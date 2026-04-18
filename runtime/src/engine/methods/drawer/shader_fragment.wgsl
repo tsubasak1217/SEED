@@ -17,9 +17,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     base_color *= in.color;
 
     // アルファテスト（Mask モード: alpha_cutoff > 0）
-    if u_material.alpha_cutoff > 0.0 && base_color.a < u_material.alpha_cutoff {
-        discard;
-    }
+    //if u_material.alpha_cutoff > 0.0 && base_color.a < u_material.alpha_cutoff {
+    //    discard;
+    //}
 
     // ── メタリック・ラフネス ──────────────────────────────────
     var metallic  = u_material.metallic_factor;

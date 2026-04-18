@@ -172,5 +172,6 @@ fn build_primitive(mesh: &tobj::Mesh) -> Primitive {
         skin_vertices: Vec::new(),
         indices: mesh.indices.clone(),
         material_index: None,  // 呼び出し元で上書きする
+        lod_indices:    Vec::new(),
     }
 }

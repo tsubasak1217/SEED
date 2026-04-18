@@ -22,11 +22,10 @@ struct ModelUniform {
     model:         mat4x4<f32>,
     normal_matrix: mat4x4<f32>,
 }
-/// ノードごとのワールド行列配列（全インスタンス分）
-@group(1) @binding(0) var<storage, read> u_instances:    array<ModelUniform>;
-/// 可視インスタンスのインデックス列（視錐台カリング後の compact list）
-/// u_instances[ u_visible_list[instance_index] ] が実際のインスタンスデータ
-@group(1) @binding(1) var<storage, read> u_visible_list: array<u32>;
+/// ノードごとのワールド行列配列（全インスタンス分）。
+/// @builtin(instance_index) は DrawIndexedIndirect.first_instance を通じて
+/// GPU カリングが書き込んだ実インスタンス番号を直接受け取る。
+@group(1) @binding(0) var<storage, read> u_instances: array<ModelUniform>;
 
 // ─── Group 2: マテリアル ──────────────────────────────────────
 

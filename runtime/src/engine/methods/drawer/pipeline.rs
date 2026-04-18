@@ -74,23 +74,9 @@ fn storage_bgl(device: &wgpu::Device, label: &str, binding: u32, visibility: wgp
 }
 
 /// モデルインスタンス用 BGL:
-///   binding 0 = u_instances    (ノードごとのワールド行列配列, Storage)
-///   binding 1 = u_visible_list (可視インスタンスインデックス列, Storage)
+///   binding 0 = u_instances (ノードごとのワールド行列配列, Storage read-only)
 fn model_instance_bgl(device: &wgpu::Device) -> wgpu::BindGroupLayout {
-    let storage_entry = |binding: u32| wgpu::BindGroupLayoutEntry {
-        binding,
-        visibility: wgpu::ShaderStages::VERTEX,
-        ty: wgpu::BindingType::Buffer {
-            ty:                 wgpu::BufferBindingType::Storage { read_only: true },
-            has_dynamic_offset: false,
-            min_binding_size:   None,
-        },
-        count: None,
-    };
-    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label:   Some("Model Instance BGL"),
-        entries: &[storage_entry(0), storage_entry(1)],
-    })
+    storage_bgl(device, "Model Instance BGL", 0, wgpu::ShaderStages::VERTEX)
 }
 
 fn texture_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
@@ -395,13 +381,205 @@ impl UnlitPipeline {
 }
 
 // ============================================================
+//  CullPipeline — GPU 視錐台カリング コンピュートパイプライン
+// ============================================================
+
+/// GPU コンピュートカリングパイプライン。
+///
+/// Group 0 BGL:
+///   0 = cull_data        (array<GpuCullData>,          Storage RO)
+///   1 = u_frustum        (FrustumUniform,               Uniform)
+///   2 = draw_cmds        (array<DrawIndexedIndirect>,   Storage RW)
+///   3 = prim_index_counts(array<u32>,                   Storage RO)
+pub struct CullPipeline {
+    pub pipeline: wgpu::ComputePipeline,
+    pub bgl:      wgpu::BindGroupLayout,
+}
+
+impl CullPipeline {
+    fn new(device: &wgpu::Device) -> Self {
+        let src    = include_str!("cull.wgsl");
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label:  Some("Cull Shader"),
+            source: wgpu::ShaderSource::Wgsl(src.into()),
+        });
+
+        let make_storage = |binding: u32, read_only: bool| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Buffer {
+                ty:                 wgpu::BufferBindingType::Storage { read_only },
+                has_dynamic_offset: false,
+                min_binding_size:   None,
+            },
+            count: None,
+        };
+        let make_uniform = |binding: u32| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Buffer {
+                ty:                 wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size:   None,
+            },
+            count: None,
+        };
+
+        let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label:   Some("Cull BGL"),
+            entries: &[
+                make_storage(0, true),   // cull_data
+                make_uniform(1),          // u_frustum
+                make_storage(2, false),  // draw_cmds
+                make_storage(3, true),   // prim_index_counts
+            ],
+        });
+
+        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label:                Some("Cull Pipeline Layout"),
+            bind_group_layouts:   &[&bgl],
+            push_constant_ranges: &[],
+        });
+
+        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label:               Some("Cull Compute Pipeline"),
+            layout:              Some(&layout),
+            module:              &shader,
+            entry_point:         Some("cs_main"),
+            compilation_options: Default::default(),
+            cache:               None,
+        });
+
+        Self { pipeline, bgl }
+    }
+}
+
+// ============================================================
+//  DepthPrepassPipelines — 深度プリパス専用パイプライン
+// ============================================================
+
+/// 深度のみを書き込む軽量パイプライン（カラー出力なし）。
+///
+/// `MeshPipeline` / `SkinnedMeshPipeline` と同じ BGL を使用するため、
+/// 同一の bind group をそのまま流用できる。
+pub struct DepthPrepassPipelines {
+    pub mesh:    wgpu::RenderPipeline,
+    pub skinned: wgpu::RenderPipeline,
+}
+
+impl DepthPrepassPipelines {
+    fn new(
+        device:       &wgpu::Device,
+        depth_format: wgpu::TextureFormat,
+        // 既存パイプラインの BGL を共用（同じ bind group を流用するため）
+        camera_bgl:   &wgpu::BindGroupLayout,
+        model_bgl:    &wgpu::BindGroupLayout,
+        joint_bgl:    &wgpu::BindGroupLayout,
+    ) -> Self {
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label:  Some("Depth Prepass Shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("depth_prepass.wgsl").into()),
+        });
+
+        let depth_stencil = wgpu::DepthStencilState {
+            format:              depth_format,
+            depth_write_enabled: true,
+            depth_compare:       wgpu::CompareFunction::Less,
+            stencil:             wgpu::StencilState::default(),
+            bias:                wgpu::DepthBiasState::default(),
+        };
+
+        // ── 非スキンメッシュ（BGL: camera + model）──────────────
+        let mesh_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label:                Some("Depth Prepass Mesh Layout"),
+            bind_group_layouts:   &[camera_bgl, model_bgl],
+            push_constant_ranges: &[],
+        });
+        let mesh = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label:  Some("Depth Prepass Mesh"),
+            layout: Some(&mesh_layout),
+            vertex: wgpu::VertexState {
+                module:              &shader,
+                entry_point:         Some("vs_mesh"),
+                buffers:             &[wgpu::VertexBufferLayout {
+                    array_stride: 72,
+                    step_mode:    wgpu::VertexStepMode::Vertex,
+                    attributes:   MESH_VERTEX_ATTRS,
+                }],
+                compilation_options: Default::default(),
+            },
+            fragment: None,  // カラー出力なし
+            primitive: wgpu::PrimitiveState {
+                topology:  wgpu::PrimitiveTopology::TriangleList,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: Some(wgpu::Face::Back),
+                ..Default::default()
+            },
+            depth_stencil:  Some(depth_stencil.clone()),
+            multisample:    wgpu::MultisampleState::default(),
+            multiview:      None,
+            cache:          None,
+        });
+
+        // ── スキンメッシュ（BGL: camera + model + dummy_material + joint）
+        // joint は group 3 に配置するため material 相当のダミー BGL が必要。
+        // ここでは model_bgl と同じ layout で空のグループを作る。
+        let dummy_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label:   Some("Depth Prepass Dummy BGL"),
+            entries: &[],
+        });
+        let skinned_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label:                Some("Depth Prepass Skinned Layout"),
+            bind_group_layouts:   &[camera_bgl, model_bgl, &dummy_bgl, joint_bgl],
+            push_constant_ranges: &[],
+        });
+        let skinned = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label:  Some("Depth Prepass Skinned"),
+            layout: Some(&skinned_layout),
+            vertex: wgpu::VertexState {
+                module:      &shader,
+                entry_point: Some("vs_skinned"),
+                buffers: &[
+                    wgpu::VertexBufferLayout {
+                        array_stride: 72,
+                        step_mode:    wgpu::VertexStepMode::Vertex,
+                        attributes:   MESH_VERTEX_ATTRS,
+                    },
+                    wgpu::VertexBufferLayout {
+                        array_stride: 24,
+                        step_mode:    wgpu::VertexStepMode::Vertex,
+                        attributes:   SKIN_VERTEX_ATTRS,
+                    },
+                ],
+                compilation_options: Default::default(),
+            },
+            fragment: None,
+            primitive: wgpu::PrimitiveState {
+                topology:  wgpu::PrimitiveTopology::TriangleList,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: Some(wgpu::Face::Back),
+                ..Default::default()
+            },
+            depth_stencil:  Some(depth_stencil),
+            multisample:    wgpu::MultisampleState::default(),
+            multiview:      None,
+            cache:          None,
+        });
+
+        Self { mesh, skinned }
+    }
+}
+
+// ============================================================
 //  DrawPipelines — 全パイプラインをまとめた型
 // ============================================================
 
 pub struct DrawPipelines {
-    pub mesh:         MeshPipeline,
-    pub skinned_mesh: SkinnedMeshPipeline,
-    pub unlit_line:   UnlitPipeline,
+    pub mesh:          MeshPipeline,
+    pub skinned_mesh:  SkinnedMeshPipeline,
+    pub unlit_line:    UnlitPipeline,
+    pub cull:          CullPipeline,
+    pub depth_prepass: DepthPrepassPipelines,
 }
 
 impl DrawPipelines {
@@ -410,10 +588,21 @@ impl DrawPipelines {
         surface_format: wgpu::TextureFormat,
         depth_format:   wgpu::TextureFormat,
     ) -> Self {
+        let mesh         = MeshPipeline::new(device, surface_format, depth_format);
+        let skinned_mesh = SkinnedMeshPipeline::new(device, surface_format, depth_format);
+        let depth_prepass = DepthPrepassPipelines::new(
+            device,
+            depth_format,
+            &mesh.camera_bgl,
+            &mesh.model_bgl,
+            &skinned_mesh.joint_bgl,
+        );
         Self {
-            mesh:         MeshPipeline::new(device, surface_format, depth_format),
-            skinned_mesh: SkinnedMeshPipeline::new(device, surface_format, depth_format),
-            unlit_line:   UnlitPipeline::new(device, surface_format, depth_format),
+            mesh,
+            skinned_mesh,
+            unlit_line:    UnlitPipeline::new(device, surface_format, depth_format),
+            cull:          CullPipeline::new(device),
+            depth_prepass,
         }
     }
 }

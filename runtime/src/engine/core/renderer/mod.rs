@@ -80,7 +80,8 @@ impl Renderer {
         let (device, queue) = pollster::block_on(adapter.request_device(
             &wgpu::DeviceDescriptor {
                 label:             None,
-                required_features: wgpu::Features::empty(),
+                required_features: wgpu::Features::MULTI_DRAW_INDIRECT
+                                 | wgpu::Features::INDIRECT_FIRST_INSTANCE,
                 required_limits:   wgpu::Limits::default(),
                 memory_hints:      wgpu::MemoryHints::default(),
                 ..Default::default()
@@ -162,6 +163,9 @@ impl Renderer {
     /// }
     /// frame.finish();
     /// ```
+    /// 深度テクスチャビューへの参照を返す（Hi-Z ピラミッド生成用）。
+    pub fn depth_view(&self) -> &wgpu::TextureView { &self.depth_texture.view }
+
     pub fn begin_frame(&mut self) -> Result<RenderFrame<'_>, wgpu::SurfaceError> {
         let output     = self.surface.get_current_texture()?;
         let color_view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -195,6 +199,71 @@ pub struct RenderFrame<'r> {
 }
 
 impl<'r> RenderFrame<'r> {
+    /// コマンドエンコーダへの可変参照を返す（Hi-Z compute pass 等に使用）。
+    pub fn encoder_mut(&mut self) -> &mut wgpu::CommandEncoder { &mut self.encoder }
+
+    /// 深度バッファビューへの参照を返す（Hi-Z ピラミッド生成用）。
+    pub fn depth_view(&self) -> &wgpu::TextureView { self.depth_view }
+
+    // ── 深度プリパス（カラー出力なし、深度クリアあり）────────────
+
+    /// 深度のみ書き込むプリパスを開始する。
+    ///
+    /// Hi-Z ピラミッド生成の前に呼び出し、終了後に `encoder_mut()` 経由で
+    /// `build_pyramid` を呼ぶこと。
+    pub fn begin_depth_prepass<'f>(&'f mut self) -> wgpu::RenderPass<'f>
+    where
+        'r: 'f,
+    {
+        self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label:             Some("Depth Prepass"),
+            color_attachments: &[],  // カラー出力なし
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: self.depth_view,
+                depth_ops: Some(wgpu::Operations {
+                    load:  wgpu::LoadOp::Clear(1.0),
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: None,
+            }),
+            occlusion_query_set: None,
+            timestamp_writes:    None,
+        })
+    }
+
+    // ── メインレンダーパス（深度プリパスの結果を保持）────────────
+
+    /// 深度プリパスの結果を保持したままメインレンダーパスを開始する。
+    ///
+    /// 深度バッファは `LoadOp::Load`（プリパスの深度を引き継ぎ）。
+    /// Early-Z により、深度プリパスで隠れたフラグメントはシェーダー実行をスキップする。
+    pub fn begin_render_pass_with_prepass<'f>(&'f mut self) -> wgpu::RenderPass<'f>
+    where
+        'r: 'f,
+    {
+        self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("Main Render Pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view:           &self.color_view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load:  wgpu::LoadOp::Clear(wgpu::Color { r: 0.1, g: 0.1, b: 0.1, a: 1.0 }),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: self.depth_view,
+                depth_ops: Some(wgpu::Operations {
+                    load:  wgpu::LoadOp::Load,   // プリパスの深度を引き継ぐ
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: None,
+            }),
+            occlusion_query_set: None,
+            timestamp_writes:    None,
+        })
+    }
+
     /// クリア付きのメインレンダーパスを開始する。
     ///
     /// 返値のレンダーパスをドロップしてから `finish()` を呼ぶこと。
@@ -222,6 +291,24 @@ impl<'r> RenderFrame<'r> {
             }),
             occlusion_query_set: None,
             timestamp_writes:    None,
+        })
+    }
+
+    /// フレーム先頭でバッファ全体を 0 クリアする（draw_count リセット用）。
+    pub fn clear_buffer(&mut self, buf: &wgpu::Buffer) {
+        self.encoder.clear_buffer(buf, 0, None);
+    }
+
+    /// コンピュートパスを開始する。
+    ///
+    /// 返値のパスをドロップしてから次の操作（レンダーパス等）を行うこと。
+    pub fn begin_compute_pass<'f>(&'f mut self) -> wgpu::ComputePass<'f>
+    where
+        'r: 'f,
+    {
+        self.encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label:            Some("Cull Compute Pass"),
+            timestamp_writes: None,
         })
     }
 

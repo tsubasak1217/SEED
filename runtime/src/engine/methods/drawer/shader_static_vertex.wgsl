@@ -13,10 +13,9 @@ struct VertexInput {
 
 @vertex
 fn vs_main(v: VertexInput, @builtin(instance_index) inst_idx: u32) -> VertexOutput {
-    // u_visible_list は視錐台カリング後の compact index list。
-    // draw_indexed の instance_count = visible_count なので
-    // inst_idx は 0..visible_count の範囲に収まる。
-    let u_model    = u_instances[u_visible_list[inst_idx]];
+    // inst_idx は DrawIndexedIndirect.first_instance 経由でコンピュートシェーダが
+    // 書き込んだ実インスタンス番号（u_instances の直接インデックス）。
+    let u_model    = u_instances[inst_idx];
     let world_pos4 = u_model.model * vec4<f32>(v.position, 1.0);
     let nm         = u_model.normal_matrix;
     let wn         = normalize((nm * vec4<f32>(v.normal,      0.0)).xyz);

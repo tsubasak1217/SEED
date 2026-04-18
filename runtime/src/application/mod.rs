@@ -16,7 +16,7 @@ use crate::engine::structs::tensor::Vector3;
 use crate::engine::methods::drawer::{
     DrawContext, GpuModel, InstancedModelBatch, CameraBuffer,
     CameraUniform,
-    draw_model_instanced,
+    draw_model_indirect,
     extract_frustum_planes,
 };
 use crate::engine::core::loader::model::Model;
@@ -207,17 +207,13 @@ impl ApplicationHandler for App {
                 self.camera.update(&self.input, delta_time);
 
                 // ── GPU バッファ更新（レンダーパスの外で行う）──────
-                //
-                // scene は &mut が必要（instanced_batch.update が dirty flag を更新）。
-                // draw_ctx は &（queue の参照のみ取り出す）。
-                // 両者は self の別フィールドなので同時借用できる。
                 let queue = self.draw_ctx.as_ref().map(|c| c.queue.clone());
 
                 if let (Some(scene), Some(queue)) = (self.scene.as_mut(), queue) {
                     // カメラ uniform（行優先 → 列優先変換のため転置）
                     let view      = self.camera.view_matrix();
                     let proj      = self.camera.projection_matrix();
-                    let view_proj = proj * view;       // 行優先 VP 行列（CPU 用）
+                    let view_proj = proj * view;
                     let pos       = self.camera.position();
                     scene.camera_buf.update(&queue, &CameraUniform {
                         view_proj: view_proj.transpose().data,
@@ -226,16 +222,16 @@ impl ApplicationHandler for App {
                         _pad:      0.0,
                     });
 
-                    // 視錐台平面を VP 行列から抽出（毎フレーム、カメラ更新後）
+                    // 視錐台平面を VP 行列から抽出
                     let frustum_planes = extract_frustum_planes(&view_proj.data);
+                    let camera_pos = [pos.x, pos.y, pos.z];
 
-                    // ① dirty な場合のみ変換バッファ再アップロード（静的シーンは初回のみ）
-                    // ② 毎フレーム視錐台カリングを実行して visible_list を更新
                     scene.instanced_batch.update(
                         &queue,
                         &scene.model,
                         &scene.instance_mats,
-                        Some(&frustum_planes),
+                        &frustum_planes,
+                        camera_pos,
                     );
                 }
 
@@ -249,15 +245,15 @@ impl ApplicationHandler for App {
                         Ok(mut frame) => {
                             {
                                 let mut pass = frame.begin_render_pass();
-                                draw_model_instanced(
+                                draw_model_indirect(
                                     &mut pass,
                                     &scene.gpu_model,
-                                    &scene.model,
                                     &scene.instanced_batch,
                                     &scene.camera_buf.bind_group,
                                     &ctx.pipelines,
                                 );
                             }
+
                             frame.finish();
                         }
                         Err(wgpu::SurfaceError::Lost) => {

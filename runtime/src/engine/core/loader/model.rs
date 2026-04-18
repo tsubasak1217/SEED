@@ -72,12 +72,16 @@ pub struct Mesh {
 /// 1 描画単位（1 マテリアル + 頂点/インデックスバッファ）。
 ///
 /// `skin_vertices` は `vertices` と同じ長さ、またはスキニングなしの場合は空。
+/// `lod_indices[0]` = LOD1（約50%）、`[1]` = LOD2（約25%）、`[2]` = LOD3（約10%）。
+/// 空の場合は LOD 未生成（すべて LOD0 で代用）。
 pub struct Primitive {
     pub vertices:      Vec<Vertex>,
     /// スキニング用並列配列（`is_skinned()` が true のときのみ有効）
     pub skin_vertices: Vec<SkinVertex>,
     pub indices:       Vec<u32>,
     pub material_index: Option<usize>,
+    /// ロード時生成の LOD インデックスバッファ群
+    pub lod_indices:   Vec<Vec<u32>>,
 }
 
 impl Primitive {

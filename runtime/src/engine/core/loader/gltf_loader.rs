@@ -281,12 +281,63 @@ fn load_primitive(
         Vec::new()
     };
 
+    let lod_indices = generate_lod_indices(&indices, &vertices);
     Primitive {
         vertices,
         skin_vertices,
         indices,
         material_index: prim.material().index(),
+        lod_indices,
     }
+}
+
+// ============================================================
+//  LOD インデックス生成
+// ============================================================
+
+/// meshopt を使ってロード時に LOD インデックスバッファを生成する。
+///
+/// 戻り値: `[LOD1_indices, LOD2_indices, LOD3_indices]`（簡略化できなかった段階で打ち切り）。
+/// 各 LOD の目標三角形数は元の 50 % / 25 % / 10 %。
+fn generate_lod_indices(indices: &[u32], vertices: &[super::model::Vertex]) -> Vec<Vec<u32>> {
+    use meshopt::VertexDataAdapter;
+    use super::model::Vertex;
+
+    // 三角形が 4 枚未満なら LOD 生成不要
+    if indices.len() < 12 { return vec![]; }
+
+    let adapter = match VertexDataAdapter::new(
+        bytemuck::cast_slice::<Vertex, u8>(vertices),
+        std::mem::size_of::<Vertex>(),
+        0,  // position は Vertex の先頭フィールド (offset 0)
+    ) {
+        Ok(a) => a,
+        Err(_) => return vec![],
+    };
+
+    let base_count = indices.len();
+    let target_error = 1e-2_f32;
+    // LOD1: 50%, LOD2: 25%, LOD3: 10%
+    let ratios: &[f32] = &[0.5, 0.25, 0.1];
+
+    let mut result = Vec::new();
+    for &ratio in ratios {
+        // 3 の倍数に切り捨て（三角形単位）、最低 1 三角形
+        let target_count = ((base_count as f32 * ratio) as usize / 3 * 3).max(3);
+        let simplified = meshopt::simplify(
+            indices,
+            &adapter,
+            target_count,
+            target_error,
+            meshopt::SimplifyOptions::None,
+            None,
+        );
+        if simplified.is_empty() || simplified.len() >= base_count {
+            break;  // これ以上簡略化できなければ打ち切り
+        }
+        result.push(simplified);
+    }
+    result
 }
 
 // ============================================================

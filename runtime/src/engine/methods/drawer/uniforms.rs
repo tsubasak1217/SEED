@@ -156,6 +156,58 @@ impl JointUniform {
     }
 }
 
+// ── GPU カリング用データ ───────────────────────────────────────
+
+/// コンピュートシェーダが AABB テストに使うインスタンス単位データ。
+///
+/// WGSL レイアウト（32 bytes, align 16）:
+/// | オフセット | フィールド  | サイズ |
+/// |-----------|------------|--------|
+/// |   0       | aabb_min   |  12    |
+/// |  12       | _pad0      |   4    |
+/// |  16       | aabb_max   |  12    |
+/// |  28       | _pad1      |   4    |
+#[repr(C)]
+#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct GpuCullData {
+    pub aabb_min: [f32; 3],
+    pub _pad0:    f32,
+    pub aabb_max: [f32; 3],
+    pub _pad1:    f32,
+}
+
+/// 視錐台 6 平面ユニフォーム（コンピュートシェーダ用）。
+///
+/// WGSL レイアウト（96 bytes）:
+/// | オフセット | フィールド   | サイズ |
+/// |-----------|-------------|--------|
+/// |   0       | planes[0-5] |  96    |
+#[repr(C)]
+#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct FrustumUniform {
+    pub planes: [[f32; 4]; 6],
+}
+
+/// CPU から `indirect_cmds_buf` へ書き込む DrawIndexedIndirect コマンド。
+///
+/// wgpu / DX12 の DrawIndexedIndirect レイアウト（20 bytes）:
+/// | オフセット | フィールド      | サイズ |
+/// |-----------|----------------|--------|
+/// |   0       | index_count    |   4    |
+/// |   4       | instance_count |   4    |
+/// |   8       | first_index    |   4    |
+/// |  12       | base_vertex    |   4    |
+/// |  16       | first_instance |   4    |
+#[repr(C)]
+#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct DrawIndexedIndirectCmd {
+    pub index_count:    u32,
+    pub instance_count: u32,
+    pub first_index:    u32,
+    pub base_vertex:    i32,
+    pub first_instance: u32,
+}
+
 // ── デバッグ描画用頂点 ────────────────────────────────────────
 
 /// ラインバッチ描画用頂点（位置 + 色）。

@@ -24,7 +24,8 @@ struct VertexInput {
 
 @vertex
 fn vs_main(v: VertexInput, @builtin(instance_index) inst_idx: u32) -> VertexOutput {
-    let u_model = u_instances[u_visible_list[inst_idx]];
+    // inst_idx は DrawIndexedIndirect.first_instance 経由で実インスタンス番号を直接受け取る。
+    let u_model = u_instances[inst_idx];
     // インデックスを 127 以下にクランプして境界外アクセスを防ぐ
     let j = vec4<u32>(
         min(v.joints.x, 127u),

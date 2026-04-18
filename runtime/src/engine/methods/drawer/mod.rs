@@ -3,13 +3,15 @@ pub(crate) mod gpu_resources;
 mod pipeline;
 mod model_drawer;
 mod primitive_drawer;
+mod hiz;
 
-pub use uniforms::{CameraUniform, ModelUniform, MaterialUniform, JointUniform, ColorVertex};
+pub use uniforms::{CameraUniform, ModelUniform, MaterialUniform, JointUniform, ColorVertex,
+                   GpuCullData, FrustumUniform};
 pub use gpu_resources::{GpuTexture, GpuMaterial, GpuPrimitive, GpuMesh, GpuModel,
-                        InstancedModelBatch, GpuLineBatch, DefaultTextures, CameraBuffer,
-                        extract_frustum_planes, test_aabb_frustum};
-pub use pipeline::{MeshPipeline, SkinnedMeshPipeline, UnlitPipeline, DrawPipelines};
-pub use model_drawer::{draw_model_instanced, draw_mesh_instanced};
+                        InstancedModelBatch, NodePrimDraw, GpuLineBatch, DefaultTextures,
+                        CameraBuffer, extract_frustum_planes, test_aabb_frustum};
+pub use pipeline::{MeshPipeline, SkinnedMeshPipeline, UnlitPipeline, CullPipeline, DrawPipelines};
+pub use model_drawer::draw_model_indirect;
 pub use primitive_drawer::{LineBatch, draw_line_batch};
 
 use std::sync::Arc;
@@ -63,9 +65,15 @@ impl DrawContext {
         )
     }
 
-    /// N インスタンス分のモデル変換ストレージバッファを生成する。
+    /// N インスタンス分のモデル変換ストレージバッファと GPU カリング用バッファを生成する。
     pub fn create_instanced_batch(&self, model: &Model, num_instances: u32) -> InstancedModelBatch {
-        InstancedModelBatch::new(&self.device, model, &self.pipelines.mesh.model_bgl, num_instances)
+        InstancedModelBatch::new(
+            &self.device,
+            model,
+            &self.pipelines.mesh.model_bgl,
+            &self.pipelines.cull.bgl,
+            num_instances,
+        )
     }
 
     /// カメラユニフォームバッファを生成する。

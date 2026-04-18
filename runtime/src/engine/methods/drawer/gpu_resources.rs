@@ -5,7 +5,8 @@ use crate::engine::core::loader::model::{
     Model, ModelNode, Primitive, Vertex, TextureData, TextureSource, SamplerData,
     FilterMode, WrapMode, Material, AlphaMode,
 };
-use super::uniforms::{CameraUniform, ModelUniform, MaterialUniform, JointUniform, ColorVertex};
+use super::uniforms::{CameraUniform, ModelUniform, MaterialUniform, JointUniform, ColorVertex,
+                      GpuCullData, FrustumUniform};
 
 // ============================================================
 //  デフォルトテクスチャ（テクスチャなし時のフォールバック）
@@ -265,12 +266,26 @@ impl GpuMaterial {
 pub struct GpuPrimitive {
     pub vertex_buffer:      wgpu::Buffer,
     pub skin_vertex_buffer: Option<wgpu::Buffer>,
+    /// LOD0 インデックスバッファ（フル解像度）
     pub index_buffer:       wgpu::Buffer,
     pub index_count:        u32,
+    /// LOD1, LOD2, LOD3 インデックスバッファ（lod_index_buffers[0] = LOD1）
+    pub lod_index_buffers:  Vec<wgpu::Buffer>,
+    pub lod_index_counts:   Vec<u32>,
     pub material_index:     Option<usize>,
 }
 
 impl GpuPrimitive {
+    /// `lod` 番号に対応するインデックスバッファとインデックス数を返す。
+    /// 対応する LOD データが存在しない場合は利用可能な最高 LOD（最も簡略化済み）を使用。
+    pub fn get_lod_index_buffer(&self, lod: usize) -> (&wgpu::Buffer, u32) {
+        if lod == 0 || self.lod_index_buffers.is_empty() {
+            return (&self.index_buffer, self.index_count);
+        }
+        let idx = (lod - 1).min(self.lod_index_buffers.len() - 1);
+        (&self.lod_index_buffers[idx], self.lod_index_counts[idx])
+    }
+
     fn upload(device: &wgpu::Device, prim: &Primitive) -> Self {
         use crate::engine::core::loader::model::{Vertex, SkinVertex};
 
@@ -296,11 +311,25 @@ impl GpuPrimitive {
             usage:    wgpu::BufferUsages::INDEX,
         });
 
+        // LOD インデックスバッファをアップロード
+        let lod_index_buffers: Vec<wgpu::Buffer> = prim.lod_indices.iter()
+            .map(|lod_idx| device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label:    Some("LOD Index Buffer"),
+                contents: bytemuck::cast_slice(lod_idx),
+                usage:    wgpu::BufferUsages::INDEX,
+            }))
+            .collect();
+        let lod_index_counts: Vec<u32> = prim.lod_indices.iter()
+            .map(|lod_idx| lod_idx.len() as u32)
+            .collect();
+
         Self {
             vertex_buffer,
             skin_vertex_buffer,
             index_buffer,
             index_count:    prim.indices.len() as u32,
+            lod_index_buffers,
+            lod_index_counts,
             material_index: prim.material_index,
         }
     }
@@ -479,37 +508,78 @@ fn compute_model_aabb(model: &Model) -> ([f32; 3], [f32; 3]) {
 }
 
 // ============================================================
-//  InstancedModelBatch — インスタンシング用ストレージバッファ
+//  InstancedModelBatch — CPU フラスタムカリング + LOD + Indirect Draw
 // ============================================================
 
-/// N インスタンス分のモデル変換を格納するストレージバッファ群。
+/// LOD レベル数（0 = フル解像度、1〜3 = 簡略化済み）。
+pub const NUM_LODS: usize = 4;
+
+/// LOD 切り替え距離の二乗値。`dist_sq < LOD_DIST_SQ[i]` なら LOD i を使用。
+/// [LOD0→LOD1, LOD1→LOD2, LOD2→LOD3] の境界距離の二乗。
+const LOD_DIST_SQ: [f32; 3] = [
+    10.0 * 10.0,   // 10 ユニット以内: LOD0（フル）
+    30.0 * 30.0,   // 30 ユニット以内: LOD1（50%）
+    60.0 * 60.0,   // 60 ユニット以内: LOD2（25%）
+                   // 60 ユニット以遠: LOD3（10%）
+];
+
+/// レンダーパスで `draw_indexed` を呼ぶ際に必要な
+/// (ノード, プリミティブ) ペア情報。
 ///
-/// ## GPU レイアウト
-/// - binding 0: ノードごとのワールド行列配列（全インスタンス分）
-/// - binding 1: 可視インスタンスインデックス列（視錐台カリング後）
+/// `node_prim_list` は `(is_skinned, material_idx)` で昇順ソート済み。
+/// これによりパイプライン・マテリアル切り替え回数を最小化できる。
+pub struct NodePrimDraw {
+    /// `lod_node_data[lod][node_idx]` の bind group を参照するためのインデックス。
+    pub node_idx:     usize,
+    /// `gpu_model.meshes[mesh_idx]` の参照に使用。
+    pub mesh_idx:     usize,
+    /// `gpu_mesh.primitives[prim_idx]` の参照に使用。
+    pub prim_idx:     usize,
+    /// スキンメッシュパイプラインを使うかどうか（ソートキー①）。
+    pub is_skinned:   bool,
+    /// マテリアルインデックス（ソートキー②）。`None` は デフォルトマテリアル。
+    pub material_idx: Option<usize>,
+}
+
+/// N インスタンス分のモデル変換・CPU フラスタムカリング・距離 LOD。
 ///
-/// 頂点シェーダは `u_instances[u_visible_list[instance_index]]` でアクセスする。
+/// ## フレームごとの流れ
+/// 1. dirty 時のみ: rayon でワールド行列と AABB を全インスタンス分計算して CPU キャッシュに保存
+/// 2. 毎フレーム: 視錐台テスト → 可視インスタンスをカメラ距離で LOD バケットに振り分け →
+///    各 LOD のコンパクト行列をノードバッファへアップロードし `lod_visible_counts` を更新。
+/// 3. render pass: LOD ごとに `draw_indexed(0..lod_index_count, 0, 0..lod_visible_count)` で描画
 ///
-/// ## CPU 並列化
-/// - `update()` は rayon で並列にワールド行列を計算する
-/// - 変換 dirty flag が false のときは行列アップロードをスキップ
-/// - 視錐台カリングは毎フレーム rayon 並列で実行（AABB テスト × N は微小）
+/// ## Dirty Flag
+/// インスタンス変換が変化した場合のみワールド行列・AABB を再計算する。
+/// 視錐台カリング・LOD 選択は毎フレーム実行する（カメラが動くため）。
 pub struct InstancedModelBatch {
-    /// node_index → (storage_buffer, bind_group)。メッシュを持たないノードは None。
-    pub node_data:     Vec<Option<(wgpu::Buffer, wgpu::BindGroup)>>,
-    pub num_instances: u32,
-    /// 今フレームの可視インスタンス数（draw_indexed の instance range に使う）
-    pub visible_count: u32,
+    /// lod_node_data[lod][node_idx] = (storage_buffer, bind_group)。
+    /// メッシュを持たないノードは None。
+    pub lod_node_data:      Vec<Vec<Option<(wgpu::Buffer, wgpu::BindGroup)>>>,
+    pub num_instances:      u32,
+    /// 各 LOD の直前フレーム可視インスタンス数（draw_indexed の instance_count に使用）
+    pub lod_visible_counts: [u32; NUM_LODS],
 
     // ── 事前計算データ ───────────────────────────────────────
     mesh_node_indices: Vec<usize>,
     node_pos_map:      Vec<Option<usize>>,
 
-    // ── 視錐台カリング ───────────────────────────────────────
-    model_aabb_min:    [f32; 3],
-    model_aabb_max:    [f32; 3],
-    /// 可視インスタンスインデックス列（GPU バッファ）
-    visible_list_buf:  wgpu::Buffer,
+    // ── CPU キャッシュ（dirty 時のみ再計算）─────────────────
+    /// ワールド行列キャッシュ: flat[inst_idx * n_mesh_nodes + pos]
+    world_mats_cache: Vec<ModelUniform>,
+    /// ワールド空間 AABB キャッシュ: [inst_idx]
+    world_aabbs:      Vec<GpuCullData>,
+    /// メッシュノード数（キャッシュアクセスに使用）
+    n_mesh_nodes:     usize,
+
+    /// レンダーパスで参照する (node, prim) フラットリスト
+    pub node_prim_list: Vec<NodePrimDraw>,
+    /// node_prim_list の長さ
+    pub n_prims:        u32,
+
+    // ── ローカル AABB ────────────────────────────────────────
+    model_aabb_min: [f32; 3],
+    model_aabb_max: [f32; 3],
 
     // ── Dirty Flag ───────────────────────────────────────────
     dirty: bool,
@@ -520,42 +590,10 @@ impl InstancedModelBatch {
         device:        &wgpu::Device,
         model:         &Model,
         model_bgl:     &wgpu::BindGroupLayout,
+        _cull_bgl:     &wgpu::BindGroupLayout,
         num_instances: u32,
     ) -> Self {
         let n = num_instances.max(1) as usize;
-
-        // ── visible_list バッファを先に作成（bind group が参照するため）──
-        // 初期値: [0, 1, 2, ..., N-1]（全インスタンス可視）
-        let initial_visible: Vec<u32> = (0..num_instances).collect();
-        let visible_list_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label:    Some("Visible List Buffer"),
-            contents: bytemuck::cast_slice(&initial_visible),
-            usage:    wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-        });
-
-        // ── ノードごとのインスタンスバッファ + bind group ──────
-        let stride = std::mem::size_of::<ModelUniform>() as u64;
-        let size   = (stride * n as u64).max(16);
-
-        let node_data: Vec<Option<(wgpu::Buffer, wgpu::BindGroup)>> =
-            model.nodes.iter().enumerate().map(|(i, node)| {
-                if node.mesh_index.is_none() { return None; }
-                let buf = device.create_buffer(&wgpu::BufferDescriptor {
-                    label:              Some(&format!("Node[{}] Instance Buffer", i)),
-                    size,
-                    usage:              wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-                    mapped_at_creation: false,
-                });
-                let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label:   None,
-                    layout:  model_bgl,
-                    entries: &[
-                        wgpu::BindGroupEntry { binding: 0, resource: buf.as_entire_binding() },
-                        wgpu::BindGroupEntry { binding: 1, resource: visible_list_buf.as_entire_binding() },
-                    ],
-                });
-                Some((buf, bg))
-            }).collect();
 
         // ── メッシュノードの順序テーブル ────────────────────────
         let mesh_node_indices: Vec<usize> = model.nodes.iter().enumerate()
@@ -566,53 +604,106 @@ impl InstancedModelBatch {
             node_pos_map[node_idx] = Some(pos);
         }
 
+        // ── (node, prim) フラットリスト ──────────────────────────
+        let mut node_prim_list = Vec::new();
+        let mut prim_slot = 0u32;
+
+        for &node_idx in &mesh_node_indices {
+            let mesh_idx = model.nodes[node_idx].mesh_index.unwrap();
+            let mesh     = &model.meshes[mesh_idx];
+            for (prim_idx, prim) in mesh.primitives.iter().enumerate() {
+                node_prim_list.push(NodePrimDraw {
+                    node_idx,
+                    mesh_idx,
+                    prim_idx,
+                    is_skinned:   prim.is_skinned(),
+                    material_idx: prim.material_index,
+                });
+                prim_slot += 1;
+            }
+        }
+        let n_prims = prim_slot;
+
+        // ── ソート: (is_skinned, material_idx) 昇順 ────────────
+        node_prim_list.sort_by_key(|d| {
+            (d.is_skinned as u8, d.material_idx.unwrap_or(usize::MAX))
+        });
+
+        // ── LOD ごとのノードインスタンスバッファ + bind group ────
+        let stride = std::mem::size_of::<ModelUniform>() as u64;
+        let inst_buf_size = (stride * n as u64).max(16);
+
+        let lod_node_data: Vec<Vec<Option<(wgpu::Buffer, wgpu::BindGroup)>>> = (0..NUM_LODS)
+            .map(|lod| {
+                model.nodes.iter().enumerate().map(|(i, node)| {
+                    if node.mesh_index.is_none() { return None; }
+                    let buf = device.create_buffer(&wgpu::BufferDescriptor {
+                        label:              Some(&format!("Node[{}] LOD[{}] Instance Buffer", i, lod)),
+                        size:               inst_buf_size,
+                        usage:              wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                        mapped_at_creation: false,
+                    });
+                    let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label:   None,
+                        layout:  model_bgl,
+                        entries: &[wgpu::BindGroupEntry {
+                            binding:  0,
+                            resource: buf.as_entire_binding(),
+                        }],
+                    });
+                    Some((buf, bg))
+                }).collect()
+            })
+            .collect();
+
         // ── モデル AABB（ローカル空間）──────────────────────────
         let (model_aabb_min, model_aabb_max) = compute_model_aabb(model);
 
+        let n_mesh_nodes = mesh_node_indices.len();
         Self {
-            node_data,
+            lod_node_data,
             num_instances,
-            visible_count: num_instances,  // 初回は全インスタンス可視
+            lod_visible_counts: [0; NUM_LODS],
             mesh_node_indices,
             node_pos_map,
+            world_mats_cache: Vec::new(),
+            world_aabbs:      Vec::new(),
+            n_mesh_nodes,
+            node_prim_list,
+            n_prims,
             model_aabb_min,
             model_aabb_max,
-            visible_list_buf,
             dirty: true,
         }
     }
 
     /// 変換が変化したことを通知する。
-    /// 次の `update()` でノードバッファが再アップロードされる。
+    /// 次の `update()` でワールド行列・AABB が再計算される。
     pub fn mark_dirty(&mut self) { self.dirty = true; }
 
     /// 毎フレーム呼び出す更新関数。
     ///
-    /// 1. `dirty` な場合のみ: rayon でワールド行列を並列計算 → GPU アップロード
-    /// 2. 毎フレーム: 視錐台カリングを rayon で並列実行 → visible_list を GPU アップロード
-    ///
-    /// # 引数
-    /// - `frustum_planes`: `extract_frustum_planes()` で得た 6 平面。
-    ///   `None` を渡すと全インスタンスを可視扱いにする。
+    /// 1. `dirty` な場合のみ: rayon でワールド行列と AABB を全インスタンス分計算して
+    ///    CPU キャッシュ（`world_mats_cache`・`world_aabbs`）に保存。
+    /// 2. 毎フレーム: 視錐台テスト → カメラ距離で LOD バケットに振り分け →
+    ///    各 LOD の可視行列をノードバッファへアップロードし `lod_visible_counts` を更新。
     pub fn update(
         &mut self,
         queue:           &wgpu::Queue,
         model:           &Model,
         root_transforms: &[[[f32; 4]; 4]],
-        frustum_planes:  Option<&[[f32; 4]; 6]>,
+        frustum_planes:  &[[f32; 4]; 6],
+        camera_pos:      [f32; 3],
     ) {
         let n_instances  = root_transforms.len();
-        let n_mesh_nodes = self.mesh_node_indices.len();
+        let n_mesh_nodes = self.n_mesh_nodes;
         if n_instances == 0 || n_mesh_nodes == 0 { return; }
 
-        // ── ① 変換バッファ更新（dirty な場合のみ）────────────────
+        // ── ① ワールド行列と AABB をキャッシュ（dirty 時のみ）──────
         if self.dirty {
             self.dirty = false;
 
-            // インスタンスメジャーのフラット配列:
-            //   flat[ i * K + pos ] = インスタンス i, メッシュノード pos の行列
             let mut flat = vec![ModelUniform::identity(); n_instances * n_mesh_nodes];
-
             let node_pos_map = &self.node_pos_map;
             let root_nodes   = &model.root_nodes;
 
@@ -623,47 +714,57 @@ impl InstancedModelBatch {
                         fill_chunk(model, root_node, root_t, node_pos_map, chunk);
                     }
                 });
+            self.world_mats_cache = flat;
 
-            // 列を抽出してノードごとにアップロード
-            for (pos, &node_idx) in self.mesh_node_indices.iter().enumerate() {
-                if let Some((buf, _)) = &self.node_data[node_idx] {
-                    let column: Vec<ModelUniform> = (0..n_instances)
-                        .map(|i| flat[i * n_mesh_nodes + pos])
-                        .collect();
-                    queue.write_buffer(buf, 0, bytemuck::cast_slice(&column));
-                }
+            let aabb_min = self.model_aabb_min;
+            let aabb_max = self.model_aabb_max;
+            self.world_aabbs = root_transforms
+                .par_iter()
+                .map(|mat| {
+                    let (wmin, wmax) = transform_aabb(aabb_min, aabb_max, mat);
+                    GpuCullData { aabb_min: wmin, _pad0: 0.0, aabb_max: wmax, _pad1: 0.0 }
+                })
+                .collect();
+        }
+
+        // ── ② 視錐台カリング + 距離 LOD → LOD バケット別コンパクト行列 ─
+        let mut compact: Vec<Vec<Vec<ModelUniform>>> = (0..NUM_LODS)
+            .map(|_| (0..n_mesh_nodes).map(|_| Vec::with_capacity(n_instances / NUM_LODS + 1)).collect())
+            .collect();
+
+        for (inst_idx, aabb) in self.world_aabbs.iter().enumerate() {
+            if !test_aabb_frustum(frustum_planes, aabb.aabb_min, aabb.aabb_max) { continue; }
+
+            let cx = (aabb.aabb_min[0] + aabb.aabb_max[0]) * 0.5;
+            let cy = (aabb.aabb_min[1] + aabb.aabb_max[1]) * 0.5;
+            let cz = (aabb.aabb_min[2] + aabb.aabb_max[2]) * 0.5;
+            let dx = cx - camera_pos[0];
+            let dy = cy - camera_pos[1];
+            let dz = cz - camera_pos[2];
+            let dist_sq = dx*dx + dy*dy + dz*dz;
+
+            let lod = if dist_sq < LOD_DIST_SQ[0] { 0 }
+                      else if dist_sq < LOD_DIST_SQ[1] { 1 }
+                      else if dist_sq < LOD_DIST_SQ[2] { 2 }
+                      else { 3 };
+
+            for pos in 0..n_mesh_nodes {
+                compact[lod][pos].push(self.world_mats_cache[inst_idx * n_mesh_nodes + pos]);
             }
         }
 
-        // ── ② 視錐台カリング（毎フレーム rayon 並列）────────────
-        let visible: Vec<u32> = match frustum_planes {
-            Some(planes) => {
-                let aabb_min = self.model_aabb_min;
-                let aabb_max = self.model_aabb_max;
-                // rayon でインスタンスごとに並列 AABB テスト
-                (0..n_instances as u32)
-                    .into_par_iter()
-                    .filter(|&i| {
-                        let (wmin, wmax) = transform_aabb(
-                            aabb_min, aabb_max,
-                            &root_transforms[i as usize],
-                        );
-                        test_aabb_frustum(planes, wmin, wmax)
-                    })
-                    .collect()
+        // ── ③ 各 LOD の visible_count を更新 → GPU バッファへアップロード ──
+        for lod in 0..NUM_LODS {
+            let visible = compact[lod].first().map_or(0, |v| v.len()) as u32;
+            self.lod_visible_counts[lod] = visible;
+
+            if visible > 0 {
+                for (pos, &node_idx) in self.mesh_node_indices.iter().enumerate() {
+                    if let Some((buf, _)) = &self.lod_node_data[lod][node_idx] {
+                        queue.write_buffer(buf, 0, bytemuck::cast_slice(&compact[lod][pos]));
+                    }
+                }
             }
-            None => (0..n_instances as u32).collect(),
-        };
-
-        self.visible_count = visible.len() as u32;
-
-        // visible_list を GPU にアップロード
-        // visible_count == 0 のときは書き込み不要（draw_indexed がスキップされる）
-        if self.visible_count > 0 {
-            queue.write_buffer(
-                &self.visible_list_buf, 0,
-                bytemuck::cast_slice(&visible),
-            );
         }
     }
 }
