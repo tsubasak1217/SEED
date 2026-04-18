@@ -1,0 +1,65 @@
+# =========================
+# OS
+# =========================
+.DS_Store
+Thumbs.db
+
+# =========================
+# Visual Studio 2022
+# =========================
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# ビルド成果物
+Debug/
+Release/
+x64/
+x86/
+bin/
+obj/
+
+# C++系
+*.obj
+*.pdb
+*.ilk
+*.exe
+*.dll
+*.lib
+
+# =========================
+# VSCode
+# =========================
+.vscode/*
+!.vscode/settings.json
+!.vscode/launch.json
+!.vscode/tasks.json
+
+# =========================
+# CMake
+# =========================
+CMakeFiles/
+CMakeCache.txt
+cmake-build-*/
+compile_commands.json
+
+# =========================
+# Rust
+# =========================
+target/
+
+# =========================
+# ログ・一時ファイル
+# =========================
+*.log
+*.tmp
+*.temp
+
+# =========================
+# その他
+# =========================
+*.bak
+*.swp
+*~

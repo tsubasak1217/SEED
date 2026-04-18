@@ -1,0 +1,441 @@
+use std::path::Path;
+use gltf::animation::util::ReadOutputs;
+use super::model::*;
+use super::LoadError;
+
+// ============================================================
+//  エントリポイント
+// ============================================================
+
+pub fn load(path: &Path) -> Result<Model, LoadError> {
+    let (document, buffers, images) = gltf::import(path)
+        .map_err(|e| LoadError::Parse(e.to_string()))?;
+
+    let name = path.file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("unnamed")
+        .to_string();
+
+    let textures   = load_textures(&document, &images);
+    let materials  = load_materials(&document);
+    let meshes     = load_meshes(&document, &buffers);
+    let animations = load_animations(&document, &buffers);
+    let skins      = load_skins(&document, &buffers);
+    let (nodes, root_nodes) = load_nodes(&document);
+
+    Ok(Model { name, nodes, root_nodes, meshes, materials, textures, animations, skins })
+}
+
+// ============================================================
+//  テクスチャ
+// ============================================================
+
+fn load_textures(
+    document: &gltf::Document,
+    images: &[gltf::image::Data],
+) -> Vec<TextureData> {
+    document.textures().map(|tex| {
+        let img  = &images[tex.source().index()];
+        let pixels = normalize_to_rgba8(&img.pixels, img.format, img.width, img.height);
+        let sampler = tex.sampler();
+
+        TextureData {
+            name:   tex.name().map(String::from),
+            source: TextureSource::Embedded {
+                width:  img.width,
+                height: img.height,
+                pixels,
+            },
+            sampler: SamplerData {
+                mag_filter: sampler.mag_filter()
+                    .map(conv_mag_filter)
+                    .unwrap_or(FilterMode::Linear),
+                min_filter: sampler.min_filter()
+                    .map(conv_min_filter)
+                    .unwrap_or(FilterMode::LinearMipmapLinear),
+                wrap_u: conv_wrap(sampler.wrap_s()),
+                wrap_v: conv_wrap(sampler.wrap_t()),
+            },
+        }
+    }).collect()
+}
+
+/// glTF の様々なピクセル形式を RGBA8 に正規化する。
+fn normalize_to_rgba8(
+    src: &[u8],
+    format: gltf::image::Format,
+    _width: u32,
+    _height: u32,
+) -> Vec<u8> {
+    use gltf::image::Format::*;
+    match format {
+        R8G8B8A8 => src.to_vec(),
+        R8G8B8   => src.chunks_exact(3)
+            .flat_map(|c| [c[0], c[1], c[2], 255])
+            .collect(),
+        R8G8     => src.chunks_exact(2)
+            .flat_map(|c| [c[0], c[1], 0, 255])
+            .collect(),
+        R8       => src.iter()
+            .flat_map(|&r| [r, r, r, 255])
+            .collect(),
+        R16G16B16A16 => src.chunks_exact(8)
+            .flat_map(|c| {
+                let rgba = [
+                    u16::from_le_bytes([c[0], c[1]]),
+                    u16::from_le_bytes([c[2], c[3]]),
+                    u16::from_le_bytes([c[4], c[5]]),
+                    u16::from_le_bytes([c[6], c[7]]),
+                ];
+                rgba.map(|v| (v >> 8) as u8)
+            })
+            .collect(),
+        R16G16B16 => src.chunks_exact(6)
+            .flat_map(|c| {
+                let r = (u16::from_le_bytes([c[0], c[1]]) >> 8) as u8;
+                let g = (u16::from_le_bytes([c[2], c[3]]) >> 8) as u8;
+                let b = (u16::from_le_bytes([c[4], c[5]]) >> 8) as u8;
+                [r, g, b, 255]
+            })
+            .collect(),
+        // その他の形式はそのまま返す（GPU 側で処理）
+        _ => src.to_vec(),
+    }
+}
+
+fn conv_mag_filter(f: gltf::texture::MagFilter) -> FilterMode {
+    match f {
+        gltf::texture::MagFilter::Nearest => FilterMode::Nearest,
+        gltf::texture::MagFilter::Linear  => FilterMode::Linear,
+    }
+}
+
+fn conv_min_filter(f: gltf::texture::MinFilter) -> FilterMode {
+    use gltf::texture::MinFilter::*;
+    match f {
+        Nearest              => FilterMode::Nearest,
+        Linear               => FilterMode::Linear,
+        NearestMipmapNearest => FilterMode::NearestMipmapNearest,
+        LinearMipmapNearest  => FilterMode::LinearMipmapNearest,
+        NearestMipmapLinear  => FilterMode::NearestMipmapLinear,
+        LinearMipmapLinear   => FilterMode::LinearMipmapLinear,
+    }
+}
+
+fn conv_wrap(w: gltf::texture::WrappingMode) -> WrapMode {
+    use gltf::texture::WrappingMode::*;
+    match w {
+        ClampToEdge    => WrapMode::ClampToEdge,
+        MirroredRepeat => WrapMode::MirroredRepeat,
+        Repeat         => WrapMode::Repeat,
+    }
+}
+
+// ============================================================
+//  マテリアル
+// ============================================================
+
+fn load_materials(document: &gltf::Document) -> Vec<Material> {
+    document.materials().map(|mat| {
+        let pbr  = mat.pbr_metallic_roughness();
+
+        let base_color_factor = pbr.base_color_factor();
+        let base_color_texture = pbr.base_color_texture().map(|t| TextureInfo {
+            texture_index: t.texture().index(),
+            tex_coord_set: t.tex_coord(),
+        });
+        let metallic_roughness_texture = pbr.metallic_roughness_texture().map(|t| TextureInfo {
+            texture_index: t.texture().index(),
+            tex_coord_set: t.tex_coord(),
+        });
+        let normal_texture = mat.normal_texture().map(|t| NormalTextureInfo {
+            texture_index: t.texture().index(),
+            tex_coord_set: t.tex_coord(),
+            scale:         t.scale(),
+        });
+        let occlusion_texture = mat.occlusion_texture().map(|t| OcclusionTextureInfo {
+            texture_index: t.texture().index(),
+            tex_coord_set: t.tex_coord(),
+            strength:      t.strength(),
+        });
+        let emissive_texture = mat.emissive_texture().map(|t| TextureInfo {
+            texture_index: t.texture().index(),
+            tex_coord_set: t.tex_coord(),
+        });
+        let alpha_mode = match mat.alpha_mode() {
+            gltf::material::AlphaMode::Opaque => AlphaMode::Opaque,
+            gltf::material::AlphaMode::Mask   => AlphaMode::Mask,
+            gltf::material::AlphaMode::Blend  => AlphaMode::Blend,
+        };
+
+        Material {
+            name: mat.name().unwrap_or("").to_string(),
+            base_color_factor,
+            base_color_texture,
+            metallic_factor:             pbr.metallic_factor(),
+            roughness_factor:            pbr.roughness_factor(),
+            metallic_roughness_texture,
+            normal_texture,
+            occlusion_texture,
+            emissive_factor:  mat.emissive_factor(),
+            emissive_texture,
+            alpha_mode,
+            alpha_cutoff: mat.alpha_cutoff().unwrap_or(0.5),
+            double_sided:     mat.double_sided(),
+        }
+    }).collect()
+}
+
+// ============================================================
+//  メッシュ
+// ============================================================
+
+fn load_meshes(
+    document: &gltf::Document,
+    buffers: &[gltf::buffer::Data],
+) -> Vec<Mesh> {
+    document.meshes().map(|mesh| {
+        let primitives = mesh.primitives().map(|prim| {
+            load_primitive(&prim, buffers)
+        }).collect();
+
+        Mesh {
+            name: mesh.name().unwrap_or("").to_string(),
+            primitives,
+        }
+    }).collect()
+}
+
+fn load_primitive(
+    prim: &gltf::Primitive<'_>,
+    buffers: &[gltf::buffer::Data],
+) -> Primitive {
+    let reader = prim.reader(|b| Some(&*buffers[b.index()]));
+
+    // ── 位置（必須）────────────────────────────────────────
+    let positions: Vec<[f32; 3]> = reader
+        .read_positions()
+        .map(|it| it.collect())
+        .unwrap_or_default();
+    let n = positions.len();
+
+    // ── その他の属性（なければデフォルト）──────────────────
+    let normals: Vec<[f32; 3]> = reader
+        .read_normals()
+        .map(|it| it.collect())
+        .unwrap_or_else(|| vec![[0.0, 1.0, 0.0]; n]);
+
+    let tangents: Vec<[f32; 4]> = reader
+        .read_tangents()
+        .map(|it| it.collect())
+        .unwrap_or_else(|| vec![[1.0, 0.0, 0.0, 1.0]; n]);
+
+    let uvs0: Vec<[f32; 2]> = reader
+        .read_tex_coords(0)
+        .map(|v| v.into_f32().collect())
+        .unwrap_or_else(|| vec![[0.0; 2]; n]);
+
+    let uvs1: Vec<[f32; 2]> = reader
+        .read_tex_coords(1)
+        .map(|v| v.into_f32().collect())
+        .unwrap_or_else(|| vec![[0.0; 2]; n]);
+
+    let colors: Vec<[f32; 4]> = reader
+        .read_colors(0)
+        .map(|v| v.into_rgba_f32().collect())
+        .unwrap_or_else(|| vec![[1.0; 4]; n]);
+
+    // ── インデックス（なければ順番に生成）──────────────────
+    let indices: Vec<u32> = reader
+        .read_indices()
+        .map(|v| v.into_u32().collect())
+        .unwrap_or_else(|| (0..n as u32).collect());
+
+    // ── 頂点構築 ───────────────────────────────────────────
+    let vertices: Vec<Vertex> = (0..n).map(|i| Vertex {
+        position: positions[i],
+        normal:   normals[i],
+        tangent:  tangents[i],
+        uv0:      uvs0[i],
+        uv1:      uvs1[i],
+        color:    colors[i],
+    }).collect();
+
+    // ── スキニング ─────────────────────────────────────────
+    let joints: Vec<[u16; 4]> = reader
+        .read_joints(0)
+        .map(|v| v.into_u16().collect())
+        .unwrap_or_default();
+
+    let weights: Vec<[f32; 4]> = reader
+        .read_weights(0)
+        .map(|v| v.into_f32().collect())
+        .unwrap_or_default();
+
+    let skin_vertices: Vec<SkinVertex> = if joints.len() == n {
+        (0..n).map(|i| SkinVertex {
+            joints:  joints[i],
+            weights: weights.get(i).copied().unwrap_or([1.0, 0.0, 0.0, 0.0]),
+        }).collect()
+    } else {
+        Vec::new()
+    };
+
+    Primitive {
+        vertices,
+        skin_vertices,
+        indices,
+        material_index: prim.material().index(),
+    }
+}
+
+// ============================================================
+//  ノード（シーングラフ）
+// ============================================================
+
+fn load_nodes(document: &gltf::Document) -> (Vec<ModelNode>, Vec<usize>) {
+    let mut nodes: Vec<ModelNode> = document.nodes().map(|node| {
+        // glTF は列優先行列 → 行優先に転置
+        let local_matrix = transpose_mat4(node.transform().matrix());
+
+        ModelNode {
+            name:         node.name().unwrap_or("").to_string(),
+            local_matrix,
+            mesh_index:   node.mesh().map(|m| m.index()),
+            skin_index:   node.skin().map(|s| s.index()),
+            children:     node.children().map(|c| c.index()).collect(),
+            parent:       None, // 後で補完
+        }
+    }).collect();
+
+    // 親インデックスを補完
+    let children_map: Vec<Vec<usize>> = nodes.iter()
+        .map(|n| n.children.clone())
+        .collect();
+    for (parent_idx, children) in children_map.iter().enumerate() {
+        for &child_idx in children {
+            if let Some(n) = nodes.get_mut(child_idx) {
+                n.parent = Some(parent_idx);
+            }
+        }
+    }
+
+    // ルートノード（親なし）を収集
+    let root_nodes: Vec<usize> = nodes.iter()
+        .enumerate()
+        .filter_map(|(i, n)| if n.parent.is_none() { Some(i) } else { None })
+        .collect();
+
+    (nodes, root_nodes)
+}
+
+/// 列優先 4x4 行列（glTF）→ 行優先 4x4 行列（本エンジン）
+fn transpose_mat4(m: [[f32; 4]; 4]) -> [[f32; 4]; 4] {
+    let mut out = [[0.0f32; 4]; 4];
+    for r in 0..4 {
+        for c in 0..4 {
+            out[r][c] = m[c][r];
+        }
+    }
+    out
+}
+
+// ============================================================
+//  アニメーション
+// ============================================================
+
+fn load_animations(
+    document: &gltf::Document,
+    buffers: &[gltf::buffer::Data],
+) -> Vec<Animation> {
+    document.animations().map(|anim| {
+        let mut duration = 0.0_f32;
+
+        let channels = anim.channels().filter_map(|ch| {
+            let target = ch.target();
+            let sampler = ch.sampler();
+
+            // utils feature では Channel に reader() が生えている
+            let reader = ch.reader(|b: gltf::Buffer<'_>| Some(&*buffers[b.index()]));
+
+            let timestamps: Vec<f32> = reader
+                .read_inputs()
+                .map(|it| it.collect::<Vec<f32>>())
+                .unwrap_or_default();
+
+            if let Some(&last) = timestamps.last() {
+                duration = duration.max(last);
+            }
+
+            let interpolation = match sampler.interpolation() {
+                gltf::animation::Interpolation::Linear      => Interpolation::Linear,
+                gltf::animation::Interpolation::Step        => Interpolation::Step,
+                gltf::animation::Interpolation::CubicSpline => Interpolation::CubicSpline,
+            };
+
+            let outputs = match reader.read_outputs()? {
+                ReadOutputs::Translations(it) =>
+                    AnimationOutputs::Translations(it.collect()),
+                ReadOutputs::Rotations(rot) =>
+                    AnimationOutputs::Rotations(rot.into_f32().collect()),
+                ReadOutputs::Scales(it) =>
+                    AnimationOutputs::Scales(it.collect()),
+                ReadOutputs::MorphTargetWeights(w) =>
+                    AnimationOutputs::MorphWeights(w.into_f32().collect()),
+            };
+
+            Some(AnimationChannel {
+                target_node_index: target.node().index(),
+                sampler: AnimationSampler { interpolation, timestamps, outputs },
+            })
+        }).collect();
+
+        Animation {
+            name: anim.name().unwrap_or("").to_string(),
+            duration,
+            channels,
+        }
+    }).collect()
+}
+
+// ============================================================
+//  スキン
+// ============================================================
+
+fn load_skins(
+    document: &gltf::Document,
+    buffers: &[gltf::buffer::Data],
+) -> Vec<Skin> {
+    document.skins().map(|skin| {
+        let joints: Vec<gltf::Node<'_>> = skin.joints().collect();
+        let reader = skin.reader(|b| Some(&*buffers[b.index()]));
+
+        // インバースバインド行列（列優先 → 行優先に転置）
+        let ibms: Vec<[[f32; 4]; 4]> = reader
+            .read_inverse_bind_matrices()
+            .map(|it| it.map(transpose_mat4).collect())
+            .unwrap_or_else(|| vec![ModelNode::identity_matrix(); joints.len()]);
+
+        // スキンのルートジョイント（skin.skeleton() で取得できる場合）
+        let root_node_index = skin.skeleton().map(|n| n.index());
+
+        let skin_joints: Vec<SkinJoint> = joints.iter().enumerate().map(|(i, node)| {
+            SkinJoint {
+                node_index:           node.index(),
+                name:                 node.name().unwrap_or("").to_string(),
+                inverse_bind_matrix:  ibms[i],
+            }
+        }).collect();
+
+        // root_node_index → joints 配列内でのインデックスに変換
+        let root_joint = root_node_index.and_then(|rni| {
+            skin_joints.iter().position(|j| j.node_index == rni)
+        });
+
+        Skin {
+            name: skin.name().unwrap_or("").to_string(),
+            joints: skin_joints,
+            root_joint,
+        }
+    }).collect()
+}

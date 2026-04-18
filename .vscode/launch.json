@@ -1,0 +1,24 @@
+{
+    // IntelliSense を使用して利用可能な属性を学べます。
+    // 既存の属性の説明をホバーして表示します。
+    // 詳細情報は次を確認してください: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Runtime (Debug)",
+            "type": "lldb",
+            "request": "launch",
+            "program": "${workspaceRoot}/runtime/target/debug/SEED.exe",
+            "args": [],
+            "cwd": "${workspaceRoot}/runtime"
+        },
+        {
+            "name": "Runtime (Release)",
+            "type": "lldb",
+            "request": "launch",
+            "program": "${workspaceRoot}/runtime/target/release/SEED.exe",
+            "args": [],
+            "cwd": "${workspaceRoot}/runtime"
+        }
+    ]
+}

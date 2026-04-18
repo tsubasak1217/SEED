@@ -1,0 +1,176 @@
+use std::path::Path;
+use super::model::*;
+use super::LoadError;
+
+pub fn load(path: &Path) -> Result<Model, LoadError> {
+    let (obj_models, obj_materials_result) = tobj::load_obj(
+        path,
+        &tobj::LoadOptions {
+            triangulate:  true,
+            single_index: true,
+            ..Default::default()
+        },
+    ).map_err(|e| LoadError::Parse(e.to_string()))?;
+
+    // マテリアルが読めなくてもモデルは返す
+    let obj_materials = obj_materials_result.unwrap_or_default();
+
+    let name = path.file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("unnamed")
+        .to_string();
+
+    // ── テクスチャ ─────────────────────────────────────────────
+    // OBJ は外部ファイル参照のみ。モデルファイルと同じディレクトリを基準とする。
+    let base_dir = path.parent().unwrap_or(Path::new("."));
+    let textures: Vec<TextureData> = obj_materials.iter()
+        .flat_map(|mat| {
+            [
+                mat.diffuse_texture.as_deref(),
+                mat.normal_texture.as_deref(),
+                mat.specular_texture.as_deref(),
+            ]
+        })
+        .flatten()
+        .filter(|s| !s.is_empty())
+        .map(|tex_name| TextureData {
+            name:    Some(tex_name.to_string()),
+            source:  TextureSource::FilePath(base_dir.join(tex_name)),
+            sampler: SamplerData::default(),
+        })
+        .collect();
+
+    // ── マテリアル（Phong → PBR 近似マッピング） ─────────────
+    // OBJ は Phong モデル。diffuse → base_color、specular は roughness に近似。
+    let materials: Vec<Material> = if obj_materials.is_empty() {
+        vec![Material::default()]
+    } else {
+        obj_materials.iter().map(|mat| {
+            let base_color_factor = [
+                mat.diffuse.map_or(1.0, |d| d[0]),
+                mat.diffuse.map_or(1.0, |d| d[1]),
+                mat.diffuse.map_or(1.0, |d| d[2]),
+                1.0 - mat.dissolve.unwrap_or(0.0),  // dissolve → alpha
+            ];
+            // specular の輝度 → rough ness の逆数として近似
+            let spec_lum = mat.specular.map_or(0.0, |s| {
+                (s[0] * 0.2126 + s[1] * 0.7152 + s[2] * 0.0722).min(1.0)
+            });
+            let roughness_factor = 1.0 - spec_lum;
+
+            // テクスチャインデックスの逆引き（textures vec の何番目か）
+            let find_tex = |name: Option<&str>| -> Option<TextureInfo> {
+                let n = name?;
+                if n.is_empty() { return None; }
+                let idx = textures.iter().position(|t| {
+                    t.name.as_deref() == Some(n)
+                })?;
+                Some(TextureInfo { texture_index: idx, tex_coord_set: 0 })
+            };
+
+            let alpha_mode = if mat.dissolve.map_or(false, |d| d < 1.0) {
+                AlphaMode::Blend
+            } else {
+                AlphaMode::Opaque
+            };
+
+            Material {
+                name:                       mat.name.clone(),
+                base_color_factor,
+                base_color_texture:         find_tex(mat.diffuse_texture.as_deref()),
+                metallic_factor:            0.0, // OBJ は非 PBR なので金属度 0 でフォールバック
+                roughness_factor,
+                metallic_roughness_texture: None,
+                normal_texture: find_tex(mat.normal_texture.as_deref()).map(|ti| {
+                    NormalTextureInfo {
+                        texture_index: ti.texture_index,
+                        tex_coord_set: 0,
+                        scale: 1.0,
+                    }
+                }),
+                occlusion_texture:  None,
+                emissive_factor:    mat.ambient.unwrap_or([0.0; 3]),
+                emissive_texture:   None,
+                alpha_mode,
+                alpha_cutoff:       0.5,
+                double_sided:       false,
+            }
+        }).collect()
+    };
+
+    // ── メッシュ（tobj::Model 1 つ = 1 Primitive）────────────
+    let mut meshes: Vec<Mesh>     = Vec::new();
+    let mut nodes:  Vec<ModelNode> = Vec::new();
+    let mut root_nodes: Vec<usize> = Vec::new();
+
+    for (node_idx, obj_model) in obj_models.iter().enumerate() {
+        let mesh_idx = meshes.len();
+        let prim     = build_primitive(&obj_model.mesh);
+
+        let mat_idx  = if obj_materials.is_empty() {
+            None
+        } else {
+            obj_model.mesh.material_id
+        };
+
+        meshes.push(Mesh {
+            name: obj_model.name.clone(),
+            primitives: vec![Primitive {
+                material_index: mat_idx,
+                ..prim
+            }],
+        });
+
+        nodes.push(ModelNode {
+            name:         obj_model.name.clone(),
+            local_matrix: ModelNode::identity_matrix(),
+            mesh_index:   Some(mesh_idx),
+            skin_index:   None,
+            children:     Vec::new(),
+            parent:       None,
+        });
+        root_nodes.push(node_idx);
+    }
+
+    Ok(Model {
+        name,
+        nodes,
+        root_nodes,
+        meshes,
+        materials,
+        textures,
+        animations: Vec::new(),
+        skins:      Vec::new(),
+    })
+}
+
+/// `tobj::Mesh` → `Primitive`（スキニングなし）
+fn build_primitive(mesh: &tobj::Mesh) -> Primitive {
+    let n = mesh.positions.len() / 3;
+
+    let vertices: Vec<Vertex> = (0..n).map(|i| {
+        let p = |off: usize| mesh.positions.get(i * 3 + off).copied().unwrap_or(0.0);
+        let nm = |off: usize| mesh.normals.get(i * 3 + off).copied().unwrap_or(0.0);
+        let uv = |off: usize| mesh.texcoords.get(i * 2 + off).copied().unwrap_or(0.0);
+
+        Vertex {
+            position: [p(0), p(1), p(2)],
+            normal:   {
+                let nx = nm(0); let ny = nm(1); let nz = nm(2);
+                let len = (nx*nx + ny*ny + nz*nz).sqrt();
+                if len > 1e-6 { [nx/len, ny/len, nz/len] } else { [0.0, 1.0, 0.0] }
+            },
+            tangent: [1.0, 0.0, 0.0, 1.0],  // tobj は tangent 非対応
+            uv0:     [uv(0), 1.0 - uv(1)],  // OBJ は V 軸が反転
+            uv1:     [0.0; 2],
+            color:   [1.0; 4],
+        }
+    }).collect();
+
+    Primitive {
+        vertices,
+        skin_vertices: Vec::new(),
+        indices: mesh.indices.clone(),
+        material_index: None,  // 呼び出し元で上書きする
+    }
+}

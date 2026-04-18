@@ -1,0 +1,15 @@
+[package]
+name = "SEED"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+winit = "0.30"
+wgpu = "25"
+pollster = "0.3"
+raw-window-handle = "0.6"
+gltf = { version = "1", features = ["utils"] }
+tobj = "4"
+bytemuck = { version = "1", features = ["derive"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+rayon = "1"

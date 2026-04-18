@@ -1,0 +1,30 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net9.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <!-- SDK のデフォルト Page グロブを無効化し、src/ を明示指定する -->
+    <EnableDefaultPageItems>false</EnableDefaultPageItems>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- src/ 配下の App.xaml を ApplicationDefinition として明示指定する。     -->
+    <!-- SDK のデフォルトグロブはプロジェクトルートの App.xaml を想定しているため、 -->
+    <!-- サブディレクトリに移動した場合は Page 扱いになってしまうので上書きする。   -->
+    <ApplicationDefinition Remove="App.xaml" />
+    <ApplicationDefinition Include="src\App.xaml">
+      <Generator>MSBuild:Compile</Generator>
+      <SubType>Designer</SubType>
+    </ApplicationDefinition>
+
+    <!-- src/ 配下の残りの XAML を Page として登録する。 -->
+    <Page Include="src\**\*.xaml" Exclude="src\App.xaml">
+      <Generator>MSBuild:Compile</Generator>
+      <SubType>Designer</SubType>
+    </Page>
+  </ItemGroup>
+
+</Project>
