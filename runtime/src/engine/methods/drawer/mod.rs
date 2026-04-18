@@ -4,13 +4,16 @@ mod pipeline;
 mod model_drawer;
 mod primitive_drawer;
 mod hiz;
+mod skin_system;
 
 pub use uniforms::{CameraUniform, ModelUniform, MaterialUniform, JointUniform, ColorVertex,
                    GpuCullData, FrustumUniform};
 pub use gpu_resources::{GpuTexture, GpuMaterial, GpuPrimitive, GpuMesh, GpuModel,
                         InstancedModelBatch, NodePrimDraw, GpuLineBatch, DefaultTextures,
                         CameraBuffer, extract_frustum_planes, test_aabb_frustum};
-pub use pipeline::{MeshPipeline, SkinnedMeshPipeline, UnlitPipeline, CullPipeline, DrawPipelines};
+pub use pipeline::{MeshPipeline, SkinnedMeshPipeline, UnlitPipeline, CullPipeline, DrawPipelines,
+                   SkinComputePipeline};
+pub use gpu_resources::NUM_LODS;
 pub use model_drawer::draw_model_indirect;
 pub use primitive_drawer::{LineBatch, draw_line_batch};
 
@@ -65,13 +68,15 @@ impl DrawContext {
         )
     }
 
-    /// N インスタンス分のモデル変換ストレージバッファと GPU カリング用バッファを生成する。
+    /// N インスタンス分のモデル変換ストレージバッファを生成する。
+    /// スキンとアニメーションを持つモデルの場合は GPU スキニングシステムも初期化する。
     pub fn create_instanced_batch(&self, model: &Model, num_instances: u32) -> InstancedModelBatch {
         InstancedModelBatch::new(
             &self.device,
             model,
             &self.pipelines.mesh.model_bgl,
-            &self.pipelines.cull.bgl,
+            &self.pipelines.skin_compute,
+            &self.pipelines.skinned_mesh.joint_bgl,
             num_instances,
         )
     }

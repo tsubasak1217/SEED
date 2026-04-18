@@ -244,7 +244,8 @@ impl SkinnedMeshPipeline {
         let camera_bgl   = uniform_bgl(device, "Skinned Camera BGL", 0, wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT);
         let model_bgl    = model_instance_bgl(device);
         let material_bgl = material_bgl(device);
-        let joint_bgl    = uniform_bgl(device, "Joint BGL",            0, wgpu::ShaderStages::VERTEX);
+        // joint_bgl は storage（コンピュートシェーダが書き込むストレージバッファを vertex shader が読む）
+        let joint_bgl    = storage_bgl(device, "Joint Storage BGL", 0, wgpu::ShaderStages::VERTEX);
 
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label:                Some("Skinned Mesh Pipeline Layout"),
@@ -571,15 +572,116 @@ impl DepthPrepassPipelines {
 }
 
 // ============================================================
+//  SkinComputePipeline — GPU スキニング コンピュートパイプライン
+// ============================================================
+
+/// GPU スキニング用コンピュートパイプライン。
+///
+/// Group 0: フレームごと（anim_times + SkinParams）
+/// Group 1: 静的アニメーションデータ（ロード時 1 回）
+/// Group 2: 出力（ジョイント行列バッファ）
+pub struct SkinComputePipeline {
+    pub pipeline:    wgpu::ComputePipeline,
+    pub per_frame_bgl: wgpu::BindGroupLayout,  // group 0
+    pub static_bgl:    wgpu::BindGroupLayout,  // group 1
+    pub output_bgl:    wgpu::BindGroupLayout,  // group 2
+}
+
+impl SkinComputePipeline {
+    fn new(device: &wgpu::Device) -> Self {
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label:  Some("Skin Compute Shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("skin_compute.wgsl").into()),
+        });
+
+        let ro_storage = |binding: u32| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Buffer {
+                ty:                 wgpu::BufferBindingType::Storage { read_only: true },
+                has_dynamic_offset: false,
+                min_binding_size:   None,
+            },
+            count: None,
+        };
+        let rw_storage = |binding: u32| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Buffer {
+                ty:                 wgpu::BufferBindingType::Storage { read_only: false },
+                has_dynamic_offset: false,
+                min_binding_size:   None,
+            },
+            count: None,
+        };
+        let uniform_entry = |binding: u32| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Buffer {
+                ty:                 wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size:   None,
+            },
+            count: None,
+        };
+
+        let per_frame_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label:   Some("Skin PerFrame BGL"),
+            entries: &[ro_storage(0), uniform_entry(1)],
+        });
+
+        let static_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label:   Some("Skin Static BGL"),
+            entries: &[
+                ro_storage(0),   // bind_t
+                ro_storage(1),   // bind_r
+                ro_storage(2),   // bind_s
+                ro_storage(3),   // channels
+                ro_storage(4),   // timestamps
+                ro_storage(5),   // trans_vals
+                ro_storage(6),   // rot_vals
+                ro_storage(7),   // scale_vals
+                ro_storage(8),   // bfs_order
+                ro_storage(9),   // parents
+                ro_storage(10),  // joint_nodes
+                ro_storage(11),  // ibm
+            ],
+        });
+
+        let output_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label:   Some("Skin Output BGL"),
+            entries: &[rw_storage(0)],
+        });
+
+        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label:                Some("Skin Compute Layout"),
+            bind_group_layouts:   &[&per_frame_bgl, &static_bgl, &output_bgl],
+            push_constant_ranges: &[],
+        });
+
+        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label:               Some("Skin Compute Pipeline"),
+            layout:              Some(&layout),
+            module:              &shader,
+            entry_point:         Some("cs_main"),
+            compilation_options: Default::default(),
+            cache:               None,
+        });
+
+        Self { pipeline, per_frame_bgl, static_bgl, output_bgl }
+    }
+}
+
+// ============================================================
 //  DrawPipelines — 全パイプラインをまとめた型
 // ============================================================
 
 pub struct DrawPipelines {
-    pub mesh:          MeshPipeline,
-    pub skinned_mesh:  SkinnedMeshPipeline,
-    pub unlit_line:    UnlitPipeline,
-    pub cull:          CullPipeline,
-    pub depth_prepass: DepthPrepassPipelines,
+    pub mesh:         MeshPipeline,
+    pub skinned_mesh: SkinnedMeshPipeline,
+    pub unlit_line:   UnlitPipeline,
+    pub cull:         CullPipeline,
+    pub skin_compute: SkinComputePipeline,
 }
 
 impl DrawPipelines {
@@ -588,21 +690,12 @@ impl DrawPipelines {
         surface_format: wgpu::TextureFormat,
         depth_format:   wgpu::TextureFormat,
     ) -> Self {
-        let mesh         = MeshPipeline::new(device, surface_format, depth_format);
-        let skinned_mesh = SkinnedMeshPipeline::new(device, surface_format, depth_format);
-        let depth_prepass = DepthPrepassPipelines::new(
-            device,
-            depth_format,
-            &mesh.camera_bgl,
-            &mesh.model_bgl,
-            &skinned_mesh.joint_bgl,
-        );
         Self {
-            mesh,
-            skinned_mesh,
-            unlit_line:    UnlitPipeline::new(device, surface_format, depth_format),
-            cull:          CullPipeline::new(device),
-            depth_prepass,
+            mesh:         MeshPipeline::new(device, surface_format, depth_format),
+            skinned_mesh: SkinnedMeshPipeline::new(device, surface_format, depth_format),
+            unlit_line:   UnlitPipeline::new(device, surface_format, depth_format),
+            cull:         CullPipeline::new(device),
+            skin_compute: SkinComputePipeline::new(device),
         }
     }
 }

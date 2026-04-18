@@ -124,6 +124,9 @@ pub fn load(path: &Path) -> Result<Model, LoadError> {
         nodes.push(ModelNode {
             name:         obj_model.name.clone(),
             local_matrix: ModelNode::identity_matrix(),
+            translation:  [0.0, 0.0, 0.0],
+            rotation:     [0.0, 0.0, 0.0, 1.0],
+            scale:        [1.0, 1.0, 1.0],
             mesh_index:   Some(mesh_idx),
             skin_index:   None,
             children:     Vec::new(),

@@ -7,6 +7,8 @@ use crate::engine::core::loader::model::{
 };
 use super::uniforms::{CameraUniform, ModelUniform, MaterialUniform, JointUniform, ColorVertex,
                       GpuCullData, FrustumUniform};
+use super::skin_system::SkinComputeSystem;
+use super::pipeline::SkinComputePipeline;
 
 // ============================================================
 //  デフォルトテクスチャ（テクスチャなし時のフォールバック）
@@ -395,7 +397,7 @@ impl GpuModel {
         let joint_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label:    Some("Identity Joints"),
             contents: bytemuck::bytes_of(&identity_joints),
-            usage:    wgpu::BufferUsages::UNIFORM,
+            usage:    wgpu::BufferUsages::STORAGE,
         });
         let identity_joints_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label:  Some("Identity Joints BG"),
@@ -581,6 +583,10 @@ pub struct InstancedModelBatch {
     model_aabb_min: [f32; 3],
     model_aabb_max: [f32; 3],
 
+    // ── GPU スキニング ───────────────────────────────────────
+    /// スキンとアニメーションを持つ場合のみ Some
+    pub skin: Option<SkinComputeSystem>,
+
     // ── Dirty Flag ───────────────────────────────────────────
     dirty: bool,
 }
@@ -590,7 +596,8 @@ impl InstancedModelBatch {
         device:        &wgpu::Device,
         model:         &Model,
         model_bgl:     &wgpu::BindGroupLayout,
-        _cull_bgl:     &wgpu::BindGroupLayout,
+        skin_pipeline: &SkinComputePipeline,
+        joint_bgl:     &wgpu::BindGroupLayout,
         num_instances: u32,
     ) -> Self {
         let n = num_instances.max(1) as usize;
@@ -659,6 +666,9 @@ impl InstancedModelBatch {
         // ── モデル AABB（ローカル空間）──────────────────────────
         let (model_aabb_min, model_aabb_max) = compute_model_aabb(model);
 
+        // ── GPU スキニングシステム ────────────────────────────
+        let skin = SkinComputeSystem::new(device, model, num_instances, skin_pipeline, joint_bgl);
+
         let n_mesh_nodes = mesh_node_indices.len();
         Self {
             lod_node_data,
@@ -673,6 +683,7 @@ impl InstancedModelBatch {
             n_prims,
             model_aabb_min,
             model_aabb_max,
+            skin,
             dirty: true,
         }
     }
@@ -694,6 +705,7 @@ impl InstancedModelBatch {
         root_transforms: &[[[f32; 4]; 4]],
         frustum_planes:  &[[f32; 4]; 6],
         camera_pos:      [f32; 3],
+        anim_time:       f32,
     ) {
         let n_instances  = root_transforms.len();
         let n_mesh_nodes = self.n_mesh_nodes;
@@ -727,7 +739,8 @@ impl InstancedModelBatch {
                 .collect();
         }
 
-        // ── ② 視錐台カリング + 距離 LOD → LOD バケット別コンパクト行列 ─
+        // ── ② 視錐台カリング + 距離 LOD → per-LOD 可視インスタンスリスト ─
+        let mut lod_visible_insts: Vec<Vec<usize>> = vec![Vec::new(); NUM_LODS];
         let mut compact: Vec<Vec<Vec<ModelUniform>>> = (0..NUM_LODS)
             .map(|_| (0..n_mesh_nodes).map(|_| Vec::with_capacity(n_instances / NUM_LODS + 1)).collect())
             .collect();
@@ -748,14 +761,15 @@ impl InstancedModelBatch {
                       else if dist_sq < LOD_DIST_SQ[2] { 2 }
                       else { 3 };
 
+            lod_visible_insts[lod].push(inst_idx);
             for pos in 0..n_mesh_nodes {
                 compact[lod][pos].push(self.world_mats_cache[inst_idx * n_mesh_nodes + pos]);
             }
         }
 
-        // ── ③ 各 LOD の visible_count を更新 → GPU バッファへアップロード ──
+        // ── ③ 各 LOD: モデル行列をアップロード + スキン anim_times を更新 ──
         for lod in 0..NUM_LODS {
-            let visible = compact[lod].first().map_or(0, |v| v.len()) as u32;
+            let visible = lod_visible_insts[lod].len() as u32;
             self.lod_visible_counts[lod] = visible;
 
             if visible > 0 {
@@ -765,7 +779,32 @@ impl InstancedModelBatch {
                     }
                 }
             }
+
+            // スキンシステムへの anim_times 転送（GPU スキニング計算の入力）
+            if let Some(skin) = &self.skin {
+                skin.upload_lod_times(queue, lod, &lod_visible_insts[lod], anim_time);
+            }
         }
+    }
+
+    /// GPU スキニング コンピュートシェーダを全 LOD 分ディスパッチする。
+    /// レンダーパスより前にコマンドエンコーダに積む必要がある。
+    pub fn dispatch_skin(
+        &self,
+        encoder:  &mut wgpu::CommandEncoder,
+        pipeline: &SkinComputePipeline,
+    ) {
+        if let Some(skin) = &self.skin {
+            for lod in 0..NUM_LODS {
+                skin.dispatch_lod(encoder, pipeline, lod, self.lod_visible_counts[lod]);
+            }
+        }
+    }
+
+    /// LOD の頂点シェーダ用ジョイント BG（group 3）を返す。
+    /// スキンなしの場合は None。
+    pub fn joint_vs_bg(&self, lod: usize) -> Option<&wgpu::BindGroup> {
+        self.skin.as_ref().map(|s| &s.lod_joint_vs_bgs[lod])
     }
 }
 

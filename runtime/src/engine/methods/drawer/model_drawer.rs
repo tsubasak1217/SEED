@@ -35,6 +35,9 @@ pub fn draw_model_indirect<'pass>(
         let mut cur_skinned: Option<bool>                = None;
         let mut cur_mat_ptr: Option<*const wgpu::BindGroup> = None;
 
+        // LOD のジョイント BG（スキンなしの場合は None）
+        let joint_bg = batch.joint_vs_bg(lod);
+
         for draw in &batch.node_prim_list {
             let Some((_, model_bg)) = batch.lod_node_data[lod][draw.node_idx].as_ref()
                 else { continue };
@@ -51,7 +54,12 @@ pub fn draw_model_indirect<'pass>(
             if cur_skinned != Some(draw.is_skinned) {
                 if draw.is_skinned {
                     render_pass.set_pipeline(&pipelines.skinned_mesh.pipeline);
-                    render_pass.set_bind_group(3, &gpu_model.identity_joints_bg, &[]);
+                    // GPU スキニング: コンピュートシェーダが書き込んだ joint BG を設定
+                    if let Some(jbg) = joint_bg {
+                        render_pass.set_bind_group(3, jbg, &[]);
+                    } else {
+                        render_pass.set_bind_group(3, &gpu_model.identity_joints_bg, &[]);
+                    }
                 } else {
                     render_pass.set_pipeline(&pipelines.mesh.pipeline);
                 }

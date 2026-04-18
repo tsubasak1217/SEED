@@ -1,14 +1,15 @@
 // ============================================================
 // shader_skinned_vertex.wgsl  —  スキンメッシュ頂点シェーダ
 //
-// Group 3 にジョイント行列（最大 128 本）を追加。
-// Vertex 属性 location 0-5 は static と同じ、6-7 がスキニング用。
+// Group 3: ジョイント行列ストレージバッファ（全インスタンス分）
+//   joint_matrices[inst_idx * MAX_JOINTS + joint_idx] で参照。
+//   コンピュートシェーダが毎フレーム書き込む。
 // ============================================================
 
-struct JointUniform {
-    matrices: array<mat4x4<f32>, 128>,
-}
-@group(3) @binding(0) var<uniform> u_joints: JointUniform;
+const MAX_JOINTS: u32 = 128u;
+
+/// ジョイント行列（列優先、コンパクト順）
+@group(3) @binding(0) var<storage, read> joint_matrices: array<mat4x4<f32>>;
 
 struct VertexInput {
     @location(0) position: vec3<f32>,
@@ -18,28 +19,29 @@ struct VertexInput {
     @location(4) uv1:      vec2<f32>,
     @location(5) color:    vec4<f32>,
     // スキニング
-    @location(6) joints:  vec4<u32>,   // Uint16x4 → vec4<u32>
+    @location(6) joints:  vec4<u32>,
     @location(7) weights: vec4<f32>,
 }
 
 @vertex
 fn vs_main(v: VertexInput, @builtin(instance_index) inst_idx: u32) -> VertexOutput {
-    // inst_idx は DrawIndexedIndirect.first_instance 経由で実インスタンス番号を直接受け取る。
     let u_model = u_instances[inst_idx];
-    // インデックスを 127 以下にクランプして境界外アクセスを防ぐ
+
+    // このインスタンスのジョイント行列基点
+    let base = inst_idx * MAX_JOINTS;
     let j = vec4<u32>(
-        min(v.joints.x, 127u),
-        min(v.joints.y, 127u),
-        min(v.joints.z, 127u),
-        min(v.joints.w, 127u),
+        min(v.joints.x, MAX_JOINTS - 1u),
+        min(v.joints.y, MAX_JOINTS - 1u),
+        min(v.joints.z, MAX_JOINTS - 1u),
+        min(v.joints.w, MAX_JOINTS - 1u),
     );
 
-    // ブレンドスキニング行列
+    // ブレンドスキニング行列（列優先）
     let skin =
-        v.weights.x * u_joints.matrices[j.x] +
-        v.weights.y * u_joints.matrices[j.y] +
-        v.weights.z * u_joints.matrices[j.z] +
-        v.weights.w * u_joints.matrices[j.w];
+        v.weights.x * joint_matrices[base + j.x] +
+        v.weights.y * joint_matrices[base + j.y] +
+        v.weights.z * joint_matrices[base + j.z] +
+        v.weights.w * joint_matrices[base + j.w];
 
     let world_pos4 = u_model.model * (skin * vec4<f32>(v.position,   1.0));
     let nm         = u_model.normal_matrix;

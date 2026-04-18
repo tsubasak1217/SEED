@@ -38,8 +38,14 @@ impl Model {
 /// glTF 由来の場合は列優先から転置済み。
 pub struct ModelNode {
     pub name:         String,
-    /// ローカル変換行列 [row][col]
+    /// ローカル変換行列 [row][col]（行優先）
     pub local_matrix: [[f32; 4]; 4],
+    /// バインドポーズ平行移動（アニメーション補間用）
+    pub translation:  [f32; 3],
+    /// バインドポーズ回転クォータニオン [x, y, z, w]
+    pub rotation:     [f32; 4],
+    /// バインドポーズスケール
+    pub scale:        [f32; 3],
     pub mesh_index:   Option<usize>,
     pub skin_index:   Option<usize>,
     pub children:     Vec<usize>,

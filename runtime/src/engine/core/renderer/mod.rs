@@ -82,7 +82,10 @@ impl Renderer {
                 label:             None,
                 required_features: wgpu::Features::MULTI_DRAW_INDIRECT
                                  | wgpu::Features::INDIRECT_FIRST_INSTANCE,
-                required_limits:   wgpu::Limits::default(),
+                required_limits:   wgpu::Limits {
+                    max_storage_buffers_per_shader_stage: 12,
+                    ..wgpu::Limits::default()
+                },
                 memory_hints:      wgpu::MemoryHints::default(),
                 ..Default::default()
             },

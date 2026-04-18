@@ -57,6 +57,8 @@ pub struct App {
     parent_hwnd: Option<isize>,
     draw_ctx:    Option<DrawContext>,
     scene:       Option<GpuScene>,
+    /// グローバルアニメーション経過時間（秒）
+    anim_time:   f32,
 }
 
 impl App {
@@ -70,6 +72,7 @@ impl App {
             parent_hwnd,
             draw_ctx:    None,
             scene:       None,
+            anim_time:   0.0,
         }
     }
 
@@ -203,6 +206,7 @@ impl ApplicationHandler for App {
                 let now        = Instant::now();
                 let delta_time = now.duration_since(self.last_frame).as_secs_f32();
                 self.last_frame = now;
+                self.anim_time += delta_time;
 
                 self.camera.update(&self.input, delta_time);
 
@@ -226,12 +230,14 @@ impl ApplicationHandler for App {
                     let frustum_planes = extract_frustum_planes(&view_proj.data);
                     let camera_pos = [pos.x, pos.y, pos.z];
 
+                    // モデル行列更新 + スキン anim_times 更新
                     scene.instanced_batch.update(
                         &queue,
                         &scene.model,
                         &scene.instance_mats,
                         &frustum_planes,
                         camera_pos,
+                        self.anim_time,
                     );
                 }
 
@@ -243,6 +249,14 @@ impl ApplicationHandler for App {
                 {
                     match renderer.begin_frame() {
                         Ok(mut frame) => {
+                            // ── GPU スキニング コンピュートシェーダ ──
+                            // レンダーパスより前にエンコーダに積む
+                            scene.instanced_batch.dispatch_skin(
+                                frame.encoder_mut(),
+                                &ctx.pipelines.skin_compute,
+                            );
+
+                            // ── メインレンダーパス ──────────────────
                             {
                                 let mut pass = frame.begin_render_pass();
                                 draw_model_indirect(

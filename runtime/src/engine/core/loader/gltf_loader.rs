@@ -349,9 +349,23 @@ fn load_nodes(document: &gltf::Document) -> (Vec<ModelNode>, Vec<usize>) {
         // glTF は列優先行列 → 行優先に転置
         let local_matrix = transpose_mat4(node.transform().matrix());
 
+        // TRS を取得（アニメーション補間用）
+        let (translation, rotation, scale) = match node.transform() {
+            gltf::scene::Transform::Decomposed { translation, rotation, scale } => {
+                (translation, rotation, scale)
+            }
+            gltf::scene::Transform::Matrix { .. } => {
+                // matrix ノードは通常アニメーションされないため恒等値を使用
+                ([0.0_f32, 0.0, 0.0], [0.0_f32, 0.0, 0.0, 1.0], [1.0_f32, 1.0, 1.0])
+            }
+        };
+
         ModelNode {
             name:         node.name().unwrap_or("").to_string(),
             local_matrix,
+            translation,
+            rotation,
+            scale,
             mesh_index:   node.mesh().map(|m| m.index()),
             skin_index:   node.skin().map(|s| s.index()),
             children:     node.children().map(|c| c.index()).collect(),
