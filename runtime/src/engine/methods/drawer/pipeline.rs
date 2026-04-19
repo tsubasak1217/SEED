@@ -37,6 +37,12 @@ const COLOR_VERTEX_ATTRS: &[VA] = &[
     VA { format: VF::Float32x4, offset: 12, shader_location: 1 },
 ];
 
+// SmoothNormal 属性オフセット (12 bytes)
+//  smooth_normal [f32;3]  offset 0   location 8
+const SMOOTH_NORMAL_ATTRS: &[VA] = &[
+    VA { format: VF::Float32x3, offset: 0, shader_location: 8 },
+];
+
 // ============================================================
 //  バインドグループレイアウト生成ヘルパー
 // ============================================================
@@ -310,9 +316,12 @@ impl SkinnedMeshPipeline {
 // ============================================================
 
 pub struct UnlitPipeline {
-    pub pipeline:   wgpu::RenderPipeline,
-    pub camera_bgl: wgpu::BindGroupLayout,
-    pub model_bgl:  wgpu::BindGroupLayout,
+    /// 深度テストあり（LessEqual）— デバッグライン用
+    pub pipeline:       wgpu::RenderPipeline,
+    /// 深度無視（Always）— ギズモ前面描画用
+    pub gizmo_pipeline: wgpu::RenderPipeline,
+    pub camera_bgl:     wgpu::BindGroupLayout,
+    pub model_bgl:      wgpu::BindGroupLayout,
 }
 
 impl UnlitPipeline {
@@ -337,36 +346,38 @@ impl UnlitPipeline {
             push_constant_ranges: &[],
         });
 
+        let vertex_layout = wgpu::VertexBufferLayout {
+            array_stride: 28,
+            step_mode:    wgpu::VertexStepMode::Vertex,
+            attributes:   COLOR_VERTEX_ATTRS,
+        };
+        let color_target = wgpu::ColorTargetState {
+            format:     surface_format,
+            blend:      Some(wgpu::BlendState::ALPHA_BLENDING),
+            write_mask: wgpu::ColorWrites::ALL,
+        };
+
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label:  Some("Unlit Line Pipeline"),
             layout: Some(&layout),
             vertex: wgpu::VertexState {
                 module:      &shader,
                 entry_point: Some("vs_main"),
-                buffers: &[wgpu::VertexBufferLayout {
-                    array_stride: 28,   // [f32;3] + [f32;4]
-                    step_mode:    wgpu::VertexStepMode::Vertex,
-                    attributes:   COLOR_VERTEX_ATTRS,
-                }],
+                buffers:     &[vertex_layout.clone()],
                 compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {
                 module:      &shader,
                 entry_point: Some("fs_main"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format:     surface_format,
-                    blend:      Some(wgpu::BlendState::ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
+                targets:     &[Some(color_target.clone())],
                 compilation_options: Default::default(),
             }),
             primitive: wgpu::PrimitiveState {
-                topology:  wgpu::PrimitiveTopology::LineList,
+                topology: wgpu::PrimitiveTopology::LineList,
                 ..Default::default()
             },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format:              depth_format,
-                // デバッグオーバーレイとして深度書き込みしない
                 depth_write_enabled: false,
                 depth_compare:       wgpu::CompareFunction::LessEqual,
                 stencil:             wgpu::StencilState::default(),
@@ -377,7 +388,39 @@ impl UnlitPipeline {
             cache:       None,
         });
 
-        Self { pipeline, camera_bgl, model_bgl }
+        // ギズモ用：深度無視で常に前面描画
+        let gizmo_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label:  Some("Gizmo Line Pipeline"),
+            layout: Some(&layout),
+            vertex: wgpu::VertexState {
+                module:      &shader,
+                entry_point: Some("vs_main"),
+                buffers:     &[vertex_layout],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module:      &shader,
+                entry_point: Some("fs_main"),
+                targets:     &[Some(color_target)],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::LineList,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format:              depth_format,
+                depth_write_enabled: false,
+                depth_compare:       wgpu::CompareFunction::Always,
+                stencil:             wgpu::StencilState::default(),
+                bias:                wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview:   None,
+            cache:       None,
+        });
+
+        Self { pipeline, gizmo_pipeline, camera_bgl, model_bgl }
     }
 }
 
@@ -673,6 +716,406 @@ impl SkinComputePipeline {
 }
 
 // ============================================================
+//  IdPassPipeline — Actor ID 書き込みパス（R32Uint テクスチャ）
+// ============================================================
+
+/// Actor 選択用 ID バッファレンダーパイプライン。
+///
+/// BGL:
+///   group 0 = camera  (uniform, VS+FS)
+///   group 1 = model instances (storage read, VS)
+///   group 2 = compact instance IDs (storage read, VS)  ← このパイプライン固有
+///   group 3 = joint matrices (storage read, VS) — スキンメッシュのみ
+pub struct IdPassPipeline {
+    pub mesh_pipeline:    wgpu::RenderPipeline,
+    pub skinned_pipeline: wgpu::RenderPipeline,
+    pub camera_bgl:       wgpu::BindGroupLayout,
+    pub model_bgl:        wgpu::BindGroupLayout,
+    pub id_data_bgl:      wgpu::BindGroupLayout,
+    pub joint_bgl:        wgpu::BindGroupLayout,
+}
+
+impl IdPassPipeline {
+    fn new(device: &wgpu::Device, depth_format: wgpu::TextureFormat) -> Self {
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label:  Some("ID Pass Shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("id_pass.wgsl").into()),
+        });
+
+        let camera_bgl  = uniform_bgl(device, "ID Camera BGL", 0,
+                                      wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT);
+        let model_bgl   = model_instance_bgl(device);
+        let id_data_bgl = storage_bgl(device, "ID Data BGL", 0, wgpu::ShaderStages::VERTEX);
+        let joint_bgl   = storage_bgl(device, "ID Joint BGL", 0, wgpu::ShaderStages::VERTEX);
+
+        let depth_stencil = wgpu::DepthStencilState {
+            format:              depth_format,
+            depth_write_enabled: false,
+            depth_compare:       wgpu::CompareFunction::LessEqual,
+            stencil:             wgpu::StencilState::default(),
+            bias:                wgpu::DepthBiasState::default(),
+        };
+
+        let mesh_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label:                Some("ID Pass Mesh Layout"),
+            bind_group_layouts:   &[&camera_bgl, &model_bgl, &id_data_bgl],
+            push_constant_ranges: &[],
+        });
+        let mesh_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label:  Some("ID Pass Mesh"),
+            layout: Some(&mesh_layout),
+            vertex: wgpu::VertexState {
+                module:      &shader,
+                entry_point: Some("vs_mesh"),
+                buffers: &[wgpu::VertexBufferLayout {
+                    array_stride: 72,
+                    step_mode:    wgpu::VertexStepMode::Vertex,
+                    attributes:   MESH_VERTEX_ATTRS,
+                }],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module:      &shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format:     wgpu::TextureFormat::R32Uint,
+                    blend:      None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology:   wgpu::PrimitiveTopology::TriangleList,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode:  Some(wgpu::Face::Back),
+                ..Default::default()
+            },
+            depth_stencil: Some(depth_stencil.clone()),
+            multisample:   wgpu::MultisampleState::default(),
+            multiview:     None,
+            cache:         None,
+        });
+
+        let skinned_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label:                Some("ID Pass Skinned Layout"),
+            bind_group_layouts:   &[&camera_bgl, &model_bgl, &id_data_bgl, &joint_bgl],
+            push_constant_ranges: &[],
+        });
+        let skinned_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label:  Some("ID Pass Skinned"),
+            layout: Some(&skinned_layout),
+            vertex: wgpu::VertexState {
+                module:      &shader,
+                entry_point: Some("vs_skinned"),
+                buffers: &[
+                    wgpu::VertexBufferLayout {
+                        array_stride: 72,
+                        step_mode:    wgpu::VertexStepMode::Vertex,
+                        attributes:   MESH_VERTEX_ATTRS,
+                    },
+                    wgpu::VertexBufferLayout {
+                        array_stride: 24,
+                        step_mode:    wgpu::VertexStepMode::Vertex,
+                        attributes:   SKIN_VERTEX_ATTRS,
+                    },
+                ],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module:      &shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format:     wgpu::TextureFormat::R32Uint,
+                    blend:      None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology:   wgpu::PrimitiveTopology::TriangleList,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode:  Some(wgpu::Face::Back),
+                ..Default::default()
+            },
+            depth_stencil: Some(depth_stencil),
+            multisample:   wgpu::MultisampleState::default(),
+            multiview:     None,
+            cache:         None,
+        });
+
+        Self { mesh_pipeline, skinned_pipeline, camera_bgl, model_bgl, id_data_bgl, joint_bgl }
+    }
+}
+
+// ============================================================
+//  OutlinePipeline — バックフェース膨張法アウトライン
+// ============================================================
+
+/// 選択オブジェクトのオレンジアウトライン描画パイプライン。
+///
+/// BGL:
+///   group 0 = camera  (uniform, VS)
+///   group 1 = model instances (storage read, VS)
+///   group 2 = joint matrices (storage read, VS) — スキンメッシュのみ
+pub struct OutlinePipeline {
+    /// バックフェース膨張アウトライン（cull_mode=Front, stencil Equal(0)）
+    pub mesh_pipeline:    wgpu::RenderPipeline,
+    pub skinned_pipeline: wgpu::RenderPipeline,
+    /// 選択インスタンスの前面をステンシル=1 で塗るマスクパス（カラー出力なし）
+    pub mesh_stencil_pipeline:    wgpu::RenderPipeline,
+    pub skinned_stencil_pipeline: wgpu::RenderPipeline,
+}
+
+impl OutlinePipeline {
+    fn new(
+        device:         &wgpu::Device,
+        surface_format: wgpu::TextureFormat,
+        depth_format:   wgpu::TextureFormat,
+        camera_bgl:     &wgpu::BindGroupLayout,
+        model_bgl:      &wgpu::BindGroupLayout,
+        joint_bgl:      &wgpu::BindGroupLayout,
+    ) -> Self {
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label:  Some("Outline Shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("outline.wgsl").into()),
+        });
+
+        // depth_compare: Less + 正のバイアスで背面を遠方へずらす（③ 深度バイアス）。
+        // stencil Equal(0): draw_model_indirect が 1 を書いたキャラ内側には描画しない（② ステンシル）。
+        // cull_mode: Front + クリップ空間法線膨張: 背面法（① スムーズ法線は vs_mesh/vs_skinned で使用）。
+        let stencil_read_only = wgpu::StencilState {
+            front: wgpu::StencilFaceState {
+                compare:       wgpu::CompareFunction::Equal,
+                fail_op:       wgpu::StencilOperation::Keep,
+                depth_fail_op: wgpu::StencilOperation::Keep,
+                pass_op:       wgpu::StencilOperation::Keep,
+            },
+            back: wgpu::StencilFaceState {
+                compare:       wgpu::CompareFunction::Equal,
+                fail_op:       wgpu::StencilOperation::Keep,
+                depth_fail_op: wgpu::StencilOperation::Keep,
+                pass_op:       wgpu::StencilOperation::Keep,
+            },
+            read_mask:  0xFF,
+            write_mask: 0x00,
+        };
+        let depth_stencil = wgpu::DepthStencilState {
+            format:              depth_format,
+            depth_write_enabled: false,
+            depth_compare:       wgpu::CompareFunction::LessEqual,
+            stencil:             stencil_read_only,
+            bias:                wgpu::DepthBiasState::default(),
+        };
+
+        // ── 非スキン（group 0=camera, 1=model）──────────────────
+        let mesh_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label:                Some("Outline Mesh Layout"),
+            bind_group_layouts:   &[camera_bgl, model_bgl],
+            push_constant_ranges: &[],
+        });
+        let mesh_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label:  Some("Outline Mesh"),
+            layout: Some(&mesh_layout),
+            vertex: wgpu::VertexState {
+                module:      &shader,
+                entry_point: Some("vs_mesh"),
+                buffers: &[
+                    wgpu::VertexBufferLayout {   // slot 0: 通常頂点バッファ (position など)
+                        array_stride: 72,
+                        step_mode:    wgpu::VertexStepMode::Vertex,
+                        attributes:   MESH_VERTEX_ATTRS,
+                    },
+                    wgpu::VertexBufferLayout {   // slot 1: スムーズ法線バッファ (location 8)
+                        array_stride: 12,
+                        step_mode:    wgpu::VertexStepMode::Vertex,
+                        attributes:   SMOOTH_NORMAL_ATTRS,
+                    },
+                ],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module:      &shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format:     surface_format,
+                    blend:      Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology:   wgpu::PrimitiveTopology::TriangleList,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode:  Some(wgpu::Face::Front), // バックフェース膨張：前面をカリング
+                ..Default::default()
+            },
+            depth_stencil:  Some(depth_stencil.clone()),
+            multisample:    wgpu::MultisampleState::default(),
+            multiview:      None,
+            cache:          None,
+        });
+
+        // ── スキン（group 0=camera, 1=model, 2=joints）──────────
+        let skinned_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label:                Some("Outline Skinned Layout"),
+            bind_group_layouts:   &[camera_bgl, model_bgl, joint_bgl],
+            push_constant_ranges: &[],
+        });
+        let skinned_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label:  Some("Outline Skinned"),
+            layout: Some(&skinned_layout),
+            vertex: wgpu::VertexState {
+                module:      &shader,
+                entry_point: Some("vs_skinned"),
+                buffers: &[
+                    wgpu::VertexBufferLayout {   // slot 0: 通常頂点バッファ
+                        array_stride: 72,
+                        step_mode:    wgpu::VertexStepMode::Vertex,
+                        attributes:   MESH_VERTEX_ATTRS,
+                    },
+                    wgpu::VertexBufferLayout {   // slot 1: スキン頂点バッファ
+                        array_stride: 24,
+                        step_mode:    wgpu::VertexStepMode::Vertex,
+                        attributes:   SKIN_VERTEX_ATTRS,
+                    },
+                    wgpu::VertexBufferLayout {   // slot 2: スムーズ法線バッファ (location 8)
+                        array_stride: 12,
+                        step_mode:    wgpu::VertexStepMode::Vertex,
+                        attributes:   SMOOTH_NORMAL_ATTRS,
+                    },
+                ],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module:      &shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format:     surface_format,
+                    blend:      Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology:   wgpu::PrimitiveTopology::TriangleList,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode:  Some(wgpu::Face::Front),
+                ..Default::default()
+            },
+            depth_stencil:  Some(depth_stencil),
+            multisample:    wgpu::MultisampleState::default(),
+            multiview:      None,
+            cache:          None,
+        });
+
+        // ── ステンシルマスクパイプライン ────────────────────────────
+        // 選択インスタンスの可視ピクセルだけにステンシル=1 を書き込む。
+        // カラー出力なし、depth_write=false、depth_compare=LessEqual。
+        let stencil_write = wgpu::DepthStencilState {
+            format:              depth_format,
+            depth_write_enabled: false,
+            depth_compare:       wgpu::CompareFunction::Always,
+            stencil: wgpu::StencilState {
+                front: wgpu::StencilFaceState {
+                    compare:       wgpu::CompareFunction::Always,
+                    fail_op:       wgpu::StencilOperation::Keep,
+                    depth_fail_op: wgpu::StencilOperation::Keep,
+                    pass_op:       wgpu::StencilOperation::Replace,
+                },
+                back: wgpu::StencilFaceState {
+                    compare:       wgpu::CompareFunction::Always,
+                    fail_op:       wgpu::StencilOperation::Keep,
+                    depth_fail_op: wgpu::StencilOperation::Keep,
+                    pass_op:       wgpu::StencilOperation::Replace,
+                },
+                read_mask:  0xFF,
+                write_mask: 0xFF,
+            },
+            bias: wgpu::DepthBiasState::default(),
+        };
+
+        // fragment: None はカラーアタッチメントありのパスで使えないため、
+        // write_mask = empty() で実質カラー非出力のフラグメントシェーダーを使用する。
+        let stencil_color_target = wgpu::ColorTargetState {
+            format:     surface_format,
+            blend:      None,
+            write_mask: wgpu::ColorWrites::empty(),
+        };
+
+        let mesh_stencil_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label:  Some("Outline Mesh Stencil"),
+            layout: Some(&mesh_layout),
+            vertex: wgpu::VertexState {
+                module:      &shader,
+                entry_point: Some("vs_stencil_mesh"),
+                buffers: &[wgpu::VertexBufferLayout {
+                    array_stride: 72,
+                    step_mode:    wgpu::VertexStepMode::Vertex,
+                    attributes:   &[VA { format: VF::Float32x3, offset: 0, shader_location: 0 }],
+                }],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module:      &shader,
+                entry_point: Some("fs_main"),
+                targets:     &[Some(stencil_color_target.clone())],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology:   wgpu::PrimitiveTopology::TriangleList,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode:  Some(wgpu::Face::Back),
+                ..Default::default()
+            },
+            depth_stencil:  Some(stencil_write.clone()),
+            multisample:    wgpu::MultisampleState::default(),
+            multiview:      None,
+            cache:          None,
+        });
+
+        let skinned_stencil_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label:  Some("Outline Skinned Stencil"),
+            layout: Some(&skinned_layout),
+            vertex: wgpu::VertexState {
+                module:      &shader,
+                entry_point: Some("vs_stencil_skinned"),
+                buffers: &[
+                    wgpu::VertexBufferLayout {
+                        array_stride: 72,
+                        step_mode:    wgpu::VertexStepMode::Vertex,
+                        attributes:   &[VA { format: VF::Float32x3, offset: 0, shader_location: 0 }],
+                    },
+                    wgpu::VertexBufferLayout {
+                        array_stride: 24,
+                        step_mode:    wgpu::VertexStepMode::Vertex,
+                        attributes:   SKIN_VERTEX_ATTRS,
+                    },
+                ],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module:      &shader,
+                entry_point: Some("fs_main"),
+                targets:     &[Some(stencil_color_target)],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology:   wgpu::PrimitiveTopology::TriangleList,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode:  Some(wgpu::Face::Back),
+                ..Default::default()
+            },
+            depth_stencil:  Some(stencil_write),
+            multisample:    wgpu::MultisampleState::default(),
+            multiview:      None,
+            cache:          None,
+        });
+
+        Self { mesh_pipeline, skinned_pipeline, mesh_stencil_pipeline, skinned_stencil_pipeline }
+    }
+}
+
+// ============================================================
 //  DrawPipelines — 全パイプラインをまとめた型
 // ============================================================
 
@@ -682,6 +1125,8 @@ pub struct DrawPipelines {
     pub unlit_line:   UnlitPipeline,
     pub cull:         CullPipeline,
     pub skin_compute: SkinComputePipeline,
+    pub id_pass:      IdPassPipeline,
+    pub outline:      OutlinePipeline,
 }
 
 impl DrawPipelines {
@@ -690,12 +1135,16 @@ impl DrawPipelines {
         surface_format: wgpu::TextureFormat,
         depth_format:   wgpu::TextureFormat,
     ) -> Self {
-        Self {
-            mesh:         MeshPipeline::new(device, surface_format, depth_format),
-            skinned_mesh: SkinnedMeshPipeline::new(device, surface_format, depth_format),
-            unlit_line:   UnlitPipeline::new(device, surface_format, depth_format),
-            cull:         CullPipeline::new(device),
-            skin_compute: SkinComputePipeline::new(device),
-        }
+        let mesh         = MeshPipeline::new(device, surface_format, depth_format);
+        let skinned_mesh = SkinnedMeshPipeline::new(device, surface_format, depth_format);
+        let unlit_line   = UnlitPipeline::new(device, surface_format, depth_format);
+        let cull         = CullPipeline::new(device);
+        let skin_compute = SkinComputePipeline::new(device);
+        let id_pass      = IdPassPipeline::new(device, depth_format);
+        let outline      = OutlinePipeline::new(
+            device, surface_format, depth_format,
+            &mesh.camera_bgl, &mesh.model_bgl, &skinned_mesh.joint_bgl,
+        );
+        Self { mesh, skinned_mesh, unlit_line, cull, skin_compute, id_pass, outline }
     }
 }

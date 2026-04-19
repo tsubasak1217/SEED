@@ -6,12 +6,17 @@ use winit::window::Window;
 //  深度テクスチャ
 // ============================================================
 
-pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
+// Depth24PlusStencil8: ステンシルバッファを使用するため結合フォーマットを選択。
+// Hi-Z 深度サンプリング用には DepthOnly ビューを別途作成する。
+pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth24PlusStencil8;
 
 struct DepthTexture {
     #[allow(dead_code)]
-    texture: wgpu::Texture,
-    view:    wgpu::TextureView,
+    texture:         wgpu::Texture,
+    /// レンダーアタッチメント用（All aspect: depth+stencil 両方）
+    view:            wgpu::TextureView,
+    /// Hi-Z テクスチャサンプリング用（DepthOnly aspect）
+    depth_only_view: wgpu::TextureView,
 }
 
 impl DepthTexture {
@@ -27,8 +32,14 @@ impl DepthTexture {
                  | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });
+        // All aspect: レンダーパスで depth+stencil を同時に操作するために使用
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        Self { texture, view }
+        // DepthOnly aspect: Hi-Z コンピュートシェーダでの texture_depth_2d サンプリング用
+        let depth_only_view = texture.create_view(&wgpu::TextureViewDescriptor {
+            aspect: wgpu::TextureAspect::DepthOnly,
+            ..Default::default()
+        });
+        Self { texture, view, depth_only_view }
     }
 }
 
@@ -208,8 +219,8 @@ impl Renderer {
     /// }
     /// frame.finish();
     /// ```
-    /// 深度テクスチャビューへの参照を返す（Hi-Z ピラミッド生成用）。
-    pub fn depth_view(&self) -> &wgpu::TextureView { &self.depth_texture.view }
+    /// 深度テクスチャビューへの参照を返す（Hi-Z ピラミッド生成用、DepthOnly aspect）。
+    pub fn depth_view(&self) -> &wgpu::TextureView { &self.depth_texture.depth_only_view }
 
     pub fn begin_frame(&mut self) -> Result<RenderFrame<'_>, wgpu::SurfaceError> {
         let output     = self.surface.get_current_texture()?;
@@ -221,8 +232,9 @@ impl Renderer {
             output,
             encoder,
             color_view,
-            depth_view: &self.depth_texture.view,
-            queue:      &self.queue,
+            depth_view:      &self.depth_texture.view,
+            depth_only_view: &self.depth_texture.depth_only_view,
+            queue:           &self.queue,
         })
     }
 }
@@ -236,19 +248,22 @@ impl Renderer {
 /// `begin_render_pass()` でレンダーパスを開き、描画コマンドを積んだあと、
 /// スコープを外れてレンダーパスを閉じてから `finish()` でサブミットする。
 pub struct RenderFrame<'r> {
-    output:     wgpu::SurfaceTexture,
-    encoder:    wgpu::CommandEncoder,
-    color_view: wgpu::TextureView,
-    depth_view: &'r wgpu::TextureView,
-    queue:      &'r wgpu::Queue,
+    output:          wgpu::SurfaceTexture,
+    encoder:         wgpu::CommandEncoder,
+    color_view:      wgpu::TextureView,
+    /// All aspect: レンダーアタッチメント（depth+stencil 操作）用
+    depth_view:      &'r wgpu::TextureView,
+    /// DepthOnly aspect: Hi-Z テクスチャサンプリング用
+    depth_only_view: &'r wgpu::TextureView,
+    queue:           &'r wgpu::Queue,
 }
 
 impl<'r> RenderFrame<'r> {
     /// コマンドエンコーダへの可変参照を返す（Hi-Z compute pass 等に使用）。
     pub fn encoder_mut(&mut self) -> &mut wgpu::CommandEncoder { &mut self.encoder }
 
-    /// 深度バッファビューへの参照を返す（Hi-Z ピラミッド生成用）。
-    pub fn depth_view(&self) -> &wgpu::TextureView { self.depth_view }
+    /// 深度バッファビューへの参照を返す（Hi-Z ピラミッド生成用、DepthOnly aspect）。
+    pub fn depth_view(&self) -> &wgpu::TextureView { self.depth_only_view }
 
     // ── 深度プリパス（カラー出力なし、深度クリアあり）────────────
 
@@ -269,7 +284,11 @@ impl<'r> RenderFrame<'r> {
                     load:  wgpu::LoadOp::Clear(1.0),
                     store: wgpu::StoreOp::Store,
                 }),
-                stencil_ops: None,
+                // 深度プリパスではステンシルを使わない
+                stencil_ops: Some(wgpu::Operations {
+                    load:  wgpu::LoadOp::Clear(0),
+                    store: wgpu::StoreOp::Discard,
+                }),
             }),
             occlusion_query_set: None,
             timestamp_writes:    None,
@@ -302,7 +321,11 @@ impl<'r> RenderFrame<'r> {
                     load:  wgpu::LoadOp::Load,   // プリパスの深度を引き継ぐ
                     store: wgpu::StoreOp::Store,
                 }),
-                stencil_ops: None,
+                // ステンシルをクリアして、このパスで描画された全ピクセルに 1 を書き込む
+                stencil_ops: Some(wgpu::Operations {
+                    load:  wgpu::LoadOp::Clear(0),
+                    store: wgpu::StoreOp::Store,
+                }),
             }),
             occlusion_query_set: None,
             timestamp_writes:    None,
@@ -332,7 +355,12 @@ impl<'r> RenderFrame<'r> {
                     load:  wgpu::LoadOp::Clear(1.0),
                     store: wgpu::StoreOp::Store,
                 }),
-                stencil_ops: None,
+                // ステンシルを 0 にクリア。draw_model_indirect が 1 を書き込み、
+                // draw_outline が 0 の箇所（シルエット外側）のみ描画する。
+                stencil_ops: Some(wgpu::Operations {
+                    load:  wgpu::LoadOp::Clear(0),
+                    store: wgpu::StoreOp::Store,
+                }),
             }),
             occlusion_query_set: None,
             timestamp_writes:    None,
@@ -355,6 +383,72 @@ impl<'r> RenderFrame<'r> {
             label:            Some("Cull Compute Pass"),
             timestamp_writes: None,
         })
+    }
+
+    /// ID バッファパスを開始する（メインレンダーパスの後に呼ぶ）。
+    ///
+    /// - `id_view`  : R32Uint テクスチャビュー（クリアして書き込む）
+    /// - 深度は Load して参照するのみ（write なし）
+    pub fn begin_id_pass<'f>(
+        &'f mut self,
+        id_view: &'f wgpu::TextureView,
+    ) -> wgpu::RenderPass<'f>
+    where
+        'r: 'f,
+    {
+        self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("ID Pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view:           id_view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load:  wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: self.depth_view,
+                depth_ops: Some(wgpu::Operations {
+                    load:  wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Discard,
+                }),
+                stencil_ops: Some(wgpu::Operations {
+                    load:  wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Discard,
+                }),
+            }),
+            occlusion_query_set: None,
+            timestamp_writes:    None,
+        })
+    }
+
+    /// 1 ピクセル分を `readback_buf` へコピーするコマンドを積む。
+    ///
+    /// `frame.finish()` → GPU サブミット後に `map_async` + `poll(Wait)` で読み出す。
+    pub fn schedule_id_copy(
+        &mut self,
+        src_texture: &wgpu::Texture,
+        x:           u32,
+        y:           u32,
+        readback_buf: &wgpu::Buffer,
+    ) {
+        self.encoder.copy_texture_to_buffer(
+            wgpu::ImageCopyTexture {
+                texture:   src_texture,
+                mip_level: 0,
+                origin:    wgpu::Origin3d { x, y, z: 0 },
+                aspect:    wgpu::TextureAspect::All,
+            },
+            wgpu::ImageCopyBuffer {
+                buffer: readback_buf,
+                layout: wgpu::ImageDataLayout {
+                    offset:         0,
+                    bytes_per_row:  Some(256),  // COPY_BYTES_PER_ROW_ALIGNMENT
+                    rows_per_image: None,
+                },
+            },
+            wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+        );
     }
 
     /// コマンドを GPU にサブミットしてフレームを表示する。

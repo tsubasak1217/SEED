@@ -266,15 +266,17 @@ impl GpuMaterial {
 // ============================================================
 
 pub struct GpuPrimitive {
-    pub vertex_buffer:      wgpu::Buffer,
-    pub skin_vertex_buffer: Option<wgpu::Buffer>,
+    pub vertex_buffer:        wgpu::Buffer,
+    pub skin_vertex_buffer:   Option<wgpu::Buffer>,
+    /// アウトライン描画用スムーズ法線（位置が同じ頂点の法線を平均化したもの）
+    pub smooth_normal_buffer: wgpu::Buffer,
     /// LOD0 インデックスバッファ（フル解像度）
-    pub index_buffer:       wgpu::Buffer,
-    pub index_count:        u32,
+    pub index_buffer:         wgpu::Buffer,
+    pub index_count:          u32,
     /// LOD1, LOD2, LOD3 インデックスバッファ（lod_index_buffers[0] = LOD1）
-    pub lod_index_buffers:  Vec<wgpu::Buffer>,
-    pub lod_index_counts:   Vec<u32>,
-    pub material_index:     Option<usize>,
+    pub lod_index_buffers:    Vec<wgpu::Buffer>,
+    pub lod_index_counts:     Vec<u32>,
+    pub material_index:       Option<usize>,
 }
 
 impl GpuPrimitive {
@@ -294,6 +296,13 @@ impl GpuPrimitive {
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label:    Some("Vertex Buffer"),
             contents: bytemuck::cast_slice::<Vertex, u8>(&prim.vertices),
+            usage:    wgpu::BufferUsages::VERTEX,
+        });
+
+        let smooth_normals = compute_smooth_normals(&prim.vertices, &prim.indices);
+        let smooth_normal_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label:    Some("Smooth Normal Buffer"),
+            contents: bytemuck::cast_slice::<[f32; 3], u8>(&smooth_normals),
             usage:    wgpu::BufferUsages::VERTEX,
         });
 
@@ -328,6 +337,7 @@ impl GpuPrimitive {
         Self {
             vertex_buffer,
             skin_vertex_buffer,
+            smooth_normal_buffer,
             index_buffer,
             index_count:    prim.indices.len() as u32,
             lod_index_buffers,
@@ -335,6 +345,54 @@ impl GpuPrimitive {
             material_index: prim.material_index,
         }
     }
+}
+
+/// 隣接トライアングルの面法線を加重平均してスムーズ法線を計算する。
+///
+/// ハードエッジ部分（頂点が複製されている）では複製ごとに独立した結果になるが、
+/// それでも同一プリミティブ内の連続面の法線は滑らかになりアウトラインの破綻を軽減する。
+fn compute_smooth_normals(
+    vertices: &[crate::engine::core::loader::model::Vertex],
+    indices:  &[u32],
+) -> Vec<[f32; 3]> {
+    let n = vertices.len();
+    let mut accum = vec![[0.0f32; 3]; n];
+
+    for tri in indices.chunks(3) {
+        if tri.len() < 3 { continue; }
+        let (i0, i1, i2) = (tri[0] as usize, tri[1] as usize, tri[2] as usize);
+        if i0 >= n || i1 >= n || i2 >= n { continue; }
+
+        let p0 = vertices[i0].position;
+        let p1 = vertices[i1].position;
+        let p2 = vertices[i2].position;
+
+        let e1 = [p1[0]-p0[0], p1[1]-p0[1], p1[2]-p0[2]];
+        let e2 = [p2[0]-p0[0], p2[1]-p0[1], p2[2]-p0[2]];
+        // 面積比例の面法線（正規化しないことで大きい面を重視）
+        let fn_ = [
+            e1[1]*e2[2] - e1[2]*e2[1],
+            e1[2]*e2[0] - e1[0]*e2[2],
+            e1[0]*e2[1] - e1[1]*e2[0],
+        ];
+
+        for &i in &[i0, i1, i2] {
+            accum[i][0] += fn_[0];
+            accum[i][1] += fn_[1];
+            accum[i][2] += fn_[2];
+        }
+    }
+
+    accum.into_iter().enumerate().map(|(i, mut s)| {
+        let len = (s[0]*s[0] + s[1]*s[1] + s[2]*s[2]).sqrt();
+        if len > 1e-6 {
+            s[0] /= len; s[1] /= len; s[2] /= len;
+            s
+        } else {
+            // インデックス未使用の孤立頂点: 元の法線をフォールバックとして使用
+            vertices[i].normal
+        }
+    }).collect()
 }
 
 pub struct GpuMesh {
@@ -587,6 +645,16 @@ pub struct InstancedModelBatch {
     /// スキンとアニメーションを持つ場合のみ Some
     pub skin: Option<SkinComputeSystem>,
 
+    // ── ID パス用コンパクトインスタンス ID バッファ ───────────
+    /// lod_id_buffers[lod]: そのフレームの可視インスタンス元インデックスの配列（u32）
+    pub lod_id_buffers: Vec<wgpu::Buffer>,
+    /// lod_id_bgs[lod]: id_pass パイプラインの group 2 用 BindGroup
+    pub lod_id_bgs:     Vec<wgpu::BindGroup>,
+
+    // ── アウトライン / ピック用 CPU コンパクトインスタンスリスト ──
+    /// lod_compact_insts[lod]: compact_idx → original_inst_idx マッピング（CPU 側）
+    pub lod_compact_insts: Vec<Vec<usize>>,
+
     // ── Dirty Flag ───────────────────────────────────────────
     dirty: bool,
 }
@@ -598,6 +666,7 @@ impl InstancedModelBatch {
         model_bgl:     &wgpu::BindGroupLayout,
         skin_pipeline: &SkinComputePipeline,
         joint_bgl:     &wgpu::BindGroupLayout,
+        id_data_bgl:   &wgpu::BindGroupLayout,
         num_instances: u32,
     ) -> Self {
         let n = num_instances.max(1) as usize;
@@ -669,6 +738,29 @@ impl InstancedModelBatch {
         // ── GPU スキニングシステム ────────────────────────────
         let skin = SkinComputeSystem::new(device, model, num_instances, skin_pipeline, joint_bgl);
 
+        // ── ID パス用インスタンス ID バッファ（per-LOD）────────
+        let id_buf_size = (4 * n as u64).max(16);
+        let id_data: Vec<(wgpu::Buffer, wgpu::BindGroup)> = (0..NUM_LODS)
+            .map(|lod| {
+                let buf = device.create_buffer(&wgpu::BufferDescriptor {
+                    label:              Some(&format!("Instance ID Buffer LOD[{}]", lod)),
+                    size:               id_buf_size,
+                    usage:              wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                });
+                let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label:  None,
+                    layout: id_data_bgl,
+                    entries: &[wgpu::BindGroupEntry {
+                        binding:  0,
+                        resource: buf.as_entire_binding(),
+                    }],
+                });
+                (buf, bg)
+            })
+            .collect();
+        let (lod_id_buffers, lod_id_bgs): (Vec<_>, Vec<_>) = id_data.into_iter().unzip();
+
         let n_mesh_nodes = mesh_node_indices.len();
         Self {
             lod_node_data,
@@ -684,6 +776,9 @@ impl InstancedModelBatch {
             model_aabb_min,
             model_aabb_max,
             skin,
+            lod_id_buffers,
+            lod_id_bgs,
+            lod_compact_insts: vec![Vec::new(); NUM_LODS],
             dirty: true,
         }
     }
@@ -767,9 +862,14 @@ impl InstancedModelBatch {
             }
         }
 
-        // ── ③ 各 LOD: モデル行列をアップロード + スキン anim_times を更新 ──
+        // ── ③ 各 LOD: モデル行列・インスタンス ID をアップロード ──────
+        // CPU 側コンパクトリストを保存（アウトライン描画で compact_idx を逆引きするため）
         for lod in 0..NUM_LODS {
-            let visible = lod_visible_insts[lod].len() as u32;
+            self.lod_compact_insts[lod] = std::mem::take(&mut lod_visible_insts[lod]);
+        }
+
+        for lod in 0..NUM_LODS {
+            let visible = self.lod_compact_insts[lod].len() as u32;
             self.lod_visible_counts[lod] = visible;
 
             if visible > 0 {
@@ -778,13 +878,28 @@ impl InstancedModelBatch {
                         queue.write_buffer(buf, 0, bytemuck::cast_slice(&compact[lod][pos]));
                     }
                 }
+
+                // ID パス用: 元インスタンスインデックスをアップロード
+                let ids: Vec<u32> = self.lod_compact_insts[lod].iter().map(|&i| i as u32).collect();
+                queue.write_buffer(&self.lod_id_buffers[lod], 0, bytemuck::cast_slice(&ids));
             }
 
             // スキンシステムへの anim_times 転送（GPU スキニング計算の入力）
             if let Some(skin) = &self.skin {
-                skin.upload_lod_times(queue, lod, &lod_visible_insts[lod], anim_time);
+                skin.upload_lod_times(queue, lod, &self.lod_compact_insts[lod], anim_time);
             }
         }
+    }
+
+    /// 指定インスタンスが現在フレームで可視な場合、その LOD と compact index を返す。
+    /// カリングで非表示の場合は None。
+    pub fn find_compact_index(&self, inst_idx: u32) -> Option<(usize, u32)> {
+        for lod in 0..NUM_LODS {
+            if let Some(pos) = self.lod_compact_insts[lod].iter().position(|&i| i == inst_idx as usize) {
+                return Some((lod, pos as u32));
+            }
+        }
+        None
     }
 
     /// GPU スキニング コンピュートシェーダを全 LOD 分ディスパッチする。

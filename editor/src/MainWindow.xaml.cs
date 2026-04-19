@@ -213,6 +213,20 @@ public partial class MainWindow : Window
         SettingsPopup.IsOpen = !SettingsPopup.IsOpen;
     }
 
+    // ── ツールモード ──────────────────────────────────────────────
+
+    private void OnToolSelect(object sender, RoutedEventArgs e)
+        => _runtimeManager?.SendToRuntime("TOOL:SELECT");
+
+    private void OnToolMove(object sender, RoutedEventArgs e)
+        => _runtimeManager?.SendToRuntime("TOOL:MOVE");
+
+    private void OnToolRotate(object sender, RoutedEventArgs e)
+        => _runtimeManager?.SendToRuntime("TOOL:ROTATE");
+
+    private void OnToolScale(object sender, RoutedEventArgs e)
+        => _runtimeManager?.SendToRuntime("TOOL:SCALE");
+
     private void OnClampCursorChanged(object sender, RoutedEventArgs e)
     {
         _clampInPlay = ChkClampCursor.IsChecked == true;

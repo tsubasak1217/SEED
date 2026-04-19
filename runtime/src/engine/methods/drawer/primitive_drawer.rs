@@ -164,6 +164,118 @@ impl LineBatch {
         self.add_line(o, [o[0],       o[1]+length,  o[2]      ], [0.0, 1.0, 0.0, 1.0]);
         self.add_line(o, [o[0],       o[1],        o[2]+length], [0.0, 0.0, 1.0, 1.0]);
     }
+
+    /// 回転ギズモ（3 軸リング）を追加する。
+    ///
+    /// - X 軸リング = 赤（YZ 平面）、Y 軸リング = 緑（XZ 平面）、Z 軸リング = 青（XY 平面）
+    /// - `segments` : 円の分割数（推奨: 32）
+    pub fn add_gizmo_rotate(&mut self, pos: [f32; 3], scale: f32, segments: usize) {
+        let [px, py, pz] = pos;
+        let n = segments.max(4);
+        for i in 0..n {
+            let t0 = 2.0 * PI * i as f32 / n as f32;
+            let t1 = 2.0 * PI * (i + 1) as f32 / n as f32;
+            let (s0, c0) = t0.sin_cos();
+            let (s1, c1) = t1.sin_cos();
+            // X 軸リング（赤）: YZ 平面
+            self.add_line(
+                [px, py + scale*s0, pz + scale*c0],
+                [px, py + scale*s1, pz + scale*c1],
+                [1.0, 0.2, 0.2, 1.0],
+            );
+            // Y 軸リング（緑）: XZ 平面
+            self.add_line(
+                [px + scale*c0, py, pz + scale*s0],
+                [px + scale*c1, py, pz + scale*s1],
+                [0.2, 1.0, 0.2, 1.0],
+            );
+            // Z 軸リング（青）: XY 平面
+            self.add_line(
+                [px + scale*c0, py + scale*s0, pz],
+                [px + scale*c1, py + scale*s1, pz],
+                [0.2, 0.2, 1.0, 1.0],
+            );
+        }
+    }
+
+    /// スケールギズモ（3 軸線 + 端点ボックス）を追加する。
+    ///
+    /// - X 軸 = 赤、Y 軸 = 緑、Z 軸 = 青
+    pub fn add_gizmo_scale(&mut self, pos: [f32; 3], scale: f32) {
+        let [px, py, pz] = pos;
+        let bs = scale * 0.1; // エンドボックスの半サイズ
+
+        // X 軸（赤）
+        let xe = [px + scale, py, pz];
+        self.add_line(pos, xe, [1.0, 0.2, 0.2, 1.0]);
+        let c = [1.0, 0.2, 0.2, 1.0];
+        self.add_cube_wireframe(xe, bs, c);
+
+        // Y 軸（緑）
+        let ye = [px, py + scale, pz];
+        self.add_line(pos, ye, [0.2, 1.0, 0.2, 1.0]);
+        let c = [0.2, 1.0, 0.2, 1.0];
+        self.add_cube_wireframe(ye, bs, c);
+
+        // Z 軸（青）
+        let ze = [px, py, pz + scale];
+        self.add_line(pos, ze, [0.2, 0.2, 1.0, 1.0]);
+        let c = [0.2, 0.2, 1.0, 1.0];
+        self.add_cube_wireframe(ze, bs, c);
+    }
+
+    fn add_cube_wireframe(&mut self, center: [f32; 3], half: f32, color: [f32; 4]) {
+        let [cx, cy, cz] = center;
+        let v = [
+            [cx-half, cy-half, cz-half],
+            [cx+half, cy-half, cz-half],
+            [cx+half, cy+half, cz-half],
+            [cx-half, cy+half, cz-half],
+            [cx-half, cy-half, cz+half],
+            [cx+half, cy-half, cz+half],
+            [cx+half, cy+half, cz+half],
+            [cx-half, cy+half, cz+half],
+        ];
+        self.add_line(v[0], v[1], color); self.add_line(v[1], v[2], color);
+        self.add_line(v[2], v[3], color); self.add_line(v[3], v[0], color);
+        self.add_line(v[4], v[5], color); self.add_line(v[5], v[6], color);
+        self.add_line(v[6], v[7], color); self.add_line(v[7], v[4], color);
+        self.add_line(v[0], v[4], color); self.add_line(v[1], v[5], color);
+        self.add_line(v[2], v[6], color); self.add_line(v[3], v[7], color);
+    }
+
+    /// 移動ギズモ（3 軸矢印）を追加する。
+    ///
+    /// - X 軸 = 赤、Y 軸 = 緑、Z 軸 = 青
+    /// - `scale` : 矢印の長さ（ワールドユニット）
+    pub fn add_gizmo_translate(&mut self, pos: [f32; 3], scale: f32) {
+        let [px, py, pz] = pos;
+        let head = scale * 0.2;  // 矢じり部の長さ
+
+        // X 軸（赤）
+        let xe = [px + scale, py, pz];
+        self.add_line(pos, xe, [1.0, 0.2, 0.2, 1.0]);
+        self.add_line(xe, [px + scale - head, py + head * 0.4, pz            ], [1.0, 0.2, 0.2, 1.0]);
+        self.add_line(xe, [px + scale - head, py - head * 0.4, pz            ], [1.0, 0.2, 0.2, 1.0]);
+        self.add_line(xe, [px + scale - head, py,              pz + head * 0.4], [1.0, 0.2, 0.2, 1.0]);
+        self.add_line(xe, [px + scale - head, py,              pz - head * 0.4], [1.0, 0.2, 0.2, 1.0]);
+
+        // Y 軸（緑）
+        let ye = [px, py + scale, pz];
+        self.add_line(pos, ye, [0.2, 1.0, 0.2, 1.0]);
+        self.add_line(ye, [px + head * 0.4, py + scale - head, pz            ], [0.2, 1.0, 0.2, 1.0]);
+        self.add_line(ye, [px - head * 0.4, py + scale - head, pz            ], [0.2, 1.0, 0.2, 1.0]);
+        self.add_line(ye, [px,              py + scale - head, pz + head * 0.4], [0.2, 1.0, 0.2, 1.0]);
+        self.add_line(ye, [px,              py + scale - head, pz - head * 0.4], [0.2, 1.0, 0.2, 1.0]);
+
+        // Z 軸（青）
+        let ze = [px, py, pz + scale];
+        self.add_line(pos, ze, [0.2, 0.2, 1.0, 1.0]);
+        self.add_line(ze, [px + head * 0.4, py,              pz + scale - head], [0.2, 0.2, 1.0, 1.0]);
+        self.add_line(ze, [px - head * 0.4, py,              pz + scale - head], [0.2, 0.2, 1.0, 1.0]);
+        self.add_line(ze, [px,              py + head * 0.4, pz + scale - head], [0.2, 0.2, 1.0, 1.0]);
+        self.add_line(ze, [px,              py - head * 0.4, pz + scale - head], [0.2, 0.2, 1.0, 1.0]);
+    }
 }
 
 // ============================================================
@@ -188,6 +300,23 @@ pub fn draw_line_batch<'pass>(
     if batch.vertex_count == 0 { return; }
 
     render_pass.set_pipeline(&pipelines.unlit_line.pipeline);
+    render_pass.set_bind_group(0, camera_bg, &[]);
+    render_pass.set_bind_group(1, model_bg,  &[]);
+    render_pass.set_vertex_buffer(0, batch.vertex_buffer.slice(..));
+    render_pass.draw(0..batch.vertex_count, 0..1);
+}
+
+/// ギズモ用ラインバッチを常に前面（深度無視）で描画する。
+pub fn draw_gizmo_batch<'pass>(
+    render_pass: &mut wgpu::RenderPass<'pass>,
+    batch:       &'pass GpuLineBatch,
+    camera_bg:   &'pass wgpu::BindGroup,
+    model_bg:    &'pass wgpu::BindGroup,
+    pipelines:   &'pass DrawPipelines,
+) {
+    if batch.vertex_count == 0 { return; }
+
+    render_pass.set_pipeline(&pipelines.unlit_line.gizmo_pipeline);
     render_pass.set_bind_group(0, camera_bg, &[]);
     render_pass.set_bind_group(1, model_bg,  &[]);
     render_pass.set_vertex_buffer(0, batch.vertex_buffer.slice(..));

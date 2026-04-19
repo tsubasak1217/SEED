@@ -2,6 +2,8 @@ mod uniforms;
 pub(crate) mod gpu_resources;
 mod pipeline;
 mod model_drawer;
+mod id_pass;
+mod outline;
 mod primitive_drawer;
 mod hiz;
 mod skin_system;
@@ -12,10 +14,12 @@ pub use gpu_resources::{GpuTexture, GpuMaterial, GpuPrimitive, GpuMesh, GpuModel
                         InstancedModelBatch, NodePrimDraw, GpuLineBatch, DefaultTextures,
                         CameraBuffer, extract_frustum_planes, test_aabb_frustum};
 pub use pipeline::{MeshPipeline, SkinnedMeshPipeline, UnlitPipeline, CullPipeline, DrawPipelines,
-                   SkinComputePipeline};
+                   SkinComputePipeline, IdPassPipeline, OutlinePipeline};
 pub use gpu_resources::NUM_LODS;
 pub use model_drawer::draw_model_indirect;
-pub use primitive_drawer::{LineBatch, draw_line_batch};
+pub use id_pass::{IdBuffer, draw_id_pass};
+pub use outline::{draw_outline, draw_stencil_mask};
+pub use primitive_drawer::{LineBatch, draw_line_batch, draw_gizmo_batch};
 
 use std::sync::Arc;
 use crate::engine::core::loader::model::Model;
@@ -77,6 +81,7 @@ impl DrawContext {
             &self.pipelines.mesh.model_bgl,
             &self.pipelines.skin_compute,
             &self.pipelines.skinned_mesh.joint_bgl,
+            &self.pipelines.id_pass.id_data_bgl,
             num_instances,
         )
     }

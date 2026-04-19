@@ -5,6 +5,44 @@
         Background="#1E1E1E"
         Loaded="OnWindowLoaded"
         Closing="OnWindowClosing">
+
+    <Window.Resources>
+        <!-- 左ツールパネルのボタンスタイル -->
+        <Style x:Key="ToolBtnStyle" TargetType="RadioButton">
+            <Setter Property="Width"           Value="34"/>
+            <Setter Property="Height"          Value="34"/>
+            <Setter Property="Margin"          Value="0,0,0,4"/>
+            <Setter Property="Background"      Value="#3C3C3C"/>
+            <Setter Property="Foreground"      Value="#CCCCCC"/>
+            <Setter Property="BorderBrush"     Value="Transparent"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Cursor"          Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="RadioButton">
+                        <Border x:Name="Bd"
+                                Background="{TemplateBinding Background}"
+                                CornerRadius="4"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#E87820"/>
+                                <Setter Property="Foreground"                 Value="White"/>
+                            </Trigger>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#555555"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+
     <DockPanel>
 
         <!-- ツールバー -->
@@ -68,6 +106,44 @@
                        Text="● EDIT" Foreground="#60C060"
                        VerticalAlignment="Center" Margin="8,0"/>
         </ToolBar>
+
+        <!-- 左ツールパネル（Select / Move / Rotate / Scale） -->
+        <Border DockPanel.Dock="Left"
+                Background="#252525"
+                Width="42"
+                Padding="4,8,4,8">
+            <StackPanel HorizontalAlignment="Center">
+                <RadioButton x:Name="BtnToolSelect"
+                             GroupName="EditorTools"
+                             IsChecked="True"
+                             Style="{StaticResource ToolBtnStyle}"
+                             ToolTip="Select (Q)"
+                             Click="OnToolSelect">
+                    <TextBlock Text="↖" FontSize="16"/>
+                </RadioButton>
+                <RadioButton x:Name="BtnToolMove"
+                             GroupName="EditorTools"
+                             Style="{StaticResource ToolBtnStyle}"
+                             ToolTip="Move (W)"
+                             Click="OnToolMove">
+                    <TextBlock Text="⊕" FontSize="16"/>
+                </RadioButton>
+                <RadioButton x:Name="BtnToolRotate"
+                             GroupName="EditorTools"
+                             Style="{StaticResource ToolBtnStyle}"
+                             ToolTip="Rotate (E)"
+                             Click="OnToolRotate">
+                    <TextBlock Text="↻" FontSize="16"/>
+                </RadioButton>
+                <RadioButton x:Name="BtnToolScale"
+                             GroupName="EditorTools"
+                             Style="{StaticResource ToolBtnStyle}"
+                             ToolTip="Scale (R)"
+                             Click="OnToolScale">
+                    <TextBlock Text="⊞" FontSize="16"/>
+                </RadioButton>
+            </StackPanel>
+        </Border>
 
         <!-- ビューポート領域 -->
         <Border x:Name="ViewportBorder"

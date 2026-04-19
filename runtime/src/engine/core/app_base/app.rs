@@ -12,11 +12,12 @@ use crate::engine::core::input::Input;
 use crate::engine::core::loader::load_model;
 use crate::engine::core::renderer::Renderer;
 use crate::engine::core::window::{create_window, WindowConfig};
-use crate::engine::core::app_base::ipc::{IpcClient, IpcCommand};
+use crate::engine::core::app_base::ipc::{IpcClient, IpcCommand, ToolMode};
 use crate::engine::core::app_base::scene::Scene;
 use crate::engine::methods::drawer::{
     DrawContext, CameraBuffer, CameraUniform,
-    draw_model_indirect, extract_frustum_planes,
+    draw_model_indirect, draw_id_pass, draw_outline, draw_stencil_mask,
+    extract_frustum_planes, IdBuffer, LineBatch, draw_gizmo_batch,
 };
 use crate::engine::core::scripting::{ScriptingHost, ScriptComponent};
 use crate::engine::structs::components::ModelComponent;
@@ -76,6 +77,20 @@ pub struct App {
     /// エディタから PLAY_CLAMP:1 を受け取ったとき true。
     /// 毎フレーム ClipCursor を貼り直してカーソルをウィンドウ内に閉じ込める。
     play_clamp: bool,
+
+    // ── ピッキング / ギズモ ──────────────────────────────────
+    /// Actor 選択用 ID バッファ（Edit/Pause モードのみ使用）。
+    id_buffer:         Option<IdBuffer>,
+    /// 現在選択中のインスタンスインデックス（0-based）。
+    selected_instance: Option<u32>,
+    /// LMB クリック時のビューポートピクセル座標（次フレームで処理）。
+    pending_pick:      Option<(u32, u32)>,
+    /// 直前フレームのカーソル座標（ビューポートローカル）。
+    last_cursor_pos:   Option<(f32, f32)>,
+    /// ギズモ描画用の単位行列モデルバッファ。
+    line_model_buf:    Option<(wgpu::Buffer, wgpu::BindGroup)>,
+    /// 現在のエディタツールモード。
+    tool_mode:         ToolMode,
 }
 
 impl App {
@@ -111,6 +126,12 @@ impl App {
             paused: false,
             cam_grab_screen_pos: None,
             play_clamp: false,
+            id_buffer:         None,
+            selected_instance: None,
+            pending_pick:      None,
+            last_cursor_pos:   None,
+            line_model_buf:    None,
+            tool_mode:         ToolMode::Select,
         }
     }
 
@@ -144,12 +165,13 @@ impl App {
         let Some(ipc) = &self.ipc else { return };
         while let Some(cmd) = ipc.try_recv() {
             match cmd {
-                IpcCommand::Pause           => self.paused = true,
-                IpcCommand::Resume          => self.paused = false,
-                IpcCommand::Stop            => event_loop.exit(),
-                IpcCommand::CamKeyDown(k)   => self.cam_input.set_key(&k, true),
-                IpcCommand::CamKeyUp(k)     => self.cam_input.set_key(&k, false),
-                IpcCommand::PlayClamp(v)    => {
+                IpcCommand::Pause              => self.paused = true,
+                IpcCommand::Resume             => self.paused = false,
+                IpcCommand::Stop               => event_loop.exit(),
+                IpcCommand::CamKeyDown(k)      => self.cam_input.set_key(&k, true),
+                IpcCommand::CamKeyUp(k)        => self.cam_input.set_key(&k, false),
+                IpcCommand::SetToolMode(m)     => self.tool_mode = m,
+                IpcCommand::PlayClamp(v)       => {
                     self.play_clamp = v;
                     if !v { release_window_clamp(); }
                 }
@@ -246,6 +268,8 @@ impl ApplicationHandler for App {
 
         let scene      = Self::build_demo_scene(&ctx, self.scripting_host.as_ref());
         let camera_buf = ctx.create_camera_buffer();
+        let id_buffer  = IdBuffer::new(&ctx.device, size.width, size.height);
+        let line_model_buf = ctx.create_identity_model_bg_for_unlit();
         eprintln!("[SEED] scene ready");
 
         if self.is_embedded() {
@@ -256,12 +280,14 @@ impl ApplicationHandler for App {
             window.set_visible(true);
         }
 
-        self.draw_ctx   = Some(ctx);
-        self.scene      = Some(scene);
-        self.camera_buf = Some(camera_buf);
-        self.renderer   = Some(renderer);
-        self.window     = Some(window);
-        self.clock      = Clock::new();
+        self.draw_ctx      = Some(ctx);
+        self.scene         = Some(scene);
+        self.camera_buf    = Some(camera_buf);
+        self.id_buffer     = Some(id_buffer);
+        self.line_model_buf = Some(line_model_buf);
+        self.renderer      = Some(renderer);
+        self.window        = Some(window);
+        self.clock         = Clock::new();
 
         let hwnd = self.window_hwnd();
         eprintln!("[SEED] sending READY:{hwnd}");
@@ -286,6 +312,11 @@ impl ApplicationHandler for App {
             WindowEvent::Resized(size) => {
                 if let Some(r) = &mut self.renderer { r.resize(size); }
                 self.camera.set_aspect_ratio(size.width, size.height);
+                if size.width > 0 && size.height > 0 {
+                    if let Some(dc) = &self.draw_ctx {
+                        self.id_buffer = Some(IdBuffer::new(&dc.device, size.width, size.height));
+                    }
+                }
             }
 
             WindowEvent::KeyboardInput { event, .. } => {
@@ -296,6 +327,17 @@ impl ApplicationHandler for App {
             WindowEvent::MouseInput { button, state, .. } => {
                 let pressed = state == ElementState::Pressed;
                 self.input.process_mouse_button(button, pressed);
+
+                // LMB: Edit/Pause モードでインスタンス選択（RMB カメラ操作中は無効）
+                if button == winit::event::MouseButton::Left && pressed
+                    && (self.mode == RuntimeMode::Edit || self.paused)
+                    && !self.cam_input.rmb
+                {
+                    if let Some((cx, cy)) = self.last_cursor_pos {
+                        self.pending_pick = Some((cx as u32, cy as u32));
+                    }
+                }
+
                 if button == winit::event::MouseButton::Right {
                     self.cam_input.rmb = pressed;
                     // カメラ grab は Edit / Pause モードのみ。
@@ -321,6 +363,7 @@ impl ApplicationHandler for App {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.input.process_cursor_moved(position.x as f32, position.y as f32);
+                self.last_cursor_pos = Some((position.x as f32, position.y as f32));
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 self.input.process_scroll(&delta);
@@ -336,7 +379,6 @@ impl ApplicationHandler for App {
                 self.process_ipc(event_loop);
 
                 // Play クランプが有効な間は毎フレーム ClipCursor を再適用する。
-                // winit や OS が ClipCursor をリセットしても次フレームで復元される。
                 if self.play_clamp {
                     apply_window_clamp(self.window_hwnd());
                 }
@@ -344,8 +386,9 @@ impl ApplicationHandler for App {
                 // ── 時間 ──────────────────────────────────────
                 let time_running = self.mode == RuntimeMode::Play && !self.paused;
                 let ctx: FrameContext = self.clock.tick(time_running);
+                let in_editor = self.mode == RuntimeMode::Edit || self.paused;
 
-                if self.mode == RuntimeMode::Edit || self.paused {
+                if in_editor {
                     self.camera.update(&self.cam_input, ctx.delta_time);
                 }
 
@@ -390,6 +433,18 @@ impl ApplicationHandler for App {
                     }
                 }
 
+                // ── 選択インスタンスのワールド座標（ギズモ用）──
+                let gizmo_pos = self.selected_instance.and_then(|sel| {
+                    self.scene.as_ref()?
+                        .find_component::<ModelComponent>()?
+                        .instance_mats.get(sel as usize)
+                        .map(|mat| [mat[0][3], mat[1][3], mat[2][3]])
+                });
+
+                // ピック要求を取り出す（描画ブロック内で使用）
+                let pick_pos = self.pending_pick.take();
+                let mut did_pick = false;
+
                 // ── GPU 描画 ──────────────────────────────────
                 let window_size = self.window.as_ref().map(|w| w.inner_size());
 
@@ -403,13 +458,83 @@ impl ApplicationHandler for App {
                                     frame.encoder_mut(),
                                     &draw_ctx.pipelines.skin_compute,
                                 );
+
+                                // ギズモ GPU バッファ（レンダーパスの前に生成）
+                                let show_gizmo_pre = self.mode == RuntimeMode::Edit || self.paused;
+                                let gizmo_gpu_batch = if show_gizmo_pre
+                                    && self.tool_mode != ToolMode::Select
+                                {
+                                    gizmo_pos.map(|pos| {
+                                        let mut batch = LineBatch::new();
+                                        match self.tool_mode {
+                                            ToolMode::Move   => batch.add_gizmo_translate(pos, 1.5),
+                                            ToolMode::Rotate => batch.add_gizmo_rotate(pos, 1.2, 32),
+                                            ToolMode::Scale  => batch.add_gizmo_scale(pos, 1.5),
+                                            ToolMode::Select => {}
+                                        }
+                                        batch.build(&draw_ctx.device)
+                                    })
+                                } else { None };
+
+                                // ── メインレンダーパス ────────────────
                                 {
                                     let mut pass = frame.begin_render_pass();
                                     draw_model_indirect(
                                         &mut pass, &mc.gpu_model, &mc.instanced_batch,
                                         &camera_buf.bind_group, &draw_ctx.pipelines,
                                     );
+
+                                    // アウトライン（Edit/Pause + 選択中のみ）
+                                    // 順序: stencil_mask(選択インスタンスに1を書く) → outline(0の箇所のみ描画)
+                                    if in_editor {
+                                        if let Some(sel) = self.selected_instance {
+                                            draw_stencil_mask(
+                                                &mut pass, &mc.gpu_model, &mc.instanced_batch,
+                                                &camera_buf.bind_group, &draw_ctx.pipelines, sel,
+                                            );
+                                            draw_outline(
+                                                &mut pass, &mc.gpu_model, &mc.instanced_batch,
+                                                &camera_buf.bind_group, &draw_ctx.pipelines, sel,
+                                            );
+                                        }
+                                    }
+
+                                    // ギズモ（Edit/Pause + Move/Rotate/Scale モードのみ）
+                                    let show_gizmo = in_editor && self.tool_mode != ToolMode::Select;
+                                    if show_gizmo {
+                                        if let (Some(gpu_batch), Some((_, line_bg))) =
+                                            (&gizmo_gpu_batch, &self.line_model_buf)
+                                        {
+                                            draw_gizmo_batch(
+                                                &mut pass, gpu_batch,
+                                                &camera_buf.bind_group, line_bg,
+                                                &draw_ctx.pipelines,
+                                            );
+                                        }
+                                    }
                                 }
+
+                                // ── ID パス（Edit/Pause のみ）──────────
+                                if in_editor {
+                                    if let Some(id_buf) = &self.id_buffer {
+                                        {
+                                            let mut id_pass = frame.begin_id_pass(&id_buf.view);
+                                            draw_id_pass(
+                                                &mut id_pass, &mc.gpu_model, &mc.instanced_batch,
+                                                &camera_buf.bind_group, &draw_ctx.pipelines,
+                                            );
+                                        }
+                                        if let Some((px, py)) = pick_pos {
+                                            let px = px.min(id_buf.width.saturating_sub(1));
+                                            let py = py.min(id_buf.height.saturating_sub(1));
+                                            frame.schedule_id_copy(
+                                                &id_buf.texture, px, py, &id_buf.readback_buf,
+                                            );
+                                            did_pick = true;
+                                        }
+                                    }
+                                }
+
                                 frame.finish();
                             }
                             Err(wgpu::SurfaceError::Lost) => {
@@ -420,6 +545,15 @@ impl ApplicationHandler for App {
                             Err(wgpu::SurfaceError::OutOfMemory) => event_loop.exit(),
                             Err(e) => eprintln!("Render error: {e:?}"),
                         }
+                    }
+                }
+
+                // ── ピック結果の読み出し（GPU サブミット後）─────
+                if did_pick {
+                    if let (Some(id_buf), Some(draw_ctx)) = (&self.id_buffer, &self.draw_ctx) {
+                        let raw = id_buf.read_pixel(&draw_ctx.device);
+                        self.selected_instance = if raw > 0 { Some(raw - 1) } else { None };
+                        eprintln!("[SEED] pick: raw={raw}, selected={:?}", self.selected_instance);
                     }
                 }
 

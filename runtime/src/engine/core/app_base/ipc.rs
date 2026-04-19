@@ -5,6 +5,22 @@ use std::thread;
 use std::time::Duration;
 
 // ============================================================
+//  ToolMode — エディタの左ツールバー選択状態
+// ============================================================
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ToolMode {
+    Select,
+    Move,
+    Rotate,
+    Scale,
+}
+
+impl Default for ToolMode {
+    fn default() -> Self { ToolMode::Select }
+}
+
+// ============================================================
 //  IpcCommand — エディタから受け取るコマンド
 // ============================================================
 
@@ -18,6 +34,8 @@ pub enum IpcCommand {
     CamKeyUp(String),
     /// Play 時カーソルクランプの有効/無効
     PlayClamp(bool),
+    /// ツールモード切り替え
+    SetToolMode(ToolMode),
 }
 
 // ============================================================
@@ -89,12 +107,16 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                     Some(IpcCommand::CamKeyUp(key.to_string()))
                 } else {
                     match trimmed {
-                        "PAUSE"       => Some(IpcCommand::Pause),
-                        "RESUME"      => Some(IpcCommand::Resume),
-                        "STOP"        => Some(IpcCommand::Stop),
+                        "PAUSE"        => Some(IpcCommand::Pause),
+                        "RESUME"       => Some(IpcCommand::Resume),
+                        "STOP"         => Some(IpcCommand::Stop),
                         "PLAY_CLAMP:1" => Some(IpcCommand::PlayClamp(true)),
                         "PLAY_CLAMP:0" => Some(IpcCommand::PlayClamp(false)),
-                        _             => None,
+                        "TOOL:SELECT"  => Some(IpcCommand::SetToolMode(ToolMode::Select)),
+                        "TOOL:MOVE"    => Some(IpcCommand::SetToolMode(ToolMode::Move)),
+                        "TOOL:ROTATE"  => Some(IpcCommand::SetToolMode(ToolMode::Rotate)),
+                        "TOOL:SCALE"   => Some(IpcCommand::SetToolMode(ToolMode::Scale)),
+                        _              => None,
                     }
                 };
                 if let Some(cmd) = cmd {
