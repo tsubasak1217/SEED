@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <AssemblyName>SEEDScripting</AssemblyName>
+    <RootNamespace>SEED.Scripting</RootNamespace>
+    <!-- UnmanagedCallersOnly を含む DLL を NativeAOT なしで使うために必要 -->
+    <EnableTrimAnalyzer>false</EnableTrimAnalyzer>
+  </PropertyGroup>
+
+</Project>

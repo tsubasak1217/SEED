@@ -1,11 +1,54 @@
 use std::f32::consts::{FRAC_PI_2, FRAC_PI_4};
-use winit::keyboard::KeyCode;
 
-use winit::event::MouseButton;
-use crate::engine::core::input::{Input, InputState};
 use crate::engine::structs::tensor::{Vector3, Mat4x4};
 use crate::engine::structs::transforms::{Quaternion, Transform};
 use super::base_camera::{BaseCamera, CameraProjection};
+
+// ============================================================
+//  CameraInput — Editor から IPC + winit イベントで組み立てる
+// ============================================================
+
+/// デバッグカメラへの入力をまとめた構造体。
+///
+/// キーボード状態は Editor 側から IPC で受け取り、
+/// マウスボタン・デルタ・スクロールは winit イベントから直接受け取る。
+#[derive(Default)]
+pub struct CameraInput {
+    pub w:     bool,
+    pub a:     bool,
+    pub s:     bool,
+    pub d:     bool,
+    pub q:     bool,
+    pub e:     bool,
+    pub shift: bool,
+    pub rmb:   bool,       // 右クリック（winit MouseInput）
+    pub mouse_dx: f32,     // フレーム内累積（winit DeviceEvent）
+    pub mouse_dy: f32,
+    pub scroll:   f32,     // フレーム内累積（winit MouseWheel）
+}
+
+impl CameraInput {
+    /// IPC キー名でキー状態を更新する。
+    pub fn set_key(&mut self, key: &str, pressed: bool) {
+        match key {
+            "W"     => self.w     = pressed,
+            "A"     => self.a     = pressed,
+            "S"     => self.s     = pressed,
+            "D"     => self.d     = pressed,
+            "Q"     => self.q     = pressed,
+            "E"     => self.e     = pressed,
+            "SHIFT" => self.shift = pressed,
+            _       => {}
+        }
+    }
+
+    /// フレーム末にデルタ・スクロールをリセットする。キー状態は保持。
+    pub fn end_frame(&mut self) {
+        self.mouse_dx = 0.0;
+        self.mouse_dy = 0.0;
+        self.scroll   = 0.0;
+    }
+}
 
 /// デバッグ用フリーフライカメラ。
 ///
@@ -75,50 +118,51 @@ impl DebugCamera {
     // ─── 更新 ─────────────────────────────────────────────────
 
     /// 入力に応じてカメラを更新する。フレームループで毎フレーム呼ぶ。
-    ///
-    /// - `input`      : 入力マネージャ（`&Input`）
-    /// - `delta_time` : 前フレームからの経過時間（秒）
-    pub fn update(&mut self, input: &Input, delta_time: f32) {
-        self.update_rotation(input);
-        self.update_movement(input, delta_time);
+    pub fn update(&mut self, cam: &CameraInput, delta_time: f32) {
+        self.update_rotation(cam);
+        self.update_speed(cam);
+        self.update_movement(cam, delta_time);
     }
 
     /// マウスの raw delta でヨー・ピッチを更新し、`transform.rotation` に反映する。
-    ///
-    /// 右クリック中のみ回転する（カーソル移動と干渉しないように）。
-    fn update_rotation(&mut self, input: &Input) {
-        if !input.is_press_mouse(MouseButton::Right) { return; }
-        let delta = input.mouse_vector(InputState::Current);
-        self.yaw   += delta.x * self.mouse_sensitivity;
-        self.pitch += delta.y * self.mouse_sensitivity;
+    /// 右クリック中のみ回転する。
+    fn update_rotation(&mut self, cam: &CameraInput) {
+        if !cam.rmb { return; }
+        self.yaw   += cam.mouse_dx * self.mouse_sensitivity;
+        self.pitch += cam.mouse_dy * self.mouse_sensitivity;
 
-        // ±89° にクランプして真上・真下を向いたときのジンバルロックを防ぐ
-        const PITCH_LIMIT: f32 = FRAC_PI_2 - 0.02; // ≈ 89°
+        const PITCH_LIMIT: f32 = FRAC_PI_2 - 0.02;
         self.pitch = self.pitch.clamp(-PITCH_LIMIT, PITCH_LIMIT);
 
-        // Yaw: ワールド Y 軸回転 → Pitch: ローカル X 軸回転 の順に合成
         let yaw_q   = Quaternion::from_axis_angle(Vector3::new(0.0, 1.0, 0.0), self.yaw);
         let pitch_q = Quaternion::from_axis_angle(Vector3::new(1.0, 0.0, 0.0), self.pitch);
         self.base.transform.rotation = yaw_q * pitch_q;
     }
 
-    /// WASD + EQ でカメラ位置を移動する。Shift で 3 倍速。
-    fn update_movement(&mut self, input: &Input, delta_time: f32) {
-        let speed_mul = if input.is_press_key(KeyCode::ShiftLeft)
-                        || input.is_press_key(KeyCode::ShiftRight) { 3.0 } else { 1.0 };
+    /// ホイールスクロールで移動速度を調整する。
+    fn update_speed(&mut self, cam: &CameraInput) {
+        if cam.scroll != 0.0 {
+            self.move_speed = (self.move_speed * 1.2_f32.powf(cam.scroll)).clamp(0.5, 500.0);
+        }
+    }
+
+    /// 右クリック中のみ WASDQE でカメラ位置を移動する。Shift で 3 倍速。
+    fn update_movement(&mut self, cam: &CameraInput, delta_time: f32) {
+        if !cam.rmb { return; }
+
+        let speed_mul = if cam.shift { 3.0 } else { 1.0 };
         let speed = self.move_speed * speed_mul * delta_time;
 
-        let forward = self.base.transform.forward();
-        let right   = self.base.transform.right();
-        // 上下移動はワールド Y を使って地面に対して水平に昇降する
+        let forward  = self.base.transform.forward();
+        let right    = self.base.transform.right();
         let world_up = Vector3::new(0.0, 1.0, 0.0);
 
-        if input.is_press_key(KeyCode::KeyW) { self.base.transform.position += forward   * speed; }
-        if input.is_press_key(KeyCode::KeyS) { self.base.transform.position -= forward   * speed; }
-        if input.is_press_key(KeyCode::KeyA) { self.base.transform.position -= right     * speed; }
-        if input.is_press_key(KeyCode::KeyD) { self.base.transform.position += right     * speed; }
-        if input.is_press_key(KeyCode::KeyE) { self.base.transform.position += world_up  * speed; }
-        if input.is_press_key(KeyCode::KeyQ) { self.base.transform.position -= world_up  * speed; }
+        if cam.w { self.base.transform.position += forward  * speed; }
+        if cam.s { self.base.transform.position -= forward  * speed; }
+        if cam.a { self.base.transform.position -= right    * speed; }
+        if cam.d { self.base.transform.position += right    * speed; }
+        if cam.e { self.base.transform.position += world_up * speed; }
+        if cam.q { self.base.transform.position -= world_up * speed; }
     }
 
     // ─── BaseCamera への委譲 ──────────────────────────────────

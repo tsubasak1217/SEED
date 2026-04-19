@@ -1,5 +1,8 @@
 pub mod keyboard;
 pub mod mouse;
+pub mod raw_input;
+
+pub use raw_input::RawInput;
 
 use winit::dpi::PhysicalPosition;
 use winit::event::{MouseButton, MouseScrollDelta};

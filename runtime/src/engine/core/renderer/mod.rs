@@ -52,8 +52,9 @@ impl Renderer {
     pub fn new(window: Arc<Window>) -> Self {
         let size = window.inner_size();
 
-        // Windows では Vulkan バックエンドのスワップチェーン後処理にバグがあるため
-        // DX12 を優先する。他プラットフォームでは PRIMARY（Metal / Vulkan）を使う。
+        // Windows は DX12 を使用する。
+        // NvOptimusEnablement シンボルエクスポートにより Optimus 環境でも
+        // DX12 アダプター列挙に dGPU が現れる。
         let backends = if cfg!(target_os = "windows") {
             wgpu::Backends::DX12
         } else {
@@ -68,14 +69,9 @@ impl Renderer {
             .create_surface(window.clone())
             .expect("Failed to create surface");
 
-        let adapter = pollster::block_on(instance.request_adapter(
-            &wgpu::RequestAdapterOptions {
-                power_preference:       wgpu::PowerPreference::default(),
-                compatible_surface:     Some(&surface),
-                force_fallback_adapter: false,
-            },
-        ))
-        .expect("Failed to find a suitable adapter");
+        let adapter = Self::select_adapter(&instance, backends, &surface);
+        eprintln!("[SEED] GPU adapter: {} ({:?})",
+            adapter.get_info().name, adapter.get_info().device_type);
 
         let (device, queue) = pollster::block_on(adapter.request_device(
             &wgpu::DeviceDescriptor {
@@ -118,6 +114,52 @@ impl Renderer {
         let depth_texture = DepthTexture::new(&device, size.width, size.height);
 
         Self { surface, device, queue, config, size, depth_texture }
+    }
+
+    // ── アダプター選択 ──────────────────────────────────────────
+
+    /// 利用可能な GPU アダプターを列挙し、最適なものを選ぶ。
+    ///
+    /// 優先順位: DiscreteGpu > IntegratedGpu > その他
+    /// サーフェスと互換性のないアダプターは除外する。
+    fn select_adapter(
+        instance: &wgpu::Instance,
+        backends: wgpu::Backends,
+        surface:  &wgpu::Surface<'_>,
+    ) -> wgpu::Adapter {
+        use wgpu::DeviceType;
+
+        // DiscreteGpu を最優先にスコアリングする。
+        fn adapter_score(info: &wgpu::AdapterInfo) -> u8 {
+            match info.device_type {
+                DeviceType::DiscreteGpu   => 3,
+                DeviceType::IntegratedGpu => 2,
+                DeviceType::VirtualGpu    => 1,
+                _                         => 0,
+            }
+        }
+
+        let mut adapters: Vec<wgpu::Adapter> = instance.enumerate_adapters(backends);
+
+        eprintln!("[SEED] --- GPU adapter list ({} found) ---", adapters.len());
+        for a in &adapters {
+            let i = a.get_info();
+            eprintln!("[SEED]   {:?} | {:?} | {} | surface_ok={}",
+                i.backend, i.device_type, i.name, a.is_surface_supported(surface));
+        }
+
+        adapters.sort_by_key(|a| core::cmp::Reverse(adapter_score(&a.get_info())));
+
+
+        adapters.into_iter().next().unwrap_or_else(|| {
+            eprintln!("[SEED] enumerate_adapters returned empty, falling back to request_adapter");
+            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference:       wgpu::PowerPreference::HighPerformance,
+                compatible_surface:     Some(surface),
+                force_fallback_adapter: false,
+            }))
+            .expect("Failed to find a suitable GPU adapter")
+        })
     }
 
     // ── アクセサ ────────────────────────────────────────────────
