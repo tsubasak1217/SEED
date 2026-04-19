@@ -1,0 +1,16 @@
+shader_sources  = ["id_pass.wgsl"]
+vertex_entry    = "vs_skinned"
+fragment_entry  = "fs_main"
+vertex_slots    = ["mesh_vertex", "skin_vertex"]
+num_bind_groups = 4
+
+topology        = "TriangleList"
+cull_mode       = "Back"
+front_face      = "Ccw"
+
+depth_write     = false
+depth_compare   = "LessEqual"
+
+color_format    = "R32Uint"
+blend           = "None"
+write_mask      = "all"

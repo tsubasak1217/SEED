@@ -13,13 +13,11 @@ struct ModelUniform {
     model:         mat4x4<f32>,
     normal_matrix: mat4x4<f32>,
 }
-struct JointUniform {
-    matrices: array<mat4x4<f32>, 128>,
-}
+const MAX_JOINTS: u32 = 128u;
 
-@group(0) @binding(0) var<uniform>        u_camera:    CameraUniform;
-@group(1) @binding(0) var<storage, read>  u_instances: array<ModelUniform>;
-@group(3) @binding(0) var<uniform>        u_joints:    JointUniform;
+@group(0) @binding(0) var<uniform>       u_camera:       CameraUniform;
+@group(1) @binding(0) var<storage, read> u_instances:    array<ModelUniform>;
+@group(3) @binding(0) var<storage, read> joint_matrices: array<mat4x4<f32>>;
 
 // ── 非スキンメッシュ ─────────────────────────────────────────
 
@@ -45,13 +43,14 @@ struct SkinnedIn {
 
 @vertex
 fn vs_skinned(in: SkinnedIn) -> @builtin(position) vec4<f32> {
-    let j = in.joints;
-    let w = in.weights;
+    let base = in.inst_idx * MAX_JOINTS;
+    let j    = in.joints;
+    let w    = in.weights;
     let skin_mat =
-        w.x * u_joints.matrices[j.x] +
-        w.y * u_joints.matrices[j.y] +
-        w.z * u_joints.matrices[j.z] +
-        w.w * u_joints.matrices[j.w];
+        w.x * joint_matrices[base + min(j.x, MAX_JOINTS - 1u)] +
+        w.y * joint_matrices[base + min(j.y, MAX_JOINTS - 1u)] +
+        w.z * joint_matrices[base + min(j.z, MAX_JOINTS - 1u)] +
+        w.w * joint_matrices[base + min(j.w, MAX_JOINTS - 1u)];
     let local = skin_mat * vec4<f32>(in.position, 1.0);
     let world = u_instances[in.inst_idx].model * local;
     return u_camera.view_proj * world;

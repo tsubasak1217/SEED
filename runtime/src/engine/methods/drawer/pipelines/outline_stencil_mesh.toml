@@ -1,0 +1,18 @@
+# ステンシルマスクパス（非スキン）— 選択インスタンス前面にステンシル=1 を書き込む
+# stencil (Replace) は pipeline.rs 側で with_stencil() により注入される
+shader_sources  = ["outline.wgsl"]
+vertex_entry    = "vs_stencil_mesh"
+fragment_entry  = "fs_main"
+vertex_slots    = ["mesh_vertex"]
+num_bind_groups = 2
+
+topology        = "TriangleList"
+cull_mode       = "Back"
+front_face      = "Ccw"
+
+depth_write     = false
+depth_compare   = "Always"
+
+color_format    = "surface"
+blend           = "None"
+write_mask      = "none"

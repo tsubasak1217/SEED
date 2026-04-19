@@ -1,0 +1,14 @@
+# 深度プリパス（非スキン）— フラグメントなし、group 0+1 のみ使用
+shader_sources  = ["depth_prepass.wgsl"]
+vertex_entry    = "vs_mesh"
+vertex_slots    = ["mesh_vertex"]
+num_bind_groups = 2
+
+topology        = "TriangleList"
+cull_mode       = "Back"
+front_face      = "Ccw"
+
+depth_write     = true
+depth_compare   = "Less"
+
+color_format    = "none"

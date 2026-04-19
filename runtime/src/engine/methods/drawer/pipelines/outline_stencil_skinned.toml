@@ -1,0 +1,17 @@
+# ステンシルマスクパス（スキン）
+shader_sources  = ["outline.wgsl"]
+vertex_entry    = "vs_stencil_skinned"
+fragment_entry  = "fs_main"
+vertex_slots    = ["mesh_vertex", "skin_vertex"]
+num_bind_groups = 3
+
+topology        = "TriangleList"
+cull_mode       = "Back"
+front_face      = "Ccw"
+
+depth_write     = false
+depth_compare   = "Always"
+
+color_format    = "surface"
+blend           = "None"
+write_mask      = "none"

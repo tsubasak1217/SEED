@@ -1,0 +1,18 @@
+# バックフェース膨張アウトライン（非スキン）
+# stencil は pipeline.rs 側で with_stencil() により注入される
+shader_sources  = ["outline.wgsl"]
+vertex_entry    = "vs_mesh"
+fragment_entry  = "fs_main"
+vertex_slots    = ["mesh_vertex", "smooth_normal"]
+num_bind_groups = 2
+
+topology        = "TriangleList"
+cull_mode       = "Front"
+front_face      = "Ccw"
+
+depth_write     = false
+depth_compare   = "LessEqual"
+
+color_format    = "surface"
+blend           = "Replace"
+write_mask      = "all"

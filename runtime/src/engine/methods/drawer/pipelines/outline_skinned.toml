@@ -1,0 +1,17 @@
+# バックフェース膨張アウトライン（スキン）
+shader_sources  = ["outline.wgsl"]
+vertex_entry    = "vs_skinned"
+fragment_entry  = "fs_main"
+vertex_slots    = ["mesh_vertex", "skin_vertex", "smooth_normal"]
+num_bind_groups = 3
+
+topology        = "TriangleList"
+cull_mode       = "Front"
+front_face      = "Ccw"
+
+depth_write     = false
+depth_compare   = "LessEqual"
+
+color_format    = "surface"
+blend           = "Replace"
+write_mask      = "all"

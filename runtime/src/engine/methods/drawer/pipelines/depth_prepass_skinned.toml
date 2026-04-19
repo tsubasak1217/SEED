@@ -1,0 +1,15 @@
+# 深度プリパス（スキン）— フラグメントなし
+# group 2 はシェーダーに存在しないため空 BGL で埋める（group 3 に joint を配置するため）
+shader_sources  = ["depth_prepass.wgsl"]
+vertex_entry    = "vs_skinned"
+vertex_slots    = ["mesh_vertex", "skin_vertex"]
+num_bind_groups = 4
+
+topology        = "TriangleList"
+cull_mode       = "Back"
+front_face      = "Ccw"
+
+depth_write     = true
+depth_compare   = "Less"
+
+color_format    = "none"

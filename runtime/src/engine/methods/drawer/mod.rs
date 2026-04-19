@@ -1,5 +1,6 @@
 mod uniforms;
 pub(crate) mod gpu_resources;
+mod pipeline_config;
 mod pipeline;
 mod model_drawer;
 mod id_pass;
@@ -14,7 +15,7 @@ pub use gpu_resources::{GpuTexture, GpuMaterial, GpuPrimitive, GpuMesh, GpuModel
                         InstancedModelBatch, NodePrimDraw, GpuLineBatch, DefaultTextures,
                         CameraBuffer, extract_frustum_planes, test_aabb_frustum};
 pub use pipeline::{MeshPipeline, SkinnedMeshPipeline, UnlitPipeline, CullPipeline, DrawPipelines,
-                   SkinComputePipeline, IdPassPipeline, OutlinePipeline};
+                   SkinComputePipeline, IdPassPipeline, OutlinePipeline, DepthPrepassPipelines};
 pub use gpu_resources::NUM_LODS;
 pub use model_drawer::draw_model_indirect;
 pub use id_pass::{IdBuffer, draw_id_pass};
