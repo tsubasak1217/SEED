@@ -36,6 +36,10 @@ pub enum IpcCommand {
     PlayClamp(bool),
     /// ツールモード切り替え
     SetToolMode(ToolMode),
+    /// Ctrl キー押下（エディタから転送）
+    CtrlDown,
+    /// Ctrl キー離し（エディタから転送）
+    CtrlUp,
     /// Ctrl+Z 相当（エディタから転送）
     Undo,
     /// Ctrl+Y 相当（エディタから転送）
@@ -46,6 +50,12 @@ pub enum IpcCommand {
     Reparent { child: u32, new_parent: Option<u32> },
     /// インスタンス名変更
     Rename { idx: u32, name: String },
+    /// シーンを指定パスへ保存
+    SaveScene(String),
+    /// グループフォルダ作成（parent=None はルート）
+    CreateGroup { name: String, parent: Option<u32> },
+    /// 複数インスタンスの一括選択（インスタンスインデックスのリスト）
+    SelectMulti(Vec<u32>),
 }
 
 // ============================================================
@@ -117,6 +127,8 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                     Some(IpcCommand::CamKeyUp(key.to_string()))
                 } else {
                     match trimmed {
+                        "CTRL_DOWN"    => Some(IpcCommand::CtrlDown),
+                        "CTRL_UP"      => Some(IpcCommand::CtrlUp),
                         "PAUSE"        => Some(IpcCommand::Pause),
                         "RESUME"       => Some(IpcCommand::Resume),
                         "STOP"         => Some(IpcCommand::Stop),
@@ -141,6 +153,24 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                                     Some(IpcCommand::Rename { idx, name: name.to_string() })
                                 } else { None }
                             } else { None }
+                        }
+                        s if s.starts_with("SAVE_SCENE:") => {
+                            Some(IpcCommand::SaveScene(s["SAVE_SCENE:".len()..].to_string()))
+                        }
+                        s if s.starts_with("CREATE_GROUP:") => {
+                            let rest = &s["CREATE_GROUP:".len()..];
+                            let mut it = rest.splitn(2, ',');
+                            if let (Some(p), Some(name)) = (it.next(), it.next()) {
+                                let parent = if p == "-1" { None } else { p.parse::<u32>().ok() };
+                                Some(IpcCommand::CreateGroup { name: name.to_string(), parent })
+                            } else { None }
+                        }
+                        s if s.starts_with("SELECT_MULTI:") => {
+                            let ids: Vec<u32> = s["SELECT_MULTI:".len()..]
+                                .split(',')
+                                .filter_map(|x| x.parse::<u32>().ok())
+                                .collect();
+                            if !ids.is_empty() { Some(IpcCommand::SelectMulti(ids)) } else { None }
                         }
                         s if s.starts_with("REPARENT:") => {
                             let rest = &s["REPARENT:".len()..];

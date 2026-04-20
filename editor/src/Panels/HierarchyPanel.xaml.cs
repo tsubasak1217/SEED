@@ -4,6 +4,7 @@ using System.Linq;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
@@ -20,6 +21,7 @@ public class ActorNode
     public int             Id       { get; set; }
     public string          Name     { get; set; } = "";
     public int?            ParentId { get; set; }
+    public bool            IsGroup  { get; set; }
     public List<ActorNode> Children { get; } = new();
 }
 
@@ -40,12 +42,21 @@ public partial class HierarchyPanel : UserControl
     private Point         _dragStart;
     private bool          _isDragging;
     private ActorNode?    _dragNode;
-    private TreeViewItem? _dropTarget;
+    private TreeViewItem? _dropTarget;   // 子として追加するターゲット
     private bool          _dropAsRoot;
+    private TreeViewItem? _insertTarget; // 兄弟として挿入するターゲット
+    private bool          _insertBefore; // insertTarget の前 or 後
 
     // リネーム用
     private DispatcherTimer? _renameTimer;
     private int              _pendingRenameId = -1;
+
+    // 右クリック用
+    private ActorNode? _rightClickedNode;
+
+    // 複数選択用
+    private HashSet<int> _selectedIds = new();
+    private int          _anchorId    = -1;
 
     // ============================================================
 
@@ -60,12 +71,14 @@ public partial class HierarchyPanel : UserControl
     {
         if (_runtime is not null)
         {
-            _runtime.HierarchyUpdated -= OnHierarchyUpdated;
-            _runtime.SelectionChanged -= OnSelectionChanged;
+            _runtime.HierarchyUpdated      -= OnHierarchyUpdated;
+            _runtime.SelectionChanged      -= OnSelectionChanged;
+            _runtime.SelectionMultiChanged -= OnSelectionMultiChanged;
         }
         _runtime = runtime;
-        _runtime.HierarchyUpdated += OnHierarchyUpdated;
-        _runtime.SelectionChanged += OnSelectionChanged;
+        _runtime.HierarchyUpdated      += OnHierarchyUpdated;
+        _runtime.SelectionChanged      += OnSelectionChanged;
+        _runtime.SelectionMultiChanged += OnSelectionMultiChanged;
     }
 
     // ── Runtime イベント ──────────────────────────────────────
@@ -75,6 +88,9 @@ public partial class HierarchyPanel : UserControl
         Dispatcher.BeginInvoke(() =>
         {
             _roots = ParseHierarchy(json);
+            _selectedIds.Clear();
+            if (_selectedId >= 0) _selectedIds.Add(_selectedId);
+            _anchorId = _selectedId;
             RebuildTree(_roots);
         });
     }
@@ -84,7 +100,24 @@ public partial class HierarchyPanel : UserControl
         Dispatcher.BeginInvoke(() =>
         {
             _selectedId = idx;
+            _selectedIds.Clear();
+            if (idx >= 0) _selectedIds.Add(idx);
+            _anchorId = idx;
             SelectTreeItem(idx);
+            UpdateMultiSelectVisuals();
+        });
+    }
+
+    private void OnSelectionMultiChanged(IReadOnlyList<int> ids)
+    {
+        Dispatcher.BeginInvoke(() =>
+        {
+            _selectedIds.Clear();
+            foreach (var id in ids) _selectedIds.Add(id);
+            _selectedId  = ids.Count > 0 ? ids[0] : -1;
+            _anchorId    = _selectedId;
+            SelectTreeItem(_selectedId);
+            UpdateMultiSelectVisuals();
         });
     }
 
@@ -103,6 +136,7 @@ public partial class HierarchyPanel : UserControl
                     ParentId = e.GetProperty("parent").ValueKind == JsonValueKind.Null
                                 ? null
                                 : e.GetProperty("parent").GetInt32(),
+                    IsGroup  = e.TryGetProperty("is_group", out var ig) && ig.GetBoolean(),
                 })
                 .ToList();
 
@@ -157,8 +191,10 @@ public partial class HierarchyPanel : UserControl
     {
         var icon = new TextBlock
         {
-            Text              = "◆",
-            Foreground        = new SolidColorBrush(Color.FromRgb(0x55, 0xAA, 0xFF)),
+            Text              = node.IsGroup ? "▶" : "◆",
+            Foreground        = node.IsGroup
+                ? new SolidColorBrush(Color.FromRgb(0xFF, 0xCC, 0x44))
+                : new SolidColorBrush(Color.FromRgb(0x55, 0xAA, 0xFF)),
             FontSize          = 9,
             Margin            = new Thickness(0, 0, 4, 0),
             VerticalAlignment = VerticalAlignment.Center,
@@ -183,7 +219,14 @@ public partial class HierarchyPanel : UserControl
         if (ActorTree.SelectedItem is TreeViewItem { Tag: ActorNode node })
         {
             _selectedId = node.Id;
-            _runtime?.SendToRuntime($"SELECT:{node.Id}");
+            if (!_selectedIds.Contains(node.Id))
+            {
+                _selectedIds.Clear();
+                _selectedIds.Add(node.Id);
+                _anchorId = node.Id;
+            }
+            UpdateMultiSelectVisuals();
+            SendSelectionToRuntime();
         }
     }
 
@@ -194,8 +237,34 @@ public partial class HierarchyPanel : UserControl
         if (sender is TreeViewItem { Tag: ActorNode node })
         {
             _selectedId = node.Id;
-            _runtime?.SendToRuntime($"SELECT:{node.Id}");
+            if (!_selectedIds.Contains(node.Id))
+            {
+                _selectedIds.Clear();
+                _selectedIds.Add(node.Id);
+                _anchorId = node.Id;
+            }
+            UpdateMultiSelectVisuals();
+            SendSelectionToRuntime();
         }
+    }
+
+    /// <summary>
+    /// _selectedIds に含まれる非グループ ID を Rust へ送信する。
+    /// 単一選択は SELECT:、複数選択は SELECT_MULTI:id1,id2,... を使う。
+    /// </summary>
+    private void SendSelectionToRuntime()
+    {
+        var ids = _selectedIds
+            .Select(id => FindNode(_roots, id))
+            .Where(n => n is { IsGroup: false })
+            .Select(n => n!.Id)
+            .ToList();
+
+        if (ids.Count == 0) return;
+        if (ids.Count == 1)
+            _runtime?.SendToRuntime($"SELECT:{ids[0]}");
+        else
+            _runtime?.SendToRuntime($"SELECT_MULTI:{string.Join(",", ids)}");
     }
 
     private void SelectTreeItem(int id)
@@ -227,6 +296,23 @@ public partial class HierarchyPanel : UserControl
         RebuildTree(_roots);
     }
 
+    // ── 右クリック / コンテキストメニュー ─────────────────────
+
+    private void OnTreeRightMouseDown(object sender, MouseButtonEventArgs e)
+    {
+        var hit  = ActorTree.InputHitTest(e.GetPosition(ActorTree)) as DependencyObject;
+        var item = FindAncestor<TreeViewItem>(hit);
+        _rightClickedNode = item?.Tag as ActorNode;
+    }
+
+    private void OnCreateGroupMenu(object sender, RoutedEventArgs e)
+    {
+        // 右クリックしたノードの親と同じ階層にグループを作成
+        int parentId = _rightClickedNode?.ParentId ?? -1;
+        var name     = GetUniqueName("Group", -1);
+        _runtime?.SendToRuntime($"CREATE_GROUP:{parentId},{name}");
+    }
+
     // ── ドラッグ＆ドロップ ────────────────────────────────────
 
     private void OnTreeMouseDown(object sender, MouseButtonEventArgs e)
@@ -237,20 +323,74 @@ public partial class HierarchyPanel : UserControl
 
         if (e.ClickCount == 2)
         {
-            // ダブルクリックはリネームタイマーをキャンセル
             CancelRenameTimer();
             return;
         }
 
-        if (e.ClickCount == 1)
-        {
-            var hit  = ActorTree.InputHitTest(_dragStart) as DependencyObject;
-            var item = FindAncestor<TreeViewItem>(hit);
+        if (e.ClickCount != 1) return;
 
-            if (item?.Tag is ActorNode node && node.Id == _selectedId)
+        var hit  = ActorTree.InputHitTest(_dragStart) as DependencyObject;
+        var item = FindAncestor<TreeViewItem>(hit);
+
+        if (FindAncestor<ToggleButton>(hit) != null)
+        {
+            CancelRenameTimer();
+            _pendingRenameId = -1;
+            return;
+        }
+
+        bool isCtrl  = (Keyboard.Modifiers & ModifierKeys.Control) != 0;
+        bool isShift = (Keyboard.Modifiers & ModifierKeys.Shift)   != 0;
+
+        if (item?.Tag is ActorNode node && (isCtrl || isShift))
+        {
+            // Ctrl/Shift クリック → TreeView のデフォルト選択を抑制して手動管理
+            e.Handled = true;
+            CancelRenameTimer();
+            _pendingRenameId = -1;
+            ActorTree.Focus();
+
+            if (isShift && _anchorId >= 0)
             {
-                // 選択済みアイテムへの再クリック → タイマーでリネーム起動
-                _pendingRenameId = node.Id;
+                // アンカーからクリック位置までの範囲を選択
+                var flat = GetFlatItems(ActorTree.Items);
+                int ai   = flat.FindIndex(i => (i.Tag as ActorNode)?.Id == _anchorId);
+                int ci   = flat.FindIndex(i => (i.Tag as ActorNode)?.Id == node.Id);
+                if (ai >= 0 && ci >= 0)
+                {
+                    _selectedIds.Clear();
+                    int lo = Math.Min(ai, ci), hi = Math.Max(ai, ci);
+                    for (int i = lo; i <= hi; i++)
+                        if (flat[i].Tag is ActorNode n) _selectedIds.Add(n.Id);
+                }
+                // アンカーは変えない（連続 Shift 選択のため）
+            }
+            else if (isCtrl)
+            {
+                if (_selectedIds.Contains(node.Id))
+                    _selectedIds.Remove(node.Id);
+                else
+                    _selectedIds.Add(node.Id);
+                _anchorId = node.Id;
+            }
+
+            _selectedId = node.Id;
+            SelectTreeItem(node.Id);
+            UpdateMultiSelectVisuals();
+            SendSelectionToRuntime();
+            return;
+        }
+
+        // 通常クリック
+        if (item?.Tag is ActorNode normalNode)
+        {
+            _selectedIds.Clear();
+            _selectedIds.Add(normalNode.Id);
+            _anchorId = normalNode.Id;
+
+            if (normalNode.Id == _selectedId)
+            {
+                _pendingRenameId = normalNode.Id;
                 CancelRenameTimer();
                 _renameTimer = new DispatcherTimer
                 {
@@ -270,6 +410,11 @@ public partial class HierarchyPanel : UserControl
                 CancelRenameTimer();
                 _pendingRenameId = -1;
             }
+        }
+        else
+        {
+            CancelRenameTimer();
+            _pendingRenameId = -1;
         }
     }
 
@@ -300,10 +445,11 @@ public partial class HierarchyPanel : UserControl
         var data = new DataObject("ActorNode", node);
         DragDrop.DoDragDrop(ActorTree, data, DragDropEffects.Move);
 
-        _isDragging  = false;
-        _dragNode    = null;
-        _dropTarget  = null;
-        _dropAsRoot  = false;
+        _isDragging   = false;
+        _dragNode     = null;
+        _dropTarget   = null;
+        _dropAsRoot   = false;
+        _insertTarget = null;
         DropIndicator.Visibility = Visibility.Collapsed;
         ClearDropHighlight();
     }
@@ -325,6 +471,9 @@ public partial class HierarchyPanel : UserControl
 
         ClearDropHighlight();
         DropIndicator.Visibility = Visibility.Collapsed;
+        _insertTarget = null;
+        _dropTarget   = null;
+        _dropAsRoot   = false;
 
         var pos  = e.GetPosition(ActorTree);
         var hit  = ActorTree.InputHitTest(pos) as DependencyObject;
@@ -338,14 +487,33 @@ public partial class HierarchyPanel : UserControl
                 e.Effects = DragDropEffects.None;
                 return;
             }
-            _dropTarget = item;
-            var border = FindVisualChild<Border>(item, "RowBorder");
-            if (border != null)
-                border.Background = new SolidColorBrush(Color.FromArgb(0x55, 0x33, 0x99, 0xFF));
+
+            // アイテム上端・下端 25% → 兄弟挿入ライン表示
+            var itemTop = item.TranslatePoint(new Point(0, 0), ActorTree).Y;
+            var relY    = pos.Y - itemTop;
+            var zone    = item.ActualHeight * 0.25;
+
+            if (relY <= zone || relY >= item.ActualHeight - zone)
+            {
+                _insertBefore            = relY <= zone;
+                _insertTarget            = item;
+                var lineY                = _insertBefore ? itemTop : itemTop + item.ActualHeight;
+                DropIndicator.Margin     = new Thickness(0, lineY - 1, 0, 0);
+                DropIndicator.Visibility = Visibility.Visible;
+            }
+            else
+            {
+                // 中央 → 子として追加
+                _dropTarget = item;
+                var border = FindVisualChild<Border>(item, "RowBorder");
+                if (border != null)
+                    border.Background = new SolidColorBrush(Color.FromArgb(0x55, 0x33, 0x99, 0xFF));
+            }
         }
         else
         {
-            _dropAsRoot = true;
+            _dropAsRoot              = true;
+            DropIndicator.Margin     = new Thickness(0);
             DropIndicator.Visibility = Visibility.Visible;
         }
         e.Handled = true;
@@ -355,8 +523,9 @@ public partial class HierarchyPanel : UserControl
     {
         ClearDropHighlight();
         DropIndicator.Visibility = Visibility.Collapsed;
-        _dropTarget = null;
-        _dropAsRoot = false;
+        _dropTarget   = null;
+        _dropAsRoot   = false;
+        _insertTarget = null;
     }
 
     private void OnTreeDrop(object sender, DragEventArgs e)
@@ -367,18 +536,138 @@ public partial class HierarchyPanel : UserControl
         if (!e.Data.GetDataPresent("ActorNode")) return;
         var dragNode = (ActorNode)e.Data.GetData("ActorNode");
 
-        string msg;
-        if (_dropTarget?.Tag is ActorNode targetNode)
-            msg = $"REPARENT:{dragNode.Id},{targetNode.Id}";
+        int newParentId;
+        if (_insertTarget?.Tag is ActorNode siblingNode)
+        {
+            // 兄弟として挿入 → sibling と同じ親にする（親子付け解除に相当）
+            newParentId = siblingNode.ParentId ?? -1;
+        }
+        else if (_dropTarget?.Tag is ActorNode targetNode)
+        {
+            newParentId = targetNode.Id;
+        }
         else if (_dropAsRoot)
-            msg = $"REPARENT:{dragNode.Id},-1";
+        {
+            newParentId = -1;
+        }
         else
+        {
             return;
+        }
 
-        _runtime?.SendToRuntime(msg);
-        _dropTarget = null;
-        _dropAsRoot = false;
-        e.Handled   = true;
+        _runtime?.SendToRuntime($"REPARENT:{dragNode.Id},{newParentId}");
+        ReparentInPlace(dragNode.Id, newParentId == -1 ? null : newParentId);
+
+        _dropTarget   = null;
+        _dropAsRoot   = false;
+        _insertTarget = null;
+        e.Handled     = true;
+    }
+
+    /// <summary>
+    /// _roots と ActorTree をその場で更新する。JSON ラウンドトリップなし。
+    /// </summary>
+    private void ReparentInPlace(int childId, int? newParentId)
+    {
+        // 挿入モードのとき、兄弟ノードを先に取得しておく（DetachNode 前に）
+        var siblingNode = _insertTarget?.Tag as ActorNode;
+
+        // ── データモデル更新 ──────────────────────────────────────
+        var node = DetachNode(_roots, childId);
+        if (node == null) return;
+
+        node.ParentId = newParentId;
+
+        if (newParentId is int pid)
+        {
+            var parentNode = FindNode(_roots, pid);
+            if (parentNode == null) { _roots.Add(node); return; }
+            InsertIntoList(parentNode.Children, node, siblingNode, _insertBefore);
+        }
+        else
+        {
+            InsertIntoList(_roots, node, siblingNode, _insertBefore);
+        }
+
+        // ── TreeViewItem 移動 ─────────────────────────────────────
+        // DetachTreeItem 前に insertTarget の参照を保持
+        var insertNearItem = _insertTarget;
+
+        var childItem = FindTreeItemById(ActorTree.Items, childId);
+        if (childItem == null) return;
+
+        DetachTreeItem(ActorTree.Items, childId);
+
+        if (newParentId is int parentId)
+        {
+            var parentItem = FindTreeItemById(ActorTree.Items, parentId);
+            var dest       = parentItem?.Items ?? ActorTree.Items;
+            InsertIntoItemCollection(dest, childItem, insertNearItem, _insertBefore);
+        }
+        else
+        {
+            InsertIntoItemCollection(ActorTree.Items, childItem, insertNearItem, _insertBefore);
+        }
+    }
+
+    // リストへの挿入（sibling が見つかれば前後に、見つからなければ末尾）
+    private static void InsertIntoList<T>(List<T> list, T node, T? sibling, bool before)
+        where T : class
+    {
+        if (sibling != null)
+        {
+            int idx = list.IndexOf(sibling);
+            if (idx >= 0) { list.Insert(before ? idx : idx + 1, node); return; }
+        }
+        list.Add(node);
+    }
+
+    // ItemCollection への挿入（sibling が見つかれば前後に、見つからなければ末尾）
+    private static void InsertIntoItemCollection(
+        ItemCollection items, TreeViewItem child,
+        TreeViewItem? sibling, bool before)
+    {
+        if (sibling != null)
+        {
+            int idx = items.IndexOf(sibling);
+            if (idx >= 0) { items.Insert(before ? idx : idx + 1, child); return; }
+        }
+        items.Add(child);
+    }
+
+    // _roots から指定 Id のノードを取り外して返す
+    private static ActorNode? DetachNode(List<ActorNode> list, int id)
+    {
+        for (int i = 0; i < list.Count; i++)
+        {
+            if (list[i].Id == id) { var n = list[i]; list.RemoveAt(i); return n; }
+            var found = DetachNode(list[i].Children, id);
+            if (found != null) return found;
+        }
+        return null;
+    }
+
+    // _roots から指定 Id のノードを探す（取り外さない）
+    private static ActorNode? FindNode(List<ActorNode> list, int id)
+    {
+        foreach (var n in list)
+        {
+            if (n.Id == id) return n;
+            var found = FindNode(n.Children, id);
+            if (found != null) return found;
+        }
+        return null;
+    }
+
+    // TreeView から指定 Id のアイテムを取り外す
+    private static bool DetachTreeItem(ItemCollection items, int id)
+    {
+        foreach (TreeViewItem item in items)
+        {
+            if (item.Tag is ActorNode n && n.Id == id) { items.Remove(item); return true; }
+            if (DetachTreeItem(item.Items, id)) return true;
+        }
+        return false;
     }
 
     // ── インラインリネーム ────────────────────────────────────
@@ -536,5 +825,51 @@ public partial class HierarchyPanel : UserControl
             if (found != null) return found;
         }
         return null;
+    }
+
+    // ── 複数選択ビジュアル ────────────────────────────────────
+
+    /// <summary>
+    /// _selectedIds に含まれるがプライマリでない項目に薄いハイライトを設定する。
+    /// </summary>
+    private void UpdateMultiSelectVisuals() => UpdateMultiSelectVisuals(ActorTree.Items);
+
+    private void UpdateMultiSelectVisuals(ItemCollection items)
+    {
+        foreach (TreeViewItem item in items)
+        {
+            if (item.Tag is ActorNode node)
+            {
+                var border = FindVisualChild<Border>(item, "RowBorder");
+                if (border != null)
+                {
+                    if (_selectedIds.Contains(node.Id) && node.Id != _selectedId)
+                        border.Background = new SolidColorBrush(Color.FromArgb(0x33, 0x33, 0x99, 0xFF));
+                    else
+                        border.ClearValue(Border.BackgroundProperty);
+                }
+            }
+            UpdateMultiSelectVisuals(item.Items);
+        }
+    }
+
+    /// <summary>
+    /// 展開されている TreeViewItem を表示順（深さ優先）にフラットなリストで返す。
+    /// Shift 範囲選択のインデックス計算に使用する。
+    /// </summary>
+    private static List<TreeViewItem> GetFlatItems(ItemCollection items)
+    {
+        var list = new List<TreeViewItem>();
+        CollectFlatItems(items, list);
+        return list;
+    }
+
+    private static void CollectFlatItems(ItemCollection items, List<TreeViewItem> list)
+    {
+        foreach (TreeViewItem item in items)
+        {
+            list.Add(item);
+            if (item.IsExpanded) CollectFlatItems(item.Items, list);
+        }
     }
 }

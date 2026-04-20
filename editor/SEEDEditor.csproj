@@ -32,4 +32,8 @@
     <PackageReference Include="Dirkster.AvalonDock.Themes.VS2013" Version="4.74.0" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Resource Include="resources\icons\*.png"/>
+  </ItemGroup>
+
 </Project>

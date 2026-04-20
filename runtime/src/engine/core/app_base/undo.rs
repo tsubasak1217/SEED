@@ -98,6 +98,24 @@ impl Command for TransformCommand {
     }
 }
 
+// ============================================================
+//  MultiTransformCommand — 複数インスタンスの一括変換（複数選択ドラッグ用）
+// ============================================================
+
+pub struct MultiTransformCommand {
+    /// (instance_idx, old_mat, new_mat)
+    pub transforms: Vec<(u32, [[f32; 4]; 4], [[f32; 4]; 4])>,
+}
+
+impl Command for MultiTransformCommand {
+    fn execute(&mut self, scene: &mut Scene) {
+        for &(idx, _, new_mat) in &self.transforms { set_instance_mat(scene, idx, new_mat); }
+    }
+    fn undo(&mut self, scene: &mut Scene) {
+        for &(idx, old_mat, _) in &self.transforms { set_instance_mat(scene, idx, old_mat); }
+    }
+}
+
 // ── 内部ヘルパー ──────────────────────────────────────────────
 
 fn set_instance_mat(scene: &mut Scene, idx: u32, mat: [[f32; 4]; 4]) {

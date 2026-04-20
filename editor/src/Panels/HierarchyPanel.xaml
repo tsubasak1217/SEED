@@ -33,7 +33,7 @@
                                                   IsChecked="{Binding IsExpanded, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}"
                                                   Width="16" Height="16"
                                                   Style="{StaticResource {x:Static ToolBar.ToggleButtonStyleKey}}"
-                                                  Visibility="Collapsed">
+                                                  Visibility="Hidden">
                                         <Path x:Name="Arrow" Data="M 0,0 L 4,4 L 8,0 Z"
                                               Fill="#888888" Width="8" Height="5"
                                               HorizontalAlignment="Center" VerticalAlignment="Center"/>
@@ -127,12 +127,39 @@
                   ScrollViewer.HorizontalScrollBarVisibility="Auto"
                   SelectedItemChanged="OnTreeSelectionChanged"
                   PreviewMouseLeftButtonDown="OnTreeMouseDown"
+                  PreviewMouseRightButtonDown="OnTreeRightMouseDown"
                   PreviewMouseMove="OnTreeMouseMove"
                   Drop="OnTreeDrop"
                   DragOver="OnTreeDragOver"
                   DragEnter="OnTreeDragEnter"
                   DragLeave="OnTreeDragLeave"
                   AllowDrop="True">
+            <TreeView.ContextMenu>
+                <ContextMenu Background="#2D2D2D" BorderBrush="#555555" BorderThickness="1">
+                    <MenuItem x:Name="MenuCreateGroup" Header="グループフォルダを作成"
+                              Foreground="#CCCCCC" Background="Transparent"
+                              Click="OnCreateGroupMenu">
+                        <MenuItem.Style>
+                            <Style TargetType="MenuItem">
+                                <Setter Property="Template">
+                                    <Setter.Value>
+                                        <ControlTemplate TargetType="MenuItem">
+                                            <Border x:Name="Bd" Background="Transparent" Padding="20,5,16,5">
+                                                <ContentPresenter ContentSource="Header"/>
+                                            </Border>
+                                            <ControlTemplate.Triggers>
+                                                <Trigger Property="IsHighlighted" Value="True">
+                                                    <Setter TargetName="Bd" Property="Background" Value="#3355AAFF"/>
+                                                </Trigger>
+                                            </ControlTemplate.Triggers>
+                                        </ControlTemplate>
+                                    </Setter.Value>
+                                </Setter>
+                            </Style>
+                        </MenuItem.Style>
+                    </MenuItem>
+                </ContextMenu>
+            </TreeView.ContextMenu>
             <TreeView.Resources>
                 <SolidColorBrush x:Key="{x:Static SystemColors.HighlightBrushKey}"        Color="Transparent"/>
                 <SolidColorBrush x:Key="{x:Static SystemColors.ControlBrushKey}"          Color="Transparent"/>

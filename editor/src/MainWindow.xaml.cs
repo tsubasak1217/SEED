@@ -7,6 +7,7 @@ using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Threading;
 using System.Reflection;
+using Microsoft.Win32;
 using SEEDEditor.Panels;
 using SEEDEditor.Runtime;
 using SEEDEditor.Viewport;
@@ -76,6 +77,7 @@ public partial class MainWindow : Window
     };
 
     private static readonly string RuntimeExePath = ResolveRuntimePath();
+    private static readonly string AssetsPath     = ResolveAssetsPath();
 
     private static string ResolveRuntimePath()
     {
@@ -90,6 +92,22 @@ public partial class MainWindow : Window
         var relPath = Path.GetFullPath(
             Path.Combine(baseDir, @"..\..\..\..\runtime\target\release\SEED.exe"));
         return relPath;
+    }
+
+    private static string ResolveAssetsPath()
+    {
+        var exeDir    = Path.GetDirectoryName(RuntimeExePath)!;
+        var buildType = Path.GetFileName(exeDir);
+        var targetDir = Path.GetFileName(Path.GetDirectoryName(exeDir)!);
+
+        // dev: runtime/target/debug → runtime/
+        string runtimeRoot = (buildType is "debug" or "release") && targetDir == "target"
+            ? Path.GetFullPath(Path.Combine(exeDir, @"..\..\"))
+            : exeDir;
+
+        var assetsDir = Path.Combine(runtimeRoot, "assets");
+        Directory.CreateDirectory(assetsDir);
+        return assetsDir;
     }
 
     private ViewportHost?   _viewportHost;
@@ -113,7 +131,10 @@ public partial class MainWindow : Window
         _runtimeManager.RuntimeMoveStart     += () => { _isDragging = true;  Dispatcher.BeginInvoke(ReleasePlayClamp); };
         _runtimeManager.RuntimeMoveEnd       += () => { _isDragging = false; Dispatcher.BeginInvoke(() => { if (_clampInPlay && _runtimeManager?.State == EditorState.Play) ApplyPlayClamp(); }); };
 
+        _runtimeManager.SaveCompleted += OnSaveCompleted;
+
         PanelHierarchy.SetRuntime(_runtimeManager);
+        PanelProject.SetAssetsPath(AssetsPath);
 
         _viewportHost = new ViewportHost();
         _viewportHost.ContainerCreated += OnContainerCreated;
@@ -245,6 +266,38 @@ public partial class MainWindow : Window
         SettingsPopup.IsOpen = !SettingsPopup.IsOpen;
     }
 
+    // ── シーン保存 ────────────────────────────────────────────────
+
+    private void ShowSaveDialog()
+    {
+        var dlg = new SaveFileDialog
+        {
+            Title            = "シーンを保存",
+            Filter           = "Scene Files (*.scene)|*.scene|All Files (*.*)|*.*",
+            DefaultExt       = ".scene",
+            InitialDirectory = AssetsPath,
+            OverwritePrompt  = true,
+        };
+
+        if (dlg.ShowDialog(this) == true)
+        {
+            _runtimeManager?.SendToRuntime($"SAVE_SCENE:{dlg.FileName}");
+            EditorLog.Write($"ShowSaveDialog — SAVE_SCENE:{dlg.FileName}");
+        }
+    }
+
+    private void OnSaveCompleted(bool ok, string errorMsg)
+    {
+        Dispatcher.BeginInvoke(() =>
+        {
+            if (ok)
+                EditorLog.Write("OnSaveCompleted — 保存成功");
+            else
+                MessageBox.Show($"シーンの保存に失敗しました:\n{errorMsg}", "SEED Editor",
+                    MessageBoxButton.OK, MessageBoxImage.Error);
+        });
+    }
+
     // ── ツールモード ──────────────────────────────────────────────
 
     private void OnToolSelect(object sender, RoutedEventArgs e)
@@ -326,12 +379,16 @@ public partial class MainWindow : Window
             bool isDown = wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN;
             bool isUp   = wParam == WM_KEYUP   || wParam == WM_SYSKEYUP;
 
-            // Ctrl キー追跡
+            // Ctrl キー追跡 + Rust へ転送
             if (vk == 0x11 || vk == 0xA2 || vk == 0xA3)
             {
+                if (isDown && !_ctrlHeld)
+                    _runtimeManager?.SendToRuntime("CTRL_DOWN");
+                else if (isUp && _ctrlHeld)
+                    _runtimeManager?.SendToRuntime("CTRL_UP");
                 _ctrlHeld = isDown;
             }
-            // Ctrl+Z / Ctrl+Y → Undo/Redo を IPC 経由で転送
+            // Ctrl+Z / Ctrl+Y / Ctrl+S → IPC 経由で転送（Edit モードのみ）
             else if (isDown && _ctrlHeld && _runtimeManager?.State == EditorState.Edit)
             {
                 if (vk == 0x5A) // Z
@@ -342,6 +399,11 @@ public partial class MainWindow : Window
                 else if (vk == 0x59) // Y
                 {
                     _runtimeManager?.SendToRuntime("REDO");
+                    return CallNextHookEx(_llKeyHook, nCode, wParam, lParam);
+                }
+                else if (vk == 0x53) // S
+                {
+                    Dispatcher.BeginInvoke(ShowSaveDialog);
                     return CallNextHookEx(_llKeyHook, nCode, wParam, lParam);
                 }
             }

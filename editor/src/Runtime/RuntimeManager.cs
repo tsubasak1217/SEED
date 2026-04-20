@@ -1,6 +1,8 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
@@ -95,6 +97,12 @@ public sealed class RuntimeManager : IDisposable
 
     /// <summary>選択インスタンスが変化したときに発火する（-1 = 選択なし）。</summary>
     public event Action<int>? SelectionChanged;
+
+    /// <summary>ビューポートで複数選択されたときに発火する（インスタンスインデックスのリスト）。</summary>
+    public event Action<IReadOnlyList<int>>? SelectionMultiChanged;
+
+    /// <summary>シーン保存完了時に発火する（ok=true: 成功, ok=false: 失敗メッセージ付き）。</summary>
+    public event Action<bool, string>? SaveCompleted;
 
     // ── コンストラクタ ─────────────────────────────────────────
 
@@ -385,6 +393,24 @@ public sealed class RuntimeManager : IDisposable
                  int.TryParse(msg["SELECTED:".Length..], out var selIdx))
         {
             SelectionChanged?.Invoke(selIdx);
+        }
+        else if (msg.StartsWith("SELECTED_MULTI:", StringComparison.Ordinal))
+        {
+            var ids = msg["SELECTED_MULTI:".Length..]
+                .Split(',')
+                .Select(s => int.TryParse(s, out var n) ? (int?)n : null)
+                .Where(n => n.HasValue)
+                .Select(n => n!.Value)
+                .ToList();
+            if (ids.Count > 0) SelectionMultiChanged?.Invoke(ids);
+        }
+        else if (msg == "SAVE_OK")
+        {
+            SaveCompleted?.Invoke(true, "");
+        }
+        else if (msg.StartsWith("SAVE_ERROR:", StringComparison.Ordinal))
+        {
+            SaveCompleted?.Invoke(false, msg["SAVE_ERROR:".Length..]);
         }
         else
         {

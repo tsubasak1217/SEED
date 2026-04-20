@@ -18,14 +18,16 @@ use crate::engine::methods::drawer::{
     DrawContext, CameraBuffer, CameraUniform,
     draw_model_indirect, draw_id_pass, draw_outline, draw_stencil_mask,
     extract_frustum_planes, IdBuffer, GizmoBatch, draw_gizmo_batch,
+    LineBatch, draw_line_batch,
 };
 use crate::engine::methods::gizmo_interact::{
     GizmoDrag, GizmoPart, screen_to_ray, hit_test_gizmo, start_drag, update_drag,
     mat4x4_mul, mat4x4_inv,
 };
-use crate::engine::core::app_base::undo::{UndoHistory, TransformCommand};
+use crate::engine::core::app_base::undo::{UndoHistory, MultiTransformCommand};
 use crate::engine::core::scripting::{ScriptingHost, ScriptComponent};
 use crate::engine::structs::components::ModelComponent;
+use crate::engine::structs::components::model_component::{GroupMeta, GROUP_ID_BASE};
 use crate::engine::structs::objects::{Actor, DebugCamera};
 use crate::engine::structs::objects::camera::debug_camera::CameraInput;
 use crate::engine::structs::tensor::Vector3;
@@ -85,27 +87,37 @@ pub struct App {
 
     // ── ピッキング / ギズモ ──────────────────────────────────
     /// Actor 選択用 ID バッファ（Edit/Pause モードのみ使用）。
-    id_buffer:         Option<IdBuffer>,
-    /// 現在選択中のインスタンスインデックス（0-based）。
-    selected_instance: Option<u32>,
+    id_buffer:          Option<IdBuffer>,
+    /// 現在選択中のインスタンスインデックス（複数選択対応）。
+    selected_instances: Vec<u32>,
     /// LMB クリック時のビューポートピクセル座標（次フレームで処理）。
-    pending_pick:      Option<(u32, u32)>,
+    pending_pick:       Option<(u32, u32)>,
     /// 直前フレームのカーソル座標（ビューポートローカル）。
-    last_cursor_pos:   Option<(f32, f32)>,
+    last_cursor_pos:    Option<(f32, f32)>,
     /// ギズモ描画用の単位行列モデルバッファ。
-    line_model_buf:    Option<(wgpu::Buffer, wgpu::BindGroup)>,
+    line_model_buf:     Option<(wgpu::Buffer, wgpu::BindGroup)>,
     /// 現在のエディタツールモード。
-    tool_mode:         ToolMode,
+    tool_mode:          ToolMode,
     /// 進行中のギズモドラッグ状態。
-    gizmo_drag:        Option<GizmoDrag>,
+    gizmo_drag:         Option<GizmoDrag>,
     /// マウスホバー中のギズモパーツ（ハイライト表示用）。
     hovered_gizmo_part: Option<GizmoPart>,
     /// Undo/Redo 履歴。
     undo_history:       UndoHistory,
     /// Ctrl キーが押されているか。
     ctrl_held:          bool,
-    /// ギズモドラッグ開始時の子孫インスタンスの初期行列（index, start_mat）。
+    /// ドラッグ開始時の「ルート選択インスタンス」初期行列（親子フィルタ済み）。
+    drag_root_starts:   Vec<(u32, [[f32; 4]; 4])>,
+    /// ドラッグ開始時の子孫インスタンス初期行列（ルート以外の追従対象）。
     drag_child_starts:  Vec<(u32, [[f32; 4]; 4])>,
+    /// LMB 押下中フラグ。
+    lmb_held:           bool,
+    /// LMB 押下時のビューポート座標。
+    lmb_press_pos:      Option<(f32, f32)>,
+    /// 矩形選択ドラッグ中フラグ。
+    rect_selecting:     bool,
+    /// LMB 押下時の Ctrl 状態（ピック結果でトグル判定に使用）。
+    ctrl_at_press:      bool,
 }
 
 impl App {
@@ -141,17 +153,22 @@ impl App {
             paused: false,
             cam_grab_screen_pos: None,
             play_clamp: false,
-            id_buffer:         None,
-            selected_instance: None,
-            pending_pick:      None,
-            last_cursor_pos:   None,
-            line_model_buf:    None,
-            tool_mode:         ToolMode::Select,
-            gizmo_drag:        None,
+            id_buffer:          None,
+            selected_instances: Vec::new(),
+            pending_pick:       None,
+            last_cursor_pos:    None,
+            line_model_buf:     None,
+            tool_mode:          ToolMode::Select,
+            gizmo_drag:         None,
             hovered_gizmo_part: None,
             undo_history:       UndoHistory::new(),
             ctrl_held:          false,
+            drag_root_starts:   Vec::new(),
             drag_child_starts:  Vec::new(),
+            lmb_held:           false,
+            lmb_press_pos:      None,
+            rect_selecting:     false,
+            ctrl_at_press:      false,
         }
     }
 
@@ -185,6 +202,8 @@ impl App {
         let Some(ipc) = &self.ipc else { return };
         while let Some(cmd) = ipc.try_recv() {
             match cmd {
+                IpcCommand::CtrlDown           => self.ctrl_held = true,
+                IpcCommand::CtrlUp             => self.ctrl_held = false,
                 IpcCommand::Pause              => self.paused = true,
                 IpcCommand::Resume             => self.paused = false,
                 IpcCommand::Stop               => event_loop.exit(),
@@ -206,18 +225,39 @@ impl App {
                     }
                 }
                 IpcCommand::Select(idx) => {
-                    self.selected_instance = Some(idx);
-                    // エディタからの選択はそのまま反映（SELECTED の送り返しは不要）
+                    if let Some(scene) = &self.scene {
+                        if let Some(mc) = scene.find_component::<ModelComponent>() {
+                            if (idx as usize) < mc.instance_mats.len() {
+                                self.selected_instances = vec![idx];
+                            } else {
+                                self.selected_instances.clear();
+                            }
+                        }
+                    }
+                }
+                IpcCommand::SelectMulti(ids) => {
+                    if let Some(scene) = &self.scene {
+                        if let Some(mc) = scene.find_component::<ModelComponent>() {
+                            self.selected_instances = ids.into_iter()
+                                .filter(|&i| (i as usize) < mc.instance_mats.len())
+                                .collect();
+                        }
+                    }
                 }
                 IpcCommand::Reparent { child, new_parent } => {
                     if let Some(scene) = &mut self.scene {
                         if let Some(mc) = scene.find_component_mut::<ModelComponent>() {
-                            if (child as usize) < mc.instance_meta.len() {
+                            if child >= GROUP_ID_BASE {
+                                // グループの親変更
+                                if let Some(g) = mc.group_meta.iter_mut().find(|g| g.id == child) {
+                                    g.parent = new_parent;
+                                }
+                            } else if (child as usize) < mc.instance_meta.len() {
                                 mc.instance_meta[child as usize].parent = new_parent;
                             }
                         }
                     }
-                    self.send_hierarchy();
+                    // C# 側がインプレース更新するため send_hierarchy は不要
                 }
                 IpcCommand::Rename { idx, name } => {
                     if let Some(scene) = &mut self.scene {
@@ -229,6 +269,24 @@ impl App {
                     }
                     self.send_hierarchy();
                 }
+                IpcCommand::CreateGroup { name, parent } => {
+                    if let Some(scene) = &mut self.scene {
+                        if let Some(mc) = scene.find_component_mut::<ModelComponent>() {
+                            let id = mc.next_group_id;
+                            mc.next_group_id += 1;
+                            mc.group_meta.push(GroupMeta { id, name, parent });
+                        }
+                    }
+                    self.send_hierarchy();
+                }
+                IpcCommand::SaveScene(path) => {
+                    if let Some(scene) = &self.scene {
+                        match scene.save(std::path::Path::new(&path)) {
+                            Ok(())   => { if let Some(ipc) = &self.ipc { ipc.send("SAVE_OK"); } }
+                            Err(e)   => { if let Some(ipc) = &self.ipc { ipc.send(&format!("SAVE_ERROR:{e}")); } }
+                        }
+                    }
+                }
             }
         }
     }
@@ -239,20 +297,41 @@ impl App {
         let Some(scene) = &self.scene else { return };
         let Some(mc)    = scene.find_component::<ModelComponent>() else { return };
 
-        let mut json = String::from("[");
+        let mut json  = String::from("[");
+        let mut first = true;
+
+        // インスタンス
         for (i, meta) in mc.instance_meta.iter().enumerate() {
-            if i > 0 { json.push(','); }
+            if !first { json.push(','); }
+            first = false;
             let parent_str = match meta.parent {
                 Some(p) => p.to_string(),
                 None    => "null".to_string(),
             };
             json.push_str(&format!(
-                r#"{{"id":{},"name":{},"parent":{}}}"#,
+                r#"{{"id":{},"name":{},"parent":{},"is_group":false}}"#,
                 i,
                 serde_json::to_string(&meta.name).unwrap_or_default(),
                 parent_str,
             ));
         }
+
+        // グループ
+        for g in &mc.group_meta {
+            if !first { json.push(','); }
+            first = false;
+            let parent_str = match g.parent {
+                Some(p) => p.to_string(),
+                None    => "null".to_string(),
+            };
+            json.push_str(&format!(
+                r#"{{"id":{},"name":{},"parent":{},"is_group":true}}"#,
+                g.id,
+                serde_json::to_string(&g.name).unwrap_or_default(),
+                parent_str,
+            ));
+        }
+
         json.push(']');
         ipc.send(&format!("HIERARCHY:{json}"));
     }
@@ -260,9 +339,11 @@ impl App {
     /// 現在の選択インスタンスをエディタへ通知する。
     fn send_selected(&self) {
         let Some(ipc) = &self.ipc else { return };
-        match self.selected_instance {
-            Some(idx) => ipc.send(&format!("SELECTED:{idx}")),
-            None      => ipc.send("SELECTED:-1"),
+        match self.selected_instances.as_slice() {
+            [] => ipc.send("SELECTED:-1"),
+            [idx] => ipc.send(&format!("SELECTED:{idx}")),
+            ids => ipc.send(&format!("SELECTED_MULTI:{}",
+                ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(","))),
         }
     }
 
@@ -271,14 +352,12 @@ impl App {
     /// カーソル座標でギズモのヒットテストを行い、当たったパーツを返す。
     fn compute_gizmo_hover(&self, cx: f32, cy: f32) -> Option<GizmoPart> {
         if self.tool_mode == ToolMode::Select { return None; }
-        let sel = self.selected_instance?;
-        let mc  = self.scene.as_ref()?.find_component::<ModelComponent>()?;
-        let mat = mc.instance_mats.get(sel as usize)?;
-        let gizmo_pos = [mat[0][3], mat[1][3], mat[2][3]];
+        let mc        = self.scene.as_ref()?.find_component::<ModelComponent>()?;
+        let gizmo_pos = selection_centroid(&self.selected_instances, &mc.instance_mats)?;
 
         let window_size = self.window.as_ref()?.inner_size();
-        let cam_pos_v = self.camera.position();
-        let cam_pos   = [cam_pos_v.x, cam_pos_v.y, cam_pos_v.z];
+        let cam_pos_v   = self.camera.position();
+        let cam_pos     = [cam_pos_v.x, cam_pos_v.y, cam_pos_v.z];
 
         let d    = [gizmo_pos[0]-cam_pos[0], gizmo_pos[1]-cam_pos[1], gizmo_pos[2]-cam_pos[2]];
         let dist = (d[0]*d[0]+d[1]*d[1]+d[2]*d[2]).sqrt().max(0.01);
@@ -296,12 +375,19 @@ impl App {
     }
 
     /// カーソル座標でギズモのヒットテストを行い、当たった場合は GizmoDrag を返す。
+    /// start_mat には重心を平行移動成分とする単位行列を使う（回転・スケールは各インスタンスが保持）。
     fn try_gizmo_hit_and_start(&self, cx: f32, cy: f32) -> Option<GizmoDrag> {
         if self.tool_mode == ToolMode::Select { return None; }
-        let sel = self.selected_instance?;
-        let mc  = self.scene.as_ref()?.find_component::<ModelComponent>()?;
-        let mat = *mc.instance_mats.get(sel as usize)?;
-        let gizmo_pos = [mat[0][3], mat[1][3], mat[2][3]];
+        let mc        = self.scene.as_ref()?.find_component::<ModelComponent>()?;
+        let gizmo_pos = selection_centroid(&self.selected_instances, &mc.instance_mats)?;
+
+        // ギズモ自体の「基準行列」= 重心位置 + 単位回転
+        let centroid_mat = [
+            [1.0, 0.0, 0.0, gizmo_pos[0]],
+            [0.0, 1.0, 0.0, gizmo_pos[1]],
+            [0.0, 0.0, 1.0, gizmo_pos[2]],
+            [0.0, 0.0, 0.0, 1.0f32],
+        ];
 
         let window_size = self.window.as_ref()?.inner_size();
         let vp_w = window_size.width  as f32;
@@ -320,7 +406,7 @@ impl App {
         let (ray_o, ray_d) = screen_to_ray(cx, cy, vp_w, vp_h, &view.data, &proj.data, cam_pos);
 
         let part = hit_test_gizmo(ray_o, ray_d, gizmo_pos, radius, self.tool_mode)?;
-        Some(start_drag(part, self.tool_mode, ray_o, ray_d, gizmo_pos, radius, mat))
+        Some(start_drag(part, self.tool_mode, ray_o, ray_d, gizmo_pos, radius, centroid_mat))
     }
 
     fn build_demo_scene(ctx: &DrawContext, scripting_host: Option<&Arc<ScriptingHost>>) -> Scene {
@@ -360,12 +446,14 @@ impl App {
 
         let mut actor = Actor::with_name("BrainStem");
         actor.add_component(ModelComponent {
-            source_path: model_path.to_string_lossy().into_owned(),
+            source_path:   model_path.to_string_lossy().into_owned(),
             model,
             gpu_model,
             instanced_batch,
             instance_mats,
             instance_meta,
+            group_meta:    Vec::new(),
+            next_group_id: GROUP_ID_BASE,
         });
         scene.add_actor(actor);
 
@@ -502,62 +590,63 @@ impl ApplicationHandler for App {
                         && !self.cam_input.rmb
                     {
                         if let Some((cx, cy)) = self.last_cursor_pos {
-                            // ギズモヒットを優先。外れた場合のみ ID ピック。
+                            self.lmb_held      = true;
+                            self.lmb_press_pos = Some((cx, cy));
+                            self.ctrl_at_press = self.ctrl_held;
+
+                            // ギズモヒットを優先。外れた場合は release 時にピックまたは矩形選択。
                             if let Some(drag) = self.try_gizmo_hit_and_start(cx, cy) {
-                                // ドラッグ開始: 子孫インスタンスの初期行列を保存
-                                if let Some(sel) = self.selected_instance {
-                                    self.drag_child_starts = self.scene.as_ref()
-                                        .and_then(|s| s.find_component::<ModelComponent>())
-                                        .map(|mc| {
-                                            mc.all_descendants(sel).into_iter()
-                                                .filter_map(|c| mc.instance_mats.get(c as usize).map(|&m| (c, m)))
-                                                .collect()
-                                        })
-                                        .unwrap_or_default();
+                                if let Some(mc) = self.scene.as_ref()
+                                    .and_then(|s| s.find_component::<ModelComponent>())
+                                {
+                                    let roots = mc.filter_selection_roots(&self.selected_instances);
+                                    self.drag_root_starts = roots.iter()
+                                        .filter_map(|&i| mc.instance_mats.get(i as usize).map(|&m| (i, m)))
+                                        .collect();
+                                    self.drag_child_starts = mc.collect_non_root_descendants(&roots);
                                 }
                                 self.gizmo_drag = Some(drag);
-                            } else {
-                                self.pending_pick = Some((cx as u32, cy as u32));
                             }
                         }
                     }
                     if !pressed {
-                        // ドラッグで変化があれば Undo 履歴に積む
-                        if let (Some(drag), Some(sel)) =
-                            (&self.gizmo_drag, self.selected_instance)
+                        self.lmb_held = false;
+
+                        if self.rect_selecting {
+                            // 矩形選択終了: 確定してエディタへ通知
+                            self.send_selected();
+                            self.rect_selecting = false;
+                        } else if self.gizmo_drag.is_none() && self.lmb_press_pos.is_some()
+                            && (self.mode == RuntimeMode::Edit || self.paused)
                         {
-                            let old_mat = drag.start_mat;
-                            let new_mat = self.scene.as_ref()
-                                .and_then(|s| s.find_component::<ModelComponent>())
-                                .and_then(|mc| mc.instance_mats.get(sel as usize))
-                                .copied();
-                            if let Some(new_mat) = new_mat {
-                                if new_mat != old_mat {
-                                    self.undo_history.record(Box::new(TransformCommand {
-                                        instance_idx: sel,
-                                        old_mat,
-                                        new_mat,
-                                    }));
-                                }
+                            // クリック: ID ピックをスケジュール
+                            if let Some((cx, cy)) = self.last_cursor_pos {
+                                self.pending_pick = Some((cx as u32, cy as u32));
                             }
-                            // 子孫インスタンスの変化も記録
+                        }
+                        self.lmb_press_pos = None;
+
+                        // ドラッグで変化があれば Undo 履歴に一括記録
+                        if self.gizmo_drag.is_some() {
+                            let mut transforms: Vec<(u32, [[f32;4];4], [[f32;4];4])> = Vec::new();
+                            let root_starts  = std::mem::take(&mut self.drag_root_starts);
                             let child_starts = std::mem::take(&mut self.drag_child_starts);
-                            for (child_idx, child_start) in child_starts {
-                                let child_new = self.scene.as_ref()
-                                    .and_then(|s| s.find_component::<ModelComponent>())
-                                    .and_then(|mc| mc.instance_mats.get(child_idx as usize))
-                                    .copied();
-                                if let Some(child_new_mat) = child_new {
-                                    if child_new_mat != child_start {
-                                        self.undo_history.record(Box::new(TransformCommand {
-                                            instance_idx: child_idx,
-                                            old_mat:      child_start,
-                                            new_mat:      child_new_mat,
-                                        }));
+                            if let Some(mc) = self.scene.as_ref()
+                                .and_then(|s| s.find_component::<ModelComponent>())
+                            {
+                                for (idx, old_mat) in root_starts.into_iter().chain(child_starts) {
+                                    if let Some(&new_mat) = mc.instance_mats.get(idx as usize) {
+                                        if new_mat != old_mat {
+                                            transforms.push((idx, old_mat, new_mat));
+                                        }
                                     }
                                 }
                             }
+                            if !transforms.is_empty() {
+                                self.undo_history.record(Box::new(MultiTransformCommand { transforms }));
+                            }
                         } else {
+                            self.drag_root_starts.clear();
                             self.drag_child_starts.clear();
                         }
                         self.gizmo_drag = None;
@@ -596,6 +685,47 @@ impl ApplicationHandler for App {
                 self.input.process_cursor_moved(cx, cy);
                 self.last_cursor_pos = Some((cx, cy));
 
+                // 矩形選択の更新（LMB 押下中かつギズモドラッグなし）
+                if self.lmb_held && self.gizmo_drag.is_none() {
+                    if let Some((px, py)) = self.lmb_press_pos {
+                        let dx = cx - px;
+                        let dy = cy - py;
+                        if !self.rect_selecting && dx * dx + dy * dy > 25.0 {
+                            self.rect_selecting = true;
+                        }
+                        if self.rect_selecting {
+                            let sx_min = px.min(cx);
+                            let sx_max = px.max(cx);
+                            let sy_min = py.min(cy);
+                            let sy_max = py.max(cy);
+                            if let Some(scene) = &self.scene {
+                                if let Some(mc) = scene.find_component::<ModelComponent>() {
+                                    if let Some(ws) = self.window.as_ref().map(|w| w.inner_size()) {
+                                        let vp_w = ws.width as f32;
+                                        let vp_h = ws.height as f32;
+                                        let view = self.camera.view_matrix();
+                                        let proj = self.camera.projection_matrix();
+                                        self.selected_instances = (0..mc.instance_mats.len() as u32)
+                                            .filter(|&i| {
+                                                let m = &mc.instance_mats[i as usize];
+                                                let world = [m[0][3], m[1][3], m[2][3]];
+                                                if let Some((sx, sy)) = world_to_screen(
+                                                    world, &view.data, &proj.data, vp_w, vp_h,
+                                                ) {
+                                                    sx >= sx_min && sx <= sx_max
+                                                        && sy >= sy_min && sy <= sy_max
+                                                } else {
+                                                    false
+                                                }
+                                            })
+                                            .collect();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
                 // ホバーパーツを更新（ドラッグ中はドラッグパーツを維持）
                 self.hovered_gizmo_part = if let Some(drag) = &self.gizmo_drag {
                     Some(drag.part)
@@ -620,22 +750,20 @@ impl ApplicationHandler for App {
                 } else { None };
 
                 if let Some(new_mat) = new_mat_opt {
-                    if let Some(sel) = self.selected_instance {
+                    if let Some(drag) = &self.gizmo_drag {
+                        // delta = new_gizmo_mat * inv(start_gizmo_mat)
+                        // 全ルートおよび子孫に同一デルタを適用する
+                        let delta = mat4x4_mul(new_mat, mat4x4_inv(drag.start_mat));
                         if let Some(scene) = &mut self.scene {
                             if let Some(mc) = scene.find_component_mut::<ModelComponent>() {
-                                // 選択インスタンスを更新
-                                if let Some(m) = mc.instance_mats.get_mut(sel as usize) {
-                                    *m = new_mat;
+                                for &(idx, ref start) in &self.drag_root_starts {
+                                    if let Some(m) = mc.instance_mats.get_mut(idx as usize) {
+                                        *m = mat4x4_mul(delta, *start);
+                                    }
                                 }
-                                // 子孫を delta 伝播で追随させる
-                                if !self.drag_child_starts.is_empty() {
-                                    if let Some(drag) = &self.gizmo_drag {
-                                        let delta = mat4x4_mul(new_mat, mat4x4_inv(drag.start_mat));
-                                        for &(child_idx, child_start) in &self.drag_child_starts {
-                                            if let Some(cm) = mc.instance_mats.get_mut(child_idx as usize) {
-                                                *cm = mat4x4_mul(delta, child_start);
-                                            }
-                                        }
+                                for &(idx, ref start) in &self.drag_child_starts {
+                                    if let Some(m) = mc.instance_mats.get_mut(idx as usize) {
+                                        *m = mat4x4_mul(delta, *start);
                                     }
                                 }
                                 mc.instanced_batch.mark_dirty();
@@ -718,13 +846,10 @@ impl ApplicationHandler for App {
                     }
                 }
 
-                // ── 選択インスタンスのワールド座標（ギズモ用）──
-                let gizmo_pos = self.selected_instance.and_then(|sel| {
-                    self.scene.as_ref()?
-                        .find_component::<ModelComponent>()?
-                        .instance_mats.get(sel as usize)
-                        .map(|mat| [mat[0][3], mat[1][3], mat[2][3]])
-                });
+                // ── 選択インスタンス群の重心（ギズモ位置）──
+                let gizmo_pos = self.scene.as_ref()
+                    .and_then(|s| s.find_component::<ModelComponent>())
+                    .and_then(|mc| selection_centroid(&self.selected_instances, &mc.instance_mats));
 
                 // ピック要求を取り出す（描画ブロック内で使用）
                 let pick_pos = self.pending_pick.take();
@@ -769,6 +894,46 @@ impl ApplicationHandler for App {
                                     })
                                 } else { None };
 
+                                // 矩形選択ビジュアル（レンダーパスの前に GPU バッファを生成）
+                                let rect_gpu_batch = if in_editor && self.rect_selecting {
+                                    if let (Some((px, py)), Some((cx, cy))) =
+                                        (self.lmb_press_pos, self.last_cursor_pos)
+                                    {
+                                        let vp_w = window_size.map_or(1280.0, |s| s.width as f32);
+                                        let vp_h = window_size.map_or(720.0,  |s| s.height as f32);
+                                        let view     = self.camera.view_matrix();
+                                        let proj     = self.camera.projection_matrix();
+                                        let cam_pv   = self.camera.position();
+                                        let cam_pos  = [cam_pv.x, cam_pv.y, cam_pv.z];
+                                        let t        = 0.03f32;
+                                        let sc = [
+                                            (px.min(cx), py.min(cy)), // TL
+                                            (px.max(cx), py.min(cy)), // TR
+                                            (px.max(cx), py.max(cy)), // BR
+                                            (px.min(cx), py.max(cy)), // BL
+                                        ];
+                                        let mut wp = [[0.0f32; 3]; 4];
+                                        for (i, &(sx, sy)) in sc.iter().enumerate() {
+                                            let (_, rd) = screen_to_ray(
+                                                sx, sy, vp_w, vp_h,
+                                                &view.data, &proj.data, cam_pos,
+                                            );
+                                            wp[i] = [
+                                                cam_pos[0] + rd[0] * t,
+                                                cam_pos[1] + rd[1] * t,
+                                                cam_pos[2] + rd[2] * t,
+                                            ];
+                                        }
+                                        let color = [0.3, 0.7, 1.0, 1.0f32];
+                                        let mut lb = LineBatch::new();
+                                        lb.add_line(wp[0], wp[1], color);
+                                        lb.add_line(wp[1], wp[2], color);
+                                        lb.add_line(wp[2], wp[3], color);
+                                        lb.add_line(wp[3], wp[0], color);
+                                        Some(lb.build(&draw_ctx.device))
+                                    } else { None }
+                                } else { None };
+
                                 // ── メインレンダーパス ────────────────
                                 {
                                     let mut pass = frame.begin_render_pass();
@@ -778,17 +943,25 @@ impl ApplicationHandler for App {
                                     );
 
                                     // アウトライン（Edit/Pause + 選択中のみ）
-                                    // 順序: stencil_mask(選択インスタンスに1を書く) → outline(0の箇所のみ描画)
-                                    if in_editor {
-                                        if let Some(sel) = self.selected_instance {
-                                            draw_stencil_mask(
-                                                &mut pass, &mc.gpu_model, &mc.instanced_batch,
-                                                &camera_buf.bind_group, &draw_ctx.pipelines, sel,
-                                            );
-                                            draw_outline(
-                                                &mut pass, &mc.gpu_model, &mc.instanced_batch,
-                                                &camera_buf.bind_group, &draw_ctx.pipelines, sel,
-                                            );
+                                    // 順序: 全選択のステンシルマスク → 全選択のアウトライン
+                                    if in_editor && !self.selected_instances.is_empty() {
+                                        // ① 選択全インスタンスのステンシル=1 を書く
+                                        for &sel in &self.selected_instances {
+                                            if (sel as usize) < mc.instance_mats.len() {
+                                                draw_stencil_mask(
+                                                    &mut pass, &mc.gpu_model, &mc.instanced_batch,
+                                                    &camera_buf.bind_group, &draw_ctx.pipelines, sel,
+                                                );
+                                            }
+                                        }
+                                        // ② ステンシル=0 の箇所にアウトラインを描画
+                                        for &sel in &self.selected_instances {
+                                            if (sel as usize) < mc.instance_mats.len() {
+                                                draw_outline(
+                                                    &mut pass, &mc.gpu_model, &mc.instanced_batch,
+                                                    &camera_buf.bind_group, &draw_ctx.pipelines, sel,
+                                                );
+                                            }
                                         }
                                     }
 
@@ -804,6 +977,17 @@ impl ApplicationHandler for App {
                                                 &draw_ctx.pipelines,
                                             );
                                         }
+                                    }
+
+                                    // 矩形選択ビジュアル
+                                    if let (Some(rect_batch), Some((_, line_bg))) =
+                                        (&rect_gpu_batch, &self.line_model_buf)
+                                    {
+                                        draw_line_batch(
+                                            &mut pass, rect_batch,
+                                            &camera_buf.bind_group, line_bg,
+                                            &draw_ctx.pipelines,
+                                        );
                                     }
                                 }
 
@@ -844,9 +1028,21 @@ impl ApplicationHandler for App {
                 // ── ピック結果の読み出し（GPU サブミット後）─────
                 if did_pick {
                     if let (Some(id_buf), Some(draw_ctx)) = (&self.id_buffer, &self.draw_ctx) {
-                        let raw = id_buf.read_pixel(&draw_ctx.device);
-                        self.selected_instance = if raw > 0 { Some(raw - 1) } else { None };
-                        eprintln!("[SEED] pick: raw={raw}, selected={:?}", self.selected_instance);
+                        let raw     = id_buf.read_pixel(&draw_ctx.device);
+                        let new_idx = if raw > 0 { Some(raw - 1) } else { None };
+                        if self.ctrl_at_press {
+                            // Ctrl+クリック: 個別トグル
+                            if let Some(idx) = new_idx {
+                                if self.selected_instances.contains(&idx) {
+                                    self.selected_instances.retain(|&x| x != idx);
+                                } else {
+                                    self.selected_instances.push(idx);
+                                }
+                            }
+                        } else {
+                            self.selected_instances = new_idx.map(|i| vec![i]).unwrap_or_default();
+                        }
+                        eprintln!("[SEED] pick: raw={raw}, selected={:?}", self.selected_instances);
                         self.send_selected();
                     }
                 }
@@ -935,6 +1131,49 @@ fn apply_window_clamp(hwnd: isize) {
     }
     #[cfg(not(target_os = "windows"))]
     let _ = hwnd;
+}
+
+// ============================================================
+//  選択ユーティリティ
+// ============================================================
+
+/// 選択インスタンスのワールド位置の重心を返す。
+/// 選択が空またはすべて範囲外の場合は None。
+fn selection_centroid(instances: &[u32], mats: &[[[f32; 4]; 4]]) -> Option<[f32; 3]> {
+    if instances.is_empty() { return None; }
+    let (mut sx, mut sy, mut sz) = (0.0f32, 0.0, 0.0);
+    let mut cnt = 0u32;
+    for &i in instances {
+        if let Some(m) = mats.get(i as usize) {
+            sx += m[0][3]; sy += m[1][3]; sz += m[2][3];
+            cnt += 1;
+        }
+    }
+    if cnt == 0 { None } else { Some([sx / cnt as f32, sy / cnt as f32, sz / cnt as f32]) }
+}
+
+/// ワールド座標をビューポートのスクリーン座標へ投影する。
+/// カメラ後方（cw ≤ 0）の場合は None を返す。
+/// view / proj は row-major（`data[row][col]`）。
+fn world_to_screen(
+    world: [f32; 3],
+    view:  &[[f32; 4]; 4],
+    proj:  &[[f32; 4]; 4],
+    vp_w:  f32,
+    vp_h:  f32,
+) -> Option<(f32, f32)> {
+    let [wx, wy, wz] = world;
+    let vx = view[0][0]*wx + view[0][1]*wy + view[0][2]*wz + view[0][3];
+    let vy = view[1][0]*wx + view[1][1]*wy + view[1][2]*wz + view[1][3];
+    let vz = view[2][0]*wx + view[2][1]*wy + view[2][2]*wz + view[2][3];
+    let vw = view[3][0]*wx + view[3][1]*wy + view[3][2]*wz + view[3][3];
+    let cx = proj[0][0]*vx + proj[0][1]*vy + proj[0][2]*vz + proj[0][3]*vw;
+    let cy = proj[1][0]*vx + proj[1][1]*vy + proj[1][2]*vz + proj[1][3]*vw;
+    let cw = proj[3][0]*vx + proj[3][1]*vy + proj[3][2]*vz + proj[3][3]*vw;
+    if cw <= 0.0 { return None; }
+    let nx = cx / cw;
+    let ny = cy / cw;
+    Some(((nx + 1.0) * 0.5 * vp_w, (1.0 - ny) * 0.5 * vp_h))
 }
 
 /// Play クランプ解除。

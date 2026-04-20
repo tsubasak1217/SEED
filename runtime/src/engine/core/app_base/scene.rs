@@ -165,6 +165,8 @@ fn build_actor(
                     instanced_batch,
                     instance_mats: mc_data.instances,
                     instance_meta: meta,
+                    group_meta:    mc_data.groups,
+                    next_group_id: mc_data.next_group_id,
                 });
             }
             ComponentData::ScriptComponent(sc_data) => {

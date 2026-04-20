@@ -212,7 +212,7 @@
                                                   CanClose="False"
                                                   CanHide="True"
                                                   CanFloat="True">
-                                <panels:ProjectPanel/>
+                                <panels:ProjectPanel x:Name="PanelProject"/>
                             </avd:LayoutAnchorable>
                         </avd:LayoutAnchorablePane>
 
