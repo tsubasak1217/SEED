@@ -6,6 +6,8 @@ using System.Windows;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Threading;
+using System.Reflection;
+using SEEDEditor.Panels;
 using SEEDEditor.Runtime;
 using SEEDEditor.Viewport;
 
@@ -96,6 +98,7 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        ApplyDockTheme();
     }
 
     // ── ウィンドウ初期化 ─────────────────────────────────────────
@@ -110,9 +113,11 @@ public partial class MainWindow : Window
         _runtimeManager.RuntimeMoveStart     += () => { _isDragging = true;  Dispatcher.BeginInvoke(ReleasePlayClamp); };
         _runtimeManager.RuntimeMoveEnd       += () => { _isDragging = false; Dispatcher.BeginInvoke(() => { if (_clampInPlay && _runtimeManager?.State == EditorState.Play) ApplyPlayClamp(); }); };
 
+        PanelHierarchy.SetRuntime(_runtimeManager);
+
         _viewportHost = new ViewportHost();
         _viewportHost.ContainerCreated += OnContainerCreated;
-        ViewportBorder.Child = _viewportHost;
+        ViewportDocumentContent.Content = _viewportHost;
 
         InstallKeyboardHook();
 
@@ -200,13 +205,39 @@ public partial class MainWindow : Window
         await Task.CompletedTask;
     }
 
+    /// <summary>
+    /// VS2013 DarkTheme を ResourceDictionary のマージで適用する。
+    /// DockingManager.Theme プロパティの型依存を避けるため pack URI 方式を使用する。
+    /// </summary>
+    private void ApplyDockTheme()
+    {
+        try
+        {
+            // VS2013 DarkBrushs → Generic テンプレートの順でマージ
+            var brushUri = new Uri(
+                "pack://application:,,,/AvalonDock.Themes.VS2013;component/DarkBrushs.xaml",
+                UriKind.Absolute);
+            var genericUri = new Uri(
+                "pack://application:,,,/AvalonDock.Themes.VS2013;component/Themes/Generic.xaml",
+                UriKind.Absolute);
+
+            var dicts = DockManager.Resources.MergedDictionaries;
+            dicts.Add(new ResourceDictionary { Source = brushUri });
+            dicts.Add(new ResourceDictionary { Source = genericUri });
+        }
+        catch
+        {
+            // テーマ適用失敗時はデフォルトのまま続行
+        }
+    }
+
     private void OnWindowClosing(object sender, System.ComponentModel.CancelEventArgs e)
     {
         ReleasePlayClamp();
         UninstallKeyboardHook();
         ReleaseAllCamKeys();
         _runtimeManager?.Dispose();
-        ViewportBorder.Child = null;
+        ViewportDocumentContent.Content = null;
     }
 
     private void OnSettings(object sender, RoutedEventArgs e)
@@ -385,7 +416,7 @@ public partial class MainWindow : Window
                 BtnPause.Content   = "⏸  Pause";
                 LblState.Text      = "● EDIT";
                 LblState.Foreground = System.Windows.Media.Brushes.LightGreen;
-                ViewportBorder.Visibility = Visibility.Visible;
+                ViewportDocumentContent.Visibility = Visibility.Visible;
                 break;
 
             case EditorState.Play:
@@ -395,7 +426,7 @@ public partial class MainWindow : Window
                 BtnPause.Content   = "⏸  Pause";
                 LblState.Text      = "▶ PLAY";
                 LblState.Foreground = System.Windows.Media.Brushes.LightSkyBlue;
-                ViewportBorder.Visibility = Visibility.Hidden;
+                ViewportDocumentContent.Visibility = Visibility.Hidden;
                 break;
 
             case EditorState.Pause:
@@ -405,7 +436,7 @@ public partial class MainWindow : Window
                 BtnPause.Content   = "▶  Resume";
                 LblState.Text      = "⏸ PAUSE";
                 LblState.Foreground = System.Windows.Media.Brushes.Orange;
-                ViewportBorder.Visibility = Visibility.Visible;
+                ViewportDocumentContent.Visibility = Visibility.Visible;
                 break;
 
             case EditorState.Building:

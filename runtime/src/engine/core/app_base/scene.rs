@@ -148,12 +148,23 @@ fn build_actor(
                 let total = mc_data.instances.len();
                 let gpu_model       = ctx.upload_model(&model);
                 let instanced_batch = ctx.create_instanced_batch(&model, total as u32);
+                // meta が保存されていない旧データとの互換性を保つ
+                let mut meta = mc_data.meta;
+                if meta.len() < total {
+                    use crate::engine::structs::components::model_component::InstanceMeta;
+                    let start = meta.len();
+                    meta.resize_with(total, || InstanceMeta::new("Instance"));
+                    for i in start..total {
+                        meta[i].name = format!("Instance_{i}");
+                    }
+                }
                 actor.add_component(ModelComponent {
                     source_path:   mc_data.model_path,
                     model,
                     gpu_model,
                     instanced_batch,
                     instance_mats: mc_data.instances,
+                    instance_meta: meta,
                 });
             }
             ComponentData::ScriptComponent(sc_data) => {

@@ -90,6 +90,12 @@ public sealed class RuntimeManager : IDisposable
     /// <summary>ゲームウィンドウのドラッグ / リサイズ終了時に発火する。</summary>
     public event Action? RuntimeMoveEnd;
 
+    /// <summary>ヒエラルキーが更新されたときに発火する（JSON 文字列）。</summary>
+    public event Action<string>? HierarchyUpdated;
+
+    /// <summary>選択インスタンスが変化したときに発火する（-1 = 選択なし）。</summary>
+    public event Action<int>? SelectionChanged;
+
     // ── コンストラクタ ─────────────────────────────────────────
 
     public RuntimeManager(string runtimeExePath)
@@ -118,6 +124,9 @@ public sealed class RuntimeManager : IDisposable
         // 開発時のみ: ソースに変更がある場合だけビルドする
         if (_sourceWatcher is not null && _sourceWatcher.IsDirty)
         {
+            // ビルド前に旧プロセスを確実に終了（EXE ファイルのロック解除）
+            KillStaleRuntimeProcesses();
+
             ChangeState(EditorState.Building);
             var sourceDir = ResolveRuntimeSourceDir(_runtimeExePath)!;
             var ok = await BuildAsync(sourceDir);
@@ -172,6 +181,40 @@ public sealed class RuntimeManager : IDisposable
         if (_state == EditorState.Pause) DetachRuntimeWindow();
         KillRuntime(sendStop: true);
         _ = StartEditAsync(_viewportContainerHwnd);
+    }
+
+    // ── プライベート: 残存プロセス終了 ──────────────────────────
+
+    /// <summary>
+    /// 同名の Runtime プロセスが残っていれば強制終了し、
+    /// EXE ファイルのロックを解放する。
+    /// </summary>
+    private void KillStaleRuntimeProcesses()
+    {
+        var exeName = Path.GetFileNameWithoutExtension(_runtimeExePath); // "SEED"
+        foreach (var proc in Process.GetProcessesByName(exeName))
+        {
+            // 自分が管理しているプロセスは KillRuntime で既に終了済みのはず
+            if (_process is not null && proc.Id == _process.Id)
+            {
+                proc.Dispose();
+                continue;
+            }
+            try
+            {
+                EditorLog.Write($"KillStaleRuntimeProcesses — killing PID={proc.Id}");
+                proc.Kill();
+                proc.WaitForExit(1000);
+            }
+            catch (Exception ex)
+            {
+                EditorLog.Write($"KillStaleRuntimeProcesses — kill failed: {ex.Message}");
+            }
+            finally
+            {
+                proc.Dispose();
+            }
+        }
     }
 
     // ── プライベート: ビルド ───────────────────────────────────
@@ -333,9 +376,19 @@ public sealed class RuntimeManager : IDisposable
             EditorLog.Write($"OnPipeMessage — _runtimeHwnd set to 0x{hwnd:X}");
             RuntimeHwndAvailable?.Invoke((nint)hwnd);
         }
+        else if (msg.StartsWith("HIERARCHY:", StringComparison.Ordinal))
+        {
+            var json = msg["HIERARCHY:".Length..];
+            HierarchyUpdated?.Invoke(json);
+        }
+        else if (msg.StartsWith("SELECTED:", StringComparison.Ordinal) &&
+                 int.TryParse(msg["SELECTED:".Length..], out var selIdx))
+        {
+            SelectionChanged?.Invoke(selIdx);
+        }
         else
         {
-            EditorLog.Write("OnPipeMessage — READY parse failed or unknown message");
+            EditorLog.Write($"OnPipeMessage — unknown message: {msg[..Math.Min(60, msg.Length)]}");
         }
     }
 

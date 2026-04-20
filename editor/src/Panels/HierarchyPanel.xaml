@@ -1,0 +1,151 @@
+<UserControl x:Class="SEEDEditor.Panels.HierarchyPanel"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:local="clr-namespace:SEEDEditor.Panels"
+             Background="#1E1E1E">
+    <UserControl.Resources>
+
+        <!-- TreeViewItem スタイル（ダーク） -->
+        <Style TargetType="TreeViewItem">
+            <Setter Property="Background"       Value="Transparent"/>
+            <Setter Property="Foreground"       Value="#CCCCCC"/>
+            <Setter Property="Padding"          Value="2,2,4,2"/>
+            <Setter Property="IsExpanded"       Value="True"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="TreeViewItem">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition/>
+                            </Grid.RowDefinitions>
+                            <!-- 行ヘッダー -->
+                            <Border x:Name="RowBorder" Grid.Row="0"
+                                    Background="Transparent"
+                                    Padding="{TemplateBinding Padding}">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <!-- 折りたたみトグル -->
+                                    <ToggleButton x:Name="Expander" Grid.Column="0"
+                                                  IsChecked="{Binding IsExpanded, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}"
+                                                  Width="16" Height="16"
+                                                  Style="{StaticResource {x:Static ToolBar.ToggleButtonStyleKey}}"
+                                                  Visibility="Collapsed">
+                                        <Path x:Name="Arrow" Data="M 0,0 L 4,4 L 8,0 Z"
+                                              Fill="#888888" Width="8" Height="5"
+                                              HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                    </ToggleButton>
+                                    <ContentPresenter Grid.Column="1"
+                                                      ContentSource="Header"
+                                                      HorizontalAlignment="Left"
+                                                      VerticalAlignment="Center"/>
+                                </Grid>
+                            </Border>
+                            <!-- 子アイテム -->
+                            <ItemsPresenter x:Name="ItemsHost" Grid.Row="1"
+                                            Margin="16,0,0,0"
+                                            Visibility="Collapsed"/>
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <!-- 子あり: トグルボタンを表示 -->
+                            <Trigger Property="HasItems" Value="True">
+                                <Setter TargetName="Expander"   Property="Visibility" Value="Visible"/>
+                                <Setter TargetName="ItemsHost"  Property="Visibility" Value="Collapsed"/>
+                            </Trigger>
+                            <!-- 展開中 -->
+                            <Trigger Property="IsExpanded" Value="True">
+                                <Setter TargetName="ItemsHost" Property="Visibility" Value="Visible"/>
+                                <Setter TargetName="Arrow"     Property="Data"        Value="M 0,4 L 8,4 L 4,0 Z"/>
+                            </Trigger>
+                            <!-- 選択中 -->
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter TargetName="RowBorder" Property="Background" Value="#3399FF44"/>
+                                <Setter Property="Foreground"                        Value="White"/>
+                            </Trigger>
+                            <!-- ホバー -->
+                            <MultiTrigger>
+                                <MultiTrigger.Conditions>
+                                    <Condition Property="IsMouseOver" Value="True"/>
+                                    <Condition Property="IsSelected"  Value="False"/>
+                                </MultiTrigger.Conditions>
+                                <Setter TargetName="RowBorder" Property="Background" Value="#22FFFFFF"/>
+                            </MultiTrigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- ドラッグ中のゴーストスタイル -->
+        <Style x:Key="DragAdornerStyle" TargetType="Border">
+            <Setter Property="Background" Value="#AA333333"/>
+            <Setter Property="BorderBrush" Value="#3399FF"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="CornerRadius" Value="2"/>
+            <Setter Property="Padding" Value="6,2"/>
+        </Style>
+
+    </UserControl.Resources>
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="28"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <!-- 検索バー -->
+        <Border Grid.Row="0" Background="#252525" BorderBrush="#3C3C3C" BorderThickness="0,0,0,1">
+            <TextBox x:Name="TxtSearch"
+                     Margin="6,3" Foreground="#AAAAAA" FontSize="12"
+                     Background="#333333" BorderThickness="0"
+                     VerticalContentAlignment="Center"
+                     TextChanged="OnSearchChanged">
+                <TextBox.Style>
+                    <Style TargetType="TextBox">
+                        <Setter Property="Template">
+                            <Setter.Value>
+                                <ControlTemplate TargetType="TextBox">
+                                    <Border Background="{TemplateBinding Background}"
+                                            CornerRadius="2" Padding="4,2">
+                                        <ScrollViewer x:Name="PART_ContentHost"/>
+                                    </Border>
+                                </ControlTemplate>
+                            </Setter.Value>
+                        </Setter>
+                    </Style>
+                </TextBox.Style>
+            </TextBox>
+        </Border>
+
+        <!-- Actor ツリー -->
+        <TreeView x:Name="ActorTree" Grid.Row="1"
+                  Background="#1E1E1E" BorderThickness="0"
+                  Foreground="#CCCCCC" FontSize="13"
+                  ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                  SelectedItemChanged="OnTreeSelectionChanged"
+                  PreviewMouseLeftButtonDown="OnTreeMouseDown"
+                  PreviewMouseMove="OnTreeMouseMove"
+                  Drop="OnTreeDrop"
+                  DragOver="OnTreeDragOver"
+                  DragEnter="OnTreeDragEnter"
+                  DragLeave="OnTreeDragLeave"
+                  AllowDrop="True">
+            <TreeView.Resources>
+                <SolidColorBrush x:Key="{x:Static SystemColors.HighlightBrushKey}"        Color="Transparent"/>
+                <SolidColorBrush x:Key="{x:Static SystemColors.ControlBrushKey}"          Color="Transparent"/>
+                <SolidColorBrush x:Key="{x:Static SystemColors.HighlightTextBrushKey}"    Color="White"/>
+                <SolidColorBrush x:Key="{x:Static SystemColors.InactiveSelectionHighlightBrushKey}" Color="Transparent"/>
+            </TreeView.Resources>
+        </TreeView>
+
+        <!-- ドロップターゲットオーバーレイ（ルート行き） -->
+        <Border x:Name="DropIndicator" Grid.Row="1"
+                HorizontalAlignment="Stretch" VerticalAlignment="Top"
+                Height="2" Background="#3399FF"
+                Visibility="Collapsed" IsHitTestVisible="False"/>
+
+    </Grid>
+</UserControl>

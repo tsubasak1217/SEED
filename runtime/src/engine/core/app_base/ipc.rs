@@ -40,6 +40,12 @@ pub enum IpcCommand {
     Undo,
     /// Ctrl+Y 相当（エディタから転送）
     Redo,
+    /// ヒエラルキーからの選択（インスタンスインデックス）
+    Select(u32),
+    /// 親子付け変更（new_parent=None はルートへ）
+    Reparent { child: u32, new_parent: Option<u32> },
+    /// インスタンス名変更
+    Rename { idx: u32, name: String },
 }
 
 // ============================================================
@@ -122,6 +128,31 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                         "TOOL:SCALE"   => Some(IpcCommand::SetToolMode(ToolMode::Scale)),
                         "UNDO"         => Some(IpcCommand::Undo),
                         "REDO"         => Some(IpcCommand::Redo),
+                        s if s.starts_with("SELECT:") => {
+                            s["SELECT:".len()..].parse::<u32>().ok()
+                                .map(IpcCommand::Select)
+                        }
+                        s if s.starts_with("RENAME:") => {
+                            let rest = &s["RENAME:".len()..];
+                            // "id,name" — name 中にカンマを含む可能性があるため splitn(2)
+                            let mut it = rest.splitn(2, ',');
+                            if let (Some(idx_s), Some(name)) = (it.next(), it.next()) {
+                                if let Some(idx) = idx_s.parse::<u32>().ok() {
+                                    Some(IpcCommand::Rename { idx, name: name.to_string() })
+                                } else { None }
+                            } else { None }
+                        }
+                        s if s.starts_with("REPARENT:") => {
+                            let rest = &s["REPARENT:".len()..];
+                            let mut it = rest.splitn(2, ',');
+                            if let (Some(c), Some(p)) = (it.next(), it.next()) {
+                                if let Some(child) = c.parse::<u32>().ok() {
+                                    let new_parent = if p == "-1" { None }
+                                        else { p.parse::<u32>().ok() };
+                                    Some(IpcCommand::Reparent { child, new_parent })
+                                } else { None }
+                            } else { None }
+                        }
                         _              => None,
                     }
                 };

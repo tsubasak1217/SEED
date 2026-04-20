@@ -21,6 +21,7 @@ use crate::engine::methods::drawer::{
 };
 use crate::engine::methods::gizmo_interact::{
     GizmoDrag, GizmoPart, screen_to_ray, hit_test_gizmo, start_drag, update_drag,
+    mat4x4_mul, mat4x4_inv,
 };
 use crate::engine::core::app_base::undo::{UndoHistory, TransformCommand};
 use crate::engine::core::scripting::{ScriptingHost, ScriptComponent};
@@ -103,6 +104,8 @@ pub struct App {
     undo_history:       UndoHistory,
     /// Ctrl キーが押されているか。
     ctrl_held:          bool,
+    /// ギズモドラッグ開始時の子孫インスタンスの初期行列（index, start_mat）。
+    drag_child_starts:  Vec<(u32, [[f32; 4]; 4])>,
 }
 
 impl App {
@@ -148,6 +151,7 @@ impl App {
             hovered_gizmo_part: None,
             undo_history:       UndoHistory::new(),
             ctrl_held:          false,
+            drag_child_starts:  Vec::new(),
         }
     }
 
@@ -201,7 +205,64 @@ impl App {
                         self.undo_history.redo(scene);
                     }
                 }
+                IpcCommand::Select(idx) => {
+                    self.selected_instance = Some(idx);
+                    // エディタからの選択はそのまま反映（SELECTED の送り返しは不要）
+                }
+                IpcCommand::Reparent { child, new_parent } => {
+                    if let Some(scene) = &mut self.scene {
+                        if let Some(mc) = scene.find_component_mut::<ModelComponent>() {
+                            if (child as usize) < mc.instance_meta.len() {
+                                mc.instance_meta[child as usize].parent = new_parent;
+                            }
+                        }
+                    }
+                    self.send_hierarchy();
+                }
+                IpcCommand::Rename { idx, name } => {
+                    if let Some(scene) = &mut self.scene {
+                        if let Some(mc) = scene.find_component_mut::<ModelComponent>() {
+                            if let Some(meta) = mc.instance_meta.get_mut(idx as usize) {
+                                meta.name = name;
+                            }
+                        }
+                    }
+                    self.send_hierarchy();
+                }
             }
+        }
+    }
+
+    /// ヒエラルキーを JSON にシリアライズしてエディタへ送信する。
+    fn send_hierarchy(&self) {
+        let Some(ipc)   = &self.ipc   else { return };
+        let Some(scene) = &self.scene else { return };
+        let Some(mc)    = scene.find_component::<ModelComponent>() else { return };
+
+        let mut json = String::from("[");
+        for (i, meta) in mc.instance_meta.iter().enumerate() {
+            if i > 0 { json.push(','); }
+            let parent_str = match meta.parent {
+                Some(p) => p.to_string(),
+                None    => "null".to_string(),
+            };
+            json.push_str(&format!(
+                r#"{{"id":{},"name":{},"parent":{}}}"#,
+                i,
+                serde_json::to_string(&meta.name).unwrap_or_default(),
+                parent_str,
+            ));
+        }
+        json.push(']');
+        ipc.send(&format!("HIERARCHY:{json}"));
+    }
+
+    /// 現在の選択インスタンスをエディタへ通知する。
+    fn send_selected(&self) {
+        let Some(ipc) = &self.ipc else { return };
+        match self.selected_instance {
+            Some(idx) => ipc.send(&format!("SELECTED:{idx}")),
+            None      => ipc.send("SELECTED:-1"),
         }
     }
 
@@ -273,6 +334,8 @@ impl App {
         let instanced_batch = ctx.create_instanced_batch(&model, total as u32);
 
         let mut instance_mats = Vec::with_capacity(total);
+        let mut instance_meta = Vec::with_capacity(total);
+        let mut idx = 0usize;
         for z in 0..INSTANCE_DIM {
             for y in 0..INSTANCE_DIM {
                 for x in 0..INSTANCE_DIM {
@@ -287,6 +350,10 @@ impl App {
                         [0.0, 0.0, 1.0, tz],
                         [0.0, 0.0, 0.0, 1.0f32],
                     ]);
+                    instance_meta.push(crate::engine::structs::components::model_component::InstanceMeta::new(
+                        format!("BrainStem_{idx}")
+                    ));
+                    idx += 1;
                 }
             }
         }
@@ -298,6 +365,7 @@ impl App {
             gpu_model,
             instanced_batch,
             instance_mats,
+            instance_meta,
         });
         scene.add_actor(actor);
 
@@ -375,6 +443,7 @@ impl ApplicationHandler for App {
         if let Some(ipc) = &self.ipc {
             ipc.send(&format!("READY:{hwnd}"));
         }
+        self.send_hierarchy();
         eprintln!("[SEED] resumed() done");
     }
 
@@ -435,6 +504,17 @@ impl ApplicationHandler for App {
                         if let Some((cx, cy)) = self.last_cursor_pos {
                             // ギズモヒットを優先。外れた場合のみ ID ピック。
                             if let Some(drag) = self.try_gizmo_hit_and_start(cx, cy) {
+                                // ドラッグ開始: 子孫インスタンスの初期行列を保存
+                                if let Some(sel) = self.selected_instance {
+                                    self.drag_child_starts = self.scene.as_ref()
+                                        .and_then(|s| s.find_component::<ModelComponent>())
+                                        .map(|mc| {
+                                            mc.all_descendants(sel).into_iter()
+                                                .filter_map(|c| mc.instance_mats.get(c as usize).map(|&m| (c, m)))
+                                                .collect()
+                                        })
+                                        .unwrap_or_default();
+                                }
                                 self.gizmo_drag = Some(drag);
                             } else {
                                 self.pending_pick = Some((cx as u32, cy as u32));
@@ -460,6 +540,25 @@ impl ApplicationHandler for App {
                                     }));
                                 }
                             }
+                            // 子孫インスタンスの変化も記録
+                            let child_starts = std::mem::take(&mut self.drag_child_starts);
+                            for (child_idx, child_start) in child_starts {
+                                let child_new = self.scene.as_ref()
+                                    .and_then(|s| s.find_component::<ModelComponent>())
+                                    .and_then(|mc| mc.instance_mats.get(child_idx as usize))
+                                    .copied();
+                                if let Some(child_new_mat) = child_new {
+                                    if child_new_mat != child_start {
+                                        self.undo_history.record(Box::new(TransformCommand {
+                                            instance_idx: child_idx,
+                                            old_mat:      child_start,
+                                            new_mat:      child_new_mat,
+                                        }));
+                                    }
+                                }
+                            }
+                        } else {
+                            self.drag_child_starts.clear();
                         }
                         self.gizmo_drag = None;
                         // ドラッグ終了後はホバーを再評価する
@@ -524,8 +623,20 @@ impl ApplicationHandler for App {
                     if let Some(sel) = self.selected_instance {
                         if let Some(scene) = &mut self.scene {
                             if let Some(mc) = scene.find_component_mut::<ModelComponent>() {
+                                // 選択インスタンスを更新
                                 if let Some(m) = mc.instance_mats.get_mut(sel as usize) {
                                     *m = new_mat;
+                                }
+                                // 子孫を delta 伝播で追随させる
+                                if !self.drag_child_starts.is_empty() {
+                                    if let Some(drag) = &self.gizmo_drag {
+                                        let delta = mat4x4_mul(new_mat, mat4x4_inv(drag.start_mat));
+                                        for &(child_idx, child_start) in &self.drag_child_starts {
+                                            if let Some(cm) = mc.instance_mats.get_mut(child_idx as usize) {
+                                                *cm = mat4x4_mul(delta, child_start);
+                                            }
+                                        }
+                                    }
                                 }
                                 mc.instanced_batch.mark_dirty();
                             }
@@ -736,6 +847,7 @@ impl ApplicationHandler for App {
                         let raw = id_buf.read_pixel(&draw_ctx.device);
                         self.selected_instance = if raw > 0 { Some(raw - 1) } else { None };
                         eprintln!("[SEED] pick: raw={raw}, selected={:?}", self.selected_instance);
+                        self.send_selected();
                     }
                 }
 

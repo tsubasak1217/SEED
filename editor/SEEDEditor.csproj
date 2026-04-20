@@ -27,4 +27,9 @@
     </Page>
   </ItemGroup>
 
+  <ItemGroup>
+    <PackageReference Include="Dirkster.AvalonDock" Version="4.74.0" />
+    <PackageReference Include="Dirkster.AvalonDock.Themes.VS2013" Version="4.74.0" />
+  </ItemGroup>
+
 </Project>
