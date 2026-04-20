@@ -58,6 +58,7 @@ public partial class MainWindow : Window
 
     private bool _clampInPlay = false;
     private bool _isDragging  = false;
+    private bool _ctrlHeld    = false;
 
     private static readonly Dictionary<uint, string> VkKeyMap = new()
     {
@@ -293,6 +294,26 @@ public partial class MainWindow : Window
             var vk     = kb.vkCode;
             bool isDown = wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN;
             bool isUp   = wParam == WM_KEYUP   || wParam == WM_SYSKEYUP;
+
+            // Ctrl キー追跡
+            if (vk == 0x11 || vk == 0xA2 || vk == 0xA3)
+            {
+                _ctrlHeld = isDown;
+            }
+            // Ctrl+Z / Ctrl+Y → Undo/Redo を IPC 経由で転送
+            else if (isDown && _ctrlHeld && _runtimeManager?.State == EditorState.Edit)
+            {
+                if (vk == 0x5A) // Z
+                {
+                    _runtimeManager?.SendToRuntime("UNDO");
+                    return CallNextHookEx(_llKeyHook, nCode, wParam, lParam);
+                }
+                else if (vk == 0x59) // Y
+                {
+                    _runtimeManager?.SendToRuntime("REDO");
+                    return CallNextHookEx(_llKeyHook, nCode, wParam, lParam);
+                }
+            }
 
             if (VkKeyMap.TryGetValue(vk, out var keyName) && IsCamInputActive())
             {

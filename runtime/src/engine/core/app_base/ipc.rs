@@ -36,6 +36,10 @@ pub enum IpcCommand {
     PlayClamp(bool),
     /// ツールモード切り替え
     SetToolMode(ToolMode),
+    /// Ctrl+Z 相当（エディタから転送）
+    Undo,
+    /// Ctrl+Y 相当（エディタから転送）
+    Redo,
 }
 
 // ============================================================
@@ -116,6 +120,8 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                         "TOOL:MOVE"    => Some(IpcCommand::SetToolMode(ToolMode::Move)),
                         "TOOL:ROTATE"  => Some(IpcCommand::SetToolMode(ToolMode::Rotate)),
                         "TOOL:SCALE"   => Some(IpcCommand::SetToolMode(ToolMode::Scale)),
+                        "UNDO"         => Some(IpcCommand::Undo),
+                        "REDO"         => Some(IpcCommand::Redo),
                         _              => None,
                     }
                 };

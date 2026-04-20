@@ -4,7 +4,7 @@ use std::path::Path;
 use winit::application::ApplicationHandler;
 use winit::event::{DeviceEvent, DeviceId, ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
-use winit::keyboard::PhysicalKey;
+use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
 use crate::engine::core::clock::{Clock, FrameContext};
@@ -22,6 +22,7 @@ use crate::engine::methods::drawer::{
 use crate::engine::methods::gizmo_interact::{
     GizmoDrag, GizmoPart, screen_to_ray, hit_test_gizmo, start_drag, update_drag,
 };
+use crate::engine::core::app_base::undo::{UndoHistory, TransformCommand};
 use crate::engine::core::scripting::{ScriptingHost, ScriptComponent};
 use crate::engine::structs::components::ModelComponent;
 use crate::engine::structs::objects::{Actor, DebugCamera};
@@ -98,6 +99,10 @@ pub struct App {
     gizmo_drag:        Option<GizmoDrag>,
     /// マウスホバー中のギズモパーツ（ハイライト表示用）。
     hovered_gizmo_part: Option<GizmoPart>,
+    /// Undo/Redo 履歴。
+    undo_history:       UndoHistory,
+    /// Ctrl キーが押されているか。
+    ctrl_held:          bool,
 }
 
 impl App {
@@ -141,6 +146,8 @@ impl App {
             tool_mode:         ToolMode::Select,
             gizmo_drag:        None,
             hovered_gizmo_part: None,
+            undo_history:       UndoHistory::new(),
+            ctrl_held:          false,
         }
     }
 
@@ -183,6 +190,16 @@ impl App {
                 IpcCommand::PlayClamp(v)       => {
                     self.play_clamp = v;
                     if !v { release_window_clamp(); }
+                }
+                IpcCommand::Undo => {
+                    if let Some(scene) = &mut self.scene {
+                        self.undo_history.undo(scene);
+                    }
+                }
+                IpcCommand::Redo => {
+                    if let Some(scene) = &mut self.scene {
+                        self.undo_history.redo(scene);
+                    }
                 }
             }
         }
@@ -384,8 +401,26 @@ impl ApplicationHandler for App {
             }
 
             WindowEvent::KeyboardInput { event, .. } => {
+                let pressed = event.state == ElementState::Pressed;
                 if let PhysicalKey::Code(key) = event.physical_key {
-                    self.input.process_key(key, event.state == ElementState::Pressed);
+                    self.input.process_key(key, pressed);
+
+                    match key {
+                        KeyCode::ControlLeft | KeyCode::ControlRight => {
+                            self.ctrl_held = pressed;
+                        }
+                        KeyCode::KeyZ if pressed && self.ctrl_held => {
+                            if let Some(scene) = &mut self.scene {
+                                self.undo_history.undo(scene);
+                            }
+                        }
+                        KeyCode::KeyY if pressed && self.ctrl_held => {
+                            if let Some(scene) = &mut self.scene {
+                                self.undo_history.redo(scene);
+                            }
+                        }
+                        _ => {}
+                    }
                 }
             }
             WindowEvent::MouseInput { button, state, .. } => {
@@ -407,6 +442,25 @@ impl ApplicationHandler for App {
                         }
                     }
                     if !pressed {
+                        // ドラッグで変化があれば Undo 履歴に積む
+                        if let (Some(drag), Some(sel)) =
+                            (&self.gizmo_drag, self.selected_instance)
+                        {
+                            let old_mat = drag.start_mat;
+                            let new_mat = self.scene.as_ref()
+                                .and_then(|s| s.find_component::<ModelComponent>())
+                                .and_then(|mc| mc.instance_mats.get(sel as usize))
+                                .copied();
+                            if let Some(new_mat) = new_mat {
+                                if new_mat != old_mat {
+                                    self.undo_history.record(Box::new(TransformCommand {
+                                        instance_idx: sel,
+                                        old_mat,
+                                        new_mat,
+                                    }));
+                                }
+                            }
+                        }
                         self.gizmo_drag = None;
                         // ドラッグ終了後はホバーを再評価する
                         self.hovered_gizmo_part = self.last_cursor_pos
