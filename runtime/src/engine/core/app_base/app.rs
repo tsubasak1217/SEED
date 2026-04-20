@@ -16,7 +16,8 @@ use crate::engine::core::app_base::ipc::{IpcClient, IpcCommand, ToolMode};
 use crate::engine::core::app_base::scene::Scene;
 use crate::engine::methods::drawer::{
     DrawContext, CameraBuffer, CameraUniform,
-    draw_model_indirect, draw_id_pass, draw_outline, draw_stencil_mask,
+    draw_model_indirect, draw_id_pass,
+    draw_outline_multi, draw_stencil_mask_multi,
     extract_frustum_planes, IdBuffer, GizmoBatch, draw_gizmo_batch,
     LineBatch, draw_line_batch,
 };
@@ -899,29 +900,40 @@ impl ApplicationHandler for App {
                                     if let (Some((px, py)), Some((cx, cy))) =
                                         (self.lmb_press_pos, self.last_cursor_pos)
                                     {
-                                        let vp_w = window_size.map_or(1280.0, |s| s.width as f32);
-                                        let vp_h = window_size.map_or(720.0,  |s| s.height as f32);
-                                        let view     = self.camera.view_matrix();
-                                        let proj     = self.camera.projection_matrix();
-                                        let cam_pv   = self.camera.position();
-                                        let cam_pos  = [cam_pv.x, cam_pv.y, cam_pv.z];
-                                        let t        = 0.03f32;
+                                        let vp_w  = window_size.map_or(1280.0, |s| s.width  as f32);
+                                        let vp_h  = window_size.map_or(720.0,  |s| s.height as f32);
+                                        let view  = self.camera.view_matrix();
+                                        let proj  = self.camera.projection_matrix();
+                                        let cam_pv = self.camera.position();
+                                        let cam_pos = [cam_pv.x, cam_pv.y, cam_pv.z];
+                                        // near plane より少し前に置く。
+                                        // view-space 深度 = near * 1.05 で確実に near 面の内側に収まる。
+                                        let near_vs = self.camera.base.projection.near * 1.05;
                                         let sc = [
                                             (px.min(cx), py.min(cy)), // TL
                                             (px.max(cx), py.min(cy)), // TR
                                             (px.max(cx), py.max(cy)), // BR
                                             (px.min(cx), py.max(cy)), // BL
                                         ];
+                                        let p = &proj.data;
+                                        let v = &view.data;
                                         let mut wp = [[0.0f32; 3]; 4];
                                         for (i, &(sx, sy)) in sc.iter().enumerate() {
-                                            let (_, rd) = screen_to_ray(
-                                                sx, sy, vp_w, vp_h,
-                                                &view.data, &proj.data, cam_pos,
-                                            );
+                                            // スクリーン → NDC
+                                            let nx = 2.0 * sx / vp_w - 1.0;
+                                            let ny = 1.0 - 2.0 * sy / vp_h;
+                                            // ビュー空間方向（z=1 スケール）
+                                            let vdx = nx / p[0][0];
+                                            let vdy = ny / p[1][1];
+                                            // ビュー空間座標を near_vs にスケール（z = near_vs）
+                                            let vpx = vdx * near_vs;
+                                            let vpy = vdy * near_vs;
+                                            let vpz = near_vs;
+                                            // ビュー空間 → ワールド空間: world = cam_pos + V^T * vp
                                             wp[i] = [
-                                                cam_pos[0] + rd[0] * t,
-                                                cam_pos[1] + rd[1] * t,
-                                                cam_pos[2] + rd[2] * t,
+                                                cam_pos[0] + v[0][0]*vpx + v[1][0]*vpy + v[2][0]*vpz,
+                                                cam_pos[1] + v[0][1]*vpx + v[1][1]*vpy + v[2][1]*vpz,
+                                                cam_pos[2] + v[0][2]*vpx + v[1][2]*vpy + v[2][2]*vpz,
                                             ];
                                         }
                                         let color = [0.3, 0.7, 1.0, 1.0f32];
@@ -943,26 +955,19 @@ impl ApplicationHandler for App {
                                     );
 
                                     // アウトライン（Edit/Pause + 選択中のみ）
-                                    // 順序: 全選択のステンシルマスク → 全選択のアウトライン
+                                    // ① 全選択インスタンスのステンシルマスクを一括書き込み
+                                    // ② 合成シルエット外縁にアウトラインを一括描画
                                     if in_editor && !self.selected_instances.is_empty() {
-                                        // ① 選択全インスタンスのステンシル=1 を書く
-                                        for &sel in &self.selected_instances {
-                                            if (sel as usize) < mc.instance_mats.len() {
-                                                draw_stencil_mask(
-                                                    &mut pass, &mc.gpu_model, &mc.instanced_batch,
-                                                    &camera_buf.bind_group, &draw_ctx.pipelines, sel,
-                                                );
-                                            }
-                                        }
-                                        // ② ステンシル=0 の箇所にアウトラインを描画
-                                        for &sel in &self.selected_instances {
-                                            if (sel as usize) < mc.instance_mats.len() {
-                                                draw_outline(
-                                                    &mut pass, &mc.gpu_model, &mc.instanced_batch,
-                                                    &camera_buf.bind_group, &draw_ctx.pipelines, sel,
-                                                );
-                                            }
-                                        }
+                                        draw_stencil_mask_multi(
+                                            &mut pass, &mc.gpu_model, &mc.instanced_batch,
+                                            &camera_buf.bind_group, &draw_ctx.pipelines,
+                                            &self.selected_instances,
+                                        );
+                                        draw_outline_multi(
+                                            &mut pass, &mc.gpu_model, &mc.instanced_batch,
+                                            &camera_buf.bind_group, &draw_ctx.pipelines,
+                                            &self.selected_instances,
+                                        );
                                     }
 
                                     // ギズモ（Edit/Pause + Move/Rotate/Scale モードのみ）
