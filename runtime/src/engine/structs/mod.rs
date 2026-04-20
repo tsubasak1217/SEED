@@ -3,3 +3,4 @@ pub mod primitives;
 pub mod transforms;
 pub mod objects;
 pub mod components;
+pub mod utils;

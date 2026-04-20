@@ -1,3 +1,28 @@
+// ============================================================
+//  サブモジュール（GPU リソース・パイプライン管理）
+// ============================================================
+
+pub(crate) mod uniforms;
+pub(crate) mod gpu_resources;
+pub(crate) mod pipeline_config;
+pub(crate) mod pipeline;
+pub(crate) mod hiz;
+pub(crate) mod skin_system;
+pub(crate) mod animator;
+
+pub use uniforms::{CameraUniform, ModelUniform, MaterialUniform, JointUniform, ColorVertex,
+                   GpuCullData, FrustumUniform, GizmoVertex};
+pub use gpu_resources::{GpuTexture, GpuMaterial, GpuPrimitive, GpuMesh, GpuModel,
+                        InstancedModelBatch, NodePrimDraw, GpuLineBatch, GpuGizmoBatch,
+                        DefaultTextures, CameraBuffer,
+                        extract_frustum_planes, test_aabb_frustum, NUM_LODS};
+pub use pipeline::{MeshPipeline, SkinnedMeshPipeline, UnlitPipeline, CullPipeline, DrawPipelines,
+                   SkinComputePipeline, IdPassPipeline, OutlinePipeline, DepthPrepassPipelines};
+
+// ============================================================
+//  Renderer 本体
+// ============================================================
+
 use std::sync::Arc;
 use winit::dpi::PhysicalSize;
 use winit::window::Window;

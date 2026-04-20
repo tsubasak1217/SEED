@@ -32,7 +32,7 @@ pub fn sample_joint_matrices(
     let n_nodes = model.nodes.len();
 
     // ── ① アニメーション補間後の TRS を収集 ──────────────────
-    let mut node_trs: Vec<Option<Trs>> = vec![None; n_nodes];
+    let mut node_trs: Vec<Option<Trs>> = (0..n_nodes).map(|_| None).collect();
     for ch in &anim.channels {
         let ni = ch.target_node_index;
         if ni >= n_nodes { continue; }

@@ -417,12 +417,21 @@ pub fn vertex_buffer_layout(name: &str) -> wgpu::VertexBufferLayout<'static> {
         VA { format: VF::Float32x3, offset: 0,  shader_location: 0 },
         VA { format: VF::Float32x4, offset: 12, shader_location: 1 },
     ];
+    // GizmoVertex: pos_a(0-11), t(12-15), pos_b(16-27), side(28-31), color(32-47)
+    static GIZMO_ATTRS: &[VA] = &[
+        VA { format: VF::Float32x3, offset: 0,  shader_location: 0 },
+        VA { format: VF::Float32,   offset: 12, shader_location: 1 },
+        VA { format: VF::Float32x3, offset: 16, shader_location: 2 },
+        VA { format: VF::Float32,   offset: 28, shader_location: 3 },
+        VA { format: VF::Float32x4, offset: 32, shader_location: 4 },
+    ];
 
     match name {
         "mesh_vertex"   => VertexBufferLayout { array_stride: 72, step_mode: VertexStepMode::Vertex, attributes: MESH_ATTRS },
         "skin_vertex"   => VertexBufferLayout { array_stride: 24, step_mode: VertexStepMode::Vertex, attributes: SKIN_ATTRS },
         "smooth_normal" => VertexBufferLayout { array_stride: 12, step_mode: VertexStepMode::Vertex, attributes: SMOOTH_NORMAL_ATTRS },
         "color_vertex"  => VertexBufferLayout { array_stride: 28, step_mode: VertexStepMode::Vertex, attributes: COLOR_ATTRS },
+        "gizmo_vertex"  => VertexBufferLayout { array_stride: 48, step_mode: VertexStepMode::Vertex, attributes: GIZMO_ATTRS },
         other => panic!("unknown vertex slot preset: {other}"),
     }
 }

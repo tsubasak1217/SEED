@@ -17,7 +17,10 @@ use crate::engine::core::app_base::scene::Scene;
 use crate::engine::methods::drawer::{
     DrawContext, CameraBuffer, CameraUniform,
     draw_model_indirect, draw_id_pass, draw_outline, draw_stencil_mask,
-    extract_frustum_planes, IdBuffer, LineBatch, draw_gizmo_batch,
+    extract_frustum_planes, IdBuffer, GizmoBatch, draw_gizmo_batch,
+};
+use crate::engine::methods::gizmo_interact::{
+    GizmoDrag, GizmoPart, screen_to_ray, hit_test_gizmo, start_drag, update_drag,
 };
 use crate::engine::core::scripting::{ScriptingHost, ScriptComponent};
 use crate::engine::structs::components::ModelComponent;
@@ -91,6 +94,10 @@ pub struct App {
     line_model_buf:    Option<(wgpu::Buffer, wgpu::BindGroup)>,
     /// 現在のエディタツールモード。
     tool_mode:         ToolMode,
+    /// 進行中のギズモドラッグ状態。
+    gizmo_drag:        Option<GizmoDrag>,
+    /// マウスホバー中のギズモパーツ（ハイライト表示用）。
+    hovered_gizmo_part: Option<GizmoPart>,
 }
 
 impl App {
@@ -132,6 +139,8 @@ impl App {
             last_cursor_pos:   None,
             line_model_buf:    None,
             tool_mode:         ToolMode::Select,
+            gizmo_drag:        None,
+            hovered_gizmo_part: None,
         }
     }
 
@@ -181,6 +190,61 @@ impl App {
 
     /// デモシーンを構築する。
     /// 将来的にはシーンファイルのロードに置き換える。
+    /// カーソル座標でギズモのヒットテストを行い、当たったパーツを返す。
+    fn compute_gizmo_hover(&self, cx: f32, cy: f32) -> Option<GizmoPart> {
+        if self.tool_mode == ToolMode::Select { return None; }
+        let sel = self.selected_instance?;
+        let mc  = self.scene.as_ref()?.find_component::<ModelComponent>()?;
+        let mat = mc.instance_mats.get(sel as usize)?;
+        let gizmo_pos = [mat[0][3], mat[1][3], mat[2][3]];
+
+        let window_size = self.window.as_ref()?.inner_size();
+        let cam_pos_v = self.camera.position();
+        let cam_pos   = [cam_pos_v.x, cam_pos_v.y, cam_pos_v.z];
+
+        let d    = [gizmo_pos[0]-cam_pos[0], gizmo_pos[1]-cam_pos[1], gizmo_pos[2]-cam_pos[2]];
+        let dist = (d[0]*d[0]+d[1]*d[1]+d[2]*d[2]).sqrt().max(0.01);
+        let half_fov = self.camera.base.projection.fov_y_rad * 0.5;
+        let radius   = dist * half_fov.tan() * 0.233;
+
+        let view = self.camera.view_matrix();
+        let proj = self.camera.projection_matrix();
+        let (ray_o, ray_d) = screen_to_ray(
+            cx, cy,
+            window_size.width as f32, window_size.height as f32,
+            &view.data, &proj.data, cam_pos,
+        );
+        hit_test_gizmo(ray_o, ray_d, gizmo_pos, radius, self.tool_mode)
+    }
+
+    /// カーソル座標でギズモのヒットテストを行い、当たった場合は GizmoDrag を返す。
+    fn try_gizmo_hit_and_start(&self, cx: f32, cy: f32) -> Option<GizmoDrag> {
+        if self.tool_mode == ToolMode::Select { return None; }
+        let sel = self.selected_instance?;
+        let mc  = self.scene.as_ref()?.find_component::<ModelComponent>()?;
+        let mat = *mc.instance_mats.get(sel as usize)?;
+        let gizmo_pos = [mat[0][3], mat[1][3], mat[2][3]];
+
+        let window_size = self.window.as_ref()?.inner_size();
+        let vp_w = window_size.width  as f32;
+        let vp_h = window_size.height as f32;
+
+        let cam_pos_v = self.camera.position();
+        let cam_pos   = [cam_pos_v.x, cam_pos_v.y, cam_pos_v.z];
+
+        let d    = [gizmo_pos[0]-cam_pos[0], gizmo_pos[1]-cam_pos[1], gizmo_pos[2]-cam_pos[2]];
+        let dist = (d[0]*d[0]+d[1]*d[1]+d[2]*d[2]).sqrt().max(0.01);
+        let half_fov = self.camera.base.projection.fov_y_rad * 0.5;
+        let radius   = dist * half_fov.tan() * 0.233;
+
+        let view = self.camera.view_matrix();
+        let proj = self.camera.projection_matrix();
+        let (ray_o, ray_d) = screen_to_ray(cx, cy, vp_w, vp_h, &view.data, &proj.data, cam_pos);
+
+        let part = hit_test_gizmo(ray_o, ray_d, gizmo_pos, radius, self.tool_mode)?;
+        Some(start_drag(part, self.tool_mode, ray_o, ray_d, gizmo_pos, radius, mat))
+    }
+
     fn build_demo_scene(ctx: &DrawContext, scripting_host: Option<&Arc<ScriptingHost>>) -> Scene {
         let mut scene = Scene::new("Demo");
 
@@ -328,13 +392,25 @@ impl ApplicationHandler for App {
                 let pressed = state == ElementState::Pressed;
                 self.input.process_mouse_button(button, pressed);
 
-                // LMB: Edit/Pause モードでインスタンス選択（RMB カメラ操作中は無効）
-                if button == winit::event::MouseButton::Left && pressed
-                    && (self.mode == RuntimeMode::Edit || self.paused)
-                    && !self.cam_input.rmb
-                {
-                    if let Some((cx, cy)) = self.last_cursor_pos {
-                        self.pending_pick = Some((cx as u32, cy as u32));
+                if button == winit::event::MouseButton::Left {
+                    if pressed
+                        && (self.mode == RuntimeMode::Edit || self.paused)
+                        && !self.cam_input.rmb
+                    {
+                        if let Some((cx, cy)) = self.last_cursor_pos {
+                            // ギズモヒットを優先。外れた場合のみ ID ピック。
+                            if let Some(drag) = self.try_gizmo_hit_and_start(cx, cy) {
+                                self.gizmo_drag = Some(drag);
+                            } else {
+                                self.pending_pick = Some((cx as u32, cy as u32));
+                            }
+                        }
+                    }
+                    if !pressed {
+                        self.gizmo_drag = None;
+                        // ドラッグ終了後はホバーを再評価する
+                        self.hovered_gizmo_part = self.last_cursor_pos
+                            .and_then(|(cx, cy)| self.compute_gizmo_hover(cx, cy));
                     }
                 }
 
@@ -362,8 +438,46 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
-                self.input.process_cursor_moved(position.x as f32, position.y as f32);
-                self.last_cursor_pos = Some((position.x as f32, position.y as f32));
+                let cx = position.x as f32;
+                let cy = position.y as f32;
+                self.input.process_cursor_moved(cx, cy);
+                self.last_cursor_pos = Some((cx, cy));
+
+                // ホバーパーツを更新（ドラッグ中はドラッグパーツを維持）
+                self.hovered_gizmo_part = if let Some(drag) = &self.gizmo_drag {
+                    Some(drag.part)
+                } else {
+                    self.compute_gizmo_hover(cx, cy)
+                };
+
+                // ギズモドラッグ中: 新しい変換行列を計算してインスタンスに適用する
+                let new_mat_opt = if let Some(drag) = &self.gizmo_drag {
+                    if let Some(ws) = self.window.as_ref().map(|w| w.inner_size()) {
+                        let cam_v  = self.camera.position();
+                        let cam    = [cam_v.x, cam_v.y, cam_v.z];
+                        let view   = self.camera.view_matrix();
+                        let proj   = self.camera.projection_matrix();
+                        let (ro, rd) = screen_to_ray(
+                            cx, cy,
+                            ws.width as f32, ws.height as f32,
+                            &view.data, &proj.data, cam,
+                        );
+                        Some(update_drag(drag, ro, rd))
+                    } else { None }
+                } else { None };
+
+                if let Some(new_mat) = new_mat_opt {
+                    if let Some(sel) = self.selected_instance {
+                        if let Some(scene) = &mut self.scene {
+                            if let Some(mc) = scene.find_component_mut::<ModelComponent>() {
+                                if let Some(m) = mc.instance_mats.get_mut(sel as usize) {
+                                    *m = new_mat;
+                                }
+                                mc.instanced_batch.mark_dirty();
+                            }
+                        }
+                    }
+                }
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 self.input.process_scroll(&delta);
@@ -405,6 +519,7 @@ impl ApplicationHandler for App {
                 }
 
                 // ── GPU カメラ・インスタンスバッファ更新 ──────
+                let window_size = self.window.as_ref().map(|w| w.inner_size());
                 let queue = self.draw_ctx.as_ref().map(|c| c.queue.clone());
 
                 if let (Some(scene), Some(camera_buf), Some(queue)) =
@@ -415,11 +530,16 @@ impl ApplicationHandler for App {
                     let view_proj = proj * view;
                     let pos       = self.camera.position();
 
+                    let res = window_size.map_or([1280.0, 720.0], |s| {
+                        [s.width as f32, s.height as f32]
+                    });
                     camera_buf.update(&queue, &CameraUniform {
-                        view_proj: view_proj.transpose().data,
-                        view:      view.transpose().data,
-                        position:  [pos.x, pos.y, pos.z],
-                        _pad:      0.0,
+                        view_proj:  view_proj.transpose().data,
+                        view:       view.transpose().data,
+                        position:   [pos.x, pos.y, pos.z],
+                        _pad:       0.0,
+                        resolution: res,
+                        _pad2:      [0.0; 2],
                     });
 
                     let frustum_planes = extract_frustum_planes(&view_proj.data);
@@ -445,9 +565,6 @@ impl ApplicationHandler for App {
                 let pick_pos = self.pending_pick.take();
                 let mut did_pick = false;
 
-                // ── GPU 描画 ──────────────────────────────────
-                let window_size = self.window.as_ref().map(|w| w.inner_size());
-
                 if let (Some(renderer), Some(scene), Some(camera_buf), Some(draw_ctx)) =
                     (&mut self.renderer, &self.scene, &self.camera_buf, &self.draw_ctx)
                 {
@@ -465,11 +582,22 @@ impl ApplicationHandler for App {
                                     && self.tool_mode != ToolMode::Select
                                 {
                                     gizmo_pos.map(|pos| {
-                                        let mut batch = LineBatch::new();
+                                        // カメラ距離に比例したスクリーン固定サイズ
+                                        // radius = dist * tan(fov_y/2) * NDC_fraction
+                                        let cam_pos  = self.camera.position();
+                                        let d = [pos[0]-cam_pos.x, pos[1]-cam_pos.y, pos[2]-cam_pos.z];
+                                        let dist = (d[0]*d[0]+d[1]*d[1]+d[2]*d[2]).sqrt().max(0.01);
+                                        let half_fov = self.camera.base.projection.fov_y_rad * 0.5;
+                                        let radius = dist * half_fov.tan() * 0.233;
+
+                                        let cam_pos_arr = [cam_pos.x, cam_pos.y, cam_pos.z];
+                                        let hov  = self.hovered_gizmo_part;
+                                        let drag_part = self.gizmo_drag.as_ref().map(|d| d.part);
+                                        let mut batch = GizmoBatch::new();
                                         match self.tool_mode {
-                                            ToolMode::Move   => batch.add_gizmo_translate(pos, 1.5),
-                                            ToolMode::Rotate => batch.add_gizmo_rotate(pos, 1.2, 32),
-                                            ToolMode::Scale  => batch.add_gizmo_scale(pos, 1.5),
+                                            ToolMode::Move   => batch.add_gizmo_translate(pos, radius, hov),
+                                            ToolMode::Rotate => batch.add_gizmo_rotate(pos, radius, 64, cam_pos_arr, hov, drag_part),
+                                            ToolMode::Scale  => batch.add_gizmo_scale(pos, radius, hov),
                                             ToolMode::Select => {}
                                         }
                                         batch.build(&draw_ctx.device)

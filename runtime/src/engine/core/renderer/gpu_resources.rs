@@ -6,7 +6,7 @@ use crate::engine::core::loader::model::{
     FilterMode, WrapMode, Material, AlphaMode,
 };
 use super::uniforms::{CameraUniform, ModelUniform, MaterialUniform, JointUniform, ColorVertex,
-                      GpuCullData, FrustumUniform};
+                      GpuCullData, FrustumUniform, GizmoVertex};
 use super::skin_system::SkinComputeSystem;
 use super::pipeline::SkinComputePipeline;
 
@@ -1024,5 +1024,45 @@ impl GpuLineBatch {
             usage:    wgpu::BufferUsages::VERTEX,
         });
         Self { vertex_buffer, vertex_count: vertices.len() as u32 }
+    }
+}
+
+// ============================================================
+//  GpuGizmoBatch — ギズモ描画用 GPU バッファ
+// ============================================================
+
+/// `GizmoBatch::build()` で生成した描画可能なギズモバッファ。
+///
+/// - `line_buffer`: 太線クワッド（GizmoVertex 形式）
+/// - `tri_buffer` : ソリッド三角形（ColorVertex 形式）
+pub struct GpuGizmoBatch {
+    pub line_buffer: Option<wgpu::Buffer>,
+    pub line_count:  u32,
+    pub tri_buffer:  Option<wgpu::Buffer>,
+    pub tri_count:   u32,
+}
+
+impl GpuGizmoBatch {
+    pub fn new(device: &wgpu::Device, lines: &[GizmoVertex], tris: &[ColorVertex]) -> Self {
+        let line_buffer = if lines.is_empty() { None } else {
+            Some(device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label:    Some("Gizmo Line Buffer"),
+                contents: bytemuck::cast_slice(lines),
+                usage:    wgpu::BufferUsages::VERTEX,
+            }))
+        };
+        let tri_buffer = if tris.is_empty() { None } else {
+            Some(device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label:    Some("Gizmo Tri Buffer"),
+                contents: bytemuck::cast_slice(tris),
+                usage:    wgpu::BufferUsages::VERTEX,
+            }))
+        };
+        Self {
+            line_buffer,
+            line_count: lines.len() as u32,
+            tri_buffer,
+            tri_count:  tris.len() as u32,
+        }
     }
 }

@@ -307,7 +307,7 @@ fn create_hiz_texture(
 fn create_copy_pipeline(device: &wgpu::Device) -> (wgpu::ComputePipeline, wgpu::BindGroupLayout) {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label:  Some("HiZ Copy Shader"),
-        source: wgpu::ShaderSource::Wgsl(include_str!("hiz_copy_depth.wgsl").into()),
+        source: wgpu::ShaderSource::Wgsl(include_str!("shaders/hiz_copy_depth.wgsl").into()),
     });
 
     let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -358,7 +358,7 @@ fn create_copy_pipeline(device: &wgpu::Device) -> (wgpu::ComputePipeline, wgpu::
 fn create_gen_pipeline(device: &wgpu::Device) -> (wgpu::ComputePipeline, wgpu::BindGroupLayout) {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label:  Some("HiZ Gen Shader"),
-        source: wgpu::ShaderSource::Wgsl(include_str!("hiz_gen_mip.wgsl").into()),
+        source: wgpu::ShaderSource::Wgsl(include_str!("shaders/hiz_gen_mip.wgsl").into()),
     });
 
     let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -409,7 +409,7 @@ fn create_gen_pipeline(device: &wgpu::Device) -> (wgpu::ComputePipeline, wgpu::B
 fn create_occ_pipeline(device: &wgpu::Device) -> (wgpu::ComputePipeline, wgpu::BindGroupLayout) {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label:  Some("HiZ Occlusion Shader"),
-        source: wgpu::ShaderSource::Wgsl(include_str!("hiz_occlusion.wgsl").into()),
+        source: wgpu::ShaderSource::Wgsl(include_str!("shaders/hiz_occlusion.wgsl").into()),
     });
 
     let make_storage_ro = |binding: u32| wgpu::BindGroupLayoutEntry {

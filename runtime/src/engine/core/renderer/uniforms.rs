@@ -13,21 +13,26 @@
 
 /// カメラのビュー×プロジェクション行列一式。
 ///
-/// WGSL レイアウト（計 144 bytes）:
+/// WGSL レイアウト（計 160 bytes）:
 /// | オフセット | フィールド  | サイズ |
 /// |-----------|------------|--------|
 /// |   0       | view_proj  |  64    |
 /// |  64       | view       |  64    |
 /// | 128       | position   |  12    |
 /// | 140       | _pad       |   4    |
+/// | 144       | resolution |   8    |
+/// | 152       | _pad2      |   8    |
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct CameraUniform {
-    pub view_proj: [[f32; 4]; 4],
-    pub view:      [[f32; 4]; 4],
+    pub view_proj:  [[f32; 4]; 4],
+    pub view:       [[f32; 4]; 4],
     /// ワールド空間でのカメラ位置（スペキュラ計算用）
-    pub position:  [f32; 3],
-    pub _pad:      f32,
+    pub position:   [f32; 3],
+    pub _pad:       f32,
+    /// ビューポートの解像度（ピクセル）。ギズモ太線計算に使用。
+    pub resolution: [f32; 2],
+    pub _pad2:      [f32; 2],
 }
 
 impl CameraUniform {
@@ -38,7 +43,8 @@ impl CameraUniform {
             [0.0, 0.0, 1.0, 0.0],
             [0.0, 0.0, 0.0, 1.0],
         ];
-        Self { view_proj: id, view: id, position: [0.0; 3], _pad: 0.0 }
+        Self { view_proj: id, view: id, position: [0.0; 3], _pad: 0.0,
+               resolution: [1280.0, 720.0], _pad2: [0.0; 2] }
     }
 }
 
@@ -216,4 +222,27 @@ pub struct DrawIndexedIndirectCmd {
 pub struct ColorVertex {
     pub position: [f32; 3],
     pub color:    [f32; 4],
+}
+
+/// ギズモ太線描画用頂点。
+///
+/// 1 セグメントにつき 6 頂点（TriangleList で 2 三角形 = 1 クワッド）を生成する。
+/// 頂点シェーダがスクリーン空間の垂直オフセットを計算して線幅を付与する。
+///
+/// WGSL レイアウト（計 48 bytes）:
+/// | オフセット | フィールド | サイズ |
+/// |-----------|-----------|--------|
+/// |   0       | pos_a     |  12    |
+/// |  12       | t         |   4    |  0.0=pos_a 側, 1.0=pos_b 側
+/// |  16       | pos_b     |  12    |
+/// |  28       | side      |   4    |  -1.0 or +1.0
+/// |  32       | color     |  16    |
+#[repr(C)]
+#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct GizmoVertex {
+    pub pos_a: [f32; 3],
+    pub t:     f32,
+    pub pos_b: [f32; 3],
+    pub side:  f32,
+    pub color: [f32; 4],
 }

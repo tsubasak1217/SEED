@@ -1,0 +1,15 @@
+shader_sources  = ["unlit.wgsl"]
+vertex_entry    = "vs_main"
+fragment_entry  = "fs_main"
+vertex_slots    = ["color_vertex"]
+
+topology        = "TriangleList"
+cull_mode       = "None"
+front_face      = "Ccw"
+
+depth_write     = false
+depth_compare   = "Always"
+
+color_format    = "surface"
+blend           = "AlphaBlending"
+write_mask      = "all"

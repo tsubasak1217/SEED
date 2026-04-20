@@ -1,55 +1,60 @@
-mod uniforms;
-pub(crate) mod gpu_resources;
-mod pipeline_config;
-mod pipeline;
+// methods/drawer/mod.rs — アプリケーション向け描画 API
+//
+// GPU リソース管理・パイプライン定義は core::renderer に集約されている。
+// ここでは draw_* 関数群と DrawContext（高レベル API）のみを公開する。
+
 mod model_drawer;
 mod id_pass;
 mod outline;
 mod primitive_drawer;
-mod hiz;
-mod skin_system;
 
-pub use uniforms::{CameraUniform, ModelUniform, MaterialUniform, JointUniform, ColorVertex,
-                   GpuCullData, FrustumUniform};
-pub use gpu_resources::{GpuTexture, GpuMaterial, GpuPrimitive, GpuMesh, GpuModel,
-                        InstancedModelBatch, NodePrimDraw, GpuLineBatch, DefaultTextures,
-                        CameraBuffer, extract_frustum_planes, test_aabb_frustum};
-pub use pipeline::{MeshPipeline, SkinnedMeshPipeline, UnlitPipeline, CullPipeline, DrawPipelines,
-                   SkinComputePipeline, IdPassPipeline, OutlinePipeline, DepthPrepassPipelines};
-pub use gpu_resources::NUM_LODS;
+// drawing files が use super::gpu_resources::... 等で参照できるようモジュール別名を作成
+pub(crate) use crate::engine::core::renderer::gpu_resources;
+pub(crate) use crate::engine::core::renderer::pipeline;
+pub(crate) use crate::engine::core::renderer::uniforms;
+
+// core::renderer の公開型をそのまま再エクスポート
+pub use crate::engine::core::renderer::{
+    // ユニフォーム型
+    CameraUniform, ModelUniform, MaterialUniform, JointUniform, ColorVertex, GizmoVertex,
+    GpuCullData, FrustumUniform,
+    // GPU リソース型
+    GpuTexture, GpuMaterial, GpuPrimitive, GpuMesh, GpuModel,
+    InstancedModelBatch, NodePrimDraw, GpuLineBatch, DefaultTextures,
+    GpuGizmoBatch, CameraBuffer, extract_frustum_planes, test_aabb_frustum, NUM_LODS,
+    // パイプライン型
+    MeshPipeline, SkinnedMeshPipeline, UnlitPipeline, CullPipeline, DrawPipelines,
+    SkinComputePipeline, IdPassPipeline, OutlinePipeline, DepthPrepassPipelines,
+};
+
+// 描画関数
 pub use model_drawer::draw_model_indirect;
 pub use id_pass::{IdBuffer, draw_id_pass};
 pub use outline::{draw_outline, draw_stencil_mask};
-pub use primitive_drawer::{LineBatch, draw_line_batch, draw_gizmo_batch};
+pub use primitive_drawer::{LineBatch, GizmoBatch, draw_line_batch, draw_gizmo_batch};
+
+// ============================================================
+//  DrawContext — アプリケーション向け高レベル API
+// ============================================================
 
 use std::sync::Arc;
 use crate::engine::core::loader::model::Model;
-
-// ============================================================
-//  DrawContext — 描画に必要なリソースを一括管理する高レベル型
-// ============================================================
+use crate::engine::core::renderer::gpu_resources::{
+    GpuModel as GpuModelInner, InstancedModelBatch as BatchInner,
+    DefaultTextures as DefaultTex, CameraBuffer as CamBuf,
+};
 
 /// GPU 描画コンテキスト。
 ///
 /// `Renderer` から生成し、モデルのアップロードや描画関数呼び出しに使う。
-///
-/// # 使用例
-/// ```rust
-/// let ctx = DrawContext::new(renderer.device(), renderer.queue(),
-///                            renderer.surface_format(), renderer.depth_format());
-/// let gpu_model   = ctx.upload_model(&model);
-/// let transforms  = ctx.create_model_transforms(&model);
-/// let camera_buf  = ctx.create_camera_buffer();
-/// ```
 pub struct DrawContext {
     pub device:    Arc<wgpu::Device>,
     pub queue:     Arc<wgpu::Queue>,
     pub pipelines: DrawPipelines,
-    pub defaults:  DefaultTextures,
+    pub defaults:  DefaultTex,
 }
 
 impl DrawContext {
-    /// 描画コンテキストを初期化する。
     pub fn new(
         device:         Arc<wgpu::Device>,
         queue:          Arc<wgpu::Queue>,
@@ -57,13 +62,12 @@ impl DrawContext {
         depth_format:   wgpu::TextureFormat,
     ) -> Self {
         let pipelines = DrawPipelines::new(&device, surface_format, depth_format);
-        let defaults  = DefaultTextures::new(&device, &queue);
+        let defaults  = DefaultTex::new(&device, &queue);
         Self { device, queue, pipelines, defaults }
     }
 
-    /// モデルを GPU にアップロードして `GpuModel` を返す。
-    pub fn upload_model(&self, model: &Model) -> GpuModel {
-        GpuModel::upload(
+    pub fn upload_model(&self, model: &Model) -> GpuModelInner {
+        GpuModelInner::upload(
             &self.device,
             &self.queue,
             model,
@@ -73,10 +77,8 @@ impl DrawContext {
         )
     }
 
-    /// N インスタンス分のモデル変換ストレージバッファを生成する。
-    /// スキンとアニメーションを持つモデルの場合は GPU スキニングシステムも初期化する。
-    pub fn create_instanced_batch(&self, model: &Model, num_instances: u32) -> InstancedModelBatch {
-        InstancedModelBatch::new(
+    pub fn create_instanced_batch(&self, model: &Model, num_instances: u32) -> BatchInner {
+        BatchInner::new(
             &self.device,
             model,
             &self.pipelines.mesh.model_bgl,
@@ -87,16 +89,10 @@ impl DrawContext {
         )
     }
 
-    /// カメラユニフォームバッファを生成する。
-    pub fn create_camera_buffer(&self) -> CameraBuffer {
-        CameraBuffer::new(&self.device, &self.pipelines.mesh.camera_bgl)
+    pub fn create_camera_buffer(&self) -> CamBuf {
+        CamBuf::new(&self.device, &self.pipelines.mesh.camera_bgl)
     }
 
-    /// アンライトパイプライン用の単位行列モデルバッファを生成する。
-    ///
-    /// グリッド等のワールド空間ラインバッチ描画に使用する。
-    /// 返値の `wgpu::Buffer` はバインドグループが参照するため、
-    /// ドロップせずに呼び出し元で保持すること。
     pub fn create_identity_model_bg_for_unlit(&self) -> (wgpu::Buffer, wgpu::BindGroup) {
         use wgpu::util::DeviceExt;
         let uniform = uniforms::ModelUniform::identity();

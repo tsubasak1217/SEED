@@ -11,14 +11,15 @@ use super::pipeline_config::{RenderPipelineBuilder, parse_compare};
 
 fn get_shader_source(name: &str) -> &'static str {
     match name {
-        "shader_common.wgsl"         => include_str!("shader_common.wgsl"),
-        "shader_static_vertex.wgsl"  => include_str!("shader_static_vertex.wgsl"),
-        "shader_skinned_vertex.wgsl" => include_str!("shader_skinned_vertex.wgsl"),
-        "shader_fragment.wgsl"       => include_str!("shader_fragment.wgsl"),
-        "unlit.wgsl"                 => include_str!("unlit.wgsl"),
-        "depth_prepass.wgsl"         => include_str!("depth_prepass.wgsl"),
-        "id_pass.wgsl"               => include_str!("id_pass.wgsl"),
-        "outline.wgsl"               => include_str!("outline.wgsl"),
+        "shader_common.wgsl"         => include_str!("shaders/shader_common.wgsl"),
+        "shader_static_vertex.wgsl"  => include_str!("shaders/shader_static_vertex.wgsl"),
+        "shader_skinned_vertex.wgsl" => include_str!("shaders/shader_skinned_vertex.wgsl"),
+        "shader_fragment.wgsl"       => include_str!("shaders/shader_fragment.wgsl"),
+        "unlit.wgsl"                 => include_str!("shaders/unlit.wgsl"),
+        "gizmo_line.wgsl"            => include_str!("shaders/gizmo_line.wgsl"),
+        "depth_prepass.wgsl"         => include_str!("shaders/depth_prepass.wgsl"),
+        "id_pass.wgsl"               => include_str!("shaders/id_pass.wgsl"),
+        "outline.wgsl"               => include_str!("shaders/outline.wgsl"),
         other => panic!("unknown shader source: {other}"),
     }
 }
@@ -76,10 +77,11 @@ impl SkinnedMeshPipeline {
 // ============================================================
 
 pub struct UnlitPipeline {
-    pub pipeline:       wgpu::RenderPipeline,
-    pub gizmo_pipeline: wgpu::RenderPipeline,
-    pub camera_bgl:     wgpu::BindGroupLayout,
-    pub model_bgl:      wgpu::BindGroupLayout,
+    pub pipeline:           wgpu::RenderPipeline,  // LineList, ColorVertex
+    pub gizmo_line_pipeline: wgpu::RenderPipeline, // TriangleList, GizmoVertex (太線)
+    pub gizmo_tri_pipeline:  wgpu::RenderPipeline, // TriangleList, ColorVertex (ソリッド)
+    pub camera_bgl:          wgpu::BindGroupLayout,
+    pub model_bgl:           wgpu::BindGroupLayout,
 }
 
 impl UnlitPipeline {
@@ -92,9 +94,10 @@ impl UnlitPipeline {
         let model_bgl  = bgls.pop().unwrap();
         let camera_bgl = bgls.pop().unwrap();
 
-        let (gizmo_pipeline, _) = build(include_str!("pipelines/unlit_gizmo.toml"));
+        let (gizmo_line_pipeline, _) = build(include_str!("pipelines/gizmo_line.toml"));
+        let (gizmo_tri_pipeline, _)  = build(include_str!("pipelines/gizmo_tri.toml"));
 
-        Self { pipeline, gizmo_pipeline, camera_bgl, model_bgl }
+        Self { pipeline, gizmo_line_pipeline, gizmo_tri_pipeline, camera_bgl, model_bgl }
     }
 }
 
@@ -145,7 +148,7 @@ pub struct CullPipeline {
 
 impl CullPipeline {
     fn new(device: &wgpu::Device) -> Self {
-        let src    = include_str!("cull.wgsl");
+        let src    = include_str!("shaders/cull.wgsl");
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label:  Some("Cull Shader"),
             source: wgpu::ShaderSource::Wgsl(src.into()),
@@ -215,7 +218,7 @@ impl SkinComputePipeline {
     fn new(device: &wgpu::Device) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label:  Some("Skin Compute Shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("skin_compute.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/skin_compute.wgsl").into()),
         });
 
         let ro_storage = |binding: u32| wgpu::BindGroupLayoutEntry {
