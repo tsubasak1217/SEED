@@ -46,6 +46,10 @@ pub enum IpcCommand {
     Redo,
     /// ヒエラルキーからの選択（インスタンスインデックス）
     Select(u32),
+    /// 指定インスタンスのみ削除（子は切り離してルートへ）
+    Delete(Vec<u32>),
+    /// 指定インスタンスとその全子孫を削除
+    DeleteRecursive(Vec<u32>),
     /// 親子付け変更（new_parent=None はルートへ）
     Reparent { child: u32, new_parent: Option<u32> },
     /// インスタンス名変更
@@ -54,8 +58,14 @@ pub enum IpcCommand {
     SaveScene(String),
     /// グループフォルダ作成（parent=None はルート）
     CreateGroup { name: String, parent: Option<u32> },
+    /// グループフォルダ作成 + 子を一括移動
+    CreateGroupWithChildren { name: String, parent: Option<u32>, children: Vec<u32> },
     /// 複数インスタンスの一括選択（インスタンスインデックスのリスト）
     SelectMulti(Vec<u32>),
+    /// 選択インスタンスをクリップボードへコピー
+    Copy,
+    /// クリップボードの内容をペースト
+    Paste,
 }
 
 // ============================================================
@@ -144,6 +154,16 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                             s["SELECT:".len()..].parse::<u32>().ok()
                                 .map(IpcCommand::Select)
                         }
+                        s if s.starts_with("DELETE_RECURSIVE:") => {
+                            let ids: Vec<u32> = s["DELETE_RECURSIVE:".len()..]
+                                .split(',').filter_map(|x| x.parse::<u32>().ok()).collect();
+                            if !ids.is_empty() { Some(IpcCommand::DeleteRecursive(ids)) } else { None }
+                        }
+                        s if s.starts_with("DELETE:") => {
+                            let ids: Vec<u32> = s["DELETE:".len()..]
+                                .split(',').filter_map(|x| x.parse::<u32>().ok()).collect();
+                            if !ids.is_empty() { Some(IpcCommand::Delete(ids)) } else { None }
+                        }
                         s if s.starts_with("RENAME:") => {
                             let rest = &s["RENAME:".len()..];
                             // "id,name" — name 中にカンマを含む可能性があるため splitn(2)
@@ -165,6 +185,20 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                                 Some(IpcCommand::CreateGroup { name: name.to_string(), parent })
                             } else { None }
                         }
+                        // フォーマット: "CREATE_GROUP_WITH_CHILDREN:{parentId}|{name}|{childId1},{childId2},..."
+                        s if s.starts_with("CREATE_GROUP_WITH_CHILDREN:") => {
+                            let rest = &s["CREATE_GROUP_WITH_CHILDREN:".len()..];
+                            let mut it = rest.splitn(3, '|');
+                            if let (Some(p), Some(name), Some(kids)) = (it.next(), it.next(), it.next()) {
+                                let parent = if p == "-1" { None } else { p.parse::<u32>().ok() };
+                                let children: Vec<u32> = kids.split(',')
+                                    .filter_map(|x| x.parse::<u32>().ok())
+                                    .collect();
+                                Some(IpcCommand::CreateGroupWithChildren {
+                                    name: name.to_string(), parent, children,
+                                })
+                            } else { None }
+                        }
                         s if s.starts_with("SELECT_MULTI:") => {
                             let ids: Vec<u32> = s["SELECT_MULTI:".len()..]
                                 .split(',')
@@ -172,6 +206,8 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                                 .collect();
                             if !ids.is_empty() { Some(IpcCommand::SelectMulti(ids)) } else { None }
                         }
+                        "COPY"  => Some(IpcCommand::Copy),
+                        "PASTE" => Some(IpcCommand::Paste),
                         s if s.starts_with("REPARENT:") => {
                             let rest = &s["REPARENT:".len()..];
                             let mut it = rest.splitn(2, ',');

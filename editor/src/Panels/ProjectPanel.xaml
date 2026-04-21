@@ -172,12 +172,17 @@
             </Border>
 
             <!-- ファイル一覧 -->
-            <ScrollViewer Grid.Row="1"
-                          VerticalScrollBarVisibility="Auto"
-                          HorizontalScrollBarVisibility="Disabled"
-                          Background="#1E1E1E">
-                <WrapPanel x:Name="FileGrid" Orientation="Horizontal" Margin="6,6,6,6"/>
-            </ScrollViewer>
+            <Grid Grid.Row="1">
+                <ScrollViewer x:Name="FileScrollViewer"
+                              VerticalScrollBarVisibility="Auto"
+                              HorizontalScrollBarVisibility="Disabled"
+                              Background="#1E1E1E"
+                              Focusable="True">
+                    <WrapPanel x:Name="FileGrid" Orientation="Horizontal" Margin="6,6,6,6"/>
+                </ScrollViewer>
+                <!-- ドラッグ範囲選択の矩形オーバーレイ -->
+                <Canvas x:Name="SelectionCanvas" IsHitTestVisible="False" ClipToBounds="True"/>
+            </Grid>
         </Grid>
 
     </Grid>

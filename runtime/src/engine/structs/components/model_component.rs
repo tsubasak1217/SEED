@@ -21,11 +21,15 @@ fn default_next_group_id() -> u32 { GROUP_ID_BASE }
 pub struct InstanceMeta {
     pub name:   String,
     pub parent: Option<u32>,
+    /// 削除/追加でインデックスが変わっても変化しない安定位相シード。
+    /// アニメーション位相オフセット計算に使用する。
+    #[serde(default)]
+    pub anim_seed: u32,
 }
 
 impl InstanceMeta {
     pub fn new(name: impl Into<String>) -> Self {
-        Self { name: name.into(), parent: None }
+        Self { name: name.into(), parent: None, anim_seed: 0 }
     }
 }
 

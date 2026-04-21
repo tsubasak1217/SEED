@@ -104,6 +104,15 @@ public sealed class RuntimeManager : IDisposable
     /// <summary>シーン保存完了時に発火する（ok=true: 成功, ok=false: 失敗メッセージ付き）。</summary>
     public event Action<bool, string>? SaveCompleted;
 
+    /// <summary>ビューポート上で短押し右クリックされたときに発火する。</summary>
+    public event Action? ViewportContextMenuRequested;
+
+    /// <summary>
+    /// ランタイムが最初のフレームを実際に描画したときに発火する。
+    /// デバッグビルドのランタイムのみ送信する（FIRST_FRAME メッセージ）。
+    /// </summary>
+    public event Action? FirstFrameReady;
+
     // ── コンストラクタ ─────────────────────────────────────────
 
     public RuntimeManager(string runtimeExePath)
@@ -353,6 +362,9 @@ public sealed class RuntimeManager : IDisposable
             var msg = stderr.Length > 0 ? stderr.ToString() : "(no stderr output)";
             throw new InvalidOperationException($"Runtime crashed immediately (exit code {_process.ExitCode}):\n{msg}");
         }
+        // 正常起動できたのでクラッシュカウントをリセット
+        _restartCount    = 0;
+        _intentionalStop = false;
         EditorLog.Write("Process still alive — waiting for pipe connection (10s timeout)...");
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
@@ -376,22 +388,28 @@ public sealed class RuntimeManager : IDisposable
 
     private void OnPipeMessage(string msg)
     {
-        EditorLog.Write($"OnPipeMessage — raw='{msg}'");
         if (msg.StartsWith("READY:", StringComparison.Ordinal) &&
             long.TryParse(msg["READY:".Length..], out var hwnd))
         {
             _runtimeHwnd = (IntPtr)hwnd;
-            EditorLog.Write($"OnPipeMessage — _runtimeHwnd set to 0x{hwnd:X}");
+            EditorLog.Write($"[Runtime→Editor] READY  hwnd=0x{hwnd:X}");
             RuntimeHwndAvailable?.Invoke((nint)hwnd);
+        }
+        else if (msg == "FIRST_FRAME")
+        {
+            EditorLog.Write("[Runtime→Editor] FIRST_FRAME — 最初の実フレーム描画完了");
+            FirstFrameReady?.Invoke();
         }
         else if (msg.StartsWith("HIERARCHY:", StringComparison.Ordinal))
         {
             var json = msg["HIERARCHY:".Length..];
+            EditorLog.Write($"[Runtime→Editor] HIERARCHY ({json.Length} chars)");
             HierarchyUpdated?.Invoke(json);
         }
         else if (msg.StartsWith("SELECTED:", StringComparison.Ordinal) &&
                  int.TryParse(msg["SELECTED:".Length..], out var selIdx))
         {
+            EditorLog.Write($"[Runtime→Editor] SELECTED idx={selIdx}");
             SelectionChanged?.Invoke(selIdx);
         }
         else if (msg.StartsWith("SELECTED_MULTI:", StringComparison.Ordinal))
@@ -402,31 +420,57 @@ public sealed class RuntimeManager : IDisposable
                 .Where(n => n.HasValue)
                 .Select(n => n!.Value)
                 .ToList();
+            EditorLog.Write($"[Runtime→Editor] SELECTED_MULTI count={ids.Count}");
             if (ids.Count > 0) SelectionMultiChanged?.Invoke(ids);
+        }
+        else if (msg == "CONTEXT_MENU")
+        {
+            EditorLog.Write("[Runtime→Editor] CONTEXT_MENU");
+            ViewportContextMenuRequested?.Invoke();
         }
         else if (msg == "SAVE_OK")
         {
+            EditorLog.Write("[Runtime→Editor] SAVE_OK");
             SaveCompleted?.Invoke(true, "");
         }
         else if (msg.StartsWith("SAVE_ERROR:", StringComparison.Ordinal))
         {
+            EditorLog.Write($"[Runtime→Editor] SAVE_ERROR: {msg["SAVE_ERROR:".Length..]}");
             SaveCompleted?.Invoke(false, msg["SAVE_ERROR:".Length..]);
         }
         else
         {
-            EditorLog.Write($"OnPipeMessage — unknown message: {msg[..Math.Min(60, msg.Length)]}");
+            EditorLog.Write($"[Runtime→Editor] unknown: {msg[..Math.Min(80, msg.Length)]}");
         }
     }
 
     // ── プライベート: Runtime 自己終了 ────────────────────────
 
-    private int _restartCount = 0;
-    private const int MaxRestarts = 3;
+    private int            _restartCount  = 0;
+    private const int      MaxRestarts    = 3;
+    // KillRuntime が呼ばれた後に Exited が遅延発火しても
+    // クラッシュと誤判定しないためのフラグ。
+    private volatile bool  _intentionalStop = false;
 
     private void OnRuntimeExited(object? sender, EventArgs e)
     {
         var exitCode = _process?.ExitCode ?? -1;
-        EditorLog.Write($"OnRuntimeExited — exitCode={exitCode}  restartCount={_restartCount}");
+        EditorLog.Write($"OnRuntimeExited — exitCode={exitCode}  intentional={_intentionalStop}  restartCount={_restartCount}");
+
+        // KillRuntime / Stop による意図的な終了は再起動もクラッシュ計上もしない
+        if (_intentionalStop)
+        {
+            _intentionalStop = false;
+            Application.Current.Dispatcher.InvokeAsync(() =>
+            {
+                UninstallMinimizeHook();
+                _pipe?.Dispose();
+                _pipe        = null;
+                _runtimeHwnd = IntPtr.Zero;
+                ChangeState(EditorState.Idle);
+            });
+            return;
+        }
 
         Application.Current.Dispatcher.InvokeAsync(async () =>
         {
@@ -543,6 +587,8 @@ public sealed class RuntimeManager : IDisposable
 
     private void KillRuntime(bool sendStop = false)
     {
+        // Exited が Kill より先に発火する競合があるため、先にフラグを立てる
+        _intentionalStop = true;
         UninstallMinimizeHook();
         if (sendStop) _pipe?.Send("STOP");
         _pipe?.Dispose();

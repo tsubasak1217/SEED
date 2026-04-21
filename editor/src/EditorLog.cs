@@ -3,10 +3,13 @@ using System.IO;
 
 namespace SEEDEditor;
 
-/// <summary>デバッグ用ログ。%TEMP%\SEEDEditor.log に追記する。</summary>
+/// <summary>デバッグ用ログ。ファイルへの追記と UI パネルへのリアルタイム通知を行う。</summary>
 internal static class EditorLog
 {
     private static readonly string LogPath = ResolveLogPath();
+
+    /// <summary>新しいログ行が追加されたときに発火する（任意スレッドから呼ばれる）。</summary>
+    public static event Action<string>? LogWritten;
 
     private static string ResolveLogPath()
     {
@@ -29,5 +32,6 @@ internal static class EditorLog
         var line = $"{DateTime.Now:HH:mm:ss.fff}  {message}";
         System.Diagnostics.Debug.WriteLine("[SEEDEditor] " + message);
         try { File.AppendAllText(LogPath, line + "\n"); } catch { /* ignore */ }
+        try { LogWritten?.Invoke(line); } catch { /* ignore */ }
     }
 }

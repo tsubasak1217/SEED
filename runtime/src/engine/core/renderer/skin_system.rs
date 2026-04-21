@@ -286,12 +286,15 @@ impl SkinComputeSystem {
     /// LOD ごとのコンパクト anim_times を GPU にアップロードする。
     ///
     /// `compact_inst_indices`: このLODで可視なインスタンスの元インデックス一覧。
+    /// `anim_seeds`: インスタンスごとの安定した位相シード（InstanceMeta::anim_seed）。
+    ///   空の場合は orig インデックスをシードとして使用（後方互換）。
     /// `global_time`: 経過時間（秒）。
     pub fn upload_lod_times(
         &self,
         queue:                &wgpu::Queue,
         lod:                  usize,
         compact_inst_indices: &[usize],
+        anim_seeds:           &[u32],
         global_time:          f32,
     ) {
         let visible = compact_inst_indices.len() as u32;
@@ -300,7 +303,14 @@ impl SkinComputeSystem {
         let phase_step = self.anim_duration / self.max_instances as f32;
 
         let times: Vec<f32> = compact_inst_indices.iter()
-            .map(|&orig| (global_time + orig as f32 * phase_step) % self.anim_duration)
+            .map(|&orig| {
+                let seed = if anim_seeds.is_empty() {
+                    orig as u32
+                } else {
+                    anim_seeds.get(orig).copied().unwrap_or(orig as u32)
+                };
+                (global_time + seed as f32 * phase_step) % self.anim_duration
+            })
             .collect();
 
         queue.write_buffer(&self.lod_anim_times_bufs[lod], 0, bytemuck::cast_slice(&times));

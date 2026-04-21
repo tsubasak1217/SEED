@@ -1,12 +1,16 @@
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Windows;
+using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Interop;
+using System.Windows.Media;
 using System.Windows.Threading;
 using System.Reflection;
+using AvalonDock.Layout.Serialization;
 using Microsoft.Win32;
 using SEEDEditor.Panels;
 using SEEDEditor.Runtime;
@@ -59,9 +63,10 @@ public partial class MainWindow : Window
 
     private readonly HashSet<uint> _pressedVks = new();
 
-    private bool _clampInPlay = false;
-    private bool _isDragging  = false;
-    private bool _ctrlHeld    = false;
+    private bool _clampInPlay      = false;
+    private bool _isDragging       = false;
+    private bool _ctrlHeld         = false;
+    private bool _deleteDialogOpen = false;
 
     private static readonly Dictionary<uint, string> VkKeyMap = new()
     {
@@ -78,6 +83,15 @@ public partial class MainWindow : Window
 
     private static readonly string RuntimeExePath = ResolveRuntimePath();
     private static readonly string AssetsPath     = ResolveAssetsPath();
+    private static readonly string SettingsDir    = ResolveSettingsDir();
+
+    private static string ResolveSettingsDir()
+    {
+        var dir = Path.GetFullPath(
+            Path.Combine(AppDomain.CurrentDomain.BaseDirectory, @"..\..\..\settings"));
+        Directory.CreateDirectory(dir);
+        return dir;
+    }
 
     private static string ResolveRuntimePath()
     {
@@ -131,7 +145,9 @@ public partial class MainWindow : Window
         _runtimeManager.RuntimeMoveStart     += () => { _isDragging = true;  Dispatcher.BeginInvoke(ReleasePlayClamp); };
         _runtimeManager.RuntimeMoveEnd       += () => { _isDragging = false; Dispatcher.BeginInvoke(() => { if (_clampInPlay && _runtimeManager?.State == EditorState.Play) ApplyPlayClamp(); }); };
 
-        _runtimeManager.SaveCompleted += OnSaveCompleted;
+        _runtimeManager.SaveCompleted                 += OnSaveCompleted;
+        _runtimeManager.ViewportContextMenuRequested  += OnViewportContextMenuRequested;
+        _runtimeManager.FirstFrameReady               += OnFirstFrameReady;
 
         PanelHierarchy.SetRuntime(_runtimeManager);
         PanelProject.SetAssetsPath(AssetsPath);
@@ -145,6 +161,8 @@ public partial class MainWindow : Window
         // ウィンドウドラッグ検出用 WndProc フック
         var hwndSource = HwndSource.FromHwnd(new WindowInteropHelper(this).Handle);
         hwndSource?.AddHook(WndProc);
+
+        LoadLayout();
 
         EditorLog.Write("OnWindowLoaded — ViewportHost assigned, waiting for ContainerCreated");
     }
@@ -254,11 +272,59 @@ public partial class MainWindow : Window
 
     private void OnWindowClosing(object sender, System.ComponentModel.CancelEventArgs e)
     {
+        SaveLayout();
         ReleasePlayClamp();
         UninstallKeyboardHook();
         ReleaseAllCamKeys();
         _runtimeManager?.Dispose();
         ViewportDocumentContent.Content = null;
+    }
+
+    // ── レイアウト保存 / 読み込み ────────────────────────────────
+
+    private void SaveLayout()
+    {
+        try
+        {
+            var path = Path.Combine(SettingsDir, "layout.xml");
+            var serializer = new XmlLayoutSerializer(DockManager);
+            using var writer = new StreamWriter(path);
+            serializer.Serialize(writer);
+            EditorLog.Write($"レイアウトを保存しました: {path}");
+        }
+        catch (Exception ex)
+        {
+            EditorLog.Write($"レイアウト保存失敗: {ex.Message}");
+        }
+    }
+
+    private void LoadLayout()
+    {
+        var path = Path.Combine(SettingsDir, "layout.xml");
+        if (!File.Exists(path)) return;
+        try
+        {
+            var serializer = new XmlLayoutSerializer(DockManager);
+            serializer.LayoutSerializationCallback += (_, args) =>
+            {
+                args.Content = args.Model.ContentId switch
+                {
+                    "hierarchy" => PanelHierarchy,
+                    "project"   => PanelProject,
+                    "inspector" => PanelInspector,
+                    "viewport"  => ViewportGrid,
+                    "output"    => PanelOutput,
+                    _           => null,
+                };
+            };
+            using var reader = new StreamReader(path);
+            serializer.Deserialize(reader);
+            EditorLog.Write($"レイアウトを読み込みました: {path}");
+        }
+        catch (Exception ex)
+        {
+            EditorLog.Write($"レイアウト読み込み失敗（デフォルトレイアウトを使用）: {ex.Message}");
+        }
     }
 
     private void OnSettings(object sender, RoutedEventArgs e)
@@ -267,6 +333,48 @@ public partial class MainWindow : Window
     }
 
     // ── シーン保存 ────────────────────────────────────────────────
+
+    // ── 選択インスタンス削除 ──────────────────────────────────
+
+    private void TryDeleteSelected()
+    {
+        if (_deleteDialogOpen) return;
+        if (_runtimeManager?.State != EditorState.Edit) return;
+
+        // リネーム中（TextBox にフォーカスあり）は削除しない
+        if (FocusManager.GetFocusedElement(this) is TextBox) return;
+
+        var ids = PanelHierarchy.GetSelectedNonGroupIds();
+        if (ids.Count == 0) return;
+
+        if (!PanelHierarchy.AnyHasChildren(ids))
+        {
+            _runtimeManager!.SendToRuntime($"DELETE:{string.Join(",", ids)}");
+            return;
+        }
+
+        _deleteDialogOpen = true;
+        try
+        {
+            var result = MessageBox.Show(
+                "選択中のオブジェクトに子オブジェクトが含まれています。\n\n" +
+                "「はい」　— 子も含めてすべて削除\n" +
+                "「いいえ」— 選択オブジェクトのみ削除（子は切り離してルートへ）",
+                "オブジェクトの削除",
+                MessageBoxButton.YesNoCancel,
+                MessageBoxImage.Warning);
+
+            var idsStr = string.Join(",", ids);
+            if (result == MessageBoxResult.Yes)
+                _runtimeManager!.SendToRuntime($"DELETE_RECURSIVE:{idsStr}");
+            else if (result == MessageBoxResult.No)
+                _runtimeManager!.SendToRuntime($"DELETE:{idsStr}");
+        }
+        finally
+        {
+            _deleteDialogOpen = false;
+        }
+    }
 
     private void ShowSaveDialog()
     {
@@ -296,6 +404,58 @@ public partial class MainWindow : Window
                 MessageBox.Show($"シーンの保存に失敗しました:\n{errorMsg}", "SEED Editor",
                     MessageBoxButton.OK, MessageBoxImage.Error);
         });
+    }
+
+    // ── ビューポートコンテキストメニュー (C) ─────────────────────
+
+    private void OnViewportContextMenuRequested()
+    {
+        Dispatcher.BeginInvoke(() =>
+        {
+            if (_runtimeManager?.State != EditorState.Edit) return;
+
+            var selectedIds = PanelHierarchy.GetSelectedNonGroupIds();
+            bool hasSelection = selectedIds.Count > 0;
+
+            var menu = new ContextMenu();
+            menu.Style = BuildViewportMenuStyle();
+
+            if (hasSelection)
+            {
+                AddViewportMenuItem(menu, "コピー",  () => _runtimeManager?.SendToRuntime("COPY"));
+                AddViewportMenuItem(menu, "削除",    () =>
+                {
+                    var ids = PanelHierarchy.GetSelectedNonGroupIds();
+                    if (ids.Count > 0)
+                        _runtimeManager?.SendToRuntime($"DELETE_RECURSIVE:{string.Join(",", ids)}");
+                });
+                menu.Items.Add(new Separator());
+            }
+            AddViewportMenuItem(menu, "ペースト", () => _runtimeManager?.SendToRuntime("PASTE"));
+
+            menu.PlacementTarget = ViewportDocumentContent;
+            menu.Placement       = System.Windows.Controls.Primitives.PlacementMode.MousePoint;
+            menu.IsOpen          = true;
+        });
+    }
+
+    private static void AddViewportMenuItem(ContextMenu menu, string header, Action action)
+    {
+        var item = new MenuItem { Header = header };
+        item.Click += (_, _) => action();
+        menu.Items.Add(item);
+    }
+
+    private static Style BuildViewportMenuStyle()
+    {
+        var style = new Style(typeof(ContextMenu));
+        style.Setters.Add(new Setter(Control.BackgroundProperty,
+            new SolidColorBrush(Color.FromRgb(0x2D, 0x2D, 0x2D))));
+        style.Setters.Add(new Setter(Control.BorderBrushProperty,
+            new SolidColorBrush(Color.FromRgb(0x55, 0x55, 0x55))));
+        style.Setters.Add(new Setter(Control.ForegroundProperty,
+            new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC))));
+        return style;
     }
 
     // ── ツールモード ──────────────────────────────────────────────
@@ -329,11 +489,30 @@ public partial class MainWindow : Window
 
     private void OnRuntimeHwndAvailable(nint hwnd)
     {
-        // ステートチェックは UI スレッドで行う
         Dispatcher.BeginInvoke(() =>
         {
             if (_clampInPlay && !_isDragging && _runtimeManager?.State == EditorState.Play)
                 ApplyPlayClamp();
+
+            // FIRST_FRAME が届かない場合のフォールバック（リリースビルドの Runtime 等）。
+            // READY 受信から 3 秒経ってもオーバーレイが残っていれば強制的に閉じる。
+            Task.Delay(3000).ContinueWith(_ => Dispatcher.BeginInvoke(() =>
+            {
+                if (ViewportLoadingOverlay.Visibility != Visibility.Collapsed)
+                    ViewportLoadingOverlay.Visibility = Visibility.Collapsed;
+            }));
+        });
+    }
+
+    /// <summary>
+    /// ランタイムが最初の実フレームを描画したときに呼ばれる（デバッグビルドのみ）。
+    /// このタイミングで起動中オーバーレイを非表示にする。
+    /// </summary>
+    private void OnFirstFrameReady()
+    {
+        Dispatcher.BeginInvoke(() =>
+        {
+            ViewportLoadingOverlay.Visibility = Visibility.Collapsed;
         });
     }
 
@@ -406,6 +585,41 @@ public partial class MainWindow : Window
                     Dispatcher.BeginInvoke(ShowSaveDialog);
                     return CallNextHookEx(_llKeyHook, nCode, wParam, lParam);
                 }
+                else if (vk == 0x43) // C
+                {
+                    Dispatcher.BeginInvoke(() => {
+                        if (FocusManager.GetFocusedElement(this) is TextBox) return;
+                        if (PanelProject.IsKeyboardFocusWithin) PanelProject.HandleCopy();
+                        else _runtimeManager?.SendToRuntime("COPY");
+                    });
+                    return CallNextHookEx(_llKeyHook, nCode, wParam, lParam);
+                }
+                else if (vk == 0x58) // X
+                {
+                    Dispatcher.BeginInvoke(() => {
+                        if (FocusManager.GetFocusedElement(this) is TextBox) return;
+                        if (PanelProject.IsKeyboardFocusWithin) PanelProject.HandleCut();
+                    });
+                    return CallNextHookEx(_llKeyHook, nCode, wParam, lParam);
+                }
+                else if (vk == 0x56) // V
+                {
+                    Dispatcher.BeginInvoke(() => {
+                        if (FocusManager.GetFocusedElement(this) is TextBox) return;
+                        if (PanelProject.IsKeyboardFocusWithin) PanelProject.HandlePaste();
+                        else _runtimeManager?.SendToRuntime("PASTE");
+                    });
+                    return CallNextHookEx(_llKeyHook, nCode, wParam, lParam);
+                }
+            }
+
+            // ESC → 選択インスタンス削除（ダイアログあり）
+            if (isDown && vk == 0x1B && !_ctrlHeld
+                && _runtimeManager?.State == EditorState.Edit
+                && !_deleteDialogOpen)
+            {
+                Dispatcher.BeginInvoke(TryDeleteSelected);
+                return CallNextHookEx(_llKeyHook, nCode, wParam, lParam);
             }
 
             if (VkKeyMap.TryGetValue(vk, out var keyName) && IsCamInputActive())
@@ -479,6 +693,12 @@ public partial class MainWindow : Window
                 LblState.Text      = "● EDIT";
                 LblState.Foreground = System.Windows.Media.Brushes.LightGreen;
                 ViewportDocumentContent.Visibility = Visibility.Visible;
+                // FIRST_FRAME 受信まで待つためオーバーレイを表示する。
+                // 非デバッグビルドでは FIRST_FRAME が来ないため READY 受信時に
+                // OnRuntimeHwndAvailable → OnFirstFrameReady の代替は不要
+                // （デバッグ以外ではオーバーレイが残るが、本番ビルドはエディタを使わない想定）
+                TxtViewportStatus.Text            = "";
+                ViewportLoadingOverlay.Visibility  = Visibility.Visible;
                 break;
 
             case EditorState.Play:
@@ -489,6 +709,7 @@ public partial class MainWindow : Window
                 LblState.Text      = "▶ PLAY";
                 LblState.Foreground = System.Windows.Media.Brushes.LightSkyBlue;
                 ViewportDocumentContent.Visibility = Visibility.Hidden;
+                ViewportLoadingOverlay.Visibility  = Visibility.Collapsed;
                 break;
 
             case EditorState.Pause:
@@ -499,6 +720,7 @@ public partial class MainWindow : Window
                 LblState.Text      = "⏸ PAUSE";
                 LblState.Foreground = System.Windows.Media.Brushes.Orange;
                 ViewportDocumentContent.Visibility = Visibility.Visible;
+                ViewportLoadingOverlay.Visibility  = Visibility.Collapsed;
                 break;
 
             case EditorState.Building:
@@ -507,6 +729,8 @@ public partial class MainWindow : Window
                 BtnStop.IsEnabled  = false;
                 LblState.Text      = "⚙ BUILDING...";
                 LblState.Foreground = System.Windows.Media.Brushes.Yellow;
+                TxtViewportStatus.Text            = "ビルド中...";
+                ViewportLoadingOverlay.Visibility  = Visibility.Visible;
                 break;
 
             case EditorState.Idle:
@@ -515,6 +739,8 @@ public partial class MainWindow : Window
                 BtnStop.IsEnabled  = false;
                 LblState.Text      = "○ IDLE";
                 LblState.Foreground = System.Windows.Media.Brushes.Gray;
+                TxtViewportStatus.Text            = "再起動中...";
+                ViewportLoadingOverlay.Visibility  = Visibility.Visible;
                 break;
         }
     }

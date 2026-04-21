@@ -657,6 +657,9 @@ pub struct InstancedModelBatch {
 
     // ── Dirty Flag ───────────────────────────────────────────
     dirty: bool,
+
+    /// インスタンスごとの安定アニメーション位相シード（InstanceMeta::anim_seed と同期）
+    pub anim_seeds: Vec<u32>,
 }
 
 impl InstancedModelBatch {
@@ -780,12 +783,20 @@ impl InstancedModelBatch {
             lod_id_bgs,
             lod_compact_insts: vec![Vec::new(); NUM_LODS],
             dirty: true,
+            anim_seeds: Vec::new(),
         }
     }
 
     /// 変換が変化したことを通知する。
     /// 次の `update()` でワールド行列・AABB が再計算される。
     pub fn mark_dirty(&mut self) { self.dirty = true; }
+
+    /// InstanceMeta::anim_seed の配列を同期する。
+    /// インスタンスの追加・削除・Undo/Redo 後に呼び出す。
+    pub fn set_anim_seeds(&mut self, seeds: &[u32]) {
+        self.anim_seeds.clear();
+        self.anim_seeds.extend_from_slice(seeds);
+    }
 
     /// 毎フレーム呼び出す更新関数。
     ///
@@ -886,7 +897,7 @@ impl InstancedModelBatch {
 
             // スキンシステムへの anim_times 転送（GPU スキニング計算の入力）
             if let Some(skin) = &self.skin {
-                skin.upload_lod_times(queue, lod, &self.lod_compact_insts[lod], anim_time);
+                skin.upload_lod_times(queue, lod, &self.lod_compact_insts[lod], &self.anim_seeds, anim_time);
             }
         }
     }

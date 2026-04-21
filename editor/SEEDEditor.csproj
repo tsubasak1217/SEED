@@ -33,7 +33,8 @@
   </ItemGroup>
 
   <ItemGroup>
-    <Resource Include="resources\icons\*.png"/>
+    <Resource Include="resources\icons\**\*.png"/>
+    <Resource Include="resources\images\**\*.png"/>
   </ItemGroup>
 
 </Project>

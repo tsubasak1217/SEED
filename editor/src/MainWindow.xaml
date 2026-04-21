@@ -139,7 +139,7 @@
                                         ツールストリップと HwndHost を別 Grid 列に分けてオーバーラップを避ける。
                                         視覚的には Viewport パネル内の左端に配置される。
                                     -->
-                                    <Grid>
+                                    <Grid x:Name="ViewportGrid">
                                         <Grid.ColumnDefinitions>
                                             <!-- ツールストリップ列 -->
                                             <ColumnDefinition Width="44"/>
@@ -151,6 +151,26 @@
                                         <ContentControl Grid.Column="1"
                                                         x:Name="ViewportDocumentContent"
                                                         Background="Black"/>
+
+                                        <!-- 起動中オーバーレイ — FIRST_FRAME 受信まで前面に表示 -->
+                                        <Grid x:Name="ViewportLoadingOverlay"
+                                              Grid.Column="1"
+                                              Panel.ZIndex="5">
+                                            <Image Source="pack://application:,,,/resources/images/blueSky_ORE.png"
+                                                   Stretch="UniformToFill"/>
+                                            <TextBlock x:Name="TxtViewportStatus"
+                                                       Text=""
+                                                       Foreground="White" FontSize="14"
+                                                       FontWeight="Bold"
+                                                       HorizontalAlignment="Right"
+                                                       VerticalAlignment="Bottom"
+                                                       Margin="0,0,12,8">
+                                                <TextBlock.Effect>
+                                                    <DropShadowEffect Color="Black" BlurRadius="4"
+                                                                      ShadowDepth="1" Opacity="0.8"/>
+                                                </TextBlock.Effect>
+                                            </TextBlock>
+                                        </Grid>
 
                                         <!-- ツールストリップ (HwndHost と列が異なるためAirspace問題なし) -->
                                         <Border Grid.Column="0"
@@ -205,7 +225,7 @@
                             </avd:LayoutDocumentPane>
                         </avd:LayoutDocumentPaneGroup>
 
-                        <!-- 下部パネル: Project -->
+                        <!-- 下部パネル: Project / Output -->
                         <avd:LayoutAnchorablePane DockHeight="180" DockMinHeight="80">
                             <avd:LayoutAnchorable Title="Project"
                                                   ContentId="project"
@@ -213,6 +233,13 @@
                                                   CanHide="True"
                                                   CanFloat="True">
                                 <panels:ProjectPanel x:Name="PanelProject"/>
+                            </avd:LayoutAnchorable>
+                            <avd:LayoutAnchorable Title="Output"
+                                                  ContentId="output"
+                                                  CanClose="False"
+                                                  CanHide="True"
+                                                  CanFloat="True">
+                                <panels:OutputPanel x:Name="PanelOutput"/>
                             </avd:LayoutAnchorable>
                         </avd:LayoutAnchorablePane>
 
@@ -225,7 +252,7 @@
                                               CanClose="False"
                                               CanHide="True"
                                               CanFloat="True">
-                            <panels:InspectorPanel/>
+                            <panels:InspectorPanel x:Name="PanelInspector"/>
                         </avd:LayoutAnchorable>
                     </avd:LayoutAnchorablePane>
 

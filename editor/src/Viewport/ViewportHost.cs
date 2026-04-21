@@ -17,6 +17,8 @@ public sealed class ViewportHost : HwndHost
     private const int WS_VISIBLE      = 0x10000000;
     private const int WS_CLIPCHILDREN = 0x02000000;
     private const int WM_SIZE         = 0x0005;
+    private const int WM_ERASEBKGND   = 0x0014;
+    private const int BLACK_BRUSH     = 4;
 
     private IntPtr _containerHwnd;
 
@@ -54,6 +56,14 @@ public sealed class ViewportHost : HwndHost
     protected override IntPtr WndProc(
         IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
+        if (msg == WM_ERASEBKGND)
+        {
+            var rect = new NativeMethods.RECT();
+            NativeMethods.GetClientRect(hwnd, ref rect);
+            NativeMethods.FillRect(wParam, ref rect, NativeMethods.GetStockObject(BLACK_BRUSH));
+            handled = true;
+            return (IntPtr)1;
+        }
         if (msg == WM_SIZE)
         {
             int w = NativeMethods.LoWord(lParam);
@@ -87,6 +97,18 @@ public sealed class ViewportHost : HwndHost
 
         [DllImport("user32.dll")]
         internal static extern bool EnumChildWindows(IntPtr parent, EnumWindowsProc proc, IntPtr lParam);
+
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct RECT { public int Left, Top, Right, Bottom; }
+
+        [DllImport("user32.dll")]
+        internal static extern bool GetClientRect(IntPtr hwnd, ref RECT rect);
+
+        [DllImport("user32.dll")]
+        internal static extern int FillRect(IntPtr hdc, ref RECT rect, IntPtr hbr);
+
+        [DllImport("gdi32.dll")]
+        internal static extern IntPtr GetStockObject(int fnObject);
 
         internal static int LoWord(IntPtr lParam) => (int)(lParam.ToInt64() & 0xFFFF);
         internal static int HiWord(IntPtr lParam) => (int)((lParam.ToInt64() >> 16) & 0xFFFF);

@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
@@ -13,20 +14,75 @@ namespace SEEDEditor.Panels;
 
 public partial class ProjectPanel : UserControl
 {
+    // ── P/Invoke (ごみ箱へ送る) ──────────────────────────────────
+
+    [DllImport("shell32.dll", CharSet = CharSet.Auto)]
+    private static extern int SHFileOperation(ref SHFILEOPSTRUCT op);
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Auto)]
+    private struct SHFILEOPSTRUCT
+    {
+        public nint   hwnd;
+        public uint   wFunc;
+        public string pFrom;
+        public string pTo;
+        public ushort fFlags;
+        public bool   fAnyOperationsAborted;
+        public nint   hNameMappings;
+        public string lpszProgressTitle;
+    }
+
+    private const uint   FO_DELETE          = 0x0003;
+    private const ushort FOF_ALLOWUNDO      = 0x0040;
+    private const ushort FOF_NOCONFIRMATION = 0x0010;
+    private const ushort FOF_SILENT         = 0x0004;
+
+    private static void RecycleFile(string path)
+    {
+        var op = new SHFILEOPSTRUCT
+        {
+            wFunc  = FO_DELETE,
+            pFrom  = path + '\0' + '\0',
+            fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT,
+        };
+        SHFileOperation(ref op);
+    }
+
     // ── 状態 ──────────────────────────────────────────────────────
 
     private string             _assetsRoot  = "";
     private string             _currentPath = "";
-    private Border?            _selectedItem;
     private FileSystemWatcher? _watcher;
     private bool               _suppressTreeEvent;
 
-    private static readonly TreeViewItem DummyItem = new();
+    // 複数選択
+    private readonly HashSet<Border> _selectedItems = new();
+    private Border?                  _lastClickedItem;
+
+    // ファイルクリップボード
+    private (List<string> Paths, bool IsCut)? _fileClipboard;
+
+    // ドラッグ範囲選択
+    private bool                              _dragSelectActive;
+    private bool                              _dragThresholdMet;
+    private Point                             _dragStart;         // FileScrollViewer 座標
+    private HashSet<Border>                   _selectionAtDragStart = new();
+    private System.Windows.Shapes.Rectangle? _selRectShape;
+
+    // リネーム中フラグ・新規フォルダ用
+    private bool    _isRenaming;
+    private string? _pendingRenameFolder;
+
+    // 再クリックリネーム用タイマー
+    private Border?                                        _renamePendingTile;
+    private System.Windows.Threading.DispatcherTimer?     _renameTimer;
+
+    private static TreeViewItem NewDummy() => new();
 
     // ── アイコン URI ──────────────────────────────────────────────
 
     private static Uri PackUri(string name)
-        => new($"pack://application:,,,/resources/icons/{name}", UriKind.Absolute);
+        => new($"pack://application:,,,/resources/icons/folderview/{name}", UriKind.Absolute);
 
     private static readonly Uri UriFolder      = PackUri("folder.png");
     private static readonly Uri UriFolderEmpty = PackUri("folder_empty.png");
@@ -35,18 +91,16 @@ public partial class ProjectPanel : UserControl
     private static readonly Uri UriScene       = PackUri("scene.png");
     private static readonly Uri UriScript      = PackUri("script.png");
 
-    // 画像プレビュー対象の拡張子
     private static readonly HashSet<string> ImageExts = new(StringComparer.OrdinalIgnoreCase)
         { ".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tga", ".hdr", ".exr", ".webp" };
 
-    // 拡張子 → アイコン URI
     private static Uri GetFileIconUri(string ext) => ext.ToLowerInvariant() switch
     {
-        ".scene"                              => UriScene,
+        ".scene"                               => UriScene,
         ".glb" or ".gltf" or ".obj" or ".fbx" => UriModel,
-        ".lua" or ".cs" or ".py" or ".wgsl"  => UriScript,
-        _ when ImageExts.Contains(ext)        => UriImage,
-        _                                     => UriImage,
+        ".lua" or ".cs" or ".py" or ".wgsl"   => UriScript,
+        _ when ImageExts.Contains(ext)         => UriImage,
+        _                                      => UriImage,
     };
 
     // ─────────────────────────────────────────────────────────────
@@ -55,27 +109,50 @@ public partial class ProjectPanel : UserControl
     {
         InitializeComponent();
         MouseDown += OnPanelMouseDown;
+        WireScrollViewerEvents();
     }
 
-    // ── 公開 API ──────────────────────────────────────────────────
+    // ── 公開 API (MainWindow から呼ぶ) ────────────────────────────
 
     public void SetAssetsPath(string assetsPath)
     {
         _assetsRoot  = assetsPath;
         _currentPath = assetsPath;
-
         BuildFolderTree();
         RefreshFileGrid();
         StartWatcher();
     }
 
-    // ── フォルダツリー構築 ────────────────────────────────────────
+    public void HandleCopy()  => DoCopy();
+    public void HandleCut()   => DoCut();
+    public void HandlePaste() => DoPaste();
+
+    // ── ScrollViewer イベント配線 ─────────────────────────────────
+
+    private void WireScrollViewerEvents()
+    {
+        // 空エリアクリックで hit-test を受け取るために背景を設定
+        FileGrid.Background = Brushes.Transparent;
+
+        // ドラッグ範囲選択
+        FileScrollViewer.PreviewMouseLeftButtonDown += OnSVPreviewLMBDown;
+        FileScrollViewer.MouseLeftButtonDown        += OnSVLMBDown;
+        FileScrollViewer.PreviewMouseMove           += OnSVPreviewMouseMove;
+        FileScrollViewer.PreviewMouseLeftButtonUp   += OnSVPreviewLMBUp;
+
+        // 右クリック（背景）
+        FileScrollViewer.MouseRightButtonDown += OnSVRMBDown;
+
+        // キーボード（Delete）
+        FileScrollViewer.PreviewKeyDown += OnSVPreviewKeyDown;
+    }
+
+    // ── フォルダツリー ────────────────────────────────────────────
 
     private void BuildFolderTree()
     {
         FolderTree.Items.Clear();
         if (!Directory.Exists(_assetsRoot)) return;
-
         var root = BuildTreeNode(new DirectoryInfo(_assetsRoot));
         root.IsExpanded = true;
         root.Collapsed  += (_, _) => root.IsExpanded = true;
@@ -91,7 +168,7 @@ public partial class ProjectPanel : UserControl
         };
         if (dir.EnumerateDirectories().Any())
         {
-            item.Items.Add(DummyItem);
+            item.Items.Add(NewDummy());
             item.Expanded += OnNodeExpanded;
         }
         return item;
@@ -100,7 +177,7 @@ public partial class ProjectPanel : UserControl
     private void OnNodeExpanded(object sender, RoutedEventArgs e)
     {
         if (sender is not TreeViewItem item) return;
-        if (item.Items.Count == 1 && item.Items[0] == DummyItem)
+        if (item.Items.Count == 1 && item.Items[0] is TreeViewItem { Tag: null, Header: null })
         {
             item.Items.Clear();
             if (item.Tag is string path && Directory.Exists(path))
@@ -116,10 +193,10 @@ public partial class ProjectPanel : UserControl
     {
         var icon = new Image
         {
-            Source = new BitmapImage(UriFolder),
-            Width  = 20,
-            Height = 20,
-            Margin = new Thickness(0, 0, 5, 0),
+            Source            = new BitmapImage(UriFolder),
+            Width             = 20,
+            Height            = 20,
+            Margin            = new Thickness(0, 0, 5, 0),
             VerticalAlignment = VerticalAlignment.Center,
         };
         RenderOptions.SetBitmapScalingMode(icon, BitmapScalingMode.HighQuality);
@@ -135,8 +212,6 @@ public partial class ProjectPanel : UserControl
         return sp;
     }
 
-    // ── ツリー選択 ────────────────────────────────────────────────
-
     private void OnFolderTreeSelected(object sender, RoutedPropertyChangedEventArgs<object> e)
     {
         if (_suppressTreeEvent) return;
@@ -148,6 +223,9 @@ public partial class ProjectPanel : UserControl
 
     private void RefreshFileGrid()
     {
+        ClearAllSelection();
+        HideDragRect();
+        _dragSelectActive = false;
         FileGrid.Children.Clear();
 
         var rel = Path.GetRelativePath(_assetsRoot, _currentPath);
@@ -161,6 +239,21 @@ public partial class ProjectPanel : UserControl
 
         foreach (var file in Directory.GetFiles(_currentPath).OrderBy(p => p))
             FileGrid.Children.Add(BuildFileItem(new FileInfo(file)));
+
+        // 新規フォルダ作成後のリネーム
+        if (_pendingRenameFolder != null)
+        {
+            var target = _pendingRenameFolder;
+            _pendingRenameFolder = null;
+            var tile = FileGrid.Children.OfType<Border>()
+                .FirstOrDefault(b => b.Tag is string p && PathEquals(p, target));
+            if (tile != null)
+            {
+                SelectSingle(tile, ctrl: false, shift: false);
+                Dispatcher.BeginInvoke(() => StartRenameMode(tile),
+                    System.Windows.Threading.DispatcherPriority.Background);
+            }
+        }
     }
 
     // ── アイテム構築 ──────────────────────────────────────────────
@@ -168,38 +261,32 @@ public partial class ProjectPanel : UserControl
     private UIElement BuildDirItem(DirectoryInfo dir)
     {
         bool isEmpty = !dir.EnumerateFileSystemInfos().Any();
-        var  uri     = isEmpty ? UriFolderEmpty : UriFolder;
-        var  imgCtrl = MakeIconImage(uri, 66);
-        var  item    = WrapTile(imgCtrl, dir.Name, dir.FullName);
+        var  item    = WrapTile(MakeIconImage(isEmpty ? UriFolderEmpty : UriFolder, 66),
+                                dir.Name, dir.FullName);
         AttachItemEvents(item, dir);
         return item;
     }
 
     private UIElement BuildFileItem(FileInfo file)
     {
-        bool isImageFile = ImageExts.Contains(file.Extension);
-        var  iconUri     = GetFileIconUri(file.Extension);
-        var  imgCtrl     = MakeIconImage(iconUri, 66);
-        var  item        = WrapTile(imgCtrl, file.Name, file.FullName);
-
-        if (isImageFile)
+        var imgCtrl = MakeIconImage(GetFileIconUri(file.Extension), 66);
+        var item    = WrapTile(imgCtrl, file.Name, file.FullName);
+        if (ImageExts.Contains(file.Extension))
             _ = LoadImagePreviewAsync(imgCtrl, file.FullName);
-
         AttachItemEvents(item, file);
         return item;
     }
 
     private static Image MakeIconImage(Uri uri, int size)
     {
-        var bmp = new BitmapImage(uri);
         var img = new Image
         {
-            Source  = bmp,
-            Width   = size,
-            Height  = size,
-            Stretch = Stretch.Uniform,
+            Source              = new BitmapImage(uri),
+            Width               = size,
+            Height              = size,
+            Stretch             = Stretch.Uniform,
             HorizontalAlignment = HorizontalAlignment.Center,
-            Margin  = new Thickness(0, 6, 0, 3),
+            Margin              = new Thickness(0, 6, 0, 3),
         };
         RenderOptions.SetBitmapScalingMode(img, BitmapScalingMode.HighQuality);
         return img;
@@ -236,8 +323,6 @@ public partial class ProjectPanel : UserControl
         };
     }
 
-    // ── 画像プレビュー非同期ロード ────────────────────────────────
-
     private async Task LoadImagePreviewAsync(Image imgCtrl, string filePath)
     {
         var bitmap = await Task.Run(() =>
@@ -273,42 +358,532 @@ public partial class ProjectPanel : UserControl
     {
         item.MouseEnter += (_, _) =>
         {
-            if (item != _selectedItem)
+            if (!_selectedItems.Contains(item))
                 item.Background = new SolidColorBrush(Color.FromArgb(0x22, 0xFF, 0xFF, 0xFF));
         };
         item.MouseLeave += (_, _) =>
         {
-            if (item != _selectedItem)
+            if (!_selectedItems.Contains(item))
                 item.Background = Brushes.Transparent;
         };
         item.MouseLeftButtonDown += (_, e) =>
         {
-            SelectItem(item);
+            bool ctrl  = Keyboard.IsKeyDown(Key.LeftCtrl)  || Keyboard.IsKeyDown(Key.RightCtrl);
+            bool shift = Keyboard.IsKeyDown(Key.LeftShift) || Keyboard.IsKeyDown(Key.RightShift);
 
-            if (e.ClickCount == 2)
+            if (e.ClickCount == 2 && !ctrl && !shift)
             {
-                if (entry is DirectoryInfo dir)
-                {
-                    NavigateTo(dir.FullName);
-                }
-                else if (item.Tag is string t && t == "..")
-                {
-                    var parent = Directory.GetParent(_currentPath)?.FullName;
-                    if (parent != null && IsUnderAssets(parent))
-                        NavigateTo(parent);
-                }
+                // ダブルクリック → リネームタイマーをキャンセルしてフォルダ移動
+                CancelRenameSchedule();
+                if (entry is DirectoryInfo dir) NavigateTo(dir.FullName);
             }
-
+            else if (e.ClickCount == 1)
+            {
+                bool alreadyAlone = _selectedItems.Count == 1 && _selectedItems.Contains(item);
+                if (!ctrl && !shift && alreadyAlone)
+                {
+                    // 選択済み単独アイテムへの再クリック → リネーム予約
+                    ScheduleRename(item);
+                }
+                else
+                {
+                    CancelRenameSchedule();
+                    SelectSingle(item, ctrl, shift);
+                }
+                FileScrollViewer.Focus();
+            }
+            e.Handled = true;
+        };
+        item.MouseRightButtonDown += (_, e) =>
+        {
+            if (!_selectedItems.Contains(item))
+                SelectSingle(item, ctrl: false, shift: false);
+            FileScrollViewer.Focus();
+            ShowItemContextMenu();
             e.Handled = true;
         };
     }
 
-    private void SelectItem(Border item)
+    // ── 選択管理 ─────────────────────────────────────────────────
+
+    private void SelectSingle(Border tile, bool ctrl, bool shift)
     {
-        if (_selectedItem != null)
-            _selectedItem.Background = Brushes.Transparent;
-        _selectedItem = item;
-        item.Background = new SolidColorBrush(Color.FromArgb(0x44, 0x33, 0x99, 0xFF));
+        if (shift && _lastClickedItem != null)
+        {
+            if (!ctrl) ClearAllSelection();
+            RangeSelect(_lastClickedItem, tile);
+        }
+        else if (ctrl)
+        {
+            ToggleSelection(tile);
+            _lastClickedItem = tile;
+        }
+        else
+        {
+            ClearAllSelection();
+            AddToSelection(tile);
+            _lastClickedItem = tile;
+        }
+    }
+
+    private void RangeSelect(Border from, Border to)
+    {
+        var children = FileGrid.Children.OfType<Border>().ToList();
+        int a = children.IndexOf(from);
+        int b = children.IndexOf(to);
+        if (a < 0 || b < 0) return;
+        int lo = Math.Min(a, b), hi = Math.Max(a, b);
+        for (int i = lo; i <= hi; i++) AddToSelection(children[i]);
+    }
+
+    private void AddToSelection(Border tile)
+    {
+        _selectedItems.Add(tile);
+        tile.Background = new SolidColorBrush(Color.FromArgb(0x55, 0x33, 0x99, 0xFF));
+        ApplyCutOpacity(tile);
+    }
+
+    private void RemoveFromSelection(Border tile)
+    {
+        _selectedItems.Remove(tile);
+        tile.Background = Brushes.Transparent;
+        ApplyCutOpacity(tile);
+    }
+
+    private void ToggleSelection(Border tile)
+    {
+        if (_selectedItems.Contains(tile)) RemoveFromSelection(tile);
+        else                               AddToSelection(tile);
+    }
+
+    private void ClearAllSelection()
+    {
+        foreach (var t in _selectedItems.ToList())
+        {
+            t.Background = Brushes.Transparent;
+            ApplyCutOpacity(t);
+        }
+        _selectedItems.Clear();
+    }
+
+    private void ApplyCutOpacity(Border tile)
+    {
+        bool isCut = _fileClipboard is { IsCut: true }
+            && _fileClipboard.Value.Paths.Contains(tile.Tag as string ?? "");
+        tile.Opacity = isCut ? 0.5 : 1.0;
+    }
+
+    // ── ドラッグ範囲選択 ──────────────────────────────────────────
+
+    private void OnSVPreviewLMBDown(object sender, MouseButtonEventArgs e)
+    {
+        _dragStart = e.GetPosition(FileScrollViewer);
+
+        // OriginalSource がタイル内の要素なら範囲選択を開始しない
+        if (e.OriginalSource is DependencyObject src && FindTile(src) != null) return;
+
+        // 背景クリック → 選択解除して範囲選択開始
+        CancelRenameSchedule();
+        bool ctrl = Keyboard.IsKeyDown(Key.LeftCtrl) || Keyboard.IsKeyDown(Key.RightCtrl);
+        if (!ctrl) ClearAllSelection();
+        _selectionAtDragStart = new HashSet<Border>(_selectedItems);
+        _lastClickedItem      = null;
+        _dragSelectActive     = true;
+        _dragThresholdMet     = false;
+        FileScrollViewer.CaptureMouse();
+        FileScrollViewer.Focus();
+    }
+
+    private void OnSVLMBDown(object sender, MouseButtonEventArgs e)
+    {
+        // バブリングがここまで来るのは背景クリック時のみ（念のため残す）
+        e.Handled = true;
+    }
+
+    private void OnSVPreviewMouseMove(object sender, MouseEventArgs e)
+    {
+        if (!_dragSelectActive || e.LeftButton != MouseButtonState.Pressed) return;
+
+        var cur = e.GetPosition(FileScrollViewer);
+        double dx = cur.X - _dragStart.X, dy = cur.Y - _dragStart.Y;
+
+        if (!_dragThresholdMet && dx * dx + dy * dy > 25) _dragThresholdMet = true;
+        if (!_dragThresholdMet) return;
+
+        UpdateDragRect(cur);
+        UpdateDragSelection(cur);
+        e.Handled = true;
+    }
+
+    private void OnSVPreviewLMBUp(object sender, MouseButtonEventArgs e)
+    {
+        if (!_dragSelectActive) return;
+        _dragSelectActive = false;
+        _dragThresholdMet = false;
+        HideDragRect();
+        FileScrollViewer.ReleaseMouseCapture();
+        e.Handled = true;
+    }
+
+    private void UpdateDragRect(Point cur)
+    {
+        if (_selRectShape == null)
+        {
+            _selRectShape = new System.Windows.Shapes.Rectangle
+            {
+                Stroke          = new SolidColorBrush(Color.FromArgb(0xCC, 0x44, 0x88, 0xFF)),
+                StrokeThickness = 1,
+                Fill            = new SolidColorBrush(Color.FromArgb(0x33, 0x44, 0x88, 0xFF)),
+            };
+            SelectionCanvas.Children.Add(_selRectShape);
+        }
+        double x = Math.Min(_dragStart.X, cur.X);
+        double y = Math.Min(_dragStart.Y, cur.Y);
+        double w = Math.Abs(cur.X - _dragStart.X);
+        double h = Math.Abs(cur.Y - _dragStart.Y);
+        Canvas.SetLeft(_selRectShape, x);
+        Canvas.SetTop (_selRectShape, y);
+        _selRectShape.Width  = w;
+        _selRectShape.Height = h;
+    }
+
+    private void HideDragRect()
+    {
+        SelectionCanvas.Children.Clear();
+        _selRectShape = null;
+    }
+
+    private void UpdateDragSelection(Point cur)
+    {
+        var dragRect = new Rect(
+            Math.Min(_dragStart.X, cur.X),
+            Math.Min(_dragStart.Y, cur.Y),
+            Math.Abs(cur.X - _dragStart.X),
+            Math.Abs(cur.Y - _dragStart.Y));
+
+        foreach (var tile in FileGrid.Children.OfType<Border>())
+        {
+            var tl      = tile.TranslatePoint(new Point(0, 0), FileScrollViewer);
+            var tr      = new Rect(tl.X, tl.Y, tile.ActualWidth, tile.ActualHeight);
+            bool inRect = dragRect.IntersectsWith(tr);
+            // Ctrl+ドラッグはドラッグ開始時の選択に加算、通常ドラッグは矩形内のみ
+            if (inRect || _selectionAtDragStart.Contains(tile)) AddToSelection(tile);
+            else                                                 RemoveFromSelection(tile);
+        }
+    }
+
+    // ── 右クリックコンテキストメニュー ────────────────────────────
+
+    private void OnSVRMBDown(object sender, MouseButtonEventArgs e)
+    {
+        // 背景のみここに来る（タイル側が Handled=true にしている）
+        ClearAllSelection();
+        FileScrollViewer.Focus();
+        ShowEmptyContextMenu();
+        e.Handled = true;
+    }
+
+    private void ShowItemContextMenu()
+    {
+        var menu = new ContextMenu();
+        menu.Style = BuildMenuStyle();
+
+        Add(menu, "コピー  (Ctrl+C)",      DoCopy);
+        Add(menu, "切り取り  (Ctrl+X)",    DoCut);
+        menu.Items.Add(new Separator());
+        Add(menu, "削除",                   DoDelete);
+        if (_selectedItems.Count == 1)
+        {
+            menu.Items.Add(new Separator());
+            Add(menu, "名前の変更  (F2)", () =>
+            {
+                var tile = _selectedItems.First();
+                Dispatcher.BeginInvoke(() => StartRenameMode(tile),
+                    System.Windows.Threading.DispatcherPriority.Background);
+            });
+        }
+        menu.Items.Add(new Separator());
+        Add(menu, "エクスプローラーで開く", OpenInExplorer);
+
+        menu.PlacementTarget = FileScrollViewer;
+        menu.Placement       = System.Windows.Controls.Primitives.PlacementMode.MousePoint;
+        menu.IsOpen          = true;
+    }
+
+    private void ShowEmptyContextMenu()
+    {
+        var menu = new ContextMenu();
+        menu.Style = BuildMenuStyle();
+
+        Add(menu, "新規フォルダを作成",     CreateNewFolder);
+        menu.Items.Add(new Separator());
+        Add(menu, "エクスプローラーで開く", () =>
+            System.Diagnostics.Process.Start("explorer.exe", _currentPath));
+
+        menu.PlacementTarget = FileScrollViewer;
+        menu.Placement       = System.Windows.Controls.Primitives.PlacementMode.MousePoint;
+        menu.IsOpen          = true;
+    }
+
+    private static void Add(ContextMenu menu, string header, Action action)
+    {
+        var item = new MenuItem { Header = header };
+        item.Click += (_, _) => action();
+        menu.Items.Add(item);
+    }
+
+    private static Style BuildMenuStyle()
+    {
+        var style = new Style(typeof(ContextMenu));
+        style.Setters.Add(new Setter(BackgroundProperty,
+            new SolidColorBrush(Color.FromRgb(0x2D, 0x2D, 0x2D))));
+        style.Setters.Add(new Setter(BorderBrushProperty,
+            new SolidColorBrush(Color.FromRgb(0x55, 0x55, 0x55))));
+        style.Setters.Add(new Setter(ForegroundProperty,
+            new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC))));
+        return style;
+    }
+
+    // ── キーボード ────────────────────────────────────────────────
+
+    private void OnSVPreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.Delete && _selectedItems.Count > 0)
+        {
+            DoDelete();
+            e.Handled = true;
+        }
+        else if (e.Key == Key.F2 && _selectedItems.Count == 1)
+        {
+            var tile = _selectedItems.First();
+            Dispatcher.BeginInvoke(() => StartRenameMode(tile),
+                System.Windows.Threading.DispatcherPriority.Background);
+            e.Handled = true;
+        }
+    }
+
+    private void ScheduleRename(Border tile)
+    {
+        _renamePendingTile = tile;
+        _renameTimer?.Stop();
+        _renameTimer = new System.Windows.Threading.DispatcherTimer
+            { Interval = TimeSpan.FromMilliseconds(500) };
+        _renameTimer.Tick += (_, _) =>
+        {
+            _renameTimer?.Stop();
+            _renameTimer = null;
+            var t = _renamePendingTile;
+            _renamePendingTile = null;
+            if (t != null) StartRenameMode(t);
+        };
+        _renameTimer.Start();
+    }
+
+    private void CancelRenameSchedule()
+    {
+        _renameTimer?.Stop();
+        _renameTimer      = null;
+        _renamePendingTile = null;
+    }
+
+    // ── ファイル操作 ──────────────────────────────────────────────
+
+    public void DoCopy()
+    {
+        var paths = GetSelectedPaths();
+        if (paths.Count == 0) return;
+        _fileClipboard = (paths, IsCut: false);
+        RefreshCutVisuals();
+    }
+
+    public void DoCut()
+    {
+        var paths = GetSelectedPaths();
+        if (paths.Count == 0) return;
+        _fileClipboard = (paths, IsCut: true);
+        RefreshCutVisuals();
+    }
+
+    public void DoPaste()
+    {
+        if (_fileClipboard is not { } cb) return;
+
+        foreach (var src in cb.Paths)
+        {
+            bool srcIsDir = Directory.Exists(src);
+            bool srcIsFile = !srcIsDir && File.Exists(src);
+            if (!srcIsDir && !srcIsFile) continue;
+
+            string dest = GetUniquePastePath(src, _currentPath);
+            try
+            {
+                if (srcIsDir)
+                {
+                    CopyDirectoryRecursive(src, dest);
+                    if (cb.IsCut) Directory.Delete(src, recursive: true);
+                }
+                else
+                {
+                    File.Copy(src, dest);
+                    if (cb.IsCut) File.Delete(src);
+                }
+            }
+            catch { }
+        }
+
+        if (cb.IsCut) _fileClipboard = null;
+        RefreshCutVisuals();
+    }
+
+    private void DoDelete()
+    {
+        var paths = GetSelectedPaths();
+        if (paths.Count == 0) return;
+
+        string msg = paths.Count == 1
+            ? $"「{Path.GetFileName(paths[0])}」を削除しますか？\n\n削除したファイルはごみ箱から復元できます。"
+            : $"{paths.Count} 個のアイテムを削除しますか？\n\n削除したファイルはごみ箱から復元できます。";
+
+        var result = MessageBox.Show(msg, "削除の確認",
+            MessageBoxButton.OKCancel, MessageBoxImage.Warning);
+        if (result != MessageBoxResult.OK) return;
+
+        foreach (var path in paths)
+            RecycleFile(path);
+
+        ClearAllSelection();
+    }
+
+    private void OpenInExplorer()
+    {
+        var paths = GetSelectedPaths();
+        if (paths.Count == 0) return;
+        // 最初の選択アイテムを選択した状態でエクスプローラーを開く
+        System.Diagnostics.Process.Start("explorer.exe",
+            $"/select,\"{paths[0]}\"");
+    }
+
+    private void CreateNewFolder()
+    {
+        string name = "新規フォルダ";
+        string path = Path.Combine(_currentPath, name);
+        int n = 1;
+        while (Directory.Exists(path) || File.Exists(path))
+        {
+            name = $"新規フォルダ({n++})";
+            path = Path.Combine(_currentPath, name);
+        }
+        try
+        {
+            Directory.CreateDirectory(path);
+            _pendingRenameFolder = path;
+        }
+        catch { }
+    }
+
+    // ── インラインリネーム ────────────────────────────────────────
+
+    private void StartRenameMode(Border tile)
+    {
+        if (_isRenaming) return;
+        _isRenaming = true;
+
+        var sp        = (StackPanel)tile.Child;
+        var nameBlock = sp.Children.OfType<TextBlock>().First();
+        var origName  = nameBlock.Text;
+
+        var nameBox = new TextBox
+        {
+            Text                = origName,
+            FontSize            = 11,
+            Background          = new SolidColorBrush(Color.FromRgb(0x30, 0x30, 0x30)),
+            Foreground          = Brushes.White,
+            BorderBrush         = new SolidColorBrush(Color.FromArgb(0xAA, 0x44, 0x88, 0xFF)),
+            BorderThickness     = new Thickness(1),
+            TextAlignment       = TextAlignment.Center,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            MaxWidth            = 106,
+            MinWidth            = 60,
+        };
+        nameBox.Loaded += (_, _) => { nameBox.SelectAll(); nameBox.Focus(); };
+
+        int blockIdx = sp.Children.IndexOf(nameBlock);
+        sp.Children.RemoveAt(blockIdx);
+        sp.Children.Insert(blockIdx, nameBox);
+
+        void RestoreBlock()
+        {
+            if (!_isRenaming) return;
+            _isRenaming = false;
+            sp.Children.Remove(nameBox);
+            sp.Children.Insert(blockIdx, nameBlock);
+        }
+
+        void Commit()
+        {
+            var newName = nameBox.Text.Trim();
+            RestoreBlock();
+            if (string.IsNullOrEmpty(newName) || newName == origName) return;
+            var oldPath = (string)tile.Tag!;
+            var dir     = Path.GetDirectoryName(oldPath)!;
+            var newPath = Path.Combine(dir, newName);
+            try
+            {
+                if      (Directory.Exists(oldPath)) Directory.Move(oldPath, newPath);
+                else if (File.Exists(oldPath))      File.Move(oldPath, newPath);
+            }
+            catch { }
+        }
+
+        nameBox.KeyDown += (_, e) =>
+        {
+            if      (e.Key == Key.Return) { Commit();      e.Handled = true; }
+            else if (e.Key == Key.Escape) { RestoreBlock(); e.Handled = true; }
+        };
+        nameBox.LostFocus += (_, _) => Commit();
+    }
+
+    // ── ユーティリティ ────────────────────────────────────────────
+
+    private List<string> GetSelectedPaths()
+        => _selectedItems
+            .Select(t => t.Tag as string)
+            .Where(p => p != null)
+            .Cast<string>()
+            .ToList();
+
+    /// コピー先の一意パスを生成する。
+    /// 「name(1)」を重複がなくなるまで付け続ける（アクタコピーと同挙動）。
+    private static string GetUniquePastePath(string srcPath, string destDir)
+    {
+        bool   isDir = Directory.Exists(srcPath);
+        string ext   = isDir ? "" : Path.GetExtension(Path.GetFileName(srcPath));
+        string stem  = isDir
+            ? Path.GetFileName(srcPath)!
+            : Path.GetFileNameWithoutExtension(srcPath);
+
+        string candidate = Path.Combine(destDir, stem + ext);
+        while (File.Exists(candidate) || Directory.Exists(candidate))
+        {
+            stem     += "(1)";
+            candidate = Path.Combine(destDir, stem + ext);
+        }
+        return candidate;
+    }
+
+    private static void CopyDirectoryRecursive(string src, string dst)
+    {
+        Directory.CreateDirectory(dst);
+        foreach (var f in Directory.GetFiles(src))
+            File.Copy(f, Path.Combine(dst, Path.GetFileName(f)));
+        foreach (var d in Directory.GetDirectories(src))
+            CopyDirectoryRecursive(d, Path.Combine(dst, Path.GetFileName(d)));
+    }
+
+    private void RefreshCutVisuals()
+    {
+        foreach (Border tile in FileGrid.Children)
+            ApplyCutOpacity(tile);
     }
 
     // ── ナビゲーション ────────────────────────────────────────────
@@ -317,11 +892,7 @@ public partial class ProjectPanel : UserControl
 
     private void OnPanelMouseDown(object sender, MouseButtonEventArgs e)
     {
-        if (e.ChangedButton == MouseButton.XButton1)
-        {
-            GoUp();
-            e.Handled = true;
-        }
+        if (e.ChangedButton == MouseButton.XButton1) { GoUp(); e.Handled = true; }
     }
 
     private void GoUp()
@@ -335,8 +906,7 @@ public partial class ProjectPanel : UserControl
     private void NavigateTo(string path)
     {
         if (!Directory.Exists(path)) return;
-        _currentPath  = path;
-        _selectedItem = null;
+        _currentPath = path;
         RefreshFileGrid();
         SyncTreeSelection(path);
     }
@@ -369,7 +939,6 @@ public partial class ProjectPanel : UserControl
     {
         _watcher?.Dispose();
         if (!Directory.Exists(_assetsRoot)) return;
-
         _watcher = new FileSystemWatcher(_assetsRoot)
         {
             IncludeSubdirectories = true,
@@ -386,13 +955,26 @@ public partial class ProjectPanel : UserControl
         Dispatcher.BeginInvoke(() =>
         {
             BuildFolderTree();
-            if (!Directory.Exists(_currentPath))
-                _currentPath = _assetsRoot;
+            if (!Directory.Exists(_currentPath)) _currentPath = _assetsRoot;
             RefreshFileGrid();
         });
     }
 
-    // ── ユーティリティ ────────────────────────────────────────────
+    // ── ビジュアルツリーヘルパー ──────────────────────────────────
+
+    /// クリックされた要素からビジュアルツリーを遡り、タイル Border を探す。
+    private static Border? FindTile(DependencyObject obj)
+    {
+        var cur = obj;
+        while (cur != null)
+        {
+            if (cur is Border b && b.Tag is string) return b;
+            cur = System.Windows.Media.VisualTreeHelper.GetParent(cur);
+        }
+        return null;
+    }
+
+    // ── 静的ユーティリティ ────────────────────────────────────────
 
     private static bool PathEquals(string a, string b)
         => string.Equals(

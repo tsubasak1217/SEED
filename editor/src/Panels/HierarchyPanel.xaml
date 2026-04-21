@@ -124,6 +124,10 @@
         <TreeView x:Name="ActorTree" Grid.Row="1"
                   Background="#1E1E1E" BorderThickness="0"
                   Foreground="#CCCCCC" FontSize="13"
+                  ContextMenu="{x:Null}"
+                  VirtualizingPanel.IsVirtualizing="True"
+                  VirtualizingPanel.VirtualizationMode="Recycling"
+                  ScrollViewer.CanContentScroll="True"
                   ScrollViewer.HorizontalScrollBarVisibility="Auto"
                   SelectedItemChanged="OnTreeSelectionChanged"
                   PreviewMouseLeftButtonDown="OnTreeMouseDown"
@@ -134,32 +138,6 @@
                   DragEnter="OnTreeDragEnter"
                   DragLeave="OnTreeDragLeave"
                   AllowDrop="True">
-            <TreeView.ContextMenu>
-                <ContextMenu Background="#2D2D2D" BorderBrush="#555555" BorderThickness="1">
-                    <MenuItem x:Name="MenuCreateGroup" Header="グループフォルダを作成"
-                              Foreground="#CCCCCC" Background="Transparent"
-                              Click="OnCreateGroupMenu">
-                        <MenuItem.Style>
-                            <Style TargetType="MenuItem">
-                                <Setter Property="Template">
-                                    <Setter.Value>
-                                        <ControlTemplate TargetType="MenuItem">
-                                            <Border x:Name="Bd" Background="Transparent" Padding="20,5,16,5">
-                                                <ContentPresenter ContentSource="Header"/>
-                                            </Border>
-                                            <ControlTemplate.Triggers>
-                                                <Trigger Property="IsHighlighted" Value="True">
-                                                    <Setter TargetName="Bd" Property="Background" Value="#3355AAFF"/>
-                                                </Trigger>
-                                            </ControlTemplate.Triggers>
-                                        </ControlTemplate>
-                                    </Setter.Value>
-                                </Setter>
-                            </Style>
-                        </MenuItem.Style>
-                    </MenuItem>
-                </ContextMenu>
-            </TreeView.ContextMenu>
             <TreeView.Resources>
                 <SolidColorBrush x:Key="{x:Static SystemColors.HighlightBrushKey}"        Color="Transparent"/>
                 <SolidColorBrush x:Key="{x:Static SystemColors.ControlBrushKey}"          Color="Transparent"/>

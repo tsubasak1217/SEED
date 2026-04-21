@@ -5,6 +5,7 @@ using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
+using System.Windows.Documents;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
@@ -54,9 +55,39 @@ public partial class HierarchyPanel : UserControl
     // 右クリック用
     private ActorNode? _rightClickedNode;
 
+    // グループ作成後リネーム用
+    private string? _pendingRenameGroupName;
+
     // 複数選択用
     private HashSet<int> _selectedIds = new();
     private int          _anchorId    = -1;
+
+    // D&D: MouseDown で確定したドラッグ対象（コンテキストメニュー誤操作防止）
+    private ActorNode? _pendingDragNode;
+
+    // キャッシュ
+    private static readonly SolidColorBrush BrushGroupIcon = MakeFrozen(Color.FromRgb(0xFF, 0xCC, 0x44));
+    private static readonly SolidColorBrush BrushActorIcon = MakeFrozen(Color.FromRgb(0x55, 0xAA, 0xFF));
+    private static readonly SolidColorBrush BrushMenuBg    = MakeFrozen(Color.FromRgb(0x2D, 0x2D, 0x2D));
+    private static readonly SolidColorBrush BrushMenuBorder= MakeFrozen(Color.FromRgb(0x55, 0x55, 0x55));
+    private static readonly SolidColorBrush BrushMenuFg    = MakeFrozen(Color.FromRgb(0xCC, 0xCC, 0xCC));
+    private static readonly Style           CachedMenuStyle = CreateMenuStyle();
+
+    private static SolidColorBrush MakeFrozen(Color c)
+    {
+        var b = new SolidColorBrush(c);
+        b.Freeze();
+        return b;
+    }
+
+    private static Style CreateMenuStyle()
+    {
+        var style = new Style(typeof(ContextMenu));
+        style.Setters.Add(new Setter(Control.BackgroundProperty,  new SolidColorBrush(Color.FromRgb(0x2D, 0x2D, 0x2D))));
+        style.Setters.Add(new Setter(Control.BorderBrushProperty, new SolidColorBrush(Color.FromRgb(0x55, 0x55, 0x55))));
+        style.Setters.Add(new Setter(Control.ForegroundProperty,  new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC))));
+        return style;
+    }
 
     // ============================================================
 
@@ -92,6 +123,16 @@ public partial class HierarchyPanel : UserControl
             if (_selectedId >= 0) _selectedIds.Add(_selectedId);
             _anchorId = _selectedId;
             RebuildTree(_roots);
+
+            // グループ作成直後のリネーム
+            if (_pendingRenameGroupName != null)
+            {
+                var name = _pendingRenameGroupName;
+                _pendingRenameGroupName = null;
+                var node = GetAllNodes(_roots).FirstOrDefault(n => n.Name == name && n.IsGroup);
+                if (node != null)
+                    Dispatcher.BeginInvoke(() => StartRename(node.Id), DispatcherPriority.Background);
+            }
         });
     }
 
@@ -101,9 +142,16 @@ public partial class HierarchyPanel : UserControl
         {
             _selectedId = idx;
             _selectedIds.Clear();
-            if (idx >= 0) _selectedIds.Add(idx);
+            if (idx >= 0)
+            {
+                _selectedIds.Add(idx);
+                SelectTreeItem(idx);
+            }
+            else
+            {
+                DeselectAll();
+            }
             _anchorId = idx;
-            SelectTreeItem(idx);
             UpdateMultiSelectVisuals();
         });
     }
@@ -114,9 +162,12 @@ public partial class HierarchyPanel : UserControl
         {
             _selectedIds.Clear();
             foreach (var id in ids) _selectedIds.Add(id);
-            _selectedId  = ids.Count > 0 ? ids[0] : -1;
-            _anchorId    = _selectedId;
-            SelectTreeItem(_selectedId);
+            _selectedId = ids.Count > 0 ? ids[0] : -1;
+            _anchorId   = _selectedId;
+            if (_selectedId >= 0)
+                SelectTreeItem(_selectedId);
+            else
+                DeselectAll();
             UpdateMultiSelectVisuals();
         });
     }
@@ -187,28 +238,16 @@ public partial class HierarchyPanel : UserControl
         return item;
     }
 
-    private static StackPanel BuildItemHeader(ActorNode node)
+    private static TextBlock BuildItemHeader(ActorNode node)
     {
-        var icon = new TextBlock
+        var tb = new TextBlock { VerticalAlignment = VerticalAlignment.Center };
+        tb.Inlines.Add(new Run(node.IsGroup ? "▶ " : "◆ ")
         {
-            Text              = node.IsGroup ? "▶" : "◆",
-            Foreground        = node.IsGroup
-                ? new SolidColorBrush(Color.FromRgb(0xFF, 0xCC, 0x44))
-                : new SolidColorBrush(Color.FromRgb(0x55, 0xAA, 0xFF)),
-            FontSize          = 9,
-            Margin            = new Thickness(0, 0, 4, 0),
-            VerticalAlignment = VerticalAlignment.Center,
-        };
-        var label = new TextBlock
-        {
-            Text              = node.Name,
-            FontSize          = 13,
-            VerticalAlignment = VerticalAlignment.Center,
-        };
-        var sp = new StackPanel { Orientation = Orientation.Horizontal };
-        sp.Children.Add(icon);
-        sp.Children.Add(label);
-        return sp;
+            Foreground = node.IsGroup ? BrushGroupIcon : BrushActorIcon,
+            FontSize   = 9,
+        });
+        tb.Inlines.Add(new Run(node.Name) { FontSize = 13 });
+        return tb;
     }
 
     // ── 選択 ─────────────────────────────────────────────────
@@ -274,6 +313,22 @@ public partial class HierarchyPanel : UserControl
         finally { _suppressSelectionEvent = false; }
     }
 
+    private void DeselectAll()
+    {
+        _suppressSelectionEvent = true;
+        try { DeselectAllItems(ActorTree.Items); }
+        finally { _suppressSelectionEvent = false; }
+    }
+
+    private static void DeselectAllItems(ItemCollection items)
+    {
+        foreach (TreeViewItem item in items)
+        {
+            item.IsSelected = false;
+            DeselectAllItems(item.Items);
+        }
+    }
+
     private static bool SelectItemById(ItemCollection items, int id)
     {
         foreach (TreeViewItem item in items)
@@ -300,26 +355,92 @@ public partial class HierarchyPanel : UserControl
 
     private void OnTreeRightMouseDown(object sender, MouseButtonEventArgs e)
     {
+        // コンテキストメニューを閉じるLMBクリックで誤ドラッグが起きないようにリセット
+        _pendingDragNode = null;
+
         var hit  = ActorTree.InputHitTest(e.GetPosition(ActorTree)) as DependencyObject;
         var item = FindAncestor<TreeViewItem>(hit);
         _rightClickedNode = item?.Tag as ActorNode;
+
+        bool clickedOnSelected = _rightClickedNode != null
+            && _selectedIds.Contains(_rightClickedNode.Id);
+
+        // WPF 推奨: ContextMenu プロパティに代入し、WPF に開かせる
+        ActorTree.ContextMenu = clickedOnSelected
+            ? BuildSelectedContextMenu()
+            : BuildEmptyContextMenu();
+    }
+
+    private ContextMenu BuildSelectedContextMenu()
+    {
+        var menu = new ContextMenu();
+        menu.Style = BuildMenuStyle();
+        AddMenuItem(menu, "コピー",                    OnHierarchyCopy);
+        AddMenuItem(menu, "削除",                      OnHierarchyDelete);
+        menu.Items.Add(new Separator());
+        AddMenuItem(menu, "選択からグループを作成",    OnCreateGroupFromSelection);
+        return menu;
+    }
+
+    private ContextMenu BuildEmptyContextMenu()
+    {
+        var menu = new ContextMenu();
+        menu.Style = BuildMenuStyle();
+        AddMenuItem(menu, "グループフォルダを作成", OnCreateGroupMenu);
+        return menu;
+    }
+
+    private void OnHierarchyCopy(object sender, RoutedEventArgs e)
+        => _runtime?.SendToRuntime("COPY");
+
+    private void OnHierarchyDelete(object sender, RoutedEventArgs e)
+    {
+        var ids = _selectedIds.ToList();
+        if (ids.Count == 0) return;
+        _runtime?.SendToRuntime($"DELETE_RECURSIVE:{string.Join(",", ids)}");
+    }
+
+    private void OnCreateGroupFromSelection(object sender, RoutedEventArgs e)
+    {
+        // 先頭選択アクターの親をグループの親とする
+        var flat = GetFlatItems(ActorTree.Items);
+        var firstNode = flat
+            .Select(i => i.Tag as ActorNode)
+            .FirstOrDefault(n => n != null && _selectedIds.Contains(n.Id));
+
+        int parentId = firstNode?.ParentId ?? -1;
+
+        var name = GetUniqueName("Group", -1);
+        _pendingRenameGroupName = name;
+        var childIds = string.Join(",", _selectedIds);
+        _runtime?.SendToRuntime($"CREATE_GROUP_WITH_CHILDREN:{parentId}|{name}|{childIds}");
     }
 
     private void OnCreateGroupMenu(object sender, RoutedEventArgs e)
     {
-        // 右クリックしたノードの親と同じ階層にグループを作成
         int parentId = _rightClickedNode?.ParentId ?? -1;
         var name     = GetUniqueName("Group", -1);
+        _pendingRenameGroupName = name;
         _runtime?.SendToRuntime($"CREATE_GROUP:{parentId},{name}");
     }
+
+    private static void AddMenuItem(ContextMenu menu, string header, RoutedEventHandler handler)
+    {
+        var item = new MenuItem { Header = header };
+        item.Click += handler;
+        menu.Items.Add(item);
+    }
+
+    private static Style BuildMenuStyle() => CachedMenuStyle;
 
     // ── ドラッグ＆ドロップ ────────────────────────────────────
 
     private void OnTreeMouseDown(object sender, MouseButtonEventArgs e)
     {
-        _dragStart  = e.GetPosition(ActorTree);
-        _isDragging = false;
-        _dragNode   = null;
+        _dragStart       = e.GetPosition(ActorTree);
+        _isDragging      = false;
+        _dragNode        = null;
+        _pendingDragNode = null;
 
         if (e.ClickCount == 2)
         {
@@ -331,6 +452,7 @@ public partial class HierarchyPanel : UserControl
 
         var hit  = ActorTree.InputHitTest(_dragStart) as DependencyObject;
         var item = FindAncestor<TreeViewItem>(hit);
+        _pendingDragNode = item?.Tag as ActorNode;
 
         if (FindAncestor<ToggleButton>(hit) != null)
         {
@@ -431,18 +553,16 @@ public partial class HierarchyPanel : UserControl
         var diff = pos - _dragStart;
         if (Math.Abs(diff.X) < 4 && Math.Abs(diff.Y) < 4) return;
 
-        // ドラッグ開始 → リネームタイマーをキャンセル
+        // _pendingDragNode が null = OnTreeMouseDown が呼ばれていない（コンテキストメニュー誤操作防止）
+        if (_pendingDragNode == null) return;
+
         CancelRenameTimer();
         _pendingRenameId = -1;
 
-        var hit  = ActorTree.InputHitTest(_dragStart) as DependencyObject;
-        var item = FindAncestor<TreeViewItem>(hit);
-        if (item?.Tag is not ActorNode node) return;
-
         _isDragging = true;
-        _dragNode   = node;
+        _dragNode   = _pendingDragNode;
 
-        var data = new DataObject("ActorNode", node);
+        var data = new DataObject("ActorNode", _pendingDragNode);
         DragDrop.DoDragDrop(ActorTree, data, DragDropEffects.Move);
 
         _isDragging   = false;
@@ -648,6 +768,18 @@ public partial class HierarchyPanel : UserControl
     }
 
     // _roots から指定 Id のノードを探す（取り外さない）
+    // ── 外部公開ヘルパー ──────────────────────────────────────
+
+    /// 現在選択中の非グループ ID リストを返す。
+    public List<int> GetSelectedNonGroupIds() =>
+        _selectedIds
+            .Where(id => FindNode(_roots, id) is { IsGroup: false })
+            .ToList();
+
+    /// ids のうち少なくとも 1 つが子を持つか返す。
+    public bool AnyHasChildren(IEnumerable<int> ids) =>
+        ids.Any(id => FindNode(_roots, id) is { } n && n.Children.Count > 0);
+
     private static ActorNode? FindNode(List<ActorNode> list, int id)
     {
         foreach (var n in list)
@@ -810,7 +942,11 @@ public partial class HierarchyPanel : UserControl
         while (obj != null)
         {
             if (obj is T t) return t;
-            obj = VisualTreeHelper.GetParent(obj);
+            // Run 等の非 Visual DependencyObject は VisualTreeHelper が使えないので
+            // LogicalTreeHelper で論理親を辿る
+            obj = obj is Visual
+                ? VisualTreeHelper.GetParent(obj)
+                : LogicalTreeHelper.GetParent(obj);
         }
         return null;
     }

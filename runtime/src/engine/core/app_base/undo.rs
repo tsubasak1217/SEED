@@ -11,6 +11,7 @@
 
 use crate::engine::core::app_base::scene::Scene;
 use crate::engine::structs::components::ModelComponent;
+use crate::engine::structs::components::model_component::{GroupMeta, InstanceMeta};
 
 // ============================================================
 //  Command トレイト
@@ -19,6 +20,9 @@ use crate::engine::structs::components::ModelComponent;
 pub trait Command {
     fn execute(&mut self, scene: &mut Scene);
     fn undo(&mut self, scene: &mut Scene);
+    /// true を返すと構造変更（追加・削除）を示す。
+    /// Undo/Redo 後に選択状態・ヒエラルキー再送信が必要か判定するために使用。
+    fn is_structural(&self) -> bool { false }
 }
 
 // ============================================================
@@ -53,30 +57,73 @@ impl UndoHistory {
         self.record(cmd);
     }
 
-    /// 直前の操作を元に戻す。戻せた場合 true を返す。
-    pub fn undo(&mut self, scene: &mut Scene) -> bool {
+    /// 直前の操作を元に戻す。
+    /// 戻せた場合 `Some(is_structural)`、何もなければ `None` を返す。
+    pub fn undo(&mut self, scene: &mut Scene) -> Option<bool> {
         if let Some(mut cmd) = self.past.pop() {
+            let structural = cmd.is_structural();
             cmd.undo(scene);
             self.future.push(cmd);
-            true
+            Some(structural)
         } else {
-            false
+            None
         }
     }
 
-    /// Undo した操作をやり直す。やり直せた場合 true を返す。
-    pub fn redo(&mut self, scene: &mut Scene) -> bool {
+    /// Undo した操作をやり直す。
+    /// やり直せた場合 `Some(is_structural)`、何もなければ `None` を返す。
+    pub fn redo(&mut self, scene: &mut Scene) -> Option<bool> {
         if let Some(mut cmd) = self.future.pop() {
+            let structural = cmd.is_structural();
             cmd.execute(scene);
             self.past.push(cmd);
-            true
+            Some(structural)
         } else {
-            false
+            None
         }
     }
 
     pub fn can_undo(&self) -> bool { !self.past.is_empty() }
     pub fn can_redo(&self) -> bool { !self.future.is_empty() }
+}
+
+// ============================================================
+//  SceneSnapshotCommand — 構造変更（追加・削除）の Undo/Redo
+// ============================================================
+
+/// ModelComponent の完全スナップショット。
+/// 追加・削除操作の前後状態を保持し、任意の方向に復元する。
+pub struct SceneSnapshotCommand {
+    pub before_mats:   Vec<[[f32; 4]; 4]>,
+    pub before_meta:   Vec<InstanceMeta>,
+    pub before_groups: Vec<GroupMeta>,
+    pub before_gid:    u32,
+    pub after_mats:    Vec<[[f32; 4]; 4]>,
+    pub after_meta:    Vec<InstanceMeta>,
+    pub after_groups:  Vec<GroupMeta>,
+    pub after_gid:     u32,
+}
+
+impl Command for SceneSnapshotCommand {
+    fn execute(&mut self, scene: &mut Scene) {
+        if let Some(mc) = scene.find_component_mut::<ModelComponent>() {
+            mc.instance_mats = self.after_mats.clone();
+            mc.instance_meta = self.after_meta.clone();
+            mc.group_meta    = self.after_groups.clone();
+            mc.next_group_id = self.after_gid;
+            mc.instanced_batch.mark_dirty();
+        }
+    }
+    fn undo(&mut self, scene: &mut Scene) {
+        if let Some(mc) = scene.find_component_mut::<ModelComponent>() {
+            mc.instance_mats = self.before_mats.clone();
+            mc.instance_meta = self.before_meta.clone();
+            mc.group_meta    = self.before_groups.clone();
+            mc.next_group_id = self.before_gid;
+            mc.instanced_batch.mark_dirty();
+        }
+    }
+    fn is_structural(&self) -> bool { true }
 }
 
 // ============================================================

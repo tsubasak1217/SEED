@@ -25,13 +25,27 @@ use crate::engine::methods::gizmo_interact::{
     GizmoDrag, GizmoPart, screen_to_ray, hit_test_gizmo, start_drag, update_drag,
     mat4x4_mul, mat4x4_inv,
 };
-use crate::engine::core::app_base::undo::{UndoHistory, MultiTransformCommand};
+use crate::engine::core::app_base::undo::{UndoHistory, MultiTransformCommand, SceneSnapshotCommand};
+use crate::engine::structs::components::model_component::GROUP_ID_BASE as INST_GROUP_ID_BASE;
 use crate::engine::core::scripting::{ScriptingHost, ScriptComponent};
 use crate::engine::structs::components::ModelComponent;
 use crate::engine::structs::components::model_component::{GroupMeta, GROUP_ID_BASE};
 use crate::engine::structs::objects::{Actor, DebugCamera};
 use crate::engine::structs::objects::camera::debug_camera::CameraInput;
 use crate::engine::structs::tensor::Vector3;
+
+// ============================================================
+//  クリップボードアイテム
+// ============================================================
+
+struct ClipboardItem {
+    name:         String,
+    mat:          [[f32; 4]; 4],
+    /// clipboard 配列内でのローカル親インデックス（None = ペースト時ルート）
+    local_parent: Option<usize>,
+    /// コピー元の安定アニメーション位相シード（ペースト時にそのまま引き継ぐ）
+    anim_seed:    u32,
+}
 
 // ============================================================
 //  起動設定
@@ -119,6 +133,18 @@ pub struct App {
     rect_selecting:     bool,
     /// LMB 押下時の Ctrl 状態（ピック結果でトグル判定に使用）。
     ctrl_at_press:      bool,
+    /// ヒエラルキー更新が保留中（スロットリング用）。
+    hierarchy_dirty:     bool,
+    /// 最後にヒエラルキーを送信した時刻（スロットリング用）。
+    last_hierarchy_send: Option<std::time::Instant>,
+    /// コピー&ペースト用クリップボード。
+    clipboard: Vec<ClipboardItem>,
+    /// RMB 押下開始座標（短押し判定用）。
+    rmb_press_pos: Option<(f32, f32)>,
+    /// RMB 押下中にカーソルが閾値以上移動したか。
+    rmb_moved: bool,
+    /// FIRST_FRAME シグナル送信済みフラグ（デバッグビルド・埋め込みモードのみ使用）。
+    first_frame_sent: bool,
 }
 
 impl App {
@@ -170,6 +196,12 @@ impl App {
             lmb_press_pos:      None,
             rect_selecting:     false,
             ctrl_at_press:      false,
+            hierarchy_dirty:     false,
+            last_hierarchy_send: None,
+            clipboard:           Vec::new(),
+            rmb_press_pos:       None,
+            rmb_moved:           false,
+            first_frame_sent:    false,
         }
     }
 
@@ -200,8 +232,14 @@ impl App {
     }
 
     fn process_ipc(&mut self, event_loop: &ActiveEventLoop) {
-        let Some(ipc) = &self.ipc else { return };
-        while let Some(cmd) = ipc.try_recv() {
+        // コマンドを先にすべて収集してから処理する。
+        // &self.ipc の不変借用を処理ループ内に持ち込まないことで、
+        // apply_delete 等の &mut self メソッド呼び出しを可能にする。
+        let cmds: Vec<_> = {
+            let Some(ipc) = &self.ipc else { return };
+            std::iter::from_fn(|| ipc.try_recv()).collect()
+        };
+        for cmd in cmds {
             match cmd {
                 IpcCommand::CtrlDown           => self.ctrl_held = true,
                 IpcCommand::CtrlUp             => self.ctrl_held = false,
@@ -216,14 +254,34 @@ impl App {
                     if !v { release_window_clamp(); }
                 }
                 IpcCommand::Undo => {
-                    if let Some(scene) = &mut self.scene {
-                        self.undo_history.undo(scene);
+                    let structural = if let Some(scene) = &mut self.scene {
+                        self.undo_history.undo(scene)
+                    } else { None };
+                    if structural == Some(true) {
+                        self.selected_instances.clear();
+                        self.sync_anim_seeds();
+                        self.send_selected();
+                        self.send_hierarchy();
                     }
                 }
                 IpcCommand::Redo => {
-                    if let Some(scene) = &mut self.scene {
-                        self.undo_history.redo(scene);
+                    let structural = if let Some(scene) = &mut self.scene {
+                        self.undo_history.redo(scene)
+                    } else { None };
+                    if structural == Some(true) {
+                        self.selected_instances.clear();
+                        self.sync_anim_seeds();
+                        self.send_selected();
+                        self.send_hierarchy();
                     }
+                }
+                IpcCommand::Copy  => { self.do_copy(); }
+                IpcCommand::Paste => { self.do_paste(); }
+                IpcCommand::Delete(ids) => {
+                    self.apply_delete(&ids, false);
+                }
+                IpcCommand::DeleteRecursive(ids) => {
+                    self.apply_delete(&ids, true);
                 }
                 IpcCommand::Select(idx) => {
                     if let Some(scene) = &self.scene {
@@ -280,6 +338,25 @@ impl App {
                     }
                     self.send_hierarchy();
                 }
+                IpcCommand::CreateGroupWithChildren { name, parent, children } => {
+                    if let Some(scene) = &mut self.scene {
+                        if let Some(mc) = scene.find_component_mut::<ModelComponent>() {
+                            let gid = mc.next_group_id;
+                            mc.next_group_id += 1;
+                            mc.group_meta.push(GroupMeta { id: gid, name, parent });
+                            for child in children {
+                                if child >= GROUP_ID_BASE {
+                                    if let Some(g) = mc.group_meta.iter_mut().find(|g| g.id == child) {
+                                        g.parent = Some(gid);
+                                    }
+                                } else if (child as usize) < mc.instance_meta.len() {
+                                    mc.instance_meta[child as usize].parent = Some(gid);
+                                }
+                            }
+                        }
+                    }
+                    self.send_hierarchy();
+                }
                 IpcCommand::SaveScene(path) => {
                     if let Some(scene) = &self.scene {
                         match scene.save(std::path::Path::new(&path)) {
@@ -292,8 +369,8 @@ impl App {
         }
     }
 
-    /// ヒエラルキーを JSON にシリアライズしてエディタへ送信する。
-    fn send_hierarchy(&self) {
+    /// ヒエラルキーを JSON にシリアライズしてエディタへ送信する（実装本体）。
+    fn do_send_hierarchy(&self) {
         let Some(ipc)   = &self.ipc   else { return };
         let Some(scene) = &self.scene else { return };
         let Some(mc)    = scene.find_component::<ModelComponent>() else { return };
@@ -337,6 +414,113 @@ impl App {
         ipc.send(&format!("HIERARCHY:{json}"));
     }
 
+    /// ヒエラルキー送信（スロットリング付き）。
+    /// 100ms 以内に連続呼び出しされた場合はフラグを立てて遅延送信する。
+    fn send_hierarchy(&mut self) {
+        let now = std::time::Instant::now();
+        if let Some(last) = self.last_hierarchy_send {
+            if now.duration_since(last).as_millis() < 100 {
+                self.hierarchy_dirty = true;
+                return;
+            }
+        }
+        self.last_hierarchy_send = Some(now);
+        self.hierarchy_dirty = false;
+        self.do_send_hierarchy();
+    }
+
+    /// InstanceMeta::anim_seed を instanced_batch に同期する。
+    /// 構造変更（追加・削除・Undo/Redo）後に呼び出す。
+    fn sync_anim_seeds(&mut self) {
+        if let Some(scene) = &mut self.scene {
+            if let Some(mc) = scene.find_component_mut::<ModelComponent>() {
+                let seeds: Vec<u32> = mc.instance_meta.iter().map(|m| m.anim_seed).collect();
+                mc.instanced_batch.set_anim_seeds(&seeds);
+            }
+        }
+    }
+
+    /// 選択インスタンス（+ 全子孫）をクリップボードへコピーする。
+    fn do_copy(&mut self) {
+        use std::collections::{HashMap, HashSet};
+        let Some(scene) = &self.scene else { return };
+        let Some(mc)    = scene.find_component::<ModelComponent>() else { return };
+        if self.selected_instances.is_empty() { return; }
+
+        // 選択 + 全子孫を収集して昇順ソート
+        let mut copy_set: HashSet<u32> = self.selected_instances.iter().copied().collect();
+        for &root in &self.selected_instances {
+            copy_set.extend(mc.all_descendants(root));
+        }
+        let mut copy_list: Vec<u32> = copy_set.into_iter().collect();
+        copy_list.sort_unstable();
+
+        // 元インデックス → clipboard 内ローカルインデックス
+        let orig_to_local: HashMap<u32, usize> = copy_list.iter()
+            .enumerate().map(|(i, &orig)| (orig, i)).collect();
+
+        self.clipboard = copy_list.iter().map(|&orig| {
+            let meta         = &mc.instance_meta[orig as usize];
+            let local_parent = meta.parent
+                .filter(|&p| p < GROUP_ID_BASE)
+                .and_then(|p| orig_to_local.get(&p).copied());
+            ClipboardItem {
+                name:         meta.name.clone(),
+                mat:          mc.instance_mats[orig as usize],
+                local_parent,
+                anim_seed:    meta.anim_seed,
+            }
+        }).collect();
+    }
+
+    /// クリップボードの内容をシーンへペーストする。
+    /// ペースト後の選択は新規追加インスタンスに移る。
+    fn do_paste(&mut self) {
+        use crate::engine::structs::components::model_component::InstanceMeta;
+        if self.clipboard.is_empty() { return; }
+
+        let new_indices = {
+            let Some(scene) = &mut self.scene else { return };
+            let Some(mc)    = scene.find_component_mut::<ModelComponent>() else { return };
+
+            let before_mats   = mc.instance_mats.clone();
+            let before_meta   = mc.instance_meta.clone();
+            let before_groups = mc.group_meta.clone();
+            let before_gid    = mc.next_group_id;
+
+            let base_idx = mc.instance_mats.len() as u32;
+            let mut new_indices = Vec::with_capacity(self.clipboard.len());
+
+            for (i, item) in self.clipboard.iter().enumerate() {
+                mc.instance_mats.push(item.mat);
+                mc.instance_meta.push(InstanceMeta {
+                    name:      format!("{}(1)", item.name),
+                    parent:    item.local_parent.map(|lp| base_idx + lp as u32),
+                    anim_seed: item.anim_seed,
+                });
+                new_indices.push(base_idx + i as u32);
+            }
+            mc.instanced_batch.mark_dirty();
+
+            let after_mats   = mc.instance_mats.clone();
+            let after_meta   = mc.instance_meta.clone();
+            let after_groups = mc.group_meta.clone();
+            let after_gid    = mc.next_group_id;
+
+            self.undo_history.record(Box::new(SceneSnapshotCommand {
+                before_mats, before_meta, before_groups, before_gid,
+                after_mats,  after_meta,  after_groups,  after_gid,
+            }));
+
+            new_indices
+        };
+
+        self.selected_instances = new_indices;
+        self.sync_anim_seeds();
+        self.send_selected();
+        self.send_hierarchy();
+    }
+
     /// 現在の選択インスタンスをエディタへ通知する。
     fn send_selected(&self) {
         let Some(ipc) = &self.ipc else { return };
@@ -346,6 +530,128 @@ impl App {
             ids => ipc.send(&format!("SELECTED_MULTI:{}",
                 ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(","))),
         }
+    }
+
+    /// 選択インスタンス／グループを削除し Undo 履歴に記録する。
+    ///
+    /// - `recursive = true`  → 子孫ごと削除
+    /// - `recursive = false` → 指定ノードのみ削除、子は親を切り離してルートへ
+    fn apply_delete(&mut self, base_ids: &[u32], recursive: bool) {
+        use std::collections::{HashMap, HashSet, VecDeque};
+
+        let Some(scene) = &mut self.scene else { return };
+        let Some(mc)    = scene.find_component_mut::<ModelComponent>() else { return };
+
+        // ── ① スナップショット（削除前）─────────────────────
+        let before_mats   = mc.instance_mats.clone();
+        let before_meta   = mc.instance_meta.clone();
+        let before_groups = mc.group_meta.clone();
+        let before_gid    = mc.next_group_id;
+
+        // ── ② 削除セット構築（インスタンス / グループ に分離）──
+        let mut inst_del: HashSet<u32> = base_ids.iter().copied()
+            .filter(|&id| id < GROUP_ID_BASE).collect();
+        let mut grp_del:  HashSet<u32> = base_ids.iter().copied()
+            .filter(|&id| id >= GROUP_ID_BASE).collect();
+
+        if recursive {
+            // インスタンスの子孫インスタンスを展開
+            let inst_descs: Vec<u32> = inst_del.iter().copied()
+                .flat_map(|id| mc.all_descendants(id)).collect();
+            inst_del.extend(inst_descs);
+
+            // グループの子（インスタンス＋サブグループ）を再帰展開
+            let mut queue: VecDeque<u32> = grp_del.iter().copied().collect();
+            while let Some(gid) = queue.pop_front() {
+                for (i, meta) in mc.instance_meta.iter().enumerate() {
+                    if meta.parent == Some(gid) {
+                        let ii = i as u32;
+                        if inst_del.insert(ii) {
+                            let descs = mc.all_descendants(ii);
+                            inst_del.extend(descs);
+                        }
+                    }
+                }
+                for g in &mc.group_meta {
+                    if g.parent == Some(gid) && grp_del.insert(g.id) {
+                        queue.push_back(g.id);
+                    }
+                }
+            }
+        }
+
+        let mut sorted_asc: Vec<u32> = inst_del.iter().copied().collect();
+        sorted_asc.sort_unstable();
+
+        // 削除グループの parent マップを先に構築（後で借用競合を避けるため）
+        let grp_parent_map: HashMap<u32, Option<u32>> = mc.group_meta.iter()
+            .map(|g| (g.id, g.parent)).collect();
+
+        // ── ③ 削除されるインスタンスの元親マップ（非再帰用）──
+        let deleted_parent: HashMap<u32, Option<u32>> = sorted_asc.iter()
+            .filter_map(|&id| mc.instance_meta.get(id as usize).map(|m| (id, m.parent)))
+            .collect();
+
+        // ── ④ 親参照の修正 ───────────────────────────────────
+        for meta in mc.instance_meta.iter_mut() {
+            meta.parent = fix_parent(meta.parent, &inst_del, &deleted_parent, &sorted_asc, recursive);
+            // 親グループが削除される場合の処理
+            if let Some(p) = meta.parent {
+                if p >= GROUP_ID_BASE && grp_del.contains(&p) {
+                    meta.parent = if recursive { None }
+                        else { *grp_parent_map.get(&p).unwrap_or(&None) };
+                }
+            }
+        }
+        for g in mc.group_meta.iter_mut() {
+            if let Some(p) = g.parent {
+                if p < GROUP_ID_BASE {
+                    g.parent = fix_parent(Some(p), &inst_del, &deleted_parent, &sorted_asc, recursive);
+                } else if grp_del.contains(&p) {
+                    g.parent = if recursive { None }
+                        else { *grp_parent_map.get(&p).unwrap_or(&None) };
+                }
+            }
+        }
+
+        // ── ⑤ インスタンスを降順で削除 ──────────────────────
+        let mut sorted_desc = sorted_asc.clone();
+        sorted_desc.sort_unstable_by(|a, b| b.cmp(a));
+        for &idx in &sorted_desc {
+            if (idx as usize) < mc.instance_mats.len() {
+                mc.instance_mats.remove(idx as usize);
+                mc.instance_meta.remove(idx as usize);
+            }
+        }
+        mc.instanced_batch.mark_dirty();
+
+        // ── ⑤b グループを削除 ───────────────────────────────
+        mc.group_meta.retain(|g| !grp_del.contains(&g.id));
+
+        // ── ⑥ スナップショット（削除後）・Undo 記録 ─────────
+        let after_mats   = mc.instance_mats.clone();
+        let after_meta   = mc.instance_meta.clone();
+        let after_groups = mc.group_meta.clone();
+        let after_gid    = mc.next_group_id;
+
+        self.undo_history.record(Box::new(SceneSnapshotCommand {
+            before_mats, before_meta, before_groups, before_gid,
+            after_mats,  after_meta,  after_groups,  after_gid,
+        }));
+
+        // ── ⑦ 選択状態を更新 ────────────────────────────────
+        // 削除されていないインスタンスはインデックスがシフトするため再マップ
+        self.selected_instances = self.selected_instances.iter()
+            .filter(|&&i| !inst_del.contains(&i))
+            .map(|&i| {
+                let shift = sorted_asc.partition_point(|&d| d < i) as u32;
+                i - shift
+            })
+            .collect();
+
+        self.sync_anim_seeds();
+        self.send_selected();
+        self.send_hierarchy();
     }
 
     /// デモシーンを構築する。
@@ -437,9 +743,11 @@ impl App {
                         [0.0, 0.0, 1.0, tz],
                         [0.0, 0.0, 0.0, 1.0f32],
                     ]);
-                    instance_meta.push(crate::engine::structs::components::model_component::InstanceMeta::new(
+                    let mut meta = crate::engine::structs::components::model_component::InstanceMeta::new(
                         format!("BrainStem_{idx}")
-                    ));
+                    );
+                    meta.anim_seed = idx as u32;
+                    instance_meta.push(meta);
                     idx += 1;
                 }
             }
@@ -511,6 +819,9 @@ impl ApplicationHandler for App {
         eprintln!("[SEED] scene ready");
 
         if self.is_embedded() {
+            // 非表示ウィンドウへの request_redraw は WM_PAINT が配送されず
+            // RedrawRequested が発火しないため、常に可視化してから redraw を要求する。
+            // 起動中の白フラッシュはエディタ側コンテナの WM_ERASEBKGND 黒塗りで対処する。
             window.set_visible(true);
             window.request_redraw();
         } else {
@@ -526,6 +837,8 @@ impl ApplicationHandler for App {
         self.renderer      = Some(renderer);
         self.window        = Some(window);
         self.clock         = Clock::new();
+
+        self.sync_anim_seeds();
 
         let hwnd = self.window_hwnd();
         eprintln!("[SEED] sending READY:{hwnd}");
@@ -568,13 +881,25 @@ impl ApplicationHandler for App {
                             self.ctrl_held = pressed;
                         }
                         KeyCode::KeyZ if pressed && self.ctrl_held => {
-                            if let Some(scene) = &mut self.scene {
-                                self.undo_history.undo(scene);
+                            let structural = if let Some(scene) = &mut self.scene {
+                                self.undo_history.undo(scene)
+                            } else { None };
+                            if structural == Some(true) {
+                                self.selected_instances.clear();
+                                self.sync_anim_seeds();
+                                self.send_selected();
+                                self.send_hierarchy();
                             }
                         }
                         KeyCode::KeyY if pressed && self.ctrl_held => {
-                            if let Some(scene) = &mut self.scene {
-                                self.undo_history.redo(scene);
+                            let structural = if let Some(scene) = &mut self.scene {
+                                self.undo_history.redo(scene)
+                            } else { None };
+                            if structural == Some(true) {
+                                self.selected_instances.clear();
+                                self.sync_anim_seeds();
+                                self.send_selected();
+                                self.send_hierarchy();
                             }
                         }
                         _ => {}
@@ -665,6 +990,8 @@ impl ApplicationHandler for App {
                     if self.mode == RuntimeMode::Edit || self.paused {
                         if let Some(window) = &self.window {
                             if pressed {
+                                self.rmb_press_pos = self.last_cursor_pos;
+                                self.rmb_moved     = false;
                                 self.cam_grab_screen_pos =
                                     camera_grab_start(self.window_hwnd());
                                 window.set_cursor_visible(false);
@@ -675,6 +1002,14 @@ impl ApplicationHandler for App {
                                 } else {
                                     camera_grab_end(0, 0);
                                 }
+                                // 短押し（カーソル移動なし）→ コンテキストメニュー
+                                if !self.rmb_moved {
+                                    if let Some(ipc) = &self.ipc {
+                                        ipc.send("CONTEXT_MENU");
+                                    }
+                                }
+                                self.rmb_press_pos = None;
+                                self.rmb_moved     = false;
                             }
                         }
                     }
@@ -685,6 +1020,17 @@ impl ApplicationHandler for App {
                 let cy = position.y as f32;
                 self.input.process_cursor_moved(cx, cy);
                 self.last_cursor_pos = Some((cx, cy));
+
+                // RMB 押下中に移動量が閾値を超えたらカメラ grab とみなす
+                if self.cam_input.rmb && !self.rmb_moved {
+                    if let Some((px, py)) = self.rmb_press_pos {
+                        let dx = cx - px;
+                        let dy = cy - py;
+                        if dx * dx + dy * dy > 25.0 {
+                            self.rmb_moved = true;
+                        }
+                    }
+                }
 
                 // 矩形選択の更新（LMB 押下中かつギズモドラッグなし）
                 if self.lmb_held && self.gizmo_drag.is_none() {
@@ -785,6 +1131,19 @@ impl ApplicationHandler for App {
             // ─── メインループ ─────────────────────────────────
             WindowEvent::RedrawRequested => {
                 self.process_ipc(event_loop);
+
+                // ヒエラルキー遅延フラッシュ（スロットリングで保留されていた送信）
+                if self.hierarchy_dirty {
+                    let now = std::time::Instant::now();
+                    let ready = self.last_hierarchy_send
+                        .map(|t| now.duration_since(t).as_millis() >= 100)
+                        .unwrap_or(true);
+                    if ready {
+                        self.hierarchy_dirty = false;
+                        self.last_hierarchy_send = Some(now);
+                        self.do_send_hierarchy();
+                    }
+                }
 
                 // Play クランプが有効な間は毎フレーム ClipCursor を再適用する。
                 if self.play_clamp {
@@ -1018,6 +1377,16 @@ impl ApplicationHandler for App {
                                 }
 
                                 frame.finish();
+
+                                // 実際にポリゴンが描画された最初のフレームでエディタへ通知する
+                                // （デバッグビルド・埋め込みモード限定）。
+                                #[cfg(debug_assertions)]
+                                if !self.first_frame_sent && self.parent_hwnd.is_some() {
+                                    self.first_frame_sent = true;
+                                    if let Some(ipc) = &self.ipc {
+                                        ipc.send("FIRST_FRAME");
+                                    }
+                                }
                             }
                             Err(wgpu::SurfaceError::Lost) => {
                                 if let Some(size) = window_size {
@@ -1155,6 +1524,49 @@ fn selection_centroid(instances: &[u32], mats: &[[[f32; 4]; 4]]) -> Option<[f32;
         }
     }
     if cnt == 0 { None } else { Some([sx / cnt as f32, sy / cnt as f32, sz / cnt as f32]) }
+}
+
+/// インスタンス削除後の親参照を修正する。
+///
+/// - 親が削除される場合（非再帰）: 削除チェーンを辿り最初の生存祖先（または None）にリマップ
+/// - 親が削除される場合（再帰）: None にリセット（子孫も削除済みのはずだが念のため）
+/// - 親が生存する場合: インデックスシフトを適用
+fn fix_parent(
+    parent:         Option<u32>,
+    delete_set:     &std::collections::HashSet<u32>,
+    deleted_parent: &std::collections::HashMap<u32, Option<u32>>,
+    sorted_asc:     &[u32],
+    recursive:      bool,
+) -> Option<u32> {
+    use crate::engine::structs::components::model_component::GROUP_ID_BASE;
+    let p = parent?;
+
+    if p >= GROUP_ID_BASE {
+        return Some(p); // グループ ID は変化しない
+    }
+
+    if delete_set.contains(&p) {
+        if recursive {
+            return None;
+        }
+        // 非再帰: 削除チェーンを辿って最初の生存祖先を探す
+        let mut cur = deleted_parent.get(&p).copied().flatten();
+        loop {
+            match cur {
+                None => return None,
+                Some(c) if c >= GROUP_ID_BASE => return Some(c),
+                Some(c) if !delete_set.contains(&c) => {
+                    let shift = sorted_asc.partition_point(|&d| d < c) as u32;
+                    return Some(c - shift);
+                }
+                Some(c) => cur = deleted_parent.get(&c).copied().flatten(),
+            }
+        }
+    }
+
+    // 親は生存 → インデックスをシフト
+    let shift = sorted_asc.partition_point(|&d| d < p) as u32;
+    Some(p - shift)
 }
 
 /// ワールド座標をビューポートのスクリーン座標へ投影する。
