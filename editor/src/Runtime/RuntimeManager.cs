@@ -68,6 +68,7 @@ public sealed class RuntimeManager : IDisposable
     private IntPtr                        _runtimeHwnd;
     private IntPtr                        _viewportContainerHwnd;
     private EditorState                   _state = EditorState.Idle;
+    private Win32.RECT                    _runtimeRectBeforeEmbed;
 
     // WinEventHook（GC 対策で delegate を保持）
     private WinEventProc? _winEventDelegate;
@@ -559,6 +560,9 @@ public sealed class RuntimeManager : IDisposable
     {
         if (_runtimeHwnd == IntPtr.Zero || _viewportContainerHwnd == IntPtr.Zero) return;
 
+        // Resume 時に元のサイズ・位置へ戻すために保存
+        Win32.GetWindowRect(_runtimeHwnd, out _runtimeRectBeforeEmbed);
+
         Win32.ShowWindow(_runtimeHwnd, SW_RESTORE);
 
         // WS_POPUP / タイトルバー / リサイズ枠を除去して WS_CHILD に
@@ -595,6 +599,14 @@ public sealed class RuntimeManager : IDisposable
 
         Win32.SetWindowPos(_runtimeHwnd, IntPtr.Zero, 0, 0, 0, 0,
             SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
+
+        // Pause 前のサイズ・位置を復元
+        var r = _runtimeRectBeforeEmbed;
+        int w = r.Right  - r.Left;
+        int h = r.Bottom - r.Top;
+        if (w > 0 && h > 0)
+            Win32.MoveWindow(_runtimeHwnd, r.Left, r.Top, w, h, repaint: true);
+
         Win32.ShowWindow(_runtimeHwnd, SW_SHOWDEFAULT);
     }
 
@@ -678,6 +690,9 @@ public sealed class RuntimeManager : IDisposable
 
         [DllImport("user32.dll")]
         internal static extern IntPtr SetParent(IntPtr hWndChild, IntPtr hWndNewParent);
+
+        [DllImport("user32.dll")]
+        internal static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
 
         [DllImport("user32.dll")]
         internal static extern bool GetClientRect(IntPtr hWnd, out RECT lpRect);

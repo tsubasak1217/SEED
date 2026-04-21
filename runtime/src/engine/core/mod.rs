@@ -1,5 +1,6 @@
 pub mod app_base;
 pub mod clock;
+pub mod font;
 pub mod input;
 pub mod loader;
 pub mod renderer;

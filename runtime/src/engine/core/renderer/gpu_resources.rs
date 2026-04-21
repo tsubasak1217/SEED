@@ -815,7 +815,17 @@ impl InstancedModelBatch {
     ) {
         let n_instances  = root_transforms.len();
         let n_mesh_nodes = self.n_mesh_nodes;
-        if n_instances == 0 || n_mesh_nodes == 0 { return; }
+        if n_mesh_nodes == 0 { return; }
+        if n_instances == 0 {
+            self.dirty = false;
+            self.world_mats_cache.clear();
+            self.world_aabbs.clear();
+            for lod in 0..NUM_LODS {
+                self.lod_visible_counts[lod] = 0;
+                self.lod_compact_insts[lod].clear();
+            }
+            return;
+        }
 
         // ── ① ワールド行列と AABB をキャッシュ（dirty 時のみ）──────
         if self.dirty {

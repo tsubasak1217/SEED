@@ -145,6 +145,8 @@ pub struct App {
     rmb_moved: bool,
     /// FIRST_FRAME シグナル送信済みフラグ（デバッグビルド・埋め込みモードのみ使用）。
     first_frame_sent: bool,
+    /// 軸ギズモ（エディタモードのみ使用）。
+    axis_gizmo: Option<crate::engine::core::font::axis_gizmo::AxisGizmo>,
 }
 
 impl App {
@@ -202,6 +204,7 @@ impl App {
             rmb_press_pos:       None,
             rmb_moved:           false,
             first_frame_sent:    false,
+            axis_gizmo:          None,
         }
     }
 
@@ -834,6 +837,17 @@ impl ApplicationHandler for App {
         self.camera_buf    = Some(camera_buf);
         self.id_buffer     = Some(id_buffer);
         self.line_model_buf = Some(line_model_buf);
+
+        // 軸ギズモ（エディタモードのみ初期化）
+        if self.mode == RuntimeMode::Edit {
+            use crate::engine::core::font::axis_gizmo::AxisGizmo;
+            self.axis_gizmo = Some(AxisGizmo::new(
+                &self.draw_ctx.as_ref().unwrap().device,
+                renderer.surface_format(),
+                renderer.depth_format(),
+            ));
+        }
+
         self.renderer      = Some(renderer);
         self.window        = Some(window);
         self.clock         = Clock::new();
@@ -1305,6 +1319,16 @@ impl ApplicationHandler for App {
                                     } else { None }
                                 } else { None };
 
+                                // 軸ギズモバッチ（レンダーパス前に構築）
+                                let axis_gizmo_batch = if in_editor {
+                                    let sw  = window_size.map_or(1280.0, |s| s.width  as f32);
+                                    let sh  = window_size.map_or(720.0,  |s| s.height as f32);
+                                    let rot = self.camera.base.transform.rotation;
+                                    self.axis_gizmo.as_mut().map(|ag| {
+                                        ag.build(rot, sw, sh, &draw_ctx.device, &draw_ctx.queue)
+                                    })
+                                } else { None };
+
                                 // ── メインレンダーパス ────────────────
                                 {
                                     let mut pass = frame.begin_render_pass();
@@ -1352,6 +1376,13 @@ impl ApplicationHandler for App {
                                             &camera_buf.bind_group, line_bg,
                                             &draw_ctx.pipelines,
                                         );
+                                    }
+
+                                    // 軸ギズモ（エディタモードのみ）
+                                    if let (Some(batch), Some(ag)) =
+                                        (&axis_gizmo_batch, &self.axis_gizmo)
+                                    {
+                                        ag.draw(batch, &mut pass);
                                     }
                                 }
 

@@ -18,25 +18,187 @@
             <Setter Property="BorderThickness" Value="0"/>
             <Setter Property="FontSize"        Value="12"/>
         </Style>
+
+        <!-- MenuItem — Visual Studio ダークテーマ準拠
+             水平余白は ContentPresenter.Margin="8,0,8,0" で固定 (トリガー依存なし)
+             縦余白は Style.Setter Padding="0,6" → Bd.TemplateBinding で全ロール共通 6px -->
         <Style TargetType="{x:Type MenuItem}">
             <Setter Property="Foreground"      Value="#CCCCCC"/>
-            <Setter Property="Background"      Value="#2D2D2D"/>
+            <Setter Property="Background"      Value="#1B1B1C"/>
             <Setter Property="BorderBrush"     Value="Transparent"/>
             <Setter Property="BorderThickness" Value="0"/>
-            <Setter Property="Padding"         Value="8,4"/>
-            <Style.Triggers>
-                <Trigger Property="IsHighlighted" Value="True">
-                    <Setter Property="Background"  Value="#505050"/>
-                    <Setter Property="Foreground"  Value="White"/>
-                </Trigger>
-                <Trigger Property="IsEnabled" Value="False">
-                    <Setter Property="Foreground"  Value="#666666"/>
-                </Trigger>
-            </Style.Triggers>
+            <Setter Property="Padding"         Value="0,6"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type MenuItem}">
+                        <Border x:Name="Bd"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                Padding="{TemplateBinding Padding}"
+                                SnapsToDevicePixels="True">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+
+                                <!-- アイコン/チェックマーク列 (Submenu のみ表示)
+                                     Width=28: テキスト左端は 28+8(ContentPresenter.Margin)=36px になる
+                                     固定色 #1B1B1C: Transparent だと白 chrome が透過する -->
+                                <Border x:Name="IconArea"
+                                        Grid.Column="0"
+                                        Width="28"
+                                        Background="#1B1B1C"
+                                        Visibility="Collapsed">
+                                    <Border x:Name="CheckBox"
+                                            Width="16" Height="16"
+                                            BorderBrush="#888888"
+                                            BorderThickness="1"
+                                            HorizontalAlignment="Center"
+                                            VerticalAlignment="Center"
+                                            Visibility="Collapsed">
+                                        <Path Data="M 2,6 L 5,9 L 11,2"
+                                              Stroke="White" StrokeThickness="1.5"
+                                              HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"
+                                              SnapsToDevicePixels="False"/>
+                                    </Border>
+                                </Border>
+
+                                <!-- ヘッダーテキスト
+                                     Margin="8,0,8,0" で左右 8px を固定 (トリガー不要)
+                                     TopLevel: IconArea=Collapsed(0px) + 8px = 8px indent
+                                     Submenu : IconArea=28px + 8px = 36px indent -->
+                                <ContentPresenter x:Name="HeaderContent"
+                                                  Grid.Column="1"
+                                                  ContentSource="Header"
+                                                  RecognizesAccessKey="True"
+                                                  VerticalAlignment="Center"
+                                                  Margin="8,0,8,0"/>
+
+                                <!-- ショートカットキー (InputGestureText が空/null の場合は Collapsed) -->
+                                <TextBlock x:Name="IGT"
+                                           Grid.Column="2"
+                                           Text="{TemplateBinding InputGestureText}"
+                                           Foreground="#888888"
+                                           VerticalAlignment="Center"
+                                           Margin="24,0,8,0"
+                                           Visibility="Visible"/>
+
+                                <!-- サブメニュー矢印 -->
+                                <Path x:Name="Arrow"
+                                      Grid.Column="3"
+                                      Data="M 0,0 L 4,3.5 L 0,7"
+                                      Stroke="#BBBBBB" StrokeThickness="1.2"
+                                      Width="14" Margin="4,0,4,0"
+                                      HorizontalAlignment="Center"
+                                      VerticalAlignment="Center"
+                                      Visibility="Collapsed"/>
+
+                                <!-- サブメニュー ポップアップ -->
+                                <Popup x:Name="PART_Popup"
+                                       Grid.Column="1"
+                                       IsOpen="{Binding IsSubmenuOpen,
+                                           RelativeSource={RelativeSource TemplatedParent}}"
+                                       Placement="Bottom"
+                                       AllowsTransparency="True"
+                                       Focusable="False"
+                                       PopupAnimation="None">
+                                    <Border Background="#1B1B1C"
+                                            BorderBrush="#454545"
+                                            BorderThickness="1">
+                                        <ScrollViewer CanContentScroll="True" MaxHeight="600">
+                                            <ItemsPresenter
+                                                KeyboardNavigation.TabNavigation="Cycle"
+                                                KeyboardNavigation.DirectionalNavigation="Cycle"
+                                                SnapsToDevicePixels="{TemplateBinding SnapsToDevicePixels}"/>
+                                        </ScrollViewer>
+                                    </Border>
+                                </Popup>
+                            </Grid>
+                        </Border>
+
+                        <ControlTemplate.Triggers>
+                            <!-- TopLevel: メニューバーに馴染む背景色のみ変更 -->
+                            <Trigger Property="Role" Value="TopLevelHeader">
+                                <Setter TargetName="Bd" Property="Background" Value="Transparent"/>
+                            </Trigger>
+                            <Trigger Property="Role" Value="TopLevelItem">
+                                <Setter TargetName="Bd" Property="Background" Value="Transparent"/>
+                            </Trigger>
+                            <!-- Submenu: アイコン列を表示するだけ (Margin/Padding 変更不要) -->
+                            <Trigger Property="Role" Value="SubmenuItem">
+                                <Setter TargetName="IconArea" Property="Visibility" Value="Visible"/>
+                            </Trigger>
+                            <Trigger Property="Role" Value="SubmenuHeader">
+                                <Setter TargetName="IconArea"   Property="Visibility" Value="Visible"/>
+                                <Setter TargetName="Arrow"      Property="Visibility" Value="Visible"/>
+                                <Setter TargetName="PART_Popup" Property="Placement"  Value="Right"/>
+                            </Trigger>
+                            <!-- ホバー -->
+                            <Trigger Property="IsHighlighted" Value="True">
+                                <Setter TargetName="Bd"       Property="Background" Value="#3E3E40"/>
+                                <Setter TargetName="IconArea" Property="Background" Value="#3E3E40"/>
+                                <Setter Property="Foreground"                       Value="White"/>
+                            </Trigger>
+                            <!-- サブメニュー展開中 -->
+                            <Trigger Property="IsSubmenuOpen" Value="True">
+                                <Setter TargetName="Bd"       Property="Background" Value="#3E3E40"/>
+                                <Setter TargetName="IconArea" Property="Background" Value="#3E3E40"/>
+                            </Trigger>
+                            <!-- チェック済み -->
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="CheckBox" Property="Visibility" Value="Visible"/>
+                            </Trigger>
+                            <!-- 無効 -->
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Foreground" Value="#666666"/>
+                            </Trigger>
+                            <!-- InputGestureText が空/null の場合はショートカット列を非表示 (phantom 幅 32px を除去) -->
+                            <DataTrigger Binding="{Binding InputGestureText, RelativeSource={RelativeSource TemplatedParent}}" Value="">
+                                <Setter TargetName="IGT" Property="Visibility" Value="Collapsed"/>
+                            </DataTrigger>
+                            <DataTrigger Binding="{Binding InputGestureText, RelativeSource={RelativeSource TemplatedParent}}" Value="{x:Null}">
+                                <Setter TargetName="IGT" Property="Visibility" Value="Collapsed"/>
+                            </DataTrigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
         </Style>
+
+        <!-- ContextMenu: VS ダークテーマ準拠 (#454545 ボーダー、chrome なし) -->
+        <Style TargetType="{x:Type ContextMenu}">
+            <Setter Property="Background"      Value="#1B1B1C"/>
+            <Setter Property="BorderBrush"     Value="#454545"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Foreground"      Value="#CCCCCC"/>
+            <Setter Property="Padding"         Value="0,2"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type ContextMenu}">
+                        <Border Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                Padding="{TemplateBinding Padding}">
+                            <ScrollViewer CanContentScroll="True" MaxHeight="600">
+                                <ItemsPresenter
+                                    KeyboardNavigation.TabNavigation="Cycle"
+                                    KeyboardNavigation.DirectionalNavigation="Cycle"/>
+                            </ScrollViewer>
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
         <Style TargetType="{x:Type Separator}">
-            <Setter Property="Background" Value="#555555"/>
-            <Setter Property="Margin"     Value="4,2"/>
+            <Setter Property="Background" Value="#454545"/>
+            <Setter Property="Margin"     Value="28,2,0,2"/>
+            <Setter Property="Height"     Value="1"/>
         </Style>
 
         <!-- ── ダーク スクロールバー ─────────────────────────────── -->
@@ -174,8 +336,8 @@
               BorderThickness="0,0,0,1" BorderBrush="#3A3A3A">
 
             <!-- ファイル -->
-            <MenuItem Header="ファイル(_F)">
-                <MenuItem Header="シーンを保存(_S)"
+			<MenuItem Header="ファイル(_F)">
+				<MenuItem Header="シーンを保存(_S)"
                           InputGestureText="Ctrl+S"
                           Click="OnMenuSaveScene"/>
                 <Separator/>
@@ -381,7 +543,8 @@
                                                              Style="{StaticResource ToolBtnStyle}"
                                                              ToolTip="Select (Q)"
                                                              Click="OnToolSelect">
-                                                    <TextBlock Text="↖" FontSize="16"/>
+                                                    <Image Source="pack://application:,,,/resources/icons/toolbar/select.png"
+                                                           Width="20" Height="20"/>
                                                 </RadioButton>
 
                                                 <RadioButton x:Name="BtnToolMove"
@@ -389,7 +552,8 @@
                                                              Style="{StaticResource ToolBtnStyle}"
                                                              ToolTip="Move (W)"
                                                              Click="OnToolMove">
-                                                    <TextBlock Text="⊕" FontSize="16"/>
+                                                    <Image Source="pack://application:,,,/resources/icons/toolbar/translate.png"
+                                                           Width="20" Height="20"/>
                                                 </RadioButton>
 
                                                 <RadioButton x:Name="BtnToolRotate"
@@ -397,7 +561,8 @@
                                                              Style="{StaticResource ToolBtnStyle}"
                                                              ToolTip="Rotate (E)"
                                                              Click="OnToolRotate">
-                                                    <TextBlock Text="↻" FontSize="16"/>
+                                                    <Image Source="pack://application:,,,/resources/icons/toolbar/rotate.png"
+                                                           Width="20" Height="20"/>
                                                 </RadioButton>
 
                                                 <RadioButton x:Name="BtnToolScale"
@@ -405,7 +570,8 @@
                                                              Style="{StaticResource ToolBtnStyle}"
                                                              ToolTip="Scale (R)"
                                                              Click="OnToolScale">
-                                                    <TextBlock Text="⊞" FontSize="16"/>
+                                                    <Image Source="pack://application:,,,/resources/icons/toolbar/scale.png"
+                                                           Width="20" Height="20"/>
                                                 </RadioButton>
 
                                             </StackPanel>
