@@ -8,8 +8,10 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using System.Reflection;
+using AvalonDock.Layout;
 using AvalonDock.Layout.Serialization;
 using Microsoft.Win32;
 using SEEDEditor.Panels;
@@ -36,6 +38,13 @@ public partial class MainWindow : Window
 
     [StructLayout(LayoutKind.Sequential)]
     private struct RECT { public int Left, Top, Right, Bottom; }
+
+    [DllImport("dwmapi.dll")]
+    private static extern int DwmSetWindowAttribute(nint hwnd, int attr, ref int attrValue, int attrSize);
+
+    private const int DWMWA_USE_IMMERSIVE_DARK_MODE = 20; // Windows 10 20H1+
+    private const int DWMWA_CAPTION_COLOR           = 35; // Windows 11+
+    private const int DWMWA_BORDER_COLOR            = 34; // Windows 11+
 
     [DllImport("user32.dll")] static extern nint SetWindowsHookEx(int idHook, LowLevelKeyboardProc lpfn, nint hMod, uint dwThreadId);
     [DllImport("user32.dll")] static extern bool UnhookWindowsHookEx(nint hhk);
@@ -124,6 +133,13 @@ public partial class MainWindow : Window
         return assetsDir;
     }
 
+    private static readonly BitmapImage _imgPlay  = new(new Uri("pack://application:,,,/resources/icons/playbar/play.png"));
+    private static readonly BitmapImage _imgPause = new(new Uri("pack://application:,,,/resources/icons/playbar/pause.png"));
+
+    private static readonly SolidColorBrush _brushPlay  = new(Color.FromRgb(0x1F, 0x4A, 0x22));
+    private static readonly SolidColorBrush _brushStop  = new(Color.FromRgb(0x4A, 0x1F, 0x1F));
+    private static readonly SolidColorBrush _brushPause = new(Color.FromRgb(0x4A, 0x30, 0x00));
+
     private ViewportHost?   _viewportHost;
     private RuntimeManager? _runtimeManager;
 
@@ -135,8 +151,27 @@ public partial class MainWindow : Window
 
     // ── ウィンドウ初期化 ─────────────────────────────────────────
 
+    private void ApplyDarkTitleBar()
+    {
+        var hwnd = new WindowInteropHelper(this).Handle;
+
+        // ダークモードタイトルバー（Windows 10 20H1+）
+        int dark = 1;
+        DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, ref dark, Marshal.SizeOf(dark));
+
+        // キャプション色をツールバー色に合わせる（Windows 11+）
+        // COLORREF = 0x00BBGGRR → #2D2D2D の場合 R=G=B=0x2D なので同値
+        int captionColor = 0x001D1D1D;
+        DwmSetWindowAttribute(hwnd, DWMWA_CAPTION_COLOR, ref captionColor, Marshal.SizeOf(captionColor));
+
+        // ウィンドウ枠色も合わせる（Windows 11+）
+        int borderColor = 0x003A3A3A;
+        DwmSetWindowAttribute(hwnd, DWMWA_BORDER_COLOR, ref borderColor, Marshal.SizeOf(borderColor));
+    }
+
     private void OnWindowLoaded(object sender, RoutedEventArgs e)
     {
+        ApplyDarkTitleBar();
         EditorLog.Write($"OnWindowLoaded — RuntimeExePath={RuntimeExePath}");
 
         _runtimeManager = new RuntimeManager(RuntimeExePath);
@@ -212,36 +247,30 @@ public partial class MainWindow : Window
 
     // ── ボタンイベント ────────────────────────────────────────────
 
-    private async void OnPlay(object sender, RoutedEventArgs e)
+    private async void OnPlayPause(object sender, RoutedEventArgs e)
     {
         if (_runtimeManager is null) return;
-        try
+        var state = _runtimeManager.State;
+        if (state == EditorState.Edit)
         {
-            await _runtimeManager.PlayAsync();
+            try { await _runtimeManager.PlayAsync(); }
+            catch (Exception ex)
+            {
+                EditorLog.Write($"OnPlayPause(Play) EXCEPTION: {ex}");
+                MessageBox.Show($"Play 起動失敗:\n{ex.Message}", "SEED Editor",
+                    MessageBoxButton.OK, MessageBoxImage.Error);
+            }
         }
-        catch (Exception ex)
-        {
-            EditorLog.Write($"OnPlay EXCEPTION: {ex}");
-            MessageBox.Show($"Play 起動失敗:\n{ex.Message}", "SEED Editor",
-                MessageBoxButton.OK, MessageBoxImage.Error);
-        }
-    }
-
-    private void OnPause(object sender, RoutedEventArgs e)
-    {
-        if (_runtimeManager is null) return;
-
-        if (_runtimeManager.State == EditorState.Play)
+        else if (state == EditorState.Play)
             _runtimeManager.Pause();
-        else if (_runtimeManager.State == EditorState.Pause)
+        else if (state == EditorState.Pause)
             _runtimeManager.Resume();
     }
 
-    private async void OnStop(object sender, RoutedEventArgs e)
+    private void OnStop(object sender, RoutedEventArgs e)
     {
         if (_runtimeManager is null) return;
         _runtimeManager.Stop();
-        await Task.CompletedTask;
     }
 
     /// <summary>
@@ -330,6 +359,59 @@ public partial class MainWindow : Window
     private void OnSettings(object sender, RoutedEventArgs e)
     {
         SettingsPopup.IsOpen = !SettingsPopup.IsOpen;
+    }
+
+    // ── メニューバー ──────────────────────────────────────────────
+
+    private void OnMenuSaveScene(object sender, RoutedEventArgs e)
+        => ShowSaveDialog();
+
+    private void OnMenuExit(object sender, RoutedEventArgs e)
+        => Close();
+
+    private void OnMenuUndo(object sender, RoutedEventArgs e)
+        => _runtimeManager?.SendToRuntime("UNDO");
+
+    private void OnMenuRedo(object sender, RoutedEventArgs e)
+        => _runtimeManager?.SendToRuntime("REDO");
+
+    private void OnMenuCopy(object sender, RoutedEventArgs e)
+        => _runtimeManager?.SendToRuntime("COPY");
+
+    private void OnMenuPaste(object sender, RoutedEventArgs e)
+        => _runtimeManager?.SendToRuntime("PASTE");
+
+    private void OnMenuDelete(object sender, RoutedEventArgs e)
+        => TryDeleteSelected();
+
+    // 表示メニューが開くたびに実際の表示状態でチェックを更新する
+    private void OnViewMenuOpened(object sender, RoutedEventArgs e)
+    {
+        MenuItemHierarchy.IsChecked = IsPanelVisible("hierarchy");
+        MenuItemInspector.IsChecked = IsPanelVisible("inspector");
+        MenuItemProject.IsChecked   = IsPanelVisible("project");
+        MenuItemOutput.IsChecked    = IsPanelVisible("output");
+    }
+
+    private bool IsPanelVisible(string contentId) =>
+        DockManager.Layout.Descendents()
+            .OfType<LayoutAnchorable>()
+            .Any(a => a.ContentId == contentId && a.IsVisible);
+
+    private void OnTogglePanel(object sender, RoutedEventArgs e)
+    {
+        if (sender is not MenuItem item || item.Tag is not string contentId) return;
+
+        var panel = DockManager.Layout.Descendents()
+            .OfType<LayoutAnchorable>()
+            .FirstOrDefault(a => a.ContentId == contentId);
+        if (panel is null) return;
+
+        if (panel.IsVisible) panel.Hide();
+        else panel.Show();
+
+        // 実際の状態でチェックを確定する（WPF の自動トグルを上書き）
+        item.IsChecked = panel.IsVisible;
     }
 
     // ── シーン保存 ────────────────────────────────────────────────
@@ -491,6 +573,10 @@ public partial class MainWindow : Window
     {
         Dispatcher.BeginInvoke(() =>
         {
+            // 最大化起動などでコンテナサイズと Runtime ウィンドウサイズがズレる場合に補正
+            if (_runtimeManager?.State == EditorState.Edit)
+                _runtimeManager.ResizeRuntimeToContainer();
+
             if (_clampInPlay && !_isDragging && _runtimeManager?.State == EditorState.Play)
                 ApplyPlayClamp();
 
@@ -686,61 +772,59 @@ public partial class MainWindow : Window
         {
             case EditorState.Edit:
                 _pressedVks.Clear();
-                BtnPlay.IsEnabled  = true;
-                BtnPause.IsEnabled = false;
-                BtnStop.IsEnabled  = false;
-                BtnPause.Content   = "⏸  Pause";
-                LblState.Text      = "● EDIT";
-                LblState.Foreground = System.Windows.Media.Brushes.LightGreen;
+                BtnPlayPause.IsEnabled   = true;
+                BtnPlayPause.Background  = _brushPlay;
+                ImgPlayPause.Source      = _imgPlay;
+                BtnStop.IsEnabled        = false;
+                LblState.Text            = "● EDIT";
+                LblState.Foreground      = System.Windows.Media.Brushes.LightGreen;
                 ViewportDocumentContent.Visibility = Visibility.Visible;
-                // FIRST_FRAME 受信まで待つためオーバーレイを表示する。
-                // 非デバッグビルドでは FIRST_FRAME が来ないため READY 受信時に
-                // OnRuntimeHwndAvailable → OnFirstFrameReady の代替は不要
-                // （デバッグ以外ではオーバーレイが残るが、本番ビルドはエディタを使わない想定）
-                TxtViewportStatus.Text            = "";
+                TxtViewportStatus.Text             = "";
                 ViewportLoadingOverlay.Visibility  = Visibility.Visible;
                 break;
 
             case EditorState.Play:
-                BtnPlay.IsEnabled  = false;
-                BtnPause.IsEnabled = true;
-                BtnStop.IsEnabled  = true;
-                BtnPause.Content   = "⏸  Pause";
-                LblState.Text      = "▶ PLAY";
-                LblState.Foreground = System.Windows.Media.Brushes.LightSkyBlue;
+                BtnPlayPause.IsEnabled   = true;
+                BtnPlayPause.Background  = _brushPause;
+                ImgPlayPause.Source      = _imgPause;
+                BtnStop.IsEnabled        = true;
+                LblState.Text            = "▶ PLAY";
+                LblState.Foreground      = System.Windows.Media.Brushes.LightSkyBlue;
                 ViewportDocumentContent.Visibility = Visibility.Hidden;
                 ViewportLoadingOverlay.Visibility  = Visibility.Collapsed;
                 break;
 
             case EditorState.Pause:
-                BtnPlay.IsEnabled  = false;
-                BtnPause.IsEnabled = true;
-                BtnStop.IsEnabled  = true;
-                BtnPause.Content   = "▶  Resume";
-                LblState.Text      = "⏸ PAUSE";
-                LblState.Foreground = System.Windows.Media.Brushes.Orange;
+                BtnPlayPause.IsEnabled   = true;
+                BtnPlayPause.Background  = _brushPlay;
+                ImgPlayPause.Source      = _imgPlay;
+                BtnStop.IsEnabled        = true;
+                LblState.Text            = "⏸ PAUSE";
+                LblState.Foreground      = System.Windows.Media.Brushes.Orange;
                 ViewportDocumentContent.Visibility = Visibility.Visible;
                 ViewportLoadingOverlay.Visibility  = Visibility.Collapsed;
                 break;
 
             case EditorState.Building:
-                BtnPlay.IsEnabled  = false;
-                BtnPause.IsEnabled = false;
-                BtnStop.IsEnabled  = false;
-                LblState.Text      = "⚙ BUILDING...";
-                LblState.Foreground = System.Windows.Media.Brushes.Yellow;
+                BtnPlayPause.IsEnabled   = false;
+                BtnPlayPause.Background  = _brushPlay;
+                ImgPlayPause.Source      = _imgPlay;
+                BtnStop.IsEnabled        = false;
+                LblState.Text            = "⚙ BUILDING...";
+                LblState.Foreground      = System.Windows.Media.Brushes.Yellow;
                 TxtViewportStatus.Text            = "ビルド中...";
-                ViewportLoadingOverlay.Visibility  = Visibility.Visible;
+                ViewportLoadingOverlay.Visibility = Visibility.Visible;
                 break;
 
             case EditorState.Idle:
-                BtnPlay.IsEnabled  = false;
-                BtnPause.IsEnabled = false;
-                BtnStop.IsEnabled  = false;
-                LblState.Text      = "○ IDLE";
-                LblState.Foreground = System.Windows.Media.Brushes.Gray;
+                BtnPlayPause.IsEnabled   = false;
+                BtnPlayPause.Background  = _brushPlay;
+                ImgPlayPause.Source      = _imgPlay;
+                BtnStop.IsEnabled        = false;
+                LblState.Text            = "○ IDLE";
+                LblState.Foreground      = System.Windows.Media.Brushes.Gray;
                 TxtViewportStatus.Text            = "再起動中...";
-                ViewportLoadingOverlay.Visibility  = Visibility.Visible;
+                ViewportLoadingOverlay.Visibility = Visibility.Visible;
                 break;
         }
     }

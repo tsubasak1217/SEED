@@ -5,10 +5,130 @@
         xmlns:panels="clr-namespace:SEEDEditor.Panels"
         Title="SEED Editor" Height="720" Width="1280"
         Background="#1E1E1E"
+        WindowState="Maximized"
         Loaded="OnWindowLoaded"
         Closing="OnWindowClosing">
 
     <Window.Resources>
+
+        <!-- ── メニューバー ダークテーマ ───────────────────────── -->
+        <Style TargetType="{x:Type Menu}">
+            <Setter Property="Background"      Value="#2D2D2D"/>
+            <Setter Property="Foreground"      Value="#CCCCCC"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="FontSize"        Value="12"/>
+        </Style>
+        <Style TargetType="{x:Type MenuItem}">
+            <Setter Property="Foreground"      Value="#CCCCCC"/>
+            <Setter Property="Background"      Value="#2D2D2D"/>
+            <Setter Property="BorderBrush"     Value="Transparent"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Padding"         Value="8,4"/>
+            <Style.Triggers>
+                <Trigger Property="IsHighlighted" Value="True">
+                    <Setter Property="Background"  Value="#505050"/>
+                    <Setter Property="Foreground"  Value="White"/>
+                </Trigger>
+                <Trigger Property="IsEnabled" Value="False">
+                    <Setter Property="Foreground"  Value="#666666"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+        <Style TargetType="{x:Type Separator}">
+            <Setter Property="Background" Value="#555555"/>
+            <Setter Property="Margin"     Value="4,2"/>
+        </Style>
+
+        <!-- ── ダーク スクロールバー ─────────────────────────────── -->
+        <Style TargetType="{x:Type ScrollBar}">
+            <Setter Property="Background" Value="#252525"/>
+            <Setter Property="Width"      Value="8"/>
+            <Setter Property="MinWidth"   Value="8"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type ScrollBar}">
+                        <Border Background="{TemplateBinding Background}">
+                            <Track x:Name="PART_Track" IsDirectionReversed="True">
+                                <Track.DecreaseRepeatButton>
+                                    <RepeatButton Command="{x:Static ScrollBar.PageUpCommand}"
+                                                  Background="Transparent" BorderThickness="0"
+                                                  IsTabStop="False" Focusable="False"/>
+                                </Track.DecreaseRepeatButton>
+                                <Track.Thumb>
+                                    <Thumb>
+                                        <Thumb.Template>
+                                            <ControlTemplate TargetType="{x:Type Thumb}">
+                                                <Border x:Name="ThumbBd" Background="#505050"
+                                                        CornerRadius="3" Margin="2,1"/>
+                                                <ControlTemplate.Triggers>
+                                                    <Trigger Property="IsMouseOver" Value="True">
+                                                        <Setter TargetName="ThumbBd" Property="Background" Value="#707070"/>
+                                                    </Trigger>
+                                                    <Trigger Property="IsDragging" Value="True">
+                                                        <Setter TargetName="ThumbBd" Property="Background" Value="#909090"/>
+                                                    </Trigger>
+                                                </ControlTemplate.Triggers>
+                                            </ControlTemplate>
+                                        </Thumb.Template>
+                                    </Thumb>
+                                </Track.Thumb>
+                                <Track.IncreaseRepeatButton>
+                                    <RepeatButton Command="{x:Static ScrollBar.PageDownCommand}"
+                                                  Background="Transparent" BorderThickness="0"
+                                                  IsTabStop="False" Focusable="False"/>
+                                </Track.IncreaseRepeatButton>
+                            </Track>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="Orientation" Value="Horizontal">
+                                <Setter Property="Width"     Value="Auto"/>
+                                <Setter Property="Height"    Value="8"/>
+                                <Setter Property="MinHeight" Value="8"/>
+                                <Setter TargetName="PART_Track" Property="IsDirectionReversed" Value="False"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Playbar ボタンスタイル -->
+        <Style x:Key="PlayBarBtnStyle" TargetType="Button">
+            <Setter Property="Width"           Value="36"/>
+            <Setter Property="Height"          Value="28"/>
+            <Setter Property="Margin"          Value="2,0"/>
+            <Setter Property="Background"      Value="Transparent"/>
+            <Setter Property="BorderBrush"     Value="Transparent"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Cursor"          Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <!-- BdBase: ボタン固有の背景色(Play=緑/Stop=赤/Pause=透明) -->
+                        <Border x:Name="BdBase"
+                                Background="{TemplateBinding Background}"
+                                CornerRadius="5">
+                            <!-- BdHover: ホバー/プレス時のオーバーレイ -->
+                            <Border x:Name="BdHover" Background="Transparent" CornerRadius="5">
+                                <ContentPresenter HorizontalAlignment="Center"
+                                                  VerticalAlignment="Center"/>
+                            </Border>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="BdHover" Property="Background" Value="#33FFFFFF"/>
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="BdHover" Property="Background" Value="#55FFFFFF"/>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0.3"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
 
         <!-- Viewport内ツールバーのボタンスタイル -->
         <Style x:Key="ToolBtnStyle" TargetType="RadioButton">
@@ -49,60 +169,131 @@
 
     <DockPanel>
 
+        <!-- ── メニューバー ──────────────────────────────────────── -->
+        <Menu DockPanel.Dock="Top"
+              BorderThickness="0,0,0,1" BorderBrush="#3A3A3A">
+
+            <!-- ファイル -->
+            <MenuItem Header="ファイル(_F)">
+                <MenuItem Header="シーンを保存(_S)"
+                          InputGestureText="Ctrl+S"
+                          Click="OnMenuSaveScene"/>
+                <Separator/>
+                <MenuItem Header="終了(_X)" Click="OnMenuExit"/>
+            </MenuItem>
+
+            <!-- 編集 -->
+            <MenuItem Header="編集(_E)">
+                <MenuItem Header="元に戻す(_Z)"
+                          InputGestureText="Ctrl+Z"
+                          Click="OnMenuUndo"/>
+                <MenuItem Header="やり直し(_Y)"
+                          InputGestureText="Ctrl+Y"
+                          Click="OnMenuRedo"/>
+                <Separator/>
+                <MenuItem Header="コピー(_C)"
+                          InputGestureText="Ctrl+C"
+                          Click="OnMenuCopy"/>
+                <MenuItem Header="貼り付け(_V)"
+                          InputGestureText="Ctrl+V"
+                          Click="OnMenuPaste"/>
+                <Separator/>
+                <MenuItem Header="削除(_D)"
+                          InputGestureText="Esc"
+                          Click="OnMenuDelete"/>
+            </MenuItem>
+
+            <!-- 表示 -->
+            <MenuItem Header="表示(_V)" SubmenuOpened="OnViewMenuOpened">
+                <MenuItem x:Name="MenuItemHierarchy"
+                          Header="Hierarchy"
+                          IsCheckable="True"
+                          Tag="hierarchy"
+                          Click="OnTogglePanel"/>
+                <MenuItem x:Name="MenuItemInspector"
+                          Header="Inspector"
+                          IsCheckable="True"
+                          Tag="inspector"
+                          Click="OnTogglePanel"/>
+                <MenuItem x:Name="MenuItemProject"
+                          Header="Project"
+                          IsCheckable="True"
+                          Tag="project"
+                          Click="OnTogglePanel"/>
+                <MenuItem x:Name="MenuItemOutput"
+                          Header="Output"
+                          IsCheckable="True"
+                          Tag="output"
+                          Click="OnTogglePanel"/>
+            </MenuItem>
+
+        </Menu>
+
         <!-- ── 上部ツールバー ────────────────────────────────────── -->
-        <ToolBar DockPanel.Dock="Top" Background="#2D2D2D" Padding="4,2">
+        <Border DockPanel.Dock="Top" Background="#2D2D2D" Height="30"
+                BorderBrush="#3A3A3A" BorderThickness="0,0,0,1">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
 
-            <Button x:Name="BtnPlay" Content="▶  Play" Width="80"
-                    Click="OnPlay"
-                    Background="#3C8C3C" Foreground="White"
-                    BorderThickness="0" Padding="8,4"/>
-            <Separator/>
+                <!-- 中央: 状態ラベル + Play/Stop + Pause + Settings -->
+                <StackPanel Grid.Column="1" Orientation="Horizontal"
+                            VerticalAlignment="Center">
+                    <TextBlock x:Name="LblState"
+                               Text="● EDIT" Foreground="#60C060"
+                               VerticalAlignment="Center" Margin="0,0,8,0"/>
+                    <Button x:Name="BtnPlayPause"
+                            Style="{StaticResource PlayBarBtnStyle}"
+                            Background="#1F4A22"
+                            Click="OnPlayPause"
+                            ToolTip="Play / Pause / Resume">
+                        <Image x:Name="ImgPlayPause"
+                               Source="pack://application:,,,/resources/icons/playbar/play.png"
+                               Width="18" Height="18"
+                               RenderOptions.BitmapScalingMode="HighQuality"/>
+                    </Button>
+                    <Button x:Name="BtnStop"
+                            Style="{StaticResource PlayBarBtnStyle}"
+                            Background="#4A1F1F"
+                            Click="OnStop" IsEnabled="False"
+                            ToolTip="Stop">
+                        <Image Source="pack://application:,,,/resources/icons/playbar/stop.png"
+                               Width="18" Height="18"
+                               RenderOptions.BitmapScalingMode="HighQuality"/>
+                    </Button>
+                    <Button x:Name="BtnSettings" Content="⚙"
+                            Width="28" Height="28" Margin="6,0,0,0"
+                            Click="OnSettings"
+                            Background="#404040" Foreground="#AAAAAA"
+                            BorderThickness="0" Padding="4"
+                            ToolTip="Settings"/>
+                    <Popup x:Name="SettingsPopup"
+                           PlacementTarget="{Binding ElementName=BtnSettings}"
+                           Placement="Bottom"
+                           StaysOpen="False"
+                           AllowsTransparency="True">
+                        <Border Background="#2D2D2D" BorderBrush="#555555" BorderThickness="1"
+                                Padding="12,8" CornerRadius="2">
+                            <StackPanel>
+                                <TextBlock Text="Play Settings"
+                                           Foreground="#AAAAAA" FontSize="11"
+                                           Margin="0,0,0,6"/>
+                                <CheckBox x:Name="ChkClampCursor"
+                                          Content="Play時マウスカーソルをWindowにクランプする"
+                                          Foreground="White"
+                                          IsChecked="False"
+                                          Checked="OnClampCursorChanged"
+                                          Unchecked="OnClampCursorChanged"/>
+                            </StackPanel>
+                        </Border>
+                    </Popup>
+                </StackPanel>
 
-            <Button x:Name="BtnPause" Content="⏸  Pause" Width="90"
-                    Click="OnPause" IsEnabled="False"
-                    Background="#8C7C20" Foreground="White"
-                    BorderThickness="0" Padding="8,4"/>
-            <Separator/>
-
-            <Button x:Name="BtnStop" Content="■  Stop" Width="80"
-                    Click="OnStop" IsEnabled="False"
-                    Background="#555555" Foreground="White"
-                    BorderThickness="0" Padding="8,4"/>
-            <Separator/>
-
-            <Button x:Name="BtnSettings" Content="⚙" Width="28"
-                    Click="OnSettings"
-                    Background="#404040" Foreground="White"
-                    BorderThickness="0" Padding="4,4"
-                    ToolTip="Settings"/>
-
-            <Popup x:Name="SettingsPopup"
-                   PlacementTarget="{Binding ElementName=BtnSettings}"
-                   Placement="Bottom"
-                   StaysOpen="False"
-                   AllowsTransparency="True">
-                <Border Background="#2D2D2D" BorderBrush="#555555" BorderThickness="1"
-                        Padding="12,8" CornerRadius="2">
-                    <StackPanel>
-                        <TextBlock Text="Play Settings"
-                                   Foreground="#AAAAAA" FontSize="11"
-                                   Margin="0,0,0,6"/>
-                        <CheckBox x:Name="ChkClampCursor"
-                                  Content="Play時マウスカーソルをWindowにクランプする"
-                                  Foreground="White"
-                                  IsChecked="False"
-                                  Checked="OnClampCursorChanged"
-                                  Unchecked="OnClampCursorChanged"/>
-                    </StackPanel>
-                </Border>
-            </Popup>
-
-            <Separator/>
-
-            <TextBlock x:Name="LblState"
-                       Text="● EDIT" Foreground="#60C060"
-                       VerticalAlignment="Center" Margin="8,0"/>
-        </ToolBar>
+            </Grid>
+        </Border>
 
         <!-- ── AvalonDock ドッキングマネージャー ───────────────────── -->
         <avd:DockingManager x:Name="DockManager"
@@ -118,7 +309,7 @@
                         <avd:LayoutAnchorable Title="Hierarchy"
                                               ContentId="hierarchy"
                                               CanClose="False"
-                                              CanHide="True"
+                                              CanHide="False"
                                               CanFloat="True">
                             <panels:HierarchyPanel x:Name="PanelHierarchy"/>
                         </avd:LayoutAnchorable>
@@ -230,14 +421,14 @@
                             <avd:LayoutAnchorable Title="Project"
                                                   ContentId="project"
                                                   CanClose="False"
-                                                  CanHide="True"
+                                                  CanHide="False"
                                                   CanFloat="True">
                                 <panels:ProjectPanel x:Name="PanelProject"/>
                             </avd:LayoutAnchorable>
                             <avd:LayoutAnchorable Title="Output"
                                                   ContentId="output"
                                                   CanClose="False"
-                                                  CanHide="True"
+                                                  CanHide="False"
                                                   CanFloat="True">
                                 <panels:OutputPanel x:Name="PanelOutput"/>
                             </avd:LayoutAnchorable>
@@ -250,7 +441,7 @@
                         <avd:LayoutAnchorable Title="Inspector"
                                               ContentId="inspector"
                                               CanClose="False"
-                                              CanHide="True"
+                                              CanHide="False"
                                               CanFloat="True">
                             <panels:InspectorPanel x:Name="PanelInspector"/>
                         </avd:LayoutAnchorable>

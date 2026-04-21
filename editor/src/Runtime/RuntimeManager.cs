@@ -192,6 +192,21 @@ public sealed class RuntimeManager : IDisposable
     /// <summary>Runtime に任意のメッセージを送信する（IPC 経由）。</summary>
     public void SendToRuntime(string message) => _pipe?.Send(message);
 
+    /// <summary>
+    /// Runtime ウィンドウをコンテナの現在のクライアントサイズに合わせてリサイズする。
+    /// 最大化起動などで初期サイズがズレた場合の補正用。
+    /// </summary>
+    public void ResizeRuntimeToContainer()
+    {
+        if (_runtimeHwnd == IntPtr.Zero || _viewportContainerHwnd == IntPtr.Zero) return;
+        Win32.GetClientRect(_viewportContainerHwnd, out var rect);
+        int w = rect.Right - rect.Left;
+        int h = rect.Bottom - rect.Top;
+        if (w > 0 && h > 0)
+            Win32.MoveWindow(_runtimeHwnd, 0, 0, w, h, repaint: true);
+        EditorLog.Write($"ResizeRuntimeToContainer — {w}x{h}");
+    }
+
     /// <summary>Stop ボタン: Runtime を終了し Edit に戻る。</summary>
     public void Stop()
     {
