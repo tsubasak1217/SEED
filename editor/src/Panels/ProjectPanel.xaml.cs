@@ -586,16 +586,15 @@ public partial class ProjectPanel : UserControl
     private void ShowItemContextMenu()
     {
         var menu = new ContextMenu();
-        menu.Style = BuildMenuStyle();
 
-        Add(menu, "コピー  (Ctrl+C)",      DoCopy);
-        Add(menu, "切り取り  (Ctrl+X)",    DoCut);
+        Add(menu, "コピー",    "Ctrl+C", DoCopy);
+        Add(menu, "切り取り",  "Ctrl+X", DoCut);
         menu.Items.Add(new Separator());
-        Add(menu, "削除",                   DoDelete);
+        Add(menu, "削除",      null,     DoDelete);
         if (_selectedItems.Count == 1)
         {
             menu.Items.Add(new Separator());
-            Add(menu, "名前の変更  (F2)", () =>
+            Add(menu, "名前の変更", "F2", () =>
             {
                 var tile = _selectedItems.First();
                 Dispatcher.BeginInvoke(() => StartRenameMode(tile),
@@ -603,7 +602,7 @@ public partial class ProjectPanel : UserControl
             });
         }
         menu.Items.Add(new Separator());
-        Add(menu, "エクスプローラーで開く", OpenInExplorer);
+        Add(menu, "エクスプローラーで開く", null, OpenInExplorer);
 
         menu.PlacementTarget = FileScrollViewer;
         menu.Placement       = System.Windows.Controls.Primitives.PlacementMode.MousePoint;
@@ -613,11 +612,10 @@ public partial class ProjectPanel : UserControl
     private void ShowEmptyContextMenu()
     {
         var menu = new ContextMenu();
-        menu.Style = BuildMenuStyle();
 
-        Add(menu, "新規フォルダを作成",     CreateNewFolder);
+        Add(menu, "新規フォルダを作成",     null, CreateNewFolder);
         menu.Items.Add(new Separator());
-        Add(menu, "エクスプローラーで開く", () =>
+        Add(menu, "エクスプローラーで開く", null, () =>
             System.Diagnostics.Process.Start("explorer.exe", _currentPath));
 
         menu.PlacementTarget = FileScrollViewer;
@@ -625,23 +623,12 @@ public partial class ProjectPanel : UserControl
         menu.IsOpen          = true;
     }
 
-    private static void Add(ContextMenu menu, string header, Action action)
+    private static void Add(ContextMenu menu, string header, string? gesture, Action action)
     {
         var item = new MenuItem { Header = header };
+        if (gesture != null) item.InputGestureText = gesture;
         item.Click += (_, _) => action();
         menu.Items.Add(item);
-    }
-
-    private static Style BuildMenuStyle()
-    {
-        var style = new Style(typeof(ContextMenu));
-        style.Setters.Add(new Setter(BackgroundProperty,
-            new SolidColorBrush(Color.FromRgb(0x2D, 0x2D, 0x2D))));
-        style.Setters.Add(new Setter(BorderBrushProperty,
-            new SolidColorBrush(Color.FromRgb(0x55, 0x55, 0x55))));
-        style.Setters.Add(new Setter(ForegroundProperty,
-            new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC))));
-        return style;
     }
 
     // ── キーボード ────────────────────────────────────────────────

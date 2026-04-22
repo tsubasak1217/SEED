@@ -25,14 +25,15 @@ use crate::engine::methods::gizmo_interact::{
     GizmoDrag, GizmoPart, screen_to_ray, hit_test_gizmo, start_drag, update_drag,
     mat4x4_mul, mat4x4_inv,
 };
-use crate::engine::core::app_base::undo::{UndoHistory, MultiTransformCommand, SceneSnapshotCommand};
+use crate::engine::core::app_base::undo::{UndoHistory, MultiTransformCommand, SceneSnapshotCommand, SelectionCommand};
 use crate::engine::structs::components::model_component::GROUP_ID_BASE as INST_GROUP_ID_BASE;
 use crate::engine::core::scripting::{ScriptingHost, ScriptComponent};
 use crate::engine::structs::components::ModelComponent;
 use crate::engine::structs::components::model_component::{GroupMeta, GROUP_ID_BASE};
 use crate::engine::structs::objects::{Actor, DebugCamera};
 use crate::engine::structs::objects::camera::debug_camera::CameraInput;
-use crate::engine::structs::tensor::Vector3;
+use crate::engine::structs::tensor::{Vector3, Mat4x4};
+use crate::engine::structs::transforms::{Quaternion, Transform};
 
 // ============================================================
 //  クリップボードアイテム
@@ -147,6 +148,8 @@ pub struct App {
     first_frame_sent: bool,
     /// 軸ギズモ（エディタモードのみ使用）。
     axis_gizmo: Option<crate::engine::core::font::axis_gizmo::AxisGizmo>,
+    /// 矩形選択開始時の選択状態（Undo 記録用）。
+    selection_before_rect: Vec<u32>,
 }
 
 impl App {
@@ -201,10 +204,11 @@ impl App {
             hierarchy_dirty:     false,
             last_hierarchy_send: None,
             clipboard:           Vec::new(),
-            rmb_press_pos:       None,
-            rmb_moved:           false,
-            first_frame_sent:    false,
-            axis_gizmo:          None,
+            rmb_press_pos:         None,
+            rmb_moved:             false,
+            first_frame_sent:      false,
+            axis_gizmo:            None,
+            selection_before_rect: Vec::new(),
         }
     }
 
@@ -257,25 +261,33 @@ impl App {
                     if !v { release_window_clamp(); }
                 }
                 IpcCommand::Undo => {
-                    let structural = if let Some(scene) = &mut self.scene {
+                    let result = if let Some(scene) = &mut self.scene {
                         self.undo_history.undo(scene)
                     } else { None };
-                    if structural == Some(true) {
-                        self.selected_instances.clear();
-                        self.sync_anim_seeds();
-                        self.send_selected();
-                        self.send_hierarchy();
+                    if let Some((structural, sel)) = result {
+                        if let Some(ids) = sel {
+                            self.selected_instances = ids;
+                            self.send_selected();
+                        }
+                        if structural {
+                            self.sync_anim_seeds();
+                            self.send_hierarchy();
+                        }
                     }
                 }
                 IpcCommand::Redo => {
-                    let structural = if let Some(scene) = &mut self.scene {
+                    let result = if let Some(scene) = &mut self.scene {
                         self.undo_history.redo(scene)
                     } else { None };
-                    if structural == Some(true) {
-                        self.selected_instances.clear();
-                        self.sync_anim_seeds();
-                        self.send_selected();
-                        self.send_hierarchy();
+                    if let Some((structural, sel)) = result {
+                        if let Some(ids) = sel {
+                            self.selected_instances = ids;
+                            self.send_selected();
+                        }
+                        if structural {
+                            self.sync_anim_seeds();
+                            self.send_hierarchy();
+                        }
                     }
                 }
                 IpcCommand::Copy  => { self.do_copy(); }
@@ -287,6 +299,7 @@ impl App {
                     self.apply_delete(&ids, true);
                 }
                 IpcCommand::Select(idx) => {
+                    let before = self.selected_instances.clone();
                     if let Some(scene) = &self.scene {
                         if let Some(mc) = scene.find_component::<ModelComponent>() {
                             if (idx as usize) < mc.instance_mats.len() {
@@ -296,8 +309,14 @@ impl App {
                             }
                         }
                     }
+                    let after = self.selected_instances.clone();
+                    if before != after {
+                        self.undo_history.record(Box::new(SelectionCommand { before, after }));
+                    }
+                    self.send_selected();
                 }
                 IpcCommand::SelectMulti(ids) => {
+                    let before = self.selected_instances.clone();
                     if let Some(scene) = &self.scene {
                         if let Some(mc) = scene.find_component::<ModelComponent>() {
                             self.selected_instances = ids.into_iter()
@@ -305,6 +324,11 @@ impl App {
                                 .collect();
                         }
                     }
+                    let after = self.selected_instances.clone();
+                    if before != after {
+                        self.undo_history.record(Box::new(SelectionCommand { before, after }));
+                    }
+                    self.send_selected();
                 }
                 IpcCommand::Reparent { child, new_parent } => {
                     if let Some(scene) = &mut self.scene {
@@ -367,6 +391,12 @@ impl App {
                             Err(e)   => { if let Some(ipc) = &self.ipc { ipc.send(&format!("SAVE_ERROR:{e}")); } }
                         }
                     }
+                }
+                IpcCommand::GetActorData(idx) => {
+                    self.send_actor_data(idx);
+                }
+                IpcCommand::SetTransform { id, px, py, pz, ex, ey, ez, sx, sy, sz } => {
+                    self.apply_set_transform(id, px, py, pz, ex, ey, ez, sx, sy, sz);
                 }
             }
         }
@@ -432,6 +462,71 @@ impl App {
         self.do_send_hierarchy();
     }
 
+    /// アクターデータを JSON でエディタへ送信する。
+    fn send_actor_data(&self, idx: u32) {
+        let Some(ipc)   = &self.ipc   else { return };
+        let Some(scene) = &self.scene else { return };
+        let Some(mc)    = scene.find_component::<ModelComponent>() else { return };
+
+        let i = idx as usize;
+        if i >= mc.instance_mats.len() { return; }
+
+        let mat  = mc.instance_mats[i];
+        let meta = &mc.instance_meta[i];
+
+        // 位置: 第 4 列
+        let (px, py, pz) = (mat[0][3], mat[1][3], mat[2][3]);
+
+        // スケール: 各列ベクトルの長さ
+        let scale_x = (mat[0][0]*mat[0][0] + mat[1][0]*mat[1][0] + mat[2][0]*mat[2][0]).sqrt();
+        let scale_y = (mat[0][1]*mat[0][1] + mat[1][1]*mat[1][1] + mat[2][1]*mat[2][1]).sqrt();
+        let scale_z = (mat[0][2]*mat[0][2] + mat[1][2]*mat[1][2] + mat[2][2]*mat[2][2]).sqrt();
+
+        // 正規化された純回転行列を構築し Shepperd 法でクォータニオン → YXZ オイラー角
+        let inv_x = if scale_x > 1e-10 { 1.0 / scale_x } else { 0.0 };
+        let inv_y = if scale_y > 1e-10 { 1.0 / scale_y } else { 0.0 };
+        let inv_z = if scale_z > 1e-10 { 1.0 / scale_z } else { 0.0 };
+        let rot_mat = Mat4x4::new(
+            mat[0][0]*inv_x, mat[0][1]*inv_y, mat[0][2]*inv_z, 0.0,
+            mat[1][0]*inv_x, mat[1][1]*inv_y, mat[1][2]*inv_z, 0.0,
+            mat[2][0]*inv_x, mat[2][1]*inv_y, mat[2][2]*inv_z, 0.0,
+            0.0, 0.0, 0.0, 1.0,
+        );
+        let euler  = Quaternion::from_matrix(&rot_mat).to_euler(); // YXZ ラジアン
+        const DEG: f32 = 180.0 / std::f32::consts::PI;
+        let (ex, ey, ez) = (euler.x * DEG, euler.y * DEG, euler.z * DEG);
+
+        let name       = serde_json::to_string(&meta.name).unwrap_or_default();
+        let model_path = serde_json::to_string(&mc.source_path).unwrap_or_default();
+
+        let json = format!(
+            r#"{{"id":{idx},"name":{name},"transform":{{"px":{px:.4},"py":{py:.4},"pz":{pz:.4},"ex":{ex:.4},"ey":{ey:.4},"ez":{ez:.4},"sx":{scale_x:.4},"sy":{scale_y:.4},"sz":{scale_z:.4}}},"model_path":{model_path}}}"#
+        );
+        ipc.send(&format!("ACTOR_DATA:{json}"));
+    }
+
+    /// インスタンスのトランスフォームを書き換える。
+    fn apply_set_transform(&mut self, id: u32, px: f32, py: f32, pz: f32,
+                           ex: f32, ey: f32, ez: f32, sx: f32, sy: f32, sz: f32) {
+        let Some(scene) = &mut self.scene else { return };
+        let Some(mc)    = scene.find_component_mut::<ModelComponent>() else { return };
+
+        let i = id as usize;
+        if i >= mc.instance_mats.len() { return; }
+
+        const RAD: f32 = std::f32::consts::PI / 180.0;
+        // YXZ オイラー角（度）→ クォータニオン（Vector3::to_quaternion は YXZ 規約）
+        let q = Vector3::new(ex * RAD, ey * RAD, ez * RAD).to_quaternion();
+
+        let transform = Transform {
+            position: Vector3::new(px, py, pz),
+            rotation: q,
+            scale:    Vector3::new(sx, sy, sz),
+        };
+        mc.instance_mats[i] = transform.to_matrix().data;
+        mc.instanced_batch.mark_dirty();
+    }
+
     /// InstanceMeta::anim_seed を instanced_batch に同期する。
     /// 構造変更（追加・削除・Undo/Redo）後に呼び出す。
     fn sync_anim_seeds(&mut self) {
@@ -482,6 +577,9 @@ impl App {
         use crate::engine::structs::components::model_component::InstanceMeta;
         if self.clipboard.is_empty() { return; }
 
+        // ペースト前の選択状態を保存
+        let before_selection = self.selected_instances.clone();
+
         let new_indices = {
             let Some(scene) = &mut self.scene else { return };
             let Some(mc)    = scene.find_component_mut::<ModelComponent>() else { return };
@@ -513,6 +611,8 @@ impl App {
             self.undo_history.record(Box::new(SceneSnapshotCommand {
                 before_mats, before_meta, before_groups, before_gid,
                 after_mats,  after_meta,  after_groups,  after_gid,
+                before_selection: before_selection.clone(),
+                after_selection:  new_indices.clone(),
             }));
 
             new_indices
@@ -541,6 +641,9 @@ impl App {
     /// - `recursive = false` → 指定ノードのみ削除、子は親を切り離してルートへ
     fn apply_delete(&mut self, base_ids: &[u32], recursive: bool) {
         use std::collections::{HashMap, HashSet, VecDeque};
+
+        // 削除前の選択状態を保存
+        let before_selection = self.selected_instances.clone();
 
         let Some(scene) = &mut self.scene else { return };
         let Some(mc)    = scene.find_component_mut::<ModelComponent>() else { return };
@@ -637,20 +740,24 @@ impl App {
         let after_groups = mc.group_meta.clone();
         let after_gid    = mc.next_group_id;
 
-        self.undo_history.record(Box::new(SceneSnapshotCommand {
-            before_mats, before_meta, before_groups, before_gid,
-            after_mats,  after_meta,  after_groups,  after_gid,
-        }));
-
-        // ── ⑦ 選択状態を更新 ────────────────────────────────
-        // 削除されていないインスタンスはインデックスがシフトするため再マップ
-        self.selected_instances = self.selected_instances.iter()
+        // 削除後の選択状態を計算
+        let after_selection: Vec<u32> = before_selection.iter()
             .filter(|&&i| !inst_del.contains(&i))
             .map(|&i| {
                 let shift = sorted_asc.partition_point(|&d| d < i) as u32;
                 i - shift
             })
             .collect();
+
+        self.undo_history.record(Box::new(SceneSnapshotCommand {
+            before_mats, before_meta, before_groups, before_gid,
+            after_mats,  after_meta,  after_groups,  after_gid,
+            before_selection,
+            after_selection: after_selection.clone(),
+        }));
+
+        // ── ⑦ 選択状態を更新 ────────────────────────────────
+        self.selected_instances = after_selection;
 
         self.sync_anim_seeds();
         self.send_selected();
@@ -895,25 +1002,33 @@ impl ApplicationHandler for App {
                             self.ctrl_held = pressed;
                         }
                         KeyCode::KeyZ if pressed && self.ctrl_held => {
-                            let structural = if let Some(scene) = &mut self.scene {
+                            let result = if let Some(scene) = &mut self.scene {
                                 self.undo_history.undo(scene)
                             } else { None };
-                            if structural == Some(true) {
-                                self.selected_instances.clear();
-                                self.sync_anim_seeds();
-                                self.send_selected();
-                                self.send_hierarchy();
+                            if let Some((structural, sel)) = result {
+                                if let Some(ids) = sel {
+                                    self.selected_instances = ids;
+                                    self.send_selected();
+                                }
+                                if structural {
+                                    self.sync_anim_seeds();
+                                    self.send_hierarchy();
+                                }
                             }
                         }
                         KeyCode::KeyY if pressed && self.ctrl_held => {
-                            let structural = if let Some(scene) = &mut self.scene {
+                            let result = if let Some(scene) = &mut self.scene {
                                 self.undo_history.redo(scene)
                             } else { None };
-                            if structural == Some(true) {
-                                self.selected_instances.clear();
-                                self.sync_anim_seeds();
-                                self.send_selected();
-                                self.send_hierarchy();
+                            if let Some((structural, sel)) = result {
+                                if let Some(ids) = sel {
+                                    self.selected_instances = ids;
+                                    self.send_selected();
+                                }
+                                if structural {
+                                    self.sync_anim_seeds();
+                                    self.send_hierarchy();
+                                }
                             }
                         }
                         _ => {}
@@ -953,7 +1068,12 @@ impl ApplicationHandler for App {
                         self.lmb_held = false;
 
                         if self.rect_selecting {
-                            // 矩形選択終了: 確定してエディタへ通知
+                            // 矩形選択終了: SelectionCommand を記録してエディタへ通知
+                            let before = std::mem::take(&mut self.selection_before_rect);
+                            let after  = self.selected_instances.clone();
+                            if before != after {
+                                self.undo_history.record(Box::new(SelectionCommand { before, after }));
+                            }
                             self.send_selected();
                             self.rect_selecting = false;
                         } else if self.gizmo_drag.is_none() && self.lmb_press_pos.is_some()
@@ -1053,6 +1173,7 @@ impl ApplicationHandler for App {
                         let dy = cy - py;
                         if !self.rect_selecting && dx * dx + dy * dy > 25.0 {
                             self.rect_selecting = true;
+                            self.selection_before_rect = self.selected_instances.clone();
                         }
                         if self.rect_selecting {
                             let sx_min = px.min(cx);
@@ -1435,6 +1556,7 @@ impl ApplicationHandler for App {
                     if let (Some(id_buf), Some(draw_ctx)) = (&self.id_buffer, &self.draw_ctx) {
                         let raw     = id_buf.read_pixel(&draw_ctx.device);
                         let new_idx = if raw > 0 { Some(raw - 1) } else { None };
+                        let before  = self.selected_instances.clone();
                         if self.ctrl_at_press {
                             // Ctrl+クリック: 個別トグル
                             if let Some(idx) = new_idx {
@@ -1446,6 +1568,10 @@ impl ApplicationHandler for App {
                             }
                         } else {
                             self.selected_instances = new_idx.map(|i| vec![i]).unwrap_or_default();
+                        }
+                        let after = self.selected_instances.clone();
+                        if before != after {
+                            self.undo_history.record(Box::new(SelectionCommand { before, after }));
                         }
                         eprintln!("[SEED] pick: raw={raw}, selected={:?}", self.selected_instances);
                         self.send_selected();

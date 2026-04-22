@@ -66,6 +66,10 @@ pub enum IpcCommand {
     Copy,
     /// クリップボードの内容をペースト
     Paste,
+    /// アクターデータ要求（インスタンスインデックス）
+    GetActorData(u32),
+    /// トランスフォーム設定（位置・ZYX オイラー角(度)・スケール）
+    SetTransform { id: u32, px: f32, py: f32, pz: f32, ex: f32, ey: f32, ez: f32, sx: f32, sy: f32, sz: f32 },
 }
 
 // ============================================================
@@ -208,6 +212,29 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                         }
                         "COPY"  => Some(IpcCommand::Copy),
                         "PASTE" => Some(IpcCommand::Paste),
+                        s if s.starts_with("GET_ACTOR:") => {
+                            s["GET_ACTOR:".len()..].parse::<u32>().ok()
+                                .map(IpcCommand::GetActorData)
+                        }
+                        s if s.starts_with("SET_TRANSFORM:") => {
+                            let rest = &s["SET_TRANSFORM:".len()..];
+                            let parts: Vec<&str> = rest.split(',').collect();
+                            if parts.len() == 10 {
+                                if let Ok(id) = parts[0].parse::<u32>() {
+                                    let floats: Vec<f32> = parts[1..].iter()
+                                        .filter_map(|x| x.parse::<f32>().ok())
+                                        .collect();
+                                    if floats.len() == 9 {
+                                        Some(IpcCommand::SetTransform {
+                                            id,
+                                            px: floats[0], py: floats[1], pz: floats[2],
+                                            ex: floats[3], ey: floats[4], ez: floats[5],
+                                            sx: floats[6], sy: floats[7], sz: floats[8],
+                                        })
+                                    } else { None }
+                                } else { None }
+                            } else { None }
+                        }
                         s if s.starts_with("REPARENT:") => {
                             let rest = &s["REPARENT:".len()..];
                             let mut it = rest.splitn(2, ',');

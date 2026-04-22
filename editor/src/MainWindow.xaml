@@ -46,12 +46,15 @@
                                 </Grid.ColumnDefinitions>
 
                                 <!-- アイコン/チェックマーク列 (Submenu のみ表示)
-                                     Width=28: テキスト左端は 28+8(ContentPresenter.Margin)=36px になる
+                                     Width=26 + 1px 右ボーダー = 計 26px
+                                     テキスト左端: 26px(icon) + 6px(ContentPresenter.Margin) = 32px
                                      固定色 #1B1B1C: Transparent だと白 chrome が透過する -->
                                 <Border x:Name="IconArea"
                                         Grid.Column="0"
-                                        Width="28"
+                                        Width="26"
                                         Background="#1B1B1C"
+                                        BorderBrush="#3F3F46"
+                                        BorderThickness="0,0,1,0"
                                         Visibility="Collapsed">
                                     <Border x:Name="CheckBox"
                                             Width="16" Height="16"
@@ -69,15 +72,14 @@
                                 </Border>
 
                                 <!-- ヘッダーテキスト
-                                     Margin="8,0,8,0" で左右 8px を固定 (トリガー不要)
-                                     TopLevel: IconArea=Collapsed(0px) + 8px = 8px indent
-                                     Submenu : IconArea=28px + 8px = 36px indent -->
+                                     TopLevel: IconArea=Collapsed(0px) + 6px = 6px indent
+                                     Submenu : IconArea=26px + 6px = 32px indent (VS 準拠) -->
                                 <ContentPresenter x:Name="HeaderContent"
                                                   Grid.Column="1"
                                                   ContentSource="Header"
                                                   RecognizesAccessKey="True"
                                                   VerticalAlignment="Center"
-                                                  Margin="8,0,8,0"/>
+                                                  Margin="6,0,8,0"/>
 
                                 <!-- ショートカットキー (InputGestureText が空/null の場合は Collapsed) -->
                                 <TextBlock x:Name="IGT"
@@ -88,12 +90,12 @@
                                            Margin="24,0,8,0"
                                            Visibility="Visible"/>
 
-                                <!-- サブメニュー矢印 -->
+                                <!-- サブメニュー矢印 (塗りつぶし三角形、VS 準拠) -->
                                 <Path x:Name="Arrow"
                                       Grid.Column="3"
-                                      Data="M 0,0 L 4,3.5 L 0,7"
-                                      Stroke="#BBBBBB" StrokeThickness="1.2"
-                                      Width="14" Margin="4,0,4,0"
+                                      Data="M 0,0 L 4,3.5 L 0,7 Z"
+                                      Fill="#BBBBBB"
+                                      Width="8" Margin="4,0,8,0"
                                       HorizontalAlignment="Center"
                                       VerticalAlignment="Center"
                                       Visibility="Collapsed"/>
@@ -157,13 +159,13 @@
                             <Trigger Property="IsEnabled" Value="False">
                                 <Setter Property="Foreground" Value="#666666"/>
                             </Trigger>
-                            <!-- InputGestureText が空/null の場合はショートカット列を非表示 (phantom 幅 32px を除去) -->
-                            <DataTrigger Binding="{Binding InputGestureText, RelativeSource={RelativeSource TemplatedParent}}" Value="">
+                            <!-- InputGestureText が空/null の場合はショートカット列を非表示 (phantom 幅を除去) -->
+                            <Trigger Property="InputGestureText" Value="">
                                 <Setter TargetName="IGT" Property="Visibility" Value="Collapsed"/>
-                            </DataTrigger>
-                            <DataTrigger Binding="{Binding InputGestureText, RelativeSource={RelativeSource TemplatedParent}}" Value="{x:Null}">
+                            </Trigger>
+                            <Trigger Property="InputGestureText" Value="{x:Null}">
                                 <Setter TargetName="IGT" Property="Visibility" Value="Collapsed"/>
-                            </DataTrigger>
+                            </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
                 </Setter.Value>
@@ -196,8 +198,8 @@
         </Style>
 
         <Style TargetType="{x:Type Separator}">
-            <Setter Property="Background" Value="#454545"/>
-            <Setter Property="Margin"     Value="28,2,0,2"/>
+            <Setter Property="Background" Value="#3F3F46"/>
+            <Setter Property="Margin"     Value="26,2,0,2"/>
             <Setter Property="Height"     Value="1"/>
         </Style>
 
@@ -336,37 +338,37 @@
               BorderThickness="0,0,0,1" BorderBrush="#3A3A3A">
 
             <!-- ファイル -->
-			<MenuItem Header="ファイル(_F)">
-				<MenuItem Header="シーンを保存(_S)"
+            <MenuItem Header="ファイル">
+                <MenuItem Header="シーンを保存"
                           InputGestureText="Ctrl+S"
                           Click="OnMenuSaveScene"/>
                 <Separator/>
-                <MenuItem Header="終了(_X)" Click="OnMenuExit"/>
+                <MenuItem Header="終了" Click="OnMenuExit"/>
             </MenuItem>
 
             <!-- 編集 -->
-            <MenuItem Header="編集(_E)">
-                <MenuItem Header="元に戻す(_Z)"
+            <MenuItem Header="編集">
+                <MenuItem Header="元に戻す"
                           InputGestureText="Ctrl+Z"
                           Click="OnMenuUndo"/>
-                <MenuItem Header="やり直し(_Y)"
+                <MenuItem Header="やり直し"
                           InputGestureText="Ctrl+Y"
                           Click="OnMenuRedo"/>
                 <Separator/>
-                <MenuItem Header="コピー(_C)"
+                <MenuItem Header="コピー"
                           InputGestureText="Ctrl+C"
                           Click="OnMenuCopy"/>
-                <MenuItem Header="貼り付け(_V)"
+                <MenuItem Header="貼り付け"
                           InputGestureText="Ctrl+V"
                           Click="OnMenuPaste"/>
                 <Separator/>
-                <MenuItem Header="削除(_D)"
+                <MenuItem Header="削除"
                           InputGestureText="Esc"
                           Click="OnMenuDelete"/>
             </MenuItem>
 
             <!-- 表示 -->
-            <MenuItem Header="表示(_V)" SubmenuOpened="OnViewMenuOpened">
+            <MenuItem Header="表示" SubmenuOpened="OnViewMenuOpened">
                 <MenuItem x:Name="MenuItemHierarchy"
                           Header="Hierarchy"
                           IsCheckable="True"

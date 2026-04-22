@@ -185,6 +185,7 @@ public partial class MainWindow : Window
         _runtimeManager.FirstFrameReady               += OnFirstFrameReady;
 
         PanelHierarchy.SetRuntime(_runtimeManager);
+        PanelInspector.SetRuntime(_runtimeManager);
         PanelProject.SetAssetsPath(AssetsPath);
 
         _viewportHost = new ViewportHost();
@@ -500,7 +501,6 @@ public partial class MainWindow : Window
             bool hasSelection = selectedIds.Count > 0;
 
             var menu = new ContextMenu();
-            menu.Style = BuildViewportMenuStyle();
 
             if (hasSelection)
             {
@@ -526,18 +526,6 @@ public partial class MainWindow : Window
         var item = new MenuItem { Header = header };
         item.Click += (_, _) => action();
         menu.Items.Add(item);
-    }
-
-    private static Style BuildViewportMenuStyle()
-    {
-        var style = new Style(typeof(ContextMenu));
-        style.Setters.Add(new Setter(Control.BackgroundProperty,
-            new SolidColorBrush(Color.FromRgb(0x2D, 0x2D, 0x2D))));
-        style.Setters.Add(new Setter(Control.BorderBrushProperty,
-            new SolidColorBrush(Color.FromRgb(0x55, 0x55, 0x55))));
-        style.Setters.Add(new Setter(Control.ForegroundProperty,
-            new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC))));
-        return style;
     }
 
     // ── ツールモード ──────────────────────────────────────────────

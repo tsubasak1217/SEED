@@ -9,6 +9,7 @@ use std::ops::{
 };
 
 use super::vector2::Vector2;
+use crate::engine::structs::transforms::Quaternion;
 
 /// 3 次元ベクトル。
 ///
@@ -218,6 +219,14 @@ impl Vector3<f32> {
     pub fn normalize(self) -> Self {
         let len = self.length();
         if len > 0.0 { self / len } else { self }
+    }
+
+    /// YXZ オイラー角（ラジアン）としてクォータニオンに変換する。
+    ///
+    /// `(x=pitch, y=yaw, z=roll)` と解釈し `Quaternion::from_euler(self)` を呼ぶ。
+    #[inline]
+    pub fn to_quaternion(self) -> Quaternion {
+        Quaternion::from_euler(self)
     }
 }
 

@@ -23,6 +23,10 @@ pub trait Command {
     /// true を返すと構造変更（追加・削除）を示す。
     /// Undo/Redo 後に選択状態・ヒエラルキー再送信が必要か判定するために使用。
     fn is_structural(&self) -> bool { false }
+    /// Undo 後に復元すべき選択状態。None なら変更しない。
+    fn selection_after_undo(&self) -> Option<Vec<u32>> { None }
+    /// Redo (re-execute) 後に復元すべき選択状態。None なら変更しない。
+    fn selection_after_redo(&self) -> Option<Vec<u32>> { None }
 }
 
 // ============================================================
@@ -58,26 +62,28 @@ impl UndoHistory {
     }
 
     /// 直前の操作を元に戻す。
-    /// 戻せた場合 `Some(is_structural)`、何もなければ `None` を返す。
-    pub fn undo(&mut self, scene: &mut Scene) -> Option<bool> {
+    /// 戻せた場合 `Some((is_structural, selection_to_restore))`、何もなければ `None` を返す。
+    pub fn undo(&mut self, scene: &mut Scene) -> Option<(bool, Option<Vec<u32>>)> {
         if let Some(mut cmd) = self.past.pop() {
             let structural = cmd.is_structural();
+            let selection = cmd.selection_after_undo();
             cmd.undo(scene);
             self.future.push(cmd);
-            Some(structural)
+            Some((structural, selection))
         } else {
             None
         }
     }
 
     /// Undo した操作をやり直す。
-    /// やり直せた場合 `Some(is_structural)`、何もなければ `None` を返す。
-    pub fn redo(&mut self, scene: &mut Scene) -> Option<bool> {
+    /// やり直せた場合 `Some((is_structural, selection_to_restore))`、何もなければ `None` を返す。
+    pub fn redo(&mut self, scene: &mut Scene) -> Option<(bool, Option<Vec<u32>>)> {
         if let Some(mut cmd) = self.future.pop() {
             let structural = cmd.is_structural();
+            let selection = cmd.selection_after_redo();
             cmd.execute(scene);
             self.past.push(cmd);
-            Some(structural)
+            Some((structural, selection))
         } else {
             None
         }
@@ -102,6 +108,8 @@ pub struct SceneSnapshotCommand {
     pub after_meta:    Vec<InstanceMeta>,
     pub after_groups:  Vec<GroupMeta>,
     pub after_gid:     u32,
+    pub before_selection: Vec<u32>,
+    pub after_selection:  Vec<u32>,
 }
 
 impl Command for SceneSnapshotCommand {
@@ -124,6 +132,12 @@ impl Command for SceneSnapshotCommand {
         }
     }
     fn is_structural(&self) -> bool { true }
+    fn selection_after_undo(&self) -> Option<Vec<u32>> {
+        Some(self.before_selection.clone())
+    }
+    fn selection_after_redo(&self) -> Option<Vec<u32>> {
+        Some(self.after_selection.clone())
+    }
 }
 
 // ============================================================
@@ -161,6 +175,22 @@ impl Command for MultiTransformCommand {
     fn undo(&mut self, scene: &mut Scene) {
         for &(idx, old_mat, _) in &self.transforms { set_instance_mat(scene, idx, old_mat); }
     }
+}
+
+// ============================================================
+//  SelectionCommand — 選択状態の変更
+// ============================================================
+
+pub struct SelectionCommand {
+    pub before: Vec<u32>,
+    pub after:  Vec<u32>,
+}
+
+impl Command for SelectionCommand {
+    fn execute(&mut self, _scene: &mut Scene) {}
+    fn undo(&mut self, _scene: &mut Scene) {}
+    fn selection_after_undo(&self) -> Option<Vec<u32>> { Some(self.before.clone()) }
+    fn selection_after_redo(&self) -> Option<Vec<u32>> { Some(self.after.clone()) }
 }
 
 // ── 内部ヘルパー ──────────────────────────────────────────────

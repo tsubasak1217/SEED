@@ -42,7 +42,7 @@ public partial class HierarchyPanel : UserControl
     // ドラッグ用
     private Point         _dragStart;
     private bool          _isDragging;
-    private ActorNode?    _dragNode;
+    private List<int>     _dragNodeIds = new();
     private TreeViewItem? _dropTarget;   // 子として追加するターゲット
     private bool          _dropAsRoot;
     private TreeViewItem? _insertTarget; // 兄弟として挿入するターゲット
@@ -62,16 +62,16 @@ public partial class HierarchyPanel : UserControl
     private HashSet<int> _selectedIds = new();
     private int          _anchorId    = -1;
 
+    // 複数選択時の遅延デセレクト（クリックのみでデセレクト、ドラッグはキープ）
+    private bool _pendingDeselect;
+    private int  _pendingDeselectId = -1;
+
     // D&D: MouseDown で確定したドラッグ対象（コンテキストメニュー誤操作防止）
     private ActorNode? _pendingDragNode;
 
     // キャッシュ
     private static readonly SolidColorBrush BrushGroupIcon = MakeFrozen(Color.FromRgb(0xFF, 0xCC, 0x44));
     private static readonly SolidColorBrush BrushActorIcon = MakeFrozen(Color.FromRgb(0x55, 0xAA, 0xFF));
-    private static readonly SolidColorBrush BrushMenuBg    = MakeFrozen(Color.FromRgb(0x2D, 0x2D, 0x2D));
-    private static readonly SolidColorBrush BrushMenuBorder= MakeFrozen(Color.FromRgb(0x55, 0x55, 0x55));
-    private static readonly SolidColorBrush BrushMenuFg    = MakeFrozen(Color.FromRgb(0xCC, 0xCC, 0xCC));
-    private static readonly Style           CachedMenuStyle = CreateMenuStyle();
 
     private static SolidColorBrush MakeFrozen(Color c)
     {
@@ -80,20 +80,24 @@ public partial class HierarchyPanel : UserControl
         return b;
     }
 
-    private static Style CreateMenuStyle()
-    {
-        var style = new Style(typeof(ContextMenu));
-        style.Setters.Add(new Setter(Control.BackgroundProperty,  new SolidColorBrush(Color.FromRgb(0x2D, 0x2D, 0x2D))));
-        style.Setters.Add(new Setter(Control.BorderBrushProperty, new SolidColorBrush(Color.FromRgb(0x55, 0x55, 0x55))));
-        style.Setters.Add(new Setter(Control.ForegroundProperty,  new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC))));
-        return style;
-    }
 
     // ============================================================
 
     public HierarchyPanel()
     {
         InitializeComponent();
+        ActorTree.PreviewKeyDown            += OnTreeKeyDown;
+        ActorTree.PreviewMouseLeftButtonUp  += OnTreeMouseUp;
+    }
+
+    private void OnTreeKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.F2 && _selectedId >= 0)
+        {
+            e.Handled = true;
+            CancelRenameTimer();
+            StartRename(_selectedId);
+        }
     }
 
     // ── ランタイム接続 ────────────────────────────────────────
@@ -200,6 +204,20 @@ public partial class HierarchyPanel : UserControl
                 else
                     roots.Add(node);
             }
+
+            // グループが末尾にならないよう、各レベルを「最小インスタンス ID」でソートする。
+            // 非グループは自身の ID、グループは子孫インスタンスの最小 ID をキーとする。
+            static int MinKey(ActorNode n)
+            {
+                if (!n.IsGroup) return n.Id;
+                var min = int.MaxValue;
+                foreach (var c in n.Children) min = Math.Min(min, MinKey(c));
+                return min < int.MaxValue ? min : n.Id;
+            }
+            foreach (var node in nodes)
+                node.Children.Sort((a, b) => MinKey(a).CompareTo(MinKey(b)));
+            roots.Sort((a, b) => MinKey(a).CompareTo(MinKey(b)));
+
             return roots;
         }
         catch { return new List<ActorNode>(); }
@@ -353,10 +371,28 @@ public partial class HierarchyPanel : UserControl
 
     // ── 右クリック / コンテキストメニュー ─────────────────────
 
+    private void OnTreeMouseUp(object sender, MouseButtonEventArgs e)
+    {
+        if (!_pendingDeselect) return;
+        _pendingDeselect = false;
+        var id = _pendingDeselectId;
+        _pendingDeselectId = -1;
+
+        _selectedIds.Clear();
+        _selectedIds.Add(id);
+        _selectedId = id;
+        _anchorId   = id;
+        SelectTreeItem(id);
+        UpdateMultiSelectVisuals();
+        SendSelectionToRuntime();
+    }
+
     private void OnTreeRightMouseDown(object sender, MouseButtonEventArgs e)
     {
         // コンテキストメニューを閉じるLMBクリックで誤ドラッグが起きないようにリセット
-        _pendingDragNode = null;
+        _pendingDragNode   = null;
+        _pendingDeselect   = false;
+        _pendingDeselectId = -1;
 
         var hit  = ActorTree.InputHitTest(e.GetPosition(ActorTree)) as DependencyObject;
         var item = FindAncestor<TreeViewItem>(hit);
@@ -374,19 +410,17 @@ public partial class HierarchyPanel : UserControl
     private ContextMenu BuildSelectedContextMenu()
     {
         var menu = new ContextMenu();
-        menu.Style = BuildMenuStyle();
-        AddMenuItem(menu, "コピー",                    OnHierarchyCopy);
-        AddMenuItem(menu, "削除",                      OnHierarchyDelete);
+        AddMenuItem(menu, "コピー",                 "Ctrl+C", OnHierarchyCopy);
+        AddMenuItem(menu, "削除",                   "Del",    OnHierarchyDelete);
         menu.Items.Add(new Separator());
-        AddMenuItem(menu, "選択からグループを作成",    OnCreateGroupFromSelection);
+        AddMenuItem(menu, "選択からグループを作成", null,     OnCreateGroupFromSelection);
         return menu;
     }
 
     private ContextMenu BuildEmptyContextMenu()
     {
         var menu = new ContextMenu();
-        menu.Style = BuildMenuStyle();
-        AddMenuItem(menu, "グループフォルダを作成", OnCreateGroupMenu);
+        AddMenuItem(menu, "グループフォルダを作成", null, OnCreateGroupMenu);
         return menu;
     }
 
@@ -424,14 +458,13 @@ public partial class HierarchyPanel : UserControl
         _runtime?.SendToRuntime($"CREATE_GROUP:{parentId},{name}");
     }
 
-    private static void AddMenuItem(ContextMenu menu, string header, RoutedEventHandler handler)
+    private static void AddMenuItem(ContextMenu menu, string header, string? gesture, RoutedEventHandler handler)
     {
         var item = new MenuItem { Header = header };
+        if (gesture != null) item.InputGestureText = gesture;
         item.Click += handler;
         menu.Items.Add(item);
     }
-
-    private static Style BuildMenuStyle() => CachedMenuStyle;
 
     // ── ドラッグ＆ドロップ ────────────────────────────────────
 
@@ -439,7 +472,7 @@ public partial class HierarchyPanel : UserControl
     {
         _dragStart       = e.GetPosition(ActorTree);
         _isDragging      = false;
-        _dragNode        = null;
+        _dragNodeIds     = new();
         _pendingDragNode = null;
 
         if (e.ClickCount == 2)
@@ -506,6 +539,16 @@ public partial class HierarchyPanel : UserControl
         // 通常クリック
         if (item?.Tag is ActorNode normalNode)
         {
+            // 複数選択中に選択済みアイテムをクリック → ドラッグしないなら MouseUp でデセレクト
+            if (_selectedIds.Count > 1 && _selectedIds.Contains(normalNode.Id))
+            {
+                _pendingDeselect   = true;
+                _pendingDeselectId = normalNode.Id;
+                _pendingDragNode   = normalNode;
+                e.Handled = true;
+                return;
+            }
+
             _selectedIds.Clear();
             _selectedIds.Add(normalNode.Id);
             _anchorId = normalNode.Id;
@@ -559,15 +602,22 @@ public partial class HierarchyPanel : UserControl
         CancelRenameTimer();
         _pendingRenameId = -1;
 
-        _isDragging = true;
-        _dragNode   = _pendingDragNode;
+        // ドラッグ開始時は遅延デセレクトをキャンセル（複数選択を維持）
+        _pendingDeselect   = false;
+        _pendingDeselectId = -1;
 
-        var data = new DataObject("ActorNode", _pendingDragNode);
+        _isDragging  = true;
+        // 選択中の全ノードをドラッグ。クリックしたノードが選択外なら単独ドラッグ
+        _dragNodeIds = _selectedIds.Contains(_pendingDragNode.Id)
+            ? _selectedIds.ToList()
+            : new List<int> { _pendingDragNode.Id };
+
+        var data = new DataObject("DragIds", _dragNodeIds);
         DragDrop.DoDragDrop(ActorTree, data, DragDropEffects.Move);
 
-        _isDragging   = false;
-        _dragNode     = null;
-        _dropTarget   = null;
+        _isDragging  = false;
+        _dragNodeIds = new();
+        _dropTarget  = null;
         _dropAsRoot   = false;
         _insertTarget = null;
         DropIndicator.Visibility = Visibility.Collapsed;
@@ -576,13 +626,13 @@ public partial class HierarchyPanel : UserControl
 
     private void OnTreeDragEnter(object sender, DragEventArgs e)
     {
-        if (!e.Data.GetDataPresent("ActorNode"))
+        if (!e.Data.GetDataPresent("DragIds"))
             e.Effects = DragDropEffects.None;
     }
 
     private void OnTreeDragOver(object sender, DragEventArgs e)
     {
-        if (!e.Data.GetDataPresent("ActorNode"))
+        if (!e.Data.GetDataPresent("DragIds"))
         {
             e.Effects = DragDropEffects.None;
             return;
@@ -601,8 +651,11 @@ public partial class HierarchyPanel : UserControl
 
         if (item?.Tag is ActorNode targetNode)
         {
-            if (_dragNode != null &&
-                (targetNode.Id == _dragNode.Id || IsDescendant(_dragNode, targetNode.Id)))
+            // ドラッグ中のノードのいずれかがターゲット自身または祖先なら無効
+            bool invalid = _dragNodeIds.Any(id =>
+                id == targetNode.Id ||
+                (FindNode(_roots, id) is { } n && IsDescendant(n, targetNode.Id)));
+            if (invalid)
             {
                 e.Effects = DragDropEffects.None;
                 return;
@@ -653,30 +706,41 @@ public partial class HierarchyPanel : UserControl
         ClearDropHighlight();
         DropIndicator.Visibility = Visibility.Collapsed;
 
-        if (!e.Data.GetDataPresent("ActorNode")) return;
-        var dragNode = (ActorNode)e.Data.GetData("ActorNode");
+        if (!e.Data.GetDataPresent("DragIds")) return;
+        var dragIds = (List<int>)e.Data.GetData("DragIds");
 
         int newParentId;
         if (_insertTarget?.Tag is ActorNode siblingNode)
-        {
-            // 兄弟として挿入 → sibling と同じ親にする（親子付け解除に相当）
             newParentId = siblingNode.ParentId ?? -1;
-        }
         else if (_dropTarget?.Tag is ActorNode targetNode)
-        {
             newParentId = targetNode.Id;
-        }
         else if (_dropAsRoot)
-        {
             newParentId = -1;
-        }
         else
-        {
             return;
-        }
 
-        _runtime?.SendToRuntime($"REPARENT:{dragNode.Id},{newParentId}");
-        ReparentInPlace(dragNode.Id, newParentId == -1 ? null : newParentId);
+        // 複数ノードをまとめて親子付け変更
+        // 1 つ目は兄弟挿入位置を使い、2 つ目以降は末尾に追加する
+        bool first = true;
+        foreach (var dragId in dragIds)
+        {
+            var dragNode = FindNode(_roots, dragId);
+            if (dragNode == null) continue;
+            _runtime?.SendToRuntime($"REPARENT:{dragNode.Id},{newParentId}");
+            if (first)
+            {
+                ReparentInPlace(dragNode.Id, newParentId == -1 ? null : newParentId);
+                first = false;
+            }
+            else
+            {
+                // 2 つ目以降は挿入位置なし（末尾に追加）
+                var saved = _insertTarget;
+                _insertTarget = null;
+                ReparentInPlace(dragNode.Id, newParentId == -1 ? null : newParentId);
+                _insertTarget = saved;
+            }
+        }
 
         _dropTarget   = null;
         _dropAsRoot   = false;
@@ -849,10 +913,11 @@ public partial class HierarchyPanel : UserControl
             item.Header = BuildItemHeader(node);
         }
 
-        tb.KeyDown  += (_, e) =>
+        // PreviewKeyDown を使うことで TreeViewItem の Enter 横取りを防ぐ
+        tb.PreviewKeyDown += (_, e) =>
         {
-            if (e.Key == Key.Return) { Commit(); e.Handled = true; }
-            if (e.Key == Key.Escape) { Cancel(); e.Handled = true; }
+            if (e.Key is Key.Return or Key.Enter) { Commit(); e.Handled = true; }
+            else if (e.Key == Key.Escape)          { Cancel(); e.Handled = true; }
         };
         tb.LostFocus += (_, _) => Commit();
 

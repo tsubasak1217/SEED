@@ -114,6 +114,9 @@ public sealed class RuntimeManager : IDisposable
     /// </summary>
     public event Action? FirstFrameReady;
 
+    /// <summary>アクターデータが返ってきたときに発火する（JSON 文字列）。</summary>
+    public event Action<string>? ActorDataReceived;
+
     // ── コンストラクタ ─────────────────────────────────────────
 
     public RuntimeManager(string runtimeExePath)
@@ -453,6 +456,12 @@ public sealed class RuntimeManager : IDisposable
         {
             EditorLog.Write($"[Runtime→Editor] SAVE_ERROR: {msg["SAVE_ERROR:".Length..]}");
             SaveCompleted?.Invoke(false, msg["SAVE_ERROR:".Length..]);
+        }
+        else if (msg.StartsWith("ACTOR_DATA:", StringComparison.Ordinal))
+        {
+            var json = msg["ACTOR_DATA:".Length..];
+            EditorLog.Write($"[Runtime→Editor] ACTOR_DATA ({json.Length} chars)");
+            ActorDataReceived?.Invoke(json);
         }
         else
         {

@@ -17,7 +17,7 @@
                         <Grid>
                             <Grid.RowDefinitions>
                                 <RowDefinition Height="Auto"/>
-                                <RowDefinition/>
+                                <RowDefinition Height="Auto"/>
                             </Grid.RowDefinitions>
                             <!-- 行ヘッダー -->
                             <Border x:Name="RowBorder" Grid.Row="0"
@@ -44,6 +44,13 @@
                                                       VerticalAlignment="Center"/>
                                 </Grid>
                             </Border>
+                            <!-- インデントガイドライン -->
+                            <Rectangle x:Name="IndentLine" Grid.Row="1"
+                                       Width="1" HorizontalAlignment="Left"
+                                       Margin="7,0,0,0"
+                                       Fill="#444444"
+                                       Visibility="Collapsed"
+                                       IsHitTestVisible="False"/>
                             <!-- 子アイテム -->
                             <ItemsPresenter x:Name="ItemsHost" Grid.Row="1"
                                             Margin="16,0,0,0"
@@ -57,8 +64,9 @@
                             </Trigger>
                             <!-- 展開中 -->
                             <Trigger Property="IsExpanded" Value="True">
-                                <Setter TargetName="ItemsHost" Property="Visibility" Value="Visible"/>
-                                <Setter TargetName="Arrow"     Property="Data"        Value="M 0,4 L 8,4 L 4,0 Z"/>
+                                <Setter TargetName="ItemsHost"  Property="Visibility" Value="Visible"/>
+                                <Setter TargetName="Arrow"      Property="Data"        Value="M 0,4 L 8,4 L 4,0 Z"/>
+                                <Setter TargetName="IndentLine" Property="Visibility" Value="Visible"/>
                             </Trigger>
                             <!-- 選択中 -->
                             <Trigger Property="IsSelected" Value="True">
