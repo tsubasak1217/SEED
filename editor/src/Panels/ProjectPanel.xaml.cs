@@ -69,6 +69,11 @@ public partial class ProjectPanel : UserControl
     private HashSet<Border>                   _selectionAtDragStart = new();
     private System.Windows.Shapes.Rectangle? _selRectShape;
 
+    // アイテムドラッグ（移動）
+    private Border? _itemDragStartTile;
+    // 複数選択中に選択済みタイルをクリックしたとき SelectSingle をマウスアップまで遅延するためのフィールド
+    private Border? _pendingSingleSelectTile;
+
     // リネーム中フラグ・新規フォルダ用
     private bool    _isRenaming;
     private string? _pendingRenameFolder;
@@ -90,6 +95,7 @@ public partial class ProjectPanel : UserControl
     private static readonly Uri UriModel       = PackUri("model.png");
     private static readonly Uri UriScene       = PackUri("scene.png");
     private static readonly Uri UriScript      = PackUri("script.png");
+    private static readonly Uri UriActor       = PackUri("actor.png");
 
     private static readonly HashSet<string> ImageExts = new(StringComparer.OrdinalIgnoreCase)
         { ".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tga", ".hdr", ".exr", ".webp" };
@@ -97,6 +103,7 @@ public partial class ProjectPanel : UserControl
     private static Uri GetFileIconUri(string ext) => ext.ToLowerInvariant() switch
     {
         ".scene"                               => UriScene,
+        ".actor"                               => UriActor,
         ".glb" or ".gltf" or ".obj" or ".fbx" => UriModel,
         ".lua" or ".cs" or ".py" or ".wgsl"   => UriScript,
         _ when ImageExts.Contains(ext)         => UriImage,
@@ -114,6 +121,9 @@ public partial class ProjectPanel : UserControl
 
     // ── 公開 API (MainWindow から呼ぶ) ────────────────────────────
 
+    /// <summary>.scene ファイルがダブルクリックされたときに発火する（フルパス）。</summary>
+    public event Action<string>? SceneFileOpened;
+
     public void SetAssetsPath(string assetsPath)
     {
         _assetsRoot  = assetsPath;
@@ -126,6 +136,25 @@ public partial class ProjectPanel : UserControl
     public void HandleCopy()  => DoCopy();
     public void HandleCut()   => DoCut();
     public void HandlePaste() => DoPaste();
+
+    // ── 新規作成ボタン ────────────────────────────────────────────
+
+    private void OnCreateClick(object sender, RoutedEventArgs e)
+    {
+        if (string.IsNullOrEmpty(_currentPath) || !Directory.Exists(_currentPath)) return;
+
+        var win = new SEEDEditor.CreateItemWindow(_currentPath)
+        {
+            Owner = Window.GetWindow(this),
+        };
+        win.ItemCreated += createdPath =>
+        {
+            // 作成後にインラインリネームを開始する
+            _pendingRenameFolder = createdPath;
+            RefreshFileGrid();
+        };
+        win.Show();
+    }
 
     // ── ScrollViewer イベント配線 ─────────────────────────────────
 
@@ -240,11 +269,12 @@ public partial class ProjectPanel : UserControl
         foreach (var file in Directory.GetFiles(_currentPath).OrderBy(p => p))
             FileGrid.Children.Add(BuildFileItem(new FileInfo(file)));
 
-        // 新規フォルダ作成後のリネーム
+        // 新規ファイル/フォルダ作成後のリネーム
+        // _pendingRenameFolder はここでは消さない。StartRenameMode が実行されるまで
+        // FSW の再描画を抑制するために使い続ける。
         if (_pendingRenameFolder != null)
         {
             var target = _pendingRenameFolder;
-            _pendingRenameFolder = null;
             var tile = FileGrid.Children.OfType<Border>()
                 .FirstOrDefault(b => b.Tag is string p && PathEquals(p, target));
             if (tile != null)
@@ -264,6 +294,7 @@ public partial class ProjectPanel : UserControl
         var  item    = WrapTile(MakeIconImage(isEmpty ? UriFolderEmpty : UriFolder, 66),
                                 dir.Name, dir.FullName);
         AttachItemEvents(item, dir);
+        AttachDropTarget(item);
         return item;
     }
 
@@ -373,9 +404,12 @@ public partial class ProjectPanel : UserControl
 
             if (e.ClickCount == 2 && !ctrl && !shift)
             {
-                // ダブルクリック → リネームタイマーをキャンセルしてフォルダ移動
                 CancelRenameSchedule();
-                if (entry is DirectoryInfo dir) NavigateTo(dir.FullName);
+                if (entry is DirectoryInfo dir)
+                    NavigateTo(dir.FullName);
+                else if (entry is FileInfo file &&
+                         file.Extension.Equals(".scene", StringComparison.OrdinalIgnoreCase))
+                    SceneFileOpened?.Invoke(file.FullName);
             }
             else if (e.ClickCount == 1)
             {
@@ -384,6 +418,12 @@ public partial class ProjectPanel : UserControl
                 {
                     // 選択済み単独アイテムへの再クリック → リネーム予約
                     ScheduleRename(item);
+                }
+                else if (!ctrl && !shift && _selectedItems.Count > 1 && _selectedItems.Contains(item))
+                {
+                    // 複数選択中に選択済みアイテムをクリック
+                    // → ドラッグ開始の可能性があるため SelectSingle をマウスアップまで遅延
+                    _pendingSingleSelectTile = item;
                 }
                 else
                 {
@@ -479,9 +519,18 @@ public partial class ProjectPanel : UserControl
     {
         _dragStart = e.GetPosition(FileScrollViewer);
 
-        // OriginalSource がタイル内の要素なら範囲選択を開始しない
-        if (e.OriginalSource is DependencyObject src && FindTile(src) != null) return;
+        if (e.OriginalSource is DependencyObject src)
+        {
+            var tile = FindTile(src);
+            if (tile != null)
+            {
+                // タイル上 → 範囲選択は開始しない、アイテムドラッグの起点だけ記録
+                _itemDragStartTile = tile;
+                return;
+            }
+        }
 
+        _itemDragStartTile = null;
         // 背景クリック → 選択解除して範囲選択開始
         CancelRenameSchedule();
         bool ctrl = Keyboard.IsKeyDown(Key.LeftCtrl) || Keyboard.IsKeyDown(Key.RightCtrl);
@@ -502,11 +551,29 @@ public partial class ProjectPanel : UserControl
 
     private void OnSVPreviewMouseMove(object sender, MouseEventArgs e)
     {
-        if (!_dragSelectActive || e.LeftButton != MouseButtonState.Pressed) return;
+        if (e.LeftButton != MouseButtonState.Pressed)
+        {
+            _itemDragStartTile = null;
+            return;
+        }
 
         var cur = e.GetPosition(FileScrollViewer);
         double dx = cur.X - _dragStart.X, dy = cur.Y - _dragStart.Y;
 
+        // アイテムドラッグ開始判定（しきい値 5px）
+        if (_itemDragStartTile != null && dx * dx + dy * dy > 25)
+        {
+            var startTile = _itemDragStartTile;
+            _itemDragStartTile = null;
+            // ドラッグ起点タイルが選択に入っていなければ選択する
+            if (!_selectedItems.Contains(startTile))
+                SelectSingle(startTile, ctrl: false, shift: false);
+            if (_selectedItems.Count > 0)
+                BeginItemDrag(startTile);
+            return;
+        }
+
+        if (!_dragSelectActive) return;
         if (!_dragThresholdMet && dx * dx + dy * dy > 25) _dragThresholdMet = true;
         if (!_dragThresholdMet) return;
 
@@ -517,12 +584,127 @@ public partial class ProjectPanel : UserControl
 
     private void OnSVPreviewLMBUp(object sender, MouseButtonEventArgs e)
     {
+        _itemDragStartTile = null;
+
+        // 遅延 SelectSingle の確定（ドラッグせずにリリースした場合）
+        if (_pendingSingleSelectTile != null)
+        {
+            var t = _pendingSingleSelectTile;
+            _pendingSingleSelectTile = null;
+            CancelRenameSchedule();
+            SelectSingle(t, ctrl: false, shift: false);
+        }
+
         if (!_dragSelectActive) return;
         _dragSelectActive = false;
         _dragThresholdMet = false;
         HideDragRect();
         FileScrollViewer.ReleaseMouseCapture();
         e.Handled = true;
+    }
+
+    // ── アイテムドラッグ（移動） ──────────────────────────────────────
+
+    private void BeginItemDrag(Border sourceTile)
+    {
+        // ドラッグ確定 → 遅延 SelectSingle・リネームスケジュール両方をキャンセル
+        _pendingSingleSelectTile = null;
+        CancelRenameSchedule();
+
+        var paths = _selectedItems
+            .Select(b => b.Tag as string)
+            .Where(p => p != null)
+            .Cast<string>()
+            .ToArray();
+        if (paths.Length == 0) return;
+
+        var data = new DataObject("SEEDProjectPaths", paths);
+        DragDrop.DoDragDrop(sourceTile, data, DragDropEffects.Move);
+    }
+
+    private void AttachDropTarget(Border tile)
+    {
+        tile.AllowDrop = true;
+
+        tile.DragEnter += (_, e) =>
+        {
+            if (!e.Data.GetDataPresent("SEEDProjectPaths")) return;
+            tile.BorderBrush     = new SolidColorBrush(Color.FromArgb(0xFF, 0x44, 0x88, 0xFF));
+            tile.BorderThickness = new Thickness(2);
+            e.Effects            = DragDropEffects.Move;
+            e.Handled            = true;
+        };
+        tile.DragOver += (_, e) =>
+        {
+            if (!e.Data.GetDataPresent("SEEDProjectPaths")) return;
+            e.Effects = DragDropEffects.Move;
+            e.Handled = true;
+        };
+        tile.DragLeave += (_, _) =>
+        {
+            tile.BorderBrush     = null;
+            tile.BorderThickness = new Thickness(0);
+        };
+        tile.Drop += (_, e) =>
+        {
+            tile.BorderBrush     = null;
+            tile.BorderThickness = new Thickness(0);
+            if (!e.Data.GetDataPresent("SEEDProjectPaths")) return;
+
+            var destDir = tile.Tag as string;
+            if (destDir == null || !Directory.Exists(destDir)) return;
+
+            var paths = (string[])e.Data.GetData("SEEDProjectPaths");
+            bool anyMoved = false;
+            foreach (var src in paths)
+                if (MoveItemToFolder(src, destDir)) anyMoved = true;
+
+            if (anyMoved)
+            {
+                ClearAllSelection();
+                RefreshFileGrid();
+            }
+            e.Handled = true;
+        };
+    }
+
+    private static bool MoveItemToFolder(string srcPath, string destDir)
+    {
+        // ドロップ先が移動元そのもの
+        if (string.Equals(Path.GetFullPath(srcPath), Path.GetFullPath(destDir),
+                StringComparison.OrdinalIgnoreCase)) return false;
+
+        var name     = Path.GetFileName(srcPath);
+        var destPath = Path.Combine(destDir, name);
+
+        // 同じ場所への移動
+        if (string.Equals(Path.GetFullPath(srcPath), Path.GetFullPath(destPath),
+                StringComparison.OrdinalIgnoreCase)) return false;
+
+        // フォルダを自分の子孫フォルダに移動しようとしている
+        if (Directory.Exists(srcPath))
+        {
+            var srcFull  = Path.GetFullPath(srcPath).TrimEnd(Path.DirectorySeparatorChar);
+            var destFull = Path.GetFullPath(destDir).TrimEnd(Path.DirectorySeparatorChar);
+            if (destFull.StartsWith(srcFull + Path.DirectorySeparatorChar,
+                    StringComparison.OrdinalIgnoreCase)) return false;
+        }
+
+        try
+        {
+            if (Directory.Exists(srcPath))
+            {
+                if (Directory.Exists(destPath)) return false; // 同名フォルダが存在
+                Directory.Move(srcPath, destPath);
+            }
+            else if (File.Exists(srcPath))
+            {
+                if (File.Exists(destPath)) return false;      // 同名ファイルが存在
+                File.Move(srcPath, destPath);
+            }
+            return true;
+        }
+        catch { return false; }
     }
 
     private void UpdateDragRect(Point cur)
@@ -764,6 +946,8 @@ public partial class ProjectPanel : UserControl
         {
             Directory.CreateDirectory(path);
             _pendingRenameFolder = path;
+            // FSW の OnFsChanged は pending 中スキップされるため、ここで直接更新する
+            RefreshFileGrid();
         }
         catch { }
     }
@@ -772,6 +956,8 @@ public partial class ProjectPanel : UserControl
 
     private void StartRenameMode(Border tile)
     {
+        // pending フラグをここで解除（OnFsChanged の FSW 抑制を終わらせる）
+        _pendingRenameFolder = null;
         if (_isRenaming) return;
         _isRenaming = true;
 
@@ -943,7 +1129,10 @@ public partial class ProjectPanel : UserControl
         {
             BuildFolderTree();
             if (!Directory.Exists(_currentPath)) _currentPath = _assetsRoot;
-            RefreshFileGrid();
+            // リネーム pending 中・リネーム実行中はグリッドを再構築しない。
+            // FSW が StartRenameMode より先に実行されてタイルを破壊するのを防ぐ。
+            if (_pendingRenameFolder == null && !_isRenaming)
+                RefreshFileGrid();
         });
     }
 

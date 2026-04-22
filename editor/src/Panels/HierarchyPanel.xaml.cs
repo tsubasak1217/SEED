@@ -411,7 +411,7 @@ public partial class HierarchyPanel : UserControl
     {
         var menu = new ContextMenu();
         AddMenuItem(menu, "コピー",                 "Ctrl+C", OnHierarchyCopy);
-        AddMenuItem(menu, "削除",                   "Del",    OnHierarchyDelete);
+        AddMenuItem(menu, "削除",                   "Del / Esc",    OnHierarchyDelete);
         menu.Items.Add(new Separator());
         AddMenuItem(menu, "選択からグループを作成", null,     OnCreateGroupFromSelection);
         return menu;
@@ -456,6 +456,17 @@ public partial class HierarchyPanel : UserControl
         var name     = GetUniqueName("Group", -1);
         _pendingRenameGroupName = name;
         _runtime?.SendToRuntime($"CREATE_GROUP:{parentId},{name}");
+    }
+
+    /// <summary>
+    /// ルートに空の Actor を作成し、作成後にインライン名前変更を開始する。
+    /// ProjectPanel の + ボタンから呼ぶ。
+    /// </summary>
+    public void CreateActorAtRoot()
+    {
+        var name = GetUniqueName("Actor", -1);
+        _pendingRenameGroupName = name;
+        _runtime?.SendToRuntime($"CREATE_GROUP:-1,{name}");
     }
 
     private static void AddMenuItem(ContextMenu menu, string header, string? gesture, RoutedEventHandler handler)

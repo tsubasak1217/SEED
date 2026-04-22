@@ -27,6 +27,9 @@ public partial class InspectorPanel : UserControl
 
     // ── Runtime binding ──────────────────────────────────────
 
+    /// <summary>インスペクターでトランスフォームが確定したとき発火する（dirty 検知用）。</summary>
+    public event Action? TransformCommitted;
+
     public void SetRuntime(RuntimeManager runtime)
     {
         if (_runtime is not null)
@@ -113,9 +116,9 @@ public partial class InspectorPanel : UserControl
             var grid = BuildXYZGrid();
             grid.Tag = "transform";
 
-            (_tbPx, _tbPy, _tbPz) = AddXYZRow(grid, 0, "位置",  px, py, pz, "#E06C75", "#98C379", "#61AFEF");
-            (_tbEx, _tbEy, _tbEz) = AddXYZRow(grid, 1, "回転",  ex, ey, ez, "#E06C75", "#98C379", "#61AFEF");
-            (_tbSx, _tbSy, _tbSz) = AddXYZRow(grid, 2, "スケール", sx, sy, sz, "#E06C75", "#98C379", "#61AFEF");
+            (_tbPx, _tbPy, _tbPz) = AddXYZRow(grid, 0, "位置",    px, py, pz, "#E06C75", "#98C379", "#61AFEF", dragSpeed: 0.1);
+            (_tbEx, _tbEy, _tbEz) = AddXYZRow(grid, 1, "回転",    ex, ey, ez, "#E06C75", "#98C379", "#61AFEF", dragSpeed: 1.0);
+            (_tbSx, _tbSy, _tbSz) = AddXYZRow(grid, 2, "スケール", sx, sy, sz, "#E06C75", "#98C379", "#61AFEF", dragSpeed: 0.01);
 
             ((StackPanel)section.Child).Children.Add(grid);
             ComponentStack.Children.Add(section);
@@ -176,7 +179,8 @@ public partial class InspectorPanel : UserControl
         Grid grid, int row,
         string label,
         float vx, float vy, float vz,
-        string colorX, string colorY, string colorZ)
+        string colorX, string colorY, string colorZ,
+        double dragSpeed = 0.1)
     {
         grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(24) });
 
@@ -194,9 +198,9 @@ public partial class InspectorPanel : UserControl
         var tbY = MakeAxisField(vy, colorY); Grid.SetRow(tbY, row); Grid.SetColumn(tbY, 4); grid.Children.Add(tbY);
         var tbZ = MakeAxisField(vz, colorZ); Grid.SetRow(tbZ, row); Grid.SetColumn(tbZ, 6); grid.Children.Add(tbZ);
 
-        var lblX = MakeAxisLabel("X", colorX); Grid.SetRow(lblX, row); Grid.SetColumn(lblX, 1); grid.Children.Add(lblX);
-        var lblY = MakeAxisLabel("Y", colorY); Grid.SetRow(lblY, row); Grid.SetColumn(lblY, 3); grid.Children.Add(lblY);
-        var lblZ = MakeAxisLabel("Z", colorZ); Grid.SetRow(lblZ, row); Grid.SetColumn(lblZ, 5); grid.Children.Add(lblZ);
+        var lblX = MakeAxisLabel("X", colorX, tbX, dragSpeed); Grid.SetRow(lblX, row); Grid.SetColumn(lblX, 1); grid.Children.Add(lblX);
+        var lblY = MakeAxisLabel("Y", colorY, tbY, dragSpeed); Grid.SetRow(lblY, row); Grid.SetColumn(lblY, 3); grid.Children.Add(lblY);
+        var lblZ = MakeAxisLabel("Z", colorZ, tbZ, dragSpeed); Grid.SetRow(lblZ, row); Grid.SetColumn(lblZ, 5); grid.Children.Add(lblZ);
 
         tbX.KeyDown += OnFieldKeyDown;
         tbY.KeyDown += OnFieldKeyDown;
@@ -208,17 +212,51 @@ public partial class InspectorPanel : UserControl
         return (tbX, tbY, tbZ);
     }
 
-    private static TextBlock MakeAxisLabel(string text, string colorHex)
+    private TextBlock MakeAxisLabel(string text, string colorHex, TextBox target, double dragSpeed)
     {
-        return new TextBlock
+        var label = new TextBlock
         {
-            Text              = text,
-            Foreground        = new SolidColorBrush((Color)ColorConverter.ConvertFromString(colorHex)),
-            FontSize          = 10,
-            FontWeight        = FontWeights.Bold,
-            VerticalAlignment = VerticalAlignment.Center,
+            Text                = text,
+            Foreground          = new SolidColorBrush((Color)ColorConverter.ConvertFromString(colorHex)),
+            FontSize            = 10,
+            FontWeight          = FontWeights.Bold,
+            VerticalAlignment   = VerticalAlignment.Center,
             HorizontalAlignment = HorizontalAlignment.Center,
+            Cursor              = Cursors.SizeWE,
         };
+
+        double dragOriginX     = 0;
+        float  dragOriginValue = 0f;
+
+        label.MouseLeftButtonDown += (_, e) =>
+        {
+            if (float.TryParse(target.Text, NumberStyles.Float,
+                               CultureInfo.InvariantCulture, out var v))
+            {
+                dragOriginX     = e.GetPosition(null).X;
+                dragOriginValue = v;
+                label.CaptureMouse();
+            }
+            e.Handled = true;
+        };
+
+        label.MouseMove += (_, e) =>
+        {
+            if (!label.IsMouseCaptured) return;
+            var dx    = e.GetPosition(null).X - dragOriginX;
+            var speed = Keyboard.Modifiers.HasFlag(ModifierKeys.Shift) ? dragSpeed * 0.1 : dragSpeed;
+            target.Text = Fmt(dragOriginValue + (float)(dx * speed));
+            CommitTransform();
+        };
+
+        label.MouseLeftButtonUp += (_, e) =>
+        {
+            if (label.IsMouseCaptured)
+                label.ReleaseMouseCapture();
+            e.Handled = true;
+        };
+
+        return label;
     }
 
     private static TextBox MakeAxisField(float value, string colorHex)
@@ -299,6 +337,7 @@ public partial class InspectorPanel : UserControl
         var msg = FormattableString.Invariant(
             $"SET_TRANSFORM:{_currentId},{px},{py},{pz},{ex},{ey},{ez},{sx},{sy},{sz}");
         _runtime?.SendToRuntime(msg);
+        TransformCommitted?.Invoke();
     }
 
     private bool TryParseAll(

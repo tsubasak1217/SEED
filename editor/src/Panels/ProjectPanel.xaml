@@ -111,12 +111,67 @@
         <!-- ── 右: ファイルグリッド ───────────────────────── -->
         <Grid Grid.Column="2">
             <Grid.RowDefinitions>
+                <RowDefinition Height="30"/>
                 <RowDefinition Height="26"/>
                 <RowDefinition Height="*"/>
             </Grid.RowDefinitions>
 
-            <!-- パンくずバー -->
+            <!-- ツールバー -->
             <Border Grid.Row="0" Background="#252525" BorderBrush="#3C3C3C" BorderThickness="0,0,0,1">
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="5,0">
+
+                    <!-- 新規作成ボタン -->
+                    <Button x:Name="BtnCreate"
+                            Height="22" Padding="10,0,8,0"
+                            ToolTip="新規作成" Cursor="Hand"
+                            Click="OnCreateClick">
+                        <Button.Style>
+                            <Style TargetType="Button">
+                                <Setter Property="Background"     Value="#1E2D40"/>
+                                <Setter Property="Foreground"     Value="#80BBEE"/>
+                                <Setter Property="BorderBrush"    Value="#3A6A9A"/>
+                                <Setter Property="BorderThickness" Value="1"/>
+                                <Setter Property="Template">
+                                    <Setter.Value>
+                                        <ControlTemplate TargetType="Button">
+                                            <Border x:Name="Bd"
+                                                    Background="{TemplateBinding Background}"
+                                                    BorderBrush="{TemplateBinding BorderBrush}"
+                                                    BorderThickness="{TemplateBinding BorderThickness}"
+                                                    CornerRadius="3"
+                                                    Padding="{TemplateBinding Padding}">
+                                                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                                    <TextBlock Text="+" FontSize="16" FontWeight="Light"
+                                                               Foreground="{TemplateBinding Foreground}"
+                                                               Margin="0,-1,4,0"/>
+                                                    <TextBlock Text="新規作成" FontSize="11"
+                                                               Foreground="{TemplateBinding Foreground}"
+                                                               VerticalAlignment="Center"/>
+                                                </StackPanel>
+                                            </Border>
+                                            <ControlTemplate.Triggers>
+                                                <Trigger Property="IsMouseOver" Value="True">
+                                                    <Setter TargetName="Bd" Property="Background"  Value="#2A4A6A"/>
+                                                    <Setter TargetName="Bd" Property="BorderBrush" Value="#5599CC"/>
+                                                    <Setter Property="Foreground"                  Value="#AADDFF"/>
+                                                </Trigger>
+                                                <Trigger Property="IsPressed" Value="True">
+                                                    <Setter TargetName="Bd" Property="Background" Value="#1A3A55"/>
+                                                </Trigger>
+                                            </ControlTemplate.Triggers>
+                                        </ControlTemplate>
+                                    </Setter.Value>
+                                </Setter>
+                            </Style>
+                        </Button.Style>
+                    </Button>
+
+                </StackPanel>
+            </Border>
+
+
+            <!-- パンくずバー -->
+            <Border Grid.Row="1" Background="#252525" BorderBrush="#3C3C3C" BorderThickness="0,0,0,1">
                 <Grid>
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="Auto"/>
@@ -172,7 +227,7 @@
             </Border>
 
             <!-- ファイル一覧 -->
-            <Grid Grid.Row="1">
+            <Grid Grid.Row="2">
                 <ScrollViewer x:Name="FileScrollViewer"
                               VerticalScrollBarVisibility="Auto"
                               HorizontalScrollBarVisibility="Disabled"

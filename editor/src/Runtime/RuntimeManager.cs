@@ -117,6 +117,12 @@ public sealed class RuntimeManager : IDisposable
     /// <summary>アクターデータが返ってきたときに発火する（JSON 文字列）。</summary>
     public event Action<string>? ActorDataReceived;
 
+    /// <summary>デバッグカメラ状態が返ってきたときに発火する（CAM_STATE メッセージ本体）。</summary>
+    public event Action<string>? CameraStateReceived;
+
+    /// <summary>ランタイム側でシーンが変更されたときに発火する（ギズモドラッグ完了など）。</summary>
+    public event Action? SceneModified;
+
     // ── コンストラクタ ─────────────────────────────────────────
 
     public RuntimeManager(string runtimeExePath)
@@ -462,6 +468,27 @@ public sealed class RuntimeManager : IDisposable
             var json = msg["ACTOR_DATA:".Length..];
             EditorLog.Write($"[Runtime→Editor] ACTOR_DATA ({json.Length} chars)");
             ActorDataReceived?.Invoke(json);
+        }
+        else if (msg == "SCENE_LOADED")
+        {
+            EditorLog.Write("[Runtime→Editor] SCENE_LOADED");
+        }
+        else if (msg.StartsWith("CAM_STATE:", StringComparison.Ordinal))
+        {
+            var payload = msg["CAM_STATE:".Length..];
+            CameraStateReceived?.Invoke(payload);
+        }
+        else if (msg == "SCENE_MODIFIED")
+        {
+            SceneModified?.Invoke();
+        }
+        else if (msg.StartsWith("LOAD_ERROR:", StringComparison.Ordinal))
+        {
+            var err = msg["LOAD_ERROR:".Length..];
+            EditorLog.Write($"[Runtime→Editor] LOAD_ERROR: {err}");
+            Application.Current.Dispatcher.InvokeAsync(() =>
+                MessageBox.Show($"シーンの読み込みに失敗しました:\n{err}", "SEED Editor",
+                    MessageBoxButton.OK, MessageBoxImage.Error));
         }
         else
         {

@@ -37,12 +37,41 @@ impl From<serde_json::Error> for SceneError { fn from(e: serde_json::Error) -> S
 impl From<LoadError>         for SceneError { fn from(e: LoadError)          -> Self { Self::Load(e) } }
 
 // ============================================================
+//  DebugCameraData — シーンに付随するデバッグカメラ状態
+// ============================================================
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct DebugCameraData {
+    pub position: [f32; 3],
+    pub yaw:      f32,
+    pub pitch:    f32,
+    pub fov_deg:  f32,
+    pub far:      f32,
+    pub speed:    f32,
+}
+
+impl Default for DebugCameraData {
+    fn default() -> Self {
+        Self {
+            position: [0.0, 2.0, -10.0],
+            yaw:      0.0,
+            pitch:    0.0,
+            fov_deg:  45.0,
+            far:      1000.0,
+            speed:    5.0,
+        }
+    }
+}
+
+// ============================================================
 //  SceneData — シリアライズ用
 // ============================================================
 
 #[derive(Serialize, Deserialize)]
 struct SceneData {
     name:   String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    debug_camera: Option<DebugCameraData>,
     actors: Vec<ActorData>,
 }
 
@@ -103,10 +132,11 @@ impl Scene {
 
     // ─── 保存 ─────────────────────────────────────────────────
 
-    pub fn save(&self, path: &Path) -> Result<(), SceneError> {
+    pub fn save(&self, path: &Path, camera: &DebugCameraData) -> Result<(), SceneError> {
         let data = SceneData {
-            name:   self.name.clone(),
-            actors: self.actors.iter().map(|a| a.to_data()).collect(),
+            name:         self.name.clone(),
+            debug_camera: Some(camera.clone()),
+            actors:       self.actors.iter().map(|a| a.to_data()).collect(),
         };
         let json = serde_json::to_string_pretty(&data)?;
         std::fs::write(path, json)?;
@@ -119,15 +149,16 @@ impl Scene {
         path: &Path,
         ctx: &DrawContext,
         scripting_host: Option<&Arc<ScriptingHost>>,
-    ) -> Result<Self, SceneError> {
+    ) -> Result<(Self, Option<DebugCameraData>), SceneError> {
         let json  = std::fs::read_to_string(path)?;
         let data: SceneData = serde_json::from_str(&json)?;
 
+        let cam = data.debug_camera;
         let mut scene = Scene::new(data.name);
         for actor_data in data.actors {
             scene.actors.push(build_actor(actor_data, ctx, scripting_host)?);
         }
-        Ok(scene)
+        Ok((scene, cam))
     }
 }
 

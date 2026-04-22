@@ -72,10 +72,24 @@ public partial class MainWindow : Window
 
     private readonly HashSet<uint> _pressedVks = new();
 
-    private bool _clampInPlay      = false;
-    private bool _isDragging       = false;
-    private bool _ctrlHeld         = false;
-    private bool _deleteDialogOpen = false;
+    private bool _clampInPlay                  = false;
+    private bool _isDragging                   = false;
+    private bool _ctrlHeld                     = false;
+    private bool _deleteDialogOpen             = false;
+    private bool _viewportSettingsInitialized  = false;
+
+    // ── シーン保存状態 ─────────────────────────────────────────
+    /// <summary>現在開いているシーンのファイルパス。null = 新規未保存シーン。</summary>
+    private string? _currentScenePath         = null;
+    /// <summary>前回保存後に変更があれば true。</summary>
+    private bool    _isDirty                  = false;
+    /// <summary>シーンロード直後の HierarchyUpdated を dirty 判定から除外するフラグ。</summary>
+    private bool    _suppressDirtyOnHierarchy = true;
+    /// <summary>保存完了後に続けてロードするシーンパス（保存→ロードの連鎖用）。</summary>
+    private string? _pendingSceneLoad         = null;
+    /// <summary>保存完了後にウィンドウを閉じるフラグ（終了時確認フローで使用）。</summary>
+    private bool    _pendingClose             = false;
+    private System.Windows.Threading.DispatcherTimer? _toastTimer;
 
     private static readonly Dictionary<uint, string> VkKeyMap = new()
     {
@@ -183,10 +197,15 @@ public partial class MainWindow : Window
         _runtimeManager.SaveCompleted                 += OnSaveCompleted;
         _runtimeManager.ViewportContextMenuRequested  += OnViewportContextMenuRequested;
         _runtimeManager.FirstFrameReady               += OnFirstFrameReady;
+        _runtimeManager.CameraStateReceived           += OnCameraStateReceived;
+        _runtimeManager.HierarchyUpdated              += _ => MarkDirtyFromHierarchy();
+        _runtimeManager.SceneModified                 += MarkDirty;
 
         PanelHierarchy.SetRuntime(_runtimeManager);
         PanelInspector.SetRuntime(_runtimeManager);
+        PanelInspector.TransformCommitted += MarkDirty;
         PanelProject.SetAssetsPath(AssetsPath);
+        PanelProject.SceneFileOpened += OnSceneFileOpened;
 
         _viewportHost = new ViewportHost();
         _viewportHost.ContainerCreated += OnContainerCreated;
@@ -302,6 +321,50 @@ public partial class MainWindow : Window
 
     private void OnWindowClosing(object sender, System.ComponentModel.CancelEventArgs e)
     {
+        if (_isDirty)
+        {
+            var result = MessageBox.Show(
+                "未保存の変更があります。終了する前に保存しますか？",
+                "SEED Editor",
+                MessageBoxButton.YesNoCancel,
+                MessageBoxImage.Question);
+
+            switch (result)
+            {
+                case MessageBoxResult.Cancel:
+                    e.Cancel = true;
+                    return;
+
+                case MessageBoxResult.Yes:
+                    e.Cancel = true;
+                    if (_currentScenePath != null)
+                    {
+                        _pendingClose = true;
+                        ExecuteSave(_currentScenePath);
+                    }
+                    else
+                    {
+                        var dlg = new SaveFileDialog
+                        {
+                            Title            = "名前を付けてシーンを保存",
+                            Filter           = "Scene Files (*.scene)|*.scene|All Files (*.*)|*.*",
+                            DefaultExt       = ".scene",
+                            InitialDirectory = AssetsPath,
+                            OverwritePrompt  = true,
+                        };
+                        if (dlg.ShowDialog(this) == true)
+                        {
+                            _pendingClose = true;
+                            ExecuteSave(dlg.FileName);
+                        }
+                        // Save As でキャンセルした場合は閉じない（e.Cancel = true のまま）
+                    }
+                    return;
+
+                // No = 変更を破棄して終了（fall through）
+            }
+        }
+
         SaveLayout();
         ReleasePlayClamp();
         UninstallKeyboardHook();
@@ -364,8 +427,11 @@ public partial class MainWindow : Window
 
     // ── メニューバー ──────────────────────────────────────────────
 
-    private void OnMenuSaveScene(object sender, RoutedEventArgs e)
-        => ShowSaveDialog();
+    private void OnMenuQuickSave(object sender, RoutedEventArgs e)
+        => DoQuickSave();
+
+    private void OnMenuSaveAs(object sender, RoutedEventArgs e)
+        => ShowSaveAsDialog();
 
     private void OnMenuExit(object sender, RoutedEventArgs e)
         => Close();
@@ -459,22 +525,43 @@ public partial class MainWindow : Window
         }
     }
 
-    private void ShowSaveDialog()
+    // ── シーン保存ロジック ────────────────────────────────────────
+
+    /// <summary>Ctrl+S: パスがあれば上書き保存、なければ名前を付けて保存。</summary>
+    private void DoQuickSave()
     {
+        if (_runtimeManager?.State != EditorState.Edit) return;
+        if (_currentScenePath != null)
+            ExecuteSave(_currentScenePath);
+        else
+            ShowSaveAsDialog();
+    }
+
+    /// <summary>Ctrl+Shift+S / 名前を付けて保存。</summary>
+    private void ShowSaveAsDialog()
+    {
+        if (_runtimeManager?.State != EditorState.Edit) return;
         var dlg = new SaveFileDialog
         {
-            Title            = "シーンを保存",
+            Title            = "名前を付けてシーンを保存",
             Filter           = "Scene Files (*.scene)|*.scene|All Files (*.*)|*.*",
             DefaultExt       = ".scene",
             InitialDirectory = AssetsPath,
             OverwritePrompt  = true,
         };
+        if (_currentScenePath != null)
+            dlg.FileName = System.IO.Path.GetFileName(_currentScenePath);
 
         if (dlg.ShowDialog(this) == true)
-        {
-            _runtimeManager?.SendToRuntime($"SAVE_SCENE:{dlg.FileName}");
-            EditorLog.Write($"ShowSaveDialog — SAVE_SCENE:{dlg.FileName}");
-        }
+            ExecuteSave(dlg.FileName);
+    }
+
+    /// <summary>IPC でシーン保存コマンドを送出し、パスを記録する。</summary>
+    private void ExecuteSave(string path)
+    {
+        _currentScenePath = path;
+        _runtimeManager?.SendToRuntime($"SAVE_SCENE:{path}");
+        EditorLog.Write($"ExecuteSave — SAVE_SCENE:{path}");
     }
 
     private void OnSaveCompleted(bool ok, string errorMsg)
@@ -482,11 +569,87 @@ public partial class MainWindow : Window
         Dispatcher.BeginInvoke(() =>
         {
             if (ok)
+            {
                 EditorLog.Write("OnSaveCompleted — 保存成功");
+                MarkClean();
+                ShowToast("シーンを保存しました");
+                UpdateTitle();
+
+                // 保存→ウィンドウを閉じる（終了時確認フロー）
+                if (_pendingClose)
+                {
+                    _pendingClose = false;
+                    Close();
+                    return;
+                }
+
+                // 保存→ロードの連鎖
+                if (_pendingSceneLoad != null)
+                {
+                    var path = _pendingSceneLoad;
+                    _pendingSceneLoad = null;
+                    LoadScene(path);
+                }
+            }
             else
+            {
+                _pendingSceneLoad = null;
                 MessageBox.Show($"シーンの保存に失敗しました:\n{errorMsg}", "SEED Editor",
                     MessageBoxButton.OK, MessageBoxImage.Error);
+            }
         });
+    }
+
+    // ── ダーティ状態管理 ─────────────────────────────────────────
+
+    /// <summary>
+    /// シーンが変更されたことをマークする。UI・非UIスレッドどちらからでも呼べる。
+    /// </summary>
+    private void MarkDirty()
+    {
+        if (_isDirty) return;
+        _isDirty = true;
+        Dispatcher.BeginInvoke(UpdateTitle);
+    }
+
+    private void MarkDirtyFromHierarchy()
+    {
+        if (_suppressDirtyOnHierarchy) { _suppressDirtyOnHierarchy = false; return; }
+        MarkDirty();
+    }
+
+    private void MarkClean()
+    {
+        _isDirty = false;
+    }
+
+    private void UpdateTitle()
+    {
+        var name = _currentScenePath != null
+            ? System.IO.Path.GetFileNameWithoutExtension(_currentScenePath)
+            : "新規シーン";
+        Title = _isDirty ? $"SEED Editor — {name}*" : $"SEED Editor — {name}";
+        MenuQuickSave.Header = _currentScenePath != null ? "上書き保存" : "上書き保存（未保存）";
+    }
+
+    // ── トースト通知 ─────────────────────────────────────────────
+
+    private void ShowToast(string message)
+    {
+        ToastText.Text      = message;
+        ToastBorder.Visibility = Visibility.Visible;
+
+        _toastTimer?.Stop();
+        _toastTimer = new System.Windows.Threading.DispatcherTimer
+        {
+            Interval = TimeSpan.FromSeconds(2.5),
+        };
+        _toastTimer.Tick += (_, _) =>
+        {
+            _toastTimer?.Stop();
+            ToastBorder.Visibility = Visibility.Collapsed;
+        };
+        _toastTimer.Start();
     }
 
     // ── ビューポートコンテキストメニュー (C) ─────────────────────
@@ -504,8 +667,8 @@ public partial class MainWindow : Window
 
             if (hasSelection)
             {
-                AddViewportMenuItem(menu, "コピー",  () => _runtimeManager?.SendToRuntime("COPY"));
-                AddViewportMenuItem(menu, "削除",    () =>
+                AddViewportMenuItem(menu, "コピー", "Ctrl+C", () => _runtimeManager?.SendToRuntime("COPY"));
+                AddViewportMenuItem(menu, "削除",   "Del / Esc",    () =>
                 {
                     var ids = PanelHierarchy.GetSelectedNonGroupIds();
                     if (ids.Count > 0)
@@ -513,7 +676,7 @@ public partial class MainWindow : Window
                 });
                 menu.Items.Add(new Separator());
             }
-            AddViewportMenuItem(menu, "ペースト", () => _runtimeManager?.SendToRuntime("PASTE"));
+            AddViewportMenuItem(menu, "ペースト", "Ctrl+V", () => _runtimeManager?.SendToRuntime("PASTE"));
 
             menu.PlacementTarget = ViewportDocumentContent;
             menu.Placement       = System.Windows.Controls.Primitives.PlacementMode.MousePoint;
@@ -521,9 +684,10 @@ public partial class MainWindow : Window
         });
     }
 
-    private static void AddViewportMenuItem(ContextMenu menu, string header, Action action)
+    private static void AddViewportMenuItem(ContextMenu menu, string header, string? gesture, Action action)
     {
         var item = new MenuItem { Header = header };
+        if (gesture is not null) item.InputGestureText = gesture;
         item.Click += (_, _) => action();
         menu.Items.Add(item);
     }
@@ -567,6 +731,8 @@ public partial class MainWindow : Window
 
             if (_clampInPlay && !_isDragging && _runtimeManager?.State == EditorState.Play)
                 ApplyPlayClamp();
+
+            SyncViewportSettings();
 
             // FIRST_FRAME が届かない場合のフォールバック（リリースビルドの Runtime 等）。
             // READY 受信から 3 秒経ってもオーバーレイが残っていれば強制的に閉じる。
@@ -656,7 +822,8 @@ public partial class MainWindow : Window
                 }
                 else if (vk == 0x53) // S
                 {
-                    Dispatcher.BeginInvoke(ShowSaveDialog);
+                    bool shift = (System.Windows.Input.Keyboard.Modifiers & System.Windows.Input.ModifierKeys.Shift) != 0;
+                    Dispatcher.BeginInvoke(shift ? (Action)ShowSaveAsDialog : DoQuickSave);
                     return CallNextHookEx(_llKeyHook, nCode, wParam, lParam);
                 }
                 else if (vk == 0x43) // C
@@ -687,8 +854,8 @@ public partial class MainWindow : Window
                 }
             }
 
-            // ESC → 選択インスタンス削除（ダイアログあり）
-            if (isDown && vk == 0x1B && !_ctrlHeld
+            // ESC / Del → 選択インスタンス削除（ダイアログあり）
+            if (isDown && (vk == 0x1B || vk == 0x2E) && !_ctrlHeld
                 && _runtimeManager?.State == EditorState.Edit
                 && !_deleteDialogOpen)
             {
@@ -723,6 +890,288 @@ public partial class MainWindow : Window
     {
         var state = _runtimeManager?.State;
         return state == EditorState.Edit || state == EditorState.Pause;
+    }
+
+    // ── シーンファイル読み込み ────────────────────────────────────
+
+    private void OnSceneFileOpened(string path)
+    {
+        if (_runtimeManager?.State != EditorState.Edit) return;
+
+        if (_isDirty)
+        {
+            var result = MessageBox.Show(
+                "未保存の変更があります。シーンを切り替える前に保存しますか？",
+                "SEED Editor",
+                MessageBoxButton.YesNoCancel,
+                MessageBoxImage.Question);
+
+            if (result == MessageBoxResult.Cancel) return;
+
+            if (result == MessageBoxResult.Yes)
+            {
+                if (_currentScenePath != null)
+                {
+                    // 上書き保存してから読み込み
+                    _pendingSceneLoad = path;
+                    ExecuteSave(_currentScenePath);
+                }
+                else
+                {
+                    // 名前を付けて保存してから読み込み
+                    var dlg = new SaveFileDialog
+                    {
+                        Title            = "名前を付けてシーンを保存",
+                        Filter           = "Scene Files (*.scene)|*.scene|All Files (*.*)|*.*",
+                        DefaultExt       = ".scene",
+                        InitialDirectory = AssetsPath,
+                        OverwritePrompt  = true,
+                    };
+                    if (dlg.ShowDialog(this) == true)
+                    {
+                        _pendingSceneLoad = path;
+                        ExecuteSave(dlg.FileName);
+                    }
+                    // キャンセルした場合は何もしない
+                }
+                return;
+            }
+            // No = 変更を破棄して読み込み
+        }
+
+        LoadScene(path);
+    }
+
+    /// <summary>シーンを読み込む（ダーティチェック済みの場合に直接呼ぶ）。</summary>
+    private void LoadScene(string path)
+    {
+        _suppressDirtyOnHierarchy = true;
+        _currentScenePath = path;
+        _isDirty = false;
+        _runtimeManager?.SendToRuntime($"LOAD_SCENE:{path}");
+        UpdateTitle();
+        EditorLog.Write($"LoadScene — LOAD_SCENE:{path}");
+    }
+
+    // ── Viewport オプション ──────────────────────────────────────
+
+    private bool _updatingControls = false;
+
+    /// <summary>ポップアップをアイコン右上に配置するコールバック。</summary>
+    public System.Windows.Controls.Primitives.CustomPopupPlacement[]
+        OnViewportPopupPlacement(Size popupSize, Size targetSize, Point offset)
+    {
+        // ボタン右端・ボタン下端にポップアップ底面を揃えて上方向へ展開
+        double x = targetSize.Width + 4;
+        double y = targetSize.Height - popupSize.Height;
+        return [new(new Point(x, y), System.Windows.Controls.Primitives.PopupPrimaryAxis.Vertical)];
+    }
+
+    private void OnViewportOptions(object sender, RoutedEventArgs e)
+    {
+        bool opening = !ViewportOptionsPopup.IsOpen;
+        ViewportOptionsPopup.IsOpen = opening;
+        if (opening && _runtimeManager?.State == EditorState.Edit)
+            _runtimeManager.SendToRuntime("GET_CAM_STATE");
+    }
+
+    private void OnFovChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        if (!_viewportSettingsInitialized || _updatingControls) return;
+        var v = (int)SldFov.Value;
+        _updatingControls = true;
+        TbFovInput.Text = v.ToString();
+        _updatingControls = false;
+        _runtimeManager?.SendToRuntime($"VIEWPORT_FOV:{v}");
+    }
+
+    private void OnFarChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        if (!_viewportSettingsInitialized || _updatingControls) return;
+        var v = (int)SldFar.Value;
+        _updatingControls = true;
+        TbFarInput.Text = v.ToString();
+        _updatingControls = false;
+        _runtimeManager?.SendToRuntime($"VIEWPORT_FAR:{v}");
+    }
+
+    private void OnShowGridChanged(object sender, RoutedEventArgs e)
+    {
+        if (!_viewportSettingsInitialized) return;
+        _runtimeManager?.SendToRuntime($"SHOW_GRID:{(ChkShowGrid.IsChecked == true ? "1" : "0")}");
+    }
+
+    private void OnShowAxisGizmoChanged(object sender, RoutedEventArgs e)
+    {
+        if (!_viewportSettingsInitialized) return;
+        _runtimeManager?.SendToRuntime($"SHOW_AXIS_GIZMO:{(ChkShowAxisGizmo.IsChecked == true ? "1" : "0")}");
+    }
+
+    private void OnCamSpeedChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        if (!_viewportSettingsInitialized || _updatingControls) return;
+        var v = Math.Round(SldCamSpeed.Value, 2);
+        _updatingControls = true;
+        TbSpeedInput.Text = $"{v:F1}";
+        _updatingControls = false;
+        _runtimeManager?.SendToRuntime($"CAM_SPEED:{v.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
+    }
+
+    // ── スライダー横の数値入力 ────────────────────────────────────
+
+    private void OnSliderNumKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.Enter && sender is TextBox tb)
+        {
+            ApplySliderTextInput(tb);
+            e.Handled = true;
+        }
+    }
+
+    private void OnSliderNumLostFocus(object sender, RoutedEventArgs e)
+    {
+        if (sender is TextBox tb) ApplySliderTextInput(tb);
+    }
+
+    private void ApplySliderTextInput(TextBox tb)
+    {
+        if (_updatingControls || !_viewportSettingsInitialized) return;
+        var ic = System.Globalization.CultureInfo.InvariantCulture;
+        if (!double.TryParse(tb.Text, System.Globalization.NumberStyles.Float, ic, out var v)) return;
+
+        if (tb == TbFovInput)
+        {
+            v = Math.Clamp(v, SldFov.Minimum, SldFov.Maximum);
+            var vi = (int)v;
+            _updatingControls = true;
+            SldFov.Value = vi;
+            tb.Text = vi.ToString();
+            _updatingControls = false;
+            _runtimeManager?.SendToRuntime($"VIEWPORT_FOV:{vi}");
+        }
+        else if (tb == TbFarInput)
+        {
+            v = Math.Clamp(v, SldFar.Minimum, SldFar.Maximum);
+            var vi = (int)v;
+            _updatingControls = true;
+            SldFar.Value = vi;
+            tb.Text = vi.ToString();
+            _updatingControls = false;
+            _runtimeManager?.SendToRuntime($"VIEWPORT_FAR:{vi}");
+        }
+        else if (tb == TbSpeedInput)
+        {
+            v = Math.Clamp(v, SldCamSpeed.Minimum, SldCamSpeed.Maximum);
+            _updatingControls = true;
+            SldCamSpeed.Value = v;
+            tb.Text = $"{v:F1}";
+            _updatingControls = false;
+            _runtimeManager?.SendToRuntime($"CAM_SPEED:{v.ToString(ic)}");
+        }
+    }
+
+    // ── カメラ Transform 入力 ─────────────────────────────────────
+
+    private void OnCamFieldKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.Enter) CommitCamTransform();
+    }
+
+    private void OnCamFieldLostFocus(object sender, RoutedEventArgs e)
+    {
+        CommitCamTransform();
+    }
+
+    private void CommitCamTransform()
+    {
+        if (!_viewportSettingsInitialized) return;
+        var ic = System.Globalization.CultureInfo.InvariantCulture;
+        var ns = System.Globalization.NumberStyles.Float;
+        if (!float.TryParse(TbCamPx.Text,    ns, ic, out float px))    return;
+        if (!float.TryParse(TbCamPy.Text,    ns, ic, out float py))    return;
+        if (!float.TryParse(TbCamPz.Text,    ns, ic, out float pz))    return;
+        if (!float.TryParse(TbCamYaw.Text,   ns, ic, out float yaw))   return;
+        if (!float.TryParse(TbCamPitch.Text, ns, ic, out float pitch)) return;
+        _runtimeManager?.SendToRuntime(
+            $"CAM_TRANSFORM:{px.ToString(ic)},{py.ToString(ic)},{pz.ToString(ic)},{yaw.ToString(ic)},{pitch.ToString(ic)}");
+    }
+
+    // ── カメラ状態受信 ────────────────────────────────────────────
+
+    private void OnCameraStateReceived(string payload)
+    {
+        // CAM_STATE:{px},{py},{pz},{yaw_deg},{pitch_deg},{fov_deg},{far},{speed}
+        var parts = payload.Split(',');
+        if (parts.Length < 8) return;
+        var ic = System.Globalization.CultureInfo.InvariantCulture;
+        var ns = System.Globalization.NumberStyles.Float;
+        if (!float.TryParse(parts[0], ns, ic, out float px))    return;
+        if (!float.TryParse(parts[1], ns, ic, out float py))    return;
+        if (!float.TryParse(parts[2], ns, ic, out float pz))    return;
+        if (!float.TryParse(parts[3], ns, ic, out float yaw))   return;
+        if (!float.TryParse(parts[4], ns, ic, out float pitch)) return;
+        if (!float.TryParse(parts[5], ns, ic, out float fov))   return;
+        if (!float.TryParse(parts[6], ns, ic, out float far))   return;
+        if (!float.TryParse(parts[7], ns, ic, out float speed)) return;
+
+        Dispatcher.InvokeAsync(() =>
+        {
+            bool prev = _viewportSettingsInitialized;
+            _viewportSettingsInitialized = false;
+            _updatingControls = true;
+            TbCamPx.Text    = Fmt(px);
+            TbCamPy.Text    = Fmt(py);
+            TbCamPz.Text    = Fmt(pz);
+            TbCamYaw.Text   = Fmt(yaw);
+            TbCamPitch.Text = Fmt(pitch);
+            var fovC   = Math.Clamp(fov,   SldFov.Minimum,      SldFov.Maximum);
+            var farC   = Math.Clamp(far,   SldFar.Minimum,      SldFar.Maximum);
+            var spdC   = Math.Clamp(speed, SldCamSpeed.Minimum, SldCamSpeed.Maximum);
+            SldFov.Value      = fovC;   TbFovInput.Text   = ((int)fovC).ToString();
+            SldFar.Value      = farC;   TbFarInput.Text   = ((int)farC).ToString();
+            SldCamSpeed.Value = spdC;   TbSpeedInput.Text = $"{spdC:F1}";
+            _updatingControls = false;
+            _viewportSettingsInitialized = prev;
+        });
+    }
+
+    private static string Fmt(float v) =>
+        v.ToString("F2", System.Globalization.CultureInfo.InvariantCulture);
+
+    private void OnResetViewportSettings(object sender, RoutedEventArgs e)
+    {
+        _updatingControls = true;
+        SldFov.Value      = 45;   TbFovInput.Text   = "45";
+        SldFar.Value      = 1000; TbFarInput.Text   = "1000";
+        SldCamSpeed.Value = 5;    TbSpeedInput.Text = "5.0";
+        _updatingControls = false;
+        ChkShowGrid.IsChecked      = true;
+        ChkShowAxisGizmo.IsChecked = true;
+        if (_viewportSettingsInitialized)
+        {
+            _runtimeManager?.SendToRuntime("VIEWPORT_FOV:45");
+            _runtimeManager?.SendToRuntime("VIEWPORT_FAR:1000");
+            _runtimeManager?.SendToRuntime("CAM_SPEED:5");
+        }
+        TbCamPx.Text = "0"; TbCamPy.Text = "2"; TbCamPz.Text = "-10";
+        TbCamYaw.Text = "0"; TbCamPitch.Text = "0";
+        CommitCamTransform();
+    }
+
+    private void SyncViewportSettings()
+    {
+        _viewportSettingsInitialized = true;
+        var fov = (int)SldFov.Value;
+        TbFovInput.Text = fov.ToString();
+        _runtimeManager?.SendToRuntime($"VIEWPORT_FOV:{fov}");
+        var far = (int)SldFar.Value;
+        TbFarInput.Text = far.ToString();
+        _runtimeManager?.SendToRuntime($"VIEWPORT_FAR:{far}");
+        _runtimeManager?.SendToRuntime($"SHOW_GRID:{(ChkShowGrid.IsChecked == true ? "1" : "0")}");
+        _runtimeManager?.SendToRuntime($"SHOW_AXIS_GIZMO:{(ChkShowAxisGizmo.IsChecked == true ? "1" : "0")}");
+        var spd = Math.Round(SldCamSpeed.Value, 2);
+        TbSpeedInput.Text = $"{spd:F1}";
+        _runtimeManager?.SendToRuntime($"CAM_SPEED:{spd.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
     }
 
     private void ReleaseAllCamKeys()

@@ -13,7 +13,7 @@ use crate::engine::core::loader::load_model;
 use crate::engine::core::renderer::Renderer;
 use crate::engine::core::window::{create_window, WindowConfig};
 use crate::engine::core::app_base::ipc::{IpcClient, IpcCommand, ToolMode};
-use crate::engine::core::app_base::scene::Scene;
+use crate::engine::core::app_base::scene::{Scene, DebugCameraData};
 use crate::engine::methods::drawer::{
     DrawContext, CameraBuffer, CameraUniform,
     draw_model_indirect, draw_id_pass,
@@ -65,13 +65,6 @@ pub struct LaunchArgs {
     pub mode:        RuntimeMode,
     pub pipe_name:   Option<String>,
 }
-
-// ============================================================
-//  定数（デモシーン用）
-// ============================================================
-
-const INSTANCE_DIM:     usize = 10;
-const INSTANCE_SPACING: f32   = 3.0;
 
 // ============================================================
 //  App
@@ -150,6 +143,10 @@ pub struct App {
     axis_gizmo: Option<crate::engine::core::font::axis_gizmo::AxisGizmo>,
     /// 矩形選択開始時の選択状態（Undo 記録用）。
     selection_before_rect: Vec<u32>,
+    /// グリッド描画フラグ（エディタモードのみ）。
+    show_grid: bool,
+    /// 軸ギズモ表示フラグ（エディタモードのみ）。
+    show_axis_gizmo: bool,
 }
 
 impl App {
@@ -209,6 +206,8 @@ impl App {
             first_frame_sent:      false,
             axis_gizmo:            None,
             selection_before_rect: Vec::new(),
+            show_grid:       true,
+            show_axis_gizmo: true,
         }
     }
 
@@ -386,7 +385,16 @@ impl App {
                 }
                 IpcCommand::SaveScene(path) => {
                     if let Some(scene) = &self.scene {
-                        match scene.save(std::path::Path::new(&path)) {
+                        let pos = self.camera.base.transform.position;
+                        let cam_data = DebugCameraData {
+                            position: [pos.x, pos.y, pos.z],
+                            yaw:      self.camera.yaw,
+                            pitch:    self.camera.pitch,
+                            fov_deg:  self.camera.base.projection.fov_y_rad.to_degrees(),
+                            far:      self.camera.base.projection.far,
+                            speed:    self.camera.move_speed,
+                        };
+                        match scene.save(std::path::Path::new(&path), &cam_data) {
                             Ok(())   => { if let Some(ipc) = &self.ipc { ipc.send("SAVE_OK"); } }
                             Err(e)   => { if let Some(ipc) = &self.ipc { ipc.send(&format!("SAVE_ERROR:{e}")); } }
                         }
@@ -398,6 +406,64 @@ impl App {
                 IpcCommand::SetTransform { id, px, py, pz, ex, ey, ez, sx, sy, sz } => {
                     self.apply_set_transform(id, px, py, pz, ex, ey, ez, sx, sy, sz);
                 }
+                IpcCommand::SetCameraFov(deg) => {
+                    self.camera.base.projection.fov_y_rad =
+                        deg * std::f32::consts::PI / 180.0;
+                }
+                IpcCommand::SetCameraFar(far) => {
+                    self.camera.base.projection.far = far;
+                }
+                IpcCommand::SetShowGrid(v) => {
+                    self.show_grid = v;
+                }
+                IpcCommand::SetShowAxisGizmo(v) => {
+                    self.show_axis_gizmo = v;
+                }
+                IpcCommand::GetCamState => {
+                    let (pos, yaw, pitch, fov, far, spd) = self.cam_state_tuple();
+                    if let Some(ipc) = &self.ipc {
+                        ipc.send(&format!("CAM_STATE:{pos},{yaw},{pitch},{fov},{far},{spd}"));
+                    }
+                }
+                IpcCommand::SetCameraTransform { px, py, pz, yaw, pitch } => {
+                    self.apply_camera_transform(px, py, pz, yaw, pitch);
+                }
+                IpcCommand::SetCameraSpeed(speed) => {
+                    self.camera.move_speed = speed.clamp(0.1, 500.0);
+                }
+                IpcCommand::LoadScene(path) => {
+                    let result = if let Some(ctx) = &self.draw_ctx {
+                        Some(Scene::load(
+                            std::path::Path::new(&path),
+                            ctx,
+                            self.scripting_host.as_ref(),
+                        ))
+                    } else { None };
+                    match result {
+                        Some(Ok((new_scene, cam_data))) => {
+                            self.scene = Some(new_scene);
+                            self.selected_instances.clear();
+                            self.undo_history = UndoHistory::new();
+                            if let Some(cam) = cam_data {
+                                self.apply_camera_data(&cam);
+                            }
+                            self.sync_anim_seeds();
+                            self.send_selected();
+                            self.send_hierarchy();
+                            if let Some(ipc) = &self.ipc {
+                                ipc.send("SCENE_LOADED");
+                                let (pos, yaw, pitch, fov, far, spd) = self.cam_state_tuple();
+                                ipc.send(&format!("CAM_STATE:{pos},{yaw},{pitch},{fov},{far},{spd}"));
+                            }
+                        }
+                        Some(Err(e)) => {
+                            if let Some(ipc) = &self.ipc {
+                                ipc.send(&format!("LOAD_ERROR:{e}"));
+                            }
+                        }
+                        None => {}
+                    }
+                }
             }
         }
     }
@@ -406,7 +472,10 @@ impl App {
     fn do_send_hierarchy(&self) {
         let Some(ipc)   = &self.ipc   else { return };
         let Some(scene) = &self.scene else { return };
-        let Some(mc)    = scene.find_component::<ModelComponent>() else { return };
+        let Some(mc)    = scene.find_component::<ModelComponent>() else {
+            ipc.send("HIERARCHY:[]");
+            return;
+        };
 
         let mut json  = String::from("[");
         let mut first = true;
@@ -635,6 +704,50 @@ impl App {
         }
     }
 
+    /// カメラ状態をタプル文字列形式で返す（IPC 送信用）。
+    /// 戻り値: (pos_str, yaw_deg_str, pitch_deg_str, fov_deg_str, far_str, speed_str)
+    fn cam_state_tuple(&self) -> (String, String, String, String, String, String) {
+        let pos   = self.camera.base.transform.position;
+        let yaw   = self.camera.yaw.to_degrees();
+        let pitch = self.camera.pitch.to_degrees();
+        let fov   = self.camera.base.projection.fov_y_rad.to_degrees();
+        let far   = self.camera.base.projection.far;
+        let spd   = self.camera.move_speed;
+        (
+            format!("{},{},{}", pos.x, pos.y, pos.z),
+            format!("{yaw}"),
+            format!("{pitch}"),
+            format!("{fov}"),
+            format!("{far}"),
+            format!("{spd}"),
+        )
+    }
+
+    /// カメラのトランスフォームを位置・yaw/pitch（度）から設定する。
+    fn apply_camera_transform(&mut self, px: f32, py: f32, pz: f32, yaw_deg: f32, pitch_deg: f32) {
+        const PITCH_LIMIT: f32 = std::f32::consts::FRAC_PI_2 - 0.02;
+        self.camera.base.transform.position = Vector3::new(px, py, pz);
+        self.camera.yaw   = yaw_deg.to_radians();
+        self.camera.pitch = pitch_deg.to_radians().clamp(-PITCH_LIMIT, PITCH_LIMIT);
+        let yaw_q   = Quaternion::from_axis_angle(Vector3::new(0.0, 1.0, 0.0), self.camera.yaw);
+        let pitch_q = Quaternion::from_axis_angle(Vector3::new(1.0, 0.0, 0.0), self.camera.pitch);
+        self.camera.base.transform.rotation = yaw_q * pitch_q;
+    }
+
+    /// DebugCameraData をカメラに一括適用する。
+    fn apply_camera_data(&mut self, cam: &DebugCameraData) {
+        const PITCH_LIMIT: f32 = std::f32::consts::FRAC_PI_2 - 0.02;
+        self.camera.base.transform.position = Vector3::new(cam.position[0], cam.position[1], cam.position[2]);
+        self.camera.yaw   = cam.yaw;
+        self.camera.pitch = cam.pitch.clamp(-PITCH_LIMIT, PITCH_LIMIT);
+        let yaw_q   = Quaternion::from_axis_angle(Vector3::new(0.0, 1.0, 0.0), self.camera.yaw);
+        let pitch_q = Quaternion::from_axis_angle(Vector3::new(1.0, 0.0, 0.0), self.camera.pitch);
+        self.camera.base.transform.rotation = yaw_q * pitch_q;
+        self.camera.base.projection.fov_y_rad = cam.fov_deg.to_radians();
+        self.camera.base.projection.far = cam.far;
+        self.camera.move_speed = cam.speed;
+    }
+
     /// 選択インスタンス／グループを削除し Undo 履歴に記録する。
     ///
     /// - `recursive = true`  → 子孫ごと削除
@@ -826,69 +939,6 @@ impl App {
         Some(start_drag(part, self.tool_mode, ray_o, ray_d, gizmo_pos, radius, centroid_mat))
     }
 
-    fn build_demo_scene(ctx: &DrawContext, scripting_host: Option<&Arc<ScriptingHost>>) -> Scene {
-        let mut scene = Scene::new("Demo");
-
-        let model_path = Path::new("assets/models/BrainStem.glb");
-        let model      = load_model(model_path)
-            .unwrap_or_else(|e| panic!("BrainStem.glb のロード失敗: {e}"));
-        let gpu_model       = ctx.upload_model(&model);
-        let total           = INSTANCE_DIM.pow(3);
-        let instanced_batch = ctx.create_instanced_batch(&model, total as u32);
-
-        let mut instance_mats = Vec::with_capacity(total);
-        let mut instance_meta = Vec::with_capacity(total);
-        let mut idx = 0usize;
-        for z in 0..INSTANCE_DIM {
-            for y in 0..INSTANCE_DIM {
-                for x in 0..INSTANCE_DIM {
-                    let (tx, ty, tz) = (
-                        x as f32 * INSTANCE_SPACING,
-                        y as f32 * INSTANCE_SPACING,
-                        z as f32 * INSTANCE_SPACING,
-                    );
-                    instance_mats.push([
-                        [1.0, 0.0, 0.0, tx],
-                        [0.0, 1.0, 0.0, ty],
-                        [0.0, 0.0, 1.0, tz],
-                        [0.0, 0.0, 0.0, 1.0f32],
-                    ]);
-                    let mut meta = crate::engine::structs::components::model_component::InstanceMeta::new(
-                        format!("BrainStem_{idx}")
-                    );
-                    meta.anim_seed = idx as u32;
-                    instance_meta.push(meta);
-                    idx += 1;
-                }
-            }
-        }
-
-        let mut actor = Actor::with_name("BrainStem");
-        actor.add_component(ModelComponent {
-            source_path:   model_path.to_string_lossy().into_owned(),
-            model,
-            gpu_model,
-            instanced_batch,
-            instance_mats,
-            instance_meta,
-            group_meta:    Vec::new(),
-            next_group_id: GROUP_ID_BASE,
-        });
-        scene.add_actor(actor);
-
-        if let Some(host) = scripting_host {
-            if let Some(script) = ScriptComponent::new(Arc::clone(host), "TestRotator") {
-                let mut script_actor = Actor::with_name("TestRotator");
-                script_actor.add_component(script);
-                scene.add_actor(script_actor);
-                eprintln!("[SEED] TestRotator script component created");
-            } else {
-                eprintln!("[SEED] TestRotator: CreateComponent returned null");
-            }
-        }
-
-        scene
-    }
 }
 
 // ============================================================
@@ -911,8 +961,7 @@ impl ApplicationHandler for App {
         let size = window.inner_size();
         self.camera.set_aspect_ratio(size.width, size.height);
 
-        let center = (INSTANCE_DIM as f32 - 1.0) * INSTANCE_SPACING * 0.5;
-        self.camera.base.transform.position = Vector3::new(center, center, -10.0);
+        self.camera.base.transform.position = Vector3::new(0.0, 2.0, -10.0);
 
         let ctx = DrawContext::new(
             renderer.device(),
@@ -922,7 +971,7 @@ impl ApplicationHandler for App {
         );
         eprintln!("[SEED] DrawContext created");
 
-        let scene      = Self::build_demo_scene(&ctx, self.scripting_host.as_ref());
+        let scene = Scene::new("Untitled");
         let camera_buf = ctx.create_camera_buffer();
         let id_buffer  = IdBuffer::new(&ctx.device, size.width, size.height);
         let line_model_buf = ctx.create_identity_model_bg_for_unlit();
@@ -1104,6 +1153,7 @@ impl ApplicationHandler for App {
                             }
                             if !transforms.is_empty() {
                                 self.undo_history.record(Box::new(MultiTransformCommand { transforms }));
+                                if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
                             }
                         } else {
                             self.drag_root_starts.clear();
@@ -1133,14 +1183,17 @@ impl ApplicationHandler for App {
                                 window.set_cursor_visible(true);
                                 if let Some((x, y)) = self.cam_grab_screen_pos.take() {
                                     camera_grab_end(x, y);
-                                } else {
-                                    camera_grab_end(0, 0);
-                                }
-                                // 短押し（カーソル移動なし）→ コンテキストメニュー
-                                if !self.rmb_moved {
-                                    if let Some(ipc) = &self.ipc {
-                                        ipc.send("CONTEXT_MENU");
+                                    // 短押し（カーソル移動なし）→ コンテキストメニュー
+                                    if !self.rmb_moved {
+                                        if let Some(ipc) = &self.ipc {
+                                            ipc.send("CONTEXT_MENU");
+                                        }
                                     }
+                                } else {
+                                    // RMB_DOWN が処理されていない（コンテキストメニューの
+                                    // ポップアップが WM_RBUTTONDOWN を横取りした等）。
+                                    // ClipCursor のみ解除し SetCursorPos(0,0) は呼ばない。
+                                    release_window_clamp();
                                 }
                                 self.rmb_press_pos = None;
                                 self.rmb_moved     = false;
@@ -1252,6 +1305,11 @@ impl ApplicationHandler for App {
                             }
                         }
                     }
+                    // ドラッグ中はインスペクターをリアルタイム更新する
+                    let selected = self.selected_instances.clone();
+                    for idx in selected {
+                        self.send_actor_data(idx);
+                    }
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
@@ -1353,13 +1411,16 @@ impl ApplicationHandler for App {
                 if let (Some(renderer), Some(scene), Some(camera_buf), Some(draw_ctx)) =
                     (&mut self.renderer, &self.scene, &self.camera_buf, &self.draw_ctx)
                 {
-                    if let Some(mc) = scene.find_component::<ModelComponent>() {
-                        match renderer.begin_frame() {
-                            Ok(mut frame) => {
+                    match renderer.begin_frame() {
+                        Ok(mut frame) => {
+                            let mc = scene.find_component::<ModelComponent>();
+
+                            if let Some(mc) = mc {
                                 mc.instanced_batch.dispatch_skin(
                                     frame.encoder_mut(),
                                     &draw_ctx.pipelines.skin_compute,
                                 );
+                            }
 
                                 // ギズモ GPU バッファ（レンダーパスの前に生成）
                                 let show_gizmo_pre = self.mode == RuntimeMode::Edit || self.paused;
@@ -1440,8 +1501,32 @@ impl ApplicationHandler for App {
                                     } else { None }
                                 } else { None };
 
-                                // 軸ギズモバッチ（レンダーパス前に構築）
-                                let axis_gizmo_batch = if in_editor {
+                                // グリッド描画バッチ（エディタモード + show_grid のみ）
+                                let grid_gpu_batch = if in_editor && self.show_grid {
+                                    let mut lb = LineBatch::new();
+                                    let minor: [f32; 4] = [0.18, 0.18, 0.18, 1.0];
+                                    let major: [f32; 4] = [0.30, 0.30, 0.30, 1.0];
+                                    let ax_x:  [f32; 4] = [0.50, 0.10, 0.10, 1.0];
+                                    let ax_z:  [f32; 4] = [0.10, 0.10, 0.50, 1.0];
+                                    let n = 10i32;
+                                    let step = 5.0f32;
+                                    let ext = n as f32 * step;
+                                    for i in -n..=n {
+                                        let p = i as f32 * step;
+                                        if i == 0 {
+                                            lb.add_line([-ext, 0.0, 0.0], [ext, 0.0, 0.0], ax_x);
+                                            lb.add_line([0.0, 0.0, -ext], [0.0, 0.0, ext], ax_z);
+                                        } else {
+                                            let c = if i % 2 == 0 { major } else { minor };
+                                            lb.add_line([-ext, 0.0, p], [ext, 0.0, p], c);
+                                            lb.add_line([p, 0.0, -ext], [p, 0.0, ext], c);
+                                        }
+                                    }
+                                    Some(lb.build(&draw_ctx.device))
+                                } else { None };
+
+                                // 軸ギズモバッチ（エディタモード + show_axis_gizmo のみ）
+                                let axis_gizmo_batch = if in_editor && self.show_axis_gizmo {
                                     let sw  = window_size.map_or(1280.0, |s| s.width  as f32);
                                     let sh  = window_size.map_or(720.0,  |s| s.height as f32);
                                     let rot = self.camera.base.transform.rotation;
@@ -1453,25 +1538,24 @@ impl ApplicationHandler for App {
                                 // ── メインレンダーパス ────────────────
                                 {
                                     let mut pass = frame.begin_render_pass();
-                                    draw_model_indirect(
-                                        &mut pass, &mc.gpu_model, &mc.instanced_batch,
-                                        &camera_buf.bind_group, &draw_ctx.pipelines,
-                                    );
+                                    if let Some(mc) = mc {
+                                        draw_model_indirect(
+                                            &mut pass, &mc.gpu_model, &mc.instanced_batch,
+                                            &camera_buf.bind_group, &draw_ctx.pipelines,
+                                        );
 
-                                    // アウトライン（Edit/Pause + 選択中のみ）
-                                    // ① 全選択インスタンスのステンシルマスクを一括書き込み
-                                    // ② 合成シルエット外縁にアウトラインを一括描画
-                                    if in_editor && !self.selected_instances.is_empty() {
-                                        draw_stencil_mask_multi(
-                                            &mut pass, &mc.gpu_model, &mc.instanced_batch,
-                                            &camera_buf.bind_group, &draw_ctx.pipelines,
-                                            &self.selected_instances,
-                                        );
-                                        draw_outline_multi(
-                                            &mut pass, &mc.gpu_model, &mc.instanced_batch,
-                                            &camera_buf.bind_group, &draw_ctx.pipelines,
-                                            &self.selected_instances,
-                                        );
+                                        if in_editor && !self.selected_instances.is_empty() {
+                                            draw_stencil_mask_multi(
+                                                &mut pass, &mc.gpu_model, &mc.instanced_batch,
+                                                &camera_buf.bind_group, &draw_ctx.pipelines,
+                                                &self.selected_instances,
+                                            );
+                                            draw_outline_multi(
+                                                &mut pass, &mc.gpu_model, &mc.instanced_batch,
+                                                &camera_buf.bind_group, &draw_ctx.pipelines,
+                                                &self.selected_instances,
+                                            );
+                                        }
                                     }
 
                                     // ギズモ（Edit/Pause + Move/Rotate/Scale モードのみ）
@@ -1499,6 +1583,17 @@ impl ApplicationHandler for App {
                                         );
                                     }
 
+                                    // グリッド描画
+                                    if let (Some(grid_batch), Some((_, line_bg))) =
+                                        (&grid_gpu_batch, &self.line_model_buf)
+                                    {
+                                        draw_line_batch(
+                                            &mut pass, grid_batch,
+                                            &camera_buf.bind_group, line_bg,
+                                            &draw_ctx.pipelines,
+                                        );
+                                    }
+
                                     // 軸ギズモ（エディタモードのみ）
                                     if let (Some(batch), Some(ag)) =
                                         (&axis_gizmo_batch, &self.axis_gizmo)
@@ -1509,7 +1604,7 @@ impl ApplicationHandler for App {
 
                                 // ── ID パス（Edit/Pause のみ）──────────
                                 if in_editor {
-                                    if let Some(id_buf) = &self.id_buffer {
+                                    if let (Some(mc), Some(id_buf)) = (mc, &self.id_buffer) {
                                         {
                                             let mut id_pass = frame.begin_id_pass(&id_buf.view);
                                             draw_id_pass(
@@ -1548,7 +1643,6 @@ impl ApplicationHandler for App {
                             Err(wgpu::SurfaceError::OutOfMemory) => event_loop.exit(),
                             Err(e) => eprintln!("Render error: {e:?}"),
                         }
-                    }
                 }
 
                 // ── ピック結果の読み出し（GPU サブミット後）─────

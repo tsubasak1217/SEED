@@ -70,6 +70,22 @@ pub enum IpcCommand {
     GetActorData(u32),
     /// トランスフォーム設定（位置・ZYX オイラー角(度)・スケール）
     SetTransform { id: u32, px: f32, py: f32, pz: f32, ex: f32, ey: f32, ez: f32, sx: f32, sy: f32, sz: f32 },
+    /// デバッグカメラ画角設定（度）
+    SetCameraFov(f32),
+    /// デバッグカメラ描画距離（far clip）設定
+    SetCameraFar(f32),
+    /// グリッド描画オンオフ
+    SetShowGrid(bool),
+    /// 軸ギズモ表示オンオフ
+    SetShowAxisGizmo(bool),
+    /// シーンファイルのロード
+    LoadScene(String),
+    /// デバッグカメラ状態要求
+    GetCamState,
+    /// デバッグカメラ位置・回転設定（yaw/pitch は度）
+    SetCameraTransform { px: f32, py: f32, pz: f32, yaw: f32, pitch: f32 },
+    /// デバッグカメラ移動速度設定
+    SetCameraSpeed(f32),
 }
 
 // ============================================================
@@ -246,7 +262,42 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                                 } else { None }
                             } else { None }
                         }
-                        _              => None,
+                        s if s.starts_with("VIEWPORT_FOV:") => {
+                            s["VIEWPORT_FOV:".len()..].parse::<f32>().ok()
+                                .map(IpcCommand::SetCameraFov)
+                        }
+                        s if s.starts_with("VIEWPORT_FAR:") => {
+                            s["VIEWPORT_FAR:".len()..].parse::<f32>().ok()
+                                .map(IpcCommand::SetCameraFar)
+                        }
+                        "SHOW_GRID:1"        => Some(IpcCommand::SetShowGrid(true)),
+                        "SHOW_GRID:0"        => Some(IpcCommand::SetShowGrid(false)),
+                        "SHOW_AXIS_GIZMO:1"  => Some(IpcCommand::SetShowAxisGizmo(true)),
+                        "SHOW_AXIS_GIZMO:0"  => Some(IpcCommand::SetShowAxisGizmo(false)),
+                        s if s.starts_with("LOAD_SCENE:") => {
+                            Some(IpcCommand::LoadScene(s["LOAD_SCENE:".len()..].to_string()))
+                        }
+                        "GET_CAM_STATE" => Some(IpcCommand::GetCamState),
+                        s if s.starts_with("CAM_TRANSFORM:") => {
+                            let rest = &s["CAM_TRANSFORM:".len()..];
+                            let parts: Vec<&str> = rest.split(',').collect();
+                            if parts.len() == 5 {
+                                let fs: Vec<f32> = parts.iter()
+                                    .filter_map(|x| x.parse::<f32>().ok())
+                                    .collect();
+                                if fs.len() == 5 {
+                                    Some(IpcCommand::SetCameraTransform {
+                                        px: fs[0], py: fs[1], pz: fs[2],
+                                        yaw: fs[3], pitch: fs[4],
+                                    })
+                                } else { None }
+                            } else { None }
+                        }
+                        s if s.starts_with("CAM_SPEED:") => {
+                            s["CAM_SPEED:".len()..].parse::<f32>().ok()
+                                .map(IpcCommand::SetCameraSpeed)
+                        }
+                        _                    => None,
                     }
                 };
                 if let Some(cmd) = cmd {
