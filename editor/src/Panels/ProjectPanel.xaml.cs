@@ -124,6 +124,9 @@ public partial class ProjectPanel : UserControl
     /// <summary>.scene ファイルがダブルクリックされたときに発火する（フルパス）。</summary>
     public event Action<string>? SceneFileOpened;
 
+    /// <summary>.actor ファイルがダブルクリックされたときに発火する（フルパス）。</summary>
+    public event Action<string>? ActorFileOpened;
+
     public void SetAssetsPath(string assetsPath)
     {
         _assetsRoot  = assetsPath;
@@ -410,6 +413,9 @@ public partial class ProjectPanel : UserControl
                 else if (entry is FileInfo file &&
                          file.Extension.Equals(".scene", StringComparison.OrdinalIgnoreCase))
                     SceneFileOpened?.Invoke(file.FullName);
+                else if (entry is FileInfo actorFile &&
+                         actorFile.Extension.Equals(".actor", StringComparison.OrdinalIgnoreCase))
+                    ActorFileOpened?.Invoke(actorFile.FullName);
             }
             else if (e.ClickCount == 1)
             {

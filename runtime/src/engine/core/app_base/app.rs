@@ -25,12 +25,14 @@ use crate::engine::methods::gizmo_interact::{
     GizmoDrag, GizmoPart, screen_to_ray, hit_test_gizmo, start_drag, update_drag,
     mat4x4_mul, mat4x4_inv,
 };
-use crate::engine::core::app_base::undo::{UndoHistory, MultiTransformCommand, SceneSnapshotCommand, SelectionCommand};
+use crate::engine::core::app_base::undo::{UndoHistory, MultiTransformCommand, SceneSnapshotCommand, SelectionCommand, ActorTreeSnapshotCommand, ComponentSlotsSnapshotCommand, ActorTransformCommand};
+use crate::engine::core::app_base::scene::build_actor;
 use crate::engine::structs::components::model_component::GROUP_ID_BASE as INST_GROUP_ID_BASE;
 use crate::engine::core::scripting::{ScriptingHost, ScriptComponent};
 use crate::engine::structs::components::ModelComponent;
 use crate::engine::structs::components::model_component::{GroupMeta, GROUP_ID_BASE};
 use crate::engine::structs::objects::{Actor, DebugCamera};
+use crate::engine::structs::objects::actor::{ActorData, ActorTransform, ComponentSlotData};
 use crate::engine::structs::objects::camera::debug_camera::CameraInput;
 use crate::engine::structs::tensor::{Vector3, Mat4x4};
 use crate::engine::structs::transforms::{Quaternion, Transform};
@@ -141,12 +143,26 @@ pub struct App {
     first_frame_sent: bool,
     /// 軸ギズモ（エディタモードのみ使用）。
     axis_gizmo: Option<crate::engine::core::font::axis_gizmo::AxisGizmo>,
+    /// アイコンオーバーレイ（エディタモードのみ使用）。
+    icon_overlay: Option<crate::engine::core::font::icon_overlay::IconOverlay>,
     /// 矩形選択開始時の選択状態（Undo 記録用）。
     selection_before_rect: Vec<u32>,
     /// グリッド描画フラグ（エディタモードのみ）。
     show_grid: bool,
     /// 軸ギズモ表示フラグ（エディタモードのみ）。
     show_axis_gizmo: bool,
+    /// アクター編集モードで仮想アクターノードが選択されているとき Some(dfs_id)。
+    /// ModelComponent なしアクターでもアイコン・インスペクターを表示するために使う。
+    actor_virtual_selected_idx: Option<usize>,
+    /// アクタートランスフォームをギズモでドラッグ中に保持する開始状態 (dfs_id, old_transform)。
+    actor_transform_drag_start: Option<(u32, ActorTransform)>,
+
+    // ── 世界線システム ───────────────────────────────────────────
+    /// 現在アクティブな世界線 (0=通常シーン, N=アクター編集タブ)。
+    /// active_world_line と一致する world_line を持つ Actor のみ描画・操作される。
+    active_world_line: u32,
+    /// 世界線切り替え時に退避するカメラ状態。キーが世界線番号。
+    saved_cameras: std::collections::HashMap<u32, DebugCameraData>,
 }
 
 impl App {
@@ -205,9 +221,14 @@ impl App {
             rmb_moved:             false,
             first_frame_sent:      false,
             axis_gizmo:            None,
+            icon_overlay:          None,
             selection_before_rect: Vec::new(),
             show_grid:       true,
             show_axis_gizmo: true,
+            actor_virtual_selected_idx: None,
+            actor_transform_drag_start: None,
+            active_world_line: 0,
+            saved_cameras: std::collections::HashMap::new(),
         }
     }
 
@@ -264,6 +285,19 @@ impl App {
                         self.undo_history.undo(scene)
                     } else { None };
                     if let Some((structural, sel)) = result {
+                        // アクターツリー再構築
+                        if let Some((wl, actors_data)) = self.undo_history.peek_undone_actor_rebuild() {
+                            self.rebuild_actors_for_wl(wl, actors_data);
+                        }
+                        // コンポーネントスロット再構築
+                        if let Some((wl, actor_dfs_id, slots_data)) = self.undo_history.peek_undone_component_rebuild() {
+                            self.rebuild_actor_slots(wl, actor_dfs_id, slots_data);
+                            self.send_actor_components(actor_dfs_id);
+                        }
+                        // アクタートランスフォーム変更 → インスペクター通知
+                        if let Some((_wl, dfs_id)) = self.undo_history.peek_undone_actor_inspect() {
+                            self.send_actor_components(dfs_id);
+                        }
                         if let Some(ids) = sel {
                             self.selected_instances = ids;
                             self.send_selected();
@@ -279,6 +313,19 @@ impl App {
                         self.undo_history.redo(scene)
                     } else { None };
                     if let Some((structural, sel)) = result {
+                        // アクターツリー再構築
+                        if let Some((wl, actors_data)) = self.undo_history.peek_redone_actor_rebuild() {
+                            self.rebuild_actors_for_wl(wl, actors_data);
+                        }
+                        // コンポーネントスロット再構築
+                        if let Some((wl, actor_dfs_id, slots_data)) = self.undo_history.peek_redone_component_rebuild() {
+                            self.rebuild_actor_slots(wl, actor_dfs_id, slots_data);
+                            self.send_actor_components(actor_dfs_id);
+                        }
+                        // アクタートランスフォーム変更 → インスペクター通知
+                        if let Some((_wl, dfs_id)) = self.undo_history.peek_redone_actor_inspect() {
+                            self.send_actor_components(dfs_id);
+                        }
                         if let Some(ids) = sel {
                             self.selected_instances = ids;
                             self.send_selected();
@@ -300,11 +347,22 @@ impl App {
                 IpcCommand::Select(idx) => {
                     let before = self.selected_instances.clone();
                     if let Some(scene) = &self.scene {
-                        if let Some(mc) = scene.find_component::<ModelComponent>() {
-                            if (idx as usize) < mc.instance_mats.len() {
-                                self.selected_instances = vec![idx];
-                            } else {
-                                self.selected_instances.clear();
+                        if self.active_world_line != 0 && idx >= 999_000_000 {
+                            // 仮想アクターノード選択: actor_virtual_selected_idx をセットし
+                            // ModelComponent があれば全インスタンスも選択する。
+                            let actor_idx = (idx - 999_000_000) as usize;
+                            self.actor_virtual_selected_idx = Some(actor_idx);
+                            if let Some(mc) = scene.find_component_in_world_line::<ModelComponent>(self.active_world_line) {
+                                self.selected_instances = (0..mc.instance_mats.len() as u32).collect();
+                            }
+                        } else {
+                            self.actor_virtual_selected_idx = None;
+                            if let Some(mc) = scene.find_component_in_world_line::<ModelComponent>(self.active_world_line) {
+                                if (idx as usize) < mc.instance_mats.len() {
+                                    self.selected_instances = vec![idx];
+                                } else {
+                                    self.selected_instances.clear();
+                                }
                             }
                         }
                     }
@@ -317,7 +375,7 @@ impl App {
                 IpcCommand::SelectMulti(ids) => {
                     let before = self.selected_instances.clone();
                     if let Some(scene) = &self.scene {
-                        if let Some(mc) = scene.find_component::<ModelComponent>() {
+                        if let Some(mc) = scene.find_component_in_world_line::<ModelComponent>(self.active_world_line) {
                             self.selected_instances = ids.into_iter()
                                 .filter(|&i| (i as usize) < mc.instance_mats.len())
                                 .collect();
@@ -331,7 +389,7 @@ impl App {
                 }
                 IpcCommand::Reparent { child, new_parent } => {
                     if let Some(scene) = &mut self.scene {
-                        if let Some(mc) = scene.find_component_mut::<ModelComponent>() {
+                        if let Some(mc) = scene.find_component_in_world_line_mut::<ModelComponent>(self.active_world_line) {
                             if child >= GROUP_ID_BASE {
                                 // グループの親変更
                                 if let Some(g) = mc.group_meta.iter_mut().find(|g| g.id == child) {
@@ -346,7 +404,7 @@ impl App {
                 }
                 IpcCommand::Rename { idx, name } => {
                     if let Some(scene) = &mut self.scene {
-                        if let Some(mc) = scene.find_component_mut::<ModelComponent>() {
+                        if let Some(mc) = scene.find_component_in_world_line_mut::<ModelComponent>(self.active_world_line) {
                             if let Some(meta) = mc.instance_meta.get_mut(idx as usize) {
                                 meta.name = name;
                             }
@@ -356,7 +414,7 @@ impl App {
                 }
                 IpcCommand::CreateGroup { name, parent } => {
                     if let Some(scene) = &mut self.scene {
-                        if let Some(mc) = scene.find_component_mut::<ModelComponent>() {
+                        if let Some(mc) = scene.find_component_in_world_line_mut::<ModelComponent>(self.active_world_line) {
                             let id = mc.next_group_id;
                             mc.next_group_id += 1;
                             mc.group_meta.push(GroupMeta { id, name, parent });
@@ -366,7 +424,7 @@ impl App {
                 }
                 IpcCommand::CreateGroupWithChildren { name, parent, children } => {
                     if let Some(scene) = &mut self.scene {
-                        if let Some(mc) = scene.find_component_mut::<ModelComponent>() {
+                        if let Some(mc) = scene.find_component_in_world_line_mut::<ModelComponent>(self.active_world_line) {
                             let gid = mc.next_group_id;
                             mc.next_group_id += 1;
                             mc.group_meta.push(GroupMeta { id: gid, name, parent });
@@ -432,6 +490,20 @@ impl App {
                     self.camera.move_speed = speed.clamp(0.1, 500.0);
                 }
                 IpcCommand::LoadScene(path) => {
+                    // アクター編集中なら現在のカメラを退避してからシーンモードに切り替える
+                    {
+                        let pos = self.camera.base.transform.position;
+                        self.saved_cameras.insert(self.active_world_line, DebugCameraData {
+                            position: [pos.x, pos.y, pos.z],
+                            yaw:      self.camera.yaw,
+                            pitch:    self.camera.pitch,
+                            fov_deg:  self.camera.base.projection.fov_y_rad.to_degrees(),
+                            far:      self.camera.base.projection.far,
+                            speed:    self.camera.move_speed,
+                        });
+                    }
+                    self.active_world_line = 0;
+                    self.saved_cameras.remove(&0); // シーンカメラのみリセット
                     let result = if let Some(ctx) = &self.draw_ctx {
                         Some(Scene::load(
                             std::path::Path::new(&path),
@@ -440,9 +512,16 @@ impl App {
                         ))
                     } else { None };
                     match result {
-                        Some(Ok((new_scene, cam_data))) => {
+                        Some(Ok((mut new_scene, cam_data))) => {
+                            // world_line > 0 のアクター（アクター編集タブ）を保持する
+                            if let Some(old_scene) = self.scene.take() {
+                                for actor in old_scene.actors.into_iter().filter(|a| a.world_line > 0) {
+                                    new_scene.actors.push(actor);
+                                }
+                            }
                             self.scene = Some(new_scene);
                             self.selected_instances.clear();
+                            self.actor_virtual_selected_idx = None;
                             self.undo_history = UndoHistory::new();
                             if let Some(cam) = cam_data {
                                 self.apply_camera_data(&cam);
@@ -464,6 +543,137 @@ impl App {
                         None => {}
                     }
                 }
+                IpcCommand::OpenActor { path, world_line } => {
+                    if let Some(ctx) = &self.draw_ctx {
+                        match Scene::load_actor(
+                            std::path::Path::new(&path),
+                            ctx,
+                            self.scripting_host.as_ref(),
+                        ) {
+                            Ok(mut actor_scene) => {
+                                // 現在の世界線のカメラ状態を退避する
+                                let pos = self.camera.base.transform.position;
+                                self.saved_cameras.insert(self.active_world_line, DebugCameraData {
+                                    position: [pos.x, pos.y, pos.z],
+                                    yaw:      self.camera.yaw,
+                                    pitch:    self.camera.pitch,
+                                    fov_deg:  self.camera.base.projection.fov_y_rad.to_degrees(),
+                                    far:      self.camera.base.projection.far,
+                                    speed:    self.camera.move_speed,
+                                });
+                                // ロードしたアクターに指定の世界線を設定
+                                for actor in &mut actor_scene.actors {
+                                    actor.world_line = world_line;
+                                }
+                                // 既存シーンに追加（同じ world_line は一度クリア）
+                                let main_scene = self.scene.get_or_insert_with(|| Scene::new("main"));
+                                main_scene.actors.retain(|a| a.world_line != world_line);
+                                for actor in actor_scene.actors {
+                                    main_scene.actors.push(actor);
+                                }
+                                // この世界線に切り替え
+                                self.active_world_line = world_line;
+                                // カメラを復元（初回はデフォルト）
+                                let cam = self.saved_cameras.get(&world_line).cloned()
+                                    .unwrap_or_else(DebugCameraData::default);
+                                self.apply_camera_data(&cam);
+                                // 選択・Undo をリセット
+                                self.selected_instances.clear();
+                                self.actor_virtual_selected_idx = None;
+                                self.undo_history = UndoHistory::new();
+                                self.sync_anim_seeds();
+                                self.send_selected();
+                                self.do_send_hierarchy();
+                                self.send_world_line_info();
+                                if let Some(ipc) = &self.ipc {
+                                    ipc.send("ACTOR_EDIT_STARTED");
+                                    let (pos, yaw, pitch, fov, far, spd) = self.cam_state_tuple();
+                                    ipc.send(&format!("CAM_STATE:{pos},{yaw},{pitch},{fov},{far},{spd}"));
+                                }
+                            }
+                            Err(e) => {
+                                if let Some(ipc) = &self.ipc {
+                                    ipc.send(&format!("LOAD_ERROR:{e}"));
+                                }
+                            }
+                        }
+                    }
+                }
+                IpcCommand::SetActiveWorldLine(wl) => {
+                    // 現在の世界線のカメラを退避
+                    let pos = self.camera.base.transform.position;
+                    self.saved_cameras.insert(self.active_world_line, DebugCameraData {
+                        position: [pos.x, pos.y, pos.z],
+                        yaw:      self.camera.yaw,
+                        pitch:    self.camera.pitch,
+                        fov_deg:  self.camera.base.projection.fov_y_rad.to_degrees(),
+                        far:      self.camera.base.projection.far,
+                        speed:    self.camera.move_speed,
+                    });
+                    self.active_world_line = wl;
+                    // カメラを復元
+                    if let Some(cam) = self.saved_cameras.get(&wl).cloned() {
+                        self.apply_camera_data(&cam);
+                    }
+                    self.selected_instances.clear();
+                    self.actor_virtual_selected_idx = None;
+                    self.undo_history = UndoHistory::new();
+                    self.sync_anim_seeds();
+                    self.send_selected();
+                    self.do_send_hierarchy();
+                    self.send_world_line_info();
+                    if let Some(ipc) = &self.ipc {
+                        if wl == 0 {
+                            ipc.send("ACTOR_EDIT_ENDED");
+                        } else {
+                            ipc.send("ACTOR_EDIT_STARTED");
+                        }
+                        let (pos, yaw, pitch, fov, far, spd) = self.cam_state_tuple();
+                        ipc.send(&format!("CAM_STATE:{pos},{yaw},{pitch},{fov},{far},{spd}"));
+                    }
+                }
+                IpcCommand::RemoveWorldLine(wl) => {
+                    if let Some(scene) = &mut self.scene {
+                        scene.actors.retain(|a| a.world_line != wl);
+                    }
+                    self.saved_cameras.remove(&wl);
+                }
+                IpcCommand::AddComponent { actor_dfs_id, component_type, slot_name, args } => {
+                    let ct = component_type.clone();
+                    let sn = slot_name.clone();
+                    let a  = args.clone();
+                    self.handle_add_component_to_actor(actor_dfs_id, &ct, &sn, &a);
+                }
+                IpcCommand::GetActorComponents(dfs_id) => {
+                    self.send_actor_components(dfs_id);
+                }
+                IpcCommand::AddActor { world_line, parent_dfs_id } => {
+                    self.handle_add_actor(world_line, parent_dfs_id);
+                }
+                IpcCommand::RemoveActor(dfs_id) => {
+                    self.handle_remove_actor(dfs_id);
+                }
+                IpcCommand::RenameActor { dfs_id, name } => {
+                    let n = name.clone();
+                    self.handle_rename_actor(dfs_id, &n);
+                }
+                IpcCommand::RemoveComponentSlot { actor_dfs_id, slot_idx } => {
+                    self.handle_remove_component_slot(actor_dfs_id, slot_idx);
+                }
+                IpcCommand::RenameComponentSlot { actor_dfs_id, slot_idx, name } => {
+                    let n = name.clone();
+                    self.handle_rename_component_slot(actor_dfs_id, slot_idx, &n);
+                }
+                IpcCommand::SetActorTransform { dfs_id, px, py, pz, ex, ey, ez, sx, sy, sz } => {
+                    self.handle_set_actor_transform(dfs_id, px, py, pz, ex, ey, ez, sx, sy, sz);
+                }
+                IpcCommand::SetModelPath { actor_dfs_id, slot_idx, path } => {
+                    let p = path.clone();
+                    self.handle_set_model_path(actor_dfs_id, slot_idx, &p);
+                }
+                IpcCommand::DuplicateComponent { actor_dfs_id, slot_idx } => {
+                    self.handle_duplicate_component(actor_dfs_id, slot_idx);
+                }
             }
         }
     }
@@ -472,7 +682,27 @@ impl App {
     fn do_send_hierarchy(&self) {
         let Some(ipc)   = &self.ipc   else { return };
         let Some(scene) = &self.scene else { return };
-        let Some(mc)    = scene.find_component::<ModelComponent>() else {
+
+        if self.active_world_line != 0 {
+            // アクター編集モード: アクターツリーをそのまま階層表示する
+            let wl = self.active_world_line;
+            let roots: Vec<&Actor> = scene.actors.iter()
+                .filter(|a| a.world_line == wl)
+                .collect();
+
+            let mut nodes: Vec<(u32, String, Option<u32>)> = Vec::new();
+            let mut counter = 0u32;
+            for root in &roots {
+                collect_actor_nodes(root, None, &mut counter, &mut nodes);
+            }
+
+            let json = build_hierarchy_json(&nodes);
+            ipc.send(&format!("HIERARCHY:{json}"));
+            return;
+        }
+
+        // 通常シーンモード: ModelComponent のインスタンス・グループをフラットに表示する
+        let Some(mc) = scene.find_component_in_world_line::<ModelComponent>(self.active_world_line) else {
             ipc.send("HIERARCHY:[]");
             return;
         };
@@ -535,7 +765,22 @@ impl App {
     fn send_actor_data(&self, idx: u32) {
         let Some(ipc)   = &self.ipc   else { return };
         let Some(scene) = &self.scene else { return };
-        let Some(mc)    = scene.find_component::<ModelComponent>() else { return };
+
+        // 仮想アクターノード（ModelComponent なし）のケース
+        if self.active_world_line != 0 && idx >= 999_000_000 {
+            let actor_idx = (idx - 999_000_000) as usize;
+            let wl = self.active_world_line;
+            if let Some(actor) = scene.actors.iter().filter(|a| a.world_line == wl).nth(actor_idx) {
+                let name = serde_json::to_string(&actor.name).unwrap_or_default();
+                let json = format!(
+                    r#"{{"id":{idx},"name":{name},"transform":{{"px":0.0,"py":0.0,"pz":0.0,"ex":0.0,"ey":0.0,"ez":0.0,"sx":1.0,"sy":1.0,"sz":1.0}},"model_path":null}}"#
+                );
+                ipc.send(&format!("ACTOR_DATA:{json}"));
+            }
+            return;
+        }
+
+        let Some(mc)    = scene.find_component_in_world_line::<ModelComponent>(self.active_world_line) else { return };
 
         let i = idx as usize;
         if i >= mc.instance_mats.len() { return; }
@@ -578,7 +823,7 @@ impl App {
     fn apply_set_transform(&mut self, id: u32, px: f32, py: f32, pz: f32,
                            ex: f32, ey: f32, ez: f32, sx: f32, sy: f32, sz: f32) {
         let Some(scene) = &mut self.scene else { return };
-        let Some(mc)    = scene.find_component_mut::<ModelComponent>() else { return };
+        let Some(mc)    = scene.find_component_in_world_line_mut::<ModelComponent>(self.active_world_line) else { return };
 
         let i = id as usize;
         if i >= mc.instance_mats.len() { return; }
@@ -593,16 +838,32 @@ impl App {
             scale:    Vector3::new(sx, sy, sz),
         };
         mc.instance_mats[i] = transform.to_matrix().data;
-        mc.instanced_batch.mark_dirty();
+        mc.mark_batch_dirty();
+    }
+
+    /// 現在の世界線情報をエディタへ送信する（デバッグログ用）。
+    fn send_world_line_info(&self) {
+        let Some(ipc) = &self.ipc else { return };
+        let wl = self.active_world_line;
+        let actor_name = self.scene.as_ref()
+            .and_then(|s| s.actors.iter().find(|a| a.world_line == wl))
+            .map(|a| a.name.clone())
+            .unwrap_or_else(|| if wl == 0 { "Scene".to_string() } else { "<none>".to_string() });
+        let inst_count = self.scene.as_ref()
+            .and_then(|s| s.find_component_in_world_line::<ModelComponent>(wl))
+            .map(|mc| mc.instance_mats.len())
+            .unwrap_or(0);
+        ipc.send(&format!("WORLD_LINE_INFO:WL:{wl} | Actor:{actor_name} | Instances:{inst_count}"));
     }
 
     /// InstanceMeta::anim_seed を instanced_batch に同期する。
     /// 構造変更（追加・削除・Undo/Redo）後に呼び出す。
     fn sync_anim_seeds(&mut self) {
+        let wl = self.active_world_line;
         if let Some(scene) = &mut self.scene {
-            if let Some(mc) = scene.find_component_mut::<ModelComponent>() {
+            if let Some(mc) = scene.find_component_in_world_line_mut::<ModelComponent>(wl) {
                 let seeds: Vec<u32> = mc.instance_meta.iter().map(|m| m.anim_seed).collect();
-                mc.instanced_batch.set_anim_seeds(&seeds);
+                mc.set_batch_anim_seeds(&seeds);
             }
         }
     }
@@ -611,7 +872,7 @@ impl App {
     fn do_copy(&mut self) {
         use std::collections::{HashMap, HashSet};
         let Some(scene) = &self.scene else { return };
-        let Some(mc)    = scene.find_component::<ModelComponent>() else { return };
+        let Some(mc)    = scene.find_component_in_world_line::<ModelComponent>(self.active_world_line) else { return };
         if self.selected_instances.is_empty() { return; }
 
         // 選択 + 全子孫を収集して昇順ソート
@@ -650,8 +911,9 @@ impl App {
         let before_selection = self.selected_instances.clone();
 
         let new_indices = {
+            let wl = self.active_world_line;
             let Some(scene) = &mut self.scene else { return };
-            let Some(mc)    = scene.find_component_mut::<ModelComponent>() else { return };
+            let Some(mc)    = scene.find_component_in_world_line_mut::<ModelComponent>(wl) else { return };
 
             let before_mats   = mc.instance_mats.clone();
             let before_meta   = mc.instance_meta.clone();
@@ -670,7 +932,7 @@ impl App {
                 });
                 new_indices.push(base_idx + i as u32);
             }
-            mc.instanced_batch.mark_dirty();
+            mc.mark_batch_dirty();
 
             let after_mats   = mc.instance_mats.clone();
             let after_meta   = mc.instance_meta.clone();
@@ -697,11 +959,595 @@ impl App {
     fn send_selected(&self) {
         let Some(ipc) = &self.ipc else { return };
         match self.selected_instances.as_slice() {
-            [] => ipc.send("SELECTED:-1"),
+            [] => {
+                // ModelComponent なし仮想アクターノード選択中は仮想 ID を送る
+                if let Some(actor_idx) = self.actor_virtual_selected_idx {
+                    ipc.send(&format!("SELECTED:{}", 999_000_000u64 + actor_idx as u64));
+                } else {
+                    ipc.send("SELECTED:-1");
+                }
+            }
             [idx] => ipc.send(&format!("SELECTED:{idx}")),
             ids => ipc.send(&format!("SELECTED_MULTI:{}",
                 ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(","))),
         }
+    }
+
+    /// インスペクターの「コンポーネントを追加」リクエストを処理する。
+    fn handle_add_component(&mut self, actor_id: u32, component_type: &str, args: &str) {
+        if self.draw_ctx.is_none() || self.ipc.is_none() || self.scene.is_none() { return; }
+
+        let wl = self.active_world_line;
+        let actor_idx = if actor_id >= 999_000_000 {
+            (actor_id - 999_000_000) as usize
+        } else {
+            return;
+        };
+
+        match component_type {
+            "ModelComponent" => {
+                let path = std::path::Path::new(args);
+                let model = match crate::engine::core::loader::load_model(path) {
+                    Ok(m) => m,
+                    Err(e) => {
+                        if let Some(ipc) = &self.ipc { ipc.send(&format!("LOAD_ERROR:{e}")); }
+                        return;
+                    }
+                };
+
+                // GPU リソース構築（ctx の借用はここで完結させる）
+                let (gpu_model, instanced_batch) = {
+                    let ctx = self.draw_ctx.as_ref().unwrap();
+                    (ctx.upload_model(&model), ctx.create_instanced_batch(&model, 1))
+                };
+
+                use crate::engine::structs::components::model_component::{InstanceMeta, GROUP_ID_BASE};
+                let identity: [[f32; 4]; 4] = [
+                    [1.0, 0.0, 0.0, 0.0],
+                    [0.0, 1.0, 0.0, 0.0],
+                    [0.0, 0.0, 1.0, 0.0],
+                    [0.0, 0.0, 0.0, 1.0],
+                ];
+                let mc = ModelComponent {
+                    source_path:     args.to_string(),
+                    model:           Some(model),
+                    gpu_model:       Some(gpu_model),
+                    instanced_batch: Some(instanced_batch),
+                    instance_mats:   vec![identity],
+                    instance_meta:   vec![InstanceMeta::new("Instance_0")],
+                    group_meta:      Vec::new(),
+                    next_group_id:   GROUP_ID_BASE,
+                };
+
+                let found = {
+                    let scene = self.scene.as_mut().unwrap();
+                    if let Some(actor) = scene.actors.iter_mut()
+                        .filter(|a| a.world_line == wl)
+                        .nth(actor_idx)
+                    {
+                        actor.add_component(mc);
+                        true
+                    } else {
+                        false
+                    }
+                };
+
+                if found {
+                    self.actor_virtual_selected_idx = None;
+                    self.selected_instances = vec![0];
+                    self.sync_anim_seeds();
+                    self.send_selected();
+                    self.send_hierarchy();
+                    if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // ── アクター編集モード用ハンドラー群 ─────────────────────────
+
+    /// アクタースロットのコンポーネント一覧を送信する。
+    fn send_actor_components(&self, dfs_id: u32) {
+        let Some(ipc)   = &self.ipc   else { return };
+        let Some(scene) = &self.scene else { return };
+        let wl = self.active_world_line;
+
+        let mut c = 0u32;
+        let Some(actor) = find_actor_by_dfs(&scene.actors, wl, dfs_id, &mut c) else { return };
+
+        let [px, py, pz] = actor.transform.position;
+        let [ex, ey, ez] = actor.transform.rotation;
+        let [sx, sy, sz] = actor.transform.scale;
+
+        let mut comps_json = String::from("[");
+        for (i, slot) in actor.component_slots().iter().enumerate() {
+            if i > 0 { comps_json.push(','); }
+            let (type_name, extra) = match slot.component.to_data() {
+                crate::engine::structs::components::ComponentData::ModelComponent(ref d) => {
+                    let path_json = serde_json::to_string(&d.model_path).unwrap_or_default();
+                    ("ModelComponent", format!(r#","model_path":{path_json}"#))
+                }
+                crate::engine::structs::components::ComponentData::ScriptComponent(_) => {
+                    ("ScriptComponent", String::new())
+                }
+            };
+            comps_json.push_str(&format!(
+                r#"{{"slot":{},"name":{},"type":"{}"{}}}"#,
+                i,
+                serde_json::to_string(&slot.name).unwrap_or_default(),
+                type_name,
+                extra,
+            ));
+        }
+        comps_json.push(']');
+
+        let name_json = serde_json::to_string(&actor.name).unwrap_or_default();
+        let json = format!(
+            r#"{{"id":{dfs_id},"name":{name_json},"transform":{{"px":{px:.4},"py":{py:.4},"pz":{pz:.4},"ex":{ex:.4},"ey":{ey:.4},"ez":{ez:.4},"sx":{sx:.4},"sy":{sy:.4},"sz":{sz:.4}}},"components":{comps_json}}}"#
+        );
+        ipc.send(&format!("ACTOR_COMPONENTS:{json}"));
+    }
+
+    /// コンポーネントをアクターに追加する（新アーキテクチャ版）。
+    fn handle_add_component_to_actor(
+        &mut self,
+        actor_dfs_id:   u32,
+        component_type: &str,
+        slot_name:      &str,
+        args:           &str,
+    ) {
+        if self.draw_ctx.is_none() || self.ipc.is_none() || self.scene.is_none() { return; }
+        let wl = self.active_world_line;
+
+        match component_type {
+            "ModelComponent" => {
+                use crate::engine::structs::components::model_component::{InstanceMeta, GROUP_ID_BASE};
+                let mc = if args.is_empty() {
+                    ModelComponent::empty()
+                } else {
+                    let path = std::path::Path::new(args);
+                    let model = match crate::engine::core::loader::load_model(path) {
+                        Ok(m) => m,
+                        Err(e) => {
+                            if let Some(ipc) = &self.ipc { ipc.send(&format!("LOAD_ERROR:{e}")); }
+                            return;
+                        }
+                    };
+                    let (gpu_model, instanced_batch) = {
+                        let ctx = self.draw_ctx.as_ref().unwrap();
+                        (ctx.upload_model(&model), ctx.create_instanced_batch(&model, 1))
+                    };
+                    let identity = [[1.0f32,0.0,0.0,0.0],[0.0,1.0,0.0,0.0],[0.0,0.0,1.0,0.0],[0.0,0.0,0.0,1.0]];
+                    ModelComponent {
+                        source_path:     args.to_string(),
+                        model:           Some(model),
+                        gpu_model:       Some(gpu_model),
+                        instanced_batch: Some(instanced_batch),
+                        instance_mats:   vec![identity],
+                        instance_meta:   vec![InstanceMeta::new("Instance_0")],
+                        group_meta:      Vec::new(),
+                        next_group_id:   GROUP_ID_BASE,
+                    }
+                };
+                let name = slot_name.to_string();
+                let before_slots = self.snapshot_actor_slots(wl, actor_dfs_id);
+                let found = {
+                    let scene = self.scene.as_mut().unwrap();
+                    let mut c = 0u32;
+                    if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
+                        actor.add_component_named(name, mc);
+                        true
+                    } else { false }
+                };
+                if found {
+                    let after_slots = self.snapshot_actor_slots(wl, actor_dfs_id);
+                    self.undo_history.record(Box::new(ComponentSlotsSnapshotCommand {
+                        world_line: wl,
+                        actor_dfs_id,
+                        before_slots,
+                        after_slots,
+                    }));
+                    self.actor_virtual_selected_idx = None;
+                    self.selected_instances.clear();
+                    self.send_hierarchy();
+                    self.send_actor_components(actor_dfs_id);
+                    if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// ModelComponent のモデルパスを後から設定する。
+    fn handle_set_model_path(&mut self, actor_dfs_id: u32, slot_idx: u32, path: &str) {
+        if self.draw_ctx.is_none() || self.ipc.is_none() || self.scene.is_none() { return; }
+        let wl = self.active_world_line;
+
+        let model = match crate::engine::core::loader::load_model(std::path::Path::new(path)) {
+            Ok(m) => m,
+            Err(e) => {
+                if let Some(ipc) = &self.ipc { ipc.send(&format!("LOAD_ERROR:{e}")); }
+                return;
+            }
+        };
+        let (gpu_model, instanced_batch) = {
+            let ctx = self.draw_ctx.as_ref().unwrap();
+            (ctx.upload_model(&model), ctx.create_instanced_batch(&model, 1))
+        };
+        use crate::engine::structs::components::model_component::InstanceMeta;
+        let found = {
+            let scene = self.scene.as_mut().unwrap();
+            let mut c = 0u32;
+            if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
+                if let Some(slot) = actor.component_slots_mut().get_mut(slot_idx as usize) {
+                    if let Some(mc) = slot.component.as_any_mut().downcast_mut::<ModelComponent>() {
+                        if mc.instance_mats.is_empty() {
+                            let identity = [[1.0f32,0.0,0.0,0.0],[0.0,1.0,0.0,0.0],[0.0,0.0,1.0,0.0],[0.0,0.0,0.0,1.0]];
+                            mc.instance_mats.push(identity);
+                            mc.instance_meta.push(InstanceMeta::new("Instance_0"));
+                        }
+                        mc.source_path   = path.to_string();
+                        mc.model         = Some(model);
+                        mc.gpu_model     = Some(gpu_model);
+                        mc.instanced_batch = Some(instanced_batch);
+                        true
+                    } else { false }
+                } else { false }
+            } else { false }
+        };
+        if found {
+            self.send_actor_components(actor_dfs_id);
+            if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+        }
+    }
+
+    /// 子アクターを追加する。
+    fn handle_add_actor(&mut self, world_line: u32, parent_dfs_id: Option<u32>) {
+        if self.scene.is_none() { return; }
+
+        let before_actors = self.snapshot_actors_for_wl(world_line);
+
+        let Some(scene) = &mut self.scene else { return };
+
+        let new_actor = {
+            let mut a = Actor::with_name("Actor");
+            a.world_line = world_line;
+            a
+        };
+
+        if let Some(pid) = parent_dfs_id {
+            let mut c = 0u32;
+            if let Some(parent) = find_actor_by_dfs_mut(&mut scene.actors, world_line, pid, &mut c) {
+                parent.add_child(new_actor);
+            }
+        } else {
+            scene.actors.push(new_actor);
+        }
+
+        let after_actors = self.snapshot_actors_for_wl(world_line);
+        self.undo_history.record(Box::new(ActorTreeSnapshotCommand {
+            world_line,
+            before_actors,
+            after_actors,
+        }));
+
+        self.send_hierarchy();
+        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+    }
+
+    /// アクターを削除する（DFS id で特定）。
+    fn handle_remove_actor(&mut self, dfs_id: u32) {
+        let Some(_scene) = &self.scene else { return };
+        let wl = self.active_world_line;
+
+        let before_actors = self.snapshot_actors_for_wl(wl);
+
+        {
+            let scene = self.scene.as_mut().unwrap();
+            let mut c = 0u32;
+            remove_actor_by_dfs(&mut scene.actors, wl, dfs_id, &mut c);
+        }
+
+        let after_actors = self.snapshot_actors_for_wl(wl);
+        self.undo_history.record(Box::new(ActorTreeSnapshotCommand {
+            world_line: wl,
+            before_actors,
+            after_actors,
+        }));
+
+        self.selected_instances.clear();
+        self.actor_virtual_selected_idx = None;
+        if let Some(ipc) = &self.ipc { ipc.send("SELECTED:-1"); }
+        self.send_hierarchy();
+        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+    }
+
+    fn handle_rename_actor(&mut self, dfs_id: u32, name: &str) {
+        let Some(scene) = &mut self.scene else { return };
+        let wl = self.active_world_line;
+        let mut c = 0u32;
+        if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, dfs_id, &mut c) {
+            actor.name = name.to_string();
+        }
+        self.send_hierarchy();
+        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+    }
+
+    fn handle_remove_component_slot(&mut self, actor_dfs_id: u32, slot_idx: u32) {
+        let Some(_scene) = &self.scene else { return };
+        let wl = self.active_world_line;
+
+        let before_slots = self.snapshot_actor_slots(wl, actor_dfs_id);
+
+        {
+            let scene = self.scene.as_mut().unwrap();
+            let mut c = 0u32;
+            if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
+                actor.remove_component_at(slot_idx as usize);
+            }
+        }
+
+        let after_slots = self.snapshot_actor_slots(wl, actor_dfs_id);
+        self.undo_history.record(Box::new(ComponentSlotsSnapshotCommand {
+            world_line: wl,
+            actor_dfs_id,
+            before_slots,
+            after_slots,
+        }));
+
+        self.send_actor_components(actor_dfs_id);
+        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+    }
+
+    fn handle_rename_component_slot(&mut self, actor_dfs_id: u32, slot_idx: u32, name: &str) {
+        let Some(scene) = &mut self.scene else { return };
+        let wl = self.active_world_line;
+        let mut c = 0u32;
+        if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
+            if let Some(slot) = actor.component_slots_mut().get_mut(slot_idx as usize) {
+                slot.name = name.to_string();
+            }
+        }
+        self.send_actor_components(actor_dfs_id);
+        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+    }
+
+    fn handle_set_actor_transform(
+        &mut self,
+        dfs_id: u32,
+        px: f32, py: f32, pz: f32,
+        ex: f32, ey: f32, ez: f32,
+        sx: f32, sy: f32, sz: f32,
+    ) {
+        let Some(scene) = &mut self.scene else { return };
+        let wl = self.active_world_line;
+        let mut c = 0u32;
+        if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, dfs_id, &mut c) {
+            actor.transform.position = [px, py, pz];
+            actor.transform.rotation = [ex, ey, ez];
+            actor.transform.scale    = [sx, sy, sz];
+        }
+        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+    }
+
+    /// アクター編集モードで仮想選択中のアクターのワールド座標（transform.position）を返す。
+    fn actor_virtual_world_pos(&self) -> Option<[f32; 3]> {
+        let dfs_id = self.actor_virtual_selected_idx? as u32;
+        let wl = self.active_world_line;
+        if wl == 0 { return None; }
+        let scene = self.scene.as_ref()?;
+        let mut c = 0u32;
+        let actor = find_actor_by_dfs(&scene.actors, wl, dfs_id, &mut c)?;
+        Some(actor.transform.position)
+    }
+
+    /// 指定世界線のアクターツリー全体をデータとしてスナップショットする。
+    fn snapshot_actors_for_wl(&self, wl: u32) -> Vec<ActorData> {
+        self.scene.as_ref().map(|s| {
+            s.actors.iter()
+                .filter(|a| a.world_line == wl)
+                .map(|a| a.to_data())
+                .collect()
+        }).unwrap_or_default()
+    }
+
+    /// 指定アクターのコンポーネントスロット一覧をデータとしてスナップショットする。
+    fn snapshot_actor_slots(&self, wl: u32, actor_dfs_id: u32) -> Vec<ComponentSlotData> {
+        let Some(scene) = &self.scene else { return Vec::new() };
+        let mut c = 0u32;
+        find_actor_by_dfs(&scene.actors, wl, actor_dfs_id, &mut c)
+            .map(|actor| actor.component_slots().iter().map(|s| ComponentSlotData {
+                name:      s.name.clone(),
+                component: s.component.to_data(),
+            }).collect())
+            .unwrap_or_default()
+    }
+
+    /// 指定世界線のアクターを data から再構築する（Undo/Redo 用）。
+    fn rebuild_actors_for_wl(&mut self, wl: u32, actors_data: Vec<ActorData>) {
+        let host = self.scripting_host.clone();
+        // draw_ctx の借用はこのスコープ内で完結させ、scene への書き込みと重ならないようにする。
+        let mut rebuilt: Vec<Actor> = {
+            let Some(ctx) = &self.draw_ctx else { return };
+            actors_data.into_iter()
+                .filter_map(|d| build_actor(d, ctx, host.as_ref()).ok())
+                .collect()
+        };
+        for a in &mut rebuilt { a.set_world_line_recursive(wl); }
+
+        let scene = self.scene.get_or_insert_with(|| Scene::new("main"));
+        scene.actors.retain(|a| a.world_line != wl);
+        scene.actors.extend(rebuilt);
+
+        self.selected_instances.clear();
+        self.actor_virtual_selected_idx = None;
+    }
+
+    /// 指定アクターのコンポーネントスロットを data から再構築する（Undo/Redo 用）。
+    fn rebuild_actor_slots(&mut self, wl: u32, actor_dfs_id: u32, slots_data: Vec<ComponentSlotData>) {
+        use crate::engine::structs::objects::actor::ComponentSlot;
+        use crate::engine::structs::components::ComponentData;
+        use crate::engine::core::scripting::ScriptComponent;
+        use crate::engine::core::loader::load_model;
+
+        let host = self.scripting_host.clone();
+
+        // スロットを draw_ctx の借用スコープ内で構築する。
+        let mut new_slots: Vec<ComponentSlot> = {
+            let Some(ctx) = &self.draw_ctx else { return };
+            let mut slots = Vec::new();
+            for slot_data in slots_data {
+                let component: Box<dyn crate::engine::structs::components::Component> = match slot_data.component {
+                    ComponentData::ModelComponent(mc_data) => {
+                        let mc = if mc_data.model_path.is_empty() {
+                            ModelComponent {
+                                source_path:     String::new(),
+                                model:           None,
+                                gpu_model:       None,
+                                instanced_batch: None,
+                                instance_mats:   mc_data.instances,
+                                instance_meta:   mc_data.meta,
+                                group_meta:      mc_data.groups,
+                                next_group_id:   mc_data.next_group_id,
+                            }
+                        } else {
+                            let path = std::path::Path::new(&mc_data.model_path);
+                            let model = match load_model(path) {
+                                Ok(m) => m,
+                                Err(_) => continue,
+                            };
+                            let gpu_model       = ctx.upload_model(&model);
+                            let instanced_batch = ctx.create_instanced_batch(&model, mc_data.instances.len() as u32);
+                            ModelComponent {
+                                source_path:     mc_data.model_path,
+                                model:           Some(model),
+                                gpu_model:       Some(gpu_model),
+                                instanced_batch: Some(instanced_batch),
+                                instance_mats:   mc_data.instances,
+                                instance_meta:   mc_data.meta,
+                                group_meta:      mc_data.groups,
+                                next_group_id:   mc_data.next_group_id,
+                            }
+                        };
+                        Box::new(mc)
+                    }
+                    ComponentData::ScriptComponent(sc_data) => {
+                        if let Some(host) = &host {
+                            if let Some(sc) = ScriptComponent::new(std::sync::Arc::clone(host), sc_data.type_name) {
+                                Box::new(sc)
+                            } else { continue; }
+                        } else { continue; }
+                    }
+                };
+                slots.push(ComponentSlot { name: slot_data.name, component });
+            }
+            slots
+        };
+
+        let Some(scene) = &mut self.scene else { return };
+        let mut c = 0u32;
+        if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
+            actor.replace_components(new_slots);
+        }
+    }
+
+    /// コンポーネントを複製する（DUPLICATE_COMPONENT）。
+    fn handle_duplicate_component(&mut self, actor_dfs_id: u32, slot_idx: u32) {
+        if self.draw_ctx.is_none() { return; }
+        let wl = self.active_world_line;
+        let host = self.scripting_host.clone();
+
+        let slot_data_opt = {
+            let Some(scene) = &self.scene else { return };
+            let mut c = 0u32;
+            find_actor_by_dfs(&scene.actors, wl, actor_dfs_id, &mut c)
+                .and_then(|actor| actor.component_slots().get(slot_idx as usize))
+                .map(|s| ComponentSlotData {
+                    name:      format!("{} Copy", s.name),
+                    component: s.component.to_data(),
+                })
+        };
+        let Some(slot_data) = slot_data_opt else { return };
+
+        let before_slots = self.snapshot_actor_slots(wl, actor_dfs_id);
+
+        use crate::engine::structs::objects::actor::ComponentSlot;
+        use crate::engine::structs::components::ComponentData;
+        use crate::engine::core::scripting::ScriptComponent;
+        use crate::engine::core::loader::load_model;
+
+        // draw_ctx の借用をスコープで完結させる。
+        let new_component_opt: Option<(String, Box<dyn crate::engine::structs::components::Component>)> = {
+            let Some(ctx) = &self.draw_ctx else { return };
+            match slot_data.component {
+                ComponentData::ModelComponent(mc_data) => {
+                    let mc = if mc_data.model_path.is_empty() {
+                        ModelComponent {
+                            source_path:     String::new(),
+                            model:           None,
+                            gpu_model:       None,
+                            instanced_batch: None,
+                            instance_mats:   mc_data.instances,
+                            instance_meta:   mc_data.meta,
+                            group_meta:      mc_data.groups,
+                            next_group_id:   mc_data.next_group_id,
+                        }
+                    } else {
+                        let path = std::path::Path::new(&mc_data.model_path);
+                        let model = match load_model(path) {
+                            Ok(m) => m,
+                            Err(e) => {
+                                if let Some(ipc) = &self.ipc { ipc.send(&format!("LOAD_ERROR:{e}")); }
+                                return;
+                            }
+                        };
+                        let gpu_model       = ctx.upload_model(&model);
+                        let instanced_batch = ctx.create_instanced_batch(&model, mc_data.instances.len() as u32);
+                        ModelComponent {
+                            source_path:     mc_data.model_path,
+                            model:           Some(model),
+                            gpu_model:       Some(gpu_model),
+                            instanced_batch: Some(instanced_batch),
+                            instance_mats:   mc_data.instances,
+                            instance_meta:   mc_data.meta,
+                            group_meta:      mc_data.groups,
+                            next_group_id:   mc_data.next_group_id,
+                        }
+                    };
+                    Some((slot_data.name, Box::new(mc) as Box<dyn crate::engine::structs::components::Component>))
+                }
+                ComponentData::ScriptComponent(sc_data) => {
+                    if let Some(host) = &host {
+                        ScriptComponent::new(std::sync::Arc::clone(host), sc_data.type_name)
+                            .map(|sc| (slot_data.name, Box::new(sc) as Box<dyn crate::engine::structs::components::Component>))
+                    } else { None }
+                }
+            }
+        };
+        let Some((comp_name, new_component)) = new_component_opt else { return };
+
+        {
+            let Some(scene) = &mut self.scene else { return };
+            let mut c = 0u32;
+            if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
+                actor.component_slots_mut().push(ComponentSlot {
+                    name:      comp_name,
+                    component: new_component,
+                });
+            }
+        }
+
+        let after_slots = self.snapshot_actor_slots(wl, actor_dfs_id);
+        self.undo_history.record(Box::new(ComponentSlotsSnapshotCommand {
+            world_line: wl,
+            actor_dfs_id,
+            before_slots,
+            after_slots,
+        }));
+
+        self.send_actor_components(actor_dfs_id);
+        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
     }
 
     /// カメラ状態をタプル文字列形式で返す（IPC 送信用）。
@@ -758,8 +1604,9 @@ impl App {
         // 削除前の選択状態を保存
         let before_selection = self.selected_instances.clone();
 
+        let wl = self.active_world_line;
         let Some(scene) = &mut self.scene else { return };
-        let Some(mc)    = scene.find_component_mut::<ModelComponent>() else { return };
+        let Some(mc)    = scene.find_component_in_world_line_mut::<ModelComponent>(wl) else { return };
 
         // ── ① スナップショット（削除前）─────────────────────
         let before_mats   = mc.instance_mats.clone();
@@ -842,7 +1689,7 @@ impl App {
                 mc.instance_meta.remove(idx as usize);
             }
         }
-        mc.instanced_batch.mark_dirty();
+        mc.mark_batch_dirty();
 
         // ── ⑤b グループを削除 ───────────────────────────────
         mc.group_meta.retain(|g| !grp_del.contains(&g.id));
@@ -882,8 +1729,12 @@ impl App {
     /// カーソル座標でギズモのヒットテストを行い、当たったパーツを返す。
     fn compute_gizmo_hover(&self, cx: f32, cy: f32) -> Option<GizmoPart> {
         if self.tool_mode == ToolMode::Select { return None; }
-        let mc        = self.scene.as_ref()?.find_component::<ModelComponent>()?;
-        let gizmo_pos = selection_centroid(&self.selected_instances, &mc.instance_mats)?;
+        let gizmo_pos = if self.active_world_line != 0 && self.actor_virtual_selected_idx.is_some() {
+            self.actor_virtual_world_pos()?
+        } else {
+            let mc = self.scene.as_ref()?.find_component_in_world_line::<ModelComponent>(self.active_world_line)?;
+            selection_centroid(&self.selected_instances, &mc.instance_mats)?
+        };
 
         let window_size = self.window.as_ref()?.inner_size();
         let cam_pos_v   = self.camera.position();
@@ -908,8 +1759,12 @@ impl App {
     /// start_mat には重心を平行移動成分とする単位行列を使う（回転・スケールは各インスタンスが保持）。
     fn try_gizmo_hit_and_start(&self, cx: f32, cy: f32) -> Option<GizmoDrag> {
         if self.tool_mode == ToolMode::Select { return None; }
-        let mc        = self.scene.as_ref()?.find_component::<ModelComponent>()?;
-        let gizmo_pos = selection_centroid(&self.selected_instances, &mc.instance_mats)?;
+        let gizmo_pos = if self.active_world_line != 0 && self.actor_virtual_selected_idx.is_some() {
+            self.actor_virtual_world_pos()?
+        } else {
+            let mc = self.scene.as_ref()?.find_component_in_world_line::<ModelComponent>(self.active_world_line)?;
+            selection_centroid(&self.selected_instances, &mc.instance_mats)?
+        };
 
         // ギズモ自体の「基準行列」= 重心位置 + 単位回転
         let centroid_mat = [
@@ -994,11 +1849,20 @@ impl ApplicationHandler for App {
         self.id_buffer     = Some(id_buffer);
         self.line_model_buf = Some(line_model_buf);
 
-        // 軸ギズモ（エディタモードのみ初期化）
+        // 軸ギズモ・アイコンオーバーレイ（エディタモードのみ初期化）
         if self.mode == RuntimeMode::Edit {
             use crate::engine::core::font::axis_gizmo::AxisGizmo;
+            use crate::engine::core::font::icon_overlay::IconOverlay;
+            let dev = &self.draw_ctx.as_ref().unwrap().device;
+            let que = &self.draw_ctx.as_ref().unwrap().queue;
             self.axis_gizmo = Some(AxisGizmo::new(
-                &self.draw_ctx.as_ref().unwrap().device,
+                dev,
+                renderer.surface_format(),
+                renderer.depth_format(),
+            ));
+            self.icon_overlay = Some(IconOverlay::new(
+                dev,
+                que,
                 renderer.surface_format(),
                 renderer.depth_format(),
             ));
@@ -1100,8 +1964,18 @@ impl ApplicationHandler for App {
 
                             // ギズモヒットを優先。外れた場合は release 時にピックまたは矩形選択。
                             if let Some(drag) = self.try_gizmo_hit_and_start(cx, cy) {
-                                if let Some(mc) = self.scene.as_ref()
-                                    .and_then(|s| s.find_component::<ModelComponent>())
+                                if self.active_world_line != 0 && self.actor_virtual_selected_idx.is_some() {
+                                    // アクター編集モード: actor.transform をドラッグ対象として記録
+                                    let dfs_id = self.actor_virtual_selected_idx.unwrap() as u32;
+                                    let wl = self.active_world_line;
+                                    if let Some(scene) = &self.scene {
+                                        let mut c = 0u32;
+                                        if let Some(actor) = find_actor_by_dfs(&scene.actors, wl, dfs_id, &mut c) {
+                                            self.actor_transform_drag_start = Some((dfs_id, actor.transform.clone()));
+                                        }
+                                    }
+                                } else if let Some(mc) = self.scene.as_ref()
+                                    .and_then(|s| s.find_component_in_world_line::<ModelComponent>(self.active_world_line))
                                 {
                                     let roots = mc.filter_selection_roots(&self.selected_instances);
                                     self.drag_root_starts = roots.iter()
@@ -1137,25 +2011,46 @@ impl ApplicationHandler for App {
 
                         // ドラッグで変化があれば Undo 履歴に一括記録
                         if self.gizmo_drag.is_some() {
-                            let mut transforms: Vec<(u32, [[f32;4];4], [[f32;4];4])> = Vec::new();
-                            let root_starts  = std::mem::take(&mut self.drag_root_starts);
-                            let child_starts = std::mem::take(&mut self.drag_child_starts);
-                            if let Some(mc) = self.scene.as_ref()
-                                .and_then(|s| s.find_component::<ModelComponent>())
-                            {
-                                for (idx, old_mat) in root_starts.into_iter().chain(child_starts) {
-                                    if let Some(&new_mat) = mc.instance_mats.get(idx as usize) {
-                                        if new_mat != old_mat {
-                                            transforms.push((idx, old_mat, new_mat));
+                            if let Some((dfs_id, old_transform)) = self.actor_transform_drag_start.take() {
+                                // アクター編集モード: actor.transform の変化を記録
+                                let wl = self.active_world_line;
+                                let new_transform_opt = self.scene.as_ref().and_then(|s| {
+                                    let mut c = 0u32;
+                                    find_actor_by_dfs(&s.actors, wl, dfs_id, &mut c)
+                                        .map(|a| a.transform.clone())
+                                });
+                                if let Some(new_transform) = new_transform_opt {
+                                    if old_transform != new_transform {
+                                        self.undo_history.record(Box::new(ActorTransformCommand {
+                                            world_line: wl, dfs_id,
+                                            old_transform, new_transform,
+                                        }));
+                                        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+                                    }
+                                }
+                                self.send_actor_components(dfs_id);
+                            } else {
+                                let mut transforms: Vec<(u32, [[f32;4];4], [[f32;4];4])> = Vec::new();
+                                let root_starts  = std::mem::take(&mut self.drag_root_starts);
+                                let child_starts = std::mem::take(&mut self.drag_child_starts);
+                                if let Some(mc) = self.scene.as_ref()
+                                    .and_then(|s| s.find_component_in_world_line::<ModelComponent>(self.active_world_line))
+                                {
+                                    for (idx, old_mat) in root_starts.into_iter().chain(child_starts) {
+                                        if let Some(&new_mat) = mc.instance_mats.get(idx as usize) {
+                                            if new_mat != old_mat {
+                                                transforms.push((idx, old_mat, new_mat));
+                                            }
                                         }
                                     }
                                 }
-                            }
-                            if !transforms.is_empty() {
-                                self.undo_history.record(Box::new(MultiTransformCommand { transforms }));
-                                if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+                                if !transforms.is_empty() {
+                                    self.undo_history.record(Box::new(MultiTransformCommand { transforms }));
+                                    if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+                                }
                             }
                         } else {
+                            self.actor_transform_drag_start = None;
                             self.drag_root_starts.clear();
                             self.drag_child_starts.clear();
                         }
@@ -1234,7 +2129,7 @@ impl ApplicationHandler for App {
                             let sy_min = py.min(cy);
                             let sy_max = py.max(cy);
                             if let Some(scene) = &self.scene {
-                                if let Some(mc) = scene.find_component::<ModelComponent>() {
+                                if let Some(mc) = scene.find_component_in_world_line::<ModelComponent>(self.active_world_line) {
                                     if let Some(ws) = self.window.as_ref().map(|w| w.inner_size()) {
                                         let vp_w = ws.width as f32;
                                         let vp_h = ws.height as f32;
@@ -1286,11 +2181,23 @@ impl ApplicationHandler for App {
 
                 if let Some(new_mat) = new_mat_opt {
                     if let Some(drag) = &self.gizmo_drag {
-                        // delta = new_gizmo_mat * inv(start_gizmo_mat)
-                        // 全ルートおよび子孫に同一デルタを適用する
                         let delta = mat4x4_mul(new_mat, mat4x4_inv(drag.start_mat));
-                        if let Some(scene) = &mut self.scene {
-                            if let Some(mc) = scene.find_component_mut::<ModelComponent>() {
+                        let wl = self.active_world_line;
+
+                        if wl != 0 && self.actor_transform_drag_start.is_some() {
+                            // アクター編集モード: actor.transform に delta を適用する
+                            if let Some((dfs_id, ref start_tf)) = self.actor_transform_drag_start {
+                                let new_actor_mat = mat4x4_mul(delta, start_tf.to_mat4());
+                                let new_tf = ActorTransform::from_mat4(&new_actor_mat);
+                                let scene  = self.scene.as_mut().unwrap();
+                                let mut c  = 0u32;
+                                if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, dfs_id, &mut c) {
+                                    actor.transform = new_tf;
+                                }
+                                // send_actor_components はドラッグ終了時のみ呼ぶ（毎フレーム呼ぶとインスペクター再構築で重い）
+                            }
+                        } else if let Some(scene) = &mut self.scene {
+                            if let Some(mc) = scene.find_component_in_world_line_mut::<ModelComponent>(wl) {
                                 for &(idx, ref start) in &self.drag_root_starts {
                                     if let Some(m) = mc.instance_mats.get_mut(idx as usize) {
                                         *m = mat4x4_mul(delta, *start);
@@ -1301,14 +2208,13 @@ impl ApplicationHandler for App {
                                         *m = mat4x4_mul(delta, *start);
                                     }
                                 }
-                                mc.instanced_batch.mark_dirty();
+                                mc.mark_batch_dirty();
                             }
                         }
                     }
-                    // ドラッグ中はインスペクターをリアルタイム更新する
-                    let selected = self.selected_instances.clone();
-                    for idx in selected {
-                        self.send_actor_data(idx);
+                    // 単一インスタンス選択時のみリアルタイム更新（複数選択は毎フレーム n 件 IPC 送信になり重い）
+                    if self.actor_transform_drag_start.is_none() && self.selected_instances.len() == 1 {
+                        self.send_actor_data(self.selected_instances[0]);
                     }
                 }
             }
@@ -1391,18 +2297,29 @@ impl ApplicationHandler for App {
                     let frustum_planes = extract_frustum_planes(&view_proj.data);
                     let camera_pos     = [pos.x, pos.y, pos.z];
 
-                    if let Some(mc) = scene.find_component_mut::<ModelComponent>() {
-                        mc.instanced_batch.update(
-                            &queue, &mc.model, &mc.instance_mats,
-                            &frustum_planes, camera_pos, self.clock.anim_time(),
-                        );
+                    if let Some(mc) = scene.find_component_in_world_line_mut::<ModelComponent>(self.active_world_line) {
+                        if let (Some(batch), Some(model)) = (&mut mc.instanced_batch, mc.model.as_ref()) {
+                            batch.update(
+                                &queue, model, &mc.instance_mats,
+                                &frustum_planes, camera_pos, self.clock.anim_time(),
+                            );
+                        }
                     }
                 }
 
-                // ── 選択インスタンス群の重心（ギズモ位置）──
-                let gizmo_pos = self.scene.as_ref()
-                    .and_then(|s| s.find_component::<ModelComponent>())
-                    .and_then(|mc| selection_centroid(&self.selected_instances, &mc.instance_mats));
+                // ── ギズモ位置：アクター編集モード仮想選択 → actor.transform、それ以外 → インスタンス重心 ──
+                let gizmo_pos = if self.active_world_line != 0 && self.actor_virtual_selected_idx.is_some() {
+                    self.actor_virtual_world_pos()
+                } else {
+                    self.scene.as_ref()
+                        .and_then(|s| s.find_component_in_world_line::<ModelComponent>(self.active_world_line))
+                        .and_then(|mc| selection_centroid(&self.selected_instances, &mc.instance_mats))
+                };
+
+                // アクター仮想選択のワールド位置（レンダラー借用外で取得）
+                let actor_virtual_pos: Option<[f32; 3]> = if self.active_world_line != 0 && self.actor_virtual_selected_idx.is_some() {
+                    self.actor_virtual_world_pos()
+                } else { None };
 
                 // ピック要求を取り出す（描画ブロック内で使用）
                 let pick_pos = self.pending_pick.take();
@@ -1413,13 +2330,15 @@ impl ApplicationHandler for App {
                 {
                     match renderer.begin_frame() {
                         Ok(mut frame) => {
-                            let mc = scene.find_component::<ModelComponent>();
+                            let mc = scene.find_component_in_world_line::<ModelComponent>(self.active_world_line);
 
                             if let Some(mc) = mc {
-                                mc.instanced_batch.dispatch_skin(
-                                    frame.encoder_mut(),
-                                    &draw_ctx.pipelines.skin_compute,
-                                );
+                                if let Some(batch) = mc.instanced_batch.as_ref() {
+                                    batch.dispatch_skin(
+                                        frame.encoder_mut(),
+                                        &draw_ctx.pipelines.skin_compute,
+                                    );
+                                }
                             }
 
                                 // ギズモ GPU バッファ（レンダーパスの前に生成）
@@ -1502,10 +2421,14 @@ impl ApplicationHandler for App {
                                 } else { None };
 
                                 // グリッド描画バッチ（エディタモード + show_grid のみ）
-                                let grid_gpu_batch = if in_editor && self.show_grid {
+                                // アクター編集モードはグリッドを常時表示し、紺背景に映えるよう色を調整
+                                let grid_gpu_batch = if in_editor && (self.show_grid || self.active_world_line != 0) {
                                     let mut lb = LineBatch::new();
-                                    let minor: [f32; 4] = [0.18, 0.18, 0.18, 1.0];
-                                    let major: [f32; 4] = [0.30, 0.30, 0.30, 1.0];
+                                    let (minor, major): ([f32; 4], [f32; 4]) = if self.active_world_line != 0 {
+                                        ([0.22, 0.25, 0.40, 1.0], [0.32, 0.36, 0.55, 1.0])
+                                    } else {
+                                        ([0.18, 0.18, 0.18, 1.0], [0.30, 0.30, 0.30, 1.0])
+                                    };
                                     let ax_x:  [f32; 4] = [0.50, 0.10, 0.10, 1.0];
                                     let ax_z:  [f32; 4] = [0.10, 0.10, 0.50, 1.0];
                                     let n = 10i32;
@@ -1535,26 +2458,67 @@ impl ApplicationHandler for App {
                                     })
                                 } else { None };
 
+                                // アイコンオーバーレイバッチ（エディタモードのみ）
+                                let icon_overlay_batch = if in_editor {
+                                    let vp_w = window_size.map_or(1280.0, |s| s.width  as f32);
+                                    let vp_h = window_size.map_or(720.0,  |s| s.height as f32);
+                                    let view = self.camera.view_matrix();
+                                    let proj = self.camera.projection_matrix();
+                                    let positions: Vec<(f32, f32)> = if !self.selected_instances.is_empty() {
+                                        // インスタンスあり: 各インスタンスの位置にアイコン
+                                        scene.find_component_in_world_line::<ModelComponent>(self.active_world_line)
+                                            .map(|mc| {
+                                                self.selected_instances.iter()
+                                                    .filter_map(|&i| {
+                                                        let mat = mc.instance_mats.get(i as usize)?;
+                                                        let world = [mat[0][3], mat[1][3], mat[2][3]];
+                                                        world_to_screen(world, &view.data, &proj.data, vp_w, vp_h)
+                                                    })
+                                                    .collect()
+                                            })
+                                            .unwrap_or_default()
+                                    } else if self.actor_virtual_selected_idx.is_some() && self.active_world_line != 0 {
+                                        // 仮想アクターノード選択: actor.transform.position にアイコン
+                                        let pos = actor_virtual_pos.unwrap_or([0.0, 0.0, 0.0]);
+                                        world_to_screen(pos, &view.data, &proj.data, vp_w, vp_h)
+                                            .map(|p| vec![p])
+                                            .unwrap_or_default()
+                                    } else {
+                                        Vec::new()
+                                    };
+                                    crate::engine::core::font::icon_overlay::IconOverlay::build(
+                                        &positions, vp_w, vp_h, &draw_ctx.device,
+                                    )
+                                } else { None };
+
                                 // ── メインレンダーパス ────────────────
                                 {
-                                    let mut pass = frame.begin_render_pass();
+                                    // アクター編集モード: 紺色背景、通常: ダークグレー
+                                    let clear_color = if self.active_world_line != 0 {
+                                        wgpu::Color { r: 0.05, g: 0.08, b: 0.18, a: 1.0 }
+                                    } else {
+                                        wgpu::Color { r: 0.1,  g: 0.1,  b: 0.1,  a: 1.0 }
+                                    };
+                                    let mut pass = frame.begin_render_pass(clear_color);
                                     if let Some(mc) = mc {
-                                        draw_model_indirect(
-                                            &mut pass, &mc.gpu_model, &mc.instanced_batch,
-                                            &camera_buf.bind_group, &draw_ctx.pipelines,
-                                        );
+                                        if let Some((gpu, batch)) = mc.rendering_refs() {
+                                            draw_model_indirect(
+                                                &mut pass, gpu, batch,
+                                                &camera_buf.bind_group, &draw_ctx.pipelines,
+                                            );
 
-                                        if in_editor && !self.selected_instances.is_empty() {
-                                            draw_stencil_mask_multi(
-                                                &mut pass, &mc.gpu_model, &mc.instanced_batch,
-                                                &camera_buf.bind_group, &draw_ctx.pipelines,
-                                                &self.selected_instances,
-                                            );
-                                            draw_outline_multi(
-                                                &mut pass, &mc.gpu_model, &mc.instanced_batch,
-                                                &camera_buf.bind_group, &draw_ctx.pipelines,
-                                                &self.selected_instances,
-                                            );
+                                            if in_editor && !self.selected_instances.is_empty() {
+                                                draw_stencil_mask_multi(
+                                                    &mut pass, gpu, batch,
+                                                    &camera_buf.bind_group, &draw_ctx.pipelines,
+                                                    &self.selected_instances,
+                                                );
+                                                draw_outline_multi(
+                                                    &mut pass, gpu, batch,
+                                                    &camera_buf.bind_group, &draw_ctx.pipelines,
+                                                    &self.selected_instances,
+                                                );
+                                            }
                                         }
                                     }
 
@@ -1600,6 +2564,13 @@ impl ApplicationHandler for App {
                                     {
                                         ag.draw(batch, &mut pass);
                                     }
+
+                                    // アイコンオーバーレイ（選択アクター位置マーカー）
+                                    if let (Some(batch), Some(io)) =
+                                        (&icon_overlay_batch, &self.icon_overlay)
+                                    {
+                                        io.draw(batch, &mut pass);
+                                    }
                                 }
 
                                 // ── ID パス（Edit/Pause のみ）──────────
@@ -1607,10 +2578,12 @@ impl ApplicationHandler for App {
                                     if let (Some(mc), Some(id_buf)) = (mc, &self.id_buffer) {
                                         {
                                             let mut id_pass = frame.begin_id_pass(&id_buf.view);
-                                            draw_id_pass(
-                                                &mut id_pass, &mc.gpu_model, &mc.instanced_batch,
-                                                &camera_buf.bind_group, &draw_ctx.pipelines,
-                                            );
+                                            if let Some((gpu, batch)) = mc.rendering_refs() {
+                                                draw_id_pass(
+                                                    &mut id_pass, gpu, batch,
+                                                    &camera_buf.bind_group, &draw_ctx.pipelines,
+                                                );
+                                            }
                                         }
                                         if let Some((px, py)) = pick_pos {
                                             let px = px.min(id_buf.width.saturating_sub(1));
@@ -1818,6 +2791,138 @@ fn fix_parent(
     // 親は生存 → インデックスをシフト
     let shift = sorted_asc.partition_point(|&d| d < p) as u32;
     Some(p - shift)
+}
+
+// ============================================================
+//  アクターツリーユーティリティ（アクター編集モード用）
+// ============================================================
+
+/// Actor ツリーを DFS 順にフラット化し (id, name, parent_id) を収集する。
+fn collect_actor_nodes(
+    actor:   &Actor,
+    parent:  Option<u32>,
+    counter: &mut u32,
+    out:     &mut Vec<(u32, String, Option<u32>)>,
+) {
+    let id = *counter;
+    *counter += 1;
+    out.push((id, actor.name.clone(), parent));
+    for child in actor.children() {
+        collect_actor_nodes(child, Some(id), counter, out);
+    }
+}
+
+/// フラットリストから HIERARCHY JSON を生成する。
+fn build_hierarchy_json(nodes: &[(u32, String, Option<u32>)]) -> String {
+    let mut json  = String::from("[");
+    let mut first = true;
+    for (id, name, parent) in nodes {
+        if !first { json.push(','); }
+        first = false;
+        let parent_str = match parent {
+            Some(p) => p.to_string(),
+            None    => "null".to_string(),
+        };
+        json.push_str(&format!(
+            r#"{{"id":{},"name":{},"parent":{},"is_group":false}}"#,
+            id,
+            serde_json::to_string(name).unwrap_or_default(),
+            parent_str,
+        ));
+    }
+    json.push(']');
+    json
+}
+
+/// DFS id でアクターへの可変参照を取得する。
+/// actors は world_line でフィルタ済みのルートスライス想定。
+fn find_actor_by_dfs_mut<'a>(
+    actors:  &'a mut Vec<Actor>,
+    wl:      u32,
+    dfs_id:  u32,
+    counter: &mut u32,
+) -> Option<&'a mut Actor> {
+    for actor in actors.iter_mut() {
+        if actor.world_line != wl { continue; }
+        if *counter == dfs_id { return Some(actor); }
+        *counter += 1;
+        if let Some(found) = find_actor_child_by_dfs_mut(actor, dfs_id, counter) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+fn find_actor_child_by_dfs_mut<'a>(
+    actor:   &'a mut Actor,
+    dfs_id:  u32,
+    counter: &mut u32,
+) -> Option<&'a mut Actor> {
+    for child in actor.children_mut().iter_mut() {
+        if *counter == dfs_id { return Some(child); }
+        *counter += 1;
+        if let Some(found) = find_actor_child_by_dfs_mut(child, dfs_id, counter) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+/// DFS id でアクターへの不変参照を取得する。
+fn find_actor_by_dfs<'a>(
+    actors:  &'a Vec<Actor>,
+    wl:      u32,
+    dfs_id:  u32,
+    counter: &mut u32,
+) -> Option<&'a Actor> {
+    for actor in actors.iter() {
+        if actor.world_line != wl { continue; }
+        if *counter == dfs_id { return Some(actor); }
+        *counter += 1;
+        if let Some(found) = find_actor_child_by_dfs(actor, dfs_id, counter) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+fn find_actor_child_by_dfs<'a>(
+    actor:   &'a Actor,
+    dfs_id:  u32,
+    counter: &mut u32,
+) -> Option<&'a Actor> {
+    for child in actor.children().iter() {
+        if *counter == dfs_id { return Some(child); }
+        *counter += 1;
+        if let Some(found) = find_actor_child_by_dfs(child, dfs_id, counter) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+/// DFS id でアクターを削除する。
+fn remove_actor_by_dfs(actors: &mut Vec<Actor>, wl: u32, dfs_id: u32, counter: &mut u32) -> bool {
+    let mut i = 0;
+    while i < actors.len() {
+        if actors[i].world_line != wl { i += 1; continue; }
+        if *counter == dfs_id { actors.remove(i); return true; }
+        *counter += 1;
+        if remove_actor_children_by_dfs(&mut actors[i], dfs_id, counter) { return true; }
+        i += 1;
+    }
+    false
+}
+
+fn remove_actor_children_by_dfs(actor: &mut Actor, dfs_id: u32, counter: &mut u32) -> bool {
+    let mut i = 0;
+    while i < actor.children_mut().len() {
+        if *counter == dfs_id { actor.children_mut().remove(i); return true; }
+        *counter += 1;
+        if remove_actor_children_by_dfs(&mut actor.children_mut()[i], dfs_id, counter) { return true; }
+        i += 1;
+    }
+    false
 }
 
 /// ワールド座標をビューポートのスクリーン座標へ投影する。

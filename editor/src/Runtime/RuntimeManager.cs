@@ -117,11 +117,23 @@ public sealed class RuntimeManager : IDisposable
     /// <summary>アクターデータが返ってきたときに発火する（JSON 文字列）。</summary>
     public event Action<string>? ActorDataReceived;
 
+    /// <summary>アクター編集モードでコンポーネント一覧が返ってきたときに発火する（JSON 文字列）。</summary>
+    public event Action<string>? ActorComponentsReceived;
+
     /// <summary>デバッグカメラ状態が返ってきたときに発火する（CAM_STATE メッセージ本体）。</summary>
     public event Action<string>? CameraStateReceived;
 
     /// <summary>ランタイム側でシーンが変更されたときに発火する（ギズモドラッグ完了など）。</summary>
     public event Action? SceneModified;
+
+    /// <summary>アクター編集モードに切り替わったときに発火する。</summary>
+    public event Action? ActorEditStarted;
+
+    /// <summary>アクター編集モードが終了して通常シーンに戻ったときに発火する。</summary>
+    public event Action? ActorEditEnded;
+
+    /// <summary>世界線切り替え情報が返ってきたときに発火する（デバッグログ用）。</summary>
+    public event Action<string>? WorldLineInfoReceived;
 
     // ── コンストラクタ ─────────────────────────────────────────
 
@@ -469,6 +481,12 @@ public sealed class RuntimeManager : IDisposable
             EditorLog.Write($"[Runtime→Editor] ACTOR_DATA ({json.Length} chars)");
             ActorDataReceived?.Invoke(json);
         }
+        else if (msg.StartsWith("ACTOR_COMPONENTS:", StringComparison.Ordinal))
+        {
+            var json = msg["ACTOR_COMPONENTS:".Length..];
+            EditorLog.Write($"[Runtime→Editor] ACTOR_COMPONENTS ({json.Length} chars)");
+            ActorComponentsReceived?.Invoke(json);
+        }
         else if (msg == "SCENE_LOADED")
         {
             EditorLog.Write("[Runtime→Editor] SCENE_LOADED");
@@ -481,6 +499,22 @@ public sealed class RuntimeManager : IDisposable
         else if (msg == "SCENE_MODIFIED")
         {
             SceneModified?.Invoke();
+        }
+        else if (msg == "ACTOR_EDIT_STARTED")
+        {
+            EditorLog.Write("[Runtime→Editor] ACTOR_EDIT_STARTED");
+            ActorEditStarted?.Invoke();
+        }
+        else if (msg == "ACTOR_EDIT_ENDED")
+        {
+            EditorLog.Write("[Runtime→Editor] ACTOR_EDIT_ENDED");
+            ActorEditEnded?.Invoke();
+        }
+        else if (msg.StartsWith("WORLD_LINE_INFO:", StringComparison.Ordinal))
+        {
+            var info = msg["WORLD_LINE_INFO:".Length..];
+            EditorLog.Write($"[WorldLine] {info}");
+            WorldLineInfoReceived?.Invoke(info);
         }
         else if (msg.StartsWith("LOAD_ERROR:", StringComparison.Ordinal))
         {

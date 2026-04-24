@@ -360,7 +360,7 @@ impl<'r> RenderFrame<'r> {
     /// クリア付きのメインレンダーパスを開始する。
     ///
     /// 返値のレンダーパスをドロップしてから `finish()` を呼ぶこと。
-    pub fn begin_render_pass<'f>(&'f mut self) -> wgpu::RenderPass<'f>
+    pub fn begin_render_pass<'f>(&'f mut self, clear_color: wgpu::Color) -> wgpu::RenderPass<'f>
     where
         'r: 'f,
     {
@@ -370,7 +370,7 @@ impl<'r> RenderFrame<'r> {
                 view:           &self.color_view,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    load:  wgpu::LoadOp::Clear(wgpu::Color { r: 0.1, g: 0.1, b: 0.1, a: 1.0 }),
+                    load:  wgpu::LoadOp::Clear(clear_color),
                     store: wgpu::StoreOp::Store,
                 },
             })],

@@ -12,6 +12,7 @@
 
 pub mod atlas;
 pub mod axis_gizmo;
+pub mod icon_overlay;
 pub mod pipeline;
 pub mod rasterizer;
 

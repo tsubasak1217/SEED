@@ -48,7 +48,7 @@ pub struct GroupMeta {
 //  ModelComponentData — シリアライズ用
 // ============================================================
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct ModelComponentData {
     pub model_path: String,
     pub instances:  Vec<[[f32; 4]; 4]>,
@@ -66,9 +66,10 @@ pub struct ModelComponentData {
 
 pub struct ModelComponent {
     pub source_path:     String,
-    pub model:           Model,
-    pub gpu_model:       GpuModel,
-    pub instanced_batch: InstancedModelBatch,
+    /// モデルが未設定の場合は None（空コンポーネント状態）
+    pub model:           Option<Model>,
+    pub gpu_model:       Option<GpuModel>,
+    pub instanced_batch: Option<InstancedModelBatch>,
     pub instance_mats:   Vec<[[f32; 4]; 4]>,
     pub instance_meta:   Vec<InstanceMeta>,
     pub group_meta:      Vec<GroupMeta>,
@@ -76,6 +77,37 @@ pub struct ModelComponent {
 }
 
 impl ModelComponent {
+    /// モデルが未設定の空コンポーネントを作成する。
+    pub fn empty() -> Self {
+        Self {
+            source_path:     String::new(),
+            model:           None,
+            gpu_model:       None,
+            instanced_batch: None,
+            instance_mats:   Vec::new(),
+            instance_meta:   Vec::new(),
+            group_meta:      Vec::new(),
+            next_group_id:   GROUP_ID_BASE,
+        }
+    }
+
+    pub fn is_loaded(&self) -> bool { self.model.is_some() }
+
+    pub fn mark_batch_dirty(&mut self) {
+        if let Some(b) = &mut self.instanced_batch { b.mark_dirty(); }
+    }
+
+    pub fn set_batch_anim_seeds(&mut self, seeds: &[u32]) {
+        if let Some(b) = &mut self.instanced_batch { b.set_anim_seeds(seeds); }
+    }
+
+    pub fn rendering_refs(&self) -> Option<(&GpuModel, &InstancedModelBatch)> {
+        match (&self.gpu_model, &self.instanced_batch) {
+            (Some(gpu), Some(batch)) => Some((gpu, batch)),
+            _ => None,
+        }
+    }
+
     pub fn children_of(&self, idx: u32) -> Vec<u32> {
         self.instance_meta.iter().enumerate()
             .filter(|(_, m)| m.parent == Some(idx))

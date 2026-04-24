@@ -1,10 +1,12 @@
 using System;
 using System.Globalization;
+using System.Linq;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using Microsoft.Win32;
 using SEEDEditor.Runtime;
 
 namespace SEEDEditor.Panels;
@@ -13,9 +15,15 @@ public partial class InspectorPanel : UserControl
 {
     // ── Runtime connection ────────────────────────────────────
     private RuntimeManager? _runtime;
-    private int             _currentId = -1;
+    private int             _currentActorId = -1;
 
-    // ── Transform fields (cached for SET_TRANSFORM) ──────────
+    // ── Mode ─────────────────────────────────────────────────
+    private bool     _isActorEditMode    = false;
+    private int      _selectedSlotIdx    = -1;   // 選択中のコンポーネントスロット
+    private int      _componentSlotCount = 0;
+    private SlotInfo? _copiedSlot        = null;  // Ctrl+C でコピーしたスロット
+
+    // ── Transform fields ─────────────────────────────────────
     private TextBox? _tbPx, _tbPy, _tbPz;
     private TextBox? _tbEx, _tbEy, _tbEz;
     private TextBox? _tbSx, _tbSy, _tbSz;
@@ -25,70 +33,127 @@ public partial class InspectorPanel : UserControl
         InitializeComponent();
     }
 
-    // ── Runtime binding ──────────────────────────────────────
+    // ── Events ───────────────────────────────────────────────
 
-    /// <summary>インスペクターでトランスフォームが確定したとき発火する（dirty 検知用）。</summary>
     public event Action? TransformCommitted;
+
+    // ── Runtime binding ──────────────────────────────────────
 
     public void SetRuntime(RuntimeManager runtime)
     {
         if (_runtime is not null)
         {
-            _runtime.SelectionChanged  -= OnSelectionChanged;
-            _runtime.ActorDataReceived -= OnActorDataReceived;
+            _runtime.SelectionChanged       -= OnSelectionChanged;
+            _runtime.ActorDataReceived      -= OnActorDataReceived;
+            _runtime.ActorComponentsReceived -= OnActorComponentsReceived;
         }
         _runtime = runtime;
-        _runtime.SelectionChanged  += OnSelectionChanged;
-        _runtime.ActorDataReceived += OnActorDataReceived;
+        _runtime.SelectionChanged       += OnSelectionChanged;
+        _runtime.ActorDataReceived      += OnActorDataReceived;
+        _runtime.ActorComponentsReceived += OnActorComponentsReceived;
+    }
+
+    public void SetActorEditMode(bool isActorMode)
+    {
+        _isActorEditMode = isActorMode;
+        ShowNoSelection();
+    }
+
+    /// <summary>HierarchyPanel からアクター編集モードのアクター選択を受け取る。</summary>
+    public void SelectActor(int dfsId)
+    {
+        if (!_isActorEditMode) return;
+        _currentActorId = dfsId;
+        ActorNameBlock.Text         = $"Actor #{dfsId}";
+        ActorModelBlock.Visibility  = Visibility.Collapsed;
+        _selectedSlotIdx            = -1;
+        ComponentListStack.Children.Clear();
+        BasicInfoStack.Children.Clear();
+        ComponentPropsStack.Children.Clear();
+        CompInfoScroll.Visibility           = Visibility.Collapsed;
+        NoComponentSelectedBlock.Visibility = Visibility.Visible;
+        ClearTransformRefs();
+        ActorEditGrid.Visibility    = Visibility.Visible;
+        ComponentScroll.Visibility  = Visibility.Collapsed;
+        NoSelectionBlock.Visibility = Visibility.Collapsed;
+        _runtime?.SendToRuntime($"GET_ACTOR_COMPONENTS:{dfsId}");
     }
 
     // ── Runtime events ───────────────────────────────────────
 
     private void OnSelectionChanged(int id)
     {
+        // アクター編集モードではランタイムからの選択変更を無視する
+        // （アクター選択は HierarchyPanel.ActorDfsSelected → SelectActor() 経由で行う）
+        if (_isActorEditMode) return;
+
         Dispatcher.InvokeAsync(() =>
         {
-            _currentId = id;
+            _currentActorId = id;
             if (id < 0)
             {
                 ShowNoSelection();
+                return;
             }
-            else
-            {
-                ActorNameBlock.Text = $"Actor #{id}";
-                ActorModelBlock.Visibility = Visibility.Collapsed;
-                ComponentStack.Children.Clear();
-                ComponentScroll.Visibility  = Visibility.Visible;
-                NoSelectionBlock.Visibility = Visibility.Collapsed;
-                _runtime?.SendToRuntime($"GET_ACTOR:{id}");
-            }
+
+            ActorNameBlock.Text         = $"Actor #{id}";
+            ActorModelBlock.Visibility  = Visibility.Collapsed;
+            ComponentStack.Children.Clear();
+            ComponentScroll.Visibility  = Visibility.Visible;
+            ActorEditGrid.Visibility    = Visibility.Collapsed;
+            NoSelectionBlock.Visibility = Visibility.Collapsed;
+            _runtime?.SendToRuntime($"GET_ACTOR:{id}");
         });
     }
 
     private void OnActorDataReceived(string json)
     {
+        if (_isActorEditMode) return;
         Dispatcher.InvokeAsync(() =>
         {
-            try { BuildInspector(json); }
+            try { BuildSceneInspector(json); }
             catch (Exception ex) { EditorLog.Write($"InspectorPanel: JSON parse error: {ex.Message}"); }
         });
     }
 
-    // ── UI building ──────────────────────────────────────────
+    private void OnActorComponentsReceived(string json)
+    {
+        if (!_isActorEditMode) return;
+        Dispatcher.InvokeAsync(() =>
+        {
+            try { BuildActorComponentList(json); }
+            catch (Exception ex) { EditorLog.Write($"InspectorPanel: ACTOR_COMPONENTS parse error: {ex.Message}"); }
+        });
+    }
+
+    // ── No selection ─────────────────────────────────────────
 
     private void ShowNoSelection()
     {
         ActorNameBlock.Text         = "選択なし";
         ActorModelBlock.Visibility  = Visibility.Collapsed;
         ComponentScroll.Visibility  = Visibility.Collapsed;
+        ActorEditGrid.Visibility    = Visibility.Collapsed;
         NoSelectionBlock.Visibility = Visibility.Visible;
         ComponentStack.Children.Clear();
+        ComponentListStack.Children.Clear();
+        BasicInfoStack.Children.Clear();
+        ComponentPropsStack.Children.Clear();
+        CompInfoScroll.Visibility         = Visibility.Collapsed;
+        NoComponentSelectedBlock.Visibility = Visibility.Visible;
+        ClearTransformRefs();
+    }
+
+    private void ClearTransformRefs()
+    {
         _tbPx = _tbPy = _tbPz = null;
         _tbEx = _tbEy = _tbEz = null;
         _tbSx = _tbSy = _tbSz = null;
     }
 
-    private void BuildInspector(string json)
+    // ── Scene mode inspector ─────────────────────────────────
+
+    private void BuildSceneInspector(string json)
     {
         using var doc  = JsonDocument.Parse(json);
         var root = doc.RootElement;
@@ -96,7 +161,7 @@ public partial class InspectorPanel : UserControl
         var name      = root.TryGetProperty("name",       out var np) ? np.GetString() ?? "" : "";
         var modelPath = root.TryGetProperty("model_path", out var mp) ? mp.GetString() ?? "" : "";
 
-        ActorNameBlock.Text = string.IsNullOrEmpty(name) ? $"Actor #{_currentId}" : name;
+        ActorNameBlock.Text = string.IsNullOrEmpty(name) ? $"Actor #{_currentActorId}" : name;
         if (!string.IsNullOrEmpty(modelPath))
         {
             ActorModelBlock.Text       = System.IO.Path.GetFileName(modelPath);
@@ -104,8 +169,8 @@ public partial class InspectorPanel : UserControl
         }
 
         ComponentStack.Children.Clear();
+        ClearTransformRefs();
 
-        // ── Transform section ──
         if (root.TryGetProperty("transform", out var tf))
         {
             float px = Fp(tf, "px"), py = Fp(tf, "py"), pz = Fp(tf, "pz");
@@ -114,17 +179,15 @@ public partial class InspectorPanel : UserControl
 
             var section = BuildSection("Transform");
             var grid = BuildXYZGrid();
-            grid.Tag = "transform";
 
-            (_tbPx, _tbPy, _tbPz) = AddXYZRow(grid, 0, "位置",    px, py, pz, "#E06C75", "#98C379", "#61AFEF", dragSpeed: 0.1);
-            (_tbEx, _tbEy, _tbEz) = AddXYZRow(grid, 1, "回転",    ex, ey, ez, "#E06C75", "#98C379", "#61AFEF", dragSpeed: 1.0);
-            (_tbSx, _tbSy, _tbSz) = AddXYZRow(grid, 2, "スケール", sx, sy, sz, "#E06C75", "#98C379", "#61AFEF", dragSpeed: 0.01);
+            (_tbPx, _tbPy, _tbPz) = AddXYZRow(grid, 0, "位置",    px, py, pz, "#E06C75", "#98C379", "#61AFEF", 0.1);
+            (_tbEx, _tbEy, _tbEz) = AddXYZRow(grid, 1, "回転",    ex, ey, ez, "#E06C75", "#98C379", "#61AFEF", 1.0);
+            (_tbSx, _tbSy, _tbSz) = AddXYZRow(grid, 2, "スケール", sx, sy, sz, "#E06C75", "#98C379", "#61AFEF", 0.01);
 
             ((StackPanel)section.Child).Children.Add(grid);
             ComponentStack.Children.Add(section);
         }
 
-        // ── Model section ──
         if (!string.IsNullOrEmpty(modelPath))
         {
             var section = BuildSection("Model");
@@ -135,6 +198,477 @@ public partial class InspectorPanel : UserControl
 
         ComponentScroll.Visibility  = Visibility.Visible;
         NoSelectionBlock.Visibility = Visibility.Collapsed;
+    }
+
+    // ── Actor edit mode: component list ──────────────────────
+
+    private record SlotInfo(int SlotIdx, string Name, string TypeId, string ModelPath);
+    private List<SlotInfo> _slotInfos = new();
+
+    private void BuildActorComponentList(string json)
+    {
+        using var doc  = JsonDocument.Parse(json);
+        var root = doc.RootElement;
+
+        var name = root.TryGetProperty("name", out var np) ? np.GetString() ?? "" : "";
+        ActorNameBlock.Text = string.IsNullOrEmpty(name) ? $"Actor #{_currentActorId}" : name;
+
+        ComponentListStack.Children.Clear();
+        ClearTransformRefs();
+        _slotInfos.Clear();
+
+        if (!root.TryGetProperty("components", out var comps)) return;
+
+        _componentSlotCount = comps.GetArrayLength();
+        var prevSlot = _selectedSlotIdx;
+        _selectedSlotIdx = -1;
+
+        foreach (var comp in comps.EnumerateArray())
+        {
+            var slotIdx   = comp.TryGetProperty("slot",       out var si) ? si.GetInt32()    : 0;
+            var compName  = comp.TryGetProperty("name",       out var cn) ? cn.GetString() ?? "" : "";
+            var compType  = comp.TryGetProperty("type",       out var ct) ? ct.GetString() ?? "" : "";
+            var modelPath = comp.TryGetProperty("model_path", out var mp) ? mp.GetString() ?? "" : "";
+
+            var info = new SlotInfo(slotIdx, compName, compType, modelPath);
+            _slotInfos.Add(info);
+            ComponentListStack.Children.Add(BuildComponentChip(info.SlotIdx, info.Name, info.TypeId));
+
+            if (slotIdx == prevSlot) _selectedSlotIdx = slotIdx;
+        }
+
+        RefreshChipSelection();
+        RebuildPropsPane(root);
+    }
+
+    private void RebuildPropsPane(JsonElement root)
+    {
+        BasicInfoStack.Children.Clear();
+        ComponentPropsStack.Children.Clear();
+        ClearTransformRefs();
+
+        // [基本情報] タブ: Transform セクション
+        if (root.TryGetProperty("transform", out var tf))
+        {
+            float px = Fp(tf, "px"), py = Fp(tf, "py"), pz = Fp(tf, "pz");
+            float ex = Fp(tf, "ex"), ey = Fp(tf, "ey"), ez = Fp(tf, "ez");
+            float sx = Fp(tf, "sx"), sy = Fp(tf, "sy"), sz = Fp(tf, "sz");
+
+            var section = BuildSection("Transform");
+            var grid = BuildXYZGrid();
+            (_tbPx, _tbPy, _tbPz) = AddXYZRow(grid, 0, "位置",    px, py, pz, "#E06C75", "#98C379", "#61AFEF", 0.1);
+            (_tbEx, _tbEy, _tbEz) = AddXYZRow(grid, 1, "回転",    ex, ey, ez, "#E06C75", "#98C379", "#61AFEF", 1.0);
+            (_tbSx, _tbSy, _tbSz) = AddXYZRow(grid, 2, "スケール", sx, sy, sz, "#E06C75", "#98C379", "#61AFEF", 0.01);
+            ((StackPanel)section.Child).Children.Add(grid);
+            BasicInfoStack.Children.Add(section);
+        }
+
+        // [コンポーネント情報] タブ: 選択中スロットのプロパティ
+        if (_selectedSlotIdx >= 0)
+        {
+            var info = _slotInfos.FirstOrDefault(s => s.SlotIdx == _selectedSlotIdx);
+            if (info != null)
+            {
+                CompInfoScroll.Visibility           = Visibility.Visible;
+                NoComponentSelectedBlock.Visibility = Visibility.Collapsed;
+                BuildSlotProps(info);
+                return;
+            }
+        }
+        CompInfoScroll.Visibility           = Visibility.Collapsed;
+        NoComponentSelectedBlock.Visibility = Visibility.Visible;
+    }
+
+    private void BuildSlotProps(SlotInfo info)
+    {
+        if (info.TypeId == "ModelComponent")
+        {
+            var section = BuildSection(info.Name + " (ModelComponent)");
+            var sp = (StackPanel)section.Child;
+            sp.Children.Add(BuildModelPathRow(info));
+            ComponentPropsStack.Children.Add(section);
+        }
+    }
+
+    private UIElement BuildModelPathRow(SlotInfo info)
+    {
+        var hasPath = !string.IsNullOrEmpty(info.ModelPath);
+        var display = hasPath ? System.IO.Path.GetFileName(info.ModelPath) : "（未設定）";
+
+        var grid = new Grid { Margin = new Thickness(0, 2, 0, 2) };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(48) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+        var lbl = new TextBlock
+        {
+            Text              = "モデル",
+            Foreground        = new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88)),
+            FontSize          = 11,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+
+        // ドロップ可能なパス表示エリア
+        var pathBox = new Border
+        {
+            Background      = new SolidColorBrush(Color.FromRgb(0x1A, 0x1A, 0x1A)),
+            BorderBrush     = hasPath
+                                ? new SolidColorBrush(Color.FromRgb(0x3F, 0x3F, 0x46))
+                                : new SolidColorBrush(Color.FromRgb(0x55, 0x44, 0x22)),
+            BorderThickness = new Thickness(1),
+            Padding         = new Thickness(4, 2, 4, 2),
+            CornerRadius    = new CornerRadius(2),
+            Margin          = new Thickness(2, 0, 2, 0),
+            AllowDrop       = true,
+            ToolTip         = hasPath ? info.ModelPath : "アセットフォルダからドロップ",
+        };
+
+        var pathText = new TextBlock
+        {
+            Text          = display,
+            Foreground    = hasPath
+                              ? new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC))
+                              : new SolidColorBrush(Color.FromRgb(0x88, 0x66, 0x44)),
+            FontSize      = 11,
+            TextTrimming  = TextTrimming.CharacterEllipsis,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        pathBox.Child = pathText;
+
+        pathBox.DragEnter += (_, e) =>
+        {
+            if (IsSupportedFileDrop(e)) e.Effects = DragDropEffects.Copy;
+            else e.Effects = DragDropEffects.None;
+            e.Handled = true;
+        };
+        pathBox.DragOver += (_, e) =>
+        {
+            if (IsSupportedFileDrop(e)) e.Effects = DragDropEffects.Copy;
+            else e.Effects = DragDropEffects.None;
+            e.Handled = true;
+        };
+        pathBox.Drop += (_, e) =>
+        {
+            var path = ExtractModelPath(e);
+            if (path != null) SetModelPath(info.SlotIdx, path);
+            e.Handled = true;
+        };
+
+        var browseBtn = new Button
+        {
+            Content         = "参照",
+            Background      = new SolidColorBrush(Color.FromRgb(0x33, 0x33, 0x33)),
+            Foreground      = new SolidColorBrush(Color.FromRgb(0xBB, 0xBB, 0xBB)),
+            BorderBrush     = new SolidColorBrush(Color.FromRgb(0x44, 0x44, 0x44)),
+            BorderThickness = new Thickness(1),
+            FontSize        = 10,
+            Padding         = new Thickness(6, 2, 6, 2),
+            Cursor          = Cursors.Hand,
+            VerticalAlignment = VerticalAlignment.Center,
+            Template        = BuildSimpleButtonTemplate(),
+        };
+        browseBtn.Click += (_, _) =>
+        {
+            var dlg = new OpenFileDialog
+            {
+                Title  = "モデルファイルを選択",
+                Filter = "3D モデル|*.glb;*.gltf;*.obj|すべてのファイル|*.*",
+            };
+            if (dlg.ShowDialog(Window.GetWindow(this)) == true)
+                SetModelPath(info.SlotIdx, dlg.FileName);
+        };
+
+        Grid.SetColumn(lbl,     0); grid.Children.Add(lbl);
+        Grid.SetColumn(pathBox, 1); grid.Children.Add(pathBox);
+        Grid.SetColumn(browseBtn, 2); grid.Children.Add(browseBtn);
+        return grid;
+    }
+
+    private void SetModelPath(int slotIdx, string path)
+    {
+        if (_currentActorId < 0) return;
+        _runtime?.SendToRuntime($"SET_MODEL_PATH:{_currentActorId},{slotIdx},{path}");
+    }
+
+    private static bool IsSupportedFileDrop(DragEventArgs e)
+    {
+        if (e.Data.GetDataPresent("SEEDProjectPaths") &&
+            e.Data.GetData("SEEDProjectPaths") is List<string> paths &&
+            paths.Count == 1)
+        {
+            var ext = System.IO.Path.GetExtension(paths[0]).ToLowerInvariant();
+            return ext is ".glb" or ".gltf" or ".obj";
+        }
+        if (e.Data.GetDataPresent(DataFormats.FileDrop) &&
+            e.Data.GetData(DataFormats.FileDrop) is string[] files &&
+            files.Length == 1)
+        {
+            var ext = System.IO.Path.GetExtension(files[0]).ToLowerInvariant();
+            return ext is ".glb" or ".gltf" or ".obj";
+        }
+        return false;
+    }
+
+    private static string? ExtractModelPath(DragEventArgs e)
+    {
+        if (e.Data.GetDataPresent("SEEDProjectPaths") &&
+            e.Data.GetData("SEEDProjectPaths") is List<string> paths &&
+            paths.Count == 1)
+            return paths[0];
+        if (e.Data.GetDataPresent(DataFormats.FileDrop) &&
+            e.Data.GetData(DataFormats.FileDrop) is string[] files &&
+            files.Length == 1)
+            return files[0];
+        return null;
+    }
+
+    private static ControlTemplate BuildSimpleButtonTemplate()
+    {
+        var t = new ControlTemplate(typeof(Button));
+        var bd = new FrameworkElementFactory(typeof(Border));
+        bd.SetBinding(Border.BackgroundProperty,       new System.Windows.Data.Binding("Background") { RelativeSource = new System.Windows.Data.RelativeSource(System.Windows.Data.RelativeSourceMode.TemplatedParent) });
+        bd.SetBinding(Border.BorderBrushProperty,     new System.Windows.Data.Binding("BorderBrush") { RelativeSource = new System.Windows.Data.RelativeSource(System.Windows.Data.RelativeSourceMode.TemplatedParent) });
+        bd.SetBinding(Border.BorderThicknessProperty, new System.Windows.Data.Binding("BorderThickness") { RelativeSource = new System.Windows.Data.RelativeSource(System.Windows.Data.RelativeSourceMode.TemplatedParent) });
+        bd.SetValue(Border.CornerRadiusProperty, new CornerRadius(2));
+        var cp = new FrameworkElementFactory(typeof(ContentPresenter));
+        cp.SetValue(ContentPresenter.HorizontalAlignmentProperty, HorizontalAlignment.Center);
+        cp.SetValue(ContentPresenter.VerticalAlignmentProperty, VerticalAlignment.Center);
+        bd.AppendChild(cp);
+        t.VisualTree = bd;
+        return t;
+    }
+
+    private Border BuildComponentChip(int slotIdx, string name, string typeName)
+    {
+        var isSelected = slotIdx == _selectedSlotIdx;
+
+        var chip = new Border
+        {
+            Background      = isSelected
+                                ? new SolidColorBrush(Color.FromRgb(0x1A, 0x2A, 0x3A))
+                                : new SolidColorBrush(Color.FromRgb(0x25, 0x25, 0x25)),
+            BorderBrush     = isSelected
+                                ? new SolidColorBrush(Color.FromRgb(0x33, 0x99, 0xFF))
+                                : new SolidColorBrush(Color.FromRgb(0x3F, 0x3F, 0x46)),
+            BorderThickness = new Thickness(1),
+            CornerRadius    = new CornerRadius(3),
+            Margin          = new Thickness(4, 2, 4, 2),
+            Padding         = new Thickness(6, 4, 6, 4),
+            Cursor          = Cursors.Hand,
+            Tag             = slotIdx,
+        };
+
+        var grid = new Grid();
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+        var typeIcon = new TextBlock
+        {
+            Text              = typeName == "ModelComponent" ? "◈" : "⬡",
+            Foreground        = new SolidColorBrush(Color.FromRgb(0x55, 0xAA, 0xFF)),
+            FontSize          = 10,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin            = new Thickness(0, 0, 4, 0),
+        };
+
+        var nameBlock = new TextBlock
+        {
+            Text              = name,
+            Foreground        = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)),
+            FontSize          = 12,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+
+        var innerStack = new StackPanel { Orientation = Orientation.Horizontal };
+        innerStack.Children.Add(typeIcon);
+        innerStack.Children.Add(nameBlock);
+        Grid.SetColumn(innerStack, 0);
+        grid.Children.Add(innerStack);
+
+        var removeBtn = new TextBlock
+        {
+            Text              = "✕",
+            Foreground        = new SolidColorBrush(Color.FromRgb(0x66, 0x66, 0x66)),
+            FontSize          = 9,
+            VerticalAlignment = VerticalAlignment.Center,
+            Cursor            = Cursors.Hand,
+            Padding           = new Thickness(4, 2, 0, 2),
+            Tag               = slotIdx,
+        };
+        removeBtn.MouseEnter += (_, _) =>
+            removeBtn.Foreground = new SolidColorBrush(Color.FromRgb(0xFF, 0x66, 0x66));
+        removeBtn.MouseLeave += (_, _) =>
+            removeBtn.Foreground = new SolidColorBrush(Color.FromRgb(0x66, 0x66, 0x66));
+        removeBtn.MouseLeftButtonDown += (_, e) =>
+        {
+            e.Handled = true;
+            if (_currentActorId >= 0)
+                _runtime?.SendToRuntime($"REMOVE_COMPONENT:{_currentActorId},{slotIdx}");
+        };
+        Grid.SetColumn(removeBtn, 1);
+        grid.Children.Add(removeBtn);
+
+        chip.Child = grid;
+
+        chip.MouseLeftButtonDown += (_, _) =>
+        {
+            _selectedSlotIdx = slotIdx;
+            RefreshChipSelection();
+        };
+
+        chip.MouseRightButtonDown += (_, e) =>
+        {
+            _selectedSlotIdx = slotIdx;
+            RefreshChipSelection();
+            ShowComponentChipContextMenu(chip, slotIdx, name);
+            e.Handled = true;
+        };
+
+        return chip;
+    }
+
+    private void RefreshChipSelection()
+    {
+        foreach (var child in ComponentListStack.Children)
+        {
+            if (child is Border b && b.Tag is int idx)
+            {
+                bool sel = idx == _selectedSlotIdx;
+                b.Background  = sel
+                    ? new SolidColorBrush(Color.FromRgb(0x1A, 0x2A, 0x3A))
+                    : new SolidColorBrush(Color.FromRgb(0x25, 0x25, 0x25));
+                b.BorderBrush = sel
+                    ? new SolidColorBrush(Color.FromRgb(0x33, 0x99, 0xFF))
+                    : new SolidColorBrush(Color.FromRgb(0x3F, 0x3F, 0x46));
+            }
+        }
+    }
+
+    private void ShowComponentChipContextMenu(UIElement target, int slotIdx, string currentName)
+    {
+        var menu = new ContextMenu
+        {
+            Background  = new SolidColorBrush(Color.FromRgb(0x25, 0x25, 0x25)),
+            BorderBrush = new SolidColorBrush(Color.FromRgb(0x44, 0x44, 0x44)),
+        };
+
+        MenuItem MakeItem(string header, SolidColorBrush fg, RoutedEventHandler handler)
+        {
+            var item = new MenuItem
+            {
+                Header     = header,
+                Background = new SolidColorBrush(Color.FromRgb(0x25, 0x25, 0x25)),
+                Foreground = fg,
+                FontSize   = 11,
+            };
+            item.Click += handler;
+            return item;
+        }
+
+        menu.Items.Add(MakeItem("リネーム", new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)),
+            (_, _) => StartComponentRename(slotIdx, currentName)));
+        menu.Items.Add(MakeItem("複製", new SolidColorBrush(Color.FromRgb(0xAA, 0xDD, 0xAA)),
+            (_, _) =>
+            {
+                if (_currentActorId >= 0)
+                    _runtime?.SendToRuntime($"DUPLICATE_COMPONENT:{_currentActorId},{slotIdx}");
+            }));
+        menu.Items.Add(new Separator());
+        menu.Items.Add(MakeItem("削除", new SolidColorBrush(Color.FromRgb(0xFF, 0x66, 0x66)),
+            (_, _) =>
+            {
+                if (_currentActorId >= 0)
+                    _runtime?.SendToRuntime($"REMOVE_COMPONENT:{_currentActorId},{slotIdx}");
+            }));
+
+        menu.PlacementTarget = target;
+        menu.Placement       = System.Windows.Controls.Primitives.PlacementMode.MousePoint;
+        menu.IsOpen          = true;
+    }
+
+    private void StartComponentRename(int slotIdx, string currentName)
+    {
+        // 該当チップを TextBox に差し替え
+        foreach (var child in ComponentListStack.Children)
+        {
+            if (child is not Border b || b.Tag is not int idx || idx != slotIdx) continue;
+
+            var committed = false;
+            var tb = new TextBox
+            {
+                Text              = currentName,
+                Background        = new SolidColorBrush(Color.FromRgb(0x2D, 0x2D, 0x2D)),
+                Foreground        = Brushes.White,
+                CaretBrush        = Brushes.White,
+                BorderBrush       = new SolidColorBrush(Color.FromRgb(0x33, 0x99, 0xFF)),
+                BorderThickness   = new Thickness(1),
+                Padding           = new Thickness(4, 3, 4, 3),
+                FontSize          = 12,
+                Margin            = new Thickness(4, 2, 4, 2),
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+
+            void Commit()
+            {
+                if (committed) return;
+                committed = true;
+                var newName = tb.Text.Trim();
+                if (!string.IsNullOrEmpty(newName) && newName != currentName && _currentActorId >= 0)
+                    _runtime?.SendToRuntime($"RENAME_COMPONENT_SLOT:{_currentActorId},{slotIdx},{newName}");
+                // ランタイムが ACTOR_COMPONENTS を再送してくれるので UI は自動更新される
+            }
+
+            tb.PreviewKeyDown += (_, e) =>
+            {
+                if (e.Key is Key.Return or Key.Enter) { Commit(); e.Handled = true; }
+                else if (e.Key == Key.Escape)          { committed = true; /* キャンセル */ e.Handled = true;
+                    if (_currentActorId >= 0) _runtime?.SendToRuntime($"GET_ACTOR_COMPONENTS:{_currentActorId}"); }
+            };
+            tb.LostFocus += (_, _) => Commit();
+
+            var originalChild = b.Child;
+            b.Child = tb;
+            Dispatcher.BeginInvoke(() => { tb.Focus(); tb.SelectAll(); },
+                System.Windows.Threading.DispatcherPriority.Input);
+            return;
+        }
+    }
+
+    // ── Add Component (actor edit mode) ─────────────────────
+
+    private void OnAddComponentClicked(object sender, RoutedEventArgs e)
+    {
+        if (_runtime is null || _currentActorId < 0) return;
+        var win = new ComponentSelectorWindow(_runtime, _currentActorId)
+        {
+            Owner = Window.GetWindow(this),
+        };
+        win.ShowDialog();
+    }
+
+    // ── Component copy/paste (Ctrl+C / Ctrl+V) ───────────────
+
+    protected override void OnPreviewKeyDown(KeyEventArgs e)
+    {
+        base.OnPreviewKeyDown(e);
+        if (!_isActorEditMode || _currentActorId < 0) return;
+
+        if (e.Key == Key.C && (Keyboard.Modifiers & ModifierKeys.Control) != 0)
+        {
+            if (_selectedSlotIdx >= 0)
+            {
+                _copiedSlot = _slotInfos.FirstOrDefault(s => s.SlotIdx == _selectedSlotIdx);
+                e.Handled = true;
+            }
+        }
+        else if (e.Key == Key.V && (Keyboard.Modifiers & ModifierKeys.Control) != 0)
+        {
+            if (_copiedSlot != null)
+            {
+                _runtime?.SendToRuntime($"DUPLICATE_COMPONENT:{_currentActorId},{_copiedSlot.SlotIdx}");
+                e.Handled = true;
+            }
+        }
     }
 
     // ── Section / grid helpers ────────────────────────────────
@@ -154,17 +688,17 @@ public partial class InspectorPanel : UserControl
 
         return new Border
         {
-            Background      = new SolidColorBrush(Color.FromRgb(0x25, 0x25, 0x25)),
-            CornerRadius    = new CornerRadius(3),
-            Padding         = new Thickness(8, 6, 8, 6),
-            Margin          = new Thickness(4, 0, 4, 4),
-            Child           = sp,
+            Background   = new SolidColorBrush(Color.FromRgb(0x25, 0x25, 0x25)),
+            CornerRadius = new CornerRadius(3),
+            Padding      = new Thickness(8, 6, 8, 6),
+            Margin       = new Thickness(4, 0, 4, 4),
+            Child        = sp,
         };
     }
 
     private static Grid BuildXYZGrid()
     {
-        var grid = new Grid { Margin = new Thickness(0, 0, 0, 0) };
+        var grid = new Grid();
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(52) });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(14) });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
@@ -176,11 +710,10 @@ public partial class InspectorPanel : UserControl
     }
 
     private (TextBox x, TextBox y, TextBox z) AddXYZRow(
-        Grid grid, int row,
-        string label,
+        Grid grid, int row, string label,
         float vx, float vy, float vz,
         string colorX, string colorY, string colorZ,
-        double dragSpeed = 0.1)
+        double dragSpeed)
     {
         grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(24) });
 
@@ -191,8 +724,7 @@ public partial class InspectorPanel : UserControl
             FontSize          = 11,
             VerticalAlignment = VerticalAlignment.Center,
         };
-        Grid.SetRow(lbl, row); Grid.SetColumn(lbl, 0);
-        grid.Children.Add(lbl);
+        Grid.SetRow(lbl, row); Grid.SetColumn(lbl, 0); grid.Children.Add(lbl);
 
         var tbX = MakeAxisField(vx, colorX); Grid.SetRow(tbX, row); Grid.SetColumn(tbX, 2); grid.Children.Add(tbX);
         var tbY = MakeAxisField(vy, colorY); Grid.SetRow(tbY, row); Grid.SetColumn(tbY, 4); grid.Children.Add(tbY);
@@ -202,12 +734,8 @@ public partial class InspectorPanel : UserControl
         var lblY = MakeAxisLabel("Y", colorY, tbY, dragSpeed); Grid.SetRow(lblY, row); Grid.SetColumn(lblY, 3); grid.Children.Add(lblY);
         var lblZ = MakeAxisLabel("Z", colorZ, tbZ, dragSpeed); Grid.SetRow(lblZ, row); Grid.SetColumn(lblZ, 5); grid.Children.Add(lblZ);
 
-        tbX.KeyDown += OnFieldKeyDown;
-        tbY.KeyDown += OnFieldKeyDown;
-        tbZ.KeyDown += OnFieldKeyDown;
-        tbX.LostFocus += OnFieldLostFocus;
-        tbY.LostFocus += OnFieldLostFocus;
-        tbZ.LostFocus += OnFieldLostFocus;
+        tbX.KeyDown  += OnFieldKeyDown; tbY.KeyDown  += OnFieldKeyDown; tbZ.KeyDown  += OnFieldKeyDown;
+        tbX.LostFocus += OnFieldLostFocus; tbY.LostFocus += OnFieldLostFocus; tbZ.LostFocus += OnFieldLostFocus;
 
         return (tbX, tbY, tbZ);
     }
@@ -230,8 +758,7 @@ public partial class InspectorPanel : UserControl
 
         label.MouseLeftButtonDown += (_, e) =>
         {
-            if (float.TryParse(target.Text, NumberStyles.Float,
-                               CultureInfo.InvariantCulture, out var v))
+            if (float.TryParse(target.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var v))
             {
                 dragOriginX     = e.GetPosition(null).X;
                 dragOriginValue = v;
@@ -239,7 +766,6 @@ public partial class InspectorPanel : UserControl
             }
             e.Handled = true;
         };
-
         label.MouseMove += (_, e) =>
         {
             if (!label.IsMouseCaptured) return;
@@ -248,14 +774,11 @@ public partial class InspectorPanel : UserControl
             target.Text = Fmt(dragOriginValue + (float)(dx * speed));
             CommitTransform();
         };
-
         label.MouseLeftButtonUp += (_, e) =>
         {
-            if (label.IsMouseCaptured)
-                label.ReleaseMouseCapture();
+            if (label.IsMouseCaptured) label.ReleaseMouseCapture();
             e.Handled = true;
         };
-
         return label;
     }
 
@@ -281,22 +804,8 @@ public partial class InspectorPanel : UserControl
         var grid = new Grid { Margin = new Thickness(0, 2, 0, 2) };
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(60) });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-
-        var lbl = new TextBlock
-        {
-            Text              = label,
-            Foreground        = new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88)),
-            FontSize          = 11,
-            VerticalAlignment = VerticalAlignment.Center,
-        };
-        var val = new TextBlock
-        {
-            Text              = value,
-            Foreground        = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)),
-            FontSize          = 11,
-            VerticalAlignment = VerticalAlignment.Center,
-            TextTrimming      = TextTrimming.CharacterEllipsis,
-        };
+        var lbl = new TextBlock { Text = label, Foreground = new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88)), FontSize = 11, VerticalAlignment = VerticalAlignment.Center };
+        var val = new TextBlock { Text = value, Foreground = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)), FontSize = 11, VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis };
         Grid.SetColumn(lbl, 0); grid.Children.Add(lbl);
         Grid.SetColumn(val, 1); grid.Children.Add(val);
         return grid;
@@ -314,28 +823,34 @@ public partial class InspectorPanel : UserControl
         }
         else if (e.Key == Key.Escape)
         {
-            // Refresh from runtime to discard edit
-            if (_currentId >= 0) _runtime?.SendToRuntime($"GET_ACTOR:{_currentId}");
+            if (_isActorEditMode && _currentActorId >= 0)
+                _runtime?.SendToRuntime($"GET_ACTOR_COMPONENTS:{_currentActorId}");
+            else if (_currentActorId >= 0)
+                _runtime?.SendToRuntime($"GET_ACTOR:{_currentActorId}");
             e.Handled = true;
         }
     }
 
-    private void OnFieldLostFocus(object sender, RoutedEventArgs e)
-    {
-        CommitTransform();
-    }
+    private void OnFieldLostFocus(object sender, RoutedEventArgs e) => CommitTransform();
 
     private void CommitTransform()
     {
-        if (_currentId < 0) return;
-        if (_tbPx is null) return;
-
+        if (_currentActorId < 0 || _tbPx is null) return;
         if (!TryParseAll(out float px, out float py, out float pz,
                          out float ex, out float ey, out float ez,
                          out float sx, out float sy, out float sz)) return;
 
-        var msg = FormattableString.Invariant(
-            $"SET_TRANSFORM:{_currentId},{px},{py},{pz},{ex},{ey},{ez},{sx},{sy},{sz}");
+        string msg;
+        if (_isActorEditMode)
+        {
+            msg = FormattableString.Invariant(
+                $"SET_ACTOR_TRANSFORM:{_currentActorId},{px},{py},{pz},{ex},{ey},{ez},{sx},{sy},{sz}");
+        }
+        else
+        {
+            msg = FormattableString.Invariant(
+                $"SET_TRANSFORM:{_currentActorId},{px},{py},{pz},{ex},{ey},{ez},{sx},{sy},{sz}");
+        }
         _runtime?.SendToRuntime(msg);
         TransformCommitted?.Invoke();
     }
@@ -354,8 +869,7 @@ public partial class InspectorPanel : UserControl
     private static bool TryParse(TextBox? tb, out float value)
     {
         value = 0f;
-        return tb is not null &&
-               float.TryParse(tb.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out value);
+        return tb is not null && float.TryParse(tb.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out value);
     }
 
     // ── Helpers ──────────────────────────────────────────────

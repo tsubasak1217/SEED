@@ -86,6 +86,35 @@ pub enum IpcCommand {
     SetCameraTransform { px: f32, py: f32, pz: f32, yaw: f32, pitch: f32 },
     /// デバッグカメラ移動速度設定
     SetCameraSpeed(f32),
+    /// アクターファイルを指定世界線で開く（world_line,path の順でカンマ区切り）
+    OpenActor { path: String, world_line: u32 },
+    /// アクティブ世界線を切り替える（0=通常シーン）
+    SetActiveWorldLine(u32),
+    /// 指定世界線のアクターをシーンから除去する
+    RemoveWorldLine(u32),
+    /// アクターにコンポーネントを追加する
+    /// フォーマット: ADD_COMPONENT:{actor_dfs_id},{type},{name},{args}
+    AddComponent { actor_dfs_id: u32, component_type: String, slot_name: String, args: String },
+    /// アクターのコンポーネント一覧を要求する
+    GetActorComponents(u32),
+    /// 子アクターを追加する (world_line, parent_dfs_id=None はルート)
+    AddActor { world_line: u32, parent_dfs_id: Option<u32> },
+    /// アクターを削除する
+    RemoveActor(u32),
+    /// アクターをリネームする
+    RenameActor { dfs_id: u32, name: String },
+    /// コンポーネントスロットを削除する
+    RemoveComponentSlot { actor_dfs_id: u32, slot_idx: u32 },
+    /// コンポーネントスロットをリネームする
+    RenameComponentSlot { actor_dfs_id: u32, slot_idx: u32, name: String },
+    /// アクターのトランスフォームを設定する
+    SetActorTransform { dfs_id: u32, px: f32, py: f32, pz: f32, ex: f32, ey: f32, ez: f32, sx: f32, sy: f32, sz: f32 },
+    /// ModelComponent のモデルパスを後から設定する
+    /// フォーマット: SET_MODEL_PATH:{actor_dfs_id},{slot_idx},{path}
+    SetModelPath { actor_dfs_id: u32, slot_idx: u32, path: String },
+    /// コンポーネントスロットを複製する
+    /// フォーマット: DUPLICATE_COMPONENT:{actor_dfs_id},{slot_idx}
+    DuplicateComponent { actor_dfs_id: u32, slot_idx: u32 },
 }
 
 // ============================================================
@@ -296,6 +325,128 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                         s if s.starts_with("CAM_SPEED:") => {
                             s["CAM_SPEED:".len()..].parse::<f32>().ok()
                                 .map(IpcCommand::SetCameraSpeed)
+                        }
+                        s if s.starts_with("OPEN_ACTOR:") => {
+                            // フォーマット: "OPEN_ACTOR:<world_line>,<path>"
+                            let rest = &s["OPEN_ACTOR:".len()..];
+                            let mut it = rest.splitn(2, ',');
+                            if let (Some(wl_s), Some(path)) = (it.next(), it.next()) {
+                                wl_s.parse::<u32>().ok()
+                                    .map(|wl| IpcCommand::OpenActor { path: path.to_string(), world_line: wl })
+                            } else { None }
+                        }
+                        s if s.starts_with("SET_ACTIVE_WORLD_LINE:") => {
+                            s["SET_ACTIVE_WORLD_LINE:".len()..].parse::<u32>().ok()
+                                .map(IpcCommand::SetActiveWorldLine)
+                        }
+                        s if s.starts_with("REMOVE_WORLD_LINE:") => {
+                            s["REMOVE_WORLD_LINE:".len()..].parse::<u32>().ok()
+                                .map(IpcCommand::RemoveWorldLine)
+                        }
+                        s if s.starts_with("ADD_COMPONENT:") => {
+                            // ADD_COMPONENT:{dfs_id},{type},{name},{args}
+                            let rest = &s["ADD_COMPONENT:".len()..];
+                            let mut it = rest.splitn(4, ',');
+                            if let (Some(id_s), Some(comp_type), Some(name), Some(args)) =
+                                (it.next(), it.next(), it.next(), it.next())
+                            {
+                                id_s.parse::<u32>().ok().map(|actor_dfs_id| IpcCommand::AddComponent {
+                                    actor_dfs_id,
+                                    component_type: comp_type.to_string(),
+                                    slot_name:      name.to_string(),
+                                    args:           args.to_string(),
+                                })
+                            } else { None }
+                        }
+                        s if s.starts_with("GET_ACTOR_COMPONENTS:") => {
+                            s["GET_ACTOR_COMPONENTS:".len()..].parse::<u32>().ok()
+                                .map(IpcCommand::GetActorComponents)
+                        }
+                        s if s.starts_with("ADD_ACTOR:") => {
+                            // ADD_ACTOR:{world_line},{parent_dfs_id} (-1 = root)
+                            let rest = &s["ADD_ACTOR:".len()..];
+                            let mut it = rest.splitn(2, ',');
+                            if let (Some(wl_s), Some(p_s)) = (it.next(), it.next()) {
+                                if let Ok(wl) = wl_s.parse::<u32>() {
+                                    let parent = if p_s == "-1" { None }
+                                        else { p_s.parse::<u32>().ok() };
+                                    Some(IpcCommand::AddActor { world_line: wl, parent_dfs_id: parent })
+                                } else { None }
+                            } else { None }
+                        }
+                        s if s.starts_with("REMOVE_ACTOR:") => {
+                            s["REMOVE_ACTOR:".len()..].parse::<u32>().ok()
+                                .map(IpcCommand::RemoveActor)
+                        }
+                        s if s.starts_with("RENAME_ACTOR:") => {
+                            let rest = &s["RENAME_ACTOR:".len()..];
+                            let mut it = rest.splitn(2, ',');
+                            if let (Some(id_s), Some(name)) = (it.next(), it.next()) {
+                                id_s.parse::<u32>().ok().map(|dfs_id| IpcCommand::RenameActor {
+                                    dfs_id, name: name.to_string(),
+                                })
+                            } else { None }
+                        }
+                        s if s.starts_with("REMOVE_COMPONENT:") => {
+                            let rest = &s["REMOVE_COMPONENT:".len()..];
+                            let mut it = rest.splitn(2, ',');
+                            if let (Some(id_s), Some(slot_s)) = (it.next(), it.next()) {
+                                if let (Ok(a), Ok(sl)) = (id_s.parse::<u32>(), slot_s.parse::<u32>()) {
+                                    Some(IpcCommand::RemoveComponentSlot { actor_dfs_id: a, slot_idx: sl })
+                                } else { None }
+                            } else { None }
+                        }
+                        s if s.starts_with("RENAME_COMPONENT:") => {
+                            let rest = &s["RENAME_COMPONENT:".len()..];
+                            let mut it = rest.splitn(3, ',');
+                            if let (Some(id_s), Some(sl_s), Some(name)) = (it.next(), it.next(), it.next()) {
+                                if let (Ok(a), Ok(sl)) = (id_s.parse::<u32>(), sl_s.parse::<u32>()) {
+                                    Some(IpcCommand::RenameComponentSlot {
+                                        actor_dfs_id: a, slot_idx: sl, name: name.to_string(),
+                                    })
+                                } else { None }
+                            } else { None }
+                        }
+                        s if s.starts_with("SET_ACTOR_TRANSFORM:") => {
+                            let rest = &s["SET_ACTOR_TRANSFORM:".len()..];
+                            let parts: Vec<&str> = rest.split(',').collect();
+                            if parts.len() == 10 {
+                                if let Ok(dfs_id) = parts[0].parse::<u32>() {
+                                    let fs: Vec<f32> = parts[1..].iter()
+                                        .filter_map(|x| x.parse::<f32>().ok())
+                                        .collect();
+                                    if fs.len() == 9 {
+                                        Some(IpcCommand::SetActorTransform {
+                                            dfs_id,
+                                            px: fs[0], py: fs[1], pz: fs[2],
+                                            ex: fs[3], ey: fs[4], ez: fs[5],
+                                            sx: fs[6], sy: fs[7], sz: fs[8],
+                                        })
+                                    } else { None }
+                                } else { None }
+                            } else { None }
+                        }
+                        s if s.starts_with("SET_MODEL_PATH:") => {
+                            let rest = &s["SET_MODEL_PATH:".len()..];
+                            let mut parts = rest.splitn(3, ',');
+                            if let (Some(id_s), Some(sl_s), Some(path)) =
+                                (parts.next(), parts.next(), parts.next())
+                            {
+                                if let (Ok(a), Ok(sl)) = (id_s.parse::<u32>(), sl_s.parse::<u32>()) {
+                                    Some(IpcCommand::SetModelPath {
+                                        actor_dfs_id: a, slot_idx: sl, path: path.to_string(),
+                                    })
+                                } else { None }
+                            } else { None }
+                        }
+                        s if s.starts_with("DUPLICATE_COMPONENT:") => {
+                            let rest = &s["DUPLICATE_COMPONENT:".len()..];
+                            let mut it = rest.splitn(2, ',');
+                            if let (Some(id_s), Some(sl_s)) = (it.next(), it.next()) {
+                                if let (Ok(a), Ok(sl)) = (id_s.parse::<u32>(), sl_s.parse::<u32>()) {
+                                    Some(IpcCommand::DuplicateComponent { actor_dfs_id: a, slot_idx: sl })
+                                } else { None }
+                            } else { None }
                         }
                         _                    => None,
                     }

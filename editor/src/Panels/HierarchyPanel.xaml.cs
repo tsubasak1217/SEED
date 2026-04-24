@@ -62,6 +62,16 @@ public partial class HierarchyPanel : UserControl
     private HashSet<int> _selectedIds = new();
     private int          _anchorId    = -1;
 
+    // アクター編集モードで使用する仮想アクターノードの ID 下限値
+    // Rust 側の do_send_hierarchy と合わせること
+    private const int VirtualActorNodeIdBase = 999_000_000;
+
+    // アクター編集モード
+    private bool         _isActorEditMode          = false;
+    private uint         _activeWorldLine           = 0;
+    private bool         _pendingActorRenameAfterAdd = false;
+    private HashSet<int> _preAddNodeIds             = new();
+
     // 複数選択時の遅延デセレクト（クリックのみでデセレクト、ドラッグはキープ）
     private bool _pendingDeselect;
     private int  _pendingDeselectId = -1;
@@ -98,6 +108,32 @@ public partial class HierarchyPanel : UserControl
             CancelRenameTimer();
             StartRename(_selectedId);
         }
+    }
+
+    // ── アクター編集モード ────────────────────────────────────
+
+    /// <summary>アクター編集モードでアクターが選択されたときに発火する（DFS ID）。</summary>
+    public event Action<int>? ActorDfsSelected;
+
+    public void SetActorEditMode(bool isActorMode, uint worldLine = 0)
+    {
+        _isActorEditMode = isActorMode;
+        _activeWorldLine = worldLine;
+        ActorToolbar.Visibility = isActorMode ? Visibility.Visible : Visibility.Collapsed;
+        ActorToolbarRow.Height  = isActorMode ? new GridLength(28) : new GridLength(0);
+        SearchBarRow.Height     = isActorMode ? new GridLength(0)  : new GridLength(28);
+    }
+
+    private void OnAddActorClicked(object sender, RoutedEventArgs e)
+    {
+        if (_runtime is null) return;
+        var parentId = _isActorEditMode && _selectedId >= 0 ? _selectedId : -1;
+        if (_isActorEditMode)
+        {
+            _pendingActorRenameAfterAdd = true;
+            _preAddNodeIds = GetAllNodes(_roots).Select(n => n.Id).ToHashSet();
+        }
+        _runtime.SendToRuntime($"ADD_ACTOR:{_activeWorldLine},{parentId}");
     }
 
     // ── ランタイム接続 ────────────────────────────────────────
@@ -137,6 +173,23 @@ public partial class HierarchyPanel : UserControl
                 if (node != null)
                     Dispatcher.BeginInvoke(() => StartRename(node.Id), DispatcherPriority.Background);
             }
+
+            // アクター追加直後のリネーム
+            if (_pendingActorRenameAfterAdd && _isActorEditMode)
+            {
+                _pendingActorRenameAfterAdd = false;
+                var newNode = GetAllNodes(_roots).FirstOrDefault(n => !_preAddNodeIds.Contains(n.Id));
+                if (newNode != null)
+                {
+                    _selectedId = newNode.Id;
+                    _selectedIds.Clear();
+                    _selectedIds.Add(newNode.Id);
+                    SelectTreeItem(newNode.Id);
+                    ActorDfsSelected?.Invoke(newNode.Id);
+                    _runtime?.SendToRuntime($"SELECT:{999_000_000u + (uint)newNode.Id}");
+                    Dispatcher.BeginInvoke(() => StartRename(newNode.Id), DispatcherPriority.Background);
+                }
+            }
         });
     }
 
@@ -144,6 +197,14 @@ public partial class HierarchyPanel : UserControl
     {
         Dispatcher.BeginInvoke(() =>
         {
+            // アクター編集モードではランタイムからの SELECTED 信号を無視する
+            // (SELECT: を送っていないので誤デセレクトが発生しない)
+            if (_isActorEditMode) return;
+
+            // 仮想アクターノード選択中に SELECTED:-1 が来ても上書きしない
+            if (idx < 0 && _selectedId >= VirtualActorNodeIdBase)
+                return;
+
             _selectedId = idx;
             _selectedIds.Clear();
             if (idx >= 0)
@@ -308,9 +369,21 @@ public partial class HierarchyPanel : UserControl
     /// <summary>
     /// _selectedIds に含まれる非グループ ID を Rust へ送信する。
     /// 単一選択は SELECT:、複数選択は SELECT_MULTI:id1,id2,... を使う。
+    /// アクター編集モードでは全ノードをアクターとして扱う。
     /// </summary>
     private void SendSelectionToRuntime()
     {
+        if (_isActorEditMode)
+        {
+            if (_selectedId >= 0)
+            {
+                // 仮想 ID でアイコンオーバーレイを表示させる
+                _runtime?.SendToRuntime($"SELECT:{999_000_000u + (uint)_selectedId}");
+                ActorDfsSelected?.Invoke(_selectedId);
+            }
+            return;
+        }
+
         var ids = _selectedIds
             .Select(id => FindNode(_roots, id))
             .Where(n => n is { IsGroup: false })
@@ -410,18 +483,45 @@ public partial class HierarchyPanel : UserControl
     private ContextMenu BuildSelectedContextMenu()
     {
         var menu = new ContextMenu();
-        AddMenuItem(menu, "コピー",                 "Ctrl+C", OnHierarchyCopy);
-        AddMenuItem(menu, "削除",                   "Del / Esc",    OnHierarchyDelete);
-        menu.Items.Add(new Separator());
-        AddMenuItem(menu, "選択からグループを作成", null,     OnCreateGroupFromSelection);
+        if (_isActorEditMode)
+        {
+            AddMenuItem(menu, "子アクタを追加", null, OnAddChildActorMenu);
+            menu.Items.Add(new Separator());
+            AddMenuItem(menu, "削除", "Del", OnHierarchyDelete);
+        }
+        else
+        {
+            AddMenuItem(menu, "コピー",                 "Ctrl+C",    OnHierarchyCopy);
+            AddMenuItem(menu, "削除",                   "Del / Esc", OnHierarchyDelete);
+            menu.Items.Add(new Separator());
+            AddMenuItem(menu, "選択からグループを作成", null,        OnCreateGroupFromSelection);
+        }
         return menu;
     }
 
     private ContextMenu BuildEmptyContextMenu()
     {
         var menu = new ContextMenu();
-        AddMenuItem(menu, "グループフォルダを作成", null, OnCreateGroupMenu);
+        if (_isActorEditMode)
+        {
+            AddMenuItem(menu, "アクタを追加", null, OnAddRootActorMenu);
+        }
+        else
+        {
+            AddMenuItem(menu, "グループフォルダを作成", null, OnCreateGroupMenu);
+        }
         return menu;
+    }
+
+    private void OnAddChildActorMenu(object sender, RoutedEventArgs e)
+    {
+        if (_runtime is null || _rightClickedNode is null) return;
+        _runtime.SendToRuntime($"ADD_ACTOR:{_activeWorldLine},{_rightClickedNode.Id}");
+    }
+
+    private void OnAddRootActorMenu(object sender, RoutedEventArgs e)
+    {
+        _runtime?.SendToRuntime($"ADD_ACTOR:{_activeWorldLine},-1");
     }
 
     private void OnHierarchyCopy(object sender, RoutedEventArgs e)
@@ -429,9 +529,18 @@ public partial class HierarchyPanel : UserControl
 
     private void OnHierarchyDelete(object sender, RoutedEventArgs e)
     {
-        var ids = _selectedIds.ToList();
-        if (ids.Count == 0) return;
-        _runtime?.SendToRuntime($"DELETE_RECURSIVE:{string.Join(",", ids)}");
+        if (_isActorEditMode)
+        {
+            // アクター編集モードでは選択アクターを削除
+            if (_selectedId < 0) return;
+            _runtime?.SendToRuntime($"REMOVE_ACTOR:{_selectedId}");
+        }
+        else
+        {
+            var ids = _selectedIds.ToList();
+            if (ids.Count == 0) return;
+            _runtime?.SendToRuntime($"DELETE_RECURSIVE:{string.Join(",", ids)}");
+        }
     }
 
     private void OnCreateGroupFromSelection(object sender, RoutedEventArgs e)
@@ -696,6 +805,13 @@ public partial class HierarchyPanel : UserControl
         }
         else
         {
+            // アクター編集モードではルートへのドロップを禁止
+            if (_isActorEditMode)
+            {
+                e.Effects = DragDropEffects.None;
+                e.Handled = true;
+                return;
+            }
             _dropAsRoot              = true;
             DropIndicator.Margin     = new Thickness(0);
             DropIndicator.Visibility = Visibility.Visible;
@@ -729,6 +845,13 @@ public partial class HierarchyPanel : UserControl
             newParentId = -1;
         else
             return;
+
+        // アクター編集モードではパネル主（ルートアクター）の外に出さない
+        if (_isActorEditMode && newParentId == -1)
+        {
+            newParentId = _roots.Count > 0 ? _roots[0].Id : -1;
+            if (newParentId == -1) return;
+        }
 
         // 複数ノードをまとめて親子付け変更
         // 1 つ目は兄弟挿入位置を使い、2 つ目以降は末尾に追加する
@@ -914,7 +1037,10 @@ public partial class HierarchyPanel : UserControl
             item.Header = BuildItemHeader(node);
 
             if (newName != currentName)
-                _runtime?.SendToRuntime($"RENAME:{nodeId},{newName}");
+            {
+                var cmd = _isActorEditMode ? $"RENAME_ACTOR:{nodeId},{newName}" : $"RENAME:{nodeId},{newName}";
+                _runtime?.SendToRuntime(cmd);
+            }
         }
 
         void Cancel()

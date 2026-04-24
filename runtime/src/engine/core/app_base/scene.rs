@@ -8,7 +8,7 @@ use crate::engine::core::scripting::{ScriptComponent, ScriptingHost};
 use crate::engine::methods::drawer::DrawContext;
 use crate::engine::structs::components::{Component, ComponentData, ModelComponent};
 use crate::engine::structs::objects::Actor;
-use crate::engine::structs::objects::actor::ActorData;
+use crate::engine::structs::objects::actor::{ActorData, ActorTransform};
 
 // ============================================================
 //  SceneError
@@ -130,6 +130,19 @@ impl Scene {
         self.actors.iter_mut().find_map(|a| a.get_component_mut::<T>())
     }
 
+    /// 指定世界線に属する Actor のみを対象にコンポーネントを検索する。
+    pub fn find_component_in_world_line<T: Component + 'static>(&self, world_line: u32) -> Option<&T> {
+        self.actors.iter()
+            .filter(|a| a.world_line == world_line)
+            .find_map(|a| a.get_component::<T>())
+    }
+
+    pub fn find_component_in_world_line_mut<T: Component + 'static>(&mut self, world_line: u32) -> Option<&mut T> {
+        self.actors.iter_mut()
+            .filter(|a| a.world_line == world_line)
+            .find_map(|a| a.get_component_mut::<T>())
+    }
+
     // ─── 保存 ─────────────────────────────────────────────────
 
     pub fn save(&self, path: &Path, camera: &DebugCameraData) -> Result<(), SceneError> {
@@ -145,13 +158,32 @@ impl Scene {
 
     // ─── 読み込み ─────────────────────────────────────────────
 
+    /// `.actor` ファイル（ActorData JSON）を読み込み、単一アクターのシーンを生成する。
+    /// アクター編集モード（world_line=1）用。
+    pub fn load_actor(
+        path: &Path,
+        ctx: &DrawContext,
+        scripting_host: Option<&Arc<ScriptingHost>>,
+    ) -> Result<Self, SceneError> {
+        let raw  = std::fs::read_to_string(path)?;
+        // UTF-8 BOM (\u{FEFF}) が付いている場合は取り除く
+        let json = raw.strip_prefix('\u{FEFF}').unwrap_or(&raw);
+        let data: ActorData = serde_json::from_str(json)?;
+        let name  = data.name.clone();
+        let actor = build_actor(data, ctx, scripting_host)?;
+        let mut scene = Scene::new(name);
+        scene.add_actor(actor);
+        Ok(scene)
+    }
+
     pub fn load(
         path: &Path,
         ctx: &DrawContext,
         scripting_host: Option<&Arc<ScriptingHost>>,
     ) -> Result<(Self, Option<DebugCameraData>), SceneError> {
-        let json  = std::fs::read_to_string(path)?;
-        let data: SceneData = serde_json::from_str(&json)?;
+        let raw  = std::fs::read_to_string(path)?;
+        let json = raw.strip_prefix('\u{FEFF}').unwrap_or(&raw);
+        let data: SceneData = serde_json::from_str(json)?;
 
         let cam = data.debug_camera;
         let mut scene = Scene::new(data.name);
@@ -164,46 +196,65 @@ impl Scene {
 
 // ─── 内部ヘルパー ──────────────────────────────────────────
 
-fn build_actor(
+pub(crate) fn build_actor(
     data: ActorData,
     ctx: &DrawContext,
     scripting_host: Option<&Arc<ScriptingHost>>,
 ) -> Result<Actor, SceneError> {
     let mut actor = Actor::with_name(data.name);
 
-    for comp_data in data.components {
-        match comp_data {
+    // トランスフォームを復元
+    if let Some(tf) = data.transform {
+        actor.transform = tf;
+    }
+
+    for slot in data.components {
+        let slot_name = slot.name.clone();
+        match slot.component {
             ComponentData::ModelComponent(mc_data) => {
-                let path  = Path::new(&mc_data.model_path);
-                let model = load_model(path)?;
-                let total = mc_data.instances.len();
-                let gpu_model       = ctx.upload_model(&model);
-                let instanced_batch = ctx.create_instanced_batch(&model, total as u32);
-                // meta が保存されていない旧データとの互換性を保つ
-                let mut meta = mc_data.meta;
-                if meta.len() < total {
-                    use crate::engine::structs::components::model_component::InstanceMeta;
-                    let start = meta.len();
-                    meta.resize_with(total, || InstanceMeta::new("Instance"));
-                    for i in start..total {
-                        meta[i].name = format!("Instance_{i}");
+                use crate::engine::structs::components::model_component::{InstanceMeta, GROUP_ID_BASE};
+                if mc_data.model_path.is_empty() {
+                    // 空コンポーネント（モデル未設定）
+                    actor.add_component_named(slot_name, ModelComponent {
+                        source_path:     String::new(),
+                        model:           None,
+                        gpu_model:       None,
+                        instanced_batch: None,
+                        instance_mats:   mc_data.instances,
+                        instance_meta:   mc_data.meta,
+                        group_meta:      mc_data.groups,
+                        next_group_id:   mc_data.next_group_id,
+                    });
+                } else {
+                    let path  = Path::new(&mc_data.model_path);
+                    let model = load_model(path)?;
+                    let total = mc_data.instances.len();
+                    let gpu_model       = ctx.upload_model(&model);
+                    let instanced_batch = ctx.create_instanced_batch(&model, total as u32);
+                    let mut meta = mc_data.meta;
+                    if meta.len() < total {
+                        let start = meta.len();
+                        meta.resize_with(total, || InstanceMeta::new("Instance"));
+                        for i in start..total {
+                            meta[i].name = format!("Instance_{i}");
+                        }
                     }
+                    actor.add_component_named(slot_name, ModelComponent {
+                        source_path:   mc_data.model_path,
+                        model:         Some(model),
+                        gpu_model:     Some(gpu_model),
+                        instanced_batch: Some(instanced_batch),
+                        instance_mats: mc_data.instances,
+                        instance_meta: meta,
+                        group_meta:    mc_data.groups,
+                        next_group_id: mc_data.next_group_id,
+                    });
                 }
-                actor.add_component(ModelComponent {
-                    source_path:   mc_data.model_path,
-                    model,
-                    gpu_model,
-                    instanced_batch,
-                    instance_mats: mc_data.instances,
-                    instance_meta: meta,
-                    group_meta:    mc_data.groups,
-                    next_group_id: mc_data.next_group_id,
-                });
             }
             ComponentData::ScriptComponent(sc_data) => {
                 if let Some(host) = scripting_host {
                     if let Some(sc) = ScriptComponent::new(Arc::clone(host), sc_data.type_name) {
-                        actor.add_component(sc);
+                        actor.add_component_named(slot_name, sc);
                     }
                 }
             }

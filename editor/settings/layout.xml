@@ -6,23 +6,23 @@
         <LayoutPanel Orientation="Vertical" DockWidth="5.5906371360070075*">
           <LayoutDocumentPaneGroup Orientation="Horizontal" DockHeight="0.8145891826031679*">
             <LayoutDocumentPane Id="9093ed42-3a0f-42ea-b3ef-13b8d5c457f6" DockWidth="3.2192544650837456*">
-              <LayoutDocument Title="Viewport" IsSelected="True" ContentId="viewport" CanClose="False" CanFloat="False" LastActivationTimeStamp="04/22/2026 21:27:56" />
+              <LayoutDocument Title="Viewport" IsSelected="True" ContentId="viewport" CanClose="False" CanFloat="False" LastActivationTimeStamp="04/24/2026 10:29:05" />
             </LayoutDocumentPane>
-            <LayoutDocumentPane DockWidth="0.6305293749850244*">
-              <LayoutAnchorable CanHide="False" AutoHideMinWidth="100" AutoHideMinHeight="100" Title="Hierarchy" IsSelected="True" ContentId="hierarchy" FloatingLeft="706" FloatingTop="365" FloatingWidth="960" FloatingHeight="1032" LastActivationTimeStamp="04/22/2026 21:27:56" />
+            <LayoutDocumentPane DockWidth="0.6423928383902806*">
+              <LayoutAnchorable CanHide="False" AutoHideMinWidth="100" AutoHideMinHeight="100" Title="Hierarchy" IsSelected="True" IsLastFocusedDocument="True" ContentId="hierarchy" FloatingLeft="706" FloatingTop="365" FloatingWidth="960" FloatingHeight="1032" LastActivationTimeStamp="04/24/2026 10:29:18" />
             </LayoutDocumentPane>
-            <LayoutDocumentPane DockWidth="0.6583322539286189*">
-              <LayoutAnchorable CanHide="False" AutoHideMinWidth="100" AutoHideMinHeight="100" Title="Inspector" IsSelected="True" IsLastFocusedDocument="True" ContentId="inspector" FloatingLeft="1754" FloatingTop="366" FloatingWidth="960" FloatingHeight="1032" LastActivationTimeStamp="04/22/2026 21:27:56" />
+            <LayoutDocumentPane DockWidth="0.6464687905233627*">
+              <LayoutAnchorable CanHide="False" AutoHideMinWidth="100" AutoHideMinHeight="100" Title="Inspector" IsSelected="True" ContentId="inspector" FloatingLeft="1754" FloatingTop="366" FloatingWidth="960" FloatingHeight="1032" LastActivationTimeStamp="04/24/2026 10:28:53" />
             </LayoutDocumentPane>
           </LayoutDocumentPaneGroup>
         </LayoutPanel>
       </LayoutPanel>
       <LayoutAnchorablePaneGroup Orientation="Horizontal" DockHeight="354" DockMinHeight="80" FloatingWidth="1452" FloatingHeight="330" FloatingLeft="951" FloatingTop="1001">
         <LayoutAnchorablePane Id="54a07137-38a3-4ce6-b1b4-25a1ae560539" DockWidth="1.3257487304940878*" DockHeight="354" DockMinHeight="80" FloatingWidth="1452" FloatingHeight="330" FloatingLeft="951" FloatingTop="1001">
-          <LayoutAnchorable CanHide="False" AutoHideMinWidth="100" AutoHideMinHeight="100" Title="Project" IsSelected="True" ContentId="project" FloatingLeft="951" FloatingTop="1001" FloatingWidth="1452" FloatingHeight="330" LastActivationTimeStamp="04/22/2026 21:28:05" />
+          <LayoutAnchorable CanHide="False" AutoHideMinWidth="100" AutoHideMinHeight="100" Title="Project" IsSelected="True" ContentId="project" FloatingLeft="951" FloatingTop="1001" FloatingWidth="1452" FloatingHeight="330" LastActivationTimeStamp="04/24/2026 10:29:14" />
         </LayoutAnchorablePane>
         <LayoutAnchorablePane DockWidth="0.6742512695059121*" DockHeight="354" DockMinHeight="80" FloatingWidth="1452" FloatingHeight="330" FloatingLeft="659" FloatingTop="827">
-          <LayoutAnchorable CanHide="False" AutoHideMinWidth="100" AutoHideMinHeight="100" Title="Output" IsSelected="True" ContentId="output" FloatingLeft="659" FloatingTop="827" FloatingWidth="1452" FloatingHeight="330" LastActivationTimeStamp="04/22/2026 20:12:07" PreviousContainerId="54a07137-38a3-4ce6-b1b4-25a1ae560539" PreviousContainerIndex="1" />
+          <LayoutAnchorable CanHide="False" AutoHideMinWidth="100" AutoHideMinHeight="100" Title="Output" IsSelected="True" ContentId="output" FloatingLeft="659" FloatingTop="827" FloatingWidth="1452" FloatingHeight="330" LastActivationTimeStamp="04/24/2026 03:38:02" PreviousContainerId="54a07137-38a3-4ce6-b1b4-25a1ae560539" PreviousContainerIndex="1" />
         </LayoutAnchorablePane>
       </LayoutAnchorablePaneGroup>
     </LayoutPanel>

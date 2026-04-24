@@ -12,6 +12,8 @@
 use crate::engine::core::app_base::scene::Scene;
 use crate::engine::structs::components::ModelComponent;
 use crate::engine::structs::components::model_component::{GroupMeta, InstanceMeta};
+use crate::engine::structs::objects::Actor;
+use crate::engine::structs::objects::actor::{ActorData, ActorTransform, ComponentSlotData};
 
 // ============================================================
 //  Command トレイト
@@ -21,12 +23,21 @@ pub trait Command {
     fn execute(&mut self, scene: &mut Scene);
     fn undo(&mut self, scene: &mut Scene);
     /// true を返すと構造変更（追加・削除）を示す。
-    /// Undo/Redo 後に選択状態・ヒエラルキー再送信が必要か判定するために使用。
     fn is_structural(&self) -> bool { false }
     /// Undo 後に復元すべき選択状態。None なら変更しない。
     fn selection_after_undo(&self) -> Option<Vec<u32>> { None }
     /// Redo (re-execute) 後に復元すべき選択状態。None なら変更しない。
     fn selection_after_redo(&self) -> Option<Vec<u32>> { None }
+    /// Undo 実行後に AppBase がアクターツリーを再構築するためのデータ。
+    fn actor_rebuild_for_undo(&self) -> Option<(u32, Vec<ActorData>)> { None }
+    /// Redo 実行後に AppBase がアクターツリーを再構築するためのデータ。
+    fn actor_rebuild_for_redo(&self) -> Option<(u32, Vec<ActorData>)> { None }
+    /// Undo 実行後に AppBase がコンポーネントスロットを再構築するためのデータ。
+    fn component_rebuild_for_undo(&self) -> Option<(u32, u32, Vec<ComponentSlotData>)> { None }
+    /// Redo 実行後に AppBase がコンポーネントスロットを再構築するためのデータ。
+    fn component_rebuild_for_redo(&self) -> Option<(u32, u32, Vec<ComponentSlotData>)> { None }
+    /// Undo/Redo 後にインスペクターへ通知すべきアクターの (world_line, dfs_id)。
+    fn actor_inspect_notify(&self) -> Option<(u32, u32)> { None }
 }
 
 // ============================================================
@@ -91,6 +102,28 @@ impl UndoHistory {
 
     pub fn can_undo(&self) -> bool { !self.past.is_empty() }
     pub fn can_redo(&self) -> bool { !self.future.is_empty() }
+
+    /// undo() 直後: future の末尾が今 undo したコマンド。
+    pub fn peek_undone_actor_rebuild(&self) -> Option<(u32, Vec<ActorData>)> {
+        self.future.last()?.actor_rebuild_for_undo()
+    }
+    pub fn peek_redone_actor_rebuild(&self) -> Option<(u32, Vec<ActorData>)> {
+        self.past.last()?.actor_rebuild_for_redo()
+    }
+    pub fn peek_undone_component_rebuild(&self) -> Option<(u32, u32, Vec<ComponentSlotData>)> {
+        self.future.last()?.component_rebuild_for_undo()
+    }
+    pub fn peek_redone_component_rebuild(&self) -> Option<(u32, u32, Vec<ComponentSlotData>)> {
+        self.past.last()?.component_rebuild_for_redo()
+    }
+    /// undo() 直後: future の末尾のコマンドのインスペクター通知先。
+    pub fn peek_undone_actor_inspect(&self) -> Option<(u32, u32)> {
+        self.future.last()?.actor_inspect_notify()
+    }
+    /// redo() 直後: past の末尾のコマンドのインスペクター通知先。
+    pub fn peek_redone_actor_inspect(&self) -> Option<(u32, u32)> {
+        self.past.last()?.actor_inspect_notify()
+    }
 }
 
 // ============================================================
@@ -119,7 +152,7 @@ impl Command for SceneSnapshotCommand {
             mc.instance_meta = self.after_meta.clone();
             mc.group_meta    = self.after_groups.clone();
             mc.next_group_id = self.after_gid;
-            mc.instanced_batch.mark_dirty();
+            mc.mark_batch_dirty();
         }
     }
     fn undo(&mut self, scene: &mut Scene) {
@@ -128,7 +161,7 @@ impl Command for SceneSnapshotCommand {
             mc.instance_meta = self.before_meta.clone();
             mc.group_meta    = self.before_groups.clone();
             mc.next_group_id = self.before_gid;
-            mc.instanced_batch.mark_dirty();
+            mc.mark_batch_dirty();
         }
     }
     fn is_structural(&self) -> bool { true }
@@ -193,6 +226,102 @@ impl Command for SelectionCommand {
     fn selection_after_redo(&self) -> Option<Vec<u32>> { Some(self.after.clone()) }
 }
 
+// ============================================================
+//  ActorTreeSnapshotCommand — アクターツリー構造変更の Undo/Redo
+// ============================================================
+
+/// ADD_ACTOR / REMOVE_ACTOR のスナップショット。
+/// execute/undo は No-op で、AppBase が peek_*_actor_rebuild() を使い GPU 再構築する。
+pub struct ActorTreeSnapshotCommand {
+    pub world_line:    u32,
+    pub before_actors: Vec<ActorData>,
+    pub after_actors:  Vec<ActorData>,
+}
+
+impl Command for ActorTreeSnapshotCommand {
+    fn execute(&mut self, _scene: &mut Scene) {}
+    fn undo(&mut self, _scene: &mut Scene) {}
+    fn is_structural(&self) -> bool { true }
+    fn actor_rebuild_for_undo(&self) -> Option<(u32, Vec<ActorData>)> {
+        Some((self.world_line, self.before_actors.clone()))
+    }
+    fn actor_rebuild_for_redo(&self) -> Option<(u32, Vec<ActorData>)> {
+        Some((self.world_line, self.after_actors.clone()))
+    }
+}
+
+// ============================================================
+//  ComponentSlotsSnapshotCommand — コンポーネントスロット変更の Undo/Redo
+// ============================================================
+
+/// ADD_COMPONENT / REMOVE_COMPONENT のスナップショット。
+pub struct ComponentSlotsSnapshotCommand {
+    pub world_line:   u32,
+    pub actor_dfs_id: u32,
+    pub before_slots: Vec<ComponentSlotData>,
+    pub after_slots:  Vec<ComponentSlotData>,
+}
+
+impl Command for ComponentSlotsSnapshotCommand {
+    fn execute(&mut self, _scene: &mut Scene) {}
+    fn undo(&mut self, _scene: &mut Scene) {}
+    fn is_structural(&self) -> bool { true }
+    fn component_rebuild_for_undo(&self) -> Option<(u32, u32, Vec<ComponentSlotData>)> {
+        Some((self.world_line, self.actor_dfs_id, self.before_slots.clone()))
+    }
+    fn component_rebuild_for_redo(&self) -> Option<(u32, u32, Vec<ComponentSlotData>)> {
+        Some((self.world_line, self.actor_dfs_id, self.after_slots.clone()))
+    }
+}
+
+// ============================================================
+//  ActorTransformCommand — アクター自身の Transform 変更
+// ============================================================
+
+pub struct ActorTransformCommand {
+    pub world_line:    u32,
+    pub dfs_id:        u32,
+    pub old_transform: ActorTransform,
+    pub new_transform: ActorTransform,
+}
+
+impl Command for ActorTransformCommand {
+    fn execute(&mut self, scene: &mut Scene) {
+        let mut c = 0u32;
+        if let Some(actor) = dfs_find_mut(&mut scene.actors, self.world_line, self.dfs_id, &mut c) {
+            actor.transform = self.new_transform.clone();
+        }
+    }
+    fn undo(&mut self, scene: &mut Scene) {
+        let mut c = 0u32;
+        if let Some(actor) = dfs_find_mut(&mut scene.actors, self.world_line, self.dfs_id, &mut c) {
+            actor.transform = self.old_transform.clone();
+        }
+    }
+    fn actor_inspect_notify(&self) -> Option<(u32, u32)> {
+        Some((self.world_line, self.dfs_id))
+    }
+}
+
+fn dfs_find_mut<'a>(actors: &'a mut Vec<Actor>, wl: u32, dfs_id: u32, c: &mut u32) -> Option<&'a mut Actor> {
+    for actor in actors.iter_mut() {
+        if actor.world_line != wl { continue; }
+        if *c == dfs_id { return Some(actor); }
+        *c += 1;
+        if let Some(found) = dfs_find_child_mut(actor, dfs_id, c) { return Some(found); }
+    }
+    None
+}
+
+fn dfs_find_child_mut<'a>(actor: &'a mut Actor, dfs_id: u32, c: &mut u32) -> Option<&'a mut Actor> {
+    for child in actor.children_mut().iter_mut() {
+        if *c == dfs_id { return Some(child); }
+        *c += 1;
+        if let Some(found) = dfs_find_child_mut(child, dfs_id, c) { return Some(found); }
+    }
+    None
+}
+
 // ── 内部ヘルパー ──────────────────────────────────────────────
 
 fn set_instance_mat(scene: &mut Scene, idx: u32, mat: [[f32; 4]; 4]) {
@@ -200,6 +329,6 @@ fn set_instance_mat(scene: &mut Scene, idx: u32, mat: [[f32; 4]; 4]) {
         if let Some(m) = mc.instance_mats.get_mut(idx as usize) {
             *m = mat;
         }
-        mc.instanced_batch.mark_dirty();
+        mc.mark_batch_dirty();
     }
 }

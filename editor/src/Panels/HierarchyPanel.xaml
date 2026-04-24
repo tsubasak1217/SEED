@@ -100,12 +100,50 @@
 
     <Grid>
         <Grid.RowDefinitions>
-            <RowDefinition Height="28"/>
+            <RowDefinition x:Name="ActorToolbarRow" Height="0"/>
+            <RowDefinition x:Name="SearchBarRow" Height="28"/>
             <RowDefinition Height="*"/>
         </Grid.RowDefinitions>
 
+        <!-- アクター編集モードのツールバー -->
+        <Border x:Name="ActorToolbar" Grid.Row="0"
+                Background="#252525" BorderBrush="#3C3C3C" BorderThickness="0,0,0,1"
+                Visibility="Collapsed">
+            <StackPanel Orientation="Horizontal" Margin="4,0">
+                <Button x:Name="BtnAddActor"
+                        Content="+ アクタを追加"
+                        Background="#2A2A2A" Foreground="#88CC88"
+                        BorderBrush="#3A3A3A" BorderThickness="1"
+                        FontSize="11" Padding="8,3" Margin="0,2,4,2"
+                        Cursor="Hand"
+                        Click="OnAddActorClicked">
+                    <Button.Style>
+                        <Style TargetType="Button">
+                            <Setter Property="Template">
+                                <Setter.Value>
+                                    <ControlTemplate TargetType="Button">
+                                        <Border Background="{TemplateBinding Background}"
+                                                BorderBrush="{TemplateBinding BorderBrush}"
+                                                BorderThickness="{TemplateBinding BorderThickness}"
+                                                CornerRadius="2" Padding="{TemplateBinding Padding}">
+                                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                        </Border>
+                                        <ControlTemplate.Triggers>
+                                            <Trigger Property="IsMouseOver" Value="True">
+                                                <Setter Property="Background" Value="#333333"/>
+                                            </Trigger>
+                                        </ControlTemplate.Triggers>
+                                    </ControlTemplate>
+                                </Setter.Value>
+                            </Setter>
+                        </Style>
+                    </Button.Style>
+                </Button>
+            </StackPanel>
+        </Border>
+
         <!-- 検索バー -->
-        <Border Grid.Row="0" Background="#252525" BorderBrush="#3C3C3C" BorderThickness="0,0,0,1">
+        <Border Grid.Row="1" Background="#252525" BorderBrush="#3C3C3C" BorderThickness="0,0,0,1">
             <TextBox x:Name="TxtSearch"
                      Margin="6,3" Foreground="#AAAAAA" FontSize="12"
                      Background="#333333" BorderThickness="0"
@@ -129,7 +167,7 @@
         </Border>
 
         <!-- Actor ツリー -->
-        <TreeView x:Name="ActorTree" Grid.Row="1"
+        <TreeView x:Name="ActorTree" Grid.Row="2"
                   Background="#1E1E1E" BorderThickness="0"
                   Foreground="#CCCCCC" FontSize="13"
                   ContextMenu="{x:Null}"
@@ -155,7 +193,7 @@
         </TreeView>
 
         <!-- ドロップターゲットオーバーレイ（ルート行き） -->
-        <Border x:Name="DropIndicator" Grid.Row="1"
+        <Border x:Name="DropIndicator" Grid.Row="2"
                 HorizontalAlignment="Stretch" VerticalAlignment="Top"
                 Height="2" Background="#3399FF"
                 Visibility="Collapsed" IsHitTestVisible="False"/>

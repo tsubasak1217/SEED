@@ -644,6 +644,12 @@
                                         視覚的には Viewport パネル内の左端に配置される。
                                     -->
                                     <Grid x:Name="ViewportGrid">
+                                        <Grid.RowDefinitions>
+                                            <!-- アクタータブバー行（タブがないときは高さ 0）-->
+                                            <RowDefinition Height="Auto"/>
+                                            <!-- Viewport 本体 -->
+                                            <RowDefinition Height="*"/>
+                                        </Grid.RowDefinitions>
                                         <Grid.ColumnDefinitions>
                                             <!-- ツールストリップ列 -->
                                             <ColumnDefinition Width="44"/>
@@ -651,14 +657,73 @@
                                             <ColumnDefinition Width="*"/>
                                         </Grid.ColumnDefinitions>
 
+                                        <!-- ── アクタータブバー（Row 0, 全列スパン）────────────── -->
+                                        <Border x:Name="ActorTabBar"
+                                                Grid.Row="0" Grid.ColumnSpan="2"
+                                                Background="#252526"
+                                                BorderBrush="#3A3A3A" BorderThickness="0,0,0,1"
+                                                Height="28"
+                                                Visibility="Collapsed">
+                                            <DockPanel>
+                                                <!-- 右端固定: シーンに戻るボタン -->
+                                                <Button x:Name="BtnReturnToScene"
+                                                        DockPanel.Dock="Right"
+                                                        Content="◀ シーンに戻る"
+                                                        Height="22"
+                                                        Margin="4,3"
+                                                        Padding="8,0"
+                                                        FontSize="11"
+                                                        Foreground="#CCCCCC"
+                                                        Background="#3A3A3A"
+                                                        BorderBrush="#555555"
+                                                        BorderThickness="1"
+                                                        Cursor="Hand"
+                                                        Visibility="Collapsed"
+                                                        Click="OnReturnToScene">
+                                                    <Button.Style>
+                                                        <Style TargetType="Button">
+                                                            <Setter Property="Template">
+                                                                <Setter.Value>
+                                                                    <ControlTemplate TargetType="Button">
+                                                                        <Border x:Name="Bd"
+                                                                                Background="{TemplateBinding Background}"
+                                                                                BorderBrush="{TemplateBinding BorderBrush}"
+                                                                                BorderThickness="{TemplateBinding BorderThickness}"
+                                                                                CornerRadius="3"
+                                                                                Padding="{TemplateBinding Padding}">
+                                                                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                                                        </Border>
+                                                                        <ControlTemplate.Triggers>
+                                                                            <Trigger Property="IsMouseOver" Value="True">
+                                                                                <Setter TargetName="Bd" Property="Background" Value="#505050"/>
+                                                                            </Trigger>
+                                                                            <Trigger Property="IsPressed" Value="True">
+                                                                                <Setter TargetName="Bd" Property="Background" Value="#666666"/>
+                                                                            </Trigger>
+                                                                        </ControlTemplate.Triggers>
+                                                                    </ControlTemplate>
+                                                                </Setter.Value>
+                                                            </Setter>
+                                                        </Style>
+                                                    </Button.Style>
+                                                    </Button>
+                                                <!-- タブ一覧（横スクロール）-->
+                                                <ScrollViewer HorizontalScrollBarVisibility="Auto"
+                                                              VerticalScrollBarVisibility="Disabled"
+                                                              Focusable="False">
+                                                    <StackPanel x:Name="ActorTabsPanel" Orientation="Horizontal"/>
+                                                </ScrollViewer>
+                                            </DockPanel>
+                                        </Border>
+
                                         <!-- Viewport HWND (code-behind で ViewportHost を差し込む) -->
-                                        <ContentControl Grid.Column="1"
+                                        <ContentControl Grid.Row="1" Grid.Column="1"
                                                         x:Name="ViewportDocumentContent"
                                                         Background="Black"/>
 
                                         <!-- 起動中オーバーレイ — FIRST_FRAME 受信まで前面に表示 -->
                                         <Grid x:Name="ViewportLoadingOverlay"
-                                              Grid.Column="1"
+                                              Grid.Row="1" Grid.Column="1"
                                               Panel.ZIndex="5">
                                             <Image Source="pack://application:,,,/resources/images/blueSky_ORE.png"
                                                    Stretch="UniformToFill"/>
@@ -677,7 +742,7 @@
                                         </Grid>
 
                                         <!-- ツールストリップ (HwndHost と列が異なるためAirspace問題なし) -->
-                                        <Border Grid.Column="0"
+                                        <Border Grid.Row="1" Grid.Column="0"
                                                 Background="#CC1C1C1C"
                                                 Padding="4,10,4,10">
                                             <Border.Effect>
@@ -743,7 +808,7 @@
 
                                         <!-- Viewport オプションポップアップ -->
                                         <Popup x:Name="ViewportOptionsPopup"
-                                               Grid.Column="0"
+                                               Grid.Row="1" Grid.Column="0"
                                                PlacementTarget="{Binding ElementName=BtnViewportOptions}"
                                                Placement="Custom"
                                                CustomPopupPlacementCallback="OnViewportPopupPlacement"

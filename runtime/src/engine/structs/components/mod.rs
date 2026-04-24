@@ -45,7 +45,7 @@ pub trait Component: Any + Send + Sync {
 
 /// 各コンポーネントのシリアライズ表現。
 /// `"type"` フィールドで種別を識別し、内容を `"data"` に格納する。
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data")]
 pub enum ComponentData {
     ModelComponent(ModelComponentData),
