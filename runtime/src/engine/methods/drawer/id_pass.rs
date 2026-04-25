@@ -73,6 +73,7 @@ pub fn draw_id_pass<'pass>(
     batch:       &'pass InstancedModelBatch,
     camera_bg:   &'pass wgpu::BindGroup,
     pipelines:   &'pass DrawPipelines,
+    id_base_bg:  &'pass wgpu::BindGroup,
 ) {
     if batch.n_prims == 0 { return; }
 
@@ -100,9 +101,12 @@ pub fn draw_id_pass<'pass>(
                     }
                 } else {
                     render_pass.set_pipeline(&pipelines.id_pass.mesh_pipeline);
+                    // mesh_pipeline のレイアウトにもグループ3が含まれるため identity でバインドする
+                    render_pass.set_bind_group(3, &gpu_model.identity_joints_bg, &[]);
                 }
                 render_pass.set_bind_group(0, camera_bg, &[]);
                 render_pass.set_bind_group(2, &batch.lod_id_bgs[lod], &[]);
+                render_pass.set_bind_group(4, id_base_bg, &[]);
                 cur_skinned = Some(draw.is_skinned);
             }
 

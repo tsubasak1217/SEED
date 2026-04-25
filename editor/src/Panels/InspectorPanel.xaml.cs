@@ -1,5 +1,7 @@
 using System;
+using System.Collections.Generic;
 using System.Globalization;
+using System.IO;
 using System.Linq;
 using System.Text.Json;
 using System.Windows;
@@ -8,6 +10,7 @@ using System.Windows.Input;
 using System.Windows.Media;
 using Microsoft.Win32;
 using SEEDEditor.Runtime;
+using SEEDEditor.Scripting;
 
 namespace SEEDEditor.Panels;
 
@@ -23,10 +26,17 @@ public partial class InspectorPanel : UserControl
     private int      _componentSlotCount = 0;
     private SlotInfo? _copiedSlot        = null;  // Ctrl+C でコピーしたスロット
 
+    // ── Script state ─────────────────────────────────────────
+    // Key: "{actorId}:{slotIdx}", Value: {fieldName → valueString}
+    private readonly Dictionary<string, Dictionary<string, string>> _scriptFieldValues = new();
+    private readonly Dictionary<string, Type> _scriptTypeCache = new();
+    private string _lastComponentsJson = "";
+
     // ── Transform fields ─────────────────────────────────────
     private TextBox? _tbPx, _tbPy, _tbPz;
     private TextBox? _tbEx, _tbEy, _tbEz;
     private TextBox? _tbSx, _tbSy, _tbSz;
+    private bool     _isDraggingTransform = false;
 
     public InspectorPanel()
     {
@@ -64,38 +74,39 @@ public partial class InspectorPanel : UserControl
     {
         if (!_isActorEditMode) return;
         _currentActorId = dfsId;
-        ActorNameBlock.Text         = $"Actor #{dfsId}";
-        ActorModelBlock.Visibility  = Visibility.Collapsed;
-        _selectedSlotIdx            = -1;
-        ComponentListStack.Children.Clear();
-        BasicInfoStack.Children.Clear();
-        ComponentPropsStack.Children.Clear();
-        CompInfoScroll.Visibility           = Visibility.Collapsed;
-        NoComponentSelectedBlock.Visibility = Visibility.Visible;
-        ClearTransformRefs();
+        // UI はクリアせず現在の表示を維持したまま待つ。
+        // Rust の SELECT コマンド処理で ACTOR_COMPONENTS が即時プッシュされるため
+        // OnActorComponentsReceived で正しいデータに更新される。
         ActorEditGrid.Visibility    = Visibility.Visible;
         ComponentScroll.Visibility  = Visibility.Collapsed;
         NoSelectionBlock.Visibility = Visibility.Collapsed;
-        _runtime?.SendToRuntime($"GET_ACTOR_COMPONENTS:{dfsId}");
     }
 
     // ── Runtime events ───────────────────────────────────────
 
+    // アクター仮想ノード ID の下限（HierarchyPanel と合わせること）
+    private const int VirtualActorNodeIdBase = 999_000_000;
+
     private void OnSelectionChanged(int id)
     {
-        // アクター編集モードではランタイムからの選択変更を無視する
-        // （アクター選択は HierarchyPanel.ActorDfsSelected → SelectActor() 経由で行う）
-        if (_isActorEditMode) return;
-
         Dispatcher.InvokeAsync(() =>
         {
-            _currentActorId = id;
             if (id < 0)
             {
                 ShowNoSelection();
                 return;
             }
 
+            if (_isActorEditMode)
+            {
+                // アクター編集モード: 仮想ノード ID (>= VirtualActorNodeIdBase) のみ反映する
+                if (id >= VirtualActorNodeIdBase)
+                    SelectActor(id - VirtualActorNodeIdBase);
+                return;
+            }
+
+            // シーン編集モード
+            _currentActorId = id;
             ActorNameBlock.Text         = $"Actor #{id}";
             ActorModelBlock.Visibility  = Visibility.Collapsed;
             ComponentStack.Children.Clear();
@@ -207,6 +218,8 @@ public partial class InspectorPanel : UserControl
 
     private void BuildActorComponentList(string json)
     {
+        _lastComponentsJson = json;
+
         using var doc  = JsonDocument.Parse(json);
         var root = doc.RootElement;
 
@@ -236,6 +249,10 @@ public partial class InspectorPanel : UserControl
 
             if (slotIdx == prevSlot) _selectedSlotIdx = slotIdx;
         }
+
+        // 前回未選択かつコンポーネントが存在する場合は最後のスロットを自動選択
+        if (_selectedSlotIdx < 0 && _slotInfos.Count > 0)
+            _selectedSlotIdx = _slotInfos[^1].SlotIdx;
 
         RefreshChipSelection();
         RebuildPropsPane(root);
@@ -288,154 +305,101 @@ public partial class InspectorPanel : UserControl
             sp.Children.Add(BuildModelPathRow(info));
             ComponentPropsStack.Children.Add(section);
         }
+        else if (info.TypeId == "ScriptComponent")
+        {
+            BuildScriptSlotProps(info);
+        }
     }
 
-    private UIElement BuildModelPathRow(SlotInfo info)
+    // ── ScriptComponent inspector ─────────────────────────────
+
+    private void BuildScriptSlotProps(SlotInfo info)
     {
-        var hasPath = !string.IsNullOrEmpty(info.ModelPath);
-        var display = hasPath ? System.IO.Path.GetFileName(info.ModelPath) : "（未設定）";
+        // スクリプトパス選択セクション
+        var pathSection = BuildSection(info.Name + " (ScriptComponent)");
+        ((StackPanel)pathSection.Child).Children.Add(BuildScriptPathRow(info));
+        ComponentPropsStack.Children.Add(pathSection);
 
-        var grid = new Grid { Margin = new Thickness(0, 2, 0, 2) };
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(48) });
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        // スクリプトが設定されていなければここで終了
+        if (string.IsNullOrEmpty(info.ModelPath)) return;
 
-        var lbl = new TextBlock
-        {
-            Text              = "モデル",
-            Foreground        = new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88)),
-            FontSize          = 11,
-            VerticalAlignment = VerticalAlignment.Center,
-        };
+        var scriptType = GetOrCompileScript(info.ModelPath);
+        if (scriptType is null) return;
 
-        // ドロップ可能なパス表示エリア
-        var pathBox = new Border
-        {
-            Background      = new SolidColorBrush(Color.FromRgb(0x1A, 0x1A, 0x1A)),
-            BorderBrush     = hasPath
-                                ? new SolidColorBrush(Color.FromRgb(0x3F, 0x3F, 0x46))
-                                : new SolidColorBrush(Color.FromRgb(0x55, 0x44, 0x22)),
-            BorderThickness = new Thickness(1),
-            Padding         = new Thickness(4, 2, 4, 2),
-            CornerRadius    = new CornerRadius(2),
-            Margin          = new Thickness(2, 0, 2, 0),
-            AllowDrop       = true,
-            ToolTip         = hasPath ? info.ModelPath : "アセットフォルダからドロップ",
-        };
+        var fields = ScriptCompiler.GetSerializeFields(scriptType);
+        if (fields.Count == 0) return;
 
-        var pathText = new TextBlock
-        {
-            Text          = display,
-            Foreground    = hasPath
-                              ? new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC))
-                              : new SolidColorBrush(Color.FromRgb(0x88, 0x66, 0x44)),
-            FontSize      = 11,
-            TextTrimming  = TextTrimming.CharacterEllipsis,
-            VerticalAlignment = VerticalAlignment.Center,
-        };
-        pathBox.Child = pathText;
+        var storeKey = $"{_currentActorId}:{info.SlotIdx}";
+        if (!_scriptFieldValues.ContainsKey(storeKey))
+            _scriptFieldValues[storeKey] = new Dictionary<string, string>();
+        var values = _scriptFieldValues[storeKey];
 
-        pathBox.DragEnter += (_, e) =>
+        var fieldSection = BuildSection("フィールド");
+        var fieldSp = (StackPanel)fieldSection.Child;
+        fieldSp.Children.Add(ScriptInspectorBuilder.Build(fields, values, (name, val) =>
         {
-            if (IsSupportedFileDrop(e)) e.Effects = DragDropEffects.Copy;
-            else e.Effects = DragDropEffects.None;
-            e.Handled = true;
-        };
-        pathBox.DragOver += (_, e) =>
-        {
-            if (IsSupportedFileDrop(e)) e.Effects = DragDropEffects.Copy;
-            else e.Effects = DragDropEffects.None;
-            e.Handled = true;
-        };
-        pathBox.Drop += (_, e) =>
-        {
-            var path = ExtractModelPath(e);
-            if (path != null) SetModelPath(info.SlotIdx, path);
-            e.Handled = true;
-        };
-
-        var browseBtn = new Button
-        {
-            Content         = "参照",
-            Background      = new SolidColorBrush(Color.FromRgb(0x33, 0x33, 0x33)),
-            Foreground      = new SolidColorBrush(Color.FromRgb(0xBB, 0xBB, 0xBB)),
-            BorderBrush     = new SolidColorBrush(Color.FromRgb(0x44, 0x44, 0x44)),
-            BorderThickness = new Thickness(1),
-            FontSize        = 10,
-            Padding         = new Thickness(6, 2, 6, 2),
-            Cursor          = Cursors.Hand,
-            VerticalAlignment = VerticalAlignment.Center,
-            Template        = BuildSimpleButtonTemplate(),
-        };
-        browseBtn.Click += (_, _) =>
-        {
-            var dlg = new OpenFileDialog
-            {
-                Title  = "モデルファイルを選択",
-                Filter = "3D モデル|*.glb;*.gltf;*.obj|すべてのファイル|*.*",
-            };
-            if (dlg.ShowDialog(Window.GetWindow(this)) == true)
-                SetModelPath(info.SlotIdx, dlg.FileName);
-        };
-
-        Grid.SetColumn(lbl,     0); grid.Children.Add(lbl);
-        Grid.SetColumn(pathBox, 1); grid.Children.Add(pathBox);
-        Grid.SetColumn(browseBtn, 2); grid.Children.Add(browseBtn);
-        return grid;
+            values[name] = val;
+        }));
+        ComponentPropsStack.Children.Add(fieldSection);
     }
+
+    private UIElement BuildScriptPathRow(SlotInfo info) =>
+        FileRefBuilder.Build(
+            "スクリプト", info.ModelPath,
+            [".cs"],
+            () =>
+            {
+                var dlg = new OpenFileDialog
+                {
+                    Title  = "スクリプトファイルを選択",
+                    Filter = "C# スクリプト|*.cs|すべてのファイル|*.*",
+                };
+                return dlg.ShowDialog(Window.GetWindow(this)) == true ? dlg.FileName : null;
+            },
+            path => SetScriptPath(info.SlotIdx, path));
+
+    private void SetScriptPath(int slotIdx, string path)
+    {
+        if (_currentActorId < 0) return;
+        // 既存のキャッシュを無効化
+        var old = _slotInfos.FirstOrDefault(s => s.SlotIdx == slotIdx)?.ModelPath;
+        if (old is not null) _scriptTypeCache.Remove(old);
+        _runtime?.SendToRuntime($"SET_MODEL_PATH:{_currentActorId},{slotIdx},{path}");
+    }
+
+    private Type? GetOrCompileScript(string path)
+    {
+        if (_scriptTypeCache.TryGetValue(path, out var cached)) return cached;
+
+        var (type, errors) = ScriptCompiler.CompileFile(path);
+        if (type is null)
+        {
+            EditorLog.Write($"Script compile error [{Path.GetFileName(path)}]: {string.Join("; ", errors)}");
+            return null;
+        }
+        _scriptTypeCache[path] = type;
+        return type;
+    }
+
+    private UIElement BuildModelPathRow(SlotInfo info) =>
+        FileRefBuilder.Build(
+            "モデル", info.ModelPath,
+            [".glb", ".gltf", ".obj"],
+            () =>
+            {
+                var dlg = new OpenFileDialog
+                {
+                    Title  = "モデルファイルを選択",
+                    Filter = "3D モデル|*.glb;*.gltf;*.obj|すべてのファイル|*.*",
+                };
+                return dlg.ShowDialog(Window.GetWindow(this)) == true ? dlg.FileName : null;
+            },
+            path => SetModelPath(info.SlotIdx, path));
 
     private void SetModelPath(int slotIdx, string path)
     {
         if (_currentActorId < 0) return;
         _runtime?.SendToRuntime($"SET_MODEL_PATH:{_currentActorId},{slotIdx},{path}");
-    }
-
-    private static bool IsSupportedFileDrop(DragEventArgs e)
-    {
-        if (e.Data.GetDataPresent("SEEDProjectPaths") &&
-            e.Data.GetData("SEEDProjectPaths") is List<string> paths &&
-            paths.Count == 1)
-        {
-            var ext = System.IO.Path.GetExtension(paths[0]).ToLowerInvariant();
-            return ext is ".glb" or ".gltf" or ".obj";
-        }
-        if (e.Data.GetDataPresent(DataFormats.FileDrop) &&
-            e.Data.GetData(DataFormats.FileDrop) is string[] files &&
-            files.Length == 1)
-        {
-            var ext = System.IO.Path.GetExtension(files[0]).ToLowerInvariant();
-            return ext is ".glb" or ".gltf" or ".obj";
-        }
-        return false;
-    }
-
-    private static string? ExtractModelPath(DragEventArgs e)
-    {
-        if (e.Data.GetDataPresent("SEEDProjectPaths") &&
-            e.Data.GetData("SEEDProjectPaths") is List<string> paths &&
-            paths.Count == 1)
-            return paths[0];
-        if (e.Data.GetDataPresent(DataFormats.FileDrop) &&
-            e.Data.GetData(DataFormats.FileDrop) is string[] files &&
-            files.Length == 1)
-            return files[0];
-        return null;
-    }
-
-    private static ControlTemplate BuildSimpleButtonTemplate()
-    {
-        var t = new ControlTemplate(typeof(Button));
-        var bd = new FrameworkElementFactory(typeof(Border));
-        bd.SetBinding(Border.BackgroundProperty,       new System.Windows.Data.Binding("Background") { RelativeSource = new System.Windows.Data.RelativeSource(System.Windows.Data.RelativeSourceMode.TemplatedParent) });
-        bd.SetBinding(Border.BorderBrushProperty,     new System.Windows.Data.Binding("BorderBrush") { RelativeSource = new System.Windows.Data.RelativeSource(System.Windows.Data.RelativeSourceMode.TemplatedParent) });
-        bd.SetBinding(Border.BorderThicknessProperty, new System.Windows.Data.Binding("BorderThickness") { RelativeSource = new System.Windows.Data.RelativeSource(System.Windows.Data.RelativeSourceMode.TemplatedParent) });
-        bd.SetValue(Border.CornerRadiusProperty, new CornerRadius(2));
-        var cp = new FrameworkElementFactory(typeof(ContentPresenter));
-        cp.SetValue(ContentPresenter.HorizontalAlignmentProperty, HorizontalAlignment.Center);
-        cp.SetValue(ContentPresenter.VerticalAlignmentProperty, VerticalAlignment.Center);
-        bd.AppendChild(cp);
-        t.VisualTree = bd;
-        return t;
     }
 
     private Border BuildComponentChip(int slotIdx, string name, string typeName)
@@ -513,7 +477,10 @@ public partial class InspectorPanel : UserControl
         chip.MouseLeftButtonDown += (_, _) =>
         {
             _selectedSlotIdx = slotIdx;
-            RefreshChipSelection();
+            if (!string.IsNullOrEmpty(_lastComponentsJson))
+                BuildActorComponentList(_lastComponentsJson);
+            else
+                RefreshChipSelection();
         };
 
         chip.MouseRightButtonDown += (_, e) =>
@@ -763,6 +730,7 @@ public partial class InspectorPanel : UserControl
                 dragOriginX     = e.GetPosition(null).X;
                 dragOriginValue = v;
                 label.CaptureMouse();
+                BeginTransformDrag();
             }
             e.Handled = true;
         };
@@ -776,7 +744,11 @@ public partial class InspectorPanel : UserControl
         };
         label.MouseLeftButtonUp += (_, e) =>
         {
-            if (label.IsMouseCaptured) label.ReleaseMouseCapture();
+            if (label.IsMouseCaptured)
+            {
+                label.ReleaseMouseCapture();
+                EndTransformDrag();
+            }
             e.Handled = true;
         };
         return label;
@@ -809,6 +781,23 @@ public partial class InspectorPanel : UserControl
         Grid.SetColumn(lbl, 0); grid.Children.Add(lbl);
         Grid.SetColumn(val, 1); grid.Children.Add(val);
         return grid;
+    }
+
+    // ── Transform drag (undo batching) ───────────────────────
+
+    private void BeginTransformDrag()
+    {
+        if (_currentActorId < 0) return;
+        _isDraggingTransform = true;
+        int type = _isActorEditMode ? 1 : 0;
+        _runtime?.SendToRuntime($"BEGIN_TRANSFORM_DRAG:{type},{_currentActorId}");
+    }
+
+    private void EndTransformDrag()
+    {
+        if (!_isDraggingTransform) return;
+        _isDraggingTransform = false;
+        _runtime?.SendToRuntime("END_TRANSFORM_DRAG");
     }
 
     // ── Field commit ─────────────────────────────────────────

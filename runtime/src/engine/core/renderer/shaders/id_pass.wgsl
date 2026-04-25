@@ -1,8 +1,9 @@
 // ============================================================
 //  id_pass.wgsl — Actor 選択用 ID バッファパス
 //
-//  各フラグメントに元のインスタンスインデックス + 1 を書き込む。
+//  各フラグメントに元のインスタンスインデックス + u_id_base + 1 を書き込む。
 //  0 は背景（何も描かれていないピクセル）を意味する。
+//  u_id_base: 複数モデル描画時のオフセット（単一モデル時は 0）
 // ============================================================
 
 struct CameraUniform {
@@ -20,6 +21,8 @@ struct ModelUniform {
 @group(1) @binding(0) var<storage, read> u_instances: array<ModelUniform>;
 /// u_ids[compact_index] = 元のインスタンスインデックス（0-based）
 @group(2) @binding(0) var<storage, read> u_ids:       array<u32>;
+/// 複数モデル描画時の ID ベースオフセット（単一モデル時は 0）
+@group(4) @binding(0) var<uniform>       u_id_base:   u32;
 
 const MAX_JOINTS: u32 = 128u;
 @group(3) @binding(0) var<storage, read> joint_matrices: array<mat4x4<f32>>;
@@ -38,7 +41,7 @@ fn vs_mesh(
 ) -> VsOut {
     let world = u_instances[inst_idx].model * vec4<f32>(position, 1.0);
     let clip  = u_camera.view_proj * world;
-    return VsOut(clip, u_ids[inst_idx] + 1u);
+    return VsOut(clip, u_ids[inst_idx] + u_id_base + 1u);
 }
 
 // ── スキンメッシュ ───────────────────────────────────────────
@@ -65,7 +68,7 @@ fn vs_skinned(
     let local = skin * vec4<f32>(position, 1.0);
     let world = u_instances[inst_idx].model * local;
     let clip  = u_camera.view_proj * world;
-    return VsOut(clip, u_ids[inst_idx] + 1u);
+    return VsOut(clip, u_ids[inst_idx] + u_id_base + 1u);
 }
 
 // ── フラグメントシェーダー ────────────────────────────────────

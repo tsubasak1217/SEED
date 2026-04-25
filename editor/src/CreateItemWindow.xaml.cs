@@ -51,4 +51,33 @@ public partial class CreateItemWindow : Window
         ItemCreated?.Invoke(path);
         Close();
     }
+
+    private void OnCreateScript(object sender, RoutedEventArgs e)
+    {
+        const string BaseName = "NewScript";
+        const string Ext      = ".cs";
+
+        var path = Path.Combine(_targetPath, BaseName + Ext);
+        int n = 1;
+        while (File.Exists(path))
+        {
+            path = Path.Combine(_targetPath, $"{BaseName}({n}){Ext}");
+            n++;
+        }
+
+        var className = Path.GetFileNameWithoutExtension(path);
+        var template  = $$"""
+            using SEEDEditor.Scripting;
+
+            public class {{className}} : SEEDScript
+            {
+                // [SerializeField]
+                // float myFloat = 0.0f;
+            }
+            """;
+        File.WriteAllText(path, template, Encoding.UTF8);
+
+        ItemCreated?.Invoke(path);
+        Close();
+    }
 }

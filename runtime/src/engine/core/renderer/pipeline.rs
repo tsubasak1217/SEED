@@ -298,6 +298,7 @@ pub struct IdPassPipeline {
     pub model_bgl:        wgpu::BindGroupLayout,
     pub id_data_bgl:      wgpu::BindGroupLayout,
     pub joint_bgl:        wgpu::BindGroupLayout,
+    pub id_base_bgl:      wgpu::BindGroupLayout,
 }
 
 impl IdPassPipeline {
@@ -306,17 +307,21 @@ impl IdPassPipeline {
             RenderPipelineBuilder::new(device, toml, sf, df).build(get_shader_source)
         };
 
+        // mesh: num_bind_groups=5 → bgls[0..4] = [camera, model, id_data, joint, id_base]
         let (mesh_pipeline, mut bgls_m) = build(include_str!("pipelines/id_pass_mesh.toml"));
-        let id_data_bgl = bgls_m.pop().unwrap();
-        let model_bgl   = bgls_m.pop().unwrap();
-        let camera_bgl  = bgls_m.pop().unwrap();
+        let id_base_bgl  = bgls_m.pop().unwrap(); // group 4
+        let _joint_bgl_m = bgls_m.pop().unwrap(); // group 3 (mesh では未使用だが layout は存在)
+        let id_data_bgl  = bgls_m.pop().unwrap(); // group 2
+        let model_bgl    = bgls_m.pop().unwrap(); // group 1
+        let camera_bgl   = bgls_m.pop().unwrap(); // group 0
 
+        // skinned: num_bind_groups=5 → 同様。group 3 の joint_bgl だけ取り出す
         let (skinned_pipeline, mut bgls_s) = build(include_str!("pipelines/id_pass_skinned.toml"));
-        let joint_bgl = bgls_s.pop().unwrap();
-        // id_data_bgl, model_bgl, camera_bgl は mesh 側と同じレイアウトなので破棄
+        let _id_base_bgl_s = bgls_s.pop().unwrap(); // group 4 (mesh 側と同レイアウト)
+        let joint_bgl      = bgls_s.pop().unwrap(); // group 3
         let _ = bgls_s;
 
-        Self { mesh_pipeline, skinned_pipeline, camera_bgl, model_bgl, id_data_bgl, joint_bgl }
+        Self { mesh_pipeline, skinned_pipeline, camera_bgl, model_bgl, id_data_bgl, joint_bgl, id_base_bgl }
     }
 }
 

@@ -322,6 +322,48 @@ fn dfs_find_child_mut<'a>(actor: &'a mut Actor, dfs_id: u32, c: &mut u32) -> Opt
     None
 }
 
+// ============================================================
+//  ActorGroupTransformCommand — actor edit モードの全インスタンス一括移動
+//  instance_mats と actor.transform を同時に undo/redo する。
+// ============================================================
+
+pub struct ActorGroupTransformCommand {
+    pub wl:         u32,
+    pub dfs_id:     u32,
+    pub old_tf:     ActorTransform,
+    pub new_tf:     ActorTransform,
+    /// (instance_idx, old_mat, new_mat) — 選択アクターの MC インスタンス
+    pub transforms: Vec<(u32, [[f32; 4]; 4], [[f32; 4]; 4])>,
+    /// (child_dfs_id, old_tf, new_tf, old_mc_mat, new_mc_mat) — 子孫アクター
+    pub child_transforms: Vec<(u32, ActorTransform, ActorTransform, [[f32; 4]; 4], [[f32; 4]; 4])>,
+}
+
+impl Command for ActorGroupTransformCommand {
+    fn execute(&mut self, scene: &mut Scene) {
+        for &(idx, _, new_mat) in &self.transforms {
+            set_mc_mat_in_actor(scene, self.wl, self.dfs_id, idx, new_mat);
+        }
+        set_actor_transform(scene, self.wl, self.dfs_id, self.new_tf.clone());
+        for (child_dfs, _, new_tf, _, new_mc_mat) in &self.child_transforms {
+            set_mc_mat_in_actor(scene, self.wl, *child_dfs, 0, *new_mc_mat);
+            set_actor_transform(scene, self.wl, *child_dfs, new_tf.clone());
+        }
+    }
+    fn undo(&mut self, scene: &mut Scene) {
+        for &(idx, old_mat, _) in &self.transforms {
+            set_mc_mat_in_actor(scene, self.wl, self.dfs_id, idx, old_mat);
+        }
+        set_actor_transform(scene, self.wl, self.dfs_id, self.old_tf.clone());
+        for (child_dfs, old_tf, _, old_mc_mat, _) in &self.child_transforms {
+            set_mc_mat_in_actor(scene, self.wl, *child_dfs, 0, *old_mc_mat);
+            set_actor_transform(scene, self.wl, *child_dfs, old_tf.clone());
+        }
+    }
+    fn actor_inspect_notify(&self) -> Option<(u32, u32)> {
+        Some((self.wl, self.dfs_id))
+    }
+}
+
 // ── 内部ヘルパー ──────────────────────────────────────────────
 
 fn set_instance_mat(scene: &mut Scene, idx: u32, mat: [[f32; 4]; 4]) {
@@ -330,5 +372,33 @@ fn set_instance_mat(scene: &mut Scene, idx: u32, mat: [[f32; 4]; 4]) {
             *m = mat;
         }
         mc.mark_batch_dirty();
+    }
+}
+
+fn set_instance_mat_in_wl(scene: &mut Scene, wl: u32, idx: u32, mat: [[f32; 4]; 4]) {
+    if let Some(mc) = scene.find_component_in_world_line_mut::<ModelComponent>(wl) {
+        if let Some(m) = mc.instance_mats.get_mut(idx as usize) {
+            *m = mat;
+        }
+        mc.mark_batch_dirty();
+    }
+}
+
+fn set_mc_mat_in_actor(scene: &mut Scene, wl: u32, dfs_id: u32, idx: u32, mat: [[f32; 4]; 4]) {
+    let mut c = 0u32;
+    if let Some(actor) = dfs_find_mut(&mut scene.actors, wl, dfs_id, &mut c) {
+        if let Some(mc) = actor.get_component_mut::<ModelComponent>() {
+            if let Some(m) = mc.instance_mats.get_mut(idx as usize) {
+                *m = mat;
+            }
+            mc.mark_batch_dirty();
+        }
+    }
+}
+
+fn set_actor_transform(scene: &mut Scene, wl: u32, dfs_id: u32, tf: ActorTransform) {
+    let mut c = 0u32;
+    if let Some(actor) = dfs_find_mut(&mut scene.actors, wl, dfs_id, &mut c) {
+        actor.transform = tf;
     }
 }

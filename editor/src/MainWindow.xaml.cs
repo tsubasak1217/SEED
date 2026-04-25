@@ -92,6 +92,8 @@ public partial class MainWindow : Window
     private string? _currentScenePath         = null;
     /// <summary>前回保存後に変更があれば true。</summary>
     private bool    _isDirty                  = false;
+    /// <summary>アクター保存中フラグ（OnSaveCompleted でトースト文言を切り替えるため）。</summary>
+    private bool    _isSavingActor            = false;
     /// <summary>
     /// ナビゲーション系コマンド（世界線切り替え・シーンロード等）が
     /// 引き起こす HIERARCHY 更新をダーティ判定から除外するカウンター。
@@ -354,7 +356,12 @@ public partial class MainWindow : Window
 
                 case MessageBoxResult.Yes:
                     e.Cancel = true;
-                    if (_currentScenePath != null)
+                    if (_activeActorPath != null)
+                    {
+                        _pendingClose = true;
+                        ExecuteActorSave(_activeActorPath);
+                    }
+                    else if (_currentScenePath != null)
                     {
                         _pendingClose = true;
                         ExecuteSave(_currentScenePath);
@@ -544,11 +551,13 @@ public partial class MainWindow : Window
 
     // ── シーン保存ロジック ────────────────────────────────────────
 
-    /// <summary>Ctrl+S: パスがあれば上書き保存、なければ名前を付けて保存。</summary>
+    /// <summary>Ctrl+S: アクター編集中はアクターを、それ以外はシーンを上書き保存する。</summary>
     private void DoQuickSave()
     {
         if (_runtimeManager?.State != EditorState.Edit) return;
-        if (_currentScenePath != null)
+        if (_activeActorPath != null)
+            ExecuteActorSave(_activeActorPath);
+        else if (_currentScenePath != null)
             ExecuteSave(_currentScenePath);
         else
             ShowSaveAsDialog();
@@ -558,19 +567,39 @@ public partial class MainWindow : Window
     private void ShowSaveAsDialog()
     {
         if (_runtimeManager?.State != EditorState.Edit) return;
-        var dlg = new SaveFileDialog
+        if (_activeActorPath != null)
         {
-            Title            = "名前を付けてシーンを保存",
-            Filter           = "Scene Files (*.scene)|*.scene|All Files (*.*)|*.*",
-            DefaultExt       = ".scene",
-            InitialDirectory = AssetsPath,
-            OverwritePrompt  = true,
-        };
-        if (_currentScenePath != null)
-            dlg.FileName = System.IO.Path.GetFileName(_currentScenePath);
+            var dlg = new SaveFileDialog
+            {
+                Title            = "名前を付けてアクターを保存",
+                Filter           = "Actor Files (*.actor)|*.actor|All Files (*.*)|*.*",
+                DefaultExt       = ".actor",
+                InitialDirectory = AssetsPath,
+                OverwritePrompt  = true,
+                FileName         = System.IO.Path.GetFileName(_activeActorPath),
+            };
+            if (dlg.ShowDialog(this) == true)
+            {
+                _activeActorPath = dlg.FileName;
+                ExecuteActorSave(dlg.FileName);
+            }
+        }
+        else
+        {
+            var dlg = new SaveFileDialog
+            {
+                Title            = "名前を付けてシーンを保存",
+                Filter           = "Scene Files (*.scene)|*.scene|All Files (*.*)|*.*",
+                DefaultExt       = ".scene",
+                InitialDirectory = AssetsPath,
+                OverwritePrompt  = true,
+            };
+            if (_currentScenePath != null)
+                dlg.FileName = System.IO.Path.GetFileName(_currentScenePath);
 
-        if (dlg.ShowDialog(this) == true)
-            ExecuteSave(dlg.FileName);
+            if (dlg.ShowDialog(this) == true)
+                ExecuteSave(dlg.FileName);
+        }
     }
 
     /// <summary>IPC でシーン保存コマンドを送出し、パスを記録する。</summary>
@@ -581,6 +610,14 @@ public partial class MainWindow : Window
         EditorLog.Write($"ExecuteSave — SAVE_SCENE:{path}");
     }
 
+    /// <summary>IPC でアクター保存コマンドを送出する。</summary>
+    private void ExecuteActorSave(string path)
+    {
+        _isSavingActor = true;
+        _runtimeManager?.SendToRuntime($"SAVE_ACTOR:{path}");
+        EditorLog.Write($"ExecuteActorSave — SAVE_ACTOR:{path}");
+    }
+
     private void OnSaveCompleted(bool ok, string errorMsg)
     {
         Dispatcher.BeginInvoke(() =>
@@ -589,7 +626,9 @@ public partial class MainWindow : Window
             {
                 EditorLog.Write("OnSaveCompleted — 保存成功");
                 MarkClean();
-                ShowToast("シーンを保存しました");
+                string toast = _isSavingActor ? "アクターを保存しました" : "シーンを保存しました";
+                _isSavingActor = false;
+                ShowToast(toast);
                 UpdateTitle();
 
                 // 保存→ウィンドウを閉じる（終了時確認フロー）
@@ -610,8 +649,9 @@ public partial class MainWindow : Window
             }
             else
             {
+                _isSavingActor = false;
                 _pendingSceneLoad = null;
-                MessageBox.Show($"シーンの保存に失敗しました:\n{errorMsg}", "SEED Editor",
+                MessageBox.Show($"保存に失敗しました:\n{errorMsg}", "SEED Editor",
                     MessageBoxButton.OK, MessageBoxImage.Error);
             }
         });
@@ -971,6 +1011,8 @@ public partial class MainWindow : Window
         if (_activeActorPath != null)
         {
             _activeActorPath = null;
+            PanelHierarchy.SetActorEditMode(false);
+            PanelInspector.SetActorEditMode(false);
             RebuildActorTabBar();
         }
 

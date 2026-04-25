@@ -73,6 +73,21 @@
                 </StackPanel>
             </Button>
 
+            <Button Style="{StaticResource ItemRowStyle}" Click="OnCreateScript">
+                <StackPanel Orientation="Horizontal">
+                    <Image Source="pack://application:,,,/resources/icons/folderview/script.png"
+                           Width="34" Height="34"
+                           Margin="0,0,14,0" VerticalAlignment="Center"
+                           RenderOptions.BitmapScalingMode="HighQuality"/>
+                    <StackPanel VerticalAlignment="Center">
+                        <TextBlock Text="Script"
+                                   Foreground="#DDDDDD" FontSize="14" FontWeight="SemiBold"/>
+                        <TextBlock Text="C# スクリプトファイルを作成"
+                                   Foreground="#777777" FontSize="11" Margin="0,3,0,0"/>
+                    </StackPanel>
+                </StackPanel>
+            </Button>
+
         </StackPanel>
 
     </StackPanel>

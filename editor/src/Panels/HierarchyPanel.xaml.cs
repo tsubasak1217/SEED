@@ -197,9 +197,32 @@ public partial class HierarchyPanel : UserControl
     {
         Dispatcher.BeginInvoke(() =>
         {
-            // アクター編集モードではランタイムからの SELECTED 信号を無視する
-            // (SELECT: を送っていないので誤デセレクトが発生しない)
-            if (_isActorEditMode) return;
+            if (_isActorEditMode)
+            {
+                if (idx < 0)
+                {
+                    // 空クリック: 選択解除
+                    _selectedId = -1;
+                    _selectedIds.Clear();
+                    _anchorId = -1;
+                    DeselectAll();
+                    UpdateMultiSelectVisuals();
+                }
+                else if (idx >= VirtualActorNodeIdBase)
+                {
+                    // Viewport からアクターが選択されたとき: ヒエラルキーを連動させる
+                    var dfsId = idx - VirtualActorNodeIdBase;
+                    _selectedId = dfsId;
+                    _selectedIds.Clear();
+                    _selectedIds.Add(dfsId);
+                    _anchorId = dfsId;
+                    SelectTreeItem(dfsId);
+                    UpdateMultiSelectVisuals();
+                    // インスペクターへも通知（SelectActor 経由でパネルを表示させる）
+                    ActorDfsSelected?.Invoke(dfsId);
+                }
+                return;
+            }
 
             // 仮想アクターノード選択中に SELECTED:-1 が来ても上書きしない
             if (idx < 0 && _selectedId >= VirtualActorNodeIdBase)

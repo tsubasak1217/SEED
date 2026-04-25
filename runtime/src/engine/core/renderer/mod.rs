@@ -116,6 +116,7 @@ impl Renderer {
                                  | wgpu::Features::INDIRECT_FIRST_INSTANCE,
                 required_limits:   wgpu::Limits {
                     max_storage_buffers_per_shader_stage: 12,
+                    max_bind_groups: 5,
                     ..wgpu::Limits::default()
                 },
                 memory_hints:      wgpu::MemoryHints::default(),

@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::engine::core::clock::FrameContext;
 use crate::engine::core::loader::{load_model, LoadError};
-use crate::engine::core::scripting::{ScriptComponent, ScriptingHost};
+use crate::engine::core::scripting::{ScriptComponent, ScriptingHost, PlaceholderScriptSlot};
 use crate::engine::methods::drawer::DrawContext;
 use crate::engine::structs::components::{Component, ComponentData, ModelComponent};
 use crate::engine::structs::objects::Actor;
@@ -256,6 +256,11 @@ pub(crate) fn build_actor(
                     if let Some(sc) = ScriptComponent::new(Arc::clone(host), sc_data.type_name) {
                         actor.add_component_named(slot_name, sc);
                     }
+                } else {
+                    // エディタモード（CLR なし）: PlaceholderScriptSlot として復元する
+                    actor.add_component_named(slot_name, PlaceholderScriptSlot {
+                        script_path: sc_data.type_name,
+                    });
                 }
             }
         }

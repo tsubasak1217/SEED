@@ -74,9 +74,15 @@ fn apply_parent_hwnd(attrs: WindowAttributes, parent_hwnd: Option<isize>) -> Win
             );
             // Safety: 呼び出し元（App::resumed）が有効な HWND を保証する。
             // WPF の BuildWindowCore が返したコンテナウィンドウの HWND を渡している。
+            //
+            // with_drag_and_drop(false): WPF 側から OLE D&D を行う場合、winit が
+            // RegisterDragDrop で登録した IDropTarget へのクロスプロセス COM 呼び出しが
+            // 発生し、UI スレッドがフリーズする原因となる。埋め込みウィンドウでは OLE
+            // ドロップ受付が不要なため無効化する。
             unsafe {
                 attrs
-                    .with_decorations(false) // タイトルバー・ボーダーを除去
+                    .with_decorations(false)
+                    .with_drag_and_drop(false)
                     .with_parent_window(Some(RawWindowHandle::Win32(handle)))
             }
         }

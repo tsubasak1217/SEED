@@ -78,6 +78,12 @@ pub enum IpcCommand {
     SetShowGrid(bool),
     /// 軸ギズモ表示オンオフ
     SetShowAxisGizmo(bool),
+    /// アクターを指定パスへ保存（アクター編集モードのアクティブ世界線）
+    SaveActor(String),
+    /// インスペクターフィールドドラッグ開始（Undo 単一化のため事前状態を保存）
+    BeginTransformDrag { is_actor: bool, target_id: u32 },
+    /// インスペクターフィールドドラッグ終了（1 undo コマンドとして記録）
+    EndTransformDrag,
     /// シーンファイルのロード
     LoadScene(String),
     /// デバッグカメラ状態要求
@@ -226,6 +232,19 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                         s if s.starts_with("SAVE_SCENE:") => {
                             Some(IpcCommand::SaveScene(s["SAVE_SCENE:".len()..].to_string()))
                         }
+                        s if s.starts_with("SAVE_ACTOR:") => {
+                            Some(IpcCommand::SaveActor(s["SAVE_ACTOR:".len()..].to_string()))
+                        }
+                        s if s.starts_with("BEGIN_TRANSFORM_DRAG:") => {
+                            let rest = &s["BEGIN_TRANSFORM_DRAG:".len()..];
+                            let mut it = rest.splitn(2, ',');
+                            if let (Some(t), Some(id_s)) = (it.next(), it.next()) {
+                                if let (Ok(type_n), Ok(id)) = (t.parse::<u32>(), id_s.parse::<u32>()) {
+                                    Some(IpcCommand::BeginTransformDrag { is_actor: type_n != 0, target_id: id })
+                                } else { None }
+                            } else { None }
+                        }
+                        "END_TRANSFORM_DRAG" => Some(IpcCommand::EndTransformDrag),
                         s if s.starts_with("CREATE_GROUP:") => {
                             let rest = &s["CREATE_GROUP:".len()..];
                             let mut it = rest.splitn(2, ',');

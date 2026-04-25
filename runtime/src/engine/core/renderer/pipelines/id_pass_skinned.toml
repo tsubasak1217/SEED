@@ -2,7 +2,7 @@ shader_sources  = ["id_pass.wgsl"]
 vertex_entry    = "vs_skinned"
 fragment_entry  = "fs_main"
 vertex_slots    = ["mesh_vertex", "skin_vertex"]
-num_bind_groups = 4
+num_bind_groups = 5
 
 topology        = "TriangleList"
 cull_mode       = "Back"

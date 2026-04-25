@@ -93,6 +93,26 @@ impl DrawContext {
         CamBuf::new(&self.device, &self.pipelines.mesh.camera_bgl)
     }
 
+    /// ID パス用のベースオフセット bind group を生成する。
+    /// 複数モデルを ID パスで描画する際、モデルごとに異なる base 値を渡す。
+    pub fn create_id_base_bg(&self, base: u32) -> (wgpu::Buffer, wgpu::BindGroup) {
+        use wgpu::util::DeviceExt;
+        let buf = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label:    Some("ID Base Buffer"),
+            contents: bytemuck::bytes_of(&base),
+            usage:    wgpu::BufferUsages::UNIFORM,
+        });
+        let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label:   Some("ID Base BG"),
+            layout:  &self.pipelines.id_pass.id_base_bgl,
+            entries: &[wgpu::BindGroupEntry {
+                binding:  0,
+                resource: buf.as_entire_binding(),
+            }],
+        });
+        (buf, bg)
+    }
+
     pub fn create_identity_model_bg_for_unlit(&self) -> (wgpu::Buffer, wgpu::BindGroup) {
         use wgpu::util::DeviceExt;
         let uniform = uniforms::ModelUniform::identity();

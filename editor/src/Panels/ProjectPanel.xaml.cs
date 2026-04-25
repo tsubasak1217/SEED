@@ -3,6 +3,8 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
+using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
@@ -625,7 +627,9 @@ public partial class ProjectPanel : UserControl
         if (paths.Length == 0) return;
 
         var data = new DataObject("SEEDProjectPaths", paths);
-        DragDrop.DoDragDrop(sourceTile, data, DragDropEffects.Move);
+        DragDrop.DoDragDrop(sourceTile, data, DragDropEffects.Copy | DragDropEffects.Move);
+        // OLE ループ終了後に残留するマウスキャプチャ状態をリセットする
+        Mouse.Capture(null);
     }
 
     private void AttachDropTarget(Border tile)
@@ -984,7 +988,12 @@ public partial class ProjectPanel : UserControl
             MaxWidth            = 106,
             MinWidth            = 60,
         };
-        nameBox.Loaded += (_, _) => { nameBox.SelectAll(); nameBox.Focus(); };
+        nameBox.Loaded += (_, _) =>
+        {
+            nameBox.Focus();
+            var stemLen = origName.Length - Path.GetExtension(origName).Length;
+            nameBox.Select(0, stemLen);
+        };
 
         int blockIdx = sp.Children.IndexOf(nameBlock);
         sp.Children.RemoveAt(blockIdx);
@@ -1008,8 +1017,18 @@ public partial class ProjectPanel : UserControl
             var newPath = Path.Combine(dir, newName);
             try
             {
-                if      (Directory.Exists(oldPath)) Directory.Move(oldPath, newPath);
-                else if (File.Exists(oldPath))      File.Move(oldPath, newPath);
+                if (Directory.Exists(oldPath))
+                {
+                    Directory.Move(oldPath, newPath);
+                }
+                else if (File.Exists(oldPath))
+                {
+                    File.Move(oldPath, newPath);
+                    if (Path.GetExtension(origName).Equals(".cs", StringComparison.OrdinalIgnoreCase))
+                        UpdateScriptClassName(newPath,
+                            Path.GetFileNameWithoutExtension(origName),
+                            Path.GetFileNameWithoutExtension(newName));
+                }
             }
             catch { }
         }
@@ -1169,5 +1188,21 @@ public partial class ProjectPanel : UserControl
         var full = Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar);
         var root = Path.GetFullPath(_assetsRoot).TrimEnd(Path.DirectorySeparatorChar);
         return full.StartsWith(root, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static void UpdateScriptClassName(string filePath, string oldName, string newName)
+    {
+        if (oldName == newName) return;
+        try
+        {
+            var text    = File.ReadAllText(filePath, Encoding.UTF8);
+            var updated = Regex.Replace(
+                text,
+                $@"\bclass\s+{Regex.Escape(oldName)}\b",
+                $"class {newName}");
+            if (updated != text)
+                File.WriteAllText(filePath, updated, Encoding.UTF8);
+        }
+        catch { }
     }
 }

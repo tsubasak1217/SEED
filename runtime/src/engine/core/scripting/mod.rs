@@ -114,6 +114,25 @@ pub struct ScriptComponentData {
 }
 
 // ============================================================
+//  PlaceholderScriptSlot — エディタ専用・CLR 不使用のスクリプトスロット
+// ============================================================
+
+pub struct PlaceholderScriptSlot {
+    pub script_path: String,
+}
+
+impl Component for PlaceholderScriptSlot {
+    fn as_any(&self)         -> &dyn Any     { self }
+    fn as_any_mut(&mut self) -> &mut dyn Any { self }
+
+    fn to_data(&self) -> ComponentData {
+        ComponentData::ScriptComponent(ScriptComponentData {
+            type_name: self.script_path.clone(),
+        })
+    }
+}
+
+// ============================================================
 //  ScriptComponent — Rust Component トレイト実装
 // ============================================================
 
