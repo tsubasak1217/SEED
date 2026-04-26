@@ -310,16 +310,23 @@ pub struct ActorGroupTransformCommand {
     pub dfs_id:     u32,
     pub old_tf:     Transform,
     pub new_tf:     Transform,
-    /// (instance_idx, old_mat, new_mat) — 選択アクターの MC インスタンス
+    /// (instance_idx, old_mat, new_mat) — 選択スロット MC インスタンスの変換
     pub transforms: Vec<(u32, [[f32; 4]; 4], [[f32; 4]; 4])>,
     /// (child_dfs_id, old_tf, new_tf, old_mc_mat, new_mc_mat) — 子孫アクター
     pub child_transforms: Vec<(u32, Transform, Transform, [[f32; 4]; 4], [[f32; 4]; 4])>,
+    /// (slot_i, instance_idx, old_mat, new_mat) — 追加 MC スロット（複数 MC 対応）
+    /// slot_i はアクター内の Model スロット連番。選択スロット以外の MC 全スロットを格納する。
+    pub extra_slot_transforms: Vec<(usize, u32, [[f32; 4]; 4], [[f32; 4]; 4])>,
 }
 
 impl Command for ActorGroupTransformCommand {
     fn execute(&mut self, scene: &mut Scene) {
         for &(idx, _, new_mat) in &self.transforms {
             set_mc_mat_in_actor(scene, self.wl, self.dfs_id, idx, new_mat);
+        }
+        // 追加 MC スロットも更新する（複数 MC 対応）
+        for &(slot_i, idx, _, new_mat) in &self.extra_slot_transforms {
+            set_mc_mat_in_actor_at_slot(scene, self.wl, self.dfs_id, slot_i, idx, new_mat);
         }
         set_actor_transform(scene, self.wl, self.dfs_id, self.new_tf.clone());
         for (child_dfs, _, new_tf, _, new_mc_mat) in &self.child_transforms {
@@ -330,6 +337,10 @@ impl Command for ActorGroupTransformCommand {
     fn undo(&mut self, scene: &mut Scene) {
         for &(idx, old_mat, _) in &self.transforms {
             set_mc_mat_in_actor(scene, self.wl, self.dfs_id, idx, old_mat);
+        }
+        // 追加 MC スロットも元に戻す（複数 MC 対応）
+        for &(slot_i, idx, old_mat, _) in &self.extra_slot_transforms {
+            set_mc_mat_in_actor_at_slot(scene, self.wl, self.dfs_id, slot_i, idx, old_mat);
         }
         set_actor_transform(scene, self.wl, self.dfs_id, self.old_tf.clone());
         for (child_dfs, old_tf, _, old_mc_mat, _) in &self.child_transforms {
@@ -376,6 +387,46 @@ fn set_mc_mat_in_actor(scene: &mut Scene, wl: u32, dfs_id: u32, idx: u32, mat: [
             mc.mark_batch_dirty();
         }
     }
+}
+
+/// DFS id + スロットインデックスで指定 MC スロットのインスタンス行列を更新する。
+/// slot_i はアクター内の Model スロット連番（0-indexed）。
+/// 複数 MC スロット対応の Undo/Redo に使用する。
+fn set_mc_mat_in_actor_at_slot(scene: &mut Scene, wl: u32, dfs_id: u32, slot_i: usize, idx: u32, mat: [[f32; 4]; 4]) {
+    let mc_entity = find_mc_entity_at_slot_by_dfs(&scene.actors, wl, dfs_id, slot_i);
+    if let Some(entity) = mc_entity {
+        if let Some(mc) = scene.world.get_mut::<ModelComponent>(entity) {
+            if let Some(m) = mc.instance_mats.get_mut(idx as usize) {
+                *m = mat;
+            }
+            mc.mark_batch_dirty();
+        }
+    }
+}
+
+/// DFS id でアクターの slot_i 番目 MC スロット entity を返す。
+fn find_mc_entity_at_slot_by_dfs(actors: &[Actor], wl: u32, dfs_id: u32, slot_i: usize) -> Option<Entity> {
+    let mut c = 0u32;
+    find_mc_entity_at_slot_in_actors(actors, wl, dfs_id, slot_i, &mut c)
+}
+
+fn find_mc_entity_at_slot_in_actors(actors: &[Actor], wl: u32, dfs_id: u32, slot_i: usize, c: &mut u32) -> Option<Entity> {
+    for actor in actors {
+        if actor.world_line != wl { continue; }
+        if *c == dfs_id { return actor.mc_entity_at(slot_i); }
+        *c += 1;
+        if let Some(e) = find_mc_entity_at_slot_in_children(actor, dfs_id, slot_i, c) { return Some(e); }
+    }
+    None
+}
+
+fn find_mc_entity_at_slot_in_children(actor: &Actor, dfs_id: u32, slot_i: usize, c: &mut u32) -> Option<Entity> {
+    for child in actor.children() {
+        if *c == dfs_id { return child.mc_entity_at(slot_i); }
+        *c += 1;
+        if let Some(e) = find_mc_entity_at_slot_in_children(child, dfs_id, slot_i, c) { return Some(e); }
+    }
+    None
 }
 
 /// DFS id でアクターの最初の ModelComponent スロット entity を返す。

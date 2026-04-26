@@ -172,6 +172,15 @@ impl Actor {
         self.first_slot_entity_of_kind(ComponentKind::Model)
     }
 
+    /// slot_i 番目（Model スロット内の連番）の ModelComponent entity を返す。
+    /// ピッキング後の選択スロット特定に使用する。
+    pub fn mc_entity_at(&self, slot_i: usize) -> Option<Entity> {
+        self.slots.iter()
+            .filter(|s| s.kind == ComponentKind::Model)
+            .nth(slot_i)
+            .map(|s| s.entity)
+    }
+
     /// 全スロットの entity をイテレートする（despawn・収集用）。
     pub fn slot_entities(&self) -> impl Iterator<Item = Entity> + '_ {
         self.slots.iter().map(|s| s.entity)

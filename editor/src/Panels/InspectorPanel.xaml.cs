@@ -73,6 +73,10 @@ public partial class InspectorPanel : UserControl
     public void SelectActor(int dfsId)
     {
         if (!_isActorEditMode) return;
+        // _currentActorId を更新する前に参照をクリアする。
+        // これにより、古い TextBox の LostFocus が CommitTransform を呼び出しても
+        // _tbPx == null で早期リターンし、新アクターに古い値を送らなくなる。
+        ClearTransformRefs();
         _currentActorId = dfsId;
         // UI はクリアせず現在の表示を維持したまま待つ。
         // Rust の SELECT コマンド処理で ACTOR_COMPONENTS が即時プッシュされるため
@@ -106,6 +110,9 @@ public partial class InspectorPanel : UserControl
             }
 
             // シーン編集モード
+            // _currentActorId を更新する前に参照をクリアし、
+            // 古い TextBox の LostFocus が新アクターに値を送るのを防ぐ。
+            ClearTransformRefs();
             _currentActorId = id;
             ActorNameBlock.Text         = $"Actor #{id}";
             ActorModelBlock.Visibility  = Visibility.Collapsed;
