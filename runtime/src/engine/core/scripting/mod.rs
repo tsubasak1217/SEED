@@ -1,12 +1,22 @@
-use std::any::Any;
+// ============================================================
+//  scripting/mod.rs — CLR スクリプティングホスト
+//
+//  ScriptingHost は .NET CLR の生存期間を管理し、
+//  C# スクリプトのライフサイクル関数ポインタを保持する。
+//
+//  ScriptComponent / PlaceholderScriptSlot / ScriptComponentData は
+//  engine::components::script_component に移動済み。
+// ============================================================
+
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use netcorehost::{nethost, pdcstr, pdcstring::PdCString};
-use serde::{Deserialize, Serialize};
 
-use crate::engine::core::clock::FrameContext;
-use crate::engine::structs::components::{Component, ComponentData};
+// ScriptComponent 等は engine::components から re-export する
+pub use crate::engine::components::{
+    ScriptComponent, PlaceholderScriptSlot, ScriptComponentData,
+};
 
 // ============================================================
 //  FFI 型定義
@@ -18,12 +28,6 @@ use crate::engine::structs::components::{Component, ComponentData};
 struct RawFrameContext {
     delta_time: f32,
     anim_time:  f32,
-}
-
-impl From<&FrameContext> for RawFrameContext {
-    fn from(ctx: &FrameContext) -> Self {
-        Self { delta_time: ctx.delta_time, anim_time: ctx.anim_time }
-    }
 }
 
 // Windows x64 では "system" == "C" (cdecl) — C# の CallConvCdecl と一致する。
@@ -101,101 +105,5 @@ impl ScriptingHost {
             return dev.canonicalize().unwrap_or(dev);
         }
         base.join("SEEDScripting.dll")
-    }
-}
-
-// ============================================================
-//  ScriptComponentData — シリアライズ用
-// ============================================================
-
-#[derive(Serialize, Deserialize, Clone)]
-pub struct ScriptComponentData {
-    pub type_name: String,
-}
-
-// ============================================================
-//  PlaceholderScriptSlot — エディタ専用・CLR 不使用のスクリプトスロット
-// ============================================================
-
-pub struct PlaceholderScriptSlot {
-    pub script_path: String,
-}
-
-impl Component for PlaceholderScriptSlot {
-    fn as_any(&self)         -> &dyn Any     { self }
-    fn as_any_mut(&mut self) -> &mut dyn Any { self }
-
-    fn to_data(&self) -> ComponentData {
-        ComponentData::ScriptComponent(ScriptComponentData {
-            type_name: self.script_path.clone(),
-        })
-    }
-}
-
-// ============================================================
-//  ScriptComponent — Rust Component トレイト実装
-// ============================================================
-
-pub struct ScriptComponent {
-    host:      Arc<ScriptingHost>,
-    handle:    isize,
-    type_name: String,
-}
-
-impl ScriptComponent {
-    pub fn new(host: Arc<ScriptingHost>, type_name: impl Into<String>) -> Option<Self> {
-        let type_name = type_name.into();
-        let bytes     = type_name.as_bytes();
-        let handle = unsafe {
-            (host.create_fn)(bytes.as_ptr(), bytes.len() as i32)
-        };
-        if handle == 0 { return None; }
-        Some(Self { host, handle, type_name })
-    }
-}
-
-impl Drop for ScriptComponent {
-    fn drop(&mut self) {
-        unsafe { (self.host.destroy_fn)(self.handle); }
-    }
-}
-
-impl Component for ScriptComponent {
-    fn as_any(&self)         -> &dyn Any     { self }
-    fn as_any_mut(&mut self) -> &mut dyn Any { self }
-
-    fn to_data(&self) -> ComponentData {
-        ComponentData::ScriptComponent(ScriptComponentData {
-            type_name: self.type_name.clone(),
-        })
-    }
-
-    fn begin_frame(&mut self, ctx: &FrameContext) {
-        let raw = RawFrameContext::from(ctx);
-        unsafe { (self.host.begin_frame_fn)(self.handle, &raw); }
-    }
-    fn early_update(&mut self, ctx: &FrameContext) {
-        let raw = RawFrameContext::from(ctx);
-        unsafe { (self.host.early_update_fn)(self.handle, &raw); }
-    }
-    fn update(&mut self, ctx: &FrameContext) {
-        let raw = RawFrameContext::from(ctx);
-        unsafe { (self.host.update_fn)(self.handle, &raw); }
-    }
-    fn constant_update(&mut self, ctx: &FrameContext) {
-        let raw = RawFrameContext::from(ctx);
-        unsafe { (self.host.constant_update_fn)(self.handle, &raw); }
-    }
-    fn late_update(&mut self, ctx: &FrameContext) {
-        let raw = RawFrameContext::from(ctx);
-        unsafe { (self.host.late_update_fn)(self.handle, &raw); }
-    }
-    fn render(&mut self, ctx: &FrameContext) {
-        let raw = RawFrameContext::from(ctx);
-        unsafe { (self.host.render_fn)(self.handle, &raw); }
-    }
-    fn end_frame(&mut self, ctx: &FrameContext) {
-        let raw = RawFrameContext::from(ctx);
-        unsafe { (self.host.end_frame_fn)(self.handle, &raw); }
     }
 }

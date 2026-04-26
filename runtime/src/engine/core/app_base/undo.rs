@@ -9,11 +9,14 @@
 //  - undo/redo  : past/future を移動し、Scene に再適用。
 // ============================================================
 
+use crate::engine::ecs::Entity;
+use crate::engine::components::{
+    ModelComponent, Transform,
+};
+use crate::engine::components::model_component::{GroupMeta, InstanceMeta};
 use crate::engine::core::app_base::scene::Scene;
-use crate::engine::structs::components::ModelComponent;
-use crate::engine::structs::components::model_component::{GroupMeta, InstanceMeta};
 use crate::engine::structs::objects::Actor;
-use crate::engine::structs::objects::actor::{ActorData, ActorTransform, ComponentSlotData};
+use crate::engine::structs::objects::actor::{ActorData, ComponentSlotData};
 
 // ============================================================
 //  Command トレイト
@@ -147,7 +150,7 @@ pub struct SceneSnapshotCommand {
 
 impl Command for SceneSnapshotCommand {
     fn execute(&mut self, scene: &mut Scene) {
-        if let Some(mc) = scene.find_component_mut::<ModelComponent>() {
+        if let Some(mc) = scene.find_component_in_world_line_mut::<ModelComponent>(0) {
             mc.instance_mats = self.after_mats.clone();
             mc.instance_meta = self.after_meta.clone();
             mc.group_meta    = self.after_groups.clone();
@@ -156,7 +159,7 @@ impl Command for SceneSnapshotCommand {
         }
     }
     fn undo(&mut self, scene: &mut Scene) {
-        if let Some(mc) = scene.find_component_mut::<ModelComponent>() {
+        if let Some(mc) = scene.find_component_in_world_line_mut::<ModelComponent>(0) {
             mc.instance_mats = self.before_mats.clone();
             mc.instance_meta = self.before_meta.clone();
             mc.group_meta    = self.before_groups.clone();
@@ -281,61 +284,36 @@ impl Command for ComponentSlotsSnapshotCommand {
 pub struct ActorTransformCommand {
     pub world_line:    u32,
     pub dfs_id:        u32,
-    pub old_transform: ActorTransform,
-    pub new_transform: ActorTransform,
+    pub old_transform: Transform,
+    pub new_transform: Transform,
 }
 
 impl Command for ActorTransformCommand {
     fn execute(&mut self, scene: &mut Scene) {
-        let mut c = 0u32;
-        if let Some(actor) = dfs_find_mut(&mut scene.actors, self.world_line, self.dfs_id, &mut c) {
-            actor.transform = self.new_transform.clone();
-        }
+        set_actor_transform(scene, self.world_line, self.dfs_id, self.new_transform.clone());
     }
     fn undo(&mut self, scene: &mut Scene) {
-        let mut c = 0u32;
-        if let Some(actor) = dfs_find_mut(&mut scene.actors, self.world_line, self.dfs_id, &mut c) {
-            actor.transform = self.old_transform.clone();
-        }
+        set_actor_transform(scene, self.world_line, self.dfs_id, self.old_transform.clone());
     }
     fn actor_inspect_notify(&self) -> Option<(u32, u32)> {
         Some((self.world_line, self.dfs_id))
     }
 }
 
-fn dfs_find_mut<'a>(actors: &'a mut Vec<Actor>, wl: u32, dfs_id: u32, c: &mut u32) -> Option<&'a mut Actor> {
-    for actor in actors.iter_mut() {
-        if actor.world_line != wl { continue; }
-        if *c == dfs_id { return Some(actor); }
-        *c += 1;
-        if let Some(found) = dfs_find_child_mut(actor, dfs_id, c) { return Some(found); }
-    }
-    None
-}
-
-fn dfs_find_child_mut<'a>(actor: &'a mut Actor, dfs_id: u32, c: &mut u32) -> Option<&'a mut Actor> {
-    for child in actor.children_mut().iter_mut() {
-        if *c == dfs_id { return Some(child); }
-        *c += 1;
-        if let Some(found) = dfs_find_child_mut(child, dfs_id, c) { return Some(found); }
-    }
-    None
-}
-
 // ============================================================
 //  ActorGroupTransformCommand — actor edit モードの全インスタンス一括移動
-//  instance_mats と actor.transform を同時に undo/redo する。
+//  instance_mats と actor transform を同時に undo/redo する。
 // ============================================================
 
 pub struct ActorGroupTransformCommand {
     pub wl:         u32,
     pub dfs_id:     u32,
-    pub old_tf:     ActorTransform,
-    pub new_tf:     ActorTransform,
+    pub old_tf:     Transform,
+    pub new_tf:     Transform,
     /// (instance_idx, old_mat, new_mat) — 選択アクターの MC インスタンス
     pub transforms: Vec<(u32, [[f32; 4]; 4], [[f32; 4]; 4])>,
     /// (child_dfs_id, old_tf, new_tf, old_mc_mat, new_mc_mat) — 子孫アクター
-    pub child_transforms: Vec<(u32, ActorTransform, ActorTransform, [[f32; 4]; 4], [[f32; 4]; 4])>,
+    pub child_transforms: Vec<(u32, Transform, Transform, [[f32; 4]; 4], [[f32; 4]; 4])>,
 }
 
 impl Command for ActorGroupTransformCommand {
@@ -366,8 +344,9 @@ impl Command for ActorGroupTransformCommand {
 
 // ── 内部ヘルパー ──────────────────────────────────────────────
 
+/// world_line 0 の ModelComponent のインスタンス行列を更新する。
 fn set_instance_mat(scene: &mut Scene, idx: u32, mat: [[f32; 4]; 4]) {
-    if let Some(mc) = scene.find_component_mut::<ModelComponent>() {
+    if let Some(mc) = scene.find_component_in_world_line_mut::<ModelComponent>(0) {
         if let Some(m) = mc.instance_mats.get_mut(idx as usize) {
             *m = mat;
         }
@@ -375,6 +354,7 @@ fn set_instance_mat(scene: &mut Scene, idx: u32, mat: [[f32; 4]; 4]) {
     }
 }
 
+/// 指定世界線・インスタンスの行列を更新する。
 fn set_instance_mat_in_wl(scene: &mut Scene, wl: u32, idx: u32, mat: [[f32; 4]; 4]) {
     if let Some(mc) = scene.find_component_in_world_line_mut::<ModelComponent>(wl) {
         if let Some(m) = mc.instance_mats.get_mut(idx as usize) {
@@ -384,10 +364,12 @@ fn set_instance_mat_in_wl(scene: &mut Scene, wl: u32, idx: u32, mat: [[f32; 4]; 
     }
 }
 
+/// DFS id でアクターの ModelComponent インスタンス行列を更新する（ECS 版）。
+/// スロット専用 entity の MC を参照する（actor.entity ではない）。
 fn set_mc_mat_in_actor(scene: &mut Scene, wl: u32, dfs_id: u32, idx: u32, mat: [[f32; 4]; 4]) {
-    let mut c = 0u32;
-    if let Some(actor) = dfs_find_mut(&mut scene.actors, wl, dfs_id, &mut c) {
-        if let Some(mc) = actor.get_component_mut::<ModelComponent>() {
+    let mc_entity = find_mc_entity_by_dfs(&scene.actors, wl, dfs_id);
+    if let Some(entity) = mc_entity {
+        if let Some(mc) = scene.world.get_mut::<ModelComponent>(entity) {
             if let Some(m) = mc.instance_mats.get_mut(idx as usize) {
                 *m = mat;
             }
@@ -396,9 +378,62 @@ fn set_mc_mat_in_actor(scene: &mut Scene, wl: u32, dfs_id: u32, idx: u32, mat: [
     }
 }
 
-fn set_actor_transform(scene: &mut Scene, wl: u32, dfs_id: u32, tf: ActorTransform) {
+/// DFS id でアクターの最初の ModelComponent スロット entity を返す。
+fn find_mc_entity_by_dfs(actors: &[Actor], wl: u32, dfs_id: u32) -> Option<Entity> {
     let mut c = 0u32;
-    if let Some(actor) = dfs_find_mut(&mut scene.actors, wl, dfs_id, &mut c) {
-        actor.transform = tf;
+    find_mc_entity_in_actors(actors, wl, dfs_id, &mut c)
+}
+
+fn find_mc_entity_in_actors(actors: &[Actor], wl: u32, dfs_id: u32, c: &mut u32) -> Option<Entity> {
+    for actor in actors {
+        if actor.world_line != wl { continue; }
+        if *c == dfs_id { return actor.mc_entity(); }
+        *c += 1;
+        if let Some(e) = find_mc_entity_in_children(actor, dfs_id, c) { return Some(e); }
     }
+    None
+}
+
+fn find_mc_entity_in_children(actor: &Actor, dfs_id: u32, c: &mut u32) -> Option<Entity> {
+    for child in actor.children() {
+        if *c == dfs_id { return child.mc_entity(); }
+        *c += 1;
+        if let Some(e) = find_mc_entity_in_children(child, dfs_id, c) { return Some(e); }
+    }
+    None
+}
+
+/// DFS id でアクターの Transform を更新する（ECS 版）。
+fn set_actor_transform(scene: &mut Scene, wl: u32, dfs_id: u32, tf: Transform) {
+    let entity = find_entity_by_dfs(&scene.actors, wl, dfs_id);
+    if let Some(entity) = entity {
+        if let Some(t) = scene.world.get_mut::<Transform>(entity) {
+            *t = tf;
+        }
+    }
+}
+
+/// DFS id でアクターのエンティティを探す（不変）。
+fn find_entity_by_dfs(actors: &[Actor], wl: u32, dfs_id: u32) -> Option<Entity> {
+    let mut c = 0u32;
+    find_entity_in_actors(actors, wl, dfs_id, &mut c)
+}
+
+fn find_entity_in_actors(actors: &[Actor], wl: u32, dfs_id: u32, c: &mut u32) -> Option<Entity> {
+    for actor in actors {
+        if actor.world_line != wl { continue; }
+        if *c == dfs_id { return Some(actor.entity); }
+        *c += 1;
+        if let Some(e) = find_entity_in_children(actor, dfs_id, c) { return Some(e); }
+    }
+    None
+}
+
+fn find_entity_in_children(actor: &Actor, dfs_id: u32, c: &mut u32) -> Option<Entity> {
+    for child in actor.children() {
+        if *c == dfs_id { return Some(child.entity); }
+        *c += 1;
+        if let Some(e) = find_entity_in_children(child, dfs_id, c) { return Some(e); }
+    }
+    None
 }

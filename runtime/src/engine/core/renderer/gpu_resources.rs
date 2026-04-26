@@ -370,10 +370,13 @@ fn compute_smooth_normals(
         let e1 = [p1[0]-p0[0], p1[1]-p0[1], p1[2]-p0[2]];
         let e2 = [p2[0]-p0[0], p2[1]-p0[1], p2[2]-p0[2]];
         // 面積比例の面法線（正規化しないことで大きい面を重視）
+        // エンジンは左手座標系（Z 反転済みの頂点座標）を使用するため、
+        // 標準クロス積 e1×e2 は LH でのアウトライン向き（外向き）と逆になる。
+        // → e2×e1 = -(e1×e2) を使って正しい外向き法線を得る。
         let fn_ = [
-            e1[1]*e2[2] - e1[2]*e2[1],
-            e1[2]*e2[0] - e1[0]*e2[2],
-            e1[0]*e2[1] - e1[1]*e2[0],
+            e2[1]*e1[2] - e2[2]*e1[1],
+            e2[2]*e1[0] - e2[0]*e1[2],
+            e2[0]*e1[1] - e2[1]*e1[0],
         ];
 
         for &i in &[i0, i1, i2] {
@@ -423,11 +426,10 @@ impl GpuModel {
     ) -> Self {
         // ── テクスチャ ─────────────────────────────────────────
         let gpu_textures: Vec<GpuTexture> = model.textures.iter().enumerate().map(|(i, td)| {
-            // 法線・MR・AO は linear, ベースカラー・エミッシブは sRGB
-            // ここでは保守的にすべて linear (UnormSrgb は embeddedで判断困難)
-            // ← TextureData に用途フラグがないため Embedded は linear で統一
-            let linear = matches!(&td.source, TextureSource::FilePath(_));
-            upload_texture_data(device, queue, td, linear)
+            // TextureData.linear フラグで sRGB / 線形を切り替える。
+            // false → Rgba8UnormSrgb（ベースカラー・エミッシブ）
+            // true  → Rgba8Unorm   （法線・MR・AO など線形データ）
+            upload_texture_data(device, queue, td, td.linear)
         }).collect();
 
         // ── マテリアル ─────────────────────────────────────────

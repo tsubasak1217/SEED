@@ -61,7 +61,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let F0 = mix(vec3<f32>(0.04), albedo, metallic);
 
     // 方向光（将来的には uniform バッファに移行）
-    let light_dir   = normalize(vec3<f32>(0.5, 1.0, 0.3));
+    // LH 座標系: カメラは -Z 側にいて +Z を向く。カメラ向きの面の法線は -Z 方向なので
+    // ライトの Z は負（カメラ側から照らす）にしないと前面が ndl=0 になり真っ暗になる。
+    let light_dir   = normalize(vec3<f32>(0.5, 1.0, -0.3));
     let light_color = vec3<f32>(3.0);
 
     let L   = light_dir;

@@ -46,6 +46,10 @@ fn load_textures(
                 height: img.height,
                 pixels,
             },
+            // glTF は埋め込みのためロード時点では用途不明。
+            // ベースカラー用途が多いため sRGB (false) で統一する。
+            // 法線・MR・AO も sRGB 扱いになるが、現状 glTF は正常動作しているため維持。
+            linear: false,
             sampler: SamplerData {
                 mag_filter: sampler.mag_filter()
                     .map(conv_mag_filter)
@@ -187,6 +191,34 @@ fn load_materials(document: &gltf::Document) -> Vec<Material> {
 }
 
 // ============================================================
+//  座標系変換ユーティリティ
+// ============================================================
+
+/// glTF 右手座標系 → エンジン左手座標系 の行列変換。
+///
+/// Z 軸反転: M_lh = C * M_rh * C  (C = diag(1, 1, -1, 1))
+/// 具体的には (row==2) XOR (col==2) の要素を符号反転する。
+fn rh_to_lh_mat4(m: [[f32; 4]; 4]) -> [[f32; 4]; 4] {
+    let mut out = m;
+    for j in 0..4usize {
+        if j != 2 { out[2][j] = -m[2][j]; }   // 行 2 を反転（[2][2] 除く）
+    }
+    for i in 0..4usize {
+        if i != 2 { out[i][2] = -m[i][2]; }   // 列 2 を反転（[2][2] 除く）
+    }
+    out
+}
+
+/// クォータニオン（xyzw）を RH→LH 変換する。
+///
+/// Z 軸反転では X・Y 軸まわりの回転方向が反転するため、
+/// qx と qy を符号反転する: q_lh = [-qx, -qy, qz, qw]
+#[inline]
+fn rh_to_lh_quat(q: [f32; 4]) -> [f32; 4] {
+    [-q[0], -q[1], q[2], q[3]]
+}
+
+// ============================================================
 //  メッシュ
 // ============================================================
 
@@ -246,16 +278,20 @@ fn load_primitive(
         .unwrap_or_else(|| vec![[1.0; 4]; n]);
 
     // ── インデックス（なければ順番に生成）──────────────────
+    // Z 反転後も perspective_lh によってスクリーン空間の巻き順（CCW）は保存されるため
+    // 巻き順の反転は不要。変換前後で左手系 GPU が同じ front-face 判定を行う。
     let indices: Vec<u32> = reader
         .read_indices()
         .map(|v| v.into_u32().collect())
         .unwrap_or_else(|| (0..n as u32).collect());
 
     // ── 頂点構築 ───────────────────────────────────────────
+    // RH→LH: 位置・法線・接線の Z 成分を反転し、左手座標系に変換する。
+    // 接線の w（ビタンジェント符号）も反転（座標系の手性が変わるため）。
     let vertices: Vec<Vertex> = (0..n).map(|i| Vertex {
-        position: positions[i],
-        normal:   normals[i],
-        tangent:  tangents[i],
+        position: [positions[i][0],  positions[i][1],  -positions[i][2]],
+        normal:   [normals[i][0],    normals[i][1],    -normals[i][2]],
+        tangent:  [tangents[i][0],   tangents[i][1],   -tangents[i][2], -tangents[i][3]],
         uv0:      uvs0[i],
         uv1:      uvs1[i],
         color:    colors[i],
@@ -346,13 +382,16 @@ fn generate_lod_indices(indices: &[u32], vertices: &[super::model::Vertex]) -> V
 
 fn load_nodes(document: &gltf::Document) -> (Vec<ModelNode>, Vec<usize>) {
     let mut nodes: Vec<ModelNode> = document.nodes().map(|node| {
-        // glTF は列優先行列 → 行優先に転置
-        let local_matrix = transpose_mat4(node.transform().matrix());
+        // glTF は列優先行列 → 行優先に転置、さらに RH→LH 変換（Z 軸反転）
+        let local_matrix = rh_to_lh_mat4(transpose_mat4(node.transform().matrix()));
 
-        // TRS を取得（アニメーション補間用）
+        // TRS を取得（アニメーション補間用）、RH→LH 変換を適用
         let (translation, rotation, scale) = match node.transform() {
             gltf::scene::Transform::Decomposed { translation, rotation, scale } => {
-                (translation, rotation, scale)
+                // 平行移動 Z を反転、クォータニオン XY を反転
+                let t_lh = [translation[0], translation[1], -translation[2]];
+                let r_lh = rh_to_lh_quat(rotation);
+                (t_lh, r_lh, scale)
             }
             gltf::scene::Transform::Matrix { .. } => {
                 // matrix ノードは通常アニメーションされないため恒等値を使用
@@ -438,11 +477,16 @@ fn load_animations(
                 gltf::animation::Interpolation::CubicSpline => Interpolation::CubicSpline,
             };
 
+            // RH→LH 変換: 平行移動は Z 反転、回転はクォータニオン XY 反転
             let outputs = match reader.read_outputs()? {
                 ReadOutputs::Translations(it) =>
-                    AnimationOutputs::Translations(it.collect()),
+                    AnimationOutputs::Translations(
+                        it.map(|t| [t[0], t[1], -t[2]]).collect()
+                    ),
                 ReadOutputs::Rotations(rot) =>
-                    AnimationOutputs::Rotations(rot.into_f32().collect()),
+                    AnimationOutputs::Rotations(
+                        rot.into_f32().map(rh_to_lh_quat).collect()
+                    ),
                 ReadOutputs::Scales(it) =>
                     AnimationOutputs::Scales(it.collect()),
                 ReadOutputs::MorphTargetWeights(w) =>
@@ -475,10 +519,10 @@ fn load_skins(
         let joints: Vec<gltf::Node<'_>> = skin.joints().collect();
         let reader = skin.reader(|b| Some(&*buffers[b.index()]));
 
-        // インバースバインド行列（列優先 → 行優先に転置）
+        // インバースバインド行列（列優先 → 行優先に転置、さらに RH→LH 変換）
         let ibms: Vec<[[f32; 4]; 4]> = reader
             .read_inverse_bind_matrices()
-            .map(|it| it.map(transpose_mat4).collect())
+            .map(|it| it.map(|m| rh_to_lh_mat4(transpose_mat4(m))).collect())
             .unwrap_or_else(|| vec![ModelNode::identity_matrix(); joints.len()]);
 
         // スキンのルートジョイント（skin.skeleton() で取得できる場合）

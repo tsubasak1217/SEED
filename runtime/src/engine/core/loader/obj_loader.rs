@@ -22,21 +22,26 @@ pub fn load(path: &Path) -> Result<Model, LoadError> {
 
     // ── テクスチャ ─────────────────────────────────────────────
     // OBJ は外部ファイル参照のみ。モデルファイルと同じディレクトリを基準とする。
+    // (tex_name, linear) のタプルで用途を保持する:
+    //   diffuse  → linear: false（sRGB カラーテクスチャ）
+    //   normal   → linear: true （線形データテクスチャ）
+    //   specular → linear: true （線形データテクスチャ）
     let base_dir = path.parent().unwrap_or(Path::new("."));
     let textures: Vec<TextureData> = obj_materials.iter()
         .flat_map(|mat| {
             [
-                mat.diffuse_texture.as_deref(),
-                mat.normal_texture.as_deref(),
-                mat.specular_texture.as_deref(),
+                (mat.diffuse_texture.as_deref(),  false),   // sRGB
+                (mat.normal_texture.as_deref(),   true),    // linear
+                (mat.specular_texture.as_deref(), true),    // linear
             ]
         })
-        .flatten()
-        .filter(|s| !s.is_empty())
-        .map(|tex_name| TextureData {
+        .filter(|(name, _)| name.map_or(false, |s| !s.is_empty()))
+        .filter_map(|(name, linear)| Some((name?, linear)))
+        .map(|(tex_name, linear)| TextureData {
             name:    Some(tex_name.to_string()),
             source:  TextureSource::FilePath(base_dir.join(tex_name)),
             sampler: SamplerData::default(),
+            linear,
         })
         .collect();
 
@@ -156,14 +161,20 @@ fn build_primitive(mesh: &tobj::Mesh) -> Primitive {
         let nm = |off: usize| mesh.normals.get(i * 3 + off).copied().unwrap_or(0.0);
         let uv = |off: usize| mesh.texcoords.get(i * 2 + off).copied().unwrap_or(0.0);
 
+        // RH→LH: 位置・法線の Z 成分を反転してエンジン左手座標系に変換する。
+        // perspective_lh を使う LH では Z 反転後もスクリーン空間 CCW が保存されるため
+        // 巻き順スワップは不要。
         Vertex {
-            position: [p(0), p(1), p(2)],
+            position: [p(0), p(1), -p(2)],
             normal:   {
                 let nx = nm(0); let ny = nm(1); let nz = nm(2);
                 let len = (nx*nx + ny*ny + nz*nz).sqrt();
-                if len > 1e-6 { [nx/len, ny/len, nz/len] } else { [0.0, 1.0, 0.0] }
+                // Z 反転してエンジン LH 系に合わせる
+                if len > 1e-6 { [nx/len, ny/len, -nz/len] } else { [0.0, 1.0, 0.0] }
             },
-            tangent: [1.0, 0.0, 0.0, 1.0],  // tobj は tangent 非対応
+            // tobj は tangent 非対応。デフォルト接線 +X。
+            // Z 反転で座標系の手性が変わるため w（ビタンジェント符号）を反転する。
+            tangent: [1.0, 0.0, 0.0, -1.0],
             uv0:     [uv(0), 1.0 - uv(1)],  // OBJ は V 軸が反転
             uv1:     [0.0; 2],
             color:   [1.0; 4],

@@ -27,12 +27,15 @@ use crate::engine::methods::gizmo_interact::{
 };
 use crate::engine::core::app_base::undo::{UndoHistory, TransformCommand, MultiTransformCommand, SceneSnapshotCommand, SelectionCommand, ActorTreeSnapshotCommand, ComponentSlotsSnapshotCommand, ActorTransformCommand, ActorGroupTransformCommand};
 use crate::engine::core::app_base::scene::build_actor;
-use crate::engine::structs::components::model_component::GROUP_ID_BASE as INST_GROUP_ID_BASE;
-use crate::engine::core::scripting::{ScriptingHost, ScriptComponent, PlaceholderScriptSlot};
-use crate::engine::structs::components::ModelComponent;
-use crate::engine::structs::components::model_component::{GroupMeta, GROUP_ID_BASE};
+use crate::engine::core::scripting::ScriptingHost;
+use crate::engine::ecs::World;
+use crate::engine::components::{
+    ModelComponent, Transform as ActorTransform, ComponentKind, ComponentData,
+    ScriptComponent, PlaceholderScriptSlot,
+    GroupMeta, GROUP_ID_BASE,
+};
 use crate::engine::structs::objects::{Actor, DebugCamera};
-use crate::engine::structs::objects::actor::{ActorData, ActorTransform, ComponentSlotData};
+use crate::engine::structs::objects::actor::{ActorData, ComponentSlotData, ComponentSlot};
 use crate::engine::structs::objects::camera::debug_camera::CameraInput;
 use crate::engine::structs::tensor::{Vector3, Mat4x4};
 use crate::engine::structs::transforms::{Quaternion, Transform};
@@ -377,7 +380,8 @@ impl App {
                         self.selected_instances = if let Some(scene) = &self.scene {
                             let mut c = 0u32;
                             find_actor_by_dfs(&scene.actors, self.active_world_line, actor_dfs, &mut c)
-                                .and_then(|a| a.get_component::<ModelComponent>())
+                                .and_then(|a| a.mc_entity())
+                                .and_then(|e| scene.world.get::<ModelComponent>(e))
                                 .map(|mc| (0..mc.instance_mats.len() as u32).collect())
                                 .unwrap_or_default()
                         } else { vec![] };
@@ -505,7 +509,7 @@ impl App {
                         let actor = scene.actors.iter()
                             .find(|a| a.world_line == wl)
                             .ok_or("アクティブ世界線にアクターがありません")?;
-                        let data = actor.to_data();
+                        let data = actor.to_data(&scene.world);
                         let json = serde_json::to_string_pretty(&data).map_err(|e| e.to_string())?;
                         std::fs::write(&path, json).map_err(|e| e.to_string())?;
                         Ok(())
@@ -534,13 +538,15 @@ impl App {
                             let mut c = 0u32;
                             let snapshot = self.scene.as_ref().and_then(|s| {
                                 find_actor_by_dfs(&s.actors, wl, target_id, &mut c).map(|actor| {
-                                    let old_mats = actor.get_component::<ModelComponent>()
+                                    let old_mats = actor.mc_entity()
+                                        .and_then(|e| s.world.get::<ModelComponent>(e))
                                         .map(|mc| mc.instance_mats.clone())
                                         .unwrap_or_default();
-                                    let old_tf = actor.transform.clone();
+                                    let old_tf = s.world.get::<ActorTransform>(actor.entity)
+                                        .cloned().unwrap_or_default();
                                     let mut child_old_states = Vec::new();
                                     let mut child_dfs = target_id + 1;
-                                    collect_child_actor_old_states(actor, &mut child_dfs, &mut child_old_states);
+                                    collect_child_actor_old_states(actor, &s.world, &mut child_dfs, &mut child_old_states);
                                     (old_mats, old_tf, child_old_states)
                                 })
                             });
@@ -560,7 +566,7 @@ impl App {
                             let old_tf = self.scene.as_ref().and_then(|s| {
                                 let mut c = 0u32;
                                 find_actor_by_dfs(&s.actors, wl, target_id, &mut c)
-                                    .map(|a| a.transform.clone())
+                                    .and_then(|a| s.world.get::<ActorTransform>(a.entity).cloned())
                             });
                             if let Some(old_tf) = old_tf {
                                 self.inspector_transform_drag = Some(InspectorTransformDrag::Actor {
@@ -591,9 +597,10 @@ impl App {
                                 {
                                     if let Some(scene) = &self.scene {
                                         let mut c = 0u32;
-                                        if let Some(actor) = find_actor_by_dfs(&scene.actors, drag_wl, dfs_id, &mut c) {
-                                            if old_tf != actor.transform {
-                                                let new_tf = actor.transform.clone();
+                                        let new_tf_opt = find_actor_by_dfs(&scene.actors, drag_wl, dfs_id, &mut c)
+                                            .and_then(|a| scene.world.get::<ActorTransform>(a.entity).cloned());
+                                        if let Some(new_tf) = new_tf_opt {
+                                            if old_tf != new_tf {
                                                 self.undo_history.record(Box::new(ActorTransformCommand {
                                                     world_line: drag_wl, dfs_id,
                                                     old_transform: old_tf, new_transform: new_tf,
@@ -611,10 +618,12 @@ impl App {
                                 let child_transforms: Vec<(u32, ActorTransform, ActorTransform, [[f32;4];4], [[f32;4];4])>;
                                 {
                                     let scene_ref = self.scene.as_ref();
-                                    // 選択アクターの MC を DFS で取得（最初の MC ではなく正しいアクター）
+                                    // 選択アクターの MC をスロット entity 経由で取得する
                                     let mc_opt = scene_ref.and_then(|s| {
-                                        find_actor_by_dfs(&s.actors, wl, dfs_id, &mut c)
-                                            .and_then(|a| a.get_component::<ModelComponent>())
+                                        let mut c_ = c;
+                                        find_actor_by_dfs(&s.actors, wl, dfs_id, &mut c_)
+                                            .and_then(|a| a.mc_entity())
+                                            .and_then(|e| s.world.get::<ModelComponent>(e))
                                     });
                                     transforms = mc_opt.map(|mc| {
                                         old_mats.iter().enumerate().filter_map(|(i, &old)| {
@@ -625,20 +634,27 @@ impl App {
                                     }).unwrap_or_default();
                                     let mut c2 = 0u32;
                                     new_tf = scene_ref
-                                        .and_then(|s| find_actor_by_dfs(&s.actors, wl, dfs_id, &mut c2))
-                                        .map(|a| a.transform.clone())
+                                        .and_then(|s| {
+                                            find_actor_by_dfs(&s.actors, wl, dfs_id, &mut c2)
+                                                .and_then(|a| s.world.get::<ActorTransform>(a.entity).cloned())
+                                        })
                                         .unwrap_or_default();
                                     // 子孫アクターの変化を収集
                                     child_transforms = child_old_states.iter().filter_map(|(child_dfs, old_child_tf, old_mc_mat)| {
                                         let mut cc = 0u32;
                                         let new_child_tf = scene_ref
-                                            .and_then(|s| find_actor_by_dfs(&s.actors, wl, *child_dfs, &mut cc))
-                                            .map(|a| a.transform.clone())?;
+                                            .and_then(|s| {
+                                                find_actor_by_dfs(&s.actors, wl, *child_dfs, &mut cc)
+                                                    .and_then(|a| s.world.get::<ActorTransform>(a.entity).cloned())
+                                            })?;
                                         let mut cc2 = 0u32;
                                         let new_mc_mat = scene_ref
-                                            .and_then(|s| find_actor_by_dfs(&s.actors, wl, *child_dfs, &mut cc2))
-                                            .and_then(|a| a.get_component::<ModelComponent>())
-                                            .and_then(|mc| mc.instance_mats.first().copied())
+                                            .and_then(|s| {
+                                                find_actor_by_dfs(&s.actors, wl, *child_dfs, &mut cc2)
+                                                    .and_then(|a| a.mc_entity())
+                                                    .and_then(|e| s.world.get::<ModelComponent>(e))
+                                                    .and_then(|mc| mc.instance_mats.first().copied())
+                                            })
                                             .unwrap_or(*old_mc_mat);
                                         if old_child_tf != &new_child_tf || old_mc_mat != &new_mc_mat {
                                             Some((*child_dfs, old_child_tf.clone(), new_child_tf, *old_mc_mat, new_mc_mat))
@@ -743,33 +759,51 @@ impl App {
                     }
                 }
                 IpcCommand::OpenActor { path, world_line } => {
-                    if let Some(ctx) = &self.draw_ctx {
-                        match Scene::load_actor(
+                    if self.draw_ctx.is_some() {
+                        // カメラ状態を退避
+                        let pos = self.camera.base.transform.position;
+                        self.saved_cameras.insert(self.active_world_line, DebugCameraData {
+                            position: [pos.x, pos.y, pos.z],
+                            yaw:      self.camera.yaw,
+                            pitch:    self.camera.pitch,
+                            fov_deg:  self.camera.base.projection.fov_y_rad.to_degrees(),
+                            far:      self.camera.base.projection.far,
+                            speed:    self.camera.move_speed,
+                        });
+
+                        // main_scene を確保し、同じ world_line の古いアクターを World ごと除去する。
+                        // ※ 独自 World を作らず main_scene.world に直接ロードするため、
+                        //   まず既存エンティティを despawn してからロードする。
+                        let main_scene = self.scene.get_or_insert_with(|| Scene::new("main"));
+                        {
+                            // 除去対象エンティティを再帰的に収集（actor.entity + スロット entity を含む）
+                            fn collect_entities(actor: &Actor, out: &mut Vec<crate::engine::ecs::Entity>) {
+                                out.push(actor.entity);
+                                out.extend(actor.slot_entities());
+                                for child in actor.children() { collect_entities(child, out); }
+                            }
+                            let mut to_despawn = Vec::new();
+                            for a in main_scene.actors.iter().filter(|a| a.world_line == world_line) {
+                                collect_entities(a, &mut to_despawn);
+                            }
+                            for e in to_despawn { main_scene.world.despawn(e); }
+                            main_scene.actors.retain(|a| a.world_line != world_line);
+                        }
+
+                        // アクターを main_scene.world に直接ロードする。
+                        // entity が main_scene.world に登録されるため、
+                        // 再オープン後も to_data() がコンポーネントを正しく参照できる。
+                        let result = Scene::load_actor_into(
                             std::path::Path::new(&path),
-                            ctx,
+                            self.draw_ctx.as_ref().unwrap(),
+                            &mut main_scene.world,
                             self.scripting_host.as_ref(),
-                        ) {
-                            Ok(mut actor_scene) => {
-                                // 現在の世界線のカメラ状態を退避する
-                                let pos = self.camera.base.transform.position;
-                                self.saved_cameras.insert(self.active_world_line, DebugCameraData {
-                                    position: [pos.x, pos.y, pos.z],
-                                    yaw:      self.camera.yaw,
-                                    pitch:    self.camera.pitch,
-                                    fov_deg:  self.camera.base.projection.fov_y_rad.to_degrees(),
-                                    far:      self.camera.base.projection.far,
-                                    speed:    self.camera.move_speed,
-                                });
-                                // ロードしたアクターに指定の世界線を設定
-                                for actor in &mut actor_scene.actors {
-                                    actor.world_line = world_line;
-                                }
-                                // 既存シーンに追加（同じ world_line は一度クリア）
-                                let main_scene = self.scene.get_or_insert_with(|| Scene::new("main"));
-                                main_scene.actors.retain(|a| a.world_line != world_line);
-                                for actor in actor_scene.actors {
-                                    main_scene.actors.push(actor);
-                                }
+                            world_line,
+                        );
+
+                        match result {
+                            Ok(actor) => {
+                                main_scene.actors.push(actor);
                                 // この世界線に切り替え
                                 self.active_world_line = world_line;
                                 // カメラを復元（初回はデフォルト）
@@ -1037,16 +1071,16 @@ impl App {
         // Phase 1: 選択 MC のインスタンスを更新してデルタを計算
         let (old_mat, delta) = {
             let Some(scene) = &mut self.scene else { return };
-            let mc = if wl != 0 {
+            // Entity を先に取得（actors の不変借用を解放してから world を可変借用）
+            let entity_opt = if wl != 0 {
                 let dfs = match selected_dfs { Some(d) => d as u32, None => return };
                 let mut c = 0u32;
-                match find_actor_by_dfs_mut(&mut scene.actors, wl, dfs, &mut c) {
-                    Some(actor) => actor.get_component_mut::<ModelComponent>(),
-                    None => return,
-                }
+                find_actor_by_dfs(&scene.actors, wl, dfs, &mut c).map(|a| a.entity)
             } else {
-                scene.find_component_in_world_line_mut::<ModelComponent>(wl)
+                scene.actors.iter().find(|a| a.world_line == wl).map(|a| a.entity)
             };
+            let entity = match entity_opt { Some(e) => e, None => return };
+            let mc = scene.world.get_mut::<ModelComponent>(entity);
             let Some(mc) = mc else { return };
             if i >= mc.instance_mats.len() { return; }
             let old_mat = mc.instance_mats[i];
@@ -1066,14 +1100,27 @@ impl App {
         let (selected_old_tf, selected_new_tf, child_changes) = if wl != 0 {
             let dfs = match selected_dfs { Some(d) => d as u32, None => return };
             let Some(scene) = &mut self.scene else { return };
-            let mut c = 0u32;
-            let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, dfs, &mut c) else { return };
-            let old_tf = actor.transform.clone();
-            actor.transform = ActorTransform::from_mat4(&mat4x4_mul(delta, old_tf.to_mat4()));
-            let new_tf = actor.transform.clone();
+            // entity を先取得（actors の不変借用を解放）
+            let entity = {
+                let mut c = 0u32;
+                match find_actor_by_dfs(&scene.actors, wl, dfs, &mut c).map(|a| a.entity) {
+                    Some(e) => e,
+                    None => return,
+                }
+            };
+            let old_tf = scene.world.get::<ActorTransform>(entity).cloned().unwrap_or_default();
+            let new_tf = ActorTransform::from_mat4(&mat4x4_mul(delta, old_tf.to_mat4()));
+            if let Some(t) = scene.world.get_mut::<ActorTransform>(entity) { *t = new_tf.clone(); }
             let mut child_dfs_counter = dfs + 1;
             let mut child_changes = Vec::new();
-            apply_delta_to_actor_children(actor, delta, &mut child_dfs_counter, &mut child_changes);
+            {
+                // actors と world を別フィールドとして同時可変借用する
+                let (actors, world) = (&mut scene.actors, &mut scene.world);
+                let mut c2 = 0u32;
+                if let Some(actor) = find_actor_by_dfs_mut(actors, wl, dfs, &mut c2) {
+                    apply_delta_to_actor_children(actor, world, delta, &mut child_dfs_counter, &mut child_changes);
+                }
+            }
             (old_tf, new_tf, child_changes)
         } else {
             (ActorTransform::default(), ActorTransform::default(), Vec::new())
@@ -1263,14 +1310,14 @@ impl App {
                     (ctx.upload_model(&model), ctx.create_instanced_batch(&model, 1))
                 };
 
-                use crate::engine::structs::components::model_component::{InstanceMeta, GROUP_ID_BASE};
-                // アクターの現在 transform を初期インスタンス位置に使う
+                // アクターの現在 Transform（World から取得）を初期インスタンス位置に使う
                 let initial_mat: [[f32; 4]; 4] = {
                     let scene = self.scene.as_ref().unwrap();
                     scene.actors.iter()
                         .filter(|a| a.world_line == wl)
                         .nth(actor_idx)
-                        .map(|a| a.transform.to_mat4())
+                        .and_then(|a| scene.world.get::<ActorTransform>(a.entity))
+                        .map(|tf| tf.to_mat4())
                         .unwrap_or([[1.0,0.0,0.0,0.0],[0.0,1.0,0.0,0.0],[0.0,0.0,1.0,0.0],[0.0,0.0,0.0,1.0]])
                 };
                 let mc = ModelComponent {
@@ -1279,20 +1326,24 @@ impl App {
                     gpu_model:       Some(gpu_model),
                     instanced_batch: Some(instanced_batch),
                     instance_mats:   vec![initial_mat],
-                    instance_meta:   vec![InstanceMeta::new("Instance_0")],
+                    instance_meta:   vec![crate::engine::components::InstanceMeta::new("Instance_0")],
                     group_meta:      Vec::new(),
                     next_group_id:   GROUP_ID_BASE,
                 };
 
+                // スロット専用エンティティを spawn して world に insert し、スロットを登録する
                 let found = {
                     let scene = self.scene.as_mut().unwrap();
+                    let slot_entity = scene.world.spawn();
+                    scene.world.insert(slot_entity, mc);
                     if let Some(actor) = scene.actors.iter_mut()
                         .filter(|a| a.world_line == wl)
                         .nth(actor_idx)
                     {
-                        actor.add_component(mc);
+                        actor.add_slot_typed::<ModelComponent>("ModelComponent".to_string(), ComponentKind::Model, slot_entity);
                         true
                     } else {
+                        scene.world.despawn(slot_entity);
                         false
                     }
                 };
@@ -1321,19 +1372,24 @@ impl App {
         let mut c = 0u32;
         let Some(actor) = find_actor_by_dfs(&scene.actors, wl, dfs_id, &mut c) else { return };
 
-        let [px, py, pz] = actor.transform.position;
-        let [ex, ey, ez] = actor.transform.rotation;
-        let [sx, sy, sz] = actor.transform.scale;
+        // Transform を World から取得（なければ default）
+        let tf = scene.world.get::<ActorTransform>(actor.entity).cloned().unwrap_or_default();
+        let [px, py, pz] = tf.position;
+        let [ex, ey, ez] = tf.rotation;
+        let [sx, sy, sz] = tf.scale;
+
+        // actor.to_data() でシリアライズ済みコンポーネント一覧を取得
+        let actor_data = actor.to_data(&scene.world);
 
         let mut comps_json = String::from("[");
-        for (i, slot) in actor.component_slots().iter().enumerate() {
+        for (i, slot_data) in actor_data.components.iter().enumerate() {
             if i > 0 { comps_json.push(','); }
-            let (type_name, extra) = match slot.component.to_data() {
-                crate::engine::structs::components::ComponentData::ModelComponent(ref d) => {
+            let (type_name, extra) = match &slot_data.component {
+                ComponentData::ModelComponent(d) => {
                     let path_json = serde_json::to_string(&d.model_path).unwrap_or_default();
                     ("ModelComponent", format!(r#","model_path":{path_json}"#))
                 }
-                crate::engine::structs::components::ComponentData::ScriptComponent(ref d) => {
+                ComponentData::ScriptComponent(d) => {
                     let path_json = serde_json::to_string(&d.type_name).unwrap_or_default();
                     ("ScriptComponent", format!(r#","model_path":{path_json}"#))
                 }
@@ -1341,7 +1397,7 @@ impl App {
             comps_json.push_str(&format!(
                 r#"{{"slot":{},"name":{},"type":"{}"{}}}"#,
                 i,
-                serde_json::to_string(&slot.name).unwrap_or_default(),
+                serde_json::to_string(&slot_data.name).unwrap_or_default(),
                 type_name,
                 extra,
             ));
@@ -1366,9 +1422,19 @@ impl App {
         if self.draw_ctx.is_none() || self.ipc.is_none() || self.scene.is_none() { return; }
         let wl = self.active_world_line;
 
+        // actor.entity を先に取得（Transform 参照のみに使用）
+        let actor_entity_opt = {
+            let scene = self.scene.as_ref().unwrap();
+            let mut c = 0u32;
+            find_actor_by_dfs(&scene.actors, wl, actor_dfs_id, &mut c).map(|a| a.entity)
+        };
+        let Some(actor_entity) = actor_entity_opt else { return };
+
+        let before_slots = self.snapshot_actor_slots(wl, actor_dfs_id);
+
         match component_type {
             "ModelComponent" => {
-                use crate::engine::structs::components::model_component::{InstanceMeta, GROUP_ID_BASE};
+                use crate::engine::components::InstanceMeta;
                 let mc = if args.is_empty() {
                     ModelComponent::empty()
                 } else {
@@ -1387,9 +1453,8 @@ impl App {
                     // アクターの現在 transform を初期インスタンス位置に使う
                     let initial_mat: [[f32; 4]; 4] = {
                         let scene = self.scene.as_ref().unwrap();
-                        let mut c = 0u32;
-                        find_actor_by_dfs(&scene.actors, wl, actor_dfs_id, &mut c)
-                            .map(|a| a.transform.to_mat4())
+                        scene.world.get::<ActorTransform>(actor_entity)
+                            .map(|t| t.to_mat4())
                             .unwrap_or([[1.0,0.0,0.0,0.0],[0.0,1.0,0.0,0.0],[0.0,0.0,1.0,0.0],[0.0,0.0,0.0,1.0]])
                     };
                     ModelComponent {
@@ -1404,22 +1469,24 @@ impl App {
                     }
                 };
                 let name = slot_name.to_string();
-                let before_slots = self.snapshot_actor_slots(wl, actor_dfs_id);
                 let found = {
                     let scene = self.scene.as_mut().unwrap();
+                    // スロット専用エンティティを spawn してコンポーネントを格納する
+                    let slot_entity = scene.world.spawn();
+                    scene.world.insert(slot_entity, mc);
                     let mut c = 0u32;
                     if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
-                        actor.add_component_named(name, mc);
+                        actor.add_slot_typed::<ModelComponent>(name, ComponentKind::Model, slot_entity);
                         true
-                    } else { false }
+                    } else {
+                        scene.world.despawn(slot_entity);
+                        false
+                    }
                 };
                 if found {
                     let after_slots = self.snapshot_actor_slots(wl, actor_dfs_id);
                     self.undo_history.record(Box::new(ComponentSlotsSnapshotCommand {
-                        world_line: wl,
-                        actor_dfs_id,
-                        before_slots,
-                        after_slots,
+                        world_line: wl, actor_dfs_id, before_slots, after_slots,
                     }));
                     self.actor_virtual_selected_idx = None;
                     self.selected_instances.clear();
@@ -1429,24 +1496,25 @@ impl App {
                 }
             }
             "ScriptComponent" => {
-                let sc   = PlaceholderScriptSlot { script_path: String::new() };
                 let name = slot_name.to_string();
-                let before_slots = self.snapshot_actor_slots(wl, actor_dfs_id);
                 let found = {
                     let scene = self.scene.as_mut().unwrap();
+                    // スロット専用エンティティを spawn してコンポーネントを格納する
+                    let slot_entity = scene.world.spawn();
+                    scene.world.insert(slot_entity, PlaceholderScriptSlot { script_path: String::new() });
                     let mut c = 0u32;
                     if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
-                        actor.add_component_named(name, sc);
+                        actor.add_slot_typed::<PlaceholderScriptSlot>(name, ComponentKind::Placeholder, slot_entity);
                         true
-                    } else { false }
+                    } else {
+                        scene.world.despawn(slot_entity);
+                        false
+                    }
                 };
                 if found {
                     let after_slots = self.snapshot_actor_slots(wl, actor_dfs_id);
                     self.undo_history.record(Box::new(ComponentSlotsSnapshotCommand {
-                        world_line: wl,
-                        actor_dfs_id,
-                        before_slots,
-                        after_slots,
+                        world_line: wl, actor_dfs_id, before_slots, after_slots,
                     }));
                     self.actor_virtual_selected_idx = None;
                     self.selected_instances.clear();
@@ -1464,22 +1532,33 @@ impl App {
         if self.draw_ctx.is_none() || self.ipc.is_none() || self.scene.is_none() { return; }
         let wl = self.active_world_line;
 
-        // ScriptComponent スロットの場合はパスのみ更新して早期リターン
-        let is_script = {
-            let scene = self.scene.as_mut().unwrap();
+        // 対象スロットの entity と kind、および actor entity（Transform 参照用）を取得する
+        let (actor_entity, slot_entity, slot_kind) = {
+            let scene = self.scene.as_ref().unwrap();
             let mut c = 0u32;
-            find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c)
-                .and_then(|a| a.component_slots_mut().get_mut(slot_idx as usize))
-                .and_then(|s| s.component.as_any_mut().downcast_mut::<PlaceholderScriptSlot>())
-                .map(|sc| sc.script_path = path.to_string())
-                .is_some()
+            let actor = match find_actor_by_dfs(&scene.actors, wl, actor_dfs_id, &mut c) {
+                Some(a) => a,
+                None => return,
+            };
+            let slot = actor.slots().get(slot_idx as usize);
+            match slot {
+                Some(s) => (actor.entity, s.entity, s.kind),
+                None => return,
+            }
         };
-        if is_script {
+
+        // PlaceholderScriptSlot の場合はスロット entity のパスのみ更新して早期リターン
+        if slot_kind == ComponentKind::Placeholder {
+            let scene = self.scene.as_mut().unwrap();
+            if let Some(ps) = scene.world.get_mut::<PlaceholderScriptSlot>(slot_entity) {
+                ps.script_path = path.to_string();
+            }
             self.send_actor_components(actor_dfs_id);
             if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
             return;
         }
 
+        // ModelComponent の場合: モデルをロードして GPU リソース再構築
         let model = match crate::engine::core::loader::load_model(std::path::Path::new(path)) {
             Ok(m) => m,
             Err(e) => {
@@ -1491,29 +1570,24 @@ impl App {
             let ctx = self.draw_ctx.as_ref().unwrap();
             (ctx.upload_model(&model), ctx.create_instanced_batch(&model, 1))
         };
-        use crate::engine::structs::components::model_component::InstanceMeta;
-        let found = {
-            let scene = self.scene.as_mut().unwrap();
-            let mut c = 0u32;
-            if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
-                // actor.transform を先に取得してスロット借用前にキャプチャする
-                let initial_mat = actor.transform.to_mat4();
-                if let Some(slot) = actor.component_slots_mut().get_mut(slot_idx as usize) {
-                    if let Some(mc) = slot.component.as_any_mut().downcast_mut::<ModelComponent>() {
-                        if mc.instance_mats.is_empty() {
-                            // アクターの現在 transform を初期インスタンス位置に使う
-                            mc.instance_mats.push(initial_mat);
-                            mc.instance_meta.push(InstanceMeta::new("Instance_0"));
-                        }
-                        mc.source_path   = path.to_string();
-                        mc.model         = Some(model);
-                        mc.gpu_model     = Some(gpu_model);
-                        mc.instanced_batch = Some(instanced_batch);
-                        true
-                    } else { false }
-                } else { false }
-            } else { false }
-        };
+        use crate::engine::components::InstanceMeta;
+        let scene = self.scene.as_mut().unwrap();
+        // actor transform を先取得（actor.entity から Transform を参照）
+        let initial_mat = scene.world.get::<ActorTransform>(actor_entity)
+            .map(|t| t.to_mat4())
+            .unwrap_or([[1.0,0.0,0.0,0.0],[0.0,1.0,0.0,0.0],[0.0,0.0,1.0,0.0],[0.0,0.0,0.0,1.0]]);
+        // スロット専用 entity の ModelComponent を更新する
+        let found = if let Some(mc) = scene.world.get_mut::<ModelComponent>(slot_entity) {
+            if mc.instance_mats.is_empty() {
+                mc.instance_mats.push(initial_mat);
+                mc.instance_meta.push(InstanceMeta::new("Instance_0"));
+            }
+            mc.source_path     = path.to_string();
+            mc.model           = Some(model);
+            mc.gpu_model       = Some(gpu_model);
+            mc.instanced_batch = Some(instanced_batch);
+            true
+        } else { false };
         if found {
             self.send_actor_components(actor_dfs_id);
             if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
@@ -1660,9 +1734,26 @@ impl App {
 
         {
             let scene = self.scene.as_mut().unwrap();
-            let mut c = 0u32;
-            if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
-                actor.remove_component_at(slot_idx as usize);
+            // スロットの entity と kind を先に取り出して actors の borrow を解放する
+            let removal_info = {
+                let mut c = 0u32;
+                find_actor_by_dfs(&scene.actors, wl, actor_dfs_id, &mut c)
+                    .and_then(|a| a.slots().get(slot_idx as usize).map(|s| (s.entity, s.kind)))
+            };
+            if let Some((slot_entity, kind)) = removal_info {
+                // スロット専用エンティティからコンポーネントを除去して despawn する。
+                // 各スロットは独自 entity を持つため、is_last_of_kind チェックは不要。
+                match kind {
+                    ComponentKind::Model       => { scene.world.remove::<ModelComponent>(slot_entity); }
+                    ComponentKind::Script      => { scene.world.remove::<ScriptComponent>(slot_entity); }
+                    ComponentKind::Placeholder => { scene.world.remove::<PlaceholderScriptSlot>(slot_entity); }
+                }
+                scene.world.despawn(slot_entity);
+                // アクターのスロットリストから削除
+                let mut c = 0u32;
+                if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
+                    actor.remove_slot_at(slot_idx as usize);
+                }
             }
         }
 
@@ -1683,7 +1774,7 @@ impl App {
         let wl = self.active_world_line;
         let mut c = 0u32;
         if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
-            if let Some(slot) = actor.component_slots_mut().get_mut(slot_idx as usize) {
+            if let Some(slot) = actor.slots_mut().get_mut(slot_idx as usize) {
                 slot.name = name.to_string();
             }
         }
@@ -1699,51 +1790,48 @@ impl App {
         sx: f32, sy: f32, sz: f32,
     ) {
         let wl = self.active_world_line;
-        let old_tf = {
+        let new_tf = ActorTransform { position: [px, py, pz], rotation: [ex, ey, ez], scale: [sx, sy, sz] };
+        // entity を先に取得して borrow を解放
+        let entity = {
             let Some(scene) = &mut self.scene else { return };
             let mut c = 0u32;
-            if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, dfs_id, &mut c) {
-                let old = actor.transform.clone();
-                actor.transform.position = [px, py, pz];
-                actor.transform.rotation = [ex, ey, ez];
-                actor.transform.scale    = [sx, sy, sz];
-                Some(old)
-            } else {
-                None
-            }
+            find_actor_by_dfs(&scene.actors, wl, dfs_id, &mut c).map(|a| a.entity)
         };
-        let Some(old_tf) = old_tf else {
+        let Some(entity) = entity else {
             if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
             return;
         };
-        let new_tf = ActorTransform { position: [px, py, pz], rotation: [ex, ey, ez], scale: [sx, sy, sz] };
+        let old_tf = {
+            let Some(scene) = &mut self.scene else { return };
+            let old = scene.world.get::<ActorTransform>(entity).cloned().unwrap_or_default();
+            if let Some(t) = scene.world.get_mut::<ActorTransform>(entity) { *t = new_tf.clone(); }
+            old
+        };
 
         // actor edit モード: delta を selected actor の MC と子アクターに適用する
         let (mc_transforms, child_changes) = if wl != 0 {
             let delta = mat4x4_mul(new_tf.to_mat4(), mat4x4_inv(old_tf.to_mat4()));
             // Phase A: 選択アクターの MC を更新
             let mc_transforms = if let Some(scene) = &mut self.scene {
-                let mut c = 0u32;
-                if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, dfs_id, &mut c) {
-                    if let Some(mc) = actor.get_component_mut::<ModelComponent>() {
-                        let old_mats = mc.instance_mats.clone();
-                        for m in &mut mc.instance_mats { *m = mat4x4_mul(delta, *m); }
-                        mc.mark_batch_dirty();
-                        old_mats.iter().enumerate().filter_map(|(i, &old)| {
-                            mc.instance_mats.get(i).copied()
-                                .filter(|&new| new != old)
-                                .map(|new| (i as u32, old, new))
-                        }).collect::<Vec<_>>()
-                    } else { Vec::new() }
+                if let Some(mc) = scene.world.get_mut::<ModelComponent>(entity) {
+                    let old_mats = mc.instance_mats.clone();
+                    for m in &mut mc.instance_mats { *m = mat4x4_mul(delta, *m); }
+                    mc.mark_batch_dirty();
+                    old_mats.iter().enumerate().filter_map(|(i, &old)| {
+                        mc.instance_mats.get(i).copied()
+                            .filter(|&new| new != old)
+                            .map(|new| (i as u32, old, new))
+                    }).collect::<Vec<_>>()
                 } else { Vec::new() }
             } else { Vec::new() };
             // Phase B: 子アクターに delta を伝播
             let mut child_changes = Vec::new();
             if let Some(scene) = &mut self.scene {
+                let (actors, world) = (&mut scene.actors, &mut scene.world);
                 let mut c = 0u32;
-                if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, dfs_id, &mut c) {
+                if let Some(actor) = find_actor_by_dfs_mut(actors, wl, dfs_id, &mut c) {
                     let mut child_dfs_counter = dfs_id + 1;
-                    apply_delta_to_actor_children(actor, delta, &mut child_dfs_counter, &mut child_changes);
+                    apply_delta_to_actor_children(actor, world, delta, &mut child_dfs_counter, &mut child_changes);
                 }
             }
             (mc_transforms, child_changes)
@@ -1780,7 +1868,7 @@ impl App {
         let scene = self.scene.as_ref()?;
         let mut c = 0u32;
         let actor = find_actor_by_dfs(&scene.actors, wl, dfs_id, &mut c)?;
-        Some(actor.transform.position)
+        Some(scene.world.get::<ActorTransform>(actor.entity)?.position)
     }
 
     /// 指定世界線のアクターツリー全体をデータとしてスナップショットする。
@@ -1788,7 +1876,7 @@ impl App {
         self.scene.as_ref().map(|s| {
             s.actors.iter()
                 .filter(|a| a.world_line == wl)
-                .map(|a| a.to_data())
+                .map(|a| a.to_data(&s.world))
                 .collect()
         }).unwrap_or_default()
     }
@@ -1798,129 +1886,65 @@ impl App {
         let Some(scene) = &self.scene else { return Vec::new() };
         let mut c = 0u32;
         find_actor_by_dfs(&scene.actors, wl, actor_dfs_id, &mut c)
-            .map(|actor| actor.component_slots().iter().map(|s| ComponentSlotData {
-                name:      s.name.clone(),
-                component: s.component.to_data(),
-            }).collect())
+            .map(|actor| actor.to_data(&scene.world).components)
             .unwrap_or_default()
     }
 
     /// 指定世界線のアクターを data から再構築する（Undo/Redo 用）。
     fn rebuild_actors_for_wl(&mut self, wl: u32, actors_data: Vec<ActorData>) {
         let host = self.scripting_host.clone();
-        // draw_ctx の借用はこのスコープ内で完結させ、scene への書き込みと重ならないようにする。
-        let mut rebuilt: Vec<Actor> = {
-            let Some(ctx) = &self.draw_ctx else { return };
-            actors_data.into_iter()
-                .filter_map(|d| build_actor(d, ctx, host.as_ref()).ok())
-                .collect()
-        };
-        for a in &mut rebuilt { a.set_world_line_recursive(wl); }
+        if self.draw_ctx.is_none() { return; }
 
-        let scene = self.scene.get_or_insert_with(|| Scene::new("main"));
+        // scene を一時的に取り出して draw_ctx との同時借用問題を回避
+        let mut scene = self.scene.take().unwrap_or_else(|| Scene::new("main"));
+
+        // 既存の wl アクターエンティティを despawn して削除
+        let old_entities: Vec<_> = collect_entities_for_wl(&scene.actors, wl);
+        for e in old_entities { scene.world.despawn(e); }
         scene.actors.retain(|a| a.world_line != wl);
-        scene.actors.extend(rebuilt);
 
+        // 新アクターを構築
+        let ctx = self.draw_ctx.as_ref().unwrap();
+        for data in actors_data {
+            match build_actor(data, ctx, &mut scene.world, host.as_ref()) {
+                Ok(mut a) => { a.set_world_line_recursive(wl); scene.actors.push(a); }
+                Err(e) => eprintln!("[SEED] rebuild_actors_for_wl error: {e}"),
+            }
+        }
+
+        self.scene = Some(scene);
         self.selected_instances.clear();
         self.actor_virtual_selected_idx = None;
     }
 
     /// 指定アクターのコンポーネントスロットを data から再構築する（Undo/Redo 用）。
     fn rebuild_actor_slots(&mut self, wl: u32, actor_dfs_id: u32, slots_data: Vec<ComponentSlotData>) {
-        use crate::engine::structs::objects::actor::ComponentSlot;
-        use crate::engine::structs::components::ComponentData;
-        use crate::engine::core::scripting::ScriptComponent;
         use crate::engine::core::loader::load_model;
 
         let host = self.scripting_host.clone();
-
-        // スロットを draw_ctx の借用スコープ内で構築する。
-        let mut new_slots: Vec<ComponentSlot> = {
-            let Some(ctx) = &self.draw_ctx else { return };
-            let mut slots = Vec::new();
-            for slot_data in slots_data {
-                let component: Box<dyn crate::engine::structs::components::Component> = match slot_data.component {
-                    ComponentData::ModelComponent(mc_data) => {
-                        let mc = if mc_data.model_path.is_empty() {
-                            ModelComponent {
-                                source_path:     String::new(),
-                                model:           None,
-                                gpu_model:       None,
-                                instanced_batch: None,
-                                instance_mats:   mc_data.instances,
-                                instance_meta:   mc_data.meta,
-                                group_meta:      mc_data.groups,
-                                next_group_id:   mc_data.next_group_id,
-                            }
-                        } else {
-                            let path = std::path::Path::new(&mc_data.model_path);
-                            let model = match load_model(path) {
-                                Ok(m) => m,
-                                Err(_) => continue,
-                            };
-                            let gpu_model       = ctx.upload_model(&model);
-                            let instanced_batch = ctx.create_instanced_batch(&model, mc_data.instances.len() as u32);
-                            ModelComponent {
-                                source_path:     mc_data.model_path,
-                                model:           Some(model),
-                                gpu_model:       Some(gpu_model),
-                                instanced_batch: Some(instanced_batch),
-                                instance_mats:   mc_data.instances,
-                                instance_meta:   mc_data.meta,
-                                group_meta:      mc_data.groups,
-                                next_group_id:   mc_data.next_group_id,
-                            }
-                        };
-                        Box::new(mc)
-                    }
-                    ComponentData::ScriptComponent(sc_data) => {
-                        if let Some(host) = &host {
-                            if let Some(sc) = ScriptComponent::new(std::sync::Arc::clone(host), sc_data.type_name) {
-                                Box::new(sc)
-                            } else { continue; }
-                        } else { continue; }
-                    }
-                };
-                slots.push(ComponentSlot { name: slot_data.name, component });
-            }
-            slots
-        };
-
-        let Some(scene) = &mut self.scene else { return };
-        let mut c = 0u32;
-        if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
-            actor.replace_components(new_slots);
-        }
-    }
-
-    /// コンポーネントを複製する（DUPLICATE_COMPONENT）。
-    fn handle_duplicate_component(&mut self, actor_dfs_id: u32, slot_idx: u32) {
         if self.draw_ctx.is_none() { return; }
-        let wl = self.active_world_line;
-        let host = self.scripting_host.clone();
 
-        let slot_data_opt = {
-            let Some(scene) = &self.scene else { return };
+        // scene を一時取り出し draw_ctx との借用競合を回避
+        let mut scene = match self.scene.take() {
+            Some(s) => s,
+            None => return,
+        };
+        let ctx = self.draw_ctx.as_ref().unwrap();
+
+        // 既存スロットの entity を全て despawn して削除する
+        let existing_slot_entities: Vec<crate::engine::ecs::Entity> = {
             let mut c = 0u32;
             find_actor_by_dfs(&scene.actors, wl, actor_dfs_id, &mut c)
-                .and_then(|actor| actor.component_slots().get(slot_idx as usize))
-                .map(|s| ComponentSlotData {
-                    name:      format!("{} Copy", s.name),
-                    component: s.component.to_data(),
-                })
+                .map(|a| a.slot_entities().collect())
+                .unwrap_or_default()
         };
-        let Some(slot_data) = slot_data_opt else { return };
+        for e in existing_slot_entities { scene.world.despawn(e); }
 
-        let before_slots = self.snapshot_actor_slots(wl, actor_dfs_id);
-
-        use crate::engine::structs::objects::actor::ComponentSlot;
-        use crate::engine::structs::components::ComponentData;
-        use crate::engine::core::scripting::ScriptComponent;
-        use crate::engine::core::loader::load_model;
-
-        // draw_ctx の借用をスコープで完結させる。
-        let new_component_opt: Option<(String, Box<dyn crate::engine::structs::components::Component>)> = {
-            let Some(ctx) = &self.draw_ctx else { return };
+        // 新コンポーネントを world に insert してスロット目録を更新
+        let mut new_slots = Vec::new();
+        for slot_data in slots_data {
+            // スロット専用エンティティを新しく spawn する
+            let slot_entity = scene.world.spawn();
             match slot_data.component {
                 ComponentData::ModelComponent(mc_data) => {
                     let mc = if mc_data.model_path.is_empty() {
@@ -1936,13 +1960,7 @@ impl App {
                         }
                     } else {
                         let path = std::path::Path::new(&mc_data.model_path);
-                        let model = match load_model(path) {
-                            Ok(m) => m,
-                            Err(e) => {
-                                if let Some(ipc) = &self.ipc { ipc.send(&format!("LOAD_ERROR:{e}")); }
-                                return;
-                            }
-                        };
+                        let model = match load_model(path) { Ok(m) => m, Err(_) => { scene.world.despawn(slot_entity); continue; } };
                         let gpu_model       = ctx.upload_model(&model);
                         let instanced_batch = ctx.create_instanced_batch(&model, mc_data.instances.len() as u32);
                         ModelComponent {
@@ -1956,28 +1974,139 @@ impl App {
                             next_group_id:   mc_data.next_group_id,
                         }
                     };
-                    Some((slot_data.name, Box::new(mc) as Box<dyn crate::engine::structs::components::Component>))
+                    scene.world.insert(slot_entity, mc);
+                    new_slots.push(ComponentSlot::new::<ModelComponent>(slot_data.name, ComponentKind::Model, slot_entity));
                 }
                 ComponentData::ScriptComponent(sc_data) => {
-                    if let Some(host) = &host {
-                        ScriptComponent::new(std::sync::Arc::clone(host), sc_data.type_name)
-                            .map(|sc| (slot_data.name, Box::new(sc) as Box<dyn crate::engine::structs::components::Component>))
-                    } else { None }
+                    if let Some(h) = &host {
+                        if let Some(sc) = ScriptComponent::new(std::sync::Arc::clone(h), sc_data.type_name.clone()) {
+                            scene.world.insert(slot_entity, sc);
+                            new_slots.push(ComponentSlot::new::<ScriptComponent>(slot_data.name, ComponentKind::Script, slot_entity));
+                        } else {
+                            scene.world.insert(slot_entity, PlaceholderScriptSlot { script_path: sc_data.type_name });
+                            new_slots.push(ComponentSlot::new::<PlaceholderScriptSlot>(slot_data.name, ComponentKind::Placeholder, slot_entity));
+                        }
+                    } else {
+                        scene.world.insert(slot_entity, PlaceholderScriptSlot { script_path: sc_data.type_name });
+                        new_slots.push(ComponentSlot::new::<PlaceholderScriptSlot>(slot_data.name, ComponentKind::Placeholder, slot_entity));
+                    }
+                }
+            }
+        }
+
+        // actor.slots を更新
+        {
+            let mut c = 0u32;
+            if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
+                actor.replace_slots(new_slots);
+            }
+        }
+
+        self.scene = Some(scene);
+    }
+
+    /// コンポーネントを複製する（DUPLICATE_COMPONENT）。
+    fn handle_duplicate_component(&mut self, actor_dfs_id: u32, slot_idx: u32) {
+        if self.draw_ctx.is_none() { return; }
+        let wl = self.active_world_line;
+        let host = self.scripting_host.clone();
+
+        // スロットデータを先にスナップショット（actors/world の借用を解放）
+        let slot_data_opt = {
+            let Some(scene) = &self.scene else { return };
+            let mut c = 0u32;
+            find_actor_by_dfs(&scene.actors, wl, actor_dfs_id, &mut c)
+                .and_then(|actor| actor.to_data(&scene.world).components.into_iter().nth(slot_idx as usize))
+                .map(|mut sd| { sd.name = format!("{} Copy", sd.name); sd })
+        };
+        let Some(slot_data) = slot_data_opt else { return };
+
+        let before_slots = self.snapshot_actor_slots(wl, actor_dfs_id);
+
+        use crate::engine::core::loader::load_model;
+
+        if self.draw_ctx.is_none() { return; }
+        let mut scene = match self.scene.take() {
+            Some(s) => s,
+            None => return,
+        };
+        let ctx = self.draw_ctx.as_ref().unwrap();
+
+        // 新コンポーネントを world に insert してスロット追加
+        // スロット専用エンティティを spawn し、各スロットが独立したコンポーネントを持つ。
+        let slot_added = match slot_data.component {
+            ComponentData::ModelComponent(mc_data) => {
+                let mc = if mc_data.model_path.is_empty() {
+                    ModelComponent {
+                        source_path:     String::new(),
+                        model:           None,
+                        gpu_model:       None,
+                        instanced_batch: None,
+                        instance_mats:   mc_data.instances,
+                        instance_meta:   mc_data.meta,
+                        group_meta:      mc_data.groups,
+                        next_group_id:   mc_data.next_group_id,
+                    }
+                } else {
+                    let path = std::path::Path::new(&mc_data.model_path);
+                    let model = match load_model(path) {
+                        Ok(m) => m,
+                        Err(e) => {
+                            if let Some(ipc) = &self.ipc { ipc.send(&format!("LOAD_ERROR:{e}")); }
+                            self.scene = Some(scene);
+                            return;
+                        }
+                    };
+                    let gpu_model       = ctx.upload_model(&model);
+                    let instanced_batch = ctx.create_instanced_batch(&model, mc_data.instances.len() as u32);
+                    ModelComponent {
+                        source_path:     mc_data.model_path,
+                        model:           Some(model),
+                        gpu_model:       Some(gpu_model),
+                        instanced_batch: Some(instanced_batch),
+                        instance_mats:   mc_data.instances,
+                        instance_meta:   mc_data.meta,
+                        group_meta:      mc_data.groups,
+                        next_group_id:   mc_data.next_group_id,
+                    }
+                };
+                let slot_entity = scene.world.spawn();
+                scene.world.insert(slot_entity, mc);
+                let mut c = 0u32;
+                if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
+                    actor.add_slot_typed::<ModelComponent>(slot_data.name, ComponentKind::Model, slot_entity);
+                } else {
+                    scene.world.despawn(slot_entity);
+                }
+                true
+            }
+            ComponentData::ScriptComponent(sc_data) => {
+                let slot_entity = scene.world.spawn();
+                if let Some(h) = &host {
+                    if let Some(sc) = ScriptComponent::new(std::sync::Arc::clone(h), sc_data.type_name.clone()) {
+                        scene.world.insert(slot_entity, sc);
+                        let mut c = 0u32;
+                        if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
+                            actor.add_slot_typed::<ScriptComponent>(slot_data.name, ComponentKind::Script, slot_entity);
+                        } else { scene.world.despawn(slot_entity); }
+                        true
+                    } else {
+                        scene.world.insert(slot_entity, PlaceholderScriptSlot { script_path: sc_data.type_name });
+                        let mut c = 0u32;
+                        if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
+                            actor.add_slot_typed::<PlaceholderScriptSlot>(slot_data.name, ComponentKind::Placeholder, slot_entity);
+                        } else { scene.world.despawn(slot_entity); }
+                        true
+                    }
+                } else {
+                    scene.world.despawn(slot_entity);
+                    false
                 }
             }
         };
-        let Some((comp_name, new_component)) = new_component_opt else { return };
 
-        {
-            let Some(scene) = &mut self.scene else { return };
-            let mut c = 0u32;
-            if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
-                actor.component_slots_mut().push(ComponentSlot {
-                    name:      comp_name,
-                    component: new_component,
-                });
-            }
-        }
+        self.scene = Some(scene);
+        if !slot_added { return; }
 
         let after_slots = self.snapshot_actor_slots(wl, actor_dfs_id);
         self.undo_history.record(Box::new(ComponentSlotsSnapshotCommand {
@@ -2171,8 +2300,11 @@ impl App {
             let scene = self.scene.as_ref()?;
             if let Some(dfs) = self.actor_virtual_selected_idx {
                 let mut c = 0u32;
-                find_actor_by_dfs(&scene.actors, self.active_world_line, dfs as u32, &mut c)
-                    .and_then(|a| a.get_component::<ModelComponent>())
+                // スロット entity 経由で MC を参照する
+                let mc_slot_entity = find_actor_by_dfs(
+                    &scene.actors, self.active_world_line, dfs as u32, &mut c
+                ).and_then(|a| a.mc_entity())?;
+                scene.world.get::<ModelComponent>(mc_slot_entity)
                     .and_then(|mc| selection_centroid(&self.selected_instances, &mc.instance_mats))
                     .or_else(|| self.actor_virtual_world_pos())
             } else {
@@ -2416,16 +2548,19 @@ impl ApplicationHandler for App {
                                 let wl           = self.active_world_line;
                                 let selected_dfs = self.actor_virtual_selected_idx;
                                 if let Some(scene) = self.scene.as_ref() {
-                                    let mc = if wl != 0 {
+                                    // スロット entity 経由で MC を取得する
+                                    let mc_entity: Option<crate::engine::ecs::Entity> = if wl != 0 {
                                         selected_dfs.and_then(|dfs| {
                                             let mut c = 0u32;
                                             find_actor_by_dfs(&scene.actors, wl, dfs as u32, &mut c)
-                                                .and_then(|a| a.get_component::<ModelComponent>())
+                                                .and_then(|a| a.mc_entity())
                                         })
                                     } else {
-                                        scene.find_component_in_world_line::<ModelComponent>(wl)
+                                        scene.actors.iter()
+                                            .filter(|a| a.world_line == 0)
+                                            .find_map(|a| a.mc_entity())
                                     };
-                                    if let Some(mc) = mc {
+                                    if let Some(mc) = mc_entity.and_then(|e| scene.world.get::<ModelComponent>(e)) {
                                         let roots = mc.filter_selection_roots(&self.selected_instances);
                                         self.drag_root_starts = roots.iter()
                                             .filter_map(|&i| mc.instance_mats.get(i as usize).map(|&m| (i, m)))
@@ -2438,18 +2573,19 @@ impl ApplicationHandler for App {
                                             let mut c = 0u32;
                                             if let Some(actor) = find_actor_by_dfs(&scene.actors, wl, dfs as u32, &mut c) {
                                                 let mut child_dfs_counter = dfs as u32 + 1;
-                                                collect_child_actor_mc_starts(actor, &mut child_dfs_counter, &mut self.actor_child_drag_starts);
+                                                collect_child_actor_mc_starts(actor, &scene.world, &mut child_dfs_counter, &mut self.actor_child_drag_starts);
                                             }
                                         }
                                     }
                                     // アクター編集モード: MC なし（または空）のアクターは
-                                    // actor.transform を直接動かすパスを使う
+                                    // Transform を直接動かすパスを使う
                                     if wl != 0 && self.drag_root_starts.is_empty() {
                                         if let Some(dfs) = selected_dfs {
                                             let mut c = 0u32;
                                             if let Some(actor) = find_actor_by_dfs(&scene.actors, wl, dfs as u32, &mut c) {
-                                                self.actor_transform_drag_start =
-                                                    Some((dfs as u32, actor.transform.clone()));
+                                                let old_tf = scene.world.get::<ActorTransform>(actor.entity)
+                                                    .cloned().unwrap_or_default();
+                                                self.actor_transform_drag_start = Some((dfs as u32, old_tf));
                                             }
                                         }
                                     }
@@ -2483,34 +2619,37 @@ impl ApplicationHandler for App {
                         // ドラッグで変化があれば Undo 履歴に一括記録
                         if self.gizmo_drag.is_some() {
                             if let Some((dfs_id, old_transform)) = self.actor_transform_drag_start.take() {
-                                // アクター編集モード: MC なしアクターの actor.transform ドラッグ終了
+                                // アクター編集モード: MC なしアクターの Transform ドラッグ終了
                                 let wl = self.active_world_line;
-                                // ドラッグ中に更新された子アクター情報を回収
                                 let child_drag_starts = std::mem::take(&mut self.actor_child_drag_starts);
-                                // ドラッグ終了時の親 transform を取得
+                                // entity を取り出してから World で Transform を取得
                                 let new_transform_opt = self.scene.as_ref().and_then(|s| {
                                     let mut c = 0u32;
                                     find_actor_by_dfs(&s.actors, wl, dfs_id, &mut c)
-                                        .map(|a| a.transform.clone())
+                                        .and_then(|a| s.world.get::<ActorTransform>(a.entity).cloned())
                                 });
                                 if let Some(new_transform) = new_transform_opt {
-                                    // delta = new * inv(old) — 子アクターへの伝播に使う
                                     let delta = mat4x4_mul(new_transform.to_mat4(), mat4x4_inv(old_transform.to_mat4()));
-                                    // 子アクター transform を更新し Undo 用データを収集
                                     let mut child_transforms: Vec<(u32, ActorTransform, ActorTransform, [[f32;4];4], [[f32;4];4])> = Vec::new();
                                     for (child_dfs, start_mat) in child_drag_starts {
                                         let new_mc_mat = mat4x4_mul(delta, start_mat);
                                         if let Some(scene) = &mut self.scene {
-                                            let mut c = 0u32;
-                                            if let Some(child_actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, child_dfs, &mut c) {
-                                                // child_actor.transform はドラッグ中は未更新のため現在値が old_child_tf
-                                                let old_child_tf = child_actor.transform.clone();
+                                            // entity を先に取り出して actors の borrow を解放する
+                                            let child_entity = {
+                                                let mut c = 0u32;
+                                                find_actor_by_dfs(&scene.actors, wl, child_dfs, &mut c)
+                                                    .map(|a| a.entity)
+                                            };
+                                            if let Some(child_entity) = child_entity {
+                                                // child.transform はドラッグ中は未更新のため現在値が old_child_tf
+                                                let old_child_tf = scene.world.get::<ActorTransform>(child_entity)
+                                                    .cloned().unwrap_or_default();
                                                 let new_child_tf = ActorTransform::from_mat4(&new_mc_mat);
-                                                child_actor.transform = new_child_tf.clone();
-                                                if let Some(mc) = child_actor.get_component_mut::<ModelComponent>() {
-                                                    if let Some(m) = mc.instance_mats.first_mut() {
-                                                        *m = new_mc_mat;
-                                                    }
+                                                if let Some(tf) = scene.world.get_mut::<ActorTransform>(child_entity) {
+                                                    *tf = new_child_tf.clone();
+                                                }
+                                                if let Some(mc) = scene.world.get_mut::<ModelComponent>(child_entity) {
+                                                    if let Some(m) = mc.instance_mats.first_mut() { *m = new_mc_mat; }
                                                     mc.mark_batch_dirty();
                                                 }
                                                 child_transforms.push((child_dfs, old_child_tf, new_child_tf, start_mat, new_mc_mat));
@@ -2522,7 +2661,7 @@ impl ApplicationHandler for App {
                                             wl, dfs_id,
                                             old_tf: old_transform,
                                             new_tf: new_transform,
-                                            transforms: vec![],   // MC なしなのでインスタンス変化なし
+                                            transforms: vec![],
                                             child_transforms,
                                         }));
                                         if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
@@ -2535,17 +2674,21 @@ impl ApplicationHandler for App {
                                 let child_starts = std::mem::take(&mut self.drag_child_starts);
                                 let wl_end           = self.active_world_line;
                                 let selected_dfs_end = self.actor_virtual_selected_idx;
-                                if let Some(mc) = self.scene.as_ref().and_then(|s| {
+                                // スロット entity 経由で MC entity を取得する
+                                let mc_entity: Option<crate::engine::ecs::Entity> = self.scene.as_ref().and_then(|s| {
                                     if wl_end != 0 {
                                         selected_dfs_end.and_then(|dfs| {
                                             let mut c = 0u32;
                                             find_actor_by_dfs(&s.actors, wl_end, dfs as u32, &mut c)
-                                                .and_then(|a| a.get_component::<ModelComponent>())
+                                                .and_then(|a| a.mc_entity())
                                         })
                                     } else {
-                                        s.find_component_in_world_line::<ModelComponent>(wl_end)
+                                        s.actors.iter()
+                                            .filter(|a| a.world_line == 0)
+                                            .find_map(|a| a.mc_entity())
                                     }
-                                }) {
+                                });
+                                if let Some(mc) = mc_entity.and_then(|e| self.scene.as_ref()?.world.get::<ModelComponent>(e)) {
                                     for (idx, old_mat) in root_starts.into_iter().chain(child_starts) {
                                         if let Some(&new_mat) = mc.instance_mats.get(idx as usize) {
                                             if new_mat != old_mat {
@@ -2557,7 +2700,7 @@ impl ApplicationHandler for App {
                                 let wl = self.active_world_line;
                                 if wl != 0 && self.actor_virtual_selected_idx.is_some() {
                                     // アクター編集モード + 仮想ノード選択中:
-                                    // delta を actor.transform と子アクターに反映して ActorGroupTransformCommand で記録。
+                                    // delta を Transform と子アクターに反映して ActorGroupTransformCommand で記録。
                                     let dfs_id = self.actor_virtual_selected_idx.unwrap() as u32;
                                     let child_drag_starts = std::mem::take(&mut self.actor_child_drag_starts);
                                     let (old_tf, new_tf, child_transforms) = if let Some(&(_, old_mat, new_mat)) = transforms.first() {
@@ -2565,23 +2708,39 @@ impl ApplicationHandler for App {
                                         let mut old_v = ActorTransform::default();
                                         let mut new_v = ActorTransform::default();
                                         if let Some(scene) = &mut self.scene {
-                                            let mut c = 0u32;
-                                            if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, dfs_id, &mut c) {
-                                                old_v = actor.transform.clone();
-                                                actor.transform = ActorTransform::from_mat4(&mat4x4_mul(delta, old_v.to_mat4()));
-                                                new_v = actor.transform.clone();
+                                            // entity を先に取り出して actors の borrow を解放する
+                                            let entity = {
+                                                let mut c = 0u32;
+                                                find_actor_by_dfs(&scene.actors, wl, dfs_id, &mut c)
+                                                    .map(|a| a.entity)
+                                            };
+                                            if let Some(entity) = entity {
+                                                old_v = scene.world.get::<ActorTransform>(entity).cloned().unwrap_or_default();
+                                                new_v = ActorTransform::from_mat4(&mat4x4_mul(delta, old_v.to_mat4()));
+                                                if let Some(tf) = scene.world.get_mut::<ActorTransform>(entity) { *tf = new_v.clone(); }
                                             }
                                         }
-                                        // 子アクターの actor.transform を更新し Undo 用データを収集
+                                        // 子アクターの Transform を更新し Undo 用データを収集
                                         let mut child_transforms = Vec::new();
                                         for (child_dfs, start_mat) in child_drag_starts {
                                             if let Some(scene) = &mut self.scene {
-                                                let mut c = 0u32;
-                                                if let Some(child_actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, child_dfs, &mut c) {
-                                                    let old_child_tf = child_actor.transform.clone();
-                                                    child_actor.transform = ActorTransform::from_mat4(&mat4x4_mul(delta, old_child_tf.to_mat4()));
-                                                    let new_child_tf = child_actor.transform.clone();
-                                                    let new_mc_mat = child_actor.get_component::<ModelComponent>()
+                                                // actor.entity（Transform 用）とスロット entity（MC 用）を別々に取得する
+                                                let (child_entity_opt, mc_slot_entity) = {
+                                                    let mut c = 0u32;
+                                                    find_actor_by_dfs(&scene.actors, wl, child_dfs, &mut c)
+                                                        .map(|a| (Some(a.entity), a.mc_entity()))
+                                                        .unwrap_or((None, None))
+                                                };
+                                                if let Some(child_entity) = child_entity_opt {
+                                                    let old_child_tf = scene.world.get::<ActorTransform>(child_entity)
+                                                        .cloned().unwrap_or_default();
+                                                    let new_child_tf = ActorTransform::from_mat4(
+                                                        &mat4x4_mul(delta, old_child_tf.to_mat4()));
+                                                    if let Some(tf) = scene.world.get_mut::<ActorTransform>(child_entity) {
+                                                        *tf = new_child_tf.clone();
+                                                    }
+                                                    let new_mc_mat = mc_slot_entity
+                                                        .and_then(|e| scene.world.get::<ModelComponent>(e))
                                                         .and_then(|mc| mc.instance_mats.first().copied())
                                                         .unwrap_or(start_mat);
                                                     child_transforms.push((child_dfs, old_child_tf, new_child_tf, start_mat, new_mc_mat));
@@ -2590,10 +2749,11 @@ impl ApplicationHandler for App {
                                         }
                                         (old_v, new_v, child_transforms)
                                     } else {
+                                        // インスタンス変化なし: 現在の Transform を取得
                                         let tf = self.scene.as_ref().and_then(|s| {
                                             let mut c = 0u32;
                                             find_actor_by_dfs(&s.actors, wl, dfs_id, &mut c)
-                                                .map(|a| a.transform.clone())
+                                                .and_then(|a| s.world.get::<ActorTransform>(a.entity).cloned())
                                         }).unwrap_or_default();
                                         (tf.clone(), tf, Vec::new())
                                     };
@@ -2609,7 +2769,6 @@ impl ApplicationHandler for App {
                                         self.undo_history.record(Box::new(MultiTransformCommand { transforms }));
                                         if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
                                     }
-                                    // ドラッグ終了後にインスペクターを更新（単体選択時のみ）
                                     if self.selected_instances.len() == 1 {
                                         self.send_actor_data(self.selected_instances[0]);
                                     }
@@ -2753,16 +2912,19 @@ impl ApplicationHandler for App {
                         let selected_dfs = self.actor_virtual_selected_idx;
 
                         if let Some(scene) = &mut self.scene {
-                            let mc = if wl != 0 {
+                            // スロット entity 経由で MC entity を取得する
+                            let mc_entity: Option<crate::engine::ecs::Entity> = if wl != 0 {
                                 if let Some(dfs) = selected_dfs {
                                     let mut c = 0u32;
-                                    find_actor_by_dfs_mut(&mut scene.actors, wl, dfs as u32, &mut c)
-                                        .and_then(|a| a.get_component_mut::<ModelComponent>())
+                                    find_actor_by_dfs(&scene.actors, wl, dfs as u32, &mut c)
+                                        .and_then(|a| a.mc_entity())
                                 } else { None }
                             } else {
-                                scene.find_component_in_world_line_mut::<ModelComponent>(wl)
+                                scene.actors.iter()
+                                    .filter(|a| a.world_line == 0)
+                                    .find_map(|a| a.mc_entity())
                             };
-                            if let Some(mc) = mc {
+                            if let Some(mc) = mc_entity.and_then(|e| scene.world.get_mut::<ModelComponent>(e)) {
                                 for &(idx, ref start) in &self.drag_root_starts {
                                     if let Some(m) = mc.instance_mats.get_mut(idx as usize) {
                                         *m = mat4x4_mul(delta, *start);
@@ -2776,13 +2938,19 @@ impl ApplicationHandler for App {
                                 mc.mark_batch_dirty();
                             }
                             // アクター編集モード: MC なし（インスタンス空含む）のアクターは
-                            // actor.transform を直接ドラッグ開始時の値にデルタを掛けて更新する
+                            // Transform を直接ドラッグ開始時の値にデルタを掛けて更新する
                             if wl != 0 && self.drag_root_starts.is_empty() {
                                 if let Some((drag_dfs, ref start_tf)) = self.actor_transform_drag_start.clone() {
                                     let new_mat = mat4x4_mul(delta, start_tf.to_mat4());
-                                    let mut c = 0u32;
-                                    if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, drag_dfs, &mut c) {
-                                        actor.transform = ActorTransform::from_mat4(&new_mat);
+                                    let entity = {
+                                        let mut c = 0u32;
+                                        find_actor_by_dfs(&scene.actors, wl, drag_dfs, &mut c)
+                                            .map(|a| a.entity)
+                                    };
+                                    if let Some(entity) = entity {
+                                        if let Some(tf) = scene.world.get_mut::<ActorTransform>(entity) {
+                                            *tf = ActorTransform::from_mat4(&new_mat);
+                                        }
                                     }
                                 }
                             }
@@ -2790,9 +2958,14 @@ impl ApplicationHandler for App {
                             if wl != 0 {
                                 let child_starts = self.actor_child_drag_starts.clone();
                                 for (child_dfs, start_mat) in &child_starts {
-                                    let mut c = 0u32;
-                                    if let Some(child_actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, *child_dfs, &mut c) {
-                                        if let Some(mc) = child_actor.get_component_mut::<ModelComponent>() {
+                                    // スロット entity 経由で子アクターの MC を更新する
+                                    let mc_slot_entity = {
+                                        let mut c = 0u32;
+                                        find_actor_by_dfs(&scene.actors, wl, *child_dfs, &mut c)
+                                            .and_then(|a| a.mc_entity())
+                                    };
+                                    if let Some(entity) = mc_slot_entity {
+                                        if let Some(mc) = scene.world.get_mut::<ModelComponent>(entity) {
                                             if let Some(m) = mc.instance_mats.first_mut() {
                                                 *m = mat4x4_mul(delta, *start_mat);
                                             }
@@ -2888,8 +3061,10 @@ impl ApplicationHandler for App {
 
                     if self.active_world_line != 0 {
                         // アクター編集モード: world_line 全 MC を DFS で更新
+                        // actors と world はフィールド分割で同時可変借用する
+                        let (actors, world) = (&mut scene.actors, &mut scene.world);
                         update_all_mc_batches_for_wl(
-                            &mut scene.actors, self.active_world_line,
+                            actors, world, self.active_world_line,
                             &queue, &frustum_planes, camera_pos, self.clock.anim_time(),
                         );
                     } else if let Some(mc) = scene.find_component_in_world_line_mut::<ModelComponent>(0) {
@@ -2902,18 +3077,21 @@ impl ApplicationHandler for App {
                     }
                 }
 
-                // ── ギズモ位置：選択中アクターの MC 重心、なければ actor.transform 位置 ──
+                // ── ギズモ位置：選択中アクターの MC 重心、なければ Transform 位置 ──
                 let gizmo_pos = if self.active_world_line != 0 {
-                    // アクター編集モード: 選択アクターの MC を使う
-                    self.actor_virtual_selected_idx
+                    // アクター編集モード: entity を取り出してから World で MC を参照する
+                    let mc_centroid = self.actor_virtual_selected_idx
                         .and_then(|dfs_id| {
                             let scene = self.scene.as_ref()?;
                             let mut c = 0u32;
-                            find_actor_by_dfs(&scene.actors, self.active_world_line, dfs_id as u32, &mut c)
-                        })
-                        .and_then(|actor| actor.get_component::<ModelComponent>())
-                        .and_then(|mc| selection_centroid(&self.selected_instances, &mc.instance_mats))
-                        .or_else(|| self.actor_virtual_world_pos())
+                            // entity を取り出して actors への borrow を解放する
+                            let entity = find_actor_by_dfs(
+                                &scene.actors, self.active_world_line, dfs_id as u32, &mut c
+                            ).map(|a| a.entity)?;
+                            scene.world.get::<ModelComponent>(entity)
+                                .and_then(|mc| selection_centroid(&self.selected_instances, &mc.instance_mats))
+                        });
+                    mc_centroid.or_else(|| self.actor_virtual_world_pos())
                 } else {
                     self.scene.as_ref()
                         .and_then(|s| s.find_component_in_world_line::<ModelComponent>(0))
@@ -2933,7 +3111,7 @@ impl ApplicationHandler for App {
                 // render block 後に参照するためここで収集しておく
                 let wl_mc_pick_infos: Vec<(u32, u32, usize)> = if self.active_world_line != 0 {
                     if let Some(scene) = &self.scene {
-                        collect_mcs_in_world_line(&scene.actors, self.active_world_line)
+                        collect_mcs_in_world_line(&scene.actors, &scene.world, self.active_world_line)
                             .into_iter()
                             .map(|(base, dfs, mc)| (base, dfs, mc.instance_mats.len()))
                             .collect()
@@ -2947,7 +3125,7 @@ impl ApplicationHandler for App {
                         Ok(mut frame) => {
                             // アクター編集モード: world_line の全 MC を収集。シーンモード: 単一 MC
                             let all_mcs: Vec<(u32, u32, &ModelComponent)> = if self.active_world_line != 0 {
-                                collect_mcs_in_world_line(&scene.actors, self.active_world_line)
+                                collect_mcs_in_world_line(&scene.actors, &scene.world, self.active_world_line)
                             } else {
                                 scene.find_component_in_world_line::<ModelComponent>(0)
                                     .map(|mc| vec![(0u32, 0u32, mc)])
@@ -3588,26 +3766,42 @@ fn find_actor_child_by_dfs<'a>(
 }
 
 /// インスタンスインデックスからそのインスタンスを持つアクターの DFS インデックスを返す。
-fn find_actor_dfs_by_instance(actors: &[Actor], wl: u32, instance_idx: u32) -> Option<u32> {
+/// インスタンスインデックスからそのインスタンスを持つアクターの DFS インデックスを返す。
+#[allow(dead_code)]
+fn find_actor_dfs_by_instance(
+    actors:       &[Actor],
+    world:        &crate::engine::ecs::World,
+    wl:           u32,
+    instance_idx: u32,
+) -> Option<u32> {
     let mut counter = 0u32;
     for root in actors.iter().filter(|a| a.world_line == wl) {
-        if let Some(dfs) = find_actor_dfs_by_instance_in(root, instance_idx, &mut counter) {
+        if let Some(dfs) = find_actor_dfs_by_instance_in(root, world, instance_idx, &mut counter) {
             return Some(dfs);
         }
     }
     None
 }
 
-fn find_actor_dfs_by_instance_in(actor: &Actor, instance_idx: u32, counter: &mut u32) -> Option<u32> {
+fn find_actor_dfs_by_instance_in(
+    actor:        &Actor,
+    world:        &crate::engine::ecs::World,
+    instance_idx: u32,
+    counter:      &mut u32,
+) -> Option<u32> {
     let my_dfs = *counter;
     *counter += 1;
-    if let Some(mc) = actor.get_component::<ModelComponent>() {
-        if (instance_idx as usize) < mc.instance_mats.len() {
-            return Some(my_dfs);
-        }
+    // スロット専用 entity の全 MC インスタンス数を合算して判定する
+    let total: usize = actor.slots().iter()
+        .filter(|s| s.kind == ComponentKind::Model)
+        .filter_map(|s| world.get::<ModelComponent>(s.entity))
+        .map(|mc| mc.instance_mats.len())
+        .sum();
+    if (instance_idx as usize) < total {
+        return Some(my_dfs);
     }
     for child in actor.children() {
-        if let Some(dfs) = find_actor_dfs_by_instance_in(child, instance_idx, counter) {
+        if let Some(dfs) = find_actor_dfs_by_instance_in(child, world, instance_idx, counter) {
             return Some(dfs);
         }
     }
@@ -3617,36 +3811,45 @@ fn find_actor_dfs_by_instance_in(actor: &Actor, instance_idx: u32, counter: &mut
 /// world_line の全アクターから ModelComponent を DFS 順で収集する（不変参照版）。
 /// 戻り値: Vec<(id_base, dfs_id, &ModelComponent)>
 /// id_base は先行するすべての MC のインスタンス数の累計。
-fn collect_mcs_in_world_line<'a>(actors: &'a [Actor], wl: u32) -> Vec<(u32, u32, &'a ModelComponent)> {
+fn collect_mcs_in_world_line<'a>(
+    actors: &'a [Actor],
+    world:  &'a crate::engine::ecs::World,
+    wl:     u32,
+) -> Vec<(u32, u32, &'a ModelComponent)> {
     let mut result = Vec::new();
     let mut base    = 0u32;
     let mut counter = 0u32;
     for root in actors.iter().filter(|a| a.world_line == wl) {
-        collect_mcs_in_actor(root, &mut counter, &mut base, &mut result);
+        collect_mcs_in_actor(root, world, &mut counter, &mut base, &mut result);
     }
     result
 }
 
 fn collect_mcs_in_actor<'a>(
     actor:   &'a Actor,
+    world:   &'a crate::engine::ecs::World,
     counter: &mut u32,
     base:    &mut u32,
     result:  &mut Vec<(u32, u32, &'a ModelComponent)>,
 ) {
     let dfs = *counter;
     *counter += 1;
-    if let Some(mc) = actor.get_component::<ModelComponent>() {
-        result.push((*base, dfs, mc));
-        *base += mc.instance_mats.len() as u32;
+    // スロット専用 entity から ModelComponent を収集する（複数スロット対応）
+    for slot in actor.slots().iter().filter(|s| s.kind == ComponentKind::Model) {
+        if let Some(mc) = world.get::<ModelComponent>(slot.entity) {
+            result.push((*base, dfs, mc));
+            *base += mc.instance_mats.len() as u32;
+        }
     }
     for child in actor.children() {
-        collect_mcs_in_actor(child, counter, base, result);
+        collect_mcs_in_actor(child, world, counter, base, result);
     }
 }
 
 /// world_line の全アクターの MC バッチを DFS 順で更新する（可変参照版）。
 fn update_all_mc_batches_for_wl(
     actors:         &mut Vec<Actor>,
+    world:          &mut crate::engine::ecs::World,
     wl:             u32,
     queue:          &wgpu::Queue,
     frustum_planes: &[[f32; 4]; 6],
@@ -3654,24 +3857,32 @@ fn update_all_mc_batches_for_wl(
     anim_time:      f32,
 ) {
     for actor in actors.iter_mut().filter(|a| a.world_line == wl) {
-        update_mc_batch_recursive(actor, queue, frustum_planes, camera_pos, anim_time);
+        update_mc_batch_recursive(actor, world, queue, frustum_planes, camera_pos, anim_time);
     }
 }
 
 fn update_mc_batch_recursive(
     actor:          &mut Actor,
+    world:          &mut crate::engine::ecs::World,
     queue:          &wgpu::Queue,
     frustum_planes: &[[f32; 4]; 6],
     camera_pos:     [f32; 3],
     anim_time:      f32,
 ) {
-    if let Some(mc) = actor.get_component_mut::<ModelComponent>() {
-        if let (Some(batch), Some(model)) = (&mut mc.instanced_batch, mc.model.as_ref()) {
-            batch.update(queue, model, &mc.instance_mats, frustum_planes, camera_pos, anim_time);
+    // スロット専用 entity の全 ModelComponent バッチを更新する（複数スロット対応）
+    let slot_entities: Vec<crate::engine::ecs::Entity> = actor.slots().iter()
+        .filter(|s| s.kind == ComponentKind::Model)
+        .map(|s| s.entity)
+        .collect();
+    for slot_entity in slot_entities {
+        if let Some(mc) = world.get_mut::<ModelComponent>(slot_entity) {
+            if let (Some(batch), Some(model)) = (&mut mc.instanced_batch, mc.model.as_ref()) {
+                batch.update(queue, model, &mc.instance_mats, frustum_planes, camera_pos, anim_time);
+            }
         }
     }
     for child in actor.children_mut().iter_mut() {
-        update_mc_batch_recursive(child, queue, frustum_planes, camera_pos, anim_time);
+        update_mc_batch_recursive(child, world, queue, frustum_planes, camera_pos, anim_time);
     }
 }
 
@@ -3703,6 +3914,24 @@ fn remove_actor_children_by_dfs(actor: &mut Actor, dfs_id: u32, counter: &mut u3
 /// handle_reparent_actor での取り出し後 DFS id 補正に使用する。
 fn actor_subtree_size(actor: &Actor) -> u32 {
     1 + actor.children().iter().map(|c| actor_subtree_size(c)).sum::<u32>()
+}
+
+/// 指定 world_line のアクターとその全子孫のエンティティを収集する（World.despawn 用）。
+fn collect_entities_for_wl(actors: &[Actor], wl: u32) -> Vec<crate::engine::ecs::Entity> {
+    let mut result = Vec::new();
+    for actor in actors.iter().filter(|a| a.world_line == wl) {
+        collect_actor_entities_recursive(actor, &mut result);
+    }
+    result
+}
+
+fn collect_actor_entities_recursive(actor: &Actor, result: &mut Vec<crate::engine::ecs::Entity>) {
+    result.push(actor.entity);
+    // スロット専用エンティティも含めて収集する（World.despawn 対象）
+    result.extend(actor.slot_entities());
+    for child in actor.children() {
+        collect_actor_entities_recursive(child, result);
+    }
 }
 
 /// DFS id でアクターをツリーから取り出して out へ格納する。
@@ -3786,47 +4015,55 @@ fn release_window_clamp() {
 /// アクター編集モードのドラッグ開始時: 子孫アクターの MC 初期行列を収集する。
 /// dfs_counter は選択アクターの DFS + 1 から始める。
 fn collect_child_actor_mc_starts(
-    actor: &Actor,
+    actor:       &Actor,
+    world:       &crate::engine::ecs::World,
     dfs_counter: &mut u32,
-    result: &mut Vec<(u32, [[f32; 4]; 4])>,
+    result:      &mut Vec<(u32, [[f32; 4]; 4])>,
 ) {
     for child in actor.children() {
         let child_dfs = *dfs_counter;
         *dfs_counter += 1;
-        if let Some(mc) = child.get_component::<ModelComponent>() {
-            if let Some(&mat) = mc.instance_mats.first() {
-                result.push((child_dfs, mat));
+        // スロット entity 経由で MC の最初のインスタンス行列を取得する
+        if let Some(mc_e) = child.mc_entity() {
+            if let Some(mc) = world.get::<ModelComponent>(mc_e) {
+                if let Some(&mat) = mc.instance_mats.first() {
+                    result.push((child_dfs, mat));
+                }
             }
         }
-        collect_child_actor_mc_starts(child, dfs_counter, result);
+        collect_child_actor_mc_starts(child, world, dfs_counter, result);
     }
 }
 
 /// インスペクタードラッグ開始時: 子孫アクターの (dfs_id, old_tf, old_mc_mat) を収集する。
 fn collect_child_actor_old_states(
-    actor: &Actor,
+    actor:       &Actor,
+    world:       &crate::engine::ecs::World,
     dfs_counter: &mut u32,
-    result: &mut Vec<(u32, ActorTransform, [[f32; 4]; 4])>,
+    result:      &mut Vec<(u32, ActorTransform, [[f32; 4]; 4])>,
 ) {
     for child in actor.children() {
         let child_dfs = *dfs_counter;
         *dfs_counter += 1;
-        let old_tf = child.transform.clone();
-        let old_mc_mat = child.get_component::<ModelComponent>()
+        let old_tf = world.get::<ActorTransform>(child.entity).cloned().unwrap_or_default();
+        // スロット entity 経由で MC の最初のインスタンス行列を取得する
+        let old_mc_mat = child.mc_entity()
+            .and_then(|e| world.get::<ModelComponent>(e))
             .and_then(|mc| mc.instance_mats.first().copied())
             .unwrap_or([[0.0; 4]; 4]);
         result.push((child_dfs, old_tf, old_mc_mat));
-        collect_child_actor_old_states(child, dfs_counter, result);
+        collect_child_actor_old_states(child, world, dfs_counter, result);
     }
 }
 
 /// ギズモドラッグまたはインスペクタードラッグ中: delta を子孫アクター全体に適用し、
 /// Undo 用の変更データ (child_dfs, old_tf, new_tf, old_mc_mat, new_mc_mat) を収集する。
 fn apply_delta_to_actor_children(
-    actor: &mut Actor,
-    delta: [[f32; 4]; 4],
+    actor:       &mut Actor,
+    world:       &mut crate::engine::ecs::World,
+    delta:       [[f32; 4]; 4],
     dfs_counter: &mut u32,
-    result: &mut Vec<(u32, ActorTransform, ActorTransform, [[f32; 4]; 4], [[f32; 4]; 4])>,
+    result:      &mut Vec<(u32, ActorTransform, ActorTransform, [[f32; 4]; 4], [[f32; 4]; 4])>,
 ) {
     let identity: [[f32; 4]; 4] = [
         [1.0, 0.0, 0.0, 0.0],
@@ -3837,19 +4074,31 @@ fn apply_delta_to_actor_children(
     for child in actor.children_mut().iter_mut() {
         let child_dfs = *dfs_counter;
         *dfs_counter += 1;
-        let (old_mc_mat, new_mc_mat) = if let Some(mc) = child.get_component_mut::<ModelComponent>() {
-            let old = mc.instance_mats.first().copied().unwrap_or(identity);
-            if let Some(m) = mc.instance_mats.first_mut() { *m = mat4x4_mul(delta, *m); }
-            mc.mark_batch_dirty();
-            let new = mc.instance_mats.first().copied().unwrap_or(identity);
-            (old, new)
+        let child_entity     = child.entity;
+        // スロット entity を Copy で取り出す（child の borrow が続くが Entity は Copy）
+        let mc_slot_entity   = child.mc_entity();
+
+        // MC の更新: スロット entity 経由でアクセスする
+        let (old_mc_mat, new_mc_mat) = if let Some(mc_e) = mc_slot_entity {
+            if let Some(mc) = world.get_mut::<ModelComponent>(mc_e) {
+                let old = mc.instance_mats.first().copied().unwrap_or(identity);
+                if let Some(m) = mc.instance_mats.first_mut() { *m = mat4x4_mul(delta, *m); }
+                mc.mark_batch_dirty();
+                let new = mc.instance_mats.first().copied().unwrap_or(identity);
+                (old, new)
+            } else {
+                (identity, identity)
+            }
         } else {
             (identity, identity)
         };
-        let old_tf = child.transform.clone();
-        child.transform = ActorTransform::from_mat4(&mat4x4_mul(delta, old_tf.to_mat4()));
-        let new_tf = child.transform.clone();
+
+        // Transform の更新（actor.entity から Transform を参照）
+        let old_tf = world.get::<ActorTransform>(child_entity).cloned().unwrap_or_default();
+        let new_tf = ActorTransform::from_mat4(&mat4x4_mul(delta, old_tf.to_mat4()));
+        if let Some(tf) = world.get_mut::<ActorTransform>(child_entity) { *tf = new_tf.clone(); }
+
         result.push((child_dfs, old_tf, new_tf, old_mc_mat, new_mc_mat));
-        apply_delta_to_actor_children(child, delta, dfs_counter, result);
+        apply_delta_to_actor_children(child, world, delta, dfs_counter, result);
     }
 }

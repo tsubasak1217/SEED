@@ -226,6 +226,9 @@ pub struct TextureData {
     pub name:    Option<String>,
     pub source:  TextureSource,
     pub sampler: SamplerData,
+    /// true = 法線・MR・AO など線形データテクスチャ（Rgba8Unorm）
+    /// false = ベースカラー・エミッシブなど sRGB テクスチャ（Rgba8UnormSrgb）
+    pub linear:  bool,
 }
 
 pub enum TextureSource {
