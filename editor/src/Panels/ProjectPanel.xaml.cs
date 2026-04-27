@@ -11,6 +11,7 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using SEEDEditor;
 
 namespace SEEDEditor.Panels;
 
@@ -626,10 +627,42 @@ public partial class ProjectPanel : UserControl
             .ToArray();
         if (paths.Length == 0) return;
 
-        var data = new DataObject("SEEDProjectPaths", paths);
-        DragDrop.DoDragDrop(sourceTile, data, DragDropEffects.Copy | DragDropEffects.Move);
+        var mainWindow = Application.Current.MainWindow as MainWindow;
+
+        // GiveFeedback でカーソルとビューポートハイライトを制御する。
+        // HwndHost 上は OLE DropTarget が存在しないため「no-drop」カーソルになるのを防ぐ。
+        GiveFeedbackEventHandler giveFeedback = (_, args) =>
+        {
+            bool overVp = mainWindow?.IsMouseOverViewportHwnd() ?? false;
+            mainWindow?.SetViewportDragHighlight(overVp);
+            if (overVp)
+            {
+                // ビューポート上では OLE デフォルトの「no-drop」を抑制し通常カーソルを表示する
+                args.UseDefaultCursors = false;
+                Mouse.OverrideCursor   = null;
+                args.Handled           = true;
+            }
+            else
+            {
+                Mouse.OverrideCursor = null;
+            }
+        };
+
+        sourceTile.GiveFeedback += giveFeedback;
+        var data   = new DataObject("SEEDProjectPaths", paths);
+        var result = DragDrop.DoDragDrop(sourceTile, data, DragDropEffects.Copy | DragDropEffects.Move);
+        sourceTile.GiveFeedback -= giveFeedback;
+
+        // ドラッグ終了後のクリーンアップ
+        Mouse.OverrideCursor = null;
+        mainWindow?.SetViewportDragHighlight(false);
         // OLE ループ終了後に残留するマウスキャプチャ状態をリセットする
         Mouse.Capture(null);
+
+        // HwndHost 上へのドロップは OLE に届かず DragDropEffects.None で返る。
+        // その場合はカーソル位置を確認してビューポートへ手動でドロップを転送する。
+        if (result == DragDropEffects.None)
+            (mainWindow as MainWindow.IViewportDropReceiver)?.TryDropActorsAtCursor(paths);
     }
 
     private void AttachDropTarget(Border tile)

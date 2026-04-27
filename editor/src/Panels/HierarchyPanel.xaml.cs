@@ -197,48 +197,36 @@ public partial class HierarchyPanel : UserControl
     {
         Dispatcher.BeginInvoke(() =>
         {
-            if (_isActorEditMode)
+            if (idx < 0)
             {
-                if (idx < 0)
-                {
-                    // 空クリック: 選択解除
-                    _selectedId = -1;
-                    _selectedIds.Clear();
-                    _anchorId = -1;
-                    DeselectAll();
-                    UpdateMultiSelectVisuals();
-                }
-                else if (idx >= VirtualActorNodeIdBase)
-                {
-                    // Viewport からアクターが選択されたとき: ヒエラルキーを連動させる
-                    var dfsId = idx - VirtualActorNodeIdBase;
-                    _selectedId = dfsId;
-                    _selectedIds.Clear();
-                    _selectedIds.Add(dfsId);
-                    _anchorId = dfsId;
-                    SelectTreeItem(dfsId);
-                    UpdateMultiSelectVisuals();
-                    // インスペクターへも通知（SelectActor 経由でパネルを表示させる）
-                    ActorDfsSelected?.Invoke(dfsId);
-                }
+                // 空クリック: 選択解除
+                _selectedId = -1;
+                _selectedIds.Clear();
+                _anchorId = -1;
+                DeselectAll();
+                UpdateMultiSelectVisuals();
                 return;
             }
 
-            // 仮想アクターノード選択中に SELECTED:-1 が来ても上書きしない
-            if (idx < 0 && _selectedId >= VirtualActorNodeIdBase)
+            if (idx >= VirtualActorNodeIdBase)
+            {
+                // Viewport からアクターツリーノードが選択された（シーンモード・アクター編集モード共通）
+                var dfsId = idx - VirtualActorNodeIdBase;
+                _selectedId = dfsId;
+                _selectedIds.Clear();
+                _selectedIds.Add(dfsId);
+                _anchorId = dfsId;
+                SelectTreeItem(dfsId);
+                UpdateMultiSelectVisuals();
+                ActorDfsSelected?.Invoke(dfsId);
                 return;
+            }
 
+            // レガシー: インスタンスインデックス直接選択（アクター編集モード以外の後方互換）
             _selectedId = idx;
             _selectedIds.Clear();
-            if (idx >= 0)
-            {
-                _selectedIds.Add(idx);
-                SelectTreeItem(idx);
-            }
-            else
-            {
-                DeselectAll();
-            }
+            _selectedIds.Add(idx);
+            SelectTreeItem(idx);
             _anchorId = idx;
             UpdateMultiSelectVisuals();
         });
@@ -400,24 +388,19 @@ public partial class HierarchyPanel : UserControl
         {
             if (_selectedId >= 0)
             {
-                // 仮想 ID でアイコンオーバーレイを表示させる
+                // アクター編集モード: 仮想 ID（DFS + VirtualActorNodeIdBase）で送信
                 _runtime?.SendToRuntime($"SELECT:{999_000_000u + (uint)_selectedId}");
                 ActorDfsSelected?.Invoke(_selectedId);
             }
             return;
         }
 
-        var ids = _selectedIds
-            .Select(id => FindNode(_roots, id))
-            .Where(n => n is { IsGroup: false })
-            .Select(n => n!.Id)
-            .ToList();
-
-        if (ids.Count == 0) return;
-        if (ids.Count == 1)
-            _runtime?.SendToRuntime($"SELECT:{ids[0]}");
-        else
-            _runtime?.SendToRuntime($"SELECT_MULTI:{string.Join(",", ids)}");
+        // シーンモードもアクターツリー表示に統一したため、同じ仮想 ID 方式で送信する
+        if (_selectedId >= 0)
+        {
+            _runtime?.SendToRuntime($"SELECT:{999_000_000u + (uint)_selectedId}");
+            ActorDfsSelected?.Invoke(_selectedId);
+        }
     }
 
     private void SelectTreeItem(int id)

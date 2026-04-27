@@ -21,8 +21,14 @@ using SEEDEditor.Viewport;
 
 namespace SEEDEditor;
 
-public partial class MainWindow : Window
+public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
 {
+    /// ProjectPanel が DoDragDrop 後にビューポートドロップを転送するためのインターフェース。
+    public interface IViewportDropReceiver
+    {
+        void TryDropActorsAtCursor(string[] paths);
+    }
+
     // ── P/Invoke ────────────────────────────────────────────────
 
     private delegate nint LowLevelKeyboardProc(int nCode, nint wParam, nint lParam);
@@ -39,6 +45,36 @@ public partial class MainWindow : Window
 
     [StructLayout(LayoutKind.Sequential)]
     private struct RECT { public int Left, Top, Right, Bottom; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct POINT { public int X, Y; }
+
+    [DllImport("user32.dll")] private static extern bool GetCursorPos(out POINT pt);
+    [DllImport("user32.dll")] private static extern int  GetWindowLong(nint hWnd, int nIndex);
+    [DllImport("user32.dll")] private static extern int  SetWindowLong(nint hWnd, int nIndex, int dwNewLong);
+    private const int GWL_EXSTYLE       = -20;
+    private const int WS_EX_TRANSPARENT = 0x00000020;
+
+    // ── OLE DragDrop ─────────────────────────────────────────────────
+    [DllImport("ole32.dll")] private static extern int RegisterDragDrop(
+        nint hwnd, [MarshalAs(UnmanagedType.Interface)] IOleDropTarget dropTarget);
+    [DllImport("ole32.dll")] private static extern int RevokeDragDrop(nint hwnd);
+
+    /// ContainerHwnd を Win32 OLE DropTarget として登録するための COM インターフェース。
+    /// WPF DragOver/Drop は HwndHost 上では発火しないため、ここで直接受け取る。
+    [ComImport, Guid("00000122-0000-0000-C000-000000000046"),
+     InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IOleDropTarget
+    {
+        [PreserveSig] int DragEnter(
+            [MarshalAs(UnmanagedType.Interface)] object pDataObj,
+            uint grfKeyState, POINT pt, ref uint pdwEffect);
+        [PreserveSig] int DragOver(uint grfKeyState, POINT pt, ref uint pdwEffect);
+        [PreserveSig] int DragLeave();
+        [PreserveSig] int Drop(
+            [MarshalAs(UnmanagedType.Interface)] object pDataObj,
+            uint grfKeyState, POINT pt, ref uint pdwEffect);
+    }
 
     [DllImport("dwmapi.dll")]
     private static extern int DwmSetWindowAttribute(nint hwnd, int attr, ref int attrValue, int attrSize);
@@ -169,8 +205,10 @@ public partial class MainWindow : Window
     private static readonly SolidColorBrush _brushStop  = new(Color.FromRgb(0x4A, 0x1F, 0x1F));
     private static readonly SolidColorBrush _brushPause = new(Color.FromRgb(0x4A, 0x30, 0x00));
 
-    private ViewportHost?   _viewportHost;
-    private RuntimeManager? _runtimeManager;
+    private ViewportHost?          _viewportHost;
+    private ViewportOleDropTarget? _viewportDropTarget;
+    private Window?                _vpDragOverlay;
+    private RuntimeManager?        _runtimeManager;
 
     public MainWindow()
     {
@@ -246,6 +284,34 @@ public partial class MainWindow : Window
         var hwnd = _viewportHost!.ContainerHwnd;
         EditorLog.Write($"OnContainerCreated — ContainerHwnd=0x{hwnd:X}");
 
+        // ContainerHwnd を OLE DropTarget として登録する。
+        // HwndHost 上では WPF DragOver/Drop が発火しないため Win32 レベルで受け取る。
+        _viewportDropTarget = new ViewportOleDropTarget(this);
+        int hr = RegisterDragDrop(hwnd, _viewportDropTarget);
+        EditorLog.Write($"RegisterDragDrop hr=0x{hr:X8}");
+
+        // ドラッグハイライト用オーバーレイを事前生成する。
+        // OLE メッセージループ中に Window を生成するとデッドロックの恐れがあるため、
+        // ここで生成し HWND を確保したうえで WS_EX_TRANSPARENT を付与してクリックスルーにする。
+        _vpDragOverlay = new Window
+        {
+            WindowStyle        = WindowStyle.None,
+            AllowsTransparency = true,
+            Background         = Brushes.Transparent,   // ← これがないと白くなる
+            ShowInTaskbar      = false,
+            Focusable          = false,
+            Owner              = this,
+            Content            = new Border
+            {
+                Background = new SolidColorBrush(Color.FromArgb(50, 255, 255, 255)),
+            },
+        };
+        // HWND を強制生成して WS_EX_TRANSPARENT を付与（OLE ドラッグイベントが透過する）
+        var helper = new System.Windows.Interop.WindowInteropHelper(_vpDragOverlay);
+        helper.EnsureHandle();
+        int exStyle = GetWindowLong(helper.Handle, GWL_EXSTYLE);
+        SetWindowLong(helper.Handle, GWL_EXSTYLE, exStyle | WS_EX_TRANSPARENT);
+
         _ = Task.Run(async () =>
         {
             EditorLog.Write("Task.Run — calling StartEditAsync");
@@ -262,6 +328,195 @@ public partial class MainWindow : Window
                         MessageBoxButton.OK, MessageBoxImage.Error));
             }
         });
+    }
+
+    // ── ビューポート D&D ──────────────────────────────────────────
+
+    /// Window 全体のドラッグオーバー（フォールバック）。
+    /// HwndHost 上では WPF DragOver が発火しないため、ビューポート周囲の WPF 領域（リサイズグリッパー等）でのみ動作する。
+    /// ビューポート直上のドロップは ViewportOleDropTarget が処理する。
+    private void OnViewportDragOver(object sender, DragEventArgs e)
+    {
+        var paths = GetActorPathsFromWpf(e.Data).ToList();
+        e.Effects = (paths.Any() && IsNearViewport()) ? DragDropEffects.Copy : DragDropEffects.None;
+        e.Handled = true;
+    }
+
+    /// Window 全体のドロップ（フォールバック）。ビューポート周囲の WPF 領域からのドロップを処理する。
+    private void OnViewportDrop(object sender, DragEventArgs e)
+    {
+        if (!IsNearViewport()) return;
+        var paths = GetActorPathsFromWpf(e.Data).ToList();
+        if (!paths.Any()) return;
+
+        var (localX, localY) = GetViewportLocalCursorPos();
+        HandleViewportDrop(paths, localX, localY);
+    }
+
+    /// カーソルがビューポート HWND 矩形の近傍（40px マージン）にあるかを確認する。
+    /// WPF DragOver は HwndHost 内では発火しないため、周囲の WPF 領域（リサイズグリッパー等）を許容する。
+    private bool IsNearViewport()
+    {
+        const int Margin = 40;
+        if (_viewportHost == null) return false;
+        GetCursorPos(out var cursor);
+        GetWindowRect(_viewportHost.ContainerHwnd, out var rect);
+        return cursor.X >= rect.Left  - Margin && cursor.X <= rect.Right  + Margin
+            && cursor.Y >= rect.Top   - Margin && cursor.Y <= rect.Bottom + Margin;
+    }
+
+    /// DoDragDrop が DragDropEffects.None で返った場合（HwndHost 上へのドロップ）に
+    /// カーソル位置とビューポート HWND 矩形を比較してドロップを転送する。
+    public void TryDropActorsAtCursor(string[] paths)
+    {
+        if (!IsMouseOverViewportHwnd()) return;
+
+        var actorPaths = paths
+            .Where(p => p.EndsWith(".actor", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        if (actorPaths.Count == 0) return;
+
+        var (localX, localY) = GetViewportLocalCursorPos();
+        HandleViewportDrop(actorPaths, localX, localY);
+    }
+
+    /// カーソルがビューポート ContainerHwnd 矩形内にあるかを物理ピクセル座標で確認する。
+    public bool IsMouseOverViewportHwnd()
+    {
+        if (_viewportHost == null) return false;
+        GetCursorPos(out var cursor);
+        GetWindowRect(_viewportHost.ContainerHwnd, out var rect);
+        return cursor.X >= rect.Left && cursor.X <= rect.Right
+            && cursor.Y >= rect.Top  && cursor.Y <= rect.Bottom;
+    }
+
+    /// カーソルのビューポートローカル座標（物理ピクセル）を返す。
+    private (uint x, uint y) GetViewportLocalCursorPos()
+    {
+        GetCursorPos(out var cursor);
+        GetWindowRect(_viewportHost!.ContainerHwnd, out var rect);
+        var localX = (uint)Math.Clamp(cursor.X - rect.Left, 0, rect.Right  - rect.Left - 1);
+        var localY = (uint)Math.Clamp(cursor.Y - rect.Top,  0, rect.Bottom - rect.Top  - 1);
+        return (localX, localY);
+    }
+
+    /// ドラッグ中にビューポート上をハイライトする透明オーバーレイを表示 / 非表示にする。
+    /// オーバーレイは OnContainerCreated で事前生成済み・WS_EX_TRANSPARENT 付き。
+    public void SetViewportDragHighlight(bool active)
+    {
+        if (_vpDragOverlay == null) return;
+
+        if (active && _viewportHost != null)
+        {
+            // ContainerHwnd の物理ピクセル座標を WPF 論理座標に変換して配置する
+            GetWindowRect(_viewportHost.ContainerHwnd, out var rect);
+            var topLeft  = PointFromScreen(new Point(rect.Left,  rect.Top));
+            var botRight = PointFromScreen(new Point(rect.Right, rect.Bottom));
+
+            _vpDragOverlay.Left   = topLeft.X;
+            _vpDragOverlay.Top    = topLeft.Y;
+            _vpDragOverlay.Width  = botRight.X - topLeft.X;
+            _vpDragOverlay.Height = botRight.Y - topLeft.Y;
+
+            if (!_vpDragOverlay.IsVisible)
+                _vpDragOverlay.Show();
+        }
+        else
+        {
+            _vpDragOverlay.Hide();
+        }
+    }
+
+    /// ドロップされたアクターパスをランタイムに送信する共通処理。
+    /// WPF フォールバックパスと Win32 OLE DropTarget パスの両方から呼ばれる。
+    internal void HandleViewportDrop(IReadOnlyList<string> paths, uint viewportX, uint viewportY)
+    {
+        var state = _runtimeManager?.State;
+        EditorLog.Write($"[Drop] HandleViewportDrop paths={paths.Count} pos=({viewportX},{viewportY}) state={state}");
+        if (state != EditorState.Edit && state != EditorState.Pause) return;
+
+        foreach (var path in paths)
+        {
+            var msg = $"DROP_ACTOR:{path},{viewportX},{viewportY}";
+            EditorLog.Write($"[Drop] Sending: {msg}");
+            _runtimeManager?.SendToRuntime(msg);
+        }
+    }
+
+    /// WPF IDataObject から .actor パス一覧を取得する。
+    private static IEnumerable<string> GetActorPathsFromWpf(IDataObject data)
+    {
+        if (data.GetDataPresent("SEEDProjectPaths"))
+        {
+            var paths = data.GetData("SEEDProjectPaths") as string[];
+            if (paths != null)
+                return paths.Where(p => p.EndsWith(".actor", StringComparison.OrdinalIgnoreCase));
+        }
+        if (data.GetDataPresent(DataFormats.FileDrop))
+        {
+            var paths = data.GetData(DataFormats.FileDrop) as string[];
+            if (paths != null)
+                return paths.Where(p => p.EndsWith(".actor", StringComparison.OrdinalIgnoreCase));
+        }
+        return Enumerable.Empty<string>();
+    }
+
+    // ── Win32 OLE DropTarget（ビューポート HWND への直接ドロップ）──
+
+    /// ContainerHwnd に登録する Win32 OLE DropTarget。
+    /// WPF DragDrop はイン-プロセスで動作するため、pDataObj を System.Windows.IDataObject にキャストできる。
+    [ComVisible(true), ClassInterface(ClassInterfaceType.None)]
+    private sealed class ViewportOleDropTarget : IOleDropTarget
+    {
+        private const uint DROPEFFECT_NONE = 0;
+        private const uint DROPEFFECT_COPY = 1;
+        private const int  S_OK            = 0;
+
+        private readonly MainWindow _owner;
+
+        public ViewportOleDropTarget(MainWindow owner) => _owner = owner;
+
+        public int DragEnter(object pDataObj, uint grfKeyState, POINT pt, ref uint pdwEffect)
+        {
+            pdwEffect = GetActorPaths(pDataObj).Any() ? DROPEFFECT_COPY : DROPEFFECT_NONE;
+            return S_OK;
+        }
+
+        public int DragOver(uint grfKeyState, POINT pt, ref uint pdwEffect)
+        {
+            // DragEnter で設定したエフェクトを維持する
+            return S_OK;
+        }
+
+        public int DragLeave() => S_OK;
+
+        public int Drop(object pDataObj, uint grfKeyState, POINT pt, ref uint pdwEffect)
+        {
+            var paths = GetActorPaths(pDataObj).ToList();
+            if (paths.Count == 0) { pdwEffect = DROPEFFECT_NONE; return S_OK; }
+
+            // スクリーン座標をビューポートローカル座標に変換する
+            GetWindowRect(_owner._viewportHost!.ContainerHwnd, out var vpRect);
+            var localX = (uint)Math.Max(0, pt.X - vpRect.Left);
+            var localY = (uint)Math.Max(0, pt.Y - vpRect.Top);
+
+            _owner.Dispatcher.BeginInvoke(() => _owner.HandleViewportDrop(paths, localX, localY));
+            pdwEffect = DROPEFFECT_COPY;
+            return S_OK;
+        }
+
+        /// イン-プロセス WPF ドラッグの場合、pDataObj は System.Windows.IDataObject にキャスト可能。
+        private static IEnumerable<string> GetActorPaths(object pDataObj)
+        {
+            if (pDataObj is not System.Windows.IDataObject data) return Enumerable.Empty<string>();
+            if (data.GetDataPresent("SEEDProjectPaths"))
+            {
+                var paths = data.GetData("SEEDProjectPaths") as string[];
+                if (paths != null)
+                    return paths.Where(p => p.EndsWith(".actor", StringComparison.OrdinalIgnoreCase));
+            }
+            return Enumerable.Empty<string>();
+        }
     }
 
     // ── WndProc：ウィンドウドラッグ監視 ──────────────────────────
@@ -393,6 +648,8 @@ public partial class MainWindow : Window
         ReleasePlayClamp();
         UninstallKeyboardHook();
         ReleaseAllCamKeys();
+        if (_viewportHost != null) RevokeDragDrop(_viewportHost.ContainerHwnd);
+        _vpDragOverlay?.Close();
         _runtimeManager?.Dispose();
         ViewportDocumentContent.Content = null;
     }

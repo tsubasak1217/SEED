@@ -11,6 +11,6 @@ front_face      = "Ccw"
 depth_write     = false
 depth_compare   = "LessEqual"
 
-color_format    = "R32Uint"
+color_format    = "Rgba32Float"
 blend           = "None"
 write_mask      = "all"

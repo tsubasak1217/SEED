@@ -72,14 +72,10 @@ public partial class InspectorPanel : UserControl
     /// <summary>HierarchyPanel からアクター編集モードのアクター選択を受け取る。</summary>
     public void SelectActor(int dfsId)
     {
-        if (!_isActorEditMode) return;
-        // _currentActorId を更新する前に参照をクリアする。
-        // これにより、古い TextBox の LostFocus が CommitTransform を呼び出しても
-        // _tbPx == null で早期リターンし、新アクターに古い値を送らなくなる。
+        // シーンモード・アクター編集モード共通: DFS id でアクタを選択してコンポーネントを表示する
         ClearTransformRefs();
         _currentActorId = dfsId;
-        // UI はクリアせず現在の表示を維持したまま待つ。
-        // Rust の SELECT コマンド処理で ACTOR_COMPONENTS が即時プッシュされるため
+        // Rust の SELECT 処理で ACTOR_COMPONENTS が即時プッシュされるため
         // OnActorComponentsReceived で正しいデータに更新される。
         ActorEditGrid.Visibility    = Visibility.Visible;
         ComponentScroll.Visibility  = Visibility.Collapsed;
@@ -101,17 +97,14 @@ public partial class InspectorPanel : UserControl
                 return;
             }
 
-            if (_isActorEditMode)
+            // 仮想ノード ID（アクターツリー DFS 選択）: シーンモード・アクター編集モード共通
+            if (id >= VirtualActorNodeIdBase)
             {
-                // アクター編集モード: 仮想ノード ID (>= VirtualActorNodeIdBase) のみ反映する
-                if (id >= VirtualActorNodeIdBase)
-                    SelectActor(id - VirtualActorNodeIdBase);
+                SelectActor(id - VirtualActorNodeIdBase);
                 return;
             }
 
-            // シーン編集モード
-            // _currentActorId を更新する前に参照をクリアし、
-            // 古い TextBox の LostFocus が新アクターに値を送るのを防ぐ。
+            // レガシー: インスタンスインデックス直接選択（シーン編集モード後方互換）
             ClearTransformRefs();
             _currentActorId = id;
             ActorNameBlock.Text         = $"Actor #{id}";
@@ -136,7 +129,8 @@ public partial class InspectorPanel : UserControl
 
     private void OnActorComponentsReceived(string json)
     {
-        if (!_isActorEditMode) return;
+        // シーンモード・アクター編集モード共通: アクタが選択されていれば常に更新する
+        if (_currentActorId < 0) return;
         Dispatcher.InvokeAsync(() =>
         {
             try { BuildActorComponentList(json); }

@@ -423,12 +423,14 @@ impl<'r> RenderFrame<'r> {
         'r: 'f,
     {
         self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("ID Pass"),
+            label: Some("World Pos ID Pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view:           id_view,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    load:  wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    // 全チャンネル 0.0 でクリア。
+                    // A = bitcast<f32>(0u) = 0.0 が「背景」を意味する。
+                    load:  wgpu::LoadOp::Clear(wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }),
                     store: wgpu::StoreOp::Store,
                 },
             })],

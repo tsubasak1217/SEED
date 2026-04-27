@@ -302,9 +302,12 @@ pub struct IdPassPipeline {
 }
 
 impl IdPassPipeline {
-    fn new(device: &wgpu::Device, sf: wgpu::TextureFormat, df: wgpu::TextureFormat) -> Self {
+    fn new(device: &wgpu::Device, _sf: wgpu::TextureFormat, df: wgpu::TextureFormat) -> Self {
+        // ID パスはオフスクリーン Rgba32Float テクスチャへ描画するため、
+        // サーフェスフォーマット (_sf) ではなく固定フォーマットを使う。
         let build = |toml: &str| {
-            RenderPipelineBuilder::new(device, toml, sf, df).build(get_shader_source)
+            RenderPipelineBuilder::new(device, toml, wgpu::TextureFormat::Rgba32Float, df)
+                .build(get_shader_source)
         };
 
         // mesh: num_bind_groups=5 → bgls[0..4] = [camera, model, id_data, joint, id_base]

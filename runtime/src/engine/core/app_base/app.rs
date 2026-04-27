@@ -194,6 +194,12 @@ pub struct App {
     active_world_line: u32,
     /// 世界線切り替え時に退避するカメラ状態。キーが世界線番号。
     saved_cameras: std::collections::HashMap<u32, DebugCameraData>,
+
+    // ── ドラッグ&ドロップ ───────────────────────────────────────
+    /// DROP_ACTOR コマンドを受け取ったときに設定する。
+    /// 次フレームの ID パス後にワールド座標を読み出してアクターを配置する。
+    /// タプル: (actor_path, screen_x, screen_y)
+    pending_drop: Option<(String, u32, u32)>,
 }
 
 impl App {
@@ -264,6 +270,7 @@ impl App {
             inspector_transform_drag:     None,
             active_world_line: 0,
             saved_cameras: std::collections::HashMap::new(),
+            pending_drop:  None,
         }
     }
 
@@ -381,9 +388,9 @@ impl App {
                 }
                 IpcCommand::Select(idx) => {
                     let before = self.selected_instances.clone();
-                    if self.active_world_line != 0 && idx >= 999_000_000 {
-                        // アクター編集モード: 仮想ノード選択
-                        // → DFS で指定アクターの MC だけを選択する（親の MC は選ばない）
+                    if idx >= 999_000_000 {
+                        // アクターツリーノード選択（シーンモード・アクター編集モード共通）。
+                        // DFS id でアクターを特定し、その MC の全インスタンスを選択する。
                         let actor_dfs = (idx - 999_000_000) as u32;
                         self.actor_virtual_selected_idx = Some(actor_dfs as usize);
                         self.selected_instances = if let Some(scene) = &self.scene {
@@ -394,12 +401,12 @@ impl App {
                                 .map(|mc| (0..mc.instance_mats.len() as u32).collect())
                                 .unwrap_or_default()
                         } else { vec![] };
-                    } else if self.active_world_line == 0 {
-                        // シーン編集モード
+                    } else {
+                        // 後方互換: インスタンスインデックス直接指定（レガシーパス）
                         self.actor_virtual_selected_idx = None;
-                                self.actor_virtual_selected_slot_idx = 0;
+                        self.actor_virtual_selected_slot_idx = 0;
                         if let Some(scene) = &self.scene {
-                            if let Some(mc) = scene.find_component_in_world_line::<ModelComponent>(0) {
+                            if let Some(mc) = scene.find_component_in_world_line::<ModelComponent>(self.active_world_line) {
                                 if (idx as usize) < mc.instance_mats.len() {
                                     self.selected_instances = vec![idx];
                                 } else {
@@ -413,8 +420,8 @@ impl App {
                         self.undo_history.record(Box::new(SelectionCommand { before, after }));
                     }
                     self.send_selected();
-                    // アクター編集モードで仮想ノード選択時はインスペクタへ即時プッシュ
-                    if self.active_world_line != 0 && idx >= 999_000_000 {
+                    // 仮想ノード選択時はインスペクタへ即時プッシュ
+                    if idx >= 999_000_000 {
                         let actor_dfs = (idx - 999_000_000) as u32;
                         self.send_actor_components(actor_dfs, self.actor_virtual_selected_slot_idx);
                     }
@@ -435,26 +442,9 @@ impl App {
                     self.send_selected();
                 }
                 IpcCommand::Reparent { child, new_parent } => {
-                    if self.active_world_line != 0 {
-                        // アクター編集モード: child / new_parent は DFS id として扱い
-                        // アクターツリー自体を変更する
-                        self.handle_reparent_actor(child, new_parent);
-                    } else {
-                        // 通常シーンモード: インスタンス／グループの論理的な親子付けのみ変更する
-                        if let Some(scene) = &mut self.scene {
-                            if let Some(mc) = scene.find_component_in_world_line_mut::<ModelComponent>(self.active_world_line) {
-                                if child >= GROUP_ID_BASE {
-                                    // グループの親変更
-                                    if let Some(g) = mc.group_meta.iter_mut().find(|g| g.id == child) {
-                                        g.parent = new_parent;
-                                    }
-                                } else if (child as usize) < mc.instance_meta.len() {
-                                    mc.instance_meta[child as usize].parent = new_parent;
-                                }
-                            }
-                        }
-                        // C# 側がインプレース更新するため send_hierarchy は不要
-                    }
+                    // シーンモード・アクター編集モード共通: child / new_parent は DFS id として扱い
+                    // actor.children ツリー自体を変更する（ECS 統一後の正式パス）
+                    self.handle_reparent_actor(child, new_parent);
                 }
                 IpcCommand::Rename { idx, name } => {
                     if let Some(scene) = &mut self.scene {
@@ -921,6 +911,10 @@ impl App {
                 IpcCommand::DuplicateComponent { actor_dfs_id, slot_idx } => {
                     self.handle_duplicate_component(actor_dfs_id, slot_idx);
                 }
+                IpcCommand::DropActor { path, screen_x, screen_y } => {
+                    // 次フレームのIDパスでワールド座標を読み出すためにキューイングする
+                    self.pending_drop = Some((path, screen_x, screen_y));
+                }
             }
         }
     }
@@ -930,66 +924,20 @@ impl App {
         let Some(ipc)   = &self.ipc   else { return };
         let Some(scene) = &self.scene else { return };
 
-        if self.active_world_line != 0 {
-            // アクター編集モード: アクターツリーをそのまま階層表示する
-            let wl = self.active_world_line;
-            let roots: Vec<&Actor> = scene.actors.iter()
-                .filter(|a| a.world_line == wl)
-                .collect();
+        // シーンモード・アクター編集モード共通: アクターツリーを DFS 順に送信する。
+        // エディタ側の VirtualActorNodeIdBase (999_000_000) と組み合わせて選択を行う。
+        let wl = self.active_world_line;
+        let roots: Vec<&Actor> = scene.actors.iter()
+            .filter(|a| a.world_line == wl)
+            .collect();
 
-            let mut nodes: Vec<(u32, String, Option<u32>)> = Vec::new();
-            let mut counter = 0u32;
-            for root in &roots {
-                collect_actor_nodes(root, None, &mut counter, &mut nodes);
-            }
-
-            let json = build_hierarchy_json(&nodes);
-            ipc.send(&format!("HIERARCHY:{json}"));
-            return;
+        let mut nodes: Vec<(u32, String, Option<u32>)> = Vec::new();
+        let mut counter = 0u32;
+        for root in &roots {
+            collect_actor_nodes(root, None, &mut counter, &mut nodes);
         }
 
-        // 通常シーンモード: ModelComponent のインスタンス・グループをフラットに表示する
-        let Some(mc) = scene.find_component_in_world_line::<ModelComponent>(self.active_world_line) else {
-            ipc.send("HIERARCHY:[]");
-            return;
-        };
-
-        let mut json  = String::from("[");
-        let mut first = true;
-
-        // インスタンス
-        for (i, meta) in mc.instance_meta.iter().enumerate() {
-            if !first { json.push(','); }
-            first = false;
-            let parent_str = match meta.parent {
-                Some(p) => p.to_string(),
-                None    => "null".to_string(),
-            };
-            json.push_str(&format!(
-                r#"{{"id":{},"name":{},"parent":{},"is_group":false}}"#,
-                i,
-                serde_json::to_string(&meta.name).unwrap_or_default(),
-                parent_str,
-            ));
-        }
-
-        // グループ
-        for g in &mc.group_meta {
-            if !first { json.push(','); }
-            first = false;
-            let parent_str = match g.parent {
-                Some(p) => p.to_string(),
-                None    => "null".to_string(),
-            };
-            json.push_str(&format!(
-                r#"{{"id":{},"name":{},"parent":{},"is_group":true}}"#,
-                g.id,
-                serde_json::to_string(&g.name).unwrap_or_default(),
-                parent_str,
-            ));
-        }
-
-        json.push(']');
+        let json = build_hierarchy_json(&nodes);
         ipc.send(&format!("HIERARCHY:{json}"));
     }
 
@@ -1280,15 +1228,12 @@ impl App {
     /// 現在の選択インスタンスをエディタへ通知する。
     fn send_selected(&self) {
         let Some(ipc) = &self.ipc else { return };
-        // アクター編集モードでは常に仮想ノード ID で通知する
-        if self.active_world_line != 0 {
-            if let Some(actor_idx) = self.actor_virtual_selected_idx {
-                ipc.send(&format!("SELECTED:{}", 999_000_000u64 + actor_idx as u64));
-            } else {
-                ipc.send("SELECTED:-1");
-            }
+        // シーンモード・アクター編集モード共通: actor_virtual_selected_idx があれば仮想ノード ID で通知する
+        if let Some(actor_idx) = self.actor_virtual_selected_idx {
+            ipc.send(&format!("SELECTED:{}", 999_000_000u64 + actor_idx as u64));
             return;
         }
+        // フォールバック: インスタンスインデックス直接通知（レガシーパス）
         match self.selected_instances.as_slice() {
             [] => ipc.send("SELECTED:-1"),
             [idx] => ipc.send(&format!("SELECTED:{idx}")),
@@ -1653,6 +1598,51 @@ impl App {
 
         self.send_hierarchy();
         if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+    }
+
+    /// .actor ファイルをシーンにドロップ配置する。
+    ///
+    /// `path` から Actor をロードし、`spawn_pos` にトランスフォームを設定して
+    /// world_line=0 のシーンに追加する。
+    fn handle_drop_actor(&mut self, path: &str, spawn_pos: [f32; 3]) {
+        eprintln!("[Drop] handle_drop_actor path={path} spawn_pos={spawn_pos:?}");
+        let (Some(ctx), Some(scene)) = (self.draw_ctx.as_ref(), self.scene.as_mut()) else {
+            eprintln!("[Drop] ABORTED: draw_ctx or scene is None");
+            return
+        };
+        let host = self.scripting_host.clone();
+
+        let result = Scene::load_actor_into(
+            std::path::Path::new(path),
+            ctx,
+            &mut scene.world,
+            host.as_ref(),
+            0, // world_line = 通常シーン
+        );
+
+        match result {
+            Ok(mut actor) => {
+                eprintln!("[Drop] load_actor_into OK entity={:?} name={}", actor.entity, actor.name);
+                // ドロップ位置にトランスフォームを設定する
+                let tf = ActorTransform {
+                    position: spawn_pos,
+                    rotation: [0.0, 0.0, 0.0],
+                    scale:    [1.0, 1.0, 1.0],
+                };
+                scene.world.insert(actor.entity, tf);
+                scene.actors.push(actor);
+                eprintln!("[Drop] actors.len()={}", scene.actors.len());
+
+                self.send_hierarchy();
+                if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+            }
+            Err(e) => {
+                eprintln!("[Drop] load_actor_into ERR: {e}");
+                if let Some(ipc) = &self.ipc {
+                    ipc.send(&format!("LOAD_ERROR:{e}"));
+                }
+            }
+        }
     }
 
     /// アクターを削除する（DFS id で特定）。
@@ -2340,25 +2330,19 @@ impl App {
     }
 
     /// 選択中アクター/インスタンスのギズモ中心位置を返す共通ヘルパー。
+    /// シーンモード・アクター編集モード共通: actor_virtual_selected_idx でアクタを特定する。
     fn current_gizmo_pos(&self) -> Option<[f32; 3]> {
-        if self.active_world_line != 0 {
-            let scene = self.scene.as_ref()?;
-            if let Some(dfs) = self.actor_virtual_selected_idx {
-                let mut c = 0u32;
-                // 選択スロット entity 経由で MC を参照する
-                let mc_slot_entity = find_actor_by_dfs(
-                    &scene.actors, self.active_world_line, dfs as u32, &mut c
-                ).and_then(|a| a.mc_entity_at(self.actor_virtual_selected_slot_idx))?;
-                scene.world.get::<ModelComponent>(mc_slot_entity)
-                    .and_then(|mc| selection_centroid(&self.selected_instances, &mc.instance_mats))
-                    .or_else(|| self.actor_virtual_world_pos())
-            } else {
-                self.actor_virtual_world_pos()
-            }
-        } else {
-            self.scene.as_ref()?
-                .find_component_in_world_line::<ModelComponent>(0)
+        let scene = self.scene.as_ref()?;
+        if let Some(dfs) = self.actor_virtual_selected_idx {
+            let mut c = 0u32;
+            let mc_slot_entity = find_actor_by_dfs(
+                &scene.actors, self.active_world_line, dfs as u32, &mut c
+            ).and_then(|a| a.mc_entity_at(self.actor_virtual_selected_slot_idx))?;
+            scene.world.get::<ModelComponent>(mc_slot_entity)
                 .and_then(|mc| selection_centroid(&self.selected_instances, &mc.instance_mats))
+                .or_else(|| self.actor_virtual_world_pos())
+        } else {
+            self.actor_virtual_world_pos()
         }
     }
 
@@ -2594,18 +2578,14 @@ impl ApplicationHandler for App {
                                 let selected_dfs      = self.actor_virtual_selected_idx;
                                 let selected_slot_i   = self.actor_virtual_selected_slot_idx;
                                 if let Some(scene) = self.scene.as_ref() {
-                                    // 選択スロット（ピッキングでクリックされた MC）の entity を取得する
-                                    let mc_entity: Option<crate::engine::ecs::Entity> = if wl != 0 {
+                                    // 選択スロット entity を取得する
+                                    // シーンモード・アクター編集モード共通: selected_dfs で選択アクタを特定する
+                                    let mc_entity: Option<crate::engine::ecs::Entity> =
                                         selected_dfs.and_then(|dfs| {
                                             let mut c = 0u32;
                                             find_actor_by_dfs(&scene.actors, wl, dfs as u32, &mut c)
                                                 .and_then(|a| a.mc_entity_at(selected_slot_i))
-                                        })
-                                    } else {
-                                        scene.actors.iter()
-                                            .filter(|a| a.world_line == 0)
-                                            .find_map(|a| a.mc_entity())
-                                    };
+                                        });
                                     if let Some(mc) = mc_entity.and_then(|e| scene.world.get::<ModelComponent>(e)) {
                                         let roots = mc.filter_selection_roots(&self.selected_instances);
                                         self.drag_root_starts = roots.iter()
@@ -2613,37 +2593,32 @@ impl ApplicationHandler for App {
                                             .collect();
                                         self.drag_child_starts = mc.collect_non_root_descendants(&roots);
                                     }
-                                    // アクター編集モード: 選択スロット以外の MC スロット開始行列を収集する
-                                    // ドラッグ時に全 MC スロットを同期させるために使う
-                                    if wl != 0 {
-                                        if let Some(dfs) = selected_dfs {
-                                            let mut c = 0u32;
-                                            if let Some(actor) = find_actor_by_dfs(&scene.actors, wl, dfs as u32, &mut c) {
-                                                self.actor_extra_mc_drag_starts = actor.slots().iter()
-                                                    .filter(|s| s.kind == ComponentKind::Model)
-                                                    .enumerate()
-                                                    .filter(|&(i, _)| i != selected_slot_i)
-                                                    .filter_map(|(i, s)| {
-                                                        scene.world.get::<ModelComponent>(s.entity)
-                                                            .map(|mc| (i, mc.instance_mats.clone()))
-                                                    })
-                                                    .collect();
-                                            }
+                                    // 選択スロット以外の MC スロット開始行列を収集する
+                                    // シーンモード・アクター編集モード共通
+                                    if let Some(dfs) = selected_dfs {
+                                        let mut c = 0u32;
+                                        if let Some(actor) = find_actor_by_dfs(&scene.actors, wl, dfs as u32, &mut c) {
+                                            self.actor_extra_mc_drag_starts = actor.slots().iter()
+                                                .filter(|s| s.kind == ComponentKind::Model)
+                                                .enumerate()
+                                                .filter(|&(i, _)| i != selected_slot_i)
+                                                .filter_map(|(i, s)| {
+                                                    scene.world.get::<ModelComponent>(s.entity)
+                                                        .map(|mc| (i, mc.instance_mats.clone()))
+                                                })
+                                                .collect();
                                         }
                                     }
-                                    // アクター編集モード: 子アクター MC の開始行列を収集する
-                                    if wl != 0 {
-                                        if let Some(dfs) = selected_dfs {
-                                            let mut c = 0u32;
-                                            if let Some(actor) = find_actor_by_dfs(&scene.actors, wl, dfs as u32, &mut c) {
-                                                let mut child_dfs_counter = dfs as u32 + 1;
-                                                collect_child_actor_mc_starts(actor, &scene.world, &mut child_dfs_counter, &mut self.actor_child_drag_starts);
-                                            }
+                                    // 子アクター MC の開始行列を収集する（シーンモード・アクター編集モード共通）
+                                    if let Some(dfs) = selected_dfs {
+                                        let mut c = 0u32;
+                                        if let Some(actor) = find_actor_by_dfs(&scene.actors, wl, dfs as u32, &mut c) {
+                                            let mut child_dfs_counter = dfs as u32 + 1;
+                                            collect_child_actor_mc_starts(actor, &scene.world, &mut child_dfs_counter, &mut self.actor_child_drag_starts);
                                         }
                                     }
-                                    // アクター編集モード: MC なし（または空）のアクターは
-                                    // Transform を直接動かすパスを使う
-                                    if wl != 0 && self.drag_root_starts.is_empty() {
+                                    // MC なし（または空）のアクターは Transform を直接動かす（シーンモード・アクター編集モード共通）
+                                    if self.drag_root_starts.is_empty() {
                                         if let Some(dfs) = selected_dfs {
                                             let mut c = 0u32;
                                             if let Some(actor) = find_actor_by_dfs(&scene.actors, wl, dfs as u32, &mut c) {
@@ -2742,18 +2717,13 @@ impl ApplicationHandler for App {
                                 let selected_dfs_end  = self.actor_virtual_selected_idx;
                                 let selected_slot_i_e = self.actor_virtual_selected_slot_idx;
                                 // 選択スロット entity を取得して old→new 変換を収集する
+                                // シーンモード・アクター編集モード共通: selected_dfs で選択アクタを特定する
                                 let mc_entity: Option<crate::engine::ecs::Entity> = self.scene.as_ref().and_then(|s| {
-                                    if wl_end != 0 {
-                                        selected_dfs_end.and_then(|dfs| {
-                                            let mut c = 0u32;
-                                            find_actor_by_dfs(&s.actors, wl_end, dfs as u32, &mut c)
-                                                .and_then(|a| a.mc_entity_at(selected_slot_i_e))
-                                        })
-                                    } else {
-                                        s.actors.iter()
-                                            .filter(|a| a.world_line == 0)
-                                            .find_map(|a| a.mc_entity())
-                                    }
+                                    selected_dfs_end.and_then(|dfs| {
+                                        let mut c = 0u32;
+                                        find_actor_by_dfs(&s.actors, wl_end, dfs as u32, &mut c)
+                                            .and_then(|a| a.mc_entity_at(selected_slot_i_e))
+                                    })
                                 });
                                 if let Some(mc) = mc_entity.and_then(|e| self.scene.as_ref()?.world.get::<ModelComponent>(e)) {
                                     for (idx, old_mat) in root_starts.into_iter().chain(child_starts) {
@@ -2765,19 +2735,18 @@ impl ApplicationHandler for App {
                                     }
                                 }
                                 // 追加 MC スロットの old→new 変換を収集する（Undo 用）
+                                // シーンモード・アクター編集モード共通
                                 let extra_slot_transforms: Vec<(usize, u32, [[f32;4];4], [[f32;4];4])> =
                                     extra_mc_starts.iter().flat_map(|(slot_i, start_mats)| {
-                                        let cur_mats: Vec<[[f32;4];4]> = if wl_end != 0 {
-                                            selected_dfs_end.and_then(|dfs| {
-                                                let mut c = 0u32;
-                                                self.scene.as_ref().and_then(|s| {
-                                                    find_actor_by_dfs(&s.actors, wl_end, dfs as u32, &mut c)
-                                                        .and_then(|a| a.mc_entity_at(*slot_i))
-                                                        .and_then(|e| s.world.get::<ModelComponent>(e))
-                                                        .map(|mc| mc.instance_mats.clone())
-                                                })
-                                            }).unwrap_or_default()
-                                        } else { vec![] };
+                                        let cur_mats: Vec<[[f32;4];4]> = selected_dfs_end.and_then(|dfs| {
+                                            let mut c = 0u32;
+                                            self.scene.as_ref().and_then(|s| {
+                                                find_actor_by_dfs(&s.actors, wl_end, dfs as u32, &mut c)
+                                                    .and_then(|a| a.mc_entity_at(*slot_i))
+                                                    .and_then(|e| s.world.get::<ModelComponent>(e))
+                                                    .map(|mc| mc.instance_mats.clone())
+                                            })
+                                        }).unwrap_or_default();
                                         start_mats.iter().zip(cur_mats.iter()).enumerate()
                                             .filter_map(|(i, (old, &new))| {
                                                 if *old != new { Some((*slot_i, i as u32, *old, new)) } else { None }
@@ -2785,8 +2754,8 @@ impl ApplicationHandler for App {
                                             .collect::<Vec<_>>()
                                     }).collect();
                                 let wl = self.active_world_line;
-                                if wl != 0 && self.actor_virtual_selected_idx.is_some() {
-                                    // アクター編集モード + 仮想ノード選択中:
+                                if self.actor_virtual_selected_idx.is_some() {
+                                    // 仮想ノード選択中（シーンモード・アクター編集モード共通）:
                                     // delta を Transform と子アクターに反映して ActorGroupTransformCommand で記録。
                                     let dfs_id = self.actor_virtual_selected_idx.unwrap() as u32;
                                     let child_drag_starts = std::mem::take(&mut self.actor_child_drag_starts);
@@ -3002,18 +2971,14 @@ impl ApplicationHandler for App {
 
                         if let Some(scene) = &mut self.scene {
                             // 選択スロット entity を取得して MC 行列にデルタを適用する
+                            // シーンモード・アクター編集モード共通: selected_dfs で選択アクタを特定する
                             let selected_slot_i = self.actor_virtual_selected_slot_idx;
-                            let mc_entity: Option<crate::engine::ecs::Entity> = if wl != 0 {
+                            let mc_entity: Option<crate::engine::ecs::Entity> =
                                 if let Some(dfs) = selected_dfs {
                                     let mut c = 0u32;
                                     find_actor_by_dfs(&scene.actors, wl, dfs as u32, &mut c)
                                         .and_then(|a| a.mc_entity_at(selected_slot_i))
-                                } else { None }
-                            } else {
-                                scene.actors.iter()
-                                    .filter(|a| a.world_line == 0)
-                                    .find_map(|a| a.mc_entity())
-                            };
+                                } else { None };
                             if let Some(mc) = mc_entity.and_then(|e| scene.world.get_mut::<ModelComponent>(e)) {
                                 for &(idx, ref start) in &self.drag_root_starts {
                                     if let Some(m) = mc.instance_mats.get_mut(idx as usize) {
@@ -3028,28 +2993,27 @@ impl ApplicationHandler for App {
                                 mc.mark_batch_dirty();
                             }
                             // 追加 MC スロット（選択スロット以外）にも同デルタを適用する
-                            // これにより複数 MC スロットが一緒に動く
-                            if wl != 0 {
-                                if let Some(dfs) = selected_dfs {
-                                    let extra_starts = self.actor_extra_mc_drag_starts.clone();
-                                    for (slot_i, start_mats) in &extra_starts {
-                                        let mut c = 0u32;
-                                        let slot_entity = find_actor_by_dfs(&scene.actors, wl, dfs as u32, &mut c)
-                                            .and_then(|a| a.mc_entity_at(*slot_i));
-                                        if let Some(entity) = slot_entity {
-                                            if let Some(mc) = scene.world.get_mut::<ModelComponent>(entity) {
-                                                for (m, start) in mc.instance_mats.iter_mut().zip(start_mats.iter()) {
-                                                    *m = mat4x4_mul(delta, *start);
-                                                }
-                                                mc.mark_batch_dirty();
+                            // 追加 MC スロット（選択スロット以外）にも同デルタを適用する
+                            // シーンモード・アクター編集モード共通
+                            if let Some(dfs) = selected_dfs {
+                                let extra_starts = self.actor_extra_mc_drag_starts.clone();
+                                for (slot_i, start_mats) in &extra_starts {
+                                    let mut c = 0u32;
+                                    let slot_entity = find_actor_by_dfs(&scene.actors, wl, dfs as u32, &mut c)
+                                        .and_then(|a| a.mc_entity_at(*slot_i));
+                                    if let Some(entity) = slot_entity {
+                                        if let Some(mc) = scene.world.get_mut::<ModelComponent>(entity) {
+                                            for (m, start) in mc.instance_mats.iter_mut().zip(start_mats.iter()) {
+                                                *m = mat4x4_mul(delta, *start);
                                             }
+                                            mc.mark_batch_dirty();
                                         }
                                     }
                                 }
                             }
-                            // アクター編集モード: MC なし（インスタンス空含む）のアクターは
-                            // Transform を直接ドラッグ開始時の値にデルタを掛けて更新する
-                            if wl != 0 && self.drag_root_starts.is_empty() {
+                            // MC なし（インスタンス空含む）のアクターは
+                            // Transform を直接ドラッグ開始時の値にデルタを掛けて更新する（共通）
+                            if self.drag_root_starts.is_empty() {
                                 if let Some((drag_dfs, ref start_tf)) = self.actor_transform_drag_start.clone() {
                                     let new_mat = mat4x4_mul(delta, start_tf.to_mat4());
                                     let entity = {
@@ -3064,8 +3028,8 @@ impl ApplicationHandler for App {
                                     }
                                 }
                             }
-                            // アクター編集モード: 子アクター MC にも同デルタを適用する
-                            if wl != 0 {
+                            // 子アクター MC にも同デルタを適用する（共通）
+                            {
                                 let child_starts = self.actor_child_drag_starts.clone();
                                 for (child_dfs, start_mat) in &child_starts {
                                     // スロット entity 経由で子アクターの MC を更新する
@@ -3169,33 +3133,22 @@ impl ApplicationHandler for App {
                     let frustum_planes = extract_frustum_planes(&view_proj.data);
                     let camera_pos     = [pos.x, pos.y, pos.z];
 
-                    if self.active_world_line != 0 {
-                        // アクター編集モード: world_line 全 MC を DFS で更新
-                        // actors と world はフィールド分割で同時可変借用する
-                        let (actors, world) = (&mut scene.actors, &mut scene.world);
-                        update_all_mc_batches_for_wl(
-                            actors, world, self.active_world_line,
-                            &queue, &frustum_planes, camera_pos, self.clock.anim_time(),
-                        );
-                    } else if let Some(mc) = scene.find_component_in_world_line_mut::<ModelComponent>(0) {
-                        if let (Some(batch), Some(model)) = (&mut mc.instanced_batch, mc.model.as_ref()) {
-                            batch.update(
-                                &queue, model, &mc.instance_mats,
-                                &frustum_planes, camera_pos, self.clock.anim_time(),
-                            );
-                        }
-                    }
+                    // シーンモード・アクター編集モード共通: world_line 全 MC を DFS で更新する
+                    let (actors, world) = (&mut scene.actors, &mut scene.world);
+                    update_all_mc_batches_for_wl(
+                        actors, world, self.active_world_line,
+                        &queue, &frustum_planes, camera_pos, self.clock.anim_time(),
+                    );
                 }
 
                 // ── ギズモ位置：選択中アクターの選択スロット MC 重心、なければ Transform 位置 ──
-                let gizmo_pos = if self.active_world_line != 0 {
-                    // アクター編集モード: 選択スロットの MC entity を取り出してから World で参照する
+                // シーンモード・アクター編集モード共通: actor_virtual_selected_idx で選択アクタを特定する
+                let gizmo_pos = {
                     let selected_slot_i = self.actor_virtual_selected_slot_idx;
                     let mc_centroid = self.actor_virtual_selected_idx
                         .and_then(|dfs_id| {
                             let scene = self.scene.as_ref()?;
                             let mut c = 0u32;
-                            // スロット entity を取り出して actors への borrow を解放する
                             let mc_entity = find_actor_by_dfs(
                                 &scene.actors, self.active_world_line, dfs_id as u32, &mut c
                             ).and_then(|a| a.mc_entity_at(selected_slot_i))?;
@@ -3203,14 +3156,11 @@ impl ApplicationHandler for App {
                                 .and_then(|mc| selection_centroid(&self.selected_instances, &mc.instance_mats))
                         });
                     mc_centroid.or_else(|| self.actor_virtual_world_pos())
-                } else {
-                    self.scene.as_ref()
-                        .and_then(|s| s.find_component_in_world_line::<ModelComponent>(0))
-                        .and_then(|mc| selection_centroid(&self.selected_instances, &mc.instance_mats))
                 };
 
                 // アクター仮想選択のワールド位置（レンダラー借用外で取得）
-                let actor_virtual_pos: Option<[f32; 3]> = if self.active_world_line != 0 && self.actor_virtual_selected_idx.is_some() {
+                // シーンモード・アクター編集モード共通: actor_virtual_selected_idx があれば取得する
+                let actor_virtual_pos: Option<[f32; 3]> = if self.actor_virtual_selected_idx.is_some() {
                     self.actor_virtual_world_pos()
                 } else { None };
 
@@ -3220,42 +3170,35 @@ impl ApplicationHandler for App {
 
                 // ピック結果デコード用 MC 情報 (base, dfs_id, slot_i, instance_count)
                 // render block 後に参照するためここで収集しておく
-                let wl_mc_pick_infos: Vec<(u32, u32, usize, usize)> = if self.active_world_line != 0 {
+                // シーンモード・アクター編集モード共通で全 MC を収集する
+                let wl_mc_pick_infos: Vec<(u32, u32, usize, usize)> = {
                     if let Some(scene) = &self.scene {
                         collect_mcs_in_world_line(&scene.actors, &scene.world, self.active_world_line)
                             .into_iter()
                             .map(|(base, dfs, slot_i, mc)| (base, dfs, slot_i, mc.instance_mats.len()))
                             .collect()
                     } else { vec![] }
-                } else { vec![] };
+                };
 
                 if let (Some(renderer), Some(scene), Some(camera_buf), Some(draw_ctx)) =
                     (&mut self.renderer, &self.scene, &self.camera_buf, &self.draw_ctx)
                 {
                     match renderer.begin_frame() {
                         Ok(mut frame) => {
-                            // アクター編集モード: world_line の全 MC を収集。シーンモード: 単一 MC
+                            // シーンモード・アクター編集モード共通: world_line の全 MC を収集する
                             // タプル: (id_base, dfs_id, slot_i, &ModelComponent)
-                            let all_mcs: Vec<(u32, u32, usize, &ModelComponent)> = if self.active_world_line != 0 {
-                                collect_mcs_in_world_line(&scene.actors, &scene.world, self.active_world_line)
-                            } else {
-                                scene.find_component_in_world_line::<ModelComponent>(0)
-                                    .map(|mc| vec![(0u32, 0u32, 0usize, mc)])
-                                    .unwrap_or_default()
-                            };
+                            let all_mcs: Vec<(u32, u32, usize, &ModelComponent)> =
+                                collect_mcs_in_world_line(&scene.actors, &scene.world, self.active_world_line);
                             // 後方互換: 単一 MC として使う箇所用（シーン編集モード or 先頭 MC）
                             let mc = all_mcs.first().map(|&(_, _, _, mc)| mc);
-                            // アクター編集: 選択中アクターの MC（アウトライン・アイコン用）
-                            // dfs_id と slot_i の両方が一致するものを選択し、正確な MC にアウトラインを付ける
+                            // 選択中アクターの MC（アウトライン・アイコン用）
+                            // シーンモード・アクター編集モード共通: DFS id と slot_i で一致する MC を取得する
                             let selected_slot_i = self.actor_virtual_selected_slot_idx;
-                            let selected_mc: Option<&ModelComponent> = if self.active_world_line != 0 {
+                            let selected_mc: Option<&ModelComponent> =
                                 self.actor_virtual_selected_idx
                                     .and_then(|dfs| all_mcs.iter()
                                         .find(|&&(_, d, si, _)| d == dfs as u32 && si == selected_slot_i)
-                                        .map(|&(_, _, _, mc)| mc))
-                            } else {
-                                mc // シーンモードは先頭 MC がそのまま selected_mc
-                            };
+                                        .map(|&(_, _, _, mc)| mc));
 
                             // スキンメッシュコンピュート: 全 MC に対して実行
                             for &(_, _, _, amc) in &all_mcs {
@@ -3533,13 +3476,20 @@ impl ApplicationHandler for App {
                                                 }
                                             }
                                         }
-                                        if let Some((px, py)) = pick_pos {
+                                        // ドロップ待ちがある場合はドロップ座標を優先する。
+                                        // ピックと共存できないため、そのフレームはピックをスキップする。
+                                        let drop_pos = self.pending_drop
+                                            .as_ref()
+                                            .map(|&(_, sx, sy)| (sx, sy));
+                                        let readback_pos = drop_pos.or(pick_pos);
+                                        if let Some((px, py)) = readback_pos {
                                             let px = px.min(id_buf.width.saturating_sub(1));
                                             let py = py.min(id_buf.height.saturating_sub(1));
                                             frame.schedule_id_copy(
                                                 &id_buf.texture, px, py, &id_buf.readback_buf,
                                             );
-                                            did_pick = true;
+                                            // drop_pos があるフレームはピック結果として扱わない
+                                            did_pick = drop_pos.is_none() && pick_pos.is_some();
                                         }
                                     }
                                 }
@@ -3569,7 +3519,7 @@ impl ApplicationHandler for App {
                 // ── ピック結果の読み出し（GPU サブミット後）─────
                 if did_pick {
                     if let (Some(id_buf), Some(draw_ctx)) = (&self.id_buffer, &self.draw_ctx) {
-                        let raw = id_buf.read_pixel(&draw_ctx.device);
+                        let (_world_pos, raw) = id_buf.read_pixel(&draw_ctx.device);
                         let before = self.selected_instances.clone();
 
                         if raw == 0 {
@@ -3579,10 +3529,10 @@ impl ApplicationHandler for App {
                                 self.actor_virtual_selected_slot_idx = 0;
                                 self.selected_instances.clear();
                             }
-                        } else if self.active_world_line != 0 && !wl_mc_pick_infos.is_empty() {
-                            // アクター編集モード: base オフセットから所有 MC を特定し、
-                            // そのアクターと MC スロットを仮想選択として設定する
-                            let global = raw - 1; // global instance ID
+                        } else if !wl_mc_pick_infos.is_empty() {
+                            // シーンモード・アクター編集モード共通:
+                            // global ID から所有 MC を特定し、アクターと MC スロットを仮想選択として設定する
+                            let global = raw - 1; // global instance ID (0-based)
                             if let Some(&(base, dfs_id, slot_i, _)) = wl_mc_pick_infos.iter()
                                 .find(|&&(base, _, _, count)| global >= base && (global - base) < count as u32)
                             {
@@ -3602,7 +3552,7 @@ impl ApplicationHandler for App {
                                 self.send_actor_components(dfs_id, slot_i);
                             }
                         } else {
-                            // シーン編集モード: 従来通り
+                            // フォールバック: MC が存在しない場合
                             let new_idx = Some(raw - 1);
                             if self.ctrl_at_press {
                                 if let Some(idx) = new_idx {
@@ -3623,6 +3573,48 @@ impl ApplicationHandler for App {
                         }
                         eprintln!("[SEED] pick: raw={raw}, selected={:?}", self.selected_instances);
                         self.send_selected();
+                    }
+                }
+
+                // ── ドロップ処理（GPU サブミット後）─────────────
+                if let Some((path, sx, sy)) = self.pending_drop.take() {
+                    // ピッキングと同じピクセルを読み出す（同フレームで pick_pos も処理された可能性あり）
+                    // ドロップ専用に再読み出しが必要な場合は次フレームで処理するため、
+                    // did_pick が false のとき（= ピック処理をしていない）に限り読み出す
+                    eprintln!("[Drop] Processing pending_drop pos=({sx},{sy}) did_pick={did_pick}");
+                    let world_pos = if !did_pick {
+                        if let (Some(id_buf), Some(draw_ctx)) = (&self.id_buffer, &self.draw_ctx) {
+                            let (wpos, raw_id) = id_buf.read_pixel(&draw_ctx.device);
+                            eprintln!("[Drop] read_pixel => world_pos={wpos:?} raw_id={raw_id}");
+                            wpos
+                        } else { None }
+                    } else {
+                        // ピック処理でバッファが読み出し済みのため別途取得できない。
+                        // pending_drop を再キューイングして次フレームで処理する。
+                        eprintln!("[Drop] did_pick=true, re-queuing for next frame");
+                        self.pending_drop = Some((path.clone(), sx, sy));
+                        None
+                    };
+
+                    // world_pos が取れた場合はその場所に、なければカメラ前方 10m に配置する
+                    let spawn_pos = world_pos.unwrap_or_else(|| {
+                        let cam   = self.camera.position();
+                        let yaw   = self.camera.yaw.to_radians();
+                        let pitch = self.camera.pitch.to_radians();
+                        // LH 座標系: yaw=0 で +Z 向き
+                        const DEFAULT_DIST: f32 = 10.0;
+                        let fwd_x = yaw.sin() * pitch.cos();
+                        let fwd_y = pitch.sin();
+                        let fwd_z = yaw.cos() * pitch.cos();
+                        [
+                            cam.x + fwd_x * DEFAULT_DIST,
+                            cam.y + fwd_y * DEFAULT_DIST,
+                            cam.z + fwd_z * DEFAULT_DIST,
+                        ]
+                    });
+
+                    if world_pos.is_some() || !did_pick {
+                        self.handle_drop_actor(&path, spawn_pos);
                     }
                 }
 

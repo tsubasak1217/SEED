@@ -121,6 +121,9 @@ pub enum IpcCommand {
     /// コンポーネントスロットを複製する
     /// フォーマット: DUPLICATE_COMPONENT:{actor_dfs_id},{slot_idx}
     DuplicateComponent { actor_dfs_id: u32, slot_idx: u32 },
+    /// .actor ファイルをビューポートにドラッグ&ドロップした
+    /// フォーマット: DROP_ACTOR:{path},{screen_x},{screen_y}
+    DropActor { path: String, screen_x: u32, screen_y: u32 },
 }
 
 // ============================================================
@@ -464,6 +467,23 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                             if let (Some(id_s), Some(sl_s)) = (it.next(), it.next()) {
                                 if let (Ok(a), Ok(sl)) = (id_s.parse::<u32>(), sl_s.parse::<u32>()) {
                                     Some(IpcCommand::DuplicateComponent { actor_dfs_id: a, slot_idx: sl })
+                                } else { None }
+                            } else { None }
+                        }
+                        s if s.starts_with("DROP_ACTOR:") => {
+                            // フォーマット: DROP_ACTOR:{path},{screen_x},{screen_y}
+                            // path 中にカンマが含まれる可能性があるため末尾から数値を取り出す
+                            let rest = &s["DROP_ACTOR:".len()..];
+                            let parts: Vec<&str> = rest.rsplitn(3, ',').collect();
+                            if parts.len() == 3 {
+                                if let (Ok(sy), Ok(sx)) =
+                                    (parts[0].parse::<u32>(), parts[1].parse::<u32>())
+                                {
+                                    Some(IpcCommand::DropActor {
+                                        path: parts[2].to_string(),
+                                        screen_x: sx,
+                                        screen_y: sy,
+                                    })
                                 } else { None }
                             } else { None }
                         }
