@@ -39,6 +39,7 @@ use crate::engine::structs::objects::actor::{ActorData, ComponentSlotData, Compo
 use crate::engine::structs::objects::camera::debug_camera::CameraInput;
 use crate::engine::structs::tensor::{Vector3, Mat4x4};
 use crate::engine::structs::transforms::{Quaternion, Transform};
+use crate::engine::structs::utils::Color;
 
 // ============================================================
 //  クリップボードアイテム
@@ -210,6 +211,13 @@ pub struct App {
     /// 次フレームの ID パス後にワールド座標を読み出してアクターを配置する。
     /// タプル: (actor_path, screen_x, screen_y)
     pending_drop: Option<(String, u32, u32)>,
+    /// DRAG_HOVER コマンドを受け取ったときに設定する。
+    /// 次フレームの ID パスでワールド座標を解決してプレビュー球体位置を更新する。
+    /// タプル: (viewport_x, viewport_y)
+    pending_drop_hover: Option<(u32, u32)>,
+    /// ドラッグ中の配置プレビュー球体を描画するワールド座標。
+    /// DragHoverEnd または DROP_ACTOR でクリアされる。
+    drop_preview_pos: Option<[f32; 3]>,
 }
 
 impl App {
@@ -285,7 +293,9 @@ impl App {
             inspector_transform_drag:     None,
             active_world_line: 0,
             saved_cameras: std::collections::HashMap::new(),
-            pending_drop:  None,
+            pending_drop:       None,
+            pending_drop_hover: None,
+            drop_preview_pos:   None,
         }
     }
 
@@ -926,7 +936,21 @@ impl App {
                 }
                 IpcCommand::DropActor { path, screen_x, screen_y } => {
                     // 次フレームのIDパスでワールド座標を読み出すためにキューイングする
-                    self.pending_drop = Some((path, screen_x, screen_y));
+                    self.pending_drop       = Some((path, screen_x, screen_y));
+                    // ドロップ確定でホバープレビューをクリアする
+                    self.pending_drop_hover = None;
+                    self.drop_preview_pos   = None;
+                }
+                IpcCommand::DragHover { x, y } => {
+                    // ドラッグ中カーソル位置を記録し、次フレームのレイキャストで球体位置を解決する
+                    eprintln!("[Hover] DragHover received: ({x},{y})");
+                    self.pending_drop_hover = Some((x, y));
+                }
+                IpcCommand::DragHoverEnd => {
+                    // ドラッグ離脱: プレビュー球体を消す
+                    eprintln!("[Hover] DragHoverEnd received");
+                    self.pending_drop_hover = None;
+                    self.drop_preview_pos   = None;
                 }
             }
         }
@@ -3395,6 +3419,40 @@ impl ApplicationHandler for App {
                     self.actor_virtual_world_pos()
                 } else { None };
 
+                // ── ドラッグホバープレビュー位置の更新（レンダー前）──────────
+                // GPU リードバックを使わずレイキャストで直接ワールド座標を算出する。
+                // y=0 平面との交差を優先し、カメラが平行または後方なら DEFAULT_DIST 先。
+                // レンダー前に計算することで同一フレーム内に球体を描画できる。
+                if let Some((hsx, hsy)) = self.pending_drop_hover.take() {
+                    const DEFAULT_DIST: f32 = 10.0;
+                    if let Some(ws) = self.window.as_ref().map(|w| w.inner_size()) {
+                        let cam_v = self.camera.position();
+                        let cam   = [cam_v.x, cam_v.y, cam_v.z];
+                        let view  = self.camera.view_matrix();
+                        let proj  = self.camera.projection_matrix();
+                        let (_ro, rd) = screen_to_ray(
+                            hsx as f32, hsy as f32,
+                            ws.width as f32, ws.height as f32,
+                            &view.data, &proj.data, cam,
+                        );
+                        // y=0 平面との交差を試みる（地面への自然な配置）
+                        let pos = if rd[1].abs() > 0.001 {
+                            let t = -cam[1] / rd[1];
+                            if t > 0.5 {
+                                // 地面と交差する場合: その交点
+                                [cam[0]+rd[0]*t, 0.0, cam[2]+rd[2]*t]
+                            } else {
+                                // カメラが地面以下または後方交差: DEFAULT_DIST 先
+                                [cam[0]+rd[0]*DEFAULT_DIST, cam[1]+rd[1]*DEFAULT_DIST, cam[2]+rd[2]*DEFAULT_DIST]
+                            }
+                        } else {
+                            // レイが y 軸と平行: DEFAULT_DIST 先
+                            [cam[0]+rd[0]*DEFAULT_DIST, cam[1]+rd[1]*DEFAULT_DIST, cam[2]+rd[2]*DEFAULT_DIST]
+                        };
+                        self.drop_preview_pos = Some(pos);
+                    }
+                }
+
                 // ピック要求を取り出す（描画ブロック内で使用）
                 let pick_pos = self.pending_pick.take();
                 let mut did_pick = false;
@@ -3518,6 +3576,21 @@ impl ApplicationHandler for App {
                                         lb.add_line(wp[3], wp[0], color);
                                         Some(lb.build(&draw_ctx.device))
                                     } else { None }
+                                } else { None };
+
+                                // ドロッププレビュー球体バッチ（ドラッグ中のみ）
+                                // 固定半径のソリッドスフィアを配置予定位置に描画する
+                                const PREVIEW_SPHERE_RADIUS: f32 = 0.5;
+                                let drop_preview_batch = if let Some(pos) = self.drop_preview_pos {
+                                    let mut gb = GizmoBatch::new();
+                                    gb.add_solid_sphere(
+                                        pos,
+                                        PREVIEW_SPHERE_RADIUS,
+                                        16,  // stacks
+                                        24,  // slices
+                                        Color::new(0.3, 0.8, 1.0, 0.85),
+                                    );
+                                    Some(gb.build(&draw_ctx.device))
                                 } else { None };
 
                                 // グリッド描画バッチ（エディタモード + show_grid のみ）
@@ -3684,6 +3757,17 @@ impl ApplicationHandler for App {
                                         );
                                     }
 
+                                    // ドロッププレビュー球体描画（ドラッグ中のみ）
+                                    if let (Some(preview_batch), Some((_, line_bg))) =
+                                        (&drop_preview_batch, &self.line_model_buf)
+                                    {
+                                        draw_gizmo_batch(
+                                            &mut pass, preview_batch,
+                                            &camera_buf.bind_group, line_bg,
+                                            &draw_ctx.pipelines,
+                                        );
+                                    }
+
                                     // グリッド描画
                                     if let (Some(grid_batch), Some((_, line_bg))) =
                                         (&grid_gpu_batch, &self.line_model_buf)
@@ -3739,8 +3823,8 @@ impl ApplicationHandler for App {
                                                 }
                                             }
                                         }
-                                        // ドロップ待ちがある場合はドロップ座標を優先する。
-                                        // ピックと共存できないため、そのフレームはピックをスキップする。
+                                        // readback 優先度: drop > pick
+                                        // ホバープレビューはレイキャストで処理するため GPU リードバック不要
                                         let drop_pos = self.pending_drop
                                             .as_ref()
                                             .map(|&(_, sx, sy)| (sx, sy));
@@ -3751,7 +3835,7 @@ impl ApplicationHandler for App {
                                             frame.schedule_id_copy(
                                                 &id_buf.texture, px, py, &id_buf.readback_buf,
                                             );
-                                            // drop_pos があるフレームはピック結果として扱わない
+                                            // readback が drop ではなく pick のためかを記録するフラグ
                                             did_pick = drop_pos.is_none() && pick_pos.is_some();
                                         }
                                     }
@@ -3907,6 +3991,8 @@ impl ApplicationHandler for App {
                         self.handle_drop_actor(&path, spawn_pos);
                     }
                 }
+
+                // ホバー処理はレンダリング前（process_ipc 直後）に実行するため、ここでは何もしない。
 
                 // ─ 7. EndFrame（Play 時のみ）─────────────────
                 if time_running {

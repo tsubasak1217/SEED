@@ -124,6 +124,11 @@ pub enum IpcCommand {
     /// .actor ファイルをビューポートにドラッグ&ドロップした
     /// フォーマット: DROP_ACTOR:{path},{screen_x},{screen_y}
     DropActor { path: String, screen_x: u32, screen_y: u32 },
+    /// ドラッグ中カーソル位置ホバー通知（配置プレビュー球体表示用）
+    /// フォーマット: DRAG_HOVER:{viewport_x},{viewport_y}
+    DragHover { x: u32, y: u32 },
+    /// ドラッグ離脱通知（プレビュー球体を消す）
+    DragHoverEnd,
 }
 
 // ============================================================
@@ -487,6 +492,20 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                                 } else { None }
                             } else { None }
                         }
+                        s if s.starts_with("DRAG_HOVER:") => {
+                            // フォーマット: DRAG_HOVER:{viewport_x},{viewport_y}
+                            let rest = &s["DRAG_HOVER:".len()..];
+                            let mut parts = rest.split(',');
+                            match (parts.next(), parts.next()) {
+                                (Some(xs), Some(ys)) => {
+                                    if let (Ok(x), Ok(y)) = (xs.parse::<u32>(), ys.parse::<u32>()) {
+                                        Some(IpcCommand::DragHover { x, y })
+                                    } else { None }
+                                }
+                                _ => None,
+                            }
+                        }
+                        s if s == "DRAG_HOVER_END" => Some(IpcCommand::DragHoverEnd),
                         _                    => None,
                     }
                 };

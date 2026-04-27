@@ -400,6 +400,22 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         return (localX, localY);
     }
 
+    /// <summary>
+    /// ドラッグ中のカーソル位置をランタイムに送信する。
+    /// GiveFeedback コールバックからカーソルがビューポート上にいる間呼び出す。
+    /// </summary>
+    internal void SendActorDragHover()
+    {
+        var (localX, localY) = GetViewportLocalCursorPos();
+        _runtimeManager?.SendToRuntime($"DRAG_HOVER:{localX},{localY}");
+    }
+
+    /// <summary>ドラッグがビューポートから離れた、またはドラッグ終了時に呼び出す。</summary>
+    internal void SendActorDragHoverEnd()
+    {
+        _runtimeManager?.SendToRuntime("DRAG_HOVER_END");
+    }
+
     /// ドラッグ中にビューポート上をハイライトする透明オーバーレイを表示 / 非表示にする。
     /// オーバーレイは OnContainerCreated で事前生成済み・WS_EX_TRANSPARENT 付き。
     public void SetViewportDragHighlight(bool active)
@@ -473,25 +489,53 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         private const int  S_OK            = 0;
 
         private readonly MainWindow _owner;
+        /// <summary>現在ドラッグ中の .actor パスが存在するかどうか。</summary>
+        private bool _isDraggingActors = false;
 
         public ViewportOleDropTarget(MainWindow owner) => _owner = owner;
 
         public int DragEnter(object pDataObj, uint grfKeyState, POINT pt, ref uint pdwEffect)
         {
-            pdwEffect = GetActorPaths(pDataObj).Any() ? DROPEFFECT_COPY : DROPEFFECT_NONE;
+            var actorPaths = GetActorPaths(pDataObj).ToList();
+            _isDraggingActors = actorPaths.Any();
+            pdwEffect = _isDraggingActors ? DROPEFFECT_COPY : DROPEFFECT_NONE;
+            EditorLog.Write($"[OLE] DragEnter: isDraggingActors={_isDraggingActors} actorCount={actorPaths.Count} pt=({pt.X},{pt.Y})");
+            if (_isDraggingActors)
+                SendHover(pt);
             return S_OK;
         }
 
         public int DragOver(uint grfKeyState, POINT pt, ref uint pdwEffect)
         {
-            // DragEnter で設定したエフェクトを維持する
+            // エフェクトを維持しつつホバー位置をランタイムに通知する。
+            // pdwEffect を明示的に設定しないと OLE が DROPEFFECT_NONE と解釈することがある。
+            if (_isDraggingActors)
+            {
+                pdwEffect = DROPEFFECT_COPY;
+                SendHover(pt);
+            }
+            else
+            {
+                pdwEffect = DROPEFFECT_NONE;
+                EditorLog.Write("[OLE] DragOver: _isDraggingActors=false, skipping hover");
+            }
             return S_OK;
         }
 
-        public int DragLeave() => S_OK;
+        public int DragLeave()
+        {
+            // ドラッグ離脱: プレビュー球体を消す
+            if (_isDraggingActors)
+            {
+                _isDraggingActors = false;
+                _owner._runtimeManager?.SendToRuntime("DRAG_HOVER_END");
+            }
+            return S_OK;
+        }
 
         public int Drop(object pDataObj, uint grfKeyState, POINT pt, ref uint pdwEffect)
         {
+            _isDraggingActors = false;
             var paths = GetActorPaths(pDataObj).ToList();
             if (paths.Count == 0) { pdwEffect = DROPEFFECT_NONE; return S_OK; }
 
@@ -503,6 +547,16 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
             _owner.Dispatcher.BeginInvoke(() => _owner.HandleViewportDrop(paths, localX, localY));
             pdwEffect = DROPEFFECT_COPY;
             return S_OK;
+        }
+
+        /// <summary>スクリーン座標をビューポートローカル座標に変換して DRAG_HOVER を送信する。</summary>
+        private void SendHover(POINT pt)
+        {
+            if (_owner._viewportHost == null) return;
+            GetWindowRect(_owner._viewportHost.ContainerHwnd, out var vpRect);
+            var localX = (uint)Math.Max(0, pt.X - vpRect.Left);
+            var localY = (uint)Math.Max(0, pt.Y - vpRect.Top);
+            _owner._runtimeManager?.SendToRuntime($"DRAG_HOVER:{localX},{localY}");
         }
 
         /// イン-プロセス WPF ドラッグの場合、pDataObj は System.Windows.IDataObject にキャスト可能。

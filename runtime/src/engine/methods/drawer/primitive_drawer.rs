@@ -291,6 +291,56 @@ impl GizmoBatch {
         }
     }
 
+    /// UV スフィアをソリッド三角形で追加する。
+    ///
+    /// - `stacks`: 緯度方向の分割数（最小 2）
+    /// - `slices`: 経度方向の分割数（最小 3）
+    pub fn add_solid_sphere(
+        &mut self,
+        center: [f32; 3],
+        radius: f32,
+        stacks: usize,
+        slices: usize,
+        color:  Color,
+    ) {
+        let stacks = stacks.max(2);
+        let slices = slices.max(3);
+
+        // (stack, slice) インデックスから球面座標→ワールド座標を返すクロージャ
+        let vert = |s: usize, i: usize| -> [f32; 3] {
+            let phi   = PI * s as f32 / stacks as f32;
+            let theta = 2.0 * PI * i as f32 / slices as f32;
+            let (sp, cp) = phi.sin_cos();
+            let (st, ct) = theta.sin_cos();
+            [
+                center[0] + radius * sp * ct,
+                center[1] + radius * cp,
+                center[2] + radius * sp * st,
+            ]
+        };
+
+        for s in 0..stacks {
+            for i in 0..slices {
+                let v00 = vert(s,     i);
+                let v01 = vert(s,     i + 1);
+                let v10 = vert(s + 1, i);
+                let v11 = vert(s + 1, i + 1);
+
+                if s == 0 {
+                    // 北極キャップ（v00 == 北極点、縮退三角形）
+                    self.add_solid_tri(v00, v11, v10, color);
+                } else if s + 1 == stacks {
+                    // 南極キャップ（v10 == 南極点、縮退三角形）
+                    self.add_solid_tri(v00, v01, v10, color);
+                } else {
+                    // 中間帯: クワッドを 2 三角形に分割
+                    self.add_solid_tri(v00, v01, v10, color);
+                    self.add_solid_tri(v01, v11, v10, color);
+                }
+            }
+        }
+    }
+
     /// ソリッドキューブを追加する。
     fn add_solid_cube(&mut self, center: [f32; 3], half: f32, color: Color) {
         let [cx, cy, cz] = center;

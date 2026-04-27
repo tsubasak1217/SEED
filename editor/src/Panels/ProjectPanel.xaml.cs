@@ -630,7 +630,8 @@ public partial class ProjectPanel : UserControl
         var mainWindow = Application.Current.MainWindow as MainWindow;
 
         // GiveFeedback でカーソルとビューポートハイライトを制御する。
-        // HwndHost 上は OLE DropTarget が存在しないため「no-drop」カーソルになるのを防ぐ。
+        // HwndHost 上では OLE の DragOver が呼ばれないため GiveFeedback も1回しか発火しない。
+        // ホバープレビュー位置の更新はバックグラウンドスレッドでポーリングする。
         GiveFeedbackEventHandler giveFeedback = (_, args) =>
         {
             bool overVp = mainWindow?.IsMouseOverViewportHwnd() ?? false;
@@ -648,10 +649,42 @@ public partial class ProjectPanel : UserControl
             }
         };
 
+        // バックグラウンドスレッドで 30ms ごとにカーソル位置を送信する。
+        // DoDragDrop が UI スレッドをブロックする間、GiveFeedback はほぼ1回しか
+        // 発火しないため、スレッドでポーリングしてリアルタイム更新を実現する。
+        using var cts = new System.Threading.CancellationTokenSource();
+        var ct        = cts.Token;
+        bool prevOverVp = false;
+        var hoverThread = new System.Threading.Thread(() =>
+        {
+            while (!ct.IsCancellationRequested)
+            {
+                bool overVp = mainWindow?.IsMouseOverViewportHwnd() ?? false;
+                if (overVp)
+                {
+                    prevOverVp = true;
+                    mainWindow?.SendActorDragHover();
+                }
+                else if (prevOverVp)
+                {
+                    // ビューポートを離れた瞬間に HOVER_END を1回送信
+                    prevOverVp = false;
+                    mainWindow?.SendActorDragHoverEnd();
+                }
+                System.Threading.Thread.Sleep(30);
+            }
+        }) { IsBackground = true };
+        hoverThread.Start();
+
         sourceTile.GiveFeedback += giveFeedback;
         var data   = new DataObject("SEEDProjectPaths", paths);
         var result = DragDrop.DoDragDrop(sourceTile, data, DragDropEffects.Copy | DragDropEffects.Move);
         sourceTile.GiveFeedback -= giveFeedback;
+
+        // バックグラウンドスレッドを停止し、ホバープレビューを確実に消す
+        cts.Cancel();
+        hoverThread.Join(200);
+        mainWindow?.SendActorDragHoverEnd();
 
         // ドラッグ終了後のクリーンアップ
         Mouse.OverrideCursor = null;
