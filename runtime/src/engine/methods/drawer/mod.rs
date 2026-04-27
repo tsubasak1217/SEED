@@ -38,6 +38,8 @@ pub use primitive_drawer::{LineBatch, GizmoBatch, draw_line_batch, draw_gizmo_ba
 // ============================================================
 
 use std::sync::Arc;
+use std::collections::HashMap;
+use std::cell::RefCell;
 use crate::engine::core::loader::model::Model;
 use crate::engine::core::renderer::gpu_resources::{
     GpuModel as GpuModelInner, InstancedModelBatch as BatchInner,
@@ -48,10 +50,13 @@ use crate::engine::core::renderer::gpu_resources::{
 ///
 /// `Renderer` から生成し、モデルのアップロードや描画関数呼び出しに使う。
 pub struct DrawContext {
-    pub device:    Arc<wgpu::Device>,
-    pub queue:     Arc<wgpu::Queue>,
-    pub pipelines: DrawPipelines,
-    pub defaults:  DefaultTex,
+    pub device:      Arc<wgpu::Device>,
+    pub queue:       Arc<wgpu::Queue>,
+    pub pipelines:   DrawPipelines,
+    pub defaults:    DefaultTex,
+    /// パス → 解析済み CPU モデルのキャッシュ。
+    /// 同じパスのモデルを繰り返し build_actor/rebuild するときにディスク読み込みとパースを省く。
+    pub model_cache: RefCell<HashMap<String, Arc<Model>>>,
 }
 
 impl DrawContext {
@@ -63,7 +68,7 @@ impl DrawContext {
     ) -> Self {
         let pipelines = DrawPipelines::new(&device, surface_format, depth_format);
         let defaults  = DefaultTex::new(&device, &queue);
-        Self { device, queue, pipelines, defaults }
+        Self { device, queue, pipelines, defaults, model_cache: RefCell::new(HashMap::new()) }
     }
 
     pub fn upload_model(&self, model: &Model) -> GpuModelInner {

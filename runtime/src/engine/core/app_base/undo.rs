@@ -41,6 +41,10 @@ pub trait Command {
     fn component_rebuild_for_redo(&self) -> Option<(u32, u32, Vec<ComponentSlotData>)> { None }
     /// Undo/Redo 後にインスペクターへ通知すべきアクターの (world_line, dfs_id)。
     fn actor_inspect_notify(&self) -> Option<(u32, u32)> { None }
+    /// Undo 実行後に AppBase が復元すべきアクター DFS 選択状態 (dfs_ids, primary)。
+    fn actor_dfs_selection_after_undo(&self) -> Option<(Vec<usize>, Option<usize>)> { None }
+    /// Redo 実行後に AppBase が復元すべきアクター DFS 選択状態 (dfs_ids, primary)。
+    fn actor_dfs_selection_after_redo(&self) -> Option<(Vec<usize>, Option<usize>)> { None }
 }
 
 // ============================================================
@@ -106,6 +110,12 @@ impl UndoHistory {
     pub fn can_undo(&self) -> bool { !self.past.is_empty() }
     pub fn can_redo(&self) -> bool { !self.future.is_empty() }
 
+    /// 最後に積んだコマンドを取り出す（CompositeCommand へ統合するため）。
+    /// future スタックは変更しない。
+    pub fn pop_last(&mut self) -> Option<Box<dyn Command>> {
+        self.past.pop()
+    }
+
     /// undo() 直後: future の末尾が今 undo したコマンド。
     pub fn peek_undone_actor_rebuild(&self) -> Option<(u32, Vec<ActorData>)> {
         self.future.last()?.actor_rebuild_for_undo()
@@ -126,6 +136,14 @@ impl UndoHistory {
     /// redo() 直後: past の末尾のコマンドのインスペクター通知先。
     pub fn peek_redone_actor_inspect(&self) -> Option<(u32, u32)> {
         self.past.last()?.actor_inspect_notify()
+    }
+    /// undo() 直後: 復元すべきアクター DFS 選択状態。
+    pub fn peek_undone_actor_dfs_selection(&self) -> Option<(Vec<usize>, Option<usize>)> {
+        self.future.last()?.actor_dfs_selection_after_undo()
+    }
+    /// redo() 直後: 復元すべきアクター DFS 選択状態。
+    pub fn peek_redone_actor_dfs_selection(&self) -> Option<(Vec<usize>, Option<usize>)> {
+        self.past.last()?.actor_dfs_selection_after_redo()
     }
 }
 
@@ -274,6 +292,110 @@ impl Command for ComponentSlotsSnapshotCommand {
     }
     fn component_rebuild_for_redo(&self) -> Option<(u32, u32, Vec<ComponentSlotData>)> {
         Some((self.world_line, self.actor_dfs_id, self.after_slots.clone()))
+    }
+}
+
+// ============================================================
+//  CompositeCommand — 複数コマンドをアトミックに Undo/Redo する合成コマンド
+// ============================================================
+
+/// 複数の Command を1つの Undo/Redo 操作として扱うラッパー。
+/// プライマリ Actor のドラッグと非プライマリ Actor のドラッグを
+/// 1 Ctrl+Z で戻せるようにするために使用する。
+pub struct CompositeCommand {
+    /// execute 順に格納。undo は逆順で実行する。
+    pub commands: Vec<Box<dyn Command>>,
+}
+
+impl Command for CompositeCommand {
+    fn execute(&mut self, scene: &mut Scene) {
+        for cmd in &mut self.commands { cmd.execute(scene); }
+    }
+    fn undo(&mut self, scene: &mut Scene) {
+        for cmd in self.commands.iter_mut().rev() { cmd.undo(scene); }
+    }
+    fn is_structural(&self) -> bool {
+        self.commands.iter().any(|c| c.is_structural())
+    }
+    fn selection_after_undo(&self) -> Option<Vec<u32>> {
+        self.commands.iter().rev().find_map(|c| c.selection_after_undo())
+    }
+    fn selection_after_redo(&self) -> Option<Vec<u32>> {
+        self.commands.iter().rev().find_map(|c| c.selection_after_redo())
+    }
+    fn actor_rebuild_for_undo(&self) -> Option<(u32, Vec<ActorData>)> {
+        self.commands.iter().rev().find_map(|c| c.actor_rebuild_for_undo())
+    }
+    fn actor_rebuild_for_redo(&self) -> Option<(u32, Vec<ActorData>)> {
+        self.commands.iter().rev().find_map(|c| c.actor_rebuild_for_redo())
+    }
+    fn component_rebuild_for_undo(&self) -> Option<(u32, u32, Vec<ComponentSlotData>)> {
+        self.commands.iter().rev().find_map(|c| c.component_rebuild_for_undo())
+    }
+    fn component_rebuild_for_redo(&self) -> Option<(u32, u32, Vec<ComponentSlotData>)> {
+        self.commands.iter().rev().find_map(|c| c.component_rebuild_for_redo())
+    }
+    fn actor_inspect_notify(&self) -> Option<(u32, u32)> {
+        self.commands.iter().find_map(|c| c.actor_inspect_notify())
+    }
+    fn actor_dfs_selection_after_undo(&self) -> Option<(Vec<usize>, Option<usize>)> {
+        self.commands.iter().rev().find_map(|c| c.actor_dfs_selection_after_undo())
+    }
+    fn actor_dfs_selection_after_redo(&self) -> Option<(Vec<usize>, Option<usize>)> {
+        self.commands.iter().rev().find_map(|c| c.actor_dfs_selection_after_redo())
+    }
+}
+
+// ============================================================
+//  MultiActorDragTransformCommand — マルチ選択ドラッグ（非プライマリアクター）
+//
+//  ActorTreeSnapshotCommand の代替。GPU 再構築を行わず
+//  MC の instance_mats[0] と ActorTransform を直接書き換える軽量コマンド。
+// ============================================================
+
+/// マルチ選択ドラッグで移動した非プライマリアクターの変換を軽量に Undo/Redo する。
+pub struct MultiActorDragTransformCommand {
+    pub wl: u32,
+    /// (dfs_id, ドラッグ前の行列, ドラッグ後の行列)
+    pub transforms: Vec<(u32, [[f32; 4]; 4], [[f32; 4]; 4])>,
+}
+
+impl Command for MultiActorDragTransformCommand {
+    fn execute(&mut self, scene: &mut Scene) {
+        for &(dfs_id, _, new_mat) in &self.transforms {
+            set_mc_mat_in_actor(scene, self.wl, dfs_id, 0, new_mat);
+            set_actor_transform(scene, self.wl, dfs_id, Transform::from_mat4(&new_mat));
+        }
+    }
+    fn undo(&mut self, scene: &mut Scene) {
+        for &(dfs_id, old_mat, _) in &self.transforms {
+            set_mc_mat_in_actor(scene, self.wl, dfs_id, 0, old_mat);
+            set_actor_transform(scene, self.wl, dfs_id, Transform::from_mat4(&old_mat));
+        }
+    }
+}
+
+// ============================================================
+//  ActorDfsSelectionCommand — アクター DFS 選択状態の変更
+// ============================================================
+
+/// アクター DFS 選択を Undo/Redo するコマンド。
+/// execute/undo は No-op で、AppBase が peek_*_actor_dfs_selection() で読み取って反映する。
+pub struct ActorDfsSelectionCommand {
+    pub before_dfs_ids: Vec<usize>,
+    pub after_dfs_ids:  Vec<usize>,
+    pub before_primary: Option<usize>,
+    pub after_primary:  Option<usize>,
+}
+
+impl Command for ActorDfsSelectionCommand {
+    fn execute(&mut self, _scene: &mut Scene) {}
+    fn undo(&mut self, _scene: &mut Scene) {}
+    fn actor_dfs_selection_after_undo(&self) -> Option<(Vec<usize>, Option<usize>)> {
+        Some((self.before_dfs_ids.clone(), self.before_primary))
+    }
+    fn actor_dfs_selection_after_redo(&self) -> Option<(Vec<usize>, Option<usize>)> {
+        Some((self.after_dfs_ids.clone(), self.after_primary))
     }
 }
 

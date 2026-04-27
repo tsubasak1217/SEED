@@ -9,6 +9,7 @@
 // ============================================================
 
 use std::any::Any;
+use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use crate::engine::ecs::Component;
 use crate::engine::core::loader::model::Model;
@@ -70,8 +71,8 @@ pub struct ModelComponentData {
 /// GPU リソース (GpuModel, InstancedModelBatch) を含む純粋データ構造。
 pub struct ModelComponent {
     pub source_path:     String,
-    /// モデルが未設定の場合は None（空コンポーネント状態）
-    pub model:           Option<Model>,
+    /// CPU モデルデータ。Arc 共有でモデルキャッシュを実現する（同一パスの GPU リソース再生成コスト削減）。
+    pub model:           Option<Arc<Model>>,
     pub gpu_model:       Option<GpuModel>,
     pub instanced_batch: Option<InstancedModelBatch>,
     pub instance_mats:   Vec<[[f32; 4]; 4]>,

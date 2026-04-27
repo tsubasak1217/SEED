@@ -237,8 +237,13 @@ public partial class HierarchyPanel : UserControl
         Dispatcher.BeginInvoke(() =>
         {
             _selectedIds.Clear();
-            foreach (var id in ids) _selectedIds.Add(id);
-            _selectedId = ids.Count > 0 ? ids[0] : -1;
+            foreach (var id in ids)
+            {
+                // 仮想 ID（999_000_000 + dfs）はデコードして DFS ID として保存する
+                var dfsId = id >= VirtualActorNodeIdBase ? id - VirtualActorNodeIdBase : id;
+                _selectedIds.Add(dfsId);
+            }
+            _selectedId = _selectedIds.Count > 0 ? _selectedIds.First() : -1;
             _anchorId   = _selectedId;
             if (_selectedId >= 0)
                 SelectTreeItem(_selectedId);
@@ -386,9 +391,17 @@ public partial class HierarchyPanel : UserControl
     {
         if (_isActorEditMode)
         {
+            if (_selectedIds.Count > 1)
+            {
+                // アクター編集モード・マルチ選択: 全 DFS id を仮想 ID に変換して送信
+                var ids = string.Join(",", _selectedIds.Select(id => (999_000_000u + (uint)id).ToString()));
+                _runtime?.SendToRuntime($"SELECT_MULTI:{ids}");
+                if (_selectedId >= 0) ActorDfsSelected?.Invoke(_selectedId);
+                return;
+            }
             if (_selectedId >= 0)
             {
-                // アクター編集モード: 仮想 ID（DFS + VirtualActorNodeIdBase）で送信
+                // アクター編集モード・単一選択: 仮想 ID（DFS + VirtualActorNodeIdBase）で送信
                 _runtime?.SendToRuntime($"SELECT:{999_000_000u + (uint)_selectedId}");
                 ActorDfsSelected?.Invoke(_selectedId);
             }
@@ -396,6 +409,14 @@ public partial class HierarchyPanel : UserControl
         }
 
         // シーンモードもアクターツリー表示に統一したため、同じ仮想 ID 方式で送信する
+        if (_selectedIds.Count > 1)
+        {
+            // シーンモード・マルチ選択
+            var ids = string.Join(",", _selectedIds.Select(id => (999_000_000u + (uint)id).ToString()));
+            _runtime?.SendToRuntime($"SELECT_MULTI:{ids}");
+            if (_selectedId >= 0) ActorDfsSelected?.Invoke(_selectedId);
+            return;
+        }
         if (_selectedId >= 0)
         {
             _runtime?.SendToRuntime($"SELECT:{999_000_000u + (uint)_selectedId}");

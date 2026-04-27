@@ -314,11 +314,22 @@ pub fn build_actor(
                         next_group_id:   mc_data.next_group_id,
                     });
                 } else {
+                    use std::sync::Arc;
                     let path  = Path::new(&mc_data.model_path);
-                    let model = load_model(path)?;
+                    // キャッシュから CPU モデルを取得するか、ディスクから読み込んでキャッシュに追加する
+                    let model: Arc<crate::engine::core::loader::model::Model> = {
+                        let mut cache = ctx.model_cache.borrow_mut();
+                        if let Some(cached) = cache.get(&mc_data.model_path) {
+                            Arc::clone(cached)
+                        } else {
+                            let m = Arc::new(load_model(path)?);
+                            cache.insert(mc_data.model_path.clone(), Arc::clone(&m));
+                            m
+                        }
+                    };
                     let total = mc_data.instances.len();
-                    let gpu_model       = ctx.upload_model(&model);
-                    let instanced_batch = ctx.create_instanced_batch(&model, total as u32);
+                    let gpu_model       = ctx.upload_model(&*model);
+                    let instanced_batch = ctx.create_instanced_batch(&*model, total as u32);
                     let mut meta = mc_data.meta;
                     if meta.len() < total {
                         let start = meta.len();

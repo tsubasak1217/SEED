@@ -21,7 +21,12 @@ public partial class InspectorPanel : UserControl
     private int             _currentActorId = -1;
 
     // ── Mode ─────────────────────────────────────────────────
-    private bool     _isActorEditMode    = false;
+    private bool     _isActorEditMode       = false;
+    /// <summary>
+    /// 仮想アクターノード（DFS ID）での選択かどうか。
+    /// シーンモードでもアクターが仮想選択された場合は SET_ACTOR_TRANSFORM を使う。
+    /// </summary>
+    private bool     _isVirtualActorSelected = false;
     private int      _selectedSlotIdx    = -1;   // 選択中のコンポーネントスロット
     private int      _componentSlotCount = 0;
     private SlotInfo? _copiedSlot        = null;  // Ctrl+C でコピーしたスロット
@@ -74,7 +79,8 @@ public partial class InspectorPanel : UserControl
     {
         // シーンモード・アクター編集モード共通: DFS id でアクタを選択してコンポーネントを表示する
         ClearTransformRefs();
-        _currentActorId = dfsId;
+        _currentActorId       = dfsId;
+        _isVirtualActorSelected = true; // 仮想 DFS 選択 → SET_ACTOR_TRANSFORM を使う
         // Rust の SELECT 処理で ACTOR_COMPONENTS が即時プッシュされるため
         // OnActorComponentsReceived で正しいデータに更新される。
         ActorEditGrid.Visibility    = Visibility.Visible;
@@ -106,7 +112,8 @@ public partial class InspectorPanel : UserControl
 
             // レガシー: インスタンスインデックス直接選択（シーン編集モード後方互換）
             ClearTransformRefs();
-            _currentActorId = id;
+            _currentActorId         = id;
+            _isVirtualActorSelected = false; // インスタンス直接選択 → SET_TRANSFORM を使う
             ActorNameBlock.Text         = $"Actor #{id}";
             ActorModelBlock.Visibility  = Visibility.Collapsed;
             ComponentStack.Children.Clear();
@@ -142,6 +149,7 @@ public partial class InspectorPanel : UserControl
 
     private void ShowNoSelection()
     {
+        _isVirtualActorSelected     = false;
         ActorNameBlock.Text         = "選択なし";
         ActorModelBlock.Visibility  = Visibility.Collapsed;
         ComponentScroll.Visibility  = Visibility.Collapsed;
@@ -790,7 +798,8 @@ public partial class InspectorPanel : UserControl
     {
         if (_currentActorId < 0) return;
         _isDraggingTransform = true;
-        int type = _isActorEditMode ? 1 : 0;
+        // アクター編集モード・仮想DFS選択のどちらも type=1（アクタートランスフォームモード）
+        int type = (_isActorEditMode || _isVirtualActorSelected) ? 1 : 0;
         _runtime?.SendToRuntime($"BEGIN_TRANSFORM_DRAG:{type},{_currentActorId}");
     }
 
@@ -831,7 +840,9 @@ public partial class InspectorPanel : UserControl
                          out float sx, out float sy, out float sz)) return;
 
         string msg;
-        if (_isActorEditMode)
+        // アクター編集モード、またはシーンモードで仮想DFS選択された場合は SET_ACTOR_TRANSFORM を使う。
+        // それ以外（レガシーインスタンス直接選択）は SET_TRANSFORM を使う。
+        if (_isActorEditMode || _isVirtualActorSelected)
         {
             msg = FormattableString.Invariant(
                 $"SET_ACTOR_TRANSFORM:{_currentActorId},{px},{py},{pz},{ex},{ey},{ez},{sx},{sy},{sz}");
