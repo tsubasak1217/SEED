@@ -51,11 +51,12 @@ pub fn load(path: &Path) -> Result<Model, LoadError> {
         vec![Material::default()]
     } else {
         obj_materials.iter().map(|mat| {
+            // Kd（拡散反射色）→ PBR ベースカラー。alpha は後で dissolve から設定する。
             let base_color_factor = [
                 mat.diffuse.map_or(1.0, |d| d[0]),
                 mat.diffuse.map_or(1.0, |d| d[1]),
                 mat.diffuse.map_or(1.0, |d| d[2]),
-                1.0 - mat.dissolve.unwrap_or(0.0),  // dissolve → alpha
+                1.0,  // alpha は後の dissolve 計算で上書きする
             ];
             // specular の輝度 → rough ness の逆数として近似
             let spec_lum = mat.specular.map_or(0.0, |s| {
@@ -73,7 +74,10 @@ pub fn load(path: &Path) -> Result<Model, LoadError> {
                 Some(TextureInfo { texture_index: idx, tex_coord_set: 0 })
             };
 
-            let alpha_mode = if mat.dissolve.map_or(false, |d| d < 1.0) {
+            // OBJ の dissolve: 1.0 = 完全不透明、0.0 = 完全透明
+            // alpha = dissolve をそのまま使用する（1 - dissolve は Tr 値と混同するバグ）
+            let alpha    = mat.dissolve.unwrap_or(1.0);
+            let alpha_mode = if alpha < 1.0 {
                 AlphaMode::Blend
             } else {
                 AlphaMode::Opaque
@@ -81,7 +85,12 @@ pub fn load(path: &Path) -> Result<Model, LoadError> {
 
             Material {
                 name:                       mat.name.clone(),
-                base_color_factor,
+                base_color_factor:          [
+                    base_color_factor[0],
+                    base_color_factor[1],
+                    base_color_factor[2],
+                    alpha,
+                ],
                 base_color_texture:         find_tex(mat.diffuse_texture.as_deref()),
                 metallic_factor:            0.0, // OBJ は非 PBR なので金属度 0 でフォールバック
                 roughness_factor,
@@ -94,7 +103,10 @@ pub fn load(path: &Path) -> Result<Model, LoadError> {
                     }
                 }),
                 occlusion_texture:  None,
-                emissive_factor:    mat.ambient.unwrap_or([0.0; 3]),
+                // OBJ の Ka（アンビエント係数）は PBR エミッシブとは別物。
+                // Ka を emissive にマッピングすると Ka=1.0 の白モデルが全面発光してしまう。
+                // OBJ/MTL に Ke（エミッシブ）拡張がある場合のみ使用する（tobj 未対応のため 0 固定）。
+                emissive_factor:    [0.0; 3],
                 emissive_texture:   None,
                 alpha_mode,
                 alpha_cutoff:       0.5,

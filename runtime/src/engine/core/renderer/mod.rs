@@ -129,6 +129,9 @@ impl Renderer {
         let queue  = Arc::new(queue);
 
         let surface_caps   = surface.get_capabilities(&adapter);
+        // sRGB フォーマットを優先して選択する。
+        // Bgra8UnormSrgb 等の sRGB サーフェスは GPU がレンダーターゲット書き込み時に
+        // linear → sRGB エンコードを自動適用するため、全シェーダーで統一的にガンマ補正される。
         let surface_format = surface_caps
             .formats
             .iter()

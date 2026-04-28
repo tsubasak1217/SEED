@@ -34,10 +34,40 @@ fn load_textures(
     document: &gltf::Document,
     images: &[gltf::image::Data],
 ) -> Vec<TextureData> {
+    // ── 線形テクスチャインデックスの事前収集 ──────────────────────
+    // glTF spec:
+    //   sRGB テクスチャ（Rgba8UnormSrgb） : ベースカラー・エミッシブ
+    //   線形テクスチャ（Rgba8Unorm）      : 法線・メタリックラフネス・オクルージョン
+    //
+    // GPU は Rgba8UnormSrgb フォーマットのテクスチャをサンプリング時に
+    // 自動で sRGB → linear デコードする。線形データ（法線・MR・AO）を
+    // Rgba8UnormSrgb として誤ってロードすると、値が圧縮されて正しい
+    // PBR 計算ができなくなる（例: roughness 0.5 → 0.214 に化けて
+    // スペキュラーが爆発的に明るくなる）。
+    //
+    // マテリアル定義を先読みし、各テクスチャの実際の用途を判定する。
+    let linear_indices: std::collections::HashSet<usize> = document.materials()
+        .flat_map(|mat| {
+            let pbr = mat.pbr_metallic_roughness();
+            [
+                mat.normal_texture().map(|t| t.texture().index()),
+                pbr.metallic_roughness_texture().map(|t| t.texture().index()),
+                mat.occlusion_texture().map(|t| t.texture().index()),
+            ]
+            .into_iter()
+            .flatten()
+        })
+        .collect();
+
     document.textures().map(|tex| {
-        let img  = &images[tex.source().index()];
-        let pixels = normalize_to_rgba8(&img.pixels, img.format, img.width, img.height);
+        let img     = &images[tex.source().index()];
+        let pixels  = normalize_to_rgba8(&img.pixels, img.format, img.width, img.height);
         let sampler = tex.sampler();
+
+        // 用途に応じてフォーマットを切り替える
+        // linear=true  → Rgba8Unorm   （法線・MR・AO：線形データをそのまま使用）
+        // linear=false → Rgba8UnormSrgb（ベースカラー・エミッシブ：GPU が sRGB デコード）
+        let linear = linear_indices.contains(&tex.index());
 
         TextureData {
             name:   tex.name().map(String::from),
@@ -46,10 +76,7 @@ fn load_textures(
                 height: img.height,
                 pixels,
             },
-            // glTF は埋め込みのためロード時点では用途不明。
-            // ベースカラー用途が多いため sRGB (false) で統一する。
-            // 法線・MR・AO も sRGB 扱いになるが、現状 glTF は正常動作しているため維持。
-            linear: false,
+            linear,
             sampler: SamplerData {
                 mag_filter: sampler.mag_filter()
                     .map(conv_mag_filter)

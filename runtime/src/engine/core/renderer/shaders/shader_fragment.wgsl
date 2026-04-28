@@ -83,13 +83,18 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let specular = D * G * F / max(4.0 * ndv * ndl, 0.001);
     let Lo = (kD * albedo / PI + specular) * light_color * ndl;
 
-    // 簡易環境光
-    let ambient = vec3<f32>(0.03) * albedo * ao;
+    // 環境光: 視認性を確保するため影部分を適度に明るくする
+    let ambient = vec3<f32>(0.05) * albedo * ao;
 
     let hdr_color = ambient + Lo + emissive;
 
-    // Reinhard トーンマッピング（HDR → [0, 1]）
-    let mapped = hdr_color / (hdr_color + vec3<f32>(1.0));
+    // 輝度ベース Reinhard トーンマッピング（HDR → [0, 1] リニア空間）
+    // チャンネル毎 Reinhard では高輝度時に彩度が失われるため、
+    // 輝度で Reinhard した後スケールを乗算して色相を保持する。
+    let luma = dot(hdr_color, vec3<f32>(0.2126, 0.7152, 0.0722));
+    let mapped = hdr_color * (1.0 / (luma + 1.0));
 
+    // ガンマ補正は sRGB サーフェス（Bgra8UnormSrgb）に委ねる。
+    // GPU がレンダーターゲット書き込み時に linear → sRGB エンコードを自動適用する。
     return vec4<f32>(mapped, base_color.a);
 }
