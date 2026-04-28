@@ -76,6 +76,26 @@ impl Default for DebugCameraData {
     }
 }
 
+// ─── CanvasCameraData ─────────────────────────────────────────────────────────
+
+/// 2D アクター編集モード用カメラの保存データ。
+///
+/// XY 平面を正射影で見るカメラ。RMB ドラッグでパン、スクロールでズーム。
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct CanvasCameraData {
+    /// カメラの XY パン量（ワールドユニット）
+    pub pan_x:       f32,
+    pub pan_y:       f32,
+    /// 垂直方向に見える範囲の半分（ワールドユニット）。小さいほどズームイン。
+    pub ortho_half_h: f32,
+}
+
+impl Default for CanvasCameraData {
+    fn default() -> Self {
+        Self { pan_x: 0.0, pan_y: 0.0, ortho_half_h: 10.0 }
+    }
+}
+
 // ─── SceneData ────────────────────────────────────────────────────────────────
 
 #[derive(Serialize, Deserialize)]
@@ -285,12 +305,25 @@ pub fn build_actor(
     world:          &mut World,
     scripting_host: Option<&Arc<ScriptingHost>>,
 ) -> Result<Actor, SceneError> {
+    use crate::engine::components::CanvasTransform;
+    use crate::engine::structs::objects::actor::ActorKind;
+
     let entity = world.spawn();
 
-    // Transform を挿入する
-    world.insert(entity, data.transform.unwrap_or_default());
+    // actor_kind に応じてデフォルトトランスフォームを挿入する。
+    // Actor3D → Transform（3D ワールド空間）
+    // Actor2D → CanvasTransform（XY キャンバス空間）+ Transform（ダミーとして挿入しない）
+    match data.actor_kind {
+        ActorKind::Actor3D => {
+            world.insert(entity, data.transform.unwrap_or_default());
+        }
+        ActorKind::Actor2D => {
+            world.insert(entity, CanvasTransform::default());
+        }
+    }
 
     let mut actor = Actor::new(entity, data.name);
+    actor.actor_kind = data.actor_kind;
 
     for slot in data.components {
         let slot_name = slot.name.clone();
@@ -362,6 +395,14 @@ pub fn build_actor(
                     world.insert(slot_entity, PlaceholderScriptSlot { script_path: sc_data.type_name });
                     actor.add_slot_typed::<PlaceholderScriptSlot>(slot_name, ComponentKind::Placeholder, slot_entity);
                 }
+            }
+            ComponentData::CanvasComponent(cc_data) => {
+                use crate::engine::components::CanvasComponent;
+                world.insert(slot_entity, CanvasComponent {
+                    width:  cc_data.width,
+                    height: cc_data.height,
+                });
+                actor.add_slot_typed::<CanvasComponent>(slot_name, ComponentKind::Canvas, slot_entity);
             }
         }
     }

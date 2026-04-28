@@ -13,7 +13,7 @@ use crate::engine::core::loader::load_model;
 use crate::engine::core::renderer::Renderer;
 use crate::engine::core::window::{create_window, WindowConfig};
 use crate::engine::core::app_base::ipc::{IpcClient, IpcCommand, ToolMode};
-use crate::engine::core::app_base::scene::{Scene, DebugCameraData};
+use crate::engine::core::app_base::scene::{Scene, DebugCameraData, CanvasCameraData};
 use crate::engine::methods::drawer::{
     DrawContext, CameraBuffer, CameraUniform,
     draw_model_indirect, draw_id_pass,
@@ -33,6 +33,7 @@ use crate::engine::components::{
     ModelComponent, Transform as ActorTransform, ComponentKind, ComponentData,
     ScriptComponent, PlaceholderScriptSlot,
     GroupMeta, GROUP_ID_BASE,
+    CanvasTransform, CanvasComponent,
 };
 use crate::engine::structs::objects::{Actor, DebugCamera};
 use crate::engine::structs::objects::actor::{ActorData, ComponentSlotData, ComponentSlot};
@@ -205,6 +206,12 @@ pub struct App {
     active_world_line: u32,
     /// 世界線切り替え時に退避するカメラ状態。キーが世界線番号。
     saved_cameras: std::collections::HashMap<u32, DebugCameraData>,
+    /// 2D キャンバスモードの世界線番号セット（Ortho カメラを使用する世界線）。
+    /// OpenActor で 2D Actor をロードした世界線がここに登録される。
+    canvas_world_lines: std::collections::HashSet<u32>,
+    /// 2D キャンバスカメラ状態（世界線番号 → CanvasCameraData）。
+    /// pan_x, pan_y, ortho_half_h を保持する。
+    canvas_cameras: std::collections::HashMap<u32, CanvasCameraData>,
 
     // ── ドラッグ&ドロップ ───────────────────────────────────────
     /// DROP_ACTOR コマンドを受け取ったときに設定する。
@@ -293,6 +300,8 @@ impl App {
             inspector_transform_drag:     None,
             active_world_line: 0,
             saved_cameras: std::collections::HashMap::new(),
+            canvas_world_lines: std::collections::HashSet::new(),
+            canvas_cameras:     std::collections::HashMap::new(),
             pending_drop:       None,
             pending_drop_hover: None,
             drop_preview_pos:   None,
@@ -828,6 +837,12 @@ impl App {
 
                         match result {
                             Ok(actor) => {
+                                // 2D Actor かどうかをプッシュ前に判定してキャンバス世界線に登録する
+                                if actor.is_2d() {
+                                    self.canvas_world_lines.insert(world_line);
+                                } else {
+                                    self.canvas_world_lines.remove(&world_line);
+                                }
                                 main_scene.actors.push(actor);
                                 // この世界線に切り替え
                                 self.active_world_line = world_line;
@@ -897,6 +912,8 @@ impl App {
                         scene.actors.retain(|a| a.world_line != wl);
                     }
                     self.saved_cameras.remove(&wl);
+                    self.canvas_world_lines.remove(&wl);
+                    self.canvas_cameras.remove(&wl);
                 }
                 IpcCommand::AddComponent { actor_dfs_id, component_type, slot_name, args } => {
                     let ct = component_type.clone();
@@ -909,6 +926,9 @@ impl App {
                 }
                 IpcCommand::AddActor { world_line, parent_dfs_id } => {
                     self.handle_add_actor(world_line, parent_dfs_id);
+                }
+                IpcCommand::AddActor2D { world_line, parent_dfs_id } => {
+                    self.handle_add_actor_2d(world_line, parent_dfs_id);
                 }
                 IpcCommand::RemoveActor(dfs_id) => {
                     self.handle_remove_actor(dfs_id);
@@ -926,6 +946,12 @@ impl App {
                 }
                 IpcCommand::SetActorTransform { dfs_id, px, py, pz, ex, ey, ez, sx, sy, sz } => {
                     self.handle_set_actor_transform(dfs_id, px, py, pz, ex, ey, ez, sx, sy, sz);
+                }
+                IpcCommand::SetCanvasTransform { dfs_id, px, py, rotation, sx, sy } => {
+                    self.handle_set_canvas_transform(dfs_id, px, py, rotation, sx, sy);
+                }
+                IpcCommand::SetCanvasSize { actor_dfs_id, slot_idx, width, height } => {
+                    self.handle_set_canvas_size(actor_dfs_id, slot_idx, width, height);
                 }
                 IpcCommand::SetModelPath { actor_dfs_id, slot_idx, path } => {
                     let p = path.clone();
@@ -1470,11 +1496,24 @@ impl App {
         let mut c = 0u32;
         let Some(actor) = find_actor_by_dfs(&scene.actors, wl, dfs_id, &mut c) else { return };
 
-        // Transform を World から取得（なければ default）
-        let tf = scene.world.get::<ActorTransform>(actor.entity).cloned().unwrap_or_default();
-        let [px, py, pz] = tf.position;
-        let [ex, ey, ez] = tf.rotation;
-        let [sx, sy, sz] = tf.scale;
+        // 2D Actor は CanvasTransform、3D Actor は Transform を World から取得する
+        let is_2d = actor.is_2d();
+        let transform_json = if is_2d {
+            // CanvasTransform: position(XY), rotation(Z 回転), scale(XY)
+            let ct = scene.world.get::<CanvasTransform>(actor.entity).cloned().unwrap_or_default();
+            format!(
+                r#","canvas_transform":{{"px":{:.4},"py":{:.4},"rotation":{:.4},"sx":{:.4},"sy":{:.4}}}"#,
+                ct.position[0], ct.position[1], ct.rotation, ct.scale[0], ct.scale[1],
+            )
+        } else {
+            let tf = scene.world.get::<ActorTransform>(actor.entity).cloned().unwrap_or_default();
+            let [px, py, pz] = tf.position;
+            let [ex, ey, ez] = tf.rotation;
+            let [sx, sy, sz] = tf.scale;
+            format!(
+                r#","transform":{{"px":{px:.4},"py":{py:.4},"pz":{pz:.4},"ex":{ex:.4},"ey":{ey:.4},"ez":{ez:.4},"sx":{sx:.4},"sy":{sy:.4},"sz":{sz:.4}}}"#
+            )
+        };
 
         // actor.to_data() でシリアライズ済みコンポーネント一覧を取得
         let actor_data = actor.to_data(&scene.world);
@@ -1491,6 +1530,10 @@ impl App {
                     let path_json = serde_json::to_string(&d.type_name).unwrap_or_default();
                     ("ScriptComponent", format!(r#","model_path":{path_json}"#))
                 }
+                ComponentData::CanvasComponent(d) => {
+                    // width / height をインスペクター用に送信する
+                    ("CanvasComponent", format!(r#","width":{:.4},"height":{:.4}"#, d.width, d.height))
+                }
             };
             comps_json.push_str(&format!(
                 r#"{{"slot":{},"name":{},"type":"{}"{}}}"#,
@@ -1504,8 +1547,9 @@ impl App {
 
         let name_json = serde_json::to_string(&actor.name).unwrap_or_default();
         // selected_slot_idx: Inspector 側でどのコンポーネントスロットを選択状態にするかを示す
+        // transform_json は 3D: "transform":{...}、2D: "canvas_transform":{...} のいずれか
         let json = format!(
-            r#"{{"id":{dfs_id},"name":{name_json},"selected_slot":{selected_slot_idx},"transform":{{"px":{px:.4},"py":{py:.4},"pz":{pz:.4},"ex":{ex:.4},"ey":{ey:.4},"ez":{ez:.4},"sx":{sx:.4},"sy":{sy:.4},"sz":{sz:.4}}},"components":{comps_json}}}"#
+            r#"{{"id":{dfs_id},"name":{name_json},"selected_slot":{selected_slot_idx}{transform_json},"components":{comps_json}}}"#
         );
         ipc.send(&format!("ACTOR_COMPONENTS:{json}"));
     }
@@ -1633,6 +1677,35 @@ impl App {
                     if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
                 }
             }
+            "CanvasComponent" => {
+                // デフォルトサイズ（1920×1080）の CanvasComponent を追加する。
+                // サイズはインスペクターから後で変更可能。
+                let name = slot_name.to_string();
+                let found = {
+                    let scene = self.scene.as_mut().unwrap();
+                    let slot_entity = scene.world.spawn();
+                    scene.world.insert(slot_entity, CanvasComponent::default());
+                    let mut c = 0u32;
+                    if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
+                        actor.add_slot_typed::<CanvasComponent>(name, ComponentKind::Canvas, slot_entity);
+                        true
+                    } else {
+                        scene.world.despawn(slot_entity);
+                        false
+                    }
+                };
+                if found {
+                    let after_slots = self.snapshot_actor_slots(wl, actor_dfs_id);
+                    self.undo_history.record(Box::new(ComponentSlotsSnapshotCommand {
+                        world_line: wl, actor_dfs_id, before_slots, after_slots,
+                    }));
+                    self.actor_virtual_selected_slot_idx = 0;
+                    self.selected_instances.clear();
+                    self.send_hierarchy();
+                    self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
+                    if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+                }
+            }
             _ => {}
         }
     }
@@ -1729,6 +1802,47 @@ impl App {
 
         let new_actor = {
             let mut a = Actor::new(entity, "Actor");
+            a.world_line = world_line;
+            a
+        };
+
+        if let Some(pid) = parent_dfs_id {
+            let mut c = 0u32;
+            if let Some(parent) = find_actor_by_dfs_mut(&mut scene.actors, world_line, pid, &mut c) {
+                parent.add_child(new_actor);
+            }
+        } else {
+            scene.actors.push(new_actor);
+        }
+
+        let after_actors = self.snapshot_actors_for_wl(world_line);
+        self.undo_history.record(Box::new(ActorTreeSnapshotCommand {
+            world_line,
+            before_actors,
+            after_actors,
+        }));
+
+        self.send_hierarchy();
+        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+    }
+
+    /// 2D Actor（CanvasTransform を持つ）をシーンに追加する。
+    ///
+    /// handle_add_actor の 2D 版。World に CanvasTransform を挿入し、
+    /// Actor::new_2d でアクターを生成する。
+    fn handle_add_actor_2d(&mut self, world_line: u32, parent_dfs_id: Option<u32>) {
+        if self.scene.is_none() { return; }
+
+        let before_actors = self.snapshot_actors_for_wl(world_line);
+
+        let Some(scene) = &mut self.scene else { return };
+
+        // 2D Actor 専用エンティティを spawn して CanvasTransform を挿入する
+        let entity = scene.world.spawn();
+        scene.world.insert(entity, CanvasTransform::default());
+
+        let new_actor = {
+            let mut a = Actor::new_2d(entity, "Actor");
             a.world_line = world_line;
             a
         };
@@ -1952,6 +2066,7 @@ impl App {
                     ComponentKind::Model       => { scene.world.remove::<ModelComponent>(slot_entity); }
                     ComponentKind::Script      => { scene.world.remove::<ScriptComponent>(slot_entity); }
                     ComponentKind::Placeholder => { scene.world.remove::<PlaceholderScriptSlot>(slot_entity); }
+                    ComponentKind::Canvas      => { scene.world.remove::<CanvasComponent>(slot_entity); }
                 }
                 scene.world.despawn(slot_entity);
                 // アクターのスロットリストから削除
@@ -1983,6 +2098,71 @@ impl App {
                 slot.name = name.to_string();
             }
         }
+        self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
+        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+    }
+
+    /// 2D Actor の CanvasTransform を更新する。
+    ///
+    /// 3D の handle_set_actor_transform と異なり、MC への delta 適用は行わない。
+    /// CanvasTransform は位置・回転・スケールを独立して保持するためデルタ計算不要。
+    fn handle_set_canvas_transform(
+        &mut self,
+        dfs_id: u32,
+        px: f32, py: f32, rotation: f32, sx: f32, sy: f32,
+    ) {
+        let wl = self.active_world_line;
+
+        // entity を先に取得して borrow を解放
+        let entity = {
+            let Some(scene) = &self.scene else { return };
+            let mut c = 0u32;
+            find_actor_by_dfs(&scene.actors, wl, dfs_id, &mut c).map(|a| a.entity)
+        };
+        let Some(entity) = entity else { return };
+
+        // CanvasTransform を更新する
+        if let Some(scene) = &mut self.scene {
+            if let Some(ct) = scene.world.get_mut::<CanvasTransform>(entity) {
+                ct.position = [px, py];
+                ct.rotation = rotation;
+                ct.scale    = [sx, sy];
+            }
+        }
+
+        // インスペクターを最新値で更新し、シーン変更を通知する
+        self.send_actor_components(dfs_id, self.actor_virtual_selected_slot_idx);
+        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+    }
+
+    /// CanvasComponent のサイズを更新する。
+    fn handle_set_canvas_size(
+        &mut self,
+        actor_dfs_id: u32,
+        slot_idx:     u32,
+        width:        f32,
+        height:       f32,
+    ) {
+        let wl = self.active_world_line;
+
+        // スロットの entity を取得する
+        let slot_entity = {
+            let Some(scene) = &self.scene else { return };
+            let mut c = 0u32;
+            find_actor_by_dfs(&scene.actors, wl, actor_dfs_id, &mut c)
+                .and_then(|a| a.slots().get(slot_idx as usize))
+                .map(|s| s.entity)
+        };
+        let Some(slot_entity) = slot_entity else { return };
+
+        // CanvasComponent を更新する
+        if let Some(scene) = &mut self.scene {
+            if let Some(cc) = scene.world.get_mut::<CanvasComponent>(slot_entity) {
+                cc.width  = width;
+                cc.height = height;
+            }
+        }
+
         self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
         if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
     }
@@ -2219,6 +2399,11 @@ impl App {
                         new_slots.push(ComponentSlot::new::<PlaceholderScriptSlot>(slot_data.name, ComponentKind::Placeholder, slot_entity));
                     }
                 }
+                ComponentData::CanvasComponent(cc_data) => {
+                    // CanvasComponent をスロット専用エンティティに insert
+                    scene.world.insert(slot_entity, CanvasComponent { width: cc_data.width, height: cc_data.height });
+                    new_slots.push(ComponentSlot::new::<CanvasComponent>(slot_data.name, ComponentKind::Canvas, slot_entity));
+                }
             }
         }
 
@@ -2342,6 +2527,16 @@ impl App {
                     scene.world.despawn(slot_entity);
                     false
                 }
+            }
+            ComponentData::CanvasComponent(cc_data) => {
+                // CanvasComponent を複製して新スロット専用エンティティに insert
+                let slot_entity = scene.world.spawn();
+                scene.world.insert(slot_entity, CanvasComponent { width: cc_data.width, height: cc_data.height });
+                let mut c = 0u32;
+                if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
+                    actor.add_slot_typed::<CanvasComponent>(slot_data.name, ComponentKind::Canvas, slot_entity);
+                } else { scene.world.despawn(slot_entity); }
+                true
             }
         };
 
@@ -3357,9 +3552,40 @@ impl ApplicationHandler for App {
                 let time_running = self.mode == RuntimeMode::Play && !self.paused;
                 let ctx: FrameContext = self.clock.tick(time_running);
                 let in_editor = self.mode == RuntimeMode::Edit || self.paused;
+                // 現在の世界線が 2D キャンバスモードかどうか
+                let is_canvas = self.canvas_world_lines.contains(&self.active_world_line);
 
                 if in_editor {
-                    self.camera.update(&self.cam_input, ctx.delta_time);
+                    if is_canvas {
+                        // 2D キャンバスモード: RMB ドラッグで XY パン、スクロールでズーム
+                        if self.cam_input.rmb {
+                            // ウィンドウサイズからピクセルあたりのワールドユニットを算出
+                            let ws = self.window.as_ref().map(|w| {
+                                let s = w.inner_size();
+                                [s.width as f32, s.height as f32]
+                            }).unwrap_or([1280.0, 720.0]);
+                            let cam_2d = self.canvas_cameras
+                                .entry(self.active_world_line)
+                                .or_insert_with(CanvasCameraData::default);
+                            // ビューポート高さあたりのワールドユニット（スケール係数）
+                            let scale = (2.0 * cam_2d.ortho_half_h) / ws[1];
+                            // raw delta: right/up が正なので pan は符号反転する
+                            cam_2d.pan_x -= self.cam_input.mouse_dx * scale;
+                            cam_2d.pan_y += self.cam_input.mouse_dy * scale;
+                        }
+                        if self.cam_input.scroll != 0.0 {
+                            let cam_2d = self.canvas_cameras
+                                .entry(self.active_world_line)
+                                .or_insert_with(CanvasCameraData::default);
+                            // scroll 正 = ホイール上 = ズームイン（half_h を小さくする）
+                            cam_2d.ortho_half_h = (cam_2d.ortho_half_h
+                                * 0.9_f32.powf(self.cam_input.scroll))
+                                .clamp(0.5, 1000.0);
+                        }
+                    } else {
+                        // 3D モード: 通常のデバッグカメラ更新
+                        self.camera.update(&self.cam_input, ctx.delta_time);
+                    }
                 }
 
                 // ─ 1-6. ゲームロジック（Play 時のみ）─────────
@@ -3381,10 +3607,32 @@ impl ApplicationHandler for App {
                 if let (Some(scene), Some(camera_buf), Some(queue)) =
                     (&mut self.scene, &self.camera_buf, queue)
                 {
-                    let view      = self.camera.view_matrix();
-                    let proj      = self.camera.projection_matrix();
+                    // 2D キャンバスモードと 3D モードでビュー行列・射影行列を切り替える
+                    let (view, proj, cam_pos_arr) = if is_canvas {
+                        let cam_2d = self.canvas_cameras
+                            .entry(self.active_world_line)
+                            .or_insert_with(CanvasCameraData::default);
+                        let aspect = window_size.map_or(16.0 / 9.0, |s| {
+                            s.width as f32 / s.height as f32
+                        });
+                        let half_h = cam_2d.ortho_half_h;
+                        let half_w = half_h * aspect;
+                        // カメラは Z=-100 から XY 平面（Z=0）を見下ろす（LH forward = +Z）
+                        let eye    = Vector3::new(cam_2d.pan_x, cam_2d.pan_y, -100.0);
+                        let center = Vector3::new(cam_2d.pan_x, cam_2d.pan_y, 0.0);
+                        let up     = Vector3::new(0.0, 1.0, 0.0);
+                        let v = Mat4x4::look_at_lh(eye, center, up);
+                        // near=0, far=200 で Z=0 作業平面（z_view=100）を視野中央に収める
+                        let p = Mat4x4::orthographic_lh(-half_w, half_w, -half_h, half_h, 0.0, 200.0);
+                        (v, p, [cam_2d.pan_x, cam_2d.pan_y, -100.0])
+                    } else {
+                        let v  = self.camera.view_matrix();
+                        let p  = self.camera.projection_matrix();
+                        let cp = self.camera.position();
+                        (v, p, [cp.x, cp.y, cp.z])
+                    };
+
                     let view_proj = proj * view;
-                    let pos       = self.camera.position();
 
                     let res = window_size.map_or([1280.0, 720.0], |s| {
                         [s.width as f32, s.height as f32]
@@ -3392,14 +3640,14 @@ impl ApplicationHandler for App {
                     camera_buf.update(&queue, &CameraUniform {
                         view_proj:  view_proj.transpose().data,
                         view:       view.transpose().data,
-                        position:   [pos.x, pos.y, pos.z],
+                        position:   cam_pos_arr,
                         _pad:       0.0,
                         resolution: res,
                         _pad2:      [0.0; 2],
                     });
 
                     let frustum_planes = extract_frustum_planes(&view_proj.data);
-                    let camera_pos     = [pos.x, pos.y, pos.z];
+                    let camera_pos     = cam_pos_arr;
 
                     // シーンモード・アクター編集モード共通: world_line 全 MC を DFS で更新する
                     let (actors, world) = (&mut scene.actors, &mut scene.world);
@@ -3595,6 +3843,7 @@ impl ApplicationHandler for App {
 
                                 // グリッド描画バッチ（エディタモード + show_grid のみ）
                                 // アクター編集モードはグリッドを常時表示し、紺背景に映えるよう色を調整
+                                // 2D キャンバスモードは XY 平面グリッド（Z=0）、3D は XZ 平面グリッド（Y=0）
                                 let grid_gpu_batch = if in_editor && (self.show_grid || self.active_world_line != 0) {
                                     let mut lb = LineBatch::new();
                                     let (minor, major): ([f32; 4], [f32; 4]) = if self.active_world_line != 0 {
@@ -3602,23 +3851,217 @@ impl ApplicationHandler for App {
                                     } else {
                                         ([0.18, 0.18, 0.18, 1.0], [0.30, 0.30, 0.30, 1.0])
                                     };
-                                    let ax_x:  [f32; 4] = [0.50, 0.10, 0.10, 1.0];
-                                    let ax_z:  [f32; 4] = [0.10, 0.10, 0.50, 1.0];
-                                    let n = 10i32;
-                                    let step = 5.0f32;
-                                    let ext = n as f32 * step;
-                                    for i in -n..=n {
-                                        let p = i as f32 * step;
-                                        if i == 0 {
-                                            lb.add_line([-ext, 0.0, 0.0], [ext, 0.0, 0.0], ax_x);
-                                            lb.add_line([0.0, 0.0, -ext], [0.0, 0.0, ext], ax_z);
+                                    let ax_x: [f32; 4] = [0.50, 0.10, 0.10, 1.0];
+
+                                    if is_canvas {
+                                        // 2D モード: XY 平面グリッド（Z=0）
+                                        // ax_y: 緑色の Y 軸線
+                                        let ax_y: [f32; 4] = [0.10, 0.50, 0.10, 1.0];
+                                        let n    = 10i32;
+                                        let step = 5.0f32;
+                                        let ext  = n as f32 * step;
+                                        for i in -n..=n {
+                                            let p = i as f32 * step;
+                                            if i == 0 {
+                                                lb.add_line([-ext, 0.0, 0.0], [ext, 0.0, 0.0], ax_x);
+                                                lb.add_line([0.0, -ext, 0.0], [0.0, ext, 0.0], ax_y);
+                                            } else {
+                                                let c = if i % 2 == 0 { major } else { minor };
+                                                // 水平線（Y 方向に並ぶ）
+                                                lb.add_line([-ext, p, 0.0], [ext, p, 0.0], c);
+                                                // 垂直線（X 方向に並ぶ）
+                                                lb.add_line([p, -ext, 0.0], [p, ext, 0.0], c);
+                                            }
+                                        }
+                                    } else {
+                                        // ──────────────────────────────────────────────────────
+                                        // 3D モード: XZ 平面グリッド（Y=0）
+                                        //
+                                        // ■ カメラ追従: step 単位にスナップしてカメラ XZ に追従。
+                                        // ■ 深度フェード: 各頂点の 3D 距離で alpha を計算し
+                                        //   add_line_grad で両端点に渡す。GPU 補間で自然な消え。
+                                        // ■ スケール: カメラ Y 絶対値でグリッド単位を段階切り替え。
+                                        //   minor ライン alpha は区間内で lerp（始端=濃, 終端=淡）。
+                                        // ──────────────────────────────────────────────────────
+                                        let cam_pos = self.camera.base.transform.position;
+                                        let cam_y   = cam_pos[1].abs();
+                                        let cam_far = self.camera.base.projection.far;
+                                        let ax_z: [f32; 4] = [0.10, 0.10, 0.50, 1.0];
+
+                                        // ── グリッドスケール選択 ─────────────────────────────
+                                        // (step, thick_period, tier_y_start, tier_y_end)
+                                        let (step, thick_period, tier_start, tier_end): (f32, i64, f32, f32) =
+                                            if cam_y < 1.0 {
+                                                (0.1,  10, 0.0,  1.0)
+                                            } else if cam_y < 10.0 {
+                                                (1.0,   5, 1.0, 10.0)
+                                            } else if cam_y < 30.0 {
+                                                (5.0,   2, 10.0, 30.0)
+                                            } else {
+                                                (10.0,  5, 30.0, f32::INFINITY)
+                                            };
+
+                                        // ── minor ライン alpha: 区間始端=1.0 → 区間終端≈0.0 ──
+                                        let minor_alpha_base: f32 = if tier_end.is_finite() {
+                                            (1.0 - (cam_y - tier_start) / (tier_end - tier_start)).max(0.0)
                                         } else {
-                                            let c = if i % 2 == 0 { major } else { minor };
-                                            lb.add_line([-ext, 0.0, p], [ext, 0.0, p], c);
-                                            lb.add_line([p, 0.0, -ext], [p, 0.0, ext], c);
+                                            1.0
+                                        };
+
+                                        // ── グリッド範囲とカメラ追従スナップ ────────────────
+                                        // n_half を cam_far / step まで伸ばすことで、グリッドが
+                                        // far 距離まで描画され四隅の硬い切り口が出なくなる。
+                                        // step が小さい（0.1）場合は 300 本上限で十分（近接作業）。
+                                        let max_lines: i32 = if step < 0.5 { 300 } else { 2000 };
+                                        let n_half: i32 = ((cam_far / step) as i32).min(max_lines);
+                                        let ext    = n_half as f32 * step;
+                                        let snap_x = (cam_pos[0] / step).floor() * step;
+                                        let snap_z = (cam_pos[2] / step).floor() * step;
+
+                                        // ── XZ 距離ベースフェード ────────────────────────────
+                                        // グリッドライン端点はどちらも XZ 距離 ≥ ext になるため
+                                        // 端点 alpha だけを見ると常に 0 になる問題がある。
+                                        //
+                                        // 解決策: 各ラインをカメラの XZ 投影点でスプリットし
+                                        // 「端=0 → スプリット点=peak → 端=0」の2セグメント描画。
+                                        // peak_a = fade_xz(垂直距離) でライン種別 × 側方距離に依存。
+                                        //
+                                        // fade_xz: pow=2（2乗フェード）でフェード変化を視覚的に
+                                        // 分かりやすくする（地平線方向からでも差異が見えやすい）
+                                        let fade_xz = |d: f32| -> f32 {
+                                            (1.0 - (d / ext).powi(2)).clamp(0.0, 1.0)
+                                        };
+                                        // カメラ XZ 投影点（グリッド範囲内にクランプ）
+                                        let split_x = cam_pos[0].clamp(snap_x - ext, snap_x + ext);
+                                        let split_z = cam_pos[2].clamp(snap_z - ext, snap_z + ext);
+
+                                        for i in -n_half..=n_half {
+                                            // ── Z 方向ライン（X = world_x で固定）────────────
+                                            // 垂直距離 = |world_x - cam_x|（これがピーク alpha を決める）
+                                            let world_x  = snap_x + i as f32 * step;
+                                            let perp_dx  = (world_x - cam_pos[0]).abs();
+                                            if perp_dx < ext {
+                                                let idx_x    = (world_x / step).round() as i64;
+                                                let is_axis  = idx_x == 0;
+                                                let is_major = !is_axis && idx_x % thick_period == 0;
+                                                let base_a = if is_axis {
+                                                    ax_z[3]
+                                                } else if is_major {
+                                                    major[3]
+                                                } else {
+                                                    minor[3] * minor_alpha_base
+                                                };
+                                                if base_a > 0.005 {
+                                                    let peak_a = fade_xz(perp_dx) * base_a;
+                                                    let rgb = if is_axis { [ax_z[0], ax_z[1], ax_z[2]] }
+                                                        else if is_major  { [major[0], major[1], major[2]] }
+                                                        else               { [minor[0], minor[1], minor[2]] };
+                                                    // セグメント1: 後端(0) → スプリット点(peak_a)
+                                                    lb.add_line_grad(
+                                                        [world_x, 0.0, snap_z - ext],
+                                                        [world_x, 0.0, split_z],
+                                                        [rgb[0], rgb[1], rgb[2], 0.0],
+                                                        [rgb[0], rgb[1], rgb[2], peak_a],
+                                                    );
+                                                    // セグメント2: スプリット点(peak_a) → 前端(0)
+                                                    lb.add_line_grad(
+                                                        [world_x, 0.0, split_z],
+                                                        [world_x, 0.0, snap_z + ext],
+                                                        [rgb[0], rgb[1], rgb[2], peak_a],
+                                                        [rgb[0], rgb[1], rgb[2], 0.0],
+                                                    );
+                                                }
+                                            }
+
+                                            // ── X 方向ライン（Z = world_z で固定）────────────
+                                            let world_z  = snap_z + i as f32 * step;
+                                            let perp_dz  = (world_z - cam_pos[2]).abs();
+                                            if perp_dz < ext {
+                                                let idx_z    = (world_z / step).round() as i64;
+                                                let is_axis  = idx_z == 0;
+                                                let is_major = !is_axis && idx_z % thick_period == 0;
+                                                let base_a = if is_axis {
+                                                    ax_x[3]
+                                                } else if is_major {
+                                                    major[3]
+                                                } else {
+                                                    minor[3] * minor_alpha_base
+                                                };
+                                                if base_a > 0.005 {
+                                                    let peak_a = fade_xz(perp_dz) * base_a;
+                                                    let rgb = if is_axis { [ax_x[0], ax_x[1], ax_x[2]] }
+                                                        else if is_major  { [major[0], major[1], major[2]] }
+                                                        else               { [minor[0], minor[1], minor[2]] };
+                                                    // セグメント1: 左端(0) → スプリット点(peak_a)
+                                                    lb.add_line_grad(
+                                                        [snap_x - ext, 0.0, world_z],
+                                                        [split_x,      0.0, world_z],
+                                                        [rgb[0], rgb[1], rgb[2], 0.0],
+                                                        [rgb[0], rgb[1], rgb[2], peak_a],
+                                                    );
+                                                    // セグメント2: スプリット点(peak_a) → 右端(0)
+                                                    lb.add_line_grad(
+                                                        [split_x,      0.0, world_z],
+                                                        [snap_x + ext, 0.0, world_z],
+                                                        [rgb[0], rgb[1], rgb[2], peak_a],
+                                                        [rgb[0], rgb[1], rgb[2], 0.0],
+                                                    );
+                                                }
+                                            }
                                         }
                                     }
+
                                     Some(lb.build(&draw_ctx.device))
+                                } else { None };
+
+                                // CanvasComponent 矩形アウトラインバッチ（エディタモード + 2D キャンバス世界線のみ）
+                                // CanvasComponent を持つ各 Actor の CanvasTransform 位置を中心に
+                                // width × height の矩形を破線ではなく実線で描画する。
+                                let canvas_rect_batch = if in_editor && is_canvas {
+                                    if let Some(scene) = &self.scene {
+                                        let wl = self.active_world_line;
+                                        let mut lb = LineBatch::new();
+                                        // 矩形色: 明るいシアン（グリッドの青系と区別しやすい）
+                                        let rect_col: [f32; 4] = [0.85, 0.95, 1.0, 0.9];
+
+                                        // DFS で世界線内の全 Actor を走査して CanvasComponent を収集する
+                                        fn collect_canvas_rects(
+                                            actors: &[crate::engine::structs::objects::Actor],
+                                            world:  &crate::engine::ecs::World,
+                                            wl:     u32,
+                                            lb:     &mut LineBatch,
+                                            col:    [f32; 4],
+                                        ) {
+                                            for actor in actors {
+                                                if actor.world_line != wl { continue; }
+                                                // CanvasTransform から中心位置を取得
+                                                let pos = world.get::<CanvasTransform>(actor.entity)
+                                                    .map(|ct| ct.position)
+                                                    .unwrap_or([0.0, 0.0]);
+                                                let (cx, cy) = (pos[0], pos[1]);
+                                                // Canvas スロットを探して矩形を描画する
+                                                for slot in actor.slots() {
+                                                    if slot.kind != ComponentKind::Canvas { continue; }
+                                                    if let Some(cc) = world.get::<CanvasComponent>(slot.entity) {
+                                                        let hw = cc.width  * 0.5;
+                                                        let hh = cc.height * 0.5;
+                                                        let bl = [cx - hw, cy - hh, 0.0f32];
+                                                        let br = [cx + hw, cy - hh, 0.0f32];
+                                                        let tr = [cx + hw, cy + hh, 0.0f32];
+                                                        let tl = [cx - hw, cy + hh, 0.0f32];
+                                                        lb.add_line(bl, br, col);
+                                                        lb.add_line(br, tr, col);
+                                                        lb.add_line(tr, tl, col);
+                                                        lb.add_line(tl, bl, col);
+                                                    }
+                                                }
+                                                collect_canvas_rects(&actor.children, world, wl, lb, col);
+                                            }
+                                        }
+
+                                        collect_canvas_rects(&scene.actors, &scene.world, wl, &mut lb, rect_col);
+                                        if lb.is_empty() { None } else { Some(lb.build(&draw_ctx.device)) }
+                                    } else { None }
                                 } else { None };
 
                                 // 軸ギズモバッチ（エディタモード + show_axis_gizmo のみ）
@@ -3774,6 +4217,17 @@ impl ApplicationHandler for App {
                                     {
                                         draw_line_batch(
                                             &mut pass, grid_batch,
+                                            &camera_buf.bind_group, line_bg,
+                                            &draw_ctx.pipelines,
+                                        );
+                                    }
+
+                                    // CanvasComponent 矩形アウトライン描画（2D キャンバスモードのみ）
+                                    if let (Some(rect_batch), Some((_, line_bg))) =
+                                        (&canvas_rect_batch, &self.line_model_buf)
+                                    {
+                                        draw_line_batch(
+                                            &mut pass, rect_batch,
                                             &camera_buf.bind_group, line_bg,
                                             &draw_ctx.pipelines,
                                         );

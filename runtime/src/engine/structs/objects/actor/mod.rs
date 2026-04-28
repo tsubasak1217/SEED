@@ -29,11 +29,27 @@ use serde::{Deserialize, Serialize};
 use crate::engine::ecs::{Entity, World};
 use crate::engine::components::{
     ComponentData, ComponentKind,
-    Transform,
+    Transform, CanvasTransform,
     ModelComponent, ModelComponentData,
     ScriptComponent, ScriptComponentData, PlaceholderScriptSlot,
+    CanvasComponent, CanvasComponentData,
 };
 use crate::engine::core::clock::FrameContext;
+
+// ─── ActorKind ────────────────────────────────────────────────────────────────
+
+/// Actor の種別（3D / 2D）。
+///
+/// - Actor3D: デフォルト Transform（3D ワールド空間）を持つ
+/// - Actor2D: CanvasTransform（XY キャンバス空間）を持つ
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum ActorKind {
+    /// 3D Actor（Transform / WorldTransform）
+    #[default]
+    Actor3D,
+    /// 2D Actor（CanvasTransform）
+    Actor2D,
+}
 
 // ─── ComponentSlot ────────────────────────────────────────────────────────────
 
@@ -77,11 +93,17 @@ impl ComponentSlot {
 #[derive(Clone, Serialize, Deserialize)]
 pub struct ActorData {
     pub name:       String,
+    /// Actor の種別（3D / 2D）。省略時は Actor3D。
+    #[serde(default, skip_serializing_if = "is_actor3d")]
+    pub actor_kind: ActorKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transform:  Option<Transform>,
     pub components: Vec<ComponentSlotData>,
     pub children:   Vec<ActorData>,
 }
+
+/// actor_kind が Actor3D（デフォルト）の場合は JSON に書き出さない。
+fn is_actor3d(k: &ActorKind) -> bool { *k == ActorKind::Actor3D }
 
 /// ComponentSlot のシリアライズ用データ。
 #[derive(Clone, Serialize, Deserialize)]
@@ -104,6 +126,8 @@ pub struct Actor {
     pub name:       String,
     /// 所属世界線（0=通常シーン, N=アクター編集タブ）
     pub world_line: u32,
+    /// Actor の種別（3D / 2D）
+    pub actor_kind: ActorKind,
     /// 子 Actor（順序を保持しているため DFS が確定的）
     pub children:   Vec<Actor>,
     /// 保持コンポーネントの目録（実データは World）
@@ -114,8 +138,21 @@ impl Actor {
     pub fn new(entity: Entity, name: impl Into<String>) -> Self {
         Self {
             entity,
-            name: name.into(),
+            name:       name.into(),
             world_line: 0,
+            actor_kind: ActorKind::Actor3D,
+            children:   Vec::new(),
+            slots:      Vec::new(),
+        }
+    }
+
+    /// 2D Actor として生成するヘルパー。
+    pub fn new_2d(entity: Entity, name: impl Into<String>) -> Self {
+        Self {
+            entity,
+            name:       name.into(),
+            world_line: 0,
+            actor_kind: ActorKind::Actor2D,
             children:   Vec::new(),
             slots:      Vec::new(),
         }
@@ -229,17 +266,25 @@ impl Actor {
                     world.get::<PlaceholderScriptSlot>(slot.entity)
                         .map(|ps| ComponentData::ScriptComponent(ps.to_data()))
                 }
+                ComponentKind::Canvas => {
+                    world.get::<CanvasComponent>(slot.entity)
+                        .map(|cc| ComponentData::CanvasComponent(cc.to_data()))
+                }
             };
             data.map(|d| ComponentSlotData { name: slot.name.clone(), component: d })
         }).collect();
 
         ActorData {
             name:       self.name.clone(),
+            actor_kind: self.actor_kind,
             transform,
             components,
             children:   self.children.iter().map(|c| c.to_data(world)).collect(),
         }
     }
+
+    /// 2D Actor かどうかを返す。
+    pub fn is_2d(&self) -> bool { self.actor_kind == ActorKind::Actor2D }
 }
 
 impl Default for Actor {

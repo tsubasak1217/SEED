@@ -9,10 +9,13 @@
 // ============================================================
 
 pub mod transform;
+pub mod canvas_transform;
 pub mod model_component;
 pub mod script_component;
+pub mod canvas_component;
 
 pub use transform::Transform;
+pub use canvas_transform::CanvasTransform;
 pub use model_component::{
     ModelComponent, ModelComponentData,
     InstanceMeta, GroupMeta, GROUP_ID_BASE,
@@ -20,6 +23,7 @@ pub use model_component::{
 pub use script_component::{
     ScriptComponent, PlaceholderScriptSlot, ScriptComponentData,
 };
+pub use canvas_component::{CanvasComponent, CanvasComponentData};
 
 use serde::{Deserialize, Serialize};
 
@@ -38,6 +42,8 @@ pub enum ComponentKind {
     Script,
     /// CLR 不使用のエディタ専用プレースホルダー
     Placeholder,
+    /// UI キャンバス（基準サイズ定義・矩形表示）
+    Canvas,
 }
 
 impl ComponentKind {
@@ -47,6 +53,7 @@ impl ComponentKind {
             Self::Model       => "ModelComponent",
             Self::Script      => "ScriptComponent",
             Self::Placeholder => "ScriptComponent (placeholder)",
+            Self::Canvas      => "CanvasComponent",
         }
     }
 }
@@ -60,4 +67,5 @@ impl ComponentKind {
 pub enum ComponentData {
     ModelComponent(ModelComponentData),
     ScriptComponent(ScriptComponentData),
+    CanvasComponent(CanvasComponentData),
 }

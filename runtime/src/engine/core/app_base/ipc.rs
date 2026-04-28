@@ -103,8 +103,10 @@ pub enum IpcCommand {
     AddComponent { actor_dfs_id: u32, component_type: String, slot_name: String, args: String },
     /// アクターのコンポーネント一覧を要求する
     GetActorComponents(u32),
-    /// 子アクターを追加する (world_line, parent_dfs_id=None はルート)
+    /// 子アクター（3D）を追加する (world_line, parent_dfs_id=None はルート)
     AddActor { world_line: u32, parent_dfs_id: Option<u32> },
+    /// 子アクター（2D）を追加する (world_line, parent_dfs_id=None はルート)
+    AddActor2D { world_line: u32, parent_dfs_id: Option<u32> },
     /// アクターを削除する
     RemoveActor(u32),
     /// アクターをリネームする
@@ -113,8 +115,14 @@ pub enum IpcCommand {
     RemoveComponentSlot { actor_dfs_id: u32, slot_idx: u32 },
     /// コンポーネントスロットをリネームする
     RenameComponentSlot { actor_dfs_id: u32, slot_idx: u32, name: String },
-    /// アクターのトランスフォームを設定する
+    /// 3D アクターのトランスフォームを設定する
     SetActorTransform { dfs_id: u32, px: f32, py: f32, pz: f32, ex: f32, ey: f32, ez: f32, sx: f32, sy: f32, sz: f32 },
+    /// 2D アクターの CanvasTransform を設定する
+    /// フォーマット: SET_CANVAS_TRANSFORM:{dfs_id},{px},{py},{rotation},{sx},{sy}
+    SetCanvasTransform { dfs_id: u32, px: f32, py: f32, rotation: f32, sx: f32, sy: f32 },
+    /// CanvasComponent のサイズを設定する
+    /// フォーマット: SET_CANVAS_SIZE:{actor_dfs_id},{slot_idx},{width},{height}
+    SetCanvasSize { actor_dfs_id: u32, slot_idx: u32, width: f32, height: f32 },
     /// ModelComponent のモデルパスを後から設定する
     /// フォーマット: SET_MODEL_PATH:{actor_dfs_id},{slot_idx},{path}
     SetModelPath { actor_dfs_id: u32, slot_idx: u32, path: String },
@@ -401,6 +409,18 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                                 } else { None }
                             } else { None }
                         }
+                        s if s.starts_with("ADD_ACTOR_2D:") => {
+                            // ADD_ACTOR_2D:{world_line},{parent_dfs_id} (-1 = root)
+                            let rest = &s["ADD_ACTOR_2D:".len()..];
+                            let mut it = rest.splitn(2, ',');
+                            if let (Some(wl_s), Some(p_s)) = (it.next(), it.next()) {
+                                if let Ok(wl) = wl_s.parse::<u32>() {
+                                    let parent = if p_s == "-1" { None }
+                                        else { p_s.parse::<u32>().ok() };
+                                    Some(IpcCommand::AddActor2D { world_line: wl, parent_dfs_id: parent })
+                                } else { None }
+                            } else { None }
+                        }
                         s if s.starts_with("REMOVE_ACTOR:") => {
                             s["REMOVE_ACTOR:".len()..].parse::<u32>().ok()
                                 .map(IpcCommand::RemoveActor)
@@ -448,6 +468,44 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                                             px: fs[0], py: fs[1], pz: fs[2],
                                             ex: fs[3], ey: fs[4], ez: fs[5],
                                             sx: fs[6], sy: fs[7], sz: fs[8],
+                                        })
+                                    } else { None }
+                                } else { None }
+                            } else { None }
+                        }
+                        s if s.starts_with("SET_CANVAS_TRANSFORM:") => {
+                            // フォーマット: SET_CANVAS_TRANSFORM:{dfs_id},{px},{py},{rotation},{sx},{sy}
+                            let rest = &s["SET_CANVAS_TRANSFORM:".len()..];
+                            let parts: Vec<&str> = rest.split(',').collect();
+                            if parts.len() == 6 {
+                                if let Ok(dfs_id) = parts[0].parse::<u32>() {
+                                    let fs: Vec<f32> = parts[1..].iter()
+                                        .filter_map(|x| x.parse::<f32>().ok())
+                                        .collect();
+                                    if fs.len() == 5 {
+                                        Some(IpcCommand::SetCanvasTransform {
+                                            dfs_id,
+                                            px: fs[0], py: fs[1],
+                                            rotation: fs[2],
+                                            sx: fs[3], sy: fs[4],
+                                        })
+                                    } else { None }
+                                } else { None }
+                            } else { None }
+                        }
+                        s if s.starts_with("SET_CANVAS_SIZE:") => {
+                            // フォーマット: SET_CANVAS_SIZE:{actor_dfs_id},{slot_idx},{width},{height}
+                            let rest = &s["SET_CANVAS_SIZE:".len()..];
+                            let parts: Vec<&str> = rest.split(',').collect();
+                            if parts.len() == 4 {
+                                if let (Ok(a), Ok(sl)) = (parts[0].parse::<u32>(), parts[1].parse::<u32>()) {
+                                    let fs: Vec<f32> = parts[2..].iter()
+                                        .filter_map(|x| x.parse::<f32>().ok())
+                                        .collect();
+                                    if fs.len() == 2 {
+                                        Some(IpcCommand::SetCanvasSize {
+                                            actor_dfs_id: a, slot_idx: sl,
+                                            width: fs[0], height: fs[1],
                                         })
                                     } else { None }
                                 } else { None }

@@ -58,16 +58,31 @@
         <!-- アイテム一覧 -->
         <StackPanel Margin="0,6,0,10">
 
-            <Button Style="{StaticResource ItemRowStyle}" Click="OnCreateActor">
+            <Button Style="{StaticResource ItemRowStyle}" Click="OnCreateActor3D">
                 <StackPanel Orientation="Horizontal">
                     <Image Source="pack://application:,,,/resources/icons/folderview/actor.png"
                            Width="34" Height="34"
                            Margin="0,0,14,0" VerticalAlignment="Center"
                            RenderOptions.BitmapScalingMode="HighQuality"/>
                     <StackPanel VerticalAlignment="Center">
-                        <TextBlock Text="Actor"
+                        <TextBlock Text="Actor (3D)"
                                    Foreground="#DDDDDD" FontSize="14" FontWeight="SemiBold"/>
-                        <TextBlock Text="空のアクターファイルを作成"
+                        <TextBlock Text="空の 3D アクターファイルを作成"
+                                   Foreground="#777777" FontSize="11" Margin="0,3,0,0"/>
+                    </StackPanel>
+                </StackPanel>
+            </Button>
+
+            <Button Style="{StaticResource ItemRowStyle}" Click="OnCreateActor2D">
+                <StackPanel Orientation="Horizontal">
+                    <Image Source="pack://application:,,,/resources/icons/folderview/actor.png"
+                           Width="34" Height="34"
+                           Margin="0,0,14,0" VerticalAlignment="Center"
+                           RenderOptions.BitmapScalingMode="HighQuality"/>
+                    <StackPanel VerticalAlignment="Center">
+                        <TextBlock Text="Actor (2D)"
+                                   Foreground="#DDDDDD" FontSize="14" FontWeight="SemiBold"/>
+                        <TextBlock Text="空の 2D アクターファイルを作成（CanvasTransform）"
                                    Foreground="#777777" FontSize="11" Margin="0,3,0,0"/>
                     </StackPanel>
                 </StackPanel>

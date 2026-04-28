@@ -34,6 +34,10 @@ public partial class ComponentSelectorWindow : Window
         {
             new("ModelComponent", "Model", "3D モデルをアクタにアタッチ"),
         }),
+        ("UI", new()
+        {
+            new("CanvasComponent", "Canvas", "UI 矩形領域をアクタにアタッチ（幅・高さ指定）"),
+        }),
         ("ライト", new()),
         ("エフェクト", new()),
         ("カメラ", new()),
@@ -207,9 +211,10 @@ public partial class ComponentSelectorWindow : Window
 
     private static string GetDefaultName(string typeId) => typeId switch
     {
-        "ModelComponent"  => "Model",
-        "ScriptComponent" => "Script",
-        _                 => typeId,
+        "ModelComponent"   => "Model",
+        "ScriptComponent"  => "Script",
+        "CanvasComponent"  => "Canvas",
+        _                  => typeId,
     };
 
     // ── イベント ─────────────────────────────────────────────

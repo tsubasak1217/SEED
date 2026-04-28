@@ -62,6 +62,9 @@ impl LineBatch {
 
     pub fn clear(&mut self) { self.vertices.clear(); }
 
+    /// 描画頂点が 0 かどうかを返す（バッチが空かどうかの確認用）。
+    pub fn is_empty(&self) -> bool { self.vertices.is_empty() }
+
     pub fn build(&self, device: &wgpu::Device) -> GpuLineBatch {
         GpuLineBatch::new(device, &self.vertices)
     }
@@ -69,6 +72,20 @@ impl LineBatch {
     pub fn add_line(&mut self, start: [f32; 3], end: [f32; 3], color: [f32; 4]) {
         self.vertices.push(ColorVertex { position: start, color });
         self.vertices.push(ColorVertex { position: end,   color });
+    }
+
+    /// 両端点に異なる色を持つグラデーションラインを追加する。
+    /// 深度フェードなど、端点ごとに alpha を変えたい場合に使用する。
+    /// GPU が頂点間を線形補間するため、ライン全体で自然なグラデーションになる。
+    pub fn add_line_grad(
+        &mut self,
+        start:     [f32; 3],
+        end:       [f32; 3],
+        col_start: [f32; 4],
+        col_end:   [f32; 4],
+    ) {
+        self.vertices.push(ColorVertex { position: start, color: col_start });
+        self.vertices.push(ColorVertex { position: end,   color: col_end });
     }
 
     pub fn add_line_prim(&mut self, line: &Line3, color: [f32; 4]) {

@@ -42,6 +42,8 @@ public partial class InspectorPanel : UserControl
     private TextBox? _tbEx, _tbEy, _tbEz;
     private TextBox? _tbSx, _tbSy, _tbSz;
     private bool     _isDraggingTransform = false;
+    /// <summary>現在選択中のアクターが 2D Actor（CanvasTransform 持ち）かどうか。</summary>
+    private bool     _isActor2D = false;
 
     public InspectorPanel()
     {
@@ -150,6 +152,7 @@ public partial class InspectorPanel : UserControl
     private void ShowNoSelection()
     {
         _isVirtualActorSelected     = false;
+        _isActor2D                  = false;
         ActorNameBlock.Text         = "選択なし";
         ActorModelBlock.Visibility  = Visibility.Collapsed;
         ComponentScroll.Visibility  = Visibility.Collapsed;
@@ -191,8 +194,19 @@ public partial class InspectorPanel : UserControl
         ComponentStack.Children.Clear();
         ClearTransformRefs();
 
-        if (root.TryGetProperty("transform", out var tf))
+        if (root.TryGetProperty("canvas_transform", out var ct))
         {
+            // 2D Actor: CanvasTransform
+            _isActor2D = true;
+            float px  = Fp(ct, "px"),  py  = Fp(ct, "py");
+            float rot = Fp(ct, "rotation");
+            float sx  = Fp(ct, "sx"),  sy  = Fp(ct, "sy");
+            ComponentStack.Children.Add(BuildCanvas2DTransformSection(px, py, rot, sx, sy));
+        }
+        else if (root.TryGetProperty("transform", out var tf))
+        {
+            // 3D Actor: Transform
+            _isActor2D = false;
             float px = Fp(tf, "px"), py = Fp(tf, "py"), pz = Fp(tf, "pz");
             float ex = Fp(tf, "ex"), ey = Fp(tf, "ey"), ez = Fp(tf, "ez");
             float sx = Fp(tf, "sx"), sy = Fp(tf, "sy"), sz = Fp(tf, "sz");
@@ -222,7 +236,9 @@ public partial class InspectorPanel : UserControl
 
     // ── Actor edit mode: component list ──────────────────────
 
-    private record SlotInfo(int SlotIdx, string Name, string TypeId, string ModelPath);
+    /// <summary>コンポーネントスロット 1 件分の情報。TypeId ごとに追加フィールドを持つ。</summary>
+    private record SlotInfo(int SlotIdx, string Name, string TypeId, string ModelPath,
+        float Width = 0f, float Height = 0f);
     private List<SlotInfo> _slotInfos = new();
 
     private void BuildActorComponentList(string json)
@@ -251,8 +267,11 @@ public partial class InspectorPanel : UserControl
             var compName  = comp.TryGetProperty("name",       out var cn) ? cn.GetString() ?? "" : "";
             var compType  = comp.TryGetProperty("type",       out var ct) ? ct.GetString() ?? "" : "";
             var modelPath = comp.TryGetProperty("model_path", out var mp) ? mp.GetString() ?? "" : "";
+            // CanvasComponent 用: 幅・高さ
+            var width  = comp.TryGetProperty("width",  out var wd) ? wd.GetSingle() : 0f;
+            var height = comp.TryGetProperty("height", out var ht) ? ht.GetSingle() : 0f;
 
-            var info = new SlotInfo(slotIdx, compName, compType, modelPath);
+            var info = new SlotInfo(slotIdx, compName, compType, modelPath, width, height);
             _slotInfos.Add(info);
             ComponentListStack.Children.Add(BuildComponentChip(info.SlotIdx, info.Name, info.TypeId));
 
@@ -273,9 +292,21 @@ public partial class InspectorPanel : UserControl
         ComponentPropsStack.Children.Clear();
         ClearTransformRefs();
 
-        // [基本情報] タブ: Transform セクション
-        if (root.TryGetProperty("transform", out var tf))
+        // [基本情報] タブ: Transform セクション（3D / 2D で分岐）
+        if (root.TryGetProperty("canvas_transform", out var ct))
         {
+            // 2D Actor: CanvasTransform（位置XY・回転・スケールXY）
+            _isActor2D = true;
+            float px  = Fp(ct, "px"),  py  = Fp(ct, "py");
+            float rot = Fp(ct, "rotation");
+            float sx  = Fp(ct, "sx"),  sy  = Fp(ct, "sy");
+
+            BasicInfoStack.Children.Add(BuildCanvas2DTransformSection(px, py, rot, sx, sy));
+        }
+        else if (root.TryGetProperty("transform", out var tf))
+        {
+            // 3D Actor: Transform（位置XYZ・回転XYZ・スケールXYZ）
+            _isActor2D = false;
             float px = Fp(tf, "px"), py = Fp(tf, "py"), pz = Fp(tf, "pz");
             float ex = Fp(tf, "ex"), ey = Fp(tf, "ey"), ez = Fp(tf, "ez");
             float sx = Fp(tf, "sx"), sy = Fp(tf, "sy"), sz = Fp(tf, "sz");
@@ -318,6 +349,82 @@ public partial class InspectorPanel : UserControl
         {
             BuildScriptSlotProps(info);
         }
+        else if (info.TypeId == "CanvasComponent")
+        {
+            BuildCanvasSlotProps(info);
+        }
+    }
+
+    // ── CanvasComponent inspector ─────────────────────────────
+
+    /// <summary>CanvasComponent の幅・高さフィールドを表示して SET_CANVAS_SIZE を送信する。</summary>
+    private void BuildCanvasSlotProps(SlotInfo info)
+    {
+        var section = BuildSection(info.Name + " (CanvasComponent)");
+        var sp      = (StackPanel)section.Child;
+
+        // 幅フィールド
+        var rowW = BuildLabeledNumberRow("幅",  info.Width);
+        var tbW  = rowW.textBox;
+        sp.Children.Add(rowW.element);
+
+        // 高さフィールド
+        var rowH = BuildLabeledNumberRow("高さ", info.Height);
+        var tbH  = rowH.textBox;
+        sp.Children.Add(rowH.element);
+
+        ComponentPropsStack.Children.Add(section);
+
+        // 幅・高さを送信するローカル関数
+        void Commit()
+        {
+            if (_currentActorId < 0) return;
+            if (!float.TryParse(tbW.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var w)) return;
+            if (!float.TryParse(tbH.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var h)) return;
+            _runtime?.SendToRuntime(FormattableString.Invariant(
+                $"SET_CANVAS_SIZE:{_currentActorId},{info.SlotIdx},{w},{h}"));
+        }
+
+        tbW.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { Commit(); e.Handled = true; } };
+        tbW.LostFocus += (_, _) => Commit();
+        tbH.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { Commit(); e.Handled = true; } };
+        tbH.LostFocus += (_, _) => Commit();
+    }
+
+    /// <summary>ラベル + 数値入力フィールドの行を生成する。</summary>
+    private static (UIElement element, TextBox textBox) BuildLabeledNumberRow(string label, float value)
+    {
+        var grid = new Grid { Margin = new Thickness(0, 2, 0, 2) };
+        grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(24) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(52) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+
+        var lbl = new TextBlock
+        {
+            Text              = label,
+            Foreground        = new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88)),
+            FontSize          = 11,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        Grid.SetColumn(lbl, 0);
+        grid.Children.Add(lbl);
+
+        var tb = new TextBox
+        {
+            Text              = value.ToString("F1", CultureInfo.InvariantCulture),
+            Background        = new SolidColorBrush(Color.FromRgb(0x1A, 0x1A, 0x1A)),
+            Foreground        = new SolidColorBrush(Colors.White),
+            BorderBrush       = new SolidColorBrush(Color.FromRgb(0x3F, 0x3F, 0x46)),
+            BorderThickness   = new Thickness(1),
+            FontSize          = 11,
+            Padding           = new Thickness(3, 1, 3, 1),
+            Margin            = new Thickness(1, 1, 2, 1),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        Grid.SetColumn(tb, 1);
+        grid.Children.Add(tb);
+
+        return (grid, tb);
     }
 
     // ── ScriptComponent inspector ─────────────────────────────
@@ -685,6 +792,101 @@ public partial class InspectorPanel : UserControl
         return grid;
     }
 
+    /// <summary>
+    /// CanvasTransform（2D）用の Transform セクションを生成する。
+    /// 位置(X,Y)・回転(単一値)・スケール(X,Y) の5フィールド構成。
+    /// _tbPx/_tbPy = 位置, _tbEz = 回転, _tbSx/_tbSy = スケール にそれぞれ格納される。
+    /// </summary>
+    private Border BuildCanvas2DTransformSection(float px, float py, float rot, float sx, float sy)
+    {
+        var section = BuildSection("CanvasTransform");
+        var sp      = (StackPanel)section.Child;
+        var grid    = BuildXYGrid();
+
+        // 位置行: X, Y
+        (_tbPx, _tbPy) = AddXYRow(grid, 0, "位置", px, py, "#E06C75", "#98C379", 0.1);
+        // 回転行: Z（2D では Z 軸周り単一値）
+        _tbEz = AddSingleValueRow(grid, 1, "回転", "Z", rot, "#61AFEF", 1.0);
+        // スケール行: X, Y
+        (_tbSx, _tbSy) = AddXYRow(grid, 2, "スケール", sx, sy, "#E06C75", "#98C379", 0.01);
+
+        sp.Children.Add(grid);
+        return section;
+    }
+
+    /// <summary>XY 2列グリッド（ラベル + X軸 + Y軸）を生成する。</summary>
+    private static Grid BuildXYGrid()
+    {
+        var grid = new Grid();
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(52) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(14) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(14) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        return grid;
+    }
+
+    /// <summary>XY グリッドに X, Y 2フィールド行を追加する。</summary>
+    private (TextBox x, TextBox y) AddXYRow(
+        Grid grid, int row, string label,
+        float vx, float vy,
+        string colorX, string colorY,
+        double dragSpeed)
+    {
+        grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(24) });
+
+        var lbl = new TextBlock
+        {
+            Text              = label,
+            Foreground        = new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88)),
+            FontSize          = 11,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        Grid.SetRow(lbl, row); Grid.SetColumn(lbl, 0); grid.Children.Add(lbl);
+
+        var tbX = MakeAxisField(vx, colorX); Grid.SetRow(tbX, row); Grid.SetColumn(tbX, 2); grid.Children.Add(tbX);
+        var tbY = MakeAxisField(vy, colorY); Grid.SetRow(tbY, row); Grid.SetColumn(tbY, 4); grid.Children.Add(tbY);
+
+        var lblX = MakeAxisLabel("X", colorX, tbX, dragSpeed); Grid.SetRow(lblX, row); Grid.SetColumn(lblX, 1); grid.Children.Add(lblX);
+        var lblY = MakeAxisLabel("Y", colorY, tbY, dragSpeed); Grid.SetRow(lblY, row); Grid.SetColumn(lblY, 3); grid.Children.Add(lblY);
+
+        tbX.KeyDown   += OnFieldKeyDown; tbY.KeyDown   += OnFieldKeyDown;
+        tbX.LostFocus += OnFieldLostFocus; tbY.LostFocus += OnFieldLostFocus;
+
+        return (tbX, tbY);
+    }
+
+    /// <summary>XY グリッドに単一値行（回転などに使用）を追加する。Y列はフィールドが全幅を占める。</summary>
+    private TextBox AddSingleValueRow(
+        Grid grid, int row, string label, string axisLabel,
+        float value, string color, double dragSpeed)
+    {
+        grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(24) });
+
+        var lbl = new TextBlock
+        {
+            Text              = label,
+            Foreground        = new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88)),
+            FontSize          = 11,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        Grid.SetRow(lbl, row); Grid.SetColumn(lbl, 0); grid.Children.Add(lbl);
+
+        var tb = MakeAxisField(value, color);
+        Grid.SetRow(tb, row); Grid.SetColumn(tb, 2);
+        Grid.SetColumnSpan(tb, 3); // Y 列も含めて全幅表示
+        grid.Children.Add(tb);
+
+        var lblAxis = MakeAxisLabel(axisLabel, color, tb, dragSpeed);
+        Grid.SetRow(lblAxis, row); Grid.SetColumn(lblAxis, 1);
+        grid.Children.Add(lblAxis);
+
+        tb.KeyDown   += OnFieldKeyDown;
+        tb.LostFocus += OnFieldLostFocus;
+
+        return tb;
+    }
+
     private (TextBox x, TextBox y, TextBox z) AddXYZRow(
         Grid grid, int row, string label,
         float vx, float vy, float vz,
@@ -835,9 +1037,23 @@ public partial class InspectorPanel : UserControl
     private void CommitTransform()
     {
         if (_currentActorId < 0 || _tbPx is null) return;
-        if (!TryParseAll(out float px, out float py, out float pz,
-                         out float ex, out float ey, out float ez,
-                         out float sx, out float sy, out float sz)) return;
+
+        // 2D Actor の場合は CanvasTransform 専用コマンドを送信する
+        if (_isActor2D && (_isActorEditMode || _isVirtualActorSelected))
+        {
+            if (!TryParse(_tbPx, out float px) || !TryParse(_tbPy, out float py)) return;
+            if (!TryParse(_tbEz, out float rot)) return;
+            if (!TryParse(_tbSx, out float sx) || !TryParse(_tbSy, out float sy)) return;
+            _runtime?.SendToRuntime(FormattableString.Invariant(
+                $"SET_CANVAS_TRANSFORM:{_currentActorId},{px},{py},{rot},{sx},{sy}"));
+            TransformCommitted?.Invoke();
+            return;
+        }
+
+        // 3D Actor の場合は従来の 9 軸トランスフォームコマンドを送信する
+        if (!TryParseAll(out float px3, out float py3, out float pz3,
+                         out float ex3, out float ey3, out float ez3,
+                         out float sx3, out float sy3, out float sz3)) return;
 
         string msg;
         // アクター編集モード、またはシーンモードで仮想DFS選択された場合は SET_ACTOR_TRANSFORM を使う。
@@ -845,12 +1061,12 @@ public partial class InspectorPanel : UserControl
         if (_isActorEditMode || _isVirtualActorSelected)
         {
             msg = FormattableString.Invariant(
-                $"SET_ACTOR_TRANSFORM:{_currentActorId},{px},{py},{pz},{ex},{ey},{ez},{sx},{sy},{sz}");
+                $"SET_ACTOR_TRANSFORM:{_currentActorId},{px3},{py3},{pz3},{ex3},{ey3},{ez3},{sx3},{sy3},{sz3}");
         }
         else
         {
             msg = FormattableString.Invariant(
-                $"SET_TRANSFORM:{_currentActorId},{px},{py},{pz},{ex},{ey},{ez},{sx},{sy},{sz}");
+                $"SET_TRANSFORM:{_currentActorId},{px3},{py3},{pz3},{ex3},{ey3},{ez3},{sx3},{sy3},{sz3}");
         }
         _runtime?.SendToRuntime(msg);
         TransformCommitted?.Invoke();
