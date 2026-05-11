@@ -20,6 +20,7 @@ fn get_shader_source(name: &str) -> &'static str {
         "depth_prepass.wgsl"         => include_str!("shaders/depth_prepass.wgsl"),
         "id_pass.wgsl"               => include_str!("shaders/id_pass.wgsl"),
         "outline.wgsl"               => include_str!("shaders/outline.wgsl"),
+        "sprite.wgsl"                => include_str!("shaders/sprite.wgsl"),
         other => panic!("unknown shader source: {other}"),
     }
 }
@@ -406,6 +407,114 @@ impl OutlinePipeline {
 }
 
 // ============================================================
+//  SpritePipeline — 2D スプライトテクスチャ描画
+// ============================================================
+
+/// ワールド空間テクスチャクワッドパイプライン。
+///
+/// Group 0: CameraUniform（mesh パイプラインと同一レイアウト → camera_buf.bind_group と互換）
+/// Group 1: SpriteUniform（モデル行列 + カラー）
+/// Group 2: テクスチャ + サンプラー
+pub struct SpritePipeline {
+    pub pipeline:           wgpu::RenderPipeline,
+    /// Group 1: SpriteUniform バインドグループレイアウト
+    pub sprite_uniform_bgl: wgpu::BindGroupLayout,
+    /// Group 2: テクスチャ＋サンプラー バインドグループレイアウト
+    pub tex_bgl:            wgpu::BindGroupLayout,
+    /// リニアフィルタリングサンプラー（テクスチャ BG 構築に使用）
+    pub sampler:            wgpu::Sampler,
+    /// テクスチャ未設定時のフォールバック（白 1×1）
+    pub white_fallback_bg:  wgpu::BindGroup,
+    /// ユニットクワッド頂点バッファ ([0,1]×[0,1], 2 三角形 = 6 頂点)
+    pub unit_quad_vbuf:     wgpu::Buffer,
+}
+
+impl SpritePipeline {
+    fn new(
+        device: &wgpu::Device,
+        queue:  &wgpu::Queue,
+        sf:     wgpu::TextureFormat,
+        df:     wgpu::TextureFormat,
+    ) -> Self {
+        let (pipeline, mut bgls) =
+            RenderPipelineBuilder::new(device, include_str!("pipelines/sprite.toml"), sf, df)
+                .build(get_shader_source);
+        // bgls[0]=camera_bgl, [1]=sprite_uniform_bgl, [2]=tex_bgl (pop は末尾から)
+        let tex_bgl            = bgls.pop().unwrap();  // group 2
+        let sprite_uniform_bgl = bgls.pop().unwrap();  // group 1
+        // group 0 の camera_bgl は camera_buf.bind_group と互換のため不使用
+
+        // リニアフィルタリングサンプラー
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label:          Some("Sprite Sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter:     wgpu::FilterMode::Linear,
+            min_filter:     wgpu::FilterMode::Linear,
+            mipmap_filter:  wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+
+        // 白 1×1 フォールバックテクスチャ（テクスチャ未設定時に使用）
+        let white_tex = device.create_texture(&wgpu::TextureDescriptor {
+            label:           Some("Sprite White Fallback Tex"),
+            size:            wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count:    1,
+            dimension:       wgpu::TextureDimension::D2,
+            format:          wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage:           wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats:    &[],
+        });
+        queue.write_texture(
+            white_tex.as_image_copy(),
+            &[255u8, 255, 255, 255],
+            wgpu::ImageDataLayout {
+                offset:         0,
+                bytes_per_row:  Some(4),
+                rows_per_image: Some(1),
+            },
+            wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+        );
+        let white_view = white_tex.create_view(&Default::default());
+        let white_fallback_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label:   Some("Sprite White Fallback BG"),
+            layout:  &tex_bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding:  0,
+                    resource: wgpu::BindingResource::TextureView(&white_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding:  1,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+            ],
+        });
+
+        // ユニットクワッド: [0,1]×[0,1], 2 三角形（6頂点）
+        // レイアウト: position(vec2) + uv(vec2) = 16 bytes / 頂点
+        let quad_verts: &[f32] = &[
+            0.0, 0.0,  0.0, 0.0,   // tri1 v0: 左上
+            1.0, 0.0,  1.0, 0.0,   // tri1 v1: 右上
+            1.0, 1.0,  1.0, 1.0,   // tri1 v2: 右下
+            0.0, 0.0,  0.0, 0.0,   // tri2 v0: 左上
+            1.0, 1.0,  1.0, 1.0,   // tri2 v1: 右下
+            0.0, 1.0,  0.0, 1.0,   // tri2 v2: 左下
+        ];
+        use wgpu::util::DeviceExt;
+        let unit_quad_vbuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label:    Some("Sprite Unit Quad VBuf"),
+            contents: bytemuck::cast_slice(quad_verts),
+            usage:    wgpu::BufferUsages::VERTEX,
+        });
+
+        Self { pipeline, sprite_uniform_bgl, tex_bgl, sampler, white_fallback_bg, unit_quad_vbuf }
+    }
+}
+
+// ============================================================
 //  DrawPipelines — 全パイプラインをまとめた型
 // ============================================================
 
@@ -418,11 +527,13 @@ pub struct DrawPipelines {
     pub depth_prepass: DepthPrepassPipelines,
     pub id_pass:       IdPassPipeline,
     pub outline:       OutlinePipeline,
+    pub sprite:        SpritePipeline,
 }
 
 impl DrawPipelines {
     pub fn new(
         device:         &wgpu::Device,
+        queue:          &wgpu::Queue,
         surface_format: wgpu::TextureFormat,
         depth_format:   wgpu::TextureFormat,
     ) -> Self {
@@ -434,6 +545,7 @@ impl DrawPipelines {
         let depth_prepass = DepthPrepassPipelines::new(device, depth_format);
         let id_pass       = IdPassPipeline::new(device, surface_format, depth_format);
         let outline       = OutlinePipeline::new(device, surface_format, depth_format);
-        Self { mesh, skinned_mesh, unlit_line, cull, skin_compute, depth_prepass, id_pass, outline }
+        let sprite        = SpritePipeline::new(device, queue, surface_format, depth_format);
+        Self { mesh, skinned_mesh, unlit_line, cull, skin_compute, depth_prepass, id_pass, outline, sprite }
     }
 }

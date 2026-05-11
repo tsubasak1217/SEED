@@ -11,7 +11,7 @@
 
 use crate::engine::ecs::Entity;
 use crate::engine::components::{
-    ModelComponent, Transform,
+    ModelComponent, Transform, CanvasTransform,
 };
 use crate::engine::components::model_component::{GroupMeta, InstanceMeta};
 use crate::engine::core::app_base::scene::Scene;
@@ -574,6 +574,39 @@ fn find_mc_entity_in_children(actor: &Actor, dfs_id: u32, c: &mut u32) -> Option
         if let Some(e) = find_mc_entity_in_children(child, dfs_id, c) { return Some(e); }
     }
     None
+}
+
+// ============================================================
+//  CanvasTransformCommand — 2D アクターの CanvasTransform 変更
+// ============================================================
+
+pub struct CanvasTransformCommand {
+    pub world_line: u32,
+    pub dfs_id:     u32,
+    pub old_ct:     CanvasTransform,
+    pub new_ct:     CanvasTransform,
+}
+
+impl Command for CanvasTransformCommand {
+    fn execute(&mut self, scene: &mut Scene) {
+        set_canvas_transform(scene, self.world_line, self.dfs_id, self.new_ct.clone());
+    }
+    fn undo(&mut self, scene: &mut Scene) {
+        set_canvas_transform(scene, self.world_line, self.dfs_id, self.old_ct.clone());
+    }
+    fn actor_inspect_notify(&self) -> Option<(u32, u32)> {
+        Some((self.world_line, self.dfs_id))
+    }
+}
+
+/// DFS id でアクターの CanvasTransform を更新する（ECS 版）。
+fn set_canvas_transform(scene: &mut Scene, wl: u32, dfs_id: u32, ct: CanvasTransform) {
+    let entity = find_entity_by_dfs(&scene.actors, wl, dfs_id);
+    if let Some(entity) = entity {
+        if let Some(t) = scene.world.get_mut::<CanvasTransform>(entity) {
+            *t = ct;
+        }
+    }
 }
 
 /// DFS id でアクターの Transform を更新する（ECS 版）。

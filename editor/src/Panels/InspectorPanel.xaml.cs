@@ -41,6 +41,8 @@ public partial class InspectorPanel : UserControl
     private TextBox? _tbPx, _tbPy, _tbPz;
     private TextBox? _tbEx, _tbEy, _tbEz;
     private TextBox? _tbSx, _tbSy, _tbSz;
+    /// <summary>2D Actor 専用: ピボット X/Y フィールド。</summary>
+    private TextBox? _tbPivotX, _tbPivotY;
     private bool     _isDraggingTransform = false;
     /// <summary>現在選択中のアクターが 2D Actor（CanvasTransform 持ち）かどうか。</summary>
     private bool     _isActor2D = false;
@@ -81,13 +83,15 @@ public partial class InspectorPanel : UserControl
     {
         // シーンモード・アクター編集モード共通: DFS id でアクタを選択してコンポーネントを表示する
         ClearTransformRefs();
-        _currentActorId       = dfsId;
+        // 前回のドラッグ状態をリセットする（2D アクター選択時にコンポーネントが表示されないバグ対策）
+        _isDraggingTransform    = false;
+        _currentActorId         = dfsId;
         _isVirtualActorSelected = true; // 仮想 DFS 選択 → SET_ACTOR_TRANSFORM を使う
-        // Rust の SELECT 処理で ACTOR_COMPONENTS が即時プッシュされるため
-        // OnActorComponentsReceived で正しいデータに更新される。
         ActorEditGrid.Visibility    = Visibility.Visible;
         ComponentScroll.Visibility  = Visibility.Collapsed;
         NoSelectionBlock.Visibility = Visibility.Collapsed;
+        // Rust 側にコンポーネントデータを要求する（ビューポートからの選択時でも確実に反映される）
+        _runtime?.SendToRuntime($"GET_ACTOR_COMPONENTS:{dfsId}");
     }
 
     // ── Runtime events ───────────────────────────────────────
@@ -142,6 +146,11 @@ public partial class InspectorPanel : UserControl
         if (_currentActorId < 0) return;
         Dispatcher.InvokeAsync(() =>
         {
+            // トランスフォームドラッグ中は UI を再構築しない。
+            // Rust が CommitTransform のたびに send_actor_components を返すため、
+            // UIリビルドで _tbPx 等の参照がクリアされて以降のドラッグ値送信が
+            // 無効になってしまうのを防ぐ。
+            if (_isDraggingTransform) return;
             try { BuildActorComponentList(json); }
             catch (Exception ex) { EditorLog.Write($"InspectorPanel: ACTOR_COMPONENTS parse error: {ex.Message}"); }
         });
@@ -172,6 +181,7 @@ public partial class InspectorPanel : UserControl
         _tbPx = _tbPy = _tbPz = null;
         _tbEx = _tbEy = _tbEz = null;
         _tbSx = _tbSy = _tbSz = null;
+        _tbPivotX = _tbPivotY = null;
     }
 
     // ── Scene mode inspector ─────────────────────────────────
@@ -198,10 +208,11 @@ public partial class InspectorPanel : UserControl
         {
             // 2D Actor: CanvasTransform
             _isActor2D = true;
-            float px  = Fp(ct, "px"),  py  = Fp(ct, "py");
-            float rot = Fp(ct, "rotation");
-            float sx  = Fp(ct, "sx"),  sy  = Fp(ct, "sy");
-            ComponentStack.Children.Add(BuildCanvas2DTransformSection(px, py, rot, sx, sy));
+            float px   = Fp(ct, "px"),  py   = Fp(ct, "py");
+            float rot  = Fp(ct, "rotation");
+            float sx   = Fp(ct, "sx"),  sy   = Fp(ct, "sy");
+            float pivx = Fp(ct, "pivx"), pivy = Fp(ct, "pivy");
+            ComponentStack.Children.Add(BuildCanvas2DTransformSection(px, py, rot, sx, sy, pivx, pivy));
         }
         else if (root.TryGetProperty("transform", out var tf))
         {
@@ -238,7 +249,11 @@ public partial class InspectorPanel : UserControl
 
     /// <summary>コンポーネントスロット 1 件分の情報。TypeId ごとに追加フィールドを持つ。</summary>
     private record SlotInfo(int SlotIdx, string Name, string TypeId, string ModelPath,
-        float Width = 0f, float Height = 0f);
+        float Width = 0f, float Height = 0f,
+        // SpriteComponent 用フィールド
+        string TexturePath = "",
+        float SpriteR = 1f, float SpriteG = 1f, float SpriteB = 1f, float SpriteA = 1f,
+        float SpriteW = 100f, float SpriteH = 100f);
     private List<SlotInfo> _slotInfos = new();
 
     private void BuildActorComponentList(string json)
@@ -270,8 +285,17 @@ public partial class InspectorPanel : UserControl
             // CanvasComponent 用: 幅・高さ
             var width  = comp.TryGetProperty("width",  out var wd) ? wd.GetSingle() : 0f;
             var height = comp.TryGetProperty("height", out var ht) ? ht.GetSingle() : 0f;
+            // SpriteComponent 用: テクスチャパス・RGBA・サイズ
+            var texPath = comp.TryGetProperty("texture_path", out var tp2) ? tp2.GetString() ?? "" : "";
+            var sprR = comp.TryGetProperty("cr", out var cr) ? cr.GetSingle() : 1f;
+            var sprG = comp.TryGetProperty("cg", out var cg) ? cg.GetSingle() : 1f;
+            var sprB = comp.TryGetProperty("cb", out var cb) ? cb.GetSingle() : 1f;
+            var sprA = comp.TryGetProperty("ca", out var ca) ? ca.GetSingle() : 1f;
+            var sprW = comp.TryGetProperty("sprite_w", out var sw) ? sw.GetSingle() : 100f;
+            var sprH = comp.TryGetProperty("sprite_h", out var sh) ? sh.GetSingle() : 100f;
 
-            var info = new SlotInfo(slotIdx, compName, compType, modelPath, width, height);
+            var info = new SlotInfo(slotIdx, compName, compType, modelPath, width, height,
+                texPath, sprR, sprG, sprB, sprA, sprW, sprH);
             _slotInfos.Add(info);
             ComponentListStack.Children.Add(BuildComponentChip(info.SlotIdx, info.Name, info.TypeId));
 
@@ -295,13 +319,14 @@ public partial class InspectorPanel : UserControl
         // [基本情報] タブ: Transform セクション（3D / 2D で分岐）
         if (root.TryGetProperty("canvas_transform", out var ct))
         {
-            // 2D Actor: CanvasTransform（位置XY・回転・スケールXY）
+            // 2D Actor: CanvasTransform（位置XY・回転・スケールXY・ピボットXY）
             _isActor2D = true;
-            float px  = Fp(ct, "px"),  py  = Fp(ct, "py");
-            float rot = Fp(ct, "rotation");
-            float sx  = Fp(ct, "sx"),  sy  = Fp(ct, "sy");
+            float px   = Fp(ct, "px"),  py   = Fp(ct, "py");
+            float rot  = Fp(ct, "rotation");
+            float sx   = Fp(ct, "sx"),  sy   = Fp(ct, "sy");
+            float pivx = Fp(ct, "pivx"), pivy = Fp(ct, "pivy");
 
-            BasicInfoStack.Children.Add(BuildCanvas2DTransformSection(px, py, rot, sx, sy));
+            BasicInfoStack.Children.Add(BuildCanvas2DTransformSection(px, py, rot, sx, sy, pivx, pivy));
         }
         else if (root.TryGetProperty("transform", out var tf))
         {
@@ -353,6 +378,92 @@ public partial class InspectorPanel : UserControl
         {
             BuildCanvasSlotProps(info);
         }
+        else if (info.TypeId == "SpriteComponent")
+        {
+            BuildSpriteSlotProps(info);
+        }
+    }
+
+    // ── SpriteComponent inspector ─────────────────────────────
+
+    /// <summary>SpriteComponent のインスペクター UI を構築する。</summary>
+    /// <remarks>テクスチャパス・RGBA カラー・幅高さを表示し、変更を IPC で送信する。</remarks>
+    private void BuildSpriteSlotProps(SlotInfo info)
+    {
+        var section = BuildSection(info.Name + " (SpriteComponent)");
+        var sp      = (StackPanel)section.Child;
+
+        // テクスチャパス選択行
+        sp.Children.Add(FileRefBuilder.Build(
+            "テクスチャ", info.TexturePath,
+            [".png", ".jpg", ".jpeg", ".bmp", ".tga", ".webp"],
+            () =>
+            {
+                var dlg = new OpenFileDialog
+                {
+                    Title  = "テクスチャファイルを選択",
+                    Filter = "画像ファイル|*.png;*.jpg;*.jpeg;*.bmp;*.tga;*.webp|すべてのファイル|*.*",
+                };
+                return dlg.ShowDialog(Window.GetWindow(this)) == true ? dlg.FileName : null;
+            },
+            path =>
+            {
+                if (_currentActorId < 0) return;
+                _runtime?.SendToRuntime($"SET_SPRITE_PATH:{_currentActorId},{info.SlotIdx},{path}");
+            }));
+
+        // RGBA カラーフィールド
+        var rowR = BuildLabeledNumberRow("R", info.SpriteR);
+        var rowG = BuildLabeledNumberRow("G", info.SpriteG);
+        var rowB = BuildLabeledNumberRow("B", info.SpriteB);
+        var rowA = BuildLabeledNumberRow("A", info.SpriteA);
+        sp.Children.Add(rowR.element);
+        sp.Children.Add(rowG.element);
+        sp.Children.Add(rowB.element);
+        sp.Children.Add(rowA.element);
+
+        // 幅・高さフィールド
+        var rowW = BuildLabeledNumberRow("幅",  info.SpriteW);
+        var rowH = BuildLabeledNumberRow("高さ", info.SpriteH);
+        sp.Children.Add(rowW.element);
+        sp.Children.Add(rowH.element);
+
+        ComponentPropsStack.Children.Add(section);
+
+        // カラー変更を送信するローカル関数
+        void CommitColor()
+        {
+            if (_currentActorId < 0) return;
+            if (!float.TryParse(rowR.textBox.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var r)) return;
+            if (!float.TryParse(rowG.textBox.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var g)) return;
+            if (!float.TryParse(rowB.textBox.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var b)) return;
+            if (!float.TryParse(rowA.textBox.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var a)) return;
+            _runtime?.SendToRuntime(FormattableString.Invariant(
+                $"SET_SPRITE_COLOR:{_currentActorId},{info.SlotIdx},{r},{g},{b},{a}"));
+        }
+
+        // サイズ変更を送信するローカル関数
+        void CommitSize()
+        {
+            if (_currentActorId < 0) return;
+            if (!float.TryParse(rowW.textBox.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var w)) return;
+            if (!float.TryParse(rowH.textBox.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var h)) return;
+            _runtime?.SendToRuntime(FormattableString.Invariant(
+                $"SET_SPRITE_SIZE:{_currentActorId},{info.SlotIdx},{w},{h}"));
+        }
+
+        // RGBA 各テキストボックスにイベントを登録する
+        foreach (var tb in new[] { rowR.textBox, rowG.textBox, rowB.textBox, rowA.textBox })
+        {
+            tb.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { CommitColor(); e.Handled = true; } };
+            tb.LostFocus += (_, _) => CommitColor();
+        }
+
+        // 幅・高さのテキストボックスにイベントを登録する
+        rowW.textBox.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { CommitSize(); e.Handled = true; } };
+        rowW.textBox.LostFocus += (_, _) => CommitSize();
+        rowH.textBox.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { CommitSize(); e.Handled = true; } };
+        rowH.textBox.LostFocus += (_, _) => CommitSize();
     }
 
     // ── CanvasComponent inspector ─────────────────────────────
@@ -794,10 +905,10 @@ public partial class InspectorPanel : UserControl
 
     /// <summary>
     /// CanvasTransform（2D）用の Transform セクションを生成する。
-    /// 位置(X,Y)・回転(単一値)・スケール(X,Y) の5フィールド構成。
-    /// _tbPx/_tbPy = 位置, _tbEz = 回転, _tbSx/_tbSy = スケール にそれぞれ格納される。
+    /// 位置(X,Y)・回転(単一値)・スケール(X,Y)・ピボット(X,Y) の7フィールド構成。
+    /// _tbPx/_tbPy = 位置, _tbEz = 回転, _tbSx/_tbSy = スケール, _tbPivotX/_tbPivotY = ピボット。
     /// </summary>
-    private Border BuildCanvas2DTransformSection(float px, float py, float rot, float sx, float sy)
+    private Border BuildCanvas2DTransformSection(float px, float py, float rot, float sx, float sy, float pivx, float pivy)
     {
         var section = BuildSection("CanvasTransform");
         var sp      = (StackPanel)section.Child;
@@ -809,6 +920,8 @@ public partial class InspectorPanel : UserControl
         _tbEz = AddSingleValueRow(grid, 1, "回転", "Z", rot, "#61AFEF", 1.0);
         // スケール行: X, Y
         (_tbSx, _tbSy) = AddXYRow(grid, 2, "スケール", sx, sy, "#E06C75", "#98C379", 0.01);
+        // ピボット行: X, Y（回転・スケールの基準点オフセット）
+        (_tbPivotX, _tbPivotY) = AddXYRow(grid, 3, "ピボット", pivx, pivy, "#E06C75", "#98C379", 0.01);
 
         sp.Children.Add(grid);
         return section;
@@ -1044,8 +1157,12 @@ public partial class InspectorPanel : UserControl
             if (!TryParse(_tbPx, out float px) || !TryParse(_tbPy, out float py)) return;
             if (!TryParse(_tbEz, out float rot)) return;
             if (!TryParse(_tbSx, out float sx) || !TryParse(_tbSy, out float sy)) return;
+            // ピボット: フィールドが未設定の場合は 0.0 を使用する
+            float pivx = 0f, pivy = 0f;
+            if (_tbPivotX is not null) TryParse(_tbPivotX, out pivx);
+            if (_tbPivotY is not null) TryParse(_tbPivotY, out pivy);
             _runtime?.SendToRuntime(FormattableString.Invariant(
-                $"SET_CANVAS_TRANSFORM:{_currentActorId},{px},{py},{rot},{sx},{sy}"));
+                $"SET_CANVAS_TRANSFORM:{_currentActorId},{px},{py},{rot},{sx},{sy},{pivx},{pivy}"));
             TransformCommitted?.Invoke();
             return;
         }

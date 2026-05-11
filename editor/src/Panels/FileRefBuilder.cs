@@ -52,7 +52,7 @@ internal static class FileRefBuilder
             AllowDrop       = true,
             ToolTip         = hasPath
                 ? currentPath
-                : string.Join(", ", acceptedExtensions) + " ファイルをドロップ",
+                : "Project パネルまたはエクスプローラーから " + string.Join(" / ", acceptedExtensions) + " をドロップ",
         };
 
         var pathText = new TextBlock

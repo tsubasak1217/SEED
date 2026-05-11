@@ -7,6 +7,7 @@ mod model_drawer;
 mod id_pass;
 mod outline;
 mod primitive_drawer;
+mod sprite_drawer;
 
 // drawing files が use super::gpu_resources::... 等で参照できるようモジュール別名を作成
 pub(crate) use crate::engine::core::renderer::gpu_resources;
@@ -25,6 +26,7 @@ pub use crate::engine::core::renderer::{
     // パイプライン型
     MeshPipeline, SkinnedMeshPipeline, UnlitPipeline, CullPipeline, DrawPipelines,
     SkinComputePipeline, IdPassPipeline, OutlinePipeline, DepthPrepassPipelines,
+    SpritePipeline,
 };
 
 // 描画関数
@@ -32,6 +34,10 @@ pub use model_drawer::draw_model_indirect;
 pub use id_pass::{IdBuffer, draw_id_pass};
 pub use outline::{draw_outline, draw_stencil_mask, draw_outline_multi, draw_stencil_mask_multi};
 pub use primitive_drawer::{LineBatch, GizmoBatch, draw_line_batch, draw_gizmo_batch};
+pub use sprite_drawer::{
+    GpuSpriteTexture, SpriteUniform, SpriteVertex,
+    load_sprite_texture, prepare_sprites, draw_sprites, SpritePrepared,
+};
 
 // ============================================================
 //  DrawContext — アプリケーション向け高レベル API
@@ -45,18 +51,20 @@ use crate::engine::core::renderer::gpu_resources::{
     GpuModel as GpuModelInner, InstancedModelBatch as BatchInner,
     DefaultTextures as DefaultTex, CameraBuffer as CamBuf,
 };
-
 /// GPU 描画コンテキスト。
 ///
 /// `Renderer` から生成し、モデルのアップロードや描画関数呼び出しに使う。
 pub struct DrawContext {
-    pub device:      Arc<wgpu::Device>,
-    pub queue:       Arc<wgpu::Queue>,
-    pub pipelines:   DrawPipelines,
-    pub defaults:    DefaultTex,
+    pub device:           Arc<wgpu::Device>,
+    pub queue:            Arc<wgpu::Queue>,
+    pub pipelines:        DrawPipelines,
+    pub defaults:         DefaultTex,
     /// パス → 解析済み CPU モデルのキャッシュ。
     /// 同じパスのモデルを繰り返し build_actor/rebuild するときにディスク読み込みとパースを省く。
-    pub model_cache: RefCell<HashMap<String, Arc<Model>>>,
+    pub model_cache:      RefCell<HashMap<String, Arc<Model>>>,
+    /// パス → GPU スプライトテクスチャキャッシュ。
+    /// テクスチャの再読み込みを抑制する。
+    pub sprite_tex_cache: RefCell<HashMap<String, Arc<GpuSpriteTexture>>>,
 }
 
 impl DrawContext {
@@ -66,9 +74,16 @@ impl DrawContext {
         surface_format: wgpu::TextureFormat,
         depth_format:   wgpu::TextureFormat,
     ) -> Self {
-        let pipelines = DrawPipelines::new(&device, surface_format, depth_format);
+        let pipelines = DrawPipelines::new(&device, &queue, surface_format, depth_format);
         let defaults  = DefaultTex::new(&device, &queue);
-        Self { device, queue, pipelines, defaults, model_cache: RefCell::new(HashMap::new()) }
+        Self {
+            device,
+            queue,
+            pipelines,
+            defaults,
+            model_cache:      RefCell::new(HashMap::new()),
+            sprite_tex_cache: RefCell::new(HashMap::new()),
+        }
     }
 
     pub fn upload_model(&self, model: &Model) -> GpuModelInner {

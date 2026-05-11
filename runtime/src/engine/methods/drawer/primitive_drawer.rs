@@ -531,6 +531,83 @@ impl GizmoBatch {
             }
         }
     }
+
+    // ── 2D キャンバスモード用ギズモ ───────────────────────────────
+
+    /// 2D 移動ギズモ（X・Y 軸のみ + Center ハンドル）を追加する。
+    /// Z 軸・平面ハンドルは 2D では不要なため描画しない。
+    pub fn add_gizmo_translate_2d(&mut self, pos: [f32; 3], radius: f32, hovered: Option<GizmoPart>) {
+        let [px, py, pz] = pos;
+        let head_len = radius * 0.25;
+        let head_r   = radius * 0.07;
+
+        let cx = if hovered == Some(GizmoPart::AxisX) { highlight(GX) } else { GX };
+        let cy = if hovered == Some(GizmoPart::AxisY) { highlight(GY) } else { GY };
+
+        // X 軸（赤）
+        let shaft_tip = [px + radius - head_len, py, pz];
+        self.add_thick_line(pos, shaft_tip, cx);
+        self.add_cone([px + radius, py, pz], shaft_tip, head_r, 8, cx);
+
+        // Y 軸（緑）
+        let shaft_tip = [px, py + radius - head_len, pz];
+        self.add_thick_line(pos, shaft_tip, cy);
+        self.add_cone([px, py + radius, pz], shaft_tip, head_r, 8, cy);
+
+        // 中心ハンドル
+        let cc = if hovered == Some(GizmoPart::Center) { Color::YELLOW } else { Color::WHITE };
+        self.add_center_dot(pos, radius * 0.055, cc);
+    }
+
+    /// 2D スケールギズモ（X・Y 軸のみ + Center ハンドル）を追加する。
+    pub fn add_gizmo_scale_2d(&mut self, pos: [f32; 3], radius: f32, hovered: Option<GizmoPart>) {
+        let [px, py, pz] = pos;
+        let cube_half = radius * 0.07;
+
+        let cx = if hovered == Some(GizmoPart::AxisX) { highlight(GX) } else { GX };
+        let cy = if hovered == Some(GizmoPart::AxisY) { highlight(GY) } else { GY };
+
+        // X 軸（赤）
+        let xe = [px + radius, py, pz];
+        self.add_thick_line(pos, xe, cx);
+        self.add_solid_cube(xe, cube_half, cx);
+
+        // Y 軸（緑）
+        let ye = [px, py + radius, pz];
+        self.add_thick_line(pos, ye, cy);
+        self.add_solid_cube(ye, cube_half, cy);
+
+        // 中心ハンドル
+        let cc = if hovered == Some(GizmoPart::Center) { Color::YELLOW } else { Color::WHITE };
+        self.add_center_dot(pos, radius * 0.055, cc);
+    }
+
+    /// 2D 回転ギズモ（Z 軸周りの完全な円）を追加する。
+    /// 3D の半円表示とは異なり、カメラ真上から見下ろすため常に全周を表示する。
+    pub fn add_gizmo_rotate_2d(
+        &mut self,
+        pos:      [f32; 3],
+        radius:   f32,
+        segments: usize,
+        hovered:  Option<GizmoPart>,
+    ) {
+        let [px, py, pz] = pos;
+        let cz = if hovered == Some(GizmoPart::AxisZ) { highlight(GZ) } else { GZ };
+
+        let n = segments.max(4);
+        for i in 0..n {
+            let t0 = 2.0 * PI * i as f32 / n as f32;
+            let t1 = 2.0 * PI * (i + 1) as f32 / n as f32;
+            let (s0, c0) = t0.sin_cos();
+            let (s1, c1) = t1.sin_cos();
+            // Z 軸リング（XY 平面上の完全な円）
+            self.add_thick_line(
+                [px + radius*c0, py + radius*s0, pz],
+                [px + radius*c1, py + radius*s1, pz],
+                cz,
+            );
+        }
+    }
 }
 
 // ── 数学ヘルパー ───────────────────────────────────────────────

@@ -404,6 +404,16 @@ pub fn build_actor(
                 });
                 actor.add_slot_typed::<CanvasComponent>(slot_name, ComponentKind::Canvas, slot_entity);
             }
+            ComponentData::SpriteComponent(sc_data) => {
+                use crate::engine::components::SpriteComponent;
+                world.insert(slot_entity, SpriteComponent {
+                    texture_path: sc_data.texture_path,
+                    color:        sc_data.color,
+                    width:        sc_data.width,
+                    height:       sc_data.height,
+                });
+                actor.add_slot_typed::<SpriteComponent>(slot_name, ComponentKind::Sprite, slot_entity);
+            }
         }
     }
 

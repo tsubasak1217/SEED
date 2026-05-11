@@ -37,6 +37,7 @@ public partial class ComponentSelectorWindow : Window
         ("UI", new()
         {
             new("CanvasComponent", "Canvas", "UI 矩形領域をアクタにアタッチ（幅・高さ指定）"),
+            new("SpriteComponent", "Sprite", "2D スプライト画像をキャンバスに表示"),
         }),
         ("ライト", new()),
         ("エフェクト", new()),
@@ -214,6 +215,7 @@ public partial class ComponentSelectorWindow : Window
         "ModelComponent"   => "Model",
         "ScriptComponent"  => "Script",
         "CanvasComponent"  => "Canvas",
+        "SpriteComponent"  => "Sprite",
         _                  => typeId,
     };
 

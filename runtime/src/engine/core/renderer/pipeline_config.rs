@@ -425,6 +425,11 @@ pub fn vertex_buffer_layout(name: &str) -> wgpu::VertexBufferLayout<'static> {
         VA { format: VF::Float32,   offset: 28, shader_location: 3 },
         VA { format: VF::Float32x4, offset: 32, shader_location: 4 },
     ];
+    // SpriteVertex: position(0-7, vec2) + uv(8-15, vec2) = 16 bytes
+    static SPRITE_ATTRS: &[VA] = &[
+        VA { format: VF::Float32x2, offset: 0, shader_location: 0 },
+        VA { format: VF::Float32x2, offset: 8, shader_location: 1 },
+    ];
 
     match name {
         "mesh_vertex"   => VertexBufferLayout { array_stride: 72, step_mode: VertexStepMode::Vertex, attributes: MESH_ATTRS },
@@ -432,6 +437,7 @@ pub fn vertex_buffer_layout(name: &str) -> wgpu::VertexBufferLayout<'static> {
         "smooth_normal" => VertexBufferLayout { array_stride: 12, step_mode: VertexStepMode::Vertex, attributes: SMOOTH_NORMAL_ATTRS },
         "color_vertex"  => VertexBufferLayout { array_stride: 28, step_mode: VertexStepMode::Vertex, attributes: COLOR_ATTRS },
         "gizmo_vertex"  => VertexBufferLayout { array_stride: 48, step_mode: VertexStepMode::Vertex, attributes: GIZMO_ATTRS },
+        "sprite_vertex" => VertexBufferLayout { array_stride: 16, step_mode: VertexStepMode::Vertex, attributes: SPRITE_ATTRS },
         other => panic!("unknown vertex slot preset: {other}"),
     }
 }

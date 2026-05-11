@@ -1,0 +1,16 @@
+shader_sources  = ["sprite.wgsl"]
+vertex_entry    = "vs_main"
+fragment_entry  = "fs_main"
+vertex_slots    = ["sprite_vertex"]
+
+topology        = "TriangleList"
+cull_mode       = "None"
+front_face      = "Ccw"
+
+# スプライトは深度書き込みなし・半透明合成
+depth_write     = false
+depth_compare   = "LessEqual"
+
+color_format    = "surface"
+blend           = "AlphaBlending"
+write_mask      = "all"

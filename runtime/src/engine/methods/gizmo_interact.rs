@@ -75,6 +75,22 @@ pub fn screen_to_ray(
     (cam_pos, [wd[0]/len, wd[1]/len, wd[2]/len])
 }
 
+/// 2D 正射影カメラのスクリーン座標をワールド空間レイに変換する。
+/// レイ方向は常に [0, 0, 1]（カメラは Z=-100 から XY 平面を見下ろす）。
+pub fn screen_to_ray_ortho(
+    cx: f32, cy: f32,
+    vp_w: f32, vp_h: f32,
+    pan_x: f32, pan_y: f32,
+    half_w: f32, half_h: f32,
+) -> ([f32; 3], [f32; 3]) {
+    // Y-down 規則でスクリーン→ワールド XY を計算する
+    let ndc_x = 2.0 * cx / vp_w - 1.0;
+    let ndc_y = 2.0 * cy / vp_h - 1.0;
+    let world_x = pan_x + ndc_x * half_w;
+    let world_y = pan_y + ndc_y * half_h;
+    ([world_x, world_y, -100.0], [0.0, 0.0, 1.0])
+}
+
 // ============================================================
 //  ヒットテスト
 // ============================================================

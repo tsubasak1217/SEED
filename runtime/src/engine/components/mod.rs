@@ -13,6 +13,7 @@ pub mod canvas_transform;
 pub mod model_component;
 pub mod script_component;
 pub mod canvas_component;
+pub mod sprite_component;
 
 pub use transform::Transform;
 pub use canvas_transform::CanvasTransform;
@@ -24,6 +25,7 @@ pub use script_component::{
     ScriptComponent, PlaceholderScriptSlot, ScriptComponentData,
 };
 pub use canvas_component::{CanvasComponent, CanvasComponentData};
+pub use sprite_component::{SpriteComponent, SpriteComponentData};
 
 use serde::{Deserialize, Serialize};
 
@@ -44,6 +46,8 @@ pub enum ComponentKind {
     Placeholder,
     /// UI キャンバス（基準サイズ定義・矩形表示）
     Canvas,
+    /// 2D スプライト（テクスチャ画像・キャンバス上表示）
+    Sprite,
 }
 
 impl ComponentKind {
@@ -54,6 +58,7 @@ impl ComponentKind {
             Self::Script      => "ScriptComponent",
             Self::Placeholder => "ScriptComponent (placeholder)",
             Self::Canvas      => "CanvasComponent",
+            Self::Sprite      => "SpriteComponent",
         }
     }
 }
@@ -68,4 +73,5 @@ pub enum ComponentData {
     ModelComponent(ModelComponentData),
     ScriptComponent(ScriptComponentData),
     CanvasComponent(CanvasComponentData),
+    SpriteComponent(SpriteComponentData),
 }

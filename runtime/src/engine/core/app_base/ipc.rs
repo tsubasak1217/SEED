@@ -118,8 +118,8 @@ pub enum IpcCommand {
     /// 3D アクターのトランスフォームを設定する
     SetActorTransform { dfs_id: u32, px: f32, py: f32, pz: f32, ex: f32, ey: f32, ez: f32, sx: f32, sy: f32, sz: f32 },
     /// 2D アクターの CanvasTransform を設定する
-    /// フォーマット: SET_CANVAS_TRANSFORM:{dfs_id},{px},{py},{rotation},{sx},{sy}
-    SetCanvasTransform { dfs_id: u32, px: f32, py: f32, rotation: f32, sx: f32, sy: f32 },
+    /// フォーマット: SET_CANVAS_TRANSFORM:{dfs_id},{px},{py},{rotation},{sx},{sy},{pivot_x},{pivot_y}
+    SetCanvasTransform { dfs_id: u32, px: f32, py: f32, rotation: f32, sx: f32, sy: f32, pivot_x: f32, pivot_y: f32 },
     /// CanvasComponent のサイズを設定する
     /// フォーマット: SET_CANVAS_SIZE:{actor_dfs_id},{slot_idx},{width},{height}
     SetCanvasSize { actor_dfs_id: u32, slot_idx: u32, width: f32, height: f32 },
@@ -137,6 +137,18 @@ pub enum IpcCommand {
     DragHover { x: u32, y: u32 },
     /// ドラッグ離脱通知（プレビュー球体を消す）
     DragHoverEnd,
+    /// SpriteComponent のテクスチャパスを設定する
+    /// フォーマット: SET_SPRITE_PATH:{actor_dfs_id},{slot_idx},{path}
+    SetSpritePath { actor_dfs_id: u32, slot_idx: u32, path: String },
+    /// SpriteComponent の RGBA カラーを設定する（正規化値 0.0〜1.0）
+    /// フォーマット: SET_SPRITE_COLOR:{actor_dfs_id},{slot_idx},{r},{g},{b},{a}
+    SetSpriteColor { actor_dfs_id: u32, slot_idx: u32, r: f32, g: f32, b: f32, a: f32 },
+    /// SpriteComponent の幅・高さをキャンバスユニットで設定する
+    /// フォーマット: SET_SPRITE_SIZE:{actor_dfs_id},{slot_idx},{width},{height}
+    SetSpriteSize { actor_dfs_id: u32, slot_idx: u32, width: f32, height: f32 },
+    /// CanvasTransform の anchor を設定する（正規化値 0.0〜1.0）
+    /// フォーマット: SET_CANVAS_ANCHOR:{actor_dfs_id},{anchor_x},{anchor_y}
+    SetCanvasAnchor { actor_dfs_id: u32, ax: f32, ay: f32 },
 }
 
 // ============================================================
@@ -474,20 +486,21 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                             } else { None }
                         }
                         s if s.starts_with("SET_CANVAS_TRANSFORM:") => {
-                            // フォーマット: SET_CANVAS_TRANSFORM:{dfs_id},{px},{py},{rotation},{sx},{sy}
+                            // フォーマット: SET_CANVAS_TRANSFORM:{dfs_id},{px},{py},{rotation},{sx},{sy},{pivot_x},{pivot_y}
                             let rest = &s["SET_CANVAS_TRANSFORM:".len()..];
                             let parts: Vec<&str> = rest.split(',').collect();
-                            if parts.len() == 6 {
+                            if parts.len() == 8 {
                                 if let Ok(dfs_id) = parts[0].parse::<u32>() {
                                     let fs: Vec<f32> = parts[1..].iter()
                                         .filter_map(|x| x.parse::<f32>().ok())
                                         .collect();
-                                    if fs.len() == 5 {
+                                    if fs.len() == 7 {
                                         Some(IpcCommand::SetCanvasTransform {
                                             dfs_id,
                                             px: fs[0], py: fs[1],
                                             rotation: fs[2],
                                             sx: fs[3], sy: fs[4],
+                                            pivot_x: fs[5], pivot_y: fs[6],
                                         })
                                     } else { None }
                                 } else { None }
@@ -564,6 +577,71 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                             }
                         }
                         s if s == "DRAG_HOVER_END" => Some(IpcCommand::DragHoverEnd),
+                        s if s.starts_with("SET_SPRITE_PATH:") => {
+                            // フォーマット: SET_SPRITE_PATH:{actor_dfs_id},{slot_idx},{path}
+                            // path 中にカンマが含まれる可能性があるため splitn(3) を使用
+                            let rest = &s["SET_SPRITE_PATH:".len()..];
+                            let mut parts = rest.splitn(3, ',');
+                            if let (Some(id_s), Some(sl_s), Some(path)) =
+                                (parts.next(), parts.next(), parts.next())
+                            {
+                                if let (Ok(a), Ok(sl)) = (id_s.parse::<u32>(), sl_s.parse::<u32>()) {
+                                    Some(IpcCommand::SetSpritePath {
+                                        actor_dfs_id: a, slot_idx: sl, path: path.to_string(),
+                                    })
+                                } else { None }
+                            } else { None }
+                        }
+                        s if s.starts_with("SET_SPRITE_COLOR:") => {
+                            // フォーマット: SET_SPRITE_COLOR:{actor_dfs_id},{slot_idx},{r},{g},{b},{a}
+                            let rest = &s["SET_SPRITE_COLOR:".len()..];
+                            let parts: Vec<&str> = rest.split(',').collect();
+                            if parts.len() == 6 {
+                                if let (Ok(a), Ok(sl)) = (parts[0].parse::<u32>(), parts[1].parse::<u32>()) {
+                                    let fs: Vec<f32> = parts[2..].iter()
+                                        .filter_map(|x| x.parse::<f32>().ok())
+                                        .collect();
+                                    if fs.len() == 4 {
+                                        Some(IpcCommand::SetSpriteColor {
+                                            actor_dfs_id: a, slot_idx: sl,
+                                            r: fs[0], g: fs[1], b: fs[2], a: fs[3],
+                                        })
+                                    } else { None }
+                                } else { None }
+                            } else { None }
+                        }
+                        s if s.starts_with("SET_SPRITE_SIZE:") => {
+                            // フォーマット: SET_SPRITE_SIZE:{actor_dfs_id},{slot_idx},{width},{height}
+                            let rest = &s["SET_SPRITE_SIZE:".len()..];
+                            let parts: Vec<&str> = rest.split(',').collect();
+                            if parts.len() == 4 {
+                                if let (Ok(a), Ok(sl)) = (parts[0].parse::<u32>(), parts[1].parse::<u32>()) {
+                                    let fs: Vec<f32> = parts[2..].iter()
+                                        .filter_map(|x| x.parse::<f32>().ok())
+                                        .collect();
+                                    if fs.len() == 2 {
+                                        Some(IpcCommand::SetSpriteSize {
+                                            actor_dfs_id: a, slot_idx: sl,
+                                            width: fs[0], height: fs[1],
+                                        })
+                                    } else { None }
+                                } else { None }
+                            } else { None }
+                        }
+                        s if s.starts_with("SET_CANVAS_ANCHOR:") => {
+                            // フォーマット: SET_CANVAS_ANCHOR:{actor_dfs_id},{anchor_x},{anchor_y}
+                            let rest = &s["SET_CANVAS_ANCHOR:".len()..];
+                            let parts: Vec<&str> = rest.split(',').collect();
+                            if parts.len() == 3 {
+                                if let (Ok(id), Ok(ax), Ok(ay)) = (
+                                    parts[0].parse::<u32>(),
+                                    parts[1].parse::<f32>(),
+                                    parts[2].parse::<f32>(),
+                                ) {
+                                    Some(IpcCommand::SetCanvasAnchor { actor_dfs_id: id, ax, ay })
+                                } else { None }
+                            } else { None }
+                        }
                         _                    => None,
                     }
                 };
