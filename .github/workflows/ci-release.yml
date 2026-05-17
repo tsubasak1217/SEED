@@ -1,4 +1,4 @@
-name: CI Debug
+name: CI Release
 
 on:
   push:
@@ -10,8 +10,8 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build-debug:
-    name: Build & Test (Debug)
+  build-release:
+    name: Build & Test (Release)
     runs-on: windows-latest
 
     steps:
@@ -30,15 +30,15 @@ jobs:
     - name: Restore .NET dependencies
       run: dotnet restore editor/SEEDEditor.sln
 
-    - name: Build .NET Editor (Debug)
-      run: dotnet build editor/SEEDEditor.sln --configuration Debug --no-restore
+    - name: Build .NET Editor (Release)
+      run: dotnet build editor/SEEDEditor.sln --configuration Release --no-restore
 
-    - name: Build Rust Runtime (Debug)
+    - name: Build Rust Runtime (Release)
       run: |
         cd runtime
-        cargo build --verbose
+        cargo build --release --verbose
 
-    - name: Run Rust Tests (Debug)
+    - name: Run Rust Tests (Release)
       run: |
         cd runtime
-        cargo test --verbose
+        cargo test --release --verbose
