@@ -152,8 +152,9 @@ impl<'d> RenderPipelineBuilder<'d> {
             None
         } else {
             let format = match cfg.color_format.as_str() {
-                "R32Uint" => wgpu::TextureFormat::R32Uint,
-                _         => surface_format,
+                "R32Uint"     => wgpu::TextureFormat::R32Uint,
+                "Rgba32Float" => wgpu::TextureFormat::Rgba32Float,
+                _             => surface_format,
             };
             let blend = match cfg.blend.as_str() {
                 "AlphaBlending" => Some(wgpu::BlendState::ALPHA_BLENDING),

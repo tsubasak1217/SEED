@@ -68,6 +68,7 @@ public partial class HierarchyPanel : UserControl
 
     // アクター編集モード
     private bool         _isActorEditMode          = false;
+    private bool         _isActor2DMode            = false;  // 編集中アクターが 2D Actor かどうか
     private uint         _activeWorldLine           = 0;
     private bool         _pendingActorRenameAfterAdd = false;
     private HashSet<int> _preAddNodeIds             = new();
@@ -115,9 +116,14 @@ public partial class HierarchyPanel : UserControl
     /// <summary>アクター編集モードでアクターが選択されたときに発火する（DFS ID）。</summary>
     public event Action<int>? ActorDfsSelected;
 
-    public void SetActorEditMode(bool isActorMode, uint worldLine = 0)
+    /// <summary>
+    /// アクター編集モードの切り替え。
+    /// is2D に true を渡すと、アクタ追加コマンドが ADD_ACTOR_2D に切り替わる。
+    /// </summary>
+    public void SetActorEditMode(bool isActorMode, uint worldLine = 0, bool is2D = false)
     {
         _isActorEditMode = isActorMode;
+        _isActor2DMode   = is2D;
         _activeWorldLine = worldLine;
         ActorToolbar.Visibility = isActorMode ? Visibility.Visible : Visibility.Collapsed;
         ActorToolbarRow.Height  = isActorMode ? new GridLength(28) : new GridLength(0);
@@ -133,7 +139,9 @@ public partial class HierarchyPanel : UserControl
             _pendingActorRenameAfterAdd = true;
             _preAddNodeIds = GetAllNodes(_roots).Select(n => n.Id).ToHashSet();
         }
-        _runtime.SendToRuntime($"ADD_ACTOR:{_activeWorldLine},{parentId}");
+        // 2D アクター編集中は ADD_ACTOR_2D を使う
+        var cmd = _isActor2DMode ? "ADD_ACTOR_2D" : "ADD_ACTOR";
+        _runtime.SendToRuntime($"{cmd}:{_activeWorldLine},{parentId}");
     }
 
     // ── ランタイム接続 ────────────────────────────────────────
@@ -543,12 +551,14 @@ public partial class HierarchyPanel : UserControl
     private void OnAddChildActorMenu(object sender, RoutedEventArgs e)
     {
         if (_runtime is null || _rightClickedNode is null) return;
-        _runtime.SendToRuntime($"ADD_ACTOR:{_activeWorldLine},{_rightClickedNode.Id}");
+        var cmd = _isActor2DMode ? "ADD_ACTOR_2D" : "ADD_ACTOR";
+        _runtime.SendToRuntime($"{cmd}:{_activeWorldLine},{_rightClickedNode.Id}");
     }
 
     private void OnAddRootActorMenu(object sender, RoutedEventArgs e)
     {
-        _runtime?.SendToRuntime($"ADD_ACTOR:{_activeWorldLine},-1");
+        var cmd = _isActor2DMode ? "ADD_ACTOR_2D" : "ADD_ACTOR";
+        _runtime?.SendToRuntime($"{cmd}:{_activeWorldLine},-1");
     }
 
     private void OnHierarchyCopy(object sender, RoutedEventArgs e)

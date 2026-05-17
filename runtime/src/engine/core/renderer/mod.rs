@@ -18,7 +18,7 @@ pub use gpu_resources::{GpuTexture, GpuMaterial, GpuPrimitive, GpuMesh, GpuModel
                         extract_frustum_planes, test_aabb_frustum, NUM_LODS};
 pub use pipeline::{MeshPipeline, SkinnedMeshPipeline, UnlitPipeline, CullPipeline, DrawPipelines,
                    SkinComputePipeline, IdPassPipeline, OutlinePipeline, DepthPrepassPipelines,
-                   SpritePipeline};
+                   SpritePipeline, CanvasIdPipeline, CanvasIdUniform};
 
 // ============================================================
 //  Renderer 本体
@@ -387,6 +387,43 @@ impl<'r> RenderFrame<'r> {
                 }),
                 // ステンシルを 0 にクリア。draw_model_indirect が 1 を書き込み、
                 // draw_outline が 0 の箇所（シルエット外側）のみ描画する。
+                stencil_ops: Some(wgpu::Operations {
+                    load:  wgpu::LoadOp::Clear(0),
+                    store: wgpu::StoreOp::Store,
+                }),
+            }),
+            occlusion_query_set: None,
+            timestamp_writes:    None,
+        })
+    }
+
+    /// キャンバスオーバーレイパスを開始する。
+    ///
+    /// カラーバッファを保持（3D シーンを維持）しつつ深度バッファのみクリアして、
+    /// 2D キャンバス要素（スプライト・ギズモ等）を常に前面へ描画する。
+    /// begin_render_pass より後に呼ぶこと。
+    pub fn begin_canvas_overlay_pass<'f>(&'f mut self) -> wgpu::RenderPass<'f>
+    where
+        'r: 'f,
+    {
+        self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("Canvas Overlay Pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view:           &self.color_view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    // 3D シーンのカラーを保持する（クリアしない）
+                    load:  wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: self.depth_view,
+                depth_ops: Some(wgpu::Operations {
+                    // 深度をクリアして 2D 要素を必ず前面描画
+                    load:  wgpu::LoadOp::Clear(1.0),
+                    store: wgpu::StoreOp::Store,
+                }),
                 stencil_ops: Some(wgpu::Operations {
                     load:  wgpu::LoadOp::Clear(0),
                     store: wgpu::StoreOp::Store,

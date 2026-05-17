@@ -25,11 +25,11 @@ use crate::engine::core::renderer::Renderer;
 use crate::engine::core::window::{create_window, WindowConfig};
 use crate::engine::methods::drawer::{
     DrawContext, CameraBuffer, CameraUniform,
-    draw_model_indirect, draw_id_pass,
+    draw_model_indirect, draw_id_pass, draw_canvas_id_items, prepare_canvas_id_bg,
     draw_outline_multi, draw_stencil_mask_multi,
     extract_frustum_planes, IdBuffer, GizmoBatch, draw_gizmo_batch,
     LineBatch, draw_line_batch,
-    load_sprite_texture, prepare_sprites, draw_sprites, GpuSpriteTexture,
+    load_sprite_texture, prepare_sprites_from_mats, draw_sprites, GpuSpriteTexture,
 };
 use crate::engine::core::app_base::undo::{
     SelectionCommand, ActorGroupTransformCommand, MultiTransformCommand,
@@ -47,10 +47,16 @@ use super::{
     collect_mcs_in_world_line,
     collect_canvas_actors_in_rect,
     collect_child_actor_mc_starts,
+    canvas_anchor_offset_for_dfs,
     world_to_screen,
     camera_grab_start, camera_grab_end,
     apply_window_clamp, release_window_clamp,
 };
+
+/// キャンバス座標（ピクセル）→ 3D ワールド座標の変換スケール係数。
+/// ワールドスペースモード時に CanvasTransform 座標をワールド空間へスケールするために使う。
+/// 例: position=100px → 1.0 ワールドユニット
+const CANVAS_WORLD_SCALE: f32 = 1.0 / 100.0;
 
 impl ApplicationHandler for App {
     /// ウィンドウ・レンダラーを初期化し、IPC へ READY を通知する。
@@ -96,9 +102,12 @@ impl ApplicationHandler for App {
             window.set_visible(true);
         }
 
+        let canvas_overlay_camera_buf = ctx.create_camera_buffer();
+
         self.draw_ctx      = Some(ctx);
         self.scene         = Some(scene);
         self.camera_buf    = Some(camera_buf);
+        self.canvas_overlay_camera_buf = Some(canvas_overlay_camera_buf);
         self.id_buffer     = Some(id_buffer);
         self.line_model_buf = Some(line_model_buf);
 
@@ -338,9 +347,14 @@ impl ApplicationHandler for App {
                         } else if self.gizmo_drag.is_none() && self.lmb_press_pos.is_some()
                             && (self.mode == RuntimeMode::Edit || self.paused)
                         {
-                            // クリック: ID ピックをスケジュール
                             if let Some((cx, cy)) = self.last_cursor_pos {
-                                self.pending_pick = Some((cx as u32, cy as u32));
+                                if self.actor_edit_canvas_wls.contains(&self.active_world_line) {
+                                    // 2D アクター編集タブ: GPU ID パス不要、CPU OBB ピックを即時実行する
+                                    self.pick_2d_canvas(cx, cy);
+                                } else {
+                                    // クリック: GPU ID ピックをスケジュール
+                                    self.pending_pick = Some((cx as u32, cy as u32));
+                                }
                             }
                         }
                         self.lmb_press_pos = None;
@@ -711,8 +725,11 @@ impl ApplicationHandler for App {
                         let vp_w = ws.width  as f32;
                         let vp_h = ws.height as f32;
                         let wl_drag = self.active_world_line;
-                        let (ro, rd) = if self.canvas_world_lines.contains(&wl_drag) {
-                            // 2D ortho: スクリーン座標を直接ワールド XY に変換するレイ
+                        let in_editor_drag = self.mode == RuntimeMode::Edit || self.paused;
+                        let use_ss_drag = self.canvas_screen_space_overlay || !in_editor_drag
+                            || self.actor_edit_canvas_wls.contains(&wl_drag);
+                        let (ro, rd) = if self.canvas_world_lines.contains(&wl_drag) && use_ss_drag {
+                            // スクリーンスペース: 2D ortho レイ
                             let cam_2d = self.canvas_cameras.get(&wl_drag);
                             let pan_x  = cam_2d.map(|c| c.pan_x).unwrap_or(0.0);
                             let pan_y  = cam_2d.map(|c| c.pan_y).unwrap_or(0.0);
@@ -720,6 +737,7 @@ impl ApplicationHandler for App {
                             let half_w = half_h * (vp_w / vp_h);
                             screen_to_ray_ortho(cx, cy, vp_w, vp_h, pan_x, pan_y, half_w, half_h)
                         } else {
+                            // 3D perspective（通常 3D またはワールドスペースキャンバス）
                             let cam_v = self.camera.position();
                             let cam   = [cam_v.x, cam_v.y, cam_v.z];
                             let view  = self.camera.view_matrix();
@@ -786,12 +804,24 @@ impl ApplicationHandler for App {
                                                 .map(|a| a.entity)
                                         };
                                         if let Some(entity) = entity {
+                                            // new_mat の平行移動成分はアンカーオフセット込みのgizmo位置を基点とするため、
+                                            // CanvasTransform.position（アンカーオフセットなし）に戻すためにオフセットを引く。
+                                            let anchor_off = canvas_anchor_offset_for_dfs(
+                                                &scene.actors, &scene.world, wl, drag_dfs,
+                                            );
                                             if let Some(ct) = scene.world.get_mut::<CanvasTransform>(entity) {
                                                 // centroid_mat は単位回転・スケール+平行移動のみなので
                                                 // new_mat はツールモードに応じた変化のみを持つ。
                                                 // モードごとに変化する成分だけを更新し、他はドラッグ開始値を維持する。
-                                                ct.position[0] = new_mat[0][3];
-                                                ct.position[1] = new_mat[1][3];
+                                                let in_editor_c = self.mode == RuntimeMode::Edit || self.paused;
+                                                let use_ss_c = self.canvas_screen_space_overlay || !in_editor_c
+                                                    || self.actor_edit_canvas_wls.contains(&wl);
+                                                // ワールドスペースでは平行移動をキャンバスピクセルに変換し、
+                                                // Y 軸を再反転（レンダリング時に反転済みのため元に戻す）
+                                                let pos_inv_scale = if use_ss_c { 1.0 } else { 1.0 / CANVAS_WORLD_SCALE };
+                                                let y_inv_sign = if use_ss_c { 1.0f32 } else { -1.0 };
+                                                ct.position[0] = new_mat[0][3] * pos_inv_scale - anchor_off[0];
+                                                ct.position[1] = new_mat[1][3] * pos_inv_scale * y_inv_sign - anchor_off[1];
                                                 match self.tool_mode {
                                                     ToolMode::Rotate => {
                                                         // new_mat = Rz(delta) * T(pos) なので col0 の XY 角度がデルタ回転
@@ -802,7 +832,7 @@ impl ApplicationHandler for App {
                                                         ct.scale = start_ct.scale;
                                                     }
                                                     ToolMode::Scale => {
-                                                        // new_mat の各列の長さ = centroid 起点のスケール係数
+                                                        // new_mat の各列の長さ = centroid 起点のスケール係数（無次元）
                                                         // start_scale × factor で新しい絶対スケールを得る
                                                         let sx = (new_mat[0][0]*new_mat[0][0] + new_mat[1][0]*new_mat[1][0]).sqrt();
                                                         let sy = (new_mat[0][1]*new_mat[0][1] + new_mat[1][1]*new_mat[1][1]).sqrt();
@@ -924,10 +954,23 @@ impl ApplicationHandler for App {
                 let in_editor = self.mode == RuntimeMode::Edit || self.paused;
                 // 現在の世界線が 2D キャンバスモードかどうか
                 let is_canvas = self.canvas_world_lines.contains(&self.active_world_line);
+                // スクリーンスペースモード:
+                //   - チェックボックス ON: スクリーンスペース
+                //   - プレイ中: 常にスクリーンスペース
+                //   - アクター編集タブの 2D 世界線: 常にスクリーンスペース（編集パネルは従来通り）
+                let use_screen_space = self.canvas_screen_space_overlay || !in_editor
+                    || self.actor_edit_canvas_wls.contains(&self.active_world_line);
+
+                // アクター編集タブの 2D キャンバスのみ 2D オルソカメラを使用する。
+                // シーン上のキャンバスは screenSpace チェック ON でも 3D カメラを維持する。
+                let is_actor_edit_2d = self.actor_edit_canvas_wls.contains(&self.active_world_line);
+                // シーンのスクリーンスペースキャンバス: 3D メインカメラ + 2D オーバーレイ合成。
+                // アクター編集タブは camera_buf 自体が 2D なのでオーバーレイ不要。
+                let scene_canvas_ss = is_canvas && use_screen_space && !is_actor_edit_2d;
 
                 if in_editor {
-                    if is_canvas {
-                        // 2D キャンバスモード: RMB ドラッグで XY パン、スクロールでズーム
+                    if is_actor_edit_2d {
+                        // 2D アクター編集タブ: RMB ドラッグで XY パン、スクロールでズーム。
                         if self.cam_input.rmb {
                             let ws = self.window.as_ref().map(|w| {
                                 let s = w.inner_size();
@@ -952,7 +995,7 @@ impl ApplicationHandler for App {
                                 .clamp(0.5, 1000.0);
                         }
                     } else {
-                        // 3D モード: 通常のデバッグカメラ更新
+                        // 3D モード（ワールドスペースキャンバス含む）: 通常のデバッグカメラ更新
                         self.camera.update(&self.cam_input, ctx.delta_time);
                     }
                 }
@@ -976,8 +1019,10 @@ impl ApplicationHandler for App {
                 if let (Some(scene), Some(camera_buf), Some(queue)) =
                     (&mut self.scene, &self.camera_buf, queue)
                 {
-                    // 2D キャンバスモードと 3D モードでビュー行列・射影行列を切り替える
-                    let (view, proj, cam_pos_arr) = if is_canvas {
+                    // 2D アクター編集タブのみ 2D オルソカメラ。
+                    // シーン（canvas 有無問わず）・3D アクター編集タブ: パースペクティブカメラ。
+                    // Y-down 座標系: bottom=+half_h（スクリーン下）, top=-half_h（スクリーン上）。
+                    let (view, proj, cam_pos_arr) = if is_actor_edit_2d {
                         let cam_2d = self.canvas_cameras
                             .entry(self.active_world_line)
                             .or_insert_with(CanvasCameraData::default);
@@ -991,8 +1036,7 @@ impl ApplicationHandler for App {
                         let center = Vector3::new(cam_2d.pan_x, cam_2d.pan_y, 0.0);
                         let up     = Vector3::new(0.0, 1.0, 0.0);
                         let v = Mat4x4::look_at_lh(eye, center, up);
-                        // Y-down 座標系: bottom=+half_h, top=-half_h にすることで
-                        // ワールド Y の正方向がスクリーン下向きになる（UI/キャンバス標準規則）
+                        // Y-down: bottom=+half_h, top=-half_h でワールド Y 正方向 = スクリーン下
                         let p = Mat4x4::orthographic_lh(-half_w, half_w, half_h, -half_h, 0.0, 200.0);
                         (v, p, [cam_2d.pan_x, cam_2d.pan_y, -100.0])
                     } else {
@@ -1016,6 +1060,34 @@ impl ApplicationHandler for App {
                         _pad2:      [0.0; 2],
                     });
 
+                    // シーンスクリーンスペース専用: 2D オルソオーバーレイカメラを更新する。
+                    // 3D メインカメラの上に 2D キャンバス要素を重ねて描画するために使う。
+                    // アクター編集タブは camera_buf 自体が 2D なのでここでは更新しない。
+                    if scene_canvas_ss {
+                        if let Some(canvas_cam_buf) = &self.canvas_overlay_camera_buf {
+                            let (vp_w, vp_h) = window_size.map_or(
+                                (1280.0f32, 720.0f32),
+                                |s| (s.width as f32, s.height as f32),
+                            );
+                            let half_h = vp_h / 2.0;
+                            let half_w = vp_w / 2.0;
+                            let eye_c    = Vector3::new(0.0, 0.0, -100.0);
+                            let center_c = Vector3::new(0.0, 0.0, 0.0);
+                            let up_c     = Vector3::new(0.0, 1.0, 0.0);
+                            let cv  = Mat4x4::look_at_lh(eye_c, center_c, up_c);
+                            let cp2 = Mat4x4::orthographic_lh(-half_w, half_w, half_h, -half_h, 0.0, 200.0);
+                            let cvp = cp2 * cv;
+                            canvas_cam_buf.update(&queue, &CameraUniform {
+                                view_proj:  cvp.transpose().data,
+                                view:       cv.transpose().data,
+                                position:   [0.0, 0.0, -100.0],
+                                _pad:       0.0,
+                                resolution: [vp_w, vp_h],
+                                _pad2:      [0.0; 2],
+                            });
+                        }
+                    }
+
                     let frustum_planes = extract_frustum_planes(&view_proj.data);
                     let camera_pos     = cam_pos_arr;
 
@@ -1037,33 +1109,38 @@ impl ApplicationHandler for App {
                 } else { None };
 
                 // ── ドラッグホバープレビュー位置の更新（レンダー前）──────────
-                // GPU リードバックを使わずレイキャストで直接ワールド座標を算出する。
-                // y=0 平面との交差を優先し、カメラが平行または後方なら DEFAULT_DIST 先。
+                // 2D キャンバスモードの場合、アクターの配置位置は CanvasTransform で固定のため
+                // 3D プレビュー球体は表示しない。3D モードのみレイキャストで位置を算出する。
                 if let Some((hsx, hsy)) = self.pending_drop_hover.take() {
-                    const DEFAULT_DIST: f32 = 10.0;
-                    if let Some(ws) = self.window.as_ref().map(|w| w.inner_size()) {
-                        let cam_v = self.camera.position();
-                        let cam   = [cam_v.x, cam_v.y, cam_v.z];
-                        let view  = self.camera.view_matrix();
-                        let proj  = self.camera.projection_matrix();
-                        let (_ro, rd) = screen_to_ray(
-                            hsx as f32, hsy as f32,
-                            ws.width as f32, ws.height as f32,
-                            &view.data, &proj.data, cam,
-                        );
-                        // y=0 平面との交差を試みる（地面への自然な配置）
-                        let pos = if rd[1].abs() > 0.001 {
-                            let t = -cam[1] / rd[1];
-                            if t > 0.5 {
-                                [cam[0]+rd[0]*t, 0.0, cam[2]+rd[2]*t]
+                    if !is_canvas {
+                        // 3D モード: GPU リードバックを使わずレイキャストでワールド座標を算出する。
+                        // y=0 平面との交差を優先し、カメラが平行または後方なら DEFAULT_DIST 先。
+                        const DEFAULT_DIST: f32 = 10.0;
+                        if let Some(ws) = self.window.as_ref().map(|w| w.inner_size()) {
+                            let cam_v = self.camera.position();
+                            let cam   = [cam_v.x, cam_v.y, cam_v.z];
+                            let view  = self.camera.view_matrix();
+                            let proj  = self.camera.projection_matrix();
+                            let (_ro, rd) = screen_to_ray(
+                                hsx as f32, hsy as f32,
+                                ws.width as f32, ws.height as f32,
+                                &view.data, &proj.data, cam,
+                            );
+                            // y=0 平面との交差を試みる（地面への自然な配置）
+                            let pos = if rd[1].abs() > 0.001 {
+                                let t = -cam[1] / rd[1];
+                                if t > 0.5 {
+                                    [cam[0]+rd[0]*t, 0.0, cam[2]+rd[2]*t]
+                                } else {
+                                    [cam[0]+rd[0]*DEFAULT_DIST, cam[1]+rd[1]*DEFAULT_DIST, cam[2]+rd[2]*DEFAULT_DIST]
+                                }
                             } else {
                                 [cam[0]+rd[0]*DEFAULT_DIST, cam[1]+rd[1]*DEFAULT_DIST, cam[2]+rd[2]*DEFAULT_DIST]
-                            }
-                        } else {
-                            [cam[0]+rd[0]*DEFAULT_DIST, cam[1]+rd[1]*DEFAULT_DIST, cam[2]+rd[2]*DEFAULT_DIST]
-                        };
-                        self.drop_preview_pos = Some(pos);
+                            };
+                            self.drop_preview_pos = Some(pos);
+                        }
                     }
+                    // 2D キャンバスモード: pending_drop_hover は消費されるが drop_preview_pos は更新しない
                 }
 
                 // ピック要求を取り出す（描画ブロック内で使用）
@@ -1079,6 +1156,12 @@ impl ApplicationHandler for App {
                             .collect()
                     } else { vec![] }
                 };
+                // MC インスタンスの総数（キャンバス ID オフセット計算用）
+                // 全 MC の (base + count) の最大値 = 割り当て済み ID の上限
+                let mc_total_instances: u32 = wl_mc_pick_infos.iter()
+                    .map(|&(base, _, _, count)| base + count as u32)
+                    .max()
+                    .unwrap_or(0);
 
                 if let (Some(renderer), Some(scene), Some(camera_buf), Some(draw_ctx)) =
                     (&mut self.renderer, &self.scene, &self.camera_buf, &self.draw_ctx)
@@ -1115,19 +1198,15 @@ impl ApplicationHandler for App {
                                 && self.tool_mode != ToolMode::Select
                             {
                                 gizmo_pos.map(|pos| {
-                                    // 2D/3D でギズモ半径とカメラ位置を切り替える
-                                    let (radius, cam_pos_arr) = if is_canvas {
-                                        // 2D ortho: 表示高さの 15% をギズモ半径とする
+                                    // 2D アクター編集タブ / それ以外でギズモ半径を切り替える
+                                    let (radius, cam_pos_arr) = if is_actor_edit_2d {
+                                        // 2D スクリーンスペース: ビューポート高さの 15% をギズモ半径とする。
+                                        // ortho_half_h = vp_h/2 なので * 0.15 = vp_h * 0.075 px
                                         let cam_2d = self.canvas_cameras.get(&self.active_world_line);
                                         let r = cam_2d.map(|c| c.ortho_half_h * 0.15).unwrap_or(54.0);
-                                        let cp = [
-                                            cam_2d.map(|c| c.pan_x).unwrap_or(0.0),
-                                            cam_2d.map(|c| c.pan_y).unwrap_or(0.0),
-                                            -100.0f32,
-                                        ];
-                                        (r, cp)
+                                        (r, [0.0f32, 0.0, -100.0])
                                     } else {
-                                        // 3D perspective: 距離と FOV からギズモ半径を計算する
+                                        // 3D perspective（通常3D または ワールドスペースキャンバス）: 距離と FOV からギズモ半径を計算する
                                         let cam_pos = self.camera.position();
                                         let d = [pos[0]-cam_pos.x, pos[1]-cam_pos.y, pos[2]-cam_pos.z];
                                         let dist = (d[0]*d[0]+d[1]*d[1]+d[2]*d[2]).sqrt().max(0.01);
@@ -1174,9 +1253,9 @@ impl ApplicationHandler for App {
                                         (px.min(cx), py.max(cy)), // BL
                                     ];
                                     let mut wp = [[0.0f32; 3]; 4];
-                                    if is_canvas {
-                                        // 2D ortho: スクリーン座標をワールド XY に直接変換する
-                                        // Y-down 規則（bottom=+half_h, top=-half_h）に合わせる
+                                    if is_actor_edit_2d || scene_canvas_ss {
+                                        // 2D スクリーンスペース（アクター編集タブ・シーンSS共通）:
+                                        // 2D ortho でスクリーン座標をキャンバス XY に変換する
                                         let cam_2d = self.canvas_cameras.get(&self.active_world_line);
                                         let pan_x  = cam_2d.map(|c| c.pan_x).unwrap_or(0.0);
                                         let pan_y  = cam_2d.map(|c| c.pan_y).unwrap_or(0.0);
@@ -1234,16 +1313,17 @@ impl ApplicationHandler for App {
                             } else { None };
 
                             // グリッド描画バッチ（エディタモード + show_grid のみ）
-                            // 3D アクター編集モードはグリッドを常時表示。
-                            // 2D キャンバスモードは show_grid フラグに従う。
-                            // 2D キャンバスモードは XY 平面グリッド（Z=0）、3D は XZ 平面グリッド（Y=0）
-                            let grid_gpu_batch = if in_editor && (self.show_grid || (self.active_world_line != 0 && !is_canvas)) {
+                            // アクター編集タブの 2D キャンバス: XY 平面グリッド（常時表示）
+                            // その他（シーン上のキャンバス含む 3D 系）: XZ 平面グリッド
+                            // シーン上に canvas があっても 3D グリッドを維持する（is_actor_edit_canvas で判定）
+                            let is_actor_edit_canvas = is_canvas && self.actor_edit_canvas_wls.contains(&self.active_world_line);
+                            let grid_gpu_batch = if in_editor && (self.show_grid || (self.active_world_line != 0 && !is_actor_edit_canvas)) {
                                 let mut lb = LineBatch::new();
-                                // 2D/3D モードで色を分ける
-                                // 2D: minor を非常に薄く、major を中程度の明度で明確に区別する
-                                // 3D 編集: 紺背景に映える青系
+                                // モード別グリッド色
+                                // 2D アクター編集: 薄い青系（mine: 薄く, major: 中程度）
+                                // 3D アクター編集: 紺背景に映える青系
                                 // 3D シーン: ダークグレー
-                                let (minor, major): ([f32; 4], [f32; 4]) = if is_canvas {
+                                let (minor, major): ([f32; 4], [f32; 4]) = if is_actor_edit_canvas {
                                     ([0.22, 0.25, 0.40, 0.20], [0.32, 0.40, 0.60, 0.55])
                                 } else if self.active_world_line != 0 {
                                     ([0.22, 0.25, 0.40, 1.0], [0.32, 0.36, 0.55, 1.0])
@@ -1252,7 +1332,7 @@ impl ApplicationHandler for App {
                                 };
                                 let ax_x: [f32; 4] = [0.60, 0.15, 0.15, 0.90];
 
-                                if is_canvas {
+                                if is_actor_edit_canvas {
                                     // 2D モード: XY 平面グリッド（Z=0）
                                     // カメラ追従 + 可視範囲に応じたステップ自動選択（Y-down 座標系）
                                     // Y 軸（X=0 の縦線）: 緑、X 軸（Y=0 の横線）: 赤
@@ -1433,53 +1513,202 @@ impl ApplicationHandler for App {
                             let sprite_prepared = if in_editor && is_canvas {
                                 if let Some(scene) = &self.scene {
                                     let wl = self.active_world_line;
+                                    // ワールドスペース時はキャンバス座標をワールドユニットへスケールする
+                                    let canvas_scale = if use_screen_space { 1.0f32 } else { CANVAS_WORLD_SCALE };
 
                                     // スプライト情報収集（再帰的にアクターツリーを走査）
+                                    //
+                                    // スケールなし累積行列(world_rs)と累積スケール(cumul_scale)を分離管理し、
+                                    // CanvasComponent のスケールモードに応じて子への伝播を制御する。
+                                    //   scale_transform=false → 子の位置はスケール非依存（絶対座標）
+                                    //   scale_size=false      → 子のサイズはスケール非依存（絶対サイズ）
+                                    //   回転は常に追従する。
                                     fn collect_sprite_items(
-                                        actors:   &[crate::engine::structs::objects::Actor],
-                                        world:    &crate::engine::ecs::World,
-                                        wl:       u32,
-                                        draw_ctx: &DrawContext,
-                                        out:      &mut Vec<(CanvasTransform, f32, f32, [f32; 4], Option<std::sync::Arc<GpuSpriteTexture>>)>,
+                                        actors:             &[crate::engine::structs::objects::Actor],
+                                        world:              &crate::engine::ecs::World,
+                                        wl:                 u32,
+                                        draw_ctx:           &DrawContext,
+                                        // 親アクターの CanvasComponent サイズ（anchor 計算用）
+                                        parent_canvas_size: Option<[f32; 2]>,
+                                        // 親のワールド行列（スケールなし：回転+平行移動のみ）
+                                        parent_world_rs:    [[f32; 4]; 4],
+                                        // 親の累積スケール。スケールモードに応じて子に伝播するかを制御する。
+                                        parent_cumul_scale: [f32; 2],
+                                        // 直前の親 CanvasComponent のスケールモード (scale_transform, scale_size)
+                                        parent_scale_mode:  (bool, bool),
+                                        // ワールドスペース変換スケール（1.0=スクリーンスペース、CANVAS_WORLD_SCALE=ワールドスペース）
+                                        canvas_scale:       f32,
+                                        // Y 軸符号（スクリーンスペース=1.0、ワールドスペース=-1.0で Y を反転）
+                                        y_sign:             f32,
+                                        // シーンスクリーンスペースモード時のビューポートサイズ（ルートアンカー計算用）
+                                        // None = アクター編集タブまたはワールドスペース
+                                        viewport_size:      Option<[f32; 2]>,
+                                        out:                &mut Vec<([[f32; 4]; 4], [f32; 4], Option<std::sync::Arc<GpuSpriteTexture>>)>,
                                     ) {
+                                        let (sm_transform, sm_size) = parent_scale_mode;
+
                                         for actor in actors {
                                             if actor.world_line != wl { continue; }
                                             let ct_opt = world.get::<CanvasTransform>(actor.entity).cloned();
                                             if let Some(ct) = ct_opt {
+                                                // anchor オフセット計算:
+                                                // ルートレベル（parent_canvas_size=None）かつシーンSSモードでは
+                                                // ビューポートを仮想親として扱い、ortho 原点（画面中央）からの
+                                                // オフセットを計算する。それ以外は親キャンバスサイズ基準。
+                                                let (anchor_off_x, anchor_off_y) = if parent_canvas_size.is_none() {
+                                                    if let Some([vw, vh]) = viewport_size {
+                                                        // 画面中央が ortho 原点 → anchor=0,0 で画面左上に寄せるため -vp/2 オフセット
+                                                        (vw * ct.anchor[0] - vw / 2.0,
+                                                         vh * ct.anchor[1] - vh / 2.0)
+                                                    } else {
+                                                        (0.0, 0.0)
+                                                    }
+                                                } else {
+                                                    (parent_canvas_size.map_or(0.0, |[pw, _]| pw * ct.anchor[0] * parent_cumul_scale[0]),
+                                                     parent_canvas_size.map_or(0.0, |[_, ph]| ph * ct.anchor[1] * parent_cumul_scale[1]))
+                                                };
+
+                                                // 有効位置（スケールモードに応じて位置にスケールを乗算）
+                                                let eff_pos = if sm_transform {
+                                                    [ct.position[0] * parent_cumul_scale[0] + anchor_off_x,
+                                                     ct.position[1] * parent_cumul_scale[1] + anchor_off_y]
+                                                } else {
+                                                    [ct.position[0] + anchor_off_x,
+                                                     ct.position[1] + anchor_off_y]
+                                                };
+
+                                                // 有効 CanvasTransform（位置を調整済み・scaleは自身のもの・anchorは適用済み）
+                                                let eff_ct = CanvasTransform {
+                                                    position: eff_pos,
+                                                    rotation: ct.rotation,
+                                                    scale:    ct.scale,
+                                                    pivot:    ct.pivot,
+                                                    anchor:   [0.0, 0.0],
+                                                };
+
+                                                // 自アクターの CanvasComponent を先に取得する。
+                                                // pivot はノーマライズ値（[0,1]）のため、
+                                                // self_world_rs の計算に実際のキャンバスサイズが必要。
+                                                let my_canvas = actor.slots().iter()
+                                                    .filter(|s| s.kind == ComponentKind::Canvas)
+                                                    .find_map(|s| world.get::<CanvasComponent>(s.entity));
+                                                // sm_size による拡縮を反映した有効キャンバスサイズ
+                                                let (my_eff_w, my_eff_h) = my_canvas.map(|cc| (
+                                                    cc.width  * if sm_size { parent_cumul_scale[0] } else { 1.0 },
+                                                    cc.height * if sm_size { parent_cumul_scale[1] } else { 1.0 },
+                                                )).unwrap_or((1.0, 1.0));
+
+                                                // 自分のワールド行列（スケールなし）を親 world_rs と合成。
+                                                // to_mat4_sized でキャンバスの実サイズを渡し、
+                                                // pivot オフセットを正しく計算する。
+                                                let self_world_rs = mat4x4_mul(
+                                                    parent_world_rs,
+                                                    CanvasTransform { scale: [1.0, 1.0], ..eff_ct.clone() }
+                                                        .to_mat4_sized(my_eff_w, my_eff_h),
+                                                );
+
                                                 for slot in actor.slots() {
                                                     if slot.kind == ComponentKind::Sprite {
                                                         if let Some(sc) = world.get::<SpriteComponent>(slot.entity) {
-                                                            // テクスチャをキャッシュから取得または新規ロード
+                                                            // サイズスケール（scale_size モードに応じて）
+                                                            let eff_w = sc.width  * if sm_size { parent_cumul_scale[0] } else { 1.0 };
+                                                            let eff_h = sc.height * if sm_size { parent_cumul_scale[1] } else { 1.0 };
+                                                            // スプライト行優先行列（サイズ付き）を親 world_rs と合成し GPU 列優先に変換する
+                                                            // canvas_scale でキャンバス座標→ワールド座標へスケールする（WS=1 ならそのまま）
+                                                            let sprite_world = mat4x4_mul(parent_world_rs, eff_ct.to_sprite_mat4(eff_w, eff_h));
+                                                            // y_sign でキャンバス Y 軸（下向き）→ ワールド Y 軸（上向き）を反転する
+                                                            // スクリーンスペース: y_sign=1.0（反転なし）
+                                                            // ワールドスペース:   y_sign=-1.0（Y 反転）
+                                                            let csy = canvas_scale * y_sign;
+                                                            let gpu_mat = [
+                                                                [sprite_world[0][0] * canvas_scale, sprite_world[1][0] * csy, 0.0, 0.0],
+                                                                [sprite_world[0][1] * canvas_scale, sprite_world[1][1] * csy, 0.0, 0.0],
+                                                                [0.0,                               0.0,                     1.0, 0.0],
+                                                                [sprite_world[0][3] * canvas_scale, sprite_world[1][3] * csy, 0.0, 1.0],
+                                                            ];
+                                                            // テクスチャをキャッシュから取得または新規ロード。
+                                                            // キャッシュ値: Some(arc)=成功 / None=失敗済み（毎フレームのリトライ・ログ爆発防止）
                                                             let tex = if sc.texture_path.is_empty() {
                                                                 None
                                                             } else {
+                                                                let path_str = sc.texture_path.clone();
                                                                 let mut cache = draw_ctx.sprite_tex_cache.borrow_mut();
-                                                                if !cache.contains_key(&sc.texture_path) {
+                                                                if !cache.contains_key(&path_str) {
+                                                                    // 初回のみロード試行（成否に関わらずキャッシュに記録）
                                                                     let loaded = load_sprite_texture(
                                                                         &draw_ctx.device,
                                                                         &draw_ctx.queue,
-                                                                        &sc.texture_path,
+                                                                        &path_str,
                                                                         &draw_ctx.pipelines.sprite.tex_bgl,
                                                                         &draw_ctx.pipelines.sprite.sampler,
                                                                     );
-                                                                    if let Some(t) = loaded {
-                                                                        cache.insert(sc.texture_path.clone(), t);
-                                                                    }
+                                                                    // None（失敗）もキャッシュに入れて次フレームからスキップ
+                                                                    cache.insert(path_str.clone(), loaded);
                                                                 }
-                                                                cache.get(&sc.texture_path).cloned()
+                                                                // Some(Some(arc))=成功 / Some(None)=失敗 → flatten で None に統一
+                                                                cache.get(&sc.texture_path).and_then(|e| e.clone())
                                                             };
-                                                            out.push((ct.clone(), sc.width, sc.height, sc.color, tex));
+                                                            out.push((gpu_mat, sc.color, tex));
                                                         }
                                                     }
                                                 }
+
+                                                // my_canvas を再利用して子への CanvasComponent 情報を構築する
+                                                let child_info = my_canvas
+                                                    .map(|cc| ([cc.width, cc.height], (cc.scale_transform, cc.scale_size), cc.auto_scale));
+
+                                                let child_canvas_size  = child_info.map(|(sz, _, _)| sz);
+                                                let child_scale_mode   = child_info.map(|(_, sm, _)| sm).unwrap_or((false, false));
+                                                // ルートキャンバスかつ auto_scale=true のとき、ビューポートサイズ/参照サイズ で自動スケールする
+                                                let auto_scale_factor = if parent_canvas_size.is_none() {
+                                                    if let (Some([vw, vh]), Some((_, _, true))) = (viewport_size, child_info) {
+                                                        [vw / my_eff_w, vh / my_eff_h]
+                                                    } else {
+                                                        [1.0f32, 1.0]
+                                                    }
+                                                } else {
+                                                    [1.0f32, 1.0]
+                                                };
+                                                // 子への累積スケール（このアクターの scale_transform に応じて自分のスケールを積む）
+                                                let child_cumul_scale = if child_scale_mode.0 {
+                                                    [parent_cumul_scale[0] * ct.scale[0] * auto_scale_factor[0],
+                                                     parent_cumul_scale[1] * ct.scale[1] * auto_scale_factor[1]]
+                                                } else {
+                                                    // スケール伝播なし: auto_scale のみ適用
+                                                    [ct.scale[0] * auto_scale_factor[0],
+                                                     ct.scale[1] * auto_scale_factor[1]]
+                                                };
+                                                collect_sprite_items(
+                                                    &actor.children, world, wl, draw_ctx,
+                                                    child_canvas_size, self_world_rs,
+                                                    child_cumul_scale, child_scale_mode,
+                                                    canvas_scale, y_sign, viewport_size, out,
+                                                );
                                             }
-                                            collect_sprite_items(&actor.children, world, wl, draw_ctx, out);
                                         }
                                     }
 
+                                    // 単位行列・初期累積スケール（ルートレベル用）
+                                    const IDENTITY: [[f32; 4]; 4] = [
+                                        [1.0, 0.0, 0.0, 0.0],
+                                        [0.0, 1.0, 0.0, 0.0],
+                                        [0.0, 0.0, 1.0, 0.0],
+                                        [0.0, 0.0, 0.0, 1.0],
+                                    ];
+                                    // Y 軸符号とビューポートサイズを決定する
+                                    // シーン SS モード: ビューポートを仮想親としてアンカー計算・auto_scale に使う
+                                    let y_sign = if use_screen_space { 1.0f32 } else { -1.0 };
+                                    let is_scene_ss = use_screen_space && !self.actor_edit_canvas_wls.contains(&wl);
+                                    let vp_w = window_size.map_or(1280.0, |s| s.width  as f32);
+                                    let vp_h = window_size.map_or(720.0,  |s| s.height as f32);
+                                    let viewport_size = if is_scene_ss { Some([vp_w, vp_h]) } else { None };
                                     let mut items = Vec::new();
-                                    collect_sprite_items(&scene.actors, &scene.world, wl, draw_ctx, &mut items);
-                                    prepare_sprites(&draw_ctx.device, &draw_ctx.pipelines.sprite, &items)
+                                    collect_sprite_items(
+                                        &scene.actors, &scene.world, wl, draw_ctx,
+                                        None, IDENTITY, [1.0, 1.0], (false, false),
+                                        canvas_scale, y_sign, viewport_size, &mut items,
+                                    );
+                                    prepare_sprites_from_mats(&draw_ctx.device, &draw_ctx.pipelines.sprite, &items)
                                 } else { vec![] }
                             } else { vec![] };
 
@@ -1490,43 +1719,101 @@ impl ApplicationHandler for App {
                                     let wl = self.active_world_line;
                                     let mut lb = LineBatch::new();
                                     let rect_col: [f32; 4] = [0.85, 0.95, 1.0, 0.9];
+                                    // ワールドスペース時はキャンバス座標をワールドユニットへスケールする
+                                    let canvas_scale_rect = if use_screen_space { 1.0f32 } else { CANVAS_WORLD_SCALE };
 
+                                    // CanvasComponent / Sprite のアウトラインを再帰的に収集する。
+                                    // collect_sprite_items と同じスケールモード・累積行列の仕組みを使う。
                                     fn collect_canvas_rects(
-                                        actors:           &[crate::engine::structs::objects::Actor],
-                                        world:            &crate::engine::ecs::World,
-                                        wl:               u32,
-                                        lb:               &mut LineBatch,
-                                        col:              [f32; 4],
-                                        selected_dfs_ids: &[usize],
-                                        counter:          &mut u32,
+                                        actors:             &[crate::engine::structs::objects::Actor],
+                                        world:              &crate::engine::ecs::World,
+                                        wl:                 u32,
+                                        lb:                 &mut LineBatch,
+                                        col:                [f32; 4],
+                                        selected_dfs_ids:   &[usize],
+                                        counter:            &mut u32,
+                                        parent_canvas_size: Option<[f32; 2]>,
+                                        parent_world_rs:    [[f32; 4]; 4],
+                                        parent_cumul_scale: [f32; 2],
+                                        parent_scale_mode:  (bool, bool),
+                                        // ワールドスペース変換スケール
+                                        canvas_scale:       f32,
+                                        // Y 軸符号
+                                        y_sign:             f32,
+                                        // シーン SS モード時のビューポートサイズ
+                                        viewport_size:      Option<[f32; 2]>,
                                     ) {
+                                        let (sm_transform, sm_size) = parent_scale_mode;
+
                                         for actor in actors {
                                             if actor.world_line != wl { continue; }
-                                            // DFS ID を確定し、カウンターを進める
                                             let my_dfs = *counter as usize;
                                             *counter += 1;
 
-                                            // CanvasTransform を clone して borrow を解放してから
-                                            // CanvasComponent / SpriteComponent を別途 borrow する（同時 borrow 回避）
                                             let ct_opt = world.get::<CanvasTransform>(actor.entity).cloned();
                                             if let Some(ct) = ct_opt {
+                                                // anchor オフセット計算（collect_sprite_items と同じロジック）
+                                                let (anchor_off_x, anchor_off_y) = if parent_canvas_size.is_none() {
+                                                    if let Some([vw, vh]) = viewport_size {
+                                                        (vw * ct.anchor[0] - vw / 2.0,
+                                                         vh * ct.anchor[1] - vh / 2.0)
+                                                    } else {
+                                                        (0.0, 0.0)
+                                                    }
+                                                } else {
+                                                    (parent_canvas_size.map_or(0.0, |[pw, _]| pw * ct.anchor[0] * parent_cumul_scale[0]),
+                                                     parent_canvas_size.map_or(0.0, |[_, ph]| ph * ct.anchor[1] * parent_cumul_scale[1]))
+                                                };
+
+                                                // 有効位置（スケールモードに応じて）
+                                                let eff_pos = if sm_transform {
+                                                    [ct.position[0] * parent_cumul_scale[0] + anchor_off_x,
+                                                     ct.position[1] * parent_cumul_scale[1] + anchor_off_y]
+                                                } else {
+                                                    [ct.position[0] + anchor_off_x,
+                                                     ct.position[1] + anchor_off_y]
+                                                };
+                                                let eff_ct = CanvasTransform {
+                                                    position: eff_pos,
+                                                    rotation: ct.rotation,
+                                                    scale:    ct.scale,
+                                                    pivot:    ct.pivot,
+                                                    anchor:   [0.0, 0.0],
+                                                };
+
+                                                // pivot はノーマライズ値のため実際のキャンバスサイズで補正する
+                                                let my_canvas_r = actor.slots().iter()
+                                                    .filter(|s| s.kind == ComponentKind::Canvas)
+                                                    .find_map(|s| world.get::<CanvasComponent>(s.entity));
+                                                let (my_eff_w_r, my_eff_h_r) = my_canvas_r.map(|cc| (
+                                                    cc.width  * if sm_size { parent_cumul_scale[0] } else { 1.0 },
+                                                    cc.height * if sm_size { parent_cumul_scale[1] } else { 1.0 },
+                                                )).unwrap_or((1.0, 1.0));
+
+                                                let self_world_rs = mat4x4_mul(
+                                                    parent_world_rs,
+                                                    CanvasTransform { scale: [1.0, 1.0], ..eff_ct.clone() }
+                                                        .to_mat4_sized(my_eff_w_r, my_eff_h_r),
+                                                );
+
                                                 for slot in actor.slots() {
                                                     match slot.kind {
                                                         ComponentKind::Canvas => {
                                                             // CanvasComponent: キャンバス領域のアウトラインを常に描画する
                                                             if let Some(cc) = world.get::<CanvasComponent>(slot.entity) {
-                                                                let w = cc.width;
-                                                                let h = cc.height;
-                                                                let m = ct.to_mat4_sized(w, h);
+                                                                let eff_w = cc.width  * if sm_size { parent_cumul_scale[0] } else { 1.0 };
+                                                                let eff_h = cc.height * if sm_size { parent_cumul_scale[1] } else { 1.0 };
+                                                                let m = mat4x4_mul(parent_world_rs, eff_ct.to_mat4_sized(eff_w, eff_h));
+                                                                let csy = canvas_scale * y_sign;
                                                                 let tp = |lx: f32, ly: f32| -> [f32; 3] {
-                                                                    [m[0][0]*lx + m[0][1]*ly + m[0][3],
-                                                                     m[1][0]*lx + m[1][1]*ly + m[1][3],
+                                                                    [(m[0][0]*lx + m[0][1]*ly + m[0][3]) * canvas_scale,
+                                                                     (m[1][0]*lx + m[1][1]*ly + m[1][3]) * csy,
                                                                      0.0f32]
                                                                 };
-                                                                let tl = tp(0.0, 0.0);
-                                                                let tr = tp(w,   0.0);
-                                                                let br = tp(w,   h  );
-                                                                let bl = tp(0.0, h  );
+                                                                let tl = tp(0.0,   0.0  );
+                                                                let tr = tp(eff_w, 0.0  );
+                                                                let br = tp(eff_w, eff_h);
+                                                                let bl = tp(0.0,   eff_h);
                                                                 lb.add_line(tl, tr, col);
                                                                 lb.add_line(tr, br, col);
                                                                 lb.add_line(br, bl, col);
@@ -1537,19 +1824,20 @@ impl ApplicationHandler for App {
                                                             // SpriteComponent: 選択時のみアウトラインを描画する
                                                             if selected_dfs_ids.contains(&my_dfs) {
                                                                 if let Some(sc) = world.get::<SpriteComponent>(slot.entity) {
-                                                                    let w = sc.width;
-                                                                    let h = sc.height;
+                                                                    let eff_w = sc.width  * if sm_size { parent_cumul_scale[0] } else { 1.0 };
+                                                                    let eff_h = sc.height * if sm_size { parent_cumul_scale[1] } else { 1.0 };
                                                                     let sprite_col: [f32; 4] = [1.0, 0.95, 0.6, 0.85];
-                                                                    let m = ct.to_mat4_sized(w, h);
+                                                                    let m = mat4x4_mul(parent_world_rs, eff_ct.to_sprite_mat4(eff_w, eff_h));
+                                                                    let csy2 = canvas_scale * y_sign;
                                                                     let tp = |lx: f32, ly: f32| -> [f32; 3] {
-                                                                        [m[0][0]*lx + m[0][1]*ly + m[0][3],
-                                                                         m[1][0]*lx + m[1][1]*ly + m[1][3],
+                                                                        [(m[0][0]*lx + m[0][1]*ly + m[0][3]) * canvas_scale,
+                                                                         (m[1][0]*lx + m[1][1]*ly + m[1][3]) * csy2,
                                                                          0.0f32]
                                                                     };
                                                                     let tl = tp(0.0, 0.0);
-                                                                    let tr = tp(w,   0.0);
-                                                                    let br = tp(w,   h  );
-                                                                    let bl = tp(0.0, h  );
+                                                                    let tr = tp(1.0, 0.0);
+                                                                    let br = tp(1.0, 1.0);
+                                                                    let bl = tp(0.0, 1.0);
                                                                     lb.add_line(tl, tr, sprite_col);
                                                                     lb.add_line(tr, br, sprite_col);
                                                                     lb.add_line(br, bl, sprite_col);
@@ -1560,18 +1848,58 @@ impl ApplicationHandler for App {
                                                         _ => {}
                                                     }
                                                 }
+
+                                                let child_info = my_canvas_r
+                                                    .map(|cc| ([cc.width, cc.height], (cc.scale_transform, cc.scale_size), cc.auto_scale));
+
+                                                let child_canvas_size = child_info.map(|(sz, _, _)| sz);
+                                                let child_scale_mode  = child_info.map(|(_, sm, _)| sm).unwrap_or((false, false));
+                                                // ルートキャンバスかつ auto_scale=true のとき、ビューポートサイズ/参照サイズ で自動スケールする
+                                                let auto_scale_factor = if parent_canvas_size.is_none() {
+                                                    if let (Some([vw, vh]), Some((_, _, true))) = (viewport_size, child_info) {
+                                                        [vw / my_eff_w_r, vh / my_eff_h_r]
+                                                    } else {
+                                                        [1.0f32, 1.0]
+                                                    }
+                                                } else {
+                                                    [1.0f32, 1.0]
+                                                };
+                                                let child_cumul_scale = if child_scale_mode.0 {
+                                                    [parent_cumul_scale[0] * ct.scale[0] * auto_scale_factor[0],
+                                                     parent_cumul_scale[1] * ct.scale[1] * auto_scale_factor[1]]
+                                                } else {
+                                                    [ct.scale[0] * auto_scale_factor[0],
+                                                     ct.scale[1] * auto_scale_factor[1]]
+                                                };
+                                                collect_canvas_rects(
+                                                    &actor.children, world, wl, lb, col,
+                                                    selected_dfs_ids, counter,
+                                                    child_canvas_size, self_world_rs,
+                                                    child_cumul_scale, child_scale_mode,
+                                                    canvas_scale, y_sign, viewport_size,
+                                                );
                                             }
-                                            collect_canvas_rects(
-                                                &actor.children, world, wl, lb, col,
-                                                selected_dfs_ids, counter,
-                                            );
                                         }
                                     }
 
+                                    const IDENTITY_RECT: [[f32; 4]; 4] = [
+                                        [1.0, 0.0, 0.0, 0.0],
+                                        [0.0, 1.0, 0.0, 0.0],
+                                        [0.0, 0.0, 1.0, 0.0],
+                                        [0.0, 0.0, 0.0, 1.0],
+                                    ];
                                     let mut counter: u32 = 0;
+                                    // rect アウトライン用 y_sign と viewport_size
+                                    let y_sign_rect = if use_screen_space { 1.0f32 } else { -1.0 };
+                                    let is_scene_ss_rect = use_screen_space && !self.actor_edit_canvas_wls.contains(&wl);
+                                    let vp_w_r = window_size.map_or(1280.0, |s| s.width  as f32);
+                                    let vp_h_r = window_size.map_or(720.0,  |s| s.height as f32);
+                                    let viewport_size_rect = if is_scene_ss_rect { Some([vp_w_r, vp_h_r]) } else { None };
                                     collect_canvas_rects(
                                         &scene.actors, &scene.world, wl, &mut lb, rect_col,
                                         &self.selected_actor_dfs_ids, &mut counter,
+                                        None, IDENTITY_RECT, [1.0, 1.0], (false, false),
+                                        canvas_scale_rect, y_sign_rect, viewport_size_rect,
                                     );
                                     if lb.is_empty() { None } else { Some(lb.build(&draw_ctx.device)) }
                                 } else { None }
@@ -1588,26 +1916,12 @@ impl ApplicationHandler for App {
                             } else { None };
 
                             // アイコンオーバーレイバッチ（エディタモードのみ）
+                            // キャンバスモード・3D モード共通: 常に 3D パースペクティブ行列でスクリーン座標を計算する。
+                            // キャンバスアクターは MC インスタンスを持たないためアイコンは表示されない。
                             let icon_overlay_batch = if in_editor {
                                 let vp_w = window_size.map_or(1280.0, |s| s.width  as f32);
                                 let vp_h = window_size.map_or(720.0,  |s| s.height as f32);
-                                // 2D キャンバスモードと 3D モードでビュー/プロジェクション行列を切り替える
-                                // （GPU側の描画と同じ行列を使わないとアイコン座標がずれる）
-                                let (view, proj) = if is_canvas {
-                                    let cam_2d = self.canvas_cameras
-                                        .entry(self.active_world_line)
-                                        .or_insert_with(CanvasCameraData::default);
-                                    let half_h = cam_2d.ortho_half_h;
-                                    let half_w = half_h * (vp_w / vp_h);
-                                    let eye    = Vector3::new(cam_2d.pan_x, cam_2d.pan_y, -100.0);
-                                    let center = Vector3::new(cam_2d.pan_x, cam_2d.pan_y, 0.0);
-                                    let up     = Vector3::new(0.0, 1.0, 0.0);
-                                    let v = Mat4x4::look_at_lh(eye, center, up);
-                                    let p = Mat4x4::orthographic_lh(-half_w, half_w, half_h, -half_h, 0.0, 200.0);
-                                    (v, p)
-                                } else {
-                                    (self.camera.view_matrix(), self.camera.projection_matrix())
-                                };
+                                let (view, proj) = (self.camera.view_matrix(), self.camera.projection_matrix());
                                 let positions: Vec<(f32, f32)> = if !self.selected_instances.is_empty() {
                                     selected_mc
                                         .map(|mc| {
@@ -1651,7 +1965,69 @@ impl ApplicationHandler for App {
                                         );
                                     }
                                 }
-                                // アウトライン: 全選択アクター（マルチ選択対応）
+
+                                // 矩形選択ビジュアル（scene_canvas_ss はオーバーレイパスで描画）
+                                if !scene_canvas_ss {
+                                    if let (Some(rect_batch), Some((_, line_bg))) =
+                                        (&rect_gpu_batch, &self.line_model_buf)
+                                    {
+                                        draw_line_batch(
+                                            &mut pass, rect_batch,
+                                            &camera_buf.bind_group, line_bg,
+                                            &draw_ctx.pipelines,
+                                        );
+                                    }
+                                }
+
+                                // ドロッププレビュー球体描画（ドラッグ中のみ）
+                                if let (Some(preview_batch), Some((_, line_bg))) =
+                                    (&drop_preview_batch, &self.line_model_buf)
+                                {
+                                    draw_gizmo_batch(
+                                        &mut pass, preview_batch,
+                                        &camera_buf.bind_group, line_bg,
+                                        &draw_ctx.pipelines,
+                                    );
+                                }
+
+                                // スプライト画像描画（グリッドより前面に描画）
+                                // scene_canvas_ss の場合はオーバーレイパスで描画するためスキップ
+                                if !scene_canvas_ss && !sprite_prepared.is_empty() {
+                                    draw_sprites(
+                                        &mut pass,
+                                        &draw_ctx.pipelines.sprite,
+                                        &camera_buf.bind_group,
+                                        &sprite_prepared,
+                                    );
+                                }
+
+                                // グリッド描画（スプライトより後、Canvas 矩形・アウトラインより前）
+                                if let (Some(grid_batch), Some((_, line_bg))) =
+                                    (&grid_gpu_batch, &self.line_model_buf)
+                                {
+                                    draw_line_batch(
+                                        &mut pass, grid_batch,
+                                        &camera_buf.bind_group, line_bg,
+                                        &draw_ctx.pipelines,
+                                    );
+                                }
+
+                                // CanvasComponent 矩形アウトライン描画（グリッドより前面）
+                                // Canvas: 常に表示, Sprite: 選択時のみ表示
+                                // scene_canvas_ss の場合はオーバーレイパスで描画するためスキップ
+                                if !scene_canvas_ss {
+                                    if let (Some(rect_batch), Some((_, line_bg))) =
+                                        (&canvas_rect_batch, &self.line_model_buf)
+                                    {
+                                        draw_line_batch(
+                                            &mut pass, rect_batch,
+                                            &camera_buf.bind_group, line_bg,
+                                            &draw_ctx.pipelines,
+                                        );
+                                    }
+                                }
+
+                                // アウトライン: 全選択アクター（マルチ選択対応）※グリッドより前面に描画
                                 if in_editor {
                                     if !self.selected_actor_dfs_ids.is_empty() {
                                         // Phase 1: 全選択アクターのステンシルマスクを書き込む
@@ -1701,80 +2077,31 @@ impl ApplicationHandler for App {
                                     }
                                 }
 
-                                // 矩形選択ビジュアル
-                                if let (Some(rect_batch), Some((_, line_bg))) =
-                                    (&rect_gpu_batch, &self.line_model_buf)
-                                {
-                                    draw_line_batch(
-                                        &mut pass, rect_batch,
-                                        &camera_buf.bind_group, line_bg,
-                                        &draw_ctx.pipelines,
-                                    );
-                                }
-
-                                // ドロッププレビュー球体描画（ドラッグ中のみ）
-                                if let (Some(preview_batch), Some((_, line_bg))) =
-                                    (&drop_preview_batch, &self.line_model_buf)
-                                {
-                                    draw_gizmo_batch(
-                                        &mut pass, preview_batch,
-                                        &camera_buf.bind_group, line_bg,
-                                        &draw_ctx.pipelines,
-                                    );
-                                }
-
-                                // グリッド描画（最背面：ギズモ・アイコンより奥）
-                                if let (Some(grid_batch), Some((_, line_bg))) =
-                                    (&grid_gpu_batch, &self.line_model_buf)
-                                {
-                                    draw_line_batch(
-                                        &mut pass, grid_batch,
-                                        &camera_buf.bind_group, line_bg,
-                                        &draw_ctx.pipelines,
-                                    );
-                                }
-
-                                // スプライト画像描画（Canvas アウトラインより前に描画してアウトラインを前面に）
-                                if !sprite_prepared.is_empty() {
-                                    draw_sprites(
-                                        &mut pass,
-                                        &draw_ctx.pipelines.sprite,
-                                        &camera_buf.bind_group,
-                                        &sprite_prepared,
-                                    );
-                                }
-
-                                // CanvasComponent 矩形アウトライン描画（2D キャンバスモードのみ）
-                                // Canvas: 常に表示, Sprite: 選択時のみ表示
-                                if let (Some(rect_batch), Some((_, line_bg))) =
-                                    (&canvas_rect_batch, &self.line_model_buf)
-                                {
-                                    draw_line_batch(
-                                        &mut pass, rect_batch,
-                                        &camera_buf.bind_group, line_bg,
-                                        &draw_ctx.pipelines,
-                                    );
-                                }
-
-                                // ギズモ（グリッドより前面、アイコンより背面）
-                                let show_gizmo = in_editor && self.tool_mode != ToolMode::Select;
-                                if show_gizmo {
-                                    if let (Some(gpu_batch), Some((_, line_bg))) =
-                                        (&gizmo_gpu_batch, &self.line_model_buf)
-                                    {
-                                        draw_gizmo_batch(
-                                            &mut pass, gpu_batch,
-                                            &camera_buf.bind_group, line_bg,
-                                            &draw_ctx.pipelines,
-                                        );
+                                // ギズモ（グリッド・アウトラインより前面、アイコンより背面）
+                                // scene_canvas_ss の場合はオーバーレイパスで描画するためスキップ
+                                if !scene_canvas_ss {
+                                    let show_gizmo = in_editor && self.tool_mode != ToolMode::Select;
+                                    if show_gizmo {
+                                        if let (Some(gpu_batch), Some((_, line_bg))) =
+                                            (&gizmo_gpu_batch, &self.line_model_buf)
+                                        {
+                                            draw_gizmo_batch(
+                                                &mut pass, gpu_batch,
+                                                &camera_buf.bind_group, line_bg,
+                                                &draw_ctx.pipelines,
+                                            );
+                                        }
                                     }
                                 }
 
                                 // 軸ギズモ（エディタモードのみ）
-                                if let (Some(batch), Some(ag)) =
-                                    (&axis_gizmo_batch, &self.axis_gizmo)
-                                {
-                                    ag.draw(batch, &mut pass);
+                                // scene_canvas_ss 時はオーバーレイパスの末尾で最前面描画するためスキップ
+                                if !scene_canvas_ss {
+                                    if let (Some(batch), Some(ag)) =
+                                        (&axis_gizmo_batch, &self.axis_gizmo)
+                                    {
+                                        ag.draw(batch, &mut pass);
+                                    }
                                 }
 
                                 // アイコンオーバーレイ（最前面：選択アクター位置マーカー）
@@ -1785,11 +2112,76 @@ impl ApplicationHandler for App {
                                 }
                             }
 
+                            // ── シーンキャンバスオーバーレイパス（シーンSS専用）──────────────
+                            // 3D シーンのカラーを保持しつつ、2D キャンバス要素を最前面に合成する。
+                            // アクター編集タブは camera_buf が 2D なのでメインパスで済む。
+                            if scene_canvas_ss {
+                                if let Some(canvas_cam_buf) = self.canvas_overlay_camera_buf.as_ref() {
+                                    let mut overlay_pass = frame.begin_canvas_overlay_pass();
+
+                                    // スプライト画像（アウトラインより前に描画してアウトラインを前面に）
+                                    if !sprite_prepared.is_empty() {
+                                        draw_sprites(
+                                            &mut overlay_pass,
+                                            &draw_ctx.pipelines.sprite,
+                                            &canvas_cam_buf.bind_group,
+                                            &sprite_prepared,
+                                        );
+                                    }
+
+                                    // CanvasComponent 矩形アウトライン
+                                    if let (Some(rect_batch), Some((_, line_bg))) =
+                                        (&canvas_rect_batch, &self.line_model_buf)
+                                    {
+                                        draw_line_batch(
+                                            &mut overlay_pass, rect_batch,
+                                            &canvas_cam_buf.bind_group, line_bg,
+                                            &draw_ctx.pipelines,
+                                        );
+                                    }
+
+                                    // 矩形選択ビジュアル
+                                    if let (Some(rect_batch), Some((_, line_bg))) =
+                                        (&rect_gpu_batch, &self.line_model_buf)
+                                    {
+                                        draw_line_batch(
+                                            &mut overlay_pass, rect_batch,
+                                            &canvas_cam_buf.bind_group, line_bg,
+                                            &draw_ctx.pipelines,
+                                        );
+                                    }
+
+                                    // ギズモ（スプライト・矩形より前面）
+                                    let show_gizmo = in_editor && self.tool_mode != ToolMode::Select;
+                                    if show_gizmo {
+                                        if let (Some(gpu_batch), Some((_, line_bg))) =
+                                            (&gizmo_gpu_batch, &self.line_model_buf)
+                                        {
+                                            draw_gizmo_batch(
+                                                &mut overlay_pass, gpu_batch,
+                                                &canvas_cam_buf.bind_group, line_bg,
+                                                &draw_ctx.pipelines,
+                                            );
+                                        }
+                                    }
+
+                                    // 軸ギズモ（オーバーレイ最前面）
+                                    // scene_canvas_ss 時にメインパスから移動し、常に最前面に表示する
+                                    if let (Some(batch), Some(ag)) =
+                                        (&axis_gizmo_batch, &self.axis_gizmo)
+                                    {
+                                        ag.draw(batch, &mut overlay_pass);
+                                    }
+                                }
+                            }
+
                             // ── ID パス（Edit/Pause のみ）──────────
                             if in_editor {
                                 if let Some(id_buf) = &self.id_buffer {
                                     {
                                         // BindGroup は RenderPass より長く生きる必要があるので先に生成する
+
+                                        // 3D MC ID バインドグループ
                                         let id_base_bgs: Vec<Option<(wgpu::Buffer, wgpu::BindGroup)>> =
                                             all_mcs.iter()
                                                 .map(|&(base, _, _, amc)| {
@@ -1801,7 +2193,238 @@ impl ApplicationHandler for App {
                                                 })
                                                 .collect();
 
+                                        // キャンバスアクター ID アイテム収集
+                                        // scene canvas モードのみ実行（actor edit 2D タブは CPU picking 専用）
+                                        // DFS カウンタは find_actor_by_dfs と同じ規則で全アクターを数える。
+                                        let canvas_id_is_ss = scene_canvas_ss;
+                                        let canvas_id_raw_items: Vec<(u32, [[f32; 4]; 4], Option<String>)> =
+                                            if is_canvas && !is_actor_edit_2d {
+                                                if let Some(scene) = &self.scene {
+                                                    let wl = self.active_world_line;
+                                                    let canvas_scale = if use_screen_space { 1.0f32 } else { CANVAS_WORLD_SCALE };
+                                                    let y_sign = if use_screen_space { 1.0f32 } else { -1.0 };
+                                                    let vp_w = window_size.map_or(1280.0, |s| s.width  as f32);
+                                                    let vp_h = window_size.map_or(720.0,  |s| s.height as f32);
+                                                    let viewport_size: Option<[f32; 2]> =
+                                                        if scene_canvas_ss { Some([vp_w, vp_h]) } else { None };
+
+                                                    /// キャンバスアクター ID アイテムを DFS 順に収集する。
+                                                    ///
+                                                    /// DFS カウンタは find_actor_by_dfs と同じ規則で全アクターを数える
+                                                    /// （CanvasTransform がないアクターも子を含めてカウント）。
+                                                    fn collect_canvas_id_items(
+                                                        actors:             &[crate::engine::structs::objects::Actor],
+                                                        world:              &crate::engine::ecs::World,
+                                                        wl:                 u32,
+                                                        counter:            &mut u32,
+                                                        parent_canvas_size: Option<[f32; 2]>,
+                                                        parent_world_rs:    [[f32; 4]; 4],
+                                                        parent_cumul_scale: [f32; 2],
+                                                        parent_scale_mode:  (bool, bool),
+                                                        canvas_scale:       f32,
+                                                        y_sign:             f32,
+                                                        viewport_size:      Option<[f32; 2]>,
+                                                        mc_total:           u32,
+                                                        // out: (raw_id, gpu_mat, sprite_tex_path)
+                                                        // sprite_tex_path: Some(path) = スプライトあり → アルファマスク有効
+                                                        //                  None       = スプライトなし → 全面選択可能
+                                                        out:                &mut Vec<(u32, [[f32; 4]; 4], Option<String>)>,
+                                                    ) {
+                                                        let (sm_transform, sm_size) = parent_scale_mode;
+                                                        for actor in actors {
+                                                            if actor.world_line != wl { continue; }
+                                                            let my_dfs = *counter;
+                                                            *counter += 1;
+
+                                                            let ct_opt = world.get::<CanvasTransform>(actor.entity).cloned();
+                                                            let (next_canvas_size, next_cumul_scale, next_scale_mode, next_world_rs) =
+                                                                if let Some(ct) = ct_opt {
+                                                                    // アンカーオフセット（collect_sprite_items と同じロジック）
+                                                                    let (anchor_off_x, anchor_off_y) =
+                                                                        if parent_canvas_size.is_none() {
+                                                                            if let Some([vw, vh]) = viewport_size {
+                                                                                (vw * ct.anchor[0] - vw / 2.0,
+                                                                                 vh * ct.anchor[1] - vh / 2.0)
+                                                                            } else { (0.0, 0.0) }
+                                                                        } else {
+                                                                            (parent_canvas_size.map_or(0.0, |[pw, _]| pw * ct.anchor[0] * parent_cumul_scale[0]),
+                                                                             parent_canvas_size.map_or(0.0, |[_, ph]| ph * ct.anchor[1] * parent_cumul_scale[1]))
+                                                                        };
+                                                                    let eff_pos = if sm_transform {
+                                                                        [ct.position[0] * parent_cumul_scale[0] + anchor_off_x,
+                                                                         ct.position[1] * parent_cumul_scale[1] + anchor_off_y]
+                                                                    } else {
+                                                                        [ct.position[0] + anchor_off_x,
+                                                                         ct.position[1] + anchor_off_y]
+                                                                    };
+                                                                    let eff_ct = CanvasTransform {
+                                                                        position: eff_pos,
+                                                                        rotation: ct.rotation,
+                                                                        scale:    ct.scale,
+                                                                        pivot:    ct.pivot,
+                                                                        anchor:   [0.0, 0.0],
+                                                                    };
+
+                                                                    // 自アクターの CanvasComponent
+                                                                    let my_canvas = actor.slots().iter()
+                                                                        .filter(|s| s.kind == ComponentKind::Canvas)
+                                                                        .find_map(|s| world.get::<CanvasComponent>(s.entity));
+                                                                    let (my_eff_w, my_eff_h) = my_canvas.map(|cc| (
+                                                                        cc.width  * if sm_size { parent_cumul_scale[0] } else { 1.0 },
+                                                                        cc.height * if sm_size { parent_cumul_scale[1] } else { 1.0 },
+                                                                    )).unwrap_or((1.0, 1.0));
+
+                                                                    // 子への親ワールド RS 行列
+                                                                    let self_world_rs = mat4x4_mul(
+                                                                        parent_world_rs,
+                                                                        CanvasTransform { scale: [1.0, 1.0], ..eff_ct.clone() }
+                                                                            .to_mat4_sized(my_eff_w, my_eff_h),
+                                                                    );
+
+                                                                    // ID quad 用 GPU 行列の構築。
+                                                                    // テクスチャパスが有効な Sprite のみビューポートからピッキング可能にする。
+                                                                    // Sprite なし・テクスチャパス空（単色）のアクターは空白領域とみなし
+                                                                    // ビューポートからは選択不可（階層パネルからのみ選択できる）。
+                                                                    let csy = canvas_scale * y_sign;
+                                                                    let mut gpu_mat_and_path: Option<([[f32; 4]; 4], String)> = None;
+                                                                    for slot in actor.slots() {
+                                                                        if slot.kind == ComponentKind::Sprite {
+                                                                            if let Some(sc) = world.get::<SpriteComponent>(slot.entity) {
+                                                                                // テクスチャパスが空 = 単色スプライト = 空白と同様、選択不可
+                                                                                if sc.texture_path.is_empty() { break; }
+                                                                                let ew = sc.width  * if sm_size { parent_cumul_scale[0] } else { 1.0 };
+                                                                                let eh = sc.height * if sm_size { parent_cumul_scale[1] } else { 1.0 };
+                                                                                let sw = mat4x4_mul(parent_world_rs, eff_ct.to_sprite_mat4(ew, eh));
+                                                                                gpu_mat_and_path = Some(([
+                                                                                    [sw[0][0] * canvas_scale, sw[1][0] * csy, 0.0, 0.0],
+                                                                                    [sw[0][1] * canvas_scale, sw[1][1] * csy, 0.0, 0.0],
+                                                                                    [0.0, 0.0, 1.0, 0.0],
+                                                                                    [sw[0][3] * canvas_scale, sw[1][3] * csy, 0.0, 1.0],
+                                                                                ], sc.texture_path.clone()));
+                                                                                break;
+                                                                            }
+                                                                        }
+                                                                    }
+
+                                                                    if let Some((gpu_mat, tex_path)) = gpu_mat_and_path {
+                                                                        // raw_id = mc_total + my_dfs + 1
+                                                                        // （0 = 背景、1..mc_total = 3D MC インスタンス）
+                                                                        out.push((mc_total + my_dfs + 1, gpu_mat, Some(tex_path)));
+                                                                    }
+
+                                                                    // 子への継承情報を計算する（collect_sprite_items と同じ）
+                                                                    let child_info = my_canvas.map(|cc| (
+                                                                        [cc.width, cc.height],
+                                                                        (cc.scale_transform, cc.scale_size),
+                                                                        cc.auto_scale,
+                                                                    ));
+                                                                    let child_canvas_size = child_info.map(|(sz, _, _)| sz);
+                                                                    let child_scale_mode  = child_info.map(|(_, sm, _)| sm).unwrap_or((false, false));
+                                                                    let auto_scale_factor = if parent_canvas_size.is_none() {
+                                                                        if let (Some([vw, vh]), Some((_, _, true))) = (viewport_size, child_info) {
+                                                                            [vw / my_eff_w, vh / my_eff_h]
+                                                                        } else { [1.0f32, 1.0] }
+                                                                    } else { [1.0f32, 1.0] };
+                                                                    let child_cumul_scale = if child_scale_mode.0 {
+                                                                        [parent_cumul_scale[0] * ct.scale[0] * auto_scale_factor[0],
+                                                                         parent_cumul_scale[1] * ct.scale[1] * auto_scale_factor[1]]
+                                                                    } else {
+                                                                        [ct.scale[0] * auto_scale_factor[0],
+                                                                         ct.scale[1] * auto_scale_factor[1]]
+                                                                    };
+                                                                    (child_canvas_size, child_cumul_scale, child_scale_mode, self_world_rs)
+                                                                } else {
+                                                                    // CanvasTransform なし: 子は親の情報をそのまま引き継ぐ
+                                                                    (parent_canvas_size, parent_cumul_scale, parent_scale_mode, parent_world_rs)
+                                                                };
+
+                                                            // 常に子に再帰する（find_actor_by_dfs と DFS カウンタを合わせるため）
+                                                            collect_canvas_id_items(
+                                                                &actor.children, world, wl, counter,
+                                                                next_canvas_size, next_world_rs,
+                                                                next_cumul_scale, next_scale_mode,
+                                                                canvas_scale, y_sign, viewport_size,
+                                                                mc_total, out,
+                                                            );
+                                                        }
+                                                    }
+
+                                                    let mut items = Vec::new();
+                                                    let mut ctr   = 0u32;
+                                                    const IDENTITY: [[f32; 4]; 4] = [
+                                                        [1.0, 0.0, 0.0, 0.0],
+                                                        [0.0, 1.0, 0.0, 0.0],
+                                                        [0.0, 0.0, 1.0, 0.0],
+                                                        [0.0, 0.0, 0.0, 1.0],
+                                                    ];
+                                                    collect_canvas_id_items(
+                                                        &scene.actors, &scene.world, wl,
+                                                        &mut ctr, None, IDENTITY,
+                                                        [1.0, 1.0], (false, false),
+                                                        canvas_scale, y_sign, viewport_size,
+                                                        mc_total_instances, &mut items,
+                                                    );
+                                                    items
+                                                } else { vec![] }
+                                            } else { vec![] };
+
+                                        // キャンバス ID GPU バインドグループ（render pass より長く生きる）
+                                        let canvas_id_bgs: Vec<(wgpu::Buffer, wgpu::BindGroup)> =
+                                            canvas_id_raw_items.iter()
+                                                .map(|&(raw_id, gpu_mat, _)| {
+                                                    prepare_canvas_id_bg(
+                                                        &draw_ctx.device, &draw_ctx.pipelines,
+                                                        gpu_mat, raw_id,
+                                                    )
+                                                })
+                                                .collect();
+
+                                        // スプライトテクスチャ Arc を保持してライフタイムを確保する
+                                        // （render pass 中に参照するため drop されないようにする）
+                                        let canvas_sprite_arcs: Vec<Option<std::sync::Arc<GpuSpriteTexture>>> = {
+                                            let cache = draw_ctx.sprite_tex_cache.borrow();
+                                            canvas_id_raw_items.iter()
+                                                .map(|(_, _, path_opt): &(u32, [[f32;4];4], Option<String>)| {
+                                                    // path_opt は常に Some（テクスチャありのみ out に追加される）
+                                                    path_opt.as_deref().and_then(|path| {
+                                                        cache.get(path).and_then(|opt| opt.clone())
+                                                    })
+                                                })
+                                                .collect()
+                                        };
+
+                                        // テクスチャ BG をアイテムごとに生成する
+                                        // スプライトありは Arc から view を取得、なしは白テクスチャ（全面選択可能）
+                                        let canvas_id_tex_bgs: Vec<wgpu::BindGroup> =
+                                            canvas_sprite_arcs.iter()
+                                                .map(|arc_opt: &Option<std::sync::Arc<GpuSpriteTexture>>| {
+                                                    let view = arc_opt.as_ref()
+                                                        .map(|arc| &arc.view)
+                                                        .unwrap_or(&draw_ctx.pipelines.canvas_id.white_view);
+                                                    draw_ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                                                        label:   Some("CanvasId Tex BG"),
+                                                        layout:  &draw_ctx.pipelines.canvas_id.tex_bgl,
+                                                        entries: &[
+                                                            wgpu::BindGroupEntry {
+                                                                binding:  0,
+                                                                resource: wgpu::BindingResource::TextureView(view),
+                                                            },
+                                                            wgpu::BindGroupEntry {
+                                                                binding:  1,
+                                                                resource: wgpu::BindingResource::Sampler(
+                                                                    &draw_ctx.pipelines.canvas_id.sampler
+                                                                ),
+                                                            },
+                                                        ],
+                                                    })
+                                                })
+                                                .collect();
+                                        let canvas_id_tex_bg_refs: Vec<&wgpu::BindGroup> =
+                                            canvas_id_tex_bgs.iter().collect();
+
                                         let mut id_pass = frame.begin_id_pass(&id_buf.view);
+
+                                        // 3D MC ID 描画
                                         for (&(_, _, _, amc), bg_opt) in all_mcs.iter().zip(id_base_bgs.iter()) {
                                             if let (Some((gpu, batch)), Some((_, id_base_bg))) =
                                                 (amc.rendering_refs(), bg_opt.as_ref())
@@ -1812,6 +2435,27 @@ impl ApplicationHandler for App {
                                                     id_base_bg,
                                                 );
                                             }
+                                        }
+
+                                        // キャンバスアクター ID 描画（3D MC より後で常に上書き）
+                                        // WS: perspective camera、SS: 2D ortho カメラを使用する
+                                        let ss_camera_bg: Option<&wgpu::BindGroup> = if canvas_id_is_ss {
+                                            self.canvas_overlay_camera_buf.as_ref().map(|b| &b.bind_group)
+                                        } else { None };
+                                        if canvas_id_is_ss {
+                                            draw_canvas_id_items(
+                                                &mut id_pass, &draw_ctx.pipelines,
+                                                &camera_buf.bind_group, ss_camera_bg,
+                                                &[], &[],
+                                                &canvas_id_bgs, &canvas_id_tex_bg_refs,
+                                            );
+                                        } else {
+                                            draw_canvas_id_items(
+                                                &mut id_pass, &draw_ctx.pipelines,
+                                                &camera_buf.bind_group, None,
+                                                &canvas_id_bgs, &canvas_id_tex_bg_refs,
+                                                &[], &[],
+                                            );
                                         }
                                     }
                                     // readback 優先度: drop > pick
@@ -1870,12 +2514,14 @@ impl ApplicationHandler for App {
                                 self.selected_actor_dfs_ids.clear();
                                 self.selected_instances.clear();
                             }
-                        } else if !wl_mc_pick_infos.is_empty() {
-                            // global ID から所有 MC を特定し、アクターと MC スロットを仮想選択として設定する
-                            let global = raw - 1; // global instance ID (0-based)
-                            if let Some(&(base, dfs_id, slot_i, _)) = wl_mc_pick_infos.iter()
-                                .find(|&&(base, _, _, count)| global >= base && (global - base) < count as u32)
-                            {
+                        } else {
+                            let global = raw - 1; // 0 始まりグローバル ID
+                            // 3D MC アクター判定（raw_id = base + local + 1 のいずれかの MC 範囲に入るか）
+                            let mc_hit = wl_mc_pick_infos.iter()
+                                .find(|&&(base, _, _, count)| global >= base && (global - base) < count as u32);
+
+                            if let Some(&(base, dfs_id, slot_i, _)) = mc_hit {
+                                // 3D MC アクター選択
                                 let dfs_usize = dfs_id as usize;
                                 let local_idx = global - base;
                                 self.actor_virtual_selected_slot_idx = slot_i;
@@ -1898,6 +2544,30 @@ impl ApplicationHandler for App {
                                     self.selected_instances          = vec![local_idx];
                                 }
                                 self.send_actor_components(dfs_id, slot_i);
+                            } else if global >= mc_total_instances {
+                                // キャンバスアクター選択
+                                // raw_id = mc_total + dfs_id + 1 → canvas_dfs_id = global - mc_total
+                                let canvas_dfs_id  = global - mc_total_instances;
+                                let dfs_usize      = canvas_dfs_id as usize;
+                                self.actor_virtual_selected_slot_idx = 0;
+                                if self.ctrl_at_press {
+                                    // Ctrl+クリック: マルチ選択トグル
+                                    if self.selected_actor_dfs_ids.contains(&dfs_usize) {
+                                        self.selected_actor_dfs_ids.retain(|&x| x != dfs_usize);
+                                        if self.actor_virtual_selected_idx == Some(dfs_usize) {
+                                            self.actor_virtual_selected_idx = self.selected_actor_dfs_ids.last().copied();
+                                        }
+                                    } else {
+                                        self.selected_actor_dfs_ids.push(dfs_usize);
+                                        self.actor_virtual_selected_idx = Some(dfs_usize);
+                                    }
+                                } else {
+                                    // 通常クリック: 単一選択
+                                    self.actor_virtual_selected_idx = Some(dfs_usize);
+                                    self.selected_actor_dfs_ids     = vec![dfs_usize];
+                                }
+                                self.selected_instances.clear();
+                                self.send_actor_components(canvas_dfs_id, 0);
                             }
                         }
 

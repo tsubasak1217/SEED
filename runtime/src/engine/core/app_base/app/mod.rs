@@ -21,6 +21,7 @@ mod component_ops;
 mod transform_ops;
 mod camera_ops;
 mod gizmo_handler;
+mod pick_2d;
 mod render;
 
 // ── 外部クレート・標準ライブラリ ────────────────────────────
@@ -143,6 +144,10 @@ pub struct App {
     draw_ctx:       Option<DrawContext>,
     scene:          Option<Scene>,
     camera_buf:     Option<CameraBuffer>,
+    /// シーンのスクリーンスペースキャンバスオーバーレイ専用カメラバッファ。
+    /// 3D メインカメラの上に 2D キャンバス要素を重ねるために使う（シーンSS専用）。
+    /// アクター編集タブは camera_buf 自体が 2D なので不要。
+    canvas_overlay_camera_buf: Option<CameraBuffer>,
     scripting_host: Option<Arc<ScriptingHost>>,
 
     parent_hwnd: Option<isize>,
@@ -250,9 +255,17 @@ pub struct App {
     /// 2D キャンバスモードの世界線番号セット（Ortho カメラを使用する世界線）。
     /// OpenActor で 2D Actor をロードした世界線がここに登録される。
     canvas_world_lines: std::collections::HashSet<u32>,
+    /// アクター編集タブの 2D キャンバス世界線セット。
+    /// これに含まれる世界線は canvas_screen_space_overlay フラグに関わらず
+    /// 常にスクリーンスペースで描画する（アクター編集パネルは従来の 2D 表示を維持）。
+    actor_edit_canvas_wls: std::collections::HashSet<u32>,
     /// 2D キャンバスカメラ状態（世界線番号 → CanvasCameraData）。
     /// pan_x, pan_y, ortho_half_h を保持する。
     canvas_cameras: std::collections::HashMap<u32, CanvasCameraData>,
+    /// キャンバスをスクリーンスペースオーバーレイで表示するフラグ。
+    /// false（デフォルト）= ワールドスペース、true = スクリーンスペースオーバーレイ。
+    /// エディタのビューポートオプションから切り替え可能。実行時は常に true。
+    canvas_screen_space_overlay: bool,
 
     // ── ドラッグ&ドロップ ───────────────────────────────────────
     /// DROP_ACTOR コマンドを受け取ったときに設定する。
@@ -295,6 +308,7 @@ impl App {
             draw_ctx:       None,
             scene:          None,
             camera_buf:     None,
+            canvas_overlay_camera_buf: None,
             scripting_host,
             parent_hwnd: args.parent_hwnd,
             mode:        args.mode,
@@ -343,8 +357,10 @@ impl App {
             inspector_transform_drag:     None,
             active_world_line: 0,
             saved_cameras: std::collections::HashMap::new(),
-            canvas_world_lines: std::collections::HashSet::new(),
-            canvas_cameras:     std::collections::HashMap::new(),
+            canvas_world_lines:    std::collections::HashSet::new(),
+            actor_edit_canvas_wls: std::collections::HashSet::new(),
+            canvas_cameras:        std::collections::HashMap::new(),
+            canvas_screen_space_overlay: false,
             pending_drop:       None,
             pending_drop_hover: None,
             drop_preview_pos:   None,
@@ -527,6 +543,68 @@ fn find_actor_dfs_by_instance_in(
     for child in actor.children() {
         if let Some(dfs) = find_actor_dfs_by_instance_in(child, world, instance_idx, counter) {
             return Some(dfs);
+        }
+    }
+    None
+}
+
+/// 2D キャンバスモード用: 指定 DFS ID のアクターに適用すべきアンカーオフセットを返す。
+///
+/// アンカーオフセット = 親 CanvasComponent サイズ × CanvasTransform.anchor。
+/// ルートアクター（親なし）または CanvasComponent を持たない親の場合は [0.0, 0.0] を返す。
+/// render.rs の collect_sprite_items / collect_canvas_rects と同じロジックで計算する。
+pub(super) fn canvas_anchor_offset_for_dfs(
+    actors:     &[Actor],
+    world:      &World,
+    wl:         u32,
+    target_dfs: u32,
+) -> [f32; 2] {
+    let mut counter = 0u32;
+    for actor in actors.iter() {
+        if actor.world_line != wl { continue; }
+        // ルートアクター自身が target の場合はアンカー適用なし
+        if counter == target_dfs { return [0.0, 0.0]; }
+        counter += 1;
+        // このアクターの CanvasComponent サイズを子アクターへ渡す
+        let canvas_size = actor.slots().iter()
+            .filter(|s| s.kind == ComponentKind::Canvas)
+            .find_map(|s| world.get::<CanvasComponent>(s.entity))
+            .map(|cc| [cc.width, cc.height]);
+        if let Some(off) = find_canvas_anchor_in_children(actor, world, target_dfs, &mut counter, canvas_size) {
+            return off;
+        }
+    }
+    [0.0, 0.0]
+}
+
+/// canvas_anchor_offset_for_dfs の再帰実装（子ノード探索）。
+fn find_canvas_anchor_in_children(
+    parent:             &Actor,
+    world:              &World,
+    target_dfs:         u32,
+    counter:            &mut u32,
+    parent_canvas_size: Option<[f32; 2]>,
+) -> Option<[f32; 2]> {
+    for child in parent.children().iter() {
+        if *counter == target_dfs {
+            // ターゲットが見つかった。親の Canvas サイズ × anchor でオフセットを計算する。
+            let offset = if let Some([pw, ph]) = parent_canvas_size {
+                world.get::<CanvasTransform>(child.entity)
+                    .map(|ct| [pw * ct.anchor[0], ph * ct.anchor[1]])
+                    .unwrap_or([0.0, 0.0])
+            } else {
+                [0.0, 0.0]
+            };
+            return Some(offset);
+        }
+        *counter += 1;
+        // 子の CanvasComponent サイズを孫へ渡す
+        let child_canvas_size = child.slots().iter()
+            .filter(|s| s.kind == ComponentKind::Canvas)
+            .find_map(|s| world.get::<CanvasComponent>(s.entity))
+            .map(|cc| [cc.width, cc.height]);
+        if let Some(off) = find_canvas_anchor_in_children(child, world, target_dfs, counter, child_canvas_size) {
+            return Some(off);
         }
     }
     None

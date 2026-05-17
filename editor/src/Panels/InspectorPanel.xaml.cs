@@ -31,6 +31,10 @@ public partial class InspectorPanel : UserControl
     private int      _componentSlotCount = 0;
     private SlotInfo? _copiedSlot        = null;  // Ctrl+C でコピーしたスロット
 
+    /// <summary>次回の BuildActorComponentList 完了後に自動リネームモードを開始するスロットのベース名。</summary>
+    private bool   _pendingDuplicateRename   = false;
+    private string _pendingDuplicateBaseName = "";
+
     // ── Script state ─────────────────────────────────────────
     // Key: "{actorId}:{slotIdx}", Value: {fieldName → valueString}
     private readonly Dictionary<string, Dictionary<string, string>> _scriptFieldValues = new();
@@ -43,6 +47,8 @@ public partial class InspectorPanel : UserControl
     private TextBox? _tbSx, _tbSy, _tbSz;
     /// <summary>2D Actor 専用: ピボット X/Y フィールド。</summary>
     private TextBox? _tbPivotX, _tbPivotY;
+    /// <summary>2D Actor 専用: アンカー X/Y フィールド。</summary>
+    private TextBox? _tbAnchorX, _tbAnchorY;
     private bool     _isDraggingTransform = false;
     /// <summary>現在選択中のアクターが 2D Actor（CanvasTransform 持ち）かどうか。</summary>
     private bool     _isActor2D = false;
@@ -81,15 +87,21 @@ public partial class InspectorPanel : UserControl
     /// <summary>HierarchyPanel からアクター編集モードのアクター選択を受け取る。</summary>
     public void SelectActor(int dfsId)
     {
-        // シーンモード・アクター編集モード共通: DFS id でアクタを選択してコンポーネントを表示する
-        ClearTransformRefs();
-        // 前回のドラッグ状態をリセットする（2D アクター選択時にコンポーネントが表示されないバグ対策）
+        // 表示モードを確実に切り替える（同一アクターへの再呼び出しでも必要）
         _isDraggingTransform    = false;
-        _currentActorId         = dfsId;
         _isVirtualActorSelected = true; // 仮想 DFS 選択 → SET_ACTOR_TRANSFORM を使う
         ActorEditGrid.Visibility    = Visibility.Visible;
         ComponentScroll.Visibility  = Visibility.Collapsed;
         NoSelectionBlock.Visibility = Visibility.Collapsed;
+
+        // 同一アクターへの重複選択を排除する。
+        // ActorDfsSelected と OnSelectionChanged の両経路から呼ばれると
+        // GET_ACTOR_COMPONENTS が二重送信されて表示が遅くなるため。
+        if (_currentActorId == dfsId) return;
+
+        // シーンモード・アクター編集モード共通: DFS id でアクタを選択してコンポーネントを表示する
+        ClearTransformRefs();
+        _currentActorId = dfsId;
         // Rust 側にコンポーネントデータを要求する（ビューポートからの選択時でも確実に反映される）
         _runtime?.SendToRuntime($"GET_ACTOR_COMPONENTS:{dfsId}");
     }
@@ -112,7 +124,11 @@ public partial class InspectorPanel : UserControl
             // 仮想ノード ID（アクターツリー DFS 選択）: シーンモード・アクター編集モード共通
             if (id >= VirtualActorNodeIdBase)
             {
-                SelectActor(id - VirtualActorNodeIdBase);
+                var dfsId = id - VirtualActorNodeIdBase;
+                // ActorDfsSelected 経由（MainWindow 配線）で既に SelectActor が呼ばれているため、
+                // 同一アクターへの二重呼び出しをスキップして不要な IPC ラウンドトリップを防ぐ。
+                if (dfsId != _currentActorId)
+                    SelectActor(dfsId);
                 return;
             }
 
@@ -169,10 +185,7 @@ public partial class InspectorPanel : UserControl
         NoSelectionBlock.Visibility = Visibility.Visible;
         ComponentStack.Children.Clear();
         ComponentListStack.Children.Clear();
-        BasicInfoStack.Children.Clear();
-        ComponentPropsStack.Children.Clear();
-        CompInfoScroll.Visibility         = Visibility.Collapsed;
-        NoComponentSelectedBlock.Visibility = Visibility.Visible;
+        AccordionStack.Children.Clear();
         ClearTransformRefs();
     }
 
@@ -182,6 +195,7 @@ public partial class InspectorPanel : UserControl
         _tbEx = _tbEy = _tbEz = null;
         _tbSx = _tbSy = _tbSz = null;
         _tbPivotX = _tbPivotY = null;
+        _tbAnchorX = _tbAnchorY = null;
     }
 
     // ── Scene mode inspector ─────────────────────────────────
@@ -212,7 +226,8 @@ public partial class InspectorPanel : UserControl
             float rot  = Fp(ct, "rotation");
             float sx   = Fp(ct, "sx"),  sy   = Fp(ct, "sy");
             float pivx = Fp(ct, "pivx"), pivy = Fp(ct, "pivy");
-            ComponentStack.Children.Add(BuildCanvas2DTransformSection(px, py, rot, sx, sy, pivx, pivy));
+            float ancX = Fp(ct, "anchor_x"), ancY = Fp(ct, "anchor_y");
+            ComponentStack.Children.Add(BuildCanvas2DTransformSection(px, py, rot, sx, sy, pivx, pivy, ancX, ancY));
         }
         else if (root.TryGetProperty("transform", out var tf))
         {
@@ -250,6 +265,10 @@ public partial class InspectorPanel : UserControl
     /// <summary>コンポーネントスロット 1 件分の情報。TypeId ごとに追加フィールドを持つ。</summary>
     private record SlotInfo(int SlotIdx, string Name, string TypeId, string ModelPath,
         float Width = 0f, float Height = 0f,
+        // CanvasComponent 用スケールモードフラグ
+        bool ScaleTransform = false, bool ScaleSize = false,
+        // CanvasComponent 用自動スケールフラグ
+        bool AutoScale = true,
         // SpriteComponent 用フィールド
         string TexturePath = "",
         float SpriteR = 1f, float SpriteG = 1f, float SpriteB = 1f, float SpriteA = 1f,
@@ -266,10 +285,55 @@ public partial class InspectorPanel : UserControl
         var name = root.TryGetProperty("name", out var np) ? np.GetString() ?? "" : "";
         ActorNameBlock.Text = string.IsNullOrEmpty(name) ? $"Actor #{_currentActorId}" : name;
 
+        // 複製後の新スロット検出用に現在のスロット ID セットを保存する
+        var prevSlotIdxSet = _slotInfos.Select(s => s.SlotIdx).ToHashSet();
         ComponentListStack.Children.Clear();
+        AccordionStack.Children.Clear();
         ClearTransformRefs();
         _slotInfos.Clear();
 
+        // ── 基本情報 アコーディオン ────────────────────────────────────
+        UIElement transformContent;
+        if (root.TryGetProperty("canvas_transform", out var ct))
+        {
+            // 2D アクター: CanvasTransform（位置XY・回転・スケールXY・ピボットXY・アンカーXY）
+            _isActor2D = true;
+            float px   = Fp(ct, "px"),  py   = Fp(ct, "py");
+            float rot  = Fp(ct, "rotation");
+            float sx   = Fp(ct, "sx"),  sy   = Fp(ct, "sy");
+            float pivx = Fp(ct, "pivx"), pivy = Fp(ct, "pivy");
+            float ancX = Fp(ct, "anchor_x"), ancY = Fp(ct, "anchor_y");
+            transformContent = BuildCanvas2DTransformSection(px, py, rot, sx, sy, pivx, pivy, ancX, ancY);
+        }
+        else if (root.TryGetProperty("transform", out var tf))
+        {
+            // 3D アクター: Transform（位置XYZ・回転XYZ・スケールXYZ）
+            _isActor2D = false;
+            float px = Fp(tf, "px"), py = Fp(tf, "py"), pz = Fp(tf, "pz");
+            float ex = Fp(tf, "ex"), ey = Fp(tf, "ey"), ez = Fp(tf, "ez");
+            float sx = Fp(tf, "sx"), sy = Fp(tf, "sy"), sz = Fp(tf, "sz");
+
+            var section = BuildSection("Transform");
+            var grid    = BuildXYZGrid();
+            (_tbPx, _tbPy, _tbPz) = AddXYZRow(grid, 0, "位置",    px, py, pz, "#E06C75", "#98C379", "#61AFEF", 0.1);
+            (_tbEx, _tbEy, _tbEz) = AddXYZRow(grid, 1, "回転",    ex, ey, ez, "#E06C75", "#98C379", "#61AFEF", 1.0);
+            (_tbSx, _tbSy, _tbSz) = AddXYZRow(grid, 2, "スケール", sx, sy, sz, "#E06C75", "#98C379", "#61AFEF", 0.01);
+            ((StackPanel)section.Child).Children.Add(grid);
+            transformContent = section;
+        }
+        else
+        {
+            transformContent = new TextBlock
+            {
+                Text       = "トランスフォームデータなし",
+                Foreground = new SolidColorBrush(Color.FromRgb(0x66, 0x66, 0x66)),
+                FontSize   = 11,
+                Margin     = new Thickness(0, 4, 0, 4),
+            };
+        }
+        AccordionStack.Children.Add(BuildAccordionSection("基本情報", "", transformContent, -1));
+
+        // ── コンポーネント アコーディオン ─────────────────────────────
         if (!root.TryGetProperty("components", out var comps)) return;
 
         _componentSlotCount = comps.GetArrayLength();
@@ -278,13 +342,18 @@ public partial class InspectorPanel : UserControl
 
         foreach (var comp in comps.EnumerateArray())
         {
-            var slotIdx   = comp.TryGetProperty("slot",       out var si) ? si.GetInt32()    : 0;
-            var compName  = comp.TryGetProperty("name",       out var cn) ? cn.GetString() ?? "" : "";
-            var compType  = comp.TryGetProperty("type",       out var ct) ? ct.GetString() ?? "" : "";
+            var slotIdx  = comp.TryGetProperty("slot",       out var si)  ? si.GetInt32()    : 0;
+            var compName = comp.TryGetProperty("name",       out var cn)  ? cn.GetString() ?? "" : "";
+            var compType = comp.TryGetProperty("type",       out var ctp) ? ctp.GetString() ?? "" : "";
             var modelPath = comp.TryGetProperty("model_path", out var mp) ? mp.GetString() ?? "" : "";
-            // CanvasComponent 用: 幅・高さ
-            var width  = comp.TryGetProperty("width",  out var wd) ? wd.GetSingle() : 0f;
-            var height = comp.TryGetProperty("height", out var ht) ? ht.GetSingle() : 0f;
+            // CanvasComponent 用: 幅・高さ・スケールモード
+            var width          = comp.TryGetProperty("width",           out var wd)  ? wd.GetSingle()  : 0f;
+            var height         = comp.TryGetProperty("height",          out var ht)  ? ht.GetSingle()  : 0f;
+            // Rust の serde_json は bool を JSON 真偽値（true/false）としてシリアライズするため
+            // GetInt32() ではなく ValueKind で判定する。数値（0/1）も念のため許容する。
+            var scaleTransform = comp.TryGetProperty("scale_transform", out var stv) ? ReadJsonBool(stv, false) : false;
+            var scaleSize      = comp.TryGetProperty("scale_size",      out var ssv) ? ReadJsonBool(ssv, false) : false;
+            var autoScale      = comp.TryGetProperty("auto_scale",      out var asv) ? ReadJsonBool(asv, true)  : true;
             // SpriteComponent 用: テクスチャパス・RGBA・サイズ
             var texPath = comp.TryGetProperty("texture_path", out var tp2) ? tp2.GetString() ?? "" : "";
             var sprR = comp.TryGetProperty("cr", out var cr) ? cr.GetSingle() : 1f;
@@ -295,103 +364,182 @@ public partial class InspectorPanel : UserControl
             var sprH = comp.TryGetProperty("sprite_h", out var sh) ? sh.GetSingle() : 100f;
 
             var info = new SlotInfo(slotIdx, compName, compType, modelPath, width, height,
+                scaleTransform, scaleSize, autoScale,
                 texPath, sprR, sprG, sprB, sprA, sprW, sprH);
             _slotInfos.Add(info);
+
+            // 上部チップリストに追加
             ComponentListStack.Children.Add(BuildComponentChip(info.SlotIdx, info.Name, info.TypeId));
+
+            // アコーディオンにパラメータ編集エリアを追加
+            var propsContent = BuildSlotPropsContent(info);
+            AccordionStack.Children.Add(BuildAccordionSection(info.Name, info.TypeId, propsContent, info.SlotIdx));
 
             if (slotIdx == prevSlot) _selectedSlotIdx = slotIdx;
         }
 
-        // 前回未選択かつコンポーネントが存在する場合は最後のスロットを自動選択
+        // 前回未選択かつコンポーネントが存在する場合は最後のスロットを自動選択する
         if (_selectedSlotIdx < 0 && _slotInfos.Count > 0)
             _selectedSlotIdx = _slotInfos[^1].SlotIdx;
 
         RefreshChipSelection();
-        RebuildPropsPane(root);
-    }
 
-    private void RebuildPropsPane(JsonElement root)
-    {
-        BasicInfoStack.Children.Clear();
-        ComponentPropsStack.Children.Clear();
-        ClearTransformRefs();
-
-        // [基本情報] タブ: Transform セクション（3D / 2D で分岐）
-        if (root.TryGetProperty("canvas_transform", out var ct))
+        // 複製直後: 新スロットを検出してデフォルト名でリネームモードを開始する
+        if (_pendingDuplicateRename)
         {
-            // 2D Actor: CanvasTransform（位置XY・回転・スケールXY・ピボットXY）
-            _isActor2D = true;
-            float px   = Fp(ct, "px"),  py   = Fp(ct, "py");
-            float rot  = Fp(ct, "rotation");
-            float sx   = Fp(ct, "sx"),  sy   = Fp(ct, "sy");
-            float pivx = Fp(ct, "pivx"), pivy = Fp(ct, "pivy");
-
-            BasicInfoStack.Children.Add(BuildCanvas2DTransformSection(px, py, rot, sx, sy, pivx, pivy));
-        }
-        else if (root.TryGetProperty("transform", out var tf))
-        {
-            // 3D Actor: Transform（位置XYZ・回転XYZ・スケールXYZ）
-            _isActor2D = false;
-            float px = Fp(tf, "px"), py = Fp(tf, "py"), pz = Fp(tf, "pz");
-            float ex = Fp(tf, "ex"), ey = Fp(tf, "ey"), ez = Fp(tf, "ez");
-            float sx = Fp(tf, "sx"), sy = Fp(tf, "sy"), sz = Fp(tf, "sz");
-
-            var section = BuildSection("Transform");
-            var grid = BuildXYZGrid();
-            (_tbPx, _tbPy, _tbPz) = AddXYZRow(grid, 0, "位置",    px, py, pz, "#E06C75", "#98C379", "#61AFEF", 0.1);
-            (_tbEx, _tbEy, _tbEz) = AddXYZRow(grid, 1, "回転",    ex, ey, ez, "#E06C75", "#98C379", "#61AFEF", 1.0);
-            (_tbSx, _tbSy, _tbSz) = AddXYZRow(grid, 2, "スケール", sx, sy, sz, "#E06C75", "#98C379", "#61AFEF", 0.01);
-            ((StackPanel)section.Child).Children.Add(grid);
-            BasicInfoStack.Children.Add(section);
-        }
-
-        // [コンポーネント情報] タブ: 選択中スロットのプロパティ
-        if (_selectedSlotIdx >= 0)
-        {
-            var info = _slotInfos.FirstOrDefault(s => s.SlotIdx == _selectedSlotIdx);
-            if (info != null)
+            _pendingDuplicateRename = false;
+            var newSlot = _slotInfos.FirstOrDefault(s => !prevSlotIdxSet.Contains(s.SlotIdx));
+            if (newSlot != null)
             {
-                CompInfoScroll.Visibility           = Visibility.Visible;
-                NoComponentSelectedBlock.Visibility = Visibility.Collapsed;
-                BuildSlotProps(info);
-                return;
+                var defaultName = ComputeDuplicateName(_pendingDuplicateBaseName, newSlot.SlotIdx);
+                Dispatcher.BeginInvoke(
+                    // currentName = runtime 上の実際の名前（例: "Sprite Copy"）
+                    // initialText = 表示する候補名（例: "Sprite(1)"）
+                    // → TextBox には "Sprite(1)" が表示され、変更なしで確定しても
+                    //   "Sprite Copy" != "Sprite(1)" なので RENAME_COMPONENT_SLOT が送られる。
+                    () => StartComponentRename(newSlot.SlotIdx, newSlot.Name, defaultName),
+                    System.Windows.Threading.DispatcherPriority.Loaded);
             }
         }
-        CompInfoScroll.Visibility           = Visibility.Collapsed;
-        NoComponentSelectedBlock.Visibility = Visibility.Visible;
     }
 
-    private void BuildSlotProps(SlotInfo info)
+    /// <summary>
+    /// 複製時のデフォルト名を計算する。"baseName(1)"、"baseName(2)" の形式で既存名と重複しない最小番号を返す。
+    /// excludeSlotIdx の名前は比較対象から除外する（複製直後は元と同名の場合があるため）。
+    /// </summary>
+    private string ComputeDuplicateName(string baseName, int excludeSlotIdx)
     {
-        if (info.TypeId == "ModelComponent")
+        var existing = _slotInfos
+            .Where(s => s.SlotIdx != excludeSlotIdx)
+            .Select(s => s.Name)
+            .ToHashSet(StringComparer.Ordinal);
+        for (int n = 1; ; n++)
         {
-            var section = BuildSection(info.Name + " (ModelComponent)");
-            var sp = (StackPanel)section.Child;
-            sp.Children.Add(BuildModelPathRow(info));
-            ComponentPropsStack.Children.Add(section);
+            var candidate = $"{baseName}({n})";
+            if (!existing.Contains(candidate)) return candidate;
         }
-        else if (info.TypeId == "ScriptComponent")
+    }
+
+    /// <summary>
+    /// アコーディオンセクションを生成する。
+    /// ヘッダー行（▼/▶ + アイコン + タイトル）と折り畳み可能なコンテンツエリアを持つ。
+    /// パラメータ編集専用のため、削除・リネームなどの操作ボタンは持たない。
+    /// slotIdx が -1 の場合は基本情報セクション。
+    /// </summary>
+    private StackPanel BuildAccordionSection(string title, string typeId, UIElement content, int slotIdx)
+    {
+        var isExpanded = true;
+
+        // ── コンテナ（ヘッダー + コンテンツ）────────────────────
+        var container = new StackPanel { Tag = slotIdx };
+
+        // ── ヘッダー ──────────────────────────────────────────────
+        var header = new Border
         {
-            BuildScriptSlotProps(info);
-        }
-        else if (info.TypeId == "CanvasComponent")
+            Background      = new SolidColorBrush(Color.FromRgb(0x2A, 0x2A, 0x2A)),
+            BorderBrush     = new SolidColorBrush(Color.FromRgb(0x3F, 0x3F, 0x46)),
+            BorderThickness = new Thickness(0, 0, 0, 1),
+            Padding         = new Thickness(6, 6, 6, 6),
+            Cursor          = Cursors.Hand,
+        };
+
+        var headerGrid = new Grid();
+        headerGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });                      // 矢印
+        headerGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });                      // アイコン
+        headerGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) }); // タイトル
+
+        // 矢印（展開/折り畳みインジケータ）
+        var arrow = new TextBlock
         {
-            BuildCanvasSlotProps(info);
-        }
-        else if (info.TypeId == "SpriteComponent")
+            Text              = "▼",
+            Foreground        = new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88)),
+            FontSize          = 8,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin            = new Thickness(0, 0, 6, 0),
+        };
+        Grid.SetColumn(arrow, 0);
+        headerGrid.Children.Add(arrow);
+
+        // 種別アイコン（コンポーネントスロットのみ）
+        if (slotIdx >= 0 && !string.IsNullOrEmpty(typeId))
         {
-            BuildSpriteSlotProps(info);
+            var icon = new TextBlock
+            {
+                Text              = typeId == "ModelComponent" ? "◈" : "⬡",
+                Foreground        = new SolidColorBrush(Color.FromRgb(0x55, 0xAA, 0xFF)),
+                FontSize          = 10,
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin            = new Thickness(0, 0, 4, 0),
+            };
+            Grid.SetColumn(icon, 1);
+            headerGrid.Children.Add(icon);
         }
+
+        // タイトル
+        var titleBlock = new TextBlock
+        {
+            Text              = title,
+            Foreground        = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)),
+            FontSize          = 12,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        Grid.SetColumn(titleBlock, 2);
+        headerGrid.Children.Add(titleBlock);
+
+        header.Child = headerGrid;
+
+        // ── コンテンツラッパー（左インデント）────────────────────
+        var contentWrapper = new Border
+        {
+            Padding         = new Thickness(16, 0, 0, 4),
+            BorderBrush     = new SolidColorBrush(Color.FromRgb(0x3F, 0x3F, 0x46)),
+            BorderThickness = new Thickness(0, 0, 0, 1),
+            Child           = content,
+        };
+
+        // ヘッダークリックで展開/折り畳みトグル
+        header.MouseLeftButtonDown += (_, _) =>
+        {
+            isExpanded = !isExpanded;
+            contentWrapper.Visibility = isExpanded ? Visibility.Visible : Visibility.Collapsed;
+            arrow.Text = isExpanded ? "▼" : "▶";
+        };
+
+        container.Children.Add(header);
+        container.Children.Add(contentWrapper);
+        return container;
+    }
+
+    /// <summary>スロット情報から コンポーネントプロパティ UI を生成して返す。</summary>
+    private UIElement BuildSlotPropsContent(SlotInfo info) =>
+        info.TypeId switch
+        {
+            "ModelComponent"  => BuildModelSlotContent(info),
+            "ScriptComponent" => BuildScriptSlotContent(info),
+            "CanvasComponent" => BuildCanvasSlotContent(info),
+            "SpriteComponent" => BuildSpriteSlotContent(info),
+            _ => new TextBlock
+            {
+                Text       = $"未対応のコンポーネント: {info.TypeId}",
+                Foreground = new SolidColorBrush(Color.FromRgb(0x66, 0x66, 0x66)),
+                FontSize   = 11,
+                Margin     = new Thickness(0, 4, 0, 4),
+            },
+        };
+
+    private UIElement BuildModelSlotContent(SlotInfo info)
+    {
+        var sp = new StackPanel { Margin = new Thickness(0, 4, 0, 4) };
+        sp.Children.Add(BuildModelPathRow(info));
+        return sp;
     }
 
     // ── SpriteComponent inspector ─────────────────────────────
 
-    /// <summary>SpriteComponent のインスペクター UI を構築する。</summary>
-    /// <remarks>テクスチャパス・RGBA カラー・幅高さを表示し、変更を IPC で送信する。</remarks>
-    private void BuildSpriteSlotProps(SlotInfo info)
+    /// <summary>SpriteComponent のインスペクター UI を構築して返す。</summary>
+    private UIElement BuildSpriteSlotContent(SlotInfo info)
     {
-        var section = BuildSection(info.Name + " (SpriteComponent)");
-        var sp      = (StackPanel)section.Child;
+        var sp = new StackPanel { Margin = new Thickness(0, 4, 0, 4) };
 
         // テクスチャパス選択行
         sp.Children.Add(FileRefBuilder.Build(
@@ -412,35 +560,80 @@ public partial class InspectorPanel : UserControl
                 _runtime?.SendToRuntime($"SET_SPRITE_PATH:{_currentActorId},{info.SlotIdx},{path}");
             }));
 
-        // RGBA カラーフィールド
-        var rowR = BuildLabeledNumberRow("R", info.SpriteR);
-        var rowG = BuildLabeledNumberRow("G", info.SpriteG);
-        var rowB = BuildLabeledNumberRow("B", info.SpriteB);
-        var rowA = BuildLabeledNumberRow("A", info.SpriteA);
-        sp.Children.Add(rowR.element);
-        sp.Children.Add(rowG.element);
-        sp.Children.Add(rowB.element);
-        sp.Children.Add(rowA.element);
+        // カラーピッカーボタン（現在色のスウォッチ表示）
+        // クリックで ColorPickerWindow を開き、結果を即時送信する。
+        float curR = info.SpriteR, curG = info.SpriteG, curB = info.SpriteB, curA = info.SpriteA;
+
+        var colorSwatch = new Border
+        {
+            Width           = 120,
+            Height          = 22,
+            Margin          = new Thickness(0, 2, 0, 2),
+            BorderBrush     = new SolidColorBrush(Color.FromRgb(0x55, 0x55, 0x55)),
+            BorderThickness = new Thickness(1),
+            Background      = new SolidColorBrush(
+                Color.FromArgb((byte)(curA * 255), (byte)(curR * 255), (byte)(curG * 255), (byte)(curB * 255))),
+            Cursor          = Cursors.Hand,
+        };
+
+        // 市松背景（透明部の視覚化）
+        var checkerGrid = new Grid();
+        for (int ci = 0; ci < 2; ci++)
+            checkerGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        for (int ri = 0; ri < 2; ri++)
+            checkerGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        for (int ri = 0; ri < 2; ri++)
+            for (int ci = 0; ci < 2; ci++)
+            {
+                bool dark = (ri + ci) % 2 == 0;
+                var cell = new Border { Background = dark
+                    ? new SolidColorBrush(Color.FromRgb(0x60, 0x60, 0x60))
+                    : new SolidColorBrush(Color.FromRgb(0x99, 0x99, 0x99)) };
+                Grid.SetRow(cell, ri); Grid.SetColumn(cell, ci);
+                checkerGrid.Children.Add(cell);
+            }
+        var swatchOverlay = new Border
+        {
+            Background = new SolidColorBrush(
+                Color.FromArgb((byte)(curA * 255), (byte)(curR * 255), (byte)(curG * 255), (byte)(curB * 255))),
+        };
+        var swatchPanel = new Grid();
+        swatchPanel.Children.Add(checkerGrid);
+        swatchPanel.Children.Add(swatchOverlay);
+        colorSwatch.Child = swatchPanel;
+
+        var colorRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 2, 0, 2) };
+        var colorLabel = new TextBlock
+        {
+            Text              = "カラー",
+            Foreground        = new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88)),
+            FontSize          = 11,
+            VerticalAlignment = VerticalAlignment.Center,
+            Width             = 52,
+        };
+        colorRow.Children.Add(colorLabel);
+        colorRow.Children.Add(colorSwatch);
+        sp.Children.Add(colorRow);
+
+        colorSwatch.MouseLeftButtonUp += (_, _) =>
+        {
+            var win = Window.GetWindow(this);
+            var result = ColorPickerWindow.ShowDialog(win, curR, curG, curB, curA);
+            if (result is null) return;
+            (curR, curG, curB, curA) = result.Value;
+            // スウォッチ色を更新する
+            swatchOverlay.Background = new SolidColorBrush(
+                Color.FromArgb((byte)(curA * 255), (byte)(curR * 255), (byte)(curG * 255), (byte)(curB * 255)));
+            if (_currentActorId < 0) return;
+            _runtime?.SendToRuntime(FormattableString.Invariant(
+                $"SET_SPRITE_COLOR:{_currentActorId},{info.SlotIdx},{curR},{curG},{curB},{curA}"));
+        };
 
         // 幅・高さフィールド
         var rowW = BuildLabeledNumberRow("幅",  info.SpriteW);
         var rowH = BuildLabeledNumberRow("高さ", info.SpriteH);
         sp.Children.Add(rowW.element);
         sp.Children.Add(rowH.element);
-
-        ComponentPropsStack.Children.Add(section);
-
-        // カラー変更を送信するローカル関数
-        void CommitColor()
-        {
-            if (_currentActorId < 0) return;
-            if (!float.TryParse(rowR.textBox.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var r)) return;
-            if (!float.TryParse(rowG.textBox.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var g)) return;
-            if (!float.TryParse(rowB.textBox.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var b)) return;
-            if (!float.TryParse(rowA.textBox.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var a)) return;
-            _runtime?.SendToRuntime(FormattableString.Invariant(
-                $"SET_SPRITE_COLOR:{_currentActorId},{info.SlotIdx},{r},{g},{b},{a}"));
-        }
 
         // サイズ変更を送信するローカル関数
         void CommitSize()
@@ -452,27 +645,21 @@ public partial class InspectorPanel : UserControl
                 $"SET_SPRITE_SIZE:{_currentActorId},{info.SlotIdx},{w},{h}"));
         }
 
-        // RGBA 各テキストボックスにイベントを登録する
-        foreach (var tb in new[] { rowR.textBox, rowG.textBox, rowB.textBox, rowA.textBox })
-        {
-            tb.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { CommitColor(); e.Handled = true; } };
-            tb.LostFocus += (_, _) => CommitColor();
-        }
-
         // 幅・高さのテキストボックスにイベントを登録する
         rowW.textBox.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { CommitSize(); e.Handled = true; } };
         rowW.textBox.LostFocus += (_, _) => CommitSize();
         rowH.textBox.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { CommitSize(); e.Handled = true; } };
         rowH.textBox.LostFocus += (_, _) => CommitSize();
+
+        return sp;
     }
 
     // ── CanvasComponent inspector ─────────────────────────────
 
-    /// <summary>CanvasComponent の幅・高さフィールドを表示して SET_CANVAS_SIZE を送信する。</summary>
-    private void BuildCanvasSlotProps(SlotInfo info)
+    /// <summary>CanvasComponent の幅・高さ・スケールモードを表示して IPC を送信する。</summary>
+    private UIElement BuildCanvasSlotContent(SlotInfo info)
     {
-        var section = BuildSection(info.Name + " (CanvasComponent)");
-        var sp      = (StackPanel)section.Child;
+        var sp = new StackPanel { Margin = new Thickness(0, 4, 0, 4) };
 
         // 幅フィールド
         var rowW = BuildLabeledNumberRow("幅",  info.Width);
@@ -484,10 +671,65 @@ public partial class InspectorPanel : UserControl
         var tbH  = rowH.textBox;
         sp.Children.Add(rowH.element);
 
-        ComponentPropsStack.Children.Add(section);
+        // ── スケールモード セクション ──────────────────────────
+        var scaleSep = new TextBlock
+        {
+            Text       = "スケールモード",
+            Foreground = new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88)),
+            FontSize   = 10,
+            Margin     = new Thickness(0, 6, 0, 2),
+        };
+        sp.Children.Add(scaleSep);
+
+        // チェックボックス: トランスフォームをスケールする
+        var cbTransform = new CheckBox
+        {
+            Content             = "トランスフォームをスケールする",
+            IsChecked           = info.ScaleTransform,
+            Foreground          = new SolidColorBrush(Colors.White),
+            FontSize            = 11,
+            Margin              = new Thickness(0, 2, 0, 2),
+            VerticalAlignment   = VerticalAlignment.Center,
+        };
+        sp.Children.Add(cbTransform);
+
+        // チェックボックス: UIサイズをスケールする
+        var cbSize = new CheckBox
+        {
+            Content             = "UIサイズをスケールする",
+            IsChecked           = info.ScaleSize,
+            Foreground          = new SolidColorBrush(Colors.White),
+            FontSize            = 11,
+            Margin              = new Thickness(0, 2, 0, 8),
+            VerticalAlignment   = VerticalAlignment.Center,
+        };
+        sp.Children.Add(cbSize);
+
+        // ── 自動スケール セクション ──────────────────────────
+        var autoScaleSep = new TextBlock
+        {
+            Text       = "画面対応",
+            Foreground = new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88)),
+            FontSize   = 10,
+            Margin     = new Thickness(0, 2, 0, 2),
+        };
+        sp.Children.Add(autoScaleSep);
+
+        // チェックボックス: 画面サイズに自動スケール（ルートキャンバスのみ有効）
+        var cbAutoScale = new CheckBox
+        {
+            Content             = "画面サイズに自動スケール",
+            IsChecked           = info.AutoScale,
+            Foreground          = new SolidColorBrush(Colors.White),
+            FontSize            = 11,
+            Margin              = new Thickness(0, 2, 0, 2),
+            ToolTip             = "親キャンバスを持たないルートキャンバスにのみ有効。\nビューポートサイズの変化に応じて子 UI を自動スケールします。",
+            VerticalAlignment   = VerticalAlignment.Center,
+        };
+        sp.Children.Add(cbAutoScale);
 
         // 幅・高さを送信するローカル関数
-        void Commit()
+        void CommitSize()
         {
             if (_currentActorId < 0) return;
             if (!float.TryParse(tbW.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var w)) return;
@@ -496,10 +738,39 @@ public partial class InspectorPanel : UserControl
                 $"SET_CANVAS_SIZE:{_currentActorId},{info.SlotIdx},{w},{h}"));
         }
 
-        tbW.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { Commit(); e.Handled = true; } };
-        tbW.LostFocus += (_, _) => Commit();
-        tbH.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { Commit(); e.Handled = true; } };
-        tbH.LostFocus += (_, _) => Commit();
+        // スケールモードを送信するローカル関数
+        void CommitScaleMode()
+        {
+            if (_currentActorId < 0) return;
+            int st = (cbTransform.IsChecked == true) ? 1 : 0;
+            int ss = (cbSize.IsChecked      == true) ? 1 : 0;
+            _runtime?.SendToRuntime(FormattableString.Invariant(
+                $"SET_CANVAS_SCALE_MODE:{_currentActorId},{info.SlotIdx},{st},{ss}"));
+        }
+
+        // 画面サイズ自動スケールを送信するローカル関数
+        void CommitAutoScale()
+        {
+            if (_currentActorId < 0) return;
+            int v = (cbAutoScale.IsChecked == true) ? 1 : 0;
+            _runtime?.SendToRuntime(FormattableString.Invariant(
+                $"SET_CANVAS_AUTO_SCALE:{_currentActorId},{info.SlotIdx},{v}"));
+        }
+
+        tbW.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { CommitSize(); e.Handled = true; } };
+        tbW.LostFocus += (_, _) => CommitSize();
+        tbH.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { CommitSize(); e.Handled = true; } };
+        tbH.LostFocus += (_, _) => CommitSize();
+
+        cbTransform.Checked   += (_, _) => CommitScaleMode();
+        cbTransform.Unchecked += (_, _) => CommitScaleMode();
+        cbSize.Checked        += (_, _) => CommitScaleMode();
+        cbSize.Unchecked      += (_, _) => CommitScaleMode();
+
+        cbAutoScale.Checked   += (_, _) => CommitAutoScale();
+        cbAutoScale.Unchecked += (_, _) => CommitAutoScale();
+
+        return sp;
     }
 
     /// <summary>ラベル + 数値入力フィールドの行を生成する。</summary>
@@ -520,9 +791,11 @@ public partial class InspectorPanel : UserControl
         Grid.SetColumn(lbl, 0);
         grid.Children.Add(lbl);
 
+        var initText = value.ToString("F1", CultureInfo.InvariantCulture);
         var tb = new TextBox
         {
-            Text              = value.ToString("F1", CultureInfo.InvariantCulture),
+            Text              = initText,
+            Tag               = initText, // フォーカス前の最終有効値を保持する
             Background        = new SolidColorBrush(Color.FromRgb(0x1A, 0x1A, 0x1A)),
             Foreground        = new SolidColorBrush(Colors.White),
             BorderBrush       = new SolidColorBrush(Color.FromRgb(0x3F, 0x3F, 0x46)),
@@ -531,7 +804,9 @@ public partial class InspectorPanel : UserControl
             Padding           = new Thickness(3, 1, 3, 1),
             Margin            = new Thickness(1, 1, 2, 1),
             VerticalAlignment = VerticalAlignment.Center,
+            SelectionBrush    = new SolidColorBrush(Color.FromArgb(0x66, 0x33, 0x99, 0xFF)),
         };
+        AttachAutoSelectBehavior(tb);
         Grid.SetColumn(tb, 1);
         grid.Children.Add(tb);
 
@@ -540,34 +815,37 @@ public partial class InspectorPanel : UserControl
 
     // ── ScriptComponent inspector ─────────────────────────────
 
-    private void BuildScriptSlotProps(SlotInfo info)
+    private UIElement BuildScriptSlotContent(SlotInfo info)
     {
-        // スクリプトパス選択セクション
-        var pathSection = BuildSection(info.Name + " (ScriptComponent)");
-        ((StackPanel)pathSection.Child).Children.Add(BuildScriptPathRow(info));
-        ComponentPropsStack.Children.Add(pathSection);
+        var sp = new StackPanel { Margin = new Thickness(0, 4, 0, 4) };
+
+        // スクリプトパス選択行
+        sp.Children.Add(BuildScriptPathRow(info));
 
         // スクリプトが設定されていなければここで終了
-        if (string.IsNullOrEmpty(info.ModelPath)) return;
+        if (string.IsNullOrEmpty(info.ModelPath)) return sp;
 
         var scriptType = GetOrCompileScript(info.ModelPath);
-        if (scriptType is null) return;
+        if (scriptType is null) return sp;
 
         var fields = ScriptCompiler.GetSerializeFields(scriptType);
-        if (fields.Count == 0) return;
+        if (fields.Count == 0) return sp;
 
         var storeKey = $"{_currentActorId}:{info.SlotIdx}";
         if (!_scriptFieldValues.ContainsKey(storeKey))
             _scriptFieldValues[storeKey] = new Dictionary<string, string>();
         var values = _scriptFieldValues[storeKey];
 
+        // フィールドセクション
         var fieldSection = BuildSection("フィールド");
         var fieldSp = (StackPanel)fieldSection.Child;
         fieldSp.Children.Add(ScriptInspectorBuilder.Build(fields, values, (name, val) =>
         {
             values[name] = val;
         }));
-        ComponentPropsStack.Children.Add(fieldSection);
+        sp.Children.Add(fieldSection);
+
+        return sp;
     }
 
     private UIElement BuildScriptPathRow(SlotInfo info) =>
@@ -636,11 +914,11 @@ public partial class InspectorPanel : UserControl
         var chip = new Border
         {
             Background      = isSelected
-                                ? new SolidColorBrush(Color.FromRgb(0x1A, 0x2A, 0x3A))
-                                : new SolidColorBrush(Color.FromRgb(0x25, 0x25, 0x25)),
+                ? new SolidColorBrush(Color.FromRgb(0x1A, 0x2A, 0x3A))
+                : new SolidColorBrush(Color.FromRgb(0x25, 0x25, 0x25)),
             BorderBrush     = isSelected
-                                ? new SolidColorBrush(Color.FromRgb(0x33, 0x99, 0xFF))
-                                : new SolidColorBrush(Color.FromRgb(0x3F, 0x3F, 0x46)),
+                ? new SolidColorBrush(Color.FromRgb(0x33, 0x99, 0xFF))
+                : new SolidColorBrush(Color.FromRgb(0x3F, 0x3F, 0x46)),
             BorderThickness = new Thickness(1),
             CornerRadius    = new CornerRadius(3),
             Margin          = new Thickness(4, 2, 4, 2),
@@ -704,10 +982,7 @@ public partial class InspectorPanel : UserControl
         chip.MouseLeftButtonDown += (_, _) =>
         {
             _selectedSlotIdx = slotIdx;
-            if (!string.IsNullOrEmpty(_lastComponentsJson))
-                BuildActorComponentList(_lastComponentsJson);
-            else
-                RefreshChipSelection();
+            RefreshChipSelection();
         };
 
         chip.MouseRightButtonDown += (_, e) =>
@@ -725,16 +1000,14 @@ public partial class InspectorPanel : UserControl
     {
         foreach (var child in ComponentListStack.Children)
         {
-            if (child is Border b && b.Tag is int idx)
-            {
-                bool sel = idx == _selectedSlotIdx;
-                b.Background  = sel
-                    ? new SolidColorBrush(Color.FromRgb(0x1A, 0x2A, 0x3A))
-                    : new SolidColorBrush(Color.FromRgb(0x25, 0x25, 0x25));
-                b.BorderBrush = sel
-                    ? new SolidColorBrush(Color.FromRgb(0x33, 0x99, 0xFF))
-                    : new SolidColorBrush(Color.FromRgb(0x3F, 0x3F, 0x46));
-            }
+            if (child is not Border b || b.Tag is not int idx) continue;
+            bool sel     = idx == _selectedSlotIdx;
+            b.Background  = sel
+                ? new SolidColorBrush(Color.FromRgb(0x1A, 0x2A, 0x3A))
+                : new SolidColorBrush(Color.FromRgb(0x25, 0x25, 0x25));
+            b.BorderBrush = sel
+                ? new SolidColorBrush(Color.FromRgb(0x33, 0x99, 0xFF))
+                : new SolidColorBrush(Color.FromRgb(0x3F, 0x3F, 0x46));
         }
     }
 
@@ -764,8 +1037,20 @@ public partial class InspectorPanel : UserControl
         menu.Items.Add(MakeItem("複製", new SolidColorBrush(Color.FromRgb(0xAA, 0xDD, 0xAA)),
             (_, _) =>
             {
-                if (_currentActorId >= 0)
-                    _runtime?.SendToRuntime($"DUPLICATE_COMPONENT:{_currentActorId},{slotIdx}");
+                if (_currentActorId < 0) return;
+                // CanvasComponent は 1 アクターにつき 1 つのみ許可する
+                var srcInfo = _slotInfos.FirstOrDefault(s => s.SlotIdx == slotIdx);
+                if (srcInfo?.TypeId == "CanvasComponent" &&
+                    _slotInfos.Any(s => s.TypeId == "CanvasComponent"))
+                {
+                    MessageBox.Show(
+                        "CanvasComponent は 1 アクターにつき 1 つのみ追加できます。",
+                        "追加不可", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return;
+                }
+                _pendingDuplicateRename   = true;
+                _pendingDuplicateBaseName = currentName;
+                _runtime?.SendToRuntime($"DUPLICATE_COMPONENT:{_currentActorId},{slotIdx}");
             }));
         menu.Items.Add(new Separator());
         menu.Items.Add(MakeItem("削除", new SolidColorBrush(Color.FromRgb(0xFF, 0x66, 0x66)),
@@ -780,9 +1065,11 @@ public partial class InspectorPanel : UserControl
         menu.IsOpen          = true;
     }
 
-    private void StartComponentRename(int slotIdx, string currentName)
+    /// <param name="currentName">Runtime 上の現在の名前（変更判定の基準値）。</param>
+    /// <param name="initialText">TextBox に初期表示するテキスト。null のとき currentName を使う。</param>
+    private void StartComponentRename(int slotIdx, string currentName, string? initialText = null)
     {
-        // 該当チップを TextBox に差し替え
+        // 該当チップを TextBox に差し替える
         foreach (var child in ComponentListStack.Children)
         {
             if (child is not Border b || b.Tag is not int idx || idx != slotIdx) continue;
@@ -790,7 +1077,9 @@ public partial class InspectorPanel : UserControl
             var committed = false;
             var tb = new TextBox
             {
-                Text              = currentName,
+                // initialText が指定されていれば TextBox にはそちらを表示する。
+                // 変更判定（RENAME_COMPONENT_SLOT を送るかどうか）は currentName との比較で行う。
+                Text              = initialText ?? currentName,
                 Background        = new SolidColorBrush(Color.FromRgb(0x2D, 0x2D, 0x2D)),
                 Foreground        = Brushes.White,
                 CaretBrush        = Brushes.White,
@@ -808,19 +1097,30 @@ public partial class InspectorPanel : UserControl
                 committed = true;
                 var newName = tb.Text.Trim();
                 if (!string.IsNullOrEmpty(newName) && newName != currentName && _currentActorId >= 0)
-                    _runtime?.SendToRuntime($"RENAME_COMPONENT_SLOT:{_currentActorId},{slotIdx},{newName}");
-                // ランタイムが ACTOR_COMPONENTS を再送してくれるので UI は自動更新される
+                {
+                    // Rust パーサーは "RENAME_COMPONENT:" プレフィックスで処理する。
+                    // "_SLOT" を付けると先頭一致で誤マッチするが数値パースが失敗しコマンドが破棄される。
+                    _runtime?.SendToRuntime($"RENAME_COMPONENT:{_currentActorId},{slotIdx},{newName}");
+                }
+                else if (_currentActorId >= 0)
+                {
+                    // 名前変更なし（キャンセルと同等）: GET で UI をリフレッシュしてチップを復元する。
+                    _runtime?.SendToRuntime($"GET_ACTOR_COMPONENTS:{_currentActorId}");
+                }
             }
 
             tb.PreviewKeyDown += (_, e) =>
             {
                 if (e.Key is Key.Return or Key.Enter) { Commit(); e.Handled = true; }
-                else if (e.Key == Key.Escape)          { committed = true; /* キャンセル */ e.Handled = true;
-                    if (_currentActorId >= 0) _runtime?.SendToRuntime($"GET_ACTOR_COMPONENTS:{_currentActorId}"); }
+                else if (e.Key == Key.Escape)
+                {
+                    committed = true;
+                    e.Handled = true;
+                    if (_currentActorId >= 0) _runtime?.SendToRuntime($"GET_ACTOR_COMPONENTS:{_currentActorId}");
+                }
             };
             tb.LostFocus += (_, _) => Commit();
 
-            var originalChild = b.Child;
             b.Child = tb;
             Dispatcher.BeginInvoke(() => { tb.Focus(); tb.SelectAll(); },
                 System.Windows.Threading.DispatcherPriority.Input);
@@ -833,7 +1133,11 @@ public partial class InspectorPanel : UserControl
     private void OnAddComponentClicked(object sender, RoutedEventArgs e)
     {
         if (_runtime is null || _currentActorId < 0) return;
-        var win = new ComponentSelectorWindow(_runtime, _currentActorId)
+        // CanvasComponent が既に存在する場合は追加できないコンポーネント種別として渡す
+        var disabledTypes = new HashSet<string>();
+        if (_slotInfos.Any(s => s.TypeId == "CanvasComponent"))
+            disabledTypes.Add("CanvasComponent");
+        var win = new ComponentSelectorWindow(_runtime, _currentActorId, _isActor2D, disabledTypes)
         {
             Owner = Window.GetWindow(this),
         };
@@ -859,11 +1163,39 @@ public partial class InspectorPanel : UserControl
         {
             if (_copiedSlot != null)
             {
+                // CanvasComponent は 1 アクターにつき 1 つのみ許可する
+                if (_copiedSlot.TypeId == "CanvasComponent" &&
+                    _slotInfos.Any(s => s.TypeId == "CanvasComponent"))
+                {
+                    MessageBox.Show(
+                        "CanvasComponent は 1 アクターにつき 1 つのみ追加できます。",
+                        "追加不可", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    e.Handled = true;
+                    return;
+                }
+                _pendingDuplicateRename   = true;
+                _pendingDuplicateBaseName = _copiedSlot.Name;
                 _runtime?.SendToRuntime($"DUPLICATE_COMPONENT:{_currentActorId},{_copiedSlot.SlotIdx}");
                 e.Handled = true;
             }
         }
     }
+
+    // ── JSON helpers ─────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// JSON 要素を bool として読む。
+    /// Rust の serde_json は bool を JSON 真偽値（true/false）として出力するため
+    /// GetInt32() ではなく ValueKind で判定する。数値（0 以外 = true）も許容する。
+    /// </summary>
+    private static bool ReadJsonBool(System.Text.Json.JsonElement elem, bool fallback) =>
+        elem.ValueKind switch
+        {
+            System.Text.Json.JsonValueKind.True   => true,
+            System.Text.Json.JsonValueKind.False  => false,
+            System.Text.Json.JsonValueKind.Number => elem.GetInt32() != 0,
+            _                                     => fallback,
+        };
 
     // ── Section / grid helpers ────────────────────────────────
 
@@ -905,10 +1237,13 @@ public partial class InspectorPanel : UserControl
 
     /// <summary>
     /// CanvasTransform（2D）用の Transform セクションを生成する。
-    /// 位置(X,Y)・回転(単一値)・スケール(X,Y)・ピボット(X,Y) の7フィールド構成。
-    /// _tbPx/_tbPy = 位置, _tbEz = 回転, _tbSx/_tbSy = スケール, _tbPivotX/_tbPivotY = ピボット。
+    /// 位置(X,Y)・回転(単一値)・スケール(X,Y)・ピボット(X,Y)・アンカー(3×3プリセット + X,Y) の構成。
+    /// _tbPx/_tbPy = 位置, _tbEz = 回転, _tbSx/_tbSy = スケール, _tbPivotX/_tbPivotY = ピボット,
+    /// _tbAnchorX/_tbAnchorY = アンカー。
     /// </summary>
-    private Border BuildCanvas2DTransformSection(float px, float py, float rot, float sx, float sy, float pivx, float pivy)
+    private Border BuildCanvas2DTransformSection(
+        float px, float py, float rot, float sx, float sy,
+        float pivx, float pivy, float ancX, float ancY)
     {
         var section = BuildSection("CanvasTransform");
         var sp      = (StackPanel)section.Child;
@@ -920,11 +1255,160 @@ public partial class InspectorPanel : UserControl
         _tbEz = AddSingleValueRow(grid, 1, "回転", "Z", rot, "#61AFEF", 1.0);
         // スケール行: X, Y
         (_tbSx, _tbSy) = AddXYRow(grid, 2, "スケール", sx, sy, "#E06C75", "#98C379", 0.01);
-        // ピボット行: X, Y（回転・スケールの基準点オフセット）
-        (_tbPivotX, _tbPivotY) = AddXYRow(grid, 3, "ピボット", pivx, pivy, "#E06C75", "#98C379", 0.01);
 
         sp.Children.Add(grid);
+
+        // ── ピボットセクション ────────────────────────────────────────────
+        // ラベル
+        var pivotLabel = new TextBlock
+        {
+            Text       = "ピボット",
+            Foreground = new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88)),
+            FontSize   = 11,
+            Margin     = new Thickness(0, 6, 0, 2),
+        };
+        sp.Children.Add(pivotLabel);
+
+        // 3×3 プリセットグリッドと数値入力を横並び
+        var pivotRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 4) };
+
+        // 3×3 プリセットボタングリッド（各セルは pivot (col/2, row/2) に対応）
+        var pivotPresetGrid = new Grid { Width = 60, Height = 60, Margin = new Thickness(0, 0, 8, 0) };
+        for (int i = 0; i < 3; i++)
+        {
+            pivotPresetGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            pivotPresetGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        }
+        float[] pvPresetVals = { 0f, 0.5f, 1f };
+        for (int pvRow = 0; pvRow < 3; pvRow++)
+        {
+            for (int pvCol = 0; pvCol < 3; pvCol++)
+            {
+                float pv = pvPresetVals[pvCol];
+                float qv = pvPresetVals[pvRow];
+                // 現在選択中のプリセットを強調表示する
+                bool pvActive = (Math.Abs(pivx - pv) < 0.01f && Math.Abs(pivy - qv) < 0.01f);
+                var pvBtn = new Button
+                {
+                    Width           = 16,
+                    Height          = 16,
+                    Margin          = new Thickness(1),
+                    Background      = pvActive
+                        ? new SolidColorBrush(Color.FromRgb(0x61, 0xAF, 0xEF))
+                        : new SolidColorBrush(Color.FromRgb(0x3A, 0x3A, 0x3A)),
+                    BorderBrush     = new SolidColorBrush(Color.FromRgb(0x55, 0x55, 0x55)),
+                    BorderThickness = new Thickness(1),
+                    Padding         = new Thickness(0),
+                    Tag             = (pv, qv),
+                };
+                // プリセットボタンクリック時: 数値フィールドを更新して SET_CANVAS_TRANSFORM を送信
+                pvBtn.Click += (_, _) =>
+                {
+                    var (fpx, fpy) = ((float, float))pvBtn.Tag;
+                    if (_tbPivotX is not null) _tbPivotX.Text = fpx.ToString("F2", System.Globalization.CultureInfo.InvariantCulture);
+                    if (_tbPivotY is not null) _tbPivotY.Text = fpy.ToString("F2", System.Globalization.CultureInfo.InvariantCulture);
+                    CommitTransform();
+                };
+                Grid.SetRow(pvBtn, pvRow); Grid.SetColumn(pvBtn, pvCol);
+                pivotPresetGrid.Children.Add(pvBtn);
+            }
+        }
+        pivotRow.Children.Add(pivotPresetGrid);
+
+        // 数値入力エリア（X, Y フィールド）
+        var pivotFieldGrid = BuildXYGrid();
+        pivotFieldGrid.VerticalAlignment = VerticalAlignment.Center;
+        // AddXYRow が OnFieldLostFocus（→ CommitTransform）を自動登録する
+        (_tbPivotX, _tbPivotY) = AddXYRow(pivotFieldGrid, 0, "値", pivx, pivy, "#E06C75", "#98C379", 0.01);
+        pivotRow.Children.Add(pivotFieldGrid);
+
+        sp.Children.Add(pivotRow);
+
+        // ── アンカーセクション ────────────────────────────────────────────
+        // ラベル
+        var anchorLabel = new TextBlock
+        {
+            Text       = "アンカー",
+            Foreground = new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88)),
+            FontSize   = 11,
+            Margin     = new Thickness(0, 6, 0, 2),
+        };
+        sp.Children.Add(anchorLabel);
+
+        // 3×3 プリセットグリッドと数値入力を横並び
+        var anchorRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 4) };
+
+        // 3×3 プリセットボタングリッド
+        // 各セルは anchor (col/2, row/2) に対応する
+        var presetGrid = new Grid { Width = 60, Height = 60, Margin = new Thickness(0, 0, 8, 0) };
+        for (int i = 0; i < 3; i++)
+        {
+            presetGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            presetGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        }
+        float[] presetVals = { 0f, 0.5f, 1f };
+        for (int row = 0; row < 3; row++)
+        {
+            for (int col = 0; col < 3; col++)
+            {
+                float av = presetVals[col];
+                float bv = presetVals[row];
+                // 現在選択中のプリセットを強調表示する
+                bool isActive = (Math.Abs(ancX - av) < 0.01f && Math.Abs(ancY - bv) < 0.01f);
+                var btn = new Button
+                {
+                    Width             = 16,
+                    Height            = 16,
+                    Margin            = new Thickness(1),
+                    Background        = isActive
+                        ? new SolidColorBrush(Color.FromRgb(0x61, 0xAF, 0xEF))
+                        : new SolidColorBrush(Color.FromRgb(0x3A, 0x3A, 0x3A)),
+                    BorderBrush       = new SolidColorBrush(Color.FromRgb(0x55, 0x55, 0x55)),
+                    BorderThickness   = new Thickness(1),
+                    Padding           = new Thickness(0),
+                    Tag               = (av, bv),
+                };
+                // プリセットボタンクリック時: 数値フィールドを更新してコマンド送信
+                btn.Click += (_, _) =>
+                {
+                    var (fax, fay) = ((float, float))btn.Tag;
+                    if (_tbAnchorX is not null) _tbAnchorX.Text = fax.ToString("F2", System.Globalization.CultureInfo.InvariantCulture);
+                    if (_tbAnchorY is not null) _tbAnchorY.Text = fay.ToString("F2", System.Globalization.CultureInfo.InvariantCulture);
+                    SendCanvasAnchor();
+                };
+                Grid.SetRow(btn, row); Grid.SetColumn(btn, col);
+                presetGrid.Children.Add(btn);
+            }
+        }
+        anchorRow.Children.Add(presetGrid);
+
+        // 数値入力エリア（X, Y フィールド）
+        var anchorFieldGrid = BuildXYGrid();
+        anchorFieldGrid.VerticalAlignment = VerticalAlignment.Center;
+        (_tbAnchorX, _tbAnchorY) = AddXYRow(anchorFieldGrid, 0, "値", ancX, ancY, "#E06C75", "#98C379", 0.01);
+        _tbAnchorX.LostFocus += (_, _) => SendCanvasAnchor();
+        _tbAnchorY.LostFocus += (_, _) => SendCanvasAnchor();
+        _tbAnchorX.KeyDown   += (s, e) => { if (e.Key == System.Windows.Input.Key.Return) SendCanvasAnchor(); };
+        _tbAnchorY.KeyDown   += (s, e) => { if (e.Key == System.Windows.Input.Key.Return) SendCanvasAnchor(); };
+        anchorRow.Children.Add(anchorFieldGrid);
+
+        sp.Children.Add(anchorRow);
+
         return section;
+    }
+
+    /// <summary>
+    /// アンカー値をランタイムに送信する。
+    /// _tbAnchorX/_tbAnchorY の現在値を [0,1] にクランプして SET_CANVAS_ANCHOR を送る。
+    /// </summary>
+    private void SendCanvasAnchor()
+    {
+        if (_tbAnchorX is null || _tbAnchorY is null) return;
+        if (!TryParse(_tbAnchorX, out float ax) || !TryParse(_tbAnchorY, out float ay)) return;
+        ax = Math.Clamp(ax, 0f, 1f);
+        ay = Math.Clamp(ay, 0f, 1f);
+        _runtime?.SendToRuntime(FormattableString.Invariant(
+            $"SET_CANVAS_ANCHOR:{_currentActorId},{ax},{ay}"));
     }
 
     /// <summary>XY 2列グリッド（ラベル + X軸 + Y軸）を生成する。</summary>
@@ -1080,9 +1564,12 @@ public partial class InspectorPanel : UserControl
 
     private static TextBox MakeAxisField(float value, string colorHex)
     {
-        return new TextBox
+        var text = Fmt(value);
+        var tb = new TextBox
         {
-            Text              = Fmt(value),
+            Text              = text,
+            // フォーカス前の最終有効値を保持する（不正入力時の復元用）
+            Tag               = text,
             Background        = new SolidColorBrush(Color.FromRgb(0x1A, 0x1A, 0x1A)),
             Foreground        = new SolidColorBrush(Colors.White),
             BorderBrush       = new SolidColorBrush(Color.FromRgb(0x3F, 0x3F, 0x46)),
@@ -1091,7 +1578,38 @@ public partial class InspectorPanel : UserControl
             Padding           = new Thickness(3, 1, 3, 1),
             Margin            = new Thickness(1, 1, 2, 1),
             VerticalAlignment = VerticalAlignment.Center,
-            SelectionBrush    = new SolidColorBrush((Color)ColorConverter.ConvertFromString(colorHex)) { Opacity = 0.4 },
+            // 選択ハイライト: 青半透明で統一
+            SelectionBrush    = new SolidColorBrush(Color.FromArgb(0x66, 0x33, 0x99, 0xFF)),
+        };
+        AttachAutoSelectBehavior(tb);
+        return tb;
+    }
+
+    /// <summary>
+    /// TextBox クリック時に全選択する動作を付与する。
+    /// フォーカス取得時に現在値を Tag に保存し、不正入力時の復元に使う。
+    /// GotKeyboardFocus + PreviewMouseLeftButtonDown の組み合わせにより、
+    /// クリック後にカーソル位置でテキストが再選択解除される WPF の動作を防ぐ。
+    /// </summary>
+    private static void AttachAutoSelectBehavior(TextBox tb)
+    {
+        // フォーカス取得時: 編集前の値を Tag に保存してから全選択
+        tb.GotKeyboardFocus += (_, _) =>
+        {
+            tb.Tag = tb.Text; // 編集開始前の値を保存（不正入力時の復元用）
+            tb.SelectAll();
+        };
+
+        // クリックでフォーカスを当てる場合: まだフォーカスがなければクリックを横取りして
+        // Focus() を呼び出す。これにより GotKeyboardFocus → SelectAll の後に
+        // マウスイベントがカーソル位置を上書きするのを防ぐ。
+        tb.PreviewMouseLeftButtonDown += (_, e) =>
+        {
+            if (!tb.IsKeyboardFocusWithin)
+            {
+                e.Handled = true;
+                tb.Focus();
+            }
         };
     }
 
@@ -1154,13 +1672,14 @@ public partial class InspectorPanel : UserControl
         // 2D Actor の場合は CanvasTransform 専用コマンドを送信する
         if (_isActor2D && (_isActorEditMode || _isVirtualActorSelected))
         {
-            if (!TryParse(_tbPx, out float px) || !TryParse(_tbPy, out float py)) return;
-            if (!TryParse(_tbEz, out float rot)) return;
-            if (!TryParse(_tbSx, out float sx) || !TryParse(_tbSy, out float sy)) return;
+            float px   = ParseOrRestore(_tbPx);
+            float py   = ParseOrRestore(_tbPy);
+            float rot  = ParseOrRestore(_tbEz);
+            float sx   = ParseOrRestore(_tbSx);
+            float sy   = ParseOrRestore(_tbSy);
             // ピボット: フィールドが未設定の場合は 0.0 を使用する
-            float pivx = 0f, pivy = 0f;
-            if (_tbPivotX is not null) TryParse(_tbPivotX, out pivx);
-            if (_tbPivotY is not null) TryParse(_tbPivotY, out pivy);
+            float pivx = _tbPivotX is not null ? ParseOrRestore(_tbPivotX) : 0f;
+            float pivy = _tbPivotY is not null ? ParseOrRestore(_tbPivotY) : 0f;
             _runtime?.SendToRuntime(FormattableString.Invariant(
                 $"SET_CANVAS_TRANSFORM:{_currentActorId},{px},{py},{rot},{sx},{sy},{pivx},{pivy}"));
             TransformCommitted?.Invoke();
@@ -1168,9 +1687,9 @@ public partial class InspectorPanel : UserControl
         }
 
         // 3D Actor の場合は従来の 9 軸トランスフォームコマンドを送信する
-        if (!TryParseAll(out float px3, out float py3, out float pz3,
-                         out float ex3, out float ey3, out float ez3,
-                         out float sx3, out float sy3, out float sz3)) return;
+        float px3 = ParseOrRestore(_tbPx), py3 = ParseOrRestore(_tbPy), pz3 = ParseOrRestore(_tbPz);
+        float ex3 = ParseOrRestore(_tbEx), ey3 = ParseOrRestore(_tbEy), ez3 = ParseOrRestore(_tbEz);
+        float sx3 = ParseOrRestore(_tbSx), sy3 = ParseOrRestore(_tbSy), sz3 = ParseOrRestore(_tbSz);
 
         string msg;
         // アクター編集モード、またはシーンモードで仮想DFS選択された場合は SET_ACTOR_TRANSFORM を使う。
@@ -1189,21 +1708,43 @@ public partial class InspectorPanel : UserControl
         TransformCommitted?.Invoke();
     }
 
-    private bool TryParseAll(
-        out float px, out float py, out float pz,
-        out float ex, out float ey, out float ez,
-        out float sx, out float sy, out float sz)
-    {
-        px = py = pz = ex = ey = ez = sx = sy = sz = 0f;
-        return TryParse(_tbPx, out px) && TryParse(_tbPy, out py) && TryParse(_tbPz, out pz)
-            && TryParse(_tbEx, out ex) && TryParse(_tbEy, out ey) && TryParse(_tbEz, out ez)
-            && TryParse(_tbSx, out sx) && TryParse(_tbSy, out sy) && TryParse(_tbSz, out sz);
-    }
-
     private static bool TryParse(TextBox? tb, out float value)
     {
         value = 0f;
         return tb is not null && float.TryParse(tb.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out value);
+    }
+
+    /// <summary>
+    /// TextBox のテキストを float にパースする。
+    /// 空欄の場合は "0.000" を書き戻して 0 を返す。
+    /// 無効な文字列の場合はフォーカス取得時に Tag へ保存した直前の値を復元して返す。
+    /// </summary>
+    private static float ParseOrRestore(TextBox? tb)
+    {
+        if (tb is null) return 0f;
+
+        // 空欄 → 0 に確定
+        if (string.IsNullOrWhiteSpace(tb.Text))
+        {
+            tb.Text = Fmt(0f);
+            return 0f;
+        }
+
+        // 有効な数値 → そのまま使用
+        if (float.TryParse(tb.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var v))
+            return v;
+
+        // 無効な文字列 → Tag に保存した直前の有効値を復元
+        if (tb.Tag is string prev
+            && float.TryParse(prev, NumberStyles.Float, CultureInfo.InvariantCulture, out var pv))
+        {
+            tb.Text = prev;
+            return pv;
+        }
+
+        // フォールバック: 0
+        tb.Text = Fmt(0f);
+        return 0f;
     }
 
     // ── Helpers ──────────────────────────────────────────────

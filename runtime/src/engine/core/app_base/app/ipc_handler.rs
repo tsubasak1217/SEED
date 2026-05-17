@@ -447,6 +447,10 @@ impl App {
                 IpcCommand::SetShowAxisGizmo(v) => {
                     self.show_axis_gizmo = v;
                 }
+                IpcCommand::SetCanvasScreenSpaceOverlay(v) => {
+                    // キャンバス表示モード切り替え（false=ワールドスペース、true=スクリーンスペース）
+                    self.canvas_screen_space_overlay = v;
+                }
                 IpcCommand::GetCamState => {
                     let (pos, yaw, pitch, fov, far, spd) = self.cam_state_tuple();
                     if let Some(ipc) = &self.ipc {
@@ -483,6 +487,18 @@ impl App {
                     } else { None };
                     match result {
                         Some(Ok((mut new_scene, cam_data))) => {
+                            // world_line=0 が 2D キャンバスモードかどうかを
+                            // ロードしたアクター（すべて world_line=0）の種別を走査して判定する。
+                            // world_line > 0 のアクターを追加する前にチェックすることで
+                            // アクター編集タブの 2D アクターに誤判定しない。
+                            fn has_any_2d_actor(actors: &[crate::engine::structs::objects::Actor]) -> bool {
+                                actors.iter().any(|a| a.is_2d() || has_any_2d_actor(a.children()))
+                            }
+                            if has_any_2d_actor(&new_scene.actors) {
+                                self.canvas_world_lines.insert(0);
+                            } else {
+                                self.canvas_world_lines.remove(&0);
+                            }
                             // world_line > 0 のアクター（アクター編集タブ）を保持する
                             if let Some(old_scene) = self.scene.take() {
                                 for actor in old_scene.actors.into_iter().filter(|a| a.world_line > 0) {
@@ -555,8 +571,11 @@ impl App {
                             Ok(actor) => {
                                 if actor.is_2d() {
                                     self.canvas_world_lines.insert(world_line);
+                                    // アクター編集タブの 2D 世界線として登録（常にスクリーンスペース）
+                                    self.actor_edit_canvas_wls.insert(world_line);
                                 } else {
                                     self.canvas_world_lines.remove(&world_line);
+                                    self.actor_edit_canvas_wls.remove(&world_line);
                                 }
                                 main_scene.actors.push(actor);
                                 self.active_world_line = world_line;
@@ -624,6 +643,7 @@ impl App {
                     }
                     self.saved_cameras.remove(&wl);
                     self.canvas_world_lines.remove(&wl);
+                    self.actor_edit_canvas_wls.remove(&wl);
                     self.canvas_cameras.remove(&wl);
                 }
                 IpcCommand::AddComponent { actor_dfs_id, component_type, slot_name, args } => {
@@ -706,6 +726,12 @@ impl App {
                 }
                 IpcCommand::SetCanvasAnchor { actor_dfs_id, ax, ay } => {
                     self.handle_set_canvas_anchor(actor_dfs_id, ax, ay);
+                }
+                IpcCommand::SetCanvasScaleMode { actor_dfs_id, slot_idx, scale_transform, scale_size } => {
+                    self.handle_set_canvas_scale_mode(actor_dfs_id, slot_idx, scale_transform, scale_size);
+                }
+                IpcCommand::SetCanvasAutoScale { actor_dfs_id, slot_idx, auto_scale } => {
+                    self.handle_set_canvas_auto_scale(actor_dfs_id, slot_idx, auto_scale);
                 }
             }
         }

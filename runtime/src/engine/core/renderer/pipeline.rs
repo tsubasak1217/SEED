@@ -21,6 +21,7 @@ fn get_shader_source(name: &str) -> &'static str {
         "id_pass.wgsl"               => include_str!("shaders/id_pass.wgsl"),
         "outline.wgsl"               => include_str!("shaders/outline.wgsl"),
         "sprite.wgsl"                => include_str!("shaders/sprite.wgsl"),
+        "canvas_id.wgsl"             => include_str!("shaders/canvas_id.wgsl"),
         other => panic!("unknown shader source: {other}"),
     }
 }
@@ -515,6 +516,85 @@ impl SpritePipeline {
 }
 
 // ============================================================
+//  CanvasIdPipeline — 2D キャンバスアクター ID 書き込みパス
+// ============================================================
+
+/// キャンバスアクター ID パスで GPU に送るユニフォーム（80 bytes）。
+///
+/// model は GPU 列優先（WGSL mat4x4<f32> レイアウト）で格納する。
+/// actor_id は「bitcast<f32>(u32)」として A チャンネルに書き込まれる。
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct CanvasIdUniform {
+    /// GPU 列優先モデル行列（64 bytes）
+    pub model:    [[f32; 4]; 4],
+    /// raw アクター ID（0 = 背景、1 以上 = アクター）
+    pub actor_id: u32,
+    /// 16 バイトアライメント用パディング（12 bytes）
+    pub _pad:     [u32; 3],
+}
+
+/// キャンバスアクター ID パスパイプライン。
+///
+/// スプライトと同じユニットクワッド頂点レイアウトを使用し、
+/// Rgba32Float テクスチャの A チャンネルにアクター ID を書き込む。
+/// スプライトテクスチャのアルファが 0.1 未満のピクセルは discard するため、
+/// 透明領域クリックではアクターが選択されない。
+pub struct CanvasIdPipeline {
+    pub pipeline:         wgpu::RenderPipeline,
+    /// Group 1 BGL: CanvasIdUniform（モデル行列 + アクター ID）
+    pub canvas_id_bgl:    wgpu::BindGroupLayout,
+    /// Group 2 BGL: テクスチャ + サンプラー（アルファマスク用）
+    pub tex_bgl:          wgpu::BindGroupLayout,
+    /// スプライトなし時のフォールバック（白 1×1, alpha=1）
+    pub white_view:       wgpu::TextureView,
+    /// リニアフィルタリングサンプラー
+    pub sampler:          wgpu::Sampler,
+}
+
+impl CanvasIdPipeline {
+    fn new(device: &wgpu::Device, queue: &wgpu::Queue, df: wgpu::TextureFormat) -> Self {
+        // color_format = "Rgba32Float" のため surface_format は使用しない
+        let sf_unused = wgpu::TextureFormat::Bgra8UnormSrgb;
+        let (pipeline, mut bgls) =
+            RenderPipelineBuilder::new(device, include_str!("pipelines/canvas_id.toml"), sf_unused, df)
+                .build(get_shader_source);
+        // num_bind_groups=3 → bgls[0]=camera_bgl, [1]=canvas_id_bgl, [2]=tex_bgl
+        let tex_bgl       = bgls.pop().unwrap(); // group 2
+        let canvas_id_bgl = bgls.pop().unwrap(); // group 1
+        // group 0 の camera_bgl は camera_buf.bind_group と互換のため不使用
+
+        // 白 1×1 テクスチャ（alpha=1）を作成してフォールバックビューとする
+        let white_tex = device.create_texture(&wgpu::TextureDescriptor {
+            label:           Some("CanvasId White Fallback Tex"),
+            size:            wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count:    1,
+            dimension:       wgpu::TextureDimension::D2,
+            format:          wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage:           wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats:    &[],
+        });
+        queue.write_texture(
+            white_tex.as_image_copy(),
+            &[255u8, 255, 255, 255],
+            wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(4), rows_per_image: Some(1) },
+            wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+        );
+        let white_view = white_tex.create_view(&Default::default());
+
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label:      Some("CanvasId Sampler"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+
+        Self { pipeline, canvas_id_bgl, tex_bgl, white_view, sampler }
+    }
+}
+
+// ============================================================
 //  DrawPipelines — 全パイプラインをまとめた型
 // ============================================================
 
@@ -528,6 +608,7 @@ pub struct DrawPipelines {
     pub id_pass:       IdPassPipeline,
     pub outline:       OutlinePipeline,
     pub sprite:        SpritePipeline,
+    pub canvas_id:     CanvasIdPipeline,
 }
 
 impl DrawPipelines {
@@ -546,6 +627,7 @@ impl DrawPipelines {
         let id_pass       = IdPassPipeline::new(device, surface_format, depth_format);
         let outline       = OutlinePipeline::new(device, surface_format, depth_format);
         let sprite        = SpritePipeline::new(device, queue, surface_format, depth_format);
-        Self { mesh, skinned_mesh, unlit_line, cull, skin_compute, depth_prepass, id_pass, outline, sprite }
+        let canvas_id     = CanvasIdPipeline::new(device, queue, depth_format);
+        Self { mesh, skinned_mesh, unlit_line, cull, skin_compute, depth_prepass, id_pass, outline, sprite, canvas_id }
     }
 }

@@ -15,8 +15,14 @@ use super::{
     App,
     find_actor_by_dfs, find_actor_by_dfs_mut,
     apply_delta_to_actor_children,
+    canvas_anchor_offset_for_dfs,
     mat4x4_mul, mat4x4_inv,
+    RuntimeMode,
 };
+
+/// キャンバス座標（ピクセル）→ 3D ワールド座標の変換スケール係数。
+/// ワールドスペースモード時に CanvasTransform 座標をワールド空間にスケールするために使う。
+const CANVAS_WORLD_SCALE: f32 = 1.0 / 100.0;
 
 impl App {
     /// MC インスタンスのトランスフォームを行列形式で適用する（旧スタイル SET_TRANSFORM 用）。
@@ -248,7 +254,9 @@ impl App {
                 position: [px, py],
                 rotation,
                 scale: [sx, sy],
-                pivot: [pivot_x, pivot_y],
+                pivot:  [pivot_x, pivot_y],
+                // anchor は handle_set_canvas_transform では変更しないため旧値を引き継ぐ
+                anchor: old_ct.anchor,
             };
             let changed = new_ct.position != old_ct.position
                 || new_ct.rotation != old_ct.rotation
@@ -265,6 +273,39 @@ impl App {
 
         // インスペクターを最新値で更新し、シーン変更を通知する
         self.send_actor_components(dfs_id, self.actor_virtual_selected_slot_idx);
+        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+    }
+
+    /// CanvasComponent のスケールモードを更新する。
+    ///
+    /// scale_transform: 子UIの位置にスケールを適用するか
+    /// scale_size:      子UIのサイズにスケールを適用するか
+    pub(super) fn handle_set_canvas_scale_mode(
+        &mut self,
+        actor_dfs_id:    u32,
+        slot_idx:        u32,
+        scale_transform: bool,
+        scale_size:      bool,
+    ) {
+        let wl = self.active_world_line;
+
+        let slot_entity = {
+            let Some(scene) = &self.scene else { return };
+            let mut c = 0u32;
+            find_actor_by_dfs(&scene.actors, wl, actor_dfs_id, &mut c)
+                .and_then(|a| a.slots().get(slot_idx as usize))
+                .map(|s| s.entity)
+        };
+        let Some(slot_entity) = slot_entity else { return };
+
+        if let Some(scene) = &mut self.scene {
+            if let Some(cc) = scene.world.get_mut::<CanvasComponent>(slot_entity) {
+                cc.scale_transform = scale_transform;
+                cc.scale_size      = scale_size;
+            }
+        }
+
+        self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
         if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
     }
 
@@ -309,12 +350,47 @@ impl App {
         let scene = self.scene.as_ref()?;
         let mut c = 0u32;
         let actor = find_actor_by_dfs(&scene.actors, wl, dfs_id, &mut c)?;
-        // 2D キャンバスモードは CanvasTransform を優先する
+        // 2D キャンバスモードは CanvasTransform を優先し、アンカーオフセットを加算する
         if self.canvas_world_lines.contains(&wl) {
             let ct = scene.world.get::<CanvasTransform>(actor.entity)?;
-            Some([ct.position[0], ct.position[1], 0.0])
+            let off = canvas_anchor_offset_for_dfs(&scene.actors, &scene.world, wl, dfs_id);
+            // ワールドスペースモード（エディタでスクリーンスペース OFF かつ 3D シーン世界線）では
+            // 座標をスケールして 3D 空間へ変換し、Y 軸（下向き→上向き）を反転する
+            let in_editor = self.mode == RuntimeMode::Edit || self.paused;
+            let use_ss = self.canvas_screen_space_overlay || !in_editor
+                || self.actor_edit_canvas_wls.contains(&wl);
+            let ws     = if !use_ss { CANVAS_WORLD_SCALE } else { 1.0 };
+            let y_sign = if !use_ss { -1.0f32 } else { 1.0 };
+            Some([(ct.position[0] + off[0]) * ws,
+                  (ct.position[1] + off[1]) * ws * y_sign,
+                  0.0])
         } else {
             Some(scene.world.get::<ActorTransform>(actor.entity)?.position)
         }
+    }
+
+    /// CanvasComponent の画面サイズ自動スケールフラグを更新する。
+    pub(super) fn handle_set_canvas_auto_scale(
+        &mut self,
+        actor_dfs_id: u32,
+        slot_idx:     u32,
+        auto_scale:   bool,
+    ) {
+        let wl = self.active_world_line;
+        let slot_entity = {
+            let Some(scene) = &self.scene else { return };
+            let mut c = 0u32;
+            find_actor_by_dfs(&scene.actors, wl, actor_dfs_id, &mut c)
+                .and_then(|a| a.slots().get(slot_idx as usize))
+                .map(|s| s.entity)
+        };
+        let Some(slot_entity) = slot_entity else { return };
+        if let Some(scene) = &mut self.scene {
+            if let Some(cc) = scene.world.get_mut::<CanvasComponent>(slot_entity) {
+                cc.auto_scale = auto_scale;
+            }
+        }
+        self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
+        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
     }
 }

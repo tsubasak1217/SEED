@@ -26,17 +26,18 @@ pub use crate::engine::core::renderer::{
     // パイプライン型
     MeshPipeline, SkinnedMeshPipeline, UnlitPipeline, CullPipeline, DrawPipelines,
     SkinComputePipeline, IdPassPipeline, OutlinePipeline, DepthPrepassPipelines,
-    SpritePipeline,
+    SpritePipeline, CanvasIdPipeline, CanvasIdUniform,
 };
 
 // 描画関数
 pub use model_drawer::draw_model_indirect;
-pub use id_pass::{IdBuffer, draw_id_pass};
+pub use id_pass::{IdBuffer, draw_id_pass, draw_canvas_id_items, prepare_canvas_id_bg};
 pub use outline::{draw_outline, draw_stencil_mask, draw_outline_multi, draw_stencil_mask_multi};
 pub use primitive_drawer::{LineBatch, GizmoBatch, draw_line_batch, draw_gizmo_batch};
 pub use sprite_drawer::{
     GpuSpriteTexture, SpriteUniform, SpriteVertex,
-    load_sprite_texture, prepare_sprites, draw_sprites, SpritePrepared,
+    load_sprite_texture, prepare_sprites, prepare_sprites_from_mats,
+    draw_sprites, SpritePrepared,
 };
 
 // ============================================================
@@ -63,8 +64,8 @@ pub struct DrawContext {
     /// 同じパスのモデルを繰り返し build_actor/rebuild するときにディスク読み込みとパースを省く。
     pub model_cache:      RefCell<HashMap<String, Arc<Model>>>,
     /// パス → GPU スプライトテクスチャキャッシュ。
-    /// テクスチャの再読み込みを抑制する。
-    pub sprite_tex_cache: RefCell<HashMap<String, Arc<GpuSpriteTexture>>>,
+    /// Some(arc) = ロード成功、None = ロード失敗済み（毎フレームのリトライ・ログ爆発を防ぐ）。
+    pub sprite_tex_cache: RefCell<HashMap<String, Option<Arc<GpuSpriteTexture>>>>,
 }
 
 impl DrawContext {

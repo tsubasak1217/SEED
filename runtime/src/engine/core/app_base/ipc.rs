@@ -149,6 +149,17 @@ pub enum IpcCommand {
     /// CanvasTransform の anchor を設定する（正規化値 0.0〜1.0）
     /// フォーマット: SET_CANVAS_ANCHOR:{actor_dfs_id},{anchor_x},{anchor_y}
     SetCanvasAnchor { actor_dfs_id: u32, ax: f32, ay: f32 },
+    /// CanvasComponent のスケールモードを設定する
+    /// フォーマット: SET_CANVAS_SCALE_MODE:{actor_dfs_id},{slot_idx},{scale_transform},{scale_size}
+    /// scale_transform / scale_size は "0" または "1"
+    SetCanvasScaleMode { actor_dfs_id: u32, slot_idx: u32, scale_transform: bool, scale_size: bool },
+    /// キャンバスをスクリーンスペースオーバーレイで表示するかを切り替える
+    /// false（デフォルト）= ワールドスペース、true = スクリーンスペースオーバーレイ
+    /// フォーマット: CANVAS_SS_OVERLAY:0/1
+    SetCanvasScreenSpaceOverlay(bool),
+    /// ルートキャンバスの画面サイズ自動スケールを設定する
+    /// フォーマット: SET_CANVAS_AUTO_SCALE:{actor_dfs_id},{slot_idx},{value}
+    SetCanvasAutoScale { actor_dfs_id: u32, slot_idx: u32, auto_scale: bool },
 }
 
 // ============================================================
@@ -346,10 +357,12 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                             s["VIEWPORT_FAR:".len()..].parse::<f32>().ok()
                                 .map(IpcCommand::SetCameraFar)
                         }
-                        "SHOW_GRID:1"        => Some(IpcCommand::SetShowGrid(true)),
-                        "SHOW_GRID:0"        => Some(IpcCommand::SetShowGrid(false)),
-                        "SHOW_AXIS_GIZMO:1"  => Some(IpcCommand::SetShowAxisGizmo(true)),
-                        "SHOW_AXIS_GIZMO:0"  => Some(IpcCommand::SetShowAxisGizmo(false)),
+                        "SHOW_GRID:1"           => Some(IpcCommand::SetShowGrid(true)),
+                        "SHOW_GRID:0"           => Some(IpcCommand::SetShowGrid(false)),
+                        "SHOW_AXIS_GIZMO:1"     => Some(IpcCommand::SetShowAxisGizmo(true)),
+                        "SHOW_AXIS_GIZMO:0"     => Some(IpcCommand::SetShowAxisGizmo(false)),
+                        "CANVAS_SS_OVERLAY:1"   => Some(IpcCommand::SetCanvasScreenSpaceOverlay(true)),
+                        "CANVAS_SS_OVERLAY:0"   => Some(IpcCommand::SetCanvasScreenSpaceOverlay(false)),
                         s if s.starts_with("LOAD_SCENE:") => {
                             Some(IpcCommand::LoadScene(s["LOAD_SCENE:".len()..].to_string()))
                         }
@@ -639,6 +652,34 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                                     parts[2].parse::<f32>(),
                                 ) {
                                     Some(IpcCommand::SetCanvasAnchor { actor_dfs_id: id, ax, ay })
+                                } else { None }
+                            } else { None }
+                        }
+                        s if s.starts_with("SET_CANVAS_SCALE_MODE:") => {
+                            // フォーマット: SET_CANVAS_SCALE_MODE:{actor_dfs_id},{slot_idx},{scale_transform},{scale_size}
+                            let rest = &s["SET_CANVAS_SCALE_MODE:".len()..];
+                            let parts: Vec<&str> = rest.split(',').collect();
+                            if parts.len() == 4 {
+                                if let (Ok(id), Ok(sl)) = (parts[0].parse::<u32>(), parts[1].parse::<u32>()) {
+                                    let st = parts[2].trim() == "1";
+                                    let ss = parts[3].trim() == "1";
+                                    Some(IpcCommand::SetCanvasScaleMode {
+                                        actor_dfs_id: id, slot_idx: sl,
+                                        scale_transform: st, scale_size: ss,
+                                    })
+                                } else { None }
+                            } else { None }
+                        }
+                        s if s.starts_with("SET_CANVAS_AUTO_SCALE:") => {
+                            // フォーマット: SET_CANVAS_AUTO_SCALE:{actor_dfs_id},{slot_idx},{value}
+                            let rest = &s["SET_CANVAS_AUTO_SCALE:".len()..];
+                            let parts: Vec<&str> = rest.split(',').collect();
+                            if parts.len() == 3 {
+                                if let (Ok(id), Ok(sl)) = (parts[0].parse::<u32>(), parts[1].parse::<u32>()) {
+                                    let v = parts[2].trim() == "1";
+                                    Some(IpcCommand::SetCanvasAutoScale {
+                                        actor_dfs_id: id, slot_idx: sl, auto_scale: v,
+                                    })
                                 } else { None }
                             } else { None }
                         }

@@ -84,6 +84,34 @@ impl CanvasTransform {
     pub fn to_mat4(&self) -> [[f32; 4]; 4] {
         self.to_mat4_sized(1.0, 1.0)
     }
+
+    /// スプライト描画用のサイズ付き行優先ローカル行列を返す。
+    ///
+    /// `to_mat4_sized` と同じ計算だが、X 基底に `width`、Y 基底に `height` を乗じることで
+    /// ユニットクワッド [0,1]×[0,1] がスプライトのワールド矩形にマッピングされる行列を生成する。
+    /// ペアレント行列（親のワールド行列）との乗算に使用する。
+    ///
+    /// 計算式:
+    ///   col0 = cos*sx*w, col1 = -sin*sy*h, translation = T(position) * T(-pivot*size) で決定
+    pub fn to_sprite_mat4(&self, width: f32, height: f32) -> [[f32; 4]; 4] {
+        let rad = self.rotation.to_radians();
+        let cos = rad.cos();
+        let sin = rad.sin();
+        let [sx, sy] = self.scale;
+        let [px, py] = self.position;
+        // ピボットをサイズで実際のオフセットに変換する
+        let pvx = self.pivot[0] * width;
+        let pvy = self.pivot[1] * height;
+        // X 基底に width、Y 基底に height を乗じることで
+        // ユニットクワッド(u,v)→スプライトサイズの変換を表す行優先行列。
+        // 平行移動成分は to_mat4_sized と同じ（ピボット調整済み）。
+        [
+            [cos * sx * width,  -sin * sy * height,  0.0,  px - cos * sx * pvx + sin * sy * pvy],
+            [sin * sx * width,   cos * sy * height,  0.0,  py - sin * sx * pvx - cos * sy * pvy],
+            [0.0,                0.0,                1.0,  0.0],
+            [0.0,                0.0,                0.0,  1.0],
+        ]
+    }
 }
 
 impl Default for CanvasTransform {

@@ -97,8 +97,13 @@ pub struct ActorData {
     /// Actor の種別（3D / 2D）。省略時は Actor3D。
     #[serde(default, skip_serializing_if = "is_actor3d")]
     pub actor_kind: ActorKind,
+    /// 3D アクターのトランスフォーム。Actor3D のみ使用。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transform:  Option<Transform>,
+    /// 2D アクターのキャンバストランスフォーム（position/rotation/scale/pivot/anchor）。
+    /// Actor2D のみ使用。既存の .actor ファイルとの互換性のため省略可（省略時はデフォルト）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canvas_transform: Option<CanvasTransform>,
     pub components: Vec<ComponentSlotData>,
     pub children:   Vec<ActorData>,
 }
@@ -251,7 +256,9 @@ impl Actor {
     /// World を参照してシリアライズ用データを生成する。
     /// コンポーネント実データは slot.entity から取得する（actor.entity ではない）。
     pub fn to_data(&self, world: &World) -> ActorData {
-        let transform = world.get::<Transform>(self.entity).cloned();
+        let transform        = world.get::<Transform>(self.entity).cloned();
+        // 2D アクターは CanvasTransform（pivot/anchor を含む）を保存する
+        let canvas_transform = world.get::<CanvasTransform>(self.entity).cloned();
         let components = self.slots.iter().filter_map(|slot| {
             // 各スロットは専用 entity を持つ
             let data = match slot.kind {
@@ -280,11 +287,12 @@ impl Actor {
         }).collect();
 
         ActorData {
-            name:       self.name.clone(),
-            actor_kind: self.actor_kind,
+            name:             self.name.clone(),
+            actor_kind:       self.actor_kind,
             transform,
+            canvas_transform,
             components,
-            children:   self.children.iter().map(|c| c.to_data(world)).collect(),
+            children:         self.children.iter().map(|c| c.to_data(world)).collect(),
         }
     }
 

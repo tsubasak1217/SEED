@@ -318,7 +318,9 @@ pub fn build_actor(
             world.insert(entity, data.transform.unwrap_or_default());
         }
         ActorKind::Actor2D => {
-            world.insert(entity, CanvasTransform::default());
+            // 保存済み canvas_transform があれば復元（pivot/anchor を含む）。
+            // 旧フォーマット（canvas_transform フィールドなし）との互換のためデフォルトにフォールバック。
+            world.insert(entity, data.canvas_transform.unwrap_or_default());
         }
     }
 
@@ -399,8 +401,11 @@ pub fn build_actor(
             ComponentData::CanvasComponent(cc_data) => {
                 use crate::engine::components::CanvasComponent;
                 world.insert(slot_entity, CanvasComponent {
-                    width:  cc_data.width,
-                    height: cc_data.height,
+                    width:           cc_data.width,
+                    height:          cc_data.height,
+                    scale_size:      cc_data.scale_size,
+                    scale_transform: cc_data.scale_transform,
+                    auto_scale:      cc_data.auto_scale,
                 });
                 actor.add_slot_typed::<CanvasComponent>(slot_name, ComponentKind::Canvas, slot_entity);
             }

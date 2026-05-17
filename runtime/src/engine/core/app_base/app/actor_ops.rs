@@ -111,8 +111,10 @@ impl App {
 
     /// .actor ファイルをシーンにドロップ配置する。
     ///
-    /// `path` から Actor をロードし、`spawn_pos` にトランスフォームを設定して
-    /// world_line=0 のシーンに追加する。配置操作は Undo/Redo の対象。
+    /// 3D アクターの場合は `spawn_pos` にトランスフォームを設定して配置する。
+    /// 2D アクター（Actor2D）の場合はドロップ位置を無視し、アクターファイルの
+    /// CanvasTransform（アンカー・ピボット・position）をそのまま使用して配置する。
+    /// いずれも world_line=0 のシーンに追加し、配置操作は Undo/Redo の対象。
     pub(super) fn handle_drop_actor(&mut self, path: &str, spawn_pos: [f32; 3]) {
         eprintln!("[Drop] handle_drop_actor path={path} spawn_pos={spawn_pos:?}");
         if self.draw_ctx.is_none() || self.scene.is_none() {
@@ -140,10 +142,24 @@ impl App {
         };
 
         match load_result {
-            Ok(mut actor) => {
+            Ok(actor) => {
                 eprintln!("[Drop] load_actor_into OK entity={:?} name={}", actor.entity, actor.name);
-                // ドロップ位置への ActorTransform 設定と instance_mats 同期
-                {
+
+                if actor.is_2d() {
+                    // ── 2D キャンバスアクター ─────────────────────────────────────
+                    // ドロップ位置は無視する。
+                    // アクターファイルに保存された CanvasTransform（position/anchor/pivot/scale）を
+                    // そのまま使用して配置場所を決定する。
+                    eprintln!("[Drop] 2D actor: using CanvasTransform from file (ignoring spawn_pos)");
+                    // world_line=0 を 2D キャンバスモードとして登録する。
+                    // これにより次フレームからスプライト描画が有効になる。
+                    self.canvas_world_lines.insert(0);
+                    let scene = self.scene.as_mut().unwrap();
+                    scene.actors.push(actor);
+                    eprintln!("[Drop] 2D actors.len()={}", scene.actors.len());
+                } else {
+                    // ── 3D アクター ──────────────────────────────────────────────
+                    // ドロップ位置に ActorTransform を設定し、instance_mats を同期する
                     let scene = self.scene.as_mut().unwrap();
                     let tf = ActorTransform {
                         position: spawn_pos,
@@ -165,8 +181,8 @@ impl App {
                         }
                     }
                     scene.actors.push(actor);
-                    eprintln!("[Drop] actors.len()={}", scene.actors.len());
-                } // ← ここで scene の可変借用が解放される
+                    eprintln!("[Drop] 3D actors.len()={}", scene.actors.len());
+                }
 
                 // 配置後スナップショットを取得し、Undo 履歴に記録する
                 let after_actors = self.snapshot_actors_for_wl(0);

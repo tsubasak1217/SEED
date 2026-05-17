@@ -3,68 +3,13 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              Background="#1E1E1E">
 
-    <UserControl.Resources>
-        <!-- Dark TabControl -->
-        <Style x:Key="DarkTab" TargetType="TabControl">
-            <Setter Property="Background"       Value="#1E1E1E"/>
-            <Setter Property="BorderThickness"  Value="0"/>
-            <Setter Property="Padding"          Value="0"/>
-            <Setter Property="Template">
-                <Setter.Value>
-                    <ControlTemplate TargetType="TabControl">
-                        <Grid>
-                            <Grid.RowDefinitions>
-                                <RowDefinition Height="Auto"/>
-                                <RowDefinition Height="*"/>
-                            </Grid.RowDefinitions>
-                            <Border Grid.Row="0" Background="#252525"
-                                    BorderBrush="#3F3F46" BorderThickness="0,0,0,1">
-                                <TabPanel IsItemsHost="True"/>
-                            </Border>
-                            <ContentPresenter Grid.Row="1" ContentSource="SelectedContent"/>
-                        </Grid>
-                    </ControlTemplate>
-                </Setter.Value>
-            </Setter>
-        </Style>
-
-        <!-- Dark TabItem -->
-        <Style x:Key="DarkTabItem" TargetType="TabItem">
-            <Setter Property="Foreground"      Value="#666666"/>
-            <Setter Property="FontSize"        Value="11"/>
-            <Setter Property="Padding"         Value="10,5"/>
-            <Setter Property="Background"      Value="Transparent"/>
-            <Setter Property="Template">
-                <Setter.Value>
-                    <ControlTemplate TargetType="TabItem">
-                        <Border x:Name="Bd" Padding="{TemplateBinding Padding}"
-                                BorderBrush="Transparent" BorderThickness="0,0,0,2">
-                            <ContentPresenter ContentSource="Header"
-                                              HorizontalAlignment="Center"
-                                              VerticalAlignment="Center"/>
-                        </Border>
-                        <ControlTemplate.Triggers>
-                            <Trigger Property="IsSelected" Value="True">
-                                <Setter TargetName="Bd" Property="BorderBrush" Value="#3399FF"/>
-                                <Setter Property="Foreground" Value="#CCCCCC"/>
-                            </Trigger>
-                            <Trigger Property="IsMouseOver" Value="True">
-                                <Setter Property="Foreground" Value="#AAAAAA"/>
-                            </Trigger>
-                        </ControlTemplate.Triggers>
-                    </ControlTemplate>
-                </Setter.Value>
-            </Setter>
-        </Style>
-    </UserControl.Resources>
-
     <Grid>
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
         </Grid.RowDefinitions>
 
-        <!-- ── Actor Header ── -->
+        <!-- ── アクターヘッダー ── -->
         <Border Grid.Row="0" Background="#252526" BorderBrush="#3F3F46"
                 BorderThickness="0,0,0,1" Padding="8,6">
             <StackPanel>
@@ -78,9 +23,9 @@
             </StackPanel>
         </Border>
 
-        <!-- ── Content area ── -->
+        <!-- ── コンテンツエリア ── -->
         <Grid Grid.Row="1">
-            <!-- "No selection" overlay -->
+            <!-- 未選択オーバーレイ -->
             <TextBlock x:Name="NoSelectionBlock"
                        Text="選択されているオブジェクトがありません"
                        Foreground="#444444" FontSize="12"
@@ -88,14 +33,14 @@
                        TextWrapping="Wrap" TextAlignment="Center"
                        Margin="16"/>
 
-            <!-- Scene mode: single scroll area -->
+            <!-- シーンモード: 単一スクロールエリア -->
             <ScrollViewer x:Name="ComponentScroll"
                           VerticalScrollBarVisibility="Auto"
                           Visibility="Collapsed">
                 <StackPanel x:Name="ComponentStack" Margin="0,4,0,4"/>
             </ScrollViewer>
 
-            <!-- Actor edit mode -->
+            <!-- アクター編集モード -->
             <Grid x:Name="ActorEditGrid" Visibility="Collapsed">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="120" MinHeight="40"/>
@@ -103,7 +48,7 @@
                     <RowDefinition Height="*" MinHeight="60"/>
                 </Grid.RowDefinitions>
 
-                <!-- Component list (top, scrollable) -->
+                <!-- コンポーネント一覧（上部・スクロール可能） -->
                 <Border Grid.Row="0" Background="#1A1A1A"
                         BorderBrush="#3F3F46" BorderThickness="0,0,0,1">
                     <DockPanel>
@@ -149,35 +94,17 @@
                     </DockPanel>
                 </Border>
 
-                <!-- Splitter -->
+                <!-- スプリッター -->
                 <GridSplitter Grid.Row="1"
                               HorizontalAlignment="Stretch" VerticalAlignment="Center"
                               Height="5" Background="#333333"
                               ResizeDirection="Rows" ResizeBehavior="PreviousAndNext"
                               ShowsPreview="False"/>
 
-                <!-- Properties area with tabs -->
-                <TabControl Grid.Row="2"
-                            Style="{StaticResource DarkTab}">
-                    <TabItem Header="基本情報" Style="{StaticResource DarkTabItem}">
-                        <ScrollViewer VerticalScrollBarVisibility="Auto">
-                            <StackPanel x:Name="BasicInfoStack" Margin="0,4,0,4"/>
-                        </ScrollViewer>
-                    </TabItem>
-                    <TabItem Header="コンポーネント情報" Style="{StaticResource DarkTabItem}">
-                        <Grid>
-                            <TextBlock x:Name="NoComponentSelectedBlock"
-                                       Text="コンポーネント未選択"
-                                       Foreground="#444444" FontSize="11"
-                                       HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                            <ScrollViewer x:Name="CompInfoScroll"
-                                          VerticalScrollBarVisibility="Auto"
-                                          Visibility="Collapsed">
-                                <StackPanel x:Name="ComponentPropsStack" Margin="0,4,0,4"/>
-                            </ScrollViewer>
-                        </Grid>
-                    </TabItem>
-                </TabControl>
+                <!-- アコーディオン（下部・パラメータ編集） -->
+                <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto">
+                    <StackPanel x:Name="AccordionStack" Margin="0,2,0,8"/>
+                </ScrollViewer>
             </Grid>
         </Grid>
     </Grid>

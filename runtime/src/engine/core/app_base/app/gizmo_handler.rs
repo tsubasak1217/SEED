@@ -11,7 +11,10 @@ use crate::engine::methods::gizmo_interact::{
     GizmoDrag, GizmoPart, screen_to_ray, screen_to_ray_ortho, hit_test_gizmo, start_drag,
 };
 
-use super::{App, find_actor_by_dfs, selection_centroid};
+use super::{App, RuntimeMode, find_actor_by_dfs, selection_centroid, canvas_anchor_offset_for_dfs};
+
+/// キャンバス座標（ピクセル）→ 3D ワールド座標の変換スケール係数。
+const CANVAS_WORLD_SCALE: f32 = 1.0 / 100.0;
 
 impl App {
     /// 全選択アクター（selected_actor_dfs_ids）のワールド位置重心を返す。
@@ -22,15 +25,30 @@ impl App {
         let scene = self.scene.as_ref()?;
         let wl = self.active_world_line;
         let is_canvas = self.canvas_world_lines.contains(&wl);
+        // ワールドスペースモード判定: エディタでスクリーンスペース OFF ならワールドスペース
+        let in_editor = self.mode == RuntimeMode::Edit || self.paused;
+        let use_screen_space = self.canvas_screen_space_overlay || !in_editor
+            || self.actor_edit_canvas_wls.contains(&wl);
         let mut sum = [0.0f32; 3];
         let mut count = 0usize;
         for &dfs_id in &self.selected_actor_dfs_ids {
             let mut c = 0u32;
             if let Some(actor) = find_actor_by_dfs(&scene.actors, wl, dfs_id as u32, &mut c) {
                 let pos = if is_canvas {
-                    // 2D: CanvasTransform から位置を取得する
+                    // 2D: CanvasTransform から位置を取得し、アンカーオフセットを加算する
                     scene.world.get::<CanvasTransform>(actor.entity)
-                        .map(|ct| [ct.position[0], ct.position[1], 0.0])
+                        .map(|ct| {
+                            let off = canvas_anchor_offset_for_dfs(
+                                &scene.actors, &scene.world, wl, dfs_id as u32,
+                            );
+                            // ワールドスペースモードでは座標をスケールして 3D 空間へ変換し、
+                            // Y 軸（キャンバス下向き→3D 上向き）を反転する
+                            let ws     = if !use_screen_space { CANVAS_WORLD_SCALE } else { 1.0 };
+                            let y_sign = if !use_screen_space { -1.0f32 } else { 1.0 };
+                            [(ct.position[0] + off[0]) * ws,
+                             (ct.position[1] + off[1]) * ws * y_sign,
+                             0.0]
+                        })
                 } else {
                     // 3D: MC の instance_mats[0] を優先、なければ ActorTransform.position を使う
                     actor.mc_entity()
@@ -78,7 +96,8 @@ impl App {
     }
 
     /// カーソル座標でギズモのヒットテストを行い、当たったパーツを返す。
-    /// 2D キャンバスモードでは ortho レイと 2D 有効パーツのみで判定する。
+    /// 2D キャンバスモードでは 2D 有効パーツのみで判定する。
+    /// スクリーンスペース: ortho レイ、ワールドスペース: perspective レイ を使用する。
     pub(super) fn compute_gizmo_hover(&self, cx: f32, cy: f32) -> Option<GizmoPart> {
         if self.tool_mode == ToolMode::Select { return None; }
         let gizmo_pos = self.current_gizmo_pos()?;
@@ -87,8 +106,13 @@ impl App {
         let vp_h = window_size.height as f32;
         let wl   = self.active_world_line;
         let is_canvas = self.canvas_world_lines.contains(&wl);
+        // ワールドスペースモード判定
+        let in_editor = self.mode == RuntimeMode::Edit || self.paused;
+        let use_screen_space = self.canvas_screen_space_overlay || !in_editor
+            || self.actor_edit_canvas_wls.contains(&wl);
 
-        let (ray_o, ray_d, radius) = if is_canvas {
+        let (ray_o, ray_d, radius) = if is_canvas && use_screen_space {
+            // スクリーンスペース: 2D ortho レイ
             let cam_2d = self.canvas_cameras.get(&wl);
             let pan_x  = cam_2d.map(|c| c.pan_x).unwrap_or(0.0);
             let pan_y  = cam_2d.map(|c| c.pan_y).unwrap_or(0.0);
@@ -98,6 +122,7 @@ impl App {
             let (ro, rd) = screen_to_ray_ortho(cx, cy, vp_w, vp_h, pan_x, pan_y, half_w, half_h);
             (ro, rd, r)
         } else {
+            // 3D perspective（通常 3D オブジェクトまたはワールドスペースキャンバス）
             let cam_pos_v = self.camera.position();
             let cam_pos   = [cam_pos_v.x, cam_pos_v.y, cam_pos_v.z];
             let d    = [gizmo_pos[0]-cam_pos[0], gizmo_pos[1]-cam_pos[1], gizmo_pos[2]-cam_pos[2]];
@@ -111,7 +136,7 @@ impl App {
         };
 
         let part = hit_test_gizmo(ray_o, ray_d, gizmo_pos, radius, self.tool_mode)?;
-        // 2D では Move/Scale の Z 軸・XZ/YZ 平面ハンドルは無効。
+        // 2D キャンバスでは Move/Scale の Z 軸・XZ/YZ 平面ハンドルは無効。
         // Rotate の AxisZ は 2D での回転操作に使うので有効とする。
         if is_canvas {
             match part {
@@ -144,8 +169,13 @@ impl App {
         let vp_h = window_size.height as f32;
         let wl   = self.active_world_line;
         let is_canvas = self.canvas_world_lines.contains(&wl);
+        // ワールドスペースモード判定
+        let in_editor = self.mode == RuntimeMode::Edit || self.paused;
+        let use_screen_space = self.canvas_screen_space_overlay || !in_editor
+            || self.actor_edit_canvas_wls.contains(&wl);
 
-        let (ray_o, ray_d, radius) = if is_canvas {
+        let (ray_o, ray_d, radius) = if is_canvas && use_screen_space {
+            // スクリーンスペース: 2D ortho レイ
             let cam_2d = self.canvas_cameras.get(&wl);
             let pan_x  = cam_2d.map(|c| c.pan_x).unwrap_or(0.0);
             let pan_y  = cam_2d.map(|c| c.pan_y).unwrap_or(0.0);
@@ -155,6 +185,7 @@ impl App {
             let (ro, rd) = screen_to_ray_ortho(cx, cy, vp_w, vp_h, pan_x, pan_y, half_w, half_h);
             (ro, rd, r)
         } else {
+            // 3D perspective（通常 3D オブジェクトまたはワールドスペースキャンバス）
             let cam_pos_v = self.camera.position();
             let cam_pos   = [cam_pos_v.x, cam_pos_v.y, cam_pos_v.z];
             let d    = [gizmo_pos[0]-cam_pos[0], gizmo_pos[1]-cam_pos[1], gizmo_pos[2]-cam_pos[2]];
@@ -168,7 +199,7 @@ impl App {
         };
 
         let part = hit_test_gizmo(ray_o, ray_d, gizmo_pos, radius, self.tool_mode)?;
-        // 2D では Move/Scale の Z 軸・XZ/YZ 平面ハンドルは無効。
+        // 2D キャンバスでは Move/Scale の Z 軸・XZ/YZ 平面ハンドルは無効。
         // Rotate の AxisZ は 2D での回転操作に使うので有効とする。
         if is_canvas {
             match part {

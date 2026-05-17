@@ -12,6 +12,10 @@ env:
 jobs:
   build-and-test:
     runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        configuration: [Debug, Release]
 
     steps:
     - uses: actions/checkout@v4
@@ -29,15 +33,23 @@ jobs:
     - name: Restore .NET dependencies
       run: dotnet restore editor/SEEDEditor.sln
 
-    - name: Build .NET Editor
-      run: dotnet build editor/SEEDEditor.sln --configuration Release --no-restore
+    - name: Build .NET Editor (${{ matrix.configuration }})
+      run: dotnet build editor/SEEDEditor.sln --configuration ${{ matrix.configuration }} --no-restore
 
-    - name: Build Rust Runtime
+    - name: Build Rust Runtime (${{ matrix.configuration }})
       run: |
         cd runtime
-        cargo build --verbose
+        if ("${{ matrix.configuration }}" -eq "Release") {
+          cargo build --release --verbose
+        } else {
+          cargo build --verbose
+        }
 
-    - name: Run Rust Tests
+    - name: Run Rust Tests (${{ matrix.configuration }})
       run: |
         cd runtime
-        cargo test --verbose
+        if ("${{ matrix.configuration }}" -eq "Release") {
+          cargo test --release --verbose
+        } else {
+          cargo test --verbose
+        }

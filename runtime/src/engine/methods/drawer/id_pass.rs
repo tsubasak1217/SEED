@@ -12,7 +12,7 @@
 
 use super::{
     gpu_resources::{GpuModel, InstancedModelBatch, NUM_LODS},
-    pipeline::DrawPipelines,
+    pipeline::{DrawPipelines, CanvasIdUniform},
 };
 
 // ピクセルあたりのバイト数 (Rgba32Float = 4 × 4bytes)
@@ -85,6 +85,93 @@ impl IdBuffer {
         let world_pos = if id != 0 { Some([x, y, z]) } else { None };
         (world_pos, id)
     }
+}
+
+// ============================================================
+//  draw_id_pass — ID パスでモデルを描画
+// ============================================================
+
+// ============================================================
+//  draw_canvas_id_items — キャンバスアクター ID パス描画
+// ============================================================
+
+/// キャンバスアクター ID パスにユニットクワッドを描画する。
+///
+/// 各アイテムはアクター raw ID と GPU 列優先モデル行列を持ち、
+/// 呼び出し元で事前に GPU バッファ + バインドグループを生成してから渡す。
+/// DFS 順に描画するので子が親を上書きし最前面の子が選択される。
+/// `*_tex_bgs` はアイテムと 1:1 対応するテクスチャ bind_group（group 2）で、
+/// スプライトなし時は white_fallback（alpha=1 全面選択）を渡す。
+///
+/// # 引数
+/// - `ws_items` / `ws_tex_bgs`: WS アイテムとテクスチャ BG（camera_buf 使用）
+/// - `ss_items` / `ss_tex_bgs`: SS アイテムとテクスチャ BG（ortho カメラ使用）
+/// - `ws_camera_bg`: WS 用カメラ BG（perspective または 2D ortho）
+/// - `ss_camera_bg`: SS 用 2D ortho カメラ BG（None なら SS アイテムは描画しない）
+pub fn draw_canvas_id_items<'pass>(
+    render_pass:  &mut wgpu::RenderPass<'pass>,
+    pipelines:    &'pass DrawPipelines,
+    ws_camera_bg: &'pass wgpu::BindGroup,
+    ss_camera_bg: Option<&'pass wgpu::BindGroup>,
+    ws_items:     &'pass [(wgpu::Buffer, wgpu::BindGroup)],
+    ws_tex_bgs:   &[&'pass wgpu::BindGroup],
+    ss_items:     &'pass [(wgpu::Buffer, wgpu::BindGroup)],
+    ss_tex_bgs:   &[&'pass wgpu::BindGroup],
+) {
+    if ws_items.is_empty() && ss_items.is_empty() { return; }
+
+    render_pass.set_pipeline(&pipelines.canvas_id.pipeline);
+    // スプライトパイプラインのユニットクワッド頂点バッファを共有する
+    render_pass.set_vertex_buffer(0, pipelines.sprite.unit_quad_vbuf.slice(..));
+
+    // ワールドスペース（perspective / WS ortho カメラ）
+    if !ws_items.is_empty() {
+        render_pass.set_bind_group(0, ws_camera_bg, &[]);
+        for ((_, bg), &tex_bg) in ws_items.iter().zip(ws_tex_bgs.iter()) {
+            render_pass.set_bind_group(1, bg, &[]);
+            render_pass.set_bind_group(2, tex_bg, &[]);
+            render_pass.draw(0..6, 0..1);
+        }
+    }
+
+    // スクリーンスペース（2D ortho カメラ）—— WS より後に描画するため常に前面に上書きされる
+    if let Some(ss_bg) = ss_camera_bg {
+        if !ss_items.is_empty() {
+            render_pass.set_bind_group(0, ss_bg, &[]);
+            for ((_, bg), &tex_bg) in ss_items.iter().zip(ss_tex_bgs.iter()) {
+                render_pass.set_bind_group(1, bg, &[]);
+                render_pass.set_bind_group(2, tex_bg, &[]);
+                render_pass.draw(0..6, 0..1);
+            }
+        }
+    }
+}
+
+/// キャンバス ID バインドグループを生成するヘルパー。
+///
+/// render pass 外で呼び出し、pass ライフタイム中リソースを保持する。
+pub fn prepare_canvas_id_bg(
+    device:    &wgpu::Device,
+    pipelines: &DrawPipelines,
+    model:     [[f32; 4]; 4],
+    actor_id:  u32,
+) -> (wgpu::Buffer, wgpu::BindGroup) {
+    use wgpu::util::DeviceExt;
+    let uniform = CanvasIdUniform { model, actor_id, _pad: [0; 3] };
+    let buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label:    Some("CanvasId Uniform Buf"),
+        contents: bytemuck::bytes_of(&uniform),
+        usage:    wgpu::BufferUsages::UNIFORM,
+    });
+    let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label:   Some("CanvasId BG"),
+        layout:  &pipelines.canvas_id.canvas_id_bgl,
+        entries: &[wgpu::BindGroupEntry {
+            binding:  0,
+            resource: buf.as_entire_binding(),
+        }],
+    });
+    (buf, bg)
 }
 
 // ============================================================

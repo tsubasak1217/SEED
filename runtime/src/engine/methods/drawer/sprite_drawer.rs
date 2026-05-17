@@ -46,8 +46,9 @@ pub struct SpriteUniform {
 /// テクスチャ本体・ビュー・バインドグループを一体で保持する。
 pub struct GpuSpriteTexture {
     pub bind_group: wgpu::BindGroup,
-    _texture: wgpu::Texture,
-    _view:    wgpu::TextureView,
+    /// テクスチャビュー（キャンバス ID パス等の別パイプラインでアルファ参照に使用）
+    pub view:     wgpu::TextureView,
+    _texture:     wgpu::Texture,
 }
 
 /// テクスチャファイルを読み込んで GpuSpriteTexture を生成する。
@@ -62,8 +63,30 @@ pub fn load_sprite_texture(
     tex_bgl: &wgpu::BindGroupLayout,
     sampler: &wgpu::Sampler,
 ) -> Option<Arc<GpuSpriteTexture>> {
-    let img  = image::open(path).ok()?;
+    // image::open() は拡張子でフォーマットを判定するが、
+    // with_guessed_format() はファイル先頭のマジックバイトで判定するため
+    // 拡張子と実際のフォーマットが一致しないファイルも正しく読める。
+    let img = match image::io::Reader::open(path) {
+        Ok(reader) => match reader.with_guessed_format() {
+            Ok(guessed) => match guessed.decode() {
+                Ok(img) => img,
+                Err(e) => {
+                    eprintln!("[SEED sprite] decode failed: path={:?} err={}", path, e);
+                    return None;
+                }
+            },
+            Err(e) => {
+                eprintln!("[SEED sprite] format guess failed: path={:?} err={}", path, e);
+                return None;
+            }
+        },
+        Err(e) => {
+            eprintln!("[SEED sprite] open failed: path={:?} err={}", path, e);
+            return None;
+        }
+    };
     let rgba = img.to_rgba8();
+    eprintln!("[SEED sprite] load ok: path={:?} size={}x{}", path, rgba.width(), rgba.height());
     let (w, h) = rgba.dimensions();
 
     let texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -101,7 +124,7 @@ pub fn load_sprite_texture(
             },
         ],
     });
-    Some(Arc::new(GpuSpriteTexture { bind_group, _texture: texture, _view: view }))
+    Some(Arc::new(GpuSpriteTexture { bind_group, view, _texture: texture }))
 }
 
 // ============================================================
@@ -155,6 +178,40 @@ pub fn prepare_sprites(
             model: sprite_model_matrix(ct, *w, *h),
             color: *color,
         };
+        let uniform_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label:    Some("SpriteUniform Buf"),
+            contents: bytemuck::bytes_of(&uniform),
+            usage:    wgpu::BufferUsages::UNIFORM,
+        });
+        let uniform_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label:   Some("SpriteUniform BG"),
+            layout:  &pipeline.sprite_uniform_bgl,
+            entries: &[wgpu::BindGroupEntry {
+                binding:  0,
+                resource: uniform_buf.as_entire_binding(),
+            }],
+        });
+        SpritePrepared { uniform_buf, uniform_bg, tex: tex.clone() }
+    }).collect()
+}
+
+/// 計算済みモデル行列（GPU 列優先）からスプライト描画リソースを準備する。
+///
+/// `collect_sprite_items` でペアレント行列を合成済みの GPU 列優先行列を直接受け取る。
+/// `prepare_sprites` がサイズ + CanvasTransform を受け取るのに対し、
+/// こちらは合成済み行列をそのまま使うためペアレント伝播に対応している。
+///
+/// # 引数
+/// - `items`: (GPU 列優先モデル行列, RGBA カラー, テクスチャ Arc or None) のリスト
+pub fn prepare_sprites_from_mats(
+    device:   &wgpu::Device,
+    pipeline: &SpritePipeline,
+    items:    &[([[f32; 4]; 4], [f32; 4], Option<Arc<GpuSpriteTexture>>)],
+) -> Vec<SpritePrepared> {
+    use wgpu::util::DeviceExt;
+
+    items.iter().map(|(model_mat, color, tex)| {
+        let uniform = SpriteUniform { model: *model_mat, color: *color };
         let uniform_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label:    Some("SpriteUniform Buf"),
             contents: bytemuck::bytes_of(&uniform),

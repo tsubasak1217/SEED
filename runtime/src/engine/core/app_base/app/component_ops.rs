@@ -163,8 +163,14 @@ impl App {
                     ("ScriptComponent", format!(r#","model_path":{path_json}"#))
                 }
                 ComponentData::CanvasComponent(d) => {
-                    // width / height をインスペクター用に送信する
-                    ("CanvasComponent", format!(r#","width":{:.4},"height":{:.4}"#, d.width, d.height))
+                    // width / height / スケールモード / 自動スケールをインスペクター用に送信する
+                    ("CanvasComponent", format!(
+                        r#","width":{:.4},"height":{:.4},"scale_transform":{},"scale_size":{},"auto_scale":{}"#,
+                        d.width, d.height,
+                        d.scale_transform as u8,
+                        d.scale_size      as u8,
+                        d.auto_scale      as u8,
+                    ))
                 }
                 ComponentData::SpriteComponent(d) => {
                     // テクスチャパス・カラー・サイズをインスペクター用に送信する
@@ -631,7 +637,12 @@ impl App {
             ComponentData::CanvasComponent(cc_data) => {
                 // CanvasComponent を複製して新スロット専用エンティティに insert
                 let slot_entity = scene.world.spawn();
-                scene.world.insert(slot_entity, CanvasComponent { width: cc_data.width, height: cc_data.height });
+                scene.world.insert(slot_entity, CanvasComponent {
+                                    width: cc_data.width, height: cc_data.height,
+                                    scale_transform: cc_data.scale_transform,
+                                    scale_size:      cc_data.scale_size,
+                                    auto_scale:      cc_data.auto_scale,
+                                });
                 let mut c = 0u32;
                 if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
                     actor.add_slot_typed::<CanvasComponent>(slot_data.name, ComponentKind::Canvas, slot_entity);
@@ -1103,7 +1114,12 @@ impl App {
                     }
                 }
                 ComponentData::CanvasComponent(cc_data) => {
-                    scene.world.insert(slot_entity, CanvasComponent { width: cc_data.width, height: cc_data.height });
+                    scene.world.insert(slot_entity, CanvasComponent {
+                                    width: cc_data.width, height: cc_data.height,
+                                    scale_transform: cc_data.scale_transform,
+                                    scale_size:      cc_data.scale_size,
+                                    auto_scale:      cc_data.auto_scale,
+                                });
                     new_slots.push(ComponentSlot::new::<CanvasComponent>(slot_data.name, ComponentKind::Canvas, slot_entity));
                 }
                 ComponentData::SpriteComponent(sc_data) => {

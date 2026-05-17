@@ -956,6 +956,21 @@
                                                         </StackPanel>
                                                     </Expander>
 
+                                                    <!-- ▶ キャンバス -->
+                                                    <Expander Header="キャンバス" IsExpanded="True"
+                                                              Style="{StaticResource DarkExpanderStyle}"
+                                                              Margin="0,8,0,0">
+                                                        <StackPanel Margin="8,6,0,2">
+                                                            <CheckBox x:Name="ChkCanvasScreenSpace"
+                                                                      Content="キャンバスをスクリーンスペースで表示"
+                                                                      Foreground="White" FontSize="11"
+                                                                      IsChecked="False"
+                                                                      Margin="0,0,0,4"
+                                                                      Checked="OnCanvasScreenSpaceChanged"
+                                                                      Unchecked="OnCanvasScreenSpaceChanged"/>
+                                                        </StackPanel>
+                                                    </Expander>
+
                                                     <!-- デフォルトに戻す -->
                                                     <Border Height="1" Background="#444444" Margin="0,10,0,8"/>
                                                     <Button Content="デフォルトに戻す"

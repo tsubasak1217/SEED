@@ -116,7 +116,8 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
     private bool _viewportSettingsInitialized  = false;
 
     // ── アクタータブ管理 ───────────────────────────────────────
-    private record ActorTab(string Path, string Name, uint WorldLine);
+    /// <summary>アクター編集タブ情報。IsActor2D は actor_kind="Actor2D" のとき true。</summary>
+    private record ActorTab(string Path, string Name, uint WorldLine, bool IsActor2D = false);
     private readonly List<ActorTab> _actorTabs       = new();
     /// <summary>現在アクター編集モードで開いているアクターのパス。null = シーンモード。</summary>
     private string? _activeActorPath                 = null;
@@ -1350,12 +1351,14 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         else
         {
             // 新規タブ: 世界線を割り当ててロード
-            var wl   = _nextWorldLineIdx++;
-            var name = System.IO.Path.GetFileNameWithoutExtension(path);
-            _actorTabs.Add(new ActorTab(path, name, wl));
+            var wl      = _nextWorldLineIdx++;
+            var name    = System.IO.Path.GetFileNameWithoutExtension(path);
+            // actor_kind を読み取って 2D アクターか判定する
+            var is2D    = DetectActorIs2D(path);
+            _actorTabs.Add(new ActorTab(path, name, wl, is2D));
             _activeActorPath = path;
             SendNavCommand($"OPEN_ACTOR:{wl},{path}");
-            EditorLog.Write($"OnActorFileOpened — OPEN_ACTOR:{wl},{path}");
+            EditorLog.Write($"OnActorFileOpened — OPEN_ACTOR:{wl},{path} (is2D={is2D})");
         }
 
         RebuildActorTabBar();
@@ -1365,9 +1368,10 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
     {
         Dispatcher.InvokeAsync(() =>
         {
-            var tab = _actorTabs.LastOrDefault();
-            var wl  = tab?.WorldLine ?? 1u;
-            PanelHierarchy.SetActorEditMode(true, wl);
+            var tab   = _actorTabs.LastOrDefault();
+            var wl    = tab?.WorldLine ?? 1u;
+            var is2D  = tab?.IsActor2D ?? false;
+            PanelHierarchy.SetActorEditMode(true, wl, is2D);
             PanelInspector.SetActorEditMode(true);
             RebuildActorTabBar();
         });
@@ -1404,9 +1408,25 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         if (tab == null) return;
         _activeActorPath = path;
         SendNavCommand($"SET_ACTIVE_WORLD_LINE:{tab.WorldLine}");
-        PanelHierarchy.SetActorEditMode(true, tab.WorldLine);
+        PanelHierarchy.SetActorEditMode(true, tab.WorldLine, tab.IsActor2D);
         PanelInspector.SetActorEditMode(true);
         RebuildActorTabBar();
+    }
+
+    /// <summary>
+    /// アクターファイルを読み取り、actor_kind が "Actor2D" かどうかを返す。
+    /// ファイルが読めない場合は false を返す。
+    /// </summary>
+    private static bool DetectActorIs2D(string path)
+    {
+        try
+        {
+            var json = System.IO.File.ReadAllText(path);
+            using var doc = System.Text.Json.JsonDocument.Parse(json);
+            return doc.RootElement.TryGetProperty("actor_kind", out var kind)
+                && kind.GetString() == "Actor2D";
+        }
+        catch { return false; }
     }
 
     /// <summary>タブの × を押してそのタブを閉じる。</summary>
@@ -1605,6 +1625,13 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         _runtimeManager?.SendToRuntime($"SHOW_AXIS_GIZMO:{(ChkShowAxisGizmo.IsChecked == true ? "1" : "0")}");
     }
 
+    /// キャンバス表示モード切り替え（スクリーンスペース / ワールドスペース）
+    private void OnCanvasScreenSpaceChanged(object sender, RoutedEventArgs e)
+    {
+        if (!_viewportSettingsInitialized) return;
+        _runtimeManager?.SendToRuntime($"CANVAS_SS_OVERLAY:{(ChkCanvasScreenSpace.IsChecked == true ? "1" : "0")}");
+    }
+
     private void OnCamSpeedChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
     {
         if (!_viewportSettingsInitialized || _updatingControls) return;
@@ -1743,13 +1770,15 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         SldFar.Value      = 1000; TbFarInput.Text   = "1000";
         SldCamSpeed.Value = 5;    TbSpeedInput.Text = "5.0";
         _updatingControls = false;
-        ChkShowGrid.IsChecked      = true;
-        ChkShowAxisGizmo.IsChecked = true;
+        ChkShowGrid.IsChecked        = true;
+        ChkShowAxisGizmo.IsChecked   = true;
+        ChkCanvasScreenSpace.IsChecked = false;
         if (_viewportSettingsInitialized)
         {
             _runtimeManager?.SendToRuntime("VIEWPORT_FOV:45");
             _runtimeManager?.SendToRuntime("VIEWPORT_FAR:1000");
             _runtimeManager?.SendToRuntime("CAM_SPEED:5");
+            _runtimeManager?.SendToRuntime("CANVAS_SS_OVERLAY:0");
         }
         TbCamPx.Text = "0"; TbCamPy.Text = "2"; TbCamPz.Text = "-10";
         TbCamYaw.Text = "0"; TbCamPitch.Text = "0";

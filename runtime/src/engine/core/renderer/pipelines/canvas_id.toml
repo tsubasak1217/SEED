@@ -1,0 +1,18 @@
+shader_sources  = ["canvas_id.wgsl"]
+vertex_entry    = "vs_main"
+fragment_entry  = "fs_main"
+# スプライトと同じ頂点レイアウト（position: vec2 + uv: vec2）
+vertex_slots    = ["sprite_vertex"]
+num_bind_groups = 3
+
+topology        = "TriangleList"
+cull_mode       = "None"
+front_face      = "Ccw"
+
+# キャンバスは常に上書き（深度に関わらず ID を書き込む）
+depth_write     = false
+depth_compare   = "Always"
+
+color_format    = "Rgba32Float"
+blend           = "None"
+write_mask      = "all"
