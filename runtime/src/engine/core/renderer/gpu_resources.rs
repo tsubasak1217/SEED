@@ -125,15 +125,9 @@ fn load_from_file(
     linear:  bool,
     sampler: &SamplerData,
 ) -> GpuTexture {
-    let img = image::open(path)
-        .map(|i| i.to_rgba8())
-        .unwrap_or_else(|_| {
-            // 読み込み失敗 → 1×1 マゼンタ（エラーを視覚的に示す）
-            let mut fallback = image::RgbaImage::new(1, 1);
-            fallback.put_pixel(0, 0, image::Rgba([255, 0, 255, 255]));
-            fallback
-        });
-
+    // asset_fs 経由で読む（仮想パス assets:// と PAK に対応）
+    let path_str = path.to_str().unwrap_or("");
+    let img = crate::engine::asset_fs::read_image(path_str);
     upload_rgba8(device, queue, img.width(), img.height(), &img, linear, sampler,
                  path.to_str())
 }

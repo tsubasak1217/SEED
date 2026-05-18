@@ -160,6 +160,9 @@ pub enum IpcCommand {
     /// ルートキャンバスの画面サイズ自動スケールを設定する
     /// フォーマット: SET_CANVAS_AUTO_SCALE:{actor_dfs_id},{slot_idx},{value}
     SetCanvasAutoScale { actor_dfs_id: u32, slot_idx: u32, auto_scale: bool },
+    /// InputMapComponent のアセットパスを設定する
+    /// フォーマット: SET_INPUTMAP_PATH:{actor_dfs_id},{slot_idx},{path}
+    SetInputMapPath { actor_dfs_id: u32, slot_idx: u32, path: String },
 }
 
 // ============================================================
@@ -679,6 +682,21 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                                     let v = parts[2].trim() == "1";
                                     Some(IpcCommand::SetCanvasAutoScale {
                                         actor_dfs_id: id, slot_idx: sl, auto_scale: v,
+                                    })
+                                } else { None }
+                            } else { None }
+                        }
+                        s if s.starts_with("SET_INPUTMAP_PATH:") => {
+                            // フォーマット: SET_INPUTMAP_PATH:{actor_dfs_id},{slot_idx},{path}
+                            // path 中にカンマが含まれる可能性があるため splitn(3) を使用
+                            let rest = &s["SET_INPUTMAP_PATH:".len()..];
+                            let mut parts = rest.splitn(3, ',');
+                            if let (Some(id_s), Some(sl_s), Some(path)) =
+                                (parts.next(), parts.next(), parts.next())
+                            {
+                                if let (Ok(a), Ok(sl)) = (id_s.parse::<u32>(), sl_s.parse::<u32>()) {
+                                    Some(IpcCommand::SetInputMapPath {
+                                        actor_dfs_id: a, slot_idx: sl, path: path.to_string(),
                                     })
                                 } else { None }
                             } else { None }

@@ -103,9 +103,12 @@ pub enum RuntimeMode {
 
 /// App::new / App::run への引数。
 pub struct LaunchArgs {
-    pub parent_hwnd: Option<isize>,
-    pub mode:        RuntimeMode,
-    pub pipe_name:   Option<String>,
+    pub parent_hwnd:  Option<isize>,
+    pub mode:         RuntimeMode,
+    pub pipe_name:    Option<String>,
+    /// アセットルートディレクトリの絶対パス（Play / パッケージモードで使用）。
+    /// None の場合は実行ファイルの隣に assets/ or assets.pak があると仮定する。
+    pub assets_root:  Option<String>,
 }
 
 // ============================================================
@@ -150,10 +153,12 @@ pub struct App {
     canvas_overlay_camera_buf: Option<CameraBuffer>,
     scripting_host: Option<Arc<ScriptingHost>>,
 
-    parent_hwnd: Option<isize>,
-    mode:        RuntimeMode,
-    ipc:         Option<IpcClient>,
-    paused:      bool,
+    parent_hwnd:  Option<isize>,
+    mode:         RuntimeMode,
+    ipc:          Option<IpcClient>,
+    paused:       bool,
+    /// アセットルートのパス（Playモード・パッケージモードでのシーン自動ロードに使用）。
+    assets_root:  Option<String>,
 
     /// RMB 押下時のスクリーン座標。カーソルロック解除後に復元する。
     cam_grab_screen_pos: Option<(i32, i32)>,
@@ -287,15 +292,25 @@ impl App {
         let ipc = args.pipe_name.as_deref()
             .and_then(|name| IpcClient::connect(name).ok());
 
-        let scripting_host = match ScriptingHost::load(&ScriptingHost::resolve_dll_path()) {
-            Ok(host) => {
-                eprintln!("[SEED] ScriptingHost loaded");
-                Some(host)
+        let t0 = std::time::Instant::now();
+        let dll_path = ScriptingHost::resolve_dll_path();
+        eprintln!("[SEED] ScriptingHost DLL path: {:?} (exists={})", dll_path, dll_path.exists());
+
+        let scripting_host = if dll_path.exists() {
+            // DLL が存在する場合のみ CLR ロードを試みる（存在しない場合は hostfxr 検索で遅延するため）
+            match ScriptingHost::load(&dll_path) {
+                Ok(host) => {
+                    eprintln!("[SEED] ScriptingHost loaded ({:.1}ms)", t0.elapsed().as_millis());
+                    Some(host)
+                }
+                Err(e) => {
+                    eprintln!("[SEED] ScriptingHost load failed ({:.1}ms): {e}", t0.elapsed().as_millis());
+                    None
+                }
             }
-            Err(e) => {
-                eprintln!("[SEED] ScriptingHost load failed (scripting disabled): {e}");
-                None
-            }
+        } else {
+            eprintln!("[SEED] ScriptingHost skipped — DLL not found ({:.1}ms)", t0.elapsed().as_millis());
+            None
         };
 
         Self {
@@ -310,10 +325,11 @@ impl App {
             camera_buf:     None,
             canvas_overlay_camera_buf: None,
             scripting_host,
-            parent_hwnd: args.parent_hwnd,
-            mode:        args.mode,
+            parent_hwnd:  args.parent_hwnd,
+            mode:         args.mode,
             ipc,
-            paused: false,
+            paused:       false,
+            assets_root:  args.assets_root,
             cam_grab_screen_pos: None,
             play_clamp: false,
             id_buffer:          None,

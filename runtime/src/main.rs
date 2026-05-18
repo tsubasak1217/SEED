@@ -1,3 +1,7 @@
+// リリースビルド時はコンソールウィンドウを非表示にする。
+// デバッグビルドはコンソールを残し、ログを確認できるようにする。
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 mod engine;
 
 use engine::core::app_base::{App, LaunchArgs, RuntimeMode};
@@ -34,5 +38,9 @@ fn parse_args() -> LaunchArgs {
         .find(|a| a.starts_with("--pipe="))
         .map(|a| a["--pipe=".len()..].to_string());
 
-    LaunchArgs { parent_hwnd, mode, pipe_name }
+    let assets_root = raw.iter()
+        .find(|a| a.starts_with("--assets-root="))
+        .map(|a| a["--assets-root=".len()..].to_string());
+
+    LaunchArgs { parent_hwnd, mode, pipe_name, assets_root }
 }

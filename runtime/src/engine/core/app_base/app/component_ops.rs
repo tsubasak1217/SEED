@@ -11,7 +11,7 @@
 use crate::engine::components::{
     ModelComponent, Transform as ActorTransform, ComponentKind, ComponentData,
     ScriptComponent, PlaceholderScriptSlot, CanvasComponent,
-    GROUP_ID_BASE, CanvasTransform, SpriteComponent,
+    GROUP_ID_BASE, CanvasTransform, SpriteComponent, InputMapComponent,
 };
 use crate::engine::structs::objects::actor::{ComponentSlotData, ComponentSlot};
 use crate::engine::structs::objects::Actor;
@@ -179,6 +179,11 @@ impl App {
                         r#","texture_path":{path_json},"cr":{:.4},"cg":{:.4},"cb":{:.4},"ca":{:.4},"sprite_w":{:.4},"sprite_h":{:.4}"#,
                         d.color[0], d.color[1], d.color[2], d.color[3], d.width, d.height,
                     ))
+                }
+                ComponentData::InputMapComponent(d) => {
+                    // アセットパスをインスペクター用に送信する
+                    let path_json = serde_json::to_string(&d.asset_path).unwrap_or_default();
+                    ("InputMapComponent", format!(r#","asset_path":{path_json}"#))
                 }
             };
             comps_json.push_str(&format!(
@@ -384,6 +389,35 @@ impl App {
                     if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
                 }
             }
+            "InputMapComponent" => {
+                // デフォルト（未設定）の InputMapComponent をアクターに追加する。
+                // アセットパスはインスペクターから後で設定する。
+                let name = slot_name.to_string();
+                let found = {
+                    let scene = self.scene.as_mut().unwrap();
+                    let slot_entity = scene.world.spawn();
+                    scene.world.insert(slot_entity, InputMapComponent::default());
+                    let mut c = 0u32;
+                    if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
+                        actor.add_slot_typed::<InputMapComponent>(name, ComponentKind::InputMap, slot_entity);
+                        true
+                    } else {
+                        scene.world.despawn(slot_entity);
+                        false
+                    }
+                };
+                if found {
+                    let after_slots = self.snapshot_actor_slots(wl, actor_dfs_id);
+                    self.undo_history.record(Box::new(ComponentSlotsSnapshotCommand {
+                        world_line: wl, actor_dfs_id, before_slots, after_slots,
+                    }));
+                    self.actor_virtual_selected_slot_idx = 0;
+                    self.selected_instances.clear();
+                    self.send_hierarchy();
+                    self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
+                    if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+                }
+            }
             _ => {}
         }
     }
@@ -488,6 +522,7 @@ impl App {
                     ComponentKind::Placeholder => { scene.world.remove::<PlaceholderScriptSlot>(slot_entity); }
                     ComponentKind::Canvas      => { scene.world.remove::<CanvasComponent>(slot_entity); }
                     ComponentKind::Sprite      => { scene.world.remove::<SpriteComponent>(slot_entity); }
+                    ComponentKind::InputMap    => { scene.world.remove::<InputMapComponent>(slot_entity); }
                 }
                 scene.world.despawn(slot_entity);
                 // アクターのスロットリストから削除
@@ -661,6 +696,16 @@ impl App {
                 let mut c = 0u32;
                 if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
                     actor.add_slot_typed::<SpriteComponent>(slot_data.name, ComponentKind::Sprite, slot_entity);
+                } else { scene.world.despawn(slot_entity); }
+                true
+            }
+            ComponentData::InputMapComponent(ic_data) => {
+                // InputMapComponent を複製して新スロット専用エンティティに insert
+                let slot_entity = scene.world.spawn();
+                scene.world.insert(slot_entity, InputMapComponent { asset_path: ic_data.asset_path });
+                let mut c = 0u32;
+                if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
+                    actor.add_slot_typed::<InputMapComponent>(slot_data.name, ComponentKind::InputMap, slot_entity);
                 } else { scene.world.despawn(slot_entity); }
                 true
             }
@@ -995,6 +1040,27 @@ impl App {
         if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
     }
 
+    /// InputMapComponent のアセットパスを更新する。
+    pub(super) fn handle_set_inputmap_path(&mut self, actor_dfs_id: u32, slot_idx: u32, path: &str) {
+        let wl = self.active_world_line;
+        let slot_entity = {
+            let Some(scene) = &self.scene else { return };
+            let mut c = 0u32;
+            find_actor_by_dfs(&scene.actors, wl, actor_dfs_id, &mut c)
+                .and_then(|a| a.slots().get(slot_idx as usize))
+                .filter(|s| s.kind == ComponentKind::InputMap)
+                .map(|s| s.entity)
+        };
+        if let Some(entity) = slot_entity {
+            let Some(scene) = &mut self.scene else { return };
+            if let Some(ic) = scene.world.get_mut::<InputMapComponent>(entity) {
+                ic.asset_path = path.to_string();
+            }
+        }
+        self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
+        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+    }
+
     /// CanvasTransform の anchor を更新する。
     ///
     /// anchor は親 Canvas における position 基準点（[0,1]×[0,1]）。
@@ -1130,6 +1196,10 @@ impl App {
                         height:       sc_data.height,
                     });
                     new_slots.push(ComponentSlot::new::<SpriteComponent>(slot_data.name, ComponentKind::Sprite, slot_entity));
+                }
+                ComponentData::InputMapComponent(ic_data) => {
+                    scene.world.insert(slot_entity, InputMapComponent { asset_path: ic_data.asset_path });
+                    new_slots.push(ComponentSlot::new::<InputMapComponent>(slot_data.name, ComponentKind::InputMap, slot_entity));
                 }
             }
         }

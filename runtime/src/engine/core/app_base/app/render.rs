@@ -58,19 +58,158 @@ use super::{
 /// 例: position=100px → 1.0 ワールドユニット
 const CANVAS_WORLD_SCALE: f32 = 1.0 / 100.0;
 
+impl App {
+    /// アセットルートを解決して asset_fs を初期化する。
+    ///
+    /// - `self.assets_root` が指定されている場合はそれを使う
+    /// - 未指定の場合は実行ファイルの隣にある assets/ フォルダを使う
+    /// - assets.pak が実行ファイルの隣にあれば PAK モードで初期化する
+    fn init_asset_fs(&self) {
+        use crate::engine::asset_fs;
+        use std::path::PathBuf;
+
+        // アセットルートを決定する
+        let assets_root: PathBuf = if let Some(root) = &self.assets_root {
+            PathBuf::from(root)
+        } else {
+            // 実行ファイルの隣の assets/ ディレクトリを使う
+            std::env::current_exe()
+                .ok()
+                .and_then(|p| p.parent().map(|d| d.join("assets")))
+                .unwrap_or_else(|| PathBuf::from("assets"))
+        };
+
+        // 実行ファイルの隣に assets.pak があれば PAK モードにする
+        let pak_path = assets_root.parent()
+            .map(|dir| dir.join("assets.pak"))
+            .filter(|p| p.exists());
+
+        asset_fs::init(assets_root, pak_path.as_deref());
+    }
+
+    /// Playモードでプロジェクト設定からシーンを自動ロードする。
+    ///
+    /// assets_root/project_settings.json を読み、start_scene のシーンをロードする。
+    fn auto_load_start_scene(&mut self) {
+        use crate::engine::asset_fs;
+
+        // project_settings.json を読む（仮想パス対応）
+        let settings_path = "assets://project_settings.json";
+        let json = match asset_fs::read_string(settings_path) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("[SEED] project_settings.json の読み込み失敗: {e}");
+                return;
+            }
+        };
+
+        // start_scene パスを抽出する（serde_json でパース）
+        let start_scene: String = match serde_json::from_str::<serde_json::Value>(&json) {
+            Ok(v) => v["start_scene"].as_str().unwrap_or("").to_string(),
+            Err(e) => {
+                eprintln!("[SEED] project_settings.json のパース失敗: {e}");
+                return;
+            }
+        };
+
+        if start_scene.is_empty() {
+            eprintln!("[SEED] start_scene が未設定です");
+            return;
+        }
+
+        // 仮想パスを絶対パスに解決する
+        let scene_path = asset_fs::resolve(&start_scene);
+        eprintln!("[SEED] start_scene を読み込み中: {:?}", scene_path);
+
+        let result = if let Some(ctx) = &self.draw_ctx {
+            Some(crate::engine::core::app_base::scene::Scene::load(
+                &scene_path,
+                ctx,
+                self.scripting_host.as_ref(),
+            ))
+        } else {
+            None
+        };
+
+        match result {
+            Some(Ok((new_scene, _cam_data))) => {
+                self.scene = Some(new_scene);
+                eprintln!("[SEED] start_scene ロード完了");
+            }
+            Some(Err(e)) => {
+                eprintln!("[SEED] start_scene ロード失敗: {e}");
+            }
+            None => {}
+        }
+    }
+}
+
+// ============================================================
+//  StartupLogger — 起動タイミングをファイルへ記録する診断ツール
+//
+//  windows_subsystem="windows" リリースビルドでは eprintln! が出力されないため、
+//  実行ファイルの隣に seed_startup.log を書き出してどのステップが遅いか判断する。
+//  埋め込みモード（エディタ内 Play）では無効。
+// ============================================================
+
+struct StartupLogger {
+    file:  Option<std::io::BufWriter<std::fs::File>>,
+    start: std::time::Instant,
+}
+
+impl StartupLogger {
+    /// スタンドアロンモード用インスタンスを生成する。
+    /// `standalone` が false（エディタ埋め込み）の場合はログを出力しない。
+    fn new(start: std::time::Instant, standalone: bool) -> Self {
+        let file = if standalone {
+            std::env::current_exe()
+                .ok()
+                .and_then(|p| p.parent().map(|d| d.join("seed_startup.log")))
+                .and_then(|path| std::fs::File::create(path).ok())
+                .map(std::io::BufWriter::new)
+        } else {
+            None
+        };
+        Self { file, start }
+    }
+
+    /// タイムスタンプ付きでメッセージを記録する。
+    fn log(&mut self, msg: &str) {
+        use std::io::Write;
+        let ms = self.start.elapsed().as_millis();
+        eprintln!("[SEED] [{ms:6}ms] {msg}");
+        if let Some(ref mut f) = self.file {
+            let _ = writeln!(f, "[{ms:6}ms] {msg}");
+            let _ = f.flush();
+        }
+    }
+}
+
 impl ApplicationHandler for App {
     /// ウィンドウ・レンダラーを初期化し、IPC へ READY を通知する。
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        eprintln!("[SEED] resumed() start  parent_hwnd={:?}", self.parent_hwnd);
+        let t_resumed = std::time::Instant::now();
+        let mut slog = StartupLogger::new(t_resumed, !self.is_embedded());
+
+        slog.log(&format!("resumed() start  parent_hwnd={:?}", self.parent_hwnd));
 
         let window = Arc::new(create_window(event_loop, &WindowConfig {
             parent_hwnd: self.parent_hwnd,
             ..WindowConfig::default()
         }));
-        eprintln!("[SEED] window created");
+        slog.log("window created");
+
+        // スタンドアロンモードでは GPU 初期化前にウィンドウを即表示する。
+        // Renderer::new() (wgpu DX12 デバイス作成) は数秒かかることがあり、
+        // 初期化完了まで画面に何も出ない問題を防ぐ。
+        // 埋め込みモードはエディタ側コンテナが背景を描くため従来どおり後で表示。
+        if !self.is_embedded() {
+            window.set_visible(true);
+            slog.log("window set_visible");
+        }
 
         let mut renderer = Renderer::new(window.clone());
-        eprintln!("[SEED] renderer created");
+        slog.log("Renderer::new() done");
 
         let size = window.inner_size();
         self.camera.set_aspect_ratio(size.width, size.height);
@@ -82,14 +221,15 @@ impl ApplicationHandler for App {
             renderer.queue(),
             renderer.surface_format(),
             renderer.depth_format(),
+            renderer.pipeline_cache(),
         );
-        eprintln!("[SEED] DrawContext created");
+        slog.log("DrawContext::new() done  (pipeline compilation)");
 
         let scene = crate::engine::core::app_base::scene::Scene::new("Untitled");
         let camera_buf = ctx.create_camera_buffer();
         let id_buffer  = IdBuffer::new(&ctx.device, size.width, size.height);
         let line_model_buf = ctx.create_identity_model_bg_for_unlit();
-        eprintln!("[SEED] scene ready");
+        slog.log("scene/buffers ready");
 
         if self.is_embedded() {
             // 非表示ウィンドウへの request_redraw は WM_PAINT が配送されず
@@ -98,8 +238,10 @@ impl ApplicationHandler for App {
             window.set_visible(true);
             window.request_redraw();
         } else {
-            if let Ok(frame) = renderer.begin_frame() { frame.finish(); }
-            window.set_visible(true);
+            // スタンドアロンモードは resumed() 冒頭で set_visible 済み。
+            // 空フレームのフラッシュを防ぐため begin_frame はスキップし、
+            // 最初の実描画フレームで自然に描き始める。
+            window.set_visible(true); // 冪等（すでに表示中）
         }
 
         let canvas_overlay_camera_buf = ctx.create_camera_buffer();
@@ -136,13 +278,26 @@ impl ApplicationHandler for App {
 
         self.sync_anim_seeds();
 
+        // asset_fs を初期化する（全モード共通）
+        slog.log("init_asset_fs begin");
+        self.init_asset_fs();
+        slog.log("init_asset_fs done");
+
         let hwnd = self.window_hwnd();
-        eprintln!("[SEED] sending READY:{hwnd}");
+        slog.log(&format!("sending READY:{hwnd}"));
         if let Some(ipc) = &self.ipc {
             ipc.send(&format!("READY:{hwnd}"));
         }
         self.send_hierarchy();
-        eprintln!("[SEED] resumed() done");
+
+        // Playモードでは project_settings.json からシーンを自動ロードする
+        if self.mode == RuntimeMode::Play {
+            slog.log("auto_load_start_scene begin");
+            self.auto_load_start_scene();
+            slog.log("auto_load_start_scene done");
+        }
+
+        slog.log(&format!("resumed() TOTAL done"));
     }
 
     /// ウィンドウイベントを処理する（キー入力・マウス・リサイズ・メインループ）。

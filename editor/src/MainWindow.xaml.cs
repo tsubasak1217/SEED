@@ -242,7 +242,7 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         ApplyDarkTitleBar();
         EditorLog.Write($"OnWindowLoaded — RuntimeExePath={RuntimeExePath}");
 
-        _runtimeManager = new RuntimeManager(RuntimeExePath);
+        _runtimeManager = new RuntimeManager(RuntimeExePath) { AssetsPath = AssetsPath };
         _runtimeManager.StateChanged         += OnStateChanged;
         _runtimeManager.RuntimeHwndAvailable += OnRuntimeHwndAvailable;
         _runtimeManager.RuntimeMoveStart     += () => { _isDragging = true;  Dispatcher.BeginInvoke(ReleasePlayClamp); };
@@ -260,10 +260,12 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         PanelHierarchy.SetRuntime(_runtimeManager);
         PanelHierarchy.ActorDfsSelected += id => PanelInspector.SelectActor(id);
         PanelInspector.SetRuntime(_runtimeManager);
+        PanelInspector.SetAssetsPath(AssetsPath);
         PanelInspector.TransformCommitted += MarkDirty;
         PanelProject.SetAssetsPath(AssetsPath);
-        PanelProject.SceneFileOpened += OnSceneFileOpened;
-        PanelProject.ActorFileOpened += OnActorFileOpened;
+        PanelProject.SceneFileOpened    += OnSceneFileOpened;
+        PanelProject.ActorFileOpened    += OnActorFileOpened;
+        PanelProject.InputMapFileOpened += OnInputMapFileOpened;
 
         _viewportHost = new ViewportHost();
         _viewportHost.ContainerCreated += OnContainerCreated;
@@ -761,6 +763,21 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         SettingsPopup.IsOpen = !SettingsPopup.IsOpen;
     }
 
+    // ── プロジェクト設定 ──────────────────────────────────────────
+
+    /// <summary>
+    /// 「プロジェクト設定」ボタン: プロジェクト設定ウィンドウをモーダルで開く。
+    /// 設定ファイルは AssetsPath/project_settings.json に保存される。
+    /// </summary>
+    private void OnOpenProjectSettings(object sender, RoutedEventArgs e)
+    {
+        var win = new SEEDEditor.ProjectSettings.ProjectSettingsWindow(AssetsPath)
+        {
+            Owner = this,
+        };
+        win.ShowDialog();
+    }
+
     // ── メニューバー ──────────────────────────────────────────────
 
     private void OnMenuQuickSave(object sender, RoutedEventArgs e)
@@ -771,6 +788,13 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
 
     private void OnMenuExit(object sender, RoutedEventArgs e)
         => Close();
+
+    /// <summary>パッケージ化ウィンドウを開く。</summary>
+    private void OnOpenPackaging(object sender, RoutedEventArgs e)
+    {
+        var win = new SEEDEditor.Packaging.PackagingWindow(AssetsPath) { Owner = this };
+        win.ShowDialog();
+    }
 
     private void OnMenuUndo(object sender, RoutedEventArgs e)
         => _runtimeManager?.SendToRuntime("UNDO");
@@ -1362,6 +1386,15 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         }
 
         RebuildActorTabBar();
+    }
+
+    // ── InputMap ファイル編集 ────────────────────────────────────
+
+    /// <summary>.inputmap ファイルをダブルクリックしたときに InputMap エディタを開く。</summary>
+    private void OnInputMapFileOpened(string path)
+    {
+        var win = new SEEDEditor.InputMap.InputMapEditorWindow(path) { Owner = this };
+        win.Show();
     }
 
     private void OnActorEditStarted()

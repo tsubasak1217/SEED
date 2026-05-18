@@ -77,23 +77,29 @@ impl DepthTexture {
 ///
 /// `device` / `queue` は `Arc` で共有し、`DrawContext` と所有権なしに共用できる。
 pub struct Renderer {
-    surface:       wgpu::Surface<'static>,
-    device:        Arc<wgpu::Device>,
-    queue:         Arc<wgpu::Queue>,
-    config:        wgpu::SurfaceConfiguration,
-    size:          PhysicalSize<u32>,
-    depth_texture: DepthTexture,
+    surface:        wgpu::Surface<'static>,
+    device:         Arc<wgpu::Device>,
+    queue:          Arc<wgpu::Queue>,
+    config:         wgpu::SurfaceConfiguration,
+    size:           PhysicalSize<u32>,
+    depth_texture:  DepthTexture,
+    /// コンパイル済みパイプライン状態のキャッシュ。
+    /// GPU が PIPELINE_CACHE フィーチャーをサポートする場合のみ Some になる。
+    pipeline_cache: Option<wgpu::PipelineCache>,
 }
 
 impl Renderer {
     pub fn new(window: Arc<Window>) -> Self {
         let size = window.inner_size();
 
-        // Windows は DX12 を使用する。
+        // Windows は Vulkan を優先使用する。
+        // DX12 は PIPELINE_CACHE フィーチャー非対応の GPU が多く、起動時のシェーダー
+        // コンパイル（~15秒）をキャッシュできない。Vulkan は PIPELINE_CACHE を
+        // 普遍的にサポートするため、2回目以降の起動が大幅に高速化される。
         // NvOptimusEnablement シンボルエクスポートにより Optimus 環境でも
-        // DX12 アダプター列挙に dGPU が現れる。
+        // dGPU が列挙される。
         let backends = if cfg!(target_os = "windows") {
-            wgpu::Backends::DX12
+            wgpu::Backends::VULKAN
         } else {
             wgpu::Backends::PRIMARY
         };
@@ -110,11 +116,17 @@ impl Renderer {
         eprintln!("[SEED] GPU adapter: {} ({:?})",
             adapter.get_info().name, adapter.get_info().device_type);
 
+        // PIPELINE_CACHE はオプション機能（DX12 の一部 GPU では非対応）。
+        // アダプターが対応している場合のみ要求する。
+        let supports_pipeline_cache = adapter.features()
+            .contains(wgpu::Features::PIPELINE_CACHE);
+
         let (device, queue) = pollster::block_on(adapter.request_device(
             &wgpu::DeviceDescriptor {
                 label:             None,
                 required_features: wgpu::Features::MULTI_DRAW_INDIRECT
-                                 | wgpu::Features::INDIRECT_FIRST_INSTANCE,
+                                 | wgpu::Features::INDIRECT_FIRST_INSTANCE
+                                 | if supports_pipeline_cache { wgpu::Features::PIPELINE_CACHE } else { wgpu::Features::empty() },
                 required_limits:   wgpu::Limits {
                     max_storage_buffers_per_shader_stage: 12,
                     max_bind_groups: 5,
@@ -128,6 +140,31 @@ impl Renderer {
 
         let device = Arc::new(device);
         let queue  = Arc::new(queue);
+
+        // GPU が PIPELINE_CACHE をサポートする場合のみキャッシュを生成する。
+        // exe 隣の pipeline_cache.bin からデータを読み込み、
+        // ファイルが存在しない場合・不正データの場合は fallback=true により
+        // 通常コンパイルにフォールバックする。
+        let pipeline_cache = if supports_pipeline_cache {
+            let cache_path = std::env::current_exe()
+                .ok()
+                .and_then(|p| p.parent().map(|d| d.join("pipeline_cache.bin")));
+            let cache_data = cache_path.as_ref().and_then(|p| std::fs::read(p).ok());
+
+            // Safety: cache_data は自分のプロセスが書き出したものを読み込む。
+            // fallback=true なので不正データでもパニックせず再コンパイルに移行する。
+            let cache = unsafe {
+                device.create_pipeline_cache(&wgpu::PipelineCacheDescriptor {
+                    label:    Some("SEED Pipeline Cache"),
+                    data:     cache_data.as_deref(),
+                    fallback: true,
+                })
+            };
+            Some(cache)
+        } else {
+            eprintln!("[SEED] PipelineCache not supported on this GPU — skipping cache");
+            None
+        };
 
         let surface_caps   = surface.get_capabilities(&adapter);
         // sRGB フォーマットを優先して選択する。
@@ -154,7 +191,7 @@ impl Renderer {
 
         let depth_texture = DepthTexture::new(&device, size.width, size.height);
 
-        Self { surface, device, queue, config, size, depth_texture }
+        Self { surface, device, queue, config, size, depth_texture, pipeline_cache }
     }
 
     // ── アダプター選択 ──────────────────────────────────────────
@@ -217,6 +254,28 @@ impl Renderer {
     /// 深度バッファのフォーマットを返す。
     pub fn depth_format(&self) -> wgpu::TextureFormat { DEPTH_FORMAT }
 
+    /// コンパイル済みパイプラインキャッシュへの参照を返す。
+    /// GPU が非対応の場合は None を返す。
+    pub fn pipeline_cache(&self) -> Option<&wgpu::PipelineCache> { self.pipeline_cache.as_ref() }
+
+    // ── パイプラインキャッシュ保存 ──────────────────────────────
+
+    /// パイプラインキャッシュをディスクへ書き出す。
+    ///
+    /// exe 隣の `pipeline_cache.bin` に保存する。
+    /// キャッシュが None（GPU 非対応）または `get_data()` が None の場合は何もしない。
+    pub fn save_pipeline_cache(&self) {
+        let Some(cache) = &self.pipeline_cache else { return; };
+        let Some(data)  = cache.get_data() else { return; };
+        let Some(path)  = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.join("pipeline_cache.bin")))
+        else { return; };
+        if let Err(e) = std::fs::write(&path, &data) {
+            eprintln!("[SEED] pipeline cache save failed: {e}");
+        }
+    }
+
     // ── リサイズ ────────────────────────────────────────────────
 
     pub fn resize(&mut self, new_size: PhysicalSize<u32>) {
@@ -266,6 +325,17 @@ impl Renderer {
             depth_only_view: &self.depth_texture.depth_only_view,
             queue:           &self.queue,
         })
+    }
+}
+
+// ============================================================
+//  Drop — パイプラインキャッシュの自動保存
+// ============================================================
+
+/// `Renderer` がドロップされる際にパイプラインキャッシュを自動保存する。
+impl Drop for Renderer {
+    fn drop(&mut self) {
+        self.save_pipeline_cache();
     }
 }
 

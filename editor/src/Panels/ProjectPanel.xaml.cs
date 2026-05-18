@@ -107,6 +107,7 @@ public partial class ProjectPanel : UserControl
     {
         ".scene"                               => UriScene,
         ".actor"                               => UriActor,
+        ".inputmap"                            => UriScript,
         ".glb" or ".gltf" or ".obj" or ".fbx" => UriModel,
         ".lua" or ".cs" or ".py" or ".wgsl"   => UriScript,
         _ when ImageExts.Contains(ext)         => UriImage,
@@ -129,6 +130,9 @@ public partial class ProjectPanel : UserControl
 
     /// <summary>.actor ファイルがダブルクリックされたときに発火する（フルパス）。</summary>
     public event Action<string>? ActorFileOpened;
+
+    /// <summary>.inputmap ファイルがダブルクリックされたときに発火する（フルパス）。</summary>
+    public event Action<string>? InputMapFileOpened;
 
     public void SetAssetsPath(string assetsPath)
     {
@@ -419,6 +423,9 @@ public partial class ProjectPanel : UserControl
                 else if (entry is FileInfo actorFile &&
                          actorFile.Extension.Equals(".actor", StringComparison.OrdinalIgnoreCase))
                     ActorFileOpened?.Invoke(actorFile.FullName);
+                else if (entry is FileInfo imFile &&
+                         imFile.Extension.Equals(".inputmap", StringComparison.OrdinalIgnoreCase))
+                    InputMapFileOpened?.Invoke(imFile.FullName);
             }
             else if (e.ClickCount == 1)
             {

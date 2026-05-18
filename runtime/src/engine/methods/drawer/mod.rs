@@ -74,8 +74,9 @@ impl DrawContext {
         queue:          Arc<wgpu::Queue>,
         surface_format: wgpu::TextureFormat,
         depth_format:   wgpu::TextureFormat,
+        cache:          Option<&wgpu::PipelineCache>,
     ) -> Self {
-        let pipelines = DrawPipelines::new(&device, &queue, surface_format, depth_format);
+        let pipelines = DrawPipelines::new(&device, &queue, surface_format, depth_format, cache);
         let defaults  = DefaultTex::new(&device, &queue);
         Self {
             device,

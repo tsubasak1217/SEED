@@ -62,6 +62,8 @@ public sealed class RuntimeManager : IDisposable
 
     // ── フィールド ─────────────────────────────────────────────
     private readonly string               _runtimeExePath;
+    /// <summary>Playモードで --assets-root として渡すアセットルートパス。</summary>
+    public string? AssetsPath { get; set; }
     private readonly RuntimeSourceWatcher? _sourceWatcher;
     private Process?                      _process;
     private PipeServer?                   _pipe;
@@ -349,9 +351,14 @@ public sealed class RuntimeManager : IDisposable
         _pipe = new PipeServer();
         EditorLog.Write($"PipeServer created — name={_pipe.PipeName}");
 
+        // Playモードではアセットルートパスを引数として渡し、
+        // ランタイムが project_settings.json から開始シーンを自動ロードできるようにする
+        var assetsRootArg = !string.IsNullOrEmpty(AssetsPath)
+            ? $" --assets-root={AssetsPath}"
+            : "";
         var args = editMode
             ? $"--mode=edit --pipe={_pipe.PipeName} --parent-hwnd={_viewportContainerHwnd}"
-            : $"--mode=play --pipe={_pipe.PipeName}";
+            : $"--mode=play --pipe={_pipe.PipeName}{assetsRootArg}";
 
         var workDir = ResolveWorkingDirectory(_runtimeExePath);
         EditorLog.Write($"Process.Start — exe={_runtimeExePath}  args={args}  workDir={workDir}");

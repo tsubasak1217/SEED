@@ -20,6 +20,10 @@ public partial class InspectorPanel : UserControl
     private RuntimeManager? _runtime;
     private int             _currentActorId = -1;
 
+    // ── Assets path ──────────────────────────────────────────
+    /// <summary>仮想パス変換に使用するアセットルートパス。</summary>
+    private string _assetsPath = "";
+
     // ── Mode ─────────────────────────────────────────────────
     private bool     _isActorEditMode       = false;
     /// <summary>
@@ -63,6 +67,9 @@ public partial class InspectorPanel : UserControl
     public event Action? TransformCommitted;
 
     // ── Runtime binding ──────────────────────────────────────
+
+    /// <summary>アセットルートパスを設定する（仮想パス変換に使用）。</summary>
+    public void SetAssetsPath(string assetsPath) => _assetsPath = assetsPath;
 
     public void SetRuntime(RuntimeManager runtime)
     {
@@ -272,7 +279,9 @@ public partial class InspectorPanel : UserControl
         // SpriteComponent 用フィールド
         string TexturePath = "",
         float SpriteR = 1f, float SpriteG = 1f, float SpriteB = 1f, float SpriteA = 1f,
-        float SpriteW = 100f, float SpriteH = 100f);
+        float SpriteW = 100f, float SpriteH = 100f,
+        // InputMapComponent 用フィールド
+        string InputMapPath = "");
     private List<SlotInfo> _slotInfos = new();
 
     private void BuildActorComponentList(string json)
@@ -362,10 +371,13 @@ public partial class InspectorPanel : UserControl
             var sprA = comp.TryGetProperty("ca", out var ca) ? ca.GetSingle() : 1f;
             var sprW = comp.TryGetProperty("sprite_w", out var sw) ? sw.GetSingle() : 100f;
             var sprH = comp.TryGetProperty("sprite_h", out var sh) ? sh.GetSingle() : 100f;
+            // InputMapComponent 用: アセットパス
+            var inputMapPath = comp.TryGetProperty("asset_path", out var ap) ? ap.GetString() ?? "" : "";
 
             var info = new SlotInfo(slotIdx, compName, compType, modelPath, width, height,
                 scaleTransform, scaleSize, autoScale,
-                texPath, sprR, sprG, sprB, sprA, sprW, sprH);
+                texPath, sprR, sprG, sprB, sprA, sprW, sprH,
+                InputMapPath: inputMapPath);
             _slotInfos.Add(info);
 
             // 上部チップリストに追加
@@ -514,10 +526,11 @@ public partial class InspectorPanel : UserControl
     private UIElement BuildSlotPropsContent(SlotInfo info) =>
         info.TypeId switch
         {
-            "ModelComponent"  => BuildModelSlotContent(info),
-            "ScriptComponent" => BuildScriptSlotContent(info),
-            "CanvasComponent" => BuildCanvasSlotContent(info),
-            "SpriteComponent" => BuildSpriteSlotContent(info),
+            "ModelComponent"    => BuildModelSlotContent(info),
+            "ScriptComponent"   => BuildScriptSlotContent(info),
+            "CanvasComponent"   => BuildCanvasSlotContent(info),
+            "SpriteComponent"   => BuildSpriteSlotContent(info),
+            "InputMapComponent" => BuildInputMapSlotContent(info),
             _ => new TextBlock
             {
                 Text       = $"未対応のコンポーネント: {info.TypeId}",
@@ -526,6 +539,63 @@ public partial class InspectorPanel : UserControl
                 Margin     = new Thickness(0, 4, 0, 4),
             },
         };
+
+    // ── InputMapComponent inspector ───────────────────────────
+
+    /// <summary>InputMapComponent のインスペクター UI を構築して返す。</summary>
+    private UIElement BuildInputMapSlotContent(SlotInfo info)
+    {
+        var sp = new StackPanel { Margin = new Thickness(0, 4, 0, 4) };
+
+        // .inputmap アセットパス選択行
+        sp.Children.Add(FileRefBuilder.Build(
+            "InputMap", info.InputMapPath,
+            [".inputmap"],
+            () =>
+            {
+                var dlg = new OpenFileDialog
+                {
+                    Title  = "InputMap ファイルを選択",
+                    Filter = "InputMap アセット|*.inputmap|すべてのファイル|*.*",
+                };
+                return dlg.ShowDialog(Window.GetWindow(this)) == true ? dlg.FileName : null;
+            },
+            path =>
+            {
+                if (_currentActorId < 0) return;
+                // 絶対パスを仮想パスに変換してからランタイムへ送信する
+                var virtualPath = VirtualPath.ToVirtual(path, _assetsPath);
+                _runtime?.SendToRuntime($"SET_INPUTMAP_PATH:{_currentActorId},{info.SlotIdx},{virtualPath}");
+            }));
+
+        // InputMap エディタを開くボタン
+        var editBtn = new Button
+        {
+            Content             = "InputMap エディタを開く",
+            Margin              = new Thickness(0, 4, 0, 0),
+            Padding             = new Thickness(8, 4, 8, 4),
+            Background          = new SolidColorBrush(Color.FromRgb(0x2A, 0x3A, 0x2A)),
+            Foreground          = new SolidColorBrush(Color.FromRgb(0xAA, 0xCC, 0xAA)),
+            BorderBrush         = new SolidColorBrush(Color.FromRgb(0x44, 0x66, 0x44)),
+            BorderThickness     = new Thickness(1),
+            HorizontalAlignment = HorizontalAlignment.Left,
+            FontSize            = 11,
+            Cursor              = Cursors.Hand,
+        };
+        editBtn.Click += (_, _) =>
+        {
+            // 既に存在するウィンドウがあればアクティブにする、なければ新規作成
+            var path = info.InputMapPath;
+            var win  = new SEEDEditor.InputMap.InputMapEditorWindow(path)
+            {
+                Owner = Window.GetWindow(this),
+            };
+            win.Show();
+        };
+        sp.Children.Add(editBtn);
+
+        return sp;
+    }
 
     private UIElement BuildModelSlotContent(SlotInfo info)
     {
@@ -557,7 +627,9 @@ public partial class InspectorPanel : UserControl
             path =>
             {
                 if (_currentActorId < 0) return;
-                _runtime?.SendToRuntime($"SET_SPRITE_PATH:{_currentActorId},{info.SlotIdx},{path}");
+                // 絶対パスを仮想パスに変換してからランタイムへ送信する
+                var virtualPath = VirtualPath.ToVirtual(path, _assetsPath);
+                _runtime?.SendToRuntime($"SET_SPRITE_PATH:{_currentActorId},{info.SlotIdx},{virtualPath}");
             }));
 
         // カラーピッカーボタン（現在色のスウォッチ表示）

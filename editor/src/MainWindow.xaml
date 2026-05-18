@@ -259,6 +259,38 @@
             </Setter>
         </Style>
 
+        <!-- 上部バー テキストボタン スタイル（プロジェクト設定など）-->
+        <Style x:Key="TopBarTextBtnStyle" TargetType="Button">
+            <Setter Property="Height"          Value="22"/>
+            <Setter Property="Padding"         Value="10,0"/>
+            <Setter Property="Background"      Value="#3A3A3A"/>
+            <Setter Property="Foreground"      Value="#CCCCCC"/>
+            <Setter Property="BorderBrush"     Value="Transparent"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Cursor"          Value="Hand"/>
+            <Setter Property="FontSize"        Value="11"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Bd"
+                                Background="{TemplateBinding Background}"
+                                CornerRadius="3"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#505050"/>
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#686868"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
         <!-- Playbar ボタンスタイル -->
         <Style x:Key="PlayBarBtnStyle" TargetType="Button">
             <Setter Property="Width"           Value="36"/>
@@ -495,6 +527,8 @@
                           InputGestureText="Ctrl+Shift+S"
                           Click="OnMenuSaveAs"/>
                 <Separator/>
+                <MenuItem Header="パッケージ化..." Click="OnOpenPackaging"/>
+                <Separator/>
                 <MenuItem Header="終了" Click="OnMenuExit"/>
             </MenuItem>
 
@@ -554,6 +588,16 @@
                     <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="*"/>
                 </Grid.ColumnDefinitions>
+
+                <!-- 右端: プロジェクト設定ボタン -->
+                <StackPanel Grid.Column="2" Orientation="Horizontal"
+                            HorizontalAlignment="Right" VerticalAlignment="Center"
+                            Margin="0,0,8,0">
+                    <Button Content="⚙ プロジェクト設定"
+                            Style="{StaticResource TopBarTextBtnStyle}"
+                            Click="OnOpenProjectSettings"
+                            ToolTip="プロジェクト設定を開く"/>
+                </StackPanel>
 
                 <!-- 中央: 状態ラベル + Play/Stop + Pause + Settings -->
                 <StackPanel Grid.Column="1" Orientation="Horizontal"

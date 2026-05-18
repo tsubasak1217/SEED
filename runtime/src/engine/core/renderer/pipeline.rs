@@ -38,9 +38,10 @@ pub struct MeshPipeline {
 }
 
 impl MeshPipeline {
-    fn new(device: &wgpu::Device, sf: wgpu::TextureFormat, df: wgpu::TextureFormat) -> Self {
+    fn new(device: &wgpu::Device, sf: wgpu::TextureFormat, df: wgpu::TextureFormat, cache: Option<&wgpu::PipelineCache>) -> Self {
         let (pipeline, mut bgls) =
             RenderPipelineBuilder::new(device, include_str!("pipelines/mesh.toml"), sf, df)
+                .with_cache(cache)
                 .build(get_shader_source);
         let material_bgl = bgls.pop().unwrap();
         let model_bgl    = bgls.pop().unwrap();
@@ -62,9 +63,10 @@ pub struct SkinnedMeshPipeline {
 }
 
 impl SkinnedMeshPipeline {
-    fn new(device: &wgpu::Device, sf: wgpu::TextureFormat, df: wgpu::TextureFormat) -> Self {
+    fn new(device: &wgpu::Device, sf: wgpu::TextureFormat, df: wgpu::TextureFormat, cache: Option<&wgpu::PipelineCache>) -> Self {
         let (pipeline, mut bgls) =
             RenderPipelineBuilder::new(device, include_str!("pipelines/skinned_mesh.toml"), sf, df)
+                .with_cache(cache)
                 .build(get_shader_source);
         let joint_bgl    = bgls.pop().unwrap();
         let material_bgl = bgls.pop().unwrap();
@@ -87,9 +89,9 @@ pub struct UnlitPipeline {
 }
 
 impl UnlitPipeline {
-    fn new(device: &wgpu::Device, sf: wgpu::TextureFormat, df: wgpu::TextureFormat) -> Self {
+    fn new(device: &wgpu::Device, sf: wgpu::TextureFormat, df: wgpu::TextureFormat, cache: Option<&wgpu::PipelineCache>) -> Self {
         let build = |toml: &str| {
-            RenderPipelineBuilder::new(device, toml, sf, df).build(get_shader_source)
+            RenderPipelineBuilder::new(device, toml, sf, df).with_cache(cache).build(get_shader_source)
         };
 
         let (pipeline, mut bgls) = build(include_str!("pipelines/unlit.toml"));
@@ -117,15 +119,17 @@ pub struct DepthPrepassPipelines {
 }
 
 impl DepthPrepassPipelines {
-    pub fn new(device: &wgpu::Device, df: wgpu::TextureFormat) -> Self {
+    pub fn new(device: &wgpu::Device, df: wgpu::TextureFormat, cache: Option<&wgpu::PipelineCache>) -> Self {
         // color_format = "none" なので surface_format は使用されない
         let sf_unused = wgpu::TextureFormat::Bgra8UnormSrgb;
 
         let (mesh, _) =
             RenderPipelineBuilder::new(device, include_str!("pipelines/depth_prepass_mesh.toml"), sf_unused, df)
+                .with_cache(cache)
                 .build(get_shader_source);
         let (skinned, _) =
             RenderPipelineBuilder::new(device, include_str!("pipelines/depth_prepass_skinned.toml"), sf_unused, df)
+                .with_cache(cache)
                 .build(get_shader_source);
 
         Self { mesh, skinned }
@@ -149,7 +153,7 @@ pub struct CullPipeline {
 }
 
 impl CullPipeline {
-    fn new(device: &wgpu::Device) -> Self {
+    fn new(device: &wgpu::Device, cache: Option<&wgpu::PipelineCache>) -> Self {
         let src    = include_str!("shaders/cull.wgsl");
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label:  Some("Cull Shader"),
@@ -198,7 +202,7 @@ impl CullPipeline {
             module:              &shader,
             entry_point:         Some("cs_main"),
             compilation_options: Default::default(),
-            cache:               None,
+            cache,
         });
 
         Self { pipeline, bgl }
@@ -217,7 +221,7 @@ pub struct SkinComputePipeline {
 }
 
 impl SkinComputePipeline {
-    fn new(device: &wgpu::Device) -> Self {
+    fn new(device: &wgpu::Device, cache: Option<&wgpu::PipelineCache>) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label:  Some("Skin Compute Shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shaders/skin_compute.wgsl").into()),
@@ -282,7 +286,7 @@ impl SkinComputePipeline {
             module:              &shader,
             entry_point:         Some("cs_main"),
             compilation_options: Default::default(),
-            cache:               None,
+            cache,
         });
 
         Self { pipeline, per_frame_bgl, static_bgl, output_bgl }
@@ -304,11 +308,12 @@ pub struct IdPassPipeline {
 }
 
 impl IdPassPipeline {
-    fn new(device: &wgpu::Device, _sf: wgpu::TextureFormat, df: wgpu::TextureFormat) -> Self {
+    fn new(device: &wgpu::Device, _sf: wgpu::TextureFormat, df: wgpu::TextureFormat, cache: Option<&wgpu::PipelineCache>) -> Self {
         // ID パスはオフスクリーン Rgba32Float テクスチャへ描画するため、
         // サーフェスフォーマット (_sf) ではなく固定フォーマットを使う。
         let build = |toml: &str| {
             RenderPipelineBuilder::new(device, toml, wgpu::TextureFormat::Rgba32Float, df)
+                .with_cache(cache)
                 .build(get_shader_source)
         };
 
@@ -342,7 +347,7 @@ pub struct OutlinePipeline {
 }
 
 impl OutlinePipeline {
-    fn new(device: &wgpu::Device, sf: wgpu::TextureFormat, df: wgpu::TextureFormat) -> Self {
+    fn new(device: &wgpu::Device, sf: wgpu::TextureFormat, df: wgpu::TextureFormat, cache: Option<&wgpu::PipelineCache>) -> Self {
         // stencil Equal(0): アウトライン内側への描画を抑制
         let stencil_read_only = wgpu::StencilState {
             front: wgpu::StencilFaceState {
@@ -382,6 +387,7 @@ impl OutlinePipeline {
         let build = |toml: &str, stencil: wgpu::StencilState| {
             RenderPipelineBuilder::new(device, toml, sf, df)
                 .with_stencil(stencil)
+                .with_cache(cache)
                 .build(get_shader_source)
                 .0
         };
@@ -436,9 +442,11 @@ impl SpritePipeline {
         queue:  &wgpu::Queue,
         sf:     wgpu::TextureFormat,
         df:     wgpu::TextureFormat,
+        cache:  Option<&wgpu::PipelineCache>,
     ) -> Self {
         let (pipeline, mut bgls) =
             RenderPipelineBuilder::new(device, include_str!("pipelines/sprite.toml"), sf, df)
+                .with_cache(cache)
                 .build(get_shader_source);
         // bgls[0]=camera_bgl, [1]=sprite_uniform_bgl, [2]=tex_bgl (pop は末尾から)
         let tex_bgl            = bgls.pop().unwrap();  // group 2
@@ -553,11 +561,12 @@ pub struct CanvasIdPipeline {
 }
 
 impl CanvasIdPipeline {
-    fn new(device: &wgpu::Device, queue: &wgpu::Queue, df: wgpu::TextureFormat) -> Self {
+    fn new(device: &wgpu::Device, queue: &wgpu::Queue, df: wgpu::TextureFormat, cache: Option<&wgpu::PipelineCache>) -> Self {
         // color_format = "Rgba32Float" のため surface_format は使用しない
         let sf_unused = wgpu::TextureFormat::Bgra8UnormSrgb;
         let (pipeline, mut bgls) =
             RenderPipelineBuilder::new(device, include_str!("pipelines/canvas_id.toml"), sf_unused, df)
+                .with_cache(cache)
                 .build(get_shader_source);
         // num_bind_groups=3 → bgls[0]=camera_bgl, [1]=canvas_id_bgl, [2]=tex_bgl
         let tex_bgl       = bgls.pop().unwrap(); // group 2
@@ -617,17 +626,23 @@ impl DrawPipelines {
         queue:          &wgpu::Queue,
         surface_format: wgpu::TextureFormat,
         depth_format:   wgpu::TextureFormat,
+        cache:          Option<&wgpu::PipelineCache>,
     ) -> Self {
-        let mesh          = MeshPipeline::new(device, surface_format, depth_format);
-        let skinned_mesh  = SkinnedMeshPipeline::new(device, surface_format, depth_format);
-        let unlit_line    = UnlitPipeline::new(device, surface_format, depth_format);
-        let cull          = CullPipeline::new(device);
-        let skin_compute  = SkinComputePipeline::new(device);
-        let depth_prepass = DepthPrepassPipelines::new(device, depth_format);
-        let id_pass       = IdPassPipeline::new(device, surface_format, depth_format);
-        let outline       = OutlinePipeline::new(device, surface_format, depth_format);
-        let sprite        = SpritePipeline::new(device, queue, surface_format, depth_format);
-        let canvas_id     = CanvasIdPipeline::new(device, queue, depth_format);
+        let sf = surface_format;
+        let df = depth_format;
+        // cache を全パイプラインに渡す。
+        // 初回は通常コンパイル（15 秒程度）してキャッシュに記録し、
+        // 2 回目以降はキャッシュから復元するためコンパイルをスキップする。
+        let mesh          = MeshPipeline::new(device, sf, df, cache);
+        let skinned_mesh  = SkinnedMeshPipeline::new(device, sf, df, cache);
+        let unlit_line    = UnlitPipeline::new(device, sf, df, cache);
+        let cull          = CullPipeline::new(device, cache);
+        let skin_compute  = SkinComputePipeline::new(device, cache);
+        let depth_prepass = DepthPrepassPipelines::new(device, df, cache);
+        let id_pass       = IdPassPipeline::new(device, sf, df, cache);
+        let outline       = OutlinePipeline::new(device, sf, df, cache);
+        let sprite        = SpritePipeline::new(device, queue, sf, df, cache);
+        let canvas_id     = CanvasIdPipeline::new(device, queue, df, cache);
         Self { mesh, skinned_mesh, unlit_line, cull, skin_compute, depth_prepass, id_pass, outline, sprite, canvas_id }
     }
 }

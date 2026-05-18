@@ -14,6 +14,7 @@ pub mod model_component;
 pub mod script_component;
 pub mod canvas_component;
 pub mod sprite_component;
+pub mod inputmap_component;
 
 pub use transform::Transform;
 pub use canvas_transform::CanvasTransform;
@@ -26,6 +27,7 @@ pub use script_component::{
 };
 pub use canvas_component::{CanvasComponent, CanvasComponentData};
 pub use sprite_component::{SpriteComponent, SpriteComponentData};
+pub use inputmap_component::{InputMapComponent, InputMapComponentData};
 
 use serde::{Deserialize, Serialize};
 
@@ -48,6 +50,8 @@ pub enum ComponentKind {
     Canvas,
     /// 2D スプライト（テクスチャ画像・キャンバス上表示）
     Sprite,
+    /// 入力マップアセット参照（.inputmap ファイルへのリンク）
+    InputMap,
 }
 
 impl ComponentKind {
@@ -59,6 +63,7 @@ impl ComponentKind {
             Self::Placeholder => "ScriptComponent (placeholder)",
             Self::Canvas      => "CanvasComponent",
             Self::Sprite      => "SpriteComponent",
+            Self::InputMap    => "InputMapComponent",
         }
     }
 }
@@ -74,4 +79,5 @@ pub enum ComponentData {
     ScriptComponent(ScriptComponentData),
     CanvasComponent(CanvasComponentData),
     SpriteComponent(SpriteComponentData),
+    InputMapComponent(InputMapComponentData),
 }

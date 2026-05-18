@@ -733,6 +733,10 @@ impl App {
                 IpcCommand::SetCanvasAutoScale { actor_dfs_id, slot_idx, auto_scale } => {
                     self.handle_set_canvas_auto_scale(actor_dfs_id, slot_idx, auto_scale);
                 }
+                IpcCommand::SetInputMapPath { actor_dfs_id, slot_idx, path } => {
+                    let p = path.clone();
+                    self.handle_set_inputmap_path(actor_dfs_id, slot_idx, &p);
+                }
             }
         }
     }

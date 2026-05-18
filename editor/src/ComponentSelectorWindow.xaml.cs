@@ -58,6 +58,10 @@ public partial class ComponentSelectorWindow : Window
         ("カメラ", new()),
         ("物理", new()),
         ("サウンド", new()),
+        ("入力", new()
+        {
+            new("InputMapComponent", "InputMap", ".inputmap アセットをアクタにアタッチ", ActorTarget.Common),
+        }),
         ("スクリプト", new()
         {
             new("ScriptComponent", "Script", "スクリプトをアクタにアタッチ", ActorTarget.Common),
@@ -252,11 +256,12 @@ public partial class ComponentSelectorWindow : Window
 
     private static string GetDefaultName(string typeId) => typeId switch
     {
-        "ModelComponent"   => "Model",
-        "ScriptComponent"  => "Script",
-        "CanvasComponent"  => "Canvas",
-        "SpriteComponent"  => "Sprite",
-        _                  => typeId,
+        "ModelComponent"    => "Model",
+        "ScriptComponent"   => "Script",
+        "CanvasComponent"   => "Canvas",
+        "SpriteComponent"   => "Sprite",
+        "InputMapComponent" => "InputMap",
+        _                   => typeId,
     };
 
     // ── イベント ─────────────────────────────────────────────

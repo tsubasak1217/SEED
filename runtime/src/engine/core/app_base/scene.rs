@@ -246,7 +246,7 @@ impl Scene {
         ctx:            &DrawContext,
         scripting_host: Option<&Arc<ScriptingHost>>,
     ) -> Result<Self, SceneError> {
-        let raw  = std::fs::read_to_string(path)?;
+        let raw  = crate::engine::asset_fs::read_string(path.to_str().unwrap_or(""))?;
         let json = raw.strip_prefix('\u{FEFF}').unwrap_or(&raw);
         let data: ActorData = serde_json::from_str(json)?;
         let name = data.name.clone();
@@ -268,7 +268,7 @@ impl Scene {
         scripting_host: Option<&Arc<ScriptingHost>>,
         world_line:     u32,
     ) -> Result<Actor, SceneError> {
-        let raw  = std::fs::read_to_string(path)?;
+        let raw  = crate::engine::asset_fs::read_string(path.to_str().unwrap_or(""))?;
         let json = raw.strip_prefix('\u{FEFF}').unwrap_or(&raw);
         let data: ActorData = serde_json::from_str(json)?;
         let mut actor = build_actor(data, ctx, world, scripting_host)?;
@@ -282,7 +282,7 @@ impl Scene {
         ctx:            &DrawContext,
         scripting_host: Option<&Arc<ScriptingHost>>,
     ) -> Result<(Self, Option<DebugCameraData>), SceneError> {
-        let raw  = std::fs::read_to_string(path)?;
+        let raw  = crate::engine::asset_fs::read_string(path.to_str().unwrap_or(""))?;
         let json = raw.strip_prefix('\u{FEFF}').unwrap_or(&raw);
         let data: SceneData = serde_json::from_str(json)?;
 
@@ -418,6 +418,11 @@ pub fn build_actor(
                     height:       sc_data.height,
                 });
                 actor.add_slot_typed::<SpriteComponent>(slot_name, ComponentKind::Sprite, slot_entity);
+            }
+            ComponentData::InputMapComponent(ic_data) => {
+                use crate::engine::components::InputMapComponent;
+                world.insert(slot_entity, InputMapComponent { asset_path: ic_data.asset_path });
+                actor.add_slot_typed::<InputMapComponent>(slot_name, ComponentKind::InputMap, slot_entity);
             }
         }
     }

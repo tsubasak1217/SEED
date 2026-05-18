@@ -71,6 +71,8 @@ pub struct RenderPipelineBuilder<'d> {
     surface_format: wgpu::TextureFormat,
     depth_format:   wgpu::TextureFormat,
     stencil:        Option<wgpu::StencilState>,
+    /// コンパイル済みパイプラインキャッシュ（Some の場合は再コンパイルをスキップ）。
+    cache:          Option<&'d wgpu::PipelineCache>,
 }
 
 impl<'d> RenderPipelineBuilder<'d> {
@@ -83,12 +85,20 @@ impl<'d> RenderPipelineBuilder<'d> {
     ) -> Self {
         let cfg: PipelineConfig = toml::from_str(toml_src)
             .expect("invalid pipeline TOML");
-        Self { device, cfg, surface_format, depth_format, stencil: None }
+        Self { device, cfg, surface_format, depth_format, stencil: None, cache: None }
     }
 
     /// ステンシルステートを上書き設定する（アウトライン等の特殊用途）。
     pub fn with_stencil(mut self, s: wgpu::StencilState) -> Self {
         self.stencil = Some(s);
+        self
+    }
+
+    /// パイプラインキャッシュを設定する。
+    /// キャッシュが有効な場合、2 回目以降の起動でシェーダーコンパイルをスキップできる。
+    /// パイプラインキャッシュを設定する。None の場合はキャッシュなし（非対応 GPU 向け）。
+    pub fn with_cache(mut self, cache: Option<&'d wgpu::PipelineCache>) -> Self {
+        self.cache = cache;
         self
     }
 
@@ -101,7 +111,7 @@ impl<'d> RenderPipelineBuilder<'d> {
     where
         F: Fn(&str) -> &'static str,
     {
-        let Self { device, cfg, surface_format, depth_format, stencil } = self;
+        let Self { device, cfg, surface_format, depth_format, stencil, cache } = self;
 
         // ── 1. シェーダーソースを連結 ──────────────────────────
         let combined: String = cfg.shader_sources.iter()
@@ -228,7 +238,7 @@ impl<'d> RenderPipelineBuilder<'d> {
             depth_stencil,
             multisample: wgpu::MultisampleState::default(),
             multiview:   None,
-            cache:       None,
+            cache,
         });
 
         (pipeline, all_bgls)
