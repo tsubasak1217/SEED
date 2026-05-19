@@ -32,7 +32,9 @@ use crate::engine::components::{
 use crate::engine::structs::objects::Actor;
 use crate::engine::structs::objects::actor::{ActorData, ComponentSlotData};
 
-// ─── SceneError ───────────────────────────────────────────────────────────────
+// ============================================================
+//  SceneError — シーン読み書き時のエラー型
+// ============================================================
 
 #[derive(Debug)]
 pub enum SceneError {
@@ -56,7 +58,9 @@ impl From<std::io::Error>    for SceneError { fn from(e: std::io::Error)    -> S
 impl From<serde_json::Error> for SceneError { fn from(e: serde_json::Error) -> Self { Self::Json(e) } }
 impl From<LoadError>         for SceneError { fn from(e: LoadError)          -> Self { Self::Load(e) } }
 
-// ─── DebugCameraData ──────────────────────────────────────────────────────────
+// ============================================================
+//  DebugCameraData — デバッグカメラの保存データ
+// ============================================================
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct DebugCameraData {
@@ -77,7 +81,9 @@ impl Default for DebugCameraData {
     }
 }
 
-// ─── CanvasCameraData ─────────────────────────────────────────────────────────
+// ============================================================
+//  CanvasCameraData — 2D アクター編集カメラの保存データ
+// ============================================================
 
 /// 2D アクター編集モード用カメラの保存データ。
 ///
@@ -97,7 +103,9 @@ impl Default for CanvasCameraData {
     }
 }
 
-// ─── SceneData ────────────────────────────────────────────────────────────────
+// ============================================================
+//  SceneData — シーンファイルのデシリアライズ用内部型
+// ============================================================
 
 #[derive(Serialize, Deserialize)]
 struct SceneData {
@@ -107,7 +115,9 @@ struct SceneData {
     actors: Vec<ActorData>,
 }
 
-// ─── Scene ────────────────────────────────────────────────────────────────────
+// ============================================================
+//  Scene — World のオーナー + アクターツリー管理
+// ============================================================
 
 /// シーン本体。World（コンポーネントデータ）と Actor ツリーを所有する。
 pub struct Scene {
@@ -127,7 +137,7 @@ impl Scene {
         self.actors.push(actor);
     }
 
-    // ─── World へのショートハンドアクセス ────────────────────
+    // ── World へのショートハンドアクセス ─────────────────────
 
     /// Entity の Transform コンポーネントへの不変参照を返す。
     pub fn transform(&self, entity: Entity) -> Option<&Transform> {
@@ -149,7 +159,7 @@ impl Scene {
         self.world.get_mut::<T>(entity)
     }
 
-    // ─── 検索ヘルパー ─────────────────────────────────────────
+    // ── 検索ヘルパー ──────────────────────────────────────────
 
     /// Play モード用のメインカメラを DFS で探す。
     ///
@@ -256,7 +266,7 @@ impl Scene {
         self.world.get_mut::<T>(slot_entity)
     }
 
-    // ─── フレームライフサイクル（System 移行前の暫定）──────────
+    // ── フレームライフサイクル（System 移行前の暫定）───────────
 
     pub fn begin_frame(&self, _ctx: &FrameContext) {}
     pub fn early_update(&self, _ctx: &FrameContext) {}
@@ -266,7 +276,7 @@ impl Scene {
     pub fn render(&self, _ctx: &FrameContext) {}
     pub fn end_frame(&self, _ctx: &FrameContext) {}
 
-    // ─── 保存 ─────────────────────────────────────────────────
+    // ── 保存 ──────────────────────────────────────────────────
 
     pub fn save(&self, path: &Path, camera: &DebugCameraData) -> Result<(), SceneError> {
         let data = SceneData {
@@ -279,7 +289,7 @@ impl Scene {
         Ok(())
     }
 
-    // ─── 読み込み ─────────────────────────────────────────────
+    // ── 読み込み ──────────────────────────────────────────────
 
     /// `.actor` ファイル（ActorData JSON）を読み込み、単一アクターのシーンを生成する。
     pub fn load_actor(
@@ -337,7 +347,9 @@ impl Scene {
     }
 }
 
-// ─── build_actor ──────────────────────────────────────────────────────────────
+// ============================================================
+//  build_actor — ActorData → Actor 構築
+// ============================================================
 
 /// ActorData から Actor を構築し、コンポーネントを World に挿入する。
 pub fn build_actor(

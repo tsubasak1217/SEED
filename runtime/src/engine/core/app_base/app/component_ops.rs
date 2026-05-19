@@ -784,7 +784,7 @@ impl App {
             .unwrap_or_default()
     }
 
-    // ─── Canvas 2D コンポーネント自動親子化 ───────────────────────
+    // ── Canvas 2D コンポーネント自動親子化 ────────────────────────
 
     /// Canvas 上に配置するコンポーネント（Sprite など）を追加する際の
     /// 自動親子化処理エントリポイント。
@@ -1012,7 +1012,7 @@ impl App {
         }
     }
 
-    // ─── SpriteComponent プロパティ設定 ───────────────────────────
+    // ── SpriteComponent プロパティ設定 ────────────────────────────
 
     /// SpriteComponent のテクスチャパスを更新する。
     pub(super) fn handle_set_sprite_path(&mut self, actor_dfs_id: u32, slot_idx: u32, path: &str) {
@@ -1110,7 +1110,7 @@ impl App {
         if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
     }
 
-    // ─── CameraComponent プロパティ設定 ────────────────────────────
+    // ── CameraComponent プロパティ設定 ─────────────────────────────
 
     /// CameraComponent の FOV（視野角・度）を更新する。
     pub(super) fn handle_set_camera_fov(&mut self, actor_dfs_id: u32, slot_idx: u32, value: f32) {

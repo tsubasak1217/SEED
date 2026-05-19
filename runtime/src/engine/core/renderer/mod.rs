@@ -37,6 +37,9 @@ use winit::window::Window;
 // Hi-Z 深度サンプリング用には DepthOnly ビューを別途作成する。
 pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth24PlusStencil8;
 
+/// wgpu の COPY_BYTES_PER_ROW_ALIGNMENT 要件 (256 バイト境界)。
+const COPY_ROW_ALIGNMENT: u32 = 256;
+
 struct DepthTexture {
     #[allow(dead_code)]
     texture:         wgpu::Texture,
@@ -691,7 +694,7 @@ impl<'r> RenderFrame<'r> {
                 buffer: readback_buf,
                 layout: wgpu::ImageDataLayout {
                     offset:         0,
-                    bytes_per_row:  Some(256),  // COPY_BYTES_PER_ROW_ALIGNMENT
+                    bytes_per_row:  Some(COPY_ROW_ALIGNMENT),
                     rows_per_image: None,
                 },
             },

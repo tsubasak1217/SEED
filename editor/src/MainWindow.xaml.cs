@@ -15,9 +15,11 @@ using System.Reflection;
 using AvalonDock.Layout;
 using AvalonDock.Layout.Serialization;
 using Microsoft.Win32;
+using SEEDEditor.Native;
 using SEEDEditor.Panels;
 using SEEDEditor.Runtime;
 using SEEDEditor.Viewport;
+using static SEEDEditor.Native.NativeInterop;
 
 namespace SEEDEditor;
 
@@ -28,79 +30,6 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
     {
         void TryDropActorsAtCursor(string[] paths);
     }
-
-    // ── P/Invoke ────────────────────────────────────────────────
-
-    private delegate nint LowLevelKeyboardProc(int nCode, nint wParam, nint lParam);
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct KBDLLHOOKSTRUCT
-    {
-        public uint  vkCode;
-        public uint  scanCode;
-        public uint  flags;
-        public uint  time;
-        public nint  dwExtraInfo;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct RECT { public int Left, Top, Right, Bottom; }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct POINT { public int X, Y; }
-
-    [DllImport("user32.dll")] private static extern bool GetCursorPos(out POINT pt);
-    [DllImport("user32.dll")] private static extern int  GetWindowLong(nint hWnd, int nIndex);
-    [DllImport("user32.dll")] private static extern int  SetWindowLong(nint hWnd, int nIndex, int dwNewLong);
-    private const int GWL_EXSTYLE       = -20;
-    private const int WS_EX_TRANSPARENT = 0x00000020;
-
-    // ── OLE DragDrop ─────────────────────────────────────────────────
-    [DllImport("ole32.dll")] private static extern int RegisterDragDrop(
-        nint hwnd, [MarshalAs(UnmanagedType.Interface)] IOleDropTarget dropTarget);
-    [DllImport("ole32.dll")] private static extern int RevokeDragDrop(nint hwnd);
-
-    /// ContainerHwnd を Win32 OLE DropTarget として登録するための COM インターフェース。
-    /// WPF DragOver/Drop は HwndHost 上では発火しないため、ここで直接受け取る。
-    [ComImport, Guid("00000122-0000-0000-C000-000000000046"),
-     InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-    private interface IOleDropTarget
-    {
-        [PreserveSig] int DragEnter(
-            [MarshalAs(UnmanagedType.Interface)] object pDataObj,
-            uint grfKeyState, POINT pt, ref uint pdwEffect);
-        [PreserveSig] int DragOver(uint grfKeyState, POINT pt, ref uint pdwEffect);
-        [PreserveSig] int DragLeave();
-        [PreserveSig] int Drop(
-            [MarshalAs(UnmanagedType.Interface)] object pDataObj,
-            uint grfKeyState, POINT pt, ref uint pdwEffect);
-    }
-
-    [DllImport("dwmapi.dll")]
-    private static extern int DwmSetWindowAttribute(nint hwnd, int attr, ref int attrValue, int attrSize);
-
-    private const int DWMWA_USE_IMMERSIVE_DARK_MODE = 20; // Windows 10 20H1+
-    private const int DWMWA_CAPTION_COLOR           = 35; // Windows 11+
-    private const int DWMWA_BORDER_COLOR            = 34; // Windows 11+
-
-    [DllImport("user32.dll")] static extern nint SetWindowsHookEx(int idHook, LowLevelKeyboardProc lpfn, nint hMod, uint dwThreadId);
-    [DllImport("user32.dll")] static extern bool UnhookWindowsHookEx(nint hhk);
-    [DllImport("user32.dll")] static extern nint CallNextHookEx(nint hhk, int nCode, nint wParam, nint lParam);
-    [DllImport("kernel32.dll")] static extern nint GetModuleHandle(string? lpModuleName);
-    [DllImport("user32.dll")] static extern nint GetForegroundWindow();
-    [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(nint hWnd, out uint lpdwProcessId);
-    [DllImport("user32.dll")] static extern bool GetWindowRect(nint hWnd, out RECT lpRect);
-    [DllImport("user32.dll")] static extern bool ClipCursor(ref RECT lpRect);
-    [DllImport("user32.dll")] static extern bool ClipCursor(nint lpRect); // null 用
-
-    private const int WH_KEYBOARD_LL = 13;
-    private const int WM_KEYDOWN     = 0x0100;
-    private const int WM_KEYUP       = 0x0101;
-    private const int WM_SYSKEYDOWN  = 0x0104;
-    private const int WM_SYSKEYUP    = 0x0105;
-    private const int WM_SYSCOMMAND  = 0x0112;
-    private const int WM_EXITSIZEMOVE = 0x0232;
-    private const int SC_MOVE        = 0xF010;
 
     // ── フィールド ──────────────────────────────────────────────
 

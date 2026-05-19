@@ -40,13 +40,15 @@ pub struct MeshPipeline {
 
 impl MeshPipeline {
     fn new(device: &wgpu::Device, sf: wgpu::TextureFormat, df: wgpu::TextureFormat, cache: Option<&wgpu::PipelineCache>) -> Self {
-        let (pipeline, mut bgls) =
+        let (pipeline, bgls) =
             RenderPipelineBuilder::new(device, include_str!("pipelines/mesh.toml"), sf, df)
                 .with_cache(cache)
                 .build(get_shader_source);
-        let material_bgl = bgls.pop().unwrap();
-        let model_bgl    = bgls.pop().unwrap();
-        let camera_bgl   = bgls.pop().unwrap();
+        // group 番号順 (0, 1, 2) にイテレートして取り出す
+        let mut it = bgls.into_iter();
+        let camera_bgl   = it.next().unwrap(); // group 0
+        let model_bgl    = it.next().unwrap(); // group 1
+        let material_bgl = it.next().unwrap(); // group 2
         Self { pipeline, camera_bgl, model_bgl, material_bgl }
     }
 }
@@ -65,14 +67,16 @@ pub struct SkinnedMeshPipeline {
 
 impl SkinnedMeshPipeline {
     fn new(device: &wgpu::Device, sf: wgpu::TextureFormat, df: wgpu::TextureFormat, cache: Option<&wgpu::PipelineCache>) -> Self {
-        let (pipeline, mut bgls) =
+        let (pipeline, bgls) =
             RenderPipelineBuilder::new(device, include_str!("pipelines/skinned_mesh.toml"), sf, df)
                 .with_cache(cache)
                 .build(get_shader_source);
-        let joint_bgl    = bgls.pop().unwrap();
-        let material_bgl = bgls.pop().unwrap();
-        let model_bgl    = bgls.pop().unwrap();
-        let camera_bgl   = bgls.pop().unwrap();
+        // group 番号順 (0, 1, 2, 3) にイテレートして取り出す
+        let mut it = bgls.into_iter();
+        let camera_bgl   = it.next().unwrap(); // group 0
+        let model_bgl    = it.next().unwrap(); // group 1
+        let material_bgl = it.next().unwrap(); // group 2
+        let joint_bgl    = it.next().unwrap(); // group 3
         Self { pipeline, camera_bgl, model_bgl, material_bgl, joint_bgl }
     }
 }
@@ -95,9 +99,11 @@ impl UnlitPipeline {
             RenderPipelineBuilder::new(device, toml, sf, df).with_cache(cache).build(get_shader_source)
         };
 
-        let (pipeline, mut bgls) = build(include_str!("pipelines/unlit.toml"));
-        let model_bgl  = bgls.pop().unwrap();
-        let camera_bgl = bgls.pop().unwrap();
+        let (pipeline, bgls) = build(include_str!("pipelines/unlit.toml"));
+        // group 番号順 (0, 1) にイテレートして取り出す
+        let mut it = bgls.into_iter();
+        let camera_bgl = it.next().unwrap(); // group 0
+        let model_bgl  = it.next().unwrap(); // group 1
 
         let (gizmo_line_pipeline, _) = build(include_str!("pipelines/gizmo_line.toml"));
         let (gizmo_tri_pipeline, _)  = build(include_str!("pipelines/gizmo_tri.toml"));
@@ -445,14 +451,15 @@ impl SpritePipeline {
         df:     wgpu::TextureFormat,
         cache:  Option<&wgpu::PipelineCache>,
     ) -> Self {
-        let (pipeline, mut bgls) =
+        let (pipeline, bgls) =
             RenderPipelineBuilder::new(device, include_str!("pipelines/sprite.toml"), sf, df)
                 .with_cache(cache)
                 .build(get_shader_source);
-        // bgls[0]=camera_bgl, [1]=sprite_uniform_bgl, [2]=tex_bgl (pop は末尾から)
-        let tex_bgl            = bgls.pop().unwrap();  // group 2
-        let sprite_uniform_bgl = bgls.pop().unwrap();  // group 1
-        // group 0 の camera_bgl は camera_buf.bind_group と互換のため不使用
+        // group 番号順 (0, 1, 2) にイテレートして取り出す
+        let mut it = bgls.into_iter();
+        let _camera_bgl_compat = it.next(); // group 0: camera_buf.bind_group と互換のため不使用
+        let sprite_uniform_bgl = it.next().unwrap(); // group 1
+        let tex_bgl            = it.next().unwrap(); // group 2
 
         // リニアフィルタリングサンプラー
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -565,14 +572,15 @@ impl CanvasIdPipeline {
     fn new(device: &wgpu::Device, queue: &wgpu::Queue, df: wgpu::TextureFormat, cache: Option<&wgpu::PipelineCache>) -> Self {
         // color_format = "Rgba32Float" のため surface_format は使用しない
         let sf_unused = wgpu::TextureFormat::Bgra8UnormSrgb;
-        let (pipeline, mut bgls) =
+        let (pipeline, bgls) =
             RenderPipelineBuilder::new(device, include_str!("pipelines/canvas_id.toml"), sf_unused, df)
                 .with_cache(cache)
                 .build(get_shader_source);
-        // num_bind_groups=3 → bgls[0]=camera_bgl, [1]=canvas_id_bgl, [2]=tex_bgl
-        let tex_bgl       = bgls.pop().unwrap(); // group 2
-        let canvas_id_bgl = bgls.pop().unwrap(); // group 1
-        // group 0 の camera_bgl は camera_buf.bind_group と互換のため不使用
+        // group 番号順 (0, 1, 2) にイテレートして取り出す
+        let mut it = bgls.into_iter();
+        let _camera_bgl_compat = it.next(); // group 0: camera_buf.bind_group と互換のため不使用
+        let canvas_id_bgl      = it.next().unwrap(); // group 1
+        let tex_bgl            = it.next().unwrap(); // group 2
 
         // 白 1×1 テクスチャ（alpha=1）を作成してフォールバックビューとする
         let white_tex = device.create_texture(&wgpu::TextureDescriptor {
@@ -632,13 +640,14 @@ impl CameraPreviewBlitPipeline {
         df:     wgpu::TextureFormat,
         cache:  Option<&wgpu::PipelineCache>,
     ) -> Self {
-        let (pipeline, mut bgls) =
+        let (pipeline, bgls) =
             RenderPipelineBuilder::new(device, include_str!("pipelines/camera_preview_blit.toml"), sf, df)
                 .with_cache(cache)
                 .build(get_shader_source);
-        // bgls[0]=rect_bgl, [1]=tex_bgl (pop は末尾から)
-        let tex_bgl  = bgls.pop().unwrap();
-        let rect_bgl = bgls.pop().unwrap();
+        // group 番号順 (0, 1) にイテレートして取り出す
+        let mut it = bgls.into_iter();
+        let rect_bgl = it.next().unwrap(); // group 0
+        let tex_bgl  = it.next().unwrap(); // group 1
         Self { pipeline, rect_bgl, tex_bgl }
     }
 }

@@ -1,398 +1,380 @@
-# SEED エンジン コードレビュー
+# SEED プロジェクト コードレビュー
 
-レビュー実施日: 2026-05-19  
-対象: runtime (Rust/wgpu) + editor (C#/WPF)
-
----
-
-## 総評
-
-ECS の基礎設計（SparseSet・World・Component）は堅固で、ファイル分割の方向性も概ね正しい。
-コメントも充実しており、設計意図は読める。
-ただし `App` 構造体が神オブジェクト化しており、IPC パーサーの重複が深刻。
-以下に重要度別で改善点を列挙する。
-
----
-
-## 🔴 重要度 HIGH — 早期に対処すべき設計問題
+**レビュー日**: 2026-05-19  
+**対象ブランチ**: master（直近の変更ファイル群）  
+**レビュー対象ファイル**:
+- `runtime/src/engine/core/app_base/app/component_ops.rs`
+- `runtime/src/engine/core/app_base/app/mod.rs`
+- `runtime/src/engine/core/app_base/app/pick_2d.rs`
+- `runtime/src/engine/core/app_base/app/render.rs`（冒頭部分）
+- `runtime/src/engine/core/app_base/app/drag_state.rs`
+- `runtime/src/engine/core/app_base/ipc.rs`
+- `runtime/src/engine/core/app_base/scene.rs`
+- `runtime/src/engine/core/renderer/mod.rs`
+- `runtime/src/engine/core/renderer/pipeline.rs`
 
 ---
 
-### H-1. App 構造体の神オブジェクト化 (God Object)
+## 重要度の定義
 
-**ファイル:** `runtime/src/engine/core/app_base/app/mod.rs:309-475`
+| 記号 | レベル | 説明 |
+|------|--------|------|
+| 🔴 | **高** | バグ・データ不整合・セキュリティに関わる問題。早急に対応が必要 |
+| 🟡 | **中** | 保守性・可読性・潜在的パフォーマンス問題。計画的に対応すべき |
+| 🟢 | **低** | スタイル改善・軽微な設計問題。余裕があれば対応 |
 
-App 構造体に **65 フィールド以上** が詰め込まれている。
-エディタ状態・カメラ・ピッキング・Undo・ドラッグ・世界線・クリップボード・FPS 計測・
-キャンバス・カメラプレビュー・ギズモが全て 1 つの型に混在している。
+---
+
+## 🔴 高優先度
+
+### 1. ScriptComponent の JSON キーが誤っている（バグ）
+
+**ファイル**: `component_ops.rs:163`
 
 ```rust
-// 現状: 単一構造体に全責務を集中
-pub struct App {
-    // ── カメラ ──
-    camera: DebugCamera,
-    camera_buf: Option<CameraBuffer>,
-    canvas_overlay_camera_buf: Option<CameraBuffer>,
-    cam_input: CameraInput,
-    cam_grab_screen_pos: Option<(i32, i32)>,
-    // ── ピッキング ──
-    id_buffer: Option<IdBuffer>,
+ComponentData::ScriptComponent(d) => {
+    let path_json = serde_json::to_string(&d.type_name).unwrap_or_default();
+    ("ScriptComponent", format!(r#","model_path":{path_json}"#))
+    //                                  ^^^^^^^^^^^
+    //   ScriptComponent なのに model_path キーを送っている
+}
+```
+
+**問題**: `ScriptComponent` のデータを `model_path` というキー名でエディタへ送信している。エディタ側が `type_name` を期待している場合、スクリプトパスがインスペクターに正しく表示されないバグが発生する。
+
+**修正案**:
+```rust
+ComponentData::ScriptComponent(d) => {
+    let path_json = serde_json::to_string(&d.type_name).unwrap_or_default();
+    ("ScriptComponent", format!(r#","type_name":{path_json}"#))
+}
+```
+
+---
+
+### 2. `ipc.rs` が非 Windows でコンパイルエラーになる可能性
+
+**ファイル**: `ipc.rs:349`
+
+```rust
+fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
+    use std::os::windows::io::AsRawHandle;  // ← 無条件インポート
+    ...
+}
+```
+
+`peek_pipe` 関数は `#[cfg(windows)]` でガードされているが、`read_loop` 内の `AsRawHandle` のインポートと `peek_pipe` の呼び出しは非 Windows でもコンパイルが通ろうとする。プロジェクトが Windows 専用であれば実害はないが、明示的に `#[cfg(target_os = "windows")]` でガードするかファイル先頭に `#![cfg(windows)]` を追加すべき。
+
+---
+
+## 🟡 中優先度
+
+### 3. ModelComponent 構築ロジックが複数箇所に重複している
+
+**ファイル**: `component_ops.rs` (L244-285, L628-677, L1290-1331)
+
+以下の3箇所でほぼ同一の「キャッシュから取得 or ディスクからロード → GPU リソース構築」ロジックが書かれている:
+
+- `handle_add_component_to_actor` の `ModelComponent` ケース
+- `handle_duplicate_component` の `ModelComponent` ケース
+- `rebuild_actor_slots` の `ModelComponent` ケース
+
+**問題**: バグ修正や仕様変更が1箇所に入った際に他の箇所が追従し忘れる。
+
+**修正案**: 共通ヘルパー関数を切り出す。
+
+```rust
+/// モデルパスから ModelComponent を構築するヘルパー。
+/// キャッシュヒット時は Arc をクローンし、ミスの場合はディスクからロード。
+fn build_model_component_from_path(
+    ctx: &DrawContext,
+    ipc: Option<&IpcClient>,
+    path_str: &str,
+    instance_mats: Vec<[[f32; 4]; 4]>,
+    instance_meta: Vec<InstanceMeta>,
+    group_meta: Vec<GroupMeta>,
+    next_group_id: u32,
+) -> Option<ModelComponent> { ... }
+```
+
+---
+
+### 4. `handle_add_component_to_actor` の各コンポーネント種別でコードパターンが重複している
+
+**ファイル**: `component_ops.rs:241-460`
+
+`ModelComponent`, `ScriptComponent`, `CanvasComponent`, `SpriteComponent`, `InputMapComponent`, `CameraComponent` のそれぞれで以下の同じパターンが繰り返されている:
+
+```rust
+let slot_entity = scene.world.spawn();
+scene.world.insert(slot_entity, XXXComponent::default());
+let mut c = 0u32;
+if let Some(actor) = find_actor_by_dfs_mut(...) {
+    actor.add_slot_typed::<XXXComponent>(...);
+    true
+} else {
+    scene.world.despawn(slot_entity);
+    false
+};
+if found {
+    let after_slots = self.snapshot_actor_slots(...);
+    self.undo_history.record(...);
+    // 同じ後処理 4行
+}
+```
+
+**修正案**: スロット追加の共通部分をクロージャや内部ヘルパーに切り出す。少なくとも Undo 記録と後処理の4行は共通化できる。
+
+---
+
+### 5. `App` 構造体のフィールドが過多（単一責任原則）
+
+**ファイル**: `mod.rs:325-463`
+
+`App` 構造体に約45個のフィールドが詰め込まれている。関連するフィールドをサブ構造体に分割することで可読性と保守性が向上する。
+
+**分割候補例**:
+```rust
+struct SelectionState {
     selected_instances: Vec<u32>,
-    pending_pick: Option<(u32, u32)>,
-    // ── ドラッグ ──
-    drag_root_starts: Vec<(u32, [[f32; 4]; 4])>,
-    drag_child_starts: Vec<(u32, [[f32; 4]; 4])>,
-    actor_child_drag_starts: Vec<(u32, [[f32; 4]; 4])>,
-    actor_extra_mc_drag_starts: Vec<(usize, Vec<[[f32; 4]; 4]>)>,
-    multi_actor_drag_starts: Vec<(u32, [[f32; 4]; 4])>,
-    // ── Undo ──
-    undo_history: UndoHistory,
-    // ── 世界線 ──
-    active_world_line: u32,
-    saved_cameras: HashMap<u32, DebugCameraData>,
+    selected_actor_dfs_ids: Vec<usize>,
+    actor_virtual_selected_idx: Option<usize>,
+    actor_virtual_selected_slot_idx: usize,
+}
+
+struct CanvasState {
     canvas_world_lines: HashSet<u32>,
     actor_edit_canvas_wls: HashSet<u32>,
     canvas_cameras: HashMap<u32, CanvasCameraData>,
-    // ─ 以下40フィールド以上続く ─
+    canvas_screen_space_overlay: bool,
+    canvas_overlay_camera_buf: Option<CameraBuffer>,
 }
 ```
 
-**改善案:** 責務ごとにサブ構造体に分割する。
-
-```rust
-pub struct App {
-    editor_state:    EditorState,    // ツールモード・選択・Undo
-    drag_state:      DragState,      // ドラッグ開始行列・矩形選択
-    camera_state:    CameraState,    // デバッグカメラ・カメラ入力
-    world_lines:     WorldLineManager, // 世界線・キャンバス情報
-    render_state:    RenderState,    // renderer・draw_ctx・camera_buf
-    scene:           Option<Scene>,
-    ipc:             Option<IpcClient>,
-    // ...
-}
-```
-
-App::new() の初期化リスト (494-568) が 75 行になっているのも
-この問題の直接的な症状である。Default トレイトを実装して省略できる。
+ただし Rust の借用規則により `&mut self` の分割はトレードオフが伴うため、段階的なリファクタリングを推奨。
 
 ---
 
-### H-2. IPC パーサーの重複コード (550 行超の match 文)
+### 6. `collect_canvas_actors_in_rect` で O(n²) の重複チェック
 
-**ファイル:** `runtime/src/engine/core/app_base/ipc.rs:245-795`
-
-`read_loop` 内の 1 つの `match` 式に全コマンドのパース処理を直書きしている。
-各コマンドは「文字列を splitn → parse::<u32>() → parse::<f32>()」という
-**ほぼ同一のパターン**を繰り返しており、50 回以上重複している。
+**ファイル**: `mod.rs:877`
 
 ```rust
-// 現状: 同一パターンが各コマンドにコピーされている
-s if s.starts_with("SET_TRANSFORM:") => {
-    let parts: Vec<&str> = rest.split(',').collect();
-    if parts.len() == 10 {
-        if let Ok(id) = parts[0].parse::<u32>() {
-            let floats: Vec<f32> = parts[1..].iter()
-                .filter_map(|x| x.parse::<f32>().ok()).collect();
-            // ...
+if !result.contains(&dfs_id) { result.push(dfs_id); }
+```
+
+`result` が `Vec<usize>` のため `contains` が O(n) になる。アクター数が多い場合、矩形選択のたびに O(n²) コストが発生する。
+
+**修正案**: ローカルで `HashSet` を使いつつ、戻り値は `Vec` で返す:
+```rust
+// 呼び出し元で HashSet を管理するか、result を HashSet に変更する
+```
+
+---
+
+### 7. `find_actor_by_dfs` の引数型が `&Vec<Actor>` になっている
+
+**ファイル**: `mod.rs:680`
+
+```rust
+fn find_actor_by_dfs<'a>(
+    actors:  &'a Vec<Actor>,  // ← &[Actor] が Rust の慣例
+    ...
+```
+
+Rust のベストプラクティスでは `&Vec<T>` ではなく `&[T]` を使う（スライス参照）。`clippy::ptr_arg` 警告が出る可能性がある。`find_actor_by_dfs_mut` と `collect_mcs_in_world_line` の引数も同様。
+
+---
+
+### 8. `scene.rs` のライフサイクルメソッドが空実装のまま残っている
+
+**ファイル**: `scene.rs:271-277`
+
+```rust
+pub fn begin_frame(&self, _ctx: &FrameContext) {}
+pub fn early_update(&self, _ctx: &FrameContext) {}
+pub fn update(&self, _ctx: &FrameContext) {}
+pub fn constant_update(&self, _ctx: &FrameContext) {}
+pub fn late_update(&self, _ctx: &FrameContext) {}
+pub fn render(&self, _ctx: &FrameContext) {}
+pub fn end_frame(&self, _ctx: &FrameContext) {}
+```
+
+コメントに「System 移行前の暫定」とあるが、実装が進むにつれてデッドコードになるリスクがある。呼び出し元から削除するか、`#[deprecated]` を付与してトラッキングする。
+
+---
+
+### 9. `find_model_in_world_line` がルートアクターしか探索しない
+
+**ファイル**: `scene.rs:207-216`
+
+```rust
+pub fn find_model_in_world_line(&self, wl: u32) -> Option<(Entity, &ModelComponent)> {
+    for root in self.actors.iter().filter(|a| a.world_line == wl) {
+        for slot in root.slots() {     // ← root のスロットのみ探索
+            ...
         }
     }
-}
-s if s.starts_with("SET_ACTOR_TRANSFORM:") => {
-    // 上と全く同じ構造
-}
-s if s.starts_with("SET_CANVAS_TRANSFORM:") => {
-    // 上と全く同じ構造（フィールド数だけ違う）
+    None
 }
 ```
 
-**改善案:** パースヘルパー関数を切り出す。
-
-```rust
-// 共通ヘルパー
-fn parse_u32(s: &str) -> Option<u32> { s.parse().ok() }
-fn parse_f32(s: &str) -> Option<f32> { s.parse().ok() }
-
-fn parse_id_and_floats<const N: usize>(rest: &str) -> Option<(u32, [f32; N])> {
-    let parts: Vec<&str> = rest.splitn(N + 1, ',').collect();
-    if parts.len() != N + 1 { return None; }
-    let id = parse_u32(parts[0])?;
-    let mut floats = [0.0f32; N];
-    for (i, p) in parts[1..].iter().enumerate() {
-        floats[i] = parse_f32(p)?;
-    }
-    Some((id, floats))
-}
-```
-
-またコマンド文字列とその解釈が 1 か所に集中しているため、
-C# 側と Rust 側で **プロトコルのズレが生じても気づきにくい**。
-将来的には MessagePack や Protocol Buffers などの型付きシリアライズを検討すること。
+子アクターを持つシーンでは、ルートアクターがモデルを持たない場合に `None` を返してしまう。「後方互換 API」と注記はあるが、動作制限を関数ドキュメントに明示すべき。
 
 ---
 
-### H-3. DFS ツリー走査の重複実装
+### 10. `pipeline.rs` の `get_shader_source` でランタイムパニック
 
-**ファイル:** `runtime/src/engine/core/app_base/app/mod.rs:641-1100`
-
-不変版・可変版で **ほぼ同一コード** が二重実装されている。
-さらに「ルートレベル」と「子ノード再帰」を分けた関数ペアが何組もある。
-
-| 不変版 | 可変版 | 目的 |
-|--------|--------|------|
-| `find_actor_by_dfs` | `find_actor_by_dfs_mut` | DFS ID でアクターを取得 |
-| `find_actor_child_by_dfs` | `find_actor_child_by_dfs_mut` | 同上の再帰実装 |
-| `remove_actor_by_dfs` (削除) | `extract_actor_by_dfs` (取り出し) | 削除と取り出しで類似構造 |
-| `collect_mcs_in_world_line` | `update_all_mc_batches_for_wl` | 収集と更新で類似走査 |
-
-DFS カウンターを手動インクリメントするパターンが全体に散在しており、
-カウント漏れバグを引き起こしやすい。
-
-**改善案:** ジェネリックな DFS ウォーカーを実装する。
+**ファイル**: `pipeline.rs:12-28`
 
 ```rust
-/// DFS 順に全アクターを訪問し、クロージャに (dfs_id, actor) を渡す。
-fn walk_actors_dfs<F>(actors: &[Actor], wl: u32, mut f: F)
-where
-    F: FnMut(u32, &Actor),
-{
-    let mut counter = 0u32;
-    fn walk<F: FnMut(u32, &Actor)>(actor: &Actor, c: &mut u32, f: &mut F) {
-        f(*c, actor);
-        *c += 1;
-        for child in actor.children() { walk(child, c, f); }
-    }
-    for root in actors.iter().filter(|a| a.world_line == wl) {
-        walk(root, &mut counter, &mut f);
+fn get_shader_source(name: &str) -> &'static str {
+    match name {
+        "shader_common.wgsl" => include_str!("..."),
+        ...
+        other => panic!("unknown shader source: {other}"),
     }
 }
 ```
 
----
-
-### H-4. render.rs の `window_event` が肥大化
-
-**ファイル:** `runtime/src/engine/core/app_base/app/render.rs`
-
-`ApplicationHandler::window_event` の LMB ドラッグ開始処理だけで
-100 行近くを占めている。イベントハンドラに複雑なロジックが直書きされており、
-テストも困難な状態。
-
-**改善案:**
-- `handle_lmb_press(&mut self, cx: f32, cy: f32)` などのハンドラメソッドに抽出する
-- `gizmo_handler.rs` に既に分離されているので、同様のパターンで
-  `drag_handler.rs` / `pick_handler.rs` に分割する
+シェーダー名のタイポはコンパイル時に検出できない。シェーダー名を `enum` で管理するか、少なくとも定数文字列を使うことでタイポリスクを減らせる。
 
 ---
 
-## 🟠 重要度 MEDIUM — 品質向上のために対応推奨
+## 🟢 低優先度
 
----
+### 11. `DragState` が `Default` trait を実装していない
 
-### M-1. マジックナンバーの残存
-
-以下の箇所にマジックナンバーが残っている。
-
-| ファイル | 行 | 数値 | 問題 |
-|----------|-----|------|------|
-| `app/mod.rs` | 169 | `size: 16` | BlitRect = [f32;4] の意味だがコメントのみ |
-| `renderer/mod.rs` | 694 | `Some(256)` | COPY_BYTES_PER_ROW_ALIGNMENT だがコメント止まり |
-| `ipc.rs` | 818 | `0..20`, `from_millis(100)` | 接続リトライ回数・待機時間 |
-| `render.rs` | 179 | `Vector3::new(0.0, 2.0, -10.0)` | カメラ初期位置のハードコード |
+**ファイル**: `drag_state.rs:65-86`
 
 ```rust
-// 改善例
-const BLIT_RECT_BUFFER_SIZE: u64 = 16; // [f32; 4]
-const COPY_ROW_ALIGNMENT: u32 = 256;   // wgpu の COPY_BYTES_PER_ROW_ALIGNMENT
-const PIPE_CONNECT_RETRIES: u32 = 20;
-const PIPE_CONNECT_RETRY_MS: u64 = 100;
-const DEFAULT_CAMERA_POSITION: [f32; 3] = [0.0, 2.0, -10.0];
-```
-
----
-
-### M-2. 手動行列乗算 — Mat4x4 型が活用されていない
-
-**ファイル:** `runtime/src/engine/core/app_base/app/mod.rs:1170-1180`
-
-`world_to_screen` 関数は配列インデックスで行列乗算を直書きしている。
-`Mat4x4` 型と `Vector3` 型がプロジェクト内に存在するにも関わらず使われていない。
-
-```rust
-// 現状: 生の配列アクセスで行列乗算
-let vx = view[0][0]*wx + view[0][1]*wy + view[0][2]*wz + view[0][3];
-// ...（8行続く）
-
-// 改善: 型のメソッドを使う
-let view_mat  = Mat4x4::from_cols(view);
-let proj_mat  = Mat4x4::from_cols(proj);
-let clip_pos  = proj_mat * view_mat * Vector3::new(wx, wy, wz).extend(1.0);
-```
-
-`apply_delta_to_actor_children` (1241-1245) の単位行列もマジックナンバー同様。
-`Mat4x4::IDENTITY` のような定数で置き換えること。
-
----
-
-### M-3. pipeline.rs の bgls.pop().unwrap() 順序依存
-
-**ファイル:** `runtime/src/engine/core/renderer/pipeline.rs`
-
-```rust
-// 現状: インデックス順に pop() — 並び順を変えるとサイレントに壊れる
-let material_bgl = bgls.pop().unwrap();
-let model_bgl    = bgls.pop().unwrap();
-let camera_bgl   = bgls.pop().unwrap();
-```
-
-TOML 設定でバインドグループレイアウトの順序が変わると
-`pop()` の結果も変わり、ランタイムでクラッシュ or 描画バグになる。
-
-**改善案:** 名前付きの Map で取り出す、または TOML から group 番号を読んで対応させる。
-
----
-
-### M-4. build_hierarchy_json の手動 JSON 構築
-
-**ファイル:** `runtime/src/engine/core/app_base/app/mod.rs:620-639`
-
-```rust
-// 現状: 手動で JSON を組み立てている
-fn build_hierarchy_json(nodes: &[(u32, String, Option<u32>)]) -> String {
-    let mut json  = String::from("[");
-    // ...
-    json.push_str(&format!(r#"{{"id":{},"name":{},...}}"#, ...));
+impl DragState {
+    pub fn new() -> Self { ... }  // new() があるが Default が未実装
 }
 ```
 
-serde_json は既にプロジェクトに存在する。手動 JSON 構築はエスケープ漏れのリスクがある
-（名前に `"` が入ると壊れる可能性）。
+Rust の慣例では `new()` が引数なしの場合は `Default` trait も実装する。`#[derive(Default)]` が使えない場合でも `impl Default for DragState` を追加すると統一性が上がる。
+
+---
+
+### 12. `pick_2d.rs` で `actor.children` に直接フィールドアクセスしている
+
+**ファイル**: `pick_2d.rs:233`
 
 ```rust
-// 改善: serde_json::to_string で安全に生成
-#[derive(Serialize)]
-struct HierarchyNode { id: u32, name: String, parent: Option<u32>, is_group: bool }
+walk_pick_2d(
+    &actor.children, world, wl,  // ← メソッド経由でなくフィールド直接参照
+```
 
-fn build_hierarchy_json(nodes: &[(u32, String, Option<u32>)]) -> String {
-    let items: Vec<HierarchyNode> = nodes.iter()
-        .map(|(id, name, parent)| HierarchyNode { id: *id, name: name.clone(), parent: *parent, is_group: false })
-        .collect();
-    serde_json::to_string(&items).unwrap_or_default()
+他の箇所では `actor.children()` メソッドを使っているが、ここだけ直接フィールドアクセスになっている。カプセル化の一貫性のため `actor.children()` に統一すべき。
+
+---
+
+### 13. `pick_2d.rs` の `IDENTITY` 定数が `mod.rs` の `MAT4_IDENTITY` と重複
+
+**ファイル**: `pick_2d.rs:49-54`
+
+```rust
+const IDENTITY: [[f32; 4]; 4] = [
+    [1.0, 0.0, 0.0, 0.0],
+    ...
+];
+```
+
+`mod.rs` の `MAT4_IDENTITY` と同一定義。`pub(super)` で公開して使いまわすか、共通モジュールに移動する。
+
+---
+
+### 14. `handle_add_component` の「旧スタイル」に仮想 ID 境界値の定数未定義
+
+**ファイル**: `component_ops.rs:35`
+
+```rust
+let actor_idx = if actor_id >= 999_000_000 {
+    (actor_id - 999_000_000) as usize
+```
+
+`999_000_000` はマジックナンバー（コメントで「仮想 ID」と説明はある）。プロジェクトポリシー「マジックナンバー禁止」に従い、定数化すべき。
+
+```rust
+const VIRTUAL_ACTOR_ID_BASE: u32 = 999_000_000;
+```
+
+---
+
+### 15. `walk_pick_2d` の引数が多い（`too_many_arguments` 警告を抑制中）
+
+**ファイル**: `pick_2d.rs:132`
+
+```rust
+#[allow(clippy::too_many_arguments)]
+fn walk_pick_2d(...) {
+```
+
+引数を構造体 `PickContext` にまとめることで、将来の引数追加も容易になる。
+
+```rust
+struct PickContext<'a> {
+    actors: &'a [Actor],
+    world: &'a World,
+    wl: u32,
+    canvas_x: f32,
+    canvas_y: f32,
 }
 ```
 
 ---
 
-### M-5. C# エディタの P/Invoke が MainWindow に直書き
+### 16. `ipc.rs` でパースエラーが無言でスキップされる
 
-**ファイル:** `editor/src/MainWindow.xaml.cs`
-
-Win32 API の P/Invoke 定義（`GetCursorPos`, `SetWindowLong`, `RegisterDragDrop` 等）が
-UI クラスである `MainWindow` に直接記述されている。
-単一責任原則に反し、他のウィンドウやパネルで同じ API が必要になったときに重複が発生する。
-
-**改善案:** `Native/NativeInterop.cs` のような専用クラスに集約する。
-
----
-
-### M-6. DFS ID の脆弱性 — ツリー変更で全 ID が変化する
-
-**全体設計の問題**
-
-DFS ID（ツリーのトポロジカル順インデックス）はアクターの挿入・削除・並び替えで
-全ノードの ID が変化する「不安定な ID」である。
-Undo コマンド・IPC メッセージ・インスペクター通知など、システム全体がこの ID に依存しており、
-操作順序によっては誤ったアクターを指してしまうリスクがある。
-
-**改善案:** アクター生成時に安定した UUID (または単調増加する u64) を割り当て、
-エディタとランタイム間の通信はこの安定 ID を使う。
-DFS ID はヒエラルキー表示の順序計算にのみ使用する。
-
----
-
-## 🟡 重要度 LOW — 余裕があれば対応
-
----
-
-### L-1. HashMap / HashSet の完全修飾
-
-**ファイル:** `app/mod.rs:557-560`
+**ファイル**: `ipc.rs:731-733`
 
 ```rust
-// 現状
-saved_cameras: std::collections::HashMap::new(),
-canvas_world_lines: std::collections::HashSet::new(),
-```
-
-`use std::collections::{HashMap, HashSet};` を追加すれば読みやすくなる。
-（構造体定義部では型名だけが使われており、new() 呼び出し時だけ完全修飾になっている）
-
----
-
-### L-2. コメントスタイルの混在
-
-一部ファイルで英語コメントと日本語コメントが混在している。
-また `// ──` 区切り線のスタイルが `// ====` と `// ──` で混在している箇所がある。
-プロジェクト全体で統一ルールを設けること。
-
----
-
-### L-3. `try_open` のリトライ上限がマジックナンバー
-
-**ファイル:** `ipc.rs:817-825`
-
-```rust
-fn try_open(path: &str) -> std::io::Result<std::fs::File> {
-    for _ in 0..20 {  // ← 20 と 100ms はなぜこの値？
-        match OpenOptions::new().read(true).write(true).open(path) {
-            Ok(f)  => return Ok(f),
-            Err(_) => thread::sleep(Duration::from_millis(100)),
-        }
-    }
-    OpenOptions::new().read(true).write(true).open(path)
+if let Some(cmd) = cmd {
+    if tx.send(cmd).is_err() { break; }
 }
+// cmd が None の場合は黙って次のコマンドへ進む
 ```
 
-定数化 + コメントでリトライ設計の意図を明示すること。
+不正フォーマットのコマンドが来た場合にデバッグログがない。開発中は `#[cfg(debug_assertions)]` ブロックで警告を出力すると問題診断が容易になる。
 
 ---
 
-### L-4. `ScriptComponent` / `PlaceholderScriptSlot` の二重型
+## ポジティブなポイント
 
-**ファイル:** `runtime/src/engine/components/script_component.rs`
+以下の実装は特に評価できる点として挙げる。
 
-CLR 有効時は `ScriptComponent`、無効時は `PlaceholderScriptSlot` を使う設計だが、
-エディタで表示名も `"ScriptComponent (placeholder)"` と紛らわしい。
-将来スクリプト機能が拡充された際に整理すること。
+1. **`DragState` の分離** (`drag_state.rs`): App 構造体から LMB ドラッグ関連状態を切り出した設計は単一責任原則に従っており、可読性が高い。
 
----
+2. **IPC パースヘルパー群** (`ipc.rs:238-336`): `parse_nf`, `parse1u_nf`, `parse2u_tail` 等の汎用ヘルパーにより、各コマンドのパース処理が簡潔に書けている。const ジェネリクスを活用した型安全なパースは特に良い設計。
 
-## ✅ 評価が高い箇所
+3. **Undo/Redo の一貫した記録** (`component_ops.rs`): コンポーネント追加・削除・複製の全操作で `before_slots` / `after_slots` をスナップショットして Undo コマンドを積んでいる。Undo の抜け漏れが少ない。
 
-問題点だけでなく、良い設計も記録しておく。
+4. **ECS のボローパターン** (`scene.rs`, `component_ops.rs`): `actor.entity` を先取りして actors の借用を解放してから `world` を操作する「Entity の先取り」パターンが一貫して使われており、Rust の借用チェッカーとうまく協調している。
 
-| 箇所 | 評価ポイント |
-|------|-------------|
-| `ecs/storage.rs` | SparseSet の O(1) insert/get/remove が正しく実装されている |
-| `ecs/world.rs` | TypeId ベースの型消去で型安全なクエリを実現 |
-| `renderer/mod.rs` | アダプター選択・パイプラインキャッシュ・プレゼントモードの選択ロジックが適切 |
-| `renderer/pipeline.rs` | TOML 設定 + WGSL リフレクションでデータドリブンなパイプライン定義 |
-| `app/mod.rs` のサブモジュール構成 | ipc_handler / actor_ops / transform_ops など責務分割の方向性は正しい |
-| コメントの充実度 | クラス・関数・処理コメントが全体的に丁寧に記述されている |
-| `draw_ctx.model_cache` | 同一パスの CPU モデル再利用でディスク読み込みを省略 |
+5. **定数化されたマジックナンバー** (`render.rs`, `mod.rs`): `CANVAS_WORLD_SCALE`, `CAMERA_PREVIEW_W/H`, `MAT4_IDENTITY`, `BLIT_RECT_BUFFER_SIZE` など、重要な数値が定数として管理されている。
+
+6. **モジュール分割** (`app/mod.rs`): `component_ops`, `actor_ops`, `transform_ops`, `gizmo_handler` 等の機能別分割が徹底されており、単一ファイルへの処理詰め込みを回避できている。
 
 ---
 
-## 改善優先ランキング
+## 優先対応一覧
 
-| 優先度 | 項目 | 工数感 |
-|--------|------|--------|
-| 🔴 1 | H-1: App 構造体分割 | 大 |
-| 🔴 2 | H-2: IPC パーサー共通化 | 中 |
-| 🔴 3 | H-3: DFS ウォーカー統一 | 中 |
-| 🔴 4 | H-4: render.rs ハンドラ分割 | 中 |
-| 🟠 5 | M-1: マジックナンバー定数化 | 小 |
-| 🟠 6 | M-2: Mat4x4 型の活用 | 小 |
-| 🟠 7 | M-4: build_hierarchy_json を serde_json に | 小 |
-| 🟠 8 | M-5: P/Invoke 分離 | 小 |
-| 🟠 9 | M-6: 安定アクター ID 設計 | 大 |
-| 🟡 10 | L-1〜L-4: その他細部 | 極小 |
+| # | 重要度 | ファイル | 概要 |
+|---|--------|---------|------|
+| 1 | 🔴 高 | `component_ops.rs:163` | ScriptComponent の JSON キーが `model_path` になっているバグ |
+| 2 | 🔴 高 | `ipc.rs:349` | 非 Windows でコンパイルエラーになる可能性 |
+| 3 | 🟡 中 | `component_ops.rs` 複数箇所 | ModelComponent 構築ロジックの重複（3箇所以上） |
+| 4 | 🟡 中 | `component_ops.rs:241-460` | コンポーネント追加処理の繰り返しパターン |
+| 5 | 🟡 中 | `mod.rs:325-463` | App 構造体のフィールドが過多 |
+| 6 | 🟡 中 | `mod.rs:877` | 矩形選択の O(n²) 重複チェック |
+| 7 | 🟡 中 | `mod.rs:680` | `&Vec<Actor>` → `&[Actor]` への変更 |
+| 8 | 🟡 中 | `scene.rs:271` | 空のライフサイクルメソッドの残存 |
+| 9 | 🟡 中 | `scene.rs:207` | `find_model_in_world_line` の動作制限の明示 |
+| 10 | 🟡 中 | `pipeline.rs:12` | シェーダー名のランタイムパニック |
+| 11 | 🟢 低 | `drag_state.rs:65` | `Default` trait の未実装 |
+| 12 | 🟢 低 | `pick_2d.rs:233` | `actor.children` への直接アクセス |
+| 13 | 🟢 低 | `pick_2d.rs:49` | `IDENTITY` 定数の重複定義 |
+| 14 | 🟢 低 | `component_ops.rs:35` | 仮想 ID 境界値 `999_000_000` の定数未定義 |
+| 15 | 🟢 低 | `pick_2d.rs:132` | `too_many_arguments` の抑制 |
+| 16 | 🟢 低 | `ipc.rs:731` | パースエラー時のデバッグログなし |

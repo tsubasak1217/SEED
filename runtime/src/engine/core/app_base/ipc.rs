@@ -5,6 +5,16 @@ use std::thread;
 use std::time::Duration;
 
 // ============================================================
+//  モジュール定数
+// ============================================================
+
+/// パイプ接続を試みる最大リトライ回数。
+const PIPE_CONNECT_RETRIES: u32 = 20;
+
+/// リトライ間隔 (ミリ秒)。エディタ起動後のパイプ準備待ち時間に相当する。
+const PIPE_CONNECT_RETRY_MS: u64 = 100;
+
+// ============================================================
 //  ToolMode — エディタの左ツールバー選択状態
 // ============================================================
 
@@ -218,7 +228,116 @@ impl IpcClient {
     }
 }
 
-// ─── 内部ヘルパー ──────────────────────────────────────────
+// ============================================================
+//  IPC パース共通ヘルパー
+//
+//  IPC コマンドのペイロードは「カンマ区切りの数値列」という共通フォーマットを持つ。
+//  以下のヘルパーで重複パターンを集約し、各コマンド解析を 1〜2 行に簡略化する。
+// ============================================================
+
+/// `rest` から f32×N をカンマ区切りでパースして [f32; N] を返す（先頭 u32 なし）。
+#[inline]
+fn parse_nf<const N: usize>(rest: &str) -> Option<[f32; N]> {
+    let parts: Vec<&str> = rest.split(',').collect();
+    if parts.len() != N { return None; }
+    let mut fs = [0.0f32; N];
+    for (i, p) in parts.iter().enumerate() {
+        fs[i] = p.trim().parse().ok()?;
+    }
+    Some(fs)
+}
+
+/// `rest` から `u32, f32×N` をカンマ区切りでパースして (id, [f32; N]) を返す。
+#[inline]
+fn parse1u_nf<const N: usize>(rest: &str) -> Option<(u32, [f32; N])> {
+    let parts: Vec<&str> = rest.split(',').collect();
+    if parts.len() != N + 1 { return None; }
+    let id: u32 = parts[0].trim().parse().ok()?;
+    let mut fs = [0.0f32; N];
+    for (i, p) in parts[1..].iter().enumerate() {
+        fs[i] = p.trim().parse().ok()?;
+    }
+    Some((id, fs))
+}
+
+/// `rest` から `u32, <tail>` をカンマ区切りでパースして (id, tail) を返す。
+/// tail にカンマが含まれてもよい（ファイルパス等）。
+#[inline]
+fn parse1u_tail(rest: &str) -> Option<(u32, &str)> {
+    let mut it = rest.splitn(2, ',');
+    Some((it.next()?.trim().parse().ok()?, it.next()?))
+}
+
+/// `rest` から `u32, u32` をカンマ区切りでパースして (a, b) を返す。
+#[inline]
+fn parse2u(rest: &str) -> Option<(u32, u32)> {
+    let mut it = rest.splitn(2, ',');
+    Some((it.next()?.trim().parse().ok()?, it.next()?.trim().parse().ok()?))
+}
+
+/// `rest` から `u32, u32, <tail>` をカンマ区切りでパースして (a, b, tail) を返す。
+/// tail にカンマが含まれてもよい（ファイルパス等）。
+#[inline]
+fn parse2u_tail(rest: &str) -> Option<(u32, u32, &str)> {
+    let mut it = rest.splitn(3, ',');
+    Some((
+        it.next()?.trim().parse().ok()?,
+        it.next()?.trim().parse().ok()?,
+        it.next()?,
+    ))
+}
+
+/// `rest` から `u32, u32, f32` をカンマ区切りでパースして (a, b, v) を返す。
+#[inline]
+fn parse2u1f(rest: &str) -> Option<(u32, u32, f32)> {
+    let mut it = rest.split(',');
+    Some((
+        it.next()?.trim().parse().ok()?,
+        it.next()?.trim().parse().ok()?,
+        it.next()?.trim().parse().ok()?,
+    ))
+}
+
+/// `rest` から `u32, u32, {0|1}` をカンマ区切りでパースして (a, b, bool) を返す。
+#[inline]
+fn parse2u1b(rest: &str) -> Option<(u32, u32, bool)> {
+    let mut it = rest.split(',');
+    Some((
+        it.next()?.trim().parse().ok()?,
+        it.next()?.trim().parse().ok()?,
+        it.next()?.trim() == "1",
+    ))
+}
+
+/// `rest` から `u32, u32, {0|1}, {0|1}` をカンマ区切りでパースして (a, b, bool, bool) を返す。
+#[inline]
+fn parse2u2b(rest: &str) -> Option<(u32, u32, bool, bool)> {
+    let mut it = rest.split(',');
+    Some((
+        it.next()?.trim().parse().ok()?,
+        it.next()?.trim().parse().ok()?,
+        it.next()?.trim() == "1",
+        it.next()?.trim() == "1",
+    ))
+}
+
+/// `rest` から `u32, u32, f32×N` をカンマ区切りでパースして (a, b, [f32; N]) を返す。
+#[inline]
+fn parse2u_nf<const N: usize>(rest: &str) -> Option<(u32, u32, [f32; N])> {
+    let parts: Vec<&str> = rest.split(',').collect();
+    if parts.len() != N + 2 { return None; }
+    let a: u32 = parts[0].trim().parse().ok()?;
+    let b: u32 = parts[1].trim().parse().ok()?;
+    let mut fs = [0.0f32; N];
+    for (i, p) in parts[2..].iter().enumerate() {
+        fs[i] = p.trim().parse().ok()?;
+    }
+    Some((a, b, fs))
+}
+
+// ============================================================
+//  内部ヘルパー
+// ============================================================
 
 /// PeekNamedPipe でデータ確認後のみ ReadFile する。
 ///
@@ -277,14 +396,9 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                             if !ids.is_empty() { Some(IpcCommand::Delete(ids)) } else { None }
                         }
                         s if s.starts_with("RENAME:") => {
-                            let rest = &s["RENAME:".len()..];
-                            // "id,name" — name 中にカンマを含む可能性があるため splitn(2)
-                            let mut it = rest.splitn(2, ',');
-                            if let (Some(idx_s), Some(name)) = (it.next(), it.next()) {
-                                if let Some(idx) = idx_s.parse::<u32>().ok() {
-                                    Some(IpcCommand::Rename { idx, name: name.to_string() })
-                                } else { None }
-                            } else { None }
+                            // "id,name" — name 中にカンマを含む可能性があるため parse1u_tail を使用
+                            parse1u_tail(&s["RENAME:".len()..])
+                                .map(|(idx, name)| IpcCommand::Rename { idx, name: name.to_string() })
                         }
                         s if s.starts_with("SAVE_SCENE:") => {
                             Some(IpcCommand::SaveScene(s["SAVE_SCENE:".len()..].to_string()))
@@ -338,34 +452,20 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                                 .map(IpcCommand::GetActorData)
                         }
                         s if s.starts_with("SET_TRANSFORM:") => {
-                            let rest = &s["SET_TRANSFORM:".len()..];
-                            let parts: Vec<&str> = rest.split(',').collect();
-                            if parts.len() == 10 {
-                                if let Ok(id) = parts[0].parse::<u32>() {
-                                    let floats: Vec<f32> = parts[1..].iter()
-                                        .filter_map(|x| x.parse::<f32>().ok())
-                                        .collect();
-                                    if floats.len() == 9 {
-                                        Some(IpcCommand::SetTransform {
-                                            id,
-                                            px: floats[0], py: floats[1], pz: floats[2],
-                                            ex: floats[3], ey: floats[4], ez: floats[5],
-                                            sx: floats[6], sy: floats[7], sz: floats[8],
-                                        })
-                                    } else { None }
-                                } else { None }
-                            } else { None }
+                            // フォーマット: SET_TRANSFORM:{id},{px},{py},{pz},{ex},{ey},{ez},{sx},{sy},{sz}
+                            parse1u_nf::<9>(&s["SET_TRANSFORM:".len()..]).map(|(id, fs)| IpcCommand::SetTransform {
+                                id,
+                                px: fs[0], py: fs[1], pz: fs[2],
+                                ex: fs[3], ey: fs[4], ez: fs[5],
+                                sx: fs[6], sy: fs[7], sz: fs[8],
+                            })
                         }
                         s if s.starts_with("REPARENT:") => {
-                            let rest = &s["REPARENT:".len()..];
-                            let mut it = rest.splitn(2, ',');
-                            if let (Some(c), Some(p)) = (it.next(), it.next()) {
-                                if let Some(child) = c.parse::<u32>().ok() {
-                                    let new_parent = if p == "-1" { None }
-                                        else { p.parse::<u32>().ok() };
-                                    Some(IpcCommand::Reparent { child, new_parent })
-                                } else { None }
-                            } else { None }
+                            // フォーマット: REPARENT:{child},{parent|-1}
+                            parse1u_tail(&s["REPARENT:".len()..]).and_then(|(child, p)| {
+                                let new_parent = if p == "-1" { None } else { p.parse::<u32>().ok() };
+                                Some(IpcCommand::Reparent { child, new_parent })
+                            })
                         }
                         s if s.starts_with("VIEWPORT_FOV:") => {
                             s["VIEWPORT_FOV:".len()..].parse::<f32>().ok()
@@ -386,19 +486,11 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                         }
                         "GET_CAM_STATE" => Some(IpcCommand::GetCamState),
                         s if s.starts_with("CAM_TRANSFORM:") => {
-                            let rest = &s["CAM_TRANSFORM:".len()..];
-                            let parts: Vec<&str> = rest.split(',').collect();
-                            if parts.len() == 5 {
-                                let fs: Vec<f32> = parts.iter()
-                                    .filter_map(|x| x.parse::<f32>().ok())
-                                    .collect();
-                                if fs.len() == 5 {
-                                    Some(IpcCommand::SetCameraTransform {
-                                        px: fs[0], py: fs[1], pz: fs[2],
-                                        yaw: fs[3], pitch: fs[4],
-                                    })
-                                } else { None }
-                            } else { None }
+                            // フォーマット: CAM_TRANSFORM:{px},{py},{pz},{yaw},{pitch}
+                            parse_nf::<5>(&s["CAM_TRANSFORM:".len()..]).map(|fs| IpcCommand::SetCameraTransform {
+                                px: fs[0], py: fs[1], pz: fs[2],
+                                yaw: fs[3], pitch: fs[4],
+                            })
                         }
                         s if s.starts_with("CAM_SPEED:") => {
                             s["CAM_SPEED:".len()..].parse::<f32>().ok()
@@ -469,113 +561,60 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                                 .map(IpcCommand::RemoveActor)
                         }
                         s if s.starts_with("RENAME_ACTOR:") => {
-                            let rest = &s["RENAME_ACTOR:".len()..];
-                            let mut it = rest.splitn(2, ',');
-                            if let (Some(id_s), Some(name)) = (it.next(), it.next()) {
-                                id_s.parse::<u32>().ok().map(|dfs_id| IpcCommand::RenameActor {
-                                    dfs_id, name: name.to_string(),
-                                })
-                            } else { None }
+                            // フォーマット: RENAME_ACTOR:{dfs_id},{name}
+                            parse1u_tail(&s["RENAME_ACTOR:".len()..])
+                                .map(|(dfs_id, name)| IpcCommand::RenameActor { dfs_id, name: name.to_string() })
                         }
                         s if s.starts_with("REMOVE_COMPONENT:") => {
-                            let rest = &s["REMOVE_COMPONENT:".len()..];
-                            let mut it = rest.splitn(2, ',');
-                            if let (Some(id_s), Some(slot_s)) = (it.next(), it.next()) {
-                                if let (Ok(a), Ok(sl)) = (id_s.parse::<u32>(), slot_s.parse::<u32>()) {
-                                    Some(IpcCommand::RemoveComponentSlot { actor_dfs_id: a, slot_idx: sl })
-                                } else { None }
-                            } else { None }
+                            // フォーマット: REMOVE_COMPONENT:{actor_dfs_id},{slot_idx}
+                            parse2u(&s["REMOVE_COMPONENT:".len()..])
+                                .map(|(a, sl)| IpcCommand::RemoveComponentSlot { actor_dfs_id: a, slot_idx: sl })
                         }
                         s if s.starts_with("RENAME_COMPONENT:") => {
-                            let rest = &s["RENAME_COMPONENT:".len()..];
-                            let mut it = rest.splitn(3, ',');
-                            if let (Some(id_s), Some(sl_s), Some(name)) = (it.next(), it.next(), it.next()) {
-                                if let (Ok(a), Ok(sl)) = (id_s.parse::<u32>(), sl_s.parse::<u32>()) {
-                                    Some(IpcCommand::RenameComponentSlot {
-                                        actor_dfs_id: a, slot_idx: sl, name: name.to_string(),
-                                    })
-                                } else { None }
-                            } else { None }
+                            // フォーマット: RENAME_COMPONENT:{actor_dfs_id},{slot_idx},{name}
+                            parse2u_tail(&s["RENAME_COMPONENT:".len()..])
+                                .map(|(a, sl, name)| IpcCommand::RenameComponentSlot {
+                                    actor_dfs_id: a, slot_idx: sl, name: name.to_string(),
+                                })
                         }
                         s if s.starts_with("SET_ACTOR_TRANSFORM:") => {
-                            let rest = &s["SET_ACTOR_TRANSFORM:".len()..];
-                            let parts: Vec<&str> = rest.split(',').collect();
-                            if parts.len() == 10 {
-                                if let Ok(dfs_id) = parts[0].parse::<u32>() {
-                                    let fs: Vec<f32> = parts[1..].iter()
-                                        .filter_map(|x| x.parse::<f32>().ok())
-                                        .collect();
-                                    if fs.len() == 9 {
-                                        Some(IpcCommand::SetActorTransform {
-                                            dfs_id,
-                                            px: fs[0], py: fs[1], pz: fs[2],
-                                            ex: fs[3], ey: fs[4], ez: fs[5],
-                                            sx: fs[6], sy: fs[7], sz: fs[8],
-                                        })
-                                    } else { None }
-                                } else { None }
-                            } else { None }
+                            // フォーマット: SET_ACTOR_TRANSFORM:{dfs_id},{px},{py},{pz},{ex},{ey},{ez},{sx},{sy},{sz}
+                            parse1u_nf::<9>(&s["SET_ACTOR_TRANSFORM:".len()..]).map(|(dfs_id, fs)| IpcCommand::SetActorTransform {
+                                dfs_id,
+                                px: fs[0], py: fs[1], pz: fs[2],
+                                ex: fs[3], ey: fs[4], ez: fs[5],
+                                sx: fs[6], sy: fs[7], sz: fs[8],
+                            })
                         }
                         s if s.starts_with("SET_CANVAS_TRANSFORM:") => {
                             // フォーマット: SET_CANVAS_TRANSFORM:{dfs_id},{px},{py},{rotation},{sx},{sy},{pivot_x},{pivot_y}
-                            let rest = &s["SET_CANVAS_TRANSFORM:".len()..];
-                            let parts: Vec<&str> = rest.split(',').collect();
-                            if parts.len() == 8 {
-                                if let Ok(dfs_id) = parts[0].parse::<u32>() {
-                                    let fs: Vec<f32> = parts[1..].iter()
-                                        .filter_map(|x| x.parse::<f32>().ok())
-                                        .collect();
-                                    if fs.len() == 7 {
-                                        Some(IpcCommand::SetCanvasTransform {
-                                            dfs_id,
-                                            px: fs[0], py: fs[1],
-                                            rotation: fs[2],
-                                            sx: fs[3], sy: fs[4],
-                                            pivot_x: fs[5], pivot_y: fs[6],
-                                        })
-                                    } else { None }
-                                } else { None }
-                            } else { None }
+                            parse1u_nf::<7>(&s["SET_CANVAS_TRANSFORM:".len()..]).map(|(dfs_id, fs)| IpcCommand::SetCanvasTransform {
+                                dfs_id,
+                                px: fs[0], py: fs[1],
+                                rotation: fs[2],
+                                sx: fs[3], sy: fs[4],
+                                pivot_x: fs[5], pivot_y: fs[6],
+                            })
                         }
                         s if s.starts_with("SET_CANVAS_SIZE:") => {
                             // フォーマット: SET_CANVAS_SIZE:{actor_dfs_id},{slot_idx},{width},{height}
-                            let rest = &s["SET_CANVAS_SIZE:".len()..];
-                            let parts: Vec<&str> = rest.split(',').collect();
-                            if parts.len() == 4 {
-                                if let (Ok(a), Ok(sl)) = (parts[0].parse::<u32>(), parts[1].parse::<u32>()) {
-                                    let fs: Vec<f32> = parts[2..].iter()
-                                        .filter_map(|x| x.parse::<f32>().ok())
-                                        .collect();
-                                    if fs.len() == 2 {
-                                        Some(IpcCommand::SetCanvasSize {
-                                            actor_dfs_id: a, slot_idx: sl,
-                                            width: fs[0], height: fs[1],
-                                        })
-                                    } else { None }
-                                } else { None }
-                            } else { None }
+                            parse2u_nf::<2>(&s["SET_CANVAS_SIZE:".len()..])
+                                .map(|(a, sl, fs)| IpcCommand::SetCanvasSize {
+                                    actor_dfs_id: a, slot_idx: sl,
+                                    width: fs[0], height: fs[1],
+                                })
                         }
                         s if s.starts_with("SET_MODEL_PATH:") => {
-                            let rest = &s["SET_MODEL_PATH:".len()..];
-                            let mut parts = rest.splitn(3, ',');
-                            if let (Some(id_s), Some(sl_s), Some(path)) =
-                                (parts.next(), parts.next(), parts.next())
-                            {
-                                if let (Ok(a), Ok(sl)) = (id_s.parse::<u32>(), sl_s.parse::<u32>()) {
-                                    Some(IpcCommand::SetModelPath {
-                                        actor_dfs_id: a, slot_idx: sl, path: path.to_string(),
-                                    })
-                                } else { None }
-                            } else { None }
+                            // フォーマット: SET_MODEL_PATH:{actor_dfs_id},{slot_idx},{path}
+                            parse2u_tail(&s["SET_MODEL_PATH:".len()..])
+                                .map(|(a, sl, path)| IpcCommand::SetModelPath {
+                                    actor_dfs_id: a, slot_idx: sl, path: path.to_string(),
+                                })
                         }
                         s if s.starts_with("DUPLICATE_COMPONENT:") => {
-                            let rest = &s["DUPLICATE_COMPONENT:".len()..];
-                            let mut it = rest.splitn(2, ',');
-                            if let (Some(id_s), Some(sl_s)) = (it.next(), it.next()) {
-                                if let (Ok(a), Ok(sl)) = (id_s.parse::<u32>(), sl_s.parse::<u32>()) {
-                                    Some(IpcCommand::DuplicateComponent { actor_dfs_id: a, slot_idx: sl })
-                                } else { None }
-                            } else { None }
+                            // フォーマット: DUPLICATE_COMPONENT:{actor_dfs_id},{slot_idx}
+                            parse2u(&s["DUPLICATE_COMPONENT:".len()..])
+                                .map(|(a, sl)| IpcCommand::DuplicateComponent { actor_dfs_id: a, slot_idx: sl })
                         }
                         s if s.starts_with("DROP_ACTOR:") => {
                             // フォーマット: DROP_ACTOR:{path},{screen_x},{screen_y}
@@ -610,182 +649,81 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                         s if s == "DRAG_HOVER_END" => Some(IpcCommand::DragHoverEnd),
                         s if s.starts_with("SET_SPRITE_PATH:") => {
                             // フォーマット: SET_SPRITE_PATH:{actor_dfs_id},{slot_idx},{path}
-                            // path 中にカンマが含まれる可能性があるため splitn(3) を使用
-                            let rest = &s["SET_SPRITE_PATH:".len()..];
-                            let mut parts = rest.splitn(3, ',');
-                            if let (Some(id_s), Some(sl_s), Some(path)) =
-                                (parts.next(), parts.next(), parts.next())
-                            {
-                                if let (Ok(a), Ok(sl)) = (id_s.parse::<u32>(), sl_s.parse::<u32>()) {
-                                    Some(IpcCommand::SetSpritePath {
-                                        actor_dfs_id: a, slot_idx: sl, path: path.to_string(),
-                                    })
-                                } else { None }
-                            } else { None }
+                            parse2u_tail(&s["SET_SPRITE_PATH:".len()..])
+                                .map(|(a, sl, path)| IpcCommand::SetSpritePath {
+                                    actor_dfs_id: a, slot_idx: sl, path: path.to_string(),
+                                })
                         }
                         s if s.starts_with("SET_SPRITE_COLOR:") => {
                             // フォーマット: SET_SPRITE_COLOR:{actor_dfs_id},{slot_idx},{r},{g},{b},{a}
-                            let rest = &s["SET_SPRITE_COLOR:".len()..];
-                            let parts: Vec<&str> = rest.split(',').collect();
-                            if parts.len() == 6 {
-                                if let (Ok(a), Ok(sl)) = (parts[0].parse::<u32>(), parts[1].parse::<u32>()) {
-                                    let fs: Vec<f32> = parts[2..].iter()
-                                        .filter_map(|x| x.parse::<f32>().ok())
-                                        .collect();
-                                    if fs.len() == 4 {
-                                        Some(IpcCommand::SetSpriteColor {
-                                            actor_dfs_id: a, slot_idx: sl,
-                                            r: fs[0], g: fs[1], b: fs[2], a: fs[3],
-                                        })
-                                    } else { None }
-                                } else { None }
-                            } else { None }
+                            parse2u_nf::<4>(&s["SET_SPRITE_COLOR:".len()..])
+                                .map(|(a, sl, fs)| IpcCommand::SetSpriteColor {
+                                    actor_dfs_id: a, slot_idx: sl,
+                                    r: fs[0], g: fs[1], b: fs[2], a: fs[3],
+                                })
                         }
                         s if s.starts_with("SET_SPRITE_SIZE:") => {
                             // フォーマット: SET_SPRITE_SIZE:{actor_dfs_id},{slot_idx},{width},{height}
-                            let rest = &s["SET_SPRITE_SIZE:".len()..];
-                            let parts: Vec<&str> = rest.split(',').collect();
-                            if parts.len() == 4 {
-                                if let (Ok(a), Ok(sl)) = (parts[0].parse::<u32>(), parts[1].parse::<u32>()) {
-                                    let fs: Vec<f32> = parts[2..].iter()
-                                        .filter_map(|x| x.parse::<f32>().ok())
-                                        .collect();
-                                    if fs.len() == 2 {
-                                        Some(IpcCommand::SetSpriteSize {
-                                            actor_dfs_id: a, slot_idx: sl,
-                                            width: fs[0], height: fs[1],
-                                        })
-                                    } else { None }
-                                } else { None }
-                            } else { None }
+                            parse2u_nf::<2>(&s["SET_SPRITE_SIZE:".len()..])
+                                .map(|(a, sl, fs)| IpcCommand::SetSpriteSize {
+                                    actor_dfs_id: a, slot_idx: sl,
+                                    width: fs[0], height: fs[1],
+                                })
                         }
                         s if s.starts_with("SET_CANVAS_ANCHOR:") => {
                             // フォーマット: SET_CANVAS_ANCHOR:{actor_dfs_id},{anchor_x},{anchor_y}
-                            let rest = &s["SET_CANVAS_ANCHOR:".len()..];
-                            let parts: Vec<&str> = rest.split(',').collect();
-                            if parts.len() == 3 {
-                                if let (Ok(id), Ok(ax), Ok(ay)) = (
-                                    parts[0].parse::<u32>(),
-                                    parts[1].parse::<f32>(),
-                                    parts[2].parse::<f32>(),
-                                ) {
-                                    Some(IpcCommand::SetCanvasAnchor { actor_dfs_id: id, ax, ay })
-                                } else { None }
-                            } else { None }
+                            parse1u_nf::<2>(&s["SET_CANVAS_ANCHOR:".len()..])
+                                .map(|(id, fs)| IpcCommand::SetCanvasAnchor { actor_dfs_id: id, ax: fs[0], ay: fs[1] })
                         }
                         s if s.starts_with("SET_CANVAS_SCALE_MODE:") => {
                             // フォーマット: SET_CANVAS_SCALE_MODE:{actor_dfs_id},{slot_idx},{scale_transform},{scale_size}
-                            let rest = &s["SET_CANVAS_SCALE_MODE:".len()..];
-                            let parts: Vec<&str> = rest.split(',').collect();
-                            if parts.len() == 4 {
-                                if let (Ok(id), Ok(sl)) = (parts[0].parse::<u32>(), parts[1].parse::<u32>()) {
-                                    let st = parts[2].trim() == "1";
-                                    let ss = parts[3].trim() == "1";
-                                    Some(IpcCommand::SetCanvasScaleMode {
-                                        actor_dfs_id: id, slot_idx: sl,
-                                        scale_transform: st, scale_size: ss,
-                                    })
-                                } else { None }
-                            } else { None }
+                            parse2u2b(&s["SET_CANVAS_SCALE_MODE:".len()..])
+                                .map(|(id, sl, st, ss)| IpcCommand::SetCanvasScaleMode {
+                                    actor_dfs_id: id, slot_idx: sl,
+                                    scale_transform: st, scale_size: ss,
+                                })
                         }
                         s if s.starts_with("SET_CANVAS_AUTO_SCALE:") => {
-                            // フォーマット: SET_CANVAS_AUTO_SCALE:{actor_dfs_id},{slot_idx},{value}
-                            let rest = &s["SET_CANVAS_AUTO_SCALE:".len()..];
-                            let parts: Vec<&str> = rest.split(',').collect();
-                            if parts.len() == 3 {
-                                if let (Ok(id), Ok(sl)) = (parts[0].parse::<u32>(), parts[1].parse::<u32>()) {
-                                    let v = parts[2].trim() == "1";
-                                    Some(IpcCommand::SetCanvasAutoScale {
-                                        actor_dfs_id: id, slot_idx: sl, auto_scale: v,
-                                    })
-                                } else { None }
-                            } else { None }
+                            // フォーマット: SET_CANVAS_AUTO_SCALE:{actor_dfs_id},{slot_idx},{0|1}
+                            parse2u1b(&s["SET_CANVAS_AUTO_SCALE:".len()..])
+                                .map(|(id, sl, v)| IpcCommand::SetCanvasAutoScale {
+                                    actor_dfs_id: id, slot_idx: sl, auto_scale: v,
+                                })
                         }
                         s if s.starts_with("SET_INPUTMAP_PATH:") => {
                             // フォーマット: SET_INPUTMAP_PATH:{actor_dfs_id},{slot_idx},{path}
-                            // path 中にカンマが含まれる可能性があるため splitn(3) を使用
-                            let rest = &s["SET_INPUTMAP_PATH:".len()..];
-                            let mut parts = rest.splitn(3, ',');
-                            if let (Some(id_s), Some(sl_s), Some(path)) =
-                                (parts.next(), parts.next(), parts.next())
-                            {
-                                if let (Ok(a), Ok(sl)) = (id_s.parse::<u32>(), sl_s.parse::<u32>()) {
-                                    Some(IpcCommand::SetInputMapPath {
-                                        actor_dfs_id: a, slot_idx: sl, path: path.to_string(),
-                                    })
-                                } else { None }
-                            } else { None }
+                            parse2u_tail(&s["SET_INPUTMAP_PATH:".len()..])
+                                .map(|(a, sl, path)| IpcCommand::SetInputMapPath {
+                                    actor_dfs_id: a, slot_idx: sl, path: path.to_string(),
+                                })
                         }
                         s if s.starts_with("SET_CAMERA_FOV:") => {
                             // フォーマット: SET_CAMERA_FOV:{actor_dfs_id},{slot_idx},{value}
-                            let rest = &s["SET_CAMERA_FOV:".len()..];
-                            let parts: Vec<&str> = rest.split(',').collect();
-                            if parts.len() == 3 {
-                                if let (Ok(a), Ok(sl), Ok(v)) = (
-                                    parts[0].parse::<u32>(),
-                                    parts[1].parse::<u32>(),
-                                    parts[2].parse::<f32>(),
-                                ) {
-                                    Some(IpcCommand::SetCameraComponentFov { actor_dfs_id: a, slot_idx: sl, value: v })
-                                } else { None }
-                            } else { None }
+                            parse2u1f(&s["SET_CAMERA_FOV:".len()..])
+                                .map(|(a, sl, v)| IpcCommand::SetCameraComponentFov { actor_dfs_id: a, slot_idx: sl, value: v })
                         }
                         s if s.starts_with("SET_CAMERA_NEAR:") => {
                             // フォーマット: SET_CAMERA_NEAR:{actor_dfs_id},{slot_idx},{value}
-                            let rest = &s["SET_CAMERA_NEAR:".len()..];
-                            let parts: Vec<&str> = rest.split(',').collect();
-                            if parts.len() == 3 {
-                                if let (Ok(a), Ok(sl), Ok(v)) = (
-                                    parts[0].parse::<u32>(),
-                                    parts[1].parse::<u32>(),
-                                    parts[2].parse::<f32>(),
-                                ) {
-                                    Some(IpcCommand::SetCameraComponentNear { actor_dfs_id: a, slot_idx: sl, value: v })
-                                } else { None }
-                            } else { None }
+                            parse2u1f(&s["SET_CAMERA_NEAR:".len()..])
+                                .map(|(a, sl, v)| IpcCommand::SetCameraComponentNear { actor_dfs_id: a, slot_idx: sl, value: v })
                         }
                         s if s.starts_with("SET_CAMERA_FAR:") => {
                             // フォーマット: SET_CAMERA_FAR:{actor_dfs_id},{slot_idx},{value}
-                            let rest = &s["SET_CAMERA_FAR:".len()..];
-                            let parts: Vec<&str> = rest.split(',').collect();
-                            if parts.len() == 3 {
-                                if let (Ok(a), Ok(sl), Ok(v)) = (
-                                    parts[0].parse::<u32>(),
-                                    parts[1].parse::<u32>(),
-                                    parts[2].parse::<f32>(),
-                                ) {
-                                    Some(IpcCommand::SetCameraComponentFar { actor_dfs_id: a, slot_idx: sl, value: v })
-                                } else { None }
-                            } else { None }
+                            parse2u1f(&s["SET_CAMERA_FAR:".len()..])
+                                .map(|(a, sl, v)| IpcCommand::SetCameraComponentFar { actor_dfs_id: a, slot_idx: sl, value: v })
                         }
                         s if s.starts_with("SET_CAMERA_MAIN:") => {
                             // フォーマット: SET_CAMERA_MAIN:{actor_dfs_id},{slot_idx},{0|1}
-                            let rest = &s["SET_CAMERA_MAIN:".len()..];
-                            let parts: Vec<&str> = rest.split(',').collect();
-                            if parts.len() == 3 {
-                                if let (Ok(a), Ok(sl)) = (parts[0].parse::<u32>(), parts[1].parse::<u32>()) {
-                                    let v = parts[2].trim() == "1";
-                                    Some(IpcCommand::SetCameraComponentMain { actor_dfs_id: a, slot_idx: sl, is_main: v })
-                                } else { None }
-                            } else { None }
+                            parse2u1b(&s["SET_CAMERA_MAIN:".len()..])
+                                .map(|(a, sl, v)| IpcCommand::SetCameraComponentMain { actor_dfs_id: a, slot_idx: sl, is_main: v })
                         }
                         s if s.starts_with("SET_CAMERA_CLEAR_COLOR:") => {
                             // フォーマット: SET_CAMERA_CLEAR_COLOR:{actor_dfs_id},{slot_idx},{r},{g},{b},{a}
-                            let rest = &s["SET_CAMERA_CLEAR_COLOR:".len()..];
-                            let parts: Vec<&str> = rest.split(',').collect();
-                            if parts.len() == 6 {
-                                if let (Ok(a), Ok(sl)) = (parts[0].parse::<u32>(), parts[1].parse::<u32>()) {
-                                    let fs: Vec<f32> = parts[2..].iter()
-                                        .filter_map(|x| x.parse::<f32>().ok())
-                                        .collect();
-                                    if fs.len() == 4 {
-                                        Some(IpcCommand::SetCameraComponentClearColor {
-                                            actor_dfs_id: a, slot_idx: sl,
-                                            r: fs[0], g: fs[1], b: fs[2], a: fs[3],
-                                        })
-                                    } else { None }
-                                } else { None }
-                            } else { None }
+                            parse2u_nf::<4>(&s["SET_CAMERA_CLEAR_COLOR:".len()..])
+                                .map(|(a, sl, fs)| IpcCommand::SetCameraComponentClearColor {
+                                    actor_dfs_id: a, slot_idx: sl,
+                                    r: fs[0], g: fs[1], b: fs[2], a: fs[3],
+                                })
                         }
                         _                    => None,
                     }
@@ -815,10 +753,10 @@ fn peek_pipe(handle: std::os::windows::raw::HANDLE) -> u32 {
 }
 
 fn try_open(path: &str) -> std::io::Result<std::fs::File> {
-    for _ in 0..20 {
+    for _ in 0..PIPE_CONNECT_RETRIES {
         match OpenOptions::new().read(true).write(true).open(path) {
             Ok(f)  => return Ok(f),
-            Err(_) => thread::sleep(Duration::from_millis(100)),
+            Err(_) => thread::sleep(Duration::from_millis(PIPE_CONNECT_RETRY_MS)),
         }
     }
     OpenOptions::new().read(true).write(true).open(path)

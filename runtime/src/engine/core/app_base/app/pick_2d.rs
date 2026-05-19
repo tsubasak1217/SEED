@@ -65,7 +65,7 @@ impl App {
 
         if let Some(dfs_id) = hit {
             // ヒット: アクターを選択する
-            if self.ctrl_at_press {
+            if self.drag.ctrl_at_press {
                 // Ctrl+クリック: マルチ選択トグル
                 if self.selected_actor_dfs_ids.contains(&dfs_id) {
                     self.selected_actor_dfs_ids.retain(|&x| x != dfs_id);
@@ -83,7 +83,7 @@ impl App {
             }
             self.selected_instances.clear();
             self.send_actor_components(dfs_id as u32, 0);
-        } else if !self.ctrl_at_press {
+        } else if !self.drag.ctrl_at_press {
             // 空クリック: 選択解除
             self.actor_virtual_selected_idx = None;
             self.selected_actor_dfs_ids.clear();

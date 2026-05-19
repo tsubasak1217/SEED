@@ -13,6 +13,7 @@
 // ============================================================
 
 // ── サブモジュール ──────────────────────────────────────────
+mod drag_state;
 mod ipc_handler;
 mod hierarchy_sync;
 mod clipboard;
@@ -26,6 +27,7 @@ mod render;
 pub(crate) mod camera_scene_gizmo;
 
 // ── 外部クレート・標準ライブラリ ────────────────────────────
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use winit::application::ApplicationHandler;
@@ -50,7 +52,7 @@ use crate::engine::methods::drawer::{
     LineBatch, draw_line_batch,
 };
 use crate::engine::methods::gizmo_interact::{
-    GizmoDrag, GizmoPart, screen_to_ray, screen_to_ray_ortho, hit_test_gizmo, start_drag, update_drag,
+    GizmoPart,
     mat4x4_mul, mat4x4_inv,
 };
 use crate::engine::core::app_base::undo::{
@@ -71,9 +73,24 @@ use crate::engine::components::{
 use crate::engine::structs::objects::{Actor, DebugCamera};
 use crate::engine::structs::objects::actor::{ActorData, ComponentSlotData, ComponentSlot};
 use crate::engine::structs::objects::camera::debug_camera::CameraInput;
-use crate::engine::structs::tensor::{Vector3, Mat4x4};
+use crate::engine::structs::tensor::{Vector3, Vector4, Mat4x4};
 use crate::engine::structs::transforms::{Quaternion, Transform};
 use crate::engine::structs::utils::Color;
+
+// ============================================================
+//  モジュール定数
+// ============================================================
+
+/// BlitRect バッファのバイトサイズ ([f32; 4] = 16 bytes)
+const BLIT_RECT_BUFFER_SIZE: u64 = 16;
+
+/// 4×4 単位行列
+const MAT4_IDENTITY: [[f32; 4]; 4] = [
+    [1.0, 0.0, 0.0, 0.0],
+    [0.0, 1.0, 0.0, 0.0],
+    [0.0, 0.0, 1.0, 0.0],
+    [0.0, 0.0, 0.0, 1.0],
+];
 
 // ============================================================
 //  CameraPreviewResources — カメラプレビュー描画リソース
@@ -166,7 +183,7 @@ impl CameraPreviewResources {
         // ブリット矩形ユニフォームバッファ (Group 0)
         let blit_rect_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label:              Some("Camera Preview Blit Rect"),
-            size:               16,  // BlitRect = [f32; 4]
+            size:               BLIT_RECT_BUFFER_SIZE,
             usage:              wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -352,28 +369,14 @@ pub struct App {
     line_model_buf:     Option<(wgpu::Buffer, wgpu::BindGroup)>,
     /// 現在のエディタツールモード。
     tool_mode:          ToolMode,
-    /// 進行中のギズモドラッグ状態。
-    gizmo_drag:         Option<GizmoDrag>,
+    /// LMB ドラッグに関連する全状態（ギズモドラッグ・矩形選択・入力状態）。
+    drag:               drag_state::DragState,
     /// マウスホバー中のギズモパーツ（ハイライト表示用）。
     hovered_gizmo_part: Option<GizmoPart>,
     /// Undo/Redo 履歴。
     undo_history:       UndoHistory,
     /// Ctrl キーが押されているか。
     ctrl_held:          bool,
-    /// ドラッグ開始時の「ルート選択インスタンス」初期行列（親子フィルタ済み）。
-    drag_root_starts:   Vec<(u32, [[f32; 4]; 4])>,
-    /// ドラッグ開始時の子孫インスタンス初期行列（ルート以外の追従対象）。
-    drag_child_starts:  Vec<(u32, [[f32; 4]; 4])>,
-    /// アクター編集モードのギズモドラッグ開始時の子アクター MC 行列 (child_dfs_id, mat)。
-    actor_child_drag_starts: Vec<(u32, [[f32; 4]; 4])>,
-    /// LMB 押下中フラグ。
-    lmb_held:           bool,
-    /// LMB 押下時のビューポート座標。
-    lmb_press_pos:      Option<(f32, f32)>,
-    /// 矩形選択ドラッグ中フラグ。
-    rect_selecting:     bool,
-    /// LMB 押下時の Ctrl 状態（ピック結果でトグル判定に使用）。
-    ctrl_at_press:      bool,
     /// ヒエラルキー更新が保留中（スロットリング用）。
     hierarchy_dirty:     bool,
     /// 最後にヒエラルキーを送信した時刻（スロットリング用）。
@@ -398,11 +401,6 @@ pub struct App {
     fps_frame_count: u32,
     /// FPS 計測ウィンドウの開始時刻。
     fps_frame_start: std::time::Instant,
-    /// 矩形選択開始時の選択状態（Undo 記録用）。
-    selection_before_rect: Vec<u32>,
-    /// 矩形選択開始時のアクター DFS 選択状態（Undo 記録用）。
-    selection_before_rect_dfs: Vec<usize>,
-    selection_before_rect_primary: Option<usize>,
     /// グリッド描画フラグ（エディタモードのみ）。
     show_grid: bool,
     /// 軸ギズモ表示フラグ（エディタモードのみ）。
@@ -416,16 +414,6 @@ pub struct App {
     /// 選択中の ModelComponent スロットインデックス（Model スロット内の連番）。
     /// ピッキング時にどの MC スロットが選択されたかを記憶し、アウトライン描画・Inspectorハイライトに使う。
     actor_virtual_selected_slot_idx: usize,
-    /// アクタートランスフォームをギズモでドラッグ中に保持する開始状態 (dfs_id, old_transform)。
-    actor_transform_drag_start: Option<(u32, ActorTransform)>,
-    /// 2D アクターの CanvasTransform をギズモでドラッグ中に保持する開始状態 (dfs_id, old_canvas_transform)。
-    canvas_transform_drag_start: Option<(u32, CanvasTransform)>,
-    /// ギズモドラッグ開始時の追加 MC スロット開始行列。
-    /// タプル: (slot_i, 全インスタンス開始行列 Vec)
-    /// 選択スロット以外の MC を選択スロットと一緒に動かすために使う。
-    actor_extra_mc_drag_starts: Vec<(usize, Vec<[[f32; 4]; 4]>)>,
-    /// マルチ選択ギズモドラッグ時の非プライマリ選択アクター開始行列（dfs_id, start_mat）。
-    multi_actor_drag_starts: Vec<(u32, [[f32; 4]; 4])>,
     /// インスペクターフィールドドラッグ中の事前状態（Undo 1 コマンド化のために使用）。
     inspector_transform_drag: Option<InspectorTransformDrag>,
 
@@ -434,17 +422,17 @@ pub struct App {
     /// active_world_line と一致する world_line を持つ Actor のみ描画・操作される。
     active_world_line: u32,
     /// 世界線切り替え時に退避するカメラ状態。キーが世界線番号。
-    saved_cameras: std::collections::HashMap<u32, DebugCameraData>,
+    saved_cameras: HashMap<u32, DebugCameraData>,
     /// 2D キャンバスモードの世界線番号セット（Ortho カメラを使用する世界線）。
     /// OpenActor で 2D Actor をロードした世界線がここに登録される。
-    canvas_world_lines: std::collections::HashSet<u32>,
+    canvas_world_lines: HashSet<u32>,
     /// アクター編集タブの 2D キャンバス世界線セット。
     /// これに含まれる世界線は canvas_screen_space_overlay フラグに関わらず
     /// 常にスクリーンスペースで描画する（アクター編集パネルは従来の 2D 表示を維持）。
-    actor_edit_canvas_wls: std::collections::HashSet<u32>,
+    actor_edit_canvas_wls: HashSet<u32>,
     /// 2D キャンバスカメラ状態（世界線番号 → CanvasCameraData）。
     /// pan_x, pan_y, ortho_half_h を保持する。
-    canvas_cameras: std::collections::HashMap<u32, CanvasCameraData>,
+    canvas_cameras: HashMap<u32, CanvasCameraData>,
     /// キャンバスをスクリーンスペースオーバーレイで表示するフラグ。
     /// false（デフォルト）= ワールドスペース、true = スクリーンスペースオーバーレイ。
     /// エディタのビューポートオプションから切り替え可能。実行時は常に true。
@@ -518,17 +506,10 @@ impl App {
             last_cursor_pos:    None,
             line_model_buf:     None,
             tool_mode:          ToolMode::Select,
-            gizmo_drag:         None,
+            drag:               drag_state::DragState::new(),
             hovered_gizmo_part: None,
             undo_history:       UndoHistory::new(),
             ctrl_held:          false,
-            drag_root_starts:   Vec::new(),
-            drag_child_starts:  Vec::new(),
-            actor_child_drag_starts: Vec::new(),
-            lmb_held:           false,
-            lmb_press_pos:      None,
-            rect_selecting:     false,
-            ctrl_at_press:      false,
             hierarchy_dirty:     false,
             last_hierarchy_send: None,
             clipboard:           Vec::new(),
@@ -541,24 +522,17 @@ impl App {
             fps_display:           0.0,
             fps_frame_count:       0,
             fps_frame_start:       std::time::Instant::now(),
-            selection_before_rect:         Vec::new(),
-            selection_before_rect_dfs:     Vec::new(),
-            selection_before_rect_primary: None,
             show_grid:       true,
             show_axis_gizmo: true,
             actor_virtual_selected_idx:      None,
             selected_actor_dfs_ids:          Vec::new(),
             actor_virtual_selected_slot_idx: 0,
-            actor_transform_drag_start:   None,
-            canvas_transform_drag_start:  None,
-            actor_extra_mc_drag_starts:   Vec::new(),
-            multi_actor_drag_starts:      Vec::new(),
             inspector_transform_drag:     None,
             active_world_line: 0,
-            saved_cameras: std::collections::HashMap::new(),
-            canvas_world_lines:    std::collections::HashSet::new(),
-            actor_edit_canvas_wls: std::collections::HashSet::new(),
-            canvas_cameras:        std::collections::HashMap::new(),
+            saved_cameras: HashMap::new(),
+            canvas_world_lines:    HashSet::new(),
+            actor_edit_canvas_wls: HashSet::new(),
+            canvas_cameras:        HashMap::new(),
             canvas_screen_space_overlay: false,
             camera_preview:     None,
             camera_gizmo:       None,
@@ -644,26 +618,27 @@ fn collect_actor_nodes(
     }
 }
 
+/// ヒエラルキー JSON 1 ノード分のシリアライズ用構造体。
+#[derive(serde::Serialize)]
+struct HierarchyNode<'a> {
+    id:       u32,
+    name:     &'a str,
+    parent:   Option<u32>,
+    is_group: bool,
+}
+
 /// フラットリストから HIERARCHY JSON を生成する。
 fn build_hierarchy_json(nodes: &[(u32, String, Option<u32>)]) -> String {
-    let mut json  = String::from("[");
-    let mut first = true;
-    for (id, name, parent) in nodes {
-        if !first { json.push(','); }
-        first = false;
-        let parent_str = match parent {
-            Some(p) => p.to_string(),
-            None    => "null".to_string(),
-        };
-        json.push_str(&format!(
-            r#"{{"id":{},"name":{},"parent":{},"is_group":false}}"#,
-            id,
-            serde_json::to_string(name).unwrap_or_default(),
-            parent_str,
-        ));
-    }
-    json.push(']');
-    json
+    let items: Vec<HierarchyNode<'_>> = nodes
+        .iter()
+        .map(|(id, name, parent)| HierarchyNode {
+            id:       *id,
+            name:     name.as_str(),
+            parent:   *parent,
+            is_group: false,
+        })
+        .collect();
+    serde_json::to_string(&items).unwrap_or_default()
 }
 
 /// DFS id でアクターへの可変参照を取得する。
@@ -1149,8 +1124,8 @@ fn selection_centroid(instances: &[u32], mats: &[[[f32; 4]; 4]]) -> Option<[f32;
 #[allow(dead_code)]
 fn fix_parent(
     parent:         Option<u32>,
-    delete_set:     &std::collections::HashSet<u32>,
-    deleted_parent: &std::collections::HashMap<u32, Option<u32>>,
+    delete_set:     &HashSet<u32>,
+    deleted_parent: &HashMap<u32, Option<u32>>,
     sorted_asc:     &[u32],
     recursive:      bool,
 ) -> Option<u32> {
@@ -1186,7 +1161,7 @@ fn fix_parent(
 }
 
 /// ワールド座標をビューポートのスクリーン座標へ投影する。
-/// カメラ後方（cw ≤ 0）の場合は None を返す。
+/// カメラ後方（clip.w ≤ 0）の場合は None を返す。
 fn world_to_screen(
     world: [f32; 3],
     view:  &[[f32; 4]; 4],
@@ -1195,16 +1170,13 @@ fn world_to_screen(
     vp_h:  f32,
 ) -> Option<(f32, f32)> {
     let [wx, wy, wz] = world;
-    let vx = view[0][0]*wx + view[0][1]*wy + view[0][2]*wz + view[0][3];
-    let vy = view[1][0]*wx + view[1][1]*wy + view[1][2]*wz + view[1][3];
-    let vz = view[2][0]*wx + view[2][1]*wy + view[2][2]*wz + view[2][3];
-    let vw = view[3][0]*wx + view[3][1]*wy + view[3][2]*wz + view[3][3];
-    let cx = proj[0][0]*vx + proj[0][1]*vy + proj[0][2]*vz + proj[0][3]*vw;
-    let cy = proj[1][0]*vx + proj[1][1]*vy + proj[1][2]*vz + proj[1][3]*vw;
-    let cw = proj[3][0]*vx + proj[3][1]*vy + proj[3][2]*vz + proj[3][3]*vw;
-    if cw <= 0.0 { return None; }
-    let nx = cx / cw;
-    let ny = cy / cw;
+    // ビュー変換 → プロジェクション変換（列ベクトル規約: v' = M * v）
+    let view_pos = Mat4x4 { data: *view } * Vector4::new(wx, wy, wz, 1.0);
+    let clip     = Mat4x4 { data: *proj } * view_pos;
+    if clip.w <= 0.0 { return None; }
+    // NDC → スクリーン座標
+    let nx = clip.x / clip.w;
+    let ny = clip.y / clip.w;
     Some(((nx + 1.0) * 0.5 * vp_w, (1.0 - ny) * 0.5 * vp_h))
 }
 
@@ -1265,12 +1237,7 @@ fn apply_delta_to_actor_children(
     dfs_counter: &mut u32,
     result:      &mut Vec<(u32, ActorTransform, ActorTransform, [[f32; 4]; 4], [[f32; 4]; 4])>,
 ) {
-    let identity: [[f32; 4]; 4] = [
-        [1.0, 0.0, 0.0, 0.0],
-        [0.0, 1.0, 0.0, 0.0],
-        [0.0, 0.0, 1.0, 0.0],
-        [0.0, 0.0, 0.0, 1.0],
-    ];
+    let identity = MAT4_IDENTITY;
     for child in actor.children_mut().iter_mut() {
         let child_dfs = *dfs_counter;
         *dfs_counter += 1;
