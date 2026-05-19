@@ -1,0 +1,725 @@
+// ============================================================
+//  drag_handler.rs — カーソル移動・LMB ドラッグ処理
+//
+//  【含む処理】
+//  - on_cursor_moved:    カーソル移動（矩形選択・ギズモドラッグ適用）
+//  - handle_lmb_press:   LMB 押下時: ギズモヒット判定・ドラッグ開始状態収集
+//  - handle_lmb_release: LMB 離し時: Undo 記録・ピックスケジュール
+// ============================================================
+
+use winit::dpi::PhysicalPosition;
+
+use crate::engine::components::{
+    ModelComponent, Transform as ActorTransform, ComponentKind, CanvasTransform,
+};
+use crate::engine::core::app_base::undo::{
+    SelectionCommand, ActorGroupTransformCommand, MultiTransformCommand,
+    ActorDfsSelectionCommand, MultiActorDragTransformCommand, CompositeCommand,
+};
+use crate::engine::methods::gizmo_interact::{
+    screen_to_ray, screen_to_ray_ortho, update_drag, mat4x4_mul, mat4x4_inv,
+};
+
+use super::{
+    App, RuntimeMode,
+    find_actor_by_dfs,
+    collect_mcs_in_world_line,
+    collect_canvas_actors_in_rect,
+    collect_child_actor_mc_starts,
+    canvas_anchor_offset_for_dfs,
+    world_to_screen,
+    camera_scene_gizmo,
+    CANVAS_WORLD_SCALE,
+};
+
+impl App {
+    // ============================================================
+    //  on_cursor_moved
+    // ============================================================
+
+    /// カーソル移動処理。
+    ///
+    /// - RMB 移動量の閾値超え判定（カメラ grab 判定）
+    /// - 矩形選択の更新（2D キャンバスまたは 3D）
+    /// - ホバーギズモパーツの更新
+    /// - ギズモドラッグ中の MC・Transform・Canvas の更新
+    pub(super) fn on_cursor_moved(&mut self, position: PhysicalPosition<f64>) {
+        let cx = position.x as f32;
+        let cy = position.y as f32;
+        self.input.process_cursor_moved(cx, cy);
+        self.last_cursor_pos = Some((cx, cy));
+
+        // RMB 押下中に移動量が閾値を超えたらカメラ grab とみなす
+        if self.cam_input.rmb && !self.rmb_moved {
+            if let Some((px, py)) = self.rmb_press_pos {
+                let dx = cx - px;
+                let dy = cy - py;
+                if dx * dx + dy * dy > 25.0 {
+                    self.rmb_moved = true;
+                }
+            }
+        }
+
+        // 矩形選択の更新（LMB 押下中かつギズモドラッグなし）
+        if self.drag.lmb_held && self.drag.gizmo_drag.is_none() {
+            if let Some((px, py)) = self.drag.lmb_press_pos {
+                let dx = cx - px;
+                let dy = cy - py;
+                if !self.drag.rect_selecting && dx * dx + dy * dy > 25.0 {
+                    self.drag.rect_selecting = true;
+                    self.drag.selection_before_rect         = self.selected_instances.clone();
+                    self.drag.selection_before_rect_dfs     = self.selected_actor_dfs_ids.clone();
+                    self.drag.selection_before_rect_primary = self.actor_virtual_selected_idx;
+                }
+                if self.drag.rect_selecting {
+                    let sx_min = px.min(cx);
+                    let sx_max = px.max(cx);
+                    let sy_min = py.min(cy);
+                    let sy_max = py.max(cy);
+                    if let Some(scene) = &self.scene {
+                        if let Some(ws) = self.window.as_ref().map(|w| w.inner_size()) {
+                            let wl   = self.active_world_line;
+                            let vp_w = ws.width as f32;
+                            let vp_h = ws.height as f32;
+                            let mut rect_dfs: Vec<usize> = Vec::new();
+
+                            if self.canvas_world_lines.contains(&wl) {
+                                // 2D キャンバス: スクリーン矩形をワールド矩形に変換して
+                                // CanvasTransform.position が範囲内かで判定する
+                                let cam_2d = self.canvas_cameras.get(&wl);
+                                let pan_x  = cam_2d.map(|c| c.pan_x).unwrap_or(0.0);
+                                let pan_y  = cam_2d.map(|c| c.pan_y).unwrap_or(0.0);
+                                let half_h = cam_2d.map(|c| c.ortho_half_h).unwrap_or(10.0);
+                                let half_w = half_h * (vp_w / vp_h);
+                                // Y-down 規則（bottom=+half_h）でスクリーン→ワールド変換
+                                let wx_min = pan_x + (2.0 * sx_min / vp_w - 1.0) * half_w;
+                                let wx_max = pan_x + (2.0 * sx_max / vp_w - 1.0) * half_w;
+                                let wy_min = pan_y + (2.0 * sy_min / vp_h - 1.0) * half_h;
+                                let wy_max = pan_y + (2.0 * sy_max / vp_h - 1.0) * half_h;
+                                let mut dfs_counter = 0u32;
+                                for actor in scene.actors.iter().filter(|a| a.world_line == wl) {
+                                    collect_canvas_actors_in_rect(
+                                        actor, &scene.world, &mut dfs_counter,
+                                        wx_min, wx_max, wy_min, wy_max, &mut rect_dfs,
+                                    );
+                                }
+                            } else {
+                                // 3D: MC の instance_mats をスクリーン投影して判定する
+                                let view    = self.camera.view_matrix();
+                                let proj    = self.camera.projection_matrix();
+                                let all_mcs = collect_mcs_in_world_line(&scene.actors, &scene.world, wl);
+                                for (_base, dfs_id, _slot_i, mc) in all_mcs {
+                                    let in_rect = mc.instance_mats.iter().any(|m| {
+                                        let world_pos = [m[0][3], m[1][3], m[2][3]];
+                                        world_to_screen(world_pos, &view.data, &proj.data, vp_w, vp_h)
+                                            .map(|(sx, sy)| sx >= sx_min && sx <= sx_max && sy >= sy_min && sy <= sy_max)
+                                            .unwrap_or(false)
+                                    });
+                                    if in_rect && !rect_dfs.contains(&(dfs_id as usize)) {
+                                        rect_dfs.push(dfs_id as usize);
+                                    }
+                                }
+
+                                // カメラギズモ: アイコン位置をスクリーン投影して矩形内判定する
+                                let cam_gizmo_mats_rect =
+                                    camera_scene_gizmo::collect_camera_actor_matrices(
+                                        &scene.actors, &scene.world, wl,
+                                    );
+                                for (dfs_id, icon_mat) in cam_gizmo_mats_rect {
+                                    let world_pos = [icon_mat[0][3], icon_mat[1][3], icon_mat[2][3]];
+                                    let in_rect = world_to_screen(
+                                        world_pos, &view.data, &proj.data, vp_w, vp_h,
+                                    )
+                                    .map(|(sx, sy)| sx >= sx_min && sx <= sx_max && sy >= sy_min && sy <= sy_max)
+                                    .unwrap_or(false);
+                                    if in_rect && !rect_dfs.contains(&dfs_id) {
+                                        rect_dfs.push(dfs_id);
+                                    }
+                                }
+                            }
+
+                            self.selected_actor_dfs_ids     = rect_dfs.clone();
+                            self.actor_virtual_selected_idx = rect_dfs.last().copied();
+                            self.selected_instances.clear();
+                        }
+                    }
+                }
+            }
+        }
+
+        // ホバーパーツを更新（ドラッグ中はドラッグパーツを維持）
+        self.hovered_gizmo_part = if let Some(drag) = &self.drag.gizmo_drag {
+            Some(drag.part)
+        } else {
+            self.compute_gizmo_hover(cx, cy)
+        };
+
+        // ギズモドラッグ中: 新しい変換行列を計算してインスタンスに適用する
+        let new_mat_opt = if let Some(drag) = &self.drag.gizmo_drag {
+            if let Some(ws) = self.window.as_ref().map(|w| w.inner_size()) {
+                let vp_w = ws.width  as f32;
+                let vp_h = ws.height as f32;
+                let wl_drag = self.active_world_line;
+                let in_editor_drag = self.mode == RuntimeMode::Edit || self.paused;
+                let use_ss_drag = self.canvas_screen_space_overlay || !in_editor_drag
+                    || self.actor_edit_canvas_wls.contains(&wl_drag);
+                let (ro, rd) = if self.canvas_world_lines.contains(&wl_drag) && use_ss_drag {
+                    // スクリーンスペース: 2D ortho レイ
+                    let cam_2d = self.canvas_cameras.get(&wl_drag);
+                    let pan_x  = cam_2d.map(|c| c.pan_x).unwrap_or(0.0);
+                    let pan_y  = cam_2d.map(|c| c.pan_y).unwrap_or(0.0);
+                    let half_h = cam_2d.map(|c| c.ortho_half_h).unwrap_or(10.0);
+                    let half_w = half_h * (vp_w / vp_h);
+                    screen_to_ray_ortho(cx, cy, vp_w, vp_h, pan_x, pan_y, half_w, half_h)
+                } else {
+                    // 3D perspective（通常 3D またはワールドスペースキャンバス）
+                    let cam_v = self.camera.position();
+                    let cam   = [cam_v.x, cam_v.y, cam_v.z];
+                    let view  = self.camera.view_matrix();
+                    let proj  = self.camera.projection_matrix();
+                    screen_to_ray(cx, cy, vp_w, vp_h, &view.data, &proj.data, cam)
+                };
+                Some(update_drag(drag, ro, rd))
+            } else { None }
+        } else { None };
+
+        if let Some(new_mat) = new_mat_opt {
+            if let Some(drag) = &self.drag.gizmo_drag {
+                let delta        = mat4x4_mul(new_mat, mat4x4_inv(drag.start_mat));
+                let wl           = self.active_world_line;
+                let selected_dfs = self.actor_virtual_selected_idx;
+
+                if let Some(scene) = &mut self.scene {
+                    // 選択スロット entity を取得して MC 行列にデルタを適用する
+                    let selected_slot_i = self.actor_virtual_selected_slot_idx;
+                    let mc_entity: Option<crate::engine::ecs::Entity> =
+                        if let Some(dfs) = selected_dfs {
+                            let mut c = 0u32;
+                            find_actor_by_dfs(&scene.actors, wl, dfs as u32, &mut c)
+                                .and_then(|a| a.mc_entity_at(selected_slot_i))
+                        } else { None };
+                    if let Some(mc) = mc_entity.and_then(|e| scene.world.get_mut::<ModelComponent>(e)) {
+                        for &(idx, ref start) in &self.drag.drag_root_starts {
+                            if let Some(m) = mc.instance_mats.get_mut(idx as usize) {
+                                *m = mat4x4_mul(delta, *start);
+                            }
+                        }
+                        for &(idx, ref start) in &self.drag.drag_child_starts {
+                            if let Some(m) = mc.instance_mats.get_mut(idx as usize) {
+                                *m = mat4x4_mul(delta, *start);
+                            }
+                        }
+                        mc.mark_batch_dirty();
+                    }
+                    // 追加 MC スロット（選択スロット以外）にも同デルタを適用する
+                    if let Some(dfs) = selected_dfs {
+                        let extra_starts = self.drag.actor_extra_mc_drag_starts.clone();
+                        for (slot_i, start_mats) in &extra_starts {
+                            let mut c = 0u32;
+                            let slot_entity = find_actor_by_dfs(&scene.actors, wl, dfs as u32, &mut c)
+                                .and_then(|a| a.mc_entity_at(*slot_i));
+                            if let Some(entity) = slot_entity {
+                                if let Some(mc) = scene.world.get_mut::<ModelComponent>(entity) {
+                                    for (m, start) in mc.instance_mats.iter_mut().zip(start_mats.iter()) {
+                                        *m = mat4x4_mul(delta, *start);
+                                    }
+                                    mc.mark_batch_dirty();
+                                }
+                            }
+                        }
+                    }
+                    // MC なし（インスタンス空含む）のアクターは Transform を直接ドラッグする
+                    if self.drag.drag_root_starts.is_empty() {
+                        if self.canvas_world_lines.contains(&wl) {
+                            // 2D: CanvasTransform の XY 位置・Z 回転・XY スケールを更新する
+                            if let Some((drag_dfs, ref start_ct)) = self.drag.canvas_transform_drag_start.clone() {
+                                let entity = {
+                                    let mut c = 0u32;
+                                    find_actor_by_dfs(&scene.actors, wl, drag_dfs, &mut c)
+                                        .map(|a| a.entity)
+                                };
+                                if let Some(entity) = entity {
+                                    // new_mat の平行移動成分はアンカーオフセット込みのgizmo位置を基点とするため、
+                                    // CanvasTransform.position（アンカーオフセットなし）に戻すためにオフセットを引く。
+                                    let anchor_off = canvas_anchor_offset_for_dfs(
+                                        &scene.actors, &scene.world, wl, drag_dfs,
+                                    );
+                                    if let Some(ct) = scene.world.get_mut::<CanvasTransform>(entity) {
+                                        let in_editor_c = self.mode == RuntimeMode::Edit || self.paused;
+                                        let use_ss_c = self.canvas_screen_space_overlay || !in_editor_c
+                                            || self.actor_edit_canvas_wls.contains(&wl);
+                                        // ワールドスペースでは平行移動をキャンバスピクセルに変換し、
+                                        // Y 軸を再反転（レンダリング時に反転済みのため元に戻す）
+                                        let pos_inv_scale = if use_ss_c { 1.0 } else { 1.0 / CANVAS_WORLD_SCALE };
+                                        let y_inv_sign = if use_ss_c { 1.0f32 } else { -1.0 };
+                                        ct.position[0] = new_mat[0][3] * pos_inv_scale - anchor_off[0];
+                                        ct.position[1] = new_mat[1][3] * pos_inv_scale * y_inv_sign - anchor_off[1];
+                                        match self.tool_mode {
+                                            crate::engine::core::app_base::ipc::ToolMode::Rotate => {
+                                                // new_mat = Rz(delta) * T(pos) なので col0 の XY 角度がデルタ回転
+                                                let delta_angle = new_mat[1][0].atan2(new_mat[0][0]).to_degrees();
+                                                ct.rotation = start_ct.rotation + delta_angle;
+                                                ct.scale    = start_ct.scale;
+                                            }
+                                            crate::engine::core::app_base::ipc::ToolMode::Scale => {
+                                                // new_mat の各列の長さ = centroid 起点のスケール係数
+                                                let sx = (new_mat[0][0]*new_mat[0][0] + new_mat[1][0]*new_mat[1][0]).sqrt();
+                                                let sy = (new_mat[0][1]*new_mat[0][1] + new_mat[1][1]*new_mat[1][1]).sqrt();
+                                                if sx > 0.001 { ct.scale[0] = start_ct.scale[0] * sx; }
+                                                if sy > 0.001 { ct.scale[1] = start_ct.scale[1] * sy; }
+                                                ct.rotation = start_ct.rotation;
+                                            }
+                                            _ => {
+                                                // Move: 位置のみ変化
+                                                ct.rotation = start_ct.rotation;
+                                                ct.scale    = start_ct.scale;
+                                            }
+                                        }
+                                        // ピボットはドラッグ中変化なし
+                                        ct.pivot = start_ct.pivot;
+                                    }
+                                }
+                            }
+                        } else if let Some((drag_dfs, ref start_tf)) = self.drag.actor_transform_drag_start.clone() {
+                            let new_mat_tf = mat4x4_mul(delta, start_tf.to_mat4());
+                            let entity = {
+                                let mut c = 0u32;
+                                find_actor_by_dfs(&scene.actors, wl, drag_dfs, &mut c)
+                                    .map(|a| a.entity)
+                            };
+                            if let Some(entity) = entity {
+                                if let Some(tf) = scene.world.get_mut::<ActorTransform>(entity) {
+                                    *tf = ActorTransform::from_mat4(&new_mat_tf);
+                                }
+                            }
+                        }
+                    }
+                    // 子アクター MC にも同デルタを適用する
+                    {
+                        let child_starts = self.drag.actor_child_drag_starts.clone();
+                        for (child_dfs, start_mat) in &child_starts {
+                            let mc_slot_entity = {
+                                let mut c = 0u32;
+                                find_actor_by_dfs(&scene.actors, wl, *child_dfs, &mut c)
+                                    .and_then(|a| a.mc_entity())
+                            };
+                            if let Some(entity) = mc_slot_entity {
+                                if let Some(mc) = scene.world.get_mut::<ModelComponent>(entity) {
+                                    if let Some(m) = mc.instance_mats.first_mut() {
+                                        *m = mat4x4_mul(delta, *start_mat);
+                                    }
+                                    mc.mark_batch_dirty();
+                                }
+                            }
+                        }
+                    }
+                    // マルチ選択: プライマリ以外の全選択アクターにも同デルタを適用する
+                    if !self.drag.multi_actor_drag_starts.is_empty() {
+                        let multi_starts = self.drag.multi_actor_drag_starts.clone();
+                        for (other_dfs, start_mat) in &multi_starts {
+                            let mut c = 0u32;
+                            if let Some(actor) = find_actor_by_dfs(&scene.actors, wl, *other_dfs, &mut c) {
+                                let new_mat_other = mat4x4_mul(delta, *start_mat);
+                                let actor_entity = actor.entity;
+                                let mc_entity    = actor.mc_entity();
+                                // MC の instance_mats を更新する（GPU 描画位置）
+                                if let Some(me) = mc_entity {
+                                    if let Some(mc) = scene.world.get_mut::<ModelComponent>(me) {
+                                        if let Some(m) = mc.instance_mats.first_mut() {
+                                            *m = new_mat_other;
+                                        }
+                                        mc.mark_batch_dirty();
+                                    }
+                                }
+                                // ActorTransform も更新する（Inspector 反映用）
+                                if let Some(tf) = scene.world.get_mut::<ActorTransform>(actor_entity) {
+                                    *tf = ActorTransform::from_mat4(&new_mat_other);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // ドラッグ中のリアルタイム IPC 送信は廃止（ドラッグ終了時に送信）
+        }
+    }
+
+    // ============================================================
+    //  handle_lmb_press
+    // ============================================================
+
+    /// LMB 押下時: ギズモヒット判定とドラッグ開始状態の収集。
+    ///
+    /// `self.last_cursor_pos` がない場合は何もしない。
+    pub(super) fn handle_lmb_press(&mut self) {
+        if let Some((cx, cy)) = self.last_cursor_pos {
+            self.drag.lmb_held      = true;
+            self.drag.lmb_press_pos = Some((cx, cy));
+            self.drag.ctrl_at_press = self.ctrl_held;
+
+            // ギズモヒットを優先。外れた場合は release 時にピックまたは矩形選択。
+            if let Some(drag) = self.try_gizmo_hit_and_start(cx, cy) {
+                let wl              = self.active_world_line;
+                let selected_dfs    = self.actor_virtual_selected_idx;
+                let selected_slot_i = self.actor_virtual_selected_slot_idx;
+                self.drag.multi_actor_drag_starts.clear();
+                if let Some(scene) = self.scene.as_ref() {
+                    // 選択スロット entity を取得する
+                    let mc_entity: Option<crate::engine::ecs::Entity> =
+                        selected_dfs.and_then(|dfs| {
+                            let mut c = 0u32;
+                            find_actor_by_dfs(&scene.actors, wl, dfs as u32, &mut c)
+                                .and_then(|a| a.mc_entity_at(selected_slot_i))
+                        });
+                    if let Some(mc) = mc_entity.and_then(|e| scene.world.get::<ModelComponent>(e)) {
+                        // selected_instances が空（矩形選択・マルチ選択後）の場合は
+                        // インスタンス 0 をドラッグ対象として扱う
+                        let inst_slice: &[u32] = if self.selected_instances.is_empty() {
+                            &[0]
+                        } else {
+                            &self.selected_instances
+                        };
+                        let roots = mc.filter_selection_roots(inst_slice);
+                        self.drag.drag_root_starts = roots.iter()
+                            .filter_map(|&i| mc.instance_mats.get(i as usize).map(|&m| (i, m)))
+                            .collect();
+                        self.drag.drag_child_starts = mc.collect_non_root_descendants(&roots);
+                    }
+                    // 選択スロット以外の MC スロット開始行列を収集する
+                    if let Some(dfs) = selected_dfs {
+                        let mut c = 0u32;
+                        if let Some(actor) = find_actor_by_dfs(&scene.actors, wl, dfs as u32, &mut c) {
+                            self.drag.actor_extra_mc_drag_starts = actor.slots().iter()
+                                .filter(|s| s.kind == ComponentKind::Model)
+                                .enumerate()
+                                .filter(|&(i, _)| i != selected_slot_i)
+                                .filter_map(|(i, s)| {
+                                    scene.world.get::<ModelComponent>(s.entity)
+                                        .map(|mc| (i, mc.instance_mats.clone()))
+                                })
+                                .collect();
+                        }
+                    }
+                    // 子アクター MC の開始行列を収集する
+                    if let Some(dfs) = selected_dfs {
+                        let mut c = 0u32;
+                        if let Some(actor) = find_actor_by_dfs(&scene.actors, wl, dfs as u32, &mut c) {
+                            let mut child_dfs_counter = dfs as u32 + 1;
+                            collect_child_actor_mc_starts(
+                                actor, &scene.world,
+                                &mut child_dfs_counter,
+                                &mut self.drag.actor_child_drag_starts,
+                            );
+                        }
+                    }
+                    // MC なし（または空）のアクターは Transform を直接動かす
+                    if self.drag.drag_root_starts.is_empty() {
+                        if let Some(dfs) = selected_dfs {
+                            let mut c = 0u32;
+                            if let Some(actor) = find_actor_by_dfs(&scene.actors, wl, dfs as u32, &mut c) {
+                                if self.canvas_world_lines.contains(&wl) {
+                                    // 2D: CanvasTransform のスナップショットを保持する
+                                    let old_ct = scene.world.get::<CanvasTransform>(actor.entity)
+                                        .cloned().unwrap_or_default();
+                                    self.drag.canvas_transform_drag_start = Some((dfs as u32, old_ct));
+                                } else {
+                                    let old_tf = scene.world.get::<ActorTransform>(actor.entity)
+                                        .cloned().unwrap_or_default();
+                                    self.drag.actor_transform_drag_start = Some((dfs as u32, old_tf));
+                                }
+                            }
+                        }
+                    }
+                    // マルチ選択: プライマリ以外の選択アクターの開始行列を収集する
+                    if self.selected_actor_dfs_ids.len() > 1 {
+                        for &other_dfs in &self.selected_actor_dfs_ids {
+                            if Some(other_dfs) == selected_dfs { continue; }
+                            let mut c = 0u32;
+                            if let Some(actor) = find_actor_by_dfs(&scene.actors, wl, other_dfs as u32, &mut c) {
+                                let start_mat = actor.mc_entity()
+                                    .and_then(|e| scene.world.get::<ModelComponent>(e))
+                                    .and_then(|mc| mc.instance_mats.first().copied())
+                                    .unwrap_or_else(|| {
+                                        scene.world.get::<ActorTransform>(actor.entity)
+                                            .map(|tf| tf.to_mat4())
+                                            .unwrap_or_default()
+                                    });
+                                self.drag.multi_actor_drag_starts.push((other_dfs as u32, start_mat));
+                            }
+                        }
+                    }
+                }
+                self.drag.gizmo_drag = Some(drag);
+            }
+        }
+    }
+
+    // ============================================================
+    //  handle_lmb_release
+    // ============================================================
+
+    /// LMB 離し時: 矩形選択終了・クリックピック・ドラッグ Undo 記録。
+    pub(super) fn handle_lmb_release(&mut self) {
+        self.drag.lmb_held = false;
+
+        if self.drag.rect_selecting {
+            // 矩形選択終了: SelectionCommand と ActorDfsSelectionCommand を記録してエディタへ通知
+            let before_inst = std::mem::take(&mut self.drag.selection_before_rect);
+            let after_inst  = self.selected_instances.clone();
+            if before_inst != after_inst {
+                self.undo_history.record(Box::new(SelectionCommand { before: before_inst, after: after_inst }));
+            }
+            let before_dfs     = std::mem::take(&mut self.drag.selection_before_rect_dfs);
+            let before_primary = self.drag.selection_before_rect_primary.take();
+            let after_dfs      = self.selected_actor_dfs_ids.clone();
+            let after_primary  = self.actor_virtual_selected_idx;
+            if before_dfs != after_dfs || before_primary != after_primary {
+                self.undo_history.record(Box::new(ActorDfsSelectionCommand {
+                    before_dfs_ids: before_dfs,
+                    after_dfs_ids:  after_dfs,
+                    before_primary,
+                    after_primary,
+                }));
+            }
+            self.send_selected();
+            // インスペクタへプライマリ選択アクターのコンポーネントをプッシュ
+            if let Some(idx) = self.actor_virtual_selected_idx {
+                self.send_actor_components(idx as u32, self.actor_virtual_selected_slot_idx);
+            }
+            self.drag.rect_selecting = false;
+        } else if self.drag.gizmo_drag.is_none() && self.drag.lmb_press_pos.is_some()
+            && (self.mode == RuntimeMode::Edit || self.paused)
+        {
+            if let Some((cx, cy)) = self.last_cursor_pos {
+                if self.actor_edit_canvas_wls.contains(&self.active_world_line) {
+                    // 2D アクター編集タブ: GPU ID パス不要、CPU OBB ピックを即時実行する
+                    self.pick_2d_canvas(cx, cy);
+                } else {
+                    // クリック: GPU ID ピックをスケジュール
+                    self.pending_pick = Some((cx as u32, cy as u32));
+                }
+            }
+        }
+        self.drag.lmb_press_pos = None;
+
+        // ドラッグで変化があれば Undo 履歴に一括記録
+        let mut primary_recorded = false;
+        if self.drag.gizmo_drag.is_some() {
+            if let Some((dfs_id, old_transform)) = self.drag.actor_transform_drag_start.take() {
+                // アクター編集モード: MC なしアクターの Transform ドラッグ終了
+                let wl = self.active_world_line;
+                let child_drag_starts = std::mem::take(&mut self.drag.actor_child_drag_starts);
+                let new_transform_opt = self.scene.as_ref().and_then(|s| {
+                    let mut c = 0u32;
+                    find_actor_by_dfs(&s.actors, wl, dfs_id, &mut c)
+                        .and_then(|a| s.world.get::<ActorTransform>(a.entity).cloned())
+                });
+                if let Some(new_transform) = new_transform_opt {
+                    let delta = mat4x4_mul(new_transform.to_mat4(), mat4x4_inv(old_transform.to_mat4()));
+                    let mut child_transforms: Vec<(u32, ActorTransform, ActorTransform, [[f32;4];4], [[f32;4];4])> = Vec::new();
+                    for (child_dfs, start_mat) in child_drag_starts {
+                        let new_mc_mat = mat4x4_mul(delta, start_mat);
+                        if let Some(scene) = &mut self.scene {
+                            let child_entity = {
+                                let mut c = 0u32;
+                                find_actor_by_dfs(&scene.actors, wl, child_dfs, &mut c)
+                                    .map(|a| a.entity)
+                            };
+                            if let Some(child_entity) = child_entity {
+                                let old_child_tf = scene.world.get::<ActorTransform>(child_entity)
+                                    .cloned().unwrap_or_default();
+                                let new_child_tf = ActorTransform::from_mat4(&new_mc_mat);
+                                if let Some(tf) = scene.world.get_mut::<ActorTransform>(child_entity) {
+                                    *tf = new_child_tf.clone();
+                                }
+                                if let Some(mc) = scene.world.get_mut::<ModelComponent>(child_entity) {
+                                    if let Some(m) = mc.instance_mats.first_mut() { *m = new_mc_mat; }
+                                    mc.mark_batch_dirty();
+                                }
+                                child_transforms.push((child_dfs, old_child_tf, new_child_tf, start_mat, new_mc_mat));
+                            }
+                        }
+                    }
+                    if old_transform != new_transform || !child_transforms.is_empty() {
+                        self.undo_history.record(Box::new(ActorGroupTransformCommand {
+                            wl, dfs_id,
+                            old_tf: old_transform,
+                            new_tf: new_transform,
+                            transforms: vec![],
+                            child_transforms,
+                            extra_slot_transforms: vec![],
+                        }));
+                        primary_recorded = true;
+                        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+                    }
+                }
+                self.send_actor_components(dfs_id, self.actor_virtual_selected_slot_idx);
+            } else {
+                let mut transforms: Vec<(u32, [[f32;4];4], [[f32;4];4])> = Vec::new();
+                let root_starts       = std::mem::take(&mut self.drag.drag_root_starts);
+                let child_starts      = std::mem::take(&mut self.drag.drag_child_starts);
+                let extra_mc_starts   = std::mem::take(&mut self.drag.actor_extra_mc_drag_starts);
+                let wl_end            = self.active_world_line;
+                let selected_dfs_end  = self.actor_virtual_selected_idx;
+                let selected_slot_i_e = self.actor_virtual_selected_slot_idx;
+                let mc_entity: Option<crate::engine::ecs::Entity> = self.scene.as_ref().and_then(|s| {
+                    selected_dfs_end.and_then(|dfs| {
+                        let mut c = 0u32;
+                        find_actor_by_dfs(&s.actors, wl_end, dfs as u32, &mut c)
+                            .and_then(|a| a.mc_entity_at(selected_slot_i_e))
+                    })
+                });
+                if let Some(mc) = mc_entity.and_then(|e| self.scene.as_ref()?.world.get::<ModelComponent>(e)) {
+                    for (idx, old_mat) in root_starts.into_iter().chain(child_starts) {
+                        if let Some(&new_mat) = mc.instance_mats.get(idx as usize) {
+                            if new_mat != old_mat {
+                                transforms.push((idx, old_mat, new_mat));
+                            }
+                        }
+                    }
+                }
+                // 追加 MC スロットの old→new 変換を収集する（Undo 用）
+                let extra_slot_transforms: Vec<(usize, u32, [[f32;4];4], [[f32;4];4])> =
+                    extra_mc_starts.iter().flat_map(|(slot_i, start_mats)| {
+                        let cur_mats: Vec<[[f32;4];4]> = selected_dfs_end.and_then(|dfs| {
+                            let mut c = 0u32;
+                            self.scene.as_ref().and_then(|s| {
+                                find_actor_by_dfs(&s.actors, wl_end, dfs as u32, &mut c)
+                                    .and_then(|a| a.mc_entity_at(*slot_i))
+                                    .and_then(|e| s.world.get::<ModelComponent>(e))
+                                    .map(|mc| mc.instance_mats.clone())
+                            })
+                        }).unwrap_or_default();
+                        start_mats.iter().zip(cur_mats.iter()).enumerate()
+                            .filter_map(|(i, (old, &new))| {
+                                if *old != new { Some((*slot_i, i as u32, *old, new)) } else { None }
+                            })
+                            .collect::<Vec<_>>()
+                    }).collect();
+                let wl = self.active_world_line;
+                if self.actor_virtual_selected_idx.is_some() {
+                    // 仮想ノード選択中: delta を Transform と子アクターに反映して ActorGroupTransformCommand で記録
+                    let dfs_id = self.actor_virtual_selected_idx.unwrap() as u32;
+                    let child_drag_starts = std::mem::take(&mut self.drag.actor_child_drag_starts);
+                    let (old_tf, new_tf, child_transforms) = if let Some(&(_, old_mat, new_mat)) = transforms.first() {
+                        let delta = mat4x4_mul(new_mat, mat4x4_inv(old_mat));
+                        let mut old_v = ActorTransform::default();
+                        let mut new_v = ActorTransform::default();
+                        if let Some(scene) = &mut self.scene {
+                            let entity = {
+                                let mut c = 0u32;
+                                find_actor_by_dfs(&scene.actors, wl, dfs_id, &mut c)
+                                    .map(|a| a.entity)
+                            };
+                            if let Some(entity) = entity {
+                                old_v = scene.world.get::<ActorTransform>(entity).cloned().unwrap_or_default();
+                                new_v = ActorTransform::from_mat4(&mat4x4_mul(delta, old_v.to_mat4()));
+                                if let Some(tf) = scene.world.get_mut::<ActorTransform>(entity) { *tf = new_v.clone(); }
+                            }
+                        }
+                        // 子アクターの Transform を更新し Undo 用データを収集
+                        let mut child_transforms = Vec::new();
+                        for (child_dfs, start_mat) in child_drag_starts {
+                            if let Some(scene) = &mut self.scene {
+                                let (child_entity_opt, mc_slot_entity) = {
+                                    let mut c = 0u32;
+                                    find_actor_by_dfs(&scene.actors, wl, child_dfs, &mut c)
+                                        .map(|a| (Some(a.entity), a.mc_entity()))
+                                        .unwrap_or((None, None))
+                                };
+                                if let Some(child_entity) = child_entity_opt {
+                                    let old_child_tf = scene.world.get::<ActorTransform>(child_entity)
+                                        .cloned().unwrap_or_default();
+                                    let new_child_tf = ActorTransform::from_mat4(
+                                        &mat4x4_mul(delta, old_child_tf.to_mat4()));
+                                    if let Some(tf) = scene.world.get_mut::<ActorTransform>(child_entity) {
+                                        *tf = new_child_tf.clone();
+                                    }
+                                    let new_mc_mat = mc_slot_entity
+                                        .and_then(|e| scene.world.get::<ModelComponent>(e))
+                                        .and_then(|mc| mc.instance_mats.first().copied())
+                                        .unwrap_or(start_mat);
+                                    child_transforms.push((child_dfs, old_child_tf, new_child_tf, start_mat, new_mc_mat));
+                                }
+                            }
+                        }
+                        (old_v, new_v, child_transforms)
+                    } else {
+                        // インスタンス変化なし: 現在の Transform を取得
+                        let tf = self.scene.as_ref().and_then(|s| {
+                            let mut c = 0u32;
+                            find_actor_by_dfs(&s.actors, wl, dfs_id, &mut c)
+                                .and_then(|a| s.world.get::<ActorTransform>(a.entity).cloned())
+                        }).unwrap_or_default();
+                        (tf.clone(), tf, Vec::new())
+                    };
+                    self.send_actor_components(dfs_id, self.actor_virtual_selected_slot_idx);
+                    if !transforms.is_empty() || !extra_slot_transforms.is_empty() {
+                        self.undo_history.record(Box::new(ActorGroupTransformCommand {
+                            wl, dfs_id, old_tf, new_tf, transforms,
+                            child_transforms, extra_slot_transforms,
+                        }));
+                        primary_recorded = true;
+                        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+                    }
+                } else {
+                    if !transforms.is_empty() {
+                        self.undo_history.record(Box::new(MultiTransformCommand { transforms }));
+                        primary_recorded = true;
+                        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+                    }
+                    if self.selected_instances.len() == 1 {
+                        self.send_actor_data(self.selected_instances[0]);
+                    }
+                }
+            }
+        } else {
+            self.drag.actor_transform_drag_start = None;
+            self.drag.drag_root_starts.clear();
+            self.drag.drag_child_starts.clear();
+            self.drag.actor_child_drag_starts.clear();
+            self.drag.actor_extra_mc_drag_starts.clear();
+        }
+
+        // マルチ選択ドラッグ終了: 非プライマリアクターの Transform を記録する
+        if !self.drag.multi_actor_drag_starts.is_empty() {
+            let wl = self.active_world_line;
+            let mut drag_transforms: Vec<(u32, [[f32; 4]; 4], [[f32; 4]; 4])> = Vec::new();
+            if let Some(scene) = self.scene.as_ref() {
+                for &(other_dfs, old_mat) in &self.drag.multi_actor_drag_starts {
+                    let mut c = 0u32;
+                    let new_mat = find_actor_by_dfs(&scene.actors, wl, other_dfs, &mut c)
+                        .and_then(|a| a.mc_entity()
+                            .and_then(|e| scene.world.get::<ModelComponent>(e))
+                            .and_then(|mc| mc.instance_mats.first().copied())
+                            .or_else(|| scene.world.get::<ActorTransform>(a.entity)
+                                .map(|tf| tf.to_mat4())))
+                        .unwrap_or(old_mat);
+                    drag_transforms.push((other_dfs, old_mat, new_mat));
+                }
+            }
+            if !drag_transforms.is_empty() {
+                let multi_cmd: Box<dyn crate::engine::core::app_base::undo::Command> =
+                    Box::new(MultiActorDragTransformCommand { wl, transforms: drag_transforms });
+                if primary_recorded {
+                    // プライマリのコマンドを取り出して CompositeCommand に統合する
+                    if let Some(primary_cmd) = self.undo_history.pop_last() {
+                        self.undo_history.record(Box::new(CompositeCommand {
+                            commands: vec![primary_cmd, multi_cmd],
+                        }));
+                    } else {
+                        self.undo_history.record(multi_cmd);
+                    }
+                } else {
+                    self.undo_history.record(multi_cmd);
+                }
+                if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+            }
+            self.drag.multi_actor_drag_starts.clear();
+        }
+        self.drag.gizmo_drag = None;
+        // ドラッグ終了後はホバーを再評価する
+        self.hovered_gizmo_part = self.last_cursor_pos
+            .and_then(|(cx, cy)| self.compute_gizmo_hover(cx, cy));
+    }
+}

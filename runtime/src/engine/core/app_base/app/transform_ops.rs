@@ -9,14 +9,15 @@
 use crate::engine::components::{ModelComponent, Transform as ActorTransform, ComponentKind, CanvasTransform, CanvasComponent};
 use crate::engine::core::app_base::undo::{TransformCommand, ActorGroupTransformCommand};
 use crate::engine::structs::tensor::Vector3;
-use crate::engine::structs::transforms::{Quaternion, Transform};
+use crate::engine::structs::transforms::Transform;
+
+use crate::engine::methods::gizmo_interact::{mat4x4_mul, mat4x4_inv};
 
 use super::{
     App,
     find_actor_by_dfs, find_actor_by_dfs_mut,
     apply_delta_to_actor_children,
     canvas_anchor_offset_for_dfs,
-    mat4x4_mul, mat4x4_inv,
     RuntimeMode,
 };
 

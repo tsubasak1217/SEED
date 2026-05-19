@@ -4,4 +4,3 @@ pub mod scene;
 pub mod undo;
 
 pub use app::{App, LaunchArgs, RuntimeMode};
-pub use scene::Scene;

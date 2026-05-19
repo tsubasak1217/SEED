@@ -25,12 +25,12 @@ use crate::engine::methods::drawer::DrawContext;
 use crate::engine::components::{
     ComponentData, ComponentKind,
     Transform,
-    ModelComponent, ModelComponentData, InstanceMeta, GROUP_ID_BASE,
+    ModelComponent, InstanceMeta,
     ScriptComponent, PlaceholderScriptSlot,
     CameraComponent, CameraComponentData,
 };
 use crate::engine::structs::objects::Actor;
-use crate::engine::structs::objects::actor::{ActorData, ComponentSlotData};
+use crate::engine::structs::objects::actor::ActorData;
 
 // ============================================================
 //  SceneError — シーン読み書き時のエラー型
@@ -358,7 +358,6 @@ pub fn build_actor(
     world:          &mut World,
     scripting_host: Option<&Arc<ScriptingHost>>,
 ) -> Result<Actor, SceneError> {
-    use crate::engine::components::CanvasTransform;
     use crate::engine::structs::objects::actor::ActorKind;
 
     let entity = world.spawn();

@@ -5,13 +5,11 @@
 //  send_world_line_info / sync_anim_seeds / send_selected
 // ============================================================
 
-use crate::engine::components::{
-    ModelComponent, Transform as ActorTransform, CanvasTransform, ComponentData,
-};
+use crate::engine::components::ModelComponent;
 use crate::engine::structs::tensor::Mat4x4;
 use crate::engine::structs::transforms::Quaternion;
 
-use super::{App, find_actor_by_dfs, collect_actor_nodes, build_hierarchy_json};
+use super::{App, collect_actor_nodes, build_hierarchy_json};
 
 impl App {
     /// ヒエラルキーを JSON にシリアライズしてエディタへ送信する（実装本体）。

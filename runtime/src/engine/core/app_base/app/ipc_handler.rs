@@ -5,28 +5,18 @@
 //  対応する App メソッドへルーティングする。
 // ============================================================
 
-use crate::engine::core::app_base::ipc::{IpcCommand, ToolMode};
+use crate::engine::core::app_base::ipc::IpcCommand;
 use crate::engine::core::app_base::scene::{Scene, DebugCameraData};
 use crate::engine::core::app_base::app::RuntimeMode;
-use crate::engine::core::app_base::undo::{
-    UndoHistory, TransformCommand, SceneSnapshotCommand, ActorTreeSnapshotCommand,
-    SelectionCommand, ActorDfsSelectionCommand,
-};
+use crate::engine::core::app_base::undo::TransformCommand;
 use crate::engine::components::{ModelComponent, GroupMeta, GROUP_ID_BASE};
-use crate::engine::structs::objects::Actor;
 use winit::event_loop::ActiveEventLoop;
 
 use super::{
     App,
     find_actor_by_dfs,
     release_window_clamp,
-    apply_window_clamp,
-    camera_grab_start,
-    camera_grab_end,
-    collect_entities_for_wl,
-    despawn_actor_recursive,
 };
-use crate::engine::core::app_base::scene::build_actor;
 
 impl App {
     /// IPC コマンドをすべて収集してから順に処理する。
@@ -353,7 +343,7 @@ impl App {
                                 self.send_actor_components(dfs_id, self.actor_virtual_selected_slot_idx);
                             }
                             super::InspectorTransformDrag::ActorGroup { dfs_id, old_mats, old_tf, child_old_states } => {
-                                let mut c = 0u32;
+                                let c = 0u32;
                                 let transforms: Vec<(u32, [[f32;4];4], [[f32;4];4])>;
                                 let new_tf: crate::engine::components::Transform;
                                 let child_transforms: Vec<(u32, crate::engine::components::Transform, crate::engine::components::Transform, [[f32;4];4], [[f32;4];4])>;
