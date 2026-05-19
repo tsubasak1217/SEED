@@ -65,6 +65,35 @@ impl Transform {
         ]
     }
 
+    /// ワールド前方向ベクトルを返す（スケール無視）。
+    ///
+    /// YXZ オイラー角から +Z forward を計算する。
+    /// カメラのビュー行列構築などに使用する。
+    pub fn forward(&self) -> [f32; 3] {
+        let [ex, ey, _] = self.rotation.map(f32::to_radians);
+        let cx = ex.cos();
+        let sx = ex.sin();
+        let cy = ey.cos();
+        let sy = ey.sin();
+        [sy * cx, -sx, cy * cx]
+    }
+
+    /// ワールド上方向ベクトルを返す（スケール無視）。
+    pub fn up(&self) -> [f32; 3] {
+        let [ex, ey, ez] = self.rotation.map(f32::to_radians);
+        let cx = ex.cos();
+        let sx = ex.sin();
+        let cy = ey.cos();
+        let sy = ey.sin();
+        let cz = ez.cos();
+        let sz = ez.sin();
+        [
+            -cy * sz + sy * sx * cz,
+            cx * cz,
+            sy * sz + cy * sx * cz,
+        ]
+    }
+
     /// 行列から位置・YXZ オイラー角（度）・スケールを取り出す（近似）。
     pub fn from_mat4(m: &[[f32; 4]; 4]) -> Self {
         let tx = m[0][3]; let ty = m[1][3]; let tz = m[2][3];

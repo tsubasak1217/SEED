@@ -2,6 +2,7 @@
 //  camera_ops.rs — カメラ状態の取得・適用
 //
 //  cam_state_tuple / apply_camera_transform / apply_camera_data
+//  sync_debug_camera_to_main_camera
 // ============================================================
 
 use crate::engine::core::app_base::scene::DebugCameraData;
@@ -41,6 +42,33 @@ impl App {
         let yaw_q   = Quaternion::from_axis_angle(Vector3::new(0.0, 1.0, 0.0), self.camera.yaw);
         let pitch_q = Quaternion::from_axis_angle(Vector3::new(1.0, 0.0, 0.0), self.camera.pitch);
         self.camera.base.transform.rotation = yaw_q * pitch_q;
+    }
+
+    /// Pause 時にデバッグカメラをシーンのメインカメラ視点に同期する。
+    ///
+    /// `is_main = true` の CameraComponent を持つ Actor を DFS で探し、
+    /// その位置と向きをデバッグカメラに引き継ぐ。
+    /// メインカメラが存在しない場合は何もしない。
+    ///
+    /// # 向きの変換
+    /// `components::Transform` の YXZ オイラー角から forward ベクトルを算出し、
+    /// DebugCamera の yaw / pitch（ラジアン）へ変換する。
+    ///   forward = (sy·cx, −sx, cy·cx)  [sy=sin(Ey), cx=cos(Ex) など]
+    ///   pitch   = asin(−fy)
+    ///   yaw     = atan2(fx, fz)
+    pub(super) fn sync_debug_camera_to_main_camera(&mut self) {
+        let cam_tf = self.scene.as_ref()
+            .and_then(|s| s.find_main_camera())
+            .map(|(tf, _)| tf);
+
+        if let Some(tf) = cam_tf {
+            let [px, py, pz] = tf.position;
+            let [fx, fy, fz] = tf.forward();
+            // pitch = asin(−fy), yaw = atan2(fx, fz)
+            let pitch_deg = (-fy).clamp(-1.0, 1.0).asin().to_degrees();
+            let yaw_deg   = fx.atan2(fz).to_degrees();
+            self.apply_camera_transform(px, py, pz, yaw_deg, pitch_deg);
+        }
     }
 
     /// DebugCameraData をカメラに一括適用する。

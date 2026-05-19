@@ -15,6 +15,7 @@ pub mod script_component;
 pub mod canvas_component;
 pub mod sprite_component;
 pub mod inputmap_component;
+pub mod camera_component;
 
 pub use transform::Transform;
 pub use canvas_transform::CanvasTransform;
@@ -28,6 +29,7 @@ pub use script_component::{
 pub use canvas_component::{CanvasComponent, CanvasComponentData};
 pub use sprite_component::{SpriteComponent, SpriteComponentData};
 pub use inputmap_component::{InputMapComponent, InputMapComponentData};
+pub use camera_component::{CameraComponent, CameraComponentData};
 
 use serde::{Deserialize, Serialize};
 
@@ -52,6 +54,8 @@ pub enum ComponentKind {
     Sprite,
     /// 入力マップアセット参照（.inputmap ファイルへのリンク）
     InputMap,
+    /// ゲームカメラ（Play モードの視点）
+    Camera,
 }
 
 impl ComponentKind {
@@ -64,6 +68,7 @@ impl ComponentKind {
             Self::Canvas      => "CanvasComponent",
             Self::Sprite      => "SpriteComponent",
             Self::InputMap    => "InputMapComponent",
+            Self::Camera      => "CameraComponent",
         }
     }
 }
@@ -80,4 +85,5 @@ pub enum ComponentData {
     CanvasComponent(CanvasComponentData),
     SpriteComponent(SpriteComponentData),
     InputMapComponent(InputMapComponentData),
+    CameraComponent(CameraComponentData),
 }

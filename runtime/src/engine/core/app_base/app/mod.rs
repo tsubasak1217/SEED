@@ -23,6 +23,7 @@ mod camera_ops;
 mod gizmo_handler;
 mod pick_2d;
 mod render;
+pub(crate) mod camera_scene_gizmo;
 
 // ── 外部クレート・標準ライブラリ ────────────────────────────
 use std::sync::Arc;
@@ -75,6 +76,167 @@ use crate::engine::structs::transforms::{Quaternion, Transform};
 use crate::engine::structs::utils::Color;
 
 // ============================================================
+//  CameraPreviewResources — カメラプレビュー描画リソース
+// ============================================================
+
+/// カメラアクター選択時のビューポートプレビュー描画リソースまとめ。
+///
+/// オフスクリーンテクスチャへのレンダーパスと、スクリーンへのブリットパスで使用する。
+struct CameraPreviewResources {
+    /// オフスクリーンカラーテクスチャ（プレビューのレンダーターゲット）
+    color_texture: wgpu::Texture,
+    /// カラーテクスチャのビュー（レンダーターゲット兼サンプリング用）
+    color_view:    wgpu::TextureView,
+    /// オフスクリーン深度テクスチャ
+    depth_texture: wgpu::Texture,
+    /// 深度テクスチャのビュー
+    depth_view:    wgpu::TextureView,
+    /// ブリット用テクスチャバインドグループ（Group 1: テクスチャ + サンプラー）
+    blit_tex_bg:   wgpu::BindGroup,
+    /// ブリット矩形ユニフォームバッファ（NDC 座標、毎フレーム更新）
+    blit_rect_buf: wgpu::Buffer,
+    /// ブリット矩形バインドグループ（Group 0）
+    blit_rect_bg:  wgpu::BindGroup,
+}
+
+impl CameraPreviewResources {
+    /// カメラプレビューリソースを生成する。
+    ///
+    /// - `width` / `height` : プレビューテクスチャ解像度（ピクセル）
+    fn new(
+        device: &wgpu::Device,
+        blit_pipeline: &crate::engine::methods::drawer::CameraPreviewBlitPipeline,
+        width:  u32,
+        height: u32,
+    ) -> Self {
+        // オフスクリーンカラーテクスチャ（Bgra8UnormSrgb: スワップチェーンと同フォーマット）
+        let color_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label:           Some("Camera Preview Color"),
+            size:            wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count:    1,
+            dimension:       wgpu::TextureDimension::D2,
+            format:          wgpu::TextureFormat::Bgra8UnormSrgb,
+            usage:           wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats:    &[],
+        });
+        let color_view = color_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        // オフスクリーン深度テクスチャ
+        let depth_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label:           Some("Camera Preview Depth"),
+            size:            wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count:    1,
+            dimension:       wgpu::TextureDimension::D2,
+            format:          wgpu::TextureFormat::Depth24PlusStencil8,
+            usage:           wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats:    &[],
+        });
+        let depth_view = depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        // サンプラー（線形フィルタリング）
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label:          Some("Camera Preview Sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter:     wgpu::FilterMode::Linear,
+            min_filter:     wgpu::FilterMode::Linear,
+            mipmap_filter:  wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+
+        // ブリット用テクスチャバインドグループ (Group 1)
+        let blit_tex_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label:   Some("Camera Preview Blit Tex BG"),
+            layout:  &blit_pipeline.tex_bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding:  0,
+                    resource: wgpu::BindingResource::TextureView(&color_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding:  1,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+            ],
+        });
+
+        // ブリット矩形ユニフォームバッファ (Group 0)
+        let blit_rect_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label:              Some("Camera Preview Blit Rect"),
+            size:               16,  // BlitRect = [f32; 4]
+            usage:              wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let blit_rect_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label:   Some("Camera Preview Blit Rect BG"),
+            layout:  &blit_pipeline.rect_bgl,
+            entries: &[wgpu::BindGroupEntry {
+                binding:  0,
+                resource: blit_rect_buf.as_entire_binding(),
+            }],
+        });
+
+        Self {
+            color_texture, color_view,
+            depth_texture, depth_view,
+            blit_tex_bg,
+            blit_rect_buf, blit_rect_bg,
+        }
+    }
+
+    /// ブリット矩形ユニフォームをビューポートサイズに基づいて GPU に書き込む。
+    ///
+    /// プレビューはビューポート右下に配置される（マージン: 8 px）。
+    fn update_blit_rect(
+        &self,
+        queue:    &wgpu::Queue,
+        vp_w:     f32,
+        vp_h:     f32,
+        prev_w:   f32,
+        prev_h:   f32,
+    ) {
+        // プレビュー右下マージン（px）
+        const MARGIN: f32 = 8.0;
+
+        let sx0 = vp_w - prev_w - MARGIN;
+        let sx1 = vp_w - MARGIN;
+        let sy0 = vp_h - prev_h - MARGIN;  // 上端（screen Y が小さい）
+        let sy1 = vp_h - MARGIN;           // 下端
+
+        // NDC 変換（x: [-1,1], y: [-1,1]）
+        let nx0 = 2.0 * sx0 / vp_w - 1.0;
+        let nx1 = 2.0 * sx1 / vp_w - 1.0;
+        let ny0 = 1.0 - 2.0 * sy1 / vp_h;  // 下端 NDC y
+        let ny1 = 1.0 - 2.0 * sy0 / vp_h;  // 上端 NDC y
+
+        let rect: [f32; 4] = [nx0, ny0, nx1, ny1];
+        queue.write_buffer(&self.blit_rect_buf, 0, bytemuck::cast_slice(&rect));
+    }
+}
+
+// ============================================================
+//  CameraGizmoResources — カメラアイコン GLB モデル描画リソース
+// ============================================================
+
+/// カメラコンポーネントを持つアクターの位置に表示するアイコンモデルのリソース。
+///
+/// editor/resources/models/camera.glb を InstancedModelBatch として管理し、
+/// カメラアクターの数に応じてバッチを再生成する。
+pub(crate) struct CameraGizmoResources {
+    /// カメラ.glb の CPU モデル（バッチ更新に使用）。
+    pub cpu_model: std::sync::Arc<crate::engine::core::loader::model::Model>,
+    /// カメラ.glb の GPU モデル（頂点・マテリアルデータ）。
+    pub gpu_model: crate::engine::methods::drawer::GpuModel,
+    /// インスタンスバッチ（最大 capacity インスタンスを保持）。
+    pub batch:     crate::engine::methods::drawer::InstancedModelBatch,
+    /// 現在のバッチ容量。アクター数がこれを超えると再生成する。
+    pub capacity:  usize,
+}
+
+// ============================================================
 //  クリップボードアイテム
 // ============================================================
 
@@ -103,12 +265,18 @@ pub enum RuntimeMode {
 
 /// App::new / App::run への引数。
 pub struct LaunchArgs {
-    pub parent_hwnd:  Option<isize>,
-    pub mode:         RuntimeMode,
-    pub pipe_name:    Option<String>,
+    pub parent_hwnd:      Option<isize>,
+    pub mode:             RuntimeMode,
+    pub pipe_name:        Option<String>,
     /// アセットルートディレクトリの絶対パス（Play / パッケージモードで使用）。
     /// None の場合は実行ファイルの隣に assets/ or assets.pak があると仮定する。
-    pub assets_root:  Option<String>,
+    pub assets_root:      Option<String>,
+    /// エディタリソースディレクトリの絶対パス（Edit モードで使用）。
+    /// カメラギズモ等エディタ専用モデルのパス解決に使用する。
+    pub editor_resources: Option<String>,
+    /// Play モードで読み込むシーンのパス（仮想パス or 絶対パス）。
+    /// None の場合は project_settings.json の start_scene を使用する。
+    pub scene_path: Option<String>,
 }
 
 // ============================================================
@@ -159,6 +327,10 @@ pub struct App {
     paused:       bool,
     /// アセットルートのパス（Playモード・パッケージモードでのシーン自動ロードに使用）。
     assets_root:  Option<String>,
+    /// エディタリソースディレクトリ（カメラギズモモデル等の読み込みに使用）。
+    editor_resources: Option<String>,
+    /// Play モードで読み込むシーンパス。None なら project_settings.json の start_scene を使う。
+    scene_path: Option<String>,
 
     /// RMB 押下時のスクリーン座標。カーソルロック解除後に復元する。
     cam_grab_screen_pos: Option<(i32, i32)>,
@@ -220,6 +392,12 @@ pub struct App {
     axis_gizmo: Option<crate::engine::core::font::axis_gizmo::AxisGizmo>,
     /// アイコンオーバーレイ（エディタモードのみ使用）。
     icon_overlay: Option<crate::engine::core::font::icon_overlay::IconOverlay>,
+    /// 平滑化済み FPS（表示値）。0.0 = 未計算。
+    fps_display: f32,
+    /// FPS 計測ウィンドウ内のフレーム完了カウント。
+    fps_frame_count: u32,
+    /// FPS 計測ウィンドウの開始時刻。
+    fps_frame_start: std::time::Instant,
     /// 矩形選択開始時の選択状態（Undo 記録用）。
     selection_before_rect: Vec<u32>,
     /// 矩形選択開始時のアクター DFS 選択状態（Undo 記録用）。
@@ -272,6 +450,16 @@ pub struct App {
     /// エディタのビューポートオプションから切り替え可能。実行時は常に true。
     canvas_screen_space_overlay: bool,
 
+    // ── カメラプレビュー ─────────────────────────────────────────
+    /// カメラアクター選択時のビューポートプレビュー描画リソース。
+    /// 選択時に初期化され、選択解除時には None のまま。
+    camera_preview: Option<CameraPreviewResources>,
+
+    // ── カメラギズモアイコン ─────────────────────────────────────
+    /// camera.glb モデルで全カメラアクター位置にアイコンを描画するリソース。
+    /// 3D 編集モードの初回フレームで遅延初期化される。
+    camera_gizmo: Option<CameraGizmoResources>,
+
     // ── ドラッグ&ドロップ ───────────────────────────────────────
     /// DROP_ACTOR コマンドを受け取ったときに設定する。
     /// 次フレームの ID パス後にワールド座標を読み出してアクターを配置する。
@@ -292,24 +480,14 @@ impl App {
         let ipc = args.pipe_name.as_deref()
             .and_then(|name| IpcClient::connect(name).ok());
 
-        let t0 = std::time::Instant::now();
         let dll_path = ScriptingHost::resolve_dll_path();
-        eprintln!("[SEED] ScriptingHost DLL path: {:?} (exists={})", dll_path, dll_path.exists());
-
         let scripting_host = if dll_path.exists() {
             // DLL が存在する場合のみ CLR ロードを試みる（存在しない場合は hostfxr 検索で遅延するため）
             match ScriptingHost::load(&dll_path) {
-                Ok(host) => {
-                    eprintln!("[SEED] ScriptingHost loaded ({:.1}ms)", t0.elapsed().as_millis());
-                    Some(host)
-                }
-                Err(e) => {
-                    eprintln!("[SEED] ScriptingHost load failed ({:.1}ms): {e}", t0.elapsed().as_millis());
-                    None
-                }
+                Ok(host) => Some(host),
+                Err(_)   => None,
             }
         } else {
-            eprintln!("[SEED] ScriptingHost skipped — DLL not found ({:.1}ms)", t0.elapsed().as_millis());
             None
         };
 
@@ -329,7 +507,9 @@ impl App {
             mode:         args.mode,
             ipc,
             paused:       false,
-            assets_root:  args.assets_root,
+            assets_root:      args.assets_root,
+            editor_resources: args.editor_resources,
+            scene_path:       args.scene_path,
             cam_grab_screen_pos: None,
             play_clamp: false,
             id_buffer:          None,
@@ -358,6 +538,9 @@ impl App {
             first_frame_sent:      false,
             axis_gizmo:            None,
             icon_overlay:          None,
+            fps_display:           0.0,
+            fps_frame_count:       0,
+            fps_frame_start:       std::time::Instant::now(),
             selection_before_rect:         Vec::new(),
             selection_before_rect_dfs:     Vec::new(),
             selection_before_rect_primary: None,
@@ -377,6 +560,8 @@ impl App {
             actor_edit_canvas_wls: std::collections::HashSet::new(),
             canvas_cameras:        std::collections::HashMap::new(),
             canvas_screen_space_overlay: false,
+            camera_preview:     None,
+            camera_gizmo:       None,
             pending_drop:       None,
             pending_drop_hover: None,
             drop_preview_pos:   None,
@@ -409,6 +594,34 @@ impl App {
             }
         }
         0
+    }
+
+    /// 親ウィンドウ（埋め込みコンテナ）のクライアント領域サイズを返す。
+    ///
+    /// SetParent() でエディタコンテナに埋め込まれた後、Vulkan の currentExtent は
+    /// 親コンテナの可視領域に一致する。GetParent → GetClientRect で取得することで
+    /// surface.configure() に渡すべき正確なサイズが得られる。
+    /// 親ウィンドウが存在しない場合（スタンドアロン Play など）は None を返す。
+    fn get_parent_client_size(&self) -> Option<winit::dpi::PhysicalSize<u32>> {
+        #[cfg(target_os = "windows")]
+        {
+            use windows_sys::Win32::Foundation::RECT;
+            use windows_sys::Win32::UI::WindowsAndMessaging::{GetClientRect, GetParent};
+            let hwnd = self.window_hwnd();
+            if hwnd == 0 { return None; }
+            unsafe {
+                let parent = GetParent(hwnd as _);
+                if parent.is_null() { return None; }
+                let mut rect = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+                if GetClientRect(parent, &mut rect) == 0 { return None; }
+                let w = (rect.right  - rect.left) as u32;
+                let h = (rect.bottom - rect.top)  as u32;
+                if w > 0 && h > 0 {
+                    return Some(winit::dpi::PhysicalSize { width: w, height: h });
+                }
+            }
+        }
+        None
     }
 }
 

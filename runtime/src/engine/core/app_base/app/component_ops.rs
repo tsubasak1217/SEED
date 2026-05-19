@@ -12,6 +12,7 @@ use crate::engine::components::{
     ModelComponent, Transform as ActorTransform, ComponentKind, ComponentData,
     ScriptComponent, PlaceholderScriptSlot, CanvasComponent,
     GROUP_ID_BASE, CanvasTransform, SpriteComponent, InputMapComponent,
+    CameraComponent,
 };
 use crate::engine::structs::objects::actor::{ComponentSlotData, ComponentSlot};
 use crate::engine::structs::objects::Actor;
@@ -184,6 +185,14 @@ impl App {
                     // アセットパスをインスペクター用に送信する
                     let path_json = serde_json::to_string(&d.asset_path).unwrap_or_default();
                     ("InputMapComponent", format!(r#","asset_path":{path_json}"#))
+                }
+                ComponentData::CameraComponent(d) => {
+                    // FOV / near / far / is_main / clear_color をインスペクター用に送信する
+                    ("CameraComponent", format!(
+                        r#","fov_y_deg":{:.4},"near":{:.4},"far":{:.4},"is_main":{},"cr":{:.4},"cg":{:.4},"cb":{:.4},"ca":{:.4}"#,
+                        d.fov_y_deg, d.near, d.far, d.is_main as u8,
+                        d.clear_color[0], d.clear_color[1], d.clear_color[2], d.clear_color[3],
+                    ))
                 }
             };
             comps_json.push_str(&format!(
@@ -418,6 +427,35 @@ impl App {
                     if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
                 }
             }
+            "CameraComponent" => {
+                // デフォルト設定の CameraComponent をアクターに追加する。
+                // FOV / near / far / is_main / clear_color はインスペクターから後で変更可能。
+                let name = slot_name.to_string();
+                let found = {
+                    let scene = self.scene.as_mut().unwrap();
+                    let slot_entity = scene.world.spawn();
+                    scene.world.insert(slot_entity, CameraComponent::default());
+                    let mut c = 0u32;
+                    if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
+                        actor.add_slot_typed::<CameraComponent>(name, ComponentKind::Camera, slot_entity);
+                        true
+                    } else {
+                        scene.world.despawn(slot_entity);
+                        false
+                    }
+                };
+                if found {
+                    let after_slots = self.snapshot_actor_slots(wl, actor_dfs_id);
+                    self.undo_history.record(Box::new(ComponentSlotsSnapshotCommand {
+                        world_line: wl, actor_dfs_id, before_slots, after_slots,
+                    }));
+                    self.actor_virtual_selected_slot_idx = 0;
+                    self.selected_instances.clear();
+                    self.send_hierarchy();
+                    self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
+                    if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+                }
+            }
             _ => {}
         }
     }
@@ -523,6 +561,7 @@ impl App {
                     ComponentKind::Canvas      => { scene.world.remove::<CanvasComponent>(slot_entity); }
                     ComponentKind::Sprite      => { scene.world.remove::<SpriteComponent>(slot_entity); }
                     ComponentKind::InputMap    => { scene.world.remove::<InputMapComponent>(slot_entity); }
+                    ComponentKind::Camera      => { scene.world.remove::<CameraComponent>(slot_entity); }
                 }
                 scene.world.despawn(slot_entity);
                 // アクターのスロットリストから削除
@@ -706,6 +745,16 @@ impl App {
                 let mut c = 0u32;
                 if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
                     actor.add_slot_typed::<InputMapComponent>(slot_data.name, ComponentKind::InputMap, slot_entity);
+                } else { scene.world.despawn(slot_entity); }
+                true
+            }
+            ComponentData::CameraComponent(cc_data) => {
+                // CameraComponent を複製して新スロット専用エンティティに insert
+                let slot_entity = scene.world.spawn();
+                scene.world.insert(slot_entity, CameraComponent::from_data(cc_data));
+                let mut c = 0u32;
+                if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
+                    actor.add_slot_typed::<CameraComponent>(slot_data.name, ComponentKind::Camera, slot_entity);
                 } else { scene.world.despawn(slot_entity); }
                 true
             }
@@ -1061,6 +1110,124 @@ impl App {
         if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
     }
 
+    // ─── CameraComponent プロパティ設定 ────────────────────────────
+
+    /// CameraComponent の FOV（視野角・度）を更新する。
+    pub(super) fn handle_set_camera_fov(&mut self, actor_dfs_id: u32, slot_idx: u32, value: f32) {
+        let wl = self.active_world_line;
+        let slot_entity = {
+            let Some(scene) = &self.scene else { return };
+            let mut c = 0u32;
+            find_actor_by_dfs(&scene.actors, wl, actor_dfs_id, &mut c)
+                .and_then(|a| a.slots().get(slot_idx as usize))
+                .filter(|s| s.kind == ComponentKind::Camera)
+                .map(|s| s.entity)
+        };
+        if let Some(entity) = slot_entity {
+            let Some(scene) = &mut self.scene else { return };
+            if let Some(cc) = scene.world.get_mut::<CameraComponent>(entity) {
+                // 1° 未満や 179° 超は物理的に不正な値のためクランプする
+                cc.fov_y_deg = value.clamp(1.0, 179.0);
+            }
+        }
+        self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
+        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+    }
+
+    /// CameraComponent の near clip を更新する。
+    pub(super) fn handle_set_camera_near(&mut self, actor_dfs_id: u32, slot_idx: u32, value: f32) {
+        let wl = self.active_world_line;
+        let slot_entity = {
+            let Some(scene) = &self.scene else { return };
+            let mut c = 0u32;
+            find_actor_by_dfs(&scene.actors, wl, actor_dfs_id, &mut c)
+                .and_then(|a| a.slots().get(slot_idx as usize))
+                .filter(|s| s.kind == ComponentKind::Camera)
+                .map(|s| s.entity)
+        };
+        if let Some(entity) = slot_entity {
+            let Some(scene) = &mut self.scene else { return };
+            if let Some(cc) = scene.world.get_mut::<CameraComponent>(entity) {
+                // 0 以下は深度バッファの精度を完全に失うためクランプする
+                cc.near = value.max(0.0001);
+            }
+        }
+        self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
+        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+    }
+
+    /// CameraComponent の far clip を更新する。
+    pub(super) fn handle_set_camera_far(&mut self, actor_dfs_id: u32, slot_idx: u32, value: f32) {
+        let wl = self.active_world_line;
+        let slot_entity = {
+            let Some(scene) = &self.scene else { return };
+            let mut c = 0u32;
+            find_actor_by_dfs(&scene.actors, wl, actor_dfs_id, &mut c)
+                .and_then(|a| a.slots().get(slot_idx as usize))
+                .filter(|s| s.kind == ComponentKind::Camera)
+                .map(|s| s.entity)
+        };
+        if let Some(entity) = slot_entity {
+            let Some(scene) = &mut self.scene else { return };
+            if let Some(cc) = scene.world.get_mut::<CameraComponent>(entity) {
+                // near より大きい値を保証する（near はすでに 0.0001 以上）
+                cc.far = value.max(cc.near + 0.1);
+            }
+        }
+        self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
+        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+    }
+
+    /// CameraComponent の is_main フラグを更新する。
+    ///
+    /// is_main = true に設定されたカメラが Play モードで使用されるゲームカメラとなる。
+    /// 複数の Camera を is_main=true にした場合は DFS で最初に見つかったものが優先される。
+    pub(super) fn handle_set_camera_main(&mut self, actor_dfs_id: u32, slot_idx: u32, is_main: bool) {
+        let wl = self.active_world_line;
+        let slot_entity = {
+            let Some(scene) = &self.scene else { return };
+            let mut c = 0u32;
+            find_actor_by_dfs(&scene.actors, wl, actor_dfs_id, &mut c)
+                .and_then(|a| a.slots().get(slot_idx as usize))
+                .filter(|s| s.kind == ComponentKind::Camera)
+                .map(|s| s.entity)
+        };
+        if let Some(entity) = slot_entity {
+            let Some(scene) = &mut self.scene else { return };
+            if let Some(cc) = scene.world.get_mut::<CameraComponent>(entity) {
+                cc.is_main = is_main;
+            }
+        }
+        self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
+        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+    }
+
+    /// CameraComponent のクリアカラーを更新する（RGBA 正規化値 0.0〜1.0）。
+    pub(super) fn handle_set_camera_clear_color(
+        &mut self,
+        actor_dfs_id: u32,
+        slot_idx: u32,
+        r: f32, g: f32, b: f32, a: f32,
+    ) {
+        let wl = self.active_world_line;
+        let slot_entity = {
+            let Some(scene) = &self.scene else { return };
+            let mut c = 0u32;
+            find_actor_by_dfs(&scene.actors, wl, actor_dfs_id, &mut c)
+                .and_then(|a| a.slots().get(slot_idx as usize))
+                .filter(|s| s.kind == ComponentKind::Camera)
+                .map(|s| s.entity)
+        };
+        if let Some(entity) = slot_entity {
+            let Some(scene) = &mut self.scene else { return };
+            if let Some(cc) = scene.world.get_mut::<CameraComponent>(entity) {
+                cc.clear_color = [r, g, b, a];
+            }
+        }
+        self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
+        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+    }
+
     /// CanvasTransform の anchor を更新する。
     ///
     /// anchor は親 Canvas における position 基準点（[0,1]×[0,1]）。
@@ -1200,6 +1367,10 @@ impl App {
                 ComponentData::InputMapComponent(ic_data) => {
                     scene.world.insert(slot_entity, InputMapComponent { asset_path: ic_data.asset_path });
                     new_slots.push(ComponentSlot::new::<InputMapComponent>(slot_data.name, ComponentKind::InputMap, slot_entity));
+                }
+                ComponentData::CameraComponent(cc_data) => {
+                    scene.world.insert(slot_entity, CameraComponent::from_data(cc_data));
+                    new_slots.push(ComponentSlot::new::<CameraComponent>(slot_data.name, ComponentKind::Camera, slot_entity));
                 }
             }
         }

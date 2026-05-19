@@ -630,6 +630,16 @@
                             Background="#404040" Foreground="#AAAAAA"
                             BorderThickness="0" Padding="4"
                             ToolTip="Settings"/>
+                    <!-- FPS 表示（ランタイム側の計測値） -->
+                    <TextBlock x:Name="TxtFps"
+                               Text=""
+                               Foreground="#88CCFF"
+                               FontSize="11"
+                               FontFamily="Consolas"
+                               VerticalAlignment="Center"
+                               Margin="10,0,0,0"
+                               Visibility="Collapsed"
+                               ToolTip="ランタイムFPS（0.5秒更新）"/>
                     <Popup x:Name="SettingsPopup"
                            PlacementTarget="{Binding ElementName=BtnSettings}"
                            Placement="Bottom"
@@ -641,6 +651,14 @@
                                 <TextBlock Text="Play Settings"
                                            Foreground="#AAAAAA" FontSize="11"
                                            Margin="0,0,0,6"/>
+                                <CheckBox x:Name="ChkPlayFromStartScene"
+                                          Content="開始シーンからプレイ"
+                                          Foreground="White"
+                                          IsChecked="False"
+                                          Margin="0,0,0,4"
+                                          Checked="OnPlayFromStartSceneChanged"
+                                          Unchecked="OnPlayFromStartSceneChanged"
+                                          ToolTip="オフ時は現在開いているシーンでプレイします"/>
                                 <CheckBox x:Name="ChkClampCursor"
                                           Content="Play時マウスカーソルをWindowにクランプする"
                                           Foreground="White"
@@ -769,9 +787,13 @@
                                                         Background="Black"/>
 
                                         <!-- 起動中オーバーレイ — FIRST_FRAME 受信まで前面に表示 -->
+                                        <!-- IsHitTestVisible="False": オーバーレイはクリックを透過させる。
+                                             ビューポート列を覆っていても HwndHost やその下の要素が
+                                             マウスイベントを受け取れるようにする。 -->
                                         <Grid x:Name="ViewportLoadingOverlay"
                                               Grid.Row="1" Grid.Column="1"
-                                              Panel.ZIndex="5">
+                                              Panel.ZIndex="5"
+                                              IsHitTestVisible="False">
                                             <Image Source="pack://application:,,,/resources/images/blueSky_ORE.png"
                                                    Stretch="UniformToFill"/>
                                             <TextBlock x:Name="TxtViewportStatus"

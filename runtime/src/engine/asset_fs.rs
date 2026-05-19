@@ -51,14 +51,8 @@ pub fn init(assets_root: PathBuf, pak_path: Option<&Path>) {
     let pak = pak_path.and_then(|p| {
         if p.exists() {
             match PakReader::open(p) {
-                Ok(reader) => {
-                    eprintln!("[SEED] asset_fs: PAK loaded from {:?}", p);
-                    Some(Mutex::new(reader))
-                }
-                Err(e) => {
-                    eprintln!("[SEED] asset_fs: PAK open failed: {e}");
-                    None
-                }
+                Ok(reader) => Some(Mutex::new(reader)),
+                Err(_)     => None,
             }
         } else {
             None

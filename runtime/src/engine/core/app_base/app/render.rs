@@ -51,12 +51,20 @@ use super::{
     world_to_screen,
     camera_grab_start, camera_grab_end,
     apply_window_clamp, release_window_clamp,
+    camera_scene_gizmo,
+    CameraPreviewResources,
+    CameraGizmoResources,
 };
 
 /// キャンバス座標（ピクセル）→ 3D ワールド座標の変換スケール係数。
 /// ワールドスペースモード時に CanvasTransform 座標をワールド空間へスケールするために使う。
 /// 例: position=100px → 1.0 ワールドユニット
 const CANVAS_WORLD_SCALE: f32 = 1.0 / 100.0;
+
+/// カメラプレビューのテクスチャ幅（ピクセル）。
+const CAMERA_PREVIEW_W: u32 = 320;
+/// カメラプレビューのテクスチャ高さ（ピクセル）。
+const CAMERA_PREVIEW_H: u32 = 180;
 
 impl App {
     /// アセットルートを解決して asset_fs を初期化する。
@@ -87,43 +95,43 @@ impl App {
         asset_fs::init(assets_root, pak_path.as_deref());
     }
 
-    /// Playモードでプロジェクト設定からシーンを自動ロードする。
+    /// Playモードでシーンをロードする。
     ///
-    /// assets_root/project_settings.json を読み、start_scene のシーンをロードする。
-    fn auto_load_start_scene(&mut self) {
+    /// - `self.scene_path` が指定されている場合: そのシーンを読む（エディタ「現在のシーンでプレイ」）
+    /// - 未指定の場合: `assets://project_settings.json` の `start_scene` を読む
+    ///
+    /// ロードしたシーンの debug_camera データをデバッグカメラの初期位置に適用する。
+    /// メインカメラが存在しない場合のフォールバックとして機能する。
+    fn load_play_scene(&mut self) {
         use crate::engine::asset_fs;
 
-        // project_settings.json を読む（仮想パス対応）
-        let settings_path = "assets://project_settings.json";
-        let json = match asset_fs::read_string(settings_path) {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("[SEED] project_settings.json の読み込み失敗: {e}");
-                return;
+        // ロードするシーンパスを決定する
+        let scene_path_str: String = if let Some(path) = &self.scene_path {
+            // エディタから --scene= で指定されたパス
+            path.clone()
+        } else {
+            // project_settings.json の start_scene を読む
+            let json = match asset_fs::read_string("assets://project_settings.json") {
+                Ok(s) => s,
+                Err(_) => return,
+            };
+            match serde_json::from_str::<serde_json::Value>(&json) {
+                Ok(v) => {
+                    let s = v["start_scene"].as_str().unwrap_or("").to_string();
+                    if s.is_empty() { return; }
+                    s
+                }
+                Err(_) => return,
             }
         };
 
-        // start_scene パスを抽出する（serde_json でパース）
-        let start_scene: String = match serde_json::from_str::<serde_json::Value>(&json) {
-            Ok(v) => v["start_scene"].as_str().unwrap_or("").to_string(),
-            Err(e) => {
-                eprintln!("[SEED] project_settings.json のパース失敗: {e}");
-                return;
-            }
-        };
-
-        if start_scene.is_empty() {
-            eprintln!("[SEED] start_scene が未設定です");
-            return;
-        }
-
-        // 仮想パスを絶対パスに解決する
-        let scene_path = asset_fs::resolve(&start_scene);
-        eprintln!("[SEED] start_scene を読み込み中: {:?}", scene_path);
+        // PAK モードで resolve するとファイルシステム読みになるため、
+        // 仮想パス (assets://...) のまま Scene::load に渡す。
+        let scene_path = std::path::Path::new(&scene_path_str);
 
         let result = if let Some(ctx) = &self.draw_ctx {
             Some(crate::engine::core::app_base::scene::Scene::load(
-                &scene_path,
+                scene_path,
                 ctx,
                 self.scripting_host.as_ref(),
             ))
@@ -132,72 +140,28 @@ impl App {
         };
 
         match result {
-            Some(Ok((new_scene, _cam_data))) => {
+            Some(Ok((new_scene, cam_data))) => {
+                // シーンに保存されたデバッグカメラ位置を適用する。
+                // メインカメラが存在しない場合のフォールバックとして有効な視点から起動できる。
+                if let Some(cam) = cam_data {
+                    self.apply_camera_data(&cam);
+                }
                 self.scene = Some(new_scene);
-                eprintln!("[SEED] start_scene ロード完了");
             }
-            Some(Err(e)) => {
-                eprintln!("[SEED] start_scene ロード失敗: {e}");
-            }
+            Some(Err(_)) => {}
             None => {}
         }
     }
 }
 
-// ============================================================
-//  StartupLogger — 起動タイミングをファイルへ記録する診断ツール
-//
-//  windows_subsystem="windows" リリースビルドでは eprintln! が出力されないため、
-//  実行ファイルの隣に seed_startup.log を書き出してどのステップが遅いか判断する。
-//  埋め込みモード（エディタ内 Play）では無効。
-// ============================================================
-
-struct StartupLogger {
-    file:  Option<std::io::BufWriter<std::fs::File>>,
-    start: std::time::Instant,
-}
-
-impl StartupLogger {
-    /// スタンドアロンモード用インスタンスを生成する。
-    /// `standalone` が false（エディタ埋め込み）の場合はログを出力しない。
-    fn new(start: std::time::Instant, standalone: bool) -> Self {
-        let file = if standalone {
-            std::env::current_exe()
-                .ok()
-                .and_then(|p| p.parent().map(|d| d.join("seed_startup.log")))
-                .and_then(|path| std::fs::File::create(path).ok())
-                .map(std::io::BufWriter::new)
-        } else {
-            None
-        };
-        Self { file, start }
-    }
-
-    /// タイムスタンプ付きでメッセージを記録する。
-    fn log(&mut self, msg: &str) {
-        use std::io::Write;
-        let ms = self.start.elapsed().as_millis();
-        eprintln!("[SEED] [{ms:6}ms] {msg}");
-        if let Some(ref mut f) = self.file {
-            let _ = writeln!(f, "[{ms:6}ms] {msg}");
-            let _ = f.flush();
-        }
-    }
-}
 
 impl ApplicationHandler for App {
     /// ウィンドウ・レンダラーを初期化し、IPC へ READY を通知する。
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        let t_resumed = std::time::Instant::now();
-        let mut slog = StartupLogger::new(t_resumed, !self.is_embedded());
-
-        slog.log(&format!("resumed() start  parent_hwnd={:?}", self.parent_hwnd));
-
         let window = Arc::new(create_window(event_loop, &WindowConfig {
             parent_hwnd: self.parent_hwnd,
             ..WindowConfig::default()
         }));
-        slog.log("window created");
 
         // スタンドアロンモードでは GPU 初期化前にウィンドウを即表示する。
         // Renderer::new() (wgpu DX12 デバイス作成) は数秒かかることがあり、
@@ -205,11 +169,9 @@ impl ApplicationHandler for App {
         // 埋め込みモードはエディタ側コンテナが背景を描くため従来どおり後で表示。
         if !self.is_embedded() {
             window.set_visible(true);
-            slog.log("window set_visible");
         }
 
         let mut renderer = Renderer::new(window.clone());
-        slog.log("Renderer::new() done");
 
         let size = window.inner_size();
         self.camera.set_aspect_ratio(size.width, size.height);
@@ -223,13 +185,11 @@ impl ApplicationHandler for App {
             renderer.depth_format(),
             renderer.pipeline_cache(),
         );
-        slog.log("DrawContext::new() done  (pipeline compilation)");
 
         let scene = crate::engine::core::app_base::scene::Scene::new("Untitled");
         let camera_buf = ctx.create_camera_buffer();
         let id_buffer  = IdBuffer::new(&ctx.device, size.width, size.height);
         let line_model_buf = ctx.create_identity_model_bg_for_unlit();
-        slog.log("scene/buffers ready");
 
         if self.is_embedded() {
             // 非表示ウィンドウへの request_redraw は WM_PAINT が配送されず
@@ -239,8 +199,6 @@ impl ApplicationHandler for App {
             window.request_redraw();
         } else {
             // スタンドアロンモードは resumed() 冒頭で set_visible 済み。
-            // 空フレームのフラッシュを防ぐため begin_frame はスキップし、
-            // 最初の実描画フレームで自然に描き始める。
             window.set_visible(true); // 冪等（すでに表示中）
         }
 
@@ -279,25 +237,18 @@ impl ApplicationHandler for App {
         self.sync_anim_seeds();
 
         // asset_fs を初期化する（全モード共通）
-        slog.log("init_asset_fs begin");
         self.init_asset_fs();
-        slog.log("init_asset_fs done");
 
         let hwnd = self.window_hwnd();
-        slog.log(&format!("sending READY:{hwnd}"));
         if let Some(ipc) = &self.ipc {
             ipc.send(&format!("READY:{hwnd}"));
         }
         self.send_hierarchy();
 
-        // Playモードでは project_settings.json からシーンを自動ロードする
+        // Playモードでは指定シーン（または start_scene）を自動ロードする
         if self.mode == RuntimeMode::Play {
-            slog.log("auto_load_start_scene begin");
-            self.auto_load_start_scene();
-            slog.log("auto_load_start_scene done");
+            self.load_play_scene();
         }
-
-        slog.log(&format!("resumed() TOTAL done"));
     }
 
     /// ウィンドウイベントを処理する（キー入力・マウス・リサイズ・メインループ）。
@@ -314,11 +265,16 @@ impl ApplicationHandler for App {
             }
 
             WindowEvent::Resized(size) => {
-                if let Some(r) = &mut self.renderer { r.resize(size); }
-                self.camera.set_aspect_ratio(size.width, size.height);
-                if size.width > 0 && size.height > 0 {
+                // 埋め込みモードでは Vulkan の currentExtent が親コンテナの
+                // 可視領域サイズに固定される。SetWindowLong(WS_CHILD) が生成する
+                // 中間的な 816x639 の WM_SIZE を使うと depth と color の不一致が
+                // 起こるため、親がいる場合は GetClientRect(parent) を優先する。
+                let effective_size = self.get_parent_client_size().unwrap_or(size);
+                if let Some(r) = &mut self.renderer { r.resize(effective_size); }
+                self.camera.set_aspect_ratio(effective_size.width, effective_size.height);
+                if effective_size.width > 0 && effective_size.height > 0 {
                     if let Some(dc) = &self.draw_ctx {
-                        self.id_buffer = Some(IdBuffer::new(&dc.device, size.width, size.height));
+                        self.id_buffer = Some(IdBuffer::new(&dc.device, effective_size.width, effective_size.height));
                     }
                 }
             }
@@ -856,6 +812,24 @@ impl ApplicationHandler for App {
                                                 rect_dfs.push(dfs_id as usize);
                                             }
                                         }
+
+                                        // カメラギズモ: アイコン位置をスクリーン投影して矩形内判定する
+                                        let cam_gizmo_mats_rect =
+                                            camera_scene_gizmo::collect_camera_actor_matrices(
+                                                &scene.actors, &scene.world, wl,
+                                            );
+                                        for (dfs_id, icon_mat) in cam_gizmo_mats_rect {
+                                            // アイコン行列の平行移動成分がアクターのワールド位置
+                                            let world_pos = [icon_mat[0][3], icon_mat[1][3], icon_mat[2][3]];
+                                            let in_rect = world_to_screen(
+                                                world_pos, &view.data, &proj.data, vp_w, vp_h,
+                                            )
+                                            .map(|(sx, sy)| sx >= sx_min && sx <= sx_max && sy >= sy_min && sy <= sy_max)
+                                            .unwrap_or(false);
+                                            if in_rect && !rect_dfs.contains(&dfs_id) {
+                                                rect_dfs.push(dfs_id);
+                                            }
+                                        }
                                     }
 
                                     self.selected_actor_dfs_ids     = rect_dfs.clone();
@@ -1169,14 +1143,21 @@ impl ApplicationHandler for App {
 
                 // ── GPU カメラ・インスタンスバッファ更新 ──────
                 let window_size = self.window.as_ref().map(|w| w.inner_size());
+                // Outdated ハンドラ用: &mut self.renderer を借用するブロック内では
+                // self メソッドが呼べないため、HWND を事前にコピーしておく。
+                // Outdated 発生時（SetParent 後）に GetParent(my_hwnd) で
+                // 正確なコンテナサイズを取得する。
+                let my_hwnd = self.window_hwnd();
                 let queue = self.draw_ctx.as_ref().map(|c| c.queue.clone());
 
                 if let (Some(scene), Some(camera_buf), Some(queue)) =
                     (&mut self.scene, &self.camera_buf, queue)
                 {
-                    // 2D アクター編集タブのみ 2D オルソカメラ。
-                    // シーン（canvas 有無問わず）・3D アクター編集タブ: パースペクティブカメラ。
-                    // Y-down 座標系: bottom=+half_h（スクリーン下）, top=-half_h（スクリーン上）。
+                    // カメラ選択:
+                    //   - 2D アクター編集タブ → 2D オルソカメラ
+                    //   - Play モード         → シーン内 is_main=true の CameraComponent
+                    //                           （見つからなければデバッグカメラにフォールバック）
+                    //   - Edit モード         → デバッグカメラ
                     let (view, proj, cam_pos_arr) = if is_actor_edit_2d {
                         let cam_2d = self.canvas_cameras
                             .entry(self.active_world_line)
@@ -1194,7 +1175,33 @@ impl ApplicationHandler for App {
                         // Y-down: bottom=+half_h, top=-half_h でワールド Y 正方向 = スクリーン下
                         let p = Mat4x4::orthographic_lh(-half_w, half_w, half_h, -half_h, 0.0, 200.0);
                         (v, p, [cam_2d.pan_x, cam_2d.pan_y, -100.0])
+                    } else if self.mode == RuntimeMode::Play && !self.paused {
+                        // Play モード（非ポーズ時）: is_main=true の CameraComponent を探す
+                        let aspect = window_size.map_or(16.0 / 9.0, |s| {
+                            s.width as f32 / s.height as f32
+                        });
+                        let game_cam = scene.find_main_camera().map(|(tf, cd)| {
+                            let [px, py, pz] = tf.position;
+                            let [fx, fy, fz] = tf.forward();
+                            let [ux, uy, uz] = tf.up();
+                            let pos    = Vector3::new(px, py, pz);
+                            let target = pos + Vector3::new(fx, fy, fz);
+                            let up_vec = Vector3::new(ux, uy, uz);
+                            let v = Mat4x4::look_at_lh(pos, target, up_vec);
+                            let p = Mat4x4::perspective_lh(
+                                cd.fov_y_deg.to_radians(), aspect, cd.near, cd.far,
+                            );
+                            (v, p, [px, py, pz])
+                        });
+                        // メインカメラが未配置の場合はデバッグカメラにフォールバック
+                        game_cam.unwrap_or_else(|| {
+                            let v  = self.camera.view_matrix();
+                            let p  = self.camera.projection_matrix();
+                            let cp = self.camera.position();
+                            (v, p, [cp.x, cp.y, cp.z])
+                        })
                     } else {
+                        // Edit モード: デバッグカメラ
                         let v  = self.camera.view_matrix();
                         let p  = self.camera.projection_matrix();
                         let cp = self.camera.position();
@@ -1318,6 +1325,19 @@ impl ApplicationHandler for App {
                     .max()
                     .unwrap_or(0);
 
+                // カメラギズモの (DFS ID, アイコン行列) リスト（3D 編集モードのみ）。
+                // ピック情報として mc_total_instances の直後の ID 範囲に割り当てる。
+                let cam_gizmo_actor_mats: Vec<(usize, [[f32; 4]; 4])> = if in_editor && !is_canvas {
+                    if let Some(scene) = &self.scene {
+                        camera_scene_gizmo::collect_camera_actor_matrices(
+                            &scene.actors, &scene.world, self.active_world_line,
+                        )
+                    } else { vec![] }
+                } else { vec![] };
+                let camera_gizmo_count: u32 = cam_gizmo_actor_mats.len() as u32;
+                // キャンバス ID のベースオフセット（MC + カメラギズモの後）
+                let canvas_id_offset: u32 = mc_total_instances + camera_gizmo_count;
+
                 if let (Some(renderer), Some(scene), Some(camera_buf), Some(draw_ctx)) =
                     (&mut self.renderer, &self.scene, &self.camera_buf, &self.draw_ctx)
                 {
@@ -1344,6 +1364,156 @@ impl ApplicationHandler for App {
                                         frame.encoder_mut(),
                                         &draw_ctx.pipelines.skin_compute,
                                     );
+                                }
+                            }
+
+                            // ── カメラシーンギズモ（Edit モード・3D シーンのみ）──────────
+                            // カメラアイコン / フラスタム / プレビューは 3D シーン (world_line=0) でのみ表示する。
+                            let is_3d_scene = in_editor && !is_canvas;
+                            let aspect = window_size.map_or(16.0_f32 / 9.0, |s| {
+                                s.width as f32 / s.height as f32
+                            });
+                            let (vp_w_f, vp_h_f) = window_size.map_or(
+                                (1280.0_f32, 720.0_f32),
+                                |s| (s.width as f32, s.height as f32),
+                            );
+
+                            // カメラギズモモデルのレイジーロードと InstancedModelBatch 更新
+                            // assets_root が設定されている場合のみ実行する
+                            if is_3d_scene && !cam_gizmo_actor_mats.is_empty() {
+                                if let Some(ar) = self.editor_resources.clone() {
+                                    let model_path = format!("{}/models/camera.glb", ar);
+                                    // CPU モデルをキャッシュから取得するか、なければロードする
+                                    let cpu_model_opt: Option<std::sync::Arc<crate::engine::core::loader::model::Model>> = {
+                                        let mut cache = draw_ctx.model_cache.borrow_mut();
+                                        if !cache.contains_key(&model_path) {
+                                            let path = std::path::Path::new(&model_path);
+                                            match crate::engine::core::loader::load_model(path) {
+                                                Ok(m)  => { cache.insert(model_path.clone(), std::sync::Arc::new(m)); }
+                                                Err(e) => { eprintln!("[SEED] camera gizmo model load failed: {e}"); }
+                                            }
+                                        }
+                                        cache.get(&model_path).cloned()
+                                    };
+                                    if let Some(cpu) = cpu_model_opt {
+                                        // バッチ容量が不足している場合は再生成する
+                                        let need_reinit = self.camera_gizmo.as_ref()
+                                            .map(|g| g.capacity < cam_gizmo_actor_mats.len())
+                                            .unwrap_or(true);
+                                        if need_reinit {
+                                            let cap = (cam_gizmo_actor_mats.len() * 2).max(4);
+                                            let gpu_model = draw_ctx.upload_model(&cpu);
+                                            let batch     = draw_ctx.create_instanced_batch(&cpu, cap as u32);
+                                            self.camera_gizmo = Some(CameraGizmoResources {
+                                                cpu_model: cpu, gpu_model, batch, capacity: cap,
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+                            // カメラギズモバッチを毎フレーム更新する（インスタンス変換・視錐台カリング）
+                            if is_3d_scene && !cam_gizmo_actor_mats.is_empty() {
+                                let cp  = self.camera.position();
+                                let v   = self.camera.view_matrix();
+                                let p   = self.camera.projection_matrix();
+                                let fp  = extract_frustum_planes(&(p * v).data);
+                                let cpo = [cp.x, cp.y, cp.z];
+                                let transforms: Vec<[[f32; 4]; 4]> =
+                                    cam_gizmo_actor_mats.iter().map(|&(_, m)| m).collect();
+                                if let Some(gizmo) = &mut self.camera_gizmo {
+                                    gizmo.batch.mark_dirty();
+                                    gizmo.batch.update(
+                                        &draw_ctx.queue,
+                                        &gizmo.cpu_model,
+                                        &transforms,
+                                        &fp,
+                                        cpo,
+                                        0.0,
+                                    );
+                                }
+                            }
+
+                            // 選択中アクターのカメラデータ取得
+                            let selected_cam_data = if is_3d_scene {
+                                camera_scene_gizmo::get_selected_camera_data(
+                                    &scene.actors, &scene.world,
+                                    self.active_world_line,
+                                    self.actor_virtual_selected_idx,
+                                )
+                            } else { None };
+
+                            // フラスタムラインバッチ（選択カメラアクターのみ）
+                            let frustum_batch = if let Some(ref cam_data) = selected_cam_data {
+                                camera_scene_gizmo::build_camera_frustum_batch(
+                                    cam_data, aspect, &draw_ctx.device,
+                                )
+                            } else { None };
+
+                            // カメラプレビューリソースを初期化・更新する
+                            if selected_cam_data.is_some() {
+                                // リソースが未初期化の場合は生成する
+                                if self.camera_preview.is_none() {
+                                    self.camera_preview = Some(CameraPreviewResources::new(
+                                        &draw_ctx.device,
+                                        &draw_ctx.pipelines.camera_preview_blit,
+                                        CAMERA_PREVIEW_W, CAMERA_PREVIEW_H,
+                                    ));
+                                }
+                                // ブリット矩形を更新する
+                                if let Some(ref preview) = self.camera_preview {
+                                    preview.update_blit_rect(
+                                        &draw_ctx.queue, vp_w_f, vp_h_f,
+                                        CAMERA_PREVIEW_W as f32, CAMERA_PREVIEW_H as f32,
+                                    );
+                                }
+                            } else {
+                                // 選択解除時はリソースを破棄する（メモリ節約）
+                                self.camera_preview = None;
+                            }
+
+                            // カメラプレビューレンダーパス（選択カメラのビューで全 MC を描画）
+                            if let (Some(cam_data), Some(preview)) =
+                                (selected_cam_data.as_ref(), self.camera_preview.as_ref())
+                            {
+                                let res = [CAMERA_PREVIEW_W as f32, CAMERA_PREVIEW_H as f32];
+                                let preview_aspect = CAMERA_PREVIEW_W as f32 / CAMERA_PREVIEW_H as f32;
+                                let cam_uniform = camera_scene_gizmo::build_camera_uniform(
+                                    cam_data, preview_aspect, res,
+                                );
+                                // プレビュー用一時カメラバッファを生成する
+                                let preview_cam_buf = CameraBuffer::new(
+                                    &draw_ctx.device,
+                                    &draw_ctx.pipelines.unlit_line.camera_bgl,
+                                );
+                                preview_cam_buf.update(&draw_ctx.queue, &cam_uniform);
+
+                                // メッシュパイプライン用カメラバッファも生成する（PBR mesh 描画用）
+                                let preview_mesh_cam_buf = CameraBuffer::new(
+                                    &draw_ctx.device,
+                                    &draw_ctx.pipelines.mesh.camera_bgl,
+                                );
+                                preview_mesh_cam_buf.update(&draw_ctx.queue, &cam_uniform);
+
+                                // オフスクリーンプレビューパスで全 MC を描画する
+                                let clear_col = {
+                                    let [r, g, b, a] = cam_data.clear_color;
+                                    wgpu::Color { r: r as f64, g: g as f64, b: b as f64, a: a as f64 }
+                                };
+                                {
+                                    let mut preview_pass = frame.begin_offscreen_pass(
+                                        &preview.color_view,
+                                        &preview.depth_view,
+                                        clear_col,
+                                    );
+                                    for &(_, _, _, amc) in &all_mcs {
+                                        if let Some((gpu, batch)) = amc.rendering_refs() {
+                                            draw_model_indirect(
+                                                &mut preview_pass, gpu, batch,
+                                                &preview_mesh_cam_buf.bind_group,
+                                                &draw_ctx.pipelines,
+                                            );
+                                        }
+                                    }
                                 }
                             }
 
@@ -2070,6 +2240,8 @@ impl ApplicationHandler for App {
                                 })
                             } else { None };
 
+
+
                             // アイコンオーバーレイバッチ（エディタモードのみ）
                             // キャンバスモード・3D モード共通: 常に 3D パースペクティブ行列でスクリーン座標を計算する。
                             // キャンバスアクターは MC インスタンスを持たないためアイコンは表示されない。
@@ -2232,6 +2404,30 @@ impl ApplicationHandler for App {
                                     }
                                 }
 
+                                // カメラフラスタムライン（選択中カメラアクターのみ、3D シーン）
+                                if !scene_canvas_ss {
+                                    if let (Some(frustum), Some((_, line_bg))) =
+                                        (&frustum_batch, &self.line_model_buf)
+                                    {
+                                        draw_line_batch(
+                                            &mut pass, frustum,
+                                            &camera_buf.bind_group, line_bg,
+                                            &draw_ctx.pipelines,
+                                        );
+                                    }
+                                }
+
+                                // カメラアイコンモデル（全カメラアクター、3D シーン）
+                                // camera.glb を InstancedModelBatch で描画する
+                                if !scene_canvas_ss && !cam_gizmo_actor_mats.is_empty() {
+                                    if let Some(gizmo) = &self.camera_gizmo {
+                                        draw_model_indirect(
+                                            &mut pass, &gizmo.gpu_model, &gizmo.batch,
+                                            &camera_buf.bind_group, &draw_ctx.pipelines,
+                                        );
+                                    }
+                                }
+
                                 // ギズモ（グリッド・アウトラインより前面、アイコンより背面）
                                 // scene_canvas_ss の場合はオーバーレイパスで描画するためスキップ
                                 if !scene_canvas_ss {
@@ -2265,6 +2461,7 @@ impl ApplicationHandler for App {
                                 {
                                     io.draw(batch, &mut pass);
                                 }
+
                             }
 
                             // ── シーンキャンバスオーバーレイパス（シーンSS専用）──────────────
@@ -2327,6 +2524,19 @@ impl ApplicationHandler for App {
                                     {
                                         ag.draw(batch, &mut overlay_pass);
                                     }
+
+                                }
+                            }
+
+                            // ── カメラプレビューブリット（選択カメラがある場合のみ）──────
+                            // メインパスの後に、オフスクリーンプレビューをビューポート右下に貼り付ける。
+                            if selected_cam_data.is_some() {
+                                if let Some(ref preview) = self.camera_preview {
+                                    let mut blit_pass = frame.begin_blit_pass();
+                                    blit_pass.set_pipeline(&draw_ctx.pipelines.camera_preview_blit.pipeline);
+                                    blit_pass.set_bind_group(0, &preview.blit_rect_bg, &[]);
+                                    blit_pass.set_bind_group(1, &preview.blit_tex_bg, &[]);
+                                    blit_pass.draw(0..6, 0..1);
                                 }
                             }
 
@@ -2347,6 +2557,12 @@ impl ApplicationHandler for App {
                                                     }
                                                 })
                                                 .collect();
+
+                                        // カメラギズモ ID バインドグループ（RenderPass より先に生成してライフタイムを確保）
+                                        let cam_gizmo_id_base_opt: Option<(wgpu::Buffer, wgpu::BindGroup)> =
+                                            if !cam_gizmo_actor_mats.is_empty() && self.camera_gizmo.is_some() {
+                                                Some(draw_ctx.create_id_base_bg(mc_total_instances))
+                                            } else { None };
 
                                         // キャンバスアクター ID アイテム収集
                                         // scene canvas モードのみ実行（actor edit 2D タブは CPU picking 専用）
@@ -2517,7 +2733,7 @@ impl ApplicationHandler for App {
                                                         &mut ctr, None, IDENTITY,
                                                         [1.0, 1.0], (false, false),
                                                         canvas_scale, y_sign, viewport_size,
-                                                        mc_total_instances, &mut items,
+                                                        canvas_id_offset, &mut items,
                                                     );
                                                     items
                                                 } else { vec![] }
@@ -2592,6 +2808,20 @@ impl ApplicationHandler for App {
                                             }
                                         }
 
+                                        // カメラギズモ ID 描画
+                                        // base = mc_total_instances で全インスタンスを一括描画する。
+                                        // インスタンス local_idx → cam_gizmo_actor_mats[local_idx].0 = dfs_id
+                                        if let (Some(gizmo), Some((_, cam_id_bg))) =
+                                            (&self.camera_gizmo, &cam_gizmo_id_base_opt)
+                                        {
+                                            draw_id_pass(
+                                                &mut id_pass,
+                                                &gizmo.gpu_model, &gizmo.batch,
+                                                &camera_buf.bind_group, &draw_ctx.pipelines,
+                                                cam_id_bg,
+                                            );
+                                        }
+
                                         // キャンバスアクター ID 描画（3D MC より後で常に上書き）
                                         // WS: perspective camera、SS: 2D ortho カメラを使用する
                                         let ss_camera_bg: Option<&wgpu::BindGroup> = if canvas_id_is_ss {
@@ -2632,6 +2862,23 @@ impl ApplicationHandler for App {
 
                             frame.finish();
 
+                            // FPS 計測: frame.finish() 後に壁時計でカウント
+                            // delta_time ではなく present 完了回数/秒 で計測することで
+                            // non-blocking な GPU submit でも正確な fps が得られる。
+                            {
+                                const FPS_WINDOW_SECS: f32 = 0.5;
+                                self.fps_frame_count += 1;
+                                let elapsed = self.fps_frame_start.elapsed().as_secs_f32();
+                                if elapsed >= FPS_WINDOW_SECS {
+                                    self.fps_display = self.fps_frame_count as f32 / elapsed;
+                                    self.fps_frame_count = 0;
+                                    self.fps_frame_start = std::time::Instant::now();
+                                    if let Some(ipc) = &self.ipc {
+                                        ipc.send(&format!("FPS:{:.1}", self.fps_display));
+                                    }
+                                }
+                            }
+
                             // 実際にポリゴンが描画された最初のフレームでエディタへ通知する
                             // （デバッグビルド・埋め込みモード限定）。
                             #[cfg(debug_assertions)]
@@ -2642,9 +2889,47 @@ impl ApplicationHandler for App {
                                 }
                             }
                         }
-                        Err(wgpu::SurfaceError::Lost) => {
-                            if let Some(size) = window_size {
-                                renderer.resize(size);
+                        // Lost: GPU がサーフェスを解放した（フルスクリーン切替など）
+                        // Outdated: 親ウィンドウ変更・リサイズでサーフェスが無効化された
+                        // どちらも surface.configure() をやり直せば回復する。
+                        //
+                        // C# の EmbedRuntimeWindow は SetParent を最初に呼ぶ。
+                        // このため Outdated が発生する時点では必ず SetParent 済みであり、
+                        // GetParent(my_hwnd) は正確な埋め込みコンテナを返す。
+                        // GetClientRect(parent) = Vulkan の currentExtent と一致するサイズ
+                        // で resize することで depth/color attachment の不一致を防ぐ。
+                        //
+                        // my_hwnd を事前コピーしているのは &mut self.renderer を借用した
+                        // ブロック内で self メソッドを呼べない borrow checker の制約のため。
+                        Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
+                            #[cfg(target_os = "windows")]
+                            let resize_to = {
+                                use windows_sys::Win32::Foundation::RECT;
+                                use windows_sys::Win32::UI::WindowsAndMessaging::{
+                                    GetClientRect, GetParent,
+                                };
+                                let parent = unsafe { GetParent(my_hwnd as _) };
+                                let mut sz = None;
+                                if !parent.is_null() {
+                                    let mut r = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+                                    if unsafe { GetClientRect(parent, &mut r) } != 0 {
+                                        let w = (r.right  - r.left) as u32;
+                                        let h = (r.bottom - r.top)  as u32;
+                                        if w > 0 && h > 0 {
+                                            sz = Some(winit::dpi::PhysicalSize { width: w, height: h });
+                                        }
+                                    }
+                                }
+                                sz.or(window_size)
+                            };
+                            #[cfg(not(target_os = "windows"))]
+                            let resize_to = window_size;
+                            // 0x0 は最小化中に発生するケース。サイズ変更不要なのでスキップ。
+                            let is_zero = resize_to.map_or(true, |s| s.width == 0 || s.height == 0);
+                            if let Some(size) = resize_to {
+                                if !is_zero {
+                                    renderer.resize(size);
+                                }
                             }
                         }
                         Err(wgpu::SurfaceError::OutOfMemory) => event_loop.exit(),
@@ -2699,10 +2984,36 @@ impl ApplicationHandler for App {
                                     self.selected_instances          = vec![local_idx];
                                 }
                                 self.send_actor_components(dfs_id, slot_i);
-                            } else if global >= mc_total_instances {
+                            } else if global >= mc_total_instances
+                                && global < mc_total_instances + camera_gizmo_count
+                                && !cam_gizmo_actor_mats.is_empty()
+                            {
+                                // カメラギズモアイコン選択
+                                // global - mc_total_instances = カメラギズモのローカルインスタンスインデックス
+                                let cam_local_idx = (global - mc_total_instances) as usize;
+                                if let Some(&(dfs_id, _)) = cam_gizmo_actor_mats.get(cam_local_idx) {
+                                    self.actor_virtual_selected_slot_idx = 0;
+                                    if self.ctrl_at_press {
+                                        if self.selected_actor_dfs_ids.contains(&dfs_id) {
+                                            self.selected_actor_dfs_ids.retain(|&x| x != dfs_id);
+                                            if self.actor_virtual_selected_idx == Some(dfs_id) {
+                                                self.actor_virtual_selected_idx = self.selected_actor_dfs_ids.last().copied();
+                                            }
+                                        } else {
+                                            self.selected_actor_dfs_ids.push(dfs_id);
+                                            self.actor_virtual_selected_idx = Some(dfs_id);
+                                        }
+                                    } else {
+                                        self.actor_virtual_selected_idx = Some(dfs_id);
+                                        self.selected_actor_dfs_ids     = vec![dfs_id];
+                                    }
+                                    self.selected_instances.clear();
+                                    self.send_actor_components(dfs_id as u32, 0);
+                                }
+                            } else if global >= canvas_id_offset {
                                 // キャンバスアクター選択
-                                // raw_id = mc_total + dfs_id + 1 → canvas_dfs_id = global - mc_total
-                                let canvas_dfs_id  = global - mc_total_instances;
+                                // raw_id = canvas_id_offset + dfs_id + 1 → canvas_dfs_id = global - canvas_id_offset
+                                let canvas_dfs_id  = global - canvas_id_offset;
                                 let dfs_usize      = canvas_dfs_id as usize;
                                 self.actor_virtual_selected_slot_idx = 0;
                                 if self.ctrl_at_press {
@@ -2745,24 +3056,20 @@ impl ApplicationHandler for App {
                                 after_primary,
                             }));
                         }
-                        eprintln!("[SEED] pick: raw={raw}, selected={:?}", self.selected_instances);
                         self.send_selected();
                     }
                 }
 
                 // ── ドロップ処理（GPU サブミット後）─────────────
                 if let Some((path, sx, sy)) = self.pending_drop.take() {
-                    eprintln!("[Drop] Processing pending_drop pos=({sx},{sy}) did_pick={did_pick}");
                     let world_pos = if !did_pick {
                         if let (Some(id_buf), Some(draw_ctx)) = (&self.id_buffer, &self.draw_ctx) {
-                            let (wpos, raw_id) = id_buf.read_pixel(&draw_ctx.device);
-                            eprintln!("[Drop] read_pixel => world_pos={wpos:?} raw_id={raw_id}");
+                            let (wpos, _raw_id) = id_buf.read_pixel(&draw_ctx.device);
                             wpos
                         } else { None }
                     } else {
                         // ピック処理でバッファが読み出し済みのため別途取得できない。
                         // pending_drop を再キューイングして次フレームで処理する。
-                        eprintln!("[Drop] did_pick=true, re-queuing for next frame");
                         self.pending_drop = Some((path.clone(), sx, sy));
                         None
                     };

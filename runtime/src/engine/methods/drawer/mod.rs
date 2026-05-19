@@ -27,6 +27,7 @@ pub use crate::engine::core::renderer::{
     MeshPipeline, SkinnedMeshPipeline, UnlitPipeline, CullPipeline, DrawPipelines,
     SkinComputePipeline, IdPassPipeline, OutlinePipeline, DepthPrepassPipelines,
     SpritePipeline, CanvasIdPipeline, CanvasIdUniform,
+    CameraPreviewBlitPipeline,
 };
 
 // 描画関数

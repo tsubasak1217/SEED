@@ -163,6 +163,21 @@ pub enum IpcCommand {
     /// InputMapComponent のアセットパスを設定する
     /// フォーマット: SET_INPUTMAP_PATH:{actor_dfs_id},{slot_idx},{path}
     SetInputMapPath { actor_dfs_id: u32, slot_idx: u32, path: String },
+    /// CameraComponent の FOV（視野角・度）を設定する
+    /// フォーマット: SET_CAMERA_FOV:{actor_dfs_id},{slot_idx},{value}
+    SetCameraComponentFov { actor_dfs_id: u32, slot_idx: u32, value: f32 },
+    /// CameraComponent の near clip を設定する
+    /// フォーマット: SET_CAMERA_NEAR:{actor_dfs_id},{slot_idx},{value}
+    SetCameraComponentNear { actor_dfs_id: u32, slot_idx: u32, value: f32 },
+    /// CameraComponent の far clip を設定する
+    /// フォーマット: SET_CAMERA_FAR:{actor_dfs_id},{slot_idx},{value}
+    SetCameraComponentFar { actor_dfs_id: u32, slot_idx: u32, value: f32 },
+    /// CameraComponent の is_main フラグを設定する
+    /// フォーマット: SET_CAMERA_MAIN:{actor_dfs_id},{slot_idx},{0|1}
+    SetCameraComponentMain { actor_dfs_id: u32, slot_idx: u32, is_main: bool },
+    /// CameraComponent のクリアカラーを設定する（正規化値 0.0〜1.0）
+    /// フォーマット: SET_CAMERA_CLEAR_COLOR:{actor_dfs_id},{slot_idx},{r},{g},{b},{a}
+    SetCameraComponentClearColor { actor_dfs_id: u32, slot_idx: u32, r: f32, g: f32, b: f32, a: f32 },
 }
 
 // ============================================================
@@ -698,6 +713,77 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                                     Some(IpcCommand::SetInputMapPath {
                                         actor_dfs_id: a, slot_idx: sl, path: path.to_string(),
                                     })
+                                } else { None }
+                            } else { None }
+                        }
+                        s if s.starts_with("SET_CAMERA_FOV:") => {
+                            // フォーマット: SET_CAMERA_FOV:{actor_dfs_id},{slot_idx},{value}
+                            let rest = &s["SET_CAMERA_FOV:".len()..];
+                            let parts: Vec<&str> = rest.split(',').collect();
+                            if parts.len() == 3 {
+                                if let (Ok(a), Ok(sl), Ok(v)) = (
+                                    parts[0].parse::<u32>(),
+                                    parts[1].parse::<u32>(),
+                                    parts[2].parse::<f32>(),
+                                ) {
+                                    Some(IpcCommand::SetCameraComponentFov { actor_dfs_id: a, slot_idx: sl, value: v })
+                                } else { None }
+                            } else { None }
+                        }
+                        s if s.starts_with("SET_CAMERA_NEAR:") => {
+                            // フォーマット: SET_CAMERA_NEAR:{actor_dfs_id},{slot_idx},{value}
+                            let rest = &s["SET_CAMERA_NEAR:".len()..];
+                            let parts: Vec<&str> = rest.split(',').collect();
+                            if parts.len() == 3 {
+                                if let (Ok(a), Ok(sl), Ok(v)) = (
+                                    parts[0].parse::<u32>(),
+                                    parts[1].parse::<u32>(),
+                                    parts[2].parse::<f32>(),
+                                ) {
+                                    Some(IpcCommand::SetCameraComponentNear { actor_dfs_id: a, slot_idx: sl, value: v })
+                                } else { None }
+                            } else { None }
+                        }
+                        s if s.starts_with("SET_CAMERA_FAR:") => {
+                            // フォーマット: SET_CAMERA_FAR:{actor_dfs_id},{slot_idx},{value}
+                            let rest = &s["SET_CAMERA_FAR:".len()..];
+                            let parts: Vec<&str> = rest.split(',').collect();
+                            if parts.len() == 3 {
+                                if let (Ok(a), Ok(sl), Ok(v)) = (
+                                    parts[0].parse::<u32>(),
+                                    parts[1].parse::<u32>(),
+                                    parts[2].parse::<f32>(),
+                                ) {
+                                    Some(IpcCommand::SetCameraComponentFar { actor_dfs_id: a, slot_idx: sl, value: v })
+                                } else { None }
+                            } else { None }
+                        }
+                        s if s.starts_with("SET_CAMERA_MAIN:") => {
+                            // フォーマット: SET_CAMERA_MAIN:{actor_dfs_id},{slot_idx},{0|1}
+                            let rest = &s["SET_CAMERA_MAIN:".len()..];
+                            let parts: Vec<&str> = rest.split(',').collect();
+                            if parts.len() == 3 {
+                                if let (Ok(a), Ok(sl)) = (parts[0].parse::<u32>(), parts[1].parse::<u32>()) {
+                                    let v = parts[2].trim() == "1";
+                                    Some(IpcCommand::SetCameraComponentMain { actor_dfs_id: a, slot_idx: sl, is_main: v })
+                                } else { None }
+                            } else { None }
+                        }
+                        s if s.starts_with("SET_CAMERA_CLEAR_COLOR:") => {
+                            // フォーマット: SET_CAMERA_CLEAR_COLOR:{actor_dfs_id},{slot_idx},{r},{g},{b},{a}
+                            let rest = &s["SET_CAMERA_CLEAR_COLOR:".len()..];
+                            let parts: Vec<&str> = rest.split(',').collect();
+                            if parts.len() == 6 {
+                                if let (Ok(a), Ok(sl)) = (parts[0].parse::<u32>(), parts[1].parse::<u32>()) {
+                                    let fs: Vec<f32> = parts[2..].iter()
+                                        .filter_map(|x| x.parse::<f32>().ok())
+                                        .collect();
+                                    if fs.len() == 4 {
+                                        Some(IpcCommand::SetCameraComponentClearColor {
+                                            actor_dfs_id: a, slot_idx: sl,
+                                            r: fs[0], g: fs[1], b: fs[2], a: fs[3],
+                                        })
+                                    } else { None }
                                 } else { None }
                             } else { None }
                         }

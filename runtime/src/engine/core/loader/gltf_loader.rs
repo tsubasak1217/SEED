@@ -8,8 +8,19 @@ use super::LoadError;
 // ============================================================
 
 pub fn load(path: &Path) -> Result<Model, LoadError> {
-    let (document, buffers, images) = gltf::import(path)
-        .map_err(|e| LoadError::Parse(e.to_string()))?;
+    let path_str = path.to_str().unwrap_or("");
+
+    // assets:// 仮想パスの場合は PAK から読み込む（GLB 推奨: 自己完結形式）。
+    // 通常の絶対パスはファイルシステムから直接読む。
+    let (document, buffers, images) = if path_str.starts_with(crate::engine::asset_fs::ASSETS_SCHEME) {
+        let bytes = crate::engine::asset_fs::read_bytes(path_str)
+            .map_err(|e| LoadError::Io(format!("PAK read failed for {path_str}: {e}")))?;
+        gltf::import_slice(&bytes)
+            .map_err(|e| LoadError::Parse(e.to_string()))?
+    } else {
+        gltf::import(path)
+            .map_err(|e| LoadError::Parse(e.to_string()))?
+    };
 
     let name = path.file_stem()
         .and_then(|s| s.to_str())

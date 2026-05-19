@@ -50,6 +50,11 @@ pub struct PipelineConfig {
 
     #[serde(default)]
     pub depth_bias_constant: i32,
+
+    /// true にするとデプスステンシルアタッチメントなしでパイプラインを生成する。
+    /// begin_blit_pass など depth 未使用パスで使用。
+    #[serde(default)]
+    pub no_depth: bool,
 }
 
 fn default_topology()      -> String { "TriangleList".into() }
@@ -193,17 +198,22 @@ impl<'d> RenderPipelineBuilder<'d> {
             };
 
         // ── 9. 深度ステンシルステート ──────────────────────────
-        let depth_compare  = parse_compare(&cfg.depth_compare);
-        let depth_stencil  = Some(wgpu::DepthStencilState {
-            format:              depth_format,
-            depth_write_enabled: cfg.depth_write,
-            depth_compare,
-            stencil: stencil.unwrap_or_default(),
-            bias: wgpu::DepthBiasState {
-                constant: cfg.depth_bias_constant,
-                ..Default::default()
-            },
-        });
+        // no_depth = true の場合はデプスアタッチメントなし（blit パス等で使用）。
+        let depth_stencil = if cfg.no_depth {
+            None
+        } else {
+            let depth_compare = parse_compare(&cfg.depth_compare);
+            Some(wgpu::DepthStencilState {
+                format:              depth_format,
+                depth_write_enabled: cfg.depth_write,
+                depth_compare,
+                stencil: stencil.unwrap_or_default(),
+                bias: wgpu::DepthBiasState {
+                    constant: cfg.depth_bias_constant,
+                    ..Default::default()
+                },
+            })
+        };
 
         // ── 10. プリミティブステート ───────────────────────────
         let topology = match cfg.topology.as_str() {

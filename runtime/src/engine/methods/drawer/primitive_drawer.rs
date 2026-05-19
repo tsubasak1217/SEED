@@ -185,6 +185,11 @@ impl GizmoBatch {
         self.tri_verts.clear();
     }
 
+    /// ライン・トライアングル頂点がどちらも空かどうかを返す。
+    pub fn is_empty(&self) -> bool {
+        self.line_verts.is_empty() && self.tri_verts.is_empty()
+    }
+
     pub fn build(&self, device: &wgpu::Device) -> GpuGizmoBatch {
         GpuGizmoBatch::new(device, &self.line_verts, &self.tri_verts)
     }
@@ -200,7 +205,8 @@ impl GizmoBatch {
         ]);
     }
 
-    fn add_solid_tri(&mut self, a: [f32; 3], b: [f32; 3], c: [f32; 3], color: Color) {
+    /// ソリッド三角形 1 枚を追加する（外部モジュールのカメラアイコン等に使用）。
+    pub fn add_solid_tri(&mut self, a: [f32; 3], b: [f32; 3], c: [f32; 3], color: Color) {
         let color = color.to_array();
         self.tri_verts.push(ColorVertex { position: a, color });
         self.tri_verts.push(ColorVertex { position: b, color });

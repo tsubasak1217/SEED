@@ -63,30 +63,10 @@ pub fn load_sprite_texture(
     tex_bgl: &wgpu::BindGroupLayout,
     sampler: &wgpu::Sampler,
 ) -> Option<Arc<GpuSpriteTexture>> {
-    // image::open() は拡張子でフォーマットを判定するが、
-    // with_guessed_format() はファイル先頭のマジックバイトで判定するため
-    // 拡張子と実際のフォーマットが一致しないファイルも正しく読める。
-    let img = match image::io::Reader::open(path) {
-        Ok(reader) => match reader.with_guessed_format() {
-            Ok(guessed) => match guessed.decode() {
-                Ok(img) => img,
-                Err(e) => {
-                    eprintln!("[SEED sprite] decode failed: path={:?} err={}", path, e);
-                    return None;
-                }
-            },
-            Err(e) => {
-                eprintln!("[SEED sprite] format guess failed: path={:?} err={}", path, e);
-                return None;
-            }
-        },
-        Err(e) => {
-            eprintln!("[SEED sprite] open failed: path={:?} err={}", path, e);
-            return None;
-        }
-    };
-    let rgba = img.to_rgba8();
-    eprintln!("[SEED sprite] load ok: path={:?} size={}x{}", path, rgba.width(), rgba.height());
+    // asset_fs::read_image を使うことで PAK（パッケージモード）にも対応する。
+    // 失敗時は 1×1 マゼンタ画像が返るため None にはならないが、
+    // デバッグ用の eprintln は asset_fs 側で出力される。
+    let rgba = crate::engine::asset_fs::read_image(path);
     let (w, h) = rgba.dimensions();
 
     let texture = device.create_texture(&wgpu::TextureDescriptor {

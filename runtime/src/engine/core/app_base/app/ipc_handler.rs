@@ -7,6 +7,7 @@
 
 use crate::engine::core::app_base::ipc::{IpcCommand, ToolMode};
 use crate::engine::core::app_base::scene::{Scene, DebugCameraData};
+use crate::engine::core::app_base::app::RuntimeMode;
 use crate::engine::core::app_base::undo::{
     UndoHistory, TransformCommand, SceneSnapshotCommand, ActorTreeSnapshotCommand,
     SelectionCommand, ActorDfsSelectionCommand,
@@ -41,7 +42,14 @@ impl App {
             match cmd {
                 IpcCommand::CtrlDown           => self.ctrl_held = true,
                 IpcCommand::CtrlUp             => self.ctrl_held = false,
-                IpcCommand::Pause              => self.paused = true,
+                IpcCommand::Pause => {
+                    // Play モード中にメインカメラが存在する場合、
+                    // デバッグカメラをその視点に同期してから Pause に入る。
+                    if self.mode == RuntimeMode::Play {
+                        self.sync_debug_camera_to_main_camera();
+                    }
+                    self.paused = true;
+                }
                 IpcCommand::Resume             => self.paused = false,
                 IpcCommand::Stop               => event_loop.exit(),
                 IpcCommand::CamKeyDown(k)      => self.cam_input.set_key(&k, true),
@@ -706,11 +714,9 @@ impl App {
                     self.drop_preview_pos   = None;
                 }
                 IpcCommand::DragHover { x, y } => {
-                    eprintln!("[Hover] DragHover received: ({x},{y})");
                     self.pending_drop_hover = Some((x, y));
                 }
                 IpcCommand::DragHoverEnd => {
-                    eprintln!("[Hover] DragHoverEnd received");
                     self.pending_drop_hover = None;
                     self.drop_preview_pos   = None;
                 }
@@ -736,6 +742,22 @@ impl App {
                 IpcCommand::SetInputMapPath { actor_dfs_id, slot_idx, path } => {
                     let p = path.clone();
                     self.handle_set_inputmap_path(actor_dfs_id, slot_idx, &p);
+                }
+                // ── CameraComponent プロパティ設定 ───────────────────────────
+                IpcCommand::SetCameraComponentFov { actor_dfs_id, slot_idx, value } => {
+                    self.handle_set_camera_fov(actor_dfs_id, slot_idx, value);
+                }
+                IpcCommand::SetCameraComponentNear { actor_dfs_id, slot_idx, value } => {
+                    self.handle_set_camera_near(actor_dfs_id, slot_idx, value);
+                }
+                IpcCommand::SetCameraComponentFar { actor_dfs_id, slot_idx, value } => {
+                    self.handle_set_camera_far(actor_dfs_id, slot_idx, value);
+                }
+                IpcCommand::SetCameraComponentMain { actor_dfs_id, slot_idx, is_main } => {
+                    self.handle_set_camera_main(actor_dfs_id, slot_idx, is_main);
+                }
+                IpcCommand::SetCameraComponentClearColor { actor_dfs_id, slot_idx, r, g, b, a } => {
+                    self.handle_set_camera_clear_color(actor_dfs_id, slot_idx, r, g, b, a);
                 }
             }
         }

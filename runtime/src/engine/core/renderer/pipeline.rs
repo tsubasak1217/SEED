@@ -22,6 +22,7 @@ fn get_shader_source(name: &str) -> &'static str {
         "outline.wgsl"               => include_str!("shaders/outline.wgsl"),
         "sprite.wgsl"                => include_str!("shaders/sprite.wgsl"),
         "canvas_id.wgsl"             => include_str!("shaders/canvas_id.wgsl"),
+        "camera_preview_blit.wgsl"   => include_str!("shaders/camera_preview_blit.wgsl"),
         other => panic!("unknown shader source: {other}"),
     }
 }
@@ -607,17 +608,53 @@ impl CanvasIdPipeline {
 //  DrawPipelines — 全パイプラインをまとめた型
 // ============================================================
 
+// ============================================================
+//  CameraPreviewBlitPipeline — カメラプレビューブリットパイプライン
+// ============================================================
+
+/// オフスクリーンのカメラプレビューテクスチャをスクリーン矩形に貼り付けるパイプライン。
+///
+/// Group 0: BlitRect ユニフォーム (NDC 矩形座標)
+/// Group 1: プレビューテクスチャ + サンプラー
+pub struct CameraPreviewBlitPipeline {
+    /// ブリット描画パイプライン（頂点バッファなし、6 頂点の三角形 2 枚）
+    pub pipeline: wgpu::RenderPipeline,
+    /// Group 0 レイアウト（BlitRect ユニフォームバッファ）
+    pub rect_bgl: wgpu::BindGroupLayout,
+    /// Group 1 レイアウト（テクスチャ + サンプラー）
+    pub tex_bgl:  wgpu::BindGroupLayout,
+}
+
+impl CameraPreviewBlitPipeline {
+    fn new(
+        device: &wgpu::Device,
+        sf:     wgpu::TextureFormat,
+        df:     wgpu::TextureFormat,
+        cache:  Option<&wgpu::PipelineCache>,
+    ) -> Self {
+        let (pipeline, mut bgls) =
+            RenderPipelineBuilder::new(device, include_str!("pipelines/camera_preview_blit.toml"), sf, df)
+                .with_cache(cache)
+                .build(get_shader_source);
+        // bgls[0]=rect_bgl, [1]=tex_bgl (pop は末尾から)
+        let tex_bgl  = bgls.pop().unwrap();
+        let rect_bgl = bgls.pop().unwrap();
+        Self { pipeline, rect_bgl, tex_bgl }
+    }
+}
+
 pub struct DrawPipelines {
-    pub mesh:          MeshPipeline,
-    pub skinned_mesh:  SkinnedMeshPipeline,
-    pub unlit_line:    UnlitPipeline,
-    pub cull:          CullPipeline,
-    pub skin_compute:  SkinComputePipeline,
-    pub depth_prepass: DepthPrepassPipelines,
-    pub id_pass:       IdPassPipeline,
-    pub outline:       OutlinePipeline,
-    pub sprite:        SpritePipeline,
-    pub canvas_id:     CanvasIdPipeline,
+    pub mesh:                 MeshPipeline,
+    pub skinned_mesh:         SkinnedMeshPipeline,
+    pub unlit_line:           UnlitPipeline,
+    pub cull:                 CullPipeline,
+    pub skin_compute:         SkinComputePipeline,
+    pub depth_prepass:        DepthPrepassPipelines,
+    pub id_pass:              IdPassPipeline,
+    pub outline:              OutlinePipeline,
+    pub sprite:               SpritePipeline,
+    pub canvas_id:            CanvasIdPipeline,
+    pub camera_preview_blit:  CameraPreviewBlitPipeline,
 }
 
 impl DrawPipelines {
@@ -633,16 +670,17 @@ impl DrawPipelines {
         // cache を全パイプラインに渡す。
         // 初回は通常コンパイル（15 秒程度）してキャッシュに記録し、
         // 2 回目以降はキャッシュから復元するためコンパイルをスキップする。
-        let mesh          = MeshPipeline::new(device, sf, df, cache);
-        let skinned_mesh  = SkinnedMeshPipeline::new(device, sf, df, cache);
-        let unlit_line    = UnlitPipeline::new(device, sf, df, cache);
-        let cull          = CullPipeline::new(device, cache);
-        let skin_compute  = SkinComputePipeline::new(device, cache);
-        let depth_prepass = DepthPrepassPipelines::new(device, df, cache);
-        let id_pass       = IdPassPipeline::new(device, sf, df, cache);
-        let outline       = OutlinePipeline::new(device, sf, df, cache);
-        let sprite        = SpritePipeline::new(device, queue, sf, df, cache);
-        let canvas_id     = CanvasIdPipeline::new(device, queue, df, cache);
-        Self { mesh, skinned_mesh, unlit_line, cull, skin_compute, depth_prepass, id_pass, outline, sprite, canvas_id }
+        let mesh                = MeshPipeline::new(device, sf, df, cache);
+        let skinned_mesh        = SkinnedMeshPipeline::new(device, sf, df, cache);
+        let unlit_line          = UnlitPipeline::new(device, sf, df, cache);
+        let cull                = CullPipeline::new(device, cache);
+        let skin_compute        = SkinComputePipeline::new(device, cache);
+        let depth_prepass       = DepthPrepassPipelines::new(device, df, cache);
+        let id_pass             = IdPassPipeline::new(device, sf, df, cache);
+        let outline             = OutlinePipeline::new(device, sf, df, cache);
+        let sprite              = SpritePipeline::new(device, queue, sf, df, cache);
+        let canvas_id           = CanvasIdPipeline::new(device, queue, df, cache);
+        let camera_preview_blit = CameraPreviewBlitPipeline::new(device, sf, df, cache);
+        Self { mesh, skinned_mesh, unlit_line, cull, skin_compute, depth_prepass, id_pass, outline, sprite, canvas_id, camera_preview_blit }
     }
 }

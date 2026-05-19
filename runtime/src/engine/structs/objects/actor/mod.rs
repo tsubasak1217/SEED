@@ -35,6 +35,7 @@ use crate::engine::components::{
     CanvasComponent, CanvasComponentData,
     SpriteComponent,
     InputMapComponent,
+    CameraComponent,
 };
 use crate::engine::core::clock::FrameContext;
 
@@ -286,6 +287,10 @@ impl Actor {
                 ComponentKind::InputMap => {
                     world.get::<InputMapComponent>(slot.entity)
                         .map(|ic| ComponentData::InputMapComponent(ic.to_data()))
+                }
+                ComponentKind::Camera => {
+                    world.get::<CameraComponent>(slot.entity)
+                        .map(|cc| ComponentData::CameraComponent(cc.to_data()))
                 }
             };
             data.map(|d| ComponentSlotData { name: slot.name.clone(), component: d })

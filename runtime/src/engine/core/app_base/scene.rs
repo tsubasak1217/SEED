@@ -27,6 +27,7 @@ use crate::engine::components::{
     Transform,
     ModelComponent, ModelComponentData, InstanceMeta, GROUP_ID_BASE,
     ScriptComponent, PlaceholderScriptSlot,
+    CameraComponent, CameraComponentData,
 };
 use crate::engine::structs::objects::Actor;
 use crate::engine::structs::objects::actor::{ActorData, ComponentSlotData};
@@ -149,6 +150,46 @@ impl Scene {
     }
 
     // ─── 検索ヘルパー ─────────────────────────────────────────
+
+    /// Play モード用のメインカメラを DFS で探す。
+    ///
+    /// `is_main = true` の CameraComponent を持つ最初の Actor の
+    /// (Transform, CameraComponentData) を返す。
+    /// シーン内にメインカメラが存在しない場合は None を返す。
+    pub fn find_main_camera(&self) -> Option<(Transform, CameraComponentData)> {
+        fn search(
+            actor: &Actor,
+            world: &World,
+        ) -> Option<(Transform, CameraComponentData)> {
+            // このアクターの Camera スロットを確認する
+            for slot in actor.slots() {
+                if slot.kind == ComponentKind::Camera {
+                    if let Some(cc) = world.get::<CameraComponent>(slot.entity) {
+                        if cc.is_main {
+                            // Actor 本体の Transform を取得する
+                            if let Some(tf) = world.get::<Transform>(actor.entity) {
+                                return Some((tf.clone(), cc.to_data()));
+                            }
+                        }
+                    }
+                }
+            }
+            // 子アクターを再帰探索する
+            for child in actor.children() {
+                if let Some(result) = search(child, world) {
+                    return Some(result);
+                }
+            }
+            None
+        }
+
+        for actor in &self.actors {
+            if let Some(result) = search(actor, &self.world) {
+                return Some(result);
+            }
+        }
+        None
+    }
 
     /// 指定 world_line の ModelComponent を持つ最初のスロットの
     /// (Entity, &ModelComponent) を返す。
@@ -423,6 +464,10 @@ pub fn build_actor(
                 use crate::engine::components::InputMapComponent;
                 world.insert(slot_entity, InputMapComponent { asset_path: ic_data.asset_path });
                 actor.add_slot_typed::<InputMapComponent>(slot_name, ComponentKind::InputMap, slot_entity);
+            }
+            ComponentData::CameraComponent(cc_data) => {
+                world.insert(slot_entity, CameraComponent::from_data(cc_data));
+                actor.add_slot_typed::<CameraComponent>(slot_name, ComponentKind::Camera, slot_entity);
             }
         }
     }

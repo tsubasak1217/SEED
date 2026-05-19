@@ -18,7 +18,8 @@ pub use gpu_resources::{GpuTexture, GpuMaterial, GpuPrimitive, GpuMesh, GpuModel
                         extract_frustum_planes, test_aabb_frustum, NUM_LODS};
 pub use pipeline::{MeshPipeline, SkinnedMeshPipeline, UnlitPipeline, CullPipeline, DrawPipelines,
                    SkinComputePipeline, IdPassPipeline, OutlinePipeline, DepthPrepassPipelines,
-                   SpritePipeline, CanvasIdPipeline, CanvasIdUniform};
+                   SpritePipeline, CanvasIdPipeline, CanvasIdUniform,
+                   CameraPreviewBlitPipeline};
 
 // ============================================================
 //  Renderer 本体
@@ -43,6 +44,10 @@ struct DepthTexture {
     view:            wgpu::TextureView,
     /// Hi-Z テクスチャサンプリング用（DepthOnly aspect）
     depth_only_view: wgpu::TextureView,
+    /// 作成時のテクスチャ幅（サーフェスサイズとの不一致検出に使用）
+    width:           u32,
+    /// 作成時のテクスチャ高さ（サーフェスサイズとの不一致検出に使用）
+    height:          u32,
 }
 
 impl DepthTexture {
@@ -65,7 +70,7 @@ impl DepthTexture {
             aspect: wgpu::TextureAspect::DepthOnly,
             ..Default::default()
         });
-        Self { texture, view, depth_only_view }
+        Self { texture, view, depth_only_view, width, height }
     }
 }
 
@@ -103,8 +108,21 @@ impl Renderer {
         } else {
             wgpu::Backends::PRIMARY
         };
+        // Vulkan バリデーションレイヤーはデバッグビルドでも明示的に無効化する。
+        // wgpu のデフォルト (InstanceFlags::from_build_config) は debug_assertions 時に
+        // VALIDATION | DEBUG を有効化するが、Vulkan では全 API 呼び出しを検査するため
+        // CPU オーバーヘッドが 10〜50 倍になりフレームレートが著しく低下する。
+        // DX12 は同等の検査が外部レイヤーで行われるため影響が小さかった。
+        // GPU レベルのデバッグが必要な場合は環境変数 WGPU_VALIDATION=1 で有効化する。
+        let instance_flags = if std::env::var("WGPU_VALIDATION").is_ok() {
+            wgpu::InstanceFlags::DEBUG | wgpu::InstanceFlags::VALIDATION
+        } else {
+            wgpu::InstanceFlags::empty()
+        };
+
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
             backends,
+            flags: instance_flags,
             ..Default::default()
         });
 
@@ -113,8 +131,6 @@ impl Renderer {
             .expect("Failed to create surface");
 
         let adapter = Self::select_adapter(&instance, backends, &surface);
-        eprintln!("[SEED] GPU adapter: {} ({:?})",
-            adapter.get_info().name, adapter.get_info().device_type);
 
         // PIPELINE_CACHE はオプション機能（DX12 の一部 GPU では非対応）。
         // アダプターが対応している場合のみ要求する。
@@ -162,7 +178,6 @@ impl Renderer {
             };
             Some(cache)
         } else {
-            eprintln!("[SEED] PipelineCache not supported on this GPU — skipping cache");
             None
         };
 
@@ -177,12 +192,30 @@ impl Renderer {
             .find(|f| f.is_srgb())
             .unwrap_or(surface_caps.formats[0]);
 
+        // Mailbox → Immediate → Fifo の優先順で選択する。
+        //
+        // このランタイムは WPF の子ウィンドウとして DWM に埋め込まれるケースが多い。
+        // DWM 自体が OS レベルの VSync を担当するため、Vulkan 側に独自の VSync（Fifo）を
+        // 加えると「二重 VSync 待ち」になり、フレームが DWM タイミングとズレるたびに
+        // 1 サイクル余計に待機してカクつきが発生する。
+        //
+        // Mailbox: GPU が終わり次第フレームを上書き → DWM の次コンポジットで最新フレームが映る
+        // Immediate: 即時表示（DWM が VSync を管理するので実用上問題なし）
+        // Fifo: 埋め込みモードでは二重 VSync でカクつくため最後の手段とする
+        let present_mode = if surface_caps.present_modes.contains(&wgpu::PresentMode::Mailbox) {
+            wgpu::PresentMode::Mailbox
+        } else if surface_caps.present_modes.contains(&wgpu::PresentMode::Immediate) {
+            wgpu::PresentMode::Immediate
+        } else {
+            wgpu::PresentMode::Fifo
+        };
+
         let config = wgpu::SurfaceConfiguration {
             usage:                        wgpu::TextureUsages::RENDER_ATTACHMENT,
             format:                       surface_format,
             width:                        size.width,
             height:                       size.height,
-            present_mode:                 surface_caps.present_modes[0],
+            present_mode,
             alpha_mode:                   surface_caps.alpha_modes[0],
             view_formats:                 vec![],
             desired_maximum_frame_latency: 2,
@@ -219,18 +252,12 @@ impl Renderer {
 
         let mut adapters: Vec<wgpu::Adapter> = instance.enumerate_adapters(backends);
 
-        eprintln!("[SEED] --- GPU adapter list ({} found) ---", adapters.len());
-        for a in &adapters {
-            let i = a.get_info();
-            eprintln!("[SEED]   {:?} | {:?} | {} | surface_ok={}",
-                i.backend, i.device_type, i.name, a.is_surface_supported(surface));
-        }
-
+        // サーフェスと互換性のないアダプターを除外してからスコア順に並べる。
+        // 除外しないとマルチ GPU 環境で対応外 GPU が選ばれ初期化エラーになる場合がある。
+        adapters.retain(|a| a.is_surface_supported(surface));
         adapters.sort_by_key(|a| core::cmp::Reverse(adapter_score(&a.get_info())));
 
-
         adapters.into_iter().next().unwrap_or_else(|| {
-            eprintln!("[SEED] enumerate_adapters returned empty, falling back to request_adapter");
             pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference:       wgpu::PowerPreference::HighPerformance,
                 compatible_surface:     Some(surface),
@@ -312,7 +339,28 @@ impl Renderer {
     pub fn depth_view(&self) -> &wgpu::TextureView { &self.depth_texture.depth_only_view }
 
     pub fn begin_frame(&mut self) -> Result<RenderFrame<'_>, wgpu::SurfaceError> {
-        let output     = self.surface.get_current_texture()?;
+        let output = self.surface.get_current_texture()?;
+
+        // Vulkan の swapchain は surface.configure() の要求サイズを
+        // current_extent（実際のウィンドウサイズ）にクランプする場合がある。
+        // その際、depth_texture は要求サイズで作成済みのためサイズ不一致が発生し
+        // レンダーパス検証でパニックする。フレーム開始時に実際のサーフェステクスチャ
+        // サイズと depth_texture を同期させることで問題を防ぐ。
+        let surf_extent = output.texture.size();
+        if surf_extent.width  != self.depth_texture.width
+        || surf_extent.height != self.depth_texture.height
+        {
+            self.config.width  = surf_extent.width;
+            self.config.height = surf_extent.height;
+            self.size = winit::dpi::PhysicalSize {
+                width:  surf_extent.width,
+                height: surf_extent.height,
+            };
+            self.depth_texture = DepthTexture::new(
+                &self.device, surf_extent.width, surf_extent.height,
+            );
+        }
+
         let color_view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
         let encoder    = self.device.create_command_encoder(
             &wgpu::CommandEncoderDescriptor { label: Some("Render Encoder") },
@@ -499,6 +547,67 @@ impl<'r> RenderFrame<'r> {
                     store: wgpu::StoreOp::Store,
                 }),
             }),
+            occlusion_query_set: None,
+            timestamp_writes:    None,
+        })
+    }
+
+    /// オフスクリーンテクスチャへの描画パスを開始する（カメラプレビュー等に使用）。
+    ///
+    /// カラーバッファは `color_view` にクリアして描画する。
+    /// 深度バッファは `depth_view` にクリア（1.0）して描画する。
+    pub fn begin_offscreen_pass<'f>(
+        &'f mut self,
+        color_view:  &'f wgpu::TextureView,
+        depth_view:  &'f wgpu::TextureView,
+        clear_color: wgpu::Color,
+    ) -> wgpu::RenderPass<'f>
+    where
+        'r: 'f,
+    {
+        self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("Offscreen Pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view:           color_view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load:  wgpu::LoadOp::Clear(clear_color),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: depth_view,
+                depth_ops: Some(wgpu::Operations {
+                    load:  wgpu::LoadOp::Clear(1.0),
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: None,
+            }),
+            occlusion_query_set: None,
+            timestamp_writes:    None,
+        })
+    }
+
+    /// メインカラーバッファへのブリットパスを開始する（UI オーバーレイ等に使用）。
+    ///
+    /// 深度なし・カラー Load（既存の描画を保持）で、最前面に描画する。
+    /// `depth_compare = "Always"` のパイプラインと組み合わせること。
+    pub fn begin_blit_pass<'f>(&'f mut self) -> wgpu::RenderPass<'f>
+    where
+        'r: 'f,
+    {
+        self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("Blit Pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view:           &self.color_view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load:  wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            // 深度アタッチメントなし（常に最前面）
+            depth_stencil_attachment: None,
             occlusion_query_set: None,
             timestamp_writes:    None,
         })

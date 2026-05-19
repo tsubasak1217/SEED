@@ -1,0 +1,15 @@
+shader_sources  = ["camera_preview_blit.wgsl"]
+vertex_entry    = "vs_main"
+fragment_entry  = "fs_main"
+vertex_slots    = []
+
+topology        = "TriangleList"
+cull_mode       = "None"
+front_face      = "Ccw"
+
+# デプスアタッチメントなし（begin_blit_pass は depth 未使用パス）
+no_depth        = true
+
+color_format    = "surface"
+blend           = "AlphaBlending"
+write_mask      = "all"

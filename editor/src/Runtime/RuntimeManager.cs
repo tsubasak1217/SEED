@@ -26,11 +26,16 @@ public enum EditorState { Idle, Building, Edit, Play, Pause }
 ///
 /// 状態遷移:
 ///   Idle  ──[StartEdit]──▶ Edit
-///   Edit  ──[Play]────────▶ Play
-///   Play  ──[最小化検知]──▶ Pause   ← WinEventHook
+///   Edit  ──[Play]────────▶ Play   ← Edit ランタイムは非表示にして保持（GPU コンテキスト維持）
+///   Play  ──[最小化検知]──▶ Pause  ← WinEventHook
 ///   Pause ──[Resume]──────▶ Play
-///   Play/Pause ──[Stop]───▶ Edit    ← Kill → Edit 再起動
-///   Play/Pause ──[閉じる]─▶ Edit    ← Runtime 自己終了
+///   Play/Pause ──[Stop]───▶ Edit   ← Play を Kill → 保存 Edit を ShowWindow で即復元
+///   Play/Pause ──[閉じる]─▶ Edit   ← Play 自己終了 → 保存 Edit を ShowWindow で即復元
+///
+/// Edit ランタイムを Play 中も生かしておく理由:
+///   デバッグビルドでは Play 終了→Edit 再起動時に GPU コンテキストの再初期化に
+///   約 22 秒かかる（wgpu/DX12）。非表示にするだけなら GPU は維持されたまま
+///   ShowWindow で即座に表示でき、ユーザーへの待機をゼロにできる。
 /// </summary>
 public sealed class RuntimeManager : IDisposable
 {
@@ -53,6 +58,8 @@ public sealed class RuntimeManager : IDisposable
     private const int  WS_OVERLAPPEDWINDOW        = 0x00CF0000;
     private const int  WS_VISIBLE                 = 0x10000000;
     private const int  WS_EX_APPWINDOW            = 0x00040000;
+    private const int  SW_HIDE                    = 0;
+    private const int  SW_SHOW                    = 5;
     private const int  SW_RESTORE                 = 9;
     private const int  SW_SHOWDEFAULT             = 10;
     private const uint SWP_NOMOVE                 = 0x0002;
@@ -64,6 +71,16 @@ public sealed class RuntimeManager : IDisposable
     private readonly string               _runtimeExePath;
     /// <summary>Playモードで --assets-root として渡すアセットルートパス。</summary>
     public string? AssetsPath { get; set; }
+
+    /// <summary>エディタリソースディレクトリのパス（--editor-resources として渡す）。</summary>
+    public string? EditorResourcesPath { get; set; }
+
+    /// <summary>
+    /// Play 時にロードするシーンパス。
+    /// null の場合はランタイムが project_settings.json の start_scene を使う。
+    /// </summary>
+    public string? PlayScenePath { get; set; }
+
     private readonly RuntimeSourceWatcher? _sourceWatcher;
     private Process?                      _process;
     private PipeServer?                   _pipe;
@@ -75,6 +92,11 @@ public sealed class RuntimeManager : IDisposable
     // WinEventHook（GC 対策で delegate を保持）
     private WinEventProc? _winEventDelegate;
     private IntPtr        _winEventHook;
+
+    // Play 中に保存しておく Edit ランタイムのフィールド（GPU 再初期化を避けるための保持）
+    private Process?    _savedEditProcess;
+    private PipeServer? _savedEditPipe;
+    private IntPtr      _savedEditHwnd;
 
     // ── 公開プロパティ・イベント ────────────────────────────────
 
@@ -137,6 +159,9 @@ public sealed class RuntimeManager : IDisposable
     /// <summary>世界線切り替え情報が返ってきたときに発火する（デバッグログ用）。</summary>
     public event Action<string>? WorldLineInfoReceived;
 
+    /// <summary>ランタイム側のFPSが更新されたときに発火する（0.5秒ごと）。</summary>
+    public event Action<float>? FpsReceived;
+
     // ── コンストラクタ ─────────────────────────────────────────
 
     public RuntimeManager(string runtimeExePath)
@@ -188,16 +213,41 @@ public sealed class RuntimeManager : IDisposable
         await LaunchAsync(editMode: true);
     }
 
-    /// <summary>Play ボタン: Edit Runtime を終了し Play Runtime を起動する。</summary>
+    /// <summary>
+    /// Play ボタン: Edit ランタイムをウィンドウ非表示にして保持し、Play ランタイムを起動する。
+    /// プロセスを終了しないことで GPU コンテキストを維持し、Play 終了後に即復元できるようにする。
+    /// </summary>
     public async Task PlayAsync()
     {
-        KillRuntime(sendStop: true);
+        // Edit ランタイムをフィールドに保存（プロセスは生かしたまま）
+        _savedEditProcess = _process;
+        _savedEditPipe    = _pipe;
+        _savedEditHwnd    = _runtimeHwnd;
+
+        // Play 中に Edit プロセスが終了しても OnRuntimeExited が誤発火しないよう購読解除
+        if (_savedEditProcess is not null)
+            _savedEditProcess.Exited -= OnRuntimeExited;
+
+        // Edit パイプのメッセージも一時停止
+        if (_savedEditPipe is not null)
+            _savedEditPipe.MessageReceived -= OnPipeMessage;
+
+        // Edit ウィンドウを非表示（プロセスは維持）
+        if (_savedEditHwnd != IntPtr.Zero)
+            Win32.ShowWindow(_savedEditHwnd, SW_HIDE);
+
+        // 現フィールドをリセット（LaunchAsync が Play 用に新規作成する）
+        _process     = null;
+        _pipe        = null;
+        _runtimeHwnd = IntPtr.Zero;
+
         await LaunchAsync(editMode: false);
     }
 
     /// <summary>最小化検知 or Pause ボタン: デバッグカメラに切替えて Viewport に埋め込む。</summary>
     public void Pause()
     {
+        EditorLog.Write($"Pause — state={_state}  hwnd=0x{_runtimeHwnd:X}");
         if (_state != EditorState.Play) return;
         _pipe?.Send("PAUSE");
         EmbedRuntimeWindow();
@@ -207,6 +257,7 @@ public sealed class RuntimeManager : IDisposable
     /// <summary>Resume ボタン: 通常モードに戻し独立ウィンドウに戻す。</summary>
     public void Resume()
     {
+        EditorLog.Write($"Resume — state={_state}  hwnd=0x{_runtimeHwnd:X}");
         if (_state != EditorState.Pause) return;
         DetachRuntimeWindow();
         _pipe?.Send("RESUME");
@@ -231,12 +282,17 @@ public sealed class RuntimeManager : IDisposable
         EditorLog.Write($"ResizeRuntimeToContainer — {w}x{h}");
     }
 
-    /// <summary>Stop ボタン: Runtime を終了し Edit に戻る。</summary>
+    /// <summary>Stop ボタン: Play ランタイムを終了し Edit に戻る。</summary>
     public void Stop()
     {
         if (_state == EditorState.Pause) DetachRuntimeWindow();
         KillRuntime(sendStop: true);
-        _ = StartEditAsync(_viewportContainerHwnd);
+
+        // 保存した Edit ランタイムが生きていれば即復元（GPU 再初期化なし）
+        if (_savedEditProcess is not null && !_savedEditProcess.HasExited)
+            RestoreEditRuntime();
+        else
+            _ = StartEditAsync(_viewportContainerHwnd);
     }
 
     // ── プライベート: 残存プロセス終了 ──────────────────────────
@@ -356,9 +412,16 @@ public sealed class RuntimeManager : IDisposable
         var assetsRootArg = !string.IsNullOrEmpty(AssetsPath)
             ? $" --assets-root={AssetsPath}"
             : "";
+        var editorResourcesArg = !string.IsNullOrEmpty(EditorResourcesPath)
+            ? $" --editor-resources={EditorResourcesPath}"
+            : "";
+        // PlayScenePath が設定されている場合は --scene= で渡す（null = start_scene 使用）
+        var sceneArg = !string.IsNullOrEmpty(PlayScenePath)
+            ? $" --scene={PlayScenePath}"
+            : "";
         var args = editMode
-            ? $"--mode=edit --pipe={_pipe.PipeName} --parent-hwnd={_viewportContainerHwnd}"
-            : $"--mode=play --pipe={_pipe.PipeName}{assetsRootArg}";
+            ? $"--mode=edit --pipe={_pipe.PipeName} --parent-hwnd={_viewportContainerHwnd}{editorResourcesArg}"
+            : $"--mode=play --pipe={_pipe.PipeName}{assetsRootArg}{sceneArg}";
 
         var workDir = ResolveWorkingDirectory(_runtimeExePath);
         EditorLog.Write($"Process.Start — exe={_runtimeExePath}  args={args}  workDir={workDir}");
@@ -494,6 +557,16 @@ public sealed class RuntimeManager : IDisposable
             EditorLog.Write($"[Runtime→Editor] ACTOR_COMPONENTS ({json.Length} chars)");
             ActorComponentsReceived?.Invoke(json);
         }
+        else if (msg == "STOPPED")
+        {
+            // ゲームウィンドウが閉じられた通知。
+            // Rust 側の CloseRequested で SetForegroundWindow(editor_hwnd) を直接呼んでいるため、
+            // このメッセージが届く前にエディタはすでにフォアグラウンドを取得済み。
+            // Activate() は追加の安全策として残す。
+            EditorLog.Write("[Runtime→Editor] STOPPED — ゲームウィンドウ終了、フォアグラウンド復帰");
+            Application.Current.Dispatcher.InvokeAsync(() =>
+                Application.Current.MainWindow?.Activate());
+        }
         else if (msg == "SCENE_LOADED")
         {
             EditorLog.Write("[Runtime→Editor] SCENE_LOADED");
@@ -530,6 +603,14 @@ public sealed class RuntimeManager : IDisposable
             Application.Current.Dispatcher.InvokeAsync(() =>
                 MessageBox.Show($"シーンの読み込みに失敗しました:\n{err}", "SEED Editor",
                     MessageBoxButton.OK, MessageBoxImage.Error));
+        }
+        else if (msg.StartsWith("FPS:", StringComparison.Ordinal) &&
+                 float.TryParse(msg["FPS:".Length..],
+                     System.Globalization.NumberStyles.Float,
+                     System.Globalization.CultureInfo.InvariantCulture,
+                     out var fps))
+        {
+            FpsReceived?.Invoke(fps);
         }
         else
         {
@@ -569,8 +650,19 @@ public sealed class RuntimeManager : IDisposable
         {
             UninstallMinimizeHook();
             _pipe?.Dispose();
-            _pipe         = null;
-            _runtimeHwnd  = IntPtr.Zero;
+            _pipe        = null;
+            _runtimeHwnd = IntPtr.Zero;
+
+            // Play ランタイムが終了し、保存した Edit ランタイムが生きていれば即復元
+            // （Idle を経由せず直接 Edit へ移行することで UI のちらつきを防ぐ）
+            if (_savedEditProcess is not null && !_savedEditProcess.HasExited)
+            {
+                EditorLog.Write("OnRuntimeExited — Play 終了、保存した Edit ランタイムを即復元");
+                RestoreEditRuntime();
+                return;
+            }
+
+            // 保存 Edit なし: 通常のクラッシュ再起動フロー
             ChangeState(EditorState.Idle);
 
             if (_restartCount >= MaxRestarts)
@@ -597,6 +689,64 @@ public sealed class RuntimeManager : IDisposable
         });
     }
 
+    // ── プライベート: Edit ランタイム復元 ─────────────────────
+
+    /// <summary>
+    /// Play 中に保存しておいた Edit ランタイムを復元する。
+    /// ShowWindow で再表示するだけなので GPU 再初期化が発生せず即座に表示できる。
+    /// UI スレッドから呼ぶこと。
+    /// </summary>
+    private void RestoreEditRuntime()
+    {
+        // プロセスが既に終了していた場合は通常再起動にフォールバック
+        if (_savedEditProcess is null || _savedEditProcess.HasExited)
+        {
+            EditorLog.Write("RestoreEditRuntime — 保存した Edit プロセスが消滅、StartEditAsync にフォールバック");
+            _savedEditProcess?.Dispose();
+            _savedEditProcess = null;
+            _savedEditPipe    = null;
+            _savedEditHwnd    = IntPtr.Zero;
+            _ = StartEditAsync(_viewportContainerHwnd);
+            return;
+        }
+
+        EditorLog.Write($"RestoreEditRuntime — 保存 Edit ランタイムを復元  hwnd=0x{_savedEditHwnd:X}");
+
+        // フィールドを復元
+        _process     = _savedEditProcess;
+        _pipe        = _savedEditPipe;
+        _runtimeHwnd = _savedEditHwnd;
+
+        _savedEditProcess = null;
+        _savedEditPipe    = null;
+        _savedEditHwnd    = IntPtr.Zero;
+
+        // イベントを再購読
+        if (_process is not null)
+            _process.Exited += OnRuntimeExited;
+        if (_pipe is not null)
+            _pipe.MessageReceived += OnPipeMessage;
+
+        // Edit ウィンドウを再表示してコンテナサイズに合わせる
+        if (_runtimeHwnd != IntPtr.Zero)
+        {
+            Win32.ShowWindow(_runtimeHwnd, SW_SHOW);
+            ResizeRuntimeToContainer();
+        }
+
+        // クラッシュカウントをリセット
+        _restartCount    = 0;
+        _intentionalStop = false;
+
+        // Edit 状態へ直接移行
+        ChangeState(EditorState.Edit);
+
+        // RuntimeHwndAvailable → MainWindow が SyncViewportSettings など後処理を実施
+        // FirstFrameReady → ローディングオーバーレイを即座に非表示にする
+        RuntimeHwndAvailable?.Invoke((nint)_runtimeHwnd);
+        FirstFrameReady?.Invoke();
+    }
+
     // ── プライベート: WinEvent フック（最小化検知）────────────
 
     private void InstallMinimizeHook()
@@ -621,7 +771,17 @@ public sealed class RuntimeManager : IDisposable
     private void OnWinEvent(IntPtr hook, uint eventType, IntPtr hwnd,
         int idObject, int idChild, uint thread, uint time)
     {
+        // hwnd が対象の Play ランタイムでない場合は無視
         if (hwnd != _runtimeHwnd) return;
+
+        var evtName = eventType switch
+        {
+            EVENT_SYSTEM_MOVESIZESTART => "MOVESIZESTART",
+            EVENT_SYSTEM_MOVESIZEEND   => "MOVESIZEEND",
+            EVENT_SYSTEM_MINIMIZESTART => "MINIMIZESTART",
+            _                          => $"0x{eventType:X4}",
+        };
+        EditorLog.Write($"OnWinEvent — {evtName}  hwnd=0x{hwnd:X}  state={_state}");
 
         if (eventType == EVENT_SYSTEM_MINIMIZESTART)
             Application.Current.Dispatcher.Invoke(Pause);
@@ -635,34 +795,53 @@ public sealed class RuntimeManager : IDisposable
 
     private void EmbedRuntimeWindow()
     {
+        EditorLog.Write($"EmbedRuntimeWindow — hwnd=0x{_runtimeHwnd:X}  container=0x{_viewportContainerHwnd:X}");
         if (_runtimeHwnd == IntPtr.Zero || _viewportContainerHwnd == IntPtr.Zero) return;
 
-        // Resume 時に元のサイズ・位置へ戻すために保存
-        Win32.GetWindowRect(_runtimeHwnd, out _runtimeRectBeforeEmbed);
-
+        // ShowWindow(SW_RESTORE) の後に保存することで、最小化中の座標（-32000,-32000）
+        // ではなく復元後の正確な位置・サイズが _runtimeRectBeforeEmbed に入る。
+        // DetachRuntimeWindow で MoveWindow に使用するため正確な値が必要。
         Win32.ShowWindow(_runtimeHwnd, SW_RESTORE);
 
-        // WS_POPUP / タイトルバー / リサイズ枠を除去して WS_CHILD に
+        // Resume 時に元のサイズ・位置へ戻すために保存（SW_RESTORE の後）
+        Win32.GetWindowRect(_runtimeHwnd, out _runtimeRectBeforeEmbed);
+
+        // コンテナサイズを取得する
+        Win32.GetClientRect(_viewportContainerHwnd, out var rect);
+        int cw = rect.Right  - rect.Left;
+        int ch = rect.Bottom - rect.Top;
+
+        // ① SetParent を最初に行う（他の操作より前に実施する）。
+        //
+        //    Rust 側の SurfaceError::Outdated は SetParent 後に発生する。
+        //    Outdated ハンドラが GetParent(hwnd) を呼んだとき、SetParent が
+        //    完了済みであれば正確なコンテナ HWND が返り、GetClientRect でコンテナの
+        //    実サイズ（Vulkan の currentExtent と一致）が取得できる。
+        //
+        //    以前の実装では SetWindowLong(WS_CHILD) を先に呼んでいたため、
+        //    WS_CHILD スタイルだが親なしの状態で GetParent がデスクトップ（1920x1080）を
+        //    返し、renderer.resize(1920x1080) → depth/color サイズ不一致でクラッシュした。
+        Win32.SetParent(_runtimeHwnd, _viewportContainerHwnd);
+
+        // ② スタイルを WS_CHILD に変更（タイトルバー / リサイズ枠 / タスクバーエントリ除去）
         var style = Win32.GetWindowLong(_runtimeHwnd, GWL_STYLE);
         style = (style & ~WS_POPUP & ~WS_CAPTION & ~WS_THICKFRAME) | WS_CHILD;
         Win32.SetWindowLong(_runtimeHwnd, GWL_STYLE, style);
 
-        // タスクバーエントリを除去
         var exStyle = Win32.GetWindowLong(_runtimeHwnd, GWL_EXSTYLE);
         Win32.SetWindowLong(_runtimeHwnd, GWL_EXSTYLE, exStyle & ~WS_EX_APPWINDOW);
 
-        Win32.SetParent(_runtimeHwnd, _viewportContainerHwnd);
-
-        Win32.GetClientRect(_viewportContainerHwnd, out var rect);
-        Win32.MoveWindow(_runtimeHwnd, 0, 0,
-            rect.Right - rect.Left, rect.Bottom - rect.Top, repaint: true);
-
-        Win32.SetWindowPos(_runtimeHwnd, IntPtr.Zero, 0, 0, 0, 0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
+        // ③ SWP_FRAMECHANGED で NCCALCSIZE を発火しつつ (0,0) にコンテナサイズ配置。
+        //    WS_CHILD はデコレーションなしなので client = outer = cw x ch
+        //    → WM_SIZE(cw, ch) のみ発生。
+        if (cw > 0 && ch > 0)
+            Win32.SetWindowPos(_runtimeHwnd, IntPtr.Zero, 0, 0, cw, ch,
+                SWP_NOZORDER | SWP_FRAMECHANGED);
     }
 
     private void DetachRuntimeWindow()
     {
+        EditorLog.Write($"DetachRuntimeWindow — hwnd=0x{_runtimeHwnd:X}");
         if (_runtimeHwnd == IntPtr.Zero) return;
 
         Win32.SetParent(_runtimeHwnd, IntPtr.Zero);
@@ -685,6 +864,7 @@ public sealed class RuntimeManager : IDisposable
             Win32.MoveWindow(_runtimeHwnd, r.Left, r.Top, w, h, repaint: true);
 
         Win32.ShowWindow(_runtimeHwnd, SW_SHOWDEFAULT);
+        EditorLog.Write($"DetachRuntimeWindow — 完了");
     }
 
     // ── プライベート: プロセス終了 ─────────────────────────────
@@ -740,6 +920,23 @@ public sealed class RuntimeManager : IDisposable
     public void Dispose()
     {
         KillRuntime();
+
+        // 保存した Edit ランタイムも終了させる（Play 中にウィンドウを閉じた場合など）
+        if (_savedEditProcess is not null)
+        {
+            if (!_savedEditProcess.HasExited)
+            {
+                _savedEditPipe?.Send("STOP");
+                _savedEditPipe?.Dispose();
+                try { _savedEditProcess.Kill(); _savedEditProcess.WaitForExit(500); }
+                catch (Exception ex) { EditorLog.Write($"Dispose — saved Edit kill failed: {ex.Message}"); }
+            }
+            _savedEditProcess.Dispose();
+            _savedEditProcess = null;
+            _savedEditPipe    = null;
+            _savedEditHwnd    = IntPtr.Zero;
+        }
+
         _sourceWatcher?.Dispose();
     }
 

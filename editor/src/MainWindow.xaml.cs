@@ -124,6 +124,10 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
     /// <summary>次に開くアクタータブに割り当てる世界線インデックス。</summary>
     private uint _nextWorldLineIdx                   = 1;
 
+    // ── Play 設定 ──────────────────────────────────────────────
+    /// <summary>true のとき project_settings.json の開始シーンから Play する。false は現在のシーン。</summary>
+    private bool _playFromStartScene = false;
+
     // ── シーン保存状態 ─────────────────────────────────────────
     /// <summary>現在開いているシーンのファイルパス。null = 新規未保存シーン。</summary>
     private string? _currentScenePath         = null;
@@ -156,9 +160,10 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         { 0x10, "SHIFT" }, // VK_SHIFT
     };
 
-    private static readonly string RuntimeExePath = ResolveRuntimePath();
-    private static readonly string AssetsPath     = ResolveAssetsPath();
-    private static readonly string SettingsDir    = ResolveSettingsDir();
+    private static readonly string RuntimeExePath      = ResolveRuntimePath();
+    private static readonly string AssetsPath          = ResolveAssetsPath();
+    private static readonly string SettingsDir         = ResolveSettingsDir();
+    private static readonly string EditorResourcesPath = ResolveEditorResourcesPath();
 
     private static string ResolveSettingsDir()
     {
@@ -166,6 +171,22 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
             Path.Combine(AppDomain.CurrentDomain.BaseDirectory, @"..\..\..\settings"));
         Directory.CreateDirectory(dir);
         return dir;
+    }
+
+    /// <summary>
+    /// エディタに同梱するリソースディレクトリを解決する。
+    /// 開発時は bin/Debug/net8.0-windows から ../../../resources へ遡る。
+    /// リリース時はエグゼの隣の resources/ を使う。
+    /// </summary>
+    private static string ResolveEditorResourcesPath()
+    {
+        // 開発時: bin/Debug/net8.0-windows/ → editor/resources/
+        var devPath = Path.GetFullPath(
+            Path.Combine(AppDomain.CurrentDomain.BaseDirectory, @"..\..\..\resources"));
+        if (Directory.Exists(devPath)) return devPath;
+
+        // リリース時: exe の隣の resources/
+        return Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "resources");
     }
 
     private static string ResolveRuntimePath()
@@ -242,7 +263,11 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         ApplyDarkTitleBar();
         EditorLog.Write($"OnWindowLoaded — RuntimeExePath={RuntimeExePath}");
 
-        _runtimeManager = new RuntimeManager(RuntimeExePath) { AssetsPath = AssetsPath };
+        _runtimeManager = new RuntimeManager(RuntimeExePath)
+        {
+            AssetsPath          = AssetsPath,
+            EditorResourcesPath = EditorResourcesPath,
+        };
         _runtimeManager.StateChanged         += OnStateChanged;
         _runtimeManager.RuntimeHwndAvailable += OnRuntimeHwndAvailable;
         _runtimeManager.RuntimeMoveStart     += () => { _isDragging = true;  Dispatcher.BeginInvoke(ReleasePlayClamp); };
@@ -256,6 +281,7 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         _runtimeManager.SceneModified                 += MarkDirty;
         _runtimeManager.ActorEditStarted              += OnActorEditStarted;
         _runtimeManager.ActorEditEnded                += OnActorEditEnded;
+        _runtimeManager.FpsReceived                   += OnFpsReceived;
 
         PanelHierarchy.SetRuntime(_runtimeManager);
         PanelHierarchy.ActorDfsSelected += id => PanelInspector.SelectActor(id);
@@ -604,6 +630,9 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         var state = _runtimeManager.State;
         if (state == EditorState.Edit)
         {
+            // 「開始シーンからプレイ」OFF の場合は現在開いているシーンを渡す
+            // ON の場合は null → ランタイムが project_settings.json の start_scene を使う
+            _runtimeManager.PlayScenePath = _playFromStartScene ? null : _currentScenePath;
             try { await _runtimeManager.PlayAsync(); }
             catch (Exception ex)
             {
@@ -622,6 +651,13 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
     {
         if (_runtimeManager is null) return;
         _runtimeManager.Stop();
+    }
+
+    /// <summary>「開始シーンからプレイ」チェックボックスの変化を受け取る。</summary>
+    private void OnPlayFromStartSceneChanged(object sender, RoutedEventArgs e)
+    {
+        _playFromStartScene = ChkPlayFromStartScene.IsChecked == true;
+        EditorLog.Write($"PlayFromStartScene = {_playFromStartScene}");
     }
 
     /// <summary>
@@ -1195,7 +1231,13 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
 
     private nint LLKeyboardCallback(int nCode, nint wParam, nint lParam)
     {
-        if (nCode >= 0 && IsEditorForeground())
+        // IsEditorForeground() が false になるケース:
+        //   Pause中に埋め込みPlayウィンドウがフォーカスを持つと
+        //   GetForegroundWindow() がランタイムPIDを返すため false になる。
+        // IsCamInputActive() が true の場合（Edit/Pause）はカメラキー転送を
+        // 行う必要があるため、フォーカス不問でブロックに入る。
+        // 内部の Ctrl+Z 等は別途 State == Edit で保護されているので問題なし。
+        if (nCode >= 0 && (IsEditorForeground() || IsCamInputActive()))
         {
             var kb     = Marshal.PtrToStructure<KBDLLHOOKSTRUCT>(lParam);
             var vk     = kb.vkCode;
@@ -1878,6 +1920,7 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
                 ViewportDocumentContent.Visibility = Visibility.Visible;
                 TxtViewportStatus.Text             = "";
                 ViewportLoadingOverlay.Visibility  = Visibility.Visible;
+                Activate();
                 break;
 
             case EditorState.Play:
@@ -1924,5 +1967,22 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
                 ViewportLoadingOverlay.Visibility = Visibility.Visible;
                 break;
         }
+
+        // FPS 表示: Edit / Pause / Play のときのみ表示（Idle / Building では非表示）
+        var showFps = state == EditorState.Edit
+                   || state == EditorState.Pause
+                   || state == EditorState.Play;
+        TxtFps.Visibility = showFps ? Visibility.Visible : Visibility.Collapsed;
+        if (!showFps) TxtFps.Text = "";
+    }
+
+    /// <summary>ランタイムからFPS通知を受け取ったときにUI上の表示を更新する。</summary>
+    private void OnFpsReceived(float fps)
+    {
+        // IPC コールバックはバックグラウンドスレッドから来るため Dispatcher 経由で更新する
+        Dispatcher.BeginInvoke(() =>
+        {
+            TxtFps.Text = $"FPS: {fps:F1}";
+        });
     }
 }

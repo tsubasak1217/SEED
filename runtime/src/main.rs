@@ -42,5 +42,13 @@ fn parse_args() -> LaunchArgs {
         .find(|a| a.starts_with("--assets-root="))
         .map(|a| a["--assets-root=".len()..].to_string());
 
-    LaunchArgs { parent_hwnd, mode, pipe_name, assets_root }
+    let editor_resources = raw.iter()
+        .find(|a| a.starts_with("--editor-resources="))
+        .map(|a| a["--editor-resources=".len()..].to_string());
+
+    let scene_path = raw.iter()
+        .find(|a| a.starts_with("--scene="))
+        .map(|a| a["--scene=".len()..].to_string());
+
+    LaunchArgs { parent_hwnd, mode, pipe_name, assets_root, editor_resources, scene_path }
 }

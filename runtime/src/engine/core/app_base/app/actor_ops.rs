@@ -116,11 +116,7 @@ impl App {
     /// CanvasTransform（アンカー・ピボット・position）をそのまま使用して配置する。
     /// いずれも world_line=0 のシーンに追加し、配置操作は Undo/Redo の対象。
     pub(super) fn handle_drop_actor(&mut self, path: &str, spawn_pos: [f32; 3]) {
-        eprintln!("[Drop] handle_drop_actor path={path} spawn_pos={spawn_pos:?}");
-        if self.draw_ctx.is_none() || self.scene.is_none() {
-            eprintln!("[Drop] ABORTED: draw_ctx or scene is None");
-            return;
-        }
+        if self.draw_ctx.is_none() || self.scene.is_none() { return; }
 
         // Undo のために配置前の world_line=0 アクターをスナップショットする
         let before_actors = self.snapshot_actors_for_wl(0);
@@ -143,20 +139,15 @@ impl App {
 
         match load_result {
             Ok(actor) => {
-                eprintln!("[Drop] load_actor_into OK entity={:?} name={}", actor.entity, actor.name);
-
                 if actor.is_2d() {
                     // ── 2D キャンバスアクター ─────────────────────────────────────
                     // ドロップ位置は無視する。
                     // アクターファイルに保存された CanvasTransform（position/anchor/pivot/scale）を
                     // そのまま使用して配置場所を決定する。
-                    eprintln!("[Drop] 2D actor: using CanvasTransform from file (ignoring spawn_pos)");
                     // world_line=0 を 2D キャンバスモードとして登録する。
-                    // これにより次フレームからスプライト描画が有効になる。
                     self.canvas_world_lines.insert(0);
                     let scene = self.scene.as_mut().unwrap();
                     scene.actors.push(actor);
-                    eprintln!("[Drop] 2D actors.len()={}", scene.actors.len());
                 } else {
                     // ── 3D アクター ──────────────────────────────────────────────
                     // ドロップ位置に ActorTransform を設定し、instance_mats を同期する
@@ -181,7 +172,6 @@ impl App {
                         }
                     }
                     scene.actors.push(actor);
-                    eprintln!("[Drop] 3D actors.len()={}", scene.actors.len());
                 }
 
                 // 配置後スナップショットを取得し、Undo 履歴に記録する

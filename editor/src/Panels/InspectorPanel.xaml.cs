@@ -281,7 +281,11 @@ public partial class InspectorPanel : UserControl
         float SpriteR = 1f, float SpriteG = 1f, float SpriteB = 1f, float SpriteA = 1f,
         float SpriteW = 100f, float SpriteH = 100f,
         // InputMapComponent 用フィールド
-        string InputMapPath = "");
+        string InputMapPath = "",
+        // CameraComponent 用フィールド
+        float FovYDeg = 45f, float CamNear = 0.1f, float CamFar = 1000f,
+        bool  IsMain  = false,
+        float CamCR = 0.1f, float CamCG = 0.1f, float CamCB = 0.1f, float CamCA = 1f);
     private List<SlotInfo> _slotInfos = new();
 
     private void BuildActorComponentList(string json)
@@ -373,11 +377,22 @@ public partial class InspectorPanel : UserControl
             var sprH = comp.TryGetProperty("sprite_h", out var sh) ? sh.GetSingle() : 100f;
             // InputMapComponent 用: アセットパス
             var inputMapPath = comp.TryGetProperty("asset_path", out var ap) ? ap.GetString() ?? "" : "";
+            // CameraComponent 用: FOV / near / far / is_main / clear_color
+            var fovYDeg = comp.TryGetProperty("fov_y_deg", out var fov) ? fov.GetSingle() : 45f;
+            var camNear = comp.TryGetProperty("near",      out var nr)  ? nr.GetSingle()  : 0.1f;
+            var camFar  = comp.TryGetProperty("far",       out var fr)  ? fr.GetSingle()  : 1000f;
+            var isMain  = comp.TryGetProperty("is_main",   out var im)  ? ReadJsonBool(im, false) : false;
+            var camCR   = comp.TryGetProperty("cr",        out var ccr) ? ccr.GetSingle() : 0.1f;
+            var camCG   = comp.TryGetProperty("cg",        out var ccg) ? ccg.GetSingle() : 0.1f;
+            var camCB   = comp.TryGetProperty("cb",        out var ccb) ? ccb.GetSingle() : 0.1f;
+            var camCA   = comp.TryGetProperty("ca",        out var cca) ? cca.GetSingle() : 1.0f;
 
             var info = new SlotInfo(slotIdx, compName, compType, modelPath, width, height,
                 scaleTransform, scaleSize, autoScale,
                 texPath, sprR, sprG, sprB, sprA, sprW, sprH,
-                InputMapPath: inputMapPath);
+                InputMapPath: inputMapPath,
+                FovYDeg: fovYDeg, CamNear: camNear, CamFar: camFar, IsMain: isMain,
+                CamCR: camCR, CamCG: camCG, CamCB: camCB, CamCA: camCA);
             _slotInfos.Add(info);
 
             // 上部チップリストに追加
@@ -531,6 +546,7 @@ public partial class InspectorPanel : UserControl
             "CanvasComponent"   => BuildCanvasSlotContent(info),
             "SpriteComponent"   => BuildSpriteSlotContent(info),
             "InputMapComponent" => BuildInputMapSlotContent(info),
+            "CameraComponent"   => BuildCameraSlotContent(info),
             _ => new TextBlock
             {
                 Text       = $"未対応のコンポーネント: {info.TypeId}",
@@ -539,6 +555,108 @@ public partial class InspectorPanel : UserControl
                 Margin     = new Thickness(0, 4, 0, 4),
             },
         };
+
+    // ── CameraComponent inspector ─────────────────────────────
+
+    /// <summary>CameraComponent のインスペクター UI を構築して返す。</summary>
+    private UIElement BuildCameraSlotContent(SlotInfo info)
+    {
+        var sp = new StackPanel { Margin = new Thickness(0, 4, 0, 4) };
+
+        // FOV（垂直視野角）
+        var rowFov = BuildLabeledNumberRow("FOV (垂直°)", info.FovYDeg);
+        sp.Children.Add(rowFov.element);
+        void CommitFov()
+        {
+            if (_currentActorId < 0) return;
+            if (!float.TryParse(rowFov.textBox.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) return;
+            _runtime?.SendToRuntime(FormattableString.Invariant($"SET_CAMERA_FOV:{_currentActorId},{info.SlotIdx},{v}"));
+        }
+        rowFov.textBox.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { CommitFov(); e.Handled = true; } };
+        rowFov.textBox.LostFocus += (_, _) => CommitFov();
+
+        // ニアクリップ
+        var rowNear = BuildLabeledNumberRow("Near", info.CamNear);
+        sp.Children.Add(rowNear.element);
+        void CommitNear()
+        {
+            if (_currentActorId < 0) return;
+            if (!float.TryParse(rowNear.textBox.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) return;
+            _runtime?.SendToRuntime(FormattableString.Invariant($"SET_CAMERA_NEAR:{_currentActorId},{info.SlotIdx},{v}"));
+        }
+        rowNear.textBox.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { CommitNear(); e.Handled = true; } };
+        rowNear.textBox.LostFocus += (_, _) => CommitNear();
+
+        // ファークリップ
+        var rowFar = BuildLabeledNumberRow("Far", info.CamFar);
+        sp.Children.Add(rowFar.element);
+        void CommitFar()
+        {
+            if (_currentActorId < 0) return;
+            if (!float.TryParse(rowFar.textBox.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) return;
+            _runtime?.SendToRuntime(FormattableString.Invariant($"SET_CAMERA_FAR:{_currentActorId},{info.SlotIdx},{v}"));
+        }
+        rowFar.textBox.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { CommitFar(); e.Handled = true; } };
+        rowFar.textBox.LostFocus += (_, _) => CommitFar();
+
+        // メインカメラフラグ
+        var mainRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 4, 0, 2) };
+        mainRow.Children.Add(new TextBlock
+        {
+            Text       = "Is Main",
+            Foreground = new SolidColorBrush(Color.FromRgb(0xAA, 0xAA, 0xAA)),
+            FontSize   = 11,
+            Width      = 90,
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+        var mainCheck = new CheckBox
+        {
+            IsChecked         = info.IsMain,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin            = new Thickness(4, 0, 0, 0),
+        };
+        mainCheck.Checked   += (_, _) => _runtime?.SendToRuntime($"SET_CAMERA_MAIN:{_currentActorId},{info.SlotIdx},1");
+        mainCheck.Unchecked += (_, _) => _runtime?.SendToRuntime($"SET_CAMERA_MAIN:{_currentActorId},{info.SlotIdx},0");
+        mainRow.Children.Add(mainCheck);
+        sp.Children.Add(mainRow);
+
+        // クリアカラー
+        float curR = info.CamCR, curG = info.CamCG, curB = info.CamCB, curA = info.CamCA;
+        var colorSwatch = new Border
+        {
+            Width           = 120,
+            Height          = 22,
+            Margin          = new Thickness(0, 2, 0, 2),
+            BorderBrush     = new SolidColorBrush(Color.FromRgb(0x55, 0x55, 0x55)),
+            BorderThickness = new Thickness(1),
+            Background      = new SolidColorBrush(
+                Color.FromArgb((byte)(curA * 255), (byte)(curR * 255), (byte)(curG * 255), (byte)(curB * 255))),
+            Cursor          = Cursors.Hand,
+        };
+        var clearRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 4, 0, 2) };
+        clearRow.Children.Add(new TextBlock
+        {
+            Text       = "クリアカラー",
+            Foreground = new SolidColorBrush(Color.FromRgb(0xAA, 0xAA, 0xAA)),
+            FontSize   = 11,
+            Width      = 90,
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+        clearRow.Children.Add(colorSwatch);
+        colorSwatch.MouseLeftButtonDown += (_, _) =>
+        {
+            var result = ColorPickerWindow.ShowDialog(Window.GetWindow(this), curR, curG, curB, curA);
+            if (result is null) return;
+            (curR, curG, curB, curA) = result.Value;
+            colorSwatch.Background = new SolidColorBrush(
+                Color.FromArgb((byte)(curA * 255), (byte)(curR * 255), (byte)(curG * 255), (byte)(curB * 255)));
+            _runtime?.SendToRuntime(FormattableString.Invariant(
+                $"SET_CAMERA_CLEAR_COLOR:{_currentActorId},{info.SlotIdx},{curR},{curG},{curB},{curA}"));
+        };
+        sp.Children.Add(clearRow);
+
+        return sp;
+    }
 
     // ── InputMapComponent inspector ───────────────────────────
 

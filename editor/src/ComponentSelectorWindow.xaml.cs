@@ -55,7 +55,10 @@ public partial class ComponentSelectorWindow : Window
         }),
         ("ライト", new()),
         ("エフェクト", new()),
-        ("カメラ", new()),
+        ("カメラ", new()
+        {
+            new("CameraComponent", "Camera", "Play モードで使用するゲームカメラ", ActorTarget.Actor3D),
+        }),
         ("物理", new()),
         ("サウンド", new()),
         ("入力", new()
@@ -261,6 +264,7 @@ public partial class ComponentSelectorWindow : Window
         "CanvasComponent"   => "Canvas",
         "SpriteComponent"   => "Sprite",
         "InputMapComponent" => "InputMap",
+        "CameraComponent"   => "Camera",
         _                   => typeId,
     };
 
