@@ -23,6 +23,8 @@ public partial class ComponentSelectorWindow : Window
     private readonly bool            _isActor2D;       // 2D アクターかどうか
     /// <summary>追加上限に達しているため選択不可のコンポーネント種別 ID セット。</summary>
     private readonly HashSet<string> _disabledTypes;
+    /// <summary>ロード済みプラグイン名リスト（"プラグイン" カテゴリのエントリに使用）。</summary>
+    private readonly IReadOnlyList<string> _pluginNames;
 
     private string? _selectedType;
     private Border? _selectedBorder;
@@ -59,7 +61,10 @@ public partial class ComponentSelectorWindow : Window
         {
             new("CameraComponent", "Camera", "Play モードで使用するゲームカメラ", ActorTarget.Actor3D),
         }),
-        ("物理", new()),
+        ("物理", new()
+        {
+            new("ColliderComponent", "Collider", "衝突判定形状・リジッドボディをアクターにアタッチ（Box・Sphere・Capsule、重力有無は内部で設定）", ActorTarget.Actor3D),
+        }),
         ("サウンド", new()),
         ("入力", new()
         {
@@ -71,6 +76,19 @@ public partial class ComponentSelectorWindow : Window
         }),
     };
 
+    /// <summary>
+    /// ロード済みプラグインリストから動的にカテゴリエントリを生成して返す。
+    /// プラグインがない場合は空のカテゴリを返す（「今後追加」として表示される）。
+    /// </summary>
+    private List<ComponentEntry> BuildPluginEntries() =>
+        _pluginNames
+            .Select(name => new ComponentEntry(
+                $"Plugin:{name}",
+                name,
+                $"{name} プラグインをアクターにアタッチ",
+                ActorTarget.Common))
+            .ToList();
+
     private static readonly SolidColorBrush BrushSelected  = new(Color.FromRgb(0x1A, 0x2A, 0x3A));
     private static readonly SolidColorBrush BrushHover     = new(Color.FromRgb(0x28, 0x28, 0x28));
     private static readonly SolidColorBrush BrushTransp    = Brushes.Transparent;
@@ -78,13 +96,15 @@ public partial class ComponentSelectorWindow : Window
 
     public ComponentSelectorWindow(
         RuntimeManager runtime, int actorDfsId,
-        bool isActor2D = false, HashSet<string>? disabledTypes = null)
+        bool isActor2D = false, HashSet<string>? disabledTypes = null,
+        IReadOnlyList<string>? pluginNames = null)
     {
         InitializeComponent();
-        _runtime       = runtime;
-        _actorDfsId    = actorDfsId;
-        _isActor2D     = isActor2D;
+        _runtime      = runtime;
+        _actorDfsId   = actorDfsId;
+        _isActor2D    = isActor2D;
         _disabledTypes = disabledTypes ?? new HashSet<string>();
+        _pluginNames  = pluginNames ?? Array.Empty<string>();
         BuildCategoryList(filter: "");
     }
 
@@ -113,10 +133,12 @@ public partial class ComponentSelectorWindow : Window
         var prevType = _selectedType;
 
         // 検索中はフラットリスト表示（カテゴリヘッダーなし）
+        // プラグインカテゴリを動的追加して全カテゴリを対象に検索する
         if (!string.IsNullOrEmpty(filter))
         {
             var matches = Categories
                 .SelectMany(c => c.Items)
+                .Concat(BuildPluginEntries())
                 .Where(i => EntryMatchesActor(i)
                          && (i.Label.Contains(filter, StringComparison.OrdinalIgnoreCase)
                           || i.Description.Contains(filter, StringComparison.OrdinalIgnoreCase)))
@@ -145,7 +167,11 @@ public partial class ComponentSelectorWindow : Window
         }
 
         // 通常表示: カテゴリヘッダー + 開閉
-        foreach (var (catName, items) in Categories)
+        // 静的カテゴリリストにプラグインカテゴリを動的追加して結合する
+        var allCategories = Categories
+            .Append(("プラグイン", BuildPluginEntries()))
+            .ToList();
+        foreach (var (catName, items) in allCategories)
         {
             bool collapsed = _collapsedCategories.Contains(catName);
 
@@ -259,13 +285,16 @@ public partial class ComponentSelectorWindow : Window
 
     private static string GetDefaultName(string typeId) => typeId switch
     {
-        "ModelComponent"    => "Model",
-        "ScriptComponent"   => "Script",
-        "CanvasComponent"   => "Canvas",
-        "SpriteComponent"   => "Sprite",
-        "InputMapComponent" => "InputMap",
-        "CameraComponent"   => "Camera",
-        _                   => typeId,
+        "ModelComponent"     => "Model",
+        "ScriptComponent"    => "Script",
+        "CanvasComponent"    => "Canvas",
+        "SpriteComponent"    => "Sprite",
+        "InputMapComponent"  => "InputMap",
+        "CameraComponent"    => "Camera",
+        "ColliderComponent"  => "Collider",
+        // Plugin:{name} → プラグイン名をデフォルト名とする
+        _ when typeId.StartsWith("Plugin:", StringComparison.Ordinal) => typeId["Plugin:".Length..],
+        _                    => typeId,
     };
 
     // ── イベント ─────────────────────────────────────────────

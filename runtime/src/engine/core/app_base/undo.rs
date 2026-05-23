@@ -643,3 +643,46 @@ fn find_entity_in_children(actor: &Actor, dfs_id: u32, c: &mut u32) -> Option<En
     }
     None
 }
+
+// ============================================================
+//  PluginFieldCommand — プラグインフィールド値の変更 Undo コマンド
+// ============================================================
+
+use crate::engine::components::PluginComponent;
+
+/// プラグインコンポーネントのフィールド値を 1 つ変更する Undo コマンド。
+///
+/// slot_entity を直接保持することで find_actor_by_dfs を不要にしている。
+/// execute: new_value を適用
+/// undo:    old_value に戻す
+pub struct PluginFieldCommand {
+    /// スロット専用 ECS エンティティ（PluginComponent が格納されている）
+    pub slot_entity:  Entity,
+    /// 変更フィールドのキー
+    pub key:          String,
+    /// 変更前の値
+    pub old_value:    String,
+    /// 変更後の値
+    pub new_value:    String,
+    /// インスペクタ再送信用 (world_line, actor_dfs_id)
+    pub world_line:   u32,
+    pub actor_dfs_id: u32,
+}
+
+impl Command for PluginFieldCommand {
+    fn execute(&mut self, scene: &mut Scene) {
+        if let Some(pc) = scene.world.get_mut::<PluginComponent>(self.slot_entity) {
+            pc.set_field(&self.key, &self.new_value);
+        }
+    }
+
+    fn undo(&mut self, scene: &mut Scene) {
+        if let Some(pc) = scene.world.get_mut::<PluginComponent>(self.slot_entity) {
+            pc.set_field(&self.key, &self.old_value);
+        }
+    }
+
+    fn actor_inspect_notify(&self) -> Option<(u32, u32)> {
+        Some((self.world_line, self.actor_dfs_id))
+    }
+}

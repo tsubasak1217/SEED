@@ -15,6 +15,7 @@ using System.Reflection;
 using AvalonDock.Layout;
 using AvalonDock.Layout.Serialization;
 using Microsoft.Win32;
+using SEEDEditor.AI;
 using SEEDEditor.Native;
 using SEEDEditor.Panels;
 using SEEDEditor.Runtime;
@@ -56,6 +57,14 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
     // ── Play 設定 ──────────────────────────────────────────────
     /// <summary>true のとき project_settings.json の開始シーンから Play する。false は現在のシーン。</summary>
     private bool _playFromStartScene = false;
+    /// <summary>true のとき Play 中もコライダーのワイヤーフレームを描画する。</summary>
+    private bool _playColliderDraw = false;
+
+    // ── 編集時物理シミュレーション設定 ────────────────────────────
+    /// <summary>編集モードで物理シミュレーションを動作させるかどうか。</summary>
+    private bool _editPhysicsEnabled = false;
+    /// <summary>編集時物理で RigidBody（重力・ダイナミクス）も有効にするかどうか。</summary>
+    private bool _editPhysicsWithRigidbody = false;
 
     // ── シーン保存状態 ─────────────────────────────────────────
     /// <summary>現在開いているシーンのファイルパス。null = 新規未保存シーン。</summary>
@@ -93,6 +102,7 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
     private static readonly string AssetsPath          = ResolveAssetsPath();
     private static readonly string SettingsDir         = ResolveSettingsDir();
     private static readonly string EditorResourcesPath = ResolveEditorResourcesPath();
+    private static readonly string EditorPluginsPath   = ResolveEditorPluginsPath();
 
     private static string ResolveSettingsDir()
     {
@@ -116,6 +126,24 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
 
         // リリース時: exe の隣の resources/
         return Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "resources");
+    }
+
+    /// <summary>
+    /// エディタ同梱のプラグインライブラリディレクトリを解決する。
+    /// 開発時は bin/Debug/net8.0-windows/ → editor/plugins/
+    /// リリース時は exe の隣の plugins/
+    /// </summary>
+    private static string ResolveEditorPluginsPath()
+    {
+        // 開発時: bin/Debug/net8.0-windows/ → editor/plugins/
+        var devPath = Path.GetFullPath(
+            Path.Combine(AppDomain.CurrentDomain.BaseDirectory, @"..\..\..\plugins"));
+        if (Directory.Exists(devPath)) return devPath;
+
+        // リリース時: exe の隣の plugins/
+        var relPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "plugins");
+        Directory.CreateDirectory(relPath);
+        return relPath;
     }
 
     private static string ResolveRuntimePath()
@@ -160,6 +188,8 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
     private ViewportOleDropTarget? _viewportDropTarget;
     private Window?                _vpDragOverlay;
     private RuntimeManager?        _runtimeManager;
+    /// <summary>AI アシスタントパネルのビルド済み UI 要素（LoadLayout でコンテンツを復元するために保持）</summary>
+    private UIElement?             _aiPanelUi;
 
     public MainWindow()
     {
@@ -213,6 +243,7 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         _runtimeManager.FpsReceived                   += OnFpsReceived;
 
         PanelHierarchy.SetRuntime(_runtimeManager);
+        PanelHierarchy.SetAssetsPath(AssetsPath);
         PanelHierarchy.ActorDfsSelected += id => PanelInspector.SelectActor(id);
         PanelInspector.SetRuntime(_runtimeManager);
         PanelInspector.SetAssetsPath(AssetsPath);
@@ -221,6 +252,12 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         PanelProject.SceneFileOpened    += OnSceneFileOpened;
         PanelProject.ActorFileOpened    += OnActorFileOpened;
         PanelProject.InputMapFileOpened += OnInputMapFileOpened;
+
+        // AI アシスタントパネルを初期化する。
+        // LoadLayout() がこの後に呼ばれてコンテンツを上書きするため、
+        // _aiPanelUi にビルド済み要素を保持して LoadLayout 内で参照する。
+        var aiPanel = new AIAssistantPanel(_runtimeManager, AssetsPath);
+        _aiPanelUi = aiPanel.Build();
 
         _viewportHost = new ViewportHost();
         _viewportHost.ContainerCreated += OnContainerCreated;
@@ -330,7 +367,7 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         if (!IsMouseOverViewportHwnd()) return;
 
         var actorPaths = paths
-            .Where(p => p.EndsWith(".actor", StringComparison.OrdinalIgnoreCase))
+            .Where(p => IsActorFile(p))
             .ToList();
         if (actorPaths.Count == 0) return;
 
@@ -424,16 +461,21 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         {
             var paths = data.GetData("SEEDProjectPaths") as string[];
             if (paths != null)
-                return paths.Where(p => p.EndsWith(".actor", StringComparison.OrdinalIgnoreCase));
+                return paths.Where(p => IsActorFile(p));
         }
         if (data.GetDataPresent(DataFormats.FileDrop))
         {
             var paths = data.GetData(DataFormats.FileDrop) as string[];
             if (paths != null)
-                return paths.Where(p => p.EndsWith(".actor", StringComparison.OrdinalIgnoreCase));
+                return paths.Where(p => IsActorFile(p));
         }
         return Enumerable.Empty<string>();
     }
+
+    /// <summary>.actor / .actor2d いずれかの拡張子を持つパスかを返す。</summary>
+    private static bool IsActorFile(string path)
+        => path.EndsWith(".actor",   StringComparison.OrdinalIgnoreCase)
+        || path.EndsWith(".actor2d", StringComparison.OrdinalIgnoreCase);
 
     // ── Win32 OLE DropTarget（ビューポート HWND への直接ドロップ）──
 
@@ -525,7 +567,7 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
             {
                 var paths = data.GetData("SEEDProjectPaths") as string[];
                 if (paths != null)
-                    return paths.Where(p => p.EndsWith(".actor", StringComparison.OrdinalIgnoreCase));
+                    return paths.Where(p => IsActorFile(p));
             }
             return Enumerable.Empty<string>();
         }
@@ -559,9 +601,31 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         var state = _runtimeManager.State;
         if (state == EditorState.Edit)
         {
-            // 「開始シーンからプレイ」OFF の場合は現在開いているシーンを渡す
-            // ON の場合は null → ランタイムが project_settings.json の start_scene を使う
-            _runtimeManager.PlayScenePath = _playFromStartScene ? null : _currentScenePath;
+            if (_playFromStartScene)
+            {
+                // 「開始シーンからプレイ」ON: null を渡してランタイムに start_scene を使わせる
+                _runtimeManager.PlayScenePath = null;
+            }
+            else
+            {
+                // 現在の Edit ランタイムのシーン状態（未保存変更を含む）を
+                // 一時ファイルへ保存してから Play する。
+                // これによりファイル保存なしでも常に最新状態で実行できる。
+                var tempPath = await _runtimeManager.SaveCurrentSceneToTempAsync();
+                if (tempPath is null)
+                {
+                    // 一時保存に失敗した場合はファイル保存済みのパスにフォールバックする
+                    EditorLog.Write("OnPlayPause — 一時保存失敗。_currentScenePath にフォールバック");
+                    _runtimeManager.PlayScenePath = _currentScenePath;
+                }
+                else
+                {
+                    _runtimeManager.PlayScenePath = tempPath;
+                }
+            }
+
+            // Play 起動フラグを設定してから PlayAsync を呼ぶ
+            _runtimeManager.PlayColliderDraw = _playColliderDraw;
             try { await _runtimeManager.PlayAsync(); }
             catch (Exception ex)
             {
@@ -705,12 +769,13 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
             {
                 args.Content = args.Model.ContentId switch
                 {
-                    "hierarchy" => PanelHierarchy,
-                    "project"   => PanelProject,
-                    "inspector" => PanelInspector,
-                    "viewport"  => ViewportGrid,
-                    "output"    => PanelOutput,
-                    _           => null,
+                    "hierarchy"    => PanelHierarchy,
+                    "project"      => PanelProject,
+                    "inspector"    => PanelInspector,
+                    "viewport"     => ViewportGrid,
+                    "output"       => PanelOutput,
+                    "ai_assistant" => _aiPanelUi,
+                    _              => null,
                 };
             };
             using var reader = new StreamReader(path);
@@ -736,7 +801,7 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
     /// </summary>
     private void OnOpenProjectSettings(object sender, RoutedEventArgs e)
     {
-        var win = new SEEDEditor.ProjectSettings.ProjectSettingsWindow(AssetsPath)
+        var win = new SEEDEditor.ProjectSettings.ProjectSettingsWindow(AssetsPath, EditorPluginsPath)
         {
             Owner = this,
         };
@@ -1044,7 +1109,31 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
                         _runtimeManager?.SendToRuntime($"DELETE_RECURSIVE:{string.Join(",", ids)}");
                 });
                 menu.Items.Add(new Separator());
+                AddViewportMenuItem(menu, "アクタファイル化", null,
+                    () => PanelHierarchy.ShowExportActorDialog());
+                menu.Items.Add(new Separator());
             }
+            // ── アクタを追加 サブメニュー ──────────────────────
+            var addActorMenu = new MenuItem { Header = "アクタを追加" };
+
+            var add3DItem = new MenuItem { Header = "3Dアクタ" };
+            add3DItem.Click += (_, _) =>
+            {
+                PanelHierarchy.PrepareRenameAfterAdd();
+                _runtimeManager?.SendToRuntime("ADD_ACTOR:0,-1");
+            };
+            addActorMenu.Items.Add(add3DItem);
+
+            var add2DItem = new MenuItem { Header = "2Dアクタ" };
+            add2DItem.Click += (_, _) =>
+            {
+                PanelHierarchy.PrepareRenameAfterAdd();
+                _runtimeManager?.SendToRuntime("ADD_ACTOR_2D:0,-1");
+            };
+            addActorMenu.Items.Add(add2DItem);
+
+            menu.Items.Add(addActorMenu);
+            menu.Items.Add(new Separator());
             AddViewportMenuItem(menu, "ペースト", "Ctrl+V", () => _runtimeManager?.SendToRuntime("PASTE"));
 
             menu.PlacementTarget = ViewportDocumentContent;
@@ -1086,6 +1175,52 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
             else
                 ReleasePlayClamp();
         }
+    }
+
+    // ── 実行時コライダー描画 ────────────────────────────────────────
+
+    /// <summary>
+    /// "実行時コライダー描画" チェックボックスが変更されたときに呼ばれる。
+    /// フラグを更新し、IPC コマンドで Runtime に通知する。
+    /// </summary>
+    private void OnPlayColliderDrawChanged(object sender, RoutedEventArgs e)
+    {
+        _playColliderDraw = ChkPlayColliderDraw.IsChecked == true;
+        _runtimeManager?.SendToRuntime($"SET_PLAY_COLLIDER_DRAW:{(_playColliderDraw ? 1 : 0)}");
+    }
+
+    // ── 編集時の物理シミュレーション ────────────────────────────────
+
+    /// <summary>
+    /// "編集時の物理シミュレーション" チェックボックスが変更されたときに呼ばれる。
+    /// RigidBody サブパネルの表示を切り替え、IPC コマンドで Runtime に通知する。
+    /// </summary>
+    private void OnEditPhysicsChanged(object sender, RoutedEventArgs e)
+    {
+        _editPhysicsEnabled = ChkEditPhysics.IsChecked == true;
+        // RigidBody サブオプションの表示・非表示を切り替える
+        PnlEditPhysicsRigidbody.Visibility = _editPhysicsEnabled
+            ? System.Windows.Visibility.Visible
+            : System.Windows.Visibility.Collapsed;
+        // 無効化時は RigidBody チェックもリセットする
+        if (!_editPhysicsEnabled)
+        {
+            ChkEditPhysicsRigidbody.IsChecked = false;
+            _editPhysicsWithRigidbody = false;
+        }
+        _runtimeManager?.SendToRuntime(
+            $"SET_EDIT_PHYSICS:{(_editPhysicsEnabled ? 1 : 0)},{(_editPhysicsWithRigidbody ? 1 : 0)}");
+    }
+
+    /// <summary>
+    /// "RigidBody" サブチェックボックスが変更されたときに呼ばれる。
+    /// フラグを更新し、IPC コマンドで Runtime に通知する。
+    /// </summary>
+    private void OnEditPhysicsRigidbodyChanged(object sender, RoutedEventArgs e)
+    {
+        _editPhysicsWithRigidbody = ChkEditPhysicsRigidbody.IsChecked == true;
+        _runtimeManager?.SendToRuntime(
+            $"SET_EDIT_PHYSICS:{(_editPhysicsEnabled ? 1 : 0)},{(_editPhysicsWithRigidbody ? 1 : 0)}");
     }
 
     // ── Play 時カーソルクランプ（IPC 経由で Rust 側が毎フレーム適用）──────
@@ -1423,6 +1558,8 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
     /// </summary>
     private static bool DetectActorIs2D(string path)
     {
+        // .actor2d 拡張子は定義上 2D アクター。JSON 解析不要。
+        if (path.EndsWith(".actor2d", StringComparison.OrdinalIgnoreCase)) return true;
         try
         {
             var json = System.IO.File.ReadAllText(path);
@@ -1803,6 +1940,14 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         var spd = Math.Round(SldCamSpeed.Value, 2);
         TbSpeedInput.Text = $"{spd:F1}";
         _runtimeManager?.SendToRuntime($"CAM_SPEED:{spd.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
+        // 編集時物理設定は Edit runtime にのみ送信する（Play runtime へ送ると物理スレッドが停止する）
+        if (_runtimeManager?.State == EditorState.Edit)
+        {
+            _runtimeManager?.SendToRuntime(
+                $"SET_EDIT_PHYSICS:{(_editPhysicsEnabled ? 1 : 0)},{(_editPhysicsWithRigidbody ? 1 : 0)}");
+        }
+        // コライダー描画は Play/Edit 両方で送信する
+        _runtimeManager?.SendToRuntime($"SET_PLAY_COLLIDER_DRAW:{(_playColliderDraw ? 1 : 0)}");
     }
 
     private void ReleaseAllCamKeys()

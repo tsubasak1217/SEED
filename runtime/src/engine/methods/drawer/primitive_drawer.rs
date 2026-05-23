@@ -130,10 +130,18 @@ impl LineBatch {
     }
 
     pub fn add_sphere(&mut self, sphere: &Sphere, segments: usize, color: [f32; 4]) {
-        let cx = sphere.center.x;
-        let cy = sphere.center.y;
-        let cz = sphere.center.z;
-        let r  = sphere.radius;
+        self.add_sphere_at(
+            [sphere.center.x, sphere.center.y, sphere.center.z],
+            sphere.radius,
+            segments,
+            color,
+        );
+    }
+
+    /// 中心と半径を直接指定して球の 3 大円ワイヤーフレームを追加する。
+    pub fn add_sphere_at(&mut self, center: [f32; 3], radius: f32, segments: usize, color: [f32; 4]) {
+        let [cx, cy, cz] = center;
+        let r = radius;
         let n = segments.max(4);
         for i in 0..n {
             let t0 = 2.0 * PI * i as f32 / n as f32;
@@ -141,8 +149,8 @@ impl LineBatch {
             let (s0, c0) = t0.sin_cos();
             let (s1, c1) = t1.sin_cos();
             self.add_line(
-                [cx + r*c0, cy,       cz + r*s0],
-                [cx + r*c1, cy,       cz + r*s1], color,
+                [cx + r*c0, cy,        cz + r*s0],
+                [cx + r*c1, cy,        cz + r*s1], color,
             );
             self.add_line(
                 [cx + r*c0, cy + r*s0, cz],
@@ -152,6 +160,306 @@ impl LineBatch {
                 [cx,        cy + r*s0, cz + r*c0],
                 [cx,        cy + r*s1, cz + r*c1], color,
             );
+        }
+    }
+
+    /// OBB（有向バウンディングボックス）ワイヤーフレームを追加する。
+    ///
+    /// - `center`      : ワールド空間での中心座標
+    /// - `rotation`    : クォータニオン [x, y, z, w]
+    /// - `half_extents`: ローカル各軸の半サイズ（スケール適用済み）
+    /// - `color`       : 線の色
+    pub fn add_obb(
+        &mut self,
+        center:       [f32; 3],
+        rotation:     [f32; 4],
+        half_extents: [f32; 3],
+        color:        [f32; 4],
+    ) {
+        let [cx, cy, cz] = center;
+        let [hx, hy, hz] = half_extents;
+
+        // ローカル 8 コーナーを回転後にワールド座標へ変換
+        let corners: [[f32; 3]; 8] = [
+            [-hx, -hy, -hz], [ hx, -hy, -hz], [ hx,  hy, -hz], [-hx,  hy, -hz],
+            [-hx, -hy,  hz], [ hx, -hy,  hz], [ hx,  hy,  hz], [-hx,  hy,  hz],
+        ].map(|lp| {
+            let rp = rotate_quat(rotation, lp);
+            [cx + rp[0], cy + rp[1], cz + rp[2]]
+        });
+
+        // 前面・後面・側面 各 4 辺 = 計 12 辺
+        self.add_line(corners[0], corners[1], color); self.add_line(corners[1], corners[2], color);
+        self.add_line(corners[2], corners[3], color); self.add_line(corners[3], corners[0], color);
+        self.add_line(corners[4], corners[5], color); self.add_line(corners[5], corners[6], color);
+        self.add_line(corners[6], corners[7], color); self.add_line(corners[7], corners[4], color);
+        self.add_line(corners[0], corners[4], color); self.add_line(corners[1], corners[5], color);
+        self.add_line(corners[2], corners[6], color); self.add_line(corners[3], corners[7], color);
+    }
+
+    /// カプセルワイヤーフレームを追加する。
+    ///
+    /// - `pos`         : カプセル中心（ワールド空間）
+    /// - `rotation`    : クォータニオン [x, y, z, w]（Y 軸が長軸）
+    /// - `radius`      : 半径（スケール適用済み）
+    /// - `half_height` : 円筒部半高さ（スケール適用済み）
+    /// - `segments`    : 円周分割数（最小 4）
+    ///
+    /// 描画内容: 円筒端の 2 つの円リング + 縦接続線 4 本 + 両端の半球弧（各 2 平面）
+    pub fn add_capsule_wireframe(
+        &mut self,
+        pos:         [f32; 3],
+        rotation:    [f32; 4],
+        radius:      f32,
+        half_height: f32,
+        segments:    usize,
+        color:       [f32; 4],
+    ) {
+        let n = segments.max(4);
+
+        // ローカル Y 軸（長軸）をワールド空間に変換して両端球中心を求める
+        let up     = rotate_quat(rotation, [0.0, half_height, 0.0]);
+        let top    = [pos[0] + up[0], pos[1] + up[1], pos[2] + up[2]];
+        let bottom = [pos[0] - up[0], pos[1] - up[1], pos[2] - up[2]];
+
+        // 長軸の正規化ベクトル（半球弧の極方向として使用）
+        let up_len = (up[0]*up[0] + up[1]*up[1] + up[2]*up[2]).sqrt().max(1e-6);
+        let up_n = [up[0]/up_len, up[1]/up_len, up[2]/up_len];
+
+        // 長軸に直交する 2 基底ベクトル（円リング・半球弧描画用）
+        let (u, v_ax) = perp_basis(up);
+
+        // ─ 上下の円リング（円筒端の輪）──────────────────────────
+        for i in 0..n {
+            let t0 = 2.0 * PI * i as f32 / n as f32;
+            let t1 = 2.0 * PI * (i + 1) as f32 / n as f32;
+            let (s0, c0) = t0.sin_cos();
+            let (s1, c1) = t1.sin_cos();
+
+            let p0 = [
+                top[0] + radius * (u[0]*c0 + v_ax[0]*s0),
+                top[1] + radius * (u[1]*c0 + v_ax[1]*s0),
+                top[2] + radius * (u[2]*c0 + v_ax[2]*s0),
+            ];
+            let p1 = [
+                top[0] + radius * (u[0]*c1 + v_ax[0]*s1),
+                top[1] + radius * (u[1]*c1 + v_ax[1]*s1),
+                top[2] + radius * (u[2]*c1 + v_ax[2]*s1),
+            ];
+            self.add_line(p0, p1, color);
+
+            let q0 = [
+                bottom[0] + radius * (u[0]*c0 + v_ax[0]*s0),
+                bottom[1] + radius * (u[1]*c0 + v_ax[1]*s0),
+                bottom[2] + radius * (u[2]*c0 + v_ax[2]*s0),
+            ];
+            let q1 = [
+                bottom[0] + radius * (u[0]*c1 + v_ax[0]*s1),
+                bottom[1] + radius * (u[1]*c1 + v_ax[1]*s1),
+                bottom[2] + radius * (u[2]*c1 + v_ax[2]*s1),
+            ];
+            self.add_line(q0, q1, color);
+        }
+
+        // ─ 縦接続線（円筒の側面 4 本）──────────────────────────
+        const N_VERTICAL: usize = 4;
+        for i in 0..N_VERTICAL {
+            let t = 2.0 * PI * i as f32 / N_VERTICAL as f32;
+            let (s, c) = t.sin_cos();
+            let dx = radius * (u[0]*c + v_ax[0]*s);
+            let dy = radius * (u[1]*c + v_ax[1]*s);
+            let dz = radius * (u[2]*c + v_ax[2]*s);
+            self.add_line(
+                [top[0]+dx,    top[1]+dy,    top[2]+dz],
+                [bottom[0]+dx, bottom[1]+dy, bottom[2]+dz],
+                color,
+            );
+        }
+
+        // ─ 半球弧（u・v_ax 軸の 2 平面で各半円を描画）──────────
+        // half_n: 半円の分割数（segments の半分。最低 4 セグメント）
+        let half_n = (n / 2).max(4);
+
+        // (u, up_n) 平面と (v_ax, up_n) 平面の 2 平面で弧を描く
+        for &ax in &[u, v_ax] {
+            for i in 0..half_n {
+                let t0 = PI * i as f32 / half_n as f32;
+                let t1 = PI * (i + 1) as f32 / half_n as f32;
+                let (s0, c0) = t0.sin_cos();
+                let (s1, c1) = t1.sin_cos();
+
+                // 上半球弧: p(theta) = top + r*(cos(theta)*ax + sin(theta)*up_n)
+                //   theta=0    → top + r*ax        (赤道)
+                //   theta=PI/2 → top + r*up_n      (極)
+                //   theta=PI   → top - r*ax        (赤道反対側)
+                let tp0 = [
+                    top[0] + radius * (c0*ax[0] + s0*up_n[0]),
+                    top[1] + radius * (c0*ax[1] + s0*up_n[1]),
+                    top[2] + radius * (c0*ax[2] + s0*up_n[2]),
+                ];
+                let tp1 = [
+                    top[0] + radius * (c1*ax[0] + s1*up_n[0]),
+                    top[1] + radius * (c1*ax[1] + s1*up_n[1]),
+                    top[2] + radius * (c1*ax[2] + s1*up_n[2]),
+                ];
+                self.add_line(tp0, tp1, color);
+
+                // 下半球弧: p(theta) = bottom + r*(cos(theta)*ax - sin(theta)*up_n)
+                //   theta=0    → bottom + r*ax     (赤道)
+                //   theta=PI/2 → bottom - r*up_n   (下極)
+                //   theta=PI   → bottom - r*ax     (赤道反対側)
+                let bp0 = [
+                    bottom[0] + radius * (c0*ax[0] - s0*up_n[0]),
+                    bottom[1] + radius * (c0*ax[1] - s0*up_n[1]),
+                    bottom[2] + radius * (c0*ax[2] - s0*up_n[2]),
+                ];
+                let bp1 = [
+                    bottom[0] + radius * (c1*ax[0] - s1*up_n[0]),
+                    bottom[1] + radius * (c1*ax[1] - s1*up_n[1]),
+                    bottom[2] + radius * (c1*ax[2] - s1*up_n[2]),
+                ];
+                self.add_line(bp0, bp1, color);
+            }
+        }
+    }
+
+    /// シリンダーワイヤーフレームを追加する（Y 軸が長軸）。
+    ///
+    /// - `pos`         : シリンダー中心（ワールド空間）
+    /// - `rotation`    : クォータニオン [x, y, z, w]（Y 軸が長軸）
+    /// - `radius`      : 半径（スケール適用済み）
+    /// - `half_height` : 半高さ（スケール適用済み）
+    /// - `segments`    : 円周分割数（最小 4）
+    ///
+    /// 描画内容: 上下 2 つの円リング + 縦接続線 4 本
+    pub fn add_cylinder_wireframe(
+        &mut self,
+        pos:         [f32; 3],
+        rotation:    [f32; 4],
+        radius:      f32,
+        half_height: f32,
+        segments:    usize,
+        color:       [f32; 4],
+    ) {
+        let n = segments.max(4);
+
+        let up     = rotate_quat(rotation, [0.0, half_height, 0.0]);
+        let top    = [pos[0] + up[0], pos[1] + up[1], pos[2] + up[2]];
+        let bottom = [pos[0] - up[0], pos[1] - up[1], pos[2] - up[2]];
+        let (u, v_ax) = perp_basis(up);
+
+        // 上下の円リング
+        for i in 0..n {
+            let t0 = 2.0 * PI * i as f32 / n as f32;
+            let t1 = 2.0 * PI * (i + 1) as f32 / n as f32;
+            let (s0, c0) = t0.sin_cos();
+            let (s1, c1) = t1.sin_cos();
+
+            let p0 = [top[0]+radius*(u[0]*c0+v_ax[0]*s0), top[1]+radius*(u[1]*c0+v_ax[1]*s0), top[2]+radius*(u[2]*c0+v_ax[2]*s0)];
+            let p1 = [top[0]+radius*(u[0]*c1+v_ax[0]*s1), top[1]+radius*(u[1]*c1+v_ax[1]*s1), top[2]+radius*(u[2]*c1+v_ax[2]*s1)];
+            self.add_line(p0, p1, color);
+
+            let q0 = [bottom[0]+radius*(u[0]*c0+v_ax[0]*s0), bottom[1]+radius*(u[1]*c0+v_ax[1]*s0), bottom[2]+radius*(u[2]*c0+v_ax[2]*s0)];
+            let q1 = [bottom[0]+radius*(u[0]*c1+v_ax[0]*s1), bottom[1]+radius*(u[1]*c1+v_ax[1]*s1), bottom[2]+radius*(u[2]*c1+v_ax[2]*s1)];
+            self.add_line(q0, q1, color);
+        }
+
+        // 縦接続線（4 本）
+        const N_VERT_CYL: usize = 4;
+        for i in 0..N_VERT_CYL {
+            let t = 2.0 * PI * i as f32 / N_VERT_CYL as f32;
+            let (s, c) = t.sin_cos();
+            let dx = radius * (u[0]*c + v_ax[0]*s);
+            let dy = radius * (u[1]*c + v_ax[1]*s);
+            let dz = radius * (u[2]*c + v_ax[2]*s);
+            self.add_line(
+                [top[0]+dx,    top[1]+dy,    top[2]+dz],
+                [bottom[0]+dx, bottom[1]+dy, bottom[2]+dz],
+                color,
+            );
+        }
+    }
+
+    /// コーンワイヤーフレームを追加する（Y 軸が長軸、頂点が +Y 側）。
+    ///
+    /// - `pos`         : コーン中心（ワールド空間）
+    /// - `rotation`    : クォータニオン [x, y, z, w]（Y 軸が長軸）
+    /// - `radius`      : 底面半径（スケール適用済み）
+    /// - `half_height` : 半高さ（スケール適用済み）
+    /// - `segments`    : 円周分割数（最小 4）
+    ///
+    /// 描画内容: 底面の円リング + 頂点から底面への接続線 8 本
+    pub fn add_cone_wireframe(
+        &mut self,
+        pos:         [f32; 3],
+        rotation:    [f32; 4],
+        radius:      f32,
+        half_height: f32,
+        segments:    usize,
+        color:       [f32; 4],
+    ) {
+        let n = segments.max(4);
+
+        let up     = rotate_quat(rotation, [0.0, half_height, 0.0]);
+        let apex   = [pos[0] + up[0], pos[1] + up[1], pos[2] + up[2]];
+        let base_c = [pos[0] - up[0], pos[1] - up[1], pos[2] - up[2]];
+        let (u, v_ax) = perp_basis(up);
+
+        // 底面の円リング
+        for i in 0..n {
+            let t0 = 2.0 * PI * i as f32 / n as f32;
+            let t1 = 2.0 * PI * (i + 1) as f32 / n as f32;
+            let (s0, c0) = t0.sin_cos();
+            let (s1, c1) = t1.sin_cos();
+
+            let p0 = [base_c[0]+radius*(u[0]*c0+v_ax[0]*s0), base_c[1]+radius*(u[1]*c0+v_ax[1]*s0), base_c[2]+radius*(u[2]*c0+v_ax[2]*s0)];
+            let p1 = [base_c[0]+radius*(u[0]*c1+v_ax[0]*s1), base_c[1]+radius*(u[1]*c1+v_ax[1]*s1), base_c[2]+radius*(u[2]*c1+v_ax[2]*s1)];
+            self.add_line(p0, p1, color);
+        }
+
+        // 頂点から底面への接続線（8 本）
+        const N_SIDE_CONE: usize = 8;
+        for i in 0..N_SIDE_CONE {
+            let t = 2.0 * PI * i as f32 / N_SIDE_CONE as f32;
+            let (s, c) = t.sin_cos();
+            let bp = [
+                base_c[0] + radius * (u[0]*c + v_ax[0]*s),
+                base_c[1] + radius * (u[1]*c + v_ax[1]*s),
+                base_c[2] + radius * (u[2]*c + v_ax[2]*s),
+            ];
+            self.add_line(apex, bp, color);
+        }
+    }
+
+    /// ConvexHull ワイヤーフレームを追加する。
+    ///
+    /// `vertices` はワールド空間での頂点リスト。
+    /// 全頂点ペアを線で繋ぐことで凸形状の稜線を可視化する。
+    pub fn add_convex_hull_wireframe(
+        &mut self,
+        vertices: &[[f32; 3]],
+        color:    [f32; 4],
+    ) {
+        let n = vertices.len();
+        for i in 0..n {
+            for j in (i + 1)..n {
+                self.add_line(vertices[i], vertices[j], color);
+            }
+        }
+    }
+
+    /// TriangleMesh ワイヤーフレームを追加する（各三角形の 3 辺を描画）。
+    ///
+    /// `triangles` はワールド空間での三角形リスト（各要素は [a, b, c]）。
+    pub fn add_triangle_mesh_wireframe(
+        &mut self,
+        triangles: &[[[f32; 3]; 3]],
+        color:     [f32; 4],
+    ) {
+        for tri in triangles {
+            self.add_line(tri[0], tri[1], color);
+            self.add_line(tri[1], tri[2], color);
+            self.add_line(tri[2], tri[0], color);
         }
     }
 
@@ -617,6 +925,25 @@ impl GizmoBatch {
 }
 
 // ── 数学ヘルパー ───────────────────────────────────────────────
+
+/// クォータニオン q = [x, y, z, w] でベクトル v を回転させる（Rodrigues の公式）。
+///
+/// OBB・カプセルワイヤーフレームのコーナー・端点計算に使用する。
+fn rotate_quat(q: [f32; 4], v: [f32; 3]) -> [f32; 3] {
+    let (qx, qy, qz, qw) = (q[0], q[1], q[2], q[3]);
+    let (vx, vy, vz)     = (v[0], v[1], v[2]);
+    // v' = 2(u·v)u + (w²-|u|²)v + 2w(u×v)
+    let dot_uv = qx*vx + qy*vy + qz*vz;
+    let dot_uu = qx*qx + qy*qy + qz*qz;
+    let cx = qy*vz - qz*vy;
+    let cy = qz*vx - qx*vz;
+    let cz = qx*vy - qy*vx;
+    [
+        2.0*dot_uv*qx + (qw*qw - dot_uu)*vx + 2.0*qw*cx,
+        2.0*dot_uv*qy + (qw*qw - dot_uu)*vy + 2.0*qw*cy,
+        2.0*dot_uv*qz + (qw*qw - dot_uu)*vz + 2.0*qw*cz,
+    ]
+}
 
 fn perp_basis(d: [f32; 3]) -> ([f32; 3], [f32; 3]) {
     let len = (d[0]*d[0] + d[1]*d[1] + d[2]*d[2]).sqrt().max(1e-6);

@@ -23,6 +23,7 @@ fn get_shader_source(name: &str) -> &'static str {
         "sprite.wgsl"                => include_str!("shaders/sprite.wgsl"),
         "canvas_id.wgsl"             => include_str!("shaders/canvas_id.wgsl"),
         "camera_preview_blit.wgsl"   => include_str!("shaders/camera_preview_blit.wgsl"),
+        "bar_fill.wgsl"              => include_str!("shaders/bar_fill.wgsl"),
         other => panic!("unknown shader source: {other}"),
     }
 }
@@ -652,6 +653,92 @@ impl CameraPreviewBlitPipeline {
     }
 }
 
+// ============================================================
+//  BarFillPipeline — 帯塗りつぶしパイプライン
+// ============================================================
+
+/// 帯塗りつぶし用 GPU ユニフォーム（32 bytes）。
+///
+/// NDC 座標系 (X: -1=左/+1=右、Y: -1=下/+1=上) で矩形を指定する。
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct BarFillUniform {
+    /// 塗りカラー（RGBA リニア）
+    pub color: [f32; 4],
+    /// NDC 左端
+    pub x0:    f32,
+    /// NDC 下端
+    pub y0:    f32,
+    /// NDC 右端
+    pub x1:    f32,
+    /// NDC 上端
+    pub y1:    f32,
+}
+
+/// LetterBox / PillarBox の帯エリアを単色で塗りつぶすパイプライン。
+///
+/// 頂点バッファなし（@builtin(vertex_index) で 6 頂点を生成）。
+/// depth_write = false / depth_compare = Always のため深度に干渉しない。
+pub struct BarFillPipeline {
+    /// 帯描画パイプライン
+    pub pipeline:     wgpu::RenderPipeline,
+    /// Group 0 レイアウト（BarFillUniform バッファ）
+    pub uniform_bgl:  wgpu::BindGroupLayout,
+}
+
+impl BarFillPipeline {
+    fn new(
+        device: &wgpu::Device,
+        sf:     wgpu::TextureFormat,
+        df:     wgpu::TextureFormat,
+        cache:  Option<&wgpu::PipelineCache>,
+    ) -> Self {
+        let (pipeline, bgls) =
+            RenderPipelineBuilder::new(device, include_str!("pipelines/bar_fill.toml"), sf, df)
+                .with_cache(cache)
+                .build(get_shader_source);
+        let mut it = bgls.into_iter();
+        let uniform_bgl = it.next().unwrap(); // group 0
+        Self { pipeline, uniform_bgl }
+    }
+
+    /// 指定した NDC 矩形を単色で塗りつぶす。
+    ///
+    /// - `ndc_x0/y0`: 矩形の左端・下端（NDC）
+    /// - `ndc_x1/y1`: 矩形の右端・上端（NDC）
+    pub fn draw(
+        &self,
+        pass:    &mut wgpu::RenderPass<'_>,
+        device:  &wgpu::Device,
+        color:   [f32; 4],
+        ndc_x0:  f32,
+        ndc_y0:  f32,
+        ndc_x1:  f32,
+        ndc_y1:  f32,
+    ) {
+        use wgpu::util::DeviceExt;
+        let uniform = BarFillUniform { color, x0: ndc_x0, y0: ndc_y0, x1: ndc_x1, y1: ndc_y1 };
+        // フレームごとに小さなユニフォームバッファを生成して即時描画する
+        let buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label:    Some("BarFill Uniform Buf"),
+            contents: bytemuck::bytes_of(&uniform),
+            usage:    wgpu::BufferUsages::UNIFORM,
+        });
+        let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label:   Some("BarFill BG"),
+            layout:  &self.uniform_bgl,
+            entries: &[wgpu::BindGroupEntry {
+                binding:  0,
+                resource: buf.as_entire_binding(),
+            }],
+        });
+        pass.set_pipeline(&self.pipeline);
+        pass.set_bind_group(0, &bg, &[]);
+        // 6 頂点（2 三角形）を 1 インスタンス描画
+        pass.draw(0..6, 0..1);
+    }
+}
+
 pub struct DrawPipelines {
     pub mesh:                 MeshPipeline,
     pub skinned_mesh:         SkinnedMeshPipeline,
@@ -664,6 +751,7 @@ pub struct DrawPipelines {
     pub sprite:               SpritePipeline,
     pub canvas_id:            CanvasIdPipeline,
     pub camera_preview_blit:  CameraPreviewBlitPipeline,
+    pub bar_fill:             BarFillPipeline,
 }
 
 impl DrawPipelines {
@@ -690,6 +778,7 @@ impl DrawPipelines {
         let sprite              = SpritePipeline::new(device, queue, sf, df, cache);
         let canvas_id           = CanvasIdPipeline::new(device, queue, df, cache);
         let camera_preview_blit = CameraPreviewBlitPipeline::new(device, sf, df, cache);
-        Self { mesh, skinned_mesh, unlit_line, cull, skin_compute, depth_prepass, id_pass, outline, sprite, canvas_id, camera_preview_blit }
+        let bar_fill            = BarFillPipeline::new(device, sf, df, cache);
+        Self { mesh, skinned_mesh, unlit_line, cull, skin_compute, depth_prepass, id_pass, outline, sprite, canvas_id, camera_preview_blit, bar_fill }
     }
 }

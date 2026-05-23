@@ -9,12 +9,13 @@
 //  累積スケール伝播を親子間で管理する。
 // ============================================================
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::engine::components::{
     CanvasTransform, CanvasComponent, SpriteComponent, ComponentKind,
 };
-use crate::engine::ecs::World;
+use crate::engine::ecs::{Entity, World};
 use crate::engine::structs::objects::Actor;
 use crate::engine::methods::drawer::{
     DrawContext, LineBatch, GpuSpriteTexture, load_sprite_texture,
@@ -56,6 +57,9 @@ pub(super) fn collect_sprite_items(
     y_sign:             f32,
     // シーン SS モード時のビューポートサイズ（ルートアンカー計算用）。None = アクター編集タブまたはワールドスペース。
     viewport_size:      Option<[f32; 2]>,
+    // ルートキャンバスアクターごとの有効ビューポートサイズ上書き（Camera 参照用）。
+    // actor.entity → [w, h]。viewport_size より優先される。
+    canvas_viewport_overrides: &HashMap<Entity, [f32; 2]>,
     out:                &mut Vec<([[f32; 4]; 4], [f32; 4], Option<Arc<GpuSpriteTexture>>)>,
 ) {
     let (sm_transform, sm_size) = parent_scale_mode;
@@ -67,9 +71,15 @@ pub(super) fn collect_sprite_items(
             // アンカーオフセット計算:
             // ルートレベル（parent_canvas_size=None）かつシーン SS モードでは
             // ビューポートを仮想親として扱い、ortho 原点（画面中央）からのオフセットを計算する。
+            // Camera 参照が設定されているルートキャンバスはオーバーライドマップの値を優先する。
             // それ以外は親キャンバスサイズ基準。
+            let eff_viewport = if parent_canvas_size.is_none() {
+                canvas_viewport_overrides.get(&actor.entity).copied().or(viewport_size)
+            } else {
+                viewport_size
+            };
             let (anchor_off_x, anchor_off_y) = if parent_canvas_size.is_none() {
-                if let Some([vw, vh]) = viewport_size {
+                if let Some([vw, vh]) = eff_viewport {
                     // 画面中央が ortho 原点 → anchor=0,0 で画面左上に寄せるため -vp/2 オフセット
                     (vw * ct.anchor[0] - vw / 2.0,
                      vh * ct.anchor[1] - vh / 2.0)
@@ -167,8 +177,9 @@ pub(super) fn collect_sprite_items(
             let child_canvas_size = child_info.map(|(sz, _, _)| sz);
             let child_scale_mode  = child_info.map(|(_, sm, _)| sm).unwrap_or((false, false));
             // ルートキャンバスかつ auto_scale=true のとき、ビューポートサイズ/参照サイズで自動スケールする
+            // Camera 参照の場合は eff_viewport がカメラの描画範囲になる
             let auto_scale_factor = if parent_canvas_size.is_none() {
-                if let (Some([vw, vh]), Some((_, _, true))) = (viewport_size, child_info) {
+                if let (Some([vw, vh]), Some((_, _, true))) = (eff_viewport, child_info) {
                     [vw / my_eff_w, vh / my_eff_h]
                 } else {
                     [1.0f32, 1.0]
@@ -189,7 +200,7 @@ pub(super) fn collect_sprite_items(
                 &actor.children, world, wl, draw_ctx,
                 child_canvas_size, self_world_rs,
                 child_cumul_scale, child_scale_mode,
-                canvas_scale, y_sign, viewport_size, out,
+                canvas_scale, y_sign, viewport_size, canvas_viewport_overrides, out,
             );
         }
     }
@@ -223,6 +234,7 @@ pub(super) fn collect_canvas_rects(
     canvas_scale:       f32,
     y_sign:             f32,
     viewport_size:      Option<[f32; 2]>,
+    canvas_viewport_overrides: &HashMap<Entity, [f32; 2]>,
 ) {
     let (sm_transform, sm_size) = parent_scale_mode;
 
@@ -234,8 +246,14 @@ pub(super) fn collect_canvas_rects(
         let ct_opt = world.get::<CanvasTransform>(actor.entity).cloned();
         if let Some(ct) = ct_opt {
             // アンカーオフセット計算（collect_sprite_items と同じロジック）
+            // Camera 参照のルートキャンバスはオーバーライドマップの値を優先する
+            let eff_viewport = if parent_canvas_size.is_none() {
+                canvas_viewport_overrides.get(&actor.entity).copied().or(viewport_size)
+            } else {
+                viewport_size
+            };
             let (anchor_off_x, anchor_off_y) = if parent_canvas_size.is_none() {
-                if let Some([vw, vh]) = viewport_size {
+                if let Some([vw, vh]) = eff_viewport {
                     (vw * ct.anchor[0] - vw / 2.0,
                      vh * ct.anchor[1] - vh / 2.0)
                 } else {
@@ -337,7 +355,7 @@ pub(super) fn collect_canvas_rects(
             let child_canvas_size = child_info.map(|(sz, _, _)| sz);
             let child_scale_mode  = child_info.map(|(_, sm, _)| sm).unwrap_or((false, false));
             let auto_scale_factor = if parent_canvas_size.is_none() {
-                if let (Some([vw, vh]), Some((_, _, true))) = (viewport_size, child_info) {
+                if let (Some([vw, vh]), Some((_, _, true))) = (eff_viewport, child_info) {
                     [vw / my_eff_w_r, vh / my_eff_h_r]
                 } else {
                     [1.0f32, 1.0]
@@ -357,7 +375,7 @@ pub(super) fn collect_canvas_rects(
                 selected_dfs_ids, counter,
                 child_canvas_size, self_world_rs,
                 child_cumul_scale, child_scale_mode,
-                canvas_scale, y_sign, viewport_size,
+                canvas_scale, y_sign, viewport_size, canvas_viewport_overrides,
             );
         }
     }
@@ -390,6 +408,7 @@ pub(super) fn collect_canvas_id_items(
     canvas_scale:       f32,
     y_sign:             f32,
     viewport_size:      Option<[f32; 2]>,
+    canvas_viewport_overrides: &HashMap<Entity, [f32; 2]>,
     // 3D MC インスタンスの総数（canvas_id の raw_id オフセット計算に使用）
     mc_total:           u32,
     out:                &mut Vec<(u32, [[f32; 4]; 4], Option<String>)>,
@@ -404,9 +423,15 @@ pub(super) fn collect_canvas_id_items(
         let (next_canvas_size, next_cumul_scale, next_scale_mode, next_world_rs) =
             if let Some(ct) = ct_opt {
                 // アンカーオフセット（collect_sprite_items と同じロジック）
+                // Camera 参照のルートキャンバスはオーバーライドマップの値を優先する
+                let eff_viewport = if parent_canvas_size.is_none() {
+                    canvas_viewport_overrides.get(&actor.entity).copied().or(viewport_size)
+                } else {
+                    viewport_size
+                };
                 let (anchor_off_x, anchor_off_y) =
                     if parent_canvas_size.is_none() {
-                        if let Some([vw, vh]) = viewport_size {
+                        if let Some([vw, vh]) = eff_viewport {
                             (vw * ct.anchor[0] - vw / 2.0,
                              vh * ct.anchor[1] - vh / 2.0)
                         } else { (0.0, 0.0) }
@@ -484,7 +509,7 @@ pub(super) fn collect_canvas_id_items(
                 let child_canvas_size = child_info.map(|(sz, _, _)| sz);
                 let child_scale_mode  = child_info.map(|(_, sm, _)| sm).unwrap_or((false, false));
                 let auto_scale_factor = if parent_canvas_size.is_none() {
-                    if let (Some([vw, vh]), Some((_, _, true))) = (viewport_size, child_info) {
+                    if let (Some([vw, vh]), Some((_, _, true))) = (eff_viewport, child_info) {
                         [vw / my_eff_w, vh / my_eff_h]
                     } else { [1.0f32, 1.0] }
                 } else { [1.0f32, 1.0] };
@@ -506,7 +531,7 @@ pub(super) fn collect_canvas_id_items(
             &actor.children, world, wl, counter,
             next_canvas_size, next_world_rs,
             next_cumul_scale, next_scale_mode,
-            canvas_scale, y_sign, viewport_size,
+            canvas_scale, y_sign, viewport_size, canvas_viewport_overrides,
             mc_total, out,
         );
     }

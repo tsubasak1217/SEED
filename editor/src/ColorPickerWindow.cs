@@ -1,13 +1,17 @@
 // ============================================================
 //  ColorPickerWindow.cs — ダークテーマ HSV カラーピッカーダイアログ
 //
-//  RGBA 正規化値（0.0〜1.0）で色を受け取り、編集後の値を返す。
-//  HSV 色空間での選択（SV 正方形 + H スライダー）、Alpha スライダー、
-//  RGBA テキスト入力、Hex 入力、現在色/新色プレビューを提供する。
+//  RGBA 正規化値（0.0〜1.0 リニア）で色を受け取り、編集後の値を返す。
+//  内部は sRGB 色空間で表示し、入出力時に linear ↔ sRGB 変換を行う。
+//  ・wgpu sRGB サーフェス（linear → sRGB 自動変換）に合わせた補正。
+//  ・HSV 色空間での選択（SV 正方形 + H スライダー）、Alpha スライダー、
+//    RGBA テキスト入力、Hex 入力（sRGB 値）、現在色/新色プレビュー、
+//    スポイト（スクリーンカラーサンプリング）を提供する。
 // ============================================================
 
 using System;
 using System.Globalization;
+using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -18,9 +22,9 @@ using System.Windows.Shapes;
 namespace SEEDEditor;
 
 /// <summary>
-/// HSV カラーピッカーダイアログ。
-/// <see cref="ShowDialog(Window, float, float, float, float)"/> で呼び出し、
-/// 結果は <see cref="ResultR"/>/<see cref="ResultG"/>/<see cref="ResultB"/>/<see cref="ResultA"/> で取得する。
+/// HSV カラーピッカーダイアログ（linear ↔ sRGB 変換付き）。
+/// <see cref="ShowDialog(Window, float, float, float, float)"/> はリニア RGBA を受け取り、
+/// 結果もリニア RGBA で返す。表示は sRGB 換算値で行うため、ゲーム画面と色が一致する。
 /// </summary>
 public sealed class ColorPickerWindow : Window
 {
@@ -32,14 +36,14 @@ public sealed class ColorPickerWindow : Window
     /// <summary>カーソル円の半径（ピクセル）。</summary>
     private const double CURSOR_R = 6.0;
 
-    // ── 内部状態 ──────────────────────────────────────────────
+    // ── 内部状態（すべて sRGB 空間で保持） ──────────────────────
     /// <summary>色相（0〜360）。</summary>
     private double _hue = 0;
     /// <summary>彩度（0〜1）。</summary>
     private double _sat = 1;
     /// <summary>明度（0〜1）。</summary>
     private double _val = 1;
-    /// <summary>不透明度（0〜1）。</summary>
+    /// <summary>不透明度（0〜1）。アルファはガンマ変換しない。</summary>
     private double _alpha = 1;
 
     private bool _updatingText = false;
@@ -58,17 +62,21 @@ public sealed class ColorPickerWindow : Window
     private readonly Border          _previewNew;
     private readonly TextBox         _tbR, _tbG, _tbB, _tbA, _tbHex;
 
-    // ── 結果 ─────────────────────────────────────────────────
-    /// <summary>OK 時の R 値（0〜1）。</summary>
+    // ── 結果（リニア値） ──────────────────────────────────────
+    /// <summary>OK 時の R 値（0〜1 リニア）。</summary>
     public float ResultR { get; private set; }
-    /// <summary>OK 時の G 値（0〜1）。</summary>
+    /// <summary>OK 時の G 値（0〜1 リニア）。</summary>
     public float ResultG { get; private set; }
-    /// <summary>OK 時の B 値（0〜1）。</summary>
+    /// <summary>OK 時の B 値（0〜1 リニア）。</summary>
     public float ResultB { get; private set; }
-    /// <summary>OK 時の A 値（0〜1）。</summary>
+    /// <summary>OK 時の A 値（0〜1 リニア）。</summary>
     public float ResultA { get; private set; }
 
-    // ── コンストラクタ ────────────────────────────────────────
+    // ── コンストラクタ（リニア値を受け取る） ─────────────────────
+    /// <param name="r">入力 R（リニア 0〜1）</param>
+    /// <param name="g">入力 G（リニア 0〜1）</param>
+    /// <param name="b">入力 B（リニア 0〜1）</param>
+    /// <param name="a">入力 A（リニア 0〜1、ガンマ変換なし）</param>
     private ColorPickerWindow(float r, float g, float b, float a)
     {
         Title           = "カラーピッカー";
@@ -77,8 +85,11 @@ public sealed class ColorPickerWindow : Window
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
         Background      = new SolidColorBrush(Color.FromRgb(0x28, 0x28, 0x28));
 
-        // 初期値を HSV に変換
-        RgbToHsv(r, g, b, out _hue, out _sat, out _val);
+        // ── リニア入力を sRGB 空間に変換して内部状態に設定 ─────────
+        // wgpu は sRGB サーフェスを使用するため、リニア値 → sRGB で表示すると
+        // ゲーム上での表示色と一致する。
+        float sR = LinearToSrgb(r), sG = LinearToSrgb(g), sB = LinearToSrgb(b);
+        RgbToHsv(sR, sG, sB, out _hue, out _sat, out _val);
         _alpha = Math.Clamp(a, 0, 1);
 
         // ── SV 正方形 ─────────────────────────────────────────
@@ -91,7 +102,6 @@ public sealed class ColorPickerWindow : Window
             Fill = Brushes.Transparent,
         };
 
-        // SV 正方形のマウスイベント
         _svImage.MouseDown += SvMouseDown;
         _svImage.MouseMove += SvMouseMove;
         _svImage.MouseUp   += (_, _) => _svImage.ReleaseMouseCapture();
@@ -139,6 +149,8 @@ public sealed class ColorPickerWindow : Window
         alphaCanvas.Children.Add(_alphaCursor);
 
         // ── プレビュー ────────────────────────────────────────
+        // 「現在色」は入力リニア値をそのまま ScRgb で表示する（WPF が gamma 補正するため
+        // GPU の sRGB 出力と同じ見た目になる）。
         _previewOld = MakePreviewBorder(Color.FromScRgb((float)_alpha, r, g, b));
         _previewNew = MakePreviewBorder(Colors.White);
 
@@ -159,7 +171,6 @@ public sealed class ColorPickerWindow : Window
         _tbA   = MakeNumTextBox();
         _tbHex = MakeHexTextBox();
 
-        // テキスト確定時
         foreach (var tb in new[] { _tbR, _tbG, _tbB, _tbA })
         {
             tb.LostFocus += (_, _) => ApplyRgbaText();
@@ -170,14 +181,20 @@ public sealed class ColorPickerWindow : Window
 
         var textGrid = BuildTextGrid();
 
-        // ── OK / Cancel ───────────────────────────────────────
-        var btnOk = MakeButton("OK", "#61AFEF");
-        var btnCc = MakeButton("キャンセル", "#3A3A3A");
-        btnOk.Click += (_, _) =>
+        // ── ボタン行（スポイト / OK / Cancel） ───────────────────
+        var btnEye = MakeButton("💉 スポイト", "#4A5A4A");
+        var btnOk  = MakeButton("OK",          "#61AFEF");
+        var btnCc  = MakeButton("キャンセル",   "#3A3A3A");
+
+        btnEye.Click += (_, _) => StartEyedropper();
+        btnOk.Click  += (_, _) =>
         {
+            // sRGB 選択値をリニアに変換して結果として返す
             var (nr, ng, nb) = HsvToRgb(_hue, _sat, _val);
-            ResultR = (float)nr; ResultG = (float)ng;
-            ResultB = (float)nb; ResultA = (float)_alpha;
+            ResultR = SrgbToLinear((float)nr);
+            ResultG = SrgbToLinear((float)ng);
+            ResultB = SrgbToLinear((float)nb);
+            ResultA = (float)_alpha; // alpha はガンマ変換なし
             DialogResult = true;
             Close();
         };
@@ -189,6 +206,7 @@ public sealed class ColorPickerWindow : Window
             HorizontalAlignment = HorizontalAlignment.Right,
             Margin              = new Thickness(0, 8, 0, 0),
         };
+        btnRow.Children.Add(btnEye);
         btnRow.Children.Add(btnCc);
         btnRow.Children.Add(btnOk);
 
@@ -208,7 +226,6 @@ public sealed class ColorPickerWindow : Window
 
         Content = sp;
 
-        // 初期描画
         DrawSvBitmap();
         DrawHueBitmap();
         DrawAlphaBitmap();
@@ -219,7 +236,8 @@ public sealed class ColorPickerWindow : Window
     // ── 静的エントリポイント ──────────────────────────────────
 
     /// <summary>
-    /// カラーピッカーを開いて結果を返す。キャンセル時は null。
+    /// カラーピッカーを開いて結果を返す。入出力はリニア RGBA（0〜1）。
+    /// キャンセル時は null。
     /// </summary>
     public static (float r, float g, float b, float a)? ShowDialog(
         Window owner, float r, float g, float b, float a)
@@ -230,9 +248,140 @@ public sealed class ColorPickerWindow : Window
         return null;
     }
 
+    // ── スポイト ──────────────────────────────────────────────
+
+    /// <summary>
+    /// スポイトモードを開始する。半透明のフルスクリーンオーバーレイを表示し、
+    /// クリックした位置のスクリーンカラー（sRGB）を取得してピッカーに反映する。
+    /// </summary>
+    private void StartEyedropper()
+    {
+        var overlay = new EyedropperOverlay();
+        // ピッカーウィンドウを一時的に非アクティブ化して視認性を確保する
+        overlay.Owner = this;
+        if (overlay.ShowDialog() == true && overlay.Result is { } result)
+        {
+            // スクリーンから取得した sRGB 値をそのまま HSV に変換する
+            RgbToHsv(result.r, result.g, result.b, out _hue, out _sat, out _val);
+            DrawSvBitmap();
+            DrawAlphaBitmap();
+            UpdateCursors();
+            RefreshTextFields();
+        }
+        Activate();
+    }
+
+    // ── スクリーンカラーサンプリング（GDI32） ─────────────────────
+
+    [DllImport("gdi32.dll")] private static extern uint GetPixel(IntPtr hdc, int x, int y);
+    [DllImport("user32.dll")] private static extern IntPtr GetDC(IntPtr hwnd);
+    [DllImport("user32.dll")] private static extern int ReleaseDC(IntPtr hwnd, IntPtr hdc);
+
+    /// <summary>物理ピクセル座標のスクリーンカラーを sRGB（0〜1）で返す。</summary>
+    private static (float r, float g, float b) SampleScreenPixel(int physX, int physY)
+    {
+        var hdc   = GetDC(IntPtr.Zero);
+        uint col  = GetPixel(hdc, physX, physY);
+        ReleaseDC(IntPtr.Zero, hdc);
+        // COLORREF: 0x00BBGGRR
+        byte rb = (byte)(col & 0xFF);
+        byte gb = (byte)((col >> 8) & 0xFF);
+        byte bb = (byte)((col >> 16) & 0xFF);
+        return (rb / 255f, gb / 255f, bb / 255f);
+    }
+
+    // ── フルスクリーンスポイトオーバーレイ ──────────────────────
+
+    /// <summary>
+    /// スポイト操作用の半透明フルスクリーンウィンドウ。
+    /// マウス追従カラープレビュー付き。クリックで色を確定、Esc でキャンセル。
+    /// </summary>
+    private sealed class EyedropperOverlay : Window
+    {
+        /// <summary>確定した sRGB カラー。キャンセル時は null。</summary>
+        public (float r, float g, float b)? Result { get; private set; }
+
+        // カーソル近くに表示するプレビュー部品
+        private readonly Border    _colorBlock;
+        private readonly TextBlock _hexLabel;
+        private readonly Canvas    _canvas;
+
+        public EyedropperOverlay()
+        {
+            WindowStyle           = WindowStyle.None;
+            AllowsTransparency    = true;
+            // alpha=1 にすることでマウスイベントをキャプチャしつつほぼ透明にする
+            Background            = new SolidColorBrush(Color.FromArgb(1, 0, 0, 0));
+            Topmost               = true;
+            WindowState           = WindowState.Maximized;
+            Cursor                = Cursors.Cross;
+            ShowInTaskbar         = false;
+
+            // ── カーソル追従プレビュー ──
+            _colorBlock = new Border
+            {
+                Width           = 36,
+                Height          = 36,
+                BorderBrush     = Brushes.White,
+                BorderThickness = new Thickness(2),
+            };
+            _hexLabel = new TextBlock
+            {
+                Foreground = Brushes.White,
+                Background = new SolidColorBrush(Color.FromArgb(180, 0, 0, 0)),
+                FontSize   = 10,
+                Padding    = new Thickness(3, 1, 3, 1),
+            };
+            // プレビュー全体を小パネルに格納
+            var preview = new StackPanel { Orientation = Orientation.Vertical };
+            preview.Children.Add(_colorBlock);
+            preview.Children.Add(_hexLabel);
+
+            _canvas = new Canvas();
+            _canvas.Children.Add(preview);
+            Content = _canvas;
+
+            MouseMove           += OnMouseMove;
+            MouseLeftButtonDown += OnMouseDown;
+            KeyDown             += (_, e) => { if (e.Key == Key.Escape) { DialogResult = false; Close(); } };
+        }
+
+        private void OnMouseMove(object sender, MouseEventArgs e)
+        {
+            var pos  = e.GetPosition(this);
+            var (px, py) = ToPhysPixels(pos);
+            var (r, g, b) = SampleScreenPixel(px, py);
+            _colorBlock.Background = new SolidColorBrush(
+                Color.FromRgb((byte)(r * 255), (byte)(g * 255), (byte)(b * 255)));
+            _hexLabel.Text = $"#{(byte)(r*255):X2}{(byte)(g*255):X2}{(byte)(b*255):X2}";
+            // プレビューを右下にオフセット（カーソルと重ならないよう）
+            var preview = (FrameworkElement)_canvas.Children[0];
+            Canvas.SetLeft(preview, Math.Min(pos.X + 14, ActualWidth  - preview.ActualWidth  - 4));
+            Canvas.SetTop( preview, Math.Min(pos.Y + 14, ActualHeight - preview.ActualHeight - 4));
+        }
+
+        private void OnMouseDown(object sender, MouseButtonEventArgs e)
+        {
+            var pos = e.GetPosition(this);
+            var (px, py) = ToPhysPixels(pos);
+            Result       = SampleScreenPixel(px, py);
+            DialogResult = true;
+            Close();
+        }
+
+        /// <summary>WPF 論理ピクセル → 物理ピクセル変換（DPI 対応）。</summary>
+        private (int x, int y) ToPhysPixels(Point logical)
+        {
+            var src = PresentationSource.FromVisual(this)?.CompositionTarget?.TransformToDevice;
+            double sx = src?.M11 ?? 1.0;
+            double sy = src?.M22 ?? 1.0;
+            return ((int)(logical.X * sx), (int)(logical.Y * sy));
+        }
+    }
+
     // ── ビットマップ描画 ──────────────────────────────────────
 
-    /// <summary>SV 正方形を現在の色相で再描画する。</summary>
+    /// <summary>SV 正方形を現在の色相で再描画する（sRGB 値で描画）。</summary>
     private void DrawSvBitmap()
     {
         int w = SV_SIZE, h = SV_SIZE;
@@ -286,7 +435,6 @@ public sealed class ColorPickerWindow : Window
             for (int x = 0; x < w; x++)
             {
                 double t = (double)x / (w - 1);
-                // 市松背景（透明部の表現）
                 bool even = ((x / 6) + (y / 6)) % 2 == 0;
                 double bg = even ? 0.6 : 0.4;
                 double r = cr * t + bg * (1 - t);
@@ -304,32 +452,29 @@ public sealed class ColorPickerWindow : Window
 
     // ── カーソル・プレビュー更新 ──────────────────────────────
 
-    /// <summary>SV カーソル・色相カーソル・Alphaカーソルを現在の HSV に合わせて移動する。</summary>
+    /// <summary>SV / 色相 / Alpha カーソルと新色プレビューを更新する。</summary>
     private void UpdateCursors()
     {
-        // SV カーソル
         double svX = _sat * (SV_SIZE - 1);
         double svY = (1.0 - _val) * (SV_SIZE - 1);
         Canvas.SetLeft(_svCursor, svX - CURSOR_R);
         Canvas.SetTop(_svCursor,  svY - CURSOR_R);
 
-        // 色相カーソル（幅4のため中央に調整）
         double hx = _hue / 360.0 * (SV_SIZE - 1) - 2;
         Canvas.SetLeft(_hueCursor, Math.Clamp(hx, 0, SV_SIZE - 4));
         Canvas.SetTop(_hueCursor, 0);
 
-        // Alpha カーソル
         double ax = _alpha * (SV_SIZE - 1) - 2;
         Canvas.SetLeft(_alphaCursor, Math.Clamp(ax, 0, SV_SIZE - 4));
         Canvas.SetTop(_alphaCursor, 0);
 
-        // プレビュー新色
+        // 新色プレビュー（sRGB 表示）
         var (r, g, b) = HsvToRgb(_hue, _sat, _val);
         _previewNew.Background = new SolidColorBrush(
             Color.FromArgb((byte)(_alpha * 255), (byte)(r * 255), (byte)(g * 255), (byte)(b * 255)));
     }
 
-    /// <summary>テキストフィールドを現在の HSV から更新する。</summary>
+    /// <summary>テキストフィールドを現在の sRGB 値で更新する。</summary>
     private void RefreshTextFields()
     {
         _updatingText = true;
@@ -338,7 +483,7 @@ public sealed class ColorPickerWindow : Window
         _tbG.Text = g.ToString("F3", CultureInfo.InvariantCulture);
         _tbB.Text = b.ToString("F3", CultureInfo.InvariantCulture);
         _tbA.Text = _alpha.ToString("F3", CultureInfo.InvariantCulture);
-        // Hex 表示
+        // Hex は sRGB 0〜255 の 16 進表記
         int hr = (int)(r * 255); int hg = (int)(g * 255);
         int hb = (int)(b * 255); int ha = (int)(_alpha * 255);
         _tbHex.Text = $"{hr:X2}{hg:X2}{hb:X2}{ha:X2}";
@@ -410,7 +555,7 @@ public sealed class ColorPickerWindow : Window
 
     // ── テキスト適用 ──────────────────────────────────────────
 
-    /// <summary>R/G/B/A テキストボックスの値を内部状態に反映する。</summary>
+    /// <summary>R/G/B/A テキストボックスの sRGB 値を内部状態に反映する。</summary>
     private void ApplyRgbaText()
     {
         if (_updatingText) return;
@@ -426,7 +571,7 @@ public sealed class ColorPickerWindow : Window
         RefreshTextFields();
     }
 
-    /// <summary>Hex テキストボックスの値を内部状態に反映する。RRGGBBAA 形式。</summary>
+    /// <summary>Hex テキストボックスの sRGB 値を内部状態に反映する。RRGGBBAA 形式。</summary>
     private void ApplyHexText()
     {
         if (_updatingText) return;
@@ -446,9 +591,35 @@ public sealed class ColorPickerWindow : Window
     private static bool TryParseHexByte(string s, int start, out byte val)
         => byte.TryParse(s.Substring(start, 2), NumberStyles.HexNumber, null, out val);
 
-    // ── HSV ↔ RGB 変換 ───────────────────────────────────────
+    // ── linear ↔ sRGB 変換 ───────────────────────────────────
 
-    /// <summary>HSV → RGB 変換（H: 0〜360, S/V: 0〜1 → R/G/B: 0〜1）。</summary>
+    /// <summary>
+    /// リニア値 → sRGB 変換（IEC 61966-2-1 準拠）。
+    /// wgpu sRGB サーフェスに書き込んだリニア値をピッカーで正確に表示するために使用する。
+    /// </summary>
+    private static float LinearToSrgb(float c)
+    {
+        c = Math.Clamp(c, 0f, 1f);
+        return c <= 0.0031308f
+            ? c * 12.92f
+            : 1.055f * MathF.Pow(c, 1f / 2.4f) - 0.055f;
+    }
+
+    /// <summary>
+    /// sRGB 値 → リニア変換（IEC 61966-2-1 準拠）。
+    /// ピッカーで選択した sRGB 値を wgpu シェーダー用リニア値に変換するために使用する。
+    /// </summary>
+    private static float SrgbToLinear(float c)
+    {
+        c = Math.Clamp(c, 0f, 1f);
+        return c <= 0.04045f
+            ? c / 12.92f
+            : MathF.Pow((c + 0.055f) / 1.055f, 2.4f);
+    }
+
+    // ── HSV ↔ RGB 変換（sRGB 空間） ──────────────────────────
+
+    /// <summary>HSV → RGB 変換（H: 0〜360, S/V: 0〜1 → R/G/B: 0〜1 sRGB）。</summary>
     private static (double r, double g, double b) HsvToRgb(double h, double s, double v)
     {
         if (s == 0) return (v, v, v);
@@ -469,7 +640,7 @@ public sealed class ColorPickerWindow : Window
         };
     }
 
-    /// <summary>RGB → HSV 変換（R/G/B: 0〜1 → H: 0〜360, S/V: 0〜1）。</summary>
+    /// <summary>RGB → HSV 変換（R/G/B: 0〜1 sRGB → H: 0〜360, S/V: 0〜1）。</summary>
     private static void RgbToHsv(float r, float g, float b, out double h, out double s, out double v)
     {
         double max = Math.Max(r, Math.Max(g, b));

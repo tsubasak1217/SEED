@@ -806,6 +806,9 @@ impl InstancedModelBatch {
         model:           &Model,
         root_transforms: &[[[f32; 4]; 4]],
         frustum_planes:  &[[f32; 4]; 6],
+        // メインカメラに加えて判定する追加フラスタム（プレビューカメラなど）。
+        // Some の場合: どちらかの視錐台に入っていれば可視と見なす（OR カリング）。
+        extra_frustum:   Option<&[[f32; 4]; 6]>,
         camera_pos:      [f32; 3],
         anim_time:       f32,
     ) {
@@ -858,7 +861,14 @@ impl InstancedModelBatch {
             .collect();
 
         for (inst_idx, aabb) in self.world_aabbs.iter().enumerate() {
-            if !test_aabb_frustum(frustum_planes, aabb.aabb_min, aabb.aabb_max) { continue; }
+            // メイン視錐台でカリング → 追加視錐台（プレビューカメラ等）でも判定する。
+            // どちらかに入っていれば可視とする。
+            if !test_aabb_frustum(frustum_planes, aabb.aabb_min, aabb.aabb_max) {
+                let visible_in_extra = extra_frustum
+                    .map(|ef| test_aabb_frustum(ef, aabb.aabb_min, aabb.aabb_max))
+                    .unwrap_or(false);
+                if !visible_in_extra { continue; }
+            }
 
             let cx = (aabb.aabb_min[0] + aabb.aabb_max[0]) * 0.5;
             let cy = (aabb.aabb_min[1] + aabb.aabb_max[1]) * 0.5;

@@ -663,8 +663,16 @@
                                           Content="Play時マウスカーソルをWindowにクランプする"
                                           Foreground="White"
                                           IsChecked="False"
+                                          Margin="0,0,0,4"
                                           Checked="OnClampCursorChanged"
                                           Unchecked="OnClampCursorChanged"/>
+                                <CheckBox x:Name="ChkPlayColliderDraw"
+                                          Content="実行時コライダー描画"
+                                          Foreground="White"
+                                          IsChecked="False"
+                                          Checked="OnPlayColliderDrawChanged"
+                                          Unchecked="OnPlayColliderDrawChanged"
+                                          ToolTip="Play中にコライダーのワイヤーフレームを描画します。衝突中は赤色で表示されます。"/>
                             </StackPanel>
                         </Border>
                     </Popup>
@@ -1037,6 +1045,34 @@
                                                         </StackPanel>
                                                     </Expander>
 
+                                                    <!-- ▶ 物理 -->
+                                                    <Expander Header="物理" IsExpanded="True"
+                                                              Style="{StaticResource DarkExpanderStyle}"
+                                                              Margin="0,8,0,0">
+                                                        <StackPanel Margin="8,6,0,2">
+                                                            <!-- 編集時の物理シミュレーション -->
+                                                            <CheckBox x:Name="ChkEditPhysics"
+                                                                      Content="編集時の物理シミュレーション"
+                                                                      Foreground="White" FontSize="11"
+                                                                      IsChecked="False"
+                                                                      Margin="0,0,0,4"
+                                                                      Checked="OnEditPhysicsChanged"
+                                                                      Unchecked="OnEditPhysicsChanged"/>
+                                                            <!-- RigidBody サブオプション（編集時物理が有効なときのみ表示） -->
+                                                            <StackPanel x:Name="PnlEditPhysicsRigidbody"
+                                                                        Visibility="Collapsed"
+                                                                        Margin="0,2,0,4">
+                                                                <CheckBox x:Name="ChkEditPhysicsRigidbody"
+                                                                          Content="RigidBody（重力・ダイナミクスを有効にする）"
+                                                                          Foreground="White" FontSize="11"
+                                                                          IsChecked="False"
+                                                                          Margin="16,0,0,0"
+                                                                          Checked="OnEditPhysicsRigidbodyChanged"
+                                                                          Unchecked="OnEditPhysicsRigidbodyChanged"/>
+                                                            </StackPanel>
+                                                        </StackPanel>
+                                                    </Expander>
+
                                                     <!-- デフォルトに戻す -->
                                                     <Border Height="1" Background="#444444" Margin="0,10,0,8"/>
                                                     <Button Content="デフォルトに戻す"
@@ -1079,14 +1115,21 @@
 
                     </avd:LayoutPanel>
 
-                    <!-- 右パネル: Inspector -->
-                    <avd:LayoutAnchorablePane DockWidth="260" DockMinWidth="140">
+                    <!-- 右パネル: Inspector + AI アシスタント -->
+                    <avd:LayoutAnchorablePane DockWidth="300" DockMinWidth="200">
                         <avd:LayoutAnchorable Title="Inspector"
                                               ContentId="inspector"
                                               CanClose="False"
                                               CanHide="False"
                                               CanFloat="True">
                             <panels:InspectorPanel x:Name="PanelInspector"/>
+                        </avd:LayoutAnchorable>
+                        <avd:LayoutAnchorable Title="AI アシスタント"
+                                              ContentId="ai_assistant"
+                                              CanClose="False"
+                                              CanHide="False"
+                                              CanFloat="True">
+                            <!-- コンテンツは LoadLayout の LayoutSerializationCallback で設定される -->
                         </avd:LayoutAnchorable>
                     </avd:LayoutAnchorablePane>
 

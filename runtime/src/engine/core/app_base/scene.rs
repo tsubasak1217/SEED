@@ -458,6 +458,7 @@ pub fn build_actor(
                     scale_size:      cc_data.scale_size,
                     scale_transform: cc_data.scale_transform,
                     auto_scale:      cc_data.auto_scale,
+                    viewport_ref:    cc_data.viewport_ref.clone(),
                 });
                 actor.add_slot_typed::<CanvasComponent>(slot_name, ComponentKind::Canvas, slot_entity);
             }
@@ -479,6 +480,45 @@ pub fn build_actor(
             ComponentData::CameraComponent(cc_data) => {
                 world.insert(slot_entity, CameraComponent::from_data(cc_data));
                 actor.add_slot_typed::<CameraComponent>(slot_name, ComponentKind::Camera, slot_entity);
+            }
+            ComponentData::PluginComponent(pc_data) => {
+                // PluginComponent はそのまま復元する。
+                // 対応する Plugin が存在しなくてもデータは保持し続ける（プラグイン無効時の互換性維持）。
+                use crate::engine::components::PluginComponent;
+                world.insert(slot_entity, PluginComponent {
+                    plugin_name: pc_data.plugin_name,
+                    fields:      pc_data.fields,
+                });
+                actor.add_slot_typed::<PluginComponent>(slot_name, ComponentKind::Plugin, slot_entity);
+            }
+            ComponentData::ColliderComponent(cc_data) => {
+                use crate::engine::components::ColliderComponent;
+                world.insert(slot_entity, ColliderComponent::from(cc_data));
+                actor.add_slot_typed::<ColliderComponent>(slot_name, ComponentKind::Collider, slot_entity);
+            }
+            ComponentData::LegacyRigidbodyComponent(rb_data) => {
+                // 旧フォーマット（Rigidbody が独立コンポーネント）の後方互換マイグレーション。
+                // スロットエンティティは生成せず、同アクターの ColliderComponent にデータを適用する。
+                use crate::engine::components::ColliderComponent;
+                world.despawn(slot_entity);
+                if let Some(collider_slot) = actor.slots().iter()
+                    .find(|s| s.kind == ComponentKind::Collider)
+                {
+                    if let Some(cc) = world.get_mut::<ColliderComponent>(collider_slot.entity) {
+                        cc.use_rigidbody            = true;
+                        cc.mass                     = rb_data.mass;
+                        cc.restitution              = rb_data.restitution;
+                        cc.friction                 = rb_data.friction;
+                        cc.linear_damping           = rb_data.linear_damping;
+                        cc.angular_damping          = rb_data.angular_damping;
+                        cc.gravity_scale            = rb_data.gravity_scale;
+                        cc.is_kinematic             = rb_data.is_kinematic;
+                        cc.freeze_position          = rb_data.freeze_position;
+                        cc.freeze_rotation          = rb_data.freeze_rotation;
+                        cc.initial_linear_velocity  = rb_data.initial_linear_velocity;
+                        cc.initial_angular_velocity = rb_data.initial_angular_velocity;
+                    }
+                }
             }
         }
     }

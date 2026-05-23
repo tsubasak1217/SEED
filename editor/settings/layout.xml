@@ -1,31 +1,34 @@
 <?xml version="1.0" encoding="utf-8"?>
 <LayoutRoot>
   <RootPanel Orientation="Horizontal">
-    <LayoutPanel Orientation="Vertical" DockWidth="8.61923401359965*">
+    <LayoutPanel Orientation="Vertical" DockWidth="11.543120569402879*">
       <LayoutPanel Orientation="Horizontal" DockHeight="0.8565607308954141*">
         <LayoutPanel Orientation="Vertical" DockWidth="5.5906371360070075*">
           <LayoutDocumentPaneGroup Orientation="Horizontal" DockHeight="0.8145891826031679*">
-            <LayoutDocumentPane Id="9093ed42-3a0f-42ea-b3ef-13b8d5c457f6" DockWidth="3.208150077129131*">
-              <LayoutDocument Title="Viewport" IsSelected="True" ContentId="viewport" CanClose="False" CanFloat="False" LastActivationTimeStamp="05/20/2026 01:58:24" />
+            <LayoutDocumentPane Id="9093ed42-3a0f-42ea-b3ef-13b8d5c457f6" DockWidth="3.161056817330667*">
+              <LayoutDocument Title="Viewport" IsSelected="True" IsLastFocusedDocument="True" ContentId="viewport" CanClose="False" CanFloat="False" LastActivationTimeStamp="05/23/2026 13:25:17" />
             </LayoutDocumentPane>
-            <LayoutDocumentPane DockWidth="0.6534972263448958*">
-              <LayoutAnchorable CanHide="False" AutoHideMinWidth="100" AutoHideMinHeight="100" Title="Hierarchy" IsSelected="True" IsLastFocusedDocument="True" ContentId="hierarchy" FloatingLeft="706" FloatingTop="365" FloatingWidth="960" FloatingHeight="1032" LastActivationTimeStamp="05/20/2026 01:58:24" />
+            <LayoutDocumentPane DockWidth="0.7005904861433592*">
+              <LayoutAnchorable CanHide="False" AutoHideMinWidth="100" AutoHideMinHeight="100" Title="Hierarchy" IsSelected="True" ContentId="hierarchy" FloatingLeft="706" FloatingTop="365" FloatingWidth="960" FloatingHeight="1032" LastActivationTimeStamp="05/23/2026 13:25:01" />
             </LayoutDocumentPane>
           </LayoutDocumentPaneGroup>
         </LayoutPanel>
       </LayoutPanel>
       <LayoutAnchorablePaneGroup Orientation="Horizontal" DockHeight="407" DockMinHeight="80" FloatingWidth="1452" FloatingHeight="330" FloatingLeft="951" FloatingTop="1001">
         <LayoutAnchorablePane DockWidth="1.3257487304940878*" DockHeight="407" DockMinHeight="80" FloatingWidth="1452" FloatingHeight="330" FloatingLeft="734" FloatingTop="794">
-          <LayoutAnchorable CanHide="False" AutoHideMinWidth="100" AutoHideMinHeight="100" Title="Project" IsSelected="True" ContentId="project" FloatingLeft="734" FloatingTop="794" FloatingWidth="1452" FloatingHeight="330" LastActivationTimeStamp="05/20/2026 02:16:35" />
+          <LayoutAnchorable CanHide="False" AutoHideMinWidth="100" AutoHideMinHeight="100" Title="Project" IsSelected="True" ContentId="project" FloatingLeft="734" FloatingTop="794" FloatingWidth="1452" FloatingHeight="330" LastActivationTimeStamp="05/23/2026 13:25:12" />
         </LayoutAnchorablePane>
         <LayoutAnchorablePane Id="51ebc7cc-8932-45e4-9494-a5b2cc7944d3" DockWidth="0.6742512695059121*" DockHeight="443" DockMinHeight="80" FloatingWidth="1452" FloatingHeight="330" FloatingLeft="659" FloatingTop="827">
-          <LayoutAnchorable CanHide="False" AutoHideMinWidth="100" AutoHideMinHeight="100" Title="Output" IsSelected="True" ContentId="output" FloatingLeft="659" FloatingTop="827" FloatingWidth="1452" FloatingHeight="330" LastActivationTimeStamp="05/19/2026 15:43:08" />
+          <LayoutAnchorable CanHide="False" AutoHideMinWidth="100" AutoHideMinHeight="100" Title="Output" IsSelected="True" ContentId="output" FloatingLeft="659" FloatingTop="827" FloatingWidth="1452" FloatingHeight="330" LastActivationTimeStamp="05/23/2026 12:41:01" />
         </LayoutAnchorablePane>
       </LayoutAnchorablePaneGroup>
     </LayoutPanel>
-    <LayoutAnchorablePane DockWidth="368" FloatingWidth="960" FloatingHeight="1032" FloatingLeft="960">
-      <LayoutAnchorable CanHide="False" AutoHideMinWidth="100" AutoHideMinHeight="100" Title="Inspector" IsSelected="True" ContentId="inspector" FloatingLeft="960" FloatingWidth="960" FloatingHeight="1032" LastActivationTimeStamp="05/20/2026 01:27:38" />
-    </LayoutAnchorablePane>
+    <LayoutAnchorablePaneGroup Orientation="Vertical" DockWidth="480">
+      <LayoutAnchorablePane Id="c2f1d189-6aca-4f2a-8f91-c6b1eb5f4259" DockWidth="480" DockHeight="0.20988394501306135*" FloatingWidth="960" FloatingHeight="1032" FloatingLeft="960">
+        <LayoutAnchorable CanHide="False" AutoHideMinWidth="100" AutoHideMinHeight="100" Title="Inspector" IsSelected="True" ContentId="inspector" FloatingLeft="960" FloatingWidth="960" FloatingHeight="1032" LastActivationTimeStamp="05/23/2026 12:38:48" />
+        <LayoutAnchorable CanHide="False" AutoHideMinWidth="100" AutoHideMinHeight="100" Title="AI アシスタント" ContentId="ai_assistant" FloatingLeft="1620" FloatingTop="551" FloatingWidth="960" FloatingHeight="1032" LastActivationTimeStamp="05/23/2026 03:11:20" PreviousContainerId="c2f1d189-6aca-4f2a-8f91-c6b1eb5f4259" PreviousContainerIndex="1" />
+      </LayoutAnchorablePane>
+    </LayoutAnchorablePaneGroup>
   </RootPanel>
   <TopSide />
   <RightSide />

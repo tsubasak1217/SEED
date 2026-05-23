@@ -11,9 +11,19 @@
 //    6. ドロップ処理・FPS 計測・EndFrame
 // ============================================================
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use winit::event_loop::ActiveEventLoop;
 
 use crate::engine::components::ModelComponent;
+
+/// デバッグログ用フレームカウンター（ログを出力する最大フレーム数）。
+static DEBUG_FRAME: AtomicU64 = AtomicU64::new(0);
+/// このフレーム数だけ詳細ログを出力する。
+const DEBUG_LOG_FRAMES: u64 = 10;
+use crate::engine::components::{ColliderComponent, ColliderShapeData, ComponentKind};
+use crate::engine::components::Transform as ActorTransform;
+use crate::engine::structs::transforms::Quaternion;
+use crate::engine::structs::objects::actor::Actor;
 use crate::engine::core::app_base::ipc::ToolMode;
 use crate::engine::core::app_base::scene::CanvasCameraData;
 use crate::engine::core::clock::FrameContext;
@@ -33,6 +43,7 @@ use crate::engine::structs::utils::Color;
 use super::{
     App, RuntimeMode,
     collect_mcs_in_world_line,
+    find_actor_by_dfs,
     world_to_screen,
     apply_window_clamp,
     camera_scene_gizmo,
@@ -41,7 +52,187 @@ use super::{
     CANVAS_WORLD_SCALE,
 };
 
+// ============================================================
+//  compute_game_viewport — スケーリングモード別ビューポート計算
+// ============================================================
+
+/// スケーリングモードに応じたビューポート矩形・射影アスペクト比・実効 FOV_Y を計算する。
+///
+/// 戻り値: `(vp_x, vp_y, vp_w, vp_h, proj_aspect, fov_y_rad)`
+/// - vp_x/y: ウィンドウ左上を原点としたビューポートのオフセット（黒帯の幅）
+/// - vp_w/h: ゲーム描画領域のサイズ
+/// - proj_aspect: 射影行列に渡すアスペクト比
+/// - fov_y_rad: 射影行列に渡す実効縦 FOV（ラジアン）
+fn compute_game_viewport(
+    scaling_mode: &crate::engine::components::ScalingMode,
+    window_w:  f32,
+    window_h:  f32,
+    target_w:  u32,
+    target_h:  u32,
+    fov_y_deg: f32,
+) -> (f32, f32, f32, f32, f32, f32) {
+    use crate::engine::components::ScalingMode;
+    let tw = target_w.max(1) as f32;
+    let th = target_h.max(1) as f32;
+    let target_aspect = tw / th;
+    let window_aspect = if window_h > 0.0 { window_w / window_h } else { target_aspect };
+    let fov_y_rad = fov_y_deg.to_radians();
+
+    match scaling_mode {
+        ScalingMode::VertMinus => {
+            // 縦 FOV 固定・横はウィンドウアスペクト比に従う（従来の挙動）
+            (0.0, 0.0, window_w, window_h, window_aspect, fov_y_rad)
+        }
+        ScalingMode::HorPlus => {
+            // 横 FOV を target アスペクト比で固定し、window アスペクト比に合わせた縦 FOV を逆算する
+            let fov_x     = 2.0 * ((fov_y_rad * 0.5).tan() * target_aspect).atan();
+            let fov_y_adj = if window_aspect > 0.0 {
+                2.0 * ((fov_x * 0.5).tan() / window_aspect).atan()
+            } else {
+                fov_y_rad
+            };
+            (0.0, 0.0, window_w, window_h, window_aspect, fov_y_adj)
+        }
+        ScalingMode::LetterBox => {
+            // 横幅をウィンドウ幅に合わせてスケール。高さが溢れる場合は上下クリップ
+            let scale = window_w / tw;
+            let vp_h  = (th * scale).min(window_h);
+            let y_off = ((window_h - vp_h) * 0.5).max(0.0);
+            (0.0, y_off, window_w, vp_h, target_aspect, fov_y_rad)
+        }
+        ScalingMode::PillarBox => {
+            // 縦幅をウィンドウ高さに合わせてスケール。横幅が溢れる場合は左右クリップ
+            let scale = window_h / th;
+            let vp_w  = (tw * scale).min(window_w);
+            let x_off = ((window_w - vp_w) * 0.5).max(0.0);
+            (x_off, 0.0, vp_w, window_h, target_aspect, fov_y_rad)
+        }
+        ScalingMode::LetterPillarBox => {
+            // アスペクト比を完全に保持しつつ最大化する（"fit / contain" 挙動）。
+            // ウィンドウが target より横長 → 縦幅基準でスケール（左右帯）
+            // ウィンドウが target より縦長 → 横幅基準でスケール（上下帯）
+            if window_aspect >= target_aspect {
+                // 横が広い: 縦をウィンドウ高さにフィット → 左右帯
+                let vp_w  = window_h * target_aspect;
+                let x_off = ((window_w - vp_w) * 0.5).max(0.0);
+                (x_off, 0.0, vp_w, window_h, target_aspect, fov_y_rad)
+            } else {
+                // 縦が長い: 横をウィンドウ幅にフィット → 上下帯
+                let vp_h  = window_w / target_aspect;
+                let y_off = ((window_h - vp_h) * 0.5).max(0.0);
+                (0.0, y_off, window_w, vp_h, target_aspect, fov_y_rad)
+            }
+        }
+        ScalingMode::FullScale => {
+            // target アスペクト比を保ったまま全画面に伸縮（黒帯なし・歪みあり）
+            (0.0, 0.0, window_w, window_h, target_aspect, fov_y_rad)
+        }
+    }
+}
+
 use super::canvas_collect::{collect_sprite_items, collect_canvas_rects, collect_canvas_id_items};
+
+// ============================================================
+//  canvas_viewport_map — CanvasViewportRef::Camera 解決ユーティリティ
+// ============================================================
+
+/// CanvasViewportRef::Camera で参照されるカメラアクターのビューポートサイズを解決する。
+///
+/// 参照カメラ自身のスケーリングモードを `compute_game_viewport` で適用し、
+/// LetterBox / PillarBox 等の帯を除いたコンテンツ領域のサイズを返す。
+/// - 参照先が見つからない場合: フォールバックとして `[win_w, win_h]` を返す
+fn resolve_camera_viewport_size(
+    actors:         &[crate::engine::structs::objects::Actor],
+    world:          &crate::engine::ecs::World,
+    cam_actor_name: &str,
+    cam_slot_name:  &str,
+    win_w: f32,
+    win_h: f32,
+    // 使用しないが将来の拡張用に残す
+    _game_viewport: Option<(f32, f32, f32, f32)>,
+) -> [f32; 2] {
+    use crate::engine::components::{ComponentKind, CameraComponent};
+
+    /// DFS でアクター名が一致し、かつ指定スロット名の CameraComponent を持つ最初のアクターの
+    /// CameraComponent を返す。
+    /// 同名アクターが複数存在する場合、Camera スロットを持つものを優先して探索する。
+    fn find_camera_component<'a>(
+        actors: &'a [crate::engine::structs::objects::Actor],
+        world:  &'a crate::engine::ecs::World,
+        actor_name: &str,
+        slot_name:  &str,
+    ) -> Option<&'a CameraComponent> {
+        for a in actors {
+            if a.name == actor_name {
+                // 名前が一致するアクターで指定スロット名の CameraComponent を確認する
+                if let Some(cam) = a.slots().iter()
+                    .find(|s| s.name == slot_name && s.kind == ComponentKind::Camera)
+                    .and_then(|s| world.get::<CameraComponent>(s.entity))
+                {
+                    return Some(cam);
+                }
+                // 名前が一致しても Camera スロットがない場合は次のアクターへ継続する
+            }
+            // 子アクターを再帰的に探索する
+            if let Some(found) = find_camera_component(a.children(), world, actor_name, slot_name) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    let Some(cam) = find_camera_component(actors, world, cam_actor_name, cam_slot_name) else {
+        return [win_w, win_h];
+    };
+
+    // 参照カメラのスケーリングモードをウィンドウサイズに適用して実描画領域を計算する。
+    // LetterBox/PillarBox 時は帯部分を除いたコンテンツ領域のみをキャンバス基準として返す。
+    let (_, _, rendered_w, rendered_h, _, _) = compute_game_viewport(
+        &cam.scaling_mode,
+        win_w,
+        win_h,
+        cam.target_width,
+        cam.target_height,
+        cam.fov_y_deg,
+    );
+    [rendered_w, rendered_h]
+}
+
+/// is_scene_ss が true のときに各ルートキャンバスアクターの有効ビューポートサイズを事前解決する。
+///
+/// `CanvasViewportRef::Camera` を持つルートキャンバスのみマップに追加する。
+/// `Window` 参照はデフォルトの `viewport_size` にフォールバックするため不要。
+fn build_canvas_viewport_map(
+    actors:        &[crate::engine::structs::objects::Actor],
+    world:         &crate::engine::ecs::World,
+    wl:            u32,
+    win_w:         f32,
+    win_h:         f32,
+    game_viewport: Option<(f32, f32, f32, f32)>,
+) -> std::collections::HashMap<crate::engine::ecs::Entity, [f32; 2]> {
+    use crate::engine::components::{CanvasTransform, CanvasComponent, ComponentKind, CanvasViewportRef};
+    let mut map = std::collections::HashMap::new();
+    for actor in actors {
+        if actor.world_line != wl { continue; }
+        // CanvasTransform がないアクターはルートキャンバスでない
+        if world.get::<CanvasTransform>(actor.entity).is_none() { continue; }
+        // Canvas スロットの viewport_ref を確認する
+        for slot in actor.slots() {
+            if slot.kind != ComponentKind::Canvas { continue; }
+            if let Some(cc) = world.get::<CanvasComponent>(slot.entity) {
+                if let CanvasViewportRef::Camera { actor_name, slot_name } = &cc.viewport_ref {
+                    let vp = resolve_camera_viewport_size(
+                        actors, world, actor_name, slot_name, win_w, win_h, game_viewport,
+                    );
+                    map.insert(actor.entity, vp);
+                }
+                // Camera 参照以外はマップに追加しない（collect 側でフォールバック）
+                break;
+            }
+        }
+    }
+    map
+}
 
 /// カメラプレビューのテクスチャ幅（ピクセル）。
 const CAMERA_PREVIEW_W: u32 = 320;
@@ -49,11 +240,77 @@ const CAMERA_PREVIEW_W: u32 = 320;
 const CAMERA_PREVIEW_H: u32 = 180;
 
 impl App {
+    /// スクリーン座標のワールドスポーン位置を IDバッファ読み取りで解決する。
+    ///
+    /// `did_pick` が true の場合はピック処理でバッファ消費済みのため None を返す
+    /// （呼び出し元は次フレームに再キューすること）。
+    ///
+    /// IDバッファからメッシュ面のワールド座標を取得できた場合はその位置を、
+    /// 取得できない場合はレイキャスト（カメラ前方 DEFAULT_DIST）にフォールバックする。
+    /// D&D（pending_drop）とコンテキストメニュー追加（pending_add_actor）の両方で使用する。
+    fn resolve_spawn_pos(&self, sx: u32, sy: u32, did_pick: bool) -> Option<[f32; 3]> {
+        /// IDバッファがない・メッシュに当たらない場合のレイ方向への代替距離
+        const DEFAULT_DIST: f32 = 10.0;
+
+        // ピック処理がバッファを使用済みのため今フレームでは読み取れない
+        if did_pick { return None; }
+
+        // IDバッファからメッシュ面のワールド座標を取得する
+        let world_pos = if let (Some(id_buf), Some(draw_ctx)) = (&self.id_buffer, &self.draw_ctx) {
+            let (wpos, _raw_id) = id_buf.read_pixel(&draw_ctx.device);
+            wpos
+        } else {
+            None
+        };
+
+        // ワールド座標が取れた場合はそのまま使い、なければレイキャストにフォールバック
+        Some(world_pos.unwrap_or_else(|| {
+            let cam_v = self.camera.position();
+            let cam   = [cam_v.x, cam_v.y, cam_v.z];
+            if let Some(ws) = self.window.as_ref().map(|w| w.inner_size()) {
+                let view = self.camera.view_matrix();
+                let proj = self.camera.projection_matrix();
+                let (_ro, rd) = screen_to_ray(
+                    sx as f32, sy as f32,
+                    ws.width as f32, ws.height as f32,
+                    &view.data, &proj.data, cam,
+                );
+                [
+                    cam[0] + rd[0] * DEFAULT_DIST,
+                    cam[1] + rd[1] * DEFAULT_DIST,
+                    cam[2] + rd[2] * DEFAULT_DIST,
+                ]
+            } else {
+                // ウィンドウサイズが取れない場合はカメラ前方向に配置する
+                let yaw   = self.camera.yaw.to_radians();
+                let pitch = self.camera.pitch.to_radians();
+                [
+                    cam[0] + yaw.sin() * pitch.cos() * DEFAULT_DIST,
+                    cam[1] + pitch.sin()              * DEFAULT_DIST,
+                    cam[2] + yaw.cos() * pitch.cos() * DEFAULT_DIST,
+                ]
+            }
+        }))
+    }
+
     /// RedrawRequested イベント処理: 1 フレーム分のレンダリング全体を担う。
     ///
     /// render.rs の window_event から委譲される。
     pub(super) fn handle_redraw_requested(&mut self, event_loop: &ActiveEventLoop) {
+        let dbg_frame = DEBUG_FRAME.fetch_add(1, Ordering::Relaxed);
+        let dbg = dbg_frame < DEBUG_LOG_FRAMES;
+        if dbg { eprintln!("[SEED FRAME {dbg_frame}] start  mode={:?}  paused={}", self.mode, self.paused); }
+
         self.process_ipc(event_loop);
+        if dbg { eprintln!("[SEED FRAME {dbg_frame}] process_ipc done"); }
+
+        // AI 実行中はレンダリングをスキップして GPU リソースを LLM に解放する。
+        // IPC は process_ipc で処理済みなので RESUME_RENDER を受け取れる。
+        // request_redraw() でポーリングを継続し、RESUME_RENDER 受信後に即復帰できるようにする。
+        if self.render_paused {
+            if let Some(w) = &self.window { w.request_redraw(); }
+            return;
+        }
 
         // ヒエラルキー遅延フラッシュ（スロットリングで保留されていた送信）
         if self.hierarchy_dirty {
@@ -71,6 +328,16 @@ impl App {
         // Play クランプが有効な間は毎フレーム ClipCursor を再適用する。
         if self.play_clamp {
             apply_window_clamp(self.window_hwnd());
+        }
+
+        // ── 物理同期（Play フレームまたは編集時物理シミュレーション有効時）─────────────
+        // ゲームロジック・スクリプト更新より前に物理結果を取り込む
+        let should_update_physics = (self.mode == RuntimeMode::Play && !self.paused)
+            || (self.mode == RuntimeMode::Edit && self.edit_physics_enabled);
+        if should_update_physics {
+            if dbg { eprintln!("[SEED FRAME {dbg_frame}] update_physics start"); }
+            self.update_physics();
+            if dbg { eprintln!("[SEED FRAME {dbg_frame}] update_physics done"); }
         }
 
         // ── 時間 ──────────────────────────────────────
@@ -127,14 +394,21 @@ impl App {
 
         // ─ 1-6. ゲームロジック（Play 時のみ）─────────
         if time_running {
+            if dbg { eprintln!("[SEED FRAME {dbg_frame}] begin_frame"); }
             if let Some(scene) = &mut self.scene { scene.begin_frame(&ctx); }
+            if dbg { eprintln!("[SEED FRAME {dbg_frame}] early_update"); }
             if let Some(scene) = &mut self.scene { scene.early_update(&ctx); }
+            if dbg { eprintln!("[SEED FRAME {dbg_frame}] update"); }
             if let Some(scene) = &mut self.scene { scene.update(&ctx); }
+            if dbg { eprintln!("[SEED FRAME {dbg_frame}] constant_update"); }
             for fixed_ctx in self.clock.drain_fixed() {
                 if let Some(scene) = &mut self.scene { scene.constant_update(&fixed_ctx); }
             }
+            if dbg { eprintln!("[SEED FRAME {dbg_frame}] late_update"); }
             if let Some(scene) = &mut self.scene { scene.late_update(&ctx); }
+            if dbg { eprintln!("[SEED FRAME {dbg_frame}] scene.render"); }
             if let Some(scene) = &mut self.scene { scene.render(&ctx); }
+            if dbg { eprintln!("[SEED FRAME {dbg_frame}] game logic done"); }
         }
 
         // ── GPU カメラ・インスタンスバッファ更新 ──────
@@ -145,6 +419,42 @@ impl App {
         // 正確なコンテナサイズを取得する。
         let my_hwnd = self.window_hwnd();
         let queue = self.draw_ctx.as_ref().map(|c| c.queue.clone());
+
+        // Play モードのスケーリングモードに応じたビューポート矩形とクリアカラー。
+        // カメラ選択ブロック内で上書きされ、メインレンダーパスで適用する。
+        let win_w_f = window_size.map_or(1280.0_f32, |s| s.width  as f32);
+        let win_h_f = window_size.map_or(720.0_f32,  |s| s.height as f32);
+
+        // Edit モードで選択中のカメラの視錐台プレーンを事前に計算する。
+        //
+        // update_all_mc_batches_for_wl では scene への可変借用が必要なため、
+        // ここで不変借用のうちにフラスタムを取得しておく。
+        // デバッグカメラ OR 選択カメラのいずれかに入っていれば描画する（OR カリング）。
+        let preview_frustum: Option<[[f32; 4]; 6]> = {
+            // 3D Edit シーン（アクター編集 2D タブ以外）のみ対象
+            // WL 0 に 2D アクターが混在していても 3D カメラ視錐台を計算する
+            let is_3d_edit = in_editor && !is_actor_edit_2d;
+            if is_3d_edit {
+                let aspect = window_size.map_or(
+                    16.0_f32 / 9.0, |s| s.width as f32 / s.height as f32
+                );
+                self.scene.as_ref().and_then(|scene| {
+                    camera_scene_gizmo::get_selected_camera_data(
+                        &scene.actors, &scene.world,
+                        self.active_world_line,
+                        self.actor_virtual_selected_idx,
+                    )
+                }).map(|cam_data| {
+                    camera_scene_gizmo::compute_frustum_planes(&cam_data, aspect)
+                })
+            } else { None }
+        };
+        let mut game_viewport:    (f32, f32, f32, f32) = (0.0, 0.0, win_w_f, win_h_f);
+        let mut game_clear_color: [f32; 4]             = [0.1, 0.1, 0.1, 1.0];
+        // LetterBox / PillarBox 時の帯カラー。デフォルト黒。
+        let mut game_bar_color:   [f32; 4]             = [0.0, 0.0, 0.0, 1.0];
+        // LetterBox / PillarBox 選択フラグ（帯カラーを clear に使用する）
+        let mut uses_bar_mode:    bool                 = false;
 
         if let (Some(scene), Some(camera_buf), Some(queue)) =
             (&mut self.scene, &self.camera_buf, queue)
@@ -173,10 +483,23 @@ impl App {
                 (v, p, [cam_2d.pan_x, cam_2d.pan_y, -100.0])
             } else if self.mode == RuntimeMode::Play && !self.paused {
                 // Play モード（非ポーズ時）: is_main=true の CameraComponent を探す
-                let aspect = window_size.map_or(16.0 / 9.0, |s| {
-                    s.width as f32 / s.height as f32
-                });
+                // スケーリングモードに応じたビューポート矩形・射影アスペクト比・実効 FOV を計算する
                 let game_cam = scene.find_main_camera().map(|(tf, cd)| {
+                    let (vp_x, vp_y, vp_w, vp_h, proj_aspect, fov_y_rad) = compute_game_viewport(
+                        &cd.scaling_mode, win_w_f, win_h_f,
+                        cd.target_width, cd.target_height, cd.fov_y_deg,
+                    );
+                    game_viewport    = (vp_x, vp_y, vp_w.max(1.0), vp_h.max(1.0));
+                    game_clear_color = cd.clear_color;
+                    game_bar_color   = cd.bar_color;
+                    // LetterBox / PillarBox の場合は帯カラーを LoadOp::Clear に使用する。
+                    // ゲームエリア内は scene オブジェクトがクリアカラーを上書きする想定。
+                    uses_bar_mode = matches!(
+                        cd.scaling_mode,
+                        crate::engine::components::ScalingMode::LetterBox
+                        | crate::engine::components::ScalingMode::PillarBox
+                        | crate::engine::components::ScalingMode::LetterPillarBox
+                    );
                     let [px, py, pz] = tf.position;
                     let [fx, fy, fz] = tf.forward();
                     let [ux, uy, uz] = tf.up();
@@ -184,9 +507,7 @@ impl App {
                     let target = pos + Vector3::new(fx, fy, fz);
                     let up_vec = Vector3::new(ux, uy, uz);
                     let v = Mat4x4::look_at_lh(pos, target, up_vec);
-                    let p = Mat4x4::perspective_lh(
-                        cd.fov_y_deg.to_radians(), aspect, cd.near, cd.far,
-                    );
+                    let p = Mat4x4::perspective_lh(fov_y_rad, proj_aspect, cd.near, cd.far);
                     (v, p, [px, py, pz])
                 });
                 // メインカメラが未配置の場合はデバッグカメラにフォールバック
@@ -250,10 +571,11 @@ impl App {
             let camera_pos     = cam_pos_arr;
 
             // シーンモード・アクター編集モード共通: world_line 全 MC を DFS で更新する
+            // preview_frustum が Some の場合: デバッグカメラ OR プレビューカメラの OR カリング。
             let (actors, world) = (&mut scene.actors, &mut scene.world);
             super::update_all_mc_batches_for_wl(
                 actors, world, self.active_world_line,
-                &queue, &frustum_planes, camera_pos, self.clock.anim_time(),
+                &queue, &frustum_planes, preview_frustum.as_ref(), camera_pos, self.clock.anim_time(),
             );
         }
 
@@ -267,10 +589,11 @@ impl App {
         } else { None };
 
         // ── ドラッグホバープレビュー位置の更新（レンダー前）──────────
-        // 2D キャンバスモードの場合、アクターの配置位置は CanvasTransform で固定のため
+        // アクター編集 2D タブの場合、アクターの配置位置は CanvasTransform で固定のため
         // 3D プレビュー球体は表示しない。3D モードのみレイキャストで位置を算出する。
+        // 3D+2D 混在シーン（is_canvas=true）では 3D レイキャストを引き続き使用する。
         if let Some((hsx, hsy)) = self.pending_drop_hover.take() {
-            if !is_canvas {
+            if !is_actor_edit_2d {
                 // 3D モード: GPU リードバックを使わずレイキャストでワールド座標を算出する。
                 // y=0 平面との交差を優先し、カメラが平行または後方なら DEFAULT_DIST 先。
                 const DEFAULT_DIST: f32 = 10.0;
@@ -323,7 +646,7 @@ impl App {
 
         // カメラギズモの (DFS ID, アイコン行列) リスト（3D 編集モードのみ）。
         // ピック情報として mc_total_instances の直後の ID 範囲に割り当てる。
-        let cam_gizmo_actor_mats: Vec<(usize, [[f32; 4]; 4])> = if in_editor && !is_canvas {
+        let cam_gizmo_actor_mats: Vec<(usize, [[f32; 4]; 4])> = if in_editor && !is_actor_edit_2d {
             if let Some(scene) = &self.scene {
                 camera_scene_gizmo::collect_camera_actor_matrices(
                     &scene.actors, &scene.world, self.active_world_line,
@@ -333,6 +656,13 @@ impl App {
         let camera_gizmo_count: u32 = cam_gizmo_actor_mats.len() as u32;
         // キャンバス ID のベースオフセット（MC + カメラギズモの後）
         let canvas_id_offset: u32 = mc_total_instances + camera_gizmo_count;
+
+        // 選択アクターの種別（2D/3D）を可変借用の前に確定する。
+        // self.renderer を可変借用した後は self の不変借用が取れないため。
+        // ワールドスペース表示中（use_screen_space = false）の 2D アクターはパースペクティブ
+        // カメラで描画されるため、ortho 半径ではなく 3D 半径を使う必要がある。
+        let gizmo_actor_is_2d = is_actor_edit_2d
+            || (self.selected_primary_actor_is_2d() && use_screen_space);
 
         if let (Some(renderer), Some(scene), Some(camera_buf), Some(draw_ctx)) =
             (&mut self.renderer, &self.scene, &self.camera_buf, &self.draw_ctx)
@@ -364,8 +694,9 @@ impl App {
                     }
 
                     // ── カメラシーンギズモ（Edit モード・3D シーンのみ）──────────
-                    // カメラアイコン / フラスタム / プレビューは 3D シーン (world_line=0) でのみ表示する。
-                    let is_3d_scene = in_editor && !is_canvas;
+                    // カメラアイコン / フラスタム / プレビューはアクター編集 2D タブ以外で表示する。
+                    // WL 0 に 2D アクターが混在していても 3D カメラギズモを表示する。
+                    let is_3d_scene = in_editor && !is_actor_edit_2d;
                     let aspect = window_size.map_or(16.0_f32 / 9.0, |s| {
                         s.width as f32 / s.height as f32
                     });
@@ -418,11 +749,13 @@ impl App {
                             cam_gizmo_actor_mats.iter().map(|&(_, m)| m).collect();
                         if let Some(gizmo) = &mut self.camera_gizmo {
                             gizmo.batch.mark_dirty();
+                            // カメラアイコンは常に表示するため extra_frustum なし
                             gizmo.batch.update(
                                 &draw_ctx.queue,
                                 &gizmo.cpu_model,
                                 &transforms,
                                 &fp,
+                                None,
                                 cpo,
                                 0.0,
                             );
@@ -514,13 +847,15 @@ impl App {
                     }
 
                     // ギズモ GPU バッファ（レンダーパスの前に生成）
+                    // 選択アクターの種別（2D/3D）でギズモ形状を決定する。
+                    // gizmo_actor_is_2d は可変借用前に確定済み（self.renderer との競合回避）。
                     let show_gizmo_pre = self.mode == RuntimeMode::Edit || self.paused;
                     let gizmo_gpu_batch = if show_gizmo_pre
                         && self.tool_mode != ToolMode::Select
                     {
                         gizmo_pos.map(|pos| {
-                            // 2D アクター編集タブ / それ以外でギズモ半径を切り替える
-                            let (radius, cam_pos_arr) = if is_actor_edit_2d {
+                            // 2D アクター編集タブ・2D アクター選択時 / それ以外でギズモ半径を切り替える
+                            let (radius, cam_pos_arr) = if gizmo_actor_is_2d {
                                 // 2D スクリーンスペース: ビューポート高さの 15% をギズモ半径とする。
                                 // ortho_half_h = vp_h/2 なので * 0.15 = vp_h * 0.075 px
                                 let cam_2d = self.canvas_cameras.get(&self.active_world_line);
@@ -539,7 +874,7 @@ impl App {
                             let hov  = self.hovered_gizmo_part;
                             let drag_part = self.drag.gizmo_drag.as_ref().map(|d| d.part);
                             let mut batch = GizmoBatch::new();
-                            if is_canvas {
+                            if gizmo_actor_is_2d {
                                 // 2D: Z 軸・平面ハンドル不要、Rotate は完全円
                                 match self.tool_mode {
                                     ToolMode::Move   => batch.add_gizmo_translate_2d(pos, radius, hov),
@@ -828,10 +1163,148 @@ impl App {
                         Some(lb.build(&draw_ctx.device))
                     } else { None };
 
+                    // ── コライダーワイヤーフレームバッチ ──────────────────────────────
+                    // 描画条件:
+                    //   - エディタモード（3D シーンのみ）: 常に表示
+                    //   - Play モード: play_collider_draw フラグが有効な場合のみ表示
+                    // トリガーコライダー: 黄色 / 通常コライダー: 緑 / 衝突中: 赤
+                    const COLLIDER_COLOR_NORMAL:    [f32; 4] = [0.0, 1.0, 0.2, 1.0];
+                    const COLLIDER_COLOR_TRIGGER:   [f32; 4] = [1.0, 0.9, 0.0, 1.0];
+                    const COLLIDER_COLOR_COLLISION: [f32; 4] = [1.0, 0.2, 0.0, 1.0];
+
+                    let draw_colliders = (in_editor && !is_actor_edit_2d)
+                        || (!in_editor && self.play_collider_draw);
+
+                    let collider_wireframe_batch = if draw_colliders {
+                        let wl = self.active_world_line;
+                        let mut lb = LineBatch::new();
+
+                        // DFS でアクターツリーを走査（子 Actor を含む）
+                        // dfs_counter は physics_ops.rs の entity_id と一致させるため
+                        // コライダーを持たないアクターも含めて 1-indexed でカウントする
+                        let mut dfs_counter: u64 = 0;
+                        let mut stack: Vec<&Actor> = scene.actors.iter()
+                            .filter(|a| a.world_line == wl)
+                            .rev()
+                            .collect();
+
+                        while let Some(actor) = stack.pop() {
+                            // 先にインクリメント（physics_ops.rs と同一の 1-indexed カウント）
+                            dfs_counter += 1;
+                            let dfs_id = dfs_counter;
+
+                            // 子を DFS スタックに追加
+                            for child in actor.children.iter().rev() {
+                                stack.push(child);
+                            }
+
+                            // Transform は actor.entity から取得
+                            let Some(tf) = scene.world.get::<ActorTransform>(actor.entity) else { continue };
+
+                            // Collider スロットエンティティから ColliderComponent を取得
+                            let collider_slot = actor.slots().iter()
+                                .find(|s| s.kind == ComponentKind::Collider);
+                            let Some(cs) = collider_slot else { continue };
+                            let Some(collider) = scene.world.get::<ColliderComponent>(cs.entity) else { continue };
+
+                            // コライダー色: トリガーなら黄色、衝突中なら赤、通常なら緑
+                            let color = if collider.is_trigger {
+                                COLLIDER_COLOR_TRIGGER
+                            } else if self.active_collision_dfs_ids.contains(&dfs_id) {
+                                COLLIDER_COLOR_COLLISION
+                            } else {
+                                COLLIDER_COLOR_NORMAL
+                            };
+
+                            // Transform のオイラー角（YXZ 度数）からクォータニオンを生成
+                            let q = Quaternion::from_euler(Vector3::new(
+                                tf.rotation[0].to_radians(),
+                                tf.rotation[1].to_radians(),
+                                tf.rotation[2].to_radians(),
+                            ));
+                            let rot   = [q.x, q.y, q.z, q.w];
+                            let scale = tf.scale;
+
+                            // コライダーオフセットをワールド空間に変換して中心座標を計算
+                            let off = collider.offset;
+                            let off_world = q.rotate(Vector3::new(off[0], off[1], off[2]));
+                            let pos = [
+                                tf.position[0] + off_world.x,
+                                tf.position[1] + off_world.y,
+                                tf.position[2] + off_world.z,
+                            ];
+
+                            match &collider.shape {
+                                ColliderShapeData::Box { half_extents } => {
+                                    // スケールを半サイズに適用
+                                    let he = [
+                                        half_extents[0] * scale[0].abs(),
+                                        half_extents[1] * scale[1].abs(),
+                                        half_extents[2] * scale[2].abs(),
+                                    ];
+                                    lb.add_obb(pos, rot, he, color);
+                                }
+                                ColliderShapeData::Sphere { radius } => {
+                                    // 最大スケール軸を半径に適用
+                                    let r = radius * scale[0].abs()
+                                        .max(scale[1].abs())
+                                        .max(scale[2].abs());
+                                    lb.add_sphere_at(pos, r, 24, color);
+                                }
+                                ColliderShapeData::Capsule { radius, half_height } => {
+                                    let r  = radius * scale[0].abs().max(scale[2].abs());
+                                    let hh = half_height * scale[1].abs();
+                                    lb.add_capsule_wireframe(pos, rot, r, hh, 24, color);
+                                }
+                                ColliderShapeData::Cylinder { radius, half_height } => {
+                                    let r  = radius * scale[0].abs().max(scale[2].abs());
+                                    let hh = half_height * scale[1].abs();
+                                    lb.add_cylinder_wireframe(pos, rot, r, hh, 24, color);
+                                }
+                                ColliderShapeData::Cone { radius, half_height } => {
+                                    let r  = radius * scale[0].abs().max(scale[2].abs());
+                                    let hh = half_height * scale[1].abs();
+                                    lb.add_cone_wireframe(pos, rot, r, hh, 24, color);
+                                }
+                                ColliderShapeData::ConvexHull { vertices } => {
+                                    // 全頂点をスケール・回転・平行移動でワールド空間に変換
+                                    let world_verts: Vec<[f32; 3]> = vertices.iter()
+                                        .map(|&[x, y, z]| {
+                                            let sv = Vector3::new(
+                                                x * scale[0], y * scale[1], z * scale[2],
+                                            );
+                                            let rv = q.rotate(sv);
+                                            [pos[0] + rv.x, pos[1] + rv.y, pos[2] + rv.z]
+                                        })
+                                        .collect();
+                                    lb.add_convex_hull_wireframe(&world_verts, color);
+                                }
+                                ColliderShapeData::TriangleMesh { triangles } => {
+                                    // 全三角形頂点をワールド空間に変換
+                                    let world_tris: Vec<[[f32; 3]; 3]> = triangles.iter()
+                                        .map(|tri| {
+                                            tri.map(|[x, y, z]| {
+                                                let sv = Vector3::new(
+                                                    x * scale[0], y * scale[1], z * scale[2],
+                                                );
+                                                let rv = q.rotate(sv);
+                                                [pos[0] + rv.x, pos[1] + rv.y, pos[2] + rv.z]
+                                            })
+                                        })
+                                        .collect();
+                                    lb.add_triangle_mesh_wireframe(&world_tris, color);
+                                }
+                            }
+                        }
+
+                        if lb.is_empty() { None } else { Some(lb.build(&draw_ctx.device)) }
+                    } else { None };
+
                     // スプライト描画リソース収集（render pass 前に GPU バッファを準備する）
                     // CanvasTransform + SpriteComponent を持つアクターを列挙し、
                     // テクスチャをキャッシュから取得または新規ロードして SpritePrepared を生成する。
-                    let sprite_prepared = if in_editor && is_canvas {
+                    // Edit / Play 両モードで収集する（in_editor チェックなし）。
+                    let sprite_prepared = if is_canvas {
                         if let Some(scene) = &self.scene {
                             let wl = self.active_world_line;
                             // ワールドスペース時はキャンバス座標をワールドユニットへスケールする
@@ -852,11 +1325,19 @@ impl App {
                             let vp_w = window_size.map_or(1280.0, |s| s.width  as f32);
                             let vp_h = window_size.map_or(720.0,  |s| s.height as f32);
                             let viewport_size = if is_scene_ss { Some([vp_w, vp_h]) } else { None };
+                            // CanvasViewportRef::Camera を持つルートキャンバスのビューポートサイズを事前解決する。
+                            // プレイモードでは実際のゲームビューポートサイズ、編集モードではカメラの設計解像度を使用する。
+                            let play_gvp = if is_scene_ss && !in_editor { Some(game_viewport) } else { None };
+                            let canvas_vp_overrides = if is_scene_ss {
+                                build_canvas_viewport_map(&scene.actors, &scene.world, wl, vp_w, vp_h, play_gvp)
+                            } else {
+                                std::collections::HashMap::new()
+                            };
                             let mut items = Vec::new();
                             collect_sprite_items(
                                 &scene.actors, &scene.world, wl, draw_ctx,
                                 None, IDENTITY, [1.0, 1.0], (false, false),
-                                canvas_scale, y_sign, viewport_size, &mut items,
+                                canvas_scale, y_sign, viewport_size, &canvas_vp_overrides, &mut items,
                             );
                             prepare_sprites_from_mats(&draw_ctx.device, &draw_ctx.pipelines.sprite, &items)
                         } else { vec![] }
@@ -886,11 +1367,18 @@ impl App {
                             let vp_w_r = window_size.map_or(1280.0, |s| s.width  as f32);
                             let vp_h_r = window_size.map_or(720.0,  |s| s.height as f32);
                             let viewport_size_rect = if is_scene_ss_rect { Some([vp_w_r, vp_h_r]) } else { None };
+                            // Camera 参照のルートキャンバスはビューポートオーバーライドマップを使用する
+                            let play_gvp_r = if is_scene_ss_rect && !in_editor { Some(game_viewport) } else { None };
+                            let canvas_vp_overrides_r = if is_scene_ss_rect {
+                                build_canvas_viewport_map(&scene.actors, &scene.world, wl, vp_w_r, vp_h_r, play_gvp_r)
+                            } else {
+                                std::collections::HashMap::new()
+                            };
                             collect_canvas_rects(
                                 &scene.actors, &scene.world, wl, &mut lb, rect_col,
                                 &self.selected_actor_dfs_ids, &mut counter,
                                 None, IDENTITY_RECT, [1.0, 1.0], (false, false),
-                                canvas_scale_rect, y_sign_rect, viewport_size_rect,
+                                canvas_scale_rect, y_sign_rect, viewport_size_rect, &canvas_vp_overrides_r,
                             );
                             if lb.is_empty() { None } else { Some(lb.build(&draw_ctx.device)) }
                         } else { None }
@@ -909,13 +1397,14 @@ impl App {
 
 
                     // アイコンオーバーレイバッチ（エディタモードのみ）
-                    // キャンバスモード・3D モード共通: 常に 3D パースペクティブ行列でスクリーン座標を計算する。
-                    // キャンバスアクターは MC インスタンスを持たないためアイコンは表示されない。
+                    // 全選択アクター（マルチ選択対応）の 3D Transform 位置をスクリーン投影してアイコンを表示する。
+                    // キャンバスアクター（2D）はスクリーンスペース描画のため 3D 投影をスキップする。
                     let icon_overlay_batch = if in_editor {
                         let vp_w = window_size.map_or(1280.0, |s| s.width  as f32);
                         let vp_h = window_size.map_or(720.0,  |s| s.height as f32);
                         let (view, proj) = (self.camera.view_matrix(), self.camera.projection_matrix());
                         let positions: Vec<(f32, f32)> = if !self.selected_instances.is_empty() {
+                            // レガシーインスタンス選択（ModelComponent クリック）
                             selected_mc
                                 .map(|mc| {
                                     self.selected_instances.iter()
@@ -927,11 +1416,27 @@ impl App {
                                         .collect()
                                 })
                                 .unwrap_or_default()
-                        } else if self.actor_virtual_selected_idx.is_some() && self.active_world_line != 0 {
-                            let pos = actor_virtual_pos.unwrap_or([0.0, 0.0, 0.0]);
-                            world_to_screen(pos, &view.data, &proj.data, vp_w, vp_h)
-                                .map(|p| vec![p])
-                                .unwrap_or_default()
+                        } else if !self.selected_actor_dfs_ids.is_empty() {
+                            // DFS 選択（シーンモード・アクター編集モード共通）
+                            // world_line != 0 の制限を撤廃してメインシーンでも表示する
+                            if let Some(scene) = &self.scene {
+                                let wl = self.active_world_line;
+                                self.selected_actor_dfs_ids.iter()
+                                    .filter_map(|&dfs_id| {
+                                        let mut c = 0u32;
+                                        let actor = find_actor_by_dfs(
+                                            &scene.actors, wl, dfs_id as u32, &mut c,
+                                        )?;
+                                        // 3D アクターの Transform 位置を使う（2D はスキップ）
+                                        let pos = scene.world
+                                            .get::<ActorTransform>(actor.entity)?
+                                            .position;
+                                        world_to_screen(pos, &view.data, &proj.data, vp_w, vp_h)
+                                    })
+                                    .collect()
+                            } else {
+                                Vec::new()
+                            }
                         } else {
                             Vec::new()
                         };
@@ -942,32 +1447,70 @@ impl App {
 
                     // ── メインレンダーパス ────────────────
                     {
-                        // アクター編集モード: 紺色背景、通常: ダークグレー
-                        let clear_color = if self.active_world_line != 0 {
+                        // Play モード: ゲームカメラのクリアカラーで全体クリア
+                        // （帯エリアは begin_render_pass 後に BarFillPipeline で別途塗りつぶす）
+                        // Edit モード: アクター編集タブは紺色、通常はダークグレー
+                        let clear_color = if self.mode == RuntimeMode::Play && !self.paused {
+                            let [r, g, b, a] = game_clear_color;
+                            wgpu::Color { r: r as f64, g: g as f64, b: b as f64, a: a as f64 }
+                        } else if self.active_world_line != 0 {
                             wgpu::Color { r: 0.05, g: 0.08, b: 0.18, a: 1.0 }
                         } else {
                             wgpu::Color { r: 0.1,  g: 0.1,  b: 0.1,  a: 1.0 }
                         };
                         let mut pass = frame.begin_render_pass(clear_color);
+
+                        // LetterBox / PillarBox 時: ビューポート設定前に帯エリアを帯カラーで塗る。
+                        // LoadOp::Clear はサーフェス全体をクリアするため、ゲーム以外のエリアを
+                        // BarFillPipeline で上書きすることで正しい帯カラーを適用する。
+                        if self.mode == RuntimeMode::Play && !self.paused && uses_bar_mode {
+                            let (vp_x, vp_y, vp_w, vp_h) = game_viewport;
+                            // ピクセル座標 → NDC 変換
+                            // ndc_x(px) = px / win_w * 2 - 1
+                            // ndc_y(py) = 1 - py / win_h * 2  (ピクセル Y は上が 0、NDC Y は上が +1)
+                            let to_ndc_x = |px: f32| px / win_w_f * 2.0 - 1.0;
+                            let to_ndc_y = |py: f32| 1.0 - py / win_h_f * 2.0;
+
+                            // 4 辺の帯候補（面積 0 の帯は描画スキップ）
+                            let bar_rects = [
+                                // 上帯: Y=0〜vp_y
+                                (0.0, 0.0, win_w_f, vp_y),
+                                // 下帯: Y=(vp_y+vp_h)〜win_h
+                                (0.0, vp_y + vp_h, win_w_f, win_h_f),
+                                // 左帯: X=0〜vp_x
+                                (0.0, 0.0, vp_x, win_h_f),
+                                // 右帯: X=(vp_x+vp_w)〜win_w
+                                (vp_x + vp_w, 0.0, win_w_f, win_h_f),
+                            ];
+                            for (px0, py0, px1, py1) in bar_rects {
+                                // 面積 0 の帯はスキップ（LetterBox なら左右帯が幅 0 になる等）
+                                if px1 - px0 < 0.5 || py1 - py0 < 0.5 { continue; }
+                                // ピクセル矩形を NDC 矩形に変換（y は上下反転）
+                                let ndc_x0 = to_ndc_x(px0);
+                                let ndc_x1 = to_ndc_x(px1);
+                                let ndc_y0 = to_ndc_y(py1); // py が大きいほど NDC y が小さい
+                                let ndc_y1 = to_ndc_y(py0);
+                                draw_ctx.pipelines.bar_fill.draw(
+                                    &mut pass, &draw_ctx.device,
+                                    game_bar_color, ndc_x0, ndc_y0, ndc_x1, ndc_y1,
+                                );
+                            }
+                        }
+
+                        // Play モード: スケーリングモードに応じてビューポートを設定する。
+                        // LetterBox/PillarBox では set_scissor_rect によって黒帯へのはみ出しをクリップする。
+                        // VertMinus/HorPlus/FullScale は全画面ビューポートのままなので実質ノーオペレーション。
+                        if self.mode == RuntimeMode::Play && !self.paused {
+                            let (vp_x, vp_y, vp_w, vp_h) = game_viewport;
+                            pass.set_viewport(vp_x, vp_y, vp_w, vp_h, 0.0, 1.0);
+                            pass.set_scissor_rect(vp_x as u32, vp_y as u32, vp_w as u32, vp_h as u32);
+                        }
                         // 全 MC を描画（子アクターの MC も含む）
                         for &(_, _, _, amc) in &all_mcs {
                             if let Some((gpu, batch)) = amc.rendering_refs() {
                                 draw_model_indirect(
                                     &mut pass, gpu, batch,
                                     &camera_buf.bind_group, &draw_ctx.pipelines,
-                                );
-                            }
-                        }
-
-                        // 矩形選択ビジュアル（scene_canvas_ss はオーバーレイパスで描画）
-                        if !scene_canvas_ss {
-                            if let (Some(rect_batch), Some((_, line_bg))) =
-                                (&rect_gpu_batch, &self.line_model_buf)
-                            {
-                                draw_line_batch(
-                                    &mut pass, rect_batch,
-                                    &camera_buf.bind_group, line_bg,
-                                    &draw_ctx.pipelines,
                                 );
                             }
                         }
@@ -983,18 +1526,9 @@ impl App {
                             );
                         }
 
-                        // スプライト画像描画（グリッドより前面に描画）
-                        // scene_canvas_ss の場合はオーバーレイパスで描画するためスキップ
-                        if !scene_canvas_ss && !sprite_prepared.is_empty() {
-                            draw_sprites(
-                                &mut pass,
-                                &draw_ctx.pipelines.sprite,
-                                &camera_buf.bind_group,
-                                &sprite_prepared,
-                            );
-                        }
-
-                        // グリッド描画（スプライトより後、Canvas 矩形・アウトラインより前）
+                        // グリッド描画（スプライト・選択矩形より先に描画）
+                        // sprite/unlit パイプラインは depth_write=false かつ LessEqual のため、
+                        // グリッドより後に描画することでグリッドの上に正しく重なる。
                         if let (Some(grid_batch), Some((_, line_bg))) =
                             (&grid_gpu_batch, &self.line_model_buf)
                         {
@@ -1005,12 +1539,37 @@ impl App {
                             );
                         }
 
+                        // スプライト画像描画（グリッドより後に描画し前面に表示）
+                        // scene_canvas_ss の場合はオーバーレイパスで描画するためスキップ
+                        if !scene_canvas_ss && !sprite_prepared.is_empty() {
+                            draw_sprites(
+                                &mut pass,
+                                &draw_ctx.pipelines.sprite,
+                                &camera_buf.bind_group,
+                                &sprite_prepared,
+                            );
+                        }
+
                         // CanvasComponent 矩形アウトライン描画（グリッドより前面）
                         // Canvas: 常に表示, Sprite: 選択時のみ表示
                         // scene_canvas_ss の場合はオーバーレイパスで描画するためスキップ
                         if !scene_canvas_ss {
                             if let (Some(rect_batch), Some((_, line_bg))) =
                                 (&canvas_rect_batch, &self.line_model_buf)
+                            {
+                                draw_line_batch(
+                                    &mut pass, rect_batch,
+                                    &camera_buf.bind_group, line_bg,
+                                    &draw_ctx.pipelines,
+                                );
+                            }
+                        }
+
+                        // 矩形選択ビジュアル（グリッドより後に描画し前面に表示）
+                        // scene_canvas_ss はオーバーレイパスで描画するためスキップ
+                        if !scene_canvas_ss {
+                            if let (Some(rect_batch), Some((_, line_bg))) =
+                                (&rect_gpu_batch, &self.line_model_buf)
                             {
                                 draw_line_batch(
                                     &mut pass, rect_batch,
@@ -1083,6 +1642,19 @@ impl App {
                             }
                         }
 
+                        // コライダーワイヤーフレーム（エディタモード + 3D シーンのみ）
+                        if !scene_canvas_ss {
+                            if let (Some(coll_batch), Some((_, line_bg))) =
+                                (&collider_wireframe_batch, &self.line_model_buf)
+                            {
+                                draw_line_batch(
+                                    &mut pass, coll_batch,
+                                    &camera_buf.bind_group, line_bg,
+                                    &draw_ctx.pipelines,
+                                );
+                            }
+                        }
+
                         // カメラアイコンモデル（全カメラアクター、3D シーン）
                         // camera.glb を InstancedModelBatch で描画する
                         if !scene_canvas_ss && !cam_gizmo_actor_mats.is_empty() {
@@ -1095,8 +1667,9 @@ impl App {
                         }
 
                         // ギズモ（グリッド・アウトラインより前面、アイコンより背面）
-                        // scene_canvas_ss の場合はオーバーレイパスで描画するためスキップ
-                        if !scene_canvas_ss {
+                        // 3D アクター選択中はメインパスで描画（scene_canvas_ss でもスキップしない）。
+                        // 2D アクター選択中 + scene_canvas_ss の場合のみオーバーレイパスへ移動。
+                        if !scene_canvas_ss || !gizmo_actor_is_2d {
                             let show_gizmo = in_editor && self.tool_mode != ToolMode::Select;
                             if show_gizmo {
                                 if let (Some(gpu_batch), Some((_, line_bg))) =
@@ -1170,7 +1743,9 @@ impl App {
                             }
 
                             // ギズモ（スプライト・矩形より前面）
-                            let show_gizmo = in_editor && self.tool_mode != ToolMode::Select;
+                            // 2D アクター選択中のみ 2D オルソカメラで描画する。
+                            // 3D アクター選択中はメインパスで描画済みのためスキップ。
+                            let show_gizmo = in_editor && self.tool_mode != ToolMode::Select && gizmo_actor_is_2d;
                             if show_gizmo {
                                 if let (Some(gpu_batch), Some((_, line_bg))) =
                                     (&gizmo_gpu_batch, &self.line_model_buf)
@@ -1244,7 +1819,13 @@ impl App {
                                             let vp_h = window_size.map_or(720.0,  |s| s.height as f32);
                                             let viewport_size: Option<[f32; 2]> =
                                                 if scene_canvas_ss { Some([vp_w, vp_h]) } else { None };
-
+                                            // Camera 参照のルートキャンバス用ビューポートオーバーライドマップ
+                                            let play_gvp_id = if scene_canvas_ss && !in_editor { Some(game_viewport) } else { None };
+                                            let canvas_vp_overrides_id = if scene_canvas_ss {
+                                                build_canvas_viewport_map(&scene.actors, &scene.world, wl, vp_w, vp_h, play_gvp_id)
+                                            } else {
+                                                std::collections::HashMap::new()
+                                            };
 
                                             let mut items = Vec::new();
                                             let mut ctr   = 0u32;
@@ -1259,6 +1840,7 @@ impl App {
                                                 &mut ctr, None, IDENTITY,
                                                 [1.0, 1.0], (false, false),
                                                 canvas_scale, y_sign, viewport_size,
+                                                &canvas_vp_overrides_id,
                                                 canvas_id_offset, &mut items,
                                             );
                                             items
@@ -1369,19 +1951,25 @@ impl App {
                                     );
                                 }
                             }
-                            // readback 優先度: drop > pick
+                            // readback 優先度: drop > add_actor > pick
                             let drop_pos = self.pending_drop
                                 .as_ref()
                                 .map(|&(_, sx, sy)| (sx, sy));
-                            let readback_pos = drop_pos.or(pick_pos);
+                            let add_actor_pos = self.pending_add_actor
+                                .as_ref()
+                                .and_then(|&(is_2d, _, _, sx, sy)| {
+                                    // 2D アクターはスポーン位置不要なので readback しない
+                                    if is_2d { None } else { Some((sx, sy)) }
+                                });
+                            let readback_pos = drop_pos.or(add_actor_pos).or(pick_pos);
                             if let Some((px, py)) = readback_pos {
                                 let px = px.min(id_buf.width.saturating_sub(1));
                                 let py = py.min(id_buf.height.saturating_sub(1));
                                 frame.schedule_id_copy(
                                     &id_buf.texture, px, py, &id_buf.readback_buf,
                                 );
-                                // readback が drop ではなく pick のためかを記録するフラグ
-                                did_pick = drop_pos.is_none() && pick_pos.is_some();
+                                // readback が drop/add_actor ではなく pick のためかを記録するフラグ
+                                did_pick = drop_pos.is_none() && add_actor_pos.is_none() && pick_pos.is_some();
                             }
                         }
                     }
@@ -1588,50 +2176,25 @@ impl App {
 
         // ── ドロップ処理（GPU サブミット後）─────────────
         if let Some((path, sx, sy)) = self.pending_drop.take() {
-            let world_pos = if !did_pick {
-                if let (Some(id_buf), Some(draw_ctx)) = (&self.id_buffer, &self.draw_ctx) {
-                    let (wpos, _raw_id) = id_buf.read_pixel(&draw_ctx.device);
-                    wpos
-                } else { None }
+            match self.resolve_spawn_pos(sx, sy, did_pick) {
+                // ピック処理でバッファ読み出し済みのため次フレームで再試行する
+                None => self.pending_drop = Some((path, sx, sy)),
+                Some(spawn_pos) => self.handle_drop_actor(&path, spawn_pos),
+            }
+        }
+
+        // ── コンテキストメニュー経由のアクター追加（GPU サブミット後）─────────────
+        // D&D と同じ IDバッファ読み取りでスポーン位置を確定する
+        if let Some((is_2d, world_line, parent_dfs_id, sx, sy)) = self.pending_add_actor.take() {
+            if is_2d {
+                // 2D アクターはスポーン位置不要なので即座に追加する
+                self.handle_add_actor_2d(world_line, parent_dfs_id);
             } else {
-                // ピック処理でバッファが読み出し済みのため別途取得できない。
-                // pending_drop を再キューイングして次フレームで処理する。
-                self.pending_drop = Some((path.clone(), sx, sy));
-                None
-            };
-
-            // world_pos が取れた場合はその場所に、なければカーソルレイ方向へ DEFAULT_DIST 進んだ位置に配置する
-            const DEFAULT_DIST: f32 = 10.0;
-            let spawn_pos = world_pos.unwrap_or_else(|| {
-                let cam_v = self.camera.position();
-                let cam   = [cam_v.x, cam_v.y, cam_v.z];
-                if let Some(ws) = self.window.as_ref().map(|w| w.inner_size()) {
-                    let view = self.camera.view_matrix();
-                    let proj = self.camera.projection_matrix();
-                    let (_ro, rd) = screen_to_ray(
-                        sx as f32, sy as f32,
-                        ws.width as f32, ws.height as f32,
-                        &view.data, &proj.data, cam,
-                    );
-                    [
-                        cam[0] + rd[0] * DEFAULT_DIST,
-                        cam[1] + rd[1] * DEFAULT_DIST,
-                        cam[2] + rd[2] * DEFAULT_DIST,
-                    ]
-                } else {
-                    // フォールバック: カメラ前方
-                    let yaw   = self.camera.yaw.to_radians();
-                    let pitch = self.camera.pitch.to_radians();
-                    [
-                        cam[0] + yaw.sin() * pitch.cos() * DEFAULT_DIST,
-                        cam[1] + pitch.sin()              * DEFAULT_DIST,
-                        cam[2] + yaw.cos() * pitch.cos() * DEFAULT_DIST,
-                    ]
+                match self.resolve_spawn_pos(sx, sy, did_pick) {
+                    // 再キューイング
+                    None => self.pending_add_actor = Some((false, world_line, parent_dfs_id, sx, sy)),
+                    Some(spawn_pos) => self.handle_add_actor(world_line, parent_dfs_id, Some(spawn_pos)),
                 }
-            });
-
-            if world_pos.is_some() || !did_pick {
-                self.handle_drop_actor(&path, spawn_pos);
             }
         }
 
@@ -1643,6 +2206,7 @@ impl App {
         self.input.end_frame();
         self.cam_input.end_frame();
 
+        if dbg { eprintln!("[SEED FRAME {dbg_frame}] end"); }
         if let Some(window) = &self.window { window.request_redraw(); }
     }
 }

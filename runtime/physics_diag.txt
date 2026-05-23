@@ -1,0 +1,245 @@
+The specified runtimeconfig.json [\\?\C:\Users\k023g\source\RustProjects\SEED\scripting\bin\Debug\net9.0\SEEDScripting.runtimeconfig.json] does not exist
+[SEED INIT] handle_resumed start  mode=Play
+[SEED INIT] Renderer::new() start
+[SEED INIT] Renderer::new() done
+[SEED INIT] DrawContext created
+[SEED INIT] init_asset_fs done
+[App] プラグイン 0 件ロード完了
+[SEED INIT] load_plugins done  count=0
+[SEED INIT] load_play_scene start  scene_path=Some("C:\\Users\\k023g\\source\\RustProjects\\SEED\\runtime\\assets\\scenes\\physics.scene")
+[SEED INIT] load_play_scene done  actors=4
+[Physics] start_physics: 3 objects collected (world_line=0)
+[Physics]   entity_id=1 pos=(0.081,0.967,1.845) rigidbody=true kinematic=false
+[Physics]   entity_id=3 pos=(0.000,0.000,0.000) rigidbody=false kinematic=false
+[Physics]   entity_id=4 pos=(2.577,1.273,2.321) rigidbody=true kinematic=true
+[SEED INIT] start_physics done
+[SEED INIT] window set_visible + request_redraw
+[SEED INIT] READY sent  hwnd=0x3709D0
+[SEED FRAME 0] start  mode=Play  paused=false
+[SEED FRAME 0] process_ipc done
+[SEED FRAME 0] update_physics start
+[Physics] frame=0 transform_updates=1
+[Physics]   entity_id=1 new_pos=(0.081,0.951,1.845)
+[SEED FRAME 0] update_physics done
+[SEED FRAME 0] begin_frame
+[SEED FRAME 0] early_update
+[SEED FRAME 0] update
+[SEED FRAME 0] constant_update
+[SEED FRAME 0] late_update
+[SEED FRAME 0] scene.render
+[SEED FRAME 0] game logic done
+[SEED FRAME 0] end
+[SEED FRAME 1] start  mode=Play  paused=false
+[SEED FRAME 1] process_ipc done
+[SEED FRAME 1] update_physics start
+[Physics] frame=1 transform_updates=1
+[Physics]   entity_id=1 new_pos=(0.081,0.941,1.845)
+[SEED FRAME 1] update_physics done
+[SEED FRAME 1] begin_frame
+[SEED FRAME 1] early_update
+[SEED FRAME 1] update
+[SEED FRAME 1] constant_update
+[SEED FRAME 1] late_update
+[SEED FRAME 1] scene.render
+[SEED FRAME 1] game logic done
+[SEED FRAME 1] end
+[SEED FRAME 2] start  mode=Play  paused=false
+[SEED FRAME 2] process_ipc done
+[SEED FRAME 2] update_physics start
+[Physics] frame=2 transform_updates=1
+[Physics]   entity_id=1 new_pos=(0.081,0.911,1.845)
+[SEED FRAME 2] update_physics done
+[SEED FRAME 2] begin_frame
+[SEED FRAME 2] early_update
+[SEED FRAME 2] update
+[SEED FRAME 2] constant_update
+[SEED FRAME 2] late_update
+[SEED FRAME 2] scene.render
+[SEED FRAME 2] game logic done
+[SEED FRAME 2] end
+[SEED FRAME 3] start  mode=Play  paused=false
+[SEED FRAME 3] process_ipc done
+[SEED FRAME 3] update_physics start
+[Physics] frame=3 transform_updates=1
+[Physics]   entity_id=1 new_pos=(0.081,0.893,1.845)
+[SEED FRAME 3] update_physics done
+[SEED FRAME 3] begin_frame
+[SEED FRAME 3] early_update
+[SEED FRAME 3] update
+[SEED FRAME 3] constant_update
+[SEED FRAME 3] late_update
+[SEED FRAME 3] scene.render
+[SEED FRAME 3] game logic done
+[SEED FRAME 3] end
+[SEED FRAME 4] start  mode=Play  paused=false
+[SEED FRAME 4] process_ipc done
+[SEED FRAME 4] update_physics start
+[SEED FRAME 4] update_physics done
+[SEED FRAME 4] begin_frame
+[SEED FRAME 4] early_update
+[SEED FRAME 4] update
+[SEED FRAME 4] constant_update
+[SEED FRAME 4] late_update
+[SEED FRAME 4] scene.render
+[SEED FRAME 4] game logic done
+[SEED FRAME 4] end
+[SEED FRAME 5] start  mode=Play  paused=false
+[SEED FRAME 5] process_ipc done
+[SEED FRAME 5] update_physics start
+[Physics] frame=5 transform_updates=1
+[Physics]   entity_id=1 new_pos=(0.081,0.872,1.845)
+[SEED FRAME 5] update_physics done
+[SEED FRAME 5] begin_frame
+[SEED FRAME 5] early_update
+[SEED FRAME 5] update
+[SEED FRAME 5] constant_update
+[SEED FRAME 5] late_update
+[SEED FRAME 5] scene.render
+[SEED FRAME 5] game logic done
+[SEED FRAME 5] end
+[SEED FRAME 6] start  mode=Play  paused=false
+[SEED FRAME 6] process_ipc done
+[SEED FRAME 6] update_physics start
+[Physics] frame=6 transform_updates=1
+[Physics]   entity_id=1 new_pos=(0.081,0.849,1.845)
+[SEED FRAME 6] update_physics done
+[SEED FRAME 6] begin_frame
+[SEED FRAME 6] early_update
+[SEED FRAME 6] update
+[SEED FRAME 6] constant_update
+[SEED FRAME 6] late_update
+[SEED FRAME 6] scene.render
+[SEED FRAME 6] game logic done
+[SEED FRAME 6] end
+[SEED FRAME 7] start  mode=Play  paused=false
+[SEED FRAME 7] process_ipc done
+[SEED FRAME 7] update_physics start
+[SEED FRAME 7] update_physics done
+[SEED FRAME 7] begin_frame
+[SEED FRAME 7] early_update
+[SEED FRAME 7] update
+[SEED FRAME 7] constant_update
+[SEED FRAME 7] late_update
+[SEED FRAME 7] scene.render
+[SEED FRAME 7] game logic done
+[SEED FRAME 7] end
+[SEED FRAME 8] start  mode=Play  paused=false
+[SEED FRAME 8] process_ipc done
+[SEED FRAME 8] update_physics start
+[Physics] frame=8 transform_updates=1
+[Physics]   entity_id=1 new_pos=(0.081,0.823,1.845)
+[SEED FRAME 8] update_physics done
+[SEED FRAME 8] begin_frame
+[SEED FRAME 8] early_update
+[SEED FRAME 8] update
+[SEED FRAME 8] constant_update
+[SEED FRAME 8] late_update
+[SEED FRAME 8] scene.render
+[SEED FRAME 8] game logic done
+[SEED FRAME 8] end
+[SEED FRAME 9] start  mode=Play  paused=false
+[SEED FRAME 9] process_ipc done
+[SEED FRAME 9] update_physics start
+[Physics] frame=9 transform_updates=1
+[Physics]   entity_id=1 new_pos=(0.081,0.795,1.845)
+[SEED FRAME 9] update_physics done
+[SEED FRAME 9] begin_frame
+[SEED FRAME 9] early_update
+[SEED FRAME 9] update
+[SEED FRAME 9] constant_update
+[SEED FRAME 9] late_update
+[SEED FRAME 9] scene.render
+[SEED FRAME 9] game logic done
+[SEED FRAME 9] end
+[Physics] frame=12 transform_updates=1
+[Physics]   entity_id=1 new_pos=(0.081,0.764,1.845)
+[Physics] frame=17 transform_updates=1
+[Physics]   entity_id=1 new_pos=(0.081,0.731,1.845)
+[Physics] frame=23 transform_updates=1
+[Physics]   entity_id=1 new_pos=(0.081,0.696,1.845)
+[Physics] frame=28 transform_updates=1
+[Physics]   entity_id=1 new_pos=(0.081,0.658,1.845)
+[Physics] frame=33 transform_updates=1
+[Physics]   entity_id=1 new_pos=(0.081,0.618,1.845)
+[Physics] frame=37 transform_updates=1
+[Physics]   entity_id=1 new_pos=(0.081,0.576,1.845)
+[Physics] frame=40 transform_updates=1
+[Physics]   entity_id=1 new_pos=(0.081,0.531,1.845)
+[Physics] frame=43 transform_updates=1
+[Physics]   entity_id=1 new_pos=(0.081,0.483,1.845)
+[Physics] frame=44 transform_updates=1
+[Physics]   entity_id=1 new_pos=(0.081,0.480,1.845)
+[Physics] frame=46 transform_updates=1
+[Physics]   entity_id=1 new_pos=(0.081,0.479,1.845)
+[Physics] frame=48 transform_updates=1
+[Physics]   entity_id=1 new_pos=(0.081,0.478,1.845)
+[Physics] frame=50 transform_updates=1
+[Physics]   entity_id=1 new_pos=(0.081,0.478,1.845)
+[Physics] frame=52 transform_updates=1
+[Physics]   entity_id=1 new_pos=(0.081,0.478,1.845)
+[Physics] frame=54 transform_updates=1
+[Physics]   entity_id=1 new_pos=(0.081,0.477,1.845)
+[Physics] frame=56 transform_updates=1
+[Physics]   entity_id=1 new_pos=(0.081,0.477,1.845)
+[Physics] frame=58 transform_updates=1
+[Physics]   entity_id=1 new_pos=(0.081,0.477,1.845)
+[Physics] frame=60 transform_updates=1
+[Physics]   entity_id=1 new_pos=(0.081,0.477,1.845)
+[Physics] frame=62 transform_updates=1
+[Physics]   entity_id=1 new_pos=(0.081,0.477,1.845)
+[Physics] frame=64 transform_updates=1
+[Physics]   entity_id=1 new_pos=(0.081,0.477,1.845)
+[Physics] frame=66 transform_updates=1
+[Physics]   entity_id=1 new_pos=(0.081,0.477,1.845)
+[Physics] frame=68 transform_updates=1
+[Physics]   entity_id=1 new_pos=(0.081,0.477,1.845)
+[Physics] frame=70 transform_updates=1
+[Physics]   entity_id=1 new_pos=(0.081,0.477,1.845)
+[Physics] frame=72 transform_updates=1
+[Physics]   entity_id=1 new_pos=(0.081,0.477,1.845)
+[Physics] frame=74 transform_updates=1
+[Physics]   entity_id=1 new_pos=(0.081,0.476,1.845)
+[Physics] frame=76 transform_updates=1
+[Physics]   entity_id=1 new_pos=(0.081,0.476,1.845)
+[Physics] frame=78 transform_updates=1
+[Physics]   entity_id=1 new_pos=(0.081,0.476,1.845)
+[Physics] frame=79 transform_updates=1
+[Physics]   entity_id=1 new_pos=(0.081,0.476,1.845)
+[Physics] frame=82 transform_updates=1
+[Physics]   entity_id=1 new_pos=(0.081,0.476,1.845)
+[Physics] frame=84 transform_updates=1
+[Physics]   entity_id=1 new_pos=(0.081,0.476,1.845)
+[Physics] frame=86 transform_updates=1
+[Physics]   entity_id=1 new_pos=(0.081,0.476,1.845)
+[Physics] frame=88 transform_updates=1
+[Physics]   entity_id=1 new_pos=(0.081,0.476,1.845)
+[Physics] frame=90 transform_updates=1
+[Physics]   entity_id=1 new_pos=(0.081,0.476,1.845)
+[Physics] frame=92 transform_updates=1
+[Physics]   entity_id=1 new_pos=(0.081,0.476,1.845)
+[Physics] frame=94 transform_updates=1
+[Physics]   entity_id=1 new_pos=(0.081,0.476,1.845)
+[Physics] frame=96 transform_updates=1
+[Physics]   entity_id=1 new_pos=(0.081,0.476,1.845)
+[Physics] frame=98 transform_updates=1
+[Physics]   entity_id=1 new_pos=(0.081,0.476,1.845)
+[Physics] frame=100 transform_updates=1
+[Physics]   entity_id=1 new_pos=(0.081,0.476,1.845)
+[Physics] frame=102 transform_updates=1
+[Physics]   entity_id=1 new_pos=(0.081,0.476,1.845)
+[Physics] frame=104 transform_updates=1
+[Physics]   entity_id=1 new_pos=(0.081,0.476,1.845)
+[Physics] frame=105 transform_updates=1
+[Physics]   entity_id=1 new_pos=(0.081,0.476,1.845)
+[Physics] frame=106 transform_updates=1
+[Physics]   entity_id=1 new_pos=(0.081,0.476,1.845)
+[Physics] frame=110 transform_updates=1
+[Physics]   entity_id=1 new_pos=(0.081,0.476,1.845)
+[Physics] frame=112 transform_updates=1
+[Physics]   entity_id=1 new_pos=(0.081,0.476,1.845)
+[Physics] frame=114 transform_updates=1
+[Physics]   entity_id=1 new_pos=(0.081,0.476,1.845)
+[Physics] frame=116 transform_updates=1
+[Physics]   entity_id=1 new_pos=(0.081,0.476,1.845)
+[Physics] frame=118 transform_updates=1
+[Physics]   entity_id=1 new_pos=(0.081,0.476,1.845)

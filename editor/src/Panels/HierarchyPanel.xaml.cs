@@ -23,6 +23,8 @@ public class ActorNode
     public string          Name     { get; set; } = "";
     public int?            ParentId { get; set; }
     public bool            IsGroup  { get; set; }
+    /// <summary>2D アクター（CanvasTransform）か否か。Hierarchy アイコン色分けに使用する。</summary>
+    public bool            Is2D     { get; set; }
     public List<ActorNode> Children { get; } = new();
 }
 
@@ -35,6 +37,7 @@ public partial class HierarchyPanel : UserControl
     // ── 状態 ─────────────────────────────────────────────────
 
     private RuntimeManager? _runtime;
+    private string          _assetsPath = "";
     private List<ActorNode> _roots      = new();
     private int             _selectedId = -1;
     private bool            _suppressSelectionEvent;
@@ -80,9 +83,16 @@ public partial class HierarchyPanel : UserControl
     // D&D: MouseDown で確定したドラッグ対象（コンテキストメニュー誤操作防止）
     private ActorNode? _pendingDragNode;
 
+    // ドラッグ中の Inspector 切り替え抑制:
+    // MouseDown でフラグを立て、MouseUp（ドラッグなし）またはドラッグ完了後に SendSelectionToRuntime を実行する。
+    private bool _deferRuntimeSelection = false;
+
     // キャッシュ
-    private static readonly SolidColorBrush BrushGroupIcon = MakeFrozen(Color.FromRgb(0xFF, 0xCC, 0x44));
-    private static readonly SolidColorBrush BrushActorIcon = MakeFrozen(Color.FromRgb(0x55, 0xAA, 0xFF));
+    private static readonly SolidColorBrush BrushGroupIcon   = MakeFrozen(Color.FromRgb(0xFF, 0xCC, 0x44));
+    /// <summary>3D アクターのアイコン色（青系）。</summary>
+    private static readonly SolidColorBrush BrushActorIcon   = MakeFrozen(Color.FromRgb(0x55, 0xAA, 0xFF));
+    /// <summary>2D アクターのアイコン色（オレンジ系）。</summary>
+    private static readonly SolidColorBrush BrushActor2DIcon = MakeFrozen(Color.FromRgb(0xFF, 0x88, 0x44));
 
     private static SolidColorBrush MakeFrozen(Color c)
     {
@@ -117,6 +127,17 @@ public partial class HierarchyPanel : UserControl
     public event Action<int>? ActorDfsSelected;
 
     /// <summary>
+    /// 次のヒエラルキー更新後に追加されたアクターをリネームモードにする準備をする。
+    /// ビューポートコンテキストメニューなど、アクター編集モード外から
+    /// アクタを追加する場合に呼び出す。
+    /// </summary>
+    public void PrepareRenameAfterAdd()
+    {
+        _preAddNodeIds             = GetAllNodes(_roots).Select(n => n.Id).ToHashSet();
+        _pendingActorRenameAfterAdd = true;
+    }
+
+    /// <summary>
     /// アクター編集モードの切り替え。
     /// is2D に true を渡すと、アクタ追加コマンドが ADD_ACTOR_2D に切り替わる。
     /// </summary>
@@ -145,6 +166,9 @@ public partial class HierarchyPanel : UserControl
     }
 
     // ── ランタイム接続 ────────────────────────────────────────
+
+    /// <summary>アセットルートパスを設定する。アクタファイル保存ダイアログの初期ディレクトリに使用する。</summary>
+    public void SetAssetsPath(string assetsPath) => _assetsPath = assetsPath;
 
     public void SetRuntime(RuntimeManager runtime)
     {
@@ -182,8 +206,8 @@ public partial class HierarchyPanel : UserControl
                     Dispatcher.BeginInvoke(() => StartRename(node.Id), DispatcherPriority.Background);
             }
 
-            // アクター追加直後のリネーム
-            if (_pendingActorRenameAfterAdd && _isActorEditMode)
+            // アクター追加直後のリネーム（アクター編集モード・シーンモード共通）
+            if (_pendingActorRenameAfterAdd)
             {
                 _pendingActorRenameAfterAdd = false;
                 var newNode = GetAllNodes(_roots).FirstOrDefault(n => !_preAddNodeIds.Contains(n.Id));
@@ -277,6 +301,7 @@ public partial class HierarchyPanel : UserControl
                                 ? null
                                 : e.GetProperty("parent").GetInt32(),
                     IsGroup  = e.TryGetProperty("is_group", out var ig) && ig.GetBoolean(),
+                    Is2D     = e.TryGetProperty("is_2d",    out var i2) && i2.GetBoolean(),
                 })
                 .ToList();
 
@@ -344,9 +369,13 @@ public partial class HierarchyPanel : UserControl
     private static TextBlock BuildItemHeader(ActorNode node)
     {
         var tb = new TextBlock { VerticalAlignment = VerticalAlignment.Center };
+        // IsGroup: 黄色 ▶、2D アクター: オレンジ ◆、3D アクター: 青 ◆
+        var iconBrush = node.IsGroup ? BrushGroupIcon
+                      : node.Is2D   ? BrushActor2DIcon
+                      :               BrushActorIcon;
         tb.Inlines.Add(new Run(node.IsGroup ? "▶ " : "◆ ")
         {
-            Foreground = node.IsGroup ? BrushGroupIcon : BrushActorIcon,
+            Foreground = iconBrush,
             FontSize   = 9,
         });
         tb.Inlines.Add(new Run(node.Name) { FontSize = 13 });
@@ -368,7 +397,9 @@ public partial class HierarchyPanel : UserControl
                 _anchorId = node.Id;
             }
             UpdateMultiSelectVisuals();
-            SendSelectionToRuntime();
+            // ドラッグの可能性があるため MouseUp まで遅延する場合は送信しない
+            if (!_deferRuntimeSelection)
+                SendSelectionToRuntime();
         }
     }
 
@@ -386,7 +417,9 @@ public partial class HierarchyPanel : UserControl
                 _anchorId = node.Id;
             }
             UpdateMultiSelectVisuals();
-            SendSelectionToRuntime();
+            // ドラッグの可能性があるため MouseUp まで遅延する場合は送信しない
+            if (!_deferRuntimeSelection)
+                SendSelectionToRuntime();
         }
     }
 
@@ -397,6 +430,9 @@ public partial class HierarchyPanel : UserControl
     /// </summary>
     private void SendSelectionToRuntime()
     {
+        var tid  = System.Threading.Thread.CurrentThread.ManagedThreadId;
+        var isUi = Dispatcher.CheckAccess();
+        SEEDEditor.EditorLog.Write($"[Hierarchy.SendSelection] tid={tid} ui={isUi} id={_selectedId} actorMode={_isActorEditMode}");
         if (_isActorEditMode)
         {
             if (_selectedIds.Count > 1)
@@ -481,6 +517,14 @@ public partial class HierarchyPanel : UserControl
 
     private void OnTreeMouseUp(object sender, MouseButtonEventArgs e)
     {
+        // 遅延させていた選択通知を確定する（ドラッグが発生しなかった場合）
+        if (_deferRuntimeSelection)
+        {
+            _deferRuntimeSelection = false;
+            if (!_isDragging)
+                SendSelectionToRuntime();
+        }
+
         if (!_pendingDeselect) return;
         _pendingDeselect = false;
         var id = _pendingDeselectId;
@@ -531,6 +575,9 @@ public partial class HierarchyPanel : UserControl
             menu.Items.Add(new Separator());
             AddMenuItem(menu, "選択からグループを作成", null,        OnCreateGroupFromSelection);
         }
+        // 2D / 3D 共通: 選択アクターをファイルとして書き出す
+        menu.Items.Add(new Separator());
+        AddMenuItem(menu, "アクタファイル化", null, OnExportActorMenu);
         return menu;
     }
 
@@ -615,6 +662,56 @@ public partial class HierarchyPanel : UserControl
         _runtime?.SendToRuntime($"CREATE_GROUP:-1,{name}");
     }
 
+    /// <summary>右クリック "アクタファイル化" が選択されたときの処理。</summary>
+    private void OnExportActorMenu(object sender, RoutedEventArgs e)
+    {
+        if (_rightClickedNode is null) return;
+        SendExportActorCommand(_rightClickedNode.Id, _rightClickedNode.Name, _rightClickedNode.Is2D);
+    }
+
+    /// <summary>
+    /// 選択中アクターのファイル化ダイアログを開いて保存コマンドを送信する。
+    /// ビューポートのコンテキストメニューなど外部から呼び出す場合に使用する。
+    /// </summary>
+    public void ShowExportActorDialog()
+    {
+        // プライマリ選択 ID を決定する（単一選択 → _selectedId、複数選択 → 先頭）
+        int targetId = _selectedId >= 0 ? _selectedId
+                     : _selectedIds.Count > 0 ? _selectedIds.First()
+                     : -1;
+        if (targetId < 0) return;
+
+        var node = GetAllNodes(_roots).FirstOrDefault(n => n.Id == targetId && !n.IsGroup);
+        if (node is null) return;
+
+        SendExportActorCommand(node.Id, node.Name, node.Is2D);
+    }
+
+    /// <summary>
+    /// Windows 標準の SaveFileDialog でパスを取得し EXPORT_ACTOR コマンドを送信する。
+    /// 2D アクターは .actor2d、3D アクターは .actor 拡張子を使用する。
+    /// </summary>
+    private void SendExportActorCommand(int nodeId, string defaultName, bool is2D)
+    {
+        var ext    = is2D ? ".actor2d" : ".actor";
+        var filter = is2D
+            ? "2D Actorファイル (*.actor2d)|*.actor2d|すべてのファイル (*.*)|*.*"
+            : "Actorファイル (*.actor)|*.actor|すべてのファイル (*.*)|*.*";
+
+        var dlg = new Microsoft.Win32.SaveFileDialog
+        {
+            Title            = "アクタファイルの保存",
+            FileName         = defaultName,
+            DefaultExt       = ext,
+            Filter           = filter,
+            InitialDirectory = _assetsPath,
+        };
+
+        if (dlg.ShowDialog() != true) return;
+
+        _runtime?.SendToRuntime($"EXPORT_ACTOR:{nodeId},{dlg.FileName}");
+    }
+
     private static void AddMenuItem(ContextMenu menu, string header, string? gesture, RoutedEventHandler handler)
     {
         var item = new MenuItem { Header = header };
@@ -627,10 +724,11 @@ public partial class HierarchyPanel : UserControl
 
     private void OnTreeMouseDown(object sender, MouseButtonEventArgs e)
     {
-        _dragStart       = e.GetPosition(ActorTree);
-        _isDragging      = false;
-        _dragNodeIds     = new();
-        _pendingDragNode = null;
+        _dragStart             = e.GetPosition(ActorTree);
+        _isDragging            = false;
+        _dragNodeIds           = new();
+        _pendingDragNode       = null;
+        _deferRuntimeSelection = false; // 前回の残りをリセット
 
         if (e.ClickCount == 2)
         {
@@ -693,12 +791,17 @@ public partial class HierarchyPanel : UserControl
             return;
         }
 
-        // 通常クリック
+        // 通常クリック: ドラッグの可能性があるため選択通知を MouseUp まで遅延する。
+        // これによりドラッグ中は Inspector が切り替わらず、D&D が完了してから切り替わる。
         if (item?.Tag is ActorNode normalNode)
         {
+            _deferRuntimeSelection = true;
+
             // 複数選択中に選択済みアイテムをクリック → ドラッグしないなら MouseUp でデセレクト
+            // この分岐は e.Handled = true で TreeView 選択を抑制するため defer は不要
             if (_selectedIds.Count > 1 && _selectedIds.Contains(normalNode.Id))
             {
+                _deferRuntimeSelection = false; // _pendingDeselect 機構に任せる
                 _pendingDeselect   = true;
                 _pendingDeselectId = normalNode.Id;
                 _pendingDragNode   = normalNode;
@@ -770,7 +873,14 @@ public partial class HierarchyPanel : UserControl
             : new List<int> { _pendingDragNode.Id };
 
         var data = new DataObject("DragIds", _dragNodeIds);
+        // VP ref ドロップゾーン用: 単一アクタードラッグ時に DFS ID をカスタムキーで付加する
+        if (_dragNodeIds.Count == 1)
+            data.SetData("HierarchyActorDfsId", _dragNodeIds[0]);
         DragDrop.DoDragDrop(ActorTree, data, DragDropEffects.Move);
+
+        // ドラッグ完了: 遅延フラグだけクリアして選択通知は送らない。
+        // D&D 後に Inspector が切り替わらないようにするためのユーザー仕様。
+        _deferRuntimeSelection = false;
 
         _isDragging  = false;
         _dragNodeIds = new();
@@ -1006,9 +1116,15 @@ public partial class HierarchyPanel : UserControl
     // ── 外部公開ヘルパー ──────────────────────────────────────
 
     /// 現在選択中の非グループ ID リストを返す。
+    /// ノードがツリーに存在しない場合（カメラアクターの仮想ノード等）はアクターとして扱う。
     public List<int> GetSelectedNonGroupIds() =>
         _selectedIds
-            .Where(id => FindNode(_roots, id) is { IsGroup: false })
+            .Where(id =>
+            {
+                var node = FindNode(_roots, id);
+                // ツリーに見つからない場合はグループ外アクターとして扱う
+                return node == null || !node.IsGroup;
+            })
             .ToList();
 
     /// ids のうち少なくとも 1 つが子を持つか返す。
@@ -1075,8 +1191,9 @@ public partial class HierarchyPanel : UserControl
 
             if (newName != currentName)
             {
-                var cmd = _isActorEditMode ? $"RENAME_ACTOR:{nodeId},{newName}" : $"RENAME:{nodeId},{newName}";
-                _runtime?.SendToRuntime(cmd);
+                // シーンモード・アクター編集モードともにノードはアクタ（DFS ID）なので
+                // 常に RENAME_ACTOR を使用する（RENAME はインスタンスリネーム用）
+                _runtime?.SendToRuntime($"RENAME_ACTOR:{nodeId},{newName}");
             }
         }
 

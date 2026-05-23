@@ -1,0 +1,18 @@
+shader_sources  = ["bar_fill.wgsl"]
+vertex_entry    = "vs_main"
+fragment_entry  = "fs_main"
+# 頂点バッファなし（@builtin(vertex_index) でクワッドを生成）
+vertex_slots    = []
+
+topology        = "TriangleList"
+cull_mode       = "None"
+front_face      = "Ccw"
+
+# 深度テストしない（メインパスの深度に干渉させない）
+depth_write     = false
+depth_compare   = "Always"
+
+color_format    = "surface"
+# 単純置換（帯カラーをそのまま書き込む）
+blend           = "Replace"
+write_mask      = "all"

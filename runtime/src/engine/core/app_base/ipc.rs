@@ -170,6 +170,13 @@ pub enum IpcCommand {
     /// ルートキャンバスの画面サイズ自動スケールを設定する
     /// フォーマット: SET_CANVAS_AUTO_SCALE:{actor_dfs_id},{slot_idx},{value}
     SetCanvasAutoScale { actor_dfs_id: u32, slot_idx: u32, auto_scale: bool },
+    /// キャンバスのビューポート参照をウィンドウに設定する（Camera 参照を解除）
+    /// フォーマット: SET_CANVAS_VIEWPORT_REF_WINDOW:{actor_dfs_id},{slot_idx}
+    SetCanvasViewportRefWindow { actor_dfs_id: u32, slot_idx: u32 },
+    /// キャンバスのビューポート参照をカメラに設定する
+    /// フォーマット: SET_CANVAS_VIEWPORT_REF_CAMERA:{actor_dfs_id},{slot_idx},{actor_name},{slot_name}
+    /// actor_name / slot_name はカンマを含まない前提
+    SetCanvasViewportRefCamera { actor_dfs_id: u32, slot_idx: u32, actor_name: String, slot_name: String },
     /// InputMapComponent のアセットパスを設定する
     /// フォーマット: SET_INPUTMAP_PATH:{actor_dfs_id},{slot_idx},{path}
     SetInputMapPath { actor_dfs_id: u32, slot_idx: u32, path: String },
@@ -188,6 +195,70 @@ pub enum IpcCommand {
     /// CameraComponent のクリアカラーを設定する（正規化値 0.0〜1.0）
     /// フォーマット: SET_CAMERA_CLEAR_COLOR:{actor_dfs_id},{slot_idx},{r},{g},{b},{a}
     SetCameraComponentClearColor { actor_dfs_id: u32, slot_idx: u32, r: f32, g: f32, b: f32, a: f32 },
+    /// CameraComponent のスケーリングモードを設定する
+    /// フォーマット: SET_CAMERA_SCALING_MODE:{actor_dfs_id},{slot_idx},{mode}
+    SetCameraComponentScalingMode { actor_dfs_id: u32, slot_idx: u32, mode: String },
+    /// CameraComponent のターゲット解像度を設定する
+    /// フォーマット: SET_CAMERA_TARGET_SIZE:{actor_dfs_id},{slot_idx},{width},{height}
+    SetCameraComponentTargetSize { actor_dfs_id: u32, slot_idx: u32, width: u32, height: u32 },
+    /// CameraComponent の帯カラーを設定する（LetterBox / PillarBox 時の帯色、正規化値 0.0〜1.0）
+    /// フォーマット: SET_CAMERA_BAR_COLOR:{actor_dfs_id},{slot_idx},{r},{g},{b},{a}
+    SetCameraBarColor { actor_dfs_id: u32, slot_idx: u32, r: f32, g: f32, b: f32, a: f32 },
+    /// ColliderComponent のデータ全体（リジッドボディ設定を含む）を JSON で設定する
+    /// フォーマット: SET_COLLIDER_DATA:{actor_dfs_id},{slot_idx},{json}
+    /// json は ColliderComponentData の serde_json シリアライズ結果（カンマ含む）
+    SetColliderData { actor_dfs_id: u32, slot_idx: u32, json: String },
+    /// プラグインコンポーネントのフィールド値を設定する
+    /// フォーマット: SET_PLUGIN_FIELD:{actor_dfs_id},{slot_idx},{key},{value}
+    /// ※ key と value はカンマを含む可能性があるため最後の区切りのみ使用
+    SetPluginField { actor_dfs_id: u32, slot_idx: u32, key: String, value: String },
+    /// ロード済みプラグイン一覧の要求
+    /// フォーマット: GET_PLUGIN_LIST
+    GetPluginList,
+
+    // ── AI アシスタント用コマンド ─────────────────────────────────────────────
+
+    /// シーン全体の情報を JSON で要求する
+    /// フォーマット: GET_SCENE_INFO
+    GetSceneInfo,
+    /// ローカル AI 実行中にレンダリングを一時停止して GPU リソースを解放する
+    /// フォーマット: PAUSE_RENDER
+    PauseRender,
+    /// ローカル AI 応答完了後にレンダリングを再開する
+    /// フォーマット: RESUME_RENDER
+    ResumeRender,
+    /// AI が新しいアクターを追加する
+    /// フォーマット: AI_ADD_ACTOR:{name},{x},{y},{z}
+    AiAddActor { name: String, x: f32, y: f32, z: f32 },
+    /// AI がアクターを削除する（DFS ID 指定）
+    /// フォーマット: AI_REMOVE_ACTOR:{actor_dfs_id}
+    AiRemoveActor { actor_dfs_id: u32 },
+    /// AI がアクターを移動する（DFS ID + 位置）
+    /// フォーマット: AI_MOVE_ACTOR:{actor_dfs_id},{x},{y},{z}
+    AiMoveActor { actor_dfs_id: u32, x: f32, y: f32, z: f32 },
+    /// AI がコンポーネントを追加する
+    /// フォーマット: AI_ADD_COMPONENT:{actor_dfs_id},{component_type},{params_json}
+    AiAddComponent { actor_dfs_id: u32, component_type: String, params_json: String },
+    /// AI がコンポーネントのフィールド値を設定する
+    /// フォーマット: AI_SET_VALUE:{actor_dfs_id},{slot_idx},{key},{value}
+    AiSetValue { actor_dfs_id: u32, slot_idx: u32, key: String, value: String },
+
+    /// シーン内のアクターをファイルへ書き出す。
+    /// transform はルートのみ 0 にリセット、子は相対位置を維持。
+    /// フォーマット: EXPORT_ACTOR:{dfs_id},{path}
+    /// path はエディタの SaveFileDialog で選択された絶対ファイルパス
+    ExportActor { dfs_id: u32, path: String },
+
+    /// 編集時の物理シミュレーション設定。
+    /// enabled=true かつ with_rigidbody=false : 重力なし・全ボディを kinematic として衝突検出のみ
+    /// enabled=true かつ with_rigidbody=true  : 重力・ダイナミクスも有効な完全シミュレーション
+    /// フォーマット: SET_EDIT_PHYSICS:{enabled},{with_rigidbody}  (0=off, 1=on)
+    SetEditPhysics { enabled: bool, with_rigidbody: bool },
+
+    /// 実行時コライダー描画設定。
+    /// Play モードでもコライダーワイヤーフレームを描画する。
+    /// フォーマット: SET_PLAY_COLLIDER_DRAW:{0|1}
+    SetPlayColliderDraw(bool),
 }
 
 // ============================================================
@@ -690,6 +761,30 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                                     actor_dfs_id: id, slot_idx: sl, auto_scale: v,
                                 })
                         }
+                        s if s.starts_with("SET_CANVAS_VIEWPORT_REF_WINDOW:") => {
+                            // フォーマット: SET_CANVAS_VIEWPORT_REF_WINDOW:{actor_dfs_id},{slot_idx}
+                            parse2u(&s["SET_CANVAS_VIEWPORT_REF_WINDOW:".len()..])
+                                .map(|(id, sl)| IpcCommand::SetCanvasViewportRefWindow {
+                                    actor_dfs_id: id, slot_idx: sl,
+                                })
+                        }
+                        s if s.starts_with("SET_CANVAS_VIEWPORT_REF_CAMERA:") => {
+                            // フォーマット: SET_CANVAS_VIEWPORT_REF_CAMERA:{actor_dfs_id},{slot_idx},{actor_name},{slot_name}
+                            // actor_name / slot_name にカンマが含まれない前提で4分割する
+                            let rest = &s["SET_CANVAS_VIEWPORT_REF_CAMERA:".len()..];
+                            let mut it = rest.splitn(4, ',');
+                            let parsed = (|| -> Option<IpcCommand> {
+                                let id:        u32    = it.next()?.trim().parse().ok()?;
+                                let sl:        u32    = it.next()?.trim().parse().ok()?;
+                                let aname             = it.next()?.to_string();
+                                let sname             = it.next()?.to_string();
+                                Some(IpcCommand::SetCanvasViewportRefCamera {
+                                    actor_dfs_id: id, slot_idx: sl,
+                                    actor_name: aname, slot_name: sname,
+                                })
+                            })();
+                            parsed
+                        }
                         s if s.starts_with("SET_INPUTMAP_PATH:") => {
                             // フォーマット: SET_INPUTMAP_PATH:{actor_dfs_id},{slot_idx},{path}
                             parse2u_tail(&s["SET_INPUTMAP_PATH:".len()..])
@@ -725,6 +820,172 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                                     r: fs[0], g: fs[1], b: fs[2], a: fs[3],
                                 })
                         }
+                        s if s.starts_with("SET_CAMERA_SCALING_MODE:") => {
+                            // フォーマット: SET_CAMERA_SCALING_MODE:{actor_dfs_id},{slot_idx},{mode}
+                            parse2u_tail(&s["SET_CAMERA_SCALING_MODE:".len()..])
+                                .map(|(a, sl, mode)| IpcCommand::SetCameraComponentScalingMode {
+                                    actor_dfs_id: a, slot_idx: sl, mode: mode.trim().to_string(),
+                                })
+                        }
+                        s if s.starts_with("SET_CAMERA_TARGET_SIZE:") => {
+                            // フォーマット: SET_CAMERA_TARGET_SIZE:{actor_dfs_id},{slot_idx},{width},{height}
+                            let rest = &s["SET_CAMERA_TARGET_SIZE:".len()..];
+                            let mut it = rest.split(',');
+                            if let (Some(a_s), Some(sl_s), Some(w_s), Some(h_s)) =
+                                (it.next(), it.next(), it.next(), it.next())
+                            {
+                                if let (Ok(a), Ok(sl), Ok(w), Ok(h)) = (
+                                    a_s.trim().parse::<u32>(),
+                                    sl_s.trim().parse::<u32>(),
+                                    w_s.trim().parse::<u32>(),
+                                    h_s.trim().parse::<u32>(),
+                                ) {
+                                    Some(IpcCommand::SetCameraComponentTargetSize {
+                                        actor_dfs_id: a, slot_idx: sl, width: w, height: h,
+                                    })
+                                } else { None }
+                            } else { None }
+                        }
+                        s if s.starts_with("SET_CAMERA_BAR_COLOR:") => {
+                            // フォーマット: SET_CAMERA_BAR_COLOR:{actor_dfs_id},{slot_idx},{r},{g},{b},{a}
+                            parse2u_nf::<4>(&s["SET_CAMERA_BAR_COLOR:".len()..])
+                                .map(|(a, sl, fs)| IpcCommand::SetCameraBarColor {
+                                    actor_dfs_id: a, slot_idx: sl,
+                                    r: fs[0], g: fs[1], b: fs[2], a: fs[3],
+                                })
+                        }
+                        s if s.starts_with("SET_COLLIDER_DATA:") => {
+                            // フォーマット: SET_COLLIDER_DATA:{actor_dfs_id},{slot_idx},{json}
+                            // json は ColliderComponentData の JSON（カンマ含む）のため splitn(3) を使用
+                            let rest = &s["SET_COLLIDER_DATA:".len()..];
+                            let mut it = rest.splitn(3, ',');
+                            if let (Some(a_s), Some(sl_s), Some(json)) =
+                                (it.next(), it.next(), it.next())
+                            {
+                                if let (Ok(a), Ok(sl)) =
+                                    (a_s.trim().parse::<u32>(), sl_s.trim().parse::<u32>())
+                                {
+                                    Some(IpcCommand::SetColliderData {
+                                        actor_dfs_id: a,
+                                        slot_idx: sl,
+                                        json: json.to_string(),
+                                    })
+                                } else { None }
+                            } else { None }
+                        }
+                        s if s.starts_with("SET_PLUGIN_FIELD:") => {
+                            // フォーマット: SET_PLUGIN_FIELD:{actor_dfs_id},{slot_idx},{key},{value}
+                            // key と value はカンマを含む可能性があるため 4 分割して最後をまとめる
+                            let rest = &s["SET_PLUGIN_FIELD:".len()..];
+                            let mut it = rest.splitn(4, ',');
+                            if let (Some(a_s), Some(sl_s), Some(key), Some(value)) =
+                                (it.next(), it.next(), it.next(), it.next())
+                            {
+                                if let (Ok(a), Ok(sl)) =
+                                    (a_s.trim().parse::<u32>(), sl_s.trim().parse::<u32>())
+                                {
+                                    Some(IpcCommand::SetPluginField {
+                                        actor_dfs_id: a,
+                                        slot_idx: sl,
+                                        key:   key.to_string(),
+                                        value: value.to_string(),
+                                    })
+                                } else { None }
+                            } else { None }
+                        }
+                        "GET_PLUGIN_LIST"  => Some(IpcCommand::GetPluginList),
+                        "GET_SCENE_INFO"   => Some(IpcCommand::GetSceneInfo),
+                        "PAUSE_RENDER"     => Some(IpcCommand::PauseRender),
+                        "RESUME_RENDER"    => Some(IpcCommand::ResumeRender),
+
+                        // ── AI アシスタント用コマンド ──────────────────────────────
+                        s if s.starts_with("AI_ADD_ACTOR:") => {
+                            // フォーマット: AI_ADD_ACTOR:{name},{x},{y},{z}
+                            let rest = &s["AI_ADD_ACTOR:".len()..];
+                            // 名前にカンマが含まれる可能性があるため、末尾 3 要素を数値として取り出す
+                            let parts: Vec<&str> = rest.rsplitn(4, ',').collect();
+                            if parts.len() == 4 {
+                                if let (Ok(z), Ok(y), Ok(x)) = (
+                                    parts[0].trim().parse::<f32>(),
+                                    parts[1].trim().parse::<f32>(),
+                                    parts[2].trim().parse::<f32>(),
+                                ) {
+                                    let name = parts[3].to_string();
+                                    Some(IpcCommand::AiAddActor { name, x, y, z })
+                                } else { None }
+                            } else { None }
+                        }
+                        s if s.starts_with("AI_REMOVE_ACTOR:") => {
+                            // フォーマット: AI_REMOVE_ACTOR:{actor_dfs_id}
+                            s["AI_REMOVE_ACTOR:".len()..].trim().parse::<u32>().ok()
+                                .map(|id| IpcCommand::AiRemoveActor { actor_dfs_id: id })
+                        }
+                        s if s.starts_with("AI_MOVE_ACTOR:") => {
+                            // フォーマット: AI_MOVE_ACTOR:{actor_dfs_id},{x},{y},{z}
+                            parse1u_nf::<3>(&s["AI_MOVE_ACTOR:".len()..])
+                                .map(|(id, fs)| IpcCommand::AiMoveActor {
+                                    actor_dfs_id: id, x: fs[0], y: fs[1], z: fs[2],
+                                })
+                        }
+                        s if s.starts_with("AI_ADD_COMPONENT:") => {
+                            // フォーマット: AI_ADD_COMPONENT:{actor_dfs_id},{component_type},{params_json}
+                            let rest = &s["AI_ADD_COMPONENT:".len()..];
+                            let mut it = rest.splitn(3, ',');
+                            if let (Some(id_s), Some(comp_type), Some(params)) =
+                                (it.next(), it.next(), it.next())
+                            {
+                                id_s.trim().parse::<u32>().ok().map(|id| IpcCommand::AiAddComponent {
+                                    actor_dfs_id: id,
+                                    component_type: comp_type.to_string(),
+                                    params_json:    params.to_string(),
+                                })
+                            } else { None }
+                        }
+                        s if s.starts_with("AI_SET_VALUE:") => {
+                            // フォーマット: AI_SET_VALUE:{actor_dfs_id},{slot_idx},{key},{value}
+                            let rest = &s["AI_SET_VALUE:".len()..];
+                            let mut it = rest.splitn(4, ',');
+                            if let (Some(a_s), Some(sl_s), Some(key), Some(value)) =
+                                (it.next(), it.next(), it.next(), it.next())
+                            {
+                                if let (Ok(a), Ok(sl)) =
+                                    (a_s.trim().parse::<u32>(), sl_s.trim().parse::<u32>())
+                                {
+                                    Some(IpcCommand::AiSetValue {
+                                        actor_dfs_id: a,
+                                        slot_idx:     sl,
+                                        key:          key.to_string(),
+                                        value:        value.to_string(),
+                                    })
+                                } else { None }
+                            } else { None }
+                        }
+
+                        s if s.starts_with("EXPORT_ACTOR:") => {
+                            // フォーマット: EXPORT_ACTOR:{dfs_id},{path}
+                            // path は絶対ファイルパス（カンマを含まない前提）
+                            parse1u_tail(&s["EXPORT_ACTOR:".len()..])
+                                .map(|(dfs_id, path)| IpcCommand::ExportActor {
+                                    dfs_id,
+                                    path: path.to_string(),
+                                })
+                        }
+
+                        s if s.starts_with("SET_EDIT_PHYSICS:") => {
+                            // フォーマット: SET_EDIT_PHYSICS:{enabled},{with_rigidbody}  (0/1)
+                            let rest = &s["SET_EDIT_PHYSICS:".len()..];
+                            let mut it = rest.split(',');
+                            match (it.next(), it.next()) {
+                                (Some(e), Some(rb)) => Some(IpcCommand::SetEditPhysics {
+                                    enabled:         e.trim() == "1",
+                                    with_rigidbody:  rb.trim() == "1",
+                                }),
+                                _ => None,
+                            }
+                        }
+                        "SET_PLAY_COLLIDER_DRAW:1" => Some(IpcCommand::SetPlayColliderDraw(true)),
+                        "SET_PLAY_COLLIDER_DRAW:0" => Some(IpcCommand::SetPlayColliderDraw(false)),
+
                         _                    => None,
                     }
                 };

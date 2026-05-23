@@ -6,7 +6,7 @@
 //  actor_virtual_world_pos
 // ============================================================
 
-use crate::engine::components::{ModelComponent, Transform as ActorTransform, ComponentKind, CanvasTransform, CanvasComponent};
+use crate::engine::components::{ModelComponent, Transform as ActorTransform, ComponentKind, CanvasTransform, CanvasComponent, CanvasViewportRef};
 use crate::engine::core::app_base::undo::{TransformCommand, ActorGroupTransformCommand};
 use crate::engine::structs::tensor::Vector3;
 use crate::engine::structs::transforms::Transform;
@@ -351,8 +351,9 @@ impl App {
         let scene = self.scene.as_ref()?;
         let mut c = 0u32;
         let actor = find_actor_by_dfs(&scene.actors, wl, dfs_id, &mut c)?;
-        // 2D キャンバスモードは CanvasTransform を優先し、アンカーオフセットを加算する
-        if self.canvas_world_lines.contains(&wl) {
+        // canvas_world_lines（シーン全体の 2D フラグ）ではなくアクター個別の種別で判定する。
+        // 3D/2D 混在シーンで 3D アクターを選んでも正しく ActorTransform を参照できる。
+        if actor.is_2d() {
             let ct = scene.world.get::<CanvasTransform>(actor.entity)?;
             let off = canvas_anchor_offset_for_dfs(&scene.actors, &scene.world, wl, dfs_id);
             // ワールドスペースモード（エディタでスクリーンスペース OFF かつ 3D シーン世界線）では
@@ -389,6 +390,65 @@ impl App {
         if let Some(scene) = &mut self.scene {
             if let Some(cc) = scene.world.get_mut::<CanvasComponent>(slot_entity) {
                 cc.auto_scale = auto_scale;
+            }
+        }
+        self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
+        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+    }
+
+    /// キャンバスのビューポート参照をウィンドウ（デフォルト）に戻す。
+    pub(super) fn handle_set_canvas_viewport_ref_window(
+        &mut self,
+        actor_dfs_id: u32,
+        slot_idx:     u32,
+    ) {
+        let wl = self.active_world_line;
+        let slot_entity = {
+            let Some(scene) = &self.scene else { return };
+            let mut c = 0u32;
+            find_actor_by_dfs(&scene.actors, wl, actor_dfs_id, &mut c)
+                .and_then(|a| a.slots().get(slot_idx as usize))
+                .filter(|s| s.kind == ComponentKind::Canvas)
+                .map(|s| s.entity)
+        };
+        let Some(slot_entity) = slot_entity else { return };
+        if let Some(scene) = &mut self.scene {
+            if let Some(cc) = scene.world.get_mut::<CanvasComponent>(slot_entity) {
+                cc.viewport_ref = CanvasViewportRef::Window;
+            }
+        }
+        self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
+        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+    }
+
+    /// キャンバスのビューポート参照を指定カメラに設定する。
+    ///
+    /// `cam_actor_name` / `cam_slot_name` で参照カメラを特定する。
+    /// 実際に該当カメラが存在するかのバリデーションはここでは行わない
+    /// （シーンリロード後に参照が無効になることがある）。
+    pub(super) fn handle_set_canvas_viewport_ref_camera(
+        &mut self,
+        actor_dfs_id: u32,
+        slot_idx:     u32,
+        cam_actor_name: String,
+        cam_slot_name:  String,
+    ) {
+        let wl = self.active_world_line;
+        let slot_entity = {
+            let Some(scene) = &self.scene else { return };
+            let mut c = 0u32;
+            find_actor_by_dfs(&scene.actors, wl, actor_dfs_id, &mut c)
+                .and_then(|a| a.slots().get(slot_idx as usize))
+                .filter(|s| s.kind == ComponentKind::Canvas)
+                .map(|s| s.entity)
+        };
+        let Some(slot_entity) = slot_entity else { return };
+        if let Some(scene) = &mut self.scene {
+            if let Some(cc) = scene.world.get_mut::<CanvasComponent>(slot_entity) {
+                cc.viewport_ref = CanvasViewportRef::Camera {
+                    actor_name: cam_actor_name,
+                    slot_name:  cam_slot_name,
+                };
             }
         }
         self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);

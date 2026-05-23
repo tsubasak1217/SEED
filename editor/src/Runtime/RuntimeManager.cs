@@ -81,6 +81,13 @@ public sealed class RuntimeManager : IDisposable
     /// </summary>
     public string? PlayScenePath { get; set; }
 
+    /// <summary>
+    /// Play 起動時に --play-collider-draw=1 フラグを渡すかどうか。
+    /// true の場合、Play ランタイムはコライダーワイヤーフレームを最初から描画する
+    /// （SyncViewportSettings の到着遅延を回避するための先行フラグ）。
+    /// </summary>
+    public bool PlayColliderDraw { get; set; }
+
     private readonly RuntimeSourceWatcher? _sourceWatcher;
     private Process?                      _process;
     private PipeServer?                   _pipe;
@@ -161,6 +168,22 @@ public sealed class RuntimeManager : IDisposable
 
     /// <summary>ランタイム側のFPSが更新されたときに発火する（0.5秒ごと）。</summary>
     public event Action<float>? FpsReceived;
+
+    /// <summary>
+    /// ロード済みプラグイン一覧が返ってきたときに発火する（JSON 文字列）。
+    /// フォーマット: [{"name":"...","version":"...","description":"..."},...]
+    /// </summary>
+    public event Action<string>? PluginListReceived;
+
+    /// <summary>
+    /// シーン情報が返ってきたときに発火する（JSON 文字列）。
+    /// GET_SCENE_INFO コマンドへの応答として受信する。
+    /// フォーマット: ActorData[] のシリアライズ JSON
+    /// </summary>
+    public event Action<string>? SceneInfoReceived;
+
+    /// <summary>アクターファイル書き出し完了通知。true=成功（保存パス）/ false=失敗（エラーメッセージ）。</summary>
+    public event Action<bool, string>? ExportActorCompleted;
 
     // ── コンストラクタ ─────────────────────────────────────────
 
@@ -265,7 +288,103 @@ public sealed class RuntimeManager : IDisposable
     }
 
     /// <summary>Runtime に任意のメッセージを送信する（IPC 経由）。</summary>
-    public void SendToRuntime(string message) => _pipe?.Send(message);
+    public void SendToRuntime(string message)
+    {
+        // 高頻度で送信されるカメラキー・修飾キーのログは除外する
+        var noisy = message.StartsWith("CAM_KEY_")
+                 || message == "CTRL_DOWN"
+                 || message == "CTRL_UP";
+        if (!noisy)
+            EditorLog.Write($"[Editor→Runtime] {message[..Math.Min(80, message.Length)]}");
+        _pipe?.Send(message);
+    }
+
+    /// <summary>
+    /// 現在の Edit ランタイムのシーン状態をシステム TEMP フォルダの一時ファイルへ保存し、
+    /// そのパスを返す。Play 実行前に未保存シーンの状態をキャプチャするために使用する。
+    ///
+    /// 既存の SAVE_SCENE / SAVE_OK IPC を再利用して保存する。
+    /// タイムアウト（10 秒）または保存失敗時は null を返す。
+    /// </summary>
+    public async Task<string?> SaveCurrentSceneToTempAsync()
+    {
+        // Edit モード以外では使用不可
+        if (_pipe is null || _state != EditorState.Edit)
+        {
+            EditorLog.Write("SaveCurrentSceneToTempAsync — Edit モードでないためスキップ");
+            return null;
+        }
+
+        // 一時保存先パスを作成する（毎回同じパスで上書き）
+        var tempDir  = Path.Combine(Path.GetTempPath(), "SEED");
+        Directory.CreateDirectory(tempDir);
+        var tempPath = Path.Combine(tempDir, "_play_temp.scene");
+
+        // SAVE_OK / SAVE_ERROR を一回だけ受け取るための TCS を用意する。
+        // SaveCompleted イベントは他の保存操作でも発火するため、
+        // 購読してすぐ解除するパターンで競合を最小化する。
+        var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        void OnSave(bool ok, string _err)
+        {
+            tcs.TrySetResult(ok);
+        }
+
+        SaveCompleted += OnSave;
+        try
+        {
+            _pipe.Send($"SAVE_SCENE:{tempPath}");
+            EditorLog.Write($"SaveCurrentSceneToTempAsync — SAVE_SCENE:{tempPath}");
+
+            // 最大 10 秒待機する（ディスク書き込みに時間がかかる場合に備える）
+            var timeoutTask = Task.Delay(TimeSpan.FromSeconds(10));
+            var completed   = await Task.WhenAny(tcs.Task, timeoutTask);
+
+            if (completed == timeoutTask)
+            {
+                EditorLog.Write("SaveCurrentSceneToTempAsync — タイムアウト");
+                return null;
+            }
+
+            var ok = await tcs.Task;
+            if (!ok)
+            {
+                EditorLog.Write("SaveCurrentSceneToTempAsync — 保存失敗");
+                return null;
+            }
+
+            EditorLog.Write($"SaveCurrentSceneToTempAsync — 保存完了: {tempPath}");
+            return tempPath;
+        }
+        finally
+        {
+            // 必ず購読を解除する
+            SaveCompleted -= OnSave;
+        }
+    }
+
+    /// <summary>
+    /// AI 実行中にレンダリングを一時停止して GPU リソースを解放する。
+    /// ローカル LLM がレンダリングと GPU を奪い合わないようにするために使用する。
+    /// Edit モードでのみ有効。Play/Pause 中は何もしない。
+    /// </summary>
+    public void PauseRendering()
+    {
+        if (_state != EditorState.Edit) return;
+        EditorLog.Write("[Editor→Runtime] PAUSE_RENDER");
+        _pipe?.Send("PAUSE_RENDER");
+    }
+
+    /// <summary>
+    /// AI 応答完了後にレンダリングを再開する。
+    /// PauseRendering() とペアで使用する。
+    /// </summary>
+    public void ResumeRendering()
+    {
+        if (_state != EditorState.Edit) return;
+        EditorLog.Write("[Editor→Runtime] RESUME_RENDER");
+        _pipe?.Send("RESUME_RENDER");
+    }
 
     /// <summary>
     /// Runtime ウィンドウをコンテナの現在のクライアントサイズに合わせてリサイズする。
@@ -419,9 +538,11 @@ public sealed class RuntimeManager : IDisposable
         var sceneArg = !string.IsNullOrEmpty(PlayScenePath)
             ? $" --scene={PlayScenePath}"
             : "";
+        // コライダー描画フラグ: SyncViewportSettings の到着前から有効にするために先行フラグとして渡す
+        var playColliderDrawArg = PlayColliderDraw ? " --play-collider-draw=1" : "";
         var args = editMode
             ? $"--mode=edit --pipe={_pipe.PipeName} --parent-hwnd={_viewportContainerHwnd}{editorResourcesArg}"
-            : $"--mode=play --pipe={_pipe.PipeName}{assetsRootArg}{sceneArg}";
+            : $"--mode=play --pipe={_pipe.PipeName}{assetsRootArg}{sceneArg}{editorResourcesArg}{playColliderDrawArg}";
 
         var workDir = ResolveWorkingDirectory(_runtimeExePath);
         EditorLog.Write($"Process.Start — exe={_runtimeExePath}  args={args}  workDir={workDir}");
@@ -612,6 +733,40 @@ public sealed class RuntimeManager : IDisposable
         {
             FpsReceived?.Invoke(fps);
         }
+        else if (msg.StartsWith("PLUGIN_LIST:", StringComparison.Ordinal))
+        {
+            // ロード済みプラグイン一覧を受信する。
+            // フォーマット: PLUGIN_LIST:[{"name":"...","version":"...","description":"..."},...]
+            var json = msg["PLUGIN_LIST:".Length..];
+            EditorLog.Write($"[Runtime→Editor] PLUGIN_LIST ({json.Length} chars)");
+            PluginListReceived?.Invoke(json);
+        }
+        else if (msg.StartsWith("SCENE_INFO:", StringComparison.Ordinal))
+        {
+            // シーン情報を受信する（AI アシスタントの GET_SCENE_INFO 応答）。
+            // フォーマット: SCENE_INFO:[{ActorData...}, ...]
+            var json = msg["SCENE_INFO:".Length..];
+            EditorLog.Write($"[Runtime→Editor] SCENE_INFO ({json.Length} chars)");
+            SceneInfoReceived?.Invoke(json);
+        }
+        else if (msg.StartsWith("EXPORT_ACTOR_OK:", StringComparison.Ordinal))
+        {
+            var path = msg["EXPORT_ACTOR_OK:".Length..];
+            EditorLog.Write($"[Runtime→Editor] EXPORT_ACTOR_OK: {path}");
+            ExportActorCompleted?.Invoke(true, path);
+            Application.Current.Dispatcher.InvokeAsync(() =>
+                MessageBox.Show($"アクタファイルを保存しました:\n{path}", "SEED Editor",
+                    MessageBoxButton.OK, MessageBoxImage.Information));
+        }
+        else if (msg.StartsWith("EXPORT_ACTOR_ERR:", StringComparison.Ordinal))
+        {
+            var err = msg["EXPORT_ACTOR_ERR:".Length..];
+            EditorLog.Write($"[Runtime→Editor] EXPORT_ACTOR_ERR: {err}");
+            ExportActorCompleted?.Invoke(false, err);
+            Application.Current.Dispatcher.InvokeAsync(() =>
+                MessageBox.Show($"アクタファイルの保存に失敗しました:\n{err}", "SEED Editor",
+                    MessageBoxButton.OK, MessageBoxImage.Error));
+        }
         else
         {
             EditorLog.Write($"[Runtime→Editor] unknown: {msg[..Math.Min(80, msg.Length)]}");
@@ -771,9 +926,7 @@ public sealed class RuntimeManager : IDisposable
     private void OnWinEvent(IntPtr hook, uint eventType, IntPtr hwnd,
         int idObject, int idChild, uint thread, uint time)
     {
-        // hwnd が対象の Play ランタイムでない場合は無視
-        if (hwnd != _runtimeHwnd) return;
-
+        // hwnd が対象の Play ランタイムでない場合もログに残す（想定外イベント検出）
         var evtName = eventType switch
         {
             EVENT_SYSTEM_MOVESIZESTART => "MOVESIZESTART",
@@ -781,10 +934,13 @@ public sealed class RuntimeManager : IDisposable
             EVENT_SYSTEM_MINIMIZESTART => "MINIMIZESTART",
             _                          => $"0x{eventType:X4}",
         };
-        EditorLog.Write($"OnWinEvent — {evtName}  hwnd=0x{hwnd:X}  state={_state}");
+        var tid  = System.Threading.Thread.CurrentThread.ManagedThreadId;
+        var isUi = Application.Current?.Dispatcher.CheckAccess() ?? false;
+        EditorLog.Write($"OnWinEvent — {evtName}  hwnd=0x{hwnd:X}  runtimeHwnd=0x{_runtimeHwnd:X}  match={hwnd == _runtimeHwnd}  tid={tid}  ui={isUi}  state={_state}");
+        if (hwnd != _runtimeHwnd) return;
 
         if (eventType == EVENT_SYSTEM_MINIMIZESTART)
-            Application.Current.Dispatcher.Invoke(Pause);
+            Application.Current.Dispatcher.InvokeAsync(Pause);
         else if (eventType == EVENT_SYSTEM_MOVESIZESTART)
             RuntimeMoveStart?.Invoke();
         else if (eventType == EVENT_SYSTEM_MOVESIZEEND)

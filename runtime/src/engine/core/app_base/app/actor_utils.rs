@@ -29,16 +29,16 @@ use crate::engine::methods::gizmo_interact::mat4x4_mul;
 //  ヒエラルキーユーティリティ
 // ============================================================
 
-/// Actor ツリーを DFS 順にフラット化し (id, name, parent_id) を収集する。
+/// Actor ツリーを DFS 順にフラット化し (id, name, parent_id, is_2d) を収集する。
 pub(super) fn collect_actor_nodes(
     actor:   &Actor,
     parent:  Option<u32>,
     counter: &mut u32,
-    out:     &mut Vec<(u32, String, Option<u32>)>,
+    out:     &mut Vec<(u32, String, Option<u32>, bool)>,
 ) {
     let id = *counter;
     *counter += 1;
-    out.push((id, actor.name.clone(), parent));
+    out.push((id, actor.name.clone(), parent, actor.is_2d()));
     for child in actor.children() {
         collect_actor_nodes(child, Some(id), counter, out);
     }
@@ -51,17 +51,20 @@ struct HierarchyNode<'a> {
     name:     &'a str,
     parent:   Option<u32>,
     is_group: bool,
+    /// 2D アクター（CanvasTransform）か否かを示すフラグ。エディタのアイコン色分けに使用する。
+    is_2d:    bool,
 }
 
 /// フラットリストから HIERARCHY JSON を生成する。
-pub(super) fn build_hierarchy_json(nodes: &[(u32, String, Option<u32>)]) -> String {
+pub(super) fn build_hierarchy_json(nodes: &[(u32, String, Option<u32>, bool)]) -> String {
     let items: Vec<HierarchyNode<'_>> = nodes
         .iter()
-        .map(|(id, name, parent)| HierarchyNode {
+        .map(|(id, name, parent, is_2d)| HierarchyNode {
             id:       *id,
             name:     name.as_str(),
             parent:   *parent,
             is_group: false,
+            is_2d:    *is_2d,
         })
         .collect();
     serde_json::to_string(&items).unwrap_or_default()
@@ -329,17 +332,21 @@ fn collect_mcs_in_actor<'a>(
 }
 
 /// world_line の全アクターの MC バッチを DFS 順で更新する（可変参照版）。
+///
+/// `extra_frustum` を指定するとメイン視錐台と OR でカリングする（どちらかに入れば可視）。
+/// Edit モードでカメラプレビューを表示している場合に使用する。
 pub(super) fn update_all_mc_batches_for_wl(
     actors:         &mut Vec<Actor>,
     world:          &mut World,
     wl:             u32,
     queue:          &wgpu::Queue,
     frustum_planes: &[[f32; 4]; 6],
+    extra_frustum:  Option<&[[f32; 4]; 6]>,
     camera_pos:     [f32; 3],
     anim_time:      f32,
 ) {
     for actor in actors.iter_mut().filter(|a| a.world_line == wl) {
-        update_mc_batch_recursive(actor, world, queue, frustum_planes, camera_pos, anim_time);
+        update_mc_batch_recursive(actor, world, queue, frustum_planes, extra_frustum, camera_pos, anim_time);
     }
 }
 
@@ -349,6 +356,7 @@ fn update_mc_batch_recursive(
     world:          &mut World,
     queue:          &wgpu::Queue,
     frustum_planes: &[[f32; 4]; 6],
+    extra_frustum:  Option<&[[f32; 4]; 6]>,
     camera_pos:     [f32; 3],
     anim_time:      f32,
 ) {
@@ -360,12 +368,12 @@ fn update_mc_batch_recursive(
     for slot_entity in slot_entities {
         if let Some(mc) = world.get_mut::<ModelComponent>(slot_entity) {
             if let (Some(batch), Some(model)) = (&mut mc.instanced_batch, mc.model.as_deref()) {
-                batch.update(queue, model, &mc.instance_mats, frustum_planes, camera_pos, anim_time);
+                batch.update(queue, model, &mc.instance_mats, frustum_planes, extra_frustum, camera_pos, anim_time);
             }
         }
     }
     for child in actor.children_mut().iter_mut() {
-        update_mc_batch_recursive(child, world, queue, frustum_planes, camera_pos, anim_time);
+        update_mc_batch_recursive(child, world, queue, frustum_planes, extra_frustum, camera_pos, anim_time);
     }
 }
 
@@ -649,6 +657,73 @@ pub(super) fn world_to_screen(
     let nx = clip.x / clip.w;
     let ny = clip.y / clip.w;
     Some(((nx + 1.0) * 0.5 * vp_w, (1.0 - ny) * 0.5 * vp_h))
+}
+
+/// ModelComponent を持たない 3D アクターの Transform 位置を矩形内でスクリーン投影し、
+/// DFS ID を result に追加する。MC 選択・カメラギズモ選択と重複しないよう already を参照する。
+/// 2D キャンバスアクターはスキップする（キャンバス専用の選択ロジックで処理する）。
+pub(super) fn collect_transform_only_in_rect(
+    actors:  &[Actor],
+    world:   &World,
+    wl:      u32,
+    view:    &[[f32; 4]; 4],
+    proj:    &[[f32; 4]; 4],
+    vp_w:    f32,
+    vp_h:    f32,
+    sx_min:  f32, sx_max: f32,
+    sy_min:  f32, sy_max: f32,
+    already: &[usize],
+    result:  &mut Vec<usize>,
+) {
+    let mut counter = 0u32;
+    for actor in actors.iter().filter(|a| a.world_line == wl) {
+        collect_transform_only_recursive(
+            actor, world, view, proj, vp_w, vp_h,
+            sx_min, sx_max, sy_min, sy_max,
+            &mut counter, already, result,
+        );
+    }
+}
+
+fn collect_transform_only_recursive(
+    actor:   &Actor,
+    world:   &World,
+    view:    &[[f32; 4]; 4],
+    proj:    &[[f32; 4]; 4],
+    vp_w:    f32,
+    vp_h:    f32,
+    sx_min:  f32, sx_max: f32,
+    sy_min:  f32, sy_max: f32,
+    counter: &mut u32,
+    already: &[usize],
+    result:  &mut Vec<usize>,
+) {
+    let dfs_id = *counter as usize;
+    *counter += 1;
+
+    // 2D キャンバスアクターは対象外
+    let has_model = actor.slots().iter().any(|s| s.kind == ComponentKind::Model);
+    if !has_model && !actor.is_2d()
+        && !already.contains(&dfs_id)
+        && !result.contains(&dfs_id)
+    {
+        if let Some(tf) = world.get::<ActorTransform>(actor.entity) {
+            let pos = tf.position;
+            if let Some((sx, sy)) = world_to_screen(pos, view, proj, vp_w, vp_h) {
+                if sx >= sx_min && sx <= sx_max && sy >= sy_min && sy <= sy_max {
+                    result.push(dfs_id);
+                }
+            }
+        }
+    }
+
+    for child in actor.children() {
+        collect_transform_only_recursive(
+            child, world, view, proj, vp_w, vp_h,
+            sx_min, sx_max, sy_min, sy_max,
+            counter, already, result,
+        );
+    }
 }
 
 // ============================================================

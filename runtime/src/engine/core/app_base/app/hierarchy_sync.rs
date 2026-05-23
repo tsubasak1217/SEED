@@ -22,7 +22,7 @@ impl App {
             .filter(|a| a.world_line == wl)
             .collect();
 
-        let mut nodes: Vec<(u32, String, Option<u32>)> = Vec::new();
+        let mut nodes: Vec<(u32, String, Option<u32>, bool)> = Vec::new();
         let mut counter = 0u32;
         for root in &roots {
             collect_actor_nodes(root, None, &mut counter, &mut nodes);

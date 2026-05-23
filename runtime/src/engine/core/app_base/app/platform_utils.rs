@@ -69,3 +69,22 @@ pub(super) fn release_window_clamp() {
         windows_sys::Win32::UI::WindowsAndMessaging::ClipCursor(core::ptr::null());
     }
 }
+
+/// Pause モード用カーソルワープ。
+///
+/// ウィンドウローカル座標 (lx, ly) へカーソルを移動する。
+/// GetWindowRect でウィンドウ左上のスクリーン座標を取得し SetCursorPos で移動する。
+/// 非クライアント領域を持たない WS_CHILD ウィンドウ（埋め込み Runtime）向け実装。
+pub(super) fn warp_cursor_to_local(hwnd: isize, lx: i32, ly: i32) {
+    #[cfg(target_os = "windows")]
+    unsafe {
+        use windows_sys::Win32::Foundation::RECT;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{GetWindowRect, SetCursorPos};
+        let mut rect = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+        if GetWindowRect(hwnd as _, &mut rect) != 0 {
+            SetCursorPos(rect.left + lx, rect.top + ly);
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    let _ = (hwnd, lx, ly);
+}

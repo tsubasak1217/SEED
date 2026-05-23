@@ -9,7 +9,7 @@
 //  - handle_set_camera_clear_color: クリアカラー（RGBA）の更新
 // ============================================================
 
-use crate::engine::components::{ComponentKind, CameraComponent};
+use crate::engine::components::{ComponentKind, CameraComponent, ScalingMode};
 
 use super::{App, find_actor_by_dfs};
 
@@ -103,6 +103,86 @@ impl App {
             let Some(scene) = &mut self.scene else { return };
             if let Some(cc) = scene.world.get_mut::<CameraComponent>(entity) {
                 cc.is_main = is_main;
+            }
+        }
+        self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
+        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+    }
+
+    /// CameraComponent のスケーリングモードを更新する。
+    pub(super) fn handle_set_camera_scaling_mode(
+        &mut self,
+        actor_dfs_id: u32,
+        slot_idx: u32,
+        mode_str: &str,
+    ) {
+        let wl = self.active_world_line;
+        let slot_entity = {
+            let Some(scene) = &self.scene else { return };
+            let mut c = 0u32;
+            find_actor_by_dfs(&scene.actors, wl, actor_dfs_id, &mut c)
+                .and_then(|a| a.slots().get(slot_idx as usize))
+                .filter(|s| s.kind == ComponentKind::Camera)
+                .map(|s| s.entity)
+        };
+        if let Some(entity) = slot_entity {
+            let Some(scene) = &mut self.scene else { return };
+            if let Some(cc) = scene.world.get_mut::<CameraComponent>(entity) {
+                cc.scaling_mode = ScalingMode::from_str(mode_str);
+            }
+        }
+        self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
+        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+    }
+
+    /// CameraComponent のターゲット解像度を更新する（スケーリングモードのベースサイズ）。
+    pub(super) fn handle_set_camera_target_size(
+        &mut self,
+        actor_dfs_id: u32,
+        slot_idx: u32,
+        width: u32,
+        height: u32,
+    ) {
+        let wl = self.active_world_line;
+        let slot_entity = {
+            let Some(scene) = &self.scene else { return };
+            let mut c = 0u32;
+            find_actor_by_dfs(&scene.actors, wl, actor_dfs_id, &mut c)
+                .and_then(|a| a.slots().get(slot_idx as usize))
+                .filter(|s| s.kind == ComponentKind::Camera)
+                .map(|s| s.entity)
+        };
+        if let Some(entity) = slot_entity {
+            let Some(scene) = &mut self.scene else { return };
+            if let Some(cc) = scene.world.get_mut::<CameraComponent>(entity) {
+                cc.target_width  = width.max(1);
+                cc.target_height = height.max(1);
+            }
+        }
+        self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
+        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+    }
+
+    /// CameraComponent の帯カラーを更新する（LetterBox / PillarBox 時の帯色、RGBA 正規化値 0.0〜1.0）。
+    pub(super) fn handle_set_camera_bar_color(
+        &mut self,
+        actor_dfs_id: u32,
+        slot_idx: u32,
+        r: f32, g: f32, b: f32, a: f32,
+    ) {
+        let wl = self.active_world_line;
+        let slot_entity = {
+            let Some(scene) = &self.scene else { return };
+            let mut c = 0u32;
+            find_actor_by_dfs(&scene.actors, wl, actor_dfs_id, &mut c)
+                .and_then(|a| a.slots().get(slot_idx as usize))
+                .filter(|s| s.kind == ComponentKind::Camera)
+                .map(|s| s.entity)
+        };
+        if let Some(entity) = slot_entity {
+            let Some(scene) = &mut self.scene else { return };
+            if let Some(cc) = scene.world.get_mut::<CameraComponent>(entity) {
+                cc.bar_color = [r, g, b, a];
             }
         }
         self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);

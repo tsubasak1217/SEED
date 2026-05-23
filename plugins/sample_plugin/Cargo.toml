@@ -1,0 +1,19 @@
+# ============================================================
+#  sample_plugin — サンプル/テスト用プラグイン DLL
+#
+#  crate-type = ["cdylib"] で Windows DLL（.dll）としてビルドされる。
+#  seed-plugin-api にのみ依存し、エンジン本体の重い依存を引き込まない。
+# ============================================================
+
+[package]
+name    = "sample_plugin"
+version = "0.1.0"
+edition = "2024"
+
+# cdylib = 他言語から呼び出せるダイナミックライブラリ（.dll / .so）
+[lib]
+name      = "sample_plugin"
+crate-type = ["cdylib"]
+
+[dependencies]
+seed-plugin-api = { path = "../../plugin_api" }

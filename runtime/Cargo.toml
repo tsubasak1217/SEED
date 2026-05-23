@@ -20,6 +20,10 @@ serde_json = "1"
 naga = { version = "25", features = ["wgsl-in"] }
 toml  = "0.8"
 netcorehost = "0.20"
+libloading = "0.8"
+seed-plugin-api    = { path = "../plugin_api" }
+rapier3d           = { version = "0.22", features = ["simd-stable"] }
+crossbeam-channel  = "0.5"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_System_Pipes", "Win32_Foundation", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }

@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Runtime.InteropServices;
+using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -83,6 +85,11 @@ public partial class ProjectSettingsWindow : Window
             new("tags",   "タグ"),
             new("layers", "レイヤー"),
         }),
+        // ── プラグイン設定 ─────────────────────────────────────────
+        new("plugins", "プラグイン", new()
+        {
+            new("plugin_manage", "プラグイン管理", IsImplemented: true),
+        }),
     };
 
     // ── ブラシ定数 ────────────────────────────────────────────
@@ -101,6 +108,12 @@ public partial class ProjectSettingsWindow : Window
 
     /// <summary>アセットディレクトリのパス（ファイルダイアログの初期ディレクトリとして使用）。</summary>
     private readonly string _assetsPath;
+
+    /// <summary>
+    /// エディタ同梱のプラグインライブラリディレクトリ（editor/plugins/）。
+    /// ライブラリタブでインポート可能なプラグインの一覧表示に使用する。
+    /// </summary>
+    private readonly string _editorPluginsPath;
 
     /// <summary>ロード済みの設定データ。「保存して閉じる」時にファイルへ書き出す。</summary>
     private readonly ProjectSettingsData _data;
@@ -123,18 +136,27 @@ public partial class ProjectSettingsWindow : Window
     /// <summary>「ゲーム開始シーン」パネルのシーンパス入力フィールド。</summary>
     private TextBox? _tbStartScene;
 
+    /// <summary>
+    /// プラグイン管理パネルのチェックボックスリスト。
+    /// Key = プラグイン名, Value = IsChecked バインド元 CheckBox。
+    /// CollectSettingsFromUi() で有効/無効状態を収集する。
+    /// </summary>
+    private Dictionary<string, CheckBox> _pluginCheckBoxes = new();
+
     // ── コンストラクタ ────────────────────────────────────────
 
     /// <summary>
     /// プロジェクト設定ウィンドウを生成する。
     /// </summary>
     /// <param name="assetsPath">アセットディレクトリのパス。project_settings.json はここに置かれる。</param>
-    public ProjectSettingsWindow(string assetsPath)
+    /// <param name="editorPluginsPath">エディタ同梱プラグインライブラリのディレクトリ（editor/plugins/）。</param>
+    public ProjectSettingsWindow(string assetsPath, string editorPluginsPath = "")
     {
         InitializeComponent();
-        _assetsPath   = assetsPath;
-        _settingsPath = Path.Combine(assetsPath, "project_settings.json");
-        _data         = ProjectSettingsData.LoadFrom(_settingsPath);
+        _assetsPath        = assetsPath;
+        _editorPluginsPath = editorPluginsPath;
+        _settingsPath      = Path.Combine(assetsPath, "project_settings.json");
+        _data              = ProjectSettingsData.LoadFrom(_settingsPath);
     }
 
     // ── ウィンドウ初期化 ─────────────────────────────────────
@@ -286,9 +308,10 @@ public partial class ProjectSettingsWindow : Window
         // 右パネルのコンテンツを対応する設定 UI に差し替える
         SettingsContent.Content = subItemId switch
         {
-            "game_name"   => BuildGameNamePanel(),
-            "start_scene" => BuildStartScenePanel(),
-            _             => BuildPlaceholderPanel(GetSubItemLabel(subItemId)),
+            "game_name"      => BuildGameNamePanel(),
+            "start_scene"    => BuildStartScenePanel(),
+            "plugin_manage"  => BuildPluginManagePanel(),
+            _                => BuildPlaceholderPanel(GetSubItemLabel(subItemId)),
         };
     }
 
@@ -539,5 +562,467 @@ public partial class ProjectSettingsWindow : Window
                 ? raw
                 : VirtualPath.ToVirtual(raw, _assetsPath);
         }
+
+        // プラグイン有効/無効状態を収集する（CheckBox が存在する場合のみ）
+        if (_pluginCheckBoxes.Count > 0)
+        {
+            // 既存エントリを更新し、新規エントリを追加する
+            foreach (var (name, cb) in _pluginCheckBoxes)
+            {
+                var enabled = cb.IsChecked == true;
+                var entry   = _data.Plugins.FirstOrDefault(p => p.Name == name);
+                if (entry is null)
+                    _data.Plugins.Add(new PluginEntry { Name = name, Enabled = enabled });
+                else
+                    entry.Enabled = enabled;
+            }
+        }
+    }
+
+    // ── プラグイン管理パネル ──────────────────────────────────
+
+    // タブ選択状態（true = ライブラリ, false = インポート済み）
+    private bool _pluginTabIsLibrary = false;
+
+    /// <summary>
+    /// プラグイン管理パネルを構築して返す。
+    /// 「ライブラリ」「インポート済み」の 2 タブを持つ。
+    /// </summary>
+    private UIElement BuildPluginManagePanel()
+    {
+        _pluginCheckBoxes.Clear();
+
+        var root = new StackPanel();
+
+        // ── ヘッダー ──────────────────────────────────────────────
+        root.Children.Add(BuildPanelHeader(
+            "プラグイン管理",
+            "ライブラリからプラグインをインポートしてプロジェクトに追加します。\n" +
+            "インポート済みプラグインの有効/無効は「インポート済み」タブで切り替えます。"));
+
+        root.Children.Add(new Border
+        {
+            Height     = 1,
+            Background = new SolidColorBrush(Color.FromRgb(0x3A, 0x3A, 0x3A)),
+            Margin     = new Thickness(0, 0, 0, 0),
+        });
+
+        // ── タブバー ──────────────────────────────────────────────
+        var tabContent = new Border
+        {
+            Background = new SolidColorBrush(Color.FromRgb(0x1E, 0x1E, 0x1E)),
+            Margin     = new Thickness(0),
+        };
+
+        Border? tabLibBorder    = null;
+        Border? tabImportBorder = null;
+
+        void RefreshTabContent()
+        {
+            tabContent.Child = _pluginTabIsLibrary
+                ? BuildLibraryTabContent(RefreshTabContent)
+                : BuildImportedTabContent();
+
+            // タブ選択状態のスタイルを更新する
+            if (tabLibBorder is not null)
+                tabLibBorder.Background = _pluginTabIsLibrary
+                    ? new SolidColorBrush(Color.FromRgb(0x1E, 0x1E, 0x1E))
+                    : new SolidColorBrush(Color.FromRgb(0x2A, 0x2A, 0x2A));
+            if (tabImportBorder is not null)
+                tabImportBorder.Background = !_pluginTabIsLibrary
+                    ? new SolidColorBrush(Color.FromRgb(0x1E, 0x1E, 0x1E))
+                    : new SolidColorBrush(Color.FromRgb(0x2A, 0x2A, 0x2A));
+        }
+
+        tabLibBorder    = BuildTabHeader("ライブラリ",    isSelected: _pluginTabIsLibrary,  onClick: () => { _pluginTabIsLibrary = true;  RefreshTabContent(); });
+        tabImportBorder = BuildTabHeader("インポート済み", isSelected: !_pluginTabIsLibrary, onClick: () => { _pluginTabIsLibrary = false; RefreshTabContent(); });
+
+        var tabBar = new Grid();
+        tabBar.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        tabBar.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        Grid.SetColumn(tabLibBorder,    0);
+        Grid.SetColumn(tabImportBorder, 1);
+        tabBar.Children.Add(tabLibBorder);
+        tabBar.Children.Add(tabImportBorder);
+        root.Children.Add(tabBar);
+
+        root.Children.Add(new Border
+        {
+            Height     = 1,
+            Background = new SolidColorBrush(Color.FromRgb(0x3A, 0x3A, 0x3A)),
+        });
+
+        // 初期タブコンテンツを設定する
+        RefreshTabContent();
+        root.Children.Add(tabContent);
+
+        return root;
+    }
+
+    /// <summary>タブヘッダー Border を生成する。</summary>
+    private static Border BuildTabHeader(string label, bool isSelected, Action onClick)
+    {
+        var bg = isSelected
+            ? new SolidColorBrush(Color.FromRgb(0x1E, 0x1E, 0x1E))
+            : new SolidColorBrush(Color.FromRgb(0x2A, 0x2A, 0x2A));
+
+        var border = new Border
+        {
+            Background  = bg,
+            Padding     = new Thickness(0, 8, 0, 8),
+            Cursor      = Cursors.Hand,
+            BorderBrush = new SolidColorBrush(Color.FromRgb(0x3A, 0x3A, 0x3A)),
+        };
+
+        // 選択中はアクセントカラーのアンダーラインを表示する
+        var stack = new StackPanel();
+        stack.Children.Add(new TextBlock
+        {
+            Text              = label,
+            Foreground        = isSelected
+                ? new SolidColorBrush(Color.FromRgb(0xEE, 0xEE, 0xEE))
+                : new SolidColorBrush(Color.FromRgb(0x77, 0x77, 0x77)),
+            FontSize          = 12,
+            HorizontalAlignment = HorizontalAlignment.Center,
+        });
+        if (isSelected)
+        {
+            stack.Children.Add(new Border
+            {
+                Height     = 2,
+                Margin     = new Thickness(12, 4, 12, 0),
+                Background = new SolidColorBrush(Color.FromRgb(0x33, 0x99, 0xFF)),
+            });
+        }
+        border.Child = stack;
+
+        border.MouseLeftButtonDown += (_, _) => onClick();
+        border.MouseEnter += (_, _) =>
+        {
+            if (border.Background is SolidColorBrush bg2 &&
+                bg2.Color == Color.FromRgb(0x2A, 0x2A, 0x2A))
+                border.Background = new SolidColorBrush(Color.FromRgb(0x30, 0x30, 0x30));
+        };
+        border.MouseLeave += (_, _) =>
+        {
+            if (border.Background is SolidColorBrush bg2 &&
+                bg2.Color == Color.FromRgb(0x30, 0x30, 0x30))
+                border.Background = new SolidColorBrush(Color.FromRgb(0x2A, 0x2A, 0x2A));
+        };
+
+        return border;
+    }
+
+    // ── ライブラリタブ ────────────────────────────────────────
+
+    /// <summary>
+    /// 「ライブラリ」タブのコンテンツを構築して返す。
+    /// editor/plugins/ にある未インポートのプラグインを一覧表示し、
+    /// インポートボタンでプロジェクトの plugins/ フォルダへコピーする。
+    /// </summary>
+    private UIElement BuildLibraryTabContent(Action refreshPanel)
+    {
+        var sp = new StackPanel { Margin = new Thickness(0, 8, 0, 8) };
+
+        // ライブラリディレクトリが未設定または存在しない場合
+        if (string.IsNullOrEmpty(_editorPluginsPath) || !Directory.Exists(_editorPluginsPath))
+        {
+            sp.Children.Add(new TextBlock
+            {
+                Text         = "ライブラリフォルダが見つかりません。\neditor/plugins/ にプラグインを配置してください。",
+                Foreground   = new SolidColorBrush(Color.FromRgb(0x66, 0x66, 0x66)),
+                FontSize     = 11,
+                TextWrapping = TextWrapping.Wrap,
+                Margin       = new Thickness(16, 8, 16, 0),
+            });
+            return sp;
+        }
+
+        // インポート済みプラグイン名セット（重複インポート防止）
+        var projectPluginsDir = Path.GetFullPath(Path.Combine(_assetsPath, "..", "plugins"));
+        var importedNames = Directory.Exists(projectPluginsDir)
+            ? Directory.GetDirectories(projectPluginsDir)
+                  .Select(d => ReadPluginName(d))
+                  .Where(n => n is not null)
+                  .ToHashSet(StringComparer.OrdinalIgnoreCase)!
+            : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        // ライブラリフォルダをスキャンして plugin.json を持つフォルダを列挙する
+        var libDirs = Directory.GetDirectories(_editorPluginsPath)
+            .Where(d => File.Exists(Path.Combine(d, "plugin.json")))
+            .ToArray();
+
+        if (libDirs.Length == 0)
+        {
+            sp.Children.Add(new TextBlock
+            {
+                Text         = "ライブラリにプラグインがありません。",
+                Foreground   = new SolidColorBrush(Color.FromRgb(0x55, 0x55, 0x55)),
+                FontSize     = 11,
+                Margin       = new Thickness(16, 8, 16, 0),
+            });
+            return sp;
+        }
+
+        foreach (var dir in libDirs)
+        {
+            var (name, version, desc) = ReadPluginManifest(dir);
+            var alreadyImported = importedNames.Contains(name);
+
+            sp.Children.Add(BuildPluginRow(
+                name, version, desc,
+                rightControl: BuildImportButton(dir, name, alreadyImported, projectPluginsDir, refreshPanel)));
+        }
+
+        sp.Children.Add(new TextBlock
+        {
+            Text         = "※ インポートするとプロジェクトの plugins/ フォルダにコピーされます。",
+            Foreground   = new SolidColorBrush(Color.FromRgb(0x44, 0x44, 0x44)),
+            FontSize     = 10,
+            TextWrapping = TextWrapping.Wrap,
+            Margin       = new Thickness(16, 12, 16, 0),
+        });
+
+        return sp;
+    }
+
+    /// <summary>
+    /// インポートボタンを生成する。
+    /// インポート済みの場合は「インポート済み」ラベルを表示する（非活性）。
+    /// </summary>
+    private UIElement BuildImportButton(
+        string srcDir, string pluginName, bool alreadyImported,
+        string destPluginsDir, Action refreshPanel)
+    {
+        if (alreadyImported)
+        {
+            return new TextBlock
+            {
+                Text              = "インポート済み",
+                Foreground        = new SolidColorBrush(Color.FromRgb(0x44, 0x88, 0x44)),
+                FontSize          = 11,
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin            = new Thickness(0, 0, 4, 0),
+            };
+        }
+
+        var btn = new Button
+        {
+            Content             = "インポート",
+            Padding             = new Thickness(10, 4, 10, 4),
+            FontSize            = 11,
+            Background          = new SolidColorBrush(Color.FromRgb(0x09, 0x4D, 0x80)),
+            Foreground          = new SolidColorBrush(Color.FromRgb(0xDD, 0xDD, 0xDD)),
+            BorderThickness     = new Thickness(0),
+            Cursor              = Cursors.Hand,
+            VerticalAlignment   = VerticalAlignment.Center,
+        };
+        btn.Click += (_, _) =>
+        {
+            try
+            {
+                // プラグインフォルダをプロジェクトの plugins/ へコピーする
+                var destDir = Path.Combine(destPluginsDir, Path.GetFileName(srcDir));
+                CopyDirectory(srcDir, destDir);
+
+                // project_settings.json の plugins リストに追加（デフォルト有効）
+                if (_data.Plugins.All(p => p.Name != pluginName))
+                    _data.Plugins.Add(new PluginEntry { Name = pluginName, Enabled = true });
+
+                // パネルを再描画する
+                refreshPanel();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(
+                    $"インポートに失敗しました:\n{ex.Message}",
+                    "インポートエラー", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        };
+
+        return btn;
+    }
+
+    // ── インポート済みタブ ────────────────────────────────────
+
+    /// <summary>
+    /// 「インポート済み」タブのコンテンツを構築して返す。
+    /// {assetsRoot}/../plugins/ にある各プラグインを一覧表示し、
+    /// 有効/無効 CheckBox で切り替えられる。
+    /// </summary>
+    private UIElement BuildImportedTabContent()
+    {
+        _pluginCheckBoxes.Clear();
+
+        var sp = new StackPanel { Margin = new Thickness(0, 8, 0, 8) };
+
+        var projectPluginsDir = Path.GetFullPath(Path.Combine(_assetsPath, "..", "plugins"));
+        var pluginDirs = Directory.Exists(projectPluginsDir)
+            ? Directory.GetDirectories(projectPluginsDir)
+                  .Where(d => File.Exists(Path.Combine(d, "plugin.json")))
+                  .ToArray()
+            : Array.Empty<string>();
+
+        if (pluginDirs.Length == 0)
+        {
+            sp.Children.Add(new TextBlock
+            {
+                Text         = "インポート済みのプラグインがありません。\n「ライブラリ」タブからインポートしてください。",
+                Foreground   = new SolidColorBrush(Color.FromRgb(0x55, 0x55, 0x55)),
+                FontSize     = 11,
+                TextWrapping = TextWrapping.Wrap,
+                Margin       = new Thickness(16, 8, 16, 0),
+            });
+            return sp;
+        }
+
+        foreach (var dir in pluginDirs)
+        {
+            var (name, version, desc) = ReadPluginManifest(dir);
+            var existingEntry = _data.Plugins.FirstOrDefault(p => p.Name == name);
+            var isEnabled     = existingEntry?.Enabled ?? true;
+
+            // 有効/無効チェックボックスを右側コントロールとして渡す
+            var cb = new CheckBox
+            {
+                IsChecked         = isEnabled,
+                VerticalAlignment = VerticalAlignment.Center,
+                ToolTip           = "有効にするとエンジン起動時にロードされます",
+            };
+            _pluginCheckBoxes[name] = cb;
+
+            sp.Children.Add(BuildPluginRow(name, version, desc, rightControl: cb));
+        }
+
+        sp.Children.Add(new TextBlock
+        {
+            Text         = "※ 変更はプロジェクト設定の保存後、次回エンジン起動時に反映されます。",
+            Foreground   = new SolidColorBrush(Color.FromRgb(0x44, 0x44, 0x44)),
+            FontSize     = 10,
+            TextWrapping = TextWrapping.Wrap,
+            Margin       = new Thickness(16, 12, 16, 0),
+        });
+
+        return sp;
+    }
+
+    // ── 共通ヘルパー ──────────────────────────────────────────
+
+    /// <summary>
+    /// プラグイン 1 行分の UI（名前・バージョン・説明 + 右側コントロール）を生成する。
+    /// </summary>
+    private static Border BuildPluginRow(string name, string version, string desc, UIElement rightControl)
+    {
+        var row = new Border
+        {
+            Background      = new SolidColorBrush(Color.FromRgb(0x25, 0x25, 0x25)),
+            BorderBrush     = new SolidColorBrush(Color.FromRgb(0x35, 0x35, 0x35)),
+            BorderThickness = new Thickness(0, 0, 0, 1),
+            Padding         = new Thickness(16, 9, 16, 9),
+        };
+
+        var grid = new Grid();
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) }); // 情報
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });                      // バージョン + 右コントロール
+
+        // 名前・説明列
+        var infoStack = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
+        infoStack.Children.Add(new TextBlock
+        {
+            Text       = name,
+            Foreground = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)),
+            FontSize   = 12,
+            FontWeight = FontWeights.SemiBold,
+        });
+        if (!string.IsNullOrEmpty(desc))
+        {
+            infoStack.Children.Add(new TextBlock
+            {
+                Text         = desc,
+                Foreground   = new SolidColorBrush(Color.FromRgb(0x66, 0x66, 0x66)),
+                FontSize     = 10,
+                TextWrapping = TextWrapping.Wrap,
+            });
+        }
+        Grid.SetColumn(infoStack, 0);
+        grid.Children.Add(infoStack);
+
+        // バージョン + 右コントロール列
+        var rightStack = new StackPanel
+        {
+            Orientation       = Orientation.Horizontal,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin            = new Thickness(8, 0, 0, 0),
+        };
+        if (!string.IsNullOrEmpty(version))
+        {
+            rightStack.Children.Add(new TextBlock
+            {
+                Text              = $"v{version}",
+                Foreground        = new SolidColorBrush(Color.FromRgb(0x55, 0x55, 0x55)),
+                FontSize          = 10,
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin            = new Thickness(0, 0, 10, 0),
+            });
+        }
+        rightStack.Children.Add(rightControl);
+        Grid.SetColumn(rightStack, 1);
+        grid.Children.Add(rightStack);
+
+        row.Child = grid;
+        return row;
+    }
+
+    /// <summary>
+    /// plugin.json のマニフェストを読んで (name, version, description) を返す。
+    /// 読み取れない場合はフォルダ名を name として使用する。
+    /// </summary>
+    private static (string name, string version, string desc) ReadPluginManifest(string dir)
+    {
+        var name    = Path.GetFileName(dir);
+        var version = "";
+        var desc    = "";
+        try
+        {
+            var json = File.ReadAllText(Path.Combine(dir, "plugin.json"));
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+            if (root.TryGetProperty("name",        out var n)) name    = n.GetString() ?? name;
+            if (root.TryGetProperty("version",     out var v)) version = v.GetString() ?? "";
+            if (root.TryGetProperty("description", out var d)) desc    = d.GetString() ?? "";
+        }
+        catch { /* manifest が読めなかった場合はフォルダ名を使用する */ }
+        return (name, version, desc);
+    }
+
+    /// <summary>
+    /// plugin.json が存在するフォルダからプラグイン名を読む。
+    /// 読み取れない場合は null を返す。
+    /// </summary>
+    private static string? ReadPluginName(string dir)
+    {
+        var manifestPath = Path.Combine(dir, "plugin.json");
+        if (!File.Exists(manifestPath)) return null;
+        try
+        {
+            var json = File.ReadAllText(manifestPath);
+            using var doc = JsonDocument.Parse(json);
+            if (doc.RootElement.TryGetProperty("name", out var n))
+                return n.GetString();
+        }
+        catch { }
+        return Path.GetFileName(dir);
+    }
+
+    /// <summary>
+    /// ディレクトリを再帰的にコピーする。destDir が存在する場合は上書きする。
+    /// </summary>
+    private static void CopyDirectory(string srcDir, string destDir)
+    {
+        Directory.CreateDirectory(destDir);
+        foreach (var file in Directory.GetFiles(srcDir))
+            File.Copy(file, Path.Combine(destDir, Path.GetFileName(file)), overwrite: true);
+        foreach (var subDir in Directory.GetDirectories(srcDir))
+            CopyDirectory(subDir, Path.Combine(destDir, Path.GetFileName(subDir)));
     }
 }

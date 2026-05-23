@@ -15,7 +15,8 @@ use crate::engine::components::{
     ModelComponent, Transform as ActorTransform, ComponentKind, ComponentData,
     ScriptComponent, PlaceholderScriptSlot, CanvasComponent,
     SpriteComponent, InputMapComponent,
-    CameraComponent,
+    CameraComponent, PluginComponent,
+    ColliderComponent,
 };
 use crate::engine::structs::objects::actor::{ComponentSlotData, ComponentSlot};
 use crate::engine::core::app_base::undo::ComponentSlotsSnapshotCommand;
@@ -128,6 +129,8 @@ impl App {
                     ComponentKind::Sprite      => { scene.world.remove::<SpriteComponent>(slot_entity); }
                     ComponentKind::InputMap    => { scene.world.remove::<InputMapComponent>(slot_entity); }
                     ComponentKind::Camera      => { scene.world.remove::<CameraComponent>(slot_entity); }
+                    ComponentKind::Plugin      => { scene.world.remove::<PluginComponent>(slot_entity); }
+                    ComponentKind::Collider    => { scene.world.remove::<ColliderComponent>(slot_entity); }
                 }
                 scene.world.despawn(slot_entity);
                 // アクターのスロットリストから削除
@@ -282,6 +285,7 @@ impl App {
                                     scale_transform: cc_data.scale_transform,
                                     scale_size:      cc_data.scale_size,
                                     auto_scale:      cc_data.auto_scale,
+                                    viewport_ref:    cc_data.viewport_ref.clone(),
                                 });
                 let mut c = 0u32;
                 if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
@@ -323,6 +327,32 @@ impl App {
                     actor.add_slot_typed::<CameraComponent>(slot_data.name, ComponentKind::Camera, slot_entity);
                 } else { scene.world.despawn(slot_entity); }
                 true
+            }
+            ComponentData::PluginComponent(pc_data) => {
+                // PluginComponent を複製して新スロット専用エンティティに insert
+                let slot_entity = scene.world.spawn();
+                scene.world.insert(slot_entity, PluginComponent {
+                    plugin_name: pc_data.plugin_name,
+                    fields:      pc_data.fields,
+                });
+                let mut c = 0u32;
+                if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
+                    actor.add_slot_typed::<PluginComponent>(slot_data.name, ComponentKind::Plugin, slot_entity);
+                } else { scene.world.despawn(slot_entity); }
+                true
+            }
+            ComponentData::ColliderComponent(cc_data) => {
+                let slot_entity = scene.world.spawn();
+                scene.world.insert(slot_entity, ColliderComponent::from(cc_data));
+                let mut c = 0u32;
+                if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
+                    actor.add_slot_typed::<ColliderComponent>(slot_data.name, ComponentKind::Collider, slot_entity);
+                } else { scene.world.despawn(slot_entity); }
+                true
+            }
+            ComponentData::LegacyRigidbodyComponent(_) => {
+                // 旧フォーマット互換: ColliderComponent に統合済みのためスロット追加しない
+                false
             }
         };
 
@@ -450,6 +480,7 @@ impl App {
                                     scale_transform: cc_data.scale_transform,
                                     scale_size:      cc_data.scale_size,
                                     auto_scale:      cc_data.auto_scale,
+                                    viewport_ref:    cc_data.viewport_ref.clone(),
                                 });
                     new_slots.push(ComponentSlot::new::<CanvasComponent>(slot_data.name, ComponentKind::Canvas, slot_entity));
                 }
@@ -469,6 +500,22 @@ impl App {
                 ComponentData::CameraComponent(cc_data) => {
                     scene.world.insert(slot_entity, CameraComponent::from_data(cc_data));
                     new_slots.push(ComponentSlot::new::<CameraComponent>(slot_data.name, ComponentKind::Camera, slot_entity));
+                }
+                ComponentData::PluginComponent(pc_data) => {
+                    // PluginComponent を新スロット専用エンティティに insert する
+                    scene.world.insert(slot_entity, PluginComponent {
+                        plugin_name: pc_data.plugin_name,
+                        fields:      pc_data.fields,
+                    });
+                    new_slots.push(ComponentSlot::new::<PluginComponent>(slot_data.name, ComponentKind::Plugin, slot_entity));
+                }
+                ComponentData::ColliderComponent(cc_data) => {
+                    scene.world.insert(slot_entity, ColliderComponent::from(cc_data));
+                    new_slots.push(ComponentSlot::new::<ColliderComponent>(slot_data.name, ComponentKind::Collider, slot_entity));
+                }
+                ComponentData::LegacyRigidbodyComponent(_) => {
+                    // 旧フォーマット互換: ColliderComponent に統合済みのためスキップする
+                    scene.world.despawn(slot_entity);
                 }
             }
         }

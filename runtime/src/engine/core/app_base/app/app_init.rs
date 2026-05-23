@@ -29,20 +29,19 @@ impl App {
     /// 初期化完了後に IPC へ `READY:{hwnd}` を通知する。
     /// Play モードの場合は続いてシーンを自動ロードする。
     pub(super) fn handle_resumed(&mut self, event_loop: &ActiveEventLoop) {
+        eprintln!("[SEED INIT] handle_resumed start  mode={:?}", self.mode);
         let window = Arc::new(create_window(event_loop, &WindowConfig {
             parent_hwnd: self.parent_hwnd,
             ..WindowConfig::default()
         }));
 
-        // スタンドアロンモードでは GPU 初期化前にウィンドウを即表示する。
-        // Renderer::new()（wgpu DX12 デバイス作成）は数秒かかることがあり、
-        // 初期化完了まで画面に何も出ない問題を防ぐ。
-        // 埋め込みモードはエディタ側コンテナが背景を描くため従来どおり後で表示。
-        if !self.is_embedded() {
-            window.set_visible(true);
-        }
-
+        // GPU 初期化（wgpu DX12 デバイス + シェーダーコンパイル）は数秒かかることがある。
+        // この間はメインスレッドがブロックされるため、ウィンドウを表示してしまうと
+        // Windows に「応答なし」と判定される。
+        // → 初期化完了後に表示することで "Not Responding" を回避する。
+        eprintln!("[SEED INIT] Renderer::new() start");
         let renderer = Renderer::new(window.clone());
+        eprintln!("[SEED INIT] Renderer::new() done");
 
         let size = window.inner_size();
         self.camera.set_aspect_ratio(size.width, size.height);
@@ -61,22 +60,12 @@ impl App {
             renderer.depth_format(),
             renderer.pipeline_cache(),
         );
+        eprintln!("[SEED INIT] DrawContext created");
 
         let scene = crate::engine::core::app_base::scene::Scene::new("Untitled");
         let camera_buf = ctx.create_camera_buffer();
         let id_buffer  = IdBuffer::new(&ctx.device, size.width, size.height);
         let line_model_buf = ctx.create_identity_model_bg_for_unlit();
-
-        if self.is_embedded() {
-            // 非表示ウィンドウへの request_redraw は WM_PAINT が配送されず
-            // RedrawRequested が発火しないため、常に可視化してから redraw を要求する。
-            // 起動中の白フラッシュはエディタ側コンテナの WM_ERASEBKGND 黒塗りで対処する。
-            window.set_visible(true);
-            window.request_redraw();
-        } else {
-            // スタンドアロンモードは resumed() 冒頭で set_visible 済み
-            window.set_visible(true); // 冪等（すでに表示中）
-        }
 
         let canvas_overlay_camera_buf = ctx.create_camera_buffer();
 
@@ -104,6 +93,7 @@ impl App {
                 renderer.surface_format(),
                 renderer.depth_format(),
             ));
+            eprintln!("[SEED INIT] axis_gizmo + icon_overlay created");
         }
 
         self.renderer = Some(renderer);
@@ -114,16 +104,48 @@ impl App {
 
         // asset_fs を初期化する（全モード共通）
         self.init_asset_fs();
+        eprintln!("[SEED INIT] init_asset_fs done");
+
+        // プラグインをロードする
+        self.load_plugins();
+        eprintln!("[SEED INIT] load_plugins done  count={}", self.plugin_registry.len());
+
+        // Play モードでは指定シーン（または start_scene）を自動ロードする。
+        // シーンロード・モデルロードはメインスレッドをブロックするため、
+        // ウィンドウ表示より先に完了させる。
+        if self.mode == RuntimeMode::Play {
+            eprintln!("[SEED INIT] load_play_scene start  scene_path={:?}", self.scene_path);
+            self.load_play_scene();
+            let actor_count = self.scene.as_ref().map(|s| s.actors.len()).unwrap_or(0);
+            eprintln!("[SEED INIT] load_play_scene done  actors={actor_count}");
+            self.start_physics();
+            eprintln!("[SEED INIT] start_physics done");
+        }
+
+        // ── ウィンドウ表示（全初期化完了後）────────────────────────────
+        // GPU 初期化・シーンロード・プラグインロードはすべてメインスレッドをブロックする。
+        // これらが完了してからウィンドウを表示することで、Windows が「応答なし」と
+        // 誤判定するのを防ぐ。
+        // 非表示ウィンドウへの request_redraw は WM_PAINT が配送されないため、
+        // set_visible の直後に明示的に redraw を要求して最初のフレームを確実に描画する。
+        if let Some(w) = &self.window {
+            w.set_visible(true);
+            w.request_redraw();
+        }
+        eprintln!("[SEED INIT] window set_visible + request_redraw");
 
         let hwnd = self.window_hwnd();
         if let Some(ipc) = &self.ipc {
             ipc.send(&format!("READY:{hwnd}"));
         }
+        eprintln!("[SEED INIT] READY sent  hwnd=0x{hwnd:X}");
         self.send_hierarchy();
-
-        // Play モードでは指定シーン（または start_scene）を自動ロードする
-        if self.mode == RuntimeMode::Play {
-            self.load_play_scene();
+        // ロード済みプラグイン一覧をエディタへ通知する
+        if !self.plugin_registry.is_empty() {
+            let json = self.plugin_registry.to_json();
+            if let Some(ipc) = &self.ipc {
+                ipc.send(&format!("PLUGIN_LIST:{json}"));
+            }
         }
     }
 
@@ -153,6 +175,47 @@ impl App {
             .filter(|p| p.exists());
 
         asset_fs::init(assets_root, pak_path.as_deref());
+    }
+
+    /// プロジェクトのプラグインフォルダからプラグインをロードする。
+    ///
+    /// プラグインフォルダ: `{assets_root}/../plugins/`
+    /// 有効化リスト: `{assets_root}/project_settings.json` の plugins フィールド
+    fn load_plugins(&mut self) {
+        use crate::engine::plugin::registry::PluginRegistry;
+        use crate::engine::plugin::manifest::PluginEntry;
+
+        // アセットルートを解決する
+        let assets_root = if let Some(root) = &self.assets_root {
+            std::path::PathBuf::from(root)
+        } else {
+            std::env::current_exe()
+                .ok()
+                .and_then(|p| p.parent().map(|d| d.join("assets")))
+                .unwrap_or_else(|| std::path::PathBuf::from("assets"))
+        };
+
+        // プラグインフォルダ = assets の隣の plugins/ ディレクトリ
+        let plugins_dir = assets_root.parent()
+            .map(|p| p.join("plugins"))
+            .unwrap_or_else(|| std::path::PathBuf::from("plugins"));
+
+        // project_settings.json から有効化リストを読み込む
+        let settings_path = assets_root.join("project_settings.json");
+        let enabled_list: Vec<PluginEntry> = if settings_path.exists() {
+            let text = std::fs::read_to_string(&settings_path).unwrap_or_default();
+            // plugins フィールドだけ取り出す
+            serde_json::from_str::<serde_json::Value>(&text)
+                .ok()
+                .and_then(|v| v.get("plugins").cloned())
+                .and_then(|arr| serde_json::from_value(arr).ok())
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+
+        self.plugin_registry = PluginRegistry::load_from_dir(&plugins_dir, &enabled_list);
+        eprintln!("[App] プラグイン {} 件ロード完了", self.plugin_registry.len());
     }
 
     /// Play モードでシーンをロードする。
@@ -204,6 +267,16 @@ impl App {
                 // シーンに保存されたデバッグカメラ位置を適用する
                 if let Some(cam) = cam_data {
                     self.apply_camera_data(&cam);
+                }
+                // 2D アクターが含まれていれば WL 0 をキャンバス世界線として登録する。
+                // IPC の LoadScene 処理と同様に has_any_2d_actor を再帰チェックする。
+                fn has_any_2d_actor(actors: &[crate::engine::structs::objects::Actor]) -> bool {
+                    actors.iter().any(|a| a.is_2d() || has_any_2d_actor(a.children()))
+                }
+                if has_any_2d_actor(&new_scene.actors) {
+                    self.canvas_world_lines.insert(0);
+                } else {
+                    self.canvas_world_lines.remove(&0);
                 }
                 self.scene = Some(new_scene);
             }

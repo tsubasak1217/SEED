@@ -45,6 +45,10 @@ public partial class InspectorPanel : UserControl
     private readonly Dictionary<string, Type> _scriptTypeCache = new();
     private string _lastComponentsJson = "";
 
+    // ── Plugin state ─────────────────────────────────────────
+    /// <summary>ロード済みプラグイン名リスト。PLUGIN_LIST IPC メッセージで更新される。</summary>
+    private List<string> _pluginNames = new();
+
     // ── Transform fields ─────────────────────────────────────
     private TextBox? _tbPx, _tbPy, _tbPz;
     private TextBox? _tbEx, _tbEy, _tbEz;
@@ -75,14 +79,31 @@ public partial class InspectorPanel : UserControl
     {
         if (_runtime is not null)
         {
-            _runtime.SelectionChanged       -= OnSelectionChanged;
-            _runtime.ActorDataReceived      -= OnActorDataReceived;
+            _runtime.SelectionChanged        -= OnSelectionChanged;
+            _runtime.ActorDataReceived       -= OnActorDataReceived;
             _runtime.ActorComponentsReceived -= OnActorComponentsReceived;
+            _runtime.PluginListReceived      -= OnPluginListReceived;
         }
         _runtime = runtime;
-        _runtime.SelectionChanged       += OnSelectionChanged;
-        _runtime.ActorDataReceived      += OnActorDataReceived;
+        _runtime.SelectionChanged        += OnSelectionChanged;
+        _runtime.ActorDataReceived       += OnActorDataReceived;
         _runtime.ActorComponentsReceived += OnActorComponentsReceived;
+        _runtime.PluginListReceived      += OnPluginListReceived;
+    }
+
+    /// <summary>PLUGIN_LIST メッセージを受信してプラグイン名リストを更新する。</summary>
+    private void OnPluginListReceived(string json)
+    {
+        // [{"name":"...","version":"...","description":"..."},...]
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            _pluginNames = doc.RootElement.EnumerateArray()
+                .Select(e => e.TryGetProperty("name", out var n) ? n.GetString() ?? "" : "")
+                .Where(n => n.Length > 0)
+                .ToList();
+        }
+        catch { _pluginNames = new(); }
     }
 
     public void SetActorEditMode(bool isActorMode)
@@ -94,6 +115,10 @@ public partial class InspectorPanel : UserControl
     /// <summary>HierarchyPanel からアクター編集モードのアクター選択を受け取る。</summary>
     public void SelectActor(int dfsId)
     {
+        var tid  = System.Threading.Thread.CurrentThread.ManagedThreadId;
+        var isUi = Dispatcher.CheckAccess();
+        SEEDEditor.EditorLog.Write($"[Inspector.SelectActor] dfsId={dfsId} tid={tid} ui={isUi} currentId={_currentActorId}");
+
         // 表示モードを確実に切り替える（同一アクターへの再呼び出しでも必要）
         _isDraggingTransform    = false;
         _isVirtualActorSelected = true; // 仮想 DFS 選択 → SET_ACTOR_TRANSFORM を使う
@@ -110,7 +135,9 @@ public partial class InspectorPanel : UserControl
         ClearTransformRefs();
         _currentActorId = dfsId;
         // Rust 側にコンポーネントデータを要求する（ビューポートからの選択時でも確実に反映される）
+        SEEDEditor.EditorLog.Write($"[Inspector.SelectActor] SendToRuntime GET_ACTOR_COMPONENTS:{dfsId}");
         _runtime?.SendToRuntime($"GET_ACTOR_COMPONENTS:{dfsId}");
+        SEEDEditor.EditorLog.Write($"[Inspector.SelectActor] SendToRuntime done");
     }
 
     // ── Runtime events ───────────────────────────────────────
@@ -174,6 +201,15 @@ public partial class InspectorPanel : UserControl
             // UIリビルドで _tbPx 等の参照がクリアされて以降のドラッグ値送信が
             // 無効になってしまうのを防ぐ。
             if (_isDraggingTransform) return;
+
+            // VP ref 解決待ちの場合は、ドロップされたアクターの Camera スロットを抽出して
+            // インスペクタ UI 再構築ではなく参照設定処理に転用する。
+            if (_pendingVpRefActorDfsId >= 0)
+            {
+                ResolveCameraRefFromComponents(json);
+                return;
+            }
+
             try { BuildActorComponentList(json); }
             catch (Exception ex) { EditorLog.Write($"InspectorPanel: ACTOR_COMPONENTS parse error: {ex.Message}"); }
         });
@@ -276,6 +312,8 @@ public partial class InspectorPanel : UserControl
         bool ScaleTransform = false, bool ScaleSize = false,
         // CanvasComponent 用自動スケールフラグ
         bool AutoScale = true,
+        // CanvasComponent 用ビューポート参照（"window" or "camera"）
+        string VpRefType = "window", string VpRefActor = "", string VpRefSlot = "",
         // SpriteComponent 用フィールド
         string TexturePath = "",
         float SpriteR = 1f, float SpriteG = 1f, float SpriteB = 1f, float SpriteA = 1f,
@@ -285,7 +323,17 @@ public partial class InspectorPanel : UserControl
         // CameraComponent 用フィールド
         float FovYDeg = 45f, float CamNear = 0.1f, float CamFar = 1000f,
         bool  IsMain  = false,
-        float CamCR = 0.1f, float CamCG = 0.1f, float CamCB = 0.1f, float CamCA = 1f);
+        float CamCR = 0.1f, float CamCG = 0.1f, float CamCB = 0.1f, float CamCA = 1f,
+        string CamScalingMode = "vert_minus", int CamTargetW = 1920, int CamTargetH = 1080,
+        float CamBarCR = 0f, float CamBarCG = 0f, float CamBarCB = 0f, float CamBarCA = 1f,
+        // PluginComponent 用フィールド
+        // plugin_fields は [{"key":...,"label":...,"kind":{...},"current_value":...,"tooltip":...},...] JSON
+        string PluginName = "", string PluginFieldsJson = "",
+        // ColliderComponent 用フィールド（collider_data JSON 全体）
+        string ColliderDataJson = "{}",
+        // RigidbodyComponent 用フィールド（rigidbody_data JSON 全体）
+        string RigidbodyDataJson = "{}");
+
     private List<SlotInfo> _slotInfos = new();
 
     private void BuildActorComponentList(string json)
@@ -367,6 +415,10 @@ public partial class InspectorPanel : UserControl
             var scaleTransform = comp.TryGetProperty("scale_transform", out var stv) ? ReadJsonBool(stv, false) : false;
             var scaleSize      = comp.TryGetProperty("scale_size",      out var ssv) ? ReadJsonBool(ssv, false) : false;
             var autoScale      = comp.TryGetProperty("auto_scale",      out var asv) ? ReadJsonBool(asv, true)  : true;
+            // CanvasComponent 用: ビューポート参照
+            var vpRefType  = comp.TryGetProperty("vp_ref_type",  out var vrt) ? vrt.GetString() ?? "window" : "window";
+            var vpRefActor = comp.TryGetProperty("vp_ref_actor", out var vra) ? vra.GetString() ?? ""       : "";
+            var vpRefSlot  = comp.TryGetProperty("vp_ref_slot",  out var vrs) ? vrs.GetString() ?? ""       : "";
             // SpriteComponent 用: テクスチャパス・RGBA・サイズ
             var texPath = comp.TryGetProperty("texture_path", out var tp2) ? tp2.GetString() ?? "" : "";
             var sprR = comp.TryGetProperty("cr", out var cr) ? cr.GetSingle() : 1f;
@@ -385,14 +437,34 @@ public partial class InspectorPanel : UserControl
             var camCR   = comp.TryGetProperty("cr",        out var ccr) ? ccr.GetSingle() : 0.1f;
             var camCG   = comp.TryGetProperty("cg",        out var ccg) ? ccg.GetSingle() : 0.1f;
             var camCB   = comp.TryGetProperty("cb",        out var ccb) ? ccb.GetSingle() : 0.1f;
-            var camCA   = comp.TryGetProperty("ca",        out var cca) ? cca.GetSingle() : 1.0f;
+            var camCA         = comp.TryGetProperty("ca",             out var cca) ? cca.GetSingle()  : 1.0f;
+            var camScalingMode = comp.TryGetProperty("scaling_mode",  out var csm) ? csm.GetString() ?? "vert_minus" : "vert_minus";
+            var camTargetW     = comp.TryGetProperty("target_width",  out var ctw) ? (int)ctw.GetUInt32() : 1920;
+            var camTargetH     = comp.TryGetProperty("target_height", out var cth) ? (int)cth.GetUInt32() : 1080;
+            var camBarCR       = comp.TryGetProperty("bar_cr", out var bcrj) ? bcrj.GetSingle() : 0f;
+            var camBarCG       = comp.TryGetProperty("bar_cg", out var bcgj) ? bcgj.GetSingle() : 0f;
+            var camBarCB       = comp.TryGetProperty("bar_cb", out var bcbj) ? bcbj.GetSingle() : 0f;
+            var camBarCA       = comp.TryGetProperty("bar_ca", out var bcaj) ? bcaj.GetSingle() : 1f;
+            // PluginComponent 用: プラグイン名とフィールド定義 JSON
+            var pluginName       = comp.TryGetProperty("plugin_name",   out var pn)  ? pn.GetString()  ?? "" : "";
+            var pluginFieldsJson = comp.TryGetProperty("plugin_fields",  out var pf)  ? pf.GetRawText()      : "[]";
+            // ColliderComponent 用: collider_data 全体 JSON
+            var colliderDataJson   = comp.TryGetProperty("collider_data",   out var cd)  ? cd.GetRawText() : "{}";
+            // RigidbodyComponent 用: rigidbody_data 全体 JSON
+            var rigidbodyDataJson  = comp.TryGetProperty("rigidbody_data",  out var rd)  ? rd.GetRawText() : "{}";
 
             var info = new SlotInfo(slotIdx, compName, compType, modelPath, width, height,
                 scaleTransform, scaleSize, autoScale,
-                texPath, sprR, sprG, sprB, sprA, sprW, sprH,
+                VpRefType: vpRefType, VpRefActor: vpRefActor, VpRefSlot: vpRefSlot,
+                TexturePath: texPath, SpriteR: sprR, SpriteG: sprG, SpriteB: sprB, SpriteA: sprA,
+                SpriteW: sprW, SpriteH: sprH,
                 InputMapPath: inputMapPath,
                 FovYDeg: fovYDeg, CamNear: camNear, CamFar: camFar, IsMain: isMain,
-                CamCR: camCR, CamCG: camCG, CamCB: camCB, CamCA: camCA);
+                CamCR: camCR, CamCG: camCG, CamCB: camCB, CamCA: camCA,
+                CamScalingMode: camScalingMode, CamTargetW: camTargetW, CamTargetH: camTargetH,
+                CamBarCR: camBarCR, CamBarCG: camBarCG, CamBarCB: camBarCB, CamBarCA: camBarCA,
+                PluginName: pluginName, PluginFieldsJson: pluginFieldsJson,
+                ColliderDataJson: colliderDataJson, RigidbodyDataJson: rigidbodyDataJson);
             _slotInfos.Add(info);
 
             // 上部チップリストに追加
@@ -543,10 +615,12 @@ public partial class InspectorPanel : UserControl
         {
             "ModelComponent"    => BuildModelSlotContent(info),
             "ScriptComponent"   => BuildScriptSlotContent(info),
-            "CanvasComponent"   => BuildCanvasSlotContent(info),
-            "SpriteComponent"   => BuildSpriteSlotContent(info),
-            "InputMapComponent" => BuildInputMapSlotContent(info),
-            "CameraComponent"   => BuildCameraSlotContent(info),
+            "CanvasComponent"    => BuildCanvasSlotContent(info),
+            "SpriteComponent"    => BuildSpriteSlotContent(info),
+            "InputMapComponent"  => BuildInputMapSlotContent(info),
+            "CameraComponent"    => BuildCameraSlotContent(info),
+            "PluginComponent"    => BuildPluginSlotContent(info),
+            "ColliderComponent"  => BuildColliderSlotContent(info),
             _ => new TextBlock
             {
                 Text       = $"未対応のコンポーネント: {info.TypeId}",
@@ -555,6 +629,352 @@ public partial class InspectorPanel : UserControl
                 Margin     = new Thickness(0, 4, 0, 4),
             },
         };
+
+    // ── PluginComponent inspector ─────────────────────────────
+
+    /// <summary>
+    /// PluginComponent のインスペクター UI を動的に構築して返す。
+    /// plugin_fields JSON をパースしてフィールド種別ごとに適切な入力 UI を生成する。
+    /// 値変更時は SET_PLUGIN_FIELD:{actor},{slot},{key},{value} を送信する。
+    /// </summary>
+    private UIElement BuildPluginSlotContent(SlotInfo info)
+    {
+        var sp = new StackPanel { Margin = new Thickness(0, 4, 0, 4) };
+
+        // プラグイン名の表示（読み取り専用ヘッダー）
+        sp.Children.Add(new TextBlock
+        {
+            Text       = $"Plugin: {info.PluginName}",
+            Foreground = new SolidColorBrush(Color.FromRgb(0x66, 0xAA, 0xFF)),
+            FontSize   = 11,
+            Margin     = new Thickness(0, 0, 0, 8),
+        });
+
+        // plugin_fields JSON をパースしてフィールド行を生成する
+        List<JsonElement> fields;
+        try
+        {
+            using var doc = JsonDocument.Parse(info.PluginFieldsJson);
+            fields = doc.RootElement.EnumerateArray().Select(e => e.Clone()).ToList();
+        }
+        catch
+        {
+            sp.Children.Add(new TextBlock
+            {
+                Text       = "フィールド定義の読み込みに失敗しました",
+                Foreground = new SolidColorBrush(Color.FromRgb(0xAA, 0x44, 0x44)),
+                FontSize   = 11,
+            });
+            return sp;
+        }
+
+        if (fields.Count == 0)
+        {
+            sp.Children.Add(new TextBlock
+            {
+                Text       = "（フィールドなし）",
+                Foreground = new SolidColorBrush(Color.FromRgb(0x55, 0x55, 0x55)),
+                FontSize   = 11,
+            });
+            return sp;
+        }
+
+        foreach (var field in fields)
+        {
+            var key          = field.TryGetProperty("key",           out var k)   ? k.GetString()   ?? "" : "";
+            var label        = field.TryGetProperty("label",         out var lb)  ? lb.GetString()  ?? "" : key;
+            var currentValue = field.TryGetProperty("current_value", out var cv)  ? cv.GetString()  ?? "" : "";
+            var tooltip      = field.TryGetProperty("tooltip",       out var tt)  ? tt.GetString()  ?? "" : "";
+
+            // フィールド種別を取得する（kind.type）
+            var kindType = "";
+            JsonElement kindParams = default;
+            if (field.TryGetProperty("kind", out var kindEl))
+            {
+                if (kindEl.TryGetProperty("type",   out var kt)) kindType   = kt.GetString() ?? "";
+                kindEl.TryGetProperty("params", out kindParams);
+            }
+
+            // フィールド行を生成してアタッチする
+            var row = BuildPluginFieldRow(info, key, label, kindType, kindParams, currentValue, tooltip);
+            sp.Children.Add(row);
+        }
+
+        return sp;
+    }
+
+    /// <summary>
+    /// プラグインフィールド 1 行分の UI を生成して返す。
+    /// kindType に応じてテキストボックス・チェックボックス・コンボボックス等を生成する。
+    /// </summary>
+    private UIElement BuildPluginFieldRow(
+        SlotInfo    info,
+        string      key,
+        string      label,
+        string      kindType,
+        JsonElement kindParams,
+        string      currentValue,
+        string      tooltip)
+    {
+        // ラベル列（固定幅） + コントロール列（可変）の 2 カラムグリッド
+        var grid = new Grid { Margin = new Thickness(0, 2, 0, 2) };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(120) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+
+        var labelBlock = new TextBlock
+        {
+            Text              = label,
+            Foreground        = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)),
+            FontSize          = 12,
+            VerticalAlignment = VerticalAlignment.Center,
+            ToolTip           = string.IsNullOrEmpty(tooltip) ? null : tooltip,
+        };
+        Grid.SetColumn(labelBlock, 0);
+        grid.Children.Add(labelBlock);
+
+        // フィールド種別ごとに入力コントロールを生成する
+        UIElement control = kindType switch
+        {
+            "Float"    => BuildPluginFloatField(info, key, kindParams, currentValue),
+            "Int"      => BuildPluginIntField(info, key, kindParams, currentValue),
+            "Bool"     => BuildPluginBoolField(info, key, currentValue),
+            "Color"    => BuildPluginColorField(info, key, currentValue),
+            "FilePath" => BuildPluginFilePathField(info, key, kindParams, currentValue),
+            "Enum"     => BuildPluginEnumField(info, key, kindParams, currentValue),
+            _          => BuildPluginStringField(info, key, currentValue), // String or unknown
+        };
+        Grid.SetColumn(control, 1);
+        grid.Children.Add(control);
+
+        return grid;
+    }
+
+    /// <summary>プラグインフィールド値変更を Rust へ送信するヘルパー。</summary>
+    private void SendPluginFieldChange(SlotInfo info, string key, string value)
+        => _runtime?.SendToRuntime($"SET_PLUGIN_FIELD:{_currentActorId},{info.SlotIdx},{key},{value}");
+
+    /// <summary>Float フィールド: ドラッグ可能な数値入力。</summary>
+    private UIElement BuildPluginFloatField(SlotInfo info, string key, JsonElement kindParams, string currentValue)
+    {
+        // min/max/step を取得する（未指定時はデフォルト値を使用）
+        var min  = kindParams.ValueKind != JsonValueKind.Undefined && kindParams.TryGetProperty("min",  out var minEl)  ? (double)minEl.GetSingle()  : -1e9;
+        var max  = kindParams.ValueKind != JsonValueKind.Undefined && kindParams.TryGetProperty("max",  out var maxEl)  ? (double)maxEl.GetSingle()  :  1e9;
+        var step = kindParams.ValueKind != JsonValueKind.Undefined && kindParams.TryGetProperty("step", out var stepEl) ? (double)stepEl.GetSingle() :  0.1;
+
+        float.TryParse(currentValue, System.Globalization.NumberStyles.Float,
+            System.Globalization.CultureInfo.InvariantCulture, out var initVal);
+
+        var tb = new TextBox
+        {
+            Text   = initVal.ToString("G7", System.Globalization.CultureInfo.InvariantCulture),
+            Style  = TryFindResource("NumericTextBox") as Style,
+            Height = 22,
+        };
+
+        tb.LostFocus += (_, _) =>
+        {
+            if (float.TryParse(tb.Text, System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out var v))
+            {
+                v      = (float)Math.Clamp(v, min, max);
+                tb.Text = v.ToString("G7", System.Globalization.CultureInfo.InvariantCulture);
+                SendPluginFieldChange(info, key, tb.Text);
+            }
+        };
+        tb.KeyDown += (_, e) =>
+        {
+            if (e.Key == Key.Return) { tb.MoveFocus(new TraversalRequest(FocusNavigationDirection.Next)); e.Handled = true; }
+        };
+
+        return tb;
+    }
+
+    /// <summary>Int フィールド: 整数値入力 TextBox。</summary>
+    private UIElement BuildPluginIntField(SlotInfo info, string key, JsonElement kindParams, string currentValue)
+    {
+        var min = kindParams.ValueKind != JsonValueKind.Undefined && kindParams.TryGetProperty("min", out var minEl) ? minEl.GetInt32() : int.MinValue;
+        var max = kindParams.ValueKind != JsonValueKind.Undefined && kindParams.TryGetProperty("max", out var maxEl) ? maxEl.GetInt32() : int.MaxValue;
+
+        var tb = new TextBox
+        {
+            Text   = currentValue,
+            Style  = TryFindResource("NumericTextBox") as Style,
+            Height = 22,
+        };
+        tb.LostFocus += (_, _) =>
+        {
+            if (int.TryParse(tb.Text, out var v))
+            {
+                v = Math.Clamp(v, min, max);
+                tb.Text = v.ToString();
+                SendPluginFieldChange(info, key, tb.Text);
+            }
+        };
+        tb.KeyDown += (_, e) =>
+        {
+            if (e.Key == Key.Return) { tb.MoveFocus(new TraversalRequest(FocusNavigationDirection.Next)); e.Handled = true; }
+        };
+        return tb;
+    }
+
+    /// <summary>String フィールド: テキスト入力 TextBox。</summary>
+    private UIElement BuildPluginStringField(SlotInfo info, string key, string currentValue)
+    {
+        var tb = new TextBox
+        {
+            Text   = currentValue,
+            Style  = TryFindResource("NumericTextBox") as Style,
+            Height = 22,
+        };
+        tb.LostFocus += (_, _) => SendPluginFieldChange(info, key, tb.Text);
+        tb.KeyDown   += (_, e) =>
+        {
+            if (e.Key == Key.Return) { tb.MoveFocus(new TraversalRequest(FocusNavigationDirection.Next)); e.Handled = true; }
+        };
+        return tb;
+    }
+
+    /// <summary>Bool フィールド: チェックボックス。</summary>
+    private UIElement BuildPluginBoolField(SlotInfo info, string key, string currentValue)
+    {
+        var cb = new CheckBox
+        {
+            IsChecked         = currentValue == "true" || currentValue == "1",
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        cb.Checked   += (_, _) => SendPluginFieldChange(info, key, "true");
+        cb.Unchecked += (_, _) => SendPluginFieldChange(info, key, "false");
+        return cb;
+    }
+
+    /// <summary>Color フィールド: RGBA カラーピッカーボタン。値は "r,g,b,a"（0.0〜1.0）形式。</summary>
+    private UIElement BuildPluginColorField(SlotInfo info, string key, string currentValue)
+    {
+        // "r,g,b,a" をパースして初期カラーを設定する
+        var parts = currentValue.Split(',');
+        float TryParsePart(int i, float def)
+        {
+            if (i < parts.Length && float.TryParse(parts[i], System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out var v)) return v;
+            return def;
+        }
+        float r = TryParsePart(0, 1f), g = TryParsePart(1, 1f),
+              b = TryParsePart(2, 1f), a = TryParsePart(3, 1f);
+
+        // アルファはリニアのまま、RGB は sRGB 変換して WPF に渡す
+        byte AlphaByte(float f) => (byte)Math.Clamp((int)(f * 255), 0, 255);
+        var  initColor = Color.FromArgb(AlphaByte(a), LinearToSrgbByte(r), LinearToSrgbByte(g), LinearToSrgbByte(b));
+
+        var btn = new Button
+        {
+            Height     = 22,
+            Background = new SolidColorBrush(initColor),
+            BorderBrush = new SolidColorBrush(Color.FromRgb(0x44, 0x44, 0x44)),
+            BorderThickness = new Thickness(1),
+            Cursor     = Cursors.Hand,
+        };
+        btn.Click += (_, _) =>
+        {
+            // ColorPickerWindow は静的 ShowDialog を使用する
+            var owner = Window.GetWindow(btn);
+            var result = ColorPickerWindow.ShowDialog(owner!, r, g, b, a);
+            if (result.HasValue)
+            {
+                var (nr, ng, nb, na) = result.Value;
+                byte AlphaByte2(float f) => (byte)Math.Clamp((int)(f * 255), 0, 255);
+                btn.Background = new SolidColorBrush(Color.FromArgb(AlphaByte2(na), LinearToSrgbByte(nr), LinearToSrgbByte(ng), LinearToSrgbByte(nb)));
+                var val = string.Format(System.Globalization.CultureInfo.InvariantCulture,
+                    "{0:F4},{1:F4},{2:F4},{3:F4}", nr, ng, nb, na);
+                SendPluginFieldChange(info, key, val);
+                // ローカル変数を更新して次回ピッカー起動時の初期値として使う
+                r = nr; g = ng; b = nb; a = na;
+            }
+        };
+        return btn;
+    }
+
+    /// <summary>FilePath フィールド: TextBox + 参照ボタン。</summary>
+    private UIElement BuildPluginFilePathField(SlotInfo info, string key, JsonElement kindParams, string currentValue)
+    {
+        var filter = kindParams.ValueKind != JsonValueKind.Undefined &&
+                     kindParams.TryGetProperty("filter", out var fEl) ? fEl.GetString() ?? "*.*" : "*.*";
+
+        var stack = new StackPanel { Orientation = Orientation.Horizontal };
+
+        var tb = new TextBox
+        {
+            Text   = currentValue,
+            Style  = TryFindResource("NumericTextBox") as Style,
+            Height = 22,
+            Width  = 160,
+        };
+        tb.LostFocus += (_, _) => SendPluginFieldChange(info, key, tb.Text);
+        tb.KeyDown   += (_, e) =>
+        {
+            if (e.Key == Key.Return) { tb.MoveFocus(new TraversalRequest(FocusNavigationDirection.Next)); e.Handled = true; }
+        };
+        stack.Children.Add(tb);
+
+        var btn = new Button
+        {
+            Content = "...",
+            Width   = 26,
+            Height  = 22,
+            Margin  = new Thickness(2, 0, 0, 0),
+        };
+        btn.Click += (_, _) =>
+        {
+            // "*.png;*.jpg" 形式のフィルタを OpenFileDialog 形式に変換する
+            var dlgFilter = string.IsNullOrEmpty(filter) || filter == "*.*"
+                ? "All Files (*.*)|*.*"
+                : $"Files ({filter})|{filter}|All Files (*.*)|*.*";
+            var dlg = new OpenFileDialog
+            {
+                Filter           = dlgFilter,
+                InitialDirectory = Directory.Exists(_assetsPath) ? _assetsPath : Environment.CurrentDirectory,
+            };
+            if (dlg.ShowDialog() == true)
+            {
+                tb.Text = dlg.FileName;
+                SendPluginFieldChange(info, key, tb.Text);
+            }
+        };
+        stack.Children.Add(btn);
+
+        return stack;
+    }
+
+    /// <summary>Enum フィールド: ドロップダウン。値はインデックス文字列（"0", "1", ...）で保存する。</summary>
+    private UIElement BuildPluginEnumField(SlotInfo info, string key, JsonElement kindParams, string currentValue)
+    {
+        var options = new List<string>();
+        if (kindParams.ValueKind != JsonValueKind.Undefined && kindParams.TryGetProperty("options", out var opts))
+            foreach (var opt in opts.EnumerateArray())
+                options.Add(opt.GetString() ?? "");
+
+        var combo = new ComboBox
+        {
+            Height     = 22,
+            Background = System.Windows.Media.Brushes.White,
+            Foreground = System.Windows.Media.Brushes.Black,
+        };
+        foreach (var opt in options)
+            combo.Items.Add(new ComboBoxItem { Content = opt, Foreground = System.Windows.Media.Brushes.Black });
+
+        int.TryParse(currentValue, out var selectedIdx);
+        if (selectedIdx >= 0 && selectedIdx < options.Count)
+            combo.SelectedIndex = selectedIdx;
+        else if (options.Count > 0)
+            combo.SelectedIndex = 0;
+
+        combo.SelectionChanged += (_, _) =>
+        {
+            var idx = combo.SelectedIndex >= 0 ? combo.SelectedIndex : 0;
+            SendPluginFieldChange(info, key, idx.ToString());
+        };
+
+        return combo;
+    }
 
     // ── CameraComponent inspector ─────────────────────────────
 
@@ -630,7 +1050,7 @@ public partial class InspectorPanel : UserControl
             BorderBrush     = new SolidColorBrush(Color.FromRgb(0x55, 0x55, 0x55)),
             BorderThickness = new Thickness(1),
             Background      = new SolidColorBrush(
-                Color.FromArgb((byte)(curA * 255), (byte)(curR * 255), (byte)(curG * 255), (byte)(curB * 255))),
+                Color.FromArgb((byte)(curA * 255), LinearToSrgbByte(curR), LinearToSrgbByte(curG), LinearToSrgbByte(curB))),
             Cursor          = Cursors.Hand,
         };
         var clearRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 4, 0, 2) };
@@ -649,11 +1069,485 @@ public partial class InspectorPanel : UserControl
             if (result is null) return;
             (curR, curG, curB, curA) = result.Value;
             colorSwatch.Background = new SolidColorBrush(
-                Color.FromArgb((byte)(curA * 255), (byte)(curR * 255), (byte)(curG * 255), (byte)(curB * 255)));
+                Color.FromArgb((byte)(curA * 255), LinearToSrgbByte(curR), LinearToSrgbByte(curG), LinearToSrgbByte(curB)));
             _runtime?.SendToRuntime(FormattableString.Invariant(
                 $"SET_CAMERA_CLEAR_COLOR:{_currentActorId},{info.SlotIdx},{curR},{curG},{curB},{curA}"));
         };
         sp.Children.Add(clearRow);
+
+        // スケーリングモード
+        var scalingModes = new[]
+        {
+            ("vert_minus",          "Vert- (縦FOV固定)"),
+            ("hor_plus",            "Hor+ (横FOV固定)"),
+            ("letter_box",          "レターボックス (上下黒帯)"),
+            ("pillar_box",          "ピラーボックス (左右黒帯)"),
+            ("letter_pillar_box",   "レター+ピラー (自動帯)"),
+            ("full_scale",          "フルスケール (伸縮)"),
+        };
+        var scalingRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 4, 0, 2) };
+        scalingRow.Children.Add(new TextBlock
+        {
+            Text       = "スケーリング",
+            Foreground = new SolidColorBrush(Color.FromRgb(0xAA, 0xAA, 0xAA)),
+            FontSize   = 11,
+            Width      = 90,
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+        var scalingCombo = new ComboBox
+        {
+            Width      = 170,
+            FontSize   = 11,
+            Margin     = new Thickness(4, 0, 0, 0),
+            Background = System.Windows.Media.Brushes.White,
+            Foreground = System.Windows.Media.Brushes.Black,
+        };
+        foreach (var (val, label) in scalingModes)
+            scalingCombo.Items.Add(new ComboBoxItem
+            {
+                Content    = label,
+                Tag        = val,
+                Foreground = System.Windows.Media.Brushes.Black,
+            });
+        var currentScalingIdx = Array.FindIndex(scalingModes, t => t.Item1 == info.CamScalingMode);
+        scalingCombo.SelectedIndex = currentScalingIdx >= 0 ? currentScalingIdx : 0;
+        scalingCombo.SelectionChanged += (_, _) =>
+        {
+            if (scalingCombo.SelectedItem is ComboBoxItem item && item.Tag is string mode)
+                _runtime?.SendToRuntime($"SET_CAMERA_SCALING_MODE:{_currentActorId},{info.SlotIdx},{mode}");
+        };
+        scalingRow.Children.Add(scalingCombo);
+        sp.Children.Add(scalingRow);
+
+        // ターゲット解像度（スケーリングモード用）
+        var rowTW = BuildLabeledNumberRow("解像度 W", info.CamTargetW);
+        var rowTH = BuildLabeledNumberRow("解像度 H", info.CamTargetH);
+        sp.Children.Add(rowTW.element);
+        sp.Children.Add(rowTH.element);
+        void CommitTargetSize()
+        {
+            if (_currentActorId < 0) return;
+            if (!int.TryParse(rowTW.textBox.Text, out var w) || w < 1) return;
+            if (!int.TryParse(rowTH.textBox.Text, out var h) || h < 1) return;
+            _runtime?.SendToRuntime($"SET_CAMERA_TARGET_SIZE:{_currentActorId},{info.SlotIdx},{w},{h}");
+        }
+        rowTW.textBox.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { CommitTargetSize(); e.Handled = true; } };
+        rowTW.textBox.LostFocus += (_, _) => CommitTargetSize();
+        rowTH.textBox.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { CommitTargetSize(); e.Handled = true; } };
+        rowTH.textBox.LostFocus += (_, _) => CommitTargetSize();
+
+        // ── 帯カラー（LetterBox / PillarBox 選択時のみ表示）──────────
+        float curBarR = info.CamBarCR, curBarG = info.CamBarCG, curBarB = info.CamBarCB, curBarA = info.CamBarCA;
+        var barColorSwatch = new Border
+        {
+            Width           = 120,
+            Height          = 22,
+            Margin          = new Thickness(0, 2, 0, 2),
+            BorderBrush     = new SolidColorBrush(Color.FromRgb(0x55, 0x55, 0x55)),
+            BorderThickness = new Thickness(1),
+            Background      = new SolidColorBrush(
+                Color.FromArgb((byte)(curBarA * 255), LinearToSrgbByte(curBarR),
+                               LinearToSrgbByte(curBarG), LinearToSrgbByte(curBarB))),
+            Cursor = Cursors.Hand,
+        };
+        var barRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 4, 0, 2) };
+        barRow.Children.Add(new TextBlock
+        {
+            Text              = "帯カラー",
+            Foreground        = new SolidColorBrush(Color.FromRgb(0xAA, 0xAA, 0xAA)),
+            FontSize          = 11,
+            Width             = 90,
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+        barRow.Children.Add(barColorSwatch);
+        barColorSwatch.MouseLeftButtonDown += (_, _) =>
+        {
+            var result = ColorPickerWindow.ShowDialog(Window.GetWindow(this), curBarR, curBarG, curBarB, curBarA);
+            if (result is null) return;
+            (curBarR, curBarG, curBarB, curBarA) = result.Value;
+            barColorSwatch.Background = new SolidColorBrush(
+                Color.FromArgb((byte)(curBarA * 255), LinearToSrgbByte(curBarR),
+                               LinearToSrgbByte(curBarG), LinearToSrgbByte(curBarB)));
+            _runtime?.SendToRuntime(FormattableString.Invariant(
+                $"SET_CAMERA_BAR_COLOR:{_currentActorId},{info.SlotIdx},{curBarR},{curBarG},{curBarB},{curBarA}"));
+        };
+        sp.Children.Add(barRow);
+
+        // LetterBox / PillarBox のときのみ帯カラー行を表示する
+        static bool IsBarMode(string mode) => mode is "letter_box" or "pillar_box" or "letter_pillar_box";
+        barRow.Visibility = IsBarMode(info.CamScalingMode) ? Visibility.Visible : Visibility.Collapsed;
+        scalingCombo.SelectionChanged += (_, _) =>
+        {
+            if (scalingCombo.SelectedItem is ComboBoxItem item && item.Tag is string mode)
+                barRow.Visibility = IsBarMode(mode) ? Visibility.Visible : Visibility.Collapsed;
+        };
+
+        return sp;
+    }
+
+    // ── ColliderComponent inspector（リジッドボディ統合版）────────────
+
+    /// <summary>
+    /// ColliderComponent のインスペクター UI を構築して返す。
+    /// 形状・オフセット・トリガー・レイヤーに加え、
+    /// 「リジッドボディを使用」チェックをオンにすると物理演算パラメータが展開される。
+    /// 値変更時は SET_COLLIDER_DATA:{actorId},{slotIdx},{json} を送信する。
+    /// </summary>
+    private UIElement BuildColliderSlotContent(SlotInfo info)
+    {
+        var sp = new StackPanel { Margin = new Thickness(0, 4, 0, 4) };
+
+        // ── 現在の collider_data JSON をパース ──────────────────────────
+        string shapeType  = "Box";
+        float  heX = 0.5f, heY = 0.5f, heZ = 0.5f;
+        float  radius     = 0.5f;
+        float  halfHeight = 1.0f;
+        float  offX = 0f, offY = 0f, offZ = 0f;
+        bool   isTrigger  = false;
+        int    physLayer  = 1;
+        int    layerMask  = 0;
+        // リジッドボディ設定
+        bool   useRb      = false;
+        float  mass = 1f, rest = 0.3f, fric = 0.5f, linDamp = 0.01f, angDamp = 0.05f, gravScale = 1f;
+        bool   isKinematic = false;
+        var    freezePos   = new bool[3];
+        var    freezeRot   = new bool[3];
+        var    initLinVel  = new float[3];
+        var    initAngVel  = new float[3];
+
+        try
+        {
+            using var doc = JsonDocument.Parse(info.ColliderDataJson);
+            var root = doc.RootElement;
+            if (root.TryGetProperty("shape", out var shape))
+            {
+                shapeType = shape.TryGetProperty("type", out var t) ? t.GetString() ?? "Box" : "Box";
+                if (shape.TryGetProperty("half_extents", out var he) && he.GetArrayLength() == 3)
+                { heX = he[0].GetSingle(); heY = he[1].GetSingle(); heZ = he[2].GetSingle(); }
+                if (shape.TryGetProperty("radius",      out var r))  radius     = r.GetSingle();
+                if (shape.TryGetProperty("half_height", out var hh)) halfHeight = hh.GetSingle();
+            }
+            if (root.TryGetProperty("offset", out var off) && off.GetArrayLength() == 3)
+            { offX = off[0].GetSingle(); offY = off[1].GetSingle(); offZ = off[2].GetSingle(); }
+            if (root.TryGetProperty("is_trigger",    out var it2)) isTrigger = it2.GetBoolean();
+            if (root.TryGetProperty("physics_layer", out var pl))  physLayer = pl.GetInt32();
+            if (root.TryGetProperty("layer_mask",    out var lm))  layerMask = lm.GetInt32();
+            // リジッドボディ設定
+            if (root.TryGetProperty("use_rigidbody",   out var ur))  useRb       = ur.GetBoolean();
+            if (root.TryGetProperty("mass",            out var mv))  mass        = mv.GetSingle();
+            if (root.TryGetProperty("restitution",     out var rv2)) rest        = rv2.GetSingle();
+            if (root.TryGetProperty("friction",        out var fv))  fric        = fv.GetSingle();
+            if (root.TryGetProperty("linear_damping",  out var ld))  linDamp     = ld.GetSingle();
+            if (root.TryGetProperty("angular_damping", out var ad))  angDamp     = ad.GetSingle();
+            if (root.TryGetProperty("gravity_scale",   out var gs))  gravScale   = gs.GetSingle();
+            if (root.TryGetProperty("is_kinematic",    out var ik))  isKinematic = ik.GetBoolean();
+            ReadBoolArray(root,  "freeze_position",          freezePos);
+            ReadBoolArray(root,  "freeze_rotation",          freezeRot);
+            ReadFloatArray(root, "initial_linear_velocity",  initLinVel);
+            ReadFloatArray(root, "initial_angular_velocity", initAngVel);
+        }
+        catch { /* デフォルト値を使用 */ }
+
+        // ── 現在値（クロージャ共有） ─────────────────────────────────────
+        var curShapeType  = shapeType;
+        var curHe         = new float[] { heX, heY, heZ };
+        var curRadius     = radius;
+        var curHalfHeight = halfHeight;
+        var curOffset     = new float[] { offX, offY, offZ };
+        var curTrigger    = isTrigger;
+        var curLayer      = physLayer;
+        var curMask       = layerMask;
+        var curUseRb      = useRb;
+        var curMass       = mass;      var curRest  = rest;    var curFric    = fric;
+        var curLinDamp    = linDamp;   var curAngD  = angDamp; var curGrav    = gravScale;
+        var curKinem      = isKinematic;
+        var curFreezeP    = (bool[])freezePos.Clone();
+        var curFreezeR    = (bool[])freezeRot.Clone();
+        var curLinV       = (float[])initLinVel.Clone();
+        var curAngV       = (float[])initAngVel.Clone();
+
+        // ── JSON 再構築 + 送信ヘルパー ───────────────────────────────────
+        void CommitCollider()
+        {
+            if (_currentActorId < 0) return;
+            static string F(float v) => v.ToString("G", CultureInfo.InvariantCulture);
+            static string B(bool  v) => v ? "true" : "false";
+            string shapeJson = curShapeType switch
+            {
+                "Sphere"   => $"{{\"type\":\"Sphere\",\"radius\":{F(curRadius)}}}",
+                "Capsule"  => $"{{\"type\":\"Capsule\",\"radius\":{F(curRadius)},\"half_height\":{F(curHalfHeight)}}}",
+                "Cylinder" => $"{{\"type\":\"Cylinder\",\"radius\":{F(curRadius)},\"half_height\":{F(curHalfHeight)}}}",
+                "Cone"     => $"{{\"type\":\"Cone\",\"radius\":{F(curRadius)},\"half_height\":{F(curHalfHeight)}}}",
+                _          => $"{{\"type\":\"Box\",\"half_extents\":[{F(curHe[0])},{F(curHe[1])},{F(curHe[2])}]}}",
+            };
+            var json =
+                $"{{\"shape\":{shapeJson}," +
+                $"\"offset\":[{F(curOffset[0])},{F(curOffset[1])},{F(curOffset[2])}]," +
+                $"\"is_trigger\":{B(curTrigger)}," +
+                $"\"physics_layer\":{curLayer}," +
+                $"\"layer_mask\":{curMask}," +
+                $"\"use_rigidbody\":{B(curUseRb)}," +
+                $"\"mass\":{F(curMass)}," +
+                $"\"restitution\":{F(curRest)}," +
+                $"\"friction\":{F(curFric)}," +
+                $"\"linear_damping\":{F(curLinDamp)}," +
+                $"\"angular_damping\":{F(curAngD)}," +
+                $"\"gravity_scale\":{F(curGrav)}," +
+                $"\"is_kinematic\":{B(curKinem)}," +
+                $"\"freeze_position\":[{B(curFreezeP[0])},{B(curFreezeP[1])},{B(curFreezeP[2])}]," +
+                $"\"freeze_rotation\":[{B(curFreezeR[0])},{B(curFreezeR[1])},{B(curFreezeR[2])}]," +
+                $"\"initial_linear_velocity\":[{F(curLinV[0])},{F(curLinV[1])},{F(curLinV[2])}]," +
+                $"\"initial_angular_velocity\":[{F(curAngV[0])},{F(curAngV[1])},{F(curAngV[2])}]}}";
+            _runtime?.SendToRuntime($"SET_COLLIDER_DATA:{_currentActorId},{info.SlotIdx},{json}");
+        }
+
+        // ────────────────────────────────────────────────────────────────
+        // コライダー設定
+        // ────────────────────────────────────────────────────────────────
+
+        // --- 形状タイプ コンボボックス ---
+        var shapeLabel = new TextBlock
+        {
+            Text = "形状", Foreground = new SolidColorBrush(Color.FromRgb(0xAA, 0xAA, 0xAA)),
+            FontSize = 11, Width = 90, VerticalAlignment = VerticalAlignment.Center,
+        };
+        var shapeCombo = new ComboBox
+        {
+            Width = 120, Height = 22, FontSize = 11, Margin = new Thickness(4, 0, 0, 0),
+            Background = System.Windows.Media.Brushes.White,
+            Foreground = System.Windows.Media.Brushes.Black,
+        };
+        shapeCombo.Items.Add(new ComboBoxItem { Content = "Box",      Foreground = System.Windows.Media.Brushes.Black });
+        shapeCombo.Items.Add(new ComboBoxItem { Content = "Sphere",   Foreground = System.Windows.Media.Brushes.Black });
+        shapeCombo.Items.Add(new ComboBoxItem { Content = "Capsule",  Foreground = System.Windows.Media.Brushes.Black });
+        shapeCombo.Items.Add(new ComboBoxItem { Content = "Cylinder", Foreground = System.Windows.Media.Brushes.Black });
+        shapeCombo.Items.Add(new ComboBoxItem { Content = "Cone",     Foreground = System.Windows.Media.Brushes.Black });
+        foreach (ComboBoxItem ci in shapeCombo.Items)
+            if (ci.Content as string == curShapeType) { shapeCombo.SelectedItem = ci; break; }
+        var shapeRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 4, 0, 2) };
+        shapeRow.Children.Add(shapeLabel);
+        shapeRow.Children.Add(shapeCombo);
+        sp.Children.Add(shapeRow);
+
+        // --- 形状別パラメータエリア（動的に差し替え） ---
+        var shapeParamPanel = new StackPanel();
+        sp.Children.Add(shapeParamPanel);
+
+        void RebuildShapeParams()
+        {
+            shapeParamPanel.Children.Clear();
+            if (curShapeType == "Box")
+            {
+                var row = BuildXYZRowSimple("半辺 (HalfExtents)", curHe[0], curHe[1], curHe[2]);
+                shapeParamPanel.Children.Add(row.element);
+                void CommitHe()
+                {
+                    if (!float.TryParse(row.tx.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var x)) return;
+                    if (!float.TryParse(row.ty.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var y)) return;
+                    if (!float.TryParse(row.tz.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var z)) return;
+                    curHe[0] = x; curHe[1] = y; curHe[2] = z; CommitCollider();
+                }
+                row.tx.LostFocus += (_, _) => CommitHe(); row.tx.KeyDown += (_, e) => { if (e.Key is Key.Return or Key.Enter) CommitHe(); };
+                row.ty.LostFocus += (_, _) => CommitHe(); row.ty.KeyDown += (_, e) => { if (e.Key is Key.Return or Key.Enter) CommitHe(); };
+                row.tz.LostFocus += (_, _) => CommitHe(); row.tz.KeyDown += (_, e) => { if (e.Key is Key.Return or Key.Enter) CommitHe(); };
+            }
+            else if (curShapeType == "Sphere")
+            {
+                var rowR = BuildLabeledNumberRow("半径 (m)", curRadius);
+                shapeParamPanel.Children.Add(rowR.element);
+                void CommitR() {
+                    if (float.TryParse(rowR.textBox.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var v))
+                    { curRadius = v; CommitCollider(); }
+                }
+                rowR.textBox.LostFocus += (_, _) => CommitR();
+                rowR.textBox.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) CommitR(); };
+            }
+            else if (curShapeType is "Capsule" or "Cylinder" or "Cone")
+            {
+                // Capsule / Cylinder / Cone は半径 + 半高さ の 2 パラメータ
+                var rowR  = BuildLabeledNumberRow("半径 (m)",   curRadius);
+                var rowHH = BuildLabeledNumberRow("半高さ (m)", curHalfHeight);
+                shapeParamPanel.Children.Add(rowR.element);
+                shapeParamPanel.Children.Add(rowHH.element);
+                void CommitRH() {
+                    if (!float.TryParse(rowR.textBox.Text,  NumberStyles.Float, CultureInfo.InvariantCulture, out var r))  return;
+                    if (!float.TryParse(rowHH.textBox.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var hh)) return;
+                    curRadius = r; curHalfHeight = hh; CommitCollider();
+                }
+                rowR.textBox.LostFocus  += (_, _) => CommitRH(); rowR.textBox.KeyDown  += (_, e) => { if (e.Key is Key.Return or Key.Enter) CommitRH(); };
+                rowHH.textBox.LostFocus += (_, _) => CommitRH(); rowHH.textBox.KeyDown += (_, e) => { if (e.Key is Key.Return or Key.Enter) CommitRH(); };
+            }
+        }
+        RebuildShapeParams();
+
+        shapeCombo.SelectionChanged += (_, _) =>
+        {
+            curShapeType  = (shapeCombo.SelectedItem as ComboBoxItem)?.Content as string ?? "Box";
+            curHe         = new float[] { 0.5f, 0.5f, 0.5f };
+            curRadius     = 0.5f;
+            curHalfHeight = 1.0f;
+            RebuildShapeParams();
+            CommitCollider();
+        };
+
+        // --- オフセット ---
+        var offRow = BuildXYZRowSimple("オフセット", curOffset[0], curOffset[1], curOffset[2]);
+        sp.Children.Add(offRow.element);
+        void CommitOff() {
+            if (!float.TryParse(offRow.tx.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var x)) return;
+            if (!float.TryParse(offRow.ty.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var y)) return;
+            if (!float.TryParse(offRow.tz.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var z)) return;
+            curOffset[0] = x; curOffset[1] = y; curOffset[2] = z; CommitCollider();
+        }
+        offRow.tx.LostFocus += (_, _) => CommitOff(); offRow.tx.KeyDown += (_, e) => { if (e.Key is Key.Return or Key.Enter) CommitOff(); };
+        offRow.ty.LostFocus += (_, _) => CommitOff(); offRow.ty.KeyDown += (_, e) => { if (e.Key is Key.Return or Key.Enter) CommitOff(); };
+        offRow.tz.LostFocus += (_, _) => CommitOff(); offRow.tz.KeyDown += (_, e) => { if (e.Key is Key.Return or Key.Enter) CommitOff(); };
+
+        // --- 押し戻し ---
+        // 内部フィールド is_trigger (true=押し戻しなし) とは論理が逆。
+        // チェックON = 押し戻す (is_trigger=false)、チェックOFF = 押し戻さない/trigger (is_trigger=true)
+        var triggerRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 4, 0, 2) };
+        triggerRow.Children.Add(new TextBlock
+        {
+            Text = "押し戻し", Foreground = new SolidColorBrush(Color.FromRgb(0xAA, 0xAA, 0xAA)),
+            FontSize = 11, Width = 90, VerticalAlignment = VerticalAlignment.Center,
+        });
+        var triggerCheck = new CheckBox { IsChecked = !curTrigger, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(4, 0, 0, 0) };
+        triggerRow.Children.Add(triggerCheck);
+        sp.Children.Add(triggerRow);
+
+        // --- 物理レイヤー ---
+        var layerRow = BuildLabeledIntRow("物理レイヤー", curLayer);
+        sp.Children.Add(layerRow.element);
+        void CommitLayer() { if (int.TryParse(layerRow.textBox.Text, out var v)) { curLayer = v; CommitCollider(); } }
+        layerRow.textBox.LostFocus += (_, _) => CommitLayer();
+        layerRow.textBox.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) CommitLayer(); };
+
+        // --- レイヤーマスク ---
+        var maskRow = BuildLabeledIntRow("レイヤーマスク", curMask);
+        sp.Children.Add(maskRow.element);
+        void CommitMask() { if (int.TryParse(maskRow.textBox.Text, out var v)) { curMask = v; CommitCollider(); } }
+        maskRow.textBox.LostFocus += (_, _) => CommitMask();
+        maskRow.textBox.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) CommitMask(); };
+
+        // ────────────────────────────────────────────────────────────────
+        // リジッドボディ設定（「リジッドボディを使用」チェックで展開）
+        // is_trigger=true（押し戻しなし）の場合は RigidBody は使用できないため
+        // セクション全体を非表示にする。
+        // ────────────────────────────────────────────────────────────────
+
+        // RigidBody セクション全体コンテナ（trigger 状態に連動して表示/非表示を切り替え）
+        var rbSectionContainer = new StackPanel
+        {
+            Visibility = curTrigger ? Visibility.Collapsed : Visibility.Visible,
+        };
+        sp.Children.Add(rbSectionContainer);
+
+        // trigger チェックボックスのハンドラをここで登録（rbSectionContainer 参照が確定した後）
+        triggerCheck.Checked   += (_, _) => { curTrigger = false; rbSectionContainer.Visibility = Visibility.Visible;   CommitCollider(); };
+        triggerCheck.Unchecked += (_, _) => { curTrigger = true;  rbSectionContainer.Visibility = Visibility.Collapsed; CommitCollider(); };
+
+        // 区切り線
+        rbSectionContainer.Children.Add(new Separator { Margin = new Thickness(0, 6, 0, 2), Background = new SolidColorBrush(Color.FromRgb(0x44, 0x44, 0x44)) });
+
+        // --- 「リジッドボディを使用」チェックボックス ---
+        var rbPanel = new StackPanel { Margin = new Thickness(0, 0, 0, 0) };
+        var useRbRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 2, 0, 4) };
+        useRbRow.Children.Add(new TextBlock
+        {
+            Text = "リジッドボディを使用", Foreground = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)),
+            FontSize = 11, Width = 130, VerticalAlignment = VerticalAlignment.Center, FontWeight = FontWeights.Bold,
+        });
+        var useRbCheck = new CheckBox { IsChecked = curUseRb, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(4, 0, 0, 0) };
+        useRbRow.Children.Add(useRbCheck);
+        rbSectionContainer.Children.Add(useRbRow);
+
+        // リジッドボディパラメータ展開パネル（左アクセントライン付きのインデントブロック）
+        var rbParamsPanel = new StackPanel
+        {
+            Margin = new Thickness(0, 0, 0, 0),
+        };
+        // Inspector 上で RigidBody セクションをサブセクションとしてインデント表示する
+        var rbBorder = new Border
+        {
+            BorderBrush     = new SolidColorBrush(Color.FromRgb(0x44, 0x44, 0x44)),
+            BorderThickness = new Thickness(2, 0, 0, 0),
+            Margin          = new Thickness(8, 2, 0, 4),
+            Padding         = new Thickness(8, 4, 0, 4),
+            Child           = rbParamsPanel,
+            Visibility      = curUseRb ? Visibility.Visible : Visibility.Collapsed,
+        };
+
+        // --- 数値フィールド群 ---
+        (UIElement element, TextBox textBox) MakeF(string label, float val) => BuildLabeledNumberRow(label, val);
+
+        var rowMass = MakeF("質量 (kg)",        curMass);
+        var rowRest = MakeF("反発係数",          curRest);
+        var rowFric = MakeF("摩擦係数",          curFric);
+        var rowLinD = MakeF("移動速度の減衰",    curLinDamp);
+        var rowAngD = MakeF("回転速度の減衰",    curAngD);
+        var rowGrav = MakeF("重力の倍率",        curGrav);
+        rbParamsPanel.Children.Add(rowMass.element);
+        rbParamsPanel.Children.Add(rowRest.element);
+        rbParamsPanel.Children.Add(rowFric.element);
+        rbParamsPanel.Children.Add(rowLinD.element);
+        rbParamsPanel.Children.Add(rowAngD.element);
+        rbParamsPanel.Children.Add(rowGrav.element);
+
+        void CommitFloats() {
+            if (!TryParseF(rowMass.textBox, out curMass))    return;
+            if (!TryParseF(rowRest.textBox, out curRest))    return;
+            if (!TryParseF(rowFric.textBox, out curFric))    return;
+            if (!TryParseF(rowLinD.textBox, out curLinDamp)) return;
+            if (!TryParseF(rowAngD.textBox, out curAngD))    return;
+            if (!TryParseF(rowGrav.textBox, out curGrav))    return;
+            CommitCollider();
+        }
+        foreach (var row in new[] { rowMass, rowRest, rowFric, rowLinD, rowAngD, rowGrav })
+        {
+            row.textBox.LostFocus += (_, _) => CommitFloats();
+            row.textBox.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) CommitFloats(); };
+        }
+
+        // --- キネマティック（スクリプトで直接制御） ---
+        rbParamsPanel.Children.Add(BuildCheckRow("キネマティック", curKinem,
+            v => { curKinem = v; CommitCollider(); }));
+
+        // --- フリーズ（軸固定） ---
+        rbParamsPanel.Children.Add(BuildFreezeRow("静止移動軸", curFreezeP, () => CommitCollider()));
+        rbParamsPanel.Children.Add(BuildFreezeRow("静止回転軸", curFreezeR, () => CommitCollider()));
+
+        // --- 初速度 ---
+        var rowLinV = BuildXYZRowSimple("初速度 (m/s)", curLinV[0], curLinV[1], curLinV[2]);
+        rbParamsPanel.Children.Add(rowLinV.element);
+        void CommitLinV() {
+            if (!TryParseF(rowLinV.tx, out var x)) return;
+            if (!TryParseF(rowLinV.ty, out var y)) return;
+            if (!TryParseF(rowLinV.tz, out var z)) return;
+            curLinV[0] = x; curLinV[1] = y; curLinV[2] = z; CommitCollider();
+        }
+        rowLinV.tx.LostFocus += (_, _) => CommitLinV(); rowLinV.tx.KeyDown += (_, e) => { if (e.Key is Key.Return or Key.Enter) CommitLinV(); };
+        rowLinV.ty.LostFocus += (_, _) => CommitLinV(); rowLinV.ty.KeyDown += (_, e) => { if (e.Key is Key.Return or Key.Enter) CommitLinV(); };
+        rowLinV.tz.LostFocus += (_, _) => CommitLinV(); rowLinV.tz.KeyDown += (_, e) => { if (e.Key is Key.Return or Key.Enter) CommitLinV(); };
+
+        // --- 初期角速度 ---
+        var rowAngV = BuildXYZRowSimple("初角速度 (rad/s)", curAngV[0], curAngV[1], curAngV[2]);
+        rbParamsPanel.Children.Add(rowAngV.element);
+        void CommitAngV() {
+            if (!TryParseF(rowAngV.tx, out var x)) return;
+            if (!TryParseF(rowAngV.ty, out var y)) return;
+            if (!TryParseF(rowAngV.tz, out var z)) return;
+            curAngV[0] = x; curAngV[1] = y; curAngV[2] = z; CommitCollider();
+        }
+        rowAngV.tx.LostFocus += (_, _) => CommitAngV(); rowAngV.tx.KeyDown += (_, e) => { if (e.Key is Key.Return or Key.Enter) CommitAngV(); };
+        rowAngV.ty.LostFocus += (_, _) => CommitAngV(); rowAngV.ty.KeyDown += (_, e) => { if (e.Key is Key.Return or Key.Enter) CommitAngV(); };
+        rowAngV.tz.LostFocus += (_, _) => CommitAngV(); rowAngV.tz.KeyDown += (_, e) => { if (e.Key is Key.Return or Key.Enter) CommitAngV(); };
+
+        rbSectionContainer.Children.Add(rbBorder);
+
+        // チェック切り替え時にボーダーごと表示/非表示を切り替える
+        useRbCheck.Checked   += (_, _) => { curUseRb = true;  rbBorder.Visibility = Visibility.Visible;   CommitCollider(); };
+        useRbCheck.Unchecked += (_, _) => { curUseRb = false; rbBorder.Visibility  = Visibility.Collapsed; CommitCollider(); };
 
         return sp;
     }
@@ -762,7 +1656,7 @@ public partial class InspectorPanel : UserControl
             BorderBrush     = new SolidColorBrush(Color.FromRgb(0x55, 0x55, 0x55)),
             BorderThickness = new Thickness(1),
             Background      = new SolidColorBrush(
-                Color.FromArgb((byte)(curA * 255), (byte)(curR * 255), (byte)(curG * 255), (byte)(curB * 255))),
+                Color.FromArgb((byte)(curA * 255), LinearToSrgbByte(curR), LinearToSrgbByte(curG), LinearToSrgbByte(curB))),
             Cursor          = Cursors.Hand,
         };
 
@@ -785,7 +1679,7 @@ public partial class InspectorPanel : UserControl
         var swatchOverlay = new Border
         {
             Background = new SolidColorBrush(
-                Color.FromArgb((byte)(curA * 255), (byte)(curR * 255), (byte)(curG * 255), (byte)(curB * 255))),
+                Color.FromArgb((byte)(curA * 255), LinearToSrgbByte(curR), LinearToSrgbByte(curG), LinearToSrgbByte(curB))),
         };
         var swatchPanel = new Grid();
         swatchPanel.Children.Add(checkerGrid);
@@ -813,7 +1707,7 @@ public partial class InspectorPanel : UserControl
             (curR, curG, curB, curA) = result.Value;
             // スウォッチ色を更新する
             swatchOverlay.Background = new SolidColorBrush(
-                Color.FromArgb((byte)(curA * 255), (byte)(curR * 255), (byte)(curG * 255), (byte)(curB * 255)));
+                Color.FromArgb((byte)(curA * 255), LinearToSrgbByte(curR), LinearToSrgbByte(curG), LinearToSrgbByte(curB)));
             if (_currentActorId < 0) return;
             _runtime?.SendToRuntime(FormattableString.Invariant(
                 $"SET_SPRITE_COLOR:{_currentActorId},{info.SlotIdx},{curR},{curG},{curB},{curA}"));
@@ -918,6 +1812,78 @@ public partial class InspectorPanel : UserControl
         };
         sp.Children.Add(cbAutoScale);
 
+        // ── ビューポート参照 セクション ──────────────────────────
+        var vpRefSep = new TextBlock
+        {
+            Text       = "ビューポート参照",
+            Foreground = new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88)),
+            FontSize   = 10,
+            Margin     = new Thickness(0, 8, 0, 2),
+        };
+        sp.Children.Add(vpRefSep);
+
+        // 参照種別ドロップダウン（ウィンドウ / カメラ）
+        var cmbVpRef = new ComboBox
+        {
+            Foreground   = new SolidColorBrush(Colors.Black),
+            Background   = new SolidColorBrush(Colors.White),
+            FontSize     = 11,
+            Margin       = new Thickness(0, 2, 0, 4),
+            Padding      = new Thickness(4, 2, 4, 2),
+        };
+        cmbVpRef.Items.Add(new ComboBoxItem { Content = "ウィンドウ", Tag = "window", Foreground = new SolidColorBrush(Colors.Black) });
+        cmbVpRef.Items.Add(new ComboBoxItem { Content = "カメラ",     Tag = "camera", Foreground = new SolidColorBrush(Colors.Black) });
+        cmbVpRef.SelectedIndex = info.VpRefType == "camera" ? 1 : 0;
+        sp.Children.Add(cmbVpRef);
+
+        // カメラ参照フィールド（D&D 受け付けエリア）
+        var vpRefCameraPanel = new StackPanel { Visibility = info.VpRefType == "camera" ? Visibility.Visible : Visibility.Collapsed };
+
+        // 現在の参照表示ラベル
+        var vpRefLabel = new TextBlock
+        {
+            Text       = info.VpRefType == "camera" && !string.IsNullOrEmpty(info.VpRefActor)
+                             ? $"{info.VpRefActor} / {info.VpRefSlot}"
+                             : "（未設定）",
+            Foreground = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)),
+            FontSize   = 11,
+            Margin     = new Thickness(4, 0, 4, 2),
+        };
+
+        // D&D ドロップゾーン: シーンビューポートやヒエラルキーからカメラアクターをドロップできる
+        var vpDropZone = new Border
+        {
+            BorderBrush     = new SolidColorBrush(Color.FromRgb(0x55, 0x77, 0x99)),
+            BorderThickness = new Thickness(1),
+            Background      = new SolidColorBrush(Color.FromRgb(0x1A, 0x1A, 0x1A)),
+            CornerRadius    = new CornerRadius(3),
+            Padding         = new Thickness(6, 4, 6, 4),
+            Margin          = new Thickness(0, 0, 0, 2),
+            AllowDrop       = true,
+            Child           = vpRefLabel,
+            ToolTip         = "シーンビューポートまたはヒエラルキーからカメラアクターをドロップして参照を設定",
+        };
+
+        // クリア（ウィンドウに戻す）ボタン
+        var btnClearVp = new Button
+        {
+            Content         = "✕ 参照解除",
+            FontSize        = 10,
+            Foreground      = new SolidColorBrush(Color.FromRgb(0xAA, 0x55, 0x55)),
+            Background      = new SolidColorBrush(Color.FromRgb(0x22, 0x22, 0x22)),
+            BorderBrush     = new SolidColorBrush(Color.FromRgb(0x44, 0x22, 0x22)),
+            BorderThickness = new Thickness(1),
+            Padding         = new Thickness(6, 2, 6, 2),
+            Margin          = new Thickness(0, 0, 0, 4),
+            HorizontalAlignment = HorizontalAlignment.Left,
+        };
+
+        vpRefCameraPanel.Children.Add(vpDropZone);
+        vpRefCameraPanel.Children.Add(btnClearVp);
+        sp.Children.Add(vpRefCameraPanel);
+
+        // ── イベント ──────────────────────────────────────────
+
         // 幅・高さを送信するローカル関数
         void CommitSize()
         {
@@ -947,6 +1913,53 @@ public partial class InspectorPanel : UserControl
                 $"SET_CANVAS_AUTO_SCALE:{_currentActorId},{info.SlotIdx},{v}"));
         }
 
+        // ビューポート参照種別変更
+        cmbVpRef.SelectionChanged += (_, _) =>
+        {
+            if (_currentActorId < 0) return;
+            var selTag = (cmbVpRef.SelectedItem as ComboBoxItem)?.Tag as string ?? "window";
+            vpRefCameraPanel.Visibility = selTag == "camera" ? Visibility.Visible : Visibility.Collapsed;
+            if (selTag == "window")
+            {
+                _runtime?.SendToRuntime($"SET_CANVAS_VIEWPORT_REF_WINDOW:{_currentActorId},{info.SlotIdx}");
+            }
+        };
+
+        // D&D: ドラッグオーバー（カメラアクター DFS ID を期待）
+        // HierarchyPanel は DoDragDrop を DragDropEffects.Move で呼ぶため、
+        // ここも Move を要求しないと Effects の AND が None になってドロップが拒否される。
+        vpDropZone.DragOver += (_, e) =>
+        {
+            if (e.Data.GetDataPresent("HierarchyActorDfsId") || e.Data.GetDataPresent("SceneViewActorDfsId"))
+                e.Effects = DragDropEffects.Move;
+            else
+                e.Effects = DragDropEffects.None;
+            e.Handled = true;
+        };
+
+        // D&D: ドロップ処理
+        vpDropZone.Drop += (_, e) =>
+        {
+            if (_currentActorId < 0 || _runtime is null) return;
+            int? droppedDfsId = null;
+            if (e.Data.GetDataPresent("HierarchyActorDfsId"))
+                droppedDfsId = e.Data.GetData("HierarchyActorDfsId") as int?;
+            else if (e.Data.GetDataPresent("SceneViewActorDfsId"))
+                droppedDfsId = e.Data.GetData("SceneViewActorDfsId") as int?;
+            if (droppedDfsId is null) return;
+            // ドロップされたアクターのカメラスロットを解決する（IPC 経由でスロット一覧を取得）
+            ResolveAndApplyCameraRef(droppedDfsId.Value, info.SlotIdx, vpRefLabel);
+            e.Handled = true;
+        };
+
+        // 参照解除ボタン
+        btnClearVp.Click += (_, _) =>
+        {
+            if (_currentActorId < 0) return;
+            _runtime?.SendToRuntime($"SET_CANVAS_VIEWPORT_REF_WINDOW:{_currentActorId},{info.SlotIdx}");
+            vpRefLabel.Text = "（未設定）";
+        };
+
         tbW.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { CommitSize(); e.Handled = true; } };
         tbW.LostFocus += (_, _) => CommitSize();
         tbH.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { CommitSize(); e.Handled = true; } };
@@ -963,12 +1976,192 @@ public partial class InspectorPanel : UserControl
         return sp;
     }
 
+    /// <summary>
+    /// ドロップされたアクターの Camera スロットを解決して参照を設定する。
+    /// 同一アクターに複数の Camera スロットがある場合はポップアップで選択させる。
+    /// actorファイルからのドロップは DFS ID が存在しないため不可（インスタンス化済みのみ対応）。
+    /// </summary>
+    private void ResolveAndApplyCameraRef(int droppedActorDfsId, int canvasSlotIdx, TextBlock displayLabel)
+    {
+        if (_runtime is null || _currentActorId < 0) return;
+
+        // ランタイムへアクターのコンポーネント一覧を要求して Camera スロットを収集する
+        // NOTE: GET_ACTOR_COMPONENTS の応答は非同期 IPC のため、ここでは pending 状態にして
+        //       OnActorComponentsReceived で続きを処理する。
+        _pendingVpRefActorDfsId  = droppedActorDfsId;
+        _pendingVpRefCanvasSlotIdx = canvasSlotIdx;
+        _pendingVpRefDisplayLabel  = displayLabel;
+        _runtime.SendToRuntime($"GET_ACTOR_COMPONENTS:{droppedActorDfsId}");
+    }
+
+    // ── CanvasViewportRef ドロップ解決用 pending フィールド ──────────────
+    private int     _pendingVpRefActorDfsId    = -1;
+    private int     _pendingVpRefCanvasSlotIdx = -1;
+    private TextBlock? _pendingVpRefDisplayLabel = null;
+
+    /// <summary>
+    /// GET_ACTOR_COMPONENTS の応答 JSON から CameraComponent スロットを抽出して VP ref を設定する。
+    /// Camera が 1 件なら即時適用、複数件ならポップアップで選択させる。
+    /// </summary>
+    private void ResolveCameraRefFromComponents(string json)
+    {
+        // pending フィールドをローカルに退避してからリセットする（再帰ガード）
+        var pendingDfsId   = _pendingVpRefActorDfsId;
+        var canvasSlotIdx  = _pendingVpRefCanvasSlotIdx;
+        var displayLabel   = _pendingVpRefDisplayLabel;
+        _pendingVpRefActorDfsId    = -1;
+        _pendingVpRefCanvasSlotIdx = -1;
+        _pendingVpRefDisplayLabel  = null;
+
+        if (displayLabel is null || _runtime is null || _currentActorId < 0) return;
+
+        string actorName;
+        var cameraSlots = new List<(int slotIdx, string slotName)>();
+
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+            actorName = root.TryGetProperty("name", out var np) ? np.GetString() ?? "" : $"Actor#{pendingDfsId}";
+
+            if (root.TryGetProperty("components", out var comps))
+            {
+                foreach (var comp in comps.EnumerateArray())
+                {
+                    var compType = comp.TryGetProperty("type", out var ct) ? ct.GetString() ?? "" : "";
+                    if (compType != "CameraComponent") continue;
+                    var slotIdx  = comp.TryGetProperty("slot", out var si) ? si.GetInt32()    : 0;
+                    var slotName = comp.TryGetProperty("name", out var cn) ? cn.GetString() ?? $"Camera[{slotIdx}]" : $"Camera[{slotIdx}]";
+                    cameraSlots.Add((slotIdx, slotName));
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            EditorLog.Write($"InspectorPanel: VP ref resolve error: {ex.Message}");
+            return;
+        }
+
+        if (cameraSlots.Count == 0)
+        {
+            MessageBox.Show(
+                "選択されたアクターには CameraComponent がありません。",
+                "参照設定エラー", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        // VP ref を確定して IPC 送信・ラベル更新するローカル関数
+        void Apply(string slotName)
+        {
+            _runtime.SendToRuntime(
+                $"SET_CANVAS_VIEWPORT_REF_CAMERA:{_currentActorId},{canvasSlotIdx},{actorName},{slotName}");
+            displayLabel.Text = $"{actorName} / {slotName}";
+        }
+
+        if (cameraSlots.Count == 1)
+        {
+            // Camera が 1 件のみ → 即時適用
+            Apply(cameraSlots[0].slotName);
+        }
+        else
+        {
+            // Camera が複数 → ポップアップで選択させる
+            ShowCameraSlotSelectionPopup(cameraSlots.Select(s => s.slotName).ToList(), Apply);
+        }
+    }
+
+    /// <summary>
+    /// 複数 CameraComponent がある場合のスロット選択ポップアップを表示する。
+    /// 選択確定後に onSelected コールバックを呼ぶ。
+    /// </summary>
+    private void ShowCameraSlotSelectionPopup(List<string> slotNames, Action<string> onSelected)
+    {
+        var dlg = new Window
+        {
+            Title                 = "Camera スロットを選択",
+            Width                 = 300,
+            SizeToContent         = SizeToContent.Height,
+            Owner                 = Window.GetWindow(this),
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Background            = new SolidColorBrush(Color.FromRgb(0x1E, 0x1E, 0x1E)),
+            ResizeMode            = ResizeMode.NoResize,
+        };
+
+        var sp = new StackPanel { Margin = new Thickness(12, 12, 12, 12) };
+
+        sp.Children.Add(new TextBlock
+        {
+            Text         = "同一アクター内に複数の CameraComponent があります。\n参照するスロットを選択してください。",
+            Foreground   = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)),
+            FontSize     = 11,
+            TextWrapping = TextWrapping.Wrap,
+            Margin       = new Thickness(0, 0, 0, 8),
+        });
+
+        var listBox = new ListBox
+        {
+            Background  = new SolidColorBrush(Color.FromRgb(0x2A, 0x2A, 0x2A)),
+            Foreground  = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)),
+            BorderBrush = new SolidColorBrush(Color.FromRgb(0x44, 0x44, 0x44)),
+            MaxHeight   = 150,
+            Margin      = new Thickness(0, 0, 0, 8),
+        };
+        foreach (var name in slotNames)
+            listBox.Items.Add(new ListBoxItem
+            {
+                Content    = name,
+                Foreground = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)),
+            });
+        listBox.SelectedIndex = 0;
+        sp.Children.Add(listBox);
+
+        var btnOk = new Button
+        {
+            Content             = "選択",
+            Padding             = new Thickness(12, 4, 12, 4),
+            HorizontalAlignment = HorizontalAlignment.Right,
+        };
+        sp.Children.Add(btnOk);
+
+        // 確定処理（ボタン・ダブルクリック共通）
+        void Confirm()
+        {
+            if (listBox.SelectedItem is ListBoxItem item && item.Content is string selected)
+            {
+                onSelected(selected);
+                dlg.Close();
+            }
+        }
+
+        btnOk.Click              += (_, _) => Confirm();
+        listBox.MouseDoubleClick += (_, _) => Confirm();
+        // Enter キーで確定
+        dlg.KeyDown += (_, e) => { if (e.Key == Key.Return || e.Key == Key.Enter) { Confirm(); e.Handled = true; } };
+
+        dlg.Content = sp;
+        dlg.ShowDialog();
+    }
+
+    /// <summary>
+    /// リニア値 (0-1) を sRGB バイト (0-255) に変換する。
+    /// WPF の Color.FromArgb は sRGB バイト値を期待するため、
+    /// Rust ランタイムから受け取るリニア値を表示用に変換する際に使用する。
+    /// </summary>
+    private static byte LinearToSrgbByte(float linear)
+    {
+        linear = Math.Clamp(linear, 0f, 1f);
+        float srgb = linear <= 0.0031308f
+            ? 12.92f * linear
+            : 1.055f * MathF.Pow(linear, 1f / 2.4f) - 0.055f;
+        return (byte)Math.Clamp((int)(srgb * 255f + 0.5f), 0, 255);
+    }
+
     /// <summary>ラベル + 数値入力フィールドの行を生成する。</summary>
     private static (UIElement element, TextBox textBox) BuildLabeledNumberRow(string label, float value)
     {
         var grid = new Grid { Margin = new Thickness(0, 2, 0, 2) };
         grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(24) });
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(52) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(90) });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
 
         var lbl = new TextBlock
@@ -1327,7 +2520,7 @@ public partial class InspectorPanel : UserControl
         var disabledTypes = new HashSet<string>();
         if (_slotInfos.Any(s => s.TypeId == "CanvasComponent"))
             disabledTypes.Add("CanvasComponent");
-        var win = new ComponentSelectorWindow(_runtime, _currentActorId, _isActor2D, disabledTypes)
+        var win = new ComponentSelectorWindow(_runtime, _currentActorId, _isActor2D, disabledTypes, _pluginNames)
         {
             Owner = Window.GetWindow(this),
         };
@@ -1386,6 +2579,140 @@ public partial class InspectorPanel : UserControl
             System.Text.Json.JsonValueKind.Number => elem.GetInt32() != 0,
             _                                     => fallback,
         };
+
+    // ── 物理コンポーネント用ヘルパー ──────────────────────────────
+
+    /// <summary>ラベル + 整数入力フィールドの行を生成する。</summary>
+    private static (UIElement element, TextBox textBox) BuildLabeledIntRow(string label, int value)
+    {
+        var tb = new TextBox
+        {
+            Text              = value.ToString(CultureInfo.InvariantCulture),
+            Background        = new SolidColorBrush(Color.FromRgb(0x1E, 0x1E, 0x1E)),
+            Foreground        = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)),
+            BorderBrush       = new SolidColorBrush(Color.FromRgb(0x44, 0x44, 0x44)),
+            BorderThickness   = new Thickness(1),
+            FontSize          = 11,
+            Padding           = new Thickness(4, 1, 4, 1),
+            Width             = 80,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 2, 0, 2) };
+        row.Children.Add(new TextBlock
+        {
+            Text      = label, FontSize = 11, Width = 90,
+            Foreground = new SolidColorBrush(Color.FromRgb(0xAA, 0xAA, 0xAA)),
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+        row.Children.Add(tb);
+        return (row, tb);
+    }
+
+    /// <summary>ラベル + X/Y/Z テキストボックス行を生成する（シンプル版）。</summary>
+    private static (UIElement element, TextBox tx, TextBox ty, TextBox tz) BuildXYZRowSimple(
+        string label, float vx, float vy, float vz)
+    {
+        TextBox MakeTb(float val) => new TextBox
+        {
+            Text              = val.ToString("F3", CultureInfo.InvariantCulture),
+            Background        = new SolidColorBrush(Color.FromRgb(0x1E, 0x1E, 0x1E)),
+            Foreground        = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)),
+            BorderBrush       = new SolidColorBrush(Color.FromRgb(0x44, 0x44, 0x44)),
+            BorderThickness   = new Thickness(1),
+            FontSize          = 11,
+            Padding           = new Thickness(4, 1, 4, 1),
+            Width             = 58,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin            = new Thickness(2, 0, 0, 0),
+        };
+        var tx = MakeTb(vx); var ty = MakeTb(vy); var tz = MakeTb(vz);
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 2, 0, 2) };
+        row.Children.Add(new TextBlock
+        {
+            Text = label, FontSize = 11, Width = 90,
+            Foreground = new SolidColorBrush(Color.FromRgb(0xAA, 0xAA, 0xAA)),
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+        row.Children.Add(tx); row.Children.Add(ty); row.Children.Add(tz);
+        return (row, tx, ty, tz);
+    }
+
+    /// <summary>ラベル + チェックボックス行を生成する。</summary>
+    private static UIElement BuildCheckRow(string label, bool value, Action<bool> onChange)
+    {
+        var check = new CheckBox
+        {
+            IsChecked = value,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(4, 0, 0, 0),
+        };
+        check.Checked   += (_, _) => onChange(true);
+        check.Unchecked += (_, _) => onChange(false);
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 4, 0, 2) };
+        row.Children.Add(new TextBlock
+        {
+            Text = label, FontSize = 11, Width = 90,
+            Foreground = new SolidColorBrush(Color.FromRgb(0xAA, 0xAA, 0xAA)),
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+        row.Children.Add(check);
+        return row;
+    }
+
+    /// <summary>ラベル + X/Y/Z チェックボックス行（フリーズ用）を生成する。</summary>
+    private static UIElement BuildFreezeRow(string label, bool[] values, Action onChange)
+    {
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 3, 0, 2) };
+        row.Children.Add(new TextBlock
+        {
+            Text = label, FontSize = 11, Width = 90,
+            Foreground = new SolidColorBrush(Color.FromRgb(0xAA, 0xAA, 0xAA)),
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+        string[] axes = { "X", "Y", "Z" };
+        for (int i = 0; i < 3; i++)
+        {
+            int idx = i;
+            var lbl = new TextBlock
+            {
+                Text = axes[idx], FontSize = 10, Width = 14,
+                Foreground = new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88)),
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(6, 0, 0, 0),
+            };
+            var check = new CheckBox
+            {
+                IsChecked = values[idx],
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(2, 0, 0, 0),
+            };
+            check.Checked   += (_, _) => { values[idx] = true;  onChange(); };
+            check.Unchecked += (_, _) => { values[idx] = false; onChange(); };
+            row.Children.Add(lbl);
+            row.Children.Add(check);
+        }
+        return row;
+    }
+
+    /// <summary>TextBox の浮動小数点パース（InvariantCulture）。</summary>
+    private static bool TryParseF(TextBox tb, out float value) =>
+        float.TryParse(tb.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out value);
+
+    /// <summary>JsonElement から bool 配列を読み込む（要素数チェック付き）。</summary>
+    private static void ReadBoolArray(System.Text.Json.JsonElement root, string key, bool[] dest)
+    {
+        if (!root.TryGetProperty(key, out var arr)) return;
+        for (int i = 0; i < Math.Min(dest.Length, arr.GetArrayLength()); i++)
+            dest[i] = arr[i].ValueKind == System.Text.Json.JsonValueKind.True;
+    }
+
+    /// <summary>JsonElement から float 配列を読み込む（要素数チェック付き）。</summary>
+    private static void ReadFloatArray(System.Text.Json.JsonElement root, string key, float[] dest)
+    {
+        if (!root.TryGetProperty(key, out var arr)) return;
+        for (int i = 0; i < Math.Min(dest.Length, arr.GetArrayLength()); i++)
+            dest[i] = arr[i].GetSingle();
+    }
 
     // ── Section / grid helpers ────────────────────────────────
 

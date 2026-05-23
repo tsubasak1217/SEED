@@ -16,7 +16,7 @@ use crate::engine::components::{
     ModelComponent, Transform as ActorTransform, ComponentKind, ComponentData,
     PlaceholderScriptSlot, CanvasComponent,
     GROUP_ID_BASE, CanvasTransform, SpriteComponent, InputMapComponent,
-    CameraComponent,
+    CameraComponent, ColliderComponent,
 };
 use crate::engine::core::app_base::undo::ComponentSlotsSnapshotCommand;
 
@@ -165,9 +165,18 @@ impl App {
                     ("ScriptComponent", format!(r#","model_path":{path_json}"#))
                 }
                 ComponentData::CanvasComponent(d) => {
-                    // width / height / スケールモード / 自動スケールをインスペクター用に送信する
+                    // width / height / スケールモード / 自動スケール / ビューポート参照をインスペクター用に送信する
+                    use crate::engine::components::CanvasViewportRef;
+                    let (vp_ref_type, vp_actor_name, vp_slot_name) = match &d.viewport_ref {
+                        CanvasViewportRef::Window => ("window", String::new(), String::new()),
+                        CanvasViewportRef::Camera { actor_name, slot_name } => {
+                            ("camera", actor_name.clone(), slot_name.clone())
+                        }
+                    };
+                    let vp_actor_json = serde_json::to_string(&vp_actor_name).unwrap_or_default();
+                    let vp_slot_json  = serde_json::to_string(&vp_slot_name).unwrap_or_default();
                     ("CanvasComponent", format!(
-                        r#","width":{:.4},"height":{:.4},"scale_transform":{},"scale_size":{},"auto_scale":{}"#,
+                        r#","width":{:.4},"height":{:.4},"scale_transform":{},"scale_size":{},"auto_scale":{},"vp_ref_type":"{vp_ref_type}","vp_ref_actor":{vp_actor_json},"vp_ref_slot":{vp_slot_json}"#,
                         d.width, d.height,
                         d.scale_transform as u8,
                         d.scale_size      as u8,
@@ -188,12 +197,53 @@ impl App {
                     ("InputMapComponent", format!(r#","asset_path":{path_json}"#))
                 }
                 ComponentData::CameraComponent(d) => {
-                    // FOV / near / far / is_main / clear_color をインスペクター用に送信する
+                    // FOV / near / far / is_main / clear_color / scaling_mode / target_size / bar_color をインスペクター用に送信する
                     ("CameraComponent", format!(
-                        r#","fov_y_deg":{:.4},"near":{:.4},"far":{:.4},"is_main":{},"cr":{:.4},"cg":{:.4},"cb":{:.4},"ca":{:.4}"#,
+                        r#","fov_y_deg":{:.4},"near":{:.4},"far":{:.4},"is_main":{},"cr":{:.4},"cg":{:.4},"cb":{:.4},"ca":{:.4},"scaling_mode":"{}","target_width":{},"target_height":{},"bar_cr":{:.4},"bar_cg":{:.4},"bar_cb":{:.4},"bar_ca":{:.4}"#,
                         d.fov_y_deg, d.near, d.far, d.is_main as u8,
                         d.clear_color[0], d.clear_color[1], d.clear_color[2], d.clear_color[3],
+                        d.scaling_mode.as_str(), d.target_width, d.target_height,
+                        d.bar_color[0], d.bar_color[1], d.bar_color[2], d.bar_color[3],
                     ))
+                }
+                ComponentData::PluginComponent(d) => {
+                    // プラグイン名とフィールド定義＋現在値をインスペクター用に送信する
+                    let plugin_name_json = serde_json::to_string(&d.plugin_name).unwrap_or_default();
+                    // フィールド定義はレジストリから取得する
+                    let fields_json = if let Some(lp) = self.plugin_registry.get(&d.plugin_name) {
+                        let defs = lp.plugin.field_defs();
+                        let arr: Vec<String> = defs.iter().map(|def| {
+                            let key   = serde_json::to_string(&def.key).unwrap_or_default();
+                            let label = serde_json::to_string(&def.label).unwrap_or_default();
+                            let kind  = serde_json::to_string(&def.kind).unwrap_or("null".to_string());
+                            let cur   = serde_json::to_string(
+                                d.fields.get(&def.key).map(|s| s.as_str()).unwrap_or(&def.default_value)
+                            ).unwrap_or_default();
+                            let tooltip = serde_json::to_string(&def.tooltip).unwrap_or_default();
+                            format!(r#"{{"key":{key},"label":{label},"kind":{kind},"current_value":{cur},"tooltip":{tooltip}}}"#)
+                        }).collect();
+                        format!("[{}]", arr.join(","))
+                    } else {
+                        // プラグインが未ロードでも保存データは表示する（読み取り専用）
+                        let arr: Vec<String> = d.fields.iter().map(|(k, v)| {
+                            let key = serde_json::to_string(k).unwrap_or_default();
+                            let val = serde_json::to_string(v).unwrap_or_default();
+                            format!(r#"{{"key":{key},"label":{key},"kind":{{"type":"String","params":{{"max_len":256}}}},"current_value":{val},"tooltip":""}}"#)
+                        }).collect();
+                        format!("[{}]", arr.join(","))
+                    };
+                    ("PluginComponent", format!(
+                        r#","plugin_name":{plugin_name_json},"plugin_fields":{fields_json}"#
+                    ))
+                }
+                ComponentData::ColliderComponent(d) => {
+                    // ColliderComponent のデータを JSON シリアライズしてエディタへ送信する
+                    let json = serde_json::to_string(d).unwrap_or_default();
+                    ("ColliderComponent", format!(r#","collider_data":{json}"#))
+                }
+                ComponentData::LegacyRigidbodyComponent(_) => {
+                    // 旧フォーマット互換: to_data_recursive からは生成されないため通常は到達しない
+                    ("_legacy", String::new())
                 }
             };
             comps_json.push_str(&format!(
@@ -439,6 +489,68 @@ impl App {
                     let mut c = 0u32;
                     if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
                         actor.add_slot_typed::<CameraComponent>(name, ComponentKind::Camera, slot_entity);
+                        true
+                    } else {
+                        scene.world.despawn(slot_entity);
+                        false
+                    }
+                };
+                if found {
+                    let after_slots = self.snapshot_actor_slots(wl, actor_dfs_id);
+                    self.undo_history.record(Box::new(ComponentSlotsSnapshotCommand {
+                        world_line: wl, actor_dfs_id, before_slots, after_slots,
+                    }));
+                    self.actor_virtual_selected_slot_idx = 0;
+                    self.selected_instances.clear();
+                    self.send_hierarchy();
+                    self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
+                    if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+                }
+            }
+            "ColliderComponent" => {
+                // デフォルト（Box 形状）の ColliderComponent をアクターに追加する。
+                // 形状・サイズ・オフセットはインスペクターから後で変更可能。
+                let name = slot_name.to_string();
+                let found = {
+                    let scene = self.scene.as_mut().unwrap();
+                    let slot_entity = scene.world.spawn();
+                    scene.world.insert(slot_entity, ColliderComponent::default());
+                    let mut c = 0u32;
+                    if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
+                        actor.add_slot_typed::<ColliderComponent>(name, ComponentKind::Collider, slot_entity);
+                        true
+                    } else {
+                        scene.world.despawn(slot_entity);
+                        false
+                    }
+                };
+                if found {
+                    let after_slots = self.snapshot_actor_slots(wl, actor_dfs_id);
+                    self.undo_history.record(Box::new(ComponentSlotsSnapshotCommand {
+                        world_line: wl, actor_dfs_id, before_slots, after_slots,
+                    }));
+                    self.actor_virtual_selected_slot_idx = 0;
+                    self.selected_instances.clear();
+                    self.send_hierarchy();
+                    self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
+                    if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+                }
+            }
+            // "RigidbodyComponent" は ColliderComponent に統合されたため独立スロットとして追加しない
+            plugin_type if plugin_type.starts_with("Plugin:") => {
+                // "Plugin:{plugin_name}" フォーマット。
+                // args にはプラグイン名が入る（plugin_type の後半部分と同じ）。
+                use crate::engine::components::PluginComponent;
+                let plugin_name = &plugin_type["Plugin:".len()..];
+                let name = slot_name.to_string();
+                let pc = PluginComponent::new(plugin_name);
+                let found = {
+                    let scene = self.scene.as_mut().unwrap();
+                    let slot_entity = scene.world.spawn();
+                    scene.world.insert(slot_entity, pc);
+                    let mut c = 0u32;
+                    if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
+                        actor.add_slot_typed::<PluginComponent>(name, ComponentKind::Plugin, slot_entity);
                         true
                     } else {
                         scene.world.despawn(slot_entity);

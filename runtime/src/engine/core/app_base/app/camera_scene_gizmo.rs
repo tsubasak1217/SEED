@@ -25,7 +25,7 @@ use crate::engine::components::{
     ComponentKind, CameraComponent,
     Transform as ActorTransform,
 };
-use crate::engine::methods::drawer::{GizmoBatch, LineBatch, CameraUniform};
+use crate::engine::methods::drawer::{GizmoBatch, LineBatch, CameraUniform, extract_frustum_planes};
 use crate::engine::structs::utils::Color;
 
 // ── カメラアイコン寸法定数（ローカル座標）────────────────────────────────────
@@ -338,6 +338,29 @@ pub fn build_camera_frustum_batch(
     let mut lb = LineBatch::new();
     add_camera_frustum(&mut lb, cam_data, aspect);
     if lb.is_empty() { None } else { Some(lb.build(device)) }
+}
+
+/// 選択中カメラの視錐台プレーンを計算する（フラスタムカリング用）。
+///
+/// `build_camera_uniform` の view_proj はトランスポーズされた GPU 向け形式であるため、
+/// `extract_frustum_planes` に渡す行優先 VP 行列はここで別途計算する。
+pub fn compute_frustum_planes(cam_data: &SelectedCameraData, aspect: f32) -> [[f32; 4]; 6] {
+    let tf = &cam_data.transform;
+    let [px, py, pz] = tf.position;
+    let [fx, fy, fz] = tf.forward();
+    let [ux, uy, uz] = tf.up();
+    let pos    = Vector3::new(px, py, pz);
+    let target = pos + Vector3::new(fx, fy, fz);
+    let up_vec = Vector3::new(ux, uy, uz);
+    let view   = Mat4x4::look_at_lh(pos, target, up_vec);
+    let proj   = Mat4x4::perspective_lh(
+        cam_data.fov_y_deg.to_radians(),
+        aspect,
+        cam_data.near.max(0.01),
+        cam_data.far.max(cam_data.near + 0.1),
+    );
+    let vp = proj * view;
+    extract_frustum_planes(&vp.data)
 }
 
 /// 選択中カメラの CameraUniform を構築する（カメラプレビューレンダー用）。

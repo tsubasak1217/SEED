@@ -10,6 +10,7 @@ dependencies = [
  "bytemuck",
  "gltf",
  "image",
+ "libloading",
  "meshopt",
  "naga",
  "netcorehost",

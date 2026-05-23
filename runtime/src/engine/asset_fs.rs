@@ -66,6 +66,11 @@ pub fn init(assets_root: PathBuf, pak_path: Option<&Path>) {
 //  パス解決
 // ============================================================
 
+/// 初期化済みアセットルートを返す。未初期化の場合は None。
+pub fn root() -> Option<&'static PathBuf> {
+    ASSETS_ROOT.get()
+}
+
 /// 仮想パスかどうかを判定する。
 pub fn is_virtual(path: &str) -> bool {
     path.starts_with(ASSETS_SCHEME)

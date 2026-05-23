@@ -1,0 +1,18 @@
+# ============================================================
+#  seed-plugin-api — プラグイン作成者向け API クレート
+#
+#  Plugin トレイト・PluginFieldKind・PluginFieldDef のみを提供する。
+#  runtime と各プラグイン DLL が同じクレートに依存することで
+#  vtable レイアウトの互換性を保証する。
+# ============================================================
+
+[package]
+name    = "seed-plugin-api"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+libloading = "0.8"

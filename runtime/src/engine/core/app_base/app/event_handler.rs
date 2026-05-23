@@ -19,7 +19,7 @@ use crate::engine::methods::drawer::IdBuffer;
 use super::{
     App, RuntimeMode,
     camera_grab_start, camera_grab_end,
-    release_window_clamp,
+    release_window_clamp, warp_cursor_to_local,
 };
 
 impl App {
@@ -136,6 +136,18 @@ impl App {
                         self.cam_grab_screen_pos =
                             camera_grab_start(self.window_hwnd());
                         window.set_cursor_visible(false);
+                        // Pause モード: DeviceEvent::MouseMotion は WS_CHILD に届かないため
+                        // CursorMoved ベースのカメラ回転を使う。
+                        // ウィンドウ中央をピボットとしてカーソルをワープして固定する。
+                        if self.paused {
+                            if let Some(ws) = self.window.as_ref().map(|w| w.inner_size()) {
+                                let pvx = ws.width  as f32 / 2.0;
+                                let pvy = ws.height as f32 / 2.0;
+                                self.pause_cam_pivot        = Some((pvx, pvy));
+                                self.pause_cam_warp_pending = 1;
+                                warp_cursor_to_local(self.window_hwnd(), pvx as i32, pvy as i32);
+                            }
+                        }
                     } else {
                         window.set_cursor_visible(true);
                         if let Some((x, y)) = self.cam_grab_screen_pos.take() {
@@ -145,14 +157,20 @@ impl App {
                                 if let Some(ipc) = &self.ipc {
                                     ipc.send("CONTEXT_MENU");
                                 }
+                                // アクタ追加時のスポーン位置計算用に座標を保存する
+                                self.context_menu_screen_pos = self.last_cursor_pos
+                                    .map(|(x, y)| (x as u32, y as u32));
                             }
                         } else {
                             // RMB_DOWN が処理されていない（コンテキストメニューのポップアップが
                             // WM_RBUTTONDOWN を横取りした等）。ClipCursor のみ解除する。
                             release_window_clamp();
                         }
-                        self.rmb_press_pos = None;
-                        self.rmb_moved     = false;
+                        self.rmb_press_pos          = None;
+                        self.rmb_moved              = false;
+                        // Pause モードカメラ回転用ピボットをリセット
+                        self.pause_cam_pivot        = None;
+                        self.pause_cam_warp_pending = 0;
                     }
                 }
             }

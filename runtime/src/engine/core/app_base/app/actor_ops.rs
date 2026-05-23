@@ -28,19 +28,31 @@ impl App {
     /// 3D Actor（ActorTransform を持つ）をシーンに追加する。
     ///
     /// `world_line` で対象の世界線を指定し、`parent_dfs_id` が Some の場合はその
-    /// アクターの子として追加する。操作は Undo/Redo の対象。
-    pub(super) fn handle_add_actor(&mut self, world_line: u32, parent_dfs_id: Option<u32>) {
+    /// アクターの子として追加する。
+    /// `spawn_pos` が Some の場合はその位置に配置する（コンテキストメニュー経由など）。
+    /// None の場合はデフォルト Transform（原点）で配置する。操作は Undo/Redo の対象。
+    pub(super) fn handle_add_actor(
+        &mut self,
+        world_line:    u32,
+        parent_dfs_id: Option<u32>,
+        spawn_pos:     Option<[f32; 3]>,
+    ) {
         if self.scene.is_none() { return; }
 
         let before_actors = self.snapshot_actors_for_wl(world_line);
 
         let Some(scene) = &mut self.scene else { return };
 
-        // World にエンティティを生成してデフォルト Transform を挿入する。
+        // World にエンティティを生成して Transform を挿入する。
         // Actor::with_name() が使う Entity::default() は index=0 で全アクターが衝突するため
         // 必ず world.spawn() で一意な entity を取得する。
         let entity = scene.world.spawn();
-        scene.world.insert(entity, ActorTransform::default());
+        let tf = if let Some(pos) = spawn_pos {
+            ActorTransform { position: pos, rotation: [0.0, 0.0, 0.0], scale: [1.0, 1.0, 1.0] }
+        } else {
+            ActorTransform::default()
+        };
+        scene.world.insert(entity, tf);
 
         let new_actor = {
             let mut a = Actor::new(entity, "Actor");
@@ -218,6 +230,8 @@ impl App {
         self.actor_virtual_selected_idx = None;
         self.actor_virtual_selected_slot_idx = 0;
         if let Some(ipc) = &self.ipc { ipc.send("SELECTED:-1"); }
+        // 2D アクターが全削除された場合に canvas_world_lines を更新する
+        self.update_canvas_wl_state_for(wl);
         self.send_hierarchy();
         if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
     }
@@ -333,6 +347,8 @@ impl App {
         self.actor_virtual_selected_idx = None;
         self.actor_virtual_selected_slot_idx = 0;
         if let Some(ipc) = &self.ipc { ipc.send("SELECTED:-1"); }
+        // 2D アクターが全削除された場合に canvas_world_lines を更新する
+        self.update_canvas_wl_state_for(wl);
         self.send_hierarchy();
         if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
     }
@@ -373,5 +389,80 @@ impl App {
         self.selected_instances.clear();
         self.actor_virtual_selected_idx = None;
         self.actor_virtual_selected_slot_idx = 0;
+
+        // Undo/Redo 後も canvas_world_lines を正しく同期する
+        self.update_canvas_wl_state_for(wl);
+    }
+
+    /// 指定 world_line に 2D アクターが残っているかを確認し、canvas_world_lines を更新する。
+    /// アクター削除・Undo/Redo 後に呼び出すことで選択モードの不整合を防ぐ。
+    pub(super) fn update_canvas_wl_state_for(&mut self, wl: u32) {
+        fn has_2d(actors: &[Actor]) -> bool {
+            actors.iter().any(|a| a.is_2d() || has_2d(a.children()))
+        }
+        if let Some(scene) = &self.scene {
+            let has = scene.actors.iter()
+                .filter(|a| a.world_line == wl)
+                .any(|a| a.is_2d() || has_2d(a.children()));
+            if has {
+                self.canvas_world_lines.insert(wl);
+            } else {
+                self.canvas_world_lines.remove(&wl);
+            }
+        }
+    }
+
+    /// 選択中アクターをファイルへ書き出す（アクタファイル化）。
+    ///
+    /// - ルートのトランスフォームのみ 0 にリセット（子は相対位置を維持）
+    /// - 子アクターも含め再帰的にシリアライズする
+    /// - `path` はエディタの SaveFileDialog が返した絶対ファイルパス
+    /// - 成功時: `EXPORT_ACTOR_OK:{saved_path}` を IPC で返す
+    /// - 失敗時: `EXPORT_ACTOR_ERR:{reason}` を IPC で返す
+    pub(super) fn handle_export_actor(&self, dfs_id: u32, path: &str) {
+        let result: Result<String, String> = (|| {
+            let scene = self.scene.as_ref().ok_or("シーンが読み込まれていません")?;
+            let wl = self.active_world_line;
+
+            // DFS ID でアクターを検索する
+            let mut c = 0u32;
+            let actor = find_actor_by_dfs(&scene.actors, wl, dfs_id, &mut c)
+                .ok_or_else(|| format!("DFS ID {} のアクターが見つかりません", dfs_id))?;
+
+            // World を参照してシリアライズ（子も再帰的に含まれる）
+            let mut data = actor.to_data(&scene.world);
+
+            // ルートの Transform を 0 にリセット（配置時の起点をオリジンに統一）
+            if let Some(ref mut tf) = data.transform {
+                tf.position = [0.0, 0.0, 0.0];
+                tf.rotation = [0.0, 0.0, 0.0];
+                tf.scale    = [1.0, 1.0, 1.0];
+            }
+            // 2D アクター: CanvasTransform の位置・回転もリセット（pivot / anchor は維持）
+            if let Some(ref mut ct) = data.canvas_transform {
+                ct.position = [0.0, 0.0];
+                ct.rotation = 0.0;
+                ct.scale    = [1.0, 1.0];
+            }
+
+            // 保存先ディレクトリが存在しない場合は作成する
+            let save_path = std::path::Path::new(path);
+            if let Some(parent) = save_path.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            }
+
+            // pretty-print JSON で書き出す
+            let json = serde_json::to_string_pretty(&data).map_err(|e| e.to_string())?;
+            std::fs::write(save_path, json).map_err(|e| e.to_string())?;
+
+            Ok(save_path.to_string_lossy().to_string())
+        })();
+
+        if let Some(ipc) = &self.ipc {
+            match result {
+                Ok(path) => ipc.send(&format!("EXPORT_ACTOR_OK:{path}")),
+                Err(err) => ipc.send(&format!("EXPORT_ACTOR_ERR:{err}")),
+            }
+        }
     }
 }

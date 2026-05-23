@@ -34,8 +34,10 @@ impl App {
         for &dfs_id in &self.selected_actor_dfs_ids {
             let mut c = 0u32;
             if let Some(actor) = find_actor_by_dfs(&scene.actors, wl, dfs_id as u32, &mut c) {
-                let pos = if is_canvas {
-                    // 2D: CanvasTransform から位置を取得し、アンカーオフセットを加算する
+                // シーン全体の is_canvas ではなく、アクター個別の種別で分岐する。
+                // 3D/2D 混在シーンで 3D アクターを選んでも正しく ActorTransform を参照できる。
+                let pos = if actor.is_2d() {
+                    // 2D アクター: CanvasTransform から位置を取得し、アンカーオフセットを加算する
                     scene.world.get::<CanvasTransform>(actor.entity)
                         .map(|ct| {
                             let off = canvas_anchor_offset_for_dfs(
@@ -50,7 +52,7 @@ impl App {
                              0.0]
                         })
                 } else {
-                    // 3D: MC の instance_mats[0] を優先、なければ ActorTransform.position を使う
+                    // 3D アクター: MC の instance_mats[0] を優先、なければ ActorTransform.position を使う
                     actor.mc_entity()
                         .and_then(|e| scene.world.get::<ModelComponent>(e))
                         .and_then(|mc| mc.instance_mats.first())
@@ -65,6 +67,30 @@ impl App {
         }
         if count > 0 { Some([sum[0] / count as f32, sum[1] / count as f32, sum[2] / count as f32]) }
         else { None }
+    }
+
+    /// 現在選択中のプライマリアクターが 2D かどうかを返す。
+    ///
+    /// シーン全体の `canvas_world_lines` ではなくアクター個別の種別で判定するため、
+    /// 3D/2D 混在シーンで 3D アクターを選択中でも false を返す。
+    pub(super) fn selected_primary_actor_is_2d(&self) -> bool {
+        let scene = if let Some(s) = self.scene.as_ref() { s } else { return false };
+        let wl = self.active_world_line;
+        // actor_virtual_selected_idx が Some のとき、それがプライマリ選択
+        if let Some(dfs) = self.actor_virtual_selected_idx {
+            let mut c = 0u32;
+            return find_actor_by_dfs(&scene.actors, wl, dfs as u32, &mut c)
+                .map(|a| a.is_2d())
+                .unwrap_or(false);
+        }
+        // selected_actor_dfs_ids の先頭をプライマリとする
+        if let Some(&dfs_id) = self.selected_actor_dfs_ids.first() {
+            let mut c = 0u32;
+            return find_actor_by_dfs(&scene.actors, wl, dfs_id as u32, &mut c)
+                .map(|a| a.is_2d())
+                .unwrap_or(false);
+        }
+        false
     }
 
     /// 選択中アクター/インスタンスのギズモ中心位置を返す共通ヘルパー。
@@ -105,13 +131,17 @@ impl App {
         let vp_w = window_size.width  as f32;
         let vp_h = window_size.height as f32;
         let wl   = self.active_world_line;
-        let is_canvas = self.canvas_world_lines.contains(&wl);
         // ワールドスペースモード判定
         let in_editor = self.mode == RuntimeMode::Edit || self.paused;
         let use_screen_space = self.canvas_screen_space_overlay || !in_editor
             || self.actor_edit_canvas_wls.contains(&wl);
+        // シーン全体の is_canvas ではなく選択アクター個別の種別で判定する。
+        // ワールドスペース表示中（use_screen_space = false）の 2D アクターは
+        // パースペクティブカメラで描画されるため 3D ギズモパスを使う。
+        let gizmo_actor_is_2d = self.actor_edit_canvas_wls.contains(&wl)
+            || (self.selected_primary_actor_is_2d() && use_screen_space);
 
-        let (ray_o, ray_d, radius) = if is_canvas && use_screen_space {
+        let (ray_o, ray_d, radius) = if gizmo_actor_is_2d && use_screen_space {
             // スクリーンスペース: 2D ortho レイ
             let cam_2d = self.canvas_cameras.get(&wl);
             let pan_x  = cam_2d.map(|c| c.pan_x).unwrap_or(0.0);
@@ -138,7 +168,7 @@ impl App {
         let part = hit_test_gizmo(ray_o, ray_d, gizmo_pos, radius, self.tool_mode)?;
         // 2D キャンバスでは Move/Scale の Z 軸・XZ/YZ 平面ハンドルは無効。
         // Rotate の AxisZ は 2D での回転操作に使うので有効とする。
-        if is_canvas {
+        if gizmo_actor_is_2d {
             match part {
                 GizmoPart::AxisZ if self.tool_mode == ToolMode::Rotate => Some(part),
                 GizmoPart::AxisZ | GizmoPart::PlaneXZ | GizmoPart::PlaneYZ => None,
@@ -168,13 +198,17 @@ impl App {
         let vp_w = window_size.width  as f32;
         let vp_h = window_size.height as f32;
         let wl   = self.active_world_line;
-        let is_canvas = self.canvas_world_lines.contains(&wl);
         // ワールドスペースモード判定
         let in_editor = self.mode == RuntimeMode::Edit || self.paused;
         let use_screen_space = self.canvas_screen_space_overlay || !in_editor
             || self.actor_edit_canvas_wls.contains(&wl);
+        // シーン全体の is_canvas ではなく選択アクター個別の種別で判定する。
+        // ワールドスペース表示中（use_screen_space = false）の 2D アクターは
+        // パースペクティブカメラで描画されるため 3D ギズモパスを使う。
+        let gizmo_actor_is_2d = self.actor_edit_canvas_wls.contains(&wl)
+            || (self.selected_primary_actor_is_2d() && use_screen_space);
 
-        let (ray_o, ray_d, radius) = if is_canvas && use_screen_space {
+        let (ray_o, ray_d, radius) = if gizmo_actor_is_2d && use_screen_space {
             // スクリーンスペース: 2D ortho レイ
             let cam_2d = self.canvas_cameras.get(&wl);
             let pan_x  = cam_2d.map(|c| c.pan_x).unwrap_or(0.0);
@@ -201,7 +235,7 @@ impl App {
         let part = hit_test_gizmo(ray_o, ray_d, gizmo_pos, radius, self.tool_mode)?;
         // 2D キャンバスでは Move/Scale の Z 軸・XZ/YZ 平面ハンドルは無効。
         // Rotate の AxisZ は 2D での回転操作に使うので有効とする。
-        if is_canvas {
+        if gizmo_actor_is_2d {
             match part {
                 GizmoPart::AxisZ if self.tool_mode == ToolMode::Rotate => {}
                 GizmoPart::AxisZ | GizmoPart::PlaneXZ | GizmoPart::PlaneYZ => return None,

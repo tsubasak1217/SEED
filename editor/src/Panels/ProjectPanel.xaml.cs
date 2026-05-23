@@ -99,6 +99,7 @@ public partial class ProjectPanel : UserControl
     private static readonly Uri UriScene       = PackUri("scene.png");
     private static readonly Uri UriScript      = PackUri("script.png");
     private static readonly Uri UriActor       = PackUri("actor.png");
+    private static readonly Uri UriActor2D     = PackUri("actor2d.png");
 
     private static readonly HashSet<string> ImageExts = new(StringComparer.OrdinalIgnoreCase)
         { ".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tga", ".hdr", ".exr", ".webp" };
@@ -107,6 +108,7 @@ public partial class ProjectPanel : UserControl
     {
         ".scene"                               => UriScene,
         ".actor"                               => UriActor,
+        ".actor2d"                             => UriActor2D,
         ".inputmap"                            => UriScript,
         ".glb" or ".gltf" or ".obj" or ".fbx" => UriModel,
         ".lua" or ".cs" or ".py" or ".wgsl"   => UriScript,
@@ -421,7 +423,8 @@ public partial class ProjectPanel : UserControl
                          file.Extension.Equals(".scene", StringComparison.OrdinalIgnoreCase))
                     SceneFileOpened?.Invoke(file.FullName);
                 else if (entry is FileInfo actorFile &&
-                         actorFile.Extension.Equals(".actor", StringComparison.OrdinalIgnoreCase))
+                         (actorFile.Extension.Equals(".actor",   StringComparison.OrdinalIgnoreCase) ||
+                          actorFile.Extension.Equals(".actor2d", StringComparison.OrdinalIgnoreCase)))
                     ActorFileOpened?.Invoke(actorFile.FullName);
                 else if (entry is FileInfo imFile &&
                          imFile.Extension.Equals(".inputmap", StringComparison.OrdinalIgnoreCase))

@@ -18,9 +18,11 @@ mod ipc_handler;
 mod hierarchy_sync;
 mod clipboard;
 mod actor_ops;
+mod ai_ops;
 mod component_ops;
 mod canvas_component_ops;
 mod camera_component_ops;
+mod physics_component_ops;
 mod transform_ops;
 mod camera_ops;
 mod gizmo_handler;
@@ -31,6 +33,7 @@ mod canvas_collect;
 mod app_init;
 mod event_handler;
 mod drag_handler;
+mod physics_ops;
 pub(crate) mod camera_scene_gizmo;
 
 // ── 外部クレート・標準ライブラリ ────────────────────────────
@@ -258,7 +261,7 @@ struct ClipboardItem {
 // ============================================================
 
 /// ランタイムの動作モード。
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum RuntimeMode {
     /// デバッグカメラ・エディタ埋め込み
     Edit,
@@ -280,6 +283,8 @@ pub struct LaunchArgs {
     /// Play モードで読み込むシーンのパス（仮想パス or 絶対パス）。
     /// None の場合は project_settings.json の start_scene を使用する。
     pub scene_path: Option<String>,
+    /// Play 起動時に実行時コライダー描画を有効化するか（SyncViewportSettings の遅延を回避）。
+    pub play_collider_draw: bool,
 }
 
 // ============================================================
@@ -328,6 +333,9 @@ pub struct App {
     mode:         RuntimeMode,
     ipc:          Option<IpcClient>,
     paused:       bool,
+    /// AI 実行中にレンダリングを停止して GPU リソースを LLM に解放するフラグ。
+    /// PAUSE_RENDER / RESUME_RENDER IPC コマンドで切り替える。
+    render_paused: bool,
     /// アセットルートのパス（Playモード・パッケージモードでのシーン自動ロードに使用）。
     assets_root:  Option<String>,
     /// エディタリソースディレクトリ（カメラギズモモデル等の読み込みに使用）。
@@ -375,6 +383,12 @@ pub struct App {
     rmb_press_pos: Option<(f32, f32)>,
     /// RMB 押下中にカーソルが閾値以上移動したか。
     rmb_moved: bool,
+    /// Pause モードでのデバッグカメラ回転用ピボット座標（ウィンドウローカル）。
+    /// RMB 押下時にウィンドウ中央へカーソルをワープして座標を固定する。
+    /// DeviceEvent::MouseMotion は WS_CHILD に届かないため CursorMoved で代替する。
+    pause_cam_pivot: Option<(f32, f32)>,
+    /// ワープ後に OS が生成する CursorMoved イベントをスキップするためのカウンタ。
+    pause_cam_warp_pending: u32,
     /// FIRST_FRAME シグナル送信済みフラグ（デバッグビルド・埋め込みモードのみ使用）。
     first_frame_sent: bool,
     /// 軸ギズモ（エディタモードのみ使用）。
@@ -446,6 +460,57 @@ pub struct App {
     /// ドラッグ中の配置プレビュー球体を描画するワールド座標。
     /// DragHoverEnd または DROP_ACTOR でクリアされる。
     drop_preview_pos: Option<[f32; 3]>,
+    /// コンテキストメニューを開いた時点のビューポートスクリーン座標。
+    /// ADD_ACTOR / ADD_ACTOR_2D 受信時に pending_add_actor へ移送される。
+    context_menu_screen_pos: Option<(u32, u32)>,
+    /// コンテキストメニュー経由のアクター追加を次フレームで処理するためのキュー。
+    /// pending_drop と同様に IDバッファ座標読み取り後にスポーン位置を確定する。
+    /// タプル: (is_2d, world_line, parent_dfs_id, screen_x, screen_y)
+    pending_add_actor: Option<(bool, u32, Option<u32>, u32, u32)>,
+
+    // ── プラグインシステム ─────────────────────────────────────────
+    /// ロード済みプラグインのレジストリ。
+    /// 起動時に handle_resumed で初期化される。
+    pub(super) plugin_registry: crate::engine::plugin::registry::PluginRegistry,
+
+    // ── 物理システム ──────────────────────────────────────────────
+    /// 固定ステップ物理スレッド。Play モード開始時に起動、停止時に Drop する。
+    /// 編集時の物理シミュレーションが有効な場合は Edit モードでも起動する。
+    pub(super) physics_thread: Option<crate::engine::physics::PhysicsThread>,
+
+    /// 編集時の物理シミュレーション有効フラグ。
+    /// true のとき Edit モードでも物理スレッドを起動して衝突検出を行う。
+    pub(super) edit_physics_enabled: bool,
+
+    /// 編集時の物理シミュレーションで RigidBody ダイナミクス（重力・慣性）を有効にするか。
+    /// false = 全ボディを kinematic として衝突検出のみ（アクターは移動しない）。
+    /// true  = 重力・動的応答も有効（アクターが物理挙動で移動する）。
+    pub(super) edit_physics_with_rigidbody: bool,
+
+    /// 実行時コライダー描画フラグ。
+    /// true のとき Play モードでもコライダーワイヤーフレームを描画する。
+    pub(super) play_collider_draw: bool,
+
+    /// 現在フレームで衝突中のエンティティ DFS ID セット。
+    /// 物理スレッドの衝突イベント（Enter/Stay）から毎フレーム更新され、
+    /// コライダーワイヤーフレームの色変更に使用する。
+    pub(super) active_collision_dfs_ids: std::collections::HashSet<u64>,
+
+    /// ギズモドラッグ中に一時的に kinematic 化している物理エンティティ ID。
+    /// None = ドラッグなし。ドラッグ開始時に SetBodyKinematic(true)、
+    /// 終了時に SetBodyKinematic(false) を物理スレッドへ送信するために使用する。
+    pub(super) dragging_physics_entity_id: Option<u64>,
+
+    /// コライダーのみ編集モード（edit_physics_with_rigidbody=false）でのドラッグ中の
+    /// 「衝突なしの最終有効位置」。衝突検出で押し戻すときにここへ戻る。
+    /// (position [x,y,z], quaternion [x,y,z,w]) の形式。
+    pub(super) drag_collider_last_valid_pos: Option<([f32; 3], [f32; 4])>,
+
+    /// コライダーのみ編集モードのドラッグ中、前フレーム末に物理スレッドへ送信した位置。
+    /// 「衝突なし」の物理結果を受け取った際に last_valid_pos を更新するために使う。
+    /// on_cursor_moved が update_physics より前に走り AT を更新してしまうため、
+    /// 現フレームの AT ではなく「前フレームに送った位置」を安全確認済み位置として使う。
+    pub(super) drag_prev_at_pos: Option<([f32; 3], [f32; 4])>,
 }
 
 impl App {
@@ -480,7 +545,8 @@ impl App {
             parent_hwnd:  args.parent_hwnd,
             mode:         args.mode,
             ipc,
-            paused:       false,
+            paused:        false,
+            render_paused: false,
             assets_root:      args.assets_root,
             editor_resources: args.editor_resources,
             scene_path:       args.scene_path,
@@ -500,9 +566,11 @@ impl App {
             last_hierarchy_send: None,
             clipboard:           Vec::new(),
             actor_clipboard:     Vec::new(),
-            rmb_press_pos:         None,
-            rmb_moved:             false,
-            first_frame_sent:      false,
+            rmb_press_pos:          None,
+            rmb_moved:              false,
+            pause_cam_pivot:        None,
+            pause_cam_warp_pending: 0,
+            first_frame_sent:       false,
             axis_gizmo:            None,
             icon_overlay:          None,
             fps_display:           0.0,
@@ -514,6 +582,14 @@ impl App {
             selected_actor_dfs_ids:          Vec::new(),
             actor_virtual_selected_slot_idx: 0,
             inspector_transform_drag:     None,
+            edit_physics_enabled:        false,
+            edit_physics_with_rigidbody: false,
+            // Play 起動時に --play-collider-draw=1 が渡された場合は即有効化する
+            play_collider_draw:          args.play_collider_draw,
+            active_collision_dfs_ids:     std::collections::HashSet::new(),
+            dragging_physics_entity_id:   None,
+            drag_collider_last_valid_pos: None,
+            drag_prev_at_pos:             None,
             active_world_line: 0,
             saved_cameras: HashMap::new(),
             canvas_world_lines:    HashSet::new(),
@@ -525,6 +601,10 @@ impl App {
             pending_drop:       None,
             pending_drop_hover: None,
             drop_preview_pos:   None,
+            context_menu_screen_pos: None,
+            pending_add_actor:  None,
+            plugin_registry:  crate::engine::plugin::registry::PluginRegistry::empty(),
+            physics_thread:   None,
         }
     }
 
@@ -599,6 +679,7 @@ use actor_utils::{
     collect_actor_nodes, build_hierarchy_json,
     find_actor_by_dfs, find_actor_by_dfs_mut,
     canvas_anchor_offset_for_dfs, collect_canvas_actors_in_rect,
+    collect_transform_only_in_rect,
     collect_mcs_in_world_line, update_all_mc_batches_for_wl,
     remove_actor_by_dfs, actor_subtree_size, find_parent_canvas_info,
     collect_entities_for_wl, despawn_actor_recursive,
@@ -609,5 +690,6 @@ use actor_utils::{
 };
 use platform_utils::{
     camera_grab_start, camera_grab_end, apply_window_clamp, release_window_clamp,
+    warp_cursor_to_local,
 };
 

@@ -1,0 +1,7 @@
+{
+  "name": "SamplePlugin",
+  "version": "0.1.0",
+  "description": "プラグインシステムのテスト用サンプルプラグイン。Float/Int/Bool/String/Color/Enum の全フィールド種別を実装しています。",
+  "author": "SEED Engine",
+  "entry_dll": "sample_plugin.dll"
+}

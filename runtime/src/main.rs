@@ -50,5 +50,8 @@ fn parse_args() -> LaunchArgs {
         .find(|a| a.starts_with("--scene="))
         .map(|a| a["--scene=".len()..].to_string());
 
-    LaunchArgs { parent_hwnd, mode, pipe_name, assets_root, editor_resources, scene_path }
+    // Play 起動時にエディタから渡されるフラグ。SyncViewportSettings の到着前から有効にする。
+    let play_collider_draw = raw.iter().any(|a| a == "--play-collider-draw=1");
+
+    LaunchArgs { parent_hwnd, mode, pipe_name, assets_root, editor_resources, scene_path, play_collider_draw }
 }

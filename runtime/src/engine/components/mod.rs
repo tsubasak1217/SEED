@@ -16,6 +16,9 @@ pub mod canvas_component;
 pub mod sprite_component;
 pub mod inputmap_component;
 pub mod camera_component;
+pub mod plugin_component;
+pub mod collider_component;
+pub mod rigidbody_component;
 
 pub use transform::Transform;
 pub use canvas_transform::CanvasTransform;
@@ -26,10 +29,14 @@ pub use model_component::{
 pub use script_component::{
     ScriptComponent, PlaceholderScriptSlot, ScriptComponentData,
 };
-pub use canvas_component::{CanvasComponent, CanvasComponentData};
+pub use canvas_component::{CanvasComponent, CanvasComponentData, CanvasViewportRef};
 pub use sprite_component::{SpriteComponent, SpriteComponentData};
 pub use inputmap_component::{InputMapComponent, InputMapComponentData};
-pub use camera_component::{CameraComponent, CameraComponentData};
+pub use camera_component::{CameraComponent, CameraComponentData, ScalingMode};
+pub use plugin_component::{PluginComponent, PluginComponentData};
+pub use collider_component::{ColliderComponent, ColliderComponentData, ColliderShapeData};
+// RigidbodyComponentData は旧フォーマットシーンの後方互換デシリアライズ専用
+pub use rigidbody_component::RigidbodyComponentData;
 
 use serde::{Deserialize, Serialize};
 
@@ -56,6 +63,10 @@ pub enum ComponentKind {
     InputMap,
     /// ゲームカメラ（Play モードの視点）
     Camera,
+    /// 動的プラグインコンポーネント（Plugin::field_defs() でフィールドを定義）
+    Plugin,
+    /// 物理コライダー（衝突形状の定義、リジッドボディ設定を内包）
+    Collider,
 }
 
 impl ComponentKind {
@@ -69,6 +80,8 @@ impl ComponentKind {
             Self::Sprite      => "SpriteComponent",
             Self::InputMap    => "InputMapComponent",
             Self::Camera      => "CameraComponent",
+            Self::Plugin      => "PluginComponent",
+            Self::Collider    => "ColliderComponent",
         }
     }
 }
@@ -86,4 +99,11 @@ pub enum ComponentData {
     SpriteComponent(SpriteComponentData),
     InputMapComponent(InputMapComponentData),
     CameraComponent(CameraComponentData),
+    /// 動的プラグインコンポーネント（plugin_name + fields を保持）
+    PluginComponent(PluginComponentData),
+    /// 物理コライダー（リジッドボディ設定を内包）
+    ColliderComponent(ColliderComponentData),
+    /// 旧フォーマット互換 — 読み込み時に ColliderComponent へ移行される
+    #[serde(rename = "RigidbodyComponent")]
+    LegacyRigidbodyComponent(RigidbodyComponentData),
 }

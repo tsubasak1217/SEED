@@ -1,8 +1,25 @@
+using System.Collections.Generic;
 using System.IO;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace SEEDEditor.ProjectSettings;
+
+/// <summary>
+/// プロジェクト設定のプラグインエントリ。
+/// project_settings.json の "plugins" 配列の各要素に対応する。
+/// Rust 側の manifest::PluginEntry と同一構造を維持すること。
+/// </summary>
+public class PluginEntry
+{
+    /// <summary>プラグイン識別名（plugin.json の name フィールドと一致させること）。</summary>
+    [JsonPropertyName("name")]
+    public string Name { get; set; } = string.Empty;
+
+    /// <summary>プラグインが有効化されているかどうか。</summary>
+    [JsonPropertyName("enabled")]
+    public bool Enabled { get; set; } = true;
+}
 
 /// <summary>
 /// プロジェクト全体の設定データ。
@@ -20,6 +37,15 @@ public class ProjectSettingsData
     /// <summary>ゲーム起動時に最初にロードするシーンの仮想パス（assets://...）。</summary>
     [JsonPropertyName("start_scene")]
     public string StartScene { get; set; } = string.Empty;
+
+    // ── プラグイン設定 ────────────────────────────────────────
+
+    /// <summary>
+    /// インポート済みプラグインの有効/無効リスト。
+    /// リストに存在しないプラグインはデフォルトで有効（Rust 側と同一ルール）。
+    /// </summary>
+    [JsonPropertyName("plugins")]
+    public List<PluginEntry> Plugins { get; set; } = new();
 
     // ── グラフィックス設定（将来実装） ─────────────────────────
     // ── オーディオ設定（将来実装） ──────────────────────────────

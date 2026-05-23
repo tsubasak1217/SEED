@@ -19,7 +19,8 @@ pub use gpu_resources::{GpuTexture, GpuMaterial, GpuPrimitive, GpuMesh, GpuModel
 pub use pipeline::{MeshPipeline, SkinnedMeshPipeline, UnlitPipeline, CullPipeline, DrawPipelines,
                    SkinComputePipeline, IdPassPipeline, OutlinePipeline, DepthPrepassPipelines,
                    SpritePipeline, CanvasIdPipeline, CanvasIdUniform,
-                   CameraPreviewBlitPipeline};
+                   CameraPreviewBlitPipeline,
+                   BarFillPipeline, BarFillUniform};
 
 // ============================================================
 //  Renderer 本体

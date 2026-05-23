@@ -36,6 +36,7 @@ use crate::engine::components::{
     SpriteComponent,
     InputMapComponent,
     CameraComponent,
+    ColliderComponent, ColliderComponentData,
 };
 use crate::engine::core::clock::FrameContext;
 
@@ -96,6 +97,9 @@ impl ComponentSlot {
 #[derive(Clone, Serialize, Deserialize)]
 pub struct ActorData {
     pub name:       String,
+    /// エディタ/AI 用の DFS 順 ID。保存時は出力しない。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dfs_id:     Option<u32>,
     /// Actor の種別（3D / 2D）。省略時は Actor3D。
     #[serde(default, skip_serializing_if = "is_actor3d")]
     pub actor_kind: ActorKind,
@@ -256,13 +260,21 @@ impl Actor {
     // ─── シリアライズ ─────────────────────────────────────────
 
     /// World を参照してシリアライズ用データを生成する。
-    /// コンポーネント実データは slot.entity から取得する（actor.entity ではない）。
     pub fn to_data(&self, world: &World) -> ActorData {
+        self.to_data_recursive(world, &mut None)
+    }
+
+    /// DFS ID カウンタを伴う再帰的なシリアライズ。
+    pub fn to_data_recursive(&self, world: &World, counter: &mut Option<u32>) -> ActorData {
+        let dfs_id = if let Some(c) = counter {
+            let id = *c;
+            *c += 1;
+            Some(id)
+        } else { None };
+
         let transform        = world.get::<Transform>(self.entity).cloned();
-        // 2D アクターは CanvasTransform（pivot/anchor を含む）を保存する
         let canvas_transform = world.get::<CanvasTransform>(self.entity).cloned();
         let components = self.slots.iter().filter_map(|slot| {
-            // 各スロットは専用 entity を持つ
             let data = match slot.kind {
                 ComponentKind::Model => {
                     world.get::<ModelComponent>(slot.entity)
@@ -292,17 +304,27 @@ impl Actor {
                     world.get::<CameraComponent>(slot.entity)
                         .map(|cc| ComponentData::CameraComponent(cc.to_data()))
                 }
+                ComponentKind::Plugin => {
+                    world.get::<crate::engine::components::PluginComponent>(slot.entity)
+                        .map(|pc| pc.clone())
+                        .map(ComponentData::PluginComponent)
+                }
+                ComponentKind::Collider => {
+                    world.get::<ColliderComponent>(slot.entity)
+                        .map(|cc| ComponentData::ColliderComponent(ColliderComponentData::from(cc)))
+                }
             };
             data.map(|d| ComponentSlotData { name: slot.name.clone(), component: d })
         }).collect();
 
         ActorData {
             name:             self.name.clone(),
+            dfs_id,
             actor_kind:       self.actor_kind,
             transform,
             canvas_transform,
             components,
-            children:         self.children.iter().map(|c| c.to_data(world)).collect(),
+            children:         self.children.iter().map(|c| c.to_data_recursive(world, counter)).collect(),
         }
     }
 

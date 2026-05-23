@@ -1,0 +1,16 @@
+# ============================================================
+#  SEED ワークスペースルート
+#
+#  メンバー:
+#    runtime/          — エンジン本体 (SEED.exe)
+#    plugin_api/       — プラグイン作成者向け API クレート (trait 定義のみ)
+#    plugins/*/        — 各プラグイン DLL クレート
+# ============================================================
+
+[workspace]
+members  = [
+    "runtime",
+    "plugin_api",
+    "plugins/sample_plugin",
+]
+resolver = "2"

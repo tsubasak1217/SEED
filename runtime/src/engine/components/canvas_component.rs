@@ -9,6 +9,32 @@
 use serde::{Deserialize, Serialize};
 use crate::engine::ecs::Component;
 
+// ─── CanvasViewportRef ────────────────────────────────────────────────────────
+
+/// キャンバスのアンカー計算・自動スケールで参照するビューポートの種別。
+///
+/// `Window`（デフォルト）: ウィンドウ全体のサイズを基準とする。
+/// `Camera { actor_name, slot_name }`: 指定カメラコンポーネントの描画範囲を基準とする。
+/// - 編集モード: カメラの target_width × target_height（設計解像度）
+/// - プレイモード: カメラが実際に描画するビューポートのピクセルサイズ
+#[derive(Clone, Serialize, Deserialize, PartialEq, Debug)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum CanvasViewportRef {
+    /// ウィンドウ全体をアンカー/スケール基準とする（デフォルト）
+    Window,
+    /// 指定カメラの描画範囲をアンカー/スケール基準とする
+    Camera {
+        /// 参照するカメラアクターの名前
+        actor_name: String,
+        /// 参照するカメラコンポーネントのスロット名
+        slot_name:  String,
+    },
+}
+
+impl Default for CanvasViewportRef {
+    fn default() -> Self { Self::Window }
+}
+
 // ─── CanvasComponentData ──────────────────────────────────────────────────────
 
 /// CanvasComponent のシリアライズ用データ。
@@ -28,6 +54,9 @@ pub struct CanvasComponentData {
     /// true のとき、ビューポートサイズ変化に応じて子 UI を proportional にスケールする。
     #[serde(default = "default_auto_scale")]
     pub auto_scale: bool,
+    /// アンカー/スケール計算で参照するビューポートの種別。
+    #[serde(default)]
+    pub viewport_ref: CanvasViewportRef,
 }
 
 fn default_auto_scale() -> bool { true }
@@ -50,6 +79,10 @@ fn default_auto_scale() -> bool { true }
 /// # 画面サイズ自動スケール
 /// auto_scale=true（デフォルト）かつ親キャンバスを持たないルートキャンバスのとき、
 /// ビューポートサイズに応じて子 UI を proportional にスケールする。
+///
+/// # ビューポート参照
+/// viewport_ref でアンカー計算・自動スケールの基準を「ウィンドウ全体」か
+/// 「指定カメラの描画範囲」かを選択できる。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CanvasComponent {
     /// キャンバスの基準幅（ワールドユニット）
@@ -66,6 +99,9 @@ pub struct CanvasComponent {
     /// 親キャンバスを持たないルートキャンバスにのみ有効。
     #[serde(default = "default_auto_scale")]
     pub auto_scale: bool,
+    /// アンカー/スケール計算で参照するビューポートの種別。
+    #[serde(default)]
+    pub viewport_ref: CanvasViewportRef,
 }
 
 impl CanvasComponent {
@@ -77,6 +113,7 @@ impl CanvasComponent {
             scale_size:      self.scale_size,
             scale_transform: self.scale_transform,
             auto_scale:      self.auto_scale,
+            viewport_ref:    self.viewport_ref.clone(),
         }
     }
 }
@@ -85,7 +122,14 @@ impl Default for CanvasComponent {
     fn default() -> Self {
         // デフォルトは 1920 × 1080（一般的な UI デザイン解像度）
         // スケールモードはデフォルトで両方 false（絶対座標・絶対サイズ）
-        Self { width: 1920.0, height: 1080.0, scale_size: false, scale_transform: false, auto_scale: true }
+        Self {
+            width:        1920.0,
+            height:       1080.0,
+            scale_size:      false,
+            scale_transform: false,
+            auto_scale:      true,
+            viewport_ref:    CanvasViewportRef::Window,
+        }
     }
 }
 

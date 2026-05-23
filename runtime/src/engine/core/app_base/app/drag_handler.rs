@@ -22,9 +22,11 @@ use crate::engine::methods::gizmo_interact::{
 
 use super::{
     App, RuntimeMode,
+    warp_cursor_to_local,
     find_actor_by_dfs,
     collect_mcs_in_world_line,
     collect_canvas_actors_in_rect,
+    collect_transform_only_in_rect,
     collect_child_actor_mc_starts,
     canvas_anchor_offset_for_dfs,
     world_to_screen,
@@ -48,6 +50,35 @@ impl App {
         let cy = position.y as f32;
         self.input.process_cursor_moved(cx, cy);
         self.last_cursor_pos = Some((cx, cy));
+
+        // ── Pause モードカメラ回転 ───────────────────────────────────
+        // Pause 中は Runtime が WS_CHILD として親プロセス内に埋め込まれており、
+        // DeviceEvent::MouseMotion（Raw Input）がフォアグラウンドプロセス（エディタ）に
+        // 横取りされてこのウィンドウには届かない。
+        // 代替として CursorMoved（WM_MOUSEMOVE）のデルタをカメラ入力へ積算し、
+        // カーソルをピボット（ウィンドウ中央）へ毎回ワープすることで無限回転を実現する。
+        if self.paused && self.cam_input.rmb {
+            if self.pause_cam_warp_pending > 0 {
+                // 自己ワープが生成した CursorMoved イベントはスキップする
+                self.pause_cam_warp_pending = self.pause_cam_warp_pending.saturating_sub(1);
+                return;
+            }
+            if let Some((pvx, pvy)) = self.pause_cam_pivot {
+                let dx = cx - pvx;
+                let dy = cy - pvy;
+                if dx * dx + dy * dy > 0.5 {
+                    // デルタをカメラ入力へ積算する
+                    self.cam_input.mouse_dx += dx;
+                    self.cam_input.mouse_dy += dy;
+                    // カーソルをピボットへ戻し、次の CursorMoved をスキップする
+                    warp_cursor_to_local(self.window_hwnd(), pvx as i32, pvy as i32);
+                    self.pause_cam_warp_pending = 1;
+                    // 短押し判定をキャンセル（コンテキストメニュー抑制）
+                    self.rmb_moved = true;
+                }
+            }
+            return;
+        }
 
         // RMB 押下中に移動量が閾値を超えたらカメラ grab とみなす
         if self.cam_input.rmb && !self.rmb_moved {
@@ -83,8 +114,12 @@ impl App {
                             let vp_h = ws.height as f32;
                             let mut rect_dfs: Vec<usize> = Vec::new();
 
-                            if self.canvas_world_lines.contains(&wl) {
-                                // 2D キャンバス: スクリーン矩形をワールド矩形に変換して
+                            // アクター編集タブの純粋 2D シーン（actor_edit_canvas_wls に含まれる）のみ
+                            // 2D キャンバス座標系での矩形選択を使用する。
+                            // メインシーン（world_line=0）は 3D アクターと Canvas アクターが混在するため
+                            // 常に 3D 選択ロジックを使用し、Canvas アクターは CanvasTransform で追加判定する。
+                            if self.actor_edit_canvas_wls.contains(&wl) {
+                                // 純粋 2D キャンバス編集タブ: スクリーン矩形をワールド矩形に変換して
                                 // CanvasTransform.position が範囲内かで判定する
                                 let cam_2d = self.canvas_cameras.get(&wl);
                                 let pan_x  = cam_2d.map(|c| c.pan_x).unwrap_or(0.0);
@@ -136,6 +171,17 @@ impl App {
                                         rect_dfs.push(dfs_id);
                                     }
                                 }
+
+                                // ModelComponent を持たない 3D アクター（Transform のみ）も選択対象にする
+                                // 既選択リスト（rect_dfs）への借用衝突を避けるため一時 Vec に収集して後で結合する
+                                let mut tf_only: Vec<usize> = Vec::new();
+                                collect_transform_only_in_rect(
+                                    &scene.actors, &scene.world, wl,
+                                    &view.data, &proj.data, vp_w, vp_h,
+                                    sx_min, sx_max, sy_min, sy_max,
+                                    &rect_dfs, &mut tf_only,
+                                );
+                                rect_dfs.extend(tf_only);
                             }
 
                             self.selected_actor_dfs_ids     = rect_dfs.clone();
@@ -192,12 +238,16 @@ impl App {
                 if let Some(scene) = &mut self.scene {
                     // 選択スロット entity を取得して MC 行列にデルタを適用する
                     let selected_slot_i = self.actor_virtual_selected_slot_idx;
-                    let mc_entity: Option<crate::engine::ecs::Entity> =
-                        if let Some(dfs) = selected_dfs {
-                            let mut c = 0u32;
-                            find_actor_by_dfs(&scene.actors, wl, dfs as u32, &mut c)
-                                .and_then(|a| a.mc_entity_at(selected_slot_i))
-                        } else { None };
+                    // mc_entity と actor_entity を同時に取得する（ActorTransform 更新のため）
+                    let (mc_entity, drag_actor_entity): (
+                        Option<crate::engine::ecs::Entity>,
+                        Option<crate::engine::ecs::Entity>,
+                    ) = if let Some(dfs) = selected_dfs {
+                        let mut c = 0u32;
+                        if let Some(actor) = find_actor_by_dfs(&scene.actors, wl, dfs as u32, &mut c) {
+                            (actor.mc_entity_at(selected_slot_i), Some(actor.entity))
+                        } else { (None, None) }
+                    } else { (None, None) };
                     if let Some(mc) = mc_entity.and_then(|e| scene.world.get_mut::<ModelComponent>(e)) {
                         for &(idx, ref start) in &self.drag.drag_root_starts {
                             if let Some(m) = mc.instance_mats.get_mut(idx as usize) {
@@ -210,6 +260,23 @@ impl App {
                             }
                         }
                         mc.mark_batch_dirty();
+                    }
+                    // MC アクターの ActorTransform もドラッグ中に更新する。
+                    // frame_renderer がコライダーワイヤーフレーム位置を ActorTransform から
+                    // 読み取るため、MC 更新と同期しないとワイヤーフレームが遅れる。
+                    // 【注意】new_mat はギズモ重心行列（単位回転）のため、そのまま使うと
+                    // 回転が 0 にリセットされる。drag_root_starts の開始行列に delta を
+                    // 乗算することで元の回転・スケールを保持した正確な TRS 行列を計算する。
+                    if mc_entity.is_some() && !self.drag.drag_root_starts.is_empty() {
+                        if let Some(entity) = drag_actor_entity {
+                            if let Some(actor_new_mat) = self.drag.drag_root_starts.first()
+                                .map(|&(_, ref s)| mat4x4_mul(delta, *s))
+                            {
+                                if let Some(tf) = scene.world.get_mut::<ActorTransform>(entity) {
+                                    *tf = ActorTransform::from_mat4(&actor_new_mat);
+                                }
+                            }
+                        }
                     }
                     // 追加 MC スロット（選択スロット以外）にも同デルタを適用する
                     if let Some(dfs) = selected_dfs {
@@ -298,10 +365,11 @@ impl App {
                     {
                         let child_starts = self.drag.actor_child_drag_starts.clone();
                         for (child_dfs, start_mat) in &child_starts {
-                            let mc_slot_entity = {
+                            let (mc_slot_entity, child_actor_entity) = {
                                 let mut c = 0u32;
-                                find_actor_by_dfs(&scene.actors, wl, *child_dfs, &mut c)
-                                    .and_then(|a| a.mc_entity())
+                                if let Some(actor) = find_actor_by_dfs(&scene.actors, wl, *child_dfs, &mut c) {
+                                    (actor.mc_entity(), Some(actor.entity))
+                                } else { (None, None) }
                             };
                             if let Some(entity) = mc_slot_entity {
                                 if let Some(mc) = scene.world.get_mut::<ModelComponent>(entity) {
@@ -309,6 +377,12 @@ impl App {
                                         *m = mat4x4_mul(delta, *start_mat);
                                     }
                                     mc.mark_batch_dirty();
+                                }
+                            }
+                            // 子アクターの ActorTransform も更新してコライダーワイヤーフレームを追従させる
+                            if let Some(entity) = child_actor_entity {
+                                if let Some(tf) = scene.world.get_mut::<ActorTransform>(entity) {
+                                    *tf = ActorTransform::from_mat4(&mat4x4_mul(delta, *start_mat));
                                 }
                             }
                         }
@@ -603,17 +677,19 @@ impl App {
                     let child_drag_starts = std::mem::take(&mut self.drag.actor_child_drag_starts);
                     let (old_tf, new_tf, child_transforms) = if let Some(&(_, old_mat, new_mat)) = transforms.first() {
                         let delta = mat4x4_mul(new_mat, mat4x4_inv(old_mat));
-                        let mut old_v = ActorTransform::default();
-                        let mut new_v = ActorTransform::default();
+                        // ドラッグ中に ActorTransform はリアルタイム更新済みのため、
+                        // 「ドラッグ前の AT」は MC の開始行列 (old_mat) から復元する。
+                        // 現在の AT から delta を掛けると 2 重に移動してしまうため使用しない。
+                        let old_v = ActorTransform::from_mat4(&old_mat);
+                        let new_v = ActorTransform::from_mat4(&new_mat);
                         if let Some(scene) = &mut self.scene {
                             let entity = {
                                 let mut c = 0u32;
                                 find_actor_by_dfs(&scene.actors, wl, dfs_id, &mut c)
                                     .map(|a| a.entity)
                             };
+                            // AT はドラッグ中に更新済みだが念のため最終値を再セットする
                             if let Some(entity) = entity {
-                                old_v = scene.world.get::<ActorTransform>(entity).cloned().unwrap_or_default();
-                                new_v = ActorTransform::from_mat4(&mat4x4_mul(delta, old_v.to_mat4()));
                                 if let Some(tf) = scene.world.get_mut::<ActorTransform>(entity) { *tf = new_v.clone(); }
                             }
                         }
@@ -628,10 +704,10 @@ impl App {
                                         .unwrap_or((None, None))
                                 };
                                 if let Some(child_entity) = child_entity_opt {
-                                    let old_child_tf = scene.world.get::<ActorTransform>(child_entity)
-                                        .cloned().unwrap_or_default();
+                                    // 子アクターも AT がドラッグ中更新済みのため start_mat から old を復元する
+                                    let old_child_tf = ActorTransform::from_mat4(&start_mat);
                                     let new_child_tf = ActorTransform::from_mat4(
-                                        &mat4x4_mul(delta, old_child_tf.to_mat4()));
+                                        &mat4x4_mul(delta, start_mat));
                                     if let Some(tf) = scene.world.get_mut::<ActorTransform>(child_entity) {
                                         *tf = new_child_tf.clone();
                                     }

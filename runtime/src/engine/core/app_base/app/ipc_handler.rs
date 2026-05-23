@@ -41,6 +41,10 @@ impl App {
                     self.paused = true;
                 }
                 IpcCommand::Resume             => self.paused = false,
+                // AI 実行中レンダリング停止（GPU リソースを LLM に解放するため）
+                IpcCommand::PauseRender        => self.render_paused = true,
+                // AI 応答完了後にレンダリングを再開する
+                IpcCommand::ResumeRender       => self.render_paused = false,
                 IpcCommand::Stop               => event_loop.exit(),
                 IpcCommand::CamKeyDown(k)      => self.cam_input.set_key(&k, true),
                 IpcCommand::CamKeyUp(k)        => self.cam_input.set_key(&k, false),
@@ -514,6 +518,11 @@ impl App {
                             self.sync_anim_seeds();
                             self.send_selected();
                             self.send_hierarchy();
+                            // 編集時物理シミュレーションが有効な場合、シーンロード後に再起動する
+                            if self.edit_physics_enabled {
+                                self.stop_physics();
+                                self.start_physics();
+                            }
                             if let Some(ipc) = &self.ipc {
                                 ipc.send("SCENE_LOADED");
                                 let (pos, yaw, pitch, fov, far, spd) = self.cam_state_tuple();
@@ -663,10 +672,21 @@ impl App {
                     self.send_actor_components(dfs_id, self.actor_virtual_selected_slot_idx);
                 }
                 IpcCommand::AddActor { world_line, parent_dfs_id } => {
-                    self.handle_add_actor(world_line, parent_dfs_id);
+                    if let Some((sx, sy)) = self.context_menu_screen_pos.take() {
+                        // コンテキストメニュー経由: D&D と同じ IDバッファ読み取り方式で
+                        // スポーン位置を次フレームで確定する
+                        self.pending_add_actor = Some((false, world_line, parent_dfs_id, sx, sy));
+                    } else {
+                        self.handle_add_actor(world_line, parent_dfs_id, None);
+                    }
                 }
                 IpcCommand::AddActor2D { world_line, parent_dfs_id } => {
-                    self.handle_add_actor_2d(world_line, parent_dfs_id);
+                    if let Some(_) = self.context_menu_screen_pos.take() {
+                        // 2D アクターはスポーン位置を使わないが pending 方式で処理タイミングを統一する
+                        self.pending_add_actor = Some((true, world_line, parent_dfs_id, 0, 0));
+                    } else {
+                        self.handle_add_actor_2d(world_line, parent_dfs_id);
+                    }
                 }
                 IpcCommand::RemoveActor(dfs_id) => {
                     self.handle_remove_actor(dfs_id);
@@ -729,6 +749,14 @@ impl App {
                 IpcCommand::SetCanvasAutoScale { actor_dfs_id, slot_idx, auto_scale } => {
                     self.handle_set_canvas_auto_scale(actor_dfs_id, slot_idx, auto_scale);
                 }
+                IpcCommand::SetCanvasViewportRefWindow { actor_dfs_id, slot_idx } => {
+                    self.handle_set_canvas_viewport_ref_window(actor_dfs_id, slot_idx);
+                }
+                IpcCommand::SetCanvasViewportRefCamera { actor_dfs_id, slot_idx, actor_name, slot_name } => {
+                    let an = actor_name.clone();
+                    let sn = slot_name.clone();
+                    self.handle_set_canvas_viewport_ref_camera(actor_dfs_id, slot_idx, an, sn);
+                }
                 IpcCommand::SetInputMapPath { actor_dfs_id, slot_idx, path } => {
                     let p = path.clone();
                     self.handle_set_inputmap_path(actor_dfs_id, slot_idx, &p);
@@ -749,7 +777,324 @@ impl App {
                 IpcCommand::SetCameraComponentClearColor { actor_dfs_id, slot_idx, r, g, b, a } => {
                     self.handle_set_camera_clear_color(actor_dfs_id, slot_idx, r, g, b, a);
                 }
+                IpcCommand::SetCameraComponentScalingMode { actor_dfs_id, slot_idx, mode } => {
+                    let m = mode.clone();
+                    self.handle_set_camera_scaling_mode(actor_dfs_id, slot_idx, &m);
+                }
+                IpcCommand::SetCameraComponentTargetSize { actor_dfs_id, slot_idx, width, height } => {
+                    self.handle_set_camera_target_size(actor_dfs_id, slot_idx, width, height);
+                }
+                IpcCommand::SetCameraBarColor { actor_dfs_id, slot_idx, r, g, b, a } => {
+                    self.handle_set_camera_bar_color(actor_dfs_id, slot_idx, r, g, b, a);
+                }
+                // ── 物理コンポーネント ──────────────────────────────────────
+                IpcCommand::SetColliderData { actor_dfs_id, slot_idx, json } => {
+                    let j = json.clone();
+                    self.handle_set_collider_data(actor_dfs_id, slot_idx, &j);
+                }
+                // ── プラグインコンポーネント ─────────────────────────────────
+                IpcCommand::SetPluginField { actor_dfs_id, slot_idx, key, value } => {
+                    let k = key.clone();
+                    let v = value.clone();
+                    self.handle_set_plugin_field(actor_dfs_id, slot_idx, &k, &v);
+                }
+                IpcCommand::GetPluginList => {
+                    self.send_plugin_list();
+                }
+
+                // ── AI アシスタント用コマンド ─────────────────────────────────
+                IpcCommand::GetSceneInfo => {
+                    self.send_scene_info();
+                }
+                IpcCommand::AiAddActor { name, x, y, z } => {
+                    self.handle_ai_add_actor(&name.clone(), x, y, z);
+                }
+                IpcCommand::AiRemoveActor { actor_dfs_id } => {
+                    self.apply_delete(&[actor_dfs_id], true);
+                    self.send_hierarchy();
+                    if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+                }
+                IpcCommand::AiMoveActor { actor_dfs_id, x, y, z } => {
+                    self.handle_ai_move_actor(actor_dfs_id, x, y, z);
+                }
+                IpcCommand::AiAddComponent { actor_dfs_id, component_type, params_json } => {
+                    let ct = component_type.clone();
+                    let pj = params_json.clone();
+                    self.handle_ai_add_component(actor_dfs_id, &ct, &pj);
+                }
+                IpcCommand::AiSetValue { actor_dfs_id, slot_idx, key, value } => {
+                    self.handle_set_component_value(actor_dfs_id, slot_idx, &key, &value);
+                }
+                IpcCommand::ExportActor { dfs_id, path } => {
+                    self.handle_export_actor(dfs_id, &path);
+                }
+
+                // ── 物理シミュレーション設定 ─────────────────────────────────
+                IpcCommand::SetEditPhysics { enabled, with_rigidbody } => {
+                    // Play モードでは無視する（Play 起動時の SyncViewportSettings による誤停止を防ぐ）
+                    if self.mode != RuntimeMode::Edit { continue; }
+                    // 編集時の物理シミュレーション設定を更新する
+                    self.edit_physics_enabled        = enabled;
+                    self.edit_physics_with_rigidbody = with_rigidbody;
+                    if enabled {
+                        // 既存スレッドを停止してから新しい設定で再起動する
+                        self.stop_physics();
+                        self.start_physics();
+                    } else {
+                        self.stop_physics();
+                        // 無効化時は衝突中 ID セットをクリアして描画色をリセットする
+                        self.active_collision_dfs_ids.clear();
+                    }
+                }
+                IpcCommand::SetPlayColliderDraw(v) => {
+                    // 実行時コライダー描画フラグを更新する
+                    self.play_collider_draw = v;
+                }
             }
+        }
+    }
+
+    // ============================================================
+    //  AI フィールド変更ディスパッチャ
+    // ============================================================
+
+    /// AI からの AI_SET_VALUE コマンドを、コンポーネント型に応じて各ハンドラへ振り分ける。
+    fn handle_set_component_value(&mut self, actor_dfs_id: u32, slot_idx: u32, key: &str, value: &str) {
+        use crate::engine::components::ComponentKind;
+
+        let wl = self.active_world_line;
+        let kind = {
+            let scene = match self.scene.as_ref() { Some(s) => s, None => return };
+            let mut c = 0u32;
+            let actor = match super::find_actor_by_dfs(&scene.actors, wl, actor_dfs_id, &mut c) {
+                Some(a) => a,
+                None => return,
+            };
+            actor.slots().get(slot_idx as usize).map(|s| s.kind)
+        };
+
+        let Some(kind) = kind else { return };
+
+        match kind {
+            // ModelComponent: "model_path"
+            ComponentKind::Model if key == "model_path" => {
+                self.handle_set_model_path(actor_dfs_id, slot_idx, value);
+            }
+
+            // CameraComponent: "fov", "near", "far", "is_main", "clear_color"
+            ComponentKind::Camera => {
+                match key {
+                    "fov" | "fov_y_deg" => {
+                        if let Ok(v) = value.parse::<f32>() { self.handle_set_camera_fov(actor_dfs_id, slot_idx, v); }
+                    }
+                    "near" => {
+                        if let Ok(v) = value.parse::<f32>() { self.handle_set_camera_near(actor_dfs_id, slot_idx, v); }
+                    }
+                    "far" => {
+                        if let Ok(v) = value.parse::<f32>() { self.handle_set_camera_far(actor_dfs_id, slot_idx, v); }
+                    }
+                    "is_main" => {
+                        let b = value == "true" || value == "1";
+                        self.handle_set_camera_main(actor_dfs_id, slot_idx, b);
+                    }
+                    "clear_color" => {
+                        // "r,g,b,a" 形式を想定
+                        let parts: Vec<f32> = value.split(',').filter_map(|s| s.trim().parse().ok()).collect();
+                        if parts.len() == 4 {
+                            self.handle_set_camera_clear_color(actor_dfs_id, slot_idx, parts[0], parts[1], parts[2], parts[3]);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            // SpriteComponent: "texture_path", "color", "width", "height"
+            ComponentKind::Sprite => {
+                match key {
+                    "texture_path" | "path" => {
+                        self.handle_set_sprite_path(actor_dfs_id, slot_idx, value);
+                    }
+                    "color" => {
+                        let parts: Vec<f32> = value.split(',').filter_map(|s| s.trim().parse().ok()).collect();
+                        if parts.len() == 4 {
+                            self.handle_set_sprite_color(actor_dfs_id, slot_idx, parts[0], parts[1], parts[2], parts[3]);
+                        }
+                    }
+                    "width" => {
+                        if let Ok(v) = value.parse::<f32>() {
+                            let h = {
+                                let scene = self.scene.as_ref().unwrap();
+                                let mut c = 0u32;
+                                find_actor_by_dfs(&scene.actors, wl, actor_dfs_id, &mut c)
+                                    .and_then(|a| a.slots().get(slot_idx as usize))
+                                    .and_then(|s| scene.world.get::<crate::engine::components::SpriteComponent>(s.entity))
+                                    .map(|s| s.height)
+                                    .unwrap_or(100.0)
+                            };
+                            self.handle_set_sprite_size(actor_dfs_id, slot_idx, v, h);
+                        }
+                    }
+                    "height" => {
+                        if let Ok(v) = value.parse::<f32>() {
+                            let w = {
+                                let scene = self.scene.as_ref().unwrap();
+                                let mut c = 0u32;
+                                find_actor_by_dfs(&scene.actors, wl, actor_dfs_id, &mut c)
+                                    .and_then(|a| a.slots().get(slot_idx as usize))
+                                    .and_then(|s| scene.world.get::<crate::engine::components::SpriteComponent>(s.entity))
+                                    .map(|s| s.width)
+                                    .unwrap_or(100.0)
+                            };
+                            self.handle_set_sprite_size(actor_dfs_id, slot_idx, w, v);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            // CanvasComponent: "width", "height", "scale_size", "scale_transform", "auto_scale"
+            ComponentKind::Canvas => {
+                match key {
+                    "width" => {
+                        if let Ok(v) = value.parse::<f32>() {
+                            let h = {
+                                let scene = self.scene.as_ref().unwrap();
+                                let mut c = 0u32;
+                                find_actor_by_dfs(&scene.actors, wl, actor_dfs_id, &mut c)
+                                    .and_then(|a| a.slots().get(slot_idx as usize))
+                                    .and_then(|s| scene.world.get::<crate::engine::components::CanvasComponent>(s.entity))
+                                    .map(|s| s.height)
+                                    .unwrap_or(1080.0)
+                            };
+                            self.handle_set_canvas_size(actor_dfs_id, slot_idx, v, h);
+                        }
+                    }
+                    "height" => {
+                        if let Ok(v) = value.parse::<f32>() {
+                            let w = {
+                                let scene = self.scene.as_ref().unwrap();
+                                let mut c = 0u32;
+                                find_actor_by_dfs(&scene.actors, wl, actor_dfs_id, &mut c)
+                                    .and_then(|a| a.slots().get(slot_idx as usize))
+                                    .and_then(|s| scene.world.get::<crate::engine::components::CanvasComponent>(s.entity))
+                                    .map(|s| s.width)
+                                    .unwrap_or(1920.0)
+                            };
+                            self.handle_set_canvas_size(actor_dfs_id, slot_idx, w, v);
+                        }
+                    }
+                    "scale_size" => {
+                        let b = value == "true" || value == "1";
+                        let st = {
+                            let scene = self.scene.as_ref().unwrap();
+                            let mut c = 0u32;
+                            find_actor_by_dfs(&scene.actors, wl, actor_dfs_id, &mut c)
+                                .and_then(|a| a.slots().get(slot_idx as usize))
+                                .and_then(|s| scene.world.get::<crate::engine::components::CanvasComponent>(s.entity))
+                                .map(|s| s.scale_transform)
+                                .unwrap_or(false)
+                        };
+                        self.handle_set_canvas_scale_mode(actor_dfs_id, slot_idx, st, b);
+                    }
+                    "scale_transform" => {
+                        let b = value == "true" || value == "1";
+                        let ss = {
+                            let scene = self.scene.as_ref().unwrap();
+                            let mut c = 0u32;
+                            find_actor_by_dfs(&scene.actors, wl, actor_dfs_id, &mut c)
+                                .and_then(|a| a.slots().get(slot_idx as usize))
+                                .and_then(|s| scene.world.get::<crate::engine::components::CanvasComponent>(s.entity))
+                                .map(|s| s.scale_size)
+                                .unwrap_or(false)
+                        };
+                        self.handle_set_canvas_scale_mode(actor_dfs_id, slot_idx, b, ss);
+                    }
+                    "auto_scale" => {
+                        let b = value == "true" || value == "1";
+                        self.handle_set_canvas_auto_scale(actor_dfs_id, slot_idx, b);
+                    }
+                    _ => {}
+                }
+            }
+
+            // InputMapComponent: "asset_path"
+            ComponentKind::InputMap if key == "asset_path" || key == "path" => {
+                self.handle_set_inputmap_path(actor_dfs_id, slot_idx, value);
+            }
+
+            // PluginComponent: 全フィールド
+            ComponentKind::Plugin => {
+                self.handle_set_plugin_field(actor_dfs_id, slot_idx, key, value);
+            }
+
+            _ => {
+                // その他のコンポーネントや未知のキーは現状無視（必要に応じて拡張）
+            }
+        }
+    }
+
+    // ============================================================
+    //  プラグインフィールド変更処理
+    // ============================================================
+
+    /// プラグインコンポーネントのフィールド値を変更し Undo に記録する。
+    fn handle_set_plugin_field(&mut self, actor_dfs_id: u32, slot_idx: u32, key: &str, new_value: &str) {
+        use crate::engine::components::{PluginComponent, ComponentKind};
+        use crate::engine::core::app_base::undo::PluginFieldCommand;
+
+        let wl    = self.active_world_line;
+        let scene = match self.scene.as_mut() { Some(s) => s, None => return };
+
+        // スロットエンティティと plugin_name を取得する
+        let (slot_entity, plugin_name, old_value) = {
+            let mut c = 0u32;
+            let actor = match super::find_actor_by_dfs(&scene.actors, wl, actor_dfs_id, &mut c) {
+                Some(a) => a,
+                None    => return,
+            };
+            let slot = match actor.slots().get(slot_idx as usize) {
+                Some(s) if s.kind == ComponentKind::Plugin => s,
+                _ => return,
+            };
+            let entity = slot.entity;
+            let (pname, oval) = if let Some(pc) = scene.world.get::<PluginComponent>(entity) {
+                let old = pc.fields.get(key).cloned().unwrap_or_default();
+                (pc.plugin_name.clone(), old)
+            } else { return };
+            (entity, pname, oval)
+        };
+
+        // 値が変わっていなければ何もしない
+        if old_value == new_value { return; }
+
+        // プラグインの on_field_changed を呼び出す（副作用・バリデーション）
+        if let Some(lp) = self.plugin_registry.get(&plugin_name) {
+            lp.plugin.on_field_changed(key, &old_value, new_value);
+        }
+
+        // フィールド値を更新する
+        if let Some(pc) = scene.world.get_mut::<PluginComponent>(slot_entity) {
+            pc.set_field(key, new_value);
+        }
+
+        // Undo コマンドを記録する（slot_entity を直接保持）
+        self.undo_history.record(Box::new(PluginFieldCommand {
+            slot_entity: slot_entity,
+            key:         key.to_string(),
+            old_value,
+            new_value:   new_value.to_string(),
+            world_line:  self.active_world_line,
+            actor_dfs_id,
+        }));
+
+        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+    }
+
+    /// ロード済みプラグイン一覧をエディタへ送信する。
+    fn send_plugin_list(&self) {
+        if let Some(ipc) = &self.ipc {
+            let json = self.plugin_registry.to_json();
+            ipc.send(&format!("PLUGIN_LIST:{json}"));
         }
     }
 }
