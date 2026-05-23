@@ -21,6 +21,7 @@ static DEBUG_FRAME: AtomicU64 = AtomicU64::new(0);
 /// このフレーム数だけ詳細ログを出力する。
 const DEBUG_LOG_FRAMES: u64 = 10;
 use crate::engine::components::{ColliderComponent, ColliderShapeData, ComponentKind};
+use crate::engine::components::{Collider2dComponent, ColliderShape2dData, CanvasTransform};
 use crate::engine::components::Transform as ActorTransform;
 use crate::engine::structs::transforms::Quaternion;
 use crate::engine::structs::objects::actor::Actor;
@@ -338,6 +339,13 @@ impl App {
             if dbg { eprintln!("[SEED FRAME {dbg_frame}] update_physics start"); }
             self.update_physics();
             if dbg { eprintln!("[SEED FRAME {dbg_frame}] update_physics done"); }
+        }
+
+        // ── 2D 物理同期（Play フレームまたは編集時 2D 物理シミュレーション有効時）─────
+        let should_update_physics_2d = (self.mode == RuntimeMode::Play && !self.paused)
+            || (self.mode == RuntimeMode::Edit && self.edit_physics_2d_enabled);
+        if should_update_physics_2d {
+            self.update_physics_2d();
         }
 
         // ── 時間 ──────────────────────────────────────
@@ -1300,6 +1308,198 @@ impl App {
                         if lb.is_empty() { None } else { Some(lb.build(&draw_ctx.device)) }
                     } else { None };
 
+                    // ── 2D コライダーワイヤーフレームバッチ ──────────────────────────────
+                    // 描画条件:
+                    //   - 2D キャンバス世界線（is_canvas）のみ
+                    //   - エディタモード: 常に表示
+                    //   - Play モード: play_collider_draw フラグが有効な場合のみ表示
+                    // トリガーコライダー: 黄色 / 通常コライダー: 緑 / 衝突中: 赤
+                    let draw_colliders_2d = is_canvas
+                        && (in_editor || self.play_collider_draw);
+
+                    let collider_2d_wireframe_batch = if draw_colliders_2d {
+                        // キャンバス座標 → レンダリング座標変換スケール
+                        let canvas_scale = if use_screen_space { 1.0f32 } else { CANVAS_WORLD_SCALE };
+                        // Y 軸方向: スクリーンスペース時は Y+ が下（CSS と同方向）
+                        let y_sign = if use_screen_space { 1.0f32 } else { -1.0 };
+
+                        // ── SS モード補正パラメータ ──────────────────────────────────────────
+                        // scene_canvas_ss=true のとき、スプライトは ortho 空間に
+                        // ビューポートセンタリング (-vp/2, -vp/2) + auto_scale が適用される。
+                        // body_pos_px はキャンバスピクセル座標なので、同じ変換を適用して
+                        // ワイヤーフレームとスプライトを一致させる。
+                        //
+                        // 変換: ortho = (-vp_w/2 + px * sx,  (-vp_h/2 + py * sy) * y_sign)
+                        //
+                        // ※ ルートキャンバスが position=[0,0] の標準ケースで正確
+                        // (ss_off_x, ss_off_y) : 位置変換のビューポートセンタリングオフセット
+                        // (ss_sx,  ss_sy)      : 位置変換スケール（auto_scale 時 = vp/canvas）
+                        // (size_sx, size_sy)   : サイズ変換スケール（scale_size=true 時のみ ss_sx/sy, それ以外は 1.0）
+                        let (ss_off_x, ss_off_y, ss_sx, ss_sy, size_sx, size_sy) = if scene_canvas_ss {
+                            use crate::engine::components::{CanvasComponent, CanvasViewportRef};
+                            let (win_vp_w, win_vp_h) = window_size.map_or(
+                                (1280.0f32, 720.0f32),
+                                |s| (s.width as f32, s.height as f32),
+                            );
+                            // ルートキャンバスを検索して auto_scale / scale_size とサイズを取得する
+                            let root_canvas = scene.actors.iter()
+                                .filter(|a| a.world_line == self.active_world_line)
+                                .find_map(|a| {
+                                    a.slots().iter()
+                                        .find(|s| s.kind == ComponentKind::Canvas)
+                                        .and_then(|s| scene.world.get::<CanvasComponent>(s.entity))
+                                        .map(|cc| {
+                                            // Camera 参照の場合はゲームビューポートサイズを使用する
+                                            let (vpw, vph) = match &cc.viewport_ref {
+                                                CanvasViewportRef::Camera { .. } if !in_editor => {
+                                                    (game_viewport.2, game_viewport.3)
+                                                }
+                                                _ => (win_vp_w, win_vp_h),
+                                            };
+                                            (cc.width, cc.height, cc.auto_scale, cc.scale_size, vpw, vph)
+                                        })
+                                });
+                            match root_canvas {
+                                Some((cw, ch, true, scale_size, vpw, vph)) => {
+                                    // auto_scale=true: 位置はビューポート比でスケール + センタリング
+                                    // サイズは scale_size=true の場合のみスケール（false なら 1.0）
+                                    let sx = vpw / cw;
+                                    let sy = vph / ch;
+                                    (
+                                        -vpw / 2.0, -vph / 2.0,
+                                        sx, sy,
+                                        if scale_size { sx } else { 1.0 },
+                                        if scale_size { sy } else { 1.0 },
+                                    )
+                                }
+                                Some((_, _, false, _, vpw, vph)) => {
+                                    // auto_scale=false: センタリングのみ、スケール・サイズとも 1.0
+                                    (-vpw / 2.0, -vph / 2.0, 1.0, 1.0, 1.0, 1.0)
+                                }
+                                None => (0.0, 0.0, 1.0, 1.0, 1.0, 1.0),
+                            }
+                        } else {
+                            (0.0, 0.0, 1.0, 1.0, 1.0, 1.0)
+                        };
+
+                        let mut lb = LineBatch::new();
+
+                        // anchor + pivot 補正済みの body_pos_px を使ってワイヤーフレームを描画する。
+                        // collect_actor2d_contexts は DFS 全アクターを数えつつ Actor2D のコンテキストを返す。
+                        let ctx2d_list = crate::engine::core::app_base::app::physics2d_ops::collect_actor2d_contexts(
+                            scene, self.active_world_line,
+                        );
+
+                        for ctx in &ctx2d_list {
+                            let Some(slot_entity) = ctx.collider_slot_entity else { continue };
+                            let Some(collider) = scene.world.get::<Collider2dComponent>(slot_entity) else { continue };
+
+                            // コライダー色: トリガーなら黄色、衝突中なら赤、通常なら緑
+                            let color = if collider.is_trigger {
+                                COLLIDER_COLOR_TRIGGER
+                            } else if self.active_collision_2d_dfs_ids.contains(&ctx.dfs_id) {
+                                COLLIDER_COLOR_COLLISION
+                            } else {
+                                COLLIDER_COLOR_NORMAL
+                            };
+
+                            let rot_rad = ctx.rot_rad;
+                            let scale   = ctx.scale;
+                            let (sin, cos) = rot_rad.sin_cos();
+
+                            // コライダーオフセットをボディ回転で変換する（キャンバスピクセル単位）
+                            let [ox, oy] = collider.offset;
+                            let off_wx = cos * ox - sin * oy;
+                            let off_wy = sin * ox + cos * oy;
+
+                            // ピボット補正ワールドベクトルを計算し、body_pos_px からアクターピボット点を逆算する。
+                            //
+                            // body_pos_px = actor_pivot_world + pivot_corr_world なので:
+                            //   actor_pivot_world = body_pos_px - pivot_corr_world
+                            //
+                            // スプライト座標変換と対応させる:
+                            //   - actor_pivot_world (アンカー込みの位置) は
+                            //     sm_transform=true なら ss_sx でスケール、false なら等倍
+                            //   - アンカーオフセット (anchor_off) は常に ss_sx でスケール
+                            //     (auto_scale はアンカー位置に常に反映されるため)
+                            //   - pivot_corr + collider.offset はサイズ量なので size_sx でスケール
+                            let pc = ctx.pivot_corr_local;
+                            let pivot_corr_world = [
+                                cos * pc[0] - sin * pc[1],
+                                sin * pc[0] + cos * pc[1],
+                            ];
+                            let actor_pivot_world = [
+                                ctx.body_pos_px[0] - pivot_corr_world[0],
+                                ctx.body_pos_px[1] - pivot_corr_world[1],
+                            ];
+                            // アンカーを除いた純粋な位置成分（キャンバスピクセル）
+                            let anchor = ctx.anchor_off;
+                            let pos_raw = [
+                                actor_pivot_world[0] - anchor[0],
+                                actor_pivot_world[1] - anchor[1],
+                            ];
+
+                            // 位置変換:
+                            //   SS モードでは「位置 * sm_scale + アンカー * ss_sx + (ピボット補正+オフセット) * size_sx」
+                            //   非 SS モードでは body_pos_px 全体に canvas_scale を乗算する
+                            let (cx, cy, eff_sx, eff_sy) = if scene_canvas_ss {
+                                // sm_transform の有無で位置スケールを切り替える
+                                let sm_scale_x = if ctx.sm_transform { ss_sx } else { 1.0 };
+                                let sm_scale_y = if ctx.sm_transform { ss_sy } else { 1.0 };
+                                let cx = ss_off_x
+                                    + pos_raw[0] * sm_scale_x        // 位置成分
+                                    + anchor[0]  * ss_sx              // アンカー (常にauto_scaleスケール)
+                                    + (pivot_corr_world[0] + off_wx) * size_sx;  // サイズ/ピボット成分
+                                let cy = (ss_off_y
+                                    + pos_raw[1] * sm_scale_y
+                                    + anchor[1]  * ss_sy
+                                    + (pivot_corr_world[1] + off_wy) * size_sy) * y_sign;
+                                (cx, cy, size_sx, size_sy)
+                            } else {
+                                (
+                                    (ctx.body_pos_px[0] + off_wx) * canvas_scale,
+                                    (ctx.body_pos_px[1] + off_wy) * canvas_scale * y_sign,
+                                    canvas_scale,
+                                    canvas_scale,
+                                )
+                            };
+
+                            match &collider.shape {
+                                ColliderShape2dData::Box { half_extents } => {
+                                    let hx = half_extents[0] * scale[0].abs() * eff_sx;
+                                    let hy = half_extents[1] * scale[1].abs() * eff_sy;
+                                    lb.add_box_2d([cx, cy], rot_rad * y_sign, [hx, hy], 0.0, color);
+                                }
+                                ColliderShape2dData::Circle { radius } => {
+                                    let r = radius * scale[0].abs().max(scale[1].abs()) * eff_sx.max(eff_sy);
+                                    lb.add_circle_2d([cx, cy], r, 32, 0.0, color);
+                                }
+                                ColliderShape2dData::Capsule { radius, half_height } => {
+                                    let r  = radius * scale[0].abs().max(scale[1].abs()) * eff_sx.max(eff_sy);
+                                    let hh = half_height * scale[1].abs() * eff_sy;
+                                    lb.add_capsule_2d([cx, cy], rot_rad * y_sign, r, hh, 16, 0.0, color);
+                                }
+                                ColliderShape2dData::ConvexHull { vertices } => {
+                                    let world_verts: Vec<[f32; 2]> = vertices.iter()
+                                        .map(|&[vx, vy]| {
+                                            let svx = vx * scale[0];
+                                            let svy = vy * scale[1];
+                                            let rwx = cos * svx - sin * svy;
+                                            let rwy = sin * svx + cos * svy;
+                                            [
+                                                cx + rwx * eff_sx,
+                                                cy + rwy * eff_sy * y_sign,
+                                            ]
+                                        })
+                                        .collect();
+                                    lb.add_convex_hull_2d(&world_verts, 0.0, color);
+                                }
+                            }
+                        }
+
+                        if lb.is_empty() { None } else { Some(lb.build(&draw_ctx.device)) }
+                    } else { None };
+
                     // スプライト描画リソース収集（render pass 前に GPU バッファを準備する）
                     // CanvasTransform + SpriteComponent を持つアクターを列挙し、
                     // テクスチャをキャッシュから取得または新規ロードして SpritePrepared を生成する。
@@ -1642,13 +1842,27 @@ impl App {
                             }
                         }
 
-                        // コライダーワイヤーフレーム（エディタモード + 3D シーンのみ）
+                        // コライダーワイヤーフレーム（エディタモード + 3D シーン）
+                        // scene_canvas_ss=true（3D + スクリーンスペース 2D の合成）でも
+                        // 3D コライダーは 3D カメラパスで描画するためガードしない
+                        if let (Some(coll_batch), Some((_, line_bg))) =
+                            (&collider_wireframe_batch, &self.line_model_buf)
+                        {
+                            draw_line_batch(
+                                &mut pass, coll_batch,
+                                &camera_buf.bind_group, line_bg,
+                                &draw_ctx.pipelines,
+                            );
+                        }
+
+                        // 2D コライダーワイヤーフレーム（アクター編集 2D タブ + ワールドスペースキャンバス）
+                        // scene_canvas_ss の場合はオーバーレイパスで描画するためスキップする
                         if !scene_canvas_ss {
-                            if let (Some(coll_batch), Some((_, line_bg))) =
-                                (&collider_wireframe_batch, &self.line_model_buf)
+                            if let (Some(coll2d_batch), Some((_, line_bg))) =
+                                (&collider_2d_wireframe_batch, &self.line_model_buf)
                             {
                                 draw_line_batch(
-                                    &mut pass, coll_batch,
+                                    &mut pass, coll2d_batch,
                                     &camera_buf.bind_group, line_bg,
                                     &draw_ctx.pipelines,
                                 );
@@ -1726,6 +1940,17 @@ impl App {
                             {
                                 draw_line_batch(
                                     &mut overlay_pass, rect_batch,
+                                    &canvas_cam_buf.bind_group, line_bg,
+                                    &draw_ctx.pipelines,
+                                );
+                            }
+
+                            // 2D コライダーワイヤーフレーム（シーン SS オーバーレイパス）
+                            if let (Some(coll2d_batch), Some((_, line_bg))) =
+                                (&collider_2d_wireframe_batch, &self.line_model_buf)
+                            {
+                                draw_line_batch(
+                                    &mut overlay_pass, coll2d_batch,
                                     &canvas_cam_buf.bind_group, line_bg,
                                     &draw_ctx.pipelines,
                                 );
@@ -2205,6 +2430,23 @@ impl App {
 
         self.input.end_frame();
         self.cam_input.end_frame();
+
+        // ── Play モード初回フレーム末尾で物理スレッドを起動する ─────────────────
+        // フレーム先頭（update_physics/update_physics_2d）で起動すると、
+        // wgpu の初回シェーダーコンパイル・テクスチャアップロード等（~1 秒程度）の間に
+        // 物理スレッドが 60Hz で走り続け、1 秒分の先行が生じる。
+        // フレーム末尾（GPU present 後）に起動することで、次フレームまでの ~16ms しか
+        // 物理が進まないため、初期位置のズレが発生しない。
+        if self.mode == RuntimeMode::Play && !self.paused {
+            if self.physics_thread.is_none() {
+                eprintln!("[PHYS3D] 初回フレーム末に 3D 物理スレッドを起動");
+                self.start_physics();
+            }
+            if self.physics_thread_2d.is_none() {
+                eprintln!("[PHYS2D] 初回フレーム末に 2D 物理スレッドを起動");
+                self.start_physics_2d();
+            }
+        }
 
         if dbg { eprintln!("[SEED FRAME {dbg_frame}] end"); }
         if let Some(window) = &self.window { window.request_redraw(); }

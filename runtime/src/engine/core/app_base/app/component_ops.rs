@@ -16,7 +16,7 @@ use crate::engine::components::{
     ModelComponent, Transform as ActorTransform, ComponentKind, ComponentData,
     PlaceholderScriptSlot, CanvasComponent,
     GROUP_ID_BASE, CanvasTransform, SpriteComponent, InputMapComponent,
-    CameraComponent, ColliderComponent,
+    CameraComponent, ColliderComponent, Collider2dComponent,
 };
 use crate::engine::core::app_base::undo::ComponentSlotsSnapshotCommand;
 
@@ -240,6 +240,11 @@ impl App {
                     // ColliderComponent のデータを JSON シリアライズしてエディタへ送信する
                     let json = serde_json::to_string(d).unwrap_or_default();
                     ("ColliderComponent", format!(r#","collider_data":{json}"#))
+                }
+                ComponentData::Collider2dComponent(d) => {
+                    // Collider2dComponent のデータを JSON シリアライズしてエディタへ送信する
+                    let json = serde_json::to_string(d).unwrap_or_default();
+                    ("Collider2dComponent", format!(r#","collider_data":{json}"#))
                 }
                 ComponentData::LegacyRigidbodyComponent(_) => {
                     // 旧フォーマット互換: to_data_recursive からは生成されないため通常は到達しない
@@ -518,6 +523,35 @@ impl App {
                     let mut c = 0u32;
                     if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
                         actor.add_slot_typed::<ColliderComponent>(name, ComponentKind::Collider, slot_entity);
+                        true
+                    } else {
+                        scene.world.despawn(slot_entity);
+                        false
+                    }
+                };
+                if found {
+                    let after_slots = self.snapshot_actor_slots(wl, actor_dfs_id);
+                    self.undo_history.record(Box::new(ComponentSlotsSnapshotCommand {
+                        world_line: wl, actor_dfs_id, before_slots, after_slots,
+                    }));
+                    self.actor_virtual_selected_slot_idx = 0;
+                    self.selected_instances.clear();
+                    self.send_hierarchy();
+                    self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
+                    if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+                }
+            }
+            "Collider2dComponent" => {
+                // デフォルト（Box 形状 100×100px）の Collider2dComponent を 2D アクターに追加する。
+                // 形状・サイズ・オフセットはインスペクターから後で変更可能。
+                let name = slot_name.to_string();
+                let found = {
+                    let scene = self.scene.as_mut().unwrap();
+                    let slot_entity = scene.world.spawn();
+                    scene.world.insert(slot_entity, Collider2dComponent::default());
+                    let mut c = 0u32;
+                    if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
+                        actor.add_slot_typed::<Collider2dComponent>(name, ComponentKind::Collider2d, slot_entity);
                         true
                     } else {
                         scene.world.despawn(slot_entity);

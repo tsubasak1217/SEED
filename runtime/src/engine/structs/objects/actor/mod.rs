@@ -313,6 +313,11 @@ impl Actor {
                     world.get::<ColliderComponent>(slot.entity)
                         .map(|cc| ComponentData::ColliderComponent(ColliderComponentData::from(cc)))
                 }
+                ComponentKind::Collider2d => {
+                    // 2D コライダーコンポーネントをシリアライズ用データに変換する
+                    world.get::<crate::engine::components::Collider2dComponent>(slot.entity)
+                        .map(|cc| ComponentData::Collider2dComponent(crate::engine::components::Collider2dComponentData::from(cc)))
+                }
             };
             data.map(|d| ComponentSlotData { name: slot.name.clone(), component: d })
         }).collect();

@@ -208,6 +208,15 @@ pub enum IpcCommand {
     /// フォーマット: SET_COLLIDER_DATA:{actor_dfs_id},{slot_idx},{json}
     /// json は ColliderComponentData の serde_json シリアライズ結果（カンマ含む）
     SetColliderData { actor_dfs_id: u32, slot_idx: u32, json: String },
+    /// Collider2dComponent のデータ全体（リジッドボディ設定を含む）を JSON で設定する
+    /// フォーマット: SET_COLLIDER2D_DATA:{actor_dfs_id},{slot_idx},{json}
+    /// json は Collider2dComponentData の serde_json シリアライズ結果（カンマ含む）
+    SetCollider2dData { actor_dfs_id: u32, slot_idx: u32, json: String },
+    /// 編集時の 2D 物理シミュレーション設定。
+    /// enabled=true かつ with_rigidbody=false : 重力なし・全ボディを kinematic として衝突検出のみ
+    /// enabled=true かつ with_rigidbody=true  : 重力・ダイナミクスも有効な完全シミュレーション
+    /// フォーマット: SET_EDIT_PHYSICS_2D:{enabled},{with_rigidbody}  (0=off, 1=on)
+    SetEditPhysics2d { enabled: bool, with_rigidbody: bool },
     /// プラグインコンポーネントのフィールド値を設定する
     /// フォーマット: SET_PLUGIN_FIELD:{actor_dfs_id},{slot_idx},{key},{value}
     /// ※ key と value はカンマを含む可能性があるため最後の区切りのみ使用
@@ -872,6 +881,37 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                                     })
                                 } else { None }
                             } else { None }
+                        }
+                        s if s.starts_with("SET_COLLIDER2D_DATA:") => {
+                            // フォーマット: SET_COLLIDER2D_DATA:{actor_dfs_id},{slot_idx},{json}
+                            // json は Collider2dComponentData の JSON（カンマ含む）のため splitn(3) を使用
+                            let rest = &s["SET_COLLIDER2D_DATA:".len()..];
+                            let mut it = rest.splitn(3, ',');
+                            if let (Some(a_s), Some(sl_s), Some(json)) =
+                                (it.next(), it.next(), it.next())
+                            {
+                                if let (Ok(a), Ok(sl)) =
+                                    (a_s.trim().parse::<u32>(), sl_s.trim().parse::<u32>())
+                                {
+                                    Some(IpcCommand::SetCollider2dData {
+                                        actor_dfs_id: a,
+                                        slot_idx: sl,
+                                        json: json.to_string(),
+                                    })
+                                } else { None }
+                            } else { None }
+                        }
+                        s if s.starts_with("SET_EDIT_PHYSICS_2D:") => {
+                            // フォーマット: SET_EDIT_PHYSICS_2D:{enabled},{with_rigidbody}  (0/1)
+                            let rest = &s["SET_EDIT_PHYSICS_2D:".len()..];
+                            let mut it = rest.split(',');
+                            match (it.next(), it.next()) {
+                                (Some(e), Some(rb)) => Some(IpcCommand::SetEditPhysics2d {
+                                    enabled:        e.trim() == "1",
+                                    with_rigidbody: rb.trim() == "1",
+                                }),
+                                _ => None,
+                            }
                         }
                         s if s.starts_with("SET_PLUGIN_FIELD:") => {
                             // フォーマット: SET_PLUGIN_FIELD:{actor_dfs_id},{slot_idx},{key},{value}

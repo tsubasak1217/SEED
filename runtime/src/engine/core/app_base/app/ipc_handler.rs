@@ -523,6 +523,11 @@ impl App {
                                 self.stop_physics();
                                 self.start_physics();
                             }
+                            // 2D 物理シミュレーションが有効な場合、シーンロード後に再起動する
+                            if self.edit_physics_2d_enabled {
+                                self.stop_physics_2d();
+                                self.start_physics_2d();
+                            }
                             if let Some(ipc) = &self.ipc {
                                 ipc.send("SCENE_LOADED");
                                 let (pos, yaw, pitch, fov, far, spd) = self.cam_state_tuple();
@@ -792,6 +797,11 @@ impl App {
                     let j = json.clone();
                     self.handle_set_collider_data(actor_dfs_id, slot_idx, &j);
                 }
+                IpcCommand::SetCollider2dData { actor_dfs_id, slot_idx, json } => {
+                    // 2D コライダーコンポーネントデータを JSON でまとめて更新する
+                    let j = json.clone();
+                    self.handle_set_collider2d_data(actor_dfs_id, slot_idx, &j);
+                }
                 // ── プラグインコンポーネント ─────────────────────────────────
                 IpcCommand::SetPluginField { actor_dfs_id, slot_idx, key, value } => {
                     let k = key.clone();
@@ -849,6 +859,24 @@ impl App {
                 IpcCommand::SetPlayColliderDraw(v) => {
                     // 実行時コライダー描画フラグを更新する
                     self.play_collider_draw = v;
+                }
+
+                // ── 2D 物理シミュレーション設定 ──────────────────────────────
+                IpcCommand::SetEditPhysics2d { enabled, with_rigidbody } => {
+                    // Play モードでは無視する（Play 起動時の SyncViewportSettings による誤停止を防ぐ）
+                    if self.mode != RuntimeMode::Edit { continue; }
+                    // 編集時の 2D 物理シミュレーション設定を更新する
+                    self.edit_physics_2d_enabled        = enabled;
+                    self.edit_physics_2d_with_rigidbody = with_rigidbody;
+                    if enabled {
+                        // 既存 2D スレッドを停止してから新しい設定で再起動する
+                        self.stop_physics_2d();
+                        self.start_physics_2d();
+                    } else {
+                        self.stop_physics_2d();
+                        // 無効化時は衝突中 ID セットをクリアして描画色をリセットする
+                        self.active_collision_2d_dfs_ids.clear();
+                    }
                 }
             }
         }

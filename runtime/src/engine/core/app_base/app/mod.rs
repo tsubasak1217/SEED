@@ -23,6 +23,8 @@ mod component_ops;
 mod canvas_component_ops;
 mod camera_component_ops;
 mod physics_component_ops;
+mod physics2d_ops;
+mod physics2d_component_ops;
 mod transform_ops;
 mod camera_ops;
 mod gizmo_handler;
@@ -511,6 +513,29 @@ pub struct App {
     /// on_cursor_moved が update_physics より前に走り AT を更新してしまうため、
     /// 現フレームの AT ではなく「前フレームに送った位置」を安全確認済み位置として使う。
     pub(super) drag_prev_at_pos: Option<([f32; 3], [f32; 4])>,
+
+    // ── 2D 物理システム ───────────────────────────────────────────
+    /// 2D 固定ステップ物理スレッド（rapier2d バックエンド）。
+    /// Play モード開始時または編集時 2D 物理有効化時に起動し、停止時に Drop する。
+    pub(super) physics_thread_2d: Option<crate::engine::physics::PhysicsThread2d>,
+
+    /// 編集時の 2D 物理シミュレーション有効フラグ。
+    /// true のとき Edit モードでも 2D 物理スレッドを起動して衝突検出を行う。
+    pub(super) edit_physics_2d_enabled: bool,
+
+    /// 編集時の 2D 物理シミュレーションで RigidBody ダイナミクス（重力・慣性）を有効にするか。
+    /// false = 全ボディを kinematic として衝突検出のみ。
+    /// true  = 重力・動的応答も有効（キャンバスアクターが物理挙動で移動する）。
+    pub(super) edit_physics_2d_with_rigidbody: bool,
+
+    /// 現在フレームで 2D 衝突中のエンティティ DFS ID セット。
+    /// 2D 物理スレッドの衝突イベント（Enter/Stay）から毎フレーム更新される。
+    pub(super) active_collision_2d_dfs_ids: std::collections::HashSet<u64>,
+
+    /// 2D ギズモドラッグ中に一時的に kinematic 化している 2D 物理エンティティ ID。
+    /// None = ドラッグなし。ドラッグ開始時に SetBodyKinematic(true)、
+    /// 終了時に SetBodyKinematic(false) を 2D 物理スレッドへ送信する。
+    pub(super) dragging_physics_2d_entity_id: Option<u64>,
 }
 
 impl App {
@@ -605,6 +630,11 @@ impl App {
             pending_add_actor:  None,
             plugin_registry:  crate::engine::plugin::registry::PluginRegistry::empty(),
             physics_thread:   None,
+            physics_thread_2d:           None,
+            edit_physics_2d_enabled:     false,
+            edit_physics_2d_with_rigidbody: false,
+            active_collision_2d_dfs_ids: std::collections::HashSet::new(),
+            dragging_physics_2d_entity_id: None,
         }
     }
 

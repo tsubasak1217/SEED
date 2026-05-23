@@ -323,9 +323,11 @@ impl App {
                                         ct.position[1] = new_mat[1][3] * pos_inv_scale * y_inv_sign - anchor_off[1];
                                         match self.tool_mode {
                                             crate::engine::core::app_base::ipc::ToolMode::Rotate => {
-                                                // new_mat = Rz(delta) * T(pos) なので col0 の XY 角度がデルタ回転
+                                                // new_mat = Rz(delta) * T(pos) なので col0 の XY 角度がデルタ回転。
+                                                // ワールドスペース描画時は Y 軸が反転しているため回転方向を逆符号にする。
                                                 let delta_angle = new_mat[1][0].atan2(new_mat[0][0]).to_degrees();
-                                                ct.rotation = start_ct.rotation + delta_angle;
+                                                let rot_sign = if use_ss_c { 1.0f32 } else { -1.0 };
+                                                ct.rotation = start_ct.rotation + delta_angle * rot_sign;
                                                 ct.scale    = start_ct.scale;
                                             }
                                             crate::engine::core::app_base::ipc::ToolMode::Scale => {

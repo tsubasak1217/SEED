@@ -118,8 +118,9 @@ impl App {
             self.load_play_scene();
             let actor_count = self.scene.as_ref().map(|s| s.actors.len()).unwrap_or(0);
             eprintln!("[SEED INIT] load_play_scene done  actors={actor_count}");
-            self.start_physics();
-            eprintln!("[SEED INIT] start_physics done");
+            // 物理スレッドは初回フレームまで起動を遅延する。
+            // ここで起動するとロード中に物理演算が進み、アクターが意図しない初期状態になる。
+            // update_physics() / update_physics_2d() の先頭で自動起動される。
         }
 
         // ── ウィンドウ表示（全初期化完了後）────────────────────────────

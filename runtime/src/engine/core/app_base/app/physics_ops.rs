@@ -97,6 +97,9 @@ impl App {
     /// 3. 衝突中エンティティ DFS ID セットを更新する（コライダー色変更用）
     /// 4. Kinematic Actor の Transform を物理スレッドへ送信する
     pub(super) fn update_physics(&mut self) {
+        // 物理スレッドが未起動の場合はスキップする。
+        // Play モードの初回起動は handle_redraw_requested() のフレーム末尾で行う。
+        // （フレーム先頭で起動すると初回 GPU 処理の間に物理が先行してしまうため）
         let Some(thread) = &self.physics_thread else { return };
 
         // 診断ログ（最初の 120 フレームのみ）

@@ -131,6 +131,10 @@ impl App {
                     ComponentKind::Camera      => { scene.world.remove::<CameraComponent>(slot_entity); }
                     ComponentKind::Plugin      => { scene.world.remove::<PluginComponent>(slot_entity); }
                     ComponentKind::Collider    => { scene.world.remove::<ColliderComponent>(slot_entity); }
+                    ComponentKind::Collider2d  => {
+                        use crate::engine::components::Collider2dComponent;
+                        scene.world.remove::<Collider2dComponent>(slot_entity);
+                    }
                 }
                 scene.world.despawn(slot_entity);
                 // アクターのスロットリストから削除
@@ -350,6 +354,16 @@ impl App {
                 } else { scene.world.despawn(slot_entity); }
                 true
             }
+            ComponentData::Collider2dComponent(cc_data) => {
+                use crate::engine::components::Collider2dComponent;
+                let slot_entity = scene.world.spawn();
+                scene.world.insert(slot_entity, Collider2dComponent::from(cc_data));
+                let mut c = 0u32;
+                if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
+                    actor.add_slot_typed::<Collider2dComponent>(slot_data.name, ComponentKind::Collider2d, slot_entity);
+                } else { scene.world.despawn(slot_entity); }
+                true
+            }
             ComponentData::LegacyRigidbodyComponent(_) => {
                 // 旧フォーマット互換: ColliderComponent に統合済みのためスロット追加しない
                 false
@@ -512,6 +526,11 @@ impl App {
                 ComponentData::ColliderComponent(cc_data) => {
                     scene.world.insert(slot_entity, ColliderComponent::from(cc_data));
                     new_slots.push(ComponentSlot::new::<ColliderComponent>(slot_data.name, ComponentKind::Collider, slot_entity));
+                }
+                ComponentData::Collider2dComponent(cc_data) => {
+                    use crate::engine::components::Collider2dComponent;
+                    scene.world.insert(slot_entity, Collider2dComponent::from(cc_data));
+                    new_slots.push(ComponentSlot::new::<Collider2dComponent>(slot_data.name, ComponentKind::Collider2d, slot_entity));
                 }
                 ComponentData::LegacyRigidbodyComponent(_) => {
                     // 旧フォーマット互換: ColliderComponent に統合済みのためスキップする

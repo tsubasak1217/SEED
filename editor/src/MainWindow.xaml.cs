@@ -65,6 +65,10 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
     private bool _editPhysicsEnabled = false;
     /// <summary>編集時物理で RigidBody（重力・ダイナミクス）も有効にするかどうか。</summary>
     private bool _editPhysicsWithRigidbody = false;
+    /// <summary>編集モードで 2D 物理シミュレーションを動作させるかどうか。</summary>
+    private bool _editPhysics2dEnabled = false;
+    /// <summary>編集時 2D 物理で RigidBody（重力・ダイナミクス）も有効にするかどうか。</summary>
+    private bool _editPhysics2dWithRigidbody = false;
 
     // ── シーン保存状態 ─────────────────────────────────────────
     /// <summary>現在開いているシーンのファイルパス。null = 新規未保存シーン。</summary>
@@ -1223,6 +1227,38 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
             $"SET_EDIT_PHYSICS:{(_editPhysicsEnabled ? 1 : 0)},{(_editPhysicsWithRigidbody ? 1 : 0)}");
     }
 
+    /// <summary>
+    /// "編集時の 2D 物理シミュレーション" チェックボックスが変更されたときに呼ばれる。
+    /// RigidBody サブパネルの表示を切り替え、IPC コマンドで Runtime に通知する。
+    /// </summary>
+    private void OnEditPhysics2dChanged(object sender, RoutedEventArgs e)
+    {
+        _editPhysics2dEnabled = ChkEditPhysics2d.IsChecked == true;
+        // RigidBody サブオプションの表示・非表示を切り替える
+        PnlEditPhysics2dRigidbody.Visibility = _editPhysics2dEnabled
+            ? System.Windows.Visibility.Visible
+            : System.Windows.Visibility.Collapsed;
+        // 無効化時は RigidBody チェックもリセットする
+        if (!_editPhysics2dEnabled)
+        {
+            ChkEditPhysics2dRigidbody.IsChecked = false;
+            _editPhysics2dWithRigidbody = false;
+        }
+        _runtimeManager?.SendToRuntime(
+            $"SET_EDIT_PHYSICS_2D:{(_editPhysics2dEnabled ? 1 : 0)},{(_editPhysics2dWithRigidbody ? 1 : 0)}");
+    }
+
+    /// <summary>
+    /// 2D 物理の "RigidBody" サブチェックボックスが変更されたときに呼ばれる。
+    /// フラグを更新し、IPC コマンドで Runtime に通知する。
+    /// </summary>
+    private void OnEditPhysics2dRigidbodyChanged(object sender, RoutedEventArgs e)
+    {
+        _editPhysics2dWithRigidbody = ChkEditPhysics2dRigidbody.IsChecked == true;
+        _runtimeManager?.SendToRuntime(
+            $"SET_EDIT_PHYSICS_2D:{(_editPhysics2dEnabled ? 1 : 0)},{(_editPhysics2dWithRigidbody ? 1 : 0)}");
+    }
+
     // ── Play 時カーソルクランプ（IPC 経由で Rust 側が毎フレーム適用）──────
 
     private void OnRuntimeHwndAvailable(nint hwnd)
@@ -1945,6 +1981,8 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         {
             _runtimeManager?.SendToRuntime(
                 $"SET_EDIT_PHYSICS:{(_editPhysicsEnabled ? 1 : 0)},{(_editPhysicsWithRigidbody ? 1 : 0)}");
+            _runtimeManager?.SendToRuntime(
+                $"SET_EDIT_PHYSICS_2D:{(_editPhysics2dEnabled ? 1 : 0)},{(_editPhysics2dWithRigidbody ? 1 : 0)}");
         }
         // コライダー描画は Play/Edit 両方で送信する
         _runtimeManager?.SendToRuntime($"SET_PLAY_COLLIDER_DRAW:{(_playColliderDraw ? 1 : 0)}");

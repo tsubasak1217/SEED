@@ -18,6 +18,7 @@ pub mod inputmap_component;
 pub mod camera_component;
 pub mod plugin_component;
 pub mod collider_component;
+pub mod collider2d_component;
 pub mod rigidbody_component;
 
 pub use transform::Transform;
@@ -35,6 +36,9 @@ pub use inputmap_component::{InputMapComponent, InputMapComponentData};
 pub use camera_component::{CameraComponent, CameraComponentData, ScalingMode};
 pub use plugin_component::{PluginComponent, PluginComponentData};
 pub use collider_component::{ColliderComponent, ColliderComponentData, ColliderShapeData};
+pub use collider2d_component::{
+    Collider2dComponent, Collider2dComponentData, ColliderShape2dData,
+};
 // RigidbodyComponentData は旧フォーマットシーンの後方互換デシリアライズ専用
 pub use rigidbody_component::RigidbodyComponentData;
 
@@ -67,6 +71,8 @@ pub enum ComponentKind {
     Plugin,
     /// 物理コライダー（衝突形状の定義、リジッドボディ設定を内包）
     Collider,
+    /// 2D 物理コライダー（キャンバスアクター用、衝突形状・リジッドボディ設定を内包）
+    Collider2d,
 }
 
 impl ComponentKind {
@@ -82,6 +88,7 @@ impl ComponentKind {
             Self::Camera      => "CameraComponent",
             Self::Plugin      => "PluginComponent",
             Self::Collider    => "ColliderComponent",
+            Self::Collider2d  => "Collider2dComponent",
         }
     }
 }
@@ -103,6 +110,8 @@ pub enum ComponentData {
     PluginComponent(PluginComponentData),
     /// 物理コライダー（リジッドボディ設定を内包）
     ColliderComponent(ColliderComponentData),
+    /// 2D 物理コライダー（キャンバスアクター用）
+    Collider2dComponent(Collider2dComponentData),
     /// 旧フォーマット互換 — 読み込み時に ColliderComponent へ移行される
     #[serde(rename = "RigidbodyComponent")]
     LegacyRigidbodyComponent(RigidbodyComponentData),

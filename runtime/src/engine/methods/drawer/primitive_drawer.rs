@@ -463,6 +463,144 @@ impl LineBatch {
         }
     }
 
+    // ── 2D キャンバス専用ワイヤーフレーム ────────────────────────────────────
+
+    /// 2D ボックスワイヤーフレームを XY 平面に追加する（Z=depth）。
+    ///
+    /// - `center`      : 中心座標 [x, y] (canvas 単位)
+    /// - `rotation_rad`: Z 軸周り回転（ラジアン）
+    /// - `half_extents`: ローカル半サイズ [hx, hy] (canvas 単位)
+    /// - `depth`       : Z 座標（前後ソート用、通常 0.0）
+    /// - `color`       : 線の色
+    pub fn add_box_2d(
+        &mut self,
+        center:       [f32; 2],
+        rotation_rad: f32,
+        half_extents: [f32; 2],
+        depth:        f32,
+        color:        [f32; 4],
+    ) {
+        let (sin, cos) = rotation_rad.sin_cos();
+        let [cx, cy] = center;
+        let [hx, hy] = half_extents;
+
+        // ローカル 4 コーナーを回転してワールドへ変換
+        let corners = [
+            [-hx, -hy], [ hx, -hy], [ hx,  hy], [-hx,  hy],
+        ].map(|[lx, ly]| {
+            [cx + cos * lx - sin * ly, cy + sin * lx + cos * ly, depth]
+        });
+
+        // 4 辺を描画する
+        self.add_line(corners[0], corners[1], color);
+        self.add_line(corners[1], corners[2], color);
+        self.add_line(corners[2], corners[3], color);
+        self.add_line(corners[3], corners[0], color);
+    }
+
+    /// 2D 円ワイヤーフレームを XY 平面に追加する（Z=depth）。
+    ///
+    /// - `center`  : 中心座標 [x, y] (canvas 単位)
+    /// - `radius`  : 半径 (canvas 単位)
+    /// - `segments`: 分割数（最小 8）
+    /// - `depth`   : Z 座標
+    /// - `color`   : 線の色
+    pub fn add_circle_2d(
+        &mut self,
+        center:   [f32; 2],
+        radius:   f32,
+        segments: usize,
+        depth:    f32,
+        color:    [f32; 4],
+    ) {
+        let [cx, cy] = center;
+        let n = segments.max(8);
+        for i in 0..n {
+            let t0 = 2.0 * PI * i as f32 / n as f32;
+            let t1 = 2.0 * PI * (i + 1) as f32 / n as f32;
+            self.add_line(
+                [cx + radius * t0.cos(), cy + radius * t0.sin(), depth],
+                [cx + radius * t1.cos(), cy + radius * t1.sin(), depth],
+                color,
+            );
+        }
+    }
+
+    /// 2D カプセルワイヤーフレームを XY 平面に追加する（Z=depth）。
+    ///
+    /// - `center`      : 中心座標 [x, y] (canvas 単位)
+    /// - `rotation_rad`: Z 軸周り回転（ラジアン）。長軸が Y 方向。
+    /// - `radius`      : 半径 (canvas 単位)
+    /// - `half_height` : 円筒部の半高さ (canvas 単位)
+    /// - `segments`    : 半円の分割数（最小 8）
+    /// - `depth`       : Z 座標
+    /// - `color`       : 線の色
+    pub fn add_capsule_2d(
+        &mut self,
+        center:       [f32; 2],
+        rotation_rad: f32,
+        radius:       f32,
+        half_height:  f32,
+        segments:     usize,
+        depth:        f32,
+        color:        [f32; 4],
+    ) {
+        let [cx, cy] = center;
+        let (sin, cos) = rotation_rad.sin_cos();
+        let n = (segments.max(8) / 2).max(4);
+
+        // ローカル座標をワールドに変換するクロージャ
+        let to_world = |lx: f32, ly: f32| -> [f32; 3] {
+            [cx + cos * lx - sin * ly, cy + sin * lx + cos * ly, depth]
+        };
+
+        // 上端・下端の接線線（両脇 2 本）
+        self.add_line(to_world(-radius,  half_height), to_world(-radius, -half_height), color);
+        self.add_line(to_world( radius,  half_height), to_world( radius, -half_height), color);
+
+        // 上端半円（Y+方向）
+        for i in 0..n {
+            let t0 = PI * i as f32 / n as f32;           // 0..PI
+            let t1 = PI * (i + 1) as f32 / n as f32;
+            self.add_line(
+                to_world(-radius * t0.sin(),  half_height + radius * t0.cos()),
+                to_world(-radius * t1.sin(),  half_height + radius * t1.cos()),
+                color,
+            );
+        }
+
+        // 下端半円（Y-方向）
+        for i in 0..n {
+            let t0 = PI * i as f32 / n as f32;
+            let t1 = PI * (i + 1) as f32 / n as f32;
+            self.add_line(
+                to_world( radius * t0.sin(), -half_height - radius * t0.cos()),
+                to_world( radius * t1.sin(), -half_height - radius * t1.cos()),
+                color,
+            );
+        }
+    }
+
+    /// 2D 凸包ワイヤーフレームを XY 平面に追加する（Z=depth）。
+    ///
+    /// - `vertices`: 頂点リスト [x, y] (canvas 単位)
+    /// - `depth`   : Z 座標
+    /// - `color`   : 線の色
+    pub fn add_convex_hull_2d(
+        &mut self,
+        vertices: &[[f32; 2]],
+        depth:    f32,
+        color:    [f32; 4],
+    ) {
+        let n = vertices.len();
+        if n < 2 { return; }
+        for i in 0..n {
+            let a = vertices[i];
+            let b = vertices[(i + 1) % n];
+            self.add_line([a[0], a[1], depth], [b[0], b[1], depth], color);
+        }
+    }
+
     pub fn add_world_axes(&mut self, origin: [f32; 3], length: f32) {
         let o = origin;
         self.add_line(o, [o[0]+length, o[1],       o[2]      ], [1.0, 0.0, 0.0, 1.0]);

@@ -621,6 +621,7 @@ public partial class InspectorPanel : UserControl
             "CameraComponent"    => BuildCameraSlotContent(info),
             "PluginComponent"    => BuildPluginSlotContent(info),
             "ColliderComponent"  => BuildColliderSlotContent(info),
+            "Collider2dComponent" => BuildCollider2dSlotContent(info),
             _ => new TextBlock
             {
                 Text       = $"未対応のコンポーネント: {info.TypeId}",
@@ -1552,6 +1553,385 @@ public partial class InspectorPanel : UserControl
         return sp;
     }
 
+    // ── Collider2dComponent inspector（2D リジッドボディ統合版）────────────
+
+    /// <summary>
+    /// Collider2dComponent のインスペクター UI を構築して返す（2D キャンバス用）。
+    /// 形状・オフセット・トリガー・レイヤーに加え、
+    /// 「リジッドボディを使用」チェックをオンにすると物理演算パラメータが展開される。
+    /// 値変更時は SET_COLLIDER2D_DATA:{actorId},{slotIdx},{json} を送信する。
+    /// </summary>
+    private UIElement BuildCollider2dSlotContent(SlotInfo info)
+    {
+        var sp = new StackPanel { Margin = new Thickness(0, 4, 0, 4) };
+
+        // ── 現在の collider_data JSON をパース ──────────────────────────
+        string shapeType  = "Box";
+        float  heX = 50f, heY = 50f;   // ピクセル単位
+        float  radius     = 50f;
+        float  halfHeight = 100f;
+        float  offX = 0f, offY = 0f;
+        bool   isTrigger  = false;
+        int    physLayer  = 1;
+        int    layerMask  = 0;
+        // リジッドボディ設定
+        bool   useRb      = false;
+        float  mass = 1f, rest = 0.3f, fric = 0.5f, linDamp = 0.01f, angDamp = 0.05f, gravScale = 1f;
+        bool   isKinematic = false;
+        var    freezePos2  = new bool[2];
+        bool   freezeRot2  = false;
+        var    initLinVel2 = new float[2];
+        float  initAngVel2 = 0f;
+
+        try
+        {
+            using var doc = JsonDocument.Parse(info.ColliderDataJson);
+            var root = doc.RootElement;
+            if (root.TryGetProperty("shape", out var shape))
+            {
+                shapeType = shape.TryGetProperty("type", out var t) ? t.GetString() ?? "Box" : "Box";
+                if (shape.TryGetProperty("half_extents", out var he) && he.GetArrayLength() == 2)
+                { heX = he[0].GetSingle(); heY = he[1].GetSingle(); }
+                if (shape.TryGetProperty("radius",      out var r))  radius     = r.GetSingle();
+                if (shape.TryGetProperty("half_height", out var hh)) halfHeight = hh.GetSingle();
+            }
+            if (root.TryGetProperty("offset", out var off) && off.GetArrayLength() == 2)
+            { offX = off[0].GetSingle(); offY = off[1].GetSingle(); }
+            if (root.TryGetProperty("is_trigger",    out var it2)) isTrigger = it2.GetBoolean();
+            if (root.TryGetProperty("physics_layer", out var pl))  physLayer = pl.GetInt32();
+            if (root.TryGetProperty("layer_mask",    out var lm))  layerMask = lm.GetInt32();
+            if (root.TryGetProperty("use_rigidbody",   out var ur))  useRb       = ur.GetBoolean();
+            if (root.TryGetProperty("mass",            out var mv))  mass        = mv.GetSingle();
+            if (root.TryGetProperty("restitution",     out var rv2)) rest        = rv2.GetSingle();
+            if (root.TryGetProperty("friction",        out var fv))  fric        = fv.GetSingle();
+            if (root.TryGetProperty("linear_damping",  out var ld))  linDamp     = ld.GetSingle();
+            if (root.TryGetProperty("angular_damping", out var ad))  angDamp     = ad.GetSingle();
+            if (root.TryGetProperty("gravity_scale",   out var gs))  gravScale   = gs.GetSingle();
+            if (root.TryGetProperty("is_kinematic",    out var ik))  isKinematic = ik.GetBoolean();
+            if (root.TryGetProperty("freeze_position", out var fp) && fp.GetArrayLength() == 2)
+            { freezePos2[0] = fp[0].GetBoolean(); freezePos2[1] = fp[1].GetBoolean(); }
+            if (root.TryGetProperty("freeze_rotation", out var fr))  freezeRot2  = fr.GetBoolean();
+            if (root.TryGetProperty("initial_linear_velocity", out var ilv) && ilv.GetArrayLength() == 2)
+            { initLinVel2[0] = ilv[0].GetSingle(); initLinVel2[1] = ilv[1].GetSingle(); }
+            if (root.TryGetProperty("initial_angular_velocity", out var iav)) initAngVel2 = iav.GetSingle();
+        }
+        catch { /* デフォルト値を使用 */ }
+
+        // ── 現在値（クロージャ共有） ─────────────────────────────────────
+        var curShapeType  = shapeType;
+        var curHe         = new float[] { heX, heY };
+        var curRadius     = radius;
+        var curHalfHeight = halfHeight;
+        var curOffset     = new float[] { offX, offY };
+        var curTrigger    = isTrigger;
+        var curLayer      = physLayer;
+        var curMask       = layerMask;
+        var curUseRb      = useRb;
+        var curMass       = mass;      var curRest  = rest;    var curFric    = fric;
+        var curLinDamp    = linDamp;   var curAngD  = angDamp; var curGrav    = gravScale;
+        var curKinem      = isKinematic;
+        var curFreezeP    = (bool[])freezePos2.Clone();
+        var curFreezeR    = freezeRot2;
+        var curLinV       = (float[])initLinVel2.Clone();
+        var curAngV2      = initAngVel2;
+
+        // ── JSON 再構築 + 送信ヘルパー ───────────────────────────────────
+        void CommitCollider2d()
+        {
+            if (_currentActorId < 0) return;
+            static string F(float v) => v.ToString("G", CultureInfo.InvariantCulture);
+            static string B(bool  v) => v ? "true" : "false";
+            string shapeJson = curShapeType switch
+            {
+                "Circle"  => $"{{\"type\":\"Circle\",\"radius\":{F(curRadius)}}}",
+                "Capsule" => $"{{\"type\":\"Capsule\",\"radius\":{F(curRadius)},\"half_height\":{F(curHalfHeight)}}}",
+                _         => $"{{\"type\":\"Box\",\"half_extents\":[{F(curHe[0])},{F(curHe[1])}]}}",
+            };
+            var json =
+                $"{{\"shape\":{shapeJson}," +
+                $"\"offset\":[{F(curOffset[0])},{F(curOffset[1])}]," +
+                $"\"is_trigger\":{B(curTrigger)}," +
+                $"\"physics_layer\":{curLayer}," +
+                $"\"layer_mask\":{curMask}," +
+                $"\"use_rigidbody\":{B(curUseRb)}," +
+                $"\"mass\":{F(curMass)}," +
+                $"\"restitution\":{F(curRest)}," +
+                $"\"friction\":{F(curFric)}," +
+                $"\"linear_damping\":{F(curLinDamp)}," +
+                $"\"angular_damping\":{F(curAngD)}," +
+                $"\"gravity_scale\":{F(curGrav)}," +
+                $"\"is_kinematic\":{B(curKinem)}," +
+                $"\"freeze_position\":[{B(curFreezeP[0])},{B(curFreezeP[1])}]," +
+                $"\"freeze_rotation\":{B(curFreezeR)}," +
+                $"\"initial_linear_velocity\":[{F(curLinV[0])},{F(curLinV[1])}]," +
+                $"\"initial_angular_velocity\":{F(curAngV2)}}}";
+            _runtime?.SendToRuntime($"SET_COLLIDER2D_DATA:{_currentActorId},{info.SlotIdx},{json}");
+        }
+
+        // ────────────────────────────────────────────────────────────────
+        // コライダー設定
+        // ────────────────────────────────────────────────────────────────
+
+        // --- 形状タイプ コンボボックス ---
+        var shapeCombo = new ComboBox
+        {
+            Width = 120, Height = 22, FontSize = 11, Margin = new Thickness(4, 0, 0, 0),
+            Background = System.Windows.Media.Brushes.White,
+            Foreground = System.Windows.Media.Brushes.Black,
+        };
+        shapeCombo.Items.Add(new ComboBoxItem { Content = "Box",     Foreground = System.Windows.Media.Brushes.Black });
+        shapeCombo.Items.Add(new ComboBoxItem { Content = "Circle",  Foreground = System.Windows.Media.Brushes.Black });
+        shapeCombo.Items.Add(new ComboBoxItem { Content = "Capsule", Foreground = System.Windows.Media.Brushes.Black });
+        foreach (ComboBoxItem ci in shapeCombo.Items)
+            if (ci.Content as string == curShapeType) { shapeCombo.SelectedItem = ci; break; }
+        var shapeRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 4, 0, 2) };
+        shapeRow.Children.Add(new TextBlock
+        {
+            Text = "形状", Foreground = new SolidColorBrush(Color.FromRgb(0xAA, 0xAA, 0xAA)),
+            FontSize = 11, Width = 90, VerticalAlignment = VerticalAlignment.Center,
+        });
+        shapeRow.Children.Add(shapeCombo);
+        sp.Children.Add(shapeRow);
+
+        // --- 形状別パラメータエリア（動的に差し替え） ---
+        var shapeParamPanel = new StackPanel();
+        sp.Children.Add(shapeParamPanel);
+
+        // 2 値ラベル行ヘルパー（X, Y）
+        static (UIElement element, TextBox tx, TextBox ty) BuildXYRowSimple2d(string label, float vx, float vy)
+        {
+            TextBox MakeTb(float val) => new TextBox
+            {
+                Text              = val.ToString("F2", CultureInfo.InvariantCulture),
+                Background        = new SolidColorBrush(Color.FromRgb(0x1E, 0x1E, 0x1E)),
+                Foreground        = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)),
+                BorderBrush       = new SolidColorBrush(Color.FromRgb(0x44, 0x44, 0x44)),
+                BorderThickness   = new Thickness(1),
+                FontSize          = 11,
+                Padding           = new Thickness(4, 1, 4, 1),
+                Width             = 68,
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin            = new Thickness(2, 0, 0, 0),
+            };
+            var tx = MakeTb(vx); var ty = MakeTb(vy);
+            var row = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 2, 0, 2) };
+            row.Children.Add(new TextBlock
+            {
+                Text = label, FontSize = 11, Width = 90,
+                Foreground = new SolidColorBrush(Color.FromRgb(0xAA, 0xAA, 0xAA)),
+                VerticalAlignment = VerticalAlignment.Center,
+            });
+            row.Children.Add(tx); row.Children.Add(ty);
+            return (row, tx, ty);
+        }
+
+        void RebuildShapeParams2d()
+        {
+            shapeParamPanel.Children.Clear();
+            if (curShapeType == "Box")
+            {
+                var row = BuildXYRowSimple2d("半辺 HE (px)", curHe[0], curHe[1]);
+                shapeParamPanel.Children.Add(row.element);
+                void CommitHe() {
+                    if (!TryParseF(row.tx, out var x)) return;
+                    if (!TryParseF(row.ty, out var y)) return;
+                    curHe[0] = x; curHe[1] = y; CommitCollider2d();
+                }
+                row.tx.LostFocus += (_, _) => CommitHe(); row.tx.KeyDown += (_, e) => { if (e.Key is Key.Return or Key.Enter) CommitHe(); };
+                row.ty.LostFocus += (_, _) => CommitHe(); row.ty.KeyDown += (_, e) => { if (e.Key is Key.Return or Key.Enter) CommitHe(); };
+            }
+            else if (curShapeType == "Circle")
+            {
+                var rowR = BuildLabeledNumberRow("半径 (px)", curRadius);
+                shapeParamPanel.Children.Add(rowR.element);
+                void CommitR() {
+                    if (TryParseF(rowR.textBox, out var v)) { curRadius = v; CommitCollider2d(); }
+                }
+                rowR.textBox.LostFocus += (_, _) => CommitR();
+                rowR.textBox.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) CommitR(); };
+            }
+            else if (curShapeType == "Capsule")
+            {
+                var rowR  = BuildLabeledNumberRow("半径 (px)",   curRadius);
+                var rowHH = BuildLabeledNumberRow("半高さ (px)", curHalfHeight);
+                shapeParamPanel.Children.Add(rowR.element);
+                shapeParamPanel.Children.Add(rowHH.element);
+                void CommitRH() {
+                    if (!TryParseF(rowR.textBox,  out var r))  return;
+                    if (!TryParseF(rowHH.textBox, out var hh)) return;
+                    curRadius = r; curHalfHeight = hh; CommitCollider2d();
+                }
+                rowR.textBox.LostFocus  += (_, _) => CommitRH(); rowR.textBox.KeyDown  += (_, e) => { if (e.Key is Key.Return or Key.Enter) CommitRH(); };
+                rowHH.textBox.LostFocus += (_, _) => CommitRH(); rowHH.textBox.KeyDown += (_, e) => { if (e.Key is Key.Return or Key.Enter) CommitRH(); };
+            }
+        }
+        RebuildShapeParams2d();
+
+        shapeCombo.SelectionChanged += (_, _) =>
+        {
+            curShapeType  = (shapeCombo.SelectedItem as ComboBoxItem)?.Content as string ?? "Box";
+            curHe         = new float[] { 50f, 50f };
+            curRadius     = 50f;
+            curHalfHeight = 100f;
+            RebuildShapeParams2d();
+            CommitCollider2d();
+        };
+
+        // --- オフセット (px) ---
+        var offRow2d = BuildXYRowSimple2d("オフセット (px)", curOffset[0], curOffset[1]);
+        sp.Children.Add(offRow2d.element);
+        void CommitOff2d() {
+            if (!TryParseF(offRow2d.tx, out var x)) return;
+            if (!TryParseF(offRow2d.ty, out var y)) return;
+            curOffset[0] = x; curOffset[1] = y; CommitCollider2d();
+        }
+        offRow2d.tx.LostFocus += (_, _) => CommitOff2d(); offRow2d.tx.KeyDown += (_, e) => { if (e.Key is Key.Return or Key.Enter) CommitOff2d(); };
+        offRow2d.ty.LostFocus += (_, _) => CommitOff2d(); offRow2d.ty.KeyDown += (_, e) => { if (e.Key is Key.Return or Key.Enter) CommitOff2d(); };
+
+        // --- 押し戻し ---
+        var triggerRow2d = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 4, 0, 2) };
+        triggerRow2d.Children.Add(new TextBlock
+        {
+            Text = "押し戻し", Foreground = new SolidColorBrush(Color.FromRgb(0xAA, 0xAA, 0xAA)),
+            FontSize = 11, Width = 90, VerticalAlignment = VerticalAlignment.Center,
+        });
+        var triggerCheck2d = new CheckBox { IsChecked = !curTrigger, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(4, 0, 0, 0) };
+        triggerRow2d.Children.Add(triggerCheck2d);
+        sp.Children.Add(triggerRow2d);
+
+        // --- 物理レイヤー・マスク ---
+        var layerRow2d = BuildLabeledIntRow("物理レイヤー", curLayer);
+        sp.Children.Add(layerRow2d.element);
+        void CommitLayer2d() { if (int.TryParse(layerRow2d.textBox.Text, out var v)) { curLayer = v; CommitCollider2d(); } }
+        layerRow2d.textBox.LostFocus += (_, _) => CommitLayer2d();
+        layerRow2d.textBox.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) CommitLayer2d(); };
+
+        var maskRow2d = BuildLabeledIntRow("レイヤーマスク", curMask);
+        sp.Children.Add(maskRow2d.element);
+        void CommitMask2d() { if (int.TryParse(maskRow2d.textBox.Text, out var v)) { curMask = v; CommitCollider2d(); } }
+        maskRow2d.textBox.LostFocus += (_, _) => CommitMask2d();
+        maskRow2d.textBox.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) CommitMask2d(); };
+
+        // ────────────────────────────────────────────────────────────────
+        // リジッドボディ設定
+        // ────────────────────────────────────────────────────────────────
+        var rbSectionContainer2d = new StackPanel
+        {
+            Visibility = curTrigger ? Visibility.Collapsed : Visibility.Visible,
+        };
+        sp.Children.Add(rbSectionContainer2d);
+
+        triggerCheck2d.Checked   += (_, _) => { curTrigger = false; rbSectionContainer2d.Visibility = Visibility.Visible;   CommitCollider2d(); };
+        triggerCheck2d.Unchecked += (_, _) => { curTrigger = true;  rbSectionContainer2d.Visibility = Visibility.Collapsed; CommitCollider2d(); };
+
+        rbSectionContainer2d.Children.Add(new Separator { Margin = new Thickness(0, 6, 0, 2), Background = new SolidColorBrush(Color.FromRgb(0x44, 0x44, 0x44)) });
+
+        var useRbRow2d = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 2, 0, 4) };
+        useRbRow2d.Children.Add(new TextBlock
+        {
+            Text = "リジッドボディを使用", Foreground = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)),
+            FontSize = 11, Width = 130, VerticalAlignment = VerticalAlignment.Center, FontWeight = FontWeights.Bold,
+        });
+        var useRbCheck2d = new CheckBox { IsChecked = curUseRb, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(4, 0, 0, 0) };
+        useRbRow2d.Children.Add(useRbCheck2d);
+        rbSectionContainer2d.Children.Add(useRbRow2d);
+
+        var rbParamsPanel2d = new StackPanel();
+        var rbBorder2d = new Border
+        {
+            BorderBrush     = new SolidColorBrush(Color.FromRgb(0x44, 0x44, 0x44)),
+            BorderThickness = new Thickness(2, 0, 0, 0),
+            Margin          = new Thickness(8, 2, 0, 4),
+            Padding         = new Thickness(8, 4, 0, 4),
+            Child           = rbParamsPanel2d,
+            Visibility      = curUseRb ? Visibility.Visible : Visibility.Collapsed,
+        };
+
+        (UIElement element, TextBox textBox) MakeF2d(string label, float val) => BuildLabeledNumberRow(label, val);
+        var rowMass2d = MakeF2d("質量 (kg)",     curMass);
+        var rowRest2d = MakeF2d("反発係数",       curRest);
+        var rowFric2d = MakeF2d("摩擦係数",       curFric);
+        var rowLinD2d = MakeF2d("移動速度の減衰", curLinDamp);
+        var rowAngD2d = MakeF2d("回転速度の減衰", curAngD);
+        var rowGrav2d = MakeF2d("重力の倍率",     curGrav);
+        rbParamsPanel2d.Children.Add(rowMass2d.element);
+        rbParamsPanel2d.Children.Add(rowRest2d.element);
+        rbParamsPanel2d.Children.Add(rowFric2d.element);
+        rbParamsPanel2d.Children.Add(rowLinD2d.element);
+        rbParamsPanel2d.Children.Add(rowAngD2d.element);
+        rbParamsPanel2d.Children.Add(rowGrav2d.element);
+
+        void CommitFloats2d() {
+            if (!TryParseF(rowMass2d.textBox, out curMass))    return;
+            if (!TryParseF(rowRest2d.textBox, out curRest))    return;
+            if (!TryParseF(rowFric2d.textBox, out curFric))    return;
+            if (!TryParseF(rowLinD2d.textBox, out curLinDamp)) return;
+            if (!TryParseF(rowAngD2d.textBox, out curAngD))    return;
+            if (!TryParseF(rowGrav2d.textBox, out curGrav))    return;
+            CommitCollider2d();
+        }
+        foreach (var row2d in new[] { rowMass2d, rowRest2d, rowFric2d, rowLinD2d, rowAngD2d, rowGrav2d })
+        {
+            row2d.textBox.LostFocus += (_, _) => CommitFloats2d();
+            row2d.textBox.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) CommitFloats2d(); };
+        }
+
+        // --- キネマティック ---
+        rbParamsPanel2d.Children.Add(BuildCheckRow("キネマティック", curKinem,
+            v => { curKinem = v; CommitCollider2d(); }));
+
+        // --- 位置フリーズ [X, Y] ---
+        var freezePRow2d = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 3, 0, 2) };
+        freezePRow2d.Children.Add(new TextBlock
+        {
+            Text = "静止移動軸", FontSize = 11, Width = 90,
+            Foreground = new SolidColorBrush(Color.FromRgb(0xAA, 0xAA, 0xAA)),
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+        for (int i2 = 0; i2 < 2; i2++)
+        {
+            int idx2 = i2;
+            var lbl2 = new TextBlock { Text = i2 == 0 ? "X" : "Y", FontSize = 10, Foreground = new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88)), Margin = new Thickness(4, 0, 0, 0) };
+            var chk2 = new CheckBox { IsChecked = curFreezeP[idx2], VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(2, 0, 0, 0) };
+            chk2.Checked   += (_, _) => { curFreezeP[idx2] = true;  CommitCollider2d(); };
+            chk2.Unchecked += (_, _) => { curFreezeP[idx2] = false; CommitCollider2d(); };
+            freezePRow2d.Children.Add(lbl2);
+            freezePRow2d.Children.Add(chk2);
+        }
+        rbParamsPanel2d.Children.Add(freezePRow2d);
+
+        // --- 回転フリーズ（Z 軸のみ）---
+        rbParamsPanel2d.Children.Add(BuildCheckRow("静止回転軸 Z", curFreezeR,
+            v => { curFreezeR = v; CommitCollider2d(); }));
+
+        // --- 初速度 (px/s) ---
+        var rowLinV2d = BuildXYRowSimple2d("初速度 (px/s)", curLinV[0], curLinV[1]);
+        rbParamsPanel2d.Children.Add(rowLinV2d.element);
+        void CommitLinV2d() {
+            if (!TryParseF(rowLinV2d.tx, out var x)) return;
+            if (!TryParseF(rowLinV2d.ty, out var y)) return;
+            curLinV[0] = x; curLinV[1] = y; CommitCollider2d();
+        }
+        rowLinV2d.tx.LostFocus += (_, _) => CommitLinV2d(); rowLinV2d.tx.KeyDown += (_, e) => { if (e.Key is Key.Return or Key.Enter) CommitLinV2d(); };
+        rowLinV2d.ty.LostFocus += (_, _) => CommitLinV2d(); rowLinV2d.ty.KeyDown += (_, e) => { if (e.Key is Key.Return or Key.Enter) CommitLinV2d(); };
+
+        // --- 初期角速度 (rad/s) ---
+        var rowAngV2d = BuildLabeledNumberRow("初角速度 (rad/s)", curAngV2);
+        rbParamsPanel2d.Children.Add(rowAngV2d.element);
+        void CommitAngV2d() {
+            if (TryParseF(rowAngV2d.textBox, out var v)) { curAngV2 = v; CommitCollider2d(); }
+        }
+        rowAngV2d.textBox.LostFocus += (_, _) => CommitAngV2d();
+        rowAngV2d.textBox.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) CommitAngV2d(); };
+
+        rbSectionContainer2d.Children.Add(rbBorder2d);
+
+        useRbCheck2d.Checked   += (_, _) => { curUseRb = true;  rbBorder2d.Visibility = Visibility.Visible;   CommitCollider2d(); };
+        useRbCheck2d.Unchecked += (_, _) => { curUseRb = false; rbBorder2d.Visibility = Visibility.Collapsed; CommitCollider2d(); };
+
+        return sp;
+    }
+
     // ── InputMapComponent inspector ───────────────────────────
 
     /// <summary>InputMapComponent のインスペクター UI を構築して返す。</summary>
@@ -1765,10 +2145,10 @@ public partial class InspectorPanel : UserControl
         };
         sp.Children.Add(scaleSep);
 
-        // チェックボックス: トランスフォームをスケールする
+        // チェックボックス: アイテムのトランスフォームをスケールする
         var cbTransform = new CheckBox
         {
-            Content             = "トランスフォームをスケールする",
+            Content             = "アイテムのトランスフォームをスケールする",
             IsChecked           = info.ScaleTransform,
             Foreground          = new SolidColorBrush(Colors.White),
             FontSize            = 11,
@@ -1777,10 +2157,10 @@ public partial class InspectorPanel : UserControl
         };
         sp.Children.Add(cbTransform);
 
-        // チェックボックス: UIサイズをスケールする
+        // チェックボックス: アイテムのサイズをスケールする
         var cbSize = new CheckBox
         {
-            Content             = "UIサイズをスケールする",
+            Content             = "アイテムのサイズをスケールする",
             IsChecked           = info.ScaleSize,
             Foreground          = new SolidColorBrush(Colors.White),
             FontSize            = 11,

@@ -63,7 +63,8 @@ public partial class ComponentSelectorWindow : Window
         }),
         ("物理", new()
         {
-            new("ColliderComponent", "Collider", "衝突判定形状・リジッドボディをアクターにアタッチ（Box・Sphere・Capsule、重力有無は内部で設定）", ActorTarget.Actor3D),
+            new("ColliderComponent",   "Collider",    "衝突判定形状・リジッドボディをアクターにアタッチ（Box・Sphere・Capsule、重力有無は内部で設定）", ActorTarget.Actor3D),
+            new("Collider2dComponent", "Collider 2D", "2D コライダー・リジッドボディをアクターにアタッチ（Box・Circle・Capsule、ピクセル単位）",         ActorTarget.Actor2D),
         }),
         ("サウンド", new()),
         ("入力", new()
@@ -291,7 +292,8 @@ public partial class ComponentSelectorWindow : Window
         "SpriteComponent"    => "Sprite",
         "InputMapComponent"  => "InputMap",
         "CameraComponent"    => "Camera",
-        "ColliderComponent"  => "Collider",
+        "ColliderComponent"   => "Collider",
+        "Collider2dComponent" => "Collider2D",
         // Plugin:{name} → プラグイン名をデフォルト名とする
         _ when typeId.StartsWith("Plugin:", StringComparison.Ordinal) => typeId["Plugin:".Length..],
         _                    => typeId,

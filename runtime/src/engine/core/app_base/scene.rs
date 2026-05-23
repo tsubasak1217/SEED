@@ -496,6 +496,12 @@ pub fn build_actor(
                 world.insert(slot_entity, ColliderComponent::from(cc_data));
                 actor.add_slot_typed::<ColliderComponent>(slot_name, ComponentKind::Collider, slot_entity);
             }
+            ComponentData::Collider2dComponent(cc_data) => {
+                // 2D コライダーコンポーネントを ECS ワールドに挿入してスロットを登録する
+                use crate::engine::components::Collider2dComponent;
+                world.insert(slot_entity, Collider2dComponent::from(cc_data));
+                actor.add_slot_typed::<Collider2dComponent>(slot_name, ComponentKind::Collider2d, slot_entity);
+            }
             ComponentData::LegacyRigidbodyComponent(rb_data) => {
                 // 旧フォーマット（Rigidbody が独立コンポーネント）の後方互換マイグレーション。
                 // スロットエンティティは生成せず、同アクターの ColliderComponent にデータを適用する。

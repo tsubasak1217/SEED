@@ -1070,6 +1070,28 @@
                                                                           Checked="OnEditPhysicsRigidbodyChanged"
                                                                           Unchecked="OnEditPhysicsRigidbodyChanged"/>
                                                             </StackPanel>
+                                                            <!-- 区切り線 -->
+                                                            <Border Height="1" Background="#444444" Margin="0,4,0,6"/>
+                                                            <!-- 編集時の 2D 物理シミュレーション -->
+                                                            <CheckBox x:Name="ChkEditPhysics2d"
+                                                                      Content="編集時の 2D 物理シミュレーション"
+                                                                      Foreground="White" FontSize="11"
+                                                                      IsChecked="False"
+                                                                      Margin="0,0,0,4"
+                                                                      Checked="OnEditPhysics2dChanged"
+                                                                      Unchecked="OnEditPhysics2dChanged"/>
+                                                            <!-- 2D RigidBody サブオプション（2D 物理が有効なときのみ表示） -->
+                                                            <StackPanel x:Name="PnlEditPhysics2dRigidbody"
+                                                                        Visibility="Collapsed"
+                                                                        Margin="0,2,0,4">
+                                                                <CheckBox x:Name="ChkEditPhysics2dRigidbody"
+                                                                          Content="RigidBody（重力・ダイナミクスを有効にする）"
+                                                                          Foreground="White" FontSize="11"
+                                                                          IsChecked="False"
+                                                                          Margin="16,0,0,0"
+                                                                          Checked="OnEditPhysics2dRigidbodyChanged"
+                                                                          Unchecked="OnEditPhysics2dRigidbodyChanged"/>
+                                                            </StackPanel>
                                                         </StackPanel>
                                                     </Expander>
 
