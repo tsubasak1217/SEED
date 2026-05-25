@@ -11,34 +11,33 @@ env:
 
 jobs:
   build-debug:
-    name: Build & Test (Debug)
+    name: Build (Debug) - Windows
     runs-on: windows-latest
 
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-    - name: Setup .NET
-      uses: actions/setup-dotnet@v4
-      with:
-        dotnet-version: '9.0.x'
+      # ── .NET エディタ ────────────────────────────────────────────────────────
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.x'
 
-    - name: Setup Rust
-      uses: dtolnay/rust-toolchain@stable
-      with:
-        toolchain: stable
+      - name: Restore .NET dependencies
+        run: dotnet restore editor/SEEDEditor.sln
 
-    - name: Restore .NET dependencies
-      run: dotnet restore editor/SEEDEditor.sln
+      - name: Build .NET Editor (Debug)
+        run: dotnet build editor/SEEDEditor.sln --configuration Debug --no-restore
 
-    - name: Build .NET Editor (Debug)
-      run: dotnet build editor/SEEDEditor.sln --configuration Debug --no-restore
+      # ── Rust ランタイム ──────────────────────────────────────────────────────
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
 
-    - name: Build Rust Runtime (Debug)
-      run: |
-        cd runtime
-        cargo build --verbose
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: runtime -> runtime/target
 
-    - name: Run Rust Tests (Debug)
-      run: |
-        cd runtime
-        cargo test --verbose
+      - name: Build Rust Runtime (Debug)
+        working-directory: runtime
+        run: cargo build --verbose

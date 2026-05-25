@@ -38,8 +38,10 @@
     <Resource Include="resources\images\**\*.png"/>
   </ItemGroup>
 
-  <!-- llama-server.exe と依存 DLL をビルド出力ディレクトリへコピーする -->
-  <ItemGroup>
+  <!-- llama-server.exe と依存 DLL をビルド出力ディレクトリへコピーする。     -->
+  <!-- CI 環境（GitHub Actions が CI=true を設定）ではファイルが存在しないため、 -->
+  <!-- Condition で除外してビルドエラーを回避する。                              -->
+  <ItemGroup Condition="'$(CI)'!='true'">
     <Content Include="src\AI\LocalLlm\llama-server.exe">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <Link>llama-server.exe</Link>
