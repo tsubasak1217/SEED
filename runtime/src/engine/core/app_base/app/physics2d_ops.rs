@@ -9,29 +9,36 @@
 //                          Kinematic CanvasTransform を物理スレッドに送信し、
 //                          結果（動的 Rigidbody の Transform + 衝突イベント）を受信して適用する
 //
-//  【座標変換：anchor + pivot 補正】
-//    CanvasTransform.position は「ピボット点のキャンバスローカル位置」であり、
-//    実際のワールド（物理）位置は以下の 2 段補正が必要:
+//  【座標変換：canvas_collect.rs と同一の変換チェーン】
+//    collect_actor2d_contexts は canvas_collect.rs (collect_sprite_items) と
+//    完全に同じ座標変換チェーンを使って body_pos_px を計算する。
+//    これにより「スプライト描画位置 = 当たり判定位置」が保証される。
 //
-//    1. アンカー補正
-//       - ルートアクター（親 Canvas なし）: 補正なし（ワールドスペース）
-//       - 子アクター: anchor_off = parent_canvas_size × anchor × cumul_scale
-//       → eff_pos = position (* cumul_scale if sm_transform) + anchor_off
+//    変換チェーン:
+//    1. ルートアクターのアンカー計算（ビューポート基準）
+//       anchor_off = [vw * anchor[0] - vw/2,  vh * anchor[1] - vh/2]
+//       （ortho 原点 = 画面中央、anchor=0.5 → offset=0 で中央配置）
 //
-//    2. ピボット補正（視覚的 bbox 基準）
-//       - 視覚的バウンディングボックス（Sprite があればスプライトサイズ、なければコライダー AABB）を基準に
-//         pivot から center へのオフセットを計算し body_pos に加算する。
-//       - body_pos = eff_pos + R(rot) * (0.5 - pivot) * visual_bbox * scale
-//       → body_pos_px = eff_pos + pivot_corr_world
+//    2. auto_scale_factor（ルートキャンバスのみ）
+//       = [vp_w / canvas_w, vp_h / canvas_h]  (auto_scale=true の場合)
+//       この係数を child_cumul_scale に常に含める
 //
-//    body_pos_px が物理ボディの世界座標（ピクセル単位）。
-//    PIXELS_PER_METER で除算してメートルに変換して物理スレッドへ渡す。
+//    3. 子の累積スケール（scale_transform フラグに応じて）
+//       scale_transform=true : parent_cumul_scale * ct.scale * auto_scale_factor
+//       scale_transform=false: ct.scale * auto_scale_factor
+//
+//    4. pivot 補正でボディ中心（矩形の中心）を計算
+//       pivot_corr_canonical = (0.5 - ct.pivot) × ref_size
+//         ref_size: CanvasComponent あり → Canvas サイズ（Sprite 非依存）
+//                   CanvasComponent なし → コライダーバウンディングボックスサイズ
+//       body_pos_px = actor_pivot_world + R(parent_rot) * R(local_rot) * S(ct.scale) * pivot_corr_canonical
 //
 //  【書き戻し（Dynamic ボディ位置 → CanvasTransform）】
-//    eff_pos_new = new_pos * PPM
+//    actor_pivot_world = new_pos * PPM - R(new_rot) * pivot_corr_local
+//    eff_pos_local = R(-parent_world_rot) * (actor_pivot_world - parent_canvas_origin)
 //    ct.position = sm_transform
-//                  ? (eff_pos_new - anchor_off) / cumul_scale
-//                  : eff_pos_new - anchor_off
+//                  ? (eff_pos_local - anchor_off) / parent_cumul_scale
+//                  : eff_pos_local - anchor_off
 //
 //  【編集時物理シミュレーション】
 //    edit_physics_2d_with_rigidbody=false : 全ボディを kinematic + 重力なし で起動。
@@ -39,9 +46,10 @@
 //    edit_physics_2d_with_rigidbody=true  : 通常の Play 物理と同様（重力・ダイナミクスあり）。
 // ============================================================
 
+use std::collections::HashMap;
 use crate::engine::components::{
-    Collider2dComponent, ColliderShape2dData, CanvasTransform, CanvasComponent,
-    SpriteComponent, ComponentKind,
+    Collider2dComponent, CanvasTransform, CanvasComponent,
+    ComponentKind,
 };
 use crate::engine::ecs::Entity;
 use crate::engine::physics::{
@@ -51,6 +59,7 @@ use crate::engine::physics::{
 use crate::engine::core::app_base::scene::Scene;
 use crate::engine::structs::objects::actor::{Actor, ActorKind};
 use super::{App, RuntimeMode, InspectorTransformDrag};
+use super::canvas_collect::build_canvas_viewport_map;
 
 // ─── Actor2d 物理コンテキスト ────────────────────────────────────────────────
 
@@ -58,50 +67,74 @@ use super::{App, RuntimeMode, InspectorTransformDrag};
 ///
 /// collect_actor2d_contexts() で DFS 順に一括収集し、
 /// start_physics_2d / update_physics_2d / frame_renderer のすべてのロジックで共有する。
+///
+/// 【設計方針】
+///   body_pos_px = CanvasTransform.position のワールド位置（ピボット点）。
+///   Collider と Sprite は完全に独立しており、互いに影響しない。
+///   コライダーの位置は body_pos_px + R(rot) * collider.offset で決まる。
 pub(crate) struct Actor2dPhysicsCtx {
     /// DFS 1-indexed エンティティ ID（物理スレッドの entity_id と一致）
     pub(crate) dfs_id:           u64,
     /// ECS アクターエンティティ（CanvasTransform 書き戻し用）
     pub(crate) actor_entity:     Entity,
-    /// ピクセル単位のボディ中心ワールド位置（anchor + pivot 補正済み）
+    /// CanvasTransform.position のワールド位置（ortho 空間、ビューポート中心が原点）。
+    /// = CanvasTransform のピボット点のワールド座標。
+    /// Sprite や pivot 設定の影響を受けない。
     pub(crate) body_pos_px:      [f32; 2],
     /// 累積ワールド回転（ラジアン）= 全祖先の回転を合算した値。
-    /// 物理スレッドへの rotation および書き戻し時の回転計算に使用する。
     pub(crate) rot_rad:          f32,
     /// アクタースケール（ローカル）
     pub(crate) scale:            [f32; 2],
-    /// アンカーオフセット（親キャンバスローカル空間・ピクセル）。書き戻し時に eff_pos から減算する。
+    /// アンカーオフセット（ortho 空間）。書き戻し時に使用。
     pub(crate) anchor_off:       [f32; 2],
-    /// ピボット補正ローカルベクトル（ピクセル）。書き戻し時に R(new_rot) を掛けて減算する。
-    pub(crate) pivot_corr_local: [f32; 2],
     /// true なら親スケールで position をスケール済み（書き戻し時に除算が必要）
     pub(crate) sm_transform:     bool,
-    /// 親累積スケール（sm_transform=true 時の書き戻し除算に使用）
+    /// 親累積スケール（auto_scale_factor 込み）。書き戻し時の sm_transform 逆スケールに使用。
     pub(crate) cumul_scale:      [f32; 2],
+    /// ピボット補正ローカルベクトル（スケール・回転前の正規化値）。
+    /// = (0.5 - pivot) × ref_size × size_eff
+    ///   ref_size: CanvasComponent あり → Canvas サイズ / なし → コライダー AABB サイズ
+    /// 書き戻し時に body_pos_px → actor_pivot_world を求めるために使用する。
+    pub(crate) pivot_corr_local: [f32; 2],
+    /// コライダー形状・オフセットのスケール係数 X。
+    /// sm_size=true: parent_cumul_scale[0]、それ以外 1.0
+    pub(crate) size_sx:          f32,
+    /// コライダー形状・オフセットのスケール係数 Y
+    pub(crate) size_sy:          f32,
     /// Collider2d スロットエンティティ。None = Collider2d コンポーネントなし。
     pub(crate) collider_slot_entity: Option<Entity>,
-    /// 親キャンバスの原点ワールド位置（ピクセル）。
-    /// 書き戻し時にワールド座標から親ローカル座標へ変換するために使用する。
+    /// 親キャンバスの原点ワールド位置（ortho 空間ピクセル）。書き戻し用。
     pub(crate) parent_canvas_origin: [f32; 2],
-    /// 親の累積ワールド回転（ラジアン）。
-    /// 書き戻し時に累積回転から親回転を除いてローカル回転を求めるために使用する。
+    /// 親の累積ワールド回転（ラジアン）。書き戻し用。
     pub(crate) parent_world_rot:     f32,
 }
 
 /// シーン内の全アクターを DFS 順に走査し、Actor2D の物理コンテキストを収集する。
 ///
-/// - DFS カウンタは 3D アクターも含めて全アクターをカウントするため、
-///   物理スレッドの entity_id（= DFS 1-indexed）と一致する。
-/// - anchor / pivot 補正を適用した body_pos_px を計算する。
-/// - 親キャンバスの Transform（位置・回転）変化に追従するため、
-///   parent_canvas_origin（親キャンバス原点のワールド位置）と
-///   parent_world_rot（累積ワールド回転）を DFS スタック経由で伝播する。
-///   これにより Sprite と同じ親子ワールド変換合成が実現される。
+/// canvas_collect.rs (collect_sprite_items) と同一の座標変換チェーンを使用することで、
+/// スプライト描画位置と当たり判定位置を完全に一致させる。
+///
+/// # 変換チェーンのポイント
+/// - ルートアクターのアンカー: [vw * anchor - vw/2, vh * anchor - vh/2]（ビューポート中心基準）
+/// - auto_scale_factor を child_cumul_scale に常に含める
+/// - pivot_corr_local の基準サイズ:
+///     CanvasComponent あり → Canvas サイズ × size_eff
+///     CanvasComponent なし + Collider2d あり → コライダー AABB サイズ × size_eff
+/// - body_pos_px = actor_pivot_world + pivot_corr_world（SS オフセット追加不要）
+///
+/// # 引数
+/// - `viewport_size`: シーン SS モード時のウィンドウサイズ [w, h]（デフォルトビューポート）。
+///   None = ワールドスペースまたはアクター編集タブ（スケールなし）。
+/// - `canvas_viewport_overrides`: `CanvasViewportRef::Camera` を持つルートキャンバスアクターの
+///   実効ビューポートサイズ上書きマップ（entity → [w, h]）。
+///   空 HashMap を渡すとウィンドウサイズをそのまま使用する。
 ///
 /// frame_renderer.rs の 2D コライダーワイヤーフレーム描画でも共用するため pub(crate)。
 pub(crate) fn collect_actor2d_contexts(
-    scene:      &Scene,
-    world_line: u32,
+    scene:         &Scene,
+    world_line:    u32,
+    viewport_size: Option<[f32; 2]>,
+    canvas_viewport_overrides: &HashMap<Entity, [f32; 2]>,
 ) -> Vec<Actor2dPhysicsCtx> {
     let mut result      = Vec::new();
     let mut dfs_counter = 0u64;
@@ -109,10 +142,6 @@ pub(crate) fn collect_actor2d_contexts(
     // スタック要素:
     //   (アクター, 親 Canvas サイズ, 親累積スケール, (scale_transform, scale_size),
     //    親キャンバス原点ワールド位置, 親累積ワールド回転)
-    //
-    // parent_canvas_origin : 親キャンバスのローカル [0,0] に対応するワールド座標（ピクセル）。
-    //                        子の eff_pos_local をワールド座標へ変換する基点になる。
-    // parent_world_rot     : 全祖先の回転を合算した累積ワールド回転（ラジアン）。
     type CtxElem<'a> = (&'a Actor, Option<[f32; 2]>, [f32; 2], (bool, bool), [f32; 2], f32);
 
     let mut stack: Vec<CtxElem> = scene.actors.iter()
@@ -126,13 +155,18 @@ pub(crate) fn collect_actor2d_contexts(
         let dfs_id = dfs_counter;
 
         // ── 自アクターの CanvasTransform を先取りする ──────────────────────────
-        // 子へ渡す canvas 原点・累積回転の計算に使用する。
         let ct_opt = scene.world.get::<CanvasTransform>(actor.entity);
 
-        // ── 子アクターへの親コンテキストを計算する ─────────────────────────────
+        // ── 自アクターの CanvasComponent を取得する ─────────────────────────────
         let my_canvas = actor.slots().iter()
             .find(|s| s.kind == ComponentKind::Canvas)
             .and_then(|s| scene.world.get::<CanvasComponent>(s.entity));
+
+        // sm_size による拡縮を反映した有効キャンバスサイズ（子 canvas 原点・auto_scale 計算用）
+        let (my_eff_w, my_eff_h) = my_canvas.map(|cc| (
+            cc.width  * if sm_size { parent_cumul_scale[0] } else { 1.0 },
+            cc.height * if sm_size { parent_cumul_scale[1] } else { 1.0 },
+        )).unwrap_or((1.0, 1.0));
 
         // 子が参照する「有効 Canvas サイズ」（scale_size モード考慮済み）
         let child_canvas_size = my_canvas.map(|cc| [
@@ -143,45 +177,71 @@ pub(crate) fn collect_actor2d_contexts(
             .map(|cc| (cc.scale_transform, cc.scale_size))
             .unwrap_or((false, false));
 
-        // 子への累積スケール（自分の scale_transform/scale に依存）
+        // CanvasViewportRef::Camera を持つルートキャンバスのビューポートサイズを解決する。
+        // ルートアクター（parent_canvas_size=None）のみオーバーライドマップを参照する。
+        // canvas_collect.rs と同一のパターン。
+        let eff_viewport = if parent_canvas_size.is_none() {
+            canvas_viewport_overrides.get(&actor.entity).copied().or(viewport_size)
+        } else {
+            viewport_size
+        };
+
+        // auto_scale_factor: ルートキャンバス（parent_canvas_size=None）かつ auto_scale=true のとき
+        // ビューポートサイズ / 基準キャンバスサイズ で計算する。
+        // canvas_collect.rs と同一の計算。eff_viewport を使用してカメラ参照ビューポートに対応する。
+        let auto_scale_factor = if parent_canvas_size.is_none() {
+            if let (Some([vw, vh]), Some(true)) = (eff_viewport, my_canvas.map(|cc| cc.auto_scale)) {
+                [vw / my_eff_w.max(f32::EPSILON), vh / my_eff_h.max(f32::EPSILON)]
+            } else {
+                [1.0f32, 1.0]
+            }
+        } else {
+            [1.0f32, 1.0]
+        };
+
+        // 子への累積スケール（auto_scale_factor を常に含む）
+        // canvas_collect.rs の child_cumul_scale と同一の計算:
+        //   scale_transform=true : parent_cumul_scale * ct.scale * auto_scale_factor
+        //   scale_transform=false: ct.scale * auto_scale_factor
         let child_cumul_scale = if let Some(ct) = ct_opt {
             if child_sm.0 {
-                [parent_cumul_scale[0] * ct.scale[0],
-                 parent_cumul_scale[1] * ct.scale[1]]
+                [parent_cumul_scale[0] * ct.scale[0] * auto_scale_factor[0],
+                 parent_cumul_scale[1] * ct.scale[1] * auto_scale_factor[1]]
             } else {
-                [ct.scale[0], ct.scale[1]]
+                [ct.scale[0] * auto_scale_factor[0],
+                 ct.scale[1] * auto_scale_factor[1]]
             }
         } else {
             parent_cumul_scale
         };
 
         // ── 子への canvas 原点・累積回転を計算する ─────────────────────────────
-        //
         // child_canvas_origin = 自アクターの canvas ローカル [0,0] がマップされるワールド位置。
-        //
-        // 計算式:
-        //   1. eff_pos_local = anchor_off + position (sm_transform に応じてスケール)
-        //      … 自アクターのピボット点の「親ローカル座標」
-        //   2. actor_pivot_world = parent_canvas_origin + R(parent_world_rot) * eff_pos_local
-        //      … 自アクターのピボット点の「ワールド座標」
-        //   3. canvas 原点 = actor_pivot_world - R(actor_world_rot) * (ct.pivot * canvas_eff_size)
-        //      … ピボットオフセットを逆適用して canvas [0,0] を求める
-        //
-        // CanvasTransform が存在しない場合は親の値をそのまま引き継ぐ。
         let (child_canvas_origin, child_world_rot) = if let Some(ct) = ct_opt {
-            let anchor_off_for_child = match parent_canvas_size {
-                None           => [0.0f32, 0.0],
+            // アンカーオフセット（canvas_collect.rs と同一）:
+            //   ルートレベル: [vw * anchor - vw/2, vh * anchor - vh/2]（ortho 中心基準）
+            //   子レベル: parent_canvas_size * anchor * parent_cumul_scale
+            // eff_viewport を使用: CanvasViewportRef::Camera 参照時はカメラの実効サイズを基準とする
+            let anchor_off_child = match parent_canvas_size {
+                None => {
+                    if let Some([vw, vh]) = eff_viewport {
+                        [vw * ct.anchor[0] - vw / 2.0, vh * ct.anchor[1] - vh / 2.0]
+                    } else {
+                        [0.0f32, 0.0]
+                    }
+                }
                 Some([pw, ph]) => [
                     pw * ct.anchor[0] * parent_cumul_scale[0],
                     ph * ct.anchor[1] * parent_cumul_scale[1],
                 ],
             };
+
             let eff_pos_local = if sm_transform {
-                [ct.position[0] * parent_cumul_scale[0] + anchor_off_for_child[0],
-                 ct.position[1] * parent_cumul_scale[1] + anchor_off_for_child[1]]
+                [ct.position[0] * parent_cumul_scale[0] + anchor_off_child[0],
+                 ct.position[1] * parent_cumul_scale[1] + anchor_off_child[1]]
             } else {
-                [ct.position[0] + anchor_off_for_child[0],
-                 ct.position[1] + anchor_off_for_child[1]]
+                [ct.position[0] + anchor_off_child[0],
+                 ct.position[1] + anchor_off_child[1]]
             };
 
             // 親ローカル座標 → ワールド座標
@@ -211,7 +271,6 @@ pub(crate) fn collect_actor2d_contexts(
 
             (canvas_origin, actor_world_rot)
         } else {
-            // CanvasTransform なし: 親の変換をそのまま引き継ぐ
             (parent_canvas_origin, parent_world_rot)
         };
 
@@ -225,24 +284,27 @@ pub(crate) fn collect_actor2d_contexts(
 
         let Some(ct) = ct_opt else { continue };
 
-        // Collider2d スロットエンティティを探す（なければコンテキストは記録しない）
-        // ただし DFS カウントは全アクターで行うため、スキップはしない
+        // Collider2d スロットエンティティを探す
         let collider_slot_entity = actor.slots().iter()
             .find(|s| s.kind == ComponentKind::Collider2d)
             .map(|s| s.entity);
 
-        // ── 1. アンカー補正 ──────────────────────────────────────────────────
-        // 親キャンバスのローカル座標における anchor オフセット。
-        // 子への伝播計算と同一の式を使用する（変数は Actor2D スコープ用に再束縛）。
+        // ── 1. アンカー補正（canvas_collect.rs と同一） ───────────────────────
+        // eff_viewport: CanvasViewportRef::Camera 参照時はカメラの実効サイズを基準とする
         let anchor_off = match parent_canvas_size {
-            None       => [0.0f32, 0.0],
+            None => {
+                if let Some([vw, vh]) = eff_viewport {
+                    [vw * ct.anchor[0] - vw / 2.0, vh * ct.anchor[1] - vh / 2.0]
+                } else {
+                    [0.0f32, 0.0]
+                }
+            }
             Some([pw, ph]) => [
                 pw * ct.anchor[0] * parent_cumul_scale[0],
                 ph * ct.anchor[1] * parent_cumul_scale[1],
             ],
         };
 
-        // sm_transform=true の場合、position に親の cumul_scale を乗算する
         let eff_pos_local = if sm_transform {
             [ct.position[0] * parent_cumul_scale[0] + anchor_off[0],
              ct.position[1] * parent_cumul_scale[1] + anchor_off[1]]
@@ -251,81 +313,74 @@ pub(crate) fn collect_actor2d_contexts(
              ct.position[1] + anchor_off[1]]
         };
 
-        // 親ローカル座標 → ワールド座標へ変換してピボット点のワールド位置を求める。
-        // これにより親キャンバスの位置・回転変化に追従する。
+        // 親ローカル座標 → ワールド座標（ortho 空間）
         let (sin_p, cos_p) = parent_world_rot.sin_cos();
         let actor_pivot_world = [
             parent_canvas_origin[0] + cos_p * eff_pos_local[0] - sin_p * eff_pos_local[1],
             parent_canvas_origin[1] + sin_p * eff_pos_local[0] + cos_p * eff_pos_local[1],
         ];
 
-        // 累積ワールド回転（全祖先の回転 + 自分のローカル回転）
+        // 累積ワールド回転
         let actor_world_rot = parent_world_rot + ct.rotation.to_radians();
 
-        // ── 2. ピボット補正（視覚的バウンディングボックス基準）─────────────────
-        //
-        // CanvasTransform.pivot はオブジェクトの「視覚的」 bounding box 内の基準点位置。
-        // 物理ボディは常に視覚的 bounding box の中心（center）に置く:
-        //   body_pos = actor_pivot_world + R(actor_world_rot) * (0.5 - pivot) * visual_bbox * scale
-        //
-        // visual_bbox の優先順位:
-        //   1. SpriteComponent.width / .height（スプライトが存在する場合）
-        //   2. Collider2dComponent の形状 AABB（スプライトなし・コライダーのみ）
-        //   3. [0, 0]（コンポーネントなし）
-        let visual_bbox: [f32; 2] = {
-            // Sprite コンポーネントがあればスプライトサイズを視覚的 bbox として使用する
-            let sprite_bbox = actor.slots().iter()
-                .find(|s| s.kind == ComponentKind::Sprite)
-                .and_then(|s| scene.world.get::<SpriteComponent>(s.entity))
-                .map(|sp| [sp.width, sp.height]);
+        // size_eff: sm_size=true のとき parent_cumul_scale（auto_scale 込み）、それ以外 1.0。
+        // コライダー形状・オフセットをキャンバスピクセル → ortho ピクセルに変換するために使用する。
+        let size_eff = if sm_size { parent_cumul_scale } else { [1.0f32, 1.0] };
 
-            if let Some(bbox) = sprite_bbox {
-                bbox
-            } else if let Some(slot_entity) = collider_slot_entity {
-                // スプライトなし: コライダー形状の AABB をフォールバックとして使用する
-                if let Some(collider) = scene.world.get::<Collider2dComponent>(slot_entity) {
-                    match &collider.shape {
-                        ColliderShape2dData::Box { half_extents } =>
-                            [2.0 * half_extents[0], 2.0 * half_extents[1]],
-                        ColliderShape2dData::Circle { radius } =>
-                            [2.0 * radius, 2.0 * radius],
-                        ColliderShape2dData::Capsule { radius, half_height } =>
-                            [2.0 * radius, 2.0 * (radius + half_height)],
-                        ColliderShape2dData::ConvexHull { vertices } => {
-                            if vertices.is_empty() {
-                                [0.0, 0.0]
-                            } else {
-                                let (min_x, max_x) = vertices.iter().fold(
-                                    (f32::INFINITY, f32::NEG_INFINITY),
-                                    |(mn, mx), v| (mn.min(v[0]), mx.max(v[0])),
-                                );
-                                let (min_y, max_y) = vertices.iter().fold(
-                                    (f32::INFINITY, f32::NEG_INFINITY),
-                                    |(mn, mx), v| (mn.min(v[1]), mx.max(v[1])),
-                                );
-                                [max_x - min_x, max_y - min_y]
-                            }
-                        }
-                    }
-                } else {
-                    [0.0, 0.0]
-                }
+        // ── 2. ピボット補正（基準サイズ選択） ─────────────────────────────────
+        //
+        // CanvasTransform.position は「ピボット点」のローカル位置。
+        // ボディ中心を「矩形の中心」に合わせるため、pivot 位置から中心への補正を加算する。
+        //
+        //   pivot_corr_canonical = (0.5 - ct.pivot) × ref_size × size_eff
+        //
+        // 基準サイズの選択:
+        //   ・CanvasComponent あり → Canvas サイズ（Sprite 非依存）
+        //   ・CanvasComponent なし + Collider2d あり → コライダーバウンディングボックスサイズ
+        //     → pivot=[0,0] = 左上端, pivot=[0,1] = 左下端 などのアンカー端揃えが機能する
+        //   ・いずれもなし → 補正なし（body_pos = pivot 点のまま）
+        //
+        // canvas_collect.rs の to_mat4_sized は T(pos)*R(rot)*S(scale)*T(-pivot) の順なので
+        //   pivot_corr_world = R(parent_rot)*R(local_rot)*S(ct.scale)*pivot_corr_canonical
+        let pivot_corr_local: [f32; 2] = if let Some(cc) = my_canvas {
+            // CanvasComponent あり: Canvas サイズ基準
+            let eff_w = cc.width  * size_eff[0];
+            let eff_h = cc.height * size_eff[1];
+            [(0.5 - ct.pivot[0]) * eff_w, (0.5 - ct.pivot[1]) * eff_h]
+        } else if let Some(slot_entity) = collider_slot_entity {
+            // CanvasComponent なし: コライダーバウンディングボックスサイズ基準
+            // これにより pivot=[0,0] の左上端や pivot=[0,1] の左下端にアンカーを合わせられる
+            if let Some(collider) = scene.world.get::<Collider2dComponent>(slot_entity) {
+                let (ref_w, ref_h) = collider.shape.bounding_size();
+                let eff_w = ref_w * size_eff[0];
+                let eff_h = ref_h * size_eff[1];
+                [(0.5 - ct.pivot[0]) * eff_w, (0.5 - ct.pivot[1]) * eff_h]
             } else {
-                [0.0, 0.0]
+                [0.0f32, 0.0]
             }
+        } else {
+            [0.0f32, 0.0]
         };
 
-        let pivot_corr_local: [f32; 2] = [
-            (0.5 - ct.pivot[0]) * visual_bbox[0] * ct.scale[0],
-            (0.5 - ct.pivot[1]) * visual_bbox[1] * ct.scale[1],
+        // canvas_collect.rs の to_mat4_sized と同じ変換順：
+        //   R(local_rot) * S(ct.scale) * pivot_corr_canonical
+        let local_rot = ct.rotation.to_radians();
+        let (sin_l, cos_l) = local_rot.sin_cos();
+        let pivx = pivot_corr_local[0];
+        let pivy = pivot_corr_local[1];
+        let rotated_scaled = [
+            cos_l * ct.scale[0] * pivx - sin_l * ct.scale[1] * pivy,
+            sin_l * ct.scale[0] * pivx + cos_l * ct.scale[1] * pivy,
         ];
 
-        // ピボット補正を累積ワールド回転で回転させてワールド空間に変換する
-        let (sin_a, cos_a) = actor_world_rot.sin_cos();
+        // さらに親のワールド回転で変換してワールド空間へ
+        let (sin_p, cos_p) = parent_world_rot.sin_cos();
         let pivot_corr_world = [
-            cos_a * pivot_corr_local[0] - sin_a * pivot_corr_local[1],
-            sin_a * pivot_corr_local[0] + cos_a * pivot_corr_local[1],
+            cos_p * rotated_scaled[0] - sin_p * rotated_scaled[1],
+            sin_p * rotated_scaled[0] + cos_p * rotated_scaled[1],
         ];
+
+        // ── 3. ボディ位置 = ピボット点 + ピボット補正 ────────────────────────
         let body_pos_px = [
             actor_pivot_world[0] + pivot_corr_world[0],
             actor_pivot_world[1] + pivot_corr_world[1],
@@ -341,6 +396,8 @@ pub(crate) fn collect_actor2d_contexts(
             pivot_corr_local,
             sm_transform,
             cumul_scale:          parent_cumul_scale,
+            size_sx:              size_eff[0],
+            size_sy:              size_eff[1],
             collider_slot_entity,
             parent_canvas_origin,
             parent_world_rot,
@@ -353,6 +410,27 @@ pub(crate) fn collect_actor2d_contexts(
 // ─── App メソッド ─────────────────────────────────────────────────────────────
 
 impl App {
+    // ─── ビューポートサイズ計算 ─────────────────────────────────────
+
+    /// 2D 物理変換に使用するビューポートサイズを計算して返す。
+    ///
+    /// シーン SS キャンバスモードのとき実ビューポートサイズ [w, h] を返す。
+    /// それ以外（ワールドスペース・アクター編集タブ等）は None を返す。
+    pub(super) fn compute_viewport_size_2d(&self) -> Option<[f32; 2]> {
+        let is_canvas        = self.canvas_world_lines.contains(&self.active_world_line);
+        let is_actor_edit_2d = self.actor_edit_canvas_wls.contains(&self.active_world_line);
+        let in_editor        = self.mode == RuntimeMode::Edit;
+        let use_screen_space = self.canvas_screen_space_overlay || !in_editor || is_actor_edit_2d;
+        let scene_canvas_ss  = is_canvas && use_screen_space && !is_actor_edit_2d;
+
+        if !scene_canvas_ss { return None; }
+
+        self.window.as_ref().map(|w| {
+            let s = w.inner_size();
+            [s.width as f32, s.height as f32]
+        }).or(Some([1280.0, 720.0]))
+    }
+
     // ─── 起動 ────────────────────────────────────────────────────
 
     /// 2D 物理スレッドを起動し、シーン内の全 Collider2d Actor2D を物理ワールドに登録する。
@@ -363,14 +441,24 @@ impl App {
     /// Edit モード (edit_physics_2d_with_rigidbody=true):
     ///   通常と同様（重力・ダイナミクスあり）。
     pub(super) fn start_physics_2d(&mut self) {
+        // ビューポートサイズを先に取得する（scene の借用が解放されてから再借用するため）
+        let viewport_size = self.compute_viewport_size_2d();
+
         let Some(scene) = &self.scene else { return };
+
+        // CanvasViewportRef::Camera を持つルートキャンバスのビューポートサイズを解決する
+        let (win_w, win_h) = viewport_size.map(|[w, h]| (w, h)).unwrap_or((1280.0, 720.0));
+        let canvas_vp_overrides = build_canvas_viewport_map(
+            &scene.actors, &scene.world,
+            self.active_world_line, win_w, win_h, None,
+        );
 
         // 編集時コライダーのみモード: 全ボディを kinematic 扱い
         let force_kinematic = self.mode == RuntimeMode::Edit
             && !self.edit_physics_2d_with_rigidbody;
 
         // actor2d コンテキストを収集し、Collider2d 付きのものを物理ワールドに登録する
-        let contexts = collect_actor2d_contexts(scene, self.active_world_line);
+        let contexts = collect_actor2d_contexts(scene, self.active_world_line, viewport_size, &canvas_vp_overrides);
 
         let thread = PhysicsThread2d::spawn();
 
@@ -378,15 +466,18 @@ impl App {
             let Some(slot_entity) = ctx.collider_slot_entity else { continue };
             let Some(collider) = scene.world.get::<Collider2dComponent>(slot_entity) else { continue };
 
+            // body_pos_px は ortho 空間（ビューポート中心が原点）で計算済みなので PPM で除算するだけ
             let position = [
                 ctx.body_pos_px[0] / PIXELS_PER_METER,
                 ctx.body_pos_px[1] / PIXELS_PER_METER,
             ];
+            // コライダーオフセットに size_sx/sy を適用する
             let collider_offset = [
-                collider.offset[0] / PIXELS_PER_METER,
-                collider.offset[1] / PIXELS_PER_METER,
+                collider.offset[0] * ctx.size_sx / PIXELS_PER_METER,
+                collider.offset[1] * ctx.size_sy / PIXELS_PER_METER,
             ];
-            let shape = collider.shape.to_physics_shape();
+            // コライダー形状に size_sx/sy を適用する（scale_size=true 時のみ実際にスケールされる）
+            let shape = collider.shape.to_physics_shape_scaled(ctx.size_sx, ctx.size_sy);
 
             let rigidbody = if collider.use_rigidbody {
                 let mut rb = collider.to_rigidbody_state();
@@ -446,23 +537,29 @@ impl App {
     /// 5. Kinematic Actor2D の body_pos を物理スレッドへ送信する
     pub(super) fn update_physics_2d(&mut self) {
         // 物理スレッドが未起動の場合はスキップする。
-        // Play モードの初回起動は handle_redraw_requested() のフレーム末尾で行う。
-        // （フレーム先頭で起動すると初回 GPU 処理の間に物理が先行してしまうため）
         let Some(_) = &self.physics_thread_2d else { return };
 
         // Edit コライダーのみモードでは CanvasTransform 更新をスキップする
         let should_apply_transforms = self.mode != RuntimeMode::Edit
             || self.edit_physics_2d_with_rigidbody;
 
+        // ビューポートサイズを取得する（scene 借用前に計算）
+        let viewport_size = self.compute_viewport_size_2d();
+
         // ── Actor2d コンテキストを一括収集（read-only borrow で完結させる）────
         let contexts: Vec<Actor2dPhysicsCtx> = if let Some(scene) = &self.scene {
-            collect_actor2d_contexts(scene, self.active_world_line)
+            // CanvasViewportRef::Camera を持つルートキャンバスのビューポートサイズを解決する
+            let (win_w, win_h) = viewport_size.map(|[w, h]| (w, h)).unwrap_or((1280.0, 720.0));
+            let canvas_vp_overrides = build_canvas_viewport_map(
+                &scene.actors, &scene.world,
+                self.active_world_line, win_w, win_h, None,
+            );
+            collect_actor2d_contexts(scene, self.active_world_line, viewport_size, &canvas_vp_overrides)
         } else {
             return;
         };
 
         // ── ギズモドラッグ中アクター（2D）の kinematic 切り替え ──────────────
-        // 2D アクターはビューポートの 2D ギズモドラッグ対象になる。
         let new_drag_entity_id: Option<u64> = if self.drag.gizmo_drag.is_some() {
             self.actor_virtual_selected_idx.map(|dfs_id| dfs_id as u64 + 1)
         } else {
@@ -476,7 +573,6 @@ impl App {
         if new_drag_entity_id != self.dragging_physics_2d_entity_id {
             let thread = self.physics_thread_2d.as_ref().unwrap();
             if let Some(old_id) = self.dragging_physics_2d_entity_id {
-                // ドラッグ終了: 現在のボディ位置・回転を final_position として渡し Dynamic に戻す
                 let final_position = contexts.iter()
                     .find(|c| c.dfs_id == old_id)
                     .map(|c| (
@@ -490,7 +586,6 @@ impl App {
                 });
             }
             if let Some(new_id) = new_drag_entity_id {
-                // ドラッグ開始: Kinematic に変更して重力・衝突力を一時停止する
                 let ecs_start_pos = contexts.iter()
                     .find(|c| c.dfs_id == new_id)
                     .map(|c| (
@@ -513,7 +608,6 @@ impl App {
             // ① Dynamic Rigidbody2D の CanvasTransform を ECS に書き戻す
             if should_apply_transforms {
                 if let Some(scene) = &mut self.scene {
-                    // 初回の transform_updates を一度だけログに出して確認する
                     static FIRST_RESULT_LOGGED: std::sync::atomic::AtomicBool =
                         std::sync::atomic::AtomicBool::new(false);
                     if !result.transform_updates.is_empty()
@@ -530,7 +624,6 @@ impl App {
                     for (entity_id, new_pos, new_rot) in &result.transform_updates {
                         if Some(*entity_id) == self.dragging_physics_2d_entity_id { continue; }
 
-                        // entity_id に対応するコンテキストを探す
                         if let Some(ctx) = contexts.iter().find(|c| c.dfs_id == *entity_id) {
                             write_back_canvas_transform(scene, ctx, *new_pos, *new_rot);
                         }
@@ -588,7 +681,6 @@ impl App {
         for ctx in &contexts {
             let Some(slot_entity) = ctx.collider_slot_entity else { continue };
             let Some(collider) = scene.world.get::<Collider2dComponent>(slot_entity) else { continue };
-            // Kinematic ボディのみ更新する（動的ボディはスレッドが位置を管理する）
             if !collider.use_rigidbody || !collider.is_kinematic { continue; }
 
             thread.send(PhysicsCommand2d::UpdateKinematic {
@@ -615,43 +707,57 @@ impl App {
 
 /// 物理スレッドから受け取った新しい位置・回転を CanvasTransform に書き戻す。
 ///
-/// body_pos（ワールド座標）から ct.position（親キャンバスローカル座標）への逆変換を行う。
+/// `new_pos` は「ortho 空間ピクセル / PIXELS_PER_METER」（メートル単位）。
+/// body_pos_px = キャンバス中心のワールド位置（ピボット点 + ピボット補正適用済み）なので、
+/// まずピボット補正を逆適用して actor_pivot_world を求めてから逆変換する。
 ///
-/// # 逆変換の計算（新方式: 親ワールド変換を考慮）
-///   1. pivot 補正除去:
-///      actor_pivot_world = new_body_pos_px - R(new_rot) * pivot_corr_local
-///   2. 親ワールド変換の逆適用（ワールド → 親ローカル）:
-///      eff_pos_local = R(-parent_world_rot) * (actor_pivot_world - parent_canvas_origin)
-///   3. アンカーオフセット除去 + sm_transform 逆スケール:
-///      ct.position = sm_transform
-///                    ? (eff_pos_local - anchor_off) / cumul_scale
-///                    : eff_pos_local - anchor_off
-///   4. ローカル回転:
-///      ct.rotation = new_rot - parent_world_rot  （累積回転からローカル回転を取り出す）
+/// # 逆変換の計算
+///   1. new_pos * PPM = new_body_px（ボディ中心 ortho 座標）
+///   2. actor_pivot_world = new_body_px - R(new_rot) * pivot_corr_local（ピボット補正逆適用）
+///   3. eff_pos_local = R(-parent_world_rot) * (actor_pivot_world - parent_canvas_origin)
+///   4. ct.position = (eff_pos_local - anchor_off) / cumul_scale  (sm_transform=true)
+///                  = eff_pos_local - anchor_off                    (sm_transform=false)
+///   5. ct.rotation = new_rot - parent_world_rot
 fn write_back_canvas_transform(
     scene:   &mut Scene,
     ctx:     &Actor2dPhysicsCtx,
     new_pos: [f32; 2],
     new_rot: f32,
 ) {
-    // ① ピボット補正を累積ワールド回転で除去してピボット点のワールド座標を求める
-    let (sin_new, cos_new) = new_rot.sin_cos();
-    let pc = ctx.pivot_corr_local;
-    let pivot_corr_world_new = [
-        cos_new * pc[0] - sin_new * pc[1],
-        sin_new * pc[0] + cos_new * pc[1],
-    ];
-    let actor_pivot_world = [
-        new_pos[0] * PIXELS_PER_METER - pivot_corr_world_new[0],
-        new_pos[1] * PIXELS_PER_METER - pivot_corr_world_new[1],
+    // ① new_pos（メートル）→ ortho ピクセル = ボディ中心のワールド座標
+    let new_body_px = [
+        new_pos[0] * PIXELS_PER_METER,
+        new_pos[1] * PIXELS_PER_METER,
     ];
 
-    // ② 親ワールド変換の逆適用: ワールド座標 → 親キャンバスローカル座標
-    //    R(-parent_world_rot) * (actor_pivot_world - parent_canvas_origin)
+    // ピボット補正を逆適用してピボット点のワールド座標を求める。
+    // 順変換: body_pos = actor_pivot + R(parent_rot)*R(local_rot)*S(scale)*pivot_corr_local
+    // 逆変換: actor_pivot = body_pos - R(parent_rot)*R(new_local_rot)*S(scale)*pivot_corr_local
+    let new_local_rot = new_rot - ctx.parent_world_rot;
+    let (sin_nl, cos_nl) = new_local_rot.sin_cos();
+    let cx = ctx.pivot_corr_local[0]; // (0.5-pivot.x) * eff_w
+    let cy = ctx.pivot_corr_local[1]; // (0.5-pivot.y) * eff_h
+    // R(new_local_rot) * S(ctx.scale) * pivot_corr_local
+    let rotated_scaled = [
+        cos_nl * ctx.scale[0] * cx - sin_nl * ctx.scale[1] * cy,
+        sin_nl * ctx.scale[0] * cx + cos_nl * ctx.scale[1] * cy,
+    ];
+    // さらに親のワールド回転を掛けてワールド空間へ
+    let (sin_p, cos_p) = ctx.parent_world_rot.sin_cos();
+    let pivot_corr_world = [
+        cos_p * rotated_scaled[0] - sin_p * rotated_scaled[1],
+        sin_p * rotated_scaled[0] + cos_p * rotated_scaled[1],
+    ];
+    let actor_pivot_world = [
+        new_body_px[0] - pivot_corr_world[0],
+        new_body_px[1] - pivot_corr_world[1],
+    ];
+
+    // ② 親ワールド変換の逆適用: ortho ワールド座標 → 親キャンバスローカル座標
+    //    eff_pos_local = R(-parent_world_rot) * (actor_pivot_world - parent_canvas_origin)
     let dx = actor_pivot_world[0] - ctx.parent_canvas_origin[0];
     let dy = actor_pivot_world[1] - ctx.parent_canvas_origin[1];
     let (sin_p, cos_p) = ctx.parent_world_rot.sin_cos();
-    // R(-rot) = [[cos, sin], [-sin, cos]]
     let eff_pos_local = [
         cos_p * dx + sin_p * dy,
        -sin_p * dx + cos_p * dy,

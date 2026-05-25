@@ -64,176 +64,10 @@ use super::{
 /// - vp_w/h: ゲーム描画領域のサイズ
 /// - proj_aspect: 射影行列に渡すアスペクト比
 /// - fov_y_rad: 射影行列に渡す実効縦 FOV（ラジアン）
-fn compute_game_viewport(
-    scaling_mode: &crate::engine::components::ScalingMode,
-    window_w:  f32,
-    window_h:  f32,
-    target_w:  u32,
-    target_h:  u32,
-    fov_y_deg: f32,
-) -> (f32, f32, f32, f32, f32, f32) {
-    use crate::engine::components::ScalingMode;
-    let tw = target_w.max(1) as f32;
-    let th = target_h.max(1) as f32;
-    let target_aspect = tw / th;
-    let window_aspect = if window_h > 0.0 { window_w / window_h } else { target_aspect };
-    let fov_y_rad = fov_y_deg.to_radians();
-
-    match scaling_mode {
-        ScalingMode::VertMinus => {
-            // 縦 FOV 固定・横はウィンドウアスペクト比に従う（従来の挙動）
-            (0.0, 0.0, window_w, window_h, window_aspect, fov_y_rad)
-        }
-        ScalingMode::HorPlus => {
-            // 横 FOV を target アスペクト比で固定し、window アスペクト比に合わせた縦 FOV を逆算する
-            let fov_x     = 2.0 * ((fov_y_rad * 0.5).tan() * target_aspect).atan();
-            let fov_y_adj = if window_aspect > 0.0 {
-                2.0 * ((fov_x * 0.5).tan() / window_aspect).atan()
-            } else {
-                fov_y_rad
-            };
-            (0.0, 0.0, window_w, window_h, window_aspect, fov_y_adj)
-        }
-        ScalingMode::LetterBox => {
-            // 横幅をウィンドウ幅に合わせてスケール。高さが溢れる場合は上下クリップ
-            let scale = window_w / tw;
-            let vp_h  = (th * scale).min(window_h);
-            let y_off = ((window_h - vp_h) * 0.5).max(0.0);
-            (0.0, y_off, window_w, vp_h, target_aspect, fov_y_rad)
-        }
-        ScalingMode::PillarBox => {
-            // 縦幅をウィンドウ高さに合わせてスケール。横幅が溢れる場合は左右クリップ
-            let scale = window_h / th;
-            let vp_w  = (tw * scale).min(window_w);
-            let x_off = ((window_w - vp_w) * 0.5).max(0.0);
-            (x_off, 0.0, vp_w, window_h, target_aspect, fov_y_rad)
-        }
-        ScalingMode::LetterPillarBox => {
-            // アスペクト比を完全に保持しつつ最大化する（"fit / contain" 挙動）。
-            // ウィンドウが target より横長 → 縦幅基準でスケール（左右帯）
-            // ウィンドウが target より縦長 → 横幅基準でスケール（上下帯）
-            if window_aspect >= target_aspect {
-                // 横が広い: 縦をウィンドウ高さにフィット → 左右帯
-                let vp_w  = window_h * target_aspect;
-                let x_off = ((window_w - vp_w) * 0.5).max(0.0);
-                (x_off, 0.0, vp_w, window_h, target_aspect, fov_y_rad)
-            } else {
-                // 縦が長い: 横をウィンドウ幅にフィット → 上下帯
-                let vp_h  = window_w / target_aspect;
-                let y_off = ((window_h - vp_h) * 0.5).max(0.0);
-                (0.0, y_off, window_w, vp_h, target_aspect, fov_y_rad)
-            }
-        }
-        ScalingMode::FullScale => {
-            // target アスペクト比を保ったまま全画面に伸縮（黒帯なし・歪みあり）
-            (0.0, 0.0, window_w, window_h, target_aspect, fov_y_rad)
-        }
-    }
-}
-
-use super::canvas_collect::{collect_sprite_items, collect_canvas_rects, collect_canvas_id_items};
-
-// ============================================================
-//  canvas_viewport_map — CanvasViewportRef::Camera 解決ユーティリティ
-// ============================================================
-
-/// CanvasViewportRef::Camera で参照されるカメラアクターのビューポートサイズを解決する。
-///
-/// 参照カメラ自身のスケーリングモードを `compute_game_viewport` で適用し、
-/// LetterBox / PillarBox 等の帯を除いたコンテンツ領域のサイズを返す。
-/// - 参照先が見つからない場合: フォールバックとして `[win_w, win_h]` を返す
-fn resolve_camera_viewport_size(
-    actors:         &[crate::engine::structs::objects::Actor],
-    world:          &crate::engine::ecs::World,
-    cam_actor_name: &str,
-    cam_slot_name:  &str,
-    win_w: f32,
-    win_h: f32,
-    // 使用しないが将来の拡張用に残す
-    _game_viewport: Option<(f32, f32, f32, f32)>,
-) -> [f32; 2] {
-    use crate::engine::components::{ComponentKind, CameraComponent};
-
-    /// DFS でアクター名が一致し、かつ指定スロット名の CameraComponent を持つ最初のアクターの
-    /// CameraComponent を返す。
-    /// 同名アクターが複数存在する場合、Camera スロットを持つものを優先して探索する。
-    fn find_camera_component<'a>(
-        actors: &'a [crate::engine::structs::objects::Actor],
-        world:  &'a crate::engine::ecs::World,
-        actor_name: &str,
-        slot_name:  &str,
-    ) -> Option<&'a CameraComponent> {
-        for a in actors {
-            if a.name == actor_name {
-                // 名前が一致するアクターで指定スロット名の CameraComponent を確認する
-                if let Some(cam) = a.slots().iter()
-                    .find(|s| s.name == slot_name && s.kind == ComponentKind::Camera)
-                    .and_then(|s| world.get::<CameraComponent>(s.entity))
-                {
-                    return Some(cam);
-                }
-                // 名前が一致しても Camera スロットがない場合は次のアクターへ継続する
-            }
-            // 子アクターを再帰的に探索する
-            if let Some(found) = find_camera_component(a.children(), world, actor_name, slot_name) {
-                return Some(found);
-            }
-        }
-        None
-    }
-
-    let Some(cam) = find_camera_component(actors, world, cam_actor_name, cam_slot_name) else {
-        return [win_w, win_h];
-    };
-
-    // 参照カメラのスケーリングモードをウィンドウサイズに適用して実描画領域を計算する。
-    // LetterBox/PillarBox 時は帯部分を除いたコンテンツ領域のみをキャンバス基準として返す。
-    let (_, _, rendered_w, rendered_h, _, _) = compute_game_viewport(
-        &cam.scaling_mode,
-        win_w,
-        win_h,
-        cam.target_width,
-        cam.target_height,
-        cam.fov_y_deg,
-    );
-    [rendered_w, rendered_h]
-}
-
-/// is_scene_ss が true のときに各ルートキャンバスアクターの有効ビューポートサイズを事前解決する。
-///
-/// `CanvasViewportRef::Camera` を持つルートキャンバスのみマップに追加する。
-/// `Window` 参照はデフォルトの `viewport_size` にフォールバックするため不要。
-fn build_canvas_viewport_map(
-    actors:        &[crate::engine::structs::objects::Actor],
-    world:         &crate::engine::ecs::World,
-    wl:            u32,
-    win_w:         f32,
-    win_h:         f32,
-    game_viewport: Option<(f32, f32, f32, f32)>,
-) -> std::collections::HashMap<crate::engine::ecs::Entity, [f32; 2]> {
-    use crate::engine::components::{CanvasTransform, CanvasComponent, ComponentKind, CanvasViewportRef};
-    let mut map = std::collections::HashMap::new();
-    for actor in actors {
-        if actor.world_line != wl { continue; }
-        // CanvasTransform がないアクターはルートキャンバスでない
-        if world.get::<CanvasTransform>(actor.entity).is_none() { continue; }
-        // Canvas スロットの viewport_ref を確認する
-        for slot in actor.slots() {
-            if slot.kind != ComponentKind::Canvas { continue; }
-            if let Some(cc) = world.get::<CanvasComponent>(slot.entity) {
-                if let CanvasViewportRef::Camera { actor_name, slot_name } = &cc.viewport_ref {
-                    let vp = resolve_camera_viewport_size(
-                        actors, world, actor_name, slot_name, win_w, win_h, game_viewport,
-                    );
-                    map.insert(actor.entity, vp);
-                }
-                // Camera 参照以外はマップに追加しない（collect 側でフォールバック）
-                break;
-            }
-        }
-    }
-    map
-}
+use super::canvas_collect::{
+    collect_sprite_items, collect_canvas_rects, collect_canvas_id_items,
+    compute_game_viewport, build_canvas_viewport_map,
+};
 
 /// カメラプレビューのテクスチャ幅（ピクセル）。
 const CAMERA_PREVIEW_W: u32 = 320;
@@ -1323,71 +1157,27 @@ impl App {
                         // Y 軸方向: スクリーンスペース時は Y+ が下（CSS と同方向）
                         let y_sign = if use_screen_space { 1.0f32 } else { -1.0 };
 
-                        // ── SS モード補正パラメータ ──────────────────────────────────────────
-                        // scene_canvas_ss=true のとき、スプライトは ortho 空間に
-                        // ビューポートセンタリング (-vp/2, -vp/2) + auto_scale が適用される。
-                        // body_pos_px はキャンバスピクセル座標なので、同じ変換を適用して
-                        // ワイヤーフレームとスプライトを一致させる。
-                        //
-                        // 変換: ortho = (-vp_w/2 + px * sx,  (-vp_h/2 + py * sy) * y_sign)
-                        //
-                        // ※ ルートキャンバスが position=[0,0] の標準ケースで正確
-                        // (ss_off_x, ss_off_y) : 位置変換のビューポートセンタリングオフセット
-                        // (ss_sx,  ss_sy)      : 位置変換スケール（auto_scale 時 = vp/canvas）
-                        // (size_sx, size_sy)   : サイズ変換スケール（scale_size=true 時のみ ss_sx/sy, それ以外は 1.0）
-                        let (ss_off_x, ss_off_y, ss_sx, ss_sy, size_sx, size_sy) = if scene_canvas_ss {
-                            use crate::engine::components::{CanvasComponent, CanvasViewportRef};
-                            let (win_vp_w, win_vp_h) = window_size.map_or(
-                                (1280.0f32, 720.0f32),
-                                |s| (s.width as f32, s.height as f32),
-                            );
-                            // ルートキャンバスを検索して auto_scale / scale_size とサイズを取得する
-                            let root_canvas = scene.actors.iter()
-                                .filter(|a| a.world_line == self.active_world_line)
-                                .find_map(|a| {
-                                    a.slots().iter()
-                                        .find(|s| s.kind == ComponentKind::Canvas)
-                                        .and_then(|s| scene.world.get::<CanvasComponent>(s.entity))
-                                        .map(|cc| {
-                                            // Camera 参照の場合はゲームビューポートサイズを使用する
-                                            let (vpw, vph) = match &cc.viewport_ref {
-                                                CanvasViewportRef::Camera { .. } if !in_editor => {
-                                                    (game_viewport.2, game_viewport.3)
-                                                }
-                                                _ => (win_vp_w, win_vp_h),
-                                            };
-                                            (cc.width, cc.height, cc.auto_scale, cc.scale_size, vpw, vph)
-                                        })
-                                });
-                            match root_canvas {
-                                Some((cw, ch, true, scale_size, vpw, vph)) => {
-                                    // auto_scale=true: 位置はビューポート比でスケール + センタリング
-                                    // サイズは scale_size=true の場合のみスケール（false なら 1.0）
-                                    let sx = vpw / cw;
-                                    let sy = vph / ch;
-                                    (
-                                        -vpw / 2.0, -vph / 2.0,
-                                        sx, sy,
-                                        if scale_size { sx } else { 1.0 },
-                                        if scale_size { sy } else { 1.0 },
-                                    )
-                                }
-                                Some((_, _, false, _, vpw, vph)) => {
-                                    // auto_scale=false: センタリングのみ、スケール・サイズとも 1.0
-                                    (-vpw / 2.0, -vph / 2.0, 1.0, 1.0, 1.0, 1.0)
-                                }
-                                None => (0.0, 0.0, 1.0, 1.0, 1.0, 1.0),
-                            }
-                        } else {
-                            (0.0, 0.0, 1.0, 1.0, 1.0, 1.0)
-                        };
-
                         let mut lb = LineBatch::new();
 
-                        // anchor + pivot 補正済みの body_pos_px を使ってワイヤーフレームを描画する。
-                        // collect_actor2d_contexts は DFS 全アクターを数えつつ Actor2D のコンテキストを返す。
+                        // collect_actor2d_contexts に viewport_size を渡す。
+                        // canvas_collect.rs と同一の変換チェーンで body_pos_px が計算される。
+                        // SS モード時は ortho 空間（ビューポート中心が原点）で返ってくるため、
+                        // ワイヤーフレーム描画はコライダーオフセットを加算するだけでよい。
+                        let vp_wf = window_size.map_or(1280.0f32, |s| s.width  as f32);
+                        let vp_hf = window_size.map_or(720.0f32,  |s| s.height as f32);
+                        let viewport_size_2d = if scene_canvas_ss { Some([vp_wf, vp_hf]) } else { None };
+                        // CanvasViewportRef::Camera を持つルートキャンバスのビューポートサイズを解決する
+                        let canvas_vp_overrides_2d = if scene_canvas_ss {
+                            build_canvas_viewport_map(
+                                &scene.actors, &scene.world,
+                                self.active_world_line, vp_wf, vp_hf,
+                                if !in_editor { Some(game_viewport) } else { None },
+                            )
+                        } else {
+                            std::collections::HashMap::new()
+                        };
                         let ctx2d_list = crate::engine::core::app_base::app::physics2d_ops::collect_actor2d_contexts(
-                            scene, self.active_world_line,
+                            scene, self.active_world_line, viewport_size_2d, &canvas_vp_overrides_2d,
                         );
 
                         for ctx in &ctx2d_list {
@@ -1412,49 +1202,12 @@ impl App {
                             let off_wx = cos * ox - sin * oy;
                             let off_wy = sin * ox + cos * oy;
 
-                            // ピボット補正ワールドベクトルを計算し、body_pos_px からアクターピボット点を逆算する。
-                            //
-                            // body_pos_px = actor_pivot_world + pivot_corr_world なので:
-                            //   actor_pivot_world = body_pos_px - pivot_corr_world
-                            //
-                            // スプライト座標変換と対応させる:
-                            //   - actor_pivot_world (アンカー込みの位置) は
-                            //     sm_transform=true なら ss_sx でスケール、false なら等倍
-                            //   - アンカーオフセット (anchor_off) は常に ss_sx でスケール
-                            //     (auto_scale はアンカー位置に常に反映されるため)
-                            //   - pivot_corr + collider.offset はサイズ量なので size_sx でスケール
-                            let pc = ctx.pivot_corr_local;
-                            let pivot_corr_world = [
-                                cos * pc[0] - sin * pc[1],
-                                sin * pc[0] + cos * pc[1],
-                            ];
-                            let actor_pivot_world = [
-                                ctx.body_pos_px[0] - pivot_corr_world[0],
-                                ctx.body_pos_px[1] - pivot_corr_world[1],
-                            ];
-                            // アンカーを除いた純粋な位置成分（キャンバスピクセル）
-                            let anchor = ctx.anchor_off;
-                            let pos_raw = [
-                                actor_pivot_world[0] - anchor[0],
-                                actor_pivot_world[1] - anchor[1],
-                            ];
-
-                            // 位置変換:
-                            //   SS モードでは「位置 * sm_scale + アンカー * ss_sx + (ピボット補正+オフセット) * size_sx」
-                            //   非 SS モードでは body_pos_px 全体に canvas_scale を乗算する
+                            // body_pos_px は canvas_collect.rs と同一の変換で ortho 空間で計算済み。
+                            // コライダーオフセットは ctx.size_sx/size_sy でスケールして加算する。
                             let (cx, cy, eff_sx, eff_sy) = if scene_canvas_ss {
-                                // sm_transform の有無で位置スケールを切り替える
-                                let sm_scale_x = if ctx.sm_transform { ss_sx } else { 1.0 };
-                                let sm_scale_y = if ctx.sm_transform { ss_sy } else { 1.0 };
-                                let cx = ss_off_x
-                                    + pos_raw[0] * sm_scale_x        // 位置成分
-                                    + anchor[0]  * ss_sx              // アンカー (常にauto_scaleスケール)
-                                    + (pivot_corr_world[0] + off_wx) * size_sx;  // サイズ/ピボット成分
-                                let cy = (ss_off_y
-                                    + pos_raw[1] * sm_scale_y
-                                    + anchor[1]  * ss_sy
-                                    + (pivot_corr_world[1] + off_wy) * size_sy) * y_sign;
-                                (cx, cy, size_sx, size_sy)
+                                let cx = ctx.body_pos_px[0] + off_wx * ctx.size_sx;
+                                let cy = (ctx.body_pos_px[1] + off_wy * ctx.size_sy) * y_sign;
+                                (cx, cy, ctx.size_sx, ctx.size_sy)
                             } else {
                                 (
                                     (ctx.body_pos_px[0] + off_wx) * canvas_scale,

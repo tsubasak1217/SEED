@@ -10,9 +10,12 @@
 //   - 応答中の経過時間表示
 // ============================================================
 
+using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
+using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
@@ -33,12 +36,19 @@ namespace SEEDEditor.AI;
 /// </summary>
 public class AIAssistantPanel
 {
+    // ── モード定数 ───────────────────────────────────────────────
+    private const int MODE_API = 0;
+    private const int MODE_CLI = 1;
+
     // ── プロバイダーインデックス定数 ─────────────────────────────
-    /// <summary>Ollama なし。インデックスは 0〜3 の 4 種類。</summary>
+    // Mode=API
     private const int PROVIDER_LOCAL_AI  = 0;
     private const int PROVIDER_OPENAI    = 1;
     private const int PROVIDER_ANTHROPIC = 2;
     private const int PROVIDER_GEMINI    = 3;
+    // Mode=CLI
+    private const int PROVIDER_CLI_GEMINI = 0;
+    private const int PROVIDER_CLI_CLAUDE = 1;
 
     // ── メッセージカラー定数 ─────────────────────────────────────
     /// <summary>システムメッセージ色（緑）</summary>
@@ -61,6 +71,18 @@ public class AIAssistantPanel
     private const int MAX_SESSIONS            = 50;
     /// <summary>セッションタイトルに使用する先頭文字数</summary>
     private const int SESSION_TITLE_MAX_CHARS = 30;
+    /// <summary>
+    /// Gemini CLI が対応するモデル一覧。
+    /// gemini /model コマンドで表示される名前と一致させること。
+    /// </summary>
+    private static readonly string[] GEMINI_CLI_MODELS =
+    {
+        "gemini-3-flash-preview",        // Flash 系（高速・高頻度）
+        "gemini-3.1-flash-lite-preview", // Flash Lite 系（低クォータ消費）
+        "gemini-2.5-flash",              // Flash 系
+        "gemini-2.5-flash-lite",         // Flash Lite 系（低クォータ消費）
+        // gemma-* は Gemini クラウド API 非対応（ローカル推論専用）のため除外
+    };
 
     /// <summary>AI へ渡すシステムプロンプト。エンジン全知識をコンパクトに与える。</summary>
     private const string SYSTEM_PROMPT =
@@ -118,6 +140,7 @@ public class AIAssistantPanel
     // ── 設定ポップアップ UI ───────────────────────────────────────
     /// <summary>設定ポップアップ（歯車ボタンの上に展開）</summary>
     private readonly Popup     _settingsPopup;
+    private readonly ComboBox  _modeCombo;
     private readonly ComboBox  _providerCombo;
     private readonly ComboBox  _modelCombo;
     private readonly TextBox   _apiKeyBox;
@@ -127,6 +150,14 @@ public class AIAssistantPanel
     private readonly TextBlock _popupApiKeyLabel;
     /// <summary>エンドポイントラベル（OpenAI 互換向けのみ表示）</summary>
     private readonly TextBlock _popupEndpointLabel;
+
+    // ── Gemini CLI モデル状態 UI ──────────────────────────────────
+    /// <summary>モデル状態セクション（CLI Gemini モード時のみ表示）</summary>
+    private readonly Border _geminiStatusSection;
+    /// <summary>モデル名 → 状態 TextBlock（確認結果を動的に書き換える）</summary>
+    private readonly Dictionary<string, TextBlock> _modelStatusLabels = new();
+    /// <summary>モデル状態確認ボタン</summary>
+    private readonly Button _checkModelsBtn;
 
     // ── 履歴ダッシュボード UI ─────────────────────────────────────
     /// <summary>チャット表示パネル（通常時に表示）</summary>
@@ -154,6 +185,15 @@ public class AIAssistantPanel
     private          DateTime                     _sendStartTime;
     /// <summary>思考中インジケーターの段落参照（非 null = 表示中）</summary>
     private          Paragraph?                   _thinkingParagraph;
+    /// <summary>
+    /// キャッシュ済み CLI プロバイダー（Gemini CLI 用プリウォームプロセスを保持する）。
+    /// プロバイダー・モデルが変わったときのみ再生成する。
+    /// </summary>
+    private          CliAgentProvider?            _cachedCliProvider;
+    /// <summary>キャッシュ済みプロバイダーに対応するキー文字列（"command:model"）。</summary>
+    private          string                       _cachedCliKey = "";
+    /// <summary>UpdateProviderUi の再入防止フラグ（プロバイダーコンボ変更イベントの連鎖を防ぐ）。</summary>
+    private          bool                         _updatingProviderUi;
 
     // ── コンストラクタ ───────────────────────────────────────────
 
@@ -290,6 +330,25 @@ public class AIAssistantPanel
         };
         _popupApiKeyLabel   = MakeSettingsLabel("API Key");
         _popupEndpointLabel = MakeSettingsLabel("Endpoint (OpenAI 互換)");
+
+        _modeCombo = new ComboBox { MinWidth = 150, Margin = new Thickness(0, 0, 0, 6) };
+        _modeCombo.Items.Add("API モード (直接通信)");
+        _modeCombo.Items.Add("CLI モード (外部ツール)");
+        _modeCombo.SelectedIndex = MODE_API;
+
+        _checkModelsBtn = new Button
+        {
+            Content             = "状態を更新",
+            FontSize            = 10,
+            Padding             = new Thickness(6, 2, 6, 2),
+            Background          = new SolidColorBrush(Color.FromRgb(60, 60, 60)),
+            Foreground          = Brushes.LightGray,
+            BorderThickness     = new Thickness(0),
+            HorizontalAlignment = HorizontalAlignment.Right,
+        };
+        // BuildGeminiStatusSection は _checkModelsBtn と _modelStatusLabels を使うため後に呼ぶ
+        _geminiStatusSection = BuildGeminiStatusSection();
+
         _settingsPopup      = BuildSettingsPopup();
 
         // 履歴ダッシュボード関連
@@ -321,6 +380,10 @@ public class AIAssistantPanel
         WireEvents();
         UpdateStatusLabel();
         _ = CheckLocalAiStatusAsync();
+
+        // 設定読み込み完了後に CLI Gemini のプリウォームを開始する
+        // （メッセージ送信前にプロセスが立ち上がっていれば最初から高速応答できる）
+        EnsureCliProviderPrewarmed();
     }
 
     // ── 公開メソッド ─────────────────────────────────────────────
@@ -489,6 +552,8 @@ public class AIAssistantPanel
             Margin     = new Thickness(0, 0, 0, 8),
         });
 
+        stack.Children.Add(MakeSettingsLabel("モード"));
+        stack.Children.Add(_modeCombo);
         stack.Children.Add(MakeSettingsLabel("プロバイダー"));
         stack.Children.Add(_providerCombo);
         stack.Children.Add(MakeSettingsLabel("モデル"));
@@ -498,6 +563,9 @@ public class AIAssistantPanel
         stack.Children.Add(_popupEndpointLabel);
         stack.Children.Add(_endpointBox);
         stack.Children.Add(_fetchModelsButton);
+        // CLI Gemini 時のみ表示するモデル状態セクション（初期は非表示）
+        _geminiStatusSection.Visibility = Visibility.Collapsed;
+        stack.Children.Add(_geminiStatusSection);
 
         border.Child = stack;
         popup.Child  = border;
@@ -716,7 +784,13 @@ public class AIAssistantPanel
             var settings = JsonSerializer.Deserialize<AIPanelSettings>(json);
             if (settings is null) return;
 
+            // モードの設定
+            if (settings.Mode == MODE_API || settings.Mode == MODE_CLI)
+                _modeCombo.SelectedIndex = settings.Mode;
+
             // プロバイダーインデックスの範囲チェック
+            // モード切り替えによって Items が変わるため、先に項目を更新しておく
+            UpdateProviderComboItems();
             if (settings.ProviderIndex >= 0 && settings.ProviderIndex < _providerCombo.Items.Count)
                 _providerCombo.SelectedIndex = settings.ProviderIndex;
 
@@ -724,6 +798,10 @@ public class AIAssistantPanel
             _apiKeyBox.Text           = settings.ApiKey;
             _endpointBox.Text         = settings.Endpoint;
             _showToolLogCheck.IsChecked = settings.ShowToolLog;
+
+            // WireEvents() より前に呼ぶため SelectionChanged イベントが発火しない。
+            // 読み込んだ設定値に合わせて UI の表示状態を手動で更新する。
+            UpdateProviderUi(_popupApiKeyLabel, _popupEndpointLabel);
         }
         catch (Exception ex)
         {
@@ -739,6 +817,7 @@ public class AIAssistantPanel
             Directory.CreateDirectory(APP_DATA_DIR);
             var settings = new AIPanelSettings
             {
+                Mode          = _modeCombo.SelectedIndex,
                 ProviderIndex = _providerCombo.SelectedIndex,
                 Model         = _modelCombo.Text ?? "",
                 ApiKey        = _apiKeyBox.Text  ?? "",
@@ -792,59 +871,138 @@ public class AIAssistantPanel
     /// <summary>ステータスバーの表示ラベルを現在の設定に基づいて更新する。</summary>
     private void UpdateStatusLabel()
     {
-        var providerName = _providerCombo.SelectedIndex switch
+        var modeName = _modeCombo.SelectedIndex == MODE_CLI ? "[CLI] " : "";
+        var providerName = "不明";
+
+        if (_modeCombo.SelectedIndex == MODE_API)
         {
-            PROVIDER_LOCAL_AI  => "ローカル AI",
-            PROVIDER_OPENAI    => "OpenAI 互換",
-            PROVIDER_ANTHROPIC => "Anthropic",
-            PROVIDER_GEMINI    => "Gemini",
-            _                  => "不明",
-        };
+            providerName = _providerCombo.SelectedIndex switch
+            {
+                PROVIDER_LOCAL_AI  => "ローカル AI",
+                PROVIDER_OPENAI    => "OpenAI 互換",
+                PROVIDER_ANTHROPIC => "Anthropic",
+                PROVIDER_GEMINI    => "Gemini",
+                _                  => "不明",
+            };
+        }
+        else
+        {
+            providerName = _providerCombo.SelectedIndex switch
+            {
+                PROVIDER_CLI_GEMINI => "Gemini CLI",
+                PROVIDER_CLI_CLAUDE => "Claude Code",
+                _                   => "不明",
+            };
+        }
+
         var model = _modelCombo.Text ?? "";
-        _statusLabel.Text = string.IsNullOrWhiteSpace(model)
-            ? providerName
-            : $"{providerName} / {model}";
+        // API モードと CLI Gemini モードはモデル名をステータスに表示する
+        var isCliGeminiMode = _modeCombo.SelectedIndex == MODE_CLI
+                           && _providerCombo.SelectedIndex == PROVIDER_CLI_GEMINI;
+        var modelInfo = ((_modeCombo.SelectedIndex == MODE_API || isCliGeminiMode) && !string.IsNullOrWhiteSpace(model))
+            ? $" / {model}"
+            : "";
+
+        _statusLabel.Text = $"{modeName}{providerName}{modelInfo}";
     }
 
     /// <summary>プロバイダーコンボボックスの項目を初期化する（Ollama なし）。</summary>
     private void InitProviderCombo()
     {
-        _providerCombo.Items.Add("ローカル AI (Qwen2.5-Coder)"); // PROVIDER_LOCAL_AI  = 0
-        _providerCombo.Items.Add("OpenAI 互換");                  // PROVIDER_OPENAI    = 1
-        _providerCombo.Items.Add("Anthropic");                    // PROVIDER_ANTHROPIC = 2
-        _providerCombo.Items.Add("Google Gemini");                // PROVIDER_GEMINI    = 3
-        _providerCombo.SelectedIndex = PROVIDER_LOCAL_AI;
-
-        UpdateModelCombo();
+        UpdateProviderComboItems();
         UpdateProviderUi(_popupApiKeyLabel, _popupEndpointLabel);
+    }
+
+    /// <summary>モードに応じてプロバイダーコンボの項目を詰め替える。</summary>
+    private void UpdateProviderComboItems()
+    {
+        var prevIdx = _providerCombo.SelectedIndex;
+        _providerCombo.Items.Clear();
+
+        if (_modeCombo.SelectedIndex == MODE_API)
+        {
+            _providerCombo.Items.Add("ローカル AI (Qwen2.5-Coder)");
+            _providerCombo.Items.Add("OpenAI 互換");
+            _providerCombo.Items.Add("Anthropic");
+            _providerCombo.Items.Add("Google Gemini");
+        }
+        else
+        {
+            _providerCombo.Items.Add("Gemini CLI (gemini)");
+            _providerCombo.Items.Add("Claude Code (claude)");
+        }
+
+        if (prevIdx >= 0 && prevIdx < _providerCombo.Items.Count)
+            _providerCombo.SelectedIndex = prevIdx;
+        else if (_providerCombo.Items.Count > 0)
+            _providerCombo.SelectedIndex = 0;
     }
 
     /// <summary>
     /// 選択中のプロバイダーに応じてポップアップ内の表示要素を切り替える。
-    /// ローカル AI では API キーと Endpoint を非表示にする。
+    /// CLI モードやローカル AI では API キーと Endpoint を非表示にする。
     /// </summary>
     private void UpdateProviderUi(TextBlock apiKeyLabel, TextBlock endpointLabel)
     {
-        var idx       = _providerCombo.SelectedIndex;
-        var isLocalAi = idx == PROVIDER_LOCAL_AI;
-        var isOpenAi  = idx == PROVIDER_OPENAI;
-        var isGemini  = idx == PROVIDER_GEMINI;
+        // SelectionChanged 連鎖による再入を防ぐ
+        // （モードコンボ変更 → UpdateProviderComboItems でプロバイダー SelectedIndex 設定
+        //   → SelectionChanged 発火 → UpdateProviderUi 再帰呼び出し）
+        if (_updatingProviderUi) return;
+        _updatingProviderUi = true;
+        try
+        {
+            // プロバイダーが切り替わったのでキャッシュ済み CLI プロバイダーを破棄する
+            _cachedCliProvider?.Dispose();
+            _cachedCliProvider = null;
+            _cachedCliKey      = "";
 
-        // API キー欄: ローカル AI では不要
-        var apiKeyVis = isLocalAi ? Visibility.Collapsed : Visibility.Visible;
-        apiKeyLabel.Visibility = apiKeyVis;
-        _apiKeyBox.Visibility  = apiKeyVis;
+            var mode = _modeCombo.SelectedIndex;
+            var pIdx = _providerCombo.SelectedIndex;
 
-        // Endpoint 欄: OpenAI 互換のみ表示
-        var endpointVis = isOpenAi ? Visibility.Visible : Visibility.Collapsed;
-        endpointLabel.Visibility  = endpointVis;
-        _endpointBox.Visibility   = endpointVis;
+            var isCli       = mode == MODE_CLI;
+            var isCliGemini = isCli && pIdx == PROVIDER_CLI_GEMINI;
+            var isLocalAi   = !isCli && pIdx == PROVIDER_LOCAL_AI;
+            var isOpenAi    = !isCli && pIdx == PROVIDER_OPENAI;
+            var isGemini    = !isCli && pIdx == PROVIDER_GEMINI;
 
-        // モデル取得ボタン: Gemini のみ表示
-        _fetchModelsButton.Visibility = isGemini ? Visibility.Visible : Visibility.Collapsed;
+            // CLI Gemini はモデル選択が必要（-m フラグで渡す）、それ以外の CLI では不要
+            var modelVis = (!isCli || isCliGemini) ? Visibility.Visible : Visibility.Collapsed;
 
-        UpdateModelCombo();
-        UpdateStatusLabel();
+            _modelCombo.Visibility = modelVis;
+            // モデルラベルも同様に表示切り替えする（親の StackPanel から探す）
+            if (_modelCombo.Parent is StackPanel stack)
+            {
+                var idx = stack.Children.IndexOf(_modelCombo);
+                if (idx > 0 && stack.Children[idx - 1] is TextBlock label)
+                    label.Visibility = modelVis;
+            }
+
+            // API キー欄: ローカル AI または CLI では不要
+            var apiKeyVis = (isLocalAi || isCli) ? Visibility.Collapsed : Visibility.Visible;
+            apiKeyLabel.Visibility = apiKeyVis;
+            _apiKeyBox.Visibility  = apiKeyVis;
+
+            // Endpoint 欄: OpenAI 互換のみ表示
+            var endpointVis = isOpenAi ? Visibility.Visible : Visibility.Collapsed;
+            endpointLabel.Visibility = endpointVis;
+            _endpointBox.Visibility  = endpointVis;
+
+            // モデル取得ボタン: API Gemini のみ表示
+            _fetchModelsButton.Visibility = isGemini ? Visibility.Visible : Visibility.Collapsed;
+
+            // モデル状態セクション: CLI Gemini のみ表示
+            _geminiStatusSection.Visibility = isCliGemini ? Visibility.Visible : Visibility.Collapsed;
+
+            UpdateModelCombo();
+            UpdateStatusLabel();
+
+            // CLI Gemini に切り替わった場合はプリウォームを即時開始する
+            EnsureCliProviderPrewarmed();
+        }
+        finally
+        {
+            _updatingProviderUi = false;
+        }
     }
 
     /// <summary>選択中のプロバイダーに合わせたモデル候補をコンボに設定する。</summary>
@@ -852,6 +1010,24 @@ public class AIAssistantPanel
     {
         var prevModel = _modelCombo.Text;
         _modelCombo.Items.Clear();
+
+        // CLI Gemini モードはモデル選択あり（-m フラグで渡す）
+        if (_modeCombo.SelectedIndex == MODE_CLI)
+        {
+            if (_providerCombo.SelectedIndex == PROVIDER_CLI_GEMINI)
+            {
+                // GEMINI_CLI_MODELS と同じリストを使用する（gemini /model で確認したモデル名と一致させること）
+                foreach (var m in GEMINI_CLI_MODELS)
+                    _modelCombo.Items.Add(m);
+            }
+            // CLI Claude はモデル選択なし（空のままにしてデフォルトを使用）
+
+            if (!string.IsNullOrEmpty(prevModel) && _modelCombo.Items.Contains(prevModel))
+                _modelCombo.Text = prevModel;
+            else if (_modelCombo.Items.Count > 0)
+                _modelCombo.SelectedIndex = 0;
+            return;
+        }
 
         switch (_providerCombo.SelectedIndex)
         {
@@ -980,6 +1156,15 @@ public class AIAssistantPanel
         // 歯車ボタン: 設定ポップアップの開閉
         _gearButton.Click += (_, _) => _settingsPopup.IsOpen = !_settingsPopup.IsOpen;
 
+        // モード変更時の自動更新と設定保存
+        _modeCombo.SelectionChanged += (_, _) =>
+        {
+            UpdateProviderComboItems();
+            UpdateProviderUi(_popupApiKeyLabel, _popupEndpointLabel);
+            SaveSettings();
+            UpdateStatusLabel();
+        };
+
         // 履歴トグルボタン: チャット/履歴パネルを切り替える
         _historyToggleButton.Click += (_, _) =>
         {
@@ -1021,9 +1206,19 @@ public class AIAssistantPanel
                 _ = FetchGeminiModelsAsync();
         };
 
-        // モデル変更時の自動保存
-        _modelCombo.SelectionChanged += (_, _) => { SaveSettings(); UpdateStatusLabel(); };
-        _modelCombo.LostFocus        += (_, _) => { SaveSettings(); UpdateStatusLabel(); };
+        // モデル変更時の自動保存 + CLI Gemini ならプロバイダー再生成
+        _modelCombo.SelectionChanged += (_, _) =>
+        {
+            SaveSettings();
+            UpdateStatusLabel();
+            EnsureCliProviderPrewarmed();
+        };
+        _modelCombo.LostFocus += (_, _) =>
+        {
+            SaveSettings();
+            UpdateStatusLabel();
+            EnsureCliProviderPrewarmed();
+        };
 
         // API キー / Endpoint 変更時の自動保存
         _apiKeyBox.LostFocus    += (_, _) => SaveSettings();
@@ -1033,8 +1228,11 @@ public class AIAssistantPanel
         _showToolLogCheck.Checked   += (_, _) => SaveSettings();
         _showToolLogCheck.Unchecked += (_, _) => SaveSettings();
 
-        // モデル取得ボタン（Gemini のみ）
+        // モデル取得ボタン（API Gemini のみ）
         _fetchModelsButton.Click += async (_, _) => await FetchGeminiModelsAsync(showMessageOnSuccess: true);
+
+        // Gemini CLI モデル状態確認ボタン
+        _checkModelsBtn.Click += async (_, _) => await CheckAllGeminiModelsAsync();
     }
 
     // ── メッセージ送受信 ──────────────────────────────────────────
@@ -1050,7 +1248,7 @@ public class AIAssistantPanel
         if (_currentSession is null) return;
 
         // ローカル AI: サーバーが未起動の場合は起動する
-        if (_providerCombo.SelectedIndex == PROVIDER_LOCAL_AI && !_localLlmManager.IsServerRunning)
+        if (_modeCombo.SelectedIndex == MODE_API && _providerCombo.SelectedIndex == PROVIDER_LOCAL_AI && !_localLlmManager.IsServerRunning)
         {
             _sendButton.IsEnabled = false;
             _inputBox.IsEnabled   = false;
@@ -1074,7 +1272,7 @@ public class AIAssistantPanel
         _sendButton.IsEnabled = false;
         _inputBox.IsEnabled   = false;
 
-        var isLocalAi = _providerCombo.SelectedIndex == PROVIDER_LOCAL_AI;
+        var isLocalAi = _modeCombo.SelectedIndex == MODE_API && _providerCombo.SelectedIndex == PROVIDER_LOCAL_AI;
         if (isLocalAi) _runtime?.PauseRendering();
 
         // 経過時間タイマーを開始する
@@ -1110,6 +1308,7 @@ public class AIAssistantPanel
             {
                 // 思考中インジケーターを表示する
                 AppendThinkingIndicator(isLocalAi);
+
                 AIResponse response;
                 try
                 {
@@ -1119,7 +1318,7 @@ public class AIAssistantPanel
                 {
                     RemoveThinkingIndicator();
                 }
-
+                
                 // アシスタントメッセージを履歴に記録する
                 var assistantMsg = new ChatMessage
                 {
@@ -1178,7 +1377,42 @@ public class AIAssistantPanel
     /// <summary>選択中のプロバイダーを生成して返す。</summary>
     private IAIProvider CreateProvider()
     {
-        var idx       = _providerCombo.SelectedIndex;
+        var mode = _modeCombo.SelectedIndex;
+        var pIdx = _providerCombo.SelectedIndex;
+
+        if (mode == MODE_CLI)
+        {
+            if (pIdx == PROVIDER_CLI_GEMINI)
+            {
+                // CLI Gemini はプリウォームプロセスを保持するためキャッシュして再利用する
+                // プロバイダーやモデルが変わった場合のみ再生成する
+                var cliModel  = (_modelCombo.Text ?? "").Trim();
+                var cliKey    = $"gemini:{cliModel}";
+                if (_cachedCliProvider == null || _cachedCliKey != cliKey)
+                {
+                    _cachedCliProvider?.Dispose();
+                    _cachedCliProvider = new CliAgentProvider(
+                        "Gemini CLI", "gemini", "https://github.com/google/gemini-cli", cliModel);
+                    _cachedCliKey = cliKey;
+                }
+                return _cachedCliProvider;
+            }
+            else
+            {
+                // Claude Code はプリウォームなし・毎回生成でも問題なし
+                var claudeKey = "claude:";
+                if (_cachedCliProvider == null || _cachedCliKey != claudeKey)
+                {
+                    _cachedCliProvider?.Dispose();
+                    _cachedCliProvider = new CliAgentProvider(
+                        "Claude Code", "claude", "https://docs.anthropic.com/claude/docs/agents-and-tools/claude-code");
+                    _cachedCliKey = claudeKey;
+                }
+                return _cachedCliProvider;
+            }
+        }
+
+        var idx = _providerCombo.SelectedIndex;
         var isLocalAi = idx == PROVIDER_LOCAL_AI;
 
         var settings = new AISettings
@@ -1196,6 +1430,31 @@ public class AIAssistantPanel
             PROVIDER_GEMINI    => new GeminiProvider(settings),
             _                  => new OpenAICompatibleProvider(settings), // LOCAL_AI と OPENAI
         };
+    }
+
+    /// <summary>
+    /// CLI Gemini モードが選択されている場合にプロバイダーを即時生成してプリウォームを開始する。
+    /// 送信ボタンが押される前にプロセスを起動しておくことで最初のメッセージからウォームスタートできる。
+    /// モデルが変わった場合は古いプロバイダーを破棄して再生成する。
+    /// </summary>
+    private void EnsureCliProviderPrewarmed()
+    {
+        if (_modeCombo.SelectedIndex != MODE_CLI
+         || _providerCombo.SelectedIndex != PROVIDER_CLI_GEMINI)
+            return;
+
+        var cliModel = (_modelCombo.Text ?? "").Trim();
+        var cliKey   = $"gemini:{cliModel}";
+
+        // キーが一致していればすでにウォームアップ済み
+        if (_cachedCliProvider != null && _cachedCliKey == cliKey)
+            return;
+
+        _cachedCliProvider?.Dispose();
+        _cachedCliProvider = new CliAgentProvider(
+            "Gemini CLI", "gemini", "https://github.com/google/gemini-cli", cliModel);
+        _cachedCliKey = cliKey;
+        EditorLog.Write($"[AIPanel] Gemini CLI プリウォーム開始: model={cliModel}");
     }
 
     /// <summary>エディタコマンド実行エンジンを生成して返す。</summary>
@@ -1495,5 +1754,282 @@ public class AIAssistantPanel
             FontSize   = 11,
             Margin     = new Thickness(0, 4, 0, 2),
         };
+    }
+
+    // ── Gemini CLI モデル状態確認 ────────────────────────────────
+
+    /// <summary>Gemini CLI モデルの利用可能状態。</summary>
+    private enum GeminiModelAvailability { Unknown, Available, RateLimited, Timeout, Error }
+
+    /// <summary>
+    /// モデル状態セクションの UI を構築する。
+    /// 各モデルの行と状態 TextBlock を生成し _modelStatusLabels に登録する。
+    /// </summary>
+    private Border BuildGeminiStatusSection()
+    {
+        var border = new Border
+        {
+            BorderBrush     = new SolidColorBrush(Color.FromRgb(70, 70, 70)),
+            BorderThickness = new Thickness(0, 1, 0, 0),
+            Margin          = new Thickness(0, 10, 0, 0),
+            Padding         = new Thickness(0, 8, 0, 0),
+        };
+        var stack = new StackPanel { Orientation = Orientation.Vertical };
+
+        // ヘッダー行（「モデル状態」ラベル + 更新ボタン）
+        var header = new Grid();
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        var titleLabel = new TextBlock
+        {
+            Text              = "モデル状態",
+            Foreground        = Brushes.LightGray,
+            FontSize          = 11,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        Grid.SetColumn(titleLabel,    0);
+        Grid.SetColumn(_checkModelsBtn, 1);
+        header.Children.Add(titleLabel);
+        header.Children.Add(_checkModelsBtn);
+        stack.Children.Add(header);
+
+        // 各モデルの状態行を生成する
+        foreach (var model in GEMINI_CLI_MODELS)
+        {
+            var row = new Grid { Margin = new Thickness(0, 3, 0, 0) };
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+            var nameLabel = new TextBlock
+            {
+                Text              = model,
+                Foreground        = new SolidColorBrush(Color.FromRgb(200, 200, 200)),
+                FontSize          = 10,
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            var statusLabel = new TextBlock
+            {
+                Text              = "○ 未確認",
+                Foreground        = new SolidColorBrush(Color.FromRgb(120, 120, 120)),
+                FontSize          = 10,
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin            = new Thickness(8, 0, 0, 0),
+            };
+
+            Grid.SetColumn(nameLabel,   0);
+            Grid.SetColumn(statusLabel, 1);
+            row.Children.Add(nameLabel);
+            row.Children.Add(statusLabel);
+            stack.Children.Add(row);
+
+            _modelStatusLabels[model] = statusLabel;
+        }
+
+        border.Child = stack;
+        return border;
+    }
+
+    /// <summary>
+    /// 全 Gemini CLI モデルを順番に確認し、状態ラベルを随時更新する。
+    /// 並列実行するとクォートを一斉消費するため、逐次実行にしている。
+    /// </summary>
+    private async Task CheckAllGeminiModelsAsync()
+    {
+        _checkModelsBtn.IsEnabled = false;
+        _checkModelsBtn.Content   = "確認中...";
+
+        // 全モデルを「確認中」状態に初期化する
+        foreach (var (_, lbl) in _modelStatusLabels)
+        {
+            lbl.Text       = "◌ 確認中...";
+            lbl.Foreground = new SolidColorBrush(Color.FromRgb(100, 180, 220));
+            lbl.ToolTip    = null;
+        }
+
+        var geminiPath = ResolveGeminiPath();
+        if (geminiPath is null)
+        {
+            foreach (var (_, lbl) in _modelStatusLabels)
+            {
+                lbl.Text       = "✕ gemini が見つかりません";
+                lbl.Foreground = new SolidColorBrush(Color.FromRgb(220, 80, 60));
+            }
+            _checkModelsBtn.IsEnabled = true;
+            _checkModelsBtn.Content   = "状態を更新";
+            return;
+        }
+
+        // 逐次確認。並列は禁止（同時にクォータを消費して全モデルが上限超過に見えるため）。
+        // モデル間に 5 秒の待機を挟んで RPM（分間リクエスト数）上限を回避する。
+        // ※ Gemini 無料枠は RPD（日次）と RPM（分間）の 2 種類の上限があり、
+        //   /model バーは RPD を表示するが実際の API 呼び出しは RPM でも弾かれる。
+        bool isFirst = true;
+        foreach (var model in GEMINI_CLI_MODELS)
+        {
+            if (!_modelStatusLabels.TryGetValue(model, out var lbl)) continue;
+
+            // 2 モデル目以降は RPM 上限を避けるために少し待つ
+            if (!isFirst) await Task.Delay(TimeSpan.FromSeconds(5));
+            isFirst = false;
+
+            var (status, detail) = await CheckOneGeminiModelAsync(model, geminiPath);
+            (lbl.Text, lbl.Foreground) = status switch
+            {
+                GeminiModelAvailability.Available   => ("● 利用可",       new SolidColorBrush(Color.FromRgb(80,  200, 80))),
+                GeminiModelAvailability.RateLimited => ("● 上限超過",     new SolidColorBrush(Color.FromRgb(220, 80,  60))),
+                GeminiModelAvailability.Timeout     => ("○ タイムアウト", new SolidColorBrush(Color.FromRgb(220, 160, 60))),
+                _                                   => ("✕ エラー",       new SolidColorBrush(Color.FromRgb(180, 100, 50))),
+            };
+            // エラーやタイムアウト時は詳細をツールチップに表示する
+            if (!string.IsNullOrWhiteSpace(detail))
+                lbl.ToolTip = detail;
+        }
+
+        _checkModelsBtn.IsEnabled = true;
+        _checkModelsBtn.Content   = "状態を更新";
+    }
+
+    /// <summary>
+    /// 指定モデルへ最小プロンプトを送り利用可能状態を返す。
+    /// stderr の「上限超過」メッセージを検出した瞬間にプロセスを強制終了して
+    /// リトライ待ちをスキップする。
+    /// </summary>
+    /// <returns>(状態, エラー詳細文字列)</returns>
+    private static async Task<(GeminiModelAvailability Status, string Detail)> CheckOneGeminiModelAsync(
+        string model, string geminiPath)
+    {
+        // タイムアウトを 60 秒に設定（重いモデルへの初回リクエストは時間がかかる）
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        try
+        {
+            // --approval-mode plan: ファイル直接編集を防ぐ読み取り専用モード
+            // "hi" のような単純プロンプトではツール呼び出しが発生しないため承認待ちブロックは起きない
+            var psi = new ProcessStartInfo
+            {
+                FileName               = "cmd.exe",
+                Arguments              = $"/c \"\"{geminiPath}\" -p hi -m {model} --skip-trust --approval-mode plan\"",
+                UseShellExecute        = false,
+                CreateNoWindow         = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError  = true,
+                RedirectStandardInput  = true,
+                StandardOutputEncoding = Encoding.UTF8,
+                StandardErrorEncoding  = Encoding.UTF8,
+            };
+            psi.EnvironmentVariables["CI"]                = "true";
+            psi.EnvironmentVariables["NON_INTERACTIVE"]   = "true";
+            psi.EnvironmentVariables["GEMINI_SKIP_TRUST"] = "true";
+
+            using var process = new Process { StartInfo = psi };
+            process.Start();
+
+            // stdin を即座に閉じる（-p hi でインラインプロンプト指定済みのため stdin 不要）
+            try { process.StandardInput.Close(); } catch { }
+
+            // stderr を全行取得しながら上限超過メッセージを記録する。
+            // ※ 即座に Kill しない。CLI が内部リトライで成功した場合、stdout に応答が出るため
+            //   stdout の有無を最優先の判定基準とし、stderr はあくまで補足情報とする。
+            var rateLimitDetected = false;
+            var stderrSb          = new StringBuilder();
+            var stderrTask = Task.Run(async () =>
+            {
+                try
+                {
+                    while (!process.StandardError.EndOfStream)
+                    {
+                        var line = await process.StandardError.ReadLineAsync(cts.Token);
+                        if (line is null) continue;
+                        stderrSb.AppendLine(line);
+                        if (line.Contains("You have exhausted",     StringComparison.OrdinalIgnoreCase) ||
+                            line.Contains("exhausted your capacity", StringComparison.OrdinalIgnoreCase) ||
+                            line.Contains("RESOURCE_EXHAUSTED",     StringComparison.OrdinalIgnoreCase))
+                        {
+                            rateLimitDetected = true;
+                            // Kill しない: 内部リトライで成功する可能性がある
+                        }
+                    }
+                }
+                catch { }
+            });
+
+            // stdout の内容を取得する（応答があれば利用可能と判断するために使用する）
+            var stdoutSb   = new StringBuilder();
+            var stdoutTask = Task.Run(async () =>
+            {
+                try
+                {
+                    while (!process.StandardOutput.EndOfStream)
+                    {
+                        var line = await process.StandardOutput.ReadLineAsync(cts.Token);
+                        if (line != null) stdoutSb.AppendLine(line);
+                    }
+                }
+                catch { }
+            });
+
+            try   { await process.WaitForExitAsync(cts.Token); }
+            catch (OperationCanceledException)
+            {
+                try { process.Kill(true); } catch { }
+                var stderrOnTimeout = stderrSb.ToString().Trim();
+                EditorLog.Write($"[GeminiCheck] {model}: タイムアウト stderr={stderrOnTimeout[..Math.Min(stderrOnTimeout.Length, 200)]}");
+                return (GeminiModelAvailability.Timeout, $"60秒以内に応答なし\n{stderrOnTimeout}");
+            }
+
+            await Task.WhenAll(stderrTask, stdoutTask);
+
+            var stderrText = stderrSb.ToString().Trim();
+            var stdoutText = StripAnsiCodesStatic(stdoutSb.ToString()).Trim();
+
+            EditorLog.Write($"[GeminiCheck] {model}: exit={process.ExitCode} rateLimited={rateLimitDetected} stdoutLen={stdoutText.Length} stderr={stderrText[..Math.Min(stderrText.Length, 200)]}");
+
+            // 判定優先度: stdout 応答 > exit 0 > 上限超過 > エラー
+            // stdout に応答がある場合は成功（内部リトライが成功した可能性もある）
+            if (stdoutText.Length > 0) return (GeminiModelAvailability.Available, "");
+
+            if (process.ExitCode == 0) return (GeminiModelAvailability.Available, "");
+
+            if (rateLimitDetected) return (GeminiModelAvailability.RateLimited, "");
+
+            // 終了コード != 0 かつ上限超過でない場合はエラー詳細を返す
+            return (GeminiModelAvailability.Error,
+                    $"終了コード: {process.ExitCode}\n{stderrText[..Math.Min(stderrText.Length, 300)]}");
+        }
+        catch (OperationCanceledException) { return (GeminiModelAvailability.Timeout, "タイムアウト"); }
+        catch (Exception ex)               { return (GeminiModelAvailability.Error,   ex.Message);    }
+    }
+
+    /// <summary>ANSI エスケープシーケンスを除去する（AIAssistantPanel 内のログ整形用）。</summary>
+    private static string StripAnsiCodesStatic(string text)
+        => Regex.Replace(text, @"\x1b(\[[0-9;]*[a-zA-Z]|\][^\x07]*\x07|.)", "");
+
+    /// <summary>Gemini CLI の実行ファイルパスを解決して返す。見つからない場合は null。</summary>
+    private static string? ResolveGeminiPath()
+    {
+        var npmPath = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+            "npm", "gemini.cmd");
+        if (File.Exists(npmPath)) return npmPath;
+
+        try
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName               = "where",
+                Arguments              = "gemini",
+                UseShellExecute        = false,
+                CreateNoWindow         = true,
+                RedirectStandardOutput = true,
+            };
+            using var p = Process.Start(psi);
+            if (p is not null)
+            {
+                var output = p.StandardOutput.ReadToEnd().Split('\n', '\r')[0].Trim();
+                p.WaitForExit();
+                if (p.ExitCode == 0 && !string.IsNullOrEmpty(output)) return output;
+            }
+        }
+        catch { }
+        return null;
     }
 }

@@ -57,18 +57,63 @@ impl ColliderShape2dData {
     /// ピクセル単位の形状データを PIXELS_PER_METER で除算して
     /// メートル単位の `physics::ColliderShape2d` に変換する。
     pub fn to_physics_shape(&self) -> ColliderShape2d {
+        self.to_physics_shape_scaled(1.0, 1.0)
+    }
+
+    /// ピクセル単位の形状データに size_sx/size_sy を乗算してから
+    /// PIXELS_PER_METER で除算し、メートル単位の `physics::ColliderShape2d` に変換する。
+    ///
+    /// - scale_size=true のとき: size_sx = auto_scale 係数（vp_w / canvas_w）
+    /// - scale_size=false のとき: size_sx = 1.0（形状寸法はスケールしない）
+    pub fn to_physics_shape_scaled(&self, size_sx: f32, size_sy: f32) -> ColliderShape2d {
         let s = PIXELS_PER_METER;
         match self {
             Self::Box { half_extents } =>
-                ColliderShape2d::Box { half_extents: [half_extents[0] / s, half_extents[1] / s] },
+                ColliderShape2d::Box { half_extents: [
+                    half_extents[0] * size_sx / s,
+                    half_extents[1] * size_sy / s,
+                ]},
             Self::Circle { radius } =>
-                ColliderShape2d::Circle { radius: radius / s },
+                // 均等スケールを前提として最大スケールを使用する
+                ColliderShape2d::Circle { radius: radius * size_sx.max(size_sy) / s },
             Self::Capsule { radius, half_height } =>
-                ColliderShape2d::Capsule { radius: radius / s, half_height: half_height / s },
+                ColliderShape2d::Capsule {
+                    radius:      radius      * size_sx / s,
+                    half_height: half_height * size_sy / s,
+                },
             Self::ConvexHull { vertices } =>
                 ColliderShape2d::ConvexHull {
-                    vertices: vertices.iter().map(|&[x, y]| [x / s, y / s]).collect(),
+                    vertices: vertices.iter().map(|&[x, y]| [x * size_sx / s, y * size_sy / s]).collect(),
                 },
+        }
+    }
+
+    /// コライダー形状のバウンディングボックスサイズ（幅, 高さ）をキャンバスピクセル単位で返す。
+    ///
+    /// CanvasComponent を持たないアクターのピボット補正基準サイズとして使用する。
+    /// pivot=[0,0] → 左上端、pivot=[0,1] → 左下端 のようなアンカー端揃えが機能する。
+    pub fn bounding_size(&self) -> (f32, f32) {
+        match self {
+            Self::Box { half_extents } =>
+                (half_extents[0] * 2.0, half_extents[1] * 2.0),
+            Self::Circle { radius } =>
+                (radius * 2.0, radius * 2.0),
+            Self::Capsule { radius, half_height } =>
+                (radius * 2.0, (radius + half_height) * 2.0),
+            Self::ConvexHull { vertices } => {
+                if vertices.is_empty() { return (0.0, 0.0); }
+                let mut min_x = f32::MAX;
+                let mut min_y = f32::MAX;
+                let mut max_x = f32::MIN;
+                let mut max_y = f32::MIN;
+                for &[x, y] in vertices {
+                    if x < min_x { min_x = x; }
+                    if y < min_y { min_y = y; }
+                    if x > max_x { max_x = x; }
+                    if y > max_y { max_y = y; }
+                }
+                (max_x - min_x, max_y - min_y)
+            }
         }
     }
 

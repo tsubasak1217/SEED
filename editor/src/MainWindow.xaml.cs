@@ -102,11 +102,11 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         { 0x10, "SHIFT" }, // VK_SHIFT
     };
 
-    private static readonly string RuntimeExePath      = ResolveRuntimePath();
-    private static readonly string AssetsPath          = ResolveAssetsPath();
-    private static readonly string SettingsDir         = ResolveSettingsDir();
-    private static readonly string EditorResourcesPath = ResolveEditorResourcesPath();
-    private static readonly string EditorPluginsPath   = ResolveEditorPluginsPath();
+    public static string RuntimeExePath      = ResolveRuntimePath();
+    public static string AssetsPath          = ResolveAssetsPath();
+    public static string SettingsDir         = ResolveSettingsDir();
+    public static string EditorResourcesPath = ResolveEditorResourcesPath();
+    public static string EditorPluginsPath   = ResolveEditorPluginsPath();
 
     private static string ResolveSettingsDir()
     {
@@ -1743,6 +1743,7 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
     {
         _currentScenePath = path;
         _isDirty = false;
+        SEEDEditor.ProjectSettings.RecentProjectsManager.AddProject(path);
         SendNavCommand($"LOAD_SCENE:{path}");
         UpdateTitle();
         EditorLog.Write($"LoadScene — LOAD_SCENE:{path}");

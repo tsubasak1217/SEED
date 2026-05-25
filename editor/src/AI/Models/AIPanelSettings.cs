@@ -15,8 +15,15 @@ namespace SEEDEditor.AI.Models;
 public class AIPanelSettings
 {
     /// <summary>
+    /// AI 動作モード。
+    /// 0: API (直接 Web API を呼ぶ) / 1: CLI (ローカルの CLI ツールを介す)
+    /// </summary>
+    public int Mode { get; set; } = 0;
+
+    /// <summary>
     /// 選択中のプロバイダーインデックス。
-    /// 0: ローカル AI / 1: OpenAI 互換 / 2: Anthropic / 3: Gemini
+    /// Mode=0 (API) 時: 0:ローカルAI / 1:OpenAI / 2:Anthropic / 3:Gemini
+    /// Mode=1 (CLI) 時: 0:Gemini CLI / 1:Claude Code
     /// </summary>
     public int ProviderIndex { get; set; } = 0;
 

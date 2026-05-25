@@ -14,6 +14,7 @@ use std::sync::Arc;
 
 use crate::engine::components::{
     CanvasTransform, CanvasComponent, SpriteComponent, ComponentKind,
+    CanvasViewportRef, CameraComponent, ScalingMode,
 };
 use crate::engine::ecs::{Entity, World};
 use crate::engine::structs::objects::Actor;
@@ -535,4 +536,149 @@ pub(super) fn collect_canvas_id_items(
             mc_total, out,
         );
     }
+}
+
+// ============================================================
+//  canvas_viewport_utils — CanvasViewportRef::Camera 解決ユーティリティ
+//
+//  frame_renderer.rs と physics2d_ops.rs の両方から参照されるため、
+//  canvas_collect.rs (pub(super)) に配置する。
+// ============================================================
+
+/// スケーリングモードに応じたゲームビューポート矩形・アスペクト比・FOV を計算する。
+///
+/// 戻り値: (vp_x, vp_y, vp_w, vp_h, proj_aspect, fov_y_rad)
+pub(super) fn compute_game_viewport(
+    scaling_mode: &ScalingMode,
+    window_w:  f32,
+    window_h:  f32,
+    target_w:  u32,
+    target_h:  u32,
+    fov_y_deg: f32,
+) -> (f32, f32, f32, f32, f32, f32) {
+    let tw = target_w.max(1) as f32;
+    let th = target_h.max(1) as f32;
+    let target_aspect = tw / th;
+    let window_aspect = if window_h > 0.0 { window_w / window_h } else { target_aspect };
+    let fov_y_rad = fov_y_deg.to_radians();
+
+    match scaling_mode {
+        ScalingMode::VertMinus => {
+            (0.0, 0.0, window_w, window_h, window_aspect, fov_y_rad)
+        }
+        ScalingMode::HorPlus => {
+            let fov_x     = 2.0 * ((fov_y_rad * 0.5).tan() * target_aspect).atan();
+            let fov_y_adj = if window_aspect > 0.0 {
+                2.0 * ((fov_x * 0.5).tan() / window_aspect).atan()
+            } else {
+                fov_y_rad
+            };
+            (0.0, 0.0, window_w, window_h, window_aspect, fov_y_adj)
+        }
+        ScalingMode::LetterBox => {
+            let scale = window_w / tw;
+            let vp_h  = (th * scale).min(window_h);
+            let y_off = ((window_h - vp_h) * 0.5).max(0.0);
+            (0.0, y_off, window_w, vp_h, target_aspect, fov_y_rad)
+        }
+        ScalingMode::PillarBox => {
+            let scale = window_h / th;
+            let vp_w  = (tw * scale).min(window_w);
+            let x_off = ((window_w - vp_w) * 0.5).max(0.0);
+            (x_off, 0.0, vp_w, window_h, target_aspect, fov_y_rad)
+        }
+        ScalingMode::LetterPillarBox => {
+            if window_aspect >= target_aspect {
+                let vp_w  = window_h * target_aspect;
+                let x_off = ((window_w - vp_w) * 0.5).max(0.0);
+                (x_off, 0.0, vp_w, window_h, target_aspect, fov_y_rad)
+            } else {
+                let vp_h  = window_w / target_aspect;
+                let y_off = ((window_h - vp_h) * 0.5).max(0.0);
+                (0.0, y_off, window_w, vp_h, target_aspect, fov_y_rad)
+            }
+        }
+        ScalingMode::FullScale => {
+            (0.0, 0.0, window_w, window_h, target_aspect, fov_y_rad)
+        }
+    }
+}
+
+/// `CanvasViewportRef::Camera` で参照されるカメラアクターのビューポートサイズを解決する。
+///
+/// 参照カメラのスケーリングモードを適用し、帯を除いたコンテンツ領域のサイズを返す。
+/// 参照先が見つからない場合は `[win_w, win_h]` を返す。
+pub(super) fn resolve_camera_viewport_size(
+    actors:         &[Actor],
+    world:          &World,
+    cam_actor_name: &str,
+    cam_slot_name:  &str,
+    win_w: f32,
+    win_h: f32,
+) -> [f32; 2] {
+    /// DFS でアクター名と指定スロット名の CameraComponent を持つ最初のアクターを返す。
+    fn find_camera_component<'a>(
+        actors:     &'a [Actor],
+        world:      &'a World,
+        actor_name: &str,
+        slot_name:  &str,
+    ) -> Option<&'a CameraComponent> {
+        for a in actors {
+            if a.name == actor_name {
+                if let Some(cam) = a.slots().iter()
+                    .find(|s| s.name == slot_name && s.kind == ComponentKind::Camera)
+                    .and_then(|s| world.get::<CameraComponent>(s.entity))
+                {
+                    return Some(cam);
+                }
+            }
+            if let Some(found) = find_camera_component(a.children(), world, actor_name, slot_name) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    let Some(cam) = find_camera_component(actors, world, cam_actor_name, cam_slot_name) else {
+        return [win_w, win_h];
+    };
+
+    let (_, _, rendered_w, rendered_h, _, _) = compute_game_viewport(
+        &cam.scaling_mode,
+        win_w, win_h,
+        cam.target_width, cam.target_height, cam.fov_y_deg,
+    );
+    [rendered_w, rendered_h]
+}
+
+/// シーン SS モード時に各ルートキャンバスアクターの有効ビューポートサイズを事前解決する。
+///
+/// `CanvasViewportRef::Camera` を持つルートキャンバスのみマップに追加する。
+/// `Window` 参照はデフォルトの `viewport_size` にフォールバックするため不要。
+pub(super) fn build_canvas_viewport_map(
+    actors:        &[Actor],
+    world:         &World,
+    wl:            u32,
+    win_w:         f32,
+    win_h:         f32,
+    _game_viewport: Option<(f32, f32, f32, f32)>,
+) -> HashMap<Entity, [f32; 2]> {
+    let mut map = HashMap::new();
+    for actor in actors {
+        if actor.world_line != wl { continue; }
+        if world.get::<CanvasTransform>(actor.entity).is_none() { continue; }
+        for slot in actor.slots() {
+            if slot.kind != ComponentKind::Canvas { continue; }
+            if let Some(cc) = world.get::<CanvasComponent>(slot.entity) {
+                if let CanvasViewportRef::Camera { actor_name, slot_name } = &cc.viewport_ref {
+                    let vp = resolve_camera_viewport_size(
+                        actors, world, actor_name, slot_name, win_w, win_h,
+                    );
+                    map.insert(actor.entity, vp);
+                }
+                break;
+            }
+        }
+    }
+    map
 }
