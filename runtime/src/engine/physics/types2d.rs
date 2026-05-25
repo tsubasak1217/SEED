@@ -149,6 +149,21 @@ pub enum PhysicsCommand2d {
         /// Dynamic 復帰時に適用する最終座標 (position, rotation)。
         final_position: Option<([f32; 2], f32)>,
     },
+    /// リジッドボディに付属するコライダーの形状・スケール・オフセットを差し替える。
+    ///
+    /// ウィンドウリサイズ時に scale_size=true のアクターのコライダーサイズを更新するために使用する。
+    /// リジッドボディの位置・速度・回転は保持される。
+    /// Static コライダー（use_rigidbody=false）は RemoveObject + AddObject で再登録するため対象外。
+    RescaleCollider {
+        /// Actor の DFS 順識別 ID
+        entity_id:       u64,
+        /// 新しいコライダー形状（メートル単位で設定済み）
+        shape:           ColliderShape2d,
+        /// ワールドスケール [x, y]（build_collider_shape_2d に渡す）
+        scale:           [f32; 2],
+        /// コライダーのローカルオフセット [x, y]（メートル）
+        collider_offset: [f32; 2],
+    },
     /// スレッドを停止する
     Stop,
 }

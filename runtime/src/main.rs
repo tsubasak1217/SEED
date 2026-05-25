@@ -26,6 +26,11 @@ fn parse_args() -> LaunchArgs {
         .find(|a| a.starts_with("--parent-hwnd="))
         .and_then(|a| a["--parent-hwnd=".len()..].parse::<isize>().ok());
 
+    // エディタが渡す親プロセス PID。このプロセスが終了したら SEED.exe も自動終了する。
+    let parent_pid = raw.iter()
+        .find(|a| a.starts_with("--parent-pid="))
+        .and_then(|a| a["--parent-pid=".len()..].parse::<u32>().ok());
+
     let mode = raw.iter()
         .find(|a| a.starts_with("--mode="))
         .map(|a| match &a["--mode=".len()..] {
@@ -53,5 +58,5 @@ fn parse_args() -> LaunchArgs {
     // Play 起動時にエディタから渡されるフラグ。SyncViewportSettings の到着前から有効にする。
     let play_collider_draw = raw.iter().any(|a| a == "--play-collider-draw=1");
 
-    LaunchArgs { parent_hwnd, mode, pipe_name, assets_root, editor_resources, scene_path, play_collider_draw }
+    LaunchArgs { parent_hwnd, parent_pid, mode, pipe_name, assets_root, editor_resources, scene_path, play_collider_draw }
 }

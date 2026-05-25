@@ -540,9 +540,11 @@ public sealed class RuntimeManager : IDisposable
             : "";
         // コライダー描画フラグ: SyncViewportSettings の到着前から有効にするために先行フラグとして渡す
         var playColliderDrawArg = PlayColliderDraw ? " --play-collider-draw=1" : "";
+        // エディタの PID を渡す: SEED.exe はエディタが終了したら自分自身も終了する
+        var parentPidArg = $" --parent-pid={System.Diagnostics.Process.GetCurrentProcess().Id}";
         var args = editMode
-            ? $"--mode=edit --pipe={_pipe.PipeName} --parent-hwnd={_viewportContainerHwnd}{editorResourcesArg}"
-            : $"--mode=play --pipe={_pipe.PipeName}{assetsRootArg}{sceneArg}{editorResourcesArg}{playColliderDrawArg}";
+            ? $"--mode=edit --pipe={_pipe.PipeName} --parent-hwnd={_viewportContainerHwnd}{editorResourcesArg}{parentPidArg}"
+            : $"--mode=play --pipe={_pipe.PipeName}{assetsRootArg}{sceneArg}{editorResourcesArg}{playColliderDrawArg}{parentPidArg}";
 
         var workDir = ResolveWorkingDirectory(_runtimeExePath);
         EditorLog.Write($"Process.Start — exe={_runtimeExePath}  args={args}  workDir={workDir}");

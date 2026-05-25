@@ -274,6 +274,9 @@ pub enum RuntimeMode {
 /// App::new / App::run への引数。
 pub struct LaunchArgs {
     pub parent_hwnd:      Option<isize>,
+    /// 親プロセス（エディタ）のプロセス ID。
+    /// 設定時は親が終了したタイミングで自プロセスも自動終了する。
+    pub parent_pid:       Option<u32>,
     pub mode:             RuntimeMode,
     pub pipe_name:        Option<String>,
     /// アセットルートディレクトリの絶対パス（Play / パッケージモードで使用）。
@@ -536,11 +539,19 @@ pub struct App {
     /// None = ドラッグなし。ドラッグ開始時に SetBodyKinematic(true)、
     /// 終了時に SetBodyKinematic(false) を 2D 物理スレッドへ送信する。
     pub(super) dragging_physics_2d_entity_id: Option<u64>,
+
+    /// 直前フレームで 2D 物理に使用したビューポートサイズ。
+    /// ウィンドウリサイズ検出に使用し、変化時に static 物理ボディを再登録する。
+    pub(super) last_physics_2d_viewport: Option<[f32; 2]>,
 }
 
 impl App {
     /// App インスタンスを生成する（EventLoop は run() で生成される）。
     pub fn new(args: LaunchArgs) -> Self {
+        // 親プロセス（エディタ）の監視を開始する。
+        // 親が終了した際に自プロセスも自動終了するバックグラウンドスレッドが起動する。
+        crate::engine::core::parent_guard::watch(args.parent_pid);
+
         let ipc = args.pipe_name.as_deref()
             .and_then(|name| IpcClient::connect(name).ok());
 
@@ -635,6 +646,7 @@ impl App {
             edit_physics_2d_with_rigidbody: false,
             active_collision_2d_dfs_ids: std::collections::HashSet::new(),
             dragging_physics_2d_entity_id: None,
+            last_physics_2d_viewport: None,
         }
     }
 

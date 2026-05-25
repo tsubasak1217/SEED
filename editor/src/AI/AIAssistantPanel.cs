@@ -949,10 +949,19 @@ public class AIAssistantPanel
         //   → SelectionChanged 発火 → UpdateProviderUi 再帰呼び出し）
         if (_updatingProviderUi) return;
         _updatingProviderUi = true;
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        EditorLog.Write($"[AIPanel][UpdateProviderUi] 開始 mode={_modeCombo.SelectedIndex} provider={_providerCombo.SelectedIndex}");
+
         try
         {
             // プロバイダーが切り替わったのでキャッシュ済み CLI プロバイダーを破棄する
-            _cachedCliProvider?.Dispose();
+            if (_cachedCliProvider != null)
+            {
+                EditorLog.Write($"[AIPanel][UpdateProviderUi] Dispose 開始 key={_cachedCliKey}");
+                _cachedCliProvider.Dispose();
+                EditorLog.Write($"[AIPanel][UpdateProviderUi] Dispose 完了 ({sw.ElapsedMilliseconds}ms)");
+            }
             _cachedCliProvider = null;
             _cachedCliKey      = "";
 
@@ -993,15 +1002,21 @@ public class AIAssistantPanel
             // モデル状態セクション: CLI Gemini のみ表示
             _geminiStatusSection.Visibility = isCliGemini ? Visibility.Visible : Visibility.Collapsed;
 
+            EditorLog.Write($"[AIPanel][UpdateProviderUi] UpdateModelCombo 開始 ({sw.ElapsedMilliseconds}ms)");
             UpdateModelCombo();
+            EditorLog.Write($"[AIPanel][UpdateProviderUi] UpdateModelCombo 完了 ({sw.ElapsedMilliseconds}ms)");
+
             UpdateStatusLabel();
 
             // CLI Gemini に切り替わった場合はプリウォームを即時開始する
+            EditorLog.Write($"[AIPanel][UpdateProviderUi] EnsureCliProviderPrewarmed 開始 ({sw.ElapsedMilliseconds}ms)");
             EnsureCliProviderPrewarmed();
+            EditorLog.Write($"[AIPanel][UpdateProviderUi] EnsureCliProviderPrewarmed 完了 ({sw.ElapsedMilliseconds}ms)");
         }
         finally
         {
             _updatingProviderUi = false;
+            EditorLog.Write($"[AIPanel][UpdateProviderUi] 終了 ({sw.ElapsedMilliseconds}ms)");
         }
     }
 
@@ -1159,10 +1174,15 @@ public class AIAssistantPanel
         // モード変更時の自動更新と設定保存
         _modeCombo.SelectionChanged += (_, _) =>
         {
+            var sw2 = System.Diagnostics.Stopwatch.StartNew();
+            EditorLog.Write($"[AIPanel][ModeChanged] 開始 mode={_modeCombo.SelectedIndex}");
             UpdateProviderComboItems();
+            EditorLog.Write($"[AIPanel][ModeChanged] UpdateProviderComboItems 完了 ({sw2.ElapsedMilliseconds}ms)");
             UpdateProviderUi(_popupApiKeyLabel, _popupEndpointLabel);
+            EditorLog.Write($"[AIPanel][ModeChanged] UpdateProviderUi 完了 ({sw2.ElapsedMilliseconds}ms)");
             SaveSettings();
             UpdateStatusLabel();
+            EditorLog.Write($"[AIPanel][ModeChanged] 終了 ({sw2.ElapsedMilliseconds}ms)");
         };
 
         // 履歴トグルボタン: チャット/履歴パネルを切り替える
@@ -1196,7 +1216,10 @@ public class AIAssistantPanel
         // プロバイダー変更時の自動更新と設定保存
         _providerCombo.SelectionChanged += (_, _) =>
         {
+            var sw3 = System.Diagnostics.Stopwatch.StartNew();
+            EditorLog.Write($"[AIPanel][ProviderChanged] 開始 provider={_providerCombo.SelectedIndex} _updatingProviderUi={_updatingProviderUi}");
             UpdateProviderUi(_popupApiKeyLabel, _popupEndpointLabel);
+            EditorLog.Write($"[AIPanel][ProviderChanged] UpdateProviderUi 完了 ({sw3.ElapsedMilliseconds}ms)");
             SaveSettings();
             UpdateStatusLabel();
 
@@ -1204,6 +1227,7 @@ public class AIAssistantPanel
             if (_providerCombo.SelectedIndex == PROVIDER_GEMINI
                 && !string.IsNullOrWhiteSpace(_apiKeyBox.Text))
                 _ = FetchGeminiModelsAsync();
+            EditorLog.Write($"[AIPanel][ProviderChanged] 終了 ({sw3.ElapsedMilliseconds}ms)");
         };
 
         // モデル変更時の自動保存 + CLI Gemini ならプロバイダー再生成
@@ -1448,13 +1472,25 @@ public class AIAssistantPanel
 
         // キーが一致していればすでにウォームアップ済み
         if (_cachedCliProvider != null && _cachedCliKey == cliKey)
+        {
+            EditorLog.Write($"[AIPanel][EnsureCli] スキップ（同一キー={cliKey}）");
             return;
+        }
 
-        _cachedCliProvider?.Dispose();
+        EditorLog.Write($"[AIPanel][EnsureCli] 開始 oldKey={_cachedCliKey} newKey={cliKey}");
+        var swE = System.Diagnostics.Stopwatch.StartNew();
+
+        if (_cachedCliProvider != null)
+        {
+            EditorLog.Write($"[AIPanel][EnsureCli] Dispose 開始 key={_cachedCliKey}");
+            _cachedCliProvider.Dispose();
+            EditorLog.Write($"[AIPanel][EnsureCli] Dispose 完了 ({swE.ElapsedMilliseconds}ms)");
+        }
+
         _cachedCliProvider = new CliAgentProvider(
             "Gemini CLI", "gemini", "https://github.com/google/gemini-cli", cliModel);
         _cachedCliKey = cliKey;
-        EditorLog.Write($"[AIPanel] Gemini CLI プリウォーム開始: model={cliModel}");
+        EditorLog.Write($"[AIPanel][EnsureCli] 完了 model={cliModel} ({swE.ElapsedMilliseconds}ms)");
     }
 
     /// <summary>エディタコマンド実行エンジンを生成して返す。</summary>

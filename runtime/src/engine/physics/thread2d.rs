@@ -415,6 +415,53 @@ fn handle_command_2d(
                 }
             }
         }
+
+        PhysicsCommand2d::RescaleCollider { entity_id, shape, scale, collider_offset } => {
+            // リジッドボディ付きコライダーの形状を差し替える。
+            // 旧コライダーを削除して新しい形状・オフセットで再作成し、
+            // リジッドボディの位置・速度・回転はそのまま保持する。
+            // Static コライダー（rb_handle=None）は RemoveObject+AddObject で処理するため対象外。
+            if let Some(entry) = entries.get(&entity_id) {
+                let Some(rb_h) = entry.rb_handle else { return };
+                let old_col_h  = entry.col_handle;
+
+                // 旧コライダーから摩擦・反発係数・センサーフラグを継承する
+                let (friction, restitution, is_trigger) = col_set.get(old_col_h)
+                    .map(|c| (c.friction(), c.restitution(), c.is_sensor()))
+                    .unwrap_or((0.5, 0.3, false));
+
+                // 旧コライダーを削除する（rb は保持）。
+                // wake_up=true でボディをスリープ解除しておく。
+                // これをしないと差し替え後のボディが眠ったままになり重力・押し戻しが再開しない。
+                col_to_entity.remove(&old_col_h);
+                col_set.remove(old_col_h, island_manager, rb_set, true);
+
+                // 新コライダーをローカルオフセット位置で作成して親 rb に attach する
+                let offset_iso = Isometry::translation(collider_offset[0], collider_offset[1]);
+                let new_col = build_collider_shape_2d(&shape, &scale)
+                    .position(offset_iso)
+                    .friction(friction)
+                    .restitution(restitution)
+                    .sensor(is_trigger)
+                    .active_events(ActiveEvents::COLLISION_EVENTS)
+                    .active_collision_types(ActiveCollisionTypes::all())
+                    .build();
+
+                let new_col_h = col_set.insert_with_parent(new_col, rb_h, rb_set);
+                col_to_entity.insert(new_col_h, entity_id);
+
+                // 新コライダー挿入後も念のりボディを明示的にウェイクアップする
+                if let Some(rb) = rb_set.get_mut(rb_h) {
+                    rb.wake_up(true);
+                }
+
+                // エントリを更新する
+                if let Some(entry) = entries.get_mut(&entity_id) {
+                    entry.col_handle = new_col_h;
+                    entry.col_offset = collider_offset;
+                }
+            }
+        }
     }
 }
 

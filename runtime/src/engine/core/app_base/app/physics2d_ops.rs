@@ -674,7 +674,69 @@ impl App {
             self.active_collision_2d_dfs_ids = frame_colliding;
         }
 
-        // ④ Kinematic Actor2D の body_pos を物理スレッドへ送信する
+        // ④ ビューポートサイズ変化時に Static ボディを再登録する
+        //
+        // ウィンドウリサイズによって anchor ベースのボディ位置（床・壁など）が変化するため、
+        // use_rigidbody=false の static ボディを RemoveObject + AddObject で再配置する。
+        //
+        // kinematic ボディは⑤で毎フレーム UpdateKinematic を送信しており、
+        // dynamic ボディはシミュレーション継続のため位置リセットを行わない。
+        let viewport_changed = self.last_physics_2d_viewport != viewport_size;
+        if viewport_changed {
+            self.last_physics_2d_viewport = viewport_size;
+
+            if let (Some(thread), Some(scene)) = (&self.physics_thread_2d, &self.scene) {
+                for ctx in &contexts {
+                    let Some(slot_entity) = ctx.collider_slot_entity else { continue };
+                    let Some(collider) = scene.world.get::<Collider2dComponent>(slot_entity) else { continue };
+
+                    if collider.use_rigidbody {
+                        // rigidbody ボディ（dynamic/kinematic）のコライダー形状を差し替える。
+                        // scale_size=true のとき size_sx/size_sy がビューポートに連動するため、
+                        // RescaleCollider で形状のみ更新する（位置・速度・回転は保持）。
+                        let shape = collider.shape.to_physics_shape_scaled(ctx.size_sx, ctx.size_sy);
+                        let collider_offset = [
+                            collider.offset[0] * ctx.size_sx / PIXELS_PER_METER,
+                            collider.offset[1] * ctx.size_sy / PIXELS_PER_METER,
+                        ];
+                        thread.send(PhysicsCommand2d::RescaleCollider {
+                            entity_id:       ctx.dfs_id,
+                            shape,
+                            scale:           ctx.scale,
+                            collider_offset,
+                        });
+                    } else {
+                        // static ボディ: anchor ベースのボディ位置が変化するため RemoveObject + AddObject で再登録する
+                        let position = [
+                            ctx.body_pos_px[0] / PIXELS_PER_METER,
+                            ctx.body_pos_px[1] / PIXELS_PER_METER,
+                        ];
+                        let collider_offset = [
+                            collider.offset[0] * ctx.size_sx / PIXELS_PER_METER,
+                            collider.offset[1] * ctx.size_sy / PIXELS_PER_METER,
+                        ];
+                        let shape = collider.shape.to_physics_shape_scaled(ctx.size_sx, ctx.size_sy);
+
+                        // 旧ボディを削除して新位置で再登録する
+                        thread.send(PhysicsCommand2d::RemoveObject { entity_id: ctx.dfs_id });
+                        thread.send(PhysicsCommand2d::AddObject(PhysicsObject2d {
+                            entity_id:     ctx.dfs_id,
+                            position,
+                            rotation:      ctx.rot_rad,
+                            scale:         ctx.scale,
+                            collider:      shape,
+                            collider_offset,
+                            rigidbody:     None, // static ボディは rigidbody なし
+                            is_trigger:    collider.is_trigger,
+                            physics_layer: collider.physics_layer,
+                            layer_mask:    collider.layer_mask,
+                        }));
+                    }
+                }
+            }
+        }
+
+        // ⑤ Kinematic Actor2D の body_pos を物理スレッドへ送信する
         let Some(scene) = &self.scene else { return };
         let thread = self.physics_thread_2d.as_ref().unwrap();
 
@@ -690,7 +752,7 @@ impl App {
             });
         }
 
-        // ⑤ ドラッグ中 Actor2D の現在位置を kinematic 更新として送信する
+        // ⑥ ドラッグ中 Actor2D の現在位置を kinematic 更新として送信する
         if let Some(drag_entity_id) = self.dragging_physics_2d_entity_id {
             if let Some(ctx) = contexts.iter().find(|c| c.dfs_id == drag_entity_id) {
                 thread.send(PhysicsCommand2d::UpdateKinematic {
