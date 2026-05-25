@@ -1,7 +1,0 @@
-{
-  "hooksConfig": {
-    "disabled": [
-      "claude-mem"
-    ]
-  }
-}

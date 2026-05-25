@@ -9,7 +9,14 @@ namespace SEEDEditor.Panels;
 public partial class OutputPanel : UserControl
 {
     private const int MaxLines  = 1000;
-    private       int _lineCount = 0;
+    private       int _lineCount    = 0;
+    /// <summary>
+    /// ScrollToEnd のスケジュール済みフラグ。
+    /// Background キューに複数の AppendLine が積まれていても ScrollToEnd は 1 回にまとめる。
+    /// ScrollToEnd は内部で InvalidateMeasure を呼び Render 優先度（7）のレイアウトを発生させる。
+    /// Render > Input（5）のため多重呼び出しがマウスクリック応答を遅延させる原因になる。
+    /// </summary>
+    private       bool _scrollPending = false;
 
     // ログ種別ごとの文字色
     private static readonly SolidColorBrush BrushDefault = new(Color.FromRgb(0xCC, 0xCC, 0xCC));
@@ -26,7 +33,10 @@ public partial class OutputPanel : UserControl
 
     private void OnLogWritten(string line)
     {
-        Dispatcher.BeginInvoke(() => AppendLine(line));
+        // Background 優先度で遅延実行することで、UI 操作（ComboBox 等）の妨げにならないようにする。
+        // Normal 優先度だと WPF が ComboBox の Items 更新中にキューを処理してしまい
+        // AppendLine + ScrollToEnd が多数実行されて UI がフリーズする原因となる。
+        Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Background, () => AppendLine(line));
     }
 
     private void AppendLine(string line)
@@ -51,8 +61,19 @@ public partial class OutputPanel : UserControl
         doc.Blocks.Add(para);
         _lineCount++;
 
-        // 最下行へスクロール
-        LogBox.ScrollToEnd();
+        // 連続ログ追加時に ScrollToEnd を 1 回にまとめる。
+        // すでにスクロールがスケジュール済みであれば追加しない。
+        if (!_scrollPending)
+        {
+            _scrollPending = true;
+            // Background キューの末尾に追加することで、直前の AppendLine がすべて終わってから
+            // 1 度だけ ScrollToEnd を呼ぶ（Render レイアウトの発生を最小限に抑える）。
+            Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Background, new Action(() =>
+            {
+                _scrollPending = false;
+                LogBox.ScrollToEnd();
+            }));
+        }
     }
 
     private static SolidColorBrush PickBrush(string line)

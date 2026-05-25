@@ -94,16 +94,10 @@ public class CliAgentProvider : IAIProvider, IDisposable
 
         if (processToKill != null)
         {
-            EditorLog.Write($"[CliAgent][Dispose] バックグラウンド Kill 開始 name={Name}");
             _ = Task.Run(() =>
             {
-                var swBg = System.Diagnostics.Stopwatch.StartNew();
-                try
-                {
-                    processToKill.Kill(entireProcessTree: true);
-                    EditorLog.Write($"[CliAgent][Dispose] Kill 完了 ({swBg.ElapsedMilliseconds}ms)");
-                }
-                catch (Exception ex) { EditorLog.Write($"[CliAgent][Dispose] Kill 例外: {ex.Message}"); }
+                try { processToKill.Kill(entireProcessTree: true); }
+                catch (Exception ex) { EditorLog.Write($"[CliAgent] Kill 例外: {ex.Message}"); }
                 try { processToKill.Dispose(); } catch { }
             });
         }
@@ -111,8 +105,6 @@ public class CliAgentProvider : IAIProvider, IDisposable
         try { stdinToClose?.Dispose(); } catch { }
         try { _warmLock.Dispose(); } catch { }
         try { _chatLock.Dispose(); } catch { }
-
-        EditorLog.Write($"[CliAgent][Dispose] 完了（Kill はバックグラウンド）name={Name}");
     }
 
     // ── プリウォーム管理 ──────────────────────────────────────────────────
@@ -126,29 +118,33 @@ public class CliAgentProvider : IAIProvider, IDisposable
         // 既にウォームアップ中・破棄済みなら何もしない
         if (_isWarming || _disposed) return;
         _isWarming = true;
-        var swW = System.Diagnostics.Stopwatch.StartNew();
-        EditorLog.Write($"[CliAgent][WarmUp] 開始 name={Name} model={_model}");
         try
         {
+            // 設定切り替え直後の Node.js 起動による CPU 負荷でエディタが重くなるのを防ぐため
+            // 少し待機してから起動する（UI が落ち着く時間を確保する）。
+            await Task.Delay(600).ConfigureAwait(false);
+            if (_disposed) return;
+
             // ResolveCommandPath は where/which コマンドをブロック実行するため
             // スレッドプールで実行し UI スレッドをブロックしない。
             // ConfigureAwait(false) で以降の continuation もスレッドプールで実行する
             // （WPF Dispatcher に戻さないことで _warmLock.Wait() とのデッドロックを防ぐ）。
-            EditorLog.Write($"[CliAgent][WarmUp] ResolveCommandPath 開始 ({swW.ElapsedMilliseconds}ms)");
             var path = await Task.Run(() => ResolveCommandPath(_command)).ConfigureAwait(false);
-            EditorLog.Write($"[CliAgent][WarmUp] ResolveCommandPath 完了 path={path} ({swW.ElapsedMilliseconds}ms)");
-            if (_disposed) { EditorLog.Write("[CliAgent][WarmUp] Dispose 済みにつき中断"); return; }
+            if (_disposed) return;
 
             var psi     = BuildGeminiStartInfo(path);
             var process = new Process { StartInfo = psi };
-            EditorLog.Write($"[CliAgent][WarmUp] Process.Start 開始 ({swW.ElapsedMilliseconds}ms)");
             if (!process.Start())
             {
                 process.Dispose();
                 EditorLog.Write("[CliAgent] プリウォーム: プロセス起動失敗。");
                 return;
             }
-            EditorLog.Write($"[CliAgent][WarmUp] Process.Start 完了 PID={process.Id} ({swW.ElapsedMilliseconds}ms)");
+
+            // Node.js 起動中の CPU 負荷がエディタに影響しないよう優先度を下げる。
+            // 実際にメッセージを送信する際（SendToGeminiAsync）はプロセスを引き継ぐだけなので
+            // 優先度が低くてもレスポンス速度への影響は小さい。
+            try { process.PriorityClass = System.Diagnostics.ProcessPriorityClass.BelowNormal; } catch { }
 
             // 強制終了時に子プロセスも終了させるためジョブオブジェクトに登録する
             ChildProcessGuard.Track(process);
@@ -163,14 +159,11 @@ public class CliAgentProvider : IAIProvider, IDisposable
                 // Dispose がすでに呼ばれていた場合はプロセスを即終了させる
                 try { process.Kill(entireProcessTree: true); } catch { }
                 process.Dispose();
-                EditorLog.Write("[CliAgent][WarmUp] Dispose 済み（プロセス起動後）につき中断");
                 return;
             }
 
-            EditorLog.Write($"[CliAgent][WarmUp] _warmLock.WaitAsync 開始 ({swW.ElapsedMilliseconds}ms)");
             try { await _warmLock.WaitAsync().ConfigureAwait(false); }
-            catch (ObjectDisposedException) { EditorLog.Write("[CliAgent][WarmUp] _warmLock Disposed につき中断"); return; }
-            EditorLog.Write($"[CliAgent][WarmUp] _warmLock 取得 ({swW.ElapsedMilliseconds}ms)");
+            catch (ObjectDisposedException) { return; }
 
             try
             {
@@ -178,7 +171,6 @@ public class CliAgentProvider : IAIProvider, IDisposable
                 {
                     try { process.Kill(entireProcessTree: true); } catch { }
                     process.Dispose();
-                    EditorLog.Write("[CliAgent][WarmUp] Dispose 済み（ロック取得後）につき中断");
                     return;
                 }
                 // 古いプリウォームプロセスが残っていれば破棄する
@@ -190,8 +182,6 @@ public class CliAgentProvider : IAIProvider, IDisposable
             {
                 try { _warmLock.Release(); } catch (ObjectDisposedException) { }
             }
-
-            EditorLog.Write($"[CliAgent][WarmUp] 完了（stdin 待機中）PID={process.Id} ({swW.ElapsedMilliseconds}ms)");
         }
         catch (Exception ex)
         {

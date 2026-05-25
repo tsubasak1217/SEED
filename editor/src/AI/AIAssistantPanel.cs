@@ -194,6 +194,10 @@ public class AIAssistantPanel
     private          string                       _cachedCliKey = "";
     /// <summary>UpdateProviderUi の再入防止フラグ（プロバイダーコンボ変更イベントの連鎖を防ぐ）。</summary>
     private          bool                         _updatingProviderUi;
+    /// <summary>UpdateProviderComboItems 実行中フラグ。Items 操作による SelectionChanged を無視するために使う。</summary>
+    private          bool                         _updatingProviderCombo;
+    /// <summary>UpdateModelCombo 実行中フラグ。Items 操作による SelectionChanged を無視するために使う。</summary>
+    private          bool                         _updatingModelCombo;
 
     // ── コンストラクタ ───────────────────────────────────────────
 
@@ -916,26 +920,35 @@ public class AIAssistantPanel
     /// <summary>モードに応じてプロバイダーコンボの項目を詰め替える。</summary>
     private void UpdateProviderComboItems()
     {
-        var prevIdx = _providerCombo.SelectedIndex;
-        _providerCombo.Items.Clear();
-
-        if (_modeCombo.SelectedIndex == MODE_API)
+        // Items.Clear() / SelectedIndex 設定による SelectionChanged を無視する
+        _updatingProviderCombo = true;
+        try
         {
-            _providerCombo.Items.Add("ローカル AI (Qwen2.5-Coder)");
-            _providerCombo.Items.Add("OpenAI 互換");
-            _providerCombo.Items.Add("Anthropic");
-            _providerCombo.Items.Add("Google Gemini");
-        }
-        else
-        {
-            _providerCombo.Items.Add("Gemini CLI (gemini)");
-            _providerCombo.Items.Add("Claude Code (claude)");
-        }
+            var prevIdx = _providerCombo.SelectedIndex;
+            _providerCombo.Items.Clear();
 
-        if (prevIdx >= 0 && prevIdx < _providerCombo.Items.Count)
-            _providerCombo.SelectedIndex = prevIdx;
-        else if (_providerCombo.Items.Count > 0)
-            _providerCombo.SelectedIndex = 0;
+            if (_modeCombo.SelectedIndex == MODE_API)
+            {
+                _providerCombo.Items.Add("ローカル AI (Qwen2.5-Coder)");
+                _providerCombo.Items.Add("OpenAI 互換");
+                _providerCombo.Items.Add("Anthropic");
+                _providerCombo.Items.Add("Google Gemini");
+            }
+            else
+            {
+                _providerCombo.Items.Add("Gemini CLI (gemini)");
+                _providerCombo.Items.Add("Claude Code (claude)");
+            }
+
+            if (prevIdx >= 0 && prevIdx < _providerCombo.Items.Count)
+                _providerCombo.SelectedIndex = prevIdx;
+            else if (_providerCombo.Items.Count > 0)
+                _providerCombo.SelectedIndex = 0;
+        }
+        finally
+        {
+            _updatingProviderCombo = false;
+        }
     }
 
     /// <summary>
@@ -950,18 +963,10 @@ public class AIAssistantPanel
         if (_updatingProviderUi) return;
         _updatingProviderUi = true;
 
-        var sw = System.Diagnostics.Stopwatch.StartNew();
-        EditorLog.Write($"[AIPanel][UpdateProviderUi] 開始 mode={_modeCombo.SelectedIndex} provider={_providerCombo.SelectedIndex}");
-
         try
         {
             // プロバイダーが切り替わったのでキャッシュ済み CLI プロバイダーを破棄する
-            if (_cachedCliProvider != null)
-            {
-                EditorLog.Write($"[AIPanel][UpdateProviderUi] Dispose 開始 key={_cachedCliKey}");
-                _cachedCliProvider.Dispose();
-                EditorLog.Write($"[AIPanel][UpdateProviderUi] Dispose 完了 ({sw.ElapsedMilliseconds}ms)");
-            }
+            _cachedCliProvider?.Dispose();
             _cachedCliProvider = null;
             _cachedCliKey      = "";
 
@@ -1002,77 +1007,81 @@ public class AIAssistantPanel
             // モデル状態セクション: CLI Gemini のみ表示
             _geminiStatusSection.Visibility = isCliGemini ? Visibility.Visible : Visibility.Collapsed;
 
-            EditorLog.Write($"[AIPanel][UpdateProviderUi] UpdateModelCombo 開始 ({sw.ElapsedMilliseconds}ms)");
             UpdateModelCombo();
-            EditorLog.Write($"[AIPanel][UpdateProviderUi] UpdateModelCombo 完了 ({sw.ElapsedMilliseconds}ms)");
-
             UpdateStatusLabel();
 
             // CLI Gemini に切り替わった場合はプリウォームを即時開始する
-            EditorLog.Write($"[AIPanel][UpdateProviderUi] EnsureCliProviderPrewarmed 開始 ({sw.ElapsedMilliseconds}ms)");
             EnsureCliProviderPrewarmed();
-            EditorLog.Write($"[AIPanel][UpdateProviderUi] EnsureCliProviderPrewarmed 完了 ({sw.ElapsedMilliseconds}ms)");
         }
         finally
         {
             _updatingProviderUi = false;
-            EditorLog.Write($"[AIPanel][UpdateProviderUi] 終了 ({sw.ElapsedMilliseconds}ms)");
         }
     }
 
     /// <summary>選択中のプロバイダーに合わせたモデル候補をコンボに設定する。</summary>
     private void UpdateModelCombo()
     {
-        var prevModel = _modelCombo.Text;
-        _modelCombo.Items.Clear();
-
-        // CLI Gemini モードはモデル選択あり（-m フラグで渡す）
-        if (_modeCombo.SelectedIndex == MODE_CLI)
+        // Items.Clear() / SelectedIndex = 0 によって SelectionChanged が発火するのを防ぐ。
+        // SelectionChanged ハンドラは _updatingModelCombo == true のときに早期リターンする。
+        _updatingModelCombo = true;
+        try
         {
-            if (_providerCombo.SelectedIndex == PROVIDER_CLI_GEMINI)
-            {
-                // GEMINI_CLI_MODELS と同じリストを使用する（gemini /model で確認したモデル名と一致させること）
-                foreach (var m in GEMINI_CLI_MODELS)
-                    _modelCombo.Items.Add(m);
-            }
-            // CLI Claude はモデル選択なし（空のままにしてデフォルトを使用）
+            var prevModel = _modelCombo.Text;
+            _modelCombo.Items.Clear();
 
+            // CLI Gemini モードはモデル選択あり（-m フラグで渡す）
+            if (_modeCombo.SelectedIndex == MODE_CLI)
+            {
+                if (_providerCombo.SelectedIndex == PROVIDER_CLI_GEMINI)
+                {
+                    // GEMINI_CLI_MODELS と同じリストを使用する（gemini /model で確認したモデル名と一致させること）
+                    foreach (var m in GEMINI_CLI_MODELS)
+                        _modelCombo.Items.Add(m);
+                }
+                // CLI Claude はモデル選択なし（空のままにしてデフォルトを使用）
+
+                if (!string.IsNullOrEmpty(prevModel) && _modelCombo.Items.Contains(prevModel))
+                    _modelCombo.Text = prevModel;
+                else if (_modelCombo.Items.Count > 0)
+                    _modelCombo.SelectedIndex = 0;
+                return;
+            }
+
+            switch (_providerCombo.SelectedIndex)
+            {
+                case PROVIDER_LOCAL_AI:
+                    _modelCombo.Items.Add("qwen2.5-coder");
+                    break;
+                case PROVIDER_ANTHROPIC:
+                    _modelCombo.Items.Add("claude-opus-4-7");
+                    _modelCombo.Items.Add("claude-sonnet-4-6");
+                    _modelCombo.Items.Add("claude-haiku-4-5-20251001");
+                    break;
+                case PROVIDER_GEMINI:
+                    _modelCombo.Items.Add("gemini-2.5-flash-preview-04-17");
+                    _modelCombo.Items.Add("gemini-2.5-pro-preview-05-06");
+                    _modelCombo.Items.Add("gemini-2.0-flash");
+                    _modelCombo.Items.Add("gemini-1.5-flash-latest");
+                    _modelCombo.Items.Add("gemini-1.5-pro-latest");
+                    break;
+                default: // PROVIDER_OPENAI
+                    _modelCombo.Items.Add("gpt-4o");
+                    _modelCombo.Items.Add("gpt-4o-mini");
+                    _modelCombo.Items.Add("o3-mini");
+                    break;
+            }
+
+            // 以前の選択を可能な限り復元する
             if (!string.IsNullOrEmpty(prevModel) && _modelCombo.Items.Contains(prevModel))
                 _modelCombo.Text = prevModel;
             else if (_modelCombo.Items.Count > 0)
                 _modelCombo.SelectedIndex = 0;
-            return;
         }
-
-        switch (_providerCombo.SelectedIndex)
+        finally
         {
-            case PROVIDER_LOCAL_AI:
-                _modelCombo.Items.Add("qwen2.5-coder");
-                break;
-            case PROVIDER_ANTHROPIC:
-                _modelCombo.Items.Add("claude-opus-4-7");
-                _modelCombo.Items.Add("claude-sonnet-4-6");
-                _modelCombo.Items.Add("claude-haiku-4-5-20251001");
-                break;
-            case PROVIDER_GEMINI:
-                _modelCombo.Items.Add("gemini-2.5-flash-preview-04-17");
-                _modelCombo.Items.Add("gemini-2.5-pro-preview-05-06");
-                _modelCombo.Items.Add("gemini-2.0-flash");
-                _modelCombo.Items.Add("gemini-1.5-flash-latest");
-                _modelCombo.Items.Add("gemini-1.5-pro-latest");
-                break;
-            default: // PROVIDER_OPENAI
-                _modelCombo.Items.Add("gpt-4o");
-                _modelCombo.Items.Add("gpt-4o-mini");
-                _modelCombo.Items.Add("o3-mini");
-                break;
+            _updatingModelCombo = false;
         }
-
-        // 以前の選択を可能な限り復元する
-        if (!string.IsNullOrEmpty(prevModel) && _modelCombo.Items.Contains(prevModel))
-            _modelCombo.Text = prevModel;
-        else if (_modelCombo.Items.Count > 0)
-            _modelCombo.SelectedIndex = 0;
     }
 
     // ── Gemini モデル取得 ────────────────────────────────────────
@@ -1174,15 +1183,10 @@ public class AIAssistantPanel
         // モード変更時の自動更新と設定保存
         _modeCombo.SelectionChanged += (_, _) =>
         {
-            var sw2 = System.Diagnostics.Stopwatch.StartNew();
-            EditorLog.Write($"[AIPanel][ModeChanged] 開始 mode={_modeCombo.SelectedIndex}");
             UpdateProviderComboItems();
-            EditorLog.Write($"[AIPanel][ModeChanged] UpdateProviderComboItems 完了 ({sw2.ElapsedMilliseconds}ms)");
             UpdateProviderUi(_popupApiKeyLabel, _popupEndpointLabel);
-            EditorLog.Write($"[AIPanel][ModeChanged] UpdateProviderUi 完了 ({sw2.ElapsedMilliseconds}ms)");
             SaveSettings();
             UpdateStatusLabel();
-            EditorLog.Write($"[AIPanel][ModeChanged] 終了 ({sw2.ElapsedMilliseconds}ms)");
         };
 
         // 履歴トグルボタン: チャット/履歴パネルを切り替える
@@ -1214,12 +1218,11 @@ public class AIAssistantPanel
         };
 
         // プロバイダー変更時の自動更新と設定保存
+        // UpdateProviderComboItems 実行中（Items 操作中）の SelectionChanged は無視する
         _providerCombo.SelectionChanged += (_, _) =>
         {
-            var sw3 = System.Diagnostics.Stopwatch.StartNew();
-            EditorLog.Write($"[AIPanel][ProviderChanged] 開始 provider={_providerCombo.SelectedIndex} _updatingProviderUi={_updatingProviderUi}");
+            if (_updatingProviderCombo) return;
             UpdateProviderUi(_popupApiKeyLabel, _popupEndpointLabel);
-            EditorLog.Write($"[AIPanel][ProviderChanged] UpdateProviderUi 完了 ({sw3.ElapsedMilliseconds}ms)");
             SaveSettings();
             UpdateStatusLabel();
 
@@ -1227,12 +1230,13 @@ public class AIAssistantPanel
             if (_providerCombo.SelectedIndex == PROVIDER_GEMINI
                 && !string.IsNullOrWhiteSpace(_apiKeyBox.Text))
                 _ = FetchGeminiModelsAsync();
-            EditorLog.Write($"[AIPanel][ProviderChanged] 終了 ({sw3.ElapsedMilliseconds}ms)");
         };
 
         // モデル変更時の自動保存 + CLI Gemini ならプロバイダー再生成
+        // UpdateModelCombo 実行中（Items 操作中）の SelectionChanged は無視する
         _modelCombo.SelectionChanged += (_, _) =>
         {
+            if (_updatingModelCombo) return;
             SaveSettings();
             UpdateStatusLabel();
             EnsureCliProviderPrewarmed();
@@ -1472,25 +1476,12 @@ public class AIAssistantPanel
 
         // キーが一致していればすでにウォームアップ済み
         if (_cachedCliProvider != null && _cachedCliKey == cliKey)
-        {
-            EditorLog.Write($"[AIPanel][EnsureCli] スキップ（同一キー={cliKey}）");
             return;
-        }
 
-        EditorLog.Write($"[AIPanel][EnsureCli] 開始 oldKey={_cachedCliKey} newKey={cliKey}");
-        var swE = System.Diagnostics.Stopwatch.StartNew();
-
-        if (_cachedCliProvider != null)
-        {
-            EditorLog.Write($"[AIPanel][EnsureCli] Dispose 開始 key={_cachedCliKey}");
-            _cachedCliProvider.Dispose();
-            EditorLog.Write($"[AIPanel][EnsureCli] Dispose 完了 ({swE.ElapsedMilliseconds}ms)");
-        }
-
+        _cachedCliProvider?.Dispose();
         _cachedCliProvider = new CliAgentProvider(
             "Gemini CLI", "gemini", "https://github.com/google/gemini-cli", cliModel);
         _cachedCliKey = cliKey;
-        EditorLog.Write($"[AIPanel][EnsureCli] 完了 model={cliModel} ({swE.ElapsedMilliseconds}ms)");
     }
 
     /// <summary>エディタコマンド実行エンジンを生成して返す。</summary>
