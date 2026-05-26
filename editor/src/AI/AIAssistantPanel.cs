@@ -199,6 +199,16 @@ public class AIAssistantPanel
     /// <summary>UpdateModelCombo 実行中フラグ。Items 操作による SelectionChanged を無視するために使う。</summary>
     private          bool                         _updatingModelCombo;
 
+    // ── SeedAIBridge（外部エージェント向け HTTP API） ───────────────
+    /// <summary>
+    /// Gemini CLI / Claude Code などの外部エージェントが PowerShell 経由で
+    /// エディタ操作を呼び出せるよう HTTP サーバーを提供するブリッジ。
+    /// EditorCommandExecutor を共有するため、Executor もフィールドで保持する。
+    /// </summary>
+    private readonly EditorCommandExecutor        _sharedExecutor;
+    /// <summary>HTTP ブリッジ本体（ポート 7234）。アプリ終了まで動作し続ける。</summary>
+    private readonly SeedAIBridge                 _bridge;
+
     // ── コンストラクタ ───────────────────────────────────────────
 
     /// <summary>
@@ -218,6 +228,10 @@ public class AIAssistantPanel
         // ランタイムからの SCENE_INFO イベントを購読する
         if (_runtime is not null)
             _runtime.SceneInfoReceived += OnSceneInfoReceived;
+
+        // SeedAIBridge と SendMessageAsync の両方で共有する EditorCommandExecutor を生成する。
+        // SceneInfoReceived イベント購読後に生成することで GetSceneInfoAsync が正しく動作する。
+        _sharedExecutor = CreateExecutor();
 
         // ── UI 要素の生成 ──────────────────────────────────────────
         // チャット表示エリア: RichTextBox で全メッセージにわたるテキスト選択を可能にする
@@ -384,10 +398,13 @@ public class AIAssistantPanel
         WireEvents();
         UpdateStatusLabel();
         _ = CheckLocalAiStatusAsync();
+        // プリウォームは初回送信時に CreateProvider() で行う（遅延生成）。
+        // 起動時に Node.js を先行起動すると不要な負荷がかかるため廃止。
 
-        // 設定読み込み完了後に CLI Gemini のプリウォームを開始する
-        // （メッセージ送信前にプロセスが立ち上がっていれば最初から高速応答できる）
-        EnsureCliProviderPrewarmed();
+        // Gemini CLI / Claude Code などの外部エージェントから HTTP でエディタを操作できるよう
+        // SeedAIBridge を起動する。失敗時は内部でログを出力するだけで起動は続行する。
+        _bridge = new SeedAIBridge(_sharedExecutor);
+        _bridge.Start();
     }
 
     // ── 公開メソッド ─────────────────────────────────────────────
@@ -1009,9 +1026,9 @@ public class AIAssistantPanel
 
             UpdateModelCombo();
             UpdateStatusLabel();
-
-            // CLI Gemini に切り替わった場合はプリウォームを即時開始する
-            EnsureCliProviderPrewarmed();
+            // プリウォームは設定ポップアップを閉じたタイミングで行う（_settingsPopup.Closed）。
+            // ここで即時起動すると、モード/プロバイダーを変更するたびに
+            // Node.js プロセスの起動・停止が繰り返されてエディタが重くなるため。
         }
         finally
         {
@@ -1232,21 +1249,25 @@ public class AIAssistantPanel
                 _ = FetchGeminiModelsAsync();
         };
 
-        // モデル変更時の自動保存 + CLI Gemini ならプロバイダー再生成
+        // モデル変更時の自動保存
+        // プリウォームは _settingsPopup.Closed に委譲するため、ここでは行わない
+        // （変更のたびに Node.js プロセスが起動するとエディタが重くなるため）
         // UpdateModelCombo 実行中（Items 操作中）の SelectionChanged は無視する
         _modelCombo.SelectionChanged += (_, _) =>
         {
             if (_updatingModelCombo) return;
             SaveSettings();
             UpdateStatusLabel();
-            EnsureCliProviderPrewarmed();
         };
         _modelCombo.LostFocus += (_, _) =>
         {
             SaveSettings();
             UpdateStatusLabel();
-            EnsureCliProviderPrewarmed();
         };
+
+        // プリウォームは SendMessageAsync → CreateProvider() で行う（遅延生成）。
+        // 設定ポップアップ操作中に Node.js を起動・停止しないようにするため、
+        // ポップアップ閉じイベントでのプリウォームも行わない。
 
         // API キー / Endpoint 変更時の自動保存
         _apiKeyBox.LostFocus    += (_, _) => SaveSettings();
@@ -1329,7 +1350,10 @@ public class AIAssistantPanel
                 TrimHistory(_currentSession.Messages, isLocalAi ? MAX_HISTORY_CHARS_LOCAL : int.MaxValue));
 
             var tools    = EditorToolDefinitions.All();
-            var executor = CreateExecutor();
+            // _sharedExecutor はコンストラクタで生成した共有インスタンスを使う。
+            // SeedAIBridge も同じインスタンスを使うことで HTTP API と内部エージェントループが
+            // 同じ Rust ランタイムへの IPC チャンネルを共有する。
+            var executor = _sharedExecutor;
             const int MAX_TOOL_ROUNDS = 10;
 
             for (int round = 0; round < MAX_TOOL_ROUNDS; round++)
@@ -1458,30 +1482,6 @@ public class AIAssistantPanel
             PROVIDER_GEMINI    => new GeminiProvider(settings),
             _                  => new OpenAICompatibleProvider(settings), // LOCAL_AI と OPENAI
         };
-    }
-
-    /// <summary>
-    /// CLI Gemini モードが選択されている場合にプロバイダーを即時生成してプリウォームを開始する。
-    /// 送信ボタンが押される前にプロセスを起動しておくことで最初のメッセージからウォームスタートできる。
-    /// モデルが変わった場合は古いプロバイダーを破棄して再生成する。
-    /// </summary>
-    private void EnsureCliProviderPrewarmed()
-    {
-        if (_modeCombo.SelectedIndex != MODE_CLI
-         || _providerCombo.SelectedIndex != PROVIDER_CLI_GEMINI)
-            return;
-
-        var cliModel = (_modelCombo.Text ?? "").Trim();
-        var cliKey   = $"gemini:{cliModel}";
-
-        // キーが一致していればすでにウォームアップ済み
-        if (_cachedCliProvider != null && _cachedCliKey == cliKey)
-            return;
-
-        _cachedCliProvider?.Dispose();
-        _cachedCliProvider = new CliAgentProvider(
-            "Gemini CLI", "gemini", "https://github.com/google/gemini-cli", cliModel);
-        _cachedCliKey = cliKey;
     }
 
     /// <summary>エディタコマンド実行エンジンを生成して返す。</summary>

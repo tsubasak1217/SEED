@@ -127,6 +127,40 @@ impl RigidBodyState {
         );
     }
 
+    /// Cylinder コライダー用の慣性テンソルを設定する。
+    pub fn set_cylinder_inertia(&mut self, radius: f32, half_height: f32) {
+        if self.inv_mass <= 0.0 { return; }
+        let h = half_height * 2.0;
+        let r = radius;
+        let m = self.mass;
+        // 円柱: Ixx = Izz = m(3r²+h²)/12, Iyy = mr²/2
+        let ixx = m * (3.0 * r * r + h * h) / 12.0;
+        let iyy = m * r * r / 2.0;
+        let izz = ixx;
+        self.inv_inertia_local = Mat3x3::new(
+            1.0 / ixx, 0.0, 0.0,
+            0.0, 1.0 / iyy, 0.0,
+            0.0, 0.0, 1.0 / izz,
+        );
+    }
+
+    /// Cone コライダー用の慣性テンソルを設定する。
+    pub fn set_cone_inertia(&mut self, radius: f32, half_height: f32) {
+        if self.inv_mass <= 0.0 { return; }
+        let h = half_height * 2.0;
+        let r = radius;
+        let m = self.mass;
+        // コーン: Ixx = Izz = m(3r²+2h²)/20, Iyy = 3/10 * m * r²
+        let ixx = m * (3.0 * r * r + 2.0 * h * h) / 20.0;
+        let iyy = 3.0 * m * r * r / 10.0;
+        let izz = ixx;
+        self.inv_inertia_local = Mat3x3::new(
+            1.0 / ixx, 0.0, 0.0,
+            0.0, 1.0 / iyy, 0.0,
+            0.0, 0.0, 1.0 / izz,
+        );
+    }
+
     /// ConvexHull 用の近似慣性テンソルを AABB で計算して設定する。
     pub fn set_convex_hull_inertia_approx(&mut self, vertices: &[Vector3<f32>]) {
         if self.inv_mass <= 0.0 || vertices.is_empty() { return; }
@@ -147,6 +181,10 @@ impl RigidBodyState {
             ColliderShape::Sphere { radius }         => self.set_sphere_inertia(*radius),
             ColliderShape::Capsule { radius, half_height } =>
                 self.set_capsule_inertia(*radius, *half_height),
+            ColliderShape::Cylinder { radius, half_height } =>
+                self.set_cylinder_inertia(*radius, *half_height),
+            ColliderShape::Cone { radius, half_height } =>
+                self.set_cone_inertia(*radius, *half_height),
             ColliderShape::ConvexHull { vertices }   =>
                 self.set_convex_hull_inertia_approx(vertices),
             ColliderShape::TriangleMesh { .. }       => {

@@ -27,6 +27,16 @@
     </Page>
   </ItemGroup>
 
+  <!-- WPF の _wpftmp 内部プロジェクトが SeedMcpServer サブディレクトリの     -->
+  <!-- obj/ 生成ファイルを拾って属性重複エラーになるのを防ぐ。               -->
+  <ItemGroup>
+    <Compile  Remove="SeedMcpServer\**" />
+    <EmbeddedResource Remove="SeedMcpServer\**" />
+    <None     Remove="SeedMcpServer\**" />
+    <Content  Remove="SeedMcpServer\**" />
+    <Page     Remove="SeedMcpServer\**" />
+  </ItemGroup>
+
   <ItemGroup>
     <PackageReference Include="Dirkster.AvalonDock" Version="4.74.0" />
     <PackageReference Include="Dirkster.AvalonDock.Themes.VS2013" Version="4.74.0" />
@@ -52,5 +62,23 @@
       <Link>%(Filename)%(Extension)</Link>
     </Content>
   </ItemGroup>
+
+  <!-- SeedMcpServer をメインビルド後に独立してビルドし、出力を同じディレクトリへコピーする。 -->
+  <!-- ProjectReference を使わないことで WPF の _wpftmp 中間プロジェクトとの衝突を回避する。 -->
+  <Target Name="BuildAndCopySeedMcpServer" AfterTargets="Build" Condition="'$(CI)'!='true'">
+    <!-- SeedMcpServer 自身をビルドする（restore も内部で自動実行される）-->
+    <Exec Command="dotnet build &quot;$(MSBuildProjectDirectory)\SeedMcpServer\SeedMcpServer.csproj&quot; -c $(Configuration)"
+          StandardOutputImportance="low"
+          StandardErrorImportance="normal" />
+    <!-- ビルド結果を SEEDEditor.exe と同じディレクトリへ全ファイルコピーする。        -->
+    <!-- .exe だけでなく .dll / .runtimeconfig.json / .deps.json も必須。           -->
+    <!-- これらが揃っていないと AppHost (.exe) がランタイムを起動できず MCP が失敗する。 -->
+    <ItemGroup>
+      <_SeedMcpServerFiles Include="$(MSBuildProjectDirectory)\SeedMcpServer\bin\$(Configuration)\net9.0\*.*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_SeedMcpServerFiles)"
+          DestinationFolder="$(OutputPath)"
+          SkipUnchangedFiles="true" />
+  </Target>
 
 </Project>

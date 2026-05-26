@@ -57,17 +57,24 @@ public class EditorCommandExecutor
     ///
     /// 返値は AI への tool 結果メッセージとして使用する。
     /// エラーが発生した場合はエラーメッセージを返す（例外は送出しない）。
+    ///
+    /// <param name="includeSceneInfo">
+    /// true（API モード）: add_actor / add_component / remove_actor の後に自動でシーン情報を取得して返す。
+    ///   AI が次のツール呼び出しで DFS ID やスロット番号を参照できるようにするため。
+    /// false（MCP バッチモード）: 自動シーン取得をスキップする。
+    ///   seed_batch 内部でも EditorCommandExecutor が呼ばれるが、バッチ内の各操作では
+    ///   中間結果が Gemini に届かないため自動取得は無駄な IPC 往復になる。
+    /// </param>
     /// </summary>
-    public async Task<string> ExecuteAsync(ToolCall toolCall)
+    public async Task<string> ExecuteAsync(ToolCall toolCall, bool includeSceneInfo = true)
     {
         _log($"[AI ツール] {toolCall.FunctionName}({toolCall.ArgumentsJson})");
 
         try
         {
             // 構造変化を伴う操作（add_actor / remove_actor / add_component）は
-            // 実行後に自動でシーン情報を取得してレスポンスに付加する。
-            // これにより、モデルが get_scene_info を別途呼び出さなくても
-            // 最新の DFS ID とスロット情報を把握できる。
+            // includeSceneInfo=true（API モード）の場合のみ自動でシーン情報を返す。
+            // MCP バッチモード（includeSceneInfo=false）では省略して IPC 往復を減らす。
             switch (toolCall.FunctionName)
             {
                 case "list_asset_files":
@@ -78,21 +85,24 @@ public class EditorCommandExecutor
 
                 case "add_actor":
                 {
-                    var msg   = ExecuteAddActor(toolCall.ArgumentsJson);
+                    var msg = ExecuteAddActor(toolCall.ArgumentsJson);
+                    if (!includeSceneInfo) return msg;
                     var scene = await ExecuteGetSceneInfo();
                     return $"{msg}\n[現在のシーン情報]\n{scene}";
                 }
 
                 case "remove_actor":
                 {
-                    var msg   = ExecuteRemoveActor(toolCall.ArgumentsJson);
+                    var msg = ExecuteRemoveActor(toolCall.ArgumentsJson);
+                    if (!includeSceneInfo) return msg;
                     var scene = await ExecuteGetSceneInfo();
                     return $"{msg}\n[現在のシーン情報]\n{scene}";
                 }
 
                 case "add_component":
                 {
-                    var msg   = ExecuteAddComponent(toolCall.ArgumentsJson);
+                    var msg = ExecuteAddComponent(toolCall.ArgumentsJson);
+                    if (!includeSceneInfo) return msg;
                     var scene = await ExecuteGetSceneInfo();
                     return $"{msg}\n[現在のシーン情報]\n{scene}";
                 }
@@ -141,7 +151,7 @@ public class EditorCommandExecutor
         var z    = root.TryGetProperty("z",    out var ze) ? ze.GetSingle() : 0f;
 
         _sendToRuntime($"AI_ADD_ACTOR:{name},{x},{y},{z}");
-        return $"アクター '{name}' を追加しました。新しく追加されたアクターの DFS ID を特定するために、次に必ず 'get_scene_info' を呼び出してください。";
+        return $"アクター '{name}' を追加しました。上記の [現在のシーン情報] に新しい DFS ID が含まれています。";
     }
 
     /// <summary>アクターを削除する。</summary>
@@ -151,7 +161,7 @@ public class EditorCommandExecutor
         var id = doc.RootElement.GetProperty("actor_dfs_id").GetInt32();
 
         _sendToRuntime($"AI_REMOVE_ACTOR:{id}");
-        return $"DFS ID={id} のアクターを削除しました。シーン構造が変わったため、次に必ず 'get_scene_info' を呼び出してください。";
+        return $"DFS ID={id} のアクターを削除しました。上記の [現在のシーン情報] で変更後の DFS ID を確認できます。";
     }
 
     /// <summary>アクターを移動する。</summary>
@@ -180,7 +190,7 @@ public class EditorCommandExecutor
 
         // params_json は現在は空文字列を渡す（将来の拡張用）
         _sendToRuntime($"AI_ADD_COMPONENT:{actorId},{compType},{{}}");
-        return $"DFS ID={actorId} のアクターに '{compType}' コンポーネントを追加しました。追加されたコンポーネントのスロットインデックスを確認するために、次に 'get_scene_info' を呼び出すことを推奨します。";
+        return $"DFS ID={actorId} のアクターに '{compType}' コンポーネントを追加しました。上記の [現在のシーン情報] でスロット情報を確認できます。";
     }
 
     /// <summary>コンポーネントフィールドの値を変更する。</summary>

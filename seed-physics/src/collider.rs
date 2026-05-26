@@ -29,6 +29,10 @@ pub enum ColliderShape {
     Sphere { radius: f32 },
     /// カプセル（ローカル Y 軸方向、中心から上下に half_height 延伸 + 半径 radius）
     Capsule { radius: f32, half_height: f32 },
+    /// シリンダー（ローカル Y 軸方向、半径 radius、高さ 2*half_height）
+    Cylinder { radius: f32, half_height: f32 },
+    /// コーン（ローカル Y 軸方向、半径 radius、高さ 2*half_height）
+    Cone { radius: f32, half_height: f32 },
     /// 凸包（頂点数 ≤ CONVEX_HULL_MAX_VERTICES）
     ConvexHull { vertices: Vec<Vector3<f32>> },
     /// 三角形メッシュ（三角形数 ≤ TRIANGLE_MESH_MAX_TRIANGLES）。Static 専用。
@@ -120,6 +124,16 @@ impl ColliderShape {
                 Aabb::new(mn, mx)
             }
 
+            Self::Cylinder { radius, half_height } | Self::Cone { radius, half_height } => {
+                let r  = radius * scale.x.abs().max(scale.z.abs());
+                let hh = half_height * scale.y.abs();
+                // AABB はシリンダー/コーンを囲むボックスとして計算
+                // Y軸の範囲: [-hh, hh]
+                // XY/ZY平面の範囲: [-r, r]
+                let extent = Vector3::new(r, hh, r);
+                aabb_from_obb(position, rotation, extent)
+            }
+
             Self::ConvexHull { vertices } => {
                 if vertices.is_empty() {
                     return Aabb::new(position, position);
@@ -193,8 +207,40 @@ impl ColliderShape {
                 let r  = radius * scale.x.abs().max(scale.z.abs());
                 let hh = half_height * scale.y.abs();
                 let up = rotate_vec3(rotation, Vector3::new(0.0, hh, 0.0));
-                let tip = if dir.dot(up) >= 0.0 { position + up } else { position - up };
+                let tip = if dir.dot(up) >= 0.0 { position + up } else { position - -up };
                 tip + dir.normalize() * r
+            }
+            Self::Cylinder { radius, half_height } => {
+                let r  = radius * scale.x.abs().max(scale.z.abs());
+                let hh = half_height * scale.y.abs();
+                let local_dir = rotate_vec3(rotation.conjugate(), dir);
+                // 円柱のサポート点
+                let l_y = if local_dir.y >= 0.0 { hh } else { -hh };
+                let l_xz = if (local_dir.x * local_dir.x + local_dir.z * local_dir.z) > 1e-6 {
+                     let dir_xz = Vector3::new(local_dir.x, 0.0, local_dir.z).normalize();
+                     dir_xz * r
+                } else {
+                    Vector3::zero()
+                };
+                let lp = Vector3::new(l_xz.x, l_y, l_xz.z);
+                position + rotate_vec3(rotation, lp)
+            }
+            Self::Cone { radius, half_height } => {
+                let r  = radius * scale.x.abs().max(scale.z.abs());
+                let hh = half_height * scale.y.abs();
+                let local_dir = rotate_vec3(rotation.conjugate(), dir);
+                // コーンのサポート点：頂点 (0, hh, 0) か、底面周縁か
+                let dot_v = local_dir.y * hh;
+                let dot_b = -local_dir.y * hh + (local_dir.x * 0.0 + local_dir.z * 0.0) + r * (local_dir.x * local_dir.x + local_dir.z * local_dir.z).sqrt();
+                // 実際はコーンの頂点 (0, hh, 0) または底面エッジ
+                let lp = if dot_v > dot_b {
+                    Vector3::new(0.0, hh, 0.0)
+                } else {
+                    // 底面周縁
+                    let dir_xz = Vector3::new(local_dir.x, 0.0, local_dir.z).normalize();
+                    dir_xz * r + Vector3::new(0.0, -hh, 0.0)
+                };
+                position + rotate_vec3(rotation, lp)
             }
             Self::ConvexHull { vertices } => {
                 let local_dir = rotate_vec3(rotation.conjugate(), dir);
@@ -224,6 +270,7 @@ impl ColliderShape {
             }
         }
     }
+
 }
 
 // ─── 数学ユーティリティ ──────────────────────────────────────────────────────

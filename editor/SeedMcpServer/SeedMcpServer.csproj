@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <!-- net9.0（Windows 依存なし）— WPF 不要なのでフレームワーク修飾子を外す -->
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>SeedMcpServer</AssemblyName>
+    <!-- 出力は標準の bin/Debug/net9.0/ に任せる。SEEDEditor 側でコピーする。 -->
+  </PropertyGroup>
+
+</Project>

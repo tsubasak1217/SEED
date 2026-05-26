@@ -94,15 +94,26 @@ public class CliAgentProvider : IAIProvider, IDisposable
 
         if (processToKill != null)
         {
-            _ = Task.Run(() =>
+            _ = Task.Run(async () =>
             {
-                try { processToKill.Kill(entireProcessTree: true); }
+                // stdin を閉じて EOF を送り、gemini CLI のクリーン終了を促す。
+                // (-p - モードは EOF を受け取ると自然終了する)
+                try { stdinToClose?.Dispose(); } catch { }
+
+                // 500ms 待って自然終了していれば Kill 不要（全プロセス列挙のオーバーヘッドを回避）。
+                // Kill(entireProcessTree:true) は全プロセス列挙を伴い数百ms かかることがあるため
+                // なるべくスキップする。
+                await Task.Delay(500).ConfigureAwait(false);
+
+                try
+                {
+                    if (!processToKill.HasExited)
+                        processToKill.Kill(entireProcessTree: true);
+                }
                 catch (Exception ex) { EditorLog.Write($"[CliAgent] Kill 例外: {ex.Message}"); }
                 try { processToKill.Dispose(); } catch { }
             });
         }
-
-        try { stdinToClose?.Dispose(); } catch { }
         try { _warmLock.Dispose(); } catch { }
         try { _chatLock.Dispose(); } catch { }
     }
@@ -120,9 +131,10 @@ public class CliAgentProvider : IAIProvider, IDisposable
         _isWarming = true;
         try
         {
-            // 設定切り替え直後の Node.js 起動による CPU 負荷でエディタが重くなるのを防ぐため
-            // 少し待機してから起動する（UI が落ち着く時間を確保する）。
-            await Task.Delay(600).ConfigureAwait(false);
+            // 設定ポップアップを閉じた直後の描画が落ち着いてから Node.js を起動するため、
+            // 1500ms 待機する。Node.js 起動時のディスク I/O がエディタの
+            // レンダリングや他の I/O 操作と競合するのを緩和する。
+            await Task.Delay(1500).ConfigureAwait(false);
             if (_disposed) return;
 
             // ResolveCommandPath は where/which コマンドをブロック実行するため
@@ -501,64 +513,155 @@ public class CliAgentProvider : IAIProvider, IDisposable
 
     // ── 共通ユーティリティ ────────────────────────────────────────────────
 
-    /// <summary>メッセージ履歴とツール定義から CLI 向けのプロンプト文字列を組み立てる。</summary>
+    /// <summary>
+    /// メッセージ履歴とツール定義から CLI 向けのプロンプト文字列を組み立てる。
+    ///
+    /// 【Gemini CLI 向け設計指針】
+    /// Gemini CLI の強みは「実行→観察→再調整」の自律ループにある。
+    /// このループを活かすため、シェルコマンド（run_shell_command）経由で
+    /// SeedAIBridge HTTP API（http://localhost:7234/seed-ai/）を呼ばせる。
+    ///
+    /// 旧方式（JSON ブロック出力→C# パース）の問題:
+    ///  ・エージェントループが機能せず 1 ターンで終わる
+    ///  ・「実行結果を観察して次の行動を決める」ができない
+    ///  ・ファイルツールを禁止するだけでは Gemini の能力を活かせない
+    ///
+    /// 新方式（HTTP API 呼び出し）の利点:
+    ///  ・Invoke-RestMethod の出力を Gemini 自身が観察して次の操作を決める
+    ///  ・シーン情報取得 → アクター追加 → 結果確認 の流れを自律実行できる
+    ///  ・ファイルツールは settings.json で除外済み → ソース改変は不可能
+    /// </summary>
     private string BuildPrompt(List<ChatMessage> messages, List<ToolDefinition> tools)
     {
         var sb = new StringBuilder();
-        sb.AppendLine("あなたは SEED ゲームエンジンのエディタアシスタントです。以下の指示に従ってください。");
-        sb.AppendLine("- 出力は日本語で行ってください。");
-        sb.AppendLine("- コアコードを直接編集せず、提供されたツールを使用して操作してください。");
-        sb.AppendLine("- ツールを使用する場合は、以下の JSON 形式のみをコードブロック ```json ... ``` で出力してください。");
-        sb.AppendLine("  { \"tool\": \"関数名\", \"parameters\": { \"引数名\": \"値\" } }");
+
+        // ── Gemini CLI 向け: MCP ツール説明 ─────────────────────────────
+        // シェルコマンドはすべて無効化済み。Gemini が使えるのは MCP ツールのみ。
+        // seed_query（読み取り）と seed_batch（一括変更）の 2 つだけを説明する。
+        sb.AppendLine("=== SEED EDITOR MCP MODE ===");
+        sb.AppendLine("You are a SEED game engine SCENE EDITOR.");
+        sb.AppendLine("You have exactly 2 MCP tools. Use them EFFICIENTLY — minimize total tool calls.");
+        sb.AppendLine();
+        sb.AppendLine("## Tool 1: seed_query");
+        sb.AppendLine("Read scene state or asset file list.");
+        sb.AppendLine("  seed_query(type:\"scene\")              → current actors, dfs_id, components, slot_idx");
+        sb.AppendLine("  seed_query(type:\"assets\",dir:\"models\")  → model file absolute paths");
+        sb.AppendLine("  seed_query(type:\"assets\",dir:\"scripts\") → script file absolute paths");
+        sb.AppendLine();
+        sb.AppendLine("## Tool 2: seed_batch");
+        sb.AppendLine("Execute scene modifications. ALL operations go into ONE single call as an array.");
+        sb.AppendLine("Operations execute in order. DFS IDs are assigned sequentially as actors are added (0, 1, 2...).");
+        sb.AppendLine("You can predict DFS IDs in advance: first add_actor gets id=N, next gets id=N+1, etc.");
+        sb.AppendLine();
+        sb.AppendLine("  Commands:");
+        sb.AppendLine("    {\"cmd\":\"add_actor\",     \"name\":\"Name\", \"x\":0, \"y\":0, \"z\":0}");
+        sb.AppendLine("    {\"cmd\":\"add_component\", \"actor_dfs_id\":N, \"component_type\":\"Model\"}");
+        sb.AppendLine("    {\"cmd\":\"set_value\",     \"actor_dfs_id\":N, \"slot_idx\":0, \"key\":\"model_path\", \"value\":\"C:/path/to.glb\"}");
+        sb.AppendLine("    {\"cmd\":\"move_actor\",    \"actor_dfs_id\":N, \"x\":0, \"y\":0, \"z\":0}");
+        sb.AppendLine("    {\"cmd\":\"remove_actor\",  \"actor_dfs_id\":N}");
+        sb.AppendLine();
+        sb.AppendLine("## EXAMPLE — correct way to add 3 actors with Model (all in ONE seed_batch call):");
+        sb.AppendLine("  // Suppose current scene is empty (next dfs_id = 0)");
+        sb.AppendLine("  // and model path = \"C:/assets/models/Cube.glb\" from seed_query");
+        sb.AppendLine("  seed_batch(operations: [");
+        sb.AppendLine("    {\"cmd\":\"add_actor\",     \"name\":\"A\", \"x\":0, \"y\":0, \"z\":0},   // → dfs_id 0");
+        sb.AppendLine("    {\"cmd\":\"add_component\", \"actor_dfs_id\":0, \"component_type\":\"Model\"},");
+        sb.AppendLine("    {\"cmd\":\"set_value\",     \"actor_dfs_id\":0, \"slot_idx\":0, \"key\":\"model_path\", \"value\":\"C:/assets/models/Cube.glb\"},");
+        sb.AppendLine("    {\"cmd\":\"add_actor\",     \"name\":\"B\", \"x\":2, \"y\":0, \"z\":0},   // → dfs_id 1");
+        sb.AppendLine("    {\"cmd\":\"add_component\", \"actor_dfs_id\":1, \"component_type\":\"Model\"},");
+        sb.AppendLine("    {\"cmd\":\"set_value\",     \"actor_dfs_id\":1, \"slot_idx\":0, \"key\":\"model_path\", \"value\":\"C:/assets/models/Cube.glb\"},");
+        sb.AppendLine("    {\"cmd\":\"add_actor\",     \"name\":\"C\", \"x\":4, \"y\":0, \"z\":0},   // → dfs_id 2");
+        sb.AppendLine("    {\"cmd\":\"add_component\", \"actor_dfs_id\":2, \"component_type\":\"Model\"},");
+        sb.AppendLine("    {\"cmd\":\"set_value\",     \"actor_dfs_id\":2, \"slot_idx\":0, \"key\":\"model_path\", \"value\":\"C:/assets/models/Cube.glb\"}");
+        sb.AppendLine("  ])");
+        sb.AppendLine("  // For 25 actors, put ALL 75 operations (add_actor+add_component+set_value × 25) into ONE call.");
+        sb.AppendLine();
+        sb.AppendLine("## !! SYSTEM-ENFORCED HARD LIMIT: EXACTLY 4 TURNS TOTAL !!");
+        sb.AppendLine("The agentic loop is terminated after 4 turns by the system. This is NOT optional.");
+        sb.AppendLine();
+        sb.AppendLine("  Turn 1: seed_query(type:\"scene\")              — read current state");
+        sb.AppendLine("  Turn 2: seed_query(type:\"assets\", dir:\"...\")  — read asset paths (skip if not needed)");
+        sb.AppendLine("  Turn 3: seed_batch(operations:[...ALL...])    — execute ALL operations in ONE call");
+        sb.AppendLine("  Turn 4: Japanese summary. SESSION ENDS.");
+        sb.AppendLine();
+        sb.AppendLine("!! CRITICAL: If you call seed_batch more than once (e.g., once per actor),");
+        sb.AppendLine("   the session terminates after turn 4 with the task INCOMPLETE.");
+        sb.AppendLine("   Adding 25 actors one-by-one = 25 seed_batch calls = FAILS after 2 actors.");
+        sb.AppendLine("   The ONLY way to add 25 actors: put ALL 75 ops in the single Turn 3 seed_batch.");
+        sb.AppendLine();
+        sb.AppendLine("## Workflow:");
+        sb.AppendLine("1. seed_query(type:\"scene\") — ONCE.");
+        sb.AppendLine("2. seed_query(type:\"assets\") — ONCE, only if file paths are needed.");
+        sb.AppendLine("3. Plan ALL operations. Predict DFS IDs (sequential from current count).");
+        sb.AppendLine("4. seed_batch — ONE call with ALL operations. No intermediate checks.");
+        sb.AppendLine("5. Summarize in Japanese. STOP.");
+        sb.AppendLine();
+        sb.AppendLine("## Additional Rules:");
+        sb.AppendLine("- set_value values are always strings: numbers=\"45.0\", bool=\"true\"/\"false\", color=\"r,g,b,a\".");
+        sb.AppendLine("- NEVER guess file paths — use seed_query to get real absolute paths first.");
+        sb.AppendLine("- After summarizing in Japanese, STOP. Do NOT call any more tools.");
+        sb.AppendLine("=================================");
         sb.AppendLine();
 
-        // システムメッセージを先頭にまとめて出力する
-        var systemMsgs = messages.Where(m => m.Role == "system").ToList();
-        if (systemMsgs.Count > 0)
-        {
-            sb.AppendLine("## システム指示:");
-            foreach (var sm in systemMsgs)
-                sb.AppendLine(sm.Content);
-            sb.AppendLine();
-        }
+        // ── システムメッセージは CLI モードでは使わない ─────────────────────────────
+        // API モード向けの SYSTEM_PROMPT（個別ツール呼び出しルール等）は MCP 指示と矛盾するため除外する。
+        // 例: "Call get_scene_info after every add_actor" は seed_batch の一括実行方針に反する。
 
-        sb.AppendLine("## 利用可能なツール:");
-        foreach (var t in tools)
-            sb.AppendLine($"- {t.Name}: {t.Description}");
-
-        // システムメッセージ以外の会話履歴をロールラベル付きで出力する
-        sb.AppendLine("\n## 会話履歴:");
-        foreach (var msg in messages.Where(m => m.Role != "system"))
+        // システムメッセージ以外の会話履歴をロールラベル付きで出力する。
+        // 最後のユーザーメッセージにバッチ指示を付加する。
+        // ・ユーザー発言として付加することでシステムプリアンブルより高い優先度でモデルに届く
+        // ・プロンプト末尾（"Assistant:" 直前）に置くことで再帰性バイアスを最大活用する
+        // ・"Undo可能" と伝えることで失敗を恐れた確認ループを抑制する（GPT review ⑤）
+        sb.AppendLine("## Conversation History:");
+        var nonSystemMsgs = messages.Where(m => m.Role != "system").ToList();
+        var lastUserMsg   = nonSystemMsgs.LastOrDefault(m => m.Role == "user");
+        foreach (var msg in nonSystemMsgs)
         {
             var roleName = msg.Role switch
             {
-                "user"      => "ユーザー",
-                "assistant" => "アシスタント",
-                "tool"      => "ツール結果",
-                _           => "その他",
+                "user"      => "User",
+                "assistant" => "Assistant",
+                "tool"      => "Tool Result",
+                _           => "Other",
             };
-            sb.AppendLine($"{roleName}: {msg.Content}");
+            var content = msg.Content;
+
+            // 最後のユーザーメッセージの末尾にバッチ強制の注記を付加する。
+            // 失敗を恐れず一括実行できるよう "Undo可能" の旨も添える。
+            if (ReferenceEquals(msg, lastUserMsg))
+                content +=
+                    "\n(注意: すべての操作を必ず1回のseed_batchコールにまとめること。" +
+                    "アクターやコンポーネントごとに個別に呼ばないこと。" +
+                    "操作はすべてUndo可能なので失敗を恐れず一括実行すること。)";
+
+            sb.AppendLine($"{roleName}: {content}");
         }
-        sb.AppendLine("\nアシスタント: ");
+        sb.AppendLine("\nAssistant: ");
         return sb.ToString();
     }
 
-    /// <summary>Gemini CLI 起動用の ProcessStartInfo を構築する。</summary>
+    /// <summary>
+    /// Gemini CLI 起動用の ProcessStartInfo を構築する。
+    /// 作業ディレクトリには空のサンドボックスを使用し、プロジェクトのソースファイルを
+    /// Gemini に見せない。これにより Gemini のファイル編集ツールが誤動作するのを防ぐ。
+    /// </summary>
     private ProcessStartInfo BuildGeminiStartInfo(string geminiPath)
     {
         var modelFlag = string.IsNullOrWhiteSpace(_model) ? "" : $" -m {_model}";
-        // プロジェクトルート（SEED/）を作業ディレクトリにする。
-        // AppDomain.CurrentDomain.BaseDirectory は editor\bin\Debug\net9.0-windows\ を指すため
-        // 4階層上がるとプロジェクトルートになる。
-        // WorkingDirectory を設定しないと Gemini CLI がバイナリ出力ディレクトリを
-        // ワークスペースと認識してそれ以外のパスへのアクセスを拒否する。
-        var workDir = Path.GetFullPath(
-            Path.Combine(AppDomain.CurrentDomain.BaseDirectory, @"..\..\..\..\"));
+        // 空のサンドボックスディレクトリを使用する。
+        // プロジェクトルートを指定すると Gemini CLI がコーディングエージェントとして
+        // Rust ソースファイルを直接編集してしまうため、意図的に何もないディレクトリを渡す。
+        // SEED のシーン操作は JSON ツール呼び出し（IPC 経由）で行うため
+        // ファイルシステムアクセスは不要。
+        var workDir = GetOrCreateGeminiSandbox();
         var psi = new ProcessStartInfo
         {
             FileName               = "cmd.exe",
             // -p - : stdin からプロンプトを読み取るプリントモード（EOF まで読んで 1 回応答して終了）
-            Arguments              = $"/c \"\"{geminiPath}\"{modelFlag} -p - --skip-trust --approval-mode plan\"",
+            // --approval-mode yolo : MCP ツール（seed_query / seed_batch）を自動承認する。
+            //   coreTools:[] で危険なネイティブツールは封じてあるため安全。
+            //   有効値: "default" | "auto_edit" | "yolo" | "plan"
+            Arguments              = $"/c \"\"{geminiPath}\"{modelFlag} -p - --skip-trust --approval-mode yolo\"",
             UseShellExecute        = false,
             CreateNoWindow         = true,
             RedirectStandardOutput = true,
@@ -568,11 +671,61 @@ public class CliAgentProvider : IAIProvider, IDisposable
             StandardErrorEncoding  = Encoding.UTF8,
             WorkingDirectory       = workDir,
         };
-        psi.EnvironmentVariables["CI"]                     = "true";
-        psi.EnvironmentVariables["NON_INTERACTIVE"]        = "true";
-        psi.EnvironmentVariables["GEMINI_SKIP_TRUST"]      = "true";
-        psi.EnvironmentVariables["GEMINI_WORKSPACE_TRUST"] = "true";
+        psi.EnvironmentVariables["CI"]                        = "true";
+        psi.EnvironmentVariables["NON_INTERACTIVE"]            = "true";
+        // GEMINI_CLI_TRUST_WORKSPACE=true: ワークスペース設定（.gemini/settings.json）を信頼済みとしてロードする。
+        // 未設定だと Gemini CLI のフォルダトラスト機構により workspace 設定が無視され、
+        // mcpServers や coreTools が適用されない（デフォルトは untrusted = workspace 設定を空扱い）。
+        psi.EnvironmentVariables["GEMINI_CLI_TRUST_WORKSPACE"] = "true";
         return psi;
+    }
+
+    /// <summary>
+    /// Gemini CLI 専用の空サンドボックスディレクトリを作成して返す。
+    ///
+    /// .gemini/settings.json に MCP サーバー（SeedMcpServer.exe）を登録し、
+    /// coreTools を空にすることでシェル実行・ファイル編集などすべてのネイティブツールを無効化する。
+    ///
+    /// これにより Gemini は SeedMcpServer が公開する 2 つのツールのみ使用可能になる:
+    ///   seed_query  → シーン情報 / アセット一覧の取得
+    ///   seed_batch  → シーン操作の一括実行（変更の唯一の手段）
+    ///
+    /// "変更できる手段が seed_batch の 1 回のみ" という仕組みで
+    /// Gemini が全操作をまとめるよう強制される（プロンプト指示でなく設計で強制）。
+    /// </summary>
+    private static string GetOrCreateGeminiSandbox()
+    {
+        var sandboxDir = Path.Combine(Path.GetTempPath(), "seed_gemini_sandbox");
+        var dotGemini  = Path.Combine(sandboxDir, ".gemini");
+        Directory.CreateDirectory(dotGemini);
+
+        // SeedMcpServer.exe のパスを SEEDEditor.exe と同じディレクトリから解決する。
+        var editorDir     = Path.GetDirectoryName(
+            System.Reflection.Assembly.GetExecutingAssembly().Location) ?? "";
+        var mcpServerPath = Path.Combine(editorDir, "SeedMcpServer.exe")
+            .Replace('\\', '/');  // JSON 文字列中のパス区切りはスラッシュに統一
+
+        // coreTools: [] → すべてのネイティブツール（run_shell_command / read_file 等）を無効化。
+        // mcpServers.seed → SeedMcpServer.exe を MCP プロバイダーとして登録。
+        // maxSessionTurns は設定しない。
+        //   値が小さすぎるとタスクが途中で打ち切られエラーの原因になる。
+        //   バッチ強制はプロンプト指示とユーザーメッセージへの付加で行う。
+        var settingsJson = $$"""
+            {
+              "coreTools": [],
+              "mcpServers": {
+                "seed": {
+                  "command": "{{mcpServerPath}}"
+                }
+              }
+            }
+            """;
+        File.WriteAllText(
+            Path.Combine(dotGemini, "settings.json"),
+            settingsJson,
+            new UTF8Encoding(false));
+
+        return sandboxDir;
     }
 
     /// <summary>stdout テキストを解析して AIResponse を生成する。</summary>
