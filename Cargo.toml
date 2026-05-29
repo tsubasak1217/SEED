@@ -14,3 +14,21 @@ members  = [
     "plugins/sample_plugin",
 ]
 resolver = "2"
+
+# ── デバッグビルドのパフォーマンス最適化 ──────────────────────────────
+# wgpu は debug ビルドで RenderPass ドロップ時に全コマンドを unoptimized なコードで
+# 処理するため、25 体以上のアクターで ~20ms/frame の CPU オーバーヘッドが発生する。
+# wgpu 関連クレートのみ opt-level=2 でコンパイルすることで、アプリケーションの
+# デバッグ情報・アサーションを維持しつつ GPU コマンド処理を大幅に高速化する。
+[profile.dev.package.wgpu]
+opt-level = 2
+[profile.dev.package.wgpu-core]
+opt-level = 2
+[profile.dev.package.wgpu-hal]
+opt-level = 2
+[profile.dev.package.wgpu-types]
+opt-level = 2
+[profile.dev.package.ash]
+opt-level = 2
+[profile.dev.package.naga]
+opt-level = 2

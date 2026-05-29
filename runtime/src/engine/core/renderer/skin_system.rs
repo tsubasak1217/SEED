@@ -322,10 +322,13 @@ impl SkinComputeSystem {
         }));
     }
 
-    /// 指定 LOD の GPU スキニング計算をコマンドエンコーダに積む。
+    /// 指定 LOD の GPU スキニング計算を ComputePass に積む。
+    ///
+    /// 呼び出し元が 1 つの ComputePass を共有して複数の LOD / アクター分を
+    /// まとめて記録することで、begin/end pass のオーバーヘッドを削減する。
     pub fn dispatch_lod(
         &self,
-        encoder:       &mut wgpu::CommandEncoder,
+        pass:          &mut wgpu::ComputePass<'_>,
         pipeline:      &SkinComputePipeline,
         lod:           usize,
         visible_count: u32,
@@ -333,10 +336,6 @@ impl SkinComputeSystem {
         if visible_count == 0 { return; }
 
         let wg_count = (visible_count + 63) / 64;
-        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-            label:            Some("Skin Compute Pass"),
-            timestamp_writes: None,
-        });
         pass.set_pipeline(&pipeline.pipeline);
         pass.set_bind_group(0, &self.lod_per_frame_bgs[lod], &[]);
         pass.set_bind_group(1, &self.static_bg, &[]);

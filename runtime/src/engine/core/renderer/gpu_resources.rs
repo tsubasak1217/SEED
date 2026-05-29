@@ -929,16 +929,19 @@ impl InstancedModelBatch {
         None
     }
 
-    /// GPU スキニング コンピュートシェーダを全 LOD 分ディスパッチする。
-    /// レンダーパスより前にコマンドエンコーダに積む必要がある。
+    /// GPU スキニング コンピュートシェーダを全 LOD 分 ComputePass に積む。
+    ///
+    /// 呼び出し元が 1 つの ComputePass を複数アクターで共有することで
+    /// begin/end pass オーバーヘッドを排除する。
+    /// レンダーパスより前の ComputePass 内で呼び出すこと。
     pub fn dispatch_skin(
         &self,
-        encoder:  &mut wgpu::CommandEncoder,
+        pass:     &mut wgpu::ComputePass<'_>,
         pipeline: &SkinComputePipeline,
     ) {
         if let Some(skin) = &self.skin {
             for lod in 0..NUM_LODS {
-                skin.dispatch_lod(encoder, pipeline, lod, self.lod_visible_counts[lod]);
+                skin.dispatch_lod(pass, pipeline, lod, self.lod_visible_counts[lod]);
             }
         }
     }

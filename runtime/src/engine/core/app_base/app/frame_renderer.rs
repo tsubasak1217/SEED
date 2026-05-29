@@ -20,6 +20,12 @@ use crate::engine::components::ModelComponent;
 static DEBUG_FRAME: AtomicU64 = AtomicU64::new(0);
 /// このフレーム数だけ詳細ログを出力する。
 const DEBUG_LOG_FRAMES: u64 = 10;
+
+/// パフォーマンスログ用フレームカウンター。
+/// 60 フレームごとに各処理の CPU 消費時間と MC/スキン数をログ出力する。
+static PERF_FRAME: AtomicU64 = AtomicU64::new(0);
+/// パフォーマンスログを出力する間隔（フレーム数）。
+const PERF_LOG_INTERVAL: u64 = 60;
 use crate::engine::components::{ColliderComponent, ColliderShapeData, ComponentKind};
 use crate::engine::components::{Collider2dComponent, ColliderShape2dData, CanvasTransform};
 use crate::engine::components::Transform as ActorTransform;
@@ -35,6 +41,7 @@ use crate::engine::methods::drawer::{
     extract_frustum_planes, GizmoBatch, draw_gizmo_batch,
     LineBatch, draw_line_batch,
     prepare_sprites_from_mats, draw_sprites, GpuSpriteTexture,
+    NUM_LODS,
 };
 use crate::engine::methods::gizmo_interact::screen_to_ray;
 use crate::engine::core::app_base::undo::{SelectionCommand, ActorDfsSelectionCommand};
@@ -136,7 +143,46 @@ impl App {
         let dbg = dbg_frame < DEBUG_LOG_FRAMES;
         if dbg { eprintln!("[SEED FRAME {dbg_frame}] start  mode={:?}  paused={}", self.mode, self.paused); }
 
+        // ── パフォーマンス計測変数 ─────────────────────────────────────────────
+        // 60 フレームごとに各処理の CPU 消費時間を eprintln! でログ出力する。
+        // GPU コマンド記録時間（CPU 側）を計測するため、実際の GPU 実行時間は含まない。
+        // ただし total_ms と begin_frame_ms は GPU バックプレッシャー（get_current_texture 待機）も含む。
+        let perf_idx = PERF_FRAME.fetch_add(1, Ordering::Relaxed);
+        let do_perf  = perf_idx % PERF_LOG_INTERVAL == 0;
+        // フレーム全体の経過時間 [ms]（begin_frame の GPU 待機 + コマンド記録 + submit を含む）
+        let perf_t_total = std::time::Instant::now();
+        // begin_frame（get_current_texture）にかかった時間 [ms]（GPU バックプレッシャーの指標）
+        let mut perf_begin_frame_ms: f64 = 0.0;
+        // process_ipc にかかった時間 [ms]
+        let mut perf_ipc_ms:        f64 = 0.0;
+        // MCバッチ更新（視錐台カリング + write_buffer記録）にかかった CPU 時間 [ms]
+        let mut perf_batch_ms:      f64 = 0.0;
+        // スキンコンピュートコマンド記録にかかった CPU 時間 [ms]
+        let mut perf_skin_ms:       f64 = 0.0;
+        // メインパスの draw_model_indirect コマンド記録にかかった CPU 時間 [ms]
+        let mut perf_draw_ms:       f64 = 0.0;
+        // ID パスコマンド記録にかかった CPU 時間 [ms]
+        let mut perf_id_ms:         f64 = 0.0;
+        // グリッド GPU バッチ生成（CPU 線生成 + device.create_buffer_init）にかかった時間 [ms]
+        let mut perf_grid_ms:       f64 = 0.0;
+        // コライダーワイヤーフレームバッチ生成にかかった時間 [ms]
+        let mut perf_collider_ms:   f64 = 0.0;
+        // メインレンダーパス全体（begin〜pass drop）にかかった時間 [ms]
+        let mut perf_main_pass_ms:  f64 = 0.0;
+        // pass.drop() だけにかかった時間 [ms]（wgpu デバッグ検証オーバーヘッドの指標）
+        let mut perf_pass_drop_ms:  f64 = 0.0;
+        // frame.finish()（encoder.finish + queue.submit + surface.present）にかかった時間 [ms]
+        let mut perf_finish_ms:     f64 = 0.0;
+        // このフレームの ModelComponent 総数
+        let mut perf_mc_count:      usize = 0;
+        // うちスキン（アニメーション）付き MC 数
+        let mut perf_skin_mc_count: usize = 0;
+        // 実際に dispatch したスキン LOD 数（visible_count > 0 のもの）
+        let mut perf_skin_dispatches: u32 = 0;
+
+        let _perf_t_ipc = std::time::Instant::now();
         self.process_ipc(event_loop);
+        perf_ipc_ms = _perf_t_ipc.elapsed().as_secs_f64() * 1000.0;
         if dbg { eprintln!("[SEED FRAME {dbg_frame}] process_ipc done"); }
 
         // AI 実行中はレンダリングをスキップして GPU リソースを LLM に解放する。
@@ -298,6 +344,10 @@ impl App {
         // LetterBox / PillarBox 選択フラグ（帯カラーを clear に使用する）
         let mut uses_bar_mode:    bool                 = false;
 
+        // 統合バッチ更新で使うためここで宣言しておく（begin_frame ブロック外でも参照できるよう）
+        let mut saved_frustum_planes: [[f32; 4]; 6] = [[0.0; 4]; 6];
+        let mut saved_camera_pos:     [f32; 3]       = [0.0; 3];
+
         if let (Some(scene), Some(camera_buf), Some(queue)) =
             (&mut self.scene, &self.camera_buf, queue)
         {
@@ -411,14 +461,19 @@ impl App {
 
             let frustum_planes = extract_frustum_planes(&view_proj.data);
             let camera_pos     = cam_pos_arr;
+            // 統合バッチ更新のためにブロック外へ保存する
+            saved_frustum_planes = frustum_planes;
+            saved_camera_pos     = camera_pos;
 
             // シーンモード・アクター編集モード共通: world_line 全 MC を DFS で更新する
             // preview_frustum が Some の場合: デバッグカメラ OR プレビューカメラの OR カリング。
             let (actors, world) = (&mut scene.actors, &mut scene.world);
+            let _perf_t_batch = std::time::Instant::now();
             super::update_all_mc_batches_for_wl(
                 actors, world, self.active_world_line,
                 &queue, &frustum_planes, preview_frustum.as_ref(), camera_pos, self.clock.anim_time(),
             );
+            perf_batch_ms = _perf_t_batch.elapsed().as_secs_f64() * 1000.0;
         }
 
         // ── ギズモ位置：全選択アクターの重心（マルチ選択対応） ──
@@ -509,7 +564,11 @@ impl App {
         if let (Some(renderer), Some(scene), Some(camera_buf), Some(draw_ctx)) =
             (&mut self.renderer, &self.scene, &self.camera_buf, &self.draw_ctx)
         {
-            match renderer.begin_frame() {
+            // begin_frame = get_current_texture(): GPU バックプレッシャーでここが長くなる
+            let _perf_t_bf = std::time::Instant::now();
+            let begin_frame_result = renderer.begin_frame();
+            perf_begin_frame_ms = _perf_t_bf.elapsed().as_secs_f64() * 1000.0;
+            match begin_frame_result {
                 Ok(mut frame) => {
                     // シーンモード・アクター編集モード共通: world_line の全 MC を収集する
                     // タプル: (id_base, dfs_id, slot_i, &ModelComponent)
@@ -525,15 +584,161 @@ impl App {
                                 .find(|&&(_, d, si, _)| d == dfs as u32 && si == selected_slot_i)
                                 .map(|&(_, _, _, mc)| mc));
 
+                    // ─── 統合モデルバッチ更新 ─────────────────────────────────────────────
+                    // 同一 source_path を持つ全 MC の行列・アニメーションを 1 バッチに統合する。
+                    // draw call 数: N_actors × P_prims → N_unique_models × P_prims
+                    // RenderPass::drop() のコマンド処理コストが N 倍の差として現れるため、
+                    // 50 アクター × 1 モデルの場合は理論上 ~50 倍の高速化が見込まれる。
+                    //
+                    // ① MC を source_path でグループ化（CPU データのみ収集）
+                    struct MergeInfo {
+                        cpu_model: std::sync::Arc<crate::engine::core::loader::model::Model>,
+                        mats:      Vec<[[f32; 4]; 4]>,
+                        seeds:     Vec<u32>,
+                        /// 統合インスタンス i の絶対 ID（元 MC の id_base + 元インスタンス idx）
+                        abs_ids:   Vec<u32>,
+                    }
+                    // (dfs_id, slot_i) → (source_path, merged_start, n_instances)
+                    // アウトライン描画時に統合バッチ内のインスタンス範囲を特定するために使う。
+                    // merged_start: このMCの先頭インスタンスの統合バッチ内インデックス
+                    // n_instances:  このMCのインスタンス数
+                    let mut mc_outline_map: std::collections::HashMap<
+                        (u32, usize),
+                        (String, u32, u32),
+                    > = std::collections::HashMap::new();
+                    let merge_map: std::collections::HashMap<String, MergeInfo> = {
+                        let mut map: std::collections::HashMap<String, MergeInfo>
+                            = std::collections::HashMap::new();
+                        for &(id_base, dfs_id, slot_i, amc) in &all_mcs {
+                            if amc.source_path.is_empty()  { continue; }
+                            if amc.gpu_model.is_none()     { continue; }
+                            let Some(arc_m) = amc.model.as_ref() else { continue };
+                            let e = map.entry(amc.source_path.clone())
+                                .or_insert_with(|| MergeInfo {
+                                    cpu_model: arc_m.clone(),
+                                    mats:      Vec::new(),
+                                    seeds:     Vec::new(),
+                                    abs_ids:   Vec::new(),
+                                });
+                            // このMCが統合バッチに追加される前の先頭インデックスを記録する
+                            let merged_start = e.mats.len() as u32;
+                            let n_insts      = amc.instance_mats.len() as u32;
+                            mc_outline_map.insert(
+                                (dfs_id, slot_i),
+                                (amc.source_path.clone(), merged_start, n_insts),
+                            );
+                            for (inst_i, &mat) in amc.instance_mats.iter().enumerate() {
+                                e.mats.push(mat);
+                                e.seeds.push(
+                                    amc.instance_meta.get(inst_i)
+                                       .map(|m| m.anim_seed)
+                                       .unwrap_or(0)
+                                );
+                                // abs_id = MC の id_base + このインスタンスのオフセット
+                                e.abs_ids.push(id_base + inst_i as u32);
+                            }
+                        }
+                        map
+                    };
+
+                    // ② 統合バッチ生成/更新（容量不足時は再生成）
+                    for (path, info) in &merge_map {
+                        let total = info.mats.len();
+                        let need_reinit = self.shared_model_batches.get(path)
+                            .map(|s| s.capacity < total)
+                            .unwrap_or(true);
+                        if need_reinit {
+                            let cap        = (total * 2).max(4);
+                            let new_batch  = draw_ctx.create_instanced_batch(
+                                &info.cpu_model, cap as u32
+                            );
+                            let id_zero_bg = draw_ctx.create_id_base_bg(0);
+                            self.shared_model_batches.insert(path.clone(), super::SharedModelData {
+                                cpu_model:  info.cpu_model.clone(),
+                                batch:      new_batch,
+                                capacity:   cap,
+                                id_zero_bg,
+                            });
+                        }
+                        if let Some(sd) = self.shared_model_batches.get_mut(path) {
+                            // フィールド分割借用: batch は可変、cpu_model は不変
+                            let batch     = &mut sd.batch;
+                            let cpu_model = &sd.cpu_model;
+                            batch.set_anim_seeds(&info.seeds);
+                            batch.mark_dirty();
+                            batch.update(
+                                &draw_ctx.queue,
+                                cpu_model,
+                                &info.mats,
+                                &saved_frustum_planes,
+                                preview_frustum.as_ref(),
+                                saved_camera_pos,
+                                self.clock.anim_time(),
+                            );
+                            // lod_id_buffers を絶対 ID で上書きする
+                            // update() が書いた「統合バッチ内 compact インデックス」を
+                            // 元 MC の id_base + 元インスタンスインデックスに差し替え、
+                            // CPU ピッキングのデコードロジックをそのまま使えるようにする。
+                            for lod in 0..NUM_LODS {
+                                if batch.lod_visible_counts[lod] > 0 {
+                                    let remapped: Vec<u32> = batch.lod_compact_insts[lod]
+                                        .iter()
+                                        .map(|&merged_idx| info.abs_ids[merged_idx])
+                                        .collect();
+                                    draw_ctx.queue.write_buffer(
+                                        &batch.lod_id_buffers[lod],
+                                        0,
+                                        bytemuck::cast_slice(&remapped),
+                                    );
+                                }
+                            }
+                        }
+                    }
+
+                    // ③ draw 時に参照する source_path → &GpuModel マッピング
+                    // all_mcs の最初の該当 MC の GpuModel を借用する（全 MC が同一 GPU データを持つ）
+                    let gpu_model_by_path: std::collections::HashMap<
+                        &str,
+                        &crate::engine::methods::drawer::GpuModel,
+                    > = all_mcs.iter()
+                        .filter_map(|&(_, _, _, amc)| {
+                            if amc.source_path.is_empty() { return None; }
+                            amc.gpu_model.as_ref()
+                                .map(|gpu| (amc.source_path.as_str(), gpu))
+                        })
+                        .collect();
+                    // ─── 統合モデルバッチ更新 終了 ──────────────────────────────────────────
+
                     // スキンメッシュコンピュート: 全 MC に対して実行
-                    for &(_, _, _, amc) in &all_mcs {
-                        if let Some(batch) = amc.instanced_batch.as_ref() {
-                            batch.dispatch_skin(
-                                frame.encoder_mut(),
+                    // ─ 全アクターで 1 つの ComputePass を共有する ─
+                    // 以前は MC ごとに begin_compute_pass → end を繰り返していたため、
+                    // 25 アクターで 25 × begin/end のオーバーヘッドが発生していた（~15ms/frame）。
+                    // 1 パスにまとめることでコマンド記録コストを大幅に削減する。
+                    // ─ パフォーマンス計測 ─
+                    perf_mc_count = all_mcs.len();
+                    let _perf_t_skin = std::time::Instant::now();
+                    {
+                        let mut skin_pass = frame.encoder_mut().begin_compute_pass(
+                            &wgpu::ComputePassDescriptor {
+                                label:            Some("Skin Compute Pass"),
+                                timestamp_writes: None,
+                            },
+                        );
+                        // 統合バッチのみをディスパッチする（per-MC バッチは使用しない）
+                        // N_actors 回 → N_unique_models 回に削減
+                        for sd in self.shared_model_batches.values() {
+                            if sd.batch.skin.is_some() {
+                                perf_skin_mc_count += 1;
+                                perf_skin_dispatches += sd.batch.lod_visible_counts
+                                    .iter().filter(|&&c| c > 0).count() as u32;
+                            }
+                            sd.batch.dispatch_skin(
+                                &mut skin_pass,
                                 &draw_ctx.pipelines.skin_compute,
                             );
                         }
-                    }
+                    } // skin_pass がここでドロップされ ComputePass が終了する
+                    perf_skin_ms = _perf_t_skin.elapsed().as_secs_f64() * 1000.0;
 
                     // ── カメラシーンギズモ（Edit モード・3D シーンのみ）──────────
                     // カメラアイコン / フラスタム / プレビューはアクター編集 2D タブ以外で表示する。
@@ -676,10 +881,11 @@ impl App {
                                 &preview.depth_view,
                                 clear_col,
                             );
-                            for &(_, _, _, amc) in &all_mcs {
-                                if let Some((gpu, batch)) = amc.rendering_refs() {
+                            // 統合バッチで描画（per-MC バッチは使用しない）
+                            for (path, sd) in &self.shared_model_batches {
+                                if let Some(&gpu) = gpu_model_by_path.get(path.as_str()) {
                                     draw_model_indirect(
-                                        &mut preview_pass, gpu, batch,
+                                        &mut preview_pass, gpu, &sd.batch,
                                         &preview_mesh_cam_buf.bind_group,
                                         &draw_ctx.pipelines,
                                     );
@@ -811,6 +1017,7 @@ impl App {
                     } else { None };
 
                     // グリッド描画バッチ（エディタモード + show_grid のみ）
+                    let _perf_t_grid = std::time::Instant::now();
                     // アクター編集タブの 2D キャンバス: XY 平面グリッド（常時表示）
                     // その他（シーン上のキャンバス含む 3D 系）: XZ 平面グリッド
                     // シーン上に canvas があっても 3D グリッドを維持する（is_actor_edit_canvas で判定）
@@ -1004,8 +1211,10 @@ impl App {
 
                         Some(lb.build(&draw_ctx.device))
                     } else { None };
+                    perf_grid_ms = _perf_t_grid.elapsed().as_secs_f64() * 1000.0;
 
                     // ── コライダーワイヤーフレームバッチ ──────────────────────────────
+                    let _perf_t_collider = std::time::Instant::now();
                     // 描画条件:
                     //   - エディタモード（3D シーンのみ）: 常に表示
                     //   - Play モード: play_collider_draw フラグが有効な場合のみ表示
@@ -1141,6 +1350,7 @@ impl App {
 
                         if lb.is_empty() { None } else { Some(lb.build(&draw_ctx.device)) }
                     } else { None };
+                    perf_collider_ms = _perf_t_collider.elapsed().as_secs_f64() * 1000.0;
 
                     // ── 2D コライダーワイヤーフレームバッチ ──────────────────────────────
                     // 描画条件:
@@ -1399,6 +1609,7 @@ impl App {
                     } else { None };
 
                     // ── メインレンダーパス ────────────────
+                    let _perf_t_main = std::time::Instant::now();
                     {
                         // Play モード: ゲームカメラのクリアカラーで全体クリア
                         // （帯エリアは begin_render_pass 後に BarFillPipeline で別途塗りつぶす）
@@ -1458,15 +1669,17 @@ impl App {
                             pass.set_viewport(vp_x, vp_y, vp_w, vp_h, 0.0, 1.0);
                             pass.set_scissor_rect(vp_x as u32, vp_y as u32, vp_w as u32, vp_h as u32);
                         }
-                        // 全 MC を描画（子アクターの MC も含む）
-                        for &(_, _, _, amc) in &all_mcs {
-                            if let Some((gpu, batch)) = amc.rendering_refs() {
+                        // 全 MC を統合バッチで描画（N_actors → N_unique_models 回の draw call）
+                        let _perf_t_draw = std::time::Instant::now();
+                        for (path, sd) in &self.shared_model_batches {
+                            if let Some(&gpu) = gpu_model_by_path.get(path.as_str()) {
                                 draw_model_indirect(
-                                    &mut pass, gpu, batch,
+                                    &mut pass, gpu, &sd.batch,
                                     &camera_buf.bind_group, &draw_ctx.pipelines,
                                 );
                             }
                         }
+                        perf_draw_ms = _perf_t_draw.elapsed().as_secs_f64() * 1000.0;
 
                         // ドロッププレビュー球体描画（ドラッグ中のみ）
                         if let (Some(preview_batch), Some((_, line_bg))) =
@@ -1533,50 +1746,79 @@ impl App {
                         }
 
                         // アウトライン: 全選択アクター（マルチ選択対応）※グリッドより前面に描画
+                        // 統合バッチを使用することで、スキンアニメーション済みの
+                        // ジョイント行列が正しく反映されたアウトラインが得られる。
                         if in_editor {
                             if !self.selected_actor_dfs_ids.is_empty() {
                                 // Phase 1: 全選択アクターのステンシルマスクを書き込む
                                 for &dfs_id in &self.selected_actor_dfs_ids {
-                                    if let Some(&(_, _, _, mc)) = all_mcs.iter()
-                                        .find(|&&(_, d, si, _)| d == dfs_id as u32 && si == 0)
+                                    if let Some((path, &merged_start, &n_insts)) =
+                                        mc_outline_map.get(&(dfs_id as u32, 0usize))
+                                            .map(|(p, s, n)| (p, s, n))
                                     {
-                                        if let Some((gpu, batch)) = mc.rendering_refs() {
+                                        if let (Some(&gpu), Some(sd)) = (
+                                            gpu_model_by_path.get(path.as_str()),
+                                            self.shared_model_batches.get(path),
+                                        ) {
+                                            // 統合バッチ内のこのアクターのインスタンスインデックス列
+                                            let merged_insts: Vec<u32> =
+                                                (merged_start..merged_start + n_insts).collect();
                                             draw_stencil_mask_multi(
-                                                &mut pass, gpu, batch,
+                                                &mut pass, gpu, &sd.batch,
                                                 &camera_buf.bind_group, &draw_ctx.pipelines,
-                                                &[0],
+                                                &merged_insts,
                                             );
                                         }
                                     }
                                 }
                                 // Phase 2: 全選択アクターのアウトラインを描画
                                 for &dfs_id in &self.selected_actor_dfs_ids {
-                                    if let Some(&(_, _, _, mc)) = all_mcs.iter()
-                                        .find(|&&(_, d, si, _)| d == dfs_id as u32 && si == 0)
+                                    if let Some((path, &merged_start, &n_insts)) =
+                                        mc_outline_map.get(&(dfs_id as u32, 0usize))
+                                            .map(|(p, s, n)| (p, s, n))
                                     {
-                                        if let Some((gpu, batch)) = mc.rendering_refs() {
+                                        if let (Some(&gpu), Some(sd)) = (
+                                            gpu_model_by_path.get(path.as_str()),
+                                            self.shared_model_batches.get(path),
+                                        ) {
+                                            let merged_insts: Vec<u32> =
+                                                (merged_start..merged_start + n_insts).collect();
                                             draw_outline_multi(
-                                                &mut pass, gpu, batch,
+                                                &mut pass, gpu, &sd.batch,
                                                 &camera_buf.bind_group, &draw_ctx.pipelines,
-                                                &[0],
+                                                &merged_insts,
                                             );
                                         }
                                     }
                                 }
                             } else if !self.selected_instances.is_empty() {
                                 // レガシー: インスタンス直接選択（後方互換）
-                                if let Some(sel_mc) = selected_mc {
-                                    if let Some((gpu, batch)) = sel_mc.rendering_refs() {
-                                        draw_stencil_mask_multi(
-                                            &mut pass, gpu, batch,
-                                            &camera_buf.bind_group, &draw_ctx.pipelines,
-                                            &self.selected_instances,
-                                        );
-                                        draw_outline_multi(
-                                            &mut pass, gpu, batch,
-                                            &camera_buf.bind_group, &draw_ctx.pipelines,
-                                            &self.selected_instances,
-                                        );
+                                // selected_instances は per-MC インスタンスインデックスなので、
+                                // 統合バッチ内インデックスへ merged_start だけオフセットする
+                                if let Some(dfs) = self.actor_virtual_selected_idx {
+                                    let key = (dfs as u32, self.actor_virtual_selected_slot_idx);
+                                    if let Some((path, &merged_start, _)) =
+                                        mc_outline_map.get(&key).map(|(p, s, n)| (p, s, n))
+                                    {
+                                        if let (Some(&gpu), Some(sd)) = (
+                                            gpu_model_by_path.get(path.as_str()),
+                                            self.shared_model_batches.get(path),
+                                        ) {
+                                            let merged_selected: Vec<u32> =
+                                                self.selected_instances.iter()
+                                                    .map(|&inst_i| merged_start + inst_i)
+                                                    .collect();
+                                            draw_stencil_mask_multi(
+                                                &mut pass, gpu, &sd.batch,
+                                                &camera_buf.bind_group, &draw_ctx.pipelines,
+                                                &merged_selected,
+                                            );
+                                            draw_outline_multi(
+                                                &mut pass, gpu, &sd.batch,
+                                                &camera_buf.bind_group, &draw_ctx.pipelines,
+                                                &merged_selected,
+                                            );
+                                        }
                                     }
                                 }
                             }
@@ -1668,8 +1910,15 @@ impl App {
                             io.draw(batch, &mut pass);
                         }
 
+                        // pass.drop() の時間を明示計測する。
+                        // wgpu デバッグモードでは drop() 時に全コマンドの検証が走るため、
+                        // 多数のアクターがある場合にここが大きなボトルネックになりうる。
+                        let _perf_t_drop = std::time::Instant::now();
+                        drop(pass);
+                        perf_pass_drop_ms = _perf_t_drop.elapsed().as_secs_f64() * 1000.0;
                     }
 
+                    perf_main_pass_ms = _perf_t_main.elapsed().as_secs_f64() * 1000.0;
                     // ── シーンキャンバスオーバーレイパス（シーンSS専用）──────────────
                     // 3D シーンのカラーを保持しつつ、2D キャンバス要素を最前面に合成する。
                     // アクター編集タブは camera_buf が 2D なのでメインパスで済む。
@@ -1762,20 +2011,14 @@ impl App {
                     // ── ID パス（Edit/Pause のみ）──────────
                     if in_editor {
                         if let Some(id_buf) = &self.id_buffer {
+                            let _perf_t_id = std::time::Instant::now();
                             {
                                 // BindGroup は RenderPass より長く生きる必要があるので先に生成する
 
-                                // 3D MC ID バインドグループ
-                                let id_base_bgs: Vec<Option<(wgpu::Buffer, wgpu::BindGroup)>> =
-                                    all_mcs.iter()
-                                        .map(|&(base, _, _, amc)| {
-                                            if amc.rendering_refs().is_some() {
-                                                Some(draw_ctx.create_id_base_bg(base))
-                                            } else {
-                                                None
-                                            }
-                                        })
-                                        .collect();
+                                // 3D MC ID バインドグループ:
+                                // 統合バッチを使うため per-MC の id_base_bgs は不要。
+                                // 各統合バッチの lod_id_buffers には絶対 ID が書き込まれており、
+                                // id_zero_bg (base=0) との組み合わせで正しい ID が出力される。
 
                                 // カメラギズモ ID バインドグループ（RenderPass より先に生成してライフタイムを確保）
                                 let cam_gizmo_id_base_opt: Option<(wgpu::Buffer, wgpu::BindGroup)> =
@@ -1881,15 +2124,15 @@ impl App {
 
                                 let mut id_pass = frame.begin_id_pass(&id_buf.view);
 
-                                // 3D MC ID 描画
-                                for (&(_, _, _, amc), bg_opt) in all_mcs.iter().zip(id_base_bgs.iter()) {
-                                    if let (Some((gpu, batch)), Some((_, id_base_bg))) =
-                                        (amc.rendering_refs(), bg_opt.as_ref())
-                                    {
+                                // 3D MC ID 描画（統合バッチ使用）
+                                // lod_id_buffers に絶対 ID が書き込まれているため
+                                // id_zero_bg (base=0) で CPU デコードが正しく機能する
+                                for (path, sd) in &self.shared_model_batches {
+                                    if let Some(&gpu) = gpu_model_by_path.get(path.as_str()) {
                                         draw_id_pass(
-                                            &mut id_pass, gpu, batch,
+                                            &mut id_pass, gpu, &sd.batch,
                                             &camera_buf.bind_group, &draw_ctx.pipelines,
-                                            id_base_bg,
+                                            &sd.id_zero_bg.1,
                                         );
                                     }
                                 }
@@ -1929,6 +2172,7 @@ impl App {
                                     );
                                 }
                             }
+                            perf_id_ms = _perf_t_id.elapsed().as_secs_f64() * 1000.0;
                             // readback 優先度: drop > add_actor > pick
                             let drop_pos = self.pending_drop
                                 .as_ref()
@@ -1952,7 +2196,39 @@ impl App {
                         }
                     }
 
+                    let _perf_t_finish = std::time::Instant::now();
                     frame.finish();
+                    perf_finish_ms = _perf_t_finish.elapsed().as_secs_f64() * 1000.0;
+
+                    // ── パフォーマンスログ ─────────────────────────────────────────
+                    // 60 フレームごとに CPU タイミングを eprintln! で出力する。
+                    // total:       フレーム全体（begin_frame GPU 待機 + 記録 + submit）
+                    // begin_frame: get_current_texture 待機（GPU バックプレッシャー指標）
+                    // ipc:         process_ipc の時間
+                    // batch_upd:   MC バッチ更新（view frustum カリング + write_buffer）
+                    // skin_cmds:   スキンコンピュートコマンド記録
+                    // draw:        draw_model_indirect コマンド記録（メインパス）
+                    // id_pass:     ID パスコマンド記録（Edit モードのみ）
+                    // grid:        グリッドGPU バッチ生成
+                    // finish:      encoder.finish + queue.submit + surface.present
+                    // other = total - 上記全て（残りは未計測のコライダー・ギズモ等）
+                    if do_perf {
+                        let total_ms = perf_t_total.elapsed().as_secs_f64() * 1000.0;
+                        // main_pass は draw を内包するので draw を除いた残り = main_pass - draw = 他の描画コマンド記録
+                        let main_rest_ms = (perf_main_pass_ms - perf_draw_ms).max(0.0);
+                        let other_ms = (total_ms
+                            - perf_begin_frame_ms - perf_ipc_ms - perf_batch_ms
+                            - perf_skin_ms - perf_main_pass_ms - perf_id_ms
+                            - perf_grid_ms - perf_collider_ms - perf_finish_ms).max(0.0);
+                        eprintln!(
+                            "[PERF f={perf_idx}] MC={perf_mc_count} skin_MC={perf_skin_mc_count} dispatches={perf_skin_dispatches} \
+                             | total={total_ms:.3}ms bf={perf_begin_frame_ms:.3}ms ipc={perf_ipc_ms:.3}ms \
+                             batch={perf_batch_ms:.3}ms skin={perf_skin_ms:.3}ms \
+                             main_pass={perf_main_pass_ms:.3}ms(draw={perf_draw_ms:.3}ms+pass_drop={perf_pass_drop_ms:.3}ms+rest={main_rest_ms:.3}ms) \
+                             id={perf_id_ms:.3}ms grid={perf_grid_ms:.3}ms collider={perf_collider_ms:.3}ms \
+                             finish={perf_finish_ms:.3}ms other={other_ms:.3}ms"
+                        );
+                    }
 
                     // FPS 計測: frame.finish() 後に壁時計でカウント
                     // delta_time ではなく present 完了回数/秒 で計測することで

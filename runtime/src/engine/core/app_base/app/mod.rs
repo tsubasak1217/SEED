@@ -51,7 +51,7 @@ use crate::engine::core::input::Input;
 use crate::engine::core::renderer::Renderer;
 use crate::engine::core::app_base::ipc::{IpcClient, ToolMode};
 use crate::engine::core::app_base::scene::{Scene, DebugCameraData, CanvasCameraData};
-use crate::engine::methods::drawer::{DrawContext, CameraBuffer, IdBuffer};
+use crate::engine::methods::drawer::{DrawContext, CameraBuffer, IdBuffer, InstancedModelBatch};
 use crate::engine::methods::gizmo_interact::GizmoPart;
 use crate::engine::core::app_base::undo::UndoHistory;
 use crate::engine::core::scripting::ScriptingHost;
@@ -242,6 +242,27 @@ pub(crate) struct CameraGizmoResources {
     pub batch:     crate::engine::methods::drawer::InstancedModelBatch,
     /// 現在のバッチ容量。アクター数がこれを超えると再生成する。
     pub capacity:  usize,
+}
+
+// ============================================================
+//  SharedModelData — 同一モデル統合バッチキャッシュ
+// ============================================================
+
+/// 同一モデルパスを参照する全アクターインスタンスを 1 つの GPU バッチに統合した
+/// キャッシュエントリ。
+///
+/// 同じモデルを使う N 体のアクターを個別に描画すると RenderPass コマンドが N × P 個
+/// （P = プリミティブ数）になるが、このバッチに統合することで P 個に削減できる。
+struct SharedModelData {
+    /// batch.update() に必要な CPU モデル（Arc で参照コスト=ゼロ）
+    cpu_model: std::sync::Arc<crate::engine::core::loader::model::Model>,
+    /// 統合インスタンスバッチ（全アクターの行列・スキンデータを保持）
+    batch:     InstancedModelBatch,
+    /// バッチの割り当て済みインスタンス上限（超えたら再生成する）
+    capacity:  usize,
+    /// ID パス用ベースオフセット=0 のバインドグループ。
+    /// lod_id_buffers には絶対 ID を書き込むため base=0 で識別可能。
+    id_zero_bg: (wgpu::Buffer, wgpu::BindGroup),
 }
 
 // ============================================================
@@ -453,6 +474,13 @@ pub struct App {
     /// 3D 編集モードの初回フレームで遅延初期化される。
     camera_gizmo: Option<CameraGizmoResources>,
 
+    // ── 統合モデルバッチキャッシュ ──────────────────────────────────
+    /// モデルパス → 統合バッチのキャッシュ。
+    /// 同一モデルを参照する全アクターの行列を 1 つの InstancedModelBatch に統合し、
+    /// draw call 数を「アクター数 × プリミティブ数」→「ユニークモデル数 × プリミティブ数」
+    /// に削減することで RenderPass::drop() のオーバーヘッドを大幅に低減する。
+    shared_model_batches: HashMap<String, SharedModelData>,
+
     // ── ドラッグ&ドロップ ───────────────────────────────────────
     /// DROP_ACTOR コマンドを受け取ったときに設定する。
     /// 次フレームの ID パス後にワールド座標を読み出してアクターを配置する。
@@ -632,9 +660,10 @@ impl App {
             actor_edit_canvas_wls: HashSet::new(),
             canvas_cameras:        HashMap::new(),
             canvas_screen_space_overlay: false,
-            camera_preview:     None,
-            camera_gizmo:       None,
-            pending_drop:       None,
+            camera_preview:          None,
+            camera_gizmo:            None,
+            shared_model_batches:    HashMap::new(),
+            pending_drop:            None,
             pending_drop_hover: None,
             drop_preview_pos:   None,
             context_menu_screen_pos: None,
