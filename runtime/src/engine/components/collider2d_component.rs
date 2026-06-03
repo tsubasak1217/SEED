@@ -19,6 +19,7 @@
 use serde::{Deserialize, Serialize};
 use crate::engine::ecs::Component;
 use crate::engine::physics::{ColliderShape2d, RigidBodyState2d, PIXELS_PER_METER};
+use crate::engine::components::canvas_component::AspectRatioAxis;
 
 // ─── コライダー形状のシリアライズ可能バリアント ──────────────────────────────
 
@@ -191,6 +192,15 @@ pub struct Collider2dComponent {
     /// Play 開始直後に適用される初期回転速度（rad/s）
     #[serde(default)]
     pub initial_angular_velocity: f32,
+
+    // ─── アスペクト比設定 ────────────────────────────────────────────────────
+
+    /// scale_size=true のとき、形状のスケールをアスペクト比維持で適用するか。
+    #[serde(default)]
+    pub keep_aspect_ratio: bool,
+    /// アスペクト比維持の基準軸（keep_aspect_ratio=true のときのみ有効）。
+    #[serde(default)]
+    pub aspect_ratio_axis: AspectRatioAxis,
 }
 
 // ─── デフォルト値ファクトリ ──────────────────────────────────────────────────
@@ -223,6 +233,8 @@ impl Default for Collider2dComponent {
             freeze_rotation:         false,
             initial_linear_velocity:  [0.0; 2],
             initial_angular_velocity: 0.0,
+            keep_aspect_ratio:        false,
+            aspect_ratio_axis:        AspectRatioAxis::Width,
         }
     }
 }
@@ -288,6 +300,10 @@ pub struct Collider2dComponentData {
     pub initial_linear_velocity:  [f32; 2],
     #[serde(default)]
     pub initial_angular_velocity: f32,
+    #[serde(default)]
+    pub keep_aspect_ratio: bool,
+    #[serde(default)]
+    pub aspect_ratio_axis: AspectRatioAxis,
 }
 
 impl From<&Collider2dComponent> for Collider2dComponentData {
@@ -310,6 +326,8 @@ impl From<&Collider2dComponent> for Collider2dComponentData {
             freeze_rotation:         c.freeze_rotation,
             initial_linear_velocity:  c.initial_linear_velocity,
             initial_angular_velocity: c.initial_angular_velocity,
+            keep_aspect_ratio:        c.keep_aspect_ratio,
+            aspect_ratio_axis:        c.aspect_ratio_axis.clone(),
         }
     }
 }
@@ -334,6 +352,8 @@ impl From<Collider2dComponentData> for Collider2dComponent {
             freeze_rotation:         d.freeze_rotation,
             initial_linear_velocity:  d.initial_linear_velocity,
             initial_angular_velocity: d.initial_angular_velocity,
+            keep_aspect_ratio:        d.keep_aspect_ratio,
+            aspect_ratio_axis:        d.aspect_ratio_axis,
         }
     }
 }

@@ -18,7 +18,7 @@ pub use gpu_resources::{GpuTexture, GpuMaterial, GpuPrimitive, GpuMesh, GpuModel
                         extract_frustum_planes, test_aabb_frustum, NUM_LODS};
 pub use pipeline::{MeshPipeline, SkinnedMeshPipeline, UnlitPipeline, CullPipeline, DrawPipelines,
                    SkinComputePipeline, IdPassPipeline, OutlinePipeline, DepthPrepassPipelines,
-                   SpritePipeline, CanvasIdPipeline, CanvasIdUniform,
+                   SpritePipeline, SpriteOutlinePipeline, CanvasIdPipeline, CanvasIdUniform,
                    CameraPreviewBlitPipeline,
                    BarFillPipeline, BarFillUniform};
 

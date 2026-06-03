@@ -26,7 +26,7 @@ use crate::engine::ecs::Component;
 /// 実際の描画位置 = anchor * 親 Canvas サイズ + position。
 /// 描画ループで親の CanvasComponent サイズを掛けて適用するため、
 /// to_mat4_sized 自体には影響しない。
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CanvasTransform {
     /// XY 平面上の位置（ワールドユニット）。ピボット点のワールド座標。
     pub position: [f32; 2],

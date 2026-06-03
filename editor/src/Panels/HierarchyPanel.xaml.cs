@@ -562,10 +562,13 @@ public partial class HierarchyPanel : UserControl
     private ContextMenu BuildSelectedContextMenu()
     {
         var menu = new ContextMenu();
+
+        // ── アクタを追加 サブメニュー（子として作成）──────────────────
+        menu.Items.Add(BuildAddActorSubMenu(asChild: true));
+        menu.Items.Add(new Separator());
+
         if (_isActorEditMode)
         {
-            AddMenuItem(menu, "子アクタを追加", null, OnAddChildActorMenu);
-            menu.Items.Add(new Separator());
             AddMenuItem(menu, "削除", "Del", OnHierarchyDelete);
         }
         else
@@ -574,36 +577,63 @@ public partial class HierarchyPanel : UserControl
             AddMenuItem(menu, "削除",                   "Del / Esc", OnHierarchyDelete);
             menu.Items.Add(new Separator());
             AddMenuItem(menu, "選択からグループを作成", null,        OnCreateGroupFromSelection);
+            menu.Items.Add(new Separator());
+            AddMenuItem(menu, "アクタファイル化", null, OnExportActorMenu);
         }
-        // 2D / 3D 共通: 選択アクターをファイルとして書き出す
-        menu.Items.Add(new Separator());
-        AddMenuItem(menu, "アクタファイル化", null, OnExportActorMenu);
         return menu;
     }
 
     private ContextMenu BuildEmptyContextMenu()
     {
         var menu = new ContextMenu();
-        if (_isActorEditMode)
+
+        // ── アクタを追加 サブメニュー（ルートに作成）──────────────────
+        menu.Items.Add(BuildAddActorSubMenu(asChild: false));
+
+        if (!_isActorEditMode)
         {
-            AddMenuItem(menu, "アクタを追加", null, OnAddRootActorMenu);
-        }
-        else
-        {
+            menu.Items.Add(new Separator());
             AddMenuItem(menu, "グループフォルダを作成", null, OnCreateGroupMenu);
         }
         return menu;
     }
 
-    private void OnAddChildActorMenu(object sender, RoutedEventArgs e)
+    /// <summary>
+    /// 「アクタを追加」サブメニューを生成する。
+    /// asChild=true のとき右クリックノードの子として追加、false のときルートに追加する。
+    /// </summary>
+    private MenuItem BuildAddActorSubMenu(bool asChild)
     {
-        if (_runtime is null || _rightClickedNode is null) return;
-        var cmd = _isActor2DMode ? "ADD_ACTOR_2D" : "ADD_ACTOR";
-        _runtime.SendToRuntime($"{cmd}:{_activeWorldLine},{_rightClickedNode.Id}");
+        var sub = new MenuItem { Header = "アクタを追加" };
+
+        var item3D = new MenuItem { Header = "3D アクタ" };
+        item3D.Click += (_, _) =>
+        {
+            PrepareRenameAfterAdd();
+            if (asChild && _rightClickedNode is not null)
+                _runtime?.SendToRuntime($"ADD_ACTOR_CHILD:{_rightClickedNode.Id}");
+            else
+                _runtime?.SendToRuntime($"ADD_ACTOR:{_activeWorldLine},-1");
+        };
+
+        var item2D = new MenuItem { Header = "2D アクタ" };
+        item2D.Click += (_, _) =>
+        {
+            PrepareRenameAfterAdd();
+            if (asChild && _rightClickedNode is not null)
+                _runtime?.SendToRuntime($"ADD_ACTOR_2D_CHILD:{_rightClickedNode.Id}");
+            else
+                _runtime?.SendToRuntime($"ADD_ACTOR_2D:{_activeWorldLine},-1");
+        };
+
+        sub.Items.Add(item3D);
+        sub.Items.Add(item2D);
+        return sub;
     }
 
     private void OnAddRootActorMenu(object sender, RoutedEventArgs e)
     {
+        PrepareRenameAfterAdd();
         var cmd = _isActor2DMode ? "ADD_ACTOR_2D" : "ADD_ACTOR";
         _runtime?.SendToRuntime($"{cmd}:{_activeWorldLine},-1");
     }

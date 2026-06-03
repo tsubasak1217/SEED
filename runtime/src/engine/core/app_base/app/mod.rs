@@ -36,6 +36,7 @@ mod app_init;
 mod event_handler;
 mod drag_handler;
 mod physics_ops;
+mod physics_timeline;
 pub(crate) mod camera_scene_gizmo;
 
 // ── 外部クレート・標準ライブラリ ────────────────────────────
@@ -334,6 +335,28 @@ enum InspectorTransformDrag {
 }
 
 // ============================================================
+//  CameraSnapAnim — 軸ギズモクリック時のカメラ回転補間
+// ============================================================
+
+/// 軸ギズモドットをクリックした際の、カメラ回転スナップアニメーション状態。
+///
+/// 補間は Quaternion Slerp で行い、完了時に target_yaw/pitch を直接代入する。
+pub(super) struct CameraSnapAnim {
+    /// 補間開始時の回転クォータニオン
+    pub start_rot:    crate::engine::structs::transforms::Quaternion,
+    /// 補間目標の回転クォータニオン
+    pub target_rot:   crate::engine::structs::transforms::Quaternion,
+    /// 完了時に camera.yaw に直接代入する正確な値（ラジアン）
+    pub target_yaw:   f32,
+    /// 完了時に camera.pitch に直接代入する正確な値（ラジアン）
+    pub target_pitch: f32,
+    /// アニメーション継続時間（秒）
+    pub duration: f32,
+    /// 経過時間（秒）
+    pub elapsed:  f32,
+}
+
+// ============================================================
 //  App
 // ============================================================
 
@@ -353,6 +376,8 @@ pub struct App {
     /// 3D メインカメラの上に 2D キャンバス要素を重ねるために使う（シーンSS専用）。
     /// アクター編集タブは camera_buf 自体が 2D なので不要。
     canvas_overlay_camera_buf: Option<CameraBuffer>,
+    /// MMB スティック HUD 描画用スクリーンスペースカメラバッファ。
+    mmb_hud_cam_buf: Option<CameraBuffer>,
     scripting_host: Option<Arc<ScriptingHost>>,
 
     parent_hwnd:  Option<isize>,
@@ -371,6 +396,8 @@ pub struct App {
 
     /// RMB 押下時のスクリーン座標。カーソルロック解除後に復元する。
     cam_grab_screen_pos: Option<(i32, i32)>,
+    /// MMB 押下時のスクリーン座標。MMB 離し時にカーソルをここへ戻す。
+    mmb_grab_screen_pos: Option<(i32, i32)>,
 
     /// エディタから PLAY_CLAMP:1 を受け取ったとき true。
     /// 毎フレーム ClipCursor を貼り直してカーソルをウィンドウ内に閉じ込める。
@@ -431,6 +458,10 @@ pub struct App {
     show_grid: bool,
     /// 軸ギズモ表示フラグ（エディタモードのみ）。
     show_axis_gizmo: bool,
+    /// 軸ギズモのホバー状態（どのドットにカーソルが当たっているか）。
+    axis_gizmo_hovered: Option<crate::engine::core::font::axis_gizmo::AxisHit>,
+    /// 軸ギズモクリック時のカメラ回転スナップアニメーション状態。
+    camera_snap_anim: Option<CameraSnapAnim>,
     /// 仮想アクターノードが選択されているとき Some(dfs_id)（プライマリ選択）。
     /// ModelComponent なしアクターでもアイコン・インスペクターを表示するために使う。
     actor_virtual_selected_idx: Option<usize>,
@@ -520,6 +551,39 @@ pub struct App {
     /// true  = 重力・動的応答も有効（アクターが物理挙動で移動する）。
     pub(super) edit_physics_with_rigidbody: bool,
 
+    // ─── 編集時物理タイムライン ───────────────────────────────────────────────
+
+    /// タイムラインが停止中かどうか。true = 停止、false = 再生中。
+    /// edit_physics_enabled が true になった時点で true に初期化される。
+    pub(super) edit_physics_paused: bool,
+
+    /// 「最新フレームで停止」状態かどうか。
+    /// true のとき、再生ボタンが押されるまでシミュレーションを進めない。
+    pub(super) edit_physics_at_latest: bool,
+
+    /// フレームスナップショットのリスト（インデックス=フレーム番号）。
+    pub(super) edit_physics_snapshots: Vec<physics_timeline::PhysicsSnapshot>,
+
+    /// 現在表示中のフレームインデックス。
+    pub(super) edit_physics_current_frame: usize,
+
+    /// 累積シミュレーション時間（秒）。スナップショット記録時に更新。
+    pub(super) edit_physics_sim_time: f64,
+
+    /// 連続して変化なしだったフレーム数。
+    /// 物理スレッド起動直後は結果が遅延するため、数フレームは猶予を設ける。
+    pub(super) edit_physics_no_change_count: u32,
+
+    /// 物理エンジン再起動後のウォームアップ残フレーム数。
+    /// 最新フレームから物理エンジンを再起動した直後に使用する。
+    /// この値が 0 より大きい間は「変化なし停止判定」をスキップする。
+    pub(super) edit_physics_warmup_frames: u32,
+
+    /// スナップショットプレイバックモードかどうか。
+    /// 過去フレームから再生する場合に true になる。
+    /// 物理エンジンは動かさず、記録済みスナップショットをコマ送りで再生する。
+    pub(super) edit_physics_in_playback: bool,
+
     /// 実行時コライダー描画フラグ。
     /// true のとき Play モードでもコライダーワイヤーフレームを描画する。
     pub(super) play_collider_draw: bool,
@@ -549,6 +613,10 @@ pub struct App {
     /// 2D 固定ステップ物理スレッド（rapier2d バックエンド）。
     /// Play モード開始時または編集時 2D 物理有効化時に起動し、停止時に Drop する。
     pub(super) physics_thread_2d: Option<crate::engine::physics::PhysicsThread2d>,
+
+    /// 3D キャンバスごとの 2D 物理スレッド（canvas root の Entity → PhysicsThread2d）。
+    /// 各 3D キャンバスは他のキャンバスと物理が干渉しないよう独立したスレッドを持つ。
+    pub(super) canvas_3d_physics: std::collections::HashMap<crate::engine::ecs::Entity, crate::engine::physics::PhysicsThread2d>,
 
     /// 編集時の 2D 物理シミュレーション有効フラグ。
     /// true のとき Edit モードでも 2D 物理スレッドを起動して衝突検出を行う。
@@ -605,6 +673,7 @@ impl App {
             scene:          None,
             camera_buf:     None,
             canvas_overlay_camera_buf: None,
+            mmb_hud_cam_buf: None,
             scripting_host,
             parent_hwnd:  args.parent_hwnd,
             mode:         args.mode,
@@ -615,6 +684,7 @@ impl App {
             editor_resources: args.editor_resources,
             scene_path:       args.scene_path,
             cam_grab_screen_pos: None,
+            mmb_grab_screen_pos: None,
             play_clamp: false,
             id_buffer:          None,
             selected_instances: Vec::new(),
@@ -642,12 +712,22 @@ impl App {
             fps_frame_start:       std::time::Instant::now(),
             show_grid:       true,
             show_axis_gizmo: true,
+            axis_gizmo_hovered: None,
+            camera_snap_anim:   None,
             actor_virtual_selected_idx:      None,
             selected_actor_dfs_ids:          Vec::new(),
             actor_virtual_selected_slot_idx: 0,
             inspector_transform_drag:     None,
             edit_physics_enabled:        false,
             edit_physics_with_rigidbody: false,
+            edit_physics_paused:          true,
+            edit_physics_at_latest:       true,
+            edit_physics_snapshots:       Vec::new(),
+            edit_physics_current_frame:   0,
+            edit_physics_sim_time:        0.0,
+            edit_physics_no_change_count: 0,
+            edit_physics_warmup_frames:   0,
+            edit_physics_in_playback:     false,
             // Play 起動時に --play-collider-draw=1 が渡された場合は即有効化する
             play_collider_draw:          args.play_collider_draw,
             active_collision_dfs_ids:     std::collections::HashSet::new(),
@@ -671,6 +751,7 @@ impl App {
             plugin_registry:  crate::engine::plugin::registry::PluginRegistry::empty(),
             physics_thread:   None,
             physics_thread_2d:           None,
+            canvas_3d_physics:           std::collections::HashMap::new(),
             edit_physics_2d_enabled:     false,
             edit_physics_2d_with_rigidbody: false,
             active_collision_2d_dfs_ids: std::collections::HashSet::new(),
@@ -758,9 +839,10 @@ use actor_utils::{
     selection_centroid, world_to_screen,
     collect_child_actor_mc_starts, collect_child_actor_old_states,
     apply_delta_to_actor_children,
+    find_parent_actor_of_dfs, get_3d_canvas_world_mat,
 };
 use platform_utils::{
     camera_grab_start, camera_grab_end, apply_window_clamp, release_window_clamp,
-    warp_cursor_to_local,
+    warp_cursor_to_local, mmb_grab_start, mmb_grab_end,
 };
 

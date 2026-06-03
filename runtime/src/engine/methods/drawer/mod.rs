@@ -26,7 +26,7 @@ pub use crate::engine::core::renderer::{
     // パイプライン型
     MeshPipeline, SkinnedMeshPipeline, UnlitPipeline, CullPipeline, DrawPipelines,
     SkinComputePipeline, IdPassPipeline, OutlinePipeline, DepthPrepassPipelines,
-    SpritePipeline, CanvasIdPipeline, CanvasIdUniform,
+    SpritePipeline, SpriteOutlinePipeline, CanvasIdPipeline, CanvasIdUniform,
     CameraPreviewBlitPipeline,
 };
 
@@ -38,7 +38,7 @@ pub use primitive_drawer::{LineBatch, GizmoBatch, draw_line_batch, draw_gizmo_ba
 pub use sprite_drawer::{
     GpuSpriteTexture, SpriteUniform, SpriteVertex,
     load_sprite_texture, prepare_sprites, prepare_sprites_from_mats,
-    draw_sprites, SpritePrepared,
+    draw_sprites, draw_sprite_outline, SpritePrepared,
 };
 
 // ============================================================

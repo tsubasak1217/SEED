@@ -601,6 +601,64 @@ impl LineBatch {
         }
     }
 
+    /// MMB スティック HUD を描画する。
+    ///
+    /// ゲームパッドのスティック UI 風。
+    /// - 外円（固定）: MMB 押し込み起点を中心とした操作範囲
+    /// - 内円（動く）: 現在のカーソルオフセット位置（外円半径でクランプ）
+    /// - 中心十字: 起点マーク
+    /// - 起点→内円中心への線: 入力方向の可視化
+    ///
+    /// 座標はスクリーンスペースオーソグラフィック（中心原点、Y-down ピクセル単位）。
+    ///
+    /// # 引数
+    /// - `origin`      : 起点座標（オーソグラフィック空間: ビューポート中心が原点）
+    /// - `offset_x/y`  : 現在のカーソルオフセット（ピクセル）
+    /// - `outer_r`     : 外円半径（ピクセル）
+    /// - `inner_r`     : 内円半径（ピクセル）
+    pub fn add_mmb_stick(
+        &mut self,
+        origin:   [f32; 2],
+        offset_x: f32,
+        offset_y: f32,
+        outer_r:  f32,
+        inner_r:  f32,
+    ) {
+        // オフセットを外円半径にクランプして内円位置を決定する
+        let dist = (offset_x * offset_x + offset_y * offset_y).sqrt();
+        let (clamped_x, clamped_y) = if dist > outer_r && dist > 0.0 {
+            (offset_x / dist * outer_r, offset_y / dist * outer_r)
+        } else {
+            (offset_x, offset_y)
+        };
+
+        let [ox, oy] = origin;
+        let stick_cx = ox + clamped_x;
+        let stick_cy = oy + clamped_y;
+
+        // 外円（薄い白、半透明）
+        const OUTER_ALPHA: f32 = 0.35;
+        let outer_col = [1.0_f32, 1.0, 1.0, OUTER_ALPHA];
+        self.add_circle_2d([ox, oy], outer_r, 48, 0.0, outer_col);
+
+        // 起点 → 内円中心への線（方向の可視化、やや透明）
+        if dist > 1.0 {
+            let line_col = [1.0_f32, 1.0, 1.0, 0.5];
+            self.add_line([ox, oy, 0.0], [stick_cx, stick_cy, 0.0], line_col);
+        }
+
+        // 中心十字（起点マーク）
+        const CROSS_SIZE: f32 = 5.0;
+        let cross_col = [1.0_f32, 1.0, 1.0, 0.6];
+        self.add_line([ox - CROSS_SIZE, oy, 0.0], [ox + CROSS_SIZE, oy, 0.0], cross_col);
+        self.add_line([ox, oy - CROSS_SIZE, 0.0], [ox, oy + CROSS_SIZE, 0.0], cross_col);
+
+        // 内円（白、不透明寄り）
+        const INNER_ALPHA: f32 = 0.85;
+        let inner_col = [1.0_f32, 1.0, 1.0, INNER_ALPHA];
+        self.add_circle_2d([stick_cx, stick_cy], inner_r, 24, 0.0, inner_col);
+    }
+
     pub fn add_world_axes(&mut self, origin: [f32; 3], length: f32) {
         let o = origin;
         self.add_line(o, [o[0]+length, o[1],       o[2]      ], [1.0, 0.0, 0.0, 1.0]);
@@ -1032,6 +1090,142 @@ impl GizmoBatch {
         // 中心ハンドル
         let cc = if hovered == Some(GizmoPart::Center) { Color::YELLOW } else { Color::WHITE };
         self.add_center_dot(pos, radius * 0.055, cc);
+    }
+
+    // ── 3D Canvas 子アクター向け oriented ギズモ ────────────────────
+
+    /// キャンバス座標系に合わせた移動ギズモ（X・Y 軸 + XY 平面ハンドル）を追加する。
+    ///
+    /// - ax: キャンバス X 軸（ワールド空間単位ベクトル）= canvas 右方向
+    /// - ay: キャンバス Y 軸（ワールド空間単位ベクトル）= canvas 下方向
+    pub fn add_gizmo_translate_canvas(
+        &mut self,
+        pos:     [f32; 3],
+        radius:  f32,
+        hovered: Option<GizmoPart>,
+        ax:      [f32; 3],
+        ay:      [f32; 3],
+    ) {
+        let head_len = radius * 0.25;
+        let head_r   = radius * 0.07;
+        let cx = if hovered == Some(GizmoPart::AxisX)   { highlight(GX) } else { GX };
+        let cy = if hovered == Some(GizmoPart::AxisY)   { highlight(GY) } else { GY };
+        let cz = if hovered == Some(GizmoPart::PlaneXY) { highlight(GZ) } else { GZ };
+        let cf = if hovered == Some(GizmoPart::PlaneXY) { highlight_fill(GZ_FILL) } else { GZ_FILL };
+        // 各軸方向のワールド位置計算ヘルパー
+        let tip = |dir: [f32; 3], t: f32| -> [f32; 3] {
+            [pos[0]+dir[0]*t, pos[1]+dir[1]*t, pos[2]+dir[2]*t]
+        };
+        // X 軸矢印（赤 = canvas right）
+        self.add_thick_line(pos, tip(ax, radius - head_len), cx);
+        self.add_cone(tip(ax, radius), tip(ax, radius - head_len), head_r, 8, cx);
+        // Y 軸矢印（緑 = canvas down）
+        self.add_thick_line(pos, tip(ay, radius - head_len), cy);
+        self.add_cone(tip(ay, radius), tip(ay, radius - head_len), head_r, 8, cy);
+        // XY 平面ハンドル（青 = canvas 平面、法線 = az = ax×ay）
+        let o = radius * 0.5;
+        let s = radius * 0.075;
+        let cx_ax = |t: f32| [pos[0]+ax[0]*t, pos[1]+ax[1]*t, pos[2]+ax[2]*t];
+        let cy_ay = |t: f32| [pos[0]+ay[0]*t, pos[1]+ay[1]*t, pos[2]+ay[2]*t];
+        let center = [pos[0]+ax[0]*o+ay[0]*o, pos[1]+ax[1]*o+ay[1]*o, pos[2]+ax[2]*o+ay[2]*o];
+        let a = [center[0]-ax[0]*s-ay[0]*s, center[1]-ax[1]*s-ay[1]*s, center[2]-ax[2]*s-ay[2]*s];
+        let b = [center[0]+ax[0]*s-ay[0]*s, center[1]+ax[1]*s-ay[1]*s, center[2]+ax[2]*s-ay[2]*s];
+        let c = [center[0]+ax[0]*s+ay[0]*s, center[1]+ax[1]*s+ay[1]*s, center[2]+ax[2]*s+ay[2]*s];
+        let d = [center[0]-ax[0]*s+ay[0]*s, center[1]-ax[1]*s+ay[1]*s, center[2]-ax[2]*s+ay[2]*s];
+        let _ = (cx_ax, cy_ay); // unused warning suppression
+        self.add_plane_quad(a, b, c, d, cf, cz);
+        // 中心ハンドル
+        let cc = if hovered == Some(GizmoPart::Center) { Color::YELLOW } else { Color::WHITE };
+        self.add_center_dot(pos, radius * 0.055, cc);
+    }
+
+    /// キャンバス座標系に合わせたスケールギズモ（X・Y 軸 + XY 平面ハンドル）を追加する。
+    pub fn add_gizmo_scale_canvas(
+        &mut self,
+        pos:     [f32; 3],
+        radius:  f32,
+        hovered: Option<GizmoPart>,
+        ax:      [f32; 3],
+        ay:      [f32; 3],
+    ) {
+        let cube_half = radius * 0.07;
+        let cx = if hovered == Some(GizmoPart::AxisX)   { highlight(GX) } else { GX };
+        let cy = if hovered == Some(GizmoPart::AxisY)   { highlight(GY) } else { GY };
+        let cz = if hovered == Some(GizmoPart::PlaneXY) { highlight(GZ) } else { GZ };
+        let cf = if hovered == Some(GizmoPart::PlaneXY) { highlight_fill(GZ_FILL) } else { GZ_FILL };
+        let tip = |dir: [f32; 3], t: f32| -> [f32; 3] {
+            [pos[0]+dir[0]*t, pos[1]+dir[1]*t, pos[2]+dir[2]*t]
+        };
+        // X 軸（赤）
+        let xe = tip(ax, radius);
+        self.add_thick_line(pos, xe, cx);
+        self.add_solid_cube(xe, cube_half, cx);
+        // Y 軸（緑）
+        let ye = tip(ay, radius);
+        self.add_thick_line(pos, ye, cy);
+        self.add_solid_cube(ye, cube_half, cy);
+        // XY 平面ハンドル（青）
+        let o = radius * 0.5;
+        let s = radius * 0.075;
+        let center = [pos[0]+ax[0]*o+ay[0]*o, pos[1]+ax[1]*o+ay[1]*o, pos[2]+ax[2]*o+ay[2]*o];
+        let a = [center[0]-ax[0]*s-ay[0]*s, center[1]-ax[1]*s-ay[1]*s, center[2]-ax[2]*s-ay[2]*s];
+        let b = [center[0]+ax[0]*s-ay[0]*s, center[1]+ax[1]*s-ay[1]*s, center[2]+ax[2]*s-ay[2]*s];
+        let c = [center[0]+ax[0]*s+ay[0]*s, center[1]+ax[1]*s+ay[1]*s, center[2]+ax[2]*s+ay[2]*s];
+        let d = [center[0]-ax[0]*s+ay[0]*s, center[1]-ax[1]*s+ay[1]*s, center[2]-ax[2]*s+ay[2]*s];
+        self.add_plane_quad(a, b, c, d, cf, cz);
+        // 中心ハンドル
+        let cc = if hovered == Some(GizmoPart::Center) { Color::YELLOW } else { Color::WHITE };
+        self.add_center_dot(pos, radius * 0.055, cc);
+    }
+
+    /// キャンバス座標系に合わせた回転ギズモ（canvas 法線周りのリングのみ）を追加する。
+    ///
+    /// - az: キャンバス法線軸（AxisZ に対応）= ax×ay
+    /// - ax/ay: リング構築用のキャンバス X/Y 軸
+    /// カメラ向き判定で手前半円のみ表示（drag 中は全周）。
+    pub fn add_gizmo_rotate_canvas(
+        &mut self,
+        pos:      [f32; 3],
+        radius:   f32,
+        segments: usize,
+        cam_pos:  [f32; 3],
+        hovered:  Option<GizmoPart>,
+        dragging: Option<GizmoPart>,
+        az:       [f32; 3],
+        ax:       [f32; 3],
+        ay:       [f32; 3],
+    ) {
+        let cz = if hovered == Some(GizmoPart::AxisZ) { highlight(GZ) } else { GZ };
+        // カメラ→gizmo_pos の正規化ベクトル（半円フィルタ用）
+        let cd = {
+            let d = [cam_pos[0]-pos[0], cam_pos[1]-pos[1], cam_pos[2]-pos[2]];
+            let len = (d[0]*d[0]+d[1]*d[1]+d[2]*d[2]).sqrt().max(1e-6);
+            [d[0]/len, d[1]/len, d[2]/len]
+        };
+        let n = segments.max(4);
+        for i in 0..n {
+            let t0 = 2.0 * std::f32::consts::PI * i as f32 / n as f32;
+            let t1 = 2.0 * std::f32::consts::PI * (i + 1) as f32 / n as f32;
+            let tm = (t0 + t1) * 0.5;
+            let (s0, c0) = t0.sin_cos();
+            let (s1, c1) = t1.sin_cos();
+            let (sm, cm) = tm.sin_cos();
+            // リング上の点（キャンバス平面内の円）
+            let p0 = [pos[0]+radius*(ax[0]*c0+ay[0]*s0),
+                      pos[1]+radius*(ax[1]*c0+ay[1]*s0),
+                      pos[2]+radius*(ax[2]*c0+ay[2]*s0)];
+            let p1 = [pos[0]+radius*(ax[0]*c1+ay[0]*s1),
+                      pos[1]+radius*(ax[1]*c1+ay[1]*s1),
+                      pos[2]+radius*(ax[2]*c1+ay[2]*s1)];
+            // 中点の径方向（カメラ向き判定）
+            let mid_rad = [ax[0]*cm+ay[0]*sm, ax[1]*cm+ay[1]*sm, ax[2]*cm+ay[2]*sm];
+            let show = match dragging {
+                Some(GizmoPart::AxisZ) => true,
+                Some(_) => false,
+                None => mid_rad[0]*cd[0]+mid_rad[1]*cd[1]+mid_rad[2]*cd[2] > 0.0,
+            };
+            if show { self.add_thick_line(p0, p1, cz); }
+        }
     }
 
     /// 2D 回転ギズモ（Z 軸周りの完全な円）を追加する。

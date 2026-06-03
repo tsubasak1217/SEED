@@ -175,12 +175,19 @@ impl App {
                     };
                     let vp_actor_json = serde_json::to_string(&vp_actor_name).unwrap_or_default();
                     let vp_slot_json  = serde_json::to_string(&vp_slot_name).unwrap_or_default();
+                    let aspect_axis = if matches!(d.aspect_ratio_axis, crate::engine::components::AspectRatioAxis::Height) { "height" } else { "width" };
+                    // gravity_mode: 0=screen_down, 1=canvas_down
+                    let gravity_mode_val = if matches!(d.gravity_mode, crate::engine::components::GravityMode::CanvasDown) { 1u8 } else { 0u8 };
+                    // pivot: 3D キャンバス専用（Actor3D アタッチ時のみ有効）
                     ("CanvasComponent", format!(
-                        r#","width":{:.4},"height":{:.4},"scale_transform":{},"scale_size":{},"auto_scale":{},"vp_ref_type":"{vp_ref_type}","vp_ref_actor":{vp_actor_json},"vp_ref_slot":{vp_slot_json}"#,
+                        r#","width":{:.4},"height":{:.4},"scale_transform":{},"scale_size":{},"auto_scale":{},"vp_ref_type":"{vp_ref_type}","vp_ref_actor":{vp_actor_json},"vp_ref_slot":{vp_slot_json},"keep_aspect_ratio":{},"aspect_ratio_axis":"{aspect_axis}","gravity_mode":{gravity_mode_val},"pivot_x":{:.4},"pivot_y":{:.4}"#,
                         d.width, d.height,
-                        d.scale_transform as u8,
-                        d.scale_size      as u8,
-                        d.auto_scale      as u8,
+                        d.scale_transform  as u8,
+                        d.scale_size       as u8,
+                        d.auto_scale       as u8,
+                        d.keep_aspect_ratio as u8,
+                        d.pivot[0],
+                        d.pivot[1],
                     ))
                 }
                 ComponentData::SpriteComponent(d) => {
@@ -397,13 +404,28 @@ impl App {
                 }
             }
             "CanvasComponent" => {
-                // デフォルトサイズ（1920×1080）の CanvasComponent を追加する。
-                // サイズはインスペクターから後で変更可能。
+                // CanvasComponent を追加する。
+                // Actor3D アタッチ時は 3D ワールド向けデフォルト（640×360, auto_scale=false）を使用する。
+                // Actor2D アタッチ時はスクリーンスペース向けデフォルト（1920×1080, auto_scale=true）を使用する。
                 let name = slot_name.to_string();
+                // アクターが 3D かどうかを事前確認する（不変参照を先に完了させてから可変操作へ移行）
+                let is_actor_3d = {
+                    let scene = self.scene.as_ref().unwrap();
+                    let mut c = 0u32;
+                    find_actor_by_dfs(&scene.actors, wl, actor_dfs_id, &mut c)
+                        .map(|a| !a.is_2d())
+                        .unwrap_or(false)
+                };
                 let found = {
                     let scene = self.scene.as_mut().unwrap();
+                    let cc = if is_actor_3d {
+                        // 3D キャンバス: デフォルト解像度 640×360、自動スケール無効
+                        CanvasComponent { width: 640.0, height: 360.0, auto_scale: false, ..CanvasComponent::default() }
+                    } else {
+                        CanvasComponent::default()
+                    };
                     let slot_entity = scene.world.spawn();
-                    scene.world.insert(slot_entity, CanvasComponent::default());
+                    scene.world.insert(slot_entity, cc);
                     let mut c = 0u32;
                     if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
                         actor.add_slot_typed::<CanvasComponent>(name, ComponentKind::Canvas, slot_entity);

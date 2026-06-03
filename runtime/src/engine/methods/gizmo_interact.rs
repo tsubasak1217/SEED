@@ -36,6 +36,10 @@ pub struct GizmoDrag {
     pub ref_point:    [f32; 3],
     /// Center ハンドル用: ドラッグ開始時のカメラ平面法線。それ以外は未使用（[0;3]）。
     pub plane_normal: [f32; 3],
+    /// キャンバス座標系の X / Y / Z 軸（ワールド空間単位ベクトル）。
+    /// None = ワールド軸揃え（通常の 3D / 2D ギズモ）。
+    /// Some([ax, ay, az]) = 3D Canvas 子アクター用向き付きギズモ。
+    pub axes: Option<[[f32; 3]; 3]>,
 }
 
 // ============================================================
@@ -236,7 +240,7 @@ pub fn start_drag(
         };
         (rp, [0.0f32; 3])
     };
-    GizmoDrag { part, tool, start_mat, gizmo_pos, radius, ref_point, plane_normal }
+    GizmoDrag { part, tool, start_mat, gizmo_pos, radius, ref_point, plane_normal, axes: None }
 }
 
 // ============================================================
@@ -253,39 +257,69 @@ pub fn update_drag(
 
     match drag.tool {
         ToolMode::Move => {
-            let delta = match drag.part {
-                GizmoPart::AxisX => {
-                    let curr = closest_on_axis(gp, [1.0,0.0,0.0], ray_o, ray_d);
-                    [curr[0]-drag.ref_point[0], 0.0, 0.0]
+            let delta = if let Some([ax, ay, az]) = drag.axes {
+                // 3D Canvas 子アクター向け: canvas 座標系軸に沿った移動
+                match drag.part {
+                    GizmoPart::AxisX => {
+                        let curr = closest_on_axis(gp, ax, ray_o, ray_d);
+                        let proj = dot3(sub3(curr, drag.ref_point), ax);
+                        scale3(ax, proj)
+                    }
+                    GizmoPart::AxisY => {
+                        let curr = closest_on_axis(gp, ay, ray_o, ray_d);
+                        let proj = dot3(sub3(curr, drag.ref_point), ay);
+                        scale3(ay, proj)
+                    }
+                    GizmoPart::PlaneXY => {
+                        // canvas 平面（法線 = az）上での移動
+                        if let Some(p) = ray_plane_hit(ray_o, ray_d, gp, az) {
+                            sub3(p, drag.ref_point)
+                        } else { [0.0; 3] }
+                    }
+                    GizmoPart::Center => {
+                        if let Some(t) = ray_plane_t(ray_o, ray_d, gp, drag.plane_normal) {
+                            let p = ray_at(ray_o, ray_d, t);
+                            sub3(p, drag.ref_point)
+                        } else { [0.0; 3] }
+                    }
+                    _ => [0.0; 3],
                 }
-                GizmoPart::AxisY => {
-                    let curr = closest_on_axis(gp, [0.0,1.0,0.0], ray_o, ray_d);
-                    [0.0, curr[1]-drag.ref_point[1], 0.0]
-                }
-                GizmoPart::AxisZ => {
-                    let curr = closest_on_axis(gp, [0.0,0.0,1.0], ray_o, ray_d);
-                    [0.0, 0.0, curr[2]-drag.ref_point[2]]
-                }
-                GizmoPart::PlaneXY => {
-                    if let Some(p) = ray_plane_hit(ray_o, ray_d, gp, [0.0,0.0,1.0]) {
-                        [p[0]-drag.ref_point[0], p[1]-drag.ref_point[1], 0.0]
-                    } else { [0.0;3] }
-                }
-                GizmoPart::PlaneXZ => {
-                    if let Some(p) = ray_plane_hit(ray_o, ray_d, gp, [0.0,1.0,0.0]) {
-                        [p[0]-drag.ref_point[0], 0.0, p[2]-drag.ref_point[2]]
-                    } else { [0.0;3] }
-                }
-                GizmoPart::PlaneYZ => {
-                    if let Some(p) = ray_plane_hit(ray_o, ray_d, gp, [1.0,0.0,0.0]) {
-                        [0.0, p[1]-drag.ref_point[1], p[2]-drag.ref_point[2]]
-                    } else { [0.0;3] }
-                }
-                GizmoPart::Center => {
-                    if let Some(t) = ray_plane_t(ray_o, ray_d, gp, drag.plane_normal) {
-                        let p = ray_at(ray_o, ray_d, t);
-                        sub3(p, drag.ref_point)
-                    } else { [0.0;3] }
+            } else {
+                // 通常ワールド軸
+                match drag.part {
+                    GizmoPart::AxisX => {
+                        let curr = closest_on_axis(gp, [1.0,0.0,0.0], ray_o, ray_d);
+                        [curr[0]-drag.ref_point[0], 0.0, 0.0]
+                    }
+                    GizmoPart::AxisY => {
+                        let curr = closest_on_axis(gp, [0.0,1.0,0.0], ray_o, ray_d);
+                        [0.0, curr[1]-drag.ref_point[1], 0.0]
+                    }
+                    GizmoPart::AxisZ => {
+                        let curr = closest_on_axis(gp, [0.0,0.0,1.0], ray_o, ray_d);
+                        [0.0, 0.0, curr[2]-drag.ref_point[2]]
+                    }
+                    GizmoPart::PlaneXY => {
+                        if let Some(p) = ray_plane_hit(ray_o, ray_d, gp, [0.0,0.0,1.0]) {
+                            [p[0]-drag.ref_point[0], p[1]-drag.ref_point[1], 0.0]
+                        } else { [0.0;3] }
+                    }
+                    GizmoPart::PlaneXZ => {
+                        if let Some(p) = ray_plane_hit(ray_o, ray_d, gp, [0.0,1.0,0.0]) {
+                            [p[0]-drag.ref_point[0], 0.0, p[2]-drag.ref_point[2]]
+                        } else { [0.0;3] }
+                    }
+                    GizmoPart::PlaneYZ => {
+                        if let Some(p) = ray_plane_hit(ray_o, ray_d, gp, [1.0,0.0,0.0]) {
+                            [0.0, p[1]-drag.ref_point[1], p[2]-drag.ref_point[2]]
+                        } else { [0.0;3] }
+                    }
+                    GizmoPart::Center => {
+                        if let Some(t) = ray_plane_t(ray_o, ray_d, gp, drag.plane_normal) {
+                            let p = ray_at(ray_o, ray_d, t);
+                            sub3(p, drag.ref_point)
+                        } else { [0.0;3] }
+                    }
                 }
             };
             mat[0][3] = drag.start_mat[0][3] + delta[0];
@@ -297,62 +331,101 @@ pub fn update_drag(
             let apply_col = |mat: &mut [[f32;4];4], col: usize, factor: f32| {
                 for r in 0..3 { mat[r][col] = drag.start_mat[r][col] * factor; }
             };
-            match drag.part {
-                GizmoPart::AxisX => {
-                    let curr = closest_on_axis(gp, [1.0,0.0,0.0], ray_o, ray_d);
-                    let f = scale_factor_axis(drag.ref_point, curr, [1.0,0.0,0.0], gp);
-                    apply_col(&mut mat, 0, f);
-                }
-                GizmoPart::AxisY => {
-                    let curr = closest_on_axis(gp, [0.0,1.0,0.0], ray_o, ray_d);
-                    let f = scale_factor_axis(drag.ref_point, curr, [0.0,1.0,0.0], gp);
-                    apply_col(&mut mat, 1, f);
-                }
-                GizmoPart::AxisZ => {
-                    let curr = closest_on_axis(gp, [0.0,0.0,1.0], ray_o, ray_d);
-                    let f = scale_factor_axis(drag.ref_point, curr, [0.0,0.0,1.0], gp);
-                    apply_col(&mut mat, 2, f);
-                }
-                GizmoPart::PlaneXY => {
-                    if let Some(p) = ray_plane_hit(ray_o, ray_d, gp, [0.0,0.0,1.0]) {
-                        let f = plane_scale_factor(drag.ref_point, p, gp);
-                        apply_col(&mut mat, 0, f); apply_col(&mut mat, 1, f);
-                    }
-                }
-                GizmoPart::PlaneXZ => {
-                    if let Some(p) = ray_plane_hit(ray_o, ray_d, gp, [0.0,1.0,0.0]) {
-                        let f = plane_scale_factor(drag.ref_point, p, gp);
-                        apply_col(&mut mat, 0, f); apply_col(&mut mat, 2, f);
-                    }
-                }
-                GizmoPart::PlaneYZ => {
-                    if let Some(p) = ray_plane_hit(ray_o, ray_d, gp, [1.0,0.0,0.0]) {
-                        let f = plane_scale_factor(drag.ref_point, p, gp);
-                        apply_col(&mut mat, 1, f); apply_col(&mut mat, 2, f);
-                    }
-                }
-                GizmoPart::Center => {
-                    if let Some(t) = ray_plane_t(ray_o, ray_d, gp, drag.plane_normal) {
-                        let p = ray_at(ray_o, ray_d, t);
-                        // d_ref がほぼ 0（中心クリック）でも f=1.0 から始まる加算式。
-                        // 1 ギズモ半径分ドラッグすると 2x スケール。
-                        let d_curr = len3(sub3(p,               gp));
-                        let d_ref  = len3(sub3(drag.ref_point,  gp));
-                        let f = (1.0 + (d_curr - d_ref) / drag.radius).max(0.05);
+            if let Some([ax, ay, az]) = drag.axes {
+                // 3D Canvas 子アクター向け: canvas 軸に沿ったスケール
+                match drag.part {
+                    GizmoPart::AxisX => {
+                        let curr = closest_on_axis(gp, ax, ray_o, ray_d);
+                        let f = scale_factor_axis(drag.ref_point, curr, ax, gp);
                         apply_col(&mut mat, 0, f);
+                    }
+                    GizmoPart::AxisY => {
+                        let curr = closest_on_axis(gp, ay, ray_o, ray_d);
+                        let f = scale_factor_axis(drag.ref_point, curr, ay, gp);
                         apply_col(&mut mat, 1, f);
+                    }
+                    GizmoPart::PlaneXY => {
+                        if let Some(p) = ray_plane_hit(ray_o, ray_d, gp, az) {
+                            let f = plane_scale_factor(drag.ref_point, p, gp);
+                            apply_col(&mut mat, 0, f); apply_col(&mut mat, 1, f);
+                        }
+                    }
+                    GizmoPart::Center => {
+                        if let Some(t) = ray_plane_t(ray_o, ray_d, gp, drag.plane_normal) {
+                            let p = ray_at(ray_o, ray_d, t);
+                            let d_curr = len3(sub3(p, gp));
+                            let d_ref  = len3(sub3(drag.ref_point, gp));
+                            let f = (1.0 + (d_curr - d_ref) / drag.radius).max(0.05);
+                            apply_col(&mut mat, 0, f);
+                            apply_col(&mut mat, 1, f);
+                        }
+                    }
+                    _ => {}
+                }
+            } else {
+                match drag.part {
+                    GizmoPart::AxisX => {
+                        let curr = closest_on_axis(gp, [1.0,0.0,0.0], ray_o, ray_d);
+                        let f = scale_factor_axis(drag.ref_point, curr, [1.0,0.0,0.0], gp);
+                        apply_col(&mut mat, 0, f);
+                    }
+                    GizmoPart::AxisY => {
+                        let curr = closest_on_axis(gp, [0.0,1.0,0.0], ray_o, ray_d);
+                        let f = scale_factor_axis(drag.ref_point, curr, [0.0,1.0,0.0], gp);
+                        apply_col(&mut mat, 1, f);
+                    }
+                    GizmoPart::AxisZ => {
+                        let curr = closest_on_axis(gp, [0.0,0.0,1.0], ray_o, ray_d);
+                        let f = scale_factor_axis(drag.ref_point, curr, [0.0,0.0,1.0], gp);
                         apply_col(&mut mat, 2, f);
+                    }
+                    GizmoPart::PlaneXY => {
+                        if let Some(p) = ray_plane_hit(ray_o, ray_d, gp, [0.0,0.0,1.0]) {
+                            let f = plane_scale_factor(drag.ref_point, p, gp);
+                            apply_col(&mut mat, 0, f); apply_col(&mut mat, 1, f);
+                        }
+                    }
+                    GizmoPart::PlaneXZ => {
+                        if let Some(p) = ray_plane_hit(ray_o, ray_d, gp, [0.0,1.0,0.0]) {
+                            let f = plane_scale_factor(drag.ref_point, p, gp);
+                            apply_col(&mut mat, 0, f); apply_col(&mut mat, 2, f);
+                        }
+                    }
+                    GizmoPart::PlaneYZ => {
+                        if let Some(p) = ray_plane_hit(ray_o, ray_d, gp, [1.0,0.0,0.0]) {
+                            let f = plane_scale_factor(drag.ref_point, p, gp);
+                            apply_col(&mut mat, 1, f); apply_col(&mut mat, 2, f);
+                        }
+                    }
+                    GizmoPart::Center => {
+                        if let Some(t) = ray_plane_t(ray_o, ray_d, gp, drag.plane_normal) {
+                            let p = ray_at(ray_o, ray_d, t);
+                            let d_curr = len3(sub3(p,               gp));
+                            let d_ref  = len3(sub3(drag.ref_point,  gp));
+                            let f = (1.0 + (d_curr - d_ref) / drag.radius).max(0.05);
+                            apply_col(&mut mat, 0, f);
+                            apply_col(&mut mat, 1, f);
+                            apply_col(&mut mat, 2, f);
+                        }
                     }
                 }
             }
         }
 
         ToolMode::Rotate => {
-            let axis = match drag.part {
-                GizmoPart::AxisX => [1.0f32, 0.0, 0.0],
-                GizmoPart::AxisY => [0.0, 1.0, 0.0],
-                GizmoPart::AxisZ => [0.0, 0.0, 1.0],
-                _ => return mat,
+            // axes が Some の場合は AxisZ = canvas 法線周りの回転のみ許容する
+            let axis = if let Some([_, _, az]) = drag.axes {
+                match drag.part {
+                    GizmoPart::AxisZ => az,
+                    _ => return mat,
+                }
+            } else {
+                match drag.part {
+                    GizmoPart::AxisX => [1.0f32, 0.0, 0.0],
+                    GizmoPart::AxisY => [0.0, 1.0, 0.0],
+                    GizmoPart::AxisZ => [0.0, 0.0, 1.0],
+                    _ => return mat,
+                }
             };
             // t < 0（平面がカメラ後方）も許容して交点を取得する。
             if let Some(t) = ray_plane_t(ray_o, ray_d, gp, axis) {
@@ -544,4 +617,85 @@ pub fn mat4x4_mul(a: [[f32; 4]; 4], b: [[f32; 4]; 4]) -> [[f32; 4]; 4] {
         }
     }
     r
+}
+
+fn add3(a: [f32; 3], b: [f32; 3]) -> [f32; 3] { [a[0]+b[0], a[1]+b[1], a[2]+b[2]] }
+fn scale3(v: [f32; 3], s: f32) -> [f32; 3] { [v[0]*s, v[1]*s, v[2]*s] }
+
+// ============================================================
+//  キャンバス座標系向け oriented ギズモ関数
+// ============================================================
+
+/// 3D Canvas 子アクター向けのヒットテスト。
+///
+/// レイをキャンバスローカル空間（ax/ay/az = X/Y/Z 軸）に変換してから
+/// 標準 hit_test_gizmo を実行し、キャンバスで有効なパーツのみを返す。
+///   Move/Scale: AxisX, AxisY, PlaneXY（canvas 平面移動）, Center
+///   Rotate    : AxisZ（canvas 法線周り）のみ
+pub fn hit_test_gizmo_canvas(
+    ray_o:     [f32; 3],
+    ray_d:     [f32; 3],
+    gizmo_pos: [f32; 3],
+    radius:    f32,
+    tool:      ToolMode,
+    ax:        [f32; 3],
+    ay:        [f32; 3],
+    az:        [f32; 3],
+) -> Option<GizmoPart> {
+    // レイをキャンバスローカル空間に変換する（gizmo_pos が原点）
+    let d = sub3(ray_o, gizmo_pos);
+    let local_o = [dot3(d, ax), dot3(d, ay), dot3(d, az)];
+    let local_d = [dot3(ray_d, ax), dot3(ray_d, ay), dot3(ray_d, az)];
+    let part = hit_test_gizmo(local_o, local_d, [0.0, 0.0, 0.0], radius, tool)?;
+    // キャンバス子アクター向けの有効パーツフィルタ
+    let valid = match tool {
+        ToolMode::Move | ToolMode::Scale => {
+            matches!(part, GizmoPart::AxisX | GizmoPart::AxisY
+                        | GizmoPart::PlaneXY | GizmoPart::Center)
+        }
+        ToolMode::Rotate => matches!(part, GizmoPart::AxisZ),
+        _ => false,
+    };
+    if valid { Some(part) } else { None }
+}
+
+/// 3D Canvas 子アクター向けのドラッグ開始状態を生成する。
+///
+/// レイをキャンバスローカル空間に変換してから start_drag を呼び出し、
+/// ref_point と plane_normal をワールド空間に戻して GizmoDrag に格納する。
+/// `axes = Some([ax, ay, az])` が設定されるため update_drag が canvas 軸を使用する。
+pub fn start_drag_canvas(
+    part:      GizmoPart,
+    tool:      ToolMode,
+    ray_o:     [f32; 3],
+    ray_d:     [f32; 3],
+    gizmo_pos: [f32; 3],
+    radius:    f32,
+    start_mat: [[f32; 4]; 4],
+    ax:        [f32; 3],
+    ay:        [f32; 3],
+    az:        [f32; 3],
+) -> GizmoDrag {
+    // レイをキャンバスローカル空間に変換（gizmo_pos = 原点）
+    let d = sub3(ray_o, gizmo_pos);
+    let local_o = [dot3(d, ax), dot3(d, ay), dot3(d, az)];
+    let local_d = [dot3(ray_d, ax), dot3(ray_d, ay), dot3(ray_d, az)];
+    let local_drag = start_drag(part, tool, local_o, local_d, [0.0, 0.0, 0.0], radius, start_mat);
+    // ref_point をキャンバスローカル→ワールド空間に変換する
+    let rp = local_drag.ref_point;
+    let ref_w = add3(add3(add3(scale3(ax, rp[0]), scale3(ay, rp[1])), scale3(az, rp[2])), gizmo_pos);
+    // plane_normal も変換（Center ハンドル用）
+    let pn = local_drag.plane_normal;
+    let pn_w = if pn[0] != 0.0 || pn[1] != 0.0 || pn[2] != 0.0 {
+        add3(add3(scale3(ax, pn[0]), scale3(ay, pn[1])), scale3(az, pn[2]))
+    } else {
+        [0.0; 3]
+    };
+    GizmoDrag {
+        ref_point:    ref_w,
+        plane_normal: pn_w,
+        gizmo_pos,
+        axes:         Some([ax, ay, az]),
+        ..local_drag
+    }
 }

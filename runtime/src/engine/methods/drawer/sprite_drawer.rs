@@ -8,7 +8,7 @@
 
 use std::sync::Arc;
 use crate::engine::components::CanvasTransform;
-use crate::engine::core::renderer::pipeline::SpritePipeline;
+use crate::engine::core::renderer::pipeline::{SpritePipeline, SpriteOutlinePipeline};
 
 // ============================================================
 //  頂点・ユニフォーム型
@@ -234,6 +234,35 @@ pub fn draw_sprites<'rp>(
             .unwrap_or(&pipeline.white_fallback_bg);
         pass.set_bind_group(2, tex_bg, &[]);
         // ユニットクワッド 6 頂点（2 三角形）を描画
+        pass.draw(0..6, 0..1);
+    }
+}
+
+/// 選択スプライトのオレンジアウトラインを描画する。
+///
+/// `sprite_outline.wgsl` がクリップ空間でコーナーを押し出すため、
+/// `prepared` のモデル行列は通常スプライトと同じ（拡大不要）。
+/// 実スプライトより先に呼ぶことで、外枠だけがオレンジとして見える。
+/// テクスチャバインドグループは不要（単色塗りつぶし、バインドグループ 2 個のみ）。
+pub fn draw_sprite_outline<'rp>(
+    pass:            &mut wgpu::RenderPass<'rp>,
+    sprite_pipeline: &'rp SpritePipeline,
+    outline_pipeline: &'rp SpriteOutlinePipeline,
+    camera_bg:       &'rp wgpu::BindGroup,
+    prepared:        &'rp [SpritePrepared],
+) {
+    if prepared.is_empty() { return; }
+
+    pass.set_pipeline(&outline_pipeline.pipeline);
+    // スプライトと同一のユニットクワッド頂点バッファを使用する
+    pass.set_vertex_buffer(0, sprite_pipeline.unit_quad_vbuf.slice(..));
+    pass.set_bind_group(0, camera_bg, &[]);
+
+    for item in prepared {
+        // group 1: SpriteUniform（モデル行列 + カラー）
+        // SpritePipeline の sprite_uniform_bgl と同一レイアウトのため互換
+        pass.set_bind_group(1, &item.uniform_bg, &[]);
+        // テクスチャなし（group 2 不要）、ユニットクワッド 6 頂点を描画
         pass.draw(0..6, 0..1);
     }
 }

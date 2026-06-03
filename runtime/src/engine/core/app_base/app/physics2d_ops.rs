@@ -49,12 +49,12 @@
 use std::collections::HashMap;
 use crate::engine::components::{
     Collider2dComponent, CanvasTransform, CanvasComponent,
-    ComponentKind,
+    ComponentKind, AspectRatioAxis, GravityMode, Transform as ActorTransform,
 };
 use crate::engine::ecs::Entity;
 use crate::engine::physics::{
     PhysicsThread2d, PhysicsCommand2d, PhysicsObject2d,
-    CollisionPhase2d, TriggerPhase2d, PIXELS_PER_METER,
+    CollisionPhase2d, TriggerPhase2d, PIXELS_PER_METER, DEFAULT_GRAVITY_2D,
 };
 use crate::engine::core::app_base::scene::Scene;
 use crate::engine::structs::objects::actor::{Actor, ActorKind};
@@ -142,15 +142,15 @@ pub(crate) fn collect_actor2d_contexts(
     // スタック要素:
     //   (アクター, 親 Canvas サイズ, 親累積スケール, (scale_transform, scale_size),
     //    親キャンバス原点ワールド位置, 親累積ワールド回転)
-    type CtxElem<'a> = (&'a Actor, Option<[f32; 2]>, [f32; 2], (bool, bool), [f32; 2], f32);
+    type CtxElem<'a> = (&'a Actor, Option<[f32; 2]>, [f32; 2], (bool, bool, bool, bool), [f32; 2], f32);
 
     let mut stack: Vec<CtxElem> = scene.actors.iter()
         .filter(|a| a.world_line == world_line)
         .rev()
-        .map(|a| (a, None::<[f32; 2]>, [1.0f32, 1.0], (false, false), [0.0f32, 0.0], 0.0f32))
+        .map(|a| (a, None::<[f32; 2]>, [1.0f32, 1.0], (false, false, false, true), [0.0f32, 0.0], 0.0f32))
         .collect();
 
-    while let Some((actor, parent_canvas_size, parent_cumul_scale, (sm_transform, sm_size), parent_canvas_origin, parent_world_rot)) = stack.pop() {
+    while let Some((actor, parent_canvas_size, parent_cumul_scale, (sm_transform, sm_size, keep_aspect, is_width_axis), parent_canvas_origin, parent_world_rot)) = stack.pop() {
         dfs_counter += 1;
         let dfs_id = dfs_counter;
 
@@ -162,20 +162,25 @@ pub(crate) fn collect_actor2d_contexts(
             .find(|s| s.kind == ComponentKind::Canvas)
             .and_then(|s| scene.world.get::<CanvasComponent>(s.entity));
 
-        // sm_size による拡縮を反映した有効キャンバスサイズ（子 canvas 原点・auto_scale 計算用）
+        // sm_size による拡縮を反映した有効キャンバスサイズ（子 canvas 原点・auto_scale 計算用、アスペクト比考慮）
+        let phys_sc_x = if sm_size { if keep_aspect && !is_width_axis { parent_cumul_scale[1] } else { parent_cumul_scale[0] } } else { 1.0 };
+        let phys_sc_y = if sm_size { if keep_aspect && is_width_axis  { parent_cumul_scale[0] } else { parent_cumul_scale[1] } } else { 1.0 };
         let (my_eff_w, my_eff_h) = my_canvas.map(|cc| (
-            cc.width  * if sm_size { parent_cumul_scale[0] } else { 1.0 },
-            cc.height * if sm_size { parent_cumul_scale[1] } else { 1.0 },
+            cc.width  * phys_sc_x,
+            cc.height * phys_sc_y,
         )).unwrap_or((1.0, 1.0));
 
-        // 子が参照する「有効 Canvas サイズ」（scale_size モード考慮済み）
+        // 子が参照する「有効 Canvas サイズ」（scale_size・アスペクト比モード考慮済み）
         let child_canvas_size = my_canvas.map(|cc| [
-            cc.width  * if sm_size { parent_cumul_scale[0] } else { 1.0 },
-            cc.height * if sm_size { parent_cumul_scale[1] } else { 1.0 },
+            cc.width  * phys_sc_x,
+            cc.height * phys_sc_y,
         ]);
         let child_sm = my_canvas
-            .map(|cc| (cc.scale_transform, cc.scale_size))
-            .unwrap_or((false, false));
+            .map(|cc| (
+                cc.scale_transform, cc.scale_size,
+                cc.keep_aspect_ratio, matches!(cc.aspect_ratio_axis, AspectRatioAxis::Width),
+            ))
+            .unwrap_or((false, false, false, true));
 
         // CanvasViewportRef::Camera を持つルートキャンバスのビューポートサイズを解決する。
         // ルートアクター（parent_canvas_size=None）のみオーバーライドマップを参照する。
@@ -324,8 +329,21 @@ pub(crate) fn collect_actor2d_contexts(
         let actor_world_rot = parent_world_rot + ct.rotation.to_radians();
 
         // size_eff: sm_size=true のとき parent_cumul_scale（auto_scale 込み）、それ以外 1.0。
-        // コライダー形状・オフセットをキャンバスピクセル → ortho ピクセルに変換するために使用する。
-        let size_eff = if sm_size { parent_cumul_scale } else { [1.0f32, 1.0] };
+        // Collider2d の keep_aspect_ratio を考慮してアスペクト比維持スケールを適用する。
+        let size_eff = {
+            let base = if sm_size { parent_cumul_scale } else { [1.0f32, 1.0] };
+            // Collider2d の keep_aspect_ratio 設定を参照してsize_effを調整する
+            if let Some(coll_ent) = collider_slot_entity {
+                if let Some(coll) = scene.world.get::<Collider2dComponent>(coll_ent) {
+                    if coll.keep_aspect_ratio && sm_size {
+                        match &coll.aspect_ratio_axis {
+                            AspectRatioAxis::Width  => [base[0], base[0]],
+                            AspectRatioAxis::Height => [base[1], base[1]],
+                        }
+                    } else { base }
+                } else { base }
+            } else { base }
+        };
 
         // ── 2. ピボット補正（基準サイズ選択） ─────────────────────────────────
         //
@@ -460,6 +478,7 @@ impl App {
         // actor2d コンテキストを収集し、Collider2d 付きのものを物理ワールドに登録する
         let contexts = collect_actor2d_contexts(scene, self.active_world_line, viewport_size, &canvas_vp_overrides);
 
+        // ── 2D キャンバス物理スレッドを起動する ────────────────────────────────
         let thread = PhysicsThread2d::spawn();
 
         for ctx in &contexts {
@@ -515,6 +534,14 @@ impl App {
             thread.send(PhysicsCommand2d::SetGravity { gravity: [0.0, 0.0] });
         }
 
+        // 重力方向を設定する（3D キャンバスの gravity_mode / Z 回転を考慮）
+        if !force_kinematic {
+            let gravity = self.compute_scene_gravity_2d();
+            if gravity != [0.0, crate::engine::physics::DEFAULT_GRAVITY_2D[1]] {
+                thread.send(PhysicsCommand2d::SetGravity { gravity });
+            }
+        }
+
         self.physics_thread_2d = Some(thread);
     }
 
@@ -523,6 +550,8 @@ impl App {
     /// Play モード停止時に 2D 物理スレッドを終了する（Drop で Stop 送信・join）。
     pub(super) fn stop_physics_2d(&mut self) {
         self.physics_thread_2d = None;
+        // 3D キャンバス物理スレッドもすべて停止する（Drop で Stop 送信）
+        self.canvas_3d_physics.clear();
     }
 
     // ─── 毎フレーム更新 ──────────────────────────────────────────
@@ -752,7 +781,17 @@ impl App {
             });
         }
 
-        // ⑥ ドラッグ中 Actor2D の現在位置を kinematic 更新として送信する
+        // ⑥ ScreenDown モードの 3D キャンバスがある場合、Z 回転変化に応じて重力を更新する
+        {
+            let gravity = self.compute_scene_gravity_2d();
+            let should_apply = self.mode != RuntimeMode::Edit || self.edit_physics_2d_with_rigidbody;
+            if should_apply {
+                let thread = self.physics_thread_2d.as_ref().unwrap();
+                thread.send(PhysicsCommand2d::SetGravity { gravity });
+            }
+        }
+
+        // ⑦ ドラッグ中 Actor2D の現在位置を kinematic 更新として送信する
         if let Some(drag_entity_id) = self.dragging_physics_2d_entity_id {
             if let Some(ctx) = contexts.iter().find(|c| c.dfs_id == drag_entity_id) {
                 thread.send(PhysicsCommand2d::UpdateKinematic {
@@ -848,5 +887,53 @@ fn write_back_canvas_transform(
     if let Some(ct) = scene.world.get_mut::<CanvasTransform>(ctx.actor_entity) {
         ct.position = new_ct_pos;
         ct.rotation = new_local_rot.to_degrees();
+    }
+}
+
+// ─── 重力方向ヘルパー ────────────────────────────────────────────────────────
+
+impl App {
+    /// シーン内の 3D キャンバス（Actor3D + CanvasComponent）の gravity_mode と Z 回転から
+    /// 現在のシーンで使用すべき重力方向ベクトルを計算する。
+    ///
+    /// 3D キャンバスが見つからない場合は DEFAULT_GRAVITY_2D を返す。
+    /// 複数の 3D キャンバスがある場合は最初に見つかったものを使用する。
+    pub(super) fn compute_scene_gravity_2d(&self) -> [f32; 2] {
+        let wl = self.active_world_line;
+        let Some(scene) = &self.scene else {
+            return crate::engine::physics::DEFAULT_GRAVITY_2D;
+        };
+
+        // シーン内の Actor3D + CanvasComponent を持つアクターを探す
+        for actor in scene.actors.iter().filter(|a| a.world_line == wl && !a.is_2d()) {
+            let Some(slot) = actor.slots().iter().find(|s| s.kind == ComponentKind::Canvas) else { continue };
+            let Some(cc) = scene.world.get::<CanvasComponent>(slot.entity) else { continue };
+
+            let z_rot_deg = scene.world.get::<ActorTransform>(actor.entity)
+                .map(|t| t.rotation[2])
+                .unwrap_or(0.0);
+            return compute_canvas_gravity(cc.gravity_mode, z_rot_deg);
+        }
+
+        crate::engine::physics::DEFAULT_GRAVITY_2D
+    }
+}
+
+/// キャンバスの重力方向ベクトル [gx, gy] を計算する（m/s² 単位）。
+///
+/// `CanvasDown`: 常に [0, 9.81]（キャンバスローカル Y+ 下方向）。
+/// `ScreenDown`: キャンバスの Z 回転 θ から、スクリーン下方向がキャンバスローカルで
+///   どの方向に対応するかを計算する。
+///   θ=0 → [0, 9.81]（変化なし）、θ=90° → [9.81, 0]（キャンバス「右」が画面下）
+fn compute_canvas_gravity(mode: GravityMode, z_rot_deg: f32) -> [f32; 2] {
+    const G: f32 = 9.81;
+    match mode {
+        GravityMode::CanvasDown => [0.0, G],
+        GravityMode::ScreenDown => {
+            // スクリーン下 [0, G] をキャンバス Z 回転で逆変換:
+            // rotate([0, G], -θ) = [G*sin(θ), G*cos(θ)]
+            let theta = z_rot_deg.to_radians();
+            [G * theta.sin(), G * theta.cos()]
+        }
     }
 }

@@ -3,6 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:avd="https://github.com/Dirkster99/AvalonDock"
         xmlns:panels="clr-namespace:SEEDEditor.Panels"
+        xmlns:local="clr-namespace:SEEDEditor"
         Title="SEED Editor" Height="720" Width="1280"
         Background="#1E1E1E"
         WindowState="Maximized"
@@ -442,15 +443,25 @@
 
         <!-- 数値入力 TextBox スタイル（スライダー横の小型入力欄）-->
         <Style x:Key="NumInputStyle" TargetType="{x:Type TextBox}">
-            <Setter Property="Background"        Value="#1A1A1A"/>
-            <Setter Property="Foreground"        Value="White"/>
-            <Setter Property="BorderBrush"       Value="#3F3F46"/>
-            <Setter Property="BorderThickness"   Value="1"/>
-            <Setter Property="FontSize"          Value="11"/>
-            <Setter Property="Padding"           Value="3,1"/>
-            <Setter Property="VerticalAlignment" Value="Center"/>
-            <Setter Property="TextAlignment"     Value="Right"/>
-            <Setter Property="Margin"            Value="3,0,0,0"/>
+            <Setter Property="Background"                        Value="#1A1A1A"/>
+            <Setter Property="Foreground"                        Value="White"/>
+            <Setter Property="BorderBrush"                       Value="#3F3F46"/>
+            <Setter Property="BorderThickness"                   Value="1"/>
+            <Setter Property="FontSize"                          Value="11"/>
+            <Setter Property="Padding"                           Value="3,1"/>
+            <Setter Property="VerticalAlignment"                 Value="Center"/>
+            <Setter Property="TextAlignment"                     Value="Right"/>
+            <Setter Property="Margin"                            Value="3,0,0,0"/>
+            <!-- ImGui 風ドラッグ入力を有効化 -->
+            <Setter Property="local:NumericDragBehavior.Enabled" Value="True"/>
+        </Style>
+
+        <!-- InspectorPanel から TryFindResource で参照されるスタイル（NumInputStyle を継承）。
+             文字列・ファイルパスフィールドにも使われるためドラッグビヘイビアはここでは無効にし、
+             数値フィールドはコードで個別に SetEnabled(true) する。 -->
+        <Style x:Key="NumericTextBox" TargetType="{x:Type TextBox}"
+               BasedOn="{StaticResource NumInputStyle}">
+            <Setter Property="local:NumericDragBehavior.Enabled" Value="False"/>
         </Style>
 
         <!-- ダーク Expander スタイル -->
@@ -503,6 +514,90 @@
                                 <Setter TargetName="Arrow"   Property="Text"       Value="▼"/>
                             </Trigger>
                         </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- ── 編集時物理タイムライン Slider スタイル ──────────────── -->
+        <!-- DecreaseRepeatButton / IncreaseRepeatButton を定義しないと WPF の Track が
+             Thumb 位置を計算できず、Thumb が常に端に貼り付いてしまう。
+             両ボタンは Opacity="0" で透明にしてクリック領域だけ確保する。 -->
+        <Style x:Key="PhysicsRepeatBtnStyle" TargetType="RepeatButton">
+            <Setter Property="Opacity"    Value="0"/>
+            <Setter Property="Focusable"  Value="False"/>
+            <Setter Property="IsTabStop"  Value="False"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="RepeatButton">
+                        <Rectangle Fill="Transparent"/>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="PhysicsSliderStyle" TargetType="Slider">
+            <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="Height" Value="18"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Slider">
+                        <Grid>
+                            <!-- トラック背景（未再生部分） -->
+                            <Border x:Name="TrackBg"
+                                    Height="4" CornerRadius="2"
+                                    Background="#44FFFFFF"
+                                    VerticalAlignment="Center"/>
+                            <!-- 再生済み部分（進捗バー）: Width は code-behind で更新する -->
+                            <Border x:Name="TrackFill"
+                                    Height="4" CornerRadius="2"
+                                    Background="#FF44CCFF"
+                                    VerticalAlignment="Center"
+                                    HorizontalAlignment="Left"
+                                    Width="0"/>
+                            <!-- Slider トラック本体（DecreaseRepeatButton + Thumb + IncreaseRepeatButton）-->
+                            <!-- DecreaseRepeatButton/IncreaseRepeatButton がないと Track が
+                                 Thumb 位置を正しく計算できないため必須 -->
+                            <Track x:Name="PART_Track">
+                                <Track.DecreaseRepeatButton>
+                                    <RepeatButton Style="{StaticResource PhysicsRepeatBtnStyle}"
+                                                  Command="Slider.DecreaseLarge"/>
+                                </Track.DecreaseRepeatButton>
+                                <Track.Thumb>
+                                    <Thumb>
+                                        <Thumb.Style>
+                                            <Style TargetType="Thumb">
+                                                <Setter Property="Width"  Value="12"/>
+                                                <Setter Property="Height" Value="12"/>
+                                                <Setter Property="Cursor" Value="Hand"/>
+                                                <Setter Property="Template">
+                                                    <Setter.Value>
+                                                        <ControlTemplate TargetType="Thumb">
+                                                            <Ellipse x:Name="Dot"
+                                                                     Fill="#DDDDDD"
+                                                                     Stroke="#888888"
+                                                                     StrokeThickness="1"/>
+                                                            <ControlTemplate.Triggers>
+                                                                <Trigger Property="IsMouseOver" Value="True">
+                                                                    <Setter TargetName="Dot" Property="Fill" Value="#FFFFFF"/>
+                                                                </Trigger>
+                                                                <Trigger Property="IsDragging" Value="True">
+                                                                    <Setter TargetName="Dot" Property="Fill" Value="#44CCFF"/>
+                                                                </Trigger>
+                                                            </ControlTemplate.Triggers>
+                                                        </ControlTemplate>
+                                                    </Setter.Value>
+                                                </Setter>
+                                            </Style>
+                                        </Thumb.Style>
+                                    </Thumb>
+                                </Track.Thumb>
+                                <Track.IncreaseRepeatButton>
+                                    <RepeatButton Style="{StaticResource PhysicsRepeatBtnStyle}"
+                                                  Command="Slider.IncreaseLarge"/>
+                                </Track.IncreaseRepeatButton>
+                            </Track>
+                        </Grid>
                     </ControlTemplate>
                 </Setter.Value>
             </Setter>
@@ -722,6 +817,8 @@
                                             <RowDefinition Height="Auto"/>
                                             <!-- Viewport 本体 -->
                                             <RowDefinition Height="*"/>
+                                            <!-- 編集時物理タイムライン（ツールストリップ列を除いたビューポート列にのみ表示）-->
+                                            <RowDefinition x:Name="PhysicsTimelineRow" Height="0"/>
                                         </Grid.RowDefinitions>
                                         <Grid.ColumnDefinitions>
                                             <!-- ツールストリップ列 -->
@@ -883,6 +980,94 @@
                                             </DockPanel>
                                         </Border>
 
+                                        <!-- ── 編集時物理タイムライン（Row 2, Col 1 のみ）── -->
+                                        <!-- ツールストリップ列（Col 0）には表示しない。
+                                             HwndHost と同じ列に重ならない行に配置するため Airspace 問題なし。 -->
+                                        <Border x:Name="PhysicsTimelinePanel"
+                                                Grid.Row="2" Grid.Column="1"
+                                                Background="#E0141414"
+                                                BorderBrush="#55AACCFF"
+                                                BorderThickness="0,1,0,0"
+                                                Visibility="Collapsed">
+                                            <Grid Margin="8,5,8,5">
+                                                <Grid.ColumnDefinitions>
+                                                    <!-- 再生/停止ボタン -->
+                                                    <ColumnDefinition Width="Auto"/>
+                                                    <!-- 現在時刻 -->
+                                                    <ColumnDefinition Width="Auto"/>
+                                                    <!-- シークバー -->
+                                                    <ColumnDefinition Width="*"/>
+                                                    <!-- 総フレーム表示 -->
+                                                    <ColumnDefinition Width="Auto"/>
+                                                    <!-- 適用ボタン -->
+                                                    <ColumnDefinition Width="Auto"/>
+                                                </Grid.ColumnDefinitions>
+
+                                                <!-- 再生/停止ボタン（▶ / ■） -->
+                                                <TextBlock x:Name="TxtPhysicsPlayBtn"
+                                                           Grid.Column="0"
+                                                           Text="▶"
+                                                           Foreground="#CCFFFFFF"
+                                                           FontSize="14"
+                                                           VerticalAlignment="Center"
+                                                           Cursor="Hand"
+                                                           Margin="0,0,8,0"
+                                                           ToolTip="再生 / 停止（スペースキー）"
+                                                           MouseLeftButtonDown="OnPhysicsTimerClick"/>
+
+                                                <!-- 現在時刻表示 -->
+                                                <TextBlock x:Name="TxtPhysicsTimer"
+                                                           Grid.Column="1"
+                                                           Text="0.00s"
+                                                           Foreground="#AAFFFFFF"
+                                                           FontSize="11"
+                                                           FontFamily="Consolas"
+                                                           VerticalAlignment="Center"
+                                                           Margin="0,0,6,0"
+                                                           MinWidth="42"/>
+
+                                                <!-- シークバー（Slider） -->
+                                                <Slider x:Name="SldPhysicsTimeline"
+                                                        Grid.Column="2"
+                                                        Minimum="0" Maximum="0" Value="0"
+                                                        IsSnapToTickEnabled="True"
+                                                        TickFrequency="1"
+                                                        SmallChange="1"
+                                                        LargeChange="10"
+                                                        Style="{StaticResource PhysicsSliderStyle}"
+                                                        VerticalAlignment="Center"
+                                                        ValueChanged="OnPhysicsSliderValueChanged"/>
+
+                                                <!-- 総フレーム / 総時間表示 -->
+                                                <TextBlock x:Name="TxtPhysicsTotalTime"
+                                                           Grid.Column="3"
+                                                           Text="f0 / f0"
+                                                           Foreground="#66FFFFFF"
+                                                           FontSize="11"
+                                                           FontFamily="Consolas"
+                                                           VerticalAlignment="Center"
+                                                           Margin="6,0,4,0"/>
+
+                                                <!-- 適用ボタン（現在フレームをフレーム0として確定） -->
+                                                <Border x:Name="BtnPhysicsApply"
+                                                        Grid.Column="4"
+                                                        Width="22" Height="22"
+                                                        Background="Transparent"
+                                                        BorderBrush="#44FFFFFF"
+                                                        BorderThickness="1"
+                                                        CornerRadius="3"
+                                                        Cursor="Hand"
+                                                        ToolTip="このフレームをスタート状態として適用（履歴をクリアしてフレーム0に設定）"
+                                                        MouseLeftButtonDown="OnPhysicsApplyClick">
+                                                    <TextBlock Text="✓"
+                                                               Foreground="#88FFCC88"
+                                                               FontSize="11"
+                                                               HorizontalAlignment="Center"
+                                                               VerticalAlignment="Center"/>
+                                                </Border>
+                                            </Grid>
+                                        </Border>
+
                                         <!-- Viewport オプションポップアップ -->
                                         <Popup x:Name="ViewportOptionsPopup"
                                                Grid.Row="1" Grid.Column="0"
@@ -990,10 +1175,11 @@
                                                                     <ColumnDefinition Width="*"/>
                                                                     <ColumnDefinition Width="*"/>
                                                                 </Grid.ColumnDefinitions>
-                                                                <TextBlock Text="Yaw°"   Grid.Column="0" Foreground="#CCCCAA" FontSize="9" HorizontalAlignment="Center"/>
-                                                                <TextBlock Text="Pitch°" Grid.Column="1" Foreground="#CCCCAA" FontSize="9" HorizontalAlignment="Center"/>
+                                                                <TextBlock Text="X°"   Grid.Column="0" Foreground="#CCCCAA" FontSize="9" HorizontalAlignment="Center"/>
+                                                                <TextBlock Text="Y°"   Grid.Column="1" Foreground="#CCCCAA" FontSize="9" HorizontalAlignment="Center"/>
+                                                                <TextBlock Text="Z°"   Grid.Column="2" Foreground="#CCCCAA" FontSize="9" HorizontalAlignment="Center"/>
                                                             </Grid>
-                                                            <!-- 回転入力行 -->
+                                                            <!-- 回転入力行（Euler XYZ） -->
                                                             <Grid>
                                                                 <Grid.ColumnDefinitions>
                                                                     <ColumnDefinition Width="36"/>
@@ -1002,8 +1188,9 @@
                                                                     <ColumnDefinition Width="*"/>
                                                                 </Grid.ColumnDefinitions>
                                                                 <TextBlock Text="回転" Grid.Column="0" Foreground="#888888" FontSize="10" VerticalAlignment="Center"/>
-                                                                <TextBox x:Name="TbCamYaw"   Grid.Column="1" Text="0" Margin="1" Style="{StaticResource NumInputStyle}" KeyDown="OnCamFieldKeyDown" LostFocus="OnCamFieldLostFocus"/>
-                                                                <TextBox x:Name="TbCamPitch" Grid.Column="2" Text="0" Margin="1" Style="{StaticResource NumInputStyle}" KeyDown="OnCamFieldKeyDown" LostFocus="OnCamFieldLostFocus"/>
+                                                                <TextBox x:Name="TbCamEuX" Grid.Column="1" Text="0" Margin="1" Style="{StaticResource NumInputStyle}" KeyDown="OnCamFieldKeyDown" LostFocus="OnCamFieldLostFocus"/>
+                                                                <TextBox x:Name="TbCamEuY" Grid.Column="2" Text="0" Margin="1" Style="{StaticResource NumInputStyle}" KeyDown="OnCamFieldKeyDown" LostFocus="OnCamFieldLostFocus"/>
+                                                                <TextBox x:Name="TbCamEuZ" Grid.Column="3" Text="0" Margin="1" Style="{StaticResource NumInputStyle}" KeyDown="OnCamFieldKeyDown" LostFocus="OnCamFieldLostFocus"/>
                                                             </Grid>
 
                                                         </StackPanel>

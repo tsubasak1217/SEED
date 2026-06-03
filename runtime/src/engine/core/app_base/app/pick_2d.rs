@@ -192,17 +192,13 @@ fn walk_pick_2d(
                     .to_mat4_sized(my_eff_w_r, my_eff_h_r),
             );
 
-            // Sprite のみヒットテストを行う。
-            // GPU ピッキングと統一して、テクスチャパスが有効な Sprite の OBB に
-            // 当たった場合のみ選択対象にする。
-            // Canvas のみ（スプライトなし）・テクスチャなし単色スプライトは
-            // ビューポートからの選択対象外（空白領域とみなす）。
+            // SpriteComponent を持つアクターの OBB ヒットテストを行う。
+            // テクスチャなし（単色）も含めて全 Sprite を選択対象にする。
+            // Canvas のみ（Sprite スロットなし）は選択対象外（空白領域とみなす）。
             let mut sprite_hit = false;
             for slot in actor.slots() {
                 if slot.kind == ComponentKind::Sprite {
                     if let Some(sc) = world.get::<SpriteComponent>(slot.entity) {
-                        // テクスチャなし（単色）は選択不可（GPU パスと同じ扱い）
-                        if sc.texture_path.is_empty() { continue; }
                         let eff_w = sc.width  * if sm_size { parent_cumul_scale[0] } else { 1.0 };
                         let eff_h = sc.height * if sm_size { parent_cumul_scale[1] } else { 1.0 };
                         let m = mat4x4_mul(parent_world_rs, eff_ct.to_mat4_sized(eff_w, eff_h));

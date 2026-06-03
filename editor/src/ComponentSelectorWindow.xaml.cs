@@ -52,8 +52,8 @@ public partial class ComponentSelectorWindow : Window
         }),
         ("UI", new()
         {
-            new("CanvasComponent", "Canvas", "UI 矩形領域をアクタにアタッチ（幅・高さ指定）", ActorTarget.Actor2D),
-            new("SpriteComponent", "Sprite", "2D スプライト画像をキャンバスに表示",          ActorTarget.Actor2D),
+            new("CanvasComponent", "Canvas", "UI 矩形領域をアクタにアタッチ（幅・高さ指定）。3D アクタにアタッチするとワールド空間に配置", ActorTarget.Common),
+            new("SpriteComponent", "Sprite", "2D スプライト画像をキャンバスに表示",          ActorTarget.Common),
         }),
         ("ライト", new()),
         ("エフェクト", new()),
@@ -64,7 +64,7 @@ public partial class ComponentSelectorWindow : Window
         ("物理", new()
         {
             new("ColliderComponent",   "Collider",    "衝突判定形状・リジッドボディをアクターにアタッチ（Box・Sphere・Capsule、重力有無は内部で設定）", ActorTarget.Actor3D),
-            new("Collider2dComponent", "Collider 2D", "2D コライダー・リジッドボディをアクターにアタッチ（Box・Circle・Capsule、ピクセル単位）",         ActorTarget.Actor2D),
+            new("Collider2dComponent", "Collider 2D", "2D コライダー・リジッドボディをアクターにアタッチ（Box・Circle・Capsule、ピクセル単位）",         ActorTarget.Common),
         }),
         ("サウンド", new()),
         ("入力", new()
@@ -275,9 +275,13 @@ public partial class ComponentSelectorWindow : Window
         if (_selectedBorder != null) _selectedBorder.Background = Brushes.Transparent;
         _selectedBorder  = row;
         row.Background   = BrushSelected;
-        _selectedType    = entry.TypeId;
 
-        TbName.Text      = string.IsNullOrEmpty(TbName.Text) || TbName.Text == GetDefaultName(_selectedType ?? "")
+        // 前の型のデフォルト名を保存してから型を更新する（自動リネーム判定に使用）
+        var prevType  = _selectedType;
+        _selectedType = entry.TypeId;
+
+        // テキストが空、または前回選択した型のデフォルト名のままであれば新しい型のデフォルト名に更新する
+        TbName.Text      = string.IsNullOrEmpty(TbName.Text) || TbName.Text == GetDefaultName(prevType ?? "")
             ? entry.Label
             : TbName.Text;
 

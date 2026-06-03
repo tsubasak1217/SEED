@@ -36,6 +36,21 @@ pub(super) fn camera_grab_start(hwnd: isize) -> Option<(i32, i32)> {
     None
 }
 
+/// MMB 押下時: ビューポートに ClipCursor でカーソルを閉じ込め、押下前の座標を返す。
+///
+/// ビューポート外にカーソルが出ると親ウィンドウ（WPF）がカーソルを再表示するため、
+/// RMB と同様に ClipCursor でウィンドウ内に閉じ込める。
+pub(super) fn mmb_grab_start(hwnd: isize) -> Option<(i32, i32)> {
+    // RMB と同じ実装（ClipCursor あり）
+    camera_grab_start(hwnd)
+}
+
+/// MMB リリース時: ClipCursor を解除してカーソルを起点座標へ戻す。
+pub(super) fn mmb_grab_end(x: i32, y: i32) {
+    // RMB と同じ実装
+    camera_grab_end(x, y);
+}
+
 /// RMB リリース時: ClipCursor を解除してカーソルを元の座標へ戻す。
 pub(super) fn camera_grab_end(x: i32, y: i32) {
     #[cfg(target_os = "windows")]

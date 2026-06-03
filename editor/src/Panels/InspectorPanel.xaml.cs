@@ -6,9 +6,11 @@ using System.Linq;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Documents;
 using System.Windows.Input;
 using System.Windows.Media;
 using Microsoft.Win32;
+using SEEDEditor;
 using SEEDEditor.Runtime;
 using SEEDEditor.Scripting;
 
@@ -196,11 +198,12 @@ public partial class InspectorPanel : UserControl
         if (_currentActorId < 0) return;
         Dispatcher.InvokeAsync(() =>
         {
-            // トランスフォームドラッグ中は UI を再構築しない。
-            // Rust が CommitTransform のたびに send_actor_components を返すため、
-            // UIリビルドで _tbPx 等の参照がクリアされて以降のドラッグ値送信が
-            // 無効になってしまうのを防ぐ。
-            if (_isDraggingTransform) return;
+            // ドラッグ操作中は UI を再構築しない。
+            // Rust が SET_*_TRANSFORM 等のたびに send_actor_components を返すため、
+            // UIリビルドで TextBox 参照がクリアされてドラッグが中断されるのを防ぐ。
+            // _isDraggingTransform: ラベルドラッグ中（MakeAxisLabel）
+            // Mouse.Captured != null: NumericDragBehavior などによるキャプチャ中
+            if (_isDraggingTransform || Mouse.Captured != null) return;
 
             // VP ref 解決待ちの場合は、ドロップされたアクターの Camera スロットを抽出して
             // インスペクタ UI 再構築ではなく参照設定処理に転用する。
@@ -314,6 +317,12 @@ public partial class InspectorPanel : UserControl
         bool AutoScale = true,
         // CanvasComponent 用ビューポート参照（"window" or "camera"）
         string VpRefType = "window", string VpRefActor = "", string VpRefSlot = "",
+        // CanvasComponent 用アスペクト比維持（scale_size=true のときのみ有効）
+        bool KeepAspectRatio = false, string AspectRatioAxis = "width",
+        // CanvasComponent 用重力方向モード（0=スクリーン下, 1=キャンバス下）
+        int GravityMode = 0,
+        // 3D CanvasComponent 用ピボット（正規化値 [0,1]）。Actor3D アタッチ時のみ有効。
+        float Canvas3dPivotX = 0f, float Canvas3dPivotY = 0f,
         // SpriteComponent 用フィールド
         string TexturePath = "",
         float SpriteR = 1f, float SpriteG = 1f, float SpriteB = 1f, float SpriteA = 1f,
@@ -419,6 +428,14 @@ public partial class InspectorPanel : UserControl
             var vpRefType  = comp.TryGetProperty("vp_ref_type",  out var vrt) ? vrt.GetString() ?? "window" : "window";
             var vpRefActor = comp.TryGetProperty("vp_ref_actor", out var vra) ? vra.GetString() ?? ""       : "";
             var vpRefSlot  = comp.TryGetProperty("vp_ref_slot",  out var vrs) ? vrs.GetString() ?? ""       : "";
+            // CanvasComponent 用: アスペクト比維持
+            var keepAspectRatio = comp.TryGetProperty("keep_aspect_ratio", out var kar) ? ReadJsonBool(kar, false) : false;
+            var aspectRatioAxis = comp.TryGetProperty("aspect_ratio_axis", out var ara) ? ara.GetString() ?? "width" : "width";
+            // CanvasComponent 用: 重力方向モード
+            var gravityMode = comp.TryGetProperty("gravity_mode", out var gm)  ? gm.GetInt32()  : 0;
+            // 3D CanvasComponent 用: ピボット
+            var canvas3dPivotX = comp.TryGetProperty("pivot_x", out var pvx) ? pvx.GetSingle() : 0f;
+            var canvas3dPivotY = comp.TryGetProperty("pivot_y", out var pvy) ? pvy.GetSingle() : 0f;
             // SpriteComponent 用: テクスチャパス・RGBA・サイズ
             var texPath = comp.TryGetProperty("texture_path", out var tp2) ? tp2.GetString() ?? "" : "";
             var sprR = comp.TryGetProperty("cr", out var cr) ? cr.GetSingle() : 1f;
@@ -456,6 +473,9 @@ public partial class InspectorPanel : UserControl
             var info = new SlotInfo(slotIdx, compName, compType, modelPath, width, height,
                 scaleTransform, scaleSize, autoScale,
                 VpRefType: vpRefType, VpRefActor: vpRefActor, VpRefSlot: vpRefSlot,
+                KeepAspectRatio: keepAspectRatio, AspectRatioAxis: aspectRatioAxis,
+                GravityMode: gravityMode,
+                Canvas3dPivotX: canvas3dPivotX, Canvas3dPivotY: canvas3dPivotY,
                 TexturePath: texPath, SpriteR: sprR, SpriteG: sprG, SpriteB: sprB, SpriteA: sprA,
                 SpriteW: sprW, SpriteH: sprH,
                 InputMapPath: inputMapPath,
@@ -519,6 +539,37 @@ public partial class InspectorPanel : UserControl
         }
     }
 
+    /// <summary>コンポーネント種別 ID からヘッダー背景色を返す。基本情報はニュートラルグレー。</summary>
+    private static Color GetTypeHeaderColor(string typeId) => typeId switch
+    {
+        "ModelComponent"      => Color.FromRgb(0x1C, 0x32, 0x1C), // 暗緑
+        "CanvasComponent"     => Color.FromRgb(0x18, 0x28, 0x3C), // 暗青
+        "SpriteComponent"     => Color.FromRgb(0x28, 0x18, 0x38), // 暗紫
+        "InputMapComponent"   => Color.FromRgb(0x38, 0x26, 0x12), // 暗橙
+        "CameraComponent"     => Color.FromRgb(0x12, 0x30, 0x38), // 暗シアン
+        "ColliderComponent"   => Color.FromRgb(0x38, 0x16, 0x16), // 暗赤
+        "Collider2dComponent" => Color.FromRgb(0x38, 0x16, 0x16), // 暗赤
+        "ScriptComponent"     => Color.FromRgb(0x20, 0x34, 0x20), // 暗緑（スクリプト）
+        "PluginComponent"     => Color.FromRgb(0x34, 0x2C, 0x12), // 暗黄
+        _                     => Color.FromRgb(0x2A, 0x2A, 0x2A), // ニュートラル（基本情報）
+    };
+
+    /// <summary>コンポーネント種別 ID から表示ラベルを返す。</summary>
+    private static string GetTypeDisplayLabel(string typeId) => typeId switch
+    {
+        "ModelComponent"      => "Model",
+        "CanvasComponent"     => "Canvas",
+        "SpriteComponent"     => "Sprite",
+        "InputMapComponent"   => "InputMap",
+        "CameraComponent"     => "Camera",
+        "ColliderComponent"   => "Collider",
+        "Collider2dComponent" => "Collider 2D",
+        "ScriptComponent"     => "Script",
+        "PluginComponent"     => "Plugin",
+        _ when typeId.StartsWith("Plugin:", StringComparison.Ordinal) => typeId["Plugin:".Length..],
+        _                     => typeId,
+    };
+
     /// <summary>
     /// アコーディオンセクションを生成する。
     /// ヘッダー行（▼/▶ + アイコン + タイトル）と折り畳み可能なコンテンツエリアを持つ。
@@ -532,10 +583,13 @@ public partial class InspectorPanel : UserControl
         // ── コンテナ（ヘッダー + コンテンツ）────────────────────
         var container = new StackPanel { Tag = slotIdx };
 
-        // ── ヘッダー ──────────────────────────────────────────────
+        // ── ヘッダー（コンポーネント種別に応じた有彩色背景）────────
+        var isComponentSlot = slotIdx >= 0 && !string.IsNullOrEmpty(typeId);
+        var headerBgColor   = isComponentSlot ? GetTypeHeaderColor(typeId) : Color.FromRgb(0x2A, 0x2A, 0x2A);
+
         var header = new Border
         {
-            Background      = new SolidColorBrush(Color.FromRgb(0x2A, 0x2A, 0x2A)),
+            Background      = new SolidColorBrush(headerBgColor),
             BorderBrush     = new SolidColorBrush(Color.FromRgb(0x3F, 0x3F, 0x46)),
             BorderThickness = new Thickness(0, 0, 0, 1),
             Padding         = new Thickness(6, 6, 6, 6),
@@ -560,7 +614,7 @@ public partial class InspectorPanel : UserControl
         headerGrid.Children.Add(arrow);
 
         // 種別アイコン（コンポーネントスロットのみ）
-        if (slotIdx >= 0 && !string.IsNullOrEmpty(typeId))
+        if (isComponentSlot)
         {
             var icon = new TextBlock
             {
@@ -574,14 +628,24 @@ public partial class InspectorPanel : UserControl
             headerGrid.Children.Add(icon);
         }
 
-        // タイトル
+        // タイトル: "コンポーネント名 - 種別" 形式（種別部分は薄い色で表示）
         var titleBlock = new TextBlock
         {
-            Text              = title,
-            Foreground        = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)),
             FontSize          = 12,
             VerticalAlignment = VerticalAlignment.Center,
         };
+        titleBlock.Inlines.Add(new Run(title)
+        {
+            Foreground = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)),
+        });
+        if (isComponentSlot)
+        {
+            titleBlock.Inlines.Add(new Run($" - {GetTypeDisplayLabel(typeId)}")
+            {
+                Foreground = new SolidColorBrush(Color.FromRgb(0x66, 0x66, 0x66)),
+                FontSize   = 10,
+            });
+        }
         Grid.SetColumn(titleBlock, 2);
         headerGrid.Children.Add(titleBlock);
 
@@ -771,21 +835,24 @@ public partial class InspectorPanel : UserControl
             Style  = TryFindResource("NumericTextBox") as Style,
             Height = 22,
         };
+        NumericDragBehavior.SetEnabled(tb, true);
 
-        tb.LostFocus += (_, _) =>
+        void CommitPluginFloat()
         {
             if (float.TryParse(tb.Text, System.Globalization.NumberStyles.Float,
                 System.Globalization.CultureInfo.InvariantCulture, out var v))
             {
-                v      = (float)Math.Clamp(v, min, max);
+                v       = (float)Math.Clamp(v, min, max);
                 tb.Text = v.ToString("G7", System.Globalization.CultureInfo.InvariantCulture);
                 SendPluginFieldChange(info, key, tb.Text);
             }
-        };
+        }
+        tb.LostFocus += (_, _) => CommitPluginFloat();
         tb.KeyDown += (_, e) =>
         {
             if (e.Key == Key.Return) { tb.MoveFocus(new TraversalRequest(FocusNavigationDirection.Next)); e.Handled = true; }
         };
+        NumericDragBehavior.SetOnDrag(tb, CommitPluginFloat);
 
         return tb;
     }
@@ -802,15 +869,17 @@ public partial class InspectorPanel : UserControl
             Style  = TryFindResource("NumericTextBox") as Style,
             Height = 22,
         };
-        tb.LostFocus += (_, _) =>
+        void CommitPluginInt()
         {
             if (int.TryParse(tb.Text, out var v))
             {
-                v = Math.Clamp(v, min, max);
+                v       = Math.Clamp(v, min, max);
                 tb.Text = v.ToString();
                 SendPluginFieldChange(info, key, tb.Text);
             }
-        };
+        }
+        NumericDragBehavior.Attach(tb, sensitivity: 1.0, isInteger: true, onDrag: CommitPluginInt, min: min, max: max);
+        tb.LostFocus += (_, _) => CommitPluginInt();
         tb.KeyDown += (_, e) =>
         {
             if (e.Key == Key.Return) { tb.MoveFocus(new TraversalRequest(FocusNavigationDirection.Next)); e.Handled = true; }
@@ -995,6 +1064,7 @@ public partial class InspectorPanel : UserControl
         }
         rowFov.textBox.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { CommitFov(); e.Handled = true; } };
         rowFov.textBox.LostFocus += (_, _) => CommitFov();
+        NumericDragBehavior.SetOnDrag(rowFov.textBox, CommitFov);
 
         // ニアクリップ
         var rowNear = BuildLabeledNumberRow("Near", info.CamNear);
@@ -1007,6 +1077,7 @@ public partial class InspectorPanel : UserControl
         }
         rowNear.textBox.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { CommitNear(); e.Handled = true; } };
         rowNear.textBox.LostFocus += (_, _) => CommitNear();
+        NumericDragBehavior.SetOnDrag(rowNear.textBox, CommitNear);
 
         // ファークリップ
         var rowFar = BuildLabeledNumberRow("Far", info.CamFar);
@@ -1019,6 +1090,7 @@ public partial class InspectorPanel : UserControl
         }
         rowFar.textBox.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { CommitFar(); e.Handled = true; } };
         rowFar.textBox.LostFocus += (_, _) => CommitFar();
+        NumericDragBehavior.SetOnDrag(rowFar.textBox, CommitFar);
 
         // メインカメラフラグ
         var mainRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 4, 0, 2) };
@@ -1120,9 +1192,11 @@ public partial class InspectorPanel : UserControl
         scalingRow.Children.Add(scalingCombo);
         sp.Children.Add(scalingRow);
 
-        // ターゲット解像度（スケーリングモード用）
+        // ターゲット解像度（スケーリングモード用）— 整数入力
         var rowTW = BuildLabeledNumberRow("解像度 W", info.CamTargetW);
+        NumericDragBehavior.Attach(rowTW.textBox, sensitivity: 1.0, isInteger: true);
         var rowTH = BuildLabeledNumberRow("解像度 H", info.CamTargetH);
+        NumericDragBehavior.Attach(rowTH.textBox, sensitivity: 1.0, isInteger: true);
         sp.Children.Add(rowTW.element);
         sp.Children.Add(rowTH.element);
         void CommitTargetSize()
@@ -1136,6 +1210,7 @@ public partial class InspectorPanel : UserControl
         rowTW.textBox.LostFocus += (_, _) => CommitTargetSize();
         rowTH.textBox.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { CommitTargetSize(); e.Handled = true; } };
         rowTH.textBox.LostFocus += (_, _) => CommitTargetSize();
+        NumericDragBehavior.SetOnDrag(rowTW.textBox, CommitTargetSize); NumericDragBehavior.SetOnDrag(rowTH.textBox, CommitTargetSize);
 
         // ── 帯カラー（LetterBox / PillarBox 選択時のみ表示）──────────
         float curBarR = info.CamBarCR, curBarG = info.CamBarCG, curBarB = info.CamBarCB, curBarA = info.CamBarCA;
@@ -1351,6 +1426,7 @@ public partial class InspectorPanel : UserControl
                 row.tx.LostFocus += (_, _) => CommitHe(); row.tx.KeyDown += (_, e) => { if (e.Key is Key.Return or Key.Enter) CommitHe(); };
                 row.ty.LostFocus += (_, _) => CommitHe(); row.ty.KeyDown += (_, e) => { if (e.Key is Key.Return or Key.Enter) CommitHe(); };
                 row.tz.LostFocus += (_, _) => CommitHe(); row.tz.KeyDown += (_, e) => { if (e.Key is Key.Return or Key.Enter) CommitHe(); };
+                NumericDragBehavior.SetOnDrag(row.tx, CommitHe); NumericDragBehavior.SetOnDrag(row.ty, CommitHe); NumericDragBehavior.SetOnDrag(row.tz, CommitHe);
             }
             else if (curShapeType == "Sphere")
             {
@@ -1362,6 +1438,7 @@ public partial class InspectorPanel : UserControl
                 }
                 rowR.textBox.LostFocus += (_, _) => CommitR();
                 rowR.textBox.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) CommitR(); };
+                NumericDragBehavior.SetOnDrag(rowR.textBox, CommitR);
             }
             else if (curShapeType is "Capsule" or "Cylinder" or "Cone")
             {
@@ -1377,6 +1454,7 @@ public partial class InspectorPanel : UserControl
                 }
                 rowR.textBox.LostFocus  += (_, _) => CommitRH(); rowR.textBox.KeyDown  += (_, e) => { if (e.Key is Key.Return or Key.Enter) CommitRH(); };
                 rowHH.textBox.LostFocus += (_, _) => CommitRH(); rowHH.textBox.KeyDown += (_, e) => { if (e.Key is Key.Return or Key.Enter) CommitRH(); };
+                NumericDragBehavior.SetOnDrag(rowR.textBox, CommitRH); NumericDragBehavior.SetOnDrag(rowHH.textBox, CommitRH);
             }
         }
         RebuildShapeParams();
@@ -1403,6 +1481,7 @@ public partial class InspectorPanel : UserControl
         offRow.tx.LostFocus += (_, _) => CommitOff(); offRow.tx.KeyDown += (_, e) => { if (e.Key is Key.Return or Key.Enter) CommitOff(); };
         offRow.ty.LostFocus += (_, _) => CommitOff(); offRow.ty.KeyDown += (_, e) => { if (e.Key is Key.Return or Key.Enter) CommitOff(); };
         offRow.tz.LostFocus += (_, _) => CommitOff(); offRow.tz.KeyDown += (_, e) => { if (e.Key is Key.Return or Key.Enter) CommitOff(); };
+        NumericDragBehavior.SetOnDrag(offRow.tx, CommitOff); NumericDragBehavior.SetOnDrag(offRow.ty, CommitOff); NumericDragBehavior.SetOnDrag(offRow.tz, CommitOff);
 
         // --- 押し戻し ---
         // 内部フィールド is_trigger (true=押し戻しなし) とは論理が逆。
@@ -1418,18 +1497,20 @@ public partial class InspectorPanel : UserControl
         sp.Children.Add(triggerRow);
 
         // --- 物理レイヤー ---
-        var layerRow = BuildLabeledIntRow("物理レイヤー", curLayer);
+        var layerRow = BuildLabeledIntRow("物理レイヤー", curLayer, min: 0);
         sp.Children.Add(layerRow.element);
-        void CommitLayer() { if (int.TryParse(layerRow.textBox.Text, out var v)) { curLayer = v; CommitCollider(); } }
+        void CommitLayer() { if (int.TryParse(layerRow.textBox.Text, out var v)) { curLayer = Math.Max(0, v); CommitCollider(); } }
         layerRow.textBox.LostFocus += (_, _) => CommitLayer();
         layerRow.textBox.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) CommitLayer(); };
+        NumericDragBehavior.SetOnDrag(layerRow.textBox, CommitLayer);
 
         // --- レイヤーマスク ---
-        var maskRow = BuildLabeledIntRow("レイヤーマスク", curMask);
+        var maskRow = BuildLabeledIntRow("レイヤーマスク", curMask, min: 0);
         sp.Children.Add(maskRow.element);
-        void CommitMask() { if (int.TryParse(maskRow.textBox.Text, out var v)) { curMask = v; CommitCollider(); } }
+        void CommitMask() { if (int.TryParse(maskRow.textBox.Text, out var v)) { curMask = Math.Max(0, v); CommitCollider(); } }
         maskRow.textBox.LostFocus += (_, _) => CommitMask();
         maskRow.textBox.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) CommitMask(); };
+        NumericDragBehavior.SetOnDrag(maskRow.textBox, CommitMask);
 
         // ────────────────────────────────────────────────────────────────
         // リジッドボディ設定（「リジッドボディを使用」チェックで展開）
@@ -1508,6 +1589,7 @@ public partial class InspectorPanel : UserControl
         {
             row.textBox.LostFocus += (_, _) => CommitFloats();
             row.textBox.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) CommitFloats(); };
+            NumericDragBehavior.SetOnDrag(row.textBox, CommitFloats);
         }
 
         // --- キネマティック（スクリプトで直接制御） ---
@@ -1530,6 +1612,7 @@ public partial class InspectorPanel : UserControl
         rowLinV.tx.LostFocus += (_, _) => CommitLinV(); rowLinV.tx.KeyDown += (_, e) => { if (e.Key is Key.Return or Key.Enter) CommitLinV(); };
         rowLinV.ty.LostFocus += (_, _) => CommitLinV(); rowLinV.ty.KeyDown += (_, e) => { if (e.Key is Key.Return or Key.Enter) CommitLinV(); };
         rowLinV.tz.LostFocus += (_, _) => CommitLinV(); rowLinV.tz.KeyDown += (_, e) => { if (e.Key is Key.Return or Key.Enter) CommitLinV(); };
+        NumericDragBehavior.SetOnDrag(rowLinV.tx, CommitLinV); NumericDragBehavior.SetOnDrag(rowLinV.ty, CommitLinV); NumericDragBehavior.SetOnDrag(rowLinV.tz, CommitLinV);
 
         // --- 初期角速度 ---
         var rowAngV = BuildXYZRowSimple("初角速度 (rad/s)", curAngV[0], curAngV[1], curAngV[2]);
@@ -1543,6 +1626,7 @@ public partial class InspectorPanel : UserControl
         rowAngV.tx.LostFocus += (_, _) => CommitAngV(); rowAngV.tx.KeyDown += (_, e) => { if (e.Key is Key.Return or Key.Enter) CommitAngV(); };
         rowAngV.ty.LostFocus += (_, _) => CommitAngV(); rowAngV.ty.KeyDown += (_, e) => { if (e.Key is Key.Return or Key.Enter) CommitAngV(); };
         rowAngV.tz.LostFocus += (_, _) => CommitAngV(); rowAngV.tz.KeyDown += (_, e) => { if (e.Key is Key.Return or Key.Enter) CommitAngV(); };
+        NumericDragBehavior.SetOnDrag(rowAngV.tx, CommitAngV); NumericDragBehavior.SetOnDrag(rowAngV.ty, CommitAngV); NumericDragBehavior.SetOnDrag(rowAngV.tz, CommitAngV);
 
         rbSectionContainer.Children.Add(rbBorder);
 
@@ -1582,6 +1666,9 @@ public partial class InspectorPanel : UserControl
         bool   freezeRot2  = false;
         var    initLinVel2 = new float[2];
         float  initAngVel2 = 0f;
+        // アスペクト比設定
+        bool   keepAspect2d    = false;
+        string aspectAxis2d    = "width";
 
         try
         {
@@ -1614,6 +1701,8 @@ public partial class InspectorPanel : UserControl
             if (root.TryGetProperty("initial_linear_velocity", out var ilv) && ilv.GetArrayLength() == 2)
             { initLinVel2[0] = ilv[0].GetSingle(); initLinVel2[1] = ilv[1].GetSingle(); }
             if (root.TryGetProperty("initial_angular_velocity", out var iav)) initAngVel2 = iav.GetSingle();
+            if (root.TryGetProperty("keep_aspect_ratio", out var kar2)) keepAspect2d = kar2.GetBoolean();
+            if (root.TryGetProperty("aspect_ratio_axis", out var ara2)) aspectAxis2d = ara2.GetString() ?? "width";
         }
         catch { /* デフォルト値を使用 */ }
 
@@ -1634,6 +1723,8 @@ public partial class InspectorPanel : UserControl
         var curFreezeR    = freezeRot2;
         var curLinV       = (float[])initLinVel2.Clone();
         var curAngV2      = initAngVel2;
+        var curKeepAspect2d = keepAspect2d;
+        var curAspectAxis2d = aspectAxis2d;
 
         // ── JSON 再構築 + 送信ヘルパー ───────────────────────────────────
         void CommitCollider2d()
@@ -1664,7 +1755,9 @@ public partial class InspectorPanel : UserControl
                 $"\"freeze_position\":[{B(curFreezeP[0])},{B(curFreezeP[1])}]," +
                 $"\"freeze_rotation\":{B(curFreezeR)}," +
                 $"\"initial_linear_velocity\":[{F(curLinV[0])},{F(curLinV[1])}]," +
-                $"\"initial_angular_velocity\":{F(curAngV2)}}}";
+                $"\"initial_angular_velocity\":{F(curAngV2)}," +
+                $"\"keep_aspect_ratio\":{B(curKeepAspect2d)}," +
+                $"\"aspect_ratio_axis\":\"{curAspectAxis2d}\"}}";
             _runtime?.SendToRuntime($"SET_COLLIDER2D_DATA:{_currentActorId},{info.SlotIdx},{json}");
         }
 
@@ -1700,19 +1793,24 @@ public partial class InspectorPanel : UserControl
         // 2 値ラベル行ヘルパー（X, Y）
         static (UIElement element, TextBox tx, TextBox ty) BuildXYRowSimple2d(string label, float vx, float vy)
         {
-            TextBox MakeTb(float val) => new TextBox
+            TextBox MakeTb(float val)
             {
-                Text              = val.ToString("F2", CultureInfo.InvariantCulture),
-                Background        = new SolidColorBrush(Color.FromRgb(0x1E, 0x1E, 0x1E)),
-                Foreground        = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)),
-                BorderBrush       = new SolidColorBrush(Color.FromRgb(0x44, 0x44, 0x44)),
-                BorderThickness   = new Thickness(1),
-                FontSize          = 11,
-                Padding           = new Thickness(4, 1, 4, 1),
-                Width             = 68,
-                VerticalAlignment = VerticalAlignment.Center,
-                Margin            = new Thickness(2, 0, 0, 0),
-            };
+                var t = new TextBox
+                {
+                    Text              = val.ToString("F2", CultureInfo.InvariantCulture),
+                    Background        = new SolidColorBrush(Color.FromRgb(0x1E, 0x1E, 0x1E)),
+                    Foreground        = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)),
+                    BorderBrush       = new SolidColorBrush(Color.FromRgb(0x44, 0x44, 0x44)),
+                    BorderThickness   = new Thickness(1),
+                    FontSize          = 11,
+                    Padding           = new Thickness(4, 1, 4, 1),
+                    Width             = 68,
+                    VerticalAlignment = VerticalAlignment.Center,
+                    Margin            = new Thickness(2, 0, 0, 0),
+                };
+                NumericDragBehavior.SetEnabled(t, true);
+                return t;
+            }
             var tx = MakeTb(vx); var ty = MakeTb(vy);
             var row = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 2, 0, 2) };
             row.Children.Add(new TextBlock
@@ -1739,6 +1837,7 @@ public partial class InspectorPanel : UserControl
                 }
                 row.tx.LostFocus += (_, _) => CommitHe(); row.tx.KeyDown += (_, e) => { if (e.Key is Key.Return or Key.Enter) CommitHe(); };
                 row.ty.LostFocus += (_, _) => CommitHe(); row.ty.KeyDown += (_, e) => { if (e.Key is Key.Return or Key.Enter) CommitHe(); };
+                NumericDragBehavior.SetOnDrag(row.tx, CommitHe); NumericDragBehavior.SetOnDrag(row.ty, CommitHe);
             }
             else if (curShapeType == "Circle")
             {
@@ -1749,6 +1848,7 @@ public partial class InspectorPanel : UserControl
                 }
                 rowR.textBox.LostFocus += (_, _) => CommitR();
                 rowR.textBox.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) CommitR(); };
+                NumericDragBehavior.SetOnDrag(rowR.textBox, CommitR);
             }
             else if (curShapeType == "Capsule")
             {
@@ -1763,6 +1863,7 @@ public partial class InspectorPanel : UserControl
                 }
                 rowR.textBox.LostFocus  += (_, _) => CommitRH(); rowR.textBox.KeyDown  += (_, e) => { if (e.Key is Key.Return or Key.Enter) CommitRH(); };
                 rowHH.textBox.LostFocus += (_, _) => CommitRH(); rowHH.textBox.KeyDown += (_, e) => { if (e.Key is Key.Return or Key.Enter) CommitRH(); };
+                NumericDragBehavior.SetOnDrag(rowR.textBox, CommitRH); NumericDragBehavior.SetOnDrag(rowHH.textBox, CommitRH);
             }
         }
         RebuildShapeParams2d();
@@ -1787,6 +1888,7 @@ public partial class InspectorPanel : UserControl
         }
         offRow2d.tx.LostFocus += (_, _) => CommitOff2d(); offRow2d.tx.KeyDown += (_, e) => { if (e.Key is Key.Return or Key.Enter) CommitOff2d(); };
         offRow2d.ty.LostFocus += (_, _) => CommitOff2d(); offRow2d.ty.KeyDown += (_, e) => { if (e.Key is Key.Return or Key.Enter) CommitOff2d(); };
+        NumericDragBehavior.SetOnDrag(offRow2d.tx, CommitOff2d); NumericDragBehavior.SetOnDrag(offRow2d.ty, CommitOff2d);
 
         // --- 押し戻し ---
         var triggerRow2d = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 4, 0, 2) };
@@ -1800,17 +1902,19 @@ public partial class InspectorPanel : UserControl
         sp.Children.Add(triggerRow2d);
 
         // --- 物理レイヤー・マスク ---
-        var layerRow2d = BuildLabeledIntRow("物理レイヤー", curLayer);
+        var layerRow2d = BuildLabeledIntRow("物理レイヤー", curLayer, min: 0);
         sp.Children.Add(layerRow2d.element);
-        void CommitLayer2d() { if (int.TryParse(layerRow2d.textBox.Text, out var v)) { curLayer = v; CommitCollider2d(); } }
+        void CommitLayer2d() { if (int.TryParse(layerRow2d.textBox.Text, out var v)) { curLayer = Math.Max(0, v); CommitCollider2d(); } }
         layerRow2d.textBox.LostFocus += (_, _) => CommitLayer2d();
         layerRow2d.textBox.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) CommitLayer2d(); };
+        NumericDragBehavior.SetOnDrag(layerRow2d.textBox, CommitLayer2d);
 
-        var maskRow2d = BuildLabeledIntRow("レイヤーマスク", curMask);
+        var maskRow2d = BuildLabeledIntRow("レイヤーマスク", curMask, min: 0);
         sp.Children.Add(maskRow2d.element);
-        void CommitMask2d() { if (int.TryParse(maskRow2d.textBox.Text, out var v)) { curMask = v; CommitCollider2d(); } }
+        void CommitMask2d() { if (int.TryParse(maskRow2d.textBox.Text, out var v)) { curMask = Math.Max(0, v); CommitCollider2d(); } }
         maskRow2d.textBox.LostFocus += (_, _) => CommitMask2d();
         maskRow2d.textBox.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) CommitMask2d(); };
+        NumericDragBehavior.SetOnDrag(maskRow2d.textBox, CommitMask2d);
 
         // ────────────────────────────────────────────────────────────────
         // リジッドボディ設定
@@ -1874,6 +1978,7 @@ public partial class InspectorPanel : UserControl
         {
             row2d.textBox.LostFocus += (_, _) => CommitFloats2d();
             row2d.textBox.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) CommitFloats2d(); };
+            NumericDragBehavior.SetOnDrag(row2d.textBox, CommitFloats2d);
         }
 
         // --- キネマティック ---
@@ -1914,6 +2019,7 @@ public partial class InspectorPanel : UserControl
         }
         rowLinV2d.tx.LostFocus += (_, _) => CommitLinV2d(); rowLinV2d.tx.KeyDown += (_, e) => { if (e.Key is Key.Return or Key.Enter) CommitLinV2d(); };
         rowLinV2d.ty.LostFocus += (_, _) => CommitLinV2d(); rowLinV2d.ty.KeyDown += (_, e) => { if (e.Key is Key.Return or Key.Enter) CommitLinV2d(); };
+        NumericDragBehavior.SetOnDrag(rowLinV2d.tx, CommitLinV2d); NumericDragBehavior.SetOnDrag(rowLinV2d.ty, CommitLinV2d);
 
         // --- 初期角速度 (rad/s) ---
         var rowAngV2d = BuildLabeledNumberRow("初角速度 (rad/s)", curAngV2);
@@ -1923,11 +2029,78 @@ public partial class InspectorPanel : UserControl
         }
         rowAngV2d.textBox.LostFocus += (_, _) => CommitAngV2d();
         rowAngV2d.textBox.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) CommitAngV2d(); };
+        NumericDragBehavior.SetOnDrag(rowAngV2d.textBox, CommitAngV2d);
 
         rbSectionContainer2d.Children.Add(rbBorder2d);
 
         useRbCheck2d.Checked   += (_, _) => { curUseRb = true;  rbBorder2d.Visibility = Visibility.Visible;   CommitCollider2d(); };
         useRbCheck2d.Unchecked += (_, _) => { curUseRb = false; rbBorder2d.Visibility = Visibility.Collapsed; CommitCollider2d(); };
+
+        // ── アスペクト比セクション ──────────────────────────────────────────
+        var aspectSep2d = new TextBlock
+        {
+            Text       = "スケール設定",
+            Foreground = new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88)),
+            FontSize   = 10,
+            Margin     = new Thickness(0, 8, 0, 2),
+        };
+        sp.Children.Add(aspectSep2d);
+
+        // チェックボックス: アスペクト比を維持
+        var cbKeepAspect2d = new CheckBox
+        {
+            Content           = "アスペクト比を維持（scale_size 時）",
+            IsChecked         = curKeepAspect2d,
+            Foreground        = new SolidColorBrush(Colors.White),
+            FontSize          = 11,
+            Margin            = new Thickness(0, 2, 0, 2),
+            VerticalAlignment = VerticalAlignment.Center,
+            ToolTip           = "親 CanvasComponent の scale_size=true 時に、形状のスケールをアスペクト比維持で適用します。",
+        };
+        sp.Children.Add(cbKeepAspect2d);
+
+        // 基準軸選択パネル（アスペクト比維持がオンのときのみ表示）
+        var axisPanel2d = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Margin      = new Thickness(16, 0, 0, 4),
+            Visibility  = curKeepAspect2d ? Visibility.Visible : Visibility.Collapsed,
+        };
+        axisPanel2d.Children.Add(new TextBlock
+        {
+            Text              = "基準軸",
+            Foreground        = new SolidColorBrush(Color.FromRgb(0xAA, 0xAA, 0xAA)),
+            FontSize          = 11,
+            Width             = 60,
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+        var cmbAspectAxis2d = new ComboBox
+        {
+            Width      = 100,
+            FontSize   = 11,
+            Background = System.Windows.Media.Brushes.White,
+            Foreground = System.Windows.Media.Brushes.Black,
+            Margin     = new Thickness(4, 0, 0, 0),
+        };
+        cmbAspectAxis2d.Items.Add(new ComboBoxItem { Content = "横（幅）基準",   Tag = "width",  Foreground = System.Windows.Media.Brushes.Black });
+        cmbAspectAxis2d.Items.Add(new ComboBoxItem { Content = "縦（高さ）基準", Tag = "height", Foreground = System.Windows.Media.Brushes.Black });
+        cmbAspectAxis2d.SelectedIndex = curAspectAxis2d == "height" ? 1 : 0;
+        axisPanel2d.Children.Add(cmbAspectAxis2d);
+        sp.Children.Add(axisPanel2d);
+
+        // アスペクト比を送信するローカル関数
+        void CommitAspectRatio2d()
+        {
+            if (_currentActorId < 0) return;
+            int keep = (cbKeepAspect2d.IsChecked == true) ? 1 : 0;
+            var axis = (cmbAspectAxis2d.SelectedItem as ComboBoxItem)?.Tag as string ?? "width";
+            curKeepAspect2d = keep == 1;
+            curAspectAxis2d = axis;
+            CommitCollider2d();
+        }
+        cbKeepAspect2d.Checked   += (_, _) => { axisPanel2d.Visibility = Visibility.Visible;  CommitAspectRatio2d(); };
+        cbKeepAspect2d.Unchecked += (_, _) => { axisPanel2d.Visibility = Visibility.Collapsed; CommitAspectRatio2d(); };
+        cmbAspectAxis2d.SelectionChanged += (_, _) => CommitAspectRatio2d();
 
         return sp;
     }
@@ -2114,6 +2287,7 @@ public partial class InspectorPanel : UserControl
         rowW.textBox.LostFocus += (_, _) => CommitSize();
         rowH.textBox.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { CommitSize(); e.Handled = true; } };
         rowH.textBox.LostFocus += (_, _) => CommitSize();
+        NumericDragBehavior.SetOnDrag(rowW.textBox, CommitSize); NumericDragBehavior.SetOnDrag(rowH.textBox, CommitSize);
 
         return sp;
     }
@@ -2164,22 +2338,62 @@ public partial class InspectorPanel : UserControl
             IsChecked           = info.ScaleSize,
             Foreground          = new SolidColorBrush(Colors.White),
             FontSize            = 11,
-            Margin              = new Thickness(0, 2, 0, 8),
+            Margin              = new Thickness(0, 2, 0, 2),
             VerticalAlignment   = VerticalAlignment.Center,
         };
         sp.Children.Add(cbSize);
 
-        // ── 自動スケール セクション ──────────────────────────
-        var autoScaleSep = new TextBlock
+        // アスペクト比維持パネル（アイテムのサイズをスケールする のときのみ表示）
+        var aspectPanel = new StackPanel
         {
-            Text       = "画面対応",
-            Foreground = new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88)),
-            FontSize   = 10,
-            Margin     = new Thickness(0, 2, 0, 2),
+            Margin     = new Thickness(16, 0, 0, 6),
+            Visibility = info.ScaleSize ? Visibility.Visible : Visibility.Collapsed,
         };
-        sp.Children.Add(autoScaleSep);
 
-        // チェックボックス: 画面サイズに自動スケール（ルートキャンバスのみ有効）
+        // チェックボックス: アイテムのアスペクト比を維持
+        var cbKeepAspect = new CheckBox
+        {
+            Content           = "アイテムのアスペクト比を維持",
+            IsChecked         = info.KeepAspectRatio,
+            Foreground        = new SolidColorBrush(Colors.White),
+            FontSize          = 11,
+            Margin            = new Thickness(0, 2, 0, 2),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        aspectPanel.Children.Add(cbKeepAspect);
+
+        // 基準軸選択パネル（アスペクト比維持がオンのときのみ表示）
+        var axisPanel = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Margin      = new Thickness(16, 0, 0, 2),
+            Visibility  = info.KeepAspectRatio ? Visibility.Visible : Visibility.Collapsed,
+        };
+        axisPanel.Children.Add(new TextBlock
+        {
+            Text              = "基準軸",
+            Foreground        = new SolidColorBrush(Color.FromRgb(0xAA, 0xAA, 0xAA)),
+            FontSize          = 11,
+            Width             = 60,
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+        var cmbAspectAxis = new ComboBox
+        {
+            Width      = 100,
+            FontSize   = 11,
+            Background = System.Windows.Media.Brushes.White,
+            Foreground = System.Windows.Media.Brushes.Black,
+            Margin     = new Thickness(4, 0, 0, 0),
+        };
+        cmbAspectAxis.Items.Add(new ComboBoxItem { Content = "横（幅）基準",   Tag = "width",  Foreground = System.Windows.Media.Brushes.Black });
+        cmbAspectAxis.Items.Add(new ComboBoxItem { Content = "縦（高さ）基準", Tag = "height", Foreground = System.Windows.Media.Brushes.Black });
+        cmbAspectAxis.SelectedIndex = info.AspectRatioAxis == "height" ? 1 : 0;
+        axisPanel.Children.Add(cmbAspectAxis);
+        aspectPanel.Children.Add(axisPanel);
+        sp.Children.Add(aspectPanel);
+
+        // ── 自動スケール セクション（Actor2D = 2D キャンバス時のみ表示）──────────────────────────
+        // Actor3D に Canvas をアタッチした場合（3D ワールドキャンバス）はこの設定を使わない。
         var cbAutoScale = new CheckBox
         {
             Content             = "画面サイズに自動スケール",
@@ -2190,9 +2404,21 @@ public partial class InspectorPanel : UserControl
             ToolTip             = "親キャンバスを持たないルートキャンバスにのみ有効。\nビューポートサイズの変化に応じて子 UI を自動スケールします。",
             VerticalAlignment   = VerticalAlignment.Center,
         };
-        sp.Children.Add(cbAutoScale);
+        if (_isActor2D)
+        {
+            var autoScaleSep = new TextBlock
+            {
+                Text       = "画面対応",
+                Foreground = new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88)),
+                FontSize   = 10,
+                Margin     = new Thickness(0, 2, 0, 2),
+            };
+            sp.Children.Add(autoScaleSep);
+            sp.Children.Add(cbAutoScale);
+        }
 
-        // ── ビューポート参照 セクション ──────────────────────────
+        // ── ビューポート参照 セクション（Actor2D = 2D キャンバス時のみ表示）──────────────────────────
+        // Actor3D の 3D ワールドキャンバスにはビューポート参照は不要。
         var vpRefSep = new TextBlock
         {
             Text       = "ビューポート参照",
@@ -2200,7 +2426,7 @@ public partial class InspectorPanel : UserControl
             FontSize   = 10,
             Margin     = new Thickness(0, 8, 0, 2),
         };
-        sp.Children.Add(vpRefSep);
+        if (_isActor2D) sp.Children.Add(vpRefSep);
 
         // 参照種別ドロップダウン（ウィンドウ / カメラ）
         var cmbVpRef = new ComboBox
@@ -2214,7 +2440,7 @@ public partial class InspectorPanel : UserControl
         cmbVpRef.Items.Add(new ComboBoxItem { Content = "ウィンドウ", Tag = "window", Foreground = new SolidColorBrush(Colors.Black) });
         cmbVpRef.Items.Add(new ComboBoxItem { Content = "カメラ",     Tag = "camera", Foreground = new SolidColorBrush(Colors.Black) });
         cmbVpRef.SelectedIndex = info.VpRefType == "camera" ? 1 : 0;
-        sp.Children.Add(cmbVpRef);
+        if (_isActor2D) sp.Children.Add(cmbVpRef);
 
         // カメラ参照フィールド（D&D 受け付けエリア）
         var vpRefCameraPanel = new StackPanel { Visibility = info.VpRefType == "camera" ? Visibility.Visible : Visibility.Collapsed };
@@ -2260,7 +2486,7 @@ public partial class InspectorPanel : UserControl
 
         vpRefCameraPanel.Children.Add(vpDropZone);
         vpRefCameraPanel.Children.Add(btnClearVp);
-        sp.Children.Add(vpRefCameraPanel);
+        if (_isActor2D) sp.Children.Add(vpRefCameraPanel);
 
         // ── イベント ──────────────────────────────────────────
 
@@ -2344,14 +2570,191 @@ public partial class InspectorPanel : UserControl
         tbW.LostFocus += (_, _) => CommitSize();
         tbH.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { CommitSize(); e.Handled = true; } };
         tbH.LostFocus += (_, _) => CommitSize();
+        NumericDragBehavior.SetOnDrag(tbW, CommitSize); NumericDragBehavior.SetOnDrag(tbH, CommitSize);
 
         cbTransform.Checked   += (_, _) => CommitScaleMode();
         cbTransform.Unchecked += (_, _) => CommitScaleMode();
-        cbSize.Checked        += (_, _) => CommitScaleMode();
-        cbSize.Unchecked      += (_, _) => CommitScaleMode();
+        cbSize.Checked        += (_, _) =>
+        {
+            CommitScaleMode();
+            aspectPanel.Visibility = Visibility.Visible;
+        };
+        cbSize.Unchecked += (_, _) =>
+        {
+            CommitScaleMode();
+            aspectPanel.Visibility = Visibility.Collapsed;
+        };
+
+        // アスペクト比維持を送信するローカル関数
+        void CommitAspectRatio()
+        {
+            if (_currentActorId < 0) return;
+            int keep = (cbKeepAspect.IsChecked == true) ? 1 : 0;
+            var axis = (cmbAspectAxis.SelectedItem as ComboBoxItem)?.Tag as string ?? "width";
+            _runtime?.SendToRuntime($"SET_CANVAS_ASPECT_RATIO:{_currentActorId},{info.SlotIdx},{keep},{axis}");
+        }
+
+        cbKeepAspect.Checked   += (_, _) => { axisPanel.Visibility = Visibility.Visible;  CommitAspectRatio(); };
+        cbKeepAspect.Unchecked += (_, _) => { axisPanel.Visibility = Visibility.Collapsed; CommitAspectRatio(); };
+        cmbAspectAxis.SelectionChanged += (_, _) => CommitAspectRatio();
 
         cbAutoScale.Checked   += (_, _) => CommitAutoScale();
         cbAutoScale.Unchecked += (_, _) => CommitAutoScale();
+
+        // ── 重力方向セクション ──────────────────────────────────────────────────
+        var gravitySep = new TextBlock
+        {
+            Text       = "2D 物理 – 重力方向",
+            Foreground = new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88)),
+            FontSize   = 10,
+            Margin     = new Thickness(0, 8, 0, 2),
+        };
+        sp.Children.Add(gravitySep);
+
+        // 重力方向ドロップダウン
+        var cmbGravity = new ComboBox
+        {
+            Foreground = new SolidColorBrush(Colors.Black),
+            Background = new SolidColorBrush(Colors.White),
+            FontSize   = 11,
+            Margin     = new Thickness(0, 2, 0, 4),
+            Padding    = new Thickness(4, 2, 4, 2),
+            ToolTip    = "スクリーン下方向: キャンバスを回転しても「画面の下」が常に重力方向です。\n" +
+                         "キャンバス下方向: キャンバスを回転すると重力も追従します。",
+        };
+        cmbGravity.Items.Add(new ComboBoxItem
+        {
+            Content    = "スクリーン下方向を正とする（デフォルト）",
+            Tag        = 0,
+            Foreground = new SolidColorBrush(Colors.Black),
+        });
+        cmbGravity.Items.Add(new ComboBoxItem
+        {
+            Content    = "キャンバス下方向を正とする",
+            Tag        = 1,
+            Foreground = new SolidColorBrush(Colors.Black),
+        });
+        cmbGravity.SelectedIndex = info.GravityMode == 1 ? 1 : 0;
+        sp.Children.Add(cmbGravity);
+
+        // 重力方向変更を IPC 送信するローカル関数
+        void CommitGravityMode()
+        {
+            if (_currentActorId < 0) return;
+            var mode = (cmbGravity.SelectedItem as ComboBoxItem)?.Tag as int? ?? 0;
+            _runtime?.SendToRuntime(FormattableString.Invariant(
+                $"SET_CANVAS_GRAVITY_MODE:{_currentActorId},{info.SlotIdx},{mode}"));
+        }
+        cmbGravity.SelectionChanged += (_, _) => CommitGravityMode();
+
+        // ── 3D キャンバス専用: ピボット設定（Actor2D では非表示）──────────────────────────
+        // 2D アクタの CanvasTransform ピボットと同じレイアウト（3×3 プリセットグリッド + XY フィールド）。
+        // アクター位置がキャンバスのどの点に対応するかを決める。
+        // (0,0)=左上原点（デフォルト）, (0.5,0.5)=中央, (1,1)=右下。
+        if (!_isActor2D)
+        {
+            var pivotLabel3d = new TextBlock
+            {
+                Text       = "ピボット",
+                Foreground = new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88)),
+                FontSize   = 11,
+                Margin     = new Thickness(0, 8, 0, 2),
+                ToolTip    = "アクター位置がキャンバスのどの点に対応するかを指定します。\n(0,0)=左上, (0.5,0.5)=中央, (1,1)=右下",
+            };
+            sp.Children.Add(pivotLabel3d);
+
+            float curPivX = info.Canvas3dPivotX;
+            float curPivY = info.Canvas3dPivotY;
+
+            // 数値フィールド（プリセットボタンのクロージャから先行参照するため先に生成）
+            var tbPivX = MakeAxisField(curPivX, "#E06C75");
+            var tbPivY = MakeAxisField(curPivY, "#98C379");
+
+            // ピボット変更を IPC 送信するローカル関数
+            void CommitPivot()
+            {
+                if (_currentActorId < 0) return;
+                if (!float.TryParse(tbPivX.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var px)) return;
+                if (!float.TryParse(tbPivY.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var py)) return;
+                px = Math.Clamp(px, 0f, 1f);
+                py = Math.Clamp(py, 0f, 1f);
+                tbPivX.Text = px.ToString("G7", CultureInfo.InvariantCulture);
+                tbPivY.Text = py.ToString("G7", CultureInfo.InvariantCulture);
+                _runtime?.SendToRuntime(FormattableString.Invariant(
+                    $"SET_CANVAS_3D_PIVOT:{_currentActorId},{info.SlotIdx},{px},{py}"));
+            }
+
+            // 3×3 プリセットグリッドと数値入力を横並び（2D CanvasTransform ピボットと同じ構成）
+            var piv3dRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 4) };
+
+            var piv3dPresetGrid = new Grid { Width = 60, Height = 60, Margin = new Thickness(0, 0, 8, 0) };
+            for (int i = 0; i < 3; i++)
+            {
+                piv3dPresetGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+                piv3dPresetGrid.RowDefinitions.Add(new RowDefinition    { Height = new GridLength(1, GridUnitType.Star) });
+            }
+            float[] pvVals = { 0f, 0.5f, 1f };
+            for (int pvRowIdx = 0; pvRowIdx < 3; pvRowIdx++)
+            {
+                for (int pvColIdx = 0; pvColIdx < 3; pvColIdx++)
+                {
+                    float pv = pvVals[pvColIdx];
+                    float qv = pvVals[pvRowIdx];
+                    bool pvActive = Math.Abs(curPivX - pv) < 0.01f && Math.Abs(curPivY - qv) < 0.01f;
+                    var pvBtn = new Button
+                    {
+                        Width           = 16,
+                        Height          = 16,
+                        Margin          = new Thickness(1),
+                        Background      = pvActive
+                            ? new SolidColorBrush(Color.FromRgb(0x61, 0xAF, 0xEF))
+                            : new SolidColorBrush(Color.FromRgb(0x3A, 0x3A, 0x3A)),
+                        BorderBrush     = new SolidColorBrush(Color.FromRgb(0x55, 0x55, 0x55)),
+                        BorderThickness = new Thickness(1),
+                        Padding         = new Thickness(0),
+                        Tag             = (pv, qv),
+                    };
+                    pvBtn.Click += (_, _) =>
+                    {
+                        var (fpx, fpy) = ((float, float))pvBtn.Tag;
+                        tbPivX.Text = fpx.ToString("F2", CultureInfo.InvariantCulture);
+                        tbPivY.Text = fpy.ToString("F2", CultureInfo.InvariantCulture);
+                        CommitPivot();
+                    };
+                    Grid.SetRow(pvBtn, pvRowIdx);
+                    Grid.SetColumn(pvBtn, pvColIdx);
+                    piv3dPresetGrid.Children.Add(pvBtn);
+                }
+            }
+            piv3dRow.Children.Add(piv3dPresetGrid);
+
+            // 数値入力エリア（AddXYRow と同じレイアウト。CommitPivot を直接フックして CommitTransform を呼ばない）
+            var piv3dFieldGrid = BuildXYGrid();
+            piv3dFieldGrid.VerticalAlignment = VerticalAlignment.Center;
+            piv3dFieldGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(24) });
+            var piv3dRowLbl = new TextBlock
+            {
+                Text              = "値",
+                Foreground        = new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88)),
+                FontSize          = 11,
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            Grid.SetRow(piv3dRowLbl, 0); Grid.SetColumn(piv3dRowLbl, 0); piv3dFieldGrid.Children.Add(piv3dRowLbl);
+            Grid.SetRow(tbPivX, 0);      Grid.SetColumn(tbPivX, 2);      piv3dFieldGrid.Children.Add(tbPivX);
+            Grid.SetRow(tbPivY, 0);      Grid.SetColumn(tbPivY, 4);      piv3dFieldGrid.Children.Add(tbPivY);
+            var piv3dLblX = MakeAxisLabel("X", "#E06C75", tbPivX, 0.01);
+            var piv3dLblY = MakeAxisLabel("Y", "#98C379", tbPivY, 0.01);
+            Grid.SetRow(piv3dLblX, 0);   Grid.SetColumn(piv3dLblX, 1);   piv3dFieldGrid.Children.Add(piv3dLblX);
+            Grid.SetRow(piv3dLblY, 0);   Grid.SetColumn(piv3dLblY, 3);   piv3dFieldGrid.Children.Add(piv3dLblY);
+            tbPivX.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { CommitPivot(); e.Handled = true; } };
+            tbPivY.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { CommitPivot(); e.Handled = true; } };
+            tbPivX.LostFocus += (_, _) => CommitPivot();
+            tbPivY.LostFocus += (_, _) => CommitPivot();
+            NumericDragBehavior.SetOnDrag(tbPivX, CommitPivot); NumericDragBehavior.SetOnDrag(tbPivY, CommitPivot);
+            piv3dRow.Children.Add(piv3dFieldGrid);
+
+            sp.Children.Add(piv3dRow);
+        }
 
         return sp;
     }
@@ -2570,6 +2973,7 @@ public partial class InspectorPanel : UserControl
             SelectionBrush    = new SolidColorBrush(Color.FromArgb(0x66, 0x33, 0x99, 0xFF)),
         };
         AttachAutoSelectBehavior(tb);
+        NumericDragBehavior.SetEnabled(tb, true);
         Grid.SetColumn(tb, 1);
         grid.Children.Add(tb);
 
@@ -2963,7 +3367,9 @@ public partial class InspectorPanel : UserControl
     // ── 物理コンポーネント用ヘルパー ──────────────────────────────
 
     /// <summary>ラベル + 整数入力フィールドの行を生成する。</summary>
-    private static (UIElement element, TextBox textBox) BuildLabeledIntRow(string label, int value)
+    private static (UIElement element, TextBox textBox) BuildLabeledIntRow(
+        string label, int value,
+        int min = int.MinValue, int max = int.MaxValue)
     {
         var tb = new TextBox
         {
@@ -2977,6 +3383,7 @@ public partial class InspectorPanel : UserControl
             Width             = 80,
             VerticalAlignment = VerticalAlignment.Center,
         };
+        NumericDragBehavior.Attach(tb, sensitivity: 1.0, isInteger: true, min: min, max: max);
         var row = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 2, 0, 2) };
         row.Children.Add(new TextBlock
         {
@@ -2992,19 +3399,24 @@ public partial class InspectorPanel : UserControl
     private static (UIElement element, TextBox tx, TextBox ty, TextBox tz) BuildXYZRowSimple(
         string label, float vx, float vy, float vz)
     {
-        TextBox MakeTb(float val) => new TextBox
+        TextBox MakeTb(float val)
         {
-            Text              = val.ToString("F3", CultureInfo.InvariantCulture),
-            Background        = new SolidColorBrush(Color.FromRgb(0x1E, 0x1E, 0x1E)),
-            Foreground        = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)),
-            BorderBrush       = new SolidColorBrush(Color.FromRgb(0x44, 0x44, 0x44)),
-            BorderThickness   = new Thickness(1),
-            FontSize          = 11,
-            Padding           = new Thickness(4, 1, 4, 1),
-            Width             = 58,
-            VerticalAlignment = VerticalAlignment.Center,
-            Margin            = new Thickness(2, 0, 0, 0),
-        };
+            var t = new TextBox
+            {
+                Text              = val.ToString("F3", CultureInfo.InvariantCulture),
+                Background        = new SolidColorBrush(Color.FromRgb(0x1E, 0x1E, 0x1E)),
+                Foreground        = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)),
+                BorderBrush       = new SolidColorBrush(Color.FromRgb(0x44, 0x44, 0x44)),
+                BorderThickness   = new Thickness(1),
+                FontSize          = 11,
+                Padding           = new Thickness(4, 1, 4, 1),
+                Width             = 58,
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin            = new Thickness(2, 0, 0, 0),
+            };
+            NumericDragBehavior.SetEnabled(t, true);
+            return t;
+        }
         var tx = MakeTb(vx); var ty = MakeTb(vy); var tz = MakeTb(vz);
         var row = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 2, 0, 2) };
         row.Children.Add(new TextBlock
@@ -3287,6 +3699,7 @@ public partial class InspectorPanel : UserControl
         _tbAnchorY.LostFocus += (_, _) => SendCanvasAnchor();
         _tbAnchorX.KeyDown   += (s, e) => { if (e.Key == System.Windows.Input.Key.Return) SendCanvasAnchor(); };
         _tbAnchorY.KeyDown   += (s, e) => { if (e.Key == System.Windows.Input.Key.Return) SendCanvasAnchor(); };
+        NumericDragBehavior.SetOnDrag(_tbAnchorX, SendCanvasAnchor); NumericDragBehavior.SetOnDrag(_tbAnchorY, SendCanvasAnchor);
         anchorRow.Children.Add(anchorFieldGrid);
 
         sp.Children.Add(anchorRow);
@@ -3346,6 +3759,7 @@ public partial class InspectorPanel : UserControl
 
         tbX.KeyDown   += OnFieldKeyDown; tbY.KeyDown   += OnFieldKeyDown;
         tbX.LostFocus += OnFieldLostFocus; tbY.LostFocus += OnFieldLostFocus;
+        NumericDragBehavior.SetOnDrag(tbX, CommitTransform); NumericDragBehavior.SetOnDrag(tbY, CommitTransform);
 
         return (tbX, tbY);
     }
@@ -3377,6 +3791,7 @@ public partial class InspectorPanel : UserControl
 
         tb.KeyDown   += OnFieldKeyDown;
         tb.LostFocus += OnFieldLostFocus;
+        NumericDragBehavior.SetOnDrag(tb, CommitTransform);
 
         return tb;
     }
@@ -3408,6 +3823,7 @@ public partial class InspectorPanel : UserControl
 
         tbX.KeyDown  += OnFieldKeyDown; tbY.KeyDown  += OnFieldKeyDown; tbZ.KeyDown  += OnFieldKeyDown;
         tbX.LostFocus += OnFieldLostFocus; tbY.LostFocus += OnFieldLostFocus; tbZ.LostFocus += OnFieldLostFocus;
+        NumericDragBehavior.SetOnDrag(tbX, CommitTransform); NumericDragBehavior.SetOnDrag(tbY, CommitTransform); NumericDragBehavior.SetOnDrag(tbZ, CommitTransform);
 
         return (tbX, tbY, tbZ);
     }
@@ -3479,6 +3895,7 @@ public partial class InspectorPanel : UserControl
             SelectionBrush    = new SolidColorBrush(Color.FromArgb(0x66, 0x33, 0x99, 0xFF)),
         };
         AttachAutoSelectBehavior(tb);
+        NumericDragBehavior.SetEnabled(tb, true);
         return tb;
     }
 
@@ -3500,10 +3917,13 @@ public partial class InspectorPanel : UserControl
         // クリックでフォーカスを当てる場合: まだフォーカスがなければクリックを横取りして
         // Focus() を呼び出す。これにより GotKeyboardFocus → SelectAll の後に
         // マウスイベントがカーソル位置を上書きするのを防ぐ。
+        // NumericDragBehavior が有効な場合はドラッグ側に制御を渡す
+        //（ドラッグか通常クリックかを NumericDragBehavior が OnPreviewMouseUp で判断する）。
         tb.PreviewMouseLeftButtonDown += (_, e) =>
         {
             if (!tb.IsKeyboardFocusWithin)
             {
+                if (NumericDragBehavior.GetEnabled(tb)) return;
                 e.Handled = true;
                 tb.Focus();
             }

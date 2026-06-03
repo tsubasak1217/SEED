@@ -62,6 +62,56 @@ public class AIAssistantPanel
     /// <summary>ツールログ色（グレー）</summary>
     private static readonly Color COLOR_TOOL   = Color.FromRgb(120, 120, 120);
 
+    // ── プロバイダー名マップ ──────────────────────────────────────
+    /// <summary>API モードのプロバイダー表示名マップ（インデックス → 表示名）</summary>
+    private static readonly Dictionary<int, string> API_PROVIDER_NAMES = new()
+    {
+        { PROVIDER_LOCAL_AI,  "ローカル AI" },
+        { PROVIDER_OPENAI,    "OpenAI 互換" },
+        { PROVIDER_ANTHROPIC, "Anthropic" },
+        { PROVIDER_GEMINI,    "Gemini" },
+    };
+
+    /// <summary>CLI モードのプロバイダー表示名マップ（インデックス → 表示名）</summary>
+    private static readonly Dictionary<int, string> CLI_PROVIDER_NAMES = new()
+    {
+        { PROVIDER_CLI_GEMINI, "Gemini CLI" },
+        { PROVIDER_CLI_CLAUDE, "Claude Code" },
+    };
+
+    // ── ColorType → Color マッピング ────────────────────────────
+    /// <summary>ChatDisplayItem.ColorType から Color へのルックアップテーブル</summary>
+    private static readonly Dictionary<string, Color> COLOR_TYPE_MAP = new()
+    {
+        { "user",   COLOR_USER },
+        { "ai",     COLOR_AI },
+        { "error",  COLOR_ERROR },
+        { "tool",   COLOR_TOOL },
+        { "system", COLOR_SYSTEM },
+    };
+
+    // ── CLI プロバイダーメタデータ ──────────────────────────────
+    /// <summary>CLI プロバイダーのメタデータ（表示名・コマンド・参考 URL）</summary>
+    private sealed record CliProviderMeta(string Name, string Command, string Url);
+
+    /// <summary>CLI プロバイダーインデックス → メタデータのマッピング</summary>
+    private static readonly Dictionary<int, CliProviderMeta> CLI_PROVIDER_METAS = new()
+    {
+        { PROVIDER_CLI_GEMINI, new("Gemini CLI",  "gemini", "https://github.com/google/gemini-cli") },
+        { PROVIDER_CLI_CLAUDE, new("Claude Code", "claude", "https://docs.anthropic.com/claude/docs/agents-and-tools/claude-code") },
+    };
+
+    // ── API プロバイダーファクトリ ───────────────────────────────
+    /// <summary>
+    /// API プロバイダーインデックス → ファクトリのマッピング。
+    /// 未登録インデックス（LOCAL_AI・OPENAI）は OpenAICompatibleProvider にフォールバックする。
+    /// </summary>
+    private static readonly Dictionary<int, Func<AISettings, IAIProvider>> API_PROVIDER_FACTORIES = new()
+    {
+        { PROVIDER_ANTHROPIC, s => new AnthropicProvider(s) },
+        { PROVIDER_GEMINI,    s => new GeminiProvider(s) },
+    };
+
     // ── その他定数 ────────────────────────────────────────────────
     /// <summary>シーン情報応答のタイムアウト（秒）</summary>
     private const int SCENE_INFO_TIMEOUT_SEC  = 10;
@@ -892,35 +942,16 @@ public class AIAssistantPanel
     /// <summary>ステータスバーの表示ラベルを現在の設定に基づいて更新する。</summary>
     private void UpdateStatusLabel()
     {
-        var modeName = _modeCombo.SelectedIndex == MODE_CLI ? "[CLI] " : "";
-        var providerName = "不明";
+        var isCli        = _modeCombo.SelectedIndex == MODE_CLI;
+        var modeName     = isCli ? "[CLI] " : "";
+        // モードに応じた名前マップから表示名を取得し、未登録は「不明」にフォールバックする
+        var nameMap      = isCli ? CLI_PROVIDER_NAMES : API_PROVIDER_NAMES;
+        var providerName = nameMap.GetValueOrDefault(_providerCombo.SelectedIndex, "不明");
 
-        if (_modeCombo.SelectedIndex == MODE_API)
-        {
-            providerName = _providerCombo.SelectedIndex switch
-            {
-                PROVIDER_LOCAL_AI  => "ローカル AI",
-                PROVIDER_OPENAI    => "OpenAI 互換",
-                PROVIDER_ANTHROPIC => "Anthropic",
-                PROVIDER_GEMINI    => "Gemini",
-                _                  => "不明",
-            };
-        }
-        else
-        {
-            providerName = _providerCombo.SelectedIndex switch
-            {
-                PROVIDER_CLI_GEMINI => "Gemini CLI",
-                PROVIDER_CLI_CLAUDE => "Claude Code",
-                _                   => "不明",
-            };
-        }
-
-        var model = _modelCombo.Text ?? "";
+        var model           = _modelCombo.Text ?? "";
+        var isCliGeminiMode = isCli && _providerCombo.SelectedIndex == PROVIDER_CLI_GEMINI;
         // API モードと CLI Gemini モードはモデル名をステータスに表示する
-        var isCliGeminiMode = _modeCombo.SelectedIndex == MODE_CLI
-                           && _providerCombo.SelectedIndex == PROVIDER_CLI_GEMINI;
-        var modelInfo = ((_modeCombo.SelectedIndex == MODE_API || isCliGeminiMode) && !string.IsNullOrWhiteSpace(model))
+        var modelInfo = ((!isCli || isCliGeminiMode) && !string.IsNullOrWhiteSpace(model))
             ? $" / {model}"
             : "";
 
@@ -1288,126 +1319,37 @@ public class AIAssistantPanel
 
     /// <summary>
     /// ユーザーのメッセージを AI に送信し、応答を処理するメインエージェントループ。
-    /// ツール呼び出しが返ってきた場合は実行して結果を返し、再度 AI に送信する。
+    /// 各処理ステップをサブメソッドに分割して可読性を高める。
     /// </summary>
     private async Task SendMessageAsync()
     {
         var userText = _inputBox.Text.Trim();
-        if (string.IsNullOrEmpty(userText)) return;
-        if (_currentSession is null) return;
+        if (string.IsNullOrEmpty(userText) || _currentSession is null) return;
 
-        // ローカル AI: サーバーが未起動の場合は起動する
-        if (_modeCombo.SelectedIndex == MODE_API && _providerCombo.SelectedIndex == PROVIDER_LOCAL_AI && !_localLlmManager.IsServerRunning)
-        {
-            _sendButton.IsEnabled = false;
-            _inputBox.IsEnabled   = false;
-            _runtime?.PauseRendering();
+        var isLocalAi = _modeCombo.SelectedIndex == MODE_API
+                     && _providerCombo.SelectedIndex == PROVIDER_LOCAL_AI;
 
-            var started = await _localLlmManager.EnsureServerRunningAsync(
-                onProgress: msg => AppendSystemMessage(msg));
-            if (!started)
-            {
-                _runtime?.ResumeRendering();
-                _sendButton.IsEnabled = true;
-                _inputBox.IsEnabled   = true;
-                return;
-            }
-            _sendButton.IsEnabled = true;
-            _inputBox.IsEnabled   = true;
-        }
+        // ローカル AI: サーバーが未起動の場合は起動を試みる
+        if (isLocalAi && !_localLlmManager.IsServerRunning
+            && !await EnsureLocalAiReadyAsync()) return;
 
         // 入力をクリアして UI を無効化する
         _inputBox.Clear();
         _sendButton.IsEnabled = false;
         _inputBox.IsEnabled   = false;
-
-        var isLocalAi = _modeCombo.SelectedIndex == MODE_API && _providerCombo.SelectedIndex == PROVIDER_LOCAL_AI;
         if (isLocalAi) _runtime?.PauseRendering();
 
-        // 経過時間タイマーを開始する
         StartElapsedTimer();
 
         try
         {
-            // ユーザーメッセージを履歴に追加して表示する
-            var userMsg = new ChatMessage { Role = "user", Content = userText };
-            _currentSession.Messages.Add(userMsg);
-
-            // セッションタイトルを最初のメッセージから設定する
-            if (_currentSession.Title == "新しいチャット" && !string.IsNullOrEmpty(userText))
-            {
-                _currentSession.Title = userText.Length > SESSION_TITLE_MAX_CHARS
-                    ? userText[..SESSION_TITLE_MAX_CHARS] + "…"
-                    : userText;
-            }
-
-            AppendUserMessage(userText);
+            // ユーザーメッセージを履歴・表示に追加する
+            AppendAndPrepareUserMessage(userText);
 
             var provider = CreateProvider();
-            var systemMsg = new ChatMessage { Role = "system", Content = SYSTEM_PROMPT };
-            var messagesWithSystem = new List<ChatMessage> { systemMsg };
-            messagesWithSystem.AddRange(
-                TrimHistory(_currentSession.Messages, isLocalAi ? MAX_HISTORY_CHARS_LOCAL : int.MaxValue));
+            var messages = BuildAgentMessages(isLocalAi);
+            await RunAgentLoopAsync(provider, messages, isLocalAi);
 
-            var tools    = EditorToolDefinitions.All();
-            // _sharedExecutor はコンストラクタで生成した共有インスタンスを使う。
-            // SeedAIBridge も同じインスタンスを使うことで HTTP API と内部エージェントループが
-            // 同じ Rust ランタイムへの IPC チャンネルを共有する。
-            var executor = _sharedExecutor;
-            const int MAX_TOOL_ROUNDS = 10;
-
-            for (int round = 0; round < MAX_TOOL_ROUNDS; round++)
-            {
-                // 思考中インジケーターを表示する
-                AppendThinkingIndicator(isLocalAi);
-
-                AIResponse response;
-                try
-                {
-                    response = await provider.ChatAsync(messagesWithSystem, tools);
-                }
-                finally
-                {
-                    RemoveThinkingIndicator();
-                }
-                
-                // アシスタントメッセージを履歴に記録する
-                var assistantMsg = new ChatMessage
-                {
-                    Role               = "assistant",
-                    Content            = response.TextContent ?? "",
-                    ToolCalls          = response.ToolCalls.Count > 0 ? response.ToolCalls : null,
-                    RawGeminiPartsJson = response.RawGeminiPartsJson,
-                };
-                _currentSession.Messages.Add(assistantMsg);
-                messagesWithSystem.Add(assistantMsg);
-
-                if (!string.IsNullOrEmpty(response.TextContent))
-                    AppendAiMessage(response.TextContent);
-
-                // ツール呼び出しがなければ完了
-                if (!response.HasToolCalls) break;
-
-                // 各ツールを実行して結果を履歴に追加する
-                foreach (var tc in response.ToolCalls)
-                {
-                    var result = await executor.ExecuteAsync(tc);
-
-                    if (_showToolLogCheck.IsChecked == true)
-                        AppendToolLog(tc.FunctionName, result);
-
-                    var toolResultMsg = new ChatMessage
-                    {
-                        Role       = "tool",
-                        Content    = result,
-                        ToolCallId = tc.Id,
-                    };
-                    _currentSession.Messages.Add(toolResultMsg);
-                    messagesWithSystem.Add(toolResultMsg);
-                }
-            }
-
-            // セッションを保存する
             SaveSessions();
         }
         catch (Exception ex)
@@ -1424,48 +1366,153 @@ public class AIAssistantPanel
         }
     }
 
+    /// <summary>
+    /// ローカル AI サーバーが起動していることを確認する。
+    /// 未起動なら起動を試み、失敗した場合は UI を元に戻して false を返す。
+    /// </summary>
+    private async Task<bool> EnsureLocalAiReadyAsync()
+    {
+        _sendButton.IsEnabled = false;
+        _inputBox.IsEnabled   = false;
+        _runtime?.PauseRendering();
+
+        var started = await _localLlmManager.EnsureServerRunningAsync(
+            onProgress: msg => AppendSystemMessage(msg));
+
+        if (!started)
+        {
+            _runtime?.ResumeRendering();
+            _sendButton.IsEnabled = true;
+            _inputBox.IsEnabled   = true;
+        }
+        return started;
+    }
+
+    /// <summary>
+    /// ユーザーメッセージをセッション履歴・チャット表示に追加する。
+    /// 最初のメッセージでセッションタイトルを設定する。
+    /// </summary>
+    private void AppendAndPrepareUserMessage(string userText)
+    {
+        _currentSession!.Messages.Add(new ChatMessage { Role = "user", Content = userText });
+
+        // セッションタイトルを最初のメッセージから設定する
+        if (_currentSession.Title == "新しいチャット" && !string.IsNullOrEmpty(userText))
+        {
+            _currentSession.Title = userText.Length > SESSION_TITLE_MAX_CHARS
+                ? userText[..SESSION_TITLE_MAX_CHARS] + "…"
+                : userText;
+        }
+        AppendUserMessage(userText);
+    }
+
+    /// <summary>
+    /// システムプロンプトと履歴を結合した AI 送信用メッセージリストを構築する。
+    /// ローカル AI は文字数上限で履歴をトリムする。
+    /// </summary>
+    private List<ChatMessage> BuildAgentMessages(bool isLocalAi)
+    {
+        var systemMsg = new ChatMessage { Role = "system", Content = SYSTEM_PROMPT };
+        var messages  = new List<ChatMessage> { systemMsg };
+        messages.AddRange(
+            TrimHistory(_currentSession!.Messages,
+                isLocalAi ? MAX_HISTORY_CHARS_LOCAL : int.MaxValue));
+        return messages;
+    }
+
+    /// <summary>
+    /// エージェントループを実行する。
+    /// AI 応答にツール呼び出しが含まれる限り繰り返す（最大 MAX_TOOL_ROUNDS 回）。
+    /// </summary>
+    private async Task RunAgentLoopAsync(
+        IAIProvider provider, List<ChatMessage> messages, bool isLocalAi)
+    {
+        var tools    = EditorToolDefinitions.All();
+        // _sharedExecutor はコンストラクタで生成した共有インスタンスを使う。
+        // SeedAIBridge も同じインスタンスを使うことで HTTP API と内部エージェントループが
+        // 同じ Rust ランタイムへの IPC チャンネルを共有する。
+        var executor = _sharedExecutor;
+        const int MAX_TOOL_ROUNDS = 10;
+
+        for (int round = 0; round < MAX_TOOL_ROUNDS; round++)
+        {
+            var response = await RequestAiResponseAsync(provider, messages, tools, isLocalAi);
+
+            // アシスタントメッセージを履歴に記録する
+            var assistantMsg = new ChatMessage
+            {
+                Role               = "assistant",
+                Content            = response.TextContent ?? "",
+                ToolCalls          = response.HasToolCalls ? response.ToolCalls : null,
+                RawGeminiPartsJson = response.RawGeminiPartsJson,
+            };
+            _currentSession!.Messages.Add(assistantMsg);
+            messages.Add(assistantMsg);
+
+            if (!string.IsNullOrEmpty(response.TextContent))
+                AppendAiMessage(response.TextContent);
+
+            // ツール呼び出しがなければ完了
+            if (!response.HasToolCalls) break;
+
+            await ExecuteToolCallsAsync(response.ToolCalls, messages, executor);
+        }
+    }
+
+    /// <summary>
+    /// AI に問い合わせを行い、思考中インジケーターを表示しながらレスポンスを待つ。
+    /// </summary>
+    private async Task<AIResponse> RequestAiResponseAsync(
+        IAIProvider provider, List<ChatMessage> messages,
+        List<ToolDefinition> tools, bool isLocalAi)
+    {
+        AppendThinkingIndicator(isLocalAi);
+        try
+        {
+            return await provider.ChatAsync(messages, tools);
+        }
+        finally
+        {
+            RemoveThinkingIndicator();
+        }
+    }
+
+    /// <summary>
+    /// 1 ラウンド分のツール呼び出しを順に実行し、結果をセッション履歴・チャット表示に追加する。
+    /// </summary>
+    private async Task ExecuteToolCallsAsync(
+        List<ToolCall> toolCalls, List<ChatMessage> messages, EditorCommandExecutor executor)
+    {
+        foreach (var tc in toolCalls)
+        {
+            var result = await executor.ExecuteAsync(tc);
+
+            if (_showToolLogCheck.IsChecked == true)
+                AppendToolLog(tc.FunctionName, result);
+
+            var toolResultMsg = new ChatMessage
+            {
+                Role       = "tool",
+                Content    = result,
+                ToolCallId = tc.Id,
+            };
+            _currentSession!.Messages.Add(toolResultMsg);
+            messages.Add(toolResultMsg);
+        }
+    }
+
     // ── プロバイダー・エグゼキューター生成 ──────────────────────
 
     /// <summary>選択中のプロバイダーを生成して返す。</summary>
     private IAIProvider CreateProvider()
     {
-        var mode = _modeCombo.SelectedIndex;
-        var pIdx = _providerCombo.SelectedIndex;
+        // CLI モードはキャッシュ付き CLI プロバイダーを返す
+        if (_modeCombo.SelectedIndex == MODE_CLI)
+            return CreateCliProvider(_providerCombo.SelectedIndex);
 
-        if (mode == MODE_CLI)
-        {
-            if (pIdx == PROVIDER_CLI_GEMINI)
-            {
-                // CLI Gemini はプリウォームプロセスを保持するためキャッシュして再利用する
-                // プロバイダーやモデルが変わった場合のみ再生成する
-                var cliModel  = (_modelCombo.Text ?? "").Trim();
-                var cliKey    = $"gemini:{cliModel}";
-                if (_cachedCliProvider == null || _cachedCliKey != cliKey)
-                {
-                    _cachedCliProvider?.Dispose();
-                    _cachedCliProvider = new CliAgentProvider(
-                        "Gemini CLI", "gemini", "https://github.com/google/gemini-cli", cliModel);
-                    _cachedCliKey = cliKey;
-                }
-                return _cachedCliProvider;
-            }
-            else
-            {
-                // Claude Code はプリウォームなし・毎回生成でも問題なし
-                var claudeKey = "claude:";
-                if (_cachedCliProvider == null || _cachedCliKey != claudeKey)
-                {
-                    _cachedCliProvider?.Dispose();
-                    _cachedCliProvider = new CliAgentProvider(
-                        "Claude Code", "claude", "https://docs.anthropic.com/claude/docs/agents-and-tools/claude-code");
-                    _cachedCliKey = claudeKey;
-                }
-                return _cachedCliProvider;
-            }
-        }
-
-        var idx = _providerCombo.SelectedIndex;
-        var isLocalAi = idx == PROVIDER_LOCAL_AI;
+        // API モード: 設定を組み立てて API_PROVIDER_FACTORIES で生成する
+        var pIdx      = _providerCombo.SelectedIndex;
+        var isLocalAi = pIdx == PROVIDER_LOCAL_AI;
 
         var settings = new AISettings
         {
@@ -1476,12 +1523,36 @@ public class AIAssistantPanel
             TimeoutSeconds = isLocalAi ? 600 : 120,
         };
 
-        return idx switch
+        // ファクトリに未登録のインデックス（LOCAL_AI・OPENAI）は OpenAICompatibleProvider
+        return API_PROVIDER_FACTORIES.TryGetValue(pIdx, out var factory)
+            ? factory(settings)
+            : new OpenAICompatibleProvider(settings);
+    }
+
+    /// <summary>
+    /// CLI モードのプロバイダーを CLI_PROVIDER_METAS からキャッシュして返す。
+    /// プロバイダーやモデルが変わった場合のみ再生成する（プリウォームプロセス保持のため）。
+    /// </summary>
+    private IAIProvider CreateCliProvider(int pIdx)
+    {
+        // メタデータが未登録の場合は Claude Code にフォールバック
+        if (!CLI_PROVIDER_METAS.TryGetValue(pIdx, out var meta))
         {
-            PROVIDER_ANTHROPIC => new AnthropicProvider(settings),
-            PROVIDER_GEMINI    => new GeminiProvider(settings),
-            _                  => new OpenAICompatibleProvider(settings), // LOCAL_AI と OPENAI
-        };
+            pIdx = PROVIDER_CLI_CLAUDE;
+            meta = CLI_PROVIDER_METAS[PROVIDER_CLI_CLAUDE];
+        }
+
+        // Gemini CLI はモデルを -m フラグで渡す。Claude Code はモデル指定なし。
+        var cliModel = (pIdx == PROVIDER_CLI_GEMINI) ? (_modelCombo.Text ?? "").Trim() : "";
+        var cliKey   = $"{meta.Command}:{cliModel}";
+
+        if (_cachedCliProvider == null || _cachedCliKey != cliKey)
+        {
+            _cachedCliProvider?.Dispose();
+            _cachedCliProvider = new CliAgentProvider(meta.Name, meta.Command, meta.Url, cliModel);
+            _cachedCliKey      = cliKey;
+        }
+        return _cachedCliProvider;
     }
 
     /// <summary>エディタコマンド実行エンジンを生成して返す。</summary>
@@ -1595,17 +1666,11 @@ public class AIAssistantPanel
 
     /// <summary>
     /// ChatDisplayItem を RichTextBox に段落として追加する（セッション復元用）。
+    /// ColorType は COLOR_TYPE_MAP で解決し、未登録キーは COLOR_SYSTEM にフォールバックする。
     /// </summary>
     private void RenderDisplayItem(ChatDisplayItem item)
     {
-        var color = item.ColorType switch
-        {
-            "user"  => COLOR_USER,
-            "ai"    => COLOR_AI,
-            "error" => COLOR_ERROR,
-            "tool"  => COLOR_TOOL,
-            _       => COLOR_SYSTEM,
-        };
+        var color = COLOR_TYPE_MAP.GetValueOrDefault(item.ColorType, COLOR_SYSTEM);
         RenderParagraph(item.Sender, item.Text, color);
     }
 

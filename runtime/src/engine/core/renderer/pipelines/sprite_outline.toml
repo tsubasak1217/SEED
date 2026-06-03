@@ -1,0 +1,19 @@
+shader_sources  = ["sprite_outline.wgsl"]
+vertex_entry    = "vs_main"
+fragment_entry  = "fs_main"
+# スプライトと同じ頂点レイアウト（position: vec2 + uv: vec2）
+vertex_slots    = ["sprite_vertex"]
+# テクスチャ不要のため 2 グループ（camera + sprite_uniform）
+num_bind_groups = 2
+
+topology        = "TriangleList"
+cull_mode       = "None"
+front_face      = "Ccw"
+
+# 3D アウトラインと同様: 深度テストあり・書き込みなし（深度で遮蔽される）
+depth_write     = false
+depth_compare   = "LessEqual"
+
+color_format    = "surface"
+blend           = "AlphaBlending"
+write_mask      = "all"

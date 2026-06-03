@@ -154,6 +154,11 @@ pub enum PhysicsCommand {
         /// None なら Rapier の現在位置をそのまま維持する。
         final_position: Option<([f32; 3], [f32; 4])>,
     },
+    /// 物理シミュレーションを一時停止する（速度・内部状態を保持したまま）。
+    /// タイムライン停止時に使用する。Resume で再開できる。
+    Pause,
+    /// 物理シミュレーションを再開する（Pause の解除）。
+    Resume,
     /// スレッドを停止する
     Stop,
 }

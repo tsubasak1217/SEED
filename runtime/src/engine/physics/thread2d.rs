@@ -156,11 +156,19 @@ fn run_physics_loop_2d(
     let step_duration = Duration::from_secs_f64(PHYSICS_2D_FIXED_STEP);
     let mut next_step = Instant::now();
 
+    // Pause/Resume 状態（true のとき物理ステップをスキップ、速度は保持される）
+    let mut paused = false;
+
     loop {
         // ── コマンド処理（全キューをフラッシュ）────────────────────────────
         loop {
             match cmd_rx.try_recv() {
-                Ok(PhysicsCommand2d::Stop) => return,
+                Ok(PhysicsCommand2d::Stop)   => return,
+                Ok(PhysicsCommand2d::Pause)  => { paused = true; }
+                Ok(PhysicsCommand2d::Resume) => {
+                    paused = false;
+                    next_step = Instant::now();
+                }
                 Ok(cmd) => handle_command_2d(
                     cmd,
                     &mut rigid_body_set, &mut collider_set,
@@ -172,6 +180,12 @@ fn run_physics_loop_2d(
                 Err(TryRecvError::Empty)        => break,
                 Err(TryRecvError::Disconnected) => return,
             }
+        }
+
+        // Pause 中は物理ステップをスキップ
+        if paused {
+            std::thread::sleep(Duration::from_millis(5));
+            continue;
         }
 
         // ── 物理ステップ ─────────────────────────────────────────────────────
@@ -235,7 +249,9 @@ fn handle_command_2d(
     gravity:           &mut nalgebra::Vector2<Real>,
 ) {
     match cmd {
-        PhysicsCommand2d::Stop => { /* 呼び出し元で処理済み */ }
+        PhysicsCommand2d::Stop   => { /* 呼び出し元で処理済み */ }
+        PhysicsCommand2d::Pause  => { /* ループ側で処理済み */ }
+        PhysicsCommand2d::Resume => { /* ループ側で処理済み */ }
 
         PhysicsCommand2d::AddObject(obj) => {
             add_object_2d(obj, rb_set, col_set, entries, col_to_entity, trigger_set);

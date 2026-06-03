@@ -816,3 +816,57 @@ pub(super) fn apply_delta_to_actor_children(
     }
 }
 
+// ============================================================
+//  3D Canvas 座標変換ユーティリティ
+// ============================================================
+
+/// DFS ID のアクターの直接親アクターを返す。
+///
+/// アクターツリーを DFS 順で走査し、target_dfs の直前の親を返す。
+/// トップレベルアクター（親なし）の場合は None を返す。
+pub(super) fn find_parent_actor_of_dfs<'a>(
+    actors:  &'a [Actor],
+    wl:      u32,
+    target:  u32,
+    counter: &mut u32,
+    parent:  Option<&'a Actor>,
+) -> Option<&'a Actor> {
+    for actor in actors {
+        if actor.world_line != wl { continue; }
+        let my_dfs = *counter;
+        *counter += 1;
+        if my_dfs == target { return parent; }
+        if let Some(found) =
+            find_parent_actor_of_dfs(actor.children(), wl, target, counter, Some(actor))
+        {
+            return Some(found);
+        }
+    }
+    None
+}
+
+/// アクターが Actor3D + CanvasComponent を持つ場合、canvas_to_world 変換行列を返す。
+///
+/// canvas_to_world = actor_3d_mat * local_mat
+/// local_mat は pivot・Y 反転を含む 3D Canvas 固有のローカル行列。
+/// 3D Canvas 親でない（is_2d() / CanvasComponent なし）場合は None を返す。
+pub(super) fn get_3d_canvas_world_mat(
+    actor: &Actor,
+    world: &World,
+) -> Option<[[f32; 4]; 4]> {
+    if actor.is_2d() { return None; }
+    let canvas_slot = actor.slots().iter().find(|s| s.kind == ComponentKind::Canvas)?;
+    let cc = world.get::<CanvasComponent>(canvas_slot.entity)?;
+    let tf = world.get::<ActorTransform>(actor.entity)?;
+    const CWS: f32 = 1.0 / 100.0;
+    let (piv_x, piv_y, w, h) = (cc.pivot[0], cc.pivot[1], cc.width, cc.height);
+    // キャンバス Y+（下）→ ワールド Y-（Y-UP カメラで screen 下）、pivot オフセット適用
+    let local_mat = [
+        [ CWS,  0.0, 0.0, -piv_x * w * CWS],
+        [ 0.0, -CWS, 0.0,  piv_y * h * CWS],
+        [ 0.0,  0.0, 1.0,  0.0            ],
+        [ 0.0,  0.0, 0.0,  1.0            ],
+    ];
+    Some(mat4x4_mul(tf.to_mat4(), local_mat))
+}
+

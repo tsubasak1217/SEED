@@ -21,6 +21,7 @@ fn get_shader_source(name: &str) -> &'static str {
         "id_pass.wgsl"               => include_str!("shaders/id_pass.wgsl"),
         "outline.wgsl"               => include_str!("shaders/outline.wgsl"),
         "sprite.wgsl"                => include_str!("shaders/sprite.wgsl"),
+        "sprite_outline.wgsl"        => include_str!("shaders/sprite_outline.wgsl"),
         "canvas_id.wgsl"             => include_str!("shaders/canvas_id.wgsl"),
         "camera_preview_blit.wgsl"   => include_str!("shaders/camera_preview_blit.wgsl"),
         "bar_fill.wgsl"              => include_str!("shaders/bar_fill.wgsl"),
@@ -739,6 +740,34 @@ impl BarFillPipeline {
     }
 }
 
+// ============================================================
+//  SpriteOutlinePipeline — 選択スプライトのスクリーンスペース均一アウトライン
+// ============================================================
+
+/// スプライト選択時のオレンジアウトラインパイプライン。
+///
+/// sprite_outline.wgsl によりクリップ空間でコーナーを押し出し、
+/// 3D モデルアウトラインと同一の OUTLINE_THICKNESS を実現する。
+/// テクスチャ不要のためバインドグループは Group 0（Camera）+ Group 1（SpriteUniform）のみ。
+pub struct SpriteOutlinePipeline {
+    pub pipeline: wgpu::RenderPipeline,
+}
+
+impl SpriteOutlinePipeline {
+    fn new(
+        device: &wgpu::Device,
+        sf:     wgpu::TextureFormat,
+        df:     wgpu::TextureFormat,
+        cache:  Option<&wgpu::PipelineCache>,
+    ) -> Self {
+        let (pipeline, _bgls) =
+            RenderPipelineBuilder::new(device, include_str!("pipelines/sprite_outline.toml"), sf, df)
+                .with_cache(cache)
+                .build(get_shader_source);
+        Self { pipeline }
+    }
+}
+
 pub struct DrawPipelines {
     pub mesh:                 MeshPipeline,
     pub skinned_mesh:         SkinnedMeshPipeline,
@@ -749,6 +778,7 @@ pub struct DrawPipelines {
     pub id_pass:              IdPassPipeline,
     pub outline:              OutlinePipeline,
     pub sprite:               SpritePipeline,
+    pub sprite_outline:       SpriteOutlinePipeline,
     pub canvas_id:            CanvasIdPipeline,
     pub camera_preview_blit:  CameraPreviewBlitPipeline,
     pub bar_fill:             BarFillPipeline,
@@ -776,9 +806,10 @@ impl DrawPipelines {
         let id_pass             = IdPassPipeline::new(device, sf, df, cache);
         let outline             = OutlinePipeline::new(device, sf, df, cache);
         let sprite              = SpritePipeline::new(device, queue, sf, df, cache);
+        let sprite_outline      = SpriteOutlinePipeline::new(device, sf, df, cache);
         let canvas_id           = CanvasIdPipeline::new(device, queue, df, cache);
         let camera_preview_blit = CameraPreviewBlitPipeline::new(device, sf, df, cache);
         let bar_fill            = BarFillPipeline::new(device, sf, df, cache);
-        Self { mesh, skinned_mesh, unlit_line, cull, skin_compute, depth_prepass, id_pass, outline, sprite, canvas_id, camera_preview_blit, bar_fill }
+        Self { mesh, skinned_mesh, unlit_line, cull, skin_compute, depth_prepass, id_pass, outline, sprite, sprite_outline, canvas_id, camera_preview_blit, bar_fill }
     }
 }

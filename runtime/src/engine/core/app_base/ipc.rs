@@ -98,8 +98,9 @@ pub enum IpcCommand {
     LoadScene(String),
     /// デバッグカメラ状態要求
     GetCamState,
-    /// デバッグカメラ位置・回転設定（yaw/pitch は度）
-    SetCameraTransform { px: f32, py: f32, pz: f32, yaw: f32, pitch: f32 },
+    /// デバッグカメラ位置・Euler XYZ 回転設定（度、YXZ 合成順）
+    /// フォーマット: CAM_TRANSFORM:{px},{py},{pz},{euler_x},{euler_y},{euler_z}
+    SetCameraTransform { px: f32, py: f32, pz: f32, euler_x: f32, euler_y: f32, euler_z: f32 },
     /// デバッグカメラ移動速度設定
     SetCameraSpeed(f32),
     /// アクターファイルを指定世界線で開く（world_line,path の順でカンマ区切り）
@@ -117,6 +118,12 @@ pub enum IpcCommand {
     AddActor { world_line: u32, parent_dfs_id: Option<u32> },
     /// 子アクター（2D）を追加する (world_line, parent_dfs_id=None はルート)
     AddActor2D { world_line: u32, parent_dfs_id: Option<u32> },
+    /// 指定アクターの子として 3D アクターを追加する（world_line は親から自動取得）
+    /// フォーマット: ADD_ACTOR_CHILD:{parent_dfs_id}
+    AddActorChild { parent_dfs_id: u32 },
+    /// 指定アクターの子として 2D アクターを追加する（world_line は親から自動取得）
+    /// フォーマット: ADD_ACTOR_2D_CHILD:{parent_dfs_id}
+    AddActor2dChild { parent_dfs_id: u32 },
     /// アクターを削除する
     RemoveActor(u32),
     /// アクターをリネームする
@@ -170,6 +177,20 @@ pub enum IpcCommand {
     /// ルートキャンバスの画面サイズ自動スケールを設定する
     /// フォーマット: SET_CANVAS_AUTO_SCALE:{actor_dfs_id},{slot_idx},{value}
     SetCanvasAutoScale { actor_dfs_id: u32, slot_idx: u32, auto_scale: bool },
+    /// CanvasComponent のアスペクト比維持設定を更新する
+    /// フォーマット: SET_CANVAS_ASPECT_RATIO:{actor_dfs_id},{slot_idx},{keep:0|1},{axis:width|height}
+    SetCanvasAspectRatio { actor_dfs_id: u32, slot_idx: u32, keep: bool, axis: String },
+    /// CanvasComponent の重力方向モードを設定する
+    /// フォーマット: SET_CANVAS_GRAVITY_MODE:{actor_dfs_id},{slot_idx},{mode:0|1}
+    /// mode: 0=ScreenDown, 1=CanvasDown
+    SetCanvasGravityMode { actor_dfs_id: u32, slot_idx: u32, mode: u8 },
+    /// 3D キャンバスのピボットを設定する（Actor3D アタッチ時のみ有効）
+    /// フォーマット: SET_CANVAS_3D_PIVOT:{actor_dfs_id},{slot_idx},{pivot_x},{pivot_y}
+    /// pivot_x / pivot_y は正規化値 [0,1]。(0,0)=左上, (0.5,0.5)=中央, (1,1)=右下。
+    SetCanvas3dPivot { actor_dfs_id: u32, slot_idx: u32, pivot_x: f32, pivot_y: f32 },
+    /// Collider2dComponent のアスペクト比維持設定を更新する
+    /// フォーマット: SET_COLLIDER2D_ASPECT_RATIO:{actor_dfs_id},{slot_idx},{keep:0|1},{axis:width|height}
+    SetCollider2dAspectRatio { actor_dfs_id: u32, slot_idx: u32, keep: bool, axis: String },
     /// キャンバスのビューポート参照をウィンドウに設定する（Camera 参照を解除）
     /// フォーマット: SET_CANVAS_VIEWPORT_REF_WINDOW:{actor_dfs_id},{slot_idx}
     SetCanvasViewportRefWindow { actor_dfs_id: u32, slot_idx: u32 },
@@ -268,6 +289,20 @@ pub enum IpcCommand {
     /// Play モードでもコライダーワイヤーフレームを描画する。
     /// フォーマット: SET_PLAY_COLLIDER_DRAW:{0|1}
     SetPlayColliderDraw(bool),
+
+    // ─── 編集時物理タイムライン ─────────────────────────────────────────────
+    /// 再生/停止トグル。
+    /// フォーマット: EDIT_PHYSICS_PLAY_PAUSE
+    EditPhysicsPlayPause,
+    /// フレームを N ステップ進む（step>0）または戻す（step<0）。
+    /// フォーマット: EDIT_PHYSICS_STEP:{step}  (例: +1, -1, +5)
+    EditPhysicsStep { step: i32 },
+    /// 指定フレームへシーク。
+    /// フォーマット: EDIT_PHYSICS_SEEK:{frame_idx}
+    EditPhysicsSeek { frame: usize },
+    /// 現在フレームの状態をフレーム 0 として適用（履歴削除）。
+    /// フォーマット: EDIT_PHYSICS_APPLY_FRAME
+    EditPhysicsApplyFrame,
 }
 
 // ============================================================
@@ -566,10 +601,10 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                         }
                         "GET_CAM_STATE" => Some(IpcCommand::GetCamState),
                         s if s.starts_with("CAM_TRANSFORM:") => {
-                            // フォーマット: CAM_TRANSFORM:{px},{py},{pz},{yaw},{pitch}
-                            parse_nf::<5>(&s["CAM_TRANSFORM:".len()..]).map(|fs| IpcCommand::SetCameraTransform {
+                            // フォーマット: CAM_TRANSFORM:{px},{py},{pz},{euler_x},{euler_y},{euler_z}
+                            parse_nf::<6>(&s["CAM_TRANSFORM:".len()..]).map(|fs| IpcCommand::SetCameraTransform {
                                 px: fs[0], py: fs[1], pz: fs[2],
-                                yaw: fs[3], pitch: fs[4],
+                                euler_x: fs[3], euler_y: fs[4], euler_z: fs[5],
                             })
                         }
                         s if s.starts_with("CAM_SPEED:") => {
@@ -635,6 +670,16 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                                     Some(IpcCommand::AddActor2D { world_line: wl, parent_dfs_id: parent })
                                 } else { None }
                             } else { None }
+                        }
+                        s if s.starts_with("ADD_ACTOR_CHILD:") => {
+                            // ADD_ACTOR_CHILD:{parent_dfs_id}
+                            s["ADD_ACTOR_CHILD:".len()..].trim().parse::<u32>().ok()
+                                .map(|id| IpcCommand::AddActorChild { parent_dfs_id: id })
+                        }
+                        s if s.starts_with("ADD_ACTOR_2D_CHILD:") => {
+                            // ADD_ACTOR_2D_CHILD:{parent_dfs_id}
+                            s["ADD_ACTOR_2D_CHILD:".len()..].trim().parse::<u32>().ok()
+                                .map(|id| IpcCommand::AddActor2dChild { parent_dfs_id: id })
                         }
                         s if s.starts_with("REMOVE_ACTOR:") => {
                             s["REMOVE_ACTOR:".len()..].parse::<u32>().ok()
@@ -770,6 +815,41 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                                     actor_dfs_id: id, slot_idx: sl, auto_scale: v,
                                 })
                         }
+                        s if s.starts_with("SET_CANVAS_ASPECT_RATIO:") => {
+                            // フォーマット: SET_CANVAS_ASPECT_RATIO:{id},{slot},{0|1},{axis}
+                            let rest = &s["SET_CANVAS_ASPECT_RATIO:".len()..];
+                            let mut it = rest.splitn(4, ',');
+                            (|| -> Option<IpcCommand> {
+                                let id:   u32  = it.next()?.trim().parse().ok()?;
+                                let sl:   u32  = it.next()?.trim().parse().ok()?;
+                                let keep: bool = it.next()?.trim() == "1";
+                                let axis       = it.next()?.trim().to_string();
+                                Some(IpcCommand::SetCanvasAspectRatio { actor_dfs_id: id, slot_idx: sl, keep, axis })
+                            })()
+                        }
+                        s if s.starts_with("SET_CANVAS_GRAVITY_MODE:") => {
+                            // フォーマット: SET_CANVAS_GRAVITY_MODE:{actor_dfs_id},{slot_idx},{mode}
+                            let rest = &s["SET_CANVAS_GRAVITY_MODE:".len()..];
+                            let mut it = rest.splitn(3, ',');
+                            (|| -> Option<IpcCommand> {
+                                let id:   u32 = it.next()?.trim().parse().ok()?;
+                                let sl:   u32 = it.next()?.trim().parse().ok()?;
+                                let mode: u8  = it.next()?.trim().parse().ok()?;
+                                Some(IpcCommand::SetCanvasGravityMode { actor_dfs_id: id, slot_idx: sl, mode })
+                            })()
+                        }
+                        s if s.starts_with("SET_COLLIDER2D_ASPECT_RATIO:") => {
+                            // フォーマット: SET_COLLIDER2D_ASPECT_RATIO:{id},{slot},{0|1},{axis}
+                            let rest = &s["SET_COLLIDER2D_ASPECT_RATIO:".len()..];
+                            let mut it = rest.splitn(4, ',');
+                            (|| -> Option<IpcCommand> {
+                                let id:   u32  = it.next()?.trim().parse().ok()?;
+                                let sl:   u32  = it.next()?.trim().parse().ok()?;
+                                let keep: bool = it.next()?.trim() == "1";
+                                let axis       = it.next()?.trim().to_string();
+                                Some(IpcCommand::SetCollider2dAspectRatio { actor_dfs_id: id, slot_idx: sl, keep, axis })
+                            })()
+                        }
                         s if s.starts_with("SET_CANVAS_VIEWPORT_REF_WINDOW:") => {
                             // フォーマット: SET_CANVAS_VIEWPORT_REF_WINDOW:{actor_dfs_id},{slot_idx}
                             parse2u(&s["SET_CANVAS_VIEWPORT_REF_WINDOW:".len()..])
@@ -793,6 +873,15 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                                 })
                             })();
                             parsed
+                        }
+                        s if s.starts_with("SET_CANVAS_3D_PIVOT:") => {
+                            // フォーマット: SET_CANVAS_3D_PIVOT:{actor_dfs_id},{slot_idx},{pivot_x},{pivot_y}
+                            parse2u_nf::<2>(&s["SET_CANVAS_3D_PIVOT:".len()..])
+                                .map(|(a, sl, fs)| IpcCommand::SetCanvas3dPivot {
+                                    actor_dfs_id: a, slot_idx: sl,
+                                    pivot_x: fs[0].clamp(0.0, 1.0),
+                                    pivot_y: fs[1].clamp(0.0, 1.0),
+                                })
                         }
                         s if s.starts_with("SET_INPUTMAP_PATH:") => {
                             // フォーマット: SET_INPUTMAP_PATH:{actor_dfs_id},{slot_idx},{path}
@@ -1011,6 +1100,22 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                                 })
                         }
 
+                        "EDIT_PHYSICS_PLAY_PAUSE" => {
+                            Some(IpcCommand::EditPhysicsPlayPause)
+                        }
+                        s if s.starts_with("EDIT_PHYSICS_STEP:") => {
+                            let rest = &s["EDIT_PHYSICS_STEP:".len()..];
+                            rest.trim().parse::<i32>().ok()
+                                .map(|step| IpcCommand::EditPhysicsStep { step })
+                        }
+                        "EDIT_PHYSICS_APPLY_FRAME" => {
+                            Some(IpcCommand::EditPhysicsApplyFrame)
+                        }
+                        s if s.starts_with("EDIT_PHYSICS_SEEK:") => {
+                            let rest = &s["EDIT_PHYSICS_SEEK:".len()..];
+                            rest.trim().parse::<usize>().ok()
+                                .map(|frame| IpcCommand::EditPhysicsSeek { frame })
+                        }
                         s if s.starts_with("SET_EDIT_PHYSICS:") => {
                             // フォーマット: SET_EDIT_PHYSICS:{enabled},{with_rigidbody}  (0/1)
                             let rest = &s["SET_EDIT_PHYSICS:".len()..];

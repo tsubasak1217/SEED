@@ -11,7 +11,7 @@
 // ============================================================
 
 use crate::engine::components::{
-    ComponentKind, CanvasComponent, CanvasTransform, SpriteComponent,
+    ComponentKind, CanvasComponent, CanvasTransform, SpriteComponent, Collider2dComponent,
 };
 use crate::engine::structs::objects::Actor;
 use crate::engine::core::app_base::undo::ActorTreeSnapshotCommand;
@@ -79,12 +79,15 @@ impl App {
         let before_actors = self.snapshot_actors_for_wl(wl);
 
         // 親のサブツリーサイズを記録（子を追加した後の child DFS id 計算用）
-        let parent_size_before = {
+        // また、親が 3D アクターかどうかを事前確認する（3D Canvas の場合は選択を親に維持）
+        let (parent_size_before, is_parent_3d) = {
             let scene = self.scene.as_ref().unwrap();
             let mut c = 0u32;
-            find_actor_by_dfs(&scene.actors, wl, parent_dfs_id, &mut c)
-                .map(|a| actor_subtree_size(a))
-                .unwrap_or(1)
+            if let Some(a) = find_actor_by_dfs(&scene.actors, wl, parent_dfs_id, &mut c) {
+                (actor_subtree_size(a), !a.is_2d())
+            } else {
+                (1, false)
+            }
         };
 
         // 新規子 Actor2D のエンティティを生成して CanvasTransform を挿入する
@@ -124,13 +127,17 @@ impl App {
             after_actors,
         }));
 
-        // 子アクターを選択状態にしてエディタへ通知する
-        self.actor_virtual_selected_idx      = Some(child_dfs_id as usize);
-        self.selected_actor_dfs_ids          = vec![child_dfs_id as usize];
+        // 選択状態を更新してエディタへ通知する。
+        // 3D Canvas（親が Actor3D）の場合は、子 Actor2D の gizmo は 3D 親の世界変換を
+        // 考慮していないため、親を選択状態のまま維持して混乱を防ぐ。
+        // 2D Canvas の場合は従来通り子を選択して編集しやすくする。
+        let select_dfs = if is_parent_3d { parent_dfs_id } else { child_dfs_id };
+        self.actor_virtual_selected_idx      = Some(select_dfs as usize);
+        self.selected_actor_dfs_ids          = vec![select_dfs as usize];
         self.selected_instances.clear();
         self.send_selected();
         self.send_hierarchy();
-        self.send_actor_components(child_dfs_id, 0);
+        self.send_actor_components(select_dfs, 0);
         if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
     }
 
@@ -147,11 +154,27 @@ impl App {
         let wl = self.active_world_line;
         let before_actors = self.snapshot_actors_for_wl(wl);
 
+        // 対象アクターが 3D かどうかを事前確認する（デフォルトサイズと選択対象の切り替え用）
+        let is_actor_3d = {
+            let scene = self.scene.as_ref().unwrap();
+            let mut c = 0u32;
+            find_actor_by_dfs(&scene.actors, wl, actor_dfs_id, &mut c)
+                .map(|a| !a.is_2d())
+                .unwrap_or(false)
+        };
+
         // 対象アクターに Canvas スロットを追加する
         {
             let scene = self.scene.as_mut().unwrap();
+            // 3D キャンバス: デフォルト解像度 640×360、自動スケール無効
+            // 2D キャンバス: 従来通り 1920×1080、自動スケール有効
+            let cc = if is_actor_3d {
+                CanvasComponent { width: 640.0, height: 360.0, auto_scale: false, ..CanvasComponent::default() }
+            } else {
+                CanvasComponent::default()
+            };
             let slot_entity = scene.world.spawn();
-            scene.world.insert(slot_entity, CanvasComponent::default());
+            scene.world.insert(slot_entity, cc);
             let mut c = 0u32;
             if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
                 actor.add_slot_typed::<CanvasComponent>(
@@ -209,20 +232,24 @@ impl App {
             after_actors,
         }));
 
-        // 子アクターを選択状態にしてエディタへ通知する
-        self.actor_virtual_selected_idx      = Some(child_dfs_id as usize);
-        self.selected_actor_dfs_ids          = vec![child_dfs_id as usize];
+        // 選択状態を更新してエディタへ通知する。
+        // 3D Canvas の場合は親アクターを選択維持（子 Actor2D の gizmo は親の世界変換を
+        // 未考慮のため、親を選択して gizmo による移動を正常にする）。
+        let select_dfs = if is_actor_3d { actor_dfs_id } else { child_dfs_id };
+        self.actor_virtual_selected_idx      = Some(select_dfs as usize);
+        self.selected_actor_dfs_ids          = vec![select_dfs as usize];
         self.selected_instances.clear();
         self.send_selected();
         self.send_hierarchy();
-        self.send_actor_components(child_dfs_id, 0);
+        self.send_actor_components(select_dfs, 0);
         if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
     }
 
     /// 指定アクターの指定スロットに Canvas 2D コンポーネントを挿入する内部ヘルパー。
     ///
-    /// 現在は SpriteComponent のみ対応。
-    /// 今後 Canvas 上に配置するコンポーネント（Image など）を追加したらここに case を足す。
+    /// Canvas 系コンポーネントを 2D Actor に挿入する内部ヘルパー。
+    ///
+    /// Canvas 上に新しいコンポーネント種別を追加する場合はここに case を追加する。
     fn insert_canvas_component_slot(
         &mut self,
         wl:             u32,
@@ -239,6 +266,19 @@ impl App {
                 if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
                     actor.add_slot_typed::<SpriteComponent>(
                         slot_name.to_string(), ComponentKind::Sprite, slot_entity,
+                    );
+                } else {
+                    scene.world.despawn(slot_entity);
+                }
+            }
+            "Collider2dComponent" => {
+                let scene = self.scene.as_mut().unwrap();
+                let slot_entity = scene.world.spawn();
+                scene.world.insert(slot_entity, Collider2dComponent::default());
+                let mut c = 0u32;
+                if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
+                    actor.add_slot_typed::<Collider2dComponent>(
+                        slot_name.to_string(), ComponentKind::Collider2d, slot_entity,
                     );
                 } else {
                     scene.world.despawn(slot_entity);
@@ -266,6 +306,11 @@ impl App {
             if let Some(sc) = scene.world.get_mut::<SpriteComponent>(entity) {
                 sc.texture_path = path.to_string();
             }
+        }
+        // パスが変更されたときはテクスチャキャッシュの該当エントリを削除して再ロードを強制する。
+        // キャッシュに古い（失敗した）テクスチャが残ったままになるのを防ぐ。
+        if let Some(ctx) = &self.draw_ctx {
+            ctx.sprite_tex_cache.borrow_mut().remove(path);
         }
         self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
         if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }

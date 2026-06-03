@@ -177,11 +177,20 @@ fn run_physics_loop(
     let step_duration = Duration::from_secs_f64(PHYSICS_FIXED_STEP);
     let mut next_step = Instant::now();
 
+    // Pause/Resume 状態（true のとき物理ステップをスキップ、速度は保持される）
+    let mut paused = false;
+
     loop {
         // ── コマンド処理（全キューをフラッシュ）────────────────────────────
         loop {
             match cmd_rx.try_recv() {
-                Ok(PhysicsCommand::Stop)          => return,
+                Ok(PhysicsCommand::Stop)   => return,
+                Ok(PhysicsCommand::Pause)  => { paused = true; }
+                Ok(PhysicsCommand::Resume) => {
+                    paused = false;
+                    // Resume 直後にタイムステップをリセットして即座に次ステップを実行する
+                    next_step = Instant::now();
+                }
                 Ok(cmd) => handle_command(
                     cmd,
                     &mut rigid_body_set, &mut collider_set,
@@ -193,6 +202,12 @@ fn run_physics_loop(
                 Err(TryRecvError::Empty)          => break,
                 Err(TryRecvError::Disconnected)   => return,
             }
+        }
+
+        // Pause 中は物理ステップをスキップ（速度・内部状態は保持）
+        if paused {
+            std::thread::sleep(Duration::from_millis(5));
+            continue;
         }
 
         // ── 物理ステップ ─────────────────────────────────────────────────────
@@ -258,7 +273,9 @@ fn handle_command(
     gravity:           &mut nalgebra::Vector3<Real>,
 ) {
     match cmd {
-        PhysicsCommand::Stop => { /* 呼び出し元で処理済み */ }
+        PhysicsCommand::Stop   => { /* 呼び出し元で処理済み */ }
+        PhysicsCommand::Pause  => { /* ループ側で処理済み */ }
+        PhysicsCommand::Resume => { /* ループ側で処理済み */ }
 
         PhysicsCommand::AddObject(obj) => {
             add_object(obj, rb_set, col_set, entries, col_to_entity, trigger_set);

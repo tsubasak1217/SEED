@@ -16,6 +16,17 @@ use crate::engine::structs::transforms::Quaternion;
 use crate::engine::structs::utils::color::Color;
 use super::{FontConfig, FontSystem, TextBatch, GpuTextBatch};
 
+// ── AxisHit — ドットのヒット情報 ─────────────────────────────
+
+/// 軸ギズモのドットヒット情報。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct AxisHit {
+    /// 軸インデックス（0=X, 1=Y, 2=Z）
+    pub axis: usize,
+    /// 正端なら true、負端なら false
+    pub pos:  bool,
+}
+
 // ── 定数 ──────────────────────────────────────────────────────
 
 /// 右上端からのマージン（ピクセル）
@@ -170,12 +181,70 @@ impl AxisGizmo {
         Self { pipeline, font_system }
     }
 
+    /// カーソル座標でドット円のヒット判定を行い、最も手前のドットを返す。
+    ///
+    /// `cursor_x/y` はビューポートローカルピクセル座標（左上原点）。
+    pub fn hit_test(
+        cursor_x: f32,
+        cursor_y: f32,
+        rot:      Quaternion,
+        screen_w: f32,
+        screen_h: f32,
+    ) -> Option<AxisHit> {
+        let gx = screen_w - MARGIN;
+        let gy = MARGIN;
+
+        let right   = rot.right();
+        let up      = rot.up();
+        let forward = rot.forward();
+
+        let rights   = [right.x,   right.y,   right.z];
+        let ups      = [up.x,      up.y,      up.z];
+        let forwards = [forward.x, forward.y, forward.z];
+
+        let mut best: Option<(f32, AxisHit)> = None;
+
+        for i in 0..3 {
+            let px =  rights[i];
+            let py = -ups[i];
+
+            // 正端
+            let tx  = gx + px * RADIUS_PX;
+            let ty  = gy + py * RADIUS_PX;
+            let cz  = forwards[i];
+            let dr  = DOT_RADIUS;
+            let dx  = cursor_x - tx;
+            let dy  = cursor_y - ty;
+            if dx*dx + dy*dy <= dr*dr {
+                if best.map_or(true, |(bz, _)| cz > bz) {
+                    best = Some((cz, AxisHit { axis: i, pos: true }));
+                }
+            }
+
+            // 負端
+            let tx  = gx - px * RADIUS_PX;
+            let ty  = gy - py * RADIUS_PX;
+            let cz  = -forwards[i];
+            let dr  = DOT_RADIUS * 0.7;
+            let dx  = cursor_x - tx;
+            let dy  = cursor_y - ty;
+            if dx*dx + dy*dy <= dr*dr {
+                if best.map_or(true, |(bz, _)| cz > bz) {
+                    best = Some((cz, AxisHit { axis: i, pos: false }));
+                }
+            }
+        }
+
+        best.map(|(_, hit)| hit)
+    }
+
     /// 毎フレーム呼び出し。カメラ回転クォータニオンとスクリーンサイズからバッチを構築する。
     ///
     /// アルゴリズム:
     ///   半径1のギズモローカル頂点にカメラ回転行列の逆行列(= 転置 = R^T)を掛けると
     ///   カメラ空間での座標が得られる。これは rot.right/up/forward の dot 積と等価。
     ///   6エンドポイント(±X, ±Y, ±Z)を個別に cam_z でソートしてペインタ順に描画する。
+    /// `hovered` が Some の場合、対応するドットをハイライト表示する。
     pub fn build(
         &mut self,
         rot:      Quaternion,
@@ -183,6 +252,7 @@ impl AxisGizmo {
         screen_h: f32,
         device:   &wgpu::Device,
         queue:    &wgpu::Queue,
+        hovered:  Option<AxisHit>,
     ) -> GpuAxisGizmoBatch {
         let cx = screen_w - MARGIN;
         let cy = MARGIN;
@@ -237,10 +307,17 @@ impl AxisGizmo {
 
         for ep in &endpoints {
             let ax = &AXES[ep.axis_i];
-            let (color, dot_r) = if ep.is_pos {
+            let (base_color, base_r) = if ep.is_pos {
                 (ax.color_pos, DOT_RADIUS)
             } else {
                 (ax.color_neg, DOT_RADIUS * 0.7)
+            };
+            // ホバー中のドットをハイライト（白に近づけてサイズを 1.35 倍に）
+            let is_hovered = hovered.map_or(false, |h| h.axis == ep.axis_i && h.pos == ep.is_pos);
+            let (color, dot_r) = if is_hovered {
+                (brighten(base_color), base_r * 1.35)
+            } else {
+                (base_color, base_r)
             };
             push_thick_line_px(&mut geo, cx, cy, ep.tip_x, ep.tip_y,
                 THICKNESS, screen_w, screen_h, color);
@@ -295,6 +372,19 @@ impl AxisGizmo {
             self.font_system.draw_text_batch(text, pass);
         }
     }
+}
+
+// ── 色ヘルパー ────────────────────────────────────────────────
+
+/// 色を白方向に 40% 補間して明るくする（ホバーハイライト用）。
+#[inline]
+fn brighten(c: [f32; 4]) -> [f32; 4] {
+    [
+        (c[0] + (1.0 - c[0]) * 0.4).min(1.0),
+        (c[1] + (1.0 - c[1]) * 0.4).min(1.0),
+        (c[2] + (1.0 - c[2]) * 0.4).min(1.0),
+        c[3].max(0.9),
+    ]
 }
 
 // ── ジオメトリヘルパー ────────────────────────────────────────

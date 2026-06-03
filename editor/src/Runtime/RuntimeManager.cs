@@ -154,6 +154,12 @@ public sealed class RuntimeManager : IDisposable
     /// <summary>デバッグカメラ状態が返ってきたときに発火する（CAM_STATE メッセージ本体）。</summary>
     public event Action<string>? CameraStateReceived;
 
+    /// <summary>
+    /// 編集時物理タイムライン状態が更新されたときに発火する。
+    /// 引数: "paused,at_latest,current_frame,total_frames,time_sec"
+    /// </summary>
+    public event Action<string>? EditPhysicsStateReceived;
+
     /// <summary>ランタイム側でシーンが変更されたときに発火する（ギズモドラッグ完了など）。</summary>
     public event Action? SceneModified;
 
@@ -542,8 +548,10 @@ public sealed class RuntimeManager : IDisposable
         var playColliderDrawArg = PlayColliderDraw ? " --play-collider-draw=1" : "";
         // エディタの PID を渡す: SEED.exe はエディタが終了したら自分自身も終了する
         var parentPidArg = $" --parent-pid={System.Diagnostics.Process.GetCurrentProcess().Id}";
+        // Edit / Play 両モードで --assets-root を渡す。
+        // Edit モードでも sprite テクスチャ等のバーチャルパス（assets://...）解決に必要。
         var args = editMode
-            ? $"--mode=edit --pipe={_pipe.PipeName} --parent-hwnd={_viewportContainerHwnd}{editorResourcesArg}{parentPidArg}"
+            ? $"--mode=edit --pipe={_pipe.PipeName} --parent-hwnd={_viewportContainerHwnd}{assetsRootArg}{editorResourcesArg}{parentPidArg}"
             : $"--mode=play --pipe={_pipe.PipeName}{assetsRootArg}{sceneArg}{editorResourcesArg}{playColliderDrawArg}{parentPidArg}";
 
         var workDir = ResolveWorkingDirectory(_runtimeExePath);
@@ -702,6 +710,11 @@ public sealed class RuntimeManager : IDisposable
         else if (msg == "SCENE_MODIFIED")
         {
             SceneModified?.Invoke();
+        }
+        else if (msg.StartsWith("EDIT_PHYSICS_STATE:", StringComparison.Ordinal))
+        {
+            var payload = msg["EDIT_PHYSICS_STATE:".Length..];
+            EditPhysicsStateReceived?.Invoke(payload);
         }
         else if (msg == "ACTOR_EDIT_STARTED")
         {

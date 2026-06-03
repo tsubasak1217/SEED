@@ -454,13 +454,13 @@ impl App {
                     self.canvas_screen_space_overlay = v;
                 }
                 IpcCommand::GetCamState => {
-                    let (pos, yaw, pitch, fov, far, spd) = self.cam_state_tuple();
+                    let (pos, euler_x, euler_y, euler_z, fov, far, spd) = self.cam_state_tuple();
                     if let Some(ipc) = &self.ipc {
-                        ipc.send(&format!("CAM_STATE:{pos},{yaw},{pitch},{fov},{far},{spd}"));
+                        ipc.send(&format!("CAM_STATE:{pos},{euler_x},{euler_y},{euler_z},{fov},{far},{spd}"));
                     }
                 }
-                IpcCommand::SetCameraTransform { px, py, pz, yaw, pitch } => {
-                    self.apply_camera_transform(px, py, pz, yaw, pitch);
+                IpcCommand::SetCameraTransform { px, py, pz, euler_x, euler_y, euler_z } => {
+                    self.apply_camera_euler(px, py, pz, euler_x, euler_y, euler_z);
                 }
                 IpcCommand::SetCameraSpeed(speed) => {
                     self.camera.move_speed = speed.clamp(0.1, 500.0);
@@ -518,20 +518,27 @@ impl App {
                             self.sync_anim_seeds();
                             self.send_selected();
                             self.send_hierarchy();
-                            // 編集時物理シミュレーションが有効な場合、シーンロード後に再起動する
+                            // 物理タイムラインをリセットしてシーンロード後の初期状態に戻す
+                            self.reset_physics_timeline();
+                            // 有効な物理スレッドをシーン初期状態で再起動する
                             if self.edit_physics_enabled {
                                 self.stop_physics();
                                 self.start_physics();
                             }
-                            // 2D 物理シミュレーションが有効な場合、シーンロード後に再起動する
                             if self.edit_physics_2d_enabled {
                                 self.stop_physics_2d();
                                 self.start_physics_2d();
                             }
+                            // いずれかの物理が有効な場合はタイムラインを初期化して物理スレッドを Pause する。
+                            // init_physics_timeline を呼ばないと Pause が送られず、シーンロード直後から
+                            // 物理演算が走り続けて再生時に落下済み状態になってしまう。
+                            if self.edit_physics_enabled || self.edit_physics_2d_enabled {
+                                self.init_physics_timeline();
+                            }
                             if let Some(ipc) = &self.ipc {
                                 ipc.send("SCENE_LOADED");
-                                let (pos, yaw, pitch, fov, far, spd) = self.cam_state_tuple();
-                                ipc.send(&format!("CAM_STATE:{pos},{yaw},{pitch},{fov},{far},{spd}"));
+                                let (pos, euler_x, euler_y, euler_z, fov, far, spd) = self.cam_state_tuple();
+                                ipc.send(&format!("CAM_STATE:{pos},{euler_x},{euler_y},{euler_z},{fov},{far},{spd}"));
                             }
                         }
                         Some(Err(e)) => {
@@ -604,8 +611,8 @@ impl App {
                                 self.send_world_line_info();
                                 if let Some(ipc) = &self.ipc {
                                     ipc.send("ACTOR_EDIT_STARTED");
-                                    let (pos, yaw, pitch, fov, far, spd) = self.cam_state_tuple();
-                                    ipc.send(&format!("CAM_STATE:{pos},{yaw},{pitch},{fov},{far},{spd}"));
+                                    let (pos, euler_x, euler_y, euler_z, fov, far, spd) = self.cam_state_tuple();
+                                    ipc.send(&format!("CAM_STATE:{pos},{euler_x},{euler_y},{euler_z},{fov},{far},{spd}"));
                                 }
                             }
                             Err(e) => {
@@ -645,8 +652,8 @@ impl App {
                         } else {
                             ipc.send("ACTOR_EDIT_STARTED");
                         }
-                        let (pos, yaw, pitch, fov, far, spd) = self.cam_state_tuple();
-                        ipc.send(&format!("CAM_STATE:{pos},{yaw},{pitch},{fov},{far},{spd}"));
+                        let (pos, euler_x, euler_y, euler_z, fov, far, spd) = self.cam_state_tuple();
+                        ipc.send(&format!("CAM_STATE:{pos},{euler_x},{euler_y},{euler_z},{fov},{far},{spd}"));
                     }
                 }
                 IpcCommand::RemoveWorldLine(wl) => {
@@ -665,7 +672,8 @@ impl App {
                     let sn = slot_name.clone();
                     let a  = args.clone();
                     match ct.as_str() {
-                        "SpriteComponent" => {
+                        // Canvas 上に配置するコンポーネント → 親子化ロジック経由
+                        "SpriteComponent" | "Collider2dComponent" => {
                             self.handle_add_canvas_child_component(actor_dfs_id, &ct, &sn, &a);
                         }
                         _ => {
@@ -692,6 +700,12 @@ impl App {
                     } else {
                         self.handle_add_actor_2d(world_line, parent_dfs_id);
                     }
+                }
+                IpcCommand::AddActorChild { parent_dfs_id } => {
+                    self.handle_add_actor_child(parent_dfs_id);
+                }
+                IpcCommand::AddActor2dChild { parent_dfs_id } => {
+                    self.handle_add_actor_2d_child(parent_dfs_id);
                 }
                 IpcCommand::RemoveActor(dfs_id) => {
                     self.handle_remove_actor(dfs_id);
@@ -754,6 +768,17 @@ impl App {
                 IpcCommand::SetCanvasAutoScale { actor_dfs_id, slot_idx, auto_scale } => {
                     self.handle_set_canvas_auto_scale(actor_dfs_id, slot_idx, auto_scale);
                 }
+                IpcCommand::SetCanvasAspectRatio { actor_dfs_id, slot_idx, keep, axis } => {
+                    let a = axis.clone();
+                    self.handle_set_canvas_aspect_ratio(actor_dfs_id, slot_idx, keep, &a);
+                }
+                IpcCommand::SetCanvasGravityMode { actor_dfs_id, slot_idx, mode } => {
+                    self.handle_set_canvas_gravity_mode(actor_dfs_id, slot_idx, mode);
+                }
+                IpcCommand::SetCollider2dAspectRatio { actor_dfs_id, slot_idx, keep, axis } => {
+                    let a = axis.clone();
+                    self.handle_set_collider2d_aspect_ratio(actor_dfs_id, slot_idx, keep, &a);
+                }
                 IpcCommand::SetCanvasViewportRefWindow { actor_dfs_id, slot_idx } => {
                     self.handle_set_canvas_viewport_ref_window(actor_dfs_id, slot_idx);
                 }
@@ -761,6 +786,9 @@ impl App {
                     let an = actor_name.clone();
                     let sn = slot_name.clone();
                     self.handle_set_canvas_viewport_ref_camera(actor_dfs_id, slot_idx, an, sn);
+                }
+                IpcCommand::SetCanvas3dPivot { actor_dfs_id, slot_idx, pivot_x, pivot_y } => {
+                    self.handle_set_canvas_3d_pivot(actor_dfs_id, slot_idx, pivot_x, pivot_y);
                 }
                 IpcCommand::SetInputMapPath { actor_dfs_id, slot_idx, path } => {
                     let p = path.clone();
@@ -850,10 +878,36 @@ impl App {
                         // 既存スレッドを停止してから新しい設定で再起動する
                         self.stop_physics();
                         self.start_physics();
+                        // タイムラインを初期化する（初期状態をフレーム0として記録）
+                        self.init_physics_timeline();
                     } else {
                         self.stop_physics();
                         // 無効化時は衝突中 ID セットをクリアして描画色をリセットする
                         self.active_collision_dfs_ids.clear();
+                        // タイムラインをリセットする
+                        self.reset_physics_timeline();
+                    }
+                }
+
+                // ── 編集時物理タイムライン操作 ──────────────────────────────
+                IpcCommand::EditPhysicsPlayPause => {
+                    if self.mode == RuntimeMode::Edit {
+                        self.handle_edit_physics_play_pause();
+                    }
+                }
+                IpcCommand::EditPhysicsStep { step } => {
+                    if self.mode == RuntimeMode::Edit {
+                        self.handle_edit_physics_step(step);
+                    }
+                }
+                IpcCommand::EditPhysicsSeek { frame } => {
+                    if self.mode == RuntimeMode::Edit {
+                        self.handle_edit_physics_seek(frame);
+                    }
+                }
+                IpcCommand::EditPhysicsApplyFrame => {
+                    if self.mode == RuntimeMode::Edit {
+                        self.handle_edit_physics_apply_frame();
                     }
                 }
                 IpcCommand::SetPlayColliderDraw(v) => {
@@ -872,6 +926,17 @@ impl App {
                         // 既存 2D スレッドを停止してから新しい設定で再起動する
                         self.stop_physics_2d();
                         self.start_physics_2d();
+                        // 3D 物理が有効でない場合はタイムラインを新規初期化する
+                        // 3D 物理が有効な場合は既にタイムラインが存在するので Pause のみ送信する
+                        if self.edit_physics_enabled {
+                            // 2D スレッドにも Pause を送って再生ボタンまで動かさない
+                            if let Some(thread) = &self.physics_thread_2d {
+                                use crate::engine::physics::PhysicsCommand2d;
+                                thread.send(PhysicsCommand2d::Pause);
+                            }
+                        } else {
+                            self.init_physics_timeline();
+                        }
                     } else {
                         self.stop_physics_2d();
                         // 無効化時は衝突中 ID セットをクリアして描画色をリセットする

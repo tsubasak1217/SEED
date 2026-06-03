@@ -285,11 +285,16 @@ impl App {
                 // CanvasComponent を複製して新スロット専用エンティティに insert
                 let slot_entity = scene.world.spawn();
                 scene.world.insert(slot_entity, CanvasComponent {
-                                    width: cc_data.width, height: cc_data.height,
-                                    scale_transform: cc_data.scale_transform,
-                                    scale_size:      cc_data.scale_size,
-                                    auto_scale:      cc_data.auto_scale,
-                                    viewport_ref:    cc_data.viewport_ref.clone(),
+                                    width:             cc_data.width,
+                                    height:            cc_data.height,
+                                    scale_transform:   cc_data.scale_transform,
+                                    scale_size:        cc_data.scale_size,
+                                    auto_scale:        cc_data.auto_scale,
+                                    viewport_ref:      cc_data.viewport_ref.clone(),
+                                    keep_aspect_ratio: cc_data.keep_aspect_ratio,
+                                    aspect_ratio_axis: cc_data.aspect_ratio_axis.clone(),
+                                    gravity_mode:      cc_data.gravity_mode,
+                                    pivot:             cc_data.pivot,
                                 });
                 let mut c = 0u32;
                 if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
@@ -490,11 +495,16 @@ impl App {
                 }
                 ComponentData::CanvasComponent(cc_data) => {
                     scene.world.insert(slot_entity, CanvasComponent {
-                                    width: cc_data.width, height: cc_data.height,
-                                    scale_transform: cc_data.scale_transform,
-                                    scale_size:      cc_data.scale_size,
-                                    auto_scale:      cc_data.auto_scale,
-                                    viewport_ref:    cc_data.viewport_ref.clone(),
+                                    width:             cc_data.width,
+                                    height:            cc_data.height,
+                                    scale_transform:   cc_data.scale_transform,
+                                    scale_size:        cc_data.scale_size,
+                                    auto_scale:        cc_data.auto_scale,
+                                    viewport_ref:      cc_data.viewport_ref.clone(),
+                                    keep_aspect_ratio: cc_data.keep_aspect_ratio,
+                                    aspect_ratio_axis: cc_data.aspect_ratio_axis.clone(),
+                                    gravity_mode:      cc_data.gravity_mode,
+                                    pivot:             cc_data.pivot,
                                 });
                     new_slots.push(ComponentSlot::new::<CanvasComponent>(slot_data.name, ComponentKind::Canvas, slot_entity));
                 }

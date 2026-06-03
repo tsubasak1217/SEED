@@ -453,12 +453,16 @@ pub fn build_actor(
             ComponentData::CanvasComponent(cc_data) => {
                 use crate::engine::components::CanvasComponent;
                 world.insert(slot_entity, CanvasComponent {
-                    width:           cc_data.width,
-                    height:          cc_data.height,
-                    scale_size:      cc_data.scale_size,
-                    scale_transform: cc_data.scale_transform,
-                    auto_scale:      cc_data.auto_scale,
-                    viewport_ref:    cc_data.viewport_ref.clone(),
+                    width:             cc_data.width,
+                    height:            cc_data.height,
+                    scale_size:        cc_data.scale_size,
+                    scale_transform:   cc_data.scale_transform,
+                    auto_scale:        cc_data.auto_scale,
+                    viewport_ref:      cc_data.viewport_ref.clone(),
+                    keep_aspect_ratio: cc_data.keep_aspect_ratio,
+                    aspect_ratio_axis: cc_data.aspect_ratio_axis.clone(),
+                    gravity_mode:      cc_data.gravity_mode,
+                    pivot:             cc_data.pivot,
                 });
                 actor.add_slot_typed::<CanvasComponent>(slot_name, ComponentKind::Canvas, slot_entity);
             }

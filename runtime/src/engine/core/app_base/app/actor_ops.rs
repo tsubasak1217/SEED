@@ -121,6 +121,34 @@ impl App {
         if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
     }
 
+    /// 指定アクターの子として 3D アクターを追加する。
+    ///
+    /// world_line は親アクターから自動取得する（Inspector の右クリックメニュー等から使用）。
+    pub(super) fn handle_add_actor_child(&mut self, parent_dfs_id: u32) {
+        let wl = {
+            let Some(scene) = &self.scene else { return };
+            let mut c = 0u32;
+            find_actor_by_dfs(&scene.actors, self.active_world_line, parent_dfs_id, &mut c)
+                .map(|a| a.world_line)
+                .unwrap_or(self.active_world_line)
+        };
+        self.handle_add_actor(wl, Some(parent_dfs_id), None);
+    }
+
+    /// 指定アクターの子として 2D アクターを追加する。
+    ///
+    /// world_line は親アクターから自動取得する（Inspector の右クリックメニュー等から使用）。
+    pub(super) fn handle_add_actor_2d_child(&mut self, parent_dfs_id: u32) {
+        let wl = {
+            let Some(scene) = &self.scene else { return };
+            let mut c = 0u32;
+            find_actor_by_dfs(&scene.actors, self.active_world_line, parent_dfs_id, &mut c)
+                .map(|a| a.world_line)
+                .unwrap_or(self.active_world_line)
+        };
+        self.handle_add_actor_2d(wl, Some(parent_dfs_id));
+    }
+
     /// .actor ファイルをシーンにドロップ配置する。
     ///
     /// 3D アクターの場合は `spawn_pos` にトランスフォームを設定して配置する。
@@ -396,14 +424,16 @@ impl App {
 
     /// 指定 world_line に 2D アクターが残っているかを確認し、canvas_world_lines を更新する。
     /// アクター削除・Undo/Redo 後に呼び出すことで選択モードの不整合を防ぐ。
+    ///
+    /// # 判定ルール
+    /// トップレベルアクター（scene.actors に直接登録）が is_2d() のみを対象とする。
+    /// Actor3D の子として存在する Actor2D（3D Canvas の配下スプライト等）はここで
+    /// canvas_world_lines に含めない。含めると canvas ID picking が 3D シーンで誤動作する。
     pub(super) fn update_canvas_wl_state_for(&mut self, wl: u32) {
-        fn has_2d(actors: &[Actor]) -> bool {
-            actors.iter().any(|a| a.is_2d() || has_2d(a.children()))
-        }
         if let Some(scene) = &self.scene {
             let has = scene.actors.iter()
                 .filter(|a| a.world_line == wl)
-                .any(|a| a.is_2d() || has_2d(a.children()));
+                .any(|a| a.is_2d());
             if has {
                 self.canvas_world_lines.insert(wl);
             } else {

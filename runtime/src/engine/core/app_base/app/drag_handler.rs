@@ -15,6 +15,7 @@ use crate::engine::components::{
 use crate::engine::core::app_base::undo::{
     SelectionCommand, ActorGroupTransformCommand, MultiTransformCommand,
     ActorDfsSelectionCommand, MultiActorDragTransformCommand, CompositeCommand,
+    CanvasTransformCommand,
 };
 use crate::engine::methods::gizmo_interact::{
     screen_to_ray, screen_to_ray_ortho, update_drag, mat4x4_mul, mat4x4_inv,
@@ -29,6 +30,8 @@ use super::{
     collect_transform_only_in_rect,
     collect_child_actor_mc_starts,
     canvas_anchor_offset_for_dfs,
+    find_parent_actor_of_dfs,
+    get_3d_canvas_world_mat,
     world_to_screen,
     camera_scene_gizmo,
     CANVAS_WORLD_SCALE,
@@ -78,6 +81,27 @@ impl App {
                 }
             }
             return;
+        }
+
+        // MMB 押し込み中: カーソルを起点から外円半径内にクランプする。
+        // クランプ距離が速度の最大値となるため、外円端 = 最高速度になる。
+        if self.cam_input.mmb {
+            use crate::engine::structs::objects::camera::debug_camera::MMB_OUTER_RADIUS;
+            let ox = self.cam_input.mmb_origin_x;
+            let oy = self.cam_input.mmb_origin_y;
+            let dx = cx - ox;
+            let dy = cy - oy;
+            let dist_sq = dx * dx + dy * dy;
+            if dist_sq > MMB_OUTER_RADIUS * MMB_OUTER_RADIUS {
+                let dist = dist_sq.sqrt();
+                let nx = ox + dx / dist * MMB_OUTER_RADIUS;
+                let ny = oy + dy / dist * MMB_OUTER_RADIUS;
+                // カーソルを外円の端にワープして閉じ込める
+                warp_cursor_to_local(self.window_hwnd(), nx as i32, ny as i32);
+                // last_cursor_pos をクランプ後の値で更新（frame_renderer 側で cursor_x/y に同期）
+                self.last_cursor_pos = Some((nx, ny));
+                return; // 次の CursorMoved でクランプ後の座標が届き通常処理される
+            }
         }
 
         // RMB 押下中に移動量が閾値を超えたらカメラ grab とみなす
@@ -209,7 +233,11 @@ impl App {
                 let in_editor_drag = self.mode == RuntimeMode::Edit || self.paused;
                 let use_ss_drag = self.canvas_screen_space_overlay || !in_editor_drag
                     || self.actor_edit_canvas_wls.contains(&wl_drag);
-                let (ro, rd) = if self.canvas_world_lines.contains(&wl_drag) && use_ss_drag {
+                // 選択アクター個別の is_2d() で判定する。
+                // canvas_world_lines.contains(&wl) は「世界線に2Dアクターが存在するか」を表すため、
+                // 3Dシーンに2Dアクターと3DアクターMixの場合に3Dアクターが誤って2D扱いになる。
+                let selected_actor_is_2d = self.selected_primary_actor_is_2d();
+                let (ro, rd) = if selected_actor_is_2d && use_ss_drag {
                     // スクリーンスペース: 2D ortho レイ
                     let cam_2d = self.canvas_cameras.get(&wl_drag);
                     let pan_x  = cam_2d.map(|c| c.pan_x).unwrap_or(0.0);
@@ -297,7 +325,11 @@ impl App {
                     }
                     // MC なし（インスタンス空含む）のアクターは Transform を直接ドラッグする
                     if self.drag.drag_root_starts.is_empty() {
-                        if self.canvas_world_lines.contains(&wl) {
+                        // canvas_drag_start が設定されているなら2Dアクター、
+                        // actor_transform_drag_start が設定されているなら3Dアクターとして処理する。
+                        // canvas_world_lines.contains(&wl) は「世界線に2Dアクターが存在するか」であり、
+                        // 3D/2D混在シーンで3DアクターをMixすると誤判定するためここでは使わない。
+                        if self.drag.canvas_transform_drag_start.is_some() {
                             // 2D: CanvasTransform の XY 位置・Z 回転・XY スケールを更新する
                             if let Some((drag_dfs, ref start_ct)) = self.drag.canvas_transform_drag_start.clone() {
                                 let entity = {
@@ -311,41 +343,83 @@ impl App {
                                     let anchor_off = canvas_anchor_offset_for_dfs(
                                         &scene.actors, &scene.world, wl, drag_dfs,
                                     );
+
+                                    // 3D Canvas の子かどうか確認する
+                                    let parent_ctw = {
+                                        let mut c_p = 0u32;
+                                        find_parent_actor_of_dfs(&scene.actors, wl, drag_dfs, &mut c_p, None)
+                                            .and_then(|p| get_3d_canvas_world_mat(p, &scene.world))
+                                    };
+
                                     if let Some(ct) = scene.world.get_mut::<CanvasTransform>(entity) {
-                                        let in_editor_c = self.mode == RuntimeMode::Edit || self.paused;
-                                        let use_ss_c = self.canvas_screen_space_overlay || !in_editor_c
-                                            || self.actor_edit_canvas_wls.contains(&wl);
-                                        // ワールドスペースでは平行移動をキャンバスピクセルに変換し、
-                                        // Y 軸を再反転（レンダリング時に反転済みのため元に戻す）
-                                        let pos_inv_scale = if use_ss_c { 1.0 } else { 1.0 / CANVAS_WORLD_SCALE };
-                                        let y_inv_sign = if use_ss_c { 1.0f32 } else { -1.0 };
-                                        ct.position[0] = new_mat[0][3] * pos_inv_scale - anchor_off[0];
-                                        ct.position[1] = new_mat[1][3] * pos_inv_scale * y_inv_sign - anchor_off[1];
-                                        match self.tool_mode {
-                                            crate::engine::core::app_base::ipc::ToolMode::Rotate => {
-                                                // new_mat = Rz(delta) * T(pos) なので col0 の XY 角度がデルタ回転。
-                                                // ワールドスペース描画時は Y 軸が反転しているため回転方向を逆符号にする。
-                                                let delta_angle = new_mat[1][0].atan2(new_mat[0][0]).to_degrees();
-                                                let rot_sign = if use_ss_c { 1.0f32 } else { -1.0 };
-                                                ct.rotation = start_ct.rotation + delta_angle * rot_sign;
-                                                ct.scale    = start_ct.scale;
+                                        if let Some(ctw) = parent_ctw {
+                                            // 3D Canvas の子: canvas_to_world の逆変換でキャンバス座標に戻す
+                                            let ctw_inv = mat4x4_inv(ctw);
+                                            let wx = new_mat[0][3];
+                                            let wy = new_mat[1][3];
+                                            let wz = new_mat[2][3];
+                                            let cx = ctw_inv[0][0]*wx + ctw_inv[0][1]*wy + ctw_inv[0][2]*wz + ctw_inv[0][3];
+                                            let cy = ctw_inv[1][0]*wx + ctw_inv[1][1]*wy + ctw_inv[1][2]*wz + ctw_inv[1][3];
+                                            match self.tool_mode {
+                                                crate::engine::core::app_base::ipc::ToolMode::Rotate => {
+                                                    // 3D Canvas の Y 反転を考慮して回転方向を逆符号にする
+                                                    let delta_angle = new_mat[1][0].atan2(new_mat[0][0]).to_degrees();
+                                                    ct.rotation = start_ct.rotation - delta_angle;
+                                                    ct.scale    = start_ct.scale;
+                                                }
+                                                crate::engine::core::app_base::ipc::ToolMode::Scale => {
+                                                    let sx = (new_mat[0][0]*new_mat[0][0] + new_mat[1][0]*new_mat[1][0]).sqrt();
+                                                    let sy = (new_mat[0][1]*new_mat[0][1] + new_mat[1][1]*new_mat[1][1]).sqrt();
+                                                    if sx > 0.001 { ct.scale[0] = start_ct.scale[0] * sx; }
+                                                    if sy > 0.001 { ct.scale[1] = start_ct.scale[1] * sy; }
+                                                    ct.rotation = start_ct.rotation;
+                                                }
+                                                _ => {
+                                                    // Move: canvas_to_world 逆変換で canvas 座標に変換
+                                                    ct.position[0] = cx - anchor_off[0];
+                                                    ct.position[1] = cy - anchor_off[1];
+                                                    ct.rotation = start_ct.rotation;
+                                                    ct.scale    = start_ct.scale;
+                                                }
                                             }
-                                            crate::engine::core::app_base::ipc::ToolMode::Scale => {
-                                                // new_mat の各列の長さ = centroid 起点のスケール係数
-                                                let sx = (new_mat[0][0]*new_mat[0][0] + new_mat[1][0]*new_mat[1][0]).sqrt();
-                                                let sy = (new_mat[0][1]*new_mat[0][1] + new_mat[1][1]*new_mat[1][1]).sqrt();
-                                                if sx > 0.001 { ct.scale[0] = start_ct.scale[0] * sx; }
-                                                if sy > 0.001 { ct.scale[1] = start_ct.scale[1] * sy; }
-                                                ct.rotation = start_ct.rotation;
+                                            ct.pivot = start_ct.pivot;
+                                        } else {
+                                            // 通常 2D Canvas 処理
+                                            let in_editor_c = self.mode == RuntimeMode::Edit || self.paused;
+                                            let use_ss_c = self.canvas_screen_space_overlay || !in_editor_c
+                                                || self.actor_edit_canvas_wls.contains(&wl);
+                                            // ワールドスペースでは平行移動をキャンバスピクセルに変換し、
+                                            // Y 軸を再反転（レンダリング時に反転済みのため元に戻す）
+                                            let pos_inv_scale = if use_ss_c { 1.0 } else { 1.0 / CANVAS_WORLD_SCALE };
+                                            let y_inv_sign = if use_ss_c { 1.0f32 } else { -1.0 };
+                                            ct.position[0] = new_mat[0][3] * pos_inv_scale - anchor_off[0];
+                                            ct.position[1] = new_mat[1][3] * pos_inv_scale * y_inv_sign - anchor_off[1];
+                                            match self.tool_mode {
+                                                crate::engine::core::app_base::ipc::ToolMode::Rotate => {
+                                                    // new_mat = Rz(delta) * T(pos) なので col0 の XY 角度がデルタ回転。
+                                                    // ワールドスペース描画時は Y 軸が反転しているため回転方向を逆符号にする。
+                                                    let delta_angle = new_mat[1][0].atan2(new_mat[0][0]).to_degrees();
+                                                    let rot_sign = if use_ss_c { 1.0f32 } else { -1.0 };
+                                                    ct.rotation = start_ct.rotation + delta_angle * rot_sign;
+                                                    ct.scale    = start_ct.scale;
+                                                }
+                                                crate::engine::core::app_base::ipc::ToolMode::Scale => {
+                                                    // new_mat の各列の長さ = centroid 起点のスケール係数
+                                                    let sx = (new_mat[0][0]*new_mat[0][0] + new_mat[1][0]*new_mat[1][0]).sqrt();
+                                                    let sy = (new_mat[0][1]*new_mat[0][1] + new_mat[1][1]*new_mat[1][1]).sqrt();
+                                                    if sx > 0.001 { ct.scale[0] = start_ct.scale[0] * sx; }
+                                                    if sy > 0.001 { ct.scale[1] = start_ct.scale[1] * sy; }
+                                                    ct.rotation = start_ct.rotation;
+                                                }
+                                                _ => {
+                                                    // Move: 位置のみ変化
+                                                    ct.rotation = start_ct.rotation;
+                                                    ct.scale    = start_ct.scale;
+                                                }
                                             }
-                                            _ => {
-                                                // Move: 位置のみ変化
-                                                ct.rotation = start_ct.rotation;
-                                                ct.scale    = start_ct.scale;
-                                            }
+                                            // ピボットはドラッグ中変化なし
+                                            ct.pivot = start_ct.pivot;
                                         }
-                                        // ピボットはドラッグ中変化なし
-                                        ct.pivot = start_ct.pivot;
                                     }
                                 }
                             }
@@ -433,6 +507,12 @@ impl App {
             self.drag.lmb_press_pos = Some((cx, cy));
             self.drag.ctrl_at_press = self.ctrl_held;
 
+            // 軸ギズモドットのクリック判定（他のすべての処理より優先）
+            if let Some(hit) = self.axis_gizmo_hovered {
+                self.snap_camera_to_axis(hit);
+                return;
+            }
+
             // ギズモヒットを優先。外れた場合は release 時にピックまたは矩形選択。
             if let Some(drag) = self.try_gizmo_hit_and_start(cx, cy) {
                 let wl              = self.active_world_line;
@@ -493,7 +573,13 @@ impl App {
                         if let Some(dfs) = selected_dfs {
                             let mut c = 0u32;
                             if let Some(actor) = find_actor_by_dfs(&scene.actors, wl, dfs as u32, &mut c) {
-                                if self.canvas_world_lines.contains(&wl) {
+                                // actor.is_2d() でアクター個別の種別を判定する。
+                                // canvas_world_lines.contains(&wl) は「世界線に2Dアクターが存在するか」のため、
+                                // 3D/2D混在シーンでは3DアクターがCanvas扱いになって動かせなくなる。
+                                // 開始時に両方クリアしてから新しい値をセットする（ステール防止）。
+                                self.drag.canvas_transform_drag_start = None;
+                                self.drag.actor_transform_drag_start  = None;
+                                if actor.is_2d() {
                                     // 2D: CanvasTransform のスナップショットを保持する
                                     let old_ct = scene.world.get::<CanvasTransform>(actor.entity)
                                         .cloned().unwrap_or_default();
@@ -581,6 +667,31 @@ impl App {
         // ドラッグで変化があれば Undo 履歴に一括記録
         let mut primary_recorded = false;
         if self.drag.gizmo_drag.is_some() {
+            // CanvasTransform ドラッグ終了処理: 必ず take() してステール状態を防ぐ。
+            // canvas_transform_drag_start が take() されないまま残ると、次の 3D アクター
+            // ドラッグ時に canvas 用パスが誤って選択されてしまう原因になる。
+            if let Some((canvas_drag_dfs, old_ct)) = self.drag.canvas_transform_drag_start.take() {
+                let wl = self.active_world_line;
+                let new_ct_opt = self.scene.as_ref().and_then(|s| {
+                    let mut c = 0u32;
+                    find_actor_by_dfs(&s.actors, wl, canvas_drag_dfs, &mut c)
+                        .and_then(|a| s.world.get::<crate::engine::components::CanvasTransform>(a.entity).cloned())
+                });
+                if let Some(new_ct) = new_ct_opt {
+                    if old_ct != new_ct {
+                        self.undo_history.record(Box::new(CanvasTransformCommand {
+                            world_line: wl,
+                            dfs_id:     canvas_drag_dfs,
+                            old_ct,
+                            new_ct,
+                        }));
+                        primary_recorded = true;
+                        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+                    }
+                }
+                self.send_actor_components(canvas_drag_dfs, self.actor_virtual_selected_slot_idx);
+            }
+
             if let Some((dfs_id, old_transform)) = self.drag.actor_transform_drag_start.take() {
                 // アクター編集モード: MC なしアクターの Transform ドラッグ終了
                 let wl = self.active_world_line;

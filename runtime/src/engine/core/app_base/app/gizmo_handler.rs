@@ -9,9 +9,11 @@ use crate::engine::components::{ModelComponent, Transform as ActorTransform, Can
 use crate::engine::core::app_base::ipc::ToolMode;
 use crate::engine::methods::gizmo_interact::{
     GizmoDrag, GizmoPart, screen_to_ray, screen_to_ray_ortho, hit_test_gizmo, start_drag,
+    hit_test_gizmo_canvas, start_drag_canvas,
 };
 
-use super::{App, RuntimeMode, find_actor_by_dfs, selection_centroid, canvas_anchor_offset_for_dfs};
+use super::{App, RuntimeMode, find_actor_by_dfs, selection_centroid, canvas_anchor_offset_for_dfs,
+            find_parent_actor_of_dfs, get_3d_canvas_world_mat};
 
 /// キャンバス座標（ピクセル）→ 3D ワールド座標の変換スケール係数。
 const CANVAS_WORLD_SCALE: f32 = 1.0 / 100.0;
@@ -43,13 +45,26 @@ impl App {
                             let off = canvas_anchor_offset_for_dfs(
                                 &scene.actors, &scene.world, wl, dfs_id as u32,
                             );
-                            // ワールドスペースモードでは座標をスケールして 3D 空間へ変換し、
-                            // Y 軸（キャンバス下向き→3D 上向き）を反転する
-                            let ws     = if !use_screen_space { CANVAS_WORLD_SCALE } else { 1.0 };
-                            let y_sign = if !use_screen_space { -1.0f32 } else { 1.0 };
-                            [(ct.position[0] + off[0]) * ws,
-                             (ct.position[1] + off[1]) * ws * y_sign,
-                             0.0]
+                            let cx = ct.position[0] + off[0];
+                            let cy = ct.position[1] + off[1];
+
+                            // 3D Canvas の子かどうか確認する（親が Actor3D + CanvasComponent）
+                            let parent_ctw = {
+                                let mut c_p = 0u32;
+                                find_parent_actor_of_dfs(&scene.actors, wl, dfs_id as u32, &mut c_p, None)
+                                    .and_then(|p| get_3d_canvas_world_mat(p, &scene.world))
+                            };
+                            if let Some(ctw) = parent_ctw {
+                                // 3D Canvas の子: canvas_to_world を適用して正確な 3D 位置を計算する
+                                [ctw[0][0]*cx + ctw[0][1]*cy + ctw[0][3],
+                                 ctw[1][0]*cx + ctw[1][1]*cy + ctw[1][3],
+                                 ctw[2][0]*cx + ctw[2][1]*cy + ctw[2][3]]
+                            } else {
+                                // 通常 2D Canvas: ワールドスペースモードでは座標をスケール・Y 反転する
+                                let ws     = if !use_screen_space { CANVAS_WORLD_SCALE } else { 1.0 };
+                                let y_sign = if !use_screen_space { -1.0f32 } else { 1.0 };
+                                [cx * ws, cy * ws * y_sign, 0.0]
+                            }
                         })
                 } else {
                     // 3D アクター: MC の instance_mats[0] を優先、なければ ActorTransform.position を使う
@@ -93,6 +108,32 @@ impl App {
         false
     }
 
+    /// 選択中の 2D アクターが Actor3D + CanvasComponent の直接の子（3D Canvas 子）かを確認し、
+    /// そうであれば canvas_to_world のX/Y/Z 軸（単位ベクトル）を返す。
+    /// トップレベル 2D アクター・3D アクターの場合は None を返す。
+    pub(super) fn selected_canvas_child_axes(&self) -> Option<[[f32; 3]; 3]> {
+        let dfs = self.actor_virtual_selected_idx? as u32;
+        let scene = self.scene.as_ref()?;
+        let wl = self.active_world_line;
+        // 2D アクターでなければ対象外
+        let mut c = 0u32;
+        let actor = find_actor_by_dfs(&scene.actors, wl, dfs, &mut c)?;
+        if !actor.is_2d() { return None; }
+        // 親が Actor3D + CanvasComponent かどうか確認する
+        let mut c2 = 0u32;
+        let parent = find_parent_actor_of_dfs(&scene.actors, wl, dfs, &mut c2, None)?;
+        let ctw = get_3d_canvas_world_mat(parent, &scene.world)?;
+        // canvas_to_world の各列を正規化してキャンバス軸を取得する
+        let normalize = |v: [f32; 3]| {
+            let l = (v[0]*v[0]+v[1]*v[1]+v[2]*v[2]).sqrt().max(1e-10);
+            [v[0]/l, v[1]/l, v[2]/l]
+        };
+        let ax = normalize([ctw[0][0], ctw[1][0], ctw[2][0]]); // canvas X（列0）
+        let ay = normalize([ctw[0][1], ctw[1][1], ctw[2][1]]); // canvas Y（列1）
+        let az = normalize([ctw[0][2], ctw[1][2], ctw[2][2]]); // canvas 法線（列2）
+        Some([ax, ay, az])
+    }
+
     /// 選択中アクター/インスタンスのギズモ中心位置を返す共通ヘルパー。
     /// マルチ選択時は全選択アクターの重心を返す。
     pub(super) fn current_gizmo_pos(&self) -> Option<[f32; 3]> {
@@ -126,6 +167,8 @@ impl App {
     /// スクリーンスペース: ortho レイ、ワールドスペース: perspective レイ を使用する。
     pub(super) fn compute_gizmo_hover(&self, cx: f32, cy: f32) -> Option<GizmoPart> {
         if self.tool_mode == ToolMode::Select { return None; }
+        // 編集時物理タイムラインで過去フレームを表示中はGizmo操作不可
+        if self.edit_physics_enabled && !self.edit_physics_at_latest { return None; }
         let gizmo_pos = self.current_gizmo_pos()?;
         let window_size = self.window.as_ref()?.inner_size();
         let vp_w = window_size.width  as f32;
@@ -165,6 +208,10 @@ impl App {
             (ro, rd, r)
         };
 
+        // 3D Canvas 子アクターの場合はキャンバス軸に沿った oriented ヒットテストを使う
+        if let Some([ax, ay, az]) = self.selected_canvas_child_axes() {
+            return hit_test_gizmo_canvas(ray_o, ray_d, gizmo_pos, radius, self.tool_mode, ax, ay, az);
+        }
         let part = hit_test_gizmo(ray_o, ray_d, gizmo_pos, radius, self.tool_mode)?;
         // 2D キャンバスでは Move/Scale の Z 軸・XZ/YZ 平面ハンドルは無効。
         // Rotate の AxisZ は 2D での回転操作に使うので有効とする。
@@ -185,6 +232,8 @@ impl App {
     /// （回転・スケールは各インスタンスが保持）。
     pub(super) fn try_gizmo_hit_and_start(&self, cx: f32, cy: f32) -> Option<GizmoDrag> {
         if self.tool_mode == ToolMode::Select { return None; }
+        // 編集時物理タイムラインで過去フレームを表示中はGizmo操作不可
+        if self.edit_physics_enabled && !self.edit_physics_at_latest { return None; }
         let gizmo_pos = self.current_gizmo_pos()?;
 
         let centroid_mat = [
@@ -232,6 +281,15 @@ impl App {
             (ro, rd, r)
         };
 
+        // 3D Canvas 子アクターの場合はキャンバス軸に沿った oriented ドラッグ開始を使う
+        if let Some([ax, ay, az]) = self.selected_canvas_child_axes() {
+            let part = hit_test_gizmo_canvas(
+                ray_o, ray_d, gizmo_pos, radius, self.tool_mode, ax, ay, az,
+            )?;
+            return Some(start_drag_canvas(
+                part, self.tool_mode, ray_o, ray_d, gizmo_pos, radius, centroid_mat, ax, ay, az,
+            ));
+        }
         let part = hit_test_gizmo(ray_o, ray_d, gizmo_pos, radius, self.tool_mode)?;
         // 2D キャンバスでは Move/Scale の Z 軸・XZ/YZ 平面ハンドルは無効。
         // Rotate の AxisZ は 2D での回転操作に使うので有効とする。

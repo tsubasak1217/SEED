@@ -6,7 +6,7 @@
 //  actor_virtual_world_pos
 // ============================================================
 
-use crate::engine::components::{ModelComponent, Transform as ActorTransform, ComponentKind, CanvasTransform, CanvasComponent, CanvasViewportRef};
+use crate::engine::components::{ModelComponent, Transform as ActorTransform, ComponentKind, CanvasTransform, CanvasComponent, CanvasViewportRef, AspectRatioAxis, GravityMode, Collider2dComponent};
 use crate::engine::core::app_base::undo::{TransformCommand, ActorGroupTransformCommand};
 use crate::engine::structs::tensor::Vector3;
 use crate::engine::structs::transforms::Transform;
@@ -18,6 +18,8 @@ use super::{
     find_actor_by_dfs, find_actor_by_dfs_mut,
     apply_delta_to_actor_children,
     canvas_anchor_offset_for_dfs,
+    find_parent_actor_of_dfs,
+    get_3d_canvas_world_mat,
     RuntimeMode,
 };
 
@@ -61,12 +63,23 @@ impl App {
             let Some(mc) = mc else { return };
             if i >= mc.instance_mats.len() { return; }
             let old_mat = mc.instance_mats[i];
+            // 旧行列が特異（スケール0）の場合、逆行列が不定になるためデルタが計算できない。
+            // 子孫インスタンスへのデルタ伝播をスキップし、自身のみ直接設定する。
+            let is_old_mat_singular = {
+                let r = &old_mat;
+                let det = r[0][0]*(r[1][1]*r[2][2]-r[1][2]*r[2][1])
+                         -r[0][1]*(r[1][0]*r[2][2]-r[1][2]*r[2][0])
+                         +r[0][2]*(r[1][0]*r[2][1]-r[1][1]*r[2][0]);
+                det.abs() < 1e-8
+            };
             let delta   = mat4x4_mul(new_mat, mat4x4_inv(old_mat));
             mc.instance_mats[i] = new_mat;
-            let descendants = mc.all_descendants(id);
-            for d in descendants {
-                if let Some(m) = mc.instance_mats.get_mut(d as usize) {
-                    *m = mat4x4_mul(delta, *m);
+            if !is_old_mat_singular {
+                let descendants = mc.all_descendants(id);
+                for d in descendants {
+                    if let Some(m) = mc.instance_mats.get_mut(d as usize) {
+                        *m = mat4x4_mul(delta, *m);
+                    }
                 }
             }
             mc.mark_batch_dirty();
@@ -156,8 +169,19 @@ impl App {
             old
         };
 
+        // スケールが 0 だった場合、逆行列が特異になりデルタ計算が不定になる。
+        // このフラグが true のときはデルタを使わず新しいトランスフォームを直接適用する。
+        let is_old_singular = old_tf.scale.iter().any(|&s| s.abs() < 1e-7);
+
+        let new_tf_mat = new_tf.to_mat4();
         // シーンモード・アクター編集モード共通: delta を選択アクターの MC と子アクターに適用する
-        let delta = mat4x4_mul(new_tf.to_mat4(), mat4x4_inv(old_tf.to_mat4()));
+        let delta = if is_old_singular {
+            // 旧スケールが 0 → 逆行列不定のため単位行列で代替（直接設定ルートで処理する）
+            super::MAT4_IDENTITY
+        } else {
+            mat4x4_mul(new_tf_mat, mat4x4_inv(old_tf.to_mat4()))
+        };
+
         // Phase A: 選択アクターの全 ModelComponent スロットに delta を適用する。
         // ModelComponent は actor.entity ではなく各スロット専用の entity に格納されているため、
         // スロット entity を先に収集してから world を可変借用する。
@@ -175,7 +199,14 @@ impl App {
             for slot_entity in slot_entities {
                 if let Some(mc) = scene.world.get_mut::<ModelComponent>(slot_entity) {
                     let old_mats = mc.instance_mats.clone();
-                    for m in &mut mc.instance_mats { *m = mat4x4_mul(delta, *m); }
+                    for m in &mut mc.instance_mats {
+                        if is_old_singular {
+                            // スケール0 から復帰: delta が不定なので新しいトランスフォームを直接設定する
+                            *m = new_tf_mat;
+                        } else {
+                            *m = mat4x4_mul(delta, *m);
+                        }
+                    }
                     mc.mark_batch_dirty();
                     for (i, &old) in old_mats.iter().enumerate() {
                         if let Some(new) = mc.instance_mats.get(i).copied() {
@@ -187,13 +218,16 @@ impl App {
             all_changes
         } else { Vec::new() };
         // Phase B: 子アクターに delta を伝播
+        // スケール0 からの復帰時はデルタが不定なので子アクターへの伝播をスキップする
         let mut child_changes = Vec::new();
-        if let Some(scene) = &mut self.scene {
-            let (actors, world) = (&mut scene.actors, &mut scene.world);
-            let mut c = 0u32;
-            if let Some(actor) = find_actor_by_dfs_mut(actors, wl, dfs_id, &mut c) {
-                let mut child_dfs_counter = dfs_id + 1;
-                apply_delta_to_actor_children(actor, world, delta, &mut child_dfs_counter, &mut child_changes);
+        if !is_old_singular {
+            if let Some(scene) = &mut self.scene {
+                let (actors, world) = (&mut scene.actors, &mut scene.world);
+                let mut c = 0u32;
+                if let Some(actor) = find_actor_by_dfs_mut(actors, wl, dfs_id, &mut c) {
+                    let mut child_dfs_counter = dfs_id + 1;
+                    apply_delta_to_actor_children(actor, world, delta, &mut child_dfs_counter, &mut child_changes);
+                }
             }
         }
         let (mc_transforms, child_changes) = (mc_transforms, child_changes);
@@ -356,6 +390,25 @@ impl App {
         if actor.is_2d() {
             let ct = scene.world.get::<CanvasTransform>(actor.entity)?;
             let off = canvas_anchor_offset_for_dfs(&scene.actors, &scene.world, wl, dfs_id);
+            let cx = ct.position[0] + off[0];
+            let cy = ct.position[1] + off[1];
+
+            // 3D Canvas の直接の子かどうかを確認する。
+            // 親が Actor3D + CanvasComponent なら canvas_to_world を使って正確な 3D 位置を計算する。
+            let parent_ctw = {
+                let mut c_p = 0u32;
+                find_parent_actor_of_dfs(&scene.actors, wl, dfs_id, &mut c_p, None)
+                    .and_then(|p| get_3d_canvas_world_mat(p, &scene.world))
+            };
+            if let Some(ctw) = parent_ctw {
+                // canvas_to_world * [cx, cy, 0, 1]
+                let wx = ctw[0][0] * cx + ctw[0][1] * cy + ctw[0][3];
+                let wy = ctw[1][0] * cx + ctw[1][1] * cy + ctw[1][3];
+                let wz = ctw[2][0] * cx + ctw[2][1] * cy + ctw[2][3];
+                return Some([wx, wy, wz]);
+            }
+
+            // 通常の 2D Canvas 処理（トップレベル 2D アクター）
             // ワールドスペースモード（エディタでスクリーンスペース OFF かつ 3D シーン世界線）では
             // 座標をスケールして 3D 空間へ変換し、Y 軸（下向き→上向き）を反転する
             let in_editor = self.mode == RuntimeMode::Edit || self.paused;
@@ -363,9 +416,7 @@ impl App {
                 || self.actor_edit_canvas_wls.contains(&wl);
             let ws     = if !use_ss { CANVAS_WORLD_SCALE } else { 1.0 };
             let y_sign = if !use_ss { -1.0f32 } else { 1.0 };
-            Some([(ct.position[0] + off[0]) * ws,
-                  (ct.position[1] + off[1]) * ws * y_sign,
-                  0.0])
+            Some([cx * ws, cy * ws * y_sign, 0.0])
         } else {
             Some(scene.world.get::<ActorTransform>(actor.entity)?.position)
         }
@@ -390,6 +441,120 @@ impl App {
         if let Some(scene) = &mut self.scene {
             if let Some(cc) = scene.world.get_mut::<CanvasComponent>(slot_entity) {
                 cc.auto_scale = auto_scale;
+            }
+        }
+        self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
+        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+    }
+
+    /// CanvasComponent のアスペクト比維持設定を更新する。
+    pub(super) fn handle_set_canvas_aspect_ratio(
+        &mut self,
+        actor_dfs_id: u32,
+        slot_idx:     u32,
+        keep:         bool,
+        axis:         &str,
+    ) {
+        let wl = self.active_world_line;
+        let slot_entity = {
+            let Some(scene) = &self.scene else { return };
+            let mut c = 0u32;
+            find_actor_by_dfs(&scene.actors, wl, actor_dfs_id, &mut c)
+                .and_then(|a| a.slots().get(slot_idx as usize))
+                .map(|s| s.entity)
+        };
+        let Some(slot_entity) = slot_entity else { return };
+        let aspect_axis = if axis == "height" { AspectRatioAxis::Height } else { AspectRatioAxis::Width };
+        if let Some(scene) = &mut self.scene {
+            if let Some(cc) = scene.world.get_mut::<CanvasComponent>(slot_entity) {
+                cc.keep_aspect_ratio = keep;
+                cc.aspect_ratio_axis = aspect_axis;
+            }
+        }
+        self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
+        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+    }
+
+    /// CanvasComponent の重力方向モードを更新する。
+    ///
+    /// mode: 0=ScreenDown（スクリーン下方向）, 1=CanvasDown（キャンバス下方向）
+    pub(super) fn handle_set_canvas_gravity_mode(
+        &mut self,
+        actor_dfs_id: u32,
+        slot_idx:     u32,
+        mode:         u8,
+    ) {
+        let wl = self.active_world_line;
+        let slot_entity = {
+            let Some(scene) = &self.scene else { return };
+            let mut c = 0u32;
+            find_actor_by_dfs(&scene.actors, wl, actor_dfs_id, &mut c)
+                .and_then(|a| a.slots().get(slot_idx as usize))
+                .map(|s| s.entity)
+        };
+        let Some(slot_entity) = slot_entity else { return };
+        let gravity_mode = if mode == 1 { GravityMode::CanvasDown } else { GravityMode::ScreenDown };
+        if let Some(scene) = &mut self.scene {
+            if let Some(cc) = scene.world.get_mut::<CanvasComponent>(slot_entity) {
+                cc.gravity_mode = gravity_mode;
+            }
+        }
+        self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
+        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+    }
+
+    /// Collider2dComponent のアスペクト比維持設定を更新する。
+    pub(super) fn handle_set_collider2d_aspect_ratio(
+        &mut self,
+        actor_dfs_id: u32,
+        slot_idx:     u32,
+        keep:         bool,
+        axis:         &str,
+    ) {
+        let wl = self.active_world_line;
+        let slot_entity = {
+            let Some(scene) = &self.scene else { return };
+            let mut c = 0u32;
+            find_actor_by_dfs(&scene.actors, wl, actor_dfs_id, &mut c)
+                .and_then(|a| a.slots().get(slot_idx as usize))
+                .map(|s| s.entity)
+        };
+        let Some(slot_entity) = slot_entity else { return };
+        let aspect_axis = if axis == "height" { AspectRatioAxis::Height } else { AspectRatioAxis::Width };
+        if let Some(scene) = &mut self.scene {
+            if let Some(coll) = scene.world.get_mut::<Collider2dComponent>(slot_entity) {
+                coll.keep_aspect_ratio = keep;
+                coll.aspect_ratio_axis = aspect_axis;
+            }
+        }
+        self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
+        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+    }
+
+    /// 3D キャンバスのピボットを更新する（Actor3D アタッチ時のみ有効）。
+    ///
+    /// pivot は正規化値 [0,1]×[0,1]。(0,0)=左上, (0.5,0.5)=中央, (1,1)=右下。
+    /// アクター位置がキャンバスのどの点に対応するかを決める。
+    pub(super) fn handle_set_canvas_3d_pivot(
+        &mut self,
+        actor_dfs_id: u32,
+        slot_idx:     u32,
+        pivot_x:      f32,
+        pivot_y:      f32,
+    ) {
+        let wl = self.active_world_line;
+        let slot_entity = {
+            let Some(scene) = &self.scene else { return };
+            let mut c = 0u32;
+            find_actor_by_dfs(&scene.actors, wl, actor_dfs_id, &mut c)
+                .and_then(|a| a.slots().get(slot_idx as usize))
+                .filter(|s| s.kind == ComponentKind::Canvas)
+                .map(|s| s.entity)
+        };
+        let Some(slot_entity) = slot_entity else { return };
+        if let Some(scene) = &mut self.scene {
+            if let Some(cc) = scene.world.get_mut::<CanvasComponent>(slot_entity) {
+                cc.pivot = [pivot_x.clamp(0.0, 1.0), pivot_y.clamp(0.0, 1.0)];
             }
         }
         self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);

@@ -19,6 +19,7 @@ use crate::engine::methods::drawer::IdBuffer;
 use super::{
     App, RuntimeMode,
     camera_grab_start, camera_grab_end,
+    mmb_grab_start, mmb_grab_end,
     release_window_clamp, warp_cursor_to_local,
 };
 
@@ -123,6 +124,38 @@ impl App {
             }
         }
 
+        if button == MouseButton::Middle {
+            self.cam_input.mmb = pressed;
+            if self.mode == RuntimeMode::Edit || self.paused {
+                if pressed {
+                    // カーソル起点をカメラ入力に記録する（差分計算用）
+                    if let Some((cx, cy)) = self.last_cursor_pos {
+                        self.cam_input.mmb_origin_x = cx;
+                        self.cam_input.mmb_origin_y = cy;
+                    }
+                    // RMB が先に押されていない場合のみ MMB がカーソルを管理する
+                    // （RMB 中に MMB を追加した場合はカーソルは RMB 管理のまま）
+                    if !self.cam_input.rmb {
+                        self.mmb_grab_screen_pos = mmb_grab_start(self.window_hwnd());
+                        if let Some(window) = &self.window {
+                            window.set_cursor_visible(false);
+                        }
+                    }
+                } else {
+                    // MMB 離し: カーソルを起点に戻して表示する
+                    if let Some((x, y)) = self.mmb_grab_screen_pos.take() {
+                        mmb_grab_end(x, y);
+                        // RMB がまだ押されていなければカーソルを再表示する
+                        if !self.cam_input.rmb {
+                            if let Some(window) = &self.window {
+                                window.set_cursor_visible(true);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         if button == MouseButton::Right {
             self.cam_input.rmb = pressed;
             // カメラ grab は Edit / Pause モードのみ。
@@ -133,9 +166,12 @@ impl App {
                     if pressed {
                         self.rmb_press_pos = self.last_cursor_pos;
                         self.rmb_moved     = false;
-                        self.cam_grab_screen_pos =
-                            camera_grab_start(self.window_hwnd());
-                        window.set_cursor_visible(false);
+                        // MMB 押し込み中はカーソル管理を MMB に任せる（ClipCursor の二重適用を避ける）
+                        if !self.cam_input.mmb {
+                            self.cam_grab_screen_pos =
+                                camera_grab_start(self.window_hwnd());
+                            window.set_cursor_visible(false);
+                        }
                         // Pause モード: DeviceEvent::MouseMotion は WS_CHILD に届かないため
                         // CursorMoved ベースのカメラ回転を使う。
                         // ウィンドウ中央をピボットとしてカーソルをワープして固定する。
@@ -149,7 +185,10 @@ impl App {
                             }
                         }
                     } else {
-                        window.set_cursor_visible(true);
+                        // MMB がまだ押されている場合はカーソル管理を MMB に任せる
+                        if !self.cam_input.mmb {
+                            window.set_cursor_visible(true);
+                        }
                         if let Some((x, y)) = self.cam_grab_screen_pos.take() {
                             camera_grab_end(x, y);
                             // 短押し（カーソル移動なし）→ コンテキストメニュー
