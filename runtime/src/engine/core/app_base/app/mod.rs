@@ -499,6 +499,9 @@ pub struct App {
     /// カメラアクター選択時のビューポートプレビュー描画リソース。
     /// 選択時に初期化され、選択解除時には None のまま。
     camera_preview: Option<CameraPreviewResources>,
+    /// 現在のプレビューテクスチャ生成時のカメラターゲットサイズ (w, h)。
+    /// アスペクト比変更を検出して再生成するために保持する。
+    camera_preview_target_size: Option<(u32, u32)>,
 
     // ── カメラギズモアイコン ─────────────────────────────────────
     /// camera.glb モデルで全カメラアクター位置にアイコンを描画するリソース。
@@ -740,8 +743,9 @@ impl App {
             actor_edit_canvas_wls: HashSet::new(),
             canvas_cameras:        HashMap::new(),
             canvas_screen_space_overlay: false,
-            camera_preview:          None,
-            camera_gizmo:            None,
+            camera_preview:              None,
+            camera_preview_target_size:  None,
+            camera_gizmo:                None,
             shared_model_batches:    HashMap::new(),
             pending_drop:            None,
             pending_drop_hover: None,

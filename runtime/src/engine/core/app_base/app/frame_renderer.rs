@@ -873,33 +873,48 @@ impl App {
                     } else { None };
 
                     // カメラプレビューリソースを初期化・更新する
-                    if selected_cam_data.is_some() {
-                        // リソースが未初期化の場合は生成する
-                        if self.camera_preview.is_none() {
+                    if let Some(ref cam_data) = selected_cam_data {
+                        // プレビューテクスチャサイズをカメラのアスペクト比に合わせて算出する。
+                        // 高さを CAMERA_PREVIEW_H に固定し、幅をアスペクト比から導出する。
+                        let aspect = cam_data.target_aspect();
+                        let preview_h = CAMERA_PREVIEW_H;
+                        let preview_w = ((CAMERA_PREVIEW_H as f32 * aspect).round() as u32).max(1);
+
+                        // カメラのターゲットサイズが変わった場合はリソースを作り直す。
+                        let needs_recreate = self.camera_preview.is_none()
+                            || self.camera_preview_target_size
+                                != Some((cam_data.target_width, cam_data.target_height));
+                        if needs_recreate {
                             self.camera_preview = Some(CameraPreviewResources::new(
                                 &draw_ctx.device,
                                 &draw_ctx.pipelines.camera_preview_blit,
-                                CAMERA_PREVIEW_W, CAMERA_PREVIEW_H,
+                                preview_w, preview_h,
                             ));
+                            self.camera_preview_target_size =
+                                Some((cam_data.target_width, cam_data.target_height));
                         }
-                        // ブリット矩形を更新する
+                        // ブリット矩形をカメラのアスペクト比に合わせたサイズで更新する
                         if let Some(ref preview) = self.camera_preview {
                             preview.update_blit_rect(
                                 &draw_ctx.queue, vp_w_f, vp_h_f,
-                                CAMERA_PREVIEW_W as f32, CAMERA_PREVIEW_H as f32,
+                                preview_w as f32, preview_h as f32,
                             );
                         }
                     } else {
                         // 選択解除時はリソースを破棄する（メモリ節約）
                         self.camera_preview = None;
+                        self.camera_preview_target_size = None;
                     }
 
                     // カメラプレビューレンダーパス（選択カメラのビューで全 MC を描画）
                     if let (Some(cam_data), Some(preview)) =
                         (selected_cam_data.as_ref(), self.camera_preview.as_ref())
                     {
-                        let res = [CAMERA_PREVIEW_W as f32, CAMERA_PREVIEW_H as f32];
-                        // ゲームカメラの target_width/height からアスペクト比を導出する
+                        // テクスチャサイズをアスペクト比から再計算する（上記と同一ロジック）
+                        let prev_h = CAMERA_PREVIEW_H as f32;
+                        let prev_w = (prev_h * cam_data.target_aspect()).round().max(1.0);
+                        let res = [prev_w, prev_h];
+                        // プロジェクション行列もテクスチャのアスペクト比に合わせる
                         let preview_aspect = cam_data.target_aspect();
                         let cam_uniform = camera_scene_gizmo::build_camera_uniform(
                             cam_data, preview_aspect, res,
