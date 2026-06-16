@@ -1193,17 +1193,26 @@ public partial class InspectorPanel : UserControl
         sp.Children.Add(scalingRow);
 
         // ターゲット解像度（スケーリングモード用）— 整数入力
-        var rowTW = BuildLabeledNumberRow("解像度 W", info.CamTargetW);
+        // "F0" フォーマット（小数点なし）を使うことで int.TryParse がそのまま使える。
+        // デフォルトの "F1" だと "1920.0" のように表示され int.TryParse が失敗するため。
+        var rowTW = BuildLabeledNumberRow("解像度 W", info.CamTargetW, "F0");
         NumericDragBehavior.Attach(rowTW.textBox, sensitivity: 1.0, isInteger: true);
-        var rowTH = BuildLabeledNumberRow("解像度 H", info.CamTargetH);
+        var rowTH = BuildLabeledNumberRow("解像度 H", info.CamTargetH, "F0");
         NumericDragBehavior.Attach(rowTH.textBox, sensitivity: 1.0, isInteger: true);
         sp.Children.Add(rowTW.element);
         sp.Children.Add(rowTH.element);
         void CommitTargetSize()
         {
             if (_currentActorId < 0) return;
-            if (!int.TryParse(rowTW.textBox.Text, out var w) || w < 1) return;
-            if (!int.TryParse(rowTH.textBox.Text, out var h) || h < 1) return;
+            // float.TryParse で受け付けることで、ドラッグ中など小数点が混入しても安全に処理する
+            if (!float.TryParse(rowTW.textBox.Text,
+                    System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out var wf) || wf < 1) return;
+            if (!float.TryParse(rowTH.textBox.Text,
+                    System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out var hf) || hf < 1) return;
+            var w = Math.Max(1, (int)wf);
+            var h = Math.Max(1, (int)hf);
             _runtime?.SendToRuntime($"SET_CAMERA_TARGET_SIZE:{_currentActorId},{info.SlotIdx},{w},{h}");
         }
         rowTW.textBox.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { CommitTargetSize(); e.Handled = true; } };

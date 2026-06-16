@@ -307,6 +307,17 @@ pub struct SelectedCameraData {
     pub near:      f32,
     pub far:       f32,
     pub clear_color: [f32; 4],
+    /// ゲームのターゲット解像度（横）。フラスタムおよびプレビューのアスペクト比算出に使用。
+    pub target_width:  u32,
+    /// ゲームのターゲット解像度（縦）。フラスタムおよびプレビューのアスペクト比算出に使用。
+    pub target_height: u32,
+}
+
+impl SelectedCameraData {
+    /// ターゲット解像度からアスペクト比（width / height）を返す。
+    pub fn target_aspect(&self) -> f32 {
+        self.target_width.max(1) as f32 / self.target_height.max(1) as f32
+    }
 }
 
 /// 選択中のアクターが CameraComponent を持つ場合に SelectedCameraData を返す。
@@ -330,13 +341,13 @@ pub fn get_selected_camera_data(
 /// 選択中カメラアクターのフラスタムライン GPU バッチを構築する。
 ///
 /// フラスタム可視化は選択中カメラのみ。遠クリップは MAX_FRUSTUM_FAR でクランプ。
+/// アスペクト比は cam_data.target_aspect() から自動導出する（エディタビューポートに依存しない）。
 pub fn build_camera_frustum_batch(
     cam_data: &SelectedCameraData,
-    aspect:   f32,
     device:   &wgpu::Device,
 ) -> Option<crate::engine::methods::drawer::GpuLineBatch> {
     let mut lb = LineBatch::new();
-    add_camera_frustum(&mut lb, cam_data, aspect);
+    add_camera_frustum(&mut lb, cam_data);
     if lb.is_empty() { None } else { Some(lb.build(device)) }
 }
 
@@ -344,7 +355,9 @@ pub fn build_camera_frustum_batch(
 ///
 /// `build_camera_uniform` の view_proj はトランスポーズされた GPU 向け形式であるため、
 /// `extract_frustum_planes` に渡す行優先 VP 行列はここで別途計算する。
-pub fn compute_frustum_planes(cam_data: &SelectedCameraData, aspect: f32) -> [[f32; 4]; 6] {
+/// アスペクト比は cam_data.target_aspect() から自動導出する。
+pub fn compute_frustum_planes(cam_data: &SelectedCameraData) -> [[f32; 4]; 6] {
+    let aspect = cam_data.target_aspect();
     let tf = &cam_data.transform;
     let [px, py, pz] = tf.position;
     let [fx, fy, fz] = tf.forward();
@@ -480,11 +493,13 @@ fn find_camera_actor(
                 if let Some(cam) = world.get::<CameraComponent>(cam_entity) {
                     if let Some(tf) = world.get::<ActorTransform>(actor.entity) {
                         return Some(SelectedCameraData {
-                            transform:   tf.clone(),
-                            fov_y_deg:   cam.fov_y_deg,
-                            near:        cam.near,
-                            far:         cam.far,
-                            clear_color: cam.clear_color,
+                            transform:    tf.clone(),
+                            fov_y_deg:    cam.fov_y_deg,
+                            near:         cam.near,
+                            far:          cam.far,
+                            clear_color:  cam.clear_color,
+                            target_width:  cam.target_width,
+                            target_height: cam.target_height,
                         });
                     }
                 }
@@ -501,7 +516,9 @@ fn find_camera_actor(
 }
 
 /// 選択中カメラのフラスタムラインを LineBatch に追加する。
-fn add_camera_frustum(lb: &mut LineBatch, cam: &SelectedCameraData, aspect: f32) {
+/// アスペクト比は cam.target_aspect() から自動導出する。
+fn add_camera_frustum(lb: &mut LineBatch, cam: &SelectedCameraData) {
+    let aspect  = cam.target_aspect();
     let tf      = &cam.transform;
     let pos     = tf.position;
     let fwd     = normalize3(tf.forward());

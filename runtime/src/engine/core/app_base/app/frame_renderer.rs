@@ -347,9 +347,6 @@ impl App {
             // WL 0 に 2D アクターが混在していても 3D カメラ視錐台を計算する
             let is_3d_edit = in_editor && !is_actor_edit_2d;
             if is_3d_edit {
-                let aspect = window_size.map_or(
-                    16.0_f32 / 9.0, |s| s.width as f32 / s.height as f32
-                );
                 self.scene.as_ref().and_then(|scene| {
                     camera_scene_gizmo::get_selected_camera_data(
                         &scene.actors, &scene.world,
@@ -357,7 +354,8 @@ impl App {
                         self.actor_virtual_selected_idx,
                     )
                 }).map(|cam_data| {
-                    camera_scene_gizmo::compute_frustum_planes(&cam_data, aspect)
+                    // アスペクト比はエディタビューポートではなく cam_data.target_aspect() から導出する
+                    camera_scene_gizmo::compute_frustum_planes(&cam_data)
                 })
             } else { None }
         };
@@ -795,9 +793,6 @@ impl App {
                     // カメラアイコン / フラスタム / プレビューはアクター編集 2D タブ以外で表示する。
                     // WL 0 に 2D アクターが混在していても 3D カメラギズモを表示する。
                     let is_3d_scene = in_editor && !is_actor_edit_2d;
-                    let aspect = window_size.map_or(16.0_f32 / 9.0, |s| {
-                        s.width as f32 / s.height as f32
-                    });
                     let (vp_w_f, vp_h_f) = window_size.map_or(
                         (1280.0_f32, 720.0_f32),
                         |s| (s.width as f32, s.height as f32),
@@ -870,9 +865,10 @@ impl App {
                     } else { None };
 
                     // フラスタムラインバッチ（選択カメラアクターのみ）
+                    // アスペクト比は cam_data.target_aspect() から導出する（エディタビューポート非依存）
                     let frustum_batch = if let Some(ref cam_data) = selected_cam_data {
                         camera_scene_gizmo::build_camera_frustum_batch(
-                            cam_data, aspect, &draw_ctx.device,
+                            cam_data, &draw_ctx.device,
                         )
                     } else { None };
 
@@ -903,7 +899,8 @@ impl App {
                         (selected_cam_data.as_ref(), self.camera_preview.as_ref())
                     {
                         let res = [CAMERA_PREVIEW_W as f32, CAMERA_PREVIEW_H as f32];
-                        let preview_aspect = CAMERA_PREVIEW_W as f32 / CAMERA_PREVIEW_H as f32;
+                        // ゲームカメラの target_width/height からアスペクト比を導出する
+                        let preview_aspect = cam_data.target_aspect();
                         let cam_uniform = camera_scene_gizmo::build_camera_uniform(
                             cam_data, preview_aspect, res,
                         );
