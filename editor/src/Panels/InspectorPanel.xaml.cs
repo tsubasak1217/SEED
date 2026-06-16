@@ -2949,7 +2949,8 @@ public partial class InspectorPanel : UserControl
     }
 
     /// <summary>ラベル + 数値入力フィールドの行を生成する。</summary>
-    private static (UIElement element, TextBox textBox) BuildLabeledNumberRow(string label, float value)
+    /// <param name="format">数値の書式。デフォルトは "F1"（小数第1位）。整数表示には "F0" を指定。</param>
+    private static (UIElement element, TextBox textBox) BuildLabeledNumberRow(string label, float value, string format = "F1")
     {
         var grid = new Grid { Margin = new Thickness(0, 2, 0, 2) };
         grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(24) });
@@ -2966,7 +2967,7 @@ public partial class InspectorPanel : UserControl
         Grid.SetColumn(lbl, 0);
         grid.Children.Add(lbl);
 
-        var initText = value.ToString("F1", CultureInfo.InvariantCulture);
+        var initText = value.ToString(format, CultureInfo.InvariantCulture);
         var tb = new TextBox
         {
             Text              = initText,
