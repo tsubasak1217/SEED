@@ -607,7 +607,19 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
     {
         EnsureScriptEditorDocument();
         PanelScriptEditor.OpenFile(path);
+        FocusScriptEditorDocument();
+    }
 
+    /// <summary>「表示」メニュー: スクリプトエディタを前面に表示する（ファイルは開かない）。</summary>
+    private void OnShowScriptEditor(object sender, RoutedEventArgs e)
+    {
+        EnsureScriptEditorDocument();
+        FocusScriptEditorDocument();
+    }
+
+    /// <summary>Script ドキュメントを選択・アクティブ化して前面に出す。</summary>
+    private void FocusScriptEditorDocument()
+    {
         var doc = DockManager.Layout.Descendents()
             .OfType<LayoutDocument>()
             .FirstOrDefault(d => d.ContentId == "script_editor");

@@ -670,6 +670,10 @@
                           IsCheckable="True"
                           Tag="output"
                           Click="OnTogglePanel"/>
+                <Separator/>
+                <MenuItem x:Name="MenuItemScriptEditor"
+                          Header="スクリプトエディタ"
+                          Click="OnShowScriptEditor"/>
             </MenuItem>
 
         </Menu>
