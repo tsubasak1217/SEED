@@ -75,6 +75,10 @@ public class ScriptEditorPanel : UserControl
     /// <summary>現在表示中の補完ウィンドウ（多重表示防止）。</summary>
     private CompletionWindow? _completionWindow;
 
+    /// <summary>書式・配色設定と、その保存先ディレクトリ。</summary>
+    private ScriptEditorSettings _settings = new();
+    private string? _settingsDir;
+
     /// <summary>ファイルの保存が完了したときに発火する（フルパス）。コンパイル成否に関わらず発火。</summary>
     public event Action<string>? ScriptSaved;
 
@@ -105,8 +109,12 @@ public class ScriptEditorPanel : UserControl
         body.Children.Add(_tabs);
         body.Children.Add(_emptyHint);
 
+        var toolbar = BuildToolbar();
+
         var root = new DockPanel();
+        DockPanel.SetDock(toolbar, Dock.Top);
         DockPanel.SetDock(_findBar, Dock.Top);
+        root.Children.Add(toolbar);
         root.Children.Add(_findBar);
         root.Children.Add(body);
         Content = root;
@@ -141,6 +149,75 @@ public class ScriptEditorPanel : UserControl
     private TextEditor? CurrentEditor()
         => (_tabs.SelectedItem as TabItem)?.Content as TextEditor;
 
+    /// <summary>上部ツールバー（設定・整形ボタン）を生成する。</summary>
+    private UIElement BuildToolbar()
+    {
+        var bar = new Border
+        {
+            Background      = new SolidColorBrush(Color.FromRgb(0x2D, 0x2D, 0x2E)),
+            BorderBrush     = BrushBorder,
+            BorderThickness = new Thickness(0, 0, 0, 1),
+            Padding         = new Thickness(4, 2, 4, 2),
+        };
+        var sp = new StackPanel { Orientation = Orientation.Horizontal };
+
+        Button ToolBtn(string content, string tooltip, Action onClick)
+        {
+            var b = new Button
+            {
+                Content = content, ToolTip = tooltip,
+                Foreground = BrushText, Background = new SolidColorBrush(Color.FromRgb(0x1A, 0x1A, 0x1A)),
+                BorderBrush = BrushBorder, Margin = new Thickness(2, 0, 0, 0),
+                Padding = new Thickness(6, 1, 6, 1), FontSize = 11,
+            };
+            b.Click += (_, _) => onClick();
+            return b;
+        }
+
+        sp.Children.Add(ToolBtn("⚙ 設定",   "書式・配色設定 (Ctrl+,)",        OpenSettings));
+        sp.Children.Add(ToolBtn("整形",      "コード整形 (Ctrl+K,D)",          FormatCurrent));
+        sp.Children.Add(ToolBtn("検索",      "検索 (Ctrl+F)",                  () => { _findBar.SetTarget(CurrentEditor()); _findBar.ShowFind(); }));
+        bar.Child = sp;
+        return bar;
+    }
+
+    // ── 設定（書式・配色）─────────────────────────────────────
+
+    /// <summary>設定ディレクトリを指定して設定を読み込み、全エディタへ適用する。</summary>
+    public void InitSettings(string settingsDir)
+    {
+        _settingsDir = settingsDir;
+        _settings    = ScriptEditorSettings.Load(settingsDir);
+        ApplyColorsToHighlighting(_settings);
+        foreach (var doc in _docs) ApplySettingsToEditor(doc.Editor);
+    }
+
+    /// <summary>設定ダイアログを開く。</summary>
+    private void OpenSettings()
+    {
+        var dlg = new ScriptEditorSettingsWindow(_settings) { Owner = Window.GetWindow(this) };
+        dlg.Applied += s =>
+        {
+            _settings = s;
+            if (_settingsDir is not null) _settings.Save(_settingsDir);
+            ApplyColorsToHighlighting(_settings);
+            foreach (var doc in _docs)
+            {
+                ApplySettingsToEditor(doc.Editor);
+                doc.Editor.TextArea.TextView.Redraw();
+            }
+        };
+        dlg.ShowDialog();
+    }
+
+    /// <summary>1 つのエディタに書式設定（インデント・フォント）を適用する。</summary>
+    private void ApplySettingsToEditor(TextEditor editor)
+    {
+        editor.Options.IndentationSize    = _settings.IndentationSize;
+        editor.Options.ConvertTabsToSpaces = _settings.ConvertTabsToSpaces;
+        editor.FontSize                   = _settings.FontSize;
+    }
+
     /// <summary>キーボードショートカット処理。</summary>
     private void OnPanelKeyDown(object sender, KeyEventArgs e)
     {
@@ -174,6 +251,10 @@ public class ScriptEditorPanel : UserControl
                     _awaitingFormatChord = false;
                     e.Handled = true;
                 }
+                break;
+            case Key.OemComma:                // Ctrl+, で設定を開く
+                OpenSettings();
+                e.Handled = true;
                 break;
             default:
                 _awaitingFormatChord = false;
@@ -292,6 +373,9 @@ public class ScriptEditorPanel : UserControl
         {
             if (e.ChangedButton == MouseButton.Middle) { CloseTab(doc); e.Handled = true; }
         };
+
+        // 書式・配色設定を適用する
+        ApplySettingsToEditor(editor);
 
         // ワークスペースに最新テキストを反映する（開いた瞬間の内容で同期）
         _workspace?.UpsertText(full, text);
@@ -674,6 +758,30 @@ public class ScriptEditorPanel : UserControl
         }
         _darkCSharp = def;
         return def;
+    }
+
+    /// <summary>
+    /// ユーザー設定の配色を共有ハイライト定義へ反映する。
+    /// 定義は全エディタ共有のため、呼び出し後に各エディタを Redraw すれば即反映される。
+    /// </summary>
+    private static void ApplyColorsToHighlighting(ScriptEditorSettings settings)
+    {
+        var def = BuildDarkCSharpHighlighting();
+        if (def is null) return;
+
+        // 参照型キーワードの色は type 系キーワード全般に反映する
+        foreach (var named in def.NamedHighlightingColors)
+        {
+            if (settings.Colors.TryGetValue(named.Name, out var hex))
+            {
+                try
+                {
+                    var color = (Color)ColorConverter.ConvertFromString(hex);
+                    named.Foreground = new SimpleHighlightingBrush(color);
+                }
+                catch { /* 不正な色は無視 */ }
+            }
+        }
     }
 
     /// <summary>タブヘッダー（ファイル名 + 未保存マーク + 閉じるボタン）を生成する。</summary>
