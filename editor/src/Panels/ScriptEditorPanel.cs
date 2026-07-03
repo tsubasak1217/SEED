@@ -86,7 +86,24 @@ public class ScriptEditorPanel : UserControl
             }
         };
 
+        // パネルがキーボードフォーカスを持たない（=アクティブでない）ときは
+        // 全エディタを読み取り専用にし、テキスト入力を受け付けないようにする。
+        // ビューポート（HWND）操作中のキー入力がエディタに紛れ込むのを防ぐ。
+        IsKeyboardFocusWithinChanged += (_, _) => UpdateEditability();
+
         UpdateEmptyHint();
+    }
+
+    /// <summary>
+    /// パネルのアクティブ状態（キーボードフォーカスの有無）に応じて
+    /// 全エディタの読み取り専用フラグを更新する。
+    /// フォーカスがない間は編集不可 → キー入力を無視する。
+    /// </summary>
+    private void UpdateEditability()
+    {
+        var editable = IsKeyboardFocusWithin;
+        foreach (var doc in _docs)
+            doc.Editor.IsReadOnly = !editable;
     }
 
     // ── 公開 API ─────────────────────────────────────────────
@@ -138,6 +155,8 @@ public class ScriptEditorPanel : UserControl
         _tabs.Items.Add(item);
         _tabs.SelectedItem = item;
         editor.Focus();
+        // 初期状態を現在のフォーカス状態に合わせる（フォーカスが移るまで読み取り専用）
+        UpdateEditability();
         UpdateEmptyHint();
     }
 
