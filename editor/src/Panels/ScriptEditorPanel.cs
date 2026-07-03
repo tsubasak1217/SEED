@@ -2,13 +2,20 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Threading;
 using ICSharpCode.AvalonEdit;
 using ICSharpCode.AvalonEdit.Highlighting;
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.Formatting;
 using SEEDEditor;
+using SEEDEditor.Panels.ScriptEditor;
 using SEEDEditor.Scripting;
 
 namespace SEEDEditor.Panels;
@@ -19,11 +26,20 @@ namespace SEEDEditor.Panels;
 /// 【機能】
 /// - タブ式で複数の .cs ファイルを同時に開ける（AvalonEdit / C# ハイライト / 行番号）
 /// - Ctrl+S で保存 → Roslyn でコンパイルチェック → エラーを Output に表示
+/// - エラー・警告・文法エラーを波線でリアルタイム表示（ホバーで内容表示）
+/// - Ctrl+F 検索 / Ctrl+H 置換
+/// - Ctrl+K,D でコード整形（Roslyn Formatter）
+/// - Ctrl+ホイールで表示倍率変更
 /// - 保存成功時に ScriptSaved イベントを発火（MainWindow が RELOAD_SCRIPTS を送信）
 /// - 未保存タブには ● マークを表示し、閉じるときに保存確認を出す
 /// </summary>
 public class ScriptEditorPanel : UserControl
 {
+    // ── 表示倍率の下限・上限（Ctrl+ホイール）──
+    private const double MinFontSize = 8.0;
+    private const double MaxFontSize = 40.0;
+    // 診断（エラー・警告）の再計算を遅延させるデバウンス時間
+    private static readonly TimeSpan DiagnosticsDebounce = TimeSpan.FromMilliseconds(400);
     // ── カラーテーマ（エディタ全体のダークテーマに合わせる）──
     private static readonly SolidColorBrush BrushBg        = new(Color.FromRgb(0x1E, 0x1E, 0x1E));
     private static readonly SolidColorBrush BrushEditorBg  = new(Color.FromRgb(0x1E, 0x1E, 0x1E));
@@ -37,16 +53,19 @@ public class ScriptEditorPanel : UserControl
     /// <summary>タブ 1 枚分の状態。</summary>
     private sealed class DocTab
     {
-        public required string     FilePath;
-        public required TextEditor Editor;
-        public required TabItem    Item;
-        public required TextBlock  DirtyMark;
+        public required string            FilePath;
+        public required TextEditor        Editor;
+        public required TabItem           Item;
+        public required TextBlock         DirtyMark;
+        public required TextMarkerService Markers;
+        public required DispatcherTimer   DiagTimer;
         public bool IsDirty;
     }
 
     private readonly TabControl _tabs;
     private readonly List<DocTab> _docs = new();
     private readonly TextBlock _emptyHint;
+    private readonly FindReplaceBar _findBar;
 
     /// <summary>ファイルの保存が完了したときに発火する（フルパス）。コンパイル成否に関わらず発火。</summary>
     public event Action<string>? ScriptSaved;
@@ -71,20 +90,24 @@ public class ScriptEditorPanel : UserControl
             VerticalAlignment   = VerticalAlignment.Center,
         };
 
-        var root = new Grid();
-        root.Children.Add(_tabs);
-        root.Children.Add(_emptyHint);
+        // 検索・置換バー（上部に配置、初期は非表示）
+        _findBar = new FindReplaceBar();
+
+        var body = new Grid();
+        body.Children.Add(_tabs);
+        body.Children.Add(_emptyHint);
+
+        var root = new DockPanel();
+        DockPanel.SetDock(_findBar, Dock.Top);
+        root.Children.Add(_findBar);
+        root.Children.Add(body);
         Content = root;
 
-        // Ctrl+S で現在のタブを保存する
-        PreviewKeyDown += (_, e) =>
-        {
-            if (e.Key == Key.S && Keyboard.Modifiers.HasFlag(ModifierKeys.Control))
-            {
-                SaveCurrent();
-                e.Handled = true;
-            }
-        };
+        // タブ切り替え時に検索バーの対象エディタを更新する
+        _tabs.SelectionChanged += (_, _) => _findBar.SetTarget(CurrentEditor());
+
+        // キーボードショートカット
+        PreviewKeyDown += OnPanelKeyDown;
 
         // パネルがキーボードフォーカスを持たない（=アクティブでない）ときは
         // 全エディタを読み取り専用にし、テキスト入力を受け付けないようにする。
@@ -105,6 +128,53 @@ public class ScriptEditorPanel : UserControl
         foreach (var doc in _docs)
             doc.Editor.IsReadOnly = !editable;
     }
+
+    /// <summary>現在アクティブなタブのエディタ（なければ null）。</summary>
+    private TextEditor? CurrentEditor()
+        => (_tabs.SelectedItem as TabItem)?.Content as TextEditor;
+
+    /// <summary>キーボードショートカット処理。</summary>
+    private void OnPanelKeyDown(object sender, KeyEventArgs e)
+    {
+        bool ctrl = Keyboard.Modifiers.HasFlag(ModifierKeys.Control);
+        if (!ctrl) return;
+
+        switch (e.Key)
+        {
+            case Key.S:                       // 保存
+                SaveCurrent();
+                e.Handled = true;
+                break;
+            case Key.F:                       // 検索
+                _findBar.SetTarget(CurrentEditor());
+                _findBar.ShowFind();
+                e.Handled = true;
+                break;
+            case Key.H:                       // 置換
+                _findBar.SetTarget(CurrentEditor());
+                _findBar.ShowReplace();
+                e.Handled = true;
+                break;
+            case Key.K:                       // Ctrl+K,D の 1 打鍵目（次の D を待つ）
+                _awaitingFormatChord = true;
+                e.Handled = true;
+                break;
+            case Key.D:                       // Ctrl+K の直後の Ctrl+D で整形
+                if (_awaitingFormatChord)
+                {
+                    FormatCurrent();
+                    _awaitingFormatChord = false;
+                    e.Handled = true;
+                }
+                break;
+            default:
+                _awaitingFormatChord = false;
+                break;
+        }
+    }
+
+    /// <summary>Ctrl+K の直後で Ctrl+D を待っている状態か（コード整形のコード）。</summary>
+    private bool _awaitingFormatChord;
 
     // ── 公開 API ─────────────────────────────────────────────
 
@@ -139,8 +209,47 @@ public class ScriptEditorPanel : UserControl
             Background = BrushTabBg,
         };
 
-        var doc = new DocTab { FilePath = full, Editor = editor, Item = item, DirtyMark = dirtyMark };
-        editor.TextChanged += (_, _) => SetDirty(doc, true);
+        // 診断（波線）用マーカーサービスを TextView に登録する
+        var markers = new TextMarkerService(editor.Document);
+        editor.TextArea.TextView.BackgroundRenderers.Add(markers);
+
+        // 診断の再計算を遅延実行するデバウンスタイマー
+        var diagTimer = new DispatcherTimer { Interval = DiagnosticsDebounce };
+
+        var doc = new DocTab
+        {
+            FilePath  = full,
+            Editor    = editor,
+            Item      = item,
+            DirtyMark = dirtyMark,
+            Markers   = markers,
+            DiagTimer = diagTimer,
+        };
+
+        // 編集のたびにダーティ化し、少し待ってから診断を再計算する
+        editor.TextChanged += (_, _) =>
+        {
+            SetDirty(doc, true);
+            diagTimer.Stop();
+            diagTimer.Start();
+        };
+        diagTimer.Tick += (_, _) =>
+        {
+            diagTimer.Stop();
+            _ = RunDiagnosticsAsync(doc);
+        };
+
+        // マーカーにホバーしたら診断メッセージをツールチップ表示する
+        editor.MouseHover        += (_, e) => ShowDiagnosticToolTip(doc, e);
+        editor.MouseHoverStopped += (_, _) => editor.ToolTip = null;
+
+        // Ctrl+ホイールで表示倍率を変更する
+        editor.PreviewMouseWheel += (_, e) =>
+        {
+            if (!Keyboard.Modifiers.HasFlag(ModifierKeys.Control)) return;
+            editor.FontSize = Math.Clamp(editor.FontSize + (e.Delta > 0 ? 1 : -1), MinFontSize, MaxFontSize);
+            e.Handled = true;
+        };
 
         // タブヘッダーの ✕ ボタン（BuildTabHeader 内で作った closeBtn を後付けで配線）
         if (header.Children[^1] is TextBlock closeBtn)
@@ -158,6 +267,8 @@ public class ScriptEditorPanel : UserControl
         // 初期状態を現在のフォーカス状態に合わせる（フォーカスが移るまで読み取り専用）
         UpdateEditability();
         UpdateEmptyHint();
+        // 初回の診断を実行する
+        _ = RunDiagnosticsAsync(doc);
     }
 
     /// <summary>現在アクティブなタブを保存する。</summary>
@@ -170,6 +281,138 @@ public class ScriptEditorPanel : UserControl
 
     /// <summary>未保存の変更があるタブが存在するか。</summary>
     public bool HasUnsavedChanges => _docs.Any(d => d.IsDirty);
+
+    // ── 診断（エラー・警告・文法エラー）─────────────────────
+
+    // Roslyn の参照アセンブリはコンパイルごとに再取得すると重いためキャッシュする
+    private static readonly Lazy<List<MetadataReference>> _diagRefs = new(() =>
+        AppDomain.CurrentDomain.GetAssemblies()
+            .Where(a => !a.IsDynamic && !string.IsNullOrEmpty(a.Location) && File.Exists(a.Location))
+            .Select(a => (MetadataReference)MetadataReference.CreateFromFile(a.Location))
+            .ToList());
+
+    /// <summary>
+    /// エディタのテキストを Roslyn で解析し、エラー・警告の波線を更新する。
+    /// 解析は別スレッドで行い、UI 更新のみディスパッチャに戻す。
+    /// </summary>
+    private async Task RunDiagnosticsAsync(DocTab doc)
+    {
+        var source = doc.Editor.Text;
+
+        var diags = await Task.Run(() =>
+        {
+            try
+            {
+                var tree = CSharpSyntaxTree.ParseText(source);
+                var comp = CSharpCompilation.Create(
+                    "SEEDScriptDiag",
+                    new[] { tree },
+                    _diagRefs.Value,
+                    new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+                return comp.GetDiagnostics()
+                    .Where(d => d.Severity is DiagnosticSeverity.Error or DiagnosticSeverity.Warning)
+                    .Select(d => (
+                        span:     d.Location.SourceSpan,
+                        message:  $"{(d.Severity == DiagnosticSeverity.Error ? "エラー" : "警告")} {d.Id}: {d.GetMessage()}",
+                        isError:  d.Severity == DiagnosticSeverity.Error))
+                    .ToList();
+            }
+            catch
+            {
+                return null;
+            }
+        });
+
+        if (diags is null) return;
+        // テキストが解析後に変わっていたら破棄（次の Tick で再計算される）
+        if (doc.Editor.Text != source) return;
+
+        doc.Markers.RemoveAll();
+        int errorCount = 0, warnCount = 0;
+        foreach (var (span, message, isError) in diags)
+        {
+            var color = isError
+                ? Color.FromRgb(0xF4, 0x47, 0x47)   // 赤
+                : Color.FromRgb(0xD7, 0xBA, 0x36);   // 黄
+            doc.Markers.Create(span.Start, Math.Max(span.Length, 1), color, message);
+            if (isError) errorCount++; else warnCount++;
+        }
+        doc.Editor.TextArea.TextView.Redraw();
+
+        // タブヘッダーにエラー/警告数を反映する（アイコン代わり）
+        UpdateTabDiagnosticBadge(doc, errorCount, warnCount);
+    }
+
+    /// <summary>マウス下のマーカーがあれば診断メッセージをツールチップ表示する。</summary>
+    private static void ShowDiagnosticToolTip(DocTab doc, MouseEventArgs e)
+    {
+        var pos = doc.Editor.GetPositionFromPoint(e.GetPosition(doc.Editor));
+        if (pos is null) { doc.Editor.ToolTip = null; return; }
+
+        int offset = doc.Editor.Document.GetOffset(pos.Value.Location);
+        var marker = doc.Markers.GetMarkersAtOffset(offset).FirstOrDefault();
+        if (marker?.ToolTip is null) { doc.Editor.ToolTip = null; return; }
+
+        doc.Editor.ToolTip = new ToolTip
+        {
+            Content = new TextBlock { Text = marker.ToolTip, TextWrapping = TextWrapping.Wrap, MaxWidth = 500 },
+        };
+        (doc.Editor.ToolTip as ToolTip)!.IsOpen = true;
+        e.Handled = true;
+    }
+
+    /// <summary>タブ名の横にエラー/警告数バッジを表示する。</summary>
+    private void UpdateTabDiagnosticBadge(DocTab doc, int errors, int warnings)
+    {
+        if (doc.Item.Header is not StackPanel header) return;
+        // 既存バッジ（Tag="diag"）を除去
+        var old = header.Children.OfType<TextBlock>().FirstOrDefault(t => (t.Tag as string) == "diag");
+        if (old is not null) header.Children.Remove(old);
+        if (errors == 0 && warnings == 0) return;
+
+        var badge = new TextBlock
+        {
+            Tag               = "diag",
+            Text              = errors > 0 ? $" ⛔{errors}" : $" ⚠{warnings}",
+            Foreground        = new SolidColorBrush(errors > 0
+                                    ? Color.FromRgb(0xF4, 0x47, 0x47)
+                                    : Color.FromRgb(0xD7, 0xBA, 0x36)),
+            FontSize          = 10,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        // ● 未保存マークの前（ファイル名の直後）に挿入する
+        header.Children.Insert(1, badge);
+    }
+
+    // ── コード整形（Ctrl+K,D）────────────────────────────────
+
+    /// <summary>現在のエディタの内容を Roslyn Formatter で整形する。</summary>
+    private void FormatCurrent()
+    {
+        var editor = CurrentEditor();
+        if (editor is null || editor.IsReadOnly) return;
+        try
+        {
+            var tree = CSharpSyntaxTree.ParseText(editor.Text);
+            var root = tree.GetRoot();
+            using var ws = new Microsoft.CodeAnalysis.AdhocWorkspace();
+            var options = ws.Options
+                .WithChangedOption(FormattingOptions.UseTabs,       LanguageNames.CSharp, false)
+                .WithChangedOption(FormattingOptions.IndentationSize, LanguageNames.CSharp, editor.Options.IndentationSize);
+            var formatted = Formatter.Format(root, ws, options).ToFullString();
+
+            if (formatted != editor.Text)
+            {
+                int caret = editor.CaretOffset;
+                editor.Document.Text = formatted;
+                editor.CaretOffset = Math.Min(caret, editor.Document.TextLength);
+            }
+        }
+        catch (Exception ex)
+        {
+            EditorLog.Write($"コード整形に失敗しました: {ex.Message}");
+        }
+    }
 
     // ── 保存・コンパイルチェック ─────────────────────────────
 
@@ -214,6 +457,7 @@ public class ScriptEditorPanel : UserControl
             if (result == MessageBoxResult.Cancel) return;
             if (result == MessageBoxResult.Yes)    Save(doc);
         }
+        doc.DiagTimer.Stop();
         _docs.Remove(doc);
         _tabs.Items.Remove(doc.Item);
         UpdateEmptyHint();

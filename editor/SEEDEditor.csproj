@@ -41,6 +41,8 @@
     <PackageReference Include="Dirkster.AvalonDock" Version="4.74.0" />
     <PackageReference Include="Dirkster.AvalonDock.Themes.VS2013" Version="4.74.0" />
     <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.8.0" />
+    <!-- Ctrl+K,D のコード整形（Formatter）に必要 -->
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp.Workspaces" Version="4.8.0" />
     <!-- スクリプトエディタのシンタックスハイライト用テキストエディタコントロール -->
     <PackageReference Include="AvalonEdit" Version="6.3.0.90" />
   </ItemGroup>
