@@ -6,6 +6,7 @@ using System.Reflection;
 using System.Runtime.Loader;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.Emit;
 using Microsoft.CodeAnalysis.Text;
 
 namespace SEED.Scripting;
@@ -81,7 +82,9 @@ public static class ScriptAssemblyManager
         {
             try
             {
-                var text = SourceText.From(File.ReadAllText(file));
+                // 埋め込み PDB を発行するにはソーステキストにエンコーディングが必要。
+                // UTF-8 を明示することで VS デバッグ時のソースマッピングが有効になる。
+                var text = SourceText.From(File.ReadAllText(file), System.Text.Encoding.UTF8);
                 trees.Add(CSharpSyntaxTree.ParseText(text, parseOptions, path: file));
             }
             catch (Exception ex)
@@ -98,8 +101,12 @@ public static class ScriptAssemblyManager
             new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary)
                 .WithOptimizationLevel(OptimizationLevel.Debug));
 
+        // 埋め込み PDB 付きで発行する。ソースツリーにファイルパスを設定しているため、
+        // Visual Studio を SEED.exe にアタッチするとスクリプトの .cs にブレークポイントを
+        // 張ってデバッグできる（PE 内にシンボルが含まれるので追加ファイル不要）。
         using var ms = new MemoryStream();
-        var result = compilation.Emit(ms);
+        var emitOptions = new EmitOptions(debugInformationFormat: DebugInformationFormat.Embedded);
+        var result = compilation.Emit(ms, options: emitOptions);
         if (!result.Success)
         {
             foreach (var d in result.Diagnostics.Where(d => d.Severity == DiagnosticSeverity.Error))

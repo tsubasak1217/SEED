@@ -676,6 +676,11 @@
                           Click="OnShowScriptEditor"/>
             </MenuItem>
 
+            <MenuItem Header="デバッグ">
+                <MenuItem Header="Visual Studio でスクリプトをデバッグ"
+                          Click="OnAttachVisualStudio"/>
+            </MenuItem>
+
         </Menu>
 
         <!-- ── 上部ツールバー ────────────────────────────────────── -->

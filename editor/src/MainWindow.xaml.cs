@@ -621,6 +621,54 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         FocusScriptEditorDocument();
     }
 
+    /// <summary>
+    /// 「デバッグ」メニュー: 実行中のランタイムに Visual Studio をアタッチする。
+    ///
+    /// スクリプトは埋め込み PDB 付きでコンパイルされるため、アタッチ後は
+    /// .cs にブレークポイントを張ってステップ実行・変数確認ができる。
+    /// 自動アタッチに失敗した場合は PID と手動手順を案内する。
+    /// </summary>
+    private void OnAttachVisualStudio(object sender, RoutedEventArgs e)
+    {
+        var pid = _runtimeManager?.CurrentProcessId;
+        if (pid is null)
+        {
+            MessageBox.Show(
+                "デバッグ対象のランタイムが起動していません。\n" +
+                "Play でゲームを実行してから、もう一度お試しください。\n" +
+                "（スクリプトは Play 中のランタイム内で実行されます）",
+                "スクリプトデバッグ", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        // まず実行中の Visual Studio への自動アタッチを試みる
+        bool attached = false;
+        string message = "";
+        try { attached = SEEDEditor.Runtime.VisualStudioAttach.TryAttach(pid.Value, out message); }
+        catch (Exception ex) { message = ex.Message; }
+
+        if (attached)
+        {
+            EditorLog.Write($"Visual Studio アタッチ成功: {message}");
+            MessageBox.Show(
+                $"{message}\n\nスクリプトの .cs にブレークポイントを設定してデバッグできます。",
+                "スクリプトデバッグ", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        // 自動アタッチ不可 → PID と手動手順を案内し、PID をクリップボードへコピーする
+        try { Clipboard.SetText(pid.Value.ToString()); } catch { }
+        MessageBox.Show(
+            $"自動アタッチできませんでした（{message}）。\n\n" +
+            "手動でアタッチしてください:\n" +
+            "1. Visual Studio を開く\n" +
+            "2. [デバッグ] → [プロセスにアタッチ] (Ctrl+Alt+P)\n" +
+            $"3. PID = {pid.Value} の SEED.exe を選択（PID はクリップボードにコピー済み）\n" +
+            "4. コードの種類で「マネージド (.NET)」が含まれることを確認してアタッチ\n\n" +
+            "アタッチ後、スクリプトの .cs にブレークポイントを設定できます。",
+            "スクリプトデバッグ — 手動アタッチ", MessageBoxButton.OK, MessageBoxImage.Information);
+    }
+
     /// <summary>Script ドキュメントを選択・アクティブ化して前面に出す。</summary>
     private void FocusScriptEditorDocument()
     {

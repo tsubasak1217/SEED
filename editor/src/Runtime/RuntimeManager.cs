@@ -109,6 +109,14 @@ public sealed class RuntimeManager : IDisposable
 
     public EditorState State => _state;
 
+    /// <summary>
+    /// 現在動作中のランタイムプロセス ID（VS デバッガアタッチ用）。
+    /// Play 中は Play ランタイム、Edit 中は Edit ランタイムの PID。
+    /// 未起動・終了済みなら null。
+    /// </summary>
+    public int? CurrentProcessId
+        => _process is { HasExited: false } p ? p.Id : null;
+
     /// <summary>ゲームウィンドウ HWND（READY 受信後に確定）。</summary>
     public nint RuntimeHwnd => (nint)_runtimeHwnd;
 
