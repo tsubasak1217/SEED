@@ -379,12 +379,15 @@ impl App {
             }
             "ScriptComponent" => {
                 let name = slot_name.to_string();
+                // args に .cs パスがあれば初期スクリプトパスとして設定する
+                // （RequireComponent の自動追加でパス付きスロットを 1 回で作れる）。
+                let init_path = args.to_string();
                 let found = {
                     let scene = self.scene.as_mut().unwrap();
                     // スロット専用エンティティを spawn してコンポーネントを格納する
                     let slot_entity = scene.world.spawn();
                     scene.world.insert(slot_entity, PlaceholderScriptSlot {
-                        script_path: String::new(),
+                        script_path: init_path,
                         fields:      Default::default(),
                     });
                     let mut c = 0u32;

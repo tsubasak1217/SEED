@@ -3092,7 +3092,71 @@ public partial class InspectorPanel : UserControl
         // 既存のキャッシュを無効化
         var old = _slotInfos.FirstOrDefault(s => s.SlotIdx == slotIdx)?.ModelPath;
         if (old is not null) _scriptTypeCache.Remove(old);
+
+        // クラス属性（RequireComponent / DisallowMultipleComponent）を解決する。
+        // 他スクリプトを typeof 参照する場合に備え、まず全体コンパイルで解決し、
+        // 失敗時は単一ファイルコンパイルにフォールバックする。
+        var type = ScriptCompiler.ResolveScriptTypeInProject(path, _assetsPath)
+                   ?? GetOrCompileScript(path);
+
+        // [DisallowMultipleComponent]: 同じスクリプトが別スロットに既にあれば中止する
+        if (type is not null && ScriptCompiler.HasDisallowMultiple(type) &&
+            _slotInfos.Any(s => s.SlotIdx != slotIdx && s.TypeId == "ScriptComponent" && SamePath(s.ModelPath, path)))
+        {
+            MessageBox.Show(
+                $"{Path.GetFileNameWithoutExtension(path)} は 1 アクターにつき 1 つのみ追加できます。",
+                "追加不可", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
         _runtime?.SendToRuntime($"SET_MODEL_PATH:{_currentActorId},{slotIdx},{path}");
+
+        // [RequireComponent]: 不足している要求コンポーネントを自動追加する
+        if (type is not null) EnforceRequireComponents(type, path);
+    }
+
+    /// <summary>
+    /// スクリプトの [RequireComponent] 要求を満たすよう、不足コンポーネントを自動追加する。
+    /// ネイティブコンポーネントは名前で、他スクリプトは型名から .cs を探してアタッチする。
+    /// </summary>
+    private void EnforceRequireComponents(Type scriptType, string scriptPath)
+    {
+        if (_runtime is null || _currentActorId < 0) return;
+        var root = Directory.Exists(_assetsPath)
+            ? _assetsPath
+            : (Path.GetDirectoryName(scriptPath) ?? "");
+
+        foreach (var req in ScriptCompiler.GetRequiredComponents(scriptType))
+        {
+            if (req.ComponentName is not null)
+            {
+                // ネイティブコンポーネント: 未アタッチなら追加する
+                if (_slotInfos.Any(s => s.TypeId == req.ComponentName)) continue;
+                _runtime.SendToRuntime(
+                    $"ADD_COMPONENT:{_currentActorId},{req.ComponentName},{req.ComponentName},");
+            }
+            else if (req.ScriptTypeName is not null)
+            {
+                // 他スクリプト: 型名から .cs を探し、未アタッチならパス付きで追加する
+                var file = ScriptCompiler.FindScriptFile(req.ScriptTypeName, root);
+                if (file is null)
+                {
+                    EditorLog.Write($"[RequireComponent] スクリプト '{req.ScriptTypeName}' の .cs が見つかりません");
+                    continue;
+                }
+                if (_slotInfos.Any(s => s.TypeId == "ScriptComponent" && SamePath(s.ModelPath, file))) continue;
+                var name = Path.GetFileNameWithoutExtension(file);
+                _runtime.SendToRuntime($"ADD_COMPONENT:{_currentActorId},ScriptComponent,{name},{file}");
+            }
+        }
+    }
+
+    /// <summary>2 つのパスを正規化して同一か判定する（大文字小文字・区切りを無視）。</summary>
+    private static bool SamePath(string? a, string? b)
+    {
+        if (string.IsNullOrEmpty(a) || string.IsNullOrEmpty(b)) return false;
+        try { return string.Equals(Path.GetFullPath(a), Path.GetFullPath(b), StringComparison.OrdinalIgnoreCase); }
+        catch { return string.Equals(a, b, StringComparison.OrdinalIgnoreCase); }
     }
 
     private Type? GetOrCompileScript(string path)

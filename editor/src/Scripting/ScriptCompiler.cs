@@ -64,6 +64,107 @@ public static class ScriptCompiler
     }
 
     /// <summary>
+    /// アセットルート配下の全 .cs をまとめてコンパイルし、指定ファイルが宣言する
+    /// スクリプト型を返す。他スクリプトを typeof で参照する [RequireComponent] などは
+    /// 単一ファイルコンパイルでは解決できないため、こちらを使う。失敗時は null。
+    /// </summary>
+    public static Type? ResolveScriptTypeInProject(string filePath, string assetsRoot)
+    {
+        try
+        {
+            if (!Directory.Exists(assetsRoot)) return null;
+
+            var trees = new List<(string path, SyntaxTree tree)>();
+            foreach (var f in Directory.EnumerateFiles(assetsRoot, "*.cs", SearchOption.AllDirectories))
+            {
+                try { trees.Add((f, CSharpSyntaxTree.ParseText(File.ReadAllText(f), path: f))); }
+                catch { /* 読めない/壊れたファイルはスキップ */ }
+            }
+            if (trees.Count == 0) return null;
+
+            var comp = CSharpCompilation.Create(
+                $"SEEDScriptProj_{Guid.NewGuid():N}",
+                trees.Select(t => t.tree), _refs,
+                new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+
+            using var ms = new MemoryStream();
+            if (!comp.Emit(ms).Success) return null;
+
+            var asm = Assembly.Load(ms.ToArray());
+
+            // 対象ファイルが宣言するクラス名を取得し、その型を解決する
+            var targetFull = Path.GetFullPath(filePath);
+            var target = trees.FirstOrDefault(t =>
+                string.Equals(Path.GetFullPath(t.path), targetFull, StringComparison.OrdinalIgnoreCase));
+            if (target.tree is null) return null;
+
+            var classNames = ClassNamesOf(target.tree);
+            return asm.GetTypes().FirstOrDefault(t =>
+                !t.IsAbstract && typeof(IScriptComponent).IsAssignableFrom(t) && classNames.Contains(t.Name));
+        }
+        catch { return null; }
+    }
+
+    /// <summary>
+    /// 指定スクリプト型名を宣言する .cs ファイルをアセットルート配下から探す。
+    /// まず「型名.cs」を優先し、無ければ全 .cs を走査して class 宣言を照合する。
+    /// </summary>
+    public static string? FindScriptFile(string typeName, string assetsRoot)
+    {
+        try
+        {
+            if (!Directory.Exists(assetsRoot)) return null;
+
+            var direct = Directory
+                .EnumerateFiles(assetsRoot, typeName + ".cs", SearchOption.AllDirectories)
+                .FirstOrDefault();
+            if (direct is not null) return direct;
+
+            foreach (var f in Directory.EnumerateFiles(assetsRoot, "*.cs", SearchOption.AllDirectories))
+            {
+                try
+                {
+                    if (ClassNamesOf(CSharpSyntaxTree.ParseText(File.ReadAllText(f))).Contains(typeName))
+                        return f;
+                }
+                catch { /* スキップ */ }
+            }
+            return null;
+        }
+        catch { return null; }
+    }
+
+    /// <summary>構文木からクラス宣言名の集合を取得する。</summary>
+    private static HashSet<string> ClassNamesOf(SyntaxTree tree) =>
+        tree.GetRoot().DescendantNodes()
+            .OfType<Microsoft.CodeAnalysis.CSharp.Syntax.ClassDeclarationSyntax>()
+            .Select(c => c.Identifier.Text)
+            .ToHashSet();
+
+    /// <summary>[RequireComponent] 1 件の要求内容（型名またはネイティブ名のいずれか）。</summary>
+    public readonly record struct RequireInfo(string? ComponentName, string? ScriptTypeName);
+
+    /// <summary>スクリプト型の [RequireComponent] 一覧を読み取る。</summary>
+    public static IReadOnlyList<RequireInfo> GetRequiredComponents(Type scriptType)
+    {
+        var list = new List<RequireInfo>();
+        foreach (var a in scriptType.GetCustomAttributesData()
+            .Where(a => a.AttributeType.Name == nameof(RequireComponentAttribute)))
+        {
+            if (a.ConstructorArguments.Count == 0) continue;
+            var arg = a.ConstructorArguments[0];
+            if (arg.Value is Type t)          list.Add(new RequireInfo(null, t.Name));
+            else if (arg.Value is string s)   list.Add(new RequireInfo(s, null));
+        }
+        return list;
+    }
+
+    /// <summary>スクリプト型に [DisallowMultipleComponent] が付いているか。</summary>
+    public static bool HasDisallowMultiple(Type scriptType) =>
+        scriptType.GetCustomAttributesData()
+            .Any(a => a.AttributeType.Name == nameof(DisallowMultipleComponentAttribute));
+
+    /// <summary>
     /// コンパイル済み型から [SerializeField] フィールド一覧を抽出する。
     /// [Serializable] なネストクラス型のフィールドは再帰的に子フィールドを展開する。
     /// </summary>
