@@ -17,7 +17,7 @@ use std::path::Path;
 use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
-use crate::engine::ecs::{Entity, World};
+use crate::engine::ecs::{Entity, World, Phase, Schedule};
 use crate::engine::core::clock::FrameContext;
 use crate::engine::core::loader::{load_model, LoadError};
 use crate::engine::core::scripting::ScriptingHost;
@@ -126,11 +126,17 @@ pub struct Scene {
     pub world:  World,
     /// ルート Actor のリスト（順序を保持し DFS ID の計算に使う）。
     pub actors: Vec<Actor>,
+    /// ECS システムスケジューラ。フレームの各フェーズで run_phase() から実行される。
+    /// エンジン標準システム（スクリプト駆動など）は Scene::new で登録される。
+    pub schedule: Schedule,
 }
 
 impl Scene {
     pub fn new(name: impl Into<String>) -> Self {
-        Self { name: name.into(), world: World::new(), actors: Vec::new() }
+        // エンジン標準の ECS システム（ScriptSystem 等）を登録した Schedule を構築する
+        let mut schedule = Schedule::new();
+        crate::engine::systems::register_default_systems(&mut schedule);
+        Self { name: name.into(), world: World::new(), actors: Vec::new(), schedule }
     }
 
     pub fn add_actor(&mut self, actor: Actor) {
@@ -266,15 +272,15 @@ impl Scene {
         self.world.get_mut::<T>(slot_entity)
     }
 
-    // ── フレームライフサイクル（System 移行前の暫定）───────────
+    // ── フレームライフサイクル ─────────────────────────────────
 
-    pub fn begin_frame(&self, _ctx: &FrameContext) {}
-    pub fn early_update(&self, _ctx: &FrameContext) {}
-    pub fn update(&self, _ctx: &FrameContext) {}
-    pub fn constant_update(&self, _ctx: &FrameContext) {}
-    pub fn late_update(&self, _ctx: &FrameContext) {}
-    pub fn render(&self, _ctx: &FrameContext) {}
-    pub fn end_frame(&self, _ctx: &FrameContext) {}
+    /// 指定フェーズの ECS システム群を World に対して実行する。
+    /// frame_renderer のゲームロジックブロック（Play・非ポーズ時）から
+    /// BeginFrame → EarlyUpdate → Update → ConstantUpdate(固定ステップ×N)
+    /// → LateUpdate → Render → EndFrame の順で呼ばれる。
+    pub fn run_phase(&mut self, phase: Phase, ctx: &FrameContext) {
+        self.schedule.run_phase(phase, &mut self.world, ctx);
+    }
 
     // ── 保存 ──────────────────────────────────────────────────
 
@@ -437,16 +443,23 @@ pub fn build_actor(
                 actor.add_slot_typed::<ModelComponent>(slot_name, ComponentKind::Model, slot_entity);
             }
             ComponentData::ScriptComponent(sc_data) => {
-                if let Some(host) = scripting_host {
-                    if let Some(sc) = ScriptComponent::new(Arc::clone(host), sc_data.type_name.clone()) {
-                        world.insert(slot_entity, sc);
-                        actor.add_slot_typed::<ScriptComponent>(slot_name, ComponentKind::Script, slot_entity);
-                    } else {
-                        world.insert(slot_entity, PlaceholderScriptSlot { script_path: sc_data.type_name });
-                        actor.add_slot_typed::<PlaceholderScriptSlot>(slot_name, ComponentKind::Placeholder, slot_entity);
-                    }
+                // CLR ホストがあれば実インスタンスを生成し、[SerializeField] 値も復元する。
+                // 生成失敗（型が見つからない等）または CLR 不在時は Placeholder にフォールバック。
+                let created = scripting_host.and_then(|host| {
+                    ScriptComponent::new_with_fields(
+                        Arc::clone(host),
+                        sc_data.type_name.clone(),
+                        sc_data.fields.clone(),
+                    )
+                });
+                if let Some(sc) = created {
+                    world.insert(slot_entity, sc);
+                    actor.add_slot_typed::<ScriptComponent>(slot_name, ComponentKind::Script, slot_entity);
                 } else {
-                    world.insert(slot_entity, PlaceholderScriptSlot { script_path: sc_data.type_name });
+                    world.insert(slot_entity, PlaceholderScriptSlot {
+                        script_path: sc_data.type_name,
+                        fields:      sc_data.fields,
+                    });
                     actor.add_slot_typed::<PlaceholderScriptSlot>(slot_name, ComponentKind::Placeholder, slot_entity);
                 }
             }

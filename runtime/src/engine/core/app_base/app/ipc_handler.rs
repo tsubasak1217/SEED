@@ -734,6 +734,12 @@ impl App {
                     let p = path.clone();
                     self.handle_set_model_path(actor_dfs_id, slot_idx, &p);
                 }
+                IpcCommand::SetScriptField { actor_dfs_id, slot_idx, field, value } => {
+                    self.handle_set_script_field(actor_dfs_id, slot_idx, &field, &value);
+                }
+                IpcCommand::ReloadScripts => {
+                    self.handle_reload_scripts();
+                }
                 IpcCommand::DuplicateComponent { actor_dfs_id, slot_idx } => {
                     self.handle_duplicate_component(actor_dfs_id, slot_idx);
                 }

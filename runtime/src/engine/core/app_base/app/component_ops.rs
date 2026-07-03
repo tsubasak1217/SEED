@@ -161,8 +161,11 @@ impl App {
                     ("ModelComponent", format!(r#","model_path":{path_json}"#))
                 }
                 ComponentData::ScriptComponent(d) => {
-                    let path_json = serde_json::to_string(&d.type_name).unwrap_or_default();
-                    ("ScriptComponent", format!(r#","model_path":{path_json}"#))
+                    // スクリプトパスに加え [SerializeField] フィールドの現在値を送信する。
+                    // エディタのインスペクターが初期値として表示し、SET_SCRIPT_FIELD で書き戻す。
+                    let path_json   = serde_json::to_string(&d.type_name).unwrap_or_default();
+                    let fields_json = serde_json::to_string(&d.fields).unwrap_or_else(|_| "{}".into());
+                    ("ScriptComponent", format!(r#","model_path":{path_json},"script_fields":{fields_json}"#))
                 }
                 ComponentData::CanvasComponent(d) => {
                     // width / height / スケールモード / 自動スケール / ビューポート参照をインスペクター用に送信する
@@ -380,7 +383,10 @@ impl App {
                     let scene = self.scene.as_mut().unwrap();
                     // スロット専用エンティティを spawn してコンポーネントを格納する
                     let slot_entity = scene.world.spawn();
-                    scene.world.insert(slot_entity, PlaceholderScriptSlot { script_path: String::new() });
+                    scene.world.insert(slot_entity, PlaceholderScriptSlot {
+                        script_path: String::new(),
+                        fields:      Default::default(),
+                    });
                     let mut c = 0u32;
                     if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
                         actor.add_slot_typed::<PlaceholderScriptSlot>(name, ComponentKind::Placeholder, slot_entity);

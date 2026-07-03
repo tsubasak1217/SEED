@@ -41,6 +41,14 @@
     <PackageReference Include="Dirkster.AvalonDock" Version="4.74.0" />
     <PackageReference Include="Dirkster.AvalonDock.Themes.VS2013" Version="4.74.0" />
     <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.8.0" />
+    <!-- スクリプトエディタのシンタックスハイライト用テキストエディタコントロール -->
+    <PackageReference Include="AvalonEdit" Version="6.3.0.90" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- ユーザースクリプトの基底クラス（SEED.Scripting.ScriptComponent）と
+         SerializeField 属性をランタイムと共有するための参照 -->
+    <ProjectReference Include="..\scripting\SEEDScripting.csproj" />
   </ItemGroup>
 
   <ItemGroup>

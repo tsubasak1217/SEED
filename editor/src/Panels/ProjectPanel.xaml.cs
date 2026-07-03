@@ -136,6 +136,9 @@ public partial class ProjectPanel : UserControl
     /// <summary>.inputmap ファイルがダブルクリックされたときに発火する（フルパス）。</summary>
     public event Action<string>? InputMapFileOpened;
 
+    /// <summary>.cs ファイルがダブルクリックされたときに発火する（フルパス）。内蔵スクリプトエディタで開く。</summary>
+    public event Action<string>? ScriptFileOpened;
+
     public void SetAssetsPath(string assetsPath)
     {
         _assetsRoot  = assetsPath;
@@ -429,6 +432,9 @@ public partial class ProjectPanel : UserControl
                 else if (entry is FileInfo imFile &&
                          imFile.Extension.Equals(".inputmap", StringComparison.OrdinalIgnoreCase))
                     InputMapFileOpened?.Invoke(imFile.FullName);
+                else if (entry is FileInfo csFile &&
+                         csFile.Extension.Equals(".cs", StringComparison.OrdinalIgnoreCase))
+                    ScriptFileOpened?.Invoke(csFile.FullName);
             }
             else if (e.ClickCount == 1)
             {

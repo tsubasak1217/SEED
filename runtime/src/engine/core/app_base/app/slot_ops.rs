@@ -47,11 +47,41 @@ impl App {
             }
         };
 
-        // PlaceholderScriptSlot の場合はスロット entity のパスのみ更新して早期リターン
-        if slot_kind == ComponentKind::Placeholder {
+        // スクリプトスロット（Placeholder / Script）の場合はパスを更新して早期リターン。
+        // CLR ホストがあれば新パスで実インスタンスを生成し直す（Placeholder → Script 昇格を含む）。
+        // スクリプトが変わるためフィールド値は引き継がない。
+        if slot_kind == ComponentKind::Placeholder || slot_kind == ComponentKind::Script {
+            let host = self.scripting_host.clone();
             let scene = self.scene.as_mut().unwrap();
-            if let Some(ps) = scene.world.get_mut::<PlaceholderScriptSlot>(slot_entity) {
-                ps.script_path = path.to_string();
+
+            // 旧コンポーネントを除去する（ScriptComponent の Drop で CLR インスタンスも破棄される）
+            scene.world.remove::<ScriptComponent>(slot_entity);
+            scene.world.remove::<PlaceholderScriptSlot>(slot_entity);
+
+            // 新パスでインスタンス生成を試み、失敗時は Placeholder として保持する
+            let created = host.as_ref()
+                .and_then(|h| ScriptComponent::new(std::sync::Arc::clone(h), path.to_string()));
+            let new_kind = if let Some(sc) = created {
+                scene.world.insert(slot_entity, sc);
+                ComponentKind::Script
+            } else {
+                scene.world.insert(slot_entity, PlaceholderScriptSlot {
+                    script_path: path.to_string(),
+                    fields:      Default::default(),
+                });
+                ComponentKind::Placeholder
+            };
+            // スロットの kind と type_id を新しい状態に合わせて更新する
+            let mut c = 0u32;
+            if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
+                if let Some(slot) = actor.slots_mut().get_mut(slot_idx as usize) {
+                    slot.kind    = new_kind;
+                    slot.type_id = if new_kind == ComponentKind::Script {
+                        std::any::TypeId::of::<ScriptComponent>()
+                    } else {
+                        std::any::TypeId::of::<PlaceholderScriptSlot>()
+                    };
+                }
             }
             self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
             if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
@@ -261,7 +291,10 @@ impl App {
             ComponentData::ScriptComponent(sc_data) => {
                 let slot_entity = scene.world.spawn();
                 if let Some(h) = &host {
-                    if let Some(sc) = ScriptComponent::new(std::sync::Arc::clone(h), sc_data.type_name.clone()) {
+                    // フィールド値も含めて CLR インスタンスを復元する
+                    if let Some(sc) = ScriptComponent::new_with_fields(
+                        std::sync::Arc::clone(h), sc_data.type_name.clone(), sc_data.fields.clone(),
+                    ) {
                         scene.world.insert(slot_entity, sc);
                         let mut c = 0u32;
                         if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
@@ -269,7 +302,10 @@ impl App {
                         } else { scene.world.despawn(slot_entity); }
                         true
                     } else {
-                        scene.world.insert(slot_entity, PlaceholderScriptSlot { script_path: sc_data.type_name });
+                        scene.world.insert(slot_entity, PlaceholderScriptSlot {
+                            script_path: sc_data.type_name,
+                            fields:      sc_data.fields,
+                        });
                         let mut c = 0u32;
                         if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
                             actor.add_slot_typed::<PlaceholderScriptSlot>(slot_data.name, ComponentKind::Placeholder, slot_entity);
@@ -480,16 +516,18 @@ impl App {
                     new_slots.push(ComponentSlot::new::<ModelComponent>(slot_data.name, ComponentKind::Model, slot_entity));
                 }
                 ComponentData::ScriptComponent(sc_data) => {
-                    if let Some(h) = &host {
-                        if let Some(sc) = ScriptComponent::new(std::sync::Arc::clone(h), sc_data.type_name.clone()) {
-                            scene.world.insert(slot_entity, sc);
-                            new_slots.push(ComponentSlot::new::<ScriptComponent>(slot_data.name, ComponentKind::Script, slot_entity));
-                        } else {
-                            scene.world.insert(slot_entity, PlaceholderScriptSlot { script_path: sc_data.type_name });
-                            new_slots.push(ComponentSlot::new::<PlaceholderScriptSlot>(slot_data.name, ComponentKind::Placeholder, slot_entity));
-                        }
+                    // フィールド値も含めて CLR インスタンスを復元する（失敗時は Placeholder）
+                    let created = host.as_ref().and_then(|h| ScriptComponent::new_with_fields(
+                        std::sync::Arc::clone(h), sc_data.type_name.clone(), sc_data.fields.clone(),
+                    ));
+                    if let Some(sc) = created {
+                        scene.world.insert(slot_entity, sc);
+                        new_slots.push(ComponentSlot::new::<ScriptComponent>(slot_data.name, ComponentKind::Script, slot_entity));
                     } else {
-                        scene.world.insert(slot_entity, PlaceholderScriptSlot { script_path: sc_data.type_name });
+                        scene.world.insert(slot_entity, PlaceholderScriptSlot {
+                            script_path: sc_data.type_name,
+                            fields:      sc_data.fields,
+                        });
                         new_slots.push(ComponentSlot::new::<PlaceholderScriptSlot>(slot_data.name, ComponentKind::Placeholder, slot_entity));
                     }
                 }

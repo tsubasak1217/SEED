@@ -143,6 +143,12 @@ pub enum IpcCommand {
     /// ModelComponent のモデルパスを後から設定する
     /// フォーマット: SET_MODEL_PATH:{actor_dfs_id},{slot_idx},{path}
     SetModelPath { actor_dfs_id: u32, slot_idx: u32, path: String },
+    /// ScriptComponent の [SerializeField] フィールド値を設定する
+    /// フォーマット: SET_SCRIPT_FIELD:{actor_dfs_id},{slot_idx},{field_name},{value}
+    SetScriptField { actor_dfs_id: u32, slot_idx: u32, field: String, value: String },
+    /// ユーザースクリプトを再コンパイルし、全 ScriptComponent を再生成する（ホットリロード）
+    /// フォーマット: RELOAD_SCRIPTS
+    ReloadScripts,
     /// コンポーネントスロットを複製する
     /// フォーマット: DUPLICATE_COMPONENT:{actor_dfs_id},{slot_idx}
     DuplicateComponent { actor_dfs_id: u32, slot_idx: u32 },
@@ -736,6 +742,19 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                                     actor_dfs_id: a, slot_idx: sl, path: path.to_string(),
                                 })
                         }
+                        s if s.starts_with("SET_SCRIPT_FIELD:") => {
+                            // フォーマット: SET_SCRIPT_FIELD:{actor_dfs_id},{slot_idx},{field_name},{value}
+                            // value にはカンマが含まれてもよい（文字列フィールド用）
+                            parse2u_tail(&s["SET_SCRIPT_FIELD:".len()..])
+                                .and_then(|(a, sl, tail)| {
+                                    let (field, value) = tail.split_once(',')?;
+                                    Some(IpcCommand::SetScriptField {
+                                        actor_dfs_id: a, slot_idx: sl,
+                                        field: field.to_string(), value: value.to_string(),
+                                    })
+                                })
+                        }
+                        "RELOAD_SCRIPTS" => Some(IpcCommand::ReloadScripts),
                         s if s.starts_with("DUPLICATE_COMPONENT:") => {
                             // フォーマット: DUPLICATE_COMPONENT:{actor_dfs_id},{slot_idx}
                             parse2u(&s["DUPLICATE_COMPONENT:".len()..])

@@ -42,10 +42,18 @@ public partial class InspectorPanel : UserControl
     private string _pendingDuplicateBaseName = "";
 
     // ── Script state ─────────────────────────────────────────
-    // Key: "{actorId}:{slotIdx}", Value: {fieldName → valueString}
-    private readonly Dictionary<string, Dictionary<string, string>> _scriptFieldValues = new();
     private readonly Dictionary<string, Type> _scriptTypeCache = new();
     private string _lastComponentsJson = "";
+
+    /// <summary>「スクリプトを編集」ボタンで .cs を内蔵エディタで開くよう要求する（フルパス）。</summary>
+    public event Action<string>? ScriptFileOpenRequested;
+
+    /// <summary>スクリプト保存などで型キャッシュを無効化する（次回表示時に再コンパイル）。</summary>
+    public void InvalidateScriptTypeCache(string? path = null)
+    {
+        if (path is null) _scriptTypeCache.Clear();
+        else              _scriptTypeCache.Remove(path);
+    }
 
     // ── Plugin state ─────────────────────────────────────────
     /// <summary>ロード済みプラグイン名リスト。PLUGIN_LIST IPC メッセージで更新される。</summary>
@@ -341,7 +349,9 @@ public partial class InspectorPanel : UserControl
         // ColliderComponent 用フィールド（collider_data JSON 全体）
         string ColliderDataJson = "{}",
         // RigidbodyComponent 用フィールド（rigidbody_data JSON 全体）
-        string RigidbodyDataJson = "{}");
+        string RigidbodyDataJson = "{}",
+        // ScriptComponent 用フィールド（[SerializeField] 現在値の JSON オブジェクト）
+        string ScriptFieldsJson = "{}");
 
     private List<SlotInfo> _slotInfos = new();
 
@@ -469,6 +479,8 @@ public partial class InspectorPanel : UserControl
             var colliderDataJson   = comp.TryGetProperty("collider_data",   out var cd)  ? cd.GetRawText() : "{}";
             // RigidbodyComponent 用: rigidbody_data 全体 JSON
             var rigidbodyDataJson  = comp.TryGetProperty("rigidbody_data",  out var rd)  ? rd.GetRawText() : "{}";
+            // ScriptComponent 用: [SerializeField] 現在値の JSON オブジェクト
+            var scriptFieldsJson   = comp.TryGetProperty("script_fields",   out var sfj) ? sfj.GetRawText() : "{}";
 
             var info = new SlotInfo(slotIdx, compName, compType, modelPath, width, height,
                 scaleTransform, scaleSize, autoScale,
@@ -484,7 +496,8 @@ public partial class InspectorPanel : UserControl
                 CamScalingMode: camScalingMode, CamTargetW: camTargetW, CamTargetH: camTargetH,
                 CamBarCR: camBarCR, CamBarCG: camBarCG, CamBarCB: camBarCB, CamBarCA: camBarCA,
                 PluginName: pluginName, PluginFieldsJson: pluginFieldsJson,
-                ColliderDataJson: colliderDataJson, RigidbodyDataJson: rigidbodyDataJson);
+                ColliderDataJson: colliderDataJson, RigidbodyDataJson: rigidbodyDataJson,
+                ScriptFieldsJson: scriptFieldsJson);
             _slotInfos.Add(info);
 
             // 上部チップリストに追加
@@ -3002,27 +3015,60 @@ public partial class InspectorPanel : UserControl
         // スクリプトが設定されていなければここで終了
         if (string.IsNullOrEmpty(info.ModelPath)) return sp;
 
+        // スクリプトファイルを開くボタン（内蔵スクリプトエディタ）
+        sp.Children.Add(BuildOpenScriptButton(info.ModelPath));
+
         var scriptType = GetOrCompileScript(info.ModelPath);
         if (scriptType is null) return sp;
 
         var fields = ScriptCompiler.GetSerializeFields(scriptType);
         if (fields.Count == 0) return sp;
 
-        var storeKey = $"{_currentActorId}:{info.SlotIdx}";
-        if (!_scriptFieldValues.ContainsKey(storeKey))
-            _scriptFieldValues[storeKey] = new Dictionary<string, string>();
-        var values = _scriptFieldValues[storeKey];
+        // 現在値: runtime が ACTOR_COMPONENTS の script_fields で送ってくる
+        // （シーンに保存された [SerializeField] 値）。編集は SET_SCRIPT_FIELD で書き戻す。
+        var values = ParseScriptFieldValues(info.ScriptFieldsJson);
+        var slotIdx = info.SlotIdx;
 
         // フィールドセクション
         var fieldSection = BuildSection("フィールド");
         var fieldSp = (StackPanel)fieldSection.Child;
         fieldSp.Children.Add(ScriptInspectorBuilder.Build(fields, values, (name, val) =>
         {
-            values[name] = val;
+            if (_currentActorId < 0) return;
+            _runtime?.SendToRuntime($"SET_SCRIPT_FIELD:{_currentActorId},{slotIdx},{name},{val}");
         }));
         sp.Children.Add(fieldSection);
 
         return sp;
+    }
+
+    /// <summary>script_fields JSON（{"name":"value",...}）を辞書に変換する。</summary>
+    private static Dictionary<string, string> ParseScriptFieldValues(string json)
+    {
+        var values = new Dictionary<string, string>();
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            foreach (var prop in doc.RootElement.EnumerateObject())
+                values[prop.Name] = prop.Value.GetString() ?? "";
+        }
+        catch { /* 不正な JSON は空扱い */ }
+        return values;
+    }
+
+    /// <summary>スクリプトを内蔵エディタで開くボタン行を生成する。</summary>
+    private UIElement BuildOpenScriptButton(string scriptPath)
+    {
+        var btn = new Button
+        {
+            Content             = "スクリプトを編集",
+            Margin              = new Thickness(0, 4, 0, 2),
+            Padding             = new Thickness(8, 3, 8, 3),
+            FontSize            = 11,
+            HorizontalAlignment = HorizontalAlignment.Left,
+        };
+        btn.Click += (_, _) => ScriptFileOpenRequested?.Invoke(scriptPath);
+        return btn;
     }
 
     private UIElement BuildScriptPathRow(SlotInfo info) =>

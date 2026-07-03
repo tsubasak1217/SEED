@@ -25,15 +25,25 @@ pub use crate::engine::components::{
 /// Rust 側の FrameContext と同じメモリレイアウト。
 /// C# の NativeFrameContext と一致させること。
 #[repr(C)]
-struct RawFrameContext {
-    delta_time: f32,
-    anim_time:  f32,
+pub(crate) struct RawFrameContext {
+    pub delta_time: f32,
+    pub anim_time:  f32,
+}
+
+impl From<&crate::engine::core::clock::FrameContext> for RawFrameContext {
+    fn from(ctx: &crate::engine::core::clock::FrameContext) -> Self {
+        Self { delta_time: ctx.delta_time, anim_time: ctx.anim_time }
+    }
 }
 
 // Windows x64 では "system" == "C" (cdecl) — C# の CallConvCdecl と一致する。
 type CreateFn    = unsafe extern "system" fn(*const u8, i32) -> isize;
 type DestroyFn   = unsafe extern "system" fn(isize);
 type LifecycleFn = unsafe extern "system" fn(isize, *const RawFrameContext);
+/// アセットルート内の .cs を CLR 側でコンパイルする。戻り値はコンパイルされた型数（負値はエラー）。
+type CompileFn   = unsafe extern "system" fn(*const u8, i32) -> i32;
+/// スクリプトインスタンスの [SerializeField] フィールドに文字列値を設定する。
+type SetFieldFn  = unsafe extern "system" fn(isize, *const u8, i32, *const u8, i32);
 
 // ============================================================
 //  ScriptingHost — CLR ライフタイムと関数ポインタを保持
@@ -54,6 +64,8 @@ pub struct ScriptingHost {
     pub late_update_fn:     LifecycleFn,
     pub render_fn:          LifecycleFn,
     pub end_frame_fn:       LifecycleFn,
+    pub(crate) compile_fn:   CompileFn,
+    pub(crate) set_field_fn: SetFieldFn,
 }
 
 // CLR は単一プロセスに紐付き、常にメインスレッドからのみアクセスする。
@@ -94,7 +106,20 @@ impl ScriptingHost {
             late_update_fn:    get_fn!(fn(isize, *const RawFrameContext),      pdcstr!("LateUpdate")),
             render_fn:         get_fn!(fn(isize, *const RawFrameContext),      pdcstr!("Render")),
             end_frame_fn:      get_fn!(fn(isize, *const RawFrameContext),      pdcstr!("EndFrame")),
+            compile_fn:        get_fn!(fn(*const u8, i32) -> i32,              pdcstr!("CompileScripts")),
+            set_field_fn:      get_fn!(fn(isize, *const u8, i32, *const u8, i32), pdcstr!("SetFieldValue")),
         }))
+    }
+
+    /// アセットルート配下の全 .cs スクリプトを CLR 側でコンパイル（再コンパイル）する。
+    ///
+    /// C# 側は collectible AssemblyLoadContext に読み込むため、
+    /// 再呼び出しで旧アセンブリはアンロードされる（＝ホットリロード）。
+    /// 呼び出し前に既存の ScriptComponent をすべて破棄しておくこと。
+    /// 戻り値はコンパイルされたスクリプト型の数（負値はコンパイル失敗）。
+    pub fn compile_scripts(&self, assets_root: &str) -> i32 {
+        let bytes = assets_root.as_bytes();
+        unsafe { (self.compile_fn)(bytes.as_ptr(), bytes.len() as i32) }
     }
 
     /// ワーキングディレクトリを基準に DLL を探す。

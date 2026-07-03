@@ -665,6 +665,18 @@ impl App {
             None
         };
 
+        // アセットルート配下のユーザースクリプト (.cs) を CLR 側でコンパイルする。
+        // シーンロード時の ScriptComponent 生成（型解決）より前に行う必要がある。
+        // コンパイルエラーは C# 側が stderr に出力し、エディタの Output パネルに表示される。
+        if let (Some(host), Some(root)) = (&scripting_host, &args.assets_root) {
+            let count = host.compile_scripts(root);
+            if count >= 0 {
+                eprintln!("[SEED] user scripts compiled: {count} type(s)");
+            } else {
+                eprintln!("[SEED] user script compilation failed (see errors above)");
+            }
+        }
+
         Self {
             window:         None,
             renderer:       None,
@@ -828,6 +840,7 @@ impl App {
 mod actor_utils;
 mod platform_utils;
 mod slot_ops;
+mod script_ops;
 
 // actor_utils / platform_utils の関数を親名前空間に再エクスポートする。
 // サブモジュール（render.rs 等）は既存の `use super::fn_name` のまま使用可能。

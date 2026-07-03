@@ -283,6 +283,16 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         PanelProject.SceneFileOpened    += OnSceneFileOpened;
         PanelProject.ActorFileOpened    += OnActorFileOpened;
         PanelProject.InputMapFileOpened += OnInputMapFileOpened;
+        PanelProject.ScriptFileOpened   += OnScriptFileOpened;
+
+        // スクリプトエディタ: インスペクタの「スクリプトを編集」ボタンからも開ける
+        PanelInspector.ScriptFileOpenRequested += OnScriptFileOpened;
+        // 保存時: インスペクタの型キャッシュを無効化し、runtime にホットリロードを要求する
+        PanelScriptEditor.ScriptSaved += path =>
+        {
+            PanelInspector.InvalidateScriptTypeCache(path);
+            _runtimeManager?.SendToRuntime("RELOAD_SCRIPTS");
+        };
 
         // AI アシスタントパネルを初期化する。
         // LoadLayout() がこの後に呼ばれてコンテンツを上書きするため、
@@ -535,17 +545,23 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
             {
                 args.Content = args.Model.ContentId switch
                 {
-                    "hierarchy"    => PanelHierarchy,
-                    "project"      => PanelProject,
-                    "inspector"    => PanelInspector,
-                    "viewport"     => ViewportGrid,
-                    "output"       => PanelOutput,
-                    "ai_assistant" => _aiPanelUi,
-                    _              => null,
+                    "hierarchy"     => PanelHierarchy,
+                    "project"       => PanelProject,
+                    "inspector"     => PanelInspector,
+                    "viewport"      => ViewportGrid,
+                    "output"        => PanelOutput,
+                    "ai_assistant"  => _aiPanelUi,
+                    "script_editor" => PanelScriptEditor,
+                    _               => null,
                 };
             };
             using var reader = new StreamReader(path);
             serializer.Deserialize(reader);
+
+            // 旧バージョンの layout.xml には script_editor タブが含まれていないため、
+            // デシリアライズ後に存在しなければ Viewport と同じドキュメントペインに追加する。
+            EnsureScriptEditorDocument();
+
             EditorLog.Write($"レイアウトを読み込みました: {path}");
         }
         catch (Exception ex)
@@ -559,4 +575,46 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         SettingsPopup.IsOpen = !SettingsPopup.IsOpen;
     }
 
+    // ── スクリプトエディタ ─────────────────────────────────────
+
+    /// <summary>
+    /// script_editor ドキュメントがレイアウト内に存在することを保証する。
+    /// 旧 layout.xml のデシリアライズで消えた場合、Viewport のペインへ再追加する。
+    /// </summary>
+    private void EnsureScriptEditorDocument()
+    {
+        var exists = DockManager.Layout.Descendents()
+            .OfType<LayoutDocument>()
+            .Any(d => d.ContentId == "script_editor");
+        if (exists) return;
+
+        var pane = DockManager.Layout.Descendents()
+            .OfType<LayoutDocumentPane>()
+            .FirstOrDefault();
+        if (pane is null) return;
+
+        pane.Children.Add(new LayoutDocument
+        {
+            Title     = "Script",
+            ContentId = "script_editor",
+            CanClose  = false,
+            Content   = PanelScriptEditor,
+        });
+    }
+
+    /// <summary>.cs ファイルを内蔵スクリプトエディタで開き、Script タブをアクティブにする。</summary>
+    private void OnScriptFileOpened(string path)
+    {
+        EnsureScriptEditorDocument();
+        PanelScriptEditor.OpenFile(path);
+
+        var doc = DockManager.Layout.Descendents()
+            .OfType<LayoutDocument>()
+            .FirstOrDefault(d => d.ContentId == "script_editor");
+        if (doc is not null)
+        {
+            doc.IsSelected = true;
+            doc.IsActive   = true;
+        }
+    }
 }

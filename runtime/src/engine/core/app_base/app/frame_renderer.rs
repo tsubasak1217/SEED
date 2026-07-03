@@ -305,21 +305,24 @@ impl App {
         }
 
         // ─ 1-6. ゲームロジック（Play 時のみ）─────────
+        // Scene の Schedule に登録された ECS システム群（C# スクリプト駆動を含む）を
+        // フェーズ順に実行する。
         if time_running {
+            use crate::engine::ecs::Phase;
             if dbg { eprintln!("[SEED FRAME {dbg_frame}] begin_frame"); }
-            if let Some(scene) = &mut self.scene { scene.begin_frame(&ctx); }
+            if let Some(scene) = &mut self.scene { scene.run_phase(Phase::BeginFrame, &ctx); }
             if dbg { eprintln!("[SEED FRAME {dbg_frame}] early_update"); }
-            if let Some(scene) = &mut self.scene { scene.early_update(&ctx); }
+            if let Some(scene) = &mut self.scene { scene.run_phase(Phase::EarlyUpdate, &ctx); }
             if dbg { eprintln!("[SEED FRAME {dbg_frame}] update"); }
-            if let Some(scene) = &mut self.scene { scene.update(&ctx); }
+            if let Some(scene) = &mut self.scene { scene.run_phase(Phase::Update, &ctx); }
             if dbg { eprintln!("[SEED FRAME {dbg_frame}] constant_update"); }
             for fixed_ctx in self.clock.drain_fixed() {
-                if let Some(scene) = &mut self.scene { scene.constant_update(&fixed_ctx); }
+                if let Some(scene) = &mut self.scene { scene.run_phase(Phase::ConstantUpdate, &fixed_ctx); }
             }
             if dbg { eprintln!("[SEED FRAME {dbg_frame}] late_update"); }
-            if let Some(scene) = &mut self.scene { scene.late_update(&ctx); }
+            if let Some(scene) = &mut self.scene { scene.run_phase(Phase::LateUpdate, &ctx); }
             if dbg { eprintln!("[SEED FRAME {dbg_frame}] scene.render"); }
-            if let Some(scene) = &mut self.scene { scene.render(&ctx); }
+            if let Some(scene) = &mut self.scene { scene.run_phase(Phase::Render, &ctx); }
             if dbg { eprintln!("[SEED FRAME {dbg_frame}] game logic done"); }
         }
 
@@ -2973,7 +2976,8 @@ impl App {
 
         // ─ 7. EndFrame（Play 時のみ）─────────────────
         if time_running {
-            if let Some(scene) = &mut self.scene { scene.end_frame(&ctx); }
+            use crate::engine::ecs::Phase;
+            if let Some(scene) = &mut self.scene { scene.run_phase(Phase::EndFrame, &ctx); }
         }
 
         self.input.end_frame();

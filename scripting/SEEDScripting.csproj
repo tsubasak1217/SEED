@@ -8,6 +8,14 @@
     <RootNamespace>SEED.Scripting</RootNamespace>
     <!-- UnmanagedCallersOnly を含む DLL を NativeAOT なしで使うために必要 -->
     <EnableTrimAnalyzer>false</EnableTrimAnalyzer>
+    <!-- hostfxr から動的ロードされるため runtimeconfig.json の生成と
+         NuGet 依存 DLL（Roslyn 等）の出力ディレクトリコピーを有効化する -->
+    <EnableDynamicLoading>true</EnableDynamicLoading>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!-- ユーザースクリプト (.cs) のランタイムコンパイルに使用する -->
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.8.0" />
+  </ItemGroup>
 
 </Project>

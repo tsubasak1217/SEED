@@ -1301,6 +1301,14 @@
 
                                     </Grid>
                                 </avd:LayoutDocument>
+
+                                <!-- 内蔵スクリプトエディタ（.cs をダブルクリックで開く） -->
+                                <avd:LayoutDocument Title="Script"
+                                                    ContentId="script_editor"
+                                                    CanClose="False"
+                                                    CanFloat="True">
+                                    <panels:ScriptEditorPanel x:Name="PanelScriptEditor"/>
+                                </avd:LayoutDocument>
                             </avd:LayoutDocumentPane>
                         </avd:LayoutDocumentPaneGroup>
 

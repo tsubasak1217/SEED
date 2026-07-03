@@ -75,20 +75,91 @@ public static unsafe class ScriptBridge
     public static void EndFrame(nint h, NativeFrameContext* ctx)
         => Get(h)?.EndFrame(ref *ctx);
 
+    // ─── スクリプトコンパイル ─────────────────────────────────
+
+    /// <summary>
+    /// アセットルート配下の全 .cs をコンパイルして collectible ALC にロードする。
+    /// 再呼び出しで旧アセンブリはアンロードされる（ホットリロード）。
+    /// 呼び出し前に既存インスタンスをすべて DestroyComponent しておくこと。
+    /// 戻り値: コンパイルされたスクリプト型数（-1 はコンパイル失敗）。
+    /// </summary>
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    public static int CompileScripts(byte* rootPtr, int rootLen)
+    {
+        try
+        {
+            var root = Encoding.UTF8.GetString(rootPtr, rootLen);
+            return ScriptAssemblyManager.CompileAndLoad(root);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[SEEDScripting] CompileScripts failed: {ex}");
+            return -1;
+        }
+    }
+
+    // ─── フィールド設定 ───────────────────────────────────────
+
+    /// <summary>
+    /// [SerializeField] フィールドに文字列値を設定する（リフレクション）。
+    /// 対応型: float / double / int / long / short / bool / string
+    /// </summary>
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    public static void SetFieldValue(nint h, byte* namePtr, int nameLen, byte* valPtr, int valLen)
+    {
+        try
+        {
+            var target = Get(h);
+            if (target is null) return;
+
+            var name  = Encoding.UTF8.GetString(namePtr, nameLen);
+            var value = Encoding.UTF8.GetString(valPtr, valLen);
+
+            var field = target.GetType().GetField(
+                name,
+                System.Reflection.BindingFlags.Public |
+                System.Reflection.BindingFlags.NonPublic |
+                System.Reflection.BindingFlags.Instance);
+            if (field is null)
+            {
+                Console.Error.WriteLine($"[SEEDScripting] field not found: {target.GetType().Name}.{name}");
+                return;
+            }
+
+            var inv = System.Globalization.CultureInfo.InvariantCulture;
+            object? converted = field.FieldType switch
+            {
+                var t when t == typeof(float)  => float.Parse(value, inv),
+                var t when t == typeof(double) => double.Parse(value, inv),
+                var t when t == typeof(int)    => int.Parse(value, inv),
+                var t when t == typeof(long)   => long.Parse(value, inv),
+                var t when t == typeof(short)  => short.Parse(value, inv),
+                var t when t == typeof(bool)   => value == "true",
+                var t when t == typeof(string) => value,
+                _ => null,
+            };
+            if (converted is null)
+            {
+                Console.Error.WriteLine($"[SEEDScripting] unsupported field type: {field.FieldType.Name} ({name})");
+                return;
+            }
+            field.SetValue(target, converted);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[SEEDScripting] SetFieldValue failed: {ex.Message}");
+        }
+    }
+
     // ─── 内部ヘルパー ─────────────────────────────────────────
 
     private static IScriptComponent? Get(nint h)
         => h == 0 ? null : (IScriptComponent?)GCHandle.FromIntPtr(h).Target;
 
     /// <summary>
-    /// 全ロード済みアセンブリから型名で検索する。
-    /// 完全修飾名 or 短縮名（クラス名のみ）の両方に対応。
+    /// 型名または .cs ファイルパスからスクリプト型を検索する。
+    /// ユーザースクリプトアセンブリ（ScriptAssemblyManager）を優先する。
     /// </summary>
     private static Type? FindType(string name)
-        => AppDomain.CurrentDomain
-            .GetAssemblies()
-            .SelectMany(a => { try { return a.GetTypes(); } catch { return []; } })
-            .FirstOrDefault(t =>
-                t.FullName == name ||
-                t.Name     == name);
+        => ScriptAssemblyManager.Resolve(name);
 }

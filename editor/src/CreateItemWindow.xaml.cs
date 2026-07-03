@@ -91,13 +91,25 @@ public partial class CreateItemWindow : Window
         }
 
         var className = Path.GetFileNameWithoutExtension(path);
+        // ランタイム（SEEDScripting.dll）の ScriptComponent を継承するテンプレート。
+        // 必要なライフサイクルメソッドだけ override して使う。
         var template  = $$"""
-            using SEEDEditor.Scripting;
+            using System;
+            using SEED.Scripting;
 
-            public class {{className}} : SEEDScript
+            /// <summary>{{className}} スクリプト。</summary>
+            public class {{className}} : ScriptComponent
             {
-                // [SerializeField]
-                // float myFloat = 0.0f;
+                // インスペクタに公開するフィールドは [SerializeField] を付ける
+                // [SerializeField(Label = "速度")]
+                // private float speed = 1.0f;
+
+                /// <summary>毎フレーム呼ばれる更新処理。</summary>
+                public override void Update(ref NativeFrameContext ctx)
+                {
+                    // ctx.DeltaTime : 前フレームからの経過秒
+                    // ctx.AnimTime  : ゲーム内累計時間
+                }
             }
             """;
         File.WriteAllText(path, template, Encoding.UTF8);
