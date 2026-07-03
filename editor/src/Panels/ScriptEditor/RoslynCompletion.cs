@@ -75,8 +75,12 @@ public sealed class RoslynCompletionData : ICompletionData
 
     public ImageSource? Image => null;
 
-    /// <summary>補完確定時に挿入される文字列。</summary>
-    public string Text => _item.DisplayText;
+    /// <summary>
+    /// 補完確定時に挿入される文字列 兼 フィルタ対象文字列。
+    /// AvalonEdit は入力済みプレフィックスをこの Text と照合してフィルタするため、
+    /// Roslyn の FilterText（無ければ DisplayText）を用いる。
+    /// </summary>
+    public string Text => string.IsNullOrEmpty(_item.FilterText) ? _item.DisplayText : _item.FilterText;
 
     /// <summary>リストに表示される内容（アイコン記号 + 表示名）。</summary>
     public object Content => $"{Glyph()} {_item.DisplayText}";
@@ -86,9 +90,9 @@ public sealed class RoslynCompletionData : ICompletionData
     /// <summary>Roslyn の並び順（SortText）を優先度に反映する。</summary>
     public double Priority => 0;
 
-    /// <summary>補完を確定し、対象セグメントを置き換える。</summary>
+    /// <summary>補完を確定し、対象セグメントを実際の表示名で置き換える。</summary>
     public void Complete(TextArea textArea, ISegment completionSegment, EventArgs insertionRequestEventArgs)
-        => textArea.Document.Replace(completionSegment, Text);
+        => textArea.Document.Replace(completionSegment, _item.DisplayText);
 
     /// <summary>候補の種別（メソッド・プロパティ・クラス等）を記号で表す。</summary>
     private string Glyph()

@@ -892,11 +892,23 @@ public class ScriptEditorPanel : UserControl
         if (_workspace is null || enteredText.Length == 0) return;
 
         char c = enteredText[0];
-        // 識別子文字または "." のときのみ補完を試みる（記号入力では出さない）
-        bool trigger = char.IsLetter(c) || c == '_' || c == '.';
-        if (!trigger) return;
 
-        await ShowCompletionAsync(doc);
+        // "." （メンバーアクセス）は文脈が変わるので毎回計算し直す
+        if (c == '.')
+        {
+            await ShowCompletionAsync(doc);
+            return;
+        }
+
+        // 識別子の入力: ウィンドウが未表示のときだけ起動する。
+        // 既に表示中なら AvalonEdit 側が入力済みプレフィックスで絞り込むため
+        // 再計算しない（＝毎打鍵で全件が出る問題を防ぐ）。
+        if (char.IsLetter(c) || c == '_')
+        {
+            if (_completionWindow is not null) return;
+            await ShowCompletionAsync(doc);
+        }
+        // それ以外の記号では補完を出さない
     }
 
     /// <summary>エディタ上のキー処理（F12 / Ctrl+Space）。</summary>
@@ -927,25 +939,56 @@ public class ScriptEditorPanel : UserControl
         var document = _workspace.GetDocument(doc.FilePath);
         if (document is null) return;
 
-        int position = doc.Editor.CaretOffset;
+        var editor   = doc.Editor;
+        int position = editor.CaretOffset;
         var list = await RoslynCompletion.GetCompletionsAsync(document, position);
         if (list is null || list.ItemsList.Count == 0) return;
+
+        // 入力済みの識別子（キャレット直前の英数字列）を置換対象・フィルタ語にする。
+        // これにより AvalonEdit が「入力済み文字で始まる候補」に絞り込む。
+        var text = editor.Text;
+        int wordStart = position;
+        while (wordStart > 0 && IsIdentChar(text[wordStart - 1])) wordStart--;
+        string prefix = text.Substring(wordStart, position - wordStart);
+
+        // プレフィックスがあるのに一致候補が無ければ、そもそも表示しない
+        if (prefix.Length > 0 &&
+            !list.ItemsList.Any(i => FilterOf(i).StartsWith(prefix, StringComparison.OrdinalIgnoreCase)))
+        {
+            _completionWindow?.Close();
+            return;
+        }
 
         // 既存のウィンドウを閉じてから新規表示する
         _completionWindow?.Close();
 
-        var window = new CompletionWindow(doc.Editor.TextArea)
+        var window = new CompletionWindow(editor.TextArea)
         {
-            CloseAutomatically = true,
-            Width              = 340,
+            CloseAutomatically        = true,
+            CloseWhenCaretAtBeginning = true,
+            Width                     = 340,
+            // 置換範囲を「入力済み識別子の先頭〜キャレット」にする（フィルタの起点）
+            StartOffset               = wordStart,
+            EndOffset                 = position,
         };
-        foreach (var item in list.ItemsList.Take(200))
+        // 入力済み文字による絞り込みを有効化する（既定 true だが明示する）
+        window.CompletionList.IsFiltering = true;
+
+        foreach (var item in list.ItemsList)
             window.CompletionList.CompletionData.Add(new RoslynCompletionData(item));
+
+        // 入力済みプレフィックスで初期フィルタ・最良候補を選択する
+        if (prefix.Length > 0)
+            window.CompletionList.SelectItem(prefix);
 
         window.Closed += (_, _) => _completionWindow = null;
         window.Show();
         _completionWindow = window;
     }
+
+    /// <summary>補完候補のフィルタ用文字列（FilterText 優先）。</summary>
+    private static string FilterOf(Microsoft.CodeAnalysis.Completion.CompletionItem item)
+        => string.IsNullOrEmpty(item.FilterText) ? item.DisplayText : item.FilterText;
 
     /// <summary>F12: キャレット位置のシンボル定義へジャンプする（ファイルまたぎ対応）。</summary>
     private async Task GoToDefinitionAsync(DocTab doc)
