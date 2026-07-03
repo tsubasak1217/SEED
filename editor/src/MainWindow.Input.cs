@@ -130,7 +130,16 @@ public partial class MainWindow
                 else if (vk == 0x53) // S
                 {
                     bool shift = (Keyboard.Modifiers & ModifierKeys.Shift) != 0;
-                    Dispatcher.BeginInvoke(shift ? (Action)ShowSaveAsDialog : DoQuickSave);
+                    Dispatcher.BeginInvoke(() =>
+                    {
+                        // スクリプトエディタがアクティブなときはシーン保存を行わない。
+                        // スクリプト保存（Ctrl+S=編集中 / Ctrl+Shift+S=全て）は
+                        // パネル側の OnPanelKeyDown が実施するため、ここでは何もしない
+                        // （二重保存を避ける）。
+                        if (PanelScriptEditor.IsActiveForSave) return;
+                        if (shift) ShowSaveAsDialog();
+                        else       DoQuickSave();
+                    });
                     return CallNextHookEx(_llKeyHook, nCode, wParam, lParam);
                 }
                 else if (vk == 0x43) // C

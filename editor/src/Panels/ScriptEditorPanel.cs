@@ -378,8 +378,9 @@ public class ScriptEditorPanel : UserControl
 
         switch (e.Key)
         {
-            case Key.S:                       // 保存
-                SaveCurrent();
+            case Key.S:                       // Ctrl+S=編集中を保存 / Ctrl+Shift+S=全て保存
+                if (Keyboard.Modifiers.HasFlag(ModifierKeys.Shift)) SaveAll();
+                else                                                 SaveCurrent();
                 e.Handled = true;
                 break;
             case Key.F:                       // 検索
@@ -561,6 +562,20 @@ public class ScriptEditorPanel : UserControl
     {
         if (_activeDoc is not null) Save(_activeDoc);
     }
+
+    /// <summary>開いている全ドキュメント（タブウィンドウの全スクリプト）を保存する。</summary>
+    public void SaveAll()
+    {
+        // Save は SetDirty で _docs を変更しないため列挙中に走らせても安全だが、
+        // 念のためスナップショットしてから保存する。
+        foreach (var doc in _docs.ToList()) Save(doc);
+    }
+
+    /// <summary>
+    /// スクリプトエディタが「アクティブ」（保存対象）かどうか。
+    /// エディタ内にキーボードフォーカスがある場合をアクティブとみなす。
+    /// </summary>
+    public bool IsActiveForSave => IsKeyboardFocusWithin;
 
     /// <summary>未保存の変更があるタブが存在するか。</summary>
     public bool HasUnsavedChanges => _docs.Any(d => d.IsDirty);
