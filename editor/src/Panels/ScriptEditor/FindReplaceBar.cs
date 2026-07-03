@@ -32,6 +32,18 @@ public sealed class FindReplaceBar : Border
 
     private TextEditor? _editor;
 
+    /// <summary>検索語・大文字小文字設定・表示状態が変わったときに発火する（ハイライト更新用）。</summary>
+    public event Action? SearchChanged;
+
+    /// <summary>現在の検索語。</summary>
+    public string SearchTerm => _findBox.Text;
+
+    /// <summary>大文字小文字を区別するか。</summary>
+    public bool MatchCase => _caseBox.IsChecked == true;
+
+    /// <summary>検索バーが表示され、かつ検索語が入力されているか。</summary>
+    public bool IsSearching => Visibility == Visibility.Visible && !string.IsNullOrEmpty(_findBox.Text);
+
     public FindReplaceBar()
     {
         Background      = Bg;
@@ -76,6 +88,11 @@ public sealed class FindReplaceBar : Border
         {
             if (e.Key == Key.Escape) { Hide(); e.Handled = true; }
         };
+
+        // 検索語・大文字小文字が変わるたびにハイライト更新を通知する
+        _findBox.TextChanged += (_, _) => SearchChanged?.Invoke();
+        _caseBox.Checked     += (_, _) => SearchChanged?.Invoke();
+        _caseBox.Unchecked   += (_, _) => SearchChanged?.Invoke();
     }
 
     /// <summary>操作対象のエディタを設定する（タブ切り替え時に呼ぶ）。</summary>
@@ -103,6 +120,7 @@ public sealed class FindReplaceBar : Border
         _findBox.Focus();
         _findBox.SelectAll();
         _statusText.Text = "";
+        SearchChanged?.Invoke();
     }
 
     /// <summary>バーを閉じてフォーカスをエディタへ戻す。</summary>
@@ -110,6 +128,7 @@ public sealed class FindReplaceBar : Border
     {
         Visibility = Visibility.Collapsed;
         _editor?.Focus();
+        SearchChanged?.Invoke();
     }
 
     // ── 検索・置換ロジック ────────────────────────────────────

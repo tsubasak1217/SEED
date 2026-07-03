@@ -52,6 +52,9 @@ public class ScriptEditorPanel : UserControl
     private static readonly SolidColorBrush BrushDim       = new(Color.FromRgb(0x88, 0x88, 0x88));
     private static readonly SolidColorBrush BrushAccent    = new(Color.FromRgb(0x55, 0xAA, 0xFF));
 
+    /// <summary>診断（エラー・警告）1 件。エラー一覧パネル表示に使う。</summary>
+    private sealed record DiagEntry(bool IsError, string Id, string Message, int Line, int Column, int Offset, string FilePath);
+
     /// <summary>タブ 1 枚分の状態。</summary>
     private sealed class DocTab
     {
@@ -61,6 +64,10 @@ public class ScriptEditorPanel : UserControl
         public required TextBlock         DirtyMark;
         public required TextMarkerService Markers;
         public required DispatcherTimer   DiagTimer;
+        public required HighlightRenderer SelectionHi;   // 選択単語の一致ハイライト
+        public required HighlightRenderer SearchHi;       // 検索一致ハイライト（オレンジ）
+        public required OverviewRuler     Ruler;          // 右側の概観ルーラー
+        public List<DiagEntry> Diagnostics = new();
         public bool IsDirty;
     }
 
@@ -78,6 +85,18 @@ public class ScriptEditorPanel : UserControl
     /// <summary>書式・配色設定と、その保存先ディレクトリ。</summary>
     private ScriptEditorSettings _settings = new();
     private string? _settingsDir;
+
+    /// <summary>診断ホバー用の共有ツールチップ（ホバーが外れたら閉じる）。</summary>
+    private ToolTip? _diagToolTip;
+    /// <summary>下部ステータスバーのエラー/警告カウント表示。</summary>
+    private TextBlock _statusCounts = null!;
+    /// <summary>エラー一覧パネル（初期は非表示、ステータスバークリックで開閉）。</summary>
+    private Border _errorListPanel = null!;
+    private StackPanel _errorListStack = null!;
+
+    // ハイライト色
+    private static readonly Color OccurrenceColor = Color.FromRgb(0x40, 0x40, 0x40); // 選択単語一致（薄いグレー）
+    private static readonly Color SearchColor     = Color.FromRgb(0xE5, 0x8A, 0x2E); // 検索一致（オレンジ）
 
     /// <summary>ファイルの保存が完了したときに発火する（フルパス）。コンパイル成否に関わらず発火。</summary>
     public event Action<string>? ScriptSaved;
@@ -109,18 +128,37 @@ public class ScriptEditorPanel : UserControl
         body.Children.Add(_tabs);
         body.Children.Add(_emptyHint);
 
-        var toolbar = BuildToolbar();
+        var toolbar     = BuildToolbar();
+        var statusBar   = BuildStatusBar();
+        var errorList   = BuildErrorListPanel();
 
         var root = new DockPanel();
-        DockPanel.SetDock(toolbar, Dock.Top);
-        DockPanel.SetDock(_findBar, Dock.Top);
+        DockPanel.SetDock(toolbar,   Dock.Top);
+        DockPanel.SetDock(_findBar,  Dock.Top);
+        DockPanel.SetDock(statusBar, Dock.Bottom);
+        DockPanel.SetDock(errorList, Dock.Bottom);
         root.Children.Add(toolbar);
         root.Children.Add(_findBar);
-        root.Children.Add(body);
+        root.Children.Add(statusBar);   // 最下段
+        root.Children.Add(errorList);   // ステータスバーの上
+        root.Children.Add(body);        // 残り全体（最後 = フィル）
         Content = root;
 
-        // タブ切り替え時に検索バーの対象エディタを更新する
-        _tabs.SelectionChanged += (_, _) => _findBar.SetTarget(CurrentEditor());
+        // タブ切り替え時に検索バーの対象・ハイライトを更新する
+        _tabs.SelectionChanged += (_, _) =>
+        {
+            var ed = CurrentEditor();
+            _findBar.SetTarget(ed);
+            var doc = _docs.FirstOrDefault(d => d.Editor == ed);
+            if (doc is not null) { UpdateSearchHighlight(doc); UpdateOccurrenceHighlight(doc); }
+        };
+
+        // 検索語が変わったら現在のエディタの検索ハイライトを更新する
+        _findBar.SearchChanged += () =>
+        {
+            var doc = _docs.FirstOrDefault(d => d.Editor == CurrentEditor());
+            if (doc is not null) UpdateSearchHighlight(doc);
+        };
 
         // キーボードショートカット
         PreviewKeyDown += OnPanelKeyDown;
@@ -147,7 +185,10 @@ public class ScriptEditorPanel : UserControl
 
     /// <summary>現在アクティブなタブのエディタ（なければ null）。</summary>
     private TextEditor? CurrentEditor()
-        => (_tabs.SelectedItem as TabItem)?.Content as TextEditor;
+    {
+        var item = _tabs.SelectedItem as TabItem;
+        return _docs.FirstOrDefault(d => d.Item == item)?.Editor;
+    }
 
     /// <summary>上部ツールバー（設定・整形ボタン）を生成する。</summary>
     private UIElement BuildToolbar()
@@ -310,28 +351,51 @@ public class ScriptEditorPanel : UserControl
 
         var editor = CreateEditor(text);
         var (header, dirtyMark) = BuildTabHeader(Path.GetFileName(full));
-        var item = new TabItem
-        {
-            Header     = header,
-            Content    = editor,
-            Background = BrushTabBg,
-        };
 
         // 診断（波線）用マーカーサービスを TextView に登録する
         var markers = new TextMarkerService(editor.Document);
         editor.TextArea.TextView.BackgroundRenderers.Add(markers);
+
+        // 一致ハイライト（選択単語・検索）のレイヤーを登録する。
+        // 検索（オレンジ）を上に描くため後に追加する。
+        var selectionHi = new HighlightRenderer(OccurrenceColor, 0xFF, Color.FromRgb(0x56, 0x56, 0x56));
+        var searchHi    = new HighlightRenderer(SearchColor, 0xAA);
+        editor.TextArea.TextView.BackgroundRenderers.Add(selectionHi);
+        editor.TextArea.TextView.BackgroundRenderers.Add(searchHi);
+
+        // 右側の概観ルーラー（マーククリックでジャンプ）
+        var ruler = new OverviewRuler(editor);
+
+        // エディタ本体 + ルーラーを横並びにしてタブのコンテンツにする
+        var content = new Grid();
+        content.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        content.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        Grid.SetColumn(editor, 0);
+        Grid.SetColumn(ruler, 1);
+        content.Children.Add(editor);
+        content.Children.Add(ruler);
+
+        var item = new TabItem
+        {
+            Header     = header,
+            Content    = content,
+            Background = BrushTabBg,
+        };
 
         // 診断の再計算を遅延実行するデバウンスタイマー
         var diagTimer = new DispatcherTimer { Interval = DiagnosticsDebounce };
 
         var doc = new DocTab
         {
-            FilePath  = full,
-            Editor    = editor,
-            Item      = item,
-            DirtyMark = dirtyMark,
-            Markers   = markers,
-            DiagTimer = diagTimer,
+            FilePath    = full,
+            Editor      = editor,
+            Item        = item,
+            DirtyMark   = dirtyMark,
+            Markers     = markers,
+            DiagTimer   = diagTimer,
+            SelectionHi = selectionHi,
+            SearchHi    = searchHi,
+            Ruler       = ruler,
         };
 
         // 編集のたびにダーティ化し、ワークスペースへ反映し、診断を予約する
@@ -353,9 +417,13 @@ public class ScriptEditorPanel : UserControl
             _ = RunDiagnosticsAsync(doc);
         };
 
-        // マーカーにホバーしたら診断メッセージをツールチップ表示する
+        // マーカーにホバーしたら診断メッセージをツールチップ表示し、外れたら閉じる
         editor.MouseHover        += (_, e) => ShowDiagnosticToolTip(doc, e);
-        editor.MouseHoverStopped += (_, _) => editor.ToolTip = null;
+        editor.MouseHoverStopped += (_, _) => HideDiagnosticToolTip();
+
+        // 選択単語の一致ハイライト（キャレット移動・選択変更で更新）
+        editor.TextArea.Caret.PositionChanged += (_, _) => UpdateOccurrenceHighlight(doc);
+        editor.TextArea.SelectionChanged      += (_, _) => UpdateOccurrenceHighlight(doc);
 
         // Ctrl+ホイールで表示倍率を変更する
         editor.PreviewMouseWheel += (_, e) =>
@@ -431,10 +499,17 @@ public class ScriptEditorPanel : UserControl
                     new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
                 return comp.GetDiagnostics()
                     .Where(d => d.Severity is DiagnosticSeverity.Error or DiagnosticSeverity.Warning)
-                    .Select(d => (
-                        span:     d.Location.SourceSpan,
-                        message:  $"{(d.Severity == DiagnosticSeverity.Error ? "エラー" : "警告")} {d.Id}: {d.GetMessage()}",
-                        isError:  d.Severity == DiagnosticSeverity.Error))
+                    .Select(d =>
+                    {
+                        var lineSpan = d.Location.GetLineSpan();
+                        return (
+                            span:    d.Location.SourceSpan,
+                            id:      d.Id,
+                            body:    d.GetMessage(),
+                            isError: d.Severity == DiagnosticSeverity.Error,
+                            line:    lineSpan.StartLinePosition.Line + 1,
+                            col:     lineSpan.StartLinePosition.Character + 1);
+                    })
                     .ToList();
             }
             catch
@@ -448,37 +523,54 @@ public class ScriptEditorPanel : UserControl
         if (doc.Editor.Text != source) return;
 
         doc.Markers.RemoveAll();
+        doc.Diagnostics.Clear();
         int errorCount = 0, warnCount = 0;
-        foreach (var (span, message, isError) in diags)
+        foreach (var (span, id, body, isError, line, col) in diags)
         {
             var color = isError
                 ? Color.FromRgb(0xF4, 0x47, 0x47)   // 赤
                 : Color.FromRgb(0xD7, 0xBA, 0x36);   // 黄
-            doc.Markers.Create(span.Start, Math.Max(span.Length, 1), color, message);
+            var label = $"{(isError ? "エラー" : "警告")} {id}: {body}";
+            doc.Markers.Create(span.Start, Math.Max(span.Length, 1), color, label);
+            doc.Diagnostics.Add(new DiagEntry(isError, id, body, line, col, span.Start, doc.FilePath));
             if (isError) errorCount++; else warnCount++;
         }
         doc.Editor.TextArea.TextView.Redraw();
 
-        // タブヘッダーにエラー/警告数を反映する（アイコン代わり）
+        // タブヘッダーにエラー/警告数を反映し、下部ステータス・エラー一覧を更新する
         UpdateTabDiagnosticBadge(doc, errorCount, warnCount);
+        RefreshErrorList();
     }
 
+    // ── 診断ツールチップ（ホバー表示、外れたら閉じる）─────────
+
     /// <summary>マウス下のマーカーがあれば診断メッセージをツールチップ表示する。</summary>
-    private static void ShowDiagnosticToolTip(DocTab doc, MouseEventArgs e)
+    private void ShowDiagnosticToolTip(DocTab doc, MouseEventArgs e)
     {
         var pos = doc.Editor.GetPositionFromPoint(e.GetPosition(doc.Editor));
-        if (pos is null) { doc.Editor.ToolTip = null; return; }
+        if (pos is null) { HideDiagnosticToolTip(); return; }
 
         int offset = doc.Editor.Document.GetOffset(pos.Value.Location);
         var marker = doc.Markers.GetMarkersAtOffset(offset).FirstOrDefault();
-        if (marker?.ToolTip is null) { doc.Editor.ToolTip = null; return; }
+        if (marker?.ToolTip is null) { HideDiagnosticToolTip(); return; }
 
-        doc.Editor.ToolTip = new ToolTip
+        // 共有ツールチップを使い回す（毎回 new すると閉じられなくなるため）
+        _diagToolTip ??= new ToolTip
         {
-            Content = new TextBlock { Text = marker.ToolTip, TextWrapping = TextWrapping.Wrap, MaxWidth = 500 },
+            Background = new SolidColorBrush(Color.FromRgb(0x25, 0x25, 0x26)),
+            Foreground = BrushText,
+            BorderBrush= BrushBorder,
         };
-        (doc.Editor.ToolTip as ToolTip)!.IsOpen = true;
+        _diagToolTip.PlacementTarget = doc.Editor;
+        _diagToolTip.Content = new TextBlock { Text = marker.ToolTip, TextWrapping = TextWrapping.Wrap, MaxWidth = 520 };
+        _diagToolTip.IsOpen = true;
         e.Handled = true;
+    }
+
+    /// <summary>診断ツールチップを閉じる（ホバーが外れたとき）。</summary>
+    private void HideDiagnosticToolTip()
+    {
+        if (_diagToolTip is not null) _diagToolTip.IsOpen = false;
     }
 
     /// <summary>タブ名の横にエラー/警告数バッジを表示する。</summary>
@@ -502,6 +594,226 @@ public class ScriptEditorPanel : UserControl
         };
         // ● 未保存マークの前（ファイル名の直後）に挿入する
         header.Children.Insert(1, badge);
+    }
+
+    // ── ステータスバー & エラー一覧パネル ────────────────────
+
+    /// <summary>下部ステータスバー（エラー/警告カウント + クリックで一覧開閉）を生成する。</summary>
+    private UIElement BuildStatusBar()
+    {
+        var bar = new Border
+        {
+            Background      = new SolidColorBrush(Color.FromRgb(0x00, 0x7A, 0xCC)), // VS 風の青いステータスバー
+            Padding         = new Thickness(8, 2, 8, 2),
+            Cursor          = Cursors.Hand,
+        };
+        _statusCounts = new TextBlock
+        {
+            Text = "⊘ 0   △ 0",
+            Foreground = Brushes.White,
+            FontSize = 11,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        bar.Child = _statusCounts;
+        // クリックでエラー一覧の表示を切り替える
+        bar.MouseLeftButtonUp += (_, _) =>
+            _errorListPanel.Visibility = _errorListPanel.Visibility == Visibility.Visible
+                ? Visibility.Collapsed : Visibility.Visible;
+        return bar;
+    }
+
+    /// <summary>エラー一覧パネル（初期は非表示）を生成する。</summary>
+    private UIElement BuildErrorListPanel()
+    {
+        _errorListStack = new StackPanel();
+        var scroll = new ScrollViewer
+        {
+            Content = _errorListStack,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            MaxHeight = 180,
+        };
+        _errorListPanel = new Border
+        {
+            Background      = new SolidColorBrush(Color.FromRgb(0x1E, 0x1E, 0x1E)),
+            BorderBrush     = BrushBorder,
+            BorderThickness = new Thickness(0, 1, 0, 1),
+            Visibility      = Visibility.Collapsed,
+            Child           = new DockPanel { Children = { BuildErrorListHeader(), scroll } },
+        };
+        DockPanel.SetDock((UIElement)((DockPanel)_errorListPanel.Child).Children[0], Dock.Top);
+        return _errorListPanel;
+    }
+
+    private UIElement BuildErrorListHeader()
+    {
+        var header = new Border
+        {
+            Background = new SolidColorBrush(Color.FromRgb(0x2D, 0x2D, 0x2E)),
+            Padding    = new Thickness(8, 3, 8, 3),
+        };
+        header.Child = new TextBlock
+        {
+            Text = "エラー一覧（ダブルクリックで該当箇所へ移動）",
+            Foreground = BrushDim, FontSize = 11,
+        };
+        return header;
+    }
+
+    /// <summary>全ドキュメントの診断からステータスバーとエラー一覧を再構築する。</summary>
+    private void RefreshErrorList()
+    {
+        int errors   = _docs.Sum(d => d.Diagnostics.Count(x => x.IsError));
+        int warnings = _docs.Sum(d => d.Diagnostics.Count(x => !x.IsError));
+        _statusCounts.Text = $"⊘ {errors}   △ {warnings}";
+
+        _errorListStack.Children.Clear();
+        // エラー→警告の順、ファイル・行で整列する
+        var entries = _docs.SelectMany(d => d.Diagnostics)
+            .OrderByDescending(x => x.IsError)
+            .ThenBy(x => x.FilePath).ThenBy(x => x.Line);
+        foreach (var entry in entries)
+            _errorListStack.Children.Add(BuildErrorRow(entry));
+    }
+
+    /// <summary>エラー一覧の 1 行（アイコン + コード + メッセージ + 位置）を生成する。</summary>
+    private UIElement BuildErrorRow(DiagEntry entry)
+    {
+        var row = new Border { Padding = new Thickness(8, 2, 8, 2), Cursor = Cursors.Hand };
+        var sp  = new StackPanel { Orientation = Orientation.Horizontal };
+        sp.Children.Add(new TextBlock
+        {
+            Text = entry.IsError ? "⊘" : "△",
+            Foreground = new SolidColorBrush(entry.IsError ? Color.FromRgb(0xF4, 0x47, 0x47) : Color.FromRgb(0xD7, 0xBA, 0x36)),
+            Width = 18, VerticalAlignment = VerticalAlignment.Center,
+        });
+        sp.Children.Add(new TextBlock
+        {
+            Text = entry.Id, Foreground = BrushDim, Width = 64, VerticalAlignment = VerticalAlignment.Center, FontSize = 11,
+        });
+        sp.Children.Add(new TextBlock
+        {
+            Text = entry.Message, Foreground = BrushText, VerticalAlignment = VerticalAlignment.Center, FontSize = 11,
+            TextTrimming = TextTrimming.CharacterEllipsis, MaxWidth = 620,
+        });
+        sp.Children.Add(new TextBlock
+        {
+            Text = $"  {Path.GetFileName(entry.FilePath)}:{entry.Line}",
+            Foreground = BrushDim, VerticalAlignment = VerticalAlignment.Center, FontSize = 11,
+        });
+        row.Child = sp;
+        row.MouseEnter += (_, _) => row.Background = new SolidColorBrush(Color.FromArgb(0x22, 0xFF, 0xFF, 0xFF));
+        row.MouseLeave += (_, _) => row.Background = Brushes.Transparent;
+        // ダブルクリックで該当ファイル・行へジャンプする
+        row.MouseLeftButtonDown += (_, e) =>
+        {
+            if (e.ClickCount != 2) return;
+            OpenFile(entry.FilePath);
+            var target = _docs.FirstOrDefault(d =>
+                string.Equals(d.FilePath, Path.GetFullPath(entry.FilePath), StringComparison.OrdinalIgnoreCase));
+            if (target is null) return;
+            int off = Math.Min(entry.Offset, target.Editor.Document.TextLength);
+            target.Editor.CaretOffset = off;
+            target.Editor.ScrollToLine(target.Editor.Document.GetLineByOffset(off).LineNumber);
+            target.Editor.Focus();
+        };
+        return row;
+    }
+
+    // ── 一致ハイライト（選択単語・検索）と概観ルーラー ────────
+
+    /// <summary>キャレット位置または選択中の単語に一致する全箇所をハイライトする。</summary>
+    private void UpdateOccurrenceHighlight(DocTab doc)
+    {
+        var editor = doc.Editor;
+        string word = GetHighlightWord(editor);
+        var matches = string.IsNullOrEmpty(word)
+            ? new List<(int, int)>()
+            : FindAllMatches(editor.Text, word, matchCase: true, wholeWord: true);
+
+        doc.SelectionHi.SetSegments(matches);
+        editor.TextArea.TextView.Redraw();
+        RefreshRuler(doc);
+    }
+
+    /// <summary>検索バーの語に一致する全箇所をオレンジでハイライトする。</summary>
+    private void UpdateSearchHighlight(DocTab doc)
+    {
+        var editor = doc.Editor;
+        var matches = _findBar.IsSearching
+            ? FindAllMatches(editor.Text, _findBar.SearchTerm, _findBar.MatchCase, wholeWord: false)
+            : new List<(int, int)>();
+
+        doc.SearchHi.SetSegments(matches);
+        editor.TextArea.TextView.Redraw();
+        RefreshRuler(doc);
+    }
+
+    /// <summary>概観ルーラーのマークを更新する（検索中はオレンジ、それ以外は選択一致）。</summary>
+    private void RefreshRuler(DocTab doc)
+    {
+        var editor = doc.Editor;
+        IEnumerable<(int Start, int Length)> active = _findBar.IsSearching ? doc.SearchHi.Segments : doc.SelectionHi.Segments;
+        var color = _findBar.IsSearching ? SearchColor : Color.FromRgb(0x88, 0x88, 0x88);
+
+        var marks = new List<OverviewRuler.Mark>();
+        foreach (var (start, _) in active)
+        {
+            if (start < 0 || start > editor.Document.TextLength) continue;
+            int line = editor.Document.GetLineByOffset(start).LineNumber;
+            marks.Add(new OverviewRuler.Mark(line, color));
+        }
+        doc.Ruler.SetMarks(marks);
+    }
+
+    /// <summary>ハイライト対象の単語を決定する（選択が単一識別子ならそれ、無ければキャレット下の識別子）。</summary>
+    private static string GetHighlightWord(TextEditor editor)
+    {
+        // 選択があれば、それが 1 単語（識別子）ならハイライト対象にする
+        if (editor.SelectionLength > 0)
+        {
+            var sel = editor.SelectedText;
+            return IsIdentifier(sel) ? sel : "";
+        }
+        // 選択が無ければキャレット下の識別子を対象にする
+        var text = editor.Text;
+        int caret = editor.CaretOffset;
+        int start = caret, end = caret;
+        while (start > 0 && IsIdentChar(text[start - 1])) start--;
+        while (end < text.Length && IsIdentChar(text[end])) end++;
+        return end > start ? text.Substring(start, end - start) : "";
+    }
+
+    private static bool IsIdentifier(string s)
+    {
+        if (string.IsNullOrEmpty(s)) return false;
+        foreach (var ch in s) if (!IsIdentChar(ch)) return false;
+        return true;
+    }
+
+    private static bool IsIdentChar(char c) => char.IsLetterOrDigit(c) || c == '_';
+
+    /// <summary>文字列中の全一致範囲を返す。wholeWord=true なら単語境界の一致のみ。</summary>
+    private static List<(int Start, int Length)> FindAllMatches(string text, string keyword, bool matchCase, bool wholeWord)
+    {
+        var result = new List<(int, int)>();
+        if (string.IsNullOrEmpty(keyword)) return result;
+        var cmp = matchCase ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase;
+
+        int idx = 0;
+        while (true)
+        {
+            int next = text.IndexOf(keyword, idx, cmp);
+            if (next < 0) break;
+            idx = next + keyword.Length;
+            if (wholeWord)
+            {
+                bool leftOk  = next == 0 || !IsIdentChar(text[next - 1]);
+                bool rightOk = next + keyword.Length >= text.Length || !IsIdentChar(text[next + keyword.Length]);
+                if (!leftOk || !rightOk) continue;
+            }
+            result.Add((next, keyword.Length));
+        }
+        return result;
     }
 
     // ── IntelliSense 補完 / F12 定義ジャンプ ─────────────────
@@ -675,6 +987,7 @@ public class ScriptEditorPanel : UserControl
         _docs.Remove(doc);
         _tabs.Items.Remove(doc.Item);
         UpdateEmptyHint();
+        RefreshErrorList();
     }
 
     private void SetDirty(DocTab doc, bool dirty)
