@@ -18,7 +18,7 @@ public static class ScriptInspectorBuilder
 
     /// <summary>
     /// [SerializeField] フィールド一覧から WPF の StackPanel を生成する。
-    /// onValueChanged: (fieldName, newValueString)
+    /// onValueChanged: (fieldPath, newValueString)。ネストは "parent.child" のドットパス。
     /// </summary>
     public static StackPanel Build(
         IReadOnlyList<ScriptFieldInfo>      fields,
@@ -26,42 +26,104 @@ public static class ScriptInspectorBuilder
         Action<string, string>              onValueChanged)
     {
         var stack = new StackPanel();
-        foreach (var field in fields)
-        {
-            currentValues.TryGetValue(field.Field.Name, out var raw);
-            var row = BuildRow(field, raw, onValueChanged);
-            if (row is not null) stack.Children.Add(row);
-        }
+        BuildInto(stack, fields, currentValues, onValueChanged, prefix: "");
         return stack;
     }
 
-    private static UIElement? BuildRow(ScriptFieldInfo field, string? raw, Action<string, string> onChange)
+    /// <summary>フィールド群を stack に構築する（prefix でドットパスを連結する再帰用）。</summary>
+    private static void BuildInto(
+        StackPanel                          stack,
+        IReadOnlyList<ScriptFieldInfo>      fields,
+        IReadOnlyDictionary<string, string> values,
+        Action<string, string>              onChange,
+        string                              prefix)
     {
-        var t = field.Field.FieldType;
+        foreach (var field in fields)
+        {
+            // [Header] があれば見出しを前置する
+            if (!string.IsNullOrEmpty(field.Header))
+                stack.Children.Add(MakeHeader(field.Header!));
+
+            var fullPath = prefix + field.Field.Name;
+
+            // [Serializable] ネストクラス → 折りたたみで子フィールドを再帰表示
+            if (field.Children is not null)
+            {
+                stack.Children.Add(BuildNestedFoldout(field, fullPath, values, onChange));
+                continue;
+            }
+
+            var row = BuildRow(field, fullPath, values, onChange);
+            if (row is not null) stack.Children.Add(row);
+        }
+    }
+
+    private static UIElement? BuildRow(
+        ScriptFieldInfo field, string path,
+        IReadOnlyDictionary<string, string> values, Action<string, string> onChange)
+    {
+        values.TryGetValue(path, out var raw);
+        var t       = field.Field.FieldType;
+        var onLeaf  = (Action<string>)(s => onChange(path, s));
 
         if (t == typeof(float) || t == typeof(double))
         {
             var v = raw is not null && float.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out var pv)
                 ? pv : Convert.ToSingle(field.DefaultValue ?? 0f);
-            return BuildFloatRow(field, v, s => onChange(field.Field.Name, s));
+            return field.RangeMin is float mn && field.RangeMax is float mx
+                ? BuildRangeRow(field, v, mn, mx, isInt: false, onLeaf)
+                : BuildFloatRow(field, v, onLeaf);
         }
         if (t == typeof(int) || t == typeof(long) || t == typeof(short))
         {
             var v = raw is not null && int.TryParse(raw, out var pv) ? pv : Convert.ToInt32(field.DefaultValue ?? 0);
-            return BuildIntRow(field, v, s => onChange(field.Field.Name, s));
+            return field.RangeMin is float imn && field.RangeMax is float imx
+                ? BuildRangeRow(field, v, imn, imx, isInt: true, onLeaf)
+                : BuildIntRow(field, v, onLeaf);
         }
         if (t == typeof(bool))
         {
             var v = raw is not null ? raw == "true" : (bool)(field.DefaultValue ?? false);
-            return BuildBoolRow(field, v, s => onChange(field.Field.Name, s));
+            return BuildBoolRow(field, v, onLeaf);
         }
         if (t == typeof(string))
         {
             var v = raw ?? (string?)field.DefaultValue ?? "";
-            return BuildStringRow(field, v, s => onChange(field.Field.Name, s));
+            return BuildStringRow(field, v, onLeaf);
         }
         return BuildReadOnlyRow(field);
     }
+
+    /// <summary>[Serializable] ネストクラスを折りたたみ（Expander）で表示する。</summary>
+    private static UIElement BuildNestedFoldout(
+        ScriptFieldInfo field, string fullPath,
+        IReadOnlyDictionary<string, string> values, Action<string, string> onChange)
+    {
+        var inner = new StackPanel { Margin = new Thickness(10, 2, 0, 2) };
+        // 子は "親パス." を prefix にして再帰構築する
+        BuildInto(inner, field.Children!, values, onChange, prefix: fullPath + ".");
+
+        var expander = new Expander
+        {
+            Header     = field.Label,
+            IsExpanded = true,
+            Foreground = BrushText,
+            Margin     = new Thickness(0, 2, 0, 2),
+            Content    = inner,
+            ToolTip    = field.Tooltip,
+        };
+        return expander;
+    }
+
+    /// <summary>[Header] 見出しの TextBlock を生成する。</summary>
+    private static UIElement MakeHeader(string text) => new TextBlock
+    {
+        Text       = text,
+        Foreground = BrushText,
+        FontWeight = FontWeights.Bold,
+        FontSize   = 11,
+        Margin     = new Thickness(0, 8, 0, 2),
+    };
 
     // ── 型別ビルダー ─────────────────────────────────────────
 
@@ -81,6 +143,67 @@ public static class ScriptInspectorBuilder
         tb.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { CommitInt(tb, onChange); e.Handled = true; } };
         tb.LostFocus += (_, _) => CommitInt(tb, onChange);
         return MakeRow(field.Label, field.Tooltip, drag, tb);
+    }
+
+    /// <summary>[Range] 付き数値フィールド: スライダー + 数値ボックスを表示する。</summary>
+    private static UIElement BuildRangeRow(
+        ScriptFieldInfo field, double value, float min, float max, bool isInt, Action<string> onChange)
+    {
+        // min > max の指定ミスに備えて入れ替える
+        if (min > max) (min, max) = (max, min);
+        value = Math.Clamp(value, min, max);
+
+        var slider = new Slider
+        {
+            Minimum           = min,
+            Maximum           = max,
+            Value             = value,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin            = new Thickness(2, 0, 4, 0),
+            IsSnapToTickEnabled = isInt,
+            TickFrequency     = isInt ? 1 : 0.0001,
+        };
+        var box = MakeTextBox(isInt ? ((int)Math.Round(value)).ToString() : Fmt((float)value));
+        box.Width = 52;
+
+        // 再入防止フラグ（スライダー↔ボックスの相互更新でループしないように）
+        bool updating = false;
+
+        slider.ValueChanged += (_, e) =>
+        {
+            if (updating) return;
+            updating = true;
+            var v = isInt ? Math.Round(e.NewValue) : e.NewValue;
+            box.Text = isInt ? ((int)v).ToString() : Fmt((float)v);
+            onChange(box.Text);
+            updating = false;
+        };
+
+        void CommitBox()
+        {
+            if (updating) return;
+            if (!double.TryParse(box.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) return;
+            v = Math.Clamp(v, min, max);
+            if (isInt) v = Math.Round(v);
+            updating = true;
+            box.Text      = isInt ? ((int)v).ToString() : Fmt((float)v);
+            slider.Value  = v;
+            onChange(box.Text);
+            updating = false;
+        }
+        box.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { CommitBox(); e.Handled = true; } };
+        box.LostFocus += (_, _) => CommitBox();
+
+        // スライダー（可変幅）と数値ボックス（固定幅）を横並びにする
+        var grid = new Grid();
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        Grid.SetColumn(slider, 0);
+        Grid.SetColumn(box, 1);
+        grid.Children.Add(slider);
+        grid.Children.Add(box);
+
+        return MakeRow(field.Label, field.Tooltip, null, grid);
     }
 
     private static UIElement BuildBoolRow(ScriptFieldInfo field, bool value, Action<string> onChange)
