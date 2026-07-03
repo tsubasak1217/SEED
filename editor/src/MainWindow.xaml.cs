@@ -663,7 +663,8 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
             Title     = title,
             ContentId = contentId,
             CanClose  = false,
-            CanHide   = false,
+            // 「表示」メニューから非表示にできるよう CanHide を許可する
+            CanHide   = true,
             Content   = content,
         });
     }
@@ -676,18 +677,31 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         FocusScriptEditorDocument();
     }
 
-    /// <summary>「表示」メニュー: スクリプトエディタを前面に表示する（ファイルは開かない）。</summary>
-    private void OnShowScriptEditor(object sender, RoutedEventArgs e)
+    /// <summary>
+    /// 「表示 &gt; スクリプト &gt; スクリプトエディタ」メニュー:
+    /// スクリプトエディタ（LayoutDocument）の表示/非表示をトグルする。
+    /// 表示中なら閉じ、非表示なら再追加して前面に出す。
+    /// </summary>
+    private void OnToggleScriptEditor(object sender, RoutedEventArgs e)
     {
-        EnsureScriptEditorDocument();
-        FocusScriptEditorDocument();
+        var doc = DockManager.Layout.Descendents()
+            .OfType<LayoutDocument>()
+            .FirstOrDefault(d => d.ContentId == "script_editor");
+
+        if (doc is not null)
+        {
+            // 表示中 → 閉じる
+            doc.Close();
+            if (sender is MenuItem mi) mi.IsChecked = false;
+        }
+        else
+        {
+            // 非表示 → 再追加して前面へ
+            EnsureScriptEditorDocument();
+            FocusScriptEditorDocument();
+            if (sender is MenuItem mi) mi.IsChecked = true;
+        }
     }
-
-    /// <summary>「表示」メニュー: 「タブ」（開いているスクリプト一覧）パネルを前面に表示する。</summary>
-    private void OnShowOpenDocuments(object sender, RoutedEventArgs e) => ShowAnchorable("open_documents");
-
-    /// <summary>「表示」メニュー: 「エラー一覧」パネルを前面に表示する。</summary>
-    private void OnShowErrorList(object sender, RoutedEventArgs e) => ShowAnchorable("error_list");
 
     /// <summary>
     /// 指定 ContentId のアンカーパネルを表示する。

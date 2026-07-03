@@ -79,7 +79,17 @@ public partial class MainWindow
         MenuItemInspector.IsChecked = IsPanelVisible("inspector");
         MenuItemProject.IsChecked   = IsPanelVisible("project");
         MenuItemOutput.IsChecked    = IsPanelVisible("output");
+        // スクリプト関連ウィンドウの表示状態もチェックへ反映する
+        MenuItemOpenDocuments.IsChecked = IsPanelVisible("open_documents");
+        MenuItemErrorList.IsChecked     = IsPanelVisible("error_list");
+        MenuItemScriptEditor.IsChecked  = IsScriptEditorVisible();
     }
+
+    /// <summary>スクリプトエディタ（LayoutDocument）がレイアウト上に存在するか。</summary>
+    private bool IsScriptEditorVisible() =>
+        DockManager.Layout.Descendents()
+            .OfType<LayoutDocument>()
+            .Any(d => d.ContentId == "script_editor");
 
     private bool IsPanelVisible(string contentId) =>
         DockManager.Layout.Descendents()

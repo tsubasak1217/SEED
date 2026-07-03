@@ -648,38 +648,48 @@
                           Click="OnMenuDelete"/>
             </MenuItem>
 
-            <!-- 表示 -->
+            <!-- 表示（カテゴリごとに入れ子化） -->
             <MenuItem Header="表示" SubmenuOpened="OnViewMenuOpened">
-                <MenuItem x:Name="MenuItemHierarchy"
-                          Header="Hierarchy"
-                          IsCheckable="True"
-                          Tag="hierarchy"
-                          Click="OnTogglePanel"/>
-                <MenuItem x:Name="MenuItemInspector"
-                          Header="Inspector"
-                          IsCheckable="True"
-                          Tag="inspector"
-                          Click="OnTogglePanel"/>
-                <MenuItem x:Name="MenuItemProject"
-                          Header="Project"
-                          IsCheckable="True"
-                          Tag="project"
-                          Click="OnTogglePanel"/>
-                <MenuItem x:Name="MenuItemOutput"
-                          Header="Output"
-                          IsCheckable="True"
-                          Tag="output"
-                          Click="OnTogglePanel"/>
-                <Separator/>
-                <MenuItem x:Name="MenuItemScriptEditor"
-                          Header="スクリプトエディタ"
-                          Click="OnShowScriptEditor"/>
-                <MenuItem x:Name="MenuItemOpenDocuments"
-                          Header="タブ（開いているスクリプト）"
-                          Click="OnShowOpenDocuments"/>
-                <MenuItem x:Name="MenuItemErrorList"
-                          Header="エラー一覧"
-                          Click="OnShowErrorList"/>
+                <!-- パネル: エディタ基本パネル -->
+                <MenuItem Header="パネル">
+                    <MenuItem x:Name="MenuItemHierarchy"
+                              Header="Hierarchy"
+                              IsCheckable="True"
+                              Tag="hierarchy"
+                              Click="OnTogglePanel"/>
+                    <MenuItem x:Name="MenuItemInspector"
+                              Header="Inspector"
+                              IsCheckable="True"
+                              Tag="inspector"
+                              Click="OnTogglePanel"/>
+                    <MenuItem x:Name="MenuItemProject"
+                              Header="Project"
+                              IsCheckable="True"
+                              Tag="project"
+                              Click="OnTogglePanel"/>
+                    <MenuItem x:Name="MenuItemOutput"
+                              Header="Output"
+                              IsCheckable="True"
+                              Tag="output"
+                              Click="OnTogglePanel"/>
+                </MenuItem>
+                <!-- スクリプト: スクリプト編集関連ウィンドウ -->
+                <MenuItem Header="スクリプト">
+                    <MenuItem x:Name="MenuItemScriptEditor"
+                              Header="スクリプトエディタ"
+                              IsCheckable="True"
+                              Click="OnToggleScriptEditor"/>
+                    <MenuItem x:Name="MenuItemOpenDocuments"
+                              Header="タブ（開いているスクリプト）"
+                              IsCheckable="True"
+                              Tag="open_documents"
+                              Click="OnTogglePanel"/>
+                    <MenuItem x:Name="MenuItemErrorList"
+                              Header="エラー一覧"
+                              IsCheckable="True"
+                              Tag="error_list"
+                              Click="OnTogglePanel"/>
+                </MenuItem>
             </MenuItem>
 
             <MenuItem Header="デバッグ">

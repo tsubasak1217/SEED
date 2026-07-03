@@ -6,6 +6,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Documents;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
@@ -57,6 +58,8 @@ public class ScriptEditorPanel : UserControl
     private static readonly SolidColorBrush BrushBorder    = new(Color.FromRgb(0x3F, 0x3F, 0x46));
     private static readonly SolidColorBrush BrushDim       = new(Color.FromRgb(0x88, 0x88, 0x88));
     private static readonly SolidColorBrush BrushAccent    = new(Color.FromRgb(0x55, 0xAA, 0xFF));
+    private static readonly SolidColorBrush BrushError     = new(Color.FromRgb(0xF4, 0x47, 0x47)); // エラーアイコン=赤
+    private static readonly SolidColorBrush BrushWarning   = new(Color.FromRgb(0xD7, 0xBA, 0x36)); // 警告アイコン=黄
 
     /// <summary>開いているドキュメント 1 件の状態。</summary>
     private sealed class DocTab
@@ -90,6 +93,11 @@ public class ScriptEditorPanel : UserControl
 
     /// <summary>左下ステータスバーのエラー/警告カウント表示（常時表示）。</summary>
     private TextBlock _statusCounts = null!;
+    // ステータスバー内の色分け Run（アイコン=赤/黄・カウント=白）
+    private Run _statusErrIcon   = null!;
+    private Run _statusErrCount  = null!;
+    private Run _statusWarnIcon  = null!;
+    private Run _statusWarnCount = null!;
 
     /// <summary>スクリプト全体の意味解析ワークスペース（IntelliSense / F12 用）。遅延生成。</summary>
     private ScriptWorkspace? _workspace;
@@ -251,13 +259,21 @@ public class ScriptEditorPanel : UserControl
             HorizontalAlignment = HorizontalAlignment.Stretch,
             ToolTip         = "クリックでエラー一覧を開く",
         };
+        // アイコン(色付き) と カウント(白) を Run で分けて色を独立させる。
+        //   エラーアイコン(⊘)=赤 / 警告アイコン(△)=黄 / 各カウント=白
+        _statusErrIcon   = new Run("⊘ ")  { Foreground = BrushError };
+        _statusErrCount  = new Run("0")   { Foreground = BrushText };
+        _statusWarnIcon  = new Run("   △ ") { Foreground = BrushWarning };
+        _statusWarnCount = new Run("0")   { Foreground = BrushText };
         _statusCounts = new TextBlock
         {
-            Text = "⊘ 0   △ 0",
-            Foreground = BrushText,
             FontSize = 11,
             HorizontalAlignment = HorizontalAlignment.Left,
         };
+        _statusCounts.Inlines.Add(_statusErrIcon);
+        _statusCounts.Inlines.Add(_statusErrCount);
+        _statusCounts.Inlines.Add(_statusWarnIcon);
+        _statusCounts.Inlines.Add(_statusWarnCount);
         bar.Child = _statusCounts;
         bar.MouseLeftButtonUp += (_, _) => ShowErrorListRequested?.Invoke();
         return bar;
@@ -268,12 +284,9 @@ public class ScriptEditorPanel : UserControl
     {
         int errors   = _docs.Sum(d => d.Diagnostics.Count(x => x.IsError));
         int warnings = _docs.Sum(d => d.Diagnostics.Count(x => !x.IsError));
-        _statusCounts.Text = $"⊘ {errors}   △ {warnings}";
-        _statusCounts.Foreground = errors > 0
-            ? new SolidColorBrush(Color.FromRgb(0xF4, 0x47, 0x47))
-            : warnings > 0
-                ? new SolidColorBrush(Color.FromRgb(0xD7, 0xBA, 0x36))
-                : BrushText;
+        // アイコン色は固定（赤/黄）、カウントは常に白のまま件数のみ更新する
+        _statusErrCount.Text  = errors.ToString();
+        _statusWarnCount.Text = warnings.ToString();
     }
 
     /// <summary>診断変化を各所へ通知する（左下カウント + エラー一覧パネル）。</summary>
