@@ -74,8 +74,16 @@ unsafe impl Sync for ScriptingHost {}
 
 impl ScriptingHost {
     /// DLL パスから CLR を初期化して ScriptingHost を構築する。
+    ///
+    /// ビルド出力の DLL を直接ロードするとプロセス実行中ずっとファイルが
+    /// ロックされ、エディタ/VS からの再ビルドが「別プロセスが使用中」で
+    /// 失敗する。これを避けるため、DLL 一式をプロセス専用のテンポラリ
+    /// ディレクトリへシャドウコピーし、そのコピーをロードする。
+    /// これによりビルド出力側は一切ロックされず、実行中でも再ビルドできる。
     pub fn load(dll_path: &Path) -> Result<Arc<Self>, Box<dyn std::error::Error>> {
-        let config_path = dll_path.with_extension("runtimeconfig.json");
+        // シャドウコピー（失敗時は元のパスにフォールバック）
+        let load_dll = Self::shadow_copy(dll_path).unwrap_or_else(|_| dll_path.to_path_buf());
+        let config_path = load_dll.with_extension("runtimeconfig.json");
 
         let hostfxr = nethost::load_hostfxr()?;
         let context = hostfxr.initialize_for_runtime_config(
@@ -83,7 +91,7 @@ impl ScriptingHost {
         )?;
 
         let loader = context.get_delegate_loader_for_assembly(
-            PdCString::from_os_str(dll_path.as_os_str())?,
+            PdCString::from_os_str(load_dll.as_os_str())?,
         )?;
 
         macro_rules! get_fn {
@@ -109,6 +117,42 @@ impl ScriptingHost {
             compile_fn:        get_fn!(fn(*const u8, i32) -> i32,              pdcstr!("CompileScripts")),
             set_field_fn:      get_fn!(fn(isize, *const u8, i32, *const u8, i32), pdcstr!("SetFieldValue")),
         }))
+    }
+
+    /// DLL とその関連ファイル一式を、プロセス専用のテンポラリディレクトリへ
+    /// コピーし、コピー後の DLL パスを返す。
+    ///
+    /// ビルド出力ディレクトリをロックしないためのシャドウコピー。
+    /// hostfxr は runtimeconfig.json / deps.json / 依存 DLL を DLL と同じ
+    /// フォルダから解決するため、ディレクトリ内の全ファイルをコピーする。
+    fn shadow_copy(dll_path: &Path) -> std::io::Result<PathBuf> {
+        use std::fs;
+
+        let src_dir = dll_path.parent().ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::NotFound, "DLL の親ディレクトリが取得できません")
+        })?;
+        let file_name = dll_path.file_name().ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::NotFound, "DLL ファイル名が取得できません")
+        })?;
+
+        // プロセス ID 単位のシャドウディレクトリ（多重起動でも衝突しない）
+        let shadow_dir = std::env::temp_dir()
+            .join("SEED_scripting_shadow")
+            .join(std::process::id().to_string());
+
+        // 既存の残骸を掃除してから作り直す
+        let _ = fs::remove_dir_all(&shadow_dir);
+        fs::create_dir_all(&shadow_dir)?;
+
+        // ソースディレクトリ直下の全ファイルをコピーする
+        for entry in fs::read_dir(src_dir)? {
+            let entry = entry?;
+            if !entry.file_type()?.is_file() { continue; }
+            let dst = shadow_dir.join(entry.file_name());
+            fs::copy(entry.path(), dst)?;
+        }
+
+        Ok(shadow_dir.join(file_name))
     }
 
     /// アセットルート配下の全 .cs スクリプトを CLR 側でコンパイル（再コンパイル）する。
