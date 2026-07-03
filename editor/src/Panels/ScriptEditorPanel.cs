@@ -941,19 +941,21 @@ public class ScriptEditorPanel : UserControl
 
         var editor   = doc.Editor;
         int position = editor.CaretOffset;
-        var list = await RoslynCompletion.GetCompletionsAsync(document, position);
-        if (list is null || list.ItemsList.Count == 0) return;
 
-        // 入力済みの識別子（キャレット直前の英数字列）を置換対象・フィルタ語にする。
-        // これにより AvalonEdit が「入力済み文字で始まる候補」に絞り込む。
+        // 入力済みの識別子（キャレット直前の英数字列）を置換対象・フィルタ語にする
         var text = editor.Text;
         int wordStart = position;
         while (wordStart > 0 && IsIdentChar(text[wordStart - 1])) wordStart--;
         string prefix = text.Substring(wordStart, position - wordStart);
 
-        // プレフィックスがあるのに一致候補が無ければ、そもそも表示しない
-        if (prefix.Length > 0 &&
-            !list.ItemsList.Any(i => FilterOf(i).StartsWith(prefix, StringComparison.OrdinalIgnoreCase)))
+        // 自作補完: スコープ内の実シンボル（変数・型・メソッド等）を取得する
+        var entries = await CustomCompletion.GetEntriesAsync(document, position, prefix.Length);
+
+        // キャレットが解析中に動いていたら破棄する
+        if (editor.CaretOffset != position) return;
+
+        // 予測できる候補が無ければ表示しない
+        if (entries.Count == 0)
         {
             _completionWindow?.Close();
             return;
@@ -971,11 +973,11 @@ public class ScriptEditorPanel : UserControl
             StartOffset               = wordStart,
             EndOffset                 = position,
         };
-        // 入力済み文字による絞り込みを有効化する（既定 true だが明示する）
+        // 入力済み文字による絞り込みを有効化する（追加入力・削除に追従）
         window.CompletionList.IsFiltering = true;
 
-        foreach (var item in list.ItemsList)
-            window.CompletionList.CompletionData.Add(new RoslynCompletionData(item));
+        foreach (var entry in entries)
+            window.CompletionList.CompletionData.Add(new SymbolCompletionData(entry));
 
         // 入力済みプレフィックスで初期フィルタ・最良候補を選択する
         if (prefix.Length > 0)
@@ -985,10 +987,6 @@ public class ScriptEditorPanel : UserControl
         window.Show();
         _completionWindow = window;
     }
-
-    /// <summary>補完候補のフィルタ用文字列（FilterText 優先）。</summary>
-    private static string FilterOf(Microsoft.CodeAnalysis.Completion.CompletionItem item)
-        => string.IsNullOrEmpty(item.FilterText) ? item.DisplayText : item.FilterText;
 
     /// <summary>F12: キャレット位置のシンボル定義へジャンプする（ファイルまたぎ対応）。</summary>
     private async Task GoToDefinitionAsync(DocTab doc)
