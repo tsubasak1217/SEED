@@ -1,4 +1,4 @@
-namespace SEED.Scripting;
+namespace SEEDEditor.Scripting;
 
 /// <summary>
 /// スクリプトコンポーネントが実装するインターフェース。

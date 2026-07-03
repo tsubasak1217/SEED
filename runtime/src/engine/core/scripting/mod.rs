@@ -89,7 +89,7 @@ impl ScriptingHost {
         macro_rules! get_fn {
             ($ty:ty, $method:expr) => {{
                 *loader.get_function_with_unmanaged_callers_only::<$ty>(
-                    pdcstr!("SEED.Scripting.ScriptBridge, SEEDScripting"),
+                    pdcstr!("SEEDEditor.Scripting.ScriptBridge, SEEDScripting"),
                     $method,
                 )?
             }};

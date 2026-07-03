@@ -5,14 +5,14 @@ using System.Linq;
 using System.Reflection;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
-using SEED.Scripting;
+using SEEDEditor.Scripting;
 
 namespace SEEDEditor.Scripting;
 
 /// <summary>
 /// エディタ内でのスクリプトコンパイル（インスペクタ表示・保存時の検証用）。
 ///
-/// ユーザースクリプトはランタイム側と同じ SEED.Scripting.ScriptComponent を
+/// ユーザースクリプトはランタイム側と同じ SEEDEditor.Scripting.SEEDScript を
 /// 継承する。エディタは SEEDScripting.dll を参照してコンパイルするため、
 /// ランタイム（CLR ホスト側の Roslyn コンパイル）と同一の型体系で検証できる。
 /// </summary>
@@ -23,7 +23,7 @@ public static class ScriptCompiler
     private static List<MetadataReference> BuildRefs()
     {
         // SEEDScripting.dll のロードを強制する（参照アセンブリは遅延ロードのため）
-        _ = typeof(ScriptComponent).Assembly;
+        _ = typeof(SEEDScript).Assembly;
 
         return AppDomain.CurrentDomain.GetAssemblies()
             .Where(a => !a.IsDynamic && File.Exists(a.Location))
@@ -32,7 +32,7 @@ public static class ScriptCompiler
     }
 
     /// <summary>
-    /// 単一の .cs ファイルをコンパイルし、ScriptComponent 派生型を返す。
+    /// 単一の .cs ファイルをコンパイルし、SEEDScript 派生型を返す。
     /// エラー時は (null, エラーメッセージ一覧)。
     /// </summary>
     public static (Type? scriptType, IReadOnlyList<string> errors) CompileFile(string filePath)
@@ -60,7 +60,7 @@ public static class ScriptCompiler
             !t.IsAbstract && typeof(IScriptComponent).IsAssignableFrom(t));
         return t is not null
             ? (t, Array.Empty<string>())
-            : (null, ["ScriptComponent (SEED.Scripting) を継承したクラスがスクリプト内に見つかりません"]);
+            : (null, ["SEEDScript (SEEDEditor.Scripting) を継承したクラスがスクリプト内に見つかりません"]);
     }
 
     /// <summary>

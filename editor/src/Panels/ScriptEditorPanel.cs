@@ -14,6 +14,7 @@ using ICSharpCode.AvalonEdit;
 using ICSharpCode.AvalonEdit.CodeCompletion;
 using ICSharpCode.AvalonEdit.Highlighting;
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.Classification;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.Formatting;
 using Microsoft.CodeAnalysis.Text;
@@ -72,6 +73,7 @@ public class ScriptEditorPanel : UserControl
         public required HighlightRenderer SelectionHi;   // 選択単語の一致ハイライト
         public required HighlightRenderer SearchHi;       // 検索一致ハイライト（オレンジ）
         public required OverviewRuler     Ruler;          // 右側の概観ルーラー
+        public required SemanticColorizer Semantic;      // 型名・メソッド名などの意味的着色
         public List<ScriptDiagnostic> Diagnostics = new();
         public bool IsDirty;
     }
@@ -348,9 +350,12 @@ public class ScriptEditorPanel : UserControl
             _settings = s;
             if (_settingsDir is not null) _settings.Save(_settingsDir);
             ApplyColorsToHighlighting(_settings);
+            // セマンティック着色のブラシキャッシュを破棄し、新しい設定色で再計算する
+            _semanticBrushCache.Clear();
             foreach (var doc in _docs)
             {
                 ApplySettingsToEditor(doc.Editor);
+                _ = RunSemanticColorizeAsync(doc);
                 doc.Editor.TextArea.TextView.Redraw();
             }
         };
@@ -467,6 +472,11 @@ public class ScriptEditorPanel : UserControl
         editor.TextArea.TextView.BackgroundRenderers.Add(selectionHi);
         editor.TextArea.TextView.BackgroundRenderers.Add(searchHi);
 
+        // セマンティック着色（型名・メソッド名・フィールド名など）。
+        // 正規表現ハイライトの後に適用したいので LineTransformers の末尾に追加する。
+        var semantic = new SemanticColorizer();
+        editor.TextArea.TextView.LineTransformers.Add(semantic);
+
         // 右側の概観ルーラー（マーククリックでジャンプ）
         var ruler = new OverviewRuler(editor);
 
@@ -492,6 +502,7 @@ public class ScriptEditorPanel : UserControl
             SelectionHi = selectionHi,
             SearchHi    = searchHi,
             Ruler       = ruler,
+            Semantic    = semantic,
         };
 
         // 編集のたびにダーティ化し、ワークスペースへ反映し、診断を予約する
@@ -511,6 +522,7 @@ public class ScriptEditorPanel : UserControl
         {
             diagTimer.Stop();
             _ = RunDiagnosticsAsync(doc);
+            _ = RunSemanticColorizeAsync(doc);
         };
 
         // マーカーにホバーしたら診断メッセージをツールチップ表示し、外れたら閉じる
@@ -539,8 +551,9 @@ public class ScriptEditorPanel : UserControl
         // 初期状態を現在のフォーカス状態に合わせる（フォーカスが移るまで読み取り専用）
         UpdateEditability();
         ActivateDoc(doc);
-        // 初回の診断を実行する
+        // 初回の診断・セマンティック着色を実行する
         _ = RunDiagnosticsAsync(doc);
+        _ = RunSemanticColorizeAsync(doc);
     }
 
     /// <summary>現在アクティブなドキュメントを保存する。</summary>
@@ -556,10 +569,18 @@ public class ScriptEditorPanel : UserControl
 
     // Roslyn の参照アセンブリはコンパイルごとに再取得すると重いためキャッシュする
     private static readonly Lazy<List<MetadataReference>> _diagRefs = new(() =>
-        AppDomain.CurrentDomain.GetAssemblies()
+    {
+        // SEEDScripting.dll（SEEDScript 基底クラス・SerializeField 属性を含む）の
+        // ロードを強制する。参照アセンブリは遅延ロードのため、これを行わないと
+        // 診断コンパイル時に SEEDScript / SerializeField が「型が見つからない」と
+        // 誤判定されてしまう。
+        _ = typeof(global::SEEDEditor.Scripting.SEEDScript).Assembly;
+
+        return AppDomain.CurrentDomain.GetAssemblies()
             .Where(a => !a.IsDynamic && !string.IsNullOrEmpty(a.Location) && File.Exists(a.Location))
             .Select(a => (MetadataReference)MetadataReference.CreateFromFile(a.Location))
-            .ToList());
+            .ToList();
+    });
 
     /// <summary>
     /// エディタのテキストを Roslyn で解析し、エラー・警告の波線を更新する。
@@ -620,6 +641,89 @@ public class ScriptEditorPanel : UserControl
         // 概観ルーラーのエラー/警告マークと、左下カウント・エラー一覧パネルを更新する
         RefreshRuler(doc);
         NotifyDiagnosticsChanged();
+    }
+
+    // ── セマンティック着色（型名・メソッド名・フィールド名など）─────
+
+    // Roslyn 分類種別 → 既定色（VS ダークテーマ準拠）。
+    // 正規表現ハイライトでは識別できない「識別子系」トークンのみを対象にする
+    // （キーワード・文字列・コメントは標準ハイライトに委ねる）。
+    private static readonly Dictionary<string, Color> _semanticDefaults = new()
+    {
+        ["class name"]            = Color.FromRgb(0x4E, 0xC9, 0xB0), // 型名=ティール
+        ["record class name"]     = Color.FromRgb(0x4E, 0xC9, 0xB0),
+        ["delegate name"]         = Color.FromRgb(0x4E, 0xC9, 0xB0),
+        ["struct name"]           = Color.FromRgb(0x86, 0xC6, 0x91), // 構造体=緑系
+        ["record struct name"]    = Color.FromRgb(0x86, 0xC6, 0x91),
+        ["enum name"]             = Color.FromRgb(0xB8, 0xD7, 0xA3),
+        ["interface name"]        = Color.FromRgb(0xB8, 0xD7, 0xA3),
+        ["type parameter name"]   = Color.FromRgb(0x4E, 0xC9, 0xB0),
+        ["method name"]           = Color.FromRgb(0xDC, 0xDC, 0xAA), // メソッド=薄黄
+        ["extension method name"] = Color.FromRgb(0xDC, 0xDC, 0xAA),
+        ["field name"]            = Color.FromRgb(0x9C, 0xDC, 0xFE), // フィールド=水色
+        ["constant name"]         = Color.FromRgb(0x9C, 0xDC, 0xFE),
+        ["enum member name"]      = Color.FromRgb(0x9C, 0xDC, 0xFE),
+        ["local name"]            = Color.FromRgb(0x9C, 0xDC, 0xFE),
+        ["parameter name"]        = Color.FromRgb(0x9C, 0xDC, 0xFE),
+    };
+
+    // 分類種別 → ブラシのキャッシュ（設定色を反映済み）。設定変更時にクリアされる。
+    private readonly Dictionary<string, Brush> _semanticBrushCache = new();
+
+    /// <summary>分類種別に対応するブラシを返す（対象外なら null）。設定色があれば優先する。</summary>
+    private Brush? SemanticBrush(string classification)
+    {
+        if (_semanticBrushCache.TryGetValue(classification, out var cached)) return cached;
+        if (!_semanticDefaults.TryGetValue(classification, out var def)) return null;
+
+        // 設定に同名キーがあれば上書き（データドリブンに配色を差し替え可能）
+        var color = def;
+        if (_settings is not null && _settings.Colors.TryGetValue(classification, out var hex))
+        {
+            try { color = (Color)ColorConverter.ConvertFromString(hex); } catch { /* 無効値は既定 */ }
+        }
+        var brush = new SolidColorBrush(color);
+        brush.Freeze();
+        _semanticBrushCache[classification] = brush;
+        return brush;
+    }
+
+    /// <summary>
+    /// Roslyn のセマンティック分類を計算し、型名・メソッド名などを着色する。
+    /// ワークスペース（意味解析）が無いファイルでは何もしない。
+    /// </summary>
+    private async Task RunSemanticColorizeAsync(DocTab doc)
+    {
+        if (_workspace is null) return;
+        var document = _workspace.GetDocument(doc.FilePath);
+        if (document is null) return;
+
+        var source = doc.Editor.Text;
+        List<SemanticColorizer.Span>? spans = null;
+        try
+        {
+            var text = await document.GetTextAsync();
+            var classified = await Classifier.GetClassifiedSpansAsync(
+                document, new TextSpan(0, text.Length));
+
+            spans = new List<SemanticColorizer.Span>();
+            foreach (var cs in classified)
+            {
+                var brush = SemanticBrush(cs.ClassificationType);
+                if (brush is null) continue;
+                spans.Add(new SemanticColorizer.Span(cs.TextSpan.Start, cs.TextSpan.Length, brush));
+            }
+        }
+        catch
+        {
+            return; // 解析途中の不整合などは無視（次回更新で再計算）
+        }
+
+        // テキストが解析後に変わっていたら破棄する
+        if (doc.Editor.Text != source) return;
+
+        doc.Semantic.SetSpans(spans);
+        doc.Editor.TextArea.TextView.Redraw();
     }
 
     // ── 診断ツールチップ（ホバー表示、外れたら閉じる）─────────

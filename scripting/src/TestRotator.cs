@@ -1,13 +1,13 @@
 using System;
 
-namespace SEED.Scripting;
+namespace SEEDEditor.Scripting;
 
 /// <summary>
 /// スクリプティングシステムの動作確認用サンプル。
 /// interval 秒ごとに経過時間をコンソールに出力する。
 /// [SerializeField] の動作確認も兼ねる（インスペクタから interval を変更できる）。
 /// </summary>
-public class TestRotator : ScriptComponent
+public class TestRotator : SEEDScript
 {
     /// <summary>ログ出力間隔（秒）。エディタのインスペクタから編集できる。</summary>
     [SerializeField(Label = "出力間隔(秒)", Tooltip = "ログを出力する間隔")]

@@ -1,10 +1,10 @@
-namespace SEED.Scripting;
+namespace SEEDEditor.Scripting;
 
 /// <summary>
 /// ユーザースクリプトの基底クラス。
 /// 必要なライフサイクルメソッドだけオーバーライドする。
 /// </summary>
-public abstract class ScriptComponent : IScriptComponent
+public abstract class SEEDScript : IScriptComponent
 {
     public virtual void BeginFrame(ref NativeFrameContext ctx)    {}
     public virtual void EarlyUpdate(ref NativeFrameContext ctx)   {}

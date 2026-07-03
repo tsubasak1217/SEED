@@ -1,6 +1,6 @@
 using System.Runtime.InteropServices;
 
-namespace SEED.Scripting;
+namespace SEEDEditor.Scripting;
 
 /// <summary>
 /// Rust 側の FrameContext と同じメモリレイアウト（#[repr(C)]）。

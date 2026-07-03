@@ -1,6 +1,6 @@
 using System;
 
-namespace SEED.Scripting;
+namespace SEEDEditor.Scripting;
 
 /// <summary>
 /// スクリプトのフィールドをエディタのインスペクタに公開するための属性。

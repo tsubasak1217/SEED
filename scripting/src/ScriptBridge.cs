@@ -4,7 +4,7 @@ using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text;
 
-namespace SEED.Scripting;
+namespace SEEDEditor.Scripting;
 
 /// <summary>
 /// Rust から呼ばれるアンマネージドエントリポイント群。
@@ -17,7 +17,7 @@ public static unsafe class ScriptBridge
 
     /// <summary>
     /// 型名（UTF-8）でスクリプトコンポーネントを生成し GCHandle を返す。
-    /// 型名例: "SEED.Scripting.MyScript" または単純に "MyScript"
+    /// 型名例: "SEEDEditor.Scripting.MyScript" または単純に "MyScript"
     /// </summary>
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
     public static nint CreateComponent(byte* typeNamePtr, int typeNameLen)

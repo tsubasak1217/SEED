@@ -91,14 +91,14 @@ public partial class CreateItemWindow : Window
         }
 
         var className = Path.GetFileNameWithoutExtension(path);
-        // ランタイム（SEEDScripting.dll）の ScriptComponent を継承するテンプレート。
+        // ランタイム（SEEDScripting.dll）の SEEDScript を継承するテンプレート。
         // 必要なライフサイクルメソッドだけ override して使う。
         var template  = $$"""
             using System;
-            using SEED.Scripting;
+            using SEEDEditor.Scripting;
 
             /// <summary>{{className}} スクリプト。</summary>
-            public class {{className}} : ScriptComponent
+            public class {{className}} : SEEDScript
             {
                 // インスペクタに公開するフィールドは [SerializeField] を付ける
                 // [SerializeField(Label = "速度")]
