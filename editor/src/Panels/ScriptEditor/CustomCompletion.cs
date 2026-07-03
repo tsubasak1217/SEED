@@ -29,6 +29,9 @@ public static class CustomCompletion
     /// <summary>補完候補 1 件（表示・挿入用）。</summary>
     public sealed record Entry(string Name, SymbolKind Kind, int Rank, string Detail, bool InSource);
 
+    /// <summary>"." メンバーアクセスの対象（型と静的/インスタンスの別）。</summary>
+    private readonly record struct MemberAccess(ITypeSymbol Type, bool IsStatic);
+
     /// <summary>
     /// 指定位置・入力済みプレフィックスに対する補完候補を取得する。
     /// prefixLen は position 直前の識別子の長さ（"." 判定に使う）。
@@ -45,20 +48,38 @@ public static class CustomCompletion
                 ? (await document.GetTextAsync()).ToString(new Microsoft.CodeAnalysis.Text.TextSpan(position - prefixLen, prefixLen))
                 : "";
 
+            var access  = ResolveMemberAccess(model, root, position, prefixLen);
+            // 属性コンテキスト（メンバーアクセスでないときのみ判定）
+            bool inAttr = access is null && IsAttributeContext(root, position, prefixLen);
+
             // "." メンバーアクセスなら対象式の型のメンバーだけを列挙する
-            ImmutableArray<ISymbol> symbols;
-            var container = ResolveMemberAccessType(model, root, position, prefixLen);
-            symbols = container is not null
-                ? model.LookupSymbols(position, container: container)
+            ImmutableArray<ISymbol> symbols = access is { } acc
+                ? model.LookupSymbols(position, container: acc.Type)
                 : model.LookupSymbols(position);
 
-            // 名前で参照できる有用なシンボルのみ、名前で集約（オーバーロードを 1 件に）
-            var entries = symbols
+            IEnumerable<ISymbol> query = symbols
                 .Where(s => s.CanBeReferencedByName && !string.IsNullOrEmpty(s.Name))
-                .Where(IsUsefulKind)
-                .Where(s => Matches(s.Name, prefix))
+                .Where(IsUsefulKind);
+
+            if (access is { } m)
+            {
+                // 静的アクセスは静的メンバー＋入れ子型、インスタンスアクセスは非静的のみ。
+                // さらに System.Object 由来のメンバー（Equals/ToString 等）はノイズなので除外する。
+                query = query
+                    .Where(s => m.IsStatic ? (s.IsStatic || s.Kind == SymbolKind.NamedType) : !s.IsStatic)
+                    .Where(s => s.ContainingType?.SpecialType != SpecialType.System_Object);
+            }
+            else if (inAttr)
+            {
+                // 属性コンテキストでは属性型と名前空間のみに絞る（BCL 全型のノイズを排除）
+                query = query.Where(s => s is INamespaceSymbol
+                                      || (s is INamedTypeSymbol nt && IsAttributeType(nt)));
+            }
+
+            var entries = query
                 .GroupBy(s => s.Name, StringComparer.Ordinal)
-                .Select(g => ToEntry(g.First()))
+                .Select(g => ToEntry(g.First(), inAttr))
+                .Where(e => Matches(e.Name, prefix))   // 接尾辞除去後の名前で照合する
                 .OrderBy(e => e.Rank)
                 .ThenByDescending(e => StartsWithCI(e.Name, prefix))
                 .ThenBy(e => e.Name, StringComparer.OrdinalIgnoreCase)
@@ -73,8 +94,8 @@ public static class CustomCompletion
         }
     }
 
-    /// <summary>"." の直後なら、その対象式の型を返す（メンバー補完用）。そうでなければ null。</summary>
-    private static ITypeSymbol? ResolveMemberAccessType(SemanticModel model, SyntaxNode root, int position, int prefixLen)
+    /// <summary>"." の直後なら、その対象式の型と静的/インスタンスの別を返す。そうでなければ null。</summary>
+    private static MemberAccess? ResolveMemberAccess(SemanticModel model, SyntaxNode root, int position, int prefixLen)
     {
         int dotPos = position - prefixLen - 1;
         if (dotPos < 0) return null;
@@ -84,11 +105,30 @@ public static class CustomCompletion
 
         if (token.Parent is MemberAccessExpressionSyntax ma)
         {
-            // 式が型名（静的アクセス）ならその型自身、そうでなければ式の型
-            if (model.GetSymbolInfo(ma.Expression).Symbol is ITypeSymbol typeSym) return typeSym;
-            return model.GetTypeInfo(ma.Expression).Type;
+            // 式が型名（静的アクセス）ならその型自身、そうでなければ式の型（インスタンス）
+            if (model.GetSymbolInfo(ma.Expression).Symbol is ITypeSymbol typeSym)
+                return new MemberAccess(typeSym, IsStatic: true);
+            var t = model.GetTypeInfo(ma.Expression).Type;
+            return t is null ? null : new MemberAccess(t, IsStatic: false);
         }
         return null;
+    }
+
+    /// <summary>指定位置が属性リスト [ ... ] の中（属性名の入力位置）かどうか。</summary>
+    private static bool IsAttributeContext(SyntaxNode root, int position, int prefixLen)
+    {
+        int p = Math.Max(0, position - prefixLen - 1);
+        var token = root.FindToken(p);
+        return token.Parent?.AncestorsAndSelf().OfType<AttributeSyntax>().Any() ?? false;
+    }
+
+    /// <summary>System.Attribute を継承する属性型かどうか。</summary>
+    private static bool IsAttributeType(INamedTypeSymbol type)
+    {
+        for (var b = type; b is not null; b = b.BaseType)
+            if (b.Name == "Attribute" && b.ContainingNamespace?.Name == "System")
+                return true;
+        return false;
     }
 
     /// <summary>補完に出す価値のあるシンボル種別か。</summary>
@@ -124,17 +164,28 @@ public static class CustomCompletion
         return i == prefix.Length;
     }
 
-    /// <summary>シンボルを表示用 Entry に変換する（種別でランク付け）。</summary>
-    private static Entry ToEntry(ISymbol s)
+    /// <summary>
+    /// シンボルを表示用 Entry に変換する（種別でランク付け）。
+    /// 属性コンテキストでは属性型を最優先し、"Attribute" 接尾辞を除去して表示する。
+    /// </summary>
+    private static Entry ToEntry(ISymbol s, bool inAttr)
     {
         bool inSource = s.Locations.Any(l => l.IsInSource);
+
+        // 属性コンテキストの属性型: 名前から "Attribute" を除去し最優先で表示する
+        if (inAttr && s is INamedTypeSymbol && s.Name.EndsWith("Attribute", StringComparison.Ordinal))
+        {
+            var stripped = s.Name[..^"Attribute".Length];
+            return new Entry(stripped, SymbolKind.NamedType, 0, "attribute", inSource);
+        }
+
         int rank = s.Kind switch
         {
             SymbolKind.Local or SymbolKind.Parameter or SymbolKind.RangeVariable => 0,
             SymbolKind.Field or SymbolKind.Property or SymbolKind.Event          => 1,
             SymbolKind.Method                                                    => 2,
             SymbolKind.NamedType                                                 => inSource ? 3 : 4,
-            SymbolKind.Namespace                                                 => 5,
+            SymbolKind.Namespace                                                 => inAttr ? 6 : 5,
             _                                                                    => 6,
         };
         return new Entry(s.Name, s.Kind, rank, BuildDetail(s), inSource);
