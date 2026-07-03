@@ -674,6 +674,12 @@
                 <MenuItem x:Name="MenuItemScriptEditor"
                           Header="スクリプトエディタ"
                           Click="OnShowScriptEditor"/>
+                <MenuItem x:Name="MenuItemOpenDocuments"
+                          Header="タブ（開いているスクリプト）"
+                          Click="OnShowOpenDocuments"/>
+                <MenuItem x:Name="MenuItemErrorList"
+                          Header="エラー一覧"
+                          Click="OnShowErrorList"/>
             </MenuItem>
 
             <MenuItem Header="デバッグ">

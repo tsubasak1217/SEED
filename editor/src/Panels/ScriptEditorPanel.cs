@@ -83,6 +83,13 @@ public class ScriptEditorPanel : UserControl
     public event Action? DocumentsChanged;
     /// <summary>診断が変化したときに発火（「エラー一覧」パネル更新用）。</summary>
     public event Action? DiagnosticsChanged;
+    /// <summary>左下アイコンのクリックで「エラー一覧」パネルの表示を要求する。</summary>
+    public event Action? ShowErrorListRequested;
+    /// <summary>ドキュメントがアクティブ表示されたときに発火（「タブ」パネルの自動表示用）。</summary>
+    public event Action? DocumentActivated;
+
+    /// <summary>左下ステータスバーのエラー/警告カウント表示（常時表示）。</summary>
+    private TextBlock _statusCounts = null!;
 
     /// <summary>スクリプト全体の意味解析ワークスペース（IntelliSense / F12 用）。遅延生成。</summary>
     private ScriptWorkspace? _workspace;
@@ -128,13 +135,16 @@ public class ScriptEditorPanel : UserControl
         body.Children.Add(_editorHost);
         body.Children.Add(_emptyHint);
 
-        var toolbar = BuildToolbar();
+        var toolbar   = BuildToolbar();
+        var statusBar = BuildStatusBar();
 
         var root = new DockPanel();
         DockPanel.SetDock(toolbar,   Dock.Top);
         DockPanel.SetDock(_findBar,  Dock.Top);
+        DockPanel.SetDock(statusBar, Dock.Bottom);
         root.Children.Add(toolbar);
         root.Children.Add(_findBar);
+        root.Children.Add(statusBar);   // 左下のエラー/警告アイコン（常時表示）
         root.Children.Add(body);        // 残り全体（最後 = フィル）
         Content = root;
 
@@ -185,6 +195,8 @@ public class ScriptEditorPanel : UserControl
         }
         UpdateEmptyHint();
         DocumentsChanged?.Invoke();
+        // ドキュメントを表示したら「タブ」パネルの自動表示を要求する
+        if (doc is not null) DocumentActivated?.Invoke();
     }
 
     // ── 「タブ」パネル / 「エラー一覧」パネル向け 公開 API ────
@@ -224,6 +236,51 @@ public class ScriptEditorPanel : UserControl
         target.Editor.CaretOffset = off;
         target.Editor.ScrollToLine(target.Editor.Document.GetLineByOffset(off).LineNumber);
         target.Editor.Focus();
+    }
+
+    /// <summary>左下ステータスバー（エラー/警告アイコン。クリックでエラー一覧を開く）を生成する。</summary>
+    private UIElement BuildStatusBar()
+    {
+        var bar = new Border
+        {
+            Background      = new SolidColorBrush(Color.FromRgb(0x25, 0x25, 0x26)),
+            BorderBrush     = BrushBorder,
+            BorderThickness = new Thickness(0, 1, 0, 0),
+            Padding         = new Thickness(8, 2, 8, 2),
+            Cursor          = Cursors.Hand,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            ToolTip         = "クリックでエラー一覧を開く",
+        };
+        _statusCounts = new TextBlock
+        {
+            Text = "⊘ 0   △ 0",
+            Foreground = BrushText,
+            FontSize = 11,
+            HorizontalAlignment = HorizontalAlignment.Left,
+        };
+        bar.Child = _statusCounts;
+        bar.MouseLeftButtonUp += (_, _) => ShowErrorListRequested?.Invoke();
+        return bar;
+    }
+
+    /// <summary>左下ステータスバーのエラー/警告カウントを更新する。</summary>
+    private void RefreshStatusCounts()
+    {
+        int errors   = _docs.Sum(d => d.Diagnostics.Count(x => x.IsError));
+        int warnings = _docs.Sum(d => d.Diagnostics.Count(x => !x.IsError));
+        _statusCounts.Text = $"⊘ {errors}   △ {warnings}";
+        _statusCounts.Foreground = errors > 0
+            ? new SolidColorBrush(Color.FromRgb(0xF4, 0x47, 0x47))
+            : warnings > 0
+                ? new SolidColorBrush(Color.FromRgb(0xD7, 0xBA, 0x36))
+                : BrushText;
+    }
+
+    /// <summary>診断変化を各所へ通知する（左下カウント + エラー一覧パネル）。</summary>
+    private void NotifyDiagnosticsChanged()
+    {
+        RefreshStatusCounts();
+        DiagnosticsChanged?.Invoke();
     }
 
     /// <summary>上部ツールバー（設定・整形ボタン）を生成する。</summary>
@@ -547,9 +604,9 @@ public class ScriptEditorPanel : UserControl
         }
         doc.Editor.TextArea.TextView.Redraw();
 
-        // 概観ルーラーのエラー/警告マークと、エラー一覧パネルを更新する
+        // 概観ルーラーのエラー/警告マークと、左下カウント・エラー一覧パネルを更新する
         RefreshRuler(doc);
-        DiagnosticsChanged?.Invoke();
+        NotifyDiagnosticsChanged();
     }
 
     // ── 診断ツールチップ（ホバー表示、外れたら閉じる）─────────
@@ -870,7 +927,7 @@ public class ScriptEditorPanel : UserControl
             ActivateDoc(_docs.Count == 0 ? null : _docs[Math.Clamp(idx, 0, _docs.Count - 1)]);
         UpdateEmptyHint();
         DocumentsChanged?.Invoke();
-        DiagnosticsChanged?.Invoke();
+        NotifyDiagnosticsChanged();
     }
 
     private void SetDirty(DocTab doc, bool dirty)

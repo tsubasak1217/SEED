@@ -296,6 +296,10 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         // 「タブ」「エラー一覧」パネルを生成してスクリプトエディタに接続する
         _openDocsPanel  = new OpenDocumentsPanel(PanelScriptEditor);
         _errorListPanel = new ErrorListPanel(PanelScriptEditor);
+        // 左下アイコンのクリックでエラー一覧を前面表示する
+        PanelScriptEditor.ShowErrorListRequested += () => ShowAnchorable("error_list");
+        // スクリプトを表示したら「タブ」パネルを自動で前面表示する（フォーカスは奪わない）
+        PanelScriptEditor.DocumentActivated += () => ShowAnchorable("open_documents", activate: false);
         // スクリプトエディタ: インスペクタの「スクリプトを編集」ボタンからも開ける
         PanelInspector.ScriptFileOpenRequested += OnScriptFileOpened;
         // 保存時: インスペクタの型キャッシュを無効化し、runtime にホットリロードを要求する
@@ -677,6 +681,32 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
     {
         EnsureScriptEditorDocument();
         FocusScriptEditorDocument();
+    }
+
+    /// <summary>「表示」メニュー: 「タブ」（開いているスクリプト一覧）パネルを前面に表示する。</summary>
+    private void OnShowOpenDocuments(object sender, RoutedEventArgs e) => ShowAnchorable("open_documents");
+
+    /// <summary>「表示」メニュー: 「エラー一覧」パネルを前面に表示する。</summary>
+    private void OnShowErrorList(object sender, RoutedEventArgs e) => ShowAnchorable("error_list");
+
+    /// <summary>
+    /// 指定 ContentId のアンカーパネルを表示する。
+    /// activate=true でフォーカスも移す（メニュー選択時）。
+    /// activate=false は表示・選択のみでフォーカスは移さない（自動表示時）。
+    /// </summary>
+    private void ShowAnchorable(string contentId, bool activate = true)
+    {
+        EnsureScriptSidePanels();
+        var anchorable = DockManager.Layout.Descendents()
+            .OfType<LayoutAnchorable>()
+            .FirstOrDefault(a => a.ContentId == contentId);
+        if (anchorable is null) return;
+
+        // 自動非表示・非表示状態なら表示する
+        if (anchorable.IsHidden) anchorable.Show();
+        if (anchorable.IsAutoHidden) anchorable.ToggleAutoHide();
+        anchorable.IsSelected = true;
+        if (activate) anchorable.IsActive = true;
     }
 
     /// <summary>
