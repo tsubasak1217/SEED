@@ -220,6 +220,10 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
     private RuntimeManager?        _runtimeManager;
     /// <summary>AI アシスタントパネルのビルド済み UI 要素（LoadLayout でコンテンツを復元するために保持）</summary>
     private UIElement?             _aiPanelUi;
+    /// <summary>「タブ」パネル（スクリプトで開いているファイル一覧）。LoadLayout で復元。</summary>
+    private OpenDocumentsPanel?    _openDocsPanel;
+    /// <summary>「エラー一覧」パネル。LoadLayout で復元。</summary>
+    private ErrorListPanel?        _errorListPanel;
 
     public MainWindow()
     {
@@ -289,6 +293,9 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         PanelScriptEditor.SetAssetsPath(AssetsPath);
         // スクリプトエディタ: 書式・配色設定を読み込む
         PanelScriptEditor.InitSettings(SettingsDir);
+        // 「タブ」「エラー一覧」パネルを生成してスクリプトエディタに接続する
+        _openDocsPanel  = new OpenDocumentsPanel(PanelScriptEditor);
+        _errorListPanel = new ErrorListPanel(PanelScriptEditor);
         // スクリプトエディタ: インスペクタの「スクリプトを編集」ボタンからも開ける
         PanelInspector.ScriptFileOpenRequested += OnScriptFileOpened;
         // 保存時: インスペクタの型キャッシュを無効化し、runtime にホットリロードを要求する
@@ -318,6 +325,11 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         hwndSource?.AddHook(WndProc);
 
         LoadLayout();
+
+        // layout.xml が無いフレッシュ起動では LoadLayout 内の補填が走らないため、
+        // XAML 既定レイアウトのパネルにもコンテンツを確実に割り当てる。
+        EnsureScriptEditorDocument();
+        EnsureScriptSidePanels();
 
         EditorLog.Write("OnWindowLoaded — ViewportHost assigned, waiting for ContainerCreated");
     }
@@ -553,18 +565,21 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
                     "project"       => PanelProject,
                     "inspector"     => PanelInspector,
                     "viewport"      => ViewportGrid,
-                    "output"        => PanelOutput,
-                    "ai_assistant"  => _aiPanelUi,
-                    "script_editor" => PanelScriptEditor,
-                    _               => null,
+                    "output"         => PanelOutput,
+                    "ai_assistant"   => _aiPanelUi,
+                    "script_editor"  => PanelScriptEditor,
+                    "open_documents" => _openDocsPanel,
+                    "error_list"     => _errorListPanel,
+                    _                => null,
                 };
             };
             using var reader = new StreamReader(path);
             serializer.Deserialize(reader);
 
-            // 旧バージョンの layout.xml には script_editor タブが含まれていないため、
-            // デシリアライズ後に存在しなければ Viewport と同じドキュメントペインに追加する。
+            // 旧バージョンの layout.xml には新パネルが含まれていないため、
+            // デシリアライズ後に存在しなければ追加する。
             EnsureScriptEditorDocument();
+            EnsureScriptSidePanels();
 
             EditorLog.Write($"レイアウトを読み込みました: {path}");
         }
@@ -587,10 +602,15 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
     /// </summary>
     private void EnsureScriptEditorDocument()
     {
-        var exists = DockManager.Layout.Descendents()
+        var existing = DockManager.Layout.Descendents()
             .OfType<LayoutDocument>()
-            .Any(d => d.ContentId == "script_editor");
-        if (exists) return;
+            .FirstOrDefault(d => d.ContentId == "script_editor");
+        if (existing is not null)
+        {
+            // XAML 既定レイアウト（layout.xml 無し）ではコンテンツが未設定なので補填する
+            existing.Content ??= PanelScriptEditor;
+            return;
+        }
 
         var pane = DockManager.Layout.Descendents()
             .OfType<LayoutDocumentPane>()
@@ -603,6 +623,44 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
             ContentId = "script_editor",
             CanClose  = false,
             Content   = PanelScriptEditor,
+        });
+    }
+
+    /// <summary>
+    /// 「タブ」「エラー一覧」アンカーパネルがレイアウトに存在することを保証する。
+    /// 旧 layout.xml にこれらが無い場合、最初のアンカーペインへ追加する。
+    /// </summary>
+    private void EnsureScriptSidePanels()
+    {
+        EnsureAnchorable("open_documents", "タブ", _openDocsPanel);
+        EnsureAnchorable("error_list",     "エラー一覧", _errorListPanel);
+    }
+
+    private void EnsureAnchorable(string contentId, string title, object? content)
+    {
+        if (content is null) return;
+        var existing = DockManager.Layout.Descendents()
+            .OfType<LayoutAnchorable>()
+            .FirstOrDefault(a => a.ContentId == contentId);
+        if (existing is not null)
+        {
+            // XAML 既定レイアウトではコンテンツが未設定なので補填する
+            existing.Content ??= content;
+            return;
+        }
+
+        var pane = DockManager.Layout.Descendents()
+            .OfType<LayoutAnchorablePane>()
+            .FirstOrDefault();
+        if (pane is null) return;
+
+        pane.Children.Add(new LayoutAnchorable
+        {
+            Title     = title,
+            ContentId = contentId,
+            CanClose  = false,
+            CanHide   = false,
+            Content   = content,
         });
     }
 

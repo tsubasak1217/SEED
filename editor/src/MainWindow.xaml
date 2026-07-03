@@ -794,7 +794,7 @@
             <avd:LayoutRoot>
                 <avd:LayoutPanel Orientation="Horizontal">
 
-                    <!-- 左パネル: Hierarchy -->
+                    <!-- 左パネル: Hierarchy + 開いているタブ一覧 -->
                     <avd:LayoutAnchorablePane DockWidth="220" DockMinWidth="120">
                         <avd:LayoutAnchorable Title="Hierarchy"
                                               ContentId="hierarchy"
@@ -802,6 +802,13 @@
                                               CanHide="False"
                                               CanFloat="True">
                             <panels:HierarchyPanel x:Name="PanelHierarchy"/>
+                        </avd:LayoutAnchorable>
+                        <avd:LayoutAnchorable Title="タブ"
+                                              ContentId="open_documents"
+                                              CanClose="False"
+                                              CanHide="False"
+                                              CanFloat="True">
+                            <!-- コンテンツは LoadLayout の LayoutSerializationCallback で設定される -->
                         </avd:LayoutAnchorable>
                     </avd:LayoutAnchorablePane>
 
@@ -1336,6 +1343,13 @@
                                                   CanHide="False"
                                                   CanFloat="True">
                                 <panels:OutputPanel x:Name="PanelOutput"/>
+                            </avd:LayoutAnchorable>
+                            <avd:LayoutAnchorable Title="エラー一覧"
+                                                  ContentId="error_list"
+                                                  CanClose="False"
+                                                  CanHide="False"
+                                                  CanFloat="True">
+                                <!-- コンテンツは LoadLayout の LayoutSerializationCallback で設定される -->
                             </avd:LayoutAnchorable>
                         </avd:LayoutAnchorablePane>
 
