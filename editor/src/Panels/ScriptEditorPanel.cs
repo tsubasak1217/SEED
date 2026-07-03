@@ -10,10 +10,12 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
 using ICSharpCode.AvalonEdit;
+using ICSharpCode.AvalonEdit.CodeCompletion;
 using ICSharpCode.AvalonEdit.Highlighting;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.Formatting;
+using Microsoft.CodeAnalysis.Text;
 using SEEDEditor;
 using SEEDEditor.Panels.ScriptEditor;
 using SEEDEditor.Scripting;
@@ -66,6 +68,12 @@ public class ScriptEditorPanel : UserControl
     private readonly List<DocTab> _docs = new();
     private readonly TextBlock _emptyHint;
     private readonly FindReplaceBar _findBar;
+
+    /// <summary>スクリプト全体の意味解析ワークスペース（IntelliSense / F12 用）。遅延生成。</summary>
+    private ScriptWorkspace? _workspace;
+    private string? _assetsRoot;
+    /// <summary>現在表示中の補完ウィンドウ（多重表示防止）。</summary>
+    private CompletionWindow? _completionWindow;
 
     /// <summary>ファイルの保存が完了したときに発火する（フルパス）。コンパイル成否に関わらず発火。</summary>
     public event Action<string>? ScriptSaved;
@@ -178,6 +186,25 @@ public class ScriptEditorPanel : UserControl
 
     // ── 公開 API ─────────────────────────────────────────────
 
+    /// <summary>
+    /// スクリプトのアセットルートを設定する。
+    /// IntelliSense / F12 用の Roslyn ワークスペースをこのルート配下の
+    /// 全 .cs から構築する。
+    /// </summary>
+    public void SetAssetsPath(string assetsRoot)
+    {
+        _assetsRoot = assetsRoot;
+        try
+        {
+            _workspace = new ScriptWorkspace(assetsRoot);
+        }
+        catch (Exception ex)
+        {
+            EditorLog.Write($"スクリプト解析の初期化に失敗しました（補完・F12 が無効）: {ex.Message}");
+            _workspace = null;
+        }
+    }
+
     /// <summary>ファイルを開く（既に開いていればそのタブをアクティブにする）。</summary>
     public void OpenFile(string filePath)
     {
@@ -226,13 +253,19 @@ public class ScriptEditorPanel : UserControl
             DiagTimer = diagTimer,
         };
 
-        // 編集のたびにダーティ化し、少し待ってから診断を再計算する
+        // 編集のたびにダーティ化し、ワークスペースへ反映し、診断を予約する
         editor.TextChanged += (_, _) =>
         {
             SetDirty(doc, true);
+            _workspace?.UpsertText(doc.FilePath, editor.Text);
             diagTimer.Stop();
             diagTimer.Start();
         };
+
+        // IntelliSense: 文字入力に応じて補完ウィンドウを開く
+        editor.TextArea.TextEntered += (_, e) => OnTextEntered(doc, e.Text);
+        // F12（定義へ移動）・Ctrl+Space（補完を手動起動）
+        editor.PreviewKeyDown += (_, e) => OnEditorKeyDown(doc, e);
         diagTimer.Tick += (_, _) =>
         {
             diagTimer.Stop();
@@ -259,6 +292,9 @@ public class ScriptEditorPanel : UserControl
         {
             if (e.ChangedButton == MouseButton.Middle) { CloseTab(doc); e.Handled = true; }
         };
+
+        // ワークスペースに最新テキストを反映する（開いた瞬間の内容で同期）
+        _workspace?.UpsertText(full, text);
 
         _docs.Add(doc);
         _tabs.Items.Add(item);
@@ -382,6 +418,100 @@ public class ScriptEditorPanel : UserControl
         };
         // ● 未保存マークの前（ファイル名の直後）に挿入する
         header.Children.Insert(1, badge);
+    }
+
+    // ── IntelliSense 補完 / F12 定義ジャンプ ─────────────────
+
+    /// <summary>入力文字に応じて補完ウィンドウを起動する。</summary>
+    private async void OnTextEntered(DocTab doc, string enteredText)
+    {
+        if (_workspace is null || enteredText.Length == 0) return;
+
+        char c = enteredText[0];
+        // 識別子文字または "." のときのみ補完を試みる（記号入力では出さない）
+        bool trigger = char.IsLetter(c) || c == '_' || c == '.';
+        if (!trigger) return;
+
+        await ShowCompletionAsync(doc);
+    }
+
+    /// <summary>エディタ上のキー処理（F12 / Ctrl+Space）。</summary>
+    private async void OnEditorKeyDown(DocTab doc, KeyEventArgs e)
+    {
+        // Ctrl+Space: 補完を手動起動
+        if (e.Key == Key.Space && Keyboard.Modifiers.HasFlag(ModifierKeys.Control))
+        {
+            e.Handled = true;
+            await ShowCompletionAsync(doc);
+            return;
+        }
+        // F12: 定義へ移動
+        if (e.Key == Key.F12)
+        {
+            e.Handled = true;
+            await GoToDefinitionAsync(doc);
+        }
+    }
+
+    /// <summary>現在のキャレット位置で補完候補を計算し、ウィンドウ表示する。</summary>
+    private async Task ShowCompletionAsync(DocTab doc)
+    {
+        if (_workspace is null) return;
+        // 最新テキストをワークスペースへ反映してから解析する
+        _workspace.UpsertText(doc.FilePath, doc.Editor.Text);
+
+        var document = _workspace.GetDocument(doc.FilePath);
+        if (document is null) return;
+
+        int position = doc.Editor.CaretOffset;
+        var list = await RoslynCompletion.GetCompletionsAsync(document, position);
+        if (list is null || list.ItemsList.Count == 0) return;
+
+        // 既存のウィンドウを閉じてから新規表示する
+        _completionWindow?.Close();
+
+        var window = new CompletionWindow(doc.Editor.TextArea)
+        {
+            CloseAutomatically = true,
+            Width              = 340,
+        };
+        foreach (var item in list.ItemsList.Take(200))
+            window.CompletionList.CompletionData.Add(new RoslynCompletionData(item));
+
+        window.Closed += (_, _) => _completionWindow = null;
+        window.Show();
+        _completionWindow = window;
+    }
+
+    /// <summary>F12: キャレット位置のシンボル定義へジャンプする（ファイルまたぎ対応）。</summary>
+    private async Task GoToDefinitionAsync(DocTab doc)
+    {
+        if (_workspace is null) return;
+        _workspace.UpsertText(doc.FilePath, doc.Editor.Text);
+
+        var document = _workspace.GetDocument(doc.FilePath);
+        if (document is null) return;
+
+        var result = await RoslynCompletion.ResolveDefinitionAsync(document, doc.Editor.CaretOffset);
+        if (result is null)
+        {
+            EditorLog.Write("定義が見つかりませんでした（外部ライブラリの型はジャンプ対象外です）");
+            return;
+        }
+
+        var (filePath, offset) = result.Value;
+
+        // 別ファイルなら開いてから、同一ファイルならそのまま、該当位置へキャレットを移動する
+        OpenFile(filePath);
+        var target = _docs.FirstOrDefault(d =>
+            string.Equals(d.FilePath, Path.GetFullPath(filePath), StringComparison.OrdinalIgnoreCase));
+        if (target is null) return;
+
+        int clamped = Math.Min(offset, target.Editor.Document.TextLength);
+        target.Editor.CaretOffset = clamped;
+        var line = target.Editor.Document.GetLineByOffset(clamped).LineNumber;
+        target.Editor.ScrollToLine(line);
+        target.Editor.Focus();
     }
 
     // ── コード整形（Ctrl+K,D）────────────────────────────────

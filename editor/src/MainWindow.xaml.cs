@@ -285,6 +285,8 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         PanelProject.InputMapFileOpened += OnInputMapFileOpened;
         PanelProject.ScriptFileOpened   += OnScriptFileOpened;
 
+        // スクリプトエディタ: アセットルートを渡して IntelliSense / F12 を有効化する
+        PanelScriptEditor.SetAssetsPath(AssetsPath);
         // スクリプトエディタ: インスペクタの「スクリプトを編集」ボタンからも開ける
         PanelInspector.ScriptFileOpenRequested += OnScriptFileOpened;
         // 保存時: インスペクタの型キャッシュを無効化し、runtime にホットリロードを要求する

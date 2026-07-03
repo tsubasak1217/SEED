@@ -43,6 +43,8 @@
     <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.8.0" />
     <!-- Ctrl+K,D のコード整形（Formatter）に必要 -->
     <PackageReference Include="Microsoft.CodeAnalysis.CSharp.Workspaces" Version="4.8.0" />
+    <!-- IntelliSense 補完（CompletionService）と F12 定義ジャンプに必要 -->
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp.Features" Version="4.8.0" />
     <!-- スクリプトエディタのシンタックスハイライト用テキストエディタコントロール -->
     <PackageReference Include="AvalonEdit" Version="6.3.0.90" />
   </ItemGroup>
