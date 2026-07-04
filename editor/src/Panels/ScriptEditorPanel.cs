@@ -121,10 +121,8 @@ public class ScriptEditorPanel : UserControl
     /// <summary>現在表示中の補完ウィンドウ（多重表示防止）。</summary>
     private CompletionWindow? _completionWindow;
 
-    /// <summary>AI インライン補完の共有プロバイダ（ローカル/Groq を設定で振り分け）。遅延生成。</summary>
+    /// <summary>AI インライン補完の共有プロバイダ（Groq クラウド）。遅延生成。</summary>
     private IInlineCompletionProvider? _inlineProvider;
-    /// <summary>インライン補完のサーバー起動を一度だけ試みるためのフラグ。</summary>
-    private bool _inlineServerStartRequested;
 
     /// <summary>書式・配色設定と、その保存先ディレクトリ。</summary>
     private ScriptEditorSettings _settings = new();
@@ -362,8 +360,6 @@ public class ScriptEditorPanel : UserControl
         _recovery    = new ScriptRecoveryStore(Path.Combine(settingsDir, "script_recovery"));
         ApplyColorsToHighlighting(_settings);
         foreach (var doc in _docs) ApplySettingsToEditor(doc.Editor);
-        // 前回セッションでインライン補完が有効なら、ローカル AI サーバーを起動しておく
-        if (_settings.InlineCompletionEnabled) EnsureInlineServer();
     }
 
     /// <summary>設定ダイアログを開く。</summary>
@@ -383,80 +379,19 @@ public class ScriptEditorPanel : UserControl
                 _ = RunSemanticColorizeAsync(doc);
                 doc.Editor.TextArea.TextView.Redraw();
             }
-            // インライン補完が有効化されたらローカル AI サーバーの起動を促す
-            if (_settings.InlineCompletionEnabled) EnsureInlineServer();
         };
         dlg.ShowDialog();
     }
 
     /// <summary>AI インライン補完のプロバイダを取得する（初回に生成）。</summary>
     /// <remarks>
-    /// 設定のバックエンドで振り分けるルーター。
-    /// Local = 補完専用の軽量 1.5B サーバー（別ポート・低 RAM 環境向け）。
-    /// Groq  = クラウド（OpenAI 互換）。設定変更は都度反映される。
+    /// バックエンドは Groq（クラウド・OpenAI 互換）。API キー・モデルは設定から
+    /// 都度読むため、設定変更は再生成なしで即反映される。
     /// </remarks>
     private IInlineCompletionProvider GetInlineProvider()
-    {
-        if (_inlineProvider is null)
-        {
-            var editorDir = Path.GetDirectoryName(
-                System.Reflection.Assembly.GetExecutingAssembly().Location) ?? "";
-
-            var local = new InlineCompletionProvider(LocalLlmManager.GetSharedCompletion(editorDir));
-            var groq  = new GroqInlineCompletionProvider(
-                apiKey: () => _settings.GroqApiKey,
-                model:  () => _settings.GroqModel);
-
-            _inlineProvider = new RoutingInlineCompletionProvider(
-                selector: () => _settings.InlineCompletionBackend,
-                local:    local,
-                groq:     groq);
-        }
-        return _inlineProvider;
-    }
-
-    /// <summary>
-    /// インライン補完用にローカル AI サーバー（軽量 1.5B）を起動する（初回のみ・非同期）。
-    /// Groq バックエンド時はローカルサーバー不要なので何もしない。
-    /// 初回はモデルのダウンロード（約 1.0GB）が走ることがあるため、進捗はログへ流す。
-    /// </summary>
-    private void EnsureInlineServer()
-    {
-        // ローカルバックエンドのときだけサーバーを起動する（Groq はクラウドなので不要）
-        if (_settings.InlineCompletionBackend != RoutingInlineCompletionProvider.Backend.Local) return;
-        if (_inlineServerStartRequested) return;
-        _inlineServerStartRequested = true;
-
-        var editorDir = Path.GetDirectoryName(
-            System.Reflection.Assembly.GetExecutingAssembly().Location) ?? "";
-        var llm = LocalLlmManager.GetSharedCompletion(editorDir);
-        if (llm.IsServerRunning) return;
-
-        // 起動を試み、失敗したらフラグを戻して再試行（オンオフ切り替え）できるようにする
-        _ = StartInlineServerAsync(llm);
-    }
-
-    /// <summary>インライン補完用サーバーを起動し、失敗時は再試行可能な状態へ戻す。</summary>
-    private async Task StartInlineServerAsync(LocalLlmManager llm)
-    {
-        bool ok;
-        try
-        {
-            ok = await llm.EnsureServerRunningAsync(msg => EditorLog.Write($"[インライン補完] {msg}"));
-        }
-        catch (Exception ex)
-        {
-            EditorLog.Write($"[インライン補完] サーバー起動で例外: {ex.Message}");
-            ok = false;
-        }
-
-        if (!ok)
-        {
-            // 起動できなかった: フラグを戻し、設定オフ→オンで再試行できるようにする
-            _inlineServerStartRequested = false;
-            EditorLog.Write("[インライン補完] サーバー起動に失敗しました（設定のオン/オフで再試行できます）");
-        }
-    }
+        => _inlineProvider ??= new GroqInlineCompletionProvider(
+            apiKey: () => _settings.GroqApiKey,
+            model:  () => _settings.GroqModel);
 
     /// <summary>1 つのエディタに書式設定（インデント・フォント）を適用する。</summary>
     private void ApplySettingsToEditor(TextEditor editor)

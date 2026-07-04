@@ -4,7 +4,6 @@ using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
-using Backend = SEEDEditor.Panels.ScriptEditor.InlineCompletion.RoutingInlineCompletionProvider.Backend;
 
 namespace SEEDEditor.Panels.ScriptEditor;
 
@@ -53,7 +52,7 @@ public sealed class ScriptEditorSettingsWindow : Window
         var codeStylePanel = BuildCodeStylePanel(out var indentGetter, out var tabsCheck, out var fontGetter);
         var colorPanel     = BuildColorPanel(out var colorGetters);
         var aiPanel        = BuildAiPanel(
-            out var inlineCheck, out var rbGroq, out var groqKeyGetter, out var groqModelCombo);
+            out var inlineCheck, out var groqKeyGetter, out var groqModelCombo);
 
         // 右ペイン（内容表示先）。選択カテゴリのパネルをここへ差し込む。
         var detailHost = new ContentControl();
@@ -108,7 +107,6 @@ public sealed class ScriptEditorSettingsWindow : Window
             _settings.ConvertTabsToSpaces    = tabsCheck.IsChecked == true;
             _settings.FontSize               = Math.Clamp(fontGetter(), 8, 40);
             _settings.InlineCompletionEnabled = inlineCheck.IsChecked == true;
-            _settings.InlineCompletionBackend = rbGroq.IsChecked == true ? Backend.Groq : Backend.Local;
             _settings.GroqApiKey = groqKeyGetter().Trim();
             var groqModel = ((groqModelCombo.SelectedItem as string) ?? "").Trim();
             if (groqModel.Length > 0) _settings.GroqModel = groqModel;
@@ -207,9 +205,9 @@ public sealed class ScriptEditorSettingsWindow : Window
         return panel;
     }
 
-    /// <summary>「AI 補完」カテゴリ（インライン補完・バックエンド・Groq 設定）の内容パネルを構築する。</summary>
+    /// <summary>「AI 補完」カテゴリ（インライン補完・Groq 設定）の内容パネルを構築する。</summary>
     private StackPanel BuildAiPanel(
-        out CheckBox inlineCheck, out RadioButton rbGroq, out Func<string> groqKeyGetter, out ComboBox groqModelCombo)
+        out CheckBox inlineCheck, out Func<string> groqKeyGetter, out ComboBox groqModelCombo)
     {
         var panel = new StackPanel();
         panel.Children.Add(Section("AI 補完"));
@@ -223,33 +221,11 @@ public sealed class ScriptEditorSettingsWindow : Window
         };
         panel.Children.Add(inlineCheck);
 
-        // バックエンド選択（ローカル 1.5B / Groq クラウド）。
-        // ComboBox はダークテーマだとドロップダウンが白地・白文字で読めないため、
-        // 確実に読めるラジオボタンで選ばせる。
-        var isGroq  = _settings.InlineCompletionBackend == Backend.Groq;
-        var rbLocal = new RadioButton
-        {
-            Content = "ローカル (1.5B)", Foreground = Text, GroupName = "inlineBackend",
-            IsChecked = !isGroq, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 16, 0),
-        };
-        rbGroq = new RadioButton
-        {
-            Content = "Groq (クラウド)", Foreground = Text, GroupName = "inlineBackend",
-            IsChecked = isGroq, VerticalAlignment = VerticalAlignment.Center,
-        };
-        var backendRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 2, 0, 2) };
-        backendRow.Children.Add(new TextBlock
-        {
-            Text = "バックエンド", Foreground = Text, Width = 120, VerticalAlignment = VerticalAlignment.Center,
-        });
-        backendRow.Children.Add(rbLocal);
-        backendRow.Children.Add(rbGroq);
-        panel.Children.Add(backendRow);
-
         panel.Children.Add(new TextBlock
         {
-            Text = "ローカル: 初回約1.0GBのモデルDL。Groq: 低スペック機でも高速だがAPIキーが必要。",
-            Foreground = Dim, FontSize = 11, Margin = new Thickness(0, 0, 0, 4), TextWrapping = TextWrapping.Wrap,
+            Text = "Groq（クラウド・OpenAI 互換）で補完します。利用には API キーが必要です。"
+                 + "コード補完には非推論モデル（例: llama-3.3-70b-versatile）を推奨。",
+            Foreground = Dim, FontSize = 11, Margin = new Thickness(0, 2, 0, 4), TextWrapping = TextWrapping.Wrap,
         });
 
         // Groq APIキー

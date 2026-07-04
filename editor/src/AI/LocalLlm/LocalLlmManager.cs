@@ -36,23 +36,14 @@ public sealed class LocalLlmManager : IDisposable
 
     /// <summary>チャット用モデル（7B）の待受ポート。</summary>
     private const int CHAT_PORT = 8480;
-    /// <summary>インライン補完用モデル（1.5B）の待受ポート。</summary>
-    private const int COMPLETION_PORT = 8481;
 
     /// <summary>チャット用モデルのファイル名（Qwen2.5-Coder 7B Q4_K_M）。</summary>
     private const string CHAT_MODEL_FILENAME = "Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf";
     private const string CHAT_MODEL_URL =
         "https://huggingface.co/bartowski/Qwen2.5-Coder-7B-Instruct-GGUF/resolve/main/Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf";
 
-    /// <summary>補完用モデルのファイル名（Qwen2.5-Coder 1.5B Q4_K_M・約1.0GB）。</summary>
-    private const string COMPLETION_MODEL_FILENAME = "Qwen2.5-Coder-1.5B-Instruct-Q4_K_M.gguf";
-    private const string COMPLETION_MODEL_URL =
-        "https://huggingface.co/bartowski/Qwen2.5-Coder-1.5B-Instruct-GGUF/resolve/main/Qwen2.5-Coder-1.5B-Instruct-Q4_K_M.gguf";
-
     /// <summary>チャット用コンテキスト長（シーン JSON が大きいため余裕を持たせる）。</summary>
     private const int CHAT_CTX_SIZE = 8192;
-    /// <summary>補完用コンテキスト長（短くして VRAM・計算量を抑える）。</summary>
-    private const int COMPLETION_CTX_SIZE = 2048;
 
     /// <summary>
     /// サーバー起動後の接続待機タイムアウト（秒）。
@@ -69,20 +60,11 @@ public sealed class LocalLlmManager : IDisposable
     // ── 共有インスタンス（用途別）────────────────────────────
 
     private static LocalLlmManager? _sharedChat;
-    private static LocalLlmManager? _sharedCompletion;
 
     /// <summary>チャット用（7B・ポート 8480）の共有インスタンスを取得する。</summary>
     public static LocalLlmManager GetShared(string editorDir)
         => _sharedChat ??= new LocalLlmManager(
             editorDir, CHAT_MODEL_FILENAME, CHAT_MODEL_URL, CHAT_PORT, CHAT_CTX_SIZE, "約4.4GB");
-
-    /// <summary>
-    /// インライン補完用（1.5B・ポート 8481）の共有インスタンスを取得する。
-    /// 軽量なので VRAM に余裕で収まり、低 RAM 環境でもスワップを起こしにくい。
-    /// </summary>
-    public static LocalLlmManager GetSharedCompletion(string editorDir)
-        => _sharedCompletion ??= new LocalLlmManager(
-            editorDir, COMPLETION_MODEL_FILENAME, COMPLETION_MODEL_URL, COMPLETION_PORT, COMPLETION_CTX_SIZE, "約1.0GB");
 
     // ── フィールド ──────────────────────────────────────────
 
