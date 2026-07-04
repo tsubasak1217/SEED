@@ -25,10 +25,24 @@ public sealed class ScriptEditorSettings
 
     /// <summary>
     /// AI インライン補完（Copilot 風ゴーストテキスト → Tab 確定）を有効にするか。
-    /// 有効化すると補完専用の軽量ローカル LLM（llama-server / Qwen2.5-Coder 1.5B）を
-    /// 起動して使う。初回はモデルのダウンロード（約 1.0GB）が走るため既定は無効。
+    /// 有効化すると <see cref="InlineCompletionBackend"/> のバックエンドで補完する。既定は無効。
     /// </summary>
     public bool InlineCompletionEnabled { get; set; } = false;
+
+    /// <summary>
+    /// インライン補完のバックエンド。
+    /// Local = 補完専用の軽量ローカル LLM（Qwen2.5-Coder 1.5B・初回 約1.0GB DL）。
+    /// Groq  = クラウド（OpenAI 互換）。低スペック機でも高速だが API キーが必要。
+    /// </summary>
+    [JsonConverter(typeof(JsonStringEnumConverter))]
+    public InlineCompletion.RoutingInlineCompletionProvider.Backend InlineCompletionBackend { get; set; }
+        = InlineCompletion.RoutingInlineCompletionProvider.Backend.Local;
+
+    /// <summary>Groq バックエンドの API キー（https://console.groq.com で取得）。</summary>
+    public string GroqApiKey { get; set; } = "";
+
+    /// <summary>Groq で使うモデル名（例: llama-3.1-8b-instant / qwen-2.5-coder-32b 等）。</summary>
+    public string GroqModel { get; set; } = "llama-3.1-8b-instant";
 
     // ── 意味解析（識別子）系の配色キー ─────────────────────────
     // Roslyn のセマンティック分類（型名・メソッド名・変数名など）を論理的に

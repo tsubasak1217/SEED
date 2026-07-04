@@ -28,19 +28,19 @@ public sealed class InlineCompletionController : IDisposable
     /// <summary>ゴーストテキストで表示・確定する最大行数（過大な予測を抑える）。</summary>
     private const int MaxGhostLines = 8;
 
-    private readonly TextEditor                _editor;
-    private readonly InlineCompletionProvider  _provider;
-    private readonly GhostTextRenderer         _renderer;
-    private readonly DispatcherTimer           _debounceTimer;
-    private readonly Func<bool>                _isEnabled;    // 設定でインライン補完が有効か
-    private readonly Func<bool>                _isSuppressed; // IntelliSense 表示中など抑止すべきか
+    private readonly TextEditor                 _editor;
+    private readonly IInlineCompletionProvider  _provider;
+    private readonly GhostTextRenderer          _renderer;
+    private readonly DispatcherTimer            _debounceTimer;
+    private readonly Func<bool>                 _isEnabled;    // 設定でインライン補完が有効か
+    private readonly Func<bool>                 _isSuppressed; // IntelliSense 表示中など抑止すべきか
 
     private CancellationTokenSource? _cts;
     private bool _accepting;   // 自前の確定挿入中は再トリガ・却下を抑止する
 
     public InlineCompletionController(
         TextEditor editor,
-        InlineCompletionProvider provider,
+        IInlineCompletionProvider provider,
         Func<bool> isEnabled,
         Func<bool> isSuppressed)
     {

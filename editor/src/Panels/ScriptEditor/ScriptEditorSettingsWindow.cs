@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
+using Backend = SEEDEditor.Panels.ScriptEditor.InlineCompletion.RoutingInlineCompletionProvider.Backend;
 
 namespace SEEDEditor.Panels.ScriptEditor;
 
@@ -63,11 +64,30 @@ public sealed class ScriptEditorSettingsWindow : Window
             Margin     = new Thickness(0, 6, 0, 2),
         };
         root.Children.Add(inlineCheck);
+
+        // バックエンド選択（ローカル 1.5B / Groq クラウド）
+        var backendCombo = new ComboBox
+        {
+            Foreground = Text, Background = FieldBg, BorderBrush = Border2,
+            Margin = new Thickness(0, 2, 0, 2), Width = 220, HorizontalAlignment = HorizontalAlignment.Left,
+        };
+        backendCombo.Items.Add("ローカル (Qwen2.5-Coder 1.5B)");
+        backendCombo.Items.Add("Groq (クラウド・OpenAI互換)");
+        backendCombo.SelectedIndex =
+            _settings.InlineCompletionBackend == Backend.Groq ? 1 : 0;
+        root.Children.Add(LabeledRow("バックエンド", backendCombo));
+
         root.Children.Add(new TextBlock
         {
-            Text = "補完専用の軽量ローカルAI（Qwen2.5-Coder 1.5B）を使用。初回は約1.0GBのモデルDLが走ります。",
+            Text = "ローカル: 初回約1.0GBのモデルDL。Groq: 低スペック機でも高速だがAPIキーが必要（console.groq.com）。",
             Foreground = Dim, FontSize = 11, Margin = new Thickness(0, 0, 0, 4), TextWrapping = TextWrapping.Wrap,
         });
+
+        // Groq 用の設定（API キー・モデル名）
+        var groqKeyBox   = TextField("Groq APIキー", _settings.GroqApiKey, out var groqKeyGetter);
+        var groqModelBox = TextField("Groq モデル", _settings.GroqModel, out var groqModelGetter);
+        root.Children.Add(groqKeyBox);
+        root.Children.Add(groqModelBox);
 
         // ── 配色設定 ──
         root.Children.Add(Section("配色設定"));
@@ -100,6 +120,10 @@ public sealed class ScriptEditorSettingsWindow : Window
             _settings.ConvertTabsToSpaces    = tabsCheck.IsChecked == true;
             _settings.FontSize               = Math.Clamp(fontGetter(), 8, 40);
             _settings.InlineCompletionEnabled = inlineCheck.IsChecked == true;
+            _settings.InlineCompletionBackend = backendCombo.SelectedIndex == 1 ? Backend.Groq : Backend.Local;
+            _settings.GroqApiKey = groqKeyGetter().Trim();
+            var groqModel = groqModelGetter().Trim();
+            if (groqModel.Length > 0) _settings.GroqModel = groqModel;
             foreach (var (_, key) in ScriptEditorSettings.ColorEntries)
                 _settings.Colors[key] = NormalizeHex(colorGetters[key](), _settings.Colors[key]);
             Applied?.Invoke(_settings);
@@ -123,6 +147,30 @@ public sealed class ScriptEditorSettingsWindow : Window
         FontSize = 13, FontWeight = FontWeights.Bold,
         Margin = new Thickness(0, 10, 0, 6),
     };
+
+    /// <summary>ラベル付きの 1 行テキスト入力を生成する。</summary>
+    private static UIElement TextField(string label, string value, out Func<string> getter)
+    {
+        var tb = new TextBox
+        {
+            Text = value ?? "", Width = 220, Background = FieldBg, Foreground = Text, CaretBrush = Text,
+            BorderBrush = Border2, BorderThickness = new Thickness(1), Padding = new Thickness(3, 1, 3, 1),
+        };
+        getter = () => tb.Text ?? "";
+        return LabeledRow(label, tb);
+    }
+
+    /// <summary>ラベル＋コントロールを横並びにした 1 行を生成する。</summary>
+    private static UIElement LabeledRow(string label, UIElement control)
+    {
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 3, 0, 3) };
+        row.Children.Add(new TextBlock
+        {
+            Text = label, Foreground = Text, Width = 120, VerticalAlignment = VerticalAlignment.Center,
+        });
+        row.Children.Add(control);
+        return row;
+    }
 
     private static UIElement NumberField(string label, int value, out Func<int> getter)
     {

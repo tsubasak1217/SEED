@@ -121,8 +121,8 @@ public class ScriptEditorPanel : UserControl
     /// <summary>現在表示中の補完ウィンドウ（多重表示防止）。</summary>
     private CompletionWindow? _completionWindow;
 
-    /// <summary>AI インライン補完の共有プロバイダ（ローカル LLM 通信）。遅延生成。</summary>
-    private InlineCompletionProvider? _inlineProvider;
+    /// <summary>AI インライン補完の共有プロバイダ（ローカル/Groq を設定で振り分け）。遅延生成。</summary>
+    private IInlineCompletionProvider? _inlineProvider;
     /// <summary>インライン補完のサーバー起動を一度だけ試みるためのフラグ。</summary>
     private bool _inlineServerStartRequested;
 
@@ -389,28 +389,41 @@ public class ScriptEditorPanel : UserControl
         dlg.ShowDialog();
     }
 
-    /// <summary>AI インライン補完の共有プロバイダを取得する（初回に生成）。</summary>
+    /// <summary>AI インライン補完のプロバイダを取得する（初回に生成）。</summary>
     /// <remarks>
-    /// チャット用 7B とは別の、補完専用の軽量 1.5B サーバー（別ポート）を使う。
-    /// 1.5B は VRAM に余裕で収まり、低 RAM 環境でもディスクスワップを起こしにくい。
+    /// 設定のバックエンドで振り分けるルーター。
+    /// Local = 補完専用の軽量 1.5B サーバー（別ポート・低 RAM 環境向け）。
+    /// Groq  = クラウド（OpenAI 互換）。設定変更は都度反映される。
     /// </remarks>
-    private InlineCompletionProvider GetInlineProvider()
+    private IInlineCompletionProvider GetInlineProvider()
     {
         if (_inlineProvider is null)
         {
             var editorDir = Path.GetDirectoryName(
                 System.Reflection.Assembly.GetExecutingAssembly().Location) ?? "";
-            _inlineProvider = new InlineCompletionProvider(LocalLlmManager.GetSharedCompletion(editorDir));
+
+            var local = new InlineCompletionProvider(LocalLlmManager.GetSharedCompletion(editorDir));
+            var groq  = new GroqInlineCompletionProvider(
+                apiKey: () => _settings.GroqApiKey,
+                model:  () => _settings.GroqModel);
+
+            _inlineProvider = new RoutingInlineCompletionProvider(
+                selector: () => _settings.InlineCompletionBackend,
+                local:    local,
+                groq:     groq);
         }
         return _inlineProvider;
     }
 
     /// <summary>
     /// インライン補完用にローカル AI サーバー（軽量 1.5B）を起動する（初回のみ・非同期）。
+    /// Groq バックエンド時はローカルサーバー不要なので何もしない。
     /// 初回はモデルのダウンロード（約 1.0GB）が走ることがあるため、進捗はログへ流す。
     /// </summary>
     private void EnsureInlineServer()
     {
+        // ローカルバックエンドのときだけサーバーを起動する（Groq はクラウドなので不要）
+        if (_settings.InlineCompletionBackend != RoutingInlineCompletionProvider.Backend.Local) return;
         if (_inlineServerStartRequested) return;
         _inlineServerStartRequested = true;
 

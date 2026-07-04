@@ -18,7 +18,7 @@ namespace SEEDEditor.Panels.ScriptEditor.InlineCompletion;
 /// llama-server の /completion エンドポイントへ投げて「間に入るコード」を得る。
 /// サーバーが起動していないときは何も返さない（起動はエディタ側が明示的に行う）。
 /// </summary>
-public sealed class InlineCompletionProvider
+public sealed class InlineCompletionProvider : IInlineCompletionProvider
 {
     // ── FIM 制御トークン（Qwen2.5-Coder のフォーマット）──────────
     private const string FimPrefixToken = "<|fim_prefix|>";
