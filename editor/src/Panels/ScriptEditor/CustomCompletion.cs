@@ -119,7 +119,10 @@ public static class CustomCompletion
     {
         int p = Math.Max(0, position - prefixLen - 1);
         var token = root.FindToken(p);
-        return token.Parent?.AncestorsAndSelf().OfType<AttributeSyntax>().Any() ?? false;
+        // 識別子の直前は '[' のことがあり、その親は AttributeList（AttributeSyntax は
+        // その子）なので、AttributeSyntax だけでなく AttributeListSyntax も判定に含める。
+        return token.Parent?.AncestorsAndSelf()
+            .Any(n => n is AttributeSyntax or AttributeListSyntax) ?? false;
     }
 
     /// <summary>System.Attribute を継承する属性型かどうか。</summary>
