@@ -110,7 +110,7 @@ public sealed class ScriptEditorSettingsWindow : Window
             _settings.InlineCompletionEnabled = inlineCheck.IsChecked == true;
             _settings.InlineCompletionBackend = rbGroq.IsChecked == true ? Backend.Groq : Backend.Local;
             _settings.GroqApiKey = groqKeyGetter().Trim();
-            var groqModel = (groqModelCombo.Text ?? "").Trim();
+            var groqModel = ((groqModelCombo.SelectedItem as string) ?? "").Trim();
             if (groqModel.Length > 0) _settings.GroqModel = groqModel;
             foreach (var (_, key) in ScriptEditorSettings.ColorEntries)
                 _settings.Colors[key] = NormalizeHex(colorGetters[key](), _settings.Colors[key]);
@@ -256,9 +256,14 @@ public sealed class ScriptEditorSettingsWindow : Window
         panel.Children.Add(TextField("Groq APIキー", _settings.GroqApiKey, out groqKeyGetter));
         var keyGetterLocal = groqKeyGetter;
 
-        // モデルは一覧取得してドロップダウンで選ぶ（一覧に無い名前も入力可）
-        groqModelCombo = MakeDarkComboBox(editable: true);
-        groqModelCombo.Text = _settings.GroqModel;
+        // モデルは一覧取得してドロップダウンから選ぶ（編集不可の選択専用）。
+        // 一覧取得前でも保存済みモデルを表示できるよう、初期項目として入れて選択しておく。
+        groqModelCombo = MakeDarkComboBox();
+        if (!string.IsNullOrWhiteSpace(_settings.GroqModel))
+        {
+            groqModelCombo.Items.Add(_settings.GroqModel);
+            groqModelCombo.SelectedIndex = 0;
+        }
         panel.Children.Add(LabeledRow("Groq モデル", groqModelCombo));
         var comboLocal = groqModelCombo;
 
@@ -291,33 +296,69 @@ public sealed class ScriptEditorSettingsWindow : Window
         Margin = new Thickness(0, 10, 0, 6),
     };
 
-    /// <summary>ダークテーマで読める ComboBox を生成する（項目・編集欄を暗色化）。</summary>
-    private static ComboBox MakeDarkComboBox(bool editable)
+    /// <summary>
+    /// ダークテーマで確実に読める「選択専用（編集不可）」ComboBox を生成する。
+    ///
+    /// 既定テンプレートは選択表示欄が OS テーマの明色（白）になり、白文字と重なって
+    /// 読めないため、選択欄・ドロップダウンとも暗色にしたカスタムテンプレートを適用する。
+    /// 入力は不要な用途（モデル選択など）を想定し、編集用テキスト欄は持たない。
+    /// </summary>
+    private static ComboBox MakeDarkComboBox()
     {
         var combo = new ComboBox
         {
-            IsEditable = editable, Foreground = Text, Background = FieldBg, BorderBrush = Border2,
-            Width = 220, HorizontalAlignment = HorizontalAlignment.Left, Padding = new Thickness(3, 1, 3, 1),
+            IsEditable = false, Foreground = Text, Background = FieldBg, BorderBrush = Border2,
+            Width = 220, HorizontalAlignment = HorizontalAlignment.Left,
+            Template = (ControlTemplate)System.Windows.Markup.XamlReader.Parse(DarkComboTemplateXaml),
         };
 
         // ドロップダウン項目を暗色にして「白地に白文字」を防ぐ
         var itemStyle = new Style(typeof(ComboBoxItem));
         itemStyle.Setters.Add(new Setter(Control.BackgroundProperty, FieldBg));
         itemStyle.Setters.Add(new Setter(Control.ForegroundProperty, Text));
-        itemStyle.Setters.Add(new Setter(Control.PaddingProperty, new Thickness(4, 2, 4, 2)));
+        itemStyle.Setters.Add(new Setter(Control.PaddingProperty, new Thickness(6, 3, 6, 3)));
         combo.ItemContainerStyle = itemStyle;
-
-        // 編集用テキストボックス部分も暗色に
-        if (editable)
-        {
-            var tbStyle = new Style(typeof(TextBox));
-            tbStyle.Setters.Add(new Setter(TextBox.ForegroundProperty, Text));
-            tbStyle.Setters.Add(new Setter(TextBox.BackgroundProperty, FieldBg));
-            tbStyle.Setters.Add(new Setter(TextBox.CaretBrushProperty, Text));
-            combo.Resources.Add(typeof(TextBox), tbStyle);
-        }
         return combo;
     }
+
+    /// <summary>
+    /// 暗色の選択専用 ComboBox 用テンプレート（XAML 文字列）。
+    /// 選択表示欄・ドロップ矢印ボタン・候補ポップアップをすべて暗色で描く。
+    /// 色はエディタの他 UI と揃える（背景 #1A1A1A / 枠 #3F3F46 / 文字 #DCDCDC）。
+    /// </summary>
+    private const string DarkComboTemplateXaml = @"
+<ControlTemplate TargetType='ComboBox'
+    xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation'
+    xmlns:x='http://schemas.microsoft.com/winfx/2006/xaml'>
+  <Grid>
+    <ToggleButton Name='ToggleButton' Focusable='False' ClickMode='Press'
+        IsChecked='{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}'>
+      <ToggleButton.Template>
+        <ControlTemplate TargetType='ToggleButton'>
+          <Border Background='#1A1A1A' BorderBrush='#3F3F46' BorderThickness='1'>
+            <Path HorizontalAlignment='Right' VerticalAlignment='Center' Margin='0,0,8,0'
+                  Fill='#DCDCDC' Data='M 0 0 L 8 0 L 4 4 Z'/>
+          </Border>
+        </ControlTemplate>
+      </ToggleButton.Template>
+    </ToggleButton>
+    <ContentPresenter Name='ContentSite' IsHitTestVisible='False'
+        Content='{Binding SelectionBoxItem, RelativeSource={RelativeSource TemplatedParent}}'
+        ContentTemplate='{Binding SelectionBoxItemTemplate, RelativeSource={RelativeSource TemplatedParent}}'
+        Margin='7,0,25,0' VerticalAlignment='Center' HorizontalAlignment='Left'
+        TextElement.Foreground='#DCDCDC'/>
+    <Popup Name='Popup' Placement='Bottom' Focusable='False' AllowsTransparency='True'
+        IsOpen='{TemplateBinding IsDropDownOpen}' PopupAnimation='Slide'>
+      <Grid Name='DropDown' SnapsToDevicePixels='True'
+          MinWidth='{TemplateBinding ActualWidth}' MaxHeight='{TemplateBinding MaxDropDownHeight}'>
+        <Border Background='#1A1A1A' BorderBrush='#3F3F46' BorderThickness='1'/>
+        <ScrollViewer>
+          <StackPanel IsItemsHost='True' KeyboardNavigation.DirectionalNavigation='Contained'/>
+        </ScrollViewer>
+      </Grid>
+    </Popup>
+  </Grid>
+</ControlTemplate>";
 
     /// <summary>現在の API キーで Groq のモデル一覧を取得し、ドロップダウンへ反映する。</summary>
     private static async Task PopulateGroqModelsAsync(ComboBox combo, TextBlock status, Func<string> keyGetter)
@@ -329,11 +370,13 @@ public sealed class ScriptEditorSettingsWindow : Window
         var models = await InlineCompletion.GroqInlineCompletionProvider.FetchModelsAsync(key);
         if (models.Count == 0) { status.Text = "取得できませんでした（キー/ネットワーク要確認）"; return; }
 
-        var current = combo.Text;
+        var current = combo.SelectedItem as string;
         combo.Items.Clear();
         foreach (var m in models) combo.Items.Add(m);
-        // 既存の選択（保存済みモデル）を尊重し、無ければ先頭を選ぶ
-        combo.Text = string.IsNullOrWhiteSpace(current) ? models[0] : current;
+        // 既存の選択（保存済みモデル）を尊重し、一覧に無ければ先頭に足して選ぶ
+        var want = string.IsNullOrWhiteSpace(current) ? models[0] : current;
+        if (!combo.Items.Contains(want)) combo.Items.Insert(0, want);
+        combo.SelectedItem = want;
         status.Text = $"{models.Count} 件取得";
     }
 
