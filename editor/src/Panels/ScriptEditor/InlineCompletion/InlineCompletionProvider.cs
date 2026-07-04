@@ -28,10 +28,12 @@ public sealed class InlineCompletionProvider
     // ── 生成・文脈のパラメータ（マジックナンバーを避け定数化）────
     /// <summary>1 回の補完で生成する最大トークン数（1 行想定なので控えめ＝高速）。</summary>
     private const int MaxPredictTokens = 64;
+    // プロンプトキャッシュ無効時は毎回プロンプト全体を処理するため、
+    // 文脈を短めにして 1 回あたりの計算量（＝重さ）を抑える。
     /// <summary>プロンプトに含めるカーソル前テキストの最大文字数。</summary>
-    private const int MaxPrefixChars = 2000;
+    private const int MaxPrefixChars = 800;
     /// <summary>プロンプトに含めるカーソル後テキストの最大文字数。</summary>
-    private const int MaxSuffixChars = 1000;
+    private const int MaxSuffixChars = 400;
     /// <summary>サンプリング温度（低め＝確定的でノイズの少ない補完）。</summary>
     private const double Temperature = 0.2;
     /// <summary>核サンプリング（上位確率のみ＝安定した候補）。</summary>
@@ -87,9 +89,9 @@ public sealed class InlineCompletionProvider
             // 接続が切れ、llama-server 側も生成を打ち切る。これにより、タイプ中に
             // 7B 推論がキューへ溜まってマシン全体が固まる問題を防ぐ（最重要）。
             Stream      = true,
-            // KV キャッシュを再利用する。タイプするたびに伸びる共通プレフィックスの
-            // 再計算を省けるため、対話的な補完のレイテンシが大幅に下がる。
-            CachePrompt = true,
+            // プロンプトキャッシュは使わない（サーバー側 --cache-ram 0 と対）。
+            // 空き RAM が少ない環境ではキャッシュ保持が逆にディスクスワップを招くため。
+            CachePrompt = false,
         };
 
         // localhost は環境により IPv6(::1) を先に試して接続失敗することがあるため、

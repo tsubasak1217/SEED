@@ -285,7 +285,10 @@ public sealed class LocalLlmManager : IDisposable
                 // --jinja: モデル組み込みの Jinja2 チャットテンプレートを有効化する。
                 // Qwen2.5-Coder はこのテンプレートでツール呼び出し形式を定義しており、
                 // これなしだとモデルがツール呼び出しをテキストとして出力してしまい実行されない。
-                Arguments = $"--model \"{_modelPath}\" --port {SERVER_PORT} --ctx-size 8192 --n-gpu-layers 99 --parallel 1 --jinja",
+                // --cache-ram 0: プロンプトキャッシュ（既定 8GB 上限）を無効化する。
+                // 空き RAM が少ない環境ではこのキャッシュが RAM を圧迫し、モデル(mmap)の
+                // ページがディスクへ追い出されて再読込され続け、ディスク 100%・激重の原因になる。
+                Arguments = $"--model \"{_modelPath}\" --port {SERVER_PORT} --ctx-size 8192 --n-gpu-layers 99 --parallel 1 --jinja --cache-ram 0",
                 UseShellExecute        = false,
                 CreateNoWindow         = true,
                 RedirectStandardOutput = true,
