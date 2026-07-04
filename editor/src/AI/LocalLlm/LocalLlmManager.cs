@@ -58,6 +58,22 @@ public sealed class LocalLlmManager : IDisposable
     /// <summary>ファイルが有効なモデルと見なす最低サイズ（バイト）</summary>
     private const long MIN_MODEL_SIZE_BYTES = 1_000_000L;
 
+    // ── 共有インスタンス ────────────────────────────────────
+
+    /// <summary>
+    /// プロセス・ポート（固定 8480）は単一資源のため、エディタ全体で 1 つの
+    /// インスタンスを共有する。AI アシスタントパネルとスクリプトエディタの
+    /// インライン補完が同じ llama-server を使い、二重起動によるポート競合を防ぐ。
+    /// </summary>
+    private static LocalLlmManager? _shared;
+
+    /// <summary>
+    /// 共有インスタンスを取得する（初回呼び出し時に生成）。
+    /// editorDir は初回のみ使用され、以降の引数は無視される。
+    /// </summary>
+    public static LocalLlmManager GetShared(string editorDir)
+        => _shared ??= new LocalLlmManager(editorDir);
+
     // ── フィールド ──────────────────────────────────────────
 
     /// <summary>llama-server.exe のフルパス</summary>

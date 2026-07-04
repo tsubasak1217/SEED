@@ -53,6 +53,22 @@ public sealed class ScriptEditorSettingsWindow : Window
         var fontBox = NumberField("フォントサイズ", (int)_settings.FontSize, out var fontGetter);
         root.Children.Add(fontBox);
 
+        // ── AI 補完 ──
+        root.Children.Add(Section("AI 補完"));
+        var inlineCheck = new CheckBox
+        {
+            Content    = "インライン補完を有効にする（予測 → Tab で確定）",
+            IsChecked  = _settings.InlineCompletionEnabled,
+            Foreground = Text,
+            Margin     = new Thickness(0, 6, 0, 2),
+        };
+        root.Children.Add(inlineCheck);
+        root.Children.Add(new TextBlock
+        {
+            Text = "内蔵ローカル AI（llama-server / Qwen2.5-Coder）を使用。初回は約4.4GBのモデルDLが走ります。",
+            Foreground = Dim, FontSize = 11, Margin = new Thickness(0, 0, 0, 4), TextWrapping = TextWrapping.Wrap,
+        });
+
         // ── 配色設定 ──
         root.Children.Add(Section("配色設定"));
         root.Children.Add(new TextBlock
@@ -80,9 +96,10 @@ public sealed class ScriptEditorSettingsWindow : Window
         var cancelBtn = MakeButton("キャンセル");
         okBtn.Click += (_, _) =>
         {
-            _settings.IndentationSize     = Math.Clamp(indentGetter(), 1, 16);
-            _settings.ConvertTabsToSpaces = tabsCheck.IsChecked == true;
-            _settings.FontSize            = Math.Clamp(fontGetter(), 8, 40);
+            _settings.IndentationSize        = Math.Clamp(indentGetter(), 1, 16);
+            _settings.ConvertTabsToSpaces    = tabsCheck.IsChecked == true;
+            _settings.FontSize               = Math.Clamp(fontGetter(), 8, 40);
+            _settings.InlineCompletionEnabled = inlineCheck.IsChecked == true;
             foreach (var (_, key) in ScriptEditorSettings.ColorEntries)
                 _settings.Colors[key] = NormalizeHex(colorGetters[key](), _settings.Colors[key]);
             Applied?.Invoke(_settings);

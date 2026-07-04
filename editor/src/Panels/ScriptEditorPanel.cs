@@ -20,7 +20,9 @@ using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.Formatting;
 using Microsoft.CodeAnalysis.Text;
 using SEEDEditor;
+using SEEDEditor.AI.LocalLlm;
 using SEEDEditor.Panels.ScriptEditor;
+using SEEDEditor.Panels.ScriptEditor.InlineCompletion;
 using SEEDEditor.Scripting;
 
 namespace SEEDEditor.Panels;
@@ -85,6 +87,7 @@ public class ScriptEditorPanel : UserControl
         public required HighlightRenderer SearchHi;       // 検索一致ハイライト（オレンジ）
         public required OverviewRuler     Ruler;          // 右側の概観ルーラー
         public required SemanticColorizer Semantic;      // 型名・メソッド名などの意味的着色
+        public InlineCompletionController? Inline;        // AI インライン補完（Copilot 風・任意）
         public List<ScriptDiagnostic> Diagnostics = new();
         public bool IsDirty;
     }
@@ -117,6 +120,11 @@ public class ScriptEditorPanel : UserControl
     private string? _assetsRoot;
     /// <summary>現在表示中の補完ウィンドウ（多重表示防止）。</summary>
     private CompletionWindow? _completionWindow;
+
+    /// <summary>AI インライン補完の共有プロバイダ（ローカル LLM 通信）。遅延生成。</summary>
+    private InlineCompletionProvider? _inlineProvider;
+    /// <summary>インライン補完のサーバー起動を一度だけ試みるためのフラグ。</summary>
+    private bool _inlineServerStartRequested;
 
     /// <summary>書式・配色設定と、その保存先ディレクトリ。</summary>
     private ScriptEditorSettings _settings = new();
@@ -354,6 +362,8 @@ public class ScriptEditorPanel : UserControl
         _recovery    = new ScriptRecoveryStore(Path.Combine(settingsDir, "script_recovery"));
         ApplyColorsToHighlighting(_settings);
         foreach (var doc in _docs) ApplySettingsToEditor(doc.Editor);
+        // 前回セッションでインライン補完が有効なら、ローカル AI サーバーを起動しておく
+        if (_settings.InlineCompletionEnabled) EnsureInlineServer();
     }
 
     /// <summary>設定ダイアログを開く。</summary>
@@ -373,8 +383,39 @@ public class ScriptEditorPanel : UserControl
                 _ = RunSemanticColorizeAsync(doc);
                 doc.Editor.TextArea.TextView.Redraw();
             }
+            // インライン補完が有効化されたらローカル AI サーバーの起動を促す
+            if (_settings.InlineCompletionEnabled) EnsureInlineServer();
         };
         dlg.ShowDialog();
+    }
+
+    /// <summary>AI インライン補完の共有プロバイダを取得する（初回に生成）。</summary>
+    private InlineCompletionProvider GetInlineProvider()
+    {
+        if (_inlineProvider is null)
+        {
+            var editorDir = Path.GetDirectoryName(
+                System.Reflection.Assembly.GetExecutingAssembly().Location) ?? "";
+            _inlineProvider = new InlineCompletionProvider(LocalLlmManager.GetShared(editorDir));
+        }
+        return _inlineProvider;
+    }
+
+    /// <summary>
+    /// インライン補完用にローカル AI サーバーを起動する（初回のみ・非同期）。
+    /// 初回はモデルのダウンロード（約 4.4GB）が走ることがあるため、進捗はログへ流す。
+    /// </summary>
+    private void EnsureInlineServer()
+    {
+        if (_inlineServerStartRequested) return;
+        _inlineServerStartRequested = true;
+
+        var editorDir = Path.GetDirectoryName(
+            System.Reflection.Assembly.GetExecutingAssembly().Location) ?? "";
+        var llm = LocalLlmManager.GetShared(editorDir);
+        if (llm.IsServerRunning) return;
+
+        _ = llm.EnsureServerRunningAsync(msg => EditorLog.Write($"[インライン補完] {msg}"));
     }
 
     /// <summary>1 つのエディタに書式設定（インデント・フォント）を適用する。</summary>
@@ -533,9 +574,17 @@ public class ScriptEditorPanel : UserControl
             diagTimer.Start();
         };
 
+        // AI インライン補完（Copilot 風ゴーストテキスト）。設定で有効なときだけ動く。
+        // IntelliSense（補完ウィンドウ）表示中は抑止して競合を避ける。
+        doc.Inline = new InlineCompletionController(
+            editor,
+            GetInlineProvider(),
+            isEnabled:    () => _settings.InlineCompletionEnabled,
+            isSuppressed: () => _completionWindow is not null);
+
         // IntelliSense: 文字入力に応じて補完ウィンドウを開く
         editor.TextArea.TextEntered += (_, e) => OnTextEntered(doc, e.Text);
-        // F12（定義へ移動）・Ctrl+Space（補完を手動起動）
+        // F12（定義へ移動）・Ctrl+Space（補完を手動起動）・Tab/Esc（インライン補完）
         editor.PreviewKeyDown += (_, e) => OnEditorKeyDown(doc, e);
         diagTimer.Tick += (_, _) =>
         {
@@ -1109,11 +1158,28 @@ public class ScriptEditorPanel : UserControl
         });
     }
 
-    /// <summary>エディタ上のキー処理（F12 / Ctrl+Space / Alt+↑↓ 行移動）。</summary>
+    /// <summary>エディタ上のキー処理（インライン補完 Tab/Esc / F12 / Ctrl+Space / Alt+↑↓ 行移動）。</summary>
     private async void OnEditorKeyDown(DocTab doc, KeyEventArgs e)
     {
         // Alt 併用時、WPF は e.Key=Key.System・実キーを e.SystemKey に入れる
         var key = e.Key == Key.System ? e.SystemKey : e.Key;
+
+        // AI インライン補完の操作（IntelliSense 補完ウィンドウ非表示時のみ）。
+        // Tab: 予測を確定して挿入。Esc: 予測を却下。予測が無ければ既定動作へ流す。
+        if (_completionWindow is null && doc.Inline is { } inline && inline.HasSuggestion
+            && Keyboard.Modifiers == ModifierKeys.None)
+        {
+            if (key == Key.Tab)
+            {
+                if (inline.AcceptSuggestion()) { e.Handled = true; return; }
+            }
+            else if (key == Key.Escape)
+            {
+                inline.Dismiss();
+                e.Handled = true;
+                return;
+            }
+        }
 
         // Alt+↑ / Alt+↓: 現在行（複数行選択時はその範囲）を丸ごと上下へ移動する
         if (Keyboard.Modifiers.HasFlag(ModifierKeys.Alt) && key is Key.Up or Key.Down)
@@ -1403,6 +1469,9 @@ public class ScriptEditorPanel : UserControl
         // 既存のウィンドウを閉じてから新規表示する
         _completionWindow?.Close();
 
+        // IntelliSense と AI インライン補完の同時表示を避ける
+        doc.Inline?.Dismiss();
+
         var window = new CompletionWindow(editor.TextArea)
         {
             CloseAutomatically        = true,
@@ -1562,6 +1631,8 @@ public class ScriptEditorPanel : UserControl
         _recovery?.Remove(doc.FilePath);
         doc.DiagTimer.Stop();
         doc.OccurTimer.Stop();
+        doc.Inline?.Dispose();   // インライン補完のタイマー・購読・レンダラを解放
+        doc.Inline = null;
         int idx = _docs.IndexOf(doc);
         _docs.Remove(doc);
         // アクティブを閉じたら隣のドキュメントへ切り替える

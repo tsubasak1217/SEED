@@ -270,10 +270,11 @@ public class AIAssistantPanel
         _runtime    = runtime;
         _assetsPath = assetsPath;
 
-        // llama-server.exe はエディタ実行ファイルと同じディレクトリに配置される想定
+        // llama-server.exe はエディタ実行ファイルと同じディレクトリに配置される想定。
+        // サーバーは単一資源のため共有インスタンスを使う（インライン補完と共用）。
         var editorDir = Path.GetDirectoryName(
             System.Reflection.Assembly.GetExecutingAssembly().Location) ?? "";
-        _localLlmManager = new LocalLlmManager(editorDir);
+        _localLlmManager = LocalLlmManager.GetShared(editorDir);
 
         // ランタイムからの SCENE_INFO イベントを購読する
         if (_runtime is not null)

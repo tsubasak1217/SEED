@@ -23,6 +23,13 @@ public sealed class ScriptEditorSettings
     /// <summary>基準フォントサイズ。</summary>
     public double FontSize { get; set; } = 13.0;
 
+    /// <summary>
+    /// AI インライン補完（Copilot 風ゴーストテキスト → Tab 確定）を有効にするか。
+    /// 有効化すると内蔵ローカル LLM（llama-server / Qwen2.5-Coder）を起動して使う。
+    /// 初回はモデルのダウンロード（約 4.4GB）が走るため既定は無効。
+    /// </summary>
+    public bool InlineCompletionEnabled { get; set; } = false;
+
     // ── 意味解析（識別子）系の配色キー ─────────────────────────
     // Roslyn のセマンティック分類（型名・メソッド名・変数名など）を論理的に
     // グループ化した色キー。1 つの論理キーへ複数の Roslyn 分類種別が対応する
