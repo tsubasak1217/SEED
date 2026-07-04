@@ -20,7 +20,18 @@ public sealed class ScriptEditorSettingsWindow : Window
     private static readonly Brush Border2= new SolidColorBrush(Color.FromRgb(0x3F, 0x3F, 0x46));
     private static readonly Brush Dim    = new SolidColorBrush(Color.FromRgb(0x99, 0x99, 0x99));
 
+    // ── マスタ・ディテール（左ナビ）配色・寸法 ─────────────────
+    /// <summary>左カテゴリ一覧の背景色（内容ペインより一段暗くして領域を分ける）。</summary>
+    private static readonly Brush NavBg         = new SolidColorBrush(Color.FromRgb(0x20, 0x20, 0x21));
+    /// <summary>選択中カテゴリの強調背景色（VS のアクティブ項目風）。</summary>
+    private static readonly Brush NavSelectedBg = new SolidColorBrush(Color.FromRgb(0x37, 0x37, 0x3D));
+    /// <summary>左カテゴリ一覧の幅（px）。</summary>
+    private const double NavWidth = 160;
+
     private readonly ScriptEditorSettings _settings;
+
+    /// <summary>Groq モデル一覧の取得状況表示（自動取得と手動取得で共有）。</summary>
+    private TextBlock? _groqFetchStatus;
 
     /// <summary>OK で保存されたときに発火する（更新後の設定）。</summary>
     public event Action<ScriptEditorSettings>? Applied;
@@ -30,121 +41,64 @@ public sealed class ScriptEditorSettingsWindow : Window
         _settings = settings;
 
         Title       = "スクリプトエディタ設定";
-        Width       = 420;
+        Width       = 640;
         Height      = 560;
         Background   = Bg;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
 
-        var root = new StackPanel { Margin = new Thickness(16) };
+        // ── 各カテゴリの設定内容パネルを構築する ────────────────
+        // レイアウトは「左：カテゴリ一覧／右：選択中カテゴリの内容／下：OK・キャンセル」の
+        // マスタ・ディテール構成。内容パネルは一度だけ生成し、選択に応じて右ペインへ差し替える。
+        // 各コントロールは所属パネルを親に持ち続けるため、非表示中でも入力値（getter）は保持される。
+        var codeStylePanel = BuildCodeStylePanel(out var indentGetter, out var tabsCheck, out var fontGetter);
+        var colorPanel     = BuildColorPanel(out var colorGetters);
+        var aiPanel        = BuildAiPanel(
+            out var inlineCheck, out var rbGroq, out var groqKeyGetter, out var groqModelCombo);
 
-        // ── 書式設定 ──
-        root.Children.Add(Section("書式設定"));
-
-        var indentBox = NumberField("インデント幅", _settings.IndentationSize, out var indentGetter);
-        root.Children.Add(indentBox);
-
-        var tabsCheck = new CheckBox
+        // 右ペイン（内容表示先）。選択カテゴリのパネルをここへ差し込む。
+        var detailHost = new ContentControl();
+        var detailScroll = new ScrollViewer
         {
-            Content    = "タブを空白に変換する",
-            IsChecked  = _settings.ConvertTabsToSpaces,
-            Foreground = Text,
-            Margin     = new Thickness(0, 6, 0, 6),
+            Content = detailHost,
+            VerticalScrollBarVisibility   = ScrollBarVisibility.Auto,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            Padding = new Thickness(16, 8, 16, 8),
         };
-        root.Children.Add(tabsCheck);
 
-        var fontBox = NumberField("フォントサイズ", (int)_settings.FontSize, out var fontGetter);
-        root.Children.Add(fontBox);
-
-        // ── AI 補完 ──
-        root.Children.Add(Section("AI 補完"));
-        var inlineCheck = new CheckBox
+        // ── 左：カテゴリ一覧（ナビゲーション）────────────────────
+        // カテゴリ表示名と対応する内容パネルの並び。データ駆動で追加・削除できるようにする。
+        var categories = new (string Label, UIElement Panel)[]
         {
-            Content    = "インライン補完を有効にする（予測 → Tab で確定）",
-            IsChecked  = _settings.InlineCompletionEnabled,
-            Foreground = Text,
-            Margin     = new Thickness(0, 6, 0, 2),
+            ("コードスタイル", codeStylePanel),
+            ("色設定",         colorPanel),
+            ("AI 補完",        aiPanel),
         };
-        root.Children.Add(inlineCheck);
 
-        // バックエンド選択（ローカル 1.5B / Groq クラウド）。
-        // ComboBox はダークテーマだとドロップダウンが白地・白文字で読めないため、
-        // 確実に読めるラジオボタンで選ばせる。
-        var isGroq  = _settings.InlineCompletionBackend == Backend.Groq;
-        var rbLocal = new RadioButton
+        var navPanel = new StackPanel { Margin = new Thickness(0, 8, 0, 0) };
+        var navButtons = new System.Collections.Generic.List<Button>();
+        for (int i = 0; i < categories.Length; i++)
         {
-            Content = "ローカル (1.5B)", Foreground = Text, GroupName = "inlineBackend",
-            IsChecked = !isGroq, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 16, 0),
-        };
-        var rbGroq = new RadioButton
-        {
-            Content = "Groq (クラウド)", Foreground = Text, GroupName = "inlineBackend",
-            IsChecked = isGroq, VerticalAlignment = VerticalAlignment.Center,
-        };
-        var backendRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 2, 0, 2) };
-        backendRow.Children.Add(new TextBlock
-        {
-            Text = "バックエンド", Foreground = Text, Width = 120, VerticalAlignment = VerticalAlignment.Center,
-        });
-        backendRow.Children.Add(rbLocal);
-        backendRow.Children.Add(rbGroq);
-        root.Children.Add(backendRow);
-
-        root.Children.Add(new TextBlock
-        {
-            Text = "ローカル: 初回約1.0GBのモデルDL。Groq: 低スペック機でも高速だがAPIキーが必要。",
-            Foreground = Dim, FontSize = 11, Margin = new Thickness(0, 0, 0, 4), TextWrapping = TextWrapping.Wrap,
-        });
-
-        // Groq APIキー
-        var groqKeyBox = TextField("Groq APIキー", _settings.GroqApiKey, out var groqKeyGetter);
-        root.Children.Add(groqKeyBox);
-
-        // モデルは一覧取得してドロップダウンで選ぶ（一覧に無い名前も入力可）
-        var groqModelCombo = MakeDarkComboBox(editable: true);
-        groqModelCombo.Text = _settings.GroqModel;
-        root.Children.Add(LabeledRow("Groq モデル", groqModelCombo));
-
-        var fetchStatus = new TextBlock
-        {
-            Foreground = Dim, FontSize = 11, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 0, 0, 0),
-        };
-        var fetchBtn = MakeButton("モデル一覧を取得");
-        fetchBtn.Click += async (_, _) => await PopulateGroqModelsAsync(groqModelCombo, fetchStatus, groqKeyGetter);
-        var fetchRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(120, 0, 0, 2) };
-        fetchRow.Children.Add(fetchBtn);
-        fetchRow.Children.Add(fetchStatus);
-        root.Children.Add(fetchRow);
-
-        var groqLinkBtn = MakeButton("Groqでキーを取得/確認");
-        groqLinkBtn.Click += (_, _) => OpenUrl("https://console.groq.com/keys");
-        root.Children.Add(LabeledRow("", groqLinkBtn));
-
-        // 既にキーがあれば開いた時点でモデル一覧を取得しておく
-        if (!string.IsNullOrWhiteSpace(_settings.GroqApiKey))
-            _ = PopulateGroqModelsAsync(groqModelCombo, fetchStatus, groqKeyGetter);
-
-        // ── 配色設定 ──
-        root.Children.Add(Section("配色設定"));
-        root.Children.Add(new TextBlock
-        {
-            Text = "各構文要素の色。左のスウォッチをクリックでカラーピッカーを開く（直接 #RRGGBB 入力も可）。",
-            Foreground = Dim, FontSize = 11, Margin = new Thickness(0, 0, 0, 6), TextWrapping = TextWrapping.Wrap,
-        });
-
-        var colorGetters = new System.Collections.Generic.Dictionary<string, Func<string>>();
-        foreach (var (label, key) in ScriptEditorSettings.ColorEntries)
-        {
-            var current = _settings.Colors.TryGetValue(key, out var c) ? c : "#DCDCDC";
-            root.Children.Add(ColorRow(label, current, out var getter));
-            colorGetters[key] = getter;
+            int index   = i;
+            var navBtn  = MakeNavButton(categories[i].Label);
+            navBtn.Click += (_, _) => SelectCategory(index);
+            navButtons.Add(navBtn);
+            navPanel.Children.Add(navBtn);
         }
 
-        // ── ボタン ──
+        // カテゴリ選択：右ペインを差し替え、選択中ボタンだけをハイライトする。
+        void SelectCategory(int index)
+        {
+            detailHost.Content = categories[index].Panel;
+            for (int j = 0; j < navButtons.Count; j++)
+                navButtons[j].Background = j == index ? NavSelectedBg : Brushes.Transparent;
+        }
+
+        // ── OK / キャンセル（右下）──────────────────────────────
         var btnRow = new StackPanel
         {
             Orientation = Orientation.Horizontal,
             HorizontalAlignment = HorizontalAlignment.Right,
-            Margin = new Thickness(0, 16, 0, 0),
+            Margin = new Thickness(0, 10, 12, 10),
         };
         var okBtn     = MakeButton("OK");
         var cancelBtn = MakeButton("キャンセル");
@@ -167,9 +121,164 @@ public sealed class ScriptEditorSettingsWindow : Window
         cancelBtn.Click += (_, _) => { DialogResult = false; Close(); };
         btnRow.Children.Add(cancelBtn);
         btnRow.Children.Add(okBtn);
-        root.Children.Add(btnRow);
 
-        Content = new ScrollViewer { Content = root, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+        // ── 全体レイアウトを組み立てる ──────────────────────────
+        // 上段：左ナビ（固定幅）＋境界線＋右内容（可変幅）、下段：ボタン行。
+        var layout = new Grid();
+        layout.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        layout.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+
+        var paneGrid = new Grid();
+        paneGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(NavWidth) });
+        paneGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+
+        // ナビと内容の間の境界線を、右内容ペインの左枠として描く。
+        var navBorder = new Border { Background = NavBg, Child = navPanel };
+        Grid.SetColumn(navBorder, 0);
+        var detailBorder = new Border
+        {
+            BorderBrush = Border2, BorderThickness = new Thickness(1, 0, 0, 0), Child = detailScroll,
+        };
+        Grid.SetColumn(detailBorder, 1);
+        paneGrid.Children.Add(navBorder);
+        paneGrid.Children.Add(detailBorder);
+        Grid.SetRow(paneGrid, 0);
+
+        // ボタン行の上に区切り線を置く。
+        var footer = new Border
+        {
+            BorderBrush = Border2, BorderThickness = new Thickness(0, 1, 0, 0), Child = btnRow,
+        };
+        Grid.SetRow(footer, 1);
+
+        layout.Children.Add(paneGrid);
+        layout.Children.Add(footer);
+        Content = layout;
+
+        // 既定で先頭カテゴリを選択表示する。
+        SelectCategory(0);
+
+        // 既にキーがあれば開いた時点で Groq モデル一覧を取得しておく（AI 補完パネル用）。
+        if (!string.IsNullOrWhiteSpace(_settings.GroqApiKey))
+            _ = PopulateGroqModelsAsync(groqModelCombo, _groqFetchStatus!, groqKeyGetter);
+    }
+
+    // ── カテゴリ内容パネルの構築 ──────────────────────────────
+
+    /// <summary>「コードスタイル」カテゴリ（インデント・タブ・フォント）の内容パネルを構築する。</summary>
+    private StackPanel BuildCodeStylePanel(out Func<int> indentGetter, out CheckBox tabsCheck, out Func<int> fontGetter)
+    {
+        var panel = new StackPanel();
+        panel.Children.Add(Section("書式設定"));
+
+        panel.Children.Add(NumberField("インデント幅", _settings.IndentationSize, out indentGetter));
+
+        tabsCheck = new CheckBox
+        {
+            Content    = "タブを空白に変換する",
+            IsChecked  = _settings.ConvertTabsToSpaces,
+            Foreground = Text,
+            Margin     = new Thickness(0, 6, 0, 6),
+        };
+        panel.Children.Add(tabsCheck);
+
+        panel.Children.Add(NumberField("フォントサイズ", (int)_settings.FontSize, out fontGetter));
+        return panel;
+    }
+
+    /// <summary>「色設定」カテゴリ（各構文要素の配色）の内容パネルを構築する。</summary>
+    private StackPanel BuildColorPanel(out System.Collections.Generic.Dictionary<string, Func<string>> colorGetters)
+    {
+        var panel = new StackPanel();
+        panel.Children.Add(Section("配色設定"));
+        panel.Children.Add(new TextBlock
+        {
+            Text = "各構文要素の色。左のスウォッチをクリックでカラーピッカーを開く（直接 #RRGGBB 入力も可）。",
+            Foreground = Dim, FontSize = 11, Margin = new Thickness(0, 0, 0, 6), TextWrapping = TextWrapping.Wrap,
+        });
+
+        colorGetters = new System.Collections.Generic.Dictionary<string, Func<string>>();
+        foreach (var (label, key) in ScriptEditorSettings.ColorEntries)
+        {
+            var current = _settings.Colors.TryGetValue(key, out var c) ? c : "#DCDCDC";
+            panel.Children.Add(ColorRow(label, current, out var getter));
+            colorGetters[key] = getter;
+        }
+        return panel;
+    }
+
+    /// <summary>「AI 補完」カテゴリ（インライン補完・バックエンド・Groq 設定）の内容パネルを構築する。</summary>
+    private StackPanel BuildAiPanel(
+        out CheckBox inlineCheck, out RadioButton rbGroq, out Func<string> groqKeyGetter, out ComboBox groqModelCombo)
+    {
+        var panel = new StackPanel();
+        panel.Children.Add(Section("AI 補完"));
+
+        inlineCheck = new CheckBox
+        {
+            Content    = "インライン補完を有効にする（予測 → Tab で確定）",
+            IsChecked  = _settings.InlineCompletionEnabled,
+            Foreground = Text,
+            Margin     = new Thickness(0, 6, 0, 2),
+        };
+        panel.Children.Add(inlineCheck);
+
+        // バックエンド選択（ローカル 1.5B / Groq クラウド）。
+        // ComboBox はダークテーマだとドロップダウンが白地・白文字で読めないため、
+        // 確実に読めるラジオボタンで選ばせる。
+        var isGroq  = _settings.InlineCompletionBackend == Backend.Groq;
+        var rbLocal = new RadioButton
+        {
+            Content = "ローカル (1.5B)", Foreground = Text, GroupName = "inlineBackend",
+            IsChecked = !isGroq, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 16, 0),
+        };
+        rbGroq = new RadioButton
+        {
+            Content = "Groq (クラウド)", Foreground = Text, GroupName = "inlineBackend",
+            IsChecked = isGroq, VerticalAlignment = VerticalAlignment.Center,
+        };
+        var backendRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 2, 0, 2) };
+        backendRow.Children.Add(new TextBlock
+        {
+            Text = "バックエンド", Foreground = Text, Width = 120, VerticalAlignment = VerticalAlignment.Center,
+        });
+        backendRow.Children.Add(rbLocal);
+        backendRow.Children.Add(rbGroq);
+        panel.Children.Add(backendRow);
+
+        panel.Children.Add(new TextBlock
+        {
+            Text = "ローカル: 初回約1.0GBのモデルDL。Groq: 低スペック機でも高速だがAPIキーが必要。",
+            Foreground = Dim, FontSize = 11, Margin = new Thickness(0, 0, 0, 4), TextWrapping = TextWrapping.Wrap,
+        });
+
+        // Groq APIキー
+        panel.Children.Add(TextField("Groq APIキー", _settings.GroqApiKey, out groqKeyGetter));
+        var keyGetterLocal = groqKeyGetter;
+
+        // モデルは一覧取得してドロップダウンで選ぶ（一覧に無い名前も入力可）
+        groqModelCombo = MakeDarkComboBox(editable: true);
+        groqModelCombo.Text = _settings.GroqModel;
+        panel.Children.Add(LabeledRow("Groq モデル", groqModelCombo));
+        var comboLocal = groqModelCombo;
+
+        // モデル一覧の取得状況表示（開いた時点の自動取得でも使うためフィールドに保持）。
+        _groqFetchStatus = new TextBlock
+        {
+            Foreground = Dim, FontSize = 11, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 0, 0, 0),
+        };
+        var fetchBtn = MakeButton("モデル一覧を取得");
+        fetchBtn.Click += async (_, _) => await PopulateGroqModelsAsync(comboLocal, _groqFetchStatus, keyGetterLocal);
+        var fetchRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(120, 0, 0, 2) };
+        fetchRow.Children.Add(fetchBtn);
+        fetchRow.Children.Add(_groqFetchStatus);
+        panel.Children.Add(fetchRow);
+
+        var groqLinkBtn = MakeButton("Groqでキーを取得/確認");
+        groqLinkBtn.Click += (_, _) => OpenUrl("https://console.groq.com/keys");
+        panel.Children.Add(LabeledRow("", groqLinkBtn));
+
+        return panel;
     }
 
     // ── ウィジェット生成 ──────────────────────────────────────
@@ -319,6 +428,23 @@ public sealed class ScriptEditorSettingsWindow : Window
     {
         Content = content, MinWidth = 88, Margin = new Thickness(6, 0, 0, 0),
         Padding = new Thickness(8, 3, 8, 3), Foreground = Text, Background = FieldBg, BorderBrush = Border2,
+    };
+
+    /// <summary>
+    /// 左カテゴリ一覧の項目ボタンを生成する。
+    /// 枠なし・左寄せ・全幅で、選択状態は呼び出し側が Background を切り替えて表現する。
+    /// </summary>
+    private static Button MakeNavButton(string label) => new()
+    {
+        Content = label,
+        Foreground = Text,
+        Background = Brushes.Transparent,
+        BorderThickness = new Thickness(0),
+        HorizontalAlignment        = HorizontalAlignment.Stretch,
+        HorizontalContentAlignment = HorizontalAlignment.Left,
+        Padding = new Thickness(14, 8, 8, 8),
+        Cursor  = System.Windows.Input.Cursors.Hand,
+        FontSize = 13,
     };
 
     private static Brush HexToBrush(string hex, Color fallback)
