@@ -1,5 +1,6 @@
 using System;
 using System.Globalization;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
@@ -94,17 +95,33 @@ public sealed class ScriptEditorSettingsWindow : Window
             Foreground = Dim, FontSize = 11, Margin = new Thickness(0, 0, 0, 4), TextWrapping = TextWrapping.Wrap,
         });
 
-        // Groq 用の設定（API キー・モデル名）とキー取得/確認リンク
-        var groqKeyBox   = TextField("Groq APIキー", _settings.GroqApiKey, out var groqKeyGetter);
-        var groqModelBox = TextField("Groq モデル", _settings.GroqModel, out var groqModelGetter);
+        // Groq APIキー
+        var groqKeyBox = TextField("Groq APIキー", _settings.GroqApiKey, out var groqKeyGetter);
         root.Children.Add(groqKeyBox);
-        root.Children.Add(groqModelBox);
+
+        // モデルは一覧取得してドロップダウンで選ぶ（一覧に無い名前も入力可）
+        var groqModelCombo = MakeDarkComboBox(editable: true);
+        groqModelCombo.Text = _settings.GroqModel;
+        root.Children.Add(LabeledRow("Groq モデル", groqModelCombo));
+
+        var fetchStatus = new TextBlock
+        {
+            Foreground = Dim, FontSize = 11, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 0, 0, 0),
+        };
+        var fetchBtn = MakeButton("モデル一覧を取得");
+        fetchBtn.Click += async (_, _) => await PopulateGroqModelsAsync(groqModelCombo, fetchStatus, groqKeyGetter);
+        var fetchRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(120, 0, 0, 2) };
+        fetchRow.Children.Add(fetchBtn);
+        fetchRow.Children.Add(fetchStatus);
+        root.Children.Add(fetchRow);
 
         var groqLinkBtn = MakeButton("Groqでキーを取得/確認");
-        groqLinkBtn.HorizontalAlignment = HorizontalAlignment.Left;
-        groqLinkBtn.Margin = new Thickness(0, 0, 0, 0);
         groqLinkBtn.Click += (_, _) => OpenUrl("https://console.groq.com/keys");
         root.Children.Add(LabeledRow("", groqLinkBtn));
+
+        // 既にキーがあれば開いた時点でモデル一覧を取得しておく
+        if (!string.IsNullOrWhiteSpace(_settings.GroqApiKey))
+            _ = PopulateGroqModelsAsync(groqModelCombo, fetchStatus, groqKeyGetter);
 
         // ── 配色設定 ──
         root.Children.Add(Section("配色設定"));
@@ -139,7 +156,7 @@ public sealed class ScriptEditorSettingsWindow : Window
             _settings.InlineCompletionEnabled = inlineCheck.IsChecked == true;
             _settings.InlineCompletionBackend = rbGroq.IsChecked == true ? Backend.Groq : Backend.Local;
             _settings.GroqApiKey = groqKeyGetter().Trim();
-            var groqModel = groqModelGetter().Trim();
+            var groqModel = (groqModelCombo.Text ?? "").Trim();
             if (groqModel.Length > 0) _settings.GroqModel = groqModel;
             foreach (var (_, key) in ScriptEditorSettings.ColorEntries)
                 _settings.Colors[key] = NormalizeHex(colorGetters[key](), _settings.Colors[key]);
@@ -164,6 +181,52 @@ public sealed class ScriptEditorSettingsWindow : Window
         FontSize = 13, FontWeight = FontWeights.Bold,
         Margin = new Thickness(0, 10, 0, 6),
     };
+
+    /// <summary>ダークテーマで読める ComboBox を生成する（項目・編集欄を暗色化）。</summary>
+    private static ComboBox MakeDarkComboBox(bool editable)
+    {
+        var combo = new ComboBox
+        {
+            IsEditable = editable, Foreground = Text, Background = FieldBg, BorderBrush = Border2,
+            Width = 220, HorizontalAlignment = HorizontalAlignment.Left, Padding = new Thickness(3, 1, 3, 1),
+        };
+
+        // ドロップダウン項目を暗色にして「白地に白文字」を防ぐ
+        var itemStyle = new Style(typeof(ComboBoxItem));
+        itemStyle.Setters.Add(new Setter(Control.BackgroundProperty, FieldBg));
+        itemStyle.Setters.Add(new Setter(Control.ForegroundProperty, Text));
+        itemStyle.Setters.Add(new Setter(Control.PaddingProperty, new Thickness(4, 2, 4, 2)));
+        combo.ItemContainerStyle = itemStyle;
+
+        // 編集用テキストボックス部分も暗色に
+        if (editable)
+        {
+            var tbStyle = new Style(typeof(TextBox));
+            tbStyle.Setters.Add(new Setter(TextBox.ForegroundProperty, Text));
+            tbStyle.Setters.Add(new Setter(TextBox.BackgroundProperty, FieldBg));
+            tbStyle.Setters.Add(new Setter(TextBox.CaretBrushProperty, Text));
+            combo.Resources.Add(typeof(TextBox), tbStyle);
+        }
+        return combo;
+    }
+
+    /// <summary>現在の API キーで Groq のモデル一覧を取得し、ドロップダウンへ反映する。</summary>
+    private static async Task PopulateGroqModelsAsync(ComboBox combo, TextBlock status, Func<string> keyGetter)
+    {
+        var key = keyGetter().Trim();
+        if (key.Length == 0) { status.Text = "APIキーを入力してください"; return; }
+
+        status.Text = "取得中...";
+        var models = await InlineCompletion.GroqInlineCompletionProvider.FetchModelsAsync(key);
+        if (models.Count == 0) { status.Text = "取得できませんでした（キー/ネットワーク要確認）"; return; }
+
+        var current = combo.Text;
+        combo.Items.Clear();
+        foreach (var m in models) combo.Items.Add(m);
+        // 既存の選択（保存済みモデル）を尊重し、無ければ先頭を選ぶ
+        combo.Text = string.IsNullOrWhiteSpace(current) ? models[0] : current;
+        status.Text = $"{models.Count} 件取得";
+    }
 
     /// <summary>既定ブラウザで URL を開く（失敗時はログのみ）。</summary>
     private static void OpenUrl(string url)

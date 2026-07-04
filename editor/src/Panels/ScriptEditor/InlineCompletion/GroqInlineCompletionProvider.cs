@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
@@ -20,8 +21,11 @@ namespace SEEDEditor.Panels.ScriptEditor.InlineCompletion;
 /// </summary>
 public sealed class GroqInlineCompletionProvider : IInlineCompletionProvider
 {
-    /// <summary>Groq の OpenAI 互換エンドポイント。</summary>
+    /// <summary>Groq の OpenAI 互換エンドポイント（チャット補完）。</summary>
     private const string EndpointUrl = "https://api.groq.com/openai/v1/chat/completions";
+
+    /// <summary>Groq の利用可能モデル一覧エンドポイント。</summary>
+    private const string ModelsUrl = "https://api.groq.com/openai/v1/models";
 
     // ── 生成・文脈パラメータ ────────────────────────────────
     private const int    MaxTokens      = 160;
@@ -125,6 +129,41 @@ public sealed class GroqInlineCompletionProvider : IInlineCompletionProvider
         }
     }
 
+    /// <summary>
+    /// 指定 API キーで利用可能なモデル ID 一覧を取得する（ソート済み）。
+    /// キー未設定・エラー時は空リストを返す。設定画面のモデル選択用。
+    /// </summary>
+    public static async Task<IReadOnlyList<string>> FetchModelsAsync(string apiKey, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(apiKey)) return Array.Empty<string>();
+        try
+        {
+            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
+            using var req = new HttpRequestMessage(HttpMethod.Get, ModelsUrl);
+            req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
+
+            using var res = await http.SendAsync(req, ct);
+            if (!res.IsSuccessStatusCode)
+            {
+                SEEDEditor.EditorLog.Write($"[インライン補完] Groq モデル一覧 HTTP {(int)res.StatusCode} {res.StatusCode}");
+                return Array.Empty<string>();
+            }
+
+            var body   = await res.Content.ReadAsStringAsync(ct);
+            var parsed = JsonSerializer.Deserialize<ModelList>(body);
+            return parsed?.Data?
+                .Where(m => !string.IsNullOrEmpty(m.Id))
+                .Select(m => m.Id!)
+                .OrderBy(id => id, StringComparer.Ordinal)
+                .ToList() ?? (IReadOnlyList<string>)Array.Empty<string>();
+        }
+        catch (Exception ex)
+        {
+            SEEDEditor.EditorLog.Write($"[インライン補完] Groq モデル一覧の取得失敗: {ex.Message}");
+            return Array.Empty<string>();
+        }
+    }
+
     /// <summary>チャットモデルが付けがちな ```csharp フェンスを取り除く。</summary>
     private static string StripCodeFences(string s)
     {
@@ -169,5 +208,17 @@ public sealed class GroqInlineCompletionProvider : IInlineCompletionProvider
     private sealed class Delta
     {
         [JsonPropertyName("content")] public string? Content { get; set; }
+    }
+
+    // ── モデル一覧 DTO（/v1/models）───────────────────────────
+
+    private sealed class ModelList
+    {
+        [JsonPropertyName("data")] public ModelInfo[]? Data { get; set; }
+    }
+
+    private sealed class ModelInfo
+    {
+        [JsonPropertyName("id")] public string? Id { get; set; }
     }
 }
