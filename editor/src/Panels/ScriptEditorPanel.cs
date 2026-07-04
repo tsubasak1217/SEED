@@ -1077,10 +1077,34 @@ public class ScriptEditorPanel : UserControl
         // 再計算しない（＝毎打鍵で全件が出る問題を防ぐ）。
         if (char.IsLetter(c) || c == '_')
         {
-            if (_completionWindow is not null) return;
+            if (_completionWindow is not null)
+            {
+                // 既に表示中: 絞り込み結果が空になったら空バーが残るので閉じる。
+                // AvalonEdit の絞り込みが適用された後に判定するため後回しにする。
+                ScheduleCloseCompletionIfEmpty();
+                return;
+            }
             await ShowCompletionAsync(doc);
         }
         // それ以外の記号では補完を出さない
+    }
+
+    /// <summary>
+    /// 絞り込み後の補完ウィンドウに表示候補が 1 件も無ければ閉じる。
+    /// AvalonEdit のフィルタ適用はこの入力イベントの中で行われるため、
+    /// Dispatcher で 1 段遅らせて（フィルタ確定後に）判定する。
+    /// </summary>
+    private void ScheduleCloseCompletionIfEmpty()
+    {
+        Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Background, () =>
+        {
+            var w = _completionWindow;
+            if (w is null) return;
+            // 絞り込み後の表示件数（ListBox の項目数）が 0 なら空バーになる
+            var listBox = w.CompletionList.ListBox;
+            if (listBox is null || listBox.Items.Count == 0)
+                w.Close();
+        });
     }
 
     /// <summary>エディタ上のキー処理（F12 / Ctrl+Space / Alt+↑↓ 行移動）。</summary>
@@ -1112,6 +1136,20 @@ public class ScriptEditorPanel : UserControl
             return;
         }
 
+        // Enter: 直前が「{」なら閉じ括弧を自動生成し、間へインデント付きで改行する。
+        // 補完ウィンドウ表示中は Enter が候補確定に使われるので対象外にする。
+        if (key is Key.Enter or Key.Return
+            && _completionWindow is null
+            && !Keyboard.Modifiers.HasFlag(ModifierKeys.Control)
+            && !Keyboard.Modifiers.HasFlag(ModifierKeys.Alt))
+        {
+            if (TryExpandBraceOnEnter(doc.Editor))
+            {
+                e.Handled = true;
+                return;
+            }
+        }
+
         // Ctrl+Space: 補完を手動起動
         if (e.Key == Key.Space && Keyboard.Modifiers.HasFlag(ModifierKeys.Control))
         {
@@ -1125,6 +1163,73 @@ public class ScriptEditorPanel : UserControl
             e.Handled = true;
             await GoToDefinitionAsync(doc);
         }
+    }
+
+    /// <summary>
+    /// キャレット直前が「{」のとき Enter で閉じ括弧「}」を自動生成し、
+    /// 括弧の間へインデント付きの空行を作ってキャレットを置く。
+    /// 例: <c>if (x) {|</c> で Enter →
+    /// <code>
+    /// if (x) {
+    ///     |
+    /// }
+    /// </code>
+    /// 直後に既に「}」がある場合は二重生成せず、間を広げるだけにする。
+    /// 処理した場合は true（呼び出し側が既定の改行を抑止する）。
+    /// </summary>
+    private bool TryExpandBraceOnEnter(TextEditor editor)
+    {
+        // 範囲選択中は既定動作（選択置換）に任せる
+        if (editor.SelectionLength > 0) return false;
+
+        var document = editor.Document;
+        int caret = editor.CaretOffset;
+        if (caret == 0) return false;
+
+        // 直前の文字が「{」でなければ対象外
+        if (document.GetCharAt(caret - 1) != '{') return false;
+
+        // 直後に既に「}」があるか（あれば閉じ括弧を追加しない）
+        char after = caret < document.TextLength ? document.GetCharAt(caret) : '\0';
+        bool hasClose = after == '}';
+
+        // 現在行の先頭インデントを引き継ぎ、内側は 1 段深くする
+        var    line       = document.GetLineByOffset(caret);
+        string lineText   = document.GetText(line.Offset, line.Length);
+        string baseIndent = GetLeadingWhitespace(lineText);
+        string indentUnit = _settings.ConvertTabsToSpaces
+            ? new string(' ', Math.Max(1, _settings.IndentationSize))
+            : "\t";
+        string innerIndent = baseIndent + indentUnit;
+        string nl          = GetLineDelimiter(document, line);
+
+        // 「改行＋内側インデント（＋改行＋閉じ括弧）」を挿入する
+        string insertion = hasClose
+            ? nl + innerIndent + nl + baseIndent          // 既存の「}」の手前に空行を作る
+            : nl + innerIndent + nl + baseIndent + "}";    // 閉じ括弧を自動生成
+        document.Insert(caret, insertion);
+
+        // キャレットを内側インデント行の末尾へ置く
+        editor.CaretOffset = caret + nl.Length + innerIndent.Length;
+        return true;
+    }
+
+    /// <summary>文字列先頭の空白（スペース・タブ）だけを返す。</summary>
+    private static string GetLeadingWhitespace(string s)
+    {
+        int i = 0;
+        while (i < s.Length && (s[i] == ' ' || s[i] == '\t')) i++;
+        return s.Substring(0, i);
+    }
+
+    /// <summary>指定行の改行文字列を返す（無ければ既定の CRLF）。</summary>
+    private static string GetLineDelimiter(ICSharpCode.AvalonEdit.Document.TextDocument document,
+                                           ICSharpCode.AvalonEdit.Document.DocumentLine line)
+    {
+        // DelimiterLength==0（最終行）のときは前行の改行を採用、無ければ CRLF
+        if (line.DelimiterLength > 0)
+            return document.GetText(line.Offset + line.Length, line.DelimiterLength);
+        return document.TextLength >= 2 && document.Text.Contains('\r') ? "\r\n" : "\n";
     }
 
     /// <summary>
