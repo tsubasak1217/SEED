@@ -1075,18 +1075,16 @@ public class ScriptEditorPanel : UserControl
         // 識別子の入力: ウィンドウが未表示のときだけ起動する。
         // 既に表示中なら AvalonEdit 側が入力済みプレフィックスで絞り込むため
         // 再計算しない（＝毎打鍵で全件が出る問題を防ぐ）。
-        if (char.IsLetter(c) || c == '_')
+        if ((char.IsLetter(c) || c == '_') && _completionWindow is null)
         {
-            if (_completionWindow is not null)
-            {
-                // 既に表示中: 絞り込み結果が空になったら空バーが残るので閉じる。
-                // AvalonEdit の絞り込みが適用された後に判定するため後回しにする。
-                ScheduleCloseCompletionIfEmpty();
-                return;
-            }
             await ShowCompletionAsync(doc);
+            return;
         }
-        // それ以外の記号では補完を出さない
+
+        // 表示中にテキストが変わったら（英字・記号・空白いずれでも）絞り込み結果を確認し、
+        // 候補が 0 件なら空の白バーが残らないようウィンドウを閉じる。
+        if (_completionWindow is not null)
+            ScheduleCloseCompletionIfEmpty();
     }
 
     /// <summary>
@@ -1100,9 +1098,13 @@ public class ScriptEditorPanel : UserControl
         {
             var w = _completionWindow;
             if (w is null) return;
-            // 絞り込み後の表示件数（ListBox の項目数）が 0 なら空バーになる
+
+            // ListBox 未生成（テンプレート未適用）なら判定を先送りする
             var listBox = w.CompletionList.ListBox;
-            if (listBox is null || listBox.Items.Count == 0)
+            if (listBox is null) { ScheduleCloseCompletionIfEmpty(); return; }
+
+            // 絞り込み後の表示件数が 0 なら空バーになるので閉じる
+            if (listBox.Items.Count == 0)
                 w.Close();
         });
     }
@@ -1189,9 +1191,15 @@ public class ScriptEditorPanel : UserControl
         // 直前の文字が「{」でなければ対象外
         if (document.GetCharAt(caret - 1) != '{') return false;
 
-        // 直後に既に「}」があるか（あれば閉じ括弧を追加しない）
-        char after = caret < document.TextLength ? document.GetCharAt(caret) : '\0';
-        bool hasClose = after == '}';
+        // 閉じ括弧を新規生成すべきか判定する。
+        // 単に直後の 1 文字を見るだけでは「{ 改行 }」のように別行に対応する「}」が
+        // ある場合を見落とすため、ドキュメント全体で「{」と「}」の数を比較し、
+        // 「{」が多い（未対応の開き括弧が残る）ときだけ閉じ括弧を生成する。
+        var    docText = document.Text;
+        bool   needClose = CountChar(docText, '{') > CountChar(docText, '}');
+        // 直後に既に「}」がある（同一行内 "{}"）ときは、その括弧を独立行へ展開する
+        char   after      = caret < document.TextLength ? document.GetCharAt(caret) : '\0';
+        bool   splitClose = !needClose && after == '}';
 
         // 現在行の先頭インデントを引き継ぎ、内側は 1 段深くする
         var    line       = document.GetLineByOffset(caret);
@@ -1203,15 +1211,27 @@ public class ScriptEditorPanel : UserControl
         string innerIndent = baseIndent + indentUnit;
         string nl          = GetLineDelimiter(document, line);
 
-        // 「改行＋内側インデント（＋改行＋閉じ括弧）」を挿入する
-        string insertion = hasClose
-            ? nl + innerIndent + nl + baseIndent          // 既存の「}」の手前に空行を作る
-            : nl + innerIndent + nl + baseIndent + "}";    // 閉じ括弧を自動生成
+        // 生成パターン:
+        //   needClose  : 改行＋内側インデント＋改行＋閉じ括弧（「}」を自動生成）
+        //   splitClose : 改行＋内側インデント＋改行＋インデント（既存「}」を独立行へ）
+        //   それ以外   : 改行＋内側インデント（対応済みなので普通のインデント改行のみ）
+        string insertion =
+            needClose  ? nl + innerIndent + nl + baseIndent + "}" :
+            splitClose ? nl + innerIndent + nl + baseIndent :
+                         nl + innerIndent;
         document.Insert(caret, insertion);
 
         // キャレットを内側インデント行の末尾へ置く
         editor.CaretOffset = caret + nl.Length + innerIndent.Length;
         return true;
+    }
+
+    /// <summary>文字列中に指定文字が現れる回数を数える。</summary>
+    private static int CountChar(string s, char target)
+    {
+        int n = 0;
+        foreach (var ch in s) if (ch == target) n++;
+        return n;
     }
 
     /// <summary>文字列先頭の空白（スペース・タブ）だけを返す。</summary>
