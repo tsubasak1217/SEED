@@ -309,6 +309,14 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
             _runtimeManager?.SendToRuntime("RELOAD_SCRIPTS");
         };
 
+        // 予期せぬ例外でクラッシュする直前に未保存スクリプトを退避する（復元用）。
+        // UI スレッドの未処理例外は Dispatcher 経由、それ以外は AppDomain 経由で捕捉する。
+        Application.Current.DispatcherUnhandledException += (_, _) => PanelScriptEditor.FlushRecovery();
+        AppDomain.CurrentDomain.UnhandledException       += (_, _) => PanelScriptEditor.FlushRecovery();
+
+        // 前回が異常終了（クラッシュ）していれば、未保存スクリプトの復元を提案する
+        PanelScriptEditor.CheckCrashRecovery();
+
         // AI アシスタントパネルを初期化する。
         // LoadLayout() がこの後に呼ばれてコンテンツを上書きするため、
         // _aiPanelUi にビルド済み要素を保持して LoadLayout 内で参照する。
@@ -525,6 +533,17 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
                 // No = 変更を破棄して終了（fall through）
             }
         }
+
+        // シーン確認のあとに、スクリプトの未保存を独立して確認する。
+        // （どちらも未保存なら シーン → スクリプト の順で確認が出る。）
+        if (!PanelScriptEditor.PromptSaveOnExit())
+        {
+            e.Cancel = true;
+            return;
+        }
+
+        // ここまで来たら正常終了。クラッシュ復元用の退避データを消す。
+        PanelScriptEditor.ClearRecovery();
 
         SaveLayout();
         ReleasePlayClamp();

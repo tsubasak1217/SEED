@@ -113,6 +113,8 @@ public class ScriptEditorPanel : UserControl
     /// <summary>書式・配色設定と、その保存先ディレクトリ。</summary>
     private ScriptEditorSettings _settings = new();
     private string? _settingsDir;
+    /// <summary>未保存編集のクラッシュ復元ストア（InitSettings で生成）。</summary>
+    private ScriptRecoveryStore? _recovery;
 
     /// <summary>診断ホバー用の共有ツールチップ（ホバーが外れたら閉じる）。</summary>
     private ToolTip? _diagToolTip;
@@ -340,6 +342,8 @@ public class ScriptEditorPanel : UserControl
     {
         _settingsDir = settingsDir;
         _settings    = ScriptEditorSettings.Load(settingsDir);
+        // 未保存編集のクラッシュ復元ストアを用意する
+        _recovery    = new ScriptRecoveryStore(Path.Combine(settingsDir, "script_recovery"));
         ApplyColorsToHighlighting(_settings);
         foreach (var doc in _docs) ApplySettingsToEditor(doc.Editor);
     }
@@ -527,6 +531,8 @@ public class ScriptEditorPanel : UserControl
             diagTimer.Stop();
             _ = RunDiagnosticsAsync(doc);
             _ = RunSemanticColorizeAsync(doc);
+            // 未保存なら内容を退避、保存済みなら退避を消す（クラッシュ復元用）
+            UpdateRecovery(doc);
         };
 
         // マーカーにホバーしたら診断メッセージをツールチップ表示し、外れたら閉じる
@@ -582,6 +588,111 @@ public class ScriptEditorPanel : UserControl
 
     /// <summary>未保存の変更があるタブが存在するか。</summary>
     public bool HasUnsavedChanges => _docs.Any(d => d.IsDirty);
+
+    // ── 終了時の未保存確認 ────────────────────────────────────
+
+    /// <summary>
+    /// アプリ終了時に、未保存スクリプトがあれば保存確認する。
+    /// 戻り値 false = ユーザーがキャンセル（終了を中止すべき）。
+    /// シーンの未保存確認とは独立して呼び出す想定。
+    /// </summary>
+    public bool PromptSaveOnExit()
+    {
+        var dirty = _docs.Where(d => d.IsDirty).ToList();
+        if (dirty.Count == 0) return true;
+
+        var names = string.Join("\n", dirty.Select(d => "・" + Path.GetFileName(d.FilePath)));
+        var result = MessageBox.Show(
+            $"未保存のスクリプトがあります。保存しますか？\n\n{names}",
+            "スクリプトエディタ",
+            MessageBoxButton.YesNoCancel, MessageBoxImage.Question);
+
+        switch (result)
+        {
+            case MessageBoxResult.Cancel: return false;          // 終了中止
+            case MessageBoxResult.Yes:    foreach (var d in dirty) Save(d); break;
+            // No = 破棄して終了（何もしない）
+        }
+        return true;
+    }
+
+    // ── クラッシュ復元 ────────────────────────────────────────
+
+    /// <summary>ドキュメントの退避データを最新化する（未保存なら保存、保存済みなら削除）。</summary>
+    private void UpdateRecovery(DocTab doc)
+    {
+        if (_recovery is null) return;
+        if (doc.IsDirty) _recovery.Save(doc.FilePath, doc.Editor.Text);
+        else             _recovery.Remove(doc.FilePath);
+    }
+
+    /// <summary>全未保存ドキュメントの内容を即座に退避する（クラッシュ直前のフラッシュ用）。</summary>
+    public void FlushRecovery()
+    {
+        if (_recovery is null) return;
+        // クラッシュ経路（別スレッド含む）から呼ばれ得るため防御的に処理する
+        foreach (var doc in _docs.Where(d => d.IsDirty))
+        {
+            try { _recovery.Save(doc.FilePath, doc.Editor.Text); }
+            catch { /* UI スレッド外アクセス等は無視（ベストエフォート） */ }
+        }
+    }
+
+    /// <summary>全退避データを削除する（アプリの正常終了時に呼ぶ）。</summary>
+    public void ClearRecovery() => _recovery?.Clear();
+
+    /// <summary>
+    /// 起動時に呼ぶ。前回クラッシュの退避データがあれば復元を提案し、
+    /// 承諾されたら各スクリプトを開いて未保存内容を復元する。
+    /// </summary>
+    public void CheckCrashRecovery()
+    {
+        if (_recovery is null || !_recovery.HasAny()) return;
+
+        var entries = _recovery.LoadAll();
+        if (entries.Count == 0) { _recovery.Clear(); return; }
+
+        var names = string.Join("\n", entries.Select(e => "・" + Path.GetFileName(e.FilePath)));
+        var result = MessageBox.Show(
+            "前回のセッションが正常に終了しませんでした。\n" +
+            $"編集中だったスクリプトの内容を復元しますか？\n\n{names}",
+            "スクリプトエディタ - 復元",
+            MessageBoxButton.YesNo, MessageBoxImage.Warning);
+
+        if (result == MessageBoxResult.Yes)
+        {
+            foreach (var e in entries) RestoreDoc(e.FilePath, e.Content);
+        }
+        // 復元してもしなくても退避データは一旦消す（復元後は編集で再退避される）
+        _recovery.Clear();
+    }
+
+    /// <summary>退避内容で 1 ファイルを復元する（開いて内容を差し替え、未保存扱いにする）。</summary>
+    private void RestoreDoc(string filePath, string content)
+    {
+        try
+        {
+            if (File.Exists(filePath))
+            {
+                OpenFile(filePath);
+                var doc = _docs.FirstOrDefault(d =>
+                    string.Equals(d.FilePath, Path.GetFullPath(filePath), StringComparison.OrdinalIgnoreCase));
+                if (doc is not null && doc.Editor.Text != content)
+                {
+                    // Text 変更で TextChanged が発火し、ダーティ化・再退避される
+                    doc.Editor.Text = content;
+                }
+            }
+            else
+            {
+                EditorLog.Write($"復元スキップ（元ファイルが存在しません）: {filePath}");
+            }
+        }
+        catch (Exception ex)
+        {
+            EditorLog.Write($"スクリプト復元に失敗: {Path.GetFileName(filePath)} - {ex.Message}");
+        }
+    }
 
     // ── 診断（エラー・警告・文法エラー）─────────────────────
 
@@ -1103,6 +1214,9 @@ public class ScriptEditorPanel : UserControl
             EditorLog.Write($"スクリプト保存・コンパイル成功 [{Path.GetFileName(doc.FilePath)}] → {type.Name}");
         }
 
+        // 保存できたので退避データは不要（クラッシュ復元対象から外す）
+        _recovery?.Remove(doc.FilePath);
+
         // 保存自体は成功しているためイベントは常に発火する
         // （コンパイルエラー時も runtime 側は旧アセンブリを維持して動き続ける）
         ScriptSaved?.Invoke(doc.FilePath);
@@ -1119,6 +1233,8 @@ public class ScriptEditorPanel : UserControl
             if (result == MessageBoxResult.Cancel) return;
             if (result == MessageBoxResult.Yes)    Save(doc);
         }
+        // 閉じたドキュメントの退避データは不要（保存済み or 破棄を選択済み）
+        _recovery?.Remove(doc.FilePath);
         doc.DiagTimer.Stop();
         int idx = _docs.IndexOf(doc);
         _docs.Remove(doc);
