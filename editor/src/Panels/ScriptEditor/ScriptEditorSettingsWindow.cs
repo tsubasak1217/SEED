@@ -447,6 +447,7 @@ public sealed class ScriptEditorSettingsWindow : Window
     {
         Content = content, MinWidth = 88, Margin = new Thickness(6, 0, 0, 0),
         Padding = new Thickness(8, 3, 8, 3), Foreground = Text, Background = FieldBg, BorderBrush = Border2,
+        Template = (ControlTemplate)System.Windows.Markup.XamlReader.Parse(DarkButtonTemplateXaml),
     };
 
     /// <summary>
@@ -464,7 +465,41 @@ public sealed class ScriptEditorSettingsWindow : Window
         Padding = new Thickness(14, 8, 8, 8),
         Cursor  = System.Windows.Input.Cursors.Hand,
         FontSize = 13,
+        Template = (ControlTemplate)System.Windows.Markup.XamlReader.Parse(DarkButtonTemplateXaml),
     };
+
+    /// <summary>
+    /// ダークテーマ用ボタンテンプレート（XAML 文字列）。
+    /// 既定テンプレートはホバー/押下時に OS テーマの明色背景になり、明るい文字が
+    /// 埋もれて見えなくなる。ここでは全状態で背景を暗色に保ち、文字色（Foreground）は
+    /// そのまま用いて可視性を確保する。
+    /// 背景は通常＝Background（選択・通常色をそのまま反映）、ホバー＝#3E3E42、押下＝#2A2A2E。
+    /// </summary>
+    private const string DarkButtonTemplateXaml = @"
+<ControlTemplate TargetType='Button'
+    xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation'
+    xmlns:x='http://schemas.microsoft.com/winfx/2006/xaml'>
+  <Border x:Name='bd' SnapsToDevicePixels='True'
+      Background='{TemplateBinding Background}'
+      BorderBrush='{TemplateBinding BorderBrush}'
+      BorderThickness='{TemplateBinding BorderThickness}'>
+    <ContentPresenter Margin='{TemplateBinding Padding}'
+        HorizontalAlignment='{TemplateBinding HorizontalContentAlignment}'
+        VerticalAlignment='Center'
+        TextElement.Foreground='{TemplateBinding Foreground}'/>
+  </Border>
+  <ControlTemplate.Triggers>
+    <Trigger Property='IsMouseOver' Value='True'>
+      <Setter TargetName='bd' Property='Background' Value='#3E3E42'/>
+    </Trigger>
+    <Trigger Property='IsPressed' Value='True'>
+      <Setter TargetName='bd' Property='Background' Value='#2A2A2E'/>
+    </Trigger>
+    <Trigger Property='IsEnabled' Value='False'>
+      <Setter Property='Opacity' Value='0.5'/>
+    </Trigger>
+  </ControlTemplate.Triggers>
+</ControlTemplate>";
 
     private static Brush HexToBrush(string hex, Color fallback)
     {
