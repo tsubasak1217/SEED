@@ -25,20 +25,26 @@ public sealed class InlineCompletionProvider
     private const string FimMiddleToken = "<|fim_middle|>";
 
     // ── 生成・文脈のパラメータ（マジックナンバーを避け定数化）────
-    /// <summary>1 回の補完で生成する最大トークン数（1〜数行を想定）。</summary>
-    private const int MaxPredictTokens = 96;
+    /// <summary>1 回の補完で生成する最大トークン数（1 行想定なので控えめ＝高速）。</summary>
+    private const int MaxPredictTokens = 64;
     /// <summary>プロンプトに含めるカーソル前テキストの最大文字数。</summary>
     private const int MaxPrefixChars = 2000;
     /// <summary>プロンプトに含めるカーソル後テキストの最大文字数。</summary>
     private const int MaxSuffixChars = 1000;
     /// <summary>サンプリング温度（低め＝確定的でノイズの少ない補完）。</summary>
     private const double Temperature = 0.2;
+    /// <summary>核サンプリング（上位確率のみ＝安定した候補）。</summary>
+    private const double TopP = 0.95;
     /// <summary>1 リクエストのタイムアウト（秒）。</summary>
     private const int RequestTimeoutSec = 12;
 
-    /// <summary>生成停止トークン（FIM 制御・特殊トークンで打ち切る）。</summary>
+    /// <summary>
+    /// 生成停止トークン。FIM 制御・特殊トークンに加え、改行でも停止する。
+    /// 表示は 1 行のみなので、改行以降の生成を止めることでレイテンシを大きく削る。
+    /// </summary>
     private static readonly string[] StopTokens =
     {
+        "\n",
         "<|endoftext|>", FimPrefixToken, FimSuffixToken, FimMiddleToken,
         "<|fim_pad|>", "<|repo_name|>", "<|file_sep|>",
     };
@@ -74,8 +80,12 @@ public sealed class InlineCompletionProvider
             Prompt      = fimPrompt,
             NPredict    = MaxPredictTokens,
             Temperature = Temperature,
+            TopP        = TopP,
             Stop        = StopTokens,
             Stream      = false,
+            // KV キャッシュを再利用する。タイプするたびに伸びる共通プレフィックスの
+            // 再計算を省けるため、対話的な補完のレイテンシが大幅に下がる（最大の高速化）。
+            CachePrompt = true,
         };
 
         try
@@ -99,11 +109,13 @@ public sealed class InlineCompletionProvider
     /// <summary>/completion リクエストボディ。</summary>
     private sealed class CompletionRequest
     {
-        [JsonPropertyName("prompt")]      public string   Prompt      { get; set; } = "";
-        [JsonPropertyName("n_predict")]   public int      NPredict    { get; set; }
-        [JsonPropertyName("temperature")] public double   Temperature { get; set; }
-        [JsonPropertyName("stop")]        public string[] Stop        { get; set; } = Array.Empty<string>();
-        [JsonPropertyName("stream")]      public bool     Stream      { get; set; }
+        [JsonPropertyName("prompt")]       public string   Prompt      { get; set; } = "";
+        [JsonPropertyName("n_predict")]    public int      NPredict    { get; set; }
+        [JsonPropertyName("temperature")]  public double   Temperature { get; set; }
+        [JsonPropertyName("top_p")]        public double   TopP        { get; set; }
+        [JsonPropertyName("stop")]         public string[] Stop        { get; set; } = Array.Empty<string>();
+        [JsonPropertyName("stream")]       public bool     Stream      { get; set; }
+        [JsonPropertyName("cache_prompt")] public bool     CachePrompt { get; set; }
     }
 
     /// <summary>/completion レスポンスボディ（content のみ利用）。</summary>
