@@ -18,8 +18,12 @@ namespace SEEDEditor.Panels.ScriptEditor.InlineCompletion;
 /// </summary>
 public sealed class InlineCompletionController : IDisposable
 {
-    /// <summary>入力停止から補完リクエストまでの待ち時間（短いほど反応が速い）。</summary>
-    private static readonly TimeSpan Debounce = TimeSpan.FromMilliseconds(250);
+    /// <summary>
+    /// 入力停止から補完リクエストまでの待ち時間。
+    /// 短いほど反応は速いが、タイプ中に重い推論が走りマシンが固まりやすい。
+    /// 「入力が止まってから」だけ推論するよう、やや長めに取る。
+    /// </summary>
+    private static readonly TimeSpan Debounce = TimeSpan.FromMilliseconds(500);
 
     private readonly TextEditor                _editor;
     private readonly InlineCompletionProvider  _provider;

@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using System.Net.Http;
 using System.Text;
 using System.Text.Json;
@@ -82,9 +83,12 @@ public sealed class InlineCompletionProvider
             Temperature = Temperature,
             TopP        = TopP,
             Stop        = StopTokens,
-            Stream      = false,
+            // ストリーミングで受信する。新しい入力が来て ct がキャンセルされると
+            // 接続が切れ、llama-server 側も生成を打ち切る。これにより、タイプ中に
+            // 7B 推論がキューへ溜まってマシン全体が固まる問題を防ぐ（最重要）。
+            Stream      = true,
             // KV キャッシュを再利用する。タイプするたびに伸びる共通プレフィックスの
-            // 再計算を省けるため、対話的な補完のレイテンシが大幅に下がる（最大の高速化）。
+            // 再計算を省けるため、対話的な補完のレイテンシが大幅に下がる。
             CachePrompt = true,
         };
 
@@ -94,19 +98,42 @@ public sealed class InlineCompletionProvider
 
         try
         {
-            var json    = JsonSerializer.Serialize(request);
-            using var content = new StringContent(json, Encoding.UTF8, "application/json");
-            using var res     = await _http.PostAsync(url, content, ct);
+            var json = JsonSerializer.Serialize(request);
+            using var req = new HttpRequestMessage(HttpMethod.Post, url)
+            {
+                Content = new StringContent(json, Encoding.UTF8, "application/json"),
+            };
+            // ヘッダー受信時点で返してもらい、本文はストリームで逐次読む
+            using var res = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
             if (!res.IsSuccessStatusCode)
             {
                 SEEDEditor.EditorLog.Write($"[インライン補完] HTTP {(int)res.StatusCode} {res.StatusCode}");
                 return null;
             }
 
-            var body   = await res.Content.ReadAsStringAsync(ct);
-            var parsed = JsonSerializer.Deserialize<CompletionResponse>(body);
-            var text   = parsed?.Content;
-            return string.IsNullOrEmpty(text) ? null : text;
+            await using var stream = await res.Content.ReadAsStreamAsync(ct);
+            using var reader = new StreamReader(stream);
+
+            var sb = new StringBuilder();
+            // SSE: 各行が "data: {json}"。content を積み上げ、改行・stop で打ち切る。
+            while (await reader.ReadLineAsync(ct) is { } line)
+            {
+                if (line.Length == 0 || !line.StartsWith("data:", StringComparison.Ordinal)) continue;
+
+                var payload = line[5..].Trim();
+                CompletionResponse? chunk;
+                try { chunk = JsonSerializer.Deserialize<CompletionResponse>(payload); }
+                catch { continue; }
+
+                if (!string.IsNullOrEmpty(chunk?.Content)) sb.Append(chunk!.Content);
+
+                // 1 行分そろった（改行を含む）か、サーバーが停止したら十分。
+                // 早期に return するとレスポンスが破棄され、接続切断で生成も止まる。
+                if (chunk?.Stop == true) break;
+                if (sb.Length > 0 && sb.ToString().IndexOf('\n') >= 0) break;
+            }
+
+            return sb.Length == 0 ? null : sb.ToString();
         }
         catch (OperationCanceledException) { return null; } // 新しい入力で破棄
         catch (Exception ex)
@@ -130,9 +157,10 @@ public sealed class InlineCompletionProvider
         [JsonPropertyName("cache_prompt")] public bool     CachePrompt { get; set; }
     }
 
-    /// <summary>/completion レスポンスボディ（content のみ利用）。</summary>
+    /// <summary>/completion レスポンス（ストリーミング 1 チャンク／最終まとめ共通）。</summary>
     private sealed class CompletionResponse
     {
         [JsonPropertyName("content")] public string? Content { get; set; }
+        [JsonPropertyName("stop")]    public bool    Stop    { get; set; }
     }
 }
