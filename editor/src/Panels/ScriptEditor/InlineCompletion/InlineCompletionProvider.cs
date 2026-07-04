@@ -88,12 +88,20 @@ public sealed class InlineCompletionProvider
             CachePrompt = true,
         };
 
+        // localhost は環境により IPv6(::1) を先に試して接続失敗することがあるため、
+        // サーバーがバインドしている IPv4(127.0.0.1) を明示して確実に繋ぐ。
+        string url = _llm.Endpoint.Replace("localhost", "127.0.0.1") + "/completion";
+
         try
         {
             var json    = JsonSerializer.Serialize(request);
             using var content = new StringContent(json, Encoding.UTF8, "application/json");
-            using var res     = await _http.PostAsync($"{_llm.Endpoint}/completion", content, ct);
-            if (!res.IsSuccessStatusCode) return null;
+            using var res     = await _http.PostAsync(url, content, ct);
+            if (!res.IsSuccessStatusCode)
+            {
+                SEEDEditor.EditorLog.Write($"[インライン補完] HTTP {(int)res.StatusCode} {res.StatusCode}");
+                return null;
+            }
 
             var body   = await res.Content.ReadAsStringAsync(ct);
             var parsed = JsonSerializer.Deserialize<CompletionResponse>(body);
@@ -101,7 +109,11 @@ public sealed class InlineCompletionProvider
             return string.IsNullOrEmpty(text) ? null : text;
         }
         catch (OperationCanceledException) { return null; } // 新しい入力で破棄
-        catch                              { return null; } // 通信・解析エラーは黙って無効
+        catch (Exception ex)
+        {
+            SEEDEditor.EditorLog.Write($"[インライン補完] リクエスト失敗: {ex.GetType().Name}: {ex.Message}");
+            return null; // 通信・解析エラーは黙って無効
+        }
     }
 
     // ── llama-server /completion の入出力 DTO ───────────────────

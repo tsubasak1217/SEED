@@ -120,7 +120,10 @@ public sealed class InlineCompletionController : IDisposable
 
     private async Task RequestAsync()
     {
-        if (!_isEnabled() || _isSuppressed() || !_provider.IsAvailable) return;
+        // どのゲートで止まったかを追えるよう、抑止理由をログに残す（原因調査用）
+        if (!_isEnabled())        { Log("skip: 設定オフ");             return; }
+        if (_isSuppressed())      { Log("skip: IntelliSense表示中");   return; }
+        if (!_provider.IsAvailable) { Log("skip: サーバー未起動");     return; }
 
         var document = _editor.Document;
         int caret    = _editor.CaretOffset;
@@ -131,7 +134,7 @@ public sealed class InlineCompletionController : IDisposable
         if (caret < line.EndOffset)
         {
             string rest = document.GetText(caret, line.EndOffset - caret);
-            if (rest.TrimEnd().Length > 0) return;
+            if (rest.TrimEnd().Length > 0) { Log("skip: 行の途中"); return; }
         }
 
         string text   = _editor.Text;
@@ -142,18 +145,23 @@ public sealed class InlineCompletionController : IDisposable
         _cts = new CancellationTokenSource();
         var token = _cts.Token;
 
+        Log($"request: caret={caret} prefixLen={prefix.Length}");
         string? result = await _provider.GetCompletionAsync(prefix, suffix, token);
-        if (result is null || token.IsCancellationRequested) return;
+        if (result is null || token.IsCancellationRequested) { Log("result: null/cancel"); return; }
 
         // リクエスト中に編集・カーソル移動があれば破棄する（陳腐化防止）
-        if (_editor.CaretOffset != caret || _editor.Document.TextLength != text.Length) return;
+        if (_editor.CaretOffset != caret || _editor.Document.TextLength != text.Length) { Log("result: 陳腐化"); return; }
 
         string firstLine = FirstLine(result);
-        if (firstLine.Length == 0) return;   // 改行のみ等の無意味な予測は出さない
+        if (firstLine.Length == 0) { Log("result: 空行"); return; }   // 改行のみ等の無意味な予測は出さない
 
+        Log($"show: \"{firstLine}\"");
         _renderer.SetText(firstLine, caret);
-        _editor.TextArea.TextView.InvalidateLayer(_renderer.Layer);
+        _editor.TextArea.TextView.Redraw();
     }
+
+    /// <summary>インライン補完の調査用ログ（[インライン補完] 接頭辞で追える）。</summary>
+    private static void Log(string message) => SEEDEditor.EditorLog.Write($"[インライン補完] {message}");
 
     /// <summary>予測文字列の先頭 1 行を取り出す（末尾空白は除去、v1 は 1 行表示）。</summary>
     private static string FirstLine(string s)

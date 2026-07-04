@@ -415,7 +415,30 @@ public class ScriptEditorPanel : UserControl
         var llm = LocalLlmManager.GetShared(editorDir);
         if (llm.IsServerRunning) return;
 
-        _ = llm.EnsureServerRunningAsync(msg => EditorLog.Write($"[インライン補完] {msg}"));
+        // 起動を試み、失敗したらフラグを戻して再試行（オンオフ切り替え）できるようにする
+        _ = StartInlineServerAsync(llm);
+    }
+
+    /// <summary>インライン補完用サーバーを起動し、失敗時は再試行可能な状態へ戻す。</summary>
+    private async Task StartInlineServerAsync(LocalLlmManager llm)
+    {
+        bool ok;
+        try
+        {
+            ok = await llm.EnsureServerRunningAsync(msg => EditorLog.Write($"[インライン補完] {msg}"));
+        }
+        catch (Exception ex)
+        {
+            EditorLog.Write($"[インライン補完] サーバー起動で例外: {ex.Message}");
+            ok = false;
+        }
+
+        if (!ok)
+        {
+            // 起動できなかった: フラグを戻し、設定オフ→オンで再試行できるようにする
+            _inlineServerStartRequested = false;
+            EditorLog.Write("[インライン補完] サーバー起動に失敗しました（設定のオン/オフで再試行できます）");
+        }
     }
 
     /// <summary>1 つのエディタに書式設定（インデント・フォント）を適用する。</summary>
@@ -575,12 +598,14 @@ public class ScriptEditorPanel : UserControl
         };
 
         // AI インライン補完（Copilot 風ゴーストテキスト）。設定で有効なときだけ動く。
-        // IntelliSense（補完ウィンドウ）表示中は抑止して競合を避ける。
+        // IntelliSense（補完ウィンドウ）とは共存させる（Copilot と同様）。Tab の競合は
+        // OnEditorKeyDown 側で解決済み（ウィンドウ表示中は Tab=IntelliSense 確定、
+        // 非表示時のみ Tab=ゴースト確定）。よって抑止はしない（常に false）。
         doc.Inline = new InlineCompletionController(
             editor,
             GetInlineProvider(),
             isEnabled:    () => _settings.InlineCompletionEnabled,
-            isSuppressed: () => _completionWindow is not null);
+            isSuppressed: () => false);
 
         // IntelliSense: 文字入力に応じて補完ウィンドウを開く
         editor.TextArea.TextEntered += (_, e) => OnTextEntered(doc, e.Text);
@@ -1468,9 +1493,6 @@ public class ScriptEditorPanel : UserControl
 
         // 既存のウィンドウを閉じてから新規表示する
         _completionWindow?.Close();
-
-        // IntelliSense と AI インライン補完の同時表示を避ける
-        doc.Inline?.Dismiss();
 
         var window = new CompletionWindow(editor.TextArea)
         {
