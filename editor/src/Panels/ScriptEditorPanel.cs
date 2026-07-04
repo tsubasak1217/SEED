@@ -561,6 +561,18 @@ public class ScriptEditorPanel : UserControl
         editor.TextArea.Caret.PositionChanged += (_, _) => ScheduleOccurrence();
         editor.TextArea.SelectionChanged      += (_, _) => ScheduleOccurrence();
 
+        // コピー/カットをプレーンテキストのみに上書きする。
+        // AvalonEdit 既定は選択範囲全体に RTF/HTML（ハイライト付き）を生成するため
+        // 数万行のコピーが非常に遅い。プレーンテキストだけ載せれば VS 並みに速い。
+        editor.TextArea.CommandBindings.Add(new CommandBinding(
+            ApplicationCommands.Copy,
+            (_, e) => { CopyPlainText(editor); e.Handled = true; },
+            (_, e) => { e.CanExecute = true; e.Handled = true; }));
+        editor.TextArea.CommandBindings.Add(new CommandBinding(
+            ApplicationCommands.Cut,
+            (_, e) => { CutPlainText(editor); e.Handled = true; },
+            (_, e) => { e.CanExecute = !editor.IsReadOnly; e.Handled = true; }));
+
         // Ctrl+ホイールで表示倍率を変更する
         editor.PreviewMouseWheel += (_, e) =>
         {
@@ -1079,6 +1091,21 @@ public class ScriptEditorPanel : UserControl
             return;
         }
 
+        // Ctrl+C / Ctrl+X: 高速なプレーンテキストコピー（AvalonEdit のリッチ生成を回避）。
+        // PreviewKeyDown で Handled にすることでコマンド変換を止め、二重処理を防ぐ。
+        if (Keyboard.Modifiers == ModifierKeys.Control && e.Key == Key.C)
+        {
+            CopyPlainText(doc.Editor);
+            e.Handled = true;
+            return;
+        }
+        if (Keyboard.Modifiers == ModifierKeys.Control && e.Key == Key.X)
+        {
+            CutPlainText(doc.Editor);
+            e.Handled = true;
+            return;
+        }
+
         // Ctrl+Space: 補完を手動起動
         if (e.Key == Key.Space && Keyboard.Modifiers.HasFlag(ModifierKeys.Control))
         {
@@ -1091,6 +1118,57 @@ public class ScriptEditorPanel : UserControl
         {
             e.Handled = true;
             await GoToDefinitionAsync(doc);
+        }
+    }
+
+    /// <summary>
+    /// 選択範囲（無ければ現在行）をプレーンテキストとしてクリップボードへコピーする。
+    /// AvalonEdit 既定のリッチテキスト生成を回避し、数万行でも高速にコピーする。
+    /// </summary>
+    private static void CopyPlainText(TextEditor editor)
+    {
+        var text = GetCopyText(editor);
+        if (!string.IsNullOrEmpty(text)) SetClipboardText(text);
+    }
+
+    /// <summary>コピー相当の内容を切り取る（プレーンテキスト）。</summary>
+    private static void CutPlainText(TextEditor editor)
+    {
+        if (editor.IsReadOnly) return;
+        var text = GetCopyText(editor);
+        if (string.IsNullOrEmpty(text)) return;
+        SetClipboardText(text);
+
+        if (editor.SelectionLength > 0)
+        {
+            // 選択範囲を削除する
+            var seg = editor.TextArea.Selection.SurroundingSegment;
+            editor.Document.Remove(seg.Offset, seg.Length);
+        }
+        else
+        {
+            // 選択が無ければ現在行を丸ごと削除する（改行込み）
+            var line = editor.Document.GetLineByOffset(editor.CaretOffset);
+            editor.Document.Remove(line.Offset, line.TotalLength);
+        }
+    }
+
+    /// <summary>コピー対象文字列を返す（選択があればそれ、無ければ現在行＋改行）。</summary>
+    private static string GetCopyText(TextEditor editor)
+    {
+        if (editor.SelectionLength > 0) return editor.SelectedText;
+        // 選択が無い場合は VS 同様に現在行を丸ごと（改行含む）コピーする
+        var line = editor.Document.GetLineByOffset(editor.CaretOffset);
+        return editor.Document.GetText(line.Offset, line.TotalLength);
+    }
+
+    /// <summary>クリップボードへプレーンテキストを設定する（一時的な失敗はリトライ）。</summary>
+    private static void SetClipboardText(string text)
+    {
+        for (int attempt = 0; attempt < 3; attempt++)
+        {
+            try { Clipboard.SetText(text); return; }
+            catch { System.Threading.Thread.Sleep(10); }
         }
     }
 
