@@ -51,6 +51,12 @@ public class ScriptEditorPanel : UserControl
     private const double MaxFontSize = 40.0;
     // 診断（エラー・警告）の再計算を遅延させるデバウンス時間
     private static readonly TimeSpan DiagnosticsDebounce = TimeSpan.FromMilliseconds(400);
+    // 選択単語ハイライトのデバウンス間隔（キャレット移動のたびの全文走査を避ける）
+    private static readonly TimeSpan OccurrenceDebounce   = TimeSpan.FromMilliseconds(180);
+    // これを超える文字数のファイルでは選択単語ハイライトを無効化する（巨大ファイルの操作性優先）
+    private const int OccurrenceMaxTextLength = 200_000;
+    // これを超える文字数のファイルではセマンティック着色を無効化する（毎編集の全文分類が重いため）
+    private const int SemanticMaxTextLength   = 200_000;
     // ── カラーテーマ（エディタ全体のダークテーマに合わせる）──
     private static readonly SolidColorBrush BrushBg        = new(Color.FromRgb(0x1E, 0x1E, 0x1E));
     private static readonly SolidColorBrush BrushEditorBg  = new(Color.FromRgb(0x1E, 0x1E, 0x1E));
@@ -74,6 +80,7 @@ public class ScriptEditorPanel : UserControl
         public required FrameworkElement  Content;        // エディタ + ルーラーのコンテナ
         public required TextMarkerService Markers;
         public required DispatcherTimer   DiagTimer;
+        public required DispatcherTimer   OccurTimer;    // 選択単語ハイライトのデバウンス
         public required HighlightRenderer SelectionHi;   // 選択単語の一致ハイライト
         public required HighlightRenderer SearchHi;       // 検索一致ハイライト（オレンジ）
         public required OverviewRuler     Ruler;          // 右側の概観ルーラー
@@ -499,7 +506,9 @@ public class ScriptEditorPanel : UserControl
         content.Children.Add(ruler);
 
         // 診断の再計算を遅延実行するデバウンスタイマー
-        var diagTimer = new DispatcherTimer { Interval = DiagnosticsDebounce };
+        var diagTimer  = new DispatcherTimer { Interval = DiagnosticsDebounce };
+        // 選択単語ハイライトのデバウンスタイマー
+        var occurTimer = new DispatcherTimer { Interval = OccurrenceDebounce };
 
         var doc = new DocTab
         {
@@ -508,6 +517,7 @@ public class ScriptEditorPanel : UserControl
             Content     = content,
             Markers     = markers,
             DiagTimer   = diagTimer,
+            OccurTimer  = occurTimer,
             SelectionHi = selectionHi,
             SearchHi    = searchHi,
             Ruler       = ruler,
@@ -535,14 +545,21 @@ public class ScriptEditorPanel : UserControl
             // 未保存なら内容を退避、保存済みなら退避を消す（クラッシュ復元用）
             UpdateRecovery(doc);
         };
+        occurTimer.Tick += (_, _) =>
+        {
+            occurTimer.Stop();
+            UpdateOccurrenceHighlight(doc);
+        };
 
         // マーカーにホバーしたら診断メッセージをツールチップ表示し、外れたら閉じる
         editor.MouseHover        += (_, e) => ShowDiagnosticToolTip(doc, e);
         editor.MouseHoverStopped += (_, _) => HideDiagnosticToolTip();
 
-        // 選択単語の一致ハイライト（キャレット移動・選択変更で更新）
-        editor.TextArea.Caret.PositionChanged += (_, _) => UpdateOccurrenceHighlight(doc);
-        editor.TextArea.SelectionChanged      += (_, _) => UpdateOccurrenceHighlight(doc);
+        // 選択単語の一致ハイライトはデバウンスして更新する（キャレット移動のたびの
+        // 全文走査＋全再描画を避け、大きなファイルでも軽快に動かす）。
+        void ScheduleOccurrence() { occurTimer.Stop(); occurTimer.Start(); }
+        editor.TextArea.Caret.PositionChanged += (_, _) => ScheduleOccurrence();
+        editor.TextArea.SelectionChanged      += (_, _) => ScheduleOccurrence();
 
         // Ctrl+ホイールで表示倍率を変更する
         editor.PreviewMouseWheel += (_, e) =>
@@ -825,6 +842,15 @@ public class ScriptEditorPanel : UserControl
     private async Task RunSemanticColorizeAsync(DocTab doc)
     {
         if (_workspace is null) return;
+
+        // 巨大ファイルでは全文分類（数万スパン）の再計算が重いので着色を無効化する
+        if (doc.Editor.Document.TextLength > SemanticMaxTextLength)
+        {
+            doc.Semantic.Clear();
+            doc.Editor.TextArea.TextView.Redraw();
+            return;
+        }
+
         var document = _workspace.GetDocument(doc.FilePath);
         if (document is null) return;
 
@@ -893,6 +919,19 @@ public class ScriptEditorPanel : UserControl
     private void UpdateOccurrenceHighlight(DocTab doc)
     {
         var editor = doc.Editor;
+
+        // 巨大ファイルでは全文走査が重いので選択単語ハイライトを行わない
+        if (editor.Document.TextLength > OccurrenceMaxTextLength)
+        {
+            if (doc.SelectionHi.Segments.Any())
+            {
+                doc.SelectionHi.SetSegments(new List<(int, int)>());
+                editor.TextArea.TextView.Redraw();
+                RefreshRuler(doc);
+            }
+            return;
+        }
+
         string word = GetHighlightWord(editor);
         var matches = string.IsNullOrEmpty(word)
             ? new List<(int, int)>()
@@ -1313,6 +1352,7 @@ public class ScriptEditorPanel : UserControl
         // 閉じたドキュメントの退避データは不要（保存済み or 破棄を選択済み）
         _recovery?.Remove(doc.FilePath);
         doc.DiagTimer.Stop();
+        doc.OccurTimer.Stop();
         int idx = _docs.IndexOf(doc);
         _docs.Remove(doc);
         // アクティブを閉じたら隣のドキュメントへ切り替える
