@@ -12,6 +12,7 @@ using System.Windows.Media;
 using System.Windows.Threading;
 using ICSharpCode.AvalonEdit;
 using ICSharpCode.AvalonEdit.CodeCompletion;
+using ICSharpCode.AvalonEdit.Editing;
 using ICSharpCode.AvalonEdit.Highlighting;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.Classification;
@@ -1025,9 +1026,20 @@ public class ScriptEditorPanel : UserControl
         // それ以外の記号では補完を出さない
     }
 
-    /// <summary>エディタ上のキー処理（F12 / Ctrl+Space）。</summary>
+    /// <summary>エディタ上のキー処理（F12 / Ctrl+Space / Alt+↑↓ 行移動）。</summary>
     private async void OnEditorKeyDown(DocTab doc, KeyEventArgs e)
     {
+        // Alt 併用時、WPF は e.Key=Key.System・実キーを e.SystemKey に入れる
+        var key = e.Key == Key.System ? e.SystemKey : e.Key;
+
+        // Alt+↑ / Alt+↓: 現在行（複数行選択時はその範囲）を丸ごと上下へ移動する
+        if (Keyboard.Modifiers.HasFlag(ModifierKeys.Alt) && key is Key.Up or Key.Down)
+        {
+            e.Handled = true;
+            MoveLines(doc.Editor, key == Key.Up ? -1 : +1);
+            return;
+        }
+
         // Ctrl+Space: 補完を手動起動
         if (e.Key == Key.Space && Keyboard.Modifiers.HasFlag(ModifierKeys.Control))
         {
@@ -1041,6 +1053,71 @@ public class ScriptEditorPanel : UserControl
             e.Handled = true;
             await GoToDefinitionAsync(doc);
         }
+    }
+
+    /// <summary>
+    /// 選択中の行（または現在行）を丸ごと上下に移動する（Alt+↑ / Alt+↓）。
+    /// delta = -1 で上へ、+1 で下へ。選択とキャレット位置は移動後も相対的に保つ。
+    /// </summary>
+    private static void MoveLines(TextEditor editor, int delta)
+    {
+        var doc  = editor.Document;
+        var area = editor.TextArea;
+
+        // 選択範囲（無ければキャレット位置）から対象行の範囲を求める
+        int selStart = area.Selection.IsEmpty ? editor.CaretOffset : area.Selection.SurroundingSegment.Offset;
+        int selEnd   = area.Selection.IsEmpty ? editor.CaretOffset : area.Selection.SurroundingSegment.EndOffset;
+
+        var firstLine = doc.GetLineByOffset(selStart);
+        var lastLine  = doc.GetLineByOffset(selEnd);
+        // 選択末尾が行頭（次行の先頭）に達している場合は、その行を含めない
+        if (lastLine != firstLine && selEnd == lastLine.Offset && selEnd > selStart)
+            lastLine = lastLine.PreviousLine;
+
+        int startNum = firstLine.LineNumber;
+        int endNum   = lastLine.LineNumber;
+
+        // 端では移動できない
+        if (delta < 0 && startNum <= 1)             return;
+        if (delta > 0 && endNum   >= doc.LineCount) return;
+
+        // 移動対象ブロックに対する選択・キャレットの相対オフセットを記録する
+        int blockOffset = firstLine.Offset;
+        int caretRel    = editor.CaretOffset - blockOffset;
+        int anchorRel   = selStart - blockOffset;
+        int headRel     = selEnd   - blockOffset;
+        bool hadSelection = !area.Selection.IsEmpty;
+
+        // 隣接行を含めた領域 [lo..hi] を、行内容を並べ替えて 1 回で置換する
+        int lo = delta < 0 ? startNum - 1 : startNum;
+        int hi = delta < 0 ? endNum       : endNum + 1;
+        var loLine = doc.GetLineByNumber(lo);
+        var hiLine = doc.GetLineByNumber(hi);
+
+        // 領域内の改行文字（lo 行は必ず後続行があるので区切りを持つ）
+        string delim = doc.GetText(loLine.Offset + loLine.Length, loLine.DelimiterLength);
+
+        // 領域各行の内容（改行を除く）を取得する
+        var contents = new List<string>();
+        for (var l = loLine; l != null && l.LineNumber <= hi; l = l.NextLine)
+            contents.Add(doc.GetText(l.Offset, l.Length));
+
+        // 並べ替え: 上移動は先頭（隣接行）を末尾へ、下移動は末尾（隣接行）を先頭へ
+        if (delta < 0) { var top = contents[0]; contents.RemoveAt(0); contents.Add(top); }
+        else           { var bot = contents[^1]; contents.RemoveAt(contents.Count - 1); contents.Insert(0, bot); }
+
+        int regionStart = loLine.Offset;
+        int regionLen   = hiLine.EndOffset - loLine.Offset;
+        doc.Replace(regionStart, regionLen, string.Join(delim, contents));
+
+        // 移動後のブロック先頭を求め、選択・キャレットを相対位置で復元する
+        int newStartNum = startNum + delta;
+        int newBlockOffset = doc.GetLineByNumber(newStartNum).Offset;
+        editor.CaretOffset = newBlockOffset + caretRel;
+        if (hadSelection)
+            area.Selection = Selection.Create(area, newBlockOffset + anchorRel, newBlockOffset + headRel);
+        else
+            area.ClearSelection();
     }
 
     /// <summary>現在のキャレット位置で補完候補を計算し、ウィンドウ表示する。</summary>
