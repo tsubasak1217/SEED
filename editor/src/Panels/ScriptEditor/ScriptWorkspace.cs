@@ -30,6 +30,12 @@ public sealed class ScriptWorkspace
         var host = MefHostServices.Create(MefHostServices.DefaultAssemblies);
         _workspace = new AdhocWorkspace(host);
 
+        // SEEDScripting.dll（SEEDScript 基底クラス・SerializeField 等の属性を含む）の
+        // ロードを強制する。参照アセンブリは遅延ロードのため、これを行わないと
+        // ワークスペース生成時に未ロードで参照から漏れ、補完に SerializeField 等の
+        // 属性やスクリプト API が出てこなくなる。
+        _ = typeof(global::SEEDEditor.Scripting.SEEDScript).Assembly;
+
         var refs = AppDomain.CurrentDomain.GetAssemblies()
             .Where(a => !a.IsDynamic && !string.IsNullOrEmpty(a.Location) && File.Exists(a.Location))
             .Select(a => (MetadataReference)MetadataReference.CreateFromFile(a.Location))
