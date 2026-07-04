@@ -118,7 +118,8 @@ public sealed class GroqInlineCompletionProvider : IInlineCompletionProvider
                 if (!string.IsNullOrEmpty(delta)) sb.Append(delta);
             }
 
-            var text = StripCodeFences(sb.ToString());
+            // 推論モデル（qwen3 等）は思考過程を <think>…</think> で吐くため取り除く。
+            var text = StripCodeFences(StripReasoning(sb.ToString()));
             return string.IsNullOrEmpty(text) ? null : text;
         }
         catch (OperationCanceledException) { return null; } // 新しい入力で破棄
@@ -162,6 +163,27 @@ public sealed class GroqInlineCompletionProvider : IInlineCompletionProvider
             SEEDEditor.EditorLog.Write($"[インライン補完] Groq モデル一覧の取得失敗: {ex.Message}");
             return Array.Empty<string>();
         }
+    }
+
+    /// <summary>
+    /// 推論モデル（qwen3 / deepseek-r1 等）が吐く思考ブロック &lt;think&gt;…&lt;/think&gt; を除去する。
+    /// 閉じタグがある場合はそのブロックを丸ごと削り、思考だけで出力が終わった
+    /// （閉じられていない）場合はコードが無いとみなして空文字を返す。
+    /// </summary>
+    private static string StripReasoning(string s)
+    {
+        const string open  = "<think>";
+        const string close = "</think>";
+
+        int start = s.IndexOf(open, StringComparison.OrdinalIgnoreCase);
+        while (start >= 0)
+        {
+            int end = s.IndexOf(close, start, StringComparison.OrdinalIgnoreCase);
+            if (end < 0) return "";                       // 思考のみで打ち切り＝補完なし
+            s = s.Remove(start, end - start + close.Length);
+            start = s.IndexOf(open, StringComparison.OrdinalIgnoreCase);
+        }
+        return s.Trim();
     }
 
     /// <summary>チャットモデルが付けがちな ```csharp フェンスを取り除く。</summary>
