@@ -25,8 +25,8 @@ public sealed class ScriptEditorSettings
 
     /// <summary>
     /// AI インライン補完（Copilot 風ゴーストテキスト → Tab 確定）を有効にするか。
-    /// 有効化すると内蔵ローカル LLM（llama-server / Qwen2.5-Coder）を起動して使う。
-    /// 初回はモデルのダウンロード（約 4.4GB）が走るため既定は無効。
+    /// 有効化すると補完専用の軽量ローカル LLM（llama-server / Qwen2.5-Coder 1.5B）を
+    /// 起動して使う。初回はモデルのダウンロード（約 1.0GB）が走るため既定は無効。
     /// </summary>
     public bool InlineCompletionEnabled { get; set; } = false;
 

@@ -31,24 +31,32 @@ public sealed class LocalLlmManager : IDisposable
 {
     // ── 定数 ────────────────────────────────────────────────
 
-    /// <summary>llama-server が待ち受けるポート番号</summary>
-    private const int SERVER_PORT = 8480;
+    // 用途別モデル定義。チャットは高品質な 7B、インライン補完は軽量な 1.5B を使う。
+    // 別ポートで同時起動でき、補完側は低 RAM 環境でもディスクスワップを起こさない。
 
-    /// <summary>デフォルトモデルのファイル名（Qwen2.5-Coder 7B Q4_K_M 量子化）</summary>
-    private const string DEFAULT_MODEL_FILENAME = "Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf";
+    /// <summary>チャット用モデル（7B）の待受ポート。</summary>
+    private const int CHAT_PORT = 8480;
+    /// <summary>インライン補完用モデル（1.5B）の待受ポート。</summary>
+    private const int COMPLETION_PORT = 8481;
 
-    /// <summary>
-    /// モデルのダウンロード URL。
-    /// Bartowski 氏の HuggingFace リポジトリから Q4_K_M 量子化版を取得する。
-    /// ライセンス: Apache 2.0（商用利用可・制限なし）
-    /// サイズ: 約 4.4GB
-    /// </summary>
-    private const string DEFAULT_MODEL_DOWNLOAD_URL =
+    /// <summary>チャット用モデルのファイル名（Qwen2.5-Coder 7B Q4_K_M）。</summary>
+    private const string CHAT_MODEL_FILENAME = "Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf";
+    private const string CHAT_MODEL_URL =
         "https://huggingface.co/bartowski/Qwen2.5-Coder-7B-Instruct-GGUF/resolve/main/Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf";
+
+    /// <summary>補完用モデルのファイル名（Qwen2.5-Coder 1.5B Q4_K_M・約1.0GB）。</summary>
+    private const string COMPLETION_MODEL_FILENAME = "Qwen2.5-Coder-1.5B-Instruct-Q4_K_M.gguf";
+    private const string COMPLETION_MODEL_URL =
+        "https://huggingface.co/bartowski/Qwen2.5-Coder-1.5B-Instruct-GGUF/resolve/main/Qwen2.5-Coder-1.5B-Instruct-Q4_K_M.gguf";
+
+    /// <summary>チャット用コンテキスト長（シーン JSON が大きいため余裕を持たせる）。</summary>
+    private const int CHAT_CTX_SIZE = 8192;
+    /// <summary>補完用コンテキスト長（短くして VRAM・計算量を抑える）。</summary>
+    private const int COMPLETION_CTX_SIZE = 2048;
 
     /// <summary>
     /// サーバー起動後の接続待機タイムアウト（秒）。
-    /// Qwen2.5-Coder 7B のモデルロードは VRAM 状況次第で 90 秒以上かかる場合がある。
+    /// 7B のモデルロードは VRAM 状況次第で 90 秒以上かかる場合がある。
     /// </summary>
     private const int SERVER_START_TIMEOUT_SEC = 180;
 
@@ -58,21 +66,23 @@ public sealed class LocalLlmManager : IDisposable
     /// <summary>ファイルが有効なモデルと見なす最低サイズ（バイト）</summary>
     private const long MIN_MODEL_SIZE_BYTES = 1_000_000L;
 
-    // ── 共有インスタンス ────────────────────────────────────
+    // ── 共有インスタンス（用途別）────────────────────────────
 
-    /// <summary>
-    /// プロセス・ポート（固定 8480）は単一資源のため、エディタ全体で 1 つの
-    /// インスタンスを共有する。AI アシスタントパネルとスクリプトエディタの
-    /// インライン補完が同じ llama-server を使い、二重起動によるポート競合を防ぐ。
-    /// </summary>
-    private static LocalLlmManager? _shared;
+    private static LocalLlmManager? _sharedChat;
+    private static LocalLlmManager? _sharedCompletion;
 
-    /// <summary>
-    /// 共有インスタンスを取得する（初回呼び出し時に生成）。
-    /// editorDir は初回のみ使用され、以降の引数は無視される。
-    /// </summary>
+    /// <summary>チャット用（7B・ポート 8480）の共有インスタンスを取得する。</summary>
     public static LocalLlmManager GetShared(string editorDir)
-        => _shared ??= new LocalLlmManager(editorDir);
+        => _sharedChat ??= new LocalLlmManager(
+            editorDir, CHAT_MODEL_FILENAME, CHAT_MODEL_URL, CHAT_PORT, CHAT_CTX_SIZE, "約4.4GB");
+
+    /// <summary>
+    /// インライン補完用（1.5B・ポート 8481）の共有インスタンスを取得する。
+    /// 軽量なので VRAM に余裕で収まり、低 RAM 環境でもスワップを起こしにくい。
+    /// </summary>
+    public static LocalLlmManager GetSharedCompletion(string editorDir)
+        => _sharedCompletion ??= new LocalLlmManager(
+            editorDir, COMPLETION_MODEL_FILENAME, COMPLETION_MODEL_URL, COMPLETION_PORT, COMPLETION_CTX_SIZE, "約1.0GB");
 
     // ── フィールド ──────────────────────────────────────────
 
@@ -81,6 +91,21 @@ public sealed class LocalLlmManager : IDisposable
 
     /// <summary>モデルキャッシュファイルのフルパス</summary>
     private readonly string _modelPath;
+
+    /// <summary>モデルのダウンロード URL</summary>
+    private readonly string _modelUrl;
+
+    /// <summary>モデルファイル名（進捗表示用）</summary>
+    private readonly string _modelFileName;
+
+    /// <summary>このサーバーの待受ポート</summary>
+    private readonly int _port;
+
+    /// <summary>コンテキスト長（--ctx-size）</summary>
+    private readonly int _ctxSize;
+
+    /// <summary>ダウンロードサイズの表示ラベル（進捗表示用）</summary>
+    private readonly string _sizeLabel;
 
     /// <summary>実行中のサーバープロセス</summary>
     private Process? _serverProcess;
@@ -91,7 +116,7 @@ public sealed class LocalLlmManager : IDisposable
     /// llama-server のベース URL。
     /// OpenAICompatibleProvider が /v1/chat/completions を付加するため /v1 は含めない。
     /// </summary>
-    public string Endpoint => $"http://localhost:{SERVER_PORT}";
+    public string Endpoint => $"http://localhost:{_port}";
 
     /// <summary>llama-server.exe がエディタに同梱されているか</summary>
     public bool IsServerExeAvailable => File.Exists(_serverExePath);
@@ -105,13 +130,22 @@ public sealed class LocalLlmManager : IDisposable
 
     // ── コンストラクタ ──────────────────────────────────────
 
-    /// <summary>
-    /// ローカル LLM マネージャーを初期化する。
-    /// </summary>
-    /// <param name="editorDir">エディタ実行ファイルのディレクトリ（llama-server.exe の配置場所）</param>
-    public LocalLlmManager(string editorDir)
+    /// <summary>用途別のモデル設定でローカル LLM マネージャーを初期化する。</summary>
+    /// <param name="editorDir">llama-server.exe の配置ディレクトリ</param>
+    /// <param name="modelFileName">モデルのキャッシュファイル名</param>
+    /// <param name="modelUrl">モデルのダウンロード URL</param>
+    /// <param name="port">llama-server の待受ポート</param>
+    /// <param name="ctxSize">コンテキスト長</param>
+    /// <param name="sizeLabel">ダウンロードサイズ表示ラベル</param>
+    private LocalLlmManager(string editorDir, string modelFileName, string modelUrl,
+                            int port, int ctxSize, string sizeLabel)
     {
         _serverExePath = Path.Combine(editorDir, "llama-server.exe");
+        _modelFileName = modelFileName;
+        _modelUrl      = modelUrl;
+        _port          = port;
+        _ctxSize       = ctxSize;
+        _sizeLabel     = sizeLabel;
 
         // モデルキャッシュディレクトリを作成する（存在する場合は何もしない）
         var modelsDir = Path.Combine(
@@ -119,7 +153,7 @@ public sealed class LocalLlmManager : IDisposable
             "SEED", "models");
         Directory.CreateDirectory(modelsDir);
 
-        _modelPath = Path.Combine(modelsDir, DEFAULT_MODEL_FILENAME);
+        _modelPath = Path.Combine(modelsDir, modelFileName);
     }
 
     // ── 公開メソッド ─────────────────────────────────────────
@@ -147,7 +181,7 @@ public sealed class LocalLlmManager : IDisposable
         // モデルが未ダウンロードの場合はダウンロードする
         if (!IsModelDownloaded)
         {
-            onProgress?.Invoke($"モデルを初回ダウンロード中... ({DEFAULT_MODEL_FILENAME}, 約4.4GB)");
+            onProgress?.Invoke($"モデルを初回ダウンロード中... ({_modelFileName}, {_sizeLabel})");
             var downloadOk = await DownloadModelAsync(onProgress, ct);
             if (!downloadOk) return false;
         }
@@ -196,7 +230,7 @@ public sealed class LocalLlmManager : IDisposable
         Action<string>? onProgress,
         CancellationToken ct)
     {
-        EditorLog.Write($"LocalLlmManager — ダウンロード開始: {DEFAULT_MODEL_DOWNLOAD_URL}");
+        EditorLog.Write($"LocalLlmManager — ダウンロード開始: {_modelUrl}");
 
         // ダウンロード中断時に不完全なファイルが残らないよう一時ファイルに保存する
         var tempPath = _modelPath + ".part";
@@ -204,7 +238,7 @@ public sealed class LocalLlmManager : IDisposable
         {
             using var http = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
             using var response = await http.GetAsync(
-                DEFAULT_MODEL_DOWNLOAD_URL,
+                _modelUrl,
                 HttpCompletionOption.ResponseHeadersRead,
                 ct);
 
@@ -288,7 +322,7 @@ public sealed class LocalLlmManager : IDisposable
                 // --cache-ram 0: プロンプトキャッシュ（既定 8GB 上限）を無効化する。
                 // 空き RAM が少ない環境ではこのキャッシュが RAM を圧迫し、モデル(mmap)の
                 // ページがディスクへ追い出されて再読込され続け、ディスク 100%・激重の原因になる。
-                Arguments = $"--model \"{_modelPath}\" --port {SERVER_PORT} --ctx-size 8192 --n-gpu-layers 99 --parallel 1 --jinja --cache-ram 0",
+                Arguments = $"--model \"{_modelPath}\" --port {_port} --ctx-size {_ctxSize} --n-gpu-layers 99 --parallel 1 --jinja --cache-ram 0",
                 UseShellExecute        = false,
                 CreateNoWindow         = true,
                 RedirectStandardOutput = true,
@@ -332,7 +366,7 @@ public sealed class LocalLlmManager : IDisposable
             try
             {
                 // OpenAI 互換の /v1/models で疎通確認する
-                var res = await http.GetAsync($"http://localhost:{SERVER_PORT}/v1/models", ct);
+                var res = await http.GetAsync($"http://localhost:{_port}/v1/models", ct);
                 if (res.IsSuccessStatusCode)
                 {
                     EditorLog.Write("LocalLlmManager — サーバー接続確認 OK");

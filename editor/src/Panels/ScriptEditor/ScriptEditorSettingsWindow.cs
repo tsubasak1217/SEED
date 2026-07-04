@@ -65,7 +65,7 @@ public sealed class ScriptEditorSettingsWindow : Window
         root.Children.Add(inlineCheck);
         root.Children.Add(new TextBlock
         {
-            Text = "内蔵ローカル AI（llama-server / Qwen2.5-Coder）を使用。初回は約4.4GBのモデルDLが走ります。",
+            Text = "補完専用の軽量ローカルAI（Qwen2.5-Coder 1.5B）を使用。初回は約1.0GBのモデルDLが走ります。",
             Foreground = Dim, FontSize = 11, Margin = new Thickness(0, 0, 0, 4), TextWrapping = TextWrapping.Wrap,
         });
 

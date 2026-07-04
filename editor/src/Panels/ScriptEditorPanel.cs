@@ -390,20 +390,24 @@ public class ScriptEditorPanel : UserControl
     }
 
     /// <summary>AI インライン補完の共有プロバイダを取得する（初回に生成）。</summary>
+    /// <remarks>
+    /// チャット用 7B とは別の、補完専用の軽量 1.5B サーバー（別ポート）を使う。
+    /// 1.5B は VRAM に余裕で収まり、低 RAM 環境でもディスクスワップを起こしにくい。
+    /// </remarks>
     private InlineCompletionProvider GetInlineProvider()
     {
         if (_inlineProvider is null)
         {
             var editorDir = Path.GetDirectoryName(
                 System.Reflection.Assembly.GetExecutingAssembly().Location) ?? "";
-            _inlineProvider = new InlineCompletionProvider(LocalLlmManager.GetShared(editorDir));
+            _inlineProvider = new InlineCompletionProvider(LocalLlmManager.GetSharedCompletion(editorDir));
         }
         return _inlineProvider;
     }
 
     /// <summary>
-    /// インライン補完用にローカル AI サーバーを起動する（初回のみ・非同期）。
-    /// 初回はモデルのダウンロード（約 4.4GB）が走ることがあるため、進捗はログへ流す。
+    /// インライン補完用にローカル AI サーバー（軽量 1.5B）を起動する（初回のみ・非同期）。
+    /// 初回はモデルのダウンロード（約 1.0GB）が走ることがあるため、進捗はログへ流す。
     /// </summary>
     private void EnsureInlineServer()
     {
@@ -412,7 +416,7 @@ public class ScriptEditorPanel : UserControl
 
         var editorDir = Path.GetDirectoryName(
             System.Reflection.Assembly.GetExecutingAssembly().Location) ?? "";
-        var llm = LocalLlmManager.GetShared(editorDir);
+        var llm = LocalLlmManager.GetSharedCompletion(editorDir);
         if (llm.IsServerRunning) return;
 
         // 起動を試み、失敗したらフラグを戻して再試行（オンオフ切り替え）できるようにする
