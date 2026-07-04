@@ -179,9 +179,48 @@ public sealed class InlineCompletionController : IDisposable
         string suggestion = CleanSuggestion(result);
         if (suggestion.Length == 0) { Log("result: 空"); return; }   // 空白・改行のみは出さない
 
+        // このエンジンに存在しない Unity API を含む予測は誤りなので出さない
+        // （小型モデルは C# ゲームコードを Unity と誤認しがち）。
+        if (LooksLikeWrongApi(suggestion)) { Log("result: Unity API のため破棄"); return; }
+
+        // 表示は既存コードを覆わない範囲（下の空行分）に制限し、見た目と挿入内容を一致させる
+        suggestion = CapToAvailableLines(suggestion, caret);
+        if (suggestion.Length == 0) { Log("result: 表示可能行なし"); return; }
+
         Log($"show: {suggestion.Split('\n').Length}行");
         _renderer.SetText(suggestion, caret);
         _editor.TextArea.TextView.Redraw();
+    }
+
+    /// <summary>SEED エンジンに存在しない明らかな Unity 依存 API を含むか。</summary>
+    private static bool LooksLikeWrongApi(string s)
+        => s.Contains("UnityEngine") || s.Contains("MonoBehaviour");
+
+    /// <summary>
+    /// 予測を「カーソル行の下にある空行数＋1 行目」までに制限する。
+    /// これにより 2 行目以降が既存コードを覆わず、プレビューと確定内容が一致する。
+    /// 下が EOF まで空（＝以降は自由に書ける）の場合は制限しない。
+    /// </summary>
+    private string CapToAvailableLines(string suggestion, int caret)
+    {
+        var lines = suggestion.Split('\n');
+        if (lines.Length <= 1) return suggestion;
+
+        var doc        = _editor.Document;
+        int caretLine  = doc.GetLineByOffset(caret).LineNumber;
+        bool hitCode   = false;
+        int  available = 0;
+        for (int ln = caretLine + 1; ln <= doc.LineCount; ln++)
+        {
+            var dl = doc.GetLineByNumber(ln);
+            if (doc.GetText(dl.Offset, dl.Length).Trim().Length > 0) { hitCode = true; break; }
+            available++;
+        }
+
+        // 既存コードに当たる場合のみ「1 行目＋空行数」に制限（EOF まで空なら無制限）
+        int maxLines = hitCode ? 1 + available : lines.Length;
+        if (lines.Length > maxLines) lines = lines[..maxLines];
+        return string.Join("\n", lines);
     }
 
     /// <summary>インライン補完の調査用ログ（[インライン補完] 接頭辞で追える）。</summary>

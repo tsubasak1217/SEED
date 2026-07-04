@@ -83,11 +83,20 @@ public sealed class GhostTextRenderer : IBackgroundRenderer
         // 1 行目（カーソル直後に追記）
         drawingContext.DrawText(MakeText(lines[0], typeface, dpi), vpos);
 
-        // 2 行目以降。背景レンダラは既存テキストを押し下げられないので、
-        // 各行の背景をエディタ色で塗って下の内容を隠し「行が空いた」ように見せる。
+        // 2 行目以降。背景レンダラは既存テキストを押し下げられないため、
+        // 「空行の上」にだけ描画する。ドキュメント上の対応行に実コードがあれば
+        // そこで打ち切り、既存コードを絶対に覆い隠さない（消したように見せない）。
         var bg = _editor.Background ?? FallbackBg;
         for (int i = 1; i < lines.Length; i++)
         {
+            int docLineNo = caretLoc.Line + i;   // TextLocation.Line は 1 始まり
+            if (docLineNo <= document.LineCount)
+            {
+                var dl = document.GetLineByNumber(docLineNo);
+                // 対応する既存行が空白のみでなければ、以降は描かない（コードを隠さない）
+                if (document.GetText(dl.Offset, dl.Length).Trim().Length > 0) break;
+            }
+
             double y = vpos.Y + i * lineHeight;
             drawingContext.DrawRectangle(bg, null,
                 new Rect(0, y, Math.Max(0, textView.ActualWidth), lineHeight));
