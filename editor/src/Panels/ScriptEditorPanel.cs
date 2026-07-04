@@ -61,6 +61,9 @@ public class ScriptEditorPanel : UserControl
     private static readonly SolidColorBrush BrushAccent    = new(Color.FromRgb(0x55, 0xAA, 0xFF));
     private static readonly SolidColorBrush BrushError     = new(Color.FromRgb(0xF4, 0x47, 0x47)); // エラーアイコン=赤
     private static readonly SolidColorBrush BrushWarning   = new(Color.FromRgb(0xD7, 0xBA, 0x36)); // 警告アイコン=黄
+    // 予測（補完）ウィンドウの配色: 背景はエディタ(#1E1E1E)より少し明るい黒、文字は白
+    private static readonly SolidColorBrush BrushCompletionBg = new(Color.FromRgb(0x2A, 0x2A, 0x2B));
+    private static readonly SolidColorBrush BrushCompletionFg = new(Color.FromRgb(0xFF, 0xFF, 0xFF));
 
     /// <summary>開いているドキュメント 1 件の状態。</summary>
     private sealed class DocTab
@@ -983,9 +986,33 @@ public class ScriptEditorPanel : UserControl
         if (prefix.Length > 0)
             window.CompletionList.SelectItem(prefix);
 
+        // 配色（背景=少し明るい黒 / 文字=白）を適用する
+        ApplyCompletionColors(window);
+
         window.Closed += (_, _) => _completionWindow = null;
         window.Show();
         _completionWindow = window;
+    }
+
+    /// <summary>予測ウィンドウの配色（背景=少し明るい黒・文字=白）を適用する。</summary>
+    private static void ApplyCompletionColors(CompletionWindow window)
+    {
+        window.Background            = BrushCompletionBg;
+        window.Foreground            = BrushCompletionFg;
+        window.BorderBrush           = BrushBorder;
+        window.CompletionList.Background = BrushCompletionBg;
+        window.CompletionList.Foreground = BrushCompletionFg;
+
+        // 内部 ListBox はテンプレート適用後（表示後）に確実に取得できるため、
+        // Loaded 後にも色を適用しておく。
+        window.CompletionList.Loaded += (_, _) =>
+        {
+            var lb = window.CompletionList.ListBox;
+            if (lb is null) return;
+            lb.Background      = BrushCompletionBg;
+            lb.Foreground      = BrushCompletionFg;
+            lb.BorderThickness = new Thickness(0);
+        };
     }
 
     /// <summary>F12: キャレット位置のシンボル定義へジャンプする（ファイルまたぎ対応）。</summary>
