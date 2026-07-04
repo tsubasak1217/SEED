@@ -25,6 +25,9 @@ public sealed class InlineCompletionController : IDisposable
     /// </summary>
     private static readonly TimeSpan Debounce = TimeSpan.FromMilliseconds(500);
 
+    /// <summary>ゴーストテキストで表示・確定する最大行数（過大な予測を抑える）。</summary>
+    private const int MaxGhostLines = 8;
+
     private readonly TextEditor                _editor;
     private readonly InlineCompletionProvider  _provider;
     private readonly GhostTextRenderer         _renderer;
@@ -70,16 +73,33 @@ public sealed class InlineCompletionController : IDisposable
         int offset = _renderer.Offset;
         if (offset < 0 || offset > _editor.Document.TextLength) { Dismiss(); return false; }
 
+        // 複数行のときは予測内の LF をドキュメントの改行コードへ合わせて挿入する
+        // （CRLF ファイルへ LF を混ぜないようにする）。
+        string toInsert = text.Replace("\n", DocNewLine());
+
         _accepting = true;
         try
         {
-            _editor.Document.Insert(offset, text);
-            _editor.CaretOffset = offset + text.Length;
+            _editor.Document.Insert(offset, toInsert);
+            _editor.CaretOffset = offset + toInsert.Length;
         }
         finally { _accepting = false; }
 
         Dismiss();
         return true;
+    }
+
+    /// <summary>ドキュメントの改行コードを返す（既定は CRLF）。</summary>
+    private string DocNewLine()
+    {
+        var doc = _editor.Document;
+        if (doc.LineCount >= 1)
+        {
+            var first = doc.GetLineByNumber(1);
+            if (first.DelimiterLength == 2) return "\r\n";
+            if (first.DelimiterLength == 1) return "\n";
+        }
+        return "\r\n";
     }
 
     /// <summary>予測表示を消す（Esc・却下・状態変化時）。</summary>
@@ -156,23 +176,30 @@ public sealed class InlineCompletionController : IDisposable
         // リクエスト中に編集・カーソル移動があれば破棄する（陳腐化防止）
         if (_editor.CaretOffset != caret || _editor.Document.TextLength != text.Length) { Log("result: 陳腐化"); return; }
 
-        string firstLine = FirstLine(result);
-        if (firstLine.Length == 0) { Log("result: 空行"); return; }   // 改行のみ等の無意味な予測は出さない
+        string suggestion = CleanSuggestion(result);
+        if (suggestion.Length == 0) { Log("result: 空"); return; }   // 空白・改行のみは出さない
 
-        Log($"show: \"{firstLine}\"");
-        _renderer.SetText(firstLine, caret);
+        Log($"show: {suggestion.Split('\n').Length}行");
+        _renderer.SetText(suggestion, caret);
         _editor.TextArea.TextView.Redraw();
     }
 
     /// <summary>インライン補完の調査用ログ（[インライン補完] 接頭辞で追える）。</summary>
     private static void Log(string message) => SEEDEditor.EditorLog.Write($"[インライン補完] {message}");
 
-    /// <summary>予測文字列の先頭 1 行を取り出す（末尾空白は除去、v1 は 1 行表示）。</summary>
-    private static string FirstLine(string s)
+    /// <summary>
+    /// 予測文字列を表示・挿入用に整形する。改行を LF に正規化し、末尾の空白・改行を
+    /// 除いたうえで、長すぎる予測は先頭 <see cref="MaxGhostLines"/> 行までに制限する。
+    /// </summary>
+    private static string CleanSuggestion(string s)
     {
-        int nl = s.IndexOf('\n');
-        string first = nl >= 0 ? s[..nl] : s;
-        return first.TrimEnd('\r', ' ', '\t');
+        s = s.Replace("\r\n", "\n").Replace("\r", "\n").TrimEnd();
+        if (s.Length == 0) return "";
+
+        var lines = s.Split('\n');
+        if (lines.Length > MaxGhostLines)
+            lines = lines[..MaxGhostLines];
+        return string.Join("\n", lines);
     }
 
     private void CancelPending()

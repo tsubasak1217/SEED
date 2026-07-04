@@ -19,6 +19,9 @@ public sealed class GhostTextRenderer : IBackgroundRenderer
     /// <summary>ゴーストテキストの色（薄いグレー）。</summary>
     private static readonly Brush GhostBrush = CreateFrozen(Color.FromRgb(0x80, 0x80, 0x80));
 
+    /// <summary>2 行目以降の下地を塗る色（エディタ背景が取得できないとき用のフォールバック）。</summary>
+    private static readonly Brush FallbackBg = CreateFrozen(Color.FromRgb(0x1E, 0x1E, 0x1E));
+
     private readonly TextEditor _editor;
 
     /// <summary>表示中の予測テキスト（null または空なら非表示）。</summary>
@@ -57,26 +60,50 @@ public sealed class GhostTextRenderer : IBackgroundRenderer
 
         textView.EnsureVisualLines();
 
-        // オフセットの視覚位置（テキスト先頭）を求め、スクロール量を差し引く
-        var location = _editor.Document.GetLocation(_offset);
-        var vpos     = textView.GetVisualPosition(
-            new TextViewPosition(location), VisualYPosition.TextTop) - textView.ScrollOffset;
+        var document = _editor.Document;
 
-        // エディタと同じフォントで描画する
+        // カーソル位置（1 行目の描画開始点）。スクロール量を差し引く。
+        var caretLoc = document.GetLocation(_offset);
+        var vpos     = textView.GetVisualPosition(
+            new TextViewPosition(caretLoc), VisualYPosition.TextTop) - textView.ScrollOffset;
+
+        // 2 行目以降の左端 x（カーソル行の桁 0 の位置）。予測は自身のインデントを含む。
+        var lineStart = document.GetLineByOffset(_offset);
+        var startLoc  = document.GetLocation(lineStart.Offset);
+        double leftX  = textView.GetVisualPosition(
+            new TextViewPosition(startLoc), VisualYPosition.TextTop).X - textView.ScrollOffset.X;
+
         var typeface = new Typeface(_editor.FontFamily, _editor.FontStyle, _editor.FontWeight, _editor.FontStretch);
         var dpi      = VisualTreeHelper.GetDpi(_editor).PixelsPerDip;
+        double lineHeight = textView.DefaultLineHeight;
 
-        var formatted = new FormattedText(
-            _text,
-            CultureInfo.CurrentCulture,
-            FlowDirection.LeftToRight,
-            typeface,
-            _editor.FontSize,
-            GhostBrush,
-            dpi);
+        // 改行で分割し、1 行目はカーソル直後、2 行目以降はその下へ描く。
+        var lines = _text.Split('\n');
 
-        drawingContext.DrawText(formatted, vpos);
+        // 1 行目（カーソル直後に追記）
+        drawingContext.DrawText(MakeText(lines[0], typeface, dpi), vpos);
+
+        // 2 行目以降。背景レンダラは既存テキストを押し下げられないので、
+        // 各行の背景をエディタ色で塗って下の内容を隠し「行が空いた」ように見せる。
+        var bg = _editor.Background ?? FallbackBg;
+        for (int i = 1; i < lines.Length; i++)
+        {
+            double y = vpos.Y + i * lineHeight;
+            drawingContext.DrawRectangle(bg, null,
+                new Rect(0, y, Math.Max(0, textView.ActualWidth), lineHeight));
+            drawingContext.DrawText(MakeText(lines[i], typeface, dpi), new Point(leftX, y));
+        }
     }
+
+    /// <summary>ゴースト色の FormattedText を生成する。</summary>
+    private FormattedText MakeText(string text, Typeface typeface, double dpi) => new(
+        text,
+        CultureInfo.CurrentCulture,
+        FlowDirection.LeftToRight,
+        typeface,
+        _editor.FontSize,
+        GhostBrush,
+        dpi);
 
     private static Brush CreateFrozen(Color color)
     {

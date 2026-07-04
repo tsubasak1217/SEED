@@ -26,8 +26,8 @@ public sealed class InlineCompletionProvider
     private const string FimMiddleToken = "<|fim_middle|>";
 
     // ── 生成・文脈のパラメータ（マジックナンバーを避け定数化）────
-    /// <summary>1 回の補完で生成する最大トークン数（1 行想定なので控えめ＝高速）。</summary>
-    private const int MaxPredictTokens = 64;
+    /// <summary>1 回の補完で生成する最大トークン数（複数行を許容するため多めに取る）。</summary>
+    private const int MaxPredictTokens = 160;
     // プロンプトキャッシュ無効時は毎回プロンプト全体を処理するため、
     // 文脈を短めにして 1 回あたりの計算量（＝重さ）を抑える。
     /// <summary>プロンプトに含めるカーソル前テキストの最大文字数。</summary>
@@ -42,12 +42,10 @@ public sealed class InlineCompletionProvider
     private const int RequestTimeoutSec = 12;
 
     /// <summary>
-    /// 生成停止トークン。FIM 制御・特殊トークンに加え、改行でも停止する。
-    /// 表示は 1 行のみなので、改行以降の生成を止めることでレイテンシを大きく削る。
+    /// 生成停止トークン（FIM 制御・特殊トークン）。複数行補完のため改行では止めない。
     /// </summary>
     private static readonly string[] StopTokens =
     {
-        "\n",
         "<|endoftext|>", FimPrefixToken, FimSuffixToken, FimMiddleToken,
         "<|fim_pad|>", "<|repo_name|>", "<|file_sep|>",
     };
@@ -129,10 +127,9 @@ public sealed class InlineCompletionProvider
 
                 if (!string.IsNullOrEmpty(chunk?.Content)) sb.Append(chunk!.Content);
 
-                // 1 行分そろった（改行を含む）か、サーバーが停止したら十分。
-                // 早期に return するとレスポンスが破棄され、接続切断で生成も止まる。
+                // サーバーが停止（stop）するまで積み上げる（複数行を受け取る）。
+                // 途中で新しい入力が来れば ct キャンセルで接続が切れ、生成も止まる。
                 if (chunk?.Stop == true) break;
-                if (sb.Length > 0 && sb.ToString().IndexOf('\n') >= 0) break;
             }
 
             return sb.Length == 0 ? null : sb.ToString();
