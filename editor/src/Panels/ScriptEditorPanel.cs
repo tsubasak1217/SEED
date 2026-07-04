@@ -804,26 +804,28 @@ public class ScriptEditorPanel : UserControl
 
     // ── セマンティック着色（型名・メソッド名・フィールド名など）─────
 
-    // Roslyn 分類種別 → 既定色（VS ダークテーマ準拠）。
+    // Roslyn 分類種別 → 論理配色キー（ScriptEditorSettings.SemKeys）。
     // 正規表現ハイライトでは識別できない「識別子系」トークンのみを対象にする
     // （キーワード・文字列・コメントは標準ハイライトに委ねる）。
-    private static readonly Dictionary<string, Color> _semanticDefaults = new()
+    // 実際の色は設定（_settings.Colors）から論理キーで引くため、メンバ変数と
+    // 一時変数（ローカル・引数）を別色に分けられる。
+    private static readonly Dictionary<string, string> SemanticKeyMap = new()
     {
-        ["class name"]            = Color.FromRgb(0x4E, 0xC9, 0xB0), // 型名=ティール
-        ["record class name"]     = Color.FromRgb(0x4E, 0xC9, 0xB0),
-        ["delegate name"]         = Color.FromRgb(0x4E, 0xC9, 0xB0),
-        ["struct name"]           = Color.FromRgb(0x86, 0xC6, 0x91), // 構造体=緑系
-        ["record struct name"]    = Color.FromRgb(0x86, 0xC6, 0x91),
-        ["enum name"]             = Color.FromRgb(0xB8, 0xD7, 0xA3),
-        ["interface name"]        = Color.FromRgb(0xB8, 0xD7, 0xA3),
-        ["type parameter name"]   = Color.FromRgb(0x4E, 0xC9, 0xB0),
-        ["method name"]           = Color.FromRgb(0xDC, 0xDC, 0xAA), // メソッド=薄黄
-        ["extension method name"] = Color.FromRgb(0xDC, 0xDC, 0xAA),
-        ["field name"]            = Color.FromRgb(0x9C, 0xDC, 0xFE), // フィールド=水色
-        ["constant name"]         = Color.FromRgb(0x9C, 0xDC, 0xFE),
-        ["enum member name"]      = Color.FromRgb(0x9C, 0xDC, 0xFE),
-        ["local name"]            = Color.FromRgb(0x9C, 0xDC, 0xFE),
-        ["parameter name"]        = Color.FromRgb(0x9C, 0xDC, 0xFE),
+        ["class name"]            = ScriptEditorSettings.SemKeys.Type,   // 型名
+        ["record class name"]     = ScriptEditorSettings.SemKeys.Type,
+        ["delegate name"]         = ScriptEditorSettings.SemKeys.Type,
+        ["type parameter name"]   = ScriptEditorSettings.SemKeys.Type,
+        ["struct name"]           = ScriptEditorSettings.SemKeys.Struct, // 構造体
+        ["record struct name"]    = ScriptEditorSettings.SemKeys.Struct,
+        ["enum name"]             = ScriptEditorSettings.SemKeys.EnumInterface,
+        ["interface name"]        = ScriptEditorSettings.SemKeys.EnumInterface,
+        ["method name"]           = ScriptEditorSettings.SemKeys.Method, // メソッド
+        ["extension method name"] = ScriptEditorSettings.SemKeys.Method,
+        ["field name"]            = ScriptEditorSettings.SemKeys.Field,  // メンバ変数（フィールド）
+        ["constant name"]         = ScriptEditorSettings.SemKeys.Field,
+        ["enum member name"]      = ScriptEditorSettings.SemKeys.Field,
+        ["local name"]            = ScriptEditorSettings.SemKeys.Local,     // ローカル（一時）変数
+        ["parameter name"]        = ScriptEditorSettings.SemKeys.Parameter, // 引数
     };
 
     // 分類種別 → ブラシのキャッシュ（設定色を反映済み）。設定変更時にクリアされる。
@@ -833,14 +835,18 @@ public class ScriptEditorPanel : UserControl
     private Brush? SemanticBrush(string classification)
     {
         if (_semanticBrushCache.TryGetValue(classification, out var cached)) return cached;
-        if (!_semanticDefaults.TryGetValue(classification, out var def)) return null;
+        if (!SemanticKeyMap.TryGetValue(classification, out var key)) return null;
 
-        // 設定に同名キーがあれば上書き（データドリブンに配色を差し替え可能）
-        var color = def;
-        if (_settings is not null && _settings.Colors.TryGetValue(classification, out var hex))
-        {
-            try { color = (Color)ColorConverter.ConvertFromString(hex); } catch { /* 無効値は既定 */ }
-        }
+        // 論理キーに対応する色を設定から取得。無ければ既定配色にフォールバック。
+        string? hex = null;
+        _settings?.Colors.TryGetValue(key, out hex);
+        if (hex is null) ScriptEditorSettings.DefaultColors().TryGetValue(key, out hex);
+        if (hex is null) return null;
+
+        Color color;
+        try { color = (Color)ColorConverter.ConvertFromString(hex); }
+        catch { return null; } // 無効な色文字列は着色しない
+
         var brush = new SolidColorBrush(color);
         brush.Freeze();
         _semanticBrushCache[classification] = brush;

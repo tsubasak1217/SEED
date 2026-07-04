@@ -248,6 +248,40 @@ public sealed class ColorPickerWindow : Window
         return null;
     }
 
+    /// <summary>
+    /// UI 色（sRGB）向けのカラーピッカーを開く。ゲーム描画色と異なり
+    /// リニア変換を伴わないため、エディタの配色設定など「見たままの色」を
+    /// 扱う用途に使う。入力・戻り値ともに sRGB の <see cref="Color"/>（不透明）。
+    /// キャンセル時は null。
+    /// </summary>
+    /// <remarks>
+    /// 内部ピッカーはリニア RGBA で動作するため、入力 sRGB → リニアへ変換して渡し、
+    /// 結果のリニア → sRGB へ戻すことで、表示・往復ともに sRGB 値を保つ。
+    /// </remarks>
+    public static Color? ShowDialogSrgb(Window owner, Color srgb)
+    {
+        // sRGB(0..1) → リニアへ変換してピッカーへ渡す
+        float lr = SrgbToLinear(srgb.R / 255f);
+        float lg = SrgbToLinear(srgb.G / 255f);
+        float lb = SrgbToLinear(srgb.B / 255f);
+
+        var result = ShowDialog(owner, lr, lg, lb, 1f);
+        if (result is not { } res) return null;
+
+        // 結果のリニア → sRGB へ戻して 8bit 色にする
+        byte r = LinearToByte(res.r);
+        byte g = LinearToByte(res.g);
+        byte b = LinearToByte(res.b);
+        return Color.FromRgb(r, g, b);
+    }
+
+    /// <summary>リニア値（0〜1）を sRGB の 8bit 成分へ変換する。</summary>
+    private static byte LinearToByte(float linear)
+    {
+        int v = (int)Math.Round(LinearToSrgb(linear) * 255f);
+        return (byte)Math.Clamp(v, 0, 255);
+    }
+
     // ── スポイト ──────────────────────────────────────────────
 
     /// <summary>

@@ -57,7 +57,7 @@ public sealed class ScriptEditorSettingsWindow : Window
         root.Children.Add(Section("配色設定"));
         root.Children.Add(new TextBlock
         {
-            Text = "各構文要素の色（#RRGGBB）。プレビューをクリックで色を反映。",
+            Text = "各構文要素の色。左のスウォッチをクリックでカラーピッカーを開く（直接 #RRGGBB 入力も可）。",
             Foreground = Dim, FontSize = 11, Margin = new Thickness(0, 0, 0, 6), TextWrapping = TextWrapping.Wrap,
         });
 
@@ -124,13 +124,14 @@ public sealed class ScriptEditorSettingsWindow : Window
         return row;
     }
 
-    private static UIElement ColorRow(string label, string hex, out Func<string> getter)
+    private UIElement ColorRow(string label, string hex, out Func<string> getter)
     {
         var preview = new Border
         {
             Width = 22, Height = 22, BorderBrush = Border2, BorderThickness = new Thickness(1),
             Background = HexToBrush(hex, Colors.Gray), Margin = new Thickness(0, 0, 6, 0),
             Cursor = System.Windows.Input.Cursors.Hand,
+            ToolTip = "クリックでカラーピッカーを開く",
         };
         var tb = new TextBox
         {
@@ -139,6 +140,14 @@ public sealed class ScriptEditorSettingsWindow : Window
         };
         // テキスト変更でプレビューを追従させる
         tb.TextChanged += (_, _) => preview.Background = HexToBrush(tb.Text, ((SolidColorBrush)preview.Background).Color);
+        // スウォッチをクリックしたらカラーピッカーを開き、選んだ色をテキストへ反映する
+        preview.MouseLeftButtonDown += (_, _) =>
+        {
+            var current = ((SolidColorBrush)preview.Background).Color;
+            var picked = ColorPickerWindow.ShowDialogSrgb(this, current);
+            if (picked is { } c)
+                tb.Text = $"#{c.R:X2}{c.G:X2}{c.B:X2}"; // TextChanged がプレビューへ反映
+        };
         getter = () => tb.Text;
 
         var row = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 3, 0, 3) };
