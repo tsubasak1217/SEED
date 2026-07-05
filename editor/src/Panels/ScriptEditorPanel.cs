@@ -96,6 +96,8 @@ public class ScriptEditorPanel : UserControl
         /// 開いた場合に true。機能保証のため編集・保存・ワークスペース登録を行わない。
         /// </summary>
         public bool IsReadOnly;
+        /// <summary>このドキュメントに設定されたブレークポイント集合（行追従）。</summary>
+        public BreakpointSet? Breaks;
     }
 
     private readonly List<DocTab> _docs = new();
@@ -135,6 +137,8 @@ public class ScriptEditorPanel : UserControl
     private string? _settingsDir;
     /// <summary>未保存編集のクラッシュ復元ストア（InitSettings で生成）。</summary>
     private ScriptRecoveryStore? _recovery;
+    /// <summary>ブレークポイントの永続化ストア（設定ディレクトリ配下）。</summary>
+    private BreakpointStore? _breakpointStore;
 
     /// <summary>診断ホバー用の共有ツールチップ（ホバーが外れたら閉じる）。</summary>
     private ToolTip? _diagToolTip;
@@ -240,6 +244,14 @@ public class ScriptEditorPanel : UserControl
     /// <summary>開いているドキュメントの一覧を返す（「タブ」パネル用）。</summary>
     public IReadOnlyList<OpenDocInfo> GetOpenDocuments()
         => _docs.Select(d => new OpenDocInfo(d.FilePath, d.IsDirty, d == _activeDoc, d.IsReadOnly)).ToList();
+
+    /// <summary>
+    /// 開いている各ドキュメントの現在のブレークポイント（ファイルパス→行番号）。
+    /// 将来のデバッガバックエンドがアタッチ時の設定に使う。永続分は BreakpointStore を参照。
+    /// </summary>
+    public IReadOnlyDictionary<string, IReadOnlyList<int>> GetBreakpoints()
+        => _docs.Where(d => d.Breaks is not null)
+                .ToDictionary(d => d.FilePath, d => (IReadOnlyList<int>)d.Breaks!.Lines());
 
     /// <summary>指定パスのドキュメントをアクティブにする（「タブ」パネルからの選択）。</summary>
     public void ActivateFile(string filePath)
@@ -365,6 +377,7 @@ public class ScriptEditorPanel : UserControl
         _settings    = ScriptEditorSettings.Load(settingsDir);
         // 未保存編集のクラッシュ復元ストアを用意する
         _recovery    = new ScriptRecoveryStore(Path.Combine(settingsDir, "script_recovery"));
+        _breakpointStore = new BreakpointStore(settingsDir);
         ApplyColorsToHighlighting(_settings);
         foreach (var doc in _docs) ApplySettingsToEditor(doc.Editor);
     }
@@ -555,6 +568,17 @@ public class ScriptEditorPanel : UserControl
             Semantic    = semantic,
             IsReadOnly  = readOnly,
         };
+
+        // ブレークポイント用ガター（行番号の左）。クリックでトグルし、変更を永続化する。
+        // 保存済みのブレークポイント行があれば復元する。
+        var breaks = new BreakpointSet(editor.Document, _breakpointStore?.Get(full));
+        var bpMargin = new BreakpointMargin(breaks, () =>
+        {
+            _breakpointStore?.Set(full, breaks.Lines());
+            _breakpointStore?.Save();
+        });
+        editor.TextArea.LeftMargins.Insert(0, bpMargin);
+        doc.Breaks = breaks;
 
         // 編集のたびにダーティ化し、ワークスペースへ反映し、診断を予約する。
         // 読み取り専用タブ（エンジン API のソース）はユーザーのワークスペースへ登録しない
@@ -1718,6 +1742,13 @@ public class ScriptEditorPanel : UserControl
             return;
         }
         SetDirty(doc, false);
+
+        // 編集で移動したブレークポイント位置を保存時に永続化する（行番号が最新になる）
+        if (_breakpointStore is not null && doc.Breaks is not null)
+        {
+            _breakpointStore.Set(doc.FilePath, doc.Breaks.Lines());
+            _breakpointStore.Save();
+        }
 
         // Roslyn でコンパイルチェックし、結果を Output パネルに表示する
         var (type, errors) = ScriptCompiler.CompileFile(doc.FilePath);
