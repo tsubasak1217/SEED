@@ -119,6 +119,20 @@ public static class ScriptAssemblyManager
         Unload();
         ms.Position = 0;
         _context  = new AssemblyLoadContext("SEEDUserScripts", isCollectible: true);
+
+        // ユーザースクリプトが参照するホスト側アセンブリ（SEEDScripting 本体や
+        // その依存 DLL）は、すでにこのプロセスにロード済みである。ただし SEEDScripting は
+        // Rust ランタイムが hostfxr（load_assembly_and_get_function_pointer）経由で
+        // Default とは別の独立した AssemblyLoadContext にロードしているため、
+        // collectible ALC の既定のフォールバック（Default ALC）では名前解決できず
+        // FileNotFoundException になる。
+        // そこで Resolving で、プロセス内にロード済みの同名アセンブリ（ALC を問わず
+        // AppDomain 全体から検索）へフォールバックさせる。これで基底クラス SEEDScript や
+        // SEED.* API を含む SEEDScripting をユーザーアセンブリから参照できる。
+        _context.Resolving += (ctx, name) =>
+            AppDomain.CurrentDomain.GetAssemblies()
+                .FirstOrDefault(a => !a.IsDynamic && a.GetName().Name == name.Name);
+
         _assembly = _context.LoadFromStream(ms);
 
         // ── パス → 型 マッピングを構築する ──
