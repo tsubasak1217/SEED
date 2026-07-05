@@ -253,6 +253,38 @@ public class ScriptEditorPanel : UserControl
         => _docs.Where(d => d.Breaks is not null)
                 .ToDictionary(d => d.FilePath, d => (IReadOnlyList<int>)d.Breaks!.Lines());
 
+    /// <summary>
+    /// デバッガアタッチ用の全ブレークポイント（ファイルパス→行番号）。
+    /// 永続化済み（未オープンのファイル含む）を土台に、開いているドキュメントの
+    /// 現在値で上書きする（編集で移動した最新位置を優先）。
+    /// </summary>
+    public IReadOnlyDictionary<string, IReadOnlyList<int>> GetBreakpointsForDebug()
+    {
+        var result = new Dictionary<string, IReadOnlyList<int>>(StringComparer.OrdinalIgnoreCase);
+        if (_breakpointStore is not null)
+            foreach (var (path, lines) in _breakpointStore.All())
+                result[path] = lines;
+        foreach (var d in _docs.Where(d => d.Breaks is not null))
+            result[d.FilePath] = d.Breaks!.Lines();
+        return result;
+    }
+
+    /// <summary>指定ファイルの指定行を開いてキャレットを移動する（デバッグの現在行表示用）。</summary>
+    public void GoToLine(string filePath, int line)
+    {
+        OpenFile(filePath);
+        var full = Path.GetFullPath(filePath);
+        var doc = _docs.FirstOrDefault(d =>
+            string.Equals(d.FilePath, full, StringComparison.OrdinalIgnoreCase));
+        if (doc is null) return;
+
+        int clamped = Math.Clamp(line, 1, Math.Max(1, doc.Editor.Document.LineCount));
+        var docLine = doc.Editor.Document.GetLineByNumber(clamped);
+        doc.Editor.CaretOffset = docLine.Offset;
+        doc.Editor.ScrollToLine(clamped);
+        doc.Editor.Focus();
+    }
+
     /// <summary>指定パスのドキュメントをアクティブにする（「タブ」パネルからの選択）。</summary>
     public void ActivateFile(string filePath)
     {

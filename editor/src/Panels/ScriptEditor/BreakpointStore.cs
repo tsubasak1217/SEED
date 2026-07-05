@@ -31,6 +31,10 @@ public sealed class BreakpointStore
     public IReadOnlyList<int> Get(string filePath)
         => _byPath.TryGetValue(Normalize(filePath), out var lines) ? lines : Array.Empty<int>();
 
+    /// <summary>永続化されている全ファイルのブレークポイント（正規化パス→行）。デバッガのアタッチ用。</summary>
+    public IReadOnlyDictionary<string, IReadOnlyList<int>> All()
+        => _byPath.ToDictionary(kv => kv.Key, kv => (IReadOnlyList<int>)kv.Value);
+
     /// <summary>指定ファイルのブレークポイント行を設定する（空なら削除）。呼び出し後に Save する。</summary>
     public void Set(string filePath, IEnumerable<int> lines)
     {

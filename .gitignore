@@ -68,3 +68,5 @@ target/
 # エディタ設定
 # =========================
 editor/settings/
+# netcoredbg デバッガのバイナリ（サイズ大・各自配置）
+/tools/netcoredbg/

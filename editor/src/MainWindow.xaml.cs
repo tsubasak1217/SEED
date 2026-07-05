@@ -218,6 +218,8 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
     private ViewportOleDropTarget? _viewportDropTarget;
     private Window?                _vpDragOverlay;
     private RuntimeManager?        _runtimeManager;
+    /// <summary>内蔵デバッガ（netcoredbg/DAP）のセッション。アタッチ中のみ非 null。</summary>
+    private SEEDEditor.Debugger.ScriptDebugSession? _debugSession;
     /// <summary>AI アシスタントパネルのビルド済み UI 要素（LoadLayout でコンテンツを復元するために保持）</summary>
     private UIElement?             _aiPanelUi;
     /// <summary>「タブ」パネル（スクリプトで開いているファイル一覧）。LoadLayout で復元。</summary>
@@ -551,6 +553,8 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         ReleaseAllCamKeys();
         if (_viewportHost != null) RevokeDragDrop(_viewportHost.ContainerHwnd);
         _vpDragOverlay?.Close();
+        _debugSession?.Dispose();
+        _debugSession = null;
         _runtimeManager?.Dispose();
         ViewportDocumentContent.Content = null;
     }
@@ -788,6 +792,107 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
             "4. コードの種類で「マネージド (.NET)」が含まれることを確認してアタッチ\n\n" +
             "アタッチ後、スクリプトの .cs にブレークポイントを設定できます。",
             "スクリプトデバッグ — 手動アタッチ", MessageBoxButton.OK, MessageBoxImage.Information);
+    }
+
+    // ── 内蔵デバッガ（netcoredbg / DAP）────────────────────────
+
+    /// <summary>
+    /// 「デバッグ」メニュー: 実行中のランタイムへ内蔵デバッガ（netcoredbg）でアタッチし、
+    /// 現在のブレークポイントを設定する。停止時はその行を開いて表示する。
+    /// </summary>
+    private async void OnDebugStartInEditor(object sender, RoutedEventArgs e)
+    {
+        var pid = _runtimeManager?.CurrentProcessId;
+        if (pid is null)
+        {
+            MessageBox.Show(
+                "デバッグ対象のランタイムが起動していません。\nPlay でゲームを実行してからお試しください。",
+                "スクリプトデバッグ", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+        if (_debugSession is { IsActive: true })
+        {
+            MessageBox.Show("既にデバッグセッションが動作中です。", "スクリプトデバッグ",
+                MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var session = new SEEDEditor.Debugger.ScriptDebugSession();
+        _debugSession = session;
+
+        // イベントは DAP 読み取りスレッドから来るため UI へマーシャリングする
+        session.Log        += m => EditorLog.Write(m);
+        session.Output     += t => EditorLog.Write($"[デバッグ出力] {t}");
+        session.Continued  += () => EditorLog.Write("[デバッグ] 実行を継続しました。");
+        session.Terminated += () => Dispatcher.BeginInvoke(() =>
+        {
+            EditorLog.Write("[デバッグ] セッションが終了しました。");
+            _debugSession?.Dispose();
+            _debugSession = null;
+        });
+        session.Stopped += info => Dispatcher.BeginInvoke(async () =>
+        {
+            EditorLog.Write($"[デバッグ] 停止しました（{info.Reason}）。");
+            try
+            {
+                var frames = await session.GetStackTraceAsync();
+                foreach (var f in frames)
+                {
+                    if (string.IsNullOrEmpty(f.SourcePath)) continue;
+                    PanelScriptEditor.GoToLine(f.SourcePath!, f.Line);
+                    EditorLog.Write($"[デバッグ] 現在位置 {System.IO.Path.GetFileName(f.SourcePath)}:{f.Line}  {f.Name}");
+                    break;
+                }
+            }
+            catch (Exception ex) { EditorLog.Write($"[デバッグ] スタック取得失敗: {ex.Message}"); }
+        });
+
+        try
+        {
+            var breakpoints = PanelScriptEditor.GetBreakpointsForDebug();
+            await session.StartAsync(pid.Value, breakpoints);
+            MessageBox.Show(
+                $"内蔵デバッガでアタッチしました（PID={pid.Value}）。\n" +
+                "ブレークポイントで停止すると、その行を表示します。\n" +
+                "［デバッグ］メニューから継続・ステップ・デタッチができます。",
+                "スクリプトデバッグ", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+        catch (Exception ex)
+        {
+            EditorLog.Write($"[デバッグ] アタッチ失敗: {ex.Message}");
+            _debugSession?.Dispose();
+            _debugSession = null;
+            MessageBox.Show(
+                $"内蔵デバッガでアタッチできませんでした。\n\n{ex.Message}",
+                "スクリプトデバッグ", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    /// <summary>「デバッグ」メニュー: 継続（F5 相当）。</summary>
+    private async void OnDebugContinue(object sender, RoutedEventArgs e)
+    {
+        if (_debugSession is { IsActive: true } s) await SafeDebugAsync(s.ContinueAsync());
+    }
+
+    /// <summary>「デバッグ」メニュー: ステップオーバー（F10 相当）。</summary>
+    private async void OnDebugStepOver(object sender, RoutedEventArgs e)
+    {
+        if (_debugSession is { IsActive: true } s) await SafeDebugAsync(s.StepOverAsync());
+    }
+
+    /// <summary>「デバッグ」メニュー: デタッチ（ランタイムは終了させない）。</summary>
+    private async void OnDebugDetach(object sender, RoutedEventArgs e)
+    {
+        var s = _debugSession;
+        _debugSession = null;
+        if (s is not null) { await SafeDebugAsync(s.DisconnectAsync()); EditorLog.Write("[デバッグ] デタッチしました。"); }
+    }
+
+    /// <summary>デバッグ操作を安全に await する（失敗はログのみ）。</summary>
+    private static async Task SafeDebugAsync(Task op)
+    {
+        try { await op; }
+        catch (Exception ex) { EditorLog.Write($"[デバッグ] 操作に失敗: {ex.Message}"); }
     }
 
     /// <summary>Script ドキュメントを選択・アクティブ化して前面に出す。</summary>

@@ -693,6 +693,12 @@
             </MenuItem>
 
             <MenuItem Header="デバッグ">
+                <MenuItem Header="内蔵デバッガでアタッチ（ブレークポイント）"
+                          Click="OnDebugStartInEditor"/>
+                <MenuItem Header="継続 (F5)"          Click="OnDebugContinue"/>
+                <MenuItem Header="ステップオーバー (F10)" Click="OnDebugStepOver"/>
+                <MenuItem Header="デタッチ"           Click="OnDebugDetach"/>
+                <Separator/>
                 <MenuItem Header="Visual Studio でスクリプトをデバッグ"
                           Click="OnAttachVisualStudio"/>
             </MenuItem>
