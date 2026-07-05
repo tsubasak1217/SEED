@@ -35,4 +35,40 @@ public static class RoslynCompletion
             return null;
         }
     }
+
+    /// <summary>
+    /// 指定位置のシンボルが「参照アセンブリ（メタデータ）で定義された型・メンバ」の場合に、
+    /// その定義元アセンブリ名・型名・メンバ名を返す。ソース定義を持つシンボルは対象外（null）。
+    ///
+    /// エンジン API（SEEDScripting.dll 内の Mathf/Vector3/Transform/SEEDScript 等）は
+    /// メタデータ参照経由のため <see cref="ResolveDefinitionAsync"/> では解決できない。
+    /// これで得た型名から、呼び出し側がエンジンのソースファイルを引き当てて開く。
+    /// </summary>
+    public static async Task<(string assembly, string typeName, string? memberName)?>
+        ResolveMetadataDefinitionAsync(Document document, int position)
+    {
+        try
+        {
+            var symbol = await SymbolFinder.FindSymbolAtPositionAsync(document, position);
+            if (symbol is null) return null;
+
+            // ソース上に定義があるならメタデータ扱いしない（ユーザースクリプト側で解決済み）
+            if (symbol.Locations.Any(l => l.IsInSource)) return null;
+
+            var assembly = symbol.ContainingAssembly?.Name;
+            if (string.IsNullOrEmpty(assembly)) return null;
+
+            // 型そのもの、またはメンバの含有型を対象にする
+            var typeSymbol = symbol as INamedTypeSymbol ?? symbol.ContainingType;
+            if (typeSymbol is null) return null;
+
+            // メンバ（メソッド・プロパティ・フィールド）ならその名前も返し、キャレット位置決めに使う
+            string? memberName = symbol is INamedTypeSymbol ? null : symbol.Name;
+            return (assembly!, typeSymbol.Name, memberName);
+        }
+        catch
+        {
+            return null;
+        }
+    }
 }

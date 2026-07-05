@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Documents;
@@ -28,7 +29,7 @@ using SEEDEditor.Scripting;
 namespace SEEDEditor.Panels;
 
 /// <summary>開いているドキュメント 1 件の情報（「タブ」パネル表示用）。</summary>
-public sealed record OpenDocInfo(string FilePath, bool IsDirty, bool IsActive);
+public sealed record OpenDocInfo(string FilePath, bool IsDirty, bool IsActive, bool IsReadOnly);
 
 /// <summary>診断（エラー・警告）1 件（「エラー一覧」パネル表示用）。</summary>
 public sealed record ScriptDiagnostic(bool IsError, string Id, string Message, int Line, int Column, int Offset, string FilePath);
@@ -90,6 +91,11 @@ public class ScriptEditorPanel : UserControl
         public InlineCompletionController? Inline;        // AI インライン補完（Copilot 風・任意）
         public List<ScriptDiagnostic> Diagnostics = new();
         public bool IsDirty;
+        /// <summary>
+        /// 読み取り専用タブか。エンジン API（SEEDScripting のソース）を定義ジャンプで
+        /// 開いた場合に true。機能保証のため編集・保存・ワークスペース登録を行わない。
+        /// </summary>
+        public bool IsReadOnly;
     }
 
     private readonly List<DocTab> _docs = new();
@@ -203,7 +209,8 @@ public class ScriptEditorPanel : UserControl
     {
         var editable = IsKeyboardFocusWithin;
         foreach (var doc in _docs)
-            doc.Editor.IsReadOnly = !editable;
+            // 読み取り専用タブ（エンジン API のソース）は常に編集不可を維持する。
+            doc.Editor.IsReadOnly = doc.IsReadOnly || !editable;
     }
 
     /// <summary>現在アクティブなエディタ（なければ null）。</summary>
@@ -232,7 +239,7 @@ public class ScriptEditorPanel : UserControl
 
     /// <summary>開いているドキュメントの一覧を返す（「タブ」パネル用）。</summary>
     public IReadOnlyList<OpenDocInfo> GetOpenDocuments()
-        => _docs.Select(d => new OpenDocInfo(d.FilePath, d.IsDirty, d == _activeDoc)).ToList();
+        => _docs.Select(d => new OpenDocInfo(d.FilePath, d.IsDirty, d == _activeDoc, d.IsReadOnly)).ToList();
 
     /// <summary>指定パスのドキュメントをアクティブにする（「タブ」パネルからの選択）。</summary>
     public void ActivateFile(string filePath)
@@ -471,7 +478,15 @@ public class ScriptEditorPanel : UserControl
     }
 
     /// <summary>ファイルを開く（既に開いていればそのタブをアクティブにする）。</summary>
-    public void OpenFile(string filePath)
+    public void OpenFile(string filePath) => OpenFileInternal(filePath, readOnly: false);
+
+    /// <summary>
+    /// ファイルを読み取り専用タブで開く（エンジン API のソースなど、機能保証のため
+    /// 編集させたくないファイル向け）。定義ジャンプ（F12）から使う。
+    /// </summary>
+    public void OpenFileReadOnly(string filePath) => OpenFileInternal(filePath, readOnly: true);
+
+    private void OpenFileInternal(string filePath, bool readOnly)
     {
         var full = Path.GetFullPath(filePath);
 
@@ -538,11 +553,15 @@ public class ScriptEditorPanel : UserControl
             SearchHi    = searchHi,
             Ruler       = ruler,
             Semantic    = semantic,
+            IsReadOnly  = readOnly,
         };
 
-        // 編集のたびにダーティ化し、ワークスペースへ反映し、診断を予約する
+        // 編集のたびにダーティ化し、ワークスペースへ反映し、診断を予約する。
+        // 読み取り専用タブ（エンジン API のソース）はユーザーのワークスペースへ登録しない
+        // （型の二重定義を避けるため）。通常は編集されないが念のためガードする。
         editor.TextChanged += (_, _) =>
         {
+            if (doc.IsReadOnly) return;
             SetDirty(doc, true);
             _workspace?.UpsertText(doc.FilePath, editor.Text);
             diagTimer.Stop();
@@ -610,16 +629,22 @@ public class ScriptEditorPanel : UserControl
         // 書式・配色設定を適用する
         ApplySettingsToEditor(editor);
 
-        // ワークスペースに最新テキストを反映する（開いた瞬間の内容で同期）
-        _workspace?.UpsertText(full, text);
+        // ワークスペースに最新テキストを反映する（開いた瞬間の内容で同期）。
+        // 読み取り専用（エンジン API のソース）はユーザーのワークスペースへ入れない。
+        if (!readOnly)
+            _workspace?.UpsertText(full, text);
 
         _docs.Add(doc);
-        // 初期状態を現在のフォーカス状態に合わせる（フォーカスが移るまで読み取り専用）
+        // 初期状態を現在のフォーカス状態に合わせる（読み取り専用タブは常に編集不可）
         UpdateEditability();
         ActivateDoc(doc);
-        // 初回の診断・セマンティック着色を実行する
-        _ = RunDiagnosticsAsync(doc);
-        _ = RunSemanticColorizeAsync(doc);
+        // 初回の診断・セマンティック着色を実行する（読み取り専用はワークスペース外なので不要）。
+        // 構文ハイライト（正規表現ベース）は読み取り専用でもそのまま効く。
+        if (!readOnly)
+        {
+            _ = RunDiagnosticsAsync(doc);
+            _ = RunSemanticColorizeAsync(doc);
+        }
     }
 
     /// <summary>現在アクティブなドキュメントを保存する。</summary>
@@ -1494,7 +1519,16 @@ public class ScriptEditorPanel : UserControl
         };
     }
 
-    /// <summary>F12: キャレット位置のシンボル定義へジャンプする（ファイルまたぎ対応）。</summary>
+    /// <summary>エンジン API を提供するアセンブリ名（このソースへは読み取り専用で開く）。</summary>
+    private const string EngineAssemblyName = "SEEDScripting";
+
+    /// <summary>
+    /// F12: キャレット位置のシンボル定義へジャンプする（ファイルまたぎ対応）。
+    ///
+    /// 1) ユーザースクリプト内の定義 → 通常タブで開いて移動。
+    /// 2) エンジン API（SEEDScripting）の定義 → そのソースを読み取り専用タブで開いて移動。
+    ///    機能保証のため編集はできない。
+    /// </summary>
     private async Task GoToDefinitionAsync(DocTab doc)
     {
         if (_workspace is null) return;
@@ -1503,19 +1537,46 @@ public class ScriptEditorPanel : UserControl
         var document = _workspace.GetDocument(doc.FilePath);
         if (document is null) return;
 
-        var result = await RoslynCompletion.ResolveDefinitionAsync(document, doc.Editor.CaretOffset);
-        if (result is null)
+        int caret = doc.Editor.CaretOffset;
+
+        // 1) ユーザースクリプト（プロジェクト内ソース）の定義
+        var inSource = await RoslynCompletion.ResolveDefinitionAsync(document, caret);
+        if (inSource is { } r)
         {
-            EditorLog.Write("定義が見つかりませんでした（外部ライブラリの型はジャンプ対象外です）");
+            NavigateToDefinition(r.filePath, r.offset, readOnly: false);
             return;
         }
 
-        var (filePath, offset) = result.Value;
+        // 2) エンジン API（SEEDScripting）の定義 → ソースを読み取り専用で開く
+        var meta = await RoslynCompletion.ResolveMetadataDefinitionAsync(document, caret);
+        if (meta is { } m &&
+            string.Equals(m.assembly, EngineAssemblyName, StringComparison.OrdinalIgnoreCase))
+        {
+            var src = ResolveEngineSource(m.typeName, m.memberName);
+            if (src is { } s)
+            {
+                NavigateToDefinition(s.filePath, s.offset, readOnly: true);
+                return;
+            }
+            EditorLog.Write($"エンジン API '{m.typeName}' のソースが見つかりませんでした。");
+            return;
+        }
 
-        // 別ファイルなら開いてから、同一ファイルならそのまま、該当位置へキャレットを移動する
-        OpenFile(filePath);
+        EditorLog.Write("定義が見つかりませんでした（.NET 標準ライブラリなど外部の型はジャンプ対象外です）");
+    }
+
+    /// <summary>
+    /// 指定ファイルを（必要なら開いて）該当オフセットへジャンプする。
+    /// readOnly の場合はエンジン API のソースとして読み取り専用タブで開く。
+    /// </summary>
+    private void NavigateToDefinition(string filePath, int offset, bool readOnly)
+    {
+        if (readOnly) OpenFileReadOnly(filePath);
+        else          OpenFile(filePath);
+
+        var full = Path.GetFullPath(filePath);
         var target = _docs.FirstOrDefault(d =>
-            string.Equals(d.FilePath, Path.GetFullPath(filePath), StringComparison.OrdinalIgnoreCase));
+            string.Equals(d.FilePath, full, StringComparison.OrdinalIgnoreCase));
         if (target is null) return;
 
         int clamped = Math.Min(offset, target.Editor.Document.TextLength);
@@ -1523,6 +1584,92 @@ public class ScriptEditorPanel : UserControl
         var line = target.Editor.Document.GetLineByOffset(clamped).LineNumber;
         target.Editor.ScrollToLine(line);
         target.Editor.Focus();
+    }
+
+    /// <summary>
+    /// エンジン API（SEEDScripting）の型名から、対応するソース .cs ファイルと、
+    /// その中の定義位置（型宣言・メンバ宣言）のオフセットを引き当てる。
+    /// ソースが見つからなければ null。
+    /// </summary>
+    private (string filePath, int offset)? ResolveEngineSource(string typeName, string? memberName)
+    {
+        var srcDir = FindEngineSourceDir();
+        if (srcDir is null) return null;
+
+        try
+        {
+            // まずファイル名が型名と一致する .cs を探す（SEED API は 1 型 1 ファイル命名）
+            string? file = Directory
+                .EnumerateFiles(srcDir, "*.cs", SearchOption.AllDirectories)
+                .FirstOrDefault(f =>
+                    string.Equals(Path.GetFileNameWithoutExtension(f), typeName, StringComparison.OrdinalIgnoreCase));
+
+            // 見つからなければ、型宣言を含むファイルを走査して探す
+            file ??= Directory
+                .EnumerateFiles(srcDir, "*.cs", SearchOption.AllDirectories)
+                .FirstOrDefault(f => Regex.IsMatch(
+                    File.ReadAllText(f),
+                    $@"\b(class|struct|interface|enum)\s+{Regex.Escape(typeName)}\b"));
+
+            if (file is null) return null;
+
+            var text = File.ReadAllText(file);
+            return (file, FindDeclarationOffset(text, typeName, memberName));
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// ソーステキスト中の定義位置オフセットを求める。メンバ名があればそれを優先し、
+    /// なければ型宣言、いずれも無ければ先頭（0）を返す。
+    /// </summary>
+    private static int FindDeclarationOffset(string text, string typeName, string? memberName)
+    {
+        // メンバ（メソッド/プロパティ/フィールド）名の宣言らしき位置
+        if (!string.IsNullOrEmpty(memberName))
+        {
+            var m = Regex.Match(text, $@"\b{Regex.Escape(memberName!)}\b");
+            if (m.Success) return m.Index;
+        }
+        // 型宣言（class/struct/interface/enum TypeName）
+        var t = Regex.Match(text, $@"\b(class|struct|interface|enum)\s+{Regex.Escape(typeName)}\b");
+        if (t.Success)
+        {
+            // 型名そのものの先頭に合わせる
+            int nameIdx = text.IndexOf(typeName, t.Index, StringComparison.Ordinal);
+            return nameIdx >= 0 ? nameIdx : t.Index;
+        }
+        return 0;
+    }
+
+    // エンジンソースディレクトリ（scripting/src）の探索結果キャッシュ（"" は探索失敗）
+    private string? _engineSrcDir;
+
+    /// <summary>
+    /// エンジン API のソースディレクトリ（リポジトリの scripting/src）を特定する。
+    /// 実行ディレクトリから親を遡って scripting/src を探す。見つからなければ null。
+    /// </summary>
+    private string? FindEngineSourceDir()
+    {
+        if (_engineSrcDir is not null)
+            return _engineSrcDir.Length == 0 ? null : _engineSrcDir;
+
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir is not null)
+        {
+            var candidate = Path.Combine(dir.FullName, "scripting", "src");
+            if (Directory.Exists(candidate))
+            {
+                _engineSrcDir = candidate;
+                return candidate;
+            }
+            dir = dir.Parent;
+        }
+        _engineSrcDir = "";   // 失敗を記憶して次回以降の走査を避ける
+        return null;
     }
 
     // ── コード整形（Ctrl+K,D）────────────────────────────────
@@ -1559,6 +1706,8 @@ public class ScriptEditorPanel : UserControl
 
     private void Save(DocTab doc)
     {
+        // 読み取り専用タブ（エンジン API のソース）は保存しない（機能保証のため）。
+        if (doc.IsReadOnly) return;
         try
         {
             File.WriteAllText(doc.FilePath, doc.Editor.Text);

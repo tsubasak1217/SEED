@@ -76,8 +76,14 @@ public sealed class OpenDocumentsPanel : UserControl
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
-        // ファイル名（+ 未保存なら ● を前置）
+        // ファイル名（+ 未保存なら ● を前置 / 読み取り専用なら 🔒 を前置）
         var nameStack = new StackPanel { Orientation = Orientation.Horizontal };
+        if (doc.IsReadOnly)
+            nameStack.Children.Add(new TextBlock
+            {
+                Text = "🔒", FontSize = 10,
+                Margin = new Thickness(0, 0, 4, 0), VerticalAlignment = VerticalAlignment.Center,
+            });
         if (doc.IsDirty)
             nameStack.Children.Add(new TextBlock
             {
@@ -89,7 +95,7 @@ public sealed class OpenDocumentsPanel : UserControl
             Text = Path.GetFileName(doc.FilePath),
             Foreground = Text, FontSize = 12, VerticalAlignment = VerticalAlignment.Center,
             TextTrimming = TextTrimming.CharacterEllipsis,
-            ToolTip = doc.FilePath,
+            ToolTip = doc.IsReadOnly ? $"{doc.FilePath}（読み取り専用・エンジン API）" : doc.FilePath,
         });
         Grid.SetColumn(nameStack, 0);
         grid.Children.Add(nameStack);
