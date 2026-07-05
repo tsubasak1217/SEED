@@ -883,7 +883,12 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         session.Output     += t => EditorLog.Write($"[デバッグ出力] {t}");
         session.Continued  += () => Dispatcher.BeginInvoke(() =>
         {
-            // 継続でランタイムのメインスレッドが再開する。凍結解除に合わせて
+            // ステップ操作に伴う一時的な継続（直後に再停止する）では、画面・状態を
+            // 一切いじらない。プレビューを消したり停止行ハイライトを消したりすると、
+            // 次の停止までの一瞬でちらつくため。次の stopped でまとめて更新される。
+            if (_debugStepping) return;
+
+            // 完全な継続: ランタイムのメインスレッドが再開する。凍結解除に合わせて
             // 停止フレームのプレビューを消し、ウィンドウ操作の抑止も解除し、
             // 停止行ハイライトを消して、ゲームウィンドウを最前面へ戻す。
             EditorLog.Write("[デバッグ] 実行を継続しました。");
@@ -891,13 +896,8 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
             _frozenPreview.Hide();
             PanelScriptEditor.ClearDebugStoppedLine();
             PanelScriptEditor.ClearDebugEvaluator();
-            // ステップ中の一時的な継続ではゲーム前面化やツールバー非表示を行わない
-            // （直後に再停止してちらつくため）。完全な継続のときだけ行う。
-            if (!_debugStepping)
-            {
-                DebugStepBar.Visibility = Visibility.Collapsed;
-                BringGameWindowToFront();
-            }
+            DebugStepBar.Visibility = Visibility.Collapsed;
+            BringGameWindowToFront();
         });
         session.Terminated += () => Dispatcher.BeginInvoke(() =>
         {
@@ -1003,6 +1003,15 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
     {
         try
         {
+            // 既に表示中なら貼り直さない。DWM サムネイルはソース（ゲームウィンドウ）の
+            // 最新内容を自動で反映するため、ステップ等で停止するたびに Hide→再登録すると
+            // 一瞬空になって画面がちらつく。位置だけ更新して貼り直しは避ける。
+            if (_frozenPreview.IsShowing)
+            {
+                UpdateFrozenFramePreviewRect();
+                return;
+            }
+
             var mainHwnd = new WindowInteropHelper(this).Handle;
             var srcHwnd  = _runtimeManager?.RuntimeHwnd ?? 0;
             if (mainHwnd == 0 || srcHwnd == 0) return;
