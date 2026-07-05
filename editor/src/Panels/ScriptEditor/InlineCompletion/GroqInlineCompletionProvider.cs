@@ -34,12 +34,27 @@ public sealed class GroqInlineCompletionProvider : IInlineCompletionProvider
     private const double Temperature    = 0.2;
     private const int    RequestTimeoutSec = 20;
 
-    /// <summary>補完エンジンとしての役割を固定するシステムプロンプト。</summary>
-    private const string SystemPrompt =
-        "You are an inline code completion engine for the C# scripting of a custom game engine (NOT Unity). " +
+    /// <summary>補完エンジンとしての役割を固定するシステムプロンプト（基本方針）。</summary>
+    private const string SystemPromptBase =
+        "You are an inline code completion engine for the C# scripting of a custom game engine called SEED (NOT Unity). " +
         "Given the code before and after the cursor, output ONLY the raw code to insert at the cursor to continue it. " +
-        "Do not repeat the existing code. Do not use the UnityEngine namespace. " +
+        "Do not repeat the existing code. Do not use the UnityEngine namespace or MonoBehaviour. " +
+        "Use ONLY the SEED engine API described in the reference below, plus the .NET base class library. " +
         "Do not add explanations or markdown code fences.";
+
+    /// <summary>
+    /// 実際に使うシステムプロンプト。基本方針に加え、スクリプト API リファレンス
+    /// （docs/scripting_api.md）を「正典」として注入し、モデルに SEED 独自 API を教える。
+    /// リファレンスは初回のみ読み込まれキャッシュされる。
+    /// </summary>
+    private static string BuildSystemPrompt()
+    {
+        var reference = ScriptApiReference.Load();
+        if (string.IsNullOrEmpty(reference)) return SystemPromptBase;
+        return SystemPromptBase
+             + "\n\n=== SEED Script API reference (authoritative; the only engine API you may use) ===\n"
+             + reference;
+    }
 
     // APIキー・モデル名は設定から都度読む（設定変更が即反映される）
     private readonly Func<string> _apiKey;
@@ -77,7 +92,7 @@ public sealed class GroqInlineCompletionProvider : IInlineCompletionProvider
             Stream   = true,
             Messages = new[]
             {
-                new ChatMessage { Role = "system", Content = SystemPrompt },
+                new ChatMessage { Role = "system", Content = BuildSystemPrompt() },
                 new ChatMessage { Role = "user",   Content = userMessage },
             },
         };

@@ -98,7 +98,8 @@ public partial class CreateItemWindow : Window
         // ConstantUpdate → LateUpdate → Render → EndFrame」の順に呼ばれる。
         var template  = $$"""
             using System;
-            using SEEDEditor.Scripting;
+            using SEEDEditor.Scripting;   // SEEDScript・[SerializeField] など
+            using SEED;                    // Mathf・Vector3・Time・Random・transform など
 
             /// <summary>{{className}} スクリプト。</summary>
             public class {{className}} : SEEDScript
@@ -106,6 +107,12 @@ public partial class CreateItemWindow : Window
                 // インスペクタに公開するフィールドは [SerializeField] を付ける
                 // [SerializeField(Label = "速度")]
                 // private float speed = 1.0f;
+
+                // 使える API 例:
+                //   transform.Position / .Rotation / .Scale  … 自分の GameObject の Transform（get/set）
+                //   Time.DeltaTime                            … 前フレームからの経過秒
+                //   Mathf.Lerp / Vector3 / Random / Debug.Log … 数学・乱数・ログ
+                // 詳細は docs/scripting_api.md を参照。
 
                 /// <summary>フレーム開始時に呼ばれる。入力取得や状態リセット向け。</summary>
                 public override void BeginFrame(ref NativeFrameContext ctx)

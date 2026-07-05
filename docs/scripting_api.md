@@ -1,0 +1,185 @@
+# SEED スクリプト API リファレンス
+
+このファイルは **SEED のスクリプト（C#）から使える API の唯一の正典** です。
+
+- 人間向けのリファレンスであると同時に、**スクリプトエディタの AI インライン補完へ注入される情報源** でもあります（`editor/src/Panels/ScriptEditor/InlineCompletion/ScriptApiReference.cs` が本ファイルを読み込み、補完のシステムプロンプトへ要約を渡します）。
+- したがって **API を追加・変更したら、必ず本ファイルを更新** してください。ここに書かれていない API は AI が知りません。
+
+> **重要（AI 向け）**: SEED は **Unity ではありません**。`UnityEngine` 名前空間・`MonoBehaviour`・`GetComponent` の Unity 実装などは存在しません。使えるのは以下に列挙した SEED 独自 API と .NET 標準ライブラリ（`System.*`）だけです。
+
+---
+
+## 1. スクリプトの基本形
+
+スクリプトは C# で書き、`SEEDScript`（`SEEDEditor.Scripting` 名前空間）を継承します。ゲーム向け API は `SEED` 名前空間にあります。
+
+```csharp
+using SEEDEditor.Scripting;   // SEEDScript・[SerializeField] など
+using SEED;                    // Mathf・Vector3・Time・Random・GameObject など
+
+public class Mover : SEEDScript
+{
+    // インスペクタに公開するフィールドは [SerializeField] を付ける
+    [SerializeField(Label = "速度")]
+    private float speed = 2.0f;
+
+    public override void Update(ref NativeFrameContext ctx)
+    {
+        // 毎フレーム、自分の GameObject を右へ動かす
+        transform.Position += Vector3.Right * speed * Time.DeltaTime;
+    }
+}
+```
+
+`ref NativeFrameContext ctx` には `ctx.DeltaTime`（前フレームからの経過秒）と `ctx.AnimTime`（累計時間）が入っています。同じ値は `Time.DeltaTime` / `Time.ElapsedTime` でも取れます。
+
+---
+
+## 2. ライフサイクル関数
+
+`SEEDScript` を継承して override します。1 フレーム内で以下の順に呼ばれます（すべて `ref NativeFrameContext ctx` を取る）。
+
+| 関数 | 呼ばれるタイミング／用途 |
+|------|--------------------------|
+| `BeginFrame`     | フレーム開始時。入力取得や状態リセット向け |
+| `EarlyUpdate`    | Update より前。他スクリプトへ渡す事前計算向け |
+| `Update`         | 毎フレームの主更新。ゲームロジックの中心 |
+| `ConstantUpdate` | 固定タイムステップの更新。物理など時間刻みを一定にしたい処理向け |
+| `LateUpdate`     | Update 後。追従カメラなど他更新の結果を使う処理向け |
+| `Render`         | 描画フェーズ。描画に関わる処理向け |
+| `EndFrame`       | フレーム終了時。後片付けや状態確定向け |
+
+不要な関数は override しなくて構いません。
+
+---
+
+## 3. Time（フレーム時間） / Debug（ログ）
+
+```csharp
+Time.DeltaTime      // float: 前フレームからの経過秒
+Time.ElapsedTime    // float: ゲーム内の累計時間（秒）
+
+Debug.Log("メッセージ");        // 情報ログ
+Debug.LogWarning("注意");       // 警告
+Debug.LogError("失敗");         // エラー
+```
+
+---
+
+## 4. Mathf（数学ユーティリティ・float 中心）
+
+```csharp
+Mathf.PI, Mathf.Deg2Rad, Mathf.Rad2Deg, Mathf.Epsilon, Mathf.Infinity
+
+Mathf.Sin(x) Mathf.Cos(x) Mathf.Tan(x) Mathf.Asin(x) Mathf.Acos(x) Mathf.Atan(x) Mathf.Atan2(y, x)
+Mathf.Sqrt(x) Mathf.Pow(x, p) Mathf.Exp(x) Mathf.Log(x) Mathf.Log(x, b) Mathf.Log10(x)
+Mathf.Abs(x) Mathf.Sign(x) Mathf.Floor(x) Mathf.Ceil(x) Mathf.Round(x)
+Mathf.FloorToInt(x) Mathf.CeilToInt(x) Mathf.RoundToInt(x)
+Mathf.Min(a, b) Mathf.Max(a, b)
+Mathf.Clamp(v, min, max) Mathf.Clamp01(v)
+Mathf.Lerp(a, b, t) Mathf.LerpUnclamped(a, b, t) Mathf.InverseLerp(a, b, v)
+Mathf.MoveTowards(current, target, maxDelta)
+Mathf.Repeat(t, length) Mathf.PingPong(t, length) Mathf.SmoothStep(from, to, t)
+Mathf.Approximately(a, b)   // 浮動小数の等価比較（== の代わりに使う）
+```
+
+---
+
+## 5. Vector2 / Vector3 / Quaternion（不変値型）
+
+### Vector3（位置・方向・スケール）
+
+```csharp
+new Vector3(x, y, z)
+Vector3.Zero Vector3.One Vector3.Up Vector3.Down Vector3.Left Vector3.Right Vector3.Forward Vector3.Back
+
+v.x v.y v.z
+v.Magnitude v.SqrMagnitude v.Normalized
+
+a + b, a - b, -a, a * 2f, 2f * a, a / 2f, a == b, a != b
+
+Vector3.Dot(a, b) Vector3.Cross(a, b) Vector3.Distance(a, b) Vector3.Scale(a, b)
+Vector3.Lerp(a, b, t) Vector3.MoveTowards(cur, target, maxDelta) Vector3.Angle(a, b)
+Vector3.Min(a, b) Vector3.Max(a, b)
+```
+
+`Vector2` も同様（`x, y` と `Zero/One/Up/Down/Left/Right`、`Dot/Distance/Scale/Lerp/Min/Max`）。
+
+### Quaternion（回転）
+
+```csharp
+Quaternion.Identity
+Quaternion.Euler(xDeg, yDeg, zDeg)  // オイラー角（度）から。適用順は YXZ
+Quaternion.Euler(vector3Degrees)
+Quaternion.AngleAxis(angleDeg, axis)
+
+q1 * q2          // 回転の合成
+q * vector3      // ベクトルを回す
+q.EulerAngles    // Vector3（度）へ変換（Transform.Rotation へ書き戻す用）
+q.Normalized
+```
+
+> Transform の回転は **YXZ オイラー角（度）の Vector3** で表します。合成・補間したいときだけ Quaternion を使い、`q.EulerAngles` で Vector3 に戻します。
+
+---
+
+## 6. Random（乱数）
+
+エンジン全体で 1 つの系列を共有します。`using System;` と併用すると `System.Random` と衝突するので、その場合は `SEED.Random` と明示してください。
+
+```csharp
+Random.Value                 // float: 0.0 以上 1.0 未満
+Random.Range(min, max)       // float: min 以上 max 未満
+Random.Range(minInt, maxInt) // int:   min 以上 max 未満（max は含まない）
+Random.Bool                  // bool
+Random.InsideUnitCircle      // Vector2: 半径 1 の円内
+Random.OnUnitSphere          // Vector3: 長さ 1 のランダム方向
+Random.InitState(seed)       // シード固定（再現用）
+```
+
+---
+
+## 7. GameObject / Transform（コンポーネントへのアクセス）
+
+スクリプトは自分がアタッチされた GameObject を `gameObject`、その Transform を `transform` で参照できます。
+
+```csharp
+gameObject                 // GameObject: このスクリプトが乗るオブジェクト
+gameObject.IsValid         // bool: 実体が有効か
+transform                  // Transform: gameObject.Transform の短縮
+
+transform.Position         // Vector3（get/set）
+transform.Rotation         // Vector3（get/set。YXZ オイラー角・度）
+transform.Scale            // Vector3（get/set）
+
+// 例: 回しながら上げる
+transform.Rotation += new Vector3(0f, 90f * Time.DeltaTime, 0f);
+transform.Position += Vector3.Up * Time.DeltaTime;
+```
+
+> Transform は Rust ランタイムの ECS コンポーネントを FFI 経由で読み書きします。`Position` などへの代入は即座にゲーム世界へ反映されます。
+
+### 利用可能なコンポーネント
+
+現在スクリプトから型付きでアクセスできるのは **Transform** です。他のコンポーネント（Camera / Sprite / Rigidbody / Collider など）は順次対応予定で、対応済みのものは本節に追記されます。
+
+---
+
+## 8. （メンテナ向け）新しいコンポーネントをスクリプトへ公開する手順
+
+コンポーネントを増やしたら、以下を行うことで **自動的にスクリプト・AI 補完から使える** ようになります。
+
+1. **Rust 側レジストリへ登録**: `runtime/src/engine/core/scripting/host_api.rs` の `register_components()` に、コンポーネント名とフィールドアクセサ（`Transform` の例に倣う）を 1 エントリ追加する。
+2. **C# 側ラッパー（任意）**: 型付きで扱いたい場合は `scripting/src/Api/` に薄いラッパー（`Transform.cs` に倣う）を足す。汎用アクセス（名前指定）だけで良ければ不要。
+3. **本ファイル（`docs/scripting_api.md`）の第 7 節に追記**: これを忘れると AI 補完がその API を知りません。
+
+この 3 点は `.claude/CLAUDE.md` にも運用ルールとして明記されています。
+
+---
+
+## 9. 使用可能なライブラリ
+
+- 上記の SEED API（`SEED` / `SEEDEditor.Scripting` 名前空間）
+- .NET 標準ライブラリ（`System`, `System.Collections.Generic`, `System.Linq`, `System.Math` など）
+
+**使えないもの**: `UnityEngine.*`、`MonoBehaviour`、Unity のコルーチン（`IEnumerator` ベースの `StartCoroutine` 等）。これらは SEED には存在しません。

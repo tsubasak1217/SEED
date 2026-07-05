@@ -60,6 +60,15 @@
     <Resource Include="resources\images\**\*.png"/>
   </ItemGroup>
 
+  <!-- スクリプト API リファレンス（AI インライン補完の正典）を出力ディレクトリへコピーし、 -->
+  <!-- 実行時に ScriptApiReference が確実に読み込めるようにする。                          -->
+  <ItemGroup>
+    <Content Include="..\docs\scripting_api.md">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <Link>scripting_api.md</Link>
+    </Content>
+  </ItemGroup>
+
   <!-- llama-server.exe と依存 DLL をビルド出力ディレクトリへコピーする。     -->
   <!-- CI 環境（GitHub Actions が CI=true を設定）ではファイルが存在しないため、 -->
   <!-- Condition で除外してビルドエラーを回避する。                              -->
