@@ -98,6 +98,10 @@ public class ScriptEditorPanel : UserControl
         public bool IsReadOnly;
         /// <summary>このドキュメントに設定されたブレークポイント集合（行追従）。</summary>
         public BreakpointSet? Breaks;
+        /// <summary>ブレークポイント用ガター（ヒット行アイコン更新に使用）。</summary>
+        public BreakpointMargin? BpMargin;
+        /// <summary>デバッガ停止行の赤背景ハイライト。</summary>
+        public DebugLineHighlighter? DebugLine;
     }
 
     private readonly List<DocTab> _docs = new();
@@ -291,6 +295,47 @@ public class ScriptEditorPanel : UserControl
         doc.Editor.CaretOffset = docLine.Offset;
         doc.Editor.ScrollToLine(clamped);
         doc.Editor.Focus();
+    }
+
+    /// <summary>
+    /// デバッガが停止した行を表示・強調する。
+    /// 該当ファイルを開いてその行へジャンプし、行を赤背景でハイライトし、
+    /// その行のブレークポイントを「ヒット（実行位置）」アイコンに切り替える。
+    /// 他ドキュメントの停止表示は解除する。
+    /// </summary>
+    public void SetDebugStoppedLine(string filePath, int line)
+    {
+        // まず全ドキュメントの停止表示をクリアしてから対象行に付け直す
+        ClearDebugStoppedLine();
+
+        GoToLine(filePath, line);
+
+        var full = Path.GetFullPath(filePath);
+        var doc = _docs.FirstOrDefault(d =>
+            string.Equals(d.FilePath, full, StringComparison.OrdinalIgnoreCase));
+        if (doc is null) return;
+
+        int clamped = Math.Clamp(line, 1, Math.Max(1, doc.Editor.Document.LineCount));
+        if (doc.DebugLine is not null)
+        {
+            doc.DebugLine.Line = clamped;
+            doc.Editor.TextArea.TextView.InvalidateLayer(ICSharpCode.AvalonEdit.Rendering.KnownLayer.Selection);
+        }
+        doc.BpMargin?.SetHitLine(clamped);
+    }
+
+    /// <summary>全ドキュメントのデバッガ停止表示（赤背景・ヒットアイコン）を解除する。</summary>
+    public void ClearDebugStoppedLine()
+    {
+        foreach (var d in _docs)
+        {
+            if (d.DebugLine is { Line: not -1 })
+            {
+                d.DebugLine.Line = -1;
+                d.Editor.TextArea.TextView.InvalidateLayer(ICSharpCode.AvalonEdit.Rendering.KnownLayer.Selection);
+            }
+            d.BpMargin?.SetHitLine(-1);
+        }
     }
 
     /// <summary>指定パスのドキュメントをアクティブにする（「タブ」パネルからの選択）。</summary>
@@ -620,7 +665,13 @@ public class ScriptEditorPanel : UserControl
             BreakpointsChanged?.Invoke(full, breaks.Lines());
         });
         editor.TextArea.LeftMargins.Insert(0, bpMargin);
-        doc.Breaks = breaks;
+        doc.Breaks   = breaks;
+        doc.BpMargin = bpMargin;
+
+        // デバッガ停止行の赤背景ハイライト（TextView 背景レンダラー）。
+        var debugLine = new DebugLineHighlighter();
+        editor.TextArea.TextView.BackgroundRenderers.Add(debugLine);
+        doc.DebugLine = debugLine;
 
         // 編集のたびにダーティ化し、ワークスペースへ反映し、診断を予約する。
         // 読み取り専用タブ（エンジン API のソース）はユーザーのワークスペースへ登録しない

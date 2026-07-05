@@ -357,6 +357,11 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         _viewportHost.ContainerCreated += OnContainerCreated;
         ViewportDocumentContent.Content = _viewportHost;
 
+        // 停止フレームプレビュー（DWM サムネイル）を Viewport のサイズ・位置変更へ追従させる。
+        _viewportHost.SizeChanged += (_, _) => UpdateFrozenFramePreviewRect();
+        SizeChanged               += (_, _) => UpdateFrozenFramePreviewRect();
+        LocationChanged           += (_, _) => UpdateFrozenFramePreviewRect();
+
         InstallKeyboardHook();
 
         // ウィンドウドラッグ検出用 WndProc フック
@@ -865,10 +870,13 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         session.Continued  += () => Dispatcher.BeginInvoke(() =>
         {
             // 継続でランタイムのメインスレッドが再開する。凍結解除に合わせて
-            // 停止フレームのプレビューを消し、ウィンドウ操作の抑止も解除する。
+            // 停止フレームのプレビューを消し、ウィンドウ操作の抑止も解除し、
+            // 停止行ハイライトを消して、ゲームウィンドウを最前面へ戻す。
             EditorLog.Write("[デバッグ] 実行を継続しました。");
             if (_runtimeManager is not null) _runtimeManager.DebuggerSuspended = false;
             _frozenPreview.Hide();
+            PanelScriptEditor.ClearDebugStoppedLine();
+            BringGameWindowToFront();
         });
         session.Terminated += () => Dispatcher.BeginInvoke(() =>
         {
@@ -877,6 +885,7 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
             EditorLog.Write("[デバッグ] セッションが終了しました。");
             if (_runtimeManager is not null) _runtimeManager.DebuggerSuspended = false;
             _frozenPreview.Hide();
+            PanelScriptEditor.ClearDebugStoppedLine();
             _debugSession?.Dispose();
             _debugSession = null;
         });
@@ -893,7 +902,8 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
                 foreach (var f in frames)
                 {
                     if (string.IsNullOrEmpty(f.SourcePath)) continue;
-                    PanelScriptEditor.GoToLine(f.SourcePath!, f.Line);
+                    // 停止行へジャンプ＋赤背景ハイライト＋ブレークポイントをヒットアイコンに切替
+                    PanelScriptEditor.SetDebugStoppedLine(f.SourcePath!, f.Line);
                     EditorLog.Write($"[デバッグ] 現在位置 {System.IO.Path.GetFileName(f.SourcePath)}:{f.Line}  {f.Name}");
                     break;
                 }
@@ -961,22 +971,61 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         {
             var mainHwnd = new WindowInteropHelper(this).Handle;
             var srcHwnd  = _runtimeManager?.RuntimeHwnd ?? 0;
-            if (_viewportHost is null || mainHwnd == 0 || srcHwnd == 0) return;
+            if (mainHwnd == 0 || srcHwnd == 0) return;
+            if (!TryGetViewportRectInWindow(mainHwnd, out int l, out int t, out int r, out int b)) return;
 
-            // Viewport コンテナの画面矩形を、メインウィンドウのクライアント座標へ変換する。
-            NativeInterop.GetWindowRect(_viewportHost.ContainerHwnd, out var vp);
-            var origin = new NativeInterop.POINT { X = 0, Y = 0 };
-            NativeInterop.ClientToScreen(mainHwnd, ref origin);
-
-            _frozenPreview.Show(
-                mainHwnd, srcHwnd,
-                vp.Left  - origin.X, vp.Top    - origin.Y,
-                vp.Right - origin.X, vp.Bottom - origin.Y);
+            _frozenPreview.Show(mainHwnd, srcHwnd, l, t, r, b);
         }
         catch (Exception ex)
         {
             EditorLog.Write($"[デバッグ] 停止フレームのプレビュー表示に失敗: {ex.Message}");
         }
+    }
+
+    /// <summary>
+    /// 停止フレームプレビュー表示中に、Viewport パネルのサイズ・位置変更へ追従して
+    /// DWM サムネイルの表示矩形を更新する。ウィンドウ移動・リサイズ、ドッキングパネルの
+    /// スプリッター操作などから呼ばれる。
+    /// </summary>
+    private void UpdateFrozenFramePreviewRect()
+    {
+        if (!_frozenPreview.IsShowing) return;
+        var mainHwnd = new WindowInteropHelper(this).Handle;
+        if (mainHwnd == 0) return;
+        if (TryGetViewportRectInWindow(mainHwnd, out int l, out int t, out int r, out int b))
+            _frozenPreview.UpdateRect(l, t, r, b);
+    }
+
+    /// <summary>
+    /// Viewport コンテナの画面矩形を、メインウィンドウのクライアント座標（物理ピクセル）へ
+    /// 変換して返す。取得できなければ false。
+    /// </summary>
+    private bool TryGetViewportRectInWindow(nint mainHwnd, out int left, out int top, out int right, out int bottom)
+    {
+        left = top = right = bottom = 0;
+        if (_viewportHost is null || _viewportHost.ContainerHwnd == 0) return false;
+
+        NativeInterop.GetWindowRect(_viewportHost.ContainerHwnd, out var vp);
+        var origin = new NativeInterop.POINT { X = 0, Y = 0 };
+        NativeInterop.ClientToScreen(mainHwnd, ref origin);
+
+        left   = vp.Left   - origin.X;
+        top    = vp.Top    - origin.Y;
+        right  = vp.Right  - origin.X;
+        bottom = vp.Bottom - origin.Y;
+        return right > left && bottom > top;
+    }
+
+    /// <summary>
+    /// ゲーム（Play ランタイム）ウィンドウを最前面へ表示する。
+    /// ブレークポイント停止でエディタが前面に出た後、継続でゲームへ戻すために使う。
+    /// </summary>
+    private void BringGameWindowToFront()
+    {
+        var hwnd = _runtimeManager?.RuntimeHwnd ?? 0;
+        if (hwnd == 0) return;
+        NativeInterop.BringWindowToTop(hwnd);
+        NativeInterop.SetForegroundWindow(hwnd);
     }
 
     /// <summary>「デバッグ」メニュー: 継続（F5 相当）。</summary>

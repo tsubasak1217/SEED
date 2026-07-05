@@ -104,6 +104,12 @@ internal static class NativeInterop
     /// <summary>ウィンドウのクライアント座標を画面座標へ変換する（原点取得に使用）。</summary>
     [DllImport("user32.dll")] public static extern bool ClientToScreen(nint hWnd, ref POINT lpPoint);
 
+    /// <summary>指定ウィンドウを Z オーダーの最前面へ移動する。</summary>
+    [DllImport("user32.dll")] public static extern bool BringWindowToTop(nint hWnd);
+
+    /// <summary>指定ウィンドウをフォアグラウンド（前面・アクティブ）にする。</summary>
+    [DllImport("user32.dll")] public static extern bool SetForegroundWindow(nint hWnd);
+
     /// <summary>マウスカーソルを指定した矩形内に閉じ込める。</summary>
     [DllImport("user32.dll")] public static extern bool ClipCursor(ref RECT lpRect);
 

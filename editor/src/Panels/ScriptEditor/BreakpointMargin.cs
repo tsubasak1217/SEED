@@ -27,12 +27,18 @@ public sealed class BreakpointMargin : AbstractMargin
     private static readonly Brush BackgroundBrush = Frozen(Color.FromRgb(0x25, 0x25, 0x26));
     private static readonly Brush BreakBrush      = Frozen(Color.FromRgb(0xE5, 0x14, 0x00));
     private static readonly Brush HoverBrush      = Frozen(Color.FromArgb(0x66, 0xE5, 0x14, 0x00));
+    /// <summary>ヒット（現在停止行）を示す黄色。実行位置の矢印・リング色。</summary>
+    private static readonly Brush HitBrush        = Frozen(Color.FromRgb(0xFF, 0xE0, 0x33));
+    /// <summary>ヒット時にブレークポイント丸へ重ねる黄色リング。</summary>
+    private static readonly Pen   HitRingPen      = FrozenPen(Color.FromRgb(0xFF, 0xE0, 0x33), 1.6);
 
     private readonly BreakpointSet _breakpoints;
     private readonly Action        _onChanged;
 
     /// <summary>ホバー中の行番号（無ければ -1）。</summary>
     private int _hoverLine = -1;
+    /// <summary>デバッガが現在停止している行（ヒット表示用。無ければ -1）。</summary>
+    private int _hitLine = -1;
 
     public BreakpointMargin(BreakpointSet breakpoints, Action onChanged)
     {
@@ -46,6 +52,24 @@ public sealed class BreakpointMargin : AbstractMargin
         var b = new SolidColorBrush(c);
         b.Freeze();
         return b;
+    }
+
+    private static Pen FrozenPen(Color c, double thickness)
+    {
+        var p = new Pen(Frozen(c), thickness);
+        p.Freeze();
+        return p;
+    }
+
+    /// <summary>
+    /// デバッガが停止している行（ヒット行）を設定する。-1 で解除。
+    /// その行のブレークポイントは実行位置（黄色矢印＋リング）付きで描画される。
+    /// </summary>
+    public void SetHitLine(int line)
+    {
+        if (_hitLine == line) return;
+        _hitLine = line;
+        InvalidateVisual();
     }
 
     // ── レイアウト ───────────────────────────────────────────
@@ -87,12 +111,41 @@ public sealed class BreakpointMargin : AbstractMargin
             int lineNumber = visualLine.FirstDocumentLine.LineNumber;
             bool hasBreak  = _breakpoints.Contains(lineNumber);
             bool isHover   = lineNumber == _hoverLine;
-            if (!hasBreak && !isHover) continue;
+            bool isHit     = lineNumber == _hitLine;
+            if (!hasBreak && !isHover && !isHit) continue;
 
             double top = visualLine.VisualTop - textView.VerticalOffset;
             double cy  = top + visualLine.Height / 2;
-            dc.DrawEllipse(hasBreak ? BreakBrush : HoverBrush, null, new Point(cx, cy), DotRadius, DotRadius);
+
+            // ブレークポイント丸。ヒット行では黄色リングを重ねて「停止中」を強調する。
+            if (hasBreak)
+                dc.DrawEllipse(BreakBrush, isHit ? HitRingPen : null, new Point(cx, cy), DotRadius, DotRadius);
+            else if (isHover)
+                dc.DrawEllipse(HoverBrush, null, new Point(cx, cy), DotRadius, DotRadius);
+
+            // 実行位置（現在停止行）は黄色の右向き矢印を重ねて表示する。
+            // ブレークポイント有りなら赤丸＋黄矢印＝「ヒットしたブレークポイント」に見える。
+            if (isHit)
+                dc.DrawGeometry(HitBrush, null, ArrowGeometry(cx, cy));
         }
+    }
+
+    /// <summary>実行位置を示す右向き矢印（三角形）を作る。</summary>
+    private static Geometry ArrowGeometry(double cx, double cy)
+    {
+        // マージン幅（18px）に収まるコンパクトな三角形。中心 (cx,cy) 基準。
+        const double half = 4.0;   // 縦の半分
+        const double tip  = 5.0;   // 先端の右への張り出し
+        const double tail = 3.5;   // 後端の左位置
+        var g = new StreamGeometry();
+        using (var ctx = g.Open())
+        {
+            ctx.BeginFigure(new Point(cx - tail, cy - half), isFilled: true, isClosed: true);
+            ctx.LineTo(new Point(cx + tip, cy), true, false);
+            ctx.LineTo(new Point(cx - tail, cy + half), true, false);
+        }
+        g.Freeze();
+        return g;
     }
 
     // ── 入力 ────────────────────────────────────────────────
