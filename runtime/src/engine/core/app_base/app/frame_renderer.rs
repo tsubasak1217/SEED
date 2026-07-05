@@ -22,10 +22,15 @@ static DEBUG_FRAME: AtomicU64 = AtomicU64::new(0);
 const DEBUG_LOG_FRAMES: u64 = 10;
 
 /// パフォーマンスログ用フレームカウンター。
-/// 60 フレームごとに各処理の CPU 消費時間と MC/スキン数をログ出力する。
+/// PERF_LOG_INTERVAL フレームごとに各処理の CPU 消費時間と MC/スキン数をログ出力する。
 static PERF_FRAME: AtomicU64 = AtomicU64::new(0);
 /// パフォーマンスログを出力する間隔（フレーム数）。
 const PERF_LOG_INTERVAL: u64 = 60;
+/// パフォーマンスログ（[PERF] 行）を出力するかどうか。
+/// 既定では無効。プロファイルしたいときのみ環境変数 SEED_PERF_LOG を設定して有効化する。
+/// （常時出力するとエディタログが [PERF] 行で埋まり、スクリプト等の重要ログが埋没するため）
+static PERF_LOG_ENABLED: std::sync::LazyLock<bool> =
+    std::sync::LazyLock::new(|| std::env::var_os("SEED_PERF_LOG").is_some());
 use crate::engine::components::{ColliderComponent, ColliderShapeData, ComponentKind};
 use crate::engine::components::{Collider2dComponent, ColliderShape2dData, CanvasTransform};
 use crate::engine::components::Transform as ActorTransform;
@@ -151,7 +156,7 @@ impl App {
         // GPU コマンド記録時間（CPU 側）を計測するため、実際の GPU 実行時間は含まない。
         // ただし total_ms と begin_frame_ms は GPU バックプレッシャー（get_current_texture 待機）も含む。
         let perf_idx = PERF_FRAME.fetch_add(1, Ordering::Relaxed);
-        let do_perf  = perf_idx % PERF_LOG_INTERVAL == 0;
+        let do_perf  = *PERF_LOG_ENABLED && perf_idx % PERF_LOG_INTERVAL == 0;
         // フレーム全体の経過時間 [ms]（begin_frame の GPU 待機 + コマンド記録 + submit を含む）
         let perf_t_total = std::time::Instant::now();
         // begin_frame（get_current_texture）にかかった時間 [ms]（GPU バックプレッシャーの指標）

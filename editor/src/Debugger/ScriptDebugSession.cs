@@ -100,9 +100,16 @@ public sealed class ScriptDebugSession : IDisposable
 
         // 2) attach（processId 指定）。レスポンスは configurationDone 後に返るため、
         //    ここでは待たずに投げる（先に await すると相手待ちでデッドロックする）。
+        //
+        //    justMyCode=false は必須。ユーザースクリプトは Roslyn がメモリ上
+        //    （LoadFromStream の動的アセンブリ）に生成するため、netcoredbg の
+        //    Just My Code 判定では「ユーザーコードでない」と分類されがちで、
+        //    有効だとブレークポイントがスキップされて停止しない。無効化して
+        //    動的アセンブリでも確実に停止させる。
         var attachTask = _client.SendRequestAsync("attach", new JsonObject
         {
             ["processId"] = processId,
+            ["justMyCode"] = false,
         }, ct);
 
         // 3) "initialized" イベントを待ってからブレークポイントを設定する
@@ -125,11 +132,35 @@ public sealed class ScriptDebugSession : IDisposable
         var arr = new JsonArray();
         foreach (var line in lines) arr.Add(new JsonObject { ["line"] = line });
 
-        await _client.SendRequestAsync("setBreakpoints", new JsonObject
+        var body = await _client.SendRequestAsync("setBreakpoints", new JsonObject
         {
             ["source"]      = new JsonObject { ["path"] = filePath, ["name"] = Path.GetFileName(filePath) },
             ["breakpoints"] = arr,
         }, ct).ConfigureAwait(false);
+
+        // 応答の verified を確認してログに出す。
+        // verified=false の場合、netcoredbg がそのソース行をロード済みモジュールの
+        // シーケンスポイントへ対応づけられていない（＝停止しない）。
+        // 原因の切り分け（ソースパス不一致・PDB 未読込・JMC など）に必須の情報。
+        var fileName = Path.GetFileName(filePath);
+        if (body?["breakpoints"] is JsonArray results)
+        {
+            int i = 0;
+            foreach (var bp in results)
+            {
+                var line     = bp?["line"]?.GetValue<int>() ?? (i < lines.Count ? lines[i] : 0);
+                var verified = bp?["verified"]?.GetValue<bool>() ?? false;
+                var message  = bp?["message"]?.GetValue<string>();
+                Log?.Invoke(verified
+                    ? $"[デバッグ] BP設定OK {fileName}:{line}"
+                    : $"[デバッグ] BP未解決 {fileName}:{line}  {message ?? "(netcoredbg が行をバインドできませんでした)"}");
+                i++;
+            }
+        }
+        else
+        {
+            Log?.Invoke($"[デバッグ] setBreakpoints 応答に breakpoints がありません（{fileName}）。");
+        }
     }
 
     // ── 実行制御 ────────────────────────────────────────────
