@@ -36,6 +36,14 @@ public sealed class ScriptDebugSession : IDisposable
     /// <summary>直近に停止したスレッド ID（継続・ステップの対象）。</summary>
     public int CurrentThreadId { get; private set; }
 
+    /// <summary>
+    /// 現在ブレークポイント等で停止中か（stopped 受信〜continued の間 true）。
+    /// 停止中はデバッギ（ランタイム）のメインスレッドが凍結しており、
+    /// そのウィンドウへの同期的な Win32 操作はデッドロックするため、
+    /// エディタ側はこのフラグで停止中の危険な操作を回避する。
+    /// </summary>
+    public bool IsStopped { get; private set; }
+
     /// <summary>セッションがアタッチ済みで操作可能か。</summary>
     public bool IsActive => _client is not null && _adapter is { HasExited: false };
 
@@ -234,11 +242,13 @@ public sealed class ScriptDebugSession : IDisposable
                 int threadId = body?["threadId"]?.GetValue<int>() ?? 0;
                 var reason   = body?["reason"]?.GetValue<string>() ?? "";
                 CurrentThreadId = threadId;
+                IsStopped = true;
                 Stopped?.Invoke(new StoppedInfo(reason, threadId));
                 break;
             }
 
             case "continued":
+                IsStopped = false;
                 Continued?.Invoke();
                 break;
 
@@ -251,6 +261,7 @@ public sealed class ScriptDebugSession : IDisposable
 
             case "terminated":
             case "exited":
+                IsStopped = false;
                 Terminated?.Invoke();
                 break;
         }

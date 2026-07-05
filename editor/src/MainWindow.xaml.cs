@@ -237,6 +237,11 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
     /// 既定で有効（メニュー操作なしで常にデバッグできるようにする）。
     /// </summary>
     private bool _debugAutoAttach = true;
+    /// <summary>
+    /// ブレークポイント停止中に、凍結した Play ウィンドウの最終フレームを
+    /// Viewport 上へ静止表示する DWM サムネイルプレビュー。
+    /// </summary>
+    private readonly SEEDEditor.Debugger.FrozenFramePreview _frozenPreview = new();
     /// <summary>AI アシスタントパネルのビルド済み UI 要素（LoadLayout でコンテンツを復元するために保持）</summary>
     private UIElement?             _aiPanelUi;
     /// <summary>「タブ」パネル（スクリプトで開いているファイル一覧）。LoadLayout で復元。</summary>
@@ -461,14 +466,34 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
             }
         }
         else if (state == EditorState.Play)
-            _runtimeManager.Pause();
+        {
+            // ブレークポイントで停止中は、ランタイムのメインスレッドが凍結しているため
+            // Pause（ウィンドウ埋め込み）を行うとデッドロックする。停止中に Play/Pause を
+            // 押した場合は「継続（実行再開）」として扱う。
+            if (_debugSession is { IsStopped: true } s)
+                await SafeDebugAsync(s.ContinueAsync());
+            else
+                _runtimeManager.Pause();
+        }
         else if (state == EditorState.Pause)
             _runtimeManager.Resume();
     }
 
-    private void OnStop(object sender, RoutedEventArgs e)
+    private async void OnStop(object sender, RoutedEventArgs e)
     {
         if (_runtimeManager is null) return;
+
+        // デバッグセッション中に Stop する場合は、先にデバッガをデタッチして
+        // ランタイムの凍結を解除する。凍結したままだと Kill 前後のウィンドウ操作
+        // （復元時の ShowWindow/リサイズ等）や後片付けがブロックしうるため。
+        if (_debugSession is { IsActive: true } s)
+        {
+            _frozenPreview.Hide();
+            _runtimeManager.DebuggerSuspended = false;
+            _debugSession = null;
+            await SafeDebugAsync(s.DisconnectAsync());
+        }
+
         _runtimeManager.Stop();
     }
 
@@ -575,6 +600,7 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         _vpDragOverlay?.Close();
         _debugSession?.Dispose();
         _debugSession = null;
+        _frozenPreview.Dispose();
         _runtimeManager?.Dispose();
         ViewportDocumentContent.Content = null;
     }
@@ -836,18 +862,31 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         // イベントは DAP 読み取りスレッドから来るため UI へマーシャリングする
         session.Log        += m => EditorLog.Write(m);
         session.Output     += t => EditorLog.Write($"[デバッグ出力] {t}");
-        session.Continued  += () => EditorLog.Write("[デバッグ] 実行を継続しました。");
+        session.Continued  += () => Dispatcher.BeginInvoke(() =>
+        {
+            // 継続でランタイムのメインスレッドが再開する。凍結解除に合わせて
+            // 停止フレームのプレビューを消し、ウィンドウ操作の抑止も解除する。
+            EditorLog.Write("[デバッグ] 実行を継続しました。");
+            if (_runtimeManager is not null) _runtimeManager.DebuggerSuspended = false;
+            _frozenPreview.Hide();
+        });
         session.Terminated += () => Dispatcher.BeginInvoke(() =>
         {
             // Play 終了（プロセス消滅）でここに来る。_debugAutoAttach は保持したままにし、
             // 次の Play 開始時に再アタッチできるようにする（デタッチ操作でのみ無効化）。
             EditorLog.Write("[デバッグ] セッションが終了しました。");
+            if (_runtimeManager is not null) _runtimeManager.DebuggerSuspended = false;
+            _frozenPreview.Hide();
             _debugSession?.Dispose();
             _debugSession = null;
         });
         session.Stopped += info => Dispatcher.BeginInvoke(async () =>
         {
             EditorLog.Write($"[デバッグ] 停止しました（{info.Reason}）。");
+            // 停止中はランタイムのメインスレッドが凍結する。ウィンドウ埋め込み等の
+            // 危険な操作を抑止し、凍結フレームを Viewport 上へ静止表示する。
+            if (_runtimeManager is not null) _runtimeManager.DebuggerSuspended = true;
+            ShowFrozenFramePreview();
             try
             {
                 var frames = await session.GetStackTraceAsync();
@@ -907,6 +946,36 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         catch (Exception ex)
         {
             EditorLog.Write($"[デバッグ] 実行中ブレークポイント反映に失敗: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// ブレークポイント停止中に、凍結した Play ウィンドウの最終フレームを
+    /// Viewport 領域へ DWM サムネイルで静止表示する。
+    /// （停止中はエンジンのメインスレッドが凍結し描画ループが止まるため、
+    ///   自由に見回せるデバッグカメラ表示は不可。最後のフレームの静止表示のみ。）
+    /// </summary>
+    private void ShowFrozenFramePreview()
+    {
+        try
+        {
+            var mainHwnd = new WindowInteropHelper(this).Handle;
+            var srcHwnd  = _runtimeManager?.RuntimeHwnd ?? 0;
+            if (_viewportHost is null || mainHwnd == 0 || srcHwnd == 0) return;
+
+            // Viewport コンテナの画面矩形を、メインウィンドウのクライアント座標へ変換する。
+            NativeInterop.GetWindowRect(_viewportHost.ContainerHwnd, out var vp);
+            var origin = new NativeInterop.POINT { X = 0, Y = 0 };
+            NativeInterop.ClientToScreen(mainHwnd, ref origin);
+
+            _frozenPreview.Show(
+                mainHwnd, srcHwnd,
+                vp.Left  - origin.X, vp.Top    - origin.Y,
+                vp.Right - origin.X, vp.Bottom - origin.Y);
+        }
+        catch (Exception ex)
+        {
+            EditorLog.Write($"[デバッグ] 停止フレームのプレビュー表示に失敗: {ex.Message}");
         }
     }
 

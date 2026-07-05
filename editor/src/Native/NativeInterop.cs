@@ -101,6 +101,9 @@ internal static class NativeInterop
     /// <summary>ウィンドウの画面座標での矩形を取得する。</summary>
     [DllImport("user32.dll")] public static extern bool GetWindowRect(nint hWnd, out RECT lpRect);
 
+    /// <summary>ウィンドウのクライアント座標を画面座標へ変換する（原点取得に使用）。</summary>
+    [DllImport("user32.dll")] public static extern bool ClientToScreen(nint hWnd, ref POINT lpPoint);
+
     /// <summary>マウスカーソルを指定した矩形内に閉じ込める。</summary>
     [DllImport("user32.dll")] public static extern bool ClipCursor(ref RECT lpRect);
 

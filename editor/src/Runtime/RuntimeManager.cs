@@ -110,6 +110,16 @@ public sealed class RuntimeManager : IDisposable
     public EditorState State => _state;
 
     /// <summary>
+    /// 実行中ランタイムが内蔵デバッガのブレークポイントで停止（メインスレッド凍結）中か。
+    /// MainWindow がデバッグセッションの停止/継続に合わせて設定する。
+    ///
+    /// 凍結中はランタイムのメッセージポンプが止まっているため、そのウィンドウへの
+    /// 同期的な Win32 操作（SetParent / SetWindowPos 等）は呼び出し側スレッドごと
+    /// ブロックしてデッドロックする。これを避けるためウィンドウ埋め込み等を抑止する。
+    /// </summary>
+    public bool DebuggerSuspended { get; set; }
+
+    /// <summary>
     /// 現在動作中のランタイムプロセス ID（VS デバッガアタッチ用）。
     /// Play 中は Play ランタイム、Edit 中は Edit ランタイムの PID。
     /// 未起動・終了済みなら null。
@@ -284,8 +294,19 @@ public sealed class RuntimeManager : IDisposable
     /// <summary>最小化検知 or Pause ボタン: デバッグカメラに切替えて Viewport に埋め込む。</summary>
     public void Pause()
     {
-        EditorLog.Write($"Pause — state={_state}  hwnd=0x{_runtimeHwnd:X}");
+        EditorLog.Write($"Pause — state={_state}  hwnd=0x{_runtimeHwnd:X}  dbgSuspended={DebuggerSuspended}");
         if (_state != EditorState.Play) return;
+
+        // ブレークポイント停止中はランタイムのメインスレッドが凍結しており、
+        // EmbedRuntimeWindow 内の SetParent/SetWindowPos が凍結ウィンドウへの
+        // 同期 Win32 呼び出しでデッドロックする。停止中は埋め込みを行わない
+        // （停止フレームの表示は DWM サムネイルで別途行う）。
+        if (DebuggerSuspended)
+        {
+            EditorLog.Write("Pause — デバッガ停止中のためウィンドウ埋め込みを抑止");
+            return;
+        }
+
         _pipe?.Send("PAUSE");
         EmbedRuntimeWindow();
         ChangeState(EditorState.Pause);
