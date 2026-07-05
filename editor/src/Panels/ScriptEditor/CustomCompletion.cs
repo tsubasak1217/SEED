@@ -29,8 +29,19 @@ public static class CustomCompletion
     /// <summary>補完候補 1 件（表示・挿入用）。</summary>
     public sealed record Entry(string Name, SymbolKind Kind, int Rank, string Detail, bool InSource);
 
-    /// <summary>"." メンバーアクセスの対象（型と静的/インスタンスの別）。</summary>
-    private readonly record struct MemberAccess(ITypeSymbol Type, bool IsStatic);
+    /// <summary>"." の左側の種類。</summary>
+    private enum AccessMode
+    {
+        /// <summary>名前空間（例: SEED.）→ 配下の型・サブ名前空間を出す。</summary>
+        Namespace,
+        /// <summary>型名（例: Mathf.）→ 静的メンバー＋入れ子型を出す。</summary>
+        StaticType,
+        /// <summary>インスタンス式（例: transform.）→ 非静的メンバーを出す。</summary>
+        Instance,
+    }
+
+    /// <summary>"." メンバーアクセスの対象（コンテナと種別）。</summary>
+    private readonly record struct MemberAccess(INamespaceOrTypeSymbol Container, AccessMode Mode);
 
     /// <summary>
     /// 指定位置・入力済みプレフィックスに対する補完候補を取得する。
@@ -52,9 +63,10 @@ public static class CustomCompletion
             // 属性コンテキスト（メンバーアクセスでないときのみ判定）
             bool inAttr = access is null && IsAttributeContext(root, position, prefixLen);
 
-            // "." メンバーアクセスなら対象式の型のメンバーだけを列挙する
+            // "." メンバーアクセスなら対象（名前空間 / 型 / インスタンス式）の
+            // メンバーだけを列挙する。名前空間なら配下の型・サブ名前空間が出る。
             ImmutableArray<ISymbol> symbols = access is { } acc
-                ? model.LookupSymbols(position, container: acc.Type)
+                ? model.LookupSymbols(position, container: acc.Container)
                 : model.LookupSymbols(position);
 
             IEnumerable<ISymbol> query = symbols
@@ -63,11 +75,17 @@ public static class CustomCompletion
 
             if (access is { } m)
             {
-                // 静的アクセスは静的メンバー＋入れ子型、インスタンスアクセスは非静的のみ。
+                // 名前空間アクセス（SEED. など）は型・サブ名前空間をそのまま出す。
+                // 型アクセスは静的メンバー＋入れ子型、インスタンスアクセスは非静的のみ。
                 // さらに System.Object 由来のメンバー（Equals/ToString 等）はノイズなので除外する。
-                query = query
-                    .Where(s => m.IsStatic ? (s.IsStatic || s.Kind == SymbolKind.NamedType) : !s.IsStatic)
-                    .Where(s => s.ContainingType?.SpecialType != SpecialType.System_Object);
+                if (m.Mode == AccessMode.StaticType)
+                    query = query
+                        .Where(s => s.IsStatic || s.Kind == SymbolKind.NamedType)
+                        .Where(s => s.ContainingType?.SpecialType != SpecialType.System_Object);
+                else if (m.Mode == AccessMode.Instance)
+                    query = query
+                        .Where(s => !s.IsStatic)
+                        .Where(s => s.ContainingType?.SpecialType != SpecialType.System_Object);
             }
             else if (inAttr)
             {
@@ -94,7 +112,14 @@ public static class CustomCompletion
         }
     }
 
-    /// <summary>"." の直後なら、その対象式の型と静的/インスタンスの別を返す。そうでなければ null。</summary>
+    /// <summary>
+    /// "." の直後なら、その左側の対象（名前空間 / 型 / インスタンス式）を返す。
+    /// そうでなければ null。
+    ///
+    /// 式のメンバーアクセス（<c>transform.</c> / <c>Mathf.</c>）だけでなく、
+    /// 名前空間や型を修飾する QualifiedName（<c>SEED.</c> / <c>using SEED.</c>）にも対応する。
+    /// これにより名前空間配下の型（SEED.Random / SEED.Vector3 など）が補完に出る。
+    /// </summary>
     private static MemberAccess? ResolveMemberAccess(SemanticModel model, SyntaxNode root, int position, int prefixLen)
     {
         int dotPos = position - prefixLen - 1;
@@ -103,15 +128,25 @@ public static class CustomCompletion
         var token = root.FindToken(dotPos);
         if (!token.IsKind(SyntaxKind.DotToken)) return null;
 
-        if (token.Parent is MemberAccessExpressionSyntax ma)
+        // "." の左側の式を取り出す。式アクセスと名前修飾の両方を受ける。
+        ExpressionSyntax? left = token.Parent switch
         {
-            // 式が型名（静的アクセス）ならその型自身、そうでなければ式の型（インスタンス）
-            if (model.GetSymbolInfo(ma.Expression).Symbol is ITypeSymbol typeSym)
-                return new MemberAccess(typeSym, IsStatic: true);
-            var t = model.GetTypeInfo(ma.Expression).Type;
-            return t is null ? null : new MemberAccess(t, IsStatic: false);
-        }
-        return null;
+            MemberAccessExpressionSyntax ma => ma.Expression,
+            QualifiedNameSyntax qn          => qn.Left,
+            _                               => null,
+        };
+        if (left is null) return null;
+
+        // 左側が名前空間・型そのものを指すなら、それをコンテナにする
+        var leftSymbol = model.GetSymbolInfo(left).Symbol;
+        if (leftSymbol is INamespaceSymbol ns)
+            return new MemberAccess(ns, AccessMode.Namespace);
+        if (leftSymbol is ITypeSymbol typeSym)
+            return new MemberAccess(typeSym, AccessMode.StaticType);
+
+        // それ以外は式の評価型（インスタンスアクセス）
+        var t = model.GetTypeInfo(left).Type;
+        return t is null ? null : new MemberAccess(t, AccessMode.Instance);
     }
 
     /// <summary>指定位置が属性リスト [ ... ] の中（属性名の入力位置）かどうか。</summary>
