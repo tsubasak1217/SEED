@@ -188,7 +188,16 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
 
         var relPath = Path.GetFullPath(
             Path.Combine(baseDir, @"..\..\..\..\runtime\target\release\SEED.exe"));
-        return relPath;
+        if (File.Exists(relPath)) return relPath;
+
+        // debug / release どちらの成果物もまだ存在しない（クリーンな初回起動など）。
+        // このあと RuntimeManager が RuntimeSourceWatcher の指示で `cargo build`
+        // （＝ debug 出力）を実行して SEED.exe を生成する。
+        // ここで release パスを返すと、debug がビルドされても起動時に
+        // target/release/SEED.exe を探して「指定されたファイルが見つかりません」
+        // (Win32Exception 2) で失敗するため、ビルド後に生成される debug パスを
+        // デフォルトのフォールバックとして返す。
+        return devPath;
     }
 
     private static string ResolveAssetsPath()
