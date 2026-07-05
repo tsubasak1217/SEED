@@ -201,6 +201,27 @@ impl App {
             return;
         }
 
+        // ── 最小化ガード ────────────────────────────────────────────────
+        // ウィンドウが最小化されると winit の inner_size は 0×0 を返す。
+        // このまま描画すると、カメラ／ビューポート計算が幅・高さ 0 の矩形を
+        // 生成し、wgpu の set_viewport バリデーション
+        // （"Viewport has invalid rect ... size is less than or equal to 0"）で
+        // パニックする。パニックが巻き戻る際に Surface の drop で
+        // 「未 present の SurfaceTexture が残っている」二次パニックを誘発し、
+        // プロセスが abort（0xC0000409）してしまう。
+        //
+        // 最小化中はそもそも表示されないため、フレーム描画を丸ごとスキップし、
+        // request_redraw() でポーリングだけ継続して復帰に備える。
+        // サーフェスは resize しない（resize() 側も 0 サイズを無視する）ため、
+        // 復元時は既存のスワップチェーンでそのまま描画を再開できる。
+        if let Some(w) = &self.window {
+            let sz = w.inner_size();
+            if sz.width == 0 || sz.height == 0 {
+                w.request_redraw();
+                return;
+            }
+        }
+
         // ヒエラルキー遅延フラッシュ（スロットリングで保留されていた送信）
         if self.hierarchy_dirty {
             let now = std::time::Instant::now();

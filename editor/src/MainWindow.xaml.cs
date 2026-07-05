@@ -1138,7 +1138,10 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
     private void OnGlobalDebugKeys(object sender, KeyEventArgs e)
     {
         if (_debugSession is not { IsStopped: true } s) return;
-        switch (e.Key)
+        // F10 は Windows/WPF ではメニュー活性化用の「システムキー」として届くため、
+        // e.Key は Key.System になり実キーは e.SystemKey に入る。両者を吸収する。
+        var key = e.Key == Key.System ? e.SystemKey : e.Key;
+        switch (key)
         {
             case Key.F5:
                 _ = SafeDebugAsync(s.ContinueAsync());
