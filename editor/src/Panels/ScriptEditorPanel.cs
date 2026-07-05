@@ -22,6 +22,7 @@ using Microsoft.CodeAnalysis.Formatting;
 using Microsoft.CodeAnalysis.Text;
 using SEEDEditor;
 using SEEDEditor.AI.LocalLlm;
+using SEEDEditor.Debugger;
 using SEEDEditor.Panels.ScriptEditor;
 using SEEDEditor.Panels.ScriptEditor.InlineCompletion;
 using SEEDEditor.Scripting;
@@ -322,6 +323,84 @@ public class ScriptEditorPanel : UserControl
             doc.Editor.TextArea.TextView.InvalidateLayer(ICSharpCode.AvalonEdit.Rendering.KnownLayer.Selection);
         }
         doc.BpMargin?.SetHitLine(clamped);
+    }
+
+    // ── デバッガ ホバー評価（停止中の変数値表示）─────────────────
+    /// <summary>停止中の式評価デリゲート。非 null の間だけホバー表示が有効。</summary>
+    public Func<string, Task<EvalResult?>>? DebugEvaluator;
+    /// <summary>クラス/構造体を展開するための子要素取得デリゲート。</summary>
+    public Func<int, Task<IReadOnlyList<VarInfo>>>? DebugVariablesFetcher;
+    /// <summary>ホバー値表示ポップアップ（遅延生成）。</summary>
+    private DebugHoverPopup? _debugHover;
+
+    /// <summary>デバッガ停止時に、式評価と子要素取得のデリゲートを設定してホバー表示を有効化する。</summary>
+    public void SetDebugEvaluator(
+        Func<string, Task<EvalResult?>> eval,
+        Func<int, Task<IReadOnlyList<VarInfo>>> fetch)
+    {
+        DebugEvaluator        = eval;
+        DebugVariablesFetcher = fetch;
+    }
+
+    /// <summary>継続・終了時にホバー表示を無効化し、ポップアップを閉じる。</summary>
+    public void ClearDebugEvaluator()
+    {
+        DebugEvaluator        = null;
+        DebugVariablesFetcher = null;
+        _debugHover?.Hide();
+    }
+
+    /// <summary>
+    /// スクリプト上のホバーで、その位置の式を評価してポップアップ表示する。
+    /// デバッガ停止中（DebugEvaluator 設定時）のみ動作する。
+    /// </summary>
+    private async void OnDebugHover(TextEditor editor, MouseEventArgs e)
+    {
+        var evaluator = DebugEvaluator;
+        var fetcher   = DebugVariablesFetcher;
+        if (evaluator is null || fetcher is null) return;
+
+        var tvp = editor.GetPositionFromPoint(e.GetPosition(editor));
+        if (tvp is null) return;
+
+        int offset = editor.Document.GetOffset(tvp.Value.Line, tvp.Value.Column);
+        var expr = ExtractHoverExpression(editor.Document, offset);
+        if (string.IsNullOrEmpty(expr)) return;
+
+        EvalResult? result;
+        try { result = await evaluator(expr); }
+        catch { return; }
+        if (result is null) return;
+
+        // 取得デリゲートは常に「現在の」DebugVariablesFetcher を参照する（セッション差し替え対応）。
+        _debugHover ??= new DebugHoverPopup(varRef =>
+            DebugVariablesFetcher?.Invoke(varRef)
+            ?? Task.FromResult<IReadOnlyList<VarInfo>>(System.Array.Empty<VarInfo>()));
+        _debugHover.Show(editor, expr!, result);
+        e.Handled = true;
+    }
+
+    /// <summary>ホバーが外れたらポップアップを（少し待って）閉じる。</summary>
+    private void OnDebugHoverStopped() => _debugHover?.ScheduleClose();
+
+    /// <summary>
+    /// ドキュメントオフセット位置の「式」（識別子・ドット連結。例: num / transform.Position）を切り出す。
+    /// </summary>
+    private static string? ExtractHoverExpression(ICSharpCode.AvalonEdit.Document.TextDocument doc, int offset)
+    {
+        if (offset < 0 || offset > doc.TextLength) return null;
+
+        int start = offset, end = offset;
+        while (start > 0 && IsExprChar(doc.GetCharAt(start - 1))) start--;
+        while (end < doc.TextLength && IsExprCharNoDot(doc.GetCharAt(end))) end++;
+        if (end <= start) return null;
+
+        var s = doc.GetText(start, end - start).Trim().Trim('.');
+        if (s.Length == 0 || char.IsDigit(s[0])) return null;
+        return s;
+
+        static bool IsExprChar(char c)     => char.IsLetterOrDigit(c) || c == '_' || c == '.';
+        static bool IsExprCharNoDot(char c) => char.IsLetterOrDigit(c) || c == '_';
     }
 
     /// <summary>全ドキュメントのデバッガ停止表示（赤背景・ヒットアイコン）を解除する。</summary>
@@ -672,6 +751,10 @@ public class ScriptEditorPanel : UserControl
         var debugLine = new DebugLineHighlighter();
         editor.TextArea.TextView.BackgroundRenderers.Add(debugLine);
         doc.DebugLine = debugLine;
+
+        // デバッガ停止中の変数ホバー表示。停止中（DebugEvaluator 設定時）のみ動作する。
+        editor.TextArea.TextView.MouseHover        += (_, ev) => OnDebugHover(editor, ev);
+        editor.TextArea.TextView.MouseHoverStopped += (_, _)  => OnDebugHoverStopped();
 
         // 編集のたびにダーティ化し、ワークスペースへ反映し、診断を予約する。
         // 読み取り専用タブ（エンジン API のソース）はユーザーのワークスペースへ登録しない

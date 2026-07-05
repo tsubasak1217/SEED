@@ -35,6 +35,13 @@ public partial class MainWindow
 
             SyncViewportSettings();
 
+            // 起動後、最初に Edit ランタイムが準備できたら前回のシーンを復元する（一度だけ）。
+            if (!_initialSceneLoaded && _runtimeManager?.State == EditorState.Edit)
+            {
+                _initialSceneLoaded = true;
+                TryLoadLastScene();
+            }
+
             // FIRST_FRAME が届かない場合のフォールバック（リリースビルドの Runtime 等）。
             // READY 受信から 3 秒経ってもオーバーレイが残っていれば強制的に閉じる。
             Task.Delay(3000).ContinueWith(_ => Dispatcher.BeginInvoke(() =>

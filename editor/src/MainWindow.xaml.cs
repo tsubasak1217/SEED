@@ -99,6 +99,8 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
     // ── シーン保存状態 ─────────────────────────────────────────
     /// <summary>現在開いているシーンのファイルパス。null = 新規未保存シーン。</summary>
     private string? _currentScenePath         = null;
+    /// <summary>起動時の前回シーン復元を一度だけ行うためのフラグ。</summary>
+    private bool    _initialSceneLoaded       = false;
     /// <summary>前回保存後に変更があれば true。</summary>
     private bool    _isDirty                  = false;
     /// <summary>アクター保存中フラグ（OnSaveCompleted でトースト文言を切り替えるため）。</summary>
@@ -880,6 +882,7 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
             if (_runtimeManager is not null) _runtimeManager.DebuggerSuspended = false;
             _frozenPreview.Hide();
             PanelScriptEditor.ClearDebugStoppedLine();
+            PanelScriptEditor.ClearDebugEvaluator();
             BringGameWindowToFront();
         });
         session.Terminated += () => Dispatcher.BeginInvoke(() =>
@@ -890,6 +893,7 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
             if (_runtimeManager is not null) _runtimeManager.DebuggerSuspended = false;
             _frozenPreview.Hide();
             PanelScriptEditor.ClearDebugStoppedLine();
+            PanelScriptEditor.ClearDebugEvaluator();
             _debugSession?.Dispose();
             _debugSession = null;
         });
@@ -914,6 +918,10 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
                     EditorLog.Write($"[デバッグ] 現在位置 {System.IO.Path.GetFileName(f.SourcePath)}:{f.Line}  {f.Name}");
                     break;
                 }
+                // 変数ホバー表示を有効化（GetStackTraceAsync で最上位フレーム ID が確定した後）。
+                PanelScriptEditor.SetDebugEvaluator(
+                    expr   => session.EvaluateAsync(expr),
+                    varRef => session.GetVariablesAsync(varRef));
             }
             catch (Exception ex) { EditorLog.Write($"[デバッグ] スタック取得失敗: {ex.Message}"); }
         });

@@ -331,4 +331,32 @@ public partial class MainWindow
         UpdateTitle();
         EditorLog.Write($"LoadScene — LOAD_SCENE:{path}");
     }
+
+    /// <summary>
+    /// 起動時に前回最後に開いていたシーンを復元する。
+    /// 最近開いたシーン一覧（RecentProjectsManager）の先頭にある、実在する .scene を読み込む。
+    /// 無ければ何もしない（ランタイム側の既定シーンのまま）。
+    /// </summary>
+    private void TryLoadLastScene()
+    {
+        try
+        {
+            var last = SEEDEditor.ProjectSettings.RecentProjectsManager.LoadRecentProjects()
+                .FirstOrDefault(p =>
+                    !string.IsNullOrEmpty(p)
+                    && p.EndsWith(".scene", StringComparison.OrdinalIgnoreCase)
+                    && System.IO.File.Exists(p));
+            if (last is null)
+            {
+                EditorLog.Write("起動時シーン復元: 対象なし（既定シーンのまま）");
+                return;
+            }
+            EditorLog.Write($"起動時シーン復元 — {last}");
+            LoadScene(last);
+        }
+        catch (Exception ex)
+        {
+            EditorLog.Write($"起動時シーン復元に失敗: {ex.Message}");
+        }
+    }
 }

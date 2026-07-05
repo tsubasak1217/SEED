@@ -14,6 +14,12 @@ public sealed record StoppedInfo(string Reason, int ThreadId);
 /// <summary>1 スタックフレーム（現在行の表示・変数取得に使う）。</summary>
 public sealed record StackFrameInfo(int Id, string Name, string? SourcePath, int Line);
 
+/// <summary>式評価（ホバー等）の結果。VariablesReference>0 なら子要素を展開できる。</summary>
+public sealed record EvalResult(string Result, string? Type, int VariablesReference);
+
+/// <summary>変数 1 件（クラス/構造体の展開結果）。VariablesReference>0 なら更に展開可能。</summary>
+public sealed record VarInfo(string Name, string Value, string? Type, int VariablesReference);
+
 /// <summary>
 /// netcoredbg（DAP）を使ったスクリプトのデバッグセッション。
 ///
@@ -35,6 +41,12 @@ public sealed class ScriptDebugSession : IDisposable
 
     /// <summary>直近に停止したスレッド ID（継続・ステップの対象）。</summary>
     public int CurrentThreadId { get; private set; }
+
+    /// <summary>
+    /// 直近のスタックトレースの最上位フレーム ID。ホバー式評価の frameId に使う。
+    /// 停止していない・未取得なら null。
+    /// </summary>
+    public int? TopFrameId { get; private set; }
 
     /// <summary>
     /// 現在ブレークポイント等で停止中か（stopped 受信〜continued の間 true）。
@@ -210,7 +222,65 @@ public sealed class ScriptDebugSession : IDisposable
                     Line:       fo["line"]?.GetValue<int>() ?? 0));
             }
         }
+        TopFrameId = result.Count > 0 ? result[0].Id : null;
         return result;
+    }
+
+    /// <summary>
+    /// 式を評価する（ホバー用）。停止中のみ有効。frameId は最上位フレームを既定に使う。
+    /// 評価不能な式（キーワード等）は例外にせず null を返す。
+    /// </summary>
+    public async Task<EvalResult?> EvaluateAsync(string expression, int? frameId = null, CancellationToken ct = default)
+    {
+        if (_client is null || !IsStopped) return null;
+        var fid = frameId ?? TopFrameId;
+        if (fid is null) return null;
+        try
+        {
+            var body = await _client.SendRequestAsync("evaluate", new JsonObject
+            {
+                ["expression"] = expression,
+                ["frameId"]    = fid.Value,
+                ["context"]    = "hover",
+            }, ct).ConfigureAwait(false);
+            var res = body?["result"]?.GetValue<string>();
+            if (res is null) return null;
+            return new EvalResult(
+                res,
+                body!["type"]?.GetValue<string>(),
+                body["variablesReference"]?.GetValue<int>() ?? 0);
+        }
+        catch (DapException) { return null; }   // 未定義シンボル等は評価失敗として無視
+    }
+
+    /// <summary>
+    /// variablesReference の子要素（クラス/構造体のフィールド等）を取得する。
+    /// </summary>
+    public async Task<IReadOnlyList<VarInfo>> GetVariablesAsync(int variablesReference, CancellationToken ct = default)
+    {
+        var list = new List<VarInfo>();
+        if (_client is null || variablesReference <= 0) return list;
+        try
+        {
+            var body = await _client.SendRequestAsync("variables", new JsonObject
+            {
+                ["variablesReference"] = variablesReference,
+            }, ct).ConfigureAwait(false);
+            if (body?["variables"] is JsonArray arr)
+            {
+                foreach (var v in arr)
+                {
+                    if (v is not JsonObject vo) continue;
+                    list.Add(new VarInfo(
+                        vo["name"]?.GetValue<string>()  ?? "",
+                        vo["value"]?.GetValue<string>() ?? "",
+                        vo["type"]?.GetValue<string>(),
+                        vo["variablesReference"]?.GetValue<int>() ?? 0));
+                }
+            }
+        }
+        catch (DapException) { /* 取得失敗時は空 */ }
+        return list;
     }
 
     /// <summary>アタッチを解除する（デバッギ＝ランタイムは終了させない）。</summary>
