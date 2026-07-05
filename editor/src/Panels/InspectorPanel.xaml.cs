@@ -4,6 +4,7 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Text.Json;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Documents;
@@ -3018,18 +3019,60 @@ public partial class InspectorPanel : UserControl
         // スクリプトファイルを開くボタン（内蔵スクリプトエディタ）
         sp.Children.Add(BuildOpenScriptButton(info.ModelPath));
 
-        var scriptType = GetOrCompileScript(info.ModelPath);
-        if (scriptType is null) return sp;
+        // スクリプト型の解決（[SerializeField] フィールド表示用）。
+        // 未キャッシュのコンパイルは Roslyn のフルコンパイル（Emit + Assembly.Load）で
+        // 数百 ms〜1 秒かかる。これを UI スレッドで行うとインスペクタ表示が固まる（＝選択の遅延）。
+        // よってキャッシュヒット時のみ即時にフィールドを描画し、未キャッシュ時は
+        // プレースホルダを出してバックグラウンドでコンパイルし、完了後に差し込む。
+        if (_scriptTypeCache.TryGetValue(info.ModelPath, out var cachedType) && cachedType is not null)
+        {
+            AppendScriptFields(sp, cachedType, info);
+            return sp;
+        }
 
+        var loading = new TextBlock
+        {
+            Text       = "スクリプト情報を読み込み中…",
+            Foreground = new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88)),
+            FontSize   = 11,
+            Margin     = new Thickness(2, 4, 0, 2),
+        };
+        sp.Children.Add(loading);
+
+        var path           = info.ModelPath;
+        int actorAtRequest = _currentActorId;
+        var infoCopy       = info;
+        Task.Run(() =>
+            {
+                try { return ScriptCompiler.CompileFile(path); }
+                catch (Exception ex) { return ((Type?)null, (IReadOnlyList<string>)new[] { ex.Message }); }
+            })
+            .ContinueWith(t =>
+            {
+                var (type, errors) = t.Result;
+                if (type is not null) _scriptTypeCache[path] = type;
+                else EditorLog.Write($"Script compile error [{Path.GetFileName(path)}]: {string.Join("; ", errors)}");
+
+                // コンパイル中に選択が変わっていたら反映しない（この sp は破棄済み）
+                if (_currentActorId != actorAtRequest) return;
+                sp.Children.Remove(loading);
+                if (type is not null) AppendScriptFields(sp, type, infoCopy);
+            }, TaskScheduler.FromCurrentSynchronizationContext());
+
+        return sp;
+    }
+
+    /// <summary>スクリプトの [SerializeField] フィールドセクションを sp に追加する（UI スレッドで呼ぶ）。</summary>
+    private void AppendScriptFields(StackPanel sp, Type scriptType, SlotInfo info)
+    {
         var fields = ScriptCompiler.GetSerializeFields(scriptType);
-        if (fields.Count == 0) return sp;
+        if (fields.Count == 0) return;
 
         // 現在値: runtime が ACTOR_COMPONENTS の script_fields で送ってくる
         // （シーンに保存された [SerializeField] 値）。編集は SET_SCRIPT_FIELD で書き戻す。
-        var values = ParseScriptFieldValues(info.ScriptFieldsJson);
+        var values  = ParseScriptFieldValues(info.ScriptFieldsJson);
         var slotIdx = info.SlotIdx;
 
-        // フィールドセクション
         var fieldSection = BuildSection("フィールド");
         var fieldSp = (StackPanel)fieldSection.Child;
         fieldSp.Children.Add(ScriptInspectorBuilder.Build(fields, values, (name, val) =>
@@ -3038,8 +3081,6 @@ public partial class InspectorPanel : UserControl
             _runtime?.SendToRuntime($"SET_SCRIPT_FIELD:{_currentActorId},{slotIdx},{name},{val}");
         }));
         sp.Children.Add(fieldSection);
-
-        return sp;
     }
 
     /// <summary>script_fields JSON（{"name":"value",...}）を辞書に変換する。</summary>

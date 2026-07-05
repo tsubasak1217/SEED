@@ -697,6 +697,8 @@
                      手動アタッチのメニューは不要（ブレークポイントを置くだけで停止する）。 -->
                 <MenuItem Header="継続 (F5)"          Click="OnDebugContinue"/>
                 <MenuItem Header="ステップオーバー (F10)" Click="OnDebugStepOver"/>
+                <MenuItem Header="ステップイン (F11)"    Click="OnDebugStepIn"/>
+                <MenuItem Header="ステップアウト (Shift+F11)" Click="OnDebugStepOut"/>
                 <MenuItem Header="デタッチ"           Click="OnDebugDetach"/>
                 <Separator/>
                 <MenuItem Header="Visual Studio でスクリプトをデバッグ"
@@ -750,6 +752,29 @@
                                Width="18" Height="18"
                                RenderOptions.BitmapScalingMode="HighQuality"/>
                     </Button>
+
+                    <!-- デバッグ操作（ブレークポイント停止中のみ表示）:
+                         継続(F5) / ステップオーバー(F10) / ステップイン(F11) / ステップアウト(Shift+F11) -->
+                    <StackPanel x:Name="DebugStepBar" Orientation="Horizontal"
+                                VerticalAlignment="Center" Margin="8,0,0,0"
+                                Visibility="Collapsed">
+                        <Button x:Name="BtnDebugContinue" Style="{StaticResource PlayBarBtnStyle}"
+                                Background="#25402A" Click="OnDebugContinue" ToolTip="継続 (F5)">
+                            <TextBlock Text="▶" FontSize="13" Foreground="#8FE0A0"/>
+                        </Button>
+                        <Button x:Name="BtnDebugStepOver" Style="{StaticResource PlayBarBtnStyle}"
+                                Background="#333333" Click="OnDebugStepOver" ToolTip="ステップオーバー (F10)">
+                            <TextBlock Text="↷" FontSize="15" Foreground="#DDDDDD"/>
+                        </Button>
+                        <Button x:Name="BtnDebugStepIn" Style="{StaticResource PlayBarBtnStyle}"
+                                Background="#333333" Click="OnDebugStepIn" ToolTip="ステップイン (F11)">
+                            <TextBlock Text="↳" FontSize="15" Foreground="#DDDDDD"/>
+                        </Button>
+                        <Button x:Name="BtnDebugStepOut" Style="{StaticResource PlayBarBtnStyle}"
+                                Background="#333333" Click="OnDebugStepOut" ToolTip="ステップアウト (Shift+F11)">
+                            <TextBlock Text="↰" FontSize="15" Foreground="#DDDDDD"/>
+                        </Button>
+                    </StackPanel>
                     <Button x:Name="BtnSettings" Content="⚙"
                             Width="28" Height="28" Margin="6,0,0,0"
                             Click="OnSettings"

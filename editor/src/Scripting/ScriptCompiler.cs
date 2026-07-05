@@ -20,6 +20,13 @@ public static class ScriptCompiler
 {
     private static readonly List<MetadataReference> _refs = BuildRefs();
 
+    /// <summary>
+    /// メタデータ参照の構築（全ロード済みアセンブリの列挙＋メタデータ読み込み）を先に済ませておく。
+    /// 静的フィールド _refs は初回コンパイル時に初期化されるため、それを起動時に
+    /// バックグラウンドで先取りしておくと、最初のスクリプト選択時のコンパイルが速くなる。
+    /// </summary>
+    public static void WarmUp() => _ = _refs.Count;
+
     private static List<MetadataReference> BuildRefs()
     {
         // SEEDScripting.dll のロードを強制する（参照アセンブリは遅延ロードのため）

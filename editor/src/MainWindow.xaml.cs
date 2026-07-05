@@ -370,6 +370,14 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
 
         InstallKeyboardHook();
 
+        // デバッグ操作のショートカット（F5/F10/F11）。停止中のみ機能する。
+        // PreviewKeyDown（トンネル）でエディタより先に捕捉する。
+        PreviewKeyDown += OnGlobalDebugKeys;
+
+        // スクリプトのメタデータ参照構築を起動時にバックグラウンドで先取りし、
+        // 最初のスクリプト付きアクター選択時のインスペクタ表示を速くする。
+        Task.Run(() => { try { SEEDEditor.Scripting.ScriptCompiler.WarmUp(); } catch { } });
+
         // ウィンドウドラッグ検出用 WndProc フック
         var hwndSource = HwndSource.FromHwnd(new WindowInteropHelper(this).Handle);
         hwndSource?.AddHook(WndProc);
@@ -883,27 +891,38 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
             _frozenPreview.Hide();
             PanelScriptEditor.ClearDebugStoppedLine();
             PanelScriptEditor.ClearDebugEvaluator();
-            BringGameWindowToFront();
+            // ステップ中の一時的な継続ではゲーム前面化やツールバー非表示を行わない
+            // （直後に再停止してちらつくため）。完全な継続のときだけ行う。
+            if (!_debugStepping)
+            {
+                DebugStepBar.Visibility = Visibility.Collapsed;
+                BringGameWindowToFront();
+            }
         });
         session.Terminated += () => Dispatcher.BeginInvoke(() =>
         {
             // Play 終了（プロセス消滅）でここに来る。_debugAutoAttach は保持したままにし、
             // 次の Play 開始時に再アタッチできるようにする（デタッチ操作でのみ無効化）。
             EditorLog.Write("[デバッグ] セッションが終了しました。");
+            _debugStepping = false;
             if (_runtimeManager is not null) _runtimeManager.DebuggerSuspended = false;
             _frozenPreview.Hide();
             PanelScriptEditor.ClearDebugStoppedLine();
             PanelScriptEditor.ClearDebugEvaluator();
+            DebugStepBar.Visibility = Visibility.Collapsed;
             _debugSession?.Dispose();
             _debugSession = null;
         });
         session.Stopped += info => Dispatcher.BeginInvoke(async () =>
         {
             EditorLog.Write($"[デバッグ] 停止しました（{info.Reason}）。");
+            _debugStepping = false;
             // 停止中はランタイムのメインスレッドが凍結する。ウィンドウ埋め込み等の
             // 危険な操作を抑止し、凍結フレームを Viewport 上へ静止表示する。
             if (_runtimeManager is not null) _runtimeManager.DebuggerSuspended = true;
             ShowFrozenFramePreview();
+            // デバッグ操作ツールバー（継続・ステップ）を表示する。
+            DebugStepBar.Visibility = Visibility.Visible;
             // 停止したらエディタを前面へ（継続時に前面化したゲームより上に出す）。
             // 自ウィンドウの操作なのでデッドロックしない。
             Activate();
@@ -1075,16 +1094,60 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         });
     }
 
-    /// <summary>「デバッグ」メニュー: 継続（F5 相当）。</summary>
+    /// <summary>
+    /// ステップ操作中かどうか（step over/in/out）。
+    /// ステップ時は継続→停止が瞬時に繰り返されるため、その間の「継続」で
+    /// ゲームを最前面化したりツールバーを隠したりしないための一時フラグ。
+    /// </summary>
+    private bool _debugStepping;
+
+    /// <summary>「デバッグ」: 継続（F5）。</summary>
     private async void OnDebugContinue(object sender, RoutedEventArgs e)
     {
-        if (_debugSession is { IsActive: true } s) await SafeDebugAsync(s.ContinueAsync());
+        if (_debugSession is { IsStopped: true } s) await SafeDebugAsync(s.ContinueAsync());
     }
 
-    /// <summary>「デバッグ」メニュー: ステップオーバー（F10 相当）。</summary>
+    /// <summary>「デバッグ」: ステップオーバー（F10）。現在行を実行し次の行で停止（関数へは入らない）。</summary>
     private async void OnDebugStepOver(object sender, RoutedEventArgs e)
     {
-        if (_debugSession is { IsActive: true } s) await SafeDebugAsync(s.StepOverAsync());
+        if (_debugSession is { IsStopped: true } s) { _debugStepping = true; await SafeDebugAsync(s.StepOverAsync()); }
+    }
+
+    /// <summary>「デバッグ」: ステップイン（F11）。呼び出し先の関数内へ入って停止。</summary>
+    private async void OnDebugStepIn(object sender, RoutedEventArgs e)
+    {
+        if (_debugSession is { IsStopped: true } s) { _debugStepping = true; await SafeDebugAsync(s.StepInAsync()); }
+    }
+
+    /// <summary>「デバッグ」: ステップアウト（Shift+F11）。現在の関数を抜けて呼び出し元で停止。</summary>
+    private async void OnDebugStepOut(object sender, RoutedEventArgs e)
+    {
+        if (_debugSession is { IsStopped: true } s) { _debugStepping = true; await SafeDebugAsync(s.StepOutAsync()); }
+    }
+
+    /// <summary>F5/F10/F11 のデバッグ操作ショートカット（停止中のみ）。ウィンドウの PreviewKeyDown から呼ぶ。</summary>
+    private void OnGlobalDebugKeys(object sender, KeyEventArgs e)
+    {
+        if (_debugSession is not { IsStopped: true } s) return;
+        switch (e.Key)
+        {
+            case Key.F5:
+                _ = SafeDebugAsync(s.ContinueAsync());
+                e.Handled = true;
+                break;
+            case Key.F10:
+                _debugStepping = true;
+                _ = SafeDebugAsync(s.StepOverAsync());
+                e.Handled = true;
+                break;
+            case Key.F11:
+                _debugStepping = true;
+                _ = (Keyboard.Modifiers & ModifierKeys.Shift) != 0
+                    ? SafeDebugAsync(s.StepOutAsync())
+                    : SafeDebugAsync(s.StepInAsync());
+                e.Handled = true;
+                break;
+        }
     }
 
     /// <summary>「デバッグ」メニュー: デタッチ（ランタイムは終了させない）。</summary>
