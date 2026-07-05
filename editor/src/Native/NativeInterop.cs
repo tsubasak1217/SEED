@@ -110,6 +110,21 @@ internal static class NativeInterop
     /// <summary>指定ウィンドウをフォアグラウンド（前面・アクティブ）にする。</summary>
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(nint hWnd);
 
+    /// <summary>
+    /// ウィンドウの位置・サイズ・Z オーダーを変更する。
+    /// SWP_ASYNCWINDOWPOS を付けると対象スレッドへ非同期でポストするため、
+    /// 対象ウィンドウが応答不能（デバッガで凍結中など）でも呼び出し側はブロックしない。
+    /// </summary>
+    [DllImport("user32.dll")] public static extern bool SetWindowPos(
+        nint hWnd, nint hWndInsertAfter, int x, int y, int cx, int cy, uint uFlags);
+
+    // SetWindowPos 用の定数
+    public static readonly nint HWND_TOP     = 0;
+    public const uint SWP_NOSIZE         = 0x0001;
+    public const uint SWP_NOMOVE         = 0x0002;
+    public const uint SWP_NOACTIVATE     = 0x0010;
+    public const uint SWP_ASYNCWINDOWPOS = 0x4000;
+
     /// <summary>マウスカーソルを指定した矩形内に閉じ込める。</summary>
     [DllImport("user32.dll")] public static extern bool ClipCursor(ref RECT lpRect);
 

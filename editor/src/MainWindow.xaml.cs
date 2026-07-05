@@ -896,6 +896,9 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
             // 危険な操作を抑止し、凍結フレームを Viewport 上へ静止表示する。
             if (_runtimeManager is not null) _runtimeManager.DebuggerSuspended = true;
             ShowFrozenFramePreview();
+            // 停止したらエディタを前面へ（継続時に前面化したゲームより上に出す）。
+            // 自ウィンドウの操作なのでデッドロックしない。
+            Activate();
             try
             {
                 var frames = await session.GetStackTraceAsync();
@@ -1019,13 +1022,21 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
     /// <summary>
     /// ゲーム（Play ランタイム）ウィンドウを最前面へ表示する。
     /// ブレークポイント停止でエディタが前面に出た後、継続でゲームへ戻すために使う。
+    ///
+    /// 重要: デバッギ（ゲーム）はいつブレークポイントで凍結するか分からない。
+    /// BringWindowToTop / SetForegroundWindow は対象スレッドへ同期メッセージを送るため、
+    /// 呼び出し中にゲームが凍結すると応答待ちでエディタ UI スレッドごとデッドロックする。
+    /// （例: ブレークポイントを1つ残したまま継続 → 数フレーム後に再停止するケース）。
+    /// これを避けるため SWP_ASYNCWINDOWPOS で「非同期ポスト」して Z オーダーだけ上げる。
+    /// ゲームが生きていれば処理され最前面化し、凍結していても呼び出しはブロックしない。
     /// </summary>
     private void BringGameWindowToFront()
     {
         var hwnd = _runtimeManager?.RuntimeHwnd ?? 0;
         if (hwnd == 0) return;
-        NativeInterop.BringWindowToTop(hwnd);
-        NativeInterop.SetForegroundWindow(hwnd);
+        NativeInterop.SetWindowPos(
+            hwnd, NativeInterop.HWND_TOP, 0, 0, 0, 0,
+            NativeInterop.SWP_NOMOVE | NativeInterop.SWP_NOSIZE | NativeInterop.SWP_ASYNCWINDOWPOS);
     }
 
     /// <summary>「デバッグ」メニュー: 継続（F5 相当）。</summary>
