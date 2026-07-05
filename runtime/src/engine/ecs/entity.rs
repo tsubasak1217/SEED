@@ -24,6 +24,16 @@ impl Entity {
     #[inline] pub fn index(self)      -> u32 { self.index }
     /// 世代を返す（再利用検出用）。
     #[inline] pub fn generation(self) -> u32 { self.generation }
+
+    /// (index, generation) から Entity を復元する（FFI 境界からの再構築用）。
+    ///
+    /// C# スクリプト側が保持する index/generation から Entity を作り直すために使う。
+    /// 生死・世代の整合は World 側（SparseSet::get の世代チェック）で担保されるため、
+    /// 無効・再利用済みのエンティティを渡してもコンポーネント取得が None になるだけ。
+    #[inline]
+    pub(crate) fn from_raw(index: u32, generation: u32) -> Self {
+        Self { index, generation }
+    }
 }
 
 impl std::fmt::Display for Entity {

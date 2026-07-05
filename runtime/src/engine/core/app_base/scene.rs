@@ -279,7 +279,40 @@ impl Scene {
     /// BeginFrame → EarlyUpdate → Update → ConstantUpdate(固定ステップ×N)
     /// → LateUpdate → Render → EndFrame の順で呼ばれる。
     pub fn run_phase(&mut self, phase: Phase, ctx: &FrameContext) {
+        // スクリプト実行の前に、各 ScriptComponent へ所有 Actor（Entity）を同期する。
+        // フレーム先頭（BeginFrame）で 1 回行えば、以降のフェーズでも保持される。
+        // これによりスクリプトの gameObject/transform が自分のオブジェクトを指す。
+        if matches!(phase, Phase::BeginFrame) {
+            Self::sync_script_owners(&self.actors, &mut self.world);
+        }
         self.schedule.run_phase(phase, &mut self.world, ctx);
+    }
+
+    /// Actor ツリーを走査し、各スクリプトスロットの ScriptComponent に所有 Actor の
+    /// Entity を書き込む。ScriptComponent はスロット専用 entity に格納されており、
+    /// それ自身は所有 Actor を知らないため、ここで橋渡しする。
+    fn sync_script_owners(
+        actors: &[crate::engine::structs::objects::Actor],
+        world:  &mut crate::engine::ecs::World,
+    ) {
+        use crate::engine::components::{ComponentKind, ScriptComponent};
+
+        fn walk(actor: &crate::engine::structs::objects::Actor, world: &mut crate::engine::ecs::World) {
+            for slot in actor.slots() {
+                if slot.kind == ComponentKind::Script {
+                    if let Some(sc) = world.get_mut::<ScriptComponent>(slot.entity) {
+                        sc.owner = Some(actor.entity);
+                    }
+                }
+            }
+            for child in actor.children() {
+                walk(child, world);
+            }
+        }
+
+        for actor in actors {
+            walk(actor, world);
+        }
     }
 
     // ── 保存 ──────────────────────────────────────────────────

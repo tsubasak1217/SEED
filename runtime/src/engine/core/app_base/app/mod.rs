@@ -658,7 +658,12 @@ impl App {
         let scripting_host = if dll_path.exists() {
             // DLL が存在する場合のみ CLR ロードを試みる（存在しない場合は hostfxr 検索で遅延するため）
             match ScriptingHost::load(&dll_path) {
-                Ok(host) => Some(host),
+                Ok(host) => {
+                    // コンポーネントアクセス用の関数ポインタ表を C# へ登録する
+                    // （これ以降 transform.Position などのスクリプトアクセスが有効になる）
+                    host.install_host_api();
+                    Some(host)
+                }
                 Err(_)   => None,
             }
         } else {

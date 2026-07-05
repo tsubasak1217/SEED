@@ -13,6 +13,16 @@ namespace SEEDEditor.Scripting;
 /// </summary>
 public static unsafe class ScriptBridge
 {
+    // ─── ホスト API 登録 ──────────────────────────────────────
+
+    /// <summary>
+    /// Rust ランタイムがコンポーネントアクセス用の関数ポインタ表を登録する。
+    /// 起動時に一度だけ呼ばれ、以降 Transform 等のアクセスがこの表を通る。
+    /// </summary>
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    public static void RegisterHostApi(SEED.ScriptHostApi* api)
+        => SEED.ScriptHost.Register(api);
+
     // ─── インスタンス生成・破棄 ────────────────────────────────
 
     /// <summary>
@@ -46,40 +56,48 @@ public static unsafe class ScriptBridge
     }
 
     // ─── ライフサイクル ───────────────────────────────────────
-    // 各フェーズの実行直前に SEED.Time を現在フレームの値へ同期し、
-    // スクリプトから ctx を引き回さず Time.DeltaTime 等を参照できるようにする。
+    // 各フェーズの実行直前に、現在フレームの時間（SEED.Time）と所有エンティティ
+    // （SEEDScript.gameObject/transform 用）をスクリプトへ束縛する（Prepare）。
 
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
     public static void BeginFrame(nint h, NativeFrameContext* ctx)
-    { SyncTime(ctx); Get(h)?.BeginFrame(ref *ctx); }
+    { Prepare(h, ctx)?.BeginFrame(ref *ctx); }
 
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
     public static void EarlyUpdate(nint h, NativeFrameContext* ctx)
-    { SyncTime(ctx); Get(h)?.EarlyUpdate(ref *ctx); }
+    { Prepare(h, ctx)?.EarlyUpdate(ref *ctx); }
 
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
     public static void Update(nint h, NativeFrameContext* ctx)
-    { SyncTime(ctx); Get(h)?.Update(ref *ctx); }
+    { Prepare(h, ctx)?.Update(ref *ctx); }
 
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
     public static void ConstantUpdate(nint h, NativeFrameContext* ctx)
-    { SyncTime(ctx); Get(h)?.ConstantUpdate(ref *ctx); }
+    { Prepare(h, ctx)?.ConstantUpdate(ref *ctx); }
 
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
     public static void LateUpdate(nint h, NativeFrameContext* ctx)
-    { SyncTime(ctx); Get(h)?.LateUpdate(ref *ctx); }
+    { Prepare(h, ctx)?.LateUpdate(ref *ctx); }
 
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
     public static void Render(nint h, NativeFrameContext* ctx)
-    { SyncTime(ctx); Get(h)?.Render(ref *ctx); }
+    { Prepare(h, ctx)?.Render(ref *ctx); }
 
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
     public static void EndFrame(nint h, NativeFrameContext* ctx)
-    { SyncTime(ctx); Get(h)?.EndFrame(ref *ctx); }
+    { Prepare(h, ctx)?.EndFrame(ref *ctx); }
 
-    /// <summary>現在フレームの時間を SEED.Time へ反映する（各フェーズ実行の直前）。</summary>
-    private static void SyncTime(NativeFrameContext* ctx)
-        => SEED.Time.Sync(ctx->DeltaTime, ctx->AnimTime);
+    /// <summary>
+    /// フェーズ実行の直前準備。現在フレームの時間を SEED.Time へ同期し、
+    /// SEEDScript には所有エンティティを束縛する。対象インスタンスを返す。
+    /// </summary>
+    private static IScriptComponent? Prepare(nint h, NativeFrameContext* ctx)
+    {
+        SEED.Time.Sync(ctx->DeltaTime, ctx->AnimTime);
+        var s = Get(h);
+        if (s is SEEDScript ss) ss.BindEntity(ctx->EntityIndex, ctx->EntityGeneration);
+        return s;
+    }
 
     // ─── スクリプトコンパイル ─────────────────────────────────
 

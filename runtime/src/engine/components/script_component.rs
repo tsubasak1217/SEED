@@ -12,7 +12,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use serde::{Deserialize, Serialize};
-use crate::engine::ecs::Component;
+use crate::engine::ecs::{Component, Entity};
 use crate::engine::ecs::schedule::Phase;
 use crate::engine::core::clock::FrameContext;
 use crate::engine::core::scripting::{ScriptingHost, RawFrameContext};
@@ -43,6 +43,10 @@ pub struct ScriptComponent {
     pub(crate) type_name: String,
     /// [SerializeField] フィールドの現在値（シリアライズ・再生成時の復元用）。
     pub fields: BTreeMap<String, String>,
+    /// このスクリプトが乗る GameObject（所有 Entity）。
+    /// スクリプトから gameObject/transform で所有オブジェクトへアクセスするために使う。
+    /// Scene が毎フレーム（BeginFrame 前）に Actor ツリーから同期する。未同期時は None。
+    pub(crate) owner: Option<Entity>,
 }
 
 impl ScriptComponent {
@@ -52,7 +56,7 @@ impl ScriptComponent {
         let bytes     = type_name.as_bytes();
         let handle    = unsafe { (host.create_fn)(bytes.as_ptr(), bytes.len() as i32) };
         if handle == 0 { return None; }
-        Some(Self { host, handle, type_name, fields: BTreeMap::new() })
+        Some(Self { host, handle, type_name, fields: BTreeMap::new(), owner: None })
     }
 
     /// フィールド値付きでスクリプトを生成する（シーンロード・リロード時の復元用）。
@@ -91,19 +95,35 @@ impl ScriptComponent {
     }
 
     /// 指定フェーズに対応するライフサイクルメソッドを CLR 側で実行する。
-    /// ScriptSystem から毎フレーム呼ばれる。
+    /// 所有 Entity を ctx に載せて渡すことで、スクリプトの gameObject/transform が
+    /// 自分のオブジェクトを参照できるようにする。
     pub fn run_phase(&self, phase: Phase, ctx: &FrameContext) {
-        let raw = RawFrameContext::from(ctx);
+        Self::run_phase_raw(&self.host, self.handle, self.owner, phase, ctx);
+    }
+
+    /// World 借用を持たずにフェーズを実行する（ScriptSystem が事前収集したハンドル用）。
+    ///
+    /// C# のライフサイクル内から transform 等のアクセサが呼ばれると World を可変で
+    /// 触るため、呼び出し側は World への参照を一切保持せずにこれを呼ぶ必要がある。
+    /// そのため必要な値（host/handle/owner）だけを受け取る形にしている。
+    pub fn run_phase_raw(
+        host:   &ScriptingHost,
+        handle: isize,
+        owner:  Option<Entity>,
+        phase:  Phase,
+        ctx:    &FrameContext,
+    ) {
+        let raw = RawFrameContext::new(ctx, owner);
         let f = match phase {
-            Phase::BeginFrame     => self.host.begin_frame_fn,
-            Phase::EarlyUpdate    => self.host.early_update_fn,
-            Phase::Update         => self.host.update_fn,
-            Phase::ConstantUpdate => self.host.constant_update_fn,
-            Phase::LateUpdate     => self.host.late_update_fn,
-            Phase::Render         => self.host.render_fn,
-            Phase::EndFrame       => self.host.end_frame_fn,
+            Phase::BeginFrame     => host.begin_frame_fn,
+            Phase::EarlyUpdate    => host.early_update_fn,
+            Phase::Update         => host.update_fn,
+            Phase::ConstantUpdate => host.constant_update_fn,
+            Phase::LateUpdate     => host.late_update_fn,
+            Phase::Render         => host.render_fn,
+            Phase::EndFrame       => host.end_frame_fn,
         };
-        unsafe { f(self.handle, &raw); }
+        unsafe { f(handle, &raw); }
     }
 
     /// シリアライズ用データに変換する。

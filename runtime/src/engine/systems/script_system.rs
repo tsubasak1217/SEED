@@ -9,22 +9,41 @@
 //  （Play モード・非ポーズ時のみ）で Scene::run_phase 経由。
 // ============================================================
 
-use crate::engine::ecs::{FnSystem, Phase, Schedule};
+use std::sync::Arc;
+
+use crate::engine::ecs::{Entity, FnSystem, Phase, Schedule};
 use crate::engine::ecs::schedule::all_phases;
 use crate::engine::components::ScriptComponent;
+use crate::engine::core::scripting::{ScriptingHost, with_world};
 
 /// 全フェーズにスクリプト駆動システムを登録する。
 ///
 /// 各フェーズで World の全 ScriptComponent をクエリし、
 /// 対応する C# ライフサイクルメソッドを呼び出す。
+///
+/// C# のライフサイクル内から transform 等のアクセサが呼ばれると World を可変で
+/// 触る（host_api）。そのため、まず呼び出しに必要な値（host/handle/owner）だけを
+/// 収集して World の借用を解放し、その後 with_world で World ポインタを公開しながら
+/// スクリプトを実行する。これにより「クエリの不変借用」と「アクセサの可変借用」の
+/// 競合を避ける。
 pub fn register(schedule: &mut Schedule) {
     for phase in all_phases() {
         schedule.add_system(phase, FnSystem::new(system_name(phase), move |world, ctx| {
-            // ScriptComponent はスロット専用 entity に格納されている。
-            // run_phase は &self で呼べるため不変クエリで十分。
-            for (_entity, sc) in world.query::<ScriptComponent>() {
-                sc.run_phase(phase, ctx);
-            }
+            // 1. 実行に必要な情報を収集する（ここで World の不変借用は終わる）
+            let calls: Vec<(Arc<ScriptingHost>, isize, Option<Entity>)> = world
+                .query::<ScriptComponent>()
+                .map(|(_entity, sc)| (Arc::clone(&sc.host), sc.handle, sc.owner))
+                .collect();
+            if calls.is_empty() { return; }
+
+            // 2. World ポインタを公開しつつ、収集済みハンドルへスクリプトを実行する。
+            //    この間 Rust 側は World への参照を保持しないため、アクセサからの
+            //    可変アクセスが安全に行える。
+            with_world(world, || {
+                for (host, handle, owner) in &calls {
+                    ScriptComponent::run_phase_raw(host, *handle, *owner, phase, ctx);
+                }
+            });
         }));
     }
 }

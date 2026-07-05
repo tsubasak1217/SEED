@@ -13,6 +13,12 @@ use std::sync::Arc;
 
 use netcorehost::{nethost, pdcstr, pdcstring::PdCString};
 
+use crate::engine::ecs::Entity;
+
+// C# → Rust のコンポーネントアクセスブリッジ
+pub mod host_api;
+pub use host_api::with_world;
+
 // ScriptComponent 等は engine::components から re-export する
 pub use crate::engine::components::{
     ScriptComponent, PlaceholderScriptSlot, ScriptComponentData,
@@ -24,15 +30,31 @@ pub use crate::engine::components::{
 
 /// Rust 側の FrameContext と同じメモリレイアウト。
 /// C# の NativeFrameContext と一致させること。
+///
+/// entity_index / entity_generation は、このスクリプトが乗る GameObject
+/// （所有 Entity）を C# 側へ伝えるためのもの。所有者が未束縛のときは
+/// entity_index = u32::MAX（C# の Entity.None に対応）。
 #[repr(C)]
 pub(crate) struct RawFrameContext {
-    pub delta_time: f32,
-    pub anim_time:  f32,
+    pub delta_time:        f32,
+    pub anim_time:         f32,
+    pub entity_index:      u32,
+    pub entity_generation: u32,
 }
 
-impl From<&crate::engine::core::clock::FrameContext> for RawFrameContext {
-    fn from(ctx: &crate::engine::core::clock::FrameContext) -> Self {
-        Self { delta_time: ctx.delta_time, anim_time: ctx.anim_time }
+impl RawFrameContext {
+    /// フレーム時間と所有エンティティから生成する。
+    pub fn new(ctx: &crate::engine::core::clock::FrameContext, owner: Option<Entity>) -> Self {
+        let (entity_index, entity_generation) = match owner {
+            Some(e) => (e.index(), e.generation()),
+            None    => (u32::MAX, 0),
+        };
+        Self {
+            delta_time: ctx.delta_time,
+            anim_time:  ctx.anim_time,
+            entity_index,
+            entity_generation,
+        }
     }
 }
 
@@ -44,6 +66,8 @@ type LifecycleFn = unsafe extern "system" fn(isize, *const RawFrameContext);
 type CompileFn   = unsafe extern "system" fn(*const u8, i32) -> i32;
 /// スクリプトインスタンスの [SerializeField] フィールドに文字列値を設定する。
 type SetFieldFn  = unsafe extern "system" fn(isize, *const u8, i32, *const u8, i32);
+/// コンポーネントアクセス用の関数ポインタ表（HOST_API）を C# へ登録する。
+type RegisterHostApiFn = unsafe extern "system" fn(*const host_api::ScriptHostApi);
 
 // ============================================================
 //  ScriptingHost — CLR ライフタイムと関数ポインタを保持
@@ -66,6 +90,7 @@ pub struct ScriptingHost {
     pub end_frame_fn:       LifecycleFn,
     pub(crate) compile_fn:   CompileFn,
     pub(crate) set_field_fn: SetFieldFn,
+    register_host_api_fn:    RegisterHostApiFn,
 }
 
 // CLR は単一プロセスに紐付き、常にメインスレッドからのみアクセスする。
@@ -116,7 +141,14 @@ impl ScriptingHost {
             end_frame_fn:      get_fn!(fn(isize, *const RawFrameContext),      pdcstr!("EndFrame")),
             compile_fn:        get_fn!(fn(*const u8, i32) -> i32,              pdcstr!("CompileScripts")),
             set_field_fn:      get_fn!(fn(isize, *const u8, i32, *const u8, i32), pdcstr!("SetFieldValue")),
+            register_host_api_fn: get_fn!(fn(*const host_api::ScriptHostApi),  pdcstr!("RegisterHostApi")),
         }))
+    }
+
+    /// コンポーネントアクセス用の関数ポインタ表（HOST_API）を C# へ登録する。
+    /// CLR ロード後に一度だけ呼ぶ。これ以降 transform.Position などのアクセスが有効になる。
+    pub fn install_host_api(&self) {
+        unsafe { (self.register_host_api_fn)(host_api::host_api_ptr()); }
     }
 
     /// DLL とその関連ファイル一式を、プロセス専用のテンポラリディレクトリへ
