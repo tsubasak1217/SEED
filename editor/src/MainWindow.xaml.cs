@@ -229,6 +229,13 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
     private RuntimeManager?        _runtimeManager;
     /// <summary>内蔵デバッガ（netcoredbg/DAP）のセッション。アタッチ中のみ非 null。</summary>
     private SEEDEditor.Debugger.ScriptDebugSession? _debugSession;
+    /// <summary>
+    /// スクリプトデバッグが「有効」か。true の間は Play 開始のたびに
+    /// 新しい Play プロセスへ自動的にデバッガをアタッチする。
+    /// スクリプトは Play 中のみ実行され、かつ Play は毎回別プロセスとして
+    /// 起動するため、Play プロセスへ自動追従する必要がある。
+    /// </summary>
+    private bool _debugAutoAttach;
     /// <summary>AI アシスタントパネルのビルド済み UI 要素（LoadLayout でコンテンツを復元するために保持）</summary>
     private UIElement?             _aiPanelUi;
     /// <summary>「タブ」パネル（スクリプトで開いているファイル一覧）。LoadLayout で復元。</summary>
@@ -806,25 +813,58 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
     // ── 内蔵デバッガ（netcoredbg / DAP）────────────────────────
 
     /// <summary>
-    /// 「デバッグ」メニュー: 実行中のランタイムへ内蔵デバッガ（netcoredbg）でアタッチし、
-    /// 現在のブレークポイントを設定する。停止時はその行を開いて表示する。
+    /// 「デバッグ」メニュー: スクリプトデバッグを有効化する。
+    ///
+    /// スクリプトは Play 中のみ実行され、しかも Play は毎回 Edit とは別プロセスとして
+    /// 起動する。そのため Edit ランタイムへアタッチしても Update 等が呼ばれず
+    /// ブレークポイントに到達しない（＝止まらない）。
+    /// ここでは「自動アタッチ」を有効化し、
+    ///   - 既に Play 中なら即その Play プロセスへアタッチ、
+    ///   - Edit 中なら次に Play を開始したときに Play プロセスへ自動アタッチ、
+    /// することで、ユーザーがプロセスを意識せずデバッグできるようにする。
     /// </summary>
     private async void OnDebugStartInEditor(object sender, RoutedEventArgs e)
     {
-        var pid = _runtimeManager?.CurrentProcessId;
-        if (pid is null)
-        {
-            MessageBox.Show(
-                "デバッグ対象のランタイムが起動していません。\nPlay でゲームを実行してからお試しください。",
-                "スクリプトデバッグ", MessageBoxButton.OK, MessageBoxImage.Information);
-            return;
-        }
         if (_debugSession is { IsActive: true })
         {
             MessageBox.Show("既にデバッグセッションが動作中です。", "スクリプトデバッグ",
                 MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
+
+        // 以降、Play 開始のたびに Play プロセスへ自動アタッチする
+        _debugAutoAttach = true;
+
+        if (_runtimeManager?.State == EditorState.Play &&
+            _runtimeManager.CurrentProcessId is int pid)
+        {
+            // 既に Play 中: いま動いている Play プロセスへ即アタッチする
+            await AttachDebuggerAsync(pid, showDialog: true);
+        }
+        else
+        {
+            MessageBox.Show(
+                "スクリプトデバッグを有効にしました。\n\n" +
+                "スクリプトは Play 中のみ実行されるため、Play を開始すると\n" +
+                "自動的に Play プロセスへデバッガをアタッチし、ブレークポイントを設定します。\n" +
+                "（Edit のままではスクリプトが動かず停止しません）\n\n" +
+                "無効化するには［デバッグ］→［デタッチ］を実行してください。",
+                "スクリプトデバッグ", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+    }
+
+    /// <summary>
+    /// 指定 PID（実行中の Play ランタイム）へ内蔵デバッガ（netcoredbg）をアタッチし、
+    /// 現在のブレークポイントを設定する。停止時はその行を開いて表示する。
+    /// </summary>
+    /// <param name="pid">アタッチ対象プロセス ID（Play ランタイム）。</param>
+    /// <param name="showDialog">
+    /// 手動アタッチ時は true で結果ダイアログを表示する。
+    /// Play 開始に伴う自動アタッチ時は false（ダイアログを出さずログのみ）。
+    /// </param>
+    private async Task AttachDebuggerAsync(int pid, bool showDialog)
+    {
+        if (_debugSession is { IsActive: true }) return;
 
         var session = new SEEDEditor.Debugger.ScriptDebugSession();
         _debugSession = session;
@@ -835,6 +875,8 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         session.Continued  += () => EditorLog.Write("[デバッグ] 実行を継続しました。");
         session.Terminated += () => Dispatcher.BeginInvoke(() =>
         {
+            // Play 終了（プロセス消滅）でここに来る。_debugAutoAttach は保持したままにし、
+            // 次の Play 開始時に再アタッチできるようにする（デタッチ操作でのみ無効化）。
             EditorLog.Write("[デバッグ] セッションが終了しました。");
             _debugSession?.Dispose();
             _debugSession = null;
@@ -859,22 +901,39 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         try
         {
             var breakpoints = PanelScriptEditor.GetBreakpointsForDebug();
-            await session.StartAsync(pid.Value, breakpoints);
-            MessageBox.Show(
-                $"内蔵デバッガでアタッチしました（PID={pid.Value}）。\n" +
-                "ブレークポイントで停止すると、その行を表示します。\n" +
-                "［デバッグ］メニューから継続・ステップ・デタッチができます。",
-                "スクリプトデバッグ", MessageBoxButton.OK, MessageBoxImage.Information);
+            await session.StartAsync(pid, breakpoints);
+            if (showDialog)
+                MessageBox.Show(
+                    $"内蔵デバッガでアタッチしました（PID={pid}）。\n" +
+                    "ブレークポイントで停止すると、その行を表示します。\n" +
+                    "［デバッグ］メニューから継続・ステップ・デタッチができます。",
+                    "スクリプトデバッグ", MessageBoxButton.OK, MessageBoxImage.Information);
         }
         catch (Exception ex)
         {
             EditorLog.Write($"[デバッグ] アタッチ失敗: {ex.Message}");
             _debugSession?.Dispose();
             _debugSession = null;
-            MessageBox.Show(
-                $"内蔵デバッガでアタッチできませんでした。\n\n{ex.Message}",
-                "スクリプトデバッグ", MessageBoxButton.OK, MessageBoxImage.Warning);
+            if (showDialog)
+                MessageBox.Show(
+                    $"内蔵デバッガでアタッチできませんでした。\n\n{ex.Message}",
+                    "スクリプトデバッグ", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
+    }
+
+    /// <summary>
+    /// Play 開始時に呼ばれ、スクリプトデバッグが有効なら Play プロセスへ自動アタッチする。
+    /// OnStateChanged（状態遷移）から呼ばれる。
+    /// </summary>
+    private void TryAutoAttachDebuggerOnPlay()
+    {
+        if (!_debugAutoAttach) return;
+        if (_debugSession is { IsActive: true }) return;   // Pause→Play 等では再アタッチ不要
+        if (_runtimeManager?.State != EditorState.Play)    return;
+        if (_runtimeManager.CurrentProcessId is not int pid) return;
+
+        EditorLog.Write($"[デバッグ] Play 開始を検知 — Play プロセス PID={pid} へ自動アタッチします。");
+        _ = AttachDebuggerAsync(pid, showDialog: false);
     }
 
     /// <summary>「デバッグ」メニュー: 継続（F5 相当）。</summary>
@@ -892,6 +951,8 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
     /// <summary>「デバッグ」メニュー: デタッチ（ランタイムは終了させない）。</summary>
     private async void OnDebugDetach(object sender, RoutedEventArgs e)
     {
+        // デタッチは明示的な無効化。Play 開始時の自動アタッチも止める。
+        _debugAutoAttach = false;
         var s = _debugSession;
         _debugSession = null;
         if (s is not null) { await SafeDebugAsync(s.DisconnectAsync()); EditorLog.Write("[デバッグ] デタッチしました。"); }

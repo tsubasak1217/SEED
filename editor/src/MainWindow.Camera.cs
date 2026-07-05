@@ -280,7 +280,14 @@ public partial class MainWindow
     private void OnStateChanged(EditorState state)
     {
         EditorLog.Write($"OnStateChanged — {state}");
-        Dispatcher.BeginInvoke(() => ApplyUiState(state));
+        Dispatcher.BeginInvoke(() =>
+        {
+            ApplyUiState(state);
+            // Play へ遷移したら、スクリプトデバッグが有効な場合に
+            // 新しい Play プロセスへ自動アタッチする（スクリプトは Play 中のみ動くため）。
+            if (state == EditorState.Play)
+                TryAutoAttachDebuggerOnPlay();
+        });
     }
 
     private void ApplyUiState(EditorState state)
