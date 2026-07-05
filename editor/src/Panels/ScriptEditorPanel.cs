@@ -254,6 +254,14 @@ public class ScriptEditorPanel : UserControl
                 .ToDictionary(d => d.FilePath, d => (IReadOnlyList<int>)d.Breaks!.Lines());
 
     /// <summary>
+    /// ブレークポイントが変更（トグル）されたときに発火する。
+    /// 引数: (ファイルの絶対パス, そのファイルの現在のブレークポイント行一覧)。
+    /// デバッグセッション中は、これを購読して netcoredbg へ即時反映することで
+    /// 実行中に設置・解除したブレークポイントでも停止できるようにする。
+    /// </summary>
+    public event Action<string, IReadOnlyList<int>>? BreakpointsChanged;
+
+    /// <summary>
     /// デバッガアタッチ用の全ブレークポイント（ファイルパス→行番号）。
     /// 永続化済み（未オープンのファイル含む）を土台に、開いているドキュメントの
     /// 現在値で上書きする（編集で移動した最新位置を優先）。
@@ -608,6 +616,8 @@ public class ScriptEditorPanel : UserControl
         {
             _breakpointStore?.Set(full, breaks.Lines());
             _breakpointStore?.Save();
+            // デバッグセッション中の実行時トグルを即座に反映させるため通知する。
+            BreakpointsChanged?.Invoke(full, breaks.Lines());
         });
         editor.TextArea.LeftMargins.Insert(0, bpMargin);
         doc.Breaks = breaks;

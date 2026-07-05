@@ -693,8 +693,8 @@
             </MenuItem>
 
             <MenuItem Header="デバッグ">
-                <MenuItem Header="内蔵デバッガでアタッチ（ブレークポイント）"
-                          Click="OnDebugStartInEditor"/>
+                <!-- 内蔵デバッガは Play 開始時に Play プロセスへ自動アタッチするため、
+                     手動アタッチのメニューは不要（ブレークポイントを置くだけで停止する）。 -->
                 <MenuItem Header="継続 (F5)"          Click="OnDebugContinue"/>
                 <MenuItem Header="ステップオーバー (F10)" Click="OnDebugStepOver"/>
                 <MenuItem Header="デタッチ"           Click="OnDebugDetach"/>
