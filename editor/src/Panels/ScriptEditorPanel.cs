@@ -797,10 +797,11 @@ public class ScriptEditorPanel : UserControl
         // IntelliSense（補完ウィンドウ）とは共存させる（Copilot と同様）。Tab の競合は
         // OnEditorKeyDown 側で解決済み（ウィンドウ表示中は Tab=IntelliSense 確定、
         // 非表示時のみ Tab=ゴースト確定）。よって抑止はしない（常に false）。
+        // 読み取り専用（エンジン側ソース等）では AI インライン補完も無効化する。
         doc.Inline = new InlineCompletionController(
             editor,
             GetInlineProvider(),
-            isEnabled:    () => _settings.InlineCompletionEnabled,
+            isEnabled:    () => _settings.InlineCompletionEnabled && !readOnly,
             isSuppressed: () => false);
 
         // IntelliSense: 文字入力に応じて補完ウィンドウを開く
@@ -1665,6 +1666,8 @@ public class ScriptEditorPanel : UserControl
     private async Task ShowCompletionAsync(DocTab doc)
     {
         if (_workspace is null) return;
+        // 読み取り専用（エンジン側ソース等）では編集しないので予測変換も出さない。
+        if (doc.IsReadOnly || doc.Editor.IsReadOnly) return;
         // 最新テキストをワークスペースへ反映してから解析する
         _workspace.UpsertText(doc.FilePath, doc.Editor.Text);
 

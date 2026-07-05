@@ -81,7 +81,11 @@ public sealed class OpenDocumentsPanel : UserControl
         if (doc.IsReadOnly)
             nameStack.Children.Add(new TextBlock
             {
-                Text = "🔒", FontSize = 10,
+                // Segoe MDL2 Assets のロック字形（モノクロなので Foreground の色が効く）を黄色で表示。
+                Text = "",
+                FontFamily = new FontFamily("Segoe MDL2 Assets"),
+                Foreground = new SolidColorBrush(Color.FromRgb(0xFF, 0xC8, 0x2E)),
+                FontSize = 11,
                 Margin = new Thickness(0, 0, 4, 0), VerticalAlignment = VerticalAlignment.Center,
             });
         if (doc.IsDirty)
