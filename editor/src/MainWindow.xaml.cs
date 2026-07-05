@@ -357,10 +357,14 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         _viewportHost.ContainerCreated += OnContainerCreated;
         ViewportDocumentContent.Content = _viewportHost;
 
-        // 停止フレームプレビュー（DWM サムネイル）を Viewport のサイズ・位置変更へ追従させる。
-        _viewportHost.SizeChanged += (_, _) => UpdateFrozenFramePreviewRect();
-        SizeChanged               += (_, _) => UpdateFrozenFramePreviewRect();
-        LocationChanged           += (_, _) => UpdateFrozenFramePreviewRect();
+        // 停止フレームプレビュー（DWM サムネイル）を Viewport パネルのサイズ・位置変更へ
+        // 追従させる。パネル自体（ドッキングのスプリッター操作）は
+        // ViewportDocumentContent.SizeChanged、ウィンドウ全体はウィンドウの
+        // SizeChanged/LocationChanged で捕捉する。
+        ViewportDocumentContent.SizeChanged += (_, _) => UpdateFrozenFramePreviewRect();
+        _viewportHost.SizeChanged           += (_, _) => UpdateFrozenFramePreviewRect();
+        SizeChanged                         += (_, _) => UpdateFrozenFramePreviewRect();
+        LocationChanged                     += (_, _) => UpdateFrozenFramePreviewRect();
 
         InstallKeyboardHook();
 
@@ -1000,43 +1004,67 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
     }
 
     /// <summary>
-    /// Viewport コンテナの画面矩形を、メインウィンドウのクライアント座標（物理ピクセル）へ
+    /// Viewport パネルの矩形を、メインウィンドウのクライアント座標（物理ピクセル）へ
     /// 変換して返す。取得できなければ false。
+    ///
+    /// ContainerHwnd（HwndHost の子ウィンドウ）は Play 中に Viewport ドキュメントが
+    /// Hidden になると位置・サイズが更新されず陳腐化するため使わない。代わりに
+    /// WPF 要素（ViewportDocumentContent）の現在のレイアウトから PointToScreen で
+    /// 実座標を求める。Hidden でもレイアウトは有効なので、パネルのサイズ変更に追従できる。
     /// </summary>
     private bool TryGetViewportRectInWindow(nint mainHwnd, out int left, out int top, out int right, out int bottom)
     {
         left = top = right = bottom = 0;
-        if (_viewportHost is null || _viewportHost.ContainerHwnd == 0) return false;
+        var el = ViewportDocumentContent;
+        if (el is null || el.ActualWidth <= 0 || el.ActualHeight <= 0) return false;
 
-        NativeInterop.GetWindowRect(_viewportHost.ContainerHwnd, out var vp);
-        var origin = new NativeInterop.POINT { X = 0, Y = 0 };
-        NativeInterop.ClientToScreen(mainHwnd, ref origin);
+        try
+        {
+            // 要素の左上・右下をスクリーン（物理ピクセル）座標へ変換する。
+            var p0 = el.PointToScreen(new System.Windows.Point(0, 0));
+            var p1 = el.PointToScreen(new System.Windows.Point(el.ActualWidth, el.ActualHeight));
 
-        left   = vp.Left   - origin.X;
-        top    = vp.Top    - origin.Y;
-        right  = vp.Right  - origin.X;
-        bottom = vp.Bottom - origin.Y;
-        return right > left && bottom > top;
+            var origin = new NativeInterop.POINT { X = 0, Y = 0 };
+            NativeInterop.ClientToScreen(mainHwnd, ref origin);
+
+            left   = (int)Math.Round(Math.Min(p0.X, p1.X)) - origin.X;
+            top    = (int)Math.Round(Math.Min(p0.Y, p1.Y)) - origin.Y;
+            right  = (int)Math.Round(Math.Max(p0.X, p1.X)) - origin.X;
+            bottom = (int)Math.Round(Math.Max(p0.Y, p1.Y)) - origin.Y;
+            return right > left && bottom > top;
+        }
+        catch
+        {
+            // PointToScreen は要素が PresentationSource に未接続だと失敗する。
+            return false;
+        }
     }
 
     /// <summary>
     /// ゲーム（Play ランタイム）ウィンドウを最前面へ表示する。
     /// ブレークポイント停止でエディタが前面に出た後、継続でゲームへ戻すために使う。
     ///
-    /// 重要: デバッギ（ゲーム）はいつブレークポイントで凍結するか分からない。
-    /// BringWindowToTop / SetForegroundWindow は対象スレッドへ同期メッセージを送るため、
-    /// 呼び出し中にゲームが凍結すると応答待ちでエディタ UI スレッドごとデッドロックする。
-    /// （例: ブレークポイントを1つ残したまま継続 → 数フレーム後に再停止するケース）。
-    /// これを避けるため SWP_ASYNCWINDOWPOS で「非同期ポスト」して Z オーダーだけ上げる。
-    /// ゲームが生きていれば処理され最前面化し、凍結していても呼び出しはブロックしない。
+    /// エディタがフォアグラウンドプロセスなので、SetForegroundWindow で他ウィンドウ
+    /// （ゲーム）へ前面を渡せる。ただし BringWindowToTop / SetForegroundWindow は
+    /// 対象スレッドへ同期メッセージを送るため、呼び出し中にゲームがブレークポイントで
+    /// 凍結すると応答待ちでブロックしうる（ブレークポイントを残したまま継続 → 数フレーム後に
+    /// 再停止するケース）。
+    /// これを UI スレッドで行うとエディタごとデッドロックするため、ワーカースレッドで実行する。
+    /// 万一ブロックしても待つのはそのワーカーだけで、UI は固まらない。
     /// </summary>
     private void BringGameWindowToFront()
     {
         var hwnd = _runtimeManager?.RuntimeHwnd ?? 0;
         if (hwnd == 0) return;
-        NativeInterop.SetWindowPos(
-            hwnd, NativeInterop.HWND_TOP, 0, 0, 0, 0,
-            NativeInterop.SWP_NOMOVE | NativeInterop.SWP_NOSIZE | NativeInterop.SWP_ASYNCWINDOWPOS);
+        System.Threading.Tasks.Task.Run(() =>
+        {
+            try
+            {
+                NativeInterop.BringWindowToTop(hwnd);
+                NativeInterop.SetForegroundWindow(hwnd);
+            }
+            catch { /* 前面化失敗は致命ではないので無視 */ }
+        });
     }
 
     /// <summary>「デバッグ」メニュー: 継続（F5 相当）。</summary>
