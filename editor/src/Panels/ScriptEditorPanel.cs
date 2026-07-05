@@ -285,7 +285,12 @@ public class ScriptEditorPanel : UserControl
     /// <summary>指定ファイルの指定行を開いてキャレットを移動する（デバッグの現在行表示用）。</summary>
     public void GoToLine(string filePath, int line)
     {
-        OpenFile(filePath);
+        // デバッガのステップインでエンジン側ソース（ScriptBridge.cs など、ユーザーの
+        // アセット配下でないスクリプト）へ飛んだ場合は、閲覧は許可するが編集はさせない
+        // （機能保証のため読み取り専用で開く）。ユーザースクリプト（アセット配下）は編集可。
+        if (IsUserScriptPath(filePath)) OpenFile(filePath);
+        else                            OpenFileReadOnly(filePath);
+
         var full = Path.GetFullPath(filePath);
         var doc = _docs.FirstOrDefault(d =>
             string.Equals(d.FilePath, full, StringComparison.OrdinalIgnoreCase));
@@ -296,6 +301,26 @@ public class ScriptEditorPanel : UserControl
         doc.Editor.CaretOffset = docLine.Offset;
         doc.Editor.ScrollToLine(clamped);
         doc.Editor.Focus();
+    }
+
+    /// <summary>
+    /// 指定パスがユーザースクリプト（編集可能）か。アセットルート配下なら true。
+    /// アセット外（エンジン側 scripting/src の ScriptBridge.cs 等）は false＝読み取り専用扱い。
+    /// アセットルート未設定時は安全側に倒し、編集させない（false）。
+    /// </summary>
+    private bool IsUserScriptPath(string filePath)
+    {
+        if (string.IsNullOrEmpty(_assetsRoot) || string.IsNullOrEmpty(filePath)) return false;
+        try
+        {
+            var full = Path.GetFullPath(filePath);
+            var root = Path.GetFullPath(_assetsRoot);
+            // ルート直下判定（区切り正規化のため末尾セパレータを付けて前方一致）
+            root = root.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                   + Path.DirectorySeparatorChar;
+            return full.StartsWith(root, StringComparison.OrdinalIgnoreCase);
+        }
+        catch { return false; }
     }
 
     /// <summary>
