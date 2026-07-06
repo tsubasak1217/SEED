@@ -449,6 +449,37 @@ impl App {
         }).or(Some([1280.0, 720.0]))
     }
 
+    /// スクリプトの ScreenPosition API 用に、全 Actor2D の
+    /// 「アクターエンティティ → ウィンドウ左上原点のスクリーン座標（ピクセル）」を収集する。
+    ///
+    /// collect_actor2d_contexts（描画・物理と同一の座標変換チェーン）の body_pos_px は
+    /// ビューポート中心を原点とする ortho 空間なので、ウィンドウ半分を加算して
+    /// 左上原点のスクリーン座標へ変換する。座標は CanvasTransform のピボット点に対応する。
+    /// frame_renderer がフレームごとに呼び、host_api へ公開する。
+    pub(super) fn collect_2d_screen_positions(&self) -> Vec<(Entity, [f32; 2])> {
+        let viewport_size = self.compute_viewport_size_2d();
+        let Some(scene) = &self.scene else { return Vec::new() };
+
+        // CanvasViewportRef::Camera を持つルートキャンバスのビューポート上書きを解決する
+        let (win_w, win_h) = viewport_size.map(|[w, h]| (w, h)).unwrap_or((1280.0, 720.0));
+        let canvas_vp_overrides = build_canvas_viewport_map(
+            &scene.actors, &scene.world,
+            self.active_world_line, win_w, win_h, None,
+        );
+
+        let contexts = collect_actor2d_contexts(
+            scene, self.active_world_line, viewport_size, &canvas_vp_overrides,
+        );
+
+        // ortho 空間（ビューポート中心原点・Y 下向き）→ ウィンドウ左上原点へ変換する
+        contexts.into_iter()
+            .map(|c| (
+                c.actor_entity,
+                [c.body_pos_px[0] + win_w * 0.5, c.body_pos_px[1] + win_h * 0.5],
+            ))
+            .collect()
+    }
+
     // ─── 起動 ────────────────────────────────────────────────────
 
     /// 2D 物理スレッドを起動し、シーン内の全 Collider2d Actor2D を物理ワールドに登録する。

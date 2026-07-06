@@ -1410,11 +1410,29 @@ public class ScriptEditorPanel : UserControl
             }
         }
 
-        // Alt+↑ / Alt+↓: 現在行（複数行選択時はその範囲）を丸ごと上下へ移動する
-        if (Keyboard.Modifiers.HasFlag(ModifierKeys.Alt) && key is Key.Up or Key.Down)
+        // Ctrl+Alt+↑ / Ctrl+Alt+↓: 垂直カーソル（矩形選択）を上下に生成・拡張する。
+        // 幅ゼロの矩形選択はマルチラインカーソルとして機能し、入力が全行へ反映される。
+        if (Keyboard.Modifiers == (ModifierKeys.Control | ModifierKeys.Alt) && key is Key.Up or Key.Down)
+        {
+            e.Handled = true;
+            ExtendVerticalCaret(doc.Editor, key == Key.Up ? -1 : +1);
+            return;
+        }
+
+        // Alt 単独+↑ / ↓: 現在行（複数行選択時はその範囲）を丸ごと上下へ移動する。
+        // Ctrl+Alt（垂直カーソル）と区別するため修飾キーは Alt のみの場合に限定する。
+        if (Keyboard.Modifiers == ModifierKeys.Alt && key is Key.Up or Key.Down)
         {
             e.Handled = true;
             MoveLines(doc.Editor, key == Key.Up ? -1 : +1);
+            return;
+        }
+
+        // Ctrl+/: 選択行（未選択時はカーソル行）のコメントアウトをトグルする
+        if (Keyboard.Modifiers == ModifierKeys.Control && key == Key.OemQuestion)
+        {
+            e.Handled = true;
+            ToggleLineComment(doc.Editor);
             return;
         }
 
@@ -1606,6 +1624,115 @@ public class ScriptEditorPanel : UserControl
         {
             try { Clipboard.SetText(text); return; }
             catch { System.Threading.Thread.Sleep(10); }
+        }
+    }
+
+    /// <summary>
+    /// 垂直カーソル（矩形選択）を上下に生成・拡張する（Ctrl+Alt+↑ / Ctrl+Alt+↓）。
+    ///
+    /// 矩形選択が無い場合はキャレット位置を起点（アンカー）に 1 行分の矩形選択を作り、
+    /// 既にある場合はアクティブ端を delta 行分だけ伸縮する。
+    /// 幅ゼロの矩形選択は AvalonEdit ではマルチラインカーソルとして機能し、
+    /// 文字入力・削除が選択中の全行へ同時に反映される。
+    /// </summary>
+    private static void ExtendVerticalCaret(TextEditor editor, int delta)
+    {
+        var area = editor.TextArea;
+
+        // 現在の矩形選択からアンカー（固定端）とアクティブ端を取得する。
+        // 矩形選択が無い場合はキャレット位置を両端の初期値とする。
+        ICSharpCode.AvalonEdit.TextViewPosition anchor, active;
+        if (area.Selection is ICSharpCode.AvalonEdit.Editing.RectangleSelection rect)
+        {
+            anchor = rect.StartPosition;
+            active = rect.EndPosition;
+        }
+        else
+        {
+            anchor = area.Caret.Position;
+            active = area.Caret.Position;
+        }
+
+        // アクティブ端を 1 行分移動する（文書の範囲外へは出さない）
+        int newLine = active.Line + delta;
+        if (newLine < 1 || newLine > editor.Document.LineCount) return;
+
+        // 移動先の行が短い場合に備えて Column は行長へクランプしつつ、
+        // VisualColumn を維持することで矩形の見た目上の列を揃える
+        var targetLine = editor.Document.GetLineByNumber(newLine);
+        int column     = Math.Min(active.Column, targetLine.Length + 1);
+        var newActive  = new ICSharpCode.AvalonEdit.TextViewPosition(newLine, column, active.VisualColumn);
+
+        area.Selection      = new ICSharpCode.AvalonEdit.Editing.RectangleSelection(area, anchor, newActive);
+        area.Caret.Position = newActive;
+    }
+
+    /// <summary>
+    /// 選択行（未選択時はカーソル行）のコメントアウトをトグルする（Ctrl+/）。
+    ///
+    /// 対象範囲の非空行がすべて「//」で始まる場合はコメントを解除し、
+    /// そうでなければ範囲内の最小インデント位置に「// 」を挿入する
+    /// （インデントを揃えて挿入することで整形が崩れない。VS / VSCode と同じ挙動）。
+    /// </summary>
+    private static void ToggleLineComment(TextEditor editor)
+    {
+        // コメント記号（削除時は後続スペース 1 つも一緒に除去する）
+        const string CommentToken          = "//";
+        const string CommentTokenWithSpace = "// ";
+
+        var doc  = editor.Document;
+        var area = editor.TextArea;
+
+        // 対象行範囲を選択（無ければキャレット行）から求める
+        int selStart = area.Selection.IsEmpty ? editor.CaretOffset : area.Selection.SurroundingSegment.Offset;
+        int selEnd   = area.Selection.IsEmpty ? editor.CaretOffset : area.Selection.SurroundingSegment.EndOffset;
+        var firstLine = doc.GetLineByOffset(selStart);
+        var lastLine  = doc.GetLineByOffset(selEnd);
+        // 選択末尾が行頭（次行の先頭）に達している場合は、その行を含めない
+        if (lastLine != firstLine && selEnd == lastLine.Offset && selEnd > selStart)
+            lastLine = lastLine.PreviousLine;
+
+        // 1 パス目: 全非空行がコメント済みかどうかと、挿入位置となる最小インデントを調べる
+        bool allCommented = true;
+        int  minIndent    = int.MaxValue;
+        for (int n = firstLine.LineNumber; n <= lastLine.LineNumber; n++)
+        {
+            var line    = doc.GetLineByNumber(n);
+            var text    = doc.GetText(line.Offset, line.Length);
+            var trimmed = text.TrimStart();
+            if (trimmed.Length == 0) continue;   // 空行は判定・挿入の対象外
+
+            minIndent = Math.Min(minIndent, text.Length - trimmed.Length);
+            if (!trimmed.StartsWith(CommentToken)) allCommented = false;
+        }
+        if (minIndent == int.MaxValue) return;   // 全行が空行
+
+        // 2 パス目: まとめて挿入 / 削除する（RunUpdate で Undo を 1 単位に束ねる）
+        using (doc.RunUpdate())
+        {
+            // 後ろの行から処理することで、編集による前方行のオフセット変化を気にせず扱える
+            for (int n = lastLine.LineNumber; n >= firstLine.LineNumber; n--)
+            {
+                var line    = doc.GetLineByNumber(n);
+                var text    = doc.GetText(line.Offset, line.Length);
+                var trimmed = text.TrimStart();
+                if (trimmed.Length == 0) continue;
+
+                if (allCommented)
+                {
+                    // コメント解除: 「// 」（スペース付き）を優先して除去し、無ければ「//」のみ除去
+                    int tokenPos = line.Offset + (text.Length - trimmed.Length);
+                    int removeLen = trimmed.StartsWith(CommentTokenWithSpace)
+                        ? CommentTokenWithSpace.Length
+                        : CommentToken.Length;
+                    doc.Remove(tokenPos, removeLen);
+                }
+                else
+                {
+                    // コメント化: 範囲共通の最小インデント位置に「// 」を挿入する
+                    doc.Insert(line.Offset + minIndent, CommentTokenWithSpace);
+                }
+            }
         }
     }
 

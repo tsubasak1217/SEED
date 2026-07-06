@@ -303,6 +303,7 @@ if (player.IsValid) { player.Transform.Position = SEED.Vector3.Zero; }
 
 ```csharp
 transform.Position         // Vector3（get/set）
+transform.WorldPosition    // Vector3（get のみ。ワールド絶対座標 = Position と同値）
 transform.Rotation         // Vector3（get/set。YXZ オイラー角・度）
 transform.Scale            // Vector3（get/set）
 
@@ -320,7 +321,10 @@ ct.Rotation                // float（get/set。Z 軸周りの度）
 ct.Scale                   // Vector2（get/set）
 ct.Pivot                   // Vector2（get/set。回転・スケール基準点。正規化 [0,1]、(0.5,0.5)=中央）
 ct.Anchor                  // Vector2（get/set。親 Canvas 内の position 基準点。(0,0)=左上 (1,1)=右下）
+ct.ScreenPosition          // Vector2（get のみ。ウィンドウ左上原点のスクリーン座標・ピクセル）
 ```
+
+> `Position` は**親 Canvas 相対**の座標ですが、`ScreenPosition` はアンカー・スケールモード・親チェーンをすべて反映した**画面上の絶対位置**（ピボット点）を返します。SEED の 3D `Transform.Position` は元々ワールド絶対座標です（親子はエディタ操作時のみ連動）。
 
 ### Sprite（2D スプライト表示）
 

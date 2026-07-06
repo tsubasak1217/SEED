@@ -23,6 +23,15 @@ public readonly struct Transform
         set => ScriptHost.TrySetVec3(_entity, Comp, "position", value);
     }
 
+    /// <summary>
+    /// ワールド絶対座標（get のみ）。
+    ///
+    /// SEED の 3D Transform は常にワールド空間で保持されるため <see cref="Position"/> と
+    /// 同値（親子階層はエディタ操作時のみ連動し、実行時のローカル座標系は持たない）。
+    /// 「絶対座標が欲しい」意図を明示したいときにこちらを使う。
+    /// </summary>
+    public Vector3 WorldPosition => Position;
+
     /// <summary>回転（YXZ オイラー角・度）。</summary>
     public Vector3 Rotation
     {

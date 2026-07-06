@@ -68,6 +68,11 @@ thread_local! {
     /// AudioManager は App が所有するため即時実行せず、App がフレーム末尾に適用する
     ///（SE の再生遅延は数 ms 以内で知覚できない）。
     static AUDIO_COMMANDS: RefCell<Vec<ScriptAudioCommand>> = const { RefCell::new(Vec::new()) };
+
+    /// 2D アクターのスクリーン座標マップ（アクターエンティティ → 左上原点ピクセル）。
+    /// frame_renderer が描画と同一の座標変換チェーンでフレームごとに計算・公開し、
+    /// スクリプトの CanvasTransform.ScreenPosition が参照する。
+    static SCREEN_POSITIONS: RefCell<Vec<(Entity, [f32; 2])>> = const { RefCell::new(Vec::new()) };
 }
 
 /// World ポインタを設定してクロージャを実行し、終了後に元へ戻す。
@@ -848,6 +853,29 @@ pub fn publish_playing_audio_slots(slots: Vec<Entity>) {
     PLAYING_AUDIO_SLOTS.with(|p| *p.borrow_mut() = slots);
 }
 
+/// 2D アクターのスクリーン座標マップを公開する（フレームごとに更新）。
+pub fn publish_screen_positions(positions: Vec<(Entity, [f32; 2])>) {
+    SCREEN_POSITIONS.with(|p| *p.borrow_mut() = positions);
+}
+
+/// 2D アクターのスクリーン座標（ウィンドウ左上原点・ピクセル）を取得する。
+/// 見つかった=1 / 2D アクターでない・未公開=0（out は 2 要素）。
+unsafe extern "system" fn ffi_screen_position(idx: u32, generation: u32, out: *mut f32) -> i32 {
+    if out.is_null() { return 0; }
+    let entity = Entity::from_raw(idx, generation);
+    let found = SCREEN_POSITIONS.with(|p| {
+        p.borrow().iter().find(|(e, _)| *e == entity).map(|(_, pos)| *pos)
+    });
+    match found {
+        Some(pos) => {
+            *out        = pos[0];
+            *out.add(1) = pos[1];
+            1
+        }
+        None => 0,
+    }
+}
+
 /// AudioComponent を操作する。成功（IsPlaying の場合は再生中）=1 / 失敗=0。
 ///
 /// idx/gen は gameObject のルートエンティティ。AudioComponent のスロットを
@@ -900,6 +928,7 @@ pub struct ScriptHostApi {
     scene:             unsafe extern "system" fn(i32, *const u8, i32) -> i32,
     audio:             unsafe extern "system" fn(i32, *const u8, i32, f32, i32) -> i32,
     audio_component:   unsafe extern "system" fn(i32, u32, u32) -> i32,
+    screen_position:   unsafe extern "system" fn(u32, u32, *mut f32) -> i32,
 }
 
 // 関数ポインタは Sync。プロセス全体で 1 つの静的表を共有する。
@@ -919,6 +948,7 @@ static HOST_API: ScriptHostApi = ScriptHostApi {
     scene:             ffi_scene,
     audio:             ffi_audio,
     audio_component:   ffi_audio_component,
+    screen_position:   ffi_screen_position,
 };
 
 /// C# へ渡す関数ポインタ表へのポインタを返す（RegisterHostApi 用）。

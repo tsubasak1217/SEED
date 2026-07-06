@@ -344,6 +344,20 @@ public static unsafe class ScriptHost
         return _api.AudioComponent(action, e.Index, e.Generation) != 0;
     }
 
+    /// <summary>
+    /// 2D アクターのスクリーン座標（ウィンドウ左上原点・ピクセル）を取得する。
+    /// 2D アクターでない場合は false。
+    /// </summary>
+    public static bool TryGetScreenPosition(Entity e, out Vector2 position)
+    {
+        position = Vector2.Zero;
+        if (!_available || _api.ScreenPosition == null || !e.IsValid) return false;
+        float* buf = stackalloc float[2];
+        if (_api.ScreenPosition(e.Index, e.Generation, buf) == 0) return false;
+        position = new Vector2(buf[0], buf[1]);
+        return true;
+    }
+
     // ── シーン遷移 ───────────────────────────────────────────────
 
     /// <summary>
@@ -449,4 +463,6 @@ public unsafe struct ScriptHostApi
     public delegate* unmanaged[Cdecl]<int, byte*, int, float, int, int> Audio;
     /// <summary>(action, idx, gen) → 1/0（action: 0=Play/1=Stop/2=IsPlaying）</summary>
     public delegate* unmanaged[Cdecl]<int, uint, uint, int> AudioComponent;
+    /// <summary>(idx, gen, out float[2]) → 1/0（2D アクターのスクリーン座標）</summary>
+    public delegate* unmanaged[Cdecl]<uint, uint, float*, int> ScreenPosition;
 }

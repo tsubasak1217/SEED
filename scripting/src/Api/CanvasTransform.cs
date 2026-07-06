@@ -57,4 +57,15 @@ public readonly struct CanvasTransform
         get => ScriptHost.TryGetVec2(_entity, Comp, "anchor", out var v) ? v : Vector2.Zero;
         set => ScriptHost.TrySetVec2(_entity, Comp, "anchor", value);
     }
+
+    /// <summary>
+    /// このアクターのスクリーン座標（ウィンドウ左上原点・ピクセル。get のみ）。
+    ///
+    /// 親 Canvas のアンカー・スケールモード・親チェーンの回転などをすべて反映した
+    /// 最終的な描画位置（ピボット点）を返す。エンジンが描画と同一の座標変換で
+    /// フレームごとに計算した値のため、Position（親 Canvas 相対）と異なり
+    /// 画面上の絶対位置として扱える。2D アクターでない場合は Zero。
+    /// </summary>
+    public Vector2 ScreenPosition
+        => ScriptHost.TryGetScreenPosition(_entity, out var v) ? v : Vector2.Zero;
 }

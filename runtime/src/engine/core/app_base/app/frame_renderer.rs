@@ -369,6 +369,10 @@ impl App {
             // AudioSource.IsPlaying 判定用に再生中スロット一覧を公開する
             crate::engine::core::scripting::host_api::publish_playing_audio_slots(
                 self.playing_audio_slots());
+            // CanvasTransform.ScreenPosition 用に 2D アクターのスクリーン座標を公開する
+            //（描画と同一の座標変換チェーンでフレームごとに計算する）
+            crate::engine::core::scripting::host_api::publish_screen_positions(
+                self.collect_2d_screen_positions());
             if dbg { eprintln!("[SEED FRAME {dbg_frame}] begin_frame"); }
             if let Some(scene) = &mut self.scene { scene.run_phase(Phase::BeginFrame, &ctx); }
             if dbg { eprintln!("[SEED FRAME {dbg_frame}] early_update"); }
