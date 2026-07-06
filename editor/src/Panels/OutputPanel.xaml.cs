@@ -27,6 +27,18 @@ public partial class OutputPanel : UserControl
     private const int MaxLines = 1000;
 
     /// <summary>
+    /// 上へスクロールして閲覧中（最下部に追従していない）は先頭トリムを保留する上限。
+    /// この間はメモリ保護のためのハード上限に達するまで行を捨てず、表示位置を維持する。
+    /// </summary>
+    private const int MaxLinesWhileScrolledUp = MaxLines * 4;
+
+    /// <summary>
+    /// 1 回の <see cref="AddRow"/> で先頭から削除する最大数。
+    /// 大量削除（CollectionChanged の嵐）による一時的なヒッチを避けるため小分けにする。
+    /// </summary>
+    private const int TrimBudgetPerAdd = 32;
+
+    /// <summary>
     /// ログの発生源カテゴリ。
     /// - <see cref="Game"/>: ユーザースクリプトの Debug.Log 出力（<c>[Script]</c> 系）。
     /// - <see cref="Engine"/>: それ以外（Rust エンジン・エディタ内部・ビルド・ランタイム通知など）。
@@ -171,7 +183,17 @@ public partial class OutputPanel : UserControl
     private void AddRow(string line)
     {
         _rows.Add(new LogRow(line, PickBrush(line)));
-        while (_rows.Count > MaxLines)
+
+        // 追従中（最下部）は上限 MaxLines を保つ。ユーザーが上へスクロールして閲覧中は、
+        // 先頭を捨てると全行のインデックスが繰り上がって表示位置が上へ流れてしまう
+        // （＝「流される」）ため、ハード上限 MaxLinesWhileScrolledUp までトリムを保留して
+        // 閲覧位置を維持する。追従へ戻れば次以降の追加で徐々に MaxLines へ収束する。
+        int limit = _atBottom ? MaxLines : MaxLinesWhileScrolledUp;
+
+        // 1 回で大量削除するとヒッチするため削除数を制限し、複数回に分けて収束させる
+        // （追従中は末尾追加でどのみち最下部に留まるのでトリムは不可視）。
+        int budget = TrimBudgetPerAdd;
+        while (_rows.Count > limit && budget-- > 0)
             _rows.RemoveAt(0);
     }
 
