@@ -115,6 +115,12 @@ public partial class OutputPanel : UserControl
     /// </summary>
     private bool _atBottom = true;
 
+    /// <summary>ListBox 内部の ScrollViewer（スクロール位置補正に使う。初回スクロール時に取得）。</summary>
+    private ScrollViewer? _scrollViewer;
+
+    /// <summary>このティックで先頭から捨てた行数（閲覧中のスクロール位置補正に使う）。</summary>
+    private int _frontTrimmedThisTick;
+
     // ログ種別ごとの文字色
     private static readonly SolidColorBrush BrushDefault = new(Color.FromRgb(0xCC, 0xCC, 0xCC));
     private static readonly SolidColorBrush BrushRuntime = new(Color.FromRgb(0x6C, 0xD5, 0xF5)); // 水色
@@ -172,6 +178,7 @@ public partial class OutputPanel : UserControl
     {
         if (_pending.IsEmpty) return;
 
+        _frontTrimmedThisTick = 0;
         int added = 0;
         while (added < FlushChunk && _pending.TryDequeue(out var line))
         {
@@ -180,9 +187,19 @@ public partial class OutputPanel : UserControl
             added++;
         }
 
-        // 追加後、最下部にいるなら 1 回だけスクロールする（行ごとにやらない）。
         if (added > 0 && _atBottom)
+        {
+            // 追従中は最下部へ 1 回だけスクロールする（行ごとにやらない）。
             ScrollToBottom();
+        }
+        else if (_frontTrimmedThisTick > 0 && _scrollViewer is not null)
+        {
+            // 閲覧中（非追従）にハード上限で先頭を捨てた場合、捨てた行数ぶんスクロール位置を
+            // 繰り下げて表示内容を固定する（＝最大数を超えても表示が流れない）。
+            // 捨てた行は画面より上なので、補正すれば見た目は一切動かない。
+            double target = _scrollViewer.VerticalOffset - _frontTrimmedThisTick;
+            _scrollViewer.ScrollToVerticalOffset(target < 0 ? 0 : target);
+        }
     }
 
     /// <summary>1 行を履歴へ蓄積し、フィルタに一致すれば表示行へ追加する。</summary>
@@ -211,10 +228,11 @@ public partial class OutputPanel : UserControl
         }
         else if (_rows.Count > MaxLinesWhileScrolledUp)
         {
-            // 閲覧中（上スクロール中）は先頭を捨てると表示位置が上へ流れてしまう（＝「流される」）
-            // ため、原則トリムを保留する。ただしハード上限に達したらメモリ保護のため
-            // 最古の行だけ捨てる（このときだけ表示が動く。通常のリーディングでは到達しない）。
+            // 閲覧中（上スクロール中）はハード上限までトリムを保留するが、上限に達したら
+            // メモリ保護のため最古の行を捨てる。捨てた行数はカウントしておき、ティック末で
+            // スクロール位置を同数だけ繰り下げて表示内容を固定する（最大数を超えても流れない）。
             _rows.RemoveAt(0);
+            _frontTrimmedThisTick++;
         }
     }
 
@@ -232,6 +250,9 @@ public partial class OutputPanel : UserControl
     /// </summary>
     private void OnScrollChanged(object sender, ScrollChangedEventArgs e)
     {
+        // スクロール位置補正用に内部 ScrollViewer を初回に捕捉する。
+        _scrollViewer ??= e.OriginalSource as ScrollViewer;
+
         if (e.ExtentHeightChange != 0) return;
 
         var scrollable = e.ExtentHeight - e.ViewportHeight;
