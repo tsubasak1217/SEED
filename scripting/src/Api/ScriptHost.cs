@@ -337,18 +337,18 @@ public static unsafe class ScriptHost
     // ── シーン遷移 ───────────────────────────────────────────────
 
     /// <summary>
-    /// シーン全体を .scene ファイルへ切り替える（フレーム末尾に遅延適用）。
+    /// シーンコマンドを発行する（kind: 0=事前読み込み / 1=遷移。フレーム末尾に遅延適用）。
     /// 受理されたら true。
     /// </summary>
-    public static bool TryLoadScene(string scenePath)
+    public static bool SceneCommand(int kind, string sceneName)
     {
-        if (!_available || _api.LoadScene == null || string.IsNullOrEmpty(scenePath)) return false;
+        if (!_available || _api.Scene == null || string.IsNullOrEmpty(sceneName)) return false;
 
-        int pl = Encoding.UTF8.GetByteCount(scenePath);
+        int pl = Encoding.UTF8.GetByteCount(sceneName);
         Span<byte> pb = stackalloc byte[pl];
-        Encoding.UTF8.GetBytes(scenePath, pb);
+        Encoding.UTF8.GetBytes(sceneName, pb);
         fixed (byte* pp = pb)
-            return _api.LoadScene(pp, pl) != 0;
+            return _api.Scene(kind, pp, pl) != 0;
     }
 
     // ── 物理（Raycast）──────────────────────────────────────────
@@ -433,8 +433,8 @@ public unsafe struct ScriptHostApi
     public delegate* unmanaged[Cdecl]<int, float*, int> InputMouseState;
     /// <summary>(origin float[3], dir float[3], maxDist, out float[7] hit, out uint[2] entity) → 1/0</summary>
     public delegate* unmanaged[Cdecl]<float*, float*, float, float*, uint*, int> Raycast;
-    /// <summary>(path, pathLen) → 1/0</summary>
-    public delegate* unmanaged[Cdecl]<byte*, int, int> LoadScene;
+    /// <summary>(kind, name, nameLen) → 1/0（kind: 0=事前読み込み / 1=遷移）</summary>
+    public delegate* unmanaged[Cdecl]<int, byte*, int, int> Scene;
     /// <summary>(kind, path, pathLen, volume, flag) → 1/0</summary>
     public delegate* unmanaged[Cdecl]<int, byte*, int, float, int, int> Audio;
 }

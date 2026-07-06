@@ -126,10 +126,15 @@ pub enum ScriptSceneCommand {
     Instantiate { path: String, entity: Entity },
     /// 指定ルートエンティティの Actor をシーンから破棄する。
     Destroy { entity: Entity },
-    /// .scene ファイルへシーン全体を切り替える（シーン遷移）。
+    /// シーンを事前読み込みする（遷移はしない）。
+    /// Transition 前に呼んでおくことで、遷移時のロード時間をなくせる。
+    /// name_or_path はシーンマネージャ登録名または assets:// パス。
+    PreloadScene { name_or_path: String },
+    /// シーン全体を切り替える（シーン遷移）。事前読み込み済みなら即座に切り替わり、
+    /// 未読み込みなら内部で自動的に読み込んでから切り替わる。
     /// このコマンドが存在するフレームでは他の全コマンドが破棄される
     /// （旧ワールドのエンティティ参照が新ワールドで別実体を指す危険を防ぐため）。
-    LoadScene { path: String },
+    TransitionScene { name_or_path: String },
 }
 
 /// 積まれたシーン操作コマンドを取り出す（キューは空になる）。
@@ -491,16 +496,25 @@ unsafe extern "system" fn ffi_destroy(idx: u32, generation: u32) -> i32 {
     1
 }
 
-/// シーン全体を .scene ファイルへ切り替える（シーン遷移）。受理=1 / 失敗=0。
+// ─── シーンコマンド種別（C# 側 Scene クラスの定数と一致させる）───
+const SCENE_CMD_PRELOAD: i32 = 0;    // 事前読み込み（遷移しない）
+const SCENE_CMD_TRANSITION: i32 = 1; // 遷移（未読み込みなら自動 Load）
+
+/// シーンの事前読み込み・遷移コマンドを発行する。受理=1 / 失敗=0。
 ///
-/// 実際の切り替えはフレームのゲームロジック後に遅延適用される。
-/// 同フレームに積まれた他のシーン操作コマンドはすべて破棄される。
-unsafe extern "system" fn ffi_load_scene(path: *const u8, path_len: i32) -> i32 {
-    let path_str = str_from(path, path_len);
-    if path_str.is_empty() { return 0; }
-    SCENE_COMMANDS.with(|q| q.borrow_mut().push(ScriptSceneCommand::LoadScene {
-        path: path_str.to_string(),
-    }));
+/// kind: 上記 SCENE_CMD_*。name_or_path はシーンマネージャ登録名
+/// （project_settings.json の scenes）または assets:// パス。
+/// 実際の処理はフレームのゲームロジック後に遅延適用される。
+/// Transition があるフレームでは他のシーン操作コマンドはすべて破棄される。
+unsafe extern "system" fn ffi_scene(kind: i32, name: *const u8, name_len: i32) -> i32 {
+    let name_str = str_from(name, name_len);
+    if name_str.is_empty() { return 0; }
+    let cmd = match kind {
+        SCENE_CMD_PRELOAD    => ScriptSceneCommand::PreloadScene    { name_or_path: name_str.to_string() },
+        SCENE_CMD_TRANSITION => ScriptSceneCommand::TransitionScene { name_or_path: name_str.to_string() },
+        _ => return 0,
+    };
+    SCENE_COMMANDS.with(|q| q.borrow_mut().push(cmd));
     1
 }
 
@@ -743,7 +757,7 @@ pub struct ScriptHostApi {
     input_mouse:       unsafe extern "system" fn(i32, u32) -> i32,
     input_mouse_state: unsafe extern "system" fn(i32, *mut f32) -> i32,
     raycast:           unsafe extern "system" fn(*const f32, *const f32, f32, *mut f32, *mut u32) -> i32,
-    load_scene:        unsafe extern "system" fn(*const u8, i32) -> i32,
+    scene:             unsafe extern "system" fn(i32, *const u8, i32) -> i32,
     audio:             unsafe extern "system" fn(i32, *const u8, i32, f32, i32) -> i32,
 }
 
@@ -761,7 +775,7 @@ static HOST_API: ScriptHostApi = ScriptHostApi {
     input_mouse:       ffi_input_mouse_button,
     input_mouse_state: ffi_input_mouse_state,
     raycast:           ffi_raycast,
-    load_scene:        ffi_load_scene,
+    scene:             ffi_scene,
     audio:             ffi_audio,
 };
 

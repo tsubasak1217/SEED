@@ -32,7 +32,9 @@ public partial class MainWindow
     /// </summary>
     private void OnOpenProjectSettings(object sender, RoutedEventArgs e)
     {
-        var win = new SEEDEditor.ProjectSettings.ProjectSettingsWindow(AssetsPath, EditorPluginsPath)
+        // 現在開いているシーンのパスを渡す（シーンマネージャの「現在のシーンを追加」用）
+        var win = new SEEDEditor.ProjectSettings.ProjectSettingsWindow(
+            AssetsPath, EditorPluginsPath, _currentScenePath)
         {
             Owner = this,
         };

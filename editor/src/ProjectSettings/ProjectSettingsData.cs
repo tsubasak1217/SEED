@@ -22,6 +22,23 @@ public class PluginEntry
 }
 
 /// <summary>
+/// シーンマネージャに登録されたシーンエントリ。
+/// project_settings.json の "scenes" 配列の各要素に対応する。
+/// スクリプトからは Name を引数に SEED.Scene.Transition("name") で遷移できる。
+/// Rust 側（app_init.rs のシーンレジストリ読み込み）と同一構造を維持すること。
+/// </summary>
+public class SceneEntry
+{
+    /// <summary>シーン識別名（既定はファイル名の拡張子なし。レジストリ内で一意）。</summary>
+    [JsonPropertyName("name")]
+    public string Name { get; set; } = string.Empty;
+
+    /// <summary>シーンファイルの仮想パス（assets://...）。</summary>
+    [JsonPropertyName("path")]
+    public string Path { get; set; } = string.Empty;
+}
+
+/// <summary>
 /// プロジェクト全体の設定データ。
 /// {assetsPath}/project_settings.json に JSON 形式で永続化される。
 /// 今後カテゴリが増えるたびにプロパティを追加していく。
@@ -37,6 +54,15 @@ public class ProjectSettingsData
     /// <summary>ゲーム起動時に最初にロードするシーンの仮想パス（assets://...）。</summary>
     [JsonPropertyName("start_scene")]
     public string StartScene { get; set; } = string.Empty;
+
+    // ── シーンマネージャ ─────────────────────────────────────
+
+    /// <summary>
+    /// シーンマネージャに登録されたシーン一覧。
+    /// スクリプトの SEED.Scene.Load / Transition が名前で参照する。
+    /// </summary>
+    [JsonPropertyName("scenes")]
+    public List<SceneEntry> Scenes { get; set; } = new();
 
     // ── プラグイン設定 ────────────────────────────────────────
 

@@ -37,14 +37,14 @@ impl App {
         let commands = take_scene_commands();
         if commands.is_empty() { return; }
 
-        // LoadScene が含まれる場合はシーン遷移のみを実行し、他のコマンドは破棄する。
+        // TransitionScene が含まれる場合はシーン遷移のみを実行し、他のコマンドは破棄する。
         // 旧ワールドで予約されたエンティティ (index, generation) が新ワールドの
         // 別実体を指してしまう危険を防ぐため（Instantiate の予約エンティティ等）。
-        if let Some(path) = commands.iter().find_map(|c| match c {
-            ScriptSceneCommand::LoadScene { path } => Some(path.clone()),
+        if let Some(name) = commands.iter().find_map(|c| match c {
+            ScriptSceneCommand::TransitionScene { name_or_path } => Some(name_or_path.clone()),
             _ => None,
         }) {
-            self.apply_script_load_scene(&path);
+            self.apply_script_transition_scene(&name);
             self.send_hierarchy();
             return;
         }
@@ -57,7 +57,10 @@ impl App {
                 ScriptSceneCommand::Destroy { entity } => {
                     self.apply_script_destroy(entity);
                 }
-                ScriptSceneCommand::LoadScene { .. } => unreachable!("上で処理済み"),
+                ScriptSceneCommand::PreloadScene { name_or_path } => {
+                    self.apply_script_preload_scene(&name_or_path);
+                }
+                ScriptSceneCommand::TransitionScene { .. } => unreachable!("上で処理済み"),
             }
         }
 
@@ -130,13 +133,84 @@ impl App {
         }
     }
 
-    /// LoadScene コマンドを適用する: シーン全体を .scene ファイルの内容へ切り替える。
+    /// シーン参照（シーンマネージャ登録名または assets:// パス）を実パスへ解決する。
     ///
+    /// 1. レジストリに名前が登録されていればそのパス
+    /// 2. ".scene" 拡張子付きの登録名（"game.scene" → "game"）でも解決を試みる
+    /// 3. どちらでもなければパス直接指定とみなしてそのまま返す
+    fn resolve_scene_ref(&self, name_or_path: &str) -> String {
+        if let Some(path) = self.scene_registry.get(name_or_path) {
+            return path.clone();
+        }
+        // "name.scene" 形式でも登録名にマッチさせる（パス区切りを含まない場合のみ）
+        if !name_or_path.contains('/') && !name_or_path.contains('\\') {
+            if let Some(stem) = name_or_path.strip_suffix(".scene") {
+                if let Some(path) = self.scene_registry.get(stem) {
+                    return path.clone();
+                }
+            }
+        }
+        name_or_path.to_string()
+    }
+
+    /// PreloadScene コマンドを適用する: シーンを読み込んで保持する（遷移はしない）。
+    ///
+    /// Transition 前の暇なタイミング（フェードアウト中など）で呼んでおくことで、
+    /// 遷移フレームのロード時間をなくす。保持できる事前読み込みは 1 つで、
+    /// 直後の Transition で消費される（別のシーンを Preload すると置き換わる）。
+    fn apply_script_preload_scene(&mut self, name_or_path: &str) {
+        if self.draw_ctx.is_none() { return; }
+        let path = self.resolve_scene_ref(name_or_path);
+
+        // 同じシーンが事前読み込み済みなら何もしない
+        if self.preloaded_scene.as_ref().is_some_and(|(p, _, _)| *p == path) {
+            return;
+        }
+
+        let host = self.scripting_host.clone();
+        let load_result = {
+            let ctx = self.draw_ctx.as_ref().unwrap();
+            Scene::load(std::path::Path::new(&path), ctx, host.as_ref())
+        };
+        match load_result {
+            Ok((scene, cam)) => {
+                self.preloaded_scene = Some((path, scene, cam));
+            }
+            Err(e) => {
+                eprintln!("[Script] Scene.Load 失敗 ({name_or_path} → {path}): {e}");
+            }
+        }
+    }
+
+    /// TransitionScene コマンドを適用する: シーン全体を切り替える。
+    ///
+    /// 事前読み込み済み（Preload 済み）ならロードなしで即座に切り替え、
+    /// 未読み込みならここで読み込んでから切り替える。
     /// 旧シーンの破棄（スクリプトインスタンスは ScriptComponent の Drop で CLR 側も解放）、
     /// 物理スレッドの再起動（起動していた場合のみ）、キャンバス世界線の再判定を行う。
     /// パスは assets:// 仮想パスのまま Scene::load へ渡す（PAK モード対応）。
-    fn apply_script_load_scene(&mut self, path: &str) {
-        let Some(_) = &self.draw_ctx else { return };
+    fn apply_script_transition_scene(&mut self, name_or_path: &str) {
+        if self.draw_ctx.is_none() { return; }
+        let path = self.resolve_scene_ref(name_or_path);
+
+        // 事前読み込み済みならそれを消費し、なければここで読み込む（自動 Load）
+        let loaded = match self.preloaded_scene.take() {
+            Some((p, scene, cam)) if p == path => Some((scene, cam)),
+            other => {
+                // 別シーンの事前読み込みが残っていた場合は破棄する
+                drop(other);
+                let host = self.scripting_host.clone();
+                let ctx  = self.draw_ctx.as_ref().unwrap();
+                match Scene::load(std::path::Path::new(&path), ctx, host.as_ref()) {
+                    Ok((scene, cam)) => Some((scene, cam)),
+                    Err(e) => {
+                        eprintln!("[Script] Scene.Transition 失敗 ({name_or_path} → {path}): {e}");
+                        None
+                    }
+                }
+            }
+        };
+        let Some((new_scene, cam_data)) = loaded else { return };
 
         // 物理スレッドの起動状態を記録してから停止する（新シーンで再収集するため）
         let had_physics    = self.physics_thread.is_some();
@@ -144,42 +218,25 @@ impl App {
         self.stop_physics();
         self.stop_physics_2d();
 
-        let host = self.scripting_host.clone();
-        let load_result = {
-            let ctx = self.draw_ctx.as_ref().unwrap();
-            Scene::load(std::path::Path::new(path), ctx, host.as_ref())
-        };
-
-        match load_result {
-            Ok((new_scene, cam_data)) => {
-                // シーンに保存されたデバッグカメラ位置を適用する（メインカメラ不在時のフォールバック）
-                if let Some(cam) = cam_data {
-                    self.apply_camera_data(&cam);
-                }
-                // 2D アクターが含まれていれば WL 0 をキャンバス世界線として登録する
-                fn has_any_2d_actor(actors: &[Actor]) -> bool {
-                    actors.iter().any(|a| a.is_2d() || has_any_2d_actor(a.children()))
-                }
-                if has_any_2d_actor(&new_scene.actors) {
-                    self.canvas_world_lines.insert(0);
-                } else {
-                    self.canvas_world_lines.remove(&0);
-                }
-                // 旧シーンを置き換える（World の Drop で旧スクリプトインスタンスも解放される）
-                self.scene = Some(new_scene);
-
-                // 物理を新シーンの内容で再起動する
-                if had_physics    { self.start_physics(); }
-                if had_physics_2d { self.start_physics_2d(); }
-            }
-            Err(e) => {
-                // 失敗時: 旧シーンを維持し、物理も元の状態へ戻す。
-                // [Script] プレフィックスでゲーム側出力として分類させる。
-                eprintln!("[Script] Scene.Load 失敗 ({path}): {e}");
-                if had_physics    { self.start_physics(); }
-                if had_physics_2d { self.start_physics_2d(); }
-            }
+        // シーンに保存されたデバッグカメラ位置を適用する（メインカメラ不在時のフォールバック）
+        if let Some(cam) = cam_data {
+            self.apply_camera_data(&cam);
         }
+        // 2D アクターが含まれていれば WL 0 をキャンバス世界線として登録する
+        fn has_any_2d_actor(actors: &[Actor]) -> bool {
+            actors.iter().any(|a| a.is_2d() || has_any_2d_actor(a.children()))
+        }
+        if has_any_2d_actor(&new_scene.actors) {
+            self.canvas_world_lines.insert(0);
+        } else {
+            self.canvas_world_lines.remove(&0);
+        }
+        // 旧シーンを置き換える（World の Drop で旧スクリプトインスタンスも解放される）
+        self.scene = Some(new_scene);
+
+        // 物理を新シーンの内容で再起動する
+        if had_physics    { self.start_physics(); }
+        if had_physics_2d { self.start_physics_2d(); }
     }
 
     /// 物理イベント（衝突・トリガー）をスクリプトのコールバックへ配信する。

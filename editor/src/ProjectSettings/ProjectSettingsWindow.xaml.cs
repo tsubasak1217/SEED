@@ -50,8 +50,9 @@ public partial class ProjectSettingsWindow : Window
         // ── 必須設定（ゲームとして機能するために必ず設定すべき項目）──
         new("required", "必須", new()
         {
-            new("game_name",   "ゲーム名",         IsImplemented: true),
-            new("start_scene", "ゲーム開始シーン", IsImplemented: true),
+            new("game_name",     "ゲーム名",         IsImplemented: true),
+            new("start_scene",   "ゲーム開始シーン", IsImplemented: true),
+            new("scene_manager", "シーンマネージャ", IsImplemented: true),
         }),
         // ── グラフィックス設定（将来実装）──────────────────────────
         new("graphics", "グラフィックス", new()
@@ -136,6 +137,12 @@ public partial class ProjectSettingsWindow : Window
     /// <summary>「ゲーム開始シーン」パネルのシーンパス入力フィールド。</summary>
     private TextBox? _tbStartScene;
 
+    /// <summary>現在ビューポートで開いているシーンの絶対パス（未保存なら null）。</summary>
+    private readonly string? _currentScenePath;
+
+    /// <summary>シーンマネージャの一覧表示先パネル（行の再構築に使用）。</summary>
+    private StackPanel? _sceneListPanel;
+
     /// <summary>
     /// プラグイン管理パネルのチェックボックスリスト。
     /// Key = プラグイン名, Value = IsChecked バインド元 CheckBox。
@@ -150,11 +157,16 @@ public partial class ProjectSettingsWindow : Window
     /// </summary>
     /// <param name="assetsPath">アセットディレクトリのパス。project_settings.json はここに置かれる。</param>
     /// <param name="editorPluginsPath">エディタ同梱プラグインライブラリのディレクトリ（editor/plugins/）。</param>
-    public ProjectSettingsWindow(string assetsPath, string editorPluginsPath = "")
+    /// <param name="currentScenePath">
+    /// 現在ビューポートで開いているシーンの絶対パス（未保存なら null）。
+    /// シーンマネージャの「現在のシーンを追加」ボタンで使用する。
+    /// </param>
+    public ProjectSettingsWindow(string assetsPath, string editorPluginsPath = "", string? currentScenePath = null)
     {
         InitializeComponent();
         _assetsPath        = assetsPath;
         _editorPluginsPath = editorPluginsPath;
+        _currentScenePath  = currentScenePath;
         _settingsPath      = Path.Combine(assetsPath, "project_settings.json");
         _data              = ProjectSettingsData.LoadFrom(_settingsPath);
     }
@@ -310,6 +322,7 @@ public partial class ProjectSettingsWindow : Window
         {
             "game_name"      => BuildGameNamePanel(),
             "start_scene"    => BuildStartScenePanel(),
+            "scene_manager"  => BuildSceneManagerPanel(),
             "plugin_manage"  => BuildPluginManagePanel(),
             _                => BuildPlaceholderPanel(GetSubItemLabel(subItemId)),
         };
@@ -448,6 +461,195 @@ public partial class ProjectSettingsWindow : Window
         });
 
         return panel;
+    }
+
+    // ── シーンマネージャパネル ────────────────────────────────
+
+    /// <summary>「シーンマネージャ」設定パネルを構築して返す。</summary>
+    ///
+    /// 登録したシーンはスクリプトから名前で参照できる:
+    ///   SEED.Scene.Transition("シーン名") / SEED.Scene.Load("シーン名")
+    /// 追加方法は「現在のシーンを追加」ボタン、またはボタンへの .scene ファイルドロップ。
+    private UIElement BuildSceneManagerPanel()
+    {
+        var panel = new StackPanel();
+
+        panel.Children.Add(BuildPanelHeader(
+            "シーンマネージャ",
+            "スクリプトから名前で遷移できるシーンを登録します。\n" +
+            "SEED.Scene.Transition(\"シーン名\") / SEED.Scene.Load(\"シーン名\") で参照されます。"));
+
+        panel.Children.Add(new Border
+        {
+            Height     = 1,
+            Background = new SolidColorBrush(Color.FromRgb(0x3A, 0x3A, 0x3A)),
+            Margin     = new Thickness(0, 0, 0, 12),
+        });
+
+        // 追加ボタン（クリック = 現在のシーンを追加 / .scene ファイルのドロップ先も兼ねる）
+        var addBtn = new Button
+        {
+            Content   = "＋ 追加（現在のシーン）",
+            Style     = (Style)Resources["BrowseButton"],
+            AllowDrop = true,
+            Padding   = new Thickness(14, 6, 14, 6),
+            HorizontalAlignment = HorizontalAlignment.Left,
+            ToolTip   = "クリック: ビューポートで開いているシーンを登録\nドロップ: .scene ファイルをここへドラッグして登録",
+        };
+        addBtn.Click    += OnAddCurrentScene;
+        addBtn.DragOver += (_, e) =>
+        {
+            // .scene ファイルのドロップのみ受け付ける
+            e.Effects = e.Data.GetDataPresent(DataFormats.FileDrop) ? DragDropEffects.Copy : DragDropEffects.None;
+            e.Handled = true;
+        };
+        addBtn.Drop += OnDropSceneFiles;
+        panel.Children.Add(addBtn);
+
+        panel.Children.Add(new TextBlock
+        {
+            Text         = "ボタンへ .scene ファイルをドロップしても登録できます。名前は一覧で編集できます。",
+            Foreground   = new SolidColorBrush(Color.FromRgb(0x66, 0x66, 0x66)),
+            FontSize     = 11,
+            Margin       = new Thickness(0, 6, 0, 12),
+            TextWrapping = TextWrapping.Wrap,
+        });
+
+        // 登録済みシーンの一覧
+        _sceneListPanel = new StackPanel();
+        RebuildSceneList();
+        panel.Children.Add(_sceneListPanel);
+
+        return panel;
+    }
+
+    /// <summary>「現在のシーンを追加」: ビューポートで開いているシーンをレジストリへ登録する。</summary>
+    private void OnAddCurrentScene(object sender, RoutedEventArgs e)
+    {
+        if (string.IsNullOrEmpty(_currentScenePath))
+        {
+            MessageBox.Show(this,
+                "現在開いているシーンがありません。先にシーンを保存してください。",
+                "シーンマネージャ", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+        AddSceneEntry(_currentScenePath);
+        RebuildSceneList();
+    }
+
+    /// <summary>追加ボタンへの .scene ファイルドロップ: ドロップされた全 .scene を登録する。</summary>
+    private void OnDropSceneFiles(object sender, DragEventArgs e)
+    {
+        if (e.Data.GetData(DataFormats.FileDrop) is not string[] files) return;
+        foreach (var f in files)
+        {
+            if (Path.GetExtension(f).Equals(".scene", StringComparison.OrdinalIgnoreCase))
+                AddSceneEntry(f);
+        }
+        RebuildSceneList();
+    }
+
+    /// <summary>
+    /// シーンファイル（絶対パス）をレジストリへ追加する。
+    /// パスは仮想パス（assets://）へ変換し、既登録パスは無視する。
+    /// 名前はファイル名（拡張子なし）を既定とし、重複時は "(1)" 等を付与して一意化する。
+    /// </summary>
+    private void AddSceneEntry(string absolutePath)
+    {
+        var virtualPath = VirtualPath.ToVirtual(absolutePath, _assetsPath);
+
+        // 同じパスが登録済みなら何もしない
+        if (_data.Scenes.Any(s => s.Path == virtualPath)) return;
+
+        // ファイル名（拡張子なし）を基に一意な名前を決める
+        var baseName = Path.GetFileNameWithoutExtension(absolutePath);
+        var name     = baseName;
+        int suffix   = 1;
+        while (_data.Scenes.Any(s => s.Name == name))
+        {
+            name = $"{baseName}({suffix})";
+            suffix++;
+        }
+
+        _data.Scenes.Add(new SceneEntry { Name = name, Path = virtualPath });
+    }
+
+    /// <summary>登録済みシーンの一覧 UI を再構築する。</summary>
+    private void RebuildSceneList()
+    {
+        if (_sceneListPanel is null) return;
+        _sceneListPanel.Children.Clear();
+
+        if (_data.Scenes.Count == 0)
+        {
+            _sceneListPanel.Children.Add(new TextBlock
+            {
+                Text       = "登録されたシーンはありません。",
+                Foreground = new SolidColorBrush(Color.FromRgb(0x66, 0x66, 0x66)),
+                FontSize   = 11,
+            });
+            return;
+        }
+
+        foreach (var entry in _data.Scenes)
+        {
+            var captured = entry;
+            var row = new Grid { Margin = new Thickness(0, 0, 0, 4) };
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(160) });
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+            // 名前（編集可。スクリプトが Transition("名前") で参照するキー）
+            var nameBox = new TextBox
+            {
+                Text    = captured.Name,
+                Style   = (Style)Resources["SettingTextBox"],
+                ToolTip = "スクリプトから参照する名前（SEED.Scene.Transition のキー）",
+            };
+            nameBox.LostFocus += (_, _) =>
+            {
+                var newName = nameBox.Text.Trim();
+                // 空・他エントリとの重複は元の名前へ戻す
+                if (newName.Length == 0 ||
+                    _data.Scenes.Any(s => !ReferenceEquals(s, captured) && s.Name == newName))
+                {
+                    nameBox.Text = captured.Name;
+                    return;
+                }
+                captured.Name = newName;
+            };
+            Grid.SetColumn(nameBox, 0);
+            row.Children.Add(nameBox);
+
+            // パス表示（読み取り専用）
+            var pathText = new TextBlock
+            {
+                Text              = captured.Path,
+                Foreground        = new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88)),
+                FontSize          = 11,
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin            = new Thickness(8, 0, 8, 0),
+                TextTrimming      = TextTrimming.CharacterEllipsis,
+            };
+            Grid.SetColumn(pathText, 1);
+            row.Children.Add(pathText);
+
+            // 削除ボタン
+            var removeBtn = new Button
+            {
+                Content = "削除",
+                Style   = (Style)Resources["BrowseButton"],
+            };
+            removeBtn.Click += (_, _) =>
+            {
+                _data.Scenes.Remove(captured);
+                RebuildSceneList();
+            };
+            Grid.SetColumn(removeBtn, 2);
+            row.Children.Add(removeBtn);
+
+            _sceneListPanel.Children.Add(row);
+        }
     }
 
     /// <summary>

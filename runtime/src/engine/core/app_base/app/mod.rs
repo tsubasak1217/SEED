@@ -370,6 +370,13 @@ pub struct App {
     input:          Input,
     /// スクリプト Audio API 用のオーディオマネージャ（初回コマンド時に遅延初期化）
     audio:          Option<crate::engine::core::audio::AudioManager>,
+    /// シーンレジストリ: シーンマネージャ登録名 → assets:// パス
+    /// （project_settings.json の "scenes" 配列から起動時に読み込む）。
+    /// スクリプトの SEED.Scene.Load / Transition が名前解決に使う。
+    scene_registry: HashMap<String, String>,
+    /// スクリプトの Scene.Load で事前読み込みされたシーン
+    /// （(解決済みパス, シーン, デバッグカメラ)。Transition 時に消費される）。
+    preloaded_scene: Option<(String, Scene, Option<DebugCameraData>)>,
     cam_input:      CameraInput,
     camera:         DebugCamera,
     clock:          Clock,
@@ -695,6 +702,8 @@ impl App {
             renderer:       None,
             input:          Input::new(),
             audio:          None,
+            scene_registry: HashMap::new(),
+            preloaded_scene: None,
             cam_input:      CameraInput::default(),
             camera:         DebugCamera::default(),
             clock:          Clock::new(),

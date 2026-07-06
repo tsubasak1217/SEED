@@ -112,6 +112,10 @@ impl App {
         self.load_plugins();
         eprintln!("[SEED INIT] load_plugins done  count={}", self.plugin_registry.len());
 
+        // シーンレジストリ（シーンマネージャ登録名 → パス）をロードする。
+        // スクリプトの SEED.Scene.Load / Transition("名前") の名前解決に使う。
+        self.load_scene_registry();
+
         // Play モードでは指定シーン（または start_scene）を自動ロードする。
         // シーンロード・モデルロードはメインスレッドをブロックするため、
         // ウィンドウ表示より先に完了させる。
@@ -228,6 +232,29 @@ impl App {
     ///
     /// ロードしたシーンの debug_camera データをデバッグカメラの初期位置に適用する。
     /// メインカメラが存在しない場合のフォールバックとして機能する。
+    /// project_settings.json の "scenes" 配列からシーンレジストリを読み込む。
+    ///
+    /// 形式: [{"name": "game", "path": "assets://scenes/game.scene"}, ...]
+    /// （エディタのプロジェクト設定「シーンマネージャ」で登録・編集する）。
+    /// ファイルや配列が無い場合は空レジストリのまま（名前解決は全て失敗し、
+    /// スクリプトはパス直接指定のみ使用可能）。
+    pub(super) fn load_scene_registry(&mut self) {
+        use crate::engine::asset_fs;
+
+        self.scene_registry.clear();
+        let Ok(json) = asset_fs::read_string("assets://project_settings.json") else { return };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&json) else { return };
+        let Some(scenes) = v["scenes"].as_array() else { return };
+        for entry in scenes {
+            let name = entry["name"].as_str().unwrap_or("");
+            let path = entry["path"].as_str().unwrap_or("");
+            if !name.is_empty() && !path.is_empty() {
+                self.scene_registry.insert(name.to_string(), path.to_string());
+            }
+        }
+        eprintln!("[SEED INIT] scene registry loaded  count={}", self.scene_registry.len());
+    }
+
     pub(super) fn load_play_scene(&mut self) {
         use crate::engine::asset_fs;
 
