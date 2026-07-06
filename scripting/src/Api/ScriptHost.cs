@@ -284,6 +284,38 @@ public static unsafe class ScriptHost
         return _api.Destroy(e.Index, e.Generation) != 0;
     }
 
+    // ── 入力（キー・マウス）─────────────────────────────────────
+
+    /// <summary>キー入力判定（kind: 0=押下中/1=押した瞬間/2=離した瞬間）。</summary>
+    public static bool InputKey(int kind, uint keyId)
+    {
+        if (!_available || _api.InputKey == null) return false;
+        return _api.InputKey(kind, keyId) != 0;
+    }
+
+    /// <summary>マウスボタン入力判定（kind は InputKey と同じ体系）。</summary>
+    public static bool InputMouse(int kind, uint buttonId)
+    {
+        if (!_available || _api.InputMouse == null) return false;
+        return _api.InputMouse(kind, buttonId) != 0;
+    }
+
+    /// <summary>マウスの 2 要素状態（座標・移動量）を取得する。失敗時は Zero。</summary>
+    public static Vector2 InputMouseVec2(int kind)
+    {
+        if (!_available || _api.InputMouseState == null) return Vector2.Zero;
+        float* buf = stackalloc float[2];
+        return _api.InputMouseState(kind, buf) == 2 ? new Vector2(buf[0], buf[1]) : Vector2.Zero;
+    }
+
+    /// <summary>マウスの 1 要素状態（ホイール量）を取得する。失敗時は 0。</summary>
+    public static float InputMouseScroll(int kind)
+    {
+        if (!_available || _api.InputMouseState == null) return 0f;
+        float* buf = stackalloc float[2];
+        return _api.InputMouseState(kind, buf) == 1 ? buf[0] : 0f;
+    }
+
     /// <summary>アクターを名前で検索する（DFS 順の最初の一致）。見つからなければ false。</summary>
     public static bool TryFindActor(string name, out Entity entity)
     {
@@ -329,4 +361,10 @@ public unsafe struct ScriptHostApi
     public delegate* unmanaged[Cdecl]<uint, uint, int> Destroy;
     /// <summary>(name, nameLen, out uint[2] entity) → 1/0</summary>
     public delegate* unmanaged[Cdecl]<byte*, int, uint*, int> FindActor;
+    /// <summary>(kind, keyId) → 1/0</summary>
+    public delegate* unmanaged[Cdecl]<int, uint, int> InputKey;
+    /// <summary>(kind, buttonId) → 1/0</summary>
+    public delegate* unmanaged[Cdecl]<int, uint, int> InputMouse;
+    /// <summary>(kind, out float*) → 書き込んだ要素数（失敗=0）</summary>
+    public delegate* unmanaged[Cdecl]<int, float*, int> InputMouseState;
 }

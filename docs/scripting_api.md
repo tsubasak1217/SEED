@@ -159,6 +159,39 @@ Random.InitState(seed)       // シード固定（再現用）
 
 ---
 
+## 6.5 Input（キーボード・マウス入力）
+
+エンジンの入力状態を参照する静的クラス。判定は 3 種類（押している間 / 押した瞬間 / 離した瞬間）。
+
+```csharp
+// キーボード
+Input.GetKey(KeyCode.Space)        // bool: 押されている間 true
+Input.GetKeyDown(KeyCode.Space)    // bool: 押された瞬間のフレームだけ true
+Input.GetKeyUp(KeyCode.Space)      // bool: 離された瞬間のフレームだけ true
+
+// マウスボタン（MouseButton.Left / Right / Middle）
+Input.GetMouseButton(MouseButton.Left)
+Input.GetMouseButtonDown(MouseButton.Left)
+Input.GetMouseButtonUp(MouseButton.Left)
+
+// マウス状態
+Input.MousePos        // Vector2: スクリーン座標（ピクセル・左上原点）
+Input.MouseMove       // Vector2: 今フレームの相対移動量
+Input.MouseScroll     // float:   今フレームのホイール量（上=正）
+
+// 簡易軸入力（WASD/矢印 → [-1,1]。斜めは正規化しない）
+Input.MoveAxis()      // Vector2
+
+// 例: WASD 移動 + スペースでジャンプ判定
+var move = SEED.Input.MoveAxis();
+transform.Position += new SEED.Vector3(move.x, 0f, move.y) * speed * SEED.Time.DeltaTime;
+if (SEED.Input.GetKeyDown(SEED.KeyCode.Space)) { /* ジャンプ */ }
+```
+
+`KeyCode` の定義: `A`〜`Z` / `Alpha0`〜`Alpha9`（メイン数字キー）/ `F1`〜`F12` / `UpArrow` `DownArrow` `LeftArrow` `RightArrow` / `Space` `Enter` `Escape` `Tab` `Backspace` `Delete` / `LeftShift` `RightShift` `LeftControl` `RightControl` `LeftAlt` `RightAlt`
+
+---
+
 ## 7. GameObject とコンポーネント（Transform / CanvasTransform / Sprite / Camera）
 
 スクリプトは自分がアタッチされた GameObject を `gameObject`、その Transform を `transform` で参照できます。各コンポーネントアクセサは薄いハンドルで、プロパティへの代入は即座にゲーム世界へ反映されます。対象コンポーネントを持たないエンティティに対する読み取りは既定値、書き込みは無視されます（`HasComponent` で保持判定）。

@@ -31,8 +31,11 @@ use std::cell::{Cell, RefCell};
 use crate::engine::components::{
     CameraComponent, CanvasTransform, SpriteComponent, Transform,
 };
+use crate::engine::core::input::{Input, InputState};
 use crate::engine::ecs::{Entity, World};
 use crate::engine::structs::objects::Actor;
+
+use super::input_bridge;
 
 // ─── スレッドローカル World ポインタ ──────────────────────────
 
@@ -49,6 +52,12 @@ thread_local! {
     /// Instantiate / Destroy は Actor ツリーと DrawContext を要するため即時実行せず、
     /// ここへ積んで App がフレームのゲームロジック後に適用する（Unity の遅延 Destroy と同様）。
     static SCENE_COMMANDS: RefCell<Vec<ScriptSceneCommand>> = const { RefCell::new(Vec::new()) };
+
+    /// ゲームロジック実行中だけ設定される Input への読み取り専用ポインタ。
+    /// スクリプトの Input API（キー・マウス判定）が参照する。
+    /// 入力イベントの処理はフレームロジック外（イベントハンドラ）で行われるため、
+    /// 公開中に Input が変更されることはない。
+    static INPUT_PTR: Cell<*const Input> = const { Cell::new(std::ptr::null()) };
 }
 
 /// World ポインタを設定してクロージャを実行し、終了後に元へ戻す。
@@ -71,6 +80,17 @@ pub fn with_actors<R>(actors: &Vec<Actor>, f: impl FnOnce() -> R) -> R {
     let result = f();
     ACTORS_PTR.with(|p| p.set(prev));
     result
+}
+
+/// ゲームロジック開始前に Input への読み取り専用ポインタを公開する（None で解除）。
+///
+/// frame_renderer がフェーズ群の実行前に Some、実行後に None を渡す。
+/// スクリプトの Input API はこのポインタ経由でキー・マウス状態を参照する。
+pub fn publish_input(input: Option<&Input>) {
+    INPUT_PTR.with(|p| p.set(match input {
+        Some(i) => i as *const Input,
+        None    => std::ptr::null(),
+    }));
 }
 
 // ─── シーン操作コマンド（遅延適用）──────────────────────────
@@ -458,6 +478,71 @@ unsafe extern "system" fn ffi_find_actor(
     }
 }
 
+// ─── 入力 FFI（キー・マウス）─────────────────────────────────
+
+/// キー入力判定。押されている(kind に応じた状態)=1 / それ以外・失敗=0。
+///
+/// kind: 0=押下中(press) / 1=押した瞬間(trigger) / 2=離した瞬間(release)。
+/// key_id は C# 側 SEED.KeyCode の数値（input_bridge の対応表で変換）。
+unsafe extern "system" fn ffi_input_key(kind: i32, key_id: u32) -> i32 {
+    let ptr = INPUT_PTR.with(|p| p.get());
+    if ptr.is_null() { return 0; }
+    let input = &*ptr;
+    let Some(key) = input_bridge::keycode_from_id(key_id) else { return 0 };
+    let hit = match kind {
+        input_bridge::INPUT_KIND_PRESS   => input.is_press_key(key),
+        input_bridge::INPUT_KIND_TRIGGER => input.is_trigger_key(key),
+        input_bridge::INPUT_KIND_RELEASE => input.is_release_key(key),
+        _ => false,
+    };
+    if hit { 1 } else { 0 }
+}
+
+/// マウスボタン入力判定。判定は ffi_input_key と同じ kind 体系。
+/// button_id は C# 側 SEED.MouseButton の数値（0=左 / 1=右 / 2=中）。
+unsafe extern "system" fn ffi_input_mouse_button(kind: i32, button_id: u32) -> i32 {
+    let ptr = INPUT_PTR.with(|p| p.get());
+    if ptr.is_null() { return 0; }
+    let input = &*ptr;
+    let Some(button) = input_bridge::mouse_button_from_id(button_id) else { return 0 };
+    let hit = match kind {
+        input_bridge::INPUT_KIND_PRESS   => input.is_press_mouse(button),
+        input_bridge::INPUT_KIND_TRIGGER => input.is_trigger_mouse(button),
+        input_bridge::INPUT_KIND_RELEASE => input.is_release_mouse(button),
+        _ => false,
+    };
+    if hit { 1 } else { 0 }
+}
+
+/// マウス状態（座標・移動量・ホイール）を取得する。out へ書いた要素数を返す（失敗=0）。
+///
+/// kind: 0=スクリーン座標(2要素) / 1=相対移動量(2要素) / 2=ホイール量(1要素)。
+/// out は 2 要素以上の容量を C# 側が保証する。
+unsafe extern "system" fn ffi_input_mouse_state(kind: i32, out: *mut f32) -> i32 {
+    let ptr = INPUT_PTR.with(|p| p.get());
+    if ptr.is_null() || out.is_null() { return 0; }
+    let input = &*ptr;
+    match kind {
+        input_bridge::MOUSE_STATE_POSITION => {
+            let v = input.mouse_position(InputState::Current);
+            *out        = v.x;
+            *out.add(1) = v.y;
+            2
+        }
+        input_bridge::MOUSE_STATE_DELTA => {
+            let v = input.mouse_vector(InputState::Current);
+            *out        = v.x;
+            *out.add(1) = v.y;
+            2
+        }
+        input_bridge::MOUSE_STATE_SCROLL => {
+            *out = input.mouse_scroll(InputState::Current);
+            1
+        }
+        _ => 0,
+    }
+}
+
 // ─── C# へ渡す関数ポインタ表 ─────────────────────────────────
 
 /// C# の #[StructLayout(Sequential)] ScriptHostApi と同一レイアウト。
@@ -474,6 +559,9 @@ pub struct ScriptHostApi {
     instantiate:   unsafe extern "system" fn(*const u8, i32, *mut u32) -> i32,
     destroy:       unsafe extern "system" fn(u32, u32) -> i32,
     find_actor:    unsafe extern "system" fn(*const u8, i32, *mut u32) -> i32,
+    input_key:         unsafe extern "system" fn(i32, u32) -> i32,
+    input_mouse:       unsafe extern "system" fn(i32, u32) -> i32,
+    input_mouse_state: unsafe extern "system" fn(i32, *mut f32) -> i32,
 }
 
 // 関数ポインタは Sync。プロセス全体で 1 つの静的表を共有する。
@@ -486,6 +574,9 @@ static HOST_API: ScriptHostApi = ScriptHostApi {
     instantiate:   ffi_instantiate,
     destroy:       ffi_destroy,
     find_actor:    ffi_find_actor,
+    input_key:         ffi_input_key,
+    input_mouse:       ffi_input_mouse_button,
+    input_mouse_state: ffi_input_mouse_state,
 };
 
 /// C# へ渡す関数ポインタ表へのポインタを返す（RegisterHostApi 用）。

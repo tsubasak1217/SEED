@@ -359,6 +359,11 @@ impl App {
         // フェーズ順に実行する。
         if time_running {
             use crate::engine::ecs::Phase;
+            use crate::engine::core::scripting::publish_input;
+            // スクリプトの Input API 用に入力状態への読み取り専用ポインタを公開する。
+            // 入力イベントの処理はイベントハンドラ側で行われるため、
+            // フェーズ実行中に self.input が変更されることはない。
+            publish_input(Some(&self.input));
             if dbg { eprintln!("[SEED FRAME {dbg_frame}] begin_frame"); }
             if let Some(scene) = &mut self.scene { scene.run_phase(Phase::BeginFrame, &ctx); }
             if dbg { eprintln!("[SEED FRAME {dbg_frame}] early_update"); }
@@ -373,6 +378,8 @@ impl App {
             if let Some(scene) = &mut self.scene { scene.run_phase(Phase::LateUpdate, &ctx); }
             if dbg { eprintln!("[SEED FRAME {dbg_frame}] scene.render"); }
             if let Some(scene) = &mut self.scene { scene.run_phase(Phase::Render, &ctx); }
+            // 入力ポインタの公開を解除する（フェーズ外でのアクセスを防ぐ）
+            publish_input(None);
             // スクリプトが積んだシーン操作コマンド（Instantiate / Destroy）を適用する。
             // フェーズ実行後にまとめて適用することで、実行中スクリプトとの競合を避ける
             // （生成アクターはこの後の描画収集から同フレームで見える）。
@@ -3031,7 +3038,13 @@ impl App {
         // ─ 7. EndFrame（Play 時のみ）─────────────────
         if time_running {
             use crate::engine::ecs::Phase;
+            use crate::engine::core::scripting::publish_input;
+            // EndFrame フェーズのスクリプトからも Input API を使えるようにする
+            publish_input(Some(&self.input));
             if let Some(scene) = &mut self.scene { scene.run_phase(Phase::EndFrame, &ctx); }
+            publish_input(None);
+            // EndFrame 中に積まれたシーン操作コマンドも同フレーム内で適用する
+            self.apply_script_scene_commands();
         }
 
         self.input.end_frame();

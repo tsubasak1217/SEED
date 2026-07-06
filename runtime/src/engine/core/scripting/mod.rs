@@ -17,7 +17,11 @@ use crate::engine::ecs::Entity;
 
 // C# → Rust のコンポーネントアクセスブリッジ
 pub mod host_api;
-pub use host_api::{with_world, with_actors, take_scene_commands, ScriptSceneCommand};
+// スクリプト入力 API の ID ⇔ winit 型対応表
+pub mod input_bridge;
+pub use host_api::{
+    with_world, with_actors, take_scene_commands, publish_input, ScriptSceneCommand,
+};
 
 // ScriptComponent 等は engine::components から re-export する
 pub use crate::engine::components::{
