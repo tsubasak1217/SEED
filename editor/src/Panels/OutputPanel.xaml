@@ -84,7 +84,7 @@
                  ScrollViewer.CanContentScroll="True"
                  VirtualizingStackPanel.IsVirtualizing="True"
                  VirtualizingStackPanel.VirtualizationMode="Recycling"
-                 VirtualizingStackPanel.ScrollUnit="Pixel"
+                 VirtualizingStackPanel.ScrollUnit="Item"
                  HorizontalContentAlignment="Stretch">
             <ListBox.ItemContainerStyle>
                 <!-- 行を詰めて表示し、選択・ホバーの色をダークテーマにする -->
