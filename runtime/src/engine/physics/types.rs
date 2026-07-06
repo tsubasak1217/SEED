@@ -159,6 +159,19 @@ pub enum PhysicsCommand {
     Pause,
     /// 物理シミュレーションを再開する（Pause の解除）。
     Resume,
+    /// レイキャストを実行し、結果を reply チャンネルへ返す（同期問い合わせ）。
+    /// スクリプトの Physics.Raycast 用。物理スレッドはコマンドドレイン間隔
+    /// （約 1ms）で応答するため、メインスレッドは短いタイムアウト付きで待機する。
+    Raycast {
+        /// レイの始点（ワールド座標）
+        origin:       [f32; 3],
+        /// レイの方向（正規化推奨）
+        direction:    [f32; 3],
+        /// 最大距離
+        max_distance: f32,
+        /// 結果送信チャンネル（ヒットなし = None）
+        reply:        crossbeam_channel::Sender<Option<RaycastHit>>,
+    },
     /// スレッドを停止する
     Stop,
 }
@@ -230,7 +243,6 @@ pub enum TriggerPhase {
 // ─── レイキャスト ────────────────────────────────────────────────────────────
 
 /// レイキャストのヒット情報。
-#[allow(dead_code)]
 pub struct RaycastHit {
     /// ヒットしたオブジェクトの entity_id
     pub entity_id: u64,

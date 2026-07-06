@@ -126,6 +126,33 @@ impl ScriptComponent {
         unsafe { f(handle, &raw); }
     }
 
+    /// 物理イベント（衝突・トリガー）をスクリプトへ通知する。
+    ///
+    /// kind は RawPhysicsEvent のコメント参照（0=ColEnter .. 4=TrigExit）。
+    /// run_phase_raw と同様、呼び出し側は World への参照を保持せずに呼ぶこと
+    /// （C# コールバック内から transform 等のアクセサが World を可変で触るため）。
+    pub fn run_physics_event_raw(
+        host:       &ScriptingHost,
+        handle:     isize,
+        kind:       i32,
+        self_owner: Entity,
+        other:      Option<Entity>,
+    ) {
+        use crate::engine::core::scripting::RawPhysicsEvent;
+        let (other_index, other_generation) = match other {
+            Some(e) => (e.index(), e.generation()),
+            None    => (u32::MAX, 0),
+        };
+        let raw = RawPhysicsEvent {
+            kind,
+            self_index:      self_owner.index(),
+            self_generation: self_owner.generation(),
+            other_index,
+            other_generation,
+        };
+        unsafe { (host.physics_event_fn)(handle, &raw); }
+    }
+
     /// シリアライズ用データに変換する。
     pub fn to_data(&self) -> ScriptComponentData {
         ScriptComponentData {

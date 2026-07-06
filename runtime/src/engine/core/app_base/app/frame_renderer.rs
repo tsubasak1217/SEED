@@ -359,11 +359,13 @@ impl App {
         // フェーズ順に実行する。
         if time_running {
             use crate::engine::ecs::Phase;
-            use crate::engine::core::scripting::publish_input;
+            use crate::engine::core::scripting::{publish_input, publish_physics_sender};
             // スクリプトの Input API 用に入力状態への読み取り専用ポインタを公開する。
             // 入力イベントの処理はイベントハンドラ側で行われるため、
             // フェーズ実行中に self.input が変更されることはない。
             publish_input(Some(&self.input));
+            // スクリプトの Physics.Raycast 用に物理スレッドへの送信チャンネルを公開する
+            publish_physics_sender(self.physics_thread.as_ref().map(|t| t.command_sender()));
             if dbg { eprintln!("[SEED FRAME {dbg_frame}] begin_frame"); }
             if let Some(scene) = &mut self.scene { scene.run_phase(Phase::BeginFrame, &ctx); }
             if dbg { eprintln!("[SEED FRAME {dbg_frame}] early_update"); }
@@ -378,8 +380,9 @@ impl App {
             if let Some(scene) = &mut self.scene { scene.run_phase(Phase::LateUpdate, &ctx); }
             if dbg { eprintln!("[SEED FRAME {dbg_frame}] scene.render"); }
             if let Some(scene) = &mut self.scene { scene.run_phase(Phase::Render, &ctx); }
-            // 入力ポインタの公開を解除する（フェーズ外でのアクセスを防ぐ）
+            // 入力・物理チャンネルの公開を解除する（フェーズ外でのアクセスを防ぐ）
             publish_input(None);
+            publish_physics_sender(None);
             // スクリプトが積んだシーン操作コマンド（Instantiate / Destroy）を適用する。
             // フェーズ実行後にまとめて適用することで、実行中スクリプトとの競合を避ける
             // （生成アクターはこの後の描画収集から同フレームで見える）。

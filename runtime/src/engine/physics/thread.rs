@@ -69,6 +69,13 @@ impl PhysicsThread {
         let _ = self.cmd_tx.send(cmd);
     }
 
+    /// コマンド送信チャンネルのクローンを返す。
+    /// スクリプトの Physics.Raycast（host_api）が物理スレッドへ
+    /// 同期問い合わせするために使用する。
+    pub fn command_sender(&self) -> Sender<PhysicsCommand> {
+        self.cmd_tx.clone()
+    }
+
     /// 蓄積された結果から最新の 1 件を取得し、古い結果は破棄する。
     ///
     /// 結果がなければ `None` を返す。
@@ -150,6 +157,8 @@ fn run_physics_loop(
     let mut impulse_joint_set   = ImpulseJointSet::new();
     let mut multibody_joint_set = MultibodyJointSet::new();
     let mut ccd_solver          = CCDSolver::new();
+    // レイキャスト用クエリパイプライン（step のたびに自動更新される）
+    let mut query_pipeline      = QueryPipeline::new();
 
     // 重力ベクトル（SetGravity コマンドで変更可能）
     let mut gravity = vector![DEFAULT_GRAVITY[0], DEFAULT_GRAVITY[1], DEFAULT_GRAVITY[2]];
@@ -191,6 +200,15 @@ fn run_physics_loop(
                     // Resume 直後にタイムステップをリセットして即座に次ステップを実行する
                     next_step = Instant::now();
                 }
+                Ok(PhysicsCommand::Raycast { origin, direction, max_distance, reply }) => {
+                    // 同期レイキャスト問い合わせ（スクリプトの Physics.Raycast）。
+                    // query_pipeline は step のたびに更新済み。
+                    let hit = perform_raycast(
+                        &query_pipeline, &rigid_body_set, &collider_set, &col_to_entity,
+                        origin, direction, max_distance,
+                    );
+                    let _ = reply.send(hit);
+                }
                 Ok(cmd) => handle_command(
                     cmd,
                     &mut rigid_body_set, &mut collider_set,
@@ -230,7 +248,7 @@ fn run_physics_loop(
             &mut impulse_joint_set,
             &mut multibody_joint_set,
             &mut ccd_solver,
-            None,   // クエリパイプライン（未使用）
+            Some(&mut query_pipeline), // レイキャスト用に毎ステップ更新する
             &(),    // PhysicsHooks（デフォルト: フィルタリングなし）
             &event_handler,
         );
@@ -252,6 +270,40 @@ fn run_physics_loop(
 
         let _ = res_tx.send(result);
     }
+}
+
+// ─── レイキャスト ────────────────────────────────────────────────────────────
+
+/// クエリパイプラインでレイキャストを実行し、最初のヒットを返す。
+///
+/// スクリプトの Physics.Raycast 用。ヒットしたコライダーは col_to_entity で
+/// entity_id（DFS 順 ID）へ逆引きする。ヒットなし・逆引き失敗は None。
+fn perform_raycast(
+    query_pipeline: &QueryPipeline,
+    rb_set:         &RigidBodySet,
+    col_set:        &ColliderSet,
+    col_to_entity:  &HashMap<ColliderHandle, u64>,
+    origin:         [f32; 3],
+    direction:      [f32; 3],
+    max_distance:   f32,
+) -> Option<crate::engine::physics::types::RaycastHit> {
+    let ray = Ray::new(
+        point![origin[0], origin[1], origin[2]],
+        vector![direction[0], direction[1], direction[2]],
+    );
+    // solid=true: レイ始点がコライダー内部にある場合は距離 0 でヒットさせる
+    let (handle, intersection) = query_pipeline.cast_ray_and_get_normal(
+        rb_set, col_set, &ray, max_distance, true, QueryFilter::default(),
+    )?;
+    let entity_id = *col_to_entity.get(&handle)?;
+    let point  = ray.point_at(intersection.time_of_impact);
+    let normal = intersection.normal;
+    Some(crate::engine::physics::types::RaycastHit {
+        entity_id,
+        point:    [point.x, point.y, point.z],
+        normal:   [normal.x, normal.y, normal.z],
+        distance: intersection.time_of_impact,
+    })
 }
 
 // ─── コマンド処理 ────────────────────────────────────────────────────────────
@@ -276,6 +328,7 @@ fn handle_command(
         PhysicsCommand::Stop   => { /* 呼び出し元で処理済み */ }
         PhysicsCommand::Pause  => { /* ループ側で処理済み */ }
         PhysicsCommand::Resume => { /* ループ側で処理済み */ }
+        PhysicsCommand::Raycast { .. } => { /* ループ側（コマンドドレイン）で処理済み */ }
 
         PhysicsCommand::AddObject(obj) => {
             add_object(obj, rb_set, col_set, entries, col_to_entity, trigger_set);

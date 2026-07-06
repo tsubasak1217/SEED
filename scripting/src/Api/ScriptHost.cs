@@ -316,6 +316,35 @@ public static unsafe class ScriptHost
         return _api.InputMouseState(kind, buf) == 1 ? buf[0] : 0f;
     }
 
+    // ── 物理（Raycast）──────────────────────────────────────────
+
+    /// <summary>
+    /// レイキャストを実行する。ヒットしなければ false。
+    /// 物理スレッドへの同期問い合わせ（数 ms 以内に応答）。
+    /// </summary>
+    public static bool TryRaycast(Vector3 origin, Vector3 direction, float maxDistance, out RaycastHit hit)
+    {
+        hit = default;
+        if (!_available || _api.Raycast == null) return false;
+
+        float* o = stackalloc float[3];
+        float* d = stackalloc float[3];
+        o[0] = origin.x;    o[1] = origin.y;    o[2] = origin.z;
+        d[0] = direction.x; d[1] = direction.y; d[2] = direction.z;
+        // ヒット情報: [point.xyz, normal.xyz, distance] の 7 要素
+        float* h = stackalloc float[7];
+        uint*  e = stackalloc uint[2];
+
+        if (_api.Raycast(o, d, maxDistance, h, e) == 0) return false;
+
+        hit = new RaycastHit(
+            new GameObject(new Entity(e[0], e[1])),
+            new Vector3(h[0], h[1], h[2]),
+            new Vector3(h[3], h[4], h[5]),
+            h[6]);
+        return true;
+    }
+
     /// <summary>アクターを名前で検索する（DFS 順の最初の一致）。見つからなければ false。</summary>
     public static bool TryFindActor(string name, out Entity entity)
     {
@@ -367,4 +396,6 @@ public unsafe struct ScriptHostApi
     public delegate* unmanaged[Cdecl]<int, uint, int> InputMouse;
     /// <summary>(kind, out float*) → 書き込んだ要素数（失敗=0）</summary>
     public delegate* unmanaged[Cdecl]<int, float*, int> InputMouseState;
+    /// <summary>(origin float[3], dir float[3], maxDist, out float[7] hit, out uint[2] entity) → 1/0</summary>
+    public delegate* unmanaged[Cdecl]<float*, float*, float, float*, uint*, int> Raycast;
 }

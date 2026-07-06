@@ -99,6 +99,43 @@ public static unsafe class ScriptBridge
         return s;
     }
 
+    // ─── 物理イベント ─────────────────────────────────────────
+
+    // イベント種別（Rust 側 scripting/mod.rs の PHYSICS_EVENT_* 定数と一致させる）
+    private const int PhysicsEventCollisionEnter = 0;
+    private const int PhysicsEventCollisionStay  = 1;
+    private const int PhysicsEventCollisionExit  = 2;
+    private const int PhysicsEventTriggerEnter   = 3;
+    private const int PhysicsEventTriggerExit    = 4;
+
+    /// <summary>
+    /// 物理イベント（衝突・トリガー）をスクリプトへ通知する。
+    /// Rust の update_physics がイベント受信時に呼ぶ。
+    /// 自エンティティを束縛してから、種別に応じたコールバックを呼び出す。
+    /// </summary>
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    public static void OnPhysicsEvent(nint h, NativePhysicsEvent* ev)
+    {
+        try
+        {
+            if (Get(h) is not SEEDScript ss) return;
+            ss.BindEntity(ev->SelfIndex, ev->SelfGeneration);
+            var other = new SEED.GameObject(new SEED.Entity(ev->OtherIndex, ev->OtherGeneration));
+            switch (ev->Kind)
+            {
+                case PhysicsEventCollisionEnter: ss.OnCollisionEnter(other); break;
+                case PhysicsEventCollisionStay:  ss.OnCollisionStay(other);  break;
+                case PhysicsEventCollisionExit:  ss.OnCollisionExit(other);  break;
+                case PhysicsEventTriggerEnter:   ss.OnTriggerEnter(other);   break;
+                case PhysicsEventTriggerExit:    ss.OnTriggerExit(other);    break;
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[SEEDScripting] OnPhysicsEvent failed: {ex}");
+        }
+    }
+
     // ─── スクリプトコンパイル ─────────────────────────────────
 
     /// <summary>

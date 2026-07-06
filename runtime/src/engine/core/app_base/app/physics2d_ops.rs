@@ -660,6 +660,17 @@ impl App {
                 }
             }
 
+            // ②-0 Play モード時: 2D 衝突・トリガーイベントをスクリプトのコールバックへ配信する
+            //（3D と同じ OnCollisionEnter / OnTriggerEnter 等が呼ばれる）
+            if self.mode == RuntimeMode::Play
+                && (!result.collision_events.is_empty() || !result.trigger_events.is_empty())
+            {
+                self.dispatch_physics2d_events_to_scripts(
+                    &result.collision_events,
+                    &result.trigger_events,
+                );
+            }
+
             // ② 衝突イベントを IPC 経由でエディタへ通知する
             if self.scripting_host.is_some() {
                 for event in &result.collision_events {

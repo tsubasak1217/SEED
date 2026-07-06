@@ -58,6 +58,11 @@ thread_local! {
     /// 入力イベントの処理はフレームロジック外（イベントハンドラ）で行われるため、
     /// 公開中に Input が変更されることはない。
     static INPUT_PTR: Cell<*const Input> = const { Cell::new(std::ptr::null()) };
+
+    /// ゲームロジック実行中だけ設定される物理スレッドへのコマンド送信チャンネル。
+    /// スクリプトの Physics.Raycast（同期問い合わせ）が使用する。
+    static PHYSICS_TX: RefCell<Option<crossbeam_channel::Sender<crate::engine::physics::PhysicsCommand>>>
+        = const { RefCell::new(None) };
 }
 
 /// World ポインタを設定してクロージャを実行し、終了後に元へ戻す。
@@ -91,6 +96,16 @@ pub fn publish_input(input: Option<&Input>) {
         Some(i) => i as *const Input,
         None    => std::ptr::null(),
     }));
+}
+
+/// ゲームロジック開始前に物理スレッドへのコマンド送信チャンネルを公開する（None で解除）。
+///
+/// frame_renderer がフェーズ群の実行前に Some、実行後に None を渡す。
+/// スクリプトの Physics.Raycast はこのチャンネル経由で物理スレッドへ同期問い合わせする。
+pub fn publish_physics_sender(
+    tx: Option<crossbeam_channel::Sender<crate::engine::physics::PhysicsCommand>>,
+) {
+    PHYSICS_TX.with(|p| *p.borrow_mut() = tx);
 }
 
 // ─── シーン操作コマンド（遅延適用）──────────────────────────
@@ -543,6 +558,93 @@ unsafe extern "system" fn ffi_input_mouse_state(kind: i32, out: *mut f32) -> i32
     }
 }
 
+// ─── 物理 FFI（Raycast）──────────────────────────────────────
+
+/// レイキャストのタイムアウト（ミリ秒）。物理スレッドのコマンドドレインは
+/// 約 1ms 間隔なので通常は数 ms で応答する。応答がない場合はミス扱い。
+const RAYCAST_TIMEOUT_MS: u64 = 20;
+
+/// Play シーンの world_line（物理の DFS 順 ID はこの世界線の走査で振られる。
+/// スクリプトは Play モードでのみ実行されるため常に 0）。
+const PLAY_WORLD_LINE: u32 = 0;
+
+/// DFS 順 ID からアクターのルートエンティティを逆引きする。
+///
+/// 走査順は physics_ops::collect_physics_objects と同一
+/// （world_line 一致のルートから先行順 DFS、ID は 1 始まり・全アクターがカウント対象）。
+fn entity_by_dfs_id(actors: &[Actor], target: u64) -> Option<Entity> {
+    fn walk(actors: &[Actor], counter: &mut u64, target: u64) -> Option<Entity> {
+        for a in actors {
+            *counter += 1;
+            if *counter == target { return Some(a.entity); }
+            if let Some(e) = walk(a.children(), counter, target) { return Some(e); }
+        }
+        None
+    }
+    let roots: Vec<&Actor> = actors.iter().filter(|a| a.world_line == PLAY_WORLD_LINE).collect();
+    let mut counter = 0u64;
+    for root in roots {
+        counter += 1;
+        if counter == target { return Some(root.entity); }
+        if let Some(e) = walk(root.children(), &mut counter, target) { return Some(e); }
+    }
+    None
+}
+
+/// レイキャストを実行する。ヒット=1 / ミス・失敗=0。
+///
+/// origin / direction は各 3 要素。ヒット時は out_hit へ
+/// [point.x, point.y, point.z, normal.x, normal.y, normal.z, distance] の 7 要素、
+/// out_entity へ [index, generation] の 2 要素を書き込む
+/// （ヒットしたアクターが逆引きできない場合は u32::MAX, 0）。
+unsafe extern "system" fn ffi_raycast(
+    origin: *const f32, direction: *const f32, max_distance: f32,
+    out_hit: *mut f32, out_entity: *mut u32,
+) -> i32 {
+    use crate::engine::physics::PhysicsCommand;
+
+    if origin.is_null() || direction.is_null() || out_hit.is_null() || out_entity.is_null() {
+        return 0;
+    }
+    // 物理スレッドが起動していなければミス扱い
+    let Some(tx) = PHYSICS_TX.with(|p| p.borrow().clone()) else { return 0 };
+
+    // 同期問い合わせ: 応答用の 1 要素チャンネルを添えてコマンドを送る
+    let (reply_tx, reply_rx) = crossbeam_channel::bounded(1);
+    let cmd = PhysicsCommand::Raycast {
+        origin:       [*origin, *origin.add(1), *origin.add(2)],
+        direction:    [*direction, *direction.add(1), *direction.add(2)],
+        max_distance,
+        reply:        reply_tx,
+    };
+    if tx.send(cmd).is_err() { return 0; }
+
+    let hit = match reply_rx.recv_timeout(std::time::Duration::from_millis(RAYCAST_TIMEOUT_MS)) {
+        Ok(Some(hit)) => hit,
+        _             => return 0,
+    };
+
+    // ヒット情報を書き込む
+    *out_hit        = hit.point[0];
+    *out_hit.add(1) = hit.point[1];
+    *out_hit.add(2) = hit.point[2];
+    *out_hit.add(3) = hit.normal[0];
+    *out_hit.add(4) = hit.normal[1];
+    *out_hit.add(5) = hit.normal[2];
+    *out_hit.add(6) = hit.distance;
+
+    // DFS 順 ID → エンティティの逆引き（Actor ツリーが公開中の場合のみ）
+    let entity = {
+        let actors_ptr = ACTORS_PTR.with(|p| p.get());
+        if actors_ptr.is_null() { None } else { entity_by_dfs_id(&*actors_ptr, hit.entity_id) }
+    };
+    match entity {
+        Some(e) => { *out_entity = e.index(); *out_entity.add(1) = e.generation(); }
+        None    => { *out_entity = u32::MAX;  *out_entity.add(1) = 0; }
+    }
+    1
+}
+
 // ─── C# へ渡す関数ポインタ表 ─────────────────────────────────
 
 /// C# の #[StructLayout(Sequential)] ScriptHostApi と同一レイアウト。
@@ -562,6 +664,7 @@ pub struct ScriptHostApi {
     input_key:         unsafe extern "system" fn(i32, u32) -> i32,
     input_mouse:       unsafe extern "system" fn(i32, u32) -> i32,
     input_mouse_state: unsafe extern "system" fn(i32, *mut f32) -> i32,
+    raycast:           unsafe extern "system" fn(*const f32, *const f32, f32, *mut f32, *mut u32) -> i32,
 }
 
 // 関数ポインタは Sync。プロセス全体で 1 つの静的表を共有する。
@@ -577,6 +680,7 @@ static HOST_API: ScriptHostApi = ScriptHostApi {
     input_key:         ffi_input_key,
     input_mouse:       ffi_input_mouse_button,
     input_mouse_state: ffi_input_mouse_state,
+    raycast:           ffi_raycast,
 };
 
 /// C# へ渡す関数ポインタ表へのポインタを返す（RegisterHostApi 用）。

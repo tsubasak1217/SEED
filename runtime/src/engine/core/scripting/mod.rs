@@ -20,7 +20,8 @@ pub mod host_api;
 // スクリプト入力 API の ID ⇔ winit 型対応表
 pub mod input_bridge;
 pub use host_api::{
-    with_world, with_actors, take_scene_commands, publish_input, ScriptSceneCommand,
+    with_world, with_actors, take_scene_commands, publish_input, publish_physics_sender,
+    ScriptSceneCommand,
 };
 
 // ScriptComponent 等は engine::components から re-export する
@@ -62,10 +63,36 @@ impl RawFrameContext {
     }
 }
 
+// ─── 物理イベント種別（C# 側 ScriptBridge の定数と一致させる）───
+pub const PHYSICS_EVENT_COLLISION_ENTER: i32 = 0;
+pub const PHYSICS_EVENT_COLLISION_STAY:  i32 = 1;
+pub const PHYSICS_EVENT_COLLISION_EXIT:  i32 = 2;
+pub const PHYSICS_EVENT_TRIGGER_ENTER:   i32 = 3;
+pub const PHYSICS_EVENT_TRIGGER_EXIT:    i32 = 4;
+
+/// C# 側 NativePhysicsEvent と同じメモリレイアウト（#[repr(C)]）。
+/// 物理イベント（衝突・トリガー）をスクリプトへ通知するときに渡す。
+///
+/// kind: 0=CollisionEnter / 1=CollisionStay / 2=CollisionExit /
+///       3=TriggerEnter / 4=TriggerExit（C# 側 ScriptBridge と一致させる）
+#[repr(C)]
+pub(crate) struct RawPhysicsEvent {
+    /// イベント種別（上記コメント参照）
+    pub kind:             i32,
+    /// 通知先スクリプトが乗るアクターのエンティティ（gameObject の束縛用）
+    pub self_index:       u32,
+    pub self_generation:  u32,
+    /// 衝突相手アクターのエンティティ（u32::MAX = 不明）
+    pub other_index:      u32,
+    pub other_generation: u32,
+}
+
 // Windows x64 では "system" == "C" (cdecl) — C# の CallConvCdecl と一致する。
 type CreateFn    = unsafe extern "system" fn(*const u8, i32) -> isize;
 type DestroyFn   = unsafe extern "system" fn(isize);
 type LifecycleFn = unsafe extern "system" fn(isize, *const RawFrameContext);
+/// 物理イベント（衝突・トリガー）をスクリプトへ通知する。
+type PhysicsEventFn = unsafe extern "system" fn(isize, *const RawPhysicsEvent);
 /// アセットルート内の .cs を CLR 側でコンパイルする。戻り値はコンパイルされた型数（負値はエラー）。
 type CompileFn   = unsafe extern "system" fn(*const u8, i32) -> i32;
 /// スクリプトインスタンスの [SerializeField] フィールドに文字列値を設定する。
@@ -92,6 +119,8 @@ pub struct ScriptingHost {
     pub late_update_fn:     LifecycleFn,
     pub render_fn:          LifecycleFn,
     pub end_frame_fn:       LifecycleFn,
+    /// 物理イベント（衝突・トリガー）通知
+    pub physics_event_fn:   PhysicsEventFn,
     pub(crate) compile_fn:   CompileFn,
     pub(crate) set_field_fn: SetFieldFn,
     register_host_api_fn:    RegisterHostApiFn,
@@ -143,6 +172,7 @@ impl ScriptingHost {
             late_update_fn:    get_fn!(fn(isize, *const RawFrameContext),      pdcstr!("LateUpdate")),
             render_fn:         get_fn!(fn(isize, *const RawFrameContext),      pdcstr!("Render")),
             end_frame_fn:      get_fn!(fn(isize, *const RawFrameContext),      pdcstr!("EndFrame")),
+            physics_event_fn:  get_fn!(fn(isize, *const RawPhysicsEvent),      pdcstr!("OnPhysicsEvent")),
             compile_fn:        get_fn!(fn(*const u8, i32) -> i32,              pdcstr!("CompileScripts")),
             set_field_fn:      get_fn!(fn(isize, *const u8, i32, *const u8, i32), pdcstr!("SetFieldValue")),
             register_host_api_fn: get_fn!(fn(*const host_api::ScriptHostApi),  pdcstr!("RegisterHostApi")),

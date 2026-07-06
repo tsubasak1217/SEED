@@ -277,6 +277,17 @@ impl App {
                 }
             }
 
+            // ②-0 Play モード時: 衝突・トリガーイベントをスクリプトのコールバックへ配信する
+            //（OnCollisionEnter / OnTriggerEnter 等。Edit モードの物理プレビューでは呼ばない）
+            if self.mode == RuntimeMode::Play
+                && (!result.collision_events.is_empty() || !result.trigger_events.is_empty())
+            {
+                self.dispatch_physics_events_to_scripts(
+                    &result.collision_events,
+                    &result.trigger_events,
+                );
+            }
+
             // ② 衝突イベントを IPC 経由でエディタへ転送する（スクリプトホスト存在時のみ）
             if self.scripting_host.is_some() {
                 for event in &result.collision_events {

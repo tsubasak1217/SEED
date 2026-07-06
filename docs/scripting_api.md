@@ -56,6 +56,29 @@ public class Mover : SEEDScript
 
 不要な関数は override しなくて構いません。
 
+### 物理イベントコールバック
+
+自分のアクターのコライダー（ColliderComponent / Collider2dComponent）が他のコライダーと衝突・接触すると、以下が呼ばれます（3D / 2D 共通）。`other` は相手アクターの GameObject です（特定できない場合は `IsValid == false`）。
+
+| 関数 | 呼ばれるタイミング |
+|------|--------------------|
+| `OnCollisionEnter(SEED.GameObject other)` | 衝突が始まったフレーム |
+| `OnCollisionStay(SEED.GameObject other)`  | 衝突継続中（毎物理ステップ） |
+| `OnCollisionExit(SEED.GameObject other)`  | 衝突が終わったフレーム |
+| `OnTriggerEnter(SEED.GameObject other)`   | トリガーへの進入時（トリガー側・相手側の両方に通知） |
+| `OnTriggerExit(SEED.GameObject other)`    | トリガーからの退出時（同上） |
+
+```csharp
+public class Coin : SEEDScript
+{
+    public override void OnTriggerEnter(SEED.GameObject other)
+    {
+        SEED.Debug.Log($"取得: {other.IsValid}");
+        gameObject.Destroy();   // 自分を消す
+    }
+}
+```
+
 ---
 
 ## 3. Time（フレーム時間） / Debug（ログ）
@@ -189,6 +212,28 @@ if (SEED.Input.GetKeyDown(SEED.KeyCode.Space)) { /* ジャンプ */ }
 ```
 
 `KeyCode` の定義: `A`〜`Z` / `Alpha0`〜`Alpha9`（メイン数字キー）/ `F1`〜`F12` / `UpArrow` `DownArrow` `LeftArrow` `RightArrow` / `Space` `Enter` `Escape` `Tab` `Backspace` `Delete` / `LeftShift` `RightShift` `LeftControl` `RightControl` `LeftAlt` `RightAlt`
+
+---
+
+## 6.6 Physics（レイキャスト）
+
+```csharp
+// レイキャスト: 最初にヒットしたコライダーの情報を得る
+if (SEED.Physics.Raycast(transform.Position, SEED.Vector3.Down, 10f, out var hit))
+{
+    SEED.Debug.Log($"接地: {hit.Point} 距離={hit.Distance}");
+    hit.GameObject   // GameObject: ヒットしたアクター（IsValid で有効判定）
+    hit.Point        // Vector3: ヒット点のワールド座標
+    hit.Normal       // Vector3: ヒット点の法線
+    hit.Distance     // float:   始点からの距離
+}
+
+// ヒット情報が不要な場合の簡易版
+bool blocked = SEED.Physics.Raycast(origin, dir, maxDistance);
+```
+
+- 3D 物理（ColliderComponent）に対するレイキャストです。物理スレッドへの同期問い合わせのため、毎フレーム大量に呼ぶとフレーム時間を消費します。
+- 衝突・トリガーの**イベント通知**は第 2 節「物理イベントコールバック」（`OnCollisionEnter` 等）を参照してください。
 
 ---
 
