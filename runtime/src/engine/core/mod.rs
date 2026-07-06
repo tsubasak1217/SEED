@@ -1,4 +1,5 @@
 pub mod app_base;
+pub mod audio;
 pub mod clock;
 pub mod font;
 pub mod input;

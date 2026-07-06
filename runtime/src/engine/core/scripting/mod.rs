@@ -20,8 +20,9 @@ pub mod host_api;
 // スクリプト入力 API の ID ⇔ winit 型対応表
 pub mod input_bridge;
 pub use host_api::{
-    with_world, with_actors, take_scene_commands, publish_input, publish_physics_sender,
-    ScriptSceneCommand,
+    with_world, with_actors, take_scene_commands, take_audio_commands,
+    publish_input, publish_physics_sender,
+    ScriptSceneCommand, ScriptAudioCommand,
 };
 
 // ScriptComponent 等は engine::components から re-export する

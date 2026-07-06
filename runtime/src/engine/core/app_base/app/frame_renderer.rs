@@ -387,6 +387,8 @@ impl App {
             // フェーズ実行後にまとめて適用することで、実行中スクリプトとの競合を避ける
             // （生成アクターはこの後の描画収集から同フレームで見える）。
             self.apply_script_scene_commands();
+            // スクリプトが積んだオーディオコマンド（Audio.Play 等）を適用する
+            self.apply_script_audio_commands();
             if dbg { eprintln!("[SEED FRAME {dbg_frame}] game logic done"); }
         }
 

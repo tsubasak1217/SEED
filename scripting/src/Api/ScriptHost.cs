@@ -316,6 +316,24 @@ public static unsafe class ScriptHost
         return _api.InputMouseState(kind, buf) == 1 ? buf[0] : 0f;
     }
 
+    // ── オーディオ ───────────────────────────────────────────────
+
+    /// <summary>
+    /// オーディオコマンドを発行する（kind: 0=SE再生/1=BGM再生/2=BGM停止/3=BGM音量）。
+    /// 受理されたら true。
+    /// </summary>
+    public static bool AudioCommand(int kind, string path, float volume, int flag)
+    {
+        if (!_available || _api.Audio == null) return false;
+        path ??= "";
+
+        int pl = Encoding.UTF8.GetByteCount(path);
+        Span<byte> pb = pl > 0 ? stackalloc byte[pl] : default;
+        if (pl > 0) Encoding.UTF8.GetBytes(path, pb);
+        fixed (byte* pp = pb)
+            return _api.Audio(kind, pp, pl, volume, flag) != 0;
+    }
+
     // ── シーン遷移 ───────────────────────────────────────────────
 
     /// <summary>
@@ -417,4 +435,6 @@ public unsafe struct ScriptHostApi
     public delegate* unmanaged[Cdecl]<float*, float*, float, float*, uint*, int> Raycast;
     /// <summary>(path, pathLen) → 1/0</summary>
     public delegate* unmanaged[Cdecl]<byte*, int, int> LoadScene;
+    /// <summary>(kind, path, pathLen, volume, flag) → 1/0</summary>
+    public delegate* unmanaged[Cdecl]<int, byte*, int, float, int, int> Audio;
 }

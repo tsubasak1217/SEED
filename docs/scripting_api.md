@@ -237,6 +237,28 @@ bool blocked = SEED.Physics.Raycast(origin, dir, maxDistance);
 
 ---
 
+## 6.7 Audio（BGM・効果音）
+
+ファイルは `assets://` 仮想パスで指定します（対応形式: wav / ogg / mp3 / flac）。
+
+```csharp
+// 効果音（多重再生可）
+SEED.Audio.Play("assets://sounds/shoot.wav");           // 音量 1.0
+SEED.Audio.Play("assets://sounds/hit.ogg", 0.5f);       // 音量指定
+
+// BGM（既存 BGM は停止して置き換え。既定でループ）
+SEED.Audio.PlayBgm("assets://sounds/stage1.ogg");
+SEED.Audio.PlayBgm("assets://sounds/jingle.ogg", 0.8f, loop: false);
+
+SEED.Audio.SetBgmVolume(0.3f);   // BGM 音量を変更
+SEED.Audio.StopBgm();            // BGM を停止
+```
+
+- 同じファイルはキャッシュされ、2 回目以降の再生でディスク読み込みは発生しません。
+- オーディオデバイスが無い環境では全操作が無音で無視されます（エラーになりません）。
+
+---
+
 ## 7. GameObject とコンポーネント（Transform / CanvasTransform / Sprite / Camera）
 
 スクリプトは自分がアタッチされた GameObject を `gameObject`、その Transform を `transform` で参照できます。各コンポーネントアクセサは薄いハンドルで、プロパティへの代入は即座にゲーム世界へ反映されます。対象コンポーネントを持たないエンティティに対する読み取りは既定値、書き込みは無視されます（`HasComponent` で保持判定）。

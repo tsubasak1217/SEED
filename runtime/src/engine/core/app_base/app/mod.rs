@@ -38,6 +38,7 @@ mod drag_handler;
 mod physics_ops;
 mod physics_timeline;
 mod script_scene_ops;
+mod audio_ops;
 pub(crate) mod camera_scene_gizmo;
 
 // ── 外部クレート・標準ライブラリ ────────────────────────────
@@ -367,6 +368,8 @@ pub struct App {
     window:         Option<Arc<Window>>,
     renderer:       Option<Renderer>,
     input:          Input,
+    /// スクリプト Audio API 用のオーディオマネージャ（初回コマンド時に遅延初期化）
+    audio:          Option<crate::engine::core::audio::AudioManager>,
     cam_input:      CameraInput,
     camera:         DebugCamera,
     clock:          Clock,
@@ -691,6 +694,7 @@ impl App {
             window:         None,
             renderer:       None,
             input:          Input::new(),
+            audio:          None,
             cam_input:      CameraInput::default(),
             camera:         DebugCamera::default(),
             clock:          Clock::new(),

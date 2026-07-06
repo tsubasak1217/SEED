@@ -63,6 +63,11 @@ thread_local! {
     /// スクリプトの Physics.Raycast（同期問い合わせ）が使用する。
     static PHYSICS_TX: RefCell<Option<crossbeam_channel::Sender<crate::engine::physics::PhysicsCommand>>>
         = const { RefCell::new(None) };
+
+    /// スクリプトが発行したオーディオコマンドのキュー。
+    /// AudioManager は App が所有するため即時実行せず、App がフレーム末尾に適用する
+    ///（SE の再生遅延は数 ms 以内で知覚できない）。
+    static AUDIO_COMMANDS: RefCell<Vec<ScriptAudioCommand>> = const { RefCell::new(Vec::new()) };
 }
 
 /// World ポインタを設定してクロージャを実行し、終了後に元へ戻す。
@@ -131,6 +136,26 @@ pub enum ScriptSceneCommand {
 /// App がフレームのゲームロジック後に呼び、順番に適用する。
 pub fn take_scene_commands() -> Vec<ScriptSceneCommand> {
     SCENE_COMMANDS.with(|q| std::mem::take(&mut *q.borrow_mut()))
+}
+
+// ─── オーディオコマンド（遅延適用）──────────────────────────
+
+/// スクリプトが発行するオーディオ操作コマンド。
+/// App::apply_script_audio_commands がフレーム末尾にまとめて適用する。
+pub enum ScriptAudioCommand {
+    /// 効果音を再生する（多重再生可）
+    PlaySe { path: String, volume: f32 },
+    /// BGM を再生する（既存 BGM は置き換え）
+    PlayBgm { path: String, volume: f32, looped: bool },
+    /// BGM を停止する
+    StopBgm,
+    /// BGM の音量を変更する
+    SetBgmVolume { volume: f32 },
+}
+
+/// 積まれたオーディオコマンドを取り出す（キューは空になる）。
+pub fn take_audio_commands() -> Vec<ScriptAudioCommand> {
+    AUDIO_COMMANDS.with(|q| std::mem::take(&mut *q.borrow_mut()))
 }
 
 // ─── float 配列の定数 ────────────────────────────────────────
@@ -662,6 +687,42 @@ unsafe extern "system" fn ffi_raycast(
     1
 }
 
+// ─── オーディオ FFI ──────────────────────────────────────────
+
+/// オーディオコマンド種別（C# 側 Audio クラスの定数と一致させる）。
+const AUDIO_CMD_PLAY_SE: i32 = 0;        // SE 再生（path, volume）
+const AUDIO_CMD_PLAY_BGM: i32 = 1;       // BGM 再生（path, volume, flag=ループ 0/1）
+const AUDIO_CMD_STOP_BGM: i32 = 2;       // BGM 停止
+const AUDIO_CMD_SET_BGM_VOLUME: i32 = 3; // BGM 音量変更（volume）
+
+/// オーディオコマンドを発行する。受理=1 / 失敗=0。
+///
+/// kind: 上記 AUDIO_CMD_*。path は SE/BGM 再生時のみ使用（それ以外は無視）。
+/// volume は 1.0 = 等倍。flag は BGM 再生時のループ指定（0/1）。
+unsafe extern "system" fn ffi_audio(
+    kind: i32,
+    path: *const u8, path_len: i32,
+    volume: f32, flag: i32,
+) -> i32 {
+    let cmd = match kind {
+        AUDIO_CMD_PLAY_SE => {
+            let p = str_from(path, path_len);
+            if p.is_empty() { return 0; }
+            ScriptAudioCommand::PlaySe { path: p.to_string(), volume }
+        }
+        AUDIO_CMD_PLAY_BGM => {
+            let p = str_from(path, path_len);
+            if p.is_empty() { return 0; }
+            ScriptAudioCommand::PlayBgm { path: p.to_string(), volume, looped: flag != 0 }
+        }
+        AUDIO_CMD_STOP_BGM       => ScriptAudioCommand::StopBgm,
+        AUDIO_CMD_SET_BGM_VOLUME => ScriptAudioCommand::SetBgmVolume { volume },
+        _ => return 0,
+    };
+    AUDIO_COMMANDS.with(|q| q.borrow_mut().push(cmd));
+    1
+}
+
 // ─── C# へ渡す関数ポインタ表 ─────────────────────────────────
 
 /// C# の #[StructLayout(Sequential)] ScriptHostApi と同一レイアウト。
@@ -683,6 +744,7 @@ pub struct ScriptHostApi {
     input_mouse_state: unsafe extern "system" fn(i32, *mut f32) -> i32,
     raycast:           unsafe extern "system" fn(*const f32, *const f32, f32, *mut f32, *mut u32) -> i32,
     load_scene:        unsafe extern "system" fn(*const u8, i32) -> i32,
+    audio:             unsafe extern "system" fn(i32, *const u8, i32, f32, i32) -> i32,
 }
 
 // 関数ポインタは Sync。プロセス全体で 1 つの静的表を共有する。
@@ -700,6 +762,7 @@ static HOST_API: ScriptHostApi = ScriptHostApi {
     input_mouse_state: ffi_input_mouse_state,
     raycast:           ffi_raycast,
     load_scene:        ffi_load_scene,
+    audio:             ffi_audio,
 };
 
 /// C# へ渡す関数ポインタ表へのポインタを返す（RegisterHostApi 用）。
