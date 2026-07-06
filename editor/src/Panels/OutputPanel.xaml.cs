@@ -1,4 +1,7 @@
+using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Threading;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Documents;
@@ -32,6 +35,31 @@ public partial class OutputPanel : UserControl
     /// ここから該当行だけを再構築して表示する。<see cref="MaxLines"/> 件で先頭から破棄する。
     /// </summary>
     private readonly List<(string line, LogCategory cat)> _entries = new();
+
+    // ── バッチ描画（バックログ抑制・高速化）────────────────────────────────
+    // ログは任意スレッドから 1 行ずつ届く。以前は 1 行ごとに Dispatcher.BeginInvoke
+    // していたため、毎フレーム出力のような大量ログで UI ディスパッチャキューが溢れ、
+    // ゲームを停止しても積み残しの描画が延々と続いていた。
+    // ここではスレッドセーフなキューへ貯め、UI 側で「1 回の予約」でまとめて描画する。
+
+    /// <summary>UI へ未反映の保留ログ行（producer=任意スレッド / consumer=UI スレッド）。</summary>
+    private readonly ConcurrentQueue<string> _pending = new();
+
+    /// <summary>保留件数の概算（Interlocked 管理）。上限判定に使う。</summary>
+    private int _pendingCount;
+
+    /// <summary>フラッシュ予約中フラグ（0=未予約, 1=予約済み。Interlocked で 1 回に集約）。</summary>
+    private int _flushScheduled;
+
+    /// <summary>
+    /// 保留キューの上限。これを超えたら古い行から捨てる。
+    /// 表示は最新 <see cref="MaxLines"/> 行のみで、全文は EditorLog のファイルログに残るため、
+    /// あふれた古い保留行を捨てても実害は小さい。停止後のドレイン時間を有界化する狙い。
+    /// </summary>
+    private const int MaxPending = 6000;
+
+    /// <summary>1 回のフラッシュで処理する最大行数（UI を長く占有しないよう分割する）。</summary>
+    private const int FlushChunk = 1500;
     /// <summary>
     /// ScrollToEnd のスケジュール済みフラグ。
     /// Background キューに複数の AppendLine が積まれていても ScrollToEnd は 1 回にまとめる。
@@ -66,10 +94,41 @@ public partial class OutputPanel : UserControl
 
     private void OnLogWritten(string line)
     {
-        // Background 優先度で遅延実行することで、UI 操作（ComboBox 等）の妨げにならないようにする。
-        // Normal 優先度だと WPF が ComboBox の Items 更新中にキューを処理してしまい
-        // AppendLine + ScrollToEnd が多数実行されて UI がフリーズする原因となる。
-        Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Background, () => AppendLine(line));
+        // 任意スレッドから届く。キューへ積むだけにして、UI への反映は 1 回の予約に集約する。
+        _pending.Enqueue(line);
+        int n = Interlocked.Increment(ref _pendingCount);
+
+        // 上限超過分は古い行から捨てる（描画は最新 MaxLines 行のみ・全文はファイルログに残る）。
+        // これにより、大量出力が続いてもキューが無限に伸びず、停止後のドレインが有界になる。
+        while (n > MaxPending && _pending.TryDequeue(out _))
+            n = Interlocked.Decrement(ref _pendingCount);
+
+        // フラッシュがまだ予約されていなければ 1 回だけ予約する（Background 優先度で UI 操作を妨げない）。
+        if (Interlocked.CompareExchange(ref _flushScheduled, 1, 0) == 0)
+            Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Background, new Action(FlushPending));
+    }
+
+    /// <summary>
+    /// 保留キューの行をまとめて UI へ反映する（UI スレッドで実行）。
+    /// 1 回で最大 <see cref="FlushChunk"/> 行だけ処理し、残りがあれば次のフラッシュを予約する。
+    /// これにより「1 行 1 ディスパッチ」による大量バックログを解消し、停止後も速やかに描画が収束する。
+    /// </summary>
+    private void FlushPending()
+    {
+        // 予約フラグを解除。処理中に届いた行は下の再予約か、producer 側の予約で拾う。
+        Interlocked.Exchange(ref _flushScheduled, 0);
+
+        int processed = 0;
+        while (processed < FlushChunk && _pending.TryDequeue(out var line))
+        {
+            Interlocked.Decrement(ref _pendingCount);
+            AppendLine(line);
+            processed++;
+        }
+
+        // まだ残っていれば次のフラッシュを予約する（1 回の処理量を抑えて UI 応答を保つ）。
+        if (!_pending.IsEmpty && Interlocked.CompareExchange(ref _flushScheduled, 1, 0) == 0)
+            Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Background, new Action(FlushPending));
     }
 
     private void AppendLine(string line)
@@ -208,6 +267,10 @@ public partial class OutputPanel : UserControl
 
     private void OnClear(object sender, RoutedEventArgs e)
     {
+        // 未反映の保留行も含めて捨てる。
+        while (_pending.TryDequeue(out _)) { }
+        Interlocked.Exchange(ref _pendingCount, 0);
+
         LogBox.Document.Blocks.Clear();
         _lineCount = 0;
         _entries.Clear();

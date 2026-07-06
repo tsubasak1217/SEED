@@ -8,8 +8,30 @@ internal static class EditorLog
 {
     private static readonly string LogPath = ResolveLogPath();
 
+    /// <summary>ファイル書き込みの排他ロック（任意スレッドから Write が呼ばれるため）。</summary>
+    private static readonly object _fileLock = new();
+
+    /// <summary>
+    /// 追記用に開きっぱなしにするライタ。1 行ごとに開いて閉じる同期 I/O は
+    /// 大量ログ時に呼び出しスレッド（ランタイム出力の読み取りスレッド等）を詰まらせ、
+    /// パイプのバックプレッシャでゲーム本体まで遅くする。開きっぱなしにして
+    /// open/close コストを排除する。FileShare.Read で他プロセスからの読み取りは許可する。
+    /// </summary>
+    private static readonly StreamWriter? _writer = OpenWriter();
+
     /// <summary>新しいログ行が追加されたときに発火する（任意スレッドから呼ばれる）。</summary>
     public static event Action<string>? LogWritten;
+
+    private static StreamWriter? OpenWriter()
+    {
+        try
+        {
+            // FileMode.Create: 起動時にファイルをリセット。FileShare.Read: 読み取り併用可。
+            var fs = new FileStream(LogPath, FileMode.Create, FileAccess.Write, FileShare.Read);
+            return new StreamWriter(fs) { AutoFlush = true };
+        }
+        catch { return null; }
+    }
 
     private static string ResolveLogPath()
     {
@@ -23,15 +45,24 @@ internal static class EditorLog
 
     static EditorLog()
     {
-        // 起動時にファイルをリセット
-        File.WriteAllText(LogPath, $"=== SEEDEditor started {DateTime.Now:HH:mm:ss.fff} ===\n");
+        // 起動見出し（ファイルは OpenWriter の FileMode.Create で既にリセット済み）。
+        lock (_fileLock)
+        {
+            try { _writer?.WriteLine($"=== SEEDEditor started {DateTime.Now:HH:mm:ss.fff} ==="); }
+            catch { /* ignore */ }
+        }
     }
 
     public static void Write(string message)
     {
         var line = $"{DateTime.Now:HH:mm:ss.fff}  {message}";
         System.Diagnostics.Debug.WriteLine("[SEEDEditor] " + message);
-        try { File.AppendAllText(LogPath, line + "\n"); } catch { /* ignore */ }
+        // 開きっぱなしのライタへ追記（open/close を避けて高速化）。StreamWriter は
+        // スレッドセーフではないためロックで直列化する。
+        lock (_fileLock)
+        {
+            try { _writer?.WriteLine(line); } catch { /* ignore */ }
+        }
         try { LogWritten?.Invoke(line); } catch { /* ignore */ }
     }
 }
