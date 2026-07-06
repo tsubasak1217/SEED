@@ -19,11 +19,15 @@ namespace SEEDEditor.Panels.ScriptEditor.InlineCompletion;
 public sealed class InlineCompletionController : IDisposable
 {
     /// <summary>
-    /// 入力停止から補完リクエストまでの待ち時間。
-    /// 短いほど反応は速いが、タイプ中に重い推論が走りマシンが固まりやすい。
-    /// 「入力が止まってから」だけ推論するよう、やや長めに取る。
+    /// 補完リクエストのデバウンス（入力停止から発火までの待ち時間）。
+    /// トリガを絞ってリクエスト数（＝トークン消費）を抑えるため、状況で待ち時間を変える。
+    ///
+    /// - <see cref="FastDebounce"/>: 「コメント行を書いて改行した直後」など意図が強い場面。素早く出す。
+    /// - <see cref="SlowDebounce"/>: それ以外の一般的な入力停止。しっかり手が止まってから出すことで
+    ///   行末で止まるたびに毎回投げてしまうのを防ぎ、Groq の TPM（トークン/分）超過を減らす。
     /// </summary>
-    private static readonly TimeSpan Debounce = TimeSpan.FromMilliseconds(500);
+    private static readonly TimeSpan FastDebounce = TimeSpan.FromMilliseconds(250);
+    private static readonly TimeSpan SlowDebounce = TimeSpan.FromMilliseconds(900);
 
     /// <summary>ゴーストテキストで表示・確定する最大行数（過大な予測を抑える）。</summary>
     private const int MaxGhostLines = 8;
@@ -52,7 +56,7 @@ public sealed class InlineCompletionController : IDisposable
         _renderer = new GhostTextRenderer(editor);
         editor.TextArea.TextView.BackgroundRenderers.Add(_renderer);
 
-        _debounceTimer = new DispatcherTimer { Interval = Debounce };
+        _debounceTimer = new DispatcherTimer { Interval = SlowDebounce };
         _debounceTimer.Tick += OnDebounceTick;
 
         editor.TextChanged                    += OnTextChanged;
@@ -121,9 +125,32 @@ public sealed class InlineCompletionController : IDisposable
         if (_accepting) return;          // 自前の確定挿入は無視する
         Dismiss();                        // 既存の予測は一旦消す
         if (!_isEnabled()) return;
-        // 入力が続く間はリクエストを遅延させる（デバウンス）
+        // 入力が続く間はリクエストを遅延させる（デバウンス）。
+        // 意図が強い場面（コメント行の直後で改行）は短く、それ以外は長く待って発火を絞る。
         _debounceTimer.Stop();
+        _debounceTimer.Interval = IsAfterCommentNewline() ? FastDebounce : SlowDebounce;
         _debounceTimer.Start();
+    }
+
+    /// <summary>
+    /// 直前に「コメント行を書いて改行した」直後か（処理内容をコメントで書き、続きのコード生成を
+    /// 待っている状況）。カーソル行が空白のみ（改行直後の新規行）で、1 つ上の行が
+    /// <c>//</c> コメントのときに真とする。強いトリガとして短いデバウンスで発火させる。
+    /// </summary>
+    private bool IsAfterCommentNewline()
+    {
+        var doc   = _editor.Document;
+        int caret = _editor.CaretOffset;
+        if (caret < 0 || caret > doc.TextLength) return false;
+
+        var line = doc.GetLineByOffset(caret);
+        // カーソル行の行頭からカーソルまでが空白のみ（＝改行直後の新しい行）か
+        if (doc.GetText(line.Offset, caret - line.Offset).Trim().Length != 0) return false;
+
+        // 1 つ上の行が // コメントか
+        if (line.LineNumber <= 1) return false;
+        var prev = doc.GetLineByNumber(line.LineNumber - 1);
+        return doc.GetText(prev.Offset, prev.Length).TrimStart().StartsWith("//");
     }
 
     private void OnCaretMoved(object? sender, EventArgs e)
