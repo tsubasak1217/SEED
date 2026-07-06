@@ -1447,11 +1447,11 @@ public class ScriptEditorPanel : UserControl
             }
         }
 
-        // Ctrl+Q: AI インライン補完を手動発火（そのまま Tab で確定）。
-        //  - Q は Tab の真上にあり「Ctrl+Q → Tab」が最小の指移動で完結する。
-        //  - Ctrl+Tab（タブ切替）・Shift+Tab（アウトデント）と衝突しない空きキー。
-        //  - 手動トリガ運用（InlineCompletionManualOnly）でクラウド API のレート制限を回避する。
-        if (e.Key == Key.Q && Keyboard.Modifiers == ModifierKeys.Control)
+        // Alt+/: AI インライン補完を手動発火（そのまま Tab で確定）。
+        //  - 既存の手動トリガ運用（InlineCompletionManualOnly）に合わせたショートカット。
+        //  - Alt 併用時は key に実キー（Key.OemQuestion = '/'）が入る（上で system key を吸収済み）。
+        //  - 自動発火しないためクラウド API のレート制限（トークン/分）に当たりにくい。
+        if (key == Key.OemQuestion && Keyboard.Modifiers == ModifierKeys.Alt)
         {
             e.Handled = true;
             doc.Inline?.RequestNow();

@@ -222,11 +222,11 @@ public sealed class ScriptEditorSettingsWindow : Window
         };
         panel.Children.Add(inlineCheck);
 
-        // 手動トリガのみ：入力中の自動発火を止め、Ctrl+Q でのみ補完する。
+        // 手動トリガのみ：入力中の自動発火を止め、Alt+/ でのみ補完する。
         // クラウド API のトークン/分レート制限に当たりにくくするための運用スイッチ。
         manualCheck = new CheckBox
         {
-            Content    = "手動トリガのみ（Ctrl+Q で補完・自動発火しない）",
+            Content    = "手動トリガのみ（Alt+/ で補完・自動発火しない）",
             IsChecked  = _settings.InlineCompletionManualOnly,
             Foreground = Text,
             Margin     = new Thickness(16, 2, 0, 2),
