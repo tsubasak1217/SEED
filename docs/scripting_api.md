@@ -126,6 +126,21 @@ q.Normalized
 
 > Transform の回転は **YXZ オイラー角（度）の Vector3** で表します。合成・補間したいときだけ Quaternion を使い、`q.EulerAngles` で Vector3 に戻します。
 
+### Color（RGBA カラー・不変値型）
+
+```csharp
+new Color(r, g, b)            // アルファ省略時は 1.0（不透明）
+new Color(r, g, b, a)         // 各成分 0.0〜1.0 の正規化 float
+Color.White Color.Black Color.Red Color.Green Color.Blue
+Color.Yellow Color.Cyan Color.Magenta Color.Gray Color.Transparent
+
+c.r c.g c.b c.a
+c.WithAlpha(0.5f)             // アルファだけ差し替えた新しい色
+Color.Lerp(a, b, t)           // 線形補間（t は 0..1 にクランプ）
+a * b                         // 成分ごとの乗算（ティント合成）
+c * 2f                        // スカラー倍
+```
+
 ---
 
 ## 6. Random（乱数）
@@ -144,15 +159,25 @@ Random.InitState(seed)       // シード固定（再現用）
 
 ---
 
-## 7. GameObject / Transform（コンポーネントへのアクセス）
+## 7. GameObject とコンポーネント（Transform / CanvasTransform / Sprite / Camera）
 
-スクリプトは自分がアタッチされた GameObject を `gameObject`、その Transform を `transform` で参照できます。
+スクリプトは自分がアタッチされた GameObject を `gameObject`、その Transform を `transform` で参照できます。各コンポーネントアクセサは薄いハンドルで、プロパティへの代入は即座にゲーム世界へ反映されます。対象コンポーネントを持たないエンティティに対する読み取りは既定値、書き込みは無視されます（`HasComponent` で保持判定）。
 
 ```csharp
-gameObject                 // GameObject: このスクリプトが乗るオブジェクト
-gameObject.IsValid         // bool: 実体が有効か
-transform                  // Transform: gameObject.Transform の短縮
+gameObject                    // GameObject: このスクリプトが乗るオブジェクト
+gameObject.IsValid            // bool: 実体が有効か
+gameObject.HasComponent("Sprite")   // bool: 指定名のコンポーネントを持つか
+transform                     // Transform: gameObject.Transform の短縮
 
+gameObject.Transform          // 3D トランスフォーム
+gameObject.CanvasTransform    // 2D キャンバストランスフォーム
+gameObject.Sprite             // 2D スプライト
+gameObject.Camera             // 3D カメラ
+```
+
+### Transform（3D 位置・回転・スケール）
+
+```csharp
 transform.Position         // Vector3（get/set）
 transform.Rotation         // Vector3（get/set。YXZ オイラー角・度）
 transform.Scale            // Vector3（get/set）
@@ -162,11 +187,55 @@ transform.Rotation += new SEED.Vector3(0f, 90f * SEED.Time.DeltaTime, 0f);
 transform.Position += SEED.Vector3.Up * SEED.Time.DeltaTime;
 ```
 
-> Transform は Rust ランタイムの ECS コンポーネントを FFI 経由で読み書きします。`Position` などへの代入は即座にゲーム世界へ反映されます。
+### CanvasTransform（2D キャンバス上の位置・回転・スケール）
 
-### 利用可能なコンポーネント
+```csharp
+var ct = gameObject.CanvasTransform;
+ct.Position                // Vector2（get/set。親 Canvas 基準の相対座標）
+ct.Rotation                // float（get/set。Z 軸周りの度）
+ct.Scale                   // Vector2（get/set）
+ct.Pivot                   // Vector2（get/set。回転・スケール基準点。正規化 [0,1]、(0.5,0.5)=中央）
+ct.Anchor                  // Vector2（get/set。親 Canvas 内の position 基準点。(0,0)=左上 (1,1)=右下）
+```
 
-現在スクリプトから型付きでアクセスできるのは **Transform** です。他のコンポーネント（Camera / Sprite / Rigidbody / Collider など）は順次対応予定で、対応済みのものは本節に追記されます。
+### Sprite（2D スプライト表示）
+
+```csharp
+var sprite = gameObject.Sprite;
+sprite.TexturePath         // string（get/set。assets:// 仮想パス。空文字=単色表示）
+sprite.Color               // Color（get/set。RGBA。テクスチャに乗算）
+sprite.Width               // float（get/set。キャンバスユニット）
+sprite.Height              // float（get/set）
+sprite.Size                // Vector2（get/set。Width/Height をまとめて）
+
+// 例: 点滅させる
+sprite.Color = SEED.Color.White.WithAlpha(SEED.Mathf.PingPong(SEED.Time.ElapsedTime, 1f));
+```
+
+### Camera（3D カメラ設定）
+
+カメラの位置・向きは同じ GameObject の `transform` で動かします。
+
+```csharp
+var cam = gameObject.Camera;
+cam.FieldOfView            // float（get/set。垂直視野角・度）
+cam.Near / cam.Far         // float（get/set。クリップ距離）
+cam.IsMain                 // bool（get/set。Play モードのメインカメラか）
+cam.ClearColor             // Color（get/set。背景クリアカラー）
+cam.TargetWidth / cam.TargetHeight  // int（get/set。スケーリングのベース解像度）
+cam.BarColor               // Color（get/set。レターボックス帯の色）
+```
+
+### 利用可能なコンポーネント一覧
+
+| コンポーネント名 | アクセサ | 内容 |
+|---|---|---|
+| `Transform` | `gameObject.Transform` / `transform` | 3D 位置・回転・スケール |
+| `CanvasTransform` | `gameObject.CanvasTransform` | 2D キャンバス上の位置・回転・スケール・ピボット・アンカー |
+| `Sprite` | `gameObject.Sprite` | テクスチャパス・色・サイズ |
+| `Camera` | `gameObject.Camera` | FOV・クリップ距離・メインカメラ・クリアカラー・ベース解像度 |
+
+他のコンポーネント（Collider / Rigidbody など物理系）は物理 API として順次対応予定で、対応済みのものは本節に追記されます。
 
 ---
 
@@ -174,8 +243,8 @@ transform.Position += SEED.Vector3.Up * SEED.Time.DeltaTime;
 
 コンポーネントを増やしたら、以下を行うことで **自動的にスクリプト・AI 補完から使える** ようになります。
 
-1. **Rust 側レジストリへ登録**: `runtime/src/engine/core/scripting/host_api.rs` の `register_components()` に、コンポーネント名とフィールドアクセサ（`Transform` の例に倣う）を 1 エントリ追加する。
-2. **C# 側ラッパー（任意）**: 型付きで扱いたい場合は `scripting/src/Api/` に薄いラッパー（`Transform.cs` に倣う）を足す。汎用アクセス（名前指定）だけで良ければ不要。
+1. **Rust 側レジストリへ登録**: `runtime/src/engine/core/scripting/host_api.rs` の `read_floats` / `write_floats`（文字列フィールドがあれば `read_string` / `write_string` も）と `has_component` に、コンポーネント名の分岐を 1 つずつ追加する（`Sprite` の例に倣う）。数値は float 配列（f32=1 要素 / Vector2=2 / Vector3=3 / RGBA=4、bool は 0/1、整数は f32 変換）で受け渡す。
+2. **C# 側ラッパー（任意）**: 型付きで扱いたい場合は `scripting/src/Api/` に薄いラッパー（`Sprite.cs` に倣う）を足し、`GameObject.cs` にアクセサプロパティを追加する。汎用アクセス（`ScriptHost.TryGetFloats` などの名前指定）だけで良ければ不要。
 3. **本ファイル（`docs/scripting_api.md`）の第 7 節に追記**: これを忘れると AI 補完がその API を知りません。
 
 この 3 点は `.claude/CLAUDE.md` にも運用ルールとして明記されています。

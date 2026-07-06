@@ -6,13 +6,24 @@ namespace SEED;
 
 /// <summary>
 /// Rust ランタイムが渡してくる関数ポインタ表（<see cref="ScriptHostApi"/>）を保持し、
-/// スクリプト側のコンポーネントアクセス（Transform など）を FFI 経由で仲介する。
+/// スクリプト側のコンポーネントアクセス（Transform / Sprite など）を FFI 経由で仲介する。
+///
+/// データ表現は Rust 側 host_api.rs と対をなす:
+/// - 数値フィールドはすべて float 配列（1〜4 要素）。f32=1 / Vector2=2 / Vector3=3 / RGBA=4。
+///   bool は 0/1、整数は float に変換して受け渡す。
+/// - 文字列フィールドは UTF-8 バイト列（取得は必要長を返す 2 段階プロトコル）。
 ///
 /// Rust 側は起動時に一度だけ ScriptBridge.RegisterHostApi を呼び、
 /// このクラスへアクセサ関数ポインタを登録する。登録前・非対応フィールドは失敗（既定値）扱い。
 /// </summary>
 public static unsafe class ScriptHost
 {
+    /// <summary>float フィールドの最大要素数（RGBA カラーの 4 要素、Rust 側と一致させる）。</summary>
+    private const int MaxFloatFieldLen = 4;
+
+    /// <summary>文字列取得の初期バッファサイズ（バイト）。パス程度なら 1 回で収まる長さ。</summary>
+    private const int InitialStringBufferSize = 260;
+
     /// <summary>Rust から登録されたアクセサ関数ポインタ表。</summary>
     private static ScriptHostApi _api;
     /// <summary>ホスト API が登録済みか（未登録なら全アクセスが失敗する）。</summary>
@@ -26,11 +37,15 @@ public static unsafe class ScriptHost
         _available = true;
     }
 
-    /// <summary>指定コンポーネントの Vector3 フィールドを読む。失敗時は false。</summary>
-    public static bool TryGetVec3(Entity e, string component, string field, out Vector3 value)
+    // ── 低レベル: float 配列アクセス ─────────────────────────────
+
+    /// <summary>
+    /// 指定コンポーネントの数値フィールドを読み、buf に書かれた要素数を返す。失敗時は 0。
+    /// buf は最低でもフィールドの要素数（最大 <see cref="MaxFloatFieldLen"/>）を確保しておくこと。
+    /// </summary>
+    public static int TryGetFloats(Entity e, string component, string field, Span<float> buf)
     {
-        value = Vector3.Zero;
-        if (!_available || _api.GetVec3 == null || !e.IsValid) return false;
+        if (!_available || _api.GetFloats == null || !e.IsValid) return 0;
 
         int cl = Encoding.UTF8.GetByteCount(component);
         int fl = Encoding.UTF8.GetByteCount(field);
@@ -39,21 +54,127 @@ public static unsafe class ScriptHost
         Encoding.UTF8.GetBytes(component, cb);
         Encoding.UTF8.GetBytes(field, fb);
 
-        float* v = stackalloc float[3];
-        int ok;
         fixed (byte* cp = cb)
         fixed (byte* fp = fb)
-            ok = _api.GetVec3(e.Index, e.Generation, cp, cl, fp, fl, v);
+        fixed (float* bp = buf)
+            return _api.GetFloats(e.Index, e.Generation, cp, cl, fp, fl, bp, buf.Length);
+    }
 
-        if (ok == 0) return false;
-        value = new Vector3(v[0], v[1], v[2]);
+    /// <summary>指定コンポーネントの数値フィールドへ値（1〜4 要素）を書き込む。失敗時は false。</summary>
+    public static bool TrySetFloats(Entity e, string component, string field, ReadOnlySpan<float> values)
+    {
+        if (!_available || _api.SetFloats == null || !e.IsValid) return false;
+        if (values.Length is <= 0 or > MaxFloatFieldLen) return false;
+
+        int cl = Encoding.UTF8.GetByteCount(component);
+        int fl = Encoding.UTF8.GetByteCount(field);
+        Span<byte> cb = stackalloc byte[cl];
+        Span<byte> fb = stackalloc byte[fl];
+        Encoding.UTF8.GetBytes(component, cb);
+        Encoding.UTF8.GetBytes(field, fb);
+
+        fixed (byte* cp = cb)
+        fixed (byte* fp = fb)
+        fixed (float* vp = values)
+            return _api.SetFloats(e.Index, e.Generation, cp, cl, fp, fl, vp, values.Length) != 0;
+    }
+
+    // ── 型付きヘルパ: float / bool / Vector2 / Vector3 ──────────
+
+    /// <summary>float フィールドを読む。失敗時は false。</summary>
+    public static bool TryGetFloat(Entity e, string component, string field, out float value)
+    {
+        Span<float> buf = stackalloc float[1];
+        value = 0f;
+        if (TryGetFloats(e, component, field, buf) != 1) return false;
+        value = buf[0];
         return true;
     }
 
-    /// <summary>指定コンポーネントの Vector3 フィールドへ書き込む。失敗時は false。</summary>
+    /// <summary>float フィールドへ書き込む。失敗時は false。</summary>
+    public static bool TrySetFloat(Entity e, string component, string field, float value)
+    {
+        Span<float> buf = stackalloc float[1];
+        buf[0] = value;
+        return TrySetFloats(e, component, field, buf);
+    }
+
+    /// <summary>bool フィールド（0/1 の float 表現）を読む。失敗時は false。</summary>
+    public static bool TryGetBool(Entity e, string component, string field, out bool value)
+    {
+        var ok = TryGetFloat(e, component, field, out var f);
+        value = f != 0f;
+        return ok;
+    }
+
+    /// <summary>bool フィールド（0/1 の float 表現）へ書き込む。失敗時は false。</summary>
+    public static bool TrySetBool(Entity e, string component, string field, bool value)
+        => TrySetFloat(e, component, field, value ? 1f : 0f);
+
+    /// <summary>Vector2 フィールドを読む。失敗時は false。</summary>
+    public static bool TryGetVec2(Entity e, string component, string field, out Vector2 value)
+    {
+        Span<float> buf = stackalloc float[2];
+        value = Vector2.Zero;
+        if (TryGetFloats(e, component, field, buf) != 2) return false;
+        value = new Vector2(buf[0], buf[1]);
+        return true;
+    }
+
+    /// <summary>Vector2 フィールドへ書き込む。失敗時は false。</summary>
+    public static bool TrySetVec2(Entity e, string component, string field, Vector2 value)
+    {
+        Span<float> buf = stackalloc float[2];
+        buf[0] = value.x; buf[1] = value.y;
+        return TrySetFloats(e, component, field, buf);
+    }
+
+    /// <summary>Vector3 フィールドを読む。失敗時は false。</summary>
+    public static bool TryGetVec3(Entity e, string component, string field, out Vector3 value)
+    {
+        Span<float> buf = stackalloc float[3];
+        value = Vector3.Zero;
+        if (TryGetFloats(e, component, field, buf) != 3) return false;
+        value = new Vector3(buf[0], buf[1], buf[2]);
+        return true;
+    }
+
+    /// <summary>Vector3 フィールドへ書き込む。失敗時は false。</summary>
     public static bool TrySetVec3(Entity e, string component, string field, Vector3 value)
     {
-        if (!_available || _api.SetVec3 == null || !e.IsValid) return false;
+        Span<float> buf = stackalloc float[3];
+        buf[0] = value.x; buf[1] = value.y; buf[2] = value.z;
+        return TrySetFloats(e, component, field, buf);
+    }
+
+    /// <summary>Color（RGBA 4 要素）フィールドを読む。失敗時は false。</summary>
+    public static bool TryGetColor(Entity e, string component, string field, out Color value)
+    {
+        Span<float> buf = stackalloc float[4];
+        value = Color.White;
+        if (TryGetFloats(e, component, field, buf) != 4) return false;
+        value = new Color(buf[0], buf[1], buf[2], buf[3]);
+        return true;
+    }
+
+    /// <summary>Color（RGBA 4 要素）フィールドへ書き込む。失敗時は false。</summary>
+    public static bool TrySetColor(Entity e, string component, string field, Color value)
+    {
+        Span<float> buf = stackalloc float[4];
+        buf[0] = value.r; buf[1] = value.g; buf[2] = value.b; buf[3] = value.a;
+        return TrySetFloats(e, component, field, buf);
+    }
+
+    // ── 文字列アクセス ───────────────────────────────────────────
+
+    /// <summary>
+    /// 文字列フィールドを読む。失敗時は false。
+    /// Rust 側は「必要バイト長」を返すため、初期バッファで足りなければ広げて再取得する。
+    /// </summary>
+    public static bool TryGetString(Entity e, string component, string field, out string value)
+    {
+        value = "";
+        if (!_available || _api.GetString == null || !e.IsValid) return false;
 
         int cl = Encoding.UTF8.GetByteCount(component);
         int fl = Encoding.UTF8.GetByteCount(field);
@@ -62,16 +183,58 @@ public static unsafe class ScriptHost
         Encoding.UTF8.GetBytes(component, cb);
         Encoding.UTF8.GetBytes(field, fb);
 
-        float* v = stackalloc float[3];
-        v[0] = value.x; v[1] = value.y; v[2] = value.z;
-
-        int ok;
+        // 1 回目: 初期バッファで試す（パス程度なら通常ここで完了する）
+        Span<byte> stack = stackalloc byte[InitialStringBufferSize];
+        int needed;
         fixed (byte* cp = cb)
         fixed (byte* fp = fb)
-            ok = _api.SetVec3(e.Index, e.Generation, cp, cl, fp, fl, v);
+        fixed (byte* sp = stack)
+            needed = _api.GetString(e.Index, e.Generation, cp, cl, fp, fl, sp, stack.Length);
 
-        return ok != 0;
+        if (needed < 0) return false;                       // フィールド未対応
+        if (needed <= stack.Length)
+        {
+            value = Encoding.UTF8.GetString(stack[..needed]);
+            return true;
+        }
+
+        // 2 回目: 必要長ちょうどのヒープバッファで再取得する
+        var heap = new byte[needed];
+        int written;
+        fixed (byte* cp = cb)
+        fixed (byte* fp = fb)
+        fixed (byte* hp = heap)
+            written = _api.GetString(e.Index, e.Generation, cp, cl, fp, fl, hp, heap.Length);
+
+        if (written < 0 || written > heap.Length) return false;
+        value = Encoding.UTF8.GetString(heap, 0, written);
+        return true;
     }
+
+    /// <summary>文字列フィールドへ書き込む。失敗時は false。</summary>
+    public static bool TrySetString(Entity e, string component, string field, string value)
+    {
+        if (!_available || _api.SetString == null || !e.IsValid) return false;
+        value ??= "";
+
+        int cl = Encoding.UTF8.GetByteCount(component);
+        int fl = Encoding.UTF8.GetByteCount(field);
+        int vl = Encoding.UTF8.GetByteCount(value);
+        Span<byte> cb = stackalloc byte[cl];
+        Span<byte> fb = stackalloc byte[fl];
+        // 値は長くなり得るため、長い場合だけヒープを使う
+        Span<byte> vb = vl <= InitialStringBufferSize ? stackalloc byte[vl] : new byte[vl];
+        Encoding.UTF8.GetBytes(component, cb);
+        Encoding.UTF8.GetBytes(field, fb);
+        Encoding.UTF8.GetBytes(value, vb);
+
+        fixed (byte* cp = cb)
+        fixed (byte* fp = fb)
+        fixed (byte* vp = vb)
+            return _api.SetString(e.Index, e.Generation, cp, cl, fp, fl, vp, vl) != 0;
+    }
+
+    // ── コンポーネント保持判定 ───────────────────────────────────
 
     /// <summary>エンティティが指定コンポーネントを持つか。</summary>
     public static bool HasComponent(Entity e, string component)
@@ -89,15 +252,19 @@ public static unsafe class ScriptHost
 /// <summary>
 /// Rust の #[repr(C)] ScriptHostApi と同じレイアウトの関数ポインタ表。
 /// フィールド順・シグネチャを Rust 側 host_api.rs と必ず一致させること。
-/// すべて cdecl（Win64 では system == C == cdecl）。戻り値 int は成功=1/失敗=0。
+/// すべて cdecl（Win64 では system == C == cdecl）。
 /// </summary>
 [StructLayout(LayoutKind.Sequential)]
 public unsafe struct ScriptHostApi
 {
-    /// <summary>(idx, gen, comp, compLen, field, fieldLen, out float[3]) → 1/0</summary>
-    public delegate* unmanaged[Cdecl]<uint, uint, byte*, int, byte*, int, float*, int> GetVec3;
-    /// <summary>(idx, gen, comp, compLen, field, fieldLen, in float[3]) → 1/0</summary>
-    public delegate* unmanaged[Cdecl]<uint, uint, byte*, int, byte*, int, float*, int> SetVec3;
+    /// <summary>(idx, gen, comp, compLen, field, fieldLen, out float*, cap) → 書き込んだ要素数（失敗=0）</summary>
+    public delegate* unmanaged[Cdecl]<uint, uint, byte*, int, byte*, int, float*, int, int> GetFloats;
+    /// <summary>(idx, gen, comp, compLen, field, fieldLen, in float*, count) → 1/0</summary>
+    public delegate* unmanaged[Cdecl]<uint, uint, byte*, int, byte*, int, float*, int, int> SetFloats;
+    /// <summary>(idx, gen, comp, compLen, field, fieldLen, out byte*, cap) → 必要バイト長（失敗=-1）</summary>
+    public delegate* unmanaged[Cdecl]<uint, uint, byte*, int, byte*, int, byte*, int, int> GetString;
+    /// <summary>(idx, gen, comp, compLen, field, fieldLen, in byte*, len) → 1/0</summary>
+    public delegate* unmanaged[Cdecl]<uint, uint, byte*, int, byte*, int, byte*, int, int> SetString;
     /// <summary>(idx, gen, comp, compLen) → 1/0</summary>
     public delegate* unmanaged[Cdecl]<uint, uint, byte*, int, int> HasComponent;
 }
