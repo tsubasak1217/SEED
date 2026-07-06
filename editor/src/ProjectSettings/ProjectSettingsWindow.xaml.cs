@@ -51,7 +51,7 @@ public partial class ProjectSettingsWindow : Window
         new("required", "必須", new()
         {
             new("game_name",     "ゲーム名",         IsImplemented: true),
-            new("start_scene",   "ゲーム開始シーン", IsImplemented: true),
+            // 開始シーンの選択はシーンマネージャに統合されている（一覧のラジオボタンで選択）
             new("scene_manager", "シーンマネージャ", IsImplemented: true),
         }),
         // ── グラフィックス設定（将来実装）──────────────────────────
@@ -134,9 +134,6 @@ public partial class ProjectSettingsWindow : Window
     /// <summary>「ゲーム名」パネルの入力フィールド。</summary>
     private TextBox? _tbGameName;
 
-    /// <summary>「ゲーム開始シーン」パネルのシーンパス入力フィールド。</summary>
-    private TextBox? _tbStartScene;
-
     /// <summary>現在ビューポートで開いているシーンの絶対パス（未保存なら null）。</summary>
     private readonly string? _currentScenePath;
 
@@ -180,9 +177,9 @@ public partial class ProjectSettingsWindow : Window
         int dark = 1;
         DwmSetWindowAttribute(helper.Handle, DwmwaUseImmersiveDarkMode, ref dark, sizeof(int));
 
-        // カテゴリツリーを構築し、デフォルト項目（ゲーム開始シーン）を選択する
+        // カテゴリツリーを構築し、デフォルト項目（シーンマネージャ）を選択する
         BuildCategoryPanel();
-        SelectSubItem("start_scene");
+        SelectSubItem("scene_manager");
     }
 
     // ── 左パネル: カテゴリツリー構築 ────────────────────────
@@ -321,7 +318,6 @@ public partial class ProjectSettingsWindow : Window
         SettingsContent.Content = subItemId switch
         {
             "game_name"      => BuildGameNamePanel(),
-            "start_scene"    => BuildStartScenePanel(),
             "scene_manager"  => BuildSceneManagerPanel(),
             "plugin_manage"  => BuildPluginManagePanel(),
             _                => BuildPlaceholderPanel(GetSubItemLabel(subItemId)),
@@ -392,78 +388,9 @@ public partial class ProjectSettingsWindow : Window
         return panel;
     }
 
-    /// <summary>「ゲーム開始シーン」設定パネルを構築して返す。</summary>
-    private UIElement BuildStartScenePanel()
-    {
-        var panel = new StackPanel();
-
-        // ヘッダー（タイトル + 説明）
-        panel.Children.Add(BuildPanelHeader(
-            "ゲーム開始シーン",
-            "ゲーム起動時に最初にロードするシーンを指定します。\n" +
-            "指定されたシーンが Play 実行の起点となります。"));
-
-        // セパレーター
-        panel.Children.Add(new Border
-        {
-            Height     = 1,
-            Background = new SolidColorBrush(Color.FromRgb(0x3A, 0x3A, 0x3A)),
-            Margin     = new Thickness(0, 0, 0, 16),
-        });
-
-        // シーンパス入力行（ラベル | テキストボックス | 参照ボタン）
-        var row = new Grid { Margin = new Thickness(0, 0, 0, 6) };
-        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(120) });
-        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-
-        // ラベル
-        var label = new TextBlock
-        {
-            Text              = "開始シーン",
-            Foreground        = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)),
-            FontSize          = 12,
-            VerticalAlignment = VerticalAlignment.Center,
-        };
-        Grid.SetColumn(label, 0);
-        row.Children.Add(label);
-
-        // シーンパス テキストボックス（現在の設定値を初期表示する）
-        _tbStartScene = new TextBox
-        {
-            Text  = _data.StartScene,
-            Style = (Style)Resources["SettingTextBox"],
-        };
-        Grid.SetColumn(_tbStartScene, 1);
-        row.Children.Add(_tbStartScene);
-
-        // 参照ボタン
-        var browseBtn = new Button
-        {
-            Content = "参照...",
-            Style   = (Style)Resources["BrowseButton"],
-            Margin  = new Thickness(6, 0, 0, 0),
-        };
-        browseBtn.Click += OnBrowseStartScene;
-        Grid.SetColumn(browseBtn, 2);
-        row.Children.Add(browseBtn);
-
-        panel.Children.Add(row);
-
-        // 補足説明
-        panel.Children.Add(new TextBlock
-        {
-            Text         = "アセットフォルダ内の .scene ファイルを指定してください。",
-            Foreground   = new SolidColorBrush(Color.FromRgb(0x66, 0x66, 0x66)),
-            FontSize     = 11,
-            TextWrapping = TextWrapping.Wrap,
-            Margin       = new Thickness(120, 4, 0, 0),
-        });
-
-        return panel;
-    }
-
     // ── シーンマネージャパネル ────────────────────────────────
+    // 開始シーンの設定はシーンマネージャに統合されている
+    //（登録シーン一覧のラジオボタンで選択する）。
 
     /// <summary>「シーンマネージャ」設定パネルを構築して返す。</summary>
     ///
@@ -477,7 +404,25 @@ public partial class ProjectSettingsWindow : Window
         panel.Children.Add(BuildPanelHeader(
             "シーンマネージャ",
             "スクリプトから名前で遷移できるシーンを登録します。\n" +
-            "SEED.Scene.Transition(\"シーン名\") / SEED.Scene.Load(\"シーン名\") で参照されます。"));
+            "SEED.Scene.Transition(\"シーン名\") / SEED.Scene.Load(\"シーン名\") で参照されます。\n" +
+            "「開始」列のラジオボタンでゲーム起動時に最初にロードするシーンを選択します。"));
+
+        // 旧設定の移行: start_scene に登録済みのパスが一覧に無ければ自動でエントリ化する
+        //（開始シーン設定をシーンマネージャへ統合したことによる後方互換）
+        if (!string.IsNullOrEmpty(_data.StartScene) &&
+            !_data.Scenes.Any(s => s.Path == _data.StartScene))
+        {
+            var stem = Path.GetFileNameWithoutExtension(_data.StartScene);
+            // 名前が重複する場合は AddSceneEntry と同じ規則で一意化する
+            var name   = stem;
+            int suffix = 1;
+            while (_data.Scenes.Any(s => s.Name == name))
+            {
+                name = $"{stem}({suffix})";
+                suffix++;
+            }
+            _data.Scenes.Add(new SceneEntry { Name = name, Path = _data.StartScene });
+        }
 
         panel.Children.Add(new Border
         {
@@ -499,8 +444,11 @@ public partial class ProjectSettingsWindow : Window
         addBtn.Click    += OnAddCurrentScene;
         addBtn.DragOver += (_, e) =>
         {
-            // .scene ファイルのドロップのみ受け付ける
-            e.Effects = e.Data.GetDataPresent(DataFormats.FileDrop) ? DragDropEffects.Copy : DragDropEffects.None;
+            // エクスプローラ（FileDrop）とプロジェクトパネル（SEEDProjectPaths）の両方を受け付ける
+            e.Effects = e.Data.GetDataPresent(DataFormats.FileDrop)
+                     || e.Data.GetDataPresent(ProjectPanelDragFormat)
+                ? DragDropEffects.Copy
+                : DragDropEffects.None;
             e.Handled = true;
         };
         addBtn.Drop += OnDropSceneFiles;
@@ -537,10 +485,21 @@ public partial class ProjectSettingsWindow : Window
         RebuildSceneList();
     }
 
-    /// <summary>追加ボタンへの .scene ファイルドロップ: ドロップされた全 .scene を登録する。</summary>
+    /// <summary>プロジェクトパネルのドラッグデータ形式名（ProjectPanel.xaml.cs と一致させる）。</summary>
+    private const string ProjectPanelDragFormat = "SEEDProjectPaths";
+
+    /// <summary>
+    /// 追加ボタンへの .scene ファイルドロップ: ドロップされた全 .scene を登録する。
+    /// エクスプローラからの FileDrop と、エディタのプロジェクトパネルからの
+    /// SEEDProjectPaths 形式の両方に対応する。
+    /// </summary>
     private void OnDropSceneFiles(object sender, DragEventArgs e)
     {
-        if (e.Data.GetData(DataFormats.FileDrop) is not string[] files) return;
+        // どちらの形式でもパス配列として取り出す
+        var files = e.Data.GetData(DataFormats.FileDrop) as string[]
+                 ?? e.Data.GetData(ProjectPanelDragFormat) as string[];
+        if (files is null) return;
+
         foreach (var f in files)
         {
             if (Path.GetExtension(f).Equals(".scene", StringComparison.OrdinalIgnoreCase))
@@ -591,13 +550,42 @@ public partial class ProjectSettingsWindow : Window
             return;
         }
 
+        // 列ヘッダー行（開始 | 名前 | パス）
+        var header = new Grid { Margin = new Thickness(0, 0, 0, 4) };
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(40) });
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(160) });
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        var headerBrush = new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88));
+        var hStart = new TextBlock { Text = "開始", Foreground = headerBrush, FontSize = 11 };
+        var hName  = new TextBlock { Text = "名前", Foreground = headerBrush, FontSize = 11 };
+        var hPath  = new TextBlock { Text = "パス", Foreground = headerBrush, FontSize = 11, Margin = new Thickness(8, 0, 0, 0) };
+        Grid.SetColumn(hStart, 0); header.Children.Add(hStart);
+        Grid.SetColumn(hName,  1); header.Children.Add(hName);
+        Grid.SetColumn(hPath,  2); header.Children.Add(hPath);
+        _sceneListPanel.Children.Add(header);
+
         foreach (var entry in _data.Scenes)
         {
             var captured = entry;
             var row = new Grid { Margin = new Thickness(0, 0, 0, 4) };
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(40) });
             row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(160) });
             row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+            // 開始シーン選択ラジオボタン（選択したエントリのパスが start_scene になる）
+            var startRadio = new RadioButton
+            {
+                GroupName           = "StartSceneSelect",
+                IsChecked           = captured.Path == _data.StartScene,
+                VerticalAlignment   = VerticalAlignment.Center,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                ToolTip             = "ゲーム起動時に最初にロードするシーンにする",
+            };
+            startRadio.Checked += (_, _) => _data.StartScene = captured.Path;
+            Grid.SetColumn(startRadio, 0);
+            row.Children.Add(startRadio);
 
             // 名前（編集可。スクリプトが Transition("名前") で参照するキー）
             var nameBox = new TextBox
@@ -618,7 +606,7 @@ public partial class ProjectSettingsWindow : Window
                 }
                 captured.Name = newName;
             };
-            Grid.SetColumn(nameBox, 0);
+            Grid.SetColumn(nameBox, 1);
             row.Children.Add(nameBox);
 
             // パス表示（読み取り専用）
@@ -631,7 +619,7 @@ public partial class ProjectSettingsWindow : Window
                 Margin            = new Thickness(8, 0, 8, 0),
                 TextTrimming      = TextTrimming.CharacterEllipsis,
             };
-            Grid.SetColumn(pathText, 1);
+            Grid.SetColumn(pathText, 2);
             row.Children.Add(pathText);
 
             // 削除ボタン
@@ -642,10 +630,15 @@ public partial class ProjectSettingsWindow : Window
             };
             removeBtn.Click += (_, _) =>
             {
+                // 開始シーンに選択中のエントリを削除した場合は開始シーン設定も解除する
+                if (_data.StartScene == captured.Path)
+                {
+                    _data.StartScene = "";
+                }
                 _data.Scenes.Remove(captured);
                 RebuildSceneList();
             };
-            Grid.SetColumn(removeBtn, 2);
+            Grid.SetColumn(removeBtn, 3);
             row.Children.Add(removeBtn);
 
             _sceneListPanel.Children.Add(row);
@@ -698,23 +691,6 @@ public partial class ProjectSettingsWindow : Window
 
     // ── イベントハンドラ ─────────────────────────────────────
 
-    /// <summary>「参照...」ボタン: .scene ファイルを選択するダイアログを表示し、結果をテキストボックスに反映する。</summary>
-    private void OnBrowseStartScene(object sender, RoutedEventArgs e)
-    {
-        var dlg = new OpenFileDialog
-        {
-            Title            = "開始シーンを選択",
-            Filter           = "Scene Files (*.scene)|*.scene|All Files (*.*)|*.*",
-            InitialDirectory = Directory.Exists(_assetsPath) ? _assetsPath : Environment.CurrentDirectory,
-        };
-
-        if (dlg.ShowDialog(this) == true && _tbStartScene != null)
-        {
-            // 選択した絶対パスを仮想パスに変換して表示する
-            _tbStartScene.Text = VirtualPath.ToVirtual(dlg.FileName, _assetsPath);
-        }
-    }
-
     /// <summary>「保存して閉じる」ボタン: UI から値を収集してファイルに保存し、ウィンドウを閉じる。</summary>
     private void OnSave(object sender, RoutedEventArgs e)
     {
@@ -755,15 +731,7 @@ public partial class ProjectSettingsWindow : Window
                 _data.GameName = name;
         }
 
-        // 「ゲーム開始シーン」パネルの入力値を収集する（絶対パスを仮想パスに変換）
-        if (_tbStartScene != null)
-        {
-            var raw = _tbStartScene.Text.Trim();
-            // 絶対パスが入力された場合は仮想パスへ変換して保存する
-            _data.StartScene = VirtualPath.IsVirtual(raw)
-                ? raw
-                : VirtualPath.ToVirtual(raw, _assetsPath);
-        }
+        // 開始シーンはシーンマネージャのラジオボタン選択時に _data.StartScene へ即時反映される
 
         // プラグイン有効/無効状態を収集する（CheckBox が存在する場合のみ）
         if (_pluginCheckBoxes.Count > 0)

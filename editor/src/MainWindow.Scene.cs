@@ -26,19 +26,37 @@ public partial class MainWindow
 {
     // ── プロジェクト設定 ──────────────────────────────────────────
 
+    /// <summary>現在開いているプロジェクト設定ウィンドウ（多重起動防止用。閉じたら null）。</summary>
+    private SEEDEditor.ProjectSettings.ProjectSettingsWindow? _projectSettingsWindow;
+
     /// <summary>
-    /// 「プロジェクト設定」ボタン: プロジェクト設定ウィンドウをモーダルで開く。
+    /// 「プロジェクト設定」ボタン: プロジェクト設定ウィンドウをモーダレスで開く。
+    ///
+    /// モーダル（ShowDialog）だとエディタ本体の操作がブロックされ、プロジェクト
+    /// パネルからシーンマネージャへの .scene ドラッグ＆ドロップができないため、
+    /// Show + Owner 指定でエディタより前面を保ちつつ本体操作も可能にする。
+    /// 既に開いている場合は新規に開かずアクティブ化する。
     /// 設定ファイルは AssetsPath/project_settings.json に保存される。
     /// </summary>
     private void OnOpenProjectSettings(object sender, RoutedEventArgs e)
     {
+        // 既に開いていれば前面に出すだけ（多重起動防止）
+        if (_projectSettingsWindow is not null)
+        {
+            _projectSettingsWindow.Activate();
+            return;
+        }
+
         // 現在開いているシーンのパスを渡す（シーンマネージャの「現在のシーンを追加」用）
         var win = new SEEDEditor.ProjectSettings.ProjectSettingsWindow(
             AssetsPath, EditorPluginsPath, _currentScenePath)
         {
+            // Owner 指定によりエディタ本体より常に前面に表示される（モーダレスでも維持）
             Owner = this,
         };
-        win.ShowDialog();
+        win.Closed += (_, _) => _projectSettingsWindow = null;
+        _projectSettingsWindow = win;
+        win.Show();
     }
 
     // ── メニューバー ──────────────────────────────────────────────
