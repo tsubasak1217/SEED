@@ -101,6 +101,12 @@ internal static class NativeInterop
     /// <summary>ウィンドウの画面座標での矩形を取得する。</summary>
     [DllImport("user32.dll")] public static extern bool GetWindowRect(nint hWnd, out RECT lpRect);
 
+    /// <summary>指定した画面座標にある最前面ウィンドウのハンドルを返す（Z オーダー考慮）。</summary>
+    [DllImport("user32.dll")] public static extern nint WindowFromPoint(POINT pt);
+
+    /// <summary>指定ウィンドウの親ウィンドウのハンドルを返す（親が無ければ 0）。</summary>
+    [DllImport("user32.dll")] public static extern nint GetParent(nint hWnd);
+
     /// <summary>ウィンドウのクライアント座標を画面座標へ変換する（原点取得に使用）。</summary>
     [DllImport("user32.dll")] public static extern bool ClientToScreen(nint hWnd, ref POINT lpPoint);
 

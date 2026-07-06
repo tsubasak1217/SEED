@@ -73,14 +73,31 @@ public partial class MainWindow
         HandleViewportDrop(actorPaths, localX, localY);
     }
 
-    /// カーソルがビューポート ContainerHwnd 矩形内にあるかを物理ピクセル座標で確認する。
+    /// カーソルがビューポート ContainerHwnd 上に「実際に」あるかを確認する。
+    ///
+    /// 矩形判定だけだと Z オーダーを無視するため、プロジェクト設定ウィンドウ等が
+    /// ビューポートの手前に重なっている場合でも true になり、そのウィンドウへの
+    /// ドロップがビューポートに吸われてしまう。矩形判定に加えて WindowFromPoint で
+    /// カーソル直下の最前面ウィンドウを取得し、親を辿ってビューポートコンテナに
+    /// 到達できる場合のみ true を返す（前面に他ウィンドウがあれば到達しない）。
     public bool IsMouseOverViewportHwnd()
     {
         if (_viewportHost == null) return false;
         GetCursorPos(out var cursor);
         GetWindowRect(_viewportHost.ContainerHwnd, out var rect);
-        return cursor.X >= rect.Left && cursor.X <= rect.Right
-            && cursor.Y >= rect.Top  && cursor.Y <= rect.Bottom;
+        var inRect = cursor.X >= rect.Left && cursor.X <= rect.Right
+                  && cursor.Y >= rect.Top  && cursor.Y <= rect.Bottom;
+        if (!inRect) return false;
+
+        // カーソル直下のウィンドウから親を辿り、ビューポートコンテナ（またはその子で
+        // ある埋め込みランタイムウィンドウ）に属しているかを確認する
+        var hwnd = WindowFromPoint(cursor);
+        while (hwnd != 0)
+        {
+            if (hwnd == _viewportHost.ContainerHwnd) return true;
+            hwnd = GetParent(hwnd);
+        }
+        return false;
     }
 
     /// カーソルのビューポートローカル座標（物理ピクセル）を返す。
