@@ -61,6 +61,15 @@ public sealed class GroqInlineCompletionProvider : IInlineCompletionProvider
     private readonly Func<string> _model;
     private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(RequestTimeoutSec) };
 
+    /// <summary>
+    /// レート制限（429）を受けたら、この時刻まではリクエストを送らない（クールダウン）。
+    /// retry-after を尊重することで、上限中に無駄打ちして 429 を量産するのを防ぐ。
+    /// </summary>
+    private DateTime _cooldownUntil = DateTime.MinValue;
+
+    /// <summary>retry-after が取れなかった 429 に対する既定クールダウン秒数。</summary>
+    private const int DefaultCooldownSec = 20;
+
     public GroqInlineCompletionProvider(Func<string> apiKey, Func<string> model)
     {
         _apiKey = apiKey;
@@ -74,6 +83,9 @@ public sealed class GroqInlineCompletionProvider : IInlineCompletionProvider
     {
         var apiKey = _apiKey();
         if (string.IsNullOrWhiteSpace(apiKey)) return null;
+
+        // レート制限クールダウン中は API を叩かない（無駄打ちで 429 を量産しないため）。
+        if (DateTime.UtcNow < _cooldownUntil) return null;
 
         // 文脈はカーソル近傍だけに絞る
         string p = prefix.Length > MaxPrefixChars ? prefix[^MaxPrefixChars..] : prefix;
@@ -119,12 +131,21 @@ public sealed class GroqInlineCompletionProvider : IInlineCompletionProvider
                 if (body.Length > 300) body = body[..300];
                 body = body.Replace('\n', ' ').Replace('\r', ' ');
 
+                var retryAfter = Header("retry-after");
                 SEEDEditor.EditorLog.Write(
                     $"[インライン補完] Groq HTTP {(int)res.StatusCode} {res.StatusCode} " +
-                    $"retry-after={Header("retry-after")} " +
+                    $"retry-after={retryAfter} " +
                     $"remaining-req={Header("x-ratelimit-remaining-requests")} " +
                     $"remaining-tok={Header("x-ratelimit-remaining-tokens")} " +
                     $"body={body}");
+
+                // 429（レート制限）は retry-after ぶんクールダウンし、その間は送信を止める。
+                if ((int)res.StatusCode == 429)
+                {
+                    int sec = int.TryParse(retryAfter, out var ra) && ra > 0 ? ra : DefaultCooldownSec;
+                    _cooldownUntil = DateTime.UtcNow.AddSeconds(sec + 1);   // +1s は境界の余裕
+                    SEEDEditor.EditorLog.Write($"[インライン補完] レート制限のため {sec}s クールダウンします");
+                }
                 return null;
             }
 
