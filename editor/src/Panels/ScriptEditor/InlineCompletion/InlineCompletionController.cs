@@ -27,7 +27,7 @@ public sealed class InlineCompletionController : IDisposable
     ///   行末で止まるたびに毎回投げてしまうのを防ぎ、Groq の TPM（トークン/分）超過を減らす。
     /// </summary>
     private static readonly TimeSpan FastDebounce = TimeSpan.FromMilliseconds(250);
-    private static readonly TimeSpan SlowDebounce = TimeSpan.FromMilliseconds(900);
+    private static readonly TimeSpan SlowDebounce = TimeSpan.FromMilliseconds(600);
 
     /// <summary>ゴーストテキストで表示・確定する最大行数（過大な予測を抑える）。</summary>
     private const int MaxGhostLines = 8;
@@ -139,18 +139,24 @@ public sealed class InlineCompletionController : IDisposable
     /// </summary>
     private bool IsAfterCommentNewline()
     {
-        var doc   = _editor.Document;
-        int caret = _editor.CaretOffset;
-        if (caret < 0 || caret > doc.TextLength) return false;
+        // ここで例外が漏れると OnTextChanged の _debounceTimer.Start() に到達せず、
+        // 補完が二度と発火しなくなる。安全側に倒して必ず bool を返す。
+        try
+        {
+            var doc   = _editor.Document;
+            int caret = _editor.CaretOffset;
+            if (caret < 0 || caret > doc.TextLength) return false;
 
-        var line = doc.GetLineByOffset(caret);
-        // カーソル行の行頭からカーソルまでが空白のみ（＝改行直後の新しい行）か
-        if (doc.GetText(line.Offset, caret - line.Offset).Trim().Length != 0) return false;
+            var line = doc.GetLineByOffset(caret);
+            // カーソル行の行頭からカーソルまでが空白のみ（＝改行直後の新しい行）か
+            if (doc.GetText(line.Offset, caret - line.Offset).Trim().Length != 0) return false;
 
-        // 1 つ上の行が // コメントか
-        if (line.LineNumber <= 1) return false;
-        var prev = doc.GetLineByNumber(line.LineNumber - 1);
-        return doc.GetText(prev.Offset, prev.Length).TrimStart().StartsWith("//");
+            // 1 つ上の行が // コメントか
+            if (line.LineNumber <= 1) return false;
+            var prev = doc.GetLineByNumber(line.LineNumber - 1);
+            return doc.GetText(prev.Offset, prev.Length).TrimStart().StartsWith("//");
+        }
+        catch { return false; }
     }
 
     private void OnCaretMoved(object? sender, EventArgs e)

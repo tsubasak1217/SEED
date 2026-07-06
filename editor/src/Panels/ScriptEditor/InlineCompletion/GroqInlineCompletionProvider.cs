@@ -67,6 +67,9 @@ public sealed class GroqInlineCompletionProvider : IInlineCompletionProvider
     /// </summary>
     private DateTime _cooldownUntil = DateTime.MinValue;
 
+    /// <summary>クールダウン中スキップのログを 1 回だけ出すためのフラグ（毎回出すとうるさいため）。</summary>
+    private bool _cooldownLogged;
+
     /// <summary>retry-after が取れなかった 429 に対する既定クールダウン秒数。</summary>
     private const int DefaultCooldownSec = 20;
 
@@ -85,7 +88,17 @@ public sealed class GroqInlineCompletionProvider : IInlineCompletionProvider
         if (string.IsNullOrWhiteSpace(apiKey)) return null;
 
         // レート制限クールダウン中は API を叩かない（無駄打ちで 429 を量産しないため）。
-        if (DateTime.UtcNow < _cooldownUntil) return null;
+        // 「理由なく止まって見える」のを防ぐため、クールダウン中である旨を 1 回だけログする。
+        if (DateTime.UtcNow < _cooldownUntil)
+        {
+            if (!_cooldownLogged)
+            {
+                _cooldownLogged = true;
+                int remain = (int)Math.Ceiling((_cooldownUntil - DateTime.UtcNow).TotalSeconds);
+                SEEDEditor.EditorLog.Write($"[インライン補完] レート制限クールダウン中（あと約{remain}s）のためスキップ");
+            }
+            return null;
+        }
 
         // 文脈はカーソル近傍だけに絞る
         string p = prefix.Length > MaxPrefixChars ? prefix[^MaxPrefixChars..] : prefix;
@@ -144,6 +157,7 @@ public sealed class GroqInlineCompletionProvider : IInlineCompletionProvider
                 {
                     int sec = int.TryParse(retryAfter, out var ra) && ra > 0 ? ra : DefaultCooldownSec;
                     _cooldownUntil = DateTime.UtcNow.AddSeconds(sec + 1);   // +1s は境界の余裕
+                    _cooldownLogged = false;                                // 次のクールダウンで再度 1 回ログする
                     SEEDEditor.EditorLog.Write($"[インライン補完] レート制限のため {sec}s クールダウンします");
                 }
                 return null;
