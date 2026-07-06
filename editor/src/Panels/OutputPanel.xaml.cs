@@ -2,6 +2,8 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.Collections.Specialized;
+using System.ComponentModel;
 using System.Linq;
 using System.Text;
 using System.Threading;
@@ -28,15 +30,11 @@ public partial class OutputPanel : UserControl
 
     /// <summary>
     /// 上へスクロールして閲覧中（最下部に追従していない）は先頭トリムを保留する上限。
-    /// この間はメモリ保護のためのハード上限に達するまで行を捨てず、表示位置を維持する。
+    /// この間はここに達するまで行を捨てず、閲覧位置を固定する。仮想化により表示コストは
+    /// 一定なので大きめに取れる（毎秒30行のフラッドでも十数分ぶんの余裕がある）。
+    /// 追従へ復帰すると保留分は一括で MaxLines まで間引かれる。
     /// </summary>
-    private const int MaxLinesWhileScrolledUp = MaxLines * 4;
-
-    /// <summary>
-    /// 1 回の <see cref="AddRow"/> で先頭から削除する最大数。
-    /// 大量削除（CollectionChanged の嵐）による一時的なヒッチを避けるため小分けにする。
-    /// </summary>
-    private const int TrimBudgetPerAdd = 32;
+    private const int MaxLinesWhileScrolledUp = MaxLines * 30;
 
     /// <summary>
     /// ログの発生源カテゴリ。
@@ -59,8 +57,28 @@ public partial class OutputPanel : UserControl
         public LogRow(string text, Brush color) { Text = text; Color = color; }
     }
 
+    /// <summary>
+    /// 先頭からの一括削除を 1 回の Reset 通知で行える ObservableCollection。
+    /// 追従復帰時に、保留していた大量の超過行を効率よく（O(n) 1 回・通知 1 回で）間引くために使う。
+    /// 通常の <c>RemoveAt(0)</c> の繰り返しは O(n^2) かつ削除数ぶんの通知が発生してヒッチする。
+    /// </summary>
+    private sealed class LogRowCollection : ObservableCollection<LogRow>
+    {
+        /// <summary>先頭から <paramref name="count"/> 件をまとめて削除する。</summary>
+        public void TrimFront(int count)
+        {
+            if (count <= 0) return;
+            if (count >= Count) { Clear(); return; }
+            // 既定の内部バッキングは List<LogRow>。RemoveRange で 1 回のシフトにまとめる。
+            ((List<LogRow>)Items).RemoveRange(0, count);
+            OnPropertyChanged(new PropertyChangedEventArgs(nameof(Count)));
+            OnPropertyChanged(new PropertyChangedEventArgs("Item[]"));
+            OnCollectionChanged(new NotifyCollectionChangedEventArgs(NotifyCollectionChangedAction.Reset));
+        }
+    }
+
     /// <summary>ListBox にバインドする表示中の行（現在のフィルタに一致するもののみ）。</summary>
-    private readonly ObservableCollection<LogRow> _rows = new();
+    private readonly LogRowCollection _rows = new();
 
     /// <summary>
     /// 追加された全ログ行の履歴（カテゴリ付き）。フィルタ切り替え時にここから再構築する。
@@ -184,17 +202,20 @@ public partial class OutputPanel : UserControl
     {
         _rows.Add(new LogRow(line, PickBrush(line)));
 
-        // 追従中（最下部）は上限 MaxLines を保つ。ユーザーが上へスクロールして閲覧中は、
-        // 先頭を捨てると全行のインデックスが繰り上がって表示位置が上へ流れてしまう
-        // （＝「流される」）ため、ハード上限 MaxLinesWhileScrolledUp までトリムを保留して
-        // 閲覧位置を維持する。追従へ戻れば次以降の追加で徐々に MaxLines へ収束する。
-        int limit = _atBottom ? MaxLines : MaxLinesWhileScrolledUp;
-
-        // 1 回で大量削除するとヒッチするため削除数を制限し、複数回に分けて収束させる
-        // （追従中は末尾追加でどのみち最下部に留まるのでトリムは不可視）。
-        int budget = TrimBudgetPerAdd;
-        while (_rows.Count > limit && budget-- > 0)
+        if (_atBottom)
+        {
+            // 追従中は上限 MaxLines を保つ。定常状態では 1 行/追加なのでヒッチしない
+            // （追従復帰直後の大量超過は OnScrollChanged で一括間引き済み）。
+            while (_rows.Count > MaxLines)
+                _rows.RemoveAt(0);
+        }
+        else if (_rows.Count > MaxLinesWhileScrolledUp)
+        {
+            // 閲覧中（上スクロール中）は先頭を捨てると表示位置が上へ流れてしまう（＝「流される」）
+            // ため、原則トリムを保留する。ただしハード上限に達したらメモリ保護のため
+            // 最古の行だけ捨てる（このときだけ表示が動く。通常のリーディングでは到達しない）。
             _rows.RemoveAt(0);
+        }
     }
 
     /// <summary>最下部（最新行）までスクロールする。</summary>
@@ -214,7 +235,16 @@ public partial class OutputPanel : UserControl
         if (e.ExtentHeightChange != 0) return;
 
         var scrollable = e.ExtentHeight - e.ViewportHeight;
-        _atBottom = scrollable <= 0 || e.VerticalOffset >= scrollable - 1.0;
+        bool nowBottom = scrollable <= 0 || e.VerticalOffset >= scrollable - 1.0;
+        _atBottom = nowBottom;
+
+        // 追従へ復帰した瞬間に、閲覧中に保留していた超過行を一括で MaxLines まで間引く。
+        // Reset 1 回で済むため大量でもヒッチしない。間引き後は最下部へ再スクロールする。
+        if (nowBottom && _rows.Count > MaxLines)
+        {
+            _rows.TrimFront(_rows.Count - MaxLines);
+            ScrollToBottom();
+        }
     }
 
     /// <summary>
