@@ -316,6 +316,23 @@ public static unsafe class ScriptHost
         return _api.InputMouseState(kind, buf) == 1 ? buf[0] : 0f;
     }
 
+    // ── シーン遷移 ───────────────────────────────────────────────
+
+    /// <summary>
+    /// シーン全体を .scene ファイルへ切り替える（フレーム末尾に遅延適用）。
+    /// 受理されたら true。
+    /// </summary>
+    public static bool TryLoadScene(string scenePath)
+    {
+        if (!_available || _api.LoadScene == null || string.IsNullOrEmpty(scenePath)) return false;
+
+        int pl = Encoding.UTF8.GetByteCount(scenePath);
+        Span<byte> pb = stackalloc byte[pl];
+        Encoding.UTF8.GetBytes(scenePath, pb);
+        fixed (byte* pp = pb)
+            return _api.LoadScene(pp, pl) != 0;
+    }
+
     // ── 物理（Raycast）──────────────────────────────────────────
 
     /// <summary>
@@ -398,4 +415,6 @@ public unsafe struct ScriptHostApi
     public delegate* unmanaged[Cdecl]<int, float*, int> InputMouseState;
     /// <summary>(origin float[3], dir float[3], maxDist, out float[7] hit, out uint[2] entity) → 1/0</summary>
     public delegate* unmanaged[Cdecl]<float*, float*, float, float*, uint*, int> Raycast;
+    /// <summary>(path, pathLen) → 1/0</summary>
+    public delegate* unmanaged[Cdecl]<byte*, int, int> LoadScene;
 }

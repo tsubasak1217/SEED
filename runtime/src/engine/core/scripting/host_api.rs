@@ -121,6 +121,10 @@ pub enum ScriptSceneCommand {
     Instantiate { path: String, entity: Entity },
     /// 指定ルートエンティティの Actor をシーンから破棄する。
     Destroy { entity: Entity },
+    /// .scene ファイルへシーン全体を切り替える（シーン遷移）。
+    /// このコマンドが存在するフレームでは他の全コマンドが破棄される
+    /// （旧ワールドのエンティティ参照が新ワールドで別実体を指す危険を防ぐため）。
+    LoadScene { path: String },
 }
 
 /// 積まれたシーン操作コマンドを取り出す（キューは空になる）。
@@ -462,6 +466,19 @@ unsafe extern "system" fn ffi_destroy(idx: u32, generation: u32) -> i32 {
     1
 }
 
+/// シーン全体を .scene ファイルへ切り替える（シーン遷移）。受理=1 / 失敗=0。
+///
+/// 実際の切り替えはフレームのゲームロジック後に遅延適用される。
+/// 同フレームに積まれた他のシーン操作コマンドはすべて破棄される。
+unsafe extern "system" fn ffi_load_scene(path: *const u8, path_len: i32) -> i32 {
+    let path_str = str_from(path, path_len);
+    if path_str.is_empty() { return 0; }
+    SCENE_COMMANDS.with(|q| q.borrow_mut().push(ScriptSceneCommand::LoadScene {
+        path: path_str.to_string(),
+    }));
+    1
+}
+
 /// アクターを名前で検索する（DFS 順の最初の一致）。見つかった=1 / なし=0。
 /// out（[index, generation] の 2 要素）へルートエンティティを返す。
 unsafe extern "system" fn ffi_find_actor(
@@ -665,6 +682,7 @@ pub struct ScriptHostApi {
     input_mouse:       unsafe extern "system" fn(i32, u32) -> i32,
     input_mouse_state: unsafe extern "system" fn(i32, *mut f32) -> i32,
     raycast:           unsafe extern "system" fn(*const f32, *const f32, f32, *mut f32, *mut u32) -> i32,
+    load_scene:        unsafe extern "system" fn(*const u8, i32) -> i32,
 }
 
 // 関数ポインタは Sync。プロセス全体で 1 つの静的表を共有する。
@@ -681,6 +699,7 @@ static HOST_API: ScriptHostApi = ScriptHostApi {
     input_mouse:       ffi_input_mouse_button,
     input_mouse_state: ffi_input_mouse_state,
     raycast:           ffi_raycast,
+    load_scene:        ffi_load_scene,
 };
 
 /// C# へ渡す関数ポインタ表へのポインタを返す（RegisterHostApi 用）。

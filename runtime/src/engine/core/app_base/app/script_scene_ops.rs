@@ -37,6 +37,18 @@ impl App {
         let commands = take_scene_commands();
         if commands.is_empty() { return; }
 
+        // LoadScene が含まれる場合はシーン遷移のみを実行し、他のコマンドは破棄する。
+        // 旧ワールドで予約されたエンティティ (index, generation) が新ワールドの
+        // 別実体を指してしまう危険を防ぐため（Instantiate の予約エンティティ等）。
+        if let Some(path) = commands.iter().find_map(|c| match c {
+            ScriptSceneCommand::LoadScene { path } => Some(path.clone()),
+            _ => None,
+        }) {
+            self.apply_script_load_scene(&path);
+            self.send_hierarchy();
+            return;
+        }
+
         for cmd in commands {
             match cmd {
                 ScriptSceneCommand::Instantiate { path, entity } => {
@@ -45,6 +57,7 @@ impl App {
                 ScriptSceneCommand::Destroy { entity } => {
                     self.apply_script_destroy(entity);
                 }
+                ScriptSceneCommand::LoadScene { .. } => unreachable!("上で処理済み"),
             }
         }
 
@@ -113,6 +126,58 @@ impl App {
                 if let Some(scene) = self.scene.as_mut() {
                     scene.world.despawn(root);
                 }
+            }
+        }
+    }
+
+    /// LoadScene コマンドを適用する: シーン全体を .scene ファイルの内容へ切り替える。
+    ///
+    /// 旧シーンの破棄（スクリプトインスタンスは ScriptComponent の Drop で CLR 側も解放）、
+    /// 物理スレッドの再起動（起動していた場合のみ）、キャンバス世界線の再判定を行う。
+    /// パスは assets:// 仮想パスのまま Scene::load へ渡す（PAK モード対応）。
+    fn apply_script_load_scene(&mut self, path: &str) {
+        let Some(_) = &self.draw_ctx else { return };
+
+        // 物理スレッドの起動状態を記録してから停止する（新シーンで再収集するため）
+        let had_physics    = self.physics_thread.is_some();
+        let had_physics_2d = self.physics_thread_2d.is_some();
+        self.stop_physics();
+        self.stop_physics_2d();
+
+        let host = self.scripting_host.clone();
+        let load_result = {
+            let ctx = self.draw_ctx.as_ref().unwrap();
+            Scene::load(std::path::Path::new(path), ctx, host.as_ref())
+        };
+
+        match load_result {
+            Ok((new_scene, cam_data)) => {
+                // シーンに保存されたデバッグカメラ位置を適用する（メインカメラ不在時のフォールバック）
+                if let Some(cam) = cam_data {
+                    self.apply_camera_data(&cam);
+                }
+                // 2D アクターが含まれていれば WL 0 をキャンバス世界線として登録する
+                fn has_any_2d_actor(actors: &[Actor]) -> bool {
+                    actors.iter().any(|a| a.is_2d() || has_any_2d_actor(a.children()))
+                }
+                if has_any_2d_actor(&new_scene.actors) {
+                    self.canvas_world_lines.insert(0);
+                } else {
+                    self.canvas_world_lines.remove(&0);
+                }
+                // 旧シーンを置き換える（World の Drop で旧スクリプトインスタンスも解放される）
+                self.scene = Some(new_scene);
+
+                // 物理を新シーンの内容で再起動する
+                if had_physics    { self.start_physics(); }
+                if had_physics_2d { self.start_physics_2d(); }
+            }
+            Err(e) => {
+                // 失敗時: 旧シーンを維持し、物理も元の状態へ戻す。
+                // [Script] プレフィックスでゲーム側出力として分類させる。
+                eprintln!("[Script] Scene.Load 失敗 ({path}): {e}");
+                if had_physics    { self.start_physics(); }
+                if had_physics_2d { self.start_physics_2d(); }
             }
         }
     }
