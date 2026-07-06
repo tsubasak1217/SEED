@@ -106,7 +106,7 @@ impl App {
                         tf.position[0] += PASTE_OFFSET;
                         tf.position[2] += PASTE_OFFSET;
                     }
-                    match build_actor(paste_data, ctx, &mut scene.world, host) {
+                    match build_actor(paste_data, ctx, &mut scene.world, host, None) {
                         Ok(mut actor) => {
                             actor.set_world_line_recursive(wl);
                             scene.actors.push(actor);

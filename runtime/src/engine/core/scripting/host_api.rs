@@ -26,18 +26,29 @@
 //  可変アクセスが他の参照と衝突しない。
 // ============================================================
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 
 use crate::engine::components::{
     CameraComponent, CanvasTransform, SpriteComponent, Transform,
 };
 use crate::engine::ecs::{Entity, World};
+use crate::engine::structs::objects::Actor;
 
 // ─── スレッドローカル World ポインタ ──────────────────────────
 
 thread_local! {
     /// スクリプト実行中だけ設定される現在の World への生ポインタ。
     static WORLD_PTR: Cell<*mut World> = const { Cell::new(std::ptr::null_mut()) };
+
+    /// フェーズ実行中だけ設定される Actor ツリー（ルート一覧）への生ポインタ。
+    /// Find（名前検索）が Actor 名を参照するために使う読み取り専用ポインタ。
+    /// フェーズ中に Actor ツリーは構造変更されない（変更はフェーズ後のコマンド適用で行う）。
+    static ACTORS_PTR: Cell<*const Vec<Actor>> = const { Cell::new(std::ptr::null()) };
+
+    /// スクリプトが発行したシーン操作コマンドのキュー。
+    /// Instantiate / Destroy は Actor ツリーと DrawContext を要するため即時実行せず、
+    /// ここへ積んで App がフレームのゲームロジック後に適用する（Unity の遅延 Destroy と同様）。
+    static SCENE_COMMANDS: RefCell<Vec<ScriptSceneCommand>> = const { RefCell::new(Vec::new()) };
 }
 
 /// World ポインタを設定してクロージャを実行し、終了後に元へ戻す。
@@ -49,6 +60,38 @@ pub fn with_world<R>(world: &mut World, f: impl FnOnce() -> R) -> R {
     let result = f();
     WORLD_PTR.with(|p| p.set(prev));
     result
+}
+
+/// Actor ツリーへの読み取り専用ポインタを設定してクロージャを実行し、終了後に元へ戻す。
+///
+/// Scene::run_phase がフェーズ実行を包むことで、C# の Find（名前検索）から
+/// Actor 名を参照できるようにする。World とは別フィールドのため借用は競合しない。
+pub fn with_actors<R>(actors: &Vec<Actor>, f: impl FnOnce() -> R) -> R {
+    let prev = ACTORS_PTR.with(|p| p.replace(actors as *const Vec<Actor>));
+    let result = f();
+    ACTORS_PTR.with(|p| p.set(prev));
+    result
+}
+
+// ─── シーン操作コマンド（遅延適用）──────────────────────────
+
+/// スクリプトが発行するシーン構造の変更コマンド。
+///
+/// フェーズ実行中は Actor ツリーを直接変更できないため、
+/// App::apply_script_scene_commands がゲームロジック後にまとめて適用する。
+pub enum ScriptSceneCommand {
+    /// .actor ファイルをシーンへ生成する。
+    /// entity は ffi_instantiate が予約済みのルートエンティティ
+    /// （デフォルト Transform 挿入済みで、スクリプトは即座に Position を設定できる）。
+    Instantiate { path: String, entity: Entity },
+    /// 指定ルートエンティティの Actor をシーンから破棄する。
+    Destroy { entity: Entity },
+}
+
+/// 積まれたシーン操作コマンドを取り出す（キューは空になる）。
+/// App がフレームのゲームロジック後に呼び、順番に適用する。
+pub fn take_scene_commands() -> Vec<ScriptSceneCommand> {
+    SCENE_COMMANDS.with(|q| std::mem::take(&mut *q.borrow_mut()))
 }
 
 // ─── float 配列の定数 ────────────────────────────────────────
@@ -328,6 +371,93 @@ unsafe extern "system" fn ffi_has_component(
     if has_component(world, entity, str_from(comp, comp_len)) { 1 } else { 0 }
 }
 
+// ─── シーン操作 FFI（Instantiate / Destroy / Find）───────────
+
+/// .actor ファイルからアクターを生成する。成功=1 / 失敗=0。
+///
+/// ルートエンティティを即座に予約してデフォルト Transform を挿入し、
+/// out（[index, generation] の 2 要素）へ返す。これによりスクリプトは
+/// 戻り値の GameObject に対して同フレーム中に Position 等を設定できる。
+/// アクター本体（モデル・スプライト・子など）の構築はフレームのゲームロジック後に
+/// 遅延適用される（読み込み失敗時は予約エンティティごと破棄される）。
+///
+/// 注意: 2D アクター（Actor2D）の場合、遅延適用時に仮の Transform は
+/// CanvasTransform へ差し替えられるため、生成直後の 3D Position 設定は反映されない。
+unsafe extern "system" fn ffi_instantiate(
+    path: *const u8, path_len: i32,
+    out: *mut u32,
+) -> i32 {
+    let ptr = WORLD_PTR.with(|p| p.get());
+    if ptr.is_null() || out.is_null() { return 0; }
+    let path_str = str_from(path, path_len);
+    if path_str.is_empty() { return 0; }
+
+    // ルートエンティティを予約し、スクリプトが即座に位置設定できるよう
+    // デフォルト Transform を挿入する（2D の場合は適用時に差し替える）
+    let world = &mut *ptr;
+    let entity = world.spawn();
+    world.insert(entity, Transform::default());
+
+    SCENE_COMMANDS.with(|q| q.borrow_mut().push(ScriptSceneCommand::Instantiate {
+        path:   path_str.to_string(),
+        entity,
+    }));
+
+    *out         = entity.index();
+    *out.add(1)  = entity.generation();
+    1
+}
+
+/// 指定ルートエンティティのアクターを破棄する。受理=1 / 失敗=0。
+///
+/// 実際の破棄はフレームのゲームロジック後に遅延適用される
+/// （実行中スクリプトの巻き添えを防ぐため。Unity の Destroy と同じ考え方）。
+unsafe extern "system" fn ffi_destroy(idx: u32, generation: u32) -> i32 {
+    let ptr = WORLD_PTR.with(|p| p.get());
+    if ptr.is_null() { return 0; }
+    let world = &*ptr;
+    let entity = Entity::from_raw(idx, generation);
+    // 生存確認: 予約済み Transform か CanvasTransform を持つものだけ受理する
+    if world.get::<Transform>(entity).is_none()
+        && world.get::<CanvasTransform>(entity).is_none()
+    {
+        return 0;
+    }
+    SCENE_COMMANDS.with(|q| q.borrow_mut().push(ScriptSceneCommand::Destroy { entity }));
+    1
+}
+
+/// アクターを名前で検索する（DFS 順の最初の一致）。見つかった=1 / なし=0。
+/// out（[index, generation] の 2 要素）へルートエンティティを返す。
+unsafe extern "system" fn ffi_find_actor(
+    name: *const u8, name_len: i32,
+    out: *mut u32,
+) -> i32 {
+    let actors_ptr = ACTORS_PTR.with(|p| p.get());
+    if actors_ptr.is_null() || out.is_null() { return 0; }
+    let name_str = str_from(name, name_len);
+    if name_str.is_empty() { return 0; }
+
+    /// Actor ツリーを DFS で走査し、名前一致の最初のエンティティを返すローカル関数
+    fn walk(actors: &[Actor], name: &str) -> Option<Entity> {
+        for a in actors {
+            if a.name == name { return Some(a.entity); }
+            if let Some(e) = walk(a.children(), name) { return Some(e); }
+        }
+        None
+    }
+
+    let actors = &*actors_ptr;
+    match walk(actors, name_str) {
+        Some(e) => {
+            *out        = e.index();
+            *out.add(1) = e.generation();
+            1
+        }
+        None => 0,
+    }
+}
+
 // ─── C# へ渡す関数ポインタ表 ─────────────────────────────────
 
 /// C# の #[StructLayout(Sequential)] ScriptHostApi と同一レイアウト。
@@ -341,6 +471,9 @@ pub struct ScriptHostApi {
     get_string:    unsafe extern "system" fn(u32, u32, *const u8, i32, *const u8, i32, *mut u8, i32) -> i32,
     set_string:    unsafe extern "system" fn(u32, u32, *const u8, i32, *const u8, i32, *const u8, i32) -> i32,
     has_component: unsafe extern "system" fn(u32, u32, *const u8, i32) -> i32,
+    instantiate:   unsafe extern "system" fn(*const u8, i32, *mut u32) -> i32,
+    destroy:       unsafe extern "system" fn(u32, u32) -> i32,
+    find_actor:    unsafe extern "system" fn(*const u8, i32, *mut u32) -> i32,
 }
 
 // 関数ポインタは Sync。プロセス全体で 1 つの静的表を共有する。
@@ -350,6 +483,9 @@ static HOST_API: ScriptHostApi = ScriptHostApi {
     get_string:    ffi_get_string,
     set_string:    ffi_set_string,
     has_component: ffi_has_component,
+    instantiate:   ffi_instantiate,
+    destroy:       ffi_destroy,
+    find_actor:    ffi_find_actor,
 };
 
 /// C# へ渡す関数ポインタ表へのポインタを返す（RegisterHostApi 用）。

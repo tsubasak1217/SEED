@@ -173,7 +173,8 @@ impl App {
                 ctx,
                 &mut scene.world,
                 host.as_ref(),
-                0, // world_line = 通常シーン
+                0,    // world_line = 通常シーン
+                None, // ルートエンティティは新規 spawn
             )
         };
 
@@ -407,7 +408,7 @@ impl App {
         // 新アクターを構築
         let ctx = self.draw_ctx.as_ref().unwrap();
         for data in actors_data {
-            match build_actor(data, ctx, &mut scene.world, host.as_ref()) {
+            match build_actor(data, ctx, &mut scene.world, host.as_ref(), None) {
                 Ok(mut a) => { a.set_world_line_recursive(wl); scene.actors.push(a); }
                 Err(e) => eprintln!("[SEED] rebuild_actors_for_wl error: {e}"),
             }

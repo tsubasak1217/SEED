@@ -247,6 +247,62 @@ public static unsafe class ScriptHost
         fixed (byte* cp = cb)
             return _api.HasComponent(e.Index, e.Generation, cp, cl) != 0;
     }
+
+    // ── シーン操作（Instantiate / Destroy / Find）────────────────
+
+    /// <summary>
+    /// .actor ファイルからアクターを生成し、ルートエンティティを返す。失敗時は false。
+    /// ルートは即座に予約される（同フレーム中に Transform を設定できる）が、
+    /// アクター本体の構築はフレーム末尾に遅延適用される。
+    /// </summary>
+    public static bool TryInstantiate(string actorPath, out Entity entity)
+    {
+        entity = Entity.None;
+        if (!_available || _api.Instantiate == null || string.IsNullOrEmpty(actorPath)) return false;
+
+        int pl = Encoding.UTF8.GetByteCount(actorPath);
+        Span<byte> pb = stackalloc byte[pl];
+        Encoding.UTF8.GetBytes(actorPath, pb);
+
+        uint* outBuf = stackalloc uint[2];
+        int ok;
+        fixed (byte* pp = pb)
+            ok = _api.Instantiate(pp, pl, outBuf);
+
+        if (ok == 0) return false;
+        entity = new Entity(outBuf[0], outBuf[1]);
+        return true;
+    }
+
+    /// <summary>
+    /// 指定ルートエンティティのアクターを破棄する（フレーム末尾に遅延適用）。
+    /// 受理されたら true。
+    /// </summary>
+    public static bool TryDestroy(Entity e)
+    {
+        if (!_available || _api.Destroy == null || !e.IsValid) return false;
+        return _api.Destroy(e.Index, e.Generation) != 0;
+    }
+
+    /// <summary>アクターを名前で検索する（DFS 順の最初の一致）。見つからなければ false。</summary>
+    public static bool TryFindActor(string name, out Entity entity)
+    {
+        entity = Entity.None;
+        if (!_available || _api.FindActor == null || string.IsNullOrEmpty(name)) return false;
+
+        int nl = Encoding.UTF8.GetByteCount(name);
+        Span<byte> nb = stackalloc byte[nl];
+        Encoding.UTF8.GetBytes(name, nb);
+
+        uint* outBuf = stackalloc uint[2];
+        int ok;
+        fixed (byte* np = nb)
+            ok = _api.FindActor(np, nl, outBuf);
+
+        if (ok == 0) return false;
+        entity = new Entity(outBuf[0], outBuf[1]);
+        return true;
+    }
 }
 
 /// <summary>
@@ -267,4 +323,10 @@ public unsafe struct ScriptHostApi
     public delegate* unmanaged[Cdecl]<uint, uint, byte*, int, byte*, int, byte*, int, int> SetString;
     /// <summary>(idx, gen, comp, compLen) → 1/0</summary>
     public delegate* unmanaged[Cdecl]<uint, uint, byte*, int, int> HasComponent;
+    /// <summary>(path, pathLen, out uint[2] entity) → 1/0</summary>
+    public delegate* unmanaged[Cdecl]<byte*, int, uint*, int> Instantiate;
+    /// <summary>(idx, gen) → 1/0</summary>
+    public delegate* unmanaged[Cdecl]<uint, uint, int> Destroy;
+    /// <summary>(name, nameLen, out uint[2] entity) → 1/0</summary>
+    public delegate* unmanaged[Cdecl]<byte*, int, uint*, int> FindActor;
 }

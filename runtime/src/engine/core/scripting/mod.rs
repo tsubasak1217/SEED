@@ -17,7 +17,7 @@ use crate::engine::ecs::Entity;
 
 // C# → Rust のコンポーネントアクセスブリッジ
 pub mod host_api;
-pub use host_api::with_world;
+pub use host_api::{with_world, with_actors, take_scene_commands, ScriptSceneCommand};
 
 // ScriptComponent 等は engine::components から re-export する
 pub use crate::engine::components::{

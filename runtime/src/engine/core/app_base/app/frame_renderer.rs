@@ -373,6 +373,10 @@ impl App {
             if let Some(scene) = &mut self.scene { scene.run_phase(Phase::LateUpdate, &ctx); }
             if dbg { eprintln!("[SEED FRAME {dbg_frame}] scene.render"); }
             if let Some(scene) = &mut self.scene { scene.run_phase(Phase::Render, &ctx); }
+            // スクリプトが積んだシーン操作コマンド（Instantiate / Destroy）を適用する。
+            // フェーズ実行後にまとめて適用することで、実行中スクリプトとの競合を避ける
+            // （生成アクターはこの後の描画収集から同フレームで見える）。
+            self.apply_script_scene_commands();
             if dbg { eprintln!("[SEED FRAME {dbg_frame}] game logic done"); }
         }
 

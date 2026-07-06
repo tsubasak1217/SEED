@@ -285,7 +285,13 @@ impl Scene {
         if matches!(phase, Phase::BeginFrame) {
             Self::sync_script_owners(&self.actors, &mut self.world);
         }
-        self.schedule.run_phase(phase, &mut self.world, ctx);
+        // Actor ツリーの読み取り専用ポインタを公開しながらフェーズを実行する。
+        // スクリプトの Find（名前検索）が Actor 名を参照できるようにするため。
+        // actors と world は別フィールドなので分割借用で競合しない。
+        let Self { actors, world, schedule, .. } = self;
+        crate::engine::core::scripting::with_actors(actors, || {
+            schedule.run_phase(phase, world, ctx);
+        });
     }
 
     /// Actor ツリーを走査し、各スクリプトスロットの ScriptComponent に所有 Actor の
@@ -341,7 +347,7 @@ impl Scene {
         let data: ActorData = serde_json::from_str(json)?;
         let name = data.name.clone();
         let mut scene = Scene::new(name);
-        let actor = build_actor(data, ctx, &mut scene.world, scripting_host)?;
+        let actor = build_actor(data, ctx, &mut scene.world, scripting_host, None)?;
         scene.add_actor(actor);
         Ok(scene)
     }
@@ -351,17 +357,20 @@ impl Scene {
     /// `load_actor` と異なり独自 World を作らないため、エンティティが
     /// main_scene.world に直接登録され、再オープン後もコンポーネントが正しく参照される。
     /// world_line は Actor と全子孫に再帰的に設定される。
+    /// `root_entity` に Some を渡すと、ルートを予約済みエンティティで構築する
+    /// （スクリプトの Instantiate 用。詳細は build_actor を参照）。
     pub fn load_actor_into(
         path:           &Path,
         ctx:            &DrawContext,
         world:          &mut World,
         scripting_host: Option<&Arc<ScriptingHost>>,
         world_line:     u32,
+        root_entity:    Option<Entity>,
     ) -> Result<Actor, SceneError> {
         let raw  = crate::engine::asset_fs::read_string(path.to_str().unwrap_or(""))?;
         let json = raw.strip_prefix('\u{FEFF}').unwrap_or(&raw);
         let data: ActorData = serde_json::from_str(json)?;
-        let mut actor = build_actor(data, ctx, world, scripting_host)?;
+        let mut actor = build_actor(data, ctx, world, scripting_host, root_entity)?;
         // world_line を自身と全子孫へ伝播する
         actor.set_world_line_recursive(world_line);
         Ok(actor)
@@ -379,7 +388,7 @@ impl Scene {
         let cam = data.debug_camera;
         let mut scene = Scene::new(data.name);
         for actor_data in data.actors {
-            let actor = build_actor(actor_data, ctx, &mut scene.world, scripting_host)?;
+            let actor = build_actor(actor_data, ctx, &mut scene.world, scripting_host, None)?;
             scene.actors.push(actor);
         }
         Ok((scene, cam))
@@ -391,24 +400,40 @@ impl Scene {
 // ============================================================
 
 /// ActorData から Actor を構築し、コンポーネントを World に挿入する。
+///
+/// `root_entity` に Some を渡すと、ルートの entity を新規 spawn せずその予約済み
+/// エンティティを使う（スクリプトの Instantiate 用。予約時に挿入済みの Transform を
+/// スクリプトが設定した値として優先する）。子アクターには影響しない。
 pub fn build_actor(
     data:           ActorData,
     ctx:            &DrawContext,
     world:          &mut World,
     scripting_host: Option<&Arc<ScriptingHost>>,
+    root_entity:    Option<Entity>,
 ) -> Result<Actor, SceneError> {
     use crate::engine::structs::objects::actor::ActorKind;
+    use crate::engine::components::Transform;
 
-    let entity = world.spawn();
+    // 予約済みルートがあればそれを使い、なければ新規 spawn する
+    let reused = root_entity.is_some();
+    let entity = root_entity.unwrap_or_else(|| world.spawn());
 
     // actor_kind に応じてデフォルトトランスフォームを挿入する。
     // Actor3D → Transform（3D ワールド空間）
     // Actor2D → CanvasTransform（XY キャンバス空間）+ Transform（ダミーとして挿入しない）
     match data.actor_kind {
         ActorKind::Actor3D => {
-            world.insert(entity, data.transform.unwrap_or_default());
+            // 予約済みルートに既に Transform がある場合（Instantiate 直後にスクリプトが
+            // Position を設定済み）はその値を優先し、アクターファイルの値で上書きしない。
+            if !(reused && world.contains::<Transform>(entity)) {
+                world.insert(entity, data.transform.unwrap_or_default());
+            }
         }
         ActorKind::Actor2D => {
+            // 予約時に仮挿入された 3D Transform は 2D アクターには不要なので取り除く
+            if reused {
+                world.remove::<Transform>(entity);
+            }
             // 保存済み canvas_transform があれば復元（pivot/anchor を含む）。
             // 旧フォーマット（canvas_transform フィールドなし）との互換のためデフォルトにフォールバック。
             world.insert(entity, data.canvas_transform.unwrap_or_default());
@@ -580,7 +605,8 @@ pub fn build_actor(
     }
 
     for child_data in data.children {
-        actor.add_child(build_actor(child_data, ctx, world, scripting_host)?);
+        // 子アクターは常に新規エンティティで構築する（予約は ルートのみ）
+        actor.add_child(build_actor(child_data, ctx, world, scripting_host, None)?);
     }
 
     Ok(actor)

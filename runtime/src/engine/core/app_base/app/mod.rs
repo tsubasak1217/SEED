@@ -37,6 +37,7 @@ mod event_handler;
 mod drag_handler;
 mod physics_ops;
 mod physics_timeline;
+mod script_scene_ops;
 pub(crate) mod camera_scene_gizmo;
 
 // ── 外部クレート・標準ライブラリ ────────────────────────────
@@ -862,7 +863,7 @@ use actor_utils::{
     collect_mcs_in_world_line, update_all_mc_batches_for_wl,
     remove_actor_by_dfs, actor_subtree_size, find_parent_canvas_info,
     collect_entities_for_wl, despawn_actor_recursive,
-    count_actor_dfs_nodes, extract_actor_by_dfs,
+    count_actor_dfs_nodes, extract_actor_by_dfs, extract_actor_by_entity,
     selection_centroid, world_to_screen,
     collect_child_actor_mc_starts, collect_child_actor_old_states,
     apply_delta_to_actor_children,

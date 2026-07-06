@@ -40,4 +40,34 @@ public readonly struct GameObject
 
     /// <summary>指定名のコンポーネントを持つか（例 "Transform", "Sprite"）。</summary>
     public bool HasComponent(string component) => ScriptHost.HasComponent(_entity, component);
+
+    // ── シーン操作（静的 API）────────────────────────────────
+
+    /// <summary>
+    /// .actor ファイルからアクターを生成する（assets:// 仮想パス）。
+    /// 戻り値の GameObject には同フレーム中に Transform.Position 等を設定できる
+    /// （アクター本体の構築はフレーム末尾に行われ、設定した値が優先される）。
+    /// 失敗時は IsValid=false の GameObject を返す。
+    ///
+    /// 注意: 2D アクター（Actor2D）の場合は構築時に Transform が CanvasTransform へ
+    /// 差し替わるため、位置は翌フレーム以降に CanvasTransform.Position で設定する。
+    /// </summary>
+    public static GameObject Instantiate(string actorPath)
+        => ScriptHost.TryInstantiate(actorPath, out var e) ? new GameObject(e) : new GameObject(Entity.None);
+
+    /// <summary>
+    /// この GameObject（アクター）をシーンから破棄する。
+    /// 実際の破棄はフレーム末尾に行われる（Unity の Destroy と同じ遅延モデル）。
+    /// </summary>
+    public void Destroy() => ScriptHost.TryDestroy(_entity);
+
+    /// <summary>指定 GameObject を破棄する（<see cref="Destroy()"/> の静的版）。</summary>
+    public static void Destroy(GameObject target) => target.Destroy();
+
+    /// <summary>
+    /// アクターを名前で検索する（ヒエラルキーの DFS 順で最初の一致）。
+    /// 見つからなければ IsValid=false の GameObject を返す。
+    /// </summary>
+    public static GameObject Find(string name)
+        => ScriptHost.TryFindActor(name, out var e) ? new GameObject(e) : new GameObject(Entity.None);
 }

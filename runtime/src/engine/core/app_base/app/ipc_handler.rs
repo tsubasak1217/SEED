@@ -586,6 +586,7 @@ impl App {
                             &mut main_scene.world,
                             self.scripting_host.as_ref(),
                             world_line,
+                            None, // ルートエンティティは新規 spawn
                         );
 
                         match result {

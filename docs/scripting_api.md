@@ -175,6 +175,28 @@ gameObject.Sprite             // 2D スプライト
 gameObject.Camera             // 3D カメラ
 ```
 
+### 生成・破棄・検索（Instantiate / Destroy / Find）
+
+```csharp
+// .actor ファイル（プレハブ）からアクターを生成する（assets:// 仮想パス）
+var bullet = SEED.GameObject.Instantiate("assets://actors/Bullet.actor");
+bullet.Transform.Position = transform.Position;   // 生成直後に位置設定できる
+if (!bullet.IsValid) { /* 読み込み失敗 */ }
+
+// アクターを破棄する（実際の破棄はフレーム末尾。Unity の Destroy と同じ遅延モデル）
+bullet.Destroy();                       // インスタンス版
+SEED.GameObject.Destroy(bullet);        // 静的版（同じ動作）
+
+// アクターを名前で検索する（ヒエラルキーの DFS 順で最初の一致）
+var player = SEED.GameObject.Find("Player");
+if (player.IsValid) { player.Transform.Position = SEED.Vector3.Zero; }
+```
+
+- `Instantiate` の戻り値には**同フレーム中に** `Transform.Position` 等を設定でき、その値が優先されます（アクター本体の構築はフレーム末尾に行われます）。
+- **2D アクター（Actor2D）の注意**: 構築時に Transform が CanvasTransform へ差し替わるため、生成直後の 3D Position 設定は反映されません。位置は翌フレーム以降に `CanvasTransform.Position` で設定してください。
+- 破棄済み GameObject への読み取りは既定値、書き込みは無視されます（クラッシュしません）。
+- 現時点の制限: Play 開始後に生成・破棄したアクターの**物理コライダーは物理スレッドに反映されません**（物理イベント API 実装時に対応予定）。
+
 ### Transform（3D 位置・回転・スケール）
 
 ```csharp

@@ -556,6 +556,45 @@ pub(super) fn extract_actor_by_dfs(
     false
 }
 
+/// ルートエンティティでアクターをツリーから取り出す（DFS 順の最初の一致）。
+///
+/// スクリプトの Destroy（エンティティハンドル指定）用。DFS id と異なり
+/// エンティティは世代付きで安定なため、フレームをまたいだ破棄要求にも安全。
+pub(super) fn extract_actor_by_entity(
+    actors: &mut Vec<Actor>,
+    entity: crate::engine::ecs::Entity,
+) -> Option<Actor> {
+    let mut i = 0;
+    while i < actors.len() {
+        if actors[i].entity == entity {
+            return Some(actors.remove(i));
+        }
+        if let Some(found) = extract_actor_child_by_entity(&mut actors[i], entity) {
+            return Some(found);
+        }
+        i += 1;
+    }
+    None
+}
+
+/// extract_actor_by_entity の再帰実装（子ノード用）。
+fn extract_actor_child_by_entity(
+    actor:  &mut Actor,
+    entity: crate::engine::ecs::Entity,
+) -> Option<Actor> {
+    let mut i = 0;
+    while i < actor.children_mut().len() {
+        if actor.children_mut()[i].entity == entity {
+            return Some(actor.children_mut().remove(i));
+        }
+        if let Some(found) = extract_actor_child_by_entity(&mut actor.children_mut()[i], entity) {
+            return Some(found);
+        }
+        i += 1;
+    }
+    None
+}
+
 /// extract_actor_by_dfs の再帰実装（子ノード用）。
 fn extract_actor_child_by_dfs(
     actor:   &mut Actor,
