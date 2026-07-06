@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Documents;
@@ -10,6 +11,27 @@ public partial class OutputPanel : UserControl
 {
     private const int MaxLines  = 1000;
     private       int _lineCount    = 0;
+
+    /// <summary>
+    /// ログの発生源カテゴリ。
+    /// - <see cref="Game"/>: ユーザースクリプトの Debug.Log 出力（<c>[Script]</c> 系）。
+    /// - <see cref="Engine"/>: それ以外（Rust エンジン・エディタ内部・ビルド・ランタイム通知など）。
+    /// </summary>
+    private enum LogCategory { Engine, Game }
+
+    /// <summary>
+    /// 表示フィルタ。ComboBox の選択インデックスと一致させる（0=すべて, 1=エンジン, 2=ゲーム）。
+    /// </summary>
+    private enum LogFilter { All = 0, Engine = 1, Game = 2 }
+
+    /// <summary>現在の表示フィルタ。</summary>
+    private LogFilter _filter = LogFilter.All;
+
+    /// <summary>
+    /// 追加された全ログ行の履歴（カテゴリ付き）。フィルタ切り替え時に、
+    /// ここから該当行だけを再構築して表示する。<see cref="MaxLines"/> 件で先頭から破棄する。
+    /// </summary>
+    private readonly List<(string line, LogCategory cat)> _entries = new();
     /// <summary>
     /// ScrollToEnd のスケジュール済みフラグ。
     /// Background キューに複数の AppendLine が積まれていても ScrollToEnd は 1 回にまとめる。
@@ -51,6 +73,24 @@ public partial class OutputPanel : UserControl
     }
 
     private void AppendLine(string line)
+    {
+        // 履歴へカテゴリ付きで蓄積する（フィルタ切り替え時の再構築に使う）。
+        var cat = Classify(line);
+        _entries.Add((line, cat));
+        while (_entries.Count > MaxLines)
+            _entries.RemoveAt(0);
+
+        // 現在のフィルタに一致しない行は表示しない（履歴には残す）。
+        if (!MatchesFilter(cat)) return;
+
+        AppendParagraph(line);
+    }
+
+    /// <summary>
+    /// 1 行を RichTextBox の末尾へ段落として追加し、最下部にいれば自動スクロールする。
+    /// 表示行数を <see cref="MaxLines"/> に制限する。
+    /// </summary>
+    private void AppendParagraph(string line)
     {
         var doc = LogBox.Document;
 
@@ -111,6 +151,43 @@ public partial class OutputPanel : UserControl
         _atBottom = scrollable <= 0 || e.VerticalOffset >= scrollable - 1.0;
     }
 
+    /// <summary>
+    /// ログ行の発生源を判定する。
+    /// ユーザースクリプトの Debug.Log は <c>[Script]</c> / <c>[Script:警告]</c> / <c>[Script:エラー]</c>
+    /// を前置してランタイム標準出力へ流れるため、<c>[Script</c> を含む行をゲーム側とみなす。
+    /// それ以外はすべてエンジン側（Rust エンジン・エディタ内部・ビルド・ランタイム通知）とする。
+    /// </summary>
+    private static LogCategory Classify(string line)
+        => line.Contains("[Script") ? LogCategory.Game : LogCategory.Engine;
+
+    /// <summary>現在のフィルタでこのカテゴリを表示するかどうか。</summary>
+    private bool MatchesFilter(LogCategory cat) => _filter switch
+    {
+        LogFilter.Engine => cat == LogCategory.Engine,
+        LogFilter.Game   => cat == LogCategory.Game,
+        _                => true,   // All
+    };
+
+    /// <summary>フィルタ ComboBox の選択が変わったら表示を再構築する。</summary>
+    private void OnFilterChanged(object sender, SelectionChangedEventArgs e)
+    {
+        // InitializeComponent 中（LogBox 生成前）にも発火し得るためガードする。
+        if (LogBox is null) return;
+        _filter = (LogFilter)CmbFilter.SelectedIndex;
+        RebuildFromEntries();
+    }
+
+    /// <summary>履歴（<see cref="_entries"/>）から現在のフィルタに一致する行だけを再表示する。</summary>
+    private void RebuildFromEntries()
+    {
+        LogBox.Document.Blocks.Clear();
+        _lineCount = 0;
+        _atBottom  = true;   // 再構築後は最下部へ追従させる
+        foreach (var (line, cat) in _entries)
+            if (MatchesFilter(cat))
+                AppendParagraph(line);
+    }
+
     private static SolidColorBrush PickBrush(string line)
     {
         if (line.Contains("[Runtime→Editor]"))  return BrushRuntime;
@@ -133,5 +210,6 @@ public partial class OutputPanel : UserControl
     {
         LogBox.Document.Blocks.Clear();
         _lineCount = 0;
+        _entries.Clear();
     }
 }

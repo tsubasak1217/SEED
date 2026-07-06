@@ -2,6 +2,35 @@
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              Background="#1E1E1E">
+    <UserControl.Resources>
+        <!-- 出力フィルタ用の暗色 ComboBox（ドロップダウンもダークテーマにする） -->
+        <SolidColorBrush x:Key="{x:Static SystemColors.WindowBrushKey}"        Color="#2A2A2A"/>
+        <SolidColorBrush x:Key="{x:Static SystemColors.WindowTextBrushKey}"    Color="#CCCCCC"/>
+        <SolidColorBrush x:Key="{x:Static SystemColors.HighlightBrushKey}"     Color="#1A4A7A"/>
+        <SolidColorBrush x:Key="{x:Static SystemColors.HighlightTextBrushKey}" Color="#FFFFFF"/>
+        <SolidColorBrush x:Key="{x:Static SystemColors.ControlTextBrushKey}"   Color="#CCCCCC"/>
+        <Style TargetType="ComboBoxItem">
+            <Setter Property="Background" Value="#2A2A2A"/>
+            <Setter Property="Foreground" Value="#CCCCCC"/>
+            <Setter Property="FontSize"   Value="11"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ComboBoxItem">
+                        <Border x:Name="Bd" Background="{TemplateBinding Background}"
+                                Padding="8,4" SnapsToDevicePixels="True">
+                            <ContentPresenter VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsHighlighted" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#1A4A7A"/>
+                                <Setter Property="Foreground" Value="#FFFFFF"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </UserControl.Resources>
     <Grid>
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
@@ -19,6 +48,18 @@
                         Background="#404040" Foreground="#CCCCCC"
                         BorderThickness="0" Padding="10,2" FontSize="11"
                         Margin="4,0,0,0" Cursor="Hand"/>
+
+                <!-- 出力ソースのフィルタ（すべて / エンジン / ゲーム） -->
+                <TextBlock Text="表示:" Foreground="#999999" FontSize="11"
+                           VerticalAlignment="Center" Margin="14,0,4,0"/>
+                <ComboBox x:Name="CmbFilter" Width="96" FontSize="11" Height="22"
+                          VerticalAlignment="Center"
+                          Background="#2A2A2A" Foreground="Black" BorderBrush="#444444"
+                          SelectedIndex="0" SelectionChanged="OnFilterChanged">
+                    <ComboBoxItem Content="すべて"/>
+                    <ComboBoxItem Content="エンジン"/>
+                    <ComboBoxItem Content="ゲーム"/>
+                </ComboBox>
             </StackPanel>
         </Border>
 
