@@ -309,6 +309,12 @@ pub enum IpcCommand {
     /// 現在フレームの状態をフレーム 0 として適用（履歴削除）。
     /// フォーマット: EDIT_PHYSICS_APPLY_FRAME
     EditPhysicsApplyFrame,
+
+    /// 内蔵デバッガのアタッチ/デタッチに合わせてブレークポイント停止ガードを切り替える。
+    /// アタッチ中（true）は、ブレークポイントで長時間停止した復帰フレームの
+    /// 巨大 delta を丸めて ConstantUpdate の追いつき暴走を防ぐ。
+    /// フォーマット: DBG_GUARD:{0|1}
+    SetDebugGuard(bool),
 }
 
 // ============================================================
@@ -494,6 +500,8 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                         "PAUSE"        => Some(IpcCommand::Pause),
                         "RESUME"       => Some(IpcCommand::Resume),
                         "STOP"         => Some(IpcCommand::Stop),
+                        "DBG_GUARD:1"  => Some(IpcCommand::SetDebugGuard(true)),
+                        "DBG_GUARD:0"  => Some(IpcCommand::SetDebugGuard(false)),
                         "PLAY_CLAMP:1" => Some(IpcCommand::PlayClamp(true)),
                         "PLAY_CLAMP:0" => Some(IpcCommand::PlayClamp(false)),
                         "TOOL:SELECT"  => Some(IpcCommand::SetToolMode(ToolMode::Select)),

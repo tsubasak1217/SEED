@@ -949,6 +949,11 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         {
             var breakpoints = PanelScriptEditor.GetBreakpointsForDebug();
             await session.StartAsync(pid, breakpoints);
+            // デバッガ稼働中は Play プロセスのクロックにブレークポイント停止ガードを効かせる。
+            // これにより、ブレークポイントで長時間停止した復帰フレームで delta が丸められ、
+            // ConstantUpdate が数百回追いつき実行されてブレークポイントに延々と
+            // 再ヒットする（ステップイン/オーバーが終わらない）現象を防ぐ。
+            _runtimeManager?.SendToRuntime("DBG_GUARD:1");
         }
         catch (Exception ex)
         {
@@ -1169,6 +1174,8 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         // 次の Play 開始時には再びアタッチする（デバッグは常時自動が既定のため）。
         var s = _debugSession;
         _debugSession = null;
+        // ブレークポイント停止ガードを解除し、通常のフレームタイミングへ戻す。
+        _runtimeManager?.SendToRuntime("DBG_GUARD:0");
         if (s is not null) { await SafeDebugAsync(s.DisconnectAsync()); EditorLog.Write("[デバッグ] デタッチしました（次の Play で再アタッチします）。"); }
     }
 

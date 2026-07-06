@@ -46,6 +46,8 @@ impl App {
                 // AI 応答完了後にレンダリングを再開する
                 IpcCommand::ResumeRender       => self.render_paused = false,
                 IpcCommand::Stop               => event_loop.exit(),
+                // 内蔵デバッガのアタッチ/デタッチに応じてブレークポイント停止ガードを切り替える。
+                IpcCommand::SetDebugGuard(v)   => self.clock.set_debug_guard(v),
                 IpcCommand::CamKeyDown(k)      => self.cam_input.set_key(&k, true),
                 IpcCommand::CamKeyUp(k)        => self.cam_input.set_key(&k, false),
                 IpcCommand::SetToolMode(m)     => self.tool_mode = m,
