@@ -366,6 +366,9 @@ impl App {
             publish_input(Some(&self.input));
             // スクリプトの Physics.Raycast 用に物理スレッドへの送信チャンネルを公開する
             publish_physics_sender(self.physics_thread.as_ref().map(|t| t.command_sender()));
+            // AudioSource.IsPlaying 判定用に再生中スロット一覧を公開する
+            crate::engine::core::scripting::host_api::publish_playing_audio_slots(
+                self.playing_audio_slots());
             if dbg { eprintln!("[SEED FRAME {dbg_frame}] begin_frame"); }
             if let Some(scene) = &mut self.scene { scene.run_phase(Phase::BeginFrame, &ctx); }
             if dbg { eprintln!("[SEED FRAME {dbg_frame}] early_update"); }
@@ -389,6 +392,8 @@ impl App {
             self.apply_script_scene_commands();
             // スクリプトが積んだオーディオコマンド（Audio.Play 等）を適用する
             self.apply_script_audio_commands();
+            // AudioComponent の play_on_start 発火と距離減衰・パンを更新する
+            self.update_component_audio();
             if dbg { eprintln!("[SEED FRAME {dbg_frame}] game logic done"); }
         }
 

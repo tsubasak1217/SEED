@@ -352,7 +352,13 @@ public partial class InspectorPanel : UserControl
         // RigidbodyComponent 用フィールド（rigidbody_data JSON 全体）
         string RigidbodyDataJson = "{}",
         // ScriptComponent 用フィールド（[SerializeField] 現在値の JSON オブジェクト）
-        string ScriptFieldsJson = "{}");
+        string ScriptFieldsJson = "{}",
+        // AudioComponent 用フィールド（音声パス・音量・ループ・自動再生・3D空間再生・減衰距離・パン）
+        string AudioPath = "",
+        float AudioVolume = 1f,
+        bool AudioLoop = false, bool AudioPlayOnStart = false, bool AudioSpatial = false,
+        float AudioMinDistance = 2f, float AudioMaxDistance = 50f,
+        float AudioPan = 0f);
 
     private List<SlotInfo> _slotInfos = new();
 
@@ -482,6 +488,16 @@ public partial class InspectorPanel : UserControl
             var rigidbodyDataJson  = comp.TryGetProperty("rigidbody_data",  out var rd)  ? rd.GetRawText() : "{}";
             // ScriptComponent 用: [SerializeField] 現在値の JSON オブジェクト
             var scriptFieldsJson   = comp.TryGetProperty("script_fields",   out var sfj) ? sfj.GetRawText() : "{}";
+            // AudioComponent 用: 音声パス・音量・ループ・自動再生・3D空間再生・減衰距離・パン
+            // loop / play_on_start / spatial はランタイムから 0/1 の数値で送られるため ReadJsonBool で判定する
+            var audioPath        = comp.TryGetProperty("audio_path",    out var aup) ? aup.GetString() ?? "" : "";
+            var audioVolume      = comp.TryGetProperty("volume",        out var avo) ? avo.GetSingle() : 1f;
+            var audioLoop        = comp.TryGetProperty("loop",          out var alp) ? ReadJsonBool(alp, false) : false;
+            var audioPlayOnStart = comp.TryGetProperty("play_on_start", out var aps) ? ReadJsonBool(aps, false) : false;
+            var audioSpatial     = comp.TryGetProperty("spatial",       out var asp) ? ReadJsonBool(asp, false) : false;
+            var audioMinDistance = comp.TryGetProperty("min_distance",  out var amn) ? amn.GetSingle() : 2f;
+            var audioMaxDistance = comp.TryGetProperty("max_distance",  out var amx) ? amx.GetSingle() : 50f;
+            var audioPan         = comp.TryGetProperty("pan",           out var apn) ? apn.GetSingle() : 0f;
 
             var info = new SlotInfo(slotIdx, compName, compType, modelPath, width, height,
                 scaleTransform, scaleSize, autoScale,
@@ -498,7 +514,11 @@ public partial class InspectorPanel : UserControl
                 CamBarCR: camBarCR, CamBarCG: camBarCG, CamBarCB: camBarCB, CamBarCA: camBarCA,
                 PluginName: pluginName, PluginFieldsJson: pluginFieldsJson,
                 ColliderDataJson: colliderDataJson, RigidbodyDataJson: rigidbodyDataJson,
-                ScriptFieldsJson: scriptFieldsJson);
+                ScriptFieldsJson: scriptFieldsJson,
+                AudioPath: audioPath, AudioVolume: audioVolume,
+                AudioLoop: audioLoop, AudioPlayOnStart: audioPlayOnStart, AudioSpatial: audioSpatial,
+                AudioMinDistance: audioMinDistance, AudioMaxDistance: audioMaxDistance,
+                AudioPan: audioPan);
             _slotInfos.Add(info);
 
             // 上部チップリストに追加
@@ -564,6 +584,7 @@ public partial class InspectorPanel : UserControl
         "ColliderComponent"   => Color.FromRgb(0x38, 0x16, 0x16), // 暗赤
         "Collider2dComponent" => Color.FromRgb(0x38, 0x16, 0x16), // 暗赤
         "ScriptComponent"     => Color.FromRgb(0x20, 0x34, 0x20), // 暗緑（スクリプト）
+        "AudioComponent"      => Color.FromRgb(0x12, 0x2C, 0x34), // 暗青緑（オーディオ）
         "PluginComponent"     => Color.FromRgb(0x34, 0x2C, 0x12), // 暗黄
         _                     => Color.FromRgb(0x2A, 0x2A, 0x2A), // ニュートラル（基本情報）
     };
@@ -579,6 +600,7 @@ public partial class InspectorPanel : UserControl
         "ColliderComponent"   => "Collider",
         "Collider2dComponent" => "Collider 2D",
         "ScriptComponent"     => "Script",
+        "AudioComponent"      => "Audio Source",
         "PluginComponent"     => "Plugin",
         _ when typeId.StartsWith("Plugin:", StringComparison.Ordinal) => typeId["Plugin:".Length..],
         _                     => typeId,
@@ -697,6 +719,7 @@ public partial class InspectorPanel : UserControl
             "SpriteComponent"    => BuildSpriteSlotContent(info),
             "InputMapComponent"  => BuildInputMapSlotContent(info),
             "CameraComponent"    => BuildCameraSlotContent(info),
+            "AudioComponent"     => BuildAudioSlotContent(info),
             "PluginComponent"    => BuildPluginSlotContent(info),
             "ColliderComponent"  => BuildColliderSlotContent(info),
             "Collider2dComponent" => BuildCollider2dSlotContent(info),
@@ -2311,6 +2334,145 @@ public partial class InspectorPanel : UserControl
         rowH.textBox.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { CommitSize(); e.Handled = true; } };
         rowH.textBox.LostFocus += (_, _) => CommitSize();
         NumericDragBehavior.SetOnDrag(rowW.textBox, CommitSize); NumericDragBehavior.SetOnDrag(rowH.textBox, CommitSize);
+
+        return sp;
+    }
+
+    // ── AudioComponent inspector ──────────────────────────────
+
+    /// <summary>パン値の下限（完全に左）。</summary>
+    private const float AudioPanMin = -1f;
+    /// <summary>パン値の上限（完全に右）。</summary>
+    private const float AudioPanMax = 1f;
+    /// <summary>音量の下限（無音）。</summary>
+    private const float AudioVolumeMin = 0f;
+
+    /// <summary>
+    /// AudioComponent のインスペクター UI を構築して返す。
+    /// 音声ファイル・音量・ループ・自動再生・3D空間再生・減衰距離・パンを編集し、
+    /// 変更時は SET_AUDIO_FIELD:{actor},{slot},{key},{value} を送信する。
+    /// </summary>
+    private UIElement BuildAudioSlotContent(SlotInfo info)
+    {
+        var sp = new StackPanel { Margin = new Thickness(0, 4, 0, 4) };
+
+        // フィールド変更をランタイムへ送信するローカル関数（key ∈ path/volume/loop/play_on_start/spatial/min_distance/max_distance/pan）
+        void SendField(string key, string value)
+        {
+            if (_currentActorId < 0) return;
+            _runtime?.SendToRuntime($"SET_AUDIO_FIELD:{_currentActorId},{info.SlotIdx},{key},{value}");
+        }
+
+        // ── 音声ファイル選択行 ─────────────────────────────────
+        sp.Children.Add(FileRefBuilder.Build(
+            "音声",
+            info.AudioPath,
+            [".wav", ".ogg", ".mp3", ".flac"],
+            () =>
+            {
+                var dlg = new OpenFileDialog
+                {
+                    Title  = "音声ファイルを選択",
+                    Filter = "音声ファイル|*.wav;*.ogg;*.mp3;*.flac|すべてのファイル|*.*",
+                };
+                return dlg.ShowDialog(Window.GetWindow(this)) == true ? dlg.FileName : null;
+            },
+            path =>
+            {
+                if (_currentActorId < 0) return;
+                // 絶対パスを assets:// 仮想パスに変換してからランタイムへ送信する
+                var virtualPath = VirtualPath.ToVirtual(path, _assetsPath);
+                SendField("path", virtualPath);
+            }));
+
+        // ── 音量フィールド ─────────────────────────────────────
+        var rowVol = BuildLabeledNumberRow("音量", info.AudioVolume, "F2");
+        sp.Children.Add(rowVol.element);
+        void CommitVolume()
+        {
+            if (!float.TryParse(rowVol.textBox.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) return;
+            // 負値は無効なため下限でクランプする
+            v = MathF.Max(AudioVolumeMin, v);
+            SendField("volume", v.ToString(CultureInfo.InvariantCulture));
+        }
+        rowVol.textBox.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { CommitVolume(); e.Handled = true; } };
+        rowVol.textBox.LostFocus += (_, _) => CommitVolume();
+        NumericDragBehavior.SetOnDrag(rowVol.textBox, CommitVolume);
+
+        // ── チェックボックス行（ループ・自動再生・3D空間再生）────
+        // ラベル + CheckBox の横並び行を生成して SET_AUDIO_FIELD を送信するローカル関数
+        CheckBox AddCheckRow(string label, bool isChecked, string key)
+        {
+            var row = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 4, 0, 2) };
+            row.Children.Add(new TextBlock
+            {
+                Text              = label,
+                Foreground        = new SolidColorBrush(Color.FromRgb(0xAA, 0xAA, 0xAA)),
+                FontSize          = 11,
+                Width             = 90,
+                VerticalAlignment = VerticalAlignment.Center,
+            });
+            var check = new CheckBox
+            {
+                IsChecked         = isChecked,
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin            = new Thickness(4, 0, 0, 0),
+            };
+            // bool 値は "1"/"0" で送信する
+            check.Checked   += (_, _) => SendField(key, "1");
+            check.Unchecked += (_, _) => SendField(key, "0");
+            row.Children.Add(check);
+            sp.Children.Add(row);
+            return check;
+        }
+        AddCheckRow("ループ",      info.AudioLoop,        "loop");
+        AddCheckRow("自動再生",    info.AudioPlayOnStart, "play_on_start");
+        AddCheckRow("3D空間再生",  info.AudioSpatial,     "spatial");
+
+        // 補足説明を薄い色で表示するローカル関数
+        void AddHint(string text) => sp.Children.Add(new TextBlock
+        {
+            Text         = text,
+            Foreground   = new SolidColorBrush(Color.FromRgb(0x66, 0x66, 0x66)),
+            FontSize     = 10,
+            TextWrapping = TextWrapping.Wrap,
+            Margin       = new Thickness(0, 2, 0, 2),
+        });
+
+        // ── 減衰開始距離 / 無音距離（3D空間再生 ON 時のみ有効）──
+        AddHint("以下の距離設定は 3D空間再生が ON のときに適用されます");
+
+        // 数値フィールド + SET_AUDIO_FIELD 送信をまとめて構築するローカル関数
+        void AddFloatRow(string label, float value, string key)
+        {
+            var row = BuildLabeledNumberRow(label, value);
+            sp.Children.Add(row.element);
+            void Commit()
+            {
+                if (!float.TryParse(row.textBox.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) return;
+                SendField(key, v.ToString(CultureInfo.InvariantCulture));
+            }
+            row.textBox.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { Commit(); e.Handled = true; } };
+            row.textBox.LostFocus += (_, _) => Commit();
+            NumericDragBehavior.SetOnDrag(row.textBox, Commit);
+        }
+        AddFloatRow("減衰開始距離", info.AudioMinDistance, "min_distance");
+        AddFloatRow("無音距離",     info.AudioMaxDistance, "max_distance");
+
+        // ── パン（3D空間再生 OFF 時のみ有効）──────────────────
+        AddHint($"パン（{AudioPanMin:F0}=左 〜 {AudioPanMax:F0}=右）は 3D空間再生が OFF のときのみ有効です");
+        var rowPan = BuildLabeledNumberRow("パン", info.AudioPan, "F2");
+        sp.Children.Add(rowPan.element);
+        void CommitPan()
+        {
+            if (!float.TryParse(rowPan.textBox.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) return;
+            // パンは [-1, 1] にクランプして送信する
+            v = Math.Clamp(v, AudioPanMin, AudioPanMax);
+            SendField("pan", v.ToString(CultureInfo.InvariantCulture));
+        }
+        rowPan.textBox.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { CommitPan(); e.Handled = true; } };
+        rowPan.textBox.LostFocus += (_, _) => CommitPan();
+        NumericDragBehavior.SetOnDrag(rowPan.textBox, CommitPan);
 
         return sp;
     }

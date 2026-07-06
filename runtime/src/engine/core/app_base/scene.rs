@@ -577,6 +577,12 @@ pub fn build_actor(
                 world.insert(slot_entity, Collider2dComponent::from(cc_data));
                 actor.add_slot_typed::<Collider2dComponent>(slot_name, ComponentKind::Collider2d, slot_entity);
             }
+            ComponentData::AudioComponent(ac_data) => {
+                // オーディオソースコンポーネントを ECS ワールドに挿入してスロットを登録する
+                use crate::engine::components::AudioComponent;
+                world.insert(slot_entity, AudioComponent::from_data(ac_data));
+                actor.add_slot_typed::<AudioComponent>(slot_name, ComponentKind::Audio, slot_entity);
+            }
             ComponentData::LegacyRigidbodyComponent(rb_data) => {
                 // 旧フォーマット（Rigidbody が独立コンポーネント）の後方互換マイグレーション。
                 // スロットエンティティは生成せず、同アクターの ColliderComponent にデータを適用する。

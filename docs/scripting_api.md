@@ -256,6 +256,7 @@ SEED.Audio.StopBgm();            // BGM を停止
 
 - 同じファイルはキャッシュされ、2 回目以降の再生でディスク読み込みは発生しません。
 - オーディオデバイスが無い環境では全操作が無音で無視されます（エラーになりません）。
+- アクターに紐づく音源（3D 距離減衰・パン対応）は **AudioComponent**（第 7 節の `gameObject.AudioSource`）を使ってください。こちらの静的 API はアクターに紐づかない BGM / 単発 SE 向けです。
 
 ---
 
@@ -273,6 +274,7 @@ gameObject.Transform          // 3D トランスフォーム
 gameObject.CanvasTransform    // 2D キャンバストランスフォーム
 gameObject.Sprite             // 2D スプライト
 gameObject.Camera             // 3D カメラ
+gameObject.AudioSource        // オーディオソース（AudioComponent）
 ```
 
 ### 生成・破棄・検索（Instantiate / Destroy / Find）
@@ -348,6 +350,29 @@ cam.TargetWidth / cam.TargetHeight  // int（get/set。スケーリングのベ�
 cam.BarColor               // Color（get/set。レターボックス帯の色）
 ```
 
+### AudioSource（アクター紐づけの音源。3D 距離減衰・パン対応）
+
+エディタの「コンポーネント追加 → サウンド → Audio Source」で追加し、インスペクタで設定します。
+
+```csharp
+var audio = gameObject.AudioSource;
+audio.Play();              // 設定された音源を再生（再生中なら鳴らし直し）
+audio.Stop();              // 停止
+audio.IsPlaying            // bool: 再生中か
+
+audio.Path                 // string（get/set。assets:// 仮想パス）
+audio.Volume               // float（get/set。1.0=等倍。再生中も即反映）
+audio.Loop                 // bool（get/set。次回 Play 時に反映）
+audio.PlayOnStart          // bool（get/set。Play 開始時に自動再生）
+audio.Spatial              // bool（get/set。3D 空間再生 = メインカメラとの距離減衰 + 方向パン）
+audio.MinDistance          // float（get/set。減衰開始距離。これ以内は音量 100%）
+audio.MaxDistance          // float（get/set。無音距離。これ以遠は聞こえない）
+audio.Pan                  // float（get/set。-1=左 〜 1=右。Spatial=false 時のみ有効）
+```
+
+- 距離減衰は線形（MinDistance 以内 100% → MaxDistance で 0%）。リスナーは `is_main` のメインカメラ。
+- `Spatial = true` では音源方向に応じて左右パンが自動で振られます（手動 `Pan` は無効）。
+
 ### 利用可能なコンポーネント一覧
 
 | コンポーネント名 | アクセサ | 内容 |
@@ -356,6 +381,7 @@ cam.BarColor               // Color（get/set。レターボックス帯の色�
 | `CanvasTransform` | `gameObject.CanvasTransform` | 2D キャンバス上の位置・回転・スケール・ピボット・アンカー |
 | `Sprite` | `gameObject.Sprite` | テクスチャパス・色・サイズ |
 | `Camera` | `gameObject.Camera` | FOV・クリップ距離・メインカメラ・クリアカラー・ベース解像度 |
+| `Audio` | `gameObject.AudioSource` | 音源パス・音量・ループ・3D 減衰・パン + Play/Stop |
 
 他のコンポーネント（Collider / Rigidbody など物理系）は物理 API として順次対応予定で、対応済みのものは本節に追記されます。
 

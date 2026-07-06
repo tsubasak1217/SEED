@@ -768,6 +768,9 @@ impl App {
                 IpcCommand::SetSpriteSize { actor_dfs_id, slot_idx, width, height } => {
                     self.handle_set_sprite_size(actor_dfs_id, slot_idx, width, height);
                 }
+                IpcCommand::SetAudioField { actor_dfs_id, slot_idx, key, value } => {
+                    self.handle_set_audio_field(actor_dfs_id, slot_idx, &key, &value);
+                }
                 IpcCommand::SetCanvasAnchor { actor_dfs_id, ax, ay } => {
                     self.handle_set_canvas_anchor(actor_dfs_id, ax, ay);
                 }

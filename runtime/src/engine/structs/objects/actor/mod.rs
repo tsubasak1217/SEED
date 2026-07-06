@@ -318,6 +318,10 @@ impl Actor {
                     world.get::<crate::engine::components::Collider2dComponent>(slot.entity)
                         .map(|cc| ComponentData::Collider2dComponent(crate::engine::components::Collider2dComponentData::from(cc)))
                 }
+                ComponentKind::Audio => {
+                    world.get::<crate::engine::components::AudioComponent>(slot.entity)
+                        .map(|ac| ComponentData::AudioComponent(ac.to_data()))
+                }
             };
             data.map(|d| ComponentSlotData { name: slot.name.clone(), component: d })
         }).collect();

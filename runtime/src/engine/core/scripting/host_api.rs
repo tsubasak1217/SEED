@@ -29,7 +29,7 @@
 use std::cell::{Cell, RefCell};
 
 use crate::engine::components::{
-    CameraComponent, CanvasTransform, SpriteComponent, Transform,
+    AudioComponent, CameraComponent, CanvasTransform, SpriteComponent, Transform,
 };
 use crate::engine::core::input::{Input, InputState};
 use crate::engine::ecs::{Entity, World};
@@ -156,6 +156,10 @@ pub enum ScriptAudioCommand {
     StopBgm,
     /// BGM の音量を変更する
     SetBgmVolume { volume: f32 },
+    /// AudioComponent の音源を再生する（entity = スロットエンティティ）
+    PlayComponent { entity: Entity },
+    /// AudioComponent の音源を停止する（entity = スロットエンティティ）
+    StopComponent { entity: Entity },
 }
 
 /// 積まれたオーディオコマンドを取り出す（キューは空になる）。
@@ -168,10 +172,47 @@ pub fn take_audio_commands() -> Vec<ScriptAudioCommand> {
 /// float フィールドの最大要素数（RGBA カラーの 4 要素が最大）。
 pub const MAX_FLOAT_FIELD_LEN: usize = 4;
 
+// ─── スロットエンティティ解決 ─────────────────────────────────
+
+/// コンポーネント T の実体があるエンティティを解決する。
+///
+/// Transform / CanvasTransform はアクターのルートエンティティに直接あるが、
+/// Sprite / Camera / Audio 等の追加コンポーネントは「スロット専用エンティティ」に
+/// 格納される。スクリプトは gameObject（ルートエンティティ）しか知らないため、
+/// ルートに無い場合は Actor ツリーからスロットを探して解決する。
+///
+/// 探索順: 1. 指定エンティティ自身 → 2. 指定エンティティをルートに持つアクターの
+/// スロット群（最初に T を持つもの）。見つからなければ None。
+fn locate<T: crate::engine::ecs::Component>(world: &World, entity: Entity) -> Option<Entity> {
+    // 1. 指定エンティティ自身が持っている場合（Transform / CanvasTransform 等）
+    if world.get::<T>(entity).is_some() {
+        return Some(entity);
+    }
+    // 2. Actor ツリーからルートエンティティ一致のアクターを探し、スロットを走査する
+    let actors_ptr = ACTORS_PTR.with(|p| p.get());
+    if actors_ptr.is_null() { return None; }
+
+    /// ルートエンティティが一致するアクターを再帰検索するローカル関数
+    fn find_actor(actors: &[Actor], e: Entity) -> Option<&Actor> {
+        for a in actors {
+            if a.entity == e { return Some(a); }
+            if let Some(found) = find_actor(a.children(), e) { return Some(found); }
+        }
+        None
+    }
+
+    let actors = unsafe { &*actors_ptr };
+    let actor  = find_actor(actors, entity)?;
+    actor.slots().iter()
+        .map(|s| s.entity)
+        .find(|&se| world.get::<T>(se).is_some())
+}
+
 // ─── コンポーネントレジストリ ─────────────────────────────────
 //  新しいコンポーネントをスクリプトへ公開するときは、read_floats / write_floats
 //  （文字列フィールドがあれば read_string / write_string も）と has_component に
 //  1 分岐ずつ追加する（docs/scripting_api.md・.claude/CLAUDE.md の手順を参照）。
+//  スロット格納型のコンポーネントは locate::<T> でエンティティを解決すること。
 
 /// コンポーネントの数値フィールドを読み、out に書いた要素数を返す。未対応は None。
 ///
@@ -207,9 +248,10 @@ fn read_floats(
                 _          => None,
             }
         }
-        // ── 2D スプライト ──
+        // ── 2D スプライト（スロット格納型: locate で解決）──
         "Sprite" => {
-            let s = world.get::<SpriteComponent>(entity)?;
+            let e = locate::<SpriteComponent>(world, entity)?;
+            let s = world.get::<SpriteComponent>(e)?;
             match field {
                 "color"  => put(out, &s.color),
                 "width"  => put(out, &[s.width]),
@@ -217,9 +259,25 @@ fn read_floats(
                 _        => None,
             }
         }
-        // ── 3D カメラ ──
+        // ── オーディオソース（スロット格納型: locate で解決）──
+        "Audio" => {
+            let e = locate::<AudioComponent>(world, entity)?;
+            let a = world.get::<AudioComponent>(e)?;
+            match field {
+                "volume"        => put(out, &[a.volume]),
+                "pan"           => put(out, &[a.pan]),
+                "loop"          => put(out, &[if a.looped { 1.0 } else { 0.0 }]),
+                "play_on_start" => put(out, &[if a.play_on_start { 1.0 } else { 0.0 }]),
+                "spatial"       => put(out, &[if a.spatial { 1.0 } else { 0.0 }]),
+                "min_distance"  => put(out, &[a.min_distance]),
+                "max_distance"  => put(out, &[a.max_distance]),
+                _               => None,
+            }
+        }
+        // ── 3D カメラ（スロット格納型: locate で解決）──
         "Camera" => {
-            let c = world.get::<CameraComponent>(entity)?;
+            let e = locate::<CameraComponent>(world, entity)?;
+            let c = world.get::<CameraComponent>(e)?;
             match field {
                 "fov_y_deg"     => put(out, &[c.fov_y_deg]),
                 "near"          => put(out, &[c.near]),
@@ -270,9 +328,10 @@ fn write_floats(
                 _          => false,
             }
         }
-        // ── 2D スプライト ──
+        // ── 2D スプライト（スロット格納型: locate で解決）──
         "Sprite" => {
-            let Some(s) = world.get_mut::<SpriteComponent>(entity) else { return false };
+            let Some(e) = locate::<SpriteComponent>(world, entity) else { return false };
+            let Some(s) = world.get_mut::<SpriteComponent>(e) else { return false };
             match field {
                 "color"  => take(v).map(|a| s.color = a).is_some(),
                 "width"  => take::<1>(v).map(|a| s.width  = a[0]).is_some(),
@@ -280,9 +339,25 @@ fn write_floats(
                 _        => false,
             }
         }
-        // ── 3D カメラ ──
+        // ── オーディオソース（スロット格納型: locate で解決）──
+        "Audio" => {
+            let Some(e) = locate::<AudioComponent>(world, entity) else { return false };
+            let Some(a) = world.get_mut::<AudioComponent>(e) else { return false };
+            match field {
+                "volume"        => take::<1>(v).map(|x| a.volume = x[0].max(0.0)).is_some(),
+                "pan"           => take::<1>(v).map(|x| a.pan = x[0].clamp(-1.0, 1.0)).is_some(),
+                "loop"          => take::<1>(v).map(|x| a.looped = x[0] != 0.0).is_some(),
+                "play_on_start" => take::<1>(v).map(|x| a.play_on_start = x[0] != 0.0).is_some(),
+                "spatial"       => take::<1>(v).map(|x| a.spatial = x[0] != 0.0).is_some(),
+                "min_distance"  => take::<1>(v).map(|x| a.min_distance = x[0].max(0.0)).is_some(),
+                "max_distance"  => take::<1>(v).map(|x| a.max_distance = x[0].max(0.0)).is_some(),
+                _               => false,
+            }
+        }
+        // ── 3D カメラ（スロット格納型: locate で解決）──
         "Camera" => {
-            let Some(c) = world.get_mut::<CameraComponent>(entity) else { return false };
+            let Some(e) = locate::<CameraComponent>(world, entity) else { return false };
+            let Some(c) = world.get_mut::<CameraComponent>(e) else { return false };
             match field {
                 "fov_y_deg"     => take::<1>(v).map(|a| c.fov_y_deg = a[0]).is_some(),
                 "near"          => take::<1>(v).map(|a| c.near = a[0]).is_some(),
@@ -303,10 +378,19 @@ fn write_floats(
 fn read_string(world: &World, entity: Entity, component: &str, field: &str) -> Option<String> {
     match component {
         "Sprite" => {
-            let s = world.get::<SpriteComponent>(entity)?;
+            let e = locate::<SpriteComponent>(world, entity)?;
+            let s = world.get::<SpriteComponent>(e)?;
             match field {
                 "texture_path" => Some(s.texture_path.clone()),
                 _              => None,
+            }
+        }
+        "Audio" => {
+            let e = locate::<AudioComponent>(world, entity)?;
+            let a = world.get::<AudioComponent>(e)?;
+            match field {
+                "audio_path" => Some(a.audio_path.clone()),
+                _            => None,
             }
         }
         _ => None,
@@ -319,23 +403,33 @@ fn write_string(
 ) -> bool {
     match component {
         "Sprite" => {
-            let Some(s) = world.get_mut::<SpriteComponent>(entity) else { return false };
+            let Some(e) = locate::<SpriteComponent>(world, entity) else { return false };
+            let Some(s) = world.get_mut::<SpriteComponent>(e) else { return false };
             match field {
                 "texture_path" => { s.texture_path = value.to_string(); true }
                 _              => false,
+            }
+        }
+        "Audio" => {
+            let Some(e) = locate::<AudioComponent>(world, entity) else { return false };
+            let Some(a) = world.get_mut::<AudioComponent>(e) else { return false };
+            match field {
+                "audio_path" => { a.audio_path = value.to_string(); true }
+                _            => false,
             }
         }
         _ => false,
     }
 }
 
-/// エンティティが指定コンポーネントを持つか。
+/// エンティティ（またはそのアクターのスロット）が指定コンポーネントを持つか。
 fn has_component(world: &World, entity: Entity, component: &str) -> bool {
     match component {
         "Transform"       => world.get::<Transform>(entity).is_some(),
         "CanvasTransform" => world.get::<CanvasTransform>(entity).is_some(),
-        "Sprite"          => world.get::<SpriteComponent>(entity).is_some(),
-        "Camera"          => world.get::<CameraComponent>(entity).is_some(),
+        "Sprite"          => locate::<SpriteComponent>(world, entity).is_some(),
+        "Camera"          => locate::<CameraComponent>(world, entity).is_some(),
+        "Audio"           => locate::<AudioComponent>(world, entity).is_some(),
         _ => false,
     }
 }
@@ -737,6 +831,52 @@ unsafe extern "system" fn ffi_audio(
     1
 }
 
+/// AudioComponent 操作の種別（C# 側 AudioSource の定数と一致させる）。
+const AUDIO_COMPONENT_PLAY: i32 = 0;
+const AUDIO_COMPONENT_STOP: i32 = 1;
+const AUDIO_COMPONENT_IS_PLAYING: i32 = 2;
+
+thread_local! {
+    /// AudioComponent の「再生中スロット」判定関数。
+    /// AudioManager は App が所有するため、frame_renderer がフレームごとに
+    /// 再生中スロットのスナップショットを公開する。
+    static PLAYING_AUDIO_SLOTS: RefCell<Vec<Entity>> = const { RefCell::new(Vec::new()) };
+}
+
+/// 再生中の AudioComponent スロット一覧を公開する（フレームごとに更新）。
+pub fn publish_playing_audio_slots(slots: Vec<Entity>) {
+    PLAYING_AUDIO_SLOTS.with(|p| *p.borrow_mut() = slots);
+}
+
+/// AudioComponent を操作する。成功（IsPlaying の場合は再生中）=1 / 失敗=0。
+///
+/// idx/gen は gameObject のルートエンティティ。AudioComponent のスロットを
+/// locate で解決し、Play/Stop はコマンドキューへ積む（フレーム末尾に適用）。
+unsafe extern "system" fn ffi_audio_component(action: i32, idx: u32, generation: u32) -> i32 {
+    let ptr = WORLD_PTR.with(|p| p.get());
+    if ptr.is_null() { return 0; }
+    let world = &*ptr;
+    let entity = Entity::from_raw(idx, generation);
+    // ルートエンティティから AudioComponent のスロットエンティティを解決する
+    let Some(slot) = locate::<AudioComponent>(world, entity) else { return 0 };
+
+    match action {
+        AUDIO_COMPONENT_PLAY => {
+            AUDIO_COMMANDS.with(|q| q.borrow_mut().push(ScriptAudioCommand::PlayComponent { entity: slot }));
+            1
+        }
+        AUDIO_COMPONENT_STOP => {
+            AUDIO_COMMANDS.with(|q| q.borrow_mut().push(ScriptAudioCommand::StopComponent { entity: slot }));
+            1
+        }
+        AUDIO_COMPONENT_IS_PLAYING => {
+            let playing = PLAYING_AUDIO_SLOTS.with(|p| p.borrow().contains(&slot));
+            if playing { 1 } else { 0 }
+        }
+        _ => 0,
+    }
+}
+
 // ─── C# へ渡す関数ポインタ表 ─────────────────────────────────
 
 /// C# の #[StructLayout(Sequential)] ScriptHostApi と同一レイアウト。
@@ -759,6 +899,7 @@ pub struct ScriptHostApi {
     raycast:           unsafe extern "system" fn(*const f32, *const f32, f32, *mut f32, *mut u32) -> i32,
     scene:             unsafe extern "system" fn(i32, *const u8, i32) -> i32,
     audio:             unsafe extern "system" fn(i32, *const u8, i32, f32, i32) -> i32,
+    audio_component:   unsafe extern "system" fn(i32, u32, u32) -> i32,
 }
 
 // 関数ポインタは Sync。プロセス全体で 1 つの静的表を共有する。
@@ -777,6 +918,7 @@ static HOST_API: ScriptHostApi = ScriptHostApi {
     raycast:           ffi_raycast,
     scene:             ffi_scene,
     audio:             ffi_audio,
+    audio_component:   ffi_audio_component,
 };
 
 /// C# へ渡す関数ポインタ表へのポインタを返す（RegisterHostApi 用）。

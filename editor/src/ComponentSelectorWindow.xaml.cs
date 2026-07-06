@@ -66,7 +66,10 @@ public partial class ComponentSelectorWindow : Window
             new("ColliderComponent",   "Collider",    "衝突判定形状・リジッドボディをアクターにアタッチ（Box・Sphere・Capsule、重力有無は内部で設定）", ActorTarget.Actor3D),
             new("Collider2dComponent", "Collider 2D", "2D コライダー・リジッドボディをアクターにアタッチ（Box・Circle・Capsule、ピクセル単位）",         ActorTarget.Common),
         }),
-        ("サウンド", new()),
+        ("サウンド", new()
+        {
+            new("AudioComponent", "Audio Source", "BGM/SE の再生。3D 距離減衰・パン対応", ActorTarget.Common),
+        }),
         ("入力", new()
         {
             new("InputMapComponent", "InputMap", ".inputmap アセットをアクタにアタッチ", ActorTarget.Common),
@@ -298,6 +301,7 @@ public partial class ComponentSelectorWindow : Window
         "CameraComponent"    => "Camera",
         "ColliderComponent"   => "Collider",
         "Collider2dComponent" => "Collider2D",
+        "AudioComponent"      => "Audio",
         // Plugin:{name} → プラグイン名をデフォルト名とする
         _ when typeId.StartsWith("Plugin:", StringComparison.Ordinal) => typeId["Plugin:".Length..],
         _                    => typeId,

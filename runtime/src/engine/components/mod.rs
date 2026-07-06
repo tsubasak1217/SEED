@@ -20,6 +20,7 @@ pub mod plugin_component;
 pub mod collider_component;
 pub mod collider2d_component;
 pub mod rigidbody_component;
+pub mod audio_component;
 
 pub use transform::Transform;
 pub use canvas_transform::CanvasTransform;
@@ -41,6 +42,7 @@ pub use collider2d_component::{
 };
 // RigidbodyComponentData は旧フォーマットシーンの後方互換デシリアライズ専用
 pub use rigidbody_component::RigidbodyComponentData;
+pub use audio_component::{AudioComponent, AudioComponentData};
 
 use serde::{Deserialize, Serialize};
 
@@ -73,6 +75,8 @@ pub enum ComponentKind {
     Collider,
     /// 2D 物理コライダー（キャンバスアクター用、衝突形状・リジッドボディ設定を内包）
     Collider2d,
+    /// オーディオソース（BGM/SE 再生、3D 距離減衰・パン対応）
+    Audio,
 }
 
 impl ComponentKind {
@@ -89,6 +93,7 @@ impl ComponentKind {
             Self::Plugin      => "PluginComponent",
             Self::Collider    => "ColliderComponent",
             Self::Collider2d  => "Collider2dComponent",
+            Self::Audio       => "AudioComponent",
         }
     }
 }
@@ -115,4 +120,6 @@ pub enum ComponentData {
     /// 旧フォーマット互換 — 読み込み時に ColliderComponent へ移行される
     #[serde(rename = "RigidbodyComponent")]
     LegacyRigidbodyComponent(RigidbodyComponentData),
+    /// オーディオソース（BGM/SE 再生、3D 距離減衰・パン対応）
+    AudioComponent(AudioComponentData),
 }

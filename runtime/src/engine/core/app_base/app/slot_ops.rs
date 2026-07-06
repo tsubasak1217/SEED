@@ -165,6 +165,10 @@ impl App {
                         use crate::engine::components::Collider2dComponent;
                         scene.world.remove::<Collider2dComponent>(slot_entity);
                     }
+                    ComponentKind::Audio       => {
+                        use crate::engine::components::AudioComponent;
+                        scene.world.remove::<AudioComponent>(slot_entity);
+                    }
                 }
                 scene.world.despawn(slot_entity);
                 // アクターのスロットリストから削除
@@ -405,6 +409,16 @@ impl App {
                 } else { scene.world.despawn(slot_entity); }
                 true
             }
+            ComponentData::AudioComponent(ac_data) => {
+                use crate::engine::components::AudioComponent;
+                let slot_entity = scene.world.spawn();
+                scene.world.insert(slot_entity, AudioComponent::from_data(ac_data));
+                let mut c = 0u32;
+                if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
+                    actor.add_slot_typed::<AudioComponent>(slot_data.name, ComponentKind::Audio, slot_entity);
+                } else { scene.world.despawn(slot_entity); }
+                true
+            }
             ComponentData::LegacyRigidbodyComponent(_) => {
                 // 旧フォーマット互換: ColliderComponent に統合済みのためスロット追加しない
                 false
@@ -579,6 +593,11 @@ impl App {
                     use crate::engine::components::Collider2dComponent;
                     scene.world.insert(slot_entity, Collider2dComponent::from(cc_data));
                     new_slots.push(ComponentSlot::new::<Collider2dComponent>(slot_data.name, ComponentKind::Collider2d, slot_entity));
+                }
+                ComponentData::AudioComponent(ac_data) => {
+                    use crate::engine::components::AudioComponent;
+                    scene.world.insert(slot_entity, AudioComponent::from_data(ac_data));
+                    new_slots.push(ComponentSlot::new::<AudioComponent>(slot_data.name, ComponentKind::Audio, slot_entity));
                 }
                 ComponentData::LegacyRigidbodyComponent(_) => {
                     // 旧フォーマット互換: ColliderComponent に統合済みのためスキップする

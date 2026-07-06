@@ -234,6 +234,12 @@ impl App {
         // 旧シーンを置き換える（World の Drop で旧スクリプトインスタンスも解放される）
         self.scene = Some(new_scene);
 
+        // コンポーネント音源を停止し、play_on_start の発火記録をリセットする
+        //（新シーンの play_on_start を再発火させるため。BGM は継続する）
+        if let Some(audio) = &mut self.audio {
+            audio.reset_components();
+        }
+
         // 物理を新シーンの内容で再起動する
         if had_physics    { self.start_physics(); }
         if had_physics_2d { self.start_physics_2d(); }

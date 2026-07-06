@@ -206,6 +206,15 @@ impl App {
                     let path_json = serde_json::to_string(&d.asset_path).unwrap_or_default();
                     ("InputMapComponent", format!(r#","asset_path":{path_json}"#))
                 }
+                ComponentData::AudioComponent(d) => {
+                    // 音声パス・音量・ループ等の全フィールドをインスペクター用に送信する
+                    let path_json = serde_json::to_string(&d.audio_path).unwrap_or_default();
+                    ("AudioComponent", format!(
+                        r#","audio_path":{path_json},"volume":{:.4},"loop":{},"play_on_start":{},"spatial":{},"min_distance":{:.4},"max_distance":{:.4},"pan":{:.4}"#,
+                        d.volume, d.looped as u8, d.play_on_start as u8, d.spatial as u8,
+                        d.min_distance, d.max_distance, d.pan,
+                    ))
+                }
                 ComponentData::CameraComponent(d) => {
                     // FOV / near / far / is_main / clear_color / scaling_mode / target_size / bar_color をインスペクター用に送信する
                     ("CameraComponent", format!(
@@ -467,6 +476,36 @@ impl App {
                     let mut c = 0u32;
                     if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
                         actor.add_slot_typed::<SpriteComponent>(name, ComponentKind::Sprite, slot_entity);
+                        true
+                    } else {
+                        scene.world.despawn(slot_entity);
+                        false
+                    }
+                };
+                if found {
+                    let after_slots = self.snapshot_actor_slots(wl, actor_dfs_id);
+                    self.undo_history.record(Box::new(ComponentSlotsSnapshotCommand {
+                        world_line: wl, actor_dfs_id, before_slots, after_slots,
+                    }));
+                    self.actor_virtual_selected_slot_idx = 0;
+                    self.selected_instances.clear();
+                    self.send_hierarchy();
+                    self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
+                    if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+                }
+            }
+            "AudioComponent" => {
+                // デフォルト（未設定）の AudioComponent をアクターに追加する。
+                // 音声パス・音量・ループ等はインスペクターから後で設定する。
+                use crate::engine::components::AudioComponent;
+                let name = slot_name.to_string();
+                let found = {
+                    let scene = self.scene.as_mut().unwrap();
+                    let slot_entity = scene.world.spawn();
+                    scene.world.insert(slot_entity, AudioComponent::default());
+                    let mut c = 0u32;
+                    if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
+                        actor.add_slot_typed::<AudioComponent>(name, ComponentKind::Audio, slot_entity);
                         true
                     } else {
                         scene.world.despawn(slot_entity);

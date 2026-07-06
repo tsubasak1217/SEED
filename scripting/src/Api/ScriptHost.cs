@@ -334,6 +334,16 @@ public static unsafe class ScriptHost
             return _api.Audio(kind, pp, pl, volume, flag) != 0;
     }
 
+    /// <summary>
+    /// AudioComponent を操作する（action: 0=Play/1=Stop/2=IsPlaying）。
+    /// 成功（IsPlaying の場合は再生中）なら true。
+    /// </summary>
+    public static bool AudioComponentAction(int action, Entity e)
+    {
+        if (!_available || _api.AudioComponent == null || !e.IsValid) return false;
+        return _api.AudioComponent(action, e.Index, e.Generation) != 0;
+    }
+
     // ── シーン遷移 ───────────────────────────────────────────────
 
     /// <summary>
@@ -437,4 +447,6 @@ public unsafe struct ScriptHostApi
     public delegate* unmanaged[Cdecl]<int, byte*, int, int> Scene;
     /// <summary>(kind, path, pathLen, volume, flag) → 1/0</summary>
     public delegate* unmanaged[Cdecl]<int, byte*, int, float, int, int> Audio;
+    /// <summary>(action, idx, gen) → 1/0（action: 0=Play/1=Stop/2=IsPlaying）</summary>
+    public delegate* unmanaged[Cdecl]<int, uint, uint, int> AudioComponent;
 }
