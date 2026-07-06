@@ -67,11 +67,21 @@ public sealed class GroqInlineCompletionProvider : IInlineCompletionProvider
     /// </summary>
     private DateTime _cooldownUntil = DateTime.MinValue;
 
-    /// <summary>クールダウン中スキップのログを 1 回だけ出すためのフラグ（毎回出すとうるさいため）。</summary>
-    private bool _cooldownLogged;
-
     /// <summary>retry-after が取れなかった 429 に対する既定クールダウン秒数。</summary>
     private const int DefaultCooldownSec = 20;
+
+    /// <summary>
+    /// クールダウンの上限（秒）。Groq は 1 日あたりのトークン上限（TPD）に達すると
+    /// retry-after に数時間を返すことがあり、そのまま従うと補完が何時間も無言で
+    /// 止まったように見える。上限でキャップし、定期的に再試行して状況をログに出す。
+    /// </summary>
+    private const int MaxCooldownSec = 120;
+
+    /// <summary>クールダウンスキップのログ間引き間隔（秒）。</summary>
+    private const int LogThrottleSec = 5;
+
+    /// <summary>最後にクールダウンスキップをログした時刻。</summary>
+    private DateTime _lastCooldownLogAt = DateTime.MinValue;
 
     public GroqInlineCompletionProvider(Func<string> apiKey, Func<string> model)
     {
@@ -88,12 +98,13 @@ public sealed class GroqInlineCompletionProvider : IInlineCompletionProvider
         if (string.IsNullOrWhiteSpace(apiKey)) return null;
 
         // レート制限クールダウン中は API を叩かない（無駄打ちで 429 を量産しないため）。
-        // 「理由なく止まって見える」のを防ぐため、クールダウン中である旨を 1 回だけログする。
+        // 「理由なく止まって見える」のを防ぐため、スキップ理由を毎回ログする
+        // （自動発火モードでの連続スパムだけ LogThrottleSec で間引く）。
         if (DateTime.UtcNow < _cooldownUntil)
         {
-            if (!_cooldownLogged)
+            if ((DateTime.UtcNow - _lastCooldownLogAt).TotalSeconds >= LogThrottleSec)
             {
-                _cooldownLogged = true;
+                _lastCooldownLogAt = DateTime.UtcNow;
                 int remain = (int)Math.Ceiling((_cooldownUntil - DateTime.UtcNow).TotalSeconds);
                 SEEDEditor.EditorLog.Write($"[インライン補完] レート制限クールダウン中（あと約{remain}s）のためスキップ");
             }
@@ -153,12 +164,16 @@ public sealed class GroqInlineCompletionProvider : IInlineCompletionProvider
                     $"body={body}");
 
                 // 429（レート制限）は retry-after ぶんクールダウンし、その間は送信を止める。
+                // TPD（日次上限）では数時間が返ることがあるため MaxCooldownSec でキャップする
+                //（キャップ後は定期的に再試行され、都度この 429 ログで状況が可視化される）。
                 if ((int)res.StatusCode == 429)
                 {
                     int sec = int.TryParse(retryAfter, out var ra) && ra > 0 ? ra : DefaultCooldownSec;
-                    _cooldownUntil = DateTime.UtcNow.AddSeconds(sec + 1);   // +1s は境界の余裕
-                    _cooldownLogged = false;                                // 次のクールダウンで再度 1 回ログする
-                    SEEDEditor.EditorLog.Write($"[インライン補完] レート制限のため {sec}s クールダウンします");
+                    int capped = Math.Min(sec, MaxCooldownSec);
+                    _cooldownUntil = DateTime.UtcNow.AddSeconds(capped + 1);   // +1s は境界の余裕
+                    SEEDEditor.EditorLog.Write(sec > capped
+                        ? $"[インライン補完] レート制限（retry-after={sec}s）。上限 {capped}s でクールダウンし定期再試行します"
+                        : $"[インライン補完] レート制限のため {capped}s クールダウンします");
                 }
                 return null;
             }
@@ -185,7 +200,13 @@ public sealed class GroqInlineCompletionProvider : IInlineCompletionProvider
 
             // 推論モデル（qwen3 等）は思考過程を <think>…</think> で吐くため取り除く。
             var text = StripCodeFences(StripReasoning(sb.ToString()));
-            return string.IsNullOrEmpty(text) ? null : text;
+            if (string.IsNullOrEmpty(text))
+            {
+                // 原因調査のため「API は成功したが中身が空だった」ことを可視化する
+                SEEDEditor.EditorLog.Write($"[インライン補完] 応答が空（生応答 {sb.Length} 文字 → 除去後 0 文字）");
+                return null;
+            }
+            return text;
         }
         catch (OperationCanceledException) { return null; } // 新しい入力で破棄
         catch (Exception ex)

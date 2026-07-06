@@ -225,7 +225,10 @@ public sealed class InlineCompletionController : IDisposable
 
         Log($"request: caret={caret} prefixLen={prefix.Length}");
         string? result = await _provider.GetCompletionAsync(prefix, suffix, token);
-        if (result is null || token.IsCancellationRequested) { Log("result: null/cancel"); return; }
+        // null（プロバイダ側スキップ・エラー。理由はプロバイダが直前にログ済み）と
+        // キャンセル（新しい入力による破棄）を区別してログする
+        if (token.IsCancellationRequested) { Log("result: キャンセル（新しい入力）"); return; }
+        if (result is null)                { Log("result: null（直前のログ参照。無ければクールダウン中）"); return; }
 
         // リクエスト中に編集・カーソル移動があれば破棄する（陳腐化防止）
         if (_editor.CaretOffset != caret || _editor.Document.TextLength != text.Length) { Log("result: 陳腐化"); return; }
