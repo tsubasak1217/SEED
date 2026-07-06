@@ -64,25 +64,64 @@
         </Border>
 
         <!--
-            RichTextBox (読み取り専用): マウス範囲選択・Ctrl+C・右クリックコピーが
-            すべてネイティブで動作する。
+            仮想化 ListBox: 各行を 1 アイテムとして表示する。VirtualizingStackPanel により
+            画面に見えている数十行だけが実体化されるため、行数や追記頻度に関係なく
+            追加・トリム・スクロールが軽量に保たれる（旧 RichTextBox/FlowDocument は
+            非仮想化で全ブロックを毎回レイアウトしていたため大量ログで極端に重くなっていた）。
+            行選択 + Ctrl+C / コンテキストメニューでコピーできる。
         -->
-        <RichTextBox x:Name="LogBox"
-                     Grid.Row="1"
-                     Background="#1E1E1E"
-                     Foreground="#CCCCCC"
-                     FontFamily="Consolas"
-                     FontSize="11"
-                     BorderThickness="0"
-                     IsReadOnly="True"
-                     IsDocumentEnabled="True"
-                     VerticalScrollBarVisibility="Auto"
-                     HorizontalScrollBarVisibility="Auto"
-                     AcceptsReturn="False"
-                     Padding="4,2">
-            <RichTextBox.ContextMenu>
+        <ListBox x:Name="LogList"
+                 Grid.Row="1"
+                 Background="#1E1E1E"
+                 BorderThickness="0"
+                 FontFamily="Consolas"
+                 FontSize="11"
+                 Foreground="#CCCCCC"
+                 SelectionMode="Extended"
+                 KeyDown="OnListKeyDown"
+                 ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                 ScrollViewer.VerticalScrollBarVisibility="Auto"
+                 ScrollViewer.CanContentScroll="True"
+                 VirtualizingStackPanel.IsVirtualizing="True"
+                 VirtualizingStackPanel.VirtualizationMode="Recycling"
+                 VirtualizingStackPanel.ScrollUnit="Pixel"
+                 HorizontalContentAlignment="Stretch">
+            <ListBox.ItemContainerStyle>
+                <!-- 行を詰めて表示し、選択・ホバーの色をダークテーマにする -->
+                <Style TargetType="ListBoxItem">
+                    <Setter Property="Padding"           Value="0"/>
+                    <Setter Property="Margin"            Value="0"/>
+                    <Setter Property="MinHeight"         Value="0"/>
+                    <Setter Property="BorderThickness"   Value="0"/>
+                    <Setter Property="Background"        Value="Transparent"/>
+                    <Setter Property="Foreground"        Value="{Binding Color}"/>
+                    <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+                    <Setter Property="Template">
+                        <Setter.Value>
+                            <ControlTemplate TargetType="ListBoxItem">
+                                <Border x:Name="Bd" Background="{TemplateBinding Background}"
+                                        Padding="4,0" SnapsToDevicePixels="True">
+                                    <ContentPresenter/>
+                                </Border>
+                                <ControlTemplate.Triggers>
+                                    <Trigger Property="IsSelected" Value="True">
+                                        <Setter TargetName="Bd" Property="Background" Value="#264F78"/>
+                                    </Trigger>
+                                </ControlTemplate.Triggers>
+                            </ControlTemplate>
+                        </Setter.Value>
+                    </Setter>
+                </Style>
+            </ListBox.ItemContainerStyle>
+            <ListBox.ItemTemplate>
+                <DataTemplate>
+                    <TextBlock Text="{Binding Text}" Foreground="{Binding Color}"
+                               TextWrapping="NoWrap" LineHeight="15" LineStackingStrategy="BlockLineHeight"/>
+                </DataTemplate>
+            </ListBox.ItemTemplate>
+            <ListBox.ContextMenu>
                 <ContextMenu Background="#2D2D2D" BorderBrush="#555">
-                    <MenuItem Header="コピー (Ctrl+C)"  Command="ApplicationCommands.Copy"
+                    <MenuItem Header="コピー (Ctrl+C)"  Click="OnCopySelected"
                               Foreground="#CCC"/>
                     <Separator/>
                     <MenuItem Header="すべてコピー"      Click="OnCopyAll"
@@ -90,7 +129,7 @@
                     <MenuItem Header="クリア"            Click="OnClear"
                               Foreground="#CCC"/>
                 </ContextMenu>
-            </RichTextBox.ContextMenu>
-        </RichTextBox>
+            </ListBox.ContextMenu>
+        </ListBox>
     </Grid>
 </UserControl>
