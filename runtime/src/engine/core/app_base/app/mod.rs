@@ -387,6 +387,10 @@ pub struct App {
     /// AI 実行中にレンダリングを停止して GPU リソースを LLM に解放するフラグ。
     /// PAUSE_RENDER / RESUME_RENDER IPC コマンドで切り替える。
     render_paused: bool,
+    /// ウィンドウがフォーカスされているか（winit の WindowEvent::Focused で更新）。
+    /// フォーカスが無い間はフレームレートを抑え、遮蔽時の present 即時リターンによる
+    /// 暴走ループ（毎秒数千フレーム）を防ぐために使う。
+    window_focused: bool,
     /// アセットルートのパス（Playモード・パッケージモードでのシーン自動ロードに使用）。
     assets_root:  Option<String>,
     /// エディタリソースディレクトリ（カメラギズモモデル等の読み込みに使用）。
@@ -700,6 +704,7 @@ impl App {
             ipc,
             paused:        false,
             render_paused: false,
+            window_focused: true,
             assets_root:      args.assets_root,
             editor_resources: args.editor_resources,
             scene_path:       args.scene_path,

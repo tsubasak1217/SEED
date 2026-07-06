@@ -36,6 +36,12 @@ impl ApplicationHandler for App {
                 self.on_resize(size);
             }
 
+            // フォーカス状態を記録する。フォーカスが無い間はフレームレートを抑えて
+            // 遮蔽時の present 即時リターンによる暴走ループ（毎秒数千フレーム）を防ぐ。
+            WindowEvent::Focused(focused) => {
+                self.window_focused = focused;
+            }
+
             WindowEvent::KeyboardInput { event, .. } => {
                 self.on_keyboard_input(event);
             }

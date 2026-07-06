@@ -143,6 +143,28 @@ impl App {
         }))
     }
 
+    /// フォーカスが無い間はフレームレートを抑える。
+    ///
+    /// ゲームウィンドウが非アクティブ／遮蔽されると present_mode=Mailbox の present() が
+    /// VSync を待たず即座に返るため、`ControlFlow::Poll` + `request_redraw` のループが
+    /// 毎秒数千フレームで暴走する。毎フレーム `Debug.Log` するスクリプトでは、これが
+    /// エディタの Output を溢れさせ極端に重くする原因になる。フォーカスが無い間だけ
+    /// `UNFOCUSED_MAX_FPS` に制限してこの暴走を防ぐ（バックグラウンド描画なので実害はない）。
+    /// フォーカス時は present／DWM の VSync に任せて何もしない。
+    fn pace_frame_if_unfocused(&self, frame_start: std::time::Instant) {
+        // Edit モード（エディタ埋め込みビューポート）は、フォーカスが外れても
+        // 編集操作の滑らかさを保ちたいので制限しない。制限対象は Play／スタンドアロン
+        // 実行のウィンドウのみ（フラッドが問題になるのはこちら）。
+        if self.window_focused || self.mode == RuntimeMode::Edit { return; }
+        /// 非フォーカス時のフレームレート上限。
+        const UNFOCUSED_MAX_FPS: u64 = 30;
+        let target  = std::time::Duration::from_micros(1_000_000 / UNFOCUSED_MAX_FPS);
+        let elapsed = frame_start.elapsed();
+        if elapsed < target {
+            std::thread::sleep(target - elapsed);
+        }
+    }
+
     /// RedrawRequested イベント処理: 1 フレーム分のレンダリング全体を担う。
     ///
     /// render.rs の window_event から委譲される。
@@ -197,6 +219,7 @@ impl App {
         // IPC は process_ipc で処理済みなので RESUME_RENDER を受け取れる。
         // request_redraw() でポーリングを継続し、RESUME_RENDER 受信後に即復帰できるようにする。
         if self.render_paused {
+            self.pace_frame_if_unfocused(perf_t_total);
             if let Some(w) = &self.window { w.request_redraw(); }
             return;
         }
@@ -217,6 +240,7 @@ impl App {
         if let Some(w) = &self.window {
             let sz = w.inner_size();
             if sz.width == 0 || sz.height == 0 {
+                self.pace_frame_if_unfocused(perf_t_total);
                 w.request_redraw();
                 return;
             }
@@ -3027,6 +3051,9 @@ impl App {
         }
 
         if dbg { eprintln!("[SEED FRAME {dbg_frame}] end"); }
+        // フォーカスが無い間はフレームレートを抑える（遮蔽時の present 即時リターンによる
+        // 暴走ループと、それに伴う毎フレーム Debug.Log の氾濫を防ぐ）。
+        self.pace_frame_if_unfocused(perf_t_total);
         if let Some(window) = &self.window { window.request_redraw(); }
     }
 }
