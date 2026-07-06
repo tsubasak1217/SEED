@@ -109,7 +109,22 @@ public sealed class GroqInlineCompletionProvider : IInlineCompletionProvider
             using var res = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
             if (!res.IsSuccessStatusCode)
             {
-                SEEDEditor.EditorLog.Write($"[インライン補完] Groq HTTP {(int)res.StatusCode} {res.StatusCode}");
+                // 429（レート制限）などの原因を判別できるよう、本文とレート制限ヘッダも記録する。
+                // Groq のヘッダ: x-ratelimit-remaining-requests / -tokens（どちらが 0 かで RPM/TPM を判別）、
+                // retry-after（再試行までの秒数）。本文にも "Rate limit reached ... try again in Xs" が入る。
+                string Header(string name) =>
+                    res.Headers.TryGetValues(name, out var v) ? string.Join(",", v) : "-";
+                string body = "";
+                try { body = await res.Content.ReadAsStringAsync(ct); } catch { /* ignore */ }
+                if (body.Length > 300) body = body[..300];
+                body = body.Replace('\n', ' ').Replace('\r', ' ');
+
+                SEEDEditor.EditorLog.Write(
+                    $"[インライン補完] Groq HTTP {(int)res.StatusCode} {res.StatusCode} " +
+                    $"retry-after={Header("retry-after")} " +
+                    $"remaining-req={Header("x-ratelimit-remaining-requests")} " +
+                    $"remaining-tok={Header("x-ratelimit-remaining-tokens")} " +
+                    $"body={body}");
                 return null;
             }
 
