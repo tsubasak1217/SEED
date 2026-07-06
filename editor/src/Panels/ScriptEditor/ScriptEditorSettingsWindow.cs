@@ -52,7 +52,7 @@ public sealed class ScriptEditorSettingsWindow : Window
         var codeStylePanel = BuildCodeStylePanel(out var indentGetter, out var tabsCheck, out var fontGetter);
         var colorPanel     = BuildColorPanel(out var colorGetters);
         var aiPanel        = BuildAiPanel(
-            out var inlineCheck, out var groqKeyGetter, out var groqModelCombo);
+            out var inlineCheck, out var manualCheck, out var groqKeyGetter, out var groqModelCombo);
 
         // 右ペイン（内容表示先）。選択カテゴリのパネルをここへ差し込む。
         var detailHost = new ContentControl();
@@ -107,6 +107,7 @@ public sealed class ScriptEditorSettingsWindow : Window
             _settings.ConvertTabsToSpaces    = tabsCheck.IsChecked == true;
             _settings.FontSize               = Math.Clamp(fontGetter(), 8, 40);
             _settings.InlineCompletionEnabled = inlineCheck.IsChecked == true;
+            _settings.InlineCompletionManualOnly = manualCheck.IsChecked == true;
             _settings.GroqApiKey = groqKeyGetter().Trim();
             var groqModel = ((groqModelCombo.SelectedItem as string) ?? "").Trim();
             if (groqModel.Length > 0) _settings.GroqModel = groqModel;
@@ -207,7 +208,7 @@ public sealed class ScriptEditorSettingsWindow : Window
 
     /// <summary>「AI 補完」カテゴリ（インライン補完・Groq 設定）の内容パネルを構築する。</summary>
     private StackPanel BuildAiPanel(
-        out CheckBox inlineCheck, out Func<string> groqKeyGetter, out ComboBox groqModelCombo)
+        out CheckBox inlineCheck, out CheckBox manualCheck, out Func<string> groqKeyGetter, out ComboBox groqModelCombo)
     {
         var panel = new StackPanel();
         panel.Children.Add(Section("AI 補完"));
@@ -220,6 +221,17 @@ public sealed class ScriptEditorSettingsWindow : Window
             Margin     = new Thickness(0, 6, 0, 2),
         };
         panel.Children.Add(inlineCheck);
+
+        // 手動トリガのみ：入力中の自動発火を止め、Ctrl+Q でのみ補完する。
+        // クラウド API のトークン/分レート制限に当たりにくくするための運用スイッチ。
+        manualCheck = new CheckBox
+        {
+            Content    = "手動トリガのみ（Ctrl+Q で補完・自動発火しない）",
+            IsChecked  = _settings.InlineCompletionManualOnly,
+            Foreground = Text,
+            Margin     = new Thickness(16, 2, 0, 2),
+        };
+        panel.Children.Add(manualCheck);
 
         panel.Children.Add(new TextBlock
         {

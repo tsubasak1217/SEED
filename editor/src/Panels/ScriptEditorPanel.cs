@@ -801,8 +801,9 @@ public class ScriptEditorPanel : UserControl
         doc.Inline = new InlineCompletionController(
             editor,
             GetInlineProvider(),
-            isEnabled:    () => _settings.InlineCompletionEnabled && !readOnly,
-            isSuppressed: () => false);
+            isEnabled:     () => _settings.InlineCompletionEnabled && !readOnly,
+            isSuppressed:  () => false,
+            isAutoTrigger: () => !_settings.InlineCompletionManualOnly);
 
         // IntelliSense: 文字入力に応じて補完ウィンドウを開く
         editor.TextArea.TextEntered += (_, e) => OnTextEntered(doc, e.Text);
@@ -1444,6 +1445,17 @@ public class ScriptEditorPanel : UserControl
                 e.Handled = true;
                 return;
             }
+        }
+
+        // Ctrl+Q: AI インライン補完を手動発火（そのまま Tab で確定）。
+        //  - Q は Tab の真上にあり「Ctrl+Q → Tab」が最小の指移動で完結する。
+        //  - Ctrl+Tab（タブ切替）・Shift+Tab（アウトデント）と衝突しない空きキー。
+        //  - 手動トリガ運用（InlineCompletionManualOnly）でクラウド API のレート制限を回避する。
+        if (e.Key == Key.Q && Keyboard.Modifiers == ModifierKeys.Control)
+        {
+            e.Handled = true;
+            doc.Inline?.RequestNow();
+            return;
         }
 
         // Ctrl+Space: 補完を手動起動

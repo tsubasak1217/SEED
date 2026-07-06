@@ -69,21 +69,6 @@
     </Content>
   </ItemGroup>
 
-  <!-- llama-server.exe と依存 DLL をビルド出力ディレクトリへコピーする。     -->
-  <!-- CI 環境（GitHub Actions が CI=true を設定）ではファイルが存在しないため、 -->
-  <!-- Condition で除外してビルドエラーを回避する。                              -->
-  <ItemGroup Condition="'$(CI)'!='true'">
-    <Content Include="src\AI\LocalLlm\llama-server.exe">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-      <Link>llama-server.exe</Link>
-    </Content>
-    <!-- llama.cpp Vulkan 版の依存 DLL（出力ディレクトリ直下にフラットコピー） -->
-    <Content Include="src\AI\LocalLlm\*.dll">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-      <Link>%(Filename)%(Extension)</Link>
-    </Content>
-  </ItemGroup>
-
   <!-- SeedMcpServer をメインビルド後に独立してビルドし、出力を同じディレクトリへコピーする。 -->
   <!-- ProjectReference を使わないことで WPF の _wpftmp 中間プロジェクトとの衝突を回避する。 -->
   <Target Name="BuildAndCopySeedMcpServer" AfterTargets="Build" Condition="'$(CI)'!='true'">

@@ -29,6 +29,14 @@ public sealed class ScriptEditorSettings
     /// </summary>
     public bool InlineCompletionEnabled { get; set; } = false;
 
+    /// <summary>
+    /// インライン補完を「手動トリガ（キー押下）時のみ」実行するか。
+    /// true（既定）: 入力中に自動発火せず、明示的なショートカットでのみ補完する。
+    ///   → クラウド API のレート制限（トークン/分）に当たりにくい。
+    /// false: 入力が止まったら自動で補完する（従来動作。API 消費が多い）。
+    /// </summary>
+    public bool InlineCompletionManualOnly { get; set; } = true;
+
     /// <summary>Groq バックエンドの API キー（https://console.groq.com で取得）。</summary>
     public string GroqApiKey { get; set; } = "";
 

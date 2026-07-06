@@ -38,6 +38,7 @@ public sealed class InlineCompletionController : IDisposable
     private readonly DispatcherTimer            _debounceTimer;
     private readonly Func<bool>                 _isEnabled;    // 設定でインライン補完が有効か
     private readonly Func<bool>                 _isSuppressed; // IntelliSense 表示中など抑止すべきか
+    private readonly Func<bool>                 _isAutoTrigger; // 入力中に自動発火するか（false=手動キーのみ）
 
     private CancellationTokenSource? _cts;
     private bool _accepting;   // 自前の確定挿入中は再トリガ・却下を抑止する
@@ -46,12 +47,14 @@ public sealed class InlineCompletionController : IDisposable
         TextEditor editor,
         IInlineCompletionProvider provider,
         Func<bool> isEnabled,
-        Func<bool> isSuppressed)
+        Func<bool> isSuppressed,
+        Func<bool> isAutoTrigger)
     {
-        _editor       = editor;
-        _provider     = provider;
-        _isEnabled    = isEnabled;
-        _isSuppressed = isSuppressed;
+        _editor        = editor;
+        _provider      = provider;
+        _isEnabled     = isEnabled;
+        _isSuppressed  = isSuppressed;
+        _isAutoTrigger = isAutoTrigger;
 
         _renderer = new GhostTextRenderer(editor);
         editor.TextArea.TextView.BackgroundRenderers.Add(_renderer);
@@ -125,11 +128,29 @@ public sealed class InlineCompletionController : IDisposable
         if (_accepting) return;          // 自前の確定挿入は無視する
         Dismiss();                        // 既存の予測は一旦消す
         if (!_isEnabled()) return;
+        // 手動トリガモードでは入力中に自動発火しない（キー押下＝RequestNow のみ）。
+        if (!_isAutoTrigger()) return;
         // 入力が続く間はリクエストを遅延させる（デバウンス）。
         // 意図が強い場面（コメント行の直後で改行）は短く、それ以外は長く待って発火を絞る。
         _debounceTimer.Stop();
         _debounceTimer.Interval = IsAfterCommentNewline() ? FastDebounce : SlowDebounce;
         _debounceTimer.Start();
+    }
+
+    /// <summary>
+    /// ショートカットからの手動発火。デバウンスを介さず即座に補完をリクエストする。
+    /// 自動発火が無効（手動モード）でも動作する。
+    /// </summary>
+    public void RequestNow()
+    {
+        if (!_isEnabled()) return;
+        _debounceTimer.Stop();
+        if (_renderer.HasText)          // 既存ゴーストは消してから出し直す
+        {
+            _renderer.Clear();
+            _editor.TextArea.TextView.Redraw();
+        }
+        _ = RequestAsync();
     }
 
     /// <summary>
