@@ -97,9 +97,7 @@ public partial class CreateItemWindow : Window
         // 各関数は 1 フレーム内で「BeginFrame → EarlyUpdate → Update →
         // ConstantUpdate → LateUpdate → Render → EndFrame」の順に呼ばれる。
         var template  = $$"""
-            using System;
-            using SEEDEditor.Scripting;   // SEEDScript・[SerializeField] など
-            using SEED;                    // Mathf・Vector3・Time・Random・transform など
+            using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameContext（衝突しない基盤のみ）
 
             /// <summary>{{className}} スクリプト。</summary>
             public class {{className}} : SEEDScript
@@ -108,10 +106,17 @@ public partial class CreateItemWindow : Window
                 // [SerializeField(Label = "速度")]
                 // private float speed = 1.0f;
 
+                // ゲーム向けエンジン API（Mathf/Vector3/Time/Random/Debug/GameObject など）は
+                // SEED 名前空間にあります。System と型名が衝突する（例: Random ↔ System.Random）ため、
+                // エンジン側からは using を付けていません。「SEED.」で修飾して呼び出してください。
+                //   例) num += SEED.Random.Range(0, 10);
+                //       transform.Position += SEED.Vector3.Right * SEED.Time.DeltaTime;
+                // ※ どうしても無修飾で書きたい場合は自分で「using SEED;」を足せます（衝突解決は自己責任）。
+                //
                 // 使える API 例:
-                //   transform.Position / .Rotation / .Scale  … 自分の GameObject の Transform（get/set）
-                //   Time.DeltaTime                            … 前フレームからの経過秒
-                //   Mathf.Lerp / Vector3 / Random / Debug.Log … 数学・乱数・ログ
+                //   transform.Position / .Rotation / .Scale        … 自分の GameObject の Transform（get/set）
+                //   ctx.DeltaTime                                  … 前フレームからの経過秒
+                //   SEED.Mathf.Lerp / SEED.Vector3 / SEED.Random / SEED.Debug.Log … 数学・乱数・ログ
                 // 詳細は docs/scripting_api.md を参照。
 
                 /// <summary>フレーム開始時に呼ばれる。入力取得や状態リセット向け。</summary>

@@ -6,16 +6,19 @@
 - したがって **API を追加・変更したら、必ず本ファイルを更新** してください。ここに書かれていない API は AI が知りません。
 
 > **重要（AI 向け）**: SEED は **Unity ではありません**。`UnityEngine` 名前空間・`MonoBehaviour`・`GetComponent` の Unity 実装などは存在しません。使えるのは以下に列挙した SEED 独自 API と .NET 標準ライブラリ（`System.*`）だけです。
+>
+> **名前空間の必須修飾（重要）**: ゲーム向けエンジン API（`Mathf` / `Vector3` / `Vector2` / `Quaternion` / `Time` / `Random` / `Debug` / `GameObject` など）は **`SEED` 名前空間**にあります。エンジンはテンプレートに `using SEED;` を入れません（`System.Random` などとの型名衝突を防ぐため）。したがって **コードでは必ず `SEED.` を付けて呼び出してください**（例: `SEED.Random.Range(0, 10)`、`SEED.Vector3.Up`、`SEED.Mathf.Sin(x)`、`SEED.Time.DeltaTime`）。無修飾で書きたい場合のみ、ユーザー自身が各スクリプトの先頭に `using SEED;` を書きます（その際の名前衝突は自己責任）。基底クラス `SEEDScript` と属性・`NativeFrameContext` は `SEEDEditor.Scripting` 名前空間にあり、こちらは衝突しないためテンプレートで `using` 済みです。
+>
+> 本リファレンスの **API 一覧（列挙）部分は簡潔さのため `SEED.` を省略**しています。実際のコードでは上記のとおり `SEED.` を付けてください（`using SEED;` した場合を除く）。
 
 ---
 
 ## 1. スクリプトの基本形
 
-スクリプトは C# で書き、`SEEDScript`（`SEEDEditor.Scripting` 名前空間）を継承します。ゲーム向け API は `SEED` 名前空間にあります。
+スクリプトは C# で書き、`SEEDScript`（`SEEDEditor.Scripting` 名前空間）を継承します。ゲーム向け API は `SEED` 名前空間にあり、**`SEED.` で修飾して呼び出します**（エンジンは `using SEED;` を自動では入れません）。
 
 ```csharp
-using SEEDEditor.Scripting;   // SEEDScript・[SerializeField] など
-using SEED;                    // Mathf・Vector3・Time・Random・GameObject など
+using SEEDEditor.Scripting;   // SEEDScript・[SerializeField]・NativeFrameContext（衝突しない基盤のみ）
 
 public class Mover : SEEDScript
 {
@@ -25,13 +28,15 @@ public class Mover : SEEDScript
 
     public override void Update(ref NativeFrameContext ctx)
     {
-        // 毎フレーム、自分の GameObject を右へ動かす
-        transform.Position += Vector3.Right * speed * Time.DeltaTime;
+        // 毎フレーム、自分の GameObject を右へ動かす（エンジン API は SEED. で修飾）
+        transform.Position += SEED.Vector3.Right * speed * SEED.Time.DeltaTime;
     }
 }
 ```
 
-`ref NativeFrameContext ctx` には `ctx.DeltaTime`（前フレームからの経過秒）と `ctx.AnimTime`（累計時間）が入っています。同じ値は `Time.DeltaTime` / `Time.ElapsedTime` でも取れます。
+`ref NativeFrameContext ctx` には `ctx.DeltaTime`（前フレームからの経過秒）と `ctx.AnimTime`（累計時間）が入っています。同じ値は `SEED.Time.DeltaTime` / `SEED.Time.ElapsedTime` でも取れます。
+
+> 無修飾で書きたい場合は、そのスクリプトの先頭に自分で `using SEED;` を足してください。ただし `System.Random` など標準ライブラリと型名が衝突することがあり、その解決（`SEED.Random` と明示するなど）は利用者側の責任になります。`using` はファイル単位で閉じるため、他のスクリプトには影響しません。
 
 ---
 
@@ -125,7 +130,7 @@ q.Normalized
 
 ## 6. Random（乱数）
 
-エンジン全体で 1 つの系列を共有します。`using System;` と併用すると `System.Random` と衝突するので、その場合は `SEED.Random` と明示してください。
+エンジン全体で 1 つの系列を共有します。既定では `SEED.Random.Range(...)` のように `SEED.` を付けて呼び出します（`System.Random` との衝突を避けるため、エンジンは `using SEED;` を入れません）。自分で `using SEED;` を足した場合、`using System;` も併用していると `Random` が曖昧になるので、その場合は引き続き `SEED.Random` と明示してください。
 
 ```csharp
 Random.Value                 // float: 0.0 以上 1.0 未満
@@ -152,9 +157,9 @@ transform.Position         // Vector3（get/set）
 transform.Rotation         // Vector3（get/set。YXZ オイラー角・度）
 transform.Scale            // Vector3（get/set）
 
-// 例: 回しながら上げる
-transform.Rotation += new Vector3(0f, 90f * Time.DeltaTime, 0f);
-transform.Position += Vector3.Up * Time.DeltaTime;
+// 例: 回しながら上げる（エンジン API は SEED. で修飾）
+transform.Rotation += new SEED.Vector3(0f, 90f * SEED.Time.DeltaTime, 0f);
+transform.Position += SEED.Vector3.Up * SEED.Time.DeltaTime;
 ```
 
 > Transform は Rust ランタイムの ECS コンポーネントを FFI 経由で読み書きします。`Position` などへの代入は即座にゲーム世界へ反映されます。
