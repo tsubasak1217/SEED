@@ -12,47 +12,7 @@
 
     <Window.Resources>
 
-        <!-- ── ドロップダウンポップアップのダークテーマ ── -->
-        <SolidColorBrush x:Key="{x:Static SystemColors.WindowBrushKey}"        Color="#2A2A2A"/>
-        <SolidColorBrush x:Key="{x:Static SystemColors.WindowTextBrushKey}"    Color="#CCCCCC"/>
-        <SolidColorBrush x:Key="{x:Static SystemColors.HighlightBrushKey}"     Color="#1A4A7A"/>
-        <SolidColorBrush x:Key="{x:Static SystemColors.HighlightTextBrushKey}" Color="#FFFFFF"/>
-        <SolidColorBrush x:Key="{x:Static SystemColors.ControlTextBrushKey}"   Color="#CCCCCC"/>
-
-        <!-- ComboBoxItem のダークテーマ（ドロップダウン内の各行） -->
-        <Style TargetType="ComboBoxItem">
-            <Setter Property="Background" Value="#2A2A2A"/>
-            <Setter Property="Foreground" Value="#CCCCCC"/>
-            <Setter Property="FontSize"   Value="11"/>
-            <Setter Property="Template">
-                <Setter.Value>
-                    <ControlTemplate TargetType="ComboBoxItem">
-                        <Border x:Name="Bd"
-                                Background="{TemplateBinding Background}"
-                                Padding="8,4"
-                                SnapsToDevicePixels="True">
-                            <ContentPresenter VerticalAlignment="Center"/>
-                        </Border>
-                        <ControlTemplate.Triggers>
-                            <!-- ホバー / キーボードフォーカス -->
-                            <Trigger Property="IsHighlighted" Value="True">
-                                <Setter TargetName="Bd" Property="Background" Value="#1A4A7A"/>
-                                <Setter Property="Foreground" Value="#FFFFFF"/>
-                            </Trigger>
-                            <!-- 選択済み（ホバーなし） -->
-                            <MultiTrigger>
-                                <MultiTrigger.Conditions>
-                                    <Condition Property="IsSelected"    Value="True"/>
-                                    <Condition Property="IsHighlighted" Value="False"/>
-                                </MultiTrigger.Conditions>
-                                <Setter TargetName="Bd" Property="Background" Value="#1A3A6A"/>
-                                <Setter Property="Foreground" Value="#FFFFFF"/>
-                            </MultiTrigger>
-                        </ControlTemplate.Triggers>
-                    </ControlTemplate>
-                </Setter.Value>
-            </Setter>
-        </Style>
+        <!-- ComboBox / ComboBoxItem の配色はアプリ共通のダークテーマ暗黙スタイル（App.xaml）に任せる -->
 
         <!-- 共通ボタンスタイル -->
         <Style x:Key="ActionBtn" TargetType="Button">
@@ -180,8 +140,6 @@
                                    Foreground="#888888" FontSize="11"
                                    VerticalAlignment="Center" Margin="0,0,8,0"/>
                         <ComboBox Grid.Column="4" x:Name="CbValueType"
-                                  Background="#2A2A2A" Foreground="Black"
-                                  BorderBrush="#444444" BorderThickness="1"
                                   FontSize="11" Height="24"
                                   SelectionChanged="OnValueTypeChanged">
                             <ComboBoxItem Content="Bool（ボタン）"   Tag="Bool"/>

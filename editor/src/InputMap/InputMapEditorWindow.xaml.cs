@@ -404,10 +404,8 @@ public partial class InputMapEditorWindow : Window
             IsEditable          = true,
             IsTextSearchEnabled = false,
             StaysOpenOnEdit     = true,
-            Background          = new SolidColorBrush(Color.FromRgb(0x2A, 0x2A, 0x2A)),
-            Foreground          = Brushes.Black,   // 選択値表示部は白地のため黒文字
-            BorderBrush         = new SolidColorBrush(Color.FromRgb(0x44, 0x44, 0x44)),
-            BorderThickness     = new Thickness(1),
+            // 配色（暗背景・白文字・編集用テキスト欄含む）はアプリ共通の
+            // ダークテーマ暗黙スタイル（App.xaml）に任せる
             FontSize            = 11,
             Height              = 24,
             Margin              = new Thickness(4, 2, 4, 2),

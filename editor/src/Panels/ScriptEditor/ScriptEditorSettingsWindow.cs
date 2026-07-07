@@ -285,68 +285,18 @@ public sealed class ScriptEditorSettingsWindow : Window
     };
 
     /// <summary>
-    /// ダークテーマで確実に読める「選択専用（編集不可）」ComboBox を生成する。
+    /// 「選択専用（編集不可）」ComboBox を生成する。
     ///
-    /// 既定テンプレートは選択表示欄が OS テーマの明色（白）になり、白文字と重なって
-    /// 読めないため、選択欄・ドロップダウンとも暗色にしたカスタムテンプレートを適用する。
-    /// 入力は不要な用途（モデル選択など）を想定し、編集用テキスト欄は持たない。
+    /// 配色（暗背景・白文字・暗色ドロップダウン）はアプリ共通のダークテーマ
+    /// 暗黙スタイル（App.xaml の ComboBox / ComboBoxItem スタイル）が適用されるため、
+    /// ここでは寸法・配置のみ指定する。
     /// </summary>
-    private static ComboBox MakeDarkComboBox()
+    private static ComboBox MakeDarkComboBox() => new()
     {
-        var combo = new ComboBox
-        {
-            IsEditable = false, Foreground = Text, Background = FieldBg, BorderBrush = Border2,
-            Width = 220, HorizontalAlignment = HorizontalAlignment.Left,
-            Template = (ControlTemplate)System.Windows.Markup.XamlReader.Parse(DarkComboTemplateXaml),
-        };
-
-        // ドロップダウン項目を暗色にして「白地に白文字」を防ぐ
-        var itemStyle = new Style(typeof(ComboBoxItem));
-        itemStyle.Setters.Add(new Setter(Control.BackgroundProperty, FieldBg));
-        itemStyle.Setters.Add(new Setter(Control.ForegroundProperty, Text));
-        itemStyle.Setters.Add(new Setter(Control.PaddingProperty, new Thickness(6, 3, 6, 3)));
-        combo.ItemContainerStyle = itemStyle;
-        return combo;
-    }
-
-    /// <summary>
-    /// 暗色の選択専用 ComboBox 用テンプレート（XAML 文字列）。
-    /// 選択表示欄・ドロップ矢印ボタン・候補ポップアップをすべて暗色で描く。
-    /// 色はエディタの他 UI と揃える（背景 #1A1A1A / 枠 #3F3F46 / 文字 #DCDCDC）。
-    /// </summary>
-    private const string DarkComboTemplateXaml = @"
-<ControlTemplate TargetType='ComboBox'
-    xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation'
-    xmlns:x='http://schemas.microsoft.com/winfx/2006/xaml'>
-  <Grid>
-    <ToggleButton Name='ToggleButton' Focusable='False' ClickMode='Press'
-        IsChecked='{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}'>
-      <ToggleButton.Template>
-        <ControlTemplate TargetType='ToggleButton'>
-          <Border Background='#1A1A1A' BorderBrush='#3F3F46' BorderThickness='1'>
-            <Path HorizontalAlignment='Right' VerticalAlignment='Center' Margin='0,0,8,0'
-                  Fill='#DCDCDC' Data='M 0 0 L 8 0 L 4 4 Z'/>
-          </Border>
-        </ControlTemplate>
-      </ToggleButton.Template>
-    </ToggleButton>
-    <ContentPresenter Name='ContentSite' IsHitTestVisible='False'
-        Content='{Binding SelectionBoxItem, RelativeSource={RelativeSource TemplatedParent}}'
-        ContentTemplate='{Binding SelectionBoxItemTemplate, RelativeSource={RelativeSource TemplatedParent}}'
-        Margin='7,0,25,0' VerticalAlignment='Center' HorizontalAlignment='Left'
-        TextElement.Foreground='#DCDCDC'/>
-    <Popup Name='Popup' Placement='Bottom' Focusable='False' AllowsTransparency='True'
-        IsOpen='{TemplateBinding IsDropDownOpen}' PopupAnimation='Slide'>
-      <Grid Name='DropDown' SnapsToDevicePixels='True'
-          MinWidth='{TemplateBinding ActualWidth}' MaxHeight='{TemplateBinding MaxDropDownHeight}'>
-        <Border Background='#1A1A1A' BorderBrush='#3F3F46' BorderThickness='1'/>
-        <ScrollViewer>
-          <StackPanel IsItemsHost='True' KeyboardNavigation.DirectionalNavigation='Contained'/>
-        </ScrollViewer>
-      </Grid>
-    </Popup>
-  </Grid>
-</ControlTemplate>";
+        IsEditable = false,
+        Width = 220,
+        HorizontalAlignment = HorizontalAlignment.Left,
+    };
 
     /// <summary>現在の API キーで Groq のモデル一覧を取得し、ドロップダウンへ反映する。</summary>
     private static async Task PopulateGroqModelsAsync(ComboBox combo, TextBlock status, Func<string> keyGetter)

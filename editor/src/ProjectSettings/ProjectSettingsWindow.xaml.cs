@@ -706,22 +706,21 @@ public partial class ProjectSettingsWindow : Window
         Grid.SetColumn(label, 0);
         row.Children.Add(label);
 
+        // 配色はアプリ共通のダークテーマ暗黙スタイル（App.xaml）に任せる
         _cmbResolution = new ComboBox { FontSize = 12 };
         foreach (var (presetLabel, w, h) in ResolutionPresets)
         {
             _cmbResolution.Items.Add(new ComboBoxItem
             {
-                Content    = presetLabel,
-                Tag        = (w, h),
-                Foreground = new SolidColorBrush(Colors.Black),
+                Content = presetLabel,
+                Tag     = (w, h),
             });
         }
         // 末尾に「カスタム...」（Tag = null で判別）
         _cmbResolution.Items.Add(new ComboBoxItem
         {
-            Content    = "カスタム...",
-            Tag        = null,
-            Foreground = new SolidColorBrush(Colors.Black),
+            Content = "カスタム...",
+            Tag     = null,
         });
         Grid.SetColumn(_cmbResolution, 1);
         row.Children.Add(_cmbResolution);

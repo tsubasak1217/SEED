@@ -1,9 +1,248 @@
-﻿<Application x:Class="SEEDEditor.App"
+<Application x:Class="SEEDEditor.App"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:local="clr-namespace:SEEDEditor"
              StartupUri="src/MainWindow.xaml">
     <Application.Resources>
-         
+
+        <!-- ════════════════════════════════════════════════════════════════
+             ComboBox ダークテーマ（アプリ全体の既定・暗黙スタイル）
+
+             エディタ全体のダーク UI に合わせ、すべての ComboBox を
+             「黒地に白文字」で統一する。x:Key を持たない暗黙スタイルのため、
+             XAML / コードビハインドどちらで生成したコンボにも自動適用される。
+
+             配色:
+               本体背景        #2A2A2A（ホバー/開時 #333338）
+               文字            #DCDCDC
+               枠線            #3F3F46
+               ドロップダウン  背景 #252526 / 枠 #3F3F46
+               項目ハイライト  #1A4A7A（選択済み・非ホバー #1A3A6A）
+               無効時          文字 #6A6A6A に減光
+             ════════════════════════════════════════════════════════════════ -->
+
+        <!-- 共通ブラシ（コンボ関連のみ。他コントロールへは影響しない） -->
+        <SolidColorBrush x:Key="ComboBg"          Color="#2A2A2A"/>
+        <SolidColorBrush x:Key="ComboBgHover"     Color="#333338"/>
+        <SolidColorBrush x:Key="ComboFg"          Color="#DCDCDC"/>
+        <SolidColorBrush x:Key="ComboFgDisabled"  Color="#6A6A6A"/>
+        <SolidColorBrush x:Key="ComboBorder"      Color="#3F3F46"/>
+        <SolidColorBrush x:Key="ComboPopupBg"     Color="#252526"/>
+        <SolidColorBrush x:Key="ComboHighlight"   Color="#1A4A7A"/>
+        <SolidColorBrush x:Key="ComboSelectedBg"  Color="#1A3A6A"/>
+        <SolidColorBrush x:Key="ComboScrollTrack" Color="#2A2A2A"/>
+        <SolidColorBrush x:Key="ComboScrollThumb" Color="#555555"/>
+        <SolidColorBrush x:Key="ComboScrollThumbHover" Color="#777777"/>
+
+        <!-- ドロップダウン内スクロールバーのサム（つまみ）テンプレート -->
+        <ControlTemplate x:Key="ComboScrollThumbTemplate" TargetType="{x:Type Thumb}">
+            <Border x:Name="ThumbBd" Background="{StaticResource ComboScrollThumb}"
+                    CornerRadius="3" Margin="1"/>
+            <ControlTemplate.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter TargetName="ThumbBd" Property="Background"
+                            Value="{StaticResource ComboScrollThumbHover}"/>
+                </Trigger>
+                <Trigger Property="IsDragging" Value="True">
+                    <Setter TargetName="ThumbBd" Property="Background"
+                            Value="{StaticResource ComboScrollThumbHover}"/>
+                </Trigger>
+            </ControlTemplate.Triggers>
+        </ControlTemplate>
+
+        <!-- ドロップダウン内専用の細身スクロールバー。
+             コンボのテンプレート内 ScrollViewer にだけスコープして適用するため
+             x:Key 付きで定義し、アプリ全体の ScrollBar には影響させない。 -->
+        <Style x:Key="ComboScrollBarStyle" TargetType="{x:Type ScrollBar}">
+            <Setter Property="Width" Value="8"/>
+            <Setter Property="Background" Value="{StaticResource ComboScrollTrack}"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type ScrollBar}">
+                        <!-- トラック（背景）＋つまみのみの最小構成。上下ボタンは持たない -->
+                        <Grid Background="{StaticResource ComboScrollTrack}" SnapsToDevicePixels="True">
+                            <Track x:Name="PART_Track" IsDirectionReversed="True">
+                                <Track.DecreaseRepeatButton>
+                                    <RepeatButton Command="ScrollBar.PageUpCommand"
+                                                  Opacity="0" Focusable="False"/>
+                                </Track.DecreaseRepeatButton>
+                                <Track.Thumb>
+                                    <Thumb Template="{StaticResource ComboScrollThumbTemplate}"/>
+                                </Track.Thumb>
+                                <Track.IncreaseRepeatButton>
+                                    <RepeatButton Command="ScrollBar.PageDownCommand"
+                                                  Opacity="0" Focusable="False"/>
+                                </Track.IncreaseRepeatButton>
+                            </Track>
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+            <Style.Triggers>
+                <!-- 横向きの場合は幅ではなく高さを細くする -->
+                <Trigger Property="Orientation" Value="Horizontal">
+                    <Setter Property="Width"  Value="Auto"/>
+                    <Setter Property="Height" Value="8"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+
+        <!-- ComboBoxItem（ドロップダウン内の各行）の暗黙スタイル -->
+        <Style TargetType="{x:Type ComboBoxItem}">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Foreground" Value="{StaticResource ComboFg}"/>
+            <Setter Property="Padding"    Value="6,3"/>
+            <Setter Property="SnapsToDevicePixels" Value="True"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type ComboBoxItem}">
+                        <Border x:Name="Bd"
+                                Background="{TemplateBinding Background}"
+                                Padding="{TemplateBinding Padding}"
+                                SnapsToDevicePixels="True">
+                            <ContentPresenter VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <!-- ホバー / キーボードフォーカス -->
+                            <Trigger Property="IsHighlighted" Value="True">
+                                <Setter TargetName="Bd" Property="Background"
+                                        Value="{StaticResource ComboHighlight}"/>
+                                <Setter Property="Foreground" Value="White"/>
+                            </Trigger>
+                            <!-- 選択済み（ホバーなし）は少し暗い青で区別 -->
+                            <MultiTrigger>
+                                <MultiTrigger.Conditions>
+                                    <Condition Property="IsSelected"    Value="True"/>
+                                    <Condition Property="IsHighlighted" Value="False"/>
+                                </MultiTrigger.Conditions>
+                                <Setter TargetName="Bd" Property="Background"
+                                        Value="{StaticResource ComboSelectedBg}"/>
+                                <Setter Property="Foreground" Value="White"/>
+                            </MultiTrigger>
+                            <!-- 無効項目は減光 -->
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Foreground"
+                                        Value="{StaticResource ComboFgDisabled}"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- ComboBox 本体の暗黙スタイル（編集可能コンボにも対応） -->
+        <Style TargetType="{x:Type ComboBox}">
+            <Setter Property="Background"      Value="{StaticResource ComboBg}"/>
+            <Setter Property="Foreground"      Value="{StaticResource ComboFg}"/>
+            <Setter Property="BorderBrush"     Value="{StaticResource ComboBorder}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding"         Value="6,2,4,2"/>
+            <Setter Property="MinHeight"       Value="22"/>
+            <Setter Property="SnapsToDevicePixels" Value="True"/>
+            <Setter Property="ScrollViewer.CanContentScroll" Value="True"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type ComboBox}">
+                        <Grid>
+                            <!-- 本体全域を覆うトグル（クリックでドロップダウン開閉） -->
+                            <ToggleButton x:Name="ToggleButton"
+                                          Focusable="False" ClickMode="Press"
+                                          Background="{TemplateBinding Background}"
+                                          BorderBrush="{TemplateBinding BorderBrush}"
+                                          IsChecked="{Binding IsDropDownOpen, Mode=TwoWay,
+                                                      RelativeSource={RelativeSource TemplatedParent}}">
+                                <ToggleButton.Template>
+                                    <ControlTemplate TargetType="{x:Type ToggleButton}">
+                                        <Border x:Name="Bd"
+                                                Background="{TemplateBinding Background}"
+                                                BorderBrush="{TemplateBinding BorderBrush}"
+                                                BorderThickness="1"
+                                                SnapsToDevicePixels="True">
+                                            <!-- 白系の下向き矢印 -->
+                                            <Path HorizontalAlignment="Right" VerticalAlignment="Center"
+                                                  Margin="0,0,8,0" Fill="{StaticResource ComboFg}"
+                                                  Data="M 0 0 L 8 0 L 4 4 Z"/>
+                                        </Border>
+                                        <ControlTemplate.Triggers>
+                                            <!-- ホバー / 開時は僅かに明るく -->
+                                            <Trigger Property="IsMouseOver" Value="True">
+                                                <Setter TargetName="Bd" Property="Background"
+                                                        Value="{StaticResource ComboBgHover}"/>
+                                            </Trigger>
+                                            <Trigger Property="IsChecked" Value="True">
+                                                <Setter TargetName="Bd" Property="Background"
+                                                        Value="{StaticResource ComboBgHover}"/>
+                                            </Trigger>
+                                        </ControlTemplate.Triggers>
+                                    </ControlTemplate>
+                                </ToggleButton.Template>
+                            </ToggleButton>
+
+                            <!-- 選択中項目の表示（選択専用モード時） -->
+                            <ContentPresenter x:Name="ContentSite"
+                                              IsHitTestVisible="False"
+                                              Content="{TemplateBinding SelectionBoxItem}"
+                                              ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"
+                                              ContentTemplateSelector="{TemplateBinding ItemTemplateSelector}"
+                                              Margin="{TemplateBinding Padding}"
+                                              VerticalAlignment="Center"
+                                              HorizontalAlignment="Left"
+                                              TextElement.Foreground="{TemplateBinding Foreground}"/>
+
+                            <!-- 編集可能モード用テキスト入力欄（IsEditable=True 時のみ表示） -->
+                            <TextBox x:Name="PART_EditableTextBox"
+                                     Visibility="Hidden"
+                                     HorizontalAlignment="Stretch" VerticalAlignment="Stretch"
+                                     VerticalContentAlignment="Center"
+                                     Margin="1,1,20,1" Padding="4,0,0,0"
+                                     Focusable="True"
+                                     Background="Transparent"
+                                     Foreground="{TemplateBinding Foreground}"
+                                     CaretBrush="{StaticResource ComboFg}"
+                                     SelectionBrush="{StaticResource ComboHighlight}"
+                                     BorderThickness="0"
+                                     IsReadOnly="{TemplateBinding IsReadOnly}"/>
+
+                            <!-- 候補ドロップダウン -->
+                            <Popup x:Name="PART_Popup"
+                                   Placement="Bottom" Focusable="False"
+                                   AllowsTransparency="True"
+                                   IsOpen="{TemplateBinding IsDropDownOpen}"
+                                   PopupAnimation="Slide">
+                                <Border Background="{StaticResource ComboPopupBg}"
+                                        BorderBrush="{StaticResource ComboBorder}"
+                                        BorderThickness="1"
+                                        MinWidth="{TemplateBinding ActualWidth}"
+                                        MaxHeight="{TemplateBinding MaxDropDownHeight}"
+                                        SnapsToDevicePixels="True">
+                                    <ScrollViewer x:Name="DropDownScroll">
+                                        <ScrollViewer.Resources>
+                                            <!-- このドロップダウン内だけ黒系の細身スクロールバーを使う
+                                                 （アプリ全体の ScrollBar には影響しない） -->
+                                            <Style TargetType="{x:Type ScrollBar}"
+                                                   BasedOn="{StaticResource ComboScrollBarStyle}"/>
+                                        </ScrollViewer.Resources>
+                                        <ItemsPresenter KeyboardNavigation.DirectionalNavigation="Contained"/>
+                                    </ScrollViewer>
+                                </Border>
+                            </Popup>
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <!-- 編集可能モード: 選択表示を隠しテキスト入力欄を出す -->
+                            <Trigger Property="IsEditable" Value="True">
+                                <Setter TargetName="ContentSite" Property="Visibility" Value="Hidden"/>
+                                <Setter TargetName="PART_EditableTextBox" Property="Visibility" Value="Visible"/>
+                            </Trigger>
+                            <!-- 無効時は減光 -->
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Foreground" Value="{StaticResource ComboFgDisabled}"/>
+                                <Setter TargetName="ToggleButton" Property="Opacity" Value="0.55"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
     </Application.Resources>
 </Application>

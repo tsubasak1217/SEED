@@ -1118,14 +1118,10 @@ public partial class InspectorPanel : UserControl
             foreach (var opt in opts.EnumerateArray())
                 options.Add(opt.GetString() ?? "");
 
-        var combo = new ComboBox
-        {
-            Height     = 22,
-            Background = System.Windows.Media.Brushes.White,
-            Foreground = System.Windows.Media.Brushes.Black,
-        };
+        // 配色はアプリ共通のダークテーマ暗黙スタイル（App.xaml）に任せる
+        var combo = new ComboBox { Height = 22 };
         foreach (var opt in options)
-            combo.Items.Add(new ComboBoxItem { Content = opt, Foreground = System.Windows.Media.Brushes.Black });
+            combo.Items.Add(new ComboBoxItem { Content = opt });
 
         int.TryParse(currentValue, out var selectedIdx);
         if (selectedIdx >= 0 && selectedIdx < options.Count)
@@ -1265,18 +1261,15 @@ public partial class InspectorPanel : UserControl
         });
         var scalingCombo = new ComboBox
         {
-            Width      = 170,
-            FontSize   = 11,
-            Margin     = new Thickness(4, 0, 0, 0),
-            Background = System.Windows.Media.Brushes.White,
-            Foreground = System.Windows.Media.Brushes.Black,
+            Width    = 170,
+            FontSize = 11,
+            Margin   = new Thickness(4, 0, 0, 0),
         };
         foreach (var (val, label) in scalingModes)
             scalingCombo.Items.Add(new ComboBoxItem
             {
-                Content    = label,
-                Tag        = val,
-                Foreground = System.Windows.Media.Brushes.Black,
+                Content = label,
+                Tag     = val,
             });
         var currentScalingIdx = Array.FindIndex(scalingModes, t => t.Item1 == info.CamScalingMode);
         scalingCombo.SelectedIndex = currentScalingIdx >= 0 ? currentScalingIdx : 0;
@@ -1541,14 +1534,12 @@ public partial class InspectorPanel : UserControl
         var shapeCombo = new ComboBox
         {
             Width = 120, Height = 22, FontSize = 11, Margin = new Thickness(4, 0, 0, 0),
-            Background = System.Windows.Media.Brushes.White,
-            Foreground = System.Windows.Media.Brushes.Black,
         };
-        shapeCombo.Items.Add(new ComboBoxItem { Content = "Box",      Foreground = System.Windows.Media.Brushes.Black });
-        shapeCombo.Items.Add(new ComboBoxItem { Content = "Sphere",   Foreground = System.Windows.Media.Brushes.Black });
-        shapeCombo.Items.Add(new ComboBoxItem { Content = "Capsule",  Foreground = System.Windows.Media.Brushes.Black });
-        shapeCombo.Items.Add(new ComboBoxItem { Content = "Cylinder", Foreground = System.Windows.Media.Brushes.Black });
-        shapeCombo.Items.Add(new ComboBoxItem { Content = "Cone",     Foreground = System.Windows.Media.Brushes.Black });
+        shapeCombo.Items.Add(new ComboBoxItem { Content = "Box"      });
+        shapeCombo.Items.Add(new ComboBoxItem { Content = "Sphere"   });
+        shapeCombo.Items.Add(new ComboBoxItem { Content = "Capsule"  });
+        shapeCombo.Items.Add(new ComboBoxItem { Content = "Cylinder" });
+        shapeCombo.Items.Add(new ComboBoxItem { Content = "Cone"     });
         foreach (ComboBoxItem ci in shapeCombo.Items)
             if (ci.Content as string == curShapeType) { shapeCombo.SelectedItem = ci; break; }
         var shapeRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 4, 0, 2) };
@@ -1920,12 +1911,10 @@ public partial class InspectorPanel : UserControl
         var shapeCombo = new ComboBox
         {
             Width = 120, Height = 22, FontSize = 11, Margin = new Thickness(4, 0, 0, 0),
-            Background = System.Windows.Media.Brushes.White,
-            Foreground = System.Windows.Media.Brushes.Black,
         };
-        shapeCombo.Items.Add(new ComboBoxItem { Content = "Box",     Foreground = System.Windows.Media.Brushes.Black });
-        shapeCombo.Items.Add(new ComboBoxItem { Content = "Circle",  Foreground = System.Windows.Media.Brushes.Black });
-        shapeCombo.Items.Add(new ComboBoxItem { Content = "Capsule", Foreground = System.Windows.Media.Brushes.Black });
+        shapeCombo.Items.Add(new ComboBoxItem { Content = "Box"     });
+        shapeCombo.Items.Add(new ComboBoxItem { Content = "Circle"  });
+        shapeCombo.Items.Add(new ComboBoxItem { Content = "Capsule" });
         foreach (ComboBoxItem ci in shapeCombo.Items)
             if (ci.Content as string == curShapeType) { shapeCombo.SelectedItem = ci; break; }
         var shapeRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 4, 0, 2) };
@@ -2227,14 +2216,12 @@ public partial class InspectorPanel : UserControl
         });
         var cmbAspectAxis2d = new ComboBox
         {
-            Width      = 100,
-            FontSize   = 11,
-            Background = System.Windows.Media.Brushes.White,
-            Foreground = System.Windows.Media.Brushes.Black,
-            Margin     = new Thickness(4, 0, 0, 0),
+            Width    = 100,
+            FontSize = 11,
+            Margin   = new Thickness(4, 0, 0, 0),
         };
-        cmbAspectAxis2d.Items.Add(new ComboBoxItem { Content = "横（幅）基準",   Tag = "width",  Foreground = System.Windows.Media.Brushes.Black });
-        cmbAspectAxis2d.Items.Add(new ComboBoxItem { Content = "縦（高さ）基準", Tag = "height", Foreground = System.Windows.Media.Brushes.Black });
+        cmbAspectAxis2d.Items.Add(new ComboBoxItem { Content = "横（幅）基準",   Tag = "width"  });
+        cmbAspectAxis2d.Items.Add(new ComboBoxItem { Content = "縦（高さ）基準", Tag = "height" });
         cmbAspectAxis2d.SelectedIndex = curAspectAxis2d == "height" ? 1 : 0;
         axisPanel2d.Children.Add(cmbAspectAxis2d);
         sp.Children.Add(axisPanel2d);
@@ -2667,8 +2654,6 @@ public partial class InspectorPanel : UserControl
             // 前面 / 背景 の選択専用コンボボックス
             var cmbZone = new ComboBox
             {
-                Foreground = new SolidColorBrush(Colors.Black),
-                Background = new SolidColorBrush(Colors.White),
                 FontSize   = 11,
                 Margin     = new Thickness(0, 2, 0, 4),
                 Padding    = new Thickness(4, 2, 4, 2),
@@ -2678,15 +2663,13 @@ public partial class InspectorPanel : UserControl
             };
             cmbZone.Items.Add(new ComboBoxItem
             {
-                Content    = "前面（ワールドの手前・デフォルト）",
-                Tag        = "foreground",
-                Foreground = new SolidColorBrush(Colors.Black),
+                Content = "前面（ワールドの手前・デフォルト）",
+                Tag     = "foreground",
             });
             cmbZone.Items.Add(new ComboBoxItem
             {
-                Content    = "背景（ワールドの奥）",
-                Tag        = "background",
-                Foreground = new SolidColorBrush(Colors.Black),
+                Content = "背景（ワールドの奥）",
+                Tag     = "background",
             });
             cmbZone.SelectedIndex = info.DrawZone == "background" ? 1 : 0;
             sp.Children.Add(cmbZone);
@@ -2775,14 +2758,12 @@ public partial class InspectorPanel : UserControl
         });
         var cmbAspectAxis = new ComboBox
         {
-            Width      = 100,
-            FontSize   = 11,
-            Background = System.Windows.Media.Brushes.White,
-            Foreground = System.Windows.Media.Brushes.Black,
-            Margin     = new Thickness(4, 0, 0, 0),
+            Width    = 100,
+            FontSize = 11,
+            Margin   = new Thickness(4, 0, 0, 0),
         };
-        cmbAspectAxis.Items.Add(new ComboBoxItem { Content = "横（幅）基準",   Tag = "width",  Foreground = System.Windows.Media.Brushes.Black });
-        cmbAspectAxis.Items.Add(new ComboBoxItem { Content = "縦（高さ）基準", Tag = "height", Foreground = System.Windows.Media.Brushes.Black });
+        cmbAspectAxis.Items.Add(new ComboBoxItem { Content = "横（幅）基準",   Tag = "width"  });
+        cmbAspectAxis.Items.Add(new ComboBoxItem { Content = "縦（高さ）基準", Tag = "height" });
         cmbAspectAxis.SelectedIndex = info.AspectRatioAxis == "height" ? 1 : 0;
         axisPanel.Children.Add(cmbAspectAxis);
         aspectPanel.Children.Add(axisPanel);
@@ -2868,14 +2849,12 @@ public partial class InspectorPanel : UserControl
         // 参照種別ドロップダウン（ウィンドウ / カメラ）
         var cmbVpRef = new ComboBox
         {
-            Foreground   = new SolidColorBrush(Colors.Black),
-            Background   = new SolidColorBrush(Colors.White),
-            FontSize     = 11,
-            Margin       = new Thickness(0, 2, 0, 4),
-            Padding      = new Thickness(4, 2, 4, 2),
+            FontSize = 11,
+            Margin   = new Thickness(0, 2, 0, 4),
+            Padding  = new Thickness(4, 2, 4, 2),
         };
-        cmbVpRef.Items.Add(new ComboBoxItem { Content = "ウィンドウ", Tag = "window", Foreground = new SolidColorBrush(Colors.Black) });
-        cmbVpRef.Items.Add(new ComboBoxItem { Content = "カメラ",     Tag = "camera", Foreground = new SolidColorBrush(Colors.Black) });
+        cmbVpRef.Items.Add(new ComboBoxItem { Content = "ウィンドウ", Tag = "window" });
+        cmbVpRef.Items.Add(new ComboBoxItem { Content = "カメラ",     Tag = "camera" });
         // main_camera のときはチェックオフ時の初期値としてウィンドウを選択しておく
         cmbVpRef.SelectedIndex = info.VpRefType == "camera" ? 1 : 0;
         vpManualPanel.Children.Add(cmbVpRef);
@@ -3086,8 +3065,6 @@ public partial class InspectorPanel : UserControl
         // 重力方向ドロップダウン
         var cmbGravity = new ComboBox
         {
-            Foreground = new SolidColorBrush(Colors.Black),
-            Background = new SolidColorBrush(Colors.White),
             FontSize   = 11,
             Margin     = new Thickness(0, 2, 0, 4),
             Padding    = new Thickness(4, 2, 4, 2),
@@ -3096,15 +3073,13 @@ public partial class InspectorPanel : UserControl
         };
         cmbGravity.Items.Add(new ComboBoxItem
         {
-            Content    = "スクリーン下方向を正とする（デフォルト）",
-            Tag        = 0,
-            Foreground = new SolidColorBrush(Colors.Black),
+            Content = "スクリーン下方向を正とする（デフォルト）",
+            Tag     = 0,
         });
         cmbGravity.Items.Add(new ComboBoxItem
         {
-            Content    = "キャンバス下方向を正とする",
-            Tag        = 1,
-            Foreground = new SolidColorBrush(Colors.Black),
+            Content = "キャンバス下方向を正とする",
+            Tag     = 1,
         });
         cmbGravity.SelectedIndex = info.GravityMode == 1 ? 1 : 0;
         sp.Children.Add(cmbGravity);
