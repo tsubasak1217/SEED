@@ -12,6 +12,7 @@
 
 use crate::engine::components::{
     ComponentKind, CanvasComponent, CanvasTransform, SpriteComponent, Collider2dComponent,
+    CanvasDrawZone,
 };
 use crate::engine::structs::objects::Actor;
 use crate::engine::core::app_base::undo::ActorTreeSnapshotCommand;
@@ -364,6 +365,68 @@ impl App {
             if let Some(sc) = scene.world.get_mut::<SpriteComponent>(entity) {
                 sc.width  = width;
                 sc.height = height;
+            }
+        }
+        self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
+        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+    }
+
+    /// SpriteComponent の描画優先度レイヤーを更新する（大きいほど手前・同値は DFS 順）。
+    pub(super) fn handle_set_sprite_layer(
+        &mut self,
+        actor_dfs_id: u32,
+        slot_idx:     u32,
+        layer:        i32,
+    ) {
+        let wl = self.active_world_line;
+        let slot_entity = {
+            let Some(scene) = &self.scene else { return };
+            let mut c = 0u32;
+            find_actor_by_dfs(&scene.actors, wl, actor_dfs_id, &mut c)
+                .and_then(|a| a.slots().get(slot_idx as usize))
+                .filter(|s| s.kind == ComponentKind::Sprite)
+                .map(|s| s.entity)
+        };
+        if let Some(entity) = slot_entity {
+            let Some(scene) = &mut self.scene else { return };
+            if let Some(sc) = scene.world.get_mut::<SpriteComponent>(entity) {
+                sc.layer = layer;
+            }
+        }
+        self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
+        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+    }
+
+    // ── CanvasComponent プロパティ設定 ────────────────────────────
+
+    /// CanvasComponent の描画ゾーンを更新する（ビューポート・ルートキャンバス用）。
+    ///
+    /// zone: "background" = 3D ワールドの奥（クリアカラーの上）、
+    ///       それ以外    = "foreground"（3D ワールドの手前・従来動作）。
+    pub(super) fn handle_set_canvas_draw_zone(
+        &mut self,
+        actor_dfs_id: u32,
+        slot_idx:     u32,
+        zone:         &str,
+    ) {
+        let wl = self.active_world_line;
+        let slot_entity = {
+            let Some(scene) = &self.scene else { return };
+            let mut c = 0u32;
+            find_actor_by_dfs(&scene.actors, wl, actor_dfs_id, &mut c)
+                .and_then(|a| a.slots().get(slot_idx as usize))
+                .filter(|s| s.kind == ComponentKind::Canvas)
+                .map(|s| s.entity)
+        };
+        let draw_zone = if zone == "background" {
+            CanvasDrawZone::Background
+        } else {
+            CanvasDrawZone::Foreground
+        };
+        if let Some(entity) = slot_entity {
+            let Some(scene) = &mut self.scene else { return };
+            if let Some(cc) = scene.world.get_mut::<CanvasComponent>(entity) {
+                cc.draw_zone = draw_zone;
             }
         }
         self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);

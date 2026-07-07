@@ -814,6 +814,9 @@ impl App {
                 IpcCommand::SetSpriteSize { actor_dfs_id, slot_idx, width, height } => {
                     self.handle_set_sprite_size(actor_dfs_id, slot_idx, width, height);
                 }
+                IpcCommand::SetSpriteLayer { actor_dfs_id, slot_idx, layer } => {
+                    self.handle_set_sprite_layer(actor_dfs_id, slot_idx, layer);
+                }
                 IpcCommand::SetAudioField { actor_dfs_id, slot_idx, key, value } => {
                     self.handle_set_audio_field(actor_dfs_id, slot_idx, &key, &value);
                 }
@@ -832,6 +835,10 @@ impl App {
                 }
                 IpcCommand::SetCanvasGravityMode { actor_dfs_id, slot_idx, mode } => {
                     self.handle_set_canvas_gravity_mode(actor_dfs_id, slot_idx, mode);
+                }
+                IpcCommand::SetCanvasDrawZone { actor_dfs_id, slot_idx, zone } => {
+                    let z = zone.clone();
+                    self.handle_set_canvas_draw_zone(actor_dfs_id, slot_idx, &z);
                 }
                 IpcCommand::SetCollider2dAspectRatio { actor_dfs_id, slot_idx, keep, axis } => {
                     let a = axis.clone();

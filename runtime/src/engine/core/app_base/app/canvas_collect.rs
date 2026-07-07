@@ -15,7 +15,7 @@ use std::sync::Arc;
 use crate::engine::components::{
     CanvasTransform, CanvasComponent, SpriteComponent, ComponentKind,
     CanvasViewportRef, CameraComponent, ScalingMode, AspectRatioAxis,
-    Transform as ActorTransform,
+    CanvasDrawZone, Transform as ActorTransform,
 };
 use crate::engine::ecs::{Entity, World};
 use crate::engine::structs::objects::Actor;
@@ -35,8 +35,14 @@ const CANVAS_WORLD_SCALE: f32 = 1.0 / 100.0;
 /// スプライト描画リソースをアクターツリーから DFS 順に収集する。
 ///
 /// CanvasTransform + SpriteComponent を持つアクターを再帰的に走査し、
-/// `(GPU行列, カラー, テクスチャArc)` のタプルを `out` に追加する。
+/// `(GPU行列, カラー, テクスチャArc, 描画ゾーン, レイヤー)` のタプルを `out` に追加する。
 /// テクスチャは `draw_ctx.sprite_tex_cache` でキャッシュする（失敗も記録して毎フレームスキップ）。
+///
+/// # 描画ゾーン・レイヤー（Phase C / D）
+/// - 描画ゾーンは**ルートキャンバス**の `draw_zone` をサブツリー全体へ継承する
+///   （子キャンバスはルートに従属。ワールドキャンバスは呼び出し側が Foreground 固定で渡す）。
+/// - レイヤーは各 SpriteComponent の `layer` をそのまま出力し、呼び出し側で
+///   同一ゾーン内の安定ソート（大きいほど手前 = 後に描画）を行う。
 ///
 /// # スケールモード
 /// - `parent_scale_mode = (scale_transform, scale_size, keep_aspect_ratio, is_width_axis)`
@@ -70,7 +76,10 @@ pub(super) fn collect_sprite_items(
     // ビューポート・ルートキャンバスの自動解像度マップ（build_root_canvas_auto_size_map）。
     // 登録済みルートは width/height をこの値へ置き換え、CanvasTransform を恒等として扱う。
     root_auto_sizes:    &HashMap<Entity, [f32; 2]>,
-    out:                &mut Vec<([[f32; 4]; 4], [f32; 4], Option<Arc<GpuSpriteTexture>>)>,
+    // 親（ルートキャンバス）から継承する描画ゾーン。ルートレベルでは各ルートの
+    // CanvasComponent.draw_zone で上書きされる。呼び出し側は Foreground を渡す。
+    parent_zone:        CanvasDrawZone,
+    out:                &mut Vec<([[f32; 4]; 4], [f32; 4], Option<Arc<GpuSpriteTexture>>, CanvasDrawZone, i32)>,
 ) {
     let (sm_transform, sm_size, keep_aspect, is_width_axis) = parent_scale_mode;
 
@@ -132,6 +141,13 @@ pub(super) fn collect_sprite_items(
             let my_canvas = actor.slots().iter()
                 .filter(|s| s.kind == ComponentKind::Canvas)
                 .find_map(|s| world.get::<CanvasComponent>(s.entity));
+            // 描画ゾーンの決定（Phase C）:
+            // ルートレベルのキャンバスは自身の draw_zone、それ以外は親（ルート）から継承する。
+            let my_zone = if parent_canvas_size.is_none() {
+                my_canvas.map(|cc| cc.draw_zone).unwrap_or(parent_zone)
+            } else {
+                parent_zone
+            };
             // sm_size による拡縮を反映した有効キャンバスサイズ（アスペクト比維持を考慮）
             let size_scale_x = if sm_size {
                 if keep_aspect && !is_width_axis { parent_cumul_scale[1] } else { parent_cumul_scale[0] }
@@ -199,7 +215,8 @@ pub(super) fn collect_sprite_items(
                             // Some(Some(arc))=成功 / Some(None)=失敗 → flatten で None に統一
                             cache.get(&sc.texture_path).and_then(|e| e.clone())
                         };
-                        out.push((gpu_mat, sc.color, tex));
+                        // 描画ゾーン（ルートキャンバス継承）とレイヤー（スプライト個別）を添付する
+                        out.push((gpu_mat, sc.color, tex, my_zone, sc.layer));
                     }
                 }
             }
@@ -240,7 +257,7 @@ pub(super) fn collect_sprite_items(
                 child_canvas_size, self_world_rs,
                 child_cumul_scale, child_scale_mode,
                 canvas_scale, y_sign, viewport_size, canvas_viewport_overrides,
-                root_auto_sizes, out,
+                root_auto_sizes, my_zone, out,
             );
         }
     }
@@ -462,6 +479,12 @@ pub(super) fn collect_canvas_rects(
 /// - `gpu_mat`:        GPU 変換行列（Sprite のみ出力）
 /// - `sprite_tex_path`: `Some(path)` → スプライトありでアルファマスク有効
 ///                      `None`       → スプライトなしで全面選択可能
+/// - `draw_zone`:      ルートキャンバスから継承した描画ゾーン（Phase C）
+/// - `layer`:          スプライトのレイヤー値（Phase D）
+///
+/// 呼び出し側で描画（collect_sprite_items）と同一の順序
+/// （背景ゾーン → 前面ゾーン、各ゾーン内はレイヤー昇順の安定ソート）に
+/// 並べ替えることで、クリック時に視覚的最前面のスプライトがピックされる。
 #[allow(clippy::too_many_arguments)]
 pub(super) fn collect_canvas_id_items(
     actors:             &[Actor],
@@ -480,7 +503,9 @@ pub(super) fn collect_canvas_id_items(
     root_auto_sizes:    &HashMap<Entity, [f32; 2]>,
     // 3D MC インスタンスの総数（canvas_id の raw_id オフセット計算に使用）
     mc_total:           u32,
-    out:                &mut Vec<(u32, [[f32; 4]; 4], Option<String>)>,
+    // 親（ルートキャンバス）から継承する描画ゾーン（collect_sprite_items と同じ扱い）
+    parent_zone:        CanvasDrawZone,
+    out:                &mut Vec<(u32, [[f32; 4]; 4], Option<String>, CanvasDrawZone, i32)>,
 ) {
     let (sm_transform, sm_size, keep_aspect, is_width_axis) = parent_scale_mode;
     for actor in actors {
@@ -489,7 +514,7 @@ pub(super) fn collect_canvas_id_items(
         *counter += 1;
 
         let ct_opt = world.get::<CanvasTransform>(actor.entity).cloned();
-        let (next_canvas_size, next_cumul_scale, next_scale_mode, next_world_rs) =
+        let (next_canvas_size, next_cumul_scale, next_scale_mode, next_world_rs, next_zone) =
             if let Some(ct) = ct_opt {
                 // ビューポート・ルートキャンバス: 自動解像度上書き + Transform 恒等化（Phase B）
                 let root_auto = if parent_canvas_size.is_none() {
@@ -534,6 +559,13 @@ pub(super) fn collect_canvas_id_items(
                 let my_canvas = actor.slots().iter()
                     .filter(|s| s.kind == ComponentKind::Canvas)
                     .find_map(|s| world.get::<CanvasComponent>(s.entity));
+                // 描画ゾーンの決定（collect_sprite_items と同じロジック）:
+                // ルートレベルのキャンバスは自身の draw_zone、それ以外は親から継承する。
+                let my_zone = if parent_canvas_size.is_none() {
+                    my_canvas.map(|cc| cc.draw_zone).unwrap_or(parent_zone)
+                } else {
+                    parent_zone
+                };
                 // アスペクト比維持を考慮したスケール係数
                 let id_sc_x = if sm_size { if keep_aspect && !is_width_axis { parent_cumul_scale[1] } else { parent_cumul_scale[0] } } else { 1.0 };
                 let id_sc_y = if sm_size { if keep_aspect && is_width_axis  { parent_cumul_scale[0] } else { parent_cumul_scale[1] } } else { 1.0 };
@@ -554,7 +586,7 @@ pub(super) fn collect_canvas_id_items(
                 // SpriteComponent を持つアクターをピッキング対象にする。
                 // テクスチャなし（単色）は白テクスチャフォールバックを使用して全面選択可能にする。
                 let csy = canvas_scale * y_sign;
-                let mut gpu_mat_and_path: Option<([[f32; 4]; 4], Option<String>)> = None;
+                let mut gpu_mat_and_path: Option<([[f32; 4]; 4], Option<String>, i32)> = None;
                 for slot in actor.slots() {
                     if slot.kind == ComponentKind::Sprite {
                         if let Some(sc) = world.get::<SpriteComponent>(slot.entity) {
@@ -568,16 +600,17 @@ pub(super) fn collect_canvas_id_items(
                                 [sw[0][1] * canvas_scale, sw[1][1] * csy, 0.0, 0.0],
                                 [0.0, 0.0, 1.0, 0.0],
                                 [sw[0][3] * canvas_scale, sw[1][3] * csy, 0.0, 1.0],
-                            ], tex_path));
+                            ], tex_path, sc.layer));
                             break;
                         }
                     }
                 }
 
-                if let Some((gpu_mat, tex_path)) = gpu_mat_and_path {
+                if let Some((gpu_mat, tex_path, layer)) = gpu_mat_and_path {
                     // raw_id = mc_total + my_dfs + 1
                     // （0 = 背景、1..mc_total = 3D MC インスタンス）
-                    out.push((mc_total + my_dfs + 1, gpu_mat, tex_path));
+                    // 描画ゾーン・レイヤーは呼び出し側の描画順ソートに使用する
+                    out.push((mc_total + my_dfs + 1, gpu_mat, tex_path, my_zone, layer));
                 }
 
                 // 子への継承情報を計算する（collect_sprite_items と同じロジック。
@@ -603,10 +636,10 @@ pub(super) fn collect_canvas_id_items(
                     [ct.scale[0] * auto_scale_factor[0],
                      ct.scale[1] * auto_scale_factor[1]]
                 };
-                (child_canvas_size, child_cumul_scale, child_scale_mode, self_world_rs)
+                (child_canvas_size, child_cumul_scale, child_scale_mode, self_world_rs, my_zone)
             } else {
                 // CanvasTransform なし: 子は親の情報をそのまま引き継ぐ
-                (parent_canvas_size, parent_cumul_scale, parent_scale_mode, parent_world_rs)
+                (parent_canvas_size, parent_cumul_scale, parent_scale_mode, parent_world_rs, parent_zone)
             };
 
         // 常に子に再帰する（DFS カウンタを全アクターで管理するため）
@@ -615,7 +648,7 @@ pub(super) fn collect_canvas_id_items(
             next_canvas_size, next_world_rs,
             next_cumul_scale, next_scale_mode,
             canvas_scale, y_sign, viewport_size, canvas_viewport_overrides,
-            root_auto_sizes, mc_total, out,
+            root_auto_sizes, mc_total, next_zone, out,
         );
     }
 }
@@ -629,10 +662,16 @@ pub(super) fn collect_canvas_id_items(
 /// WS perspective カメラと組み合わせて GPU ID パスで使用する。
 /// DFS カウンタは `find_actor_by_dfs` と同じ規則で全アクターを数える。
 ///
-/// 出力タプル要素は `collect_canvas_id_items` と同一形式:
+/// 出力タプル要素:
 /// - `raw_id`:   GPU に書き込む ID 値 (`mc_total + dfs + 1`)
 /// - `gpu_mat`:  3D ワールド空間の GPU 列優先モデル行列
 /// - `tex_path`: テクスチャパス（`Some`=あり、アルファマスク有効）
+///
+/// # レイヤー順（Phase D）
+/// ワールドキャンバスのレイヤーは**そのキャンバス内**での描画順制御のため、
+/// キャンバス 1 つ分の走査（walk）ごとに追加分をレイヤー昇順で安定ソートする。
+/// これにより ID パスの描画順（後勝ち）がスプライト描画順と一致し、
+/// クリック時に視覚的最前面のスプライトがピックされる。
 pub(super) fn collect_3d_canvas_child_id_items(
     actors:   &[Actor],
     world:    &World,
@@ -669,13 +708,19 @@ pub(super) fn collect_3d_canvas_child_id_items(
                         cc.keep_aspect_ratio,
                         matches!(cc.aspect_ratio_axis, AspectRatioAxis::Width),
                     );
-                    // 子を 3D ワールド行列で再帰走査する
+                    // 子を 3D ワールド行列で再帰走査する。
+                    // このキャンバス内の追加分をレイヤー昇順で安定ソートしてから out へ
+                    // 追加する（ワールドキャンバスのレイヤーはキャンバス内で完結する）。
+                    let mut canvas_items: Vec<(u32, [[f32; 4]; 4], Option<String>, i32)> = Vec::new();
                     walk_3d_canvas_children_id(
                         &actor.children, world, wl, counter,
                         Some([cc.width, cc.height]),
                         canvas_to_world, [1.0, 1.0], child_scale_mode,
-                        mc_total, out,
+                        mc_total, &mut canvas_items,
                     );
+                    // 安定ソート: 同一レイヤーはヒエラルキー DFS 順を維持する
+                    canvas_items.sort_by_key(|&(_, _, _, layer)| layer);
+                    out.extend(canvas_items.into_iter().map(|(id, m, p, _)| (id, m, p)));
                     true
                 } else { false }
             } else { false }
@@ -694,6 +739,7 @@ pub(super) fn collect_3d_canvas_child_id_items(
 ///
 /// `parent_world_rs` は canvas_to_world（3D ワールド行列）で、
 /// 各子スプライトのモデル行列を 3D ワールド空間で構築する。
+/// 出力タプル末尾の `layer` は呼び出し側のキャンバス内レイヤーソートに使用する。
 #[allow(clippy::too_many_arguments)]
 fn walk_3d_canvas_children_id(
     actors:             &[Actor],
@@ -705,7 +751,7 @@ fn walk_3d_canvas_children_id(
     parent_cumul_scale: [f32; 2],
     parent_scale_mode:  (bool, bool, bool, bool),
     mc_total:           u32,
-    out:                &mut Vec<(u32, [[f32; 4]; 4], Option<String>)>,
+    out:                &mut Vec<(u32, [[f32; 4]; 4], Option<String>, i32)>,
 ) {
     let (sm_transform, sm_size, keep_aspect, is_width_axis) = parent_scale_mode;
 
@@ -782,7 +828,8 @@ fn walk_3d_canvas_children_id(
                         // テクスチャなしは None → 白フォールバック（全面 alpha=1）
                         let tex_path = if sc.texture_path.is_empty() { None } else { Some(sc.texture_path.clone()) };
                         // raw_id = canvas_id_offset + dfs_id（canvas_id_offset = mc_total）
-                        out.push((mc_total + my_dfs + 1, gpu_mat, tex_path));
+                        // layer は呼び出し側のキャンバス内レイヤーソートに使用する
+                        out.push((mc_total + my_dfs + 1, gpu_mat, tex_path, sc.layer));
                         break;
                     }
                 }

@@ -192,6 +192,8 @@ impl App {
                     let aspect_axis = if matches!(d.aspect_ratio_axis, crate::engine::components::AspectRatioAxis::Height) { "height" } else { "width" };
                     // gravity_mode: 0=screen_down, 1=canvas_down
                     let gravity_mode_val = if matches!(d.gravity_mode, crate::engine::components::GravityMode::CanvasDown) { 1u8 } else { 0u8 };
+                    // draw_zone: "foreground"（3D ワールドの手前・デフォルト）| "background"（奥）
+                    let draw_zone_str = if matches!(d.draw_zone, crate::engine::components::CanvasDrawZone::Background) { "background" } else { "foreground" };
                     // ビューポート・ルートキャンバス: 自動解像度（プロジェクト設定×カメラ設定）を
                     // インスペクタの読み取り専用表示用に添付する（Phase B）。
                     // 描画側（build_root_canvas_auto_size_map）と同一の計算を共有する。
@@ -217,7 +219,7 @@ impl App {
                     };
                     // pivot: 3D キャンバス専用（Actor3D アタッチ時のみ有効）
                     ("CanvasComponent", format!(
-                        r#","width":{:.4},"height":{:.4},"scale_transform":{},"scale_size":{},"auto_scale":{},"vp_ref_type":"{vp_ref_type}","vp_ref_actor":{vp_actor_json},"vp_ref_slot":{vp_slot_json},"keep_aspect_ratio":{},"aspect_ratio_axis":"{aspect_axis}","gravity_mode":{gravity_mode_val},"pivot_x":{:.4},"pivot_y":{:.4}{auto_size_json}"#,
+                        r#","width":{:.4},"height":{:.4},"scale_transform":{},"scale_size":{},"auto_scale":{},"vp_ref_type":"{vp_ref_type}","vp_ref_actor":{vp_actor_json},"vp_ref_slot":{vp_slot_json},"keep_aspect_ratio":{},"aspect_ratio_axis":"{aspect_axis}","gravity_mode":{gravity_mode_val},"draw_zone":"{draw_zone_str}","pivot_x":{:.4},"pivot_y":{:.4}{auto_size_json}"#,
                         d.width, d.height,
                         d.scale_transform  as u8,
                         d.scale_size       as u8,
@@ -228,11 +230,12 @@ impl App {
                     ))
                 }
                 ComponentData::SpriteComponent(d) => {
-                    // テクスチャパス・カラー・サイズをインスペクター用に送信する
+                    // テクスチャパス・カラー・サイズ・レイヤーをインスペクター用に送信する
                     let path_json = serde_json::to_string(&d.texture_path).unwrap_or_default();
                     ("SpriteComponent", format!(
-                        r#","texture_path":{path_json},"cr":{:.4},"cg":{:.4},"cb":{:.4},"ca":{:.4},"sprite_w":{:.4},"sprite_h":{:.4}"#,
+                        r#","texture_path":{path_json},"cr":{:.4},"cg":{:.4},"cb":{:.4},"ca":{:.4},"sprite_w":{:.4},"sprite_h":{:.4},"layer":{}"#,
                         d.color[0], d.color[1], d.color[2], d.color[3], d.width, d.height,
+                        d.layer,
                     ))
                 }
                 ComponentData::InputMapComponent(d) => {

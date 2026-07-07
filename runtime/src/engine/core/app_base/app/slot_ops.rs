@@ -334,6 +334,7 @@ impl App {
                                     keep_aspect_ratio: cc_data.keep_aspect_ratio,
                                     aspect_ratio_axis: cc_data.aspect_ratio_axis.clone(),
                                     gravity_mode:      cc_data.gravity_mode,
+                                    draw_zone:         cc_data.draw_zone,
                                     pivot:             cc_data.pivot,
                                 });
                 let mut c = 0u32;
@@ -350,6 +351,7 @@ impl App {
                     color:        sc_data.color,
                     width:        sc_data.width,
                     height:       sc_data.height,
+                    layer:        sc_data.layer,
                 });
                 let mut c = 0u32;
                 if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
@@ -556,6 +558,7 @@ impl App {
                                     keep_aspect_ratio: cc_data.keep_aspect_ratio,
                                     aspect_ratio_axis: cc_data.aspect_ratio_axis.clone(),
                                     gravity_mode:      cc_data.gravity_mode,
+                                    draw_zone:         cc_data.draw_zone,
                                     pivot:             cc_data.pivot,
                                 });
                     new_slots.push(ComponentSlot::new::<CanvasComponent>(slot_data.name, ComponentKind::Canvas, slot_entity));
@@ -566,6 +569,7 @@ impl App {
                         color:        sc_data.color,
                         width:        sc_data.width,
                         height:       sc_data.height,
+                        layer:        sc_data.layer,
                     });
                     new_slots.push(ComponentSlot::new::<SpriteComponent>(slot_data.name, ComponentKind::Sprite, slot_entity));
                 }

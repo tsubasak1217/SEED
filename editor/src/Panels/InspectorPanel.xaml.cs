@@ -347,6 +347,9 @@ public partial class InspectorPanel : UserControl
         bool KeepAspectRatio = false, string AspectRatioAxis = "width",
         // CanvasComponent 用重力方向モード（0=スクリーン下, 1=キャンバス下）
         int GravityMode = 0,
+        // CanvasComponent 用描画ゾーン（"foreground"=3Dワールドの手前・デフォルト / "background"=奥）
+        // ビューポート所属のルートキャンバスのみ UI に表示する
+        string DrawZone = "foreground",
         // CanvasComponent 用自動解像度（ビューポート・ルートキャンバスのみランタイムが送信。
         // プロジェクト設定解像度×参照カメラのスケーリングモードから算出された読み取り専用値）
         float AutoW = 0f, float AutoH = 0f,
@@ -356,6 +359,8 @@ public partial class InspectorPanel : UserControl
         string TexturePath = "",
         float SpriteR = 1f, float SpriteG = 1f, float SpriteB = 1f, float SpriteA = 1f,
         float SpriteW = 100f, float SpriteH = 100f,
+        // SpriteComponent 用描画優先度レイヤー（大きいほど手前・同値はヒエラルキー順）
+        int SpriteLayer = 0,
         // InputMapComponent 用フィールド
         string InputMapPath = "",
         // CameraComponent 用フィールド
@@ -494,6 +499,8 @@ public partial class InspectorPanel : UserControl
             var aspectRatioAxis = comp.TryGetProperty("aspect_ratio_axis", out var ara) ? ara.GetString() ?? "width" : "width";
             // CanvasComponent 用: 重力方向モード
             var gravityMode = comp.TryGetProperty("gravity_mode", out var gm)  ? gm.GetInt32()  : 0;
+            // CanvasComponent 用: 描画ゾーン（"foreground" / "background"）
+            var drawZone = comp.TryGetProperty("draw_zone", out var dzj) ? dzj.GetString() ?? "foreground" : "foreground";
             // CanvasComponent 用: 自動解像度（ビューポート・ルートキャンバスのみ送信される）
             var autoW = comp.TryGetProperty("auto_w", out var awj) ? awj.GetSingle() : 0f;
             var autoH = comp.TryGetProperty("auto_h", out var ahj) ? ahj.GetSingle() : 0f;
@@ -508,6 +515,8 @@ public partial class InspectorPanel : UserControl
             var sprA = comp.TryGetProperty("ca", out var ca) ? ca.GetSingle() : 1f;
             var sprW = comp.TryGetProperty("sprite_w", out var sw) ? sw.GetSingle() : 100f;
             var sprH = comp.TryGetProperty("sprite_h", out var sh) ? sh.GetSingle() : 100f;
+            // SpriteComponent 用: 描画優先度レイヤー
+            var sprLayer = comp.TryGetProperty("layer", out var slj) ? slj.GetInt32() : 0;
             // InputMapComponent 用: アセットパス
             var inputMapPath = comp.TryGetProperty("asset_path", out var ap) ? ap.GetString() ?? "" : "";
             // CameraComponent 用: FOV / near / far / is_main / clear_color
@@ -551,10 +560,12 @@ public partial class InspectorPanel : UserControl
                 VpRefType: vpRefType, VpRefActor: vpRefActor, VpRefSlot: vpRefSlot,
                 KeepAspectRatio: keepAspectRatio, AspectRatioAxis: aspectRatioAxis,
                 GravityMode: gravityMode,
+                DrawZone: drawZone,
                 AutoW: autoW, AutoH: autoH,
                 Canvas3dPivotX: canvas3dPivotX, Canvas3dPivotY: canvas3dPivotY,
                 TexturePath: texPath, SpriteR: sprR, SpriteG: sprG, SpriteB: sprB, SpriteA: sprA,
                 SpriteW: sprW, SpriteH: sprH,
+                SpriteLayer: sprLayer,
                 InputMapPath: inputMapPath,
                 FovYDeg: fovYDeg, CamNear: camNear, CamFar: camFar, IsMain: isMain,
                 CamCR: camCR, CamCG: camCG, CamCB: camCB, CamCA: camCA,
@@ -2429,6 +2440,29 @@ public partial class InspectorPanel : UserControl
         rowH.textBox.LostFocus += (_, _) => CommitSize();
         NumericDragBehavior.SetOnDrag(rowW.textBox, CommitSize); NumericDragBehavior.SetOnDrag(rowH.textBox, CommitSize);
 
+        // ── レイヤー（描画優先度）フィールド ──────────────────────
+        // 大きいほど手前に描画される（既定 0・同値はヒエラルキー順）。
+        // 比較は同一描画ゾーン内（ビューポートはゾーン単位で全キャンバス横断、
+        // ワールドキャンバスはそのキャンバス内）で行われる。
+        var rowLayer = BuildLabeledNumberRow("レイヤー", info.SpriteLayer);
+        rowLayer.textBox.ToolTip = "描画優先度。大きいほど手前に描画されます。\n同じ値はヒエラルキー順。同一描画ゾーン内で比較されます。";
+        sp.Children.Add(rowLayer.element);
+
+        // レイヤー変更を送信するローカル関数（整数のみ受け付ける）
+        void CommitLayer()
+        {
+            if (_currentActorId < 0) return;
+            if (!float.TryParse(rowLayer.textBox.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var lf)) return;
+            // 数値ドラッグ等で小数が入っても整数へ丸めて送信する
+            var layer = (int)MathF.Round(lf);
+            rowLayer.textBox.Text = layer.ToString(CultureInfo.InvariantCulture);
+            _runtime?.SendToRuntime(FormattableString.Invariant(
+                $"SET_SPRITE_LAYER:{_currentActorId},{info.SlotIdx},{layer}"));
+        }
+        rowLayer.textBox.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { CommitLayer(); e.Handled = true; } };
+        rowLayer.textBox.LostFocus += (_, _) => CommitLayer();
+        NumericDragBehavior.SetOnDrag(rowLayer.textBox, CommitLayer);
+
         return sp;
     }
 
@@ -2613,6 +2647,58 @@ public partial class InspectorPanel : UserControl
         {
             sp.Children.Add(rowW.element);
             sp.Children.Add(rowH.element);
+        }
+
+        // ── 描画ゾーン セクション（ビューポート・ルートキャンバスのみ）────────
+        // 描画順（奥→手前）: 背景キャンバス | 3D ワールド | 前面キャンバス。
+        // 子キャンバスはルートに従属し、ワールドキャンバスは 3D 深度で決まるため、
+        // ビューポート所属のルートキャンバスにのみ表示する（Phase C）。
+        if (_isViewportRootCanvas)
+        {
+            var zoneSep = new TextBlock
+            {
+                Text       = "描画ゾーン",
+                Foreground = new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88)),
+                FontSize   = 10,
+                Margin     = new Thickness(0, 6, 0, 2),
+            };
+            sp.Children.Add(zoneSep);
+
+            // 前面 / 背景 の選択専用コンボボックス
+            var cmbZone = new ComboBox
+            {
+                Foreground = new SolidColorBrush(Colors.Black),
+                Background = new SolidColorBrush(Colors.White),
+                FontSize   = 11,
+                Margin     = new Thickness(0, 2, 0, 4),
+                Padding    = new Thickness(4, 2, 4, 2),
+                ToolTip    = "前面: 3D ワールドの手前に重ねるオーバーレイ（デフォルト）。\n" +
+                             "背景: 3D ワールドの奥（カメラのクリアカラーの上）に描画され、\n" +
+                             "必ずワールドの背景になります。",
+            };
+            cmbZone.Items.Add(new ComboBoxItem
+            {
+                Content    = "前面（ワールドの手前・デフォルト）",
+                Tag        = "foreground",
+                Foreground = new SolidColorBrush(Colors.Black),
+            });
+            cmbZone.Items.Add(new ComboBoxItem
+            {
+                Content    = "背景（ワールドの奥）",
+                Tag        = "background",
+                Foreground = new SolidColorBrush(Colors.Black),
+            });
+            cmbZone.SelectedIndex = info.DrawZone == "background" ? 1 : 0;
+            sp.Children.Add(cmbZone);
+
+            // 描画ゾーン変更を IPC 送信するローカル関数
+            void CommitDrawZone()
+            {
+                if (_currentActorId < 0) return;
+                var zone = (cmbZone.SelectedItem as ComboBoxItem)?.Tag as string ?? "foreground";
+                _runtime?.SendToRuntime($"SET_CANVAS_DRAW_ZONE:{_currentActorId},{info.SlotIdx},{zone}");
+            }
+            cmbZone.SelectionChanged += (_, _) => CommitDrawZone();
         }
 
         // ── スケールモード セクション ──────────────────────────

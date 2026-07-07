@@ -51,6 +51,31 @@ impl Default for AspectRatioAxis {
     fn default() -> Self { Self::Width }
 }
 
+// ─── CanvasDrawZone ───────────────────────────────────────────────────────────
+
+/// ビューポート所属キャンバスの描画ゾーン（canvas_camera_rework.md 第 4 節）。
+///
+/// 描画順（奥→手前）: zfar ← 背景キャンバス | 3D ワールド | 前面キャンバス → znear
+///
+/// `Foreground`（デフォルト）: 従来どおり 3D ワールドの上に重ねるオーバーレイ。
+/// `Background`: 3D ワールドより奥（カメラのクリアカラーの上・ワールドの下）に描画する。
+///
+/// ゾーンは**ルートキャンバス**にのみ意味を持ち、子キャンバスはルートに従属する。
+/// ワールド配置（Actor3D アタッチ）のキャンバスには適用されない（3D 深度で決まるため）。
+///
+/// # serde 互換性
+/// `#[serde(default)]` により、`draw_zone` フィールドを持たない既存の保存データは
+/// `Foreground`（従来動作）として読み込まれる。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CanvasDrawZone {
+    /// 3D ワールドより手前に描画するオーバーレイ（デフォルト・従来動作）
+    #[default]
+    Foreground,
+    /// 3D ワールドより奥（クリアカラーの上）に描画する背景
+    Background,
+}
+
 // ─── CanvasViewportRef ────────────────────────────────────────────────────────
 
 /// キャンバスのアンカー計算・自動スケールで参照する基準領域の種別。
@@ -123,6 +148,10 @@ pub struct CanvasComponentData {
     /// 2D 物理シミュレーションの重力方向モード。
     #[serde(default)]
     pub gravity_mode: GravityMode,
+    /// 描画ゾーン（ビューポート所属のルートキャンバスのみ有効）。
+    /// 旧データ互換のため #[serde(default)] で Foreground（従来動作）として読み込む。
+    #[serde(default)]
+    pub draw_zone: CanvasDrawZone,
     /// 3D キャンバス専用ピボット（正規化値 [0,1]×[0,1]）。
     /// アクター位置がキャンバスのどの点に対応するかを指定する。
     /// (0,0) = 左上、(0.5,0.5) = 中央、(1,1) = 右下。
@@ -189,6 +218,12 @@ pub struct CanvasComponent {
     /// 2D 物理シミュレーションの重力方向モード。
     #[serde(default)]
     pub gravity_mode: GravityMode,
+    /// 描画ゾーン（ビューポート所属のルートキャンバスのみ有効）。
+    /// Foreground = 3D ワールドの手前（従来のオーバーレイ・デフォルト）、
+    /// Background = 3D ワールドの奥（クリアカラーの上）。
+    /// 子キャンバス・ワールド配置キャンバスでは無視される。
+    #[serde(default)]
+    pub draw_zone: CanvasDrawZone,
     /// 3D キャンバス専用ピボット（正規化値 [0,1]×[0,1]）。
     /// アクター位置がキャンバスのどの点に対応するかを指定する。
     /// (0,0) = 左上（デフォルト）、(0.5,0.5) = 中央、(1,1) = 右下。
@@ -210,6 +245,7 @@ impl CanvasComponent {
             keep_aspect_ratio: self.keep_aspect_ratio,
             aspect_ratio_axis: self.aspect_ratio_axis.clone(),
             gravity_mode:      self.gravity_mode,
+            draw_zone:         self.draw_zone,
             pivot:             self.pivot,
         }
     }
@@ -229,6 +265,8 @@ impl Default for CanvasComponent {
             keep_aspect_ratio: false,
             aspect_ratio_axis: AspectRatioAxis::Width,
             gravity_mode:      GravityMode::ScreenDown,
+            // 新規作成時は従来どおり前面（オーバーレイ）
+            draw_zone:         CanvasDrawZone::Foreground,
             pivot:             [0.0, 0.0],
         }
     }

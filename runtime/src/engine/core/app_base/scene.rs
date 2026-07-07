@@ -533,6 +533,7 @@ pub fn build_actor(
                     keep_aspect_ratio: cc_data.keep_aspect_ratio,
                     aspect_ratio_axis: cc_data.aspect_ratio_axis.clone(),
                     gravity_mode:      cc_data.gravity_mode,
+                    draw_zone:         cc_data.draw_zone,
                     pivot:             cc_data.pivot,
                 });
                 actor.add_slot_typed::<CanvasComponent>(slot_name, ComponentKind::Canvas, slot_entity);
@@ -544,6 +545,7 @@ pub fn build_actor(
                     color:        sc_data.color,
                     width:        sc_data.width,
                     height:       sc_data.height,
+                    layer:        sc_data.layer,
                 });
                 actor.add_slot_typed::<SpriteComponent>(slot_name, ComponentKind::Sprite, slot_entity);
             }

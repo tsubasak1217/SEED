@@ -28,6 +28,10 @@ pub struct SpriteComponentData {
     pub width: f32,
     /// スプライト表示高さ（キャンバスユニット）
     pub height: f32,
+    /// 描画優先度レイヤー（大きいほど手前・同値はヒエラルキー DFS 順）。
+    /// 旧データ互換のため #[serde(default)] で 0 として読み込む。
+    #[serde(default)]
+    pub layer: i32,
 }
 
 // ─── SpriteComponent ─────────────────────────────────────────────────────────
@@ -51,6 +55,11 @@ pub struct SpriteComponent {
     pub width: f32,
     /// スプライト表示高さ（キャンバスユニット）
     pub height: f32,
+    /// 描画優先度レイヤー（大きいほど手前・同値はヒエラルキー DFS 順）。
+    /// 比較は同一描画ゾーン内（ビューポートはゾーン単位で全キャンバス横断、
+    /// ワールドキャンバスはそのキャンバス内）で行われる。
+    #[serde(default)]
+    pub layer: i32,
 }
 
 impl SpriteComponent {
@@ -61,18 +70,20 @@ impl SpriteComponent {
             color:        self.color,
             width:        self.width,
             height:       self.height,
+            layer:        self.layer,
         }
     }
 }
 
 impl Default for SpriteComponent {
     fn default() -> Self {
-        // デフォルトは白色・100×100 キャンバスユニット・テクスチャなし
+        // デフォルトは白色・100×100 キャンバスユニット・テクスチャなし・レイヤー 0
         Self {
             texture_path: String::new(),
             color:        [1.0, 1.0, 1.0, 1.0],
             width:        100.0,
             height:       100.0,
+            layer:        0,
         }
     }
 }

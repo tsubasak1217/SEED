@@ -178,6 +178,9 @@ pub enum IpcCommand {
     /// SpriteComponent の幅・高さをキャンバスユニットで設定する
     /// フォーマット: SET_SPRITE_SIZE:{actor_dfs_id},{slot_idx},{width},{height}
     SetSpriteSize { actor_dfs_id: u32, slot_idx: u32, width: f32, height: f32 },
+    /// SpriteComponent の描画優先度レイヤーを設定する（大きいほど手前）
+    /// フォーマット: SET_SPRITE_LAYER:{actor_dfs_id},{slot_idx},{layer}
+    SetSpriteLayer { actor_dfs_id: u32, slot_idx: u32, layer: i32 },
     /// AudioComponent のフィールドを更新する（key: path/volume/loop/play_on_start/spatial/min_distance/max_distance/pan）
     SetAudioField { actor_dfs_id: u32, slot_idx: u32, key: String, value: String },
     /// CanvasTransform の anchor を設定する（正規化値 0.0〜1.0）
@@ -207,6 +210,10 @@ pub enum IpcCommand {
     /// フォーマット: SET_CANVAS_GRAVITY_MODE:{actor_dfs_id},{slot_idx},{mode:0|1}
     /// mode: 0=ScreenDown, 1=CanvasDown
     SetCanvasGravityMode { actor_dfs_id: u32, slot_idx: u32, mode: u8 },
+    /// CanvasComponent の描画ゾーンを設定する（ビューポート・ルートキャンバス用）
+    /// フォーマット: SET_CANVAS_DRAW_ZONE:{actor_dfs_id},{slot_idx},{zone}
+    /// zone: "foreground"（3D ワールドの手前・デフォルト）| "background"（3D ワールドの奥）
+    SetCanvasDrawZone { actor_dfs_id: u32, slot_idx: u32, zone: String },
     /// 3D キャンバスのピボットを設定する（Actor3D アタッチ時のみ有効）
     /// フォーマット: SET_CANVAS_3D_PIVOT:{actor_dfs_id},{slot_idx},{pivot_x},{pivot_y}
     /// pivot_x / pivot_y は正規化値 [0,1]。(0,0)=左上, (0.5,0.5)=中央, (1,1)=右下。
@@ -863,6 +870,15 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                                     width: fs[0], height: fs[1],
                                 })
                         }
+                        s if s.starts_with("SET_SPRITE_LAYER:") => {
+                            // フォーマット: SET_SPRITE_LAYER:{actor_dfs_id},{slot_idx},{layer}
+                            parse2u_tail(&s["SET_SPRITE_LAYER:".len()..]).and_then(|(a, sl, tail)| {
+                                let layer: i32 = tail.trim().parse().ok()?;
+                                Some(IpcCommand::SetSpriteLayer {
+                                    actor_dfs_id: a, slot_idx: sl, layer,
+                                })
+                            })
+                        }
                         s if s.starts_with("SET_AUDIO_FIELD:") => {
                             // フォーマット: SET_AUDIO_FIELD:{actor_dfs_id},{slot_idx},{key},{value}
                             parse2u_tail(&s["SET_AUDIO_FIELD:".len()..]).and_then(|(a, sl, tail)| {
@@ -915,6 +931,14 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                                 let mode: u8  = it.next()?.trim().parse().ok()?;
                                 Some(IpcCommand::SetCanvasGravityMode { actor_dfs_id: id, slot_idx: sl, mode })
                             })()
+                        }
+                        s if s.starts_with("SET_CANVAS_DRAW_ZONE:") => {
+                            // フォーマット: SET_CANVAS_DRAW_ZONE:{actor_dfs_id},{slot_idx},{zone}
+                            // zone: "foreground" | "background"
+                            parse2u_tail(&s["SET_CANVAS_DRAW_ZONE:".len()..])
+                                .map(|(a, sl, zone)| IpcCommand::SetCanvasDrawZone {
+                                    actor_dfs_id: a, slot_idx: sl, zone: zone.trim().to_string(),
+                                })
                         }
                         s if s.starts_with("SET_COLLIDER2D_ASPECT_RATIO:") => {
                             // フォーマット: SET_COLLIDER2D_ASPECT_RATIO:{id},{slot},{0|1},{axis}

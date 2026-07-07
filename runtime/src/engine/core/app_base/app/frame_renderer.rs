@@ -39,6 +39,7 @@ use crate::engine::structs::objects::actor::Actor;
 use crate::engine::core::app_base::ipc::ToolMode;
 use crate::engine::core::app_base::scene::CanvasCameraData;
 use crate::engine::core::clock::FrameContext;
+use crate::engine::components::CanvasDrawZone;
 use crate::engine::methods::drawer::{
     CameraBuffer, CameraUniform,
     draw_model_indirect, draw_id_pass, draw_canvas_id_items, prepare_canvas_id_bg,
@@ -1068,6 +1069,9 @@ impl App {
                         // ここで独立して収集する。SpritePipeline は mesh と同一カメラ BGL を使用するため
                         // preview_mesh_cam_buf.bind_group をそのまま使用できる。
                         let preview_sprite_3d = {
+                            // (行列, カラー, テクスチャ, 描画ゾーン, レイヤー) の収集バッファ。
+                            // ワールドキャンバスはゾーン概念を持たないためゾーンは無視し、
+                            // レイヤーのみキャンバス単位で安定ソートに使用する。
                             let mut items = Vec::new();
                             if let Some(s) = &self.scene {
                                 let wl = self.active_world_line;
@@ -1095,18 +1099,26 @@ impl App {
                                         cc.keep_aspect_ratio,
                                         matches!(cc.aspect_ratio_axis, crate::engine::components::AspectRatioAxis::Width),
                                     );
+                                    // このキャンバス内の追加分をレイヤー昇順で安定ソートする
+                                    // （ワールドキャンバスのレイヤーはキャンバス内で完結する）
+                                    let canvas_start = items.len();
                                     collect_sprite_items(
                                         &actor.children, &s.world, wl, draw_ctx,
                                         Some([cc.width, cc.height]),
                                         ctw, [1.0, 1.0], child_sm,
                                         1.0, 1.0,
-                                        // ワールドキャンバスは自動解像度の対象外（空マップ）
+                                        // ワールドキャンバスは自動解像度の対象外（空マップ）・ゾーン概念なし
                                         None, &std::collections::HashMap::new(),
-                                        &std::collections::HashMap::new(), &mut items,
+                                        &std::collections::HashMap::new(),
+                                        CanvasDrawZone::Foreground, &mut items,
                                     );
+                                    items[canvas_start..].sort_by_key(|&(_, _, _, _, layer)| layer);
                                 }
                             }
-                            prepare_sprites_from_mats(&draw_ctx.device, &draw_ctx.pipelines.sprite, &items)
+                            // ゾーン・レイヤーを除いた (行列, カラー, テクスチャ) で GPU リソースを準備する
+                            let plain: Vec<_> = items.into_iter()
+                                .map(|(m, col, tex, _, _)| (m, col, tex)).collect();
+                            prepare_sprites_from_mats(&draw_ctx.device, &draw_ctx.pipelines.sprite, &plain)
                         };
 
                         {
@@ -1745,13 +1757,18 @@ impl App {
                     // Edit / Play 両モードで収集する（in_editor チェックなし）。
                     //
                     // 【重要】2D スプライトと 3D Canvas スプライトを分離して収集する。
-                    //   - sprite_prepared_2d: Actor2D（CanvasTransform）のスプライト。
-                    //     scene_canvas_ss=true のときはオーバーレイパス（2D オルソカメラ）で描画。
+                    //   - sprite_prepared_2d_bg / _fg: Actor2D（CanvasTransform）のスプライトを
+                    //     ルートキャンバスの描画ゾーン（Phase C）で分割したもの。
+                    //     描画順（奥→手前）: 背景ゾーン | 3D ワールド | 前面ゾーン。
+                    //     scene_canvas_ss=true のとき、前面はオーバーレイパス（2D オルソカメラ）、
+                    //     背景はメインパス冒頭（3D ワールドより先）で描画する。
+                    //     各ゾーン内は全キャンバス横断でレイヤー昇順の安定ソート（Phase D）。
                     //   - sprite_prepared_3d: Actor3D + CanvasComponent の子スプライト。
                     //     scene_canvas_ss の値に関わらず「常に」メインパス（3D カメラ）で描画する。
                     //     2D アクターが混在するシーンで scene_canvas_ss=true になっても、
                     //     3D Canvas が 2D オルソカメラで極小点として映るバグを防ぐ。
-                    let (sprite_prepared_2d, sprite_prepared_3d) = {
+                    //     レイヤーはキャンバス単位で安定ソートする（ゾーン概念なし）。
+                    let (sprite_prepared_2d_bg, sprite_prepared_2d_fg, sprite_prepared_3d) = {
                         // 2D キャンバスアクターのスプライト（オルソ／ワールドスペース 2D 用）
                         let mut items_2d = Vec::new();
                         // 3D Canvas（Actor3D + CanvasComponent）の子スプライト（3D 透視カメラ用）
@@ -1795,7 +1812,7 @@ impl App {
                                     &scene.actors, &scene.world, wl, draw_ctx,
                                     None, IDENTITY, [1.0, 1.0], (false, false, false, true),
                                     canvas_scale, y_sign, viewport_size, &canvas_vp_overrides,
-                                    &root_auto_sizes, &mut items_2d,
+                                    &root_auto_sizes, CanvasDrawZone::Foreground, &mut items_2d,
                                 );
                             }
 
@@ -1842,20 +1859,41 @@ impl App {
                                     cc.keep_aspect_ratio,
                                     matches!(cc.aspect_ratio_axis, crate::engine::components::AspectRatioAxis::Width),
                                 );
+                                // このキャンバス内の追加分をレイヤー昇順で安定ソートする
+                                // （ワールドキャンバスのレイヤーはキャンバス内で完結する）
+                                let canvas_start = items_3d.len();
                                 collect_sprite_items(
                                     &actor.children, &scene.world, wl, draw_ctx,
                                     Some([cc.width, cc.height]),
                                     canvas_to_world, [1.0, 1.0], child_scale_mode,
                                     1.0, 1.0,
-                                    // ワールドキャンバスは自動解像度の対象外（空マップ）
+                                    // ワールドキャンバスは自動解像度の対象外（空マップ）・ゾーン概念なし
                                     None, &std::collections::HashMap::new(),
-                                    &std::collections::HashMap::new(), &mut items_3d,
+                                    &std::collections::HashMap::new(),
+                                    CanvasDrawZone::Foreground, &mut items_3d,
                                 );
+                                items_3d[canvas_start..].sort_by_key(|&(_, _, _, _, layer)| layer);
                             }
                         }
+
+                        // ── 2D スプライトを描画ゾーンで分割し、ゾーン内をレイヤーで安定ソートする ──
+                        // 分割時に DFS 順が保たれるため、sort_by_key（安定ソート）で
+                        // 「同一レイヤーはヒエラルキー順」の仕様を満たす。
+                        // ゾーン共有ソート = 全キャンバス横断で同一ゾーンのレイヤーを比較する。
+                        let (mut items_2d_bg, mut items_2d_fg): (Vec<_>, Vec<_>) =
+                            items_2d.into_iter()
+                                .partition(|&(_, _, _, zone, _)| zone == CanvasDrawZone::Background);
+                        items_2d_bg.sort_by_key(|&(_, _, _, _, layer)| layer);
+                        items_2d_fg.sort_by_key(|&(_, _, _, _, layer)| layer);
+
+                        // ゾーン・レイヤーを除いた (行列, カラー, テクスチャ) で GPU リソースを準備する
+                        let strip = |v: Vec<([[f32; 4]; 4], [f32; 4], Option<std::sync::Arc<GpuSpriteTexture>>, CanvasDrawZone, i32)>| {
+                            v.into_iter().map(|(m, col, tex, _, _)| (m, col, tex)).collect::<Vec<_>>()
+                        };
                         (
-                            prepare_sprites_from_mats(&draw_ctx.device, &draw_ctx.pipelines.sprite, &items_2d),
-                            prepare_sprites_from_mats(&draw_ctx.device, &draw_ctx.pipelines.sprite, &items_3d),
+                            prepare_sprites_from_mats(&draw_ctx.device, &draw_ctx.pipelines.sprite, &strip(items_2d_bg)),
+                            prepare_sprites_from_mats(&draw_ctx.device, &draw_ctx.pipelines.sprite, &strip(items_2d_fg)),
+                            prepare_sprites_from_mats(&draw_ctx.device, &draw_ctx.pipelines.sprite, &strip(items_3d)),
                         )
                     };
 
@@ -2234,6 +2272,25 @@ impl App {
                             pass.set_viewport(vp_x, vp_y, vp_w, vp_h, 0.0, 1.0);
                             pass.set_scissor_rect(vp_x as u32, vp_y as u32, vp_w as u32, vp_h as u32);
                         }
+
+                        // ── 背景ゾーンのキャンバススプライト（Phase C）────────────────
+                        // 描画順（奥→手前）: 背景キャンバス | 3D ワールド | 前面キャンバス。
+                        // クリア直後・3D ワールドより先に 2D オルソオーバーレイカメラで描画する。
+                        // スプライトパイプラインは depth_write=false のため、後続の 3D ワールドが
+                        // 深度テストを通過して背景スプライトの上に描画される（= 必ずワールドの背景になる）。
+                        // scene_canvas_ss（Play / Edit View3D の SS 合成）時のみ。
+                        // 2D シーンビュー（edit_view_2d）はメインパスで bg → fg の順に描画する（後述）。
+                        if scene_canvas_ss && !sprite_prepared_2d_bg.is_empty() {
+                            if let Some(canvas_cam_buf) = self.canvas_overlay_camera_buf.as_ref() {
+                                draw_sprites(
+                                    &mut pass,
+                                    &draw_ctx.pipelines.sprite,
+                                    &canvas_cam_buf.bind_group,
+                                    &sprite_prepared_2d_bg,
+                                );
+                            }
+                        }
+
                         // 全 MC を統合バッチで描画（N_actors → N_unique_models 回の draw call）
                         // 2D シーンビューでは 3D モデルを描画しない（3D シーン非表示）
                         let _perf_t_draw = std::time::Instant::now();
@@ -2298,14 +2355,27 @@ impl App {
                                 &sprite_prepared_3d,
                             );
                         }
-                        // 2D キャンバススプライト: scene_canvas_ss の場合はオーバーレイパスで描画する。
-                        if !scene_canvas_ss && !sprite_prepared_2d.is_empty() {
-                            draw_sprites(
-                                &mut pass,
-                                &draw_ctx.pipelines.sprite,
-                                &camera_buf.bind_group,
-                                &sprite_prepared_2d,
-                            );
+                        // 2D キャンバススプライト: scene_canvas_ss の場合はオーバーレイパスで描画する
+                        // （背景ゾーンはメインパス冒頭で描画済み）。
+                        // 2D シーンビュー・アクター編集タブ・ワールドスペース表示では
+                        // 背景ゾーン → 前面ゾーンの順に描画してレイヤリングをプレビューする。
+                        if !scene_canvas_ss {
+                            if !sprite_prepared_2d_bg.is_empty() {
+                                draw_sprites(
+                                    &mut pass,
+                                    &draw_ctx.pipelines.sprite,
+                                    &camera_buf.bind_group,
+                                    &sprite_prepared_2d_bg,
+                                );
+                            }
+                            if !sprite_prepared_2d_fg.is_empty() {
+                                draw_sprites(
+                                    &mut pass,
+                                    &draw_ctx.pipelines.sprite,
+                                    &camera_buf.bind_group,
+                                    &sprite_prepared_2d_fg,
+                                );
+                            }
                         }
 
                         // CanvasComponent 矩形アウトライン描画（グリッドより前面）
@@ -2542,14 +2612,16 @@ impl App {
                         if let Some(canvas_cam_buf) = self.canvas_overlay_camera_buf.as_ref() {
                             let mut overlay_pass = frame.begin_canvas_overlay_pass();
 
-                            // 2D キャンバススプライト（アウトラインより前に描画してアウトラインを前面に）
+                            // 前面ゾーンの 2D キャンバススプライト
+                            //（アウトラインより前に描画してアウトラインを前面に）。
+                            // 背景ゾーンはメインパス冒頭（3D ワールドより先）で描画済み。
                             // 3D Canvas スプライトはメインパスで 3D カメラ描画済みのためここでは不要。
-                            if !sprite_prepared_2d.is_empty() {
+                            if !sprite_prepared_2d_fg.is_empty() {
                                 draw_sprites(
                                     &mut overlay_pass,
                                     &draw_ctx.pipelines.sprite,
                                     &canvas_cam_buf.bind_group,
-                                    &sprite_prepared_2d,
+                                    &sprite_prepared_2d_fg,
                                 );
                             }
 
@@ -2689,9 +2761,22 @@ impl App {
                                                 canvas_scale, y_sign, viewport_size,
                                                 &canvas_vp_overrides_id,
                                                 &root_auto_sizes_id,
-                                                canvas_id_offset, &mut items,
+                                                canvas_id_offset,
+                                                CanvasDrawZone::Foreground, &mut items,
                                             );
-                                            items
+                                            // スプライト描画と同一の順序（背景ゾーン → 前面ゾーン、
+                                            // 各ゾーン内はレイヤー昇順の安定ソート）へ並べ替える。
+                                            // ID パスは後勝ちのため、この順序で描画すると
+                                            // 視覚的最前面のスプライトがピックされる。
+                                            let (mut id_bg, mut id_fg): (Vec<_>, Vec<_>) =
+                                                items.into_iter().partition(
+                                                    |&(_, _, _, zone, _)| zone == CanvasDrawZone::Background);
+                                            id_bg.sort_by_key(|&(_, _, _, _, layer)| layer);
+                                            id_fg.sort_by_key(|&(_, _, _, _, layer)| layer);
+                                            // ゾーン・レイヤーを除いた 3 要素タプルへ戻す
+                                            id_bg.into_iter().chain(id_fg)
+                                                .map(|(id, m, p, _, _)| (id, m, p))
+                                                .collect()
                                         } else { vec![] }
                                     } else { vec![] };
 

@@ -335,6 +335,8 @@ sprite.Color               // Color（get/set。RGBA。テクスチャに乗算�
 sprite.Width               // float（get/set。キャンバスユニット）
 sprite.Height              // float（get/set）
 sprite.Size                // Vector2（get/set。Width/Height をまとめて）
+sprite.Layer               // int（get/set。描画優先度。大きいほど手前。既定 0。
+                           //     同値はヒエラルキー順。同一描画ゾーン内で比較される）
 
 // 例: 点滅させる
 sprite.Color = SEED.Color.White.WithAlpha(SEED.Mathf.PingPong(SEED.Time.ElapsedTime, 1f));
@@ -383,7 +385,7 @@ audio.Pan                  // float（get/set。-1=左 〜 1=右。Spatial=false
 |---|---|---|
 | `Transform` | `gameObject.Transform` / `transform` | 3D 位置・回転・スケール |
 | `CanvasTransform` | `gameObject.CanvasTransform` | 2D キャンバス上の位置・回転・スケール・ピボット・アンカー |
-| `Sprite` | `gameObject.Sprite` | テクスチャパス・色・サイズ |
+| `Sprite` | `gameObject.Sprite` | テクスチャパス・色・サイズ・レイヤー |
 | `Camera` | `gameObject.Camera` | FOV・クリップ距離・メインカメラ・クリアカラー・ベース解像度 |
 | `Audio` | `gameObject.AudioSource` | 音源パス・音量・ループ・3D 減衰・パン + Play/Stop |
 

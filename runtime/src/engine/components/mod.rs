@@ -31,7 +31,7 @@ pub use model_component::{
 pub use script_component::{
     ScriptComponent, PlaceholderScriptSlot, ScriptComponentData,
 };
-pub use canvas_component::{CanvasComponent, CanvasComponentData, CanvasViewportRef, AspectRatioAxis, GravityMode};
+pub use canvas_component::{CanvasComponent, CanvasComponentData, CanvasViewportRef, AspectRatioAxis, GravityMode, CanvasDrawZone};
 pub use sprite_component::{SpriteComponent, SpriteComponentData};
 pub use inputmap_component::{InputMapComponent, InputMapComponentData};
 pub use camera_component::{CameraComponent, CameraComponentData, ScalingMode};

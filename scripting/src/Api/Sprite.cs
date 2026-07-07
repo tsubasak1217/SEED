@@ -51,4 +51,16 @@ public readonly struct Sprite
         get => new(Width, Height);
         set { Width = value.x; Height = value.y; }
     }
+
+    /// <summary>
+    /// 描画優先度レイヤー。大きいほど手前に描画される（既定 0）。
+    /// 同値はヒエラルキー順。比較は同一描画ゾーン内で行われる
+    /// （ビューポートキャンバスはゾーン単位で全キャンバス横断、
+    /// ワールドキャンバスはそのキャンバス内）。
+    /// </summary>
+    public int Layer
+    {
+        get => ScriptHost.TryGetFloat(_entity, Comp, "layer", out var v) ? (int)v : 0;
+        set => ScriptHost.TrySetFloat(_entity, Comp, "layer", value);
+    }
 }

@@ -261,6 +261,8 @@ fn read_floats(
                 "color"  => put(out, &s.color),
                 "width"  => put(out, &[s.width]),
                 "height" => put(out, &[s.height]),
+                // 描画優先度レイヤー（i32 → f32 変換して返す。Camera の target_width と同様）
+                "layer"  => put(out, &[s.layer as f32]),
                 _        => None,
             }
         }
@@ -341,6 +343,8 @@ fn write_floats(
                 "color"  => take(v).map(|a| s.color = a).is_some(),
                 "width"  => take::<1>(v).map(|a| s.width  = a[0]).is_some(),
                 "height" => take::<1>(v).map(|a| s.height = a[0]).is_some(),
+                // 描画優先度レイヤー（f32 → i32 変換して格納。Camera の target_width と同様）
+                "layer"  => take::<1>(v).map(|a| s.layer = a[0] as i32).is_some(),
                 _        => false,
             }
         }
