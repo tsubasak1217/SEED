@@ -370,11 +370,18 @@ public partial class MainWindow
             }
             if (el is ScrollViewer sv && sv.ScrollableHeight > 0)
             {
-                // 論理スクロール（CanContentScroll: 行/アイテム単位）とピクセルスクロールで単位を変える
-                double amount = sv.CanContentScroll
-                    ? delta / WheelDeltaPerNotch * SystemParameters.WheelScrollLines
-                          * EditorPreferences.Instance.TouchpadScrollScale
-                    : delta / WheelDeltaPerNotch * ScaledPixelsPerNotch;
+                // オフセットの単位を判定する:
+                //  - AvalonEdit 内部の ScrollViewer は CanContentScroll=true だが
+                //    IScrollInfo（TextView）のオフセット単位は「ピクセル」なので px 換算を使う
+                //    （行換算にすると 1 ノッチ = 3px となり、横方向の 48px に比べて極端に弱くなる）
+                //  - それ以外の論理スクロール（ListBox 等のアイテム単位）は行数換算を使う
+                bool pixelBased = !sv.CanContentScroll
+                    || sv.Content is ICSharpCode.AvalonEdit.Editing.TextArea
+                    || sv.Content is ICSharpCode.AvalonEdit.Rendering.TextView;
+                double amount = pixelBased
+                    ? delta / WheelDeltaPerNotch * ScaledPixelsPerNotch
+                    : delta / WheelDeltaPerNotch * SystemParameters.WheelScrollLines
+                          * EditorPreferences.Instance.TouchpadScrollScale;
                 sv.ScrollToVerticalOffset(Math.Clamp(sv.VerticalOffset - amount, 0, sv.ScrollableHeight));
                 return true;
             }
