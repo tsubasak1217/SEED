@@ -3270,8 +3270,63 @@ public partial class InspectorPanel : UserControl
             FontSize            = 11,
             HorizontalAlignment = HorizontalAlignment.Left,
         };
-        btn.Click += (_, _) => ScriptFileOpenRequested?.Invoke(scriptPath);
+        btn.Click += (_, _) =>
+        {
+            // ScriptComponent の type_name は絶対パスとは限らない
+            //（ファイル名のみ・assets:// 仮想パスの形式もある）ため、実ファイルへ解決してから開く
+            var resolved = ResolveScriptFilePath(scriptPath);
+            if (resolved is null)
+            {
+                MessageBox.Show(
+                    $"スクリプトファイルが見つかりません:\n{scriptPath}\n\nアセットフォルダ内を検索しましたが該当がありませんでした。",
+                    "スクリプトを編集", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+            ScriptFileOpenRequested?.Invoke(resolved);
+        };
         return btn;
+    }
+
+    /// <summary>
+    /// ScriptComponent の type_name（スクリプト参照文字列）を実ファイルの絶対パスへ解決する。
+    ///
+    /// type_name は以下のいずれの形式でも保存されうるため、順に解決を試みる:
+    ///  1. 絶対パス（旧形式。そのファイルが存在すればそのまま使う）
+    ///  2. assets:// 仮想パス（アセットルート相対へ変換）
+    ///  3. ファイル名のみ / 相対パス（アセットフォルダ配下を再帰検索して同名 .cs を探す。
+    ///     デモシーン等の移植可能な参照形式。ScriptAssemblyManager のファイル名解決と同等）
+    /// 見つからなければ null。
+    /// </summary>
+    private string? ResolveScriptFilePath(string scriptPath)
+    {
+        if (string.IsNullOrWhiteSpace(scriptPath)) return null;
+
+        try
+        {
+            // 1. 絶対パスがそのまま存在する場合（従来形式）
+            if (Path.IsPathRooted(scriptPath) && File.Exists(scriptPath)) return scriptPath;
+
+            // 2. assets:// 仮想パス → アセットルート相対へ変換する
+            if (VirtualPath.IsVirtual(scriptPath))
+            {
+                var abs = VirtualPath.ToAbsolute(scriptPath, _assetsPath);
+                if (File.Exists(abs)) return abs;
+            }
+
+            // 3. ファイル名（または相対パス）としてアセットフォルダ配下を再帰検索する
+            if (!string.IsNullOrEmpty(_assetsPath) && Directory.Exists(_assetsPath))
+            {
+                var fileName = Path.GetFileName(scriptPath);
+                if (fileName.Length > 0)
+                {
+                    var hit = Directory.EnumerateFiles(_assetsPath, fileName, SearchOption.AllDirectories)
+                        .FirstOrDefault();
+                    if (hit is not null) return hit;
+                }
+            }
+        }
+        catch { /* アクセス不可ディレクトリ等は未解決として扱う */ }
+        return null;
     }
 
     private UIElement BuildScriptPathRow(SlotInfo info) =>
