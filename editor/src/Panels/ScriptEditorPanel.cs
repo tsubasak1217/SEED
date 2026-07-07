@@ -90,6 +90,7 @@ public class ScriptEditorPanel : UserControl
         public required OverviewRuler     Ruler;          // 右側の概観ルーラー
         public required SemanticColorizer Semantic;      // 型名・メソッド名などの意味的着色
         public InlineCompletionController? Inline;        // AI インライン補完（Copilot 風・任意）
+        public QuickInfoPopup? QuickInfo;                 // VS 風のシンボル情報ホバー（QuickInfo）
         public List<ScriptDiagnostic> Diagnostics = new();
         public bool IsDirty;
         /// <summary>
@@ -780,6 +781,15 @@ public class ScriptEditorPanel : UserControl
         // デバッガ停止中の変数ホバー表示。停止中（DebugEvaluator 設定時）のみ動作する。
         editor.TextArea.TextView.MouseHover        += (_, ev) => OnDebugHover(editor, ev);
         editor.TextArea.TextView.MouseHoverStopped += (_, _)  => OnDebugHoverStopped();
+
+        // VS 風の QuickInfo（シンボル情報ホバー）。Roslyn の意味解析でシグネチャ・
+        // 種別・XML doc の summary を表示する。デバッグセッション中（DebugEvaluator
+        // 設定時）は変数ホバーが優先されるため抑止し、補完ウィンドウ表示中も出さない。
+        // 読み取り専用タブはワークスペース外のため Document が null になり自然に無効化される。
+        doc.QuickInfo = new QuickInfoPopup(
+            editor,
+            getDocument:  () => _workspace?.GetDocument(doc.FilePath),
+            isSuppressed: () => DebugEvaluator is not null || _completionWindow is not null);
 
         // 編集のたびにダーティ化し、ワークスペースへ反映し、診断を予約する。
         // 読み取り専用タブ（エンジン API のソース）はユーザーのワークスペースへ登録しない
@@ -2171,6 +2181,8 @@ public class ScriptEditorPanel : UserControl
         doc.OccurTimer.Stop();
         doc.Inline?.Dispose();   // インライン補完のタイマー・購読・レンダラを解放
         doc.Inline = null;
+        doc.QuickInfo?.Dispose();   // QuickInfo ホバーのイベント購読・ポップアップを解放
+        doc.QuickInfo = null;
         int idx = _docs.IndexOf(doc);
         _docs.Remove(doc);
         // アクティブを閉じたら隣のドキュメントへ切り替える
