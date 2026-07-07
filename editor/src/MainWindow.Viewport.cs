@@ -288,7 +288,14 @@ public partial class MainWindow
         }
     }
 
-    // ── WndProc：ウィンドウドラッグ監視 ──────────────────────────
+    // ── WndProc：ウィンドウドラッグ監視・横ホイールスクロール ─────
+
+    /// <summary>横ホイール（タッチパッドの横スワイプ等）の Windows メッセージ。
+    /// WPF は縦の MouseWheel しか標準処理しないため WndProc で自前処理する。</summary>
+    private const int WM_MOUSEHWHEEL = 0x020E;
+
+    /// <summary>横ホイール 1 ノッチ（delta=120）あたりの水平スクロール量（px）。</summary>
+    private const double HorizontalScrollPixelsPerNotch = 48.0;
 
     private nint WndProc(nint hwnd, int msg, nint wParam, nint lParam, ref bool handled)
     {
@@ -305,7 +312,47 @@ public partial class MainWindow
             if (_clampInPlay && _runtimeManager?.State == EditorState.Play)
                 ApplyPlayClamp();
         }
+        else if (msg == WM_MOUSEHWHEEL)
+        {
+            // 横ホイール入力: マウス直下のスクロール可能要素へ水平スクロールを配送する
+            //（WPF は WM_MOUSEHWHEEL を UI イベントへ変換しないため、ここで処理しないと
+            //  タッチパッドの横スワイプが全パネルで無反応になる）
+            handled = HandleHorizontalWheel(wParam);
+        }
         return nint.Zero;
+    }
+
+    /// <summary>
+    /// WM_MOUSEHWHEEL を処理する: マウスカーソル直下の要素からビジュアルツリーを遡り、
+    /// 最初に見つかったスクロール可能要素（AvalonEdit の TextEditor または ScrollViewer）へ
+    /// 水平スクロールを適用する。処理できた場合 true。
+    /// </summary>
+    private bool HandleHorizontalWheel(nint wParam)
+    {
+        // wParam の上位 16bit が符号付き delta（正 = 右方向。1 ノッチ = 120）
+        short delta = unchecked((short)((wParam.ToInt64() >> 16) & 0xFFFF));
+        if (delta == 0) return false;
+        double amount = delta / 120.0 * HorizontalScrollPixelsPerNotch;
+
+        // マウス直下の要素を取得し、ビジュアルツリーを遡ってスクロール対象を探す
+        var el = Mouse.DirectlyOver as DependencyObject;
+        while (el is not null)
+        {
+            // AvalonEdit のエディタ: 専用の水平オフセット API を使う
+            if (el is ICSharpCode.AvalonEdit.TextEditor editor)
+            {
+                editor.ScrollToHorizontalOffset(Math.Max(0, editor.HorizontalOffset + amount));
+                return true;
+            }
+            // 一般の ScrollViewer（出力パネル・ヒエラルキー等）
+            if (el is ScrollViewer sv && sv.ScrollableWidth > 0)
+            {
+                sv.ScrollToHorizontalOffset(Math.Clamp(sv.HorizontalOffset + amount, 0, sv.ScrollableWidth));
+                return true;
+            }
+            el = System.Windows.Media.VisualTreeHelper.GetParent(el);
+        }
+        return false;
     }
 
     // ── ビューポートコンテキストメニュー (C) ─────────────────────
