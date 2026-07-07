@@ -788,8 +788,12 @@ public class ScriptEditorPanel : UserControl
         // 読み取り専用タブはワークスペース外のため Document が null になり自然に無効化される。
         doc.QuickInfo = new QuickInfoPopup(
             editor,
-            getDocument:  () => _workspace?.GetDocument(doc.FilePath),
-            isSuppressed: () => DebugEvaluator is not null || _completionWindow is not null);
+            getDocument:   () => _workspace?.GetDocument(doc.FilePath),
+            isSuppressed:  () => DebugEvaluator is not null || _completionWindow is not null,
+            // 赤波線（診断マーカー）のメッセージも QuickInfo に統合表示する
+            getDiagnostic: offset => doc.Markers.GetMarkersAtOffset(offset).FirstOrDefault()?.ToolTip);
+        // QuickInfo が（非同期解析の完了後に）開いたら、先に出ていた旧診断ツールチップを閉じる
+        doc.QuickInfo.Opened += HideDiagnosticToolTip;
 
         // 編集のたびにダーティ化し、ワークスペースへ反映し、診断を予約する。
         // 読み取り専用タブ（エンジン API のソース）はユーザーのワークスペースへ登録しない
@@ -1193,6 +1197,10 @@ public class ScriptEditorPanel : UserControl
     /// <summary>マウス下のマーカーがあれば診断メッセージをツールチップ表示する。</summary>
     private void ShowDiagnosticToolTip(DocTab doc, MouseEventArgs e)
     {
+        // QuickInfo ポップアップが表示中（または表示予定）の場合は診断内容も
+        // そちらに統合表示されるため、旧来の単独ツールチップは出さない（二重表示防止）
+        if (doc.QuickInfo is { IsOpen: true }) { HideDiagnosticToolTip(); return; }
+
         var pos = doc.Editor.GetPositionFromPoint(e.GetPosition(doc.Editor));
         if (pos is null) { HideDiagnosticToolTip(); return; }
 

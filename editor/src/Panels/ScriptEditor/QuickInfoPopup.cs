@@ -40,6 +40,15 @@ public sealed class QuickInfoPopup : IDisposable
     private const double PopupPadding = 6;
     /// <summary>シグネチャ行と概要（summary）行の間隔（px）。</summary>
     private const double SummaryTopMargin = 4;
+    /// <summary>
+    /// ホバー解除から閉じるまでの猶予（ms）。ポップアップは MousePoint 配置で
+    /// カーソルに重なるため、開いた直後に MouseHoverStopped が発火する。
+    /// 即時クローズすると「開いた瞬間に消える」状態になるため、DebugHoverPopup と
+    /// 同様に遅延させ、その間にマウスがポップアップへ入れば閉じない。
+    /// </summary>
+    private const int CloseDelayMs = 280;
+    /// <summary>ポップアップをカーソルの少し下へずらす縦オフセット（px）。カーソル直下への被りを減らす。</summary>
+    private const double PopupVerticalOffset = 14;
 
     // ── 配色（エディタのダークテーマに合わせる。DebugHoverPopup と統一）──
     private static readonly Brush Bg        = Frozen(Color.FromRgb(0x25, 0x25, 0x26));  // 背景
@@ -47,6 +56,7 @@ public sealed class QuickInfoPopup : IDisposable
     private static readonly Brush BorderC   = Frozen(Color.FromRgb(0x3F, 0x3F, 0x46));  // 枠線
     private static readonly Brush DimFg     = Frozen(Color.FromRgb(0x9A, 0x9A, 0x9A));  // 種別行（淡色）
     private static readonly Brush SigFg     = Frozen(Color.FromRgb(0x9C, 0xDC, 0xFE));  // シグネチャ（青系）
+    private static readonly Brush ErrorFg   = Frozen(Color.FromRgb(0xF4, 0x8A, 0x8A));  // 診断メッセージ（赤系）
     private static readonly FontFamily Mono = new("Cascadia Mono, Consolas");
 
     // ── シグネチャ表示フォーマット ───────────────────────────────
@@ -78,12 +88,27 @@ public sealed class QuickInfoPopup : IDisposable
     private readonly Func<Document?> _getDocument;
     /// <summary>表示を抑止すべきとき true（デバッグホバー有効時・補完ウィンドウ表示中など）。</summary>
     private readonly Func<bool>      _isSuppressed;
+    /// <summary>指定オフセットの診断（赤波線）メッセージを返すデリゲート（無ければ null）。</summary>
+    private readonly Func<int, string?> _getDiagnostic;
 
     // ── UI 要素 ─────────────────────────────────────────────────
     private readonly Popup     _popup;
-    private readonly TextBlock _signatureText;   // 1 行目: シグネチャ（等幅）
-    private readonly TextBlock _kindText;        // 2 行目: シンボル種別（淡色）
-    private readonly TextBlock _summaryText;     // 3 行目: XML doc の summary（折り返し）
+    private readonly TextBlock _diagText;        // 診断メッセージ（赤波線のエラー内容。あれば最上段）
+    private readonly TextBlock _signatureText;   // シグネチャ（等幅）
+    private readonly TextBlock _kindText;        // シンボル種別（淡色）
+    private readonly TextBlock _summaryText;     // XML doc の summary（折り返し）
+
+    /// <summary>ホバー解除後の遅延クローズ用タイマー（ポップアップへ入ったらキャンセル）。</summary>
+    private readonly System.Windows.Threading.DispatcherTimer _closeTimer;
+
+    /// <summary>ポップアップが表示中か（診断ツールチップとの二重表示防止に使う）。</summary>
+    public bool IsOpen => _popup.IsOpen;
+
+    /// <summary>
+    /// ポップアップが開いた直後に発火する。QuickInfo は非同期解析の完了後に開くため、
+    /// 先に表示された旧診断ツールチップをこのタイミングで閉じてもらう（二重表示防止）。
+    /// </summary>
+    public event Action? Opened;
 
     // ── SemanticModel キャッシュ ─────────────────────────────────
     /// <summary>エディタのテキスト変更ごとに増えるバージョン番号（キャッシュ無効化キー）。</summary>
@@ -102,13 +127,26 @@ public sealed class QuickInfoPopup : IDisposable
     /// <param name="getDocument">最新テキストが反映された Roslyn Document を返すデリゲート。</param>
     /// <param name="isSuppressed">表示を抑止すべきとき true を返すデリゲート
     /// （デバッグセッション中のホバー評価や補完ウィンドウ表示中は QuickInfo を出さない）。</param>
-    public QuickInfoPopup(TextEditor editor, Func<Document?> getDocument, Func<bool> isSuppressed)
+    /// <param name="getDiagnostic">指定オフセットの診断（赤波線）メッセージを返すデリゲート。
+    /// エラー箇所ではシンボル情報と診断内容を 1 つのポップアップに統合して表示する。</param>
+    public QuickInfoPopup(
+        TextEditor editor,
+        Func<Document?> getDocument,
+        Func<bool> isSuppressed,
+        Func<int, string?>? getDiagnostic = null)
     {
-        _editor       = editor;
-        _getDocument  = getDocument;
-        _isSuppressed = isSuppressed;
+        _editor        = editor;
+        _getDocument   = getDocument;
+        _isSuppressed  = isSuppressed;
+        _getDiagnostic = getDiagnostic ?? (_ => null);
 
         // ── ポップアップの中身を構築する ──
+        _diagText = new TextBlock
+        {
+            Foreground   = ErrorFg,
+            TextWrapping = TextWrapping.Wrap,
+            Margin       = new Thickness(0, 0, 0, SummaryTopMargin),
+        };
         _signatureText = new TextBlock
         {
             Foreground   = SigFg,
@@ -127,6 +165,7 @@ public sealed class QuickInfoPopup : IDisposable
         };
 
         var stack = new StackPanel();
+        stack.Children.Add(_diagText);
         stack.Children.Add(_signatureText);
         stack.Children.Add(_kindText);
         stack.Children.Add(_summaryText);
@@ -140,15 +179,30 @@ public sealed class QuickInfoPopup : IDisposable
             MaxWidth        = MaxPopupWidth,
             Child           = stack,
         };
+        // マウスがポップアップへ入ったら遅延クローズをキャンセル（内容を選択・熟読できるように）、
+        // 出たら閉じる（DebugHoverPopup と同じ操作感）
+        border.MouseEnter += (_, _) => _closeTimer.Stop();
+        border.MouseLeave += (_, _) => Hide();
 
         _popup = new Popup
         {
             AllowsTransparency = true,
             StaysOpen          = true,
             Placement          = PlacementMode.MousePoint,   // DebugHoverPopup と同じ配置方式
+            VerticalOffset     = PopupVerticalOffset,        // カーソル直下への被りを減らす
             PlacementTarget    = editor,
             Child              = border,
         };
+
+        // ホバー解除後の遅延クローズタイマー。
+        // MousePoint 配置のポップアップはカーソルに重なるため、表示直後に
+        // MouseHoverStopped が発火する。即時クローズだと「開いた瞬間に消える」ため、
+        // 猶予を設けてその間にポップアップへ入れば閉じないようにする。
+        _closeTimer = new System.Windows.Threading.DispatcherTimer
+        {
+            Interval = TimeSpan.FromMilliseconds(CloseDelayMs),
+        };
+        _closeTimer.Tick += (_, _) => { _closeTimer.Stop(); Hide(); };
 
         // ── イベント購読 ──
         // ホバー開始/終了（AvalonEdit の TextView が発行するホバーイベント）
@@ -190,8 +244,14 @@ public sealed class QuickInfoPopup : IDisposable
     /// <summary>エディタがフォーカスを失ったら閉じる。</summary>
     private void OnLostFocus(object? sender, KeyboardFocusChangedEventArgs e) => Hide();
 
-    /// <summary>ホバーが外れたら閉じる。</summary>
-    private void OnMouseHoverStopped(object? sender, MouseEventArgs e) => Hide();
+    /// <summary>
+    /// ホバーが外れた: 少し待ってから閉じる（その間にマウスがポップアップへ
+    /// 入れば閉じない）。表示直後の疑似的なホバー解除で即消えするのを防ぐ。
+    /// </summary>
+    private void OnMouseHoverStopped(object? sender, MouseEventArgs e)
+    {
+        if (_popup.IsOpen) _closeTimer.Start();
+    }
 
     /// <summary>
     /// ホバー開始: マウス位置のシンボルを Roslyn で解決し、QuickInfo を表示する。
@@ -222,19 +282,35 @@ public sealed class QuickInfoPopup : IDisposable
 
         // 待機中にテキスト変更・別ホバー・破棄が起きていたら結果を破棄する
         if (_disposed || generation != _hoverGeneration) return;
-        if (info is null) { Hide(); return; }
+
+        // 診断（赤波線）があればシンボル情報と統合して 1 つのポップアップで表示する。
+        // シンボル未解決でも診断だけあれば表示する（未定義識別子のエラー等）。
+        string? diag = _getDiagnostic(offset);
+        if (info is null && diag is null) { Hide(); return; }
 
         // ── 表示内容を反映して開く ──
-        _signatureText.Text    = info.Signature;
-        _kindText.Text         = info.Kind;
-        _summaryText.Text       = info.Summary ?? string.Empty;
-        _summaryText.Visibility = string.IsNullOrEmpty(info.Summary)
+        _diagText.Text          = diag ?? string.Empty;
+        _diagText.Visibility    = string.IsNullOrEmpty(diag)
             ? Visibility.Collapsed : Visibility.Visible;
+        _signatureText.Text     = info?.Signature ?? string.Empty;
+        _signatureText.Visibility = info is null ? Visibility.Collapsed : Visibility.Visible;
+        _kindText.Text          = info?.Kind ?? string.Empty;
+        _kindText.Visibility    = info is null ? Visibility.Collapsed : Visibility.Visible;
+        _summaryText.Text       = info?.Summary ?? string.Empty;
+        _summaryText.Visibility = string.IsNullOrEmpty(info?.Summary)
+            ? Visibility.Collapsed : Visibility.Visible;
+
+        _closeTimer.Stop();     // 表示し直すときは進行中の遅延クローズをキャンセルする
         _popup.IsOpen = true;
+        Opened?.Invoke();
     }
 
     /// <summary>ポップアップを閉じる。</summary>
-    private void Hide() => _popup.IsOpen = false;
+    private void Hide()
+    {
+        _closeTimer.Stop();
+        _popup.IsOpen = false;
+    }
 
     // ── シンボル解決・表示内容の構築 ─────────────────────────────
 
