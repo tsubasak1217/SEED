@@ -55,6 +55,16 @@ public class ProjectSettingsData
     [JsonPropertyName("start_scene")]
     public string StartScene { get; set; } = string.Empty;
 
+    // ── グラフィックス設定 ────────────────────────────────────
+
+    /// <summary>ゲームウィンドウの初期解像度（横・物理ピクセル）。Play・パッケージ版で使用。</summary>
+    [JsonPropertyName("window_width")]
+    public int WindowWidth { get; set; } = 1920;
+
+    /// <summary>ゲームウィンドウの初期解像度（縦・物理ピクセル）。Play・パッケージ版で使用。</summary>
+    [JsonPropertyName("window_height")]
+    public int WindowHeight { get; set; } = 1080;
+
     // ── シーンマネージャ ─────────────────────────────────────
 
     /// <summary>

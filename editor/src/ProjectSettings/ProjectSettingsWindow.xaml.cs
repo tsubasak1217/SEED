@@ -54,10 +54,10 @@ public partial class ProjectSettingsWindow : Window
             // 開始シーンの選択はシーンマネージャに統合されている（一覧のラジオボタンで選択）
             new("scene_manager", "シーンマネージャ", IsImplemented: true),
         }),
-        // ── グラフィックス設定（将来実装）──────────────────────────
+        // ── グラフィックス設定 ──────────────────────────────────
         new("graphics", "グラフィックス", new()
         {
-            new("resolution",     "解像度設定"),
+            new("resolution",     "解像度設定", IsImplemented: true),
             new("render_quality", "レンダリング品質"),
         }),
         // ── オーディオ設定（将来実装）──────────────────────────────
@@ -319,6 +319,7 @@ public partial class ProjectSettingsWindow : Window
         {
             "game_name"      => BuildGameNamePanel(),
             "scene_manager"  => BuildSceneManagerPanel(),
+            "resolution"     => BuildResolutionPanel(),
             "plugin_manage"  => BuildPluginManagePanel(),
             _                => BuildPlaceholderPanel(GetSubItemLabel(subItemId)),
         };
@@ -645,6 +646,151 @@ public partial class ProjectSettingsWindow : Window
         }
     }
 
+    // ── 解像度設定パネル ──────────────────────────────────────
+
+    /// <summary>解像度プリセット一覧（表示名, 幅, 高さ）。コンボボックスの項目順。</summary>
+    private static readonly (string Label, int W, int H)[] ResolutionPresets =
+    {
+        ("1280 × 720 (HD)",        1280, 720),
+        ("1366 × 768",             1366, 768),
+        ("1600 × 900",             1600, 900),
+        ("1920 × 1080 (Full HD)",  1920, 1080),
+        ("2560 × 1440 (WQHD)",     2560, 1440),
+        ("3840 × 2160 (4K)",       3840, 2160),
+    };
+
+    /// <summary>解像度として受け付ける最小・最大値（ランタイム側のクランプと一致させる）。</summary>
+    private const int ResolutionMin = 160;
+    private const int ResolutionMax = 7680;
+
+    /// <summary>解像度コンボボックス（最後の項目が「カスタム...」）。</summary>
+    private ComboBox? _cmbResolution;
+    /// <summary>カスタム解像度の幅・高さ入力フィールド。</summary>
+    private TextBox? _tbResWidth;
+    private TextBox? _tbResHeight;
+
+    /// <summary>「解像度設定」パネルを構築して返す。</summary>
+    ///
+    /// よくある解像度のプリセット＋「カスタム...」のコンボボックス。
+    /// カスタム選択時のみ幅・高さの入力フィールドを表示する。
+    /// 既定値は Full HD（1920×1080）。設定は Play・パッケージ版の
+    /// ゲームウィンドウ初期サイズ（物理ピクセル）として使われる。
+    private UIElement BuildResolutionPanel()
+    {
+        var panel = new StackPanel();
+
+        panel.Children.Add(BuildPanelHeader(
+            "解像度設定",
+            "ゲームウィンドウの初期解像度（物理ピクセル）を指定します。\n" +
+            "Play 実行とパッケージ版のウィンドウ生成サイズに使われます（エディタ内の表示には影響しません）。"));
+
+        panel.Children.Add(new Border
+        {
+            Height     = 1,
+            Background = new SolidColorBrush(Color.FromRgb(0x3A, 0x3A, 0x3A)),
+            Margin     = new Thickness(0, 0, 0, 16),
+        });
+
+        // ── 解像度コンボボックス行 ──
+        var row = new Grid { Margin = new Thickness(0, 0, 0, 6) };
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(120) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+
+        var label = new TextBlock
+        {
+            Text              = "解像度",
+            Foreground        = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)),
+            FontSize          = 12,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        Grid.SetColumn(label, 0);
+        row.Children.Add(label);
+
+        _cmbResolution = new ComboBox { FontSize = 12 };
+        foreach (var (presetLabel, w, h) in ResolutionPresets)
+        {
+            _cmbResolution.Items.Add(new ComboBoxItem
+            {
+                Content    = presetLabel,
+                Tag        = (w, h),
+                Foreground = new SolidColorBrush(Colors.Black),
+            });
+        }
+        // 末尾に「カスタム...」（Tag = null で判別）
+        _cmbResolution.Items.Add(new ComboBoxItem
+        {
+            Content    = "カスタム...",
+            Tag        = null,
+            Foreground = new SolidColorBrush(Colors.Black),
+        });
+        Grid.SetColumn(_cmbResolution, 1);
+        row.Children.Add(_cmbResolution);
+        panel.Children.Add(row);
+
+        // ── カスタム入力フィールド（カスタム選択時のみ表示）──
+        var customPanel = new StackPanel { Margin = new Thickness(120, 4, 0, 0) };
+        var customRow = new StackPanel { Orientation = Orientation.Horizontal };
+        _tbResWidth = new TextBox
+        {
+            Text  = _data.WindowWidth.ToString(),
+            Width = 80,
+            Style = (Style)Resources["SettingTextBox"],
+        };
+        _tbResHeight = new TextBox
+        {
+            Text  = _data.WindowHeight.ToString(),
+            Width = 80,
+            Style = (Style)Resources["SettingTextBox"],
+        };
+        customRow.Children.Add(new TextBlock
+        {
+            Text = "幅", Foreground = new SolidColorBrush(Color.FromRgb(0xAA, 0xAA, 0xAA)),
+            FontSize = 12, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 6, 0),
+        });
+        customRow.Children.Add(_tbResWidth);
+        customRow.Children.Add(new TextBlock
+        {
+            Text = "高さ", Foreground = new SolidColorBrush(Color.FromRgb(0xAA, 0xAA, 0xAA)),
+            FontSize = 12, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(12, 0, 6, 0),
+        });
+        customRow.Children.Add(_tbResHeight);
+        customPanel.Children.Add(customRow);
+        customPanel.Children.Add(new TextBlock
+        {
+            Text         = $"{ResolutionMin}〜{ResolutionMax} の範囲で指定してください。",
+            Foreground   = new SolidColorBrush(Color.FromRgb(0x66, 0x66, 0x66)),
+            FontSize     = 11,
+            Margin       = new Thickness(0, 4, 0, 0),
+        });
+        panel.Children.Add(customPanel);
+
+        // ── 初期選択: 現在値がプリセットに一致すればそれを、なければカスタムを選ぶ ──
+        int presetIdx = Array.FindIndex(ResolutionPresets,
+            p => p.W == _data.WindowWidth && p.H == _data.WindowHeight);
+        bool isCustom = presetIdx < 0;
+        _cmbResolution.SelectedIndex = isCustom ? _cmbResolution.Items.Count - 1 : presetIdx;
+        customPanel.Visibility = isCustom ? Visibility.Visible : Visibility.Collapsed;
+
+        // カスタム選択の切替でフィールドの表示/非表示を連動させる
+        _cmbResolution.SelectionChanged += (_, _) =>
+        {
+            bool custom = (_cmbResolution.SelectedItem as ComboBoxItem)?.Tag is null;
+            customPanel.Visibility = custom ? Visibility.Visible : Visibility.Collapsed;
+        };
+
+        panel.Children.Add(new TextBlock
+        {
+            Text         = "実行中のウィンドウは手動でリサイズできます。ゲーム画面の収め方（レターボックス等）は\n" +
+                           "カメラコンポーネントのスケーリングモードで設定します。",
+            Foreground   = new SolidColorBrush(Color.FromRgb(0x66, 0x66, 0x66)),
+            FontSize     = 11,
+            TextWrapping = TextWrapping.Wrap,
+            Margin       = new Thickness(120, 8, 0, 0),
+        });
+
+        return panel;
+    }
+
     /// <summary>
     /// 未実装の設定項目に表示するプレースホルダーパネルを構築して返す。
     /// </summary>
@@ -732,6 +878,26 @@ public partial class ProjectSettingsWindow : Window
         }
 
         // 開始シーンはシーンマネージャのラジオボタン選択時に _data.StartScene へ即時反映される
+
+        // 「解像度設定」パネルの選択値を収集する
+        if (_cmbResolution is not null)
+        {
+            if ((_cmbResolution.SelectedItem as ComboBoxItem)?.Tag is ValueTuple<int, int> preset)
+            {
+                // プリセット選択: タグの (幅, 高さ) をそのまま採用する
+                _data.WindowWidth  = preset.Item1;
+                _data.WindowHeight = preset.Item2;
+            }
+            else if (_tbResWidth is not null && _tbResHeight is not null)
+            {
+                // カスタム選択: 入力値をパースし、範囲内にクランプして採用する
+                //（パース不能な場合は現在値を維持する）
+                if (int.TryParse(_tbResWidth.Text.Trim(), out var w))
+                    _data.WindowWidth = Math.Clamp(w, ResolutionMin, ResolutionMax);
+                if (int.TryParse(_tbResHeight.Text.Trim(), out var h))
+                    _data.WindowHeight = Math.Clamp(h, ResolutionMin, ResolutionMax);
+            }
+        }
 
         // プラグイン有効/無効状態を収集する（CheckBox が存在する場合のみ）
         if (_pluginCheckBoxes.Count > 0)

@@ -30,8 +30,16 @@ impl App {
     /// Play モードの場合は続いてシーンを自動ロードする。
     pub(super) fn handle_resumed(&mut self, event_loop: &ActiveEventLoop) {
         eprintln!("[SEED INIT] handle_resumed start  mode={:?}", self.mode);
+        // Play・スタンドアロン時はプロジェクト設定のウィンドウ解像度を初期サイズに使う。
+        // Edit（エディタ埋め込み）は WPF コンテナが実サイズを支配するため指定不要。
+        let physical_size = if self.mode == RuntimeMode::Play {
+            Some(self.load_window_size_from_settings())
+        } else {
+            None
+        };
         let window = Arc::new(create_window(event_loop, &WindowConfig {
             parent_hwnd: self.parent_hwnd,
+            physical_size,
             ..WindowConfig::default()
         }));
 
@@ -182,6 +190,46 @@ impl App {
             .filter(|p| p.exists());
 
         asset_fs::init(assets_root, pak_path.as_deref());
+    }
+
+    /// プロジェクト設定（project_settings.json）からゲームウィンドウの初期解像度を読む。
+    ///
+    /// asset_fs 初期化前（ウィンドウ生成前）に呼ばれるため、load_plugins と同じ
+    /// アセットルート解決でファイルを直接読む。フィールドが無い・不正な場合は
+    /// 既定の Full HD（エディタのプロジェクト設定の既定値と一致させる）。
+    fn load_window_size_from_settings(&self) -> (u32, u32) {
+        /// ウィンドウ初期解像度の既定値（Full HD。エディタ側の既定値と一致させる）
+        const DEFAULT_WINDOW_SIZE: (u32, u32) = (1920, 1080);
+        /// 解像度として受け付ける最小・最大値（異常値による生成失敗を防ぐ）
+        const MIN_WINDOW_DIM: u64 = 160;
+        const MAX_WINDOW_DIM: u64 = 7680;
+
+        // アセットルートを解決する（load_plugins と同一ロジック）
+        let assets_root = if let Some(root) = &self.assets_root {
+            std::path::PathBuf::from(root)
+        } else {
+            std::env::current_exe()
+                .ok()
+                .and_then(|p| p.parent().map(|d| d.join("assets")))
+                .unwrap_or_else(|| std::path::PathBuf::from("assets"))
+        };
+
+        let settings_path = assets_root.join("project_settings.json");
+        let Ok(text) = std::fs::read_to_string(&settings_path) else { return DEFAULT_WINDOW_SIZE };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else { return DEFAULT_WINDOW_SIZE };
+
+        // 幅・高さを個別に取り出し、範囲内ならペアで採用する（片方欠けは既定値）
+        let (w, h) = (
+            v["window_width"].as_u64().unwrap_or(0),
+            v["window_height"].as_u64().unwrap_or(0),
+        );
+        if (MIN_WINDOW_DIM..=MAX_WINDOW_DIM).contains(&w)
+            && (MIN_WINDOW_DIM..=MAX_WINDOW_DIM).contains(&h)
+        {
+            (w as u32, h as u32)
+        } else {
+            DEFAULT_WINDOW_SIZE
+        }
     }
 
     /// プロジェクトのプラグインフォルダからプラグインをロードする。
