@@ -295,6 +295,25 @@ pub enum RuntimeMode {
     Play,
 }
 
+/// Edit モードのビューポート表示モード（エディタの「3Dシーン / 2Dシーン」タブに対応）。
+///
+/// Edit モードかつシーン世界線（world_line = 0）でのみ意味を持つ。
+/// Play モードやアクター編集タブ（world_line > 0）には影響しない。
+/// IPC コマンド `EDIT_VIEW:3d` / `EDIT_VIEW:2d` で切り替える。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum EditViewMode {
+    /// 3D シーンビュー（デフォルト）。
+    /// 3D オブジェクトのみ表示し、スクリーンスペースキャンバス（Actor2D）は
+    /// 描画・ピッキング・ギズモをすべて非表示にする。
+    /// 3D ワールドキャンバス（Actor3D + CanvasComponent）は従来どおり表示する。
+    View3D,
+    /// 2D シーンビュー。
+    /// 3D シーン（モデル・3D グリッド・3D ギズモ等）を非表示にし、
+    /// 全スクリーンスペースキャンバスを Play 時と同じ WYSIWYG レイアウトで重ね表示する。
+    /// カメラ操作は 2D パン・ズーム（canvas_cameras[0]）に切り替わる。
+    View2D,
+}
+
 /// App::new / App::run への引数。
 pub struct LaunchArgs {
     pub parent_hwnd:      Option<isize>,
@@ -508,7 +527,13 @@ pub struct App {
     /// キャンバスをスクリーンスペースオーバーレイで表示するフラグ。
     /// false（デフォルト）= ワールドスペース、true = スクリーンスペースオーバーレイ。
     /// エディタのビューポートオプションから切り替え可能。実行時は常に true。
+    /// EDIT_VIEW コマンド受信時にビューモードと同期される
+    /// （View2D = true / View3D = false）。
     canvas_screen_space_overlay: bool,
+    /// Edit モードのビューポート表示モード（3Dシーン / 2Dシーンタブ）。
+    /// デフォルトは View3D。IPC の `EDIT_VIEW:3d` / `EDIT_VIEW:2d` で切り替える。
+    /// Edit モードかつシーン世界線（world_line = 0）でのみ参照される。
+    edit_view_mode: EditViewMode,
 
     // ── カメラプレビュー ─────────────────────────────────────────
     /// カメラアクター選択時のビューポートプレビュー描画リソース。
@@ -779,6 +804,7 @@ impl App {
             actor_edit_canvas_wls: HashSet::new(),
             canvas_cameras:        HashMap::new(),
             canvas_screen_space_overlay: false,
+            edit_view_mode:              EditViewMode::View3D,
             camera_preview:              None,
             camera_preview_target_size:  None,
             camera_gizmo:                None,
@@ -811,6 +837,35 @@ impl App {
 
     /// エディタ埋め込みモードかどうかを返す。
     fn is_embedded(&self) -> bool { self.parent_hwnd.is_some() }
+
+    // ── Edit ビューモード判定ヘルパー ─────────────────────────────
+
+    /// 現在のビューポートが「2D シーンビュー（EditViewMode::View2D）」かどうかを返す。
+    ///
+    /// 条件:
+    ///   - Edit モードである（Play・Play ポーズ中は常に false = 従来動作）
+    ///   - シーン世界線（world_line = 0）を表示中である
+    ///     （アクター編集タブ・キャンバス編集タブには影響しない）
+    ///
+    /// true のとき: 3D シーン描画を抑制し、スクリーンスペースキャンバスを
+    /// WYSIWYG レイアウトで表示、カメラは 2D パン・ズームに切り替わる。
+    pub(super) fn edit_view_is_2d(&self) -> bool {
+        self.mode == RuntimeMode::Edit
+            && self.edit_view_mode == EditViewMode::View2D
+            && self.active_world_line == 0
+    }
+
+    /// 現在のビューポートが「3D シーンビューでスクリーンスペースキャンバスを
+    /// 非表示にする状態」かどうかを返す。
+    ///
+    /// 条件は edit_view_is_2d と対になる（Edit モード + シーン世界線 + View3D）。
+    /// true のとき: Actor2D（スクリーンスペースキャンバス）の描画・ピッキング・
+    /// ギズモをすべて無効化する。3D ワールドキャンバスは影響を受けない。
+    pub(super) fn edit_view_hides_ss_canvas(&self) -> bool {
+        self.mode == RuntimeMode::Edit
+            && self.edit_view_mode == EditViewMode::View3D
+            && self.active_world_line == 0
+    }
 
     /// ウィンドウの HWND（Windows）を返す。非 Windows では 0。
     fn window_hwnd(&self) -> isize {

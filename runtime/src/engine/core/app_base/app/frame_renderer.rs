@@ -299,25 +299,48 @@ impl App {
         let time_running = self.mode == RuntimeMode::Play && !self.paused;
         let ctx: FrameContext = self.clock.tick(time_running);
         let in_editor = self.mode == RuntimeMode::Edit || self.paused;
-        // 現在の世界線が 2D キャンバスモードかどうか
-        let is_canvas = self.canvas_world_lines.contains(&self.active_world_line);
+        // ── Edit ビューモード（3Dシーン / 2Dシーンタブ）判定 ─────────────────
+        // edit_view_2d: Edit モード + シーン世界線 + View2D。
+        //   3D シーンを非表示にし、スクリーンスペースキャンバスを WYSIWYG で重ね表示する。
+        // edit_view_hide_ss: Edit モード + シーン世界線 + View3D。
+        //   スクリーンスペースキャンバス（Actor2D）を描画・ピッキングとも非表示にする。
+        // どちらも Play モード・アクター編集タブには影響しない。
+        let edit_view_2d      = self.edit_view_is_2d();
+        let edit_view_hide_ss = self.edit_view_hides_ss_canvas();
+        // 現在の世界線が 2D キャンバスモードかどうか。
+        // View3D（edit_view_hide_ss）では SS キャンバスを完全に隠すため false 扱いにし、
+        // スプライト収集・矩形アウトライン・2D コライダー・GPU ID ピッキングを一括で抑制する。
+        let is_canvas = self.canvas_world_lines.contains(&self.active_world_line)
+            && !edit_view_hide_ss;
         // スクリーンスペースモード:
         //   - チェックボックス ON: スクリーンスペース
         //   - プレイ中: 常にスクリーンスペース
         //   - アクター編集タブの 2D 世界線: 常にスクリーンスペース（編集パネルは従来通り）
+        //   - Edit の 2D シーンビュー: 常にスクリーンスペース（WYSIWYG 表示）
         let use_screen_space = self.canvas_screen_space_overlay || !in_editor
-            || self.actor_edit_canvas_wls.contains(&self.active_world_line);
+            || self.actor_edit_canvas_wls.contains(&self.active_world_line)
+            || edit_view_2d;
 
         // アクター編集タブの 2D キャンバスのみ 2D オルソカメラを使用する。
         // シーン上のキャンバスは screenSpace チェック ON でも 3D カメラを維持する。
         let is_actor_edit_2d = self.actor_edit_canvas_wls.contains(&self.active_world_line);
+        // 2D オルソカメラをメインカメラとして使うビューかどうか。
+        //   - アクター編集タブの 2D 世界線（従来動作）
+        //   - Edit の 2D シーンビュー（canvas_cameras[0] でパン・ズーム）
+        let use_ortho_2d_camera = is_actor_edit_2d || edit_view_2d;
+        // SS レイアウト（ビューポート基準のルートアンカー・auto_scale）を適用するか。
+        // 従来の scene_canvas_ss と同義（スプライト・コライダー・ID の座標計算に使う）。
+        let ss_layout = is_canvas && use_screen_space && !is_actor_edit_2d;
         // シーンのスクリーンスペースキャンバス: 3D メインカメラ + 2D オーバーレイ合成。
         // アクター編集タブは camera_buf 自体が 2D なのでオーバーレイ不要。
-        let scene_canvas_ss = is_canvas && use_screen_space && !is_actor_edit_2d;
+        // Edit の 2D シーンビューも camera_buf 自体が 2D（パン・ズーム可能）になるため
+        // オーバーレイパスは使わずメインパスで直接描画する。
+        let scene_canvas_ss = ss_layout && !edit_view_2d;
 
         if in_editor {
-            if is_actor_edit_2d {
-                // 2D アクター編集タブ: RMB ドラッグで XY パン、スクロールでズーム。
+            if use_ortho_2d_camera {
+                // 2D ビュー（アクター編集タブ / 2D シーンビュー）:
+                // RMB ドラッグで XY パン、スクロールでズーム。3D デバッグカメラは動かさない。
                 if self.cam_input.rmb {
                     let ws = self.window.as_ref().map(|w| {
                         let s = w.inner_size();
@@ -421,9 +444,9 @@ impl App {
         // ここで不変借用のうちにフラスタムを取得しておく。
         // デバッグカメラ OR 選択カメラのいずれかに入っていれば描画する（OR カリング）。
         let preview_frustum: Option<[[f32; 4]; 6]> = {
-            // 3D Edit シーン（アクター編集 2D タブ以外）のみ対象
+            // 3D Edit シーン（アクター編集 2D タブ・2D シーンビュー以外）のみ対象
             // WL 0 に 2D アクターが混在していても 3D カメラ視錐台を計算する
-            let is_3d_edit = in_editor && !is_actor_edit_2d;
+            let is_3d_edit = in_editor && !use_ortho_2d_camera;
             if is_3d_edit {
                 self.scene.as_ref().and_then(|scene| {
                     camera_scene_gizmo::get_selected_camera_data(
@@ -456,7 +479,9 @@ impl App {
             //   - Play モード         → シーン内 is_main=true の CameraComponent
             //                           （見つからなければデバッグカメラにフォールバック）
             //   - Edit モード         → デバッグカメラ
-            let (view, proj, cam_pos_arr) = if is_actor_edit_2d {
+            // 2D オルソカメラビュー（アクター編集 2D タブ / 2D シーンビュー）は
+            // canvas_cameras の 2D カメラをメインカメラとして使う。
+            let (view, proj, cam_pos_arr) = if use_ortho_2d_camera {
                 let cam_2d = self.canvas_cameras
                     .entry(self.active_world_line)
                     .or_insert_with(CanvasCameraData::default);
@@ -614,7 +639,9 @@ impl App {
         // 3D プレビュー球体は表示しない。3D モードのみレイキャストで位置を算出する。
         // 3D+2D 混在シーン（is_canvas=true）では 3D レイキャストを引き続き使用する。
         if let Some((hsx, hsy)) = self.pending_drop_hover.take() {
-            if !is_actor_edit_2d {
+            // 2D オルソカメラビュー（アクター編集 2D タブ / 2D シーンビュー）では
+            // 3D レイキャストによるプレビュー球体は使わない。
+            if !use_ortho_2d_camera {
                 // 3D モード: GPU リードバックを使わずレイキャストでワールド座標を算出する。
                 // y=0 平面との交差を優先し、カメラが平行または後方なら DEFAULT_DIST 先。
                 const DEFAULT_DIST: f32 = 10.0;
@@ -667,7 +694,7 @@ impl App {
 
         // カメラギズモの (DFS ID, アイコン行列) リスト（3D 編集モードのみ）。
         // ピック情報として mc_total_instances の直後の ID 範囲に割り当てる。
-        let cam_gizmo_actor_mats: Vec<(usize, [[f32; 4]; 4])> = if in_editor && !is_actor_edit_2d {
+        let cam_gizmo_actor_mats: Vec<(usize, [[f32; 4]; 4])> = if in_editor && !use_ortho_2d_camera {
             if let Some(scene) = &self.scene {
                 camera_scene_gizmo::collect_camera_actor_matrices(
                     &scene.actors, &scene.world, self.active_world_line,
@@ -682,11 +709,17 @@ impl App {
         // self.renderer を可変借用した後は self の不変借用が取れないため。
         // ワールドスペース表示中（use_screen_space = false）の 2D アクターはパースペクティブ
         // カメラで描画されるため、ortho 半径ではなく 3D 半径を使う必要がある。
-        let gizmo_actor_is_2d = is_actor_edit_2d
+        let gizmo_actor_is_2d = use_ortho_2d_camera
             || (self.selected_primary_actor_is_2d() && use_screen_space);
         // 3D Canvas 子アクター軸をレンダーパス開始前（可変借用前）に事前計算する。
         // レンダーパス内では &mut self.renderer の可変借用が続くため self の不変借用が取れない。
         let canvas_child_axes_pre = self.selected_canvas_child_axes();
+        // Edit ビューモードによるギズモ抑制（可変借用前に確定する）:
+        //   - View3D で SS キャンバスの 2D アクターを選択中: アイテム自体が非表示のため
+        //     ギズモも表示しない（3D ワールドキャンバスの子は表示継続）
+        //   - View2D で 3D アクターを選択中: 3D シーン非表示のためギズモも表示しない
+        // 判定ロジックは gizmo_handler 側の操作抑制と共通（gizmo_suppressed_by_edit_view）。
+        let gizmo_suppressed_by_view = self.gizmo_suppressed_by_edit_view();
 
         if let (Some(renderer), Some(scene), Some(camera_buf), Some(draw_ctx)) =
             (&mut self.renderer, &self.scene, &self.camera_buf, &self.draw_ctx)
@@ -868,9 +901,10 @@ impl App {
                     perf_skin_ms = _perf_t_skin.elapsed().as_secs_f64() * 1000.0;
 
                     // ── カメラシーンギズモ（Edit モード・3D シーンのみ）──────────
-                    // カメラアイコン / フラスタム / プレビューはアクター編集 2D タブ以外で表示する。
+                    // カメラアイコン / フラスタム / プレビューはアクター編集 2D タブ・
+                    // 2D シーンビュー以外で表示する。
                     // WL 0 に 2D アクターが混在していても 3D カメラギズモを表示する。
-                    let is_3d_scene = in_editor && !is_actor_edit_2d;
+                    let is_3d_scene = in_editor && !use_ortho_2d_camera;
                     let (vp_w_f, vp_h_f) = window_size.map_or(
                         (1280.0_f32, 720.0_f32),
                         |s| (s.width as f32, s.height as f32),
@@ -1098,8 +1132,10 @@ impl App {
                         && !self.edit_physics_at_latest;
                     let show_gizmo_pre = (self.mode == RuntimeMode::Edit || self.paused)
                         && !physics_timeline_locked;
+                    // Edit ビューモードで非表示対象のアクターを選択中はギズモを生成しない
                     let gizmo_gpu_batch = if show_gizmo_pre
                         && self.tool_mode != ToolMode::Select
+                        && !gizmo_suppressed_by_view
                     {
                         gizmo_pos.map(|pos| {
                             // 2D アクター編集タブ・2D アクター選択時 / それ以外でギズモ半径を切り替える
@@ -1166,8 +1202,8 @@ impl App {
                                 (px.min(cx), py.max(cy)), // BL
                             ];
                             let mut wp = [[0.0f32; 3]; 4];
-                            if is_actor_edit_2d || scene_canvas_ss {
-                                // 2D スクリーンスペース（アクター編集タブ・シーンSS共通）:
+                            if use_ortho_2d_camera || scene_canvas_ss {
+                                // 2D スクリーンスペース（アクター編集タブ・2Dシーンビュー・シーンSS共通）:
                                 // 2D ortho でスクリーン座標をキャンバス XY に変換する
                                 let cam_2d = self.canvas_cameras.get(&self.active_world_line);
                                 let pan_x  = cam_2d.map(|c| c.pan_x).unwrap_or(0.0);
@@ -1212,8 +1248,9 @@ impl App {
                     } else { None };
 
                     // ドロッププレビュー球体バッチ（ドラッグ中のみ）
+                    // 2D シーンビューでは 3D 配置プレビューは表示しない
                     const PREVIEW_SPHERE_RADIUS: f32 = 0.5;
-                    let drop_preview_batch = if let Some(pos) = self.drop_preview_pos {
+                    let drop_preview_batch = if let Some(pos) = self.drop_preview_pos.filter(|_| !edit_view_2d) {
                         let mut gb = GizmoBatch::new();
                         gb.add_solid_sphere(
                             pos,
@@ -1231,13 +1268,17 @@ impl App {
                     // その他（シーン上のキャンバス含む 3D 系）: XZ 平面グリッド
                     // シーン上に canvas があっても 3D グリッドを維持する（is_actor_edit_canvas で判定）
                     let is_actor_edit_canvas = is_canvas && self.actor_edit_canvas_wls.contains(&self.active_world_line);
+                    // 2D グリッド（XY 平面）を使うビューか:
+                    //   - アクター編集タブの 2D キャンバス（従来動作）
+                    //   - Edit の 2D シーンビュー（2D オルソカメラでパン・ズームするため）
+                    let is_2d_grid_view = is_actor_edit_canvas || edit_view_2d;
                     let grid_gpu_batch = if in_editor && (self.show_grid || (self.active_world_line != 0 && !is_actor_edit_canvas)) {
                         let mut lb = LineBatch::new();
                         // モード別グリッド色
-                        // 2D アクター編集: 薄い青系（mine: 薄く, major: 中程度）
+                        // 2D アクター編集・2D シーンビュー: 薄い青系（minor: 薄く, major: 中程度）
                         // 3D アクター編集: 紺背景に映える青系
                         // 3D シーン: ダークグレー
-                        let (minor, major): ([f32; 4], [f32; 4]) = if is_actor_edit_canvas {
+                        let (minor, major): ([f32; 4], [f32; 4]) = if is_2d_grid_view {
                             ([0.22, 0.25, 0.40, 0.20], [0.32, 0.40, 0.60, 0.55])
                         } else if self.active_world_line != 0 {
                             ([0.22, 0.25, 0.40, 1.0], [0.32, 0.36, 0.55, 1.0])
@@ -1246,7 +1287,7 @@ impl App {
                         };
                         let ax_x: [f32; 4] = [0.60, 0.15, 0.15, 0.90];
 
-                        if is_actor_edit_canvas {
+                        if is_2d_grid_view {
                             // 2D モード: XY 平面グリッド（Z=0）
                             // カメラ追従 + 可視範囲に応じたステップ自動選択（Y-down 座標系）
                             // Y 軸（X=0 の縦線）: 緑、X 軸（Y=0 の横線）: 赤
@@ -1432,7 +1473,8 @@ impl App {
                     const COLLIDER_COLOR_TRIGGER:   [f32; 4] = [1.0, 0.9, 0.0, 1.0];
                     const COLLIDER_COLOR_COLLISION: [f32; 4] = [1.0, 0.2, 0.0, 1.0];
 
-                    let draw_colliders = (in_editor && !is_actor_edit_2d)
+                    // 3D コライダーはアクター編集 2D タブ・2D シーンビューでは表示しない
+                    let draw_colliders = (in_editor && !use_ortho_2d_camera)
                         || (!in_editor && self.play_collider_draw);
 
                     let collider_wireframe_batch = if draw_colliders {
@@ -1584,9 +1626,10 @@ impl App {
                         // ワイヤーフレーム描画はコライダーオフセットを加算するだけでよい。
                         let vp_wf = window_size.map_or(1280.0f32, |s| s.width  as f32);
                         let vp_hf = window_size.map_or(720.0f32,  |s| s.height as f32);
-                        let viewport_size_2d = if scene_canvas_ss { Some([vp_wf, vp_hf]) } else { None };
+                        // SS レイアウト時（2D シーンビュー含む）はビューポート基準でレイアウトする
+                        let viewport_size_2d = if ss_layout { Some([vp_wf, vp_hf]) } else { None };
                         // CanvasViewportRef::Camera を持つルートキャンバスのビューポートサイズを解決する
-                        let canvas_vp_overrides_2d = if scene_canvas_ss {
+                        let canvas_vp_overrides_2d = if ss_layout {
                             build_canvas_viewport_map(
                                 &scene.actors, &scene.world,
                                 self.active_world_line, vp_wf, vp_hf,
@@ -1623,7 +1666,7 @@ impl App {
 
                             // body_pos_px は canvas_collect.rs と同一の変換で ortho 空間で計算済み。
                             // コライダーオフセットは ctx.size_sx/size_sy でスケールして加算する。
-                            let (cx, cy, eff_sx, eff_sy) = if scene_canvas_ss {
+                            let (cx, cy, eff_sx, eff_sy) = if ss_layout {
                                 let cx = ctx.body_pos_px[0] + off_wx * ctx.size_sx;
                                 let cy = (ctx.body_pos_px[1] + off_wy * ctx.size_sy) * y_sign;
                                 (cx, cy, ctx.size_sx, ctx.size_sy)
@@ -1725,12 +1768,15 @@ impl App {
 
                             // ── 3D Canvas のスプライト（is_canvas に関わらず常に収集）──
                             // Actor3D + CanvasComponent を持つアクターをワールド空間で描画する。
+                            // ただし 2D シーンビュー（edit_view_2d）では 3D シーンごと非表示のため収集しない。
                             //
                             // 座標変換の設計（3D 透視カメラは Vulkan Y-DOWN：world +Y → screen 下）:
                             //   canvas_to_world = actor_3d_mat × Scale(CANVAS_WORLD_SCALE, CANVAS_WORLD_SCALE, 1)
                             //   Y 反転なし — キャンバス Y+（下）はワールド Y+（3D カメラで screen 下）に対応 ✓
                             //   1px = 1cm（CANVAS_WORLD_SCALE = 0.01m）
-                            for actor in &scene.actors {
+                            for actor in scene.actors.iter() {
+                                // 2D シーンビューでは 3D Canvas スプライトを収集しない
+                                if edit_view_2d { break; }
                                 if actor.world_line != wl { continue; }
                                 if actor.is_2d() { continue; } // Actor3D のみ
                                 let canvas_slot = actor.slots().iter()
@@ -1822,7 +1868,8 @@ impl App {
                     // ── 3D Canvas アウトライン（エディタモード）──────────────────────────────
                     // Actor3D + CanvasComponent を持つアクターの矩形境界を 3D ワールド空間で描画する。
                     // 選択時はオレンジ（Sprite アウトラインと同色）、非選択時は青白。
-                    let canvas_3d_rect_batch = if in_editor {
+                    // 2D シーンビューでは 3D シーンごと非表示のため生成しない。
+                    let canvas_3d_rect_batch = if in_editor && !edit_view_2d {
                         if let Some(scene) = &self.scene {
                             let wl = self.active_world_line;
                             let mut lb = LineBatch::new();
@@ -1897,9 +1944,10 @@ impl App {
                     // 描画順: アウトライン Quad → 実スプライト → 外枠だけがオレンジとして見える。
                     const ORANGE: [f32; 4] = [1.0, 0.5, 0.05, 1.0];
 
+                    // 2D シーンビューでは 3D Canvas 子スプライトも非表示のためアウトラインを生成しない
                     let sprite_3d_outline_items:
                         Vec<([[f32; 4]; 4], [f32; 4], Option<std::sync::Arc<GpuSpriteTexture>>)> =
-                    if in_editor && !self.selected_actor_dfs_ids.is_empty() {
+                    if in_editor && !edit_view_2d && !self.selected_actor_dfs_ids.is_empty() {
                         if let Some(scene) = &self.scene {
                             let wl = self.active_world_line;
                             let mut items = Vec::new();
@@ -1978,7 +2026,8 @@ impl App {
                     );
 
                     // 軸ギズモバッチ（エディタモード + show_axis_gizmo のみ）
-                    let axis_gizmo_batch = if in_editor && self.show_axis_gizmo {
+                    // 2D シーンビューでは 3D カメラ方位ウィジェットは無意味のため非表示にする
+                    let axis_gizmo_batch = if in_editor && self.show_axis_gizmo && !edit_view_2d {
                         let sw  = window_size.map_or(1280.0, |s| s.width  as f32);
                         let sh  = window_size.map_or(720.0,  |s| s.height as f32);
                         let rot = self.camera.base.transform.rotation;
@@ -2002,7 +2051,8 @@ impl App {
                     // アイコンオーバーレイバッチ（エディタモードのみ）
                     // 全選択アクター（マルチ選択対応）の 3D Transform 位置をスクリーン投影してアイコンを表示する。
                     // キャンバスアクター（2D）はスクリーンスペース描画のため 3D 投影をスキップする。
-                    let icon_overlay_batch = if in_editor {
+                    // 2D シーンビューでは 3D カメラ投影が成立しないため生成しない。
+                    let icon_overlay_batch = if in_editor && !edit_view_2d {
                         let vp_w = window_size.map_or(1280.0, |s| s.width  as f32);
                         let vp_h = window_size.map_or(720.0,  |s| s.height as f32);
                         let (view, proj) = (self.camera.view_matrix(), self.camera.projection_matrix());
@@ -2080,11 +2130,11 @@ impl App {
                     {
                         // Play モード: ゲームカメラのクリアカラーで全体クリア
                         // （帯エリアは begin_render_pass 後に BarFillPipeline で別途塗りつぶす）
-                        // Edit モード: アクター編集タブは紺色、通常はダークグレー
+                        // Edit モード: アクター編集タブ・2D シーンビューは紺色、通常はダークグレー
                         let clear_color = if self.mode == RuntimeMode::Play && !self.paused {
                             let [r, g, b, a] = game_clear_color;
                             wgpu::Color { r: r as f64, g: g as f64, b: b as f64, a: a as f64 }
-                        } else if self.active_world_line != 0 {
+                        } else if self.active_world_line != 0 || edit_view_2d {
                             wgpu::Color { r: 0.05, g: 0.08, b: 0.18, a: 1.0 }
                         } else {
                             wgpu::Color { r: 0.1,  g: 0.1,  b: 0.1,  a: 1.0 }
@@ -2137,13 +2187,16 @@ impl App {
                             pass.set_scissor_rect(vp_x as u32, vp_y as u32, vp_w as u32, vp_h as u32);
                         }
                         // 全 MC を統合バッチで描画（N_actors → N_unique_models 回の draw call）
+                        // 2D シーンビューでは 3D モデルを描画しない（3D シーン非表示）
                         let _perf_t_draw = std::time::Instant::now();
-                        for (path, sd) in &self.shared_model_batches {
-                            if let Some(&gpu) = gpu_model_by_path.get(path.as_str()) {
-                                draw_model_indirect(
-                                    &mut pass, gpu, &sd.batch,
-                                    &camera_buf.bind_group, &draw_ctx.pipelines,
-                                );
+                        if !edit_view_2d {
+                            for (path, sd) in &self.shared_model_batches {
+                                if let Some(&gpu) = gpu_model_by_path.get(path.as_str()) {
+                                    draw_model_indirect(
+                                        &mut pass, gpu, &sd.batch,
+                                        &camera_buf.bind_group, &draw_ctx.pipelines,
+                                    );
+                                }
                             }
                         }
                         perf_draw_ms = _perf_t_draw.elapsed().as_secs_f64() * 1000.0;
@@ -2250,7 +2303,8 @@ impl App {
                         // アウトライン: 全選択アクター（マルチ選択対応）※グリッドより前面に描画
                         // 統合バッチを使用することで、スキンアニメーション済みの
                         // ジョイント行列が正しく反映されたアウトラインが得られる。
-                        if in_editor {
+                        // 2D シーンビューでは 3D モデル自体を描画しないためアウトラインも省略する。
+                        if in_editor && !edit_view_2d {
                             if !self.selected_actor_dfs_ids.is_empty() {
                                 // Phase 1: 全選択アクターのステンシルマスクを書き込む
                                 for &dfs_id in &self.selected_actor_dfs_ids {
@@ -2553,11 +2607,13 @@ impl App {
                                             let y_sign = if use_screen_space { 1.0f32 } else { -1.0 };
                                             let vp_w = window_size.map_or(1280.0, |s| s.width  as f32);
                                             let vp_h = window_size.map_or(720.0,  |s| s.height as f32);
+                                            // SS レイアウト時（2D シーンビュー含む）は描画と同じ
+                                            // ビューポート基準レイアウトで ID を配置する
                                             let viewport_size: Option<[f32; 2]> =
-                                                if scene_canvas_ss { Some([vp_w, vp_h]) } else { None };
+                                                if ss_layout { Some([vp_w, vp_h]) } else { None };
                                             // Camera 参照のルートキャンバス用ビューポートオーバーライドマップ
-                                            let play_gvp_id = if scene_canvas_ss && !in_editor { Some(game_viewport) } else { None };
-                                            let canvas_vp_overrides_id = if scene_canvas_ss {
+                                            let play_gvp_id = if ss_layout && !in_editor { Some(game_viewport) } else { None };
+                                            let canvas_vp_overrides_id = if ss_layout {
                                                 build_canvas_viewport_map(&scene.actors, &scene.world, wl, vp_w, vp_h, play_gvp_id)
                                             } else {
                                                 std::collections::HashMap::new()
@@ -2587,8 +2643,9 @@ impl App {
                                 // Actor3D + CanvasComponent を持つアクターの 2D 子スプライトを WS で pick できるようにする。
                                 // is_canvas に関わらず常に収集する（3D シーン中の 3D Canvas 対応）。
                                 // actor edit 2D タブは CPU picking 専用のため除外する。
+                                // 2D シーンビューでは 3D Canvas 自体が非表示のため収集しない
                                 let canvas_3d_child_id_raw_items: Vec<(u32, [[f32; 4]; 4], Option<String>)> =
-                                    if !is_actor_edit_2d {
+                                    if !use_ortho_2d_camera {
                                         if let Some(scene) = &self.scene {
                                             let wl = self.active_world_line;
                                             let mut items = Vec::new();
@@ -2710,14 +2767,17 @@ impl App {
 
                                 // 3D MC ID 描画（統合バッチ使用）
                                 // lod_id_buffers に絶対 ID が書き込まれているため
-                                // id_zero_bg (base=0) で CPU デコードが正しく機能する
-                                for (path, sd) in &self.shared_model_batches {
-                                    if let Some(&gpu) = gpu_model_by_path.get(path.as_str()) {
-                                        draw_id_pass(
-                                            &mut id_pass, gpu, &sd.batch,
-                                            &camera_buf.bind_group, &draw_ctx.pipelines,
-                                            &sd.id_zero_bg.1,
-                                        );
+                                // id_zero_bg (base=0) で CPU デコードが正しく機能する。
+                                // 2D シーンビューでは 3D モデル非表示のためピッキング対象からも外す。
+                                if !edit_view_2d {
+                                    for (path, sd) in &self.shared_model_batches {
+                                        if let Some(&gpu) = gpu_model_by_path.get(path.as_str()) {
+                                            draw_id_pass(
+                                                &mut id_pass, gpu, &sd.batch,
+                                                &camera_buf.bind_group, &draw_ctx.pipelines,
+                                                &sd.id_zero_bg.1,
+                                            );
+                                        }
                                     }
                                 }
 

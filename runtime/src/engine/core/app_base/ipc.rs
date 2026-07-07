@@ -182,6 +182,12 @@ pub enum IpcCommand {
     /// false（デフォルト）= ワールドスペース、true = スクリーンスペースオーバーレイ
     /// フォーマット: CANVAS_SS_OVERLAY:0/1
     SetCanvasScreenSpaceOverlay(bool),
+    /// Edit モードのビューポート表示モード（3Dシーン / 2Dシーンタブ）を切り替える
+    /// is_2d = true: 2D シーンビュー（スクリーンスペース重ね表示 + 2D パン・ズーム）
+    /// is_2d = false: 3D シーンビュー（スクリーンスペースキャンバス非表示）
+    /// Play モード中は無視される（Edit モード限定機能）
+    /// フォーマット: EDIT_VIEW:2d / EDIT_VIEW:3d
+    SetEditViewMode { is_2d: bool },
     /// ルートキャンバスの画面サイズ自動スケールを設定する
     /// フォーマット: SET_CANVAS_AUTO_SCALE:{actor_dfs_id},{slot_idx},{value}
     SetCanvasAutoScale { actor_dfs_id: u32, slot_idx: u32, auto_scale: bool },
@@ -612,6 +618,9 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                         "SHOW_AXIS_GIZMO:0"     => Some(IpcCommand::SetShowAxisGizmo(false)),
                         "CANVAS_SS_OVERLAY:1"   => Some(IpcCommand::SetCanvasScreenSpaceOverlay(true)),
                         "CANVAS_SS_OVERLAY:0"   => Some(IpcCommand::SetCanvasScreenSpaceOverlay(false)),
+                        // Edit ビューモード切替（エディタの 3Dシーン / 2Dシーンタブ）
+                        "EDIT_VIEW:2d"          => Some(IpcCommand::SetEditViewMode { is_2d: true  }),
+                        "EDIT_VIEW:3d"          => Some(IpcCommand::SetEditViewMode { is_2d: false }),
                         s if s.starts_with("LOAD_SCENE:") => {
                             Some(IpcCommand::LoadScene(s["LOAD_SCENE:".len()..].to_string()))
                         }

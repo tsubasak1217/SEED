@@ -138,11 +138,12 @@ impl App {
                             let vp_h = ws.height as f32;
                             let mut rect_dfs: Vec<usize> = Vec::new();
 
-                            // アクター編集タブの純粋 2D シーン（actor_edit_canvas_wls に含まれる）のみ
+                            // アクター編集タブの純粋 2D シーン（actor_edit_canvas_wls に含まれる）と
+                            // Edit の 2D シーンビュー（edit_view_is_2d）は
                             // 2D キャンバス座標系での矩形選択を使用する。
-                            // メインシーン（world_line=0）は 3D アクターと Canvas アクターが混在するため
-                            // 常に 3D 選択ロジックを使用し、Canvas アクターは CanvasTransform で追加判定する。
-                            if self.actor_edit_canvas_wls.contains(&wl) {
+                            // メインシーンの 3D ビューは 3D アクターと Canvas アクターが混在するため
+                            // 3D 選択ロジックを使用する（2D シーンビューでは 3D アクターを選択しない）。
+                            if self.actor_edit_canvas_wls.contains(&wl) || self.edit_view_is_2d() {
                                 // 純粋 2D キャンバス編集タブ: スクリーン矩形をワールド矩形に変換して
                                 // CanvasTransform.position が範囲内かで判定する
                                 let cam_2d = self.canvas_cameras.get(&wl);

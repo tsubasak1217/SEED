@@ -6,7 +6,7 @@
 // ============================================================
 
 use crate::engine::core::app_base::ipc::IpcCommand;
-use crate::engine::core::app_base::scene::{Scene, DebugCameraData};
+use crate::engine::core::app_base::scene::{Scene, DebugCameraData, CanvasCameraData};
 use crate::engine::core::app_base::app::RuntimeMode;
 use crate::engine::core::app_base::undo::TransformCommand;
 use crate::engine::components::{ModelComponent, GroupMeta, GROUP_ID_BASE};
@@ -454,6 +454,36 @@ impl App {
                 IpcCommand::SetCanvasScreenSpaceOverlay(v) => {
                     // キャンバス表示モード切り替え（false=ワールドスペース、true=スクリーンスペース）
                     self.canvas_screen_space_overlay = v;
+                }
+                IpcCommand::SetEditViewMode { is_2d } => {
+                    // Edit ビューモード切替（エディタの 3Dシーン / 2Dシーンタブ）。
+                    // Edit モード限定機能のため Play モード中は無視する。
+                    if self.mode == RuntimeMode::Edit {
+                        self.edit_view_mode = if is_2d {
+                            super::EditViewMode::View2D
+                        } else {
+                            super::EditViewMode::View3D
+                        };
+                        // ピッキング・ギズモ・ドラッグの各ハンドラは
+                        // canvas_screen_space_overlay から use_screen_space を計算するため、
+                        // ビューモードとフラグを同期させて座標系の不整合を防ぐ。
+                        // （View2D = スクリーンスペース / View3D = SS キャンバス非表示）
+                        self.canvas_screen_space_overlay = is_2d;
+                        // 2D シーンビューの初回表示時は WYSIWYG（1 キャンバスピクセル = 1 画面
+                        // ピクセル・画面中央原点）になるよう 2D カメラを初期化する。
+                        // 既にカメラ状態がある場合はユーザーのパン・ズームを維持する。
+                        if is_2d && !self.canvas_cameras.contains_key(&0) {
+                            // ortho_half_h = ビューポート高さの半分 → キャンバス座標が実ピクセルと一致
+                            let half_h = self.window.as_ref()
+                                .map(|w| w.inner_size().height as f32 / 2.0)
+                                .unwrap_or(360.0);
+                            self.canvas_cameras.insert(0, CanvasCameraData {
+                                pan_x: 0.0,
+                                pan_y: 0.0,
+                                ortho_half_h: half_h,
+                            });
+                        }
+                    }
                 }
                 IpcCommand::GetCamState => {
                     let (pos, euler_x, euler_y, euler_z, fov, far, spd) = self.cam_state_tuple();

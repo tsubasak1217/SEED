@@ -162,6 +162,21 @@ impl App {
         }
     }
 
+    /// Edit ビューモードにより選択アクターのギズモ操作を抑制すべきかを返す。
+    ///
+    /// - View3D（3D シーンビュー）: SS キャンバスの 2D アクターは非表示のため操作不可。
+    ///   ただし 3D ワールドキャンバスの子（selected_canvas_child_axes が Some）は
+    ///   3D ビューに表示されるため操作を継続する。
+    /// - View2D（2D シーンビュー）: 3D アクターは非表示のため操作不可。
+    ///
+    /// frame_renderer 側の描画抑制（gizmo_suppressed_by_view）と対になる判定。
+    pub(super) fn gizmo_suppressed_by_edit_view(&self) -> bool {
+        (self.edit_view_hides_ss_canvas()
+            && self.selected_primary_actor_is_2d()
+            && self.selected_canvas_child_axes().is_none())
+        || (self.edit_view_is_2d() && !self.selected_primary_actor_is_2d())
+    }
+
     /// カーソル座標でギズモのヒットテストを行い、当たったパーツを返す。
     /// 2D キャンバスモードでは 2D 有効パーツのみで判定する。
     /// スクリーンスペース: ortho レイ、ワールドスペース: perspective レイ を使用する。
@@ -169,6 +184,9 @@ impl App {
         if self.tool_mode == ToolMode::Select { return None; }
         // 編集時物理タイムラインで過去フレームを表示中はGizmo操作不可
         if self.edit_physics_enabled && !self.edit_physics_at_latest { return None; }
+        // Edit ビューモードで非表示のアクターはギズモ操作の対象にしない
+        // （frame_renderer の gizmo_suppressed_by_view と対応する判定）
+        if self.gizmo_suppressed_by_edit_view() { return None; }
         let gizmo_pos = self.current_gizmo_pos()?;
         let window_size = self.window.as_ref()?.inner_size();
         let vp_w = window_size.width  as f32;
@@ -234,6 +252,8 @@ impl App {
         if self.tool_mode == ToolMode::Select { return None; }
         // 編集時物理タイムラインで過去フレームを表示中はGizmo操作不可
         if self.edit_physics_enabled && !self.edit_physics_at_latest { return None; }
+        // Edit ビューモードで非表示のアクターはギズモ操作の対象にしない
+        if self.gizmo_suppressed_by_edit_view() { return None; }
         let gizmo_pos = self.current_gizmo_pos()?;
 
         let centroid_mat = [
