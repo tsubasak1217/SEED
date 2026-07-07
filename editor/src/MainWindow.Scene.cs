@@ -59,6 +59,16 @@ public partial class MainWindow
         win.Show();
     }
 
+    /// <summary>
+    /// 「編集 → 環境設定...」: エディタ全体の環境設定ウィンドウをモーダルで開く。
+    /// タッチパッドスクロール係数など、特定パネルに属さない操作系の設定を編集する。
+    /// </summary>
+    private void OnOpenEditorPreferences(object sender, RoutedEventArgs e)
+    {
+        var win = new EditorPreferencesWindow { Owner = this };
+        win.ShowDialog();
+    }
+
     // ── メニューバー ──────────────────────────────────────────────
 
     private void OnMenuQuickSave(object sender, RoutedEventArgs e)

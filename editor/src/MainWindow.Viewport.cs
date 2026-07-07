@@ -288,13 +288,9 @@ public partial class MainWindow
         }
     }
 
-    // ── WndProc：ウィンドウドラッグ監視・横ホイールスクロール ─────
-
-    /// <summary>横ホイール（タッチパッドの横スワイプ等）の Windows メッセージ。
-    /// WPF は縦の MouseWheel しか標準処理しないため WndProc で自前処理する。</summary>
-    private const int WM_MOUSEHWHEEL = 0x020E;
-
-    // 横スクロール量は縦と共通の ScrollPixelsPerNotch × 環境設定係数（ScaledPixelsPerNotch）を使う
+    // ── WndProc：ウィンドウドラッグ監視 ──────────────────────────
+    // タッチパッドスクロール（縦の減衰・横スワイプ）は EditorScrollBehavior が
+    // 全ウィンドウ共通で処理するため、ここでは扱わない。
 
     private nint WndProc(nint hwnd, int msg, nint wParam, nint lParam, ref bool handled)
     {
@@ -311,117 +307,9 @@ public partial class MainWindow
             if (_clampInPlay && _runtimeManager?.State == EditorState.Play)
                 ApplyPlayClamp();
         }
-        else if (msg == WM_MOUSEHWHEEL)
-        {
-            // 横ホイール入力: マウス直下のスクロール可能要素へ水平スクロールを配送する
-            //（WPF は WM_MOUSEHWHEEL を UI イベントへ変換しないため、ここで処理しないと
-            //  タッチパッドの横スワイプが全パネルで無反応になる）
-            handled = HandleHorizontalWheel(wParam);
-        }
         return nint.Zero;
     }
 
-    // ── タッチパッドスクロールの手動処理（縦・横共通）────────────
-
-    /// <summary>ホイール 1 ノッチの delta 値（Windows 標準）。</summary>
-    private const int WheelDeltaPerNotch = 120;
-
-    /// <summary>
-    /// 手動スクロール時の 1 ノッチあたりの移動量（px）。縦・横で共通の基準とし、
-    /// 実際の感度はこれに環境設定の係数（EditorPreferences.TouchpadScrollScale）を掛けて決まる。
-    /// </summary>
-    private const double ScrollPixelsPerNotch = 48.0;
-
-    /// <summary>環境設定の係数を適用した 1 ノッチあたりの移動量（px）。</summary>
-    private static double ScaledPixelsPerNotch
-        => ScrollPixelsPerNotch * EditorPreferences.Instance.TouchpadScrollScale;
-
-    /// <summary>
-    /// ウィンドウ全体の PreviewMouseWheel: タッチパッドの精密スクロールだけを
-    /// 手動スクロール（横方向と同じ感度・環境設定の係数適用）へ置き換える。
-    ///
-    /// 物理マウスホイールは delta が ±120 の倍数で届くのに対し、精密タッチパッドは
-    /// 端数の小さい delta を高頻度で送る。この違いで入力元を判別する（マウスは従来どおり）。
-    /// </summary>
-    private void OnGlobalPreviewMouseWheel(object sender, MouseWheelEventArgs e)
-    {
-        // 120 の倍数 = 物理ホイール（または非精密ドライバ）→ 既定処理に任せる
-        if (e.Delta % WheelDeltaPerNotch == 0) return;
-
-        if (ApplyVerticalScroll(e.Delta)) e.Handled = true;
-    }
-
-    /// <summary>
-    /// マウス直下の要素からビジュアルツリーを遡り、最初に見つかったスクロール可能要素へ
-    /// delta（生値）による縦スクロールを適用する。感度は横方向と同一
-    /// （ScaledPixelsPerNotch = 48px × 環境設定係数）。処理できた場合 true。
-    /// </summary>
-    private bool ApplyVerticalScroll(double delta)
-    {
-        var el = Mouse.DirectlyOver as DependencyObject;
-        while (el is not null)
-        {
-            // AvalonEdit のエディタ: ピクセル単位の縦オフセット API を使う
-            if (el is ICSharpCode.AvalonEdit.TextEditor editor)
-            {
-                double px = delta / WheelDeltaPerNotch * ScaledPixelsPerNotch;
-                editor.ScrollToVerticalOffset(Math.Max(0, editor.VerticalOffset - px));
-                return true;
-            }
-            if (el is ScrollViewer sv && sv.ScrollableHeight > 0)
-            {
-                // オフセットの単位を判定する:
-                //  - AvalonEdit 内部の ScrollViewer は CanContentScroll=true だが
-                //    IScrollInfo（TextView）のオフセット単位は「ピクセル」なので px 換算を使う
-                //    （行換算にすると 1 ノッチ = 3px となり、横方向の 48px に比べて極端に弱くなる）
-                //  - それ以外の論理スクロール（ListBox 等のアイテム単位）は行数換算を使う
-                bool pixelBased = !sv.CanContentScroll
-                    || sv.Content is ICSharpCode.AvalonEdit.Editing.TextArea
-                    || sv.Content is ICSharpCode.AvalonEdit.Rendering.TextView;
-                double amount = pixelBased
-                    ? delta / WheelDeltaPerNotch * ScaledPixelsPerNotch
-                    : delta / WheelDeltaPerNotch * SystemParameters.WheelScrollLines
-                          * EditorPreferences.Instance.TouchpadScrollScale;
-                sv.ScrollToVerticalOffset(Math.Clamp(sv.VerticalOffset - amount, 0, sv.ScrollableHeight));
-                return true;
-            }
-            el = System.Windows.Media.VisualTreeHelper.GetParent(el);
-        }
-        return false;
-    }
-
-    /// <summary>
-    /// WM_MOUSEHWHEEL を処理する: マウスカーソル直下の要素からビジュアルツリーを遡り、
-    /// 最初に見つかったスクロール可能要素（AvalonEdit の TextEditor または ScrollViewer）へ
-    /// 水平スクロールを適用する。処理できた場合 true。
-    /// </summary>
-    private bool HandleHorizontalWheel(nint wParam)
-    {
-        // wParam の上位 16bit が符号付き delta（正 = 右方向。1 ノッチ = 120）
-        short delta = unchecked((short)((wParam.ToInt64() >> 16) & 0xFFFF));
-        if (delta == 0) return false;
-        double amount = (double)delta / WheelDeltaPerNotch * ScaledPixelsPerNotch;
-
-        // マウス直下の要素を取得し、ビジュアルツリーを遡ってスクロール対象を探す
-        var el = Mouse.DirectlyOver as DependencyObject;
-        while (el is not null)
-        {
-            // AvalonEdit のエディタ: 専用の水平オフセット API を使う
-            if (el is ICSharpCode.AvalonEdit.TextEditor editor)
-            {
-                editor.ScrollToHorizontalOffset(Math.Max(0, editor.HorizontalOffset + amount));
-                return true;
-            }
-            // 一般の ScrollViewer（出力パネル・ヒエラルキー等）
-            if (el is ScrollViewer sv && sv.ScrollableWidth > 0)
-            {
-                sv.ScrollToHorizontalOffset(Math.Clamp(sv.HorizontalOffset + amount, 0, sv.ScrollableWidth));
-                return true;
-            }
-            el = System.Windows.Media.VisualTreeHelper.GetParent(el);
-        }
-        return false;
-    }
 
     // ── ビューポートコンテキストメニュー (C) ─────────────────────
 

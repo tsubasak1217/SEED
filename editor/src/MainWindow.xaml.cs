@@ -384,8 +384,9 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         var hwndSource = HwndSource.FromHwnd(new WindowInteropHelper(this).Handle);
         hwndSource?.AddHook(WndProc);
 
-        // タッチパッドの精密スクロール（縦）を減衰する（物理ホイールは対象外）
-        PreviewMouseWheel += OnGlobalPreviewMouseWheel;
+        // タッチパッドスクロール挙動（縦の減衰・横スワイプ対応）を全ウィンドウへ導入する
+        //（フローティングパネルや設定ウィンドウにも適用される）
+        EditorScrollBehavior.Install();
 
         LoadLayout();
 

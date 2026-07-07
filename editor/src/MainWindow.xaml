@@ -646,6 +646,10 @@
                 <MenuItem Header="削除"
                           InputGestureText="Del / Esc"
                           Click="OnMenuDelete"/>
+                <Separator/>
+                <!-- エディタ全体の環境設定（スクロール係数など。editor_preferences.json に保存） -->
+                <MenuItem Header="環境設定..."
+                          Click="OnOpenEditorPreferences"/>
             </MenuItem>
 
             <!-- 表示（カテゴリごとに入れ子化） -->

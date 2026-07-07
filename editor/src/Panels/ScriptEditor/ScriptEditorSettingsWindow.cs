@@ -53,7 +53,6 @@ public sealed class ScriptEditorSettingsWindow : Window
         var colorPanel     = BuildColorPanel(out var colorGetters);
         var aiPanel        = BuildAiPanel(
             out var inlineCheck, out var manualCheck, out var groqKeyGetter, out var groqModelCombo);
-        var opsPanel       = BuildOperationPanel(out var scrollScaleGetter);
 
         // 右ペイン（内容表示先）。選択カテゴリのパネルをここへ差し込む。
         var detailHost = new ContentControl();
@@ -72,7 +71,6 @@ public sealed class ScriptEditorSettingsWindow : Window
             ("コードスタイル", codeStylePanel),
             ("色設定",         colorPanel),
             ("AI 補完",        aiPanel),
-            ("エディタ操作",   opsPanel),
         };
 
         var navPanel = new StackPanel { Margin = new Thickness(0, 8, 0, 0) };
@@ -115,17 +113,6 @@ public sealed class ScriptEditorSettingsWindow : Window
             if (groqModel.Length > 0) _settings.GroqModel = groqModel;
             foreach (var (_, key) in ScriptEditorSettings.ColorEntries)
                 _settings.Colors[key] = NormalizeHex(colorGetters[key](), _settings.Colors[key]);
-
-            // エディタ操作: タッチパッドスクロール係数を環境設定へ保存する（範囲外はクランプ）
-            if (double.TryParse(scrollScaleGetter(),
-                    System.Globalization.NumberStyles.Float,
-                    System.Globalization.CultureInfo.InvariantCulture, out var scrollScale))
-            {
-                EditorPreferences.Instance.TouchpadScrollScale =
-                    Math.Clamp(scrollScale, EditorPreferences.ScrollScaleMin, EditorPreferences.ScrollScaleMax);
-                EditorPreferences.Save();
-            }
-
             Applied?.Invoke(_settings);
             DialogResult = true;
             Close();
@@ -216,38 +203,6 @@ public sealed class ScriptEditorSettingsWindow : Window
             panel.Children.Add(ColorRow(label, current, out var getter));
             colorGetters[key] = getter;
         }
-        return panel;
-    }
-
-    /// <summary>
-    /// 「エディタ操作」カテゴリの内容パネルを構築する。
-    /// タッチパッドスクロール係数などエディタ全体の環境設定
-    /// （EditorPreferences。editor_preferences.json に保存）をここで編集する。
-    /// </summary>
-    private StackPanel BuildOperationPanel(out Func<string> scrollScaleGetter)
-    {
-        var panel = new StackPanel();
-        panel.Children.Add(Section("エディタ操作"));
-
-        panel.Children.Add(new TextBlock
-        {
-            Text = "エディタ全体の操作感の設定です（このカテゴリはスクリプトエディタ以外にも適用されます）。",
-            Foreground = Dim, FontSize = 11, Margin = new Thickness(0, 2, 0, 8), TextWrapping = TextWrapping.Wrap,
-        });
-
-        // タッチパッドスクロール係数（1.0 = 標準。小さいほど弱い。物理ホイールには影響しない）
-        panel.Children.Add(TextField(
-            "スクロール係数",
-            EditorPreferences.Instance.TouchpadScrollScale.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture),
-            out scrollScaleGetter));
-
-        panel.Children.Add(new TextBlock
-        {
-            Text = $"タッチパッド（精密スクロール）の縦・横スクロールの強さ（{EditorPreferences.ScrollScaleMin}〜{EditorPreferences.ScrollScaleMax}）。\n"
-                 + "1.0 が標準で、小さくするほどゆっくりスクロールします。物理マウスホイールには影響しません。",
-            Foreground = Dim, FontSize = 11, Margin = new Thickness(0, 2, 0, 4), TextWrapping = TextWrapping.Wrap,
-        });
-
         return panel;
     }
 
