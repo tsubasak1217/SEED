@@ -692,6 +692,11 @@ public partial class ProjectPanel : UserControl
         }) { IsBackground = true };
         hoverThread.Start();
 
+        // ドラッグ対象にアクタファイル（.actor / .actor2d）が含まれる場合、
+        // 種類に対応するシーンタブ（3Dシーン/2Dシーン）へドロップ前に仮切替する。
+        // ドロップが成立しなければ後段の EndActorDragSceneTabSwitch で元のタブへ戻す。
+        mainWindow?.BeginActorDragSceneTabSwitch(paths);
+
         sourceTile.GiveFeedback += giveFeedback;
         var data   = new DataObject("SEEDProjectPaths", paths);
         var result = DragDrop.DoDragDrop(sourceTile, data, DragDropEffects.Copy | DragDropEffects.Move);
@@ -710,8 +715,15 @@ public partial class ProjectPanel : UserControl
 
         // HwndHost 上へのドロップは OLE に届かず DragDropEffects.None で返る。
         // その場合はカーソル位置を確認してビューポートへ手動でドロップを転送する。
+        bool forwardedToViewport = false;
         if (result == DragDropEffects.None)
-            (mainWindow as MainWindow.IViewportDropReceiver)?.TryDropActorsAtCursor(paths);
+            forwardedToViewport =
+                (mainWindow as MainWindow.IViewportDropReceiver)?.TryDropActorsAtCursor(paths) ?? false;
+
+        // ドロップが成立した場合は仮切替したシーンタブを維持し、
+        // キャンセル（Esc・枠外リリース）なら元のタブへ戻す。
+        mainWindow?.EndActorDragSceneTabSwitch(
+            result != DragDropEffects.None || forwardedToViewport);
     }
 
     private void AttachDropTarget(Border tile)

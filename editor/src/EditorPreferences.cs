@@ -30,6 +30,13 @@ public sealed class EditorPreferences
     [JsonPropertyName("touchpad_scroll_scale")]
     public double TouchpadScrollScale { get; set; } = 1.0;
 
+    /// <summary>
+    /// ヒエラルキーの選択アクターの種類（Actor2D/Actor3D）に応じて、
+    /// シーンタブ（3Dシーン/2Dシーン）を自動で切り替えるかどうか。既定はオン。
+    /// </summary>
+    [JsonPropertyName("scene_tab_auto_switch")]
+    public bool SceneTabAutoSwitch { get; set; } = true;
+
     // ── シングルトン・永続化 ──────────────────────────────────
 
     /// <summary>読み込み済みの環境設定（Init 前は既定値）。</summary>

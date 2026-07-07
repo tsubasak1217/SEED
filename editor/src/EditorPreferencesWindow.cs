@@ -24,7 +24,7 @@ public sealed class EditorPreferencesWindow : Window
 
     // ── レイアウト定数 ────────────────────────────────────────
     private const double WindowW = 420;
-    private const double WindowH = 240;
+    private const double WindowH = 330;
     private const double LabelColumnWidth = 140;
 
     // ── 配色（他の設定ウィンドウと統一したダークテーマ）────────
@@ -36,6 +36,9 @@ public sealed class EditorPreferencesWindow : Window
 
     /// <summary>スクロール係数の入力フィールド。</summary>
     private readonly TextBox _tbScrollScale;
+
+    /// <summary>「選択でシーンタブを自動切替」のチェックボックス。</summary>
+    private readonly CheckBox _cbSceneTabAutoSwitch;
 
     public EditorPreferencesWindow()
     {
@@ -62,6 +65,25 @@ public sealed class EditorPreferencesWindow : Window
             Text = $"タッチパッド（精密スクロール）の縦・横スクロールの強さ（{EditorPreferences.ScrollScaleMin}〜{EditorPreferences.ScrollScaleMax}）。\n"
                  + "1.0 が標準で、小さくするほどゆっくりスクロールします。\n"
                  + "全パネル・全ウィンドウに適用されます。物理マウスホイールには影響しません。",
+            Foreground = Dim, FontSize = 11, TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 6, 0, 0),
+        });
+
+        // ── シーンタブ自動切替のチェックボックス行 ──
+        _cbSceneTabAutoSwitch = new CheckBox
+        {
+            Content    = "選択でシーンタブを自動切替",
+            IsChecked  = EditorPreferences.Instance.SceneTabAutoSwitch,
+            Foreground = Text,
+            FontSize   = 12,
+            Margin     = new Thickness(0, 16, 0, 0),
+            VerticalContentAlignment = VerticalAlignment.Center,
+        };
+        panel.Children.Add(_cbSceneTabAutoSwitch);
+        panel.Children.Add(new TextBlock
+        {
+            Text = "ヒエラルキーで選択したアクターの種類（2D/3D）に合わせて、\n"
+                 + "ビューポートのシーンタブ（3Dシーン/2Dシーン）を自動で切り替えます。",
             Foreground = Dim, FontSize = 11, TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0, 6, 0, 0),
         });
@@ -104,6 +126,8 @@ public sealed class EditorPreferencesWindow : Window
             EditorPreferences.Instance.TouchpadScrollScale =
                 Math.Clamp(scale, EditorPreferences.ScrollScaleMin, EditorPreferences.ScrollScaleMax);
         }
+        // シーンタブ自動切替の設定を反映する
+        EditorPreferences.Instance.SceneTabAutoSwitch = _cbSceneTabAutoSwitch.IsChecked == true;
         EditorPreferences.Save();
     }
 

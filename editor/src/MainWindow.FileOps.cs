@@ -153,6 +153,8 @@ public partial class MainWindow
         _activeActorPath = null;
         PanelHierarchy.SetActorEditMode(false);
         PanelInspector.SetActorEditMode(false);
+        // シーンに戻ったら現在のシーンタブのビューモードを再送してランタイムと同期する
+        SendCurrentEditView();
         RebuildActorTabBar();
         EditorLog.Write("OnReturnToScene — SET_ACTIVE_WORLD_LINE:0");
     }
@@ -215,6 +217,8 @@ public partial class MainWindow
                 // タブが空になったのでシーンに戻る
                 _activeActorPath = null;
                 SendNavCommand("SET_ACTIVE_WORLD_LINE:0");
+                // シーンタブへ復帰するので現在のビューモードを再送して同期する
+                SendCurrentEditView();
             }
         }
 
@@ -225,6 +229,10 @@ public partial class MainWindow
     private void RebuildActorTabBar()
     {
         ActorTabsPanel.Children.Clear();
+
+        // ── 固定シーンタブ（左端に常設。生成は MainWindow.SceneTabs.cs）──
+        ActorTabsPanel.Children.Add(BuildSceneTabItem("3Dシーン", is2D: false));
+        ActorTabsPanel.Children.Add(BuildSceneTabItem("2Dシーン", is2D: true));
 
         foreach (var tab in _actorTabs)
         {
@@ -313,9 +321,8 @@ public partial class MainWindow
             ActorTabsPanel.Children.Add(tabBorder);
         }
 
-        // タブバー全体の表示制御
-        ActorTabBar.Visibility  = _actorTabs.Count > 0
-            ? Visibility.Visible : Visibility.Collapsed;
+        // タブバー全体の表示制御: 固定シーンタブを常設するため常に表示する
+        ActorTabBar.Visibility  = Visibility.Visible;
         // "シーンに戻る" はアクター編集中のみ表示
         BtnReturnToScene.Visibility = _activeActorPath != null
             ? Visibility.Visible : Visibility.Collapsed;

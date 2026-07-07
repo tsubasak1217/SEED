@@ -256,6 +256,10 @@ public partial class MainWindow
         // 編集時物理設定は Edit runtime にのみ送信する（Play runtime へ送ると物理スレッドが停止する）
         if (_runtimeManager?.State == EditorState.Edit)
         {
+            // 現在のシーンタブ（3Dシーン/2Dシーン）のビューモードを同期する。
+            // 起動時・ランタイム再接続時・Play→Edit 復帰時のいずれもここを通るため、
+            // ランタイムのビューモードが常にタブ UI と一致する。
+            SendCurrentEditView();
             _runtimeManager?.SendToRuntime(
                 $"SET_EDIT_PHYSICS:{(_editPhysicsEnabled ? 1 : 0)},{(_editPhysicsWithRigidbody ? 1 : 0)}");
             _runtimeManager?.SendToRuntime(
@@ -303,6 +307,11 @@ public partial class MainWindow
             ReleasePlayClamp();
 
         EditorLog.Write($"ApplyUiState — {state}");
+
+        // シーン/アクタータブバーは Edit モードのみ操作可能にする
+        // （Play 中はランタイムが EDIT_VIEW を無視するため UI 側も無効化する）
+        ActorTabBar.IsEnabled = state == EditorState.Edit;
+
         switch (state)
         {
             case EditorState.Edit:

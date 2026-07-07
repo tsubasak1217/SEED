@@ -60,17 +60,20 @@ public partial class MainWindow
 
     /// DoDragDrop が DragDropEffects.None で返った場合（HwndHost 上へのドロップ）に
     /// カーソル位置とビューポート HWND 矩形を比較してドロップを転送する。
-    public void TryDropActorsAtCursor(string[] paths)
+    /// 転送した（DROP_ACTOR を送信した）場合は true を返す
+    /// （シーンタブのドラッグ仮切替の確定/復帰判定に使用する）。
+    public bool TryDropActorsAtCursor(string[] paths)
     {
-        if (!IsMouseOverViewportHwnd()) return;
+        if (!IsMouseOverViewportHwnd()) return false;
 
         var actorPaths = paths
             .Where(p => IsActorFile(p))
             .ToList();
-        if (actorPaths.Count == 0) return;
+        if (actorPaths.Count == 0) return false;
 
         var (localX, localY) = GetViewportLocalCursorPos();
         HandleViewportDrop(actorPaths, localX, localY);
+        return true;
     }
 
     /// カーソルがビューポート ContainerHwnd 上に「実際に」あるかを確認する。

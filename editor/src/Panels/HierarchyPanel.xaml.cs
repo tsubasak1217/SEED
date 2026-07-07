@@ -127,6 +127,33 @@ public partial class HierarchyPanel : UserControl
     public event Action<int>? ActorDfsSelected;
 
     /// <summary>
+    /// 選択アクターの 2D/3D 種別が一意に定まったときに発火する（true = 2D）。
+    /// 2D と 3D の混在複数選択やグループのみの選択では発火しない。
+    /// MainWindow がシーンタブ（3Dシーン/2Dシーン）の自動切替に使用する。
+    /// </summary>
+    public event Action<bool>? SelectionKindResolved;
+
+    /// <summary>
+    /// 現在の選択（_selectedIds）の非グループノードの 2D/3D 種別を判定し、
+    /// 一意に定まる場合のみ SelectionKindResolved を発火する。
+    /// </summary>
+    private void NotifySelectionKind()
+    {
+        bool any2D = false;
+        bool any3D = false;
+        foreach (var id in _selectedIds)
+        {
+            var node = FindNode(_roots, id);
+            // ツリーに存在しないノードやグループは種別判定の対象外
+            if (node == null || node.IsGroup) continue;
+            if (node.Is2D) any2D = true; else any3D = true;
+        }
+        // 混在（両方 true）または実アクター選択なし（両方 false）は通知しない
+        if (any2D == any3D) return;
+        SelectionKindResolved?.Invoke(any2D);
+    }
+
+    /// <summary>
     /// 次のヒエラルキー更新後に追加されたアクターをリネームモードにする準備をする。
     /// ビューポートコンテキストメニューなど、アクター編集モード外から
     /// アクタを追加する場合に呼び出す。
@@ -251,6 +278,8 @@ public partial class HierarchyPanel : UserControl
                 SelectTreeItem(dfsId);
                 UpdateMultiSelectVisuals();
                 ActorDfsSelected?.Invoke(dfsId);
+                // ビューポートピック由来の選択でも種別通知を行う（シーンタブ自動切替用）
+                NotifySelectionKind();
                 return;
             }
 
@@ -282,6 +311,8 @@ public partial class HierarchyPanel : UserControl
             else
                 DeselectAll();
             UpdateMultiSelectVisuals();
+            // ビューポートの複数選択でも全アクターの種別が一致すれば通知する
+            NotifySelectionKind();
         });
     }
 
@@ -433,6 +464,8 @@ public partial class HierarchyPanel : UserControl
         var tid  = System.Threading.Thread.CurrentThread.ManagedThreadId;
         var isUi = Dispatcher.CheckAccess();
         SEEDEditor.EditorLog.Write($"[Hierarchy.SendSelection] tid={tid} ui={isUi} id={_selectedId} actorMode={_isActorEditMode}");
+        // 選択種別（2D/3D）が一意ならシーンタブ自動切替用に通知する
+        NotifySelectionKind();
         if (_isActorEditMode)
         {
             if (_selectedIds.Count > 1)

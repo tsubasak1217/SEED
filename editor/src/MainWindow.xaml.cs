@@ -29,7 +29,8 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
     /// ProjectPanel が DoDragDrop 後にビューポートドロップを転送するためのインターフェース。
     public interface IViewportDropReceiver
     {
-        void TryDropActorsAtCursor(string[] paths);
+        /// <summary>ドロップを転送できた（DROP_ACTOR を送信した）場合 true を返す。</summary>
+        bool TryDropActorsAtCursor(string[] paths);
     }
 
     // ── フィールド ──────────────────────────────────────────────
@@ -306,6 +307,8 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         PanelHierarchy.SetRuntime(_runtimeManager);
         PanelHierarchy.SetAssetsPath(AssetsPath);
         PanelHierarchy.ActorDfsSelected += id => PanelInspector.SelectActor(id);
+        // 選択アクターの 2D/3D 種別に応じてシーンタブ（3Dシーン/2Dシーン）を自動切替する
+        PanelHierarchy.SelectionKindResolved += OnHierarchySelectionKindResolved;
         PanelInspector.SetRuntime(_runtimeManager);
         PanelInspector.SetAssetsPath(AssetsPath);
         PanelInspector.TransformCommitted += MarkDirty;
@@ -356,6 +359,9 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
 
         // 物理タイムラインのシークバーイベントをバインドする
         BindPhysicsStepButtons();
+
+        // 固定シーンタブ（3Dシーン/2Dシーン）を初期表示する
+        RebuildActorTabBar();
 
         _viewportHost = new ViewportHost();
         _viewportHost.ContainerCreated += OnContainerCreated;
