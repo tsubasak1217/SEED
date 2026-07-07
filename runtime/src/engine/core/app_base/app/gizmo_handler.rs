@@ -59,6 +59,11 @@ impl App {
                                 [ctw[0][0]*cx + ctw[0][1]*cy + ctw[0][3],
                                  ctw[1][0]*cx + ctw[1][1]*cy + ctw[1][3],
                                  ctw[2][0]*cx + ctw[2][1]*cy + ctw[2][3]]
+                            } else if let Some(ctx2d) = self.actor_2d_layout_ctx(dfs_id as u32) {
+                                // シーン SS レイアウト時: 描画と完全に同一の変換チェーンで計算した
+                                // ピボット点ワールド座標を使う（自動解像度・ルート恒等化・
+                                // ビューポート基準アンカー・auto_scale 対応。Phase B バグ修正）
+                                [ctx2d.pivot_world_px[0], ctx2d.pivot_world_px[1], 0.0]
                             } else {
                                 // 通常 2D Canvas: ワールドスペースモードでは座標をスケール・Y 反転する
                                 let ws     = if !use_screen_space { CANVAS_WORLD_SCALE } else { 1.0 };

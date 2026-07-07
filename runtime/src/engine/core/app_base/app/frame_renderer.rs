@@ -82,7 +82,7 @@ use super::{
 use super::canvas_collect::{
     collect_sprite_items, collect_canvas_rects, collect_canvas_id_items,
     collect_3d_canvas_child_id_items, sprite_world_corners,
-    compute_game_viewport, build_canvas_viewport_map, build_root_canvas_auto_size_map,
+    compute_game_viewport, build_ss_layout_maps_free,
 };
 
 /// カメラプレビューのテクスチャ幅（ピクセル）。
@@ -1656,22 +1656,16 @@ impl App {
                         // SS レイアウト時（2D シーンビュー含む）はビューポート基準でレイアウトする
                         let viewport_size_2d = if ss_layout { Some([vp_wf, vp_hf]) } else { None };
                         // CanvasViewportRef::Camera を持つルートキャンバスのビューポートサイズを解決する
-                        let canvas_vp_overrides_2d = if ss_layout {
-                            build_canvas_viewport_map(
+                        // ビューポート上書き + ルート自動解像度マップ（描画と同一条件・共通ヘルパー）
+                        let (canvas_vp_overrides_2d, root_auto_sizes_2d) = if ss_layout {
+                            build_ss_layout_maps_free(
                                 &scene.actors, &scene.world,
                                 self.active_world_line, vp_wf, vp_hf,
                                 if !in_editor { Some(game_viewport) } else { None },
+                                self.project_resolution, edit_view_2d,
                             )
                         } else {
-                            std::collections::HashMap::new()
-                        };
-                        // ビューポート・ルートキャンバスの自動解像度マップ（描画と同一条件）
-                        let root_auto_sizes_2d = if ss_layout {
-                            build_root_canvas_auto_size_map(
-                                &scene.actors, &scene.world,
-                                self.active_world_line, self.project_resolution)
-                        } else {
-                            std::collections::HashMap::new()
+                            (std::collections::HashMap::new(), std::collections::HashMap::new())
                         };
                         let ctx2d_list = crate::engine::core::app_base::app::physics2d_ops::collect_actor2d_contexts(
                             scene, self.active_world_line, viewport_size_2d, &canvas_vp_overrides_2d,
@@ -1795,18 +1789,14 @@ impl App {
                                 let vp_h = window_size.map_or(720.0,  |s| s.height as f32);
                                 let viewport_size = if is_scene_ss { Some([vp_w, vp_h]) } else { None };
                                 let play_gvp = if is_scene_ss && !in_editor { Some(game_viewport) } else { None };
-                                let canvas_vp_overrides = if is_scene_ss {
-                                    build_canvas_viewport_map(&scene.actors, &scene.world, wl, vp_w, vp_h, play_gvp)
-                                } else {
-                                    std::collections::HashMap::new()
-                                };
-                                // ビューポート・ルートキャンバスの自動解像度マップ
+                                // ビューポート上書き + ルート自動解像度マップ
                                 // （シーン SS レイアウト時のみ。アクター編集タブは保存値のまま）
-                                let root_auto_sizes = if is_scene_ss {
-                                    build_root_canvas_auto_size_map(
-                                        &scene.actors, &scene.world, wl, self.project_resolution)
+                                let (canvas_vp_overrides, root_auto_sizes) = if is_scene_ss {
+                                    build_ss_layout_maps_free(
+                                        &scene.actors, &scene.world, wl, vp_w, vp_h, play_gvp,
+                                        self.project_resolution, edit_view_2d)
                                 } else {
-                                    std::collections::HashMap::new()
+                                    (std::collections::HashMap::new(), std::collections::HashMap::new())
                                 };
                                 collect_sprite_items(
                                     &scene.actors, &scene.world, wl, draw_ctx,
@@ -1923,17 +1913,13 @@ impl App {
                             let viewport_size_rect = if is_scene_ss_rect { Some([vp_w_r, vp_h_r]) } else { None };
                             // Camera 参照のルートキャンバスはビューポートオーバーライドマップを使用する
                             let play_gvp_r = if is_scene_ss_rect && !in_editor { Some(game_viewport) } else { None };
-                            let canvas_vp_overrides_r = if is_scene_ss_rect {
-                                build_canvas_viewport_map(&scene.actors, &scene.world, wl, vp_w_r, vp_h_r, play_gvp_r)
+                            // ビューポート上書き + ルート自動解像度マップ（描画と同一条件・共通ヘルパー）
+                            let (canvas_vp_overrides_r, root_auto_sizes_r) = if is_scene_ss_rect {
+                                build_ss_layout_maps_free(
+                                    &scene.actors, &scene.world, wl, vp_w_r, vp_h_r, play_gvp_r,
+                                    self.project_resolution, edit_view_2d)
                             } else {
-                                std::collections::HashMap::new()
-                            };
-                            // ビューポート・ルートキャンバスの自動解像度マップ（描画と同一条件）
-                            let root_auto_sizes_r = if is_scene_ss_rect {
-                                build_root_canvas_auto_size_map(
-                                    &scene.actors, &scene.world, wl, self.project_resolution)
-                            } else {
-                                std::collections::HashMap::new()
+                                (std::collections::HashMap::new(), std::collections::HashMap::new())
                             };
                             collect_canvas_rects(
                                 &scene.actors, &scene.world, wl, &mut lb, rect_col,
@@ -2733,17 +2719,13 @@ impl App {
                                                 if ss_layout { Some([vp_w, vp_h]) } else { None };
                                             // Camera 参照のルートキャンバス用ビューポートオーバーライドマップ
                                             let play_gvp_id = if ss_layout && !in_editor { Some(game_viewport) } else { None };
-                                            let canvas_vp_overrides_id = if ss_layout {
-                                                build_canvas_viewport_map(&scene.actors, &scene.world, wl, vp_w, vp_h, play_gvp_id)
+                                            // ビューポート上書き + ルート自動解像度マップ（描画と同一条件・共通ヘルパー）
+                                            let (canvas_vp_overrides_id, root_auto_sizes_id) = if ss_layout {
+                                                build_ss_layout_maps_free(
+                                                    &scene.actors, &scene.world, wl, vp_w, vp_h, play_gvp_id,
+                                                    self.project_resolution, edit_view_2d)
                                             } else {
-                                                std::collections::HashMap::new()
-                                            };
-                                            // ビューポート・ルートキャンバスの自動解像度マップ（描画と同一条件）
-                                            let root_auto_sizes_id = if ss_layout {
-                                                build_root_canvas_auto_size_map(
-                                                    &scene.actors, &scene.world, wl, self.project_resolution)
-                                            } else {
-                                                std::collections::HashMap::new()
+                                                (std::collections::HashMap::new(), std::collections::HashMap::new())
                                             };
 
                                             let mut items = Vec::new();
@@ -2762,7 +2744,9 @@ impl App {
                                                 &canvas_vp_overrides_id,
                                                 &root_auto_sizes_id,
                                                 canvas_id_offset,
-                                                CanvasDrawZone::Foreground, &mut items,
+                                                // トップレベルは SS サブツリー扱い
+                                                // （Actor3D 通過で false になり 3D キャンバス子を除外）
+                                                CanvasDrawZone::Foreground, true, &mut items,
                                             );
                                             // スプライト描画と同一の順序（背景ゾーン → 前面ゾーン、
                                             // 各ゾーン内はレイヤー昇順の安定ソート）へ並べ替える。

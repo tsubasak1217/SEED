@@ -16,7 +16,6 @@ use crate::engine::components::{CanvasTransform, CanvasComponent, ComponentKind}
 use crate::engine::ecs::Entity;
 
 use super::App;
-use super::canvas_collect::{build_canvas_viewport_map, build_root_canvas_auto_size_map};
 use super::pick_2d::hit_test_rect_2d;
 
 // ─── ドラッグホバーハイライト定数 ────────────────────────────────────────────
@@ -136,13 +135,10 @@ impl App {
         let vp_w     = win_size.map_or(1280.0, |s| s.width  as f32);
         let vp_h     = win_size.map_or(720.0,  |s| s.height as f32);
 
-        // CanvasViewportRef::Camera を持つルートキャンバスの実効ビューポート解決
-        let vp_overrides = build_canvas_viewport_map(
+        // ビューポート上書き + ルート自動解像度マップ（描画と同一条件・共通ヘルパー。
+        // View2D では設計空間表示 = キャンバス中心が ortho 原点になる）
+        let (vp_overrides, auto_sizes) = self.build_ss_layout_maps(
             &scene.actors, &scene.world, SCENE_WL, vp_w, vp_h, None,
-        );
-        // ビューポート・ルートキャンバスの自動解像度マップ（Phase B。描画と同一条件）
-        let auto_sizes = build_root_canvas_auto_size_map(
-            &scene.actors, &scene.world, SCENE_WL, self.project_resolution,
         );
 
         for actor in &scene.actors {

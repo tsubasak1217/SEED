@@ -264,6 +264,14 @@ impl App {
                 let wl           = self.active_world_line;
                 let selected_dfs = self.actor_virtual_selected_idx;
 
+                // 2D ドラッグ書き戻し用: 描画と完全に同一の変換チェーンで計算した
+                // レイアウトコンテキスト（親原点・アンカーオフセット・累積スケール）を
+                // scene の可変借用前に事前計算する（シーン SS レイアウト時のみ Some）。
+                // ルート恒等化・自動解像度・ビューポート基準アンカーを反映した逆変換に使用する。
+                let drag_ctx_2d = self.drag.canvas_transform_drag_start.as_ref()
+                    .map(|&(dfs, _)| dfs)
+                    .and_then(|dfs| self.actor_2d_layout_ctx(dfs));
+
                 if let Some(scene) = &mut self.scene {
                     // 選択スロット entity を取得して MC 行列にデルタを適用する
                     let selected_slot_i = self.actor_virtual_selected_slot_idx;
@@ -386,15 +394,45 @@ impl App {
                                             ct.pivot = start_ct.pivot;
                                         } else {
                                             // 通常 2D Canvas 処理
+                                            // SS 表示かどうか（位置の逆変換と回転方向の符号に使用）。
+                                            // drag_ctx_2d が Some のとき（シーン SS レイアウト。
+                                            // View2D ビューポートタブ含む）は常に SS 扱い。
                                             let in_editor_c = self.mode == RuntimeMode::Edit || self.paused;
-                                            let use_ss_c = self.canvas_screen_space_overlay || !in_editor_c
+                                            let use_ss_c = drag_ctx_2d.is_some()
+                                                || self.canvas_screen_space_overlay || !in_editor_c
                                                 || self.actor_edit_canvas_wls.contains(&wl);
-                                            // ワールドスペースでは平行移動をキャンバスピクセルに変換し、
-                                            // Y 軸を再反転（レンダリング時に反転済みのため元に戻す）
-                                            let pos_inv_scale = if use_ss_c { 1.0 } else { 1.0 / CANVAS_WORLD_SCALE };
-                                            let y_inv_sign = if use_ss_c { 1.0f32 } else { -1.0 };
-                                            ct.position[0] = new_mat[0][3] * pos_inv_scale - anchor_off[0];
-                                            ct.position[1] = new_mat[1][3] * pos_inv_scale * y_inv_sign - anchor_off[1];
+                                            if let Some(ctx2d) = &drag_ctx_2d {
+                                                // シーン SS レイアウト: 描画と同一チェーンの逆変換で
+                                                // position を求める（自動解像度・ルート恒等化・
+                                                // ビューポート基準アンカー・auto_scale 対応）。
+                                                // world → 親キャンバスローカル（親累積回転の逆適用）
+                                                let dx = new_mat[0][3] - ctx2d.parent_canvas_origin[0];
+                                                let dy = new_mat[1][3] - ctx2d.parent_canvas_origin[1];
+                                                let (sin_p, cos_p) = ctx2d.parent_world_rot.sin_cos();
+                                                let local_x =  cos_p * dx + sin_p * dy;
+                                                let local_y = -sin_p * dx + cos_p * dy;
+                                                // アンカーオフセットを除去し、
+                                                // sm_transform 時は親累積スケールの逆数を適用する
+                                                let px = local_x - ctx2d.anchor_off[0];
+                                                let py = local_y - ctx2d.anchor_off[1];
+                                                if ctx2d.sm_transform {
+                                                    let sx = if ctx2d.cumul_scale[0].abs() > f32::EPSILON { ctx2d.cumul_scale[0] } else { 1.0 };
+                                                    let sy = if ctx2d.cumul_scale[1].abs() > f32::EPSILON { ctx2d.cumul_scale[1] } else { 1.0 };
+                                                    ct.position[0] = px / sx;
+                                                    ct.position[1] = py / sy;
+                                                } else {
+                                                    ct.position[0] = px;
+                                                    ct.position[1] = py;
+                                                }
+                                            } else {
+                                                // 従来経路（ワールドスペース・アクター編集タブ）
+                                                // ワールドスペースでは平行移動をキャンバスピクセルに変換し、
+                                                // Y 軸を再反転（レンダリング時に反転済みのため元に戻す）
+                                                let pos_inv_scale = if use_ss_c { 1.0 } else { 1.0 / CANVAS_WORLD_SCALE };
+                                                let y_inv_sign = if use_ss_c { 1.0f32 } else { -1.0 };
+                                                ct.position[0] = new_mat[0][3] * pos_inv_scale - anchor_off[0];
+                                                ct.position[1] = new_mat[1][3] * pos_inv_scale * y_inv_sign - anchor_off[1];
+                                            }
                                             match self.tool_mode {
                                                 crate::engine::core::app_base::ipc::ToolMode::Rotate => {
                                                     // new_mat = Rz(delta) * T(pos) なので col0 の XY 角度がデルタ回転。

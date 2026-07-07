@@ -505,6 +505,12 @@ pub(super) fn collect_canvas_id_items(
     mc_total:           u32,
     // 親（ルートキャンバス）から継承する描画ゾーン（collect_sprite_items と同じ扱い）
     parent_zone:        CanvasDrawZone,
+    // スクリーンスペースのサブツリー内かどうか。
+    // CanvasTransform を持たないアクター（Actor3D。3D ワールドキャンバス等）を通過した時点で
+    // false になり、それ以降の子孫は DFS カウントのみ行い ID quad を出力しない。
+    // 3D ワールドキャンバス配下のスプライトは WS 用の collect_3d_canvas_child_id_items が
+    // 担当するため、ここで出力すると SS 座標の誤った ID quad が重なり誤選択の原因になる。
+    in_ss_subtree:      bool,
     out:                &mut Vec<(u32, [[f32; 4]; 4], Option<String>, CanvasDrawZone, i32)>,
 ) {
     let (sm_transform, sm_size, keep_aspect, is_width_axis) = parent_scale_mode;
@@ -514,8 +520,10 @@ pub(super) fn collect_canvas_id_items(
         *counter += 1;
 
         let ct_opt = world.get::<CanvasTransform>(actor.entity).cloned();
+        // CanvasTransform を持たないアクター配下は SS サブツリー外として扱う
+        let next_in_ss = in_ss_subtree && ct_opt.is_some();
         let (next_canvas_size, next_cumul_scale, next_scale_mode, next_world_rs, next_zone) =
-            if let Some(ct) = ct_opt {
+            if let (true, Some(ct)) = (in_ss_subtree, ct_opt) {
                 // ビューポート・ルートキャンバス: 自動解像度上書き + Transform 恒等化（Phase B）
                 let root_auto = if parent_canvas_size.is_none() {
                     root_auto_sizes.get(&actor.entity).copied()
@@ -638,7 +646,8 @@ pub(super) fn collect_canvas_id_items(
                 };
                 (child_canvas_size, child_cumul_scale, child_scale_mode, self_world_rs, my_zone)
             } else {
-                // CanvasTransform なし: 子は親の情報をそのまま引き継ぐ
+                // CanvasTransform なし・または SS サブツリー外:
+                // ID quad は出力せず、子は親の情報をそのまま引き継ぐ（DFS カウントのみ）
                 (parent_canvas_size, parent_cumul_scale, parent_scale_mode, parent_world_rs, parent_zone)
             };
 
@@ -648,7 +657,7 @@ pub(super) fn collect_canvas_id_items(
             next_canvas_size, next_world_rs,
             next_cumul_scale, next_scale_mode,
             canvas_scale, y_sign, viewport_size, canvas_viewport_overrides,
-            root_auto_sizes, mc_total, next_zone, out,
+            root_auto_sizes, mc_total, next_zone, next_in_ss, out,
         );
     }
 }
@@ -1132,6 +1141,67 @@ pub(super) fn build_root_canvas_auto_size_map(
         }
     }
     map
+}
+
+/// シーン SS レイアウト用の 2 つの上書きマップをまとめて構築する共通ヘルパー（フリー関数版）。
+///
+/// 戻り値: (ビューポート上書きマップ, ルート自動解像度マップ)
+/// - ビューポート上書きマップ: `CanvasViewportRef::Camera / MainCamera` の実効表示領域
+///   （ルートのアンカー基準・auto_scale の分母に使われる）
+/// - ルート自動解像度マップ: ビューポート・ルートキャンバスの実効解像度 + Transform 恒等化キー
+///
+/// # `design_space`（Edit View2D = ビューポートタブの設計空間表示）
+/// true のとき、ルートキャンバスの基準ビューポートを**自動解像度そのもの**へ上書きする。
+/// これにより
+///   - ルートのアンカーオフセット = `-自動解像度/2` → **キャンバス中心 = ortho 原点**
+///   - auto_scale 係数 = 自動解像度/自動解像度 = **1（設計解像度のまま表示）**
+/// となり、ライブウィンドウ（エディタパネル）サイズに依存しない安定した
+/// WYSIWYG 編集空間になる。Play・SS オーバーレイ表示（false）は従来どおり
+/// 実ウィンドウ基準（ゲームの最終合成と同じ）のまま変化しない。
+///
+/// 描画・GPU ID ピッキング・2D 物理・D&D 配置のすべてがこのヘルパーを共有することで
+/// 座標系の一貫性を保証する。
+/// frame_renderer（self.renderer 可変借用中）から呼べるようフリー関数として提供し、
+/// それ以外の呼び出し元向けに同名の App メソッドを用意する。
+#[allow(clippy::too_many_arguments)]
+pub(super) fn build_ss_layout_maps_free(
+    actors:       &[Actor],
+    world:        &World,
+    wl:           u32,
+    win_w:        f32,
+    win_h:        f32,
+    play_gvp:     Option<(f32, f32, f32, f32)>,
+    project_res:  (u32, u32),
+    design_space: bool,
+) -> (HashMap<Entity, [f32; 2]>, HashMap<Entity, [f32; 2]>) {
+    let mut vp_overrides = build_canvas_viewport_map(actors, world, wl, win_w, win_h, play_gvp);
+    let auto_sizes = build_root_canvas_auto_size_map(actors, world, wl, project_res);
+    // ビューポートタブ: ルートの基準ビューポートを自動解像度へ上書き（設計空間表示）
+    if design_space {
+        for (entity, size) in &auto_sizes {
+            vp_overrides.insert(*entity, *size);
+        }
+    }
+    (vp_overrides, auto_sizes)
+}
+
+impl super::App {
+    /// build_ss_layout_maps_free の App メソッド版。
+    /// プロジェクト解像度キャッシュと Edit View2D 判定を self から補完する。
+    pub(super) fn build_ss_layout_maps(
+        &self,
+        actors:   &[Actor],
+        world:    &World,
+        wl:       u32,
+        win_w:    f32,
+        win_h:    f32,
+        play_gvp: Option<(f32, f32, f32, f32)>,
+    ) -> (HashMap<Entity, [f32; 2]>, HashMap<Entity, [f32; 2]>) {
+        build_ss_layout_maps_free(
+            actors, world, wl, win_w, win_h, play_gvp,
+            self.project_resolution, self.edit_view_is_2d(),
+        )
+    }
 }
 
 /// シーン SS モード時に各ルートキャンバスアクターの有効ビューポートサイズを事前解決する。

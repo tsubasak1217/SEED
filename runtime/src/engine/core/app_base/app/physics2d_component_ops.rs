@@ -20,7 +20,7 @@ use crate::engine::physics::{PhysicsCommand2d, PhysicsObject2d, PIXELS_PER_METER
 
 use super::{App, RuntimeMode, find_actor_by_dfs};
 use super::physics2d_ops::collect_actor2d_contexts;
-use super::canvas_collect::{build_canvas_viewport_map, build_root_canvas_auto_size_map};
+use super::canvas_collect::build_canvas_viewport_map;
 
 impl App {
     /// Collider2dComponent のデータ全体（リジッドボディ設定を含む）を JSON からデシリアライズして更新する。
@@ -74,16 +74,16 @@ impl App {
 
             // PhysicsObject2d を構築する（self.scene と self.physics_thread_2d を同時借用しないよう分離）
             let phys_obj: Option<PhysicsObject2d> = self.scene.as_ref().and_then(|scene| {
-                // CanvasViewportRef::Camera を持つルートキャンバスのビューポートサイズを解決する
-                let canvas_vp_overrides = build_canvas_viewport_map(
-                    &scene.actors, &scene.world, wl, win_w, win_h, None,
-                );
-                // ビューポート・ルートキャンバスの自動解像度マップ（SS レイアウト時のみ）
-                let root_auto_sizes = if viewport_size.is_some() {
-                    build_root_canvas_auto_size_map(
-                        &scene.actors, &scene.world, wl, self.project_resolution)
+                // ビューポート上書き + ルート自動解像度マップ（描画と同一条件・共通ヘルパー）
+                let (canvas_vp_overrides, root_auto_sizes) = if viewport_size.is_some() {
+                    self.build_ss_layout_maps(
+                        &scene.actors, &scene.world, wl, win_w, win_h, None)
                 } else {
-                    std::collections::HashMap::new()
+                    (
+                        build_canvas_viewport_map(
+                            &scene.actors, &scene.world, wl, win_w, win_h, None),
+                        std::collections::HashMap::new(),
+                    )
                 };
                 // canvas_collect.rs と同一の変換チェーンで body_pos_px を取得する
                 let ctx = collect_actor2d_contexts(

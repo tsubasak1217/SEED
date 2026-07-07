@@ -58,8 +58,8 @@ use crate::engine::physics::{
 };
 use crate::engine::core::app_base::scene::Scene;
 use crate::engine::structs::objects::actor::{Actor, ActorKind};
-use super::{App, RuntimeMode, InspectorTransformDrag};
-use super::canvas_collect::{build_canvas_viewport_map, build_root_canvas_auto_size_map};
+use super::{App, RuntimeMode, InspectorTransformDrag, find_actor_by_dfs};
+use super::canvas_collect::build_canvas_viewport_map;
 
 // ─── Actor2d 物理コンテキスト ────────────────────────────────────────────────
 
@@ -77,10 +77,12 @@ pub(crate) struct Actor2dPhysicsCtx {
     pub(crate) dfs_id:           u64,
     /// ECS アクターエンティティ（CanvasTransform 書き戻し用）
     pub(crate) actor_entity:     Entity,
-    /// CanvasTransform.position のワールド位置（ortho 空間、ビューポート中心が原点）。
-    /// = CanvasTransform のピボット点のワールド座標。
-    /// Sprite や pivot 設定の影響を受けない。
+    /// 物理ボディ中心（= 矩形中心）のワールド位置（ortho 空間、ビューポート中心が原点）。
+    /// pivot_world_px にピボット補正（(0.5 - pivot) × 基準サイズ）を加算した値。
     pub(crate) body_pos_px:      [f32; 2],
+    /// CanvasTransform のピボット点（= アクター position）のワールド座標（ortho 空間）。
+    /// ギズモ表示位置・ドラッグ書き戻しなど「アクター位置そのもの」が必要な処理に使用する。
+    pub(crate) pivot_world_px:   [f32; 2],
     /// 累積ワールド回転（ラジアン）= 全祖先の回転を合算した値。
     pub(crate) rot_rad:          f32,
     /// アクタースケール（ローカル）
@@ -427,6 +429,7 @@ pub(crate) fn collect_actor2d_contexts(
             dfs_id,
             actor_entity: actor.entity,
             body_pos_px,
+            pivot_world_px: actor_pivot_world,
             rot_rad:      actor_world_rot,
             scale:        ct.scale,
             anchor_off,
@@ -457,7 +460,10 @@ impl App {
         let is_canvas        = self.canvas_world_lines.contains(&self.active_world_line);
         let is_actor_edit_2d = self.actor_edit_canvas_wls.contains(&self.active_world_line);
         let in_editor        = self.mode == RuntimeMode::Edit;
-        let use_screen_space = self.canvas_screen_space_overlay || !in_editor || is_actor_edit_2d;
+        // Edit の 2D シーンビュー（ビューポートタブ）も SS レイアウト扱いにする
+        // （frame_renderer 側の use_screen_space と同一条件。描画と物理・ギズモの座標系を一致させる）
+        let use_screen_space = self.canvas_screen_space_overlay || !in_editor || is_actor_edit_2d
+            || self.edit_view_is_2d();
         let scene_canvas_ss  = is_canvas && use_screen_space && !is_actor_edit_2d;
 
         if !scene_canvas_ss { return None; }
@@ -468,24 +474,64 @@ impl App {
         }).or(Some([1280.0, 720.0]))
     }
 
-    /// 2D 物理・スクリーン座標収集用に、ビューポート・ルートキャンバスの
-    /// 自動解像度マップを構築する共通ヘルパー。
+    /// 2D 物理・スクリーン座標収集用に、ビューポート上書きマップと
+    /// ルート自動解像度マップをまとめて構築する共通ヘルパー。
     ///
-    /// `viewport_size` が Some（= シーン SS レイアウト）の場合のみ構築し、
-    /// None（ワールドスペース・アクター編集タブ）では空マップを返して従来動作を維持する。
-    fn build_root_auto_sizes_for_2d(
+    /// `viewport_size` が Some（= シーン SS レイアウト）の場合は
+    /// build_ss_layout_maps（描画と同一。View2D では設計空間表示）を使用し、
+    /// None（ワールドスペース・アクター編集タブ）ではビューポート上書きのみ構築して
+    /// 従来動作を維持する。
+    fn build_2d_layout_maps(
         &self,
         scene:         &Scene,
         viewport_size: Option<[f32; 2]>,
-    ) -> HashMap<Entity, [f32; 2]> {
+        win_w: f32,
+        win_h: f32,
+    ) -> (HashMap<Entity, [f32; 2]>, HashMap<Entity, [f32; 2]>) {
         if viewport_size.is_some() {
-            build_root_canvas_auto_size_map(
+            self.build_ss_layout_maps(
                 &scene.actors, &scene.world,
-                self.active_world_line, self.project_resolution,
+                self.active_world_line, win_w, win_h, None,
             )
         } else {
-            HashMap::new()
+            (
+                build_canvas_viewport_map(
+                    &scene.actors, &scene.world,
+                    self.active_world_line, win_w, win_h, None,
+                ),
+                HashMap::new(),
+            )
         }
+    }
+
+    /// 指定 DFS ID の 2D アクターについて、描画（collect_sprite_items）と
+    /// **完全に同一の変換チェーン**で計算したレイアウトコンテキストを返す。
+    ///
+    /// 自動解像度・ルート恒等化・ビューポート基準アンカー・auto_scale を
+    /// すべて反映済みの pivot_world_px / anchor_off / 親原点等が得られるため、
+    /// ギズモ表示位置・ドラッグ書き戻しの座標計算に使用する。
+    /// シーン SS レイアウト時のみ Some（ワールドスペース・アクター編集タブは None =
+    /// 従来経路を使用する）。
+    pub(super) fn actor_2d_layout_ctx(&self, dfs_id: u32) -> Option<Actor2dPhysicsCtx> {
+        let viewport_size = self.compute_viewport_size_2d()?;
+        let scene = self.scene.as_ref()?;
+        let [win_w, win_h] = viewport_size;
+
+        // 対象アクターのエンティティを解決する（コンテキストの検索キー）
+        let entity = {
+            let mut c = 0u32;
+            find_actor_by_dfs(&scene.actors, self.active_world_line, dfs_id, &mut c)?.entity
+        };
+
+        // 描画と同一のマップ・チェーンでコンテキストを収集する
+        let (canvas_vp_overrides, root_auto_sizes) =
+            self.build_2d_layout_maps(scene, Some(viewport_size), win_w, win_h);
+        collect_actor2d_contexts(
+            scene, self.active_world_line, Some(viewport_size),
+            &canvas_vp_overrides, &root_auto_sizes,
+        )
+        .into_iter()
+        .find(|ctx| ctx.actor_entity == entity)
     }
 
     /// スクリプトの ScreenPosition API 用に、全 Actor2D の
@@ -499,14 +545,10 @@ impl App {
         let viewport_size = self.compute_viewport_size_2d();
         let Some(scene) = &self.scene else { return Vec::new() };
 
-        // CanvasViewportRef::Camera を持つルートキャンバスのビューポート上書きを解決する
+        // ビューポート上書き + ルート自動解像度マップ（描画と同一条件・共通ヘルパー）
         let (win_w, win_h) = viewport_size.map(|[w, h]| (w, h)).unwrap_or((1280.0, 720.0));
-        let canvas_vp_overrides = build_canvas_viewport_map(
-            &scene.actors, &scene.world,
-            self.active_world_line, win_w, win_h, None,
-        );
-        // ビューポート・ルートキャンバスの自動解像度マップ（SS レイアウト時のみ）
-        let root_auto_sizes = self.build_root_auto_sizes_for_2d(scene, viewport_size);
+        let (canvas_vp_overrides, root_auto_sizes) =
+            self.build_2d_layout_maps(scene, viewport_size, win_w, win_h);
 
         let contexts = collect_actor2d_contexts(
             scene, self.active_world_line, viewport_size, &canvas_vp_overrides,
@@ -537,19 +579,14 @@ impl App {
 
         let Some(scene) = &self.scene else { return };
 
-        // CanvasViewportRef::Camera を持つルートキャンバスのビューポートサイズを解決する
+        // ビューポート上書き + ルート自動解像度マップ（描画と同一条件・共通ヘルパー）
         let (win_w, win_h) = viewport_size.map(|[w, h]| (w, h)).unwrap_or((1280.0, 720.0));
-        let canvas_vp_overrides = build_canvas_viewport_map(
-            &scene.actors, &scene.world,
-            self.active_world_line, win_w, win_h, None,
-        );
+        let (canvas_vp_overrides, root_auto_sizes) =
+            self.build_2d_layout_maps(scene, viewport_size, win_w, win_h);
 
         // 編集時コライダーのみモード: 全ボディを kinematic 扱い
         let force_kinematic = self.mode == RuntimeMode::Edit
             && !self.edit_physics_2d_with_rigidbody;
-
-        // ビューポート・ルートキャンバスの自動解像度マップ（SS レイアウト時のみ）
-        let root_auto_sizes = self.build_root_auto_sizes_for_2d(scene, viewport_size);
 
         // actor2d コンテキストを収集し、Collider2d 付きのものを物理ワールドに登録する
         let contexts = collect_actor2d_contexts(
@@ -655,14 +692,10 @@ impl App {
 
         // ── Actor2d コンテキストを一括収集（read-only borrow で完結させる）────
         let contexts: Vec<Actor2dPhysicsCtx> = if let Some(scene) = &self.scene {
-            // CanvasViewportRef::Camera を持つルートキャンバスのビューポートサイズを解決する
+            // ビューポート上書き + ルート自動解像度マップ（描画と同一条件・共通ヘルパー）
             let (win_w, win_h) = viewport_size.map(|[w, h]| (w, h)).unwrap_or((1280.0, 720.0));
-            let canvas_vp_overrides = build_canvas_viewport_map(
-                &scene.actors, &scene.world,
-                self.active_world_line, win_w, win_h, None,
-            );
-            // ビューポート・ルートキャンバスの自動解像度マップ（SS レイアウト時のみ）
-            let root_auto_sizes = self.build_root_auto_sizes_for_2d(scene, viewport_size);
+            let (canvas_vp_overrides, root_auto_sizes) =
+                self.build_2d_layout_maps(scene, viewport_size, win_w, win_h);
             collect_actor2d_contexts(
                 scene, self.active_world_line, viewport_size, &canvas_vp_overrides, &root_auto_sizes,
             )

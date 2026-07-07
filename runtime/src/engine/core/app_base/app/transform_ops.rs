@@ -408,6 +408,14 @@ impl App {
                 return Some([wx, wy, wz]);
             }
 
+            // シーン SS レイアウト時: 描画（collect_sprite_items）と完全に同一の変換チェーンで
+            // 計算したピボット点ワールド座標を使う。
+            // 自動解像度・ルート恒等化・ビューポート基準アンカー・auto_scale を反映するため、
+            // ギズモ位置とスプライト描画位置が一致する（Phase B バグ修正）。
+            if let Some(ctx2d) = self.actor_2d_layout_ctx(dfs_id) {
+                return Some([ctx2d.pivot_world_px[0], ctx2d.pivot_world_px[1], 0.0]);
+            }
+
             // 通常の 2D Canvas 処理（トップレベル 2D アクター）
             // ワールドスペースモード（エディタでスクリーンスペース OFF かつ 3D シーン世界線）では
             // 座標をスケールして 3D 空間へ変換し、Y 軸（下向き→上向き）を反転する
