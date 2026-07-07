@@ -55,9 +55,24 @@ public sealed class QuickInfoPopup : IDisposable
     private static readonly Brush Fg        = Frozen(Color.FromRgb(0xDC, 0xDC, 0xDC));  // 通常文字
     private static readonly Brush BorderC   = Frozen(Color.FromRgb(0x3F, 0x3F, 0x46));  // 枠線
     private static readonly Brush DimFg     = Frozen(Color.FromRgb(0x9A, 0x9A, 0x9A));  // 種別行（淡色）
-    private static readonly Brush SigFg     = Frozen(Color.FromRgb(0x9C, 0xDC, 0xFE));  // シグネチャ（青系）
+    private static readonly Brush SigFg     = Frozen(Color.FromRgb(0x9C, 0xDC, 0xFE));  // シグネチャ既定色（青系）
     private static readonly Brush ErrorFg   = Frozen(Color.FromRgb(0xF4, 0x8A, 0x8A));  // 診断メッセージ（赤系）
     private static readonly FontFamily Mono = new("Cascadia Mono, Consolas");
+
+    // ── シグネチャの構文色（エディタの配色設定と同じキーから解決）────
+    // コンストラクタで渡された設定色（無ければ ScriptEditorSettings.DefaultColors）を
+    // SymbolDisplayPartKind ごとのブラシへ変換してキャッシュする。
+    private readonly Brush _colKeyword;   // キーワード（float / ref / get 等）
+    private readonly Brush _colType;      // クラス・デリゲート型名
+    private readonly Brush _colStruct;    // 構造体型名
+    private readonly Brush _colEnumIf;    // 列挙体・インターフェース・型引数
+    private readonly Brush _colMethod;    // メソッド名
+    private readonly Brush _colField;     // フィールド・プロパティ・定数・列挙メンバー
+    private readonly Brush _colLocal;     // ローカル変数
+    private readonly Brush _colParam;     // 引数名
+    private readonly Brush _colNumber;    // 数値リテラル（既定値表示など）
+    private readonly Brush _colString;    // 文字列リテラル
+    private readonly Brush _colPunct;     // 記号・空白・名前空間などその他
 
     // ── シグネチャ表示フォーマット ───────────────────────────────
     /// <summary>
@@ -129,16 +144,40 @@ public sealed class QuickInfoPopup : IDisposable
     /// （デバッグセッション中のホバー評価や補完ウィンドウ表示中は QuickInfo を出さない）。</param>
     /// <param name="getDiagnostic">指定オフセットの診断（赤波線）メッセージを返すデリゲート。
     /// エラー箇所ではシンボル情報と診断内容を 1 つのポップアップに統合して表示する。</param>
+    /// <param name="colors">エディタの配色設定（ScriptEditorSettings.Colors）。
+    /// シグネチャの構文色分けに使用する。null なら既定配色。</param>
     public QuickInfoPopup(
         TextEditor editor,
         Func<Document?> getDocument,
         Func<bool> isSuppressed,
-        Func<int, string?>? getDiagnostic = null)
+        Func<int, string?>? getDiagnostic = null,
+        System.Collections.Generic.IReadOnlyDictionary<string, string>? colors = null)
     {
         _editor        = editor;
         _getDocument   = getDocument;
         _isSuppressed  = isSuppressed;
         _getDiagnostic = getDiagnostic ?? (_ => null);
+
+        // エディタと同じ配色キーから構文色ブラシを解決する（未設定キーは既定色）
+        var defaults = ScriptEditorSettings.DefaultColors();
+        Brush Resolve(string key)
+        {
+            var hex = (colors is not null && colors.TryGetValue(key, out var v)) ? v
+                    : defaults.TryGetValue(key, out var d) ? d : "#DCDCDC";
+            try   { return Frozen((Color)ColorConverter.ConvertFromString(hex)); }
+            catch { return SigFg; }
+        }
+        _colKeyword = Resolve("ValueTypeKeywords");
+        _colType    = Resolve(ScriptEditorSettings.SemKeys.Type);
+        _colStruct  = Resolve(ScriptEditorSettings.SemKeys.Struct);
+        _colEnumIf  = Resolve(ScriptEditorSettings.SemKeys.EnumInterface);
+        _colMethod  = Resolve(ScriptEditorSettings.SemKeys.Method);
+        _colField   = Resolve(ScriptEditorSettings.SemKeys.Field);
+        _colLocal   = Resolve(ScriptEditorSettings.SemKeys.Local);
+        _colParam   = Resolve(ScriptEditorSettings.SemKeys.Parameter);
+        _colNumber  = Resolve("NumberLiteral");
+        _colString  = Resolve("String");
+        _colPunct   = Resolve("Punctuation");
 
         // ── ポップアップの中身を構築する ──
         _diagText = new TextBlock
@@ -292,7 +331,13 @@ public sealed class QuickInfoPopup : IDisposable
         _diagText.Text          = diag ?? string.Empty;
         _diagText.Visibility    = string.IsNullOrEmpty(diag)
             ? Visibility.Collapsed : Visibility.Visible;
-        _signatureText.Text     = info?.Signature ?? string.Empty;
+        // シグネチャは構文色付きの断片列（Run）で描画する（エディタと同じ色分け）
+        _signatureText.Inlines.Clear();
+        if (info is not null)
+        {
+            foreach (var run in info.Signature)
+                _signatureText.Inlines.Add(new System.Windows.Documents.Run(run.Text) { Foreground = run.Brush });
+        }
         _signatureText.Visibility = info is null ? Visibility.Collapsed : Visibility.Visible;
         _kindText.Text          = info?.Kind ?? string.Empty;
         _kindText.Visibility    = info is null ? Visibility.Collapsed : Visibility.Visible;
@@ -314,8 +359,12 @@ public sealed class QuickInfoPopup : IDisposable
 
     // ── シンボル解決・表示内容の構築 ─────────────────────────────
 
-    /// <summary>QuickInfo の表示内容（シグネチャ・種別・概要）。</summary>
-    private sealed record QuickInfoContent(string Signature, string Kind, string? Summary);
+    /// <summary>シグネチャの 1 断片（テキストと構文色。ブラシは Frozen 済みでスレッド安全）。</summary>
+    private sealed record SignatureRun(string Text, Brush Brush);
+
+    /// <summary>QuickInfo の表示内容（色分けシグネチャ・種別・概要）。</summary>
+    private sealed record QuickInfoContent(
+        System.Collections.Generic.IReadOnlyList<SignatureRun> Signature, string Kind, string? Summary);
 
     /// <summary>
     /// 指定オフセットのシンボルを解決し、表示内容を組み立てる。
@@ -347,7 +396,7 @@ public sealed class QuickInfoPopup : IDisposable
         if (symbol.Kind is SymbolKind.Label or SymbolKind.Alias or SymbolKind.Preprocessing)
             return null;
 
-        string signature = FormatSignature(symbol);
+        var    signature = FormatSignatureParts(symbol);
         string kind      = KindLabel(symbol);
         string? summary  = ExtractSummary(symbol);
         return new QuickInfoContent(signature, kind, summary);
@@ -378,38 +427,93 @@ public sealed class QuickInfoPopup : IDisposable
         return model;
     }
 
-    /// <summary>シンボルのシグネチャ文字列（1 行目）を作る。</summary>
-    private static string FormatSignature(ISymbol symbol)
+    /// <summary>
+    /// シンボルのシグネチャ（1 行目）を「テキスト + 構文色」の断片列として作る。
+    /// SymbolDisplayParts の Kind ごとにエディタと同じ配色を割り当てることで、
+    /// 型名・メソッド名・引数などを視覚的に判別できるようにする。
+    /// </summary>
+    private System.Collections.Generic.List<SignatureRun> FormatSignatureParts(ISymbol symbol)
     {
-        // 名前空間はフル表記のほうが分かりやすい（例: SEED.Scripting）
-        if (symbol is INamespaceSymbol ns)
-            return ns.ToDisplayString();
+        var runs = new System.Collections.Generic.List<SignatureRun>();
 
-        // プロパティは「型 含有型.名前 { get; set; }」風に型を先頭へ付ける
-        if (symbol is IPropertySymbol prop)
+        // パーツ列を色付き断片へ変換して追加するローカル関数
+        void AddParts(System.Collections.Immutable.ImmutableArray<SymbolDisplayPart> parts)
         {
-            var accessors = (prop.GetMethod, prop.SetMethod) switch
-            {
-                (not null, not null) => "{ get; set; }",
-                (not null, null)     => "{ get; }",
-                (null, not null)     => "{ set; }",
-                _                    => string.Empty,
-            };
-            return $"{prop.Type.ToDisplayString(SignatureFormat)} {prop.ToDisplayString(SignatureFormat)} {accessors}".TrimEnd();
+            foreach (var part in parts)
+                runs.Add(new SignatureRun(part.ToString(), PartBrush(part.Kind)));
         }
+        // 固定文字列を指定色で追加するローカル関数
+        void Add(string text, Brush brush) => runs.Add(new SignatureRun(text, brush));
 
-        // フィールドは「型 含有型.名前」（const は値の情報を SymbolDisplay に任せる）
-        if (symbol is IFieldSymbol field)
-            return $"{field.Type.ToDisplayString(SignatureFormat)} {field.ToDisplayString(SignatureFormat)}";
+        switch (symbol)
+        {
+            // 名前空間はフル表記のほうが分かりやすい（例: SEED.Scripting）
+            case INamespaceSymbol ns:
+                Add(ns.ToDisplayString(), _colPunct);
+                break;
 
-        // イベントも型を先頭に付ける
-        if (symbol is IEventSymbol ev)
-            return $"{ev.Type.ToDisplayString(SignatureFormat)} {ev.ToDisplayString(SignatureFormat)}";
+            // プロパティは「型 含有型.名前 { get; set; }」風に型を先頭へ付ける
+            case IPropertySymbol prop:
+                AddParts(prop.Type.ToDisplayParts(SignatureFormat));
+                Add(" ", _colPunct);
+                AddParts(prop.ToDisplayParts(SignatureFormat));
+                var (hasGet, hasSet) = (prop.GetMethod is not null, prop.SetMethod is not null);
+                if (hasGet || hasSet)
+                {
+                    Add(" { ", _colPunct);
+                    if (hasGet) { Add("get", _colKeyword); Add("; ", _colPunct); }
+                    if (hasSet) { Add("set", _colKeyword); Add("; ", _colPunct); }
+                    Add("}", _colPunct);
+                }
+                break;
 
-        // メソッドは SignatureFormat（IncludeType）で「戻り値型 含有型.名前(引数...)」になる。
-        // ローカル・引数も localOptions / parameterOptions により型付きで表示される。
-        return symbol.ToDisplayString(SignatureFormat);
+            // フィールド・イベントも型を先頭に付ける
+            case IFieldSymbol field:
+                AddParts(field.Type.ToDisplayParts(SignatureFormat));
+                Add(" ", _colPunct);
+                AddParts(field.ToDisplayParts(SignatureFormat));
+                break;
+            case IEventSymbol ev:
+                AddParts(ev.Type.ToDisplayParts(SignatureFormat));
+                Add(" ", _colPunct);
+                AddParts(ev.ToDisplayParts(SignatureFormat));
+                break;
+
+            // メソッドは SignatureFormat（IncludeType）で「戻り値型 含有型.名前(引数...)」になる。
+            // ローカル・引数も localOptions / parameterOptions により型付きで表示される。
+            default:
+                AddParts(symbol.ToDisplayParts(SignatureFormat));
+                break;
+        }
+        return runs;
     }
+
+    /// <summary>SymbolDisplayPart の種別をエディタ準拠の構文色ブラシへ対応付ける。</summary>
+    private Brush PartBrush(SymbolDisplayPartKind kind) => kind switch
+    {
+        SymbolDisplayPartKind.Keyword             => _colKeyword,  // float / ref / in / params 等
+        SymbolDisplayPartKind.ClassName           => _colType,
+        SymbolDisplayPartKind.RecordClassName     => _colType,
+        SymbolDisplayPartKind.DelegateName        => _colType,
+        SymbolDisplayPartKind.StructName          => _colStruct,
+        SymbolDisplayPartKind.RecordStructName    => _colStruct,
+        SymbolDisplayPartKind.InterfaceName       => _colEnumIf,
+        SymbolDisplayPartKind.EnumName            => _colEnumIf,
+        SymbolDisplayPartKind.TypeParameterName   => _colEnumIf,
+        SymbolDisplayPartKind.MethodName          => _colMethod,
+        SymbolDisplayPartKind.ExtensionMethodName => _colMethod,
+        SymbolDisplayPartKind.ParameterName       => _colParam,
+        SymbolDisplayPartKind.LocalName           => _colLocal,
+        SymbolDisplayPartKind.RangeVariableName   => _colLocal,
+        SymbolDisplayPartKind.FieldName           => _colField,
+        SymbolDisplayPartKind.ConstantName        => _colField,
+        SymbolDisplayPartKind.EnumMemberName      => _colField,
+        SymbolDisplayPartKind.PropertyName        => _colField,
+        SymbolDisplayPartKind.EventName           => _colField,
+        SymbolDisplayPartKind.NumericLiteral      => _colNumber,   // 引数の既定値など
+        SymbolDisplayPartKind.StringLiteral       => _colString,
+        _                                         => _colPunct,    // 記号・空白・名前空間など
+    };
 
     /// <summary>シンボル種別の日本語ラベル（2 行目）を返す。</summary>
     private static string KindLabel(ISymbol symbol) => symbol switch

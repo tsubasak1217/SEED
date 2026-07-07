@@ -791,7 +791,9 @@ public class ScriptEditorPanel : UserControl
             getDocument:   () => _workspace?.GetDocument(doc.FilePath),
             isSuppressed:  () => DebugEvaluator is not null || _completionWindow is not null,
             // 赤波線（診断マーカー）のメッセージも QuickInfo に統合表示する
-            getDiagnostic: offset => doc.Markers.GetMarkersAtOffset(offset).FirstOrDefault()?.ToolTip);
+            getDiagnostic: offset => doc.Markers.GetMarkersAtOffset(offset).FirstOrDefault()?.ToolTip,
+            // エディタの配色設定でシグネチャを構文色分けする
+            colors: _settings.Colors);
         // QuickInfo が（非同期解析の完了後に）開いたら、先に出ていた旧診断ツールチップを閉じる
         doc.QuickInfo.Opened += HideDiagnosticToolTip;
 
