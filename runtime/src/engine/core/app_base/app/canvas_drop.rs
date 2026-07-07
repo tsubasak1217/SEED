@@ -159,12 +159,11 @@ impl App {
             // 実効ビューポート（Camera 参照キャンバスはオーバーライドを優先）
             let [evw, evh] = vp_overrides.get(&actor.entity).copied().unwrap_or([vp_w, vp_h]);
 
-            // ルートレベルのアンカーオフセット（ortho 原点 = 画面中央基準）
-            // collect_canvas_rects と同一の計算
-            let anchor_off = [
-                evw * ct.anchor[0] - evw / 2.0,
-                evh * ct.anchor[1] - evh / 2.0,
-            ];
+            // ルートレベルのアンカーオフセット（collect_canvas_rects と同一の共通ヘルパー）。
+            // design_space=true（ビューポート編集）ではキャンバス左上をワールド原点に一致させる。
+            let anchor_off = super::canvas_collect::root_anchor_offset(
+                ct.anchor, evw, evh, self.edit_view_is_2d(),
+            );
 
             // ルートは sm_transform=false・親累積スケール=1 のため position をそのまま使用する
             let eff_ct = CanvasTransform {

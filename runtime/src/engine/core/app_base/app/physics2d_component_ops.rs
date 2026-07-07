@@ -86,8 +86,10 @@ impl App {
                     )
                 };
                 // canvas_collect.rs と同一の変換チェーンで body_pos_px を取得する
+                // （design_space は表示と一致させる。ドラッグ位置と描画をそろえる）
                 let ctx = collect_actor2d_contexts(
-                        scene, wl, viewport_size, &canvas_vp_overrides, &root_auto_sizes)
+                        scene, wl, viewport_size, &canvas_vp_overrides, &root_auto_sizes,
+                        self.edit_view_is_2d())
                     .into_iter()
                     .find(|c| c.dfs_id == entity_id)?;
 

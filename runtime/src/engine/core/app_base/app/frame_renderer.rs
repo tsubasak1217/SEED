@@ -1110,7 +1110,8 @@ impl App {
                                         // ワールドキャンバスは自動解像度の対象外（空マップ）・ゾーン概念なし
                                         None, &std::collections::HashMap::new(),
                                         &std::collections::HashMap::new(),
-                                        CanvasDrawZone::Foreground, &mut items,
+                                        // 3D ワールドキャンバス配下は常に親サイズ Some のためルート分岐に入らず design_space 無関係
+                                        CanvasDrawZone::Foreground, false, &mut items,
                                     );
                                     items[canvas_start..].sort_by_key(|&(_, _, _, _, layer)| layer);
                                 }
@@ -1669,7 +1670,7 @@ impl App {
                         };
                         let ctx2d_list = crate::engine::core::app_base::app::physics2d_ops::collect_actor2d_contexts(
                             scene, self.active_world_line, viewport_size_2d, &canvas_vp_overrides_2d,
-                            &root_auto_sizes_2d,
+                            &root_auto_sizes_2d, edit_view_2d,
                         );
 
                         for ctx in &ctx2d_list {
@@ -1802,7 +1803,7 @@ impl App {
                                     &scene.actors, &scene.world, wl, draw_ctx,
                                     None, IDENTITY, [1.0, 1.0], (false, false, false, true),
                                     canvas_scale, y_sign, viewport_size, &canvas_vp_overrides,
-                                    &root_auto_sizes, CanvasDrawZone::Foreground, &mut items_2d,
+                                    &root_auto_sizes, CanvasDrawZone::Foreground, edit_view_2d, &mut items_2d,
                                 );
                             }
 
@@ -1860,7 +1861,8 @@ impl App {
                                     // ワールドキャンバスは自動解像度の対象外（空マップ）・ゾーン概念なし
                                     None, &std::collections::HashMap::new(),
                                     &std::collections::HashMap::new(),
-                                    CanvasDrawZone::Foreground, &mut items_3d,
+                                    // 3D ワールドキャンバス配下は常に親サイズ Some のためルート分岐に入らず design_space 無関係
+                                    CanvasDrawZone::Foreground, false, &mut items_3d,
                                 );
                                 items_3d[canvas_start..].sort_by_key(|&(_, _, _, _, layer)| layer);
                             }
@@ -1926,7 +1928,7 @@ impl App {
                                 &self.selected_actor_dfs_ids, &mut counter,
                                 None, IDENTITY_RECT, [1.0, 1.0], (false, false, false, true),
                                 canvas_scale_rect, y_sign_rect, viewport_size_rect, &canvas_vp_overrides_r,
-                                &root_auto_sizes_r,
+                                &root_auto_sizes_r, edit_view_2d,
                             );
                             // 2D シーンビューでドラッグホバー中のルートキャンバス枠を
                             // 通常枠より明るく・太くハイライト描画する（Phase 3、事前計算済み）
@@ -2746,7 +2748,7 @@ impl App {
                                                 canvas_id_offset,
                                                 // トップレベルは SS サブツリー扱い
                                                 // （Actor3D 通過で false になり 3D キャンバス子を除外）
-                                                CanvasDrawZone::Foreground, true, &mut items,
+                                                CanvasDrawZone::Foreground, true, edit_view_2d, &mut items,
                                             );
                                             // スプライト描画と同一の順序（背景ゾーン → 前面ゾーン、
                                             // 各ゾーン内はレイヤー昇順の安定ソート）へ並べ替える。

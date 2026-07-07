@@ -15,9 +15,13 @@
 //    これにより「スプライト描画位置 = 当たり判定位置」が保証される。
 //
 //    変換チェーン:
-//    1. ルートアクターのアンカー計算（ビューポート基準）
-//       anchor_off = [vw * anchor[0] - vw/2,  vh * anchor[1] - vh/2]
-//       （ortho 原点 = 画面中央、anchor=0.5 → offset=0 で中央配置）
+//    1. ルートアクターのアンカー計算（ビューポート基準・共通ヘルパー root_anchor_offset）
+//       design_space=false（Play・SS オーバーレイ）:
+//         anchor_off = [vw*anchor[0] - vw/2, vh*anchor[1] - vh/2]
+//         （ortho 原点 = 画面中央、anchor=0.5 → offset=0 で中央配置）
+//       design_space=true（ビューポートタブの設計空間編集 = edit_view_is_2d）:
+//         anchor_off = [vw*anchor[0], vh*anchor[1]]
+//         （キャンバス左上をワールド原点に一致させる。「キャンバスを編集」モードと同じ）
 //
 //    2. auto_scale_factor（ルートキャンバスのみ）
 //       = [vp_w / canvas_w, vp_h / canvas_h]  (auto_scale=true の場合)
@@ -59,7 +63,7 @@ use crate::engine::physics::{
 use crate::engine::core::app_base::scene::Scene;
 use crate::engine::structs::objects::actor::{Actor, ActorKind};
 use super::{App, RuntimeMode, InspectorTransformDrag, find_actor_by_dfs};
-use super::canvas_collect::build_canvas_viewport_map;
+use super::canvas_collect::{build_canvas_viewport_map, root_anchor_offset};
 
 // ─── Actor2d 物理コンテキスト ────────────────────────────────────────────────
 
@@ -141,6 +145,9 @@ pub(crate) fn collect_actor2d_contexts(
     viewport_size: Option<[f32; 2]>,
     canvas_viewport_overrides: &HashMap<Entity, [f32; 2]>,
     root_auto_sizes: &HashMap<Entity, [f32; 2]>,
+    // ビューポートタブの設計空間表示中か（= edit_view_is_2d）。
+    // true のときルートキャンバス左上をワールド原点に一致させる（描画と同一規則）。
+    design_space:  bool,
 ) -> Vec<Actor2dPhysicsCtx> {
     let mut result      = Vec::new();
     let mut dfs_counter = 0u64;
@@ -251,7 +258,8 @@ pub(crate) fn collect_actor2d_contexts(
             let anchor_off_child = match parent_canvas_size {
                 None => {
                     if let Some([vw, vh]) = eff_viewport {
-                        [vw * ct.anchor[0] - vw / 2.0, vh * ct.anchor[1] - vh / 2.0]
+                        // ルートレベル: design_space に応じて原点位置を切り替える（共通ヘルパー）
+                        root_anchor_offset(ct.anchor, vw, vh, design_space)
                     } else {
                         [0.0f32, 0.0]
                     }
@@ -528,7 +536,7 @@ impl App {
             self.build_2d_layout_maps(scene, Some(viewport_size), win_w, win_h);
         collect_actor2d_contexts(
             scene, self.active_world_line, Some(viewport_size),
-            &canvas_vp_overrides, &root_auto_sizes,
+            &canvas_vp_overrides, &root_auto_sizes, self.edit_view_is_2d(),
         )
         .into_iter()
         .find(|ctx| ctx.actor_entity == entity)
@@ -550,9 +558,11 @@ impl App {
         let (canvas_vp_overrides, root_auto_sizes) =
             self.build_2d_layout_maps(scene, viewport_size, win_w, win_h);
 
+        // ScreenPosition API はゲーム画面（中央原点）基準で body_pos_px を得て
+        // +win/2 で左上原点スクリーン座標へ変換する契約のため、design_space=false 固定。
         let contexts = collect_actor2d_contexts(
             scene, self.active_world_line, viewport_size, &canvas_vp_overrides,
-            &root_auto_sizes,
+            &root_auto_sizes, false,
         );
 
         // ortho 空間（ビューポート中心原点・Y 下向き）→ ウィンドウ左上原点へ変換する
@@ -588,9 +598,12 @@ impl App {
         let force_kinematic = self.mode == RuntimeMode::Edit
             && !self.edit_physics_2d_with_rigidbody;
 
-        // actor2d コンテキストを収集し、Collider2d 付きのものを物理ワールドに登録する
+        // actor2d コンテキストを収集し、Collider2d 付きのものを物理ワールドに登録する。
+        // design_space は表示（frame_renderer）と一致させ、コライダー位置と描画をそろえる。
+        let design_space = self.edit_view_is_2d();
         let contexts = collect_actor2d_contexts(
             scene, self.active_world_line, viewport_size, &canvas_vp_overrides, &root_auto_sizes,
+            design_space,
         );
 
         // ── 2D キャンバス物理スレッドを起動する ────────────────────────────────
@@ -698,6 +711,7 @@ impl App {
                 self.build_2d_layout_maps(scene, viewport_size, win_w, win_h);
             collect_actor2d_contexts(
                 scene, self.active_world_line, viewport_size, &canvas_vp_overrides, &root_auto_sizes,
+                self.edit_view_is_2d(),
             )
         } else {
             return;

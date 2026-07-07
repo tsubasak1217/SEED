@@ -28,6 +28,32 @@ use crate::engine::methods::gizmo_interact::mat4x4_mul;
 /// mod.rs の CANVAS_WORLD_SCALE と同値。
 const CANVAS_WORLD_SCALE: f32 = 1.0 / 100.0;
 
+/// ルート（トップレベル）キャンバスのアンカーオフセットを計算する共通ヘルパー。
+///
+/// スプライト描画・キャンバス枠・GPU ピッキング・2D 物理/ドロップ配置のすべてが
+/// この関数を共有することで、ルートキャンバスの原点位置を完全に一致させる。
+///
+/// # 引数
+/// - `anchor`: ルートキャンバスの CanvasTransform.anchor（正規化 [0,1]）
+/// - `vw` / `vh`: 基準ビューポートサイズ（実効解像度・カメラ参照サイズ等）
+/// - `design_space`: ビューポートタブの設計空間表示中か（= edit_view_is_2d）
+///
+/// # 挙動
+/// - `design_space=false`（Play・SS オーバーレイ = 実ゲーム合成）:
+///   ortho 原点が画面中央のため、anchor=(0,0) を画面左上へ寄せる目的で `-vp/2` する。
+///   `anchor*vp - vp/2` により anchor=0→画面左上・0.5→中央・1→右下となる。
+/// - `design_space=true`（ビューポートタブの設計空間編集）:
+///   「キャンバスを編集」モードと同様に**キャンバス左上をワールド原点**へ一致させる。
+///   センタリング（`-vp/2`）を行わず、anchor=(0,0) のルートキャンバス左上が原点になる。
+#[inline]
+pub(super) fn root_anchor_offset(anchor: [f32; 2], vw: f32, vh: f32, design_space: bool) -> [f32; 2] {
+    if design_space {
+        [vw * anchor[0], vh * anchor[1]]
+    } else {
+        [vw * anchor[0] - vw / 2.0, vh * anchor[1] - vh / 2.0]
+    }
+}
+
 // ============================================================
 //  collect_sprite_items
 // ============================================================
@@ -79,6 +105,9 @@ pub(super) fn collect_sprite_items(
     // 親（ルートキャンバス）から継承する描画ゾーン。ルートレベルでは各ルートの
     // CanvasComponent.draw_zone で上書きされる。呼び出し側は Foreground を渡す。
     parent_zone:        CanvasDrawZone,
+    // ビューポートタブの設計空間表示中か（= edit_view_is_2d）。
+    // true のときルートキャンバス左上をワールド原点に一致させる（センタリングしない）。
+    design_space:       bool,
     out:                &mut Vec<([[f32; 4]; 4], [f32; 4], Option<Arc<GpuSpriteTexture>>, CanvasDrawZone, i32)>,
 ) {
     let (sm_transform, sm_size, keep_aspect, is_width_axis) = parent_scale_mode;
@@ -108,9 +137,9 @@ pub(super) fn collect_sprite_items(
             };
             let (anchor_off_x, anchor_off_y) = if parent_canvas_size.is_none() {
                 if let Some([vw, vh]) = eff_viewport {
-                    // 画面中央が ortho 原点 → anchor=0,0 で画面左上に寄せるため -vp/2 オフセット
-                    (vw * ct.anchor[0] - vw / 2.0,
-                     vh * ct.anchor[1] - vh / 2.0)
+                    // ルートレベル: design_space に応じて原点位置を切り替える（共通ヘルパー）
+                    let [ox, oy] = root_anchor_offset(ct.anchor, vw, vh, design_space);
+                    (ox, oy)
                 } else {
                     (0.0, 0.0)
                 }
@@ -257,7 +286,7 @@ pub(super) fn collect_sprite_items(
                 child_canvas_size, self_world_rs,
                 child_cumul_scale, child_scale_mode,
                 canvas_scale, y_sign, viewport_size, canvas_viewport_overrides,
-                root_auto_sizes, my_zone, out,
+                root_auto_sizes, my_zone, design_space, out,
             );
         }
     }
@@ -294,6 +323,8 @@ pub(super) fn collect_canvas_rects(
     canvas_viewport_overrides: &HashMap<Entity, [f32; 2]>,
     // ビューポート・ルートキャンバスの自動解像度マップ（collect_sprite_items と同じ扱い）
     root_auto_sizes:    &HashMap<Entity, [f32; 2]>,
+    // ビューポートタブの設計空間表示中か（= edit_view_is_2d。collect_sprite_items と同じ扱い）
+    design_space:       bool,
 ) {
     let (sm_transform, sm_size, keep_aspect, is_width_axis) = parent_scale_mode;
 
@@ -320,8 +351,9 @@ pub(super) fn collect_canvas_rects(
             };
             let (anchor_off_x, anchor_off_y) = if parent_canvas_size.is_none() {
                 if let Some([vw, vh]) = eff_viewport {
-                    (vw * ct.anchor[0] - vw / 2.0,
-                     vh * ct.anchor[1] - vh / 2.0)
+                    // ルートレベル: design_space に応じて原点位置を切り替える（共通ヘルパー）
+                    let [ox, oy] = root_anchor_offset(ct.anchor, vw, vh, design_space);
+                    (ox, oy)
                 } else {
                     (0.0, 0.0)
                 }
@@ -459,7 +491,7 @@ pub(super) fn collect_canvas_rects(
                 child_canvas_size, self_world_rs,
                 child_cumul_scale, child_scale_mode,
                 canvas_scale, y_sign, viewport_size, canvas_viewport_overrides,
-                root_auto_sizes,
+                root_auto_sizes, design_space,
             );
         }
     }
@@ -511,6 +543,8 @@ pub(super) fn collect_canvas_id_items(
     // 3D ワールドキャンバス配下のスプライトは WS 用の collect_3d_canvas_child_id_items が
     // 担当するため、ここで出力すると SS 座標の誤った ID quad が重なり誤選択の原因になる。
     in_ss_subtree:      bool,
+    // ビューポートタブの設計空間表示中か（= edit_view_is_2d。collect_sprite_items と同じ扱い）
+    design_space:       bool,
     out:                &mut Vec<(u32, [[f32; 4]; 4], Option<String>, CanvasDrawZone, i32)>,
 ) {
     let (sm_transform, sm_size, keep_aspect, is_width_axis) = parent_scale_mode;
@@ -541,8 +575,9 @@ pub(super) fn collect_canvas_id_items(
                 let (anchor_off_x, anchor_off_y) =
                     if parent_canvas_size.is_none() {
                         if let Some([vw, vh]) = eff_viewport {
-                            (vw * ct.anchor[0] - vw / 2.0,
-                             vh * ct.anchor[1] - vh / 2.0)
+                            // ルートレベル: design_space に応じて原点位置を切り替える（共通ヘルパー）
+                            let [ox, oy] = root_anchor_offset(ct.anchor, vw, vh, design_space);
+                            (ox, oy)
                         } else { (0.0, 0.0) }
                     } else {
                         (parent_canvas_size.map_or(0.0, |[pw, _]| pw * ct.anchor[0] * parent_cumul_scale[0]),
@@ -657,7 +692,7 @@ pub(super) fn collect_canvas_id_items(
             next_canvas_size, next_world_rs,
             next_cumul_scale, next_scale_mode,
             canvas_scale, y_sign, viewport_size, canvas_viewport_overrides,
-            root_auto_sizes, mc_total, next_zone, next_in_ss, out,
+            root_auto_sizes, mc_total, next_zone, next_in_ss, design_space, out,
         );
     }
 }
