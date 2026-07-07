@@ -25,6 +25,13 @@ public class ActorNode
     public bool            IsGroup  { get; set; }
     /// <summary>2D アクター（CanvasTransform）か否か。Hierarchy アイコン色分けに使用する。</summary>
     public bool            Is2D     { get; set; }
+    /// <summary>
+    /// ビューポート所属か否か。トップレベルのルートアクターが Actor2D
+    /// （スクリーンスペースキャンバス系）のサブツリーに属するとき true。
+    /// 3D ワールドキャンバス配下の 2D スプライトは Is2D=true でも IsVp=false。
+    /// シーンタブ（ワールド/ビューポート）の自動切替判定に使用する。
+    /// </summary>
+    public bool            IsVp     { get; set; }
     public List<ActorNode> Children { get; } = new();
 }
 
@@ -127,30 +134,33 @@ public partial class HierarchyPanel : UserControl
     public event Action<int>? ActorDfsSelected;
 
     /// <summary>
-    /// 選択アクターの 2D/3D 種別が一意に定まったときに発火する（true = 2D）。
-    /// 2D と 3D の混在複数選択やグループのみの選択では発火しない。
-    /// MainWindow がシーンタブ（3Dシーン/2Dシーン）の自動切替に使用する。
+    /// 選択アクターのワールド/ビューポート所属が一意に定まったときに発火する
+    /// （true = ビューポート所属）。
+    /// 所属は Is2D ではなく IsVp（トップレベルルートが Actor2D か）で判定するため、
+    /// 3D ワールドキャンバス配下の 2D スプライトはワールド所属として扱われる。
+    /// 所属の混在複数選択やグループのみの選択では発火しない。
+    /// MainWindow がシーンタブ（ワールド/ビューポート）の自動切替に使用する。
     /// </summary>
     public event Action<bool>? SelectionKindResolved;
 
     /// <summary>
-    /// 現在の選択（_selectedIds）の非グループノードの 2D/3D 種別を判定し、
+    /// 現在の選択（_selectedIds）の非グループノードのワールド/ビューポート所属を判定し、
     /// 一意に定まる場合のみ SelectionKindResolved を発火する。
     /// </summary>
     private void NotifySelectionKind()
     {
-        bool any2D = false;
-        bool any3D = false;
+        bool anyViewport = false;
+        bool anyWorld    = false;
         foreach (var id in _selectedIds)
         {
             var node = FindNode(_roots, id);
-            // ツリーに存在しないノードやグループは種別判定の対象外
+            // ツリーに存在しないノードやグループは所属判定の対象外
             if (node == null || node.IsGroup) continue;
-            if (node.Is2D) any2D = true; else any3D = true;
+            if (node.IsVp) anyViewport = true; else anyWorld = true;
         }
         // 混在（両方 true）または実アクター選択なし（両方 false）は通知しない
-        if (any2D == any3D) return;
-        SelectionKindResolved?.Invoke(any2D);
+        if (anyViewport == anyWorld) return;
+        SelectionKindResolved?.Invoke(anyViewport);
     }
 
     /// <summary>
@@ -333,6 +343,8 @@ public partial class HierarchyPanel : UserControl
                                 : e.GetProperty("parent").GetInt32(),
                     IsGroup  = e.TryGetProperty("is_group", out var ig) && ig.GetBoolean(),
                     Is2D     = e.TryGetProperty("is_2d",    out var i2) && i2.GetBoolean(),
+                    // ビューポート所属（ルートが Actor2D のサブツリー）。タブ自動切替用。
+                    IsVp     = e.TryGetProperty("is_vp",    out var iv) && iv.GetBoolean(),
                 })
                 .ToList();
 

@@ -217,6 +217,10 @@ pub enum IpcCommand {
     /// キャンバスのビューポート参照をウィンドウに設定する（Camera 参照を解除）
     /// フォーマット: SET_CANVAS_VIEWPORT_REF_WINDOW:{actor_dfs_id},{slot_idx}
     SetCanvasViewportRefWindow { actor_dfs_id: u32, slot_idx: u32 },
+    /// キャンバスのビューポート参照をメインカメラ（is_main = true）に設定する
+    /// フォーマット: SET_CANVAS_VIEWPORT_REF_MAIN_CAMERA:{actor_dfs_id},{slot_idx}
+    /// メインカメラが存在しない場合は実行時にウィンドウ基準へフォールバックする
+    SetCanvasViewportRefMainCamera { actor_dfs_id: u32, slot_idx: u32 },
     /// キャンバスのビューポート参照をカメラに設定する
     /// フォーマット: SET_CANVAS_VIEWPORT_REF_CAMERA:{actor_dfs_id},{slot_idx},{actor_name},{slot_name}
     /// actor_name / slot_name はカンマを含まない前提
@@ -928,6 +932,13 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                             // フォーマット: SET_CANVAS_VIEWPORT_REF_WINDOW:{actor_dfs_id},{slot_idx}
                             parse2u(&s["SET_CANVAS_VIEWPORT_REF_WINDOW:".len()..])
                                 .map(|(id, sl)| IpcCommand::SetCanvasViewportRefWindow {
+                                    actor_dfs_id: id, slot_idx: sl,
+                                })
+                        }
+                        s if s.starts_with("SET_CANVAS_VIEWPORT_REF_MAIN_CAMERA:") => {
+                            // フォーマット: SET_CANVAS_VIEWPORT_REF_MAIN_CAMERA:{actor_dfs_id},{slot_idx}
+                            parse2u(&s["SET_CANVAS_VIEWPORT_REF_MAIN_CAMERA:".len()..])
+                                .map(|(id, sl)| IpcCommand::SetCanvasViewportRefMainCamera {
                                     actor_dfs_id: id, slot_idx: sl,
                                 })
                         }

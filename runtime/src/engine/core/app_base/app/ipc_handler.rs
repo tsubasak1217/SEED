@@ -840,6 +840,9 @@ impl App {
                 IpcCommand::SetCanvasViewportRefWindow { actor_dfs_id, slot_idx } => {
                     self.handle_set_canvas_viewport_ref_window(actor_dfs_id, slot_idx);
                 }
+                IpcCommand::SetCanvasViewportRefMainCamera { actor_dfs_id, slot_idx } => {
+                    self.handle_set_canvas_viewport_ref_main_camera(actor_dfs_id, slot_idx);
+                }
                 IpcCommand::SetCanvasViewportRefCamera { actor_dfs_id, slot_idx, actor_name, slot_name } => {
                     let an = actor_name.clone();
                     let sn = slot_name.clone();

@@ -80,7 +80,7 @@ public partial class MainWindow
 
         _actorTabs.Remove(tab);
         _activeActorPath = null;
-        // 所有アクターの種別に対応するシーンタブ（2Dシーン / 3Dシーン）へ戻す
+        // 所有アクターの種別に対応するシーンタブ（ビューポート / ワールド）へ戻す
         _sceneTabIs2D = tab.RootIs2D;
         SendNavCommand($"EDIT_CANVAS_END:{tab.WorldLine}");
         PanelHierarchy.SetActorEditMode(false);

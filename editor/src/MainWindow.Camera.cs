@@ -256,7 +256,7 @@ public partial class MainWindow
         // 編集時物理設定は Edit runtime にのみ送信する（Play runtime へ送ると物理スレッドが停止する）
         if (_runtimeManager?.State == EditorState.Edit)
         {
-            // 現在のシーンタブ（3Dシーン/2Dシーン）のビューモードを同期する。
+            // 現在のシーンタブ（ワールド/ビューポート）のビューモードを同期する。
             // 起動時・ランタイム再接続時・Play→Edit 復帰時のいずれもここを通るため、
             // ランタイムのビューモードが常にタブ UI と一致する。
             SendCurrentEditView();

@@ -51,7 +51,7 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
     /// アクター編集タブ情報。IsActor2D は actor_kind="Actor2D" のとき true。
     /// IsSceneCanvas はシーン内キャンバスの隔離編集タブ（ファイル非対応。Path は
     /// "canvas://{世界線}" の合成キー）。RootIs2D はキャンバス所有アクターの元の種別で、
-    /// タブを閉じたとき戻るシーンタブ（2Dシーン / 3Dシーン）の判定に使う。
+    /// タブを閉じたとき戻るシーンタブ（ビューポート / ワールド）の判定に使う。
     /// </summary>
     private record ActorTab(
         string Path, string Name, uint WorldLine, bool IsActor2D = false,
@@ -316,7 +316,7 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         PanelHierarchy.SetRuntime(_runtimeManager);
         PanelHierarchy.SetAssetsPath(AssetsPath);
         PanelHierarchy.ActorDfsSelected += id => PanelInspector.SelectActor(id);
-        // 選択アクターの 2D/3D 種別に応じてシーンタブ（3Dシーン/2Dシーン）を自動切替する
+        // 選択アクターのビューポート所属（is_vp）に応じてシーンタブ（ワールド/ビューポート）を自動切替する
         PanelHierarchy.SelectionKindResolved += OnHierarchySelectionKindResolved;
         PanelInspector.SetRuntime(_runtimeManager);
         PanelInspector.SetAssetsPath(AssetsPath);
@@ -371,7 +371,7 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         // 物理タイムラインのシークバーイベントをバインドする
         BindPhysicsStepButtons();
 
-        // 固定シーンタブ（3Dシーン/2Dシーン）を初期表示する
+        // 固定シーンタブ（ワールド/ビューポート）を初期表示する
         RebuildActorTabBar();
 
         _viewportHost = new ViewportHost();
@@ -706,6 +706,13 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
             // デシリアライズ後に存在しなければ追加する。
             EnsureScriptEditorDocument();
             EnsureScriptSidePanels();
+
+            // 旧 layout.xml には旧タイトル（"Viewport"）が保存されているため、
+            // 表示タイトルを現行の「シーン」へ上書きする（ContentId は互換のため不変）。
+            var viewportDoc = DockManager.Layout.Descendents()
+                .OfType<LayoutDocument>()
+                .FirstOrDefault(d => d.ContentId == "viewport");
+            if (viewportDoc != null) viewportDoc.Title = "シーン";
 
             EditorLog.Write($"レイアウトを読み込みました: {path}");
         }

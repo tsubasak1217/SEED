@@ -331,7 +331,7 @@ public partial class InspectorPanel : UserControl
         bool ScaleTransform = false, bool ScaleSize = false,
         // CanvasComponent 用自動スケールフラグ
         bool AutoScale = true,
-        // CanvasComponent 用ビューポート参照（"window" or "camera"）
+        // CanvasComponent 用基準領域参照（"main_camera" / "window" / "camera"）
         string VpRefType = "window", string VpRefActor = "", string VpRefSlot = "",
         // CanvasComponent 用アスペクト比維持（scale_size=true のときのみ有効）
         bool KeepAspectRatio = false, string AspectRatioAxis = "width",
@@ -2632,16 +2632,41 @@ public partial class InspectorPanel : UserControl
             sp.Children.Add(scaleModePanel);
         }
 
-        // ── ビューポート参照 セクション（Actor2D = 2D キャンバス時のみ表示）──────────────────────────
-        // Actor3D の 3D ワールドキャンバスにはビューポート参照は不要。
+        // ── 基準領域 セクション（Actor2D = 2D キャンバス時のみ表示）──────────────────────────
+        // Actor3D の 3D ワールドキャンバスには基準領域の設定は不要。
+        // 「メインカメラを参照」チェックボックス（デフォルトオン）と、
+        // オフ時のみ表示される手動設定 UI（ウィンドウ/カメラのコンボ + カメラドロップゾーン）で構成する。
         var vpRefSep = new TextBlock
         {
-            Text       = "ビューポート参照",
+            Text       = "基準領域",
             Foreground = new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88)),
             FontSize   = 10,
             Margin     = new Thickness(0, 8, 0, 2),
         };
         if (_isActor2D) sp.Children.Add(vpRefSep);
+
+        // メインカメラ参照チェックボックス（vp_ref_type == "main_camera" のときオン）
+        bool isMainCamRef = info.VpRefType == "main_camera";
+        var cbMainCamRef = new CheckBox
+        {
+            Content           = "メインカメラを参照",
+            IsChecked         = isMainCamRef,
+            Foreground        = new SolidColorBrush(Colors.White),
+            FontSize          = 11,
+            Margin            = new Thickness(0, 2, 0, 2),
+            VerticalAlignment = VerticalAlignment.Center,
+            ToolTip           = "レターボックス等でゲーム表示領域が黒帯を除く矩形になる場合、\n"
+                              + "UI をその内側に収めます。\n"
+                              + "カメラが存在しない場合は自動的にウィンドウ基準になります。",
+        };
+        if (_isActor2D) sp.Children.Add(cbMainCamRef);
+
+        // 手動設定パネル（チェックがオフのときのみ表示。字下げで従属設定であることを示す）
+        var vpManualPanel = new StackPanel
+        {
+            Margin     = new Thickness(16, 0, 0, 0),
+            Visibility = isMainCamRef ? Visibility.Collapsed : Visibility.Visible,
+        };
 
         // 参照種別ドロップダウン（ウィンドウ / カメラ）
         var cmbVpRef = new ComboBox
@@ -2654,8 +2679,9 @@ public partial class InspectorPanel : UserControl
         };
         cmbVpRef.Items.Add(new ComboBoxItem { Content = "ウィンドウ", Tag = "window", Foreground = new SolidColorBrush(Colors.Black) });
         cmbVpRef.Items.Add(new ComboBoxItem { Content = "カメラ",     Tag = "camera", Foreground = new SolidColorBrush(Colors.Black) });
+        // main_camera のときはチェックオフ時の初期値としてウィンドウを選択しておく
         cmbVpRef.SelectedIndex = info.VpRefType == "camera" ? 1 : 0;
-        if (_isActor2D) sp.Children.Add(cmbVpRef);
+        vpManualPanel.Children.Add(cmbVpRef);
 
         // カメラ参照フィールド（D&D 受け付けエリア）
         var vpRefCameraPanel = new StackPanel { Visibility = info.VpRefType == "camera" ? Visibility.Visible : Visibility.Collapsed };
@@ -2701,7 +2727,8 @@ public partial class InspectorPanel : UserControl
 
         vpRefCameraPanel.Children.Add(vpDropZone);
         vpRefCameraPanel.Children.Add(btnClearVp);
-        if (_isActor2D) sp.Children.Add(vpRefCameraPanel);
+        vpManualPanel.Children.Add(vpRefCameraPanel);
+        if (_isActor2D) sp.Children.Add(vpManualPanel);
 
         // ── イベント ──────────────────────────────────────────
 
@@ -2734,7 +2761,40 @@ public partial class InspectorPanel : UserControl
                 $"SET_CANVAS_AUTO_SCALE:{_currentActorId},{info.SlotIdx},{v}"));
         }
 
-        // ビューポート参照種別変更
+        // 手動設定（コンボの現在値）を IPC 送信するローカル関数。
+        // ウィンドウ選択 → ウィンドウ基準。カメラ選択 → 参照先が設定済みならカメラ基準、
+        // 未設定ならドロップで設定されるまでウィンドウ基準にしておく。
+        void SendManualVpRef()
+        {
+            if (_currentActorId < 0) return;
+            var selTag = (cmbVpRef.SelectedItem as ComboBoxItem)?.Tag as string ?? "window";
+            if (selTag == "camera" && !string.IsNullOrEmpty(info.VpRefActor))
+            {
+                _runtime?.SendToRuntime(
+                    $"SET_CANVAS_VIEWPORT_REF_CAMERA:{_currentActorId},{info.SlotIdx},{info.VpRefActor},{info.VpRefSlot}");
+            }
+            else
+            {
+                _runtime?.SendToRuntime($"SET_CANVAS_VIEWPORT_REF_WINDOW:{_currentActorId},{info.SlotIdx}");
+            }
+        }
+
+        // メインカメラ参照チェック切替:
+        // オン → メインカメラ基準を送信し手動 UI を隠す
+        // オフ → 手動 UI を表示しコンボの現在値を送信する
+        cbMainCamRef.Checked += (_, _) =>
+        {
+            vpManualPanel.Visibility = Visibility.Collapsed;
+            if (_currentActorId < 0) return;
+            _runtime?.SendToRuntime($"SET_CANVAS_VIEWPORT_REF_MAIN_CAMERA:{_currentActorId},{info.SlotIdx}");
+        };
+        cbMainCamRef.Unchecked += (_, _) =>
+        {
+            vpManualPanel.Visibility = Visibility.Visible;
+            SendManualVpRef();
+        };
+
+        // 手動設定: 参照種別変更（ウィンドウ / カメラ）
         cmbVpRef.SelectionChanged += (_, _) =>
         {
             if (_currentActorId < 0) return;

@@ -171,7 +171,9 @@ impl App {
                     // width / height / スケールモード / 自動スケール / ビューポート参照をインスペクター用に送信する
                     use crate::engine::components::CanvasViewportRef;
                     let (vp_ref_type, vp_actor_name, vp_slot_name) = match &d.viewport_ref {
-                        CanvasViewportRef::Window => ("window", String::new(), String::new()),
+                        CanvasViewportRef::Window     => ("window",      String::new(), String::new()),
+                        // メインカメラ基準（レターボックス等を除いた実効表示矩形。カメラ無しはウィンドウ扱い）
+                        CanvasViewportRef::MainCamera => ("main_camera", String::new(), String::new()),
                         CanvasViewportRef::Camera { actor_name, slot_name } => {
                             ("camera", actor_name.clone(), slot_name.clone())
                         }

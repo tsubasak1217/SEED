@@ -53,17 +53,30 @@ impl Default for AspectRatioAxis {
 
 // ─── CanvasViewportRef ────────────────────────────────────────────────────────
 
-/// キャンバスのアンカー計算・自動スケールで参照するビューポートの種別。
+/// キャンバスのアンカー計算・自動スケールで参照する基準領域の種別。
 ///
-/// `Window`（デフォルト）: ウィンドウ全体のサイズを基準とする。
+/// `MainCamera`（新規作成時のデフォルト）: 同一世界線内で最初に見つかった
+///   `is_main = true` のカメラの実効描画領域（レターボックス等の黒帯を除いた
+///   ゲーム表示矩形）を基準とする。メインカメラが存在しない場合は自動的に
+///   ウィンドウ全体へフォールバックする。
+/// `Window`: ウィンドウ全体のサイズを基準とする。
 /// `Camera { actor_name, slot_name }`: 指定カメラコンポーネントの描画範囲を基準とする。
 /// - 編集モード: カメラの target_width × target_height（設計解像度）
 /// - プレイモード: カメラが実際に描画するビューポートのピクセルサイズ
+///
+/// # serde 互換性
+/// `Default` トレイト実装（= `#[serde(default)]` が使う値）は `Window` のまま維持する。
+/// これにより `viewport_ref` フィールドを持たない既存の保存データは従来どおり
+/// `Window` として読み込まれる。新規作成コンポーネントのデフォルトのみ
+/// `CanvasComponent::default()` 側で `MainCamera` を指定する。
 #[derive(Clone, Serialize, Deserialize, PartialEq, Debug)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum CanvasViewportRef {
-    /// ウィンドウ全体をアンカー/スケール基準とする（デフォルト）
+    /// ウィンドウ全体をアンカー/スケール基準とする
     Window,
+    /// メインカメラ（is_main = true）の実効表示領域を基準とする。
+    /// メインカメラが無い場合はウィンドウ基準として扱う。
+    MainCamera,
     /// 指定カメラの描画範囲をアンカー/スケール基準とする
     Camera {
         /// 参照するカメラアクターの名前
@@ -74,6 +87,8 @@ pub enum CanvasViewportRef {
 }
 
 impl Default for CanvasViewportRef {
+    // 注意: これは「フィールド欠落時の deserialization デフォルト」。
+    // 既存保存データとの互換のため Window を維持する（上記 doc コメント参照）。
     fn default() -> Self { Self::Window }
 }
 
@@ -139,9 +154,9 @@ fn default_auto_scale() -> bool { true }
 /// ビューポートサイズに応じて子 UI を proportional にスケールする。
 /// Actor3D アタッチ時は使用しない。
 ///
-/// # ビューポート参照
-/// viewport_ref でアンカー計算・自動スケールの基準を「ウィンドウ全体」か
-/// 「指定カメラの描画範囲」かを選択できる。
+/// # 基準領域（ビューポート参照）
+/// viewport_ref でアンカー計算・自動スケールの基準を「メインカメラの実効表示領域
+/// （新規作成時のデフォルト）」「ウィンドウ全体」「指定カメラの描画範囲」から選択できる。
 ///
 /// # 3D キャンバスのピボット
 /// pivot（Actor3D アタッチ時のみ有効）でアクター位置がキャンバスのどの点に
@@ -208,7 +223,9 @@ impl Default for CanvasComponent {
             scale_size:        false,
             scale_transform:   false,
             auto_scale:        true,
-            viewport_ref:      CanvasViewportRef::Window,
+            // 新規作成コンポーネントはメインカメラ基準をデフォルトとする
+            // （メインカメラが無い場合は実行時にウィンドウ基準へフォールバック）
+            viewport_ref:      CanvasViewportRef::MainCamera,
             keep_aspect_ratio: false,
             aspect_ratio_axis: AspectRatioAxis::Width,
             gravity_mode:      GravityMode::ScreenDown,

@@ -82,8 +82,8 @@ public sealed class EditorPreferencesWindow : Window
         panel.Children.Add(_cbSceneTabAutoSwitch);
         panel.Children.Add(new TextBlock
         {
-            Text = "ヒエラルキーで選択したアクターの種類（2D/3D）に合わせて、\n"
-                 + "ビューポートのシーンタブ（3Dシーン/2Dシーン）を自動で切り替えます。",
+            Text = "ヒエラルキーで選択したアクターの所属（ワールド/ビューポート）に合わせて、\n"
+                 + "シーンパネルのタブ（ワールド/ビューポート）を自動で切り替えます。",
             Foreground = Dim, FontSize = 11, TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0, 6, 0, 0),
         });

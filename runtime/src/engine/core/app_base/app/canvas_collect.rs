@@ -905,10 +905,59 @@ pub(super) fn resolve_camera_viewport_size(
     [rendered_w, rendered_h]
 }
 
+/// `CanvasViewportRef::MainCamera` 用: 同一世界線内のメインカメラの実効表示領域サイズを解決する。
+///
+/// 指定世界線のアクターツリーを DFS 順に走査し、最初に見つかった `is_main = true` の
+/// `CameraComponent` について、明示 Camera 参照と同じ計算（`compute_game_viewport` による
+/// スケーリングモード + 設計解像度 + ウィンドウサイズからのレターボックス補正済み矩形）で
+/// 帯を除いたゲーム表示領域のサイズを返す。
+/// メインカメラが存在しない場合は `None` を返す（= ウィンドウ基準へフォールバック）。
+pub(super) fn resolve_main_camera_viewport_size(
+    actors: &[Actor],
+    world:  &World,
+    wl:     u32,
+    win_w:  f32,
+    win_h:  f32,
+) -> Option<[f32; 2]> {
+    /// DFS で is_main = true の CameraComponent を持つ最初のスロットを探す。
+    fn find_main_camera<'a>(actors: &'a [Actor], world: &'a World) -> Option<&'a CameraComponent> {
+        for a in actors {
+            for slot in a.slots() {
+                if slot.kind != ComponentKind::Camera { continue; }
+                if let Some(cam) = world.get::<CameraComponent>(slot.entity) {
+                    if cam.is_main { return Some(cam); }
+                }
+            }
+            if let Some(found) = find_main_camera(a.children(), world) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    // トップレベルは world_line でフィルタしてから DFS する
+    // （子アクターはルートと同じ世界線に属する前提）
+    let roots: Vec<&Actor> = actors.iter().filter(|a| a.world_line == wl).collect();
+    for root in roots {
+        if let Some(cam) = find_main_camera(std::slice::from_ref(root), world) {
+            // 明示 Camera 参照（resolve_camera_viewport_size）と同一の実効矩形計算を再利用する
+            let (_, _, rendered_w, rendered_h, _, _) = compute_game_viewport(
+                &cam.scaling_mode,
+                win_w, win_h,
+                cam.target_width, cam.target_height, cam.fov_y_deg,
+            );
+            return Some([rendered_w, rendered_h]);
+        }
+    }
+    None
+}
+
 /// シーン SS モード時に各ルートキャンバスアクターの有効ビューポートサイズを事前解決する。
 ///
-/// `CanvasViewportRef::Camera` を持つルートキャンバスのみマップに追加する。
-/// `Window` 参照はデフォルトの `viewport_size` にフォールバックするため不要。
+/// `CanvasViewportRef::Camera` / `CanvasViewportRef::MainCamera` を持つルートキャンバスのみ
+/// マップに追加する。`Window` 参照はデフォルトの `viewport_size` にフォールバックするため不要。
+/// `MainCamera` 参照でメインカメラが見つからない場合もマップに追加しない
+/// （= `Window` と同じ挙動になる）。
 pub(super) fn build_canvas_viewport_map(
     actors:        &[Actor],
     world:         &World,
@@ -918,17 +967,33 @@ pub(super) fn build_canvas_viewport_map(
     _game_viewport: Option<(f32, f32, f32, f32)>,
 ) -> HashMap<Entity, [f32; 2]> {
     let mut map = HashMap::new();
+    // MainCamera 参照の解決結果はキャンバス間で共通のため 1 回だけ計算してキャッシュする
+    // （None = 未計算、Some(None) = メインカメラなし、Some(Some(vp)) = 解決済み）
+    let mut main_cam_vp: Option<Option<[f32; 2]>> = None;
     for actor in actors {
         if actor.world_line != wl { continue; }
         if world.get::<CanvasTransform>(actor.entity).is_none() { continue; }
         for slot in actor.slots() {
             if slot.kind != ComponentKind::Canvas { continue; }
             if let Some(cc) = world.get::<CanvasComponent>(slot.entity) {
-                if let CanvasViewportRef::Camera { actor_name, slot_name } = &cc.viewport_ref {
-                    let vp = resolve_camera_viewport_size(
-                        actors, world, actor_name, slot_name, win_w, win_h,
-                    );
-                    map.insert(actor.entity, vp);
+                match &cc.viewport_ref {
+                    CanvasViewportRef::Camera { actor_name, slot_name } => {
+                        let vp = resolve_camera_viewport_size(
+                            actors, world, actor_name, slot_name, win_w, win_h,
+                        );
+                        map.insert(actor.entity, vp);
+                    }
+                    CanvasViewportRef::MainCamera => {
+                        // 遅延解決（このフレームで最初に必要になったときのみ計算する）
+                        let resolved = *main_cam_vp.get_or_insert_with(|| {
+                            resolve_main_camera_viewport_size(actors, world, wl, win_w, win_h)
+                        });
+                        // メインカメラなし → マップ未登録のままウィンドウ基準にフォールバック
+                        if let Some(vp) = resolved {
+                            map.insert(actor.entity, vp);
+                        }
+                    }
+                    CanvasViewportRef::Window => {}
                 }
                 break;
             }

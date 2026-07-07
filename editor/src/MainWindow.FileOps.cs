@@ -268,8 +268,10 @@ public partial class MainWindow
         ActorTabsPanel.Children.Clear();
 
         // ── 固定シーンタブ（左端に常設。生成は MainWindow.SceneTabs.cs）──
-        ActorTabsPanel.Children.Add(BuildSceneTabItem("3Dシーン", is2D: false));
-        ActorTabsPanel.Children.Add(BuildSceneTabItem("2Dシーン", is2D: true));
+        // ワールド    = カメラに撮られて相対的に映るもの（3D アクター + 3D ワールドキャンバス）
+        // ビューポート = 画面/カメラ枠基準で張り付くもの（スクリーンスペースキャンバス系）
+        ActorTabsPanel.Children.Add(BuildSceneTabItem("ワールド",     is2D: false));
+        ActorTabsPanel.Children.Add(BuildSceneTabItem("ビューポート", is2D: true));
 
         foreach (var tab in _actorTabs)
         {

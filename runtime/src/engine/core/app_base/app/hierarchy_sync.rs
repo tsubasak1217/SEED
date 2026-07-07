@@ -22,10 +22,12 @@ impl App {
             .filter(|a| a.world_line == wl)
             .collect();
 
-        let mut nodes: Vec<(u32, String, Option<u32>, bool)> = Vec::new();
+        let mut nodes: Vec<(u32, String, Option<u32>, bool, bool)> = Vec::new();
         let mut counter = 0u32;
         for root in &roots {
-            collect_actor_nodes(root, None, &mut counter, &mut nodes);
+            // is_vp（ビューポート所属）はトップレベルルートが Actor2D かで決まり、
+            // サブツリー全体へ伝播する（3D ワールドキャンバス配下の 2D スプライトは false）
+            collect_actor_nodes(root, None, &mut counter, root.is_2d(), &mut nodes);
         }
 
         let json = build_hierarchy_json(&nodes);

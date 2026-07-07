@@ -29,18 +29,25 @@ use crate::engine::methods::gizmo_interact::mat4x4_mul;
 //  ヒエラルキーユーティリティ
 // ============================================================
 
-/// Actor ツリーを DFS 順にフラット化し (id, name, parent_id, is_2d) を収集する。
+/// Actor ツリーを DFS 順にフラット化し (id, name, parent_id, is_2d, is_vp) を収集する。
+///
+/// `root_is_vp` はこのサブツリーのトップレベル（ルート）アクターが Actor2D
+/// （= スクリーンスペースキャンバス系）かどうかのフラグ。
+/// トップレベル呼び出しでは `actor.is_2d()` を渡し、再帰では同じ値を伝播させる
+/// （「ビューポート所属」= ルートが Actor2D のサブツリー全体、という分類のため）。
 pub(super) fn collect_actor_nodes(
-    actor:   &Actor,
-    parent:  Option<u32>,
-    counter: &mut u32,
-    out:     &mut Vec<(u32, String, Option<u32>, bool)>,
+    actor:      &Actor,
+    parent:     Option<u32>,
+    counter:    &mut u32,
+    root_is_vp: bool,
+    out:        &mut Vec<(u32, String, Option<u32>, bool, bool)>,
 ) {
     let id = *counter;
     *counter += 1;
-    out.push((id, actor.name.clone(), parent, actor.is_2d()));
+    out.push((id, actor.name.clone(), parent, actor.is_2d(), root_is_vp));
     for child in actor.children() {
-        collect_actor_nodes(child, Some(id), counter, out);
+        // ルートのビューポート所属フラグを子孫全体へそのまま伝播する
+        collect_actor_nodes(child, Some(id), counter, root_is_vp, out);
     }
 }
 
@@ -53,18 +60,24 @@ struct HierarchyNode<'a> {
     is_group: bool,
     /// 2D アクター（CanvasTransform）か否かを示すフラグ。エディタのアイコン色分けに使用する。
     is_2d:    bool,
+    /// ビューポート所属フラグ。サブツリーのトップレベルルートが Actor2D
+    /// （スクリーンスペースキャンバス）のとき true。
+    /// エディタのシーンタブ（ワールド/ビューポート）自動切替に使用する。
+    /// 3D ワールドキャンバス配下の 2D スプライトは is_2d=true でも is_vp=false になる。
+    is_vp:    bool,
 }
 
 /// フラットリストから HIERARCHY JSON を生成する。
-pub(super) fn build_hierarchy_json(nodes: &[(u32, String, Option<u32>, bool)]) -> String {
+pub(super) fn build_hierarchy_json(nodes: &[(u32, String, Option<u32>, bool, bool)]) -> String {
     let items: Vec<HierarchyNode<'_>> = nodes
         .iter()
-        .map(|(id, name, parent, is_2d)| HierarchyNode {
+        .map(|(id, name, parent, is_2d, is_vp)| HierarchyNode {
             id:       *id,
             name:     name.as_str(),
             parent:   *parent,
             is_group: false,
             is_2d:    *is_2d,
+            is_vp:    *is_vp,
         })
         .collect();
     serde_json::to_string(&items).unwrap_or_default()

@@ -586,6 +586,34 @@ impl App {
         if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
     }
 
+    /// キャンバスのビューポート参照をメインカメラ（is_main = true）に設定する。
+    ///
+    /// メインカメラの解決は毎フレーム build_canvas_viewport_map 内で行われるため、
+    /// ここでは参照種別を設定するだけでよい（カメラが存在しなければウィンドウ基準になる）。
+    pub(super) fn handle_set_canvas_viewport_ref_main_camera(
+        &mut self,
+        actor_dfs_id: u32,
+        slot_idx:     u32,
+    ) {
+        let wl = self.active_world_line;
+        let slot_entity = {
+            let Some(scene) = &self.scene else { return };
+            let mut c = 0u32;
+            find_actor_by_dfs(&scene.actors, wl, actor_dfs_id, &mut c)
+                .and_then(|a| a.slots().get(slot_idx as usize))
+                .filter(|s| s.kind == ComponentKind::Canvas)
+                .map(|s| s.entity)
+        };
+        let Some(slot_entity) = slot_entity else { return };
+        if let Some(scene) = &mut self.scene {
+            if let Some(cc) = scene.world.get_mut::<CanvasComponent>(slot_entity) {
+                cc.viewport_ref = CanvasViewportRef::MainCamera;
+            }
+        }
+        self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
+        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+    }
+
     /// キャンバスのビューポート参照を指定カメラに設定する。
     ///
     /// `cam_actor_name` / `cam_slot_name` で参照カメラを特定する。

@@ -868,7 +868,9 @@
 
                         <avd:LayoutDocumentPaneGroup>
                             <avd:LayoutDocumentPane>
-                                <avd:LayoutDocument Title="Viewport"
+                                <!-- 表示タイトルのみ「シーン」へ変更。ContentId は保存済み layout.xml
+                                     との互換のため "viewport" のまま維持する -->
+                                <avd:LayoutDocument Title="シーン"
                                                     ContentId="viewport"
                                                     CanClose="False"
                                                     CanFloat="False">
@@ -895,7 +897,7 @@
                                         </Grid.ColumnDefinitions>
 
                                         <!-- ── シーン/アクタータブバー（Row 0, 全列スパン）────────
-                                             左端に固定シーンタブ（3Dシーン/2Dシーン）を常設するため
+                                             左端に固定シーンタブ（ワールド/ビューポート）を常設するため
                                              常時表示する（タブ生成は MainWindow.SceneTabs.cs / FileOps.cs） -->
                                         <Border x:Name="ActorTabBar"
                                                 Grid.Row="0" Grid.ColumnSpan="2"

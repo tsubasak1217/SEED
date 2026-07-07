@@ -1,15 +1,23 @@
 // ============================================================
-//  MainWindow.SceneTabs.cs — 3Dシーン / 2Dシーン 固定タブ
+//  MainWindow.SceneTabs.cs — ワールド / ビューポート 固定タブ
+//
+//  分類の考え方:
+//   - ワールド    = カメラに撮られて相対的に映るもの
+//                   （3D アクター、および 3D ワールドキャンバス上の 2D スプライトを含む）
+//   - ビューポート = 画面/カメラ枠基準で張り付くもの
+//                   （スクリーンスペースキャンバスとその子孫）
 //
 //  担当:
-//   - タブバー左端の固定シーンタブ（「3Dシーン」「2Dシーン」）の UI 生成
+//   - タブバー左端の固定シーンタブ（「ワールド」「ビューポート」）の UI 生成
 //   - シーンタブ選択時の EDIT_VIEW IPC 送信とアクター編集モードからの復帰
-//   - ヒエラルキー選択に応じたシーンタブの自動切替（環境設定でオン/オフ）
+//   - ヒエラルキー選択（ビューポート所属 is_vp）に応じたシーンタブの自動切替
+//     （環境設定でオン/オフ）
 //   - プロジェクトパネルからのアクタドラッグ中の仮切替と復帰
 //
 //  ランタイム側は Edit モード中のみ EDIT_VIEW:3d / EDIT_VIEW:2d を受け付け、
-//  3D ビューではスクリーンスペースキャンバスを非表示、2D ビューでは
-//  3D シーンを非表示にする（Phase 1 実装済み）。
+//  ワールドビュー（3d）ではスクリーンスペースキャンバスを非表示、
+//  ビューポートビュー（2d）ではワールドを非表示にする（Phase 1 実装済み）。
+//  ※ IPC のワイヤフォーマット（EDIT_VIEW:3d/2d）は内部表現のため変更しない。
 // ============================================================
 
 using System;
@@ -25,7 +33,7 @@ public partial class MainWindow
 {
     // ── シーンタブ状態 ─────────────────────────────────────────
 
-    /// <summary>現在選択中のシーンタブが「2Dシーン」なら true（既定は「3Dシーン」）。</summary>
+    /// <summary>現在選択中のシーンタブが「ビューポート」なら true（既定は「ワールド」）。</summary>
     private bool _sceneTabIs2D = false;
 
     // ── ドラッグ仮切替状態 ─────────────────────────────────────
@@ -48,7 +56,7 @@ public partial class MainWindow
     // ── シーンタブのアクティブ化 ───────────────────────────────
 
     /// <summary>
-    /// シーンタブ（3Dシーン / 2Dシーン）をアクティブにする。
+    /// シーンタブ（ワールド / ビューポート）をアクティブにする。
     /// アクター編集タブから戻る場合は、既存のタブ切替と同じ手順で
     /// シーン世界線（world line 0）へ復帰してからビューモードを送信する。
     /// </summary>
@@ -87,25 +95,28 @@ public partial class MainWindow
     // ── ヒエラルキー選択による自動切替 ─────────────────────────
 
     /// <summary>
-    /// ヒエラルキー選択の 2D/3D 種別が一意に定まったときに呼ばれる。
+    /// ヒエラルキー選択のワールド/ビューポート所属が一意に定まったときに呼ばれる。
+    /// isViewport はアクターの「ビューポート所属」（= トップレベルルートが Actor2D の
+    /// スクリーンスペースキャンバス系サブツリーに属するか）で判定される。
+    /// 3D ワールドキャンバス配下の 2D スプライトはワールド所属となる。
     /// 環境設定で有効かつ Edit モードでシーンタブ表示中のときのみ、
-    /// 選択アクタの種別に対応するシーンタブへ自動で切り替える。
+    /// 選択アクタの所属に対応するシーンタブへ自動で切り替える。
     /// （アクター編集タブ表示中はユーザーをタブから引き剥がさない）
     /// </summary>
-    private void OnHierarchySelectionKindResolved(bool is2D)
+    private void OnHierarchySelectionKindResolved(bool isViewport)
     {
         if (!EditorPreferences.Instance.SceneTabAutoSwitch) return;
         if (_runtimeManager?.State != EditorState.Edit) return;
-        if (_activeActorPath != null) return;   // アクター編集タブ表示中は切替しない
-        if (_sceneTabIs2D == is2D) return;      // 既に一致している
-        ActivateSceneTab(is2D);
+        if (_activeActorPath != null) return;        // アクター編集タブ表示中は切替しない
+        if (_sceneTabIs2D == isViewport) return;     // 既に一致している
+        ActivateSceneTab(isViewport);
     }
 
     // ── ドラッグ中の仮切替 ─────────────────────────────────────
 
     /// <summary>
     /// プロジェクトパネルのドラッグ開始時に呼ばれる。ドラッグ対象にアクタファイルが
-    /// 含まれる場合、拡張子（.actor2d = 2D / .actor = 3D）で種別を判定し、
+    /// 含まれる場合、拡張子（.actor2d = ビューポート / .actor = ワールド）で種別を判定し、
     /// 現在のタブと異なるなら「仮切替」としてシーンタブを切り替える。
     /// ドロップが成立しなかった場合は <see cref="EndActorDragSceneTabSwitch"/> で元に戻す。
     /// </summary>
@@ -130,7 +141,7 @@ public partial class MainWindow
         _sceneTabPrev2D        = _sceneTabIs2D;
         _sceneTabProvisional   = true;
         ActivateSceneTab(target);
-        EditorLog.Write($"BeginActorDragSceneTabSwitch — 仮切替 {(target ? "2D" : "3D")}");
+        EditorLog.Write($"BeginActorDragSceneTabSwitch — 仮切替 {(target ? "ビューポート" : "ワールド")}");
     }
 
     /// <summary>
@@ -162,7 +173,7 @@ public partial class MainWindow
     // ── 固定タブ UI 生成 ───────────────────────────────────────
 
     /// <summary>
-    /// 固定シーンタブ（「3Dシーン」または「2Dシーン」）の UI 要素を生成する。
+    /// 固定シーンタブ（「ワールド」または「ビューポート」）の UI 要素を生成する。
     /// 見た目はアクター編集タブと揃えるが、× ボタンは持たない。
     /// RebuildActorTabBar() から呼ばれる。
     /// </summary>

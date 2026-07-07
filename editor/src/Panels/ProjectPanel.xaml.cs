@@ -693,7 +693,7 @@ public partial class ProjectPanel : UserControl
         hoverThread.Start();
 
         // ドラッグ対象にアクタファイル（.actor / .actor2d）が含まれる場合、
-        // 種類に対応するシーンタブ（3Dシーン/2Dシーン）へドロップ前に仮切替する。
+        // 種類に対応するシーンタブ（ワールド/ビューポート）へドロップ前に仮切替する。
         // ドロップが成立しなければ後段の EndActorDragSceneTabSwitch で元のタブへ戻す。
         mainWindow?.BeginActorDragSceneTabSwitch(paths);
 
