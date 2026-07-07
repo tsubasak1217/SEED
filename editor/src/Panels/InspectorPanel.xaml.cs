@@ -2495,6 +2495,10 @@ public partial class InspectorPanel : UserControl
         sp.Children.Add(rowH.element);
 
         // ── スケールモード セクション ──────────────────────────
+        // 「画面サイズに自動スケール」が ON のときだけ意味を持つ設定のため、
+        // 専用パネルにまとめて自動スケールのチェック状態と連動して表示/非表示を切り替える
+        //（Actor3D の 3D ワールドキャンバスは自動スケール設定自体が無いため常時表示）。
+        var scaleModePanel = new StackPanel();
         var scaleSep = new TextBlock
         {
             Text       = "スケールモード",
@@ -2502,7 +2506,7 @@ public partial class InspectorPanel : UserControl
             FontSize   = 10,
             Margin     = new Thickness(0, 6, 0, 2),
         };
-        sp.Children.Add(scaleSep);
+        scaleModePanel.Children.Add(scaleSep);
 
         // チェックボックス: アイテムのトランスフォームをスケールする
         var cbTransform = new CheckBox
@@ -2514,7 +2518,7 @@ public partial class InspectorPanel : UserControl
             Margin              = new Thickness(0, 2, 0, 2),
             VerticalAlignment   = VerticalAlignment.Center,
         };
-        sp.Children.Add(cbTransform);
+        scaleModePanel.Children.Add(cbTransform);
 
         // チェックボックス: アイテムのサイズをスケールする
         var cbSize = new CheckBox
@@ -2526,7 +2530,7 @@ public partial class InspectorPanel : UserControl
             Margin              = new Thickness(0, 2, 0, 2),
             VerticalAlignment   = VerticalAlignment.Center,
         };
-        sp.Children.Add(cbSize);
+        scaleModePanel.Children.Add(cbSize);
 
         // アスペクト比維持パネル（アイテムのサイズをスケールする のときのみ表示）
         var aspectPanel = new StackPanel
@@ -2575,7 +2579,7 @@ public partial class InspectorPanel : UserControl
         cmbAspectAxis.SelectedIndex = info.AspectRatioAxis == "height" ? 1 : 0;
         axisPanel.Children.Add(cmbAspectAxis);
         aspectPanel.Children.Add(axisPanel);
-        sp.Children.Add(aspectPanel);
+        scaleModePanel.Children.Add(aspectPanel);
 
         // ── 自動スケール セクション（Actor2D = 2D キャンバス時のみ表示）──────────────────────────
         // Actor3D に Canvas をアタッチした場合（3D ワールドキャンバス）はこの設定を使わない。
@@ -2600,6 +2604,17 @@ public partial class InspectorPanel : UserControl
             };
             sp.Children.Add(autoScaleSep);
             sp.Children.Add(cbAutoScale);
+
+            // スケールモードは自動スケールが ON のときだけ意味を持つため、
+            // チェックボックスの直下に配置し、OFF のときは非表示にする
+            scaleModePanel.Margin     = new Thickness(16, 0, 0, 0);   // 従属設定であることを字下げで示す
+            scaleModePanel.Visibility = info.AutoScale ? Visibility.Visible : Visibility.Collapsed;
+            sp.Children.Add(scaleModePanel);
+        }
+        else
+        {
+            // Actor3D（3D ワールドキャンバス）は自動スケール設定が無いため常時表示する
+            sp.Children.Add(scaleModePanel);
         }
 
         // ── ビューポート参照 セクション（Actor2D = 2D キャンバス時のみ表示）──────────────────────────
@@ -2783,8 +2798,8 @@ public partial class InspectorPanel : UserControl
         cbKeepAspect.Unchecked += (_, _) => { axisPanel.Visibility = Visibility.Collapsed; CommitAspectRatio(); };
         cmbAspectAxis.SelectionChanged += (_, _) => CommitAspectRatio();
 
-        cbAutoScale.Checked   += (_, _) => CommitAutoScale();
-        cbAutoScale.Unchecked += (_, _) => CommitAutoScale();
+        cbAutoScale.Checked   += (_, _) => { CommitAutoScale(); scaleModePanel.Visibility = Visibility.Visible; };
+        cbAutoScale.Unchecked += (_, _) => { CommitAutoScale(); scaleModePanel.Visibility = Visibility.Collapsed; };
 
         // ── 重力方向セクション ──────────────────────────────────────────────────
         var gravitySep = new TextBlock
