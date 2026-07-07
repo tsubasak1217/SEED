@@ -2056,6 +2056,10 @@ public class ScriptEditorPanel : UserControl
                 .WithChangedOption(FormattingOptions.IndentationSize, LanguageNames.CSharp, editor.Options.IndentationSize);
             var formatted = Formatter.Format(root, ws, options).ToFullString();
 
+            // Roslyn Formatter は空白行を完全に空にするため、インデントされた
+            // ブロック内の空白行へ周囲と揃うインデントを再挿入する
+            formatted = IndentBlankLines(formatted);
+
             if (formatted != editor.Text)
             {
                 int caret = editor.CaretOffset;
@@ -2067,6 +2071,43 @@ public class ScriptEditorPanel : UserControl
         {
             EditorLog.Write($"コード整形に失敗しました: {ex.Message}");
         }
+    }
+
+    /// <summary>
+    /// 空白行に「次の非空行と同じ先頭インデント」を挿入する（整形の後処理）。
+    ///
+    /// Roslyn Formatter は空白行の空白を全除去するが、ブロック内で改行して
+    /// すぐ書き始める際にインデントが失われていると不便なため、
+    /// 次の非空行の先頭空白（タブ/スペースの種別ごと）をそのままコピーして揃える。
+    /// ファイル末尾に連続する空白行（後続の非空行が無い）はそのまま空に保つ。
+    /// </summary>
+    private static string IndentBlankLines(string text)
+    {
+        // 改行コードを保ったまま行分割する（\r\n / \n 混在に対応）
+        var lines = text.Split('\n');
+
+        for (int i = 0; i < lines.Length; i++)
+        {
+            // 空白のみの行（\r を含む場合もある）だけが対象
+            var line = lines[i];
+            bool endsWithCr = line.EndsWith('\r');
+            if (line.Trim('\r', ' ', '\t').Length != 0) continue;
+
+            // 次の非空行を探し、その先頭インデント（タブ/スペースをそのまま）を取得する
+            string indent = "";
+            for (int j = i + 1; j < lines.Length; j++)
+            {
+                var next = lines[j].TrimEnd('\r');
+                var trimmed = next.TrimStart(' ', '\t');
+                if (trimmed.Length == 0) continue;                 // 連続する空白行はスキップ
+                indent = next[..(next.Length - trimmed.Length)];   // 先頭空白部分をコピー
+                break;
+            }
+            if (indent.Length == 0) continue;   // インデント不要（トップレベル or 末尾）
+
+            lines[i] = endsWithCr ? indent + "\r" : indent;
+        }
+        return string.Join('\n', lines);
     }
 
     // ── 保存・コンパイルチェック ─────────────────────────────
