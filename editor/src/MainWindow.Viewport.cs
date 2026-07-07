@@ -294,8 +294,7 @@ public partial class MainWindow
     /// WPF は縦の MouseWheel しか標準処理しないため WndProc で自前処理する。</summary>
     private const int WM_MOUSEHWHEEL = 0x020E;
 
-    /// <summary>横ホイール 1 ノッチ（delta=120）あたりの水平スクロール量（px）。</summary>
-    private const double HorizontalScrollPixelsPerNotch = 48.0;
+    // 横スクロール量は縦と共通の ScrollPixelsPerNotch × 環境設定係数（ScaledPixelsPerNotch）を使う
 
     private nint WndProc(nint hwnd, int msg, nint wParam, nint lParam, ref bool handled)
     {
@@ -322,42 +321,42 @@ public partial class MainWindow
         return nint.Zero;
     }
 
-    // ── タッチパッド縦スクロールの減衰 ────────────────────────────
-
-    /// <summary>
-    /// タッチパッド（精密スクロール）の縦スクロール減衰係数。
-    /// 精密タッチパッドは小刻みな delta を高頻度で送るため、WPF 既定の
-    /// 「1 ノッチ = 3 行」換算だと体感が強すぎる。この係数で弱める。
-    /// </summary>
-    private const double TouchpadVerticalScrollScale = 0.35;
+    // ── タッチパッドスクロールの手動処理（縦・横共通）────────────
 
     /// <summary>ホイール 1 ノッチの delta 値（Windows 標準）。</summary>
     private const int WheelDeltaPerNotch = 120;
 
-    /// <summary>ピクセルスクロール時の 1 ノッチあたりの移動量（px。WPF 既定相当）。</summary>
-    private const double VerticalScrollPixelsPerNotch = 48.0;
+    /// <summary>
+    /// 手動スクロール時の 1 ノッチあたりの移動量（px）。縦・横で共通の基準とし、
+    /// 実際の感度はこれに環境設定の係数（EditorPreferences.TouchpadScrollScale）を掛けて決まる。
+    /// </summary>
+    private const double ScrollPixelsPerNotch = 48.0;
+
+    /// <summary>環境設定の係数を適用した 1 ノッチあたりの移動量（px）。</summary>
+    private static double ScaledPixelsPerNotch
+        => ScrollPixelsPerNotch * EditorPreferences.Instance.TouchpadScrollScale;
 
     /// <summary>
-    /// ウィンドウ全体の PreviewMouseWheel: タッチパッドの精密スクロールだけを減衰する。
+    /// ウィンドウ全体の PreviewMouseWheel: タッチパッドの精密スクロールだけを
+    /// 手動スクロール（横方向と同じ感度・環境設定の係数適用）へ置き換える。
     ///
     /// 物理マウスホイールは delta が ±120 の倍数で届くのに対し、精密タッチパッドは
-    /// 端数の小さい delta を高頻度で送る。この違いで入力元を判別し、タッチパッド入力のみ
-    /// TouchpadVerticalScrollScale を掛けて手動スクロールへ置き換える（マウスは従来どおり）。
+    /// 端数の小さい delta を高頻度で送る。この違いで入力元を判別する（マウスは従来どおり）。
     /// </summary>
     private void OnGlobalPreviewMouseWheel(object sender, MouseWheelEventArgs e)
     {
         // 120 の倍数 = 物理ホイール（または非精密ドライバ）→ 既定処理に任せる
         if (e.Delta % WheelDeltaPerNotch == 0) return;
 
-        double scaled = e.Delta * TouchpadVerticalScrollScale;
-        if (ApplyVerticalScroll(scaled)) e.Handled = true;
+        if (ApplyVerticalScroll(e.Delta)) e.Handled = true;
     }
 
     /// <summary>
     /// マウス直下の要素からビジュアルツリーを遡り、最初に見つかったスクロール可能要素へ
-    /// 減衰済み delta による縦スクロールを適用する。処理できた場合 true。
+    /// delta（生値）による縦スクロールを適用する。感度は横方向と同一
+    /// （ScaledPixelsPerNotch = 48px × 環境設定係数）。処理できた場合 true。
     /// </summary>
-    private bool ApplyVerticalScroll(double scaledDelta)
+    private bool ApplyVerticalScroll(double delta)
     {
         var el = Mouse.DirectlyOver as DependencyObject;
         while (el is not null)
@@ -365,7 +364,7 @@ public partial class MainWindow
             // AvalonEdit のエディタ: ピクセル単位の縦オフセット API を使う
             if (el is ICSharpCode.AvalonEdit.TextEditor editor)
             {
-                double px = scaledDelta / WheelDeltaPerNotch * VerticalScrollPixelsPerNotch;
+                double px = delta / WheelDeltaPerNotch * ScaledPixelsPerNotch;
                 editor.ScrollToVerticalOffset(Math.Max(0, editor.VerticalOffset - px));
                 return true;
             }
@@ -373,8 +372,9 @@ public partial class MainWindow
             {
                 // 論理スクロール（CanContentScroll: 行/アイテム単位）とピクセルスクロールで単位を変える
                 double amount = sv.CanContentScroll
-                    ? scaledDelta / WheelDeltaPerNotch * SystemParameters.WheelScrollLines
-                    : scaledDelta / WheelDeltaPerNotch * VerticalScrollPixelsPerNotch;
+                    ? delta / WheelDeltaPerNotch * SystemParameters.WheelScrollLines
+                          * EditorPreferences.Instance.TouchpadScrollScale
+                    : delta / WheelDeltaPerNotch * ScaledPixelsPerNotch;
                 sv.ScrollToVerticalOffset(Math.Clamp(sv.VerticalOffset - amount, 0, sv.ScrollableHeight));
                 return true;
             }
@@ -393,7 +393,7 @@ public partial class MainWindow
         // wParam の上位 16bit が符号付き delta（正 = 右方向。1 ノッチ = 120）
         short delta = unchecked((short)((wParam.ToInt64() >> 16) & 0xFFFF));
         if (delta == 0) return false;
-        double amount = delta / 120.0 * HorizontalScrollPixelsPerNotch;
+        double amount = (double)delta / WheelDeltaPerNotch * ScaledPixelsPerNotch;
 
         // マウス直下の要素を取得し、ビジュアルツリーを遡ってスクロール対象を探す
         var el = Mouse.DirectlyOver as DependencyObject;

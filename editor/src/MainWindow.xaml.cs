@@ -319,6 +319,8 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         PanelScriptEditor.SetAssetsPath(AssetsPath);
         // スクリプトエディタ: 書式・配色設定を読み込む
         PanelScriptEditor.InitSettings(SettingsDir);
+        // エディタ全体の環境設定（タッチパッドスクロール係数など）を読み込む
+        EditorPreferences.Init(SettingsDir);
         // 「タブ」「エラー一覧」パネルを生成してスクリプトエディタに接続する
         _openDocsPanel  = new OpenDocumentsPanel(PanelScriptEditor);
         _errorListPanel = new ErrorListPanel(PanelScriptEditor);
