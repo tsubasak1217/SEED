@@ -187,6 +187,12 @@ public sealed class RuntimeManager : IDisposable
     /// <summary>アクター編集モードが終了して通常シーンに戻ったときに発火する。</summary>
     public event Action? ActorEditEnded;
 
+    /// <summary>
+    /// キャンバス編集タブがランタイム側で開始されたときに発火する
+    /// （EDIT_CANVAS_BEGIN への応答）。引数は (世界線, ルートが2Dアクタか, アクター名)。
+    /// </summary>
+    public event Action<uint, bool, string>? CanvasEditStarted;
+
     /// <summary>世界線切り替え情報が返ってきたときに発火する（デバッグログ用）。</summary>
     public event Action<string>? WorldLineInfoReceived;
 
@@ -754,6 +760,23 @@ public sealed class RuntimeManager : IDisposable
         {
             EditorLog.Write("[Runtime→Editor] ACTOR_EDIT_ENDED");
             ActorEditEnded?.Invoke();
+        }
+        else if (msg.StartsWith("CANVAS_EDIT_WL:", StringComparison.Ordinal))
+        {
+            // キャンバス編集タブ開始応答。
+            // フォーマット: CANVAS_EDIT_WL:{world_line},{root_is_2d:0|1},{actor_name}
+            var payload = msg["CANVAS_EDIT_WL:".Length..];
+            var parts   = payload.Split(',', 3);
+            if (parts.Length == 3 && uint.TryParse(parts[0], out var canvasWl))
+            {
+                bool rootIs2D = parts[1] == "1";
+                EditorLog.Write($"[Runtime→Editor] CANVAS_EDIT_WL wl={canvasWl} rootIs2D={rootIs2D} name={parts[2]}");
+                CanvasEditStarted?.Invoke(canvasWl, rootIs2D, parts[2]);
+            }
+            else
+            {
+                EditorLog.Write($"[Runtime→Editor] CANVAS_EDIT_WL 解析失敗: {payload}");
+            }
         }
         else if (msg.StartsWith("WORLD_LINE_INFO:", StringComparison.Ordinal))
         {

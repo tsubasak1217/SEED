@@ -56,6 +56,10 @@ public partial class MainWindow
     {
         if (_runtimeManager?.State != EditorState.Edit) return;
 
+        // キャンバス編集タブ表示中ならタブごと閉じてシーンへ戻す
+        //（EDIT_CANVAS_END でランタイムがアクターをシーンへ戻す）
+        CloseActiveSceneCanvasTab();
+
         // アクター編集タブ表示中ならシーンモードへ戻す（「シーンに戻る」と同じ手順）
         if (_activeActorPath != null)
         {

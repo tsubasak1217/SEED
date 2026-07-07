@@ -49,6 +49,13 @@ public partial class InspectorPanel : UserControl
     /// <summary>「スクリプトを編集」ボタンで .cs を内蔵エディタで開くよう要求する（フルパス）。</summary>
     public event Action<string>? ScriptFileOpenRequested;
 
+    /// <summary>
+    /// 「キャンバスを編集」ボタンでキャンバス編集タブを開くよう要求する
+    /// （引数はキャンバスを所有するアクターの DFS ID）。
+    /// シーン内の 2D スクリーンスペースキャンバス・3D ワールドキャンバス共通。
+    /// </summary>
+    public event Action<int>? CanvasEditRequested;
+
     /// <summary>スクリプト保存などで型キャッシュを無効化する（次回表示時に再コンパイル）。</summary>
     public void InvalidateScriptTypeCache(string? path = null)
     {
@@ -2484,6 +2491,14 @@ public partial class InspectorPanel : UserControl
     {
         var sp = new StackPanel { Margin = new Thickness(0, 4, 0, 4) };
 
+        // ── キャンバスを編集 ボタン ─────────────────────────────
+        // シーン内キャンバスの中身（スプライト配置）を隔離した 2D 編集タブで開く。
+        // アクター編集タブ表示中（ファイルタブ・キャンバス編集タブ）は既に隔離編集中のため非表示。
+        if (!_isActorEditMode)
+        {
+            sp.Children.Add(BuildOpenCanvasEditButton());
+        }
+
         // 幅フィールド
         var rowW = BuildLabeledNumberRow("幅",  info.Width);
         var tbW  = rowW.textBox;
@@ -3275,6 +3290,30 @@ public partial class InspectorPanel : UserControl
     }
 
     /// <summary>スクリプトを内蔵エディタで開くボタン行を生成する。</summary>
+    /// <summary>
+    /// 「キャンバスを編集」ボタンを生成する（CanvasComponent インスペクタ用）。
+    /// クリックで CanvasEditRequested を発火し、MainWindow がキャンバス編集タブを開く。
+    /// 2D スクリーンスペースキャンバス・3D ワールドキャンバスの両方で使用する。
+    /// </summary>
+    private UIElement BuildOpenCanvasEditButton()
+    {
+        var btn = new Button
+        {
+            Content             = "キャンバスを編集",
+            Margin              = new Thickness(0, 4, 0, 2),
+            Padding             = new Thickness(8, 3, 8, 3),
+            FontSize            = 11,
+            HorizontalAlignment = HorizontalAlignment.Left,
+            ToolTip             = "キャンバスの中身（スプライト配置）を専用の 2D 編集タブで開きます",
+        };
+        btn.Click += (_, _) =>
+        {
+            if (_currentActorId < 0) return;
+            CanvasEditRequested?.Invoke(_currentActorId);
+        };
+        return btn;
+    }
+
     private UIElement BuildOpenScriptButton(string scriptPath)
     {
         var btn = new Button

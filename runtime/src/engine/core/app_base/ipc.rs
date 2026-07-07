@@ -105,6 +105,15 @@ pub enum IpcCommand {
     SetCameraSpeed(f32),
     /// アクターファイルを指定世界線で開く（world_line,path の順でカンマ区切り）
     OpenActor { path: String, world_line: u32 },
+    /// シーン内キャンバスアクターの隔離編集を開始する（キャンバス編集タブ）。
+    /// シーン世界線（0）の対象アクターサブツリーを world_line へ移動し、
+    /// 2D キャンバス編集世界線として登録してアクティブ化する。
+    /// フォーマット: EDIT_CANVAS_BEGIN:{world_line},{actor_dfs_id}
+    /// 応答: CANVAS_EDIT_WL:{world_line},{root_is_2d:0|1},{actor_name}
+    EditCanvasBegin { world_line: u32, actor_dfs_id: u32 },
+    /// キャンバス編集タブを終了し、アクターサブツリーをシーン世界線（0）の
+    /// 元の位置へ戻す。フォーマット: EDIT_CANVAS_END:{world_line}
+    EditCanvasEnd(u32),
     /// アクティブ世界線を切り替える（0=通常シーン）
     SetActiveWorldLine(u32),
     /// 指定世界線のアクターをシーンから除去する
@@ -644,6 +653,23 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                                 wl_s.parse::<u32>().ok()
                                     .map(|wl| IpcCommand::OpenActor { path: path.to_string(), world_line: wl })
                             } else { None }
+                        }
+                        s if s.starts_with("EDIT_CANVAS_BEGIN:") => {
+                            // フォーマット: "EDIT_CANVAS_BEGIN:{world_line},{actor_dfs_id}"
+                            let rest = &s["EDIT_CANVAS_BEGIN:".len()..];
+                            let mut it = rest.splitn(2, ',');
+                            if let (Some(wl_s), Some(dfs_s)) = (it.next(), it.next()) {
+                                match (wl_s.parse::<u32>(), dfs_s.parse::<u32>()) {
+                                    (Ok(wl), Ok(dfs)) => Some(IpcCommand::EditCanvasBegin {
+                                        world_line: wl, actor_dfs_id: dfs,
+                                    }),
+                                    _ => None,
+                                }
+                            } else { None }
+                        }
+                        s if s.starts_with("EDIT_CANVAS_END:") => {
+                            s["EDIT_CANVAS_END:".len()..].parse::<u32>().ok()
+                                .map(IpcCommand::EditCanvasEnd)
                         }
                         s if s.starts_with("SET_ACTIVE_WORLD_LINE:") => {
                             s["SET_ACTIVE_WORLD_LINE:".len()..].parse::<u32>().ok()

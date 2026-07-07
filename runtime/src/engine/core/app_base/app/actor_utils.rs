@@ -595,6 +595,83 @@ fn extract_actor_child_by_entity(
     None
 }
 
+/// DFS id でアクターをツリーから取り出し、復帰用の出自情報も返す。
+///
+/// キャンバス編集タブ（EDIT_CANVAS_BEGIN）用。取り出したアクターを編集終了時に
+/// 元の位置へ戻せるよう、以下のタプルを返す:
+/// - `Actor`         … 取り出したアクター（サブツリーごと）
+/// - `Option<Entity>`… 親アクターのエンティティ（None = シーン直下のトップレベル）
+/// - `usize`         … 挿入位置（トップレベルなら scene.actors の index、
+///                      子なら親の children 内 index）
+pub(super) fn extract_actor_by_dfs_with_origin(
+    actors: &mut Vec<Actor>,
+    wl:     u32,
+    dfs_id: u32,
+) -> Option<(Actor, Option<Entity>, usize)> {
+    let mut counter = 0u32;
+    let mut i = 0;
+    while i < actors.len() {
+        if actors[i].world_line != wl { i += 1; continue; }
+        if counter == dfs_id {
+            // トップレベルで一致: scene.actors の実 index を出自として返す
+            return Some((actors.remove(i), None, i));
+        }
+        counter += 1;
+        let parent_entity = actors[i].entity;
+        if let Some(found) =
+            extract_actor_child_by_dfs_with_origin(&mut actors[i], dfs_id, &mut counter, parent_entity)
+        {
+            return Some(found);
+        }
+        i += 1;
+    }
+    None
+}
+
+/// extract_actor_by_dfs_with_origin の再帰実装（子ノード用）。
+fn extract_actor_child_by_dfs_with_origin(
+    actor:   &mut Actor,
+    dfs_id:  u32,
+    counter: &mut u32,
+    parent_entity: Entity,
+) -> Option<(Actor, Option<Entity>, usize)> {
+    let mut i = 0;
+    while i < actor.children_mut().len() {
+        if *counter == dfs_id {
+            // 親エンティティと children 内 index を出自として返す
+            return Some((actor.children_mut().remove(i), Some(parent_entity), i));
+        }
+        *counter += 1;
+        let my_entity = actor.children_mut()[i].entity;
+        if let Some(found) =
+            extract_actor_child_by_dfs_with_origin(&mut actor.children_mut()[i], dfs_id, counter, my_entity)
+        {
+            return Some(found);
+        }
+        i += 1;
+    }
+    None
+}
+
+/// ルートエンティティでアクターへの可変参照を取得する（world_line 不問・DFS 順の最初の一致）。
+///
+/// キャンバス編集タブの終了時にサブツリーを元の親へ再挿入するために使用する。
+/// エンティティは世代付きで安定なため、編集セッションをまたいでも安全に親を特定できる。
+pub(super) fn find_actor_by_entity_mut<'a>(
+    actors: &'a mut [Actor],
+    entity: Entity,
+) -> Option<&'a mut Actor> {
+    for actor in actors.iter_mut() {
+        if actor.entity == entity {
+            return Some(actor);
+        }
+        if let Some(found) = find_actor_by_entity_mut(actor.children_mut(), entity) {
+            return Some(found);
+        }
+    }
+    None
+}
+
 /// extract_actor_by_dfs の再帰実装（子ノード用）。
 fn extract_actor_child_by_dfs(
     actor:   &mut Actor,

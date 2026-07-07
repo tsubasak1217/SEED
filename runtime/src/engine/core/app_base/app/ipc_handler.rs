@@ -662,6 +662,14 @@ impl App {
                         }
                     }
                 }
+                IpcCommand::EditCanvasBegin { world_line, actor_dfs_id } => {
+                    // シーン内キャンバスアクターの隔離編集タブを開始する
+                    self.handle_edit_canvas_begin(world_line, actor_dfs_id);
+                }
+                IpcCommand::EditCanvasEnd(wl) => {
+                    // キャンバス編集タブを終了してアクターをシーンへ戻す
+                    self.handle_edit_canvas_end(wl);
+                }
                 IpcCommand::SetActiveWorldLine(wl) => {
                     // 現在の世界線のカメラを退避
                     let pos = self.camera.base.transform.position;

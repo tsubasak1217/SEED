@@ -18,6 +18,7 @@ mod ipc_handler;
 mod hierarchy_sync;
 mod clipboard;
 mod actor_ops;
+mod canvas_edit_ops;
 mod ai_ops;
 mod component_ops;
 mod canvas_component_ops;
@@ -315,6 +316,23 @@ pub enum EditViewMode {
     View2D,
 }
 
+/// キャンバス編集タブ 1 セッション分の状態。
+///
+/// EDIT_CANVAS_BEGIN でシーン世界線（0）から専用世界線へ移動したアクターの
+/// 出自情報を保持し、EDIT_CANVAS_END で元の位置・状態へ正確に復元する。
+pub struct CanvasEditSession {
+    /// 復帰先の親アクターエンティティ（None = シーン直下のトップレベル）。
+    /// エンティティは世代付きで安定なため、セッション中に親が移動しても追跡できる。
+    parent_entity: Option<crate::engine::ecs::Entity>,
+    /// 復帰時の挿入位置（トップレベルなら scene.actors の index、
+    /// 子なら親の children 内 index）。範囲外になった場合は末尾へクランプする。
+    child_index: usize,
+    /// 対象が 3D ワールドキャンバス（Actor3D + CanvasComponent）だった場合 true。
+    /// BEGIN 時に一時的に Actor2D 化 + CanvasTransform 付与しており、
+    /// END 時に Actor3D へ戻して CanvasTransform を除去する必要がある。
+    was_3d_root: bool,
+}
+
 /// App::new / App::run への引数。
 pub struct LaunchArgs {
     pub parent_hwnd:      Option<isize>,
@@ -525,6 +543,10 @@ pub struct App {
     /// 2D キャンバスカメラ状態（世界線番号 → CanvasCameraData）。
     /// pan_x, pan_y, ortho_half_h を保持する。
     canvas_cameras: HashMap<u32, CanvasCameraData>,
+    /// キャンバス編集タブのアクティブセッション（世界線番号 → セッション情報）。
+    /// EDIT_CANVAS_BEGIN でシーンから移動したアクターの出自を記録し、
+    /// EDIT_CANVAS_END で元の位置へ戻すために使用する。
+    canvas_edit_sessions: HashMap<u32, CanvasEditSession>,
     /// キャンバスをスクリーンスペースオーバーレイで表示するフラグ。
     /// false（デフォルト）= ワールドスペース、true = スクリーンスペースオーバーレイ。
     /// エディタのビューポートオプションから切り替え可能。実行時は常に true。
@@ -808,6 +830,7 @@ impl App {
             canvas_world_lines:    HashSet::new(),
             actor_edit_canvas_wls: HashSet::new(),
             canvas_cameras:        HashMap::new(),
+            canvas_edit_sessions:  HashMap::new(),
             canvas_screen_space_overlay: false,
             edit_view_mode:              EditViewMode::View3D,
             camera_preview:              None,
@@ -942,6 +965,7 @@ use actor_utils::{
     collect_child_actor_mc_starts, collect_child_actor_old_states,
     apply_delta_to_actor_children,
     find_parent_actor_of_dfs, get_3d_canvas_world_mat,
+    extract_actor_by_dfs_with_origin, find_actor_by_entity_mut,
 };
 use platform_utils::{
     camera_grab_start, camera_grab_end, apply_window_clamp, release_window_clamp,

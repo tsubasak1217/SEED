@@ -27,6 +27,12 @@ public partial class MainWindow
     {
         if (_runtimeManager?.State != EditorState.Edit) return;
 
+        // キャンバス編集タブが開いていたら先に閉じてアクターをシーンへ戻す
+        //（LOAD_SCENE は世界線 > 0 のアクターを保持するため、開いたままだと
+        //  旧シーンのキャンバスアクターが新シーンへ紛れ込んでしまう）
+        CloseActiveSceneCanvasTab();
+        EndInactiveSceneCanvasTabs();
+
         if (_isDirty)
         {
             var result = MessageBox.Show(
@@ -110,6 +116,8 @@ public partial class MainWindow
             EditorLog.Write($"OnActorFileOpened — OPEN_ACTOR:{wl},{path} (is2D={is2D})");
         }
 
+        // 別タブへ移動したのでキャンバス編集タブは終了する（移動コマンド送信後に呼ぶこと）
+        EndInactiveSceneCanvasTabs();
         RebuildActorTabBar();
     }
 
@@ -149,6 +157,13 @@ public partial class MainWindow
     private void OnReturnToScene(object sender, RoutedEventArgs e)
     {
         if (_runtimeManager?.State != EditorState.Edit) return;
+        // キャンバス編集タブから戻る場合はタブごと閉じる（EDIT_CANVAS_END で
+        // ランタイムがアクターをシーンへ戻して世界線 0 へ復帰する）
+        if (CloseActiveSceneCanvasTab())
+        {
+            EditorLog.Write("OnReturnToScene — キャンバス編集タブを終了");
+            return;
+        }
         SendNavCommand("SET_ACTIVE_WORLD_LINE:0");
         _activeActorPath = null;
         PanelHierarchy.SetActorEditMode(false);
@@ -170,6 +185,8 @@ public partial class MainWindow
         SendNavCommand($"SET_ACTIVE_WORLD_LINE:{tab.WorldLine}");
         PanelHierarchy.SetActorEditMode(true, tab.WorldLine, tab.IsActor2D);
         PanelInspector.SetActorEditMode(true);
+        // 別タブへ移動したのでキャンバス編集タブは終了する（移動コマンド送信後に呼ぶこと）
+        EndInactiveSceneCanvasTabs();
         RebuildActorTabBar();
     }
 
@@ -198,6 +215,26 @@ public partial class MainWindow
         if (idx < 0) return;
 
         var closingTab = _actorTabs[idx];
+
+        // キャンバス編集タブ: EDIT_CANVAS_END でアクターをシーンへ戻して閉じる。
+        // 閉じたあとは所有アクターの種別に対応するシーンタブへ戻る（保存確認は不要。
+        // 編集はシーンへ直接反映済みで SCENE_MODIFIED によりダーティ扱いになっている）。
+        if (closingTab.IsSceneCanvas)
+        {
+            if (_activeActorPath == path)
+            {
+                CloseActiveSceneCanvasTab();
+            }
+            else
+            {
+                // 非アクティブなキャンバス編集タブ（通常は存在しないが念のため）
+                _actorTabs.RemoveAt(idx);
+                _runtimeManager?.SendToRuntime($"EDIT_CANVAS_END:{closingTab.WorldLine}");
+                RebuildActorTabBar();
+            }
+            return;
+        }
+
         _actorTabs.RemoveAt(idx);
 
         // 閉じるタブの世界線アクターを除去（ナビゲーションではないので SendNavCommand 不要）

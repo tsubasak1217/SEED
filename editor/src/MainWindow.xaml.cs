@@ -47,8 +47,15 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
     private bool _viewportSettingsInitialized  = false;
 
     // ── アクタータブ管理 ───────────────────────────────────────
-    /// <summary>アクター編集タブ情報。IsActor2D は actor_kind="Actor2D" のとき true。</summary>
-    private record ActorTab(string Path, string Name, uint WorldLine, bool IsActor2D = false);
+    /// <summary>
+    /// アクター編集タブ情報。IsActor2D は actor_kind="Actor2D" のとき true。
+    /// IsSceneCanvas はシーン内キャンバスの隔離編集タブ（ファイル非対応。Path は
+    /// "canvas://{世界線}" の合成キー）。RootIs2D はキャンバス所有アクターの元の種別で、
+    /// タブを閉じたとき戻るシーンタブ（2Dシーン / 3Dシーン）の判定に使う。
+    /// </summary>
+    private record ActorTab(
+        string Path, string Name, uint WorldLine, bool IsActor2D = false,
+        bool IsSceneCanvas = false, bool RootIs2D = false);
     private readonly List<ActorTab> _actorTabs       = new();
     /// <summary>現在アクター編集モードで開いているアクターのパス。null = シーンモード。</summary>
     private string? _activeActorPath                 = null;
@@ -302,6 +309,8 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         _runtimeManager.SceneModified                 += MarkDirty;
         _runtimeManager.ActorEditStarted              += OnActorEditStarted;
         _runtimeManager.ActorEditEnded                += OnActorEditEnded;
+        // キャンバス編集タブ開始応答（EDIT_CANVAS_BEGIN → CANVAS_EDIT_WL）
+        _runtimeManager.CanvasEditStarted             += OnCanvasEditStarted;
         _runtimeManager.FpsReceived                   += OnFpsReceived;
 
         PanelHierarchy.SetRuntime(_runtimeManager);
@@ -333,6 +342,8 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         PanelScriptEditor.DocumentActivated += () => ShowAnchorable("open_documents", activate: false);
         // スクリプトエディタ: インスペクタの「スクリプトを編集」ボタンからも開ける
         PanelInspector.ScriptFileOpenRequested += OnScriptFileOpened;
+        // インスペクタの「キャンバスを編集」ボタンでキャンバス編集タブを開く
+        PanelInspector.CanvasEditRequested += OnCanvasEditRequested;
         // 保存時: インスペクタの型キャッシュを無効化し、runtime にホットリロードを要求する
         PanelScriptEditor.ScriptSaved += path =>
         {
@@ -463,6 +474,11 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         var state = _runtimeManager.State;
         if (state == EditorState.Edit)
         {
+            // キャンバス編集タブが開いていたら閉じてアクターをシーンへ戻す。
+            // 開いたまま Play すると一時シーン保存にアクターが正しく含まれない。
+            CloseActiveSceneCanvasTab();
+            EndInactiveSceneCanvasTabs();
+
             if (_playFromStartScene)
             {
                 // 「開始シーンからプレイ」ON: null を渡してランタイムに start_scene を使わせる
@@ -579,6 +595,12 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
 
                 case MessageBoxResult.Yes:
                     e.Cancel = true;
+                    // キャンバス編集タブが開いていたら閉じてアクターをシーンへ戻してから保存する
+                    if (_runtimeManager?.State == EditorState.Edit)
+                    {
+                        CloseActiveSceneCanvasTab();
+                        EndInactiveSceneCanvasTabs();
+                    }
                     if (_activeActorPath != null)
                     {
                         _pendingClose = true;

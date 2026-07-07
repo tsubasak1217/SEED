@@ -190,6 +190,11 @@ public partial class MainWindow
     private void DoQuickSave()
     {
         if (_runtimeManager?.State != EditorState.Edit) return;
+        // キャンバス編集タブ表示中の保存はシーン保存として扱う。
+        // タブを閉じてアクターをシーンへ戻してから保存する（開いたまま SAVE_SCENE
+        // するとアクターが編集用世界線に居るため正しく書き出されない）。
+        CloseActiveSceneCanvasTab();
+        EndInactiveSceneCanvasTabs();
         if (_activeActorPath != null)
             ExecuteActorSave(_activeActorPath);
         else if (_currentScenePath != null)
@@ -202,6 +207,9 @@ public partial class MainWindow
     private void ShowSaveAsDialog()
     {
         if (_runtimeManager?.State != EditorState.Edit) return;
+        // キャンバス編集タブ表示中の保存はシーン保存として扱う（DoQuickSave と同じ理由）
+        CloseActiveSceneCanvasTab();
+        EndInactiveSceneCanvasTabs();
         if (_activeActorPath != null)
         {
             var dlg = new SaveFileDialog
