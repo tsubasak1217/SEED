@@ -78,6 +78,15 @@ public partial class InspectorPanel : UserControl
     private bool     _isDraggingTransform = false;
     /// <summary>現在選択中のアクターが 2D Actor（CanvasTransform 持ち）かどうか。</summary>
     private bool     _isActor2D = false;
+    /// <summary>
+    /// 現在選択中のアクターが「ビューポート所属のルートキャンバス」
+    /// （トップレベル Actor2D + CanvasComponent）かどうか。
+    /// ACTOR_COMPONENTS の is_root / is_vp フラグと Canvas スロットの有無から判定する。
+    /// シーンモード限定（アクター編集タブでは常に false = 従来の編集 UI を維持）。
+    /// ルートキャンバスは解像度が自動計算・Transform が恒等固定のため、
+    /// 幅/高さフィールドの非表示・CanvasTransform の読み取り専用化に使用する。
+    /// </summary>
+    private bool     _isViewportRootCanvas = false;
 
     public InspectorPanel()
     {
@@ -240,6 +249,7 @@ public partial class InspectorPanel : UserControl
     {
         _isVirtualActorSelected     = false;
         _isActor2D                  = false;
+        _isViewportRootCanvas       = false;
         ActorNameBlock.Text         = "選択なし";
         ActorModelBlock.Visibility  = Visibility.Collapsed;
         ComponentScroll.Visibility  = Visibility.Collapsed;
@@ -337,6 +347,9 @@ public partial class InspectorPanel : UserControl
         bool KeepAspectRatio = false, string AspectRatioAxis = "width",
         // CanvasComponent 用重力方向モード（0=スクリーン下, 1=キャンバス下）
         int GravityMode = 0,
+        // CanvasComponent 用自動解像度（ビューポート・ルートキャンバスのみランタイムが送信。
+        // プロジェクト設定解像度×参照カメラのスケーリングモードから算出された読み取り専用値）
+        float AutoW = 0f, float AutoH = 0f,
         // 3D CanvasComponent 用ピボット（正規化値 [0,1]）。Actor3D アタッチ時のみ有効。
         float Canvas3dPivotX = 0f, float Canvas3dPivotY = 0f,
         // SpriteComponent 用フィールド
@@ -386,6 +399,27 @@ public partial class InspectorPanel : UserControl
         ClearTransformRefs();
         _slotInfos.Clear();
 
+        // ── ルートキャンバス判定（Phase B）────────────────────────────
+        // is_root / is_vp（ランタイム送信）+ Canvas スロットの有無から
+        // 「ビューポート所属のルートキャンバス」かを判定する。
+        // アクター編集タブ（.actor2d ファイル編集・キャンバス編集タブ）では
+        // 保存データを直接編集させるため対象外とする。
+        var isRootActor  = root.TryGetProperty("is_root", out var irj) && ReadJsonBool(irj, false);
+        var isVpActor    = root.TryGetProperty("is_vp",   out var ivj) && ReadJsonBool(ivj, false);
+        var hasCanvasSlot = false;
+        if (root.TryGetProperty("components", out var compsScan))
+        {
+            foreach (var comp in compsScan.EnumerateArray())
+            {
+                if (comp.TryGetProperty("type", out var ctScan) && ctScan.GetString() == "CanvasComponent")
+                {
+                    hasCanvasSlot = true;
+                    break;
+                }
+            }
+        }
+        _isViewportRootCanvas = !_isActorEditMode && isRootActor && isVpActor && hasCanvasSlot;
+
         // ── 基本情報 アコーディオン ────────────────────────────────────
         UIElement transformContent;
         if (root.TryGetProperty("canvas_transform", out var ct))
@@ -397,7 +431,10 @@ public partial class InspectorPanel : UserControl
             float sx   = Fp(ct, "sx"),  sy   = Fp(ct, "sy");
             float pivx = Fp(ct, "pivx"), pivy = Fp(ct, "pivy");
             float ancX = Fp(ct, "anchor_x"), ancY = Fp(ct, "anchor_y");
-            transformContent = BuildCanvas2DTransformSection(px, py, rot, sx, sy, pivx, pivy, ancX, ancY);
+            // ルートキャンバスは Transform 恒等固定のため読み取り専用で表示する
+            transformContent = BuildCanvas2DTransformSection(
+                px, py, rot, sx, sy, pivx, pivy, ancX, ancY,
+                locked: _isViewportRootCanvas);
         }
         else if (root.TryGetProperty("transform", out var tf))
         {
@@ -457,6 +494,9 @@ public partial class InspectorPanel : UserControl
             var aspectRatioAxis = comp.TryGetProperty("aspect_ratio_axis", out var ara) ? ara.GetString() ?? "width" : "width";
             // CanvasComponent 用: 重力方向モード
             var gravityMode = comp.TryGetProperty("gravity_mode", out var gm)  ? gm.GetInt32()  : 0;
+            // CanvasComponent 用: 自動解像度（ビューポート・ルートキャンバスのみ送信される）
+            var autoW = comp.TryGetProperty("auto_w", out var awj) ? awj.GetSingle() : 0f;
+            var autoH = comp.TryGetProperty("auto_h", out var ahj) ? ahj.GetSingle() : 0f;
             // 3D CanvasComponent 用: ピボット
             var canvas3dPivotX = comp.TryGetProperty("pivot_x", out var pvx) ? pvx.GetSingle() : 0f;
             var canvas3dPivotY = comp.TryGetProperty("pivot_y", out var pvy) ? pvy.GetSingle() : 0f;
@@ -511,6 +551,7 @@ public partial class InspectorPanel : UserControl
                 VpRefType: vpRefType, VpRefActor: vpRefActor, VpRefSlot: vpRefSlot,
                 KeepAspectRatio: keepAspectRatio, AspectRatioAxis: aspectRatioAxis,
                 GravityMode: gravityMode,
+                AutoW: autoW, AutoH: autoH,
                 Canvas3dPivotX: canvas3dPivotX, Canvas3dPivotY: canvas3dPivotY,
                 TexturePath: texPath, SpriteR: sprR, SpriteG: sprG, SpriteB: sprB, SpriteA: sprA,
                 SpriteW: sprW, SpriteH: sprH,
@@ -1236,13 +1277,32 @@ public partial class InspectorPanel : UserControl
         scalingRow.Children.Add(scalingCombo);
         sp.Children.Add(scalingRow);
 
-        // ターゲット解像度（スケーリングモード用）— 整数入力
+        // ── アスペクト比 セクション ──────────────────────────────────
+        // target_width / target_height は実質「アスペクト比」として扱われる
+        //（値の比のみが意味を持つ。データ・serde は従来の解像度フィールドのまま維持）。
+        const string AspectRatioTooltip =
+            "アスペクト比は比として扱われます（16:9 でも 1920:1080 でも同じ意味）。\n" +
+            "スケーリングモードのレターボックス等はこの比を基準に計算されます。";
+        var aspectSep = new TextBlock
+        {
+            Text       = "アスペクト比",
+            Foreground = new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88)),
+            FontSize   = 10,
+            Margin     = new Thickness(0, 6, 0, 2),
+            ToolTip    = AspectRatioTooltip,
+        };
+        sp.Children.Add(aspectSep);
+
+        // 横・縦の 2 値直入力 — 整数入力
         // "F0" フォーマット（小数点なし）を使うことで int.TryParse がそのまま使える。
         // デフォルトの "F1" だと "1920.0" のように表示され int.TryParse が失敗するため。
-        var rowTW = BuildLabeledNumberRow("解像度 W", info.CamTargetW, "F0");
+        var rowTW = BuildLabeledNumberRow("横", info.CamTargetW, "F0");
         NumericDragBehavior.Attach(rowTW.textBox, sensitivity: 1.0, isInteger: true);
-        var rowTH = BuildLabeledNumberRow("解像度 H", info.CamTargetH, "F0");
+        var rowTH = BuildLabeledNumberRow("縦", info.CamTargetH, "F0");
         NumericDragBehavior.Attach(rowTH.textBox, sensitivity: 1.0, isInteger: true);
+        // 各入力行にも比としての意味をツールチップで明示する
+        if (rowTW.element is FrameworkElement twEl) twEl.ToolTip = AspectRatioTooltip;
+        if (rowTH.element is FrameworkElement thEl) thEl.ToolTip = AspectRatioTooltip;
         sp.Children.Add(rowTW.element);
         sp.Children.Add(rowTH.element);
         void CommitTargetSize()
@@ -1264,6 +1324,33 @@ public partial class InspectorPanel : UserControl
         rowTH.textBox.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { CommitTargetSize(); e.Handled = true; } };
         rowTH.textBox.LostFocus += (_, _) => CommitTargetSize();
         NumericDragBehavior.SetOnDrag(rowTW.textBox, CommitTargetSize); NumericDragBehavior.SetOnDrag(rowTH.textBox, CommitTargetSize);
+
+        // 「ウィンドウアスペクト比を適用」ボタン:
+        // プロジェクト設定のウィンドウ解像度（window_width / window_height）を
+        // 横・縦フィールドへ設定し、そのまま SET_CAMERA_TARGET_SIZE を送信する。
+        var btnApplyWindowAspect = new Button
+        {
+            Content             = "ウィンドウアスペクト比を適用",
+            FontSize            = 11,
+            Foreground          = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)),
+            Background          = new SolidColorBrush(Color.FromRgb(0x2A, 0x2A, 0x2A)),
+            BorderBrush         = new SolidColorBrush(Color.FromRgb(0x55, 0x55, 0x55)),
+            BorderThickness     = new Thickness(1),
+            Padding             = new Thickness(8, 3, 8, 3),
+            Margin              = new Thickness(0, 2, 0, 4),
+            HorizontalAlignment = HorizontalAlignment.Left,
+            ToolTip             = "プロジェクト設定の解像度（ウィンドウサイズ）の値をアスペクト比として設定します。",
+        };
+        btnApplyWindowAspect.Click += (_, _) =>
+        {
+            // プロジェクト設定を読み込み、ウィンドウ解像度を横・縦フィールドへ反映する
+            var settings = SEEDEditor.ProjectSettings.ProjectSettingsData.LoadFrom(
+                System.IO.Path.Combine(MainWindow.AssetsPath, "project_settings.json"));
+            rowTW.textBox.Text = settings.WindowWidth.ToString(CultureInfo.InvariantCulture);
+            rowTH.textBox.Text = settings.WindowHeight.ToString(CultureInfo.InvariantCulture);
+            CommitTargetSize();
+        };
+        sp.Children.Add(btnApplyWindowAspect);
 
         // ── 帯カラー（LetterBox / PillarBox 選択時のみ表示）──────────
         float curBarR = info.CamBarCR, curBarG = info.CamBarCG, curBarB = info.CamBarCB, curBarA = info.CamBarCA;
@@ -2499,15 +2586,34 @@ public partial class InspectorPanel : UserControl
             sp.Children.Add(BuildOpenCanvasEditButton());
         }
 
-        // 幅フィールド
+        // ── 解像度（幅・高さ）──────────────────────────────────
+        // ビューポート所属のルートキャンバスは解像度が
+        // 「プロジェクト設定の解像度 × 参照カメラのスケーリングモード」から自動計算されるため、
+        // 手動入力フィールドの代わりに読み取り専用の算出値を表示する
+        //（データの width / height は温存され、ワールドキャンバス・子キャンバスでは従来どおり編集可能）。
         var rowW = BuildLabeledNumberRow("幅",  info.Width);
         var tbW  = rowW.textBox;
-        sp.Children.Add(rowW.element);
-
-        // 高さフィールド
         var rowH = BuildLabeledNumberRow("高さ", info.Height);
         var tbH  = rowH.textBox;
-        sp.Children.Add(rowH.element);
+        if (_isViewportRootCanvas)
+        {
+            sp.Children.Add(new TextBlock
+            {
+                Text         = FormattableString.Invariant(
+                                   $"自動: {info.AutoW:F0} × {info.AutoH:F0}（プロジェクト設定×カメラ設定から算出）"),
+                Foreground   = new SolidColorBrush(Color.FromRgb(0xAA, 0xAA, 0xAA)),
+                FontSize     = 11,
+                Margin       = new Thickness(0, 4, 0, 2),
+                TextWrapping = TextWrapping.Wrap,
+                ToolTip      = "ルートキャンバスの解像度はプロジェクト設定の解像度と\n"
+                             + "基準領域（カメラ参照）のスケーリングモードから自動計算されます。",
+            });
+        }
+        else
+        {
+            sp.Children.Add(rowW.element);
+            sp.Children.Add(rowH.element);
+        }
 
         // ── スケールモード セクション ──────────────────────────
         // 「画面サイズに自動スケール」が ON のときだけ意味を持つ設定のため、
@@ -2632,10 +2738,15 @@ public partial class InspectorPanel : UserControl
             sp.Children.Add(scaleModePanel);
         }
 
-        // ── 基準領域 セクション（Actor2D = 2D キャンバス時のみ表示）──────────────────────────
+        // ── 基準領域 セクション ──────────────────────────
         // Actor3D の 3D ワールドキャンバスには基準領域の設定は不要。
+        // 子キャンバス（ルートでない 2D キャンバス）は親キャンバス内に配置されるだけで
+        // 基準領域の概念を持たないため非表示にする（Phase B）。
+        // → シーンモードではビューポート所属のルートキャンバスのみ表示する。
+        //   アクター編集タブでは従来どおり 2D アクターなら表示する（ファイル側で事前設定できるように）。
         // 「メインカメラを参照」チェックボックス（デフォルトオン）と、
         // オフ時のみ表示される手動設定 UI（ウィンドウ/カメラのコンボ + カメラドロップゾーン）で構成する。
+        bool showVpRef = _isActor2D && (_isActorEditMode || _isViewportRootCanvas);
         var vpRefSep = new TextBlock
         {
             Text       = "基準領域",
@@ -2643,7 +2754,7 @@ public partial class InspectorPanel : UserControl
             FontSize   = 10,
             Margin     = new Thickness(0, 8, 0, 2),
         };
-        if (_isActor2D) sp.Children.Add(vpRefSep);
+        if (showVpRef) sp.Children.Add(vpRefSep);
 
         // メインカメラ参照チェックボックス（vp_ref_type == "main_camera" のときオン）
         bool isMainCamRef = info.VpRefType == "main_camera";
@@ -2659,7 +2770,7 @@ public partial class InspectorPanel : UserControl
                               + "UI をその内側に収めます。\n"
                               + "カメラが存在しない場合は自動的にウィンドウ基準になります。",
         };
-        if (_isActor2D) sp.Children.Add(cbMainCamRef);
+        if (showVpRef) sp.Children.Add(cbMainCamRef);
 
         // 手動設定パネル（チェックがオフのときのみ表示。字下げで従属設定であることを示す）
         var vpManualPanel = new StackPanel
@@ -2728,7 +2839,7 @@ public partial class InspectorPanel : UserControl
         vpRefCameraPanel.Children.Add(vpDropZone);
         vpRefCameraPanel.Children.Add(btnClearVp);
         vpManualPanel.Children.Add(vpRefCameraPanel);
-        if (_isActor2D) sp.Children.Add(vpManualPanel);
+        if (showVpRef) sp.Children.Add(vpManualPanel);
 
         // ── イベント ──────────────────────────────────────────
 
@@ -4044,7 +4155,9 @@ public partial class InspectorPanel : UserControl
     /// </summary>
     private Border BuildCanvas2DTransformSection(
         float px, float py, float rot, float sx, float sy,
-        float pivx, float pivy, float ancX, float ancY)
+        float pivx, float pivy, float ancX, float ancY,
+        // true = ビューポート所属ルートキャンバス: Transform 恒等固定のため読み取り専用表示にする
+        bool locked = false)
     {
         var section = BuildSection("CanvasTransform");
         var sp      = (StackPanel)section.Child;
@@ -4195,6 +4308,30 @@ public partial class InspectorPanel : UserControl
         anchorRow.Children.Add(anchorFieldGrid);
 
         sp.Children.Add(anchorRow);
+
+        // ── ルートキャンバスの Transform 固定（Phase B）────────────────────────
+        // ビューポート所属のルートキャンバスは position/rotation/pivot/anchor = 0, scale = 1 に
+        // 恒等固定されるため、全編集フィールドを不活性化し注記を表示する
+        //（保存データは書き換えられず、レイアウト計算側で恒等として扱われる）。
+        if (locked)
+        {
+            // 不活性表示の減光率（編集不可であることを視覚的に示す）
+            const double LockedOpacity = 0.45;
+            sp.Children.Insert(0, new TextBlock
+            {
+                Text       = "ルートキャンバスは固定（0/1）",
+                Foreground = new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88)),
+                FontSize   = 10,
+                Margin     = new Thickness(0, 2, 0, 4),
+                ToolTip    = "ビューポート所属のルートキャンバスは位置/回転/ピボット/アンカー = 0、\n"
+                           + "スケール = 1 に固定されます（保存データは温存されます）。",
+            });
+            foreach (var target in new FrameworkElement[] { grid, pivotLabel, pivotRow, anchorLabel, anchorRow })
+            {
+                target.IsEnabled = false;
+                target.Opacity   = LockedOpacity;
+            }
+        }
 
         return section;
     }

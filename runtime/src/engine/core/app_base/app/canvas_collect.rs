@@ -67,6 +67,9 @@ pub(super) fn collect_sprite_items(
     // ルートキャンバスアクターごとの有効ビューポートサイズ上書き（Camera 参照用）。
     // actor.entity → [w, h]。viewport_size より優先される。
     canvas_viewport_overrides: &HashMap<Entity, [f32; 2]>,
+    // ビューポート・ルートキャンバスの自動解像度マップ（build_root_canvas_auto_size_map）。
+    // 登録済みルートは width/height をこの値へ置き換え、CanvasTransform を恒等として扱う。
+    root_auto_sizes:    &HashMap<Entity, [f32; 2]>,
     out:                &mut Vec<([[f32; 4]; 4], [f32; 4], Option<Arc<GpuSpriteTexture>>)>,
 ) {
     let (sm_transform, sm_size, keep_aspect, is_width_axis) = parent_scale_mode;
@@ -75,6 +78,15 @@ pub(super) fn collect_sprite_items(
         if actor.world_line != wl { continue; }
         let ct_opt = world.get::<CanvasTransform>(actor.entity).cloned();
         if let Some(ct) = ct_opt {
+            // ビューポート・ルートキャンバスの自動解像度上書き（Phase B）。
+            // Some のとき: 解像度を自動計算値へ置き換え、Transform を恒等として扱う
+            // （保存データは書き換えない）。
+            let root_auto = if parent_canvas_size.is_none() {
+                root_auto_sizes.get(&actor.entity).copied()
+            } else {
+                None
+            };
+            let ct = if root_auto.is_some() { CanvasTransform::default() } else { ct };
             // アンカーオフセット計算:
             // ルートレベル（parent_canvas_size=None）かつシーン SS モードでは
             // ビューポートを仮想親として扱い、ortho 原点（画面中央）からのオフセットを計算する。
@@ -127,10 +139,11 @@ pub(super) fn collect_sprite_items(
             let size_scale_y = if sm_size {
                 if keep_aspect && is_width_axis { parent_cumul_scale[0] } else { parent_cumul_scale[1] }
             } else { 1.0 };
-            let (my_eff_w, my_eff_h) = my_canvas.map(|cc| (
-                cc.width  * size_scale_x,
-                cc.height * size_scale_y,
-            )).unwrap_or((1.0, 1.0));
+            // 自動解像度上書きがあればそれを基準サイズとする（なければ保存値）
+            let (my_eff_w, my_eff_h) = my_canvas.map(|cc| {
+                let [bw, bh] = root_auto.unwrap_or([cc.width, cc.height]);
+                (bw * size_scale_x, bh * size_scale_y)
+            }).unwrap_or((1.0, 1.0));
 
             // 自分のワールド行列（スケールなし）を親 world_rs と合成する
             // pivot オフセットを正しく計算するため実際のキャンバスサイズを渡す
@@ -192,8 +205,9 @@ pub(super) fn collect_sprite_items(
             }
 
             // 子アクターへの CanvasComponent 情報を構築する
+            // （子のアンカー基準サイズにも自動解像度上書きを反映する）
             let child_info = my_canvas.map(|cc| (
-                [cc.width, cc.height],
+                root_auto.unwrap_or([cc.width, cc.height]),
                 (cc.scale_transform, cc.scale_size,
                  cc.keep_aspect_ratio, matches!(cc.aspect_ratio_axis, AspectRatioAxis::Width)),
                 cc.auto_scale,
@@ -225,7 +239,8 @@ pub(super) fn collect_sprite_items(
                 &actor.children, world, wl, draw_ctx,
                 child_canvas_size, self_world_rs,
                 child_cumul_scale, child_scale_mode,
-                canvas_scale, y_sign, viewport_size, canvas_viewport_overrides, out,
+                canvas_scale, y_sign, viewport_size, canvas_viewport_overrides,
+                root_auto_sizes, out,
             );
         }
     }
@@ -260,6 +275,8 @@ pub(super) fn collect_canvas_rects(
     y_sign:             f32,
     viewport_size:      Option<[f32; 2]>,
     canvas_viewport_overrides: &HashMap<Entity, [f32; 2]>,
+    // ビューポート・ルートキャンバスの自動解像度マップ（collect_sprite_items と同じ扱い）
+    root_auto_sizes:    &HashMap<Entity, [f32; 2]>,
 ) {
     let (sm_transform, sm_size, keep_aspect, is_width_axis) = parent_scale_mode;
 
@@ -270,6 +287,13 @@ pub(super) fn collect_canvas_rects(
 
         let ct_opt = world.get::<CanvasTransform>(actor.entity).cloned();
         if let Some(ct) = ct_opt {
+            // ビューポート・ルートキャンバス: 自動解像度上書き + Transform 恒等化（Phase B）
+            let root_auto = if parent_canvas_size.is_none() {
+                root_auto_sizes.get(&actor.entity).copied()
+            } else {
+                None
+            };
+            let ct = if root_auto.is_some() { CanvasTransform::default() } else { ct };
             // アンカーオフセット計算（collect_sprite_items と同じロジック）
             // Camera 参照のルートキャンバスはオーバーライドマップの値を優先する
             let eff_viewport = if parent_canvas_size.is_none() {
@@ -312,10 +336,11 @@ pub(super) fn collect_canvas_rects(
             // アスペクト比維持を考慮したスケール係数
             let size_sc_x = if sm_size { if keep_aspect && !is_width_axis { parent_cumul_scale[1] } else { parent_cumul_scale[0] } } else { 1.0 };
             let size_sc_y = if sm_size { if keep_aspect && is_width_axis  { parent_cumul_scale[0] } else { parent_cumul_scale[1] } } else { 1.0 };
-            let (my_eff_w_r, my_eff_h_r) = my_canvas_r.map(|cc| (
-                cc.width  * size_sc_x,
-                cc.height * size_sc_y,
-            )).unwrap_or((1.0, 1.0));
+            // 自動解像度上書きがあればそれを基準サイズとする（なければ保存値）
+            let (my_eff_w_r, my_eff_h_r) = my_canvas_r.map(|cc| {
+                let [bw, bh] = root_auto.unwrap_or([cc.width, cc.height]);
+                (bw * size_sc_x, bh * size_sc_y)
+            }).unwrap_or((1.0, 1.0));
 
             let self_world_rs = mat4x4_mul(
                 parent_world_rs,
@@ -335,8 +360,10 @@ pub(super) fn collect_canvas_rects(
                             } else {
                                 col
                             };
-                            let eff_w = cc.width  * size_sc_x;
-                            let eff_h = cc.height * size_sc_y;
+                            // アウトラインも自動解像度上書きを反映する
+                            let [base_w, base_h] = root_auto.unwrap_or([cc.width, cc.height]);
+                            let eff_w = base_w * size_sc_x;
+                            let eff_h = base_h * size_sc_y;
                             let m = mat4x4_mul(parent_world_rs, eff_ct.to_mat4_sized(eff_w, eff_h));
                             let csy = canvas_scale * y_sign;
                             let tp = |lx: f32, ly: f32| -> [f32; 3] {
@@ -383,9 +410,9 @@ pub(super) fn collect_canvas_rects(
                 }
             }
 
-            // 子への継承情報を構築する
+            // 子への継承情報を構築する（子のアンカー基準サイズにも自動解像度上書きを反映）
             let child_info = my_canvas_r.map(|cc| (
-                [cc.width, cc.height],
+                root_auto.unwrap_or([cc.width, cc.height]),
                 (cc.scale_transform, cc.scale_size,
                  cc.keep_aspect_ratio, matches!(cc.aspect_ratio_axis, AspectRatioAxis::Width)),
                 cc.auto_scale,
@@ -415,6 +442,7 @@ pub(super) fn collect_canvas_rects(
                 child_canvas_size, self_world_rs,
                 child_cumul_scale, child_scale_mode,
                 canvas_scale, y_sign, viewport_size, canvas_viewport_overrides,
+                root_auto_sizes,
             );
         }
     }
@@ -448,6 +476,8 @@ pub(super) fn collect_canvas_id_items(
     y_sign:             f32,
     viewport_size:      Option<[f32; 2]>,
     canvas_viewport_overrides: &HashMap<Entity, [f32; 2]>,
+    // ビューポート・ルートキャンバスの自動解像度マップ（collect_sprite_items と同じ扱い）
+    root_auto_sizes:    &HashMap<Entity, [f32; 2]>,
     // 3D MC インスタンスの総数（canvas_id の raw_id オフセット計算に使用）
     mc_total:           u32,
     out:                &mut Vec<(u32, [[f32; 4]; 4], Option<String>)>,
@@ -461,6 +491,13 @@ pub(super) fn collect_canvas_id_items(
         let ct_opt = world.get::<CanvasTransform>(actor.entity).cloned();
         let (next_canvas_size, next_cumul_scale, next_scale_mode, next_world_rs) =
             if let Some(ct) = ct_opt {
+                // ビューポート・ルートキャンバス: 自動解像度上書き + Transform 恒等化（Phase B）
+                let root_auto = if parent_canvas_size.is_none() {
+                    root_auto_sizes.get(&actor.entity).copied()
+                } else {
+                    None
+                };
+                let ct = if root_auto.is_some() { CanvasTransform::default() } else { ct };
                 // アンカーオフセット（collect_sprite_items と同じロジック）
                 // Camera 参照のルートキャンバスはオーバーライドマップの値を優先する
                 let eff_viewport = if parent_canvas_size.is_none() {
@@ -500,10 +537,11 @@ pub(super) fn collect_canvas_id_items(
                 // アスペクト比維持を考慮したスケール係数
                 let id_sc_x = if sm_size { if keep_aspect && !is_width_axis { parent_cumul_scale[1] } else { parent_cumul_scale[0] } } else { 1.0 };
                 let id_sc_y = if sm_size { if keep_aspect && is_width_axis  { parent_cumul_scale[0] } else { parent_cumul_scale[1] } } else { 1.0 };
-                let (my_eff_w, my_eff_h) = my_canvas.map(|cc| (
-                    cc.width  * id_sc_x,
-                    cc.height * id_sc_y,
-                )).unwrap_or((1.0, 1.0));
+                // 自動解像度上書きがあればそれを基準サイズとする（なければ保存値）
+                let (my_eff_w, my_eff_h) = my_canvas.map(|cc| {
+                    let [bw, bh] = root_auto.unwrap_or([cc.width, cc.height]);
+                    (bw * id_sc_x, bh * id_sc_y)
+                }).unwrap_or((1.0, 1.0));
 
                 // 子への親ワールド RS 行列
                 let self_world_rs = mat4x4_mul(
@@ -542,9 +580,10 @@ pub(super) fn collect_canvas_id_items(
                     out.push((mc_total + my_dfs + 1, gpu_mat, tex_path));
                 }
 
-                // 子への継承情報を計算する（collect_sprite_items と同じロジック）
+                // 子への継承情報を計算する（collect_sprite_items と同じロジック。
+                // 子のアンカー基準サイズにも自動解像度上書きを反映する）
                 let child_info = my_canvas.map(|cc| (
-                    [cc.width, cc.height],
+                    root_auto.unwrap_or([cc.width, cc.height]),
                     (cc.scale_transform, cc.scale_size,
                      cc.keep_aspect_ratio, matches!(cc.aspect_ratio_axis, AspectRatioAxis::Width)),
                     cc.auto_scale,
@@ -576,7 +615,7 @@ pub(super) fn collect_canvas_id_items(
             next_canvas_size, next_world_rs,
             next_cumul_scale, next_scale_mode,
             canvas_scale, y_sign, viewport_size, canvas_viewport_overrides,
-            mc_total, out,
+            root_auto_sizes, mc_total, out,
         );
     }
 }
@@ -858,6 +897,66 @@ pub(super) fn compute_game_viewport(
     }
 }
 
+/// DFS でアクター名と指定スロット名の CameraComponent を持つ最初のアクターを返す。
+///
+/// `CanvasViewportRef::Camera { actor_name, slot_name }` の参照解決に使用する。
+/// component_ops（インスペクタ用自動解像度計算）からも共用するため pub(super)。
+pub(super) fn find_camera_component_by_ref<'a>(
+    actors:     &'a [Actor],
+    world:      &'a World,
+    actor_name: &str,
+    slot_name:  &str,
+) -> Option<&'a CameraComponent> {
+    for a in actors {
+        if a.name == actor_name {
+            if let Some(cam) = a.slots().iter()
+                .find(|s| s.name == slot_name && s.kind == ComponentKind::Camera)
+                .and_then(|s| world.get::<CameraComponent>(s.entity))
+            {
+                return Some(cam);
+            }
+        }
+        if let Some(found) = find_camera_component_by_ref(a.children(), world, actor_name, slot_name) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+/// 指定世界線のアクターツリーから is_main = true の CameraComponent を DFS 順で探す。
+///
+/// `CanvasViewportRef::MainCamera` の参照解決に使用する。
+/// component_ops（インスペクタ用自動解像度計算）からも共用するため pub(super)。
+pub(super) fn find_main_camera_in_wl<'a>(
+    actors: &'a [Actor],
+    world:  &'a World,
+    wl:     u32,
+) -> Option<&'a CameraComponent> {
+    /// サブツリー内を DFS で探索する内部ヘルパー（world_line チェックはルートのみ）。
+    fn find_main_camera<'a>(actors: &'a [Actor], world: &'a World) -> Option<&'a CameraComponent> {
+        for a in actors {
+            for slot in a.slots() {
+                if slot.kind != ComponentKind::Camera { continue; }
+                if let Some(cam) = world.get::<CameraComponent>(slot.entity) {
+                    if cam.is_main { return Some(cam); }
+                }
+            }
+            if let Some(found) = find_main_camera(a.children(), world) {
+                return Some(found);
+            }
+        }
+        None
+    }
+    // トップレベルは world_line でフィルタしてから DFS する
+    // （子アクターはルートと同じ世界線に属する前提）
+    for root in actors.iter().filter(|a| a.world_line == wl) {
+        if let Some(cam) = find_main_camera(std::slice::from_ref(root), world) {
+            return Some(cam);
+        }
+    }
+    None
+}
+
 /// `CanvasViewportRef::Camera` で参照されるカメラアクターのビューポートサイズを解決する。
 ///
 /// 参照カメラのスケーリングモードを適用し、帯を除いたコンテンツ領域のサイズを返す。
@@ -870,30 +969,7 @@ pub(super) fn resolve_camera_viewport_size(
     win_w: f32,
     win_h: f32,
 ) -> [f32; 2] {
-    /// DFS でアクター名と指定スロット名の CameraComponent を持つ最初のアクターを返す。
-    fn find_camera_component<'a>(
-        actors:     &'a [Actor],
-        world:      &'a World,
-        actor_name: &str,
-        slot_name:  &str,
-    ) -> Option<&'a CameraComponent> {
-        for a in actors {
-            if a.name == actor_name {
-                if let Some(cam) = a.slots().iter()
-                    .find(|s| s.name == slot_name && s.kind == ComponentKind::Camera)
-                    .and_then(|s| world.get::<CameraComponent>(s.entity))
-                {
-                    return Some(cam);
-                }
-            }
-            if let Some(found) = find_camera_component(a.children(), world, actor_name, slot_name) {
-                return Some(found);
-            }
-        }
-        None
-    }
-
-    let Some(cam) = find_camera_component(actors, world, cam_actor_name, cam_slot_name) else {
+    let Some(cam) = find_camera_component_by_ref(actors, world, cam_actor_name, cam_slot_name) else {
         return [win_w, win_h];
     };
 
@@ -919,37 +995,96 @@ pub(super) fn resolve_main_camera_viewport_size(
     win_w:  f32,
     win_h:  f32,
 ) -> Option<[f32; 2]> {
-    /// DFS で is_main = true の CameraComponent を持つ最初のスロットを探す。
-    fn find_main_camera<'a>(actors: &'a [Actor], world: &'a World) -> Option<&'a CameraComponent> {
-        for a in actors {
-            for slot in a.slots() {
-                if slot.kind != ComponentKind::Camera { continue; }
-                if let Some(cam) = world.get::<CameraComponent>(slot.entity) {
-                    if cam.is_main { return Some(cam); }
-                }
-            }
-            if let Some(found) = find_main_camera(a.children(), world) {
-                return Some(found);
-            }
-        }
-        None
-    }
+    let cam = find_main_camera_in_wl(actors, world, wl)?;
+    // 明示 Camera 参照（resolve_camera_viewport_size）と同一の実効矩形計算を再利用する
+    let (_, _, rendered_w, rendered_h, _, _) = compute_game_viewport(
+        &cam.scaling_mode,
+        win_w, win_h,
+        cam.target_width, cam.target_height, cam.fov_y_deg,
+    );
+    Some([rendered_w, rendered_h])
+}
 
-    // トップレベルは world_line でフィルタしてから DFS する
-    // （子アクターはルートと同じ世界線に属する前提）
-    let roots: Vec<&Actor> = actors.iter().filter(|a| a.world_line == wl).collect();
-    for root in roots {
-        if let Some(cam) = find_main_camera(std::slice::from_ref(root), world) {
-            // 明示 Camera 参照（resolve_camera_viewport_size）と同一の実効矩形計算を再利用する
+// ============================================================
+//  ルートキャンバス自動解像度（Phase B: canvas_camera_rework.md 第 2 節）
+//
+//  ビューポート所属のルートキャンバスは、保存された width / height ではなく
+//  「プロジェクト設定の解像度 × 参照カメラのスケーリングモード」から
+//  実効解像度を導出する（編集時の事前計算。実行時の動的リサイズ追従は
+//  従来どおり auto_scale / スケールモードが担う）。
+//  保存データ（width / height）は書き換えず温存する。
+// ============================================================
+
+/// プロジェクト設定解像度と参照カメラ設定からルートキャンバスの実効解像度を計算する。
+///
+/// - カメラ参照あり: プロジェクト設定解像度をウィンドウサイズと見なして
+///   カメラのスケーリングモードでフィットさせ、帯を除いた矩形サイズを返す
+/// - カメラ参照なし（Window 参照・カメラ不在）: プロジェクト設定解像度をそのまま返す
+///
+/// 全呼び出し箇所（描画・物理・ピッキング・インスペクタ表示）で
+/// 同一計算を共有するための単一の正典関数。
+pub(super) fn effective_root_canvas_size(
+    project_res: (u32, u32),
+    camera:      Option<&CameraComponent>,
+) -> [f32; 2] {
+    let proj_w = project_res.0.max(1) as f32;
+    let proj_h = project_res.1.max(1) as f32;
+    match camera {
+        Some(cam) => {
+            // 明示 Camera / MainCamera 参照と同一のスケーリングモード計算を再利用する
             let (_, _, rendered_w, rendered_h, _, _) = compute_game_viewport(
                 &cam.scaling_mode,
-                win_w, win_h,
+                proj_w, proj_h,
                 cam.target_width, cam.target_height, cam.fov_y_deg,
             );
-            return Some([rendered_w, rendered_h]);
+            [rendered_w, rendered_h]
+        }
+        None => [proj_w, proj_h],
+    }
+}
+
+/// ビューポート所属のルートキャンバス（トップレベル Actor2D + CanvasComponent）ごとに
+/// 自動解像度（effective_root_canvas_size）を事前解決したマップを構築する。
+///
+/// このマップに登録されたルートキャンバスは、レイアウト計算時に
+/// - width / height をマップの値へ置き換え
+/// - CanvasTransform を恒等（position/rotation/pivot/anchor = 0, scale = 1）として扱う
+///   （保存データは書き換えない）
+/// シーン SS レイアウト時のみ構築し、アクター編集タブ・ワールドキャンバスでは
+/// 空マップを渡して従来動作を維持する。
+pub(super) fn build_root_canvas_auto_size_map(
+    actors:      &[Actor],
+    world:       &World,
+    wl:          u32,
+    project_res: (u32, u32),
+) -> HashMap<Entity, [f32; 2]> {
+    let mut map = HashMap::new();
+    // MainCamera 参照の解決結果はキャンバス間で共通のため 1 回だけ計算してキャッシュする
+    let mut main_cam: Option<Option<&CameraComponent>> = None;
+    for actor in actors {
+        if actor.world_line != wl { continue; }
+        // ビューポート所属ルートキャンバス = トップレベル Actor2D + CanvasTransform + Canvas スロット
+        if !actor.is_2d() { continue; }
+        if world.get::<CanvasTransform>(actor.entity).is_none() { continue; }
+        for slot in actor.slots() {
+            if slot.kind != ComponentKind::Canvas { continue; }
+            if let Some(cc) = world.get::<CanvasComponent>(slot.entity) {
+                // 参照カメラを解決する（Window / カメラ不在は None = プロジェクト解像度をそのまま使用）
+                let cam = match &cc.viewport_ref {
+                    CanvasViewportRef::Camera { actor_name, slot_name } => {
+                        find_camera_component_by_ref(actors, world, actor_name, slot_name)
+                    }
+                    CanvasViewportRef::MainCamera => {
+                        *main_cam.get_or_insert_with(|| find_main_camera_in_wl(actors, world, wl))
+                    }
+                    CanvasViewportRef::Window => None,
+                };
+                map.insert(actor.entity, effective_root_canvas_size(project_res, cam));
+                break;
+            }
         }
     }
-    None
+    map
 }
 
 /// シーン SS モード時に各ルートキャンバスアクターの有効ビューポートサイズを事前解決する。

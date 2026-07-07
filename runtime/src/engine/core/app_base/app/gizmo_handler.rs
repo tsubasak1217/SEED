@@ -5,7 +5,7 @@
 //  current_gizmo_pos / compute_gizmo_hover / try_gizmo_hit_and_start
 // ============================================================
 
-use crate::engine::components::{ModelComponent, Transform as ActorTransform, CanvasTransform};
+use crate::engine::components::{ModelComponent, Transform as ActorTransform, CanvasTransform, ComponentKind};
 use crate::engine::core::app_base::ipc::ToolMode;
 use crate::engine::methods::gizmo_interact::{
     GizmoDrag, GizmoPart, screen_to_ray, screen_to_ray_ortho, hit_test_gizmo, start_drag,
@@ -175,6 +175,31 @@ impl App {
             && self.selected_primary_actor_is_2d()
             && self.selected_canvas_child_axes().is_none())
         || (self.edit_view_is_2d() && !self.selected_primary_actor_is_2d())
+        // ビューポート所属のルートキャンバスは Transform 恒等固定のため
+        // ビューポートタブでの移動・回転・スケール操作を不活性化する（Phase B）
+        || (self.edit_view_is_2d() && self.selected_primary_is_viewport_root_canvas())
+    }
+
+    /// 選択中プライマリアクターが「ビューポート所属のルートキャンバス」
+    /// （トップレベル Actor2D + CanvasComponent）かどうかを返す。
+    ///
+    /// ルートキャンバスは自動解像度・Transform 恒等固定の対象のため、
+    /// ビューポートタブでのギズモ操作を抑制する判定に使用する。
+    pub(super) fn selected_primary_is_viewport_root_canvas(&self) -> bool {
+        let Some(scene) = self.scene.as_ref() else { return false };
+        let wl = self.active_world_line;
+        // プライマリ選択の DFS ID（selected_primary_actor_is_2d と同じ優先順位）
+        let primary = self.actor_virtual_selected_idx
+            .or_else(|| self.selected_actor_dfs_ids.first().copied());
+        let Some(dfs) = primary else { return false };
+        let mut c = 0u32;
+        let Some(actor) = find_actor_by_dfs(&scene.actors, wl, dfs as u32, &mut c) else { return false };
+        // Actor2D かつ Canvas スロットを持つこと
+        if !actor.is_2d() { return false; }
+        if !actor.slots().iter().any(|s| s.kind == ComponentKind::Canvas) { return false; }
+        // トップレベル（親なし）のみルートキャンバス
+        let mut c2 = 0u32;
+        find_parent_actor_of_dfs(&scene.actors, wl, dfs as u32, &mut c2, None).is_none()
     }
 
     /// カーソル座標でギズモのヒットテストを行い、当たったパーツを返す。

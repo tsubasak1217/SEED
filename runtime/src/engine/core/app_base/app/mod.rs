@@ -709,7 +709,18 @@ pub struct App {
     /// 直前フレームで 2D 物理に使用したビューポートサイズ。
     /// ウィンドウリサイズ検出に使用し、変化時に static 物理ボディを再登録する。
     pub(super) last_physics_2d_viewport: Option<[f32; 2]>,
+
+    /// プロジェクト設定（project_settings.json）のウィンドウ解像度キャッシュ (幅, 高さ)。
+    /// handle_resumed で一度だけ読み込み、以降は再読込しない。
+    /// 用途:
+    ///   - カメラ新規追加時の既定アスペクト比（target_width / target_height）
+    ///   - ビューポート・ルートキャンバスの自動解像度計算（effective_root_canvas_size）
+    pub(super) project_resolution: (u32, u32),
 }
+
+/// プロジェクト設定が読めない場合のウィンドウ解像度既定値（Full HD）。
+/// エディタ側 ProjectSettingsData の既定値と一致させること。
+pub(super) const DEFAULT_PROJECT_RESOLUTION: (u32, u32) = (1920, 1080);
 
 impl App {
     /// App インスタンスを生成する（EventLoop は run() で生成される）。
@@ -852,6 +863,8 @@ impl App {
             active_collision_2d_dfs_ids: std::collections::HashSet::new(),
             dragging_physics_2d_entity_id: None,
             last_physics_2d_viewport: None,
+            // handle_resumed で project_settings.json から上書きされる
+            project_resolution: DEFAULT_PROJECT_RESOLUTION,
         }
     }
 
@@ -959,6 +972,7 @@ use actor_utils::{
     collect_transform_only_in_rect,
     collect_mcs_in_world_line, update_all_mc_batches_for_wl,
     remove_actor_by_dfs, actor_subtree_size, find_parent_canvas_info,
+    find_actor_root_info,
     collect_entities_for_wl, despawn_actor_recursive,
     count_actor_dfs_nodes, extract_actor_by_dfs, extract_actor_by_entity,
     selection_centroid, world_to_screen,

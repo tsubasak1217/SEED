@@ -16,7 +16,7 @@ use crate::engine::components::{CanvasTransform, CanvasComponent, ComponentKind}
 use crate::engine::ecs::Entity;
 
 use super::App;
-use super::canvas_collect::build_canvas_viewport_map;
+use super::canvas_collect::{build_canvas_viewport_map, build_root_canvas_auto_size_map};
 use super::pick_2d::hit_test_rect_2d;
 
 // ─── ドラッグホバーハイライト定数 ────────────────────────────────────────────
@@ -41,9 +41,9 @@ pub(super) struct RootCanvasInfo {
     /// 矩形描画と同じ行優先ワールド行列（eff_ct.to_mat4_sized(eff_w, eff_h)）。
     /// ローカル [0, eff_w]×[0, eff_h] を ortho 空間へマップする。
     pub(super) rect_m:             [[f32; 4]; 4],
-    /// キャンバスの有効幅（ルートのため CanvasComponent.width そのまま）
+    /// キャンバスの有効幅（ビューポート・ルートは自動解像度、それ以外は CanvasComponent.width）
     pub(super) eff_w:              f32,
-    /// キャンバスの有効高さ（ルートのため CanvasComponent.height そのまま）
+    /// キャンバスの有効高さ（ビューポート・ルートは自動解像度、それ以外は CanvasComponent.height）
     pub(super) eff_h:              f32,
     /// キャンバスローカル [0,0] の ortho 空間ワールド位置（子の座標系原点）。
     /// collect_actor2d_contexts の child_canvas_origin と同一の計算
@@ -140,6 +140,10 @@ impl App {
         let vp_overrides = build_canvas_viewport_map(
             &scene.actors, &scene.world, SCENE_WL, vp_w, vp_h, None,
         );
+        // ビューポート・ルートキャンバスの自動解像度マップ（Phase B。描画と同一条件）
+        let auto_sizes = build_root_canvas_auto_size_map(
+            &scene.actors, &scene.world, SCENE_WL, self.project_resolution,
+        );
 
         for actor in &scene.actors {
             if actor.world_line != SCENE_WL { continue; }
@@ -150,6 +154,11 @@ impl App {
             let Some(cc) = actor.slots().iter()
                 .filter(|s| s.kind == ComponentKind::Canvas)
                 .find_map(|s| scene.world.get::<CanvasComponent>(s.entity)) else { continue };
+
+            // 自動解像度上書き（Some のとき Transform は恒等として扱う）
+            let root_auto = auto_sizes.get(&actor.entity).copied();
+            // ルートキャンバスの実効 CanvasTransform（自動解像度対象は恒等固定）
+            let ct = if root_auto.is_some() { CanvasTransform::default() } else { ct.clone() };
 
             // 実効ビューポート（Camera 参照キャンバスはオーバーライドを優先）
             let [evw, evh] = vp_overrides.get(&actor.entity).copied().unwrap_or([vp_w, vp_h]);
@@ -170,9 +179,8 @@ impl App {
                 anchor:   [0.0, 0.0],
             };
 
-            // ルートの有効サイズ = CanvasComponent サイズ（size スケールは親なしのため 1）
-            let eff_w = cc.width;
-            let eff_h = cc.height;
+            // ルートの有効サイズ = 自動解像度（対象外は CanvasComponent の保存サイズ）
+            let [eff_w, eff_h] = root_auto.unwrap_or([cc.width, cc.height]);
 
             // 矩形ヒット判定用行列（描画される矩形と同じ、ct.scale 込み）
             let rect_m = eff_ct.to_mat4_sized(eff_w, eff_h);
@@ -202,7 +210,8 @@ impl App {
                 eff_h,
                 origin:             [origin_m[0][3], origin_m[1][3]],
                 world_rot:          ct.rotation.to_radians(),
-                canvas_size:        [cc.width, cc.height],
+                // 子のアンカー基準サイズにも自動解像度上書きを反映する
+                canvas_size:        root_auto.unwrap_or([cc.width, cc.height]),
                 child_cumul_scale,
                 child_sm_transform: cc.scale_transform,
             });

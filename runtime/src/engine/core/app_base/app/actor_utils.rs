@@ -430,6 +430,34 @@ pub(super) fn actor_subtree_size(actor: &Actor) -> u32 {
     1 + actor.children().iter().map(|c| actor_subtree_size(c)).sum::<u32>()
 }
 
+/// 指定 DFS ID のアクターについて (トップレベルルートか, サブツリールートが Actor2D か) を返す。
+///
+/// DFS カウント規則は find_actor_by_dfs と同一
+/// （トップレベルのみ world_line でフィルタし、子孫は全カウント）。
+/// 戻り値の第 2 要素はヒエラルキーの is_vp（ビューポート所属）と同じ意味を持つ。
+/// 対象が見つからない場合は None を返す。
+pub(super) fn find_actor_root_info(
+    actors: &[Actor],
+    wl:     u32,
+    dfs_id: u32,
+) -> Option<(bool, bool)> {
+    let mut counter = 0u32;
+    for root in actors.iter().filter(|a| a.world_line == wl) {
+        let start = counter;
+        let size  = actor_subtree_size(root);
+        if dfs_id == start {
+            // トップレベルルート自身
+            return Some((true, root.is_2d()));
+        }
+        if dfs_id < start + size {
+            // このルートのサブツリー内の子孫
+            return Some((false, root.is_2d()));
+        }
+        counter += size;
+    }
+    None
+}
+
 // ============================================================
 //  親情報取得
 // ============================================================

@@ -30,10 +30,13 @@ impl App {
     /// Play モードの場合は続いてシーンを自動ロードする。
     pub(super) fn handle_resumed(&mut self, event_loop: &ActiveEventLoop) {
         eprintln!("[SEED INIT] handle_resumed start  mode={:?}", self.mode);
+        // プロジェクト設定のウィンドウ解像度を全モードで一度だけ読み込みキャッシュする。
+        // カメラ新規追加時の既定アスペクト比・ルートキャンバスの自動解像度計算に使用する。
+        self.project_resolution = self.load_window_size_from_settings();
         // Play・スタンドアロン時はプロジェクト設定のウィンドウ解像度を初期サイズに使う。
         // Edit（エディタ埋め込み）は WPF コンテナが実サイズを支配するため指定不要。
         let physical_size = if self.mode == RuntimeMode::Play {
-            Some(self.load_window_size_from_settings())
+            Some(self.project_resolution)
         } else {
             None
         };

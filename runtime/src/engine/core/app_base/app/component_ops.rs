@@ -21,7 +21,7 @@ use crate::engine::components::{
 use crate::engine::core::app_base::undo::ComponentSlotsSnapshotCommand;
 
 use super::{
-    App, find_actor_by_dfs, find_actor_by_dfs_mut,
+    App, find_actor_by_dfs, find_actor_by_dfs_mut, find_actor_root_info,
 };
 
 impl App {
@@ -129,6 +129,15 @@ impl App {
         let mut c = 0u32;
         let Some(actor) = find_actor_by_dfs(&scene.actors, wl, dfs_id, &mut c) else { return };
 
+        // このアクターがトップレベルルートか / サブツリーがビューポート所属（ルートが Actor2D）かを
+        // 判定する。インスペクタのルートキャンバス UI（解像度自動計算表示・Transform 固定・
+        // 子キャンバスの基準領域非表示）に使用する。
+        let (is_root, root_is_2d) =
+            find_actor_root_info(&scene.actors, wl, dfs_id).unwrap_or((false, false));
+        // ビューポート所属ルートキャンバス = トップレベル Actor2D + Canvas スロットあり
+        let is_viewport_root_canvas = is_root && root_is_2d
+            && actor.slots().iter().any(|s| s.kind == ComponentKind::Canvas);
+
         // 2D Actor は CanvasTransform、3D Actor は Transform を World から取得する
         let is_2d = actor.is_2d();
         let transform_json = if is_2d {
@@ -183,9 +192,32 @@ impl App {
                     let aspect_axis = if matches!(d.aspect_ratio_axis, crate::engine::components::AspectRatioAxis::Height) { "height" } else { "width" };
                     // gravity_mode: 0=screen_down, 1=canvas_down
                     let gravity_mode_val = if matches!(d.gravity_mode, crate::engine::components::GravityMode::CanvasDown) { 1u8 } else { 0u8 };
+                    // ビューポート・ルートキャンバス: 自動解像度（プロジェクト設定×カメラ設定）を
+                    // インスペクタの読み取り専用表示用に添付する（Phase B）。
+                    // 描画側（build_root_canvas_auto_size_map）と同一の計算を共有する。
+                    let auto_size_json = if is_viewport_root_canvas {
+                        use super::canvas_collect::{
+                            effective_root_canvas_size,
+                            find_camera_component_by_ref, find_main_camera_in_wl,
+                        };
+                        use crate::engine::components::CanvasViewportRef as VpRef;
+                        // 参照カメラを解決する（Window / カメラ不在は None）
+                        let cam = match &d.viewport_ref {
+                            VpRef::Camera { actor_name, slot_name } =>
+                                find_camera_component_by_ref(
+                                    &scene.actors, &scene.world, actor_name, slot_name),
+                            VpRef::MainCamera =>
+                                find_main_camera_in_wl(&scene.actors, &scene.world, wl),
+                            VpRef::Window => None,
+                        };
+                        let [aw, ah] = effective_root_canvas_size(self.project_resolution, cam);
+                        format!(r#","auto_w":{aw:.1},"auto_h":{ah:.1}"#)
+                    } else {
+                        String::new()
+                    };
                     // pivot: 3D キャンバス専用（Actor3D アタッチ時のみ有効）
                     ("CanvasComponent", format!(
-                        r#","width":{:.4},"height":{:.4},"scale_transform":{},"scale_size":{},"auto_scale":{},"vp_ref_type":"{vp_ref_type}","vp_ref_actor":{vp_actor_json},"vp_ref_slot":{vp_slot_json},"keep_aspect_ratio":{},"aspect_ratio_axis":"{aspect_axis}","gravity_mode":{gravity_mode_val},"pivot_x":{:.4},"pivot_y":{:.4}"#,
+                        r#","width":{:.4},"height":{:.4},"scale_transform":{},"scale_size":{},"auto_scale":{},"vp_ref_type":"{vp_ref_type}","vp_ref_actor":{vp_actor_json},"vp_ref_slot":{vp_slot_json},"keep_aspect_ratio":{},"aspect_ratio_axis":"{aspect_axis}","gravity_mode":{gravity_mode_val},"pivot_x":{:.4},"pivot_y":{:.4}{auto_size_json}"#,
                         d.width, d.height,
                         d.scale_transform  as u8,
                         d.scale_size       as u8,
@@ -285,8 +317,10 @@ impl App {
         let name_json = serde_json::to_string(&actor.name).unwrap_or_default();
         // selected_slot_idx: Inspector 側でどのコンポーネントスロットを選択状態にするかを示す
         // transform_json は 3D: "transform":{...}、2D: "canvas_transform":{...} のいずれか
+        // is_root / is_vp: ルートキャンバス判定用（HIERARCHY の is_vp と同一の分類規則）
         let json = format!(
-            r#"{{"id":{dfs_id},"name":{name_json},"selected_slot":{selected_slot_idx}{transform_json},"components":{comps_json}}}"#
+            r#"{{"id":{dfs_id},"name":{name_json},"selected_slot":{selected_slot_idx},"is_root":{},"is_vp":{}{transform_json},"components":{comps_json}}}"#,
+            is_root as u8, root_is_2d as u8,
         );
         ipc.send(&format!("ACTOR_COMPONENTS:{json}"));
     }
@@ -558,11 +592,18 @@ impl App {
             "CameraComponent" => {
                 // デフォルト設定の CameraComponent をアクターに追加する。
                 // FOV / near / far / is_main / clear_color はインスペクターから後で変更可能。
+                // アスペクト比（target_width / target_height）の既定値は
+                // プロジェクト設定のウィンドウ解像度に合わせる（取得不能時は Full HD キャッシュ値）。
                 let name = slot_name.to_string();
+                let (proj_w, proj_h) = self.project_resolution;
                 let found = {
                     let scene = self.scene.as_mut().unwrap();
                     let slot_entity = scene.world.spawn();
-                    scene.world.insert(slot_entity, CameraComponent::default());
+                    scene.world.insert(slot_entity, CameraComponent {
+                        target_width:  proj_w,
+                        target_height: proj_h,
+                        ..CameraComponent::default()
+                    });
                     let mut c = 0u32;
                     if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
                         actor.add_slot_typed::<CameraComponent>(name, ComponentKind::Camera, slot_entity);

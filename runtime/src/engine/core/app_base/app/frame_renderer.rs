@@ -81,7 +81,7 @@ use super::{
 use super::canvas_collect::{
     collect_sprite_items, collect_canvas_rects, collect_canvas_id_items,
     collect_3d_canvas_child_id_items, sprite_world_corners,
-    compute_game_viewport, build_canvas_viewport_map,
+    compute_game_viewport, build_canvas_viewport_map, build_root_canvas_auto_size_map,
 };
 
 /// カメラプレビューのテクスチャ幅（ピクセル）。
@@ -1100,7 +1100,9 @@ impl App {
                                         Some([cc.width, cc.height]),
                                         ctw, [1.0, 1.0], child_sm,
                                         1.0, 1.0,
-                                        None, &std::collections::HashMap::new(), &mut items,
+                                        // ワールドキャンバスは自動解像度の対象外（空マップ）
+                                        None, &std::collections::HashMap::new(),
+                                        &std::collections::HashMap::new(), &mut items,
                                     );
                                 }
                             }
@@ -1651,8 +1653,17 @@ impl App {
                         } else {
                             std::collections::HashMap::new()
                         };
+                        // ビューポート・ルートキャンバスの自動解像度マップ（描画と同一条件）
+                        let root_auto_sizes_2d = if ss_layout {
+                            build_root_canvas_auto_size_map(
+                                &scene.actors, &scene.world,
+                                self.active_world_line, self.project_resolution)
+                        } else {
+                            std::collections::HashMap::new()
+                        };
                         let ctx2d_list = crate::engine::core::app_base::app::physics2d_ops::collect_actor2d_contexts(
                             scene, self.active_world_line, viewport_size_2d, &canvas_vp_overrides_2d,
+                            &root_auto_sizes_2d,
                         );
 
                         for ctx in &ctx2d_list {
@@ -1772,10 +1783,19 @@ impl App {
                                 } else {
                                     std::collections::HashMap::new()
                                 };
+                                // ビューポート・ルートキャンバスの自動解像度マップ
+                                // （シーン SS レイアウト時のみ。アクター編集タブは保存値のまま）
+                                let root_auto_sizes = if is_scene_ss {
+                                    build_root_canvas_auto_size_map(
+                                        &scene.actors, &scene.world, wl, self.project_resolution)
+                                } else {
+                                    std::collections::HashMap::new()
+                                };
                                 collect_sprite_items(
                                     &scene.actors, &scene.world, wl, draw_ctx,
                                     None, IDENTITY, [1.0, 1.0], (false, false, false, true),
-                                    canvas_scale, y_sign, viewport_size, &canvas_vp_overrides, &mut items_2d,
+                                    canvas_scale, y_sign, viewport_size, &canvas_vp_overrides,
+                                    &root_auto_sizes, &mut items_2d,
                                 );
                             }
 
@@ -1827,7 +1847,9 @@ impl App {
                                     Some([cc.width, cc.height]),
                                     canvas_to_world, [1.0, 1.0], child_scale_mode,
                                     1.0, 1.0,
-                                    None, &std::collections::HashMap::new(), &mut items_3d,
+                                    // ワールドキャンバスは自動解像度の対象外（空マップ）
+                                    None, &std::collections::HashMap::new(),
+                                    &std::collections::HashMap::new(), &mut items_3d,
                                 );
                             }
                         }
@@ -1868,11 +1890,19 @@ impl App {
                             } else {
                                 std::collections::HashMap::new()
                             };
+                            // ビューポート・ルートキャンバスの自動解像度マップ（描画と同一条件）
+                            let root_auto_sizes_r = if is_scene_ss_rect {
+                                build_root_canvas_auto_size_map(
+                                    &scene.actors, &scene.world, wl, self.project_resolution)
+                            } else {
+                                std::collections::HashMap::new()
+                            };
                             collect_canvas_rects(
                                 &scene.actors, &scene.world, wl, &mut lb, rect_col,
                                 &self.selected_actor_dfs_ids, &mut counter,
                                 None, IDENTITY_RECT, [1.0, 1.0], (false, false, false, true),
                                 canvas_scale_rect, y_sign_rect, viewport_size_rect, &canvas_vp_overrides_r,
+                                &root_auto_sizes_r,
                             );
                             // 2D シーンビューでドラッグホバー中のルートキャンバス枠を
                             // 通常枠より明るく・太くハイライト描画する（Phase 3、事前計算済み）
@@ -2636,6 +2666,13 @@ impl App {
                                             } else {
                                                 std::collections::HashMap::new()
                                             };
+                                            // ビューポート・ルートキャンバスの自動解像度マップ（描画と同一条件）
+                                            let root_auto_sizes_id = if ss_layout {
+                                                build_root_canvas_auto_size_map(
+                                                    &scene.actors, &scene.world, wl, self.project_resolution)
+                                            } else {
+                                                std::collections::HashMap::new()
+                                            };
 
                                             let mut items = Vec::new();
                                             let mut ctr   = 0u32;
@@ -2651,6 +2688,7 @@ impl App {
                                                 [1.0, 1.0], (false, false, false, true),
                                                 canvas_scale, y_sign, viewport_size,
                                                 &canvas_vp_overrides_id,
+                                                &root_auto_sizes_id,
                                                 canvas_id_offset, &mut items,
                                             );
                                             items

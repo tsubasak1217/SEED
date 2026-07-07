@@ -59,7 +59,7 @@ use crate::engine::physics::{
 use crate::engine::core::app_base::scene::Scene;
 use crate::engine::structs::objects::actor::{Actor, ActorKind};
 use super::{App, RuntimeMode, InspectorTransformDrag};
-use super::canvas_collect::build_canvas_viewport_map;
+use super::canvas_collect::{build_canvas_viewport_map, build_root_canvas_auto_size_map};
 
 // ─── Actor2d 物理コンテキスト ────────────────────────────────────────────────
 
@@ -128,6 +128,9 @@ pub(crate) struct Actor2dPhysicsCtx {
 /// - `canvas_viewport_overrides`: `CanvasViewportRef::Camera` を持つルートキャンバスアクターの
 ///   実効ビューポートサイズ上書きマップ（entity → [w, h]）。
 ///   空 HashMap を渡すとウィンドウサイズをそのまま使用する。
+/// - `root_auto_sizes`: ビューポート・ルートキャンバスの自動解像度マップ
+///   （build_root_canvas_auto_size_map）。登録済みルートは width/height をこの値へ置き換え、
+///   CanvasTransform を恒等として扱う（canvas_collect.rs と同一の Phase B 規則）。
 ///
 /// frame_renderer.rs の 2D コライダーワイヤーフレーム描画でも共用するため pub(crate)。
 pub(crate) fn collect_actor2d_contexts(
@@ -135,6 +138,7 @@ pub(crate) fn collect_actor2d_contexts(
     world_line:    u32,
     viewport_size: Option<[f32; 2]>,
     canvas_viewport_overrides: &HashMap<Entity, [f32; 2]>,
+    root_auto_sizes: &HashMap<Entity, [f32; 2]>,
 ) -> Vec<Actor2dPhysicsCtx> {
     let mut result      = Vec::new();
     let mut dfs_counter = 0u64;
@@ -154,26 +158,41 @@ pub(crate) fn collect_actor2d_contexts(
         dfs_counter += 1;
         let dfs_id = dfs_counter;
 
+        // ── ビューポート・ルートキャンバスの自動解像度上書き（Phase B）───────────
+        // Some のとき: 解像度を自動計算値へ置き換え、CanvasTransform を恒等として扱う
+        // （canvas_collect.rs と同一の規則。保存データは書き換えない）。
+        let root_auto = if parent_canvas_size.is_none() {
+            root_auto_sizes.get(&actor.entity).copied()
+        } else {
+            None
+        };
+
         // ── 自アクターの CanvasTransform を先取りする ──────────────────────────
-        let ct_opt = scene.world.get::<CanvasTransform>(actor.entity);
+        // ルートキャンバスの Transform 恒等化のため所有値に変換してから参照を取る
+        let ct_owned: Option<CanvasTransform> = scene.world.get::<CanvasTransform>(actor.entity)
+            .map(|ct| if root_auto.is_some() { CanvasTransform::default() } else { ct.clone() });
+        let ct_opt = ct_owned.as_ref();
 
         // ── 自アクターの CanvasComponent を取得する ─────────────────────────────
         let my_canvas = actor.slots().iter()
             .find(|s| s.kind == ComponentKind::Canvas)
             .and_then(|s| scene.world.get::<CanvasComponent>(s.entity));
 
+        // 自動解像度上書きを反映した基準キャンバスサイズ（なければ保存値）
+        let my_canvas_base = my_canvas.map(|cc| root_auto.unwrap_or([cc.width, cc.height]));
+
         // sm_size による拡縮を反映した有効キャンバスサイズ（子 canvas 原点・auto_scale 計算用、アスペクト比考慮）
         let phys_sc_x = if sm_size { if keep_aspect && !is_width_axis { parent_cumul_scale[1] } else { parent_cumul_scale[0] } } else { 1.0 };
         let phys_sc_y = if sm_size { if keep_aspect && is_width_axis  { parent_cumul_scale[0] } else { parent_cumul_scale[1] } } else { 1.0 };
-        let (my_eff_w, my_eff_h) = my_canvas.map(|cc| (
-            cc.width  * phys_sc_x,
-            cc.height * phys_sc_y,
+        let (my_eff_w, my_eff_h) = my_canvas_base.map(|[bw, bh]| (
+            bw * phys_sc_x,
+            bh * phys_sc_y,
         )).unwrap_or((1.0, 1.0));
 
         // 子が参照する「有効 Canvas サイズ」（scale_size・アスペクト比モード考慮済み）
-        let child_canvas_size = my_canvas.map(|cc| [
-            cc.width  * phys_sc_x,
-            cc.height * phys_sc_y,
+        let child_canvas_size = my_canvas_base.map(|[bw, bh]| [
+            bw * phys_sc_x,
+            bh * phys_sc_y,
         ]);
         let child_sm = my_canvas
             .map(|cc| (
@@ -259,10 +278,10 @@ pub(crate) fn collect_actor2d_contexts(
             // このアクターの累積ワールド回転
             let actor_world_rot = parent_world_rot + ct.rotation.to_radians();
 
-            // canvas 有効サイズ（pivot オフセット計算に使用）
-            let (canvas_eff_w, canvas_eff_h) = my_canvas.map(|cc| (
-                cc.width  * if sm_size { parent_cumul_scale[0] } else { 1.0 },
-                cc.height * if sm_size { parent_cumul_scale[1] } else { 1.0 },
+            // canvas 有効サイズ（pivot オフセット計算に使用。自動解像度上書きを反映）
+            let (canvas_eff_w, canvas_eff_h) = my_canvas_base.map(|[bw, bh]| (
+                bw * if sm_size { parent_cumul_scale[0] } else { 1.0 },
+                bh * if sm_size { parent_cumul_scale[1] } else { 1.0 },
             )).unwrap_or((1.0, 1.0));
 
             // ピボットオフセットを逆適用して canvas [0,0] = 子の座標系原点を求める
@@ -360,10 +379,10 @@ pub(crate) fn collect_actor2d_contexts(
         //
         // canvas_collect.rs の to_mat4_sized は T(pos)*R(rot)*S(scale)*T(-pivot) の順なので
         //   pivot_corr_world = R(parent_rot)*R(local_rot)*S(ct.scale)*pivot_corr_canonical
-        let pivot_corr_local: [f32; 2] = if let Some(cc) = my_canvas {
-            // CanvasComponent あり: Canvas サイズ基準
-            let eff_w = cc.width  * size_eff[0];
-            let eff_h = cc.height * size_eff[1];
+        let pivot_corr_local: [f32; 2] = if let Some([bw, bh]) = my_canvas_base {
+            // CanvasComponent あり: Canvas サイズ基準（自動解像度上書きを反映）
+            let eff_w = bw * size_eff[0];
+            let eff_h = bh * size_eff[1];
             [(0.5 - ct.pivot[0]) * eff_w, (0.5 - ct.pivot[1]) * eff_h]
         } else if let Some(slot_entity) = collider_slot_entity {
             // CanvasComponent なし: コライダーバウンディングボックスサイズ基準
@@ -449,6 +468,26 @@ impl App {
         }).or(Some([1280.0, 720.0]))
     }
 
+    /// 2D 物理・スクリーン座標収集用に、ビューポート・ルートキャンバスの
+    /// 自動解像度マップを構築する共通ヘルパー。
+    ///
+    /// `viewport_size` が Some（= シーン SS レイアウト）の場合のみ構築し、
+    /// None（ワールドスペース・アクター編集タブ）では空マップを返して従来動作を維持する。
+    fn build_root_auto_sizes_for_2d(
+        &self,
+        scene:         &Scene,
+        viewport_size: Option<[f32; 2]>,
+    ) -> HashMap<Entity, [f32; 2]> {
+        if viewport_size.is_some() {
+            build_root_canvas_auto_size_map(
+                &scene.actors, &scene.world,
+                self.active_world_line, self.project_resolution,
+            )
+        } else {
+            HashMap::new()
+        }
+    }
+
     /// スクリプトの ScreenPosition API 用に、全 Actor2D の
     /// 「アクターエンティティ → ウィンドウ左上原点のスクリーン座標（ピクセル）」を収集する。
     ///
@@ -466,9 +505,12 @@ impl App {
             &scene.actors, &scene.world,
             self.active_world_line, win_w, win_h, None,
         );
+        // ビューポート・ルートキャンバスの自動解像度マップ（SS レイアウト時のみ）
+        let root_auto_sizes = self.build_root_auto_sizes_for_2d(scene, viewport_size);
 
         let contexts = collect_actor2d_contexts(
             scene, self.active_world_line, viewport_size, &canvas_vp_overrides,
+            &root_auto_sizes,
         );
 
         // ortho 空間（ビューポート中心原点・Y 下向き）→ ウィンドウ左上原点へ変換する
@@ -506,8 +548,13 @@ impl App {
         let force_kinematic = self.mode == RuntimeMode::Edit
             && !self.edit_physics_2d_with_rigidbody;
 
+        // ビューポート・ルートキャンバスの自動解像度マップ（SS レイアウト時のみ）
+        let root_auto_sizes = self.build_root_auto_sizes_for_2d(scene, viewport_size);
+
         // actor2d コンテキストを収集し、Collider2d 付きのものを物理ワールドに登録する
-        let contexts = collect_actor2d_contexts(scene, self.active_world_line, viewport_size, &canvas_vp_overrides);
+        let contexts = collect_actor2d_contexts(
+            scene, self.active_world_line, viewport_size, &canvas_vp_overrides, &root_auto_sizes,
+        );
 
         // ── 2D キャンバス物理スレッドを起動する ────────────────────────────────
         let thread = PhysicsThread2d::spawn();
@@ -614,7 +661,11 @@ impl App {
                 &scene.actors, &scene.world,
                 self.active_world_line, win_w, win_h, None,
             );
-            collect_actor2d_contexts(scene, self.active_world_line, viewport_size, &canvas_vp_overrides)
+            // ビューポート・ルートキャンバスの自動解像度マップ（SS レイアウト時のみ）
+            let root_auto_sizes = self.build_root_auto_sizes_for_2d(scene, viewport_size);
+            collect_actor2d_contexts(
+                scene, self.active_world_line, viewport_size, &canvas_vp_overrides, &root_auto_sizes,
+            )
         } else {
             return;
         };

@@ -20,7 +20,7 @@ use crate::engine::physics::{PhysicsCommand2d, PhysicsObject2d, PIXELS_PER_METER
 
 use super::{App, RuntimeMode, find_actor_by_dfs};
 use super::physics2d_ops::collect_actor2d_contexts;
-use super::canvas_collect::build_canvas_viewport_map;
+use super::canvas_collect::{build_canvas_viewport_map, build_root_canvas_auto_size_map};
 
 impl App {
     /// Collider2dComponent のデータ全体（リジッドボディ設定を含む）を JSON からデシリアライズして更新する。
@@ -78,8 +78,16 @@ impl App {
                 let canvas_vp_overrides = build_canvas_viewport_map(
                     &scene.actors, &scene.world, wl, win_w, win_h, None,
                 );
+                // ビューポート・ルートキャンバスの自動解像度マップ（SS レイアウト時のみ）
+                let root_auto_sizes = if viewport_size.is_some() {
+                    build_root_canvas_auto_size_map(
+                        &scene.actors, &scene.world, wl, self.project_resolution)
+                } else {
+                    std::collections::HashMap::new()
+                };
                 // canvas_collect.rs と同一の変換チェーンで body_pos_px を取得する
-                let ctx = collect_actor2d_contexts(scene, wl, viewport_size, &canvas_vp_overrides)
+                let ctx = collect_actor2d_contexts(
+                        scene, wl, viewport_size, &canvas_vp_overrides, &root_auto_sizes)
                     .into_iter()
                     .find(|c| c.dfs_id == entity_id)?;
 
