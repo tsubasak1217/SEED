@@ -10,7 +10,8 @@
 use crate::engine::components::{ModelComponent, Transform as ActorTransform, ComponentKind};
 use crate::engine::core::app_base::scene::{Scene, build_actor};
 use crate::engine::core::app_base::undo::ActorTreeSnapshotCommand;
-use crate::engine::components::CanvasTransform;
+use crate::engine::components::{CanvasTransform, CanvasComponent};
+use crate::engine::ecs::Entity;
 use crate::engine::structs::objects::Actor;
 use crate::engine::structs::objects::actor::ActorData;
 
@@ -149,11 +150,13 @@ impl App {
         self.handle_add_actor_2d(wl, Some(parent_dfs_id));
     }
 
-    /// .actor ファイルをシーンにドロップ配置する。
+    /// .actor ファイルをシーンにドロップ配置する（3D ビュー用）。
     ///
     /// 3D アクターの場合は `spawn_pos` にトランスフォームを設定して配置する。
     /// 2D アクター（Actor2D）の場合はドロップ位置を無視し、アクターファイルの
     /// CanvasTransform（アンカー・ピボット・position）をそのまま使用して配置する。
+    /// ※ 2D シーンビュー（Edit View2D）での .actor2d ドロップは、ドロップ位置と
+    ///   キャンバスヒット判定を使う handle_drop_actor_2d 側で処理される。
     /// いずれも world_line=0 のシーンに追加し、配置操作は Undo/Redo の対象。
     pub(super) fn handle_drop_actor(&mut self, path: &str, spawn_pos: [f32; 3]) {
         if self.draw_ctx.is_none() || self.scene.is_none() { return; }
@@ -233,6 +236,164 @@ impl App {
                 }
             }
         }
+    }
+
+    /// .actor2d ファイルを 2D シーンビュー（Edit View2D）へドロップ配置する。
+    ///
+    /// `screen_x`, `screen_y` はビューポートローカルの物理ピクセル座標
+    /// （エディタの DROP_ACTOR IPC が送信する値）。2D ortho カメラの
+    /// パン・ズームを反映してキャンバス（ortho）空間座標へ変換し、
+    /// ドロップ位置にアクターを配置する。
+    ///
+    /// # 配置ルール（docs/editor_2d3d_tabs.md Phase 3）
+    /// - ルートに CanvasComponent がある → シーンルートとして配置し、
+    ///   ドロップ位置を root CanvasTransform.position に設定する
+    /// - ルートに CanvasComponent がない → カーソルがヒットしている
+    ///   ルートキャンバスの子として挿入し、そのキャンバスのローカル座標系で
+    ///   position を設定する。ヒットなしなら先頭のルートキャンバス、
+    ///   キャンバスが 1 つもなければデフォルトキャンバスを新規作成する
+    ///
+    /// 配置操作は ActorTreeSnapshotCommand で Undo/Redo の対象。
+    pub(super) fn handle_drop_actor_2d(&mut self, path: &str, screen_x: u32, screen_y: u32) {
+        if self.draw_ctx.is_none() || self.scene.is_none() { return; }
+
+        // Undo のために配置前の world_line=0 アクターをスナップショットする
+        let before_actors = self.snapshot_actors_for_wl(0);
+
+        let host = self.scripting_host.clone();
+
+        // load_actor_into は draw_ctx と scene.world を同時に参照するため
+        // ブロックスコープで借用ライフタイムを制限する
+        let load_result = {
+            let ctx   = self.draw_ctx.as_ref().unwrap();
+            let scene = self.scene.as_mut().unwrap();
+            Scene::load_actor_into(
+                std::path::Path::new(path),
+                ctx,
+                &mut scene.world,
+                host.as_ref(),
+                0,    // world_line = 通常シーン
+                None, // ルートエンティティは新規 spawn
+            )
+        };
+
+        match load_result {
+            Ok(actor) => {
+                // ドロップカーソル位置を ortho（キャンバス）空間へ変換する
+                let drop_pt = self.window_to_canvas_2d(screen_x as f32, screen_y as f32);
+
+                if !actor.is_2d() {
+                    // 想定外の 3D アクター（拡張子判定と中身の不一致など）:
+                    // ファイル保存値のままルート配置するフォールバック
+                    let scene = self.scene.as_mut().unwrap();
+                    scene.actors.push(actor);
+                } else if actor.has_kind(ComponentKind::Canvas) {
+                    // ── ルートに Canvas あり: シーンルートとして配置 ─────────────
+                    // ドロップ位置（ortho 空間）から root position を逆算する。
+                    // ルートレベルの順変換は
+                    //   world = position + anchor_off（ビューポート中央基準）
+                    // のため position = drop_pt - anchor_off。
+                    // 注: CanvasViewportRef::Camera を持つファイルはウィンドウサイズで
+                    //     近似する（配置後にレイアウトが自動追従するため実害なし）。
+                    self.canvas_world_lines.insert(0);
+                    let win_size = self.window.as_ref().map(|w| w.inner_size());
+                    let vw = win_size.map_or(1280.0, |s| s.width  as f32);
+                    let vh = win_size.map_or(720.0,  |s| s.height as f32);
+                    let scene = self.scene.as_mut().unwrap();
+                    if let Some(ct) = scene.world.get_mut::<CanvasTransform>(actor.entity) {
+                        let anchor_off = [vw * ct.anchor[0] - vw / 2.0, vh * ct.anchor[1] - vh / 2.0];
+                        ct.position = [drop_pt[0] - anchor_off[0], drop_pt[1] - anchor_off[1]];
+                    }
+                    scene.actors.push(actor);
+                } else {
+                    // ── ルートに Canvas なし: 既存ルートキャンバスの子として挿入 ──
+                    self.canvas_world_lines.insert(0);
+
+                    // ヒット判定（手前 = 後に描画されるキャンバスを優先）。
+                    // ヒットなしなら先頭のルートキャンバスへフォールバックする。
+                    let infos = self.collect_root_canvas_infos();
+                    let target_entity: Option<Entity> = infos.iter().rev()
+                        .find(|i| i.contains(drop_pt))
+                        .map(|i| i.entity)
+                        .or_else(|| infos.first().map(|i| i.entity));
+
+                    // ルートキャンバスが 1 つもなければデフォルトキャンバスを新規作成する
+                    let target_entity = target_entity
+                        .unwrap_or_else(|| self.spawn_default_root_canvas());
+
+                    // 新規作成分も含めて矩形情報を再収集し、ローカル座標を計算する
+                    let infos = self.collect_root_canvas_infos();
+                    if let Some(info) = infos.iter().find(|i| i.entity == target_entity) {
+                        let scene = self.scene.as_mut().unwrap();
+                        // 子アクター自身の anchor を考慮してローカル position を逆算する
+                        let child_anchor = scene.world.get::<CanvasTransform>(actor.entity)
+                            .map(|ct| ct.anchor)
+                            .unwrap_or([0.0, 0.0]);
+                        let local_pos = info.world_to_child_local(drop_pt, child_anchor);
+                        if let Some(ct) = scene.world.get_mut::<CanvasTransform>(actor.entity) {
+                            ct.position = local_pos;
+                        }
+                        // ヒットしたキャンバス（トップレベル）の子として挿入する
+                        if let Some(parent) = scene.actors.iter_mut()
+                            .find(|a| a.world_line == 0 && a.entity == target_entity)
+                        {
+                            parent.add_child(actor);
+                        } else {
+                            // 親が見つからない場合はルートへフォールバック
+                            scene.actors.push(actor);
+                        }
+                    } else {
+                        // 矩形情報が取れない場合はルートへフォールバック
+                        let scene = self.scene.as_mut().unwrap();
+                        scene.actors.push(actor);
+                    }
+                }
+
+                // 配置後スナップショットを取得し、Undo 履歴に記録する
+                let after_actors = self.snapshot_actors_for_wl(0);
+                self.undo_history.record(Box::new(ActorTreeSnapshotCommand {
+                    world_line: 0,
+                    before_actors,
+                    after_actors,
+                }));
+
+                self.send_hierarchy();
+                if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+            }
+            Err(e) => {
+                eprintln!("[Drop2D] load_actor_into ERR: {e}");
+                if let Some(ipc) = &self.ipc {
+                    ipc.send(&format!("LOAD_ERROR:{e}"));
+                }
+            }
+        }
+
+        // ドロップ確定後はホバーハイライトを解除する
+        self.drag_hover_canvas_entity = None;
+    }
+
+    /// デフォルト設定のルートスクリーンスペースキャンバスアクターを新規作成する。
+    ///
+    /// Canvas なしの 2D アクターをドロップした際に受け皿となるキャンバスが
+    /// シーンに 1 つもない場合に呼ばれる（canvas_component_ops.rs の
+    /// add_canvas_then_child_with_component と同じ既定値: 1920×1080・auto_scale）。
+    /// 戻り値は作成したキャンバスアクターのエンティティ。
+    fn spawn_default_root_canvas(&mut self) -> Entity {
+        let scene = self.scene.as_mut().unwrap();
+
+        // アクター本体（CanvasTransform）と Canvas スロットをそれぞれ spawn する
+        let actor_entity = scene.world.spawn();
+        scene.world.insert(actor_entity, CanvasTransform::default());
+        let slot_entity = scene.world.spawn();
+        scene.world.insert(slot_entity, CanvasComponent::default());
+
+        let mut canvas_actor = Actor::new_2d(actor_entity, "Canvas");
+        canvas_actor.world_line = 0;
+        canvas_actor.add_slot_typed::<CanvasComponent>(
+            "Canvas".to_string(), ComponentKind::Canvas, slot_entity,
+        );
+        scene.actors.push(canvas_actor);
+        actor_entity
     }
 
     /// アクターを削除する（DFS id で特定）。
@@ -469,11 +630,12 @@ impl App {
                 tf.rotation = [0.0, 0.0, 0.0];
                 tf.scale    = [1.0, 1.0, 1.0];
             }
-            // 2D アクター: CanvasTransform の位置・回転もリセット（pivot / anchor は維持）
+            // 2D アクター: CanvasTransform の position のみリセットする。
+            // ドロップ配置時にドロップ位置から position を設定し直すため 0 化が必要。
+            // rotation / scale / pivot / anchor は見た目の再現に必要なため維持する
+            // （docs/editor_2d3d_tabs.md Phase 3 の保存規則）。
             if let Some(ref mut ct) = data.canvas_transform {
                 ct.position = [0.0, 0.0];
-                ct.rotation = 0.0;
-                ct.scale    = [1.0, 1.0];
             }
 
             // 保存先ディレクトリが存在しない場合は作成する

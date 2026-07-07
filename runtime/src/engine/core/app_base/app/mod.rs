@@ -29,6 +29,7 @@ mod transform_ops;
 mod camera_ops;
 mod gizmo_handler;
 mod pick_2d;
+mod canvas_drop;
 mod render;
 mod frame_renderer;
 mod canvas_collect;
@@ -567,6 +568,10 @@ pub struct App {
     /// ドラッグ中の配置プレビュー球体を描画するワールド座標。
     /// DragHoverEnd または DROP_ACTOR でクリアされる。
     drop_preview_pos: Option<[f32; 3]>,
+    /// 2D シーンビューでドラッグホバー中のルートキャンバスエンティティ。
+    /// DRAG_HOVER 受信時にヒット判定で更新し、キャンバス枠線ハイライトに使用する。
+    /// DragHoverEnd・DROP_ACTOR・ドロップ確定後にクリアされる。
+    drag_hover_canvas_entity: Option<crate::engine::ecs::Entity>,
     /// コンテキストメニューを開いた時点のビューポートスクリーン座標。
     /// ADD_ACTOR / ADD_ACTOR_2D 受信時に pending_add_actor へ移送される。
     context_menu_screen_pos: Option<(u32, u32)>,
@@ -812,6 +817,7 @@ impl App {
             pending_drop:            None,
             pending_drop_hover: None,
             drop_preview_pos:   None,
+            drag_hover_canvas_entity: None,
             context_menu_screen_pos: None,
             pending_add_actor:  None,
             plugin_registry:  crate::engine::plugin::registry::PluginRegistry::empty(),

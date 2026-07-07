@@ -668,8 +668,14 @@ impl App {
                     };
                     self.drop_preview_pos = Some(pos);
                 }
+            } else if edit_view_2d {
+                // 2D シーンビュー: プレビュー球体の代わりに、カーソルがヒットしている
+                // ルートキャンバスを判定して枠線ハイライト対象を更新する。
+                // ドロップ時のキャンバスヒット判定（handle_drop_actor_2d）と同一ロジック。
+                let hover_pt = self.window_to_canvas_2d(hsx as f32, hsy as f32);
+                self.drag_hover_canvas_entity = self.hit_root_canvas_at(hover_pt);
             }
-            // 2D キャンバスモード: pending_drop_hover は消費されるが drop_preview_pos は更新しない
+            // アクター編集タブの 2D モード: pending_drop_hover は消費されるが何も更新しない
         }
 
         // ピック要求を取り出す（描画ブロック内で使用）
@@ -714,6 +720,13 @@ impl App {
         // 3D Canvas 子アクター軸をレンダーパス開始前（可変借用前）に事前計算する。
         // レンダーパス内では &mut self.renderer の可変借用が続くため self の不変借用が取れない。
         let canvas_child_axes_pre = self.selected_canvas_child_axes();
+        // 2D シーンビューのドラッグホバー中キャンバス枠ハイライト線分も
+        // 可変借用前に事前計算する（キャンバス矩形バッチ構築時に流し込む）。
+        let drag_hover_highlight_lines = if edit_view_2d && self.drag_hover_canvas_entity.is_some() {
+            self.collect_drag_hover_highlight_lines()
+        } else {
+            Vec::new()
+        };
         // Edit ビューモードによるギズモ抑制（可変借用前に確定する）:
         //   - View3D で SS キャンバスの 2D アクターを選択中: アイテム自体が非表示のため
         //     ギズモも表示しない（3D ワールドキャンバスの子は表示継続）
@@ -1861,6 +1874,11 @@ impl App {
                                 None, IDENTITY_RECT, [1.0, 1.0], (false, false, false, true),
                                 canvas_scale_rect, y_sign_rect, viewport_size_rect, &canvas_vp_overrides_r,
                             );
+                            // 2D シーンビューでドラッグホバー中のルートキャンバス枠を
+                            // 通常枠より明るく・太くハイライト描画する（Phase 3、事前計算済み）
+                            for (from, to, col) in &drag_hover_highlight_lines {
+                                lb.add_line(*from, *to, *col);
+                            }
                             if lb.is_empty() { None } else { Some(lb.build(&draw_ctx.device)) }
                         } else { None }
                     } else { None };
@@ -3087,10 +3105,16 @@ impl App {
 
         // ── ドロップ処理（GPU サブミット後）─────────────
         if let Some((path, sx, sy)) = self.pending_drop.take() {
-            match self.resolve_spawn_pos(sx, sy, did_pick) {
-                // ピック処理でバッファ読み出し済みのため次フレームで再試行する
-                None => self.pending_drop = Some((path, sx, sy)),
-                Some(spawn_pos) => self.handle_drop_actor(&path, spawn_pos),
+            // 2D シーンビューへの .actor2d ドロップは GPU ピック（3D ワールド座標解決）が
+            // 不要なため、ortho 空間変換＋キャンバスヒット判定で即座に配置する
+            if self.edit_view_is_2d() && path.to_ascii_lowercase().ends_with(".actor2d") {
+                self.handle_drop_actor_2d(&path, sx, sy);
+            } else {
+                match self.resolve_spawn_pos(sx, sy, did_pick) {
+                    // ピック処理でバッファ読み出し済みのため次フレームで再試行する
+                    None => self.pending_drop = Some((path, sx, sy)),
+                    Some(spawn_pos) => self.handle_drop_actor(&path, spawn_pos),
+                }
             }
         }
 

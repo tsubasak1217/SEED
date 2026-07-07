@@ -112,7 +112,8 @@ impl App {
 ///
 /// m[0][3], m[1][3] が平行移動成分、2×2 部分が回転×スケールを表す。
 /// 逆行列をクラメールの公式で解き、ローカル座標が範囲内か確認する。
-fn hit_test_rect_2d(px: f32, py: f32, m: &[[f32; 4]; 4], eff_w: f32, eff_h: f32) -> bool {
+/// canvas_drop.rs のドロップ先キャンバスヒット判定でも共用するため pub(super)。
+pub(super) fn hit_test_rect_2d(px: f32, py: f32, m: &[[f32; 4]; 4], eff_w: f32, eff_h: f32) -> bool {
     // 2×2 回転スケール行列の行列式
     let det = m[0][0] * m[1][1] - m[0][1] * m[1][0];
     if det.abs() < 1e-9 { return false; } // 面積 0 の退化矩形は無視する

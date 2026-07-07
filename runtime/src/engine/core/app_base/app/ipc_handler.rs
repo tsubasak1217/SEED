@@ -236,7 +236,13 @@ impl App {
                         let actor = scene.actors.iter()
                             .find(|a| a.world_line == wl)
                             .ok_or("アクティブ世界線にアクターがありません")?;
-                        let data = actor.to_data(&scene.world);
+                        let mut data = actor.to_data(&scene.world);
+                        // 2D アクター: ルート CanvasTransform.position は 0 で保存する
+                        // （handle_export_actor と同じ規則。ドロップ配置時に位置を設定し直すため）。
+                        // rotation / scale / pivot / anchor は維持する。
+                        if let Some(ref mut ct) = data.canvas_transform {
+                            ct.position = [0.0, 0.0];
+                        }
                         let json = serde_json::to_string_pretty(&data).map_err(|e| e.to_string())?;
                         std::fs::write(&path, json).map_err(|e| e.to_string())?;
                         Ok(())
@@ -787,6 +793,8 @@ impl App {
                 IpcCommand::DragHoverEnd => {
                     self.pending_drop_hover = None;
                     self.drop_preview_pos   = None;
+                    // 2D シーンビューのキャンバスホバーハイライトも解除する
+                    self.drag_hover_canvas_entity = None;
                 }
                 IpcCommand::SetSpritePath { actor_dfs_id, slot_idx, path } => {
                     let p = path.clone();
