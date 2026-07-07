@@ -382,6 +382,9 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         var hwndSource = HwndSource.FromHwnd(new WindowInteropHelper(this).Handle);
         hwndSource?.AddHook(WndProc);
 
+        // タッチパッドの精密スクロール（縦）を減衰する（物理ホイールは対象外）
+        PreviewMouseWheel += OnGlobalPreviewMouseWheel;
+
         LoadLayout();
 
         // layout.xml が無いフレッシュ起動では LoadLayout 内の補填が走らないため、

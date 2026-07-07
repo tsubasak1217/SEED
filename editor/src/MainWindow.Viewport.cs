@@ -322,6 +322,67 @@ public partial class MainWindow
         return nint.Zero;
     }
 
+    // ── タッチパッド縦スクロールの減衰 ────────────────────────────
+
+    /// <summary>
+    /// タッチパッド（精密スクロール）の縦スクロール減衰係数。
+    /// 精密タッチパッドは小刻みな delta を高頻度で送るため、WPF 既定の
+    /// 「1 ノッチ = 3 行」換算だと体感が強すぎる。この係数で弱める。
+    /// </summary>
+    private const double TouchpadVerticalScrollScale = 0.35;
+
+    /// <summary>ホイール 1 ノッチの delta 値（Windows 標準）。</summary>
+    private const int WheelDeltaPerNotch = 120;
+
+    /// <summary>ピクセルスクロール時の 1 ノッチあたりの移動量（px。WPF 既定相当）。</summary>
+    private const double VerticalScrollPixelsPerNotch = 48.0;
+
+    /// <summary>
+    /// ウィンドウ全体の PreviewMouseWheel: タッチパッドの精密スクロールだけを減衰する。
+    ///
+    /// 物理マウスホイールは delta が ±120 の倍数で届くのに対し、精密タッチパッドは
+    /// 端数の小さい delta を高頻度で送る。この違いで入力元を判別し、タッチパッド入力のみ
+    /// TouchpadVerticalScrollScale を掛けて手動スクロールへ置き換える（マウスは従来どおり）。
+    /// </summary>
+    private void OnGlobalPreviewMouseWheel(object sender, MouseWheelEventArgs e)
+    {
+        // 120 の倍数 = 物理ホイール（または非精密ドライバ）→ 既定処理に任せる
+        if (e.Delta % WheelDeltaPerNotch == 0) return;
+
+        double scaled = e.Delta * TouchpadVerticalScrollScale;
+        if (ApplyVerticalScroll(scaled)) e.Handled = true;
+    }
+
+    /// <summary>
+    /// マウス直下の要素からビジュアルツリーを遡り、最初に見つかったスクロール可能要素へ
+    /// 減衰済み delta による縦スクロールを適用する。処理できた場合 true。
+    /// </summary>
+    private bool ApplyVerticalScroll(double scaledDelta)
+    {
+        var el = Mouse.DirectlyOver as DependencyObject;
+        while (el is not null)
+        {
+            // AvalonEdit のエディタ: ピクセル単位の縦オフセット API を使う
+            if (el is ICSharpCode.AvalonEdit.TextEditor editor)
+            {
+                double px = scaledDelta / WheelDeltaPerNotch * VerticalScrollPixelsPerNotch;
+                editor.ScrollToVerticalOffset(Math.Max(0, editor.VerticalOffset - px));
+                return true;
+            }
+            if (el is ScrollViewer sv && sv.ScrollableHeight > 0)
+            {
+                // 論理スクロール（CanContentScroll: 行/アイテム単位）とピクセルスクロールで単位を変える
+                double amount = sv.CanContentScroll
+                    ? scaledDelta / WheelDeltaPerNotch * SystemParameters.WheelScrollLines
+                    : scaledDelta / WheelDeltaPerNotch * VerticalScrollPixelsPerNotch;
+                sv.ScrollToVerticalOffset(Math.Clamp(sv.VerticalOffset - amount, 0, sv.ScrollableHeight));
+                return true;
+            }
+            el = System.Windows.Media.VisualTreeHelper.GetParent(el);
+        }
+        return false;
+    }
+
     /// <summary>
     /// WM_MOUSEHWHEEL を処理する: マウスカーソル直下の要素からビジュアルツリーを遡り、
     /// 最初に見つかったスクロール可能要素（AvalonEdit の TextEditor または ScrollViewer）へ
