@@ -692,11 +692,14 @@ impl App {
             && (self.mode == RuntimeMode::Edit || self.paused)
         {
             if let Some((cx, cy)) = self.last_cursor_pos {
-                if self.actor_edit_canvas_wls.contains(&self.active_world_line) {
-                    // 2D アクター編集タブ: GPU ID パス不要、CPU OBB ピックを即時実行する
+                if self.actor_edit_canvas_wls.contains(&self.active_world_line)
+                    || self.edit_view_is_2d()
+                {
+                    // 2D アクター編集/キャンバス編集タブ・2D シーンビュー（ビューポートタブ）:
+                    // GPU ID パス不要。CPU 矩形ピック（Sprite/Canvas 対象・優先度巡回）を即時実行する。
                     self.pick_2d_canvas(cx, cy);
                 } else {
-                    // クリック: GPU ID ピックをスケジュール
+                    // 3D シーンビュー（ワールドタブ）: GPU ID ピックをスケジュール
                     self.pending_pick = Some((cx as u32, cy as u32));
                 }
             }

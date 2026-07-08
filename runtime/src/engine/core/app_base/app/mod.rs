@@ -463,6 +463,9 @@ pub struct App {
     selected_instances: Vec<u32>,
     /// LMB クリック時のビューポートピクセル座標（次フレームで処理）。
     pending_pick:       Option<(u32, u32)>,
+    /// 2D ピックの巡回選択状態（同一地点の連続クリックで次候補へ回すため）。
+    /// (直前クリックのスクリーン座標, 優先度順の候補 DFS リスト, 現在選択インデックス)。
+    pick_2d_cycle:      Option<([f32; 2], Vec<usize>, usize)>,
     /// 直前フレームのカーソル座標（ビューポートローカル）。
     last_cursor_pos:    Option<(f32, f32)>,
     /// ギズモ描画用の単位行列モデルバッファ。
@@ -791,6 +794,7 @@ impl App {
             id_buffer:          None,
             selected_instances: Vec::new(),
             pending_pick:       None,
+            pick_2d_cycle:      None,
             last_cursor_pos:    None,
             line_model_buf:     None,
             tool_mode:          ToolMode::Select,

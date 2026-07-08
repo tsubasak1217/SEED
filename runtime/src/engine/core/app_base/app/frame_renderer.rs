@@ -3105,8 +3105,30 @@ impl App {
                 let before_primary    = self.actor_virtual_selected_idx;
 
                 if raw == 0 {
-                    // 空クリック: 選択解除（Ctrl 押下時は何もしない）
-                    if !self.drag.ctrl_at_press {
+                    // GPU ID が背景ヒット: 3D ワールドキャンバス面のレイピックを試みる
+                    // （world タブでキャンバス矩形範囲をクリックして選択できるようにする）。
+                    let canvas_hit = self.last_cursor_pos
+                        .and_then(|(cx, cy)| self.pick_3d_world_canvas(cx, cy));
+                    if let Some(dfs_usize) = canvas_hit {
+                        self.actor_virtual_selected_slot_idx = 0;
+                        if self.drag.ctrl_at_press {
+                            if self.selected_actor_dfs_ids.contains(&dfs_usize) {
+                                self.selected_actor_dfs_ids.retain(|&x| x != dfs_usize);
+                                if self.actor_virtual_selected_idx == Some(dfs_usize) {
+                                    self.actor_virtual_selected_idx = self.selected_actor_dfs_ids.last().copied();
+                                }
+                            } else {
+                                self.selected_actor_dfs_ids.push(dfs_usize);
+                                self.actor_virtual_selected_idx = Some(dfs_usize);
+                            }
+                        } else {
+                            self.actor_virtual_selected_idx = Some(dfs_usize);
+                            self.selected_actor_dfs_ids     = vec![dfs_usize];
+                        }
+                        self.selected_instances.clear();
+                        self.send_actor_components(dfs_usize as u32, 0);
+                    } else if !self.drag.ctrl_at_press {
+                        // 真の空クリック: 選択解除（Ctrl 押下時は何もしない）
                         self.actor_virtual_selected_idx      = None;
                         self.actor_virtual_selected_slot_idx = 0;
                         self.selected_actor_dfs_ids.clear();
