@@ -459,9 +459,51 @@ public class ScriptEditorPanel : UserControl
         if (doc is not null) CloseTab(doc);
     }
 
-    /// <summary>全ドキュメントの診断を返す（「エラー一覧」パネル用）。</summary>
+    /// <summary>
+    /// プロジェクト全体コンパイル（全 .cs 一括）で検出されたエラー診断。
+    /// 開いていないファイルのエラーや、型名重複などファイル横断のエラーを含む。
+    /// 保存時・Play 開始時の全体検証（SetProjectDiagnostics）で更新される。
+    /// </summary>
+    private IReadOnlyList<ScriptDiagnostic> _projectDiagnostics = Array.Empty<ScriptDiagnostic>();
+
+    /// <summary>
+    /// プロジェクト全体コンパイルの診断を設定し、エラー一覧パネル・左下カウントを更新する。
+    /// エラーが解消された場合は空リストを渡してクリアする。
+    /// </summary>
+    public void SetProjectDiagnostics(IReadOnlyList<ScriptDiagnostic> diags)
+    {
+        _projectDiagnostics = diags;
+        NotifyDiagnosticsChanged();
+    }
+
+    /// <summary>
+    /// アセットルート配下の全 .cs を一括コンパイル検証し、結果をエラー一覧へ反映して返す。
+    /// 保存時（Save）と Play 開始前（MainWindow.OnPlayPause）の共通チェック。
+    /// </summary>
+    public IReadOnlyList<ScriptDiagnostic> RunProjectCompileCheck(string assetsRoot)
+    {
+        var diags = ScriptCompiler.CompileProjectDiagnostics(assetsRoot)
+            .Select(d => new ScriptDiagnostic(
+                IsError: true, d.Id, d.Message, d.Line, d.Column, d.Offset, d.FilePath))
+            .ToList();
+        SetProjectDiagnostics(diags);
+        return diags;
+    }
+
+    /// <summary>
+    /// 全ドキュメントの診断 + プロジェクト全体コンパイルの診断を返す（「エラー一覧」パネル用）。
+    /// 開いているドキュメントの診断と重複するもの（同ファイル・同行・同 ID）は除外する。
+    /// </summary>
     public IReadOnlyList<ScriptDiagnostic> GetDiagnostics()
-        => _docs.SelectMany(d => d.Diagnostics).ToList();
+    {
+        var docDiags = _docs.SelectMany(d => d.Diagnostics).ToList();
+        var seen = docDiags
+            .Select(d => (d.FilePath.ToLowerInvariant(), d.Line, d.Id))
+            .ToHashSet();
+        docDiags.AddRange(_projectDiagnostics.Where(d =>
+            !seen.Contains((d.FilePath.ToLowerInvariant(), d.Line, d.Id))));
+        return docDiags;
+    }
 
     /// <summary>指定診断の該当箇所へジャンプする（「エラー一覧」パネルのダブルクリック）。</summary>
     public void GoToDiagnostic(ScriptDiagnostic d)
@@ -512,8 +554,10 @@ public class ScriptEditorPanel : UserControl
     /// <summary>左下ステータスバーのエラー/警告カウントを更新する。</summary>
     private void RefreshStatusCounts()
     {
-        int errors   = _docs.Sum(d => d.Diagnostics.Count(x => x.IsError));
-        int warnings = _docs.Sum(d => d.Diagnostics.Count(x => !x.IsError));
+        // プロジェクト全体コンパイルの診断も含めた統合ビュー（重複除外済み）で数える
+        var diags = GetDiagnostics();
+        int errors   = diags.Count(x => x.IsError);
+        int warnings = diags.Count(x => !x.IsError);
         // アイコン色は固定（赤/黄）、カウントは常に白のまま件数のみ更新する
         _statusErrCount.Text  = errors.ToString();
         _statusWarnCount.Text = warnings.ToString();
@@ -2168,15 +2212,18 @@ public class ScriptEditorPanel : UserControl
             // ランタイムは全 .cs を 1 アセンブリに一括コンパイルするため、
             // 型名の重複などファイル横断のエラーも検証する。
             // ここでエラーがあると実行時に全スクリプトが動かなくなる（サイレント故障）ので、
-            // 単体成功でも必ず全体検証の結果を表示する。
+            // 単体成功でも必ず全体検証を行い、結果をエラー一覧パネルへ反映する。
             if (!string.IsNullOrEmpty(_assetsRoot))
             {
-                var projErrors = ScriptCompiler.CompileProjectErrors(_assetsRoot);
-                if (projErrors.Count > 0)
+                var projDiags = RunProjectCompileCheck(_assetsRoot!);
+                if (projDiags.Count > 0)
                 {
                     EditorLog.Write("[スクリプトエラー] 全スクリプトの一括コンパイルに失敗しています。");
                     EditorLog.Write("  ※ 修正するまでシーンのスクリプトは一切実行されません:");
-                    foreach (var err in projErrors) EditorLog.Write($"  {err}");
+                    foreach (var d in projDiags)
+                        EditorLog.Write($"  {Path.GetFileName(d.FilePath)}({d.Line}行目): {d.Message}");
+                    // エラー一覧パネルを前面に出して気付けるようにする
+                    ShowErrorListRequested?.Invoke();
                 }
             }
         }

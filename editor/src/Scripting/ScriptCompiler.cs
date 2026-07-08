@@ -71,19 +71,26 @@ public static class ScriptCompiler
     }
 
     /// <summary>
+    /// プロジェクト全体コンパイルのエラー診断 1 件分。
+    /// エラー一覧パネルへの表示・該当箇所ジャンプに必要な位置情報を持つ。
+    /// </summary>
+    public readonly record struct ProjectDiagnostic(
+        string Id, string Message, string FilePath, int Line, int Column, int Offset);
+
+    /// <summary>
     /// アセットルート配下の全 .cs をランタイムと同じ条件で一括コンパイルし、
-    /// エラーメッセージ一覧を返す（成功時は空リスト）。
+    /// エラー診断一覧を返す（成功時は空リスト）。
     ///
     /// ランタイム（ScriptAssemblyManager）は全 .cs を 1 アセンブリにまとめて
     /// コンパイルするため、型名の重複などファイル横断のエラーがあると
     /// **全スクリプトが実行されなくなる**。単一ファイルコンパイル
-    /// （CompileFile）では検出できないため、保存時の検証にこちらを併用する。
+    /// （CompileFile）では検出できないため、保存時・Play 開始時の検証に使う。
     /// </summary>
-    public static IReadOnlyList<string> CompileProjectErrors(string assetsRoot)
+    public static IReadOnlyList<ProjectDiagnostic> CompileProjectDiagnostics(string assetsRoot)
     {
         try
         {
-            if (!Directory.Exists(assetsRoot)) return Array.Empty<string>();
+            if (!Directory.Exists(assetsRoot)) return Array.Empty<ProjectDiagnostic>();
 
             var trees = new List<SyntaxTree>();
             foreach (var f in Directory.EnumerateFiles(assetsRoot, "*.cs", SearchOption.AllDirectories))
@@ -91,7 +98,7 @@ public static class ScriptCompiler
                 try { trees.Add(CSharpSyntaxTree.ParseText(File.ReadAllText(f), path: f)); }
                 catch { /* 読めない/壊れたファイルはスキップ（ランタイム側と同じ扱い） */ }
             }
-            if (trees.Count == 0) return Array.Empty<string>();
+            if (trees.Count == 0) return Array.Empty<ProjectDiagnostic>();
 
             var comp = CSharpCompilation.Create(
                 $"SEEDScriptProj_{Guid.NewGuid():N}",
@@ -100,24 +107,41 @@ public static class ScriptCompiler
 
             using var ms = new MemoryStream();
             var result   = comp.Emit(ms);
-            if (result.Success) return Array.Empty<string>();
+            if (result.Success) return Array.Empty<ProjectDiagnostic>();
 
             return result.Diagnostics
                 .Where(d => d.Severity == DiagnosticSeverity.Error)
                 .Select(d =>
                 {
                     var span = d.Location.GetLineSpan();
-                    var file = string.IsNullOrEmpty(span.Path) ? "(不明)" : Path.GetFileName(span.Path);
-                    return $"{file}({span.StartLinePosition.Line + 1}行目): {d.GetMessage()}";
+                    return new ProjectDiagnostic(
+                        d.Id,
+                        d.GetMessage(),
+                        string.IsNullOrEmpty(span.Path) ? "" : span.Path,
+                        span.StartLinePosition.Line + 1,
+                        span.StartLinePosition.Character + 1,
+                        d.Location.SourceSpan.Start);
                 })
                 .ToList();
         }
         catch
         {
-            // 検証自体の失敗は保存をブロックしない（ランタイム側が最終判定する）
-            return Array.Empty<string>();
+            // 検証自体の失敗は保存・実行をブロックしない（ランタイム側が最終判定する）
+            return Array.Empty<ProjectDiagnostic>();
         }
     }
+
+    /// <summary>
+    /// 全体コンパイルエラーをメッセージ文字列の一覧で返す（Output パネル表示用）。
+    /// </summary>
+    public static IReadOnlyList<string> CompileProjectErrors(string assetsRoot)
+        => CompileProjectDiagnostics(assetsRoot)
+            .Select(d =>
+            {
+                var file = string.IsNullOrEmpty(d.FilePath) ? "(不明)" : Path.GetFileName(d.FilePath);
+                return $"{file}({d.Line}行目): {d.Message}";
+            })
+            .ToList();
 
     /// <summary>
     /// アセットルート配下の全 .cs をまとめてコンパイルし、指定ファイルが宣言する

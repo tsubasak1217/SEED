@@ -468,12 +468,45 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
 
     // ── ボタンイベント ────────────────────────────────────────────
 
+    /// <summary>
+    /// Play 開始前にスクリプトの全体コンパイルを検証する。
+    ///
+    /// エラーがある場合:
+    ///   1. エラー一覧パネルへ診断を反映してアクティブ化（前面表示）
+    ///   2. 「実行できない」旨をダイアログで表示
+    ///   3. false を返して Play をブロックする
+    /// エラーがなければ診断をクリアして true を返す。
+    /// </summary>
+    private bool CheckScriptsBeforePlay()
+    {
+        var diags = PanelScriptEditor.RunProjectCompileCheck(AssetsPath);
+        if (diags.Count == 0) return true;
+
+        EditorLog.Write($"[スクリプトエラー] コンパイルエラー {diags.Count} 件のため実行をブロックしました。");
+
+        // エラー一覧ウィンドウを自動でアクティブにしてからダイアログを表示する
+        ShowAnchorable("error_list");
+        MessageBox.Show(
+            $"スクリプトにコンパイルエラーが {diags.Count} 件あるため実行できません。\n\n" +
+            "エラー一覧ウィンドウの内容を確認し、修正してから再度実行してください。\n" +
+            "（行をダブルクリックすると該当箇所へジャンプします）",
+            "SEED Editor — 実行できません",
+            MessageBoxButton.OK, MessageBoxImage.Error);
+        return false;
+    }
+
     private async void OnPlayPause(object sender, RoutedEventArgs e)
     {
         if (_runtimeManager is null) return;
         var state = _runtimeManager.State;
         if (state == EditorState.Edit)
         {
+            // スクリプトの全体コンパイルを検証し、エラーがあれば実行をブロックする。
+            // ランタイムは全 .cs を 1 アセンブリに一括コンパイルするため、
+            // エラーが 1 つでもあると全スクリプトが実行されない（サイレント故障）。
+            // 事前に検出してエラー一覧ウィンドウ + ダイアログで通知する。
+            if (!CheckScriptsBeforePlay()) return;
+
             // キャンバス編集タブが開いていたら閉じてアクターをシーンへ戻す。
             // 開いたまま Play すると一時シーン保存にアクターが正しく含まれない。
             CloseActiveSceneCanvasTab();
