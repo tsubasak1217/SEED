@@ -4,6 +4,7 @@
 
 - 人間向けのリファレンスであると同時に、**スクリプトエディタの AI インライン補完へ注入される情報源** でもあります（`editor/src/Panels/ScriptEditor/InlineCompletion/ScriptApiReference.cs` が本ファイルを読み込み、補完のシステムプロンプトへ要約を渡します）。
 - したがって **API を追加・変更したら、必ず本ファイルを更新** してください。ここに書かれていない API は AI が知りません。
+- 検索機能付きのブラウザ閲覧用 HTML 版が [`docs/scripting_api.html`](scripting_api.html) にあります（スクリプトエディタの「📖 API ガイド」ボタンから開けます）。**API を追加・変更したら HTML 版も同時に更新** してください。
 
 > **重要（AI 向け）**: SEED は **Unity ではありません**。`UnityEngine` 名前空間・`MonoBehaviour`・`GetComponent` の Unity 実装などは存在しません。使えるのは以下に列挙した SEED 独自 API と .NET 標準ライブラリ（`System.*`）だけです。
 >

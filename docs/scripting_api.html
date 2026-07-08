@@ -1,0 +1,641 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SEED スクリプト API リファレンス</title>
+<!--
+  ============================================================
+  SEED スクリプト API リファレンス（検索機能付き HTML 版）
+
+  - 正典は docs/scripting_api.md。API を追加・変更したら
+    md と本ファイルの両方を更新すること。
+  - 完全に自己完結（外部 CSS/JS/フォント依存なし）。
+    ブラウザでこのファイルを開くだけで使える。
+  - 上部の検索窓で全 API を絞り込み表示できる
+    （API 名・シグネチャ・説明文・カテゴリ名にマッチ）。
+  ============================================================
+-->
+<style>
+  /* ── 基本配色（エディタと同じダークテーマ） ─────────────── */
+  :root {
+    --bg:        #1e1e1e;
+    --bg-panel:  #252526;
+    --bg-item:   #2d2d30;
+    --border:    #3f3f46;
+    --text:      #dcdcdc;
+    --text-dim:  #999999;
+    --accent:    #e87820;   /* エディタのタブアクセントと同じオレンジ */
+    --sig:       #9cdcfe;   /* シグネチャ（青系） */
+    --keyword:   #569cd6;
+    --string:    #ce9178;
+    --comment:   #6a9955;
+    --type:      #4ec9b0;
+    --hit:       #613214;   /* 検索ヒットのハイライト背景 */
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: "Yu Gothic UI", "Meiryo UI", "Segoe UI", sans-serif;
+    font-size: 14px;
+    line-height: 1.6;
+  }
+  code, pre, .sig {
+    font-family: Consolas, "Cascadia Code", Monaco, monospace;
+  }
+
+  /* ── 固定ヘッダー（タイトル + 検索窓） ───────────────────── */
+  header {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    background: var(--bg-panel);
+    border-bottom: 1px solid var(--border);
+    padding: 12px 24px 10px;
+  }
+  header h1 {
+    font-size: 16px;
+    font-weight: bold;
+    margin-bottom: 8px;
+  }
+  header h1 .badge {
+    color: var(--accent);
+    margin-right: 6px;
+  }
+  #search {
+    width: 100%;
+    max-width: 720px;
+    padding: 8px 12px;
+    font-size: 14px;
+    color: var(--text);
+    background: var(--bg-item);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    outline: none;
+  }
+  #search:focus { border-color: var(--accent); }
+  #hit-count {
+    margin-left: 12px;
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+  /* カテゴリジャンプ（チップ） */
+  nav {
+    margin-top: 8px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  nav a {
+    font-size: 11px;
+    color: var(--text-dim);
+    text-decoration: none;
+    background: var(--bg-item);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 2px 10px;
+    white-space: nowrap;
+  }
+  nav a:hover { color: var(--text); border-color: var(--accent); }
+
+  /* ── 本文 ────────────────────────────────────────────────── */
+  main {
+    max-width: 980px;
+    margin: 0 auto;
+    padding: 16px 24px 80px;
+  }
+  section { margin-top: 28px; }
+  section h2 {
+    font-size: 17px;
+    color: #ffffff;
+    border-left: 4px solid var(--accent);
+    padding-left: 10px;
+    margin-bottom: 4px;
+  }
+  section .section-note {
+    color: var(--text-dim);
+    font-size: 12.5px;
+    margin: 4px 0 10px 14px;
+  }
+  section h3 {
+    font-size: 14.5px;
+    color: var(--type);
+    margin: 16px 0 6px 14px;
+  }
+
+  /* API 1 件分の行 */
+  .api {
+    display: flex;
+    gap: 14px;
+    align-items: baseline;
+    background: var(--bg-item);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 6px 12px;
+    margin: 4px 0 4px 14px;
+  }
+  .api .sig {
+    color: var(--sig);
+    font-size: 13px;
+    white-space: pre-wrap;
+    flex: 0 0 46%;
+  }
+  .api .desc {
+    color: var(--text);
+    font-size: 12.5px;
+    flex: 1;
+  }
+  .api.hit { background: var(--hit); }
+
+  /* コード例 */
+  pre {
+    background: #191919;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 10px 14px;
+    margin: 8px 0 8px 14px;
+    font-size: 12.5px;
+    overflow-x: auto;
+    line-height: 1.5;
+  }
+  pre .c  { color: var(--comment); } /* コメント */
+  pre .k  { color: var(--keyword); } /* キーワード */
+  pre .s  { color: var(--string); }  /* 文字列 */
+  pre .t  { color: var(--type); }    /* 型 */
+
+  /* 注意書き */
+  .warn {
+    background: #3a2a1a;
+    border-left: 3px solid var(--accent);
+    padding: 8px 12px;
+    margin: 8px 0 8px 14px;
+    font-size: 12.5px;
+    border-radius: 0 4px 4px 0;
+  }
+
+  /* テーブル（コンポーネント一覧など） */
+  table {
+    border-collapse: collapse;
+    margin: 8px 0 8px 14px;
+    font-size: 12.5px;
+    width: calc(100% - 14px);
+  }
+  th, td {
+    border: 1px solid var(--border);
+    padding: 5px 10px;
+    text-align: left;
+  }
+  th { background: var(--bg-item); color: #fff; }
+  td code { color: var(--sig); font-size: 12px; }
+
+  /* 検索で非表示 */
+  .filtered { display: none !important; }
+
+  /* 「該当なし」表示 */
+  #no-result {
+    display: none;
+    margin: 40px auto;
+    text-align: center;
+    color: var(--text-dim);
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1><span class="badge">◆</span>SEED スクリプト API リファレンス</h1>
+  <div style="display:flex; align-items:center;">
+    <input id="search" type="text"
+           placeholder="API を検索…（例: Lerp / 回転 / Raycast / スプライト）  [ / キーでフォーカス]"
+           autocomplete="off">
+    <span id="hit-count"></span>
+  </div>
+  <nav id="toc">
+    <a href="#sec-basic">基本形</a>
+    <a href="#sec-lifecycle">ライフサイクル</a>
+    <a href="#sec-time">Time / Debug</a>
+    <a href="#sec-mathf">Mathf</a>
+    <a href="#sec-vector">Vector / Quaternion / Color</a>
+    <a href="#sec-random">Random</a>
+    <a href="#sec-input">Input</a>
+    <a href="#sec-physics">Physics</a>
+    <a href="#sec-audio">Audio</a>
+    <a href="#sec-gameobject">GameObject</a>
+    <a href="#sec-components">コンポーネント</a>
+    <a href="#sec-scene">Scene</a>
+    <a href="#sec-libs">ライブラリ</a>
+  </nav>
+</header>
+
+<main>
+
+<div class="warn" style="margin-top:16px;">
+  <b>重要</b>: SEED は Unity ではありません。<code>UnityEngine</code> / <code>MonoBehaviour</code> / <code>GetComponent</code> は存在しません。
+  エンジン API（<code>Mathf</code> / <code>Vector3</code> / <code>Time</code> など）は <b><code>SEED</code> 名前空間</b>にあり、
+  コードでは必ず <code>SEED.</code> を付けて呼び出します（例: <code>SEED.Random.Range(0, 10)</code>）。
+  本ページの一覧部分は簡潔さのため <code>SEED.</code> を省略しています。
+</div>
+
+<!-- ════════════════ 1. 基本形 ════════════════ -->
+<section id="sec-basic" data-keywords="スクリプト 基本形 テンプレート SEEDScript SerializeField 継承 class">
+  <h2>1. スクリプトの基本形</h2>
+  <p class="section-note">C# で書き、<code>SEEDScript</code>（<code>SEEDEditor.Scripting</code> 名前空間）を継承します。</p>
+<pre><span class="k">using</span> SEEDEditor.Scripting;   <span class="c">// SEEDScript・[SerializeField]・NativeFrameContext</span>
+
+<span class="k">public class</span> <span class="t">Mover</span> : <span class="t">SEEDScript</span>
+{
+    <span class="c">// インスペクタに公開するフィールドは [SerializeField] を付ける</span>
+    [<span class="t">SerializeField</span>(Label = <span class="s">"速度"</span>)]
+    <span class="k">private float</span> speed = 2.0f;
+
+    <span class="k">public override void</span> Update(<span class="k">ref</span> <span class="t">NativeFrameContext</span> ctx)
+    {
+        <span class="c">// 毎フレーム、自分の GameObject を右へ動かす</span>
+        transform.Position += <span class="t">SEED.Vector3</span>.Right * speed * <span class="t">SEED.Time</span>.DeltaTime;
+    }
+}</pre>
+  <div class="api"><code class="sig">[SerializeField]</code><span class="desc">フィールドをインスペクタに公開する属性。<code>Label</code> / <code>Tooltip</code> 指定可</span></div>
+  <div class="api"><code class="sig">ref NativeFrameContext ctx</code><span class="desc"><code>ctx.DeltaTime</code>（前フレームからの経過秒）と <code>ctx.AnimTime</code>（累計時間）を持つ</span></div>
+  <div class="warn">無修飾で書きたい場合はスクリプト先頭に自分で <code>using SEED;</code> を足します（<code>System.Random</code> 等との型名衝突は自己責任）。</div>
+</section>
+
+<!-- ════════════════ 2. ライフサイクル ════════════════ -->
+<section id="sec-lifecycle" data-keywords="ライフサイクル 更新 フレーム 物理イベント 衝突 コールバック">
+  <h2>2. ライフサイクル関数</h2>
+  <p class="section-note"><code>SEEDScript</code> を継承して override。1 フレーム内で以下の順に呼ばれます。不要なものは override 不要。</p>
+  <div class="api"><code class="sig">BeginFrame(ref ctx)</code><span class="desc">フレーム開始時。入力取得や状態リセット向け</span></div>
+  <div class="api"><code class="sig">EarlyUpdate(ref ctx)</code><span class="desc">Update より前。他スクリプトへ渡す事前計算向け</span></div>
+  <div class="api"><code class="sig">Update(ref ctx)</code><span class="desc">毎フレームの主更新。ゲームロジックの中心</span></div>
+  <div class="api"><code class="sig">ConstantUpdate(ref ctx)</code><span class="desc">固定タイムステップの更新。物理など時間刻みを一定にしたい処理向け</span></div>
+  <div class="api"><code class="sig">LateUpdate(ref ctx)</code><span class="desc">Update 後。追従カメラなど他更新の結果を使う処理向け</span></div>
+  <div class="api"><code class="sig">Render(ref ctx)</code><span class="desc">描画フェーズ。描画に関わる処理向け</span></div>
+  <div class="api"><code class="sig">EndFrame(ref ctx)</code><span class="desc">フレーム終了時。後片付けや状態確定向け</span></div>
+
+  <h3>物理イベントコールバック（3D / 2D 共通）</h3>
+  <p class="section-note">自分のコライダー（ColliderComponent / Collider2dComponent）が他コライダーと衝突・接触すると呼ばれます。<code>other</code> は相手アクター（特定できない場合 <code>IsValid == false</code>）。</p>
+  <div class="api"><code class="sig">OnCollisionEnter(GameObject other)</code><span class="desc">衝突が始まったフレーム</span></div>
+  <div class="api"><code class="sig">OnCollisionStay(GameObject other)</code><span class="desc">衝突継続中（毎物理ステップ）</span></div>
+  <div class="api"><code class="sig">OnCollisionExit(GameObject other)</code><span class="desc">衝突が終わったフレーム</span></div>
+  <div class="api"><code class="sig">OnTriggerEnter(GameObject other)</code><span class="desc">トリガーへの進入時（トリガー側・相手側の両方に通知）</span></div>
+  <div class="api"><code class="sig">OnTriggerExit(GameObject other)</code><span class="desc">トリガーからの退出時（同上）</span></div>
+<pre><span class="k">public class</span> <span class="t">Coin</span> : <span class="t">SEEDScript</span>
+{
+    <span class="k">public override void</span> OnTriggerEnter(<span class="t">SEED.GameObject</span> other)
+    {
+        <span class="t">SEED.Debug</span>.Log($<span class="s">"取得: {other.IsValid}"</span>);
+        gameObject.Destroy();   <span class="c">// 自分を消す</span>
+    }
+}</pre>
+</section>
+
+<!-- ════════════════ 3. Time / Debug ════════════════ -->
+<section id="sec-time" data-keywords="Time Debug 時間 ログ 出力 デルタタイム">
+  <h2>3. Time（フレーム時間） / Debug（ログ）</h2>
+  <div class="api"><code class="sig">Time.DeltaTime</code><span class="desc">float: 前フレームからの経過秒</span></div>
+  <div class="api"><code class="sig">Time.ElapsedTime</code><span class="desc">float: ゲーム内の累計時間（秒）</span></div>
+  <div class="api"><code class="sig">Debug.Log("メッセージ")</code><span class="desc">情報ログ（エディタの Output パネルに表示）</span></div>
+  <div class="api"><code class="sig">Debug.LogWarning("注意")</code><span class="desc">警告ログ</span></div>
+  <div class="api"><code class="sig">Debug.LogError("失敗")</code><span class="desc">エラーログ</span></div>
+</section>
+
+<!-- ════════════════ 4. Mathf ════════════════ -->
+<section id="sec-mathf" data-keywords="Mathf 数学 計算 三角関数 補間 クランプ">
+  <h2>4. Mathf（数学ユーティリティ・float 中心）</h2>
+  <h3>定数</h3>
+  <div class="api"><code class="sig">Mathf.PI / Deg2Rad / Rad2Deg / Epsilon / Infinity</code><span class="desc">円周率、度⇄ラジアン変換係数、微小値、無限大</span></div>
+  <h3>三角関数・指数対数</h3>
+  <div class="api"><code class="sig">Mathf.Sin(x) / Cos(x) / Tan(x)</code><span class="desc">三角関数（ラジアン）</span></div>
+  <div class="api"><code class="sig">Mathf.Asin(x) / Acos(x) / Atan(x) / Atan2(y, x)</code><span class="desc">逆三角関数。Atan2 は象限を考慮した角度</span></div>
+  <div class="api"><code class="sig">Mathf.Sqrt(x) / Pow(x, p) / Exp(x)</code><span class="desc">平方根・べき乗・指数</span></div>
+  <div class="api"><code class="sig">Mathf.Log(x) / Log(x, b) / Log10(x)</code><span class="desc">自然対数・底指定対数・常用対数</span></div>
+  <h3>丸め・符号</h3>
+  <div class="api"><code class="sig">Mathf.Abs(x) / Sign(x)</code><span class="desc">絶対値・符号（-1/0/1）</span></div>
+  <div class="api"><code class="sig">Mathf.Floor(x) / Ceil(x) / Round(x)</code><span class="desc">切り捨て・切り上げ・四捨五入（float を返す）</span></div>
+  <div class="api"><code class="sig">Mathf.FloorToInt(x) / CeilToInt(x) / RoundToInt(x)</code><span class="desc">同上（int を返す）</span></div>
+  <h3>範囲・補間</h3>
+  <div class="api"><code class="sig">Mathf.Min(a, b) / Max(a, b)</code><span class="desc">最小値・最大値</span></div>
+  <div class="api"><code class="sig">Mathf.Clamp(v, min, max) / Clamp01(v)</code><span class="desc">範囲に収める（Clamp01 は 0〜1）</span></div>
+  <div class="api"><code class="sig">Mathf.Lerp(a, b, t) / LerpUnclamped(a, b, t)</code><span class="desc">線形補間（t は 0..1 にクランプ / クランプなし）</span></div>
+  <div class="api"><code class="sig">Mathf.InverseLerp(a, b, v)</code><span class="desc">v が a〜b のどの割合かを返す（Lerp の逆）</span></div>
+  <div class="api"><code class="sig">Mathf.MoveTowards(current, target, maxDelta)</code><span class="desc">target へ最大 maxDelta ずつ近づける</span></div>
+  <div class="api"><code class="sig">Mathf.Repeat(t, length) / PingPong(t, length)</code><span class="desc">ループ（0〜length）/ 往復（0→length→0）</span></div>
+  <div class="api"><code class="sig">Mathf.SmoothStep(from, to, t)</code><span class="desc">滑らかなイーズイン・アウト補間</span></div>
+  <div class="api"><code class="sig">Mathf.Approximately(a, b)</code><span class="desc">浮動小数の等価比較（<code>==</code> の代わりに使う）</span></div>
+</section>
+
+<!-- ════════════════ 5. Vector / Quaternion / Color ════════════════ -->
+<section id="sec-vector" data-keywords="Vector2 Vector3 Quaternion Color ベクトル 回転 色 カラー 値型">
+  <h2>5. Vector2 / Vector3 / Quaternion / Color（不変値型）</h2>
+
+  <h3>Vector3（位置・方向・スケール）</h3>
+  <div class="api"><code class="sig">new Vector3(x, y, z)</code><span class="desc">コンストラクタ</span></div>
+  <div class="api"><code class="sig">Vector3.Zero / One / Up / Down / Left / Right / Forward / Back</code><span class="desc">定数ベクトル</span></div>
+  <div class="api"><code class="sig">v.x / v.y / v.z</code><span class="desc">成分アクセス</span></div>
+  <div class="api"><code class="sig">v.Magnitude / v.SqrMagnitude / v.Normalized</code><span class="desc">長さ / 長さの2乗 / 正規化ベクトル</span></div>
+  <div class="api"><code class="sig">a + b, a - b, -a, a * 2f, 2f * a, a / 2f, a == b, a != b</code><span class="desc">演算子（加減・反転・スカラー倍・比較）</span></div>
+  <div class="api"><code class="sig">Vector3.Dot(a, b) / Cross(a, b)</code><span class="desc">内積 / 外積</span></div>
+  <div class="api"><code class="sig">Vector3.Distance(a, b) / Angle(a, b)</code><span class="desc">2 点間距離 / 2 ベクトルのなす角（度）</span></div>
+  <div class="api"><code class="sig">Vector3.Scale(a, b)</code><span class="desc">成分ごとの乗算</span></div>
+  <div class="api"><code class="sig">Vector3.Lerp(a, b, t) / MoveTowards(cur, target, maxDelta)</code><span class="desc">線形補間 / 一定速度で近づける</span></div>
+  <div class="api"><code class="sig">Vector3.Min(a, b) / Max(a, b)</code><span class="desc">成分ごとの最小 / 最大</span></div>
+
+  <h3>Vector2</h3>
+  <div class="api"><code class="sig">Vector2 — x, y / Zero One Up Down Left Right / Dot Distance Scale Lerp Min Max</code><span class="desc">Vector3 と同様のメンバー構成（2 成分版）</span></div>
+
+  <h3>Quaternion（回転）</h3>
+  <div class="api"><code class="sig">Quaternion.Identity</code><span class="desc">無回転</span></div>
+  <div class="api"><code class="sig">Quaternion.Euler(xDeg, yDeg, zDeg) / Euler(vector3Degrees)</code><span class="desc">オイラー角（度）から生成。適用順は YXZ</span></div>
+  <div class="api"><code class="sig">Quaternion.AngleAxis(angleDeg, axis)</code><span class="desc">軸周りの回転を生成</span></div>
+  <div class="api"><code class="sig">q1 * q2</code><span class="desc">回転の合成</span></div>
+  <div class="api"><code class="sig">q * vector3</code><span class="desc">ベクトルを回す</span></div>
+  <div class="api"><code class="sig">q.EulerAngles</code><span class="desc">Vector3（度）へ変換（<code>Transform.Rotation</code> へ書き戻す用）</span></div>
+  <div class="api"><code class="sig">q.Normalized</code><span class="desc">正規化クォータニオン</span></div>
+  <div class="warn">Transform の回転は <b>YXZ オイラー角（度）の Vector3</b> で表します。合成・補間したいときだけ Quaternion を使い、<code>q.EulerAngles</code> で Vector3 に戻します。</div>
+
+  <h3>Color（RGBA カラー）</h3>
+  <div class="api"><code class="sig">new Color(r, g, b) / new Color(r, g, b, a)</code><span class="desc">各成分 0.0〜1.0 の正規化 float。アルファ省略時は 1.0（不透明）</span></div>
+  <div class="api"><code class="sig">Color.White / Black / Red / Green / Blue / Yellow / Cyan / Magenta / Gray / Transparent</code><span class="desc">定数カラー</span></div>
+  <div class="api"><code class="sig">c.r / c.g / c.b / c.a</code><span class="desc">成分アクセス</span></div>
+  <div class="api"><code class="sig">c.WithAlpha(0.5f)</code><span class="desc">アルファだけ差し替えた新しい色を返す</span></div>
+  <div class="api"><code class="sig">Color.Lerp(a, b, t)</code><span class="desc">線形補間（t は 0..1 にクランプ）</span></div>
+  <div class="api"><code class="sig">a * b / c * 2f</code><span class="desc">成分ごとの乗算（ティント合成）/ スカラー倍</span></div>
+</section>
+
+<!-- ════════════════ 6. Random ════════════════ -->
+<section id="sec-random" data-keywords="Random 乱数 ランダム シード">
+  <h2>6. Random（乱数）</h2>
+  <p class="section-note">エンジン全体で 1 つの系列を共有。<code>System.Random</code> と衝突しないよう <code>SEED.Random</code> と明示して呼び出します。</p>
+  <div class="api"><code class="sig">Random.Value</code><span class="desc">float: 0.0 以上 1.0 未満</span></div>
+  <div class="api"><code class="sig">Random.Range(min, max)</code><span class="desc">float: min 以上 max 未満</span></div>
+  <div class="api"><code class="sig">Random.Range(minInt, maxInt)</code><span class="desc">int: min 以上 max 未満（max は含まない）</span></div>
+  <div class="api"><code class="sig">Random.Bool</code><span class="desc">bool: ランダムな真偽値</span></div>
+  <div class="api"><code class="sig">Random.InsideUnitCircle</code><span class="desc">Vector2: 半径 1 の円内のランダム点</span></div>
+  <div class="api"><code class="sig">Random.OnUnitSphere</code><span class="desc">Vector3: 長さ 1 のランダム方向</span></div>
+  <div class="api"><code class="sig">Random.InitState(seed)</code><span class="desc">シード固定（再現用）</span></div>
+</section>
+
+<!-- ════════════════ 6.5 Input ════════════════ -->
+<section id="sec-input" data-keywords="Input 入力 キーボード マウス キー ボタン ホイール WASD">
+  <h2>6.5 Input（キーボード・マウス入力）</h2>
+  <p class="section-note">判定は 3 種類: 押している間 / 押した瞬間 / 離した瞬間。</p>
+  <h3>キーボード</h3>
+  <div class="api"><code class="sig">Input.GetKey(KeyCode.Space)</code><span class="desc">bool: 押されている間 true</span></div>
+  <div class="api"><code class="sig">Input.GetKeyDown(KeyCode.Space)</code><span class="desc">bool: 押された瞬間のフレームだけ true</span></div>
+  <div class="api"><code class="sig">Input.GetKeyUp(KeyCode.Space)</code><span class="desc">bool: 離された瞬間のフレームだけ true</span></div>
+  <h3>マウス</h3>
+  <div class="api"><code class="sig">Input.GetMouseButton(MouseButton.Left)</code><span class="desc">bool: ボタンが押されている間 true（Left / Right / Middle）</span></div>
+  <div class="api"><code class="sig">Input.GetMouseButtonDown(MouseButton.Left)</code><span class="desc">bool: 押された瞬間だけ true</span></div>
+  <div class="api"><code class="sig">Input.GetMouseButtonUp(MouseButton.Left)</code><span class="desc">bool: 離された瞬間だけ true</span></div>
+  <div class="api"><code class="sig">Input.MousePos</code><span class="desc">Vector2: スクリーン座標（ピクセル・左上原点）</span></div>
+  <div class="api"><code class="sig">Input.MouseMove</code><span class="desc">Vector2: 今フレームの相対移動量</span></div>
+  <div class="api"><code class="sig">Input.MouseScroll</code><span class="desc">float: 今フレームのホイール量（上=正）</span></div>
+  <h3>簡易軸入力</h3>
+  <div class="api"><code class="sig">Input.MoveAxis()</code><span class="desc">Vector2: WASD/矢印キー → [-1,1]（斜めは正規化しない）</span></div>
+<pre><span class="c">// 例: WASD 移動 + スペースでジャンプ判定</span>
+<span class="k">var</span> move = <span class="t">SEED.Input</span>.MoveAxis();
+transform.Position += <span class="k">new</span> <span class="t">SEED.Vector3</span>(move.x, 0f, move.y) * speed * <span class="t">SEED.Time</span>.DeltaTime;
+<span class="k">if</span> (<span class="t">SEED.Input</span>.GetKeyDown(<span class="t">SEED.KeyCode</span>.Space)) { <span class="c">/* ジャンプ */</span> }</pre>
+  <div class="api"><code class="sig">KeyCode（キー定義）</code><span class="desc"><code>A</code>〜<code>Z</code> / <code>Alpha0</code>〜<code>Alpha9</code>（メイン数字キー）/ <code>F1</code>〜<code>F12</code> / <code>UpArrow DownArrow LeftArrow RightArrow</code> / <code>Space Enter Escape Tab Backspace Delete</code> / <code>LeftShift RightShift LeftControl RightControl LeftAlt RightAlt</code></span></div>
+</section>
+
+<!-- ════════════════ 6.6 Physics ════════════════ -->
+<section id="sec-physics" data-keywords="Physics レイキャスト Raycast 物理 コライダー 判定">
+  <h2>6.6 Physics（レイキャスト）</h2>
+  <div class="api"><code class="sig">Physics.Raycast(origin, dir, maxDistance, out hit)</code><span class="desc">bool: 最初にヒットしたコライダーの情報を <code>hit</code> に格納</span></div>
+  <div class="api"><code class="sig">Physics.Raycast(origin, dir, maxDistance)</code><span class="desc">bool: ヒット情報が不要な場合の簡易版</span></div>
+  <div class="api"><code class="sig">hit.GameObject</code><span class="desc">GameObject: ヒットしたアクター（<code>IsValid</code> で有効判定）</span></div>
+  <div class="api"><code class="sig">hit.Point</code><span class="desc">Vector3: ヒット点のワールド座標</span></div>
+  <div class="api"><code class="sig">hit.Normal</code><span class="desc">Vector3: ヒット点の法線</span></div>
+  <div class="api"><code class="sig">hit.Distance</code><span class="desc">float: 始点からの距離</span></div>
+<pre><span class="k">if</span> (<span class="t">SEED.Physics</span>.Raycast(transform.Position, <span class="t">SEED.Vector3</span>.Down, 10f, <span class="k">out var</span> hit))
+{
+    <span class="t">SEED.Debug</span>.Log($<span class="s">"接地: {hit.Point} 距離={hit.Distance}"</span>);
+}</pre>
+  <div class="warn">3D 物理（ColliderComponent）に対するレイキャストです。物理スレッドへの同期問い合わせのため、毎フレーム大量に呼ぶとフレーム時間を消費します。衝突・トリガーの<b>イベント通知</b>は第 2 節の物理イベントコールバックを参照。</div>
+</section>
+
+<!-- ════════════════ 6.7 Audio ════════════════ -->
+<section id="sec-audio" data-keywords="Audio 音 サウンド BGM 効果音 SE 再生 音量">
+  <h2>6.7 Audio（BGM・効果音）</h2>
+  <p class="section-note">ファイルは <code>assets://</code> 仮想パスで指定（対応形式: wav / ogg / mp3 / flac）。</p>
+  <div class="api"><code class="sig">Audio.Play("assets://sounds/shoot.wav")</code><span class="desc">効果音を再生（多重再生可・音量 1.0）</span></div>
+  <div class="api"><code class="sig">Audio.Play("assets://sounds/hit.ogg", 0.5f)</code><span class="desc">音量指定で効果音を再生</span></div>
+  <div class="api"><code class="sig">Audio.PlayBgm("assets://sounds/stage1.ogg")</code><span class="desc">BGM を再生（既存 BGM は停止して置き換え。既定でループ）</span></div>
+  <div class="api"><code class="sig">Audio.PlayBgm(path, 0.8f, loop: false)</code><span class="desc">音量・ループ指定で BGM を再生</span></div>
+  <div class="api"><code class="sig">Audio.SetBgmVolume(0.3f)</code><span class="desc">BGM 音量を変更</span></div>
+  <div class="api"><code class="sig">Audio.StopBgm()</code><span class="desc">BGM を停止</span></div>
+  <div class="warn">同じファイルはキャッシュされ、2 回目以降の再生でディスク読み込みは発生しません。オーディオデバイスが無い環境では全操作が無音で無視されます。アクターに紐づく音源（3D 距離減衰・パン）は <b>AudioSource コンポーネント</b>（第 7 節）を使ってください。</div>
+</section>
+
+<!-- ════════════════ 7. GameObject ════════════════ -->
+<section id="sec-gameobject" data-keywords="GameObject gameObject アクター 生成 破棄 検索 Instantiate Destroy Find プレハブ">
+  <h2>7. GameObject</h2>
+  <p class="section-note">スクリプトは自分がアタッチされた GameObject を <code>gameObject</code>、その Transform を <code>transform</code> で参照できます。コンポーネントアクセサは薄いハンドルで、代入は即座にゲーム世界へ反映。対象コンポーネントを持たない場合、読み取りは既定値・書き込みは無視されます。</p>
+  <div class="api"><code class="sig">gameObject</code><span class="desc">GameObject: このスクリプトが乗るオブジェクト</span></div>
+  <div class="api"><code class="sig">gameObject.IsValid</code><span class="desc">bool: 実体が有効か</span></div>
+  <div class="api"><code class="sig">gameObject.HasComponent("Sprite")</code><span class="desc">bool: 指定名のコンポーネントを持つか</span></div>
+  <div class="api"><code class="sig">transform</code><span class="desc">Transform: <code>gameObject.Transform</code> の短縮</span></div>
+  <div class="api"><code class="sig">gameObject.Transform / .CanvasTransform / .Sprite / .Camera / .AudioSource</code><span class="desc">各コンポーネントへのアクセサ（詳細は下の各コンポーネント節）</span></div>
+
+  <h3>生成・破棄・検索（Instantiate / Destroy / Find）</h3>
+  <div class="api"><code class="sig">GameObject.Instantiate("assets://actors/Bullet.actor")</code><span class="desc">.actor ファイル（プレハブ）からアクターを生成。戻り値に<b>同フレーム中に</b> Position 等を設定でき、その値が優先される</span></div>
+  <div class="api"><code class="sig">obj.Destroy() / GameObject.Destroy(obj)</code><span class="desc">アクターを破棄（実際の破棄はフレーム末尾。Unity と同じ遅延モデル）</span></div>
+  <div class="api"><code class="sig">GameObject.Find("Player")</code><span class="desc">アクターを名前で検索（ヒエラルキーの DFS 順で最初の一致）</span></div>
+<pre><span class="k">var</span> bullet = <span class="t">SEED.GameObject</span>.Instantiate(<span class="s">"assets://actors/Bullet.actor"</span>);
+bullet.Transform.Position = transform.Position;   <span class="c">// 生成直後に位置設定できる</span>
+<span class="k">if</span> (!bullet.IsValid) { <span class="c">/* 読み込み失敗 */</span> }
+
+<span class="k">var</span> player = <span class="t">SEED.GameObject</span>.Find(<span class="s">"Player"</span>);
+<span class="k">if</span> (player.IsValid) { player.Transform.Position = <span class="t">SEED.Vector3</span>.Zero; }</pre>
+  <div class="warn">
+    <b>2D アクター（Actor2D）の注意</b>: 構築時に Transform が CanvasTransform へ差し替わるため、生成直後の 3D Position 設定は反映されません。位置は翌フレーム以降に <code>CanvasTransform.Position</code> で設定してください。<br>
+    破棄済み GameObject への読み取りは既定値、書き込みは無視されます（クラッシュしません）。<br>
+    現時点の制限: Play 開始後に生成・破棄したアクターの<b>物理コライダーは物理スレッドに反映されません</b>。
+  </div>
+</section>
+
+<!-- ════════════════ 7.x コンポーネント ════════════════ -->
+<section id="sec-components" data-keywords="コンポーネント Transform CanvasTransform Sprite Camera AudioSource 一覧">
+  <h2>7.x コンポーネント</h2>
+
+  <h3 id="cmp-transform">Transform（3D 位置・回転・スケール）</h3>
+  <div class="api"><code class="sig">transform.Position</code><span class="desc">Vector3（get/set）。ワールド絶対座標</span></div>
+  <div class="api"><code class="sig">transform.WorldPosition</code><span class="desc">Vector3（get のみ。ワールド絶対座標 = Position と同値）</span></div>
+  <div class="api"><code class="sig">transform.Rotation</code><span class="desc">Vector3（get/set。YXZ オイラー角・度）</span></div>
+  <div class="api"><code class="sig">transform.Scale</code><span class="desc">Vector3（get/set）</span></div>
+<pre><span class="c">// 例: 回しながら上げる</span>
+transform.Rotation += <span class="k">new</span> <span class="t">SEED.Vector3</span>(0f, 90f * <span class="t">SEED.Time</span>.DeltaTime, 0f);
+transform.Position += <span class="t">SEED.Vector3</span>.Up * <span class="t">SEED.Time</span>.DeltaTime;</pre>
+
+  <h3 id="cmp-canvastransform">CanvasTransform（2D キャンバス上の位置・回転・スケール）</h3>
+  <div class="api"><code class="sig">ct.Position</code><span class="desc">Vector2（get/set。親 Canvas 基準の相対座標）</span></div>
+  <div class="api"><code class="sig">ct.Rotation</code><span class="desc">float（get/set。Z 軸周りの度）</span></div>
+  <div class="api"><code class="sig">ct.Scale</code><span class="desc">Vector2（get/set）</span></div>
+  <div class="api"><code class="sig">ct.Pivot</code><span class="desc">Vector2（get/set。回転・スケール基準点。正規化 [0,1]、(0.5,0.5)=中央）</span></div>
+  <div class="api"><code class="sig">ct.Anchor</code><span class="desc">Vector2（get/set。親 Canvas 内の position 基準点。(0,0)=左上 (1,1)=右下）</span></div>
+  <div class="api"><code class="sig">ct.ScreenPosition</code><span class="desc">Vector2（get のみ。ウィンドウ左上原点のスクリーン座標・ピクセル。アンカー・スケールモード・親チェーンをすべて反映した絶対位置）</span></div>
+
+  <h3 id="cmp-sprite">Sprite（2D スプライト表示）</h3>
+  <div class="api"><code class="sig">sprite.TexturePath</code><span class="desc">string（get/set。<code>assets://</code> 仮想パス。空文字=単色表示）</span></div>
+  <div class="api"><code class="sig">sprite.Color</code><span class="desc">Color（get/set。RGBA。テクスチャに乗算）</span></div>
+  <div class="api"><code class="sig">sprite.Width / sprite.Height</code><span class="desc">float（get/set。キャンバスユニット）</span></div>
+  <div class="api"><code class="sig">sprite.Size</code><span class="desc">Vector2（get/set。Width/Height をまとめて）</span></div>
+  <div class="api"><code class="sig">sprite.Layer</code><span class="desc">int（get/set。描画優先度。大きいほど手前。既定 0。同値はヒエラルキー順、同一描画ゾーン内で比較）</span></div>
+<pre><span class="c">// 例: 点滅させる</span>
+sprite.Color = <span class="t">SEED.Color</span>.White.WithAlpha(<span class="t">SEED.Mathf</span>.PingPong(<span class="t">SEED.Time</span>.ElapsedTime, 1f));</pre>
+
+  <h3 id="cmp-camera">Camera（3D カメラ設定）</h3>
+  <p class="section-note">カメラの位置・向きは同じ GameObject の <code>transform</code> で動かします。</p>
+  <div class="api"><code class="sig">cam.FieldOfView</code><span class="desc">float（get/set。垂直視野角・度。透視投影時に使用）</span></div>
+  <div class="api"><code class="sig">cam.Near / cam.Far</code><span class="desc">float（get/set。クリップ距離）</span></div>
+  <div class="api"><code class="sig">cam.IsMain</code><span class="desc">bool（get/set。Play モードのメインカメラか）</span></div>
+  <div class="api"><code class="sig">cam.ClearColor</code><span class="desc">Color（get/set。背景クリアカラー）</span></div>
+  <div class="api"><code class="sig">cam.TargetWidth / cam.TargetHeight</code><span class="desc">int（get/set。スケーリングのベース解像度）</span></div>
+  <div class="api"><code class="sig">cam.BarColor</code><span class="desc">Color（get/set。レターボックス帯の色）</span></div>
+  <div class="api"><code class="sig">cam.Projection</code><span class="desc">string（get/set。<code>"perspective"</code> / <code>"orthographic"</code>）</span></div>
+  <div class="api"><code class="sig">cam.OrthoHeight</code><span class="desc">float（get/set。正射投影時の縦の描画範囲・ワールド単位。横は OrthoHeight × アスペクト比）</span></div>
+
+  <h3 id="cmp-audiosource">AudioSource（アクター紐づけの音源。3D 距離減衰・パン対応）</h3>
+  <p class="section-note">エディタの「コンポーネント追加 → サウンド → Audio Source」で追加し、インスペクタで設定します。</p>
+  <div class="api"><code class="sig">audio.Play()</code><span class="desc">設定された音源を再生（再生中なら鳴らし直し）</span></div>
+  <div class="api"><code class="sig">audio.Stop()</code><span class="desc">停止</span></div>
+  <div class="api"><code class="sig">audio.IsPlaying</code><span class="desc">bool: 再生中か</span></div>
+  <div class="api"><code class="sig">audio.Path</code><span class="desc">string（get/set。<code>assets://</code> 仮想パス）</span></div>
+  <div class="api"><code class="sig">audio.Volume</code><span class="desc">float（get/set。1.0=等倍。再生中も即反映）</span></div>
+  <div class="api"><code class="sig">audio.Loop</code><span class="desc">bool（get/set。次回 Play 時に反映）</span></div>
+  <div class="api"><code class="sig">audio.PlayOnStart</code><span class="desc">bool（get/set。Play 開始時に自動再生）</span></div>
+  <div class="api"><code class="sig">audio.Spatial</code><span class="desc">bool（get/set。3D 空間再生 = メインカメラとの距離減衰 + 方向パン）</span></div>
+  <div class="api"><code class="sig">audio.MinDistance / audio.MaxDistance</code><span class="desc">float（get/set。減衰開始距離 / 無音距離。減衰は線形）</span></div>
+  <div class="api"><code class="sig">audio.Pan</code><span class="desc">float（get/set。-1=左 〜 1=右。<code>Spatial=false</code> 時のみ有効）</span></div>
+
+  <h3>利用可能なコンポーネント一覧</h3>
+  <table>
+    <tr><th>コンポーネント名</th><th>アクセサ</th><th>内容</th></tr>
+    <tr><td><code>Transform</code></td><td><code>gameObject.Transform</code> / <code>transform</code></td><td>3D 位置・回転・スケール</td></tr>
+    <tr><td><code>CanvasTransform</code></td><td><code>gameObject.CanvasTransform</code></td><td>2D キャンバス上の位置・回転・スケール・ピボット・アンカー</td></tr>
+    <tr><td><code>Sprite</code></td><td><code>gameObject.Sprite</code></td><td>テクスチャパス・色・サイズ・レイヤー</td></tr>
+    <tr><td><code>Camera</code></td><td><code>gameObject.Camera</code></td><td>FOV・クリップ距離・メインカメラ・クリアカラー・ベース解像度</td></tr>
+    <tr><td><code>Audio</code></td><td><code>gameObject.AudioSource</code></td><td>音源パス・音量・ループ・3D 減衰・パン + Play/Stop</td></tr>
+  </table>
+  <p class="section-note">他のコンポーネント（Collider / Rigidbody など物理系）は物理 API として順次対応予定です。</p>
+</section>
+
+<!-- ════════════════ 7.5 Scene ════════════════ -->
+<section id="sec-scene" data-keywords="Scene シーン 遷移 ロード 切り替え">
+  <h2>7.5 Scene（シーン遷移）</h2>
+  <p class="section-note">シーンは<b>プロジェクト設定 → シーンマネージャで登録した名前</b>で参照します（<code>assets://</code> パス直接指定も可能）。</p>
+  <div class="api"><code class="sig">Scene.Load("game")</code><span class="desc">事前読み込みのみ（現在のシーンはそのまま）。保持できるのは 1 つで、直後の Transition で消費される</span></div>
+  <div class="api"><code class="sig">Scene.Transition("game")</code><span class="desc">シーン切り替え。<b>フレーム末尾</b>に行われ、現在のシーンの全アクター・スクリプトは破棄される。Load 済みなら即座、未 Load なら内部で自動読み込み</span></div>
+<pre><span class="c">// 推奨フロー: 事前読み込み → 遷移（遷移フレームのロード時間がなくなる）</span>
+<span class="t">SEED.Scene</span>.Load(<span class="s">"game"</span>);         <span class="c">// フェード中などに呼ぶ</span>
+<span class="c">// ... フェードアウト演出など ...</span>
+<span class="t">SEED.Scene</span>.Transition(<span class="s">"game"</span>);   <span class="c">// 即座に切り替わる</span></pre>
+  <div class="warn">読み込みに失敗した場合は現在のシーンが維持されます（戻り値 true は「受理」であり成功保証ではない）。<b>Transition を呼んだフレームで発行した Instantiate / Destroy は破棄されます</b>。シーン遷移を決めたら、そのフレームではそれ以上シーン操作をしないでください。</div>
+</section>
+
+<!-- ════════════════ 9. ライブラリ ════════════════ -->
+<section id="sec-libs" data-keywords="ライブラリ 使用可能 System LINQ 標準 Unity 使えない">
+  <h2>9. 使用可能なライブラリ</h2>
+  <div class="api"><code class="sig">SEED / SEEDEditor.Scripting</code><span class="desc">本ページに列挙した SEED API</span></div>
+  <div class="api"><code class="sig">System / System.Collections.Generic / System.Linq / System.Math など</code><span class="desc">.NET 標準ライブラリ</span></div>
+  <div class="warn"><b>使えないもの</b>: <code>UnityEngine.*</code>、<code>MonoBehaviour</code>、Unity のコルーチン（<code>IEnumerator</code> ベースの <code>StartCoroutine</code> 等）。これらは SEED には存在しません。</div>
+</section>
+
+</main>
+
+<div id="no-result">「<span id="no-result-word"></span>」に一致する API はありません</div>
+
+<script>
+// ============================================================
+//  検索フィルタ
+//  - .api 行の全文（シグネチャ + 説明）と、セクションの
+//    data-keywords / 見出しテキストを対象に部分一致で絞り込む
+//  - セクション見出しにマッチした場合はセクション全体を表示する
+//  - スペース区切りで AND 検索
+// ============================================================
+(function () {
+  const input     = document.getElementById('search');
+  const hitCount  = document.getElementById('hit-count');
+  const noResult  = document.getElementById('no-result');
+  const noWord    = document.getElementById('no-result-word');
+  const sections  = Array.from(document.querySelectorAll('main > section'));
+
+  // 各セクションの検索用テキストを事前計算する（毎回 DOM を舐めない）
+  const sectionData = sections.map(sec => {
+    const headText = ((sec.dataset.keywords || '') + ' ' +
+                      Array.from(sec.querySelectorAll('h2, h3'))
+                           .map(h => h.textContent).join(' ')).toLowerCase();
+    const items = Array.from(sec.querySelectorAll('.api')).map(el => ({
+      el,
+      text: el.textContent.toLowerCase(),
+    }));
+    return { sec, headText, items };
+  });
+
+  function applyFilter() {
+    const raw   = input.value.trim().toLowerCase();
+    const terms = raw.split(/\s+/).filter(t => t.length > 0);
+    let totalHits = 0;
+    let anyVisible = false;
+
+    for (const { sec, headText, items } of sectionData) {
+      if (terms.length === 0) {
+        // 検索なし: 全表示・ハイライト解除
+        sec.classList.remove('filtered');
+        items.forEach(({ el }) => { el.classList.remove('filtered', 'hit'); });
+        anyVisible = true;
+        continue;
+      }
+
+      // セクション見出し・キーワードに全語マッチ → セクション丸ごと表示
+      const headMatch = terms.every(t => headText.includes(t));
+
+      let sectionHasHit = false;
+      for (const { el, text } of items) {
+        const match = terms.every(t => text.includes(t));
+        if (match || headMatch) {
+          el.classList.remove('filtered');
+          el.classList.toggle('hit', match);   // 個別マッチのみハイライト
+          if (match) totalHits++;
+          sectionHasHit = true;
+        } else {
+          el.classList.add('filtered');
+          el.classList.remove('hit');
+        }
+      }
+
+      // API 行を 1 つも持たない説明資料（コード例・注意書き）は
+      // セクション表示に追従する（CSS で .filtered セクションごと隠れる）
+      const show = headMatch || sectionHasHit;
+      sec.classList.toggle('filtered', !show);
+      if (show) anyVisible = true;
+      if (headMatch && !sectionHasHit) totalHits++;   // 見出しのみのヒットも 1 件と数える
+    }
+
+    hitCount.textContent = terms.length === 0 ? '' : `${totalHits} 件ヒット`;
+    noResult.style.display = anyVisible ? 'none' : 'block';
+    noWord.textContent = input.value.trim();
+  }
+
+  input.addEventListener('input', applyFilter);
+
+  // "/" キーで検索窓にフォーカス（入力中は無効）
+  document.addEventListener('keydown', e => {
+    if (e.key === '/' && document.activeElement !== input) {
+      e.preventDefault();
+      input.focus();
+      input.select();
+    }
+    // Esc で検索クリア
+    if (e.key === 'Escape' && document.activeElement === input) {
+      input.value = '';
+      applyFilter();
+    }
+  });
+})();
+</script>
+
+</body>
+</html>

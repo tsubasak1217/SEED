@@ -602,8 +602,65 @@ public class ScriptEditorPanel : UserControl
         sp.Children.Add(ToolBtn("⚙ 設定",   "書式・配色設定 (Ctrl+,)",        OpenSettings));
         sp.Children.Add(ToolBtn("整形",      "コード整形 (Ctrl+K,D)",          FormatCurrent));
         sp.Children.Add(ToolBtn("検索",      "検索 (Ctrl+F)",                  () => { _findBar.SetTarget(CurrentEditor()); _findBar.ShowFind(); }));
+        sp.Children.Add(ToolBtn("📖 API ガイド", "スクリプト API リファレンスをブラウザで開く", OpenApiGuide));
         bar.Child = sp;
         return bar;
+    }
+
+    // ── API ガイド ─────────────────────────────────────────────
+
+    /// <summary>
+    /// スクリプト API リファレンス（検索機能付き HTML 版）を既定ブラウザで開く。
+    /// HTML が見つからない場合は正典の Markdown（docs/scripting_api.md）へフォールバックする。
+    /// </summary>
+    private void OpenApiGuide()
+    {
+        var path = LocateRepoDoc("docs/scripting_api.html")
+                ?? LocateRepoDoc("docs/scripting_api.md");
+        if (path is null)
+        {
+            EditorLog.Write("API ガイドが見つかりません（docs/scripting_api.html / .md）");
+            MessageBox.Show(
+                "API ガイド（docs/scripting_api.html）が見つかりませんでした。",
+                "スクリプトエディタ", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+        try
+        {
+            // UseShellExecute = true で OS の既定アプリ（ブラウザ）に委ねる
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName        = path,
+                UseShellExecute = true,
+            });
+            EditorLog.Write($"API ガイドを開きました: {path}");
+        }
+        catch (Exception ex)
+        {
+            EditorLog.Write($"API ガイドを開けませんでした: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// リポジトリ相対パスのドキュメントを、実行ディレクトリから親を遡って探す
+    /// （ScriptApiReference.Locate と同じ戦略。開発時のリポジトリ構成に対応）。
+    /// </summary>
+    private static string? LocateRepoDoc(string repoRelativePath)
+    {
+        var baseDir = AppContext.BaseDirectory;
+        // 1) 出力ディレクトリへコピーされた場合（ファイル名のみで直下を確認）
+        var local = Path.Combine(baseDir, Path.GetFileName(repoRelativePath));
+        if (File.Exists(local)) return local;
+        // 2) 親ディレクトリを遡ってリポジトリ内のパスを探す
+        var dir = new DirectoryInfo(baseDir);
+        while (dir is not null)
+        {
+            var candidate = Path.Combine(dir.FullName,
+                repoRelativePath.Replace('/', Path.DirectorySeparatorChar));
+            if (File.Exists(candidate)) return candidate;
+            dir = dir.Parent;
+        }
+        return null;
     }
 
     // ── 設定（書式・配色）─────────────────────────────────────
