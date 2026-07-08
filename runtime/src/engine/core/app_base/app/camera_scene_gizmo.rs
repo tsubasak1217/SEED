@@ -22,7 +22,7 @@ use crate::engine::ecs::World;
 use crate::engine::structs::objects::Actor;
 use crate::engine::structs::tensor::{Vector3, Mat4x4};
 use crate::engine::components::{
-    ComponentKind, CameraComponent,
+    ComponentKind, CameraComponent, CameraProjection,
     Transform as ActorTransform,
 };
 use crate::engine::methods::drawer::{GizmoBatch, LineBatch, CameraUniform, extract_frustum_planes};
@@ -311,12 +311,35 @@ pub struct SelectedCameraData {
     pub target_width:  u32,
     /// ゲームのターゲット解像度（縦）。フラスタムおよびプレビューのアスペクト比算出に使用。
     pub target_height: u32,
+    /// 投影方式（透視 / 正射）。
+    pub projection:   CameraProjection,
+    /// 正射投影時の縦方向の描画範囲（ワールド単位・全高）。
+    pub ortho_height: f32,
 }
 
 impl SelectedCameraData {
     /// ターゲット解像度からアスペクト比（width / height）を返す。
     pub fn target_aspect(&self) -> f32 {
         self.target_width.max(1) as f32 / self.target_height.max(1) as f32
+    }
+
+    /// 投影方式に応じた射影行列を返す（透視 or 正射）。
+    ///
+    /// フラスタムカリング・プレビュー・カメラ描画で共通利用し、投影の一貫性を保つ。
+    /// 正射は縦 `ortho_height`・横 `ortho_height * aspect` の範囲を中央基準（Y-up）で写す。
+    pub fn proj_matrix(&self, aspect: f32) -> Mat4x4<f32> {
+        let near = self.near.max(0.01);
+        let far  = self.far.max(near + 0.1);
+        match self.projection {
+            CameraProjection::Perspective => {
+                Mat4x4::perspective_lh(self.fov_y_deg.to_radians(), aspect, near, far)
+            }
+            CameraProjection::Orthographic => {
+                let half_h = (self.ortho_height.max(0.01)) * 0.5;
+                let half_w = half_h * aspect;
+                Mat4x4::orthographic_lh(-half_w, half_w, -half_h, half_h, near, far)
+            }
+        }
     }
 }
 
@@ -366,12 +389,7 @@ pub fn compute_frustum_planes(cam_data: &SelectedCameraData) -> [[f32; 4]; 6] {
     let target = pos + Vector3::new(fx, fy, fz);
     let up_vec = Vector3::new(ux, uy, uz);
     let view   = Mat4x4::look_at_lh(pos, target, up_vec);
-    let proj   = Mat4x4::perspective_lh(
-        cam_data.fov_y_deg.to_radians(),
-        aspect,
-        cam_data.near.max(0.01),
-        cam_data.far.max(cam_data.near + 0.1),
-    );
+    let proj   = cam_data.proj_matrix(aspect);
     let vp = proj * view;
     extract_frustum_planes(&vp.data)
 }
@@ -394,12 +412,7 @@ pub fn build_camera_uniform(
     let up_vec = Vector3::new(ux, uy, uz);
 
     let view = Mat4x4::look_at_lh(pos, target, up_vec);
-    let proj = Mat4x4::perspective_lh(
-        cam_data.fov_y_deg.to_radians(),
-        aspect,
-        cam_data.near.max(0.01),
-        cam_data.far.max(cam_data.near + 0.1),
-    );
+    let proj = cam_data.proj_matrix(aspect);
     let view_proj = proj * view;
 
     CameraUniform {
@@ -500,6 +513,8 @@ fn find_camera_actor(
                             clear_color:  cam.clear_color,
                             target_width:  cam.target_width,
                             target_height: cam.target_height,
+                            projection:   cam.projection,
+                            ortho_height: cam.ortho_height,
                         });
                     }
                 }
@@ -538,15 +553,23 @@ fn add_camera_frustum(lb: &mut LineBatch, cam: &SelectedCameraData) {
         right[0] * fwd[1] - right[1] * fwd[0],
     ]);
 
-    let half_fov = (cam.fov_y_deg * 0.5).to_radians().tan();
     let near     = cam.near.max(0.01);
     let far      = cam.far.min(MAX_FRUSTUM_FAR).max(near + 0.1);
 
-    // near / far 平面の半サイズ
-    let nh = half_fov * near;
-    let nw = nh * aspect;
-    let fh = half_fov * far;
-    let fw = fh * aspect;
+    // near / far 平面の半サイズ。
+    // 透視: 距離に比例して広がる（角錐）。正射: 距離に依らず一定（直方体）。
+    let (nh, nw, fh, fw) = match cam.projection {
+        CameraProjection::Perspective => {
+            let half_fov = (cam.fov_y_deg * 0.5).to_radians().tan();
+            let nh = half_fov * near;
+            let fh = half_fov * far;
+            (nh, nh * aspect, fh, fh * aspect)
+        }
+        CameraProjection::Orthographic => {
+            let h = cam.ortho_height.max(0.01) * 0.5;
+            (h, h * aspect, h, h * aspect)
+        }
+    };
 
     let nc = add3(pos, scale3(fwd, near));
     let fc = add3(pos, scale3(fwd, far));

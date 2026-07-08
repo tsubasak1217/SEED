@@ -888,6 +888,13 @@ impl App {
                 IpcCommand::SetCameraBarColor { actor_dfs_id, slot_idx, r, g, b, a } => {
                     self.handle_set_camera_bar_color(actor_dfs_id, slot_idx, r, g, b, a);
                 }
+                IpcCommand::SetCameraComponentProjection { actor_dfs_id, slot_idx, mode } => {
+                    let m = mode.clone();
+                    self.handle_set_camera_projection(actor_dfs_id, slot_idx, &m);
+                }
+                IpcCommand::SetCameraComponentOrthoHeight { actor_dfs_id, slot_idx, value } => {
+                    self.handle_set_camera_ortho_height(actor_dfs_id, slot_idx, value);
+                }
                 // ── 物理コンポーネント ──────────────────────────────────────
                 IpcCommand::SetColliderData { actor_dfs_id, slot_idx, json } => {
                     let j = json.clone();

@@ -72,4 +72,18 @@ public readonly struct Camera
         get => ScriptHost.TryGetColor(_entity, Comp, "bar_color", out var c) ? c : Color.Black;
         set => ScriptHost.TrySetColor(_entity, Comp, "bar_color", value);
     }
+
+    /// <summary>投影方式（"perspective" / "orthographic"）。</summary>
+    public string Projection
+    {
+        get => ScriptHost.TryGetString(_entity, Comp, "projection", out var s) ? s : "perspective";
+        set => ScriptHost.TrySetString(_entity, Comp, "projection", value);
+    }
+
+    /// <summary>正射投影時の縦方向の描画範囲（ワールド単位・全高）。透視投影時は未使用。</summary>
+    public float OrthoHeight
+    {
+        get => ScriptHost.TryGetFloat(_entity, Comp, "ortho_height", out var v) ? v : 0f;
+        set => ScriptHost.TrySetFloat(_entity, Comp, "ortho_height", value);
+    }
 }

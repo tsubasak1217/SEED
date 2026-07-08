@@ -348,13 +348,17 @@ sprite.Color = SEED.Color.White.WithAlpha(SEED.Mathf.PingPong(SEED.Time.ElapsedT
 
 ```csharp
 var cam = gameObject.Camera;
-cam.FieldOfView            // float（get/set。垂直視野角・度）
+cam.FieldOfView            // float（get/set。垂直視野角・度。透視投影時に使用）
 cam.Near / cam.Far         // float（get/set。クリップ距離）
 cam.IsMain                 // bool（get/set。Play モードのメインカメラか）
 cam.ClearColor             // Color（get/set。背景クリアカラー）
 cam.TargetWidth / cam.TargetHeight  // int（get/set。スケーリングのベース解像度）
 cam.BarColor               // Color（get/set。レターボックス帯の色）
+cam.Projection             // string（get/set。"perspective" / "orthographic"）
+cam.OrthoHeight            // float（get/set。正射投影時の縦の描画範囲・ワールド単位）
 ```
+
+- `Projection = "orthographic"` で平行投影（遠近感なし）。縦 `OrthoHeight`・横 `OrthoHeight × アスペクト比` の範囲を写します。透視投影時は `FieldOfView` を使用します。
 
 ### AudioSource（アクター紐づけの音源。3D 距離減衰・パン対応）
 

@@ -531,7 +531,20 @@ impl App {
                     let target = pos + Vector3::new(fx, fy, fz);
                     let up_vec = Vector3::new(ux, uy, uz);
                     let v = Mat4x4::look_at_lh(pos, target, up_vec);
-                    let p = Mat4x4::perspective_lh(fov_y_rad, proj_aspect, cd.near, cd.far);
+                    // 投影方式に応じて透視 / 正射を切り替える（正射は縦 ortho_height 基準）
+                    let p = match cd.projection {
+                        crate::engine::components::CameraProjection::Perspective => {
+                            Mat4x4::perspective_lh(fov_y_rad, proj_aspect, cd.near, cd.far)
+                        }
+                        crate::engine::components::CameraProjection::Orthographic => {
+                            let half_h = cd.ortho_height.max(0.01) * 0.5;
+                            let half_w = half_h * proj_aspect;
+                            Mat4x4::orthographic_lh(
+                                -half_w, half_w, -half_h, half_h,
+                                cd.near.max(0.01), cd.far.max(cd.near + 0.1),
+                            )
+                        }
+                    };
                     (v, p, [px, py, pz])
                 });
                 // メインカメラが未配置の場合はデバッグカメラにフォールバック

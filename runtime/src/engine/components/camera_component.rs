@@ -21,6 +21,40 @@ fn default_clear_color()   -> [f32; 4] { [0.1, 0.1, 0.1, 1.0] }
 fn default_bar_color()     -> [f32; 4] { [0.0, 0.0, 0.0, 1.0] }
 fn default_target_width()  -> u32      { 1920 }
 fn default_target_height() -> u32      { 1080 }
+/// 正射投影時の縦方向の描画範囲（ワールド単位・全高）のデフォルト。
+fn default_ortho_height()  -> f32      { 10.0 }
+
+// ─── CameraProjection ────────────────────────────────────────────────────────
+
+/// カメラの投影方式。
+///
+/// - `Perspective` : 透視投影（遠近感あり。fov_y_deg で画角を決める）
+/// - `Orthographic`: 正射投影（平行投影・遠近感なし。ortho_height で縦の描画範囲を決める）
+#[derive(Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq, Debug)]
+#[serde(rename_all = "snake_case")]
+pub enum CameraProjection {
+    #[default]
+    Perspective,
+    Orthographic,
+}
+
+impl CameraProjection {
+    /// serde/IPC で使用する文字列表現を返す。
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Perspective  => "perspective",
+            Self::Orthographic => "orthographic",
+        }
+    }
+
+    /// 文字列表現から変換する。不明な値は `Perspective` にフォールバックする。
+    pub fn from_str(s: &str) -> Self {
+        match s.trim() {
+            "orthographic" => Self::Orthographic,
+            _              => Self::Perspective,
+        }
+    }
+}
 
 // ─── ScalingMode ─────────────────────────────────────────────────────────────
 
@@ -104,6 +138,12 @@ pub struct CameraComponentData {
     /// LetterBox / PillarBox 時の帯カラー（RGBA, linear）。デフォルト黒。
     #[serde(default = "default_bar_color")]
     pub bar_color: [f32; 4],
+    /// 投影方式（透視 / 正射）。
+    #[serde(default)]
+    pub projection: CameraProjection,
+    /// 正射投影時の縦方向の描画範囲（ワールド単位・全高）。透視時は未使用。
+    #[serde(default = "default_ortho_height")]
+    pub ortho_height: f32,
 }
 
 impl Default for CameraComponentData {
@@ -118,6 +158,8 @@ impl Default for CameraComponentData {
             target_width:  default_target_width(),
             target_height: default_target_height(),
             bar_color:    default_bar_color(),
+            projection:   CameraProjection::default(),
+            ortho_height: default_ortho_height(),
         }
     }
 }
@@ -148,6 +190,10 @@ pub struct CameraComponent {
     pub target_height: u32,
     /// LetterBox / PillarBox 時の帯カラー（RGBA, linear）
     pub bar_color: [f32; 4],
+    /// 投影方式（透視 / 正射）
+    pub projection: CameraProjection,
+    /// 正射投影時の縦方向の描画範囲（ワールド単位・全高）
+    pub ortho_height: f32,
 }
 
 impl CameraComponent {
@@ -163,6 +209,8 @@ impl CameraComponent {
             target_width:  data.target_width,
             target_height: data.target_height,
             bar_color:    data.bar_color,
+            projection:   data.projection,
+            ortho_height: data.ortho_height,
         }
     }
 
@@ -178,6 +226,8 @@ impl CameraComponent {
             target_width:  self.target_width,
             target_height: self.target_height,
             bar_color:    self.bar_color,
+            projection:   self.projection,
+            ortho_height: self.ortho_height,
         }
     }
 }

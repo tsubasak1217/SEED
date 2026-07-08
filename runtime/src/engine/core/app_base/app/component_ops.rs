@@ -253,13 +253,15 @@ impl App {
                     ))
                 }
                 ComponentData::CameraComponent(d) => {
-                    // FOV / near / far / is_main / clear_color / scaling_mode / target_size / bar_color をインスペクター用に送信する
+                    // FOV / near / far / is_main / clear_color / scaling_mode / target_size /
+                    // bar_color / projection / ortho_height をインスペクター用に送信する
                     ("CameraComponent", format!(
-                        r#","fov_y_deg":{:.4},"near":{:.4},"far":{:.4},"is_main":{},"cr":{:.4},"cg":{:.4},"cb":{:.4},"ca":{:.4},"scaling_mode":"{}","target_width":{},"target_height":{},"bar_cr":{:.4},"bar_cg":{:.4},"bar_cb":{:.4},"bar_ca":{:.4}"#,
+                        r#","fov_y_deg":{:.4},"near":{:.4},"far":{:.4},"is_main":{},"cr":{:.4},"cg":{:.4},"cb":{:.4},"ca":{:.4},"scaling_mode":"{}","target_width":{},"target_height":{},"bar_cr":{:.4},"bar_cg":{:.4},"bar_cb":{:.4},"bar_ca":{:.4},"projection":"{}","ortho_height":{:.4}"#,
                         d.fov_y_deg, d.near, d.far, d.is_main as u8,
                         d.clear_color[0], d.clear_color[1], d.clear_color[2], d.clear_color[3],
                         d.scaling_mode.as_str(), d.target_width, d.target_height,
                         d.bar_color[0], d.bar_color[1], d.bar_color[2], d.bar_color[3],
+                        d.projection.as_str(), d.ortho_height,
                     ))
                 }
                 ComponentData::PluginComponent(d) => {

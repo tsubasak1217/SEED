@@ -369,6 +369,8 @@ public partial class InspectorPanel : UserControl
         float CamCR = 0.1f, float CamCG = 0.1f, float CamCB = 0.1f, float CamCA = 1f,
         string CamScalingMode = "vert_minus", int CamTargetW = 1920, int CamTargetH = 1080,
         float CamBarCR = 0f, float CamBarCG = 0f, float CamBarCB = 0f, float CamBarCA = 1f,
+        // 投影方式（"perspective" / "orthographic"）と正射投影の縦描画範囲（ワールド単位）
+        string CamProjection = "perspective", float CamOrthoHeight = 10f,
         // PluginComponent 用フィールド
         // plugin_fields は [{"key":...,"label":...,"kind":{...},"current_value":...,"tooltip":...},...] JSON
         string PluginName = "", string PluginFieldsJson = "",
@@ -535,6 +537,8 @@ public partial class InspectorPanel : UserControl
             var camBarCG       = comp.TryGetProperty("bar_cg", out var bcgj) ? bcgj.GetSingle() : 0f;
             var camBarCB       = comp.TryGetProperty("bar_cb", out var bcbj) ? bcbj.GetSingle() : 0f;
             var camBarCA       = comp.TryGetProperty("bar_ca", out var bcaj) ? bcaj.GetSingle() : 1f;
+            var camProjection  = comp.TryGetProperty("projection",   out var cpj) ? cpj.GetString() ?? "perspective" : "perspective";
+            var camOrthoHeight = comp.TryGetProperty("ortho_height", out var cohj) ? cohj.GetSingle() : 10f;
             // PluginComponent 用: プラグイン名とフィールド定義 JSON
             var pluginName       = comp.TryGetProperty("plugin_name",   out var pn)  ? pn.GetString()  ?? "" : "";
             var pluginFieldsJson = comp.TryGetProperty("plugin_fields",  out var pf)  ? pf.GetRawText()      : "[]";
@@ -571,6 +575,7 @@ public partial class InspectorPanel : UserControl
                 CamCR: camCR, CamCG: camCG, CamCB: camCB, CamCA: camCA,
                 CamScalingMode: camScalingMode, CamTargetW: camTargetW, CamTargetH: camTargetH,
                 CamBarCR: camBarCR, CamBarCG: camBarCG, CamBarCB: camBarCB, CamBarCA: camBarCA,
+                CamProjection: camProjection, CamOrthoHeight: camOrthoHeight,
                 PluginName: pluginName, PluginFieldsJson: pluginFieldsJson,
                 ColliderDataJson: colliderDataJson, RigidbodyDataJson: rigidbodyDataJson,
                 ScriptFieldsJson: scriptFieldsJson,
@@ -1145,7 +1150,31 @@ public partial class InspectorPanel : UserControl
     {
         var sp = new StackPanel { Margin = new Thickness(0, 4, 0, 4) };
 
-        // FOV（垂直視野角）
+        // ── 投影方式（透視 / 正射）────────────────────────────────────
+        // 透視時は FOV、正射時は正射高さフィールドを表示切替する。
+        var projectionModes = new[]
+        {
+            ("perspective",  "透視投影 (Perspective)"),
+            ("orthographic", "正射投影 (Orthographic)"),
+        };
+        var projRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 4, 0, 2) };
+        projRow.Children.Add(new TextBlock
+        {
+            Text       = "投影方式",
+            Foreground = new SolidColorBrush(Color.FromRgb(0xAA, 0xAA, 0xAA)),
+            FontSize   = 11,
+            Width      = 90,
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+        var projCombo = new ComboBox { Width = 170, FontSize = 11, Margin = new Thickness(4, 0, 0, 0) };
+        foreach (var (val, label) in projectionModes)
+            projCombo.Items.Add(new ComboBoxItem { Content = label, Tag = val });
+        var curProjIdx = Array.FindIndex(projectionModes, t => t.Item1 == info.CamProjection);
+        projCombo.SelectedIndex = curProjIdx >= 0 ? curProjIdx : 0;
+        projRow.Children.Add(projCombo);
+        sp.Children.Add(projRow);
+
+        // FOV（垂直視野角）— 透視投影時のみ表示
         var rowFov = BuildLabeledNumberRow("FOV (垂直°)", info.FovYDeg);
         sp.Children.Add(rowFov.element);
         void CommitFov()
@@ -1157,6 +1186,36 @@ public partial class InspectorPanel : UserControl
         rowFov.textBox.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { CommitFov(); e.Handled = true; } };
         rowFov.textBox.LostFocus += (_, _) => CommitFov();
         NumericDragBehavior.SetOnDrag(rowFov.textBox, CommitFov);
+
+        // 正射高さ（縦・ワールド単位）— 正射投影時のみ表示
+        var rowOrtho = BuildLabeledNumberRow("正射高さ (縦)", info.CamOrthoHeight);
+        sp.Children.Add(rowOrtho.element);
+        void CommitOrtho()
+        {
+            if (_currentActorId < 0) return;
+            if (!float.TryParse(rowOrtho.textBox.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) return;
+            _runtime?.SendToRuntime(FormattableString.Invariant($"SET_CAMERA_ORTHO_HEIGHT:{_currentActorId},{info.SlotIdx},{v}"));
+        }
+        rowOrtho.textBox.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { CommitOrtho(); e.Handled = true; } };
+        rowOrtho.textBox.LostFocus += (_, _) => CommitOrtho();
+        NumericDragBehavior.SetOnDrag(rowOrtho.textBox, CommitOrtho);
+
+        // 投影方式に応じた FOV / 正射高さ フィールドの表示切替
+        void UpdateProjectionVisibility(string proj)
+        {
+            bool ortho = proj == "orthographic";
+            rowFov.element.Visibility   = ortho ? Visibility.Collapsed : Visibility.Visible;
+            rowOrtho.element.Visibility = ortho ? Visibility.Visible   : Visibility.Collapsed;
+        }
+        UpdateProjectionVisibility(info.CamProjection);
+        projCombo.SelectionChanged += (_, _) =>
+        {
+            if (projCombo.SelectedItem is ComboBoxItem item && item.Tag is string proj)
+            {
+                _runtime?.SendToRuntime($"SET_CAMERA_PROJECTION:{_currentActorId},{info.SlotIdx},{proj}");
+                UpdateProjectionVisibility(proj);
+            }
+        };
 
         // ニアクリップ
         var rowNear = BuildLabeledNumberRow("Near", info.CamNear);

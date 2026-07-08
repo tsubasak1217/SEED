@@ -259,6 +259,12 @@ pub enum IpcCommand {
     /// CameraComponent の帯カラーを設定する（LetterBox / PillarBox 時の帯色、正規化値 0.0〜1.0）
     /// フォーマット: SET_CAMERA_BAR_COLOR:{actor_dfs_id},{slot_idx},{r},{g},{b},{a}
     SetCameraBarColor { actor_dfs_id: u32, slot_idx: u32, r: f32, g: f32, b: f32, a: f32 },
+    /// CameraComponent の投影方式を設定する（"perspective" / "orthographic"）
+    /// フォーマット: SET_CAMERA_PROJECTION:{actor_dfs_id},{slot_idx},{mode}
+    SetCameraComponentProjection { actor_dfs_id: u32, slot_idx: u32, mode: String },
+    /// CameraComponent の正射投影の縦描画範囲（ワールド単位・全高）を設定する
+    /// フォーマット: SET_CAMERA_ORTHO_HEIGHT:{actor_dfs_id},{slot_idx},{value}
+    SetCameraComponentOrthoHeight { actor_dfs_id: u32, slot_idx: u32, value: f32 },
     /// ColliderComponent のデータ全体（リジッドボディ設定を含む）を JSON で設定する
     /// フォーマット: SET_COLLIDER_DATA:{actor_dfs_id},{slot_idx},{json}
     /// json は ColliderComponentData の serde_json シリアライズ結果（カンマ含む）
@@ -1059,6 +1065,20 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                                 .map(|(a, sl, fs)| IpcCommand::SetCameraBarColor {
                                     actor_dfs_id: a, slot_idx: sl,
                                     r: fs[0], g: fs[1], b: fs[2], a: fs[3],
+                                })
+                        }
+                        s if s.starts_with("SET_CAMERA_PROJECTION:") => {
+                            // フォーマット: SET_CAMERA_PROJECTION:{actor_dfs_id},{slot_idx},{mode}
+                            parse2u_tail(&s["SET_CAMERA_PROJECTION:".len()..])
+                                .map(|(a, sl, mode)| IpcCommand::SetCameraComponentProjection {
+                                    actor_dfs_id: a, slot_idx: sl, mode: mode.trim().to_string(),
+                                })
+                        }
+                        s if s.starts_with("SET_CAMERA_ORTHO_HEIGHT:") => {
+                            // フォーマット: SET_CAMERA_ORTHO_HEIGHT:{actor_dfs_id},{slot_idx},{value}
+                            parse2u1f(&s["SET_CAMERA_ORTHO_HEIGHT:".len()..])
+                                .map(|(a, sl, v)| IpcCommand::SetCameraComponentOrthoHeight {
+                                    actor_dfs_id: a, slot_idx: sl, value: v,
                                 })
                         }
                         s if s.starts_with("SET_COLLIDER_DATA:") => {

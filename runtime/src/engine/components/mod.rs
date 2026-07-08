@@ -34,7 +34,7 @@ pub use script_component::{
 pub use canvas_component::{CanvasComponent, CanvasComponentData, CanvasViewportRef, AspectRatioAxis, GravityMode, CanvasDrawZone};
 pub use sprite_component::{SpriteComponent, SpriteComponentData};
 pub use inputmap_component::{InputMapComponent, InputMapComponentData};
-pub use camera_component::{CameraComponent, CameraComponentData, ScalingMode};
+pub use camera_component::{CameraComponent, CameraComponentData, ScalingMode, CameraProjection};
 pub use plugin_component::{PluginComponent, PluginComponentData};
 pub use collider_component::{ColliderComponent, ColliderComponentData, ColliderShapeData};
 pub use collider2d_component::{

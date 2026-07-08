@@ -294,6 +294,7 @@ fn read_floats(
                 "target_width"  => put(out, &[c.target_width as f32]),
                 "target_height" => put(out, &[c.target_height as f32]),
                 "bar_color"     => put(out, &c.bar_color),
+                "ortho_height"  => put(out, &[c.ortho_height]),
                 _               => None,
             }
         }
@@ -376,6 +377,7 @@ fn write_floats(
                 "target_width"  => take::<1>(v).map(|a| c.target_width  = a[0].max(0.0) as u32).is_some(),
                 "target_height" => take::<1>(v).map(|a| c.target_height = a[0].max(0.0) as u32).is_some(),
                 "bar_color"     => take(v).map(|a| c.bar_color = a).is_some(),
+                "ortho_height"  => take::<1>(v).map(|a| c.ortho_height = a[0].max(0.01)).is_some(),
                 _               => false,
             }
         }
@@ -402,6 +404,14 @@ fn read_string(world: &World, entity: Entity, component: &str, field: &str) -> O
                 _            => None,
             }
         }
+        "Camera" => {
+            let e = locate::<CameraComponent>(world, entity)?;
+            let c = world.get::<CameraComponent>(e)?;
+            match field {
+                "projection" => Some(c.projection.as_str().to_string()),
+                _            => None,
+            }
+        }
         _ => None,
     }
 }
@@ -425,6 +435,17 @@ fn write_string(
             match field {
                 "audio_path" => { a.audio_path = value.to_string(); true }
                 _            => false,
+            }
+        }
+        "Camera" => {
+            let Some(e) = locate::<CameraComponent>(world, entity) else { return false };
+            let Some(c) = world.get_mut::<CameraComponent>(e) else { return false };
+            match field {
+                "projection" => {
+                    c.projection = crate::engine::components::CameraProjection::from_str(value);
+                    true
+                }
+                _ => false,
             }
         }
         _ => false,

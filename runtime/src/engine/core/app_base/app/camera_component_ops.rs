@@ -9,7 +9,7 @@
 //  - handle_set_camera_clear_color: クリアカラー（RGBA）の更新
 // ============================================================
 
-use crate::engine::components::{ComponentKind, CameraComponent, ScalingMode};
+use crate::engine::components::{ComponentKind, CameraComponent, ScalingMode, CameraProjection};
 
 use super::{App, find_actor_by_dfs};
 
@@ -129,6 +129,58 @@ impl App {
             let Some(scene) = &mut self.scene else { return };
             if let Some(cc) = scene.world.get_mut::<CameraComponent>(entity) {
                 cc.scaling_mode = ScalingMode::from_str(mode_str);
+            }
+        }
+        self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
+        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+    }
+
+    /// CameraComponent の投影方式（透視 / 正射）を更新する。
+    pub(super) fn handle_set_camera_projection(
+        &mut self,
+        actor_dfs_id: u32,
+        slot_idx: u32,
+        mode_str: &str,
+    ) {
+        let wl = self.active_world_line;
+        let slot_entity = {
+            let Some(scene) = &self.scene else { return };
+            let mut c = 0u32;
+            find_actor_by_dfs(&scene.actors, wl, actor_dfs_id, &mut c)
+                .and_then(|a| a.slots().get(slot_idx as usize))
+                .filter(|s| s.kind == ComponentKind::Camera)
+                .map(|s| s.entity)
+        };
+        if let Some(entity) = slot_entity {
+            let Some(scene) = &mut self.scene else { return };
+            if let Some(cc) = scene.world.get_mut::<CameraComponent>(entity) {
+                cc.projection = CameraProjection::from_str(mode_str);
+            }
+        }
+        self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
+        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+    }
+
+    /// CameraComponent の正射投影の縦描画範囲（ワールド単位・全高）を更新する。
+    pub(super) fn handle_set_camera_ortho_height(
+        &mut self,
+        actor_dfs_id: u32,
+        slot_idx: u32,
+        value: f32,
+    ) {
+        let wl = self.active_world_line;
+        let slot_entity = {
+            let Some(scene) = &self.scene else { return };
+            let mut c = 0u32;
+            find_actor_by_dfs(&scene.actors, wl, actor_dfs_id, &mut c)
+                .and_then(|a| a.slots().get(slot_idx as usize))
+                .filter(|s| s.kind == ComponentKind::Camera)
+                .map(|s| s.entity)
+        };
+        if let Some(entity) = slot_entity {
+            let Some(scene) = &mut self.scene else { return };
+            if let Some(cc) = scene.world.get_mut::<CameraComponent>(entity) {
+                cc.ortho_height = value.max(0.01);
             }
         }
         self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
