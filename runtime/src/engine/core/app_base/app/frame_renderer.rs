@@ -90,6 +90,12 @@ const CAMERA_PREVIEW_W: u32 = 320;
 /// カメラプレビューのテクスチャ高さ（ピクセル）。
 const CAMERA_PREVIEW_H: u32 = 180;
 
+/// 2D 編集オルソカメラのズーム下限（ortho_half_h の最小＝最大ズームイン）。
+const CAM2D_ORTHO_HALF_H_MIN: f32 = 0.5;
+/// 2D 編集オルソカメラのズーム上限（ortho_half_h の最大＝最大ズームアウト）。
+/// 描画範囲（見える世界の広さ）の制限。従来 1000.0 を約 5 倍へ拡張。
+const CAM2D_ORTHO_HALF_H_MAX: f32 = 5000.0;
+
 impl App {
     /// スクリーン座標のワールドスポーン位置を IDバッファ読み取りで解決する。
     ///
@@ -363,7 +369,7 @@ impl App {
                     // scroll 正 = ホイール上 = ズームイン（half_h を小さくする）
                     cam_2d.ortho_half_h = (cam_2d.ortho_half_h
                         * 0.9_f32.powf(self.cam_input.scroll))
-                        .clamp(0.5, 1000.0);
+                        .clamp(CAM2D_ORTHO_HALF_H_MIN, CAM2D_ORTHO_HALF_H_MAX);
                 }
             } else {
                 // 3D モード（ワールドスペースキャンバス含む）: 通常のデバッグカメラ更新

@@ -54,6 +54,43 @@ pub(super) fn root_anchor_offset(anchor: [f32; 2], vw: f32, vh: f32, design_spac
     }
 }
 
+// ─── アウトライン描画（太さ・色）の共通定義 ──────────────────────────────────
+
+/// アウトライン太さ表現のリング間隔（描画空間の単位。SS では ortho ピクセル相当）。
+/// 実際の描画空間に合わせて呼び出し側で canvas_scale を乗じて渡す。
+const OUTLINE_RING_STEP: f32 = 1.6;
+/// 通常（非選択・非ルート）キャンバス枠のリング数（細線）。
+const OUTLINE_RINGS_THIN: u32 = 1;
+/// ルート（基準）キャンバス枠・選択枠のリング数（太線。3D 選択並みの視認性）。
+const OUTLINE_RINGS_THICK: u32 = 3;
+/// ルート（基準）キャンバス枠の色（非選択時）。基準キャンバスと分かる金色系。
+const ROOT_CANVAS_OUTLINE_COL: [f32; 4] = [1.0, 0.8, 0.25, 0.95];
+
+/// 太い矩形アウトラインを LineBatch へ描画する共通ヘルパー。
+///
+/// GPU ラインは常に 1px のため、矩形中心から外側へオフセットした同心矩形を
+/// `rings` 本重ねて太さを表現する（canvas_drop のドラッグホバーと同方式）。
+/// `step` はリング間隔（描画空間の単位。SS = ortho ピクセル相当、WS では
+/// canvas_scale を乗じてスケールする）。`corners` は tl→tr→br→bl の順。
+fn add_thick_rect(lb: &mut LineBatch, corners: [[f32; 3]; 4], color: [f32; 4], rings: u32, step: f32) {
+    let cx = (corners[0][0] + corners[1][0] + corners[2][0] + corners[3][0]) * 0.25;
+    let cy = (corners[0][1] + corners[1][1] + corners[2][1] + corners[3][1]) * 0.25;
+    for ring in 0..rings.max(1) {
+        let off = ring as f32 * step;
+        // 各コーナーを矩形中心から外側方向へ off だけ移動した矩形を生成する
+        let rc: [[f32; 3]; 4] = std::array::from_fn(|i| {
+            let c = corners[i];
+            let dx = c[0] - cx;
+            let dy = c[1] - cy;
+            let len = (dx * dx + dy * dy).sqrt().max(f32::EPSILON);
+            [c[0] + dx / len * off, c[1] + dy / len * off, c[2]]
+        });
+        for i in 0..4 {
+            lb.add_line(rc[i], rc[(i + 1) % 4], color);
+        }
+    }
+}
+
 // ============================================================
 //  collect_sprite_items
 // ============================================================
@@ -401,13 +438,24 @@ pub(super) fn collect_canvas_rects(
                 match slot.kind {
                     ComponentKind::Canvas => {
                         // CanvasComponent: キャンバス領域のアウトラインを常に描画する。
-                        // 選択中はアウトラインと同じオレンジ色、非選択時は通常色。
+                        // 色:   選択中=オレンジ / ルート(基準)キャンバス=金 / それ以外=通常色。
+                        // 太さ: 選択中 or ルート(基準)キャンバス=太線 / それ以外=細線。
+                        //       （ルートは「基準となるキャンバス」と分かるよう常に強調する）
                         if let Some(cc) = world.get::<CanvasComponent>(slot.entity) {
                             const SELECTED_COL: [f32; 4] = [1.0, 0.5, 0.05, 1.0];
-                            let draw_col = if selected_dfs_ids.contains(&my_dfs) {
+                            let is_selected = selected_dfs_ids.contains(&my_dfs);
+                            let is_root     = parent_canvas_size.is_none();
+                            let draw_col = if is_selected {
                                 SELECTED_COL
+                            } else if is_root {
+                                ROOT_CANVAS_OUTLINE_COL
                             } else {
                                 col
+                            };
+                            let rings = if is_selected || is_root {
+                                OUTLINE_RINGS_THICK
+                            } else {
+                                OUTLINE_RINGS_THIN
                             };
                             // アウトラインも自動解像度上書きを反映する
                             let [base_w, base_h] = root_auto.unwrap_or([cc.width, cc.height]);
@@ -420,18 +468,15 @@ pub(super) fn collect_canvas_rects(
                                  (m[1][0]*lx + m[1][1]*ly + m[1][3]) * csy,
                                  0.0f32]
                             };
-                            let tl = tp(0.0,   0.0  );
-                            let tr = tp(eff_w, 0.0  );
-                            let br = tp(eff_w, eff_h);
-                            let bl = tp(0.0,   eff_h);
-                            lb.add_line(tl, tr, draw_col);
-                            lb.add_line(tr, br, draw_col);
-                            lb.add_line(br, bl, draw_col);
-                            lb.add_line(bl, tl, draw_col);
+                            add_thick_rect(
+                                lb,
+                                [tp(0.0, 0.0), tp(eff_w, 0.0), tp(eff_w, eff_h), tp(0.0, eff_h)],
+                                draw_col, rings, OUTLINE_RING_STEP * canvas_scale,
+                            );
                         }
                     }
                     ComponentKind::Sprite => {
-                        // SpriteComponent: 選択時のみアウトラインを描画する
+                        // SpriteComponent: 選択時のみアウトラインを太線で描画する（3D 選択並みの視認性）
                         if selected_dfs_ids.contains(&my_dfs) {
                             if let Some(sc) = world.get::<SpriteComponent>(slot.entity) {
                                 let eff_w = sc.width  * size_sc_x;
@@ -444,14 +489,12 @@ pub(super) fn collect_canvas_rects(
                                      (m[1][0]*lx + m[1][1]*ly + m[1][3]) * csy2,
                                      0.0f32]
                                 };
-                                let tl = tp(0.0, 0.0);
-                                let tr = tp(1.0, 0.0);
-                                let br = tp(1.0, 1.0);
-                                let bl = tp(0.0, 1.0);
-                                lb.add_line(tl, tr, SPRITE_OUTLINE_COL);
-                                lb.add_line(tr, br, SPRITE_OUTLINE_COL);
-                                lb.add_line(br, bl, SPRITE_OUTLINE_COL);
-                                lb.add_line(bl, tl, SPRITE_OUTLINE_COL);
+                                add_thick_rect(
+                                    lb,
+                                    [tp(0.0, 0.0), tp(1.0, 0.0), tp(1.0, 1.0), tp(0.0, 1.0)],
+                                    SPRITE_OUTLINE_COL, OUTLINE_RINGS_THICK,
+                                    OUTLINE_RING_STEP * canvas_scale,
+                                );
                             }
                         }
                     }
