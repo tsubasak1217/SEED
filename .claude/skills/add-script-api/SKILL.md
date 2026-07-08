@@ -9,7 +9,7 @@ SEED のスクリプト API は「Rust ECS 側レジストリ」→「FFI」→�
 このスキルは、その 4 層を過不足なく・毎回同じ品質で更新するための手順書である。
 
 正典は `docs/scripting_api.md`。ここに書かれていない API は AI インライン補完が知らない。
-運用ルールは `.claude/CLAUDE.md` の「[スクリプトAPI（重要な運用ルール）]」節と完全に一致させること。
+運用ルールは `.claude/rules/scripting-api.md` と完全に一致させること。
 
 ---
 
@@ -301,4 +301,4 @@ dotnet build scripting/SEEDScripting.csproj
 4. `docs/scripting_api.html` の `<h3>`/`<div class="api">` + 一覧表 `<tr>` + `data-keywords`
 5. `cargo build` と `dotnet build scripting/SEEDScripting.csproj` が両方成功
 
-`.claude/CLAUDE.md` の 3 ステップ運用ルール（レジストリ登録 → C# ラッパー任意 → docs 追記）と整合していること。
+`.claude/rules/scripting-api.md` の運用ルール（レジストリ登録 → C# ラッパー任意 → docs 追記）と整合していること。

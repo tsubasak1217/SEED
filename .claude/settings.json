@@ -14,5 +14,26 @@
 			"NotebookEdit"
 		],
 		"defaultMode": "bypassPermissions"
+	},
+	"hooks": {
+		"PostToolUse": [
+			{
+				"matcher": "Edit|Write",
+				"hooks": [
+					{
+						"type": "command",
+						"if": "Edit(scripting/src/Api/**)",
+						"command": "echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"additionalContext\":\"スクリプトAPI領域のファイルが編集されました。作業を終える前に必ず確認: (1) docs/scripting_api.md にAPI変更を反映したか (2) docs/scripting_api.html を同期したか (3) 公開手順が変わった場合は .claude/skills/add-script-api も更新したか。未対応なら今すぐ更新すること。\"},\"systemMessage\":\"スクリプトAPI編集を検知: ドキュメント同期チェックを注入\"}'",
+						"statusMessage": "スクリプトAPI同期チェック"
+					},
+					{
+						"type": "command",
+						"if": "Edit(runtime/src/engine/core/scripting/**)",
+						"command": "echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"additionalContext\":\"スクリプトホストAPI（Rust側レジストリ/FFI）が編集されました。作業を終える前に必ず確認: (1) docs/scripting_api.md にAPI変更を反映したか (2) docs/scripting_api.html を同期したか (3) ScriptHostApi構造体を変更した場合は ScriptHost.cs とフィールド順・シグネチャが完全一致しているか (4) 公開手順が変わった場合は .claude/skills/add-script-api も更新したか。未対応なら今すぐ更新すること。\"},\"systemMessage\":\"ホストAPI編集を検知: FFI/ドキュメント同期チェックを注入\"}'",
+						"statusMessage": "ホストAPI同期チェック"
+					}
+				]
+			}
+		]
 	}
 }
