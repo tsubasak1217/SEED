@@ -601,64 +601,6 @@ impl LineBatch {
         }
     }
 
-    /// MMB スティック HUD を描画する。
-    ///
-    /// ゲームパッドのスティック UI 風。
-    /// - 外円（固定）: MMB 押し込み起点を中心とした操作範囲
-    /// - 内円（動く）: 現在のカーソルオフセット位置（外円半径でクランプ）
-    /// - 中心十字: 起点マーク
-    /// - 起点→内円中心への線: 入力方向の可視化
-    ///
-    /// 座標はスクリーンスペースオーソグラフィック（中心原点、Y-down ピクセル単位）。
-    ///
-    /// # 引数
-    /// - `origin`      : 起点座標（オーソグラフィック空間: ビューポート中心が原点）
-    /// - `offset_x/y`  : 現在のカーソルオフセット（ピクセル）
-    /// - `outer_r`     : 外円半径（ピクセル）
-    /// - `inner_r`     : 内円半径（ピクセル）
-    pub fn add_mmb_stick(
-        &mut self,
-        origin:   [f32; 2],
-        offset_x: f32,
-        offset_y: f32,
-        outer_r:  f32,
-        inner_r:  f32,
-    ) {
-        // オフセットを外円半径にクランプして内円位置を決定する
-        let dist = (offset_x * offset_x + offset_y * offset_y).sqrt();
-        let (clamped_x, clamped_y) = if dist > outer_r && dist > 0.0 {
-            (offset_x / dist * outer_r, offset_y / dist * outer_r)
-        } else {
-            (offset_x, offset_y)
-        };
-
-        let [ox, oy] = origin;
-        let stick_cx = ox + clamped_x;
-        let stick_cy = oy + clamped_y;
-
-        // 外円（薄い白、半透明）
-        const OUTER_ALPHA: f32 = 0.35;
-        let outer_col = [1.0_f32, 1.0, 1.0, OUTER_ALPHA];
-        self.add_circle_2d([ox, oy], outer_r, 48, 0.0, outer_col);
-
-        // 起点 → 内円中心への線（方向の可視化、やや透明）
-        if dist > 1.0 {
-            let line_col = [1.0_f32, 1.0, 1.0, 0.5];
-            self.add_line([ox, oy, 0.0], [stick_cx, stick_cy, 0.0], line_col);
-        }
-
-        // 中心十字（起点マーク）
-        const CROSS_SIZE: f32 = 5.0;
-        let cross_col = [1.0_f32, 1.0, 1.0, 0.6];
-        self.add_line([ox - CROSS_SIZE, oy, 0.0], [ox + CROSS_SIZE, oy, 0.0], cross_col);
-        self.add_line([ox, oy - CROSS_SIZE, 0.0], [ox, oy + CROSS_SIZE, 0.0], cross_col);
-
-        // 内円（白、不透明寄り）
-        const INNER_ALPHA: f32 = 0.85;
-        let inner_col = [1.0_f32, 1.0, 1.0, INNER_ALPHA];
-        self.add_circle_2d([stick_cx, stick_cy], inner_r, 24, 0.0, inner_col);
-    }
-
     pub fn add_world_axes(&mut self, origin: [f32; 3], length: f32) {
         let o = origin;
         self.add_line(o, [o[0]+length, o[1],       o[2]      ], [1.0, 0.0, 0.0, 1.0]);

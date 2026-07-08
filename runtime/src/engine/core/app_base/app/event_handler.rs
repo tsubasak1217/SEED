@@ -128,11 +128,6 @@ impl App {
             self.cam_input.mmb = pressed;
             if self.mode == RuntimeMode::Edit || self.paused {
                 if pressed {
-                    // カーソル起点をカメラ入力に記録する（差分計算用）
-                    if let Some((cx, cy)) = self.last_cursor_pos {
-                        self.cam_input.mmb_origin_x = cx;
-                        self.cam_input.mmb_origin_y = cy;
-                    }
                     // RMB が先に押されていない場合のみ MMB がカーソルを管理する
                     // （RMB 中に MMB を追加した場合はカーソルは RMB 管理のまま）
                     if !self.cam_input.rmb {

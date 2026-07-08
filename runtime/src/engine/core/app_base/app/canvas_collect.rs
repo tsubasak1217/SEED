@@ -54,6 +54,20 @@ pub(super) fn root_anchor_offset(anchor: [f32; 2], vw: f32, vh: f32, design_spac
     }
 }
 
+/// ヒット・描画対象外サブツリーの DFS 番号を消費する共通ヘルパー。
+///
+/// DFS 番号付けの正典（`find_actor_by_dfs`）は CanvasTransform の有無に関係なく
+/// 全アクターを数えるため、走査をスキップするサブツリーでもカウンタだけは
+/// 同じ規則で進める必要がある（番号ズレ = 誤選択・誤ハイライトの原因）。
+/// 子アクターは親と同一世界線のため world_line フィルタは行わない
+/// （`find_actor_child_by_dfs` と同じ扱い）。
+pub(super) fn skip_dfs_subtree(actors: &[Actor], counter: &mut u32) {
+    for a in actors {
+        *counter += 1;
+        skip_dfs_subtree(&a.children, counter);
+    }
+}
+
 // ─── アウトライン描画（太さ・色）の共通定義 ──────────────────────────────────
 
 /// アウトライン太さ表現のリング間隔（描画空間の単位。SS では ortho ピクセル相当）。
@@ -536,6 +550,11 @@ pub(super) fn collect_canvas_rects(
                 canvas_scale, y_sign, viewport_size, canvas_viewport_overrides,
                 root_auto_sizes, design_space,
             );
+        } else {
+            // CanvasTransform なし（Actor3D 等）: 枠描画対象外だが、DFS 番号は
+            // find_actor_by_dfs と同じ規則（子孫も含めて全カウント）で消費する。
+            // 消費しないと以降の DFS ID がズレて選択ハイライトが別枠に付く。
+            skip_dfs_subtree(&actor.children, counter);
         }
     }
 }

@@ -79,13 +79,11 @@ impl App {
         let line_model_buf = ctx.create_identity_model_bg_for_unlit();
 
         let canvas_overlay_camera_buf = ctx.create_camera_buffer();
-        let mmb_hud_cam_buf           = ctx.create_camera_buffer();
 
         self.draw_ctx      = Some(ctx);
         self.scene         = Some(scene);
         self.camera_buf    = Some(camera_buf);
         self.canvas_overlay_camera_buf = Some(canvas_overlay_camera_buf);
-        self.mmb_hud_cam_buf           = Some(mmb_hud_cam_buf);
         self.id_buffer     = Some(id_buffer);
         self.line_model_buf = Some(line_model_buf);
 

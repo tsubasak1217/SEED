@@ -425,8 +425,6 @@ pub struct App {
     /// 3D メインカメラの上に 2D キャンバス要素を重ねるために使う（シーンSS専用）。
     /// アクター編集タブは camera_buf 自体が 2D なので不要。
     canvas_overlay_camera_buf: Option<CameraBuffer>,
-    /// MMB スティック HUD 描画用スクリーンスペースカメラバッファ。
-    mmb_hud_cam_buf: Option<CameraBuffer>,
     scripting_host: Option<Arc<ScriptingHost>>,
 
     parent_hwnd:  Option<isize>,
@@ -777,7 +775,6 @@ impl App {
             scene:          None,
             camera_buf:     None,
             canvas_overlay_camera_buf: None,
-            mmb_hud_cam_buf: None,
             scripting_host,
             parent_hwnd:  args.parent_hwnd,
             mode:         args.mode,

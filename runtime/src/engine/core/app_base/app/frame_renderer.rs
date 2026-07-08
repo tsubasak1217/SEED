@@ -347,8 +347,9 @@ impl App {
         if in_editor {
             if use_ortho_2d_camera {
                 // 2D ビュー（アクター編集タブ / 2D シーンビュー）:
-                // RMB ドラッグで XY パン、スクロールでズーム。3D デバッグカメラは動かさない。
-                if self.cam_input.rmb {
+                // MMB ドラッグで XY パン、スクロールでズーム。3D デバッグカメラは動かさない。
+                // （3D ビューの MMB パンと操作を統一）
+                if self.cam_input.mmb {
                     let ws = self.window.as_ref().map(|w| {
                         let s = w.inner_size();
                         [s.width as f32, s.height as f32]
@@ -373,11 +374,6 @@ impl App {
                 }
             } else {
                 // 3D モード（ワールドスペースキャンバス含む）: 通常のデバッグカメラ更新
-                // MMB パン（絶対差分方式）のために現在カーソル位置を毎フレーム同期する
-                if let Some((cx, cy)) = self.last_cursor_pos {
-                    self.cam_input.cursor_x = cx;
-                    self.cam_input.cursor_y = cy;
-                }
                 // スナップアニメーション中は回転を補間する（RMB/移動キーでキャンセル）
                 self.update_camera_snap_anim(ctx.delta_time);
                 // 透視↔正射の投影切替を 0.3 秒かけて補間する
@@ -604,30 +600,6 @@ impl App {
                         _pad2:      [0.0; 2],
                     });
                 }
-            }
-
-            // MMB スティック HUD カメラを常に更新する（MMB 状態に関わらず毎フレーム更新）
-            if let Some(mmb_cam) = &self.mmb_hud_cam_buf {
-                let (vp_w, vp_h) = window_size.map_or(
-                    (1280.0f32, 720.0f32),
-                    |s| (s.width as f32, s.height as f32),
-                );
-                let half_w = vp_w / 2.0;
-                let half_h = vp_h / 2.0;
-                let eye_m    = Vector3::new(0.0, 0.0, -100.0);
-                let center_m = Vector3::new(0.0, 0.0, 0.0);
-                let up_m     = Vector3::new(0.0, 1.0, 0.0);
-                let mv  = Mat4x4::look_at_lh(eye_m, center_m, up_m);
-                let mp  = Mat4x4::orthographic_lh(-half_w, half_w, half_h, -half_h, 0.0, 200.0);
-                let mvp = mp * mv;
-                mmb_cam.update(&queue, &CameraUniform {
-                    view_proj:  mvp.transpose().data,
-                    view:       mv.transpose().data,
-                    position:   [0.0, 0.0, -100.0],
-                    _pad:       0.0,
-                    resolution: [vp_w, vp_h],
-                    _pad2:      [0.0; 2],
-                });
             }
 
             let frustum_planes = extract_frustum_planes(&view_proj.data);
@@ -2193,33 +2165,6 @@ impl App {
                         )
                     } else { None };
 
-                    // ── MMB スティック HUD バッチ事前構築 ──────────────────────
-                    // GpuLineBatch はパスより長いライフタイムが必要なため、pass 開始前に構築する
-                    let mmb_stick_gpu = if in_editor && self.cam_input.mmb {
-                        let (vp_w, vp_h) = window_size.map_or(
-                            (1280.0f32, 720.0f32),
-                            |s| (s.width as f32, s.height as f32),
-                        );
-                        // ビューポートローカル座標（左上原点）→ オーソグラフィック中心原点（Y-down）
-                        let half_w   = vp_w / 2.0;
-                        let half_h   = vp_h / 2.0;
-                        let origin_x = self.cam_input.mmb_origin_x - half_w;
-                        let origin_y = self.cam_input.mmb_origin_y - half_h;
-                        let offset_x = self.cam_input.cursor_x - self.cam_input.mmb_origin_x;
-                        let offset_y = self.cam_input.cursor_y - self.cam_input.mmb_origin_y;
-                        use crate::engine::structs::objects::camera::debug_camera::MMB_OUTER_RADIUS;
-                        // HUD 表示はクランプ半径と独立したコンパクトなサイズで描く
-                        const HUD_OUTER_R: f32 = 40.0;
-                        const INNER_R:     f32 =  8.0;
-                        // クランプ空間→HUD空間へオフセットをスケールして内円位置を正確に反映する
-                        let hud_scale   = HUD_OUTER_R / MMB_OUTER_RADIUS;
-                        let hud_off_x   = offset_x * hud_scale;
-                        let hud_off_y   = offset_y * hud_scale;
-                        let mut sb = LineBatch::new();
-                        sb.add_mmb_stick([origin_x, origin_y], hud_off_x, hud_off_y, HUD_OUTER_R, INNER_R);
-                        if sb.is_empty() { None } else { Some(sb.build(&draw_ctx.device)) }
-                    } else { None };
-
                     // ── メインレンダーパス ────────────────
                     let _perf_t_main = std::time::Instant::now();
                     {
@@ -2591,18 +2536,6 @@ impl App {
                             (&icon_overlay_batch, &self.icon_overlay)
                         {
                             io.draw(batch, &mut pass);
-                        }
-
-                        // MMB スティック HUD（最前面・スクリーンスペース）
-                        // passより前で構築済みの mmb_stick_gpu を描画する
-                        if let (Some(stick), Some(mmb_cam), Some((_, line_bg))) =
-                            (&mmb_stick_gpu, &self.mmb_hud_cam_buf, &self.line_model_buf)
-                        {
-                            draw_line_batch(
-                                &mut pass, stick,
-                                &mmb_cam.bind_group, line_bg,
-                                &draw_ctx.pipelines,
-                            );
                         }
 
                         // pass.drop() の時間を明示計測する。

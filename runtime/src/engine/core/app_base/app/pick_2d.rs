@@ -28,7 +28,7 @@ use crate::engine::ecs::{Entity, World};
 use crate::engine::methods::gizmo_interact::{mat4x4_mul, screen_to_ray};
 
 use super::App;
-use super::canvas_collect::root_anchor_offset;
+use super::canvas_collect::{root_anchor_offset, skip_dfs_subtree};
 
 /// 巡回選択で「同一地点クリック」とみなすスクリーン座標の許容誤差（ピクセル）。
 const PICK_CYCLE_TOLERANCE_PX: f32 = 4.0;
@@ -269,7 +269,11 @@ fn walk_pick_candidates_2d(
 
         let ct_opt = world.get::<CanvasTransform>(actor.entity).cloned();
         let Some(ct) = ct_opt else {
-            // CanvasTransform なし（Actor3D 等）: DFS を進めて子は走査しない
+            // CanvasTransform なし（Actor3D 等）: ヒット対象外だが、DFS 番号は
+            // find_actor_by_dfs と同じ規則（子孫も含めて全カウント）で消費する。
+            // ここで子孫の番号を消費しないと以降の DFS ID がズレて、
+            // ビューポートタブのクリックでワールドの別アクターが選択されてしまう。
+            skip_dfs_subtree(&actor.children, counter);
             continue;
         };
 

@@ -76,14 +76,58 @@ public partial class MainWindow
         _runtimeManager?.SendToRuntime($"SHOW_AXIS_GIZMO:{(ChkShowAxisGizmo.IsChecked == true ? "1" : "0")}");
     }
 
+    // ── デバッグカメラ 2D（正射投影）トグル ────────────────────────
+
+    /// <summary>デバッグカメラが 2D（正射投影）モードなら true。</summary>
+    private bool _editorCam2D = false;
+
     /// <summary>
-    /// エディタのデバッグカメラの投影方式（2D＝正射 / 3D＝透視）を切り替える。
-    /// 視点は維持したまま、ランタイム側で 0.3 秒かけて投影が補間される。
+    /// エディタのデバッグカメラの投影方式（2D＝正射 / 3D＝透視）を設定する。
+    /// タブバー右端の「2D」ボタンとビューポート設定のチェックボックスの両方から
+    /// 呼ばれる共通処理。視点は維持したまま、ランタイム側で 0.3 秒かけて補間される。
+    /// </summary>
+    private void SetEditorCam2D(bool on)
+    {
+        _editorCam2D = on;
+        _runtimeManager?.SendToRuntime($"EDITOR_CAM_ORTHO:{(on ? "1" : "0")}");
+
+        // UI を同期する（チェックボックス変更イベントの再帰送信は _updatingControls で抑制）
+        _updatingControls = true;
+        ChkEditorCamOrtho.IsChecked = on;
+        _updatingControls = false;
+        Update2DCamToggleVisual();
+    }
+
+    /// <summary>タブバー右端「2D」ボタンの見た目をトグル状態に合わせて更新する。</summary>
+    private void Update2DCamToggleVisual()
+    {
+        if (Btn2DCamToggle == null) return;
+        if (_editorCam2D)
+        {
+            // アクティブ: タブのアクセントと同じオレンジで強調する
+            Btn2DCamToggle.Background  = new SolidColorBrush(Color.FromRgb(0xE8, 0x78, 0x20));
+            Btn2DCamToggle.BorderBrush = new SolidColorBrush(Color.FromRgb(0xE8, 0x78, 0x20));
+            Btn2DCamToggle.Foreground  = Brushes.White;
+        }
+        else
+        {
+            Btn2DCamToggle.Background  = new SolidColorBrush(Color.FromRgb(0x3A, 0x3A, 0x3A));
+            Btn2DCamToggle.BorderBrush = new SolidColorBrush(Color.FromRgb(0x55, 0x55, 0x55));
+            Btn2DCamToggle.Foreground  = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC));
+        }
+    }
+
+    /// <summary>タブバー右端「2D」ボタン: 押すたびに 2D⇄3D をトグルする。</summary>
+    private void On2DCamToggleClicked(object sender, RoutedEventArgs e)
+        => SetEditorCam2D(!_editorCam2D);
+
+    /// <summary>
+    /// ビューポート設定の「2D（正射投影）」チェックボックス変更ハンドラ。
     /// </summary>
     private void OnEditorCamOrthoChanged(object sender, RoutedEventArgs e)
     {
-        if (!_viewportSettingsInitialized) return;
-        _runtimeManager?.SendToRuntime($"EDITOR_CAM_ORTHO:{(ChkEditorCamOrtho.IsChecked == true ? "1" : "0")}");
+        if (!_viewportSettingsInitialized || _updatingControls) return;
+        SetEditorCam2D(ChkEditorCamOrtho.IsChecked == true);
     }
 
     /// キャンバス表示モード切り替え（スクリーンスペース / ワールドスペース）

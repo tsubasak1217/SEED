@@ -83,27 +83,6 @@ impl App {
             return;
         }
 
-        // MMB 押し込み中: カーソルを起点から外円半径内にクランプする。
-        // クランプ距離が速度の最大値となるため、外円端 = 最高速度になる。
-        if self.cam_input.mmb {
-            use crate::engine::structs::objects::camera::debug_camera::MMB_OUTER_RADIUS;
-            let ox = self.cam_input.mmb_origin_x;
-            let oy = self.cam_input.mmb_origin_y;
-            let dx = cx - ox;
-            let dy = cy - oy;
-            let dist_sq = dx * dx + dy * dy;
-            if dist_sq > MMB_OUTER_RADIUS * MMB_OUTER_RADIUS {
-                let dist = dist_sq.sqrt();
-                let nx = ox + dx / dist * MMB_OUTER_RADIUS;
-                let ny = oy + dy / dist * MMB_OUTER_RADIUS;
-                // カーソルを外円の端にワープして閉じ込める
-                warp_cursor_to_local(self.window_hwnd(), nx as i32, ny as i32);
-                // last_cursor_pos をクランプ後の値で更新（frame_renderer 側で cursor_x/y に同期）
-                self.last_cursor_pos = Some((nx, ny));
-                return; // 次の CursorMoved でクランプ後の座標が届き通常処理される
-            }
-        }
-
         // RMB 押下中に移動量が閾値を超えたらカメラ grab とみなす
         if self.cam_input.rmb && !self.rmb_moved {
             if let Some((px, py)) = self.rmb_press_pos {

@@ -1,9 +1,5 @@
 use std::f32::consts::{FRAC_PI_2, FRAC_PI_4};
 
-/// MMB スティック HUD の外円半径（ビューポートピクセル）。
-/// カーソルのクランプ距離と速度の最大値を兼ねる。
-pub const MMB_OUTER_RADIUS: f32 = 100.0;
-
 use crate::engine::structs::tensor::{Vector3, Mat4x4};
 use crate::engine::structs::transforms::{Quaternion, Transform};
 use super::base_camera::{BaseCamera, CameraProjection};
@@ -30,12 +26,6 @@ pub struct CameraInput {
     pub mouse_dx: f32,     // フレーム内累積（winit DeviceEvent）
     pub mouse_dy: f32,
     pub scroll:   f32,     // フレーム内累積（winit MouseWheel）
-    /// 現在フレームのカーソル位置（ビューポートローカルピクセル）。毎フレーム更新される。
-    pub cursor_x: f32,
-    pub cursor_y: f32,
-    /// MMB 押し込み時の起点カーソル位置。押下時に一度だけ記録する。
-    pub mmb_origin_x: f32,
-    pub mmb_origin_y: f32,
 }
 
 impl CameraInput {
@@ -107,6 +97,11 @@ pub struct DebugCamera {
     /// 正射投影時の縦方向の描画範囲（ワールド単位・半分の高さ）。
     /// 正射化時に現在の透視スケール（fov × 焦点距離）から算出し、視点の見た目を維持する。
     pub ortho_half_h: f32,
+
+    /// ビューポートの高さ（物理ピクセル）。
+    /// MMB パンの「1ピクセル = 何ワールドユニットか」の換算に使う。
+    /// `set_aspect_ratio`（リサイズ時）で更新される。
+    pub viewport_h_px: f32,
 }
 
 /// 投影切り替えの補間時間（秒）。0.3 秒で透視↔正射をなめらかに補間する。
@@ -143,6 +138,7 @@ impl DebugCamera {
             ortho_blend:  0.0,
             ortho_target: 0.0,
             ortho_half_h: 5.0,
+            viewport_h_px: 720.0,
         }
     }
 
@@ -174,6 +170,9 @@ impl DebugCamera {
     /// マウスの raw delta でヨー・ピッチを更新し、`transform.rotation` に反映する。
     /// 右クリック中のみ回転する。MMB 押し込み中は無効。
     fn update_rotation(&mut self, cam: &CameraInput) {
+        // 2D（正射投影）ビュー中は RMB による視点回転を無効にする。
+        // （右上の軸ギズモクリックによる軸スナップは別経路のため有効なまま）
+        if self.ortho_target >= 0.5 { return; }
         // MMB 押し込み中は視点回転を無効にする（パン操作に専念させる）
         if !cam.rmb || cam.mmb { return; }
         self.yaw   += cam.mouse_dx * self.mouse_sensitivity;
@@ -232,53 +231,34 @@ impl DebugCamera {
         if cam.q { self.base.transform.position -= world_up * speed; }
     }
 
-    /// 中ボタン押し込み中のパン / 前後移動を処理する。
+    /// 中ボタン押し込み中のカメラ平面パンを処理する（Unity / Blender 方式）。
     ///
-    /// 起点（MMB 押し込み位置）から現在のカーソル位置への差分を毎フレームの速度として使う。
-    /// マウスを動かしていなくても、起点からずれている限り移動し続ける。
-    ///
-    /// # モード
-    /// - MMB 単押し: 起点からの差分でカメラ平面に平行なパン
-    ///   - 水平オフセット (+X) → 右方向移動
-    ///   - 垂直オフセット (+Y) → 下方向移動（スクリーン Y は下正）
-    /// - MMB + RMB 同時: 起点からの差分で前後 / 左右移動
-    ///   - 水平オフセット (+X) → 右方向パン
-    ///   - 垂直オフセット (+Y) → 後退（下に引っ張ると後退、上に引っ張ると前進）
-    fn update_mmb_pan(&mut self, cam: &CameraInput, delta_time: f32) {
+    /// マウスの raw delta をそのままワールド移動量に換算し、カメラの right / up
+    /// 方向（カメラから見た XY 平面）にのみ移動する。奥（forward）には移動しない。
+    /// 換算は「カーソル下のオブジェクトがカーソルに追従して見える」スケール:
+    /// - 正射投影: 1px = 2 * ortho_half_h / viewport_h（正確に 1:1）
+    /// - 透視投影: 焦点距離（原点までの距離）における 1px 相当のワールド長
+    fn update_mmb_pan(&mut self, cam: &CameraInput, _delta_time: f32) {
         if !cam.mmb { return; }
+        if cam.mouse_dx == 0.0 && cam.mouse_dy == 0.0 { return; }
 
-        // 起点から現在カーソル位置への差分（ピクセル）
-        let offset_x = cam.cursor_x - cam.mmb_origin_x;
-        let offset_y = cam.cursor_y - cam.mmb_origin_y;
-
-        // 起点からの距離が極小なら動かさない
-        let dist = (offset_x * offset_x + offset_y * offset_y).sqrt();
-        if dist < 0.5 { return; }
-
-        // 正規化した距離 t (0〜1) に二乗カーブを適用する。
-        // t^2 により低速レンジが広く、端に近いほど急激に加速する。
-        let t = (dist / MMB_OUTER_RADIUS).min(1.0);
-        let t_curved = t * t;
-
-        // 最大速度係数（外円端で move_speed * delta_time * この値 だけ移動）
-        const MAX_PAN_SCALE: f32 = 1.5;
-        let max_speed  = self.move_speed * delta_time * MAX_PAN_SCALE;
-        // 方向を offset に合わせつつ大きさを非線形にスケールする
-        let actual_spd = t_curved * max_speed / dist;
-
-        let right = self.base.transform.right();
-
-        if cam.rmb {
-            // MMB + RMB: 水平 → 左右パン、垂直 → 上下パン
-            let up = self.base.transform.up();
-            self.base.transform.position += right * offset_x * actual_spd;
-            self.base.transform.position -= up    * offset_y * actual_spd;
+        // 1 スクリーンピクセルあたりのワールドユニット数
+        let vp_h = self.viewport_h_px.max(1.0);
+        let world_per_px = if self.ortho_target >= 0.5 {
+            // 正射: 描画範囲（全高 2 * half_h）をビューポート高で割る
+            (2.0 * self.ortho_half_h) / vp_h
         } else {
-            // MMB 単押し: 水平 → 左右パン、垂直 → 前後移動
-            let forward = self.base.transform.forward();
-            self.base.transform.position += right   * offset_x * actual_spd;
-            self.base.transform.position -= forward * offset_y * actual_spd;
-        }
+            // 透視: 焦点面（原点までの距離）での可視高をビューポート高で割る
+            let focal = self.base.transform.position.length().max(1.0);
+            (2.0 * (self.base.projection.fov_y_rad * 0.5).tan() * focal) / vp_h
+        };
+
+        // ドラッグ方向へシーンが追従する（= カメラは逆方向へ動く）
+        // スクリーン +X（右ドラッグ）→ カメラを左へ / +Y（下ドラッグ・Y-down）→ カメラを上へ
+        let right = self.base.transform.right();
+        let up    = self.base.transform.up();
+        self.base.transform.position -= right * cam.mouse_dx * world_per_px;
+        self.base.transform.position += up    * cam.mouse_dy * world_per_px;
     }
 
     // ─── BaseCamera への委譲 ──────────────────────────────────
@@ -341,9 +321,11 @@ impl DebugCamera {
     }
 
     /// アスペクト比を更新する（ウィンドウリサイズ時に呼ぶ）。
+    /// MMB パンのピクセル→ワールド換算用にビューポート高も記録する。
     #[inline]
     pub fn set_aspect_ratio(&mut self, width: u32, height: u32) {
         self.base.set_aspect_ratio(width, height);
+        if height > 0 { self.viewport_h_px = height as f32; }
     }
 
     /// カメラの現在位置を返す。
