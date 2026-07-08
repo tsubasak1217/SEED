@@ -73,12 +73,12 @@ pub(super) fn skip_dfs_subtree(actors: &[Actor], counter: &mut u32) {
 /// アウトライン太さ表現のリング間隔（描画空間の単位。SS では ortho ピクセル相当）。
 /// 実際の描画空間に合わせて呼び出し側で canvas_scale を乗じて渡す。
 const OUTLINE_RING_STEP: f32 = 1.6;
-/// 通常（非選択・非ルート）キャンバス枠のリング数（細線）。
+/// 非選択キャンバス枠のリング数（一本線）。
 const OUTLINE_RINGS_THIN: u32 = 1;
-/// ルート（基準）キャンバス枠・選択枠のリング数（太線。3D 選択並みの視認性）。
-const OUTLINE_RINGS_THICK: u32 = 3;
-/// ルート（基準）キャンバス枠の色（非選択時）。基準キャンバスと分かる金色系。
-const ROOT_CANVAS_OUTLINE_COL: [f32; 4] = [1.0, 0.8, 0.25, 0.95];
+/// 選択枠のリング数（非選択の約 5 倍の太さで強調する）。
+const OUTLINE_RINGS_THICK: u32 = 5;
+/// ルート（基準）キャンバス枠の基本色（非選択時）。#00ff00ff（緑）。
+const ROOT_CANVAS_OUTLINE_COL: [f32; 4] = [0.0, 1.0, 0.0, 1.0];
 
 /// 太い矩形アウトラインを LineBatch へ描画する共通ヘルパー。
 ///
@@ -452,9 +452,9 @@ pub(super) fn collect_canvas_rects(
                 match slot.kind {
                     ComponentKind::Canvas => {
                         // CanvasComponent: キャンバス領域のアウトラインを常に描画する。
-                        // 色:   選択中=オレンジ / ルート(基準)キャンバス=金 / それ以外=通常色。
-                        // 太さ: 選択中 or ルート(基準)キャンバス=太線 / それ以外=細線。
-                        //       （ルートは「基準となるキャンバス」と分かるよう常に強調する）
+                        // 色:   選択中=オレンジ（選択色は全アウトライン共通） /
+                        //       ルート(基準)キャンバス=緑 / それ以外=通常色。
+                        // 太さ: 非選択=一本線、選択中のみ太線（約 5 倍）で強調する。
                         if let Some(cc) = world.get::<CanvasComponent>(slot.entity) {
                             const SELECTED_COL: [f32; 4] = [1.0, 0.5, 0.05, 1.0];
                             let is_selected = selected_dfs_ids.contains(&my_dfs);
@@ -466,7 +466,7 @@ pub(super) fn collect_canvas_rects(
                             } else {
                                 col
                             };
-                            let rings = if is_selected || is_root {
+                            let rings = if is_selected {
                                 OUTLINE_RINGS_THICK
                             } else {
                                 OUTLINE_RINGS_THIN
@@ -490,12 +490,13 @@ pub(super) fn collect_canvas_rects(
                         }
                     }
                     ComponentKind::Sprite => {
-                        // SpriteComponent: 選択時のみアウトラインを太線で描画する（3D 選択並みの視認性）
+                        // SpriteComponent: 選択時のみアウトラインを太線で描画する。
+                        // 選択色はキャンバス枠と共通のオレンジに統一する。
                         if selected_dfs_ids.contains(&my_dfs) {
                             if let Some(sc) = world.get::<SpriteComponent>(slot.entity) {
                                 let eff_w = sc.width  * size_sc_x;
                                 let eff_h = sc.height * size_sc_y;
-                                const SPRITE_OUTLINE_COL: [f32; 4] = [1.0, 0.95, 0.6, 0.85];
+                                const SPRITE_OUTLINE_COL: [f32; 4] = [1.0, 0.5, 0.05, 1.0];
                                 let m = mat4x4_mul(parent_world_rs, eff_ct.to_sprite_mat4(eff_w, eff_h));
                                 let csy2 = canvas_scale * y_sign;
                                 let tp = |lx: f32, ly: f32| -> [f32; 3] {

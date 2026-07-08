@@ -1161,10 +1161,11 @@ impl App {
                         gizmo_pos.map(|pos| {
                             // 2D アクター編集タブ・2D アクター選択時 / それ以外でギズモ半径を切り替える
                             let (radius, cam_pos_arr) = if gizmo_actor_is_2d {
-                                // 2D スクリーンスペース: ビューポート高さの 15% をギズモ半径とする。
-                                // ortho_half_h = vp_h/2 なので * 0.15 = vp_h * 0.075 px
+                                // 2D スクリーンスペース: ワールド編集（3D ビュー）と同じ
+                                // スクリーン占有率でギズモ半径を計算する（見た目の大きさを統一）
                                 let cam_2d = self.canvas_cameras.get(&self.active_world_line);
-                                let r = cam_2d.map(|c| c.ortho_half_h * 0.15).unwrap_or(54.0);
+                                let r = cam_2d.map(|c| c.ortho_half_h * GIZMO_SCREEN_RADIUS_RATIO)
+                                    .unwrap_or(360.0 * GIZMO_SCREEN_RADIUS_RATIO);
                                 (r, [0.0f32, 0.0, -100.0])
                             } else {
                                 // 3D デバッグカメラ（通常3D または ワールドスペースキャンバス）:
@@ -1963,13 +1964,14 @@ impl App {
 
                     // ── 3D Canvas アウトライン（エディタモード）──────────────────────────────
                     // Actor3D + CanvasComponent を持つアクターの矩形境界を 3D ワールド空間で描画する。
-                    // 選択時はオレンジ（Sprite アウトラインと同色）、非選択時は青白。
+                    // 選択時はオレンジ（選択色は全アウトライン共通）、
+                    // 非選択時は緑（2D ルートキャンバス枠の基本色 #00ff00ff と統一）。
                     // 2D シーンビューでは 3D シーンごと非表示のため生成しない。
                     let canvas_3d_rect_batch = if in_editor && !edit_view_2d {
                         if let Some(scene) = &self.scene {
                             let wl = self.active_world_line;
                             let mut lb = LineBatch::new();
-                            const RECT_COL_NORMAL:   [f32; 4] = [0.85, 0.95, 1.0, 0.9];
+                            const RECT_COL_NORMAL:   [f32; 4] = [0.0, 1.0, 0.0, 1.0];
                             const RECT_COL_SELECTED: [f32; 4] = [1.0, 0.5, 0.05, 1.0];
 
                             // find_actor_by_dfs と同じ規則で DFS ID を計算するため、

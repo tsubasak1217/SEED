@@ -278,7 +278,8 @@ impl App {
             let pan_y  = cam_2d.map(|c| c.pan_y).unwrap_or(0.0);
             let half_h = cam_2d.map(|c| c.ortho_half_h).unwrap_or(10.0);
             let half_w = half_h * (vp_w / vp_h);
-            let r = half_h * 0.15;
+            // ワールド編集（3D ビュー）とスクリーン占有率を統一する
+            let r = half_h * GIZMO_SCREEN_RADIUS_RATIO;
             let (ro, rd) = screen_to_ray_ortho(cx, cy, vp_w, vp_h, pan_x, pan_y, half_w, half_h);
             (ro, rd, r)
         } else {
@@ -345,7 +346,8 @@ impl App {
             let pan_y  = cam_2d.map(|c| c.pan_y).unwrap_or(0.0);
             let half_h = cam_2d.map(|c| c.ortho_half_h).unwrap_or(10.0);
             let half_w = half_h * (vp_w / vp_h);
-            let r = half_h * 0.15;
+            // ワールド編集（3D ビュー）とスクリーン占有率を統一する
+            let r = half_h * GIZMO_SCREEN_RADIUS_RATIO;
             let (ro, rd) = screen_to_ray_ortho(cx, cy, vp_w, vp_h, pan_x, pan_y, half_w, half_h);
             (ro, rd, r)
         } else {
