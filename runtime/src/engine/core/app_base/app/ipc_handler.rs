@@ -920,6 +920,34 @@ impl App {
                 IpcCommand::SetCameraComponentOrthoHeight { actor_dfs_id, slot_idx, value } => {
                     self.handle_set_camera_ortho_height(actor_dfs_id, slot_idx, value);
                 }
+                IpcCommand::SetActorActive { dfs_id, active } => {
+                    // アクターのアクティブ切替（Unity の SetActive 相当）。
+                    // 子孫への影響（実効アクティブ）は各収集処理が親の active を
+                    // 継承して判定するため、自身のフラグのみ書き換えればよい。
+                    let wl = self.active_world_line;
+                    if let Some(scene) = self.scene.as_mut() {
+                        let mut c = 0u32;
+                        if let Some(actor) = super::find_actor_by_dfs_mut(&mut scene.actors, wl, dfs_id, &mut c) {
+                            actor.active = active;
+                            if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+                            // ヒエラルキーの淡色表示を更新するため再送する
+                            self.send_hierarchy();
+                        }
+                    }
+                }
+                IpcCommand::SetSlotEnabled { actor_dfs_id, slot_idx, enabled } => {
+                    // コンポーネントスロットの有効切替（Unity の enabled 相当）
+                    let wl = self.active_world_line;
+                    if let Some(scene) = self.scene.as_mut() {
+                        let mut c = 0u32;
+                        if let Some(actor) = super::find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
+                            if let Some(slot) = actor.slots_mut().get_mut(slot_idx as usize) {
+                                slot.enabled = enabled;
+                                if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+                            }
+                        }
+                    }
+                }
                 // ── 物理コンポーネント ──────────────────────────────────────
                 IpcCommand::SetColliderData { actor_dfs_id, slot_idx, json } => {
                     let j = json.clone();

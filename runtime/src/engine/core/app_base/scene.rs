@@ -295,29 +295,38 @@ impl Scene {
     }
 
     /// Actor ツリーを走査し、各スクリプトスロットの ScriptComponent に所有 Actor の
-    /// Entity を書き込む。ScriptComponent はスロット専用 entity に格納されており、
-    /// それ自身は所有 Actor を知らないため、ここで橋渡しする。
+    /// Entity と実効アクティブフラグを書き込む。ScriptComponent はスロット専用 entity に
+    /// 格納されており、それ自身は所有 Actor を知らないため、ここで橋渡しする。
+    ///
+    /// 実効アクティブ = 自身と全祖先の active が true かつ スロットの enabled が true。
+    /// false のスクリプトは script_system がライフサイクル呼び出しをスキップする。
     fn sync_script_owners(
         actors: &[crate::engine::structs::objects::Actor],
         world:  &mut crate::engine::ecs::World,
     ) {
         use crate::engine::components::{ComponentKind, ScriptComponent};
 
-        fn walk(actor: &crate::engine::structs::objects::Actor, world: &mut crate::engine::ecs::World) {
+        fn walk(
+            actor:         &crate::engine::structs::objects::Actor,
+            world:         &mut crate::engine::ecs::World,
+            parent_active: bool,
+        ) {
+            let active = parent_active && actor.active;
             for slot in actor.slots() {
                 if slot.kind == ComponentKind::Script {
                     if let Some(sc) = world.get_mut::<ScriptComponent>(slot.entity) {
-                        sc.owner = Some(actor.entity);
+                        sc.owner  = Some(actor.entity);
+                        sc.active = active && slot.enabled;
                     }
                 }
             }
             for child in actor.children() {
-                walk(child, world);
+                walk(child, world, active);
             }
         }
 
         for actor in actors {
-            walk(actor, world);
+            walk(actor, world, true);
         }
     }
 
@@ -442,9 +451,14 @@ pub fn build_actor(
 
     let mut actor = Actor::new(entity, data.name);
     actor.actor_kind = data.actor_kind;
+    // アクティブフラグを復元する（省略時は serde デフォルトで true）
+    actor.active = data.active;
 
     for slot in data.components {
         let slot_name = slot.name.clone();
+        // このスロットの有効フラグ（match 後に追加されたスロットへ反映する）
+        let slot_enabled = slot.enabled;
+        let n_slots_before = actor.slots().len();
         // スロットごとに専用エンティティを spawn してコンポーネントを格納する。
         // これにより同型コンポーネントを複数スロット持っても互いに干渉しない。
         let slot_entity = world.spawn();
@@ -608,6 +622,15 @@ pub fn build_actor(
                         cc.initial_angular_velocity = rb_data.initial_angular_velocity;
                     }
                 }
+            }
+        }
+
+        // このループで追加されたスロットへ有効フラグを復元する。
+        // 各アームは高々 1 スロット追加のため、追加があった場合のみ末尾へ反映する
+        // （LegacyRigidbody のようにスロットを追加しないアームでは何もしない）。
+        if actor.slots().len() > n_slots_before {
+            if let Some(last) = actor.slots_mut().last_mut() {
+                last.enabled = slot_enabled;
             }
         }
     }

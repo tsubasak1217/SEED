@@ -389,6 +389,19 @@ public partial class InspectorPanel : UserControl
 
     private List<SlotInfo> _slotInfos = new();
 
+    /// <summary>スロット番号 → 有効フラグ（ACTOR_COMPONENTS の enabled）。ヘッダーのチェックボックス初期値に使う。</summary>
+    private readonly Dictionary<int, bool> _slotEnabledMap = new();
+    /// <summary>アクターのアクティブチェックボックス更新中の再帰イベント抑止。</summary>
+    private bool _updatingActorActive;
+
+    /// <summary>アクターのアクティブチェックボックス変更 → ランタイムへ SET_ACTOR_ACTIVE を送信する。</summary>
+    private void OnActorActiveChanged(object sender, RoutedEventArgs e)
+    {
+        if (_updatingActorActive || _currentActorId < 0) return;
+        var on = ActorActiveCheck.IsChecked == true;
+        _runtime?.SendToRuntime($"SET_ACTOR_ACTIVE:{_currentActorId},{(on ? 1 : 0)}");
+    }
+
     private void BuildActorComponentList(string json)
     {
         _lastComponentsJson = json;
@@ -399,12 +412,21 @@ public partial class InspectorPanel : UserControl
         var name = root.TryGetProperty("name", out var np) ? np.GetString() ?? "" : "";
         ActorNameBlock.Text = string.IsNullOrEmpty(name) ? $"Actor #{_currentActorId}" : name;
 
+        // アクターのアクティブチェックボックス（Unity の SetActive 相当）を同期する。
+        // イベント再帰（Checked → 送信 → 再受信 → Checked...）は抑止フラグで防ぐ。
+        var actorActive = !root.TryGetProperty("active", out var aav) || ReadJsonBool(aav, true);
+        _updatingActorActive = true;
+        ActorActiveCheck.IsChecked  = actorActive;
+        ActorActiveCheck.Visibility = Visibility.Visible;
+        _updatingActorActive = false;
+
         // 複製後の新スロット検出用に現在のスロット ID セットを保存する
         var prevSlotIdxSet = _slotInfos.Select(s => s.SlotIdx).ToHashSet();
         ComponentListStack.Children.Clear();
         AccordionStack.Children.Clear();
         ClearTransformRefs();
         _slotInfos.Clear();
+        _slotEnabledMap.Clear();
 
         // ── ルートキャンバス判定（Phase B）────────────────────────────
         // is_root / is_vp（ランタイム送信）+ Canvas スロットの有無から
@@ -482,6 +504,8 @@ public partial class InspectorPanel : UserControl
         {
             var slotIdx  = comp.TryGetProperty("slot",       out var si)  ? si.GetInt32()    : 0;
             var compName = comp.TryGetProperty("name",       out var cn)  ? cn.GetString() ?? "" : "";
+            // コンポーネントの有効フラグ（省略時は true）。ヘッダーのチェックボックスに反映する
+            _slotEnabledMap[slotIdx] = !comp.TryGetProperty("enabled", out var env) || ReadJsonBool(env, true);
             var compType = comp.TryGetProperty("type",       out var ctp) ? ctp.GetString() ?? "" : "";
             var modelPath = comp.TryGetProperty("model_path", out var mp) ? mp.GetString() ?? "" : "";
             // CanvasComponent 用: 幅・高さ・スケールモード
@@ -698,6 +722,7 @@ public partial class InspectorPanel : UserControl
 
         var headerGrid = new Grid();
         headerGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });                      // 矢印
+        headerGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });                      // 有効チェックボックス
         headerGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });                      // アイコン
         headerGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) }); // タイトル
 
@@ -724,7 +749,7 @@ public partial class InspectorPanel : UserControl
                 VerticalAlignment = VerticalAlignment.Center,
                 Margin            = new Thickness(0, 0, 4, 0),
             };
-            Grid.SetColumn(icon, 1);
+            Grid.SetColumn(icon, 2);
             headerGrid.Children.Add(icon);
         }
 
@@ -746,8 +771,33 @@ public partial class InspectorPanel : UserControl
                 FontSize   = 10,
             });
         }
-        Grid.SetColumn(titleBlock, 2);
+        Grid.SetColumn(titleBlock, 3);
         headerGrid.Children.Add(titleBlock);
+
+        // ── 有効チェックボックス（Unity の enabled 相当。コンポーネントスロットのみ）──
+        // CheckBox はマウスダウンを自身で処理するため、ヘッダーの折り畳みトグルとは干渉しない。
+        if (isComponentSlot)
+        {
+            var slotEnabled = !_slotEnabledMap.TryGetValue(slotIdx, out var en0) || en0;
+            titleBlock.Opacity = slotEnabled ? 1.0 : 0.5;
+            var enableChk = new CheckBox
+            {
+                IsChecked         = slotEnabled,
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin            = new Thickness(0, 0, 6, 0),
+                ToolTip           = "コンポーネントの有効/無効（OFF で描画・実行・物理の対象外）",
+            };
+            void SendEnabled(bool on)
+            {
+                _slotEnabledMap[slotIdx] = on;
+                titleBlock.Opacity = on ? 1.0 : 0.5;
+                _runtime?.SendToRuntime($"SET_SLOT_ENABLED:{_currentActorId},{slotIdx},{(on ? 1 : 0)}");
+            }
+            enableChk.Checked   += (_, _) => SendEnabled(true);
+            enableChk.Unchecked += (_, _) => SendEnabled(false);
+            Grid.SetColumn(enableChk, 1);
+            headerGrid.Children.Add(enableChk);
+        }
 
         header.Child = headerGrid;
 

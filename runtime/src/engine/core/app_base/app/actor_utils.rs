@@ -36,18 +36,21 @@ use crate::engine::methods::gizmo_interact::mat4x4_mul;
 /// トップレベル呼び出しでは `actor.is_2d()` を渡し、再帰では同じ値を伝播させる
 /// （「ビューポート所属」= ルートが Actor2D のサブツリー全体、という分類のため）。
 pub(super) fn collect_actor_nodes(
-    actor:      &Actor,
-    parent:     Option<u32>,
-    counter:    &mut u32,
-    root_is_vp: bool,
-    out:        &mut Vec<(u32, String, Option<u32>, bool, bool)>,
+    actor:         &Actor,
+    parent:        Option<u32>,
+    counter:       &mut u32,
+    root_is_vp:    bool,
+    parent_active: bool,
+    out:           &mut Vec<(u32, String, Option<u32>, bool, bool, bool)>,
 ) {
     let id = *counter;
     *counter += 1;
-    out.push((id, actor.name.clone(), parent, actor.is_2d(), root_is_vp));
+    // active は「実効アクティブ」（自身と全祖先が active）。エディタの淡色表示に使う。
+    let active = parent_active && actor.active;
+    out.push((id, actor.name.clone(), parent, actor.is_2d(), root_is_vp, active));
     for child in actor.children() {
         // ルートのビューポート所属フラグを子孫全体へそのまま伝播する
-        collect_actor_nodes(child, Some(id), counter, root_is_vp, out);
+        collect_actor_nodes(child, Some(id), counter, root_is_vp, active, out);
     }
 }
 
@@ -65,19 +68,23 @@ struct HierarchyNode<'a> {
     /// エディタのシーンタブ（ワールド/ビューポート）自動切替に使用する。
     /// 3D ワールドキャンバス配下の 2D スプライトは is_2d=true でも is_vp=false になる。
     is_vp:    bool,
+    /// 実効アクティブフラグ（自身と全祖先の active が true）。
+    /// false のノードはエディタのヒエラルキーで淡色表示する。
+    active:   bool,
 }
 
 /// フラットリストから HIERARCHY JSON を生成する。
-pub(super) fn build_hierarchy_json(nodes: &[(u32, String, Option<u32>, bool, bool)]) -> String {
+pub(super) fn build_hierarchy_json(nodes: &[(u32, String, Option<u32>, bool, bool, bool)]) -> String {
     let items: Vec<HierarchyNode<'_>> = nodes
         .iter()
-        .map(|(id, name, parent, is_2d, is_vp)| HierarchyNode {
+        .map(|(id, name, parent, is_2d, is_vp, active)| HierarchyNode {
             id:       *id,
             name:     name.as_str(),
             parent:   *parent,
             is_group: false,
             is_2d:    *is_2d,
             is_vp:    *is_vp,
+            active:   *active,
         })
         .collect();
     serde_json::to_string(&items).unwrap_or_default()
@@ -314,33 +321,44 @@ pub(super) fn collect_mcs_in_world_line<'a>(
     let mut base    = 0u32;
     let mut counter = 0u32;
     for root in actors.iter().filter(|a| a.world_line == wl) {
-        collect_mcs_in_actor(root, world, &mut counter, &mut base, &mut result);
+        collect_mcs_in_actor(root, world, &mut counter, &mut base, &mut result, true);
     }
     result
 }
 
 /// collect_mcs_in_world_line の再帰実装。
+///
+/// `parent_active` は祖先のアクティブ状態。非アクティブなアクター（自身または祖先が
+/// active=false）および enabled=false のスロットの MC は収集しない（描画・ピック対象外）。
+/// DFS カウントは選択系と整合させるため、スキップ時も必ず進める。
 fn collect_mcs_in_actor<'a>(
-    actor:   &'a Actor,
-    world:   &'a World,
-    counter: &mut u32,
-    base:    &mut u32,
-    result:  &mut Vec<(u32, u32, usize, &'a ModelComponent)>,
+    actor:         &'a Actor,
+    world:         &'a World,
+    counter:       &mut u32,
+    base:          &mut u32,
+    result:        &mut Vec<(u32, u32, usize, &'a ModelComponent)>,
+    parent_active: bool,
 ) {
     let dfs = *counter;
     *counter += 1;
+    let active = parent_active && actor.active;
     // スロット専用 entity から ModelComponent を収集する（複数スロット対応）
-    for (slot_i, slot) in actor.slots().iter()
-        .filter(|s| s.kind == ComponentKind::Model)
-        .enumerate()
-    {
-        if let Some(mc) = world.get::<ModelComponent>(slot.entity) {
-            result.push((*base, dfs, slot_i, mc));
-            *base += mc.instance_mats.len() as u32;
+    // slot_i は「Model スロット内の連番」なので、無効スロットも含めて数える
+    // （mc_entity_at と整合させるため enumerate を filter の後に置かない）
+    if active {
+        let mut slot_i = 0usize;
+        for slot in actor.slots().iter().filter(|s| s.kind == ComponentKind::Model) {
+            if slot.enabled {
+                if let Some(mc) = world.get::<ModelComponent>(slot.entity) {
+                    result.push((*base, dfs, slot_i, mc));
+                    *base += mc.instance_mats.len() as u32;
+                }
+            }
+            slot_i += 1;
         }
     }
     for child in actor.children() {
-        collect_mcs_in_actor(child, world, counter, base, result);
+        collect_mcs_in_actor(child, world, counter, base, result, active);
     }
 }
 

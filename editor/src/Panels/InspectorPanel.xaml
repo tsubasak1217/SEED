@@ -13,9 +13,21 @@
         <Border Grid.Row="0" Background="#252526" BorderBrush="#3F3F46"
                 BorderThickness="0,0,0,1" Padding="8,6">
             <StackPanel>
-                <TextBlock x:Name="ActorNameBlock"
-                           Text="選択なし"
-                           Foreground="#CCCCCC" FontSize="13" FontWeight="SemiBold"/>
+                <StackPanel Orientation="Horizontal">
+                    <!-- アクターのアクティブ切替（Unity の SetActive 相当）。
+                         非アクティブは自身と子孫が描画・更新・物理の対象外になる -->
+                    <CheckBox x:Name="ActorActiveCheck"
+                              IsChecked="True"
+                              VerticalAlignment="Center"
+                              Margin="0,0,6,0"
+                              Visibility="Collapsed"
+                              ToolTip="アクターのアクティブ切替（OFF で自身と子孫を無効化）"
+                              Checked="OnActorActiveChanged" Unchecked="OnActorActiveChanged"/>
+                    <TextBlock x:Name="ActorNameBlock"
+                               Text="選択なし"
+                               VerticalAlignment="Center"
+                               Foreground="#CCCCCC" FontSize="13" FontWeight="SemiBold"/>
+                </StackPanel>
                 <TextBlock x:Name="ActorModelBlock"
                            Text=""
                            Foreground="#666666" FontSize="11"

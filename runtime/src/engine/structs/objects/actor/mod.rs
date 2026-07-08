@@ -75,6 +75,10 @@ pub struct ComponentSlot {
     /// スロット専用の ECS エンティティ（コンポーネント実データの格納先）。
     /// Actor の entity とは別に spawn され、スロットごとに独立したデータを保持する。
     pub entity: Entity,
+    /// コンポーネントの有効フラグ（Unity の enabled 相当）。
+    /// false のとき描画・スクリプト実行・物理収集などの対象から外れる。
+    /// データは World に保持されたままなので、再度 true にすれば元の状態で復帰する。
+    pub enabled: bool,
 }
 
 impl ComponentSlot {
@@ -84,7 +88,7 @@ impl ComponentSlot {
         kind:   ComponentKind,
         entity: Entity,
     ) -> Self {
-        Self { name: name.into(), kind, type_id: TypeId::of::<T>(), entity }
+        Self { name: name.into(), kind, type_id: TypeId::of::<T>(), entity, enabled: true }
     }
 
     /// このスロットが指定型のコンポーネントかを確認する。
@@ -112,16 +116,28 @@ pub struct ActorData {
     pub canvas_transform: Option<CanvasTransform>,
     pub components: Vec<ComponentSlotData>,
     pub children:   Vec<ActorData>,
+    /// アクターのアクティブフラグ（Unity の activeSelf 相当）。
+    /// false のとき自身と全子孫が描画・更新・物理の対象から外れる。
+    /// 既存ファイルとの互換性のため省略時は true、true の場合は書き出さない。
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    pub active: bool,
 }
 
 /// actor_kind が Actor3D（デフォルト）の場合は JSON に書き出さない。
 fn is_actor3d(k: &ActorKind) -> bool { *k == ActorKind::Actor3D }
+
+/// serde 用: デフォルト true / true なら省略（active / enabled フラグの互換性維持）。
+fn default_true() -> bool { true }
+fn is_true(v: &bool) -> bool { *v }
 
 /// ComponentSlot のシリアライズ用データ。
 #[derive(Clone, Serialize, Deserialize)]
 pub struct ComponentSlotData {
     pub name:      String,
     pub component: ComponentData,
+    /// コンポーネントの有効フラグ。省略時は true、true の場合は書き出さない。
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    pub enabled: bool,
 }
 
 // ─── Actor ────────────────────────────────────────────────────────────────────
@@ -142,6 +158,10 @@ pub struct Actor {
     pub actor_kind: ActorKind,
     /// 子 Actor（順序を保持しているため DFS が確定的）
     pub children:   Vec<Actor>,
+    /// アクティブフラグ（Unity の activeSelf 相当）。
+    /// 自身が true でも祖先が false なら実効的に非アクティブになる
+    /// （実効判定は collect_inactive_actor_entities で集合として計算する）。
+    pub active:     bool,
     /// 保持コンポーネントの目録（実データは World）
     slots:          Vec<ComponentSlot>,
 }
@@ -154,6 +174,7 @@ impl Actor {
             world_line: 0,
             actor_kind: ActorKind::Actor3D,
             children:   Vec::new(),
+            active:     true,
             slots:      Vec::new(),
         }
     }
@@ -166,6 +187,7 @@ impl Actor {
             world_line: 0,
             actor_kind: ActorKind::Actor2D,
             children:   Vec::new(),
+            active:     true,
             slots:      Vec::new(),
         }
     }
@@ -196,7 +218,7 @@ impl Actor {
 
     /// スロットを追加する（World への insert と entity spawn は呼び出し元が行う）。
     pub fn add_slot(&mut self, name: impl Into<String>, kind: ComponentKind, type_id: TypeId, entity: Entity) {
-        self.slots.push(ComponentSlot { name: name.into(), kind, type_id, entity });
+        self.slots.push(ComponentSlot { name: name.into(), kind, type_id, entity, enabled: true });
     }
 
     /// 型パラメータ付きスロット追加ヘルパー。
@@ -323,7 +345,11 @@ impl Actor {
                         .map(|ac| ComponentData::AudioComponent(ac.to_data()))
                 }
             };
-            data.map(|d| ComponentSlotData { name: slot.name.clone(), component: d })
+            data.map(|d| ComponentSlotData {
+                name:      slot.name.clone(),
+                component: d,
+                enabled:   slot.enabled,
+            })
         }).collect();
 
         ActorData {
@@ -334,6 +360,7 @@ impl Actor {
             canvas_transform,
             components,
             children:         self.children.iter().map(|c| c.to_data_recursive(world, counter)).collect(),
+            active:           self.active,
         }
     }
 

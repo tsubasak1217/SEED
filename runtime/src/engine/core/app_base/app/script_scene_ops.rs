@@ -399,12 +399,16 @@ fn build_dfs_script_map(
         map:     &mut HashMap<u64, (Entity, Vec<(Arc<ScriptingHost>, isize)>)>,
     ) {
         *counter += 1;
-        // このアクターのスクリプトスロットから (host, handle) を収集する
+        // このアクターのスクリプトスロットから (host, handle) を収集する。
+        // 実効非アクティブのスクリプト（sc.active=false、Scene が毎フレーム同期）には
+        // 物理イベントコールバックも配信しない（ライフサイクルと同じ扱い）。
         let mut handles = Vec::new();
         for slot in actor.slots() {
             if slot.kind == ComponentKind::Script {
                 if let Some(sc) = world.get::<ScriptComponent>(slot.entity) {
-                    handles.push((Arc::clone(&sc.host), sc.handle));
+                    if sc.active {
+                        handles.push((Arc::clone(&sc.host), sc.handle));
+                    }
                 }
             }
         }

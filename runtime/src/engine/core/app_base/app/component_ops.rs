@@ -310,10 +310,11 @@ impl App {
                 }
             };
             comps_json.push_str(&format!(
-                r#"{{"slot":{},"name":{},"type":"{}"{}}}"#,
+                r#"{{"slot":{},"name":{},"type":"{}","enabled":{}{}}}"#,
                 i,
                 serde_json::to_string(&slot_data.name).unwrap_or_default(),
                 type_name,
+                slot_data.enabled as u8,
                 extra,
             ));
         }
@@ -323,9 +324,11 @@ impl App {
         // selected_slot_idx: Inspector 側でどのコンポーネントスロットを選択状態にするかを示す
         // transform_json は 3D: "transform":{...}、2D: "canvas_transform":{...} のいずれか
         // is_root / is_vp: ルートキャンバス判定用（HIERARCHY の is_vp と同一の分類規則）
+        // active はアクター自身のフラグ（インスペクタのチェックボックス状態用。
+        // 祖先の状態はヒエラルキー側の実効 active 表示が担う）
         let json = format!(
-            r#"{{"id":{dfs_id},"name":{name_json},"selected_slot":{selected_slot_idx},"is_root":{},"is_vp":{}{transform_json},"components":{comps_json}}}"#,
-            is_root as u8, root_is_2d as u8,
+            r#"{{"id":{dfs_id},"name":{name_json},"selected_slot":{selected_slot_idx},"is_root":{},"is_vp":{},"active":{}{transform_json},"components":{comps_json}}}"#,
+            is_root as u8, root_is_2d as u8, actor.active as u8,
         );
         ipc.send(&format!("ACTOR_COMPONENTS:{json}"));
     }

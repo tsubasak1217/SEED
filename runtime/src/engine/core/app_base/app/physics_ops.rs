@@ -372,23 +372,31 @@ fn collect_physics_objects(scene: &Scene, world_line: u32, force_kinematic: bool
     let mut objects      = Vec::new();
     let mut dfs_counter  = 0u32;
 
-    let mut stack: Vec<&Actor> = scene.actors.iter()
+    // (アクター, 親までの実効アクティブ) をスタックで運ぶ（DFS 先行順を維持）
+    let mut stack: Vec<(&Actor, bool)> = scene.actors.iter()
         .filter(|a| a.world_line == world_line)
         .rev()
+        .map(|a| (a, true))
         .collect();
 
-    while let Some(actor) = stack.pop() {
+    while let Some((actor, parent_active)) = stack.pop() {
         dfs_counter += 1;
         let dfs_id = dfs_counter as u64;
+        let active = parent_active && actor.active;
 
         for child in actor.children.iter().rev() {
-            stack.push(child);
+            stack.push((child, active));
         }
+
+        // 非アクティブアクターは物理シミュレーションへ登録しない
+        // （DFS カウントは entity_id 整合のため上で進めている）
+        if !active { continue; }
 
         let Some(tf) = scene.world.get::<ActorTransform>(actor.entity) else { continue };
 
-        // Collider スロットを探す
-        let Some(collider_slot) = actor.slots().iter().find(|s| s.kind == ComponentKind::Collider) else { continue };
+        // Collider スロットを探す（enabled=false のスロットは対象外）
+        let Some(collider_slot) = actor.slots().iter()
+            .find(|s| s.kind == ComponentKind::Collider && s.enabled) else { continue };
         let Some(collider) = scene.world.get::<ColliderComponent>(collider_slot.entity) else { continue };
 
         let position = [tf.position[0], tf.position[1], tf.position[2]];

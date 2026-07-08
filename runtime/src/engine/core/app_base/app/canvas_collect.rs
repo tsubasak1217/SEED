@@ -191,6 +191,10 @@ pub(super) fn collect_sprite_items(
 
     for actor in actors {
         if actor.world_line != wl { continue; }
+        // 非アクティブアクター: 自身と全子孫のスプライトを描画しない。
+        // 子孫は本再帰でしか到達しないため、ここで continue すればサブツリー全体が省かれる
+        // （この収集は DFS カウンタを持たないためスキップしても番号ズレは起きない）。
+        if !actor.active { continue; }
         let ct_opt = world.get::<CanvasTransform>(actor.entity).cloned();
         if let Some(ct) = ct_opt {
             // ビューポート・ルートキャンバスの自動解像度上書き（Phase B）。
@@ -276,8 +280,9 @@ pub(super) fn collect_sprite_items(
             );
 
             // SpriteComponent スロットを走査して GPU 行列とテクスチャを収集する
+            // （enabled=false のスロットは非表示）
             for slot in actor.slots() {
-                if slot.kind == ComponentKind::Sprite {
+                if slot.kind == ComponentKind::Sprite && slot.enabled {
                     if let Some(sc) = world.get::<SpriteComponent>(slot.entity) {
                         // scale_size モードに応じたスプライト有効サイズ（アスペクト比維持を考慮）
                         let eff_w = sc.width  * size_scale_x;
@@ -412,6 +417,12 @@ pub(super) fn collect_canvas_rects(
         if actor.world_line != wl { continue; }
         let my_dfs = *counter as usize;
         *counter += 1;
+
+        // 非アクティブアクター: 枠線を描画しない（DFS 番号は子孫分も進める）
+        if !actor.active {
+            skip_dfs_subtree(&actor.children, counter);
+            continue;
+        }
 
         let ct_opt = world.get::<CanvasTransform>(actor.entity).cloned();
         if let Some(ct) = ct_opt {
@@ -645,6 +656,13 @@ pub(super) fn collect_canvas_id_items(
         let my_dfs = *counter;
         *counter += 1;
 
+        // 非アクティブアクター: 描画されないためピック（ID）対象からも外す。
+        // DFS 番号は選択系と整合させるため子孫分も含めて進める。
+        if !actor.active {
+            skip_dfs_subtree(&actor.children, counter);
+            continue;
+        }
+
         let ct_opt = world.get::<CanvasTransform>(actor.entity).cloned();
         // CanvasTransform を持たないアクター配下は SS サブツリー外として扱う
         let next_in_ss = in_ss_subtree && ct_opt.is_some();
@@ -723,7 +741,8 @@ pub(super) fn collect_canvas_id_items(
                 let csy = canvas_scale * y_sign;
                 let mut gpu_mat_and_path: Option<([[f32; 4]; 4], Option<String>, i32)> = None;
                 for slot in actor.slots() {
-                    if slot.kind == ComponentKind::Sprite {
+                    // enabled=false のスプライトは非表示のためピック対象からも外す
+                    if slot.kind == ComponentKind::Sprite && slot.enabled {
                         if let Some(sc) = world.get::<SpriteComponent>(slot.entity) {
                             let ew = sc.width  * id_sc_x;
                             let eh = sc.height * id_sc_y;
@@ -820,10 +839,18 @@ pub(super) fn collect_3d_canvas_child_id_items(
         if actor.world_line != wl { continue; }
         *counter += 1;
 
+        // 非アクティブアクター: 描画されないためピック（ID）対象からも外す。
+        // DFS 番号は選択系と整合させるため子孫分も含めて進める。
+        if !actor.active {
+            skip_dfs_subtree(&actor.children, counter);
+            continue;
+        }
+
         // Actor3D + CanvasComponent: 子を canvas_to_world で走査する
+        // （Canvas スロットが enabled=false のときは通常再帰へフォールバック）
         let handled = if !actor.is_2d() {
             let canvas_slot = actor.slots().iter()
-                .find(|s| s.kind == ComponentKind::Canvas);
+                .find(|s| s.kind == ComponentKind::Canvas && s.enabled);
             if let Some(cs) = canvas_slot {
                 if let (Some(cc), Some(tf)) = (
                     world.get::<CanvasComponent>(cs.entity),
@@ -896,6 +923,12 @@ fn walk_3d_canvas_children_id(
         let my_dfs = *counter;
         *counter += 1;
 
+        // 非アクティブアクター: ピック対象から外す（DFS 番号は子孫分も進める）
+        if !actor.active {
+            skip_dfs_subtree(&actor.children, counter);
+            continue;
+        }
+
         let ct_opt = world.get::<CanvasTransform>(actor.entity).cloned();
 
         let (next_canvas_size, next_world_rs, next_cumul_scale, next_scale_mode) =
@@ -947,8 +980,9 @@ fn walk_3d_canvas_children_id(
 
             // SpriteComponent を持つアクターを ID アイテムとして追加する。
             // テクスチャなし（単色）は白テクスチャフォールバックで全面選択可能にする。
+            // （enabled=false のスプライトは非表示のためピック対象外）
             for slot in actor.slots() {
-                if slot.kind == ComponentKind::Sprite {
+                if slot.kind == ComponentKind::Sprite && slot.enabled {
                     if let Some(sc) = world.get::<SpriteComponent>(slot.entity) {
                         let ew = sc.width  * size_sc_x;
                         let eh = sc.height * size_sc_y;

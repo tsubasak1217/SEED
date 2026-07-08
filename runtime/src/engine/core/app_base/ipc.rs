@@ -273,6 +273,12 @@ pub enum IpcCommand {
     /// CameraComponent の正射投影の縦描画範囲（ワールド単位・全高）を設定する
     /// フォーマット: SET_CAMERA_ORTHO_HEIGHT:{actor_dfs_id},{slot_idx},{value}
     SetCameraComponentOrthoHeight { actor_dfs_id: u32, slot_idx: u32, value: f32 },
+    /// アクターのアクティブ切替（Unity の SetActive 相当）。
+    /// フォーマット: SET_ACTOR_ACTIVE:{dfs_id},{0|1}
+    SetActorActive { dfs_id: u32, active: bool },
+    /// コンポーネントスロットの有効切替（Unity の enabled 相当）。
+    /// フォーマット: SET_SLOT_ENABLED:{actor_dfs_id},{slot_idx},{0|1}
+    SetSlotEnabled { actor_dfs_id: u32, slot_idx: u32, enabled: bool },
     /// ColliderComponent のデータ全体（リジッドボディ設定を含む）を JSON で設定する
     /// フォーマット: SET_COLLIDER_DATA:{actor_dfs_id},{slot_idx},{json}
     /// json は ColliderComponentData の serde_json シリアライズ結果（カンマ含む）
@@ -773,6 +779,18 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                             // フォーマット: REMOVE_COMPONENT:{actor_dfs_id},{slot_idx}
                             parse2u(&s["REMOVE_COMPONENT:".len()..])
                                 .map(|(a, sl)| IpcCommand::RemoveComponentSlot { actor_dfs_id: a, slot_idx: sl })
+                        }
+                        s if s.starts_with("SET_ACTOR_ACTIVE:") => {
+                            // フォーマット: SET_ACTOR_ACTIVE:{dfs_id},{0|1}
+                            parse2u(&s["SET_ACTOR_ACTIVE:".len()..])
+                                .map(|(dfs, v)| IpcCommand::SetActorActive { dfs_id: dfs, active: v != 0 })
+                        }
+                        s if s.starts_with("SET_SLOT_ENABLED:") => {
+                            // フォーマット: SET_SLOT_ENABLED:{actor_dfs_id},{slot_idx},{0|1}
+                            parse2u1b(&s["SET_SLOT_ENABLED:".len()..])
+                                .map(|(a, sl, v)| IpcCommand::SetSlotEnabled {
+                                    actor_dfs_id: a, slot_idx: sl, enabled: v,
+                                })
                         }
                         s if s.starts_with("RENAME_COMPONENT:") => {
                             // フォーマット: RENAME_COMPONENT:{actor_dfs_id},{slot_idx},{name}

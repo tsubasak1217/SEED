@@ -30,8 +30,11 @@ pub fn register(schedule: &mut Schedule) {
     for phase in all_phases() {
         schedule.add_system(phase, FnSystem::new(system_name(phase), move |world, ctx| {
             // 1. 実行に必要な情報を収集する（ここで World の不変借用は終わる）
+            // 実効非アクティブ（アクターの active 継承が false またはスロット無効）の
+            // スクリプトは呼び出し対象から外す（Scene::sync_script_owners が毎フレーム同期）。
             let calls: Vec<(Arc<ScriptingHost>, isize, Option<Entity>)> = world
                 .query::<ScriptComponent>()
+                .filter(|(_entity, sc)| sc.active)
                 .map(|(_entity, sc)| (Arc::clone(&sc.host), sc.handle, sc.owner))
                 .collect();
             if calls.is_empty() { return; }

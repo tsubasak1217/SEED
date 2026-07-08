@@ -32,6 +32,8 @@ public class ActorNode
     /// シーンタブ（ワールド/ビューポート）の自動切替判定に使用する。
     /// </summary>
     public bool            IsVp     { get; set; }
+    /// <summary>実効アクティブか（自身と全祖先の active が true）。false は淡色表示する。</summary>
+    public bool            Active   { get; set; } = true;
     public List<ActorNode> Children { get; } = new();
 }
 
@@ -345,6 +347,8 @@ public partial class HierarchyPanel : UserControl
                     Is2D     = e.TryGetProperty("is_2d",    out var i2) && i2.GetBoolean(),
                     // ビューポート所属（ルートが Actor2D のサブツリー）。タブ自動切替用。
                     IsVp     = e.TryGetProperty("is_vp",    out var iv) && iv.GetBoolean(),
+                    // 実効アクティブ（省略時は true = アクティブ扱い）
+                    Active   = !e.TryGetProperty("active",   out var ac) || ac.GetBoolean(),
                 })
                 .ToList();
 
@@ -422,6 +426,8 @@ public partial class HierarchyPanel : UserControl
             FontSize   = 9,
         });
         tb.Inlines.Add(new Run(node.Name) { FontSize = 13 });
+        // 非アクティブ（自身または祖先の active が false）は Unity 風に淡色表示する
+        if (!node.Active) tb.Opacity = 0.45;
         return tb;
     }
 

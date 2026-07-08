@@ -47,6 +47,10 @@ pub struct ScriptComponent {
     /// スクリプトから gameObject/transform で所有オブジェクトへアクセスするために使う。
     /// Scene が毎フレーム（BeginFrame 前）に Actor ツリーから同期する。未同期時は None。
     pub(crate) owner: Option<Entity>,
+    /// 実効アクティブフラグ（アクターの active 継承 × スロットの enabled）。
+    /// false の間はライフサイクル関数・物理イベントが呼ばれない（Unity の enabled 相当）。
+    /// Scene が毎フレーム（BeginFrame 前）に Actor ツリーから同期する。
+    pub(crate) active: bool,
 }
 
 impl ScriptComponent {
@@ -56,7 +60,7 @@ impl ScriptComponent {
         let bytes     = type_name.as_bytes();
         let handle    = unsafe { (host.create_fn)(bytes.as_ptr(), bytes.len() as i32) };
         if handle == 0 { return None; }
-        Some(Self { host, handle, type_name, fields: BTreeMap::new(), owner: None })
+        Some(Self { host, handle, type_name, fields: BTreeMap::new(), owner: None, active: true })
     }
 
     /// フィールド値付きでスクリプトを生成する（シーンロード・リロード時の復元用）。

@@ -155,15 +155,17 @@ pub(crate) fn collect_actor2d_contexts(
     // スタック要素:
     //   (アクター, 親 Canvas サイズ, 親累積スケール, (scale_transform, scale_size),
     //    親キャンバス原点ワールド位置, 親累積ワールド回転)
-    type CtxElem<'a> = (&'a Actor, Option<[f32; 2]>, [f32; 2], (bool, bool, bool, bool), [f32; 2], f32);
+    //   末尾に「親までの実効アクティブ」を追加（非アクティブは物理登録から除外する）
+    type CtxElem<'a> = (&'a Actor, Option<[f32; 2]>, [f32; 2], (bool, bool, bool, bool), [f32; 2], f32, bool);
 
     let mut stack: Vec<CtxElem> = scene.actors.iter()
         .filter(|a| a.world_line == world_line)
         .rev()
-        .map(|a| (a, None::<[f32; 2]>, [1.0f32, 1.0], (false, false, false, true), [0.0f32, 0.0], 0.0f32))
+        .map(|a| (a, None::<[f32; 2]>, [1.0f32, 1.0], (false, false, false, true), [0.0f32, 0.0], 0.0f32, true))
         .collect();
 
-    while let Some((actor, parent_canvas_size, parent_cumul_scale, (sm_transform, sm_size, keep_aspect, is_width_axis), parent_canvas_origin, parent_world_rot)) = stack.pop() {
+    while let Some((actor, parent_canvas_size, parent_cumul_scale, (sm_transform, sm_size, keep_aspect, is_width_axis), parent_canvas_origin, parent_world_rot, parent_active)) = stack.pop() {
+        let active = parent_active && actor.active;
         dfs_counter += 1;
         let dfs_id = dfs_counter;
 
@@ -310,7 +312,7 @@ pub(crate) fn collect_actor2d_contexts(
 
         // 子をスタックに積む（DFS 順を保つため逆順）
         for child in actor.children.iter().rev() {
-            stack.push((child, child_canvas_size, child_cumul_scale, child_sm, child_canvas_origin, child_world_rot));
+            stack.push((child, child_canvas_size, child_cumul_scale, child_sm, child_canvas_origin, child_world_rot, active));
         }
 
         // ── Actor2D のみ処理 ─────────────────────────────────────────────────
@@ -318,10 +320,16 @@ pub(crate) fn collect_actor2d_contexts(
 
         let Some(ct) = ct_opt else { continue };
 
-        // Collider2d スロットエンティティを探す
-        let collider_slot_entity = actor.slots().iter()
-            .find(|s| s.kind == ComponentKind::Collider2d)
-            .map(|s| s.entity);
+        // Collider2d スロットエンティティを探す。
+        // 非アクティブアクター・enabled=false のスロットは物理登録の対象外にする
+        // （レイアウトコンテキスト自体はドラッグ書き戻し等で使うため収集は継続する）。
+        let collider_slot_entity = if active {
+            actor.slots().iter()
+                .find(|s| s.kind == ComponentKind::Collider2d && s.enabled)
+                .map(|s| s.entity)
+        } else {
+            None
+        };
 
         // ── 1. アンカー補正（canvas_collect.rs と同一） ───────────────────────
         // eff_viewport: CanvasViewportRef::Camera 参照時はカメラの実効サイズを基準とする
