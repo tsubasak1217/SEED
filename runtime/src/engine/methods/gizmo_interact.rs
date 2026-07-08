@@ -13,6 +13,11 @@ use crate::engine::core::app_base::ipc::ToolMode;
 //  型定義
 // ============================================================
 
+/// ギズモ半径のスクリーン占有率（ビューポート半高に対する比率）。
+/// 透視: radius = dist * tan(fov_y/2) * RATIO、
+/// 正射: radius = ortho_half_h * RATIO で見た目の大きさが一致する。
+pub const GIZMO_SCREEN_RADIUS_RATIO: f32 = 0.233;
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum GizmoPart {
     AxisX, AxisY, AxisZ,
@@ -77,6 +82,38 @@ pub fn screen_to_ray(
     ];
     let len = len3(wd).max(1e-10);
     (cam_pos, [wd[0]/len, wd[1]/len, wd[2]/len])
+}
+
+/// 3D 正射投影デバッグカメラのスクリーン座標をワールド空間レイに変換する。
+///
+/// 透視と異なりレイ原点がスクリーン位置ごとにビュー平面上を移動し、
+/// レイ方向はカメラ前方向で一定になる。
+/// - `view_data`: row-major ビュー行列（行 0/1/2 = 右/上/前 のカメラ基底）
+/// - `half_w` / `half_h`: 正射投影の半幅・半高（ワールド単位）
+pub fn screen_to_ray_ortho3d(
+    cx: f32, cy: f32,
+    vp_w: f32, vp_h: f32,
+    view_data: &[[f32; 4]; 4],
+    cam_pos:   [f32; 3],
+    half_w: f32, half_h: f32,
+) -> ([f32; 3], [f32; 3]) {
+    // ビューポート → NDC（Y 反転、Y-up 規則）
+    let ndc_x = 2.0 * cx / vp_w - 1.0;
+    let ndc_y = 1.0 - 2.0 * cy / vp_h;
+    // ビュー行列の行ベクトル = カメラ基底（右・上・前）のワールド表現
+    let right = [view_data[0][0], view_data[0][1], view_data[0][2]];
+    let up    = [view_data[1][0], view_data[1][1], view_data[1][2]];
+    let fwd   = [view_data[2][0], view_data[2][1], view_data[2][2]];
+    // レイ原点 = カメラ位置 + ビュー平面上のオフセット
+    let ox = ndc_x * half_w;
+    let oy = ndc_y * half_h;
+    let origin = [
+        cam_pos[0] + right[0]*ox + up[0]*oy,
+        cam_pos[1] + right[1]*ox + up[1]*oy,
+        cam_pos[2] + right[2]*ox + up[2]*oy,
+    ];
+    let len = len3(fwd).max(1e-10);
+    (origin, [fwd[0]/len, fwd[1]/len, fwd[2]/len])
 }
 
 /// 2D 正射影カメラのスクリーン座標をワールド空間レイに変換する。

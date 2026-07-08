@@ -8,8 +8,9 @@
 use crate::engine::components::{ModelComponent, Transform as ActorTransform, CanvasTransform, ComponentKind};
 use crate::engine::core::app_base::ipc::ToolMode;
 use crate::engine::methods::gizmo_interact::{
-    GizmoDrag, GizmoPart, screen_to_ray, screen_to_ray_ortho, hit_test_gizmo, start_drag,
-    hit_test_gizmo_canvas, start_drag_canvas,
+    GizmoDrag, GizmoPart, screen_to_ray, screen_to_ray_ortho, screen_to_ray_ortho3d,
+    hit_test_gizmo, start_drag, hit_test_gizmo_canvas, start_drag_canvas,
+    GIZMO_SCREEN_RADIUS_RATIO,
 };
 
 use super::{App, RuntimeMode, find_actor_by_dfs, selection_centroid, canvas_anchor_offset_for_dfs,
@@ -207,6 +208,44 @@ impl App {
         find_parent_actor_of_dfs(&scene.actors, wl, dfs as u32, &mut c2, None).is_none()
     }
 
+    /// エディタのデバッグカメラ（3D ビュー）でスクリーン座標をワールドレイに変換する。
+    ///
+    /// デバッグカメラの投影方式（透視 / 正射トグル）に応じてレイ生成を切り替える。
+    /// 正射時に透視用レイを使うとヒット判定がずれるため、必ずこのヘルパーを経由する。
+    pub(super) fn editor_3d_ray(&self, cx: f32, cy: f32, vp_w: f32, vp_h: f32) -> ([f32; 3], [f32; 3]) {
+        let cam_pos_v = self.camera.position();
+        let cam_pos   = [cam_pos_v.x, cam_pos_v.y, cam_pos_v.z];
+        let view = self.camera.view_matrix();
+        if self.camera.is_ortho() {
+            // 正射投影: レイ原点がビュー平面上を移動し、方向はカメラ前方向で一定
+            let half_h = self.camera.ortho_half_h.max(0.01);
+            let half_w = half_h * (vp_w / vp_h);
+            screen_to_ray_ortho3d(cx, cy, vp_w, vp_h, &view.data, cam_pos, half_w, half_h)
+        } else {
+            // 透視投影: カメラ位置からスクリーン方向へのレイ
+            let proj = self.camera.projection_matrix();
+            screen_to_ray(cx, cy, vp_w, vp_h, &view.data, &proj.data, cam_pos)
+        }
+    }
+
+    /// エディタのデバッグカメラ（3D ビュー）でのギズモ半径を返す。
+    ///
+    /// スクリーン上の見た目の大きさが投影方式・ズームに依存せず一定になるよう、
+    /// 透視: 距離 × tan(fov/2)、正射: ortho_half_h を基準に計算する。
+    pub(super) fn editor_3d_gizmo_radius(&self, gizmo_pos: [f32; 3]) -> f32 {
+        if self.camera.is_ortho() {
+            // 正射投影: 可視半高に比例させてズームに追従（見た目の大きさ一定）
+            self.camera.ortho_half_h.max(0.01) * GIZMO_SCREEN_RADIUS_RATIO
+        } else {
+            // 透視投影: カメラ距離と FOV から見た目の大きさが一定になる半径を計算
+            let cam_pos = self.camera.position();
+            let d = [gizmo_pos[0]-cam_pos.x, gizmo_pos[1]-cam_pos.y, gizmo_pos[2]-cam_pos.z];
+            let dist = (d[0]*d[0]+d[1]*d[1]+d[2]*d[2]).sqrt().max(0.01);
+            let half_fov = self.camera.base.projection.fov_y_rad * 0.5;
+            dist * half_fov.tan() * GIZMO_SCREEN_RADIUS_RATIO
+        }
+    }
+
     /// カーソル座標でギズモのヒットテストを行い、当たったパーツを返す。
     /// 2D キャンバスモードでは 2D 有効パーツのみで判定する。
     /// スクリーンスペース: ortho レイ、ワールドスペース: perspective レイ を使用する。
@@ -243,17 +282,9 @@ impl App {
             let (ro, rd) = screen_to_ray_ortho(cx, cy, vp_w, vp_h, pan_x, pan_y, half_w, half_h);
             (ro, rd, r)
         } else {
-            // 3D perspective（通常 3D オブジェクトまたはワールドスペースキャンバス）
-            let cam_pos_v = self.camera.position();
-            let cam_pos   = [cam_pos_v.x, cam_pos_v.y, cam_pos_v.z];
-            let d    = [gizmo_pos[0]-cam_pos[0], gizmo_pos[1]-cam_pos[1], gizmo_pos[2]-cam_pos[2]];
-            let dist = (d[0]*d[0]+d[1]*d[1]+d[2]*d[2]).sqrt().max(0.01);
-            let half_fov = self.camera.base.projection.fov_y_rad * 0.5;
-            let r = dist * half_fov.tan() * 0.233;
-            let view = self.camera.view_matrix();
-            let proj = self.camera.projection_matrix();
-            let (ro, rd) = screen_to_ray(cx, cy, vp_w, vp_h, &view.data, &proj.data, cam_pos);
-            (ro, rd, r)
+            // 3D デバッグカメラ（透視 / 正射は editor_3d_ray 内で分岐する）
+            let (ro, rd) = self.editor_3d_ray(cx, cy, vp_w, vp_h);
+            (ro, rd, self.editor_3d_gizmo_radius(gizmo_pos))
         };
 
         // 3D Canvas 子アクターの場合はキャンバス軸に沿った oriented ヒットテストを使う
@@ -318,17 +349,9 @@ impl App {
             let (ro, rd) = screen_to_ray_ortho(cx, cy, vp_w, vp_h, pan_x, pan_y, half_w, half_h);
             (ro, rd, r)
         } else {
-            // 3D perspective（通常 3D オブジェクトまたはワールドスペースキャンバス）
-            let cam_pos_v = self.camera.position();
-            let cam_pos   = [cam_pos_v.x, cam_pos_v.y, cam_pos_v.z];
-            let d    = [gizmo_pos[0]-cam_pos[0], gizmo_pos[1]-cam_pos[1], gizmo_pos[2]-cam_pos[2]];
-            let dist = (d[0]*d[0]+d[1]*d[1]+d[2]*d[2]).sqrt().max(0.01);
-            let half_fov = self.camera.base.projection.fov_y_rad * 0.5;
-            let r = dist * half_fov.tan() * 0.233;
-            let view = self.camera.view_matrix();
-            let proj = self.camera.projection_matrix();
-            let (ro, rd) = screen_to_ray(cx, cy, vp_w, vp_h, &view.data, &proj.data, cam_pos);
-            (ro, rd, r)
+            // 3D デバッグカメラ（透視 / 正射は editor_3d_ray 内で分岐する）
+            let (ro, rd) = self.editor_3d_ray(cx, cy, vp_w, vp_h);
+            (ro, rd, self.editor_3d_gizmo_radius(gizmo_pos))
         };
 
         // 3D Canvas 子アクターの場合はキャンバス軸に沿った oriented ドラッグ開始を使う

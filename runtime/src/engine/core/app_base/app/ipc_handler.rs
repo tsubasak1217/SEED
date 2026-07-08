@@ -465,11 +465,25 @@ impl App {
                     // Edit ビューモード切替（エディタの 3Dシーン / 2Dシーンタブ）。
                     // Edit モード限定機能のため Play モード中は無視する。
                     if self.mode == RuntimeMode::Edit {
-                        self.edit_view_mode = if is_2d {
+                        let new_mode = if is_2d {
                             super::EditViewMode::View2D
                         } else {
                             super::EditViewMode::View3D
                         };
+                        // ビューモードが実際に変わる場合は選択状態をリセットする。
+                        // ワールド / ビューポートタブを直接切り替えたとき、旧ビューで
+                        // 選択していたアクターのギズモが新ビューに残留するのを防ぐ。
+                        if new_mode != self.edit_view_mode {
+                            self.selected_actor_dfs_ids.clear();
+                            self.selected_instances.clear();
+                            self.actor_virtual_selected_idx = None;
+                            self.actor_virtual_selected_slot_idx = 0;
+                            self.hovered_gizmo_part = None;
+                            self.drag.gizmo_drag = None;
+                            // エディタのヒエラルキーパネルにも選択解除を通知する
+                            if let Some(ipc) = &self.ipc { ipc.send("SELECTED:-1"); }
+                        }
+                        self.edit_view_mode = new_mode;
                         // ピッキング・ギズモ・ドラッグの各ハンドラは
                         // canvas_screen_space_overlay から use_screen_space を計算するため、
                         // ビューモードとフラグを同期させて座標系の不整合を防ぐ。

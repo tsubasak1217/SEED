@@ -49,7 +49,7 @@ use crate::engine::methods::drawer::{
     prepare_sprites_from_mats, draw_sprites, draw_sprite_outline, GpuSpriteTexture,
     NUM_LODS,
 };
-use crate::engine::methods::gizmo_interact::screen_to_ray;
+use crate::engine::methods::gizmo_interact::{screen_to_ray, GIZMO_SCREEN_RADIUS_RATIO};
 use crate::engine::core::app_base::undo::{SelectionCommand, ActorDfsSelectionCommand};
 use crate::engine::structs::tensor::{Vector3, Mat4x4};
 use crate::engine::structs::utils::Color;
@@ -1167,12 +1167,20 @@ impl App {
                                 let r = cam_2d.map(|c| c.ortho_half_h * 0.15).unwrap_or(54.0);
                                 (r, [0.0f32, 0.0, -100.0])
                             } else {
-                                // 3D perspective（通常3D または ワールドスペースキャンバス）: 距離と FOV からギズモ半径を計算する
+                                // 3D デバッグカメラ（通常3D または ワールドスペースキャンバス）:
+                                // editor_3d_gizmo_radius と同一の式（self.renderer 可変借用中のため
+                                // self メソッドを呼べず、self.camera フィールド経由でインライン計算する）。
                                 let cam_pos = self.camera.position();
-                                let d = [pos[0]-cam_pos.x, pos[1]-cam_pos.y, pos[2]-cam_pos.z];
-                                let dist = (d[0]*d[0]+d[1]*d[1]+d[2]*d[2]).sqrt().max(0.01);
-                                let half_fov = self.camera.base.projection.fov_y_rad * 0.5;
-                                let r = dist * half_fov.tan() * 0.233;
+                                let r = if self.camera.is_ortho() {
+                                    // 正射（2D トグル）: 可視半高に比例させて見た目の大きさを一定に保つ
+                                    self.camera.ortho_half_h.max(0.01) * GIZMO_SCREEN_RADIUS_RATIO
+                                } else {
+                                    // 透視: カメラ距離と FOV から見た目の大きさが一定になる半径
+                                    let d = [pos[0]-cam_pos.x, pos[1]-cam_pos.y, pos[2]-cam_pos.z];
+                                    let dist = (d[0]*d[0]+d[1]*d[1]+d[2]*d[2]).sqrt().max(0.01);
+                                    let half_fov = self.camera.base.projection.fov_y_rad * 0.5;
+                                    dist * half_fov.tan() * GIZMO_SCREEN_RADIUS_RATIO
+                                };
                                 (r, [cam_pos.x, cam_pos.y, cam_pos.z])
                             };
 
@@ -1237,25 +1245,46 @@ impl App {
                                     wp[i] = [pan_x + nx * half_w, pan_y + ny * half_h, 0.0];
                                 }
                             } else {
-                                // 3D perspective: near plane の手前にワールド座標を投影する
+                                // 3D デバッグカメラ: near plane の少し手前にワールド座標を配置する
                                 let view    = self.camera.view_matrix();
-                                let proj    = self.camera.projection_matrix();
                                 let cam_pv  = self.camera.position();
                                 let cam_pos = [cam_pv.x, cam_pv.y, cam_pv.z];
                                 let near_vs = self.camera.base.projection.near * 1.05;
-                                let p = &proj.data;
                                 let v = &view.data;
-                                for (i, &(sx, sy)) in sc.iter().enumerate() {
-                                    let nx  = 2.0 * sx / vp_w - 1.0;
-                                    let ny  = 1.0 - 2.0 * sy / vp_h;
-                                    let vpx = (nx / p[0][0]) * near_vs;
-                                    let vpy = (ny / p[1][1]) * near_vs;
-                                    let vpz = near_vs;
-                                    wp[i] = [
-                                        cam_pos[0] + v[0][0]*vpx + v[1][0]*vpy + v[2][0]*vpz,
-                                        cam_pos[1] + v[0][1]*vpx + v[1][1]*vpy + v[2][1]*vpz,
-                                        cam_pos[2] + v[0][2]*vpx + v[1][2]*vpy + v[2][2]*vpz,
-                                    ];
+                                if self.camera.is_ortho() {
+                                    // 正射投影（2D トグル）: NDC → ビュー平面上の平行オフセット。
+                                    // 透視用の除算（nx / p[0][0]）は正射行列では位置スケールに
+                                    // ならないため、ortho_half_w/h を直接掛けて変換する。
+                                    let half_h = self.camera.ortho_half_h.max(0.01);
+                                    let half_w = half_h * (vp_w / vp_h);
+                                    for (i, &(sx, sy)) in sc.iter().enumerate() {
+                                        let nx  = 2.0 * sx / vp_w - 1.0;
+                                        let ny  = 1.0 - 2.0 * sy / vp_h;
+                                        let vpx = nx * half_w;
+                                        let vpy = ny * half_h;
+                                        let vpz = near_vs;
+                                        wp[i] = [
+                                            cam_pos[0] + v[0][0]*vpx + v[1][0]*vpy + v[2][0]*vpz,
+                                            cam_pos[1] + v[0][1]*vpx + v[1][1]*vpy + v[2][1]*vpz,
+                                            cam_pos[2] + v[0][2]*vpx + v[1][2]*vpy + v[2][2]*vpz,
+                                        ];
+                                    }
+                                } else {
+                                    // 透視投影: near plane 上へ逆投影する
+                                    let proj = self.camera.projection_matrix();
+                                    let p = &proj.data;
+                                    for (i, &(sx, sy)) in sc.iter().enumerate() {
+                                        let nx  = 2.0 * sx / vp_w - 1.0;
+                                        let ny  = 1.0 - 2.0 * sy / vp_h;
+                                        let vpx = (nx / p[0][0]) * near_vs;
+                                        let vpy = (ny / p[1][1]) * near_vs;
+                                        let vpz = near_vs;
+                                        wp[i] = [
+                                            cam_pos[0] + v[0][0]*vpx + v[1][0]*vpy + v[2][0]*vpz,
+                                            cam_pos[1] + v[0][1]*vpx + v[1][1]*vpy + v[2][1]*vpz,
+                                            cam_pos[2] + v[0][2]*vpx + v[1][2]*vpy + v[2][2]*vpz,
+                                        ];
+                                    }
                                 }
                             }
                             let color = [0.3, 0.7, 1.0, 1.0f32];

@@ -675,15 +675,29 @@ impl GizmoBatch {
         self.add_thick_line(d, a, outline);
     }
 
+    /// XY 平面のハンドル矩形を追加する（移動・スケール共通）。
+    /// 3D の 3 平面ハンドルと、2D ギズモの XY 平面ハンドルの両方から使用する。
+    fn add_plane_handle_xy(&mut self, pos: [f32; 3], radius: f32, hovered: Option<GizmoPart>) {
+        let [px, py, pz] = pos;
+        let o = radius * 0.5;
+        let s = radius * 0.075;
+        let (fxy, cxy) = if hovered == Some(GizmoPart::PlaneXY) {
+            (highlight_fill(GZ_FILL), highlight(GZ))
+        } else { (GZ_FILL, GZ) };
+        // XY 平面（Z 軸色 = 青）
+        self.add_plane_quad(
+            [px+o-s, py+o-s, pz], [px+o+s, py+o-s, pz],
+            [px+o+s, py+o+s, pz], [px+o-s, py+o+s, pz],
+            fxy, cxy,
+        );
+    }
+
     /// XY / XZ / YZ 3 平面のハンドル矩形を追加する（移動・スケール共通）。
     fn add_plane_handles(&mut self, pos: [f32; 3], radius: f32, hovered: Option<GizmoPart>) {
         let [px, py, pz] = pos;
         let o = radius * 0.5;
         let s = radius * 0.075;
 
-        let (fxy, cxy) = if hovered == Some(GizmoPart::PlaneXY) {
-            (highlight_fill(GZ_FILL), highlight(GZ))
-        } else { (GZ_FILL, GZ) };
         let (fxz, cxz) = if hovered == Some(GizmoPart::PlaneXZ) {
             (highlight_fill(GY_FILL), highlight(GY))
         } else { (GY_FILL, GY) };
@@ -692,11 +706,7 @@ impl GizmoBatch {
         } else { (GX_FILL, GX) };
 
         // XY 平面（Z 軸色 = 青）
-        self.add_plane_quad(
-            [px+o-s, py+o-s, pz], [px+o+s, py+o-s, pz],
-            [px+o+s, py+o+s, pz], [px+o-s, py+o+s, pz],
-            fxy, cxy,
-        );
+        self.add_plane_handle_xy(pos, radius, hovered);
         // XZ 平面（Y 軸色 = 緑）
         self.add_plane_quad(
             [px+o-s, py, pz+o-s], [px+o+s, py, pz+o-s],
@@ -986,8 +996,8 @@ impl GizmoBatch {
 
     // ── 2D キャンバスモード用ギズモ ───────────────────────────────
 
-    /// 2D 移動ギズモ（X・Y 軸のみ + Center ハンドル）を追加する。
-    /// Z 軸・平面ハンドルは 2D では不要なため描画しない。
+    /// 2D 移動ギズモ（X・Y 軸 + XY 平面ハンドル + Center ハンドル）を追加する。
+    /// Z 軸・XZ/YZ 平面ハンドルは 2D では不要なため描画しない。
     pub fn add_gizmo_translate_2d(&mut self, pos: [f32; 3], radius: f32, hovered: Option<GizmoPart>) {
         let [px, py, pz] = pos;
         let head_len = radius * 0.25;
@@ -1006,12 +1016,15 @@ impl GizmoBatch {
         self.add_thick_line(pos, shaft_tip, cy);
         self.add_cone([px, py + radius, pz], shaft_tip, head_r, 8, cy);
 
+        // XY 平面ハンドル（青）: 2D でも XY 同時移動に使用する（3D ギズモと共通の見た目）
+        self.add_plane_handle_xy(pos, radius, hovered);
+
         // 中心ハンドル
         let cc = if hovered == Some(GizmoPart::Center) { Color::YELLOW } else { Color::WHITE };
         self.add_center_dot(pos, radius * 0.055, cc);
     }
 
-    /// 2D スケールギズモ（X・Y 軸のみ + Center ハンドル）を追加する。
+    /// 2D スケールギズモ（X・Y 軸 + XY 平面ハンドル + Center ハンドル）を追加する。
     pub fn add_gizmo_scale_2d(&mut self, pos: [f32; 3], radius: f32, hovered: Option<GizmoPart>) {
         let [px, py, pz] = pos;
         let cube_half = radius * 0.07;
@@ -1028,6 +1041,9 @@ impl GizmoBatch {
         let ye = [px, py + radius, pz];
         self.add_thick_line(pos, ye, cy);
         self.add_solid_cube(ye, cube_half, cy);
+
+        // XY 平面ハンドル（青）: 2D でも XY 均一スケールに使用する（3D ギズモと共通の見た目）
+        self.add_plane_handle_xy(pos, radius, hovered);
 
         // 中心ハンドル
         let cc = if hovered == Some(GizmoPart::Center) { Color::YELLOW } else { Color::WHITE };

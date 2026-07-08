@@ -18,7 +18,7 @@ use crate::engine::core::app_base::undo::{
     CanvasTransformCommand,
 };
 use crate::engine::methods::gizmo_interact::{
-    screen_to_ray, screen_to_ray_ortho, update_drag, mat4x4_mul, mat4x4_inv,
+    screen_to_ray_ortho, update_drag, mat4x4_mul, mat4x4_inv,
 };
 
 use super::{
@@ -226,12 +226,8 @@ impl App {
                     let half_w = half_h * (vp_w / vp_h);
                     screen_to_ray_ortho(cx, cy, vp_w, vp_h, pan_x, pan_y, half_w, half_h)
                 } else {
-                    // 3D perspective（通常 3D またはワールドスペースキャンバス）
-                    let cam_v = self.camera.position();
-                    let cam   = [cam_v.x, cam_v.y, cam_v.z];
-                    let view  = self.camera.view_matrix();
-                    let proj  = self.camera.projection_matrix();
-                    screen_to_ray(cx, cy, vp_w, vp_h, &view.data, &proj.data, cam)
+                    // 3D デバッグカメラ（透視 / 正射は editor_3d_ray 内で分岐する）
+                    self.editor_3d_ray(cx, cy, vp_w, vp_h)
                 };
                 Some(update_drag(drag, ro, rd))
             } else { None }
