@@ -322,6 +322,11 @@ public sealed class QuickInfoPopup : IDisposable
         // 待機中にテキスト変更・別ホバー・破棄が起きていたら結果を破棄する
         if (_disposed || generation != _hoverGeneration) return;
 
+        // 解析待機中に抑止条件が成立した場合も破棄する。
+        // 同じホバーでデバッグ変数ホバーが先に値ポップアップを開いたケースで、
+        // 遅れて QuickInfo が重なって開くのを防ぐ（デバッグ停止中の競合対策）。
+        if (_isSuppressed()) return;
+
         // 診断（赤波線）があればシンボル情報と統合して 1 つのポップアップで表示する。
         // シンボル未解決でも診断だけあれば表示する（未定義識別子のエラー等）。
         string? diag = _getDiagnostic(offset);
@@ -350,8 +355,12 @@ public sealed class QuickInfoPopup : IDisposable
         Opened?.Invoke();
     }
 
-    /// <summary>ポップアップを閉じる。</summary>
-    private void Hide()
+    /// <summary>
+    /// ポップアップを閉じる。
+    /// デバッグ変数ホバーが値を表示した際、同じホバーで開いた QuickInfo を
+    /// 外部（ScriptEditorPanel）から閉じるためにも使う。
+    /// </summary>
+    public void Hide()
     {
         _closeTimer.Stop();
         _popup.IsOpen = false;

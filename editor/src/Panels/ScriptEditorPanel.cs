@@ -403,6 +403,10 @@ public class ScriptEditorPanel : UserControl
             DebugVariablesFetcher?.Invoke(varRef)
             ?? Task.FromResult<IReadOnlyList<VarInfo>>(System.Array.Empty<VarInfo>()));
         _debugHover.Show(editor, expr!, result);
+        // 変数の値ポップアップを表示したら、同じホバーで先に開いた QuickInfo
+        // （シグネチャ表示）は閉じて重なりを防ぐ。評価に失敗した式（メソッド名・
+        // 型名など）ではここに到達しないため、QuickInfo がそのまま表示される。
+        _docs.FirstOrDefault(d => d.Editor == editor)?.QuickInfo?.Hide();
         e.Handled = true;
     }
 
@@ -827,13 +831,15 @@ public class ScriptEditorPanel : UserControl
         editor.TextArea.TextView.MouseHoverStopped += (_, _)  => OnDebugHoverStopped();
 
         // VS 風の QuickInfo（シンボル情報ホバー）。Roslyn の意味解析でシグネチャ・
-        // 種別・XML doc の summary を表示する。デバッグセッション中（DebugEvaluator
-        // 設定時）は変数ホバーが優先されるため抑止し、補完ウィンドウ表示中も出さない。
+        // 種別・XML doc の summary を表示する。
+        // デバッグ停止中（一時停止中）でも QuickInfo は動作させる（VS と同じ挙動）。
+        // ただし変数ホバーが値ポップアップを表示している間は重なるため抑止し、
+        // 補完ウィンドウ表示中も出さない。
         // 読み取り専用タブはワークスペース外のため Document が null になり自然に無効化される。
         doc.QuickInfo = new QuickInfoPopup(
             editor,
             getDocument:   () => _workspace?.GetDocument(doc.FilePath),
-            isSuppressed:  () => DebugEvaluator is not null || _completionWindow is not null,
+            isSuppressed:  () => (_debugHover?.IsOpen ?? false) || _completionWindow is not null,
             // 赤波線（診断マーカー）のメッセージも QuickInfo に統合表示する
             getDiagnostic: offset => doc.Markers.GetMarkersAtOffset(offset).FirstOrDefault()?.ToolTip,
             // エディタの配色設定でシグネチャを構文色分けする
