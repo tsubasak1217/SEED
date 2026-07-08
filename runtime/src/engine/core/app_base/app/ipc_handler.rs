@@ -50,6 +50,10 @@ impl App {
                 IpcCommand::SetDebugGuard(v)   => self.clock.set_debug_guard(v),
                 IpcCommand::CamKeyDown(k)      => self.cam_input.set_key(&k, true),
                 IpcCommand::CamKeyUp(k)        => self.cam_input.set_key(&k, false),
+                // Play 切替等でキー UP が届かずスタックした移動キーを一括リセットする。
+                // スタックすると「RMB 押下だけでカメラが滑る」「軸スナップが即キャンセル
+                // される（any_move_key が真のため）」という不具合になる。
+                IpcCommand::CamKeysClear       => self.cam_input.clear_keys(),
                 IpcCommand::SetToolMode(m)     => self.tool_mode = m,
                 IpcCommand::PlayClamp(v)       => {
                     self.play_clamp = v;

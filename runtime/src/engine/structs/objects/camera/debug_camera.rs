@@ -55,6 +55,16 @@ impl CameraInput {
         self.mouse_dy = 0.0;
         self.scroll   = 0.0;
     }
+
+    /// 全キー状態を強制リセットする（CAM_KEYS_CLEAR IPC 用）。
+    ///
+    /// エディタの Play 切替などでキー UP がこのランタイムへ届かないと、
+    /// 移動キーがスタックして「RMB 押下だけでカメラが移動する」
+    /// 「軸スナップが any_move_key() により即キャンセルされる」問題になる。
+    pub fn clear_keys(&mut self) {
+        self.w = false; self.a = false; self.s = false; self.d = false;
+        self.q = false; self.e = false; self.shift = false;
+    }
 }
 
 /// デバッグ用フリーフライカメラ。

@@ -186,16 +186,20 @@ public partial class MainWindow
                 return CallNextHookEx(_llKeyHook, nCode, wParam, lParam);
             }
 
-            if (VkKeyMap.TryGetValue(vk, out var keyName) && IsCamInputActive())
+            if (VkKeyMap.TryGetValue(vk, out var keyName))
             {
-                if (isDown && _pressedVks.Add(vk))
+                if (isDown && IsCamInputActive() && _pressedVks.Add(vk))
+                {
                     _runtimeManager?.SendToRuntime($"CAM_KEY_DOWN:{keyName}");
+                }
                 else if (isUp && _pressedVks.Remove(vk))
+                {
+                    // CAM_KEY_DOWN を送信済みのキーは、状態に関わらず必ず UP を送る。
+                    // 従来は IsCamInputActive() が false になった後の UP を送信せずに
+                    // 捨てていたため、ランタイム側でキーがスタックし
+                    // 「RMB だけでカメラが移動する」「軸スナップが効かない」原因になっていた。
                     _runtimeManager?.SendToRuntime($"CAM_KEY_UP:{keyName}");
-            }
-            else if (isUp)
-            {
-                _pressedVks.Remove(vk);
+                }
             }
         }
         return CallNextHookEx(_llKeyHook, nCode, wParam, lParam);

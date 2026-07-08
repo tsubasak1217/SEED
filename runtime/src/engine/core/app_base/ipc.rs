@@ -42,6 +42,10 @@ pub enum IpcCommand {
     CamKeyDown(String),
     /// エディタから転送されたカメラキー離し
     CamKeyUp(String),
+    /// 全カメラキーの強制リセット。
+    /// Play 切替などでキー UP がこのランタイムへ届かず状態がスタックするのを防ぐ
+    /// （エディタが Edit 復帰・再同期時に送信する）。
+    CamKeysClear,
     /// Play 時カーソルクランプの有効/無効
     PlayClamp(bool),
     /// ツールモード切り替え
@@ -533,8 +537,9 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                     Some(IpcCommand::CamKeyUp(key.to_string()))
                 } else {
                     match trimmed {
-                        "CTRL_DOWN"    => Some(IpcCommand::CtrlDown),
-                        "CTRL_UP"      => Some(IpcCommand::CtrlUp),
+                        "CTRL_DOWN"      => Some(IpcCommand::CtrlDown),
+                        "CTRL_UP"        => Some(IpcCommand::CtrlUp),
+                        "CAM_KEYS_CLEAR" => Some(IpcCommand::CamKeysClear),
                         "PAUSE"        => Some(IpcCommand::Pause),
                         "RESUME"       => Some(IpcCommand::Resume),
                         "STOP"         => Some(IpcCommand::Stop),

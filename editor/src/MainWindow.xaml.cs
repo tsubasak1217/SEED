@@ -507,6 +507,11 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
             // 事前に検出してエラー一覧ウィンドウ + ダイアログで通知する。
             if (!CheckScriptsBeforePlay()) return;
 
+            // Play へ切り替える前に、押下中のカメラキーの UP を Edit ランタイムへ送る。
+            // 切替後は送信先が Play パイプになるため、ここで送らないと
+            // Edit ランタイム側でキーがスタックする（RMB だけでカメラが移動する原因）。
+            ReleaseAllCamKeys();
+
             // キャンバス編集タブが開いていたら閉じてアクターをシーンへ戻す。
             // 開いたまま Play すると一時シーン保存にアクターが正しく含まれない。
             CloseActiveSceneCanvasTab();

@@ -314,6 +314,11 @@ public partial class MainWindow
             // 起動時・ランタイム再接続時・Play→Edit 復帰時のいずれもここを通るため、
             // ランタイムのビューモードが常にタブ UI と一致する。
             SendCurrentEditView();
+            // Edit ランタイムのカメラ移動キー状態を強制リセットする。
+            // Play 切替中に届かなかった CAM_KEY_UP でキーがスタックしていると
+            // 「RMB 押下だけでカメラが移動」「軸スナップが即キャンセル」になるため、
+            // Edit 復帰・再同期のたびにクリーンな状態から始める。
+            _runtimeManager?.SendToRuntime("CAM_KEYS_CLEAR");
             _runtimeManager?.SendToRuntime(
                 $"SET_EDIT_PHYSICS:{(_editPhysicsEnabled ? 1 : 0)},{(_editPhysicsWithRigidbody ? 1 : 0)}");
             _runtimeManager?.SendToRuntime(
@@ -350,8 +355,11 @@ public partial class MainWindow
 
     private void ApplyUiState(EditorState state)
     {
+        // Edit/Pause 以外へ遷移するときは、押下中キーの CAM_KEY_UP を送ってから
+        // クリアする（Pause 中に押したキーが Play 再開でスタックするのを防ぐ）。
+        // bare Clear だと以降の実 KeyUp が _pressedVks に無いため UP が送信されない。
         if (state != EditorState.Edit && state != EditorState.Pause)
-            _pressedVks.Clear();
+            ReleaseAllCamKeys();
 
         // Play 移行時はクランプ適用、それ以外は解除
         // RuntimeHwnd が 0 の場合は OnRuntimeHwndAvailable でリトライされる
