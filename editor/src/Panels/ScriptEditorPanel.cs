@@ -2164,6 +2164,21 @@ public class ScriptEditorPanel : UserControl
         else
         {
             EditorLog.Write($"スクリプト保存・コンパイル成功 [{Path.GetFileName(doc.FilePath)}] → {type.Name}");
+
+            // ランタイムは全 .cs を 1 アセンブリに一括コンパイルするため、
+            // 型名の重複などファイル横断のエラーも検証する。
+            // ここでエラーがあると実行時に全スクリプトが動かなくなる（サイレント故障）ので、
+            // 単体成功でも必ず全体検証の結果を表示する。
+            if (!string.IsNullOrEmpty(_assetsRoot))
+            {
+                var projErrors = ScriptCompiler.CompileProjectErrors(_assetsRoot);
+                if (projErrors.Count > 0)
+                {
+                    EditorLog.Write("[スクリプトエラー] 全スクリプトの一括コンパイルに失敗しています。");
+                    EditorLog.Write("  ※ 修正するまでシーンのスクリプトは一切実行されません:");
+                    foreach (var err in projErrors) EditorLog.Write($"  {err}");
+                }
+            }
         }
 
         // 保存できたので退避データは不要（クラッシュ復元対象から外す）

@@ -696,6 +696,29 @@ public sealed class RuntimeManager : IDisposable
             EditorLog.Write($"[Runtime→Editor] SELECTED_MULTI count={ids.Count}");
             if (ids.Count > 0) SelectionMultiChanged?.Invoke(ids);
         }
+        else if (msg.StartsWith("SCRIPTS_RELOADED:", StringComparison.Ordinal))
+        {
+            // ランタイム側の全スクリプト一括コンパイル・再生成の結果通知。
+            // フォーマット: "count,restored"（count = コンパイル型数、-1 = 失敗）。
+            // 失敗時はスクリプトが Placeholder のまま実行されない（サイレント故障）ため、
+            // Output パネルに目立つ形でエラーを表示する。
+            var payload = msg["SCRIPTS_RELOADED:".Length..];
+            var countStr = payload.Split(',').FirstOrDefault() ?? "";
+            if (int.TryParse(countStr, out var compiledCount) && compiledCount >= 0)
+            {
+                EditorLog.Write($"[Runtime→Editor] SCRIPTS_RELOADED — {compiledCount} 型をコンパイル・再生成完了");
+            }
+            else
+            {
+                EditorLog.Write("════════════════════════════════════════════════");
+                EditorLog.Write("[スクリプトエラー] スクリプトのリロードに失敗しました。");
+                EditorLog.Write("  全 .cs の一括コンパイルでエラーが発生しています（型名の重複など、");
+                EditorLog.Write("  ファイル単体では検出できないエラーの可能性があります）。");
+                EditorLog.Write("  上記の [ScriptCompileError] 行を確認してください。");
+                EditorLog.Write("  ※ 修正するまでスクリプトは実行されません。");
+                EditorLog.Write("════════════════════════════════════════════════");
+            }
+        }
         else if (msg == "CONTEXT_MENU")
         {
             EditorLog.Write("[Runtime→Editor] CONTEXT_MENU");

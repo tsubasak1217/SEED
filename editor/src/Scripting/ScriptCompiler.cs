@@ -71,6 +71,55 @@ public static class ScriptCompiler
     }
 
     /// <summary>
+    /// アセットルート配下の全 .cs をランタイムと同じ条件で一括コンパイルし、
+    /// エラーメッセージ一覧を返す（成功時は空リスト）。
+    ///
+    /// ランタイム（ScriptAssemblyManager）は全 .cs を 1 アセンブリにまとめて
+    /// コンパイルするため、型名の重複などファイル横断のエラーがあると
+    /// **全スクリプトが実行されなくなる**。単一ファイルコンパイル
+    /// （CompileFile）では検出できないため、保存時の検証にこちらを併用する。
+    /// </summary>
+    public static IReadOnlyList<string> CompileProjectErrors(string assetsRoot)
+    {
+        try
+        {
+            if (!Directory.Exists(assetsRoot)) return Array.Empty<string>();
+
+            var trees = new List<SyntaxTree>();
+            foreach (var f in Directory.EnumerateFiles(assetsRoot, "*.cs", SearchOption.AllDirectories))
+            {
+                try { trees.Add(CSharpSyntaxTree.ParseText(File.ReadAllText(f), path: f)); }
+                catch { /* 読めない/壊れたファイルはスキップ（ランタイム側と同じ扱い） */ }
+            }
+            if (trees.Count == 0) return Array.Empty<string>();
+
+            var comp = CSharpCompilation.Create(
+                $"SEEDScriptProj_{Guid.NewGuid():N}",
+                trees, _refs,
+                new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+
+            using var ms = new MemoryStream();
+            var result   = comp.Emit(ms);
+            if (result.Success) return Array.Empty<string>();
+
+            return result.Diagnostics
+                .Where(d => d.Severity == DiagnosticSeverity.Error)
+                .Select(d =>
+                {
+                    var span = d.Location.GetLineSpan();
+                    var file = string.IsNullOrEmpty(span.Path) ? "(不明)" : Path.GetFileName(span.Path);
+                    return $"{file}({span.StartLinePosition.Line + 1}行目): {d.GetMessage()}";
+                })
+                .ToList();
+        }
+        catch
+        {
+            // 検証自体の失敗は保存をブロックしない（ランタイム側が最終判定する）
+            return Array.Empty<string>();
+        }
+    }
+
+    /// <summary>
     /// アセットルート配下の全 .cs をまとめてコンパイルし、指定ファイルが宣言する
     /// スクリプト型を返す。他スクリプトを typeof で参照する [RequireComponent] などは
     /// 単一ファイルコンパイルでは解決できないため、こちらを使う。失敗時は null。
