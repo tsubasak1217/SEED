@@ -1946,12 +1946,29 @@ impl App {
                             } else {
                                 (std::collections::HashMap::new(), std::collections::HashMap::new())
                             };
+                            // アウトラインのリング間隔（描画空間の単位）:
+                            // 太線はリングを重ねて表現するため、間隔を「画面 1px 相当」に
+                            // 揃えることでズームに依らず隙間なく密着し 1 本の太線に見える。
+                            //   - 2D オルソビュー: 可視高（2 * ortho_half_h）/ ビューポート高
+                            //   - SS オーバーレイ: 1 キャンバス px = 1 画面 px 固定
+                            //   - WS（3D 透視）: 距離依存のため従来の固定間隔を維持
+                            let outline_step = if use_ortho_2d_camera {
+                                let half_h = self.canvas_cameras.get(&wl)
+                                    .map(|c| c.ortho_half_h)
+                                    .unwrap_or(vp_h_r / 2.0);
+                                (2.0 * half_h) / vp_h_r.max(1.0)
+                            } else if use_screen_space {
+                                1.0
+                            } else {
+                                crate::engine::core::app_base::app::canvas_collect::OUTLINE_RING_STEP
+                                    * canvas_scale_rect
+                            };
                             collect_canvas_rects(
                                 &scene.actors, &scene.world, wl, &mut lb, rect_col,
                                 &self.selected_actor_dfs_ids, &mut counter,
                                 None, IDENTITY_RECT, [1.0, 1.0], (false, false, false, true),
                                 canvas_scale_rect, y_sign_rect, viewport_size_rect, &canvas_vp_overrides_r,
-                                &root_auto_sizes_r, edit_view_2d,
+                                &root_auto_sizes_r, edit_view_2d, outline_step,
                             );
                             // 2D シーンビューでドラッグホバー中のルートキャンバス枠を
                             // 通常枠より明るく・太くハイライト描画する（Phase 3、事前計算済み）

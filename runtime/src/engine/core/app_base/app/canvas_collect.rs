@@ -70,9 +70,9 @@ pub(super) fn skip_dfs_subtree(actors: &[Actor], counter: &mut u32) {
 
 // ─── アウトライン描画（太さ・色）の共通定義 ──────────────────────────────────
 
-/// アウトライン太さ表現のリング間隔（描画空間の単位。SS では ortho ピクセル相当）。
-/// 実際の描画空間に合わせて呼び出し側で canvas_scale を乗じて渡す。
-const OUTLINE_RING_STEP: f32 = 1.6;
+/// ワールドスペース表示でのアウトラインのリング間隔（ワールド単位に canvas_scale を
+/// 乗じる前のキャンバス単位）。SS 表示では呼び出し側が「画面 1px 相当」を渡す。
+pub(super) const OUTLINE_RING_STEP: f32 = 1.6;
 /// 非選択キャンバス枠のリング数（一本線）。
 const OUTLINE_RINGS_THIN: u32 = 1;
 /// 選択枠のリング数（非選択の約 5 倍の太さで強調する）。
@@ -82,22 +82,48 @@ const ROOT_CANVAS_OUTLINE_COL: [f32; 4] = [0.0, 1.0, 0.0, 1.0];
 
 /// 太い矩形アウトラインを LineBatch へ描画する共通ヘルパー。
 ///
-/// GPU ラインは常に 1px のため、矩形中心から外側へオフセットした同心矩形を
-/// `rings` 本重ねて太さを表現する（canvas_drop のドラッグホバーと同方式）。
-/// `step` はリング間隔（描画空間の単位。SS = ortho ピクセル相当、WS では
-/// canvas_scale を乗じてスケールする）。`corners` は tl→tr→br→bl の順。
+/// GPU ラインは常に 1px のため、矩形を外側へ押し出した同心矩形を `rings` 本
+/// 重ねて太さを表現する。`step` にはリング間隔（描画空間の単位）を渡す。
+/// 呼び出し側が「画面 1px 相当」の step を渡せば、リングが隙間なく密着して
+/// ズームに依らず 1 本の太線として見える。
+///
+/// 押し出しは**各辺の外向き法線方向**に行う（真のポリゴンオフセット）。
+/// 中心→コーナー方向の押し出しだと縦横比の大きい矩形で長辺側の間隔が潰れて
+/// 太さが不均一になるため、コーナーは隣接 2 辺の法線オフセットの合成で求める。
+/// `corners` は tl→tr→br→bl の順（回転した矩形にも対応）。
 fn add_thick_rect(lb: &mut LineBatch, corners: [[f32; 3]; 4], color: [f32; 4], rings: u32, step: f32) {
+    // 矩形中心（法線の向き判定用）
     let cx = (corners[0][0] + corners[1][0] + corners[2][0] + corners[3][0]) * 0.25;
     let cy = (corners[0][1] + corners[1][1] + corners[2][1] + corners[3][1]) * 0.25;
+
+    // 辺 a→b の外向き単位法線（XY 平面）。中心と反対側を向くよう符号を選ぶ。
+    let edge_normal = |a: [f32; 3], b: [f32; 3]| -> [f32; 2] {
+        let ex = b[0] - a[0];
+        let ey = b[1] - a[1];
+        let len = (ex * ex + ey * ey).sqrt().max(f32::EPSILON);
+        let (mut nx, mut ny) = (ey / len, -ex / len);   // 辺に垂直な単位ベクトル
+        // 辺の中点から中心へのベクトルと逆向き（外向き）に揃える
+        let mx = (a[0] + b[0]) * 0.5 - cx;
+        let my = (a[1] + b[1]) * 0.5 - cy;
+        if nx * mx + ny * my < 0.0 { nx = -nx; ny = -ny; }
+        [nx, ny]
+    };
+    // 各コーナーの押し出し方向 = 隣接 2 辺の外向き法線の和
+    // （矩形なら対角方向の単位×√2 相当。各辺がちょうど off だけ外へ動く）
+    let dirs: [[f32; 2]; 4] = std::array::from_fn(|i| {
+        let prev = corners[(i + 3) % 4];
+        let cur  = corners[i];
+        let next = corners[(i + 1) % 4];
+        let n1 = edge_normal(prev, cur);
+        let n2 = edge_normal(cur, next);
+        [n1[0] + n2[0], n1[1] + n2[1]]
+    });
+
     for ring in 0..rings.max(1) {
         let off = ring as f32 * step;
-        // 各コーナーを矩形中心から外側方向へ off だけ移動した矩形を生成する
         let rc: [[f32; 3]; 4] = std::array::from_fn(|i| {
             let c = corners[i];
-            let dx = c[0] - cx;
-            let dy = c[1] - cy;
-            let len = (dx * dx + dy * dy).sqrt().max(f32::EPSILON);
-            [c[0] + dx / len * off, c[1] + dy / len * off, c[2]]
+            [c[0] + dirs[i][0] * off, c[1] + dirs[i][1] * off, c[2]]
         });
         for i in 0..4 {
             lb.add_line(rc[i], rc[(i + 1) % 4], color);
@@ -376,6 +402,9 @@ pub(super) fn collect_canvas_rects(
     root_auto_sizes:    &HashMap<Entity, [f32; 2]>,
     // ビューポートタブの設計空間表示中か（= edit_view_is_2d。collect_sprite_items と同じ扱い）
     design_space:       bool,
+    // アウトラインのリング間隔（描画空間の単位）。
+    // SS 表示では「画面 1px 相当」を渡すことで、ズームに依らず連続した太線に見える。
+    outline_step:       f32,
 ) {
     let (sm_transform, sm_size, keep_aspect, is_width_axis) = parent_scale_mode;
 
@@ -485,7 +514,7 @@ pub(super) fn collect_canvas_rects(
                             add_thick_rect(
                                 lb,
                                 [tp(0.0, 0.0), tp(eff_w, 0.0), tp(eff_w, eff_h), tp(0.0, eff_h)],
-                                draw_col, rings, OUTLINE_RING_STEP * canvas_scale,
+                                draw_col, rings, outline_step,
                             );
                         }
                     }
@@ -508,7 +537,7 @@ pub(super) fn collect_canvas_rects(
                                     lb,
                                     [tp(0.0, 0.0), tp(1.0, 0.0), tp(1.0, 1.0), tp(0.0, 1.0)],
                                     SPRITE_OUTLINE_COL, OUTLINE_RINGS_THICK,
-                                    OUTLINE_RING_STEP * canvas_scale,
+                                    outline_step,
                                 );
                             }
                         }
@@ -549,7 +578,7 @@ pub(super) fn collect_canvas_rects(
                 child_canvas_size, self_world_rs,
                 child_cumul_scale, child_scale_mode,
                 canvas_scale, y_sign, viewport_size, canvas_viewport_overrides,
-                root_auto_sizes, design_space,
+                root_auto_sizes, design_space, outline_step,
             );
         } else {
             // CanvasTransform なし（Actor3D 等）: 枠描画対象外だが、DFS 番号は
