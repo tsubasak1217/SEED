@@ -200,6 +200,10 @@ pub enum IpcCommand {
     /// Play モード中は無視される（Edit モード限定機能）
     /// フォーマット: EDIT_VIEW:2d / EDIT_VIEW:3d
     SetEditViewMode { is_2d: bool },
+    /// エディタのデバッグカメラを正射投影/透視投影に切り替える（2D トグル）。
+    /// 視点は維持したまま 0.3 秒かけて投影方式を補間する。
+    /// フォーマット: EDITOR_CAM_ORTHO:1 / EDITOR_CAM_ORTHO:0
+    SetEditorCameraOrtho(bool),
     /// ルートキャンバスの画面サイズ自動スケールを設定する
     /// フォーマット: SET_CANVAS_AUTO_SCALE:{actor_dfs_id},{slot_idx},{value}
     SetCanvasAutoScale { actor_dfs_id: u32, slot_idx: u32, auto_scale: bool },
@@ -647,6 +651,8 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                         // Edit ビューモード切替（エディタの 3Dシーン / 2Dシーンタブ）
                         "EDIT_VIEW:2d"          => Some(IpcCommand::SetEditViewMode { is_2d: true  }),
                         "EDIT_VIEW:3d"          => Some(IpcCommand::SetEditViewMode { is_2d: false }),
+                        "EDITOR_CAM_ORTHO:1"    => Some(IpcCommand::SetEditorCameraOrtho(true)),
+                        "EDITOR_CAM_ORTHO:0"    => Some(IpcCommand::SetEditorCameraOrtho(false)),
                         s if s.starts_with("LOAD_SCENE:") => {
                             Some(IpcCommand::LoadScene(s["LOAD_SCENE:".len()..].to_string()))
                         }

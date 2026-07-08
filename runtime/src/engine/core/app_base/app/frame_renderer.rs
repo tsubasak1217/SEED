@@ -380,6 +380,8 @@ impl App {
                 }
                 // スナップアニメーション中は回転を補間する（RMB/移動キーでキャンセル）
                 self.update_camera_snap_anim(ctx.delta_time);
+                // 透視↔正射の投影切替を 0.3 秒かけて補間する
+                self.camera.update_projection_anim(ctx.delta_time);
                 self.camera.update(&self.cam_input, ctx.delta_time);
             }
         }

@@ -98,6 +98,32 @@ pub struct DebugCamera {
     pub move_speed:        f32,
     /// マウス感度（ラジアン/ピクセル）
     pub mouse_sensitivity: f32,
+
+    /// 投影ブレンド係数（0.0 = 透視投影, 1.0 = 正射投影）。
+    /// `ortho_target` へ 0.3 秒かけて補間され、射影行列は両者を線形補間する。
+    pub ortho_blend:  f32,
+    /// 投影ブレンドの目標値（0.0 or 1.0）。トグルで切り替える。
+    pub ortho_target: f32,
+    /// 正射投影時の縦方向の描画範囲（ワールド単位・半分の高さ）。
+    /// 正射化時に現在の透視スケール（fov × 焦点距離）から算出し、視点の見た目を維持する。
+    pub ortho_half_h: f32,
+}
+
+/// 投影切り替えの補間時間（秒）。0.3 秒で透視↔正射をなめらかに補間する。
+pub const CAMERA_ORTHO_ANIM_SECONDS: f32 = 0.3;
+
+/// 2 つの 4x4 行列を要素ごとに線形補間する（t=0 で a, t=1 で b）。
+///
+/// 投影切替アニメーションで透視射影行列と正射射影行列を混ぜるために使う。
+/// 幾何的に厳密な補間ではないが、near/far が共通なら視覚的に十分なめらかに遷移する。
+fn lerp_mat4(a: &Mat4x4<f32>, b: &Mat4x4<f32>, t: f32) -> Mat4x4<f32> {
+    let mut out = *a;
+    for r in 0..4 {
+        for c in 0..4 {
+            out.data[r][c] = a.data[r][c] + (b.data[r][c] - a.data[r][c]) * t;
+        }
+    }
+    out
 }
 
 impl DebugCamera {
@@ -114,6 +140,9 @@ impl DebugCamera {
             pitch:            0.0,
             move_speed,
             mouse_sensitivity,
+            ortho_blend:  0.0,
+            ortho_target: 0.0,
+            ortho_half_h: 5.0,
         }
     }
 
@@ -168,6 +197,13 @@ impl DebugCamera {
         // 右クリック中か移動キー押下中は速度調整（既存挙動）
         if cam.rmb || cam.any_move_key() {
             self.move_speed = (self.move_speed * 1.2_f32.powf(cam.scroll)).clamp(0.5, 500.0);
+            return;
+        }
+
+        // 正射投影モード: スクロールで正射サイズ（描画範囲）をズームする。
+        // 正射は距離に依らず一定のため前後移動では拡縮しない。
+        if self.ortho_target >= 0.5 {
+            self.ortho_half_h = (self.ortho_half_h * 0.9_f32.powf(cam.scroll)).clamp(0.05, 100_000.0);
             return;
         }
 
@@ -251,9 +287,58 @@ impl DebugCamera {
     #[inline]
     pub fn view_matrix(&self) -> Mat4x4<f32> { self.base.view_matrix() }
 
-    /// 射影行列を返す（BaseCamera に委譲）。
+    /// 射影行列を返す。
+    ///
+    /// `ortho_blend` に応じて透視射影と正射射影を線形補間する（0=透視, 1=正射）。
+    /// 補間中は両行列の要素を線形にブレンドすることで、投影切替をなめらかに見せる。
+    pub fn projection_matrix(&self) -> Mat4x4<f32> {
+        let persp = self.base.projection_matrix();
+        if self.ortho_blend <= 0.0 { return persp; }
+
+        let p      = &self.base.projection;
+        let half_h = self.ortho_half_h.max(0.01);
+        let half_w = half_h * p.aspect_ratio;
+        let ortho  = Mat4x4::orthographic_lh(-half_w, half_w, -half_h, half_h, p.near, p.far);
+        if self.ortho_blend >= 1.0 { return ortho; }
+
+        lerp_mat4(&persp, &ortho, self.ortho_blend)
+    }
+
+    /// 現在（目標）が正射投影モードか。
     #[inline]
-    pub fn projection_matrix(&self) -> Mat4x4<f32> { self.base.projection_matrix() }
+    pub fn is_ortho(&self) -> bool { self.ortho_target >= 0.5 }
+
+    /// 投影方式を設定する（true = 正射, false = 透視）。0.3 秒かけて補間される。
+    ///
+    /// 正射化時は現在の透視スケール（fov × 焦点距離＝原点までの距離）から
+    /// `ortho_half_h` を算出し、切替前後で見た目の大きさを維持する（視点は変えない）。
+    pub fn set_ortho(&mut self, on: bool) {
+        let target = if on { 1.0 } else { 0.0 };
+        if (self.ortho_target - target).abs() < f32::EPSILON { return; }
+        if on {
+            let focal = self.base.transform.position.length().max(1.0);
+            self.ortho_half_h = (self.base.projection.fov_y_rad * 0.5).tan() * focal;
+        }
+        self.ortho_target = target;
+    }
+
+    /// 投影方式を透視↔正射でトグルする。
+    #[inline]
+    pub fn toggle_ortho(&mut self) { self.set_ortho(self.ortho_target < 0.5); }
+
+    /// 投影ブレンドを目標値へ 0.3 秒で補間する。フレームループで毎フレーム呼ぶ。
+    pub fn update_projection_anim(&mut self, dt: f32) {
+        if (self.ortho_blend - self.ortho_target).abs() < 1e-4 {
+            self.ortho_blend = self.ortho_target;
+            return;
+        }
+        let step = dt / CAMERA_ORTHO_ANIM_SECONDS;
+        if self.ortho_blend < self.ortho_target {
+            self.ortho_blend = (self.ortho_blend + step).min(self.ortho_target);
+        } else {
+            self.ortho_blend = (self.ortho_blend - step).max(self.ortho_target);
+        }
+    }
 
     /// アスペクト比を更新する（ウィンドウリサイズ時に呼ぶ）。
     #[inline]

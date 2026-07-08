@@ -491,6 +491,13 @@ impl App {
                         }
                     }
                 }
+                IpcCommand::SetEditorCameraOrtho(v) => {
+                    // エディタのデバッグカメラを正射/透視に切り替える（Edit モード限定）。
+                    // 視点は維持し、0.3 秒かけて投影方式を補間する。
+                    if self.mode == RuntimeMode::Edit {
+                        self.camera.set_ortho(v);
+                    }
+                }
                 IpcCommand::GetCamState => {
                     let (pos, euler_x, euler_y, euler_z, fov, far, spd) = self.cam_state_tuple();
                     if let Some(ipc) = &self.ipc {

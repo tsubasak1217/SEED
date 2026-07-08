@@ -76,6 +76,16 @@ public partial class MainWindow
         _runtimeManager?.SendToRuntime($"SHOW_AXIS_GIZMO:{(ChkShowAxisGizmo.IsChecked == true ? "1" : "0")}");
     }
 
+    /// <summary>
+    /// エディタのデバッグカメラの投影方式（2D＝正射 / 3D＝透視）を切り替える。
+    /// 視点は維持したまま、ランタイム側で 0.3 秒かけて投影が補間される。
+    /// </summary>
+    private void OnEditorCamOrthoChanged(object sender, RoutedEventArgs e)
+    {
+        if (!_viewportSettingsInitialized) return;
+        _runtimeManager?.SendToRuntime($"EDITOR_CAM_ORTHO:{(ChkEditorCamOrtho.IsChecked == true ? "1" : "0")}");
+    }
+
     /// キャンバス表示モード切り替え（スクリーンスペース / ワールドスペース）
     private void OnCanvasScreenSpaceChanged(object sender, RoutedEventArgs e)
     {
