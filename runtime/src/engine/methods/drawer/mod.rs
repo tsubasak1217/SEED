@@ -34,7 +34,7 @@ pub use crate::engine::core::renderer::{
 pub use model_drawer::draw_model_indirect;
 pub use id_pass::{IdBuffer, draw_id_pass, draw_canvas_id_items, draw_collider_pick_items, prepare_canvas_id_bg};
 pub use outline::{draw_outline, draw_stencil_mask, draw_outline_multi, draw_stencil_mask_multi};
-pub use primitive_drawer::{LineBatch, GizmoBatch, draw_line_batch, draw_gizmo_batch};
+pub use primitive_drawer::{LineBatch, GizmoBatch, draw_line_batch, draw_gizmo_batch, draw_thick_line_batch};
 pub use sprite_drawer::{
     GpuSpriteTexture, SpriteUniform, SpriteVertex,
     load_sprite_texture, prepare_sprites, prepare_sprites_from_mats,

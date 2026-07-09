@@ -191,6 +191,10 @@ pub struct PhysicsResult2d {
     pub active_contact_entity_ids: Vec<u64>,
     /// 現在オーバーラップ中のトリガーに関与するエンティティ ID リスト（毎フレーム送信）。
     pub active_trigger_entity_ids: Vec<u64>,
+    /// 全 Dynamic ボディの並進速度の最大の大きさ（m/s）。収束停止判定用（3D と同じ）。
+    pub max_linear_speed:  f32,
+    /// 全 Dynamic ボディの角速度の最大の大きさ（rad/s）。
+    pub max_angular_speed: f32,
 }
 
 // ─── 衝突イベント ────────────────────────────────────────────────────────────

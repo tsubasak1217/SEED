@@ -13,6 +13,7 @@
 // ============================================================
 
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicU32, Ordering};
 use crate::engine::components::{
     Transform as ActorTransform, CanvasTransform, ModelComponent, ComponentKind,
 };
@@ -34,6 +35,25 @@ const PHYSICS_WARMUP_FRAMES: u32 = 60;
 
 // 変化検出の閾値（これ以下の差分はスキップ）
 const CHANGE_EPSILON: f32 = 1e-5;
+
+// 「静止した」とみなす並進速度の閾値（m/s）。
+// これ未満なら収束停止の候補とする。空中で緩慢に落下・回転している物体
+// （速度はあるが 1 フレームの位置差分が小さい）を誤って止めないための下限。
+const REST_LINEAR_SPEED_EPSILON: f32 = 0.03;
+
+// 「静止した」とみなす角速度の閾値（rad/s）。約 1.7°/s。
+const REST_ANGULAR_SPEED_EPSILON: f32 = 0.03;
+
+// ─── 直近フレームの最大速度（収束停止判定用）─────────────────────────────────
+// 物理スレッドが PhysicsResult(2d) で送る「全 Dynamic ボディの最大速度」を、
+// update_physics / update_physics_2d が毎フレームここへ退避する。
+// try_record_physics_snapshot（stop 判定）が edit_physics_bodies_at_rest 経由で参照する。
+// App にフィールドを増やさずに 3D/2D 更新→stop 判定間で受け渡すためのモジュール静的。
+// f32 をビット表現（to_bits/from_bits）で保持する。App は単一インスタンスのため競合しない。
+static LAST_MAX_LIN_SPEED_3D: AtomicU32 = AtomicU32::new(0);
+static LAST_MAX_ANG_SPEED_3D: AtomicU32 = AtomicU32::new(0);
+static LAST_MAX_LIN_SPEED_2D: AtomicU32 = AtomicU32::new(0);
+static LAST_MAX_ANG_SPEED_2D: AtomicU32 = AtomicU32::new(0);
 
 // ─── PhysicsSnapshot ─────────────────────────────────────────────────────────
 
@@ -126,6 +146,63 @@ impl App {
         self.drag.gizmo_drag.is_some() || self.inspector_transform_drag.is_some()
     }
 
+    // ─── 収束停止のための速度スナップショット ───────────────────────────────
+
+    /// 3D 物理スレッドが送った「全 Dynamic ボディの最大速度」を退避する。
+    /// update_physics が結果受信時に毎フレーム呼ぶ。
+    pub(super) fn store_edit_physics_rest_speeds_3d(&self, max_lin: f32, max_ang: f32) {
+        LAST_MAX_LIN_SPEED_3D.store(max_lin.to_bits(), Ordering::Relaxed);
+        LAST_MAX_ANG_SPEED_3D.store(max_ang.to_bits(), Ordering::Relaxed);
+    }
+
+    /// 2D 物理スレッドが送った「全 Dynamic ボディの最大速度」を退避する。
+    /// update_physics_2d が結果受信時に毎フレーム呼ぶ。
+    pub(super) fn store_edit_physics_rest_speeds_2d(&self, max_lin: f32, max_ang: f32) {
+        LAST_MAX_LIN_SPEED_2D.store(max_lin.to_bits(), Ordering::Relaxed);
+        LAST_MAX_ANG_SPEED_2D.store(max_ang.to_bits(), Ordering::Relaxed);
+    }
+
+    /// 全 Dynamic ボディ（有効な 3D・2D 物理）が「実際に静止した」かを速度で判定する。
+    ///
+    /// 直近フレームに物理スレッドが報告した最大並進・角速度が、
+    /// いずれも静止閾値未満のとき true。収束停止（自動 Pause）を
+    /// 「位置・回転が変化しない」だけでなく「速度がほぼ 0」でもゲートすることで、
+    /// 空中で緩慢に落下・回転している最中に停止してしまうのを防ぐ。
+    ///
+    /// 無効な側（3D または 2D）は update_physics(_2d) が走らず速度が更新されないため、
+    /// 判定から除外する（有効な側だけを見る）。これを怠ると、無効側の残留値
+    /// （mark_edit_physics_moving の ∞）で永久に静止と判定されず収束停止しなくなる。
+    fn edit_physics_bodies_at_rest(&self) -> bool {
+        let rest_3d = if self.edit_physics_enabled {
+            let lin = f32::from_bits(LAST_MAX_LIN_SPEED_3D.load(Ordering::Relaxed));
+            let ang = f32::from_bits(LAST_MAX_ANG_SPEED_3D.load(Ordering::Relaxed));
+            lin < REST_LINEAR_SPEED_EPSILON && ang < REST_ANGULAR_SPEED_EPSILON
+        } else {
+            true
+        };
+        let rest_2d = if self.edit_physics_2d_enabled {
+            let lin = f32::from_bits(LAST_MAX_LIN_SPEED_2D.load(Ordering::Relaxed));
+            let ang = f32::from_bits(LAST_MAX_ANG_SPEED_2D.load(Ordering::Relaxed));
+            lin < REST_LINEAR_SPEED_EPSILON && ang < REST_ANGULAR_SPEED_EPSILON
+        } else {
+            true
+        };
+        rest_3d && rest_2d
+    }
+
+    /// 収束停止用の速度スナップショットを「移動中」（∞）へ初期化する。
+    /// ライブシミュレーション開始・再開時に呼ぶ。物理スレッドが最初の実測速度を
+    /// 報告するまでは edit_physics_bodies_at_rest() が false を返すため、
+    /// 実データ受信前に（前回シミュレーションの残留 0 速度などで）誤って
+    /// 収束停止してしまうのを防ぐ。
+    pub(super) fn mark_edit_physics_moving(&self) {
+        let inf = f32::INFINITY.to_bits();
+        LAST_MAX_LIN_SPEED_3D.store(inf, Ordering::Relaxed);
+        LAST_MAX_ANG_SPEED_3D.store(inf, Ordering::Relaxed);
+        LAST_MAX_LIN_SPEED_2D.store(inf, Ordering::Relaxed);
+        LAST_MAX_ANG_SPEED_2D.store(inf, Ordering::Relaxed);
+    }
+
     /// RigidBody タイムラインモードで最新フレーム停止中にドラッグが開始されたとき、
     /// 物理シミュレーションを「続き」として再開する（ドラッグ中ライブシミュレーション）。
     ///
@@ -147,6 +224,8 @@ impl App {
         self.edit_physics_paused          = false;
         self.edit_physics_in_playback     = false;
         self.edit_physics_no_change_count = 0;
+        // 実測速度を受信するまで「移動中」とみなす（実データ前の誤停止防止）
+        self.mark_edit_physics_moving();
         // 再起動ではなく Resume なので受信ラグはほぼ無い（ウォームアップ不要）
         self.send_resume_to_physics_threads();
         self.send_physics_timeline_state();
@@ -285,7 +364,15 @@ impl App {
                 self.edit_physics_no_change_count = 0;
                 return;
             }
-            // 変化なし: 連続カウントを増やす。閾値を超えたら収束とみなして停止する。
+            // 【速度ゲート】位置・回転の 1 フレーム差分が微小でも、Dynamic ボディが
+            // まだ速度を持っている（空中で緩慢に落下・回転している等）間は収束停止しない。
+            // 物理スレッドが報告した全 Dynamic ボディの最大速度が静止閾値未満になって
+            // はじめて「実際に静止した」とみなし、収束カウントを進める。
+            if !self.edit_physics_bodies_at_rest() {
+                self.edit_physics_no_change_count = 0;
+                return;
+            }
+            // 変化なし & 全ボディ静止: 連続カウントを増やす。閾値を超えたら収束とみなして停止する。
             self.edit_physics_no_change_count += 1;
             if self.edit_physics_no_change_count < NO_CHANGE_STOP_THRESHOLD {
                 return; // まだ猶予中: 停止しない
@@ -351,6 +438,8 @@ impl App {
         self.edit_physics_paused          = false;
         self.edit_physics_at_latest       = false;
         self.edit_physics_no_change_count = 0;
+        // 実測速度を受信するまで「移動中」とみなす（実データ前の誤停止防止）
+        self.mark_edit_physics_moving();
 
         if is_at_latest {
             let ecs_matches_snap = self.current_ecs_matches_latest_snapshot();
@@ -406,6 +495,8 @@ impl App {
         self.edit_physics_at_latest       = false;
         self.edit_physics_warmup_frames   = PHYSICS_WARMUP_FRAMES;
         self.edit_physics_no_change_count = 0;
+        // 実測速度を受信するまで「移動中」とみなす（実データ前の誤停止防止）
+        self.mark_edit_physics_moving();
         // 物理エンジンを現在の ECS 位置で再起動する（速度 0 で再開）
         self.stop_physics();
         self.stop_physics_2d();

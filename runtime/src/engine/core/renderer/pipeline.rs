@@ -89,7 +89,11 @@ impl SkinnedMeshPipeline {
 
 pub struct UnlitPipeline {
     pub pipeline:           wgpu::RenderPipeline,  // LineList, ColorVertex
-    pub gizmo_line_pipeline: wgpu::RenderPipeline, // TriangleList, GizmoVertex (太線)
+    pub gizmo_line_pipeline: wgpu::RenderPipeline, // TriangleList, GizmoVertex (太線, depth=Always)
+    /// 選択強調用の太線パイプライン。gizmo_line と同じ GizmoVertex quad 展開シェーダを使うが、
+    /// 深度は 1px ライン（unlit）と同じ LessEqual にして遮蔽の見え方を揃える
+    /// （ギズモの depth=Always とは異なり、可視物の背後では隠れる）。
+    pub thick_line_pipeline: wgpu::RenderPipeline, // TriangleList, GizmoVertex (太線, depth=LessEqual)
     pub gizmo_tri_pipeline:  wgpu::RenderPipeline, // TriangleList, ColorVertex (ソリッド)
     pub camera_bgl:          wgpu::BindGroupLayout,
     pub model_bgl:           wgpu::BindGroupLayout,
@@ -108,9 +112,10 @@ impl UnlitPipeline {
         let model_bgl  = it.next().unwrap(); // group 1
 
         let (gizmo_line_pipeline, _) = build(include_str!("pipelines/gizmo_line.toml"));
+        let (thick_line_pipeline, _) = build(include_str!("pipelines/unlit_thick_line.toml"));
         let (gizmo_tri_pipeline, _)  = build(include_str!("pipelines/gizmo_tri.toml"));
 
-        Self { pipeline, gizmo_line_pipeline, gizmo_tri_pipeline, camera_bgl, model_bgl }
+        Self { pipeline, gizmo_line_pipeline, thick_line_pipeline, gizmo_tri_pipeline, camera_bgl, model_bgl }
     }
 }
 

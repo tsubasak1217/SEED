@@ -879,8 +879,11 @@ fn collect_results(
     active_contacts: &mut HashSet<(u64, u64)>,
     active_triggers: &mut HashSet<(u64, u64)>,
 ) -> PhysicsResult {
-    // ── Dynamic Rigidbody の Transform 取得 ──────────────────────────────────
+    // ── Dynamic Rigidbody の Transform・速度取得 ─────────────────────────────
+    // 収束停止判定用に、全 Dynamic ボディの並進・角速度の最大の大きさも集計する。
     let mut transform_updates = Vec::new();
+    let mut max_linear_speed:  f32 = 0.0;
+    let mut max_angular_speed: f32 = 0.0;
     for (entity_id, entry) in entries.iter() {
         if !entry.is_dynamic { continue; }
         let Some(rb_h) = entry.rb_handle else { continue };
@@ -890,6 +893,10 @@ fn collect_results(
         let rot = rb.rotation().quaternion();
         // SEED 規約: クォータニオンは [x(i), y(j), z(k), w] の順
         transform_updates.push((*entity_id, [pos.x, pos.y, pos.z], [rot.i, rot.j, rot.k, rot.w]));
+
+        // 速度の大きさ（静止判定に使用）
+        max_linear_speed  = max_linear_speed.max(rb.linvel().norm());
+        max_angular_speed = max_angular_speed.max(rb.angvel().norm());
     }
 
     // ── 衝突イベント処理 ─────────────────────────────────────────────────────
@@ -980,7 +987,11 @@ fn collect_results(
         if !active_trigger_entity_ids.contains(&oe) { active_trigger_entity_ids.push(oe); }
     }
 
-    PhysicsResult { transform_updates, collision_events, trigger_events, active_contact_entity_ids, active_trigger_entity_ids }
+    PhysicsResult {
+        transform_updates, collision_events, trigger_events,
+        active_contact_entity_ids, active_trigger_entity_ids,
+        max_linear_speed, max_angular_speed,
+    }
 }
 
 // ─── 変換ユーティリティ ──────────────────────────────────────────────────────

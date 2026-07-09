@@ -45,7 +45,7 @@ use crate::engine::methods::drawer::{
     draw_model_indirect, draw_id_pass, draw_canvas_id_items, draw_collider_pick_items, prepare_canvas_id_bg,
     draw_outline_multi, draw_stencil_mask_multi,
     extract_frustum_planes, GizmoBatch, draw_gizmo_batch,
-    LineBatch, draw_line_batch,
+    LineBatch, draw_line_batch, draw_thick_line_batch,
     prepare_sprites_from_mats, draw_sprites, draw_sprite_outline, GpuSpriteTexture,
     NUM_LODS,
 };
@@ -1545,9 +1545,11 @@ impl App {
                     let draw_colliders = (in_editor && !use_ortho_2d_camera)
                         || (!in_editor && self.play_collider_draw);
 
-                    let collider_wireframe_batch = if draw_colliders {
+                    let (collider_wireframe_batch, collider_wireframe_sel_batch) = if draw_colliders {
                         let wl = self.active_world_line;
                         let mut lb = LineBatch::new();
+                        // 選択中アクターのコライダー線を集める別バッチ（太線として描画する）。
+                        let mut lb_sel = LineBatch::new();
 
                         // DFS でアクターツリーを走査（子 Actor を含む）
                         // dfs_counter は physics_ops.rs の entity_id と一致させるため
@@ -1585,13 +1587,16 @@ impl App {
                             } else {
                                 COLLIDER_COLOR_NORMAL
                             };
-                            // 選択中アクターのコライダーは明度を上げて強調する。
+                            // 選択中アクターのコライダーは明度を上げ、かつ太線で強調する。
                             // selected_actor_dfs_ids はピックのデコード（global - canvas_id_offset）
                             // による 0 始まり DFS を保持するため、1 始まりの dfs_id を -1 して比較する。
+                            let is_selected = self.selected_actor_dfs_ids
+                                .contains(&(dfs_id as usize).saturating_sub(1));
                             let color = crate::engine::core::app_base::app::collider2d_wireframe::collider_color_for_selection(
-                                color,
-                                self.selected_actor_dfs_ids.contains(&(dfs_id as usize).saturating_sub(1)),
+                                color, is_selected,
                             );
+                            // 選択中は太線バッチ（lb_sel）へ、非選択は通常バッチ（lb）へ振り分ける。
+                            let target: &mut LineBatch = if is_selected { &mut lb_sel } else { &mut lb };
 
                             // Transform のオイラー角（YXZ 度数）からクォータニオンを生成
                             let q = Quaternion::from_euler(Vector3::new(
@@ -1637,29 +1642,29 @@ impl App {
                                         half_extents[1] * scale[1].abs(),
                                         half_extents[2] * scale[2].abs(),
                                     ];
-                                    lb.add_obb(pos, rot, he, color);
+                                    target.add_obb(pos, rot, he, color);
                                 }
                                 ColliderShapeData::Sphere { radius } => {
                                     // 最大スケール軸を半径に適用
                                     let r = radius * scale[0].abs()
                                         .max(scale[1].abs())
                                         .max(scale[2].abs());
-                                    lb.add_sphere_at(pos, r, 24, color);
+                                    target.add_sphere_at(pos, r, 24, color);
                                 }
                                 ColliderShapeData::Capsule { radius, half_height } => {
                                     let r  = radius * scale[0].abs().max(scale[2].abs());
                                     let hh = half_height * scale[1].abs();
-                                    lb.add_capsule_wireframe(pos, rot, r, hh, 24, color);
+                                    target.add_capsule_wireframe(pos, rot, r, hh, 24, color);
                                 }
                                 ColliderShapeData::Cylinder { radius, half_height } => {
                                     let r  = radius * scale[0].abs().max(scale[2].abs());
                                     let hh = half_height * scale[1].abs();
-                                    lb.add_cylinder_wireframe(pos, rot, r, hh, 24, color);
+                                    target.add_cylinder_wireframe(pos, rot, r, hh, 24, color);
                                 }
                                 ColliderShapeData::Cone { radius, half_height } => {
                                     let r  = radius * scale[0].abs().max(scale[2].abs());
                                     let hh = half_height * scale[1].abs();
-                                    lb.add_cone_wireframe(pos, rot, r, hh, 24, color);
+                                    target.add_cone_wireframe(pos, rot, r, hh, 24, color);
                                 }
                                 ColliderShapeData::ConvexHull { vertices } => {
                                     // 全頂点をスケール・回転・平行移動でワールド空間に変換
@@ -1672,7 +1677,7 @@ impl App {
                                             [pos[0] + rv.x, pos[1] + rv.y, pos[2] + rv.z]
                                         })
                                         .collect();
-                                    lb.add_convex_hull_wireframe(&world_verts, color);
+                                    target.add_convex_hull_wireframe(&world_verts, color);
                                 }
                                 ColliderShapeData::TriangleMesh { triangles } => {
                                     // 全三角形頂点をワールド空間に変換
@@ -1687,13 +1692,16 @@ impl App {
                                             })
                                         })
                                         .collect();
-                                    lb.add_triangle_mesh_wireframe(&world_tris, color);
+                                    target.add_triangle_mesh_wireframe(&world_tris, color);
                                 }
                             }
                         }
 
-                        if lb.is_empty() { None } else { Some(lb.build(&draw_ctx.device)) }
-                    } else { None };
+                        // 通常線（1px）＋ 選択線（太線）の 2 バッチを返す。
+                        let base = if lb.is_empty() { None } else { Some(lb.build(&draw_ctx.device)) };
+                        let sel  = if lb_sel.is_empty() { None } else { Some(lb_sel.build_thick(&draw_ctx.device)) };
+                        (base, sel)
+                    } else { (None, None) };
                     perf_collider_ms = _perf_t_collider.elapsed().as_secs_f64() * 1000.0;
 
                     // ── 2D コライダーワイヤーフレームバッチ ──────────────────────────────
@@ -1705,13 +1713,15 @@ impl App {
                     let draw_colliders_2d = is_canvas
                         && (in_editor || self.play_collider_draw);
 
-                    let collider_2d_wireframe_batch = if draw_colliders_2d {
+                    let (collider_2d_wireframe_batch, collider_2d_wireframe_sel_batch) = if draw_colliders_2d {
                         // キャンバス座標 → レンダリング座標変換スケール
                         let canvas_scale = if use_screen_space { 1.0f32 } else { CANVAS_WORLD_SCALE };
                         // Y 軸方向: スクリーンスペース時は Y+ が下（CSS と同方向）
                         let y_sign = if use_screen_space { 1.0f32 } else { -1.0 };
 
                         let mut lb = LineBatch::new();
+                        // 選択中コライダー線を集める別バッチ（太線として描画する）。
+                        let mut lb_sel = LineBatch::new();
 
                         // collect_actor2d_contexts に viewport_size を渡す。
                         // canvas_collect.rs と同一の変換チェーンで body_pos_px が計算される。
@@ -1763,12 +1773,15 @@ impl App {
                             } else {
                                 COLLIDER_COLOR_NORMAL
                             };
-                            // 選択中アクターのコライダーは明度を上げて強調する
+                            // 選択中アクターのコライダーは明度を上げ、太線で強調する
                             // （selected_actor_dfs_ids は 0 始まり DFS なので ctx.dfs_id を -1 して比較）
+                            let is_selected = self.selected_actor_dfs_ids
+                                .contains(&(ctx.dfs_id as usize).saturating_sub(1));
                             let color = crate::engine::core::app_base::app::collider2d_wireframe::collider_color_for_selection(
-                                color,
-                                self.selected_actor_dfs_ids.contains(&(ctx.dfs_id as usize).saturating_sub(1)),
+                                color, is_selected,
                             );
+                            // 選択中は太線バッチ（lb_sel）へ、非選択は通常バッチ（lb）へ振り分ける。
+                            let target: &mut LineBatch = if is_selected { &mut lb_sel } else { &mut lb };
 
                             let rot_rad = ctx.rot_rad;
                             let (sin, cos) = rot_rad.sin_cos();
@@ -1799,7 +1812,7 @@ impl App {
                             // map が Y を y_sign で反転するため、map_y_sign にも同じ y_sign を渡し
                             // 従来実装（回転 rot_rad * y_sign）と同一の頂点列を保証する。
                             crate::engine::core::app_base::app::collider2d_wireframe::emit_collider2d_wireframe(
-                                &mut lb, &collider.shape, [cx, cy], rot_rad, ctx.scale,
+                                target, &collider.shape, [cx, cy], rot_rad, ctx.scale,
                                 eff_sx, eff_sy, color, y_sign,
                                 |[x, y]| [x, y * y_sign, 0.0],
                             );
@@ -1825,8 +1838,10 @@ impl App {
                             }
                         }
 
-                        if lb.is_empty() { None } else { Some(lb.build(&draw_ctx.device)) }
-                    } else { None };
+                        let base = if lb.is_empty() { None } else { Some(lb.build(&draw_ctx.device)) };
+                        let sel  = if lb_sel.is_empty() { None } else { Some(lb_sel.build_thick(&draw_ctx.device)) };
+                        (base, sel)
+                    } else { (None, None) };
 
                     // ── 3D キャンバス配下 2D コライダーワイヤーフレームバッチ ──────────────
                     // 3D シーン内キャンバス（Actor3D + CanvasComponent）配下の Actor2D が持つ
@@ -1841,7 +1856,7 @@ impl App {
                     let draw_colliders_3d_canvas =
                         (in_editor || self.play_collider_draw) && !edit_view_2d;
 
-                    let collider_2d_canvas3d_wireframe_batch = if draw_colliders_3d_canvas {
+                    let (collider_2d_canvas3d_wireframe_batch, collider_2d_canvas3d_wireframe_sel_batch) = if draw_colliders_3d_canvas {
                         if let Some(scene) = &self.scene {
                             // 3D キャンバス配下 Actor2D → 所属キャンバスの canvas_to_world マップ。
                             let canvas3d_desc_map =
@@ -1850,9 +1865,11 @@ impl App {
                                 );
 
                             if canvas3d_desc_map.is_empty() {
-                                None
+                                (None, None)
                             } else {
                                 let mut lb = LineBatch::new();
+                                // 選択中コライダー線を集める別バッチ（太線として描画する）。
+                                let mut lb_sel = LineBatch::new();
 
                                 // スプライトの 3D キャンバス収集と同一パラメータで body_pos_px を得る:
                                 //   viewport_size = None・オーバーライド/自動解像度マップ = 空・
@@ -1883,12 +1900,15 @@ impl App {
                                     } else {
                                         COLLIDER_COLOR_NORMAL
                                     };
-                                    // 選択中アクターのコライダーは明度を上げて強調する
+                                    // 選択中アクターのコライダーは明度を上げ、太線で強調する
                                     // （selected_actor_dfs_ids は 0 始まり DFS なので ctx.dfs_id を -1 して比較）
+                                    let is_selected = self.selected_actor_dfs_ids
+                                        .contains(&(ctx.dfs_id as usize).saturating_sub(1));
                                     let color = crate::engine::core::app_base::app::collider2d_wireframe::collider_color_for_selection(
-                                        color,
-                                        self.selected_actor_dfs_ids.contains(&(ctx.dfs_id as usize).saturating_sub(1)),
+                                        color, is_selected,
                                     );
+                                    // 選択中は太線バッチ（lb_sel）へ、非選択は通常バッチ（lb）へ振り分ける。
+                                    let target: &mut LineBatch = if is_selected { &mut lb_sel } else { &mut lb };
 
                                     let rot_rad = ctx.rot_rad;
                                     let (sin, cos) = rot_rad.sin_cos();
@@ -1907,7 +1927,7 @@ impl App {
                                     // canvas_to_world 変換は正準キャンバス空間（Y+ 下）をそのまま
                                     // 3D 平面へ写すため Y 反転は発生しない → map_y_sign は +1.0。
                                     crate::engine::core::app_base::app::collider2d_wireframe::emit_collider2d_wireframe(
-                                        &mut lb, &collider.shape, [cx, cy], rot_rad, ctx.scale,
+                                        target, &collider.shape, [cx, cy], rot_rad, ctx.scale,
                                         ctx.size_sx, ctx.size_sy, color, 1.0,
                                         |p| crate::engine::core::app_base::app::collider2d_wireframe::canvas_point_to_world(ctw, p),
                                     );
@@ -1931,10 +1951,12 @@ impl App {
                                     }
                                 }
 
-                                if lb.is_empty() { None } else { Some(lb.build(&draw_ctx.device)) }
+                                let base = if lb.is_empty() { None } else { Some(lb.build(&draw_ctx.device)) };
+                                let sel  = if lb_sel.is_empty() { None } else { Some(lb_sel.build_thick(&draw_ctx.device)) };
+                                (base, sel)
                             }
-                        } else { None }
-                    } else { None };
+                        } else { (None, None) }
+                    } else { (None, None) };
 
                     // スプライト描画リソース収集（render pass 前に GPU バッファを準備する）
                     // CanvasTransform + SpriteComponent を持つアクターを列挙し、
@@ -2692,6 +2714,16 @@ impl App {
                                 &draw_ctx.pipelines,
                             );
                         }
+                        // 選択中コライダーの太線（同カメラ・同深度挙動、1px より太く強調）
+                        if let (Some(sel_batch), Some((_, line_bg))) =
+                            (&collider_wireframe_sel_batch, &self.line_model_buf)
+                        {
+                            draw_thick_line_batch(
+                                &mut pass, sel_batch,
+                                &camera_buf.bind_group, line_bg,
+                                &draw_ctx.pipelines,
+                            );
+                        }
 
                         // 3D キャンバス配下 2D コライダーワイヤーフレーム
                         // （3D シーン内キャンバス上の Actor2D コライダー）。
@@ -2707,6 +2739,16 @@ impl App {
                                 &draw_ctx.pipelines,
                             );
                         }
+                        // 選択中コライダーの太線（3D キャンバス配下・同カメラ）
+                        if let (Some(sel_batch), Some((_, line_bg))) =
+                            (&collider_2d_canvas3d_wireframe_sel_batch, &self.line_model_buf)
+                        {
+                            draw_thick_line_batch(
+                                &mut pass, sel_batch,
+                                &camera_buf.bind_group, line_bg,
+                                &draw_ctx.pipelines,
+                            );
+                        }
 
                         // 2D コライダーワイヤーフレーム（アクター編集 2D タブ + ワールドスペースキャンバス）
                         // scene_canvas_ss の場合はオーバーレイパスで描画するためスキップする
@@ -2716,6 +2758,16 @@ impl App {
                             {
                                 draw_line_batch(
                                     &mut pass, coll2d_batch,
+                                    &camera_buf.bind_group, line_bg,
+                                    &draw_ctx.pipelines,
+                                );
+                            }
+                            // 選択中コライダーの太線（2D シーン・メインカメラ）
+                            if let (Some(sel_batch), Some((_, line_bg))) =
+                                (&collider_2d_wireframe_sel_batch, &self.line_model_buf)
+                            {
+                                draw_thick_line_batch(
+                                    &mut pass, sel_batch,
                                     &camera_buf.bind_group, line_bg,
                                     &draw_ctx.pipelines,
                                 );
@@ -2814,6 +2866,16 @@ impl App {
                             {
                                 draw_line_batch(
                                     &mut overlay_pass, coll2d_batch,
+                                    &canvas_cam_buf.bind_group, line_bg,
+                                    &draw_ctx.pipelines,
+                                );
+                            }
+                            // 選択中コライダーの太線（シーン SS オーバーレイ・2D カメラ）
+                            if let (Some(sel_batch), Some((_, line_bg))) =
+                                (&collider_2d_wireframe_sel_batch, &self.line_model_buf)
+                            {
+                                draw_thick_line_batch(
+                                    &mut overlay_pass, sel_batch,
                                     &canvas_cam_buf.bind_group, line_bg,
                                     &draw_ctx.pipelines,
                                 );
@@ -2955,19 +3017,24 @@ impl App {
                                 // is_canvas に関わらず常に収集する（3D シーン中の 3D Canvas 対応）。
                                 // actor edit 2D タブは CPU picking 専用のため除外する。
                                 // 2D シーンビューでは 3D Canvas 自体が非表示のため収集しない
-                                let canvas_3d_child_id_raw_items: Vec<(u32, [[f32; 4]; 4], Option<String>)> =
+                                // 子スプライト ID アイテムと、3D キャンバスのパネル面ピック
+                                // アイテム（透明でも面全体を選択可能にする深度対応クワッド）を
+                                // 同一 DFS 走査で同時収集する。
+                                let (canvas_3d_child_id_raw_items, canvas_panel_pick_items):
+                                    (Vec<(u32, [[f32; 4]; 4], Option<String>)>, Vec<(u32, [[f32; 4]; 4])>) =
                                     if !use_ortho_2d_camera {
                                         if let Some(scene) = &self.scene {
                                             let wl = self.active_world_line;
-                                            let mut items = Vec::new();
-                                            let mut ctr   = 0u32;
+                                            let mut items  = Vec::new();
+                                            let mut panels = Vec::new();
+                                            let mut ctr    = 0u32;
                                             collect_3d_canvas_child_id_items(
                                                 &scene.actors, &scene.world, wl,
-                                                &mut ctr, canvas_id_offset, &mut items,
+                                                &mut ctr, canvas_id_offset, &mut items, &mut panels,
                                             );
-                                            items
-                                        } else { vec![] }
-                                    } else { vec![] };
+                                            (items, panels)
+                                        } else { (vec![], vec![]) }
+                                    } else { (vec![], vec![]) };
 
                                 // キャンバス ID GPU バインドグループ（render pass より長く生きる）
                                 let canvas_id_bgs: Vec<(wgpu::Buffer, wgpu::BindGroup)> =
@@ -3104,12 +3171,23 @@ impl App {
                                             )
                                         })
                                         .collect();
-                                // コライダー面は全域選択可能とするため白 1×1（alpha=1）テクスチャ BG を
-                                // 1 つ生成して全アイテムで共有する（テクスチャアルファマスク不要）。
+                                // 3D キャンバスのパネル面ピック BG（深度対応・白フォールバック）。
+                                let canvas_panel_pick_bgs: Vec<(wgpu::Buffer, wgpu::BindGroup)> =
+                                    canvas_panel_pick_items.iter()
+                                        .map(|&(raw_id, gpu_mat)| {
+                                            prepare_canvas_id_bg(
+                                                &draw_ctx.device, &draw_ctx.pipelines,
+                                                gpu_mat, raw_id,
+                                            )
+                                        })
+                                        .collect();
+                                // コライダー面・パネル面は全域選択可能とするため白 1×1（alpha=1）
+                                // テクスチャ BG を 1 つ生成して全アイテムで共有する。
                                 let collider_pick_white_bg: Option<wgpu::BindGroup> =
                                     if collider_pick_bgs_2d.is_empty()
                                         && collider_pick_bgs_3dcanvas.is_empty()
-                                        && collider_pick_bgs_3d.is_empty() {
+                                        && collider_pick_bgs_3d.is_empty()
+                                        && canvas_panel_pick_bgs.is_empty() {
                                         None
                                     } else {
                                         Some(draw_ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -3146,6 +3224,21 @@ impl App {
                                 //   - 3D キャンバス配下: WS perspective カメラ（camera_buf）・深度あり
                                 //   - 通常 2D シーン:   SS 時は 2D ortho カメラ、WS 2D 時は camera_buf・深度なし
                                 if let Some(white_bg) = &collider_pick_white_bg {
+                                    // 3D キャンバスのパネル面（深度あり・WS カメラ）を「最初」に描画する。
+                                    // これによりコライダーと同一平面（キャンバス上の子コライダー等）では
+                                    // 後から描くコライダーが LessEqual の同値で勝ち（子を選択できる）、
+                                    // パネルより奥のコライダーは深度で負ける（手前のパネルが選択される）。
+                                    // 透明なパネル領域でも面全体がピック対象となり、奥のコライダーではなく
+                                    // キャンバスが選択される。可視スプライトは後段の Always 描画で上書きされる。
+                                    if !canvas_panel_pick_bgs.is_empty() {
+                                        let tex_refs: Vec<&wgpu::BindGroup> =
+                                            vec![white_bg; canvas_panel_pick_bgs.len()];
+                                        draw_collider_pick_items(
+                                            &mut id_pass, &draw_ctx.pipelines,
+                                            &camera_buf.bind_group,
+                                            &canvas_panel_pick_bgs, &tex_refs, true,
+                                        );
+                                    }
                                     // 3D コライダー面クワッド（常に WS カメラ・深度あり）
                                     if !collider_pick_bgs_3d.is_empty() {
                                         let tex_refs: Vec<&wgpu::BindGroup> =

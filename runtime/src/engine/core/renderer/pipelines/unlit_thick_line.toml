@@ -1,0 +1,19 @@
+shader_sources  = ["gizmo_line.wgsl"]
+vertex_entry    = "vs_main"
+fragment_entry  = "fs_main"
+vertex_slots    = ["gizmo_vertex"]
+
+topology        = "TriangleList"
+cull_mode       = "None"
+front_face      = "Ccw"
+
+# 選択強調の太線は、1px ライン（unlit.toml）と同じ深度挙動に揃える:
+#   depth_write=false / depth_compare=LessEqual。
+# これにより「太くなるだけ」で、可視物による遮蔽（オクルージョン）の見え方は
+# 従来の 1px ラインと一致する（ギズモ用 gizmo_line.toml の depth=Always とは異なる）。
+depth_write     = false
+depth_compare   = "LessEqual"
+
+color_format    = "surface"
+blend           = "AlphaBlending"
+write_mask      = "all"

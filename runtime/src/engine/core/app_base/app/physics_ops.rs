@@ -336,6 +336,10 @@ impl App {
                 frame_colliding.insert(eid);
             }
             self.active_collision_dfs_ids = frame_colliding;
+
+            // 収束停止判定用に、全 Dynamic ボディの最大速度を退避する。
+            // タイムライン（stop 判定）が「実際に静止したか」を速度で確認するために使う。
+            self.store_edit_physics_rest_speeds_3d(result.max_linear_speed, result.max_angular_speed);
         }
 
         // ④ Kinematic Actor の Transform を物理スレッドへ送信する

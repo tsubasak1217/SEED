@@ -834,9 +834,17 @@ pub(super) fn collect_3d_canvas_child_id_items(
     counter:  &mut u32,
     mc_total: u32,
     out:      &mut Vec<(u32, [[f32; 4]; 4], Option<String>)>,
+    // 3D キャンバス（Actor3D + CanvasComponent）のパネル面そのものをピック対象にする
+    // ための面クワッド出力（raw_id, GPU 列優先モデル行列）。透明でも面全体を選択可能に
+    // するため、深度対応の canvas_id パイプライン（白フォールバック alpha=1）で描画する。
+    // 子スプライト（out）は Always 深度で後から上書きするため、可視スプライトが優先される。
+    panel_out: &mut Vec<(u32, [[f32; 4]; 4])>,
 ) {
     for actor in actors {
         if actor.world_line != wl { continue; }
+        // このアクターの 0 始まり DFS 番号（find_actor_by_dfs と同一規則）。
+        // パネル面 raw_id = mc_total + my_dfs + 1（子スプライト・コライダーと同一 ID 空間）。
+        let my_dfs = *counter;
         *counter += 1;
 
         // 非アクティブアクター: 描画されないためピック（ID）対象からも外す。
@@ -871,6 +879,30 @@ pub(super) fn collect_3d_canvas_child_id_items(
                         cc.keep_aspect_ratio,
                         matches!(cc.aspect_ratio_axis, AspectRatioAxis::Width),
                     );
+
+                    // キャンバスパネル面（キャンバス空間 [0,0]-[width,height]）を面ピック対象にする。
+                    // canvas_to_world でパネル 3 隅を 3D ワールドへ写し、ユニットクワッド [0,1]²
+                    // を覆うアフィンモデル行列（col0=u 基底, col1=v 基底, col3=原点）を構築する。
+                    let cpw = |x: f32, y: f32| -> [f32; 3] {
+                        [
+                            canvas_to_world[0][0] * x + canvas_to_world[0][1] * y + canvas_to_world[0][3],
+                            canvas_to_world[1][0] * x + canvas_to_world[1][1] * y + canvas_to_world[1][3],
+                            canvas_to_world[2][0] * x + canvas_to_world[2][1] * y + canvas_to_world[2][3],
+                        ]
+                    };
+                    let c00 = cpw(0.0, 0.0);
+                    let c10 = cpw(cc.width, 0.0);
+                    let c01 = cpw(0.0, cc.height);
+                    let ex = [c10[0] - c00[0], c10[1] - c00[1], c10[2] - c00[2]];
+                    let ey = [c01[0] - c00[0], c01[1] - c00[1], c01[2] - c00[2]];
+                    let panel_model = [
+                        [ex[0], ex[1], ex[2], 0.0],
+                        [ey[0], ey[1], ey[2], 0.0],
+                        [0.0,   0.0,   1.0,   0.0],
+                        [c00[0], c00[1], c00[2], 1.0],
+                    ];
+                    panel_out.push((mc_total + my_dfs + 1, panel_model));
+
                     // 子を 3D ワールド行列で再帰走査する。
                     // このキャンバス内の追加分をレイヤー昇順で安定ソートしてから out へ
                     // 追加する（ワールドキャンバスのレイヤーはキャンバス内で完結する）。
@@ -892,7 +924,7 @@ pub(super) fn collect_3d_canvas_child_id_items(
         // 3D Canvas でない場合は通常再帰する（DFS カウンタを全アクターで維持する）
         if !handled {
             collect_3d_canvas_child_id_items(
-                &actor.children, world, wl, counter, mc_total, out,
+                &actor.children, world, wl, counter, mc_total, out, panel_out,
             );
         }
     }

@@ -69,6 +69,33 @@ impl LineBatch {
         GpuLineBatch::new(device, &self.vertices)
     }
 
+    /// 蓄積済みの 1px ライン（LineList: 2 頂点 = 1 セグメント）を、スクリーン空間で
+    /// 一定太さに展開する太線バッチ（`GpuGizmoBatch` の太線部）へ変換する。
+    ///
+    /// 選択強調などで「同じ線をそのまま太く」描きたい場合に使う。各セグメントを
+    /// `GizmoBatch::add_thick_line` と同一の 6 頂点（2 三角形クワッド）へ展開し、
+    /// 実際の太さ付与は `gizmo_line.wgsl` の頂点シェーダ（スクリーン空間 quad 展開）が行う。
+    /// 描画は `draw_thick_line_batch`（深度 LessEqual・1px ラインと同じ遮蔽）で行う。
+    ///
+    /// 端数（奇数頂点）は無視する（LineBatch は常にペアで push されるため通常は発生しない）。
+    pub fn build_thick(&self, device: &wgpu::Device) -> GpuGizmoBatch {
+        let mut line_verts: Vec<GizmoVertex> = Vec::with_capacity(self.vertices.len() * 3);
+        for seg in self.vertices.chunks_exact(2) {
+            let pos_a = seg[0].position;
+            let pos_b = seg[1].position;
+            // 色はセグメント始点の色を採用する（LineBatch は 1 セグメント同色で push する）。
+            let color = seg[0].color;
+            // add_thick_line と同一の頂点並び（2 三角形 = 1 クワッド）。
+            let v = |t: f32, side: f32| GizmoVertex { pos_a, t, pos_b, side, color };
+            line_verts.extend_from_slice(&[
+                v(0.0, -1.0), v(0.0,  1.0), v(1.0, -1.0),
+                v(1.0, -1.0), v(0.0,  1.0), v(1.0,  1.0),
+            ]);
+        }
+        // ソリッド三角形は持たない（太線のみ）。
+        GpuGizmoBatch::new(device, &line_verts, &[])
+    }
+
     pub fn add_line(&mut self, start: [f32; 3], end: [f32; 3], color: [f32; 4]) {
         self.vertices.push(ColorVertex { position: start, color });
         self.vertices.push(ColorVertex { position: end,   color });
@@ -1307,5 +1334,30 @@ pub fn draw_gizmo_batch<'pass>(
             render_pass.set_vertex_buffer(0, buf.slice(..));
             render_pass.draw(0..batch.tri_count, 0..1);
         }
+    }
+}
+
+/// 太線バッチ（`LineBatch::build_thick` の出力）の太線部を描画する。
+///
+/// `draw_gizmo_batch` と異なり、選択強調用の `thick_line_pipeline`
+/// （depth_compare=LessEqual）を使うため、可視物による遮蔽の見え方が
+/// 通常の 1px ライン（`draw_line_batch`）と一致する。ソリッド三角形部は描画しない。
+///
+/// カメラ・モデルのバインドグループは 1px ライン描画と同じものを渡すこと
+/// （`camera_bg` は resolution を含む CameraUniform、`model_bg` は line_model_buf）。
+pub fn draw_thick_line_batch<'pass>(
+    render_pass: &mut wgpu::RenderPass<'pass>,
+    batch:       &'pass GpuGizmoBatch,
+    camera_bg:   &'pass wgpu::BindGroup,
+    model_bg:    &'pass wgpu::BindGroup,
+    pipelines:   &'pass DrawPipelines,
+) {
+    if batch.line_count == 0 { return; }
+    if let Some(buf) = &batch.line_buffer {
+        render_pass.set_pipeline(&pipelines.unlit_line.thick_line_pipeline);
+        render_pass.set_bind_group(0, camera_bg, &[]);
+        render_pass.set_bind_group(1, model_bg,  &[]);
+        render_pass.set_vertex_buffer(0, buf.slice(..));
+        render_pass.draw(0..batch.line_count, 0..1);
     }
 }

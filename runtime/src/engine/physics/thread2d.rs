@@ -687,8 +687,11 @@ fn collect_results_2d(
     active_contacts: &mut HashSet<(u64, u64)>,
     active_triggers: &mut HashSet<(u64, u64)>,
 ) -> PhysicsResult2d {
-    // ── Dynamic Rigidbody の Transform 取得 ──────────────────────────────────
+    // ── Dynamic Rigidbody の Transform・速度取得 ─────────────────────────────
+    // 収束停止判定用に、全 Dynamic ボディの並進・角速度の最大の大きさも集計する。
     let mut transform_updates = Vec::new();
+    let mut max_linear_speed:  f32 = 0.0;
+    let mut max_angular_speed: f32 = 0.0;
     for (entity_id, entry) in entries.iter() {
         if !entry.is_dynamic { continue; }
         let Some(rb_h) = entry.rb_handle else { continue };
@@ -704,6 +707,10 @@ fn collect_results_2d(
             [pos.x, pos.y],
             rot,
         ));
+
+        // 速度の大きさ（静止判定に使用）。2D の角速度はスカラー。
+        max_linear_speed  = max_linear_speed.max(rb.linvel().norm());
+        max_angular_speed = max_angular_speed.max(rb.angvel().abs());
     }
 
     // ── 衝突イベント処理 ─────────────────────────────────────────────────────
@@ -792,6 +799,8 @@ fn collect_results_2d(
         trigger_events,
         active_contact_entity_ids,
         active_trigger_entity_ids,
+        max_linear_speed,
+        max_angular_speed,
     }
 }
 

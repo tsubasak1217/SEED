@@ -878,6 +878,9 @@ impl App {
                 frame_colliding.insert(eid);
             }
             self.active_collision_2d_dfs_ids = frame_colliding;
+
+            // 収束停止判定用に、全 Dynamic ボディ（2D）の最大速度を退避する。
+            self.store_edit_physics_rest_speeds_2d(result.max_linear_speed, result.max_angular_speed);
         }
 
         // ④ ビューポートサイズ変化時に Static ボディを再登録する
