@@ -92,6 +92,13 @@ public partial class HierarchyPanel : UserControl
     // アクター編集モード
     private bool         _isActorEditMode          = false;
     private bool         _isActor2DMode            = false;  // 編集中アクターが 2D Actor かどうか
+    // キャンバス編集タブ（インスペクタ「キャンバスを編集」から開くシーン内キャンバスの
+    // 隔離編集タブ）を表示中かどうか。true の間はルートノード（DFS id 0 = そのタブの
+    // ルート親キャンバス。Rust 側 do_send_hierarchy は世界線内で DFS カウンタを
+    // 0 から振るため、ルートは常に id 0 になる）の削除・3D アクター追加を UI 側でも抑止する。
+    // Rust 側（handle_remove_actor / apply_delete / handle_add_actor）が最終防衛であり、
+    // ここはあくまで誤操作を未然に防ぐ UX 目的。
+    private bool         _isSceneCanvasEditMode     = false;
     private uint         _activeWorldLine           = 0;
     private bool         _pendingActorRenameAfterAdd = false;
     private HashSet<int> _preAddNodeIds             = new();
@@ -190,12 +197,15 @@ public partial class HierarchyPanel : UserControl
     /// <summary>
     /// アクター編集モードの切り替え。
     /// is2D に true を渡すと、アクタ追加コマンドが ADD_ACTOR_2D に切り替わる。
+    /// isSceneCanvas に true を渡すと、キャンバス編集タブ専用のルート保護 UI
+    /// （ルートノードの削除禁止・ルートへの 3D アクタ追加禁止）が有効になる。
     /// </summary>
-    public void SetActorEditMode(bool isActorMode, uint worldLine = 0, bool is2D = false)
+    public void SetActorEditMode(bool isActorMode, uint worldLine = 0, bool is2D = false, bool isSceneCanvas = false)
     {
-        _isActorEditMode = isActorMode;
-        _isActor2DMode   = is2D;
-        _activeWorldLine = worldLine;
+        _isActorEditMode      = isActorMode;
+        _isActor2DMode        = is2D;
+        _isSceneCanvasEditMode = isActorMode && isSceneCanvas;
+        _activeWorldLine       = worldLine;
         ActorToolbar.Visibility = isActorMode ? Visibility.Visible : Visibility.Collapsed;
         ActorToolbarRow.Height  = isActorMode ? new GridLength(28) : new GridLength(0);
         SearchBarRow.Height     = isActorMode ? new GridLength(0)  : new GridLength(28);
@@ -668,9 +678,15 @@ public partial class HierarchyPanel : UserControl
     {
         var sub = new MenuItem { Header = "アクタを追加" };
 
-        var item3D = new MenuItem { Header = "3D アクタ" };
+        // キャンバス編集タブでルートに 3D アクタを追加しようとする導線（ルート＝空きスペースへの
+        // 右クリック追加）は Rust 側（handle_add_actor）で拒否されるため、UI 側でも無効化しておく
+        // （asChild=true の子追加は既存の親ノードへの追加なので対象外）。
+        bool disallowRoot3D = !asChild && _isSceneCanvasEditMode;
+
+        var item3D = new MenuItem { Header = "3D アクタ", IsEnabled = !disallowRoot3D };
         item3D.Click += (_, _) =>
         {
+            if (disallowRoot3D) return;
             PrepareRenameAfterAdd();
             if (asChild && _rightClickedNode is not null)
                 _runtime?.SendToRuntime($"ADD_ACTOR_CHILD:{_rightClickedNode.Id}");
@@ -709,6 +725,9 @@ public partial class HierarchyPanel : UserControl
         {
             // アクター編集モードでは選択アクターを削除
             if (_selectedId < 0) return;
+            // キャンバス編集タブ中はルートノード（DFS id 0 = ルート親キャンバス）の
+            // 削除を UI 側でも抑止する（Rust 側 handle_remove_actor が最終防衛）。
+            if (_isSceneCanvasEditMode && _selectedId == 0) return;
             _runtime?.SendToRuntime($"REMOVE_ACTOR:{_selectedId}");
         }
         else

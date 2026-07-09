@@ -120,13 +120,18 @@ impl App {
         [cam_2d.pan_x + ndx * half_w, cam_2d.pan_y + ndy * half_h]
     }
 
-    /// シーン世界線（world_line=0）のルートスクリーンスペースキャンバス矩形情報を
+    /// アクティブ世界線のルートスクリーンスペースキャンバス矩形情報を
     /// scene.actors の並び順（描画順 = 手前が後）で収集する。
     ///
     /// トップレベルの Actor2D + CanvasComponent のみが対象
     /// （Actor3D 配下のワールドキャンバスは含まない）。
+    ///
+    /// 対象世界線は self.active_world_line（ビューポートは 0、アクター編集タブ／
+    /// キャンバス編集タブは各タブの wl>0）。design_space フラグは edit_view_is_2d()
+    /// を用いるため、wl>0 タブでは自動的に screen-space レイアウト（false）となり、
+    /// 描画側（frame_renderer の is_actor_edit_2d 経路）と座標系が一致する。
     pub(super) fn collect_root_canvas_infos(&self) -> Vec<RootCanvasInfo> {
-        const SCENE_WL: u32 = 0;
+        let scene_wl = self.active_world_line;
         let mut result = Vec::new();
         let Some(scene) = &self.scene else { return result };
 
@@ -138,11 +143,11 @@ impl App {
         // ビューポート上書き + ルート自動解像度マップ（描画と同一条件・共通ヘルパー。
         // View2D では設計空間表示 = キャンバス中心が ortho 原点になる）
         let (vp_overrides, auto_sizes) = self.build_ss_layout_maps(
-            &scene.actors, &scene.world, SCENE_WL, vp_w, vp_h, None,
+            &scene.actors, &scene.world, scene_wl, vp_w, vp_h, None,
         );
 
         for actor in &scene.actors {
-            if actor.world_line != SCENE_WL { continue; }
+            if actor.world_line != scene_wl { continue; }
             if !actor.is_2d() { continue; }
 
             // CanvasTransform + CanvasComponent の両方を持つルートのみ対象

@@ -29,7 +29,13 @@ impl App {
     /// 以下の 3 ケースを判定してそれぞれ適切な処理へ委譲する:
     /// 1. 対象アクターが Canvas を持つ → 新規子 Actor2D を作成してそこに追加
     /// 2. 対象アクターの親が Canvas を持つ → 対象アクターに直接追加
-    /// 3. どちらでもない → Canvas を追加してから子 Actor2D を作成して追加
+    /// 3. どちらでもない
+    ///    - 対象が 2D（Actor2D）: **Canvas を作らず** 新規子 Actor2D を作成してそこに追加。
+    ///      2D スプライトはルートレベル（parent_canvas_size=None）でも描画されるため、
+    ///      Canvas スロットを強制追加せずに済む（ユーザー要望: 勝手に Canvas を作らない）。
+    ///    - 対象が 3D（Actor3D）: 3D ワールド空間にスプライトを描くには対象アクターへ
+    ///      CanvasComponent が必須（frame_renderer の 3D Canvas 収集経路）。このケースに
+    ///      限り Canvas を追加してから子 Actor2D を作成する（従来動作を維持）。
     pub(super) fn handle_add_canvas_child_component(
         &mut self,
         actor_dfs_id:   u32,
@@ -55,15 +61,30 @@ impl App {
             find_parent_canvas_info(&scene.actors, wl, actor_dfs_id)
         };
 
+        // 対象アクターが 3D（Actor3D）かどうか（Case3 の分岐に使用）
+        let is_target_3d = {
+            let scene = self.scene.as_ref().unwrap();
+            let mut c = 0u32;
+            find_actor_by_dfs(&scene.actors, wl, actor_dfs_id, &mut c)
+                .map(|a| !a.is_2d())
+                .unwrap_or(false)
+        };
+
         if target_has_canvas {
             // Case 1: 対象が Canvas → 新規子アクターを作成してそこに追加
             self.spawn_canvas_child_with_component(actor_dfs_id, component_type, slot_name);
         } else if parent_has_canvas {
             // Case 2: 親が Canvas → 対象アクターに直接追加（通常フロー）
             self.handle_add_component_to_actor(actor_dfs_id, component_type, slot_name, args);
-        } else {
-            // Case 3: Canvas なし → Canvas を追加してから子アクターを作成して追加
+        } else if is_target_3d {
+            // Case 3a: Canvas なし・対象が 3D → 3D ワールドキャンバス描画に必要なため
+            // Canvas を追加してから子 Actor2D を作成して追加する（従来動作）
             self.add_canvas_then_child_with_component(actor_dfs_id, component_type, slot_name);
+        } else {
+            // Case 3b: Canvas なし・対象が 2D → Canvas を作らず、新規子 Actor2D を
+            // 作成してそこにコンポーネントを追加する（Case1 と同じ子作成ロジックを流用）。
+            // 子スプライトはルートレベル描画で表示されるため Canvas は不要。
+            self.spawn_canvas_child_with_component(actor_dfs_id, component_type, slot_name);
         }
     }
 

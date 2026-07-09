@@ -190,10 +190,22 @@ public partial class MainWindow
         return Enumerable.Empty<string>();
     }
 
-    /// <summary>.actor / .actor2d いずれかの拡張子を持つパスかを返す。</summary>
+    /// <summary>ビューポートへドロップ可能なファイル拡張子（ドット付き・小文字）。</summary>
+    /// <remarks>
+    /// アクターファイル（.actor / .actor2d）に加え、スプライト生成用の画像拡張子を含む。
+    /// 画像は 2D コンテキストで SpriteComponent 付き Actor2D として生成される
+    /// （3D コンテキストへドロップされた画像は Rust 側で無視する）。
+    /// 対応画像は runtime 側 DROPPABLE_IMAGE_EXTS / Cargo.toml の image feature と一致させること。
+    /// </remarks>
+    private static readonly string[] DroppableExtensions =
+    {
+        ".actor", ".actor2d",
+        ".png", ".jpg", ".jpeg", ".bmp", ".tga", ".webp",
+    };
+
+    /// <summary>ビューポートへドロップ可能なファイル（アクター or 画像）かを返す。</summary>
     private static bool IsActorFile(string path)
-        => path.EndsWith(".actor",   StringComparison.OrdinalIgnoreCase)
-        || path.EndsWith(".actor2d", StringComparison.OrdinalIgnoreCase);
+        => DroppableExtensions.Any(ext => path.EndsWith(ext, StringComparison.OrdinalIgnoreCase));
 
     // ── Win32 OLE DropTarget（ビューポート HWND への直接ドロップ）──
 

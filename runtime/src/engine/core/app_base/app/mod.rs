@@ -934,6 +934,18 @@ impl App {
             && self.active_world_line == 0
     }
 
+    /// 現在アクティブなタブが「2D 系のアクター編集タブ／キャンバス編集タブ」か
+    /// どうかを返す（wl>0 かつ actor_edit_canvas_wls に登録済み）。
+    ///
+    /// これらのタブは常にスクリーンスペース 2D レイアウトで描画され（frame_renderer の
+    /// use_screen_space 参照）、ルートアクターが 1 体だけという単一ルート構造を持つ。
+    /// ビューポート（wl==0 の Edit View2D = edit_view_is_2d）とは別条件だが、
+    /// D&D ドロップ配置ではどちらも 2D 経路（handle_drop_actor_2d）へ流す。
+    pub(super) fn is_2d_edit_tab(&self) -> bool {
+        self.active_world_line != 0
+            && self.actor_edit_canvas_wls.contains(&self.active_world_line)
+    }
+
     /// 現在のビューポートが「3D シーンビューでスクリーンスペースキャンバスを
     /// 非表示にする状態」かどうかを返す。
     ///

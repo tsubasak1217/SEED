@@ -137,7 +137,8 @@ public partial class MainWindow
             var tab  = _actorTabs.LastOrDefault();
             var wl   = tab?.WorldLine ?? 1u;
             var is2D = tab?.IsActor2D ?? false;
-            PanelHierarchy.SetActorEditMode(true, wl, is2D);
+            var isSceneCanvas = tab?.IsSceneCanvas ?? false;
+            PanelHierarchy.SetActorEditMode(true, wl, is2D, isSceneCanvas);
             PanelInspector.SetActorEditMode(true);
             RebuildActorTabBar();
         });
@@ -183,7 +184,7 @@ public partial class MainWindow
         if (tab == null) return;
         _activeActorPath = path;
         SendNavCommand($"SET_ACTIVE_WORLD_LINE:{tab.WorldLine}");
-        PanelHierarchy.SetActorEditMode(true, tab.WorldLine, tab.IsActor2D);
+        PanelHierarchy.SetActorEditMode(true, tab.WorldLine, tab.IsActor2D, tab.IsSceneCanvas);
         PanelInspector.SetActorEditMode(true);
         // 別タブへ移動したのでキャンバス編集タブは終了する（移動コマンド送信後に呼ぶこと）
         EndInactiveSceneCanvasTabs();

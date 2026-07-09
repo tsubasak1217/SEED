@@ -3697,7 +3697,10 @@ impl App {
             // を適切に振り分けるため、拡張子判定を削除して全ドロップをここへ流す。
             // なお 2D ビューでは GPU ピック（3D ワールド座標解決）自体が無意味なため、
             // resolve_spawn_pos の再キュー処理を経由しなくても実害はない。
-            if self.edit_view_is_2d() {
+            if self.edit_view_is_2d() || self.is_2d_edit_tab() {
+                // ビューポート（wl==0 の Edit View2D）に加え、2D 系のアクター編集タブ／
+                // キャンバス編集タブ（wl>0 かつ actor_edit_canvas_wls）も 2D 経路へ流す。
+                // handle_drop_actor_2d 側で active_world_line を基準に配置先を決める。
                 self.handle_drop_actor_2d(&path, sx, sy);
             } else {
                 match self.resolve_spawn_pos(sx, sy, did_pick) {
