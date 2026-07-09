@@ -404,9 +404,21 @@ impl App {
                 rotation:  prop_rot,
                 reply:     reply_tx,
             });
-            match reply_rx.recv_timeout(
+            // この recv はレンダースレッドを応答まで同期ブロックする。実待ち時間を計測して
+            // SEED_PHYS_LOG 有効時のみ、閾値超え（=スパイク）を記録する。ドラッグが重い場合、
+            // ここが主因かを実データで確認するための計測（既定オフ・無コスト）。
+            let wait_start = std::time::Instant::now();
+            let recv_result = reply_rx.recv_timeout(
                 std::time::Duration::from_millis(OVERLAP_REPLY_TIMEOUT_MS),
-            ) {
+            );
+            if *PHYS_LOG_ENABLED {
+                let waited_us = wait_start.elapsed().as_micros();
+                // 2ms 超のみ出力（通常の 1ms 未満応答はノイズなので抑制）
+                if waited_us >= 2_000 {
+                    eprintln!("[Physics] drag_pushback overlap wait = {:.2}ms", waited_us as f64 / 1000.0);
+                }
+            }
+            match recv_result {
                 Ok(v) => v,
                 // 応答なし（スレッド高負荷・終了中等）: 今フレームは判定を保留する。
                 // 未検証の位置を安全位置として採用しないため last_valid_pos は更新しない。
