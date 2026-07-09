@@ -1059,6 +1059,144 @@ fn walk_3d_canvas_children_id(
     }
 }
 
+// ============================================================
+//  collect_3d_canvas_child_outlines
+// ============================================================
+
+/// 3D Canvas（Actor3D + CanvasComponent）配下にネストされた子キャンバス
+/// （CanvasComponent を持つ Actor2D）のアウトライン矩形コーナーを 3D ワールド空間で収集する。
+///
+/// # 目的
+/// 3D キャンバスの子キャンバス枠は、ルート 3D キャンバス枠パス（frame_renderer）が
+/// 子へ再帰しないため描画されていなかった。本関数はスプライトの子走査
+/// （`walk_3d_canvas_children_id` / `collect_sprite_items`）と**同一の変換連鎖**で
+/// 各ネストキャンバスの矩形を求めるため、枠が子キャンバスの描画スプライトと一致する。
+///
+/// # 変換の一致
+/// スプライトは `mat4x4_mul(parent_world_rs, eff_ct.to_sprite_mat4(W, H))` をユニット
+/// クワッドに適用して配置される。本関数の枠は `eff_ct.to_mat4_sized(W, H)` を
+/// `[0,W]×[0,H]` のコーナーに適用する。`to_mat4_sized(W,H)` を `(W*u, H*v)` に適用した
+/// 結果は `to_sprite_mat4(W,H)` を `(u,v)` に適用した結果と一致するため、枠 == スプライト。
+///
+/// # DFS カウンタ
+/// `find_actor_by_dfs` の子ノード規則（world_line 無関係に子孫を全カウント）で `counter`
+/// を進めるため、返却する `dfs_id` は選択ハイライト（`selected_actor_dfs_ids`）と整合する。
+///
+/// 出力タプル: `([TL, TR, BR, BL] の 3D ワールド座標, そのノードの dfs_id)`
+#[allow(clippy::too_many_arguments)]
+pub(super) fn collect_3d_canvas_child_outlines(
+    actors:             &[Actor],
+    world:              &World,
+    wl:                 u32,
+    counter:            &mut u32,
+    parent_canvas_size: Option<[f32; 2]>,
+    parent_world_rs:    [[f32; 4]; 4],
+    parent_cumul_scale: [f32; 2],
+    out:                &mut Vec<([[f32; 3]; 4], u32)>,
+) {
+    for actor in actors {
+        // このノードの 0 始まり DFS 番号（find_actor_by_dfs の子規則と同一。
+        // 子ノードは world_line で除外せず全カウントする）。
+        let my_dfs = *counter;
+        *counter += 1;
+
+        // 非アクティブアクター: スプライトが描画されないため枠も描かない。
+        // DFS 番号は選択系と整合させるため子孫分も進める。
+        if !actor.active {
+            skip_dfs_subtree(&actor.children, counter);
+            continue;
+        }
+
+        let ct_opt = world.get::<CanvasTransform>(actor.entity).cloned();
+
+        let (next_canvas_size, next_world_rs, next_cumul_scale) =
+        if let Some(ct) = ct_opt {
+            // スケールモードはこのノード自身の CanvasTransform から読み取る
+            let (sm_transform, sm_size, keep_aspect, is_width_axis) = (
+                ct.scale_transform, ct.scale_size, ct.keep_aspect_ratio,
+                matches!(ct.aspect_ratio_axis, AspectRatioAxis::Width),
+            );
+            // アンカーオフセット（walk_3d_canvas_children_id / collect_sprite_items と同じ）
+            let (anchor_off_x, anchor_off_y) = parent_canvas_size.map_or((0.0f32, 0.0f32), |[pw, ph]| {
+                (pw * ct.anchor[0] * parent_cumul_scale[0],
+                 ph * ct.anchor[1] * parent_cumul_scale[1])
+            });
+            // 有効位置（スケールモードに応じて親累積スケールを適用する）
+            let eff_pos = if sm_transform {
+                [ct.position[0] * parent_cumul_scale[0] + anchor_off_x,
+                 ct.position[1] * parent_cumul_scale[1] + anchor_off_y]
+            } else {
+                [ct.position[0] + anchor_off_x, ct.position[1] + anchor_off_y]
+            };
+            let eff_ct = CanvasTransform {
+                position: eff_pos,
+                rotation: ct.rotation,
+                scale:    ct.scale,
+                pivot:    ct.pivot,
+                anchor:   [0.0, 0.0],
+                ..ct.clone()
+            };
+
+            // 自アクターの CanvasComponent
+            let my_canvas = actor.slots().iter()
+                .filter(|s| s.kind == ComponentKind::Canvas)
+                .find_map(|s| world.get::<CanvasComponent>(s.entity));
+
+            // sm_size による拡縮スケール（アスペクト比維持を考慮）
+            let size_sc_x = if sm_size {
+                if keep_aspect && !is_width_axis { parent_cumul_scale[1] } else { parent_cumul_scale[0] }
+            } else { 1.0 };
+            let size_sc_y = if sm_size {
+                if keep_aspect && is_width_axis { parent_cumul_scale[0] } else { parent_cumul_scale[1] }
+            } else { 1.0 };
+            let (my_eff_w, my_eff_h) = my_canvas.map(|cc| (
+                cc.width  * size_sc_x,
+                cc.height * size_sc_y,
+            )).unwrap_or((1.0, 1.0));
+
+            // 子伝播用のワールド RS 行列（scale=[1,1]。スプライト子走査と同一）
+            let self_world_rs = mat4x4_mul(
+                parent_world_rs,
+                CanvasTransform { scale: [1.0, 1.0], ..eff_ct.clone() }
+                    .to_mat4_sized(my_eff_w, my_eff_h),
+            );
+
+            // このノードが CanvasComponent を持つなら、その矩形アウトラインを出力する。
+            // 枠行列は eff_ct（scale 込み）× to_mat4_sized（2D collect_canvas_rects の枠と同一形）。
+            if my_canvas.is_some() {
+                let m = mat4x4_mul(parent_world_rs, eff_ct.to_mat4_sized(my_eff_w, my_eff_h));
+                let tp = |cx: f32, cy: f32| -> [f32; 3] {
+                    [m[0][0]*cx + m[0][1]*cy + m[0][3],
+                     m[1][0]*cx + m[1][1]*cy + m[1][3],
+                     m[2][0]*cx + m[2][1]*cy + m[2][3]]
+                };
+                out.push((
+                    [tp(0.0, 0.0), tp(my_eff_w, 0.0), tp(my_eff_w, my_eff_h), tp(0.0, my_eff_h)],
+                    my_dfs,
+                ));
+            }
+
+            // 子への基準 Canvas サイズと累積スケール（walk_3d_canvas_children_id と同一）
+            let child_canvas_size = my_canvas.map(|cc| [cc.width, cc.height]);
+            let child_cumul_scale = if sm_transform {
+                [parent_cumul_scale[0] * ct.scale[0], parent_cumul_scale[1] * ct.scale[1]]
+            } else {
+                [ct.scale[0], ct.scale[1]]
+            };
+            (child_canvas_size, self_world_rs, child_cumul_scale)
+        } else {
+            // CanvasTransform なし: 親情報をそのまま引き継ぐ
+            (parent_canvas_size, parent_world_rs, parent_cumul_scale)
+        };
+
+        // 常に子に再帰する（DFS カウンタを全アクターで維持するため）
+        collect_3d_canvas_child_outlines(
+            &actor.children, world, wl, counter,
+            next_canvas_size, next_world_rs, next_cumul_scale, out,
+        );
+    }
+}
+
 /// 3D Canvas 子スプライトのワールド空間コーナー座標を計算して返す。
 ///
 /// 戻り値: `[TL, TR, BR, BL]` の 3D ワールド座標。

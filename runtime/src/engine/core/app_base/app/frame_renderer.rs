@@ -2243,6 +2243,31 @@ impl App {
                                 lb.add_line(tr, br, rect_col);
                                 lb.add_line(br, bl, rect_col);
                                 lb.add_line(bl, tl, rect_col);
+
+                                // ── ネストされた子キャンバスのアウトライン ──────────────────
+                                // この 3D キャンバス配下に CanvasComponent を持つ子（Actor2D 等）が
+                                // ある場合、その矩形枠も同じ 3D ワールド変換連鎖（canvas_to_world = m）で
+                                // 描画する。スプライトの子走査と同一の変換のため、枠は描画スプライトと
+                                // 一致する。ルートループは子へ再帰しないため（DFS カウンタは
+                                // count_descendants で別途進む）、枠描画専用のローカル DFS カウンタを
+                                // my_dfs+1（最初の子の DFS 番号）から開始し、選択色判定に使う。
+                                let mut nested_outlines: Vec<([[f32; 3]; 4], u32)> = Vec::new();
+                                let mut child_dfs = my_dfs + 1;
+                                crate::engine::core::app_base::app::canvas_collect::collect_3d_canvas_child_outlines(
+                                    &actor.children, &scene.world, wl, &mut child_dfs,
+                                    Some([w, h]), m, [1.0, 1.0], &mut nested_outlines,
+                                );
+                                for (corners, dfs_id) in nested_outlines {
+                                    let col = if self.selected_actor_dfs_ids.contains(&(dfs_id as usize)) {
+                                        RECT_COL_SELECTED
+                                    } else {
+                                        RECT_COL_NORMAL
+                                    };
+                                    lb.add_line(corners[0], corners[1], col);
+                                    lb.add_line(corners[1], corners[2], col);
+                                    lb.add_line(corners[2], corners[3], col);
+                                    lb.add_line(corners[3], corners[0], col);
+                                }
                             }
 
                             if lb.is_empty() { None } else { Some(lb.build(&draw_ctx.device)) }
