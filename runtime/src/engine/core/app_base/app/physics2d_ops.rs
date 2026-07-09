@@ -816,7 +816,13 @@ impl App {
         }
 
         let thread = self.physics_thread_2d.as_ref().unwrap();
+        let _t_recv = std::time::Instant::now();
         let result = thread.recv_latest();
+        let recv_ms = _t_recv.elapsed().as_secs_f64() * 1000.0;
+
+        // rest 内訳計測用（IPC 送信とイベント数）。
+        let mut ipc_ms: f64 = 0.0;
+        let mut n_events: usize = 0;
 
         if let Some(ref result) = result {
             // ① Dynamic Rigidbody2D の CanvasTransform を ECS に書き戻す
@@ -859,6 +865,8 @@ impl App {
 
             // ② 衝突イベントを IPC 経由でエディタへ通知する
             if self.scripting_host.is_some() {
+                let _t_ipc = std::time::Instant::now();
+                n_events = result.collision_events.len() + result.trigger_events.len();
                 for event in &result.collision_events {
                     if let Some(ipc) = &self.ipc {
                         let phase_str = match event.phase {
@@ -880,6 +888,7 @@ impl App {
                             event.trigger_entity, event.other_entity));
                     }
                 }
+                ipc_ms = _t_ipc.elapsed().as_secs_f64() * 1000.0;
             }
 
             // ③ 衝突中エンティティ DFS ID セットを更新する
@@ -1010,11 +1019,12 @@ impl App {
         let threshold_us = if *PHYS_LOG_ENABLED { 2_000 } else { 15_000 };
         if total_us >= threshold_us {
             eprintln!(
-                "[Physics2D] {}update total={:.2}ms (ctx_build={:.2}ms, rest={:.2}ms) contexts={}",
+                "[Physics2D] {}update total={:.2}ms (ctx_build={:.2}ms, rest={:.2}ms | recv={:.2} ipc={:.2} events={}) contexts={}",
                 if total_us >= 15_000 { "SLOW " } else { "" },
                 total_us as f64 / 1000.0,
                 ctx_build_us as f64 / 1000.0,
                 (total_us.saturating_sub(ctx_build_us)) as f64 / 1000.0,
+                recv_ms, ipc_ms, n_events,
                 contexts.len(),
             );
         }

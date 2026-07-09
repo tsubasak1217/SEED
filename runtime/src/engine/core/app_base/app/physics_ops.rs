@@ -308,7 +308,13 @@ impl App {
 
         // 結果受信のためにここで改めて物理スレッドを借用する。
         let Some(thread) = &self.physics_thread else { return };
+        let _t_recv = std::time::Instant::now();
         let result = thread.recv_latest();
+        let recv_ms = _t_recv.elapsed().as_secs_f64() * 1000.0;
+
+        // rest 内訳計測用（IPC 送信とイベント数）。
+        let mut ipc_ms: f64 = 0.0;
+        let mut n_events: usize = 0;
 
         if let Some(ref result) = result {
             if diag {
@@ -342,6 +348,8 @@ impl App {
 
             // ② 衝突イベントを IPC 経由でエディタへ転送する（スクリプトホスト存在時のみ）
             if self.scripting_host.is_some() {
+                let _t_ipc = std::time::Instant::now();
+                n_events = result.collision_events.len() + result.trigger_events.len();
                 for event in &result.collision_events {
                     if let Some(ipc) = &self.ipc {
                         let phase_str = match event.phase {
@@ -361,6 +369,7 @@ impl App {
                         ipc.send(&format!("TRIGGER_EVENT:{},{},{phase_str}", event.trigger_entity, event.other_entity));
                     }
                 }
+                ipc_ms = _t_ipc.elapsed().as_secs_f64() * 1000.0;
             }
 
             // ③ 衝突中エンティティ DFS ID セットを更新する（コライダーワイヤー色変更用）
@@ -414,8 +423,8 @@ impl App {
         if total_ms >= 15.0 {
             let rest_ms = (total_ms - dragblock_ms - pushback_ms).max(0.0);
             eprintln!(
-                "[Physics] SLOW update_physics total={:.1}ms (dragblock={:.1} pushback={:.1} rest={:.1})",
-                total_ms, dragblock_ms, pushback_ms, rest_ms,
+                "[Physics] SLOW update_physics total={:.1}ms (dragblock={:.1} pushback={:.1} rest={:.1} | recv={:.1} ipc={:.1} events={})",
+                total_ms, dragblock_ms, pushback_ms, rest_ms, recv_ms, ipc_ms, n_events,
             );
         }
     }

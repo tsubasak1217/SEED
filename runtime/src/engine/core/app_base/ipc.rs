@@ -1,6 +1,6 @@
 use std::fs::OpenOptions;
 use std::io::{BufRead, BufReader, Write};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
@@ -373,7 +373,9 @@ pub enum IpcCommand {
 /// エディタ（サーバー）への接続、コマンド受信、イベント送信を行う。
 pub struct IpcClient {
     commands: mpsc::Receiver<IpcCommand>,
-    writer:   Arc<Mutex<std::fs::File>>,
+    /// 送信メッセージを書き込み専用スレッドへ渡すチャンネル。
+    /// 呼び出し元は投入するだけで即座に返り、パイプ書き込みでブロックしない。
+    write_tx: mpsc::Sender<String>,
 }
 
 impl IpcClient {
@@ -382,19 +384,29 @@ impl IpcClient {
         let pipe_path = format!(r"\\.\pipe\{}", pipe_name);
         let file = try_open(&pipe_path)?;
         let write_file = file.try_clone()?;
-        let writer = Arc::new(Mutex::new(write_file));
+
+        // 書き込み専用スレッドを起動する。パイプが詰まってもこのスレッドが待つだけで、
+        // 送信元（レンダースレッド等）は影響を受けない。
+        let (write_tx, write_rx) = mpsc::channel::<String>();
+        thread::spawn(move || write_loop(write_file, write_rx));
 
         let (tx, rx) = mpsc::channel();
         thread::spawn(move || read_loop(file, tx));
 
-        Ok(Self { commands: rx, writer })
+        Ok(Self { commands: rx, write_tx })
     }
 
-    /// エディタにメッセージを 1 行送信する。
+    /// エディタにメッセージを 1 行送信する（非ブロッキング）。
+    ///
+    /// 【重要】名前付きパイプへの同期 writeln! はエディタ（読み手）が遅いと
+    /// パイプバッファ満杯で呼び出し元スレッドをブロックする。update_physics などから
+    /// 衝突イベントごとに毎フレーム呼ばれるため、これがレンダースレッドを数百 ms
+    /// ブロックしていた（[PERF] の physics rest スパイクの実体）。実際の WriteFile は
+    /// 書き込み専用スレッドに委譲し、ここではチャンネルへ投入して即座に返す。
+    /// 全メッセージが単一チャンネル・単一スレッド経由のため送信順序（FIFO）は保たれる。
     pub fn send(&self, msg: &str) {
-        if let Ok(mut w) = self.writer.lock() {
-            let _ = writeln!(w, "{}", msg);
-        }
+        // 書き込みスレッドが生存する限り失敗しない。切断時（スレッド終了後）は捨てる。
+        let _ = self.write_tx.send(msg.to_string());
     }
 
     /// コマンドキューから 1 件取り出す（ブロックしない）。
@@ -513,6 +525,23 @@ fn parse2u_nf<const N: usize>(rest: &str) -> Option<(u32, u32, [f32; N])> {
 // ============================================================
 //  内部ヘルパー
 // ============================================================
+
+/// IPC 書き込み専用スレッド。
+///
+/// チャンネルで受け取ったメッセージを名前付きパイプへ 1 行ずつ書き込む。
+/// パイプバッファ満杯で writeln! がブロックしても、待つのはこのスレッドだけで、
+/// 送信元スレッド（レンダースレッド等）は send() でチャンネルへ投入済みのため影響しない。
+/// 送信元がすべて Drop されて write_tx が閉じると recv() が Err を返しループを抜ける。
+fn write_loop(mut file: std::fs::File, rx: mpsc::Receiver<String>) {
+    use std::io::Write;
+    while let Ok(msg) = rx.recv() {
+        // 元の send() と同じく 1 メッセージ = 1 行（改行区切り）で書き込む。
+        // 書き込みエラー（パイプ切断等）でスレッドを終了する。
+        if writeln!(file, "{}", msg).is_err() {
+            break;
+        }
+    }
+}
 
 /// PeekNamedPipe でデータ確認後のみ ReadFile する。
 ///
