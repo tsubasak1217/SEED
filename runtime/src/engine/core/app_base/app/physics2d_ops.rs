@@ -721,11 +721,6 @@ impl App {
         // ビューポートサイズを取得する（scene 借用前に計算）
         let viewport_size = self.compute_viewport_size_2d();
 
-        // 細粒度プロファイル用の計測開始時刻（Instant::now() は約20ns で無視できる）。
-        // 出力は SEED_PHYS_LOG 有効時のみ。update_physics_2d のどのセクションが
-        // 定常コストの主因かを実測で切り分けるため（コンテキスト再構築 vs 結果適用 vs 重力）。
-        let t_start = std::time::Instant::now();
-
         // ── Actor2d コンテキストを一括収集（read-only borrow で完結させる）────
         let contexts: Vec<Actor2dPhysicsCtx> = if let Some(scene) = &self.scene {
             // ビューポート上書き + ルート自動解像度マップ（描画と同一条件・共通ヘルパー）
@@ -739,8 +734,6 @@ impl App {
         } else {
             return;
         };
-        // コンテキスト再構築（レイアウトマップ + 全アクター DFS 走査）の経過時間。
-        let ctx_build_us = t_start.elapsed().as_micros();
 
         // ── ギズモドラッグ中アクター（2D）の kinematic 切り替え ──────────────
         let new_drag_entity_id: Option<u64> = if self.drag.gizmo_drag.is_some() {
@@ -816,9 +809,7 @@ impl App {
         }
 
         let thread = self.physics_thread_2d.as_ref().unwrap();
-        let _t_recv = std::time::Instant::now();
         let result = thread.recv_latest();
-        let recv_ms = _t_recv.elapsed().as_secs_f64() * 1000.0;
 
         if let Some(ref result) = result {
             // ① Dynamic Rigidbody2D の CanvasTransform を ECS に書き戻す
@@ -981,26 +972,6 @@ impl App {
                     rotation:  ctx.rot_rad,
                 });
             }
-        }
-
-        // ── セクション別プロファイル出力（SEED_PHYS_LOG 有効時のみ）─────────────
-        // ctx_build_us（コンテキスト再構築）と total_us（関数全体）を対比し、
-        // 定常 5-8ms/フレームの主因がコンテキスト再構築かどうかを実測で確定させる。
-        // 2ms 超のフレームのみ出力してノイズを抑制する。
-        // SEED_PHYS_LOG 有効時は 2ms 超を、無効でも 15ms 超のスパイクは常時出力する
-        // （env 未設定でもスパイク原因を捕捉するため。スパイクは稀なのでパイプは詰まらない）。
-        let total_us = t_start.elapsed().as_micros();
-        let threshold_us = if *PHYS_LOG_ENABLED { 2_000 } else { 15_000 };
-        if total_us >= threshold_us {
-            eprintln!(
-                "[Physics2D] {}update total={:.2}ms (ctx_build={:.2}ms, rest={:.2}ms | recv={:.2}) contexts={}",
-                if total_us >= 15_000 { "SLOW " } else { "" },
-                total_us as f64 / 1000.0,
-                ctx_build_us as f64 / 1000.0,
-                (total_us.saturating_sub(ctx_build_us)) as f64 / 1000.0,
-                recv_ms,
-                contexts.len(),
-            );
         }
     }
 }
