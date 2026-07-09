@@ -55,6 +55,7 @@ impl App {
                 // される（any_move_key が真のため）」という不具合になる。
                 IpcCommand::CamKeysClear       => self.cam_input.clear_keys(),
                 IpcCommand::SetToolMode(m)     => self.tool_mode = m,
+                IpcCommand::SetGizmoSpace(s)   => self.gizmo_space = s,
                 IpcCommand::PlayClamp(v)       => {
                     self.play_clamp = v;
                     if !v { release_window_clamp(); }
@@ -174,8 +175,8 @@ impl App {
                         self.send_actor_components(idx as u32, self.actor_virtual_selected_slot_idx);
                     }
                 }
-                IpcCommand::Reparent { child, new_parent } => {
-                    self.handle_reparent_actor(child, new_parent);
+                IpcCommand::Reparent { child, new_parent, anchor_sibling, place_before } => {
+                    self.handle_reparent_actor(child, new_parent, anchor_sibling, place_before);
                 }
                 IpcCommand::Rename { idx, name } => {
                     if let Some(scene) = &mut self.scene {
@@ -474,6 +475,13 @@ impl App {
                         } else {
                             super::EditViewMode::View3D
                         };
+                        // ── タブ切替フック（物理状態のタブごと保持）─────────────
+                        // ビュータブ（3Dシーン / 2Dシーン）が実際に切り替わる場合のみ、
+                        // 現タブの物理状態（スナップショット・速度）を退避する。
+                        // 同タブ再送（new_mode == 現 edit_view_mode）は物理に一切触れない。
+                        // leave は edit_view_mode 更新前に呼ぶ（current_tab_key が旧タブを指すため）。
+                        let tab_changed = new_mode != self.edit_view_mode;
+                        if tab_changed { self.leave_current_tab_physics(); }
                         // ビューモードが実際に変わる場合は選択状態をリセットする。
                         // ワールド / ビューポートタブを直接切り替えたとき、旧ビューで
                         // 選択していたアクターのギズモが新ビューに残留するのを防ぐ。
@@ -507,6 +515,10 @@ impl App {
                                 ortho_half_h: half_h,
                             });
                         }
+                        // 移動先タブの物理状態を復元する（edit_view_mode 更新後に呼ぶ）。
+                        // 保存済みなら続き（位置＋速度）から一時停止状態で復帰し、
+                        // 未保存なら現状態を初期フレームとして新規初期化する。
+                        if tab_changed { self.enter_tab_physics(); }
                     }
                 }
                 IpcCommand::SetEditorCameraOrtho(v) => {
@@ -581,6 +593,15 @@ impl App {
                             self.sync_anim_seeds();
                             self.send_selected();
                             self.send_hierarchy();
+                            // 全 world_line を作り直して Entity が再生成されるため、
+                            // タブごとに退避していた物理状態（旧 Entity キー）はすべて破棄する。
+                            // 破棄しないと、別タブ復帰時に旧 Entity のスナップショット・速度で
+                            // ECS を誤って上書きしてしまう。
+                            self.tab_physics.clear();
+                            self.current_vel_cache_3d.clear();
+                            self.current_vel_cache_2d.clear();
+                            self.pending_restore_vel_3d = None;
+                            self.pending_restore_vel_2d = None;
                             // 物理タイムラインをリセットしてシーンロード後の初期状態に戻す
                             self.reset_physics_timeline();
                             // 有効な物理スレッドをシーン初期状態で再起動する
@@ -699,6 +720,12 @@ impl App {
                     self.handle_edit_canvas_end(wl);
                 }
                 IpcCommand::SetActiveWorldLine(wl) => {
+                    // ── タブ切替フック（物理状態のタブごと保持）─────────────
+                    // 別の world_line（アクター編集タブ/シーン）へ移る場合のみ、
+                    // 現タブの物理状態を退避する。同一 wl 再送は物理に触れない。
+                    // leave は active_world_line 差し替え前に呼ぶ（旧タブを指すため）。
+                    let tab_changed = self.active_world_line != wl;
+                    if tab_changed { self.leave_current_tab_physics(); }
                     // 現在の世界線のカメラを退避
                     let pos = self.camera.base.transform.position;
                     self.saved_cameras.insert(self.active_world_line, DebugCameraData {
@@ -730,6 +757,8 @@ impl App {
                         let (pos, euler_x, euler_y, euler_z, fov, far, spd) = self.cam_state_tuple();
                         ipc.send(&format!("CAM_STATE:{pos},{euler_x},{euler_y},{euler_z},{fov},{far},{spd}"));
                     }
+                    // 移動先タブの物理状態を復元する（active_world_line 差し替え後に呼ぶ）。
+                    if tab_changed { self.enter_tab_physics(); }
                 }
                 IpcCommand::RemoveWorldLine(wl) => {
                     if let Some(scene) = &mut self.scene {
@@ -1020,6 +1049,47 @@ impl App {
                         self.active_collision_dfs_ids.clear();
                         // タイムラインをリセットする
                         self.reset_physics_timeline();
+                    }
+                }
+
+                // ── 編集時物理シミュレーション（2D/3D 統合）────────────────────
+                // エディタの単一チェックボックスから届く統合コマンド。
+                // 3D と 2D の有効／RigidBody を常に同値でミラーし、タイムラインは
+                // 3D・2D 共通の 1 本として扱う（タブごと状態保持と組み合わせて使う）。
+                IpcCommand::SetEditPhysicsAll { enabled, with_rigidbody } => {
+                    // Play モードでは無視する（Play 起動時の再同期による誤停止を防ぐ）
+                    if self.mode != RuntimeMode::Edit { continue; }
+                    // 3D・2D の設定を同値で更新する
+                    self.edit_physics_enabled           = enabled;
+                    self.edit_physics_with_rigidbody    = with_rigidbody;
+                    self.edit_physics_2d_enabled        = enabled;
+                    self.edit_physics_2d_with_rigidbody = with_rigidbody;
+                    if enabled {
+                        // 既存スレッドを停止し、初速なしで 3D・2D を再起動する
+                        self.stop_physics();
+                        self.stop_physics_2d();
+                        self.start_physics();
+                        self.start_physics_2d();
+                        if self.is_edit_physics_pushback_mode() {
+                            // RigidBody 無効: 常時押し戻しモード（Pause せず走らせ続ける）
+                            self.enter_edit_physics_pushback();
+                        } else {
+                            // RigidBody 有効: タイムラインを初期化（フレーム0記録・Pause 送信）
+                            self.init_physics_timeline();
+                        }
+                    } else {
+                        self.stop_physics();
+                        self.stop_physics_2d();
+                        // 無効化時は衝突中 ID セットをクリアして描画色をリセットする
+                        self.active_collision_dfs_ids.clear();
+                        self.active_collision_2d_dfs_ids.clear();
+                        self.reset_physics_timeline();
+                        // 退避済みのタブ物理状態も破棄する（次回有効化はクリーンな初期状態から）。
+                        // 破棄しないと、無効化を跨いだ古いスナップショット・速度で
+                        // 別タブ復帰時に ECS を誤って上書きしてしまう。
+                        self.tab_physics.clear();
+                        self.current_vel_cache_3d.clear();
+                        self.current_vel_cache_2d.clear();
                     }
                 }
 

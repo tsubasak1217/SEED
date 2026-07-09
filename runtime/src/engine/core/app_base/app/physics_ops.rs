@@ -83,8 +83,13 @@ impl App {
 
         let thread = PhysicsThread::spawn();
 
-        // シーン内の全 Actor を走査して ColliderComponent を持つものを収集・登録する
-        let objects = collect_physics_objects(scene, self.active_world_line, force_kinematic);
+        // シーン内の全 Actor を走査して ColliderComponent を持つものを収集・登録する。
+        // タブ復帰時（pending_restore_vel_3d が Some）は該当 Entity の初速を上書きして
+        // 「続き」の速度で再開する。それ以外の呼び出しでは None なので初速なし。
+        let objects = collect_physics_objects(
+            scene, self.active_world_line, force_kinematic,
+            self.pending_restore_vel_3d.as_ref(),
+        );
         if *PHYS_LOG_ENABLED {
             eprintln!("[Physics] start_physics: {} objects collected (world_line={}, force_kinematic={})",
                 objects.len(), self.active_world_line, force_kinematic);
@@ -353,6 +358,23 @@ impl App {
             // 収束停止判定用に、全 Dynamic ボディの最大速度を退避する。
             // タイムライン（stop 判定）が「実際に静止したか」を速度で確認するために使う。
             self.store_edit_physics_rest_speeds_3d(result.max_linear_speed, result.max_angular_speed);
+
+            // ⑥ タブ退避用の速度キャッシュを丸ごと更新する。
+            // DFS entity_id → ECS Entity 変換をこの 1 箇所（結果受信時）に閉じ込め、
+            // 以降のキャッシュ／退避／復元はすべて安定な ECS Entity をキーにする。
+            // ドラッグ中エンティティ（kinematic 化・速度≈0）はスキップする。
+            if let Some(scene) = &self.scene {
+                let dfs_to_entity = build_dfs_entity_map_3d(scene, self.active_world_line);
+                let drag = self.dragging_physics_entity_id;
+                let mut cache = std::collections::HashMap::new();
+                for (dfs_id, lin, ang) in &result.body_velocities {
+                    if Some(*dfs_id) == drag { continue; }
+                    if let Some(&ent) = dfs_to_entity.get(dfs_id) {
+                        cache.insert(ent, (*lin, *ang));
+                    }
+                }
+                self.current_vel_cache_3d = cache;
+            }
         }
 
         // ④ Kinematic Actor の Transform を物理スレッドへ送信する
@@ -468,13 +490,45 @@ impl App {
 
 // ─── シーン走査ユーティリティ ────────────────────────────────────────────────
 
+/// DFS entity_id（1 始まり）→ ECS Entity の対応表を構築する。
+///
+/// collect_physics_objects / apply_physics_transform と同一の DFS 順（非アクティブ
+/// アクターも含めてカウンタを進める）で走査するため、物理スレッドが返す entity_id を
+/// そのまま安定な ECS Entity へ変換できる。速度キャッシュの取り違え防止に使う。
+fn build_dfs_entity_map_3d(
+    scene:      &Scene,
+    world_line: u32,
+) -> std::collections::HashMap<u64, crate::engine::ecs::Entity> {
+    let mut map = std::collections::HashMap::new();
+    let mut dfs_counter = 0u32;
+    let mut stack: Vec<&Actor> = scene.actors.iter()
+        .filter(|a| a.world_line == world_line)
+        .rev()
+        .collect();
+    while let Some(actor) = stack.pop() {
+        dfs_counter += 1;
+        for child in actor.children.iter().rev() { stack.push(child); }
+        map.insert(dfs_counter as u64, actor.entity);
+    }
+    map
+}
+
 /// シーン内の全 Actor を DFS 順に走査して PhysicsObject リストを生成する。
 ///
 /// entity_id は DFS カウンタ（1 始まり）で、apply_physics_transform と同一の順序を保つ。
 ///
 /// `force_kinematic`: true の場合、use_rigidbody=true であっても全ボディを kinematic にする。
 /// 編集時コライダーのみモードで使用する（衝突検出のみ・Transform 更新なし）。
-fn collect_physics_objects(scene: &Scene, world_line: u32, force_kinematic: bool) -> Vec<PhysicsObject> {
+///
+/// `vel_override`: Some のとき、走査中のアクター（`actor.entity`）がマップに存在すれば
+/// RigidBody 生成時の初速（linear/angular velocity）をその値で上書きする。
+/// タブ復帰時に「続き」の速度でシミュレーションを再開するために使う。None なら初速なし。
+fn collect_physics_objects(
+    scene:        &Scene,
+    world_line:   u32,
+    force_kinematic: bool,
+    vel_override: Option<&std::collections::HashMap<crate::engine::ecs::Entity, ([f32; 3], [f32; 3])>>,
+) -> Vec<PhysicsObject> {
     let mut objects      = Vec::new();
     let mut dfs_counter  = 0u32;
 
@@ -516,6 +570,14 @@ fn collect_physics_objects(scene: &Scene, world_line: u32, force_kinematic: bool
             // force_kinematic 時は動的ボディを kinematic に変換する
             if force_kinematic {
                 rb.is_kinematic = true;
+            }
+            // タブ復帰時の初速上書き（Entity をキーに退避速度を積む）。
+            // kinematic 時は速度が無視されるため実質 Dynamic ボディのみ有効。
+            if let Some(map) = vel_override {
+                if let Some((lin, ang)) = map.get(&actor.entity) {
+                    rb.linear_velocity  = *lin;
+                    rb.angular_velocity = *ang;
+                }
             }
             Some(rb)
         } else {

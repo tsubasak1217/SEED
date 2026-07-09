@@ -173,6 +173,27 @@ pub enum PhysicsCommand2d {
     Pause,
     /// 物理シミュレーションを再開する（Pause の解除）。
     Resume,
+    /// 指定ボディが「提案位置」で他の非 Dynamic・非センサーコライダーと
+    /// 許容値を超えて重なる（めり込む）かを判定し、結果を reply チャンネルへ返す
+    /// （同期問い合わせ）。3D 版 `PhysicsCommand::CheckKinematicOverlap` と同じ意味。
+    ///
+    /// 編集時のドラッグ押し戻し（トンネリング防止）に使用する。メインスレッドは
+    /// ギズモが動かした「今フレームの提案位置そのもの」を毎フレーム検証できるため、
+    /// 非同期な結果ストリーム（recv_latest）に依存した判定で生じる取りこぼしが
+    /// 構造的に発生しない。
+    ///
+    /// Dynamic ボディとの重なりは対象外（RigidBody 有効モードでは kinematic の
+    /// ドラッグボディが Dynamic を押しのけるため、一時的な重なりは正常）。
+    CheckKinematicOverlap2d {
+        /// 判定対象のボディ（ドラッグ中のオブジェクト）
+        entity_id: u64,
+        /// 提案ワールド位置 [x, y]（メートル）
+        position:  [f32; 2],
+        /// 提案回転角度（ラジアン）
+        rotation:  f32,
+        /// 結果送信チャンネル（true = めり込みあり＝押し戻しが必要）
+        reply:     crossbeam_channel::Sender<bool>,
+    },
     /// スレッドを停止する
     Stop,
 }
@@ -195,6 +216,10 @@ pub struct PhysicsResult2d {
     pub max_linear_speed:  f32,
     /// 全 Dynamic ボディの角速度の最大の大きさ（rad/s）。
     pub max_angular_speed: f32,
+    /// 全 Dynamic ボディの現在速度: (entity_id, linvel [x,y], angvel スカラー)。
+    /// タブごとの物理状態退避（続きから再開）で唯一失われる「速度」を復元するために使う。
+    /// entity_id は DFS 順識別 ID（メインスレッド側で ECS Entity へ変換する）。
+    pub body_velocities:   Vec<(u64, [f32; 2], f32)>,
 }
 
 // ─── 衝突イベント ────────────────────────────────────────────────────────────

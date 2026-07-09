@@ -130,6 +130,52 @@ public partial class MainWindow
         SetEditorCam2D(ChkEditorCamOrtho.IsChecked == true);
     }
 
+    // ── ギズモ座標系（World / Local）トグル ────────────────────────
+
+    /// <summary>
+    /// ギズモ（移動/回転/スケール）の座標系が Local（選択アクターのローカル軸）なら true。
+    /// デフォルトは false（World＝ワールド軸整列、従来の挙動）。
+    /// ギズモの真の状態はランタイム（Rust 側 App::gizmo_space）が保持するため、
+    /// この変数はあくまで UI 表示・IPC 送信トリガー用のミラーである。
+    /// </summary>
+    private bool _gizmoLocalSpace = false;
+
+    /// <summary>
+    /// ギズモ座標系を設定し、ランタイムへ GIZMO_SPACE:WORLD / GIZMO_SPACE:LOCAL を送信する。
+    /// タブバーの World/Local トグルボタンから呼ばれる。
+    /// </summary>
+    private void SetGizmoSpace(bool local)
+    {
+        _gizmoLocalSpace = local;
+        _runtimeManager?.SendToRuntime(local ? "GIZMO_SPACE:LOCAL" : "GIZMO_SPACE:WORLD");
+        UpdateGizmoSpaceToggleVisual();
+    }
+
+    /// <summary>タブバー「World/Local」ボタンの見た目・ラベルをトグル状態に合わせて更新する。</summary>
+    private void UpdateGizmoSpaceToggleVisual()
+    {
+        if (BtnGizmoSpaceToggle == null) return;
+        if (_gizmoLocalSpace)
+        {
+            // アクティブ（Local）: Btn2DCamToggle と同じオレンジで強調する
+            BtnGizmoSpaceToggle.Content     = "Local";
+            BtnGizmoSpaceToggle.Background  = new SolidColorBrush(Color.FromRgb(0xE8, 0x78, 0x20));
+            BtnGizmoSpaceToggle.BorderBrush = new SolidColorBrush(Color.FromRgb(0xE8, 0x78, 0x20));
+            BtnGizmoSpaceToggle.Foreground  = Brushes.White;
+        }
+        else
+        {
+            BtnGizmoSpaceToggle.Content     = "World";
+            BtnGizmoSpaceToggle.Background  = new SolidColorBrush(Color.FromRgb(0x3A, 0x3A, 0x3A));
+            BtnGizmoSpaceToggle.BorderBrush = new SolidColorBrush(Color.FromRgb(0x55, 0x55, 0x55));
+            BtnGizmoSpaceToggle.Foreground  = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC));
+        }
+    }
+
+    /// <summary>タブバー「World/Local」ボタン: 押すたびに World⇄Local をトグルする。</summary>
+    private void OnGizmoSpaceToggleClicked(object sender, RoutedEventArgs e)
+        => SetGizmoSpace(!_gizmoLocalSpace);
+
     /// キャンバス表示モード切り替え（スクリーンスペース / ワールドスペース）
     private void OnCanvasScreenSpaceChanged(object sender, RoutedEventArgs e)
     {
@@ -319,10 +365,12 @@ public partial class MainWindow
             // 「RMB 押下だけでカメラが移動」「軸スナップが即キャンセル」になるため、
             // Edit 復帰・再同期のたびにクリーンな状態から始める。
             _runtimeManager?.SendToRuntime("CAM_KEYS_CLEAR");
+            // 編集時物理は 2D/3D 統合コマンド 1 本で再同期する（2D/3D 常に同値）。
             _runtimeManager?.SendToRuntime(
-                $"SET_EDIT_PHYSICS:{(_editPhysicsEnabled ? 1 : 0)},{(_editPhysicsWithRigidbody ? 1 : 0)}");
-            _runtimeManager?.SendToRuntime(
-                $"SET_EDIT_PHYSICS_2D:{(_editPhysics2dEnabled ? 1 : 0)},{(_editPhysics2dWithRigidbody ? 1 : 0)}");
+                $"SET_EDIT_PHYSICS_ALL:{(_editPhysicsEnabled ? 1 : 0)},{(_editPhysicsWithRigidbody ? 1 : 0)}");
+            // ギズモ座標系（World/Local）もランタイム再接続時に再同期する
+            // （ランタイム側は新規プロセスごとに GizmoSpace::World で初期化されるため）。
+            _runtimeManager?.SendToRuntime(_gizmoLocalSpace ? "GIZMO_SPACE:LOCAL" : "GIZMO_SPACE:WORLD");
         }
         // コライダー描画は Play/Edit 両方で送信する
         _runtimeManager?.SendToRuntime($"SET_PLAY_COLLIDER_DRAW:{(_playColliderDraw ? 1 : 0)}");

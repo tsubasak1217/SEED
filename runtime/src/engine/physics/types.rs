@@ -231,6 +231,10 @@ pub struct PhysicsResult {
     pub max_linear_speed:  f32,
     /// 全 Dynamic ボディの角速度の最大の大きさ（rad/s）。
     pub max_angular_speed: f32,
+    /// 全 Dynamic ボディの現在速度: (entity_id, linvel [x,y,z], angvel [x,y,z])。
+    /// タブごとの物理状態退避（続きから再開）で唯一失われる「速度」を復元するために使う。
+    /// entity_id は DFS 順識別 ID（メインスレッド側で ECS Entity へ変換する）。
+    pub body_velocities:   Vec<(u64, [f32; 3], [f32; 3])>,
 }
 
 // ─── 衝突イベント ────────────────────────────────────────────────────────────

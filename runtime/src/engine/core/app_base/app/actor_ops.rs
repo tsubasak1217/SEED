@@ -429,9 +429,19 @@ impl App {
 
     /// アクター編集モードでアクターツリーのペアレント関係を変更する。
     ///
-    /// child_dfs / new_parent_dfs は変更前のアクターツリー上の DFS id。
+    /// child_dfs / new_parent_dfs / anchor_sibling_dfs は変更前のアクターツリー上の DFS id。
     /// 実際にアクターを取り出して新しい親の下へ移動するため、ドラッグ追跡が正しく機能するようになる。
-    pub(super) fn handle_reparent_actor(&mut self, child_dfs: u32, new_parent_dfs: Option<u32>) {
+    ///
+    /// anchor_sibling_dfs が Some の場合、そのアクターを基準に place_before に応じて
+    /// 直前／直後へ挿入する（ヒエラルキーパネルでのドラッグ&ドロップ並べ替え用）。
+    /// None または見つからない場合は従来どおり新しい親の末尾へ追加する。
+    pub(super) fn handle_reparent_actor(
+        &mut self,
+        child_dfs: u32,
+        new_parent_dfs: Option<u32>,
+        anchor_sibling_dfs: Option<u32>,
+        place_before: bool,
+    ) {
         let wl = self.active_world_line;
         let Some(_scene) = &self.scene else { return };
 
@@ -439,6 +449,14 @@ impl App {
 
         {
             let scene = self.scene.as_mut().unwrap();
+
+            // アンカー兄弟の Entity を取り出し前に控えておく。
+            // Entity は世代付きで安定なため、child 取り出しに伴う DFS id ズレの影響を受けずに
+            // 挿入位置を特定できる（DFS id ベースの補正よりも堅牢）。
+            let anchor_entity = anchor_sibling_dfs.and_then(|adfs| {
+                let mut c = 0u32;
+                find_actor_by_dfs(&scene.actors, wl, adfs, &mut c).map(|a| a.entity)
+            });
 
             // child のサブツリーサイズを先に算出する（取り出し後の DFS 補正に使う）
             let child_subtree_size = {
@@ -462,17 +480,29 @@ impl App {
                 if child_dfs < pid { pid - child_subtree_size } else { pid }
             });
 
+            // 挿入先の兄弟リストへ、アンカー（entity 一致）を基準に挿入する。
+            // アンカーが指定されていない・見つからない場合は末尾へ追加する（従来動作）。
+            let insert_with_anchor = |siblings: &mut Vec<Actor>, actor: Actor| {
+                if let Some(ae) = anchor_entity {
+                    if let Some(pos) = siblings.iter().position(|a| a.entity == ae) {
+                        siblings.insert(if place_before { pos } else { pos + 1 }, actor);
+                        return;
+                    }
+                }
+                siblings.push(actor);
+            };
+
             // 新しい親へ挿入する（None の場合はルートへ追加）
             if let Some(pid) = adjusted_parent_dfs {
                 let mut c2 = 0u32;
                 if let Some(parent) = find_actor_by_dfs_mut(&mut scene.actors, wl, pid, &mut c2) {
-                    parent.add_child(child_actor);
+                    insert_with_anchor(parent.children_mut(), child_actor);
                 } else {
                     // 親が見つからない場合はルートへフォールバック
                     scene.actors.push(child_actor);
                 }
             } else {
-                scene.actors.push(child_actor);
+                insert_with_anchor(&mut scene.actors, child_actor);
             }
         }
 

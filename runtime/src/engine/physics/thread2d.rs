@@ -41,6 +41,14 @@ const MAX_DRAG_LINEAR_SPEED_2D: Real = 5.0;
 /// スムーズドラッグ中の kinematic ボディが目標へ追従する最大角速度（rad/s）。
 const MAX_DRAG_ANGULAR_SPEED_2D: Real = 6.0;
 
+// ─── ドラッグ押し戻し用オーバーラップ判定定数（2D）───────────────────────────
+// 3D 版 thread.rs の DRAG_OVERLAP_PENETRATION_TOLERANCE と同じ意味・同じ値。
+// Rapier のソルバーが許容する静止接触の残留侵入（既定 ≒1mm）より十分大きい深さを
+// 超えた場合のみ「めり込み」とみなし、水平ドラッグが常に押し戻される誤検出を防ぐ。
+
+/// ドラッグ押し戻し判定で「めり込み」とみなす侵入深さ（メートル）。
+const DRAG_OVERLAP_PENETRATION_TOLERANCE_2D: f32 = 0.005;
+
 // ─── PhysicsThread2d（公開 API）──────────────────────────────────────────────
 
 /// Rapier 2D 物理シミュレーションを実行するバックグラウンドスレッドのハンドル。
@@ -144,6 +152,9 @@ fn run_physics_loop_2d(
     let mut impulse_joint_set   = ImpulseJointSet::new();
     let mut multibody_joint_set = MultibodyJointSet::new();
     let mut ccd_solver          = CCDSolver::new();
+    // ドラッグ押し戻し用の同期オーバーラップ問い合わせ（CheckKinematicOverlap2d）に使用する
+    // クエリパイプライン（step のたびに自動更新される。3D 版 thread.rs と同じ仕組み）
+    let mut query_pipeline      = QueryPipeline::new();
 
     // 重力ベクトル（SetGravity コマンドで変更可能）
     let mut gravity = vector![DEFAULT_GRAVITY_2D[0], DEFAULT_GRAVITY_2D[1]];
@@ -187,6 +198,16 @@ fn run_physics_loop_2d(
                 Ok(PhysicsCommand2d::Resume) => {
                     paused = false;
                     next_step = Instant::now();
+                }
+                Ok(PhysicsCommand2d::CheckKinematicOverlap2d { entity_id, position, rotation, reply }) => {
+                    // 同期オーバーラップ問い合わせ（編集時ドラッグの押し戻し判定）。
+                    // Pause 中もコマンドドレインは回り続けるため必ず応答できる。
+                    let overlapping = check_kinematic_overlap_2d(
+                        &query_pipeline, &rigid_body_set, &collider_set,
+                        &entries, &trigger_set,
+                        entity_id, position, rotation,
+                    );
+                    let _ = reply.send(overlapping);
                 }
                 Ok(cmd) => handle_command_2d(
                     cmd,
@@ -233,7 +254,7 @@ fn run_physics_loop_2d(
             &mut impulse_joint_set,
             &mut multibody_joint_set,
             &mut ccd_solver,
-            None,
+            Some(&mut query_pipeline), // ドラッグ押し戻しの同期オーバーラップ問い合わせ用に毎ステップ更新する
             &(),
             &event_handler,
         );
@@ -311,6 +332,72 @@ fn step_isometry_toward_2d(
     Isometry::from_parts(Translation::from(new_trans), new_rot)
 }
 
+// ─── ドラッグ押し戻し用オーバーラップ判定（2D）───────────────────────────────
+
+/// 指定ボディを「提案位置」へ置いた場合に、他の非 Dynamic・非センサーコライダーと
+/// 許容値を超えて交差する（めり込む）かを判定する（3D 版 thread.rs の
+/// `check_kinematic_overlap` を 2D（Isometry2, スカラー角度, 2D shape）へ翻訳したもの）。
+///
+/// CheckKinematicOverlap2d コマンド（編集時ドラッグの押し戻し）用。
+///
+/// - 自分自身のコライダーは除外する。
+/// - センサー（トリガー）は応答なしのため除外する。自身がトリガーの場合も対象外。
+/// - Dynamic ボディは除外する: RigidBody 有効モードではドラッグ中の kinematic ボディが
+///   Dynamic を押しのける（Rapier の kinematic→dynamic 相互作用に任せる）ため、
+///   Dynamic との一時的な重なりは押し戻し対象にしない。
+/// - broad phase 候補は query_pipeline（step のたびに更新済み）で絞り込み、
+///   parry の contact クエリで正確な侵入深さを計測して許容値と比較する。
+fn check_kinematic_overlap_2d(
+    query_pipeline: &QueryPipeline,
+    rb_set:         &RigidBodySet,
+    col_set:        &ColliderSet,
+    entries:        &HashMap<u64, PhysicsEntry2d>,
+    trigger_set:    &HashSet<u64>,
+    entity_id:      u64,
+    position:       [f32; 2],
+    rotation:       f32,
+) -> bool {
+    // トリガー（センサー）自身のドラッグは押し戻し対象外
+    if trigger_set.contains(&entity_id) { return false; }
+    let Some(entry)   = entries.get(&entity_id) else { return false };
+    let Some(own_col) = col_set.get(entry.col_handle) else { return false };
+
+    // 提案位置でのコライダーポーズ = アクターワールド姿勢 × ローカルオフセット
+    let own_shape  = own_col.shared_shape().clone();
+    let o          = entry.col_offset;
+    let offset_iso = Isometry::translation(o[0], o[1]);
+    let pose       = to_isometry_2d(position, rotation) * offset_iso;
+
+    // 自分自身・センサー・Dynamic ボディを候補から除外する
+    let filter = QueryFilter {
+        flags: QueryFilterFlags::EXCLUDE_SENSORS | QueryFilterFlags::EXCLUDE_DYNAMIC,
+        exclude_collider: Some(entry.col_handle),
+        ..QueryFilter::default()
+    };
+
+    // 交差候補ごとに侵入深さを計測し、許容値を超えたら押し戻しが必要と判定する
+    let mut blocking = false;
+    query_pipeline.intersections_with_shape(
+        rb_set, col_set, &pose, &*own_shape, filter,
+        |other_handle| {
+            if let Some(other) = col_set.get(other_handle) {
+                // parry の contact クエリ（prediction=0: 交差時のみ Some）で深さを取得する。
+                // dist が負 = 侵入。許容値（静止接触の残留侵入ぶん）を超えたらブロッキング。
+                if let Ok(Some(contact)) = rapier2d::parry::query::contact(
+                    &pose, &*own_shape, other.position(), other.shape(), 0.0,
+                ) {
+                    if contact.dist < -DRAG_OVERLAP_PENETRATION_TOLERANCE_2D {
+                        blocking = true;
+                        return false; // 探索を打ち切る
+                    }
+                }
+            }
+            true // 次の候補へ
+        },
+    );
+    blocking
+}
+
 // ─── コマンド処理 ────────────────────────────────────────────────────────────
 
 /// Stop 以外の 2D コマンドを処理する。
@@ -334,6 +421,7 @@ fn handle_command_2d(
         PhysicsCommand2d::Stop   => { /* 呼び出し元で処理済み */ }
         PhysicsCommand2d::Pause  => { /* ループ側で処理済み */ }
         PhysicsCommand2d::Resume => { /* ループ側で処理済み */ }
+        PhysicsCommand2d::CheckKinematicOverlap2d { .. } => { /* ループ側（コマンドドレイン）で処理済み */ }
 
         PhysicsCommand2d::AddObject(obj) => {
             add_object_2d(obj, rb_set, col_set, entries, col_to_entity, trigger_set);
@@ -690,6 +778,8 @@ fn collect_results_2d(
     // ── Dynamic Rigidbody の Transform・速度取得 ─────────────────────────────
     // 収束停止判定用に、全 Dynamic ボディの並進・角速度の最大の大きさも集計する。
     let mut transform_updates = Vec::new();
+    // タブ退避（続きから再開）用に、全 Dynamic ボディの現在速度も収集する。
+    let mut body_velocities: Vec<(u64, [f32; 2], f32)> = Vec::new();
     let mut max_linear_speed:  f32 = 0.0;
     let mut max_angular_speed: f32 = 0.0;
     for (entity_id, entry) in entries.iter() {
@@ -709,8 +799,13 @@ fn collect_results_2d(
         ));
 
         // 速度の大きさ（静止判定に使用）。2D の角速度はスカラー。
-        max_linear_speed  = max_linear_speed.max(rb.linvel().norm());
-        max_angular_speed = max_angular_speed.max(rb.angvel().abs());
+        let linvel = rb.linvel();
+        let angvel = rb.angvel();
+        max_linear_speed  = max_linear_speed.max(linvel.norm());
+        max_angular_speed = max_angular_speed.max(angvel.abs());
+
+        // 現在速度そのもの（タブ復帰時の初速復元に使用）
+        body_velocities.push((*entity_id, [linvel.x, linvel.y], angvel));
     }
 
     // ── 衝突イベント処理 ─────────────────────────────────────────────────────
@@ -801,6 +896,7 @@ fn collect_results_2d(
         active_trigger_entity_ids,
         max_linear_speed,
         max_angular_speed,
+        body_velocities,
     }
 }
 

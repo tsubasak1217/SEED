@@ -882,6 +882,8 @@ fn collect_results(
     // ── Dynamic Rigidbody の Transform・速度取得 ─────────────────────────────
     // 収束停止判定用に、全 Dynamic ボディの並進・角速度の最大の大きさも集計する。
     let mut transform_updates = Vec::new();
+    // タブ退避（続きから再開）用に、全 Dynamic ボディの現在速度も収集する。
+    let mut body_velocities: Vec<(u64, [f32; 3], [f32; 3])> = Vec::new();
     let mut max_linear_speed:  f32 = 0.0;
     let mut max_angular_speed: f32 = 0.0;
     for (entity_id, entry) in entries.iter() {
@@ -895,8 +897,17 @@ fn collect_results(
         transform_updates.push((*entity_id, [pos.x, pos.y, pos.z], [rot.i, rot.j, rot.k, rot.w]));
 
         // 速度の大きさ（静止判定に使用）
-        max_linear_speed  = max_linear_speed.max(rb.linvel().norm());
-        max_angular_speed = max_angular_speed.max(rb.angvel().norm());
+        let linvel = rb.linvel();
+        let angvel = rb.angvel();
+        max_linear_speed  = max_linear_speed.max(linvel.norm());
+        max_angular_speed = max_angular_speed.max(angvel.norm());
+
+        // 現在速度そのもの（タブ復帰時の初速復元に使用）
+        body_velocities.push((
+            *entity_id,
+            [linvel.x, linvel.y, linvel.z],
+            [angvel.x, angvel.y, angvel.z],
+        ));
     }
 
     // ── 衝突イベント処理 ─────────────────────────────────────────────────────
@@ -991,6 +1002,7 @@ fn collect_results(
         transform_updates, collision_events, trigger_events,
         active_contact_entity_ids, active_trigger_entity_ids,
         max_linear_speed, max_angular_speed,
+        body_velocities,
     }
 }
 

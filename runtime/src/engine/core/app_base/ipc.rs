@@ -31,6 +31,24 @@ impl Default for ToolMode {
 }
 
 // ============================================================
+//  GizmoSpace — 移動/回転/スケールギズモの座標系モード
+// ============================================================
+
+/// ギズモが従う座標系。
+/// - World: ワールド軸（X/Y/Z）に整列した従来どおりのギズモ（デフォルト）。
+/// - Local: 選択中アクターのローカル回転軸に整列したギズモ。
+///   オブジェクトが回転していても、その場での「前後左右」に沿った直感的な操作ができる。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum GizmoSpace {
+    World,
+    Local,
+}
+
+impl Default for GizmoSpace {
+    fn default() -> Self { GizmoSpace::World }
+}
+
+// ============================================================
 //  IpcCommand — エディタから受け取るコマンド
 // ============================================================
 
@@ -50,6 +68,9 @@ pub enum IpcCommand {
     PlayClamp(bool),
     /// ツールモード切り替え
     SetToolMode(ToolMode),
+    /// ギズモ座標系モード切り替え（World / Local）
+    /// フォーマット: GIZMO_SPACE:WORLD / GIZMO_SPACE:LOCAL
+    SetGizmoSpace(GizmoSpace),
     /// Ctrl キー押下（エディタから転送）
     CtrlDown,
     /// Ctrl キー離し（エディタから転送）
@@ -64,8 +85,18 @@ pub enum IpcCommand {
     Delete(Vec<u32>),
     /// 指定インスタンスとその全子孫を削除
     DeleteRecursive(Vec<u32>),
-    /// 親子付け変更（new_parent=None はルートへ）
-    Reparent { child: u32, new_parent: Option<u32> },
+    /// 親子付け変更（new_parent=None はルートへ）。
+    ///
+    /// anchor_sibling: 挿入位置の基準となる兄弟アクターの DFS id（None = 末尾へ追加）。
+    /// place_before: true ならアンカーの直前、false ならアンカーの直後へ挿入する。
+    /// 旧 2 フィールド形式（IPC 上）との後方互換のため anchor_sibling/place_before は
+    /// 未指定時 None/false 扱いになる（＝従来どおり末尾追加）。
+    Reparent {
+        child:          u32,
+        new_parent:     Option<u32>,
+        anchor_sibling: Option<u32>,
+        place_before:   bool,
+    },
     /// インスタンス名変更
     Rename { idx: u32, name: String },
     /// シーンを指定パスへ保存
@@ -338,6 +369,12 @@ pub enum IpcCommand {
     /// フォーマット: SET_EDIT_PHYSICS:{enabled},{with_rigidbody}  (0=off, 1=on)
     SetEditPhysics { enabled: bool, with_rigidbody: bool },
 
+    /// 編集時の物理シミュレーション設定（2D/3D 統合）。
+    /// エディタの単一チェックボックスから届き、3D・2D を常に同値で設定する。
+    /// タイムラインは 3D・2D 共通の 1 本として扱う（タブごと状態保持と併用）。
+    /// フォーマット: SET_EDIT_PHYSICS_ALL:{enabled},{with_rigidbody}  (0=off, 1=on)
+    SetEditPhysicsAll { enabled: bool, with_rigidbody: bool },
+
     /// 実行時コライダー描画設定。
     /// Play モードでもコライダーワイヤーフレームを描画する。
     /// フォーマット: SET_PLAY_COLLIDER_DRAW:{0|1}
@@ -573,6 +610,8 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                         "TOOL:MOVE"    => Some(IpcCommand::SetToolMode(ToolMode::Move)),
                         "TOOL:ROTATE"  => Some(IpcCommand::SetToolMode(ToolMode::Rotate)),
                         "TOOL:SCALE"   => Some(IpcCommand::SetToolMode(ToolMode::Scale)),
+                        "GIZMO_SPACE:WORLD" => Some(IpcCommand::SetGizmoSpace(GizmoSpace::World)),
+                        "GIZMO_SPACE:LOCAL" => Some(IpcCommand::SetGizmoSpace(GizmoSpace::Local)),
                         "UNDO"         => Some(IpcCommand::Undo),
                         "REDO"         => Some(IpcCommand::Redo),
                         s if s.starts_with("SELECT:") => {
@@ -655,10 +694,24 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                             })
                         }
                         s if s.starts_with("REPARENT:") => {
-                            // フォーマット: REPARENT:{child},{parent|-1}
-                            parse1u_tail(&s["REPARENT:".len()..]).and_then(|(child, p)| {
-                                let new_parent = if p == "-1" { None } else { p.parse::<u32>().ok() };
-                                Some(IpcCommand::Reparent { child, new_parent })
+                            // フォーマット: REPARENT:{child},{parent|-1}[,{anchorSiblingId|-1},{placeBefore(0|1)}]
+                            // anchorSiblingId: 挿入位置の基準となる兄弟アクターの DFS id（-1 = 末尾追加）
+                            // placeBefore: 1 = アンカーの前に挿入 / 0 = アンカーの後に挿入
+                            // 後方互換: 旧 2 フィールド形式（parent のみ）も受理し、
+                            // anchor=-1, placeBefore=0（末尾追加）扱いにする
+                            parse1u_tail(&s["REPARENT:".len()..]).and_then(|(child, tail)| {
+                                let fields: Vec<&str> = tail.split(',').collect();
+                                let p = fields.first()?.trim();
+                                let new_parent = if p == "-1" { None } else { Some(p.parse::<u32>().ok()?) };
+                                let (anchor_sibling, place_before) = if fields.len() >= 3 {
+                                    let a: i64 = fields[1].trim().parse().ok()?;
+                                    let anchor = if a < 0 { None } else { Some(a as u32) };
+                                    let pb = fields[2].trim().parse::<u32>().ok()? == 1;
+                                    (anchor, pb)
+                                } else {
+                                    (None, false)
+                                };
+                                Some(IpcCommand::Reparent { child, new_parent, anchor_sibling, place_before })
                             })
                         }
                         s if s.starts_with("VIEWPORT_FOV:") => {
@@ -1287,6 +1340,18 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                             let rest = &s["EDIT_PHYSICS_SEEK:".len()..];
                             rest.trim().parse::<usize>().ok()
                                 .map(|frame| IpcCommand::EditPhysicsSeek { frame })
+                        }
+                        s if s.starts_with("SET_EDIT_PHYSICS_ALL:") => {
+                            // フォーマット: SET_EDIT_PHYSICS_ALL:{enabled},{with_rigidbody}  (0/1)
+                            let rest = &s["SET_EDIT_PHYSICS_ALL:".len()..];
+                            let mut it = rest.split(',');
+                            match (it.next(), it.next()) {
+                                (Some(e), Some(rb)) => Some(IpcCommand::SetEditPhysicsAll {
+                                    enabled:         e.trim() == "1",
+                                    with_rigidbody:  rb.trim() == "1",
+                                }),
+                                _ => None,
+                            }
                         }
                         s if s.starts_with("SET_EDIT_PHYSICS:") => {
                             // フォーマット: SET_EDIT_PHYSICS:{enabled},{with_rigidbody}  (0/1)

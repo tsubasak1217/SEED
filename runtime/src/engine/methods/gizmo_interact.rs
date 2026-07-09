@@ -43,8 +43,13 @@ pub struct GizmoDrag {
     pub plane_normal: [f32; 3],
     /// キャンバス座標系の X / Y / Z 軸（ワールド空間単位ベクトル）。
     /// None = ワールド軸揃え（通常の 3D / 2D ギズモ）。
-    /// Some([ax, ay, az]) = 3D Canvas 子アクター用向き付きギズモ。
+    /// Some([ax, ay, az]) = 3D Canvas 子アクター / Local 座標モード用向き付きギズモ。
     pub axes: Option<[[f32; 3]; 3]>,
+    /// axes が Some のとき、az 軸（法線）も含む全 3 軸ギズモかどうか。
+    /// - true  = Local 座標モードの通常 3D アクター（AxisZ・全平面ハンドル使用可）。
+    /// - false = 3D Canvas 子アクター（2 軸限定・Center ハンドルは ax/ay 面内のみスケール）。
+    /// axes が None のときは未使用（false のまま）。
+    pub full_axes: bool,
 }
 
 // ============================================================
@@ -277,7 +282,7 @@ pub fn start_drag(
         };
         (rp, [0.0f32; 3])
     };
-    GizmoDrag { part, tool, start_mat, gizmo_pos, radius, ref_point, plane_normal, axes: None }
+    GizmoDrag { part, tool, start_mat, gizmo_pos, radius, ref_point, plane_normal, axes: None, full_axes: false }
 }
 
 // ============================================================
@@ -295,7 +300,10 @@ pub fn update_drag(
     match drag.tool {
         ToolMode::Move => {
             let delta = if let Some([ax, ay, az]) = drag.axes {
-                // 3D Canvas 子アクター向け: canvas 座標系軸に沿った移動
+                // 向き付きギズモ（3D Canvas 子アクター / Local 座標モード）: ax/ay/az 軸に沿った移動。
+                // 3D Canvas 子は hit_test_gizmo_canvas が AxisZ・XZ/YZ 平面を除外するため
+                // 実際には出現しないが、Local モードの通常アクターは全軸・全平面を使うため
+                // ワールド軸版と対称に全パーツを扱う。
                 match drag.part {
                     GizmoPart::AxisX => {
                         let curr = closest_on_axis(gp, ax, ray_o, ray_d);
@@ -307,9 +315,26 @@ pub fn update_drag(
                         let proj = dot3(sub3(curr, drag.ref_point), ay);
                         scale3(ay, proj)
                     }
+                    GizmoPart::AxisZ => {
+                        let curr = closest_on_axis(gp, az, ray_o, ray_d);
+                        let proj = dot3(sub3(curr, drag.ref_point), az);
+                        scale3(az, proj)
+                    }
                     GizmoPart::PlaneXY => {
-                        // canvas 平面（法線 = az）上での移動
+                        // canvas/ローカル XY 平面（法線 = az）上での移動
                         if let Some(p) = ray_plane_hit(ray_o, ray_d, gp, az) {
+                            sub3(p, drag.ref_point)
+                        } else { [0.0; 3] }
+                    }
+                    GizmoPart::PlaneXZ => {
+                        // ローカル XZ 平面（法線 = ay）上での移動
+                        if let Some(p) = ray_plane_hit(ray_o, ray_d, gp, ay) {
+                            sub3(p, drag.ref_point)
+                        } else { [0.0; 3] }
+                    }
+                    GizmoPart::PlaneYZ => {
+                        // ローカル YZ 平面（法線 = ax）上での移動
+                        if let Some(p) = ray_plane_hit(ray_o, ray_d, gp, ax) {
                             sub3(p, drag.ref_point)
                         } else { [0.0; 3] }
                     }
@@ -319,7 +344,6 @@ pub fn update_drag(
                             sub3(p, drag.ref_point)
                         } else { [0.0; 3] }
                     }
-                    _ => [0.0; 3],
                 }
             } else {
                 // 通常ワールド軸
@@ -369,22 +393,54 @@ pub fn update_drag(
                 for r in 0..3 { mat[r][col] = drag.start_mat[r][col] * factor; }
             };
             if let Some([ax, ay, az]) = drag.axes {
-                // 3D Canvas 子アクター向け: canvas 軸に沿ったスケール
+                // 向き付きギズモ（3D Canvas 子アクター / Local 座標モード）: ax/ay/az は
+                // ワールド軸と一致しない任意方向を向きうるため、apply_col（列インデックスへの
+                // 直接上書き）は使えない。外積による正規直交基底スケール
+                //   S = fx*(ax⊗ax) + fy*(ay⊗ay) + fz*(az⊗az)
+                // を線形 3x3 部分へ直接構築する（スケールしない軸の係数は 1.0）。
+                let apply_oriented = |mat: &mut [[f32;4];4], fx: f32, fy: f32, fz: f32| {
+                    for r in 0..3 {
+                        for c in 0..3 {
+                            mat[r][c] = fx*ax[r]*ax[c] + fy*ay[r]*ay[c] + fz*az[r]*az[c];
+                        }
+                    }
+                };
                 match drag.part {
                     GizmoPart::AxisX => {
                         let curr = closest_on_axis(gp, ax, ray_o, ray_d);
                         let f = scale_factor_axis(drag.ref_point, curr, ax, gp);
-                        apply_col(&mut mat, 0, f);
+                        apply_oriented(&mut mat, f, 1.0, 1.0);
                     }
                     GizmoPart::AxisY => {
                         let curr = closest_on_axis(gp, ay, ray_o, ray_d);
                         let f = scale_factor_axis(drag.ref_point, curr, ay, gp);
-                        apply_col(&mut mat, 1, f);
+                        apply_oriented(&mut mat, 1.0, f, 1.0);
+                    }
+                    GizmoPart::AxisZ => {
+                        // full_axes（Local モード）のみ到達する。3D Canvas 子は
+                        // hit_test_gizmo_canvas が AxisZ を除外するためここには来ない。
+                        let curr = closest_on_axis(gp, az, ray_o, ray_d);
+                        let f = scale_factor_axis(drag.ref_point, curr, az, gp);
+                        apply_oriented(&mut mat, 1.0, 1.0, f);
                     }
                     GizmoPart::PlaneXY => {
                         if let Some(p) = ray_plane_hit(ray_o, ray_d, gp, az) {
                             let f = plane_scale_factor(drag.ref_point, p, gp);
-                            apply_col(&mut mat, 0, f); apply_col(&mut mat, 1, f);
+                            apply_oriented(&mut mat, f, f, 1.0);
+                        }
+                    }
+                    GizmoPart::PlaneXZ => {
+                        // full_axes（Local モード）のみ到達する
+                        if let Some(p) = ray_plane_hit(ray_o, ray_d, gp, ay) {
+                            let f = plane_scale_factor(drag.ref_point, p, gp);
+                            apply_oriented(&mut mat, f, 1.0, f);
+                        }
+                    }
+                    GizmoPart::PlaneYZ => {
+                        // full_axes（Local モード）のみ到達する
+                        if let Some(p) = ray_plane_hit(ray_o, ray_d, gp, ax) {
+                            let f = plane_scale_factor(drag.ref_point, p, gp);
+                            apply_oriented(&mut mat, 1.0, f, f);
                         }
                     }
                     GizmoPart::Center => {
@@ -393,11 +449,13 @@ pub fn update_drag(
                             let d_curr = len3(sub3(p, gp));
                             let d_ref  = len3(sub3(drag.ref_point, gp));
                             let f = (1.0 + (d_curr - d_ref) / drag.radius).max(0.05);
-                            apply_col(&mut mat, 0, f);
-                            apply_col(&mut mat, 1, f);
+                            // 3D Canvas 子（full_axes=false）は従来どおり ax/ay 面内のみ
+                            // 均等スケールし、法線（az）方向は変更しない。
+                            // Local モード（full_axes=true）は ax/ay/az 全軸を均等スケールする。
+                            let fz = if drag.full_axes { f } else { 1.0 };
+                            apply_oriented(&mut mat, f, f, fz);
                         }
                     }
-                    _ => {}
                 }
             } else {
                 match drag.part {
@@ -450,9 +508,13 @@ pub fn update_drag(
         }
 
         ToolMode::Rotate => {
-            // axes が Some の場合は AxisZ = canvas 法線周りの回転のみ許容する
-            let axis = if let Some([_, _, az]) = drag.axes {
+            // axes が Some の場合: 3D Canvas 子（full_axes=false）は AxisZ = canvas 法線
+            // 周りの回転のみ許容する（hit_test_gizmo_canvas が他パーツを除外済み）。
+            // Local 座標モード（full_axes=true）は ax/ay/az 全軸周りの回転を許容する。
+            let axis = if let Some([ax, ay, az]) = drag.axes {
                 match drag.part {
+                    GizmoPart::AxisX if drag.full_axes => ax,
+                    GizmoPart::AxisY if drag.full_axes => ay,
                     GizmoPart::AxisZ => az,
                     _ => return mat,
                 }
@@ -696,12 +758,40 @@ pub fn hit_test_gizmo_canvas(
     if valid { Some(part) } else { None }
 }
 
-/// 3D Canvas 子アクター向けのドラッグ開始状態を生成する。
+/// 向き付きギズモ（オブジェクトのローカル回転軸）向けの汎用ヒットテスト。
 ///
-/// レイをキャンバスローカル空間に変換してから start_drag を呼び出し、
+/// `hit_test_gizmo_canvas` と異なり、2D キャンバス用のパーツ制限（AxisZ・XZ/YZ 平面の除外）
+/// を行わない。gizmo_space = Local の通常 3D アクター向けに、全軸・全平面ハンドルを
+/// そのままローカル回転軸 [ax, ay, az] に沿ってヒットテストする。
+pub fn hit_test_gizmo_oriented(
+    ray_o:     [f32; 3],
+    ray_d:     [f32; 3],
+    gizmo_pos: [f32; 3],
+    radius:    f32,
+    tool:      ToolMode,
+    ax:        [f32; 3],
+    ay:        [f32; 3],
+    az:        [f32; 3],
+) -> Option<GizmoPart> {
+    // レイをローカル回転軸空間に変換する（gizmo_pos が原点）
+    let d = sub3(ray_o, gizmo_pos);
+    let local_o = [dot3(d, ax), dot3(d, ay), dot3(d, az)];
+    let local_d = [dot3(ray_d, ax), dot3(ray_d, ay), dot3(ray_d, az)];
+    hit_test_gizmo(local_o, local_d, [0.0, 0.0, 0.0], radius, tool)
+}
+
+/// 向き付きギズモ（3D Canvas 子アクター / Local 座標モード）向けのドラッグ開始状態を生成する。
+///
+/// レイを ax/ay/az ローカル空間に変換してから start_drag を呼び出し、
 /// ref_point と plane_normal をワールド空間に戻して GizmoDrag に格納する。
-/// `axes = Some([ax, ay, az])` が設定されるため update_drag が canvas 軸を使用する。
-pub fn start_drag_canvas(
+/// `axes = Some([ax, ay, az])` が設定されるため update_drag が向き付き軸を使用する。
+/// パーツの有効/無効フィルタは行わないため、3D Canvas 子（2D 平面限定）・
+/// Local 通常アクター（全軸）の両方から共通で使用できる。
+///
+/// `full_axes`: true = Local 座標モードの全 3 軸ギズモ（Center ハンドルは ax/ay/az 均等スケール）、
+/// false = 3D Canvas 子アクターの 2 軸限定ギズモ（Center ハンドルは ax/ay 面内のみスケール、
+/// 従来どおりの挙動を維持）。
+pub fn start_drag_oriented(
     part:      GizmoPart,
     tool:      ToolMode,
     ray_o:     [f32; 3],
@@ -712,15 +802,22 @@ pub fn start_drag_canvas(
     ax:        [f32; 3],
     ay:        [f32; 3],
     az:        [f32; 3],
+    full_axes: bool,
 ) -> GizmoDrag {
     // レイをキャンバスローカル空間に変換（gizmo_pos = 原点）
     let d = sub3(ray_o, gizmo_pos);
     let local_o = [dot3(d, ax), dot3(d, ay), dot3(d, az)];
     let local_d = [dot3(ray_d, ax), dot3(ray_d, ay), dot3(ray_d, az)];
     let local_drag = start_drag(part, tool, local_o, local_d, [0.0, 0.0, 0.0], radius, start_mat);
-    // ref_point をキャンバスローカル→ワールド空間に変換する
+    // ref_point をキャンバスローカル→ワールド空間に変換する。
+    // 【重要】Rotate の ref_point は start_drag 内で正規化済みの「方向ベクトル」であり
+    // 絶対座標ではない（update_drag の Rotate 分岐が dot3/cross3 で角度計算にそのまま使う）。
+    // Move/Scale/Center の ref_point は局所原点からのオフセット（絶対点）のため
+    // gizmo_pos を加算して世界座標へ戻す必要があるが、Rotate は方向のみを基底変換すればよく
+    // gizmo_pos を加算すると大きさ・原点がずれて角度計算が破綻する。
     let rp = local_drag.ref_point;
-    let ref_w = add3(add3(add3(scale3(ax, rp[0]), scale3(ay, rp[1])), scale3(az, rp[2])), gizmo_pos);
+    let rp_world_lin = add3(add3(scale3(ax, rp[0]), scale3(ay, rp[1])), scale3(az, rp[2]));
+    let ref_w = if tool == ToolMode::Rotate { rp_world_lin } else { add3(rp_world_lin, gizmo_pos) };
     // plane_normal も変換（Center ハンドル用）
     let pn = local_drag.plane_normal;
     let pn_w = if pn[0] != 0.0 || pn[1] != 0.0 || pn[2] != 0.0 {
@@ -733,6 +830,7 @@ pub fn start_drag_canvas(
         plane_normal: pn_w,
         gizmo_pos,
         axes:         Some([ax, ay, az]),
+        full_axes,
         ..local_drag
     }
 }

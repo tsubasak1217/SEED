@@ -60,6 +60,17 @@ public partial class HierarchyPanel : UserControl
     private TreeViewItem? _insertTarget; // 兄弟として挿入するターゲット
     private bool          _insertBefore; // insertTarget の前 or 後
 
+    // ドラッグ中オートスクロール用
+    /// <summary>この距離（px）以内へカーソルが入ったら自動スクロールを開始する上下端マージン。</summary>
+    private const double AutoScrollEdgeMargin = 24.0;
+    /// <summary>オートスクロール 1 ティックあたりの移動量（px）。</summary>
+    private const double AutoScrollStep = 16.0;
+    /// <summary>オートスクロールの実行間隔（ミリ秒）。</summary>
+    private const int    AutoScrollIntervalMs = 30;
+    private DispatcherTimer? _autoScrollTimer;
+    private int               _autoScrollDirection; // -1=上, 0=停止, +1=下
+    private ScrollViewer?     _treeScrollViewerCache;
+
     // リネーム用
     private DispatcherTimer? _renameTimer;
     private int              _pendingRenameId = -1;
@@ -970,6 +981,8 @@ public partial class HierarchyPanel : UserControl
         _insertTarget = null;
         DropIndicator.Visibility = Visibility.Collapsed;
         ClearDropHighlight();
+        // DoDragDrop 復帰時点で DragOver/DragLeave の取りこぼしがあってもここで確実に停止する
+        StopAutoScroll();
     }
 
     private void OnTreeDragEnter(object sender, DragEventArgs e)
@@ -994,6 +1007,11 @@ public partial class HierarchyPanel : UserControl
         _dropAsRoot   = false;
 
         var pos  = e.GetPosition(ActorTree);
+
+        // ドラッグカーソルが上下端マージン内にあれば自動スクロールを開始/継続する。
+        // TreeView は表示範囲外へドロップできないため、長いツリーで下（上）へ運べない不具合の対策。
+        UpdateAutoScroll(pos.Y);
+
         var hit  = ActorTree.InputHitTest(pos) as DependencyObject;
         var item = FindAncestor<TreeViewItem>(hit);
 
@@ -1054,12 +1072,14 @@ public partial class HierarchyPanel : UserControl
         _dropTarget   = null;
         _dropAsRoot   = false;
         _insertTarget = null;
+        StopAutoScroll();
     }
 
     private void OnTreeDrop(object sender, DragEventArgs e)
     {
         ClearDropHighlight();
         DropIndicator.Visibility = Visibility.Collapsed;
+        StopAutoScroll();
 
         if (!e.Data.GetDataPresent("DragIds")) return;
         var dragIds = (List<int>)e.Data.GetData("DragIds");
@@ -1082,13 +1102,34 @@ public partial class HierarchyPanel : UserControl
         }
 
         // 複数ノードをまとめて親子付け変更
-        // 1 つ目は兄弟挿入位置を使い、2 つ目以降は末尾に追加する
+        // 1 つ目はドロップ位置（_insertTarget/_insertBefore）を基準に挿入し、
+        // 2 つ目以降は直前に移動したノードの直後へ順に並べる（挿入順を維持する）。
+        // Rust 側へは REPARENT:{child},{parent},{anchorSiblingId},{placeBefore} で
+        // アンカー兄弟（挿入位置の基準となる DFS ID。-1 = 末尾追加）を明示的に送る。
+        // アンカー方式にしているのは、削除に伴う添字ズレを気にせず堅牢に位置指定できるため。
+        TreeViewItem? prevMovedItem = null;
         bool first = true;
         foreach (var dragId in dragIds)
         {
             var dragNode = FindNode(_roots, dragId);
             if (dragNode == null) continue;
-            _runtime?.SendToRuntime($"REPARENT:{dragNode.Id},{newParentId}");
+
+            int  anchorId;
+            bool placeBefore;
+            if (first)
+            {
+                anchorId    = _insertTarget?.Tag is ActorNode initialAnchor ? initialAnchor.Id : -1;
+                placeBefore = _insertBefore;
+            }
+            else
+            {
+                // 2 つ目以降は直前に移動したノードの直後へ挿入する
+                anchorId    = prevMovedItem?.Tag is ActorNode prevAnchor ? prevAnchor.Id : -1;
+                placeBefore = false;
+            }
+
+            _runtime?.SendToRuntime($"REPARENT:{dragNode.Id},{newParentId},{anchorId},{(placeBefore ? 1 : 0)}");
+
             if (first)
             {
                 ReparentInPlace(dragNode.Id, newParentId == -1 ? null : newParentId);
@@ -1096,12 +1137,17 @@ public partial class HierarchyPanel : UserControl
             }
             else
             {
-                // 2 つ目以降は挿入位置なし（末尾に追加）
-                var saved = _insertTarget;
-                _insertTarget = null;
+                // 2 つ目以降はローカル反映も直前ノードの直後へ挿入する（Rust 側と挙動を揃える）
+                var savedTarget = _insertTarget;
+                var savedBefore = _insertBefore;
+                _insertTarget = prevMovedItem;
+                _insertBefore = false;
                 ReparentInPlace(dragNode.Id, newParentId == -1 ? null : newParentId);
-                _insertTarget = saved;
+                _insertTarget = savedTarget;
+                _insertBefore = savedBefore;
             }
+
+            prevMovedItem = FindTreeItemById(ActorTree.Items, dragNode.Id);
         }
 
         _dropTarget   = null;
@@ -1398,6 +1444,74 @@ public partial class HierarchyPanel : UserControl
             if (found != null) return found;
         }
         return null;
+    }
+
+    // 名前を問わず、指定型の最初のビジュアル子孫を返す（ActorTree 内部の無名 ScrollViewer 取得用）
+    private static T? FindVisualChildOfType<T>(DependencyObject parent) where T : DependencyObject
+    {
+        for (int i = 0; i < VisualTreeHelper.GetChildrenCount(parent); i++)
+        {
+            var child = VisualTreeHelper.GetChild(parent, i);
+            if (child is T t) return t;
+            var found = FindVisualChildOfType<T>(child);
+            if (found != null) return found;
+        }
+        return null;
+    }
+
+    // ── ドラッグ中オートスクロール ────────────────────────────
+
+    /// <summary>
+    /// ActorTree 内部の ScrollViewer を取得する（初回のみビジュアルツリー探索し、以降キャッシュを使う）。
+    /// TreeView のテンプレート内 ScrollViewer には x:Name が付いていないため型のみで探索する。
+    /// </summary>
+    private ScrollViewer? GetTreeScrollViewer()
+    {
+        if (_treeScrollViewerCache != null) return _treeScrollViewerCache;
+        _treeScrollViewerCache = FindVisualChildOfType<ScrollViewer>(ActorTree);
+        return _treeScrollViewerCache;
+    }
+
+    /// <summary>
+    /// ドラッグ中カーソルの Y 座標（ActorTree 基準）を見て、上下端マージン内なら
+    /// オートスクロールを開始/継続し、マージン外なら停止する。
+    /// DispatcherTimer で一定間隔ごとにスクロールすることで、可視範囲外へも
+    /// ドラッグして運べるようにする（TreeView は表示範囲外へ直接ドロップできないため）。
+    /// </summary>
+    private void UpdateAutoScroll(double cursorY)
+    {
+        var viewer = GetTreeScrollViewer();
+        if (viewer == null) { StopAutoScroll(); return; }
+
+        int direction;
+        if (cursorY <= AutoScrollEdgeMargin) direction = -1;
+        else if (cursorY >= ActorTree.ActualHeight - AutoScrollEdgeMargin) direction = 1;
+        else direction = 0;
+
+        if (direction == 0) { StopAutoScroll(); return; }
+
+        _autoScrollDirection = direction;
+
+        if (_autoScrollTimer == null)
+        {
+            _autoScrollTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(AutoScrollIntervalMs) };
+            _autoScrollTimer.Tick += (_, _) =>
+            {
+                var sv = GetTreeScrollViewer();
+                if (sv == null) { StopAutoScroll(); return; }
+                var next = sv.VerticalOffset + _autoScrollDirection * AutoScrollStep;
+                sv.ScrollToVerticalOffset(Math.Max(0, Math.Min(sv.ScrollableHeight, next)));
+            };
+        }
+
+        if (!_autoScrollTimer.IsEnabled) _autoScrollTimer.Start();
+    }
+
+    /// <summary>オートスクロールタイマーを停止する。ドラッグ終了・離脱・ドロップの全経路で必ず呼ぶ。</summary>
+    private void StopAutoScroll()
+    {
+        _autoScrollTimer?.Stop();
+        _autoScrollDirection = 0;
     }
 
     // ── 複数選択ビジュアル ────────────────────────────────────

@@ -948,6 +948,48 @@
                                                         </Style>
                                                     </Button.Style>
                                                 </Button>
+                                                <!-- Btn2DCamToggle の左隣固定: ギズモ座標系（World/Local）トグル -->
+                                                <Button x:Name="BtnGizmoSpaceToggle"
+                                                        DockPanel.Dock="Right"
+                                                        Content="World"
+                                                        Width="42" Height="22"
+                                                        Margin="4,3"
+                                                        FontSize="10"
+                                                        FontWeight="Bold"
+                                                        Foreground="#CCCCCC"
+                                                        Background="#3A3A3A"
+                                                        BorderBrush="#555555"
+                                                        BorderThickness="1"
+                                                        Cursor="Hand"
+                                                        ToolTip="移動/回転/スケールギズモの座標系を World（ワールド軸）⇄ Local（選択アクターのローカル軸）で切り替え"
+                                                        Click="OnGizmoSpaceToggleClicked">
+                                                    <Button.Style>
+                                                        <Style TargetType="Button">
+                                                            <Setter Property="Template">
+                                                                <Setter.Value>
+                                                                    <ControlTemplate TargetType="Button">
+                                                                        <Border x:Name="Bd"
+                                                                                Background="{TemplateBinding Background}"
+                                                                                BorderBrush="{TemplateBinding BorderBrush}"
+                                                                                BorderThickness="{TemplateBinding BorderThickness}"
+                                                                                CornerRadius="3"
+                                                                                Padding="{TemplateBinding Padding}">
+                                                                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                                                        </Border>
+                                                                        <ControlTemplate.Triggers>
+                                                                            <Trigger Property="IsMouseOver" Value="True">
+                                                                                <Setter TargetName="Bd" Property="Background" Value="#505050"/>
+                                                                            </Trigger>
+                                                                            <Trigger Property="IsPressed" Value="True">
+                                                                                <Setter TargetName="Bd" Property="Background" Value="#666666"/>
+                                                                            </Trigger>
+                                                                        </ControlTemplate.Triggers>
+                                                                    </ControlTemplate>
+                                                                </Setter.Value>
+                                                            </Setter>
+                                                        </Style>
+                                                    </Button.Style>
+                                                </Button>
                                                 <!-- 右端固定: シーンに戻るボタン -->
                                                 <Button x:Name="BtnReturnToScene"
                                                         DockPanel.Dock="Right"
@@ -1359,9 +1401,9 @@
                                                               Style="{StaticResource DarkExpanderStyle}"
                                                               Margin="0,8,0,0">
                                                         <StackPanel Margin="8,6,0,2">
-                                                            <!-- 編集時の物理シミュレーション -->
+                                                            <!-- 編集時の物理シミュレーション（2D/3D 統合） -->
                                                             <CheckBox x:Name="ChkEditPhysics"
-                                                                      Content="編集時の物理シミュレーション"
+                                                                      Content="編集時の物理シミュレーション（2D/3D）"
                                                                       Foreground="White" FontSize="11"
                                                                       IsChecked="False"
                                                                       Margin="0,0,0,4"
@@ -1378,28 +1420,6 @@
                                                                           Margin="16,0,0,0"
                                                                           Checked="OnEditPhysicsRigidbodyChanged"
                                                                           Unchecked="OnEditPhysicsRigidbodyChanged"/>
-                                                            </StackPanel>
-                                                            <!-- 区切り線 -->
-                                                            <Border Height="1" Background="#444444" Margin="0,4,0,6"/>
-                                                            <!-- 編集時の 2D 物理シミュレーション -->
-                                                            <CheckBox x:Name="ChkEditPhysics2d"
-                                                                      Content="編集時の 2D 物理シミュレーション"
-                                                                      Foreground="White" FontSize="11"
-                                                                      IsChecked="False"
-                                                                      Margin="0,0,0,4"
-                                                                      Checked="OnEditPhysics2dChanged"
-                                                                      Unchecked="OnEditPhysics2dChanged"/>
-                                                            <!-- 2D RigidBody サブオプション（2D 物理が有効なときのみ表示） -->
-                                                            <StackPanel x:Name="PnlEditPhysics2dRigidbody"
-                                                                        Visibility="Collapsed"
-                                                                        Margin="0,2,0,4">
-                                                                <CheckBox x:Name="ChkEditPhysics2dRigidbody"
-                                                                          Content="RigidBody（重力・ダイナミクスを有効にする）"
-                                                                          Foreground="White" FontSize="11"
-                                                                          IsChecked="False"
-                                                                          Margin="16,0,0,0"
-                                                                          Checked="OnEditPhysics2dRigidbodyChanged"
-                                                                          Unchecked="OnEditPhysics2dRigidbodyChanged"/>
                                                             </StackPanel>
                                                         </StackPanel>
                                                     </Expander>

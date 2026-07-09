@@ -6,10 +6,10 @@
 // ============================================================
 
 use crate::engine::components::{ModelComponent, Transform as ActorTransform, CanvasTransform, ComponentKind};
-use crate::engine::core::app_base::ipc::ToolMode;
+use crate::engine::core::app_base::ipc::{ToolMode, GizmoSpace};
 use crate::engine::methods::gizmo_interact::{
     GizmoDrag, GizmoPart, screen_to_ray, screen_to_ray_ortho, screen_to_ray_ortho3d,
-    hit_test_gizmo, start_drag, hit_test_gizmo_canvas, start_drag_canvas,
+    hit_test_gizmo, start_drag, hit_test_gizmo_canvas, hit_test_gizmo_oriented, start_drag_oriented,
     GIZMO_SCREEN_RADIUS_RATIO,
 };
 
@@ -137,6 +137,41 @@ impl App {
         let ax = normalize([ctw[0][0], ctw[1][0], ctw[2][0]]); // canvas X（列0）
         let ay = normalize([ctw[0][1], ctw[1][1], ctw[2][1]]); // canvas Y（列1）
         let az = normalize([ctw[0][2], ctw[1][2], ctw[2][2]]); // canvas 法線（列2）
+        Some([ax, ay, az])
+    }
+
+    /// gizmo_space = Local のとき、選択中プライマリアクター（3D）のローカル回転基底
+    /// [ax, ay, az] を返す。World モード時は常に None（従来のワールド軸ギズモ）。
+    ///
+    /// 2D アクターは selected_canvas_child_axes（3D Canvas 子）または通常の 2D ギズモ
+    /// パスで処理されるため、ここでは 3D アクターのみを対象とする。
+    ///
+    /// 複数選択時はアクターごとに回転が異なり軸が一意に定まらないため、
+    /// selected_primary_actor_is_2d と同じ優先順位（actor_virtual_selected_idx →
+    /// selected_actor_dfs_ids の先頭）でプライマリ選択アクターの軸を採用する。
+    pub(super) fn selected_local_axes(&self) -> Option<[[f32; 3]; 3]> {
+        if self.gizmo_space != GizmoSpace::Local { return None; }
+        let scene = self.scene.as_ref()?;
+        let wl = self.active_world_line;
+        let primary = self.actor_virtual_selected_idx
+            .or_else(|| self.selected_actor_dfs_ids.first().copied())?;
+        let mut c = 0u32;
+        let actor = find_actor_by_dfs(&scene.actors, wl, primary as u32, &mut c)?;
+        if actor.is_2d() { return None; }
+        // 回転行列（row-major）: ModelComponent の instance_mats[0] を優先、
+        // なければ ActorTransform のオイラー角から to_mat4() で算出する。
+        let rot_mat = actor.mc_entity()
+            .and_then(|e| scene.world.get::<ModelComponent>(e))
+            .and_then(|mc| mc.instance_mats.first().copied())
+            .or_else(|| scene.world.get::<ActorTransform>(actor.entity).map(|tf| tf.to_mat4()))?;
+        // 各列を正規化してローカル軸を取得する（selected_canvas_child_axes と同手法）
+        let normalize = |v: [f32; 3]| {
+            let l = (v[0]*v[0]+v[1]*v[1]+v[2]*v[2]).sqrt().max(1e-10);
+            [v[0]/l, v[1]/l, v[2]/l]
+        };
+        let ax = normalize([rot_mat[0][0], rot_mat[1][0], rot_mat[2][0]]); // ローカル X（列0）
+        let ay = normalize([rot_mat[0][1], rot_mat[1][1], rot_mat[2][1]]); // ローカル Y（列1）
+        let az = normalize([rot_mat[0][2], rot_mat[1][2], rot_mat[2][2]]); // ローカル Z（列2）
         Some([ax, ay, az])
     }
 
@@ -292,6 +327,10 @@ impl App {
         if let Some([ax, ay, az]) = self.selected_canvas_child_axes() {
             return hit_test_gizmo_canvas(ray_o, ray_d, gizmo_pos, radius, self.tool_mode, ax, ay, az);
         }
+        // Local 座標モード（通常 3D アクター）: オブジェクトのローカル回転軸に沿ったヒットテスト
+        if let Some([ax, ay, az]) = self.selected_local_axes() {
+            return hit_test_gizmo_oriented(ray_o, ray_d, gizmo_pos, radius, self.tool_mode, ax, ay, az);
+        }
         let part = hit_test_gizmo(ray_o, ray_d, gizmo_pos, radius, self.tool_mode)?;
         // 2D キャンバスでは Move/Scale の Z 軸・XZ/YZ 平面ハンドルは無効。
         // Rotate の AxisZ は 2D での回転操作に使うので有効とする。
@@ -361,8 +400,17 @@ impl App {
             let part = hit_test_gizmo_canvas(
                 ray_o, ray_d, gizmo_pos, radius, self.tool_mode, ax, ay, az,
             )?;
-            return Some(start_drag_canvas(
-                part, self.tool_mode, ray_o, ray_d, gizmo_pos, radius, centroid_mat, ax, ay, az,
+            return Some(start_drag_oriented(
+                part, self.tool_mode, ray_o, ray_d, gizmo_pos, radius, centroid_mat, ax, ay, az, false,
+            ));
+        }
+        // Local 座標モード（通常 3D アクター）: ローカル回転軸に沿った oriented ドラッグ開始を使う
+        if let Some([ax, ay, az]) = self.selected_local_axes() {
+            let part = hit_test_gizmo_oriented(
+                ray_o, ray_d, gizmo_pos, radius, self.tool_mode, ax, ay, az,
+            )?;
+            return Some(start_drag_oriented(
+                part, self.tool_mode, ray_o, ray_d, gizmo_pos, radius, centroid_mat, ax, ay, az, true,
             ));
         }
         let part = hit_test_gizmo(ray_o, ray_d, gizmo_pos, radius, self.tool_mode)?;

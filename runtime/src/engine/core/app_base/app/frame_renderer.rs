@@ -732,6 +732,10 @@ impl App {
         // 3D Canvas 子アクター軸をレンダーパス開始前（可変借用前）に事前計算する。
         // レンダーパス内では &mut self.renderer の可変借用が続くため self の不変借用が取れない。
         let canvas_child_axes_pre = self.selected_canvas_child_axes();
+        // gizmo_space = Local のとき、選択中プライマリアクター（3D）のローカル回転軸を
+        // レンダーパス開始前（可変借用前）に事前計算する。3D Canvas 子（canvas_child_axes_pre）
+        // が優先されるため、そちらが Some の場合はここでは使用されない。
+        let local_axes_pre = self.selected_local_axes();
         // 2D シーンビューのドラッグホバー中キャンバス枠ハイライト線分も
         // 可変借用前に事前計算する（キャンバス矩形バッチ構築時に流し込む）。
         let drag_hover_highlight_lines = if edit_view_2d && self.drag_hover_canvas_entity.is_some() {
@@ -1218,8 +1222,17 @@ impl App {
                                     ToolMode::Scale  => batch.add_gizmo_scale_2d(pos, radius, hov),
                                     ToolMode::Select => {}
                                 }
+                            } else if let Some([ax, ay, az]) = local_axes_pre {
+                                // Local 座標モード（通常 3D アクター）: オブジェクトのローカル回転軸に
+                                // 沿った全軸ギズモ（回転リングもオブジェクト回転に追従する）
+                                match self.tool_mode {
+                                    ToolMode::Move   => batch.add_gizmo_translate_local(pos, radius, hov, ax, ay, az),
+                                    ToolMode::Rotate => batch.add_gizmo_rotate_local(pos, radius, 64, cam_pos_arr, hov, drag_part, ax, ay, az),
+                                    ToolMode::Scale  => batch.add_gizmo_scale_local(pos, radius, hov, ax, ay, az),
+                                    ToolMode::Select => {}
+                                }
                             } else {
-                                // 3D: 全軸・平面ハンドル、Rotate は半円
+                                // 3D（World 座標モード）: 全軸・平面ハンドル、Rotate は半円
                                 match self.tool_mode {
                                     ToolMode::Move   => batch.add_gizmo_translate(pos, radius, hov),
                                     ToolMode::Rotate => batch.add_gizmo_rotate(pos, radius, 64, cam_pos_arr, hov, drag_part),

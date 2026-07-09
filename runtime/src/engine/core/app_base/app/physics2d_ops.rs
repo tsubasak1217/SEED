@@ -73,6 +73,12 @@ use super::canvas_collect::{build_canvas_viewport_map, root_anchor_offset};
 static PHYS_LOG_ENABLED: std::sync::LazyLock<bool> =
     std::sync::LazyLock::new(|| std::env::var_os("SEED_PHYS_LOG").is_some());
 
+/// ドラッグ押し戻しの同期オーバーラップ問い合わせのタイムアウト（ミリ秒）。
+/// 3D 版 physics_ops.rs の `OVERLAP_REPLY_TIMEOUT_MS` と同じ意味・同じ値。
+/// タイムアウト時は「今フレームは保留」で安全側に倒れ、トンネリングは起きない
+/// （詳細な理由は 3D 版の定数コメントを参照）。
+const OVERLAP_REPLY_TIMEOUT_MS_2D: u64 = 4;
+
 // ─── Actor2d 物理コンテキスト ────────────────────────────────────────────────
 
 /// アクター 1 つ分の「物理ワールド上のボディ位置」と「CanvasTransform 書き戻しに必要なデータ」を保持する。
@@ -651,6 +657,13 @@ impl App {
                 if force_kinematic {
                     rb.is_kinematic = true;
                 }
+                // タブ復帰時の初速上書き（ctx.actor_entity をキーに退避速度を積む）。
+                if let Some(map) = self.pending_restore_vel_2d.as_ref() {
+                    if let Some((lin, ang)) = map.get(&ctx.actor_entity) {
+                        rb.linear_velocity  = *lin;
+                        rb.angular_velocity = *ang;
+                    }
+                }
                 Some(rb)
             } else {
                 None
@@ -772,6 +785,8 @@ impl App {
                         smooth:         false,
                     });
                 }
+                // ドラッグ終了: 押し戻し用の最終有効位置をクリアする（3D と同じ）
+                self.drag_collider_last_valid_pos_2d = None;
             }
             if let Some(new_id) = new_drag_entity_id {
                 let ecs_start_pos = contexts.iter()
@@ -808,8 +823,24 @@ impl App {
                 if start_live_sim {
                     self.begin_edit_physics_drag_live_sim();
                 }
+
+                // ドラッグ開始: 現在位置を押し戻し用の最終有効位置として初期化する（3D と同じ）。
+                if self.mode == RuntimeMode::Edit {
+                    self.drag_collider_last_valid_pos_2d = ecs_start_pos;
+                }
             }
             self.dragging_physics_2d_entity_id = new_drag_entity_id;
+        }
+
+        // ── ドラッグ中押し戻し（同期オーバーラップ判定）──────────────────────
+        // 3D 版 update_physics の apply_drag_pushback 呼び出しと同一の位置・意味。
+        // RigidBody 有効/無効どちらのモードでもドラッグ中の押し戻し判定に使用する。
+        if self.mode == RuntimeMode::Edit {
+            if let Some(drag_id) = self.dragging_physics_2d_entity_id {
+                if let Some(ctx) = contexts.iter().find(|c| c.dfs_id == drag_id) {
+                    self.apply_drag_pushback_2d(drag_id, ctx);
+                }
+            }
         }
 
         let thread = self.physics_thread_2d.as_ref().unwrap();
@@ -877,6 +908,19 @@ impl App {
 
             // 収束停止判定用に、全 Dynamic ボディ（2D）の最大速度を退避する。
             self.store_edit_physics_rest_speeds_2d(result.max_linear_speed, result.max_angular_speed);
+
+            // タブ退避用の速度キャッシュを丸ごと更新する。
+            // 2D は contexts が dfs_id↔actor_entity の対応を持つため走査不要。
+            // ドラッグ中エンティティ（kinematic 化・速度≈0）はスキップする。
+            let drag = self.dragging_physics_2d_entity_id;
+            let mut cache = std::collections::HashMap::new();
+            for (dfs_id, lin, ang) in &result.body_velocities {
+                if Some(*dfs_id) == drag { continue; }
+                if let Some(ctx) = contexts.iter().find(|c| c.dfs_id == *dfs_id) {
+                    cache.insert(ctx.actor_entity, (*lin, *ang));
+                }
+            }
+            self.current_vel_cache_2d = cache;
         }
 
         // ④ ビューポートサイズ変化時に Static ボディを再登録する
@@ -987,6 +1031,75 @@ impl App {
             }
         }
     }
+
+    // ─── ドラッグ中押し戻し（同期オーバーラップ判定・2D）──────────────────────
+
+    /// ドラッグ中 Actor2D の押し戻し判定を同期実行する。
+    ///
+    /// 3D 版 `physics_ops.rs::apply_drag_pushback` を 2D（Isometry2, スカラー角度,
+    /// CanvasTransform）へ翻訳したもの。
+    ///
+    /// 1. ギズモ／インスペクタが動かした現在の body_pos_px（＝今フレームの提案位置）を取得する。
+    /// 2. CheckKinematicOverlap2d で 2D 物理スレッドへ同期問い合わせし、提案位置で他の
+    ///    非 Dynamic・非センサーコライダーとめり込むかを判定する。
+    /// 3. めり込む場合: 最終有効位置（drag_collider_last_valid_pos_2d）へ CanvasTransform を
+    ///    復元し、ドラッグ開始 CanvasTransform（canvas_transform_drag_start）をローカル座標系で
+    ///    シフトしてチラつきを防止する。
+    /// 4. めり込まない場合: 提案位置を検証済みの最終有効位置として採用する。
+    ///
+    /// 物理スレッドへの位置送信は呼び出し元（update_physics_2d ⑤⑦）が行う。
+    fn apply_drag_pushback_2d(&mut self, drag_id: u64, ctx: &Actor2dPhysicsCtx) {
+        // ① 提案位置（メートル空間）= 今フレームの body_pos_px / PIXELS_PER_METER
+        let prop_pos = [ctx.body_pos_px[0] / PIXELS_PER_METER, ctx.body_pos_px[1] / PIXELS_PER_METER];
+        let prop_rot = ctx.rot_rad;
+
+        // ② 2D 物理スレッドへ同期問い合わせ（3D の Raycast/CheckKinematicOverlap と同じ
+        //    reply チャンネルパターン）
+        let overlapping = {
+            let Some(thread) = &self.physics_thread_2d else { return };
+            let (reply_tx, reply_rx) = crossbeam_channel::bounded::<bool>(1);
+            thread.send(PhysicsCommand2d::CheckKinematicOverlap2d {
+                entity_id: drag_id,
+                position:  prop_pos,
+                rotation:  prop_rot,
+                reply:     reply_tx,
+            });
+            match reply_rx.recv_timeout(
+                std::time::Duration::from_millis(OVERLAP_REPLY_TIMEOUT_MS_2D),
+            ) {
+                Ok(v) => v,
+                // 応答なし（スレッド高負荷・終了中等）: 今フレームは判定を保留する。
+                // 未検証の位置を安全位置として採用しないため last_valid_pos は更新しない。
+                Err(_) => return,
+            }
+        };
+
+        if !overlapping {
+            // ── めり込みなし: 提案位置を検証済みの安全位置として採用する ─────────
+            self.drag_collider_last_valid_pos_2d = Some((prop_pos, prop_rot));
+            return;
+        }
+
+        // ── めり込みあり: 最終有効位置に押し戻す ─────────────────────────────
+        let Some((last_pos, last_rot)) = self.drag_collider_last_valid_pos_2d else { return };
+
+        // CanvasTransform に安全位置を書き戻す（物理スレッドへの送信は update_physics_2d が行う）
+        if let Some(scene) = &mut self.scene {
+            write_back_canvas_transform(scene, ctx, last_pos, last_rot);
+        }
+
+        // ドラッグ開始 CanvasTransform（canvas_transform_drag_start）をシフトしてチラつきを防止する。
+        // 3D 版はワールド座標のまま平行移動成分を引くだけだが、2D の CanvasTransform.position は
+        // アンカー・親スケール・回転を経たローカル座標のため、提案位置・安全位置それぞれを
+        // compute_canvas_local_transform でローカル座標へ変換してから差分（オフセット）を取る。
+        let (prop_local, _) = compute_canvas_local_transform(ctx, prop_pos, prop_rot);
+        let (safe_local, _) = compute_canvas_local_transform(ctx, last_pos, last_rot);
+        let off_local = [prop_local[0] - safe_local[0], prop_local[1] - safe_local[1]];
+        if let Some((_, start_ct)) = &mut self.drag.canvas_transform_drag_start {
+            start_ct.position[0] -= off_local[0];
+            start_ct.position[1] -= off_local[1];
+        }
+    }
 }
 
 // ─── 書き戻しユーティリティ ──────────────────────────────────────────────────
@@ -1010,6 +1123,24 @@ fn write_back_canvas_transform(
     new_pos: [f32; 2],
     new_rot: f32,
 ) {
+    let (new_ct_pos, new_ct_rot_deg) = compute_canvas_local_transform(ctx, new_pos, new_rot);
+    if let Some(ct) = scene.world.get_mut::<CanvasTransform>(ctx.actor_entity) {
+        ct.position = new_ct_pos;
+        ct.rotation = new_ct_rot_deg;
+    }
+}
+
+/// 物理スレッドのワールド位置（メートル）・回転（ラジアン）から、
+/// 対応する CanvasTransform ローカル位置・回転（度）を計算する（純粋関数）。
+///
+/// write_back_canvas_transform の本体計算を切り出したもの。ECS への書き込みを
+/// 伴わないため、ドラッグ押し戻し（apply_drag_pushback_2d）が「提案位置」と
+/// 「安全位置」それぞれのローカル座標オフセットを比較する用途にも再利用できる。
+fn compute_canvas_local_transform(
+    ctx:     &Actor2dPhysicsCtx,
+    new_pos: [f32; 2],
+    new_rot: f32,
+) -> ([f32; 2], f32) {
     // ① new_pos（メートル）→ ortho ピクセル = ボディ中心のワールド座標
     let new_body_px = [
         new_pos[0] * PIXELS_PER_METER,
@@ -1069,10 +1200,7 @@ fn write_back_canvas_transform(
     // ④ ローカル回転 = 累積ワールド回転 - 親の累積回転
     let new_local_rot = new_rot - ctx.parent_world_rot;
 
-    if let Some(ct) = scene.world.get_mut::<CanvasTransform>(ctx.actor_entity) {
-        ct.position = new_ct_pos;
-        ct.rotation = new_local_rot.to_degrees();
-    }
+    (new_ct_pos, new_local_rot.to_degrees())
 }
 
 // ─── 重力方向ヘルパー ────────────────────────────────────────────────────────

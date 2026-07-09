@@ -1213,6 +1213,184 @@ impl GizmoBatch {
         }
     }
 
+    // ── Local 座標モード向け oriented ギズモ（通常 3D アクター・全 3 軸）────────
+
+    /// オブジェクトのローカル回転軸に沿った移動ギズモ（3 軸矢印 + 3 平面ハンドル）を追加する。
+    /// add_gizmo_translate のワールド軸 [1,0,0]/[0,1,0]/[0,0,1] を任意の正規直交基底
+    /// ax/ay/az に置き換えた汎用版。gizmo_space = Local の通常 3D アクターに使用する。
+    pub fn add_gizmo_translate_local(
+        &mut self,
+        pos:     [f32; 3],
+        radius:  f32,
+        hovered: Option<GizmoPart>,
+        ax:      [f32; 3],
+        ay:      [f32; 3],
+        az:      [f32; 3],
+    ) {
+        let head_len = radius * 0.25;
+        let head_r   = radius * 0.07;
+        let cx = if hovered == Some(GizmoPart::AxisX) { highlight(GX) } else { GX };
+        let cy = if hovered == Some(GizmoPart::AxisY) { highlight(GY) } else { GY };
+        let cz = if hovered == Some(GizmoPart::AxisZ) { highlight(GZ) } else { GZ };
+        let tip = |dir: [f32; 3], t: f32| -> [f32; 3] {
+            [pos[0]+dir[0]*t, pos[1]+dir[1]*t, pos[2]+dir[2]*t]
+        };
+        // X 軸（赤）
+        self.add_thick_line(pos, tip(ax, radius - head_len), cx);
+        self.add_cone(tip(ax, radius), tip(ax, radius - head_len), head_r, 8, cx);
+        // Y 軸（緑）
+        self.add_thick_line(pos, tip(ay, radius - head_len), cy);
+        self.add_cone(tip(ay, radius), tip(ay, radius - head_len), head_r, 8, cy);
+        // Z 軸（青）
+        self.add_thick_line(pos, tip(az, radius - head_len), cz);
+        self.add_cone(tip(az, radius), tip(az, radius - head_len), head_r, 8, cz);
+        // XY / XZ / YZ 平面ハンドル
+        self.add_plane_handles_local(pos, radius, hovered, ax, ay, az);
+        // 中心ハンドル
+        let cc = if hovered == Some(GizmoPart::Center) { Color::YELLOW } else { Color::WHITE };
+        self.add_center_dot(pos, radius * 0.055, cc);
+    }
+
+    /// オブジェクトのローカル回転軸に沿ったスケールギズモ（3 軸線 + 端点キューブ）を追加する。
+    pub fn add_gizmo_scale_local(
+        &mut self,
+        pos:     [f32; 3],
+        radius:  f32,
+        hovered: Option<GizmoPart>,
+        ax:      [f32; 3],
+        ay:      [f32; 3],
+        az:      [f32; 3],
+    ) {
+        let cube_half = radius * 0.07;
+        let cx = if hovered == Some(GizmoPart::AxisX) { highlight(GX) } else { GX };
+        let cy = if hovered == Some(GizmoPart::AxisY) { highlight(GY) } else { GY };
+        let cz = if hovered == Some(GizmoPart::AxisZ) { highlight(GZ) } else { GZ };
+        let tip = |dir: [f32; 3], t: f32| -> [f32; 3] {
+            [pos[0]+dir[0]*t, pos[1]+dir[1]*t, pos[2]+dir[2]*t]
+        };
+        // X 軸（赤）
+        let xe = tip(ax, radius);
+        self.add_thick_line(pos, xe, cx);
+        self.add_solid_cube(xe, cube_half, cx);
+        // Y 軸（緑）
+        let ye = tip(ay, radius);
+        self.add_thick_line(pos, ye, cy);
+        self.add_solid_cube(ye, cube_half, cy);
+        // Z 軸（青）
+        let ze = tip(az, radius);
+        self.add_thick_line(pos, ze, cz);
+        self.add_solid_cube(ze, cube_half, cz);
+        // XY / XZ / YZ 平面ハンドル
+        self.add_plane_handles_local(pos, radius, hovered, ax, ay, az);
+        // 中心ハンドル
+        let cc = if hovered == Some(GizmoPart::Center) { Color::YELLOW } else { Color::WHITE };
+        self.add_center_dot(pos, radius * 0.055, cc);
+    }
+
+    /// XY / XZ / YZ 3 平面のハンドル矩形をローカル軸 ax/ay/az に沿って追加する
+    /// （add_plane_handles のワールド軸版を汎用化したもの）。
+    fn add_plane_handles_local(
+        &mut self,
+        pos:     [f32; 3],
+        radius:  f32,
+        hovered: Option<GizmoPart>,
+        ax:      [f32; 3],
+        ay:      [f32; 3],
+        az:      [f32; 3],
+    ) {
+        let o = radius * 0.5;
+        let s = radius * 0.075;
+        let quad = |u: [f32; 3], v: [f32; 3]| -> [[f32; 3]; 4] {
+            let center = [pos[0]+u[0]*o+v[0]*o, pos[1]+u[1]*o+v[1]*o, pos[2]+u[2]*o+v[2]*o];
+            [
+                [center[0]-u[0]*s-v[0]*s, center[1]-u[1]*s-v[1]*s, center[2]-u[2]*s-v[2]*s],
+                [center[0]+u[0]*s-v[0]*s, center[1]+u[1]*s-v[1]*s, center[2]+u[2]*s-v[2]*s],
+                [center[0]+u[0]*s+v[0]*s, center[1]+u[1]*s+v[1]*s, center[2]+u[2]*s+v[2]*s],
+                [center[0]-u[0]*s+v[0]*s, center[1]-u[1]*s+v[1]*s, center[2]-u[2]*s+v[2]*s],
+            ]
+        };
+        let (fxy, cxy) = if hovered == Some(GizmoPart::PlaneXY) { (highlight_fill(GZ_FILL), highlight(GZ)) } else { (GZ_FILL, GZ) };
+        let (fxz, cxz) = if hovered == Some(GizmoPart::PlaneXZ) { (highlight_fill(GY_FILL), highlight(GY)) } else { (GY_FILL, GY) };
+        let (fyz, cyz) = if hovered == Some(GizmoPart::PlaneYZ) { (highlight_fill(GX_FILL), highlight(GX)) } else { (GX_FILL, GX) };
+        let [a, b, c, d] = quad(ax, ay);
+        self.add_plane_quad(a, b, c, d, fxy, cxy);
+        let [a, b, c, d] = quad(ax, az);
+        self.add_plane_quad(a, b, c, d, fxz, cxz);
+        let [a, b, c, d] = quad(ay, az);
+        self.add_plane_quad(a, b, c, d, fyz, cyz);
+    }
+
+    /// オブジェクトのローカル回転軸に沿った回転ギズモ（3 軸半円リング）を追加する。
+    /// add_gizmo_rotate のワールド軸版を任意の正規直交基底 ax/ay/az に汎用化したもの。
+    pub fn add_gizmo_rotate_local(
+        &mut self,
+        pos:      [f32; 3],
+        radius:   f32,
+        segments: usize,
+        cam_pos:  [f32; 3],
+        hovered:  Option<GizmoPart>,
+        dragging: Option<GizmoPart>,
+        ax:       [f32; 3],
+        ay:       [f32; 3],
+        az:       [f32; 3],
+    ) {
+        let cx = if hovered == Some(GizmoPart::AxisX) { highlight(GX) } else { GX };
+        let cy = if hovered == Some(GizmoPart::AxisY) { highlight(GY) } else { GY };
+        let cz = if hovered == Some(GizmoPart::AxisZ) { highlight(GZ) } else { GZ };
+
+        // オブジェクト→カメラの正規化ベクトル（半円フィルタ用）
+        let cd = {
+            let d = [cam_pos[0]-pos[0], cam_pos[1]-pos[1], cam_pos[2]-pos[2]];
+            let len = (d[0]*d[0]+d[1]*d[1]+d[2]*d[2]).sqrt().max(1e-6);
+            [d[0]/len, d[1]/len, d[2]/len]
+        };
+        // リング上の点（軸ペア u,v が張る平面内の円）を返すヘルパー
+        let ring_pt = |u: [f32; 3], v: [f32; 3], t: f32| -> [f32; 3] {
+            let (s, c) = t.sin_cos();
+            [pos[0]+radius*(u[0]*c+v[0]*s), pos[1]+radius*(u[1]*c+v[1]*s), pos[2]+radius*(u[2]*c+v[2]*s)]
+        };
+
+        let n = segments.max(4);
+        for i in 0..n {
+            let t0 = 2.0 * PI * i as f32 / n as f32;
+            let t1 = 2.0 * PI * (i + 1) as f32 / n as f32;
+            let tm = (t0 + t1) * 0.5;
+
+            // X 軸リング（YZ 平面 = ay, az が張る円。法線 = ax）
+            let mid_x = [ay[0]*tm.cos()+az[0]*tm.sin(), ay[1]*tm.cos()+az[1]*tm.sin(), ay[2]*tm.cos()+az[2]*tm.sin()];
+            let show_x = match dragging {
+                Some(GizmoPart::AxisX) => true,
+                Some(_) => false,
+                None => dot3_local(mid_x, cd) > 0.0,
+            };
+            if show_x {
+                self.add_thick_line(ring_pt(ay, az, t0), ring_pt(ay, az, t1), cx);
+            }
+
+            // Y 軸リング（XZ 平面 = ax, az。法線 = ay）
+            let mid_y = [ax[0]*tm.cos()+az[0]*tm.sin(), ax[1]*tm.cos()+az[1]*tm.sin(), ax[2]*tm.cos()+az[2]*tm.sin()];
+            let show_y = match dragging {
+                Some(GizmoPart::AxisY) => true,
+                Some(_) => false,
+                None => dot3_local(mid_y, cd) > 0.0,
+            };
+            if show_y {
+                self.add_thick_line(ring_pt(ax, az, t0), ring_pt(ax, az, t1), cy);
+            }
+
+            // Z 軸リング（XY 平面 = ax, ay。法線 = az）
+            let mid_z = [ax[0]*tm.cos()+ay[0]*tm.sin(), ax[1]*tm.cos()+ay[1]*tm.sin(), ax[2]*tm.cos()+ay[2]*tm.sin()];
+            let show_z = match dragging {
+                Some(GizmoPart::AxisZ) => true,
+                Some(_) => false,
+                None => dot3_local(mid_z, cd) > 0.0,
+            };
+            if show_z {
+                self.add_thick_line(ring_pt(ax, ay, t0), ring_pt(ax, ay, t1), cz);
+            }
+        }
+    }
+
     /// 2D 回転ギズモ（Z 軸周りの完全な円）を追加する。
     /// 3D の半円表示とは異なり、カメラ真上から見下ろすため常に全周を表示する。
     pub fn add_gizmo_rotate_2d(
@@ -1273,6 +1451,11 @@ fn perp_basis(d: [f32; 3]) -> ([f32; 3], [f32; 3]) {
 
 fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
     [a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]]
+}
+
+/// 内積（add_gizmo_rotate_local の半円カメラ向き判定に使用）。
+fn dot3_local(a: [f32; 3], b: [f32; 3]) -> f32 {
+    a[0]*b[0] + a[1]*b[1] + a[2]*b[2]
 }
 
 fn cross_norm(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {

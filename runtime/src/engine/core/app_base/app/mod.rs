@@ -41,6 +41,7 @@ mod event_handler;
 mod drag_handler;
 mod physics_ops;
 mod physics_timeline;
+mod tab_physics;
 mod script_scene_ops;
 mod audio_ops;
 pub(crate) mod camera_scene_gizmo;
@@ -56,7 +57,7 @@ use winit::window::Window;
 use crate::engine::core::clock::Clock;
 use crate::engine::core::input::Input;
 use crate::engine::core::renderer::Renderer;
-use crate::engine::core::app_base::ipc::{IpcClient, ToolMode};
+use crate::engine::core::app_base::ipc::{IpcClient, ToolMode, GizmoSpace};
 use crate::engine::core::app_base::scene::{Scene, DebugCameraData, CanvasCameraData};
 use crate::engine::methods::drawer::{DrawContext, CameraBuffer, IdBuffer, InstancedModelBatch};
 use crate::engine::methods::gizmo_interact::GizmoPart;
@@ -472,6 +473,8 @@ pub struct App {
     line_model_buf:     Option<(wgpu::Buffer, wgpu::BindGroup)>,
     /// 現在のエディタツールモード。
     tool_mode:          ToolMode,
+    /// ギズモ座標系モード（World / Local）。デフォルトは World（従来の挙動）。
+    gizmo_space:        GizmoSpace,
     /// LMB ドラッグに関連する全状態（ギズモドラッグ・矩形選択・入力状態）。
     drag:               drag_state::DragState,
     /// マウスホバー中のギズモパーツ（ハイライト表示用）。
@@ -703,9 +706,39 @@ pub struct App {
     /// 終了時に SetBodyKinematic(false) を 2D 物理スレッドへ送信する。
     pub(super) dragging_physics_2d_entity_id: Option<u64>,
 
+    /// コライダーのみ編集モード（edit_physics_2d_with_rigidbody=false）でのドラッグ中の
+    /// 「衝突なしの最終有効位置」。3D 版 `drag_collider_last_valid_pos` と同じ役割で、
+    /// 同期オーバーラップ判定（CheckKinematicOverlap2d）でめり込みを検出した際に
+    /// この位置へ CanvasTransform を押し戻すことでトンネリング（すり抜け）を防ぐ。
+    /// (position [x,y]（メートル）, rotation（ラジアン）) の形式。
+    pub(super) drag_collider_last_valid_pos_2d: Option<([f32; 2], f32)>,
+
     /// 直前フレームで 2D 物理に使用したビューポートサイズ。
     /// ウィンドウリサイズ検出に使用し、変化時に static 物理ボディを再登録する。
     pub(super) last_physics_2d_viewport: Option<[f32; 2]>,
+
+    // ─── タブごと物理状態保持（続きから再開）────────────────────────────────────
+    // ビュータブ（3Dシーン/2Dシーン）・アクター編集タブ（world_line）ごとに、
+    // 物理タイムライン状態と Dynamic ボディの速度を退避し、タブ復帰時に
+    // 位置（ECS で保持）＋速度（下記キャッシュ）で「続き」から再開できるようにする。
+
+    /// タブ（TabKey）→ 退避した物理状態。タブ離脱時に挿入し、復帰時に取り出す。
+    pub(super) tab_physics: std::collections::HashMap<tab_physics::TabKey, tab_physics::TabPhysicsState>,
+
+    /// 直近フレームの 3D Dynamic ボディ速度キャッシュ（ECS Entity → (linvel, angvel)）。
+    /// update_physics が結果ストリームから毎フレーム更新し、タブ離脱時に退避する。
+    pub(super) current_vel_cache_3d: std::collections::HashMap<crate::engine::ecs::Entity, ([f32; 3], [f32; 3])>,
+
+    /// 直近フレームの 2D Dynamic ボディ速度キャッシュ（ECS Entity → (linvel, angvel スカラー)）。
+    pub(super) current_vel_cache_2d: std::collections::HashMap<crate::engine::ecs::Entity, ([f32; 2], f32)>,
+
+    /// タブ復帰時に「次の start_physics で初速として積む速度」（一回性）。
+    /// Some のときだけ collect_physics_objects が該当 Entity の初速を上書きする。
+    /// start 直後に None へ戻すことで、他の多数の start_physics 呼び出しは初速なしを保つ。
+    pub(super) pending_restore_vel_3d: Option<std::collections::HashMap<crate::engine::ecs::Entity, ([f32; 3], [f32; 3])>>,
+
+    /// タブ復帰時に「次の start_physics_2d で初速として積む速度」（一回性、2D 版）。
+    pub(super) pending_restore_vel_2d: Option<std::collections::HashMap<crate::engine::ecs::Entity, ([f32; 2], f32)>>,
 
     /// プロジェクト設定（project_settings.json）のウィンドウ解像度キャッシュ (幅, 高さ)。
     /// handle_resumed で一度だけ読み込み、以降は再読込しない。
@@ -791,6 +824,7 @@ impl App {
             last_cursor_pos:    None,
             line_model_buf:     None,
             tool_mode:          ToolMode::Select,
+            gizmo_space:        GizmoSpace::World,
             drag:               drag_state::DragState::new(),
             hovered_gizmo_part: None,
             undo_history:       UndoHistory::new(),
@@ -858,7 +892,14 @@ impl App {
             edit_physics_2d_with_rigidbody: false,
             active_collision_2d_dfs_ids: std::collections::HashSet::new(),
             dragging_physics_2d_entity_id: None,
+            drag_collider_last_valid_pos_2d: None,
             last_physics_2d_viewport: None,
+            // タブごと物理状態保持（続きから再開）
+            tab_physics:            std::collections::HashMap::new(),
+            current_vel_cache_3d:   std::collections::HashMap::new(),
+            current_vel_cache_2d:   std::collections::HashMap::new(),
+            pending_restore_vel_3d: None,
+            pending_restore_vel_2d: None,
             // handle_resumed で project_settings.json から上書きされる
             project_resolution: DEFAULT_PROJECT_RESOLUTION,
         }
