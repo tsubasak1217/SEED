@@ -215,7 +215,7 @@ pub enum IpcCommand {
     SetCanvasAutoScale { actor_dfs_id: u32, slot_idx: u32, auto_scale: bool },
     /// CanvasComponent の重力方向モードを設定する
     /// フォーマット: SET_CANVAS_GRAVITY_MODE:{actor_dfs_id},{slot_idx},{mode:0|1}
-    /// mode: 0=ScreenDown, 1=CanvasDown
+    /// mode: 0=WorldDown, 1=CanvasDown
     SetCanvasGravityMode { actor_dfs_id: u32, slot_idx: u32, mode: u8 },
     /// CanvasComponent の描画ゾーンを設定する（ビューポート・ルートキャンバス用）
     /// フォーマット: SET_CANVAS_DRAW_ZONE:{actor_dfs_id},{slot_idx},{zone}

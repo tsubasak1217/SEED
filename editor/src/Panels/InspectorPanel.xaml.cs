@@ -3054,12 +3054,12 @@ public partial class InspectorPanel : UserControl
             FontSize   = 11,
             Margin     = new Thickness(0, 2, 0, 4),
             Padding    = new Thickness(4, 2, 4, 2),
-            ToolTip    = "スクリーン下方向: キャンバスを回転しても「画面の下」が常に重力方向です。\n" +
-                         "キャンバス下方向: キャンバスを回転すると重力も追従します。",
+            ToolTip    = "ワールド下方向: キャンバスを3Dで回転させても、中のオブジェクトは常に「ワールドの下」へ落ちます（薄い箱を傾けるとビー玉が転がる向き）。\n" +
+                         "キャンバス下方向: キャンバスを回転すると重力もキャンバスに追従します（箱の同じ壁へ落ち続ける）。",
         };
         cmbGravity.Items.Add(new ComboBoxItem
         {
-            Content = "スクリーン下方向を正とする（デフォルト）",
+            Content = "ワールド下方向を正とする（デフォルト）",
             Tag     = 0,
         });
         cmbGravity.Items.Add(new ComboBoxItem

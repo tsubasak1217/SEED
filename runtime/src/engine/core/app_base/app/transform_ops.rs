@@ -466,7 +466,7 @@ impl App {
 
     /// CanvasComponent の重力方向モードを更新する。
     ///
-    /// mode: 0=ScreenDown（スクリーン下方向）, 1=CanvasDown（キャンバス下方向）
+    /// mode: 0=WorldDown（ワールド下方向）, 1=CanvasDown（キャンバス下方向）
     pub(super) fn handle_set_canvas_gravity_mode(
         &mut self,
         actor_dfs_id: u32,
@@ -482,7 +482,7 @@ impl App {
                 .map(|s| s.entity)
         };
         let Some(slot_entity) = slot_entity else { return };
-        let gravity_mode = if mode == 1 { GravityMode::CanvasDown } else { GravityMode::ScreenDown };
+        let gravity_mode = if mode == 1 { GravityMode::CanvasDown } else { GravityMode::WorldDown };
         if let Some(scene) = &mut self.scene {
             if let Some(cc) = scene.world.get_mut::<CanvasComponent>(slot_entity) {
                 cc.gravity_mode = gravity_mode;

@@ -966,7 +966,7 @@ impl App {
             });
         }
 
-        // ⑥ ScreenDown モードの 3D キャンバスがある場合、Z 回転変化に応じて重力を更新する
+        // ⑥ 3D キャンバスのワールド姿勢に応じて重力方向を更新する（WorldDown 射影 / CanvasDown 一定）
         {
             let gravity = self.compute_scene_gravity_2d();
             let should_apply = self.mode != RuntimeMode::Edit || self.edit_physics_2d_with_rigidbody;
@@ -1078,10 +1078,10 @@ fn write_back_canvas_transform(
 // ─── 重力方向ヘルパー ────────────────────────────────────────────────────────
 
 impl App {
-    /// シーン内の 3D キャンバス（Actor3D + CanvasComponent）の gravity_mode と Z 回転から
-    /// 現在のシーンで使用すべき重力方向ベクトルを計算する。
+    /// シーン内の 3D キャンバス（Actor3D + CanvasComponent）の gravity_mode とワールド姿勢から
+    /// 現在のシーンで使用すべき重力方向ベクトル（キャンバスローカル 2D）を計算する。
     ///
-    /// 3D キャンバスが見つからない場合は DEFAULT_GRAVITY_2D を返す。
+    /// 3D キャンバスが見つからない場合は DEFAULT_GRAVITY_2D（= ワールド下・[0, G]）を返す。
     /// 複数の 3D キャンバスがある場合は最初に見つかったものを使用する。
     pub(super) fn compute_scene_gravity_2d(&self) -> [f32; 2] {
         let wl = self.active_world_line;
@@ -1094,38 +1094,50 @@ impl App {
             let Some(slot) = actor.slots().iter().find(|s| s.kind == ComponentKind::Canvas) else { continue };
             let Some(cc) = scene.world.get::<CanvasComponent>(slot.entity) else { continue };
 
-            let z_rot_deg = scene.world.get::<ActorTransform>(actor.entity)
-                .map(|t| t.rotation[2])
-                .unwrap_or(0.0);
-            return compute_canvas_gravity(cc.gravity_mode, z_rot_deg);
+            // キャンバスのワールド変換行列（描画の actor_3d_mat と同一・to_mat4）。
+            // rotation は Quaternion なので Z オイラー角を抜き出すのではなく行列で扱う。
+            let Some(tf) = scene.world.get::<ActorTransform>(actor.entity) else { continue };
+            return compute_canvas_gravity(cc.gravity_mode, &tf.to_mat4());
         }
 
         crate::engine::physics::DEFAULT_GRAVITY_2D
     }
 }
 
-/// キャンバスの重力方向ベクトル [gx, gy] を計算する（m/s² 単位）。
+/// キャンバスの重力方向ベクトル [gx, gy]（キャンバスローカル 2D・m/s²）を計算する。
 ///
-/// 【前提となる座標空間】2D 物理は共通のスクリーン整列空間（ortho・Y+ が下）で走り、
-/// 各ボディ（壁・床の Static コライダーを含む）は自身の累積ワールド回転を持つ。
-/// つまり「キャンバス＝壁で囲った箱」を回転させると、壁ボディ自体が回転する
-/// （静的コライダーの毎フレーム更新により、祖先回転に追従する）。
+/// 【座標空間】3D キャンバスの 2D 物理はキャンバスローカル空間（キャンバス面）で走る。
+/// キャンバス面のワールド軸は `actor_3d_mat`（Actor3D のワールド行列）の列で与えられる:
+///   - キャンバスローカル +X のワールド方向 = 列0
+///   - キャンバスローカル +Y（下）のワールド方向 = -列1
+///     （canvas_to_world がローカル Y に -CANVAS_WORLD_SCALE を掛けるため符号反転）
 ///
-/// `ScreenDown`: 重力は常に画面下（ワールド下）で一定 = [0, G]。
-///   箱を回転させても重力は回さない。箱（壁ボディ）が回転し、その中でビー玉は
-///   画面下の低い側へ自然に転がる。重力まで回すと「箱の回転」と二重計上になり破綻する。
-/// `CanvasDown`: 重力をキャンバス（箱）ローカルの下方向に固定する。箱が θ 回転すると
-///   共通空間上での「箱の下」も θ 回転するため、重力ベクトルも回転させる。
-fn compute_canvas_gravity(mode: GravityMode, z_rot_deg: f32) -> [f32; 2] {
+/// `WorldDown`: ワールド下方向 [0,-1,0] をキャンバスローカル 2D 軸へ射影する。
+///   キャンバスを 3D で回転させると射影も回転し、常にワールドの下（薄い箱を傾けたときに
+///   ビー玉が転がる先）へ落ちる。無回転で [0, G]、面がワールド下と直交（水平机）なら ~0。
+/// `CanvasDown`: 常にキャンバスローカル下 [0, G]（キャンバスをどう回転させても箱の同じ壁へ）。
+fn compute_canvas_gravity(mode: GravityMode, actor_3d_mat: &[[f32; 4]; 4]) -> [f32; 2] {
     const G: f32 = 9.81;
+
+    // 3成分ベクトルの内積・正規化（degenerate 時はゼロベクトル）。
+    fn dot3(a: [f32; 3], b: [f32; 3]) -> f32 { a[0]*b[0] + a[1]*b[1] + a[2]*b[2] }
+    fn norm3(v: [f32; 3]) -> [f32; 3] {
+        let len = (v[0]*v[0] + v[1]*v[1] + v[2]*v[2]).sqrt();
+        if len > f32::EPSILON { [v[0]/len, v[1]/len, v[2]/len] } else { [0.0, 0.0, 0.0] }
+    }
+
     match mode {
-        // 常に画面下で一定（箱の回転はボディ側が担うため重力は回さない）
-        GravityMode::ScreenDown => [0.0, G],
-        // 箱ローカル下に追従して重力を回転させる。
-        // ※回転符号は要実機確認（Y+ 下・回転の向きの規約により反転の可能性がある）。
-        GravityMode::CanvasDown => {
-            let theta = z_rot_deg.to_radians();
-            [G * theta.sin(), G * theta.cos()]
+        GravityMode::WorldDown => {
+            // 行優先行列 m[row][col]。列 j = 基底ベクトル j のワールド方向。
+            let m = actor_3d_mat;
+            let col0 = norm3([m[0][0], m[1][0], m[2][0]]); // キャンバスローカル +X のワールド方向
+            let col1 = norm3([m[0][1], m[1][1], m[2][1]]); // ローカル +Y は -col1 方向
+            let world_down = [0.0f32, -1.0, 0.0];          // ワールド下（Y-UP 前提）
+            let gx =  dot3(world_down, col0);
+            let gy = -dot3(world_down, col1); // ローカル +Y = -col1 なので符号反転
+            [G * gx, G * gy]
         }
+        // 常にキャンバスローカル下で一定（ワールド回転に追従しない）
+        GravityMode::CanvasDown => [0.0, G],
     }
 }

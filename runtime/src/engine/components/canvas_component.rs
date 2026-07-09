@@ -18,18 +18,24 @@ use crate::engine::ecs::Component;
 
 /// 2D 物理シミュレーションの重力方向モード。
 ///
-/// `ScreenDown`（デフォルト）: 常にスクリーン下方向を重力正方向とする。
-///   3D キャンバスの場合はキャンバスの Z 軸回転を参照して重力方向を補正する
-///   （ゲーム画面をそのまま回転させても、プレイヤー視点の「下方向」は変わらない）。
+/// `WorldDown`（デフォルト）: 常にワールド下方向を重力正方向とする。
+///   3D キャンバスの 2D 物理はキャンバスローカル空間で走るため、キャンバスの
+///   ワールド姿勢からワールド下方向 [0,-1,0] をローカル 2D 軸へ射影して重力を求める。
+///   これによりキャンバスを 3D 空間で回転させても、中のオブジェクトは常に
+///   ワールドの下（＝薄い箱を傾けたときにビー玉が転がる先）へ落ちる。
 ///
 /// `CanvasDown`: キャンバスの下方向（ローカル Y+）を重力正方向とする。
-///   3D キャンバスを回転させると重力もキャンバスに追従する。
+///   ワールドで回転させても重力はキャンバスローカル下のまま（箱の同じ壁へ落ち続ける）。
+///
+/// # serde 互換
+/// 旧名 `screen_down` は `WorldDown` の alias として読み込む（既存 .scene 互換）。
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum GravityMode {
-    /// スクリーン下方向を重力正方向とする（デフォルト）
+    /// ワールド下方向を重力正方向とする（デフォルト）
     #[default]
-    ScreenDown,
+    #[serde(alias = "screen_down")]
+    WorldDown,
     /// キャンバス下方向（ローカル Y+）を重力正方向とする
     CanvasDown,
 }
@@ -230,7 +236,7 @@ impl Default for CanvasComponent {
             // 新規作成コンポーネントはメインカメラ基準をデフォルトとする
             // （メインカメラが無い場合は実行時にウィンドウ基準へフォールバック）
             viewport_ref:      CanvasViewportRef::MainCamera,
-            gravity_mode:      GravityMode::ScreenDown,
+            gravity_mode:      GravityMode::WorldDown,
             // 新規作成時は従来どおり前面（オーバーレイ）
             draw_zone:         CanvasDrawZone::Foreground,
             pivot:             [0.0, 0.0],
