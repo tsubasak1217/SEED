@@ -834,16 +834,14 @@ impl App {
             }
 
             // ③ 衝突中エンティティ DFS ID セットを更新する
+            //
+            // 【修正2】3D と同様、色判定は毎フレームの NarrowPhase 直接クエリ
+            // （active_contact_entity_ids）へ寄せる。イベントベースの Stay 集合は
+            // Stopped 取りこぼしで残留しうるため使用しない。トリガーは別集合と和を取る。
             let mut frame_colliding: std::collections::HashSet<u64> =
                 std::collections::HashSet::new();
-            for event in &result.collision_events {
-                match event.phase {
-                    CollisionPhase2d::Enter | CollisionPhase2d::Stay => {
-                        frame_colliding.insert(event.entity_a);
-                        frame_colliding.insert(event.entity_b);
-                    }
-                    CollisionPhase2d::Exit => {}
-                }
+            for &eid in &result.active_contact_entity_ids {
+                frame_colliding.insert(eid);
             }
             for &eid in &result.active_trigger_entity_ids {
                 frame_colliding.insert(eid);

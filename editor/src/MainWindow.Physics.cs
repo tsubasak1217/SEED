@@ -76,8 +76,10 @@ public partial class MainWindow
             ChkEditPhysicsRigidbody.IsChecked = false;
             _editPhysicsWithRigidbody = false;
         }
-        // タイムラインパネルの表示切替
-        ShowPhysicsTimeline(_editPhysicsEnabled);
+        // タイムラインパネルの表示切替。
+        // 【変更3(a)】再生バー（タイムライン）は 3D/2D いずれかが RigidBody 有効時のみ表示する。
+        // RigidBody 無効（常時押し戻しモード）ではタイムラインを使わないため非表示にする。
+        RefreshPhysicsTimelineVisibility();
 
         _runtimeManager?.SendToRuntime(
             $"SET_EDIT_PHYSICS:{(_editPhysicsEnabled ? 1 : 0)},{(_editPhysicsWithRigidbody ? 1 : 0)}");
@@ -85,11 +87,13 @@ public partial class MainWindow
 
     /// <summary>
     /// "RigidBody" サブチェックボックスが変更されたときに呼ばれる。
-    /// フラグを更新し、IPC コマンドで Runtime に通知する。
+    /// フラグを更新し、タイムライン表示を切り替え、IPC コマンドで Runtime に通知する。
     /// </summary>
     private void OnEditPhysicsRigidbodyChanged(object sender, RoutedEventArgs e)
     {
         _editPhysicsWithRigidbody = ChkEditPhysicsRigidbody.IsChecked == true;
+        // 【変更3(a)】RigidBody の有効／無効で再生バー（タイムライン）の表示を切り替える。
+        RefreshPhysicsTimelineVisibility();
         _runtimeManager?.SendToRuntime(
             $"SET_EDIT_PHYSICS:{(_editPhysicsEnabled ? 1 : 0)},{(_editPhysicsWithRigidbody ? 1 : 0)}");
     }
@@ -111,6 +115,9 @@ public partial class MainWindow
             ChkEditPhysics2dRigidbody.IsChecked = false;
             _editPhysics2dWithRigidbody = false;
         }
+        // 【変更3(a)】2D 側の RigidBody 有効／無効でもタイムライン表示を切り替える
+        // （3D が無効・2D のみ RigidBody 有効な場合にタイムラインが表示されないバグを防ぐ）。
+        RefreshPhysicsTimelineVisibility();
         _runtimeManager?.SendToRuntime(
             $"SET_EDIT_PHYSICS_2D:{(_editPhysics2dEnabled ? 1 : 0)},{(_editPhysics2dWithRigidbody ? 1 : 0)}");
     }
@@ -122,8 +129,23 @@ public partial class MainWindow
     private void OnEditPhysics2dRigidbodyChanged(object sender, RoutedEventArgs e)
     {
         _editPhysics2dWithRigidbody = ChkEditPhysics2dRigidbody.IsChecked == true;
+        RefreshPhysicsTimelineVisibility();
         _runtimeManager?.SendToRuntime(
             $"SET_EDIT_PHYSICS_2D:{(_editPhysics2dEnabled ? 1 : 0)},{(_editPhysics2dWithRigidbody ? 1 : 0)}");
+    }
+
+    /// <summary>
+    /// タイムラインパネルの表示状態を、3D/2D 編集時物理の現在のチェック状態から再計算して適用する。
+    ///
+    /// Rust 側の is_edit_physics_pushback_mode() と同じ規則（3D/2D いずれかが
+    /// RigidBody 有効ならタイムラインモード）に合わせて、片方だけ RigidBody 有効な
+    /// 場合でもタイムラインバーが正しく表示されるようにする。
+    /// </summary>
+    private void RefreshPhysicsTimelineVisibility()
+    {
+        bool timeline3d = _editPhysicsEnabled    && _editPhysicsWithRigidbody;
+        bool timeline2d = _editPhysics2dEnabled  && _editPhysics2dWithRigidbody;
+        ShowPhysicsTimeline(timeline3d || timeline2d);
     }
 
     // ── 編集時物理タイムライン ─────────────────────────────────────────────────

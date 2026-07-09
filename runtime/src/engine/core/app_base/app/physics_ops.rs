@@ -100,7 +100,9 @@ impl App {
         // 物理スレッドが未起動の場合はスキップする。
         // Play モードの初回起動は handle_redraw_requested() のフレーム末尾で行う。
         // （フレーム先頭で起動すると初回 GPU 処理の間に物理が先行してしまうため）
-        let Some(thread) = &self.physics_thread else { return };
+        // ※ ドラッグ状態変化ブロック内で self の可変メソッド（自動再開）を呼ぶため、
+        //   thread はここでは束縛せず、送信のたびに狭いスコープで借用する。
+        if self.physics_thread.is_none() { return; }
 
         // 診断ログ（最初の 120 フレームのみ）
         static DIAG_FRAME: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
@@ -129,17 +131,36 @@ impl App {
         };
 
         if new_drag_entity_id != self.dragging_physics_entity_id {
+            // 【変更3(b)】ドラッグ終了自動再開の判定。
+            // RigidBody タイムラインモードで最新フレーム停止中に、Collider を持つアクターの
+            // ドラッグが終了（Some → None）した場合、再生ボタンを押さずに「最終フレームの続き」
+            // として物理を自動再開する。過去フレームへシーク中（!at_latest）は誤爆防止で対象外。
+            let drag_ended = self.dragging_physics_entity_id.is_some()
+                && new_drag_entity_id.is_none();
+            let auto_resume = drag_ended
+                && self.mode == RuntimeMode::Edit
+                && self.edit_physics_enabled
+                && self.edit_physics_with_rigidbody
+                && self.edit_physics_paused
+                && self.edit_physics_at_latest;
+
             // ドラッグ状態が変化した場合にボディタイプを切り替える
             if let Some(old_id) = self.dragging_physics_entity_id {
                 // ドラッグ終了: 現在のアクター座標を final_position として渡し Dynamic に戻す。
-                let final_position = self.scene.as_ref().and_then(|s| {
-                    get_actor_transform_by_entity_id(s, self.active_world_line, old_id)
-                });
-                thread.send(PhysicsCommand::SetBodyKinematic {
-                    entity_id: old_id,
-                    is_kinematic: false,
-                    final_position,
-                });
+                // 自動再開する場合は直後に物理スレッドを stop→start で作り直すため、
+                // この SetBodyKinematic 送信は不要（省略してムダな再構築を避ける）。
+                if !auto_resume {
+                    let final_position = self.scene.as_ref().and_then(|s| {
+                        get_actor_transform_by_entity_id(s, self.active_world_line, old_id)
+                    });
+                    if let Some(thread) = &self.physics_thread {
+                        thread.send(PhysicsCommand::SetBodyKinematic {
+                            entity_id: old_id,
+                            is_kinematic: false,
+                            final_position,
+                        });
+                    }
+                }
                 // コライダーのみモードのドラッグ終了: 最終有効位置・前フレーム位置をクリアする
                 self.drag_collider_last_valid_pos = None;
                 self.drag_prev_at_pos = None;
@@ -151,11 +172,13 @@ impl App {
                 // 持ち上げ開始時の回転ジャークを防ぐ。
                 let ecs_start_pos = self.scene.as_ref()
                     .and_then(|s| get_actor_transform_by_entity_id(s, self.active_world_line, new_id));
-                thread.send(PhysicsCommand::SetBodyKinematic {
-                    entity_id: new_id,
-                    is_kinematic: true,
-                    final_position: ecs_start_pos,
-                });
+                if let Some(thread) = &self.physics_thread {
+                    thread.send(PhysicsCommand::SetBodyKinematic {
+                        entity_id: new_id,
+                        is_kinematic: true,
+                        final_position: ecs_start_pos,
+                    });
+                }
                 // コライダーのみモードのドラッグ開始: 現在位置を最終有効位置・前フレーム位置として初期化する
                 if self.mode == RuntimeMode::Edit && !self.edit_physics_with_rigidbody {
                     let init_pos = self.scene.as_ref()
@@ -165,8 +188,17 @@ impl App {
                 }
             }
             self.dragging_physics_entity_id = new_drag_entity_id;
+
+            // 自動再開: 現在の ECS 位置から物理を再起動して続きのシミュレーションを開始する。
+            // ここで物理スレッドは作り直されるため、このフレームの結果受信は行わず終了する。
+            if auto_resume {
+                self.resume_edit_physics_from_current_ecs();
+                return;
+            }
         }
 
+        // 結果受信のためにここで改めて物理スレッドを借用する。
+        let Some(thread) = &self.physics_thread else { return };
         let result = thread.recv_latest();
 
         if let Some(ref result) = result {
@@ -313,20 +345,18 @@ impl App {
 
             // ③ 衝突中エンティティ DFS ID セットを更新する（コライダーワイヤー色変更用）
             //
-            // 通常衝突: Stay イベントが毎フレーム届くので Enter | Stay を収集する。
-            // トリガー衝突: Enter/Exit は遷移時のみ来るため、毎フレーム送られる
-            //   active_trigger_entity_ids を使って「触れている間ずっと」色を維持する。
+            // 【修正2】色判定の情報源を毎フレームの NarrowPhase 直接クエリへ寄せる。
+            // collision_events の Stay は active_contacts（イベントベース）に依存し、
+            // Stopped イベントの取りこぼしで残留（接触していないのに接触色）しうる。
+            // 一方 active_contact_entity_ids は has_any_active_contact() を毎フレーム
+            // 問い合わせた結果であり、押し戻し判定と同一の確実な情報源。
+            // トリガーは active_contact_entity_ids から除外されているため、
+            // 毎フレーム送られる active_trigger_entity_ids と和集合を取る。
             let mut frame_colliding: std::collections::HashSet<u64> = std::collections::HashSet::new();
-            for event in &result.collision_events {
-                match event.phase {
-                    CollisionPhase::Enter | CollisionPhase::Stay => {
-                        frame_colliding.insert(event.entity_a);
-                        frame_colliding.insert(event.entity_b);
-                    }
-                    CollisionPhase::Exit => {}
-                }
+            for &eid in &result.active_contact_entity_ids {
+                frame_colliding.insert(eid);
             }
-            // active_trigger_entity_ids は現在オーバーラップ中の全エンティティを毎フレーム持つ
+            // active_trigger_entity_ids は現在オーバーラップ中の全トリガー関係を毎フレーム持つ
             for &eid in &result.active_trigger_entity_ids {
                 frame_colliding.insert(eid);
             }

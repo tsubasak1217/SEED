@@ -32,7 +32,7 @@ const PERF_LOG_INTERVAL: u64 = 60;
 static PERF_LOG_ENABLED: std::sync::LazyLock<bool> =
     std::sync::LazyLock::new(|| std::env::var_os("SEED_PERF_LOG").is_some());
 use crate::engine::components::{ColliderComponent, ColliderShapeData, ComponentKind};
-use crate::engine::components::{Collider2dComponent, ColliderShape2dData, CanvasTransform};
+use crate::engine::components::{Collider2dComponent, CanvasTransform};
 use crate::engine::components::Transform as ActorTransform;
 use crate::engine::structs::transforms::Quaternion;
 use crate::engine::structs::objects::actor::Actor;
@@ -1696,7 +1696,20 @@ impl App {
                             &root_auto_sizes_2d, edit_view_2d,
                         );
 
+                        // 3D シーン内キャンバス（Actor3D + CanvasComponent）配下の Actor2D は、
+                        // canvas_to_world 変換を通す専用パス（後述の 3D キャンバス用バッチ）で
+                        // 描画するため、この 2D（ortho / ワールドスペース）パスからは除外する。
+                        // collect_actor2d_contexts は 3D キャンバス配下の Actor2D もフラットに
+                        // 含めるが、その body_pos_px はキャンバスローカル空間のため、ここで
+                        // ortho 空間として描画すると誤った位置（原点付近の極小枠）になってしまう。
+                        let canvas3d_desc_map =
+                            crate::engine::core::app_base::app::collider2d_wireframe::build_3d_canvas_collider_descendant_map(
+                                scene, self.active_world_line,
+                            );
+
                         for ctx in &ctx2d_list {
+                            // 3D キャンバス配下はこのパスの対象外（専用パスで描画）
+                            if canvas3d_desc_map.contains_key(&ctx.actor_entity) { continue; }
                             let Some(slot_entity) = ctx.collider_slot_entity else { continue };
                             let Some(collider) = scene.world.get::<Collider2dComponent>(slot_entity) else { continue };
 
@@ -1710,7 +1723,6 @@ impl App {
                             };
 
                             let rot_rad = ctx.rot_rad;
-                            let scale   = ctx.scale;
                             let (sin, cos) = rot_rad.sin_cos();
 
                             // コライダーオフセットをボディ回転で変換する（キャンバスピクセル単位）
@@ -1718,55 +1730,118 @@ impl App {
                             let off_wx = cos * ox - sin * oy;
                             let off_wy = sin * ox + cos * oy;
 
+                            // コライダー中心（Y 未反転の正準キャンバス空間）と実効スケールを求める。
                             // body_pos_px は canvas_collect.rs と同一の変換で ortho 空間で計算済み。
-                            // コライダーオフセットは ctx.size_sx/size_sy でスケールして加算する。
+                            // Y 反転（y_sign）は共通関数へ渡す map クロージャ側で行う。
                             let (cx, cy, eff_sx, eff_sy) = if ss_layout {
-                                let cx = ctx.body_pos_px[0] + off_wx * ctx.size_sx;
-                                let cy = (ctx.body_pos_px[1] + off_wy * ctx.size_sy) * y_sign;
-                                (cx, cy, ctx.size_sx, ctx.size_sy)
+                                (
+                                    ctx.body_pos_px[0] + off_wx * ctx.size_sx,
+                                    ctx.body_pos_px[1] + off_wy * ctx.size_sy,
+                                    ctx.size_sx, ctx.size_sy,
+                                )
                             } else {
                                 (
                                     (ctx.body_pos_px[0] + off_wx) * canvas_scale,
-                                    (ctx.body_pos_px[1] + off_wy) * canvas_scale * y_sign,
-                                    canvas_scale,
-                                    canvas_scale,
+                                    (ctx.body_pos_px[1] + off_wy) * canvas_scale,
+                                    canvas_scale, canvas_scale,
                                 )
                             };
 
-                            match &collider.shape {
-                                ColliderShape2dData::Box { half_extents } => {
-                                    let hx = half_extents[0] * scale[0].abs() * eff_sx;
-                                    let hy = half_extents[1] * scale[1].abs() * eff_sy;
-                                    lb.add_box_2d([cx, cy], rot_rad * y_sign, [hx, hy], 0.0, color);
-                                }
-                                ColliderShape2dData::Circle { radius } => {
-                                    let r = radius * scale[0].abs().max(scale[1].abs()) * eff_sx.max(eff_sy);
-                                    lb.add_circle_2d([cx, cy], r, 32, 0.0, color);
-                                }
-                                ColliderShape2dData::Capsule { radius, half_height } => {
-                                    let r  = radius * scale[0].abs().max(scale[1].abs()) * eff_sx.max(eff_sy);
-                                    let hh = half_height * scale[1].abs() * eff_sy;
-                                    lb.add_capsule_2d([cx, cy], rot_rad * y_sign, r, hh, 16, 0.0, color);
-                                }
-                                ColliderShape2dData::ConvexHull { vertices } => {
-                                    let world_verts: Vec<[f32; 2]> = vertices.iter()
-                                        .map(|&[vx, vy]| {
-                                            let svx = vx * scale[0];
-                                            let svy = vy * scale[1];
-                                            let rwx = cos * svx - sin * svy;
-                                            let rwy = sin * svx + cos * svy;
-                                            [
-                                                cx + rwx * eff_sx,
-                                                cy + rwy * eff_sy * y_sign,
-                                            ]
-                                        })
-                                        .collect();
-                                    lb.add_convex_hull_2d(&world_verts, 0.0, color);
-                                }
-                            }
+                            // 2D シーンの描画空間: 正準キャンバス空間の Y を y_sign で反転するのみ（Z=0）。
+                            // map が Y を y_sign で反転するため、map_y_sign にも同じ y_sign を渡し
+                            // 従来実装（回転 rot_rad * y_sign）と同一の頂点列を保証する。
+                            crate::engine::core::app_base::app::collider2d_wireframe::emit_collider2d_wireframe(
+                                &mut lb, &collider.shape, [cx, cy], rot_rad, ctx.scale,
+                                eff_sx, eff_sy, color, y_sign,
+                                |[x, y]| [x, y * y_sign, 0.0],
+                            );
                         }
 
                         if lb.is_empty() { None } else { Some(lb.build(&draw_ctx.device)) }
+                    } else { None };
+
+                    // ── 3D キャンバス配下 2D コライダーワイヤーフレームバッチ ──────────────
+                    // 3D シーン内キャンバス（Actor3D + CanvasComponent）配下の Actor2D が持つ
+                    // Collider2d を、スプライトの「3D Canvas 配下収集パス」と同一の
+                    // canvas_to_world 変換（キャンバス空間 → 3D 空間）を通して描画する。
+                    //
+                    // 通常の 2D シーン用バッチ（collider_2d_wireframe_batch）が is_canvas
+                    // （= トップレベル Actor2D 世界線）に限定されるのに対し、こちらは
+                    // is_canvas に関わらず常に評価する（3D シーンでも 3D キャンバスは存在するため）。
+                    // 描画条件（in_editor || play_collider_draw）は 2D パスと揃える。
+                    // 2D シーンビュー（edit_view_2d）では 3D シーンごと非表示のため生成しない。
+                    let draw_colliders_3d_canvas =
+                        (in_editor || self.play_collider_draw) && !edit_view_2d;
+
+                    let collider_2d_canvas3d_wireframe_batch = if draw_colliders_3d_canvas {
+                        if let Some(scene) = &self.scene {
+                            // 3D キャンバス配下 Actor2D → 所属キャンバスの canvas_to_world マップ。
+                            let canvas3d_desc_map =
+                                crate::engine::core::app_base::app::collider2d_wireframe::build_3d_canvas_collider_descendant_map(
+                                    scene, self.active_world_line,
+                                );
+
+                            if canvas3d_desc_map.is_empty() {
+                                None
+                            } else {
+                                let mut lb = LineBatch::new();
+
+                                // スプライトの 3D キャンバス収集と同一パラメータで body_pos_px を得る:
+                                //   viewport_size = None・オーバーライド/自動解像度マップ = 空・
+                                //   design_space = false。
+                                // これにより 3D キャンバス配下 Actor2D の body_pos_px は
+                                // キャンバスローカル空間（キャンバス [0,0] 基準の px、Y+ 下）で返り、
+                                // canvas_to_world 行列でスプライトと一致する 3D 位置へ変換できる。
+                                let empty_overrides: std::collections::HashMap<crate::engine::ecs::Entity, [f32; 2]> =
+                                    std::collections::HashMap::new();
+                                let empty_auto: std::collections::HashMap<crate::engine::ecs::Entity, [f32; 2]> =
+                                    std::collections::HashMap::new();
+                                let ctx3d_list = crate::engine::core::app_base::app::physics2d_ops::collect_actor2d_contexts(
+                                    scene, self.active_world_line, None, &empty_overrides,
+                                    &empty_auto, false,
+                                );
+
+                                for ctx in &ctx3d_list {
+                                    // 3D キャンバス配下でなければスキップ（通常の 2D パスが担当）。
+                                    let Some(ctw) = canvas3d_desc_map.get(&ctx.actor_entity) else { continue };
+                                    let Some(slot_entity) = ctx.collider_slot_entity else { continue };
+                                    let Some(collider) = scene.world.get::<Collider2dComponent>(slot_entity) else { continue };
+
+                                    // 接触色・トリガー色分けは通常 2D シーンと同一。
+                                    let color = if collider.is_trigger {
+                                        COLLIDER_COLOR_TRIGGER
+                                    } else if self.active_collision_2d_dfs_ids.contains(&ctx.dfs_id) {
+                                        COLLIDER_COLOR_COLLISION
+                                    } else {
+                                        COLLIDER_COLOR_NORMAL
+                                    };
+
+                                    let rot_rad = ctx.rot_rad;
+                                    let (sin, cos) = rot_rad.sin_cos();
+
+                                    // コライダーオフセットをボディ回転で変換（キャンバスピクセル単位）
+                                    let [ox, oy] = collider.offset;
+                                    let off_wx = cos * ox - sin * oy;
+                                    let off_wy = sin * ox + cos * oy;
+
+                                    // 中心はキャンバスローカル px（Y 未反転）。SS レイアウトと同じく
+                                    // オフセットへ size_sx/size_sy を適用する。Y 反転・px→3D 変換は
+                                    // canvas_to_world 行列（map クロージャ）が担う。
+                                    let cx = ctx.body_pos_px[0] + off_wx * ctx.size_sx;
+                                    let cy = ctx.body_pos_px[1] + off_wy * ctx.size_sy;
+
+                                    // canvas_to_world 変換は正準キャンバス空間（Y+ 下）をそのまま
+                                    // 3D 平面へ写すため Y 反転は発生しない → map_y_sign は +1.0。
+                                    crate::engine::core::app_base::app::collider2d_wireframe::emit_collider2d_wireframe(
+                                        &mut lb, &collider.shape, [cx, cy], rot_rad, ctx.scale,
+                                        ctx.size_sx, ctx.size_sy, color, 1.0,
+                                        |p| crate::engine::core::app_base::app::collider2d_wireframe::canvas_point_to_world(ctw, p),
+                                    );
+                                }
+
+                                if lb.is_empty() { None } else { Some(lb.build(&draw_ctx.device)) }
+                            }
+                        } else { None }
                     } else { None };
 
                     // スプライト描画リソース収集（render pass 前に GPU バッファを準備する）
@@ -2521,6 +2596,21 @@ impl App {
                         {
                             draw_line_batch(
                                 &mut pass, coll_batch,
+                                &camera_buf.bind_group, line_bg,
+                                &draw_ctx.pipelines,
+                            );
+                        }
+
+                        // 3D キャンバス配下 2D コライダーワイヤーフレーム
+                        // （3D シーン内キャンバス上の Actor2D コライダー）。
+                        // canvas_to_world 変換済みで 3D ワールド座標を持つため、
+                        // 3D コライダー同様に 3D カメラパスで常に描画する
+                        // （scene_canvas_ss でもガードしない・3D Canvas アウトラインと同扱い）。
+                        if let (Some(coll2d_c3d_batch), Some((_, line_bg))) =
+                            (&collider_2d_canvas3d_wireframe_batch, &self.line_model_buf)
+                        {
+                            draw_line_batch(
+                                &mut pass, coll2d_c3d_batch,
                                 &camera_buf.bind_group, line_bg,
                                 &draw_ctx.pipelines,
                             );

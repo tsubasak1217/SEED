@@ -34,6 +34,7 @@ mod canvas_drop;
 mod render;
 mod frame_renderer;
 mod canvas_collect;
+mod collider2d_wireframe;
 mod app_init;
 mod event_handler;
 mod drag_handler;

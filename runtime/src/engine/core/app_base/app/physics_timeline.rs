@@ -12,6 +12,7 @@
 //    戻って再生する場合は現在のTransform状態で物理エンジンを再起動する。
 // ============================================================
 
+use std::collections::HashSet;
 use crate::engine::components::{
     Transform as ActorTransform, CanvasTransform, ModelComponent, ComponentKind,
 };
@@ -47,6 +48,12 @@ pub struct PhysicsSnapshot {
     pub transforms_3d: Vec<(Entity, ActorTransform)>,
     /// 2D アクターの CanvasTransform（Entity → CanvasTransform）
     pub transforms_2d: Vec<(Entity, CanvasTransform)>,
+    /// このフレーム時点で 3D 接触中だったエンティティ DFS ID 集合（コライダー色復元用）。
+    /// シーク・ステップ・プレイバック時にこれを active_collision_dfs_ids へ書き戻すことで、
+    /// タイムライン上のどのフレームでも「そのフレーム時点の接触色」を正しく再現する。
+    pub colliding_3d: HashSet<u64>,
+    /// このフレーム時点で 2D 接触中だったエンティティ DFS ID 集合（コライダー色復元用）。
+    pub colliding_2d: HashSet<u64>,
     /// このフレームのシミュレーション累積時間（秒）
     pub time_secs: f64,
 }
@@ -54,6 +61,71 @@ pub struct PhysicsSnapshot {
 // ─── App impl ─────────────────────────────────────────────────────────────────
 
 impl App {
+    // ─── 物理スレッド Pause/Resume 共通ヘルパー ────────────────────────────────
+
+    /// 3D / 2D 両方の物理スレッドへ Pause を送信する。
+    ///
+    /// タイムラインを停止させる各所（初期化・適用・シーク・収束停止）で共用する。
+    /// スレッドが未起動なら何もしない。
+    pub(super) fn send_pause_to_physics_threads(&self) {
+        if let Some(thread) = &self.physics_thread {
+            thread.send(PhysicsCommand::Pause);
+        }
+        if let Some(thread) = &self.physics_thread_2d {
+            thread.send(PhysicsCommand2d::Pause);
+        }
+    }
+
+    /// 3D / 2D 両方の物理スレッドへ Resume を送信する。
+    pub(super) fn send_resume_to_physics_threads(&self) {
+        if let Some(thread) = &self.physics_thread {
+            thread.send(PhysicsCommand::Resume);
+        }
+        if let Some(thread) = &self.physics_thread_2d {
+            thread.send(PhysicsCommand2d::Resume);
+        }
+    }
+
+    // ─── 常時押し戻しモード判定 ────────────────────────────────────────────────
+
+    /// RigidBody 無効の「常時押し戻しモード」かどうかを返す。
+    ///
+    /// 有効になっている編集時物理（3D/2D）がすべて RigidBody 無効（コライダーのみ）の場合に true。
+    /// このモードではタイムライン（スナップショット記録・再生・Pause）を使わず、
+    /// 物理を毎フレーム走らせてドラッグ／インスペクタ編集による押し戻しを常時有効にする。
+    /// 逆に、一つでも RigidBody 有効（ダイナミクスあり）の物理があればタイムラインを優先する。
+    pub(super) fn is_edit_physics_pushback_mode(&self) -> bool {
+        if self.mode != RuntimeMode::Edit { return false; }
+        let any_enabled = self.edit_physics_enabled || self.edit_physics_2d_enabled;
+        if !any_enabled { return false; }
+        // RigidBody（タイムライン）モードの物理が一つでもあればタイムライン優先＝押し戻しモードではない
+        let timeline_3d = self.edit_physics_enabled    && self.edit_physics_with_rigidbody;
+        let timeline_2d = self.edit_physics_2d_enabled && self.edit_physics_2d_with_rigidbody;
+        !timeline_3d && !timeline_2d
+    }
+
+    /// 常時押し戻しモードへ移行する。
+    ///
+    /// タイムライン状態をリセットし、接触色をクリアするだけで、物理スレッドには
+    /// Pause を送らない（起動直後の paused=false のまま走り続ける）。
+    /// これによりドラッグ／インスペクタ編集の押し戻しが即時・常時効くようになる。
+    pub(super) fn enter_edit_physics_pushback(&mut self) {
+        self.reset_physics_timeline();
+        // 前回のライブシミュレーション時の接触色が残らないようクリアする
+        self.active_collision_dfs_ids.clear();
+        self.active_collision_2d_dfs_ids.clear();
+        // エディタへタイムライン非稼働状態を通知する（スライダーはエディタ側で非表示）
+        self.send_physics_timeline_state();
+    }
+
+    /// ギズモ／インスペクタによる Transform ドラッグが進行中かどうかを返す。
+    ///
+    /// RigidBody タイムラインモードで最新フレーム停止中のドラッグ終了自動再開の
+    /// トリガー判定（should_step_edit_physics）に使用する。
+    pub(super) fn edit_physics_drag_active(&self) -> bool {
+        self.drag.gizmo_drag.is_some() || self.inspector_transform_drag.is_some()
+    }
+
     /// 編集時物理タイムラインを初期化する。
     ///
     /// `edit_physics_enabled` が true になった時点で呼ぶ。
@@ -76,12 +148,7 @@ impl App {
 
         // 物理スレッドを Pause して、再生ボタンを押すまでシミュレーションが進まないようにする
         // （初期化直後から物理が走ると倒れた状態でスタートしてしまう）
-        if let Some(thread) = &self.physics_thread {
-            thread.send(PhysicsCommand::Pause);
-        }
-        if let Some(thread) = &self.physics_thread_2d {
-            thread.send(PhysicsCommand2d::Pause);
-        }
+        self.send_pause_to_physics_threads();
 
         self.send_physics_timeline_state();
     }
@@ -126,7 +193,14 @@ impl App {
             }
         }
 
-        Some(PhysicsSnapshot { transforms_3d, transforms_2d, time_secs })
+        Some(PhysicsSnapshot {
+            transforms_3d,
+            transforms_2d,
+            // 現在の接触状態（コライダー色）もフレームに紐付けて保存する。
+            colliding_3d: self.active_collision_dfs_ids.clone(),
+            colliding_2d: self.active_collision_2d_dfs_ids.clone(),
+            time_secs,
+        })
     }
 
     /// 物理シミュレーションの1ステップ後にスナップショットを試みる。
@@ -134,6 +208,13 @@ impl App {
     /// 前スナップショットと比較して変化がなければ記録しない。
     /// 再生中（`edit_physics_paused = false`）かつ最新フレームにいるときのみ呼ぶ。
     pub(super) fn try_record_physics_snapshot(&mut self, dt: f64) {
+        // 停止中はタイムラインへ記録しない。
+        // ・常時押し戻しモード（RigidBody 無効）: タイムライン自体を使わない。
+        // ・RigidBody タイムラインモードで最新フレーム停止中のドラッグ検知ステップ:
+        //   ドラッグ終了自動再開のためだけに物理をステップさせており、記録はしない。
+        // 再生中（paused=false）のみ記録する。
+        if self.edit_physics_paused { return; }
+
         self.edit_physics_sim_time += dt;
         let time = self.edit_physics_sim_time;
 
@@ -176,12 +257,7 @@ impl App {
             self.edit_physics_at_latest       = true;
             self.edit_physics_no_change_count = 0;
             // 速度を保持したまま物理スレッドを停止する
-            if let Some(thread) = &self.physics_thread {
-                thread.send(PhysicsCommand::Pause);
-            }
-            if let Some(thread) = &self.physics_thread_2d {
-                thread.send(PhysicsCommand2d::Pause);
-            }
+            self.send_pause_to_physics_threads();
             self.send_physics_timeline_state();
             return;
         }
@@ -218,12 +294,7 @@ impl App {
                 self.edit_physics_current_frame + 1 >= self.edit_physics_snapshots.len();
             // プレイバック中は物理エンジンが動いていないため Pause を送らない
             if !was_in_playback {
-                if let Some(thread) = &self.physics_thread {
-                    thread.send(PhysicsCommand::Pause);
-                }
-                if let Some(thread) = &self.physics_thread_2d {
-                    thread.send(PhysicsCommand2d::Pause);
-                }
+                self.send_pause_to_physics_threads();
             }
             self.send_physics_timeline_state();
         }
@@ -259,32 +330,13 @@ impl App {
                     // ── 初回再生（スナップショットがフレーム 0 のみ）: 物理スレッドを起動 ──
                     // init_physics_timeline で Pause 済みの物理スレッドを Resume して
                     // シミュレーションを開始する。
-                    if let Some(thread) = &self.physics_thread {
-                        thread.send(PhysicsCommand::Resume);
-                    }
-                    if let Some(thread) = &self.physics_thread_2d {
-                        thread.send(PhysicsCommand2d::Resume);
-                    }
+                    self.send_resume_to_physics_threads();
                 }
             } else {
                 // ── 移動あり: 現在の ECS 状態から再起動（速度 0 で再開）────
                 // 停止中に Gizmo でアクターを移動させた場合。
                 // 移動後の位置から物理エンジンをリスタートし、新たな履歴を記録する。
-                if let Some(snap) = self.capture_current_snapshot(self.edit_physics_sim_time) {
-                    if let Some(last) = self.edit_physics_snapshots.last_mut() {
-                        *last = snap;
-                    }
-                }
-                self.edit_physics_warmup_frames   = PHYSICS_WARMUP_FRAMES;
-                self.edit_physics_no_change_count = 0;
-                self.stop_physics();
-                self.stop_physics_2d();
-                if self.edit_physics_enabled {
-                    self.start_physics();
-                }
-                if self.edit_physics_2d_enabled {
-                    self.start_physics_2d();
-                }
+                self.resume_edit_physics_from_current_ecs();
             }
         } else {
             // ── 過去フレームからの再開: スナップショットプレイバック ─────
@@ -293,6 +345,39 @@ impl App {
             self.edit_physics_in_playback = true;
         }
 
+        self.send_physics_timeline_state();
+    }
+
+    /// 現在の ECS 状態から物理を再起動して「続き」のシミュレーションを開始する。
+    ///
+    /// 最新フレームで停止していた状態から、Gizmo／インスペクタでアクターを移動させた後に
+    /// 呼び出す。移動後の位置を最新スナップショットへ上書きし、物理エンジンを現在の ECS 位置で
+    /// 再起動する。スナップショット履歴は破棄せず追記されるため、フレーム番号は連番で継続する。
+    ///
+    /// 呼び出し元:
+    ///   - start_edit_physics_play（最新フレームで再生ボタン＋移動あり）
+    ///   - update_physics（RigidBody タイムラインモードでのドラッグ終了自動再開）
+    pub(super) fn resume_edit_physics_from_current_ecs(&mut self) {
+        // 移動後の現在位置を最新スナップショットへ上書きする（続きの起点にする）
+        if let Some(snap) = self.capture_current_snapshot(self.edit_physics_sim_time) {
+            if let Some(last) = self.edit_physics_snapshots.last_mut() {
+                *last = snap;
+            }
+        }
+        self.edit_physics_paused          = false;
+        self.edit_physics_in_playback     = false;
+        self.edit_physics_at_latest       = false;
+        self.edit_physics_warmup_frames   = PHYSICS_WARMUP_FRAMES;
+        self.edit_physics_no_change_count = 0;
+        // 物理エンジンを現在の ECS 位置で再起動する（速度 0 で再開）
+        self.stop_physics();
+        self.stop_physics_2d();
+        if self.edit_physics_enabled {
+            self.start_physics();
+        }
+        if self.edit_physics_2d_enabled {
+            self.start_physics_2d();
+        }
         self.send_physics_timeline_state();
     }
 
@@ -358,12 +443,7 @@ impl App {
             // ライブ物理シミュレーション中だった場合は物理スレッドも停止する
             // （スナップショットプレイバック中は物理スレッドが動いていないため不要）
             if !was_in_playback {
-                if let Some(thread) = &self.physics_thread {
-                    thread.send(PhysicsCommand::Pause);
-                }
-                if let Some(thread) = &self.physics_thread_2d {
-                    thread.send(PhysicsCommand2d::Pause);
-                }
+                self.send_pause_to_physics_threads();
             }
         }
 
@@ -382,6 +462,13 @@ impl App {
     /// これを怠ると 3D モデルの描画位置がスナップショット復元後もずれたままになる。
     fn restore_snapshot(&mut self, frame: usize) {
         let Some(snap) = self.edit_physics_snapshots.get(frame).cloned() else { return };
+
+        // ── Step 0: このフレーム時点の接触状態（コライダー色）を復元する ─────
+        // シーク・ステップ・プレイバックのいずれでも、直前のライブシミュレーション時の
+        // 接触状態が凍結・残留しないよう、フレームごとに保存した集合へ差し替える。
+        self.active_collision_dfs_ids    = snap.colliding_3d.clone();
+        self.active_collision_2d_dfs_ids = snap.colliding_2d.clone();
+
         let Some(scene) = self.scene.as_mut() else { return };
         let wl = self.active_world_line;
 
@@ -440,12 +527,18 @@ impl App {
         let cur = self.edit_physics_current_frame;
         let Some(snap) = self.edit_physics_snapshots.get(cur).cloned() else { return };
 
-        // 現在フレームを time_secs=0.0 のフレーム 0 として再設定する
+        // 現在フレームを time_secs=0.0 のフレーム 0 として再設定する。
+        // 接触状態（コライダー色）も引き継いで、このフレーム時点の色を維持する。
         let new_snap = PhysicsSnapshot {
             transforms_3d: snap.transforms_3d,
             transforms_2d: snap.transforms_2d,
+            colliding_3d:  snap.colliding_3d.clone(),
+            colliding_2d:  snap.colliding_2d.clone(),
             time_secs: 0.0,
         };
+        // 現在の接触色を適用フレームの状態へ揃える（残留した接触色を防ぐ）
+        self.active_collision_dfs_ids    = snap.colliding_3d;
+        self.active_collision_2d_dfs_ids = snap.colliding_2d;
 
         self.edit_physics_snapshots.clear();
         self.edit_physics_snapshots.push(new_snap);
@@ -464,6 +557,12 @@ impl App {
         if self.edit_physics_2d_enabled {
             self.start_physics_2d();
         }
+
+        // 【修正1】再起動した物理スレッドはデフォルトで paused=false のため、
+        // Pause を送らないと適用直後から裏で実時間シミュレーションが進み、
+        // 次の再生時に経過分だけ進んだ（最終フレーム相当の）状態へジャンプしてしまう。
+        // init_physics_timeline と同様に、再起動直後に必ず Pause を送る。
+        self.send_pause_to_physics_threads();
 
         self.hovered_gizmo_part = None;
         self.send_physics_timeline_state();
@@ -520,9 +619,27 @@ impl App {
     /// 再生停止の判定は `edit_physics_paused` で管理する。
     /// at_latest をここで使うと、スナップショット記録のたびに物理が止まってしまう。
     pub(super) fn should_step_edit_physics(&self) -> bool {
-        if !self.edit_physics_enabled { return false; }
-        if self.edit_physics_paused   { return false; }
-        true
+        // いずれの編集時物理（3D/2D）も無効ならステップしない
+        if !self.edit_physics_enabled && !self.edit_physics_2d_enabled { return false; }
+
+        // 【変更3(a)】常時押し戻しモード（RigidBody 無効）:
+        // タイムラインを使わず物理を毎フレーム走らせて、押し戻しを常時有効にする。
+        if self.is_edit_physics_pushback_mode() { return true; }
+
+        // 再生中は常にステップする
+        if !self.edit_physics_paused { return true; }
+
+        // 【変更3(b)】RigidBody タイムラインモードで最新フレーム停止中:
+        // ドラッグ操作が行われている（またはドラッグ中として物理登録済みの）間だけ
+        // ステップを許可し、update_physics でドラッグ終了を検知して自動再開する。
+        // 過去フレームへシーク中（!at_latest）は誤爆防止のため許可しない。
+        if self.edit_physics_at_latest
+            && (self.edit_physics_drag_active() || self.dragging_physics_entity_id.is_some())
+        {
+            return true;
+        }
+
+        false
     }
 }
 
@@ -540,6 +657,11 @@ fn snapshot_has_change(old: &PhysicsSnapshot, new: &PhysicsSnapshot) -> bool {
     for ((_, old_ct), (_, new_ct)) in old.transforms_2d.iter().zip(new.transforms_2d.iter()) {
         if canvas_transform_differs(old_ct, new_ct) { return true; }
     }
+    // 接触状態（コライダー色）の比較。
+    // Transform が不変でも接触の有無が変われば「変化あり」として記録し、
+    // そのフレーム時点の接触色を残す。Transform も接触も不変なら変化なし＝停止でよい。
+    if old.colliding_3d != new.colliding_3d { return true; }
+    if old.colliding_2d != new.colliding_2d { return true; }
     false
 }
 

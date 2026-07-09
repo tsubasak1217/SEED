@@ -595,7 +595,10 @@ impl App {
                             // いずれかの物理が有効な場合はタイムラインを初期化して物理スレッドを Pause する。
                             // init_physics_timeline を呼ばないと Pause が送られず、シーンロード直後から
                             // 物理演算が走り続けて再生時に落下済み状態になってしまう。
-                            if self.edit_physics_enabled || self.edit_physics_2d_enabled {
+                            // ただし常時押し戻しモード（RigidBody 無効）は Pause せず走らせ続ける。
+                            if self.is_edit_physics_pushback_mode() {
+                                self.enter_edit_physics_pushback();
+                            } else if self.edit_physics_enabled || self.edit_physics_2d_enabled {
                                 self.init_physics_timeline();
                             }
                             if let Some(ipc) = &self.ipc {
@@ -1006,8 +1009,15 @@ impl App {
                         // 既存スレッドを停止してから新しい設定で再起動する
                         self.stop_physics();
                         self.start_physics();
-                        // タイムラインを初期化する（初期状態をフレーム0として記録）
-                        self.init_physics_timeline();
+                        if self.is_edit_physics_pushback_mode() {
+                            // 【変更3(a)】RigidBody 無効: 常時押し戻しモード。
+                            // タイムラインを使わず、物理を Pause せずに走らせ続ける
+                            // （起動直後の paused=false のまま）ことでドラッグ押し戻しを常時有効化する。
+                            self.enter_edit_physics_pushback();
+                        } else {
+                            // タイムラインを初期化する（初期状態をフレーム0として記録・Pause 送信）
+                            self.init_physics_timeline();
+                        }
                     } else {
                         self.stop_physics();
                         // 無効化時は衝突中 ID セットをクリアして描画色をリセットする
@@ -1054,15 +1064,27 @@ impl App {
                         // 既存 2D スレッドを停止してから新しい設定で再起動する
                         self.stop_physics_2d();
                         self.start_physics_2d();
-                        // 3D 物理が有効でない場合はタイムラインを新規初期化する
-                        // 3D 物理が有効な場合は既にタイムラインが存在するので Pause のみ送信する
-                        if self.edit_physics_enabled {
+                        if self.is_edit_physics_pushback_mode() {
+                            // 【変更3(a)】RigidBody 無効（3D/2D ともタイムライン非使用）:
+                            // 常時押し戻しモード。物理を Pause せず走らせ続ける。
+                            self.enter_edit_physics_pushback();
+                        } else if self.edit_physics_enabled && self.edit_physics_with_rigidbody {
+                            // 3D 物理が「RigidBody 有効＝タイムラインモード」で既に動いている場合のみ、
+                            // 既存タイムラインが存在するとみなして Pause のみ送信する。
+                            // 【バグ修正】従来は self.edit_physics_enabled のみで判定していたため、
+                            // 3D が「常時押し戻しモード」（RigidBody 無効）で有効な状態から
+                            // 2D を RigidBody 有効で ON にすると、実際にはタイムラインが
+                            // 初期化されていない（reset_physics_timeline のみでスナップショット
+                            // 空）にもかかわらずこの分岐に入り、init_physics_timeline が
+                            // 呼ばれず・エディタへ状態通知もされずタイムライン UI が機能しなかった。
                             // 2D スレッドにも Pause を送って再生ボタンまで動かさない
                             if let Some(thread) = &self.physics_thread_2d {
                                 use crate::engine::physics::PhysicsCommand2d;
                                 thread.send(PhysicsCommand2d::Pause);
                             }
                         } else {
+                            // 3D がタイムラインモードで動いていない（無効 or 押し戻しモード）・
+                            // 2D が RigidBody 有効: タイムラインを新規初期化する
                             self.init_physics_timeline();
                         }
                     } else {
