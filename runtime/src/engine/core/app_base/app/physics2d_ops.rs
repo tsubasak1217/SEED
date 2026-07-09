@@ -58,7 +58,7 @@ use crate::engine::components::{
 use crate::engine::ecs::Entity;
 use crate::engine::physics::{
     PhysicsThread2d, PhysicsCommand2d, PhysicsObject2d,
-    CollisionPhase2d, TriggerPhase2d, PIXELS_PER_METER, DEFAULT_GRAVITY_2D,
+    PIXELS_PER_METER, DEFAULT_GRAVITY_2D,
 };
 use crate::engine::core::app_base::scene::Scene;
 use crate::engine::structs::objects::actor::{Actor, ActorKind};
@@ -820,10 +820,6 @@ impl App {
         let result = thread.recv_latest();
         let recv_ms = _t_recv.elapsed().as_secs_f64() * 1000.0;
 
-        // rest 内訳計測用（IPC 送信とイベント数）。
-        let mut ipc_ms: f64 = 0.0;
-        let mut n_events: usize = 0;
-
         if let Some(ref result) = result {
             // ① Dynamic Rigidbody2D の CanvasTransform を ECS に書き戻す
             if should_apply_transforms {
@@ -863,33 +859,11 @@ impl App {
                 );
             }
 
-            // ② 衝突イベントを IPC 経由でエディタへ通知する
-            if self.scripting_host.is_some() {
-                let _t_ipc = std::time::Instant::now();
-                n_events = result.collision_events.len() + result.trigger_events.len();
-                for event in &result.collision_events {
-                    if let Some(ipc) = &self.ipc {
-                        let phase_str = match event.phase {
-                            CollisionPhase2d::Enter => "Enter",
-                            CollisionPhase2d::Stay  => "Stay",
-                            CollisionPhase2d::Exit  => "Exit",
-                        };
-                        ipc.send(&format!("COLLISION_2D_EVENT:{},{},{phase_str}",
-                            event.entity_a, event.entity_b));
-                    }
-                }
-                for event in &result.trigger_events {
-                    if let Some(ipc) = &self.ipc {
-                        let phase_str = match event.phase {
-                            TriggerPhase2d::Enter => "Enter",
-                            TriggerPhase2d::Exit  => "Exit",
-                        };
-                        ipc.send(&format!("TRIGGER_2D_EVENT:{},{},{phase_str}",
-                            event.trigger_entity, event.other_entity));
-                    }
-                }
-                ipc_ms = _t_ipc.elapsed().as_secs_f64() * 1000.0;
-            }
+            // ② 2D 衝突/トリガーイベントの IPC 転送は廃止した（3D 側と同理由）。
+            //   エディタに COLLISION_2D_EVENT / TRIGGER_2D_EVENT のハンドラは無く、
+            //   接触継続中も毎フレーム送られる死んだトラフィックがパイプを圧迫して
+            //   物理シミュレーション中の入力カクつきを起こしていた。Play のスクリプト
+            //   コールバックは dispatch_physics2d_events_to_scripts でプロセス内配信済み。
 
             // ③ 衝突中エンティティ DFS ID セットを更新する
             //
@@ -1019,12 +993,12 @@ impl App {
         let threshold_us = if *PHYS_LOG_ENABLED { 2_000 } else { 15_000 };
         if total_us >= threshold_us {
             eprintln!(
-                "[Physics2D] {}update total={:.2}ms (ctx_build={:.2}ms, rest={:.2}ms | recv={:.2} ipc={:.2} events={}) contexts={}",
+                "[Physics2D] {}update total={:.2}ms (ctx_build={:.2}ms, rest={:.2}ms | recv={:.2}) contexts={}",
                 if total_us >= 15_000 { "SLOW " } else { "" },
                 total_us as f64 / 1000.0,
                 ctx_build_us as f64 / 1000.0,
                 (total_us.saturating_sub(ctx_build_us)) as f64 / 1000.0,
-                recv_ms, ipc_ms, n_events,
+                recv_ms,
                 contexts.len(),
             );
         }

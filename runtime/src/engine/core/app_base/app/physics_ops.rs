@@ -34,7 +34,6 @@ use crate::engine::structs::tensor::Vector3 as SeedVec3;
 use crate::engine::structs::transforms::Quaternion as SeedQuat;
 use crate::engine::physics::{
     PhysicsThread, PhysicsCommand, PhysicsObject,
-    CollisionPhase, TriggerPhase,
 };
 use crate::engine::core::app_base::scene::Scene;
 use super::{App, RuntimeMode, InspectorTransformDrag};
@@ -312,10 +311,6 @@ impl App {
         let result = thread.recv_latest();
         let recv_ms = _t_recv.elapsed().as_secs_f64() * 1000.0;
 
-        // rest 内訳計測用（IPC 送信とイベント数）。
-        let mut ipc_ms: f64 = 0.0;
-        let mut n_events: usize = 0;
-
         if let Some(ref result) = result {
             if diag {
                 eprintln!("[Physics] frame={} transform_updates={}", diag_n, result.transform_updates.len());
@@ -346,31 +341,18 @@ impl App {
                 );
             }
 
-            // ② 衝突イベントを IPC 経由でエディタへ転送する（スクリプトホスト存在時のみ）
-            if self.scripting_host.is_some() {
-                let _t_ipc = std::time::Instant::now();
-                n_events = result.collision_events.len() + result.trigger_events.len();
-                for event in &result.collision_events {
-                    if let Some(ipc) = &self.ipc {
-                        let phase_str = match event.phase {
-                            CollisionPhase::Enter => "Enter",
-                            CollisionPhase::Stay  => "Stay",
-                            CollisionPhase::Exit  => "Exit",
-                        };
-                        ipc.send(&format!("COLLISION_EVENT:{},{},{phase_str}", event.entity_a, event.entity_b));
-                    }
-                }
-                for event in &result.trigger_events {
-                    if let Some(ipc) = &self.ipc {
-                        let phase_str = match event.phase {
-                            TriggerPhase::Enter => "Enter",
-                            TriggerPhase::Exit  => "Exit",
-                        };
-                        ipc.send(&format!("TRIGGER_EVENT:{},{},{phase_str}", event.trigger_entity, event.other_entity));
-                    }
-                }
-                ipc_ms = _t_ipc.elapsed().as_secs_f64() * 1000.0;
-            }
+            // ② 衝突/トリガーイベントの IPC 転送は廃止した。
+            //
+            // 【理由】以前は scripting_host 存在時に COLLISION_EVENT / TRIGGER_EVENT を
+            //   接触継続中（Stay）も含め毎フレーム・接触数ぶんエディタへ送っていたが、
+            //   エディタ側にこれらのハンドラは存在せず（EDIT_PHYSICS_STATE のみ処理）、
+            //   完全に消費されない死んだトラフィックだった。物理シミュレーション中に
+            //   毎秒数百件がパイプへ流れ、エディタの読み取りループを圧迫して入力応答を
+            //   カクつかせていた（実測 [IPC] sent 約300-390/s のうち COLLISION_* が大半）。
+            //   Play モードのスクリプト OnCollision コールバックは上の
+            //   dispatch_physics_events_to_scripts でプロセス内配信済みで、IPC 転送は不要。
+            //   将来エディタ側で接触表示が必要になれば、そのとき必要フェーズだけを
+            //   明示的にリクエストして送る設計にする。
 
             // ③ 衝突中エンティティ DFS ID セットを更新する（コライダーワイヤー色変更用）
             //
@@ -423,8 +405,8 @@ impl App {
         if total_ms >= 15.0 {
             let rest_ms = (total_ms - dragblock_ms - pushback_ms).max(0.0);
             eprintln!(
-                "[Physics] SLOW update_physics total={:.1}ms (dragblock={:.1} pushback={:.1} rest={:.1} | recv={:.1} ipc={:.1} events={})",
-                total_ms, dragblock_ms, pushback_ms, rest_ms, recv_ms, ipc_ms, n_events,
+                "[Physics] SLOW update_physics total={:.1}ms (dragblock={:.1} pushback={:.1} rest={:.1} | recv={:.1})",
+                total_ms, dragblock_ms, pushback_ms, rest_ms, recv_ms,
             );
         }
     }
