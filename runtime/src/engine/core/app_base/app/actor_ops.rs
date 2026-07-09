@@ -133,6 +133,24 @@ impl App {
                 .map(|a| a.world_line)
                 .unwrap_or(self.active_world_line)
         };
+
+        // ── 種別不整合ガード（3D アクターを 2D アクターの子にすることを禁止） ──
+        // 指定された親アクターが 2D（Actor2D）の場合、3D アクターの子追加を拒否する。
+        // 2D アクターの子追加は handle_add_actor_2d_child 側で行われるため対象外。
+        {
+            let Some(scene) = &self.scene else { return };
+            let mut c = 0u32;
+            let parent_is_2d = find_actor_by_dfs(&scene.actors, self.active_world_line, parent_dfs_id, &mut c)
+                .map(|a| a.is_2d())
+                .unwrap_or(false);
+            if parent_is_2d {
+                if let Some(ipc) = &self.ipc {
+                    ipc.send("LOAD_ERROR:3Dアクターは2Dアクターの子にできません");
+                }
+                return;
+            }
+        }
+
         self.handle_add_actor(wl, Some(parent_dfs_id), None);
     }
 
@@ -444,6 +462,30 @@ impl App {
     ) {
         let wl = self.active_world_line;
         let Some(_scene) = &self.scene else { return };
+
+        // ── 種別不整合ガード（3D アクターを 2D アクターの子にすることを禁止） ──
+        // 「新しい親が 2D アクターかつ子が 3D アクター」の組み合わせだけを弾く。
+        // 逆方向（3D 親に 2D 子）や同種同士（2D-2D / 3D-3D）は許可のまま。
+        // ツリーから抽出する前に判定し、違反時は一切ツリーへ触れずに早期 return する。
+        {
+            let scene = self.scene.as_ref().unwrap();
+            let mut c = 0u32;
+            let child_is_2d = find_actor_by_dfs(&scene.actors, wl, child_dfs, &mut c)
+                .map(|a| a.is_2d())
+                .unwrap_or(false);
+            let new_parent_is_2d = new_parent_dfs.map(|pid| {
+                let mut c2 = 0u32;
+                find_actor_by_dfs(&scene.actors, wl, pid, &mut c2)
+                    .map(|a| a.is_2d())
+                    .unwrap_or(false)
+            }).unwrap_or(false);
+            if new_parent_is_2d && !child_is_2d {
+                if let Some(ipc) = &self.ipc {
+                    ipc.send("LOAD_ERROR:3Dアクターは2Dアクターの子にできません");
+                }
+                return;
+            }
+        }
 
         let before_actors = self.snapshot_actors_for_wl(wl);
 

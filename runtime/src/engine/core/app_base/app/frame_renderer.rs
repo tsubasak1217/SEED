@@ -3686,9 +3686,18 @@ impl App {
 
         // ── ドロップ処理（GPU サブミット後）─────────────
         if let Some((path, sx, sy)) = self.pending_drop.take() {
-            // 2D シーンビューへの .actor2d ドロップは GPU ピック（3D ワールド座標解決）が
-            // 不要なため、ortho 空間変換＋キャンバスヒット判定で即座に配置する
-            if self.edit_view_is_2d() && path.to_ascii_lowercase().ends_with(".actor2d") {
+            // 2D シーンビュー（Edit View2D）へのドロップは拡張子に依らず内容で判定して配置する。
+            // 従来は ".actor2d" 拡張子も要求していたが、2D アクターが ".actor" 拡張子で
+            // 保存されているケースでは条件を満たせず handle_drop_actor（ルート直置き）へ
+            // 誤って落ちてしまい、キャンバスの子にならない不具合があった。
+            // handle_drop_actor_2d は中身（is_2d / Canvas コンポーネント有無）で
+            //   ・2D アクター（Canvas なし）→ ヒットしたキャンバスの子として挿入
+            //   ・2D アクター（ルート Canvas あり）→ シーンルートへ配置
+            //   ・非 2D アクター → ルートへフォールバック配置
+            // を適切に振り分けるため、拡張子判定を削除して全ドロップをここへ流す。
+            // なお 2D ビューでは GPU ピック（3D ワールド座標解決）自体が無意味なため、
+            // resolve_spawn_pos の再キュー処理を経由しなくても実害はない。
+            if self.edit_view_is_2d() {
                 self.handle_drop_actor_2d(&path, sx, sy);
             } else {
                 match self.resolve_spawn_pos(sx, sy, did_pick) {

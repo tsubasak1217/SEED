@@ -1032,8 +1032,21 @@ public partial class HierarchyPanel : UserControl
             var relY    = pos.Y - itemTop;
             var zone    = item.ActualHeight * 0.25;
 
+            // ドラッグ中のノードに 3D アクター（!Is2D）が含まれるかどうか。
+            // 「2D アクターの子に 3D アクターを配置する」組み合わせを弾くための判定に使う。
+            bool draggingHas3D = _dragNodeIds.Any(id => FindNode(_roots, id) is { Is2D: false });
+
             if (relY <= zone || relY >= item.ActualHeight - zone)
             {
+                // 兄弟として挿入する場合、実効的な新しい親は targetNode の親ノード
+                // （親が無い＝ルート直下の場合は 3D/2D 混在制約の対象外）。
+                var effectiveParent = FindParentNode(_roots, targetNode.Id);
+                if (draggingHas3D && effectiveParent is { Is2D: true })
+                {
+                    e.Effects = DragDropEffects.None;
+                    return;
+                }
+
                 _insertBefore            = relY <= zone;
                 _insertTarget            = item;
                 var lineY                = _insertBefore ? itemTop : itemTop + item.ActualHeight;
@@ -1042,7 +1055,14 @@ public partial class HierarchyPanel : UserControl
             }
             else
             {
-                // 中央 → 子として追加
+                // 中央 → 子として追加。実効的な新しい親は targetNode 自身。
+                // targetNode が 2D かつドラッグ中に 3D が含まれる場合はドロップ不可とする。
+                if (draggingHas3D && targetNode.Is2D)
+                {
+                    e.Effects = DragDropEffects.None;
+                    return;
+                }
+
                 _dropTarget = item;
                 var border = FindVisualChild<Border>(item, "RowBorder");
                 if (border != null)
@@ -1264,6 +1284,18 @@ public partial class HierarchyPanel : UserControl
         {
             if (n.Id == id) return n;
             var found = FindNode(n.Children, id);
+            if (found != null) return found;
+        }
+        return null;
+    }
+
+    /// 指定 id のノードの親ノードを探す。ルート直下（親なし）の場合は null を返す。
+    private static ActorNode? FindParentNode(List<ActorNode> list, int id)
+    {
+        foreach (var n in list)
+        {
+            if (n.Children.Any(c => c.Id == id)) return n;
+            var found = FindParentNode(n.Children, id);
             if (found != null) return found;
         }
         return null;
