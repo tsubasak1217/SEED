@@ -1004,17 +1004,19 @@ impl App {
         // ctx_build_us（コンテキスト再構築）と total_us（関数全体）を対比し、
         // 定常 5-8ms/フレームの主因がコンテキスト再構築かどうかを実測で確定させる。
         // 2ms 超のフレームのみ出力してノイズを抑制する。
-        if *PHYS_LOG_ENABLED {
-            let total_us = t_start.elapsed().as_micros();
-            if total_us >= 2_000 {
-                eprintln!(
-                    "[Physics2D] update total={:.2}ms (ctx_build={:.2}ms, rest={:.2}ms) contexts={}",
-                    total_us as f64 / 1000.0,
-                    ctx_build_us as f64 / 1000.0,
-                    (total_us.saturating_sub(ctx_build_us)) as f64 / 1000.0,
-                    contexts.len(),
-                );
-            }
+        // SEED_PHYS_LOG 有効時は 2ms 超を、無効でも 15ms 超のスパイクは常時出力する
+        // （env 未設定でもスパイク原因を捕捉するため。スパイクは稀なのでパイプは詰まらない）。
+        let total_us = t_start.elapsed().as_micros();
+        let threshold_us = if *PHYS_LOG_ENABLED { 2_000 } else { 15_000 };
+        if total_us >= threshold_us {
+            eprintln!(
+                "[Physics2D] {}update total={:.2}ms (ctx_build={:.2}ms, rest={:.2}ms) contexts={}",
+                if total_us >= 15_000 { "SLOW " } else { "" },
+                total_us as f64 / 1000.0,
+                ctx_build_us as f64 / 1000.0,
+                (total_us.saturating_sub(ctx_build_us)) as f64 / 1000.0,
+                contexts.len(),
+            );
         }
     }
 }

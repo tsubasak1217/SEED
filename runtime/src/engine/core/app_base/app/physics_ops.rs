@@ -132,6 +132,12 @@ impl App {
         //   thread はここでは束縛せず、送信のたびに狭いスコープで借用する。
         if self.physics_thread.is_none() { return; }
 
+        // 【スパイク原因特定用の常時計測】update_physics(3D) が 15ms 以上かかったフレームだけ
+        // セクション別内訳を自動出力する（環境変数不要・スパイク時のみ発火するためパイプを詰まらせない）。
+        // [PERF] の 3d バケットが 46〜137ms へ跳ねる原因が、物理ワールド再構築（resume/live_sim）か
+        // 押し戻しか結果処理かを実データで切り分ける。
+        let _t_fn = std::time::Instant::now();
+
         // 診断ログ（最初の 120 フレームのみ）
         static DIAG_FRAME: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         let diag_n = DIAG_FRAME.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -249,7 +255,12 @@ impl App {
                 }
 
                 if start_live_sim {
+                    let _t = std::time::Instant::now();
                     self.begin_edit_physics_drag_live_sim();
+                    let ms = _t.elapsed().as_secs_f64() * 1000.0;
+                    if ms >= 15.0 {
+                        eprintln!("[Physics] SLOW begin_edit_physics_drag_live_sim = {:.1}ms (ライブシム開始)", ms);
+                    }
                 }
             }
             self.dragging_physics_entity_id = new_drag_entity_id;
@@ -257,7 +268,12 @@ impl App {
             // 自動再開（フォールバック）: 現在の ECS 位置から物理を再起動して続きを開始する。
             // ここで物理スレッドは作り直されるため、このフレームの結果受信は行わず終了する。
             if auto_resume {
+                let _t = std::time::Instant::now();
                 self.resume_edit_physics_from_current_ecs();
+                let ms = _t.elapsed().as_secs_f64() * 1000.0;
+                if ms >= 15.0 {
+                    eprintln!("[Physics] SLOW resume_edit_physics_from_current_ecs = {:.1}ms (物理ワールド再構築)", ms);
+                }
                 return;
             }
         }
@@ -279,11 +295,16 @@ impl App {
         // フレーム落ち・位置対応ズレが構造的に発生しない。
         // RigidBody 有効モードのドラッグにも同じ判定を適用する（Dynamic ボディとの
         // 重なりは物理スレッド側で除外されるため、押しのけ挙動は阻害しない）。
+        // ここまで（ドラッグ状態変化ブロック）の経過時間。
+        let dragblock_ms = _t_fn.elapsed().as_secs_f64() * 1000.0;
+
+        let _t_pushback = std::time::Instant::now();
         if self.mode == RuntimeMode::Edit {
             if let Some(drag_id) = self.dragging_physics_entity_id {
                 self.apply_drag_pushback(drag_id);
             }
         }
+        let pushback_ms = _t_pushback.elapsed().as_secs_f64() * 1000.0;
 
         // 結果受信のためにここで改めて物理スレッドを借用する。
         let Some(thread) = &self.physics_thread else { return };
@@ -384,6 +405,18 @@ impl App {
             if let Some((pos, rot)) = get_actor_transform_by_entity_id(scene, self.active_world_line, drag_entity_id) {
                 thread.send(PhysicsCommand::UpdateKinematic { entity_id: drag_entity_id, position: pos, rotation: rot });
             }
+        }
+
+        // 【スパイク内訳】update_physics 全体が 15ms 以上のフレームだけ内訳を自動出力する。
+        // dragblock = ドラッグ状態変化ブロック（SetBodyKinematic 送信等）、
+        // pushback  = 押し戻し同期問い合わせ、rest = 結果受信・書き戻し・kinematic 送信。
+        let total_ms = _t_fn.elapsed().as_secs_f64() * 1000.0;
+        if total_ms >= 15.0 {
+            let rest_ms = (total_ms - dragblock_ms - pushback_ms).max(0.0);
+            eprintln!(
+                "[Physics] SLOW update_physics total={:.1}ms (dragblock={:.1} pushback={:.1} rest={:.1})",
+                total_ms, dragblock_ms, pushback_ms, rest_ms,
+            );
         }
     }
 
