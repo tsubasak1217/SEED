@@ -42,7 +42,7 @@ use crate::engine::core::clock::FrameContext;
 use crate::engine::components::CanvasDrawZone;
 use crate::engine::methods::drawer::{
     CameraBuffer, CameraUniform,
-    draw_model_indirect, draw_id_pass, draw_canvas_id_items, prepare_canvas_id_bg,
+    draw_model_indirect, draw_id_pass, draw_canvas_id_items, draw_collider_pick_items, prepare_canvas_id_bg,
     draw_outline_multi, draw_stencil_mask_multi,
     extract_frustum_planes, GizmoBatch, draw_gizmo_batch,
     LineBatch, draw_line_batch,
@@ -1585,6 +1585,11 @@ impl App {
                             } else {
                                 COLLIDER_COLOR_NORMAL
                             };
+                            // 選択中アクターのコライダーは明度を上げて強調する
+                            let color = crate::engine::core::app_base::app::collider2d_wireframe::collider_color_for_selection(
+                                color,
+                                self.selected_actor_dfs_ids.contains(&(dfs_id as usize)),
+                            );
 
                             // Transform のオイラー角（YXZ 度数）からクォータニオンを生成
                             let q = Quaternion::from_euler(Vector3::new(
@@ -1756,6 +1761,11 @@ impl App {
                             } else {
                                 COLLIDER_COLOR_NORMAL
                             };
+                            // 選択中アクターのコライダーは明度を上げて強調する
+                            let color = crate::engine::core::app_base::app::collider2d_wireframe::collider_color_for_selection(
+                                color,
+                                self.selected_actor_dfs_ids.contains(&(ctx.dfs_id as usize)),
+                            );
 
                             let rot_rad = ctx.rot_rad;
                             let (sin, cos) = rot_rad.sin_cos();
@@ -1870,6 +1880,11 @@ impl App {
                                     } else {
                                         COLLIDER_COLOR_NORMAL
                                     };
+                                    // 選択中アクターのコライダーは明度を上げて強調する
+                                    let color = crate::engine::core::app_base::app::collider2d_wireframe::collider_color_for_selection(
+                                        color,
+                                        self.selected_actor_dfs_ids.contains(&(ctx.dfs_id as usize)),
+                                    );
 
                                     let rot_rad = ctx.rot_rad;
                                     let (sin, cos) = rot_rad.sin_cos();
@@ -3115,56 +3130,59 @@ impl App {
 
                                 let mut id_pass = frame.begin_id_pass(&id_buf.view);
 
-                                // ── コライダー面ピック描画（最背面 = 最初に描画）──────────────
-                                // ID パスは後勝ちのため、3D MC・ギズモ・スプライトより先に描画する
-                                // ことで「既存描画物と重なる場合は既存描画物の選択を優先」を実現する。
-                                //   - 3D コライダー:     WS perspective カメラ（camera_buf）
-                                //   - 3D キャンバス配下: WS perspective カメラ（camera_buf）
-                                //   - 通常 2D シーン:   SS 時は 2D ortho カメラ、WS 2D 時は camera_buf
+                                // ── コライダー面ピック描画（深度を加味して可視物と同等に選択）──
+                                // WS（3D 透視）カメラのコライダー面は深度対応バリアントで描画する:
+                                //   depth_compare=LessEqual / depth_write=true により、メインパスの
+                                //   シーン深度に対してテストしつつ自身も深度を書くため、コライダー面
+                                //   同士・可視物との重なりが「カメラに近い方優先」で解決される
+                                //   （描画順に依存しない = 手前のコライダーが確実に選択される）。
+                                // 2D（SS ortho / 2D ortho）は 3D シーン深度と比較不能なため従来どおり
+                                // 深度なし（描画順の意味論）で描画する。
+                                //   - 3D コライダー:     WS perspective カメラ（camera_buf）・深度あり
+                                //   - 3D キャンバス配下: WS perspective カメラ（camera_buf）・深度あり
+                                //   - 通常 2D シーン:   SS 時は 2D ortho カメラ、WS 2D 時は camera_buf・深度なし
                                 if let Some(white_bg) = &collider_pick_white_bg {
-                                    // 3D コライダー面クワッド（常に WS カメラ）
+                                    // 3D コライダー面クワッド（常に WS カメラ・深度あり）
                                     if !collider_pick_bgs_3d.is_empty() {
                                         let tex_refs: Vec<&wgpu::BindGroup> =
                                             vec![white_bg; collider_pick_bgs_3d.len()];
-                                        draw_canvas_id_items(
+                                        draw_collider_pick_items(
                                             &mut id_pass, &draw_ctx.pipelines,
-                                            &camera_buf.bind_group, None,
-                                            &collider_pick_bgs_3d, &tex_refs,
-                                            &[], &[],
+                                            &camera_buf.bind_group,
+                                            &collider_pick_bgs_3d, &tex_refs, true,
                                         );
                                     }
-                                    // 3D キャンバス配下コライダー（常に WS カメラ）
+                                    // 3D キャンバス配下コライダー（常に WS カメラ・深度あり）
                                     if !collider_pick_bgs_3dcanvas.is_empty() {
                                         let tex_refs: Vec<&wgpu::BindGroup> =
                                             vec![white_bg; collider_pick_bgs_3dcanvas.len()];
-                                        draw_canvas_id_items(
+                                        draw_collider_pick_items(
                                             &mut id_pass, &draw_ctx.pipelines,
-                                            &camera_buf.bind_group, None,
-                                            &collider_pick_bgs_3dcanvas, &tex_refs,
-                                            &[], &[],
+                                            &camera_buf.bind_group,
+                                            &collider_pick_bgs_3dcanvas, &tex_refs, true,
                                         );
                                     }
-                                    // 通常 2D シーンコライダー（キャンバス ID 描画と同じカメラ選択）
+                                    // 通常 2D シーンコライダー（キャンバス ID 描画と同じカメラ選択・深度なし）
                                     if !collider_pick_bgs_2d.is_empty() {
                                         let tex_refs: Vec<&wgpu::BindGroup> =
                                             vec![white_bg; collider_pick_bgs_2d.len()];
                                         if scene_canvas_ss {
                                             // シーン SS: 2D ortho（オーバーレイ）カメラで描画する
-                                            let ss_cam: Option<&wgpu::BindGroup> =
-                                                self.canvas_overlay_camera_buf.as_ref().map(|b| &b.bind_group);
-                                            draw_canvas_id_items(
-                                                &mut id_pass, &draw_ctx.pipelines,
-                                                &camera_buf.bind_group, ss_cam,
-                                                &[], &[],
-                                                &collider_pick_bgs_2d, &tex_refs,
-                                            );
+                                            if let Some(ss_cam) =
+                                                self.canvas_overlay_camera_buf.as_ref().map(|b| &b.bind_group)
+                                            {
+                                                draw_collider_pick_items(
+                                                    &mut id_pass, &draw_ctx.pipelines,
+                                                    ss_cam,
+                                                    &collider_pick_bgs_2d, &tex_refs, false,
+                                                );
+                                            }
                                         } else {
                                             // WS 2D シーン: メインカメラ（2D ortho / WS）で描画する
-                                            draw_canvas_id_items(
+                                            draw_collider_pick_items(
                                                 &mut id_pass, &draw_ctx.pipelines,
-                                                &camera_buf.bind_group, None,
-                                                &collider_pick_bgs_2d, &tex_refs,
-                                                &[], &[],
+                                                &camera_buf.bind_group,
+                                                &collider_pick_bgs_2d, &tex_refs, false,
                                             );
                                         }
                                     }

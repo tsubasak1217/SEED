@@ -153,6 +153,16 @@ pub enum PhysicsCommand {
         /// Dynamic 復帰時に適用する最終座標 (position, rotation)。
         /// None なら Rapier の現在位置をそのまま維持する。
         final_position: Option<([f32; 3], [f32; 4])>,
+        /// true の場合、この kinematic ボディへの UpdateKinematic を「目標位置」として
+        /// 扱い、物理スレッドが各ステップで最大速度クランプ付きに目標へ追従させる
+        /// （スムーズドラッグ）。編集時 RigidBody 有効モードのドラッグで使用し、
+        /// 接触相手の Dynamic ボディへ伝わる速度を物理的に妥当な範囲へ抑える。
+        ///
+        /// false の場合は従来どおり目標を即時 set_next_kinematic_position する
+        /// （1 ステップで到達 = 伝達速度 Δ/dt に上限なし）。RigidBody 無効の
+        /// 押し戻しモードでは接触相手が動かず伝達の問題がないため即時のままにする。
+        /// is_kinematic=false のときは無視される。
+        smooth: bool,
     },
     /// 物理シミュレーションを一時停止する（速度・内部状態を保持したまま）。
     /// タイムライン停止時に使用する。Resume で再開できる。

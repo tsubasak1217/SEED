@@ -45,6 +45,29 @@ use crate::engine::core::app_base::scene::Scene;
 use crate::engine::methods::drawer::LineBatch;
 use super::actor_utils::get_3d_canvas_world_mat;
 
+// ─── 選択強調（2D / 3D コライダー共通）──────────────────────────────────────
+
+/// 選択中アクターのコライダーワイヤーフレーム明度ブースト係数。
+/// 各 RGB チャンネルを (1 + BOOST) 倍して 1.0 でクランプし、色相（接触=赤・
+/// トリガー=黄・通常=緑）を保ったまま線を少し明るくして選択を強調する。
+pub const COLLIDER_SELECTED_BRIGHTNESS_BOOST: f32 = 0.4;
+
+/// アクターが選択中のとき、コライダー線色を明るくして強調する。
+/// 非選択時は色をそのまま返す。RGB を一律ブーストし、アルファは保持する。
+/// 2D / 3D / 3D キャンバス配下すべてのコライダー描画パスで共通に使う。
+pub fn collider_color_for_selection(color: [f32; 4], selected: bool) -> [f32; 4] {
+    if !selected {
+        return color;
+    }
+    let f = 1.0 + COLLIDER_SELECTED_BRIGHTNESS_BOOST;
+    [
+        (color[0] * f).min(1.0),
+        (color[1] * f).min(1.0),
+        (color[2] * f).min(1.0),
+        color[3],
+    ]
+}
+
 // ─── 形状分割数（マジックナンバー回避）─────────────────────────────────────────
 
 /// 円ワイヤーフレームの分割数（従来の add_circle_2d 呼び出しと同一）。

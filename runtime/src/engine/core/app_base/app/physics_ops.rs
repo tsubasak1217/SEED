@@ -174,6 +174,8 @@ impl App {
                             entity_id: old_id,
                             is_kinematic: false,
                             final_position,
+                            // Dynamic 復帰時は smooth は無視される（値は任意）
+                            smooth: false,
                         });
                     }
                 }
@@ -187,20 +189,8 @@ impl App {
                 // 持ち上げ開始時の回転ジャークを防ぐ。
                 let ecs_start_pos = self.scene.as_ref()
                     .and_then(|s| get_actor_transform_by_entity_id(s, self.active_world_line, new_id));
-                if let Some(thread) = &self.physics_thread {
-                    thread.send(PhysicsCommand::SetBodyKinematic {
-                        entity_id: new_id,
-                        is_kinematic: true,
-                        final_position: ecs_start_pos,
-                    });
-                }
-                // ドラッグ開始: 現在位置を押し戻し用の最終有効位置として初期化する。
-                // RigidBody 有効/無効どちらのモードでもドラッグ中の押し戻し判定に使用する。
-                if self.mode == RuntimeMode::Edit {
-                    self.drag_collider_last_valid_pos = ecs_start_pos;
-                }
 
-                // 【ドラッグ中ライブシミュレーション】
+                // 【ドラッグ中ライブシミュレーション】の発動判定を先に行う（smooth 指定に使う）。
                 // RigidBody タイムラインモードで最新フレーム停止中に Collider 付きアクターの
                 // ドラッグが開始された場合、物理を Pause 解除してドラッグ中も演算を継続する。
                 // - 自身は kinematic としてギズモに追従し、力学的影響（回転・跳ね返り）を受けない
@@ -215,6 +205,25 @@ impl App {
                     && self.scene.as_ref().map_or(false, |s| {
                         actor_has_enabled_collider(s, self.active_world_line, new_id)
                     });
+
+                // ライブシミュレーション時のみ smooth=true（目標追従・速度クランプ）にして、
+                // 床など可動 kinematic が乗っている Dynamic ボディを吹き飛ばすのを防ぐ。
+                // 押し戻しのみモード（RigidBody 無効）では接触相手が動かず伝達問題がないため
+                // false（即時反映）にする。
+                if let Some(thread) = &self.physics_thread {
+                    thread.send(PhysicsCommand::SetBodyKinematic {
+                        entity_id: new_id,
+                        is_kinematic: true,
+                        final_position: ecs_start_pos,
+                        smooth: start_live_sim,
+                    });
+                }
+                // ドラッグ開始: 現在位置を押し戻し用の最終有効位置として初期化する。
+                // RigidBody 有効/無効どちらのモードでもドラッグ中の押し戻し判定に使用する。
+                if self.mode == RuntimeMode::Edit {
+                    self.drag_collider_last_valid_pos = ecs_start_pos;
+                }
+
                 if start_live_sim {
                     self.begin_edit_physics_drag_live_sim();
                 }

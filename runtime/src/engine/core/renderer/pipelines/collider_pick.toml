@@ -1,0 +1,23 @@
+shader_sources  = ["canvas_id.wgsl"]
+vertex_entry    = "vs_main"
+fragment_entry  = "fs_main"
+# スプライトと同じ頂点レイアウト（position: vec2 + uv: vec2）
+vertex_slots    = ["sprite_vertex"]
+num_bind_groups = 3
+
+topology        = "TriangleList"
+cull_mode       = "None"
+front_face      = "Ccw"
+
+# コライダーピック面は「可視物と同等の深度選択」を行う:
+#   - depth_compare = LessEqual: メインパスで書き込まれたシーン深度（id パスは
+#     LoadOp::Load で引き継ぐ）に対してテストし、手前の可視物に隠れた面は書かれない。
+#   - depth_write = true: コライダー面同士の重なりも深度で解決する
+#     （書かない場合は描画順の後勝ちになり、カメラに近い面が負けることがある）。
+#     id パスの深度は StoreOp::Discard のため、書き込みがパス外へ影響することはない。
+depth_write     = true
+depth_compare   = "LessEqual"
+
+color_format    = "Rgba32Float"
+blend           = "None"
+write_mask      = "all"

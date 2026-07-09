@@ -37,6 +37,22 @@ use super::types::{
     DEFAULT_GRAVITY, PHYSICS_FIXED_STEP,
 };
 
+// ─── スムーズドラッグ速度クランプ定数 ────────────────────────────────────────
+
+/// スムーズドラッグ中の kinematic ボディが目標へ追従する最大並進速度（m/s）。
+///
+/// set_next_kinematic_position は「(目標 - 現在)/dt」を接触相手へ伝える速度とするため、
+/// エディタフレームが渡す 1 フレーム分の移動 Δ でも Δ/dt が大きくなり、床の上に乗った
+/// Dynamic ボディを吹き飛ばす。1 ステップの移動量を MAX_DRAG_LINEAR_SPEED*dt に制限すると
+/// 伝わる速度がこの値で頭打ちになり、乗っているボディは滑らかに押されるだけになる。
+/// （dt=1/60 のとき 1 ステップ上限 = 約 0.083m。標準的な編集ドラッグはこれ未満で追従し、
+///  素早い/フレーム落ちによる巨大ジャンプのみがクランプされる）
+const MAX_DRAG_LINEAR_SPEED: Real = 5.0;
+
+/// スムーズドラッグ中の kinematic ボディが目標へ追従する最大角速度（rad/s）。
+/// 並進と同様、回転差分 Δθ/dt が過大にならないよう 1 ステップの回転量を制限する。
+const MAX_DRAG_ANGULAR_SPEED: Real = 6.0;
+
 // ─── PhysicsThread（公開 API）────────────────────────────────────────────────
 
 /// Rapier 物理シミュレーションを実行するバックグラウンドスレッドのハンドル。
@@ -175,6 +191,16 @@ fn run_physics_loop(
     let mut active_contacts: HashSet<(u64, u64)>          = HashSet::new();
     let mut active_triggers: HashSet<(u64, u64)>          = HashSet::new();
 
+    // ── スムーズドラッグ状態 ────────────────────────────────────────────────
+    // SetBodyKinematic(is_kinematic=true, smooth=true) された「スムーズドラッグ中」
+    // ボディの entity_id → 目標ワールド姿勢のマップ。
+    // このマップにキーが存在する間、UpdateKinematic は即時反映せず目標だけを更新し、
+    // 毎ステップ直前に advance_smooth_drag_targets が最大速度クランプ付きで目標へ
+    // 追従させる。これによりエディタフレームの目標ジャンプ（Δ）がそのまま
+    // set_next_kinematic_position され「Δ/dt = 無制限の伝達速度」になるのを防ぐ。
+    // （キーの有無がスムーズドラッグ中フラグを兼ねる）
+    let mut drag_targets:    HashMap<u64, Isometry<Real>> = HashMap::new();
+
     // ── Rapier イベントコレクター ────────────────────────────────────────────
     // ChannelEventCollector は接触開始・終了イベントをチャンネル経由で提供する
     // rapier3d 0.22 の CollisionEvent は rapier3d::prelude から使用する
@@ -225,7 +251,7 @@ fn run_physics_loop(
                     &mut island_manager, &mut impulse_joint_set, &mut multibody_joint_set,
                     &mut entries, &mut col_to_entity,
                     &mut trigger_set, &mut active_contacts, &mut active_triggers,
-                    &mut gravity,
+                    &mut gravity, &mut drag_targets,
                 ),
                 Err(TryRecvError::Empty)          => break,
                 Err(TryRecvError::Disconnected)   => return,
@@ -246,6 +272,11 @@ fn run_physics_loop(
             std::thread::sleep(remaining.min(Duration::from_millis(1)));
             continue;
         }
+
+        // スムーズドラッグ: このステップの次目標位置を最大速度クランプ付きで更新する。
+        // ステップ直前・かつ実際にステップを実行するタイミングでのみ前進させることで、
+        // 1 ステップあたりの移動量（= 伝達速度 × dt）を確実に上限内に収める。
+        advance_smooth_drag_targets(&mut rigid_body_set, &entries, &drag_targets, PHYSICS_FIXED_STEP as Real);
 
         physics_pipeline.step(
             &gravity,
@@ -389,6 +420,63 @@ fn check_kinematic_overlap(
     blocking
 }
 
+// ─── スムーズドラッグ前進 ────────────────────────────────────────────────────
+
+/// スムーズドラッグ中の各 kinematic ボディについて、このステップの次目標位置を
+/// 現在位置から目標へ「最大速度クランプ付き」で前進させる。
+///
+/// set_next_kinematic_position(next) で Rapier に渡す (next - current) を
+/// MAX_DRAG_LINEAR_SPEED*dt / MAX_DRAG_ANGULAR_SPEED*dt に制限することで、
+/// 接触相手へ伝わる速度 (next-current)/dt がこの上限で頭打ちになる。
+/// 目標に十分近づくと残差 = 移動量となり速度は自然にゼロへ収束するため、
+/// ドラッグ停止時に乗っているボディへ残る速度も小さく抑えられる。
+fn advance_smooth_drag_targets(
+    rb_set:       &mut RigidBodySet,
+    entries:      &HashMap<u64, PhysicsEntry>,
+    drag_targets: &HashMap<u64, Isometry<Real>>,
+    dt:           Real,
+) {
+    let max_lin = MAX_DRAG_LINEAR_SPEED  * dt;
+    let max_ang = MAX_DRAG_ANGULAR_SPEED * dt;
+    for (entity_id, target) in drag_targets.iter() {
+        let Some(entry) = entries.get(entity_id) else { continue };
+        let Some(rb_h)  = entry.rb_handle else { continue };
+        let Some(rb)    = rb_set.get_mut(rb_h) else { continue };
+        if !rb.is_kinematic() { continue; }
+        let current = *rb.position();
+        let next    = step_isometry_toward(&current, target, max_lin, max_ang);
+        rb.set_next_kinematic_position(next);
+    }
+}
+
+/// `current` から `target` へ、並進を最大 `max_lin`、回転を最大 `max_ang`（ラジアン）
+/// だけ進めた中間 Isometry を返す。どちらも上限未満なら target 側の値をそのまま使う。
+fn step_isometry_toward(
+    current: &Isometry<Real>,
+    target:  &Isometry<Real>,
+    max_lin: Real,
+    max_ang: Real,
+) -> Isometry<Real> {
+    // 並進クランプ
+    let delta = target.translation.vector - current.translation.vector;
+    let dist  = delta.norm();
+    let new_trans = if dist > max_lin && dist > 1e-9 {
+        current.translation.vector + delta * (max_lin / dist)
+    } else {
+        target.translation.vector
+    };
+
+    // 回転クランプ（現在→目標の角度差を max_ang に制限して slerp）
+    let angle = current.rotation.angle_to(&target.rotation);
+    let new_rot = if angle > max_ang && angle > 1e-9 {
+        current.rotation.slerp(&target.rotation, max_ang / angle)
+    } else {
+        target.rotation
+    };
+
+    Isometry::from_parts(Translation::from(new_trans), new_rot)
+}
+
 // ─── コマンド処理 ────────────────────────────────────────────────────────────
 
 /// Stop 以外のコマンドを処理する（Stop は呼び出し元のマッチアームで処理済み）。
@@ -406,6 +494,7 @@ fn handle_command(
     active_contacts:   &mut HashSet<(u64, u64)>,
     active_triggers:   &mut HashSet<(u64, u64)>,
     gravity:           &mut nalgebra::Vector3<Real>,
+    drag_targets:      &mut HashMap<u64, Isometry<Real>>,
 ) {
     match cmd {
         PhysicsCommand::Stop   => { /* 呼び出し元で処理済み */ }
@@ -419,6 +508,7 @@ fn handle_command(
         }
 
         PhysicsCommand::RemoveObject { entity_id } => {
+            drag_targets.remove(&entity_id);
             if let Some(entry) = entries.remove(&entity_id) {
                 col_to_entity.remove(&entry.col_handle);
                 trigger_set.remove(&entity_id);
@@ -437,6 +527,12 @@ fn handle_command(
         }
 
         PhysicsCommand::UpdateKinematic { entity_id, position, rotation } => {
+            // スムーズドラッグ中のボディは即時反映せず「目標」だけ更新する。
+            // 実際の前進（速度クランプ付き）はステップ直前の advance_smooth_drag_targets が行う。
+            if let Some(target) = drag_targets.get_mut(&entity_id) {
+                *target = to_isometry(position, rotation);
+                return;
+            }
             if let Some(entry) = entries.get(&entity_id) {
                 if let Some(rb_h) = entry.rb_handle {
                     // RigidBody がある場合: Kinematic ボディの次ステップ目標位置を設定する
@@ -463,7 +559,12 @@ fn handle_command(
             }
         }
 
-        PhysicsCommand::SetBodyKinematic { entity_id, is_kinematic, final_position } => {
+        PhysicsCommand::SetBodyKinematic { entity_id, is_kinematic, final_position, smooth } => {
+            // Dynamic 復帰・kinematic 解除時はスムーズドラッグ登録を必ず解除する。
+            // （最終目標は下で set_position するため、以降のクランプ追従は不要）
+            if !is_kinematic {
+                drag_targets.remove(&entity_id);
+            }
             // ボディタイプを KinematicPositionBased ↔ Dynamic に切り替える。
             // ギズモドラッグ開始時に kinematic=true、終了時に false を送信する。
             //
@@ -539,6 +640,12 @@ fn handle_command(
                                     *rb.position()
                                 };
                                 rb.set_next_kinematic_position(lock_iso);
+                                // スムーズドラッグ登録: 以降の UpdateKinematic は目標のみ更新し、
+                                // advance_smooth_drag_targets が速度クランプ付きで追従させる。
+                                // 現在位置を初期目標にして開始（ドラッグ開始フレームの移動をゼロに）。
+                                if smooth {
+                                    drag_targets.insert(entity_id, lock_iso);
+                                }
                             } else {
                                 // Dynamic 復帰: 最終座標を明示セット + 速度ゼロリセット
                                 if let Some((pos, rot)) = final_position {
@@ -594,6 +701,11 @@ fn handle_command(
                         // 現在位置を kinematic 次ステップ目標として登録する
                         if let Some(rb) = rb_set.get_mut(rb_h) {
                             rb.set_next_kinematic_position(actor_world_pos);
+                        }
+                        // スムーズドラッグ指定時は目標追従に切り替える（通常は
+                        // コライダーのみ押し戻しモードで smooth=false のためスキップ）
+                        if smooth {
+                            drag_targets.insert(entity_id, actor_world_pos);
                         }
 
                         col_to_entity.insert(new_col_h, entity_id);

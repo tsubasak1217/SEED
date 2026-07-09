@@ -148,6 +148,11 @@ pub enum PhysicsCommand2d {
         is_kinematic: bool,
         /// Dynamic 復帰時に適用する最終座標 (position, rotation)。
         final_position: Option<([f32; 2], f32)>,
+        /// true の場合、この kinematic ボディへの UpdateKinematic を「目標位置」として
+        /// 扱い、物理スレッドが各ステップで最大速度クランプ付きに目標へ追従させる
+        /// （スムーズドラッグ。3D 版 PhysicsCommand::SetBodyKinematic と同じ意味）。
+        /// is_kinematic=false のときは無視される。
+        smooth: bool,
     },
     /// リジッドボディに付属するコライダーの形状・スケール・オフセットを差し替える。
     ///

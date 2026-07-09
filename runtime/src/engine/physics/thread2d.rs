@@ -29,6 +29,18 @@ use super::types2d::{
     DEFAULT_GRAVITY_2D, PHYSICS_2D_FIXED_STEP, PIXELS_PER_METER,
 };
 
+// ─── スムーズドラッグ速度クランプ定数（2D）─────────────────────────────────
+// 3D 版 thread.rs の MAX_DRAG_LINEAR_SPEED / MAX_DRAG_ANGULAR_SPEED と同じ意味。
+// set_next_kinematic_position は「(目標 - 現在)/dt」を接触相手へ伝える速度とするため、
+// 1 フレーム分の目標ジャンプ Δ でも Δ/dt が過大になり、乗っている Dynamic ボディを
+// 吹き飛ばす。1 ステップの移動量を最大速度 × dt に制限して伝達速度を頭打ちにする。
+
+/// スムーズドラッグ中の kinematic ボディが目標へ追従する最大並進速度（m/s）。
+const MAX_DRAG_LINEAR_SPEED_2D: Real = 5.0;
+
+/// スムーズドラッグ中の kinematic ボディが目標へ追従する最大角速度（rad/s）。
+const MAX_DRAG_ANGULAR_SPEED_2D: Real = 6.0;
+
 // ─── PhysicsThread2d（公開 API）──────────────────────────────────────────────
 
 /// Rapier 2D 物理シミュレーションを実行するバックグラウンドスレッドのハンドル。
@@ -159,6 +171,13 @@ fn run_physics_loop_2d(
     // Pause/Resume 状態（true のとき物理ステップをスキップ、速度は保持される）
     let mut paused = false;
 
+    // ── スムーズドラッグ状態（2D）──────────────────────────────────────────
+    // SetBodyKinematic(is_kinematic=true, smooth=true) された「スムーズドラッグ中」
+    // ボディの entity_id → 目標ワールド姿勢のマップ。キーが存在する間、UpdateKinematic は
+    // 即時反映せず目標だけを更新し、毎ステップ直前に advance_smooth_drag_targets_2d が
+    // 最大速度クランプ付きで目標へ追従させる（3D 版 thread.rs と同じ仕組み）。
+    let mut drag_targets: HashMap<u64, Isometry<Real>> = HashMap::new();
+
     loop {
         // ── コマンド処理（全キューをフラッシュ）────────────────────────────
         loop {
@@ -175,7 +194,7 @@ fn run_physics_loop_2d(
                     &mut island_manager, &mut impulse_joint_set, &mut multibody_joint_set,
                     &mut entries, &mut col_to_entity,
                     &mut trigger_set, &mut active_contacts, &mut active_triggers,
-                    &mut gravity,
+                    &mut gravity, &mut drag_targets,
                 ),
                 Err(TryRecvError::Empty)        => break,
                 Err(TryRecvError::Disconnected) => return,
@@ -195,6 +214,13 @@ fn run_physics_loop_2d(
             std::thread::sleep(remaining.min(Duration::from_millis(1)));
             continue;
         }
+
+        // スムーズドラッグ: このステップの次目標位置を最大速度クランプ付きで更新する。
+        // ステップ直前・かつ実際にステップを実行するタイミングでのみ前進させることで、
+        // 1 ステップあたりの移動量（= 伝達速度 × dt）を確実に上限内に収める。
+        advance_smooth_drag_targets_2d(
+            &mut rigid_body_set, &entries, &drag_targets, PHYSICS_2D_FIXED_STEP as Real,
+        );
 
         physics_pipeline.step(
             &gravity,
@@ -230,6 +256,61 @@ fn run_physics_loop_2d(
     }
 }
 
+// ─── スムーズドラッグ前進（2D）──────────────────────────────────────────────
+
+/// スムーズドラッグ中の各 kinematic ボディについて、このステップの次目標位置を
+/// 現在位置から目標へ「最大速度クランプ付き」で前進させる（3D 版 thread.rs と同じ）。
+///
+/// set_next_kinematic_position(next) で Rapier に渡す (next - current) を
+/// MAX_DRAG_LINEAR_SPEED_2D*dt / MAX_DRAG_ANGULAR_SPEED_2D*dt に制限することで、
+/// 接触相手へ伝わる速度 (next-current)/dt がこの上限で頭打ちになる。
+fn advance_smooth_drag_targets_2d(
+    rb_set:       &mut RigidBodySet,
+    entries:      &HashMap<u64, PhysicsEntry2d>,
+    drag_targets: &HashMap<u64, Isometry<Real>>,
+    dt:           Real,
+) {
+    let max_lin = MAX_DRAG_LINEAR_SPEED_2D  * dt;
+    let max_ang = MAX_DRAG_ANGULAR_SPEED_2D * dt;
+    for (entity_id, target) in drag_targets.iter() {
+        let Some(entry) = entries.get(entity_id) else { continue };
+        let Some(rb_h)  = entry.rb_handle else { continue };
+        let Some(rb)    = rb_set.get_mut(rb_h) else { continue };
+        if !rb.is_kinematic() { continue; }
+        let current = *rb.position();
+        let next    = step_isometry_toward_2d(&current, target, max_lin, max_ang);
+        rb.set_next_kinematic_position(next);
+    }
+}
+
+/// `current` から `target` へ、並進を最大 `max_lin`、回転を最大 `max_ang`（ラジアン）
+/// だけ進めた中間 Isometry を返す。どちらも上限未満なら target 側の値をそのまま使う。
+fn step_isometry_toward_2d(
+    current: &Isometry<Real>,
+    target:  &Isometry<Real>,
+    max_lin: Real,
+    max_ang: Real,
+) -> Isometry<Real> {
+    // 並進クランプ
+    let delta = target.translation.vector - current.translation.vector;
+    let dist  = delta.norm();
+    let new_trans = if dist > max_lin && dist > 1e-9 {
+        current.translation.vector + delta * (max_lin / dist)
+    } else {
+        target.translation.vector
+    };
+
+    // 回転クランプ（現在→目標の角度差を max_ang に制限して補間）
+    let angle = current.rotation.angle_to(&target.rotation);
+    let new_rot = if angle > max_ang && angle > 1e-9 {
+        current.rotation.slerp(&target.rotation, max_ang / angle)
+    } else {
+        target.rotation
+    };
+
+    Isometry::from_parts(Translation::from(new_trans), new_rot)
+}
+
 // ─── コマンド処理 ────────────────────────────────────────────────────────────
 
 /// Stop 以外の 2D コマンドを処理する。
@@ -247,6 +328,7 @@ fn handle_command_2d(
     active_contacts:   &mut HashSet<(u64, u64)>,
     active_triggers:   &mut HashSet<(u64, u64)>,
     gravity:           &mut nalgebra::Vector2<Real>,
+    drag_targets:      &mut HashMap<u64, Isometry<Real>>,
 ) {
     match cmd {
         PhysicsCommand2d::Stop   => { /* 呼び出し元で処理済み */ }
@@ -258,6 +340,7 @@ fn handle_command_2d(
         }
 
         PhysicsCommand2d::RemoveObject { entity_id } => {
+            drag_targets.remove(&entity_id);
             if let Some(entry) = entries.remove(&entity_id) {
                 col_to_entity.remove(&entry.col_handle);
                 trigger_set.remove(&entity_id);
@@ -273,6 +356,12 @@ fn handle_command_2d(
         }
 
         PhysicsCommand2d::UpdateKinematic { entity_id, position, rotation } => {
+            // スムーズドラッグ中のボディは即時反映せず「目標」だけ更新する。
+            // 実際の前進（速度クランプ付き）はステップ直前の advance_smooth_drag_targets_2d が行う。
+            if let Some(target) = drag_targets.get_mut(&entity_id) {
+                *target = to_isometry_2d(position, rotation);
+                return;
+            }
             if let Some(entry) = entries.get(&entity_id) {
                 if let Some(rb_h) = entry.rb_handle {
                     if let Some(rb) = rb_set.get_mut(rb_h) {
@@ -292,7 +381,11 @@ fn handle_command_2d(
             }
         }
 
-        PhysicsCommand2d::SetBodyKinematic { entity_id, is_kinematic, final_position } => {
+        PhysicsCommand2d::SetBodyKinematic { entity_id, is_kinematic, final_position, smooth } => {
+            // Dynamic 復帰・kinematic 解除時はスムーズドラッグ登録を必ず解除する。
+            if !is_kinematic {
+                drag_targets.remove(&entity_id);
+            }
             if let Some(entry) = entries.get_mut(&entity_id) {
                 let rb_h_opt = entry.rb_handle;
                 let created_for_drag = entry.rb_created_for_drag;
@@ -350,6 +443,11 @@ fn handle_command_2d(
                                     *rb.position()
                                 };
                                 rb.set_next_kinematic_position(lock_iso);
+                                // スムーズドラッグ登録: 以降の UpdateKinematic は目標のみ更新し、
+                                // advance_smooth_drag_targets_2d が速度クランプ付きで追従させる。
+                                if smooth {
+                                    drag_targets.insert(entity_id, lock_iso);
+                                }
                             } else {
                                 // Dynamic 復帰: 最終座標セット + 速度ゼロリセット
                                 if let Some((pos, rot)) = final_position {
@@ -395,6 +493,10 @@ fn handle_command_2d(
 
                         if let Some(rb) = rb_set.get_mut(rb_h) {
                             rb.set_next_kinematic_position(actor_world_pos);
+                        }
+                        // スムーズドラッグ指定時は目標追従に切り替える。
+                        if smooth {
+                            drag_targets.insert(entity_id, actor_world_pos);
                         }
 
                         col_to_entity.insert(new_col_h, entity_id);

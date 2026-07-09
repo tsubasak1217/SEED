@@ -754,6 +754,8 @@ impl App {
                         entity_id:      old_id,
                         is_kinematic:   false,
                         final_position,
+                        // Dynamic 復帰時は smooth は無視される（値は任意）
+                        smooth:         false,
                     });
                 }
             }
@@ -764,15 +766,8 @@ impl App {
                         [c.body_pos_px[0] / PIXELS_PER_METER, c.body_pos_px[1] / PIXELS_PER_METER],
                         c.rot_rad,
                     ));
-                if let Some(thread) = &self.physics_thread_2d {
-                    thread.send(PhysicsCommand2d::SetBodyKinematic {
-                        entity_id:    new_id,
-                        is_kinematic: true,
-                        final_position: ecs_start_pos,
-                    });
-                }
 
-                // 【ドラッグ中ライブシミュレーション（2D）】
+                // 【ドラッグ中ライブシミュレーション（2D）】の発動判定を先に行う（smooth 指定に使う）。
                 // 2D RigidBody タイムラインモードで最新フレーム停止中に Collider2d 付き
                 // アクターのドラッグが開始された場合、3D と同様に物理を Pause 解除して
                 // ドラッグ中も演算を継続する（自身は kinematic 追従・他は押しのけ）。
@@ -784,6 +779,18 @@ impl App {
                     && self.edit_physics_at_latest
                     && contexts.iter()
                         .any(|c| c.dfs_id == new_id && c.collider_slot_entity.is_some());
+
+                // ライブシミュレーション時のみ smooth=true（目標追従・速度クランプ）にして、
+                // 可動 kinematic が乗っている Dynamic ボディを吹き飛ばすのを防ぐ。
+                if let Some(thread) = &self.physics_thread_2d {
+                    thread.send(PhysicsCommand2d::SetBodyKinematic {
+                        entity_id:    new_id,
+                        is_kinematic: true,
+                        final_position: ecs_start_pos,
+                        smooth:       start_live_sim,
+                    });
+                }
+
                 if start_live_sim {
                     self.begin_edit_physics_drag_live_sim();
                 }

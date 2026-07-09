@@ -560,6 +560,12 @@ pub struct CanvasIdUniform {
 /// 透明領域クリックではアクターが選択されない。
 pub struct CanvasIdPipeline {
     pub pipeline:         wgpu::RenderPipeline,
+    /// コライダーピック面用の深度対応バリアント（collider_pick.toml）。
+    /// シェーダー・バインドグループレイアウトは `pipeline` と同一で、
+    /// depth_compare = LessEqual / depth_write = true のみ異なる。
+    /// メインパスのシーン深度に対してテストしつつ自身も深度を書くため、
+    /// コライダー面同士・可視物との重なりが「カメラに近い方優先」で解決される。
+    pub pick_depth_pipeline: wgpu::RenderPipeline,
     /// Group 1 BGL: CanvasIdUniform（モデル行列 + アクター ID）
     pub canvas_id_bgl:    wgpu::BindGroupLayout,
     /// Group 2 BGL: テクスチャ + サンプラー（アルファマスク用）
@@ -583,6 +589,15 @@ impl CanvasIdPipeline {
         let _camera_bgl_compat = it.next(); // group 0: camera_buf.bind_group と互換のため不使用
         let canvas_id_bgl      = it.next().unwrap(); // group 1
         let tex_bgl            = it.next().unwrap(); // group 2
+
+        // コライダーピック面用の深度対応バリアント。
+        // 同一シェーダー（canvas_id.wgsl）から生成されるため BGL は上記と等価であり、
+        // canvas_id 側の BGL で作った BindGroup をそのまま使用できる
+        // （group 0 の camera_buf 互換と同じく wgpu の BGL 等価性に依拠する既存慣例）。
+        let (pick_depth_pipeline, _bgls_depth) =
+            RenderPipelineBuilder::new(device, include_str!("pipelines/collider_pick.toml"), sf_unused, df)
+                .with_cache(cache)
+                .build(get_shader_source);
 
         // 白 1×1 テクスチャ（alpha=1）を作成してフォールバックビューとする
         let white_tex = device.create_texture(&wgpu::TextureDescriptor {
@@ -610,7 +625,7 @@ impl CanvasIdPipeline {
             ..Default::default()
         });
 
-        Self { pipeline, canvas_id_bgl, tex_bgl, white_view, sampler }
+        Self { pipeline, pick_depth_pipeline, canvas_id_bgl, tex_bgl, white_view, sampler }
     }
 }
 

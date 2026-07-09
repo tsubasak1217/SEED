@@ -147,6 +147,50 @@ pub fn draw_canvas_id_items<'pass>(
     }
 }
 
+/// コライダーピック面クワッドを ID パスへ描画する。
+///
+/// `draw_canvas_id_items` と同じユニットクワッド + CanvasIdUniform を使うが、
+/// パイプラインを深度対応バリアント（`pick_depth_pipeline`）へ切り替えられる。
+///
+/// # 深度の扱い（`with_depth`）
+/// - `true`（WS カメラのコライダー面）: depth_compare=LessEqual / depth_write=true。
+///   メインパスのシーン深度（ID パスは LoadOp::Load で引き継ぐ）に対してテストし、
+///   さらに自身も深度を書くため、コライダー面同士の重なりも「カメラに近い方優先」
+///   で解決される（メッシュ ID パスと同等の可視性判定）。
+/// - `false`（SS ortho カメラのコライダー面）: 通常の canvas_id パイプライン
+///   （depth Always）。SS ortho の深度は 3D シーン深度と比較不能なため、
+///   スプライトと同じ「描画順」の意味論に従う。
+///
+/// # 引数
+/// - `items` / `tex_bgs`: アイテムとテクスチャ BG（1:1 対応。通常は白フォールバック）
+/// - `camera_bg`: 描画に使うカメラ BG（WS または SS ortho）
+pub fn draw_collider_pick_items<'pass>(
+    render_pass: &mut wgpu::RenderPass<'pass>,
+    pipelines:   &'pass DrawPipelines,
+    camera_bg:   &'pass wgpu::BindGroup,
+    items:       &'pass [(wgpu::Buffer, wgpu::BindGroup)],
+    tex_bgs:     &[&'pass wgpu::BindGroup],
+    with_depth:  bool,
+) {
+    if items.is_empty() { return; }
+
+    // 深度対応バリアント（LessEqual + 書き込み）または通常（Always）を選択する
+    let pipeline = if with_depth {
+        &pipelines.canvas_id.pick_depth_pipeline
+    } else {
+        &pipelines.canvas_id.pipeline
+    };
+    render_pass.set_pipeline(pipeline);
+    // スプライトパイプラインのユニットクワッド頂点バッファを共有する
+    render_pass.set_vertex_buffer(0, pipelines.sprite.unit_quad_vbuf.slice(..));
+    render_pass.set_bind_group(0, camera_bg, &[]);
+    for ((_, bg), &tex_bg) in items.iter().zip(tex_bgs.iter()) {
+        render_pass.set_bind_group(1, bg, &[]);
+        render_pass.set_bind_group(2, tex_bg, &[]);
+        render_pass.draw(0..6, 0..1);
+    }
+}
+
 /// キャンバス ID バインドグループを生成するヘルパー。
 ///
 /// render pass 外で呼び出し、pass ライフタイム中リソースを保持する。
