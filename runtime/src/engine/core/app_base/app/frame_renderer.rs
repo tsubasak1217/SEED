@@ -1585,10 +1585,12 @@ impl App {
                             } else {
                                 COLLIDER_COLOR_NORMAL
                             };
-                            // 選択中アクターのコライダーは明度を上げて強調する
+                            // 選択中アクターのコライダーは明度を上げて強調する。
+                            // selected_actor_dfs_ids はピックのデコード（global - canvas_id_offset）
+                            // による 0 始まり DFS を保持するため、1 始まりの dfs_id を -1 して比較する。
                             let color = crate::engine::core::app_base::app::collider2d_wireframe::collider_color_for_selection(
                                 color,
-                                self.selected_actor_dfs_ids.contains(&(dfs_id as usize)),
+                                self.selected_actor_dfs_ids.contains(&(dfs_id as usize).saturating_sub(1)),
                             );
 
                             // Transform のオイラー角（YXZ 度数）からクォータニオンを生成
@@ -1762,9 +1764,10 @@ impl App {
                                 COLLIDER_COLOR_NORMAL
                             };
                             // 選択中アクターのコライダーは明度を上げて強調する
+                            // （selected_actor_dfs_ids は 0 始まり DFS なので ctx.dfs_id を -1 して比較）
                             let color = crate::engine::core::app_base::app::collider2d_wireframe::collider_color_for_selection(
                                 color,
-                                self.selected_actor_dfs_ids.contains(&(ctx.dfs_id as usize)),
+                                self.selected_actor_dfs_ids.contains(&(ctx.dfs_id as usize).saturating_sub(1)),
                             );
 
                             let rot_rad = ctx.rot_rad;
@@ -1881,9 +1884,10 @@ impl App {
                                         COLLIDER_COLOR_NORMAL
                                     };
                                     // 選択中アクターのコライダーは明度を上げて強調する
+                                    // （selected_actor_dfs_ids は 0 始まり DFS なので ctx.dfs_id を -1 して比較）
                                     let color = crate::engine::core::app_base::app::collider2d_wireframe::collider_color_for_selection(
                                         color,
-                                        self.selected_actor_dfs_ids.contains(&(ctx.dfs_id as usize)),
+                                        self.selected_actor_dfs_ids.contains(&(ctx.dfs_id as usize).saturating_sub(1)),
                                     );
 
                                     let rot_rad = ctx.rot_rad;
