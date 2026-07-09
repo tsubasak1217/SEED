@@ -65,6 +65,14 @@ use crate::engine::structs::objects::actor::{Actor, ActorKind};
 use super::{App, RuntimeMode, InspectorTransformDrag, find_actor_by_dfs};
 use super::canvas_collect::{build_canvas_viewport_map, root_anchor_offset};
 
+/// 物理診断ログの有効フラグ。環境変数 SEED_PHYS_LOG が設定されている場合のみ true。
+///
+/// 既定では無効。editor が runtime の stderr をパイプ捕捉している構成では、
+/// 毎フレーム／起動時の大量 eprintln! がパイプ詰まりでメインスレッドをブロックし、
+/// 再生開始直後にフレームレートが激しく低下する原因になるため、明示的にオプトインする。
+static PHYS_LOG_ENABLED: std::sync::LazyLock<bool> =
+    std::sync::LazyLock::new(|| std::env::var_os("SEED_PHYS_LOG").is_some());
+
 // ─── Actor2d 物理コンテキスト ────────────────────────────────────────────────
 
 /// アクター 1 つ分の「物理ワールド上のボディ位置」と「CanvasTransform 書き戻しに必要なデータ」を保持する。
@@ -658,12 +666,14 @@ impl App {
             }));
         }
 
-        eprintln!(
-            "[Physics2D] start_physics_2d: {} objects registered (world_line={}, force_kinematic={})",
-            contexts.iter().filter(|c| c.collider_slot_entity.is_some()).count(),
-            self.active_world_line,
-            force_kinematic,
-        );
+        if *PHYS_LOG_ENABLED {
+            eprintln!(
+                "[Physics2D] start_physics_2d: {} objects registered (world_line={}, force_kinematic={})",
+                contexts.iter().filter(|c| c.collider_slot_entity.is_some()).count(),
+                self.active_world_line,
+                force_kinematic,
+            );
+        }
 
         // コライダーのみモードでは重力を無効化する
         if force_kinematic {
@@ -807,7 +817,8 @@ impl App {
                 if let Some(scene) = &mut self.scene {
                     static FIRST_RESULT_LOGGED: std::sync::atomic::AtomicBool =
                         std::sync::atomic::AtomicBool::new(false);
-                    if !result.transform_updates.is_empty()
+                    if *PHYS_LOG_ENABLED
+                        && !result.transform_updates.is_empty()
                         && !FIRST_RESULT_LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed)
                     {
                         for (eid, pos, rot) in &result.transform_updates {

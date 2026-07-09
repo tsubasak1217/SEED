@@ -45,6 +45,15 @@ use super::{App, RuntimeMode, InspectorTransformDrag};
 /// （host_api.rs の RAYCAST_TIMEOUT_MS と同じ根拠・同じ値）
 const OVERLAP_REPLY_TIMEOUT_MS: u64 = 20;
 
+/// 物理の毎フレーム診断ログ（`[Physics]` 行）を出力するかどうか。既定オフ。
+/// プロファイル/デバッグしたいときのみ環境変数 SEED_PHYS_LOG を設定して有効化する。
+///
+/// エディタはランタイムの stderr をパイプで取り込むため、毎フレーム大量に eprintln! すると
+/// パイプバッファが詰まってランタイム側の書き込みが数十 ms ブロックし、Play 開始直後に
+/// FPS が激減する（開始 120 フレームで顕著）。既定で出力しないことでこれを防ぐ。
+static PHYS_LOG_ENABLED: std::sync::LazyLock<bool> =
+    std::sync::LazyLock::new(|| std::env::var_os("SEED_PHYS_LOG").is_some());
+
 impl App {
     // ─── 起動 ────────────────────────────────────────────────────
 
@@ -66,13 +75,15 @@ impl App {
 
         // シーン内の全 Actor を走査して ColliderComponent を持つものを収集・登録する
         let objects = collect_physics_objects(scene, self.active_world_line, force_kinematic);
-        eprintln!("[Physics] start_physics: {} objects collected (world_line={}, force_kinematic={})",
-            objects.len(), self.active_world_line, force_kinematic);
-        for obj in &objects {
-            eprintln!("[Physics]   entity_id={} pos=({:.3},{:.3},{:.3}) rigidbody={} kinematic={}",
-                obj.entity_id, obj.position[0], obj.position[1], obj.position[2],
-                obj.rigidbody.is_some(),
-                obj.rigidbody.as_ref().map_or(false, |rb| rb.is_kinematic));
+        if *PHYS_LOG_ENABLED {
+            eprintln!("[Physics] start_physics: {} objects collected (world_line={}, force_kinematic={})",
+                objects.len(), self.active_world_line, force_kinematic);
+            for obj in &objects {
+                eprintln!("[Physics]   entity_id={} pos=({:.3},{:.3},{:.3}) rigidbody={} kinematic={}",
+                    obj.entity_id, obj.position[0], obj.position[1], obj.position[2],
+                    obj.rigidbody.is_some(),
+                    obj.rigidbody.as_ref().map_or(false, |rb| rb.is_kinematic));
+            }
         }
         for obj in objects {
             thread.send(PhysicsCommand::AddObject(obj));
@@ -113,7 +124,9 @@ impl App {
         // 診断ログ（最初の 120 フレームのみ）
         static DIAG_FRAME: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         let diag_n = DIAG_FRAME.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let diag = diag_n < 120;
+        // 既定オフ（SEED_PHYS_LOG 設定時のみ）。毎フレーム eprintln! による stderr パイプ
+        // 詰まりで Play 開始直後に FPS が落ちるのを防ぐ。
+        let diag = *PHYS_LOG_ENABLED && diag_n < 120;
 
         // edit コライダーのみモードでは Transform 更新をスキップする
         let should_apply_transforms = self.mode != RuntimeMode::Edit
