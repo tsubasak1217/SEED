@@ -534,7 +534,26 @@ fn parse2u_nf<const N: usize>(rest: &str) -> Option<(u32, u32, [f32; N])> {
 /// 送信元がすべて Drop されて write_tx が閉じると recv() が Err を返しループを抜ける。
 fn write_loop(mut file: std::fs::File, rx: mpsc::Receiver<String>) {
     use std::io::Write;
+
+    // 【IPC 送信量プロファイル】種別（先頭 ':' までのプレフィックス）ごとの送信数を集計し、
+    // 1 秒ごとに stderr へ出力する。どのメッセージがエディタを洪水にしているかを特定するため。
+    let mut tally: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+    let mut last_report = std::time::Instant::now();
+
     while let Ok(msg) = rx.recv() {
+        // プレフィックス（先頭 ':' まで、なければ全体）を種別キーとして集計する。
+        let key = msg.split(':').next().unwrap_or("").to_string();
+        *tally.entry(key).or_insert(0) += 1;
+        if last_report.elapsed().as_secs_f64() >= 1.0 {
+            let total: u32 = tally.values().sum();
+            let mut items: Vec<(&String, &u32)> = tally.iter().collect();
+            items.sort_by(|a, b| b.1.cmp(a.1));
+            let top: Vec<String> = items.iter().take(6).map(|(k, n)| format!("{}={}", k, n)).collect();
+            eprintln!("[IPC] sent {}/s: {}", total, top.join(" "));
+            tally.clear();
+            last_report = std::time::Instant::now();
+        }
+
         // 元の send() と同じく 1 メッセージ = 1 行（改行区切り）で書き込む。
         // 書き込みエラー（パイプ切断等）でスレッドを終了する。
         if writeln!(file, "{}", msg).is_err() {
