@@ -948,7 +948,16 @@ impl App {
         for ctx in &contexts {
             let Some(slot_entity) = ctx.collider_slot_entity else { continue };
             let Some(collider) = scene.world.get::<Collider2dComponent>(slot_entity) else { continue };
-            if !collider.use_rigidbody || !collider.is_kinematic { continue; }
+            // Dynamic Rigidbody（use_rigidbody=true かつ非 kinematic）はシミュレーション対象のため
+            // 位置を強制しない。それ以外（Static コライダー / Kinematic ボディ）は毎フレーム
+            // 現在の計算位置へ更新する。
+            //
+            // 【Bug 修正】従来は `!use_rigidbody || !is_kinematic` で Static（use_rigidbody=false）も
+            // 除外していたため、親キャンバスを回転させても Static な地面コライダーが物理ワールド上で
+            // 起動時位置に取り残され、「地面が動いていない」「何もない場所で押し戻し」を起こしていた。
+            // 物理スレッドの UpdateKinematic は Static コライダー（rb_handle=None）を col.set_position で
+            // 直接更新できるため、ここで Static も送るだけで祖先回転に追従する。
+            if collider.use_rigidbody && !collider.is_kinematic { continue; }
 
             thread.send(PhysicsCommand2d::UpdateKinematic {
                 entity_id: ctx.dfs_id,
