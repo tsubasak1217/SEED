@@ -141,12 +141,16 @@ impl App {
         // 2D Actor は CanvasTransform、3D Actor は Transform を World から取得する
         let is_2d = actor.is_2d();
         let transform_json = if is_2d {
-            // CanvasTransform: position(XY), rotation(Z 回転), scale(XY), pivot(XY), anchor(XY)
+            // CanvasTransform: position(XY), rotation(Z 回転), scale(XY), pivot(XY), anchor(XY),
+            // スケールモード(scale_transform/scale_size/keep_aspect_ratio: 1|0,
+            // aspect_ratio_axis: 0=Width/1=Height)
             let ct = scene.world.get::<CanvasTransform>(actor.entity).cloned().unwrap_or_default();
+            let ct_axis = if matches!(ct.aspect_ratio_axis, crate::engine::components::AspectRatioAxis::Height) { 1u8 } else { 0u8 };
             format!(
-                r#","canvas_transform":{{"px":{:.4},"py":{:.4},"rotation":{:.4},"sx":{:.4},"sy":{:.4},"pivx":{:.4},"pivy":{:.4},"anchor_x":{:.4},"anchor_y":{:.4}}}"#,
+                r#","canvas_transform":{{"px":{:.4},"py":{:.4},"rotation":{:.4},"sx":{:.4},"sy":{:.4},"pivx":{:.4},"pivy":{:.4},"anchor_x":{:.4},"anchor_y":{:.4},"scale_transform":{},"scale_size":{},"keep_aspect_ratio":{},"aspect_ratio_axis":{}}}"#,
                 ct.position[0], ct.position[1], ct.rotation, ct.scale[0], ct.scale[1],
                 ct.pivot[0], ct.pivot[1], ct.anchor[0], ct.anchor[1],
+                ct.scale_transform as u8, ct.scale_size as u8, ct.keep_aspect_ratio as u8, ct_axis,
             )
         } else {
             let tf = scene.world.get::<ActorTransform>(actor.entity).cloned().unwrap_or_default();
@@ -189,7 +193,6 @@ impl App {
                     };
                     let vp_actor_json = serde_json::to_string(&vp_actor_name).unwrap_or_default();
                     let vp_slot_json  = serde_json::to_string(&vp_slot_name).unwrap_or_default();
-                    let aspect_axis = if matches!(d.aspect_ratio_axis, crate::engine::components::AspectRatioAxis::Height) { "height" } else { "width" };
                     // gravity_mode: 0=screen_down, 1=canvas_down
                     let gravity_mode_val = if matches!(d.gravity_mode, crate::engine::components::GravityMode::CanvasDown) { 1u8 } else { 0u8 };
                     // draw_zone: "foreground"（3D ワールドの手前・デフォルト）| "background"（奥）
@@ -218,13 +221,12 @@ impl App {
                         String::new()
                     };
                     // pivot: 3D キャンバス専用（Actor3D アタッチ時のみ有効）
+                    // 注: スケールモード（scale_transform/scale_size/keep_aspect_ratio/
+                    //     aspect_ratio_axis）は CanvasTransform 側へ移動したため、ここでは送らない。
                     ("CanvasComponent", format!(
-                        r#","width":{:.4},"height":{:.4},"scale_transform":{},"scale_size":{},"auto_scale":{},"vp_ref_type":"{vp_ref_type}","vp_ref_actor":{vp_actor_json},"vp_ref_slot":{vp_slot_json},"keep_aspect_ratio":{},"aspect_ratio_axis":"{aspect_axis}","gravity_mode":{gravity_mode_val},"draw_zone":"{draw_zone_str}","pivot_x":{:.4},"pivot_y":{:.4}{auto_size_json}"#,
+                        r#","width":{:.4},"height":{:.4},"auto_scale":{},"vp_ref_type":"{vp_ref_type}","vp_ref_actor":{vp_actor_json},"vp_ref_slot":{vp_slot_json},"gravity_mode":{gravity_mode_val},"draw_zone":"{draw_zone_str}","pivot_x":{:.4},"pivot_y":{:.4}{auto_size_json}"#,
                         d.width, d.height,
-                        d.scale_transform  as u8,
-                        d.scale_size       as u8,
                         d.auto_scale       as u8,
-                        d.keep_aspect_ratio as u8,
                         d.pivot[0],
                         d.pivot[1],
                     ))

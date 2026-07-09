@@ -1105,18 +1105,13 @@ impl App {
                                             [ 0.0,  0.0, 0.0,  1.0                    ],
                                         ],
                                     );
-                                    let child_sm = (
-                                        cc.scale_transform, cc.scale_size,
-                                        cc.keep_aspect_ratio,
-                                        matches!(cc.aspect_ratio_axis, crate::engine::components::AspectRatioAxis::Width),
-                                    );
                                     // このキャンバス内の追加分をレイヤー昇順で安定ソートする
                                     // （ワールドキャンバスのレイヤーはキャンバス内で完結する）
                                     let canvas_start = items.len();
                                     collect_sprite_items(
                                         &actor.children, &s.world, wl, draw_ctx,
                                         Some([cc.width, cc.height]),
-                                        ctw, [1.0, 1.0], child_sm,
+                                        ctw, [1.0, 1.0],
                                         1.0, 1.0,
                                         // ワールドキャンバスは自動解像度の対象外（空マップ）・ゾーン概念なし
                                         None, &std::collections::HashMap::new(),
@@ -2031,7 +2026,7 @@ impl App {
                                 };
                                 collect_sprite_items(
                                     &scene.actors, &scene.world, wl, draw_ctx,
-                                    None, IDENTITY, [1.0, 1.0], (false, false, false, true),
+                                    None, IDENTITY, [1.0, 1.0],
                                     canvas_scale, y_sign, viewport_size, &canvas_vp_overrides,
                                     &root_auto_sizes, CanvasDrawZone::Foreground, edit_view_2d, &mut items_2d,
                                 );
@@ -2075,18 +2070,13 @@ impl App {
                                         [ 0.0,  0.0, 0.0,  1.0                    ],
                                     ],
                                 );
-                                let child_scale_mode = (
-                                    cc.scale_transform, cc.scale_size,
-                                    cc.keep_aspect_ratio,
-                                    matches!(cc.aspect_ratio_axis, crate::engine::components::AspectRatioAxis::Width),
-                                );
                                 // このキャンバス内の追加分をレイヤー昇順で安定ソートする
                                 // （ワールドキャンバスのレイヤーはキャンバス内で完結する）
                                 let canvas_start = items_3d.len();
                                 collect_sprite_items(
                                     &actor.children, &scene.world, wl, draw_ctx,
                                     Some([cc.width, cc.height]),
-                                    canvas_to_world, [1.0, 1.0], child_scale_mode,
+                                    canvas_to_world, [1.0, 1.0],
                                     1.0, 1.0,
                                     // ワールドキャンバスは自動解像度の対象外（空マップ）・ゾーン概念なし
                                     None, &std::collections::HashMap::new(),
@@ -2173,7 +2163,7 @@ impl App {
                             collect_canvas_rects(
                                 &scene.actors, &scene.world, wl, &mut lb, rect_col,
                                 &self.selected_actor_dfs_ids, &mut counter,
-                                None, IDENTITY_RECT, [1.0, 1.0], (false, false, false, true),
+                                None, IDENTITY_RECT, [1.0, 1.0],
                                 canvas_scale_rect, y_sign_rect, viewport_size_rect, &canvas_vp_overrides_r,
                                 &root_auto_sizes_r, edit_view_2d, outline_step,
                             );
@@ -3005,7 +2995,7 @@ impl App {
                                             collect_canvas_id_items(
                                                 &scene.actors, &scene.world, wl,
                                                 &mut ctr, None, IDENTITY,
-                                                [1.0, 1.0], (false, false, false, true),
+                                                [1.0, 1.0],
                                                 canvas_scale, y_sign, viewport_size,
                                                 &canvas_vp_overrides_id,
                                                 &root_auto_sizes_id,

@@ -190,10 +190,12 @@ pub enum IpcCommand {
     /// CanvasTransform の anchor を設定する（正規化値 0.0〜1.0）
     /// フォーマット: SET_CANVAS_ANCHOR:{actor_dfs_id},{anchor_x},{anchor_y}
     SetCanvasAnchor { actor_dfs_id: u32, ax: f32, ay: f32 },
-    /// CanvasComponent のスケールモードを設定する
-    /// フォーマット: SET_CANVAS_SCALE_MODE:{actor_dfs_id},{slot_idx},{scale_transform},{scale_size}
-    /// scale_transform / scale_size は "0" または "1"
-    SetCanvasScaleMode { actor_dfs_id: u32, slot_idx: u32, scale_transform: bool, scale_size: bool },
+    /// CanvasTransform のスケールモード（scale_transform / scale_size / keep_aspect_ratio /
+    /// aspect_ratio_axis）を設定する。スケールモードは各ノードの CanvasTransform が保持するため、
+    /// スロット指定は不要（アクター DFS ID のルート CanvasTransform を更新する）。
+    /// フォーマット: SET_CANVAS_TRANSFORM_SCALE_MODE:{actor_dfs_id},{scale_transform},{scale_size},{keep_aspect},{axis}
+    /// scale_transform / scale_size / keep_aspect は "0" または "1"、axis は 0=Width / 1=Height。
+    SetCanvasTransformScaleMode { actor_dfs_id: u32, scale_transform: bool, scale_size: bool, keep_aspect: bool, axis: u8 },
     /// キャンバスをスクリーンスペースオーバーレイで表示するかを切り替える
     /// false（デフォルト）= ワールドスペース、true = スクリーンスペースオーバーレイ
     /// フォーマット: CANVAS_SS_OVERLAY:0/1
@@ -211,9 +213,6 @@ pub enum IpcCommand {
     /// ルートキャンバスの画面サイズ自動スケールを設定する
     /// フォーマット: SET_CANVAS_AUTO_SCALE:{actor_dfs_id},{slot_idx},{value}
     SetCanvasAutoScale { actor_dfs_id: u32, slot_idx: u32, auto_scale: bool },
-    /// CanvasComponent のアスペクト比維持設定を更新する
-    /// フォーマット: SET_CANVAS_ASPECT_RATIO:{actor_dfs_id},{slot_idx},{keep:0|1},{axis:width|height}
-    SetCanvasAspectRatio { actor_dfs_id: u32, slot_idx: u32, keep: bool, axis: String },
     /// CanvasComponent の重力方向モードを設定する
     /// フォーマット: SET_CANVAS_GRAVITY_MODE:{actor_dfs_id},{slot_idx},{mode:0|1}
     /// mode: 0=ScreenDown, 1=CanvasDown
@@ -492,18 +491,6 @@ fn parse2u1b(rest: &str) -> Option<(u32, u32, bool)> {
     Some((
         it.next()?.trim().parse().ok()?,
         it.next()?.trim().parse().ok()?,
-        it.next()?.trim() == "1",
-    ))
-}
-
-/// `rest` から `u32, u32, {0|1}, {0|1}` をカンマ区切りでパースして (a, b, bool, bool) を返す。
-#[inline]
-fn parse2u2b(rest: &str) -> Option<(u32, u32, bool, bool)> {
-    let mut it = rest.split(',');
-    Some((
-        it.next()?.trim().parse().ok()?,
-        it.next()?.trim().parse().ok()?,
-        it.next()?.trim() == "1",
         it.next()?.trim() == "1",
     ))
 }
@@ -958,13 +945,23 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                             parse1u_nf::<2>(&s["SET_CANVAS_ANCHOR:".len()..])
                                 .map(|(id, fs)| IpcCommand::SetCanvasAnchor { actor_dfs_id: id, ax: fs[0], ay: fs[1] })
                         }
-                        s if s.starts_with("SET_CANVAS_SCALE_MODE:") => {
-                            // フォーマット: SET_CANVAS_SCALE_MODE:{actor_dfs_id},{slot_idx},{scale_transform},{scale_size}
-                            parse2u2b(&s["SET_CANVAS_SCALE_MODE:".len()..])
-                                .map(|(id, sl, st, ss)| IpcCommand::SetCanvasScaleMode {
-                                    actor_dfs_id: id, slot_idx: sl,
+                        s if s.starts_with("SET_CANVAS_TRANSFORM_SCALE_MODE:") => {
+                            // フォーマット: SET_CANVAS_TRANSFORM_SCALE_MODE:{actor_dfs_id},{scale_transform},{scale_size},{keep_aspect},{axis}
+                            // bool は "0"/"1"、axis は 0=Width / 1=Height。
+                            let rest = &s["SET_CANVAS_TRANSFORM_SCALE_MODE:".len()..];
+                            let mut it = rest.splitn(5, ',');
+                            (|| -> Option<IpcCommand> {
+                                let id:   u32  = it.next()?.trim().parse().ok()?;
+                                let st:   bool = it.next()?.trim() == "1";
+                                let ss:   bool = it.next()?.trim() == "1";
+                                let keep: bool = it.next()?.trim() == "1";
+                                let axis: u8   = it.next()?.trim().parse().ok()?;
+                                Some(IpcCommand::SetCanvasTransformScaleMode {
+                                    actor_dfs_id: id,
                                     scale_transform: st, scale_size: ss,
+                                    keep_aspect: keep, axis,
                                 })
+                            })()
                         }
                         s if s.starts_with("SET_CANVAS_AUTO_SCALE:") => {
                             // フォーマット: SET_CANVAS_AUTO_SCALE:{actor_dfs_id},{slot_idx},{0|1}
@@ -972,18 +969,6 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                                 .map(|(id, sl, v)| IpcCommand::SetCanvasAutoScale {
                                     actor_dfs_id: id, slot_idx: sl, auto_scale: v,
                                 })
-                        }
-                        s if s.starts_with("SET_CANVAS_ASPECT_RATIO:") => {
-                            // フォーマット: SET_CANVAS_ASPECT_RATIO:{id},{slot},{0|1},{axis}
-                            let rest = &s["SET_CANVAS_ASPECT_RATIO:".len()..];
-                            let mut it = rest.splitn(4, ',');
-                            (|| -> Option<IpcCommand> {
-                                let id:   u32  = it.next()?.trim().parse().ok()?;
-                                let sl:   u32  = it.next()?.trim().parse().ok()?;
-                                let keep: bool = it.next()?.trim() == "1";
-                                let axis       = it.next()?.trim().to_string();
-                                Some(IpcCommand::SetCanvasAspectRatio { actor_dfs_id: id, slot_idx: sl, keep, axis })
-                            })()
                         }
                         s if s.starts_with("SET_CANVAS_GRAVITY_MODE:") => {
                             // フォーマット: SET_CANVAS_GRAVITY_MODE:{actor_dfs_id},{slot_idx},{mode}

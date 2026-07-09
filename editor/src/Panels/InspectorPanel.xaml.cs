@@ -299,7 +299,15 @@ public partial class InspectorPanel : UserControl
             float sx   = Fp(ct, "sx"),  sy   = Fp(ct, "sy");
             float pivx = Fp(ct, "pivx"), pivy = Fp(ct, "pivy");
             float ancX = Fp(ct, "anchor_x"), ancY = Fp(ct, "anchor_y");
-            ComponentStack.Children.Add(BuildCanvas2DTransformSection(px, py, rot, sx, sy, pivx, pivy, ancX, ancY));
+            // スケールモード（親キャンバスのスケール追従）。CanvasComponent から CanvasTransform へ移動した。
+            bool scaleTransform = ct.TryGetProperty("scale_transform",   out var st1) && ReadJsonBool(st1, false);
+            bool scaleSize      = ct.TryGetProperty("scale_size",        out var ss1) && ReadJsonBool(ss1, false);
+            bool keepAspect     = ct.TryGetProperty("keep_aspect_ratio", out var ka1) && ReadJsonBool(ka1, false);
+            int  aspectAxis     = ct.TryGetProperty("aspect_ratio_axis", out var ax1) && ax1.ValueKind == JsonValueKind.Number ? ax1.GetInt32() : 0;
+            ComponentStack.Children.Add(BuildCanvas2DTransformSection(
+                px, py, rot, sx, sy, pivx, pivy, ancX, ancY,
+                scaleTransform: scaleTransform, scaleSize: scaleSize,
+                keepAspect: keepAspect, aspectAxis: aspectAxis));
         }
         else if (root.TryGetProperty("transform", out var tf))
         {
@@ -337,14 +345,10 @@ public partial class InspectorPanel : UserControl
     /// <summary>コンポーネントスロット 1 件分の情報。TypeId ごとに追加フィールドを持つ。</summary>
     private record SlotInfo(int SlotIdx, string Name, string TypeId, string ModelPath,
         float Width = 0f, float Height = 0f,
-        // CanvasComponent 用スケールモードフラグ
-        bool ScaleTransform = false, bool ScaleSize = false,
         // CanvasComponent 用自動スケールフラグ
         bool AutoScale = true,
         // CanvasComponent 用基準領域参照（"main_camera" / "window" / "camera"）
         string VpRefType = "window", string VpRefActor = "", string VpRefSlot = "",
-        // CanvasComponent 用アスペクト比維持（scale_size=true のときのみ有効）
-        bool KeepAspectRatio = false, string AspectRatioAxis = "width",
         // CanvasComponent 用重力方向モード（0=スクリーン下, 1=キャンバス下）
         int GravityMode = 0,
         // CanvasComponent 用描画ゾーン（"foreground"=3Dワールドの手前・デフォルト / "background"=奥）
@@ -460,9 +464,16 @@ public partial class InspectorPanel : UserControl
             float sx   = Fp(ct, "sx"),  sy   = Fp(ct, "sy");
             float pivx = Fp(ct, "pivx"), pivy = Fp(ct, "pivy");
             float ancX = Fp(ct, "anchor_x"), ancY = Fp(ct, "anchor_y");
+            // スケールモード（親キャンバスのスケール追従）。CanvasComponent から CanvasTransform へ移動した。
+            bool scaleTransform = ct.TryGetProperty("scale_transform",   out var st1) && ReadJsonBool(st1, false);
+            bool scaleSize      = ct.TryGetProperty("scale_size",        out var ss1) && ReadJsonBool(ss1, false);
+            bool keepAspect     = ct.TryGetProperty("keep_aspect_ratio", out var ka1) && ReadJsonBool(ka1, false);
+            int  aspectAxis     = ct.TryGetProperty("aspect_ratio_axis", out var ax1) && ax1.ValueKind == JsonValueKind.Number ? ax1.GetInt32() : 0;
             // ルートキャンバスは Transform 恒等固定のため読み取り専用で表示する
             transformContent = BuildCanvas2DTransformSection(
                 px, py, rot, sx, sy, pivx, pivy, ancX, ancY,
+                scaleTransform: scaleTransform, scaleSize: scaleSize,
+                keepAspect: keepAspect, aspectAxis: aspectAxis,
                 locked: _isViewportRootCanvas);
         }
         else if (root.TryGetProperty("transform", out var tf))
@@ -513,16 +524,13 @@ public partial class InspectorPanel : UserControl
             var height         = comp.TryGetProperty("height",          out var ht)  ? ht.GetSingle()  : 0f;
             // Rust の serde_json は bool を JSON 真偽値（true/false）としてシリアライズするため
             // GetInt32() ではなく ValueKind で判定する。数値（0/1）も念のため許容する。
-            var scaleTransform = comp.TryGetProperty("scale_transform", out var stv) ? ReadJsonBool(stv, false) : false;
-            var scaleSize      = comp.TryGetProperty("scale_size",      out var ssv) ? ReadJsonBool(ssv, false) : false;
+            // スケールモード（scale_transform / scale_size / keep_aspect_ratio / aspect_ratio_axis）は
+            // CanvasComponent から各 2D アクターの CanvasTransform へ移動したためここでは扱わない。
             var autoScale      = comp.TryGetProperty("auto_scale",      out var asv) ? ReadJsonBool(asv, true)  : true;
             // CanvasComponent 用: ビューポート参照
             var vpRefType  = comp.TryGetProperty("vp_ref_type",  out var vrt) ? vrt.GetString() ?? "window" : "window";
             var vpRefActor = comp.TryGetProperty("vp_ref_actor", out var vra) ? vra.GetString() ?? ""       : "";
             var vpRefSlot  = comp.TryGetProperty("vp_ref_slot",  out var vrs) ? vrs.GetString() ?? ""       : "";
-            // CanvasComponent 用: アスペクト比維持
-            var keepAspectRatio = comp.TryGetProperty("keep_aspect_ratio", out var kar) ? ReadJsonBool(kar, false) : false;
-            var aspectRatioAxis = comp.TryGetProperty("aspect_ratio_axis", out var ara) ? ara.GetString() ?? "width" : "width";
             // CanvasComponent 用: 重力方向モード
             var gravityMode = comp.TryGetProperty("gravity_mode", out var gm)  ? gm.GetInt32()  : 0;
             // CanvasComponent 用: 描画ゾーン（"foreground" / "background"）
@@ -584,9 +592,8 @@ public partial class InspectorPanel : UserControl
             var audioPan         = comp.TryGetProperty("pan",           out var apn) ? apn.GetSingle() : 0f;
 
             var info = new SlotInfo(slotIdx, compName, compType, modelPath, width, height,
-                scaleTransform, scaleSize, autoScale,
+                AutoScale: autoScale,
                 VpRefType: vpRefType, VpRefActor: vpRefActor, VpRefSlot: vpRefSlot,
-                KeepAspectRatio: keepAspectRatio, AspectRatioAxis: aspectRatioAxis,
                 GravityMode: gravityMode,
                 DrawZone: drawZone,
                 AutoW: autoW, AutoH: autoH,
@@ -2793,93 +2800,10 @@ public partial class InspectorPanel : UserControl
             cmbZone.SelectionChanged += (_, _) => CommitDrawZone();
         }
 
-        // ── スケールモード セクション ──────────────────────────
-        // 「画面サイズに自動スケール」が ON のときだけ意味を持つ設定のため、
-        // 専用パネルにまとめて自動スケールのチェック状態と連動して表示/非表示を切り替える
-        //（Actor3D の 3D ワールドキャンバスは自動スケール設定自体が無いため常時表示）。
-        var scaleModePanel = new StackPanel();
-        var scaleSep = new TextBlock
-        {
-            Text       = "スケールモード",
-            Foreground = new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88)),
-            FontSize   = 10,
-            Margin     = new Thickness(0, 6, 0, 2),
-        };
-        scaleModePanel.Children.Add(scaleSep);
-
-        // チェックボックス: アイテムのトランスフォームをスケールする
-        var cbTransform = new CheckBox
-        {
-            Content             = "アイテムのトランスフォームをスケールする",
-            IsChecked           = info.ScaleTransform,
-            Foreground          = new SolidColorBrush(Colors.White),
-            FontSize            = 11,
-            Margin              = new Thickness(0, 2, 0, 2),
-            VerticalAlignment   = VerticalAlignment.Center,
-        };
-        scaleModePanel.Children.Add(cbTransform);
-
-        // チェックボックス: アイテムのサイズをスケールする
-        var cbSize = new CheckBox
-        {
-            Content             = "アイテムのサイズをスケールする",
-            IsChecked           = info.ScaleSize,
-            Foreground          = new SolidColorBrush(Colors.White),
-            FontSize            = 11,
-            Margin              = new Thickness(0, 2, 0, 2),
-            VerticalAlignment   = VerticalAlignment.Center,
-        };
-        scaleModePanel.Children.Add(cbSize);
-
-        // アスペクト比維持パネル（アイテムのサイズをスケールする のときのみ表示）
-        var aspectPanel = new StackPanel
-        {
-            Margin     = new Thickness(16, 0, 0, 6),
-            Visibility = info.ScaleSize ? Visibility.Visible : Visibility.Collapsed,
-        };
-
-        // チェックボックス: アイテムのアスペクト比を維持
-        var cbKeepAspect = new CheckBox
-        {
-            Content           = "アイテムのアスペクト比を維持",
-            IsChecked         = info.KeepAspectRatio,
-            Foreground        = new SolidColorBrush(Colors.White),
-            FontSize          = 11,
-            Margin            = new Thickness(0, 2, 0, 2),
-            VerticalAlignment = VerticalAlignment.Center,
-        };
-        aspectPanel.Children.Add(cbKeepAspect);
-
-        // 基準軸選択パネル（アスペクト比維持がオンのときのみ表示）
-        var axisPanel = new StackPanel
-        {
-            Orientation = Orientation.Horizontal,
-            Margin      = new Thickness(16, 0, 0, 2),
-            Visibility  = info.KeepAspectRatio ? Visibility.Visible : Visibility.Collapsed,
-        };
-        axisPanel.Children.Add(new TextBlock
-        {
-            Text              = "基準軸",
-            Foreground        = new SolidColorBrush(Color.FromRgb(0xAA, 0xAA, 0xAA)),
-            FontSize          = 11,
-            Width             = 60,
-            VerticalAlignment = VerticalAlignment.Center,
-        });
-        var cmbAspectAxis = new ComboBox
-        {
-            Width    = 100,
-            FontSize = 11,
-            Margin   = new Thickness(4, 0, 0, 0),
-        };
-        cmbAspectAxis.Items.Add(new ComboBoxItem { Content = "横（幅）基準",   Tag = "width"  });
-        cmbAspectAxis.Items.Add(new ComboBoxItem { Content = "縦（高さ）基準", Tag = "height" });
-        cmbAspectAxis.SelectedIndex = info.AspectRatioAxis == "height" ? 1 : 0;
-        axisPanel.Children.Add(cmbAspectAxis);
-        aspectPanel.Children.Add(axisPanel);
-        scaleModePanel.Children.Add(aspectPanel);
-
         // ── 自動スケール セクション（Actor2D = 2D キャンバス時のみ表示）──────────────────────────
         // Actor3D に Canvas をアタッチした場合（3D ワールドキャンバス）はこの設定を使わない。
+        // ※ スケールモード（トランスフォーム/サイズをスケールする・アスペクト比維持）は
+        //   CanvasComponent から各 2D アクターの CanvasTransform へ移動した（BuildCanvas2DTransformSection 参照）。
         var cbAutoScale = new CheckBox
         {
             Content             = "画面サイズに自動スケール",
@@ -2901,17 +2825,6 @@ public partial class InspectorPanel : UserControl
             };
             sp.Children.Add(autoScaleSep);
             sp.Children.Add(cbAutoScale);
-
-            // スケールモードは自動スケールが ON のときだけ意味を持つため、
-            // チェックボックスの直下に配置し、OFF のときは非表示にする
-            scaleModePanel.Margin     = new Thickness(16, 0, 0, 0);   // 従属設定であることを字下げで示す
-            scaleModePanel.Visibility = info.AutoScale ? Visibility.Visible : Visibility.Collapsed;
-            sp.Children.Add(scaleModePanel);
-        }
-        else
-        {
-            // Actor3D（3D ワールドキャンバス）は自動スケール設定が無いため常時表示する
-            sp.Children.Add(scaleModePanel);
         }
 
         // ── 基準領域 セクション ──────────────────────────
@@ -3027,16 +2940,6 @@ public partial class InspectorPanel : UserControl
                 $"SET_CANVAS_SIZE:{_currentActorId},{info.SlotIdx},{w},{h}"));
         }
 
-        // スケールモードを送信するローカル関数
-        void CommitScaleMode()
-        {
-            if (_currentActorId < 0) return;
-            int st = (cbTransform.IsChecked == true) ? 1 : 0;
-            int ss = (cbSize.IsChecked      == true) ? 1 : 0;
-            _runtime?.SendToRuntime(FormattableString.Invariant(
-                $"SET_CANVAS_SCALE_MODE:{_currentActorId},{info.SlotIdx},{st},{ss}"));
-        }
-
         // 画面サイズ自動スケールを送信するローカル関数
         void CommitAutoScale()
         {
@@ -3132,34 +3035,8 @@ public partial class InspectorPanel : UserControl
         tbH.LostFocus += (_, _) => CommitSize();
         NumericDragBehavior.SetOnDrag(tbW, CommitSize); NumericDragBehavior.SetOnDrag(tbH, CommitSize);
 
-        cbTransform.Checked   += (_, _) => CommitScaleMode();
-        cbTransform.Unchecked += (_, _) => CommitScaleMode();
-        cbSize.Checked        += (_, _) =>
-        {
-            CommitScaleMode();
-            aspectPanel.Visibility = Visibility.Visible;
-        };
-        cbSize.Unchecked += (_, _) =>
-        {
-            CommitScaleMode();
-            aspectPanel.Visibility = Visibility.Collapsed;
-        };
-
-        // アスペクト比維持を送信するローカル関数
-        void CommitAspectRatio()
-        {
-            if (_currentActorId < 0) return;
-            int keep = (cbKeepAspect.IsChecked == true) ? 1 : 0;
-            var axis = (cmbAspectAxis.SelectedItem as ComboBoxItem)?.Tag as string ?? "width";
-            _runtime?.SendToRuntime($"SET_CANVAS_ASPECT_RATIO:{_currentActorId},{info.SlotIdx},{keep},{axis}");
-        }
-
-        cbKeepAspect.Checked   += (_, _) => { axisPanel.Visibility = Visibility.Visible;  CommitAspectRatio(); };
-        cbKeepAspect.Unchecked += (_, _) => { axisPanel.Visibility = Visibility.Collapsed; CommitAspectRatio(); };
-        cmbAspectAxis.SelectionChanged += (_, _) => CommitAspectRatio();
-
-        cbAutoScale.Checked   += (_, _) => { CommitAutoScale(); scaleModePanel.Visibility = Visibility.Visible; };
-        cbAutoScale.Unchecked += (_, _) => { CommitAutoScale(); scaleModePanel.Visibility = Visibility.Collapsed; };
+        cbAutoScale.Checked   += (_, _) => CommitAutoScale();
+        cbAutoScale.Unchecked += (_, _) => CommitAutoScale();
 
         // ── 重力方向セクション ──────────────────────────────────────────────────
         var gravitySep = new TextBlock
@@ -4326,6 +4203,9 @@ public partial class InspectorPanel : UserControl
     private Border BuildCanvas2DTransformSection(
         float px, float py, float rot, float sx, float sy,
         float pivx, float pivy, float ancX, float ancY,
+        // スケールモード（親キャンバスのスケール追従設定。CanvasComponent から移動）
+        bool scaleTransform = false, bool scaleSize = false,
+        bool keepAspect = false, int aspectAxis = 0,
         // true = ビューポート所属ルートキャンバス: Transform 恒等固定のため読み取り専用表示にする
         bool locked = false)
     {
@@ -4479,6 +4359,115 @@ public partial class InspectorPanel : UserControl
 
         sp.Children.Add(anchorRow);
 
+        // ── スケールモード セクション ──────────────────────────
+        // 親キャンバスのスケールにこのアイテムの位置/サイズを追従させるかの設定。
+        // 以前は CanvasComponent（キャンバス全体）にあったが、各 2D アクターの
+        // CanvasTransform（オブジェクト単位）へ移動した。
+        var scaleModePanel = new StackPanel { Margin = new Thickness(0, 4, 0, 0) };
+        scaleModePanel.Children.Add(new TextBlock
+        {
+            Text       = "スケールモード",
+            Foreground = new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88)),
+            FontSize   = 10,
+            Margin     = new Thickness(0, 6, 0, 2),
+        });
+
+        // チェックボックス: アイテムのトランスフォームをスケールする（位置が親スケールに追従）
+        var cbTransform = new CheckBox
+        {
+            Content           = "アイテムのトランスフォームをスケールする",
+            IsChecked         = scaleTransform,
+            Foreground        = new SolidColorBrush(Colors.White),
+            FontSize          = 11,
+            Margin            = new Thickness(0, 2, 0, 2),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        scaleModePanel.Children.Add(cbTransform);
+
+        // チェックボックス: アイテムのサイズをスケールする
+        var cbSize = new CheckBox
+        {
+            Content           = "アイテムのサイズをスケールする",
+            IsChecked         = scaleSize,
+            Foreground        = new SolidColorBrush(Colors.White),
+            FontSize          = 11,
+            Margin            = new Thickness(0, 2, 0, 2),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        scaleModePanel.Children.Add(cbSize);
+
+        // アスペクト比維持パネル（アイテムのサイズをスケールする のときのみ表示）
+        var aspectPanel = new StackPanel
+        {
+            Margin     = new Thickness(16, 0, 0, 6),
+            Visibility = scaleSize ? Visibility.Visible : Visibility.Collapsed,
+        };
+
+        // チェックボックス: アイテムのアスペクト比を維持
+        var cbKeepAspect = new CheckBox
+        {
+            Content           = "アイテムのアスペクト比を維持",
+            IsChecked         = keepAspect,
+            Foreground        = new SolidColorBrush(Colors.White),
+            FontSize          = 11,
+            Margin            = new Thickness(0, 2, 0, 2),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        aspectPanel.Children.Add(cbKeepAspect);
+
+        // 基準軸選択パネル（アスペクト比維持がオンのときのみ表示）
+        var axisPanel = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Margin      = new Thickness(16, 0, 0, 2),
+            Visibility  = keepAspect ? Visibility.Visible : Visibility.Collapsed,
+        };
+        axisPanel.Children.Add(new TextBlock
+        {
+            Text              = "基準軸",
+            Foreground        = new SolidColorBrush(Color.FromRgb(0xAA, 0xAA, 0xAA)),
+            FontSize          = 11,
+            Width             = 60,
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+        var cmbAspectAxis = new ComboBox
+        {
+            Width    = 100,
+            FontSize = 11,
+            Margin   = new Thickness(4, 0, 0, 0),
+        };
+        // Tag は IPC の軸整数（0=Width, 1=Height）に対応する
+        cmbAspectAxis.Items.Add(new ComboBoxItem { Content = "横（幅）基準",   Tag = 0 });
+        cmbAspectAxis.Items.Add(new ComboBoxItem { Content = "縦（高さ）基準", Tag = 1 });
+        cmbAspectAxis.SelectedIndex = aspectAxis == 1 ? 1 : 0;
+        axisPanel.Children.Add(cmbAspectAxis);
+        aspectPanel.Children.Add(axisPanel);
+        scaleModePanel.Children.Add(aspectPanel);
+
+        sp.Children.Add(scaleModePanel);
+
+        // スケールモードを送信するローカル関数。
+        // CanvasTransform はアクタールート（DFS ID）で特定するため、スロット番号は使わない。
+        // 4 値（scale_transform / scale_size / keep_aspect / axis）を常にまとめて送る。
+        void CommitCanvasTransformScaleMode()
+        {
+            if (_currentActorId < 0) return;
+            int st   = cbTransform.IsChecked  == true ? 1 : 0;
+            int ss   = cbSize.IsChecked       == true ? 1 : 0;
+            int keep = cbKeepAspect.IsChecked == true ? 1 : 0;
+            int axis = (cmbAspectAxis.SelectedItem as ComboBoxItem)?.Tag as int? ?? 0;
+            _runtime?.SendToRuntime(FormattableString.Invariant(
+                $"SET_CANVAS_TRANSFORM_SCALE_MODE:{_currentActorId},{st},{ss},{keep},{axis}"));
+        }
+
+        cbTransform.Checked   += (_, _) => CommitCanvasTransformScaleMode();
+        cbTransform.Unchecked += (_, _) => CommitCanvasTransformScaleMode();
+        cbSize.Checked   += (_, _) => { aspectPanel.Visibility = Visibility.Visible;   CommitCanvasTransformScaleMode(); };
+        cbSize.Unchecked += (_, _) => { aspectPanel.Visibility = Visibility.Collapsed; CommitCanvasTransformScaleMode(); };
+        cbKeepAspect.Checked   += (_, _) => { axisPanel.Visibility = Visibility.Visible;   CommitCanvasTransformScaleMode(); };
+        cbKeepAspect.Unchecked += (_, _) => { axisPanel.Visibility = Visibility.Collapsed; CommitCanvasTransformScaleMode(); };
+        cmbAspectAxis.SelectionChanged += (_, _) => CommitCanvasTransformScaleMode();
+
         // ── ルートキャンバスの Transform 固定（Phase B）────────────────────────
         // ビューポート所属のルートキャンバスは position/rotation/pivot/anchor = 0, scale = 1 に
         // 恒等固定されるため、全編集フィールドを不活性化し注記を表示する
@@ -4496,7 +4485,7 @@ public partial class InspectorPanel : UserControl
                 ToolTip    = "ビューポート所属のルートキャンバスは位置/回転/ピボット/アンカー = 0、\n"
                            + "スケール = 1 に固定されます（保存データは温存されます）。",
             });
-            foreach (var target in new FrameworkElement[] { grid, pivotLabel, pivotRow, anchorLabel, anchorRow })
+            foreach (var target in new FrameworkElement[] { grid, pivotLabel, pivotRow, anchorLabel, anchorRow, scaleModePanel })
             {
                 target.IsEnabled = false;
                 target.Opacity   = LockedOpacity;

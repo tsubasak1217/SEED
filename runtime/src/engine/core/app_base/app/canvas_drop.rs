@@ -55,8 +55,6 @@ pub(super) struct RootCanvasInfo {
     /// 子への累積スケール（auto_scale_factor 込み）。
     /// collect_actor2d_contexts の child_cumul_scale と同一の計算。
     pub(super) child_cumul_scale:  [f32; 2],
-    /// キャンバスの scale_transform フラグ（true なら子 position に累積スケールを乗算）
-    pub(super) child_sm_transform: bool,
 }
 
 impl RootCanvasInfo {
@@ -69,11 +67,13 @@ impl RootCanvasInfo {
     /// （CanvasTransform.position に設定すべき値）へ逆変換する。
     ///
     /// `child_anchor` は配置する子アクターの anchor（親キャンバスサイズ基準 [0,1]）。
+    /// `child_sm_transform` は配置する子アクター**自身**の CanvasTransform.scale_transform。
+    /// スケールモードは各ノードが自己保持するため、逆スケールの要否は子の値で判定する。
     /// collect_actor2d_contexts の順変換
     ///   eff_pos_local = position (* cumul_scale) + anchor_off
     ///   world = origin + R(rot) * eff_pos_local
     /// の逆を解く。
-    pub(super) fn world_to_child_local(&self, world_pt: [f32; 2], child_anchor: [f32; 2]) -> [f32; 2] {
+    pub(super) fn world_to_child_local(&self, world_pt: [f32; 2], child_anchor: [f32; 2], child_sm_transform: bool) -> [f32; 2] {
         // ワールド → キャンバスローカル（回転の逆適用）
         let dx = world_pt[0] - self.origin[0];
         let dy = world_pt[1] - self.origin[1];
@@ -92,7 +92,7 @@ impl RootCanvasInfo {
         // scale_transform の逆スケール（0 除算はスケール 1 として扱う）
         let px = eff_pos_local[0] - anchor_off[0];
         let py = eff_pos_local[1] - anchor_off[1];
-        if self.child_sm_transform {
+        if child_sm_transform {
             let sx = if self.child_cumul_scale[0].abs() > f32::EPSILON { self.child_cumul_scale[0] } else { 1.0 };
             let sy = if self.child_cumul_scale[1].abs() > f32::EPSILON { self.child_cumul_scale[1] } else { 1.0 };
             [px / sx, py / sy]
@@ -165,13 +165,15 @@ impl App {
                 ct.anchor, evw, evh, self.edit_view_is_2d(),
             );
 
-            // ルートは sm_transform=false・親累積スケール=1 のため position をそのまま使用する
+            // ルートのため親累積スケール=1 なので position をそのまま使用する
+            // （eff_ct は行列計算専用。スケールモードフラグは行列に影響しない）
             let eff_ct = CanvasTransform {
                 position: [ct.position[0] + anchor_off[0], ct.position[1] + anchor_off[1]],
                 rotation: ct.rotation,
                 scale:    ct.scale,
                 pivot:    ct.pivot,
                 anchor:   [0.0, 0.0],
+                ..ct.clone()
             };
 
             // ルートの有効サイズ = 自動解像度（対象外は CanvasComponent の保存サイズ）
@@ -208,7 +210,6 @@ impl App {
                 // 子のアンカー基準サイズにも自動解像度上書きを反映する
                 canvas_size:        root_auto.unwrap_or([cc.width, cc.height]),
                 child_cumul_scale,
-                child_sm_transform: cc.scale_transform,
             });
         }
         result

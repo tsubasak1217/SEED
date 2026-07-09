@@ -290,8 +290,9 @@ impl App {
                 rotation,
                 scale: [sx, sy],
                 pivot:  [pivot_x, pivot_y],
-                // anchor は handle_set_canvas_transform では変更しないため旧値を引き継ぐ
+                // anchor・スケールモードは handle_set_canvas_transform では変更しないため旧値を引き継ぐ
                 anchor: old_ct.anchor,
+                ..old_ct.clone()
             };
             let changed = new_ct.position != old_ct.position
                 || new_ct.rotation != old_ct.rotation
@@ -311,32 +312,40 @@ impl App {
         if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
     }
 
-    /// CanvasComponent のスケールモードを更新する。
+    /// CanvasTransform のスケールモードを更新する。
     ///
-    /// scale_transform: 子UIの位置にスケールを適用するか
-    /// scale_size:      子UIのサイズにスケールを適用するか
-    pub(super) fn handle_set_canvas_scale_mode(
+    /// スケールモードは各ノードの CanvasTransform が保持するため、スロットではなく
+    /// アクター（DFS ID）のルート CanvasTransform を直接更新する。
+    ///
+    /// scale_transform: このノードの位置に親累積スケールを適用するか
+    /// scale_size:      このノードのサイズに親累積スケールを適用するか
+    /// keep_aspect:     scale_size 時にアスペクト比を維持するか
+    /// axis:            アスペクト比維持の基準軸（0=Width, 1=Height）
+    pub(super) fn handle_set_canvas_transform_scale_mode(
         &mut self,
         actor_dfs_id:    u32,
-        slot_idx:        u32,
         scale_transform: bool,
         scale_size:      bool,
+        keep_aspect:     bool,
+        axis:            u8,
     ) {
         let wl = self.active_world_line;
 
-        let slot_entity = {
+        // スケールモードはルート CanvasTransform に保持されるためアクターの entity を解決する
+        let entity = {
             let Some(scene) = &self.scene else { return };
             let mut c = 0u32;
-            find_actor_by_dfs(&scene.actors, wl, actor_dfs_id, &mut c)
-                .and_then(|a| a.slots().get(slot_idx as usize))
-                .map(|s| s.entity)
+            find_actor_by_dfs(&scene.actors, wl, actor_dfs_id, &mut c).map(|a| a.entity)
         };
-        let Some(slot_entity) = slot_entity else { return };
+        let Some(entity) = entity else { return };
 
+        let aspect_axis = if axis == 1 { AspectRatioAxis::Height } else { AspectRatioAxis::Width };
         if let Some(scene) = &mut self.scene {
-            if let Some(cc) = scene.world.get_mut::<CanvasComponent>(slot_entity) {
-                cc.scale_transform = scale_transform;
-                cc.scale_size      = scale_size;
+            if let Some(ct) = scene.world.get_mut::<CanvasTransform>(entity) {
+                ct.scale_transform   = scale_transform;
+                ct.scale_size        = scale_size;
+                ct.keep_aspect_ratio = keep_aspect;
+                ct.aspect_ratio_axis = aspect_axis;
             }
         }
 
@@ -449,34 +458,6 @@ impl App {
         if let Some(scene) = &mut self.scene {
             if let Some(cc) = scene.world.get_mut::<CanvasComponent>(slot_entity) {
                 cc.auto_scale = auto_scale;
-            }
-        }
-        self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
-        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
-    }
-
-    /// CanvasComponent のアスペクト比維持設定を更新する。
-    pub(super) fn handle_set_canvas_aspect_ratio(
-        &mut self,
-        actor_dfs_id: u32,
-        slot_idx:     u32,
-        keep:         bool,
-        axis:         &str,
-    ) {
-        let wl = self.active_world_line;
-        let slot_entity = {
-            let Some(scene) = &self.scene else { return };
-            let mut c = 0u32;
-            find_actor_by_dfs(&scene.actors, wl, actor_dfs_id, &mut c)
-                .and_then(|a| a.slots().get(slot_idx as usize))
-                .map(|s| s.entity)
-        };
-        let Some(slot_entity) = slot_entity else { return };
-        let aspect_axis = if axis == "height" { AspectRatioAxis::Height } else { AspectRatioAxis::Width };
-        if let Some(scene) = &mut self.scene {
-            if let Some(cc) = scene.world.get_mut::<CanvasComponent>(slot_entity) {
-                cc.keep_aspect_ratio = keep;
-                cc.aspect_ratio_axis = aspect_axis;
             }
         }
         self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);

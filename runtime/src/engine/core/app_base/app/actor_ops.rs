@@ -325,11 +325,12 @@ impl App {
                     let infos = self.collect_root_canvas_infos();
                     if let Some(info) = infos.iter().find(|i| i.entity == target_entity) {
                         let scene = self.scene.as_mut().unwrap();
-                        // 子アクター自身の anchor を考慮してローカル position を逆算する
-                        let child_anchor = scene.world.get::<CanvasTransform>(actor.entity)
-                            .map(|ct| ct.anchor)
-                            .unwrap_or([0.0, 0.0]);
-                        let local_pos = info.world_to_child_local(drop_pt, child_anchor);
+                        // 子アクター自身の anchor と scale_transform を考慮してローカル position を逆算する
+                        // （スケールモードは各ノードの CanvasTransform が保持するため子の値を使う）
+                        let (child_anchor, child_sm_transform) = scene.world.get::<CanvasTransform>(actor.entity)
+                            .map(|ct| (ct.anchor, ct.scale_transform))
+                            .unwrap_or(([0.0, 0.0], true));
+                        let local_pos = info.world_to_child_local(drop_pt, child_anchor, child_sm_transform);
                         if let Some(ct) = scene.world.get_mut::<CanvasTransform>(actor.entity) {
                             ct.position = local_pos;
                         }

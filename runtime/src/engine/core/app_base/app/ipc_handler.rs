@@ -851,15 +851,11 @@ impl App {
                 IpcCommand::SetCanvasAnchor { actor_dfs_id, ax, ay } => {
                     self.handle_set_canvas_anchor(actor_dfs_id, ax, ay);
                 }
-                IpcCommand::SetCanvasScaleMode { actor_dfs_id, slot_idx, scale_transform, scale_size } => {
-                    self.handle_set_canvas_scale_mode(actor_dfs_id, slot_idx, scale_transform, scale_size);
+                IpcCommand::SetCanvasTransformScaleMode { actor_dfs_id, scale_transform, scale_size, keep_aspect, axis } => {
+                    self.handle_set_canvas_transform_scale_mode(actor_dfs_id, scale_transform, scale_size, keep_aspect, axis);
                 }
                 IpcCommand::SetCanvasAutoScale { actor_dfs_id, slot_idx, auto_scale } => {
                     self.handle_set_canvas_auto_scale(actor_dfs_id, slot_idx, auto_scale);
-                }
-                IpcCommand::SetCanvasAspectRatio { actor_dfs_id, slot_idx, keep, axis } => {
-                    let a = axis.clone();
-                    self.handle_set_canvas_aspect_ratio(actor_dfs_id, slot_idx, keep, &a);
                 }
                 IpcCommand::SetCanvasGravityMode { actor_dfs_id, slot_idx, mode } => {
                     self.handle_set_canvas_gravity_mode(actor_dfs_id, slot_idx, mode);
@@ -1195,7 +1191,8 @@ impl App {
                 }
             }
 
-            // CanvasComponent: "width", "height", "scale_size", "scale_transform", "auto_scale"
+            // CanvasComponent: "width", "height", "auto_scale"
+            // （スケールモードは CanvasTransform 側へ移動。SET_CANVAS_TRANSFORM_SCALE_MODE で設定する）
             ComponentKind::Canvas => {
                 match key {
                     "width" => {
@@ -1225,32 +1222,6 @@ impl App {
                             };
                             self.handle_set_canvas_size(actor_dfs_id, slot_idx, w, v);
                         }
-                    }
-                    "scale_size" => {
-                        let b = value == "true" || value == "1";
-                        let st = {
-                            let scene = self.scene.as_ref().unwrap();
-                            let mut c = 0u32;
-                            find_actor_by_dfs(&scene.actors, wl, actor_dfs_id, &mut c)
-                                .and_then(|a| a.slots().get(slot_idx as usize))
-                                .and_then(|s| scene.world.get::<crate::engine::components::CanvasComponent>(s.entity))
-                                .map(|s| s.scale_transform)
-                                .unwrap_or(false)
-                        };
-                        self.handle_set_canvas_scale_mode(actor_dfs_id, slot_idx, st, b);
-                    }
-                    "scale_transform" => {
-                        let b = value == "true" || value == "1";
-                        let ss = {
-                            let scene = self.scene.as_ref().unwrap();
-                            let mut c = 0u32;
-                            find_actor_by_dfs(&scene.actors, wl, actor_dfs_id, &mut c)
-                                .and_then(|a| a.slots().get(slot_idx as usize))
-                                .and_then(|s| scene.world.get::<crate::engine::components::CanvasComponent>(s.entity))
-                                .map(|s| s.scale_size)
-                                .unwrap_or(false)
-                        };
-                        self.handle_set_canvas_scale_mode(actor_dfs_id, slot_idx, b, ss);
                     }
                     "auto_scale" => {
                         let b = value == "true" || value == "1";

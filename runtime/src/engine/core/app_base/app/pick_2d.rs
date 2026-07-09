@@ -109,7 +109,7 @@ impl App {
             walk_pick_candidates_2d(
                 &scene.actors, &scene.world, wl,
                 canvas_x, canvas_y, &mut counter,
-                IDENTITY, [1.0, 1.0], (false, false, false, true), None,
+                IDENTITY, [1.0, 1.0], None,
                 0, CanvasDrawZone::Foreground,
                 viewport_size, &overrides, &root_auto, design_space,
                 &mut cands,
@@ -250,7 +250,6 @@ fn walk_pick_candidates_2d(
     counter:            &mut u32,
     parent_world_rs:    [[f32; 4]; 4],
     parent_cumul_scale: [f32; 2],
-    parent_scale_mode:  (bool, bool, bool, bool),
     parent_canvas_size: Option<[f32; 2]>,
     depth:              u32,
     parent_zone:        CanvasDrawZone,
@@ -260,8 +259,6 @@ fn walk_pick_candidates_2d(
     design_space:       bool,
     out:                &mut Vec<PickCand2d>,
 ) {
-    let (sm_transform, sm_size, keep_aspect, is_width_axis) = parent_scale_mode;
-
     for actor in actors {
         if actor.world_line != wl { continue; }
         let my_dfs = *counter as usize;
@@ -284,6 +281,11 @@ fn walk_pick_candidates_2d(
             None
         };
         let ct = if root_auto.is_some() { CanvasTransform::default() } else { ct };
+        // スケールモードはこのノード自身の CanvasTransform から読み取る
+        let (sm_transform, sm_size, keep_aspect, is_width_axis) = (
+            ct.scale_transform, ct.scale_size, ct.keep_aspect_ratio,
+            matches!(ct.aspect_ratio_axis, AspectRatioAxis::Width),
+        );
 
         // アンカーオフセット（collect_canvas_rects と同一。Camera 参照を優先）
         let eff_viewport = if parent_canvas_size.is_none() {
@@ -316,6 +318,7 @@ fn walk_pick_candidates_2d(
             scale:    ct.scale,
             pivot:    ct.pivot,
             anchor:   [0.0, 0.0],
+            ..ct.clone()
         };
 
         let my_canvas = actor.slots().iter()
@@ -366,17 +369,14 @@ fn walk_pick_candidates_2d(
         }
 
         // ── 子への継承情報を計算して再帰する（collect_canvas_rects と同一）─────
+        // スケールモードは各子が自身の CanvasTransform から読み取るため伝播しない。
         let child_info = my_canvas.map(|cc| (
             root_auto.unwrap_or([cc.width, cc.height]),
-            (cc.scale_transform, cc.scale_size,
-             cc.keep_aspect_ratio, matches!(cc.aspect_ratio_axis, AspectRatioAxis::Width)),
             cc.auto_scale,
         ));
-        let child_canvas_size = child_info.map(|(sz, _, _)| sz);
-        let child_scale_mode  = child_info.map(|(_, sm, _)| sm)
-            .unwrap_or((false, false, false, true));
+        let child_canvas_size = child_info.map(|(sz, _)| sz);
         let auto_scale_factor = if parent_canvas_size.is_none() {
-            if let (Some([vw, vh]), Some((_, _, true))) = (eff_viewport, child_info) {
+            if let (Some([vw, vh]), Some((_, true))) = (eff_viewport, child_info) {
                 [vw / my_eff_w.max(f32::EPSILON), vh / my_eff_h.max(f32::EPSILON)]
             } else {
                 [1.0f32, 1.0]
@@ -384,7 +384,7 @@ fn walk_pick_candidates_2d(
         } else {
             [1.0f32, 1.0]
         };
-        let child_cumul_scale = if child_scale_mode.0 {
+        let child_cumul_scale = if sm_transform {
             [parent_cumul_scale[0] * ct.scale[0] * auto_scale_factor[0],
              parent_cumul_scale[1] * ct.scale[1] * auto_scale_factor[1]]
         } else {
@@ -395,7 +395,7 @@ fn walk_pick_candidates_2d(
         walk_pick_candidates_2d(
             &actor.children, world, wl,
             canvas_x, canvas_y, counter,
-            self_world_rs, child_cumul_scale, child_scale_mode,
+            self_world_rs, child_cumul_scale,
             child_canvas_size, depth + 1, my_zone,
             viewport_size, overrides, root_auto_sizes, design_space,
             out,

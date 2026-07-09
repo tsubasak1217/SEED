@@ -126,12 +126,6 @@ pub struct CanvasComponentData {
     pub width:  f32,
     /// キャンバスの基準高さ（ワールドユニット）
     pub height: f32,
-    /// 子UIのサイズをキャンバスのスケールに追従させるか。false = サイズ固定。
-    #[serde(default)]
-    pub scale_size:      bool,
-    /// 子UIのトランスフォーム（位置）をキャンバスのスケールに追従させるか。false = 絶対座標固定。
-    #[serde(default)]
-    pub scale_transform: bool,
     /// 画面サイズに自動スケール。親キャンバスを持たないルートキャンバスにのみ有効。
     /// true のとき、ビューポートサイズ変化に応じて子 UI を proportional にスケールする。
     #[serde(default = "default_auto_scale")]
@@ -139,12 +133,6 @@ pub struct CanvasComponentData {
     /// アンカー/スケール計算で参照するビューポートの種別。
     #[serde(default)]
     pub viewport_ref: CanvasViewportRef,
-    /// scale_size=true のとき、子アイテムのサイズをアスペクト比維持でスケールするか。
-    #[serde(default)]
-    pub keep_aspect_ratio: bool,
-    /// アスペクト比維持の基準軸（keep_aspect_ratio=true のときのみ有効）。
-    #[serde(default)]
-    pub aspect_ratio_axis: AspectRatioAxis,
     /// 2D 物理シミュレーションの重力方向モード。
     #[serde(default)]
     pub gravity_mode: GravityMode,
@@ -172,11 +160,9 @@ fn default_auto_scale() -> bool { true }
 /// 矩形アウトラインが表示される。
 ///
 /// # スケールモード
-/// キャンバスのスケール（CanvasTransform.scale）が変化したとき、
-/// 直接の子 UI の挙動を以下の 2 フラグで制御する。
-///   - scale_transform: true → 子の位置にスケールを乗算（10,10 → 20,20）
-///   - scale_size:      true → 子のサイズにスケールを乗算（100px → 200px）
-/// 回転は常に追従する。デフォルトは両方 false（絶対座標・絶対サイズ）。
+/// 位置・サイズをスケールに追従させるか（scale_transform / scale_size /
+/// keep_aspect_ratio / aspect_ratio_axis）は**各ノードの CanvasTransform**が
+/// 自己決定する（旧モデルでは親 Canvas がこれを子へ宣言していた）。
 ///
 /// # 画面サイズ自動スケール
 /// auto_scale=true（デフォルト）かつ親キャンバスを持たないルートキャンバスのとき、
@@ -196,12 +182,6 @@ pub struct CanvasComponent {
     pub width:  f32,
     /// キャンバスの基準高さ（ワールドユニット）
     pub height: f32,
-    /// 子UIのサイズをキャンバスのスケールに追従させるか。false = サイズ固定。
-    #[serde(default)]
-    pub scale_size:      bool,
-    /// 子UIのトランスフォーム（位置）をキャンバスのスケールに追従させるか。false = 絶対座標固定。
-    #[serde(default)]
-    pub scale_transform: bool,
     /// 画面サイズに自動スケール（デフォルト true）。
     /// 親キャンバスを持たないルートキャンバスにのみ有効。Actor3D アタッチ時は無効。
     #[serde(default = "default_auto_scale")]
@@ -209,12 +189,6 @@ pub struct CanvasComponent {
     /// アンカー/スケール計算で参照するビューポートの種別。
     #[serde(default)]
     pub viewport_ref: CanvasViewportRef,
-    /// scale_size=true のとき、子アイテムのサイズをアスペクト比維持でスケールするか。
-    #[serde(default)]
-    pub keep_aspect_ratio: bool,
-    /// アスペクト比維持の基準軸（keep_aspect_ratio=true のときのみ有効）。
-    #[serde(default)]
-    pub aspect_ratio_axis: AspectRatioAxis,
     /// 2D 物理シミュレーションの重力方向モード。
     #[serde(default)]
     pub gravity_mode: GravityMode,
@@ -238,12 +212,8 @@ impl CanvasComponent {
         CanvasComponentData {
             width:             self.width,
             height:            self.height,
-            scale_size:        self.scale_size,
-            scale_transform:   self.scale_transform,
             auto_scale:        self.auto_scale,
             viewport_ref:      self.viewport_ref.clone(),
-            keep_aspect_ratio: self.keep_aspect_ratio,
-            aspect_ratio_axis: self.aspect_ratio_axis.clone(),
             gravity_mode:      self.gravity_mode,
             draw_zone:         self.draw_zone,
             pivot:             self.pivot,
@@ -256,14 +226,10 @@ impl Default for CanvasComponent {
         Self {
             width:             1920.0,
             height:            1080.0,
-            scale_size:        false,
-            scale_transform:   false,
             auto_scale:        true,
             // 新規作成コンポーネントはメインカメラ基準をデフォルトとする
             // （メインカメラが無い場合は実行時にウィンドウ基準へフォールバック）
             viewport_ref:      CanvasViewportRef::MainCamera,
-            keep_aspect_ratio: false,
-            aspect_ratio_axis: AspectRatioAxis::Width,
             gravity_mode:      GravityMode::ScreenDown,
             // 新規作成時は従来どおり前面（オーバーレイ）
             draw_zone:         CanvasDrawZone::Foreground,

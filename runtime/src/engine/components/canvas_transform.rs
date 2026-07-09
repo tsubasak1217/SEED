@@ -8,6 +8,10 @@
 
 use serde::{Deserialize, Serialize};
 use crate::engine::ecs::Component;
+use crate::engine::components::AspectRatioAxis;
+
+/// serde デフォルト用: true を返す（scale_transform / scale_size の既定値）。
+fn default_true() -> bool { true }
 
 /// 2D キャンバス空間のトランスフォーム。
 ///
@@ -41,11 +45,37 @@ pub struct CanvasTransform {
     /// (0,0) = 左上、(0.5,0.5) = 中央、(1,1) = 右下。
     #[serde(default)]
     pub anchor: [f32; 2],
+    /// このノードの**位置**を親の累積スケールに追従させるか（既定 true）。
+    /// true  → eff_pos = position * parent_cumul_scale + anchor_off
+    /// false → eff_pos = position + anchor_off（絶対座標）
+    ///
+    /// 旧モデルでは親 Canvas（CanvasComponent）がこのフラグを子へ宣言していたが、
+    /// 現行モデルでは各ノードが自身の CanvasTransform で自己決定する。
+    #[serde(default = "default_true")]
+    pub scale_transform: bool,
+    /// このノードの**サイズ**（スプライト／コライダー寸法）を親の累積スケールに
+    /// 追従させるか（既定 true）。false = サイズ固定。
+    #[serde(default = "default_true")]
+    pub scale_size: bool,
+    /// scale_size=true のとき、サイズスケールをアスペクト比維持で適用するか（既定 false）。
+    #[serde(default)]
+    pub keep_aspect_ratio: bool,
+    /// アスペクト比維持の基準軸（keep_aspect_ratio=true のときのみ有効。既定 Width）。
+    #[serde(default)]
+    pub aspect_ratio_axis: AspectRatioAxis,
 }
 
 impl CanvasTransform {
     pub fn new(position: [f32; 2], rotation: f32, scale: [f32; 2]) -> Self {
-        Self { position, rotation, scale, pivot: [0.0, 0.0], anchor: [0.0, 0.0] }
+        Self {
+            position, rotation, scale,
+            pivot: [0.0, 0.0],
+            anchor: [0.0, 0.0],
+            scale_transform: true,
+            scale_size: true,
+            keep_aspect_ratio: false,
+            aspect_ratio_axis: AspectRatioAxis::Width,
+        }
     }
 
     /// ワールド変換行列を計算する（CanvasComponent のサイズ指定あり）。
@@ -122,6 +152,10 @@ impl Default for CanvasTransform {
             scale:    [1.0, 1.0],
             pivot:    [0.0, 0.0],
             anchor:   [0.0, 0.0],
+            scale_transform:   true,
+            scale_size:        true,
+            keep_aspect_ratio: false,
+            aspect_ratio_axis: AspectRatioAxis::Width,
         }
     }
 }

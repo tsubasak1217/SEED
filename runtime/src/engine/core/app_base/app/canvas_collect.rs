@@ -5,8 +5,8 @@
 //  アクターツリーから DFS 順に収集するためのフリー関数群。
 //
 //  フレームループ (frame.rs の on_redraw_requested) から呼び出される。
-//  CanvasComponent のスケールモード (scale_transform / scale_size) に応じた
-//  累積スケール伝播を親子間で管理する。
+//  各ノード自身の CanvasTransform のスケールモード (scale_transform / scale_size) に
+//  応じた累積スケール伝播を親子間で管理する。
 // ============================================================
 
 use std::collections::HashMap;
@@ -148,10 +148,11 @@ fn add_thick_rect(lb: &mut LineBatch, corners: [[f32; 3]; 4], color: [f32; 4], r
 ///   同一ゾーン内の安定ソート（大きいほど手前 = 後に描画）を行う。
 ///
 /// # スケールモード
-/// - `parent_scale_mode = (scale_transform, scale_size, keep_aspect_ratio, is_width_axis)`
-/// - `scale_transform=true`  : 子の位置に親の累積スケールを乗算する
-/// - `scale_size=true`       : 子のサイズに親の累積スケールを乗算する
-/// - `keep_aspect_ratio=true`: scale_size 時にアスペクト比を維持する（is_width_axis で基準軸を選択）
+/// スケールモード (scale_transform / scale_size / keep_aspect_ratio /
+/// aspect_ratio_axis) は**各ノード自身の CanvasTransform** から読み取る。
+/// - `scale_transform=true`  : このノードの位置に親の累積スケールを乗算する
+/// - `scale_size=true`       : このノードのサイズに親の累積スケールを乗算する
+/// - `keep_aspect_ratio=true`: scale_size 時にアスペクト比を維持する（軸は aspect_ratio_axis）
 /// - 回転は常に追従する
 #[allow(clippy::too_many_arguments)]
 pub(super) fn collect_sprite_items(
@@ -165,8 +166,6 @@ pub(super) fn collect_sprite_items(
     parent_world_rs:    [[f32; 4]; 4],
     // 親の累積スケール。スケールモードに応じて子に伝播するかを制御する。
     parent_cumul_scale: [f32; 2],
-    // 直前の親 CanvasComponent のスケールモード (scale_transform, scale_size, keep_aspect, is_width_axis)
-    parent_scale_mode:  (bool, bool, bool, bool),
     // ワールドスペース変換スケール（1.0=スクリーンスペース, CANVAS_WORLD_SCALE=ワールドスペース）
     canvas_scale:       f32,
     // Y 軸符号（スクリーンスペース=1.0, ワールドスペース=-1.0 で Y を反転）
@@ -187,8 +186,6 @@ pub(super) fn collect_sprite_items(
     design_space:       bool,
     out:                &mut Vec<([[f32; 4]; 4], [f32; 4], Option<Arc<GpuSpriteTexture>>, CanvasDrawZone, i32)>,
 ) {
-    let (sm_transform, sm_size, keep_aspect, is_width_axis) = parent_scale_mode;
-
     for actor in actors {
         if actor.world_line != wl { continue; }
         // 非アクティブアクター: 自身と全子孫のスプライトを描画しない。
@@ -206,6 +203,11 @@ pub(super) fn collect_sprite_items(
                 None
             };
             let ct = if root_auto.is_some() { CanvasTransform::default() } else { ct };
+            // スケールモードはこのノード自身の CanvasTransform から読み取る
+            let (sm_transform, sm_size, keep_aspect, is_width_axis) = (
+                ct.scale_transform, ct.scale_size, ct.keep_aspect_ratio,
+                matches!(ct.aspect_ratio_axis, AspectRatioAxis::Width),
+            );
             // アンカーオフセット計算:
             // ルートレベル（parent_canvas_size=None）かつシーン SS モードでは
             // ビューポートを仮想親として扱い、ortho 原点（画面中央）からのオフセットを計算する。
@@ -245,6 +247,7 @@ pub(super) fn collect_sprite_items(
                 scale:    ct.scale,
                 pivot:    ct.pivot,
                 anchor:   [0.0, 0.0],
+                ..ct.clone()
             };
 
             // 自アクターの CanvasComponent を取得する
@@ -332,21 +335,18 @@ pub(super) fn collect_sprite_items(
                 }
             }
 
-            // 子アクターへの CanvasComponent 情報を構築する
-            // （子のアンカー基準サイズにも自動解像度上書きを反映する）
+            // 子アクターへの基準 Canvas サイズと auto_scale を構築する
+            // （子のアンカー基準サイズにも自動解像度上書きを反映する）。
+            // スケールモードは各子が自身の CanvasTransform から読み取るため伝播しない。
             let child_info = my_canvas.map(|cc| (
                 root_auto.unwrap_or([cc.width, cc.height]),
-                (cc.scale_transform, cc.scale_size,
-                 cc.keep_aspect_ratio, matches!(cc.aspect_ratio_axis, AspectRatioAxis::Width)),
                 cc.auto_scale,
             ));
-            let child_canvas_size = child_info.map(|(sz, _, _)| sz);
-            let child_scale_mode  = child_info.map(|(_, sm, _)| sm)
-                .unwrap_or((false, false, false, true));
+            let child_canvas_size = child_info.map(|(sz, _)| sz);
             // ルートキャンバスかつ auto_scale=true のとき、ビューポートサイズ/参照サイズで自動スケールする
             // Camera 参照の場合は eff_viewport がカメラの描画範囲になる
             let auto_scale_factor = if parent_canvas_size.is_none() {
-                if let (Some([vw, vh]), Some((_, _, true))) = (eff_viewport, child_info) {
+                if let (Some([vw, vh]), Some((_, true))) = (eff_viewport, child_info) {
                     [vw / my_eff_w, vh / my_eff_h]
                 } else {
                     [1.0f32, 1.0]
@@ -354,8 +354,8 @@ pub(super) fn collect_sprite_items(
             } else {
                 [1.0f32, 1.0]
             };
-            // 子への累積スケール（scale_transform に応じて自分のスケールを積む）
-            let child_cumul_scale = if child_scale_mode.0 {
+            // 子への累積スケール（このノード自身の scale_transform に応じて自分のスケールを積む）
+            let child_cumul_scale = if sm_transform {
                 [parent_cumul_scale[0] * ct.scale[0] * auto_scale_factor[0],
                  parent_cumul_scale[1] * ct.scale[1] * auto_scale_factor[1]]
             } else {
@@ -366,7 +366,7 @@ pub(super) fn collect_sprite_items(
             collect_sprite_items(
                 &actor.children, world, wl, draw_ctx,
                 child_canvas_size, self_world_rs,
-                child_cumul_scale, child_scale_mode,
+                child_cumul_scale,
                 canvas_scale, y_sign, viewport_size, canvas_viewport_overrides,
                 root_auto_sizes, my_zone, design_space, out,
             );
@@ -398,7 +398,6 @@ pub(super) fn collect_canvas_rects(
     parent_canvas_size: Option<[f32; 2]>,
     parent_world_rs:    [[f32; 4]; 4],
     parent_cumul_scale: [f32; 2],
-    parent_scale_mode:  (bool, bool, bool, bool),
     canvas_scale:       f32,
     y_sign:             f32,
     viewport_size:      Option<[f32; 2]>,
@@ -411,8 +410,6 @@ pub(super) fn collect_canvas_rects(
     // SS 表示では「画面 1px 相当」を渡すことで、ズームに依らず連続した太線に見える。
     outline_step:       f32,
 ) {
-    let (sm_transform, sm_size, keep_aspect, is_width_axis) = parent_scale_mode;
-
     for actor in actors {
         if actor.world_line != wl { continue; }
         let my_dfs = *counter as usize;
@@ -433,6 +430,11 @@ pub(super) fn collect_canvas_rects(
                 None
             };
             let ct = if root_auto.is_some() { CanvasTransform::default() } else { ct };
+            // スケールモードはこのノード自身の CanvasTransform から読み取る
+            let (sm_transform, sm_size, keep_aspect, is_width_axis) = (
+                ct.scale_transform, ct.scale_size, ct.keep_aspect_ratio,
+                matches!(ct.aspect_ratio_axis, AspectRatioAxis::Width),
+            );
             // アンカーオフセット計算（collect_sprite_items と同じロジック）
             // Camera 参照のルートキャンバスはオーバーライドマップの値を優先する
             let eff_viewport = if parent_canvas_size.is_none() {
@@ -467,6 +469,7 @@ pub(super) fn collect_canvas_rects(
                 scale:    ct.scale,
                 pivot:    ct.pivot,
                 anchor:   [0.0, 0.0],
+                ..ct.clone()
             };
 
             // pivot はノーマライズ値のため実際のキャンバスサイズで補正する
@@ -557,18 +560,15 @@ pub(super) fn collect_canvas_rects(
                 }
             }
 
-            // 子への継承情報を構築する（子のアンカー基準サイズにも自動解像度上書きを反映）
+            // 子への継承情報を構築する（子のアンカー基準サイズにも自動解像度上書きを反映）。
+            // スケールモードは各子が自身の CanvasTransform から読み取るため伝播しない。
             let child_info = my_canvas_r.map(|cc| (
                 root_auto.unwrap_or([cc.width, cc.height]),
-                (cc.scale_transform, cc.scale_size,
-                 cc.keep_aspect_ratio, matches!(cc.aspect_ratio_axis, AspectRatioAxis::Width)),
                 cc.auto_scale,
             ));
-            let child_canvas_size = child_info.map(|(sz, _, _)| sz);
-            let child_scale_mode  = child_info.map(|(_, sm, _)| sm)
-                .unwrap_or((false, false, false, true));
+            let child_canvas_size = child_info.map(|(sz, _)| sz);
             let auto_scale_factor = if parent_canvas_size.is_none() {
-                if let (Some([vw, vh]), Some((_, _, true))) = (eff_viewport, child_info) {
+                if let (Some([vw, vh]), Some((_, true))) = (eff_viewport, child_info) {
                     [vw / my_eff_w_r, vh / my_eff_h_r]
                 } else {
                     [1.0f32, 1.0]
@@ -576,7 +576,7 @@ pub(super) fn collect_canvas_rects(
             } else {
                 [1.0f32, 1.0]
             };
-            let child_cumul_scale = if child_scale_mode.0 {
+            let child_cumul_scale = if sm_transform {
                 [parent_cumul_scale[0] * ct.scale[0] * auto_scale_factor[0],
                  parent_cumul_scale[1] * ct.scale[1] * auto_scale_factor[1]]
             } else {
@@ -587,7 +587,7 @@ pub(super) fn collect_canvas_rects(
                 &actor.children, world, wl, lb, col,
                 selected_dfs_ids, counter,
                 child_canvas_size, self_world_rs,
-                child_cumul_scale, child_scale_mode,
+                child_cumul_scale,
                 canvas_scale, y_sign, viewport_size, canvas_viewport_overrides,
                 root_auto_sizes, design_space, outline_step,
             );
@@ -629,7 +629,6 @@ pub(super) fn collect_canvas_id_items(
     parent_canvas_size: Option<[f32; 2]>,
     parent_world_rs:    [[f32; 4]; 4],
     parent_cumul_scale: [f32; 2],
-    parent_scale_mode:  (bool, bool, bool, bool),
     canvas_scale:       f32,
     y_sign:             f32,
     viewport_size:      Option<[f32; 2]>,
@@ -650,7 +649,6 @@ pub(super) fn collect_canvas_id_items(
     design_space:       bool,
     out:                &mut Vec<(u32, [[f32; 4]; 4], Option<String>, CanvasDrawZone, i32)>,
 ) {
-    let (sm_transform, sm_size, keep_aspect, is_width_axis) = parent_scale_mode;
     for actor in actors {
         if actor.world_line != wl { continue; }
         let my_dfs = *counter;
@@ -666,7 +664,7 @@ pub(super) fn collect_canvas_id_items(
         let ct_opt = world.get::<CanvasTransform>(actor.entity).cloned();
         // CanvasTransform を持たないアクター配下は SS サブツリー外として扱う
         let next_in_ss = in_ss_subtree && ct_opt.is_some();
-        let (next_canvas_size, next_cumul_scale, next_scale_mode, next_world_rs, next_zone) =
+        let (next_canvas_size, next_cumul_scale, next_world_rs, next_zone) =
             if let (true, Some(ct)) = (in_ss_subtree, ct_opt) {
                 // ビューポート・ルートキャンバス: 自動解像度上書き + Transform 恒等化（Phase B）
                 let root_auto = if parent_canvas_size.is_none() {
@@ -675,6 +673,11 @@ pub(super) fn collect_canvas_id_items(
                     None
                 };
                 let ct = if root_auto.is_some() { CanvasTransform::default() } else { ct };
+                // スケールモードはこのノード自身の CanvasTransform から読み取る
+                let (sm_transform, sm_size, keep_aspect, is_width_axis) = (
+                    ct.scale_transform, ct.scale_size, ct.keep_aspect_ratio,
+                    matches!(ct.aspect_ratio_axis, AspectRatioAxis::Width),
+                );
                 // アンカーオフセット（collect_sprite_items と同じロジック）
                 // Camera 参照のルートキャンバスはオーバーライドマップの値を優先する
                 let eff_viewport = if parent_canvas_size.is_none() {
@@ -706,6 +709,7 @@ pub(super) fn collect_canvas_id_items(
                     scale:    ct.scale,
                     pivot:    ct.pivot,
                     anchor:   [0.0, 0.0],
+                    ..ct.clone()
                 };
 
                 // 自アクターの CanvasComponent
@@ -768,40 +772,37 @@ pub(super) fn collect_canvas_id_items(
                 }
 
                 // 子への継承情報を計算する（collect_sprite_items と同じロジック。
-                // 子のアンカー基準サイズにも自動解像度上書きを反映する）
+                // 子のアンカー基準サイズにも自動解像度上書きを反映する）。
+                // スケールモードは各子が自身の CanvasTransform から読み取るため伝播しない。
                 let child_info = my_canvas.map(|cc| (
                     root_auto.unwrap_or([cc.width, cc.height]),
-                    (cc.scale_transform, cc.scale_size,
-                     cc.keep_aspect_ratio, matches!(cc.aspect_ratio_axis, AspectRatioAxis::Width)),
                     cc.auto_scale,
                 ));
-                let child_canvas_size = child_info.map(|(sz, _, _)| sz);
-                let child_scale_mode  = child_info.map(|(_, sm, _)| sm)
-                    .unwrap_or((false, false, false, true));
+                let child_canvas_size = child_info.map(|(sz, _)| sz);
                 let auto_scale_factor = if parent_canvas_size.is_none() {
-                    if let (Some([vw, vh]), Some((_, _, true))) = (eff_viewport, child_info) {
+                    if let (Some([vw, vh]), Some((_, true))) = (eff_viewport, child_info) {
                         [vw / my_eff_w, vh / my_eff_h]
                     } else { [1.0f32, 1.0] }
                 } else { [1.0f32, 1.0] };
-                let child_cumul_scale = if child_scale_mode.0 {
+                let child_cumul_scale = if sm_transform {
                     [parent_cumul_scale[0] * ct.scale[0] * auto_scale_factor[0],
                      parent_cumul_scale[1] * ct.scale[1] * auto_scale_factor[1]]
                 } else {
                     [ct.scale[0] * auto_scale_factor[0],
                      ct.scale[1] * auto_scale_factor[1]]
                 };
-                (child_canvas_size, child_cumul_scale, child_scale_mode, self_world_rs, my_zone)
+                (child_canvas_size, child_cumul_scale, self_world_rs, my_zone)
             } else {
                 // CanvasTransform なし・または SS サブツリー外:
                 // ID quad は出力せず、子は親の情報をそのまま引き継ぐ（DFS カウントのみ）
-                (parent_canvas_size, parent_cumul_scale, parent_scale_mode, parent_world_rs, parent_zone)
+                (parent_canvas_size, parent_cumul_scale, parent_world_rs, parent_zone)
             };
 
         // 常に子に再帰する（DFS カウンタを全アクターで管理するため）
         collect_canvas_id_items(
             &actor.children, world, wl, counter,
             next_canvas_size, next_world_rs,
-            next_cumul_scale, next_scale_mode,
+            next_cumul_scale,
             canvas_scale, y_sign, viewport_size, canvas_viewport_overrides,
             root_auto_sizes, mc_total, next_zone, next_in_ss, design_space, out,
         );
@@ -874,12 +875,6 @@ pub(super) fn collect_3d_canvas_child_id_items(
                          [ 0.0,  0.0, 1.0,  0.0                    ],
                          [ 0.0,  0.0, 0.0,  1.0                    ]],
                     );
-                    let child_scale_mode = (
-                        cc.scale_transform, cc.scale_size,
-                        cc.keep_aspect_ratio,
-                        matches!(cc.aspect_ratio_axis, AspectRatioAxis::Width),
-                    );
-
                     // キャンバスパネル面（キャンバス空間 [0,0]-[width,height]）を面ピック対象にする。
                     // canvas_to_world でパネル 3 隅を 3D ワールドへ写し、ユニットクワッド [0,1]²
                     // を覆うアフィンモデル行列（col0=u 基底, col1=v 基底, col3=原点）を構築する。
@@ -910,7 +905,7 @@ pub(super) fn collect_3d_canvas_child_id_items(
                     walk_3d_canvas_children_id(
                         &actor.children, world, wl, counter,
                         Some([cc.width, cc.height]),
-                        canvas_to_world, [1.0, 1.0], child_scale_mode,
+                        canvas_to_world, [1.0, 1.0],
                         mc_total, &mut canvas_items,
                     );
                     // 安定ソート: 同一レイヤーはヒエラルキー DFS 順を維持する
@@ -944,12 +939,9 @@ fn walk_3d_canvas_children_id(
     parent_canvas_size: Option<[f32; 2]>,
     parent_world_rs:    [[f32; 4]; 4],
     parent_cumul_scale: [f32; 2],
-    parent_scale_mode:  (bool, bool, bool, bool),
     mc_total:           u32,
     out:                &mut Vec<(u32, [[f32; 4]; 4], Option<String>, i32)>,
 ) {
-    let (sm_transform, sm_size, keep_aspect, is_width_axis) = parent_scale_mode;
-
     for actor in actors {
         if actor.world_line != wl { continue; }
         let my_dfs = *counter;
@@ -963,8 +955,13 @@ fn walk_3d_canvas_children_id(
 
         let ct_opt = world.get::<CanvasTransform>(actor.entity).cloned();
 
-        let (next_canvas_size, next_world_rs, next_cumul_scale, next_scale_mode) =
+        let (next_canvas_size, next_world_rs, next_cumul_scale) =
         if let Some(ct) = ct_opt {
+            // スケールモードはこのノード自身の CanvasTransform から読み取る
+            let (sm_transform, sm_size, keep_aspect, is_width_axis) = (
+                ct.scale_transform, ct.scale_size, ct.keep_aspect_ratio,
+                matches!(ct.aspect_ratio_axis, AspectRatioAxis::Width),
+            );
             // アンカーオフセット（collect_sprite_items の 3D Canvas パスと同じロジック）
             let (anchor_off_x, anchor_off_y) = parent_canvas_size.map_or((0.0f32, 0.0f32), |[pw, ph]| {
                 (pw * ct.anchor[0] * parent_cumul_scale[0],
@@ -984,6 +981,7 @@ fn walk_3d_canvas_children_id(
                 scale:    ct.scale,
                 pivot:    ct.pivot,
                 anchor:   [0.0, 0.0],
+                ..ct.clone()
             };
 
             // 自アクターの CanvasComponent
@@ -1037,30 +1035,25 @@ fn walk_3d_canvas_children_id(
                 }
             }
 
-            // 子への継承情報を計算する
-            let child_info = my_canvas.map(|cc| (
-                [cc.width, cc.height],
-                (cc.scale_transform, cc.scale_size,
-                 cc.keep_aspect_ratio, matches!(cc.aspect_ratio_axis, AspectRatioAxis::Width)),
-            ));
-            let child_canvas_size  = child_info.map(|(sz, _)| sz);
-            let child_scale_mode   = child_info.map(|(_, sm)| sm).unwrap_or((false, false, false, true));
-            let child_cumul_scale  = if child_scale_mode.0 {
+            // 子への基準 Canvas サイズを計算する。
+            // スケールモードは各子が自身の CanvasTransform から読み取るため伝播しない。
+            let child_canvas_size  = my_canvas.map(|cc| [cc.width, cc.height]);
+            let child_cumul_scale  = if sm_transform {
                 [parent_cumul_scale[0] * ct.scale[0],
                  parent_cumul_scale[1] * ct.scale[1]]
             } else {
                 [ct.scale[0], ct.scale[1]]
             };
-            (child_canvas_size, self_world_rs, child_cumul_scale, child_scale_mode)
+            (child_canvas_size, self_world_rs, child_cumul_scale)
         } else {
             // CanvasTransform なし: 親情報をそのまま引き継ぐ
-            (parent_canvas_size, parent_world_rs, parent_cumul_scale, parent_scale_mode)
+            (parent_canvas_size, parent_world_rs, parent_cumul_scale)
         };
 
         // 常に子に再帰する（DFS カウンタを全アクターで維持するため）
         walk_3d_canvas_children_id(
             &actor.children, world, wl, counter,
-            next_canvas_size, next_world_rs, next_cumul_scale, next_scale_mode,
+            next_canvas_size, next_world_rs, next_cumul_scale,
             mc_total, out,
         );
     }

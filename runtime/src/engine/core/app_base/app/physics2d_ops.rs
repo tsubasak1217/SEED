@@ -161,18 +161,19 @@ pub(crate) fn collect_actor2d_contexts(
     let mut dfs_counter = 0u64;
 
     // スタック要素:
-    //   (アクター, 親 Canvas サイズ, 親累積スケール, (scale_transform, scale_size),
+    //   (アクター, 親 Canvas サイズ, 親累積スケール,
     //    親キャンバス原点ワールド位置, 親累積ワールド回転)
-    //   末尾に「親までの実効アクティブ」を追加（非アクティブは物理登録から除外する）
-    type CtxElem<'a> = (&'a Actor, Option<[f32; 2]>, [f32; 2], (bool, bool, bool, bool), [f32; 2], f32, bool);
+    //   末尾に「親までの実効アクティブ」を追加（非アクティブは物理登録から除外する）。
+    //   スケールモードは各ノードが自身の CanvasTransform から読み取るため伝播しない。
+    type CtxElem<'a> = (&'a Actor, Option<[f32; 2]>, [f32; 2], [f32; 2], f32, bool);
 
     let mut stack: Vec<CtxElem> = scene.actors.iter()
         .filter(|a| a.world_line == world_line)
         .rev()
-        .map(|a| (a, None::<[f32; 2]>, [1.0f32, 1.0], (false, false, false, true), [0.0f32, 0.0], 0.0f32, true))
+        .map(|a| (a, None::<[f32; 2]>, [1.0f32, 1.0], [0.0f32, 0.0], 0.0f32, true))
         .collect();
 
-    while let Some((actor, parent_canvas_size, parent_cumul_scale, (sm_transform, sm_size, keep_aspect, is_width_axis), parent_canvas_origin, parent_world_rot, parent_active)) = stack.pop() {
+    while let Some((actor, parent_canvas_size, parent_cumul_scale, parent_canvas_origin, parent_world_rot, parent_active)) = stack.pop() {
         let active = parent_active && actor.active;
         dfs_counter += 1;
         let dfs_id = dfs_counter;
@@ -191,6 +192,15 @@ pub(crate) fn collect_actor2d_contexts(
         let ct_owned: Option<CanvasTransform> = scene.world.get::<CanvasTransform>(actor.entity)
             .map(|ct| if root_auto.is_some() { CanvasTransform::default() } else { ct.clone() });
         let ct_opt = ct_owned.as_ref();
+
+        // スケールモードはこのノード自身の CanvasTransform から読み取る
+        // （CanvasTransform を持たないノードはスケールなしの中立値）。
+        let (sm_transform, sm_size, keep_aspect, is_width_axis) = ct_opt
+            .map(|ct| (
+                ct.scale_transform, ct.scale_size, ct.keep_aspect_ratio,
+                matches!(ct.aspect_ratio_axis, AspectRatioAxis::Width),
+            ))
+            .unwrap_or((false, false, false, true));
 
         // ── 自アクターの CanvasComponent を取得する ─────────────────────────────
         let my_canvas = actor.slots().iter()
@@ -213,12 +223,6 @@ pub(crate) fn collect_actor2d_contexts(
             bw * phys_sc_x,
             bh * phys_sc_y,
         ]);
-        let child_sm = my_canvas
-            .map(|cc| (
-                cc.scale_transform, cc.scale_size,
-                cc.keep_aspect_ratio, matches!(cc.aspect_ratio_axis, AspectRatioAxis::Width),
-            ))
-            .unwrap_or((false, false, false, true));
 
         // CanvasViewportRef::Camera を持つルートキャンバスのビューポートサイズを解決する。
         // ルートアクター（parent_canvas_size=None）のみオーバーライドマップを参照する。
@@ -247,7 +251,7 @@ pub(crate) fn collect_actor2d_contexts(
         //   scale_transform=true : parent_cumul_scale * ct.scale * auto_scale_factor
         //   scale_transform=false: ct.scale * auto_scale_factor
         let child_cumul_scale = if let Some(ct) = ct_opt {
-            if child_sm.0 {
+            if sm_transform {
                 [parent_cumul_scale[0] * ct.scale[0] * auto_scale_factor[0],
                  parent_cumul_scale[1] * ct.scale[1] * auto_scale_factor[1]]
             } else {
@@ -320,7 +324,7 @@ pub(crate) fn collect_actor2d_contexts(
 
         // 子をスタックに積む（DFS 順を保つため逆順）
         for child in actor.children.iter().rev() {
-            stack.push((child, child_canvas_size, child_cumul_scale, child_sm, child_canvas_origin, child_world_rot, active));
+            stack.push((child, child_canvas_size, child_cumul_scale, child_canvas_origin, child_world_rot, active));
         }
 
         // ── Actor2D のみ処理 ─────────────────────────────────────────────────
