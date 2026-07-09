@@ -216,6 +216,14 @@ impl App {
         let mut perf_skin_mc_count: usize = 0;
         // 実際に dispatch したスキン LOD 数（visible_count > 0 のもの）
         let mut perf_skin_dispatches: u32 = 0;
+        // 3D 物理同期 update_physics()（recv/書き戻し/kinematic送信/ドラッグ押し戻し同期問い合わせ）[ms]
+        let mut perf_physics_ms:    f64 = 0.0;
+        // 編集時スナップショット記録 try_record_physics_snapshot()（ECS 状態のキャプチャ）[ms]
+        let mut perf_snapshot_ms:   f64 = 0.0;
+        // 2D 物理同期 update_physics_2d() [ms]
+        let mut perf_physics2d_ms:  f64 = 0.0;
+        // このフレームで物理が実際に更新されたか（[PERF] 自動出力の判定に使う）
+        let mut perf_physics_active = false;
 
         let _perf_t_ipc = std::time::Instant::now();
         self.process_ipc(event_loop);
@@ -282,13 +290,20 @@ impl App {
             let should_update_physics = (self.mode == RuntimeMode::Play && !self.paused)
                 || (self.mode == RuntimeMode::Edit && self.edit_physics_enabled && is_edit_physics_stepping);
             if should_update_physics {
+                perf_physics_active = true;
                 if dbg { eprintln!("[SEED FRAME {dbg_frame}] update_physics start"); }
+                // 3D 物理同期の所要時間を計測（recv・書き戻し・kinematic送信・
+                // ドラッグ押し戻しの同期オーバーラップ問い合わせ最大 20ms を含む）
+                let _perf_t_phys = std::time::Instant::now();
                 self.update_physics();
+                perf_physics_ms = _perf_t_phys.elapsed().as_secs_f64() * 1000.0;
                 if dbg { eprintln!("[SEED FRAME {dbg_frame}] update_physics done"); }
                 // 編集時のみスナップショットを記録する（変化なしなら自動停止）
                 if self.mode == RuntimeMode::Edit && self.edit_physics_enabled {
                     let dt = 1.0 / 60.0f64; // 固定タイムステップ（物理スレッドと同期）
+                    let _perf_t_snap = std::time::Instant::now();
                     self.try_record_physics_snapshot(dt);
+                    perf_snapshot_ms = _perf_t_snap.elapsed().as_secs_f64() * 1000.0;
                 }
             }
 
@@ -298,7 +313,10 @@ impl App {
             let should_update_physics_2d = (self.mode == RuntimeMode::Play && !self.paused)
                 || (self.mode == RuntimeMode::Edit && self.edit_physics_2d_enabled && is_edit_physics_stepping);
             if should_update_physics_2d {
+                perf_physics_active = true;
+                let _perf_t_phys2d = std::time::Instant::now();
                 self.update_physics_2d();
+                perf_physics2d_ms = _perf_t_phys2d.elapsed().as_secs_f64() * 1000.0;
             }
         }
 
@@ -3389,17 +3407,28 @@ impl App {
                     // grid:        グリッドGPU バッチ生成
                     // finish:      encoder.finish + queue.submit + surface.present
                     // other = total - 上記全て（残りは未計測のコライダー・ギズモ等）
-                    if do_perf {
+                    // 出力条件: 環境変数 SEED_PERF_LOG 有効時（従来）に加え、
+                    // 物理が実際に更新されたフレーム（Play 中/編集時物理稼働中）は
+                    // 環境変数なしでも PERF_LOG_INTERVAL ごとに自動出力する。
+                    // → 「物理が重い」の切り分けを設定なしで即座に行えるようにする。
+                    let do_perf_out = do_perf
+                        || (perf_physics_active && perf_idx % PERF_LOG_INTERVAL == 0);
+                    if do_perf_out {
                         let total_ms = perf_t_total.elapsed().as_secs_f64() * 1000.0;
+                        // 物理更新の合計（3D update + スナップショット記録 + 2D update）
+                        let phys_total_ms = perf_physics_ms + perf_snapshot_ms + perf_physics2d_ms;
                         // main_pass は draw を内包するので draw を除いた残り = main_pass - draw = 他の描画コマンド記録
                         let main_rest_ms = (perf_main_pass_ms - perf_draw_ms).max(0.0);
                         let other_ms = (total_ms
                             - perf_begin_frame_ms - perf_ipc_ms - perf_batch_ms
                             - perf_skin_ms - perf_main_pass_ms - perf_id_ms
-                            - perf_grid_ms - perf_collider_ms - perf_finish_ms).max(0.0);
+                            - perf_grid_ms - perf_collider_ms - perf_finish_ms
+                            - phys_total_ms).max(0.0);
                         eprintln!(
                             "[PERF f={perf_idx}] MC={perf_mc_count} skin_MC={perf_skin_mc_count} dispatches={perf_skin_dispatches} \
-                             | total={total_ms:.3}ms bf={perf_begin_frame_ms:.3}ms ipc={perf_ipc_ms:.3}ms \
+                             | total={total_ms:.3}ms \
+                             physics={phys_total_ms:.3}ms(3d={perf_physics_ms:.3}ms+snap={perf_snapshot_ms:.3}ms+2d={perf_physics2d_ms:.3}ms) \
+                             bf={perf_begin_frame_ms:.3}ms ipc={perf_ipc_ms:.3}ms \
                              batch={perf_batch_ms:.3}ms skin={perf_skin_ms:.3}ms \
                              main_pass={perf_main_pass_ms:.3}ms(draw={perf_draw_ms:.3}ms+pass_drop={perf_pass_drop_ms:.3}ms+rest={main_rest_ms:.3}ms) \
                              id={perf_id_ms:.3}ms grid={perf_grid_ms:.3}ms collider={perf_collider_ms:.3}ms \
