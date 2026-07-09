@@ -39,6 +39,12 @@ use crate::engine::physics::{
 use crate::engine::core::app_base::scene::Scene;
 use super::{App, RuntimeMode, InspectorTransformDrag};
 
+/// ドラッグ押し戻しの同期オーバーラップ問い合わせのタイムアウト（ミリ秒）。
+/// 物理スレッドのコマンドドレインは約 1ms 間隔（Pause 中は 5ms 間隔）で回るため
+/// 通常は数 ms で応答する。応答がない場合はそのフレームの判定を保留する。
+/// （host_api.rs の RAYCAST_TIMEOUT_MS と同じ根拠・同じ値）
+const OVERLAP_REPLY_TIMEOUT_MS: u64 = 20;
+
 impl App {
     // ─── 起動 ────────────────────────────────────────────────────
 
@@ -131,10 +137,12 @@ impl App {
         };
 
         if new_drag_entity_id != self.dragging_physics_entity_id {
-            // 【変更3(b)】ドラッグ終了自動再開の判定。
+            // 【変更3(b)フォールバック】ドラッグ終了自動再開の判定。
             // RigidBody タイムラインモードで最新フレーム停止中に、Collider を持つアクターの
-            // ドラッグが終了（Some → None）した場合、再生ボタンを押さずに「最終フレームの続き」
-            // として物理を自動再開する。過去フレームへシーク中（!at_latest）は誤爆防止で対象外。
+            // ドラッグが「停止したまま」終了した場合、「最終フレームの続き」として物理を自動再開する。
+            // 通常はドラッグ開始時にライブシミュレーション（下記 start_live_sim）が始まって
+            // paused=false になるため、この分岐はユーザーがドラッグ中に手動で一時停止した場合等の
+            // フォールバック。過去フレームへシーク中（!at_latest）は誤爆防止で対象外。
             let drag_ended = self.dragging_physics_entity_id.is_some()
                 && new_drag_entity_id.is_none();
             let auto_resume = drag_ended
@@ -142,13 +150,21 @@ impl App {
                 && self.edit_physics_enabled
                 && self.edit_physics_with_rigidbody
                 && self.edit_physics_paused
-                && self.edit_physics_at_latest;
+                && self.edit_physics_at_latest
+                // Collider を持たないアクターの移動では物理を再起動しない（無意味な再構築を防ぐ）
+                && self.dragging_physics_entity_id.map_or(false, |id| {
+                    self.scene.as_ref().map_or(false, |s| {
+                        actor_has_enabled_collider(s, self.active_world_line, id)
+                    })
+                });
 
             // ドラッグ状態が変化した場合にボディタイプを切り替える
             if let Some(old_id) = self.dragging_physics_entity_id {
                 // ドラッグ終了: 現在のアクター座標を final_position として渡し Dynamic に戻す。
-                // 自動再開する場合は直後に物理スレッドを stop→start で作り直すため、
-                // この SetBodyKinematic 送信は不要（省略してムダな再構築を避ける）。
+                // 【ドラッグ中ライブシミュレーション】が走っている場合は、この Dynamic 復帰
+                // だけで演算がそのまま継続する（物理スレッドの再起動は行わない）。
+                // 自動再開（フォールバック）の場合は直後に stop→start で作り直すため、
+                // この SetBodyKinematic 送信は省略してムダな再構築を避ける。
                 if !auto_resume {
                     let final_position = self.scene.as_ref().and_then(|s| {
                         get_actor_transform_by_entity_id(s, self.active_world_line, old_id)
@@ -161,9 +177,8 @@ impl App {
                         });
                     }
                 }
-                // コライダーのみモードのドラッグ終了: 最終有効位置・前フレーム位置をクリアする
+                // ドラッグ終了: 押し戻し用の最終有効位置をクリアする
                 self.drag_collider_last_valid_pos = None;
-                self.drag_prev_at_pos = None;
             }
             if let Some(new_id) = new_drag_entity_id {
                 // ドラッグ開始: Kinematic に変更して重力・衝突力を一時停止する。
@@ -179,21 +194,61 @@ impl App {
                         final_position: ecs_start_pos,
                     });
                 }
-                // コライダーのみモードのドラッグ開始: 現在位置を最終有効位置・前フレーム位置として初期化する
-                if self.mode == RuntimeMode::Edit && !self.edit_physics_with_rigidbody {
-                    let init_pos = self.scene.as_ref()
-                        .and_then(|s| get_actor_transform_by_entity_id(s, self.active_world_line, new_id));
-                    self.drag_collider_last_valid_pos = init_pos;
-                    self.drag_prev_at_pos = init_pos;
+                // ドラッグ開始: 現在位置を押し戻し用の最終有効位置として初期化する。
+                // RigidBody 有効/無効どちらのモードでもドラッグ中の押し戻し判定に使用する。
+                if self.mode == RuntimeMode::Edit {
+                    self.drag_collider_last_valid_pos = ecs_start_pos;
+                }
+
+                // 【ドラッグ中ライブシミュレーション】
+                // RigidBody タイムラインモードで最新フレーム停止中に Collider 付きアクターの
+                // ドラッグが開始された場合、物理を Pause 解除してドラッグ中も演算を継続する。
+                // - 自身は kinematic としてギズモに追従し、力学的影響（回転・跳ね返り）を受けない
+                // - 他の Dynamic ボディは Rapier の kinematic→dynamic 相互作用で押しのけられる
+                // - フレームは加算され、try_record_physics_snapshot が記録・STATE 通知を継続する
+                // 過去フレームへシーク中（!at_latest）は従来通り発動しない（誤爆防止）。
+                let start_live_sim = self.mode == RuntimeMode::Edit
+                    && self.edit_physics_enabled
+                    && self.edit_physics_with_rigidbody
+                    && self.edit_physics_paused
+                    && self.edit_physics_at_latest
+                    && self.scene.as_ref().map_or(false, |s| {
+                        actor_has_enabled_collider(s, self.active_world_line, new_id)
+                    });
+                if start_live_sim {
+                    self.begin_edit_physics_drag_live_sim();
                 }
             }
             self.dragging_physics_entity_id = new_drag_entity_id;
 
-            // 自動再開: 現在の ECS 位置から物理を再起動して続きのシミュレーションを開始する。
+            // 自動再開（フォールバック）: 現在の ECS 位置から物理を再起動して続きを開始する。
             // ここで物理スレッドは作り直されるため、このフレームの結果受信は行わず終了する。
             if auto_resume {
                 self.resume_edit_physics_from_current_ecs();
                 return;
+            }
+        }
+
+        // ── ドラッグ中押し戻し（同期オーバーラップ判定）──────────────────────
+        //
+        // 【間欠バグ修正】従来は物理スレッドの非同期結果（recv_latest）に含まれる
+        // 接触情報で押し戻しを判定していたが、メインフレームと物理ステップ
+        // （壁時計 60Hz）は非同期のため、
+        //   (a) 前フレームからステップが 1 回も回っていないフレームでは結果が None に
+        //       なり判定自体がスキップされる（その間もカーソルは壁の奥へ進む）、
+        //   (b) 「前フレーム末に送った位置 = 受信結果が参照した位置」という対応付けが
+        //       ステップ 0 回/2 回のフレームで崩れ、未検証の壁内位置を安全位置
+        //       （drag_collider_last_valid_pos）として採用してしまう、
+        // の 2 点により押し戻しが間欠的にしか効かなかった。
+        //
+        // 現在は Raycast と同じ同期問い合わせ（CheckKinematicOverlap）で
+        // 「今フレームの提案位置そのもの」を毎フレーム必ず検証するため、
+        // フレーム落ち・位置対応ズレが構造的に発生しない。
+        // RigidBody 有効モードのドラッグにも同じ判定を適用する（Dynamic ボディとの
+        // 重なりは物理スレッド側で除外されるため、押しのけ挙動は阻害しない）。
+        if self.mode == RuntimeMode::Edit {
+            if let Some(drag_id) = self.dragging_physics_entity_id {
+                self.apply_drag_pushback(drag_id);
             }
         }
 
@@ -216,95 +271,6 @@ impl App {
                     for (entity_id, new_pos, new_rot) in &result.transform_updates {
                         if Some(*entity_id) == self.dragging_physics_entity_id { continue; }
                         apply_physics_transform(scene, self.active_world_line, *entity_id, *new_pos, *new_rot);
-                    }
-                }
-            }
-
-            // ① コライダーのみ編集モードでのドラッグ中押し戻し処理。
-            // ドラッグしているアクターの衝突イベント（Enter/Stay）を検出し、
-            // 衝突があれば最終有効位置に戻すことで壁に対する押し戻しを実現する。
-            let is_collider_only_drag = self.mode == RuntimeMode::Edit
-                && !self.edit_physics_with_rigidbody
-                && self.dragging_physics_entity_id.is_some();
-            if is_collider_only_drag {
-                let drag_id = self.dragging_physics_entity_id.unwrap();
-                // NarrowPhase 直接クエリ結果を優先して使用する。
-                // CollisionEvent はキネマティック vs スタティックのペアで未発火の場合があるため、
-                // active_contact_entity_ids による検出がより確実。
-                let has_blocking_collision = result.active_contact_entity_ids.contains(&drag_id)
-                    || result.collision_events.iter().any(|e| {
-                        (e.entity_a == drag_id || e.entity_b == drag_id)
-                            && e.phase != CollisionPhase::Exit
-                    });
-
-                if has_blocking_collision {
-                    // ── 衝突中: 最終有効位置に押し戻す ──────────────────────────
-                    if let Some((last_pos, last_rot)) = self.drag_collider_last_valid_pos {
-                        // 押し戻し前の「壁侵入位置」を取得する（ドラッグ参照原点の調整量を計算するため）
-                        let wall_pos: Option<[f32; 3]> = self.scene.as_ref()
-                            .and_then(|s| get_actor_transform_by_entity_id(s, self.active_world_line, drag_id))
-                            .map(|(p, _)| p);
-
-                        // ECS に安全位置を書き戻す
-                        if let Some(scene) = &mut self.scene {
-                            apply_physics_transform(scene, self.active_world_line, drag_id, last_pos, last_rot);
-                        }
-                        // 物理スレッドにも戻した位置を通知する（次ステップで衝突を解消する）
-                        if let Some(thread) = &self.physics_thread {
-                            thread.send(PhysicsCommand::UpdateKinematic {
-                                entity_id: drag_id,
-                                position:  last_pos,
-                                rotation:  last_rot,
-                            });
-                        }
-
-                        // ドラッグ開始行列をシフトしてチラつきを防止する。
-                        //
-                        // 問題: カーソルが壁位置に留まる限り on_cursor_moved が毎フレーム
-                        //       AT を壁侵入位置に戻してしまい、押し戻しと交互にチラつく。
-                        //
-                        // 解決: 壁侵入量 offset = wall_pos - safe_pos を各ドラッグ開始行列の
-                        //       平行移動成分から引くことで、カーソル静止時の計算結果を
-                        //       「new_pos = delta * new_start = delta * (old_start - offset) = safe_pos」
-                        //       にする。これ以降カーソルを戻した方向へは自然に動く。
-                        if let Some(wall_p) = wall_pos {
-                            let off = [
-                                wall_p[0] - last_pos[0],
-                                wall_p[1] - last_pos[1],
-                                wall_p[2] - last_pos[2],
-                            ];
-                            // MC ドラッグ開始行列群を調整する
-                            for (_, sm) in &mut self.drag.drag_root_starts {
-                                sm[0][3] -= off[0]; sm[1][3] -= off[1]; sm[2][3] -= off[2];
-                            }
-                            for (_, sm) in &mut self.drag.drag_child_starts {
-                                sm[0][3] -= off[0]; sm[1][3] -= off[1]; sm[2][3] -= off[2];
-                            }
-                            for (_, mats) in &mut self.drag.actor_extra_mc_drag_starts {
-                                for sm in mats.iter_mut() {
-                                    sm[0][3] -= off[0]; sm[1][3] -= off[1]; sm[2][3] -= off[2];
-                                }
-                            }
-                            for (_, sm) in &mut self.drag.actor_child_drag_starts {
-                                sm[0][3] -= off[0]; sm[1][3] -= off[1]; sm[2][3] -= off[2];
-                            }
-                            // Transform-only ドラッグ（MC なし）の場合も調整する
-                            if let Some((_, start_tf)) = &mut self.drag.actor_transform_drag_start {
-                                start_tf.position[0] -= off[0];
-                                start_tf.position[1] -= off[1];
-                                start_tf.position[2] -= off[2];
-                            }
-                        }
-                    }
-                } else {
-                    // ── 衝突なし: 前フレームで送信した位置を有効位置として記録する ────
-                    // on_cursor_moved は update_physics より先に走り AT を最新ギズモ位置に
-                    // 更新してしまうため、現フレームの AT をそのまま last_valid_pos に使うと
-                    // 「まだ物理が確認していない位置」を安全位置として採用してしまいチラつく。
-                    // drag_prev_at_pos = 前フレーム末に物理スレッドへ送った位置 = 今の物理結果が
-                    // 参照した位置 であり、衝突なしと確認された正しい安全位置。
-                    if let Some(prev) = self.drag_prev_at_pos {
-                        self.drag_collider_last_valid_pos = Some(prev);
                     }
                 }
             }
@@ -373,19 +339,103 @@ impl App {
                 thread.send(PhysicsCommand::UpdateKinematic { entity_id, position: pos, rotation: rot });
             });
 
-        // ⑤ ドラッグ中アクターの現在位置を kinematic 更新として送信する
-        // 一時的に Kinematic 化されているため UpdateKinematic で gizmo 位置を物理スレッドに反映する
+        // ⑤ ドラッグ中アクターの現在位置を kinematic 更新として送信する。
+        // 一時的に Kinematic 化されているため UpdateKinematic で gizmo 位置を物理スレッドに反映する。
+        // 押し戻し（apply_drag_pushback）が発動したフレームでは ECS が安全位置へ復元済みのため、
+        // ここで送信されるのも検証済みの安全位置となる（送信経路はこの 1 箇所に集約）。
         if let Some(drag_entity_id) = self.dragging_physics_entity_id {
             if let Some((pos, rot)) = get_actor_transform_by_entity_id(scene, self.active_world_line, drag_entity_id) {
                 thread.send(PhysicsCommand::UpdateKinematic { entity_id: drag_entity_id, position: pos, rotation: rot });
-                // コライダーのみモードのドラッグ: 今フレームで物理スレッドに送った位置を記録する。
-                // 次フレームで「衝突なし」の物理結果を受けたとき last_valid_pos をこの値に更新する。
-                // これにより on_cursor_moved が AT を新位置に更新した後でも
-                // 「物理が確認した安全位置」だけを last_valid_pos に採用できる。
-                if self.mode == RuntimeMode::Edit && !self.edit_physics_with_rigidbody {
-                    self.drag_prev_at_pos = Some((pos, rot));
-                }
             }
+        }
+    }
+
+    // ─── ドラッグ中押し戻し（同期オーバーラップ判定）──────────────────────────
+
+    /// ドラッグ中アクターの押し戻し判定を同期実行する。
+    ///
+    /// 1. ギズモ／インスペクタが書き込んだ現在の ECS 位置（＝今フレームの提案位置）を取得する。
+    /// 2. CheckKinematicOverlap で物理スレッドへ同期問い合わせし、提案位置で他の
+    ///    非 Dynamic・非センサーコライダーとめり込むかを判定する。
+    /// 3. めり込む場合: 最終有効位置（drag_collider_last_valid_pos）へ ECS を復元し、
+    ///    ドラッグ開始行列をシフトしてチラつきを防止する。
+    /// 4. めり込まない場合: 提案位置を検証済みの最終有効位置として採用する。
+    ///
+    /// 物理スレッドへの位置送信は呼び出し元（update_physics ⑤）が行う。
+    fn apply_drag_pushback(&mut self, drag_id: u64) {
+        // ① 提案位置 = on_cursor_moved / インスペクタ編集が書き込み済みの現在 ECS 位置
+        let Some((prop_pos, prop_rot)) = self.scene.as_ref()
+            .and_then(|s| get_actor_transform_by_entity_id(s, self.active_world_line, drag_id))
+        else { return };
+
+        // ② 物理スレッドへ同期問い合わせ（Raycast と同じ reply チャンネルパターン）
+        let overlapping = {
+            let Some(thread) = &self.physics_thread else { return };
+            let (reply_tx, reply_rx) = crossbeam_channel::bounded::<bool>(1);
+            thread.send(PhysicsCommand::CheckKinematicOverlap {
+                entity_id: drag_id,
+                position:  prop_pos,
+                rotation:  prop_rot,
+                reply:     reply_tx,
+            });
+            match reply_rx.recv_timeout(
+                std::time::Duration::from_millis(OVERLAP_REPLY_TIMEOUT_MS),
+            ) {
+                Ok(v) => v,
+                // 応答なし（スレッド高負荷・終了中等）: 今フレームは判定を保留する。
+                // 未検証の位置を安全位置として採用しないため last_valid_pos は更新しない。
+                Err(_) => return,
+            }
+        };
+
+        if !overlapping {
+            // ── めり込みなし: 提案位置を検証済みの安全位置として採用する ─────────
+            self.drag_collider_last_valid_pos = Some((prop_pos, prop_rot));
+            return;
+        }
+
+        // ── めり込みあり: 最終有効位置に押し戻す ─────────────────────────────
+        let Some((last_pos, last_rot)) = self.drag_collider_last_valid_pos else { return };
+
+        // ECS に安全位置を書き戻す（物理スレッドへの送信は update_physics ⑤ が行う）
+        if let Some(scene) = &mut self.scene {
+            apply_physics_transform(scene, self.active_world_line, drag_id, last_pos, last_rot);
+        }
+
+        // ドラッグ開始行列をシフトしてチラつきを防止する。
+        //
+        // 問題: カーソルが壁位置に留まる限り on_cursor_moved が毎フレーム
+        //       AT を壁侵入位置に戻してしまい、押し戻しと交互にチラつく。
+        //
+        // 解決: 壁侵入量 offset = 提案位置 - 安全位置 を各ドラッグ開始行列の
+        //       平行移動成分から引くことで、カーソル静止時の計算結果を
+        //       「new_pos = delta * new_start = delta * (old_start - offset) = safe_pos」
+        //       にする。これ以降カーソルを戻した方向へは自然に動く。
+        let off = [
+            prop_pos[0] - last_pos[0],
+            prop_pos[1] - last_pos[1],
+            prop_pos[2] - last_pos[2],
+        ];
+        // MC ドラッグ開始行列群を調整する
+        for (_, sm) in &mut self.drag.drag_root_starts {
+            sm[0][3] -= off[0]; sm[1][3] -= off[1]; sm[2][3] -= off[2];
+        }
+        for (_, sm) in &mut self.drag.drag_child_starts {
+            sm[0][3] -= off[0]; sm[1][3] -= off[1]; sm[2][3] -= off[2];
+        }
+        for (_, mats) in &mut self.drag.actor_extra_mc_drag_starts {
+            for sm in mats.iter_mut() {
+                sm[0][3] -= off[0]; sm[1][3] -= off[1]; sm[2][3] -= off[2];
+            }
+        }
+        for (_, sm) in &mut self.drag.actor_child_drag_starts {
+            sm[0][3] -= off[0]; sm[1][3] -= off[1]; sm[2][3] -= off[2];
+        }
+        // Transform-only ドラッグ（MC なし）の場合も調整する
+        if let Some((_, start_tf)) = &mut self.drag.actor_transform_drag_start {
+            start_tf.position[0] -= off[0];
+            start_tf.position[1] -= off[1];
+            start_tf.position[2] -= off[2];
         }
     }
 }
@@ -574,6 +624,30 @@ fn quat_arr_to_euler_deg(q_arr: [f32; 4]) -> [f32; 3] {
     let q = SeedQuat::new(q_arr[0], q_arr[1], q_arr[2], q_arr[3]);
     let euler = q.to_euler();
     [euler.x.to_degrees(), euler.y.to_degrees(), euler.z.to_degrees()]
+}
+
+/// 物理 entity_id（1-indexed DFS）に対応するアクターが有効な Collider スロットを持つかを返す。
+///
+/// ドラッグ中ライブシミュレーション開始・ドラッグ終了自動再開のトリガー判定に使用する。
+/// Collider を持たないアクターの移動では物理の再開・再起動を行わない。
+fn actor_has_enabled_collider(
+    scene:      &Scene,
+    world_line: u32,
+    entity_id:  u64,
+) -> bool {
+    let mut dfs_counter = 0u32;
+    let mut stack: Vec<&Actor> = scene.actors.iter()
+        .filter(|a| a.world_line == world_line)
+        .rev()
+        .collect();
+    while let Some(actor) = stack.pop() {
+        dfs_counter += 1;
+        for child in actor.children.iter().rev() { stack.push(child); }
+        if dfs_counter as u64 != entity_id { continue; }
+        return actor.slots().iter()
+            .any(|s| s.kind == ComponentKind::Collider && s.enabled);
+    }
+    false
 }
 
 /// 物理 entity_id（1-indexed DFS）に対応するアクターの現在 Transform を取得する。

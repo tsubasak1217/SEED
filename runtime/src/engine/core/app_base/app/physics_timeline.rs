@@ -120,10 +120,36 @@ impl App {
 
     /// ギズモ／インスペクタによる Transform ドラッグが進行中かどうかを返す。
     ///
-    /// RigidBody タイムラインモードで最新フレーム停止中のドラッグ終了自動再開の
+    /// RigidBody タイムラインモードで最新フレーム停止中のドラッグ検知ステップの
     /// トリガー判定（should_step_edit_physics）に使用する。
     pub(super) fn edit_physics_drag_active(&self) -> bool {
         self.drag.gizmo_drag.is_some() || self.inspector_transform_drag.is_some()
+    }
+
+    /// RigidBody タイムラインモードで最新フレーム停止中にドラッグが開始されたとき、
+    /// 物理シミュレーションを「続き」として再開する（ドラッグ中ライブシミュレーション）。
+    ///
+    /// 物理スレッドは再起動せず Resume のみ行うため、他の Dynamic ボディの速度は
+    /// 保持されたまま継続する。ドラッグ中のオブジェクト自身は SetBodyKinematic(true) で
+    /// kinematic 化済みのためギズモの Transform に毎フレーム追従し（UpdateKinematic）、
+    /// 力学的影響（回転・跳ね返り）を受けずに他の Dynamic ボディを押しのける。
+    ///
+    /// paused=false になることで try_record_physics_snapshot が記録を継続し、
+    /// フレームが連番で加算されて EDIT_PHYSICS_STATE 通知によりエディタの
+    /// スライダー範囲も伸び続ける。
+    ///
+    /// 注意: at_latest は true のまま維持する。frame_renderer は !at_latest で
+    /// ギズモを非表示にするため、ここで false にするとドラッグ中のギズモが消えてしまう
+    /// （記録のたびに try_record 側でも true が設定される）。
+    pub(super) fn begin_edit_physics_drag_live_sim(&mut self) {
+        // 既に再生中なら何もしない（冪等）
+        if !self.edit_physics_paused { return; }
+        self.edit_physics_paused          = false;
+        self.edit_physics_in_playback     = false;
+        self.edit_physics_no_change_count = 0;
+        // 再起動ではなく Resume なので受信ラグはほぼ無い（ウォームアップ不要）
+        self.send_resume_to_physics_threads();
+        self.send_physics_timeline_state();
     }
 
     /// 編集時物理タイムラインを初期化する。
@@ -248,6 +274,17 @@ impl App {
         };
 
         if !has_change {
+            // 【ドラッグ中ライブシミュレーション】ドラッグ操作中は収束停止（自動 Pause）を
+            // 抑止する。ドラッグ中に手を止めると Transform 変化がなくなり閾値に達して
+            // 物理が Pause され、その後のドラッグで押しのけ・押し戻しが効かなくなるため。
+            // ドラッグ終了後に静止していれば通常どおり収束停止する。
+            if self.edit_physics_drag_active()
+                || self.dragging_physics_entity_id.is_some()
+                || self.dragging_physics_2d_entity_id.is_some()
+            {
+                self.edit_physics_no_change_count = 0;
+                return;
+            }
             // 変化なし: 連続カウントを増やす。閾値を超えたら収束とみなして停止する。
             self.edit_physics_no_change_count += 1;
             if self.edit_physics_no_change_count < NO_CHANGE_STOP_THRESHOLD {
@@ -631,10 +668,14 @@ impl App {
 
         // 【変更3(b)】RigidBody タイムラインモードで最新フレーム停止中:
         // ドラッグ操作が行われている（またはドラッグ中として物理登録済みの）間だけ
-        // ステップを許可し、update_physics でドラッグ終了を検知して自動再開する。
+        // ステップを許可する。これによりドラッグ開始が update_physics で検知され、
+        // ライブシミュレーション（begin_edit_physics_drag_live_sim）が開始される。
+        // ドラッグ登録が残っている間（終了直後の Dynamic 復帰送信）もステップを許可する。
         // 過去フレームへシーク中（!at_latest）は誤爆防止のため許可しない。
         if self.edit_physics_at_latest
-            && (self.edit_physics_drag_active() || self.dragging_physics_entity_id.is_some())
+            && (self.edit_physics_drag_active()
+                || self.dragging_physics_entity_id.is_some()
+                || self.dragging_physics_2d_entity_id.is_some())
         {
             return true;
         }

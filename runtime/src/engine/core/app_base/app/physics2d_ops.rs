@@ -735,21 +735,27 @@ impl App {
             }
         };
 
-        // ドラッグ状態変化時にボディタイプを切り替える
+        // ドラッグ状態変化時にボディタイプを切り替える。
+        // ※ ライブシミュレーション開始（&mut self メソッド）を呼ぶため、
+        //   thread は送信のたびに狭いスコープで借用する。
         if new_drag_entity_id != self.dragging_physics_2d_entity_id {
-            let thread = self.physics_thread_2d.as_ref().unwrap();
             if let Some(old_id) = self.dragging_physics_2d_entity_id {
+                // ドラッグ終了: 現在レイアウト位置を final_position として Dynamic に戻す。
+                // ドラッグ中ライブシミュレーションが走っている場合は、この復帰だけで
+                // 演算がそのまま継続する（再起動は行わない）。
                 let final_position = contexts.iter()
                     .find(|c| c.dfs_id == old_id)
                     .map(|c| (
                         [c.body_pos_px[0] / PIXELS_PER_METER, c.body_pos_px[1] / PIXELS_PER_METER],
                         c.rot_rad,
                     ));
-                thread.send(PhysicsCommand2d::SetBodyKinematic {
-                    entity_id:      old_id,
-                    is_kinematic:   false,
-                    final_position,
-                });
+                if let Some(thread) = &self.physics_thread_2d {
+                    thread.send(PhysicsCommand2d::SetBodyKinematic {
+                        entity_id:      old_id,
+                        is_kinematic:   false,
+                        final_position,
+                    });
+                }
             }
             if let Some(new_id) = new_drag_entity_id {
                 let ecs_start_pos = contexts.iter()
@@ -758,11 +764,29 @@ impl App {
                         [c.body_pos_px[0] / PIXELS_PER_METER, c.body_pos_px[1] / PIXELS_PER_METER],
                         c.rot_rad,
                     ));
-                thread.send(PhysicsCommand2d::SetBodyKinematic {
-                    entity_id:    new_id,
-                    is_kinematic: true,
-                    final_position: ecs_start_pos,
-                });
+                if let Some(thread) = &self.physics_thread_2d {
+                    thread.send(PhysicsCommand2d::SetBodyKinematic {
+                        entity_id:    new_id,
+                        is_kinematic: true,
+                        final_position: ecs_start_pos,
+                    });
+                }
+
+                // 【ドラッグ中ライブシミュレーション（2D）】
+                // 2D RigidBody タイムラインモードで最新フレーム停止中に Collider2d 付き
+                // アクターのドラッグが開始された場合、3D と同様に物理を Pause 解除して
+                // ドラッグ中も演算を継続する（自身は kinematic 追従・他は押しのけ）。
+                // 過去フレームへシーク中（!at_latest）は発動しない（誤爆防止）。
+                let start_live_sim = self.mode == RuntimeMode::Edit
+                    && self.edit_physics_2d_enabled
+                    && self.edit_physics_2d_with_rigidbody
+                    && self.edit_physics_paused
+                    && self.edit_physics_at_latest
+                    && contexts.iter()
+                        .any(|c| c.dfs_id == new_id && c.collider_slot_entity.is_some());
+                if start_live_sim {
+                    self.begin_edit_physics_drag_live_sim();
+                }
             }
             self.dragging_physics_2d_entity_id = new_drag_entity_id;
         }

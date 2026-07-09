@@ -193,6 +193,117 @@ pub(super) fn emit_collider2d_wireframe<F>(
     }
 }
 
+// ─── コライダーピッキング用フィルクワッド ─────────────────────────────────────
+
+/// コライダー形状の「塗りつぶしピッキング領域」を表す GPU 列優先モデル行列を生成する。
+///
+/// エディタ編集ビューでは、コライダーは線 1px のワイヤーフレームとして描画されるため
+/// 線そのものをクリックしてもアクターを選択できない。そこで ID パス（canvas_id パイプライン）に
+/// **コライダーの外接矩形を覆うユニットクワッド**を描画し、面（塗りつぶし領域）を
+/// ピッキング対象にする。返す行列はユニットクワッド `[0,1]×[0,1]` を最終描画空間上の
+/// コライダー外接クワッドへ写す（`canvas_id.wgsl` は `view_proj * model * [pos,0,1]` を行う）。
+///
+/// # 座標変換の設計
+/// `emit_collider2d_wireframe` と**まったく同じ**中心・回転・スケール・`map` 変換を用いるため、
+/// 描画されるワイヤーフレームとピッキング領域は常に一致する（形状ロジックの二重管理を避ける）。
+///
+/// # 引数
+/// 各引数の意味は `emit_collider2d_wireframe` と同一。
+/// - `map`: 正準キャンバス空間の 2D 点 [x, y] を最終描画空間の 3D 点 [x, y, z] へ変換する。
+///
+/// # 戻り値
+/// - `Some(model)`: 面ピッキング用の列優先モデル行列（`model[col][row]`）。
+/// - `None`: 面を構成できない場合（頂点数不足の凸包など）。
+#[allow(clippy::too_many_arguments)]
+pub(super) fn collider2d_pick_quad_model<F>(
+    shape:      &ColliderShape2dData,
+    center:     [f32; 2],
+    rot_rad:    f32,
+    scale:      [f32; 2],
+    eff_sx:     f32,
+    eff_sy:     f32,
+    map_y_sign: f32,
+    map:        F,
+) -> Option<[[f32; 4]; 4]>
+where
+    F: Fn([f32; 2]) -> [f32; 3],
+{
+    let [cx, cy] = center;
+    let (sin, cos) = rot_rad.sin_cos();
+
+    // 外接クワッドの 3 隅（C00=u,v(0,0) / C10=(1,0) / C01=(0,1)）から
+    // アフィン変換のモデル行列を構築する共通クロージャ。
+    // ユニットクワッド点 (u,v) → C00 + u*(C10-C00) + v*(C01-C00)（平面上）。
+    let model_from_corners = |c00: [f32; 3], c10: [f32; 3], c01: [f32; 3]| -> [[f32; 4]; 4] {
+        let ex = [c10[0] - c00[0], c10[1] - c00[1], c10[2] - c00[2]]; // u 方向基底
+        let ey = [c01[0] - c00[0], c01[1] - c00[1], c01[2] - c00[2]]; // v 方向基底
+        // GPU 列優先（model[col][row]）: col0=u 基底, col1=v 基底, col2=Z 恒等, col3=原点。
+        [
+            [ex[0], ex[1], ex[2], 0.0],
+            [ey[0], ey[1], ey[2], 0.0],
+            [0.0,   0.0,   1.0,   0.0],
+            [c00[0], c00[1], c00[2], 1.0],
+        ]
+    };
+
+    match shape {
+        // ── 矩形・円・カプセル: ローカル外接半矩形 (hx, hy) を place で写す ──────────
+        // place は emit_collider2d_wireframe と同一（ローカル Y へ map_y_sign を乗算 → 回転 → map）。
+        ColliderShape2dData::Box { .. }
+        | ColliderShape2dData::Circle { .. }
+        | ColliderShape2dData::Capsule { .. } => {
+            // 形状ごとのローカル外接半矩形（emit と同じ実効スケール適用）
+            let (hx, hy) = match shape {
+                ColliderShape2dData::Box { half_extents } => (
+                    half_extents[0] * scale[0].abs() * eff_sx,
+                    half_extents[1] * scale[1].abs() * eff_sy,
+                ),
+                ColliderShape2dData::Circle { radius } => {
+                    let r = radius * scale[0].abs().max(scale[1].abs()) * eff_sx.max(eff_sy);
+                    (r, r)
+                }
+                ColliderShape2dData::Capsule { radius, half_height } => {
+                    let r  = radius * scale[0].abs().max(scale[1].abs()) * eff_sx.max(eff_sy);
+                    let hh = half_height * scale[1].abs() * eff_sy;
+                    (r, hh + r)   // 長軸 Y のカプセルはキャップ込みで hh+r
+                }
+                _ => unreachable!(),
+            };
+            // ローカル点をワイヤーフレームと同一変換で最終空間へ写す（place と等価）。
+            let place = |lx: f32, ly: f32| -> [f32; 3] {
+                let ly = ly * map_y_sign;
+                map([cx + cos * lx - sin * ly, cy + sin * lx + cos * ly])
+            };
+            let c00 = place(-hx, -hy);
+            let c10 = place( hx, -hy);
+            let c01 = place(-hx,  hy);
+            Some(model_from_corners(c00, c10, c01))
+        }
+
+        // ── 凸包: 変換後頂点のキャンバス空間 AABB を外接クワッドとする ─────────────
+        // 凸包は emit と同じく eff を回転後の各軸へ非等方に適用し、map_y_sign は用いない。
+        ColliderShape2dData::ConvexHull { vertices } => {
+            if vertices.len() < 2 { return None; }
+            let (mut min_x, mut min_y) = (f32::INFINITY, f32::INFINITY);
+            let (mut max_x, mut max_y) = (f32::NEG_INFINITY, f32::NEG_INFINITY);
+            for &[vx, vy] in vertices.iter() {
+                let svx = vx * scale[0];
+                let svy = vy * scale[1];
+                let rwx = (cos * svx - sin * svy) * eff_sx;   // 中心相対のキャンバス空間 X
+                let rwy = (sin * svx + cos * svy) * eff_sy;   // 中心相対のキャンバス空間 Y
+                min_x = min_x.min(rwx); max_x = max_x.max(rwx);
+                min_y = min_y.min(rwy); max_y = max_y.max(rwy);
+            }
+            // 退化（面積 0）は面ピッキング不可としてスキップする。
+            if !(max_x > min_x && max_y > min_y) { return None; }
+            let c00 = map([cx + min_x, cy + min_y]);
+            let c10 = map([cx + max_x, cy + min_y]);
+            let c01 = map([cx + min_x, cy + max_y]);
+            Some(model_from_corners(c00, c10, c01))
+        }
+    }
+}
+
 // ─── 3D キャンバス配下コライダーの収集補助 ─────────────────────────────────────
 
 /// 3D シーン内キャンバス（Actor3D + CanvasComponent）配下の Actor2D エンティティを

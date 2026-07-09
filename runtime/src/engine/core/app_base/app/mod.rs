@@ -35,6 +35,7 @@ mod render;
 mod frame_renderer;
 mod canvas_collect;
 mod collider2d_wireframe;
+mod collider3d_pick;
 mod app_init;
 mod event_handler;
 mod drag_handler;
@@ -675,12 +676,6 @@ pub struct App {
     /// (position [x,y,z], quaternion [x,y,z,w]) の形式。
     pub(super) drag_collider_last_valid_pos: Option<([f32; 3], [f32; 4])>,
 
-    /// コライダーのみ編集モードのドラッグ中、前フレーム末に物理スレッドへ送信した位置。
-    /// 「衝突なし」の物理結果を受け取った際に last_valid_pos を更新するために使う。
-    /// on_cursor_moved が update_physics より前に走り AT を更新してしまうため、
-    /// 現フレームの AT ではなく「前フレームに送った位置」を安全確認済み位置として使う。
-    pub(super) drag_prev_at_pos: Option<([f32; 3], [f32; 4])>,
-
     // ── 2D 物理システム ───────────────────────────────────────────
     /// 2D 固定ステップ物理スレッド（rapier2d バックエンド）。
     /// Play モード開始時または編集時 2D 物理有効化時に起動し、停止時に Drop する。
@@ -837,7 +832,6 @@ impl App {
             active_collision_dfs_ids:     std::collections::HashSet::new(),
             dragging_physics_entity_id:   None,
             drag_collider_last_valid_pos: None,
-            drag_prev_at_pos:             None,
             active_world_line: 0,
             saved_cameras: HashMap::new(),
             canvas_world_lines:    HashSet::new(),

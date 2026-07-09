@@ -209,6 +209,16 @@ fn run_physics_loop(
                     );
                     let _ = reply.send(hit);
                 }
+                Ok(PhysicsCommand::CheckKinematicOverlap { entity_id, position, rotation, reply }) => {
+                    // 同期オーバーラップ問い合わせ（編集時ドラッグの押し戻し判定）。
+                    // Pause 中もコマンドドレインは回り続けるため必ず応答できる。
+                    let overlapping = check_kinematic_overlap(
+                        &query_pipeline, &rigid_body_set, &collider_set,
+                        &entries, &trigger_set,
+                        entity_id, position, rotation,
+                    );
+                    let _ = reply.send(overlapping);
+                }
                 Ok(cmd) => handle_command(
                     cmd,
                     &mut rigid_body_set, &mut collider_set,
@@ -306,6 +316,79 @@ fn perform_raycast(
     })
 }
 
+// ─── ドラッグ押し戻し用オーバーラップ判定 ────────────────────────────────────
+
+/// ドラッグ押し戻し判定で「めり込み」とみなす侵入深さ（メートル）。
+///
+/// Rapier のソルバーは静止接触に微小な残留侵入（allowed_linear_error 既定 ≒1mm）を
+/// 許容するため、床に載っているだけのオブジェクトも厳密にはわずかに交差している。
+/// これを「衝突中」と判定すると水平ドラッグが常に押し戻されて動かせなくなるので、
+/// 許容値より十分大きい深さを超えた場合のみブロッキングとみなす。
+const DRAG_OVERLAP_PENETRATION_TOLERANCE: f32 = 0.005;
+
+/// 指定ボディを「提案位置」へ置いた場合に、他の非 Dynamic・非センサーコライダーと
+/// 許容値を超えて交差する（めり込む）かを判定する。
+///
+/// CheckKinematicOverlap コマンド（編集時ドラッグの押し戻し）用。
+///
+/// - 自分自身のコライダーは除外する。
+/// - センサー（トリガー）は応答なしのため除外する。自身がトリガーの場合も対象外。
+/// - Dynamic ボディは除外する: RigidBody 有効モードではドラッグ中の kinematic ボディが
+///   Dynamic を押しのける（Rapier の kinematic→dynamic 相互作用に任せる）ため、
+///   Dynamic との一時的な重なりは押し戻し対象にしない。
+/// - broad phase 候補は query_pipeline（step のたびに更新済み）で絞り込み、
+///   parry の contact クエリで正確な侵入深さを計測して許容値と比較する。
+fn check_kinematic_overlap(
+    query_pipeline: &QueryPipeline,
+    rb_set:         &RigidBodySet,
+    col_set:        &ColliderSet,
+    entries:        &HashMap<u64, PhysicsEntry>,
+    trigger_set:    &HashSet<u64>,
+    entity_id:      u64,
+    position:       [f32; 3],
+    rotation:       [f32; 4],
+) -> bool {
+    // トリガー（センサー）自身のドラッグは押し戻し対象外
+    if trigger_set.contains(&entity_id) { return false; }
+    let Some(entry)   = entries.get(&entity_id) else { return false };
+    let Some(own_col) = col_set.get(entry.col_handle) else { return false };
+
+    // 提案位置でのコライダーポーズ = アクターワールド姿勢 × ローカルオフセット
+    let own_shape  = own_col.shared_shape().clone();
+    let o          = entry.col_offset;
+    let offset_iso = Isometry::translation(o[0], o[1], o[2]);
+    let pose       = to_isometry(position, rotation) * offset_iso;
+
+    // 自分自身・センサー・Dynamic ボディを候補から除外する
+    let filter = QueryFilter {
+        flags: QueryFilterFlags::EXCLUDE_SENSORS | QueryFilterFlags::EXCLUDE_DYNAMIC,
+        exclude_collider: Some(entry.col_handle),
+        ..QueryFilter::default()
+    };
+
+    // 交差候補ごとに侵入深さを計測し、許容値を超えたら押し戻しが必要と判定する
+    let mut blocking = false;
+    query_pipeline.intersections_with_shape(
+        rb_set, col_set, &pose, &*own_shape, filter,
+        |other_handle| {
+            if let Some(other) = col_set.get(other_handle) {
+                // parry の contact クエリ（prediction=0: 交差時のみ Some）で深さを取得する。
+                // dist が負 = 侵入。許容値（静止接触の残留侵入ぶん）を超えたらブロッキング。
+                if let Ok(Some(contact)) = rapier3d::parry::query::contact(
+                    &pose, &*own_shape, other.position(), other.shape(), 0.0,
+                ) {
+                    if contact.dist < -DRAG_OVERLAP_PENETRATION_TOLERANCE {
+                        blocking = true;
+                        return false; // 探索を打ち切る
+                    }
+                }
+            }
+            true // 次の候補へ
+        },
+    );
+    blocking
+}
+
 // ─── コマンド処理 ────────────────────────────────────────────────────────────
 
 /// Stop 以外のコマンドを処理する（Stop は呼び出し元のマッチアームで処理済み）。
@@ -329,6 +412,7 @@ fn handle_command(
         PhysicsCommand::Pause  => { /* ループ側で処理済み */ }
         PhysicsCommand::Resume => { /* ループ側で処理済み */ }
         PhysicsCommand::Raycast { .. } => { /* ループ側（コマンドドレイン）で処理済み */ }
+        PhysicsCommand::CheckKinematicOverlap { .. } => { /* ループ側（コマンドドレイン）で処理済み */ }
 
         PhysicsCommand::AddObject(obj) => {
             add_object(obj, rb_set, col_set, entries, col_to_entity, trigger_set);

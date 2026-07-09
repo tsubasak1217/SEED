@@ -1514,6 +1514,23 @@ impl App {
                     } else { None };
                     perf_grid_ms = _perf_t_grid.elapsed().as_secs_f64() * 1000.0;
 
+                    // ── コライダー面ピッキングアイテム ────────────────────────────────
+                    // エディタ編集ビューでは 2D コライダーは 1px のワイヤーフレームで描画される。
+                    // 線をクリックしても選択できないため、ID パス（canvas_id）へコライダーの
+                    // 外接クワッド（面）を追加し、面クリックでそのアクターを選択可能にする。
+                    // 各要素 = (raw_id, GPU 列優先モデル行列)。raw_id は該当アクターのスプライトが
+                    // 使うピック ID と同一（= canvas_id_offset + ctx.dfs_id）にすることで、
+                    // 既存のスプライトピッキングとまったく同じ経路でアクターが選択される。
+                    // ID パスは後勝ちのため、スプライト等の canvas_id より「先」に描画して
+                    // 最背面のピッキング対象とする（重なり時は既存描画物の選択を優先する）。
+                    //   - collider_pick_items_2d:       通常 2D シーン（SS ortho / WS 2D）
+                    //   - collider_pick_items_3dcanvas: 3D シーン内キャンバス配下（WS perspective）
+                    //   - collider_pick_items_3d:       3D コライダー（WS perspective。
+                    //                                   形状ごとの近似クワッド生成は collider3d_pick.rs）
+                    let mut collider_pick_items_2d:       Vec<(u32, [[f32; 4]; 4])> = Vec::new();
+                    let mut collider_pick_items_3dcanvas: Vec<(u32, [[f32; 4]; 4])> = Vec::new();
+                    let mut collider_pick_items_3d:       Vec<(u32, [[f32; 4]; 4])> = Vec::new();
+
                     // ── コライダーワイヤーフレームバッチ ──────────────────────────────
                     let _perf_t_collider = std::time::Instant::now();
                     // 描画条件:
@@ -1586,6 +1603,24 @@ impl App {
                                 tf.position[1] + off_world.y,
                                 tf.position[2] + off_world.z,
                             ];
+
+                            // コライダー面ピッキング（エディタ編集時のみ。ID パスは in_editor 限定）。
+                            // ワイヤーフレームと同一の pos / 回転 / スケールから近似クワッドを生成し、
+                            // ID パスの最背面に描画する（重なり時は既存メッシュ等の選択を優先）。
+                            // raw_id はキャンバスピッキングと同じ DFS 選択経路を使う:
+                            //   raw_id = canvas_id_offset + dfs_id（dfs_id は 1 始まりの全アクター DFS）
+                            // → decode 側の `global >= canvas_id_offset` 分岐で該当アクターが選択される。
+                            if in_editor {
+                                let cam_pv  = self.camera.position();
+                                let cam_pos = [cam_pv.x, cam_pv.y, cam_pv.z];
+                                let mut quads: Vec<[[f32; 4]; 4]> = Vec::new();
+                                crate::engine::core::app_base::app::collider3d_pick::collect_collider3d_pick_quads(
+                                    &collider.shape, pos, &q, scale, cam_pos, &mut quads,
+                                );
+                                let raw_id = canvas_id_offset + dfs_id as u32;
+                                collider_pick_items_3d.extend(
+                                    quads.into_iter().map(|m| (raw_id, m)));
+                            }
 
                             match &collider.shape {
                                 ColliderShapeData::Box { half_extents } => {
@@ -1755,6 +1790,26 @@ impl App {
                                 eff_sx, eff_sy, color, y_sign,
                                 |[x, y]| [x, y * y_sign, 0.0],
                             );
+
+                            // コライダー面ピッキング（エディタ編集時のみ。ID パス自体が
+                            // in_editor 限定のため Play 中の play_collider_draw では収集しない）。
+                            // アクター編集 2D タブは CPU picking 専用（キャンバス ID パス対象外）
+                            // のため、スプライト ID 収集（collect_canvas_id_items）と同様に除外する。
+                            // ワイヤーフレームと同一の変換でコライダー外接クワッドを構築する。
+                            // raw_id はスプライトピッキングと同じ規則:
+                            //   raw_id = canvas_id_offset + dfs(0 始まり) + 1 = canvas_id_offset + ctx.dfs_id
+                            // （collect_actor2d_contexts の dfs_id は 1 始まりの同一 DFS 順）。
+                            if in_editor && !is_actor_edit_2d {
+                                if let Some(model) =
+                                    crate::engine::core::app_base::app::collider2d_wireframe::collider2d_pick_quad_model(
+                                        &collider.shape, [cx, cy], rot_rad, ctx.scale,
+                                        eff_sx, eff_sy, y_sign,
+                                        |[x, y]| [x, y * y_sign, 0.0],
+                                    )
+                                {
+                                    collider_pick_items_2d.push((canvas_id_offset + ctx.dfs_id as u32, model));
+                                }
+                            }
                         }
 
                         if lb.is_empty() { None } else { Some(lb.build(&draw_ctx.device)) }
@@ -1837,6 +1892,24 @@ impl App {
                                         ctx.size_sx, ctx.size_sy, color, 1.0,
                                         |p| crate::engine::core::app_base::app::collider2d_wireframe::canvas_point_to_world(ctw, p),
                                     );
+
+                                    // コライダー面ピッキング（3D キャンバス配下・エディタ編集時のみ）。
+                                    // アクター編集 2D タブは CPU picking 専用のため除外する
+                                    // （3D Canvas 子スプライト ID 収集の !use_ortho_2d_camera と同じ扱い）。
+                                    // ワイヤーフレームと同一の canvas_to_world 変換で外接クワッドを
+                                    // 3D ワールド空間へ写し、WS perspective カメラの ID パスで描画する。
+                                    // raw_id 規則は 2D パスと同一（= canvas_id_offset + ctx.dfs_id）。
+                                    if in_editor && !is_actor_edit_2d {
+                                        if let Some(model) =
+                                            crate::engine::core::app_base::app::collider2d_wireframe::collider2d_pick_quad_model(
+                                                &collider.shape, [cx, cy], rot_rad, ctx.scale,
+                                                ctx.size_sx, ctx.size_sy, 1.0,
+                                                |p| crate::engine::core::app_base::app::collider2d_wireframe::canvas_point_to_world(ctw, p),
+                                            )
+                                        {
+                                            collider_pick_items_3dcanvas.push((canvas_id_offset + ctx.dfs_id as u32, model));
+                                        }
+                                    }
                                 }
 
                                 if lb.is_empty() { None } else { Some(lb.build(&draw_ctx.device)) }
@@ -2982,7 +3055,120 @@ impl App {
                                 let canvas_3d_child_id_tex_bg_refs: Vec<&wgpu::BindGroup> =
                                     canvas_3d_child_id_tex_bgs.iter().collect();
 
+                                // ── コライダー面ピック GPU リソース（render pass より長く生きる）──
+                                // ワイヤーフレーム収集時に構築した (raw_id, モデル行列) から
+                                // canvas_id パイプライン用バインドグループを生成する。
+                                let collider_pick_bgs_2d: Vec<(wgpu::Buffer, wgpu::BindGroup)> =
+                                    collider_pick_items_2d.iter()
+                                        .map(|&(raw_id, gpu_mat)| {
+                                            prepare_canvas_id_bg(
+                                                &draw_ctx.device, &draw_ctx.pipelines,
+                                                gpu_mat, raw_id,
+                                            )
+                                        })
+                                        .collect();
+                                let collider_pick_bgs_3dcanvas: Vec<(wgpu::Buffer, wgpu::BindGroup)> =
+                                    collider_pick_items_3dcanvas.iter()
+                                        .map(|&(raw_id, gpu_mat)| {
+                                            prepare_canvas_id_bg(
+                                                &draw_ctx.device, &draw_ctx.pipelines,
+                                                gpu_mat, raw_id,
+                                            )
+                                        })
+                                        .collect();
+                                let collider_pick_bgs_3d: Vec<(wgpu::Buffer, wgpu::BindGroup)> =
+                                    collider_pick_items_3d.iter()
+                                        .map(|&(raw_id, gpu_mat)| {
+                                            prepare_canvas_id_bg(
+                                                &draw_ctx.device, &draw_ctx.pipelines,
+                                                gpu_mat, raw_id,
+                                            )
+                                        })
+                                        .collect();
+                                // コライダー面は全域選択可能とするため白 1×1（alpha=1）テクスチャ BG を
+                                // 1 つ生成して全アイテムで共有する（テクスチャアルファマスク不要）。
+                                let collider_pick_white_bg: Option<wgpu::BindGroup> =
+                                    if collider_pick_bgs_2d.is_empty()
+                                        && collider_pick_bgs_3dcanvas.is_empty()
+                                        && collider_pick_bgs_3d.is_empty() {
+                                        None
+                                    } else {
+                                        Some(draw_ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                                            label:   Some("ColliderPick White Tex BG"),
+                                            layout:  &draw_ctx.pipelines.canvas_id.tex_bgl,
+                                            entries: &[
+                                                wgpu::BindGroupEntry {
+                                                    binding:  0,
+                                                    resource: wgpu::BindingResource::TextureView(
+                                                        &draw_ctx.pipelines.canvas_id.white_view
+                                                    ),
+                                                },
+                                                wgpu::BindGroupEntry {
+                                                    binding:  1,
+                                                    resource: wgpu::BindingResource::Sampler(
+                                                        &draw_ctx.pipelines.canvas_id.sampler
+                                                    ),
+                                                },
+                                            ],
+                                        }))
+                                    };
+
                                 let mut id_pass = frame.begin_id_pass(&id_buf.view);
+
+                                // ── コライダー面ピック描画（最背面 = 最初に描画）──────────────
+                                // ID パスは後勝ちのため、3D MC・ギズモ・スプライトより先に描画する
+                                // ことで「既存描画物と重なる場合は既存描画物の選択を優先」を実現する。
+                                //   - 3D コライダー:     WS perspective カメラ（camera_buf）
+                                //   - 3D キャンバス配下: WS perspective カメラ（camera_buf）
+                                //   - 通常 2D シーン:   SS 時は 2D ortho カメラ、WS 2D 時は camera_buf
+                                if let Some(white_bg) = &collider_pick_white_bg {
+                                    // 3D コライダー面クワッド（常に WS カメラ）
+                                    if !collider_pick_bgs_3d.is_empty() {
+                                        let tex_refs: Vec<&wgpu::BindGroup> =
+                                            vec![white_bg; collider_pick_bgs_3d.len()];
+                                        draw_canvas_id_items(
+                                            &mut id_pass, &draw_ctx.pipelines,
+                                            &camera_buf.bind_group, None,
+                                            &collider_pick_bgs_3d, &tex_refs,
+                                            &[], &[],
+                                        );
+                                    }
+                                    // 3D キャンバス配下コライダー（常に WS カメラ）
+                                    if !collider_pick_bgs_3dcanvas.is_empty() {
+                                        let tex_refs: Vec<&wgpu::BindGroup> =
+                                            vec![white_bg; collider_pick_bgs_3dcanvas.len()];
+                                        draw_canvas_id_items(
+                                            &mut id_pass, &draw_ctx.pipelines,
+                                            &camera_buf.bind_group, None,
+                                            &collider_pick_bgs_3dcanvas, &tex_refs,
+                                            &[], &[],
+                                        );
+                                    }
+                                    // 通常 2D シーンコライダー（キャンバス ID 描画と同じカメラ選択）
+                                    if !collider_pick_bgs_2d.is_empty() {
+                                        let tex_refs: Vec<&wgpu::BindGroup> =
+                                            vec![white_bg; collider_pick_bgs_2d.len()];
+                                        if scene_canvas_ss {
+                                            // シーン SS: 2D ortho（オーバーレイ）カメラで描画する
+                                            let ss_cam: Option<&wgpu::BindGroup> =
+                                                self.canvas_overlay_camera_buf.as_ref().map(|b| &b.bind_group);
+                                            draw_canvas_id_items(
+                                                &mut id_pass, &draw_ctx.pipelines,
+                                                &camera_buf.bind_group, ss_cam,
+                                                &[], &[],
+                                                &collider_pick_bgs_2d, &tex_refs,
+                                            );
+                                        } else {
+                                            // WS 2D シーン: メインカメラ（2D ortho / WS）で描画する
+                                            draw_canvas_id_items(
+                                                &mut id_pass, &draw_ctx.pipelines,
+                                                &camera_buf.bind_group, None,
+                                                &collider_pick_bgs_2d, &tex_refs,
+                                                &[], &[],
+                                            );
+                                        }
+                                    }
+                                }
 
                                 // 3D MC ID 描画（統合バッチ使用）
                                 // lod_id_buffers に絶対 ID が書き込まれているため
