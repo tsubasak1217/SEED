@@ -16,7 +16,31 @@ pub static NvOptimusEnablement: u32 = 1;
 pub static AmdPowerXpressRequestHighPerformance: u32 = 1;
 
 fn main() {
+    // Windows のシステムタイマ分解能を 1ms に引き上げる（既定は約 15.6ms）。
+    //
+    // 【理由】実測 [PERF] ログで、物理更新（3d/snap/2d の各同期セクション）のフレーム時間が
+    //   間欠的に約 22ms / 44ms（＝15.6ms の 1.4 倍・2.8 倍）へスパイクしていた。値が
+    //   スケジューラ量子の倍数であること・特定処理ではなく全セクション横断で起きることから、
+    //   原因は物理コードではなく OS がレンダースレッドを 1〜3 量子ぶんデスケジュールしていること。
+    //   timeBeginPeriod(1) で量子を細かくすると、スレッド起床・プリエンプションの粒度が上がり、
+    //   これらのスパイクと、物理スレッドの sleep(1ms) 膨張・押し戻し recv_timeout 膨張が緩和される。
+    //   副作用は消費電力/ウェイクアップの微増のみ（リアルタイムレンダラでは定番の対処）。
+    raise_timer_resolution();
+
     App::run(parse_args());
+}
+
+/// システムタイマ分解能を 1ms に設定する（Windows のみ）。
+///
+/// プロセス終了時に OS が自動で元へ戻すため timeEndPeriod は呼ばない
+/// （App::run はウィンドウが閉じるまで返らず、その時点でプロセスも終了する）。
+fn raise_timer_resolution() {
+    #[cfg(target_os = "windows")]
+    unsafe {
+        // winmm.dll の timeBeginPeriod。要求する最小分解能（ミリ秒）。
+        const TIMER_RESOLUTION_MS: u32 = 1;
+        windows_sys::Win32::Media::timeBeginPeriod(TIMER_RESOLUTION_MS);
+    }
 }
 
 fn parse_args() -> LaunchArgs {
