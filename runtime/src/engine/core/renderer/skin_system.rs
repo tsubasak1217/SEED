@@ -40,6 +40,9 @@ pub struct GpuSkinParams {
 
 pub const MAX_JOINTS: usize = 128;
 
+/// Animator 非駆動インスタンスの静止時刻（animations[0] の先頭フレームで凍結）。
+pub const FROZEN_POSE_TIME: f32 = 0.0;
+
 // ============================================================
 //  SkinComputeSystem
 // ============================================================
@@ -68,6 +71,7 @@ pub struct SkinComputeSystem {
     pub n_joints:      u32,
     pub n_channels:    u32,
     pub anim_duration: f32,
+    /// バッチの割り当て済みインスタンス上限（バッファサイズ算出に使用した値）
     pub max_instances: u32,
 }
 
@@ -286,39 +290,34 @@ impl SkinComputeSystem {
     /// LOD ごとのコンパクト anim_times を GPU にアップロードする。
     ///
     /// `compact_inst_indices`: このLODで可視なインスタンスの元インデックス一覧。
-    /// `anim_seeds`: インスタンスごとの安定した位相シード（InstanceMeta::anim_seed）。
-    ///   空の場合は orig インデックスをシードとして使用（後方互換）。
     /// `time_overrides`: インスタンスごとの Animator 駆動権威時刻（元インデックス順）。
-    ///   `Some(t)` のインスタンスは位相シードを無視して `t` を再生時刻に使う。
-    ///   空 or `None` のインスタンスは従来のデモ再生（global_time＋位相）。
-    /// `global_time`: デモ再生の経過時間（秒）。
+    ///   `Some(t)` のインスタンスは `t` を再生時刻に使う。
+    ///   空 or `None` のインスタンスは **静止**（`FROZEN_POSE_TIME` で凍結）。
+    ///
+    /// 【静止ポーズの選択】Animator 非駆動時は animations[0] の t=0 姿勢で凍結する。
+    /// バインドポーズ（単位ジョイント行列）にするにはコンピュートシェーダ側に
+    /// 「チャンネル評価をスキップする」分岐の追加が必要になるため、
+    /// 既存パイプラインのまま時刻を固定するだけで済む t=0 凍結を採用した。
+    /// （旧仕様のグローバルクロック＋位相シードによる群衆デモ再生は廃止済み）
     pub fn upload_lod_times(
         &self,
         queue:                &wgpu::Queue,
         lod:                  usize,
         compact_inst_indices: &[usize],
-        anim_seeds:           &[u32],
         time_overrides:       &[Option<f32>],
-        global_time:          f32,
     ) {
         let visible = compact_inst_indices.len() as u32;
         if visible == 0 { return; }
 
-        let phase_step = self.anim_duration / self.max_instances as f32;
-
         let times: Vec<f32> = compact_inst_indices.iter()
             .map(|&orig| {
-                // Animator 駆動の権威時刻があればそれを優先する（位相シード無視）。
+                // Animator 駆動の権威時刻があればそれを使う。
                 // 呼び出し側でループ/クランプ正規化済みだが、安全のため [0, duration] にクランプする。
-                if let Some(Some(t)) = time_overrides.get(orig) {
-                    return t.clamp(0.0, self.anim_duration);
+                match time_overrides.get(orig) {
+                    Some(Some(t)) => t.clamp(0.0, self.anim_duration),
+                    // 非駆動インスタンスは先頭フレームで静止させる
+                    _ => FROZEN_POSE_TIME,
                 }
-                let seed = if anim_seeds.is_empty() {
-                    orig as u32
-                } else {
-                    anim_seeds.get(orig).copied().unwrap_or(orig as u32)
-                };
-                (global_time + seed as f32 * phase_step) % self.anim_duration
             })
             .collect();
 

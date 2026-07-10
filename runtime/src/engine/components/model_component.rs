@@ -29,7 +29,9 @@ fn default_next_group_id() -> u32 { GROUP_ID_BASE }
 pub struct InstanceMeta {
     pub name:      String,
     pub parent:    Option<u32>,
-    /// 削除/追加でインデックスが変わっても変化しない安定アニメーション位相シード。
+    /// 【旧機能・シーン互換のため残置】位相シード付き群衆デモ再生（廃止済み）で
+    /// 使用していた安定アニメーション位相シード。現在は参照されないが、
+    /// 既存 .scene に保存済みのため serde 互換維持でフィールドのみ残す。
     #[serde(default)]
     pub anim_seed: u32,
 }
@@ -70,13 +72,13 @@ pub struct ModelComponentData {
 /// Animator が駆動する glTF 内蔵アニメの再生状態（揮発・非シリアライズ）。
 ///
 /// `AnimatorComponent` の kind=Model クリップ再生中、`animation_ops::update_animations`
-/// が毎フレームこの値を書き込む。`Some` のときレンダラのスキニングは
-/// グローバルクロック（デモ再生）ではなく `time` を権威時刻として使う
-/// （インスタンス位相シードを無視する）。`None` なら従来のデモ再生に戻る。
+/// が毎フレームこの値を書き込む。`Some` のときレンダラのスキニングは `time` を
+/// 権威時刻として使う。`None` のとき（Animator 無し／非再生）モデルは静止する
+/// （animations[0] の t=0 で凍結。旧仕様のグローバルクロックによるデモ再生は廃止済み）。
 ///
 /// 【現状の制約】GPU スキニング（`SkinComputeSystem`）は `Model::animations[0]`
 /// のみを再生するため、駆動可能なのは `anim_idx == 0` の場合のみ。`anim_idx != 0`
-/// は上流（update_animations）で警告してデモ再生にフォールバックさせる想定。
+/// は上流（update_animations）で警告して静止（非駆動）にフォールバックさせる想定。
 #[derive(Clone, Copy)]
 pub struct ModelAnimDrive {
     /// 再生対象アニメの Model::animations インデックス
@@ -126,10 +128,6 @@ impl ModelComponent {
     /// instanced_batch に「次回更新が必要」フラグを立てる。
     pub fn mark_batch_dirty(&mut self) {
         if let Some(b) = &mut self.instanced_batch { b.mark_dirty(); }
-    }
-
-    pub fn set_batch_anim_seeds(&mut self, seeds: &[u32]) {
-        if let Some(b) = &mut self.instanced_batch { b.set_anim_seeds(seeds); }
     }
 
     pub fn rendering_refs(&self) -> Option<(&GpuModel, &InstancedModelBatch)> {

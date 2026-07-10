@@ -72,7 +72,6 @@ impl App {
                             self.send_selected();
                         }
                         if structural {
-                            self.sync_anim_seeds();
                             self.send_hierarchy();
                         }
                     }
@@ -88,7 +87,6 @@ impl App {
                             self.send_selected();
                         }
                         if structural {
-                            self.sync_anim_seeds();
                             self.send_hierarchy();
                         }
                     }

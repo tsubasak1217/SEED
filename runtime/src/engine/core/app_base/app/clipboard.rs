@@ -181,7 +181,6 @@ impl App {
         };
 
         self.selected_instances = new_indices;
-        self.sync_anim_seeds();
         self.send_selected();
         self.send_hierarchy();
     }

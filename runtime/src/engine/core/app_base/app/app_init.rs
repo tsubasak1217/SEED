@@ -111,7 +111,6 @@ impl App {
         self.window   = Some(window);
         self.clock    = crate::engine::core::clock::Clock::new();
 
-        self.sync_anim_seeds();
 
         // asset_fs を初期化する（全モード共通）
         self.init_asset_fs();

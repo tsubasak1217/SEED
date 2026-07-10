@@ -385,10 +385,9 @@ pub(super) fn update_all_mc_batches_for_wl(
     frustum_planes: &[[f32; 4]; 6],
     extra_frustum:  Option<&[[f32; 4]; 6]>,
     camera_pos:     [f32; 3],
-    anim_time:      f32,
 ) {
     for actor in actors.iter_mut().filter(|a| a.world_line == wl) {
-        update_mc_batch_recursive(actor, world, queue, frustum_planes, extra_frustum, camera_pos, anim_time);
+        update_mc_batch_recursive(actor, world, queue, frustum_planes, extra_frustum, camera_pos);
     }
 }
 
@@ -400,7 +399,6 @@ fn update_mc_batch_recursive(
     frustum_planes: &[[f32; 4]; 6],
     extra_frustum:  Option<&[[f32; 4]; 6]>,
     camera_pos:     [f32; 3],
-    anim_time:      f32,
 ) {
     // スロット専用 entity の全 ModelComponent バッチを更新する（複数スロット対応）
     let slot_entities: Vec<Entity> = actor.slots().iter()
@@ -410,12 +408,12 @@ fn update_mc_batch_recursive(
     for slot_entity in slot_entities {
         if let Some(mc) = world.get_mut::<ModelComponent>(slot_entity) {
             if let (Some(batch), Some(model)) = (&mut mc.instanced_batch, mc.model.as_deref()) {
-                batch.update(queue, model, &mc.instance_mats, frustum_planes, extra_frustum, camera_pos, anim_time);
+                batch.update(queue, model, &mc.instance_mats, frustum_planes, extra_frustum, camera_pos);
             }
         }
     }
     for child in actor.children_mut().iter_mut() {
-        update_mc_batch_recursive(child, world, queue, frustum_planes, extra_frustum, camera_pos, anim_time);
+        update_mc_batch_recursive(child, world, queue, frustum_planes, extra_frustum, camera_pos);
     }
 }
 

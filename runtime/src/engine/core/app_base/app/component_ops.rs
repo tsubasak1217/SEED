@@ -108,7 +108,6 @@ impl App {
                     self.actor_virtual_selected_idx = None;
                     self.actor_virtual_selected_slot_idx = 0;
                     self.selected_instances = vec![0];
-                    self.sync_anim_seeds();
                     self.send_selected();
                     self.send_hierarchy();
                     if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }

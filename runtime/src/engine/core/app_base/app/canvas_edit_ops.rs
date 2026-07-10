@@ -113,7 +113,6 @@ impl App {
         self.actor_virtual_selected_idx = None;
         self.actor_virtual_selected_slot_idx = 0;
         self.undo_history = UndoHistory::new();
-        self.sync_anim_seeds();
         self.send_selected();
         self.do_send_hierarchy();
         self.send_world_line_info();
@@ -171,7 +170,6 @@ impl App {
             self.actor_virtual_selected_idx = None;
             self.actor_virtual_selected_slot_idx = 0;
             self.undo_history = UndoHistory::new();
-            self.sync_anim_seeds();
             self.send_selected();
             self.do_send_hierarchy();
             self.send_world_line_info();

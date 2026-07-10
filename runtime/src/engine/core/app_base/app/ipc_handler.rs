@@ -90,7 +90,6 @@ impl App {
                             self.send_selected();
                         }
                         if structural {
-                            self.sync_anim_seeds();
                             self.send_hierarchy();
                         }
                     }
@@ -125,7 +124,6 @@ impl App {
                             self.send_selected();
                         }
                         if structural {
-                            self.sync_anim_seeds();
                             self.send_hierarchy();
                         }
                     }
@@ -590,7 +588,6 @@ impl App {
                             if let Some(cam) = cam_data {
                                 self.apply_camera_data(&cam);
                             }
-                            self.sync_anim_seeds();
                             self.send_selected();
                             self.send_hierarchy();
                             // 全 world_line を作り直して Entity が再生成されるため、
@@ -693,7 +690,6 @@ impl App {
                                 self.actor_virtual_selected_idx = None;
                                 self.actor_virtual_selected_slot_idx = 0;
                                 self.undo_history = crate::engine::core::app_base::undo::UndoHistory::new();
-                                self.sync_anim_seeds();
                                 self.send_selected();
                                 self.do_send_hierarchy();
                                 self.send_world_line_info();
@@ -744,7 +740,6 @@ impl App {
                     self.actor_virtual_selected_idx = None;
                     self.actor_virtual_selected_slot_idx = 0;
                     self.undo_history = crate::engine::core::app_base::undo::UndoHistory::new();
-                    self.sync_anim_seeds();
                     self.send_selected();
                     self.do_send_hierarchy();
                     self.send_world_line_info();

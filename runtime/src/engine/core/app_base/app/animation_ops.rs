@@ -45,9 +45,10 @@ impl App {
         let actors = &scene.actors;
         let world  = &mut scene.world;
 
-        // ── ① 全 Model スロットの anim_drive をクリア（デモ再生へ一旦戻す）──
+        // ── ① 全 Model スロットの anim_drive をクリア（静止へ一旦戻す）──
         // この後のジョブループで「現在 Model クリップを再生中」の MC だけ再設定する。
-        // これにより停止・クリップ切替・キーフレームへの切替時に anim_drive が残らない。
+        // これにより停止・クリップ切替・キーフレームへの切替時に anim_drive が残らず、
+        // 非駆動モデルは静止（先頭フレーム凍結）となる。
         let mut model_entities: Vec<Entity> = Vec::new();
         for root in actors.iter().filter(|a| a.world_line == 0) {
             collect_model_slot_entities(root, &mut model_entities);
@@ -139,9 +140,9 @@ impl App {
                     });
 
                     let Some((me, anim_idx, duration)) = resolved else {
-                        // モデル未ロード or アニメ名が見つからない: 警告してデモ再生に委ねる
+                        // モデル未ロード or アニメ名が見つからない: 警告してスキップ（モデルは静止のまま）
                         eprintln!(
-                            "[SEED anim] Model クリップ '{}' のアニメ '{}' を解決できません（Model スロット/内蔵アニメ名を確認）。デモ再生にフォールバックします。",
+                            "[SEED anim] Model クリップ '{}' のアニメ '{}' を解決できません（Model スロット/内蔵アニメ名を確認）。モデルは静止します。",
                             current_name, cref.anim
                         );
                         continue;
@@ -162,7 +163,7 @@ impl App {
                     };
 
                     // GPU スキニングは Model::animations[0] のみ再生可能なため、
-                    // anim_idx != 0 は権威駆動できない（警告してデモ再生にフォールバック）。
+                    // anim_idx != 0 は権威駆動できない（警告してモデルは静止のまま）。
                     if anim_idx == 0 {
                         if let Some(mc) = world.get_mut::<ModelComponent>(me) {
                             mc.anim_drive = Some(ModelAnimDrive {
@@ -173,7 +174,7 @@ impl App {
                         }
                     } else {
                         eprintln!(
-                            "[SEED anim] Model クリップ '{}' は内蔵アニメ index {}（'{}'）を指すが、現状の GPU スキニングは index 0 のみ再生可能。デモ再生にフォールバックします（複数アニメ選択は今後の対応）。",
+                            "[SEED anim] Model クリップ '{}' は内蔵アニメ index {}（'{}'）を指すが、現状の GPU スキニングは index 0 のみ再生可能。モデルは静止します（複数アニメ選択は今後の対応）。",
                             current_name, anim_idx, cref.anim
                         );
                     }

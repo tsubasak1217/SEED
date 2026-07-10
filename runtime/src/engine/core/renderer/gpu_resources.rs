@@ -654,13 +654,9 @@ pub struct InstancedModelBatch {
     // ── Dirty Flag ───────────────────────────────────────────
     dirty: bool,
 
-    /// インスタンスごとの安定アニメーション位相シード（InstanceMeta::anim_seed と同期）
-    pub anim_seeds: Vec<u32>,
-
     /// インスタンスごとの Animator 駆動権威時刻（元インスタンスインデックス順）。
-    /// `Some(t)` のインスタンスは、グローバルクロック＋位相シードのデモ再生ではなく
-    /// `t` を再生時刻として使う（`ModelComponent::anim_drive` 由来）。
-    /// `None` または要素なしのインスタンスは従来のデモ再生。
+    /// `Some(t)` のインスタンスは `t` を再生時刻として使う（`ModelComponent::anim_drive` 由来）。
+    /// `None` または要素なしのインスタンスは静止（先頭フレームで凍結）。
     /// 毎フレーム `set_anim_time_overrides` で更新する。
     pub anim_time_overrides: Vec<Option<f32>>,
 }
@@ -786,7 +782,6 @@ impl InstancedModelBatch {
             lod_id_bgs,
             lod_compact_insts: vec![Vec::new(); NUM_LODS],
             dirty: true,
-            anim_seeds: Vec::new(),
             anim_time_overrides: Vec::new(),
         }
     }
@@ -795,15 +790,8 @@ impl InstancedModelBatch {
     /// 次の `update()` でワールド行列・AABB が再計算される。
     pub fn mark_dirty(&mut self) { self.dirty = true; }
 
-    /// InstanceMeta::anim_seed の配列を同期する。
-    /// インスタンスの追加・削除・Undo/Redo 後に呼び出す。
-    pub fn set_anim_seeds(&mut self, seeds: &[u32]) {
-        self.anim_seeds.clear();
-        self.anim_seeds.extend_from_slice(seeds);
-    }
-
     /// Animator 駆動の権威時刻配列を同期する（元インスタンスインデックス順）。
-    /// `update()` の前に毎フレーム呼び出す。空配列を渡すと全インスタンスがデモ再生に戻る。
+    /// `update()` の前に毎フレーム呼び出す。空配列を渡すと全インスタンスが静止（先頭フレーム凍結）になる。
     pub fn set_anim_time_overrides(&mut self, overrides: &[Option<f32>]) {
         self.anim_time_overrides.clear();
         self.anim_time_overrides.extend_from_slice(overrides);
@@ -825,7 +813,6 @@ impl InstancedModelBatch {
         // Some の場合: どちらかの視錐台に入っていれば可視と見なす（OR カリング）。
         extra_frustum:   Option<&[[f32; 4]; 6]>,
         camera_pos:      [f32; 3],
-        anim_time:       f32,
     ) {
         let n_instances  = root_transforms.len();
         let n_mesh_nodes = self.n_mesh_nodes;
@@ -927,11 +914,12 @@ impl InstancedModelBatch {
             }
 
             // スキンシステムへの anim_times 転送（GPU スキニング計算の入力）
-            // anim_time_overrides が指定されたインスタンスは Animator 駆動の権威時刻を使う。
+            // anim_time_overrides が指定されたインスタンスは Animator 駆動の権威時刻、
+            // それ以外は静止（先頭フレーム凍結）となる。
             if let Some(skin) = &self.skin {
                 skin.upload_lod_times(
                     queue, lod, &self.lod_compact_insts[lod],
-                    &self.anim_seeds, &self.anim_time_overrides, anim_time,
+                    &self.anim_time_overrides,
                 );
             }
         }

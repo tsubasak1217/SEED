@@ -2,7 +2,7 @@
 //  hierarchy_sync.rs — ヒエラルキー・アクターデータ送信
 //
 //  do_send_hierarchy / send_hierarchy / send_actor_data /
-//  send_world_line_info / sync_anim_seeds / send_selected
+//  send_world_line_info / send_selected
 // ============================================================
 
 use crate::engine::components::ModelComponent;
@@ -120,18 +120,6 @@ impl App {
             .map(|mc| mc.instance_mats.len())
             .unwrap_or(0);
         ipc.send(&format!("WORLD_LINE_INFO:WL:{wl} | Actor:{actor_name} | Instances:{inst_count}"));
-    }
-
-    /// InstanceMeta::anim_seed を instanced_batch に同期する。
-    /// 構造変更（追加・削除・Undo/Redo）後に呼び出す。
-    pub(super) fn sync_anim_seeds(&mut self) {
-        let wl = self.active_world_line;
-        if let Some(scene) = &mut self.scene {
-            if let Some(mc) = scene.find_component_in_world_line_mut::<ModelComponent>(wl) {
-                let seeds: Vec<u32> = mc.instance_meta.iter().map(|m| m.anim_seed).collect();
-                mc.set_batch_anim_seeds(&seeds);
-            }
-        }
     }
 
     /// 現在の選択インスタンスをエディタへ通知する。

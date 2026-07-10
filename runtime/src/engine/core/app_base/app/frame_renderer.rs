@@ -635,7 +635,7 @@ impl App {
             let _perf_t_batch = std::time::Instant::now();
             super::update_all_mc_batches_for_wl(
                 actors, world, self.active_world_line,
-                &queue, &frustum_planes, preview_frustum.as_ref(), camera_pos, self.clock.anim_time(),
+                &queue, &frustum_planes, preview_frustum.as_ref(), camera_pos,
             );
             perf_batch_ms = _perf_t_batch.elapsed().as_secs_f64() * 1000.0;
         }
@@ -786,8 +786,7 @@ impl App {
                     struct MergeInfo {
                         cpu_model: std::sync::Arc<crate::engine::core::loader::model::Model>,
                         mats:      Vec<[[f32; 4]; 4]>,
-                        seeds:     Vec<u32>,
-                        /// 統合インスタンス i の Animator 駆動権威時刻（None = デモ再生）。
+                        /// 統合インスタンス i の Animator 駆動権威時刻（None = 静止・先頭フレーム凍結）。
                         /// ModelComponent::anim_drive 由来。同一 MC の全インスタンスに同じ値を複製する。
                         time_overrides: Vec<Option<f32>>,
                         /// 統合インスタンス i の絶対 ID（元 MC の id_base + 元インスタンス idx）
@@ -812,7 +811,6 @@ impl App {
                                 .or_insert_with(|| MergeInfo {
                                     cpu_model: arc_m.clone(),
                                     mats:      Vec::new(),
-                                    seeds:     Vec::new(),
                                     time_overrides: Vec::new(),
                                     abs_ids:   Vec::new(),
                                 });
@@ -828,11 +826,6 @@ impl App {
                             );
                             for (inst_i, &mat) in amc.instance_mats.iter().enumerate() {
                                 e.mats.push(mat);
-                                e.seeds.push(
-                                    amc.instance_meta.get(inst_i)
-                                       .map(|m| m.anim_seed)
-                                       .unwrap_or(0)
-                                );
                                 e.time_overrides.push(mc_time_override);
                                 // abs_id = MC の id_base + このインスタンスのオフセット
                                 e.abs_ids.push(id_base + inst_i as u32);
@@ -864,8 +857,7 @@ impl App {
                             // フィールド分割借用: batch は可変、cpu_model は不変
                             let batch     = &mut sd.batch;
                             let cpu_model = &sd.cpu_model;
-                            batch.set_anim_seeds(&info.seeds);
-                            // Animator 駆動の権威時刻を反映する（デモ再生を上書き）。
+                            // Animator 駆動の権威時刻を反映する（非駆動インスタンスは静止）。
                             batch.set_anim_time_overrides(&info.time_overrides);
                             batch.mark_dirty();
                             batch.update(
@@ -875,7 +867,6 @@ impl App {
                                 &saved_frustum_planes,
                                 preview_frustum.as_ref(),
                                 saved_camera_pos,
-                                self.clock.anim_time(),
                             );
                             // lod_id_buffers を絶対 ID で上書きする
                             // update() が書いた「統合バッチ内 compact インデックス」を
@@ -1004,7 +995,6 @@ impl App {
                                 &fp,
                                 None,
                                 cpo,
-                                0.0,
                             );
                         }
                     }
