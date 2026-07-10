@@ -276,6 +276,7 @@ gameObject.CanvasTransform    // 2D キャンバストランスフォーム
 gameObject.Sprite             // 2D スプライト
 gameObject.Camera             // 3D カメラ
 gameObject.AudioSource        // オーディオソース（AudioComponent）
+gameObject.Animator           // アニメーター（キーフレームアニメーション再生。AnimatorComponent）
 ```
 
 ### 生成・破棄・検索（Instantiate / Destroy / Find）
@@ -384,6 +385,27 @@ audio.Pan                  // float（get/set。-1=左 〜 1=右。Spatial=false
 - 距離減衰は線形（MinDistance 以内 100% → MaxDistance で 0%）。リスナーは `is_main` のメインカメラ。
 - `Spatial = true` では音源方向に応じて左右パンが自動で振られます（手動 `Pan` は無効）。
 
+### Animator（キーフレームアニメーション再生）
+
+エディタの「コンポーネント追加 → アニメーター」で追加し、インスペクタで再生対象クリップ（`clips`）を登録します。実際のトラック評価・書き込みはエンジン側の AnimationSystem が毎フレーム自動で行うため、スクリプトからは再生の開始・停止・状態参照のみ行います。
+
+```csharp
+var anim = gameObject.Animator;
+anim.Play("Walk");         // 指定クリップを先頭（time=0）から再生（速度は変更しない）
+anim.Play("Walk", 1.5f);   // 再生速度も同時に指定して再生
+anim.Stop();                // 停止して time=0 に戻す
+anim.Pause();                // 再生位置を保持したまま一時停止
+anim.Resume();               // 一時停止を再開（再生対象クリップが無ければ無視）
+
+anim.IsPlaying              // bool（get のみ。再生中か）
+anim.CurrentClip            // string（get のみ。再生中のクリップ名。未再生は空文字）
+anim.Time                   // float（get/set。再生位置・秒。書き込みでシーク可能）
+anim.Speed                  // float（get/set。再生速度倍率。1.0=等倍、負値で逆再生）
+```
+
+- `Play` で指定するクリップ名は、そのアクターの Animator に登録済み（`clips` 一覧に存在し、既にロード済み）である必要があります。未登録・未ロードの名前を指定すると警告ログを出して無視されます（例外は発生しません）。
+- クリップは Play モード開始時（初回フレーム、スクリプトの `Update` 等より前）に自動ロードされるため、通常のスクリプトライフサイクル関数から呼ぶ限り「まだロードされていない」状況は発生しません。
+
 ### 利用可能なコンポーネント一覧
 
 | コンポーネント名 | アクセサ | 内容 |
@@ -393,6 +415,7 @@ audio.Pan                  // float（get/set。-1=左 〜 1=右。Spatial=false
 | `Sprite` | `gameObject.Sprite` | テクスチャパス・色・サイズ・レイヤー |
 | `Camera` | `gameObject.Camera` | FOV・クリップ距離・メインカメラ・クリアカラー・ベース解像度 |
 | `Audio` | `gameObject.AudioSource` | 音源パス・音量・ループ・3D 減衰・パン + Play/Stop |
+| `Animator` | `gameObject.Animator` | 再生中クリップ・再生位置・速度 + Play/Stop/Pause/Resume |
 
 他のコンポーネント（Collider / Rigidbody など物理系）は物理 API として順次対応予定で、対応済みのものは本節に追記されます。
 

@@ -437,7 +437,7 @@ transform.Position += <span class="k">new</span> <span class="t">SEED.Vector3</s
   <div class="api"><code class="sig">gameObject.IsValid</code><span class="desc">bool: 実体が有効か</span></div>
   <div class="api"><code class="sig">gameObject.HasComponent("Sprite")</code><span class="desc">bool: 指定名のコンポーネントを持つか</span></div>
   <div class="api"><code class="sig">transform</code><span class="desc">Transform: <code>gameObject.Transform</code> の短縮</span></div>
-  <div class="api"><code class="sig">gameObject.Transform / .CanvasTransform / .Sprite / .Camera / .AudioSource</code><span class="desc">各コンポーネントへのアクセサ（詳細は下の各コンポーネント節）</span></div>
+  <div class="api"><code class="sig">gameObject.Transform / .CanvasTransform / .Sprite / .Camera / .AudioSource / .Animator</code><span class="desc">各コンポーネントへのアクセサ（詳細は下の各コンポーネント節）</span></div>
 
   <h3>生成・破棄・検索（Instantiate / Destroy / Find）</h3>
   <div class="api"><code class="sig">GameObject.Instantiate("assets://actors/Bullet.actor")</code><span class="desc">.actor ファイル（プレハブ）からアクターを生成。戻り値に<b>同フレーム中に</b> Position 等を設定でき、その値が優先される</span></div>
@@ -457,7 +457,7 @@ bullet.Transform.Position = transform.Position;   <span class="c">// 生成直�
 </section>
 
 <!-- ════════════════ 7.x コンポーネント ════════════════ -->
-<section id="sec-components" data-keywords="コンポーネント Transform CanvasTransform Sprite Camera AudioSource 一覧">
+<section id="sec-components" data-keywords="コンポーネント Transform CanvasTransform Sprite Camera AudioSource Animator アニメーション 一覧">
   <h2>7.x コンポーネント</h2>
 
   <h3 id="cmp-transform">Transform（3D 位置・回転・スケール）</h3>
@@ -510,6 +510,19 @@ sprite.Color = <span class="t">SEED.Color</span>.White.WithAlpha(<span class="t"
   <div class="api"><code class="sig">audio.MinDistance / audio.MaxDistance</code><span class="desc">float（get/set。減衰開始距離 / 無音距離。減衰は線形）</span></div>
   <div class="api"><code class="sig">audio.Pan</code><span class="desc">float（get/set。-1=左 〜 1=右。<code>Spatial=false</code> 時のみ有効）</span></div>
 
+  <h3 id="cmp-animator">Animator（キーフレームアニメーション再生）</h3>
+  <p class="section-note">エディタの「コンポーネント追加 → アニメーター」で追加し、インスペクタで再生対象クリップ（<code>clips</code>）を登録します。トラック評価・書き込みはエンジン側の AnimationSystem が毎フレーム自動で行うため、スクリプトからは再生の開始・停止・状態参照のみ行います。</p>
+  <div class="api"><code class="sig">anim.Play("Walk")</code><span class="desc">指定クリップを先頭（time=0）から再生（速度は変更しない）</span></div>
+  <div class="api"><code class="sig">anim.Play("Walk", 1.5f)</code><span class="desc">再生速度も同時に指定して再生</span></div>
+  <div class="api"><code class="sig">anim.Stop()</code><span class="desc">停止して time=0 に戻す</span></div>
+  <div class="api"><code class="sig">anim.Pause()</code><span class="desc">再生位置を保持したまま一時停止</span></div>
+  <div class="api"><code class="sig">anim.Resume()</code><span class="desc">一時停止を再開（再生対象クリップが無ければ無視）</span></div>
+  <div class="api"><code class="sig">anim.IsPlaying</code><span class="desc">bool（get のみ。再生中か）</span></div>
+  <div class="api"><code class="sig">anim.CurrentClip</code><span class="desc">string（get のみ。再生中のクリップ名。未再生は空文字）</span></div>
+  <div class="api"><code class="sig">anim.Time</code><span class="desc">float（get/set。再生位置・秒。書き込みでシーク可能）</span></div>
+  <div class="api"><code class="sig">anim.Speed</code><span class="desc">float（get/set。再生速度倍率。1.0=等倍、負値で逆再生）</span></div>
+  <div class="warn">Play で指定するクリップ名は、そのアクターの Animator に登録済み（<code>clips</code> 一覧に存在し、既にロード済み）である必要があります。未登録・未ロードの名前を指定すると警告ログを出して無視されます（例外は発生しません）。クリップは Play モード開始時（初回フレーム、スクリプトの Update 等より前）に自動ロードされます。</div>
+
   <h3>利用可能なコンポーネント一覧</h3>
   <table>
     <tr><th>コンポーネント名</th><th>アクセサ</th><th>内容</th></tr>
@@ -518,6 +531,7 @@ sprite.Color = <span class="t">SEED.Color</span>.White.WithAlpha(<span class="t"
     <tr><td><code>Sprite</code></td><td><code>gameObject.Sprite</code></td><td>テクスチャパス・色・サイズ・レイヤー</td></tr>
     <tr><td><code>Camera</code></td><td><code>gameObject.Camera</code></td><td>FOV・クリップ距離・メインカメラ・クリアカラー・ベース解像度</td></tr>
     <tr><td><code>Audio</code></td><td><code>gameObject.AudioSource</code></td><td>音源パス・音量・ループ・3D 減衰・パン + Play/Stop</td></tr>
+    <tr><td><code>Animator</code></td><td><code>gameObject.Animator</code></td><td>再生中クリップ・再生位置・速度 + Play/Stop/Pause/Resume</td></tr>
   </table>
   <p class="section-note">他のコンポーネント（Collider / Rigidbody など物理系）は物理 API として順次対応予定です。</p>
 </section>

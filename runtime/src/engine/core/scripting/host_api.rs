@@ -29,7 +29,7 @@
 use std::cell::{Cell, RefCell};
 
 use crate::engine::components::{
-    AudioComponent, CameraComponent, CanvasTransform, SpriteComponent, Transform,
+    AnimatorComponent, AudioComponent, CameraComponent, CanvasTransform, SpriteComponent, Transform,
 };
 use crate::engine::core::input::{Input, InputState};
 use crate::engine::ecs::{Entity, World};
@@ -298,6 +298,19 @@ fn read_floats(
                 _               => None,
             }
         }
+        // ── アニメーター（スロット格納型: locate で解決）──
+        // Play/Stop/Pause/Resume は文字列引数を伴うため専用 FFI（ffi_animator_component）で扱う。
+        // ここでは単純な数値フィールド（再生位置・速度・再生中フラグ）のみを公開する。
+        "Animator" => {
+            let e = locate::<AnimatorComponent>(world, entity)?;
+            let a = world.get::<AnimatorComponent>(e)?;
+            match field {
+                "time"    => put(out, &[a.time]),
+                "speed"   => put(out, &[a.speed]),
+                "playing" => put(out, &[if a.playing { 1.0 } else { 0.0 }]),
+                _         => None,
+            }
+        }
         _ => None,
     }
 }
@@ -381,6 +394,18 @@ fn write_floats(
                 _               => false,
             }
         }
+        // ── アニメーター（スロット格納型: locate で解決）──
+        // playing は Play/Stop/Pause/Resume（ffi_animator_component）経由でのみ変更させる
+        // （直接書き込みを許すと current_clip との整合が崩れるため、ここでは公開しない）。
+        "Animator" => {
+            let Some(e) = locate::<AnimatorComponent>(world, entity) else { return false };
+            let Some(a) = world.get_mut::<AnimatorComponent>(e) else { return false };
+            match field {
+                "time"  => take::<1>(v).map(|x| a.time = x[0].max(0.0)).is_some(),
+                "speed" => take::<1>(v).map(|x| a.speed = x[0]).is_some(),
+                _       => false,
+            }
+        }
         _ => false,
     }
 }
@@ -410,6 +435,17 @@ fn read_string(world: &World, entity: Entity, component: &str, field: &str) -> O
             match field {
                 "projection" => Some(c.projection.as_str().to_string()),
                 _            => None,
+            }
+        }
+        // ── アニメーター（スロット格納型: locate で解決）──
+        // current_clip は書き込み不可（Play アクション経由でのみ変更させる）のため read のみ。
+        "Animator" => {
+            let e = locate::<AnimatorComponent>(world, entity)?;
+            let a = world.get::<AnimatorComponent>(e)?;
+            match field {
+                // 未再生（None）は空文字を返す（C# 側 CurrentClip の既定値と一致させる）
+                "current_clip" => Some(a.current_clip.clone().unwrap_or_default()),
+                _              => None,
             }
         }
         _ => None,
@@ -460,6 +496,7 @@ fn has_component(world: &World, entity: Entity, component: &str) -> bool {
         "Sprite"          => locate::<SpriteComponent>(world, entity).is_some(),
         "Camera"          => locate::<CameraComponent>(world, entity).is_some(),
         "Audio"           => locate::<AudioComponent>(world, entity).is_some(),
+        "Animator"        => locate::<AnimatorComponent>(world, entity).is_some(),
         _ => false,
     }
 }
@@ -930,6 +967,66 @@ unsafe extern "system" fn ffi_audio_component(action: i32, idx: u32, generation:
     }
 }
 
+/// AnimatorComponent 操作の種別（C# 側 Animator の定数と一致させる）。
+const ANIMATOR_COMPONENT_PLAY: i32   = 0; // clip 名 + speed（NaN = 変更なし）を指定して先頭から再生
+const ANIMATOR_COMPONENT_STOP: i32   = 1; // 停止して time=0
+const ANIMATOR_COMPONENT_PAUSE: i32  = 2; // playing=false のまま time は維持
+const ANIMATOR_COMPONENT_RESUME: i32 = 3; // current_clip があれば playing=true に戻す
+
+/// AnimatorComponent を操作する。成功=1 / 失敗=0。
+///
+/// idx/gen は gameObject のルートエンティティ。AnimatorComponent のスロットを locate で解決する。
+/// Play/Stop/Pause/Resume は文字列（clip 名）や状態遷移を伴うため、汎用の
+/// read_floats/write_floats（time・speed・playing の単純な数値フィールドのみ）とは別に
+/// この専用 FFI で扱う。
+///
+/// clip_name/clip_name_len: Play 時のクリップ名（それ以外の action では無視）。
+/// speed: Play 時の再生速度指定（NaN なら既存の speed を変更しない）。それ以外の action では無視。
+unsafe extern "system" fn ffi_animator_component(
+    action: i32, idx: u32, generation: u32,
+    clip_name: *const u8, clip_name_len: i32,
+    speed: f32,
+) -> i32 {
+    let ptr = WORLD_PTR.with(|p| p.get());
+    if ptr.is_null() { return 0; }
+    let world = &mut *ptr;
+    let entity = Entity::from_raw(idx, generation);
+    // ルートエンティティから AnimatorComponent のスロットエンティティを解決する
+    let Some(slot) = locate::<AnimatorComponent>(world, entity) else { return 0 };
+    let Some(a) = world.get_mut::<AnimatorComponent>(slot) else { return 0 };
+
+    match action {
+        ANIMATOR_COMPONENT_PLAY => {
+            let name = str_from(clip_name, clip_name_len);
+            // ロード済みキャッシュ（init_animators がフレーム先頭で clips を全ロード済み）に無ければ失敗
+            if !a.cache.contains_key(name) {
+                eprintln!("[SEED script] Animator.Play: クリップ '{name}' が見つかりません（clips 未登録 or 未ロード）");
+                return 0;
+            }
+            a.current_clip = Some(name.to_string());
+            a.time = 0.0;
+            a.playing = true;
+            if !speed.is_nan() { a.speed = speed; }
+            1
+        }
+        ANIMATOR_COMPONENT_STOP => {
+            a.playing = false;
+            a.time = 0.0;
+            1
+        }
+        ANIMATOR_COMPONENT_PAUSE => {
+            a.playing = false;
+            1
+        }
+        ANIMATOR_COMPONENT_RESUME => {
+            // 再生対象クリップが無いまま resume しても無害（システム側が current_clip 未設定を無視する）
+            if a.current_clip.is_some() { a.playing = true; }
+            1
+        }
+        _ => 0,
+    }
+}
+
 // ─── C# へ渡す関数ポインタ表 ─────────────────────────────────
 
 /// C# の #[StructLayout(Sequential)] ScriptHostApi と同一レイアウト。
@@ -954,6 +1051,7 @@ pub struct ScriptHostApi {
     audio:             unsafe extern "system" fn(i32, *const u8, i32, f32, i32) -> i32,
     audio_component:   unsafe extern "system" fn(i32, u32, u32) -> i32,
     screen_position:   unsafe extern "system" fn(u32, u32, *mut f32) -> i32,
+    animator_component: unsafe extern "system" fn(i32, u32, u32, *const u8, i32, f32) -> i32,
 }
 
 // 関数ポインタは Sync。プロセス全体で 1 つの静的表を共有する。
@@ -974,6 +1072,7 @@ static HOST_API: ScriptHostApi = ScriptHostApi {
     audio:             ffi_audio,
     audio_component:   ffi_audio_component,
     screen_position:   ffi_screen_position,
+    animator_component: ffi_animator_component,
 };
 
 /// C# へ渡す関数ポインタ表へのポインタを返す（RegisterHostApi 用）。

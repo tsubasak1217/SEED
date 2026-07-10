@@ -344,6 +344,26 @@ public static unsafe class ScriptHost
         return _api.AudioComponent(action, e.Index, e.Generation) != 0;
     }
 
+    // ── アニメーター ─────────────────────────────────────────────
+
+    /// <summary>
+    /// AnimatorComponent を操作する（action: 0=Play/1=Stop/2=Pause/3=Resume）。
+    /// clipName は Play 時のみ使用（他 action では無視されるので null 可）。
+    /// speed は Play 時の再生速度指定（<see cref="float.NaN"/> なら既存の speed を変更しない）。
+    /// 成功なら true（Play はクリップ未登録・未ロードだと false）。
+    /// </summary>
+    public static bool AnimatorComponentAction(int action, Entity e, string clipName, float speed)
+    {
+        if (!_available || _api.AnimatorComponent == null || !e.IsValid) return false;
+        clipName ??= "";
+
+        int nl = Encoding.UTF8.GetByteCount(clipName);
+        Span<byte> nb = nl > 0 ? stackalloc byte[nl] : default;
+        if (nl > 0) Encoding.UTF8.GetBytes(clipName, nb);
+        fixed (byte* np = nb)
+            return _api.AnimatorComponent(action, e.Index, e.Generation, np, nl, speed) != 0;
+    }
+
     /// <summary>
     /// 2D アクターのスクリーン座標（ウィンドウ左上原点・ピクセル）を取得する。
     /// 2D アクターでない場合は false。
@@ -465,4 +485,6 @@ public unsafe struct ScriptHostApi
     public delegate* unmanaged[Cdecl]<int, uint, uint, int> AudioComponent;
     /// <summary>(idx, gen, out float[2]) → 1/0（2D アクターのスクリーン座標）</summary>
     public delegate* unmanaged[Cdecl]<uint, uint, float*, int> ScreenPosition;
+    /// <summary>(action, idx, gen, clipName, clipNameLen, speed) → 1/0（action: 0=Play/1=Stop/2=Pause/3=Resume）</summary>
+    public delegate* unmanaged[Cdecl]<int, uint, uint, byte*, int, float, int> AnimatorComponent;
 }
