@@ -405,7 +405,13 @@ public partial class InspectorPanel : UserControl
         float AudioVolume = 1f,
         bool AudioLoop = false, bool AudioPlayOnStart = false, bool AudioSpatial = false,
         float AudioMinDistance = 2f, float AudioMaxDistance = 50f,
-        float AudioPan = 0f);
+        float AudioPan = 0f,
+        // AnimatorComponent 用フィールド（clips は JSON 配列文字列 [{"name":..,"path":..},...] のまま保持し、
+        // UI 構築時にパースする。値そのものは Rust 側 AnimatorComponentData と同一構造）
+        string AnimClipsJson = "[]",
+        string AnimDefaultClip = "",
+        bool AnimPlayOnStart = true,
+        float AnimSpeed = 1f);
 
     private List<SlotInfo> _slotInfos = new();
 
@@ -606,6 +612,11 @@ public partial class InspectorPanel : UserControl
             var audioMinDistance = comp.TryGetProperty("min_distance",  out var amn) ? amn.GetSingle() : 2f;
             var audioMaxDistance = comp.TryGetProperty("max_distance",  out var amx) ? amx.GetSingle() : 50f;
             var audioPan         = comp.TryGetProperty("pan",           out var apn) ? apn.GetSingle() : 0f;
+            // AnimatorComponent 用: クリップ一覧（生 JSON のまま保持）・既定クリップ・自動再生・速度
+            var animClipsJson    = comp.TryGetProperty("clips",         out var acj) ? acj.GetRawText() : "[]";
+            var animDefaultClip  = comp.TryGetProperty("default_clip",  out var adc) ? adc.GetString() ?? "" : "";
+            var animPlayOnStart  = comp.TryGetProperty("play_on_start", out var apos) ? ReadJsonBool(apos, true) : true;
+            var animSpeed        = comp.TryGetProperty("speed",         out var asp2) ? asp2.GetSingle() : 1f;
 
             var info = new SlotInfo(slotIdx, compName, compType, modelPath, width, height,
                 AutoScale: autoScale,
@@ -629,7 +640,9 @@ public partial class InspectorPanel : UserControl
                 AudioPath: audioPath, AudioVolume: audioVolume,
                 AudioLoop: audioLoop, AudioPlayOnStart: audioPlayOnStart, AudioSpatial: audioSpatial,
                 AudioMinDistance: audioMinDistance, AudioMaxDistance: audioMaxDistance,
-                AudioPan: audioPan);
+                AudioPan: audioPan,
+                AnimClipsJson: animClipsJson, AnimDefaultClip: animDefaultClip,
+                AnimPlayOnStart: animPlayOnStart, AnimSpeed: animSpeed);
             _slotInfos.Add(info);
 
             // アコーディオンにパラメータ編集エリアを追加（ヘッダーがリネーム・削除・複製・選択を兼ねる）
@@ -2669,30 +2682,194 @@ public partial class InspectorPanel : UserControl
     private const float AudioVolumeMin = 0f;
 
     /// <summary>
-    /// AnimatorComponent のインスペクター UI を構築して返す（P1 は読み取り専用の概要表示）。
-    /// クリップ一覧・キーフレームのタイムライン編集 UI は P2 で対応する。
-    /// 現状はシーンファイル（.scene）または .anim アセットで設定し、Play で再生確認する。
+    /// AnimatorComponent のインスペクター UI を構築して返す。
+    /// クリップ一覧（追加/削除）・既定クリップ・自動再生・速度を編集し、変更のたびに
+    /// SET_ANIMATOR_CLIPS:{actor_dfs},{slot_idx},{json} で一括送信する
+    /// （Rust 側 AnimatorComponentData は clips/default_clip/play_on_start/speed をまとめて 1 コマンドで更新する設計のため）。
+    /// 「タイムラインで編集」ボタンで AnimationTimelinePanel を開き、選択中クリップのキーフレーム編集へ遷移する。
     /// </summary>
     private UIElement BuildAnimatorSlotContent(SlotInfo info)
     {
         var sp = new StackPanel { Margin = new Thickness(0, 4, 0, 4) };
+
+        // ── clips JSON（[{"name":..,"path":..},...]）をパースして編集用リストへ展開する ──
+        var clips = new List<(string Name, string Path)>();
+        try
+        {
+            using var doc = JsonDocument.Parse(info.AnimClipsJson);
+            foreach (var c in doc.RootElement.EnumerateArray())
+            {
+                var name = c.TryGetProperty("name", out var np) ? np.GetString() ?? "" : "";
+                var path = c.TryGetProperty("path", out var pp) ? pp.GetString() ?? "" : "";
+                clips.Add((name, path));
+            }
+        }
+        catch (JsonException) { /* 不正 JSON は空リスト扱い */ }
+
+        // UI が保持する編集中の状態（コミット時にまとめて JSON 化する）
+        var curDefaultClip = info.AnimDefaultClip;
+        var curPlayOnStart = info.AnimPlayOnStart;
+        var curSpeed       = info.AnimSpeed;
+
+        // ── clips/default_clip/play_on_start/speed をまとめて 1 メッセージで送信するローカル関数 ──
+        void CommitAnimator()
+        {
+            if (_currentActorId < 0) return;
+            var payload = new
+            {
+                clips        = clips.Select(c => new { name = c.Name, path = c.Path }).ToArray(),
+                default_clip = curDefaultClip,
+                play_on_start = curPlayOnStart,
+                speed        = curSpeed,
+            };
+            var json = JsonSerializer.Serialize(payload);
+            _runtime?.SendToRuntime($"SET_ANIMATOR_CLIPS:{_currentActorId},{info.SlotIdx},{json}");
+        }
+
+        // ── クリップ一覧 ──────────────────────────────────────
         sp.Children.Add(new TextBlock
         {
-            Text         = "アニメーションクリップ（.anim）の再生コンポーネントです。",
-            Foreground   = new SolidColorBrush(Color.FromRgb(0xAA, 0xAA, 0xAA)),
-            FontSize     = 11,
-            TextWrapping = TextWrapping.Wrap,
-            Margin       = new Thickness(0, 0, 0, 4),
+            Text = "クリップ一覧", Foreground = new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88)),
+            FontSize = 11, Margin = new Thickness(0, 0, 0, 2),
         });
+
+        var clipList = new ListBox
+        {
+            Height = 76, Background = new SolidColorBrush(Color.FromRgb(0x1A, 0x1A, 0x1A)),
+            Foreground = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)), BorderThickness = new Thickness(1),
+            BorderBrush = new SolidColorBrush(Color.FromRgb(0x3F, 0x3F, 0x46)), FontSize = 11,
+        };
+        var defaultClipCombo = new ComboBox { Margin = new Thickness(0, 4, 0, 2), FontSize = 11, Height = 22 };
+
+        // clips / defaultClipCombo の内容を現在の clips リストから再構築するローカル関数
+        void RebuildClipUi()
+        {
+            clipList.Items.Clear();
+            foreach (var c in clips)
+                clipList.Items.Add(string.IsNullOrEmpty(c.Name) ? c.Path : $"{c.Name}  ({c.Path})");
+
+            defaultClipCombo.SelectionChanged -= OnDefaultClipChanged;
+            defaultClipCombo.Items.Clear();
+            defaultClipCombo.Items.Add(new ComboBoxItem { Content = "（なし）", Tag = "" });
+            foreach (var c in clips)
+                defaultClipCombo.Items.Add(new ComboBoxItem { Content = string.IsNullOrEmpty(c.Name) ? c.Path : c.Name, Tag = c.Name });
+            var idx = clips.FindIndex(c => c.Name == curDefaultClip);
+            defaultClipCombo.SelectedIndex = idx >= 0 ? idx + 1 : 0;
+            defaultClipCombo.SelectionChanged += OnDefaultClipChanged;
+        }
+
+        void OnDefaultClipChanged(object? s, SelectionChangedEventArgs e)
+        {
+            if (defaultClipCombo.SelectedItem is not ComboBoxItem item || item.Tag is not string name) return;
+            if (curDefaultClip == name) return;
+            curDefaultClip = name;
+            CommitAnimator();
+        }
+
+        sp.Children.Add(clipList);
+
+        var clipBtnRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 2, 0, 0) };
+        var addClipBtn = new Button
+        {
+            Content = "追加", Background = new SolidColorBrush(Color.FromRgb(0x33, 0x33, 0x33)),
+            Foreground = new SolidColorBrush(Color.FromRgb(0xBB, 0xBB, 0xBB)), BorderThickness = new Thickness(0),
+            Padding = new Thickness(8, 2, 8, 2), FontSize = 10, Cursor = Cursors.Hand,
+        };
+        addClipBtn.Click += (_, _) =>
+        {
+            var dlg = new OpenFileDialog { Title = "アニメーションクリップを選択", Filter = "アニメーションクリップ|*.anim|すべてのファイル|*.*" };
+            if (dlg.ShowDialog(Window.GetWindow(this)) != true) return;
+            var virtualPath = VirtualPath.ToVirtual(dlg.FileName, _assetsPath);
+            var name = Path.GetFileNameWithoutExtension(dlg.FileName);
+            clips.Add((name, virtualPath));
+            RebuildClipUi();
+            CommitAnimator();
+        };
+        var removeClipBtn = new Button
+        {
+            Content = "削除", Background = new SolidColorBrush(Color.FromRgb(0x40, 0x28, 0x28)),
+            Foreground = new SolidColorBrush(Color.FromRgb(0xBB, 0xBB, 0xBB)), BorderThickness = new Thickness(0),
+            Padding = new Thickness(8, 2, 8, 2), FontSize = 10, Margin = new Thickness(4, 0, 0, 0), Cursor = Cursors.Hand,
+        };
+        removeClipBtn.Click += (_, _) =>
+        {
+            var idx = clipList.SelectedIndex;
+            if (idx < 0 || idx >= clips.Count) return;
+            clips.RemoveAt(idx);
+            RebuildClipUi();
+            CommitAnimator();
+        };
+        clipBtnRow.Children.Add(addClipBtn);
+        clipBtnRow.Children.Add(removeClipBtn);
+        sp.Children.Add(clipBtnRow);
+
+        // ── 既定クリップ ──────────────────────────────────────
         sp.Children.Add(new TextBlock
         {
-            Text         = "クリップ一覧・既定クリップ・自動再生・速度はシーンファイルで設定します（詳細な編集 UI は今後対応予定）。",
-            Foreground   = new SolidColorBrush(Color.FromRgb(0x77, 0x77, 0x77)),
-            FontSize     = 11,
-            TextWrapping = TextWrapping.Wrap,
+            Text = "既定クリップ", Foreground = new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88)),
+            FontSize = 11, Margin = new Thickness(0, 6, 0, 0),
         });
+        sp.Children.Add(defaultClipCombo);
+        RebuildClipUi();
+
+        // ── 自動再生 ──────────────────────────────────────────
+        var playOnStartRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 6, 0, 2) };
+        playOnStartRow.Children.Add(new TextBlock
+        {
+            Text = "自動再生", Foreground = new SolidColorBrush(Color.FromRgb(0xAA, 0xAA, 0xAA)),
+            FontSize = 11, Width = 90, VerticalAlignment = VerticalAlignment.Center,
+        });
+        var playOnStartCheck = new CheckBox { IsChecked = curPlayOnStart, VerticalAlignment = VerticalAlignment.Center };
+        playOnStartCheck.Checked   += (_, _) => { curPlayOnStart = true;  CommitAnimator(); };
+        playOnStartCheck.Unchecked += (_, _) => { curPlayOnStart = false; CommitAnimator(); };
+        playOnStartRow.Children.Add(playOnStartCheck);
+        sp.Children.Add(playOnStartRow);
+
+        // ── 再生速度 ──────────────────────────────────────────
+        var rowSpeed = BuildLabeledNumberRow("速度", curSpeed, "F2");
+        sp.Children.Add(rowSpeed.element);
+        void CommitSpeed()
+        {
+            if (float.TryParse(rowSpeed.textBox.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var v))
+                curSpeed = v;
+            CommitAnimator();
+        }
+        rowSpeed.textBox.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { CommitSpeed(); e.Handled = true; } };
+        rowSpeed.textBox.LostFocus += (_, _) => CommitSpeed();
+        NumericDragBehavior.SetOnDrag(rowSpeed.textBox, CommitSpeed);
+
+        // ── タイムラインで編集 ──────────────────────────────────
+        var editTimelineBtn = new Button
+        {
+            Content = "タイムラインで編集", Background = new SolidColorBrush(Color.FromRgb(0x2C, 0x20, 0x38)),
+            Foreground = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)), BorderThickness = new Thickness(0),
+            Padding = new Thickness(8, 3, 8, 3), FontSize = 11, Margin = new Thickness(0, 10, 0, 0), Cursor = Cursors.Hand,
+            HorizontalAlignment = HorizontalAlignment.Left,
+        };
+        editTimelineBtn.Click += (_, _) =>
+        {
+            // 既定クリップ、無ければ先頭クリップを編集対象として開く
+            var targetName = curDefaultClip;
+            var target = clips.FirstOrDefault(c => c.Name == targetName);
+            if (target.Path is null && clips.Count > 0) target = clips[0];
+            if (target.Path is null)
+            {
+                MessageBox.Show(Window.GetWindow(this), "編集するクリップがありません。先にクリップを追加してください。",
+                    "情報", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+            TimelineEditRequested?.Invoke(target.Path);
+        };
+        sp.Children.Add(editTimelineBtn);
+
         return sp;
     }
+
+    /// <summary>
+    /// Inspector の「タイムラインで編集」ボタンが押されたことを通知する（引数はクリップの仮想パス）。
+    /// MainWindow がこれを購読し、AnimationTimelinePanel を表示して該当クリップを開かせる。
+    /// </summary>
+    public event Action<string>? TimelineEditRequested;
 
     /// <summary>
     /// AudioComponent のインスペクター UI を構築して返す。

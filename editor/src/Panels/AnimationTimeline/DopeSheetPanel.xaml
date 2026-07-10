@@ -1,0 +1,23 @@
+<UserControl x:Class="SEEDEditor.Panels.AnimationTimeline.DopeSheetPanel"
+             x:ClassModifier="internal"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             Background="#1E1E1E">
+    <!--
+        ドープシート本体。横スクロール可能な Canvas 1 枚に
+        ルーラー・トラック行の背景・グリッド線・キーフレーム◆・プレイヘッドを
+        すべて手続き的に描画する（DopeSheetPanel.xaml.cs の Redraw 参照）。
+        縦方向はトラック数に応じて可変高、横方向はクリップ長×ズームに応じて可変幅。
+    -->
+    <ScrollViewer x:Name="Scroller"
+                  HorizontalScrollBarVisibility="Auto"
+                  VerticalScrollBarVisibility="Disabled"
+                  Background="#1E1E1E">
+        <Canvas x:Name="DrawCanvas"
+                Background="#1E1E1E"
+                MouseLeftButtonDown="OnCanvasMouseLeftButtonDown"
+                MouseMove="OnCanvasMouseMove"
+                MouseLeftButtonUp="OnCanvasMouseLeftButtonUp"
+                MouseRightButtonDown="OnCanvasMouseRightButtonDown"/>
+    </ScrollViewer>
+</UserControl>

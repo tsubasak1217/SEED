@@ -19,5 +19,5 @@ pub mod system;
 // よく使う型・関数を再エクスポートする
 pub use clip::{AnimationClip, AnimValue, ValueType, LoopMode, Interp, Track, Keyframe, TrackTarget, AnimEvent};
 pub use sampler::sample_track;
-pub use registry::{PropBinding, resolve_binding, apply_write};
+pub use registry::{PropBinding, resolve_binding, apply_write, read_binding};
 pub use system::{normalize_time, resolve_actor_path};

@@ -404,6 +404,22 @@ pub enum IpcCommand {
     /// 巨大 delta を丸めて ConstantUpdate の追いつき暴走を防ぐ。
     /// フォーマット: DBG_GUARD:{0|1}
     SetDebugGuard(bool),
+
+    // ─── アニメーション（AnimatorComponent 編集 / Edit プレビュー）────────────
+    /// AnimatorComponent の clips / default_clip / play_on_start / speed をまとめて設定する。
+    /// フォーマット: SET_ANIMATOR_CLIPS:{actor_dfs_id},{slot_idx},{json}
+    /// json は AnimatorComponentData の serde_json シリアライズ結果（カンマ含む）。
+    /// slot_idx はマルチ Animator 対応のため付与（parse2u_tail 流用）。
+    SetAnimatorClips { actor_dfs_id: u32, slot_idx: u32, json: String },
+    /// Edit モード限定：指定クリップの指定時刻を対象アクターへプレビュー適用する。
+    /// フォーマット: ANIM_PREVIEW:{actor_dfs_id},{clip_path},{time}
+    AnimPreview { actor_dfs_id: u32, clip_path: String, time: f32 },
+    /// アニメーションプレビューを終了し、退避しておいた元値へ復元する。
+    /// フォーマット: ANIM_PREVIEW_STOP:{actor_dfs_id}
+    AnimPreviewStop { actor_dfs_id: u32 },
+    /// 指定クリップのロード済みキャッシュを破棄する（.anim 保存後の再読込用）。
+    /// フォーマット: ANIM_RELOAD:{clip_path}
+    AnimReload { clip_path: String },
 }
 
 // ============================================================
@@ -1383,6 +1399,37 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                         }
                         "SET_PLAY_COLLIDER_DRAW:1" => Some(IpcCommand::SetPlayColliderDraw(true)),
                         "SET_PLAY_COLLIDER_DRAW:0" => Some(IpcCommand::SetPlayColliderDraw(false)),
+
+                        s if s.starts_with("SET_ANIMATOR_CLIPS:") => {
+                            // フォーマット: SET_ANIMATOR_CLIPS:{actor_dfs_id},{slot_idx},{json}
+                            // json は AnimatorComponentData の serde_json シリアライズ結果（カンマ含む）。
+                            parse2u_tail(&s["SET_ANIMATOR_CLIPS:".len()..])
+                                .map(|(a, sl, json)| IpcCommand::SetAnimatorClips {
+                                    actor_dfs_id: a, slot_idx: sl, json: json.to_string(),
+                                })
+                        }
+                        s if s.starts_with("ANIM_PREVIEW_STOP:") => {
+                            // フォーマット: ANIM_PREVIEW_STOP:{actor_dfs_id}
+                            s["ANIM_PREVIEW_STOP:".len()..].trim().parse::<u32>().ok()
+                                .map(|actor_dfs_id| IpcCommand::AnimPreviewStop { actor_dfs_id })
+                        }
+                        s if s.starts_with("ANIM_PREVIEW:") => {
+                            // フォーマット: ANIM_PREVIEW:{actor_dfs_id},{clip_path},{time}
+                            // clip_path は "assets://..." 仮想パス（'/' 区切りでカンマを含まない）。
+                            let rest = &s["ANIM_PREVIEW:".len()..];
+                            let mut it = rest.splitn(3, ',');
+                            (|| -> Option<IpcCommand> {
+                                let actor_dfs_id: u32 = it.next()?.trim().parse().ok()?;
+                                let clip_path = it.next()?.to_string();
+                                let time: f32 = it.next()?.trim().parse().ok()?;
+                                Some(IpcCommand::AnimPreview { actor_dfs_id, clip_path, time })
+                            })()
+                        }
+                        s if s.starts_with("ANIM_RELOAD:") => {
+                            // フォーマット: ANIM_RELOAD:{clip_path}
+                            let clip_path = s["ANIM_RELOAD:".len()..].to_string();
+                            Some(IpcCommand::AnimReload { clip_path })
+                        }
 
                         _                    => None,
                     }

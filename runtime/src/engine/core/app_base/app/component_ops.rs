@@ -255,12 +255,14 @@ impl App {
                     ))
                 }
                 ComponentData::AnimatorComponent(d) => {
-                    // アニメーター: クリップ数・既定クリップ・自動再生・速度をインスペクター用に送信する。
-                    // 詳細なクリップ一覧編集 UI は P2 で対応するため、ここでは概要情報のみ返す。
-                    let default_clip_json = serde_json::to_string(&d.default_clip).unwrap_or_default();
+                    // アニメーター: クリップ一覧（name/path）・既定クリップ・自動再生・速度を
+                    // インスペクター／タイムラインパネル用に送信する（P2 でクリップ編集 UI が消費する）。
+                    // clips は AnimClipRef の配列（[{"name":"..","path":".."},...]）としてそのまま JSON 化する。
+                    let clips_json         = serde_json::to_string(&d.clips).unwrap_or_else(|_| "[]".to_string());
+                    let default_clip_json  = serde_json::to_string(&d.default_clip).unwrap_or_default();
                     ("AnimatorComponent", format!(
-                        r#","clip_count":{},"default_clip":{default_clip_json},"play_on_start":{},"speed":{:.4}"#,
-                        d.clips.len(), d.play_on_start as u8, d.speed,
+                        r#","clips":{clips_json},"default_clip":{default_clip_json},"play_on_start":{},"speed":{:.4}"#,
+                        d.play_on_start as u8, d.speed,
                     ))
                 }
                 ComponentData::CameraComponent(d) => {

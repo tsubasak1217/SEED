@@ -676,6 +676,11 @@
                               IsCheckable="True"
                               Tag="output"
                               Click="OnTogglePanel"/>
+                    <MenuItem x:Name="MenuItemAnimationTimeline"
+                              Header="アニメーション"
+                              IsCheckable="True"
+                              Tag="animation_timeline"
+                              Click="OnTogglePanel"/>
                 </MenuItem>
                 <!-- スクリプト: スクリプト編集関連ウィンドウ -->
                 <MenuItem Header="スクリプト">
@@ -1469,6 +1474,14 @@
                                                   CanHide="False"
                                                   CanFloat="True">
                                 <panels:OutputPanel x:Name="PanelOutput"/>
+                            </avd:LayoutAnchorable>
+                            <!-- キーフレームアニメーション編集パネル（.anim のドープシート編集） -->
+                            <avd:LayoutAnchorable Title="アニメーション"
+                                                  ContentId="animation_timeline"
+                                                  CanClose="False"
+                                                  CanHide="True"
+                                                  CanFloat="True">
+                                <panels:AnimationTimelinePanel x:Name="PanelAnimationTimeline"/>
                             </avd:LayoutAnchorable>
                             <avd:LayoutAnchorable Title="エラー一覧"
                                                   ContentId="error_list"

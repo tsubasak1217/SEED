@@ -146,6 +146,37 @@ pub fn apply_write(world: &mut World, target: &Actor, binding: PropBinding, valu
     }
 }
 
+// ─── 読み取り（Edit プレビューの元値退避用）───────────────────
+
+/// 束縛の現在値を対象アクターから読み取る。apply_write の逆方向。
+///
+/// Edit モードのアニメーションプレビュー（ANIM_PREVIEW）で、プレビュー適用前の
+/// 元値を退避するために使う。値が読み取れない（対象コンポーネントが無い等）場合は None。
+pub fn read_binding(world: &World, target: &Actor, binding: PropBinding) -> Option<AnimValue> {
+    match binding {
+        PropBinding::ActorTransformPosition =>
+            world.get::<Transform>(target.entity).map(|tf| AnimValue::Vec3(tf.position)),
+        PropBinding::ActorTransformRotation =>
+            world.get::<Transform>(target.entity).map(|tf| AnimValue::Vec3(tf.rotation)),
+        PropBinding::ActorTransformScale =>
+            world.get::<Transform>(target.entity).map(|tf| AnimValue::Vec3(tf.scale)),
+        PropBinding::CanvasTransformPosition =>
+            world.get::<CanvasTransform>(target.entity).map(|ct| AnimValue::Vec2(ct.position)),
+        PropBinding::CanvasTransformRotation =>
+            world.get::<CanvasTransform>(target.entity).map(|ct| AnimValue::Float(ct.rotation)),
+        PropBinding::CanvasTransformScale =>
+            world.get::<CanvasTransform>(target.entity).map(|ct| AnimValue::Vec2(ct.scale)),
+        // apply_write と同じスロット選択規則（最初の Sprite スロット）で読む。
+        // 退避と復元の対象を一致させるため必須。
+        PropBinding::SpriteColor => {
+            target.slots().iter()
+                .find(|s| s.kind == ComponentKind::Sprite)
+                .and_then(|s| world.get::<SpriteComponent>(s.entity))
+                .map(|sp| AnimValue::Color(sp.color))
+        }
+    }
+}
+
 /// Transform 書き換え後に、対象アクターの全 Model スロットの
 /// instance_mats[0] を新しい TRS 行列へ同期し、バッチを dirty 化する。
 ///

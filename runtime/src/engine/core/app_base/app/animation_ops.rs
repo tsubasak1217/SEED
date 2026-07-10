@@ -19,11 +19,11 @@
 use std::sync::Arc;
 
 use crate::engine::animation::{self, AnimationClip};
-use crate::engine::components::{AnimatorComponent, AnimClipRef, ComponentKind};
+use crate::engine::components::{AnimatorComponent, AnimatorComponentData, AnimClipRef, ComponentKind};
 use crate::engine::ecs::Entity;
 use crate::engine::structs::objects::Actor;
 
-use super::{App, RuntimeMode};
+use super::{App, RuntimeMode, find_actor_by_dfs};
 
 impl App {
     /// AnimationSystem の毎フレームエントリポイント（Play・非ポーズ時のみ）。
@@ -171,6 +171,146 @@ impl App {
         if let Some(ipc) = &self.ipc {
             for e in load_errors { ipc.send(&e); }
         }
+    }
+
+    // ── インスペクターからの AnimatorComponent 編集（SET_ANIMATOR_CLIPS IPC）──
+
+    /// インスペクターの Animator 編集 UI からのクリップ一覧一括更新（SET_ANIMATOR_CLIPS IPC）。
+    ///
+    /// json は AnimatorComponentData と serde 互換（clips / default_clip / play_on_start / speed）。
+    /// 揮発状態（current_clip / time / playing / initialized / cache）は AnimatorComponent::from_data
+    /// で作り直すことでリセットする（クリップ差し替え後の状態不整合を避けるため、
+    /// 安全側で常に再初期化する）。
+    pub(super) fn handle_set_animator_clips(&mut self, actor_dfs_id: u32, slot_idx: u32, json: &str) {
+        // JSON を AnimatorComponentData にデコードする（失敗時は無視）
+        let data: AnimatorComponentData = match serde_json::from_str(json) {
+            Ok(d) => d,
+            Err(err) => {
+                eprintln!("[SEED anim] SET_ANIMATOR_CLIPS: JSON パース失敗: {err}");
+                return;
+            }
+        };
+
+        let wl = self.active_world_line;
+        // 対象スロットのエンティティを解決する（handle_set_audio_field と同じ流儀）
+        let slot_entity = {
+            let Some(scene) = &self.scene else { return };
+            let mut c = 0u32;
+            find_actor_by_dfs(&scene.actors, wl, actor_dfs_id, &mut c)
+                .and_then(|a| a.slots().get(slot_idx as usize))
+                .filter(|s| s.kind == ComponentKind::Animator)
+                .map(|s| s.entity)
+        };
+        let Some(entity) = slot_entity else { return };
+        let Some(scene) = &mut self.scene else { return };
+        if let Some(a) = scene.world.get_mut::<AnimatorComponent>(entity) {
+            // 保存対象データを置換し、揮発状態は from_data 相当で作り直す
+            *a = AnimatorComponent::from_data(data);
+        }
+
+        self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
+        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+    }
+
+    // ── Edit モードのアニメーションプレビュー（ANIM_PREVIEW / ANIM_PREVIEW_STOP / ANIM_RELOAD）──
+
+    /// Edit モード限定：指定クリップの指定時刻を対象アクターへプレビュー適用する（ANIM_PREVIEW IPC）。
+    ///
+    /// 初回プレビュー時（そのアクターの元値未退避時）は、このクリップの全トラックが
+    /// 触れるプロパティの現在値を anim_preview_saved へ退避する。
+    /// 以降の呼び出し（タイムラインのスクラブ等）では退避を行わず、単に評価値を書き込む。
+    pub(super) fn handle_anim_preview(&mut self, actor_dfs_id: u32, clip_path: &str, time: f32) {
+        // Edit モード専用（Play モード中は AnimationSystem が別途評価するため無視する）
+        if self.mode != RuntimeMode::Edit {
+            eprintln!("[SEED anim] ANIM_PREVIEW は Edit モード専用（無視）");
+            return;
+        }
+
+        // クリップをキャッシュから取得、無ければロードしてキャッシュする
+        let clip: Arc<AnimationClip> = match self.anim_preview_cache.get(clip_path) {
+            Some(c) => c.clone(),
+            None => match AnimationClip::load(clip_path) {
+                Ok(c) => {
+                    let arc = Arc::new(c);
+                    self.anim_preview_cache.insert(clip_path.to_string(), arc.clone());
+                    arc
+                }
+                Err(err) => {
+                    eprintln!("[SEED anim] ANIM_PREVIEW: クリップロード失敗 {clip_path}: {err}");
+                    return;
+                }
+            },
+        };
+
+        let wl = self.active_world_line;
+        let Some(scene) = self.scene.as_mut() else { return };
+        // scene.actors（不変）と scene.world（可変）は別フィールドのため同時借用できる
+        let actors = &scene.actors;
+        let world  = &mut scene.world;
+
+        let mut counter = 0u32;
+        let Some(owner) = find_actor_by_dfs(actors, wl, actor_dfs_id, &mut counter) else { return };
+
+        // 初回プレビューなら、このクリップの全トラックが触れるプロパティの現在値を退避する
+        if !self.anim_preview_saved.contains_key(&actor_dfs_id) {
+            let mut saved = Vec::new();
+            for track in &clip.tracks {
+                let Some(binding) =
+                    animation::resolve_binding(&track.target.component, &track.target.property)
+                else { continue };
+                if binding.expected_value_type() != track.value_type { continue; }
+                let Some(target_actor) =
+                    animation::resolve_actor_path(owner, &track.target.actor_path)
+                else { continue };
+                if let Some(value) = animation::read_binding(world, target_actor, binding) {
+                    saved.push((track.target.actor_path.clone(), binding, value));
+                }
+            }
+            self.anim_preview_saved.insert(actor_dfs_id, saved);
+        }
+
+        // サンプル時刻を求め、各トラックを評価して書き込む
+        let (sample_time, _still_playing) =
+            animation::normalize_time(clip.loop_mode, time, clip.duration);
+        for track in &clip.tracks {
+            let Some(binding) =
+                animation::resolve_binding(&track.target.component, &track.target.property)
+            else { continue };
+            if binding.expected_value_type() != track.value_type { continue; }
+            let Some(target_actor) =
+                animation::resolve_actor_path(owner, &track.target.actor_path)
+            else { continue };
+            if let Some(value) = animation::sample_track(track, sample_time) {
+                animation::apply_write(world, target_actor, binding, &value);
+            }
+        }
+    }
+
+    /// アニメーションプレビューを終了し、退避しておいた元値へ復元する（ANIM_PREVIEW_STOP IPC）。
+    /// 退避エントリが無ければ何もしない（プレビュー未実行 or 既に停止済み）。
+    pub(super) fn handle_anim_preview_stop(&mut self, actor_dfs_id: u32) {
+        let Some(saved) = self.anim_preview_saved.remove(&actor_dfs_id) else { return };
+        if saved.is_empty() { return; }
+
+        let wl = self.active_world_line;
+        let Some(scene) = self.scene.as_mut() else { return };
+        let actors = &scene.actors;
+        let world  = &mut scene.world;
+
+        let mut counter = 0u32;
+        let Some(owner) = find_actor_by_dfs(actors, wl, actor_dfs_id, &mut counter) else { return };
+
+        for (actor_path, binding, value) in saved {
+            if let Some(target_actor) = animation::resolve_actor_path(owner, &actor_path) {
+                animation::apply_write(world, target_actor, binding, &value);
+            }
+        }
+    }
+
+    /// 指定クリップのロード済みキャッシュを破棄する（ANIM_RELOAD IPC）。
+    /// エディタが .anim 保存後に送る。次回の ANIM_PREVIEW で再ロードされる。
+    pub(super) fn handle_anim_reload(&mut self, clip_path: &str) {
+        self.anim_preview_cache.remove(clip_path);
     }
 }
 

@@ -328,6 +328,12 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         PanelProject.ActorFileOpened    += OnActorFileOpened;
         PanelProject.InputMapFileOpened += OnInputMapFileOpened;
         PanelProject.ScriptFileOpened   += OnScriptFileOpened;
+        // .anim ファイルのダブルクリックでアニメーションタイムラインパネルを開いて読み込む
+        PanelProject.AnimFileOpened     += path =>
+        {
+            ShowAnchorable("animation_timeline");
+            PanelAnimationTimeline.LoadAnimFile(path);
+        };
 
         // スクリプトエディタ: アセットルートを渡して IntelliSense / F12 を有効化する
         PanelScriptEditor.SetAssetsPath(AssetsPath);
@@ -346,6 +352,24 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         PanelInspector.ScriptFileOpenRequested += OnScriptFileOpened;
         // インスペクタの「キャンバスを編集」ボタンでキャンバス編集タブを開く
         PanelInspector.CanvasEditRequested += OnCanvasEditRequested;
+
+        // アニメーションタイムラインパネル: Runtime/アセットルートを注入し、
+        // Inspector の「タイムラインで編集」ボタンから対象クリップを開けるようにする。
+        PanelAnimationTimeline.SetRuntime(_runtimeManager);
+        PanelAnimationTimeline.SetAssetsPath(AssetsPath);
+        PanelInspector.TimelineEditRequested += clipPath =>
+        {
+            ShowAnchorable("animation_timeline");
+            PanelAnimationTimeline.OpenClipByPath(clipPath);
+        };
+        // パネル側の未保存インジケータ（*）を LayoutAnchorable のタイトルへ反映する
+        PanelAnimationTimeline.TitleChanged += title =>
+        {
+            var anchorable = DockManager.Layout.Descendents()
+                .OfType<LayoutAnchorable>()
+                .FirstOrDefault(a => a.ContentId == "animation_timeline");
+            if (anchorable is not null) anchorable.Title = title;
+        };
         // 保存時: インスペクタの型キャッシュを無効化し、runtime にホットリロードを要求する
         PanelScriptEditor.ScriptSaved += path =>
         {
@@ -759,6 +783,7 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
                     "inspector"     => PanelInspector,
                     "viewport"      => ViewportGrid,
                     "output"         => PanelOutput,
+                    "animation_timeline" => PanelAnimationTimeline,
                     "ai_assistant"   => _aiPanelUi,
                     "script_editor"  => PanelScriptEditor,
                     "open_documents" => _openDocsPanel,
@@ -834,6 +859,8 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
     {
         EnsureAnchorable("open_documents", "タブ", _openDocsPanel);
         EnsureAnchorable("error_list",     "エラー一覧", _errorListPanel);
+        // 新規追加パネル（旧 layout.xml には存在しない）。CanClose=False の常設パネルとして復元を保証する。
+        EnsureAnchorable("animation_timeline", "アニメーション", PanelAnimationTimeline);
     }
 
     private void EnsureAnchorable(string contentId, string title, object? content)

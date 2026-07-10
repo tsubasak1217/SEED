@@ -747,6 +747,19 @@ pub struct App {
     ///   - カメラ新規追加時の既定アスペクト比（target_width / target_height）
     ///   - ビューポート・ルートキャンバスの自動解像度計算（effective_root_canvas_size）
     pub(super) project_resolution: (u32, u32),
+
+    // ── アニメーション Edit プレビュー ───────────────────────────────
+    /// Edit モードのアニメーションプレビュー（ANIM_PREVIEW）用クリップキャッシュ。
+    /// キー = .anim アセットパス。ANIM_RELOAD 受信時にエントリを破棄し、
+    /// 次回プレビューで再ロードさせる（エディタでの .anim 保存直後に送られる）。
+    pub(super) anim_preview_cache: HashMap<String, Arc<crate::engine::animation::AnimationClip>>,
+
+    /// Edit モードのアニメーションプレビュー適用前の元値退避。
+    /// キー = プレビュー対象アクターの DFS id。値 = そのアクターのクリップが持つ
+    /// 各トラックの (相対アクターパス, 束縛, プレビュー適用前の値)。
+    /// ANIM_PREVIEW_STOP 受信時にここから取り出して書き戻し、プレビュー中に
+    /// 触れたプロパティを元の状態へ完全復元する。
+    pub(super) anim_preview_saved: HashMap<u32, Vec<(String, crate::engine::animation::PropBinding, crate::engine::animation::AnimValue)>>,
 }
 
 /// プロジェクト設定が読めない場合のウィンドウ解像度既定値（Full HD）。
@@ -903,6 +916,8 @@ impl App {
             pending_restore_vel_2d: None,
             // handle_resumed で project_settings.json から上書きされる
             project_resolution: DEFAULT_PROJECT_RESOLUTION,
+            anim_preview_cache: HashMap::new(),
+            anim_preview_saved: HashMap::new(),
         }
     }
 

@@ -142,6 +142,8 @@ public partial class ProjectPanel : UserControl
 
     /// <summary>.cs ファイルがダブルクリックされたときに発火する（フルパス）。内蔵スクリプトエディタで開く。</summary>
     public event Action<string>? ScriptFileOpened;
+    /// <summary>.anim ファイルがダブルクリックされた（絶対パス）。AnimationTimelinePanel での編集起動用。</summary>
+    public event Action<string>? AnimFileOpened;
 
     public void SetAssetsPath(string assetsPath)
     {
@@ -539,6 +541,9 @@ public partial class ProjectPanel : UserControl
                 else if (entry is FileInfo csFile &&
                          csFile.Extension.Equals(".cs", StringComparison.OrdinalIgnoreCase))
                     ScriptFileOpened?.Invoke(csFile.FullName);
+                else if (entry is FileInfo animFile &&
+                         animFile.Extension.Equals(".anim", StringComparison.OrdinalIgnoreCase))
+                    AnimFileOpened?.Invoke(animFile.FullName);
             }
             else if (e.ClickCount == 1)
             {

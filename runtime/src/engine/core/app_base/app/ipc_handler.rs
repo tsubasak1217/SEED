@@ -880,6 +880,18 @@ impl App {
                 IpcCommand::SetAudioField { actor_dfs_id, slot_idx, key, value } => {
                     self.handle_set_audio_field(actor_dfs_id, slot_idx, &key, &value);
                 }
+                IpcCommand::SetAnimatorClips { actor_dfs_id, slot_idx, json } => {
+                    self.handle_set_animator_clips(actor_dfs_id, slot_idx, &json);
+                }
+                IpcCommand::AnimPreview { actor_dfs_id, clip_path, time } => {
+                    self.handle_anim_preview(actor_dfs_id, &clip_path, time);
+                }
+                IpcCommand::AnimPreviewStop { actor_dfs_id } => {
+                    self.handle_anim_preview_stop(actor_dfs_id);
+                }
+                IpcCommand::AnimReload { clip_path } => {
+                    self.handle_anim_reload(&clip_path);
+                }
                 IpcCommand::SetCanvasAnchor { actor_dfs_id, ax, ay } => {
                     self.handle_set_canvas_anchor(actor_dfs_id, ax, ay);
                 }
