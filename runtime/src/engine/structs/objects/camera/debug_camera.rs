@@ -117,6 +117,22 @@ pub struct DebugCamera {
 /// 投影切り替えの補間時間（秒）。0.3 秒で透視↔正射をなめらかに補間する。
 pub const CAMERA_ORTHO_ANIM_SECONDS: f32 = 0.3;
 
+/// ホイール1ノッチあたりの移動速度倍率（フライ移動中の速度調整用）。
+/// scroll 量を指数として `SPEED_ADJUST_FACTOR^scroll` 倍する。
+const SPEED_ADJUST_FACTOR: f32 = 1.2;
+/// 速度調整で設定できる移動速度の下限（ユニット/秒）。
+const MOVE_SPEED_MIN: f32 = 0.5;
+/// 速度調整で設定できる移動速度の上限（ユニット/秒）。
+const MOVE_SPEED_MAX: f32 = 500.0;
+/// ホイール1ノッチあたりのドリー移動距離係数（move_speed に対する倍率）。
+const SCROLL_DOLLY_STEP: f32 = 0.5;
+/// ホイール1ノッチあたりの正射ズーム倍率（描画範囲をこの倍率で縮小する）。
+const ORTHO_ZOOM_FACTOR: f32 = 0.9;
+/// 正射投影時の描画範囲（半高）の下限（ワールド単位）。
+const ORTHO_HALF_H_MIN: f32 = 0.05;
+/// 正射投影時の描画範囲（半高）の上限（ワールド単位）。
+const ORTHO_HALF_H_MAX: f32 = 100_000.0;
+
 /// 2 つの 4x4 行列を要素ごとに線形補間する（t=0 で a, t=1 で b）。
 ///
 /// 投影切替アニメーションで透視射影行列と正射射影行列を混ぜるために使う。
@@ -199,26 +215,35 @@ impl DebugCamera {
     /// ホイールスクロール処理。
     ///
     /// - 正射投影モード: スクロールで正射サイズ（描画範囲）をズームする
-    /// - それ以外（RMB による視点回転中を含む）: スクロールで現在の視点方向へ
+    /// - RMB 押下 + WASDQE 移動中（フライ移動中）: スクロールで移動速度を調整する
+    /// - それ以外（RMB による視点回転のみを含む）: スクロールで現在の視点方向へ
     ///   前後移動（ドリー）する
     ///
-    /// 以前は RMB 押下中（または WASDQE 移動中）はスクロールで `move_speed` を
-    /// 調整する仕様だったが、「RMB で視点回転しながらホイールで寄せ引きしたい」
-    /// という要望により、RMB 中もドリー動作に統一した。
+    /// つまり「RMB で回転しているだけ」ならホイールで寄せ引きでき、
+    /// WASDQE で飛行中はホイールが速度ダイヤルとして機能する（Unity 風）。
     fn update_scroll_dolly(&mut self, cam: &CameraInput) {
         if cam.scroll == 0.0 { return; }
+
+        // フライ移動中（RMB + 移動キー押下）: スクロールで移動速度を調整する。
+        // 回転のみ（移動キーなし）の場合はここを通らず、下のドリーへ進む。
+        if cam.rmb && cam.any_move_key() {
+            self.move_speed = (self.move_speed * SPEED_ADJUST_FACTOR.powf(cam.scroll))
+                .clamp(MOVE_SPEED_MIN, MOVE_SPEED_MAX);
+            return;
+        }
 
         // 正射投影モード: スクロールで正射サイズ（描画範囲）をズームする。
         // 正射は距離に依らず一定のため前後移動では拡縮しない。
         if self.ortho_target >= 0.5 {
-            self.ortho_half_h = (self.ortho_half_h * 0.9_f32.powf(cam.scroll)).clamp(0.05, 100_000.0);
+            self.ortho_half_h = (self.ortho_half_h * ORTHO_ZOOM_FACTOR.powf(cam.scroll))
+                .clamp(ORTHO_HALF_H_MIN, ORTHO_HALF_H_MAX);
             return;
         }
 
-        // それ以外: 視点方向への前後移動（ホイール1ノッチで move_speed * 0.5 ユニット移動）。
-        // RMB 視点回転中でもここを通るため、回転しながらのドリーが可能。
+        // それ以外: 視点方向への前後移動（ホイール1ノッチで move_speed * SCROLL_DOLLY_STEP ユニット移動）。
+        // RMB による視点回転のみ（移動キーなし）の場合もここを通るため、回転しながらのドリーが可能。
         let forward = self.base.transform.forward();
-        let dist    = self.move_speed * cam.scroll * 0.5;
+        let dist    = self.move_speed * cam.scroll * SCROLL_DOLLY_STEP;
         self.base.transform.position += forward * dist;
     }
 
