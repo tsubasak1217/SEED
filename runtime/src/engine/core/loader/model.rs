@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use serde::{Serialize, Deserialize};
 
 // ============================================================
 //  最上位: Model
@@ -8,6 +9,10 @@ use std::path::PathBuf;
 ///
 /// シーングラフ (`nodes`) を頂点として持ち、`meshes` / `materials` / `textures` /
 /// `animations` / `skins` がそれぞれインデックスで参照し合う構造になっている。
+///
+/// `serde` 派生を持つのは派生データキャッシュ（`asset_cache`）で bincode
+/// シリアライズするため。GPU ハンドルは一切保持しないため丸ごと直列化できる。
+#[derive(Serialize, Deserialize)]
 pub struct Model {
     pub name:        String,
     /// 全ノード（フラット配列。子ノードは children インデックスで参照）
@@ -36,6 +41,7 @@ impl Model {
 ///
 /// `local_matrix` は行優先・列ベクトル規約（wgpu/DX12 準拠）。
 /// glTF 由来の場合は列優先から転置済み。
+#[derive(Serialize, Deserialize)]
 pub struct ModelNode {
     pub name:         String,
     /// ローカル変換行列 [row][col]（行優先）
@@ -70,6 +76,7 @@ impl ModelNode {
 /// 論理メッシュ。複数のプリミティブ（描画単位）を持てる。
 ///
 /// glTF の Mesh / Primitive 構造に対応する。
+#[derive(Serialize, Deserialize)]
 pub struct Mesh {
     pub name:       String,
     pub primitives: Vec<Primitive>,
@@ -80,6 +87,7 @@ pub struct Mesh {
 /// `skin_vertices` は `vertices` と同じ長さ、またはスキニングなしの場合は空。
 /// `lod_indices[0]` = LOD1（約50%）、`[1]` = LOD2（約25%）、`[2]` = LOD3（約10%）。
 /// 空の場合は LOD 未生成（すべて LOD0 で代用）。
+#[derive(Serialize, Deserialize)]
 pub struct Primitive {
     pub vertices:      Vec<Vertex>,
     /// スキニング用並列配列（`is_skinned()` が true のときのみ有効）
@@ -95,7 +103,7 @@ impl Primitive {
 }
 
 /// 頂点データ（GPU バッファに直接アップロードできる `repr(C)` レイアウト）。
-#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable, Serialize, Deserialize)]
 #[repr(C)]
 pub struct Vertex {
     pub position: [f32; 3],
@@ -125,7 +133,7 @@ impl Default for Vertex {
 }
 
 /// スキニング用頂点データ（`Vertex` と並列）。
-#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable, Serialize, Deserialize)]
 #[repr(C)]
 pub struct SkinVertex {
     /// 影響するボーンのインデックス（最大 4 本）
@@ -139,6 +147,7 @@ pub struct SkinVertex {
 // ============================================================
 
 /// PBR マテリアル（glTF2.0 metallic-roughness ワークフロー準拠）。
+#[derive(Serialize, Deserialize)]
 pub struct Material {
     pub name: String,
 
@@ -188,7 +197,7 @@ impl Default for Material {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AlphaMode {
     /// 完全不透明
     Opaque,
@@ -199,11 +208,13 @@ pub enum AlphaMode {
 }
 
 /// テクスチャ参照（Material → TextureData のインデックス）。
+#[derive(Serialize, Deserialize)]
 pub struct TextureInfo {
     pub texture_index: usize,
     pub tex_coord_set: u32,
 }
 
+#[derive(Serialize, Deserialize)]
 pub struct NormalTextureInfo {
     pub texture_index: usize,
     pub tex_coord_set: u32,
@@ -211,6 +222,7 @@ pub struct NormalTextureInfo {
     pub scale: f32,
 }
 
+#[derive(Serialize, Deserialize)]
 pub struct OcclusionTextureInfo {
     pub texture_index: usize,
     pub tex_coord_set: u32,
@@ -222,22 +234,99 @@ pub struct OcclusionTextureInfo {
 //  テクスチャ
 // ============================================================
 
+#[derive(Serialize, Deserialize)]
 pub struct TextureData {
     pub name:    Option<String>,
     pub source:  TextureSource,
     pub sampler: SamplerData,
     /// true = 法線・MR・AO など線形データテクスチャ（Rgba8Unorm）
     /// false = ベースカラー・エミッシブなど sRGB テクスチャ（Rgba8UnormSrgb）
+    ///
+    /// `TextureSource::Ready` の場合は `format` フィールドが sRGB/線形の権威となり、
+    /// この `linear` フラグは無視される（後方互換のため残置）。
     pub linear:  bool,
 }
 
+/// テクスチャの用途分類。派生キャッシュ生成時に最適な BC フォーマットを選ぶために使う。
+///
+/// `TextureData.linear` だけでは「法線(BC5)」と「MR/AO などの線形 RGBA(BC7)」を
+/// 区別できないため、テクスチャがどのマテリアルスロットで参照されるかをローダー側で
+/// 集計してこの分類を割り当てる。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TextureUsage {
+    /// ベースカラー・エミッシブ（sRGB, RGBA） → BC3 sRGB
+    ColorSrgb,
+    /// 法線マップ（線形, RG のみ有効） → BC5
+    NormalMap,
+    /// メタリック-ラフネス・オクルージョン等の線形 RGBA データ → BC3 Unorm
+    LinearData,
+}
+
+/// テクスチャのピクセル供給元。
+#[derive(Serialize, Deserialize)]
 pub enum TextureSource {
-    /// RGBA8 に正規化済みの埋め込みピクセルデータ
+    /// RGBA8 に正規化済みの埋め込みピクセルデータ（デコード直後・未圧縮）
     Embedded { width: u32, height: u32, pixels: Vec<u8> },
     /// 外部ファイルパス（OBJ/MTL 等）
     FilePath(PathBuf),
+    /// GPU に即アップロードできる形（派生キャッシュ由来）。
+    ///
+    /// BC 圧縮ブロック列、または BC 非対応 GPU 向けの RGBA8 ミップ列を保持する。
+    /// `mips[0]` = 最大解像度、以降 1/2 ずつ縮小したミップチェーン。
+    Ready {
+        format: CachedTexFormat,
+        width:  u32,
+        height: u32,
+        /// ミップレベルごとのバイト列（BC ブロック連結、または RGBA8 行連結）
+        mips:   Vec<Vec<u8>>,
+    },
 }
 
+/// 派生キャッシュに格納する GPU テクスチャフォーマット。
+///
+/// wgpu の型を直接 serde 直列化せず、自前の安定した列挙で保存する
+/// （wgpu のバージョンアップでの表現変化から切り離すため）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CachedTexFormat {
+    /// 非圧縮 RGBA8（線形）。BC 非対応 GPU フォールバック用。
+    Rgba8Unorm,
+    /// 非圧縮 RGBA8（sRGB）。BC 非対応 GPU フォールバック用。
+    Rgba8UnormSrgb,
+    /// BC3（sRGB, RGBA）: アルベド・エミッシブ（アルファ対応）
+    Bc3RgbaUnormSrgb,
+    /// BC3（線形, RGBA）: メタリック-ラフネス・オクルージョン等
+    Bc3RgbaUnorm,
+    /// BC1（線形, RGB）: アルファ不要な線形データ（8B/ブロックで軽量）
+    Bc1RgbaUnorm,
+    /// BC5（RG, 線形）: 法線マップ
+    Bc5RgUnorm,
+    /// BC4（R, 線形）: 単一チャンネルデータ（AO 等）
+    Bc4RUnorm,
+    /// BC6H（RGB, 符号なし float）: HDR テクスチャ（将来用・フォーマット定義のみ。現状は未生成）
+    Bc6hRgbUfloat,
+}
+
+impl CachedTexFormat {
+    /// 1 ブロック（4×4 テクセル）あたりのバイト数。
+    /// 非圧縮 RGBA8 は「1 テクセルあたり」のバイト数（4）を返す。
+    pub fn block_bytes(self) -> u32 {
+        match self {
+            CachedTexFormat::Rgba8Unorm | CachedTexFormat::Rgba8UnormSrgb => 4, // per-texel
+            CachedTexFormat::Bc1RgbaUnorm | CachedTexFormat::Bc4RUnorm => 8,
+            CachedTexFormat::Bc3RgbaUnormSrgb
+            | CachedTexFormat::Bc3RgbaUnorm
+            | CachedTexFormat::Bc5RgUnorm
+            | CachedTexFormat::Bc6hRgbUfloat => 16,
+        }
+    }
+
+    /// ブロック圧縮フォーマットかどうか（false なら非圧縮 RGBA8）。
+    pub fn is_block_compressed(self) -> bool {
+        !matches!(self, CachedTexFormat::Rgba8Unorm | CachedTexFormat::Rgba8UnormSrgb)
+    }
+}
+
+#[derive(Serialize, Deserialize)]
 pub struct SamplerData {
     pub mag_filter: FilterMode,
     pub min_filter: FilterMode,
@@ -256,7 +345,7 @@ impl Default for SamplerData {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FilterMode {
     Nearest,
     Linear,
@@ -266,7 +355,7 @@ pub enum FilterMode {
     LinearMipmapLinear,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WrapMode {
     Repeat,
     MirroredRepeat,
@@ -278,6 +367,7 @@ pub enum WrapMode {
 // ============================================================
 
 /// 1 アニメーションクリップ。
+#[derive(Serialize, Deserialize)]
 pub struct Animation {
     pub name:     String,
     /// クリップの総時間（秒）
@@ -286,12 +376,14 @@ pub struct Animation {
 }
 
 /// アニメーションチャンネル（ノード × プロパティ）。
+#[derive(Serialize, Deserialize)]
 pub struct AnimationChannel {
     /// 対象ノードのインデックス（Model::nodes）
     pub target_node_index: usize,
     pub sampler:           AnimationSampler,
 }
 
+#[derive(Serialize, Deserialize)]
 pub struct AnimationSampler {
     pub interpolation: Interpolation,
     /// キーフレームのタイムスタンプ（秒、昇順）
@@ -299,7 +391,7 @@ pub struct AnimationSampler {
     pub outputs:    AnimationOutputs,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Interpolation {
     Linear,
     Step,
@@ -307,6 +399,7 @@ pub enum Interpolation {
     CubicSpline,
 }
 
+#[derive(Serialize, Deserialize)]
 pub enum AnimationOutputs {
     Translations(Vec<[f32; 3]>),
     /// クォータニオン [x, y, z, w]
@@ -320,6 +413,7 @@ pub enum AnimationOutputs {
 // ============================================================
 
 /// スケルタルアニメーション用のスキンデータ。
+#[derive(Serialize, Deserialize)]
 pub struct Skin {
     pub name:   String,
     pub joints: Vec<SkinJoint>,
@@ -328,6 +422,7 @@ pub struct Skin {
 }
 
 /// スキンの 1 ジョイント。
+#[derive(Serialize, Deserialize)]
 pub struct SkinJoint {
     /// 対応するノードインデックス（Model::nodes）
     pub node_index: usize,

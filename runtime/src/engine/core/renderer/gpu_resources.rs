@@ -3,7 +3,7 @@ use wgpu::util::DeviceExt;
 use rayon::prelude::*;
 use crate::engine::core::loader::model::{
     Model, ModelNode, Primitive, Vertex, TextureData, TextureSource, SamplerData,
-    FilterMode, WrapMode, Material, AlphaMode,
+    FilterMode, WrapMode, Material, AlphaMode, CachedTexFormat,
 };
 use super::uniforms::{CameraUniform, ModelUniform, MaterialUniform, JointUniform, ColorVertex,
                       GpuCullData, FrustumUniform, GizmoVertex};
@@ -115,7 +115,114 @@ pub fn upload_texture_data(
         TextureSource::FilePath(path) => {
             load_from_file(device, queue, path, linear, &tex.sampler)
         }
+        // 派生キャッシュ由来の即アップロード形式（BC 圧縮 or RGBA ミップ）
+        TextureSource::Ready { format, width, height, mips } => {
+            upload_ready(device, queue, *format, *width, *height, mips, &tex.sampler,
+                         tex.name.as_deref())
+        }
     }
+}
+
+/// `CachedTexFormat` を wgpu の `TextureFormat` に変換する。
+fn conv_cached_format(f: CachedTexFormat) -> wgpu::TextureFormat {
+    use wgpu::TextureFormat as W;
+    match f {
+        CachedTexFormat::Rgba8Unorm       => W::Rgba8Unorm,
+        CachedTexFormat::Rgba8UnormSrgb   => W::Rgba8UnormSrgb,
+        CachedTexFormat::Bc3RgbaUnormSrgb => W::Bc3RgbaUnormSrgb,
+        CachedTexFormat::Bc3RgbaUnorm     => W::Bc3RgbaUnorm,
+        CachedTexFormat::Bc1RgbaUnorm     => W::Bc1RgbaUnorm,
+        CachedTexFormat::Bc5RgUnorm       => W::Bc5RgUnorm,
+        CachedTexFormat::Bc4RUnorm        => W::Bc4RUnorm,
+        CachedTexFormat::Bc6hRgbUfloat    => W::Bc6hRgbUfloat,
+    }
+}
+
+/// 派生キャッシュの `Ready`（ミップ付き BC/RGBA データ）を GPU テクスチャにアップロードする。
+///
+/// 各ミップを `queue.write_texture` で個別に書き込む。BC フォーマットの
+/// `bytes_per_row` はブロック行あたりのバイト数 `ceil(w/4) * block_bytes` を使う。
+/// `queue.write_texture` は 256B アライメント制約がない（バッファコピーのみの制約）ため、
+/// ブロック行そのままのピッチで書き込める。
+fn upload_ready(
+    device:  &wgpu::Device,
+    queue:   &wgpu::Queue,
+    format:  CachedTexFormat,
+    width:   u32,
+    height:  u32,
+    mips:    &[Vec<u8>],
+    sampler: &SamplerData,
+    label:   Option<&str>,
+) -> GpuTexture {
+    let wgpu_format = conv_cached_format(format);
+    let mip_level_count = mips.len().max(1) as u32;
+    let block_bytes = format.block_bytes();
+    let is_bc = format.is_block_compressed();
+
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label,
+        size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+        mip_level_count,
+        sample_count: 1,
+        dimension:    wgpu::TextureDimension::D2,
+        format:       wgpu_format,
+        usage:        wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+
+    // 各ミップを書き込む
+    for (level, data) in mips.iter().enumerate() {
+        let mw = (width  >> level).max(1);
+        let mh = (height >> level).max(1);
+
+        // bytes_per_row / rows: BC はブロック単位、RGBA はテクセル単位。
+        let (bytes_per_row, rows) = if is_bc {
+            let blocks_x = mw.div_ceil(4);
+            let blocks_y = mh.div_ceil(4);
+            (blocks_x * block_bytes, blocks_y)
+        } else {
+            (mw * block_bytes, mh)
+        };
+
+        // データ長が不足している破損ケースはスキップ（クラッシュ回避）。
+        if (bytes_per_row as usize) * (rows as usize) > data.len() {
+            eprintln!("[SEED cache] Ready テクスチャのミップ {level} のデータ長が不足。スキップします。");
+            continue;
+        }
+
+        queue.write_texture(
+            wgpu::ImageCopyTexture {
+                texture:   &texture,
+                mip_level: level as u32,
+                origin:    wgpu::Origin3d::ZERO,
+                aspect:    wgpu::TextureAspect::All,
+            },
+            data,
+            wgpu::ImageDataLayout {
+                offset:         0,
+                bytes_per_row:  Some(bytes_per_row),
+                rows_per_image: Some(rows),
+            },
+            wgpu::Extent3d { width: mw, height: mh, depth_or_array_layers: 1 },
+        );
+    }
+
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+    let (mag, min, mipmap) = conv_filter(sampler.min_filter, sampler.mag_filter);
+    let gpu_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+        label:          None,
+        address_mode_u: conv_wrap(sampler.wrap_u),
+        address_mode_v: conv_wrap(sampler.wrap_v),
+        address_mode_w: wgpu::AddressMode::Repeat,
+        mag_filter:     mag,
+        min_filter:     min,
+        mipmap_filter:  mipmap,
+        // ミップを持つのでフィルタ有効化。lod 範囲はデフォルト（全ミップ使用）。
+        ..Default::default()
+    });
+
+    GpuTexture { texture, view, sampler: gpu_sampler }
 }
 
 fn load_from_file(

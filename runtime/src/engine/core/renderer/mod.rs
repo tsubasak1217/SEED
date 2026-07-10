@@ -143,11 +143,19 @@ impl Renderer {
         let supports_pipeline_cache = adapter.features()
             .contains(wgpu::Features::PIPELINE_CACHE);
 
+        // TEXTURE_COMPRESSION_BC はデスクトップ GPU ではほぼ全対応だが念のため確認する。
+        // 対応時は派生キャッシュのテクスチャを BC 圧縮形式で保持し、
+        // 非対応時は非圧縮 RGBA ミップでキャッシュする（デコードスキップだけでも高速）。
+        let supports_bc = adapter.features()
+            .contains(wgpu::Features::TEXTURE_COMPRESSION_BC);
+        crate::engine::core::loader::asset_cache::set_bc_supported(supports_bc);
+
         let (device, queue) = pollster::block_on(adapter.request_device(
             &wgpu::DeviceDescriptor {
                 label:             None,
                 required_features: wgpu::Features::MULTI_DRAW_INDIRECT
                                  | wgpu::Features::INDIRECT_FIRST_INSTANCE
+                                 | if supports_bc { wgpu::Features::TEXTURE_COMPRESSION_BC } else { wgpu::Features::empty() }
                                  | if supports_pipeline_cache { wgpu::Features::PIPELINE_CACHE } else { wgpu::Features::empty() },
                 required_limits:   wgpu::Limits {
                     max_storage_buffers_per_shader_stage: 12,

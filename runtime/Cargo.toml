@@ -17,6 +17,13 @@ rayon = "1"
 meshopt = "0.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# 派生データキャッシュ（モデル/テクスチャの即ロード形式シリアライズ）
+bincode = "1"
+# GPU テクスチャ圧縮（純 Rust の BC 圧縮。BC1/BC3/BC4/BC5 対応）。
+# intel_tex_2（ISPC）は事前コンパイル済みオブジェクトが /MD（動的 CRT）で、
+# 本プロジェクトがリンクする nethost.lib（/MT・静的 CRT）と RuntimeLibrary が
+# 衝突（LNK2038）しリンク不能なため、C 依存のない純 Rust の texpresso を採用。
+texpresso = "2"
 naga = { version = "25", features = ["wgsl-in"] }
 toml  = "0.8"
 netcorehost = "0.20"

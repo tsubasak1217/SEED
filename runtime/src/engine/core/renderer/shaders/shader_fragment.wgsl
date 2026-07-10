@@ -93,7 +93,13 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // ── 法線（法線マップ対応）────────────────────────────────
     var N = normalize(in.world_normal);
     if u_material.has_normal_tex != 0u {
-        let tn  = textureSample(t_normal, s_normal, in.uv0).rgb * 2.0 - 1.0;
+        // 法線マップの Z は RG から再構築する。
+        // BC5 圧縮（RG 2ch）フォーマットは B チャンネルを持たないため直接読めない。
+        // 接空間法線は単位ベクトルなので z = sqrt(1 - x^2 - y^2) で復元でき、
+        // 非圧縮 RGB 法線マップでも同じ結果になる（後方互換）。
+        let nxy = textureSample(t_normal, s_normal, in.uv0).rg * 2.0 - 1.0;
+        let nz  = sqrt(max(0.0, 1.0 - dot(nxy, nxy)));
+        let tn  = vec3<f32>(nxy, nz);
         let T   = normalize(in.world_tan);
         let B   = normalize(in.world_bitan);
         let tbn = mat3x3<f32>(T, B, N);
