@@ -172,7 +172,7 @@ impl DebugCamera {
     /// 入力に応じてカメラを更新する。フレームループで毎フレーム呼ぶ。
     pub fn update(&mut self, cam: &CameraInput, delta_time: f32) {
         self.update_rotation(cam);
-        self.update_speed_or_scroll_move(cam);
+        self.update_scroll_dolly(cam);
         self.update_movement(cam, delta_time);
         self.update_mmb_pan(cam, delta_time);
     }
@@ -198,16 +198,15 @@ impl DebugCamera {
 
     /// ホイールスクロール処理。
     ///
-    /// - 右クリック中 or キーボード移動中: スクロールで移動速度を調整する
-    /// - それ以外: スクロールで現在の視点方向に前後移動する
-    fn update_speed_or_scroll_move(&mut self, cam: &CameraInput) {
+    /// - 正射投影モード: スクロールで正射サイズ（描画範囲）をズームする
+    /// - それ以外（RMB による視点回転中を含む）: スクロールで現在の視点方向へ
+    ///   前後移動（ドリー）する
+    ///
+    /// 以前は RMB 押下中（または WASDQE 移動中）はスクロールで `move_speed` を
+    /// 調整する仕様だったが、「RMB で視点回転しながらホイールで寄せ引きしたい」
+    /// という要望により、RMB 中もドリー動作に統一した。
+    fn update_scroll_dolly(&mut self, cam: &CameraInput) {
         if cam.scroll == 0.0 { return; }
-
-        // 右クリック中か移動キー押下中は速度調整（既存挙動）
-        if cam.rmb || cam.any_move_key() {
-            self.move_speed = (self.move_speed * 1.2_f32.powf(cam.scroll)).clamp(0.5, 500.0);
-            return;
-        }
 
         // 正射投影モード: スクロールで正射サイズ（描画範囲）をズームする。
         // 正射は距離に依らず一定のため前後移動では拡縮しない。
@@ -216,7 +215,8 @@ impl DebugCamera {
             return;
         }
 
-        // それ以外: 視点方向への前後移動（ホイール1ノッチで move_speed * 0.5 ユニット移動）
+        // それ以外: 視点方向への前後移動（ホイール1ノッチで move_speed * 0.5 ユニット移動）。
+        // RMB 視点回転中でもここを通るため、回転しながらのドリーが可能。
         let forward = self.base.transform.forward();
         let dist    = self.move_speed * cam.scroll * 0.5;
         self.base.transform.position += forward * dist;
