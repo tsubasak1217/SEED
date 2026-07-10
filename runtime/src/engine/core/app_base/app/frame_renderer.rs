@@ -787,6 +787,9 @@ impl App {
                         cpu_model: std::sync::Arc<crate::engine::core::loader::model::Model>,
                         mats:      Vec<[[f32; 4]; 4]>,
                         seeds:     Vec<u32>,
+                        /// 統合インスタンス i の Animator 駆動権威時刻（None = デモ再生）。
+                        /// ModelComponent::anim_drive 由来。同一 MC の全インスタンスに同じ値を複製する。
+                        time_overrides: Vec<Option<f32>>,
                         /// 統合インスタンス i の絶対 ID（元 MC の id_base + 元インスタンス idx）
                         abs_ids:   Vec<u32>,
                     }
@@ -810,8 +813,12 @@ impl App {
                                     cpu_model: arc_m.clone(),
                                     mats:      Vec::new(),
                                     seeds:     Vec::new(),
+                                    time_overrides: Vec::new(),
                                     abs_ids:   Vec::new(),
                                 });
+                            // この MC が Animator 駆動中なら権威時刻を、そうでなければ None を
+                            // 全インスタンス分複製する（インスタンスは同一アニメを共有再生する）。
+                            let mc_time_override = amc.anim_drive.map(|d| d.time);
                             // このMCが統合バッチに追加される前の先頭インデックスを記録する
                             let merged_start = e.mats.len() as u32;
                             let n_insts      = amc.instance_mats.len() as u32;
@@ -826,6 +833,7 @@ impl App {
                                        .map(|m| m.anim_seed)
                                        .unwrap_or(0)
                                 );
+                                e.time_overrides.push(mc_time_override);
                                 // abs_id = MC の id_base + このインスタンスのオフセット
                                 e.abs_ids.push(id_base + inst_i as u32);
                             }
@@ -857,6 +865,8 @@ impl App {
                             let batch     = &mut sd.batch;
                             let cpu_model = &sd.cpu_model;
                             batch.set_anim_seeds(&info.seeds);
+                            // Animator 駆動の権威時刻を反映する（デモ再生を上書き）。
+                            batch.set_anim_time_overrides(&info.time_overrides);
                             batch.mark_dirty();
                             batch.update(
                                 &draw_ctx.queue,

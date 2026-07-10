@@ -250,6 +250,7 @@ impl App {
                         instance_meta:   mc_data.meta,
                         group_meta:      mc_data.groups,
                         next_group_id:   mc_data.next_group_id,
+                        anim_drive:      None,
                     }
                 } else {
                     let path = std::path::Path::new(&mc_data.model_path);
@@ -284,6 +285,7 @@ impl App {
                         instance_meta:   mc_data.meta,
                         group_meta:      mc_data.groups,
                         next_group_id:   mc_data.next_group_id,
+                        anim_drive:      None,
                     }
                 };
                 let slot_entity = scene.world.spawn();
@@ -506,6 +508,7 @@ impl App {
                             instance_meta:   mc_data.meta,
                             group_meta:      mc_data.groups,
                             next_group_id:   mc_data.next_group_id,
+                            anim_drive:      None,
                         }
                     } else {
                         let path = std::path::Path::new(&mc_data.model_path);
@@ -536,6 +539,7 @@ impl App {
                             instance_meta:   mc_data.meta,
                             group_meta:      mc_data.groups,
                             next_group_id:   mc_data.next_group_id,
+                            anim_drive:      None,
                         }
                     };
                     scene.world.insert(slot_entity, mc);

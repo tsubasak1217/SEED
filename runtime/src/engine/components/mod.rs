@@ -26,7 +26,7 @@ pub mod animator_component;
 pub use transform::Transform;
 pub use canvas_transform::CanvasTransform;
 pub use model_component::{
-    ModelComponent, ModelComponentData,
+    ModelComponent, ModelComponentData, ModelAnimDrive,
     InstanceMeta, GroupMeta, GROUP_ID_BASE,
 };
 pub use script_component::{
@@ -44,7 +44,7 @@ pub use collider2d_component::{
 // RigidbodyComponentData は旧フォーマットシーンの後方互換デシリアライズ専用
 pub use rigidbody_component::RigidbodyComponentData;
 pub use audio_component::{AudioComponent, AudioComponentData};
-pub use animator_component::{AnimatorComponent, AnimatorComponentData, AnimClipRef};
+pub use animator_component::{AnimatorComponent, AnimatorComponentData, AnimClipRef, AnimClipKind, AnimClipLoop};
 
 use serde::{Deserialize, Serialize};
 

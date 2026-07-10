@@ -288,13 +288,17 @@ impl SkinComputeSystem {
     /// `compact_inst_indices`: このLODで可視なインスタンスの元インデックス一覧。
     /// `anim_seeds`: インスタンスごとの安定した位相シード（InstanceMeta::anim_seed）。
     ///   空の場合は orig インデックスをシードとして使用（後方互換）。
-    /// `global_time`: 経過時間（秒）。
+    /// `time_overrides`: インスタンスごとの Animator 駆動権威時刻（元インデックス順）。
+    ///   `Some(t)` のインスタンスは位相シードを無視して `t` を再生時刻に使う。
+    ///   空 or `None` のインスタンスは従来のデモ再生（global_time＋位相）。
+    /// `global_time`: デモ再生の経過時間（秒）。
     pub fn upload_lod_times(
         &self,
         queue:                &wgpu::Queue,
         lod:                  usize,
         compact_inst_indices: &[usize],
         anim_seeds:           &[u32],
+        time_overrides:       &[Option<f32>],
         global_time:          f32,
     ) {
         let visible = compact_inst_indices.len() as u32;
@@ -304,6 +308,11 @@ impl SkinComputeSystem {
 
         let times: Vec<f32> = compact_inst_indices.iter()
             .map(|&orig| {
+                // Animator 駆動の権威時刻があればそれを優先する（位相シード無視）。
+                // 呼び出し側でループ/クランプ正規化済みだが、安全のため [0, duration] にクランプする。
+                if let Some(Some(t)) = time_overrides.get(orig) {
+                    return t.clamp(0.0, self.anim_duration);
+                }
                 let seed = if anim_seeds.is_empty() {
                     orig as u32
                 } else {

@@ -84,6 +84,7 @@ impl App {
                     instance_meta:   vec![crate::engine::components::InstanceMeta::new("Instance_0")],
                     group_meta:      Vec::new(),
                     next_group_id:   GROUP_ID_BASE,
+                    anim_drive:      None,
                 };
 
                 // スロット専用エンティティを spawn して world に insert し、スロットを登録する
@@ -171,7 +172,20 @@ impl App {
             let (type_name, extra) = match &slot_data.component {
                 ComponentData::ModelComponent(d) => {
                     let path_json = serde_json::to_string(&d.model_path).unwrap_or_default();
-                    ("ModelComponent", format!(r#","model_path":{path_json}"#))
+                    // glTF モデル内蔵アニメ名一覧を添付する（C# の「内蔵アニメを追加」UI 用）。
+                    // components は filter_map で構築されスロットと 1:1 対応しないため、
+                    // 同一 source_path の ModelComponent をこのアクターの Model スロットから探す。
+                    // 名前は解決キー（AnimClipRef.anim）と一致させるため raw 値をそのまま送る
+                    // （無名アニメは空文字。C# 側での表示・重複扱いは C# ウェーブで対応）。
+                    let anims: Vec<String> = actor.slots().iter()
+                        .filter(|s| s.kind == ComponentKind::Model)
+                        .filter_map(|s| scene.world.get::<ModelComponent>(s.entity))
+                        .find(|mc| mc.source_path == d.model_path)
+                        .and_then(|mc| mc.model.as_ref())
+                        .map(|m| m.animations.iter().map(|a| a.name.clone()).collect())
+                        .unwrap_or_default();
+                    let anims_json = serde_json::to_string(&anims).unwrap_or_else(|_| "[]".to_string());
+                    ("ModelComponent", format!(r#","model_path":{path_json},"animations":{anims_json}"#))
                 }
                 ComponentData::ScriptComponent(d) => {
                     // スクリプトパスに加え [SerializeField] フィールドの現在値を送信する。
@@ -413,6 +427,7 @@ impl App {
                         instance_meta:   vec![InstanceMeta::new("Instance_0")],
                         group_meta:      Vec::new(),
                         next_group_id:   GROUP_ID_BASE,
+                        anim_drive:      None,
                     }
                 };
                 let name = slot_name.to_string();

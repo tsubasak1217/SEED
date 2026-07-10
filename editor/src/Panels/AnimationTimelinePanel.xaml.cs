@@ -47,11 +47,21 @@ public partial class AnimationTimelinePanel : UserControl
     /// <summary>プレビュー対象アクターの DFS ID（-1 = アクター文脈なし＝ファイル単独モード）。</summary>
     private int _actorDfsId = -1;
 
-    /// <summary>選択中アクターが持つクリップ一覧（name, path）。ComboBox の元データ。</summary>
-    private readonly List<(string Name, string Path)> _actorClips = new();
+    /// <summary>選択中アクターが持つクリップ一覧（name, kind, path）。ComboBox の元データ。
+    /// kind="model"（glTF 内蔵アニメ）のクリップは path が空文字のままで、ドープシート編集の対象外になる。</summary>
+    private readonly List<(string Name, string Kind, string Path)> _actorClips = new();
 
     /// <summary>ファイル単独モード（「直接開く」で開いた）かどうか。true の間は選択アクターの変化を無視する。</summary>
     private bool _isFileOnlyMode;
+
+    /// <summary>現在 ComboBox で選択中のクリップが kind=model（モデル内蔵アニメ）かどうか。
+    /// true の間はドープシート・再生プレビューを無効化し、案内文を表示する
+    /// （model クリップは .anim を持たず ANIM_PREVIEW/ドープシート編集の対象外のため）。</summary>
+    private bool _isModelClipSelected;
+
+    /// <summary>クリップ未選択時の既定の案内文（model クリップ選択時のみ別文言に差し替える）。</summary>
+    private const string DefaultNoClipHint = "Animator 付きアクタを選択するか、「直接開く」で .anim を開いてください";
+    private const string ModelClipHint     = "モデル内蔵アニメは編集できません（再生設定は Inspector で行ってください）";
 
     // ── 編集中クリップ ──────────────────────────────────────────
     private AnimClip? _clip;
@@ -140,6 +150,7 @@ public partial class AnimationTimelinePanel : UserControl
             _isFileOnlyMode   = true;
             _isDirty          = false;
             _selectedTrackIndex = -1;
+            _isModelClipSelected = false;
             RefreshAll();
         }
         catch (Exception ex)
@@ -230,18 +241,20 @@ public partial class AnimationTimelinePanel : UserControl
     }
 
     /// <summary>ACTOR_COMPONENTS 内の 1 コンポーネント（type=="AnimatorComponent"）を解析する。</summary>
-    private sealed record AnimatorComponentInfo(List<(string Name, string Path)> Clips, string DefaultClip);
+    private sealed record AnimatorComponentInfo(List<(string Name, string Kind, string Path)> Clips, string DefaultClip);
 
     private static AnimatorComponentInfo ParseAnimatorComponent(JsonElement comp)
     {
-        var clips = new List<(string, string)>();
+        var clips = new List<(string, string, string)>();
         if (comp.TryGetProperty("clips", out var clipsEl) && clipsEl.ValueKind == JsonValueKind.Array)
         {
             foreach (var c in clipsEl.EnumerateArray())
             {
                 var name = c.TryGetProperty("name", out var np) ? np.GetString() ?? "" : "";
+                // kind 省略時は keyframe（旧シーン後方互換。Rust 側 #[serde(default)] と同じ既定値）
+                var kind = c.TryGetProperty("kind", out var kp) ? kp.GetString() ?? "keyframe" : "keyframe";
                 var path = c.TryGetProperty("path", out var pp) ? pp.GetString() ?? "" : "";
-                clips.Add((name, path));
+                clips.Add((name, kind, path));
             }
         }
         var defaultClip = comp.TryGetProperty("default_clip", out var dp) ? dp.GetString() ?? "" : "";
@@ -250,13 +263,23 @@ public partial class AnimationTimelinePanel : UserControl
 
     // ── クリップ選択 UI ─────────────────────────────────────────
 
-    /// <summary>アクターの clips 一覧から ComboBox を再構築する。可能なら defaultClip を選択状態にする。</summary>
+    /// <summary>クリップ ComboBox の Tag（kind/path を選択変更ハンドラへ渡す）。</summary>
+    private sealed record ClipComboTag(string Kind, string Path);
+
+    /// <summary>アクターの clips 一覧から ComboBox を再構築する。可能なら defaultClip を選択状態にする。
+    /// kind=model のクリップは 🎬 アイコン付きで列挙するが、選択してもドープシート編集はできない
+    /// （<see cref="OnClipComboSelectionChanged"/> 側で案内表示に切り替える）。</summary>
     private void RebuildClipCombo(string defaultClip)
     {
         CmbClip.SelectionChanged -= OnClipComboSelectionChanged;
         CmbClip.Items.Clear();
-        foreach (var (name, path) in _actorClips)
-            CmbClip.Items.Add(new ComboBoxItem { Content = string.IsNullOrEmpty(name) ? path : name, Tag = path });
+        foreach (var (name, kind, path) in _actorClips)
+        {
+            var label = kind == "model"
+                ? $"🎬 {(string.IsNullOrEmpty(name) ? "(無名アニメ)" : name)}"
+                : (string.IsNullOrEmpty(name) ? path : name);
+            CmbClip.Items.Add(new ComboBoxItem { Content = label, Tag = new ClipComboTag(kind, path) });
+        }
         CmbClip.SelectionChanged += OnClipComboSelectionChanged;
 
         if (_actorClips.Count == 0)
@@ -266,16 +289,26 @@ public partial class AnimationTimelinePanel : UserControl
         }
 
         NoSelectionVisible(false);
-        var target = _actorClips.FirstOrDefault(c => c.Path == defaultClip);
-        var idx = target.Path is not null ? _actorClips.FindIndex(c => c.Path == defaultClip) : -1;
+        // default_clip は AnimClipRef.name を指す識別子（path ではない）。Inspector 側の一致判定と揃える。
+        var idx = _actorClips.FindIndex(c => c.Name == defaultClip);
         CmbClip.SelectedIndex = idx >= 0 ? idx : 0;
     }
 
     private void OnClipComboSelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (CmbClip.SelectedItem is not ComboBoxItem item || item.Tag is not string virtualPath) return;
+        if (CmbClip.SelectedItem is not ComboBoxItem item || item.Tag is not ClipComboTag tag) return;
         StopPreview();
-        var abs = VirtualPath.ToAbsolute(virtualPath, _assetsPath);
+
+        if (tag.Kind == "model")
+        {
+            // モデル内蔵アニメは .anim を持たない（ANIM_PREVIEW / ドープシート編集の対象外）ため、
+            // 実クリップの読み込みは行わず案内表示のみに切り替える。
+            LoadModelClipPlaceholder();
+            return;
+        }
+
+        _isModelClipSelected = false;
+        var abs = VirtualPath.ToAbsolute(tag.Path, _assetsPath);
         LoadClipFromActorContext(abs);
     }
 
@@ -287,12 +320,28 @@ public partial class AnimationTimelinePanel : UserControl
             _currentFilePath    = absolutePath;
             _isDirty            = false;
             _selectedTrackIndex = -1;
+            _isModelClipSelected = false;
             RefreshAll();
         }
         catch (Exception ex)
         {
             EditorLog.Write($"AnimationTimelinePanel: クリップ読み込み失敗: {ex.Message}");
         }
+    }
+
+    /// <summary>
+    /// kind=model のクリップが選択されたときの表示状態にする。編集対象の実クリップは存在しないため
+    /// _clip を null にし、RefreshAll の「クリップ無し」経路（ドープシート非表示・保存/再生無効化）へ乗せる。
+    /// ComboBox 自体（_actorClips）はクリアしない点が UpdateEmptyState と異なる。
+    /// </summary>
+    private void LoadModelClipPlaceholder()
+    {
+        _clip                = null;
+        _currentFilePath     = null;
+        _isDirty             = false;
+        _selectedTrackIndex  = -1;
+        _isModelClipSelected = true;
+        RefreshAll();
     }
 
     // ── 空状態表示 ──────────────────────────────────────────────
@@ -305,6 +354,7 @@ public partial class AnimationTimelinePanel : UserControl
             _clip            = null;
             _currentFilePath = null;
             _isDirty         = false;
+            _isModelClipSelected = false;
             CmbClip.Items.Clear();
             NoSelectionVisible(true);
             RefreshAll();
@@ -318,6 +368,7 @@ public partial class AnimationTimelinePanel : UserControl
         BtnPlayPause.IsEnabled = !empty && CanPreview();
         CmbClip.IsEnabled = !empty;
         BtnNewClip.IsEnabled = true; // 新規作成は常時可能（保存時にパスを指定する）
+        TbNoClipHint.Text       = DefaultNoClipHint;
         TbNoClipHint.Visibility = empty ? Visibility.Visible : Visibility.Collapsed;
         DopeSheet.Visibility    = empty ? Visibility.Collapsed : Visibility.Visible;
     }
@@ -332,6 +383,7 @@ public partial class AnimationTimelinePanel : UserControl
         _isDirty = true;
         _selectedTrackIndex = -1;
         _isFileOnlyMode = true; // 保存先未確定のため、明示的に保存するまでファイル単独扱いにする
+        _isModelClipSelected = false;
         RefreshAll();
     }
 
@@ -739,8 +791,16 @@ public partial class AnimationTimelinePanel : UserControl
 
         var hasClip = _clip is not null;
         BtnSaveClip.IsEnabled = hasClip;
-        CmbClip.IsEnabled     = hasClip && !_isFileOnlyMode;
+        // CmbClip 自体は「選択可能なクリップが 1 つでもあるか」で有効/無効を決める（model クリップ選択中も
+        // 他クリップへ切り替えられるようにするため、hasClip=false でも disable しない）。
+        CmbClip.IsEnabled     = _actorClips.Count > 0 && !_isFileOnlyMode;
+        // model クリップ選択中は専用の案内文に差し替える（それ以外は既定文言のまま）。
+        TbNoClipHint.Text       = _isModelClipSelected ? ModelClipHint : DefaultNoClipHint;
         TbNoClipHint.Visibility = hasClip ? Visibility.Collapsed : Visibility.Visible;
         DopeSheet.Visibility    = hasClip ? Visibility.Visible   : Visibility.Collapsed;
+        // duration / loop_mode は _clip 前提の値のため、model クリップ選択中は編集不可にする
+        // （ドープシート同様「モデル内蔵アニメはInspectorで編集」の対象）。
+        TbDuration.IsEnabled  = hasClip;
+        CmbLoopMode.IsEnabled = hasClip;
     }
 }

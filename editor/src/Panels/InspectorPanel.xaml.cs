@@ -2686,22 +2686,31 @@ public partial class InspectorPanel : UserControl
     /// クリップ一覧（追加/削除）・既定クリップ・自動再生・速度を編集し、変更のたびに
     /// SET_ANIMATOR_CLIPS:{actor_dfs},{slot_idx},{json} で一括送信する
     /// （Rust 側 AnimatorComponentData は clips/default_clip/play_on_start/speed をまとめて 1 コマンドで更新する設計のため）。
-    /// 「タイムラインで編集」ボタンで AnimationTimelinePanel を開き、選択中クリップのキーフレーム編集へ遷移する。
+    /// クリップは kind で 2 種類に分かれる:
+    ///   - "keyframe": .anim アセット参照（path を使用）。従来のクリップ。
+    ///   - "model"   : 同アクターの Model スロットが持つ glTF 内蔵アニメ（anim/loop_mode を使用）。
+    /// 「タイムラインで編集」ボタンで AnimationTimelinePanel を開き、選択中クリップのキーフレーム編集へ遷移する
+    /// （model クリップはタイムライン編集非対応のため案内のみ表示する）。
     /// </summary>
     private UIElement BuildAnimatorSlotContent(SlotInfo info)
     {
         var sp = new StackPanel { Margin = new Thickness(0, 4, 0, 4) };
 
-        // ── clips JSON（[{"name":..,"path":..},...]）をパースして編集用リストへ展開する ──
-        var clips = new List<(string Name, string Path)>();
+        // ── clips JSON（[{"name":..,"kind":..,"path":..,"anim":..,"loop_mode":..},...]）を
+        //    パースして編集用リストへ展開する。kind/anim/loop_mode は欠落耐性を持たせる
+        //    （旧シーン・Rust 側 #[serde(default)] と同じ既定値: kind=keyframe, loop_mode=loop）。
+        var clips = new List<(string Name, string Kind, string Path, string Anim, string LoopMode)>();
         try
         {
             using var doc = JsonDocument.Parse(info.AnimClipsJson);
             foreach (var c in doc.RootElement.EnumerateArray())
             {
                 var name = c.TryGetProperty("name", out var np) ? np.GetString() ?? "" : "";
+                var kind = c.TryGetProperty("kind", out var kp) ? kp.GetString() ?? "keyframe" : "keyframe";
                 var path = c.TryGetProperty("path", out var pp) ? pp.GetString() ?? "" : "";
-                clips.Add((name, path));
+                var anim = c.TryGetProperty("anim", out var ap) ? ap.GetString() ?? "" : "";
+                var loopMode = c.TryGetProperty("loop_mode", out var lp) ? lp.GetString() ?? "loop" : "loop";
+                clips.Add((name, kind, path, anim, loopMode));
             }
         }
         catch (JsonException) { /* 不正 JSON は空リスト扱い */ }
@@ -2712,12 +2721,16 @@ public partial class InspectorPanel : UserControl
         var curSpeed       = info.AnimSpeed;
 
         // ── clips/default_clip/play_on_start/speed をまとめて 1 メッセージで送信するローカル関数 ──
+        // kind/anim/loop_mode は keyframe クリップでも明示送信する（ラウンドトリップで情報を落とさないため）。
         void CommitAnimator()
         {
             if (_currentActorId < 0) return;
             var payload = new
             {
-                clips        = clips.Select(c => new { name = c.Name, path = c.Path }).ToArray(),
+                clips = clips.Select(c => new
+                {
+                    name = c.Name, kind = c.Kind, path = c.Path, anim = c.Anim, loop_mode = c.LoopMode,
+                }).ToArray(),
                 default_clip = curDefaultClip,
                 play_on_start = curPlayOnStart,
                 speed        = curSpeed,
@@ -2733,30 +2746,97 @@ public partial class InspectorPanel : UserControl
             FontSize = 11, Margin = new Thickness(0, 0, 0, 2),
         });
 
+        // ドラッグ中/通常時で切り替えるリスト背景（ProjectPanel からの .anim ドロップの可視化用）
+        var clipListNormalBg = new SolidColorBrush(Color.FromRgb(0x1A, 0x1A, 0x1A));
+        var clipListHoverBg  = new SolidColorBrush(Color.FromRgb(0x1A, 0x33, 0x1A));
         var clipList = new ListBox
         {
-            Height = 76, Background = new SolidColorBrush(Color.FromRgb(0x1A, 0x1A, 0x1A)),
+            Height = 76, Background = clipListNormalBg,
             Foreground = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)), BorderThickness = new Thickness(1),
             BorderBrush = new SolidColorBrush(Color.FromRgb(0x3F, 0x3F, 0x46)), FontSize = 11,
+            AllowDrop = true,
         };
         var defaultClipCombo = new ComboBox { Margin = new Thickness(0, 4, 0, 2), FontSize = 11, Height = 22 };
 
-        // clips / defaultClipCombo の内容を現在の clips リストから再構築するローカル関数
+        // ── 選択中クリップが kind=model のときだけ表示するループ種別編集行 ──
+        var modelLoopRow = new StackPanel
+        {
+            Orientation = Orientation.Horizontal, Margin = new Thickness(0, 4, 0, 0),
+            Visibility = Visibility.Collapsed,
+        };
+        modelLoopRow.Children.Add(new TextBlock
+        {
+            Text = "ループ種別 (モデル)", Foreground = new SolidColorBrush(Color.FromRgb(0xAA, 0xAA, 0xAA)),
+            FontSize = 11, Width = 100, VerticalAlignment = VerticalAlignment.Center,
+        });
+        var modelLoopCombo = new ComboBox { Width = 90, FontSize = 11, Height = 20, VerticalAlignment = VerticalAlignment.Center };
+        modelLoopCombo.Items.Add(new ComboBoxItem { Content = "loop", Tag = "loop" });
+        modelLoopCombo.Items.Add(new ComboBoxItem { Content = "once", Tag = "once" });
+        modelLoopRow.Children.Add(modelLoopCombo);
+
+        // clips / defaultClipCombo / modelLoopRow の内容を現在の clips リストから再構築するローカル関数
         void RebuildClipUi()
         {
             clipList.Items.Clear();
             foreach (var c in clips)
-                clipList.Items.Add(string.IsNullOrEmpty(c.Name) ? c.Path : $"{c.Name}  ({c.Path})");
+            {
+                if (c.Kind == "model")
+                {
+                    var animLabel = string.IsNullOrEmpty(c.Anim) ? "(無名アニメ)" : c.Anim;
+                    clipList.Items.Add($"🎬 {animLabel}  (モデル内蔵・{c.LoopMode})");
+                }
+                else
+                {
+                    clipList.Items.Add(string.IsNullOrEmpty(c.Name) ? $"📄 {c.Path}" : $"📄 {c.Name}  ({c.Path})");
+                }
+            }
 
             defaultClipCombo.SelectionChanged -= OnDefaultClipChanged;
             defaultClipCombo.Items.Clear();
             defaultClipCombo.Items.Add(new ComboBoxItem { Content = "（なし）", Tag = "" });
             foreach (var c in clips)
-                defaultClipCombo.Items.Add(new ComboBoxItem { Content = string.IsNullOrEmpty(c.Name) ? c.Path : c.Name, Tag = c.Name });
+            {
+                var label = !string.IsNullOrEmpty(c.Name) ? c.Name : (c.Kind == "model" ? c.Anim : c.Path);
+                defaultClipCombo.Items.Add(new ComboBoxItem { Content = label, Tag = c.Name });
+            }
             var idx = clips.FindIndex(c => c.Name == curDefaultClip);
             defaultClipCombo.SelectedIndex = idx >= 0 ? idx + 1 : 0;
             defaultClipCombo.SelectionChanged += OnDefaultClipChanged;
+
+            UpdateModelLoopRow();
         }
+
+        // 選択中クリップが model のときだけループ種別行を表示し、現在値を反映する
+        void UpdateModelLoopRow()
+        {
+            var idx = clipList.SelectedIndex;
+            if (idx >= 0 && idx < clips.Count && clips[idx].Kind == "model")
+            {
+                modelLoopRow.Visibility = Visibility.Visible;
+                modelLoopCombo.SelectionChanged -= OnModelLoopChanged;
+                modelLoopCombo.SelectedIndex = clips[idx].LoopMode == "once" ? 1 : 0;
+                modelLoopCombo.SelectionChanged += OnModelLoopChanged;
+            }
+            else
+            {
+                modelLoopRow.Visibility = Visibility.Collapsed;
+            }
+        }
+
+        void OnModelLoopChanged(object? s, SelectionChangedEventArgs e)
+        {
+            var idx = clipList.SelectedIndex;
+            if (idx < 0 || idx >= clips.Count || clips[idx].Kind != "model") return;
+            if (modelLoopCombo.SelectedItem is not ComboBoxItem item || item.Tag is not string mode) return;
+            var c = clips[idx];
+            if (c.LoopMode == mode) return;
+            clips[idx] = (c.Name, c.Kind, c.Path, c.Anim, mode);
+            RebuildClipUi();
+            clipList.SelectedIndex = idx;
+            CommitAnimator();
+        }
+
+        clipList.SelectionChanged += (_, _) => UpdateModelLoopRow();
 
         void OnDefaultClipChanged(object? s, SelectionChangedEventArgs e)
         {
@@ -2766,7 +2846,40 @@ public partial class InspectorPanel : UserControl
             CommitAnimator();
         }
 
+        // ── D&D: ProjectPanel からの .anim ドロップでキーフレームクリップを追加する ──
+        void OnClipListDragOver(object? s, DragEventArgs e)
+        {
+            var accept = e.Data.GetDataPresent("SEEDProjectPaths") &&
+                e.Data.GetData("SEEDProjectPaths") is string[] dragPaths &&
+                dragPaths.Any(p => string.Equals(Path.GetExtension(p), ".anim", StringComparison.OrdinalIgnoreCase));
+            e.Effects = accept ? DragDropEffects.Copy : DragDropEffects.None;
+            clipList.Background = accept ? clipListHoverBg : clipListNormalBg;
+            e.Handled = true;
+        }
+        clipList.DragEnter += OnClipListDragOver;
+        clipList.DragOver   += OnClipListDragOver;
+        clipList.DragLeave  += (_, e) => { clipList.Background = clipListNormalBg; e.Handled = true; };
+        clipList.Drop += (_, e) =>
+        {
+            clipList.Background = clipListNormalBg;
+            if (e.Data.GetDataPresent("SEEDProjectPaths") && e.Data.GetData("SEEDProjectPaths") is string[] dropPaths)
+            {
+                var added = false;
+                foreach (var p in dropPaths)
+                {
+                    if (!string.Equals(Path.GetExtension(p), ".anim", StringComparison.OrdinalIgnoreCase)) continue;
+                    var virtualPath = VirtualPath.ToVirtual(p, _assetsPath);
+                    var name = Path.GetFileNameWithoutExtension(p);
+                    clips.Add((name, "keyframe", virtualPath, "", "loop"));
+                    added = true;
+                }
+                if (added) { RebuildClipUi(); CommitAnimator(); }
+            }
+            e.Handled = true;
+        };
+
         sp.Children.Add(clipList);
+        sp.Children.Add(modelLoopRow);
 
         var clipBtnRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 2, 0, 0) };
         var addClipBtn = new Button
@@ -2781,7 +2894,8 @@ public partial class InspectorPanel : UserControl
             if (dlg.ShowDialog(Window.GetWindow(this)) != true) return;
             var virtualPath = VirtualPath.ToVirtual(dlg.FileName, _assetsPath);
             var name = Path.GetFileNameWithoutExtension(dlg.FileName);
-            clips.Add((name, virtualPath));
+            // .anim アセット参照クリップとして明示的に kind:"keyframe" を付与する
+            clips.Add((name, "keyframe", virtualPath, "", "loop"));
             RebuildClipUi();
             CommitAnimator();
         };
@@ -2802,6 +2916,60 @@ public partial class InspectorPanel : UserControl
         clipBtnRow.Children.Add(addClipBtn);
         clipBtnRow.Children.Add(removeClipBtn);
         sp.Children.Add(clipBtnRow);
+
+        // ── モデル内蔵アニメを追加 ────────────────────────────
+        // 同アクターの Model スロットが ACTOR_COMPONENTS で送ってくる animations 一覧（glTF 内蔵アニメ名）を
+        // ポップアップメニューで列挙し、選択で model クリップを追加する。Model スロットが無い/アニメ0件なら無効化する。
+        var modelAnims = GetModelSlotAnimations();
+        var addModelClipBtn = new Button
+        {
+            Content = "モデル内蔵アニメを追加",
+            Background = new SolidColorBrush(Color.FromRgb(0x28, 0x30, 0x40)),
+            Foreground = new SolidColorBrush(Color.FromRgb(0xBB, 0xBB, 0xBB)), BorderThickness = new Thickness(0),
+            Padding = new Thickness(8, 2, 8, 2), FontSize = 10, Margin = new Thickness(0, 4, 0, 0),
+            Cursor = Cursors.Hand, HorizontalAlignment = HorizontalAlignment.Left,
+        };
+        if (modelAnims.Count == 0)
+        {
+            addModelClipBtn.IsEnabled = false;
+            addModelClipBtn.ToolTip = "同アクターの Model スロットに glTF 内蔵アニメがありません";
+        }
+        else
+        {
+            addModelClipBtn.ToolTip = "Model スロットの glTF 内蔵アニメから追加します";
+            addModelClipBtn.Click += (_, _) =>
+            {
+                var menu = new ContextMenu();
+                for (int i = 0; i < modelAnims.Count; i++)
+                {
+                    var animName = modelAnims[i];
+                    var isFirst  = i == 0;
+                    var label    = string.IsNullOrEmpty(animName) ? $"(無名アニメ #{i})" : animName;
+                    var menuItem = new MenuItem
+                    {
+                        Header = isFirst ? label : $"{label}  ※先頭以外は現行GPU非対応",
+                        // 先頭以外は薄字にして現行の制約（GPUスキニングは Model::animations[0] のみ再生可能）を示す
+                        Foreground = isFirst
+                            ? null
+                            : new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88)),
+                        ToolTip = isFirst
+                            ? null
+                            : "現行GPUは Model 内の先頭アニメ (index 0) のみ再生可能です。このアニメは再生時にフォールバックされます。",
+                    };
+                    menuItem.Click += (_, _) =>
+                    {
+                        // {name: anim名, kind:"model", anim: anim名, loop_mode:"loop"} で追加する
+                        clips.Add((animName, "model", "", animName, "loop"));
+                        RebuildClipUi();
+                        CommitAnimator();
+                    };
+                    menu.Items.Add(menuItem);
+                }
+                menu.PlacementTarget = addModelClipBtn;
+                menu.IsOpen = true;
+            };
+        }
+        sp.Children.Add(addModelClipBtn);
 
         // ── 既定クリップ ──────────────────────────────────────
         sp.Children.Add(new TextBlock
@@ -2849,12 +3017,22 @@ public partial class InspectorPanel : UserControl
         editTimelineBtn.Click += (_, _) =>
         {
             // 既定クリップ、無ければ先頭クリップを編集対象として開く
-            var targetName = curDefaultClip;
-            var target = clips.FirstOrDefault(c => c.Name == targetName);
-            if (target.Path is null && clips.Count > 0) target = clips[0];
-            if (target.Path is null)
+            // （tuple の各フィールドは name/path とも空文字を正当な値として取り得るため、
+            //   「見つかったか」は FindIndex の結果で判定する）
+            var targetIdx = clips.FindIndex(c => c.Name == curDefaultClip);
+            if (targetIdx < 0 && clips.Count > 0) targetIdx = 0;
+            if (targetIdx < 0)
             {
                 MessageBox.Show(Window.GetWindow(this), "編集するクリップがありません。先にクリップを追加してください。",
+                    "情報", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+            var target = clips[targetIdx];
+            if (target.Kind == "model")
+            {
+                // モデル内蔵アニメは ANIM_PREVIEW / ドープシート編集の対象外（Rust 側 Edit プレビュー未対応）
+                MessageBox.Show(Window.GetWindow(this),
+                    "モデル内蔵アニメはタイムラインで編集できません。再生設定（ループ種別など）は Inspector で編集してください。",
                     "情報", MessageBoxButton.OK, MessageBoxImage.Information);
                 return;
             }
@@ -2870,6 +3048,34 @@ public partial class InspectorPanel : UserControl
     /// MainWindow がこれを購読し、AnimationTimelinePanel を表示して該当クリップを開かせる。
     /// </summary>
     public event Action<string>? TimelineEditRequested;
+
+    /// <summary>
+    /// 現在のアクターが持つ Model スロットの glTF 内蔵アニメ名一覧を取得する。
+    /// ACTOR_COMPONENTS（<see cref="_lastComponentsJson"/>）内の ModelComponent が送ってくる
+    /// "animations" 配列（component_ops.rs 側で付与）を読み取る。複数 Model スロットがある場合は
+    /// 最初にアニメを持つスロットのものを採用する（このアクターに 1 Model スロットのみの想定が主用途）。
+    /// </summary>
+    private List<string> GetModelSlotAnimations()
+    {
+        var result = new List<string>();
+        if (string.IsNullOrEmpty(_lastComponentsJson)) return result;
+        try
+        {
+            using var doc = JsonDocument.Parse(_lastComponentsJson);
+            if (!doc.RootElement.TryGetProperty("components", out var comps)) return result;
+            foreach (var comp in comps.EnumerateArray())
+            {
+                var type = comp.TryGetProperty("type", out var tp) ? tp.GetString() ?? "" : "";
+                if (type != "ModelComponent") continue;
+                if (!comp.TryGetProperty("animations", out var animsEl) || animsEl.ValueKind != JsonValueKind.Array) continue;
+                foreach (var a in animsEl.EnumerateArray())
+                    result.Add(a.GetString() ?? "");
+                if (result.Count > 0) break;
+            }
+        }
+        catch (JsonException) { /* 不正 JSON は空リスト扱い */ }
+        return result;
+    }
 
     /// <summary>
     /// AudioComponent のインスペクター UI を構築して返す。

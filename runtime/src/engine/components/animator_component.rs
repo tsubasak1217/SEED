@@ -27,20 +27,72 @@ fn default_speed() -> f32 { 1.0 }
 /// play_on_start の既定値（true = Play 開始時に自動再生）。
 fn default_play_on_start() -> bool { true }
 
+// ─── AnimClipKind / AnimClipLoop ─────────────────────────────
+
+/// クリップの種別。
+///
+/// - `Keyframe`: `.anim` アセット（自作キーフレームトラック）。従来のクリップ。
+/// - `Model`   : glTF モデル内蔵アニメ（Model スロットのスキニングを駆動）。
+///
+/// 旧シーン（`kind` フィールドなし）は `#[serde(default)]` により `Keyframe`
+/// として読み込まれる（後方互換）。
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AnimClipKind {
+    /// .anim キーフレームクリップ
+    Keyframe,
+    /// glTF モデル内蔵アニメ
+    Model,
+}
+
+impl Default for AnimClipKind {
+    /// kind 省略時の既定は keyframe（旧シーン後方互換）。
+    fn default() -> Self { AnimClipKind::Keyframe }
+}
+
+/// Model クリップのループ種別。
+///
+/// Keyframe クリップは `.anim` 内の `loop_mode` を使うためこの値は無視される。
+/// Model クリップは `.anim` を持たないため、ここでループ挙動を指定する。
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AnimClipLoop {
+    /// 末尾に達したら先頭へ戻って繰り返す（Model の既定）
+    Loop,
+    /// 一度だけ再生し、末尾で停止する
+    Once,
+}
+
+impl Default for AnimClipLoop {
+    /// loop_mode 省略時の既定は loop（Model アニメは繰り返し再生が自然）。
+    fn default() -> Self { AnimClipLoop::Loop }
+}
+
 // ─── AnimClipRef ─────────────────────────────────────────────
 
 /// アニメーターが参照する 1 クリップのエントリ。
 ///
 /// name は再生時の識別キー（default_clip / スクリプトからの指定に使う）。
-/// path は .anim アセットの相対パス（"assets://..." 形式）。
+/// kind によって解決先が変わる:
+///   - `Keyframe`: `path`（.anim アセット）をロードして評価する。
+///   - `Model`   : 同アクターの Model スロットの glTF 内蔵アニメ `anim`（名前）を駆動する。
 #[derive(Clone, Serialize, Deserialize)]
 pub struct AnimClipRef {
     /// 再生時の識別名（空なら path のクリップ名にフォールバック）
     #[serde(default)]
     pub name: String,
-    /// .anim アセットパス（assets:// 仮想パス）
+    /// クリップ種別（省略時は Keyframe：旧シーン後方互換）
+    #[serde(default)]
+    pub kind: AnimClipKind,
+    /// .anim アセットパス（assets:// 仮想パス）。kind=Keyframe で使用。
     #[serde(default)]
     pub path: String,
+    /// glTF モデル内蔵アニメ名。kind=Model で使用。
+    #[serde(default)]
+    pub anim: String,
+    /// Model クリップのループ種別（kind=Model で使用。既定 loop）
+    #[serde(default)]
+    pub loop_mode: AnimClipLoop,
 }
 
 // ─── AnimatorComponentData（シリアライズ用）───────────────────

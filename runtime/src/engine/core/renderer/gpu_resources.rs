@@ -656,6 +656,13 @@ pub struct InstancedModelBatch {
 
     /// インスタンスごとの安定アニメーション位相シード（InstanceMeta::anim_seed と同期）
     pub anim_seeds: Vec<u32>,
+
+    /// インスタンスごとの Animator 駆動権威時刻（元インスタンスインデックス順）。
+    /// `Some(t)` のインスタンスは、グローバルクロック＋位相シードのデモ再生ではなく
+    /// `t` を再生時刻として使う（`ModelComponent::anim_drive` 由来）。
+    /// `None` または要素なしのインスタンスは従来のデモ再生。
+    /// 毎フレーム `set_anim_time_overrides` で更新する。
+    pub anim_time_overrides: Vec<Option<f32>>,
 }
 
 impl InstancedModelBatch {
@@ -780,6 +787,7 @@ impl InstancedModelBatch {
             lod_compact_insts: vec![Vec::new(); NUM_LODS],
             dirty: true,
             anim_seeds: Vec::new(),
+            anim_time_overrides: Vec::new(),
         }
     }
 
@@ -792,6 +800,13 @@ impl InstancedModelBatch {
     pub fn set_anim_seeds(&mut self, seeds: &[u32]) {
         self.anim_seeds.clear();
         self.anim_seeds.extend_from_slice(seeds);
+    }
+
+    /// Animator 駆動の権威時刻配列を同期する（元インスタンスインデックス順）。
+    /// `update()` の前に毎フレーム呼び出す。空配列を渡すと全インスタンスがデモ再生に戻る。
+    pub fn set_anim_time_overrides(&mut self, overrides: &[Option<f32>]) {
+        self.anim_time_overrides.clear();
+        self.anim_time_overrides.extend_from_slice(overrides);
     }
 
     /// 毎フレーム呼び出す更新関数。
@@ -912,8 +927,12 @@ impl InstancedModelBatch {
             }
 
             // スキンシステムへの anim_times 転送（GPU スキニング計算の入力）
+            // anim_time_overrides が指定されたインスタンスは Animator 駆動の権威時刻を使う。
             if let Some(skin) = &self.skin {
-                skin.upload_lod_times(queue, lod, &self.lod_compact_insts[lod], &self.anim_seeds, anim_time);
+                skin.upload_lod_times(
+                    queue, lod, &self.lod_compact_insts[lod],
+                    &self.anim_seeds, &self.anim_time_overrides, anim_time,
+                );
             }
         }
     }

@@ -477,6 +477,7 @@ pub fn build_actor(
                         instance_meta:   meta,
                         group_meta:      mc_data.groups,
                         next_group_id:   mc_data.next_group_id,
+                        anim_drive:      None,
                     });
                 } else {
                     use std::sync::Arc;
@@ -510,6 +511,7 @@ pub fn build_actor(
                         instance_meta:   meta,
                         group_meta:      mc_data.groups,
                         next_group_id:   mc_data.next_group_id,
+                        anim_drive:      None,
                     });
                 }
                 actor.add_slot_typed::<ModelComponent>(slot_name, ComponentKind::Model, slot_entity);

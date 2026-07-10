@@ -65,6 +65,28 @@ pub struct ModelComponentData {
     pub next_group_id: u32,
 }
 
+// ─── ModelAnimDrive ─────────────────────────────────────────────────────────
+
+/// Animator が駆動する glTF 内蔵アニメの再生状態（揮発・非シリアライズ）。
+///
+/// `AnimatorComponent` の kind=Model クリップ再生中、`animation_ops::update_animations`
+/// が毎フレームこの値を書き込む。`Some` のときレンダラのスキニングは
+/// グローバルクロック（デモ再生）ではなく `time` を権威時刻として使う
+/// （インスタンス位相シードを無視する）。`None` なら従来のデモ再生に戻る。
+///
+/// 【現状の制約】GPU スキニング（`SkinComputeSystem`）は `Model::animations[0]`
+/// のみを再生するため、駆動可能なのは `anim_idx == 0` の場合のみ。`anim_idx != 0`
+/// は上流（update_animations）で警告してデモ再生にフォールバックさせる想定。
+#[derive(Clone, Copy)]
+pub struct ModelAnimDrive {
+    /// 再生対象アニメの Model::animations インデックス
+    pub anim_idx: usize,
+    /// 権威再生時刻（秒。ループ/クランプ後の 0..=duration 正規化済み）
+    pub time:     f32,
+    /// 再生中フラグ（false = 一時停止・停止でこの時刻を保持）
+    pub playing:  bool,
+}
+
 // ─── ModelComponent ───────────────────────────────────────────────────────────
 
 /// Actor にアタッチするモデルコンポーネント。
@@ -79,6 +101,8 @@ pub struct ModelComponent {
     pub instance_meta:   Vec<InstanceMeta>,
     pub group_meta:      Vec<GroupMeta>,
     pub next_group_id:   u32,
+    /// Animator 駆動のアニメ再生状態（揮発。None = デモ再生 / Animator 非駆動）
+    pub anim_drive:      Option<ModelAnimDrive>,
 }
 
 impl ModelComponent {
@@ -93,6 +117,7 @@ impl ModelComponent {
             instance_meta:   Vec::new(),
             group_meta:      Vec::new(),
             next_group_id:   GROUP_ID_BASE,
+            anim_drive:      None,
         }
     }
 

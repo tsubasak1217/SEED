@@ -19,7 +19,10 @@
 use std::sync::Arc;
 
 use crate::engine::animation::{self, AnimationClip};
-use crate::engine::components::{AnimatorComponent, AnimatorComponentData, AnimClipRef, ComponentKind};
+use crate::engine::components::{
+    AnimatorComponent, AnimatorComponentData, AnimClipRef, AnimClipKind, AnimClipLoop,
+    ComponentKind, ModelComponent, ModelAnimDrive,
+};
 use crate::engine::ecs::Entity;
 use crate::engine::structs::objects::Actor;
 
@@ -42,6 +45,19 @@ impl App {
         let actors = &scene.actors;
         let world  = &mut scene.world;
 
+        // ── ① 全 Model スロットの anim_drive をクリア（デモ再生へ一旦戻す）──
+        // この後のジョブループで「現在 Model クリップを再生中」の MC だけ再設定する。
+        // これにより停止・クリップ切替・キーフレームへの切替時に anim_drive が残らない。
+        let mut model_entities: Vec<Entity> = Vec::new();
+        for root in actors.iter().filter(|a| a.world_line == 0) {
+            collect_model_slot_entities(root, &mut model_entities);
+        }
+        for me in &model_entities {
+            if let Some(mc) = world.get_mut::<ModelComponent>(*me) {
+                mc.anim_drive = None;
+            }
+        }
+
         // world_line 0 のアクター木を DFS して (保持アクタ, スロット entity) を収集する
         let mut jobs: Vec<(&Actor, Entity)> = Vec::new();
         for root in actors.iter().filter(|a| a.world_line == 0) {
@@ -49,50 +65,125 @@ impl App {
         }
 
         for (owner, slot_entity) in jobs {
-            // ── アニメーターの現在状態と再生対象クリップ（Arc 複製）を読み出す ──
-            let (mut time, playing, speed, clip): (f32, bool, f32, Arc<AnimationClip>) =
+            // ── 現在クリップの参照情報（名前・状態）を読み出す ──
+            let (current_name, mut time, playing, speed) =
                 match world.get::<AnimatorComponent>(slot_entity) {
-                    Some(a) => {
-                        // 現在クリップがキャッシュに無ければスキップ
-                        let clip = match a.current_clip.as_ref().and_then(|n| a.cache.get(n).cloned()) {
-                            Some(c) => c,
-                            None => continue,
-                        };
-                        (a.time, a.playing, a.speed, clip)
-                    }
+                    Some(a) => match a.current_clip.as_ref() {
+                        Some(n) => (n.clone(), a.time, a.playing, a.speed),
+                        None    => continue, // 未再生
+                    },
                     None => continue,
                 };
 
-            // ── 時刻を進めて loop_mode で正規化する ──
-            if playing {
-                time += dt * speed;
-            }
-            let (sample_time, still_playing) =
-                animation::normalize_time(clip.loop_mode, time, clip.duration);
+            // clips から現在クリップの定義を探して種別を判定する
+            let cref: AnimClipRef = match world.get::<AnimatorComponent>(slot_entity)
+                .and_then(|a| a.clips.iter().find(|c| c.name == current_name).cloned())
+            {
+                Some(c) => c,
+                None    => continue, // クリップ定義なし（不整合）: スキップ
+            };
 
-            // ── 各トラックを評価して対象アクターへ書き込む ──
-            for track in &clip.tracks {
-                // (component, property) をレジストリで束縛に解決する
-                let Some(binding) =
-                    animation::resolve_binding(&track.target.component, &track.target.property)
-                else { continue }; // 未知プロパティは無視（ロード時想定・ここでは静かにスキップ）
-                // 束縛が期待する値型とトラックの値型が一致しなければスキップ
-                if binding.expected_value_type() != track.value_type { continue; }
-                // actor_path を保持アクタ基準で解決する
-                let Some(target_actor) =
-                    animation::resolve_actor_path(owner, &track.target.actor_path)
-                else { continue };
-                // サンプルして書き込む
-                if let Some(value) = animation::sample_track(track, sample_time) {
-                    animation::apply_write(world, target_actor, binding, &value);
+            match cref.kind {
+                // ── (a) Keyframe クリップ: 従来どおりトラックを評価してレジストリ書込 ──
+                AnimClipKind::Keyframe => {
+                    // 現在クリップがキャッシュに無ければスキップ
+                    let clip: Arc<AnimationClip> = match world.get::<AnimatorComponent>(slot_entity)
+                        .and_then(|a| a.cache.get(&current_name).cloned())
+                    {
+                        Some(c) => c,
+                        None    => continue,
+                    };
+
+                    // 時刻を進めて loop_mode で正規化する
+                    if playing { time += dt * speed; }
+                    let (sample_time, still_playing) =
+                        animation::normalize_time(clip.loop_mode, time, clip.duration);
+
+                    // 各トラックを評価して対象アクターへ書き込む
+                    for track in &clip.tracks {
+                        let Some(binding) =
+                            animation::resolve_binding(&track.target.component, &track.target.property)
+                        else { continue };
+                        if binding.expected_value_type() != track.value_type { continue; }
+                        let Some(target_actor) =
+                            animation::resolve_actor_path(owner, &track.target.actor_path)
+                        else { continue };
+                        if let Some(value) = animation::sample_track(track, sample_time) {
+                            animation::apply_write(world, target_actor, binding, &value);
+                        }
+                    }
+
+                    // 再生状態を書き戻す
+                    if let Some(a) = world.get_mut::<AnimatorComponent>(slot_entity) {
+                        a.time = time;
+                        a.playing = playing && still_playing;
+                    }
                 }
-            }
 
-            // ── 再生状態を書き戻す ──
-            if let Some(a) = world.get_mut::<AnimatorComponent>(slot_entity) {
-                a.time = time;
-                // Once の末尾到達で playing=false になる。すでに停止中なら停止のまま。
-                a.playing = playing && still_playing;
+                // ── (b) Model クリップ: glTF 内蔵アニメを anim_drive 経由で駆動 ──
+                AnimClipKind::Model => {
+                    // 同アクターの最初の有効 Model スロットを探す
+                    let model_entity = owner.slots().iter()
+                        .find(|s| s.kind == ComponentKind::Model && s.enabled)
+                        .map(|s| s.entity);
+
+                    // glTF 内蔵アニメ名 → インデックス + duration を解決する
+                    let resolved: Option<(Entity, usize, f32)> = model_entity.and_then(|me| {
+                        world.get::<ModelComponent>(me).and_then(|mc| {
+                            mc.model.as_ref().and_then(|model| {
+                                model.animations.iter()
+                                    .position(|a| a.name == cref.anim)
+                                    .map(|idx| (me, idx, model.animations[idx].duration))
+                            })
+                        })
+                    });
+
+                    let Some((me, anim_idx, duration)) = resolved else {
+                        // モデル未ロード or アニメ名が見つからない: 警告してデモ再生に委ねる
+                        eprintln!(
+                            "[SEED anim] Model クリップ '{}' のアニメ '{}' を解決できません（Model スロット/内蔵アニメ名を確認）。デモ再生にフォールバックします。",
+                            current_name, cref.anim
+                        );
+                        continue;
+                    };
+
+                    // 時刻を進めてループ/ワンショットで正規化する
+                    if playing { time += dt * speed; }
+                    let (sample_time, still_playing) = match cref.loop_mode {
+                        // ループ: rem_euclid で負時刻も巻き戻す（常に再生継続）
+                        AnimClipLoop::Loop => {
+                            let d = duration.max(1e-4);
+                            (time.rem_euclid(d), true)
+                        }
+                        // ワンショット: 末尾で停止して最終ポーズを保持する
+                        AnimClipLoop::Once => {
+                            if time >= duration { (duration, false) } else { (time.max(0.0), true) }
+                        }
+                    };
+
+                    // GPU スキニングは Model::animations[0] のみ再生可能なため、
+                    // anim_idx != 0 は権威駆動できない（警告してデモ再生にフォールバック）。
+                    if anim_idx == 0 {
+                        if let Some(mc) = world.get_mut::<ModelComponent>(me) {
+                            mc.anim_drive = Some(ModelAnimDrive {
+                                anim_idx,
+                                time: sample_time,
+                                playing,
+                            });
+                        }
+                    } else {
+                        eprintln!(
+                            "[SEED anim] Model クリップ '{}' は内蔵アニメ index {}（'{}'）を指すが、現状の GPU スキニングは index 0 のみ再生可能。デモ再生にフォールバックします（複数アニメ選択は今後の対応）。",
+                            current_name, anim_idx, cref.anim
+                        );
+                    }
+
+                    // 再生状態を書き戻す
+                    if let Some(a) = world.get_mut::<AnimatorComponent>(slot_entity) {
+                        a.time = time;
+                        a.playing = playing && still_playing;
+                    }
+                }
             }
         }
     }
@@ -159,7 +250,15 @@ impl App {
             if let Some(a) = scene.world.get_mut::<AnimatorComponent>(slot_entity) {
                 for (k, v) in loaded { a.cache.insert(k, v); }
                 a.initialized = true;
-                if a.play_on_start && !a.default_clip.is_empty() && a.cache.contains_key(&a.default_clip) {
+                // play_on_start 発火判定:
+                //   - Keyframe クリップ: ロード済み（cache に存在）が条件。
+                //   - Model クリップ    : cache は持たないため、clips に kind=Model の
+                //     同名クリップが存在すれば再生可能とみなす。
+                let default_playable = !a.default_clip.is_empty() && a.clips.iter().any(|c| {
+                    c.name == a.default_clip
+                        && (matches!(c.kind, AnimClipKind::Model) || a.cache.contains_key(&a.default_clip))
+                });
+                if a.play_on_start && default_playable {
                     a.current_clip = Some(a.default_clip.clone());
                     a.time = 0.0;
                     a.playing = true;
@@ -341,5 +440,19 @@ fn collect_animator_entities(actor: &Actor, out: &mut Vec<Entity>) {
     }
     for child in actor.children() {
         collect_animator_entities(child, out);
+    }
+}
+
+/// アクター木を DFS し、Model スロットの entity を収集する
+/// （毎フレームの anim_drive クリア用。非アクティブ配下も含めてクリアしたいので
+/// active 判定は行わない）。
+fn collect_model_slot_entities(actor: &Actor, out: &mut Vec<Entity>) {
+    for slot in actor.slots() {
+        if slot.kind == ComponentKind::Model {
+            out.push(slot.entity);
+        }
+    }
+    for child in actor.children() {
+        collect_model_slot_entities(child, out);
     }
 }
