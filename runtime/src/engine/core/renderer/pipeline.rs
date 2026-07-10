@@ -40,24 +40,42 @@ pub struct MeshPipeline {
     pub material_bgl: wgpu::BindGroupLayout,
     /// group 4: ライト（storage 配列 + メタ uniform）。LightBuffer の bind group 生成に使う。
     pub lights_bgl:   wgpu::BindGroupLayout,
+    /// group 3 用の空 BindGroup。
+    ///
+    /// mesh パイプラインは fragment が group 4（ライト）を参照する都合で
+    /// レイアウトが 5 グループになり、group 3 は「空の gap BGL」になる。
+    /// wgpu はレイアウトに存在する全 group 番号への BindGroup 設定を要求する
+    /// （空レイアウトでも未設定のまま draw すると検証エラー）ため、
+    /// 非スキン描画では必ずこの空 BG を slot 3 へセットする。
+    /// 生成は起動時 1 回のみで毎フレーム使い回す。
+    pub empty_bg3:    wgpu::BindGroup,
 }
 
 impl MeshPipeline {
     fn new(device: &wgpu::Device, sf: wgpu::TextureFormat, df: wgpu::TextureFormat, cache: Option<&wgpu::PipelineCache>) -> Self {
         let (pipeline, bgls) =
             RenderPipelineBuilder::new(device, include_str!("pipelines/mesh.toml"), sf, df)
+                .with_label("mesh_pbr")
                 .with_cache(cache)
                 .build(get_shader_source);
         // group 番号順 (0, 1, 2, 3=gap, 4=lights) にイテレートして取り出す。
         // fragment の group 4 参照によりレイアウトは 5 グループになり、
-        // group 3 はスキンなしメッシュでは空の gap BGL（未使用）になる。
+        // group 3 はスキンなしメッシュでは空の gap BGL になる。
         let mut it = bgls.into_iter();
         let camera_bgl   = it.next().unwrap(); // group 0
         let model_bgl    = it.next().unwrap(); // group 1
         let material_bgl = it.next().unwrap(); // group 2
-        let _gap_bgl     = it.next().unwrap(); // group 3（空・未使用）
+        let gap_bgl      = it.next().unwrap(); // group 3（空レイアウト）
         let lights_bgl   = it.next().unwrap(); // group 4
-        Self { pipeline, camera_bgl, model_bgl, material_bgl, lights_bgl }
+
+        // group 3 の空 BindGroup を 1 個だけ生成して保持する（draw 時の必須セット用）。
+        let empty_bg3 = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label:   Some("Mesh Empty BG (group 3)"),
+            layout:  &gap_bgl,
+            entries: &[],
+        });
+
+        Self { pipeline, camera_bgl, model_bgl, material_bgl, lights_bgl, empty_bg3 }
     }
 }
 
@@ -77,6 +95,7 @@ impl SkinnedMeshPipeline {
     fn new(device: &wgpu::Device, sf: wgpu::TextureFormat, df: wgpu::TextureFormat, cache: Option<&wgpu::PipelineCache>) -> Self {
         let (pipeline, bgls) =
             RenderPipelineBuilder::new(device, include_str!("pipelines/skinned_mesh.toml"), sf, df)
+                .with_label("skinned_mesh_pbr")
                 .with_cache(cache)
                 .build(get_shader_source);
         // group 番号順 (0, 1, 2, 3=joints, 4=lights) にイテレートして取り出す

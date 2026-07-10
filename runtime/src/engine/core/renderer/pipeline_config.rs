@@ -78,6 +78,9 @@ pub struct RenderPipelineBuilder<'d> {
     stencil:        Option<wgpu::StencilState>,
     /// コンパイル済みパイプラインキャッシュ（Some の場合は再コンパイルをスキップ）。
     cache:          Option<&'d wgpu::PipelineCache>,
+    /// パイプラインのデバッグラベル（wgpu の検証エラーメッセージに表示される）。
+    /// None の場合は vertex_entry 名（"vs_main" 等）にフォールバックする。
+    label:          Option<&'d str>,
 }
 
 impl<'d> RenderPipelineBuilder<'d> {
@@ -90,12 +93,18 @@ impl<'d> RenderPipelineBuilder<'d> {
     ) -> Self {
         let cfg: PipelineConfig = toml::from_str(toml_src)
             .expect("invalid pipeline TOML");
-        Self { device, cfg, surface_format, depth_format, stencil: None, cache: None }
+        Self { device, cfg, surface_format, depth_format, stencil: None, cache: None, label: None }
     }
 
     /// ステンシルステートを上書き設定する（アウトライン等の特殊用途）。
     pub fn with_stencil(mut self, s: wgpu::StencilState) -> Self {
         self.stencil = Some(s);
+        self
+    }
+
+    /// デバッグラベルを設定する（検証エラー時にどのパイプラインか特定しやすくする）。
+    pub fn with_label(mut self, label: &'d str) -> Self {
+        self.label = Some(label);
         self
     }
 
@@ -116,7 +125,9 @@ impl<'d> RenderPipelineBuilder<'d> {
     where
         F: Fn(&str) -> &'static str,
     {
-        let Self { device, cfg, surface_format, depth_format, stencil, cache } = self;
+        let Self { device, cfg, surface_format, depth_format, stencil, cache, label } = self;
+        // ラベル未指定時は vertex_entry 名を使う（従来の label: None から改善）。
+        let pipeline_label = label.unwrap_or(cfg.vertex_entry.as_str());
 
         // ── 1. シェーダーソースを連結 ──────────────────────────
         let combined: String = cfg.shader_sources.iter()
@@ -230,7 +241,7 @@ impl<'d> RenderPipelineBuilder<'d> {
 
         // ── 11. パイプライン生成 ───────────────────────────────
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label:  None,
+            label:  Some(pipeline_label),
             layout: Some(&layout),
             vertex: wgpu::VertexState {
                 module:              &shader,

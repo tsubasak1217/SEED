@@ -63,6 +63,13 @@ pub fn draw_model_indirect<'pass>(
                     }
                 } else {
                     render_pass.set_pipeline(&pipelines.mesh.pipeline);
+                    // group 3: mesh パイプラインではライト（group 4）参照の都合で
+                    // レイアウト上「空の gap グループ」になる。wgpu はレイアウトに
+                    // 存在する全 group への BindGroup 設定を要求する（未設定のまま
+                    // draw すると "expects a BindGroup to be set at index 3" の
+                    // 検証エラー＝Sponza 等の非スキン glTF がクラッシュ）ため、
+                    // 使い回しの空 BG を必ずセットする。
+                    render_pass.set_bind_group(3, &pipelines.mesh.empty_bg3, &[]);
                 }
                 render_pass.set_bind_group(0, camera_bg, &[]);
                 // group 4: ライト（storage 配列 + メタ）。パイプライン切り替えで
