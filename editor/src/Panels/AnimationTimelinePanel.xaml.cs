@@ -163,7 +163,13 @@ public partial class AnimationTimelinePanel : UserControl
 
     // ── Runtime イベント ────────────────────────────────────────
 
-    private void OnRuntimeStateChanged(EditorState state) => UpdatePreviewAvailability();
+    /// <summary>
+    /// RuntimeManager.ChangeState は非UIスレッド（StartEditAsync 等のバックグラウンド継続）から
+    /// 発火されることがあるため、他ハンドラ（OnSelectionChanged 等）と同様に Dispatcher.InvokeAsync で
+    /// UIスレッドへマーシャリングしてから UI 要素（BtnPlayPause 等）を触る。
+    /// </summary>
+    private void OnRuntimeStateChanged(EditorState state) =>
+        Dispatcher.InvokeAsync(UpdatePreviewAvailability);
 
     private void OnSelectionChanged(int id)
     {
