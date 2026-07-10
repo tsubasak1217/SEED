@@ -887,6 +887,9 @@ impl App {
                 IpcCommand::SetSpriteLayer { actor_dfs_id, slot_idx, layer } => {
                     self.handle_set_sprite_layer(actor_dfs_id, slot_idx, layer);
                 }
+                IpcCommand::SetLightField { actor_dfs_id, slot_idx, key, value } => {
+                    self.handle_set_light_field(actor_dfs_id, slot_idx, &key, &value);
+                }
                 IpcCommand::SetAudioField { actor_dfs_id, slot_idx, key, value } => {
                     self.handle_set_audio_field(actor_dfs_id, slot_idx, &key, &value);
                 }

@@ -726,6 +726,17 @@ impl App {
         // キャンバス ID のベースオフセット（MC + カメラギズモの後）
         let canvas_id_offset: u32 = mc_total_instances + camera_gizmo_count;
 
+        // ── ライト収集（メッシュシェーディング用 GPU ライト配列）──────────────
+        // シーンの Light スロットを Transform とともに収集する。Play/Edit 両方で反映。
+        // ライトが 0 灯なら後方互換フォールバックの方向光が返る（暗転しない）。
+        // 可変借用（&mut self.renderer）に入る前に不変借用で確定しておく。
+        let frame_lights: Vec<crate::engine::methods::drawer::GpuLight> =
+            if let Some(scene) = &self.scene {
+                super::light_ops::collect_gpu_lights(&scene.actors, &scene.world, self.active_world_line)
+            } else {
+                Vec::new()
+            };
+
         // 選択アクターの種別（2D/3D）を可変借用の前に確定する。
         // self.renderer を可変借用した後は self の不変借用が取れないため。
         // ワールドスペース表示中（use_screen_space = false）の 2D アクターはパースペクティブ
@@ -762,6 +773,10 @@ impl App {
             perf_begin_frame_ms = _perf_t_bf.elapsed().as_secs_f64() * 1000.0;
             match begin_frame_result {
                 Ok(mut frame) => {
+                    // ライト配列を GPU へアップロードする（全メッシュ描画が group 4 で共用）。
+                    // メタ（ライト数）も同時に更新される。
+                    draw_ctx.light_buffer.update(&draw_ctx.queue, &frame_lights);
+
                     // シーンモード・アクター編集モード共通: world_line の全 MC を収集する
                     // タプル: (id_base, dfs_id, slot_i, &ModelComponent)
                     let all_mcs: Vec<(u32, u32, usize, &ModelComponent)> =
@@ -1016,6 +1031,16 @@ impl App {
                         )
                     } else { None };
 
+                    // 選択中ライトアクターのギズモ（種別ごとの範囲ワイヤ・矢印、3D シーン）。
+                    let light_gizmo_batch = if is_3d_scene {
+                        super::light_scene_gizmo::build_selected_light_gizmo_batch(
+                            &scene.actors, &scene.world,
+                            self.active_world_line,
+                            self.actor_virtual_selected_idx,
+                            &draw_ctx.device,
+                        )
+                    } else { None };
+
                     // カメラプレビューリソースを初期化・更新する
                     if let Some(ref cam_data) = selected_cam_data {
                         // プレビューテクスチャサイズをカメラのアスペクト比に合わせて算出する。
@@ -1147,6 +1172,7 @@ impl App {
                                     draw_model_indirect(
                                         &mut preview_pass, gpu, &sd.batch,
                                         &preview_mesh_cam_buf.bind_group,
+                                        &draw_ctx.light_buffer.bind_group,
                                         &draw_ctx.pipelines,
                                     );
                                 }
@@ -2539,7 +2565,8 @@ impl App {
                                 if let Some(&gpu) = gpu_model_by_path.get(path.as_str()) {
                                     draw_model_indirect(
                                         &mut pass, gpu, &sd.batch,
-                                        &camera_buf.bind_group, &draw_ctx.pipelines,
+                                        &camera_buf.bind_group, &draw_ctx.light_buffer.bind_group,
+                                        &draw_ctx.pipelines,
                                     );
                                 }
                             }
@@ -2751,6 +2778,19 @@ impl App {
                             }
                         }
 
+                        // ライトギズモ（選択中ライトアクターのみ、3D シーン）
+                        if !scene_canvas_ss {
+                            if let (Some(light_gz), Some((_, line_bg))) =
+                                (&light_gizmo_batch, &self.line_model_buf)
+                            {
+                                draw_line_batch(
+                                    &mut pass, light_gz,
+                                    &camera_buf.bind_group, line_bg,
+                                    &draw_ctx.pipelines,
+                                );
+                            }
+                        }
+
                         // コライダーワイヤーフレーム（エディタモード + 3D シーン）
                         // scene_canvas_ss=true（3D + スクリーンスペース 2D の合成）でも
                         // 3D コライダーは 3D カメラパスで描画するためガードしない
@@ -2829,7 +2869,8 @@ impl App {
                             if let Some(gizmo) = &self.camera_gizmo {
                                 draw_model_indirect(
                                     &mut pass, &gizmo.gpu_model, &gizmo.batch,
-                                    &camera_buf.bind_group, &draw_ctx.pipelines,
+                                    &camera_buf.bind_group, &draw_ctx.light_buffer.bind_group,
+                                    &draw_ctx.pipelines,
                                 );
                             }
                         }

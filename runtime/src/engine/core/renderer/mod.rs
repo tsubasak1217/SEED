@@ -9,6 +9,7 @@ pub(crate) mod pipeline;
 pub(crate) mod hiz;
 pub(crate) mod skin_system;
 pub(crate) mod animator;
+pub(crate) mod lighting;
 
 pub use uniforms::{CameraUniform, ModelUniform, MaterialUniform, JointUniform, ColorVertex,
                    GpuCullData, FrustumUniform, GizmoVertex};
@@ -21,6 +22,7 @@ pub use pipeline::{MeshPipeline, SkinnedMeshPipeline, UnlitPipeline, CullPipelin
                    SpritePipeline, SpriteOutlinePipeline, CanvasIdPipeline, CanvasIdUniform,
                    CameraPreviewBlitPipeline,
                    BarFillPipeline, BarFillUniform};
+pub use lighting::{GpuLight, LightBuffer, LightMeta, MAX_LIGHTS};
 
 // ============================================================
 //  Renderer 本体

@@ -173,6 +173,10 @@ impl App {
                         use crate::engine::components::AnimatorComponent;
                         scene.world.remove::<AnimatorComponent>(slot_entity);
                     }
+                    ComponentKind::Light       => {
+                        use crate::engine::components::LightComponent;
+                        scene.world.remove::<LightComponent>(slot_entity);
+                    }
                 }
                 scene.world.despawn(slot_entity);
                 // アクターのスロットリストから削除
@@ -433,6 +437,16 @@ impl App {
                 } else { scene.world.despawn(slot_entity); }
                 true
             }
+            ComponentData::LightComponent(lc_data) => {
+                use crate::engine::components::LightComponent;
+                let slot_entity = scene.world.spawn();
+                scene.world.insert(slot_entity, LightComponent::from_data(lc_data));
+                let mut c = 0u32;
+                if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
+                    actor.add_slot_typed::<LightComponent>(slot_data.name, ComponentKind::Light, slot_entity);
+                } else { scene.world.despawn(slot_entity); }
+                true
+            }
             ComponentData::LegacyRigidbodyComponent(_) => {
                 // 旧フォーマット互換: ColliderComponent に統合済みのためスロット追加しない
                 false
@@ -617,6 +631,11 @@ impl App {
                     use crate::engine::components::AnimatorComponent;
                     scene.world.insert(slot_entity, AnimatorComponent::from_data(an_data));
                     new_slots.push(ComponentSlot::new::<AnimatorComponent>(slot_data.name, ComponentKind::Animator, slot_entity));
+                }
+                ComponentData::LightComponent(lc_data) => {
+                    use crate::engine::components::LightComponent;
+                    scene.world.insert(slot_entity, LightComponent::from_data(lc_data));
+                    new_slots.push(ComponentSlot::new::<LightComponent>(slot_data.name, ComponentKind::Light, slot_entity));
                 }
                 ComponentData::LegacyRigidbodyComponent(_) => {
                     // 旧フォーマット互換: ColliderComponent に統合済みのためスキップする

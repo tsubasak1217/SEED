@@ -433,7 +433,14 @@ public partial class InspectorPanel : UserControl
         string AnimClipsJson = "[]",
         string AnimDefaultClip = "",
         bool AnimPlayOnStart = true,
-        float AnimSpeed = 1f);
+        float AnimSpeed = 1f,
+        // LightComponent 用フィールド（種別・色・強度・range・スポット内外角・rect サイズ・影フラグ）
+        string LightKind = "directional",
+        float LightR = 1f, float LightG = 1f, float LightB = 1f,
+        float LightIntensity = 3f, float LightRange = 10f,
+        float LightInnerAngle = 25f, float LightOuterAngle = 35f,
+        float LightRectWidth = 1f, float LightRectHeight = 1f,
+        bool LightCastShadows = true);
 
     private List<SlotInfo> _slotInfos = new();
 
@@ -657,6 +664,18 @@ public partial class InspectorPanel : UserControl
             var animDefaultClip  = comp.TryGetProperty("default_clip",  out var adc) ? adc.GetString() ?? "" : "";
             var animPlayOnStart  = comp.TryGetProperty("play_on_start", out var apos) ? ReadJsonBool(apos, true) : true;
             var animSpeed        = comp.TryGetProperty("speed",         out var asp2) ? asp2.GetSingle() : 1f;
+            // LightComponent 用: 種別・色（リニア RGB）・強度・range・スポット内外角・rect サイズ・影フラグ
+            var lightKind        = comp.TryGetProperty("kind",         out var lki) ? lki.GetString() ?? "directional" : "directional";
+            var lightR           = comp.TryGetProperty("lr",           out var llr) ? llr.GetSingle() : 1f;
+            var lightG           = comp.TryGetProperty("lg",           out var llg) ? llg.GetSingle() : 1f;
+            var lightB           = comp.TryGetProperty("lb",           out var llb) ? llb.GetSingle() : 1f;
+            var lightIntensity   = comp.TryGetProperty("intensity",    out var lin) ? lin.GetSingle() : 3f;
+            var lightRange       = comp.TryGetProperty("range",        out var lrg) ? lrg.GetSingle() : 10f;
+            var lightInnerAngle  = comp.TryGetProperty("inner_angle",  out var lia) ? lia.GetSingle() : 25f;
+            var lightOuterAngle  = comp.TryGetProperty("outer_angle",  out var loa) ? loa.GetSingle() : 35f;
+            var lightRectWidth   = comp.TryGetProperty("rect_width",   out var lrw) ? lrw.GetSingle() : 1f;
+            var lightRectHeight  = comp.TryGetProperty("rect_height",  out var lrh) ? lrh.GetSingle() : 1f;
+            var lightCastShadows = comp.TryGetProperty("cast_shadows", out var lcs) ? ReadJsonBool(lcs, true) : true;
 
             var info = new SlotInfo(slotIdx, compName, compType, modelPath, width, height,
                 AutoScale: autoScale,
@@ -682,7 +701,13 @@ public partial class InspectorPanel : UserControl
                 AudioMinDistance: audioMinDistance, AudioMaxDistance: audioMaxDistance,
                 AudioPan: audioPan,
                 AnimClipsJson: animClipsJson, AnimDefaultClip: animDefaultClip,
-                AnimPlayOnStart: animPlayOnStart, AnimSpeed: animSpeed);
+                AnimPlayOnStart: animPlayOnStart, AnimSpeed: animSpeed,
+                LightKind: lightKind,
+                LightR: lightR, LightG: lightG, LightB: lightB,
+                LightIntensity: lightIntensity, LightRange: lightRange,
+                LightInnerAngle: lightInnerAngle, LightOuterAngle: lightOuterAngle,
+                LightRectWidth: lightRectWidth, LightRectHeight: lightRectHeight,
+                LightCastShadows: lightCastShadows);
             _slotInfos.Add(info);
 
             // アコーディオンにパラメータ編集エリアを追加（ヘッダーがリネーム・削除・複製・選択を兼ねる）
@@ -747,6 +772,7 @@ public partial class InspectorPanel : UserControl
         "ScriptComponent"     => Color.FromRgb(0x20, 0x34, 0x20), // 暗緑（スクリプト）
         "AudioComponent"      => Color.FromRgb(0x12, 0x2C, 0x34), // 暗青緑（オーディオ）
         "AnimatorComponent"   => Color.FromRgb(0x2C, 0x20, 0x38), // 暗紫（アニメーション）
+        "LightComponent"      => Color.FromRgb(0x3A, 0x32, 0x10), // 暗黄橙（ライト）
         "PluginComponent"     => Color.FromRgb(0x34, 0x2C, 0x12), // 暗黄
         _                     => Color.FromRgb(0x2A, 0x2A, 0x2A), // ニュートラル（基本情報）
     };
@@ -764,6 +790,7 @@ public partial class InspectorPanel : UserControl
         "ScriptComponent"     => "Script",
         "AudioComponent"      => "Audio Source",
         "AnimatorComponent"   => "Animator",
+        "LightComponent"      => "Light",
         "PluginComponent"     => "Plugin",
         _ when typeId.StartsWith("Plugin:", StringComparison.Ordinal) => typeId["Plugin:".Length..],
         _                     => typeId,
@@ -984,6 +1011,7 @@ public partial class InspectorPanel : UserControl
             "CameraComponent"    => BuildCameraSlotContent(info),
             "AudioComponent"     => BuildAudioSlotContent(info),
             "AnimatorComponent"  => BuildAnimatorSlotContent(info),
+            "LightComponent"     => BuildLightSlotContent(info),
             "PluginComponent"    => BuildPluginSlotContent(info),
             "ColliderComponent"  => BuildColliderSlotContent(info),
             "Collider2dComponent" => BuildCollider2dSlotContent(info),
@@ -3115,6 +3143,145 @@ public partial class InspectorPanel : UserControl
         }
         catch (JsonException) { /* 不正 JSON は空リスト扱い */ }
         return result;
+    }
+
+    /// <summary>
+    /// LightComponent のインスペクター UI を構築して返す。
+    /// 種別（ドロップダウン）・色・強度・range・スポット内外角・rect サイズ・影フラグを編集し、
+    /// 変更時は SET_LIGHT_FIELD:{actor},{slot},{key},{value} を送信する。
+    /// 種別に応じて関連フィールドのみ表示する。
+    /// </summary>
+    private UIElement BuildLightSlotContent(SlotInfo info)
+    {
+        var sp = new StackPanel { Margin = new Thickness(0, 4, 0, 4) };
+
+        // フィールド変更をランタイムへ送信するローカル関数。
+        void SendField(string key, string value)
+        {
+            if (_currentActorId < 0) return;
+            _runtime?.SendToRuntime($"SET_LIGHT_FIELD:{_currentActorId},{info.SlotIdx},{key},{value}");
+        }
+
+        // ── 種別ドロップダウン ─────────────────────────────────
+        var kinds = new[]
+        {
+            ("directional", "平行光 (Directional)"),
+            ("point",       "点光源 (Point)"),
+            ("spot",        "スポット (Spot)"),
+            ("rect",        "矩形エリア (Rect)"),
+        };
+        var kindRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 4, 0, 2) };
+        kindRow.Children.Add(new TextBlock
+        {
+            Text = "種別", Foreground = new SolidColorBrush(Color.FromRgb(0xAA, 0xAA, 0xAA)),
+            FontSize = 11, Width = 90, VerticalAlignment = VerticalAlignment.Center,
+        });
+        var kindCombo = new ComboBox { Width = 170, FontSize = 11, Margin = new Thickness(4, 0, 0, 0) };
+        foreach (var (val, label) in kinds)
+            kindCombo.Items.Add(new ComboBoxItem { Content = label, Tag = val });
+        var curKindIdx = Array.FindIndex(kinds, t => t.Item1 == info.LightKind);
+        kindCombo.SelectedIndex = curKindIdx >= 0 ? curKindIdx : 0;
+        kindRow.Children.Add(kindCombo);
+        sp.Children.Add(kindRow);
+
+        // ── 色（リニア RGB）────────────────────────────────────
+        float curR = info.LightR, curG = info.LightG, curB = info.LightB;
+        var colorSwatch = new Border
+        {
+            Width = 120, Height = 22, Margin = new Thickness(0, 2, 0, 2),
+            BorderBrush = new SolidColorBrush(Color.FromRgb(0x55, 0x55, 0x55)),
+            BorderThickness = new Thickness(1),
+            Background = new SolidColorBrush(
+                Color.FromRgb(LinearToSrgbByte(curR), LinearToSrgbByte(curG), LinearToSrgbByte(curB))),
+            Cursor = Cursors.Hand,
+        };
+        var colorRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 4, 0, 2) };
+        colorRow.Children.Add(new TextBlock
+        {
+            Text = "色", Foreground = new SolidColorBrush(Color.FromRgb(0xAA, 0xAA, 0xAA)),
+            FontSize = 11, Width = 90, VerticalAlignment = VerticalAlignment.Center,
+        });
+        colorRow.Children.Add(colorSwatch);
+        colorSwatch.MouseLeftButtonDown += (_, _) =>
+        {
+            // ライト色はアルファを持たない（a=1 固定）。ColorPickerWindow の a は無視する。
+            var result = ColorPickerWindow.ShowDialog(Window.GetWindow(this), curR, curG, curB, 1f);
+            if (result is null) return;
+            (curR, curG, curB, _) = result.Value;
+            colorSwatch.Background = new SolidColorBrush(
+                Color.FromRgb(LinearToSrgbByte(curR), LinearToSrgbByte(curG), LinearToSrgbByte(curB)));
+            SendField("color", FormattableString.Invariant($"{curR},{curG},{curB}"));
+        };
+        sp.Children.Add(colorRow);
+
+        // ── 数値フィールド + SET_LIGHT_FIELD 送信をまとめて構築 ──
+        // 戻り値の行要素を種別ごとの表示切替に使えるよう返す。
+        UIElement AddFloatRow(string label, float value, string key)
+        {
+            var row = BuildLabeledNumberRow(label, value);
+            sp.Children.Add(row.element);
+            void Commit()
+            {
+                if (!float.TryParse(row.textBox.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) return;
+                SendField(key, v.ToString(CultureInfo.InvariantCulture));
+            }
+            row.textBox.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { Commit(); e.Handled = true; } };
+            row.textBox.LostFocus += (_, _) => Commit();
+            NumericDragBehavior.SetOnDrag(row.textBox, Commit);
+            return row.element;
+        }
+
+        // 強度は全種別で共通。
+        AddFloatRow("強度", info.LightIntensity, "intensity");
+
+        // 種別ごとに表示切替するフィールド群。
+        var rangeRow  = AddFloatRow("減衰距離 (Range)", info.LightRange,       "range");
+        var innerRow  = AddFloatRow("内側角 (°)",        info.LightInnerAngle,  "inner_angle");
+        var outerRow  = AddFloatRow("外側角 (°)",        info.LightOuterAngle,  "outer_angle");
+        var rectWRow  = AddFloatRow("矩形 幅",            info.LightRectWidth,   "rect_width");
+        var rectHRow  = AddFloatRow("矩形 高さ",          info.LightRectHeight,  "rect_height");
+
+        // ── 影を落とす（R2 で使用）────────────────────────────
+        var shadowRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 4, 0, 2) };
+        shadowRow.Children.Add(new TextBlock
+        {
+            Text = "影を落とす", Foreground = new SolidColorBrush(Color.FromRgb(0xAA, 0xAA, 0xAA)),
+            FontSize = 11, Width = 90, VerticalAlignment = VerticalAlignment.Center,
+        });
+        var shadowCheck = new CheckBox
+        {
+            IsChecked = info.LightCastShadows, VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(4, 0, 0, 0),
+        };
+        shadowCheck.Checked   += (_, _) => SendField("cast_shadows", "1");
+        shadowCheck.Unchecked += (_, _) => SendField("cast_shadows", "0");
+        shadowRow.Children.Add(shadowCheck);
+        sp.Children.Add(shadowRow);
+
+        // 種別に応じた関連フィールドの表示切替。
+        void UpdateKindVisibility(string kind)
+        {
+            bool isPoint = kind == "point";
+            bool isSpot  = kind == "spot";
+            bool isRect  = kind == "rect";
+            // range は point / spot / rect で有効（directional は減衰なし）。
+            rangeRow.Visibility = (isPoint || isSpot || isRect) ? Visibility.Visible : Visibility.Collapsed;
+            innerRow.Visibility = isSpot ? Visibility.Visible : Visibility.Collapsed;
+            outerRow.Visibility = isSpot ? Visibility.Visible : Visibility.Collapsed;
+            rectWRow.Visibility = isRect ? Visibility.Visible : Visibility.Collapsed;
+            rectHRow.Visibility = isRect ? Visibility.Visible : Visibility.Collapsed;
+        }
+        UpdateKindVisibility(info.LightKind);
+        kindCombo.SelectionChanged += (_, _) =>
+        {
+            if (kindCombo.SelectedItem is ComboBoxItem item && item.Tag is string kind)
+            {
+                SendField("kind", kind);
+                UpdateKindVisibility(kind);
+            }
+        };
+
+        return sp;
     }
 
     /// <summary>

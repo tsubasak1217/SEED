@@ -28,6 +28,8 @@ pub use crate::engine::core::renderer::{
     SkinComputePipeline, IdPassPipeline, OutlinePipeline, DepthPrepassPipelines,
     SpritePipeline, SpriteOutlinePipeline, CanvasIdPipeline, CanvasIdUniform,
     CameraPreviewBlitPipeline,
+    // ライト
+    GpuLight, LightBuffer, MAX_LIGHTS,
 };
 
 // 描画関数
@@ -61,6 +63,9 @@ pub struct DrawContext {
     pub queue:            Arc<wgpu::Queue>,
     pub pipelines:        DrawPipelines,
     pub defaults:         DefaultTex,
+    /// ライト用 GPU バッファ一式（毎フレーム `update()` で有効ライトを書き込む）。
+    /// group 4 の bind group を全メッシュ描画で共用する。
+    pub light_buffer:     LightBuffer,
     /// パス → 解析済み CPU モデルのキャッシュ。
     /// 同じパスのモデルを繰り返し build_actor/rebuild するときにディスク読み込みとパースを省く。
     pub model_cache:      RefCell<HashMap<String, Arc<Model>>>,
@@ -79,11 +84,15 @@ impl DrawContext {
     ) -> Self {
         let pipelines = DrawPipelines::new(&device, &queue, surface_format, depth_format, cache);
         let defaults  = DefaultTex::new(&device, &queue);
+        // ライトバッファは mesh パイプラインの group 4 レイアウトから生成する
+        // （skinned_mesh とレイアウト互換のため両パイプラインで共用できる）。
+        let light_buffer = LightBuffer::new(&device, &pipelines.mesh.lights_bgl);
         Self {
             device,
             queue,
             pipelines,
             defaults,
+            light_buffer,
             model_cache:      RefCell::new(HashMap::new()),
             sprite_tex_cache: RefCell::new(HashMap::new()),
         }

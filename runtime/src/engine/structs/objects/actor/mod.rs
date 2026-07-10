@@ -363,6 +363,10 @@ impl Actor {
                     world.get::<crate::engine::components::AnimatorComponent>(slot.entity)
                         .map(|an| ComponentData::AnimatorComponent(an.to_data()))
                 }
+                ComponentKind::Light => {
+                    world.get::<crate::engine::components::LightComponent>(slot.entity)
+                        .map(|lc| ComponentData::LightComponent(lc.to_data()))
+                }
             };
             data.map(|d| ComponentSlotData {
                 name:      slot.name.clone(),

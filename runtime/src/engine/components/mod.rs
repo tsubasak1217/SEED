@@ -22,6 +22,7 @@ pub mod collider2d_component;
 pub mod rigidbody_component;
 pub mod audio_component;
 pub mod animator_component;
+pub mod light_component;
 
 pub use transform::Transform;
 pub use canvas_transform::CanvasTransform;
@@ -45,6 +46,7 @@ pub use collider2d_component::{
 pub use rigidbody_component::RigidbodyComponentData;
 pub use audio_component::{AudioComponent, AudioComponentData};
 pub use animator_component::{AnimatorComponent, AnimatorComponentData, AnimClipRef, AnimClipKind, AnimClipLoop};
+pub use light_component::{LightComponent, LightComponentData, LightKind};
 
 use serde::{Deserialize, Serialize};
 
@@ -81,6 +83,8 @@ pub enum ComponentKind {
     Audio,
     /// アニメーター（キーフレームアニメーションクリップの再生）
     Animator,
+    /// ライト（光源：directional / point / spot / rect）
+    Light,
 }
 
 impl ComponentKind {
@@ -99,6 +103,7 @@ impl ComponentKind {
             Self::Collider2d  => "Collider2dComponent",
             Self::Audio       => "AudioComponent",
             Self::Animator    => "AnimatorComponent",
+            Self::Light       => "LightComponent",
         }
     }
 }
@@ -129,4 +134,6 @@ pub enum ComponentData {
     AudioComponent(AudioComponentData),
     /// アニメーター（キーフレームアニメーションクリップの再生）
     AnimatorComponent(AnimatorComponentData),
+    /// ライト（光源：directional / point / spot / rect）
+    LightComponent(LightComponentData),
 }

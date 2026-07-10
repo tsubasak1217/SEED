@@ -24,6 +24,7 @@ pub fn draw_model_indirect<'pass>(
     gpu_model:   &'pass GpuModel,
     batch:       &'pass InstancedModelBatch,
     camera_bg:   &'pass wgpu::BindGroup,
+    lights_bg:   &'pass wgpu::BindGroup,
     pipelines:   &'pass DrawPipelines,
 ) {
     if batch.n_prims == 0 { return; }
@@ -64,6 +65,10 @@ pub fn draw_model_indirect<'pass>(
                     render_pass.set_pipeline(&pipelines.mesh.pipeline);
                 }
                 render_pass.set_bind_group(0, camera_bg, &[]);
+                // group 4: ライト（storage 配列 + メタ）。パイプライン切り替えで
+                // group 3 のレイアウトが変わると group 4 も無効化されるため、
+                // camera と同様にパイプライン切り替えのたびに再設定する。
+                render_pass.set_bind_group(4, lights_bg, &[]);
                 cur_skinned = Some(draw.is_skinned);
                 cur_mat_ptr = None;
             }

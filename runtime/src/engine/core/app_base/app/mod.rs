@@ -45,6 +45,8 @@ mod tab_physics;
 mod script_scene_ops;
 mod audio_ops;
 mod animation_ops;
+pub(crate) mod light_ops;
+pub(crate) mod light_scene_gizmo;
 mod prefab_ops;
 pub(crate) mod camera_scene_gizmo;
 

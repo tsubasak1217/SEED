@@ -38,6 +38,8 @@ pub struct MeshPipeline {
     pub camera_bgl:   wgpu::BindGroupLayout,
     pub model_bgl:    wgpu::BindGroupLayout,
     pub material_bgl: wgpu::BindGroupLayout,
+    /// group 4: ライト（storage 配列 + メタ uniform）。LightBuffer の bind group 生成に使う。
+    pub lights_bgl:   wgpu::BindGroupLayout,
 }
 
 impl MeshPipeline {
@@ -46,12 +48,16 @@ impl MeshPipeline {
             RenderPipelineBuilder::new(device, include_str!("pipelines/mesh.toml"), sf, df)
                 .with_cache(cache)
                 .build(get_shader_source);
-        // group 番号順 (0, 1, 2) にイテレートして取り出す
+        // group 番号順 (0, 1, 2, 3=gap, 4=lights) にイテレートして取り出す。
+        // fragment の group 4 参照によりレイアウトは 5 グループになり、
+        // group 3 はスキンなしメッシュでは空の gap BGL（未使用）になる。
         let mut it = bgls.into_iter();
         let camera_bgl   = it.next().unwrap(); // group 0
         let model_bgl    = it.next().unwrap(); // group 1
         let material_bgl = it.next().unwrap(); // group 2
-        Self { pipeline, camera_bgl, model_bgl, material_bgl }
+        let _gap_bgl     = it.next().unwrap(); // group 3（空・未使用）
+        let lights_bgl   = it.next().unwrap(); // group 4
+        Self { pipeline, camera_bgl, model_bgl, material_bgl, lights_bgl }
     }
 }
 
@@ -73,12 +79,13 @@ impl SkinnedMeshPipeline {
             RenderPipelineBuilder::new(device, include_str!("pipelines/skinned_mesh.toml"), sf, df)
                 .with_cache(cache)
                 .build(get_shader_source);
-        // group 番号順 (0, 1, 2, 3) にイテレートして取り出す
+        // group 番号順 (0, 1, 2, 3=joints, 4=lights) にイテレートして取り出す
         let mut it = bgls.into_iter();
         let camera_bgl   = it.next().unwrap(); // group 0
         let model_bgl    = it.next().unwrap(); // group 1
         let material_bgl = it.next().unwrap(); // group 2
         let joint_bgl    = it.next().unwrap(); // group 3
+        let _lights_bgl  = it.next().unwrap(); // group 4（LightBuffer は mesh 側 BGL で生成し共用）
         Self { pipeline, camera_bgl, model_bgl, material_bgl, joint_bgl }
     }
 }

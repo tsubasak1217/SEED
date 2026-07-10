@@ -54,6 +54,50 @@ struct MaterialUniform {
 @group(2) @binding(9)  var          t_emissive:           texture_2d<f32>;
 @group(2) @binding(10) var          s_emissive:           sampler;
 
+// ─── Group 4: ライト ──────────────────────────────────────────
+//
+// storage buffer に全ライト（最大 MAX_LIGHTS）を格納し、
+// uniform（u_light_meta.count）で有効ライト数を渡す。
+// フラグメントシェーダのライトループがこの配列を count 件だけ走査する。
+//
+// GpuLight のレイアウトは Rust 側 lighting.rs の repr(C) 構造体と
+// 厳密に一致させること（vec3 は 16 バイト境界、合計 96 バイト）。
+
+/// ライト種別コード（Rust: LIGHT_KIND_*、LightKind::to_code() と一致）。
+const LIGHT_KIND_DIRECTIONAL: u32 = 0u;
+const LIGHT_KIND_POINT:       u32 = 1u;
+const LIGHT_KIND_SPOT:        u32 = 2u;
+const LIGHT_KIND_RECT:        u32 = 3u;
+
+struct GpuLight {
+    color:            vec3<f32>,   // 0
+    intensity:        f32,         // 12
+    position:         vec3<f32>,   // 16
+    range:            f32,         // 28
+    direction:        vec3<f32>,   // 32  光が進む向き（L = -direction）
+    kind:             u32,         // 44
+    inner_cos:        f32,         // 48
+    outer_cos:        f32,         // 52
+    rect_half_width:  f32,         // 56
+    rect_half_height: f32,         // 60
+    rect_right:       vec3<f32>,   // 64
+    _pad0:            f32,         // 76
+    rect_up:          vec3<f32>,   // 80
+    _pad1:            f32,         // 92
+}
+
+// count のみ有効。パディングは 16 バイト境界のためのスカラー 3 つ
+// （vec3<u32> を使うと align 16 で構造体が 32 バイトになり Rust 側 16 バイトと不一致になる）。
+struct LightMeta {
+    count: u32,
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
+}
+
+@group(4) @binding(0) var<storage, read> u_lights:     array<GpuLight>;
+@group(4) @binding(1) var<uniform>       u_light_meta: LightMeta;
+
 // ─── 頂点シェーダ出力 / フラグメントシェーダ入力 ─────────────
 
 struct VertexOutput {

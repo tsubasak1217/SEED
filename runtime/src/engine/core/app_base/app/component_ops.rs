@@ -278,6 +278,19 @@ impl App {
                         d.play_on_start as u8, d.speed,
                     ))
                 }
+                ComponentData::LightComponent(d) => {
+                    // ライト: 種別・色・強度・range・スポット内外角・rect サイズ・影フラグを
+                    // インスペクター用に送信する（種別ごとに関連フィールドのみ UI 側で表示する）。
+                    ("LightComponent", format!(
+                        r#","kind":"{}","lr":{:.4},"lg":{:.4},"lb":{:.4},"intensity":{:.4},"range":{:.4},"inner_angle":{:.4},"outer_angle":{:.4},"rect_width":{:.4},"rect_height":{:.4},"cast_shadows":{}"#,
+                        d.kind.as_str(),
+                        d.color[0], d.color[1], d.color[2],
+                        d.intensity, d.range,
+                        d.inner_angle_deg, d.outer_angle_deg,
+                        d.rect_width, d.rect_height,
+                        d.cast_shadows as u8,
+                    ))
+                }
                 ComponentData::CameraComponent(d) => {
                     // FOV / near / far / is_main / clear_color / scaling_mode / target_size /
                     // bar_color / projection / ortho_height をインスペクター用に送信する
@@ -614,6 +627,36 @@ impl App {
                     let mut c = 0u32;
                     if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
                         actor.add_slot_typed::<AnimatorComponent>(name, ComponentKind::Animator, slot_entity);
+                        true
+                    } else {
+                        scene.world.despawn(slot_entity);
+                        false
+                    }
+                };
+                if found {
+                    let after_slots = self.snapshot_actor_slots(wl, actor_dfs_id);
+                    self.undo_history.record(Box::new(ComponentSlotsSnapshotCommand {
+                        world_line: wl, actor_dfs_id, before_slots, after_slots,
+                    }));
+                    self.actor_virtual_selected_slot_idx = 0;
+                    self.selected_instances.clear();
+                    self.send_hierarchy();
+                    self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
+                    if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+                }
+            }
+            "LightComponent" => {
+                // デフォルト（directional・白・強度3）の LightComponent をアクターに追加する。
+                // 種別・色・強度などはインスペクターまたはシーンファイルから設定する。
+                use crate::engine::components::LightComponent;
+                let name = slot_name.to_string();
+                let found = {
+                    let scene = self.scene.as_mut().unwrap();
+                    let slot_entity = scene.world.spawn();
+                    scene.world.insert(slot_entity, LightComponent::default());
+                    let mut c = 0u32;
+                    if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
+                        actor.add_slot_typed::<LightComponent>(name, ComponentKind::Light, slot_entity);
                         true
                     } else {
                         scene.world.despawn(slot_entity);

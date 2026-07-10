@@ -55,7 +55,10 @@ public partial class ComponentSelectorWindow : Window
             new("CanvasComponent", "Canvas", "UI 矩形領域をアクタにアタッチ（幅・高さ指定）。3D アクタにアタッチするとワールド空間に配置", ActorTarget.Common),
             new("SpriteComponent", "Sprite", "2D スプライト画像をキャンバスに表示",          ActorTarget.Common),
         }),
-        ("ライト", new()),
+        ("ライト", new()
+        {
+            new("LightComponent", "Light", "光源（directional / point / spot / rect）をアクターにアタッチ。向き・位置は Transform から", ActorTarget.Actor3D),
+        }),
         ("エフェクト", new()),
         ("カメラ", new()
         {
@@ -307,6 +310,7 @@ public partial class ComponentSelectorWindow : Window
         "Collider2dComponent" => "Collider2D",
         "AudioComponent"      => "Audio",
         "AnimatorComponent"   => "Animator",
+        "LightComponent"      => "Light",
         // Plugin:{name} → プラグイン名をデフォルト名とする
         _ when typeId.StartsWith("Plugin:", StringComparison.Ordinal) => typeId["Plugin:".Length..],
         _                    => typeId,

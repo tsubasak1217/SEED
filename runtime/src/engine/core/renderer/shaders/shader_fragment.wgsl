@@ -3,8 +3,55 @@
 //
 // Cook-Torrance BRDF (GGX + Smith + Schlick) を使用した
 // metallic-roughness ワークフロー PBR 実装。
-// 現在は 1 方向光 + 環境光（定数）で計算する。
+//
+// ライトは group 4 の storage buffer（array<GpuLight>）＋ライト数
+// uniform（u_light_meta.count）から供給される（shader_common.wgsl 参照）。
+// directional / point / spot / rect の 4 種をフォワードの
+// per-fragment ループで加算する。ライト 0 灯でもアンビエントのみで破綻しない。
+//
+// クラスタリング／タイル分割は将来課題（現状は全ライトを線形走査）。
 // ============================================================
+
+// ── ライト減衰ヘルパー ────────────────────────────────────────
+
+/// 距離減衰（inverse-square ＋ range ウィンドウ）。
+///
+/// 物理的な 1/d^2 に、range 付近でスムーズに 0 へ落とすウィンドウ関数
+/// （Karis / UE4 方式）を掛ける。range を超えると寄与が 0 になる。
+///   window = (1 - (d^2/range^2)^2)^2   （0..1 にクランプ）
+fn distance_attenuation(dist: f32, range: f32) -> f32 {
+    let d2      = dist * dist;
+    let inv_sqr = 1.0 / max(d2, 1e-4);
+    let factor  = d2 / max(range * range, 1e-4);
+    let window  = clamp(1.0 - factor * factor, 0.0, 1.0);
+    return inv_sqr * window * window;
+}
+
+/// 1 ライト分の Cook-Torrance BRDF を評価して放射輝度を返す。
+///
+/// - `L`        : 面から光源への方向（正規化済み）
+/// - `radiance` : そのライトの実効放射輝度（color * intensity * 減衰）
+fn shade_light(
+    N: vec3<f32>, V: vec3<f32>, L: vec3<f32>,
+    albedo: vec3<f32>, F0: vec3<f32>, metallic: f32, roughness: f32,
+    radiance: vec3<f32>,
+) -> vec3<f32> {
+    let H   = normalize(V + L);
+    let ndl = max(dot(N, L), 0.0);
+    let ndv = max(dot(N, V), 0.0001);
+    let hdv = max(dot(H, V), 0.0);
+
+    let D = distribution_ggx(N, H, roughness);
+    let G = geometry_smith(N, V, L, roughness);
+    let F = fresnel_schlick(hdv, F0);
+
+    let kS = F;
+    let kD = (vec3<f32>(1.0) - kS) * (1.0 - metallic);
+
+    // 分母にクランプして除算ゼロを防止
+    let specular = D * G * F / max(4.0 * ndv * ndl, 0.001);
+    return (kD * albedo / PI + specular) * radiance * ndl;
+}
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
@@ -55,35 +102,70 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     let V = normalize(u_camera.position - in.world_pos);
 
-    // ── Cook-Torrance PBR ────────────────────────────────────
+    // ── Cook-Torrance PBR（マテリアル項）──────────────────────
     let albedo = base_color.rgb;
     // 誘電体は F0 = 0.04、金属は albedo を F0 として使用
     let F0 = mix(vec3<f32>(0.04), albedo, metallic);
 
-    // 方向光（将来的には uniform バッファに移行）
-    // LH 座標系: カメラは -Z 側にいて +Z を向く。カメラ向きの面の法線は -Z 方向なので
-    // ライトの Z は負（カメラ側から照らす）にしないと前面が ndl=0 になり真っ暗になる。
-    let light_dir   = normalize(vec3<f32>(0.5, 1.0, -0.3));
-    let light_color = vec3<f32>(3.0);
+    // ── ライトループ ──────────────────────────────────────────
+    // group 4 の storage 配列を u_light_meta.count 件だけ走査して加算する。
+    var Lo = vec3<f32>(0.0);
+    let light_count = min(u_light_meta.count, arrayLength(&u_lights));
+    for (var i: u32 = 0u; i < light_count; i = i + 1u) {
+        let light = u_lights[i];
 
-    let L   = light_dir;
-    let H   = normalize(V + L);
-    let ndl = max(dot(N, L), 0.0);
-    let ndv = max(dot(N, V), 0.0001);
-    let hdv = max(dot(H, V), 0.0);
+        var L        = vec3<f32>(0.0, 0.0, 1.0);
+        var radiance = vec3<f32>(0.0);
+        let base_col = light.color * light.intensity;
 
-    let D = distribution_ggx(N, H, roughness);
-    let G = geometry_smith(N, V, L, roughness);
-    let F = fresnel_schlick(hdv, F0);
+        if light.kind == LIGHT_KIND_DIRECTIONAL {
+            // 平行光: L = -照射方向。減衰なし（従来の 1 方向光と同等）。
+            L        = normalize(-light.direction);
+            radiance = base_col;
 
-    let kS = F;
-    let kD = (vec3<f32>(1.0) - kS) * (1.0 - metallic);
+        } else if light.kind == LIGHT_KIND_POINT {
+            // 点光源: 位置から全方向。inverse-square ＋ range ウィンドウで減衰。
+            let to_light = light.position - in.world_pos;
+            let dist     = length(to_light);
+            L            = to_light / max(dist, 1e-4);
+            radiance     = base_col * distance_attenuation(dist, light.range);
 
-    // 分母にクランプして除算ゼロを防止
-    let specular = D * G * F / max(4.0 * ndv * ndl, 0.001);
-    let Lo = (kD * albedo / PI + specular) * light_color * ndl;
+        } else if light.kind == LIGHT_KIND_SPOT {
+            // スポット光: point の減衰に加え、内外コーン角のスムーズ円錐減衰を掛ける。
+            let to_light = light.position - in.world_pos;
+            let dist     = length(to_light);
+            L            = to_light / max(dist, 1e-4);
+            // 照射軸（light.direction）と「光源→フラグメント」方向の角度で円錐判定。
+            let cos_ang  = dot(light.direction, -L);
+            // outer_cos → inner_cos で 0→1（inner 内側は全光量、outer 外側は 0）。
+            let cone     = smoothstep(light.outer_cos, light.inner_cos, cos_ang);
+            radiance     = base_col * distance_attenuation(dist, light.range) * cone;
 
-    // 環境光: 視認性を確保するため影部分を適度に明るくする
+        } else {
+            // 矩形エリアライト（LIGHT_KIND_RECT）。
+            // ── R1 簡易近似（最近接点近似）──
+            //   矩形上でフラグメントに最も近い点を求め、その点からの点光源として扱う。
+            //   さらに発光面の表側（direction を法線とする前面）に対してのみ寄与させる。
+            //   物理的に正しい面積分（LTC: Linearly Transformed Cosines）は
+            //   TODO(R1.5) として別途実装する。
+            let d          = in.world_pos - light.position;
+            let px         = clamp(dot(d, light.rect_right), -light.rect_half_width,  light.rect_half_width);
+            let py         = clamp(dot(d, light.rect_up),    -light.rect_half_height, light.rect_half_height);
+            let closest    = light.position + light.rect_right * px + light.rect_up * py;
+            let to_light   = closest - in.world_pos;
+            let dist       = length(to_light);
+            L              = to_light / max(dist, 1e-4);
+            // 前面判定: フラグメントが発光面の表側（direction 側）にあるほど強い。
+            let facing     = clamp(dot(light.direction, -L), 0.0, 1.0);
+            radiance       = base_col * distance_attenuation(dist, light.range) * facing;
+        }
+
+        Lo += shade_light(N, V, L, albedo, F0, metallic, roughness, radiance);
+    }
+
+    // ── アンビエント ──────────────────────────────────────────
+    // 当面は定数。将来は IBL（環境マップの irradiance / prefiltered specular）へ置換する。
+    // TODO(IBL): 環境光を一定値から画像ベースライティングへ。
     let ambient = vec3<f32>(0.05) * albedo * ao;
 
     let hdr_color = ambient + Lo + emissive;
@@ -91,7 +173,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // 輝度ベース Reinhard トーンマッピング（HDR → [0, 1] リニア空間）
     // チャンネル毎 Reinhard では高輝度時に彩度が失われるため、
     // 輝度で Reinhard した後スケールを乗算して色相を保持する。
-    let luma = dot(hdr_color, vec3<f32>(0.2126, 0.7152, 0.0722));
+    let luma   = dot(hdr_color, vec3<f32>(0.2126, 0.7152, 0.0722));
     let mapped = hdr_color * (1.0 / (luma + 1.0));
 
     // ガンマ補正は sRGB サーフェス（Bgra8UnormSrgb）に委ねる。
