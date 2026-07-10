@@ -406,6 +406,9 @@ impl App {
         if time_running {
             use crate::engine::ecs::Phase;
             use crate::engine::core::scripting::{publish_input, publish_physics_sender};
+            // アニメーション評価（スクリプト更新より前に実行し、スクリプトが上書き可能にする）。
+            // AnimatorComponent のクリップを進めて対象アクターの Transform 等へ書き込む。
+            self.update_animations(ctx.delta_time);
             // スクリプトの Input API 用に入力状態への読み取り専用ポインタを公開する。
             // 入力イベントの処理はイベントハンドラ側で行われるため、
             // フェーズ実行中に self.input が変更されることはない。

@@ -693,6 +693,7 @@ public partial class InspectorPanel : UserControl
         "Collider2dComponent" => Color.FromRgb(0x38, 0x16, 0x16), // 暗赤
         "ScriptComponent"     => Color.FromRgb(0x20, 0x34, 0x20), // 暗緑（スクリプト）
         "AudioComponent"      => Color.FromRgb(0x12, 0x2C, 0x34), // 暗青緑（オーディオ）
+        "AnimatorComponent"   => Color.FromRgb(0x2C, 0x20, 0x38), // 暗紫（アニメーション）
         "PluginComponent"     => Color.FromRgb(0x34, 0x2C, 0x12), // 暗黄
         _                     => Color.FromRgb(0x2A, 0x2A, 0x2A), // ニュートラル（基本情報）
     };
@@ -709,6 +710,7 @@ public partial class InspectorPanel : UserControl
         "Collider2dComponent" => "Collider 2D",
         "ScriptComponent"     => "Script",
         "AudioComponent"      => "Audio Source",
+        "AnimatorComponent"   => "Animator",
         "PluginComponent"     => "Plugin",
         _ when typeId.StartsWith("Plugin:", StringComparison.Ordinal) => typeId["Plugin:".Length..],
         _                     => typeId,
@@ -928,6 +930,7 @@ public partial class InspectorPanel : UserControl
             "InputMapComponent"  => BuildInputMapSlotContent(info),
             "CameraComponent"    => BuildCameraSlotContent(info),
             "AudioComponent"     => BuildAudioSlotContent(info),
+            "AnimatorComponent"  => BuildAnimatorSlotContent(info),
             "PluginComponent"    => BuildPluginSlotContent(info),
             "ColliderComponent"  => BuildColliderSlotContent(info),
             "Collider2dComponent" => BuildCollider2dSlotContent(info),
@@ -2664,6 +2667,32 @@ public partial class InspectorPanel : UserControl
     private const float AudioPanMax = 1f;
     /// <summary>音量の下限（無音）。</summary>
     private const float AudioVolumeMin = 0f;
+
+    /// <summary>
+    /// AnimatorComponent のインスペクター UI を構築して返す（P1 は読み取り専用の概要表示）。
+    /// クリップ一覧・キーフレームのタイムライン編集 UI は P2 で対応する。
+    /// 現状はシーンファイル（.scene）または .anim アセットで設定し、Play で再生確認する。
+    /// </summary>
+    private UIElement BuildAnimatorSlotContent(SlotInfo info)
+    {
+        var sp = new StackPanel { Margin = new Thickness(0, 4, 0, 4) };
+        sp.Children.Add(new TextBlock
+        {
+            Text         = "アニメーションクリップ（.anim）の再生コンポーネントです。",
+            Foreground   = new SolidColorBrush(Color.FromRgb(0xAA, 0xAA, 0xAA)),
+            FontSize     = 11,
+            TextWrapping = TextWrapping.Wrap,
+            Margin       = new Thickness(0, 0, 0, 4),
+        });
+        sp.Children.Add(new TextBlock
+        {
+            Text         = "クリップ一覧・既定クリップ・自動再生・速度はシーンファイルで設定します（詳細な編集 UI は今後対応予定）。",
+            Foreground   = new SolidColorBrush(Color.FromRgb(0x77, 0x77, 0x77)),
+            FontSize     = 11,
+            TextWrapping = TextWrapping.Wrap,
+        });
+        return sp;
+    }
 
     /// <summary>
     /// AudioComponent のインスペクター UI を構築して返す。

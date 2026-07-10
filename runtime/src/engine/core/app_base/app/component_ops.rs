@@ -254,6 +254,15 @@ impl App {
                         d.min_distance, d.max_distance, d.pan,
                     ))
                 }
+                ComponentData::AnimatorComponent(d) => {
+                    // アニメーター: クリップ数・既定クリップ・自動再生・速度をインスペクター用に送信する。
+                    // 詳細なクリップ一覧編集 UI は P2 で対応するため、ここでは概要情報のみ返す。
+                    let default_clip_json = serde_json::to_string(&d.default_clip).unwrap_or_default();
+                    ("AnimatorComponent", format!(
+                        r#","clip_count":{},"default_clip":{default_clip_json},"play_on_start":{},"speed":{:.4}"#,
+                        d.clips.len(), d.play_on_start as u8, d.speed,
+                    ))
+                }
                 ComponentData::CameraComponent(d) => {
                     // FOV / near / far / is_main / clear_color / scaling_mode / target_size /
                     // bar_color / projection / ortho_height をインスペクター用に送信する
@@ -552,6 +561,36 @@ impl App {
                     let mut c = 0u32;
                     if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
                         actor.add_slot_typed::<AudioComponent>(name, ComponentKind::Audio, slot_entity);
+                        true
+                    } else {
+                        scene.world.despawn(slot_entity);
+                        false
+                    }
+                };
+                if found {
+                    let after_slots = self.snapshot_actor_slots(wl, actor_dfs_id);
+                    self.undo_history.record(Box::new(ComponentSlotsSnapshotCommand {
+                        world_line: wl, actor_dfs_id, before_slots, after_slots,
+                    }));
+                    self.actor_virtual_selected_slot_idx = 0;
+                    self.selected_instances.clear();
+                    self.send_hierarchy();
+                    self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
+                    if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+                }
+            }
+            "AnimatorComponent" => {
+                // デフォルト（クリップ未設定）の AnimatorComponent をアクターに追加する。
+                // クリップ一覧・既定クリップはインスペクター（P2）またはシーンファイルから設定する。
+                use crate::engine::components::AnimatorComponent;
+                let name = slot_name.to_string();
+                let found = {
+                    let scene = self.scene.as_mut().unwrap();
+                    let slot_entity = scene.world.spawn();
+                    scene.world.insert(slot_entity, AnimatorComponent::default());
+                    let mut c = 0u32;
+                    if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
+                        actor.add_slot_typed::<AnimatorComponent>(name, ComponentKind::Animator, slot_entity);
                         true
                     } else {
                         scene.world.despawn(slot_entity);

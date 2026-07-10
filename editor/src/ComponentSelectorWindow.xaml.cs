@@ -70,6 +70,10 @@ public partial class ComponentSelectorWindow : Window
         {
             new("AudioComponent", "Audio Source", "BGM/SE の再生。3D 距離減衰・パン対応", ActorTarget.Common),
         }),
+        ("アニメーション", new()
+        {
+            new("AnimatorComponent", "Animator", "キーフレームアニメーションクリップ（.anim）の再生", ActorTarget.Common),
+        }),
         ("入力", new()
         {
             new("InputMapComponent", "InputMap", ".inputmap アセットをアクタにアタッチ", ActorTarget.Common),
@@ -302,6 +306,7 @@ public partial class ComponentSelectorWindow : Window
         "ColliderComponent"   => "Collider",
         "Collider2dComponent" => "Collider2D",
         "AudioComponent"      => "Audio",
+        "AnimatorComponent"   => "Animator",
         // Plugin:{name} → プラグイン名をデフォルト名とする
         _ when typeId.StartsWith("Plugin:", StringComparison.Ordinal) => typeId["Plugin:".Length..],
         _                    => typeId,

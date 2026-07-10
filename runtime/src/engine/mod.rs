@@ -8,3 +8,4 @@ pub mod asset_fs;
 pub mod plugin;
 pub mod physics;
 pub mod systems;
+pub mod animation;

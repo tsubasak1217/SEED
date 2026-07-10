@@ -44,6 +44,7 @@ mod physics_timeline;
 mod tab_physics;
 mod script_scene_ops;
 mod audio_ops;
+mod animation_ops;
 pub(crate) mod camera_scene_gizmo;
 
 // ── 外部クレート・標準ライブラリ ────────────────────────────

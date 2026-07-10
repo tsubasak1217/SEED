@@ -169,6 +169,10 @@ impl App {
                         use crate::engine::components::AudioComponent;
                         scene.world.remove::<AudioComponent>(slot_entity);
                     }
+                    ComponentKind::Animator    => {
+                        use crate::engine::components::AnimatorComponent;
+                        scene.world.remove::<AnimatorComponent>(slot_entity);
+                    }
                 }
                 scene.world.despawn(slot_entity);
                 // アクターのスロットリストから削除
@@ -417,6 +421,16 @@ impl App {
                 } else { scene.world.despawn(slot_entity); }
                 true
             }
+            ComponentData::AnimatorComponent(an_data) => {
+                use crate::engine::components::AnimatorComponent;
+                let slot_entity = scene.world.spawn();
+                scene.world.insert(slot_entity, AnimatorComponent::from_data(an_data));
+                let mut c = 0u32;
+                if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
+                    actor.add_slot_typed::<AnimatorComponent>(slot_data.name, ComponentKind::Animator, slot_entity);
+                } else { scene.world.despawn(slot_entity); }
+                true
+            }
             ComponentData::LegacyRigidbodyComponent(_) => {
                 // 旧フォーマット互換: ColliderComponent に統合済みのためスロット追加しない
                 false
@@ -594,6 +608,11 @@ impl App {
                     use crate::engine::components::AudioComponent;
                     scene.world.insert(slot_entity, AudioComponent::from_data(ac_data));
                     new_slots.push(ComponentSlot::new::<AudioComponent>(slot_data.name, ComponentKind::Audio, slot_entity));
+                }
+                ComponentData::AnimatorComponent(an_data) => {
+                    use crate::engine::components::AnimatorComponent;
+                    scene.world.insert(slot_entity, AnimatorComponent::from_data(an_data));
+                    new_slots.push(ComponentSlot::new::<AnimatorComponent>(slot_data.name, ComponentKind::Animator, slot_entity));
                 }
                 ComponentData::LegacyRigidbodyComponent(_) => {
                     // 旧フォーマット互換: ColliderComponent に統合済みのためスキップする

@@ -21,6 +21,7 @@ pub mod collider_component;
 pub mod collider2d_component;
 pub mod rigidbody_component;
 pub mod audio_component;
+pub mod animator_component;
 
 pub use transform::Transform;
 pub use canvas_transform::CanvasTransform;
@@ -43,6 +44,7 @@ pub use collider2d_component::{
 // RigidbodyComponentData は旧フォーマットシーンの後方互換デシリアライズ専用
 pub use rigidbody_component::RigidbodyComponentData;
 pub use audio_component::{AudioComponent, AudioComponentData};
+pub use animator_component::{AnimatorComponent, AnimatorComponentData, AnimClipRef};
 
 use serde::{Deserialize, Serialize};
 
@@ -77,6 +79,8 @@ pub enum ComponentKind {
     Collider2d,
     /// オーディオソース（BGM/SE 再生、3D 距離減衰・パン対応）
     Audio,
+    /// アニメーター（キーフレームアニメーションクリップの再生）
+    Animator,
 }
 
 impl ComponentKind {
@@ -94,6 +98,7 @@ impl ComponentKind {
             Self::Collider    => "ColliderComponent",
             Self::Collider2d  => "Collider2dComponent",
             Self::Audio       => "AudioComponent",
+            Self::Animator    => "AnimatorComponent",
         }
     }
 }
@@ -122,4 +127,6 @@ pub enum ComponentData {
     LegacyRigidbodyComponent(RigidbodyComponentData),
     /// オーディオソース（BGM/SE 再生、3D 距離減衰・パン対応）
     AudioComponent(AudioComponentData),
+    /// アニメーター（キーフレームアニメーションクリップの再生）
+    AnimatorComponent(AnimatorComponentData),
 }
