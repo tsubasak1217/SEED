@@ -19,30 +19,44 @@
                                 <RowDefinition Height="Auto"/>
                                 <RowDefinition Height="Auto"/>
                             </Grid.RowDefinitions>
-                            <!-- 行ヘッダー -->
+                            <!--
+                                行ヘッダー。
+                                RowBorder は D&D のヒット領域（DragOver/Drop 判定）を行全幅で
+                                維持するため Transparent のまま全幅 Stretch させる。
+                                その内側に RowHighlight（コンテンツ幅＋右パディングでフィットする
+                                HorizontalAlignment="Left" の Border）を重ね、選択/ホバー/複数選択の
+                                ハイライトはこちらへ描画する（エディタ側 xaml.cs で RowHighlight を検索して塗る）。
+                                これにより行の右側の空きスペースはハイライトも左クリック/右クリックの
+                                ヒットも「空白」として扱われる（エクスプローラー風のUX）。
+                            -->
                             <Border x:Name="RowBorder" Grid.Row="0"
                                     Background="Transparent"
                                     Padding="{TemplateBinding Padding}">
-                                <Grid>
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="Auto"/>
-                                        <ColumnDefinition Width="*"/>
-                                    </Grid.ColumnDefinitions>
-                                    <!-- 折りたたみトグル -->
-                                    <ToggleButton x:Name="Expander" Grid.Column="0"
-                                                  IsChecked="{Binding IsExpanded, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}"
-                                                  Width="16" Height="16"
-                                                  Style="{StaticResource {x:Static ToolBar.ToggleButtonStyleKey}}"
-                                                  Visibility="Hidden">
-                                        <Path x:Name="Arrow" Data="M 0,0 L 4,4 L 8,0 Z"
-                                              Fill="#888888" Width="8" Height="5"
-                                              HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                                    </ToggleButton>
-                                    <ContentPresenter Grid.Column="1"
-                                                      ContentSource="Header"
-                                                      HorizontalAlignment="Left"
-                                                      VerticalAlignment="Center"/>
-                                </Grid>
+                                <!-- コンテンツ幅＋右パディング 8px でフィットする内側ハイライト用 Border -->
+                                <Border x:Name="RowHighlight"
+                                        HorizontalAlignment="Left"
+                                        Padding="0,0,8,0">
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <!-- 折りたたみトグル -->
+                                        <ToggleButton x:Name="Expander" Grid.Column="0"
+                                                      IsChecked="{Binding IsExpanded, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}"
+                                                      Width="16" Height="16"
+                                                      Style="{StaticResource {x:Static ToolBar.ToggleButtonStyleKey}}"
+                                                      Visibility="Hidden">
+                                            <Path x:Name="Arrow" Data="M 0,0 L 4,4 L 8,0 Z"
+                                                  Fill="#888888" Width="8" Height="5"
+                                                  HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                        </ToggleButton>
+                                        <ContentPresenter Grid.Column="1"
+                                                          ContentSource="Header"
+                                                          HorizontalAlignment="Left"
+                                                          VerticalAlignment="Center"/>
+                                    </Grid>
+                                </Border>
                             </Border>
                             <!-- インデントガイドライン -->
                             <Rectangle x:Name="IndentLine" Grid.Row="1"
@@ -68,18 +82,18 @@
                                 <Setter TargetName="Arrow"      Property="Data"        Value="M 0,4 L 8,4 L 4,0 Z"/>
                                 <Setter TargetName="IndentLine" Property="Visibility" Value="Visible"/>
                             </Trigger>
-                            <!-- 選択中 -->
+                            <!-- 選択中（ハイライトはコンテンツ幅の RowHighlight に描画し、右側の空白は塗らない） -->
                             <Trigger Property="IsSelected" Value="True">
-                                <Setter TargetName="RowBorder" Property="Background" Value="#3399FF44"/>
-                                <Setter Property="Foreground"                        Value="White"/>
+                                <Setter TargetName="RowHighlight" Property="Background" Value="#3399FF44"/>
+                                <Setter Property="Foreground"                           Value="White"/>
                             </Trigger>
-                            <!-- ホバー -->
+                            <!-- ホバー（同上、RowHighlight にのみ描画） -->
                             <MultiTrigger>
                                 <MultiTrigger.Conditions>
                                     <Condition Property="IsMouseOver" Value="True"/>
                                     <Condition Property="IsSelected"  Value="False"/>
                                 </MultiTrigger.Conditions>
-                                <Setter TargetName="RowBorder" Property="Background" Value="#22FFFFFF"/>
+                                <Setter TargetName="RowHighlight" Property="Background" Value="#22FFFFFF"/>
                             </MultiTrigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>

@@ -101,6 +101,12 @@ public partial class HierarchyPanel : UserControl
     /// 境界線ドロップの階層選択インジケータ位置が実際の挿入階層とずれる）。
     /// </summary>
     private const double IndentPerLevelPx = 16.0;
+    /// <summary>
+    /// ドロップ時の兄弟挿入（境界線）ゾーンが行高に占める割合（上下それぞれ）。
+    /// 境界線ドロップの判定を取りやすくするため広めに設定している
+    /// （残りの中央 1 - 2*係数 が子化ゾーンになる。0.32 → 上下 32% ずつが兄弟挿入、中央 36% が子化）。
+    /// </summary>
+    private const double SiblingInsertZoneRatio = 0.32;
 
     // ── ドロップ拒否理由ポップアップ定数 ──────────────────────────
     /// <summary>拒否理由ポップアップをカーソルから右下へずらすオフセット（px）。</summary>
@@ -645,6 +651,54 @@ public partial class HierarchyPanel : UserControl
         SendSelectionToRuntime();
     }
 
+    /// <summary>
+    /// 行内のクリック座標が「コンテンツ（RowHighlight）右端 + マージンより右」＝空白エリアかどうかを判定する。
+    /// RowBorder は D&D 受け入れのため行全幅のヒット領域を持つが、左右クリックでの選択・リネーム・
+    /// コンテキストメニューはこの判定でコンテンツ幅に絞り、右側の空きスペースを「空白」として扱う
+    /// （エクスプローラー風 UX）。判定基準は選択ハイライトの実際の描画範囲（RowHighlight）と一致させる。
+    /// RowHighlight が取得できない場合は Header 要素の幅にフォールバックする。
+    /// </summary>
+    private bool IsBlankRowAreaClick(TreeViewItem item, Point posInTree)
+    {
+        FrameworkElement? contentRef = FindVisualChild<Border>(item, "RowHighlight");
+        if (contentRef == null && item.Header is FrameworkElement header && header.ActualWidth > 0)
+            contentRef = header; // フォールバック（従来挙動）
+
+        if (contentRef == null || contentRef.ActualWidth <= 0) return false;
+
+        var contentLeft  = contentRef.TranslatePoint(new Point(0, 0), ActorTree).X;
+        var contentRight = contentLeft + contentRef.ActualWidth;
+        return posInTree.X > contentRight + RowContentRightMarginPx;
+    }
+
+    /// <summary>
+    /// ドラッグカーソル位置が行の「空白エリア」かどうかを判定する（D&D 用）。
+    /// クリック判定（IsBlankRowAreaClick）と同じ「コンテンツ右端＋マージン」基準で
+    /// ドロップ受け入れ範囲も絞り、右側の空きスペースへのドラッグは
+    /// アイテム外（ツリー余白＝ルートへのドロップ経路）として扱えるようにする。
+    ///
+    /// ただし上下の兄弟挿入ゾーン（SiblingInsertZoneRatio）内では空白判定を適用せず
+    /// 行全幅の判定を維持する。理由: after 挿入の挿入階層選択はカーソル X を右へ振って
+    /// 深い階層を選ぶ操作（BuildAfterInsertCandidates + カーソル X 探索）であり、
+    /// コンテンツ右端より右を空白扱いにすると境界線ドロップの階層選択が
+    /// マージン外で無効化されて操作性を大きく損なうため（意図的な干渉回避）。
+    /// </summary>
+    private bool IsBlankDragPosition(TreeViewItem item, Point posInTree)
+    {
+        // ゾーン判定は OnTreeDragOver と同じ基準（ヘッダ行 RowBorder の高さ）を使う
+        var rowBorder = FindVisualChild<Border>(item, "RowBorder");
+        var itemTop   = item.TranslatePoint(new Point(0, 0), ActorTree).Y;
+        var rowHeight = rowBorder is { ActualHeight: > 0 } ? rowBorder.ActualHeight : item.ActualHeight;
+        var relY      = posInTree.Y - itemTop;
+        var zone      = rowHeight * SiblingInsertZoneRatio;
+
+        // 上下の兄弟挿入ゾーン内 → 空白扱いにしない（挿入ライン・階層選択の操作性を守る）
+        if (relY <= zone || relY >= rowHeight - zone) return false;
+
+        // 中央の子化ゾーン → クリックと同じコンテンツ幅基準で空白判定する
+        return IsBlankRowAreaClick(item, posInTree);
+    }
+
     private void OnTreeRightMouseDown(object sender, MouseButtonEventArgs e)
     {
         // コンテキストメニューを閉じるLMBクリックで誤ドラッグが起きないようにリセット
@@ -658,17 +712,11 @@ public partial class HierarchyPanel : UserControl
         _rightClickedNode = item?.Tag as ActorNode;
 
         // ── エクスプローラー風: 行の右側の余白を「空白」扱いにする（右クリックのみ）──
-        // RowBorder は行の右端までヒット領域を持つため、テキスト右の余白を右クリックしても
-        // アイテム扱いになる。ヘッダテキスト右端 + 一定マージンより右なら空白扱いにする。
-        // ヘッダ要素が取得できない場合は従来挙動（アイテム扱い）にフォールバックする。
-        if (_rightClickedNode != null && item != null
-            && item.Header is FrameworkElement header && header.ActualWidth > 0)
-        {
-            var headerLeft  = header.TranslatePoint(new Point(0, 0), ActorTree).X;
-            var headerRight = headerLeft + header.ActualWidth;
-            if (pos.X > headerRight + RowContentRightMarginPx)
-                _rightClickedNode = null; // 空白扱い
-        }
+        // RowBorder は行の右端までヒット領域を持つため、コンテンツ右の余白を右クリックしても
+        // アイテム扱いになる。RowHighlight（選択ハイライトの実際の描画範囲）右端 + マージンより
+        // 右なら空白扱いにする。
+        if (_rightClickedNode != null && item != null && IsBlankRowAreaClick(item, pos))
+            _rightClickedNode = null; // 空白扱い
 
         // ── アクタ上の右クリックで選択 → 選択用メニュー（#5）──
         // 未選択アクタを右クリックしたらその場で単一選択へ切り替えてから選択用メニューを出す。
@@ -1011,7 +1059,34 @@ public partial class HierarchyPanel : UserControl
 
         var hit  = ActorTree.InputHitTest(_dragStart) as DependencyObject;
         var item = FindAncestor<TreeViewItem>(hit);
-        _pendingDragNode = item?.Tag as ActorNode;
+
+        // ── エクスプローラー風: 行の右側の空白をクリックした場合はアイテム外（空白）扱いにする ──
+        // D&D のドロップ受け入れ判定（OnTreeDragOver）は行全幅のまま維持するため、
+        // ここでの読み替えは選択・リネーム・ドラッグ開始の起点にのみ影響する。
+        if (item != null && IsBlankRowAreaClick(item, _dragStart))
+            item = null;
+
+        if (item == null)
+        {
+            // 空白クリック: 選択解除（ツリー余白クリック時の挙動。既存の局所的な余白デセレクト処理が
+            // なかったため、ここで選択解除 + ランタイムへの再通知を行う）。
+            CancelRenameTimer();
+            _pendingRenameId = -1;
+            _pendingDragNode = null;
+            if (_selectedIds.Count > 0 || _selectedId >= 0)
+            {
+                _selectedIds.Clear();
+                _selectedId = -1;
+                _anchorId   = -1;
+                DeselectAll();
+                UpdateMultiSelectVisuals();
+                SendSelectionToRuntime();
+            }
+            return;
+        }
+
+        // ここに到達した時点で item は非 null（空白クリックは上で早期 return 済み）
+        _pendingDragNode = item.Tag as ActorNode;
 
         if (FindAncestor<ToggleButton>(hit) != null)
         {
@@ -1217,6 +1292,15 @@ public partial class HierarchyPanel : UserControl
         var hit  = ActorTree.InputHitTest(pos) as DependencyObject;
         var item = FindAncestor<TreeViewItem>(hit);
 
+        // ── ドロップ受け入れ範囲もクリック可能範囲（コンテンツ幅＋マージン）に絞る ──
+        // 子化ゾーン内でコンテンツ右端＋マージンより右にカーソルがある場合はアイテム外扱いにし、
+        // ツリー余白と同じ経路（通常シーン: ルートへドロップ / アクター編集モード: 拒否）へ落とす。
+        // 兄弟挿入ゾーン内は行全幅判定を維持する（詳細は IsBlankDragPosition のコメント参照）。
+        // OnTreeDrop はここで設定した _dropTarget/_insertTarget/_dropAsRoot のみを参照するため、
+        // DragOver 側で経路を落とせば Drop の受け入れ判定も自動的に一致する。
+        if (item != null && IsBlankDragPosition(item, pos))
+            item = null;
+
         if (item?.Tag is ActorNode targetNode)
         {
             // ドラッグ中のノードのいずれかがターゲット自身または祖先なら無効
@@ -1238,7 +1322,7 @@ public partial class HierarchyPanel : UserControl
             // RowBorder が取得できない場合は従来どおり item.ActualHeight にフォールバック
             var rowHeight = rowBorder is { ActualHeight: > 0 } ? rowBorder.ActualHeight : item.ActualHeight;
             var relY      = pos.Y - itemTop;
-            var zone      = rowHeight * 0.25;
+            var zone      = rowHeight * SiblingInsertZoneRatio;
 
             // ドラッグ中のノードに 3D アクター（!Is2D）が含まれるかどうか。
             // 「2D アクターの子に 3D アクターを配置する」組み合わせを弾くための判定に使う。
@@ -1308,8 +1392,11 @@ public partial class HierarchyPanel : UserControl
                 }
 
                 _dropTarget = item;
-                if (rowBorder != null)
-                    rowBorder.Background = new SolidColorBrush(Color.FromArgb(0x55, 0x33, 0x99, 0xFF));
+                // 子化ハイライトも視覚一貫性のため RowHighlight 側に描画する
+                // （見つからない場合は RowBorder にフォールバック＝従来どおり行全幅で塗る）。
+                var highlightBorder = FindVisualChild<Border>(item, "RowHighlight") ?? rowBorder;
+                if (highlightBorder != null)
+                    highlightBorder.Background = new SolidColorBrush(Color.FromArgb(0x55, 0x33, 0x99, 0xFF));
                 HideDropReject();
             }
         }
@@ -1794,6 +1881,10 @@ public partial class HierarchyPanel : UserControl
     private void ClearDropHighlight()
     {
         if (_dropTarget == null) return;
+        // 子化ハイライトは RowHighlight に描画するが、フォールバックで RowBorder に
+        // 描画された場合もあり得るため両方クリアする（塗り残し防止）。
+        var highlight = FindVisualChild<Border>(_dropTarget, "RowHighlight");
+        if (highlight != null) highlight.ClearValue(Border.BackgroundProperty);
         var border = FindVisualChild<Border>(_dropTarget, "RowBorder");
         if (border != null) border.ClearValue(Border.BackgroundProperty);
     }
@@ -1916,7 +2007,10 @@ public partial class HierarchyPanel : UserControl
         {
             if (item.Tag is ActorNode node)
             {
-                var border = FindVisualChild<Border>(item, "RowBorder");
+                // 複数選択の薄いハイライトもコンテンツ幅の RowHighlight に描画する
+                // （見つからない場合は RowBorder にフォールバック）。
+                var border = FindVisualChild<Border>(item, "RowHighlight")
+                             ?? FindVisualChild<Border>(item, "RowBorder");
                 if (border != null)
                 {
                     if (_selectedIds.Contains(node.Id) && node.Id != _selectedId)
