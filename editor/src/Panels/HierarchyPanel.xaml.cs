@@ -34,6 +34,12 @@ public class ActorNode
     public bool            IsVp     { get; set; }
     /// <summary>実効アクティブか（自身と全祖先の active が true）。false は淡色表示する。</summary>
     public bool            Active   { get; set; } = true;
+    /// <summary>
+    /// このアクター自身が Canvas コンポーネントを持つか。
+    /// 2D アクターの新しい親として「Canvas を持つ 3D アクター」を許可する判定に使用する
+    /// （Canvas を持たない 3D アクターへの 2D 子付けは禁止）。
+    /// </summary>
+    public bool            HasCanvas { get; set; }
     public List<ActorNode> Children { get; } = new();
 }
 
@@ -74,6 +80,19 @@ public partial class HierarchyPanel : UserControl
     // リネーム用
     private DispatcherTimer? _renameTimer;
     private int              _pendingRenameId = -1;
+    /// <summary>
+    /// インラインリネーム（TextBox 表示）中かどうか。
+    /// リネーム中の再クリックで再度リネームタイマが仕込まれ、
+    /// LostFocus 確定直後にまたリネーム状態へ入ってしまう不具合を防ぐために使う。
+    /// </summary>
+    private bool             _isRenaming;
+
+    // ── エクスプローラー風レイアウト定数 ──────────────────────
+    /// <summary>
+    /// 行のヘッダテキスト右端からこの px 数を超えて右をクリックした場合は
+    /// 「空白（アイテム外）」扱いにするマージン（右クリックのみ対象）。
+    /// </summary>
+    private const double RowContentRightMarginPx = 48.0;
 
     // 右クリック用
     private ActorNode? _rightClickedNode;
@@ -370,6 +389,8 @@ public partial class HierarchyPanel : UserControl
                     IsVp     = e.TryGetProperty("is_vp",    out var iv) && iv.GetBoolean(),
                     // 実効アクティブ（省略時は true = アクティブ扱い）
                     Active   = !e.TryGetProperty("active",   out var ac) || ac.GetBoolean(),
+                    // Canvas 保有フラグ（旧 JSON にフィールドが無ければ false）
+                    HasCanvas = e.TryGetProperty("has_canvas", out var hc) && hc.GetBoolean(),
                 })
                 .ToList();
 
@@ -618,9 +639,38 @@ public partial class HierarchyPanel : UserControl
         _pendingDeselect   = false;
         _pendingDeselectId = -1;
 
-        var hit  = ActorTree.InputHitTest(e.GetPosition(ActorTree)) as DependencyObject;
+        var pos  = e.GetPosition(ActorTree);
+        var hit  = ActorTree.InputHitTest(pos) as DependencyObject;
         var item = FindAncestor<TreeViewItem>(hit);
         _rightClickedNode = item?.Tag as ActorNode;
+
+        // ── エクスプローラー風: 行の右側の余白を「空白」扱いにする（右クリックのみ）──
+        // RowBorder は行の右端までヒット領域を持つため、テキスト右の余白を右クリックしても
+        // アイテム扱いになる。ヘッダテキスト右端 + 一定マージンより右なら空白扱いにする。
+        // ヘッダ要素が取得できない場合は従来挙動（アイテム扱い）にフォールバックする。
+        if (_rightClickedNode != null && item != null
+            && item.Header is FrameworkElement header && header.ActualWidth > 0)
+        {
+            var headerLeft  = header.TranslatePoint(new Point(0, 0), ActorTree).X;
+            var headerRight = headerLeft + header.ActualWidth;
+            if (pos.X > headerRight + RowContentRightMarginPx)
+                _rightClickedNode = null; // 空白扱い
+        }
+
+        // ── アクタ上の右クリックで選択 → 選択用メニュー（#5）──
+        // 未選択アクタを右クリックしたらその場で単一選択へ切り替えてから選択用メニューを出す。
+        // 既に選択済み（複数選択に含まれる場合も）なら選択を維持する。
+        if (_rightClickedNode != null && !_selectedIds.Contains(_rightClickedNode.Id))
+        {
+            var id = _rightClickedNode.Id;
+            _selectedIds.Clear();
+            _selectedIds.Add(id);
+            _selectedId = id;
+            _anchorId   = id;
+            SelectTreeItem(id);
+            UpdateMultiSelectVisuals();
+            SendSelectionToRuntime();
+        }
 
         bool clickedOnSelected = _rightClickedNode != null
             && _selectedIds.Contains(_rightClickedNode.Id);
@@ -924,7 +974,10 @@ public partial class HierarchyPanel : UserControl
             _selectedIds.Add(normalNode.Id);
             _anchorId = normalNode.Id;
 
-            if (normalNode.Id == _selectedId)
+            // リネーム中（TextBox 表示中）はタイマを仕込まない。
+            // 仕込むと LostFocus 確定直後にタイマが発火し、また即リネーム状態へ戻ってしまう。
+            // TextBox 自体へのクリックはリネーム操作なのでそのまま素通しする。
+            if (normalNode.Id == _selectedId && !_isRenaming)
             {
                 _pendingRenameId = normalNode.Id;
                 CancelRenameTimer();
@@ -987,7 +1040,25 @@ public partial class HierarchyPanel : UserControl
         // VP ref ドロップゾーン用: 単一アクタードラッグ時に DFS ID をカスタムキーで付加する
         if (_dragNodeIds.Count == 1)
             data.SetData("HierarchyActorDfsId", _dragNodeIds[0]);
-        DragDrop.DoDragDrop(ActorTree, data, DragDropEffects.Move);
+
+        // Project パネルへのドロップ（アクタファイル化）用に、ドラッグ中の各アクタの
+        // 種別（2D/3D）と名前を _dragNodeIds と同じ順序で付加する（複数ドラッグ対応）。
+        // Project 側は保存拡張子（.actor2d / .actor）と既定ファイル名にこれを使う。
+        var dragIs2D  = new List<bool>(_dragNodeIds.Count);
+        var dragNames = new List<string>(_dragNodeIds.Count);
+        foreach (var id in _dragNodeIds)
+        {
+            var n = FindNode(_roots, id);
+            dragIs2D.Add(n?.Is2D ?? false);
+            dragNames.Add(n?.Name ?? $"Actor_{id}");
+        }
+        data.SetData("HierarchyActorIds2D",  dragIs2D);
+        data.SetData("HierarchyActorNames",  dragNames);
+
+        // 許可効果に Copy を含める。ツリー内の並べ替えは Move（DragOver で Move 指定）だが、
+        // Project パネルへのアクタファイル化ドロップは Copy を返すため、
+        // Copy を許可しておかないと Project 側でカーソル表示・Drop 配送が成立しない。
+        DragDrop.DoDragDrop(ActorTree, data, DragDropEffects.Move | DragDropEffects.Copy);
 
         // ドラッグ完了: 遅延フラグだけクリアして選択通知は送らない。
         // D&D 後に Inspector が切り替わらないようにするためのユーザー仕様。
@@ -1046,16 +1117,28 @@ public partial class HierarchyPanel : UserControl
                 return;
             }
 
-            // アイテム上端・下端 25% → 兄弟挿入ライン表示
-            var itemTop = item.TranslatePoint(new Point(0, 0), ActorTree).Y;
-            var relY    = pos.Y - itemTop;
-            var zone    = item.ActualHeight * 0.25;
+            // ゾーン判定は「ヘッダ行（RowBorder）」の高さを基準にする。
+            // item.ActualHeight は展開時に子行も含む全体高になり、ヘッダ上では
+            // 常に上端 25% に入って中央（子化）ゾーンへ到達できないため。
+            // RowBorder は Grid.Row=0（アイテム最上部）なので、その上端は item 上端と一致する。
+            var rowBorder = FindVisualChild<Border>(item, "RowBorder");
+            var itemTop   = item.TranslatePoint(new Point(0, 0), ActorTree).Y;
+            // RowBorder が取得できない場合は従来どおり item.ActualHeight にフォールバック
+            var rowHeight = rowBorder is { ActualHeight: > 0 } ? rowBorder.ActualHeight : item.ActualHeight;
+            var relY      = pos.Y - itemTop;
+            var zone      = rowHeight * 0.25;
 
             // ドラッグ中のノードに 3D アクター（!Is2D）が含まれるかどうか。
             // 「2D アクターの子に 3D アクターを配置する」組み合わせを弾くための判定に使う。
             bool draggingHas3D = _dragNodeIds.Any(id => FindNode(_roots, id) is { Is2D: false });
+            // ドラッグ中のノードに 2D アクターが含まれるかどうか。
+            // 「2D アクターを Canvas 無し 3D アクターの子にする」組み合わせを弾く判定に使う。
+            bool draggingHas2D = _dragNodeIds.Any(id => FindNode(_roots, id) is { Is2D: true });
 
-            if (relY <= zone || relY >= item.ActualHeight - zone)
+            // ヘッダ行の上端 25% / 下端 25%（およびヘッダ高を超える位置）→ 兄弟挿入ライン表示。
+            // relY がヘッダ行高を超える（= 子行上だが親 item が拾われた稀ケース）場合も
+            // relY >= rowHeight - zone が真になるため after 挿入として扱われ破綻しない。
+            if (relY <= zone || relY >= rowHeight - zone)
             {
                 // 兄弟として挿入する場合、実効的な新しい親は targetNode の親ノード
                 // （親が無い＝ルート直下の場合は 3D/2D 混在制約の対象外）。
@@ -1065,10 +1148,17 @@ public partial class HierarchyPanel : UserControl
                     e.Effects = DragDropEffects.None;
                     return;
                 }
+                // 2D を含むドラッグの実効親が「Canvas 無しの 3D アクター」なら禁止。
+                // （実効親が null＝ルート直下は許可、2D 親や Canvas 持ち 3D 親は許可）
+                if (draggingHas2D && effectiveParent is { Is2D: false, HasCanvas: false })
+                {
+                    e.Effects = DragDropEffects.None;
+                    return;
+                }
 
                 _insertBefore            = relY <= zone;
                 _insertTarget            = item;
-                var lineY                = _insertBefore ? itemTop : itemTop + item.ActualHeight;
+                var lineY                = _insertBefore ? itemTop : itemTop + rowHeight;
                 DropIndicator.Margin     = new Thickness(0, lineY - 1, 0, 0);
                 DropIndicator.Visibility = Visibility.Visible;
             }
@@ -1081,11 +1171,16 @@ public partial class HierarchyPanel : UserControl
                     e.Effects = DragDropEffects.None;
                     return;
                 }
+                // ドラッグに 2D が含まれ、子化先が「Canvas 無しの 3D アクター」なら禁止。
+                if (draggingHas2D && targetNode is { Is2D: false, HasCanvas: false })
+                {
+                    e.Effects = DragDropEffects.None;
+                    return;
+                }
 
                 _dropTarget = item;
-                var border = FindVisualChild<Border>(item, "RowBorder");
-                if (border != null)
-                    border.Background = new SolidColorBrush(Color.FromArgb(0x55, 0x33, 0x99, 0xFF));
+                if (rowBorder != null)
+                    rowBorder.Background = new SolidColorBrush(Color.FromArgb(0x55, 0x33, 0x99, 0xFF));
             }
         }
         else
@@ -1341,6 +1436,11 @@ public partial class HierarchyPanel : UserControl
         var currentName = node.Name;
         var committed   = false;
 
+        // リネーム開始。再クリックタイマの仕込みを抑止する（#4 の再リネーム防止）。
+        // 念のため保留中のタイマも停止しておく。
+        _isRenaming = true;
+        _renameTimer?.Stop();
+
         var tb = new TextBox
         {
             Text              = currentName,
@@ -1359,6 +1459,9 @@ public partial class HierarchyPanel : UserControl
         {
             if (committed) return;
             committed = true;
+            // リネーム終了。以降の再クリックはタイマを仕込んでよい。
+            _isRenaming = false;
+            _renameTimer?.Stop();
 
             var raw     = tb.Text.Trim();
             var newName = string.IsNullOrEmpty(raw) ? currentName
@@ -1379,6 +1482,9 @@ public partial class HierarchyPanel : UserControl
         {
             if (committed) return;
             committed   = true;
+            // リネーム終了。以降の再クリックはタイマを仕込んでよい。
+            _isRenaming = false;
+            _renameTimer?.Stop();
             item.Header = BuildItemHeader(node);
         }
 

@@ -58,6 +58,10 @@ public partial class ProjectPanel : UserControl
     private FileSystemWatcher? _watcher;
     private bool               _suppressTreeEvent;
 
+    // Hierarchy からドラッグされたアクタのファイル化（EXPORT_ACTOR）送信に使う Runtime 参照。
+    // MainWindow が SetRuntime で注入する。
+    private SEEDEditor.Runtime.RuntimeManager? _runtime;
+
     // 複数選択
     private readonly HashSet<Border> _selectedItems = new();
     private Border?                  _lastClickedItem;
@@ -148,6 +152,12 @@ public partial class ProjectPanel : UserControl
         StartWatcher();
     }
 
+    /// <summary>
+    /// Runtime 参照を注入する。Hierarchy からドラッグされたアクタを
+    /// アクタファイル化（EXPORT_ACTOR 送信）するために使用する。
+    /// </summary>
+    public void SetRuntime(SEEDEditor.Runtime.RuntimeManager runtime) => _runtime = runtime;
+
     public void HandleCopy()  => DoCopy();
     public void HandleCut()   => DoCut();
     public void HandlePaste() => DoPaste();
@@ -189,6 +199,100 @@ public partial class ProjectPanel : UserControl
 
         // キーボード（Delete）
         FileScrollViewer.PreviewKeyDown += OnSVPreviewKeyDown;
+
+        // Hierarchy パネルからのアクタドロップ（背景＝現在フォルダへアクタファイル化）を受ける
+        FileScrollViewer.AllowDrop =  true;
+        FileScrollViewer.DragEnter += OnSVDragOverActor;
+        FileScrollViewer.DragOver  += OnSVDragOverActor;
+        FileScrollViewer.Drop      += OnSVDropActor;
+    }
+
+    // ── Hierarchy からのアクタドロップ（アクタファイル化） ─────────
+
+    /// <summary>ドラッグデータに Hierarchy アクタ情報（DragIds / HierarchyActorDfsId）が含まれるか。</summary>
+    private static bool HasHierarchyActorData(IDataObject data)
+        => data.GetDataPresent("DragIds") || data.GetDataPresent("HierarchyActorDfsId");
+
+    /// <summary>ファイル一覧背景の DragEnter/DragOver: アクタドラッグなら Copy 効果を表示する。</summary>
+    private void OnSVDragOverActor(object sender, DragEventArgs e)
+    {
+        if (HasHierarchyActorData(e.Data))
+        {
+            e.Effects = DragDropEffects.Copy;
+            e.Handled = true;
+        }
+    }
+
+    /// <summary>ファイル一覧背景への Drop: 現在フォルダへアクタファイル化する。</summary>
+    private void OnSVDropActor(object sender, DragEventArgs e)
+    {
+        if (!HasHierarchyActorData(e.Data)) return;
+        HandleHierarchyActorDrop(e.Data, _currentPath);
+        e.Handled = true;
+    }
+
+    /// <summary>
+    /// Hierarchy からドラッグされたアクタ群を destDir にアクタファイルとして書き出す。
+    /// 各アクタについて EXPORT_ACTOR:{dfsId},{fullPath} を Runtime へ送信する。
+    /// 同名ファイルが存在／同一ドロップ内で重複する場合は "名前 (2).actor" 式に連番で回避する。
+    /// エクスポート完了後のファイル一覧更新は FileSystemWatcher が拾って行う。
+    /// </summary>
+    private void HandleHierarchyActorDrop(IDataObject data, string destDir)
+    {
+        if (_runtime == null || string.IsNullOrEmpty(destDir) || !Directory.Exists(destDir)) return;
+
+        // DragIds（複数選択対応）を優先。無ければ単一 HierarchyActorDfsId にフォールバック。
+        List<int> ids;
+        if (data.GetDataPresent("DragIds") && data.GetData("DragIds") is List<int> dragIds)
+            ids = dragIds;
+        else if (data.GetDataPresent("HierarchyActorDfsId") && data.GetData("HierarchyActorDfsId") is int single)
+            ids = new List<int> { single };
+        else return;
+
+        // 種別（2D/3D）と名前は DragIds と同順で積まれている（欠落時は既定値にフォールバック）
+        var is2DList = data.GetData("HierarchyActorIds2D") as List<bool>;
+        var nameList = data.GetData("HierarchyActorNames") as List<string>;
+
+        // 同一ドロップ内での同名重複を避けるため、確定パスを予約集合で管理する
+        var reserved = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        for (int i = 0; i < ids.Count; i++)
+        {
+            int    dfsId    = ids[i];
+            bool   is2D     = is2DList != null && i < is2DList.Count && is2DList[i];
+            string baseName = nameList != null && i < nameList.Count ? nameList[i] : $"Actor_{dfsId}";
+            string ext      = is2D ? ".actor2d" : ".actor";
+            string fullPath = MakeUniqueActorPath(destDir, SanitizeFileName(baseName), ext, reserved);
+            reserved.Add(fullPath);
+            _runtime.SendToRuntime($"EXPORT_ACTOR:{dfsId},{fullPath}");
+        }
+    }
+
+    /// <summary>ファイル名に使えない文字をアンダースコアへ置換する。空になった場合は "Actor"。</summary>
+    private static string SanitizeFileName(string name)
+    {
+        var invalid = Path.GetInvalidFileNameChars();
+        var sb      = new StringBuilder(name.Length);
+        foreach (var ch in name)
+            sb.Append(Array.IndexOf(invalid, ch) >= 0 ? '_' : ch);
+        var result = sb.ToString().Trim();
+        return string.IsNullOrEmpty(result) ? "Actor" : result;
+    }
+
+    /// <summary>
+    /// destDir 内で未使用のアクタファイルパスを返す。
+    /// 既存ファイルまたは reserved に含まれる場合は "stem (2).ext", "stem (3).ext" … と連番で回避する。
+    /// </summary>
+    private static string MakeUniqueActorPath(string dir, string stem, string ext, HashSet<string> reserved)
+    {
+        string candidate = Path.Combine(dir, stem + ext);
+        int n = 2;
+        while (File.Exists(candidate) || reserved.Contains(candidate))
+        {
+            candidate = Path.Combine(dir, $"{stem} ({n}){ext}");
+            n++;
+        }
+        return candidate;
     }
 
     // ── フォルダツリー ────────────────────────────────────────────
@@ -732,16 +836,24 @@ public partial class ProjectPanel : UserControl
 
         tile.DragEnter += (_, e) =>
         {
-            if (!e.Data.GetDataPresent("SEEDProjectPaths")) return;
+            // フォルダタイルは「ファイル移動（SEEDProjectPaths）」と
+            // 「Hierarchy アクタのファイル化」の両方を受ける。
+            if (e.Data.GetDataPresent("SEEDProjectPaths"))
+                e.Effects = DragDropEffects.Move;
+            else if (HasHierarchyActorData(e.Data))
+                e.Effects = DragDropEffects.Copy;
+            else return;
             tile.BorderBrush     = new SolidColorBrush(Color.FromArgb(0xFF, 0x44, 0x88, 0xFF));
             tile.BorderThickness = new Thickness(2);
-            e.Effects            = DragDropEffects.Move;
             e.Handled            = true;
         };
         tile.DragOver += (_, e) =>
         {
-            if (!e.Data.GetDataPresent("SEEDProjectPaths")) return;
-            e.Effects = DragDropEffects.Move;
+            if (e.Data.GetDataPresent("SEEDProjectPaths"))
+                e.Effects = DragDropEffects.Move;
+            else if (HasHierarchyActorData(e.Data))
+                e.Effects = DragDropEffects.Copy;
+            else return;
             e.Handled = true;
         };
         tile.DragLeave += (_, _) =>
@@ -753,10 +865,19 @@ public partial class ProjectPanel : UserControl
         {
             tile.BorderBrush     = null;
             tile.BorderThickness = new Thickness(0);
-            if (!e.Data.GetDataPresent("SEEDProjectPaths")) return;
 
             var destDir = tile.Tag as string;
             if (destDir == null || !Directory.Exists(destDir)) return;
+
+            // Hierarchy アクタのドロップ → そのフォルダへアクタファイル化する
+            if (HasHierarchyActorData(e.Data))
+            {
+                HandleHierarchyActorDrop(e.Data, destDir);
+                e.Handled = true;
+                return;
+            }
+
+            if (!e.Data.GetDataPresent("SEEDProjectPaths")) return;
 
             var paths = (string[])e.Data.GetData("SEEDProjectPaths");
             bool anyMoved = false;

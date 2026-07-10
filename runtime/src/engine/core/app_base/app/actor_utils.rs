@@ -29,25 +29,32 @@ use crate::engine::methods::gizmo_interact::mat4x4_mul;
 //  ヒエラルキーユーティリティ
 // ============================================================
 
-/// Actor ツリーを DFS 順にフラット化し (id, name, parent_id, is_2d, is_vp) を収集する。
+/// Actor ツリーを DFS 順にフラット化し
+/// (id, name, parent_id, is_2d, is_vp, active, has_canvas) を収集する。
 ///
 /// `root_is_vp` はこのサブツリーのトップレベル（ルート）アクターが Actor2D
 /// （= スクリーンスペースキャンバス系）かどうかのフラグ。
 /// トップレベル呼び出しでは `actor.is_2d()` を渡し、再帰では同じ値を伝播させる
 /// （「ビューポート所属」= ルートが Actor2D のサブツリー全体、という分類のため）。
+///
+/// 最後の `has_canvas` は「このアクター自身が CanvasComponent を持つか」。
+/// エディタ側で「2D アクターの新しい親として、Canvas を持たない 3D アクターを禁止する」
+/// ドロップ制限（3D Canvas アクターは 2D の親として許可）に使用する。
 pub(super) fn collect_actor_nodes(
     actor:         &Actor,
     parent:        Option<u32>,
     counter:       &mut u32,
     root_is_vp:    bool,
     parent_active: bool,
-    out:           &mut Vec<(u32, String, Option<u32>, bool, bool, bool)>,
+    out:           &mut Vec<(u32, String, Option<u32>, bool, bool, bool, bool)>,
 ) {
     let id = *counter;
     *counter += 1;
     // active は「実効アクティブ」（自身と全祖先が active）。エディタの淡色表示に使う。
     let active = parent_active && actor.active;
-    out.push((id, actor.name.clone(), parent, actor.is_2d(), root_is_vp, active));
+    // has_canvas: このアクターが CanvasComponent スロットを持つか（3D Canvas 判定に使う）
+    let has_canvas = actor.has_kind(ComponentKind::Canvas);
+    out.push((id, actor.name.clone(), parent, actor.is_2d(), root_is_vp, active, has_canvas));
     for child in actor.children() {
         // ルートのビューポート所属フラグを子孫全体へそのまま伝播する
         collect_actor_nodes(child, Some(id), counter, root_is_vp, active, out);
@@ -71,13 +78,16 @@ struct HierarchyNode<'a> {
     /// 実効アクティブフラグ（自身と全祖先の active が true）。
     /// false のノードはエディタのヒエラルキーで淡色表示する。
     active:   bool,
+    /// このアクター自身が CanvasComponent を持つか。
+    /// エディタの 2D ドロップ制限（Canvas を持たない 3D アクターへの 2D 子付け禁止）に使用する。
+    has_canvas: bool,
 }
 
 /// フラットリストから HIERARCHY JSON を生成する。
-pub(super) fn build_hierarchy_json(nodes: &[(u32, String, Option<u32>, bool, bool, bool)]) -> String {
+pub(super) fn build_hierarchy_json(nodes: &[(u32, String, Option<u32>, bool, bool, bool, bool)]) -> String {
     let items: Vec<HierarchyNode<'_>> = nodes
         .iter()
-        .map(|(id, name, parent, is_2d, is_vp, active)| HierarchyNode {
+        .map(|(id, name, parent, is_2d, is_vp, active, has_canvas)| HierarchyNode {
             id:       *id,
             name:     name.as_str(),
             parent:   *parent,
@@ -85,6 +95,7 @@ pub(super) fn build_hierarchy_json(nodes: &[(u32, String, Option<u32>, bool, boo
             is_2d:    *is_2d,
             is_vp:    *is_vp,
             active:   *active,
+            has_canvas: *has_canvas,
         })
         .collect();
     serde_json::to_string(&items).unwrap_or_default()

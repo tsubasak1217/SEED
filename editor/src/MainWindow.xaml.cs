@@ -322,6 +322,8 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         PanelInspector.SetAssetsPath(AssetsPath);
         PanelInspector.TransformCommitted += MarkDirty;
         PanelProject.SetAssetsPath(AssetsPath);
+        // Hierarchy からドラッグしたアクタをアクタファイル化（EXPORT_ACTOR 送信）するため Runtime を注入
+        PanelProject.SetRuntime(_runtimeManager);
         PanelProject.SceneFileOpened    += OnSceneFileOpened;
         PanelProject.ActorFileOpened    += OnActorFileOpened;
         PanelProject.InputMapFileOpened += OnInputMapFileOpened;

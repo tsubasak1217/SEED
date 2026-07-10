@@ -674,9 +674,12 @@ impl App {
         let wl = self.active_world_line;
         let Some(_scene) = &self.scene else { return };
 
-        // ── 種別不整合ガード（3D アクターを 2D アクターの子にすることを禁止） ──
-        // 「新しい親が 2D アクターかつ子が 3D アクター」の組み合わせだけを弾く。
-        // 逆方向（3D 親に 2D 子）や同種同士（2D-2D / 3D-3D）は許可のまま。
+        // ── 種別不整合ガード ──
+        // ① 「新しい親が 2D アクターかつ子が 3D アクター」の組み合わせを弾く。
+        // ② 「子が 2D アクターかつ新しい親が Canvas を持たない 3D アクター」の組み合わせを弾く。
+        //    2D アクターの親として許可されるのは「2D アクター」または「Canvas を持つ 3D アクター」のみ。
+        //    ルート（new_parent_dfs = None）への 2D 配置は従来どおり許可する。
+        // 逆方向・同種同士で上記に該当しないものは許可のまま。
         // ツリーから抽出する前に判定し、違反時は一切ツリーへ触れずに早期 return する。
         {
             let scene = self.scene.as_ref().unwrap();
@@ -684,17 +687,31 @@ impl App {
             let child_is_2d = find_actor_by_dfs(&scene.actors, wl, child_dfs, &mut c)
                 .map(|a| a.is_2d())
                 .unwrap_or(false);
-            let new_parent_is_2d = new_parent_dfs.map(|pid| {
+            // 新しい親の (is_2d, has_canvas) を取得する（ルート＝親なしなら None）
+            let new_parent_info = new_parent_dfs.map(|pid| {
                 let mut c2 = 0u32;
                 find_actor_by_dfs(&scene.actors, wl, pid, &mut c2)
-                    .map(|a| a.is_2d())
-                    .unwrap_or(false)
-            }).unwrap_or(false);
+                    .map(|a| (a.is_2d(), a.has_kind(ComponentKind::Canvas)))
+                    .unwrap_or((false, false))
+            });
+            let new_parent_is_2d = new_parent_info.map(|(is_2d, _)| is_2d).unwrap_or(false);
+            // ① 3D 子 → 2D 親を禁止
             if new_parent_is_2d && !child_is_2d {
                 if let Some(ipc) = &self.ipc {
                     ipc.send("LOAD_ERROR:3Dアクターは2Dアクターの子にできません");
                 }
                 return;
+            }
+            // ② 2D 子 → Canvas を持たない 3D 親を禁止
+            if child_is_2d {
+                if let Some((parent_is_2d, parent_has_canvas)) = new_parent_info {
+                    if !parent_is_2d && !parent_has_canvas {
+                        if let Some(ipc) = &self.ipc {
+                            ipc.send("LOAD_ERROR:2DアクターはCanvasを持たない3Dアクターの子にできません");
+                        }
+                        return;
+                    }
+                }
             }
         }
 
