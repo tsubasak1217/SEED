@@ -378,6 +378,9 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
 
         _viewportHost = new ViewportHost();
         _viewportHost.ContainerCreated += OnContainerCreated;
+        // 埋め込みランタイム HWND へのクリックで「シーン」パネルを手動アクティブ化する
+        //（Win32 子ウィンドウへの入力は WPF 入力ルートを通らず AvalonDock が検知できないため）
+        _viewportHost.ViewportPointerPressed += OnViewportPointerPressed;
         ViewportDocumentContent.Content = _viewportHost;
 
         // 停止フレームプレビュー（DWM サムネイル）を Viewport パネルのサイズ・位置変更へ
@@ -415,6 +418,30 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         EnsureScriptSidePanels();
 
         EditorLog.Write("OnWindowLoaded — ViewportHost assigned, waiting for ContainerCreated");
+    }
+
+    /// <summary>
+    /// 埋め込みランタイム HWND（ビューポート内の子ウィンドウ）がクリックされたときに呼ばれる。
+    /// Win32 子ウィンドウへの直接入力は WPF の入力ルートを通らないため、AvalonDock は
+    /// 「シーン」パネル（ContentId="viewport"）のアクティブ化を自動では発火できない。
+    /// WM_PARENTNOTIFY を契機に、ここで該当 LayoutDocument を手動でアクティブ化する。
+    ///
+    /// LayoutDocument は固定参照ではなくレイアウトから ContentId で都度解決するため、
+    /// ドッキング/フローティングのどちらの状態でも正しく対象を取得できる。
+    /// </summary>
+    private void OnViewportPointerPressed(object? sender, EventArgs e)
+    {
+        // UI スレッドへマーシャリングし、既にアクティブなら何もしない（毎クリックの無駄処理を避ける）
+        Dispatcher.BeginInvoke(() =>
+        {
+            var doc = DockManager.Layout.Descendents()
+                .OfType<LayoutDocument>()
+                .FirstOrDefault(d => d.ContentId == "viewport");
+            if (doc == null || doc.IsActive) return;
+
+            doc.IsSelected = true;
+            doc.IsActive   = true;
+        });
     }
 
     private void OnContainerCreated(object? sender, EventArgs e)

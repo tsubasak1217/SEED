@@ -20,12 +20,28 @@ public sealed class ViewportHost : HwndHost
     private const int WM_ERASEBKGND   = 0x0014;
     private const int BLACK_BRUSH     = 4;
 
+    // WM_PARENTNOTIFY: 子ウィンドウ（埋め込みランタイム HWND）上でマウスボタンが
+    // 押されたとき、システムが親（このコンテナ HWND）へ送るメッセージ。
+    // 子 HWND への直接入力は WPF の入力ルートを通らないため、AvalonDock は
+    // ビューポートパネルのアクティブ化を検知できない。これを補うために使用する。
+    private const int WM_PARENTNOTIFY = 0x0210;
+    private const int WM_LBUTTONDOWN  = 0x0201;
+    private const int WM_RBUTTONDOWN  = 0x0204;
+    private const int WM_MBUTTONDOWN  = 0x0207;
+    private const int WM_XBUTTONDOWN  = 0x020B;
+
     private IntPtr _containerHwnd;
 
     public IntPtr ContainerHwnd => _containerHwnd;
 
     /// <summary>コンテナ HWND が生成されたときに発火する。</summary>
     public event EventHandler? ContainerCreated;
+
+    /// <summary>
+    /// 埋め込みランタイム HWND（子ウィンドウ）上でマウスボタンが押されたときに発火する。
+    /// ビューポートパネルの手動アクティブ化に使用する（WM_PARENTNOTIFY を契機とする）。
+    /// </summary>
+    public event EventHandler? ViewportPointerPressed;
 
     // ── HwndHost 実装 ─────────────────────────────────────────
 
@@ -73,6 +89,18 @@ public sealed class ViewportHost : HwndHost
                 NativeMethods.MoveWindow(child, 0, 0, w, h, repaint: true);
                 return true;
             }, IntPtr.Zero);
+        }
+        // 子ウィンドウ（ランタイム HWND）へのマウスボタン押下を検知してパネルアクティブ化を通知する。
+        // wParam の下位ワードにイベント種別（WM_LBUTTONDOWN 等）が入る。
+        // 通知のみを行い、handled は false のまま既定処理へ流すため、ランタイム操作は一切阻害しない。
+        if (msg == WM_PARENTNOTIFY)
+        {
+            int evt = NativeMethods.LoWord(wParam);
+            if (evt == WM_LBUTTONDOWN || evt == WM_RBUTTONDOWN
+             || evt == WM_MBUTTONDOWN || evt == WM_XBUTTONDOWN)
+            {
+                ViewportPointerPressed?.Invoke(this, EventArgs.Empty);
+            }
         }
         return base.WndProc(hwnd, msg, wParam, lParam, ref handled);
     }
