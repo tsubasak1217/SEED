@@ -40,6 +40,12 @@ public class ActorNode
     /// （Canvas を持たない 3D アクターへの 2D 子付けは禁止）。
     /// </summary>
     public bool            HasCanvas { get; set; }
+    /// <summary>
+    /// このノードがプレハブ（アクタファイル参照リンク）インスタンスのルートか否か。
+    /// Rust 側はインスタンスのルートノードにのみ is_prefab=true を付ける（子は false）。
+    /// Hierarchy 上で Unity 風に青系テキスト + プレハブアイコンで区別表示する。
+    /// </summary>
+    public bool            IsPrefab { get; set; }
     public List<ActorNode> Children { get; } = new();
 }
 
@@ -158,6 +164,8 @@ public partial class HierarchyPanel : UserControl
     private static readonly SolidColorBrush BrushActorIcon   = MakeFrozen(Color.FromRgb(0x55, 0xAA, 0xFF));
     /// <summary>2D アクターのアイコン色（オレンジ系）。</summary>
     private static readonly SolidColorBrush BrushActor2DIcon = MakeFrozen(Color.FromRgb(0xFF, 0x88, 0x44));
+    /// <summary>プレハブインスタンスルートのテキスト色（Unity 風の読みやすい水色）。</summary>
+    private static readonly SolidColorBrush BrushPrefabText  = MakeFrozen(Color.FromRgb(0x7F, 0xB2, 0xE5));
 
     private static SolidColorBrush MakeFrozen(Color c)
     {
@@ -190,6 +198,13 @@ public partial class HierarchyPanel : UserControl
 
     /// <summary>アクター編集モードでアクターが選択されたときに発火する（DFS ID）。</summary>
     public event Action<int>? ActorDfsSelected;
+
+    /// <summary>
+    /// プレハブルートの右クリックメニュー「アクタファイルを開く」で、
+    /// 参照元 .actor をアクタ編集タブで開くよう要求する（引数は対象アクターの DFS ID）。
+    /// MainWindow が Inspector.OpenPrefabSource へ橋渡しする（参照元パスは Inspector が保持）。
+    /// </summary>
+    public event Action<int>? PrefabSourceOpenRequested;
 
     /// <summary>
     /// 選択アクターのワールド/ビューポート所属が一意に定まったときに発火する
@@ -410,6 +425,8 @@ public partial class HierarchyPanel : UserControl
                     Active   = !e.TryGetProperty("active",   out var ac) || ac.GetBoolean(),
                     // Canvas 保有フラグ（旧 JSON にフィールドが無ければ false）
                     HasCanvas = e.TryGetProperty("has_canvas", out var hc) && hc.GetBoolean(),
+                    // プレハブインスタンスのルートか（旧 JSON にフィールドが無ければ false）
+                    IsPrefab  = e.TryGetProperty("is_prefab", out var ip) && ip.GetBoolean(),
                 })
                 .ToList();
 
@@ -486,8 +503,19 @@ public partial class HierarchyPanel : UserControl
             Foreground = iconBrush,
             FontSize   = 9,
         });
-        tb.Inlines.Add(new Run(node.Name) { FontSize = 13 });
-        // 非アクティブ（自身または祖先の active が false）は Unity 風に淡色表示する
+        // プレハブインスタンスのルートは Unity 風に、名前の前へ小さなプレハブアイコン（📦）を付け、
+        // 名前テキストを青系（水色）で表示して通常アクターと区別する（子ノードは通常表示）。
+        if (node.IsPrefab)
+        {
+            tb.Inlines.Add(new Run("📦 ") { FontSize = 10 });
+            tb.Inlines.Add(new Run(node.Name) { FontSize = 13, Foreground = BrushPrefabText });
+        }
+        else
+        {
+            tb.Inlines.Add(new Run(node.Name) { FontSize = 13 });
+        }
+        // 非アクティブ（自身または祖先の active が false）は Unity 風に淡色表示する。
+        // テキスト色（プレハブ青）と Opacity は併存し、色を保ったまま淡くなる。
         if (!node.Active) tb.Opacity = 0.45;
         return tb;
     }
@@ -763,7 +791,31 @@ public partial class HierarchyPanel : UserControl
             menu.Items.Add(new Separator());
             AddMenuItem(menu, "アクタファイル化", null, OnExportActorMenu);
         }
+
+        // ── プレハブインスタンスのルート専用項目 ──────────────────────
+        // 右クリック対象がプレハブルートのときのみ、参照元を開く／リンク解除を追加する。
+        if (_rightClickedNode is { IsPrefab: true } prefabNode)
+        {
+            menu.Items.Add(new Separator());
+            AddMenuItem(menu, "アクタファイルを開く", null,
+                (_, _) => PrefabSourceOpenRequested?.Invoke(prefabNode.Id));
+            AddMenuItem(menu, "プレハブリンク解除", null,
+                (_, _) => ConfirmAndUnlinkPrefab(prefabNode.Id));
+        }
         return menu;
+    }
+
+    /// <summary>
+    /// 確認ダイアログを表示し、承諾されたら指定アクターのプレハブリンクを解除する（UNLINK_PREFAB 送信）。
+    /// Inspector 側のリンク解除と同一の導線・文言。
+    /// </summary>
+    private void ConfirmAndUnlinkPrefab(int actorDfsId)
+    {
+        var result = MessageBox.Show(
+            "このアクターのプレハブ参照リンクを解除しますか？\n解除後は通常のアクターとして独立し、参照元の変更は反映されなくなります。",
+            "プレハブリンク解除", MessageBoxButton.YesNo, MessageBoxImage.Question);
+        if (result != MessageBoxResult.Yes) return;
+        _runtime?.SendToRuntime($"UNLINK_PREFAB:{actorDfsId}");
     }
 
     private ContextMenu BuildEmptyContextMenu()

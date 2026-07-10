@@ -316,6 +316,8 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         PanelHierarchy.SetRuntime(_runtimeManager);
         PanelHierarchy.SetAssetsPath(AssetsPath);
         PanelHierarchy.ActorDfsSelected += id => PanelInspector.SelectActor(id);
+        // Hierarchy のプレハブルート「アクタファイルを開く」→ Inspector が参照元パスを解決して開く
+        PanelHierarchy.PrefabSourceOpenRequested += id => PanelInspector.OpenPrefabSource(id);
         // 選択アクターのビューポート所属（is_vp）に応じてシーンタブ（ワールド/ビューポート）を自動切替する
         PanelHierarchy.SelectionKindResolved += OnHierarchySelectionKindResolved;
         PanelInspector.SetRuntime(_runtimeManager);
@@ -350,6 +352,8 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         PanelScriptEditor.DocumentActivated += () => ShowAnchorable("open_documents", activate: false);
         // スクリプトエディタ: インスペクタの「スクリプトを編集」ボタンからも開ける
         PanelInspector.ScriptFileOpenRequested += OnScriptFileOpened;
+        // プレハブ参照バーのダブルクリック等で、参照元 .actor をアクタ編集タブで開く
+        PanelInspector.ActorFileOpenRequested += OnActorFileOpened;
         // インスペクタの「キャンバスを編集」ボタンでキャンバス編集タブを開く
         PanelInspector.CanvasEditRequested += OnCanvasEditRequested;
 

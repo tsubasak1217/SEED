@@ -66,6 +66,27 @@ public partial class InspectorPanel : UserControl
     public event Action<string>? ScriptFileOpenRequested;
 
     /// <summary>
+    /// プレハブ参照バーのダブルクリック等で、参照元 .actor をアクタ編集タブで開くよう要求する（フルパス）。
+    /// MainWindow の OnActorFileOpened に配線される。
+    /// </summary>
+    public event Action<string>? ActorFileOpenRequested;
+
+    // ── プレハブ参照バー ─────────────────────────────────────
+    /// <summary>
+    /// 現在選択中アクターのプレハブ参照元パス（assets:// 仮想パス or 絶対パス）。
+    /// ACTOR_COMPONENTS の prefab_source が非 null のときのみ設定される（非プレハブは null）。
+    /// Hierarchy からの「アクタファイルを開く」要求（OpenPrefabSource）でも参照する。
+    /// </summary>
+    private string? _currentPrefabSource;
+    /// <summary>
+    /// Hierarchy 側からプレハブ参照元を開く要求が来たが、まだ対象アクターの
+    /// ACTOR_COMPONENTS（prefab_source）が届いていない場合に、その対象 DFS ID を保持する。
+    /// 次回 BuildActorComponentList で一致すれば自動で開く（選択直後の非同期ギャップ対策）。
+    /// 未使用時は -1。
+    /// </summary>
+    private int _pendingOpenPrefabForDfs = -1;
+
+    /// <summary>
     /// 「キャンバスを編集」ボタンでキャンバス編集タブを開くよう要求する
     /// （引数はキャンバスを所有するアクターの DFS ID）。
     /// シーン内の 2D スクリーンスペースキャンバス・3D ワールドキャンバス共通。
@@ -274,6 +295,7 @@ public partial class InspectorPanel : UserControl
         ComponentStack.Children.Clear();
         AccordionStack.Children.Clear();
         _accordionHeaders.Clear();
+        _currentPrefabSource = null;
         ClearTransformRefs();
     }
 
@@ -524,7 +546,25 @@ public partial class InspectorPanel : UserControl
                 Margin     = new Thickness(0, 4, 0, 4),
             };
         }
+        // ── プレハブ参照バー（アコーディオン最上部・基本情報より上）──────────
+        // ACTOR_COMPONENTS の prefab_source が非 null のときのみ、Unity 風に
+        // プレハブと一目で分かる参照バーを最上部へ差し込む。非プレハブは従来の見た目のまま。
+        _currentPrefabSource =
+            root.TryGetProperty("prefab_source", out var psEl) && psEl.ValueKind == JsonValueKind.String
+                ? psEl.GetString()
+                : null;
+        if (!string.IsNullOrEmpty(_currentPrefabSource))
+            AccordionStack.Children.Add(BuildPrefabRefBar(_currentPrefabSource));
+
         AccordionStack.Children.Add(BuildAccordionSection("基本情報", "", transformContent, -1));
+
+        // Hierarchy から「アクタファイルを開く」要求が保留されており、今回の再構築対象が
+        // その対象アクターかつプレハブ参照を持つなら、ここで自動的に開く（選択→取得の非同期ギャップ対策）。
+        if (_pendingOpenPrefabForDfs == _currentActorId && !string.IsNullOrEmpty(_currentPrefabSource))
+        {
+            _pendingOpenPrefabForDfs = -1;
+            TryOpenPrefabSourcePath(_currentPrefabSource);
+        }
 
         // ── コンポーネント アコーディオン ─────────────────────────────
         if (!root.TryGetProperty("components", out var comps)) return;
@@ -4029,6 +4069,151 @@ public partial class InspectorPanel : UserControl
             CanvasEditRequested?.Invoke(_currentActorId);
         };
         return btn;
+    }
+
+    // ── プレハブ参照バー ─────────────────────────────────────
+    // Unity 風にプレハブインスタンスと一目で分かる配色（薄い青系）。色はここで定数化する。
+    /// <summary>プレハブ参照バーの背景色（薄い青系）。</summary>
+    private static readonly SolidColorBrush PrefabBarBgBrush     = MakeFrozenBrush(Color.FromRgb(0x25, 0x38, 0x52));
+    /// <summary>プレハブ参照バーの左端アクセント帯・アイコン/文字色（明るい水色）。</summary>
+    private static readonly SolidColorBrush PrefabBarAccentBrush = MakeFrozenBrush(Color.FromRgb(0x7F, 0xB2, 0xE5));
+    /// <summary>プレハブ参照バーのホバー時背景色（少し明るい青）。</summary>
+    private static readonly SolidColorBrush PrefabBarHoverBrush  = MakeFrozenBrush(Color.FromRgb(0x30, 0x47, 0x66));
+
+    private static SolidColorBrush MakeFrozenBrush(Color c)
+    {
+        var b = new SolidColorBrush(c);
+        b.Freeze();
+        return b;
+    }
+
+    /// <summary>
+    /// プレハブ参照バー（アコーディオン最上部に表示）を生成する。
+    /// ・薄い青系の帯 + 📦 アイコン + 参照ファイル名（フルパスはツールチップ）。
+    /// ・ダブルクリックで参照元 .actor をアクタ編集タブで開く（ActorFileOpenRequested）。
+    /// ・右端の「リンク解除」ボタンで確認ダイアログ後 UNLINK_PREFAB を送信する。
+    /// </summary>
+    /// <param name="source">プレハブ参照元パス（assets:// 仮想パス or 絶対パス）。</param>
+    private UIElement BuildPrefabRefBar(string source)
+    {
+        // 表示ファイル名（拡張子含む）。空なら仮想パス全体をフォールバック表示。
+        var fileName = Path.GetFileName(source);
+        if (string.IsNullOrEmpty(fileName)) fileName = source;
+
+        // 3 列グリッド: [アイコン] [ファイル名(伸縮)] [リンク解除ボタン]
+        var grid = new Grid { Margin = new Thickness(6, 3, 6, 3) };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+        // 📦 アイコン
+        var icon = new TextBlock
+        {
+            Text              = "📦",
+            FontSize          = 13,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin            = new Thickness(2, 0, 6, 0),
+        };
+        Grid.SetColumn(icon, 0);
+        grid.Children.Add(icon);
+
+        // ファイル名（フルパスはツールチップ）。幅が足りなければ省略表示。
+        var nameBlock = new TextBlock
+        {
+            Text              = fileName,
+            Foreground        = PrefabBarAccentBrush,
+            FontSize          = 12,
+            FontWeight        = FontWeights.SemiBold,
+            VerticalAlignment = VerticalAlignment.Center,
+            TextTrimming      = TextTrimming.CharacterEllipsis,
+            ToolTip           = $"プレハブ参照元:\n{source}\n\nダブルクリックで参照元アクタを開きます",
+        };
+        Grid.SetColumn(nameBlock, 1);
+        grid.Children.Add(nameBlock);
+
+        // リンク解除ボタン（小さめ・確認ダイアログ付き）
+        var unlinkBtn = new Button
+        {
+            Content             = "リンク解除",
+            FontSize            = 10,
+            Padding             = new Thickness(6, 1, 6, 1),
+            VerticalAlignment   = VerticalAlignment.Center,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            ToolTip             = "このアクターとプレハブファイルの参照リンクを解除します",
+        };
+        unlinkBtn.Click += (_, _) => ConfirmAndUnlinkPrefab();
+        Grid.SetColumn(unlinkBtn, 2);
+        grid.Children.Add(unlinkBtn);
+
+        // 帯本体（左端アクセント + 薄い青背景）。ダブルクリックで参照元を開く。
+        var bar = new Border
+        {
+            Background       = PrefabBarBgBrush,
+            BorderBrush      = PrefabBarAccentBrush,
+            BorderThickness  = new Thickness(3, 0, 0, 0), // 左端のみアクセント帯
+            CornerRadius     = new CornerRadius(2),
+            Margin           = new Thickness(0, 0, 0, 4),
+            Cursor           = System.Windows.Input.Cursors.Hand,
+            Child            = grid,
+        };
+        // ホバーで軽くハイライト（プレハブ帯であることを視覚的に強調）
+        bar.MouseEnter += (_, _) => bar.Background = PrefabBarHoverBrush;
+        bar.MouseLeave += (_, _) => bar.Background = PrefabBarBgBrush;
+        // ダブルクリックで参照元 .actor を開く（ボタン上のクリックは Button 側で消費される）
+        bar.MouseLeftButtonDown += (_, e) =>
+        {
+            if (e.ClickCount == 2 && !string.IsNullOrEmpty(_currentPrefabSource))
+                TryOpenPrefabSourcePath(_currentPrefabSource);
+        };
+        return bar;
+    }
+
+    /// <summary>
+    /// Hierarchy 側の「アクタファイルを開く」から、指定 DFS ID のプレハブ参照元を開く。
+    /// 対象が現在選択中で参照元が判明済みなら即開き、そうでなければ ACTOR_COMPONENTS を
+    /// 要求して取得後に自動で開く（BuildActorComponentList の保留処理で拾う）。
+    /// </summary>
+    public void OpenPrefabSource(int dfsId)
+    {
+        if (dfsId == _currentActorId && !string.IsNullOrEmpty(_currentPrefabSource))
+        {
+            TryOpenPrefabSourcePath(_currentPrefabSource);
+            return;
+        }
+        // まだ対象の prefab_source を持っていない → 取得を要求し、届いたら開く
+        _pendingOpenPrefabForDfs = dfsId;
+        _runtime?.SendToRuntime($"GET_ACTOR_COMPONENTS:{dfsId}");
+    }
+
+    /// <summary>
+    /// プレハブ参照元パス（assets:// 仮想パス or 絶対パス）を実ファイルへ解決し、
+    /// アクタ編集タブで開くよう要求する。欠損時はメッセージを表示する。
+    /// </summary>
+    private void TryOpenPrefabSourcePath(string source)
+    {
+        // assets:// 仮想パス → 絶対パスへ変換（絶対パスならそのまま返る）
+        var abs = VirtualPath.ToAbsolute(source, _assetsPath);
+        if (!File.Exists(abs))
+        {
+            MessageBox.Show(
+                $"参照元のアクタファイルが見つかりません:\n{source}",
+                "プレハブ参照", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+        ActorFileOpenRequested?.Invoke(abs);
+    }
+
+    /// <summary>
+    /// 確認ダイアログを表示し、承諾されたら現在アクターのプレハブリンクを解除する（UNLINK_PREFAB 送信）。
+    /// </summary>
+    private void ConfirmAndUnlinkPrefab()
+    {
+        if (_currentActorId < 0) return;
+        var result = MessageBox.Show(
+            "このアクターのプレハブ参照リンクを解除しますか？\n解除後は通常のアクターとして独立し、参照元の変更は反映されなくなります。",
+            "プレハブリンク解除", MessageBoxButton.YesNo, MessageBoxImage.Question);
+        if (result != MessageBoxResult.Yes) return;
+        _runtime?.SendToRuntime($"UNLINK_PREFAB:{_currentActorId}");
     }
 
     private UIElement BuildOpenScriptButton(string scriptPath)
