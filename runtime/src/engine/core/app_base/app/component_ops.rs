@@ -347,13 +347,20 @@ impl App {
         comps_json.push(']');
 
         let name_json = serde_json::to_string(&actor.name).unwrap_or_default();
+        // プレハブ参照リンク（あれば assets:// パス、無ければ null）を Inspector 上部の
+        // 参照表示・リンク解除 UI 用に添付する（C# パースは次ウェーブ）。
+        let prefab_source_json = match &actor.prefab_source {
+            Some(p) => serde_json::to_string(p).unwrap_or_else(|_| "null".to_string()),
+            None    => "null".to_string(),
+        };
         // selected_slot_idx: Inspector 側でどのコンポーネントスロットを選択状態にするかを示す
         // transform_json は 3D: "transform":{...}、2D: "canvas_transform":{...} のいずれか
         // is_root / is_vp: ルートキャンバス判定用（HIERARCHY の is_vp と同一の分類規則）
         // active はアクター自身のフラグ（インスペクタのチェックボックス状態用。
         // 祖先の状態はヒエラルキー側の実効 active 表示が担う）
+        // prefab_source: プレハブ参照リンク（null = リンクなし）
         let json = format!(
-            r#"{{"id":{dfs_id},"name":{name_json},"selected_slot":{selected_slot_idx},"is_root":{},"is_vp":{},"active":{}{transform_json},"components":{comps_json}}}"#,
+            r#"{{"id":{dfs_id},"name":{name_json},"selected_slot":{selected_slot_idx},"is_root":{},"is_vp":{},"active":{},"prefab_source":{prefab_source_json}{transform_json},"components":{comps_json}}}"#,
             is_root as u8, root_is_2d as u8, actor.active as u8,
         );
         ipc.send(&format!("ACTOR_COMPONENTS:{json}"));

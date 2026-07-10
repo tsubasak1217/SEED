@@ -121,6 +121,15 @@ pub struct ActorData {
     /// 既存ファイルとの互換性のため省略時は true、true の場合は書き出さない。
     #[serde(default = "default_true", skip_serializing_if = "is_true")]
     pub active: bool,
+    /// プレハブ参照リンク（アセット相対 `assets://` パス）。Unity のプレハブに相当する。
+    /// このアクターが `.actor` / `.actor2d` ファイルのインスタンスである場合に参照元のパスを保持する。
+    /// **インスタンスのルートのみが Some を持ち、子アクターは常に None**。
+    /// シーンロード時・`.actor` 保存時に、このパスの参照先ファイルからサブツリーを再展開する
+    /// （ルートの Transform / name / active / world_line は維持し、それ以外はファイル内容で置換）。
+    /// 参照先ファイルが無い／読めない場合はシーン保存値のまま（リンク維持）。
+    /// 旧 `.scene` との互換性のため省略可（省略時 None）、None のときは書き出さない。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefab_source: Option<String>,
 }
 
 /// actor_kind が Actor3D（デフォルト）の場合は JSON に書き出さない。
@@ -162,6 +171,10 @@ pub struct Actor {
     /// 自身が true でも祖先が false なら実効的に非アクティブになる
     /// （実効判定は collect_inactive_actor_entities で集合として計算する）。
     pub active:     bool,
+    /// プレハブ参照リンク（アセット相対 `assets://` パス）。ActorData の同名フィールドと対応する。
+    /// **インスタンスのルートのみ Some**（子アクターは常に None）。
+    /// build_actor で ActorData から復元し、to_data で書き戻す。
+    pub prefab_source: Option<String>,
     /// 保持コンポーネントの目録（実データは World）
     slots:          Vec<ComponentSlot>,
 }
@@ -175,6 +188,7 @@ impl Actor {
             actor_kind: ActorKind::Actor3D,
             children:   Vec::new(),
             active:     true,
+            prefab_source: None,
             slots:      Vec::new(),
         }
     }
@@ -188,6 +202,7 @@ impl Actor {
             actor_kind: ActorKind::Actor2D,
             children:   Vec::new(),
             active:     true,
+            prefab_source: None,
             slots:      Vec::new(),
         }
     }
@@ -365,6 +380,8 @@ impl Actor {
             components,
             children:         self.children.iter().map(|c| c.to_data_recursive(world, counter)).collect(),
             active:           self.active,
+            // プレハブ参照リンクを往復させる（ルートのみ Some、子は None）。
+            prefab_source:    self.prefab_source.clone(),
         }
     }
 

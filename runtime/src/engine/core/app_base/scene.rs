@@ -453,6 +453,9 @@ pub fn build_actor(
     actor.actor_kind = data.actor_kind;
     // アクティブフラグを復元する（省略時は serde デフォルトで true）
     actor.active = data.active;
+    // プレハブ参照リンクを復元する（インスタンスのルートのみ Some、子は None）。
+    // シーンロード時の再展開・ライブ反映の対象判定に使用する。
+    actor.prefab_source = data.prefab_source;
 
     for slot in data.components {
         let slot_name = slot.name.clone();

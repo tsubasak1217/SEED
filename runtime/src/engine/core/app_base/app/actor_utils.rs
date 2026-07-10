@@ -46,7 +46,7 @@ pub(super) fn collect_actor_nodes(
     counter:       &mut u32,
     root_is_vp:    bool,
     parent_active: bool,
-    out:           &mut Vec<(u32, String, Option<u32>, bool, bool, bool, bool)>,
+    out:           &mut Vec<(u32, String, Option<u32>, bool, bool, bool, bool, bool)>,
 ) {
     let id = *counter;
     *counter += 1;
@@ -54,7 +54,11 @@ pub(super) fn collect_actor_nodes(
     let active = parent_active && actor.active;
     // has_canvas: このアクターが CanvasComponent スロットを持つか（3D Canvas 判定に使う）
     let has_canvas = actor.has_kind(ComponentKind::Canvas);
-    out.push((id, actor.name.clone(), parent, actor.is_2d(), root_is_vp, active, has_canvas));
+    // is_prefab: このアクターがプレハブ参照リンクを持つか（= プレハブインスタンスのルート）。
+    // インスタンスのルートのみ Some を持つため、子ノードは自然と false になる。
+    // エディタのヒエラルキーでプレハブアイコン表示に使用する（C# パースは次ウェーブ）。
+    let is_prefab = actor.prefab_source.is_some();
+    out.push((id, actor.name.clone(), parent, actor.is_2d(), root_is_vp, active, has_canvas, is_prefab));
     for child in actor.children() {
         // ルートのビューポート所属フラグを子孫全体へそのまま伝播する
         collect_actor_nodes(child, Some(id), counter, root_is_vp, active, out);
@@ -81,13 +85,16 @@ struct HierarchyNode<'a> {
     /// このアクター自身が CanvasComponent を持つか。
     /// エディタの 2D ドロップ制限（Canvas を持たない 3D アクターへの 2D 子付け禁止）に使用する。
     has_canvas: bool,
+    /// このアクターがプレハブインスタンスのルート（prefab_source を持つ）か。
+    /// エディタのプレハブアイコン表示・右クリック「リンク解除」メニュー活性化に使用する。
+    is_prefab: bool,
 }
 
 /// フラットリストから HIERARCHY JSON を生成する。
-pub(super) fn build_hierarchy_json(nodes: &[(u32, String, Option<u32>, bool, bool, bool, bool)]) -> String {
+pub(super) fn build_hierarchy_json(nodes: &[(u32, String, Option<u32>, bool, bool, bool, bool, bool)]) -> String {
     let items: Vec<HierarchyNode<'_>> = nodes
         .iter()
-        .map(|(id, name, parent, is_2d, is_vp, active, has_canvas)| HierarchyNode {
+        .map(|(id, name, parent, is_2d, is_vp, active, has_canvas, is_prefab)| HierarchyNode {
             id:       *id,
             name:     name.as_str(),
             parent:   *parent,
@@ -96,6 +103,7 @@ pub(super) fn build_hierarchy_json(nodes: &[(u32, String, Option<u32>, bool, boo
             is_vp:    *is_vp,
             active:   *active,
             has_canvas: *has_canvas,
+            is_prefab: *is_prefab,
         })
         .collect();
     serde_json::to_string(&items).unwrap_or_default()
@@ -955,6 +963,45 @@ pub(super) fn collect_child_actor_old_states(
             .unwrap_or([[0.0; 4]; 4]);
         result.push((child_dfs, old_tf, old_mc_mat));
         collect_child_actor_old_states(child, world, dfs_counter, result);
+    }
+}
+
+/// アクターのサブツリー全体へワールド空間デルタ行列を適用する（Undo 収集なしの軽量版）。
+///
+/// 適用対象:
+///  - 自身と全子孫の ModelComponent の instance_mats（全インスタンス。ワールド行列）
+///  - 子孫アクターの Transform（ワールド空間で保持されるため delta を直接適用）
+/// ルート自身の Transform は呼び出し側が設定する（ここでは触らない）。
+/// CanvasTransform のみの 2D 子アクターは描画時に親キャンバス階層から再計算されるため
+/// 対象外（Transform を持つ場合のみ更新する）。
+///
+/// ドロップ配置・プレハブ再展開で「ルート位置＝原点」基準のアクタファイル内容を
+/// シーン上の配置行列へ変換するために使用する。
+pub(super) fn apply_delta_to_actor_subtree(
+    actor: &mut Actor,
+    world: &mut World,
+    delta: [[f32; 4]; 4],
+) {
+    // 自身の全 Model スロットの instance_mats に delta を左乗算する
+    let slot_entities: Vec<Entity> = actor.slots().iter()
+        .filter(|s| s.kind == ComponentKind::Model)
+        .map(|s| s.entity)
+        .collect();
+    for slot_entity in slot_entities {
+        if let Some(mc) = world.get_mut::<ModelComponent>(slot_entity) {
+            for m in mc.instance_mats.iter_mut() {
+                *m = mat4x4_mul(delta, *m);
+            }
+            mc.mark_batch_dirty();
+        }
+    }
+    // 子孫の Transform（ワールド空間）と MC へ再帰的に適用する
+    for child in actor.children_mut().iter_mut() {
+        let child_entity = child.entity;
+        if let Some(tf) = world.get_mut::<ActorTransform>(child_entity) {
+            *tf = ActorTransform::from_mat4(&mat4x4_mul(delta, tf.to_mat4()));
+        }
+        apply_delta_to_actor_subtree(child, world, delta);
     }
 }
 

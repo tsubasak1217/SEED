@@ -7,7 +7,7 @@
 //  snapshot_actors_for_wl / rebuild_actors_for_wl
 // ============================================================
 
-use crate::engine::components::{ModelComponent, Transform as ActorTransform, ComponentKind};
+use crate::engine::components::{Transform as ActorTransform, ComponentKind};
 use crate::engine::core::app_base::scene::{Scene, build_actor};
 use crate::engine::core::app_base::undo::ActorTreeSnapshotCommand;
 use crate::engine::components::{CanvasTransform, CanvasComponent, SpriteComponent};
@@ -359,7 +359,13 @@ impl App {
         };
 
         match load_result {
-            Ok(actor) => {
+            Ok(mut actor) => {
+                // ── プレハブ参照リンクを設定する（ドロップ配置＝プレハブ化） ────────
+                // ドロップで配置したアクターは参照元 .actor/.actor2d ファイルのインスタンス
+                // となる。生成ルートに参照元パス（assets:// 仮想パス）を記録し、以後の
+                // シーンロード時再展開・.actor 保存時ライブ反映の対象とする。
+                // 子アクターには設定しない（インスタンスのルートのみが Some を持つ）。
+                actor.prefab_source = Some(crate::engine::asset_fs::to_virtual(path));
                 if actor.is_2d() {
                     // ── 2D キャンバスアクター ─────────────────────────────────────
                     // ドロップ位置は無視する。
@@ -371,27 +377,24 @@ impl App {
                     scene.actors.push(actor);
                 } else {
                     // ── 3D アクター ──────────────────────────────────────────────
-                    // ドロップ位置に ActorTransform を設定し、instance_mats を同期する
+                    // アクタファイルは「ルート位置＝原点」基準（rotation / scale は保存値を維持）。
+                    // ルート Transform の position のみドロップ位置へ設定し、rotation / scale は
+                    // ファイル保存値を維持する。GPU 描画に使われる instance_mats（ワールド行列）は
+                    // ActorTransform の変更だけでは追従しないため、サブツリー全体（ルート・子孫の
+                    // Model と子孫の Transform）へ平行移動 T(spawn_pos) を適用して同期する
+                    // （ファイル側ルート位置が 0 のため移動量はドロップ位置そのもの）。
                     let scene = self.scene.as_mut().unwrap();
-                    let tf = ActorTransform {
-                        position: spawn_pos,
-                        rotation: [0.0, 0.0, 0.0],
-                        scale:    [1.0, 1.0, 1.0],
-                    };
-                    let spawn_mat = tf.to_mat4();
+                    let mut tf = scene.world.get::<ActorTransform>(actor.entity)
+                        .cloned()
+                        .unwrap_or_default();
+                    tf.position = spawn_pos;
                     scene.world.insert(actor.entity, tf);
-                    // GPU 描画に使われる instance_mats も spawn 位置行列で更新する
-                    // （ActorTransform だけでは描画には反映されないため）
-                    for slot in actor.slots() {
-                        if slot.kind == ComponentKind::Model {
-                            if let Some(mc) = scene.world.get_mut::<ModelComponent>(slot.entity) {
-                                for m in mc.instance_mats.iter_mut() {
-                                    *m = spawn_mat;
-                                }
-                                mc.mark_batch_dirty();
-                            }
-                        }
-                    }
+                    // 平行移動デルタ行列を作り、サブツリーの MC 行列・子 Transform に適用する
+                    let mut delta = super::MAT4_IDENTITY;
+                    delta[0][3] = spawn_pos[0];
+                    delta[1][3] = spawn_pos[1];
+                    delta[2][3] = spawn_pos[2];
+                    super::apply_delta_to_actor_subtree(&mut actor, &mut scene.world, delta);
                     scene.actors.push(actor);
                 }
 
@@ -470,7 +473,14 @@ impl App {
         };
 
         match load_result {
-            Ok(actor) => {
+            Ok(mut actor) => {
+                // ── プレハブ参照リンクを設定する（.actor/.actor2d ドロップのみ） ─────
+                // 画像ドロップから生成した新規スプライトはファイル参照インスタンスでは
+                // ないため対象外（is_image_path で除外）。.actor/.actor2d をロードした
+                // 場合のみ、生成ルートへ参照元パス（assets:// 仮想パス）を記録する。
+                if !is_image_path(path) {
+                    actor.prefab_source = Some(crate::engine::asset_fs::to_virtual(path));
+                }
                 // ドロップカーソル位置を ortho（キャンバス）空間へ変換する
                 let drop_pt = self.window_to_canvas_2d(screen_x as f32, screen_y as f32);
 
@@ -1044,10 +1054,10 @@ impl App {
     /// - `path` はエディタの SaveFileDialog が返した絶対ファイルパス
     /// - 成功時: `EXPORT_ACTOR_OK:{saved_path}` を IPC で返す
     /// - 失敗時: `EXPORT_ACTOR_ERR:{reason}` を IPC で返す
-    pub(super) fn handle_export_actor(&self, dfs_id: u32, path: &str) {
+    pub(super) fn handle_export_actor(&mut self, dfs_id: u32, path: &str) {
+        let wl = self.active_world_line;
         let result: Result<String, String> = (|| {
             let scene = self.scene.as_ref().ok_or("シーンが読み込まれていません")?;
-            let wl = self.active_world_line;
 
             // DFS ID でアクターを検索する
             let mut c = 0u32;
@@ -1057,11 +1067,22 @@ impl App {
             // World を参照してシリアライズ（子も再帰的に含まれる）
             let mut data = actor.to_data(&scene.world);
 
-            // ルートの Transform を 0 にリセット（配置時の起点をオリジンに統一）
+            // .actor ファイルは「プレハブのテンプレート」であり、ルートは特定インスタンスへの
+            // 参照リンクを持たない。出力前に prefab_source を除去して、テンプレートに
+            // 参照リンクが混入する（＝自己参照・二重リンク）ことを防ぐ。
+            data.prefab_source = None;
+
+            // ルート Transform の position のみ 0 にリセットする（配置時の起点をオリジンに統一）。
+            // rotation / scale はプレハブの見た目を保つため保存値を維持する。
+            // instance_mats・子 Transform はワールド空間で保存されるため、除去した
+            // 平行移動分（root_pos）をサブツリー全体から差し引いて「ルート位置＝原点」
+            // 基準に再基準化する（T(-root_pos) の左乗算＝平行移動成分の減算。
+            // 回転・スケールは維持されるため平行移動のみの補正で整合する）。
             if let Some(ref mut tf) = data.transform {
+                let root_pos = tf.position;
                 tf.position = [0.0, 0.0, 0.0];
-                tf.rotation = [0.0, 0.0, 0.0];
-                tf.scale    = [1.0, 1.0, 1.0];
+                let neg = [-root_pos[0], -root_pos[1], -root_pos[2]];
+                translate_exported_subtree(&mut data, neg, true);
             }
             // 2D アクター: CanvasTransform の position のみリセットする。
             // ドロップ配置時にドロップ位置から position を設定し直すため 0 化が必要。
@@ -1084,11 +1105,66 @@ impl App {
             Ok(save_path.to_string_lossy().to_string())
         })();
 
-        if let Some(ipc) = &self.ipc {
-            match result {
-                Ok(path) => ipc.send(&format!("EXPORT_ACTOR_OK:{path}")),
-                Err(err) => ipc.send(&format!("EXPORT_ACTOR_ERR:{err}")),
+        match result {
+            Ok(saved_path) => {
+                // ── エクスポート元アクターをプレハブインスタンス化（リンク付与） ──────
+                // Unity の「Project へドラッグ＝プレハブ化＋リンク」に相当する。
+                // 書き出したファイルの参照パス（assets:// 仮想パス）をエクスポート元の
+                // シーン内アクターへ記録し、以後の再展開・ライブ反映の対象にする。
+                let vpath = crate::engine::asset_fs::to_virtual(&saved_path);
+                if let Some(scene) = &mut self.scene {
+                    let mut c = 0u32;
+                    if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, dfs_id, &mut c) {
+                        actor.prefab_source = Some(vpath.clone());
+                    }
+                }
+                if let Some(ipc) = &self.ipc {
+                    ipc.send(&format!("EXPORT_ACTOR_OK:{saved_path}"));
+                }
+                // ヒエラルキーを更新（is_prefab フラグ反映）してからライブ反映を行う。
+                self.send_hierarchy();
+                // 同じ参照パスを持つ通常シーン（world_line=0）の全インスタンスへ
+                // 書き出した内容を再展開する（自身も含む。ルート Transform/name/active は維持）。
+                self.propagate_prefab_change(&saved_path);
+            }
+            Err(err) => {
+                if let Some(ipc) = &self.ipc {
+                    ipc.send(&format!("EXPORT_ACTOR_ERR:{err}"));
+                }
             }
         }
+    }
+}
+
+/// エクスポート用: ActorData サブツリーへ平行移動 `t` を適用する（再基準化）。
+///
+/// instance_mats（ワールド行列）と子孫の Transform.position はワールド空間で
+/// 保存されているため、ルートの平行移動を除去した分（t = -root_pos）を
+/// サブツリー全体へ加算することで「ルート位置＝原点」基準のアクタファイルにする。
+/// 平行移動行列の左乗算 T(t) * M は平行移動列（mat[i][3]）への加算に等しく、
+/// 回転・スケール成分は変化しない。
+///
+/// - `is_root = true` のとき自身の Transform は触らない（呼び出し側で 0 化済み）。
+/// - CanvasTransform は親キャンバス基準のローカル座標のため対象外。
+fn translate_exported_subtree(data: &mut ActorData, t: [f32; 3], is_root: bool) {
+    use crate::engine::components::ComponentData;
+
+    // 子孫アクターの Transform（ワールド空間）へ平行移動を適用する
+    if !is_root {
+        if let Some(ref mut tf) = data.transform {
+            for axis in 0..3 { tf.position[axis] += t[axis]; }
+        }
+    }
+    // ModelComponent の全 instance_mats（ワールド行列）の平行移動列へ加算する
+    for slot in &mut data.components {
+        if let ComponentData::ModelComponent(ref mut mc) = slot.component {
+            for m in &mut mc.instances {
+                for axis in 0..3 { m[axis][3] += t[axis]; }
+            }
+        }
+    }
+    // 子孫へ再帰する
+    for child in &mut data.children {
+        translate_exported_subtree(child, t, false);
     }
 }

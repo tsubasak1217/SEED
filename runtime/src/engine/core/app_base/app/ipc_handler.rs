@@ -246,14 +246,23 @@ impl App {
                         if let Some(ref mut ct) = data.canvas_transform {
                             ct.position = [0.0, 0.0];
                         }
+                        // .actor ファイルはプレハブのテンプレート。ルートの参照リンクは
+                        // 書き出さない（テンプレートへの自己参照・二重リンク混入を防ぐ）。
+                        data.prefab_source = None;
                         let json = serde_json::to_string_pretty(&data).map_err(|e| e.to_string())?;
                         std::fs::write(&path, json).map_err(|e| e.to_string())?;
                         Ok(())
                     })();
-                    if let Some(ipc) = &self.ipc {
-                        match result {
-                            Ok(())   => ipc.send("SAVE_OK"),
-                            Err(e)   => ipc.send(&format!("SAVE_ERROR:{e}")),
+                    match result {
+                        Ok(())   => {
+                            if let Some(ipc) = &self.ipc { ipc.send("SAVE_OK"); }
+                            // アクタ編集タブの保存内容を、通常シーン（world_line=0）の
+                            // 同じ参照パスを持つ全プレハブインスタンスへ再展開する
+                            // （ルート Transform/name/active は維持）。
+                            self.propagate_prefab_change(&path);
+                        }
+                        Err(e)   => {
+                            if let Some(ipc) = &self.ipc { ipc.send(&format!("SAVE_ERROR:{e}")); }
                         }
                     }
                 }
@@ -584,6 +593,12 @@ impl App {
                             self.selected_instances.clear();
                             self.actor_virtual_selected_idx = None;
                             self.actor_virtual_selected_slot_idx = 0;
+                            // ── プレハブ参照リンクの再展開（ロード時適用） ──────────────
+                            // シーンに保存された prefab_source 付きアクタを、参照先
+                            // .actor/.actor2d ファイルの最新内容で再展開する
+                            // （ルート Transform/name/active/world_line は維持）。
+                            // undo_history リセットの前に実行する（ロードの一部でありUndo対象外）。
+                            self.apply_prefab_links_on_load();
                             self.undo_history = crate::engine::core::app_base::undo::UndoHistory::new();
                             if let Some(cam) = cam_data {
                                 self.apply_camera_data(&cam);
@@ -1031,6 +1046,9 @@ impl App {
                 }
                 IpcCommand::ExportActor { dfs_id, path } => {
                     self.handle_export_actor(dfs_id, &path);
+                }
+                IpcCommand::UnlinkPrefab { actor_dfs } => {
+                    self.handle_unlink_prefab(actor_dfs);
                 }
 
                 // ── 物理シミュレーション設定 ─────────────────────────────────
