@@ -1348,7 +1348,58 @@ public partial class HierarchyPanel : UserControl
             }
             else if (relY >= rowHeight - zone)
             {
-                // ── 下端 25%（およびヘッダ高超え）→ after 挿入 ──────────────
+                // ── 下端の兄弟挿入ゾーン（およびヘッダ高超え）→ after 挿入 ──────
+                // 【展開中かつ子を持つ対象の特例（Unity/VSCode 準拠）】
+                // 展開中の親ヘッダ行の下端境界線は、見た目上「親と最初の子の間」を指す。
+                // ここで「親の弟(after)」へ挿入すると、インジケータ表示位置（親と子の間）と
+                // 実挿入位置（サブツリー全体の下）が食い違って直感的でないため、
+                // 「最初の子の前(before)」＝対象の第一子として挿入する。
+                // 最初の子の TreeViewItem が未実体化などで取得できない場合は、
+                // フォールバックとして従来どおり弟(after)挿入の経路へ進む。
+                //
+                // アンカーにはドラッグ中でない最初の子を選ぶ。ドラッグ中ノードを
+                // アンカーにすると、Rust 側（handle_reparent_actor）が抽出後の兄弟
+                // リストからアンカー Entity を見つけられず末尾追加へフォールバック
+                // してしまうため（例: 第一子自身を親下端へドラッグしたケース）。
+                // 全子がドラッグ対象で先頭アンカーを取れない場合も従来経路へ進む。
+                TreeViewItem? firstChildItem = null;
+                if (item.IsExpanded)
+                {
+                    foreach (var childObj in item.Items)
+                    {
+                        if (childObj is TreeViewItem tvi
+                            && tvi.Tag is ActorNode childNode
+                            && !_dragNodeIds.Contains(childNode.Id))
+                        {
+                            firstChildItem = tvi;
+                            break;
+                        }
+                    }
+                }
+
+                if (firstChildItem != null)
+                {
+                    // 実効親は対象アイテム自身になるため、種別ガード
+                    // （3D→2D禁止・2D→Canvas無し3D禁止）も対象を親として判定する。
+                    if (!CheckSiblingInsertAllowed(e, targetNode, draggingHas3D, draggingHas2D, pos))
+                        return;
+
+                    // _insertTarget=第一子 + _insertBefore=true により、既存の
+                    // anchor/placeBefore 送信ロジック（OnTreeDrop）とローカル楽観反映
+                    // （ReparentInPlace）がそのまま「対象の第一子として挿入」になる。
+                    _insertBefore            = true;
+                    _insertTarget            = firstChildItem;
+                    // インジケータは子のインデント位置（対象 +1 階層）で、
+                    // 親ヘッダと最初の子の間（＝親ヘッダ行の下端）に表示する。
+                    var childIndentLeft      = GetItemIndentX(firstChildItem);
+                    DropIndicator.Margin     = new Thickness(childIndentLeft, itemTop + rowHeight - 1, 0, 0);
+                    DropIndicator.Visibility = Visibility.Visible;
+                    HideDropReject();
+                    e.Handled = true;
+                    return;
+                }
+
+                // 【従来経路: 折りたたみ中・子なしアイテムの下端 → 弟(after)挿入】
                 // targetNode が「親の最後の子」である連鎖を上へ辿り、挿入先候補を深い順に構築する。
                 // カーソル X（インデント）でどの階層へ挿入するかを VSCode/Unity 方式で選ぶ（#5）。
                 var candidates = BuildAfterInsertCandidates(targetNode, item);
