@@ -811,6 +811,9 @@ impl App {
                 IpcCommand::AddActor2dChild { parent_dfs_id } => {
                     self.handle_add_actor_2d_child(parent_dfs_id);
                 }
+                IpcCommand::WrapActor { child_dfs, is_2d } => {
+                    self.handle_wrap_actor(child_dfs, is_2d);
+                }
                 IpcCommand::RemoveActor(dfs_id) => {
                     self.handle_remove_actor(dfs_id);
                 }

@@ -94,6 +94,19 @@ public partial class HierarchyPanel : UserControl
     /// </summary>
     private const double RowContentRightMarginPx = 48.0;
 
+    // ── ドロップ挿入インジケータ / 階層選択定数 ──────────────────
+    /// <summary>
+    /// ツリー 1 階層あたりのインデント幅（px）。XAML の ItemsHost Margin="16,0,0,0" と一致させること。
+    /// 変更時は HierarchyPanel.xaml の ItemsHost Margin も合わせて更新すること（ズレると
+    /// 境界線ドロップの階層選択インジケータ位置が実際の挿入階層とずれる）。
+    /// </summary>
+    private const double IndentPerLevelPx = 16.0;
+
+    // ── ドロップ拒否理由ポップアップ定数 ──────────────────────────
+    /// <summary>拒否理由ポップアップをカーソルから右下へずらすオフセット（px）。</summary>
+    private const double DropRejectPopupOffsetX = 16.0;
+    private const double DropRejectPopupOffsetY = 20.0;
+
     // 右クリック用
     private ActorNode? _rightClickedNode;
 
@@ -685,8 +698,8 @@ public partial class HierarchyPanel : UserControl
     {
         var menu = new ContextMenu();
 
-        // ── アクタを追加 サブメニュー（子として作成）──────────────────
-        menu.Items.Add(BuildAddActorSubMenu(asChild: true));
+        // ── アクタを追加 サブメニュー（2D/3D → 親(ラップ)/子 の2段選択）──────
+        menu.Items.Add(BuildAddActorForSelectedSubMenu());
         menu.Items.Add(new Separator());
 
         if (_isActorEditMode)
@@ -758,6 +771,103 @@ public partial class HierarchyPanel : UserControl
         sub.Items.Add(item2D);
         return sub;
     }
+
+    /// <summary>
+    /// 選択中アクター（右クリック対象 = _rightClickedNode）向けの「アクタを追加」サブメニューを生成する。
+    /// 構造:「アクタを追加」→「2D アクタ / 3D アクタ」→各配下に「親として追加（ラップ）」「子として追加」。
+    ///
+    /// 表示/有効ルール（対象ノードの種別・Canvas 有無・キャンバス編集ルートに基づく）:
+    ///  - 対象が 2D: 「3D アクタ」サブメニュー自体を非表示（3D は 2D の子になれず、
+    ///    新規 3D 親（Canvas 無し）も 2D を子にできないため親/子とも不成立）。#2
+    ///  - 「2D アクタ→親として追加（ラップ）」: 対象が 3D なら無効（3D は 2D の子になれない）。#3
+    ///  - 「2D アクタ→子として追加」: 対象が Canvas 無し 3D なら無効（理由ツールチップ付き）。#3
+    ///  - キャンバス編集タブのルート（DFS 0）への「親として追加（ラップ）」: 2D/3D とも無効
+    ///    （ルート一意性維持。Rust 側 handle_wrap_actor が最終防衛）。#1 ガード対応
+    ///
+    /// 複数選択中に右クリックした場合も、判定は右クリックノード（_rightClickedNode）の種別に統一する
+    /// （子/親追加はいずれも右クリックノード基準の操作のため。実装の一貫性を優先）。
+    /// </summary>
+    private MenuItem BuildAddActorForSelectedSubMenu()
+    {
+        var sub    = new MenuItem { Header = "アクタを追加" };
+        var target = _rightClickedNode;
+        if (target == null) return sub; // 念のため（選択メニューは通常 target 非 null）
+
+        // キャンバス編集タブのルート（DFS 0）は「親として追加（ラップ）」を 2D/3D とも禁止する。
+        bool isCanvasEditRoot = _isSceneCanvasEditMode && target.Id == 0;
+
+        // ── 2D アクタ サブメニュー ──────────────────────────────────
+        var m2d = new MenuItem { Header = "2D アクタ" };
+
+        // 親として追加（ラップ）: 対象が 2D のときのみ有効（3D は 2D ラッパーの子になれない）。
+        var wrap2d = new MenuItem { Header = "親として追加（ラップ）" };
+        if (!target.Is2D)
+        {
+            wrap2d.IsEnabled = false;
+            wrap2d.ToolTip   = "3Dアクターは2Dアクターの子にできません";
+        }
+        else if (isCanvasEditRoot)
+        {
+            wrap2d.IsEnabled = false;
+            wrap2d.ToolTip   = "キャンバス編集中のルートはラップできません";
+        }
+        wrap2d.Click += (_, _) => { if (wrap2d.IsEnabled) SendWrapActor(target.Id, is2d: true); };
+
+        // 子として追加: 対象が 2D なら常に有効。対象が Canvas 無し 3D なら無効。
+        var child2d = new MenuItem { Header = "子として追加" };
+        if (!target.Is2D && !target.HasCanvas)
+        {
+            child2d.IsEnabled = false;
+            child2d.ToolTip   = "Canvasを持たない3Dアクターに2Dアクターは追加できません";
+        }
+        child2d.Click += (_, _) =>
+        {
+            if (!child2d.IsEnabled) return;
+            PrepareRenameAfterAdd();
+            _runtime?.SendToRuntime($"ADD_ACTOR_2D_CHILD:{target.Id}");
+        };
+
+        m2d.Items.Add(wrap2d);
+        m2d.Items.Add(child2d);
+        sub.Items.Add(m2d);
+
+        // ── 3D アクタ サブメニュー（対象が 2D のときは非表示：#2）──────────
+        if (!target.Is2D)
+        {
+            var m3d = new MenuItem { Header = "3D アクタ" };
+
+            // 親として追加（ラップ）: 対象が 3D のときのみ有効。キャンバス編集ルートは無効。
+            var wrap3d = new MenuItem { Header = "親として追加（ラップ）" };
+            if (isCanvasEditRoot)
+            {
+                wrap3d.IsEnabled = false;
+                wrap3d.ToolTip   = "キャンバス編集中のルートはラップできません";
+            }
+            wrap3d.Click += (_, _) => { if (wrap3d.IsEnabled) SendWrapActor(target.Id, is2d: false); };
+
+            // 子として追加: 対象が 3D なら常に有効（3D→3D）。
+            var child3d = new MenuItem { Header = "子として追加" };
+            child3d.Click += (_, _) =>
+            {
+                PrepareRenameAfterAdd();
+                _runtime?.SendToRuntime($"ADD_ACTOR_CHILD:{target.Id}");
+            };
+
+            m3d.Items.Add(wrap3d);
+            m3d.Items.Add(child3d);
+            sub.Items.Add(m3d);
+        }
+
+        return sub;
+    }
+
+    /// <summary>
+    /// 指定アクターを新規アクターでラップする WRAP_ACTOR コマンドを送信する。
+    /// 新規アクターが child の位置へ挿入され、child はその子へ移動する（Rust 側 handle_wrap_actor）。
+    /// is2d=true なら 2D ラッパー、false なら 3D ラッパーを生成する。
+    /// </summary>
+    private void SendWrapActor(int childId, bool is2d)
+        => _runtime?.SendToRuntime($"WRAP_ACTOR:{childId},{(is2d ? 1 : 0)}");
 
     private void OnAddRootActorMenu(object sender, RoutedEventArgs e)
     {
@@ -1071,6 +1181,7 @@ public partial class HierarchyPanel : UserControl
         _insertTarget = null;
         DropIndicator.Visibility = Visibility.Collapsed;
         ClearDropHighlight();
+        HideDropReject();
         // DoDragDrop 復帰時点で DragOver/DragLeave の取りこぼしがあってもここで確実に停止する
         StopAutoScroll();
     }
@@ -1086,6 +1197,7 @@ public partial class HierarchyPanel : UserControl
         if (!e.Data.GetDataPresent("DragIds"))
         {
             e.Effects = DragDropEffects.None;
+            HideDropReject();
             return;
         }
         e.Effects = DragDropEffects.Move;
@@ -1113,7 +1225,7 @@ public partial class HierarchyPanel : UserControl
                 (FindNode(_roots, id) is { } n && IsDescendant(n, targetNode.Id)));
             if (invalid)
             {
-                e.Effects = DragDropEffects.None;
+                RejectDrop(e, "自分自身または子孫にはドロップできません", pos);
                 return;
             }
 
@@ -1135,52 +1247,70 @@ public partial class HierarchyPanel : UserControl
             // 「2D アクターを Canvas 無し 3D アクターの子にする」組み合わせを弾く判定に使う。
             bool draggingHas2D = _dragNodeIds.Any(id => FindNode(_roots, id) is { Is2D: true });
 
-            // ヘッダ行の上端 25% / 下端 25%（およびヘッダ高を超える位置）→ 兄弟挿入ライン表示。
-            // relY がヘッダ行高を超える（= 子行上だが親 item が拾われた稀ケース）場合も
-            // relY >= rowHeight - zone が真になるため after 挿入として扱われ破綻しない。
-            if (relY <= zone || relY >= rowHeight - zone)
+            if (relY <= zone)
             {
-                // 兄弟として挿入する場合、実効的な新しい親は targetNode の親ノード
-                // （親が無い＝ルート直下の場合は 3D/2D 混在制約の対象外）。
+                // ── 上端 25% → before 挿入（候補は 1 つ：targetNode の弟＝targetNode の兄）──
+                // 実効的な新しい親は targetNode の親ノード（ルート直下なら null）。
                 var effectiveParent = FindParentNode(_roots, targetNode.Id);
-                if (draggingHas3D && effectiveParent is { Is2D: true })
-                {
-                    e.Effects = DragDropEffects.None;
+                if (!CheckSiblingInsertAllowed(e, effectiveParent, draggingHas3D, draggingHas2D, pos))
                     return;
-                }
-                // 2D を含むドラッグの実効親が「Canvas 無しの 3D アクター」なら禁止。
-                // （実効親が null＝ルート直下は許可、2D 親や Canvas 持ち 3D 親は許可）
-                if (draggingHas2D && effectiveParent is { Is2D: false, HasCanvas: false })
-                {
-                    e.Effects = DragDropEffects.None;
-                    return;
-                }
 
-                _insertBefore            = relY <= zone;
+                _insertBefore            = true;
                 _insertTarget            = item;
-                var lineY                = _insertBefore ? itemTop : itemTop + rowHeight;
-                DropIndicator.Margin     = new Thickness(0, lineY - 1, 0, 0);
+                var indentLeft           = GetItemIndentX(item);
+                DropIndicator.Margin     = new Thickness(indentLeft, itemTop - 1, 0, 0);
                 DropIndicator.Visibility = Visibility.Visible;
+                HideDropReject();
+            }
+            else if (relY >= rowHeight - zone)
+            {
+                // ── 下端 25%（およびヘッダ高超え）→ after 挿入 ──────────────
+                // targetNode が「親の最後の子」である連鎖を上へ辿り、挿入先候補を深い順に構築する。
+                // カーソル X（インデント）でどの階層へ挿入するかを VSCode/Unity 方式で選ぶ（#5）。
+                var candidates = BuildAfterInsertCandidates(targetNode, item);
+
+                // カーソル X から挿入階層を決める。深い候補ほどインデント X が大きい。
+                // cursorX がある候補のインデント以右ならその候補（先頭＝最深から探索）。
+                // すべての候補より左なら最も浅い候補へクランプする。
+                int chosen = candidates.Count - 1;
+                for (int i = 0; i < candidates.Count; i++)
+                {
+                    if (pos.X >= GetItemIndentX(candidates[i].AnchorItem)) { chosen = i; break; }
+                }
+                var cand = candidates[chosen];
+
+                // 種別ガードは「選ばれた候補の実効親」に対して判定する（挿入先の親が階層で変わるため）。
+                if (!CheckSiblingInsertAllowed(e, cand.EffectiveParent, draggingHas3D, draggingHas2D, pos))
+                    return;
+
+                _insertBefore            = false;
+                _insertTarget            = cand.AnchorItem;
+                // ライン Y は常に「カーソルがいる targetNode 行の下端」。X のみ選ばれた階層のインデントへ。
+                var indentLeft           = GetItemIndentX(cand.AnchorItem);
+                DropIndicator.Margin     = new Thickness(indentLeft, itemTop + rowHeight - 1, 0, 0);
+                DropIndicator.Visibility = Visibility.Visible;
+                HideDropReject();
             }
             else
             {
-                // 中央 → 子として追加。実効的な新しい親は targetNode 自身。
+                // ── 中央 → 子として追加。実効的な新しい親は targetNode 自身。──
                 // targetNode が 2D かつドラッグ中に 3D が含まれる場合はドロップ不可とする。
                 if (draggingHas3D && targetNode.Is2D)
                 {
-                    e.Effects = DragDropEffects.None;
+                    RejectDrop(e, "3Dアクターは2Dアクターの子にできません", pos);
                     return;
                 }
                 // ドラッグに 2D が含まれ、子化先が「Canvas 無しの 3D アクター」なら禁止。
                 if (draggingHas2D && targetNode is { Is2D: false, HasCanvas: false })
                 {
-                    e.Effects = DragDropEffects.None;
+                    RejectDrop(e, "Canvasを持たない3Dアクターに2Dアクターは配置できません", pos);
                     return;
                 }
 
                 _dropTarget = item;
                 if (rowBorder != null)
                     rowBorder.Background = new SolidColorBrush(Color.FromArgb(0x55, 0x33, 0x99, 0xFF));
+                HideDropReject();
             }
         }
         else
@@ -1188,15 +1318,115 @@ public partial class HierarchyPanel : UserControl
             // アクター編集モードではルートへのドロップを禁止
             if (_isActorEditMode)
             {
-                e.Effects = DragDropEffects.None;
+                RejectDrop(e, "アクター編集中はルート階層へは移動できません", pos);
                 e.Handled = true;
                 return;
             }
             _dropAsRoot              = true;
             DropIndicator.Margin     = new Thickness(0);
             DropIndicator.Visibility = Visibility.Visible;
+            HideDropReject();
         }
         e.Handled = true;
+    }
+
+    /// <summary>
+    /// after 挿入時の挿入先候補を深い順に構築する（#5）。
+    /// 候補[0] は targetNode の弟としての挿入（アンカー=targetNode）。
+    /// targetNode が「その親の最後の子」である限り、親を次のアンカー候補として上へ辿る
+    /// （親の弟として → 祖父の弟として …ルートまで）。非末尾で打ち切る。
+    /// 各候補は (アンカーノード, アンカー TreeViewItem, その挿入先の実効親) を持つ。
+    /// </summary>
+    private List<(ActorNode Anchor, TreeViewItem AnchorItem, ActorNode? EffectiveParent)>
+        BuildAfterInsertCandidates(ActorNode targetNode, TreeViewItem targetItem)
+    {
+        var candidates = new List<(ActorNode, TreeViewItem, ActorNode?)>();
+        var curNode = targetNode;
+        var curItem = targetItem;
+        while (true)
+        {
+            var parent   = FindParentNode(_roots, curNode.Id);
+            candidates.Add((curNode, curItem, parent));
+
+            // curNode がその親（親なしならルート）の最後の子でなければ上位候補は無い。
+            var siblings = parent?.Children ?? _roots;
+            bool isLast  = siblings.Count > 0 && siblings[siblings.Count - 1].Id == curNode.Id;
+            if (!isLast || parent == null) break;
+
+            // 親アイテムが取得できなければ（仮想化で未実体化等）そこで打ち切る。
+            var parentItem = FindTreeItemById(ActorTree.Items, parent.Id);
+            if (parentItem == null) break;
+
+            curNode = parent;
+            curItem = parentItem;
+        }
+        return candidates;
+    }
+
+    /// <summary>
+    /// 兄弟挿入（before/after）の種別ガード。許可なら true、拒否なら e.Effects=None にして
+    /// 拒否理由ポップアップを出し false を返す。effectiveParent が null（ルート直下）は許可。
+    /// </summary>
+    private bool CheckSiblingInsertAllowed(
+        DragEventArgs e, ActorNode? effectiveParent,
+        bool draggingHas3D, bool draggingHas2D, Point pos)
+    {
+        // 3D を含むドラッグを 2D 親の兄弟へ入れる（＝2D 親の子になる）のは禁止。
+        if (draggingHas3D && effectiveParent is { Is2D: true })
+        {
+            RejectDrop(e, "3Dアクターは2Dアクターの子にできません", pos);
+            return false;
+        }
+        // 2D を含むドラッグの実効親が「Canvas 無しの 3D アクター」なら禁止。
+        if (draggingHas2D && effectiveParent is { Is2D: false, HasCanvas: false })
+        {
+            RejectDrop(e, "Canvasを持たない3Dアクターに2Dアクターは配置できません", pos);
+            return false;
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// ツリーアイテムの左端 X（ActorTree 基準）を返す。挿入インジケータのインデント合わせと
+    /// 階層選択のしきい値に使う（1 階層 = IndentPerLevelPx px、XAML の ItemsHost Margin と一致）。
+    /// 取得に失敗した場合は 0（最左）を返す。
+    /// </summary>
+    private double GetItemIndentX(TreeViewItem item)
+    {
+        try { return item.TranslatePoint(new Point(0, 0), ActorTree).X; }
+        catch { return 0; }
+    }
+
+    // ── ドロップ拒否理由ポップアップ（#4）──────────────────────────
+
+    /// <summary>
+    /// ドロップを拒否し、理由をカーソル付近にポップアップ表示する。
+    /// DragOver 中の拒否分岐から呼ぶ。許可状態になったら HideDropReject で消す。
+    /// </summary>
+    private void RejectDrop(DragEventArgs e, string reason, Point posInTree)
+    {
+        e.Effects = DragDropEffects.None;
+        // 拒否中は挿入/子化ハイライトを消す（許可の見た目と混在させない）
+        ClearDropHighlight();
+        DropIndicator.Visibility = Visibility.Collapsed;
+        ShowDropReject(reason, posInTree);
+    }
+
+    /// <summary>拒否理由ポップアップをカーソル右下に表示・追従させる。</summary>
+    private void ShowDropReject(string reason, Point posInTree)
+    {
+        DropRejectText.Text          = reason;
+        DropRejectPopup.PlacementTarget   = ActorTree;
+        DropRejectPopup.Placement         = PlacementMode.Relative;
+        DropRejectPopup.HorizontalOffset  = posInTree.X + DropRejectPopupOffsetX;
+        DropRejectPopup.VerticalOffset    = posInTree.Y + DropRejectPopupOffsetY;
+        if (!DropRejectPopup.IsOpen) DropRejectPopup.IsOpen = true;
+    }
+
+    /// <summary>拒否理由ポップアップを非表示にする（許可状態・ドロップ・離脱・ドラッグ終了で呼ぶ）。</summary>
+    private void HideDropReject()
+    {
+        if (DropRejectPopup.IsOpen) DropRejectPopup.IsOpen = false;
     }
 
     private void OnTreeDragLeave(object sender, DragEventArgs e)
@@ -1206,6 +1436,7 @@ public partial class HierarchyPanel : UserControl
         _dropTarget   = null;
         _dropAsRoot   = false;
         _insertTarget = null;
+        HideDropReject();
         StopAutoScroll();
     }
 
@@ -1213,6 +1444,7 @@ public partial class HierarchyPanel : UserControl
     {
         ClearDropHighlight();
         DropIndicator.Visibility = Visibility.Collapsed;
+        HideDropReject();
         StopAutoScroll();
 
         if (!e.Data.GetDataPresent("DragIds")) return;

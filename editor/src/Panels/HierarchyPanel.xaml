@@ -198,5 +198,18 @@
                 Height="2" Background="#3399FF"
                 Visibility="Collapsed" IsHitTestVisible="False"/>
 
+        <!-- ドロップ拒否理由ポップアップ（DragOver 中の拒否状態でのみ表示・カーソル追従） -->
+        <Popup x:Name="DropRejectPopup"
+               AllowsTransparency="True"
+               Placement="Relative"
+               PlacementTarget="{Binding ElementName=ActorTree}"
+               IsHitTestVisible="False"
+               IsOpen="False">
+            <Border Background="#E6402020" BorderBrush="#FF6666" BorderThickness="1"
+                    CornerRadius="3" Padding="8,4">
+                <TextBlock x:Name="DropRejectText" Foreground="#FFDDDD" FontSize="12"/>
+            </Border>
+        </Popup>
+
     </Grid>
 </UserControl>

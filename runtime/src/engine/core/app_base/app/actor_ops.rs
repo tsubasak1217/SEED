@@ -34,6 +34,8 @@ use super::{
     find_actor_by_dfs, find_actor_by_dfs_mut,
     actor_subtree_size,
     extract_actor_by_dfs,
+    extract_actor_by_dfs_with_origin,
+    find_actor_by_entity_mut,
     despawn_actor_recursive,
     remove_actor_by_dfs,
     collect_entities_for_wl,
@@ -206,6 +208,112 @@ impl App {
                 .unwrap_or(self.active_world_line)
         };
         self.handle_add_actor_2d(wl, Some(parent_dfs_id));
+    }
+
+    /// 指定アクター（child_dfs）を新規アクターで「ラップ」する。
+    ///
+    /// 新規ラッパーアクターを child_dfs の現在位置（同じ親・同じ兄弟 index）へ挿入し、
+    /// child_dfs をラッパーの子へ移動する。エディタ右クリック「親として追加（ラップ）」用。
+    /// `is_2d` が true なら 2D アクター（CanvasTransform）、false なら 3D アクター
+    /// （ActorTransform）としてラッパーを生成する。命名は既存の新規アクタ生成と同じく "Actor"。
+    ///
+    /// # ガード（種別不整合・ルート保護）
+    /// 新規ラッパーは Canvas を持たない素のアクターなので、以下を拒否する:
+    /// - 子が 3D かつ ラッパーが 2D → 3D は 2D の子になれない
+    /// - 子が 2D かつ ラッパーが 3D → 2D は Canvas を持たない 3D の子になれない
+    /// 実質「ラップは同種（2D→2D / 3D→3D）のみ許可」となる。
+    /// さらにキャンバス編集タブのルート（is_canvas_edit_root）はルート一意性維持のため拒否する。
+    /// アクター編集タブ（単一ルート）でルートをラップするのは、新ルートが旧ルートを
+    /// 子に持つ＝単一ルート維持のため許可してよい。
+    ///
+    /// 操作は Undo/Redo の対象。
+    pub(super) fn handle_wrap_actor(&mut self, child_dfs: u32, is_2d: bool) {
+        if self.scene.is_none() { return; }
+        let wl = self.active_world_line;
+
+        // ── キャンバス編集タブのルートはラップ禁止（ルート一意性維持） ──────────
+        if self.is_canvas_edit_root(wl, child_dfs) {
+            if let Some(ipc) = &self.ipc {
+                ipc.send("LOAD_ERROR:キャンバス編集中はルートキャンバスをラップできません");
+            }
+            return;
+        }
+
+        // ── 種別不整合ガード（ラッパーは Canvas 無しの素アクター） ──────────────
+        {
+            let scene = self.scene.as_ref().unwrap();
+            let mut c = 0u32;
+            let Some(child_is_2d) = find_actor_by_dfs(&scene.actors, wl, child_dfs, &mut c)
+                .map(|a| a.is_2d())
+            else { return }; // 対象が見つからなければ何もしない
+            // 子 3D → 2D ラッパー を禁止
+            if is_2d && !child_is_2d {
+                if let Some(ipc) = &self.ipc {
+                    ipc.send("LOAD_ERROR:3Dアクターは2Dアクターの子にできません");
+                }
+                return;
+            }
+            // 子 2D → 3D ラッパー（Canvas 無し）を禁止
+            if !is_2d && child_is_2d {
+                if let Some(ipc) = &self.ipc {
+                    ipc.send("LOAD_ERROR:2DアクターはCanvasを持たない3Dアクターの子にできません");
+                }
+                return;
+            }
+        }
+
+        let before_actors = self.snapshot_actors_for_wl(wl);
+
+        {
+            let scene = self.scene.as_mut().unwrap();
+
+            // 子アクターを現在位置（親エンティティ・兄弟内 index）ごと取り出す。
+            // 出自 (parent_entity, index) を使ってラッパーを同じ位置へ挿入する。
+            let Some((child_actor, parent_entity, index)) =
+                extract_actor_by_dfs_with_origin(&mut scene.actors, wl, child_dfs)
+            else { return };
+
+            // 新規ラッパーアクターを生成する（2D/3D で Transform 種別を分ける）。
+            // Actor::new/new_2d が使う Entity::default() は衝突するため world.spawn() で一意化する。
+            let wrapper_entity = scene.world.spawn();
+            let mut wrapper = if is_2d {
+                scene.world.insert(wrapper_entity, CanvasTransform::default());
+                Actor::new_2d(wrapper_entity, "Actor")
+            } else {
+                scene.world.insert(wrapper_entity, ActorTransform::default());
+                Actor::new(wrapper_entity, "Actor")
+            };
+            wrapper.world_line = wl;
+
+            // 取り出した子をラッパーの子へ移動する
+            wrapper.add_child(child_actor);
+
+            // ラッパーを元の位置（元の親の children、またはシーンルート）へ挿入する
+            if let Some(pe) = parent_entity {
+                if let Some(parent) = find_actor_by_entity_mut(&mut scene.actors, pe) {
+                    let children = parent.children_mut();
+                    let idx = index.min(children.len());
+                    children.insert(idx, wrapper);
+                } else {
+                    // 親が見つからない場合はルートへフォールバック
+                    scene.actors.push(wrapper);
+                }
+            } else {
+                // トップレベル: 元の scene.actors index へ挿入する
+                let idx = index.min(scene.actors.len());
+                scene.actors.insert(idx, wrapper);
+            }
+        }
+
+        let after_actors = self.snapshot_actors_for_wl(wl);
+        self.undo_history.record(Box::new(ActorTreeSnapshotCommand {
+            world_line: wl,
+            before_actors,
+            after_actors,
+        }));
+
+        self.send_hierarchy();
+        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
     }
 
     /// .actor ファイルをシーンにドロップ配置する（3D ビュー用）。

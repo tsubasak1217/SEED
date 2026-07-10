@@ -168,6 +168,11 @@ pub enum IpcCommand {
     /// 指定アクターの子として 2D アクターを追加する（world_line は親から自動取得）
     /// フォーマット: ADD_ACTOR_2D_CHILD:{parent_dfs_id}
     AddActor2dChild { parent_dfs_id: u32 },
+    /// 指定アクターを新規アクターで「ラップ」する。
+    /// 新規アクターを child_dfs の現在位置（同じ親・同じ index）に挿入し、
+    /// child_dfs をその新規アクターの子へ移動する（右クリック「親として追加（ラップ）」用）。
+    /// フォーマット: WRAP_ACTOR:{child_dfs},{is_2d(0|1)}
+    WrapActor { child_dfs: u32, is_2d: bool },
     /// アクターを削除する
     RemoveActor(u32),
     /// アクターをリネームする
@@ -834,6 +839,17 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                             // ADD_ACTOR_2D_CHILD:{parent_dfs_id}
                             s["ADD_ACTOR_2D_CHILD:".len()..].trim().parse::<u32>().ok()
                                 .map(|id| IpcCommand::AddActor2dChild { parent_dfs_id: id })
+                        }
+                        s if s.starts_with("WRAP_ACTOR:") => {
+                            // WRAP_ACTOR:{child_dfs},{is_2d(0|1)}
+                            let rest = &s["WRAP_ACTOR:".len()..];
+                            let mut it = rest.splitn(2, ',');
+                            if let (Some(c_s), Some(k_s)) = (it.next(), it.next()) {
+                                c_s.trim().parse::<u32>().ok().map(|child_dfs| IpcCommand::WrapActor {
+                                    child_dfs,
+                                    is_2d: k_s.trim() == "1",
+                                })
+                            } else { None }
                         }
                         s if s.starts_with("REMOVE_ACTOR:") => {
                             s["REMOVE_ACTOR:".len()..].parse::<u32>().ok()
