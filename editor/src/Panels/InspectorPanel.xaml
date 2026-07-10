@@ -55,68 +55,53 @@
             <!-- アクター編集モード -->
             <Grid x:Name="ActorEditGrid" Visibility="Collapsed">
                 <Grid.RowDefinitions>
-                    <RowDefinition Height="120" MinHeight="40"/>
-                    <RowDefinition Height="5"/>
                     <RowDefinition Height="*" MinHeight="60"/>
+                    <RowDefinition Height="Auto"/>
                 </Grid.RowDefinitions>
 
-                <!-- コンポーネント一覧（上部・スクロール可能） -->
-                <Border Grid.Row="0" Background="#1A1A1A"
-                        BorderBrush="#3F3F46" BorderThickness="0,0,0,1">
-                    <DockPanel>
-                        <Border DockPanel.Dock="Bottom" Padding="4,2" Background="#1E1E1E">
-                            <Button x:Name="BtnAddComponent"
-                                    Content="+ コンポーネントを追加"
-                                    BorderThickness="1"
-                                    FontSize="11" Padding="8,3"
-                                    HorizontalAlignment="Stretch"
-                                    Cursor="Hand"
-                                    Click="OnAddComponentClicked">
-                                <Button.Style>
-                                    <Style TargetType="Button">
-                                        <Setter Property="Background"  Value="#2A2A2A"/>
-                                        <Setter Property="Foreground"  Value="#888888"/>
-                                        <Setter Property="BorderBrush" Value="#444444"/>
-                                        <Setter Property="Template">
-                                            <Setter.Value>
-                                                <ControlTemplate TargetType="Button">
-                                                    <Border x:Name="Bd"
-                                                            Background="{TemplateBinding Background}"
-                                                            BorderBrush="{TemplateBinding BorderBrush}"
-                                                            BorderThickness="{TemplateBinding BorderThickness}"
-                                                            CornerRadius="2" Padding="{TemplateBinding Padding}">
-                                                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                                                    </Border>
-                                                    <ControlTemplate.Triggers>
-                                                        <Trigger Property="IsMouseOver" Value="True">
-                                                            <Setter TargetName="Bd" Property="Background" Value="#383838"/>
-                                                            <Setter Property="Foreground" Value="#AAAAAA"/>
-                                                        </Trigger>
-                                                    </ControlTemplate.Triggers>
-                                                </ControlTemplate>
-                                            </Setter.Value>
-                                        </Setter>
-                                    </Style>
-                                </Button.Style>
-                            </Button>
-                        </Border>
-                        <ScrollViewer VerticalScrollBarVisibility="Auto">
-                            <StackPanel x:Name="ComponentListStack" Margin="0,2"/>
-                        </ScrollViewer>
-                    </DockPanel>
-                </Border>
-
-                <!-- スプリッター -->
-                <GridSplitter Grid.Row="1"
-                              HorizontalAlignment="Stretch" VerticalAlignment="Center"
-                              Height="5" Background="#333333"
-                              ResizeDirection="Rows" ResizeBehavior="PreviousAndNext"
-                              ShowsPreview="False"/>
-
-                <!-- アコーディオン（下部・パラメータ編集） -->
-                <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto">
+                <!-- アコーディオン（コンポーネント一覧を兼ねる。開閉ヘッダーでリネーム・削除・複製を行う） -->
+                <ScrollViewer Grid.Row="0" VerticalScrollBarVisibility="Auto">
                     <StackPanel x:Name="AccordionStack" Margin="0,2,0,8"/>
                 </ScrollViewer>
+
+                <!-- コンポーネント追加ボタン（下部・スクロール非依存で固定表示） -->
+                <Border Grid.Row="1" Padding="4,2" Background="#1E1E1E"
+                        BorderBrush="#3F3F46" BorderThickness="0,1,0,0">
+                    <Button x:Name="BtnAddComponent"
+                            Content="+ コンポーネントを追加"
+                            BorderThickness="1"
+                            FontSize="11" Padding="8,3"
+                            HorizontalAlignment="Stretch"
+                            Cursor="Hand"
+                            Click="OnAddComponentClicked">
+                        <Button.Style>
+                            <Style TargetType="Button">
+                                <Setter Property="Background"  Value="#2A2A2A"/>
+                                <Setter Property="Foreground"  Value="#888888"/>
+                                <Setter Property="BorderBrush" Value="#444444"/>
+                                <Setter Property="Template">
+                                    <Setter.Value>
+                                        <ControlTemplate TargetType="Button">
+                                            <Border x:Name="Bd"
+                                                    Background="{TemplateBinding Background}"
+                                                    BorderBrush="{TemplateBinding BorderBrush}"
+                                                    BorderThickness="{TemplateBinding BorderThickness}"
+                                                    CornerRadius="2" Padding="{TemplateBinding Padding}">
+                                                <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                            </Border>
+                                            <ControlTemplate.Triggers>
+                                                <Trigger Property="IsMouseOver" Value="True">
+                                                    <Setter TargetName="Bd" Property="Background" Value="#383838"/>
+                                                    <Setter Property="Foreground" Value="#AAAAAA"/>
+                                                </Trigger>
+                                            </ControlTemplate.Triggers>
+                                        </ControlTemplate>
+                                    </Setter.Value>
+                                </Setter>
+                            </Style>
+                        </Button.Style>
+                    </Button>
+                </Border>
             </Grid>
         </Grid>
     </Grid>

@@ -38,6 +38,22 @@ public partial class InspectorPanel : UserControl
     private int      _componentSlotCount = 0;
     private SlotInfo? _copiedSlot        = null;  // Ctrl+C でコピーしたスロット
 
+    /// <summary>
+    /// スロット番号 → そのコンポーネントのアコーディオンヘッダー要素群。
+    /// コンポーネント一覧廃止に伴い、リネーム・選択ハイライト・右クリックメニューは
+    /// このヘッダーへ移譲された。BuildActorComponentList のたびに再構築される。
+    /// </summary>
+    private readonly Dictionary<int, AccordionHeaderRefs> _accordionHeaders = new();
+
+    /// <summary>アコーディオンヘッダーを構成する要素への参照（リネーム・選択ハイライト用）。</summary>
+    private sealed class AccordionHeaderRefs
+    {
+        public required Border    Header;
+        public required Grid      HeaderGrid;
+        public required TextBlock TitleBlock;
+        public required string    ComponentName;
+    }
+
     /// <summary>次回の BuildActorComponentList 完了後に自動リネームモードを開始するスロットのベース名。</summary>
     private bool   _pendingDuplicateRename   = false;
     private string _pendingDuplicateBaseName = "";
@@ -256,8 +272,8 @@ public partial class InspectorPanel : UserControl
         ActorEditGrid.Visibility    = Visibility.Collapsed;
         NoSelectionBlock.Visibility = Visibility.Visible;
         ComponentStack.Children.Clear();
-        ComponentListStack.Children.Clear();
         AccordionStack.Children.Clear();
+        _accordionHeaders.Clear();
         ClearTransformRefs();
     }
 
@@ -426,8 +442,8 @@ public partial class InspectorPanel : UserControl
 
         // 複製後の新スロット検出用に現在のスロット ID セットを保存する
         var prevSlotIdxSet = _slotInfos.Select(s => s.SlotIdx).ToHashSet();
-        ComponentListStack.Children.Clear();
         AccordionStack.Children.Clear();
+        _accordionHeaders.Clear();
         ClearTransformRefs();
         _slotInfos.Clear();
         _slotEnabledMap.Clear();
@@ -616,10 +632,7 @@ public partial class InspectorPanel : UserControl
                 AudioPan: audioPan);
             _slotInfos.Add(info);
 
-            // 上部チップリストに追加
-            ComponentListStack.Children.Add(BuildComponentChip(info.SlotIdx, info.Name, info.TypeId));
-
-            // アコーディオンにパラメータ編集エリアを追加
+            // アコーディオンにパラメータ編集エリアを追加（ヘッダーがリネーム・削除・複製・選択を兼ねる）
             var propsContent = BuildSlotPropsContent(info);
             AccordionStack.Children.Add(BuildAccordionSection(info.Name, info.TypeId, propsContent, info.SlotIdx));
 
@@ -630,7 +643,7 @@ public partial class InspectorPanel : UserControl
         if (_selectedSlotIdx < 0 && _slotInfos.Count > 0)
             _selectedSlotIdx = _slotInfos[^1].SlotIdx;
 
-        RefreshChipSelection();
+        RefreshAccordionSelection();
 
         // 複製直後: 新スロットを検出してデフォルト名でリネームモードを開始する
         if (_pendingDuplicateRename)
@@ -703,9 +716,10 @@ public partial class InspectorPanel : UserControl
 
     /// <summary>
     /// アコーディオンセクションを生成する。
-    /// ヘッダー行（▼/▶ + アイコン + タイトル）と折り畳み可能なコンテンツエリアを持つ。
-    /// パラメータ編集専用のため、削除・リネームなどの操作ボタンは持たない。
-    /// slotIdx が -1 の場合は基本情報セクション。
+    /// ヘッダー行（▼/▶ + アイコン + タイトル + 削除×）と折り畳み可能なコンテンツエリアを持つ。
+    /// コンポーネント一覧廃止に伴い、選択・リネーム（タイトルのダブルクリック）・削除（×ボタン）・
+    /// 複製（右クリックメニュー）はすべてこのヘッダーが担う。slotIdx が -1 の場合は基本情報セクションで、
+    /// これらの操作は無効（isComponentSlot=false）。
     /// </summary>
     private StackPanel BuildAccordionSection(string title, string typeId, UIElement content, int slotIdx)
     {
@@ -718,11 +732,17 @@ public partial class InspectorPanel : UserControl
         var isComponentSlot = slotIdx >= 0 && !string.IsNullOrEmpty(typeId);
         var headerBgColor   = isComponentSlot ? GetTypeHeaderColor(typeId) : Color.FromRgb(0x2A, 0x2A, 0x2A);
 
+        // 選択ハイライト用のデフォルト/選択時の枠線（コンポーネント一覧のチップと同じ配色を踏襲）
+        var defaultBorderBrush = new SolidColorBrush(Color.FromRgb(0x3F, 0x3F, 0x46));
+        var selectedBorderBrush = new SolidColorBrush(Color.FromRgb(0x33, 0x99, 0xFF));
+        var defaultBorderThickness = new Thickness(0, 0, 0, 1);
+        var selectedBorderThickness = new Thickness(2);
+
         var header = new Border
         {
             Background      = new SolidColorBrush(headerBgColor),
-            BorderBrush     = new SolidColorBrush(Color.FromRgb(0x3F, 0x3F, 0x46)),
-            BorderThickness = new Thickness(0, 0, 0, 1),
+            BorderBrush     = isComponentSlot && slotIdx == _selectedSlotIdx ? selectedBorderBrush : defaultBorderBrush,
+            BorderThickness = isComponentSlot && slotIdx == _selectedSlotIdx ? selectedBorderThickness : defaultBorderThickness,
             Padding         = new Thickness(6, 6, 6, 6),
             Cursor          = Cursors.Hand,
         };
@@ -732,6 +752,7 @@ public partial class InspectorPanel : UserControl
         headerGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });                      // 有効チェックボックス
         headerGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });                      // アイコン
         headerGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) }); // タイトル
+        headerGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });                      // 削除×ボタン
 
         // 矢印（展開/折り畳みインジケータ）
         var arrow = new TextBlock
@@ -806,6 +827,34 @@ public partial class InspectorPanel : UserControl
             headerGrid.Children.Add(enableChk);
         }
 
+        // ── 削除×ボタン（旧コンポーネント一覧チップの削除機能を移設。コンポーネントスロットのみ）──
+        if (isComponentSlot)
+        {
+            var removeBtn = new TextBlock
+            {
+                Text              = "✕",
+                Foreground        = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)),
+                FontSize          = 10,
+                VerticalAlignment = VerticalAlignment.Center,
+                Cursor            = Cursors.Hand,
+                Padding           = new Thickness(6, 0, 0, 0),
+                ToolTip           = "コンポーネントを削除",
+            };
+            removeBtn.MouseEnter += (_, _) =>
+                removeBtn.Foreground = new SolidColorBrush(Color.FromRgb(0xFF, 0x66, 0x66));
+            removeBtn.MouseLeave += (_, _) =>
+                removeBtn.Foreground = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC));
+            removeBtn.MouseLeftButtonDown += (_, e) =>
+            {
+                // 開閉トグルへ伝播させない（削除操作を折り畳みと混同しないため）
+                e.Handled = true;
+                if (_currentActorId >= 0)
+                    _runtime?.SendToRuntime($"REMOVE_COMPONENT:{_currentActorId},{slotIdx}");
+            };
+            Grid.SetColumn(removeBtn, 4);
+            headerGrid.Children.Add(removeBtn);
+        }
+
         header.Child = headerGrid;
 
         // ── コンテンツラッパー（左インデント）────────────────────
@@ -817,16 +866,54 @@ public partial class InspectorPanel : UserControl
             Child           = content,
         };
 
-        // ヘッダークリックで展開/折り畳みトグル
-        header.MouseLeftButtonDown += (_, _) =>
+        // ヘッダークリックで開閉トグル + コンポーネントスロットなら選択も更新する。
+        // ダブルクリック（e.ClickCount==2）の場合は直前の1クリック目で走った開閉トグルを
+        // 打ち消してからリネームを開始する（開閉とリネームが同時発火しないようにするため）。
+        header.MouseLeftButtonDown += (_, e) =>
         {
+            if (isComponentSlot && e.ClickCount == 2)
+            {
+                isExpanded = !isExpanded;
+                contentWrapper.Visibility = isExpanded ? Visibility.Visible : Visibility.Collapsed;
+                arrow.Text = isExpanded ? "▼" : "▶";
+                StartComponentRename(slotIdx, title);
+                e.Handled = true;
+                return;
+            }
+
+            if (isComponentSlot)
+            {
+                _selectedSlotIdx = slotIdx;
+                RefreshAccordionSelection();
+            }
+
             isExpanded = !isExpanded;
             contentWrapper.Visibility = isExpanded ? Visibility.Visible : Visibility.Collapsed;
             arrow.Text = isExpanded ? "▼" : "▶";
         };
 
+        // 右クリックで削除・複製・リネーム・コピー/貼り付けの操作メニューを表示する
+        if (isComponentSlot)
+        {
+            header.MouseRightButtonDown += (_, e) =>
+            {
+                _selectedSlotIdx = slotIdx;
+                RefreshAccordionSelection();
+                ShowComponentContextMenu(header, slotIdx, title);
+                e.Handled = true;
+            };
+        }
+
         container.Children.Add(header);
         container.Children.Add(contentWrapper);
+
+        // ヘッダー要素を辞書へ登録し、外部（複製直後の自動リネーム等）から参照できるようにする
+        if (isComponentSlot)
+            _accordionHeaders[slotIdx] = new AccordionHeaderRefs
+            {
+                Header = header, HeaderGrid = headerGrid, TitleBlock = titleBlock, ComponentName = title,
+            };
+
         return container;
     }
 
@@ -3724,111 +3811,27 @@ public partial class InspectorPanel : UserControl
         _runtime?.SendToRuntime($"SET_MODEL_PATH:{_currentActorId},{slotIdx},{path}");
     }
 
-    private Border BuildComponentChip(int slotIdx, string name, string typeName)
+    /// <summary>
+    /// アコーディオンヘッダーの選択ハイライト（枠線）を、現在の _selectedSlotIdx に合わせて全ヘッダーへ反映する。
+    /// 旧コンポーネント一覧チップの RefreshChipSelection 相当。
+    /// </summary>
+    private void RefreshAccordionSelection()
     {
-        var isSelected = slotIdx == _selectedSlotIdx;
-
-        var chip = new Border
+        var selectedBrush = new SolidColorBrush(Color.FromRgb(0x33, 0x99, 0xFF));
+        var defaultBrush  = new SolidColorBrush(Color.FromRgb(0x3F, 0x3F, 0x46));
+        foreach (var (slotIdx, refs) in _accordionHeaders)
         {
-            Background      = isSelected
-                ? new SolidColorBrush(Color.FromRgb(0x1A, 0x2A, 0x3A))
-                : new SolidColorBrush(Color.FromRgb(0x25, 0x25, 0x25)),
-            BorderBrush     = isSelected
-                ? new SolidColorBrush(Color.FromRgb(0x33, 0x99, 0xFF))
-                : new SolidColorBrush(Color.FromRgb(0x3F, 0x3F, 0x46)),
-            BorderThickness = new Thickness(1),
-            CornerRadius    = new CornerRadius(3),
-            Margin          = new Thickness(4, 2, 4, 2),
-            Padding         = new Thickness(6, 4, 6, 4),
-            Cursor          = Cursors.Hand,
-            Tag             = slotIdx,
-        };
-
-        var grid = new Grid();
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-
-        var typeIcon = new TextBlock
-        {
-            Text              = typeName == "ModelComponent" ? "◈" : "⬡",
-            Foreground        = new SolidColorBrush(Color.FromRgb(0x55, 0xAA, 0xFF)),
-            FontSize          = 10,
-            VerticalAlignment = VerticalAlignment.Center,
-            Margin            = new Thickness(0, 0, 4, 0),
-        };
-
-        var nameBlock = new TextBlock
-        {
-            Text              = name,
-            Foreground        = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)),
-            FontSize          = 12,
-            VerticalAlignment = VerticalAlignment.Center,
-        };
-
-        var innerStack = new StackPanel { Orientation = Orientation.Horizontal };
-        innerStack.Children.Add(typeIcon);
-        innerStack.Children.Add(nameBlock);
-        Grid.SetColumn(innerStack, 0);
-        grid.Children.Add(innerStack);
-
-        var removeBtn = new TextBlock
-        {
-            Text              = "✕",
-            Foreground        = new SolidColorBrush(Color.FromRgb(0x66, 0x66, 0x66)),
-            FontSize          = 9,
-            VerticalAlignment = VerticalAlignment.Center,
-            Cursor            = Cursors.Hand,
-            Padding           = new Thickness(4, 2, 0, 2),
-            Tag               = slotIdx,
-        };
-        removeBtn.MouseEnter += (_, _) =>
-            removeBtn.Foreground = new SolidColorBrush(Color.FromRgb(0xFF, 0x66, 0x66));
-        removeBtn.MouseLeave += (_, _) =>
-            removeBtn.Foreground = new SolidColorBrush(Color.FromRgb(0x66, 0x66, 0x66));
-        removeBtn.MouseLeftButtonDown += (_, e) =>
-        {
-            e.Handled = true;
-            if (_currentActorId >= 0)
-                _runtime?.SendToRuntime($"REMOVE_COMPONENT:{_currentActorId},{slotIdx}");
-        };
-        Grid.SetColumn(removeBtn, 1);
-        grid.Children.Add(removeBtn);
-
-        chip.Child = grid;
-
-        chip.MouseLeftButtonDown += (_, _) =>
-        {
-            _selectedSlotIdx = slotIdx;
-            RefreshChipSelection();
-        };
-
-        chip.MouseRightButtonDown += (_, e) =>
-        {
-            _selectedSlotIdx = slotIdx;
-            RefreshChipSelection();
-            ShowComponentChipContextMenu(chip, slotIdx, name);
-            e.Handled = true;
-        };
-
-        return chip;
-    }
-
-    private void RefreshChipSelection()
-    {
-        foreach (var child in ComponentListStack.Children)
-        {
-            if (child is not Border b || b.Tag is not int idx) continue;
-            bool sel     = idx == _selectedSlotIdx;
-            b.Background  = sel
-                ? new SolidColorBrush(Color.FromRgb(0x1A, 0x2A, 0x3A))
-                : new SolidColorBrush(Color.FromRgb(0x25, 0x25, 0x25));
-            b.BorderBrush = sel
-                ? new SolidColorBrush(Color.FromRgb(0x33, 0x99, 0xFF))
-                : new SolidColorBrush(Color.FromRgb(0x3F, 0x3F, 0x46));
+            var sel = slotIdx == _selectedSlotIdx;
+            refs.Header.BorderBrush     = sel ? selectedBrush : defaultBrush;
+            refs.Header.BorderThickness = sel ? new Thickness(2) : new Thickness(0, 0, 0, 1);
         }
     }
 
-    private void ShowComponentChipContextMenu(UIElement target, int slotIdx, string currentName)
+    /// <summary>
+    /// アコーディオンヘッダーの右クリックメニュー（リネーム・複製・削除・コピー/貼り付け）を表示する。
+    /// 旧コンポーネント一覧チップの ShowComponentChipContextMenu 相当。
+    /// </summary>
+    private void ShowComponentContextMenu(UIElement target, int slotIdx, string currentName)
     {
         var menu = new ContextMenu
         {
@@ -3852,23 +3855,14 @@ public partial class InspectorPanel : UserControl
         menu.Items.Add(MakeItem("リネーム", new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)),
             (_, _) => StartComponentRename(slotIdx, currentName)));
         menu.Items.Add(MakeItem("複製", new SolidColorBrush(Color.FromRgb(0xAA, 0xDD, 0xAA)),
-            (_, _) =>
-            {
-                if (_currentActorId < 0) return;
-                // CanvasComponent は 1 アクターにつき 1 つのみ許可する
-                var srcInfo = _slotInfos.FirstOrDefault(s => s.SlotIdx == slotIdx);
-                if (srcInfo?.TypeId == "CanvasComponent" &&
-                    _slotInfos.Any(s => s.TypeId == "CanvasComponent"))
-                {
-                    MessageBox.Show(
-                        "CanvasComponent は 1 アクターにつき 1 つのみ追加できます。",
-                        "追加不可", MessageBoxButton.OK, MessageBoxImage.Warning);
-                    return;
-                }
-                _pendingDuplicateRename   = true;
-                _pendingDuplicateBaseName = currentName;
-                _runtime?.SendToRuntime($"DUPLICATE_COMPONENT:{_currentActorId},{slotIdx}");
-            }));
+            (_, _) => DuplicateComponentSlot(slotIdx, currentName)));
+        menu.Items.Add(new Separator());
+        menu.Items.Add(MakeItem("コピー", new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)),
+            (_, _) => _copiedSlot = _slotInfos.FirstOrDefault(s => s.SlotIdx == slotIdx)));
+        var pasteItem = MakeItem("貼り付け", new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)),
+            (_, _) => PasteCopiedComponentSlot());
+        pasteItem.IsEnabled = _copiedSlot != null;
+        menu.Items.Add(pasteItem);
         menu.Items.Add(new Separator());
         menu.Items.Add(MakeItem("削除", new SolidColorBrush(Color.FromRgb(0xFF, 0x66, 0x66)),
             (_, _) =>
@@ -3882,67 +3876,98 @@ public partial class InspectorPanel : UserControl
         menu.IsOpen          = true;
     }
 
+    /// <summary>
+    /// 指定スロットを複製する（CanvasComponent は 1 アクターにつき 1 つのみのガード付き）。
+    /// 複製直後は BuildActorComponentList 側で新スロットを検出し、自動でリネームモードへ入る。
+    /// </summary>
+    private void DuplicateComponentSlot(int slotIdx, string currentName)
+    {
+        if (_currentActorId < 0) return;
+        // CanvasComponent は 1 アクターにつき 1 つのみ許可する
+        var srcInfo = _slotInfos.FirstOrDefault(s => s.SlotIdx == slotIdx);
+        if (srcInfo?.TypeId == "CanvasComponent" &&
+            _slotInfos.Any(s => s.TypeId == "CanvasComponent"))
+        {
+            MessageBox.Show(
+                "CanvasComponent は 1 アクターにつき 1 つのみ追加できます。",
+                "追加不可", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+        _pendingDuplicateRename   = true;
+        _pendingDuplicateBaseName = currentName;
+        _runtime?.SendToRuntime($"DUPLICATE_COMPONENT:{_currentActorId},{slotIdx}");
+    }
+
+    /// <summary>
+    /// _copiedSlot（Ctrl+C またはヘッダーメニューの「コピー」でコピーされたスロット）を複製として貼り付ける。
+    /// Ctrl+V とヘッダーメニュー「貼り付け」の共通処理。
+    /// </summary>
+    private void PasteCopiedComponentSlot()
+    {
+        if (_copiedSlot is null || _currentActorId < 0) return;
+        DuplicateComponentSlot(_copiedSlot.SlotIdx, _copiedSlot.Name);
+    }
+
     /// <param name="currentName">Runtime 上の現在の名前（変更判定の基準値）。</param>
     /// <param name="initialText">TextBox に初期表示するテキスト。null のとき currentName を使う。</param>
     private void StartComponentRename(int slotIdx, string currentName, string? initialText = null)
     {
-        // 該当チップを TextBox に差し替える
-        foreach (var child in ComponentListStack.Children)
+        // 該当スロットのアコーディオンヘッダーを特定し、タイトル部分（headerGrid の列3）を TextBox に差し替える
+        if (!_accordionHeaders.TryGetValue(slotIdx, out var refs)) return;
+
+        var committed = false;
+        var tb = new TextBox
         {
-            if (child is not Border b || b.Tag is not int idx || idx != slotIdx) continue;
+            // initialText が指定されていれば TextBox にはそちらを表示する。
+            // 変更判定（RENAME_COMPONENT を送るかどうか）は currentName との比較で行う。
+            Text              = initialText ?? currentName,
+            Background        = new SolidColorBrush(Color.FromRgb(0x2D, 0x2D, 0x2D)),
+            Foreground        = Brushes.White,
+            CaretBrush        = Brushes.White,
+            BorderBrush       = new SolidColorBrush(Color.FromRgb(0x33, 0x99, 0xFF)),
+            BorderThickness   = new Thickness(1),
+            Padding           = new Thickness(4, 2, 4, 2),
+            FontSize          = 12,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        Grid.SetColumn(tb, 3);
 
-            var committed = false;
-            var tb = new TextBox
+        void Commit()
+        {
+            if (committed) return;
+            committed = true;
+            var newName = tb.Text.Trim();
+            if (!string.IsNullOrEmpty(newName) && newName != currentName && _currentActorId >= 0)
             {
-                // initialText が指定されていれば TextBox にはそちらを表示する。
-                // 変更判定（RENAME_COMPONENT_SLOT を送るかどうか）は currentName との比較で行う。
-                Text              = initialText ?? currentName,
-                Background        = new SolidColorBrush(Color.FromRgb(0x2D, 0x2D, 0x2D)),
-                Foreground        = Brushes.White,
-                CaretBrush        = Brushes.White,
-                BorderBrush       = new SolidColorBrush(Color.FromRgb(0x33, 0x99, 0xFF)),
-                BorderThickness   = new Thickness(1),
-                Padding           = new Thickness(4, 3, 4, 3),
-                FontSize          = 12,
-                Margin            = new Thickness(4, 2, 4, 2),
-                VerticalAlignment = VerticalAlignment.Center,
-            };
-
-            void Commit()
-            {
-                if (committed) return;
-                committed = true;
-                var newName = tb.Text.Trim();
-                if (!string.IsNullOrEmpty(newName) && newName != currentName && _currentActorId >= 0)
-                {
-                    // Rust パーサーは "RENAME_COMPONENT:" プレフィックスで処理する。
-                    // "_SLOT" を付けると先頭一致で誤マッチするが数値パースが失敗しコマンドが破棄される。
-                    _runtime?.SendToRuntime($"RENAME_COMPONENT:{_currentActorId},{slotIdx},{newName}");
-                }
-                else if (_currentActorId >= 0)
-                {
-                    // 名前変更なし（キャンセルと同等）: GET で UI をリフレッシュしてチップを復元する。
-                    _runtime?.SendToRuntime($"GET_ACTOR_COMPONENTS:{_currentActorId}");
-                }
+                // Rust パーサーは "RENAME_COMPONENT:" プレフィックスで処理する。
+                // "_SLOT" を付けると先頭一致で誤マッチするが数値パースが失敗しコマンドが破棄される。
+                // 成功後はランタイムから ACTOR_COMPONENTS が再送されアコーディオン全体が再構築されるため、
+                // ここでヘッダーを手動で元に戻す必要はない。
+                _runtime?.SendToRuntime($"RENAME_COMPONENT:{_currentActorId},{slotIdx},{newName}");
             }
-
-            tb.PreviewKeyDown += (_, e) =>
+            else if (_currentActorId >= 0)
             {
-                if (e.Key is Key.Return or Key.Enter) { Commit(); e.Handled = true; }
-                else if (e.Key == Key.Escape)
-                {
-                    committed = true;
-                    e.Handled = true;
-                    if (_currentActorId >= 0) _runtime?.SendToRuntime($"GET_ACTOR_COMPONENTS:{_currentActorId}");
-                }
-            };
-            tb.LostFocus += (_, _) => Commit();
-
-            b.Child = tb;
-            Dispatcher.BeginInvoke(() => { tb.Focus(); tb.SelectAll(); },
-                System.Windows.Threading.DispatcherPriority.Input);
-            return;
+                // 名前変更なし（キャンセルと同等）: GET で UI をリフレッシュしてヘッダーを復元する。
+                _runtime?.SendToRuntime($"GET_ACTOR_COMPONENTS:{_currentActorId}");
+            }
         }
+
+        tb.PreviewKeyDown += (_, e) =>
+        {
+            if (e.Key is Key.Return or Key.Enter) { Commit(); e.Handled = true; }
+            else if (e.Key == Key.Escape)
+            {
+                committed = true;
+                e.Handled = true;
+                if (_currentActorId >= 0) _runtime?.SendToRuntime($"GET_ACTOR_COMPONENTS:{_currentActorId}");
+            }
+        };
+        tb.LostFocus += (_, _) => Commit();
+
+        refs.HeaderGrid.Children.Remove(refs.TitleBlock);
+        refs.HeaderGrid.Children.Add(tb);
+        Dispatcher.BeginInvoke(() => { tb.Focus(); tb.SelectAll(); },
+            System.Windows.Threading.DispatcherPriority.Input);
     }
 
     // ── Add Component (actor edit mode) ─────────────────────
@@ -3980,19 +4005,7 @@ public partial class InspectorPanel : UserControl
         {
             if (_copiedSlot != null)
             {
-                // CanvasComponent は 1 アクターにつき 1 つのみ許可する
-                if (_copiedSlot.TypeId == "CanvasComponent" &&
-                    _slotInfos.Any(s => s.TypeId == "CanvasComponent"))
-                {
-                    MessageBox.Show(
-                        "CanvasComponent は 1 アクターにつき 1 つのみ追加できます。",
-                        "追加不可", MessageBoxButton.OK, MessageBoxImage.Warning);
-                    e.Handled = true;
-                    return;
-                }
-                _pendingDuplicateRename   = true;
-                _pendingDuplicateBaseName = _copiedSlot.Name;
-                _runtime?.SendToRuntime($"DUPLICATE_COMPONENT:{_currentActorId},{_copiedSlot.SlotIdx}");
+                PasteCopiedComponentSlot();
                 e.Handled = true;
             }
         }
