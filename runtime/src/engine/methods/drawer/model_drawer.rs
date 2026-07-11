@@ -25,7 +25,6 @@ pub fn draw_model_indirect<'pass>(
     batch:       &'pass InstancedModelBatch,
     camera_bg:   &'pass wgpu::BindGroup,
     lights_bg:   &'pass wgpu::BindGroup,
-    shadow_bg:   &'pass wgpu::BindGroup,
     pipelines:   &'pass DrawPipelines,
 ) {
     if batch.n_prims == 0 { return; }
@@ -73,15 +72,12 @@ pub fn draw_model_indirect<'pass>(
                     render_pass.set_bind_group(3, &pipelines.mesh.empty_bg3, &[]);
                 }
                 render_pass.set_bind_group(0, camera_bg, &[]);
-                // group 4: ライト（storage 配列 + メタ）。パイプライン切り替えで
-                // group 3 のレイアウトが変わると group 4 も無効化されるため、
-                // camera と同様にパイプライン切り替えのたびに再設定する。
+                // group 4: ライト＋シャドウ複合（lights storage + メタ + CSM/スポット
+                // 深度配列 + 比較サンプラー + シャドウ行列 UBO）。max_bind_groups=5 の
+                // デバイス対応のため group 5 は新設せず group 4 へ同居させている。
+                // パイプライン切り替えで group 3 のレイアウトが変わると group 4 も
+                // 無効化されるため、camera と同様に切り替えのたびに再設定する。
                 render_pass.set_bind_group(4, lights_bg, &[]);
-                // group 5: シャドウ（深度配列 + 比較サンプラー + 行列 UBO, Phase R2）。
-                // mesh/skinned 両パイプラインとも group 5 をレイアウトに持つため、
-                // group 4 同様パイプライン切り替えのたびに必ず再設定する
-                // （未設定のまま draw すると "expects a BindGroup at index 5" で検証クラッシュ）。
-                render_pass.set_bind_group(5, shadow_bg, &[]);
                 cur_skinned = Some(draw.is_skinned);
                 cur_mat_ptr = None;
             }

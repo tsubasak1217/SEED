@@ -70,7 +70,8 @@ pub struct DrawContext {
     pub light_buffer:     LightBuffer,
     /// シャドウ用 GPU リソース一式（Phase R2）。
     /// 毎フレーム prepare_frame でシャドウ行列を更新し、record で深度パスを記録する。
-    /// group 5 の bind group を全メッシュ描画で共用する。
+    /// サンプリング用資源は light_buffer.bind_group（group 4 複合 BG の binding 2〜5）
+    /// 経由で全メッシュ描画に共用される。
     pub shadow:           ShadowResources,
     /// パス → 解析済み CPU モデルのキャッシュ。
     /// 同じパスのモデルを繰り返し build_actor/rebuild するときにディスク読み込みとパースを省く。
@@ -90,16 +91,13 @@ impl DrawContext {
     ) -> Self {
         let pipelines = DrawPipelines::new(&device, &queue, surface_format, depth_format, cache);
         let defaults  = DefaultTex::new(&device, &queue);
-        // ライトバッファは mesh パイプラインの group 4 レイアウトから生成する
-        // （skinned_mesh とレイアウト互換のため両パイプラインで共用できる）。
-        let light_buffer = LightBuffer::new(&device, &pipelines.mesh.lights_bgl);
-        // シャドウリソースは mesh パイプラインの group 0（camera）と group 5（shadow）
-        // レイアウトから生成する（skinned とレイアウト互換のため両パイプラインで共用）。
-        let shadow = ShadowResources::new(
-            &device,
-            &pipelines.mesh.camera_bgl,
-            &pipelines.mesh.shadow_bgl,
-        );
+        // シャドウリソース（深度配列・比較サンプラー・シャドウ行列 UBO）を先に生成し、
+        // ライトバッファが group 4 の複合 BindGroup（ライト binding 0/1 ＋
+        // シャドウ binding 2〜5）を構築する際に参照させる。
+        // max_bind_groups=5（group 0〜4）のデバイスがあるため group 5 は使わない。
+        // レイアウトは mesh パイプライン由来（skinned とレイアウト互換のため共用）。
+        let shadow       = ShadowResources::new(&device, &pipelines.mesh.camera_bgl);
+        let light_buffer = LightBuffer::new(&device, &pipelines.mesh.lights_bgl, &shadow);
         Self {
             device,
             queue,

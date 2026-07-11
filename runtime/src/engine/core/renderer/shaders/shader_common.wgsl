@@ -54,11 +54,15 @@ struct MaterialUniform {
 @group(2) @binding(9)  var          t_emissive:           texture_2d<f32>;
 @group(2) @binding(10) var          s_emissive:           sampler;
 
-// ─── Group 4: ライト ──────────────────────────────────────────
+// ─── Group 4: ライト（binding 0/1）＋シャドウ（binding 2〜5）───
 //
 // storage buffer に全ライト（最大 MAX_LIGHTS）を格納し、
 // uniform（u_light_meta.count）で有効ライト数を渡す。
 // フラグメントシェーダのライトループがこの配列を count 件だけ走査する。
+//
+// binding 2〜5 は Phase R2 のシャドウ資源（shadow.wgsl で宣言）。
+// デバイスの max_bind_groups=5（group 0〜4）環境があるため group 5 は新設せず、
+// シャドウを本グループへ同居させている（Rust 側の複合 BindGroup は lighting.rs）。
 //
 // GpuLight のレイアウトは Rust 側 lighting.rs の repr(C) 構造体と
 // 厳密に一致させること（vec3 は 16 バイト境界、合計 96 バイト）。

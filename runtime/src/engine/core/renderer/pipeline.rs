@@ -39,11 +39,10 @@ pub struct MeshPipeline {
     pub camera_bgl:   wgpu::BindGroupLayout,
     pub model_bgl:    wgpu::BindGroupLayout,
     pub material_bgl: wgpu::BindGroupLayout,
-    /// group 4: ライト（storage 配列 + メタ uniform）。LightBuffer の bind group 生成に使う。
+    /// group 4: ライト＋シャドウ複合（lights storage + メタ + CSM/スポット深度配列 +
+    /// 比較サンプラー + シャドウ行列 UBO）。LightBuffer の複合 bind group 生成に使う。
+    /// max_bind_groups=5（group 0〜4）のデバイスがあるため group 5 は新設しない（Phase R2）。
     pub lights_bgl:   wgpu::BindGroupLayout,
-    /// group 5: シャドウ（深度配列 ×2 + 比較サンプラー + 行列 UBO）。
-    /// ShadowResources の group 5 bind group 生成に使う（skinned とレイアウト互換）。
-    pub shadow_bgl:   wgpu::BindGroupLayout,
     /// group 3 用の空 BindGroup。
     ///
     /// mesh パイプラインは fragment が group 4（ライト）を参照する都合で
@@ -62,16 +61,16 @@ impl MeshPipeline {
                 .with_label("mesh_pbr")
                 .with_cache(cache)
                 .build(get_shader_source);
-        // group 番号順 (0, 1, 2, 3=gap, 4=lights, 5=shadow) にイテレートして取り出す。
-        // fragment の group 4/5 参照によりレイアウトは 6 グループになり、
+        // group 番号順 (0, 1, 2, 3=gap, 4=lights+shadow) にイテレートして取り出す。
+        // fragment の group 4 参照によりレイアウトは 5 グループになり、
         // group 3 はスキンなしメッシュでは空の gap BGL になる。
+        // ※ シャドウ資源は group 4 の binding 2〜5 に同居（group 5 は新設しない）。
         let mut it = bgls.into_iter();
         let camera_bgl   = it.next().unwrap(); // group 0
         let model_bgl    = it.next().unwrap(); // group 1
         let material_bgl = it.next().unwrap(); // group 2
         let gap_bgl      = it.next().unwrap(); // group 3（空レイアウト）
-        let lights_bgl   = it.next().unwrap(); // group 4
-        let shadow_bgl   = it.next().unwrap(); // group 5
+        let lights_bgl   = it.next().unwrap(); // group 4（ライト＋シャドウ複合）
 
         // group 3 の空 BindGroup を 1 個だけ生成して保持する（draw 時の必須セット用）。
         let empty_bg3 = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -80,7 +79,7 @@ impl MeshPipeline {
             entries: &[],
         });
 
-        Self { pipeline, camera_bgl, model_bgl, material_bgl, lights_bgl, shadow_bgl, empty_bg3 }
+        Self { pipeline, camera_bgl, model_bgl, material_bgl, lights_bgl, empty_bg3 }
     }
 }
 
@@ -103,14 +102,13 @@ impl SkinnedMeshPipeline {
                 .with_label("skinned_mesh_pbr")
                 .with_cache(cache)
                 .build(get_shader_source);
-        // group 番号順 (0, 1, 2, 3=joints, 4=lights, 5=shadow) にイテレートして取り出す
+        // group 番号順 (0, 1, 2, 3=joints, 4=lights+shadow) にイテレートして取り出す
         let mut it = bgls.into_iter();
         let camera_bgl   = it.next().unwrap(); // group 0
         let model_bgl    = it.next().unwrap(); // group 1
         let material_bgl = it.next().unwrap(); // group 2
         let joint_bgl    = it.next().unwrap(); // group 3
         let _lights_bgl  = it.next().unwrap(); // group 4（LightBuffer は mesh 側 BGL で生成し共用）
-        let _shadow_bgl  = it.next().unwrap(); // group 5（ShadowResources は mesh 側 BGL で生成し共用）
         Self { pipeline, camera_bgl, model_bgl, material_bgl, joint_bgl }
     }
 }

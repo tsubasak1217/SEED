@@ -1235,7 +1235,6 @@ impl App {
                                         &mut preview_pass, gpu, &sd.batch,
                                         &preview_mesh_cam_buf.bind_group,
                                         &draw_ctx.light_buffer.bind_group,
-                                        &draw_ctx.shadow.group5_bg,
                                         &draw_ctx.pipelines,
                                     );
                                 }
@@ -2548,8 +2547,9 @@ impl App {
                         // Edit モード: アクター編集タブ・2D シーンビューは紺色、通常はダークグレー
                         // ── シャドウ深度パス（Phase R2, メインパス直前）──────────────
                         // skin compute（joints 書き込み済み）後・メインパス前に、各カスケード/
-                        // スポットへシャドウキャスターの深度を描画する。メインパスが group 5 で
-                        // この深度をサンプルする。キャスターが無ければ 0 コストでスキップ。
+                        // スポットへシャドウキャスターの深度を描画する。メインパスは group 4
+                        // 複合 BG（binding 2〜5）経由でこの深度をサンプルする。
+                        // キャスターが無ければ 0 コストでスキップ。
                         if shadow_plan.any() {
                             let shadow_casters: Vec<(
                                 &crate::engine::methods::drawer::GpuModel,
@@ -2653,7 +2653,6 @@ impl App {
                                     draw_model_indirect(
                                         &mut pass, gpu, &sd.batch,
                                         &camera_buf.bind_group, &draw_ctx.light_buffer.bind_group,
-                                        &draw_ctx.shadow.group5_bg,
                                         &draw_ctx.pipelines,
                                     );
                                 }
@@ -2958,7 +2957,6 @@ impl App {
                                 draw_model_indirect(
                                     &mut pass, &gizmo.gpu_model, &gizmo.batch,
                                     &camera_buf.bind_group, &draw_ctx.light_buffer.bind_group,
-                                    &draw_ctx.shadow.group5_bg,
                                     &draw_ctx.pipelines,
                                 );
                             }

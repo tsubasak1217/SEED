@@ -117,7 +117,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // group 4 の storage 配列を u_light_meta.count 件だけ走査して加算する。
     var Lo = vec3<f32>(0.0);
     let light_count = min(u_light_meta.count, arrayLength(&u_lights));
-    // シャドウ（group 5）用: フラグメントのビュー空間深度（正）をカスケード選択に使う。
+    // シャドウ（group 4 binding 2〜5, shadow.wgsl）用: ビュー空間深度（正）をカスケード選択に使う。
     // u_camera.view は列優先アップロード済みのため view*world で正しくビュー座標になる。
     let view_z = (u_camera.view * vec4<f32>(in.world_pos, 1.0)).z;
     for (var i: u32 = 0u; i < light_count; i = i + 1u) {
@@ -169,7 +169,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             radiance       = base_col * distance_attenuation(dist, light.range) * facing;
         }
 
-        // ── シャドウ減衰（group 5）────────────────────────────
+        // ── シャドウ減衰（group 4 binding 2〜5, shadow.wgsl）──
         // shadow_index < 0 のライトは影計算をスキップ（cast_shadows=false 含む）。
         // 方向光は CSM、スポットは自身のマップを PCF 3x3 でサンプルして減衰する。
         // point/rect の影は R2 対象外（TODO: R8 RT 影 or キューブマップ）。

@@ -47,13 +47,17 @@
 #### 実装メモ（2026-07, 実機検証待ち）
 - リソース: `renderer/shadow.rs`（`ShadowResources`）。CSM=Depth32Float Texture2DArray（2048×3レイヤ,
   `CSM_CASCADE_COUNT=3`/`SHADOW_MAP_SIZE=2048`）、スポット=Depth32Float Texture2DArray
-  （1024×4レイヤ, `SPOT_SHADOW_SIZE=1024`/`MAX_SHADOW_SPOTS=4`）。group5=深度配列×2＋比較サンプラー
-  （LessEqual）＋`ShadowMatricesUbo`（cascade_vp×3＋spot_vp×4＋分割距離＋params）。
+  （1024×4レイヤ, `SPOT_SHADOW_SIZE=1024`/`MAX_SHADOW_SPOTS=4`）。
+- バインディング: **group4 にライトと同居**（binding 0=lights, 1=meta, 2=CSM深度配列,
+  3=スポット深度配列, 4=比較サンプラー(LessEqual), 5=`ShadowMatricesUbo`）。
+  max_bind_groups=5（group0〜4）のデバイスが実在するため group5 は新設しない
+  （当初の group5 実装は実機で起動不能→group4 統合で修正済み）。複合BGは `LightBuffer::new` が
+  起動時1回生成。pipeline_config.rs に「グループ数≦デバイスリミット」の起動時アサートを追加（再発防止）。
 - シャドウパス: 死蔵の depth_prepass.wgsl を流用（`ShadowDepthPipelines`, `shadow_depth_*.toml`）。
   skin compute 後・メインパス直前に各カスケード/スポットレイヤへ深度専用描画。
   シャドウ用 view-proj はレイヤごとに専用 `CameraBuffer`（group0）へアップロード。
 - CSM: practical split（`CSM_SPLIT_LAMBDA=0.5`）＋バウンディング球タイト正射＋テクセルスナップ。
-- シェーディング: `shadow.wgsl`（group5）で方向光=カスケード選択→PCF3x3、スポット=PCF3x3。
+- シェーディング: `shadow.wgsl`（group4 binding2〜5）で方向光=カスケード選択→PCF3x3、スポット=PCF3x3。
   slope-scaled 深度バイアス（`shadow_depth_*.toml` の `depth_bias_*`）＋シェーダ定数バイアス併用。
   影付きは「最初の cast_shadows=true な方向光1灯」＋スポット最大4。`GpuLight.shadow_index` で結線。
 - cast_shadows: `ModelComponent.cast_shadows`（既定true, インスペクタ「影を落とす」チェック）。

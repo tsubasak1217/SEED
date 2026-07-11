@@ -1,5 +1,5 @@
 // ============================================================
-// shadow.wgsl  —  シャドウマップ サンプリング（group 5）
+// shadow.wgsl  —  シャドウマップ サンプリング（group 4 の binding 2〜5）
 //
 // Phase R2: 方向光 CSM（3 カスケード）＋ スポット（最大 4）の
 // 深度シャドウマップを PCF 3x3 でサンプルし、可視率 [0,1] を返す。
@@ -8,12 +8,17 @@
 // shader_common.wgsl と shader_fragment.wgsl の間に連結され、
 // PBR フラグメントシェーダのライトループから呼ばれる。
 //
-// 【バインドグループ】group 5（mesh / skinned_mesh 共通）
-//   binding 0: texture_depth_2d_array  方向光 CSM（CSM_CASCADE_COUNT レイヤ）
-//   binding 1: texture_depth_2d_array  スポット（MAX_SHADOW_SPOTS レイヤ）
-//   binding 2: sampler_comparison      比較サンプラー（LessEqual）
-//   binding 3: uniform ShadowMatrices  カスケード/スポットの view-proj と分割距離
-// Rust 側 renderer/shadow.rs の定数・UBO レイアウトと厳密に一致させること。
+// 【バインドグループ】group 4（ライトと同居, mesh / skinned_mesh 共通）
+// デバイスの max_bind_groups は 5（group 0〜4）の環境が存在するため、
+// group 5 を新設せず既存のライト group 4 へシャドウ資源を統合する。
+//   binding 0: array<GpuLight>         （shader_common.wgsl で宣言）
+//   binding 1: LightMeta               （shader_common.wgsl で宣言）
+//   binding 2: texture_depth_2d_array  方向光 CSM（CSM_CASCADE_COUNT レイヤ）
+//   binding 3: texture_depth_2d_array  スポット（MAX_SHADOW_SPOTS レイヤ）
+//   binding 4: sampler_comparison      比較サンプラー（LessEqual）
+//   binding 5: uniform ShadowMatrices  カスケード/スポットの view-proj と分割距離
+// Rust 側 lighting.rs（複合 BindGroup 生成）・shadow.rs（UBO レイアウト）と
+// 厳密に一致させること。
 // ============================================================
 
 // ─── 定数（Rust: renderer/shadow.rs と一致）─────────────────
@@ -46,10 +51,10 @@ struct ShadowMatrices {
     params:         vec4<u32>,
 }
 
-@group(5) @binding(0) var t_shadow_dir:  texture_depth_2d_array;
-@group(5) @binding(1) var t_shadow_spot: texture_depth_2d_array;
-@group(5) @binding(2) var s_shadow_cmp:  sampler_comparison;
-@group(5) @binding(3) var<uniform> u_shadow: ShadowMatrices;
+@group(4) @binding(2) var t_shadow_dir:  texture_depth_2d_array;
+@group(4) @binding(3) var t_shadow_spot: texture_depth_2d_array;
+@group(4) @binding(4) var s_shadow_cmp:  sampler_comparison;
+@group(4) @binding(5) var<uniform> u_shadow: ShadowMatrices;
 
 // ─── PCF 3x3 ────────────────────────────────────────────────
 

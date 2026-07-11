@@ -9,12 +9,21 @@
 //  本モジュールは「CPU 側のライトデータ ↔ GPU バッファ」の橋渡しに徹する。
 //
 //  【バインドグループ】group 4（mesh / skinned_mesh パイプライン共通）
+//  デバイスの max_bind_groups=5（group 0〜4）環境に対応するため、
+//  Phase R2 のシャドウ資源も group 4 へ同居させた複合レイアウトになっている。
 //    binding 0: array<GpuLight>（storage, read）
 //    binding 1: LightMeta（uniform, ライト数）
-//  シェーダの宣言（shader_common.wgsl の group 4）と厳密に一致させること。
+//    binding 2: CSM 深度配列（texture_depth_2d_array, ShadowResources 所有）
+//    binding 3: スポット深度配列（texture_depth_2d_array, ShadowResources 所有）
+//    binding 4: 比較サンプラー（LessEqual, ShadowResources 所有）
+//    binding 5: ShadowMatrices UBO（ShadowResources 所有）
+//  シェーダの宣言（shader_common.wgsl / shadow.wgsl の group 4）と
+//  厳密に一致させること。
 // ============================================================
 
 use wgpu::util::DeviceExt;
+
+use super::shadow::ShadowResources;
 
 /// GPU に送れるライトの最大数。
 ///
@@ -239,13 +248,19 @@ pub struct LightBuffer {
     lights_buffer: wgpu::Buffer,
     /// LightMeta（uniform）。
     meta_buffer:   wgpu::Buffer,
-    /// group 4 の bind group（binding 0 = lights, 1 = meta）。
+    /// group 4 の複合 bind group（binding 0 = lights, 1 = meta,
+    /// 2 = CSM 深度配列, 3 = スポット深度配列, 4 = 比較サンプラー, 5 = シャドウ行列 UBO）。
+    /// ライトバッファもシャドウ資源も生成後不変のため、起動時 1 回だけ生成して使い回す
+    /// （中身の更新は queue.write_buffer / 深度パス描画で行われ、BG 再生成は不要）。
     pub bind_group: wgpu::BindGroup,
 }
 
 impl LightBuffer {
-    /// ライトバッファ一式を生成する。`bgl` は mesh パイプラインの group 4 レイアウト。
-    pub fn new(device: &wgpu::Device, bgl: &wgpu::BindGroupLayout) -> Self {
+    /// ライトバッファ一式と group 4 複合 bind group を生成する。
+    ///
+    /// - `bgl`:    mesh パイプラインの group 4 レイアウト（ライト＋シャドウ複合）。
+    /// - `shadow`: シャドウ資源（binding 2〜5 のビュー・サンプラー・UBO を供給）。
+    pub fn new(device: &wgpu::Device, bgl: &wgpu::BindGroupLayout, shadow: &ShadowResources) -> Self {
         // storage 配列は最初から MAX_LIGHTS 分ゼロ確保する（実行時サイズ変更を避ける）。
         let init_lights = vec![GpuLight::zeroed(); MAX_LIGHTS];
         let lights_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -261,12 +276,18 @@ impl LightBuffer {
             usage:    wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
+        // group 4 複合 BG（ライト binding 0/1 ＋ シャドウ binding 2〜5）。
+        // shadow.wgsl / shader_common.wgsl の group 4 宣言と一致させること。
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label:   Some("Lights BG"),
+            label:   Some("Lights+Shadow BG (group 4)"),
             layout:  bgl,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: lights_buffer.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: meta_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&shadow.dir_array_view) },
+                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&shadow.spot_array_view) },
+                wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::Sampler(&shadow.sampler) },
+                wgpu::BindGroupEntry { binding: 5, resource: shadow.ubo.as_entire_binding() },
             ],
         });
 

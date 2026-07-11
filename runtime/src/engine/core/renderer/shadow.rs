@@ -6,14 +6,18 @@
 //
 //  【役割分担（ECS/単一責任）】
 //    - 本モジュール: シャドウ用 GPU リソース（深度テクスチャ配列・比較サンプラー・
-//      シャドウ行列 UBO・group 5 バインドグループ・カスケード/スポット用シャドウ
-//      カメラバッファ）の確保、カスケード分割＋タイト正射投影＋テクセルスナップの
-//      計算、深度専用シャドウパスの記録。
+//      シャドウ行列 UBO・カスケード/スポット用シャドウカメラバッファ）の確保、
+//      カスケード分割＋タイト正射投影＋テクセルスナップの計算、深度専用シャドウ
+//      パスの記録。
 //    - frame_renderer 側は「カメラ情報とキャスターを渡して prepare_frame → record を
 //      呼ぶ」だけに留める（ロジックは本モジュールへ集約）。
 //
-//  【シェーダ対応】renderer/shaders/shadow.wgsl（group 5）と定数・UBO レイアウトを
-//  厳密に一致させること。フラグメント側の減衰は shader_fragment.wgsl のライトループ。
+//  【バインドグループ】デバイスの max_bind_groups=5（group 0〜4）環境に対応する
+//  ため group 5 は新設せず、シャドウ資源はライトの group 4 の binding 2〜5 に同居
+//  する。複合 BindGroup の生成は lighting.rs（LightBuffer::new）が担う。
+//
+//  【シェーダ対応】renderer/shaders/shadow.wgsl（group 4 binding 2〜5）と定数・UBO
+//  レイアウトを厳密に一致させること。減衰は shader_fragment.wgsl のライトループ。
 //
 //  【R2 の割り切り（TODO）】
 //    - 影付きは「最初の cast_shadows=true な方向光 1 灯」＋スポット最大 4 灯。
@@ -59,7 +63,7 @@ const SPOT_SHADOW_NEAR: f32 = 0.05;
 
 // ─── ShadowMatricesUbo（shadow.wgsl ShadowMatrices と一致）───
 
-/// group 5 binding 3 のシャドウ行列 uniform（std140, 480 bytes）。
+/// group 4 binding 5 のシャドウ行列 uniform（std140, 480 bytes）。
 ///
 /// | offset | field          | size |
 /// |--------|----------------|------|
@@ -108,11 +112,19 @@ pub struct ShadowResources {
     _spot_tex:         wgpu::Texture,
     /// スポットごとの単層ビュー（レンダーターゲット用, D2）。
     spot_layer_views:  Vec<wgpu::TextureView>,
-    /// group 5 バインドグループ（サンプリング用配列ビュー・比較サンプラー・UBO）。
-    /// 深度配列ビュー・サンプラーは本 bind group が保持するため個別フィールドは不要。
-    pub group5_bg:     wgpu::BindGroup,
-    /// シャドウ行列 UBO。
-    ubo:               wgpu::Buffer,
+    // ── group 4 複合 BindGroup（ライト＋シャドウ）生成用の公開リソース ──
+    // max_bind_groups=5（group 0〜4）のデバイスがあるため group 5 は新設せず、
+    // シャドウ資源はライトの group 4（binding 2〜5）へ同居する。複合 BindGroup
+    // 自体は LightBuffer::new が生成する。以下はいずれも生成後不変（シャドウ
+    // マップは固定解像度でリサイズ再生成も無い）ため、BG は起動時 1 回で良い。
+    /// CSM 全レイヤ配列ビュー（group 4 binding 2, サンプリング用）。
+    pub dir_array_view:  wgpu::TextureView,
+    /// スポット全レイヤ配列ビュー（group 4 binding 3, サンプリング用）。
+    pub spot_array_view: wgpu::TextureView,
+    /// 比較サンプラー（group 4 binding 4, LessEqual）。
+    pub sampler:         wgpu::Sampler,
+    /// シャドウ行列 UBO（group 4 binding 5）。
+    pub ubo:             wgpu::Buffer,
     /// カスケードごとのシャドウカメラ（group 0 相当, 深度パスの view-proj）。
     cascade_cams:      Vec<CameraBuffer>,
     /// スポットごとのシャドウカメラ。
@@ -123,11 +135,12 @@ impl ShadowResources {
     /// シャドウリソース一式を生成する。
     ///
     /// - `camera_bgl`: mesh パイプラインの group 0（シャドウカメラ用, 互換）。
-    /// - `shadow_bgl`: mesh パイプラインの group 5（本 bind group 生成用）。
+    ///
+    /// group 4 の複合 BindGroup（ライト＋シャドウ）は本構造体を渡して
+    /// `LightBuffer::new` が生成する（生成順: ShadowResources → LightBuffer）。
     pub fn new(
         device:     &wgpu::Device,
         camera_bgl: &wgpu::BindGroupLayout,
-        shadow_bgl: &wgpu::BindGroupLayout,
     ) -> Self {
         // 深度テクスチャ配列を生成するヘルパー。
         let make_array_tex = |label: &str, size: u32, layers: u32| {
@@ -199,18 +212,6 @@ impl ShadowResources {
             mapped_at_creation: false,
         });
 
-        // group 5 バインドグループ（shadow.wgsl の binding 0..3 と一致）。
-        let group5_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label:   Some("Shadow group5 BG"),
-            layout:  shadow_bgl,
-            entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&dir_array_view) },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&spot_array_view) },
-                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&sampler) },
-                wgpu::BindGroupEntry { binding: 3, resource: ubo.as_entire_binding() },
-            ],
-        });
-
         let cascade_cams: Vec<_> = (0..CSM_CASCADE_COUNT).map(|_| CameraBuffer::new(device, camera_bgl)).collect();
         let spot_cams:    Vec<_> = (0..MAX_SHADOW_SPOTS).map(|_| CameraBuffer::new(device, camera_bgl)).collect();
 
@@ -219,7 +220,9 @@ impl ShadowResources {
             dir_layer_views,
             _spot_tex: spot_tex,
             spot_layer_views,
-            group5_bg,
+            dir_array_view,
+            spot_array_view,
+            sampler,
             ubo,
             cascade_cams,
             spot_cams,

@@ -141,17 +141,35 @@ impl<'d> RenderPipelineBuilder<'d> {
             .collect::<Vec<_>>()
             .join("\n");
 
-        // ── 2. シェーダーモジュール ────────────────────────────
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label:  Some(cfg.vertex_entry.as_str()),
-            source: wgpu::ShaderSource::Wgsl(combined.clone().into()),
-        });
-
-        // ── 3. WGSL リフレクション → BGL マップ ─────────────────
+        // ── 2. WGSL リフレクション → BGL マップ ─────────────────
+        // （シェーダモジュール作成より先に行う。グループ数がデバイスリミットを
+        //   超えている場合、wgpu は create_shader_module 時点でパニックするため、
+        //   その前に原因が分かるメッセージで検証する）
         let mut reflected = reflect_bgls(device, &combined);
 
         let num_groups = cfg.num_bind_groups.unwrap_or_else(|| {
             reflected.keys().max().copied().map_or(0, |m| m + 1)
+        });
+
+        // ── 3. デバイスリミット検証（再発防止）──────────────────
+        // WGSL に @group(N) を追加すると本ビルダーが自動でグループ数を増やすが、
+        // デバイスの max_bind_groups（Vulkan の maxBoundDescriptorSets 依存。
+        // 5 = group 0〜4 の環境が実在する）を超えるとシェーダモジュール作成で
+        // パニックしエディタが起動不能になる。超過時は新グループを足すのではなく
+        // 既存グループへ binding を追加して同居させること（例: シャドウは group 4 の
+        // binding 2〜5 にライトと同居）。
+        let max_groups = device.limits().max_bind_groups;
+        assert!(
+            num_groups <= max_groups,
+            "pipeline '{pipeline_label}' は {num_groups} 個の bind group を要求するが、\
+             デバイスの max_bind_groups は {max_groups}。WGSL の @group 番号を \
+             {max_groups} 未満に収めること（既存グループへの binding 追加で同居させる）"
+        );
+
+        // ── シェーダーモジュール ────────────────────────────────
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label:  Some(cfg.vertex_entry.as_str()),
+            source: wgpu::ShaderSource::Wgsl(combined.clone().into()),
         });
 
         // ── 4. 空 BGL で gap を埋めた Vec<BGL> を構築 ─────────
