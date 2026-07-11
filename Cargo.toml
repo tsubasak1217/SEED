@@ -32,3 +32,28 @@ opt-level = 2
 opt-level = 2
 [profile.dev.package.naga]
 opt-level = 2
+
+# ── 派生データキャッシュのパフォーマンス最適化 ────────────────────────
+# アセットキャッシュ（asset_cache）はテクスチャの BC 圧縮（texpresso）と
+# bincode/serde によるシリアライズを行う。これらは計算量が大きく、
+# unoptimized な debug ビルドでは初回圧縮・キャッシュ読み書きが数十倍遅くなる
+# ため、wgpu と同様に依存クレート側のみ opt-level=2 でコンパイルする。
+# 画像デコード（png/jpeg）は初回ロードの支配的コストのため同様に最適化する。
+[profile.dev.package.texpresso]
+opt-level = 2
+[profile.dev.package.bincode]
+opt-level = 2
+[profile.dev.package.serde]
+opt-level = 2
+[profile.dev.package.image]
+opt-level = 2
+[profile.dev.package.png]
+opt-level = 2
+[profile.dev.package.zune-jpeg]
+opt-level = 2
+[profile.dev.package.fdeflate]
+opt-level = 2
+[profile.dev.package.miniz_oxide]
+opt-level = 2
+[profile.dev.package.crc32fast]
+opt-level = 2

@@ -172,16 +172,24 @@ fn upload_ready(
 
     // 各ミップを書き込む
     for (level, data) in mips.iter().enumerate() {
+        // 論理サイズ（ミップチェーンの数学的サイズ）
         let mw = (width  >> level).max(1);
         let mh = (height >> level).max(1);
 
-        // bytes_per_row / rows: BC はブロック単位、RGBA はテクセル単位。
-        let (bytes_per_row, rows) = if is_bc {
+        // bytes_per_row / rows / コピーサイズ:
+        // BC はブロック単位のため、コピー幅・高さを物理サイズ
+        // `ceil(w/4)*4 × ceil(h/4)*4` で指定する。wgpu の検証は
+        // 「コピー幅がブロック幅(4)の倍数」を要求するため、末端ミップ
+        // （2×2, 1×1）や非 4 倍数ミップ（例: 20→10→5）を論理サイズで
+        // コピーすると Validation Error になる。圧縮ミップに対しては
+        // 論理サイズを超える物理サイズのコピーが許容されている。
+        // データは asset_cache 側でも物理サイズで圧縮済みのため長さが一致する。
+        let (bytes_per_row, rows, copy_w, copy_h) = if is_bc {
             let blocks_x = mw.div_ceil(4);
             let blocks_y = mh.div_ceil(4);
-            (blocks_x * block_bytes, blocks_y)
+            (blocks_x * block_bytes, blocks_y, blocks_x * 4, blocks_y * 4)
         } else {
-            (mw * block_bytes, mh)
+            (mw * block_bytes, mh, mw, mh)
         };
 
         // データ長が不足している破損ケースはスキップ（クラッシュ回避）。
@@ -203,7 +211,7 @@ fn upload_ready(
                 bytes_per_row:  Some(bytes_per_row),
                 rows_per_image: Some(rows),
             },
-            wgpu::Extent3d { width: mw, height: mh, depth_or_array_layers: 1 },
+            wgpu::Extent3d { width: copy_w, height: copy_h, depth_or_array_layers: 1 },
         );
     }
 

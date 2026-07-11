@@ -22,12 +22,12 @@
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::SystemTime;
+use std::time::{Instant, SystemTime};
 
 use rayon::prelude::*;
 
 use super::model::{
-    CachedTexFormat, Material, Model, TextureData, TextureSource, TextureUsage,
+    CachedTexFormat, Material, Model, SkinVertex, TextureSource, TextureUsage, Vertex,
 };
 
 // ============================================================
@@ -39,7 +39,11 @@ use super::model::{
 /// インポータのロジック（頂点レイアウト・LOD 生成・座標変換・ミップ生成など）や
 /// キャッシュのバイナリ表現を変更したら必ずインクリメントすること。
 /// これによりバージョン不一致の古いキャッシュは自動的に無視され再生成される。
-pub const CACHE_FORMAT_VERSION: u32 = 1;
+///
+/// v2: ミップを物理サイズ（4 の倍数）で圧縮するよう変更。
+///     巨大バイト列（頂点・インデックス・ミップ）を bincode から分離し
+///     生ブロブ領域として格納する形式に変更（デシリアライズの大幅高速化）。
+pub const CACHE_FORMAT_VERSION: u32 = 2;
 
 /// モデルキャッシュファイルのマジック（8 バイト）。
 const MODEL_MAGIC: &[u8; 8] = b"SEEDMDL\0";
@@ -140,30 +144,267 @@ fn validate_header(data: &[u8], expect_stamp: (u64, u32, u64)) -> Option<usize> 
 }
 
 // ============================================================
+//  ブロブスロット走査 — 巨大バイト列を bincode から分離するための機構
+//
+//  【背景】
+//  bincode(serde derive) は `Vec<Vertex>` や `Vec<u8>` を要素単位で
+//  シリアライズ/デシリアライズするため、debug ビルドでは Sponza 級の
+//  数百 MB のデータに対して数十秒〜100 秒超かかる（実測 115 秒）。
+//
+//  【対策】
+//  Model 内の「巨大な Pod 配列」（頂点・スキン頂点・インデックス・LOD
+//  インデックス・テクスチャミップ/ピクセル）を bincode の対象から外し、
+//  キャッシュファイル内の生ブロブ領域に直接格納する。
+//  bincode は小さな構造メタデータ（名前・行列・マテリアル定数・アニメ等）
+//  のみを扱うため、ヒット時は「File::read + memcpy」とほぼ等速になる。
+//
+//  【走査順序の決定性】
+//  extract（書き出し）と inject（読み込み）は `visit_blob_slots` の
+//  同一トラバーサルを共有するため、ブロブの順序は常に一致する。
+// ============================================================
+
+/// Model 内の 1 ブロブスロット（巨大配列フィールドへの可変参照）。
+enum BlobSlot<'a> {
+    /// テクスチャのバイト列（Ready のミップ 1 枚 / Embedded のピクセル）
+    Bytes(&'a mut Vec<u8>),
+    /// プリミティブの頂点配列
+    Verts(&'a mut Vec<Vertex>),
+    /// スキニング頂点配列
+    Skins(&'a mut Vec<SkinVertex>),
+    /// インデックス配列（LOD0 / LOD1..3）
+    U32s(&'a mut Vec<u32>),
+}
+
+/// Model 内の全ブロブスロットを決定的な順序で訪問する。
+///
+/// 順序: 全テクスチャ（Ready の各ミップ / Embedded のピクセル）
+///     → 全メッシュ × 全プリミティブ（vertices, skin_vertices, indices, 各 lod_indices）。
+/// `FilePath` テクスチャはピクセルを持たないためスロットなし。
+fn visit_blob_slots(model: &mut Model, f: &mut impl FnMut(BlobSlot<'_>)) {
+    for td in &mut model.textures {
+        match &mut td.source {
+            TextureSource::Ready { mips, .. } => {
+                for mip in mips.iter_mut() {
+                    f(BlobSlot::Bytes(mip));
+                }
+            }
+            TextureSource::Embedded { pixels, .. } => f(BlobSlot::Bytes(pixels)),
+            TextureSource::FilePath(_) => {}
+        }
+    }
+    for mesh in &mut model.meshes {
+        for prim in &mut mesh.primitives {
+            f(BlobSlot::Verts(&mut prim.vertices));
+            f(BlobSlot::Skins(&mut prim.skin_vertices));
+            f(BlobSlot::U32s(&mut prim.indices));
+            for lod in prim.lod_indices.iter_mut() {
+                f(BlobSlot::U32s(lod));
+            }
+        }
+    }
+}
+
+/// 取り出したブロブの所有権付き表現（書き出し後に元へ戻すために保持する）。
+enum OwnedBlob {
+    Bytes(Vec<u8>),
+    Verts(Vec<Vertex>),
+    Skins(Vec<SkinVertex>),
+    U32s(Vec<u32>),
+}
+
+impl OwnedBlob {
+    /// バイト列として参照する（Pod 型は bytemuck でゼロコピー変換）。
+    fn as_bytes(&self) -> &[u8] {
+        match self {
+            OwnedBlob::Bytes(v) => v,
+            OwnedBlob::Verts(v) => bytemuck::cast_slice(v),
+            OwnedBlob::Skins(v) => bytemuck::cast_slice(v),
+            OwnedBlob::U32s(v)  => bytemuck::cast_slice(v),
+        }
+    }
+}
+
+/// Model からブロブを全て取り出し（各スロットは空 Vec になる）、取り出しリストを返す。
+fn extract_blobs(model: &mut Model) -> Vec<OwnedBlob> {
+    let mut blobs = Vec::new();
+    visit_blob_slots(model, &mut |slot| {
+        let blob = match slot {
+            BlobSlot::Bytes(v) => OwnedBlob::Bytes(std::mem::take(v)),
+            BlobSlot::Verts(v) => OwnedBlob::Verts(std::mem::take(v)),
+            BlobSlot::Skins(v) => OwnedBlob::Skins(std::mem::take(v)),
+            BlobSlot::U32s(v)  => OwnedBlob::U32s(std::mem::take(v)),
+        };
+        blobs.push(blob);
+    });
+    blobs
+}
+
+/// `extract_blobs` で取り出したブロブを元のスロットへ戻す（書き出し後の復元用）。
+fn restore_blobs(model: &mut Model, blobs: Vec<OwnedBlob>) {
+    let mut it = blobs.into_iter();
+    visit_blob_slots(model, &mut |slot| {
+        // extract と同一トラバーサルのためスロット数・順序は必ず一致する。
+        let Some(blob) = it.next() else { return; };
+        match (slot, blob) {
+            (BlobSlot::Bytes(v), OwnedBlob::Bytes(b)) => *v = b,
+            (BlobSlot::Verts(v), OwnedBlob::Verts(b)) => *v = b,
+            (BlobSlot::Skins(v), OwnedBlob::Skins(b)) => *v = b,
+            (BlobSlot::U32s(v),  OwnedBlob::U32s(b))  => *v = b,
+            // 型不一致は起こらない想定（同一トラバーサル）。安全側で無視。
+            _ => {}
+        }
+    });
+}
+
+/// 生バイト列スライスの列をブロブスロットへ注入する（読み込み用）。
+///
+/// Pod 型は `pod_collect_to_vec` で復元する（アライメント不問・memcpy 1 回）。
+/// スロット数とスライス数が食い違った場合は false（破損キャッシュ）。
+fn inject_blob_bytes(model: &mut Model, slices: &[&[u8]]) -> bool {
+    let mut i = 0usize;
+    let mut ok = true;
+    visit_blob_slots(model, &mut |slot| {
+        let Some(bytes) = slices.get(i) else { ok = false; return; };
+        i += 1;
+        match slot {
+            BlobSlot::Bytes(v) => *v = bytes.to_vec(),
+            BlobSlot::Verts(v) => *v = bytemuck::pod_collect_to_vec(bytes),
+            BlobSlot::Skins(v) => *v = bytemuck::pod_collect_to_vec(bytes),
+            BlobSlot::U32s(v)  => *v = bytemuck::pod_collect_to_vec(bytes),
+        }
+    });
+    ok && i == slices.len()
+}
+
+// ============================================================
+//  キャッシュ本体のエンコード / デコード（v2 コンテナ）
+//
+//  レイアウト（ヘッダ 36B の直後から）:
+//    u64 meta_len
+//    meta                     … bincode(ブロブ除去済み Model)。小さい。
+//    u32 blob_count
+//    blob_count × u64 len     … 各ブロブのバイト長テーブル
+//    blobs                    … 生バイト列の連結
+// ============================================================
+
+/// Model をキャッシュファイルのバイト列（ヘッダ込み）へエンコードする。
+///
+/// ブロブ取り出しのため `&mut` を取るが、書き出し後に必ず復元するので
+/// 呼び出し後の Model は元と同じ内容である。失敗時は None（警告のみ）。
+fn encode_model_cache(model: &mut Model, stamp: (u64, u32, u64), bc_used: bool) -> Option<Vec<u8>> {
+    // ── ブロブを取り出してメタデータを小さくする ──────────────
+    let blobs = extract_blobs(model);
+    let meta = bincode::serialize(model);
+    // メタ直列化の成否に関わらず、まずブロブを Model へ戻す（呼び出し元の Model を壊さない）。
+    let meta = match meta {
+        Ok(m) => m,
+        Err(e) => {
+            restore_blobs(model, blobs);
+            eprintln!("[SEED cache] モデルメタデータの直列化に失敗: err={e}");
+            return None;
+        }
+    };
+
+    // ── コンテナ構築 ───────────────────────────────────────────
+    let total_blob_len: usize = blobs.iter().map(|b| b.as_bytes().len()).sum();
+    let mut buf = Vec::with_capacity(HEADER_LEN + meta.len() + total_blob_len + blobs.len() * 8 + 64);
+    write_header(&mut buf, stamp, bc_used);
+    buf.extend_from_slice(&(meta.len() as u64).to_le_bytes());
+    buf.extend_from_slice(&meta);
+    buf.extend_from_slice(&(blobs.len() as u32).to_le_bytes());
+    for b in &blobs {
+        buf.extend_from_slice(&(b.as_bytes().len() as u64).to_le_bytes());
+    }
+    for b in &blobs {
+        buf.extend_from_slice(b.as_bytes());
+    }
+
+    restore_blobs(model, blobs);
+    Some(buf)
+}
+
+/// キャッシュファイルのバイト列から Model をデコードする。
+///
+/// ヘッダ検証（mtime/サイズ/バージョン/BC フラグ）を通過し、
+/// メタデータ・ブロブテーブルとも整合した場合のみ Some を返す。
+/// 破損・不整合はすべて None（呼び出し元が元ファイルから再生成）。
+fn decode_model_cache(data: &[u8], expect_stamp: (u64, u32, u64)) -> Option<Model> {
+    let mut pos = validate_header(data, expect_stamp)?;
+
+    // ── メタデータ（bincode。小さいので debug ビルドでも高速）──────
+    let meta_len = read_u64(data, &mut pos)? as usize;
+    let meta = data.get(pos..pos.checked_add(meta_len)?)?;
+    pos += meta_len;
+    let mut model: Model = match bincode::deserialize(meta) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("[SEED cache] メタデータのデシリアライズに失敗（再生成します）: err={e}");
+            return None;
+        }
+    };
+
+    // ── ブロブテーブル ─────────────────────────────────────────
+    let blob_count = read_u32(data, &mut pos)? as usize;
+    let mut lens = Vec::with_capacity(blob_count);
+    for _ in 0..blob_count {
+        lens.push(read_u64(data, &mut pos)? as usize);
+    }
+    let mut slices: Vec<&[u8]> = Vec::with_capacity(blob_count);
+    for len in lens {
+        let s = data.get(pos..pos.checked_add(len)?)?;
+        slices.push(s);
+        pos += len;
+    }
+
+    // ── ブロブを Model のスロットへ注入 ─────────────────────────
+    if !inject_blob_bytes(&mut model, &slices) {
+        eprintln!("[SEED cache] ブロブ数がメタデータと不一致（破損キャッシュ。再生成します）");
+        return None;
+    }
+    Some(model)
+}
+
+/// リトルエンディアン u64 を読み進める（境界チェック付き）。
+fn read_u64(data: &[u8], pos: &mut usize) -> Option<u64> {
+    let bytes = data.get(*pos..*pos + 8)?;
+    *pos += 8;
+    Some(u64::from_le_bytes(bytes.try_into().ok()?))
+}
+
+/// リトルエンディアン u32 を読み進める（境界チェック付き）。
+fn read_u32(data: &[u8], pos: &mut usize) -> Option<u32> {
+    let bytes = data.get(*pos..*pos + 4)?;
+    *pos += 4;
+    Some(u32::from_le_bytes(bytes.try_into().ok()?))
+}
+
+// ============================================================
 //  モデルキャッシュ: 読み込み
 // ============================================================
 
 /// 有効なモデルキャッシュがあれば読み込んで返す。
 ///
 /// 元ファイルパス（`assets://` 仮想パスまたは絶対パス）を受け取り、
-/// キャッシュが存在し検証を通ればデシリアライズした Model を返す。
+/// キャッシュが存在し検証を通ればデコードした Model を返す。
 /// キャッシュなし・古い・破損の場合は None（呼び出し元は元ファイルからロードする）。
 pub fn try_load_model(src: &Path) -> Option<Model> {
     let resolved = resolve_src(src);
     let stamp = source_stamp(&resolved)?;
     let cache_path = model_cache_path(&resolved)?;
 
+    let t_read = Instant::now();
     let data = std::fs::read(&cache_path).ok()?;
-    let body_start = validate_header(&data, stamp)?;
+    let read_ms = t_read.elapsed().as_secs_f64() * 1000.0;
 
-    // bincode デシリアライズ。破損していても panic せず None を返す。
-    match bincode::deserialize::<Model>(&data[body_start..]) {
-        Ok(model) => Some(model),
-        Err(e) => {
-            eprintln!("[SEED cache] モデルキャッシュのデシリアライズに失敗（再生成します）: {cache_path:?} err={e}");
-            None
-        }
-    }
+    let t_decode = Instant::now();
+    let model = decode_model_cache(&data, stamp)?;
+    let decode_ms = t_decode.elapsed().as_secs_f64() * 1000.0;
+
+    eprintln!(
+        "[SEED cache]   内訳: read {:.1}ms ({} MiB) + decode {:.1}ms",
+        read_ms, data.len() / (1024 * 1024), decode_ms,
+    );
+    Some(model)
 }
 
 // ============================================================
@@ -173,7 +414,8 @@ pub fn try_load_model(src: &Path) -> Option<Model> {
 /// Model をキャッシュに書き出す（ベストエフォート。失敗は警告のみ）。
 ///
 /// 呼び出し前に `process_model_textures` でテクスチャを Ready 形式に変換しておくこと。
-pub fn store_model(src: &Path, model: &Model) {
+/// ブロブ分離のため `&mut` を取るが、書き出し後に内容は元通り復元される。
+pub fn store_model(src: &Path, model: &mut Model) {
     let resolved = resolve_src(src);
     let Some(stamp) = source_stamp(&resolved) else { return; };
     let Some(cache_path) = model_cache_path(&resolved) else { return; };
@@ -187,15 +429,7 @@ pub fn store_model(src: &Path, model: &Model) {
     // このモデルが BC テクスチャを含むか（= 現在の GPU 能力）をフラグに記録する。
     let bc_used = bc_supported();
 
-    let mut buf = Vec::new();
-    write_header(&mut buf, stamp, bc_used);
-    match bincode::serialize(model) {
-        Ok(blob) => buf.extend_from_slice(&blob),
-        Err(e) => {
-            eprintln!("[SEED cache] モデルの直列化に失敗（キャッシュ書き込み中止）: err={e}");
-            return;
-        }
-    }
+    let Some(buf) = encode_model_cache(model, stamp, bc_used) else { return; };
 
     // 一時ファイルに書いてからリネームし、途中失敗による破損キャッシュを避ける。
     let tmp_path = cache_path.with_extension("smdl.tmp");
@@ -431,20 +665,59 @@ fn texpresso_format(format: CachedTexFormat) -> Option<texpresso::Format> {
     }
 }
 
+/// 4 の倍数に切り上げる（BC ブロックは 4×4 テクセル単位）。
+#[inline]
+fn align4(v: u32) -> u32 { (v + 3) & !3 }
+
 /// 1 ミップ（RGBA8）を指定フォーマットで BC 圧縮し、ブロック列を返す。
 ///
-/// texpresso は幅・高さが 4 の倍数でなくても内部でエッジブロックを処理するため、
-/// パディングは不要。出力ブロック数 `ceil(w/4)*ceil(h/4)` は wgpu の期待と一致する。
+/// 【物理サイズでの圧縮】
+/// wgpu の `write_texture` は BC フォーマットに対して「コピー幅がブロック幅(4)の
+/// 倍数」を要求する。ミップチェーンの末端（2×2, 1×1）や、ベースが 4 の倍数でも
+/// 途中のミップが非 4 倍数になるケース（例: 20→10→5）は論理サイズのままだと違反する。
+/// そこで各ミップを物理サイズ `ceil(w/4)*4 × ceil(h/4)*4` へエッジ複製で
+/// パディングしてから圧縮し、アップロード時も物理サイズでコピーする
+/// （wgpu は圧縮ミップに対して論理サイズを超える物理サイズコピーを許容する）。
+///
+/// 出力ブロック数は `ceil(w/4) * ceil(h/4)` で wgpu が期待するデータ量と一致する。
 fn compress_mip(width: u32, height: u32, rgba: &[u8], format: CachedTexFormat) -> Vec<u8> {
     let Some(tp) = texpresso_format(format) else {
         // 到達しない想定（build_ready_texture が BC 対応フォーマットのみ渡す）。
         // 安全側で元 RGBA をそのまま返す。
         return rgba.to_vec();
     };
-    let (w, h) = (width as usize, height as usize);
+
+    // 物理サイズ（4 の倍数へ切り上げ）にエッジ複製でパディング。
+    // 端ピクセルの複製により、パディング領域がブロック圧縮の品質に悪影響を与えない。
+    let pw = align4(width);
+    let ph = align4(height);
+    let padded;
+    let src: &[u8] = if pw == width && ph == height {
+        rgba
+    } else {
+        padded = pad_rgba_edge(width, height, rgba, pw, ph);
+        &padded
+    };
+
+    let (w, h) = (pw as usize, ph as usize);
     let size = tp.compressed_size(w, h);
     let mut out = vec![0u8; size];
-    tp.compress(rgba, w, h, texpresso::Params::default(), &mut out);
+    tp.compress(src, w, h, texpresso::Params::default(), &mut out);
+    out
+}
+
+/// RGBA8 バッファを (pw × ph) にエッジ複製（clamp）でパディングする。
+fn pad_rgba_edge(w: u32, h: u32, rgba: &[u8], pw: u32, ph: u32) -> Vec<u8> {
+    let mut out = vec![0u8; (pw as usize) * (ph as usize) * 4];
+    for y in 0..ph {
+        let sy = (y.min(h - 1)) as usize;
+        for x in 0..pw {
+            let sx = (x.min(w - 1)) as usize;
+            let src_i = (sy * w as usize + sx) * 4;
+            let dst_i = ((y * pw + x) as usize) * 4;
+            out[dst_i..dst_i + 4].copy_from_slice(&rgba[src_i..src_i + 4]);
+        }
+    }
     out
 }
 
@@ -479,21 +752,150 @@ mod tests {
     }
 
     /// BC 圧縮の出力サイズが wgpu 期待のブロック数と一致する（4 の倍数・非倍数の両方）。
+    ///
+    /// v2 では各ミップを物理サイズ（4 の倍数へ切上げ）で圧縮するため、
+    /// 非 4 倍数ミップ（10×10 等）や末端ミップ（2×2, 1×1）でも
+    /// 出力長 = `ceil(w/4) * ceil(h/4) * block_bytes` が保証される。
     #[test]
     fn compressed_size_matches_block_layout() {
         // Bc3: 16B/ブロック
         let px = vec![128u8; 8 * 8 * 4];
         let out = compress_mip(8, 8, &px, CachedTexFormat::Bc3RgbaUnormSrgb);
         assert_eq!(out.len(), (8 / 4) * (8 / 4) * 16);
-        // 非 4 倍数（6×6 → ceil=2 ブロック）でも破綻しない
-        let px6 = vec![128u8; 6 * 6 * 4];
-        let out6 = compress_mip(6, 6, &px6, CachedTexFormat::Bc3RgbaUnorm);
-        assert_eq!(out6.len(), 2 * 2 * 16);
+
+        // 非 4 倍数ミップ（10×10 → 物理 12×12 = 3×3 ブロック）。
+        // 例: ベース 20 のミップチェーン 20→10→5→2→1 で発生するケース。
+        let px10 = vec![128u8; 10 * 10 * 4];
+        let out10 = compress_mip(10, 10, &px10, CachedTexFormat::Bc3RgbaUnorm);
+        assert_eq!(out10.len(), 3 * 3 * 16);
+
+        // 5×5 → 物理 8×8 = 2×2 ブロック
+        let px5 = vec![128u8; 5 * 5 * 4];
+        let out5x5 = compress_mip(5, 5, &px5, CachedTexFormat::Bc3RgbaUnorm);
+        assert_eq!(out5x5.len(), 2 * 2 * 16);
+
+        // 末端ミップ 2×2 / 1×1 → いずれも物理 4×4 = 1 ブロック
+        let px2 = vec![128u8; 2 * 2 * 4];
+        let out2 = compress_mip(2, 2, &px2, CachedTexFormat::Bc3RgbaUnormSrgb);
+        assert_eq!(out2.len(), 16);
+        let px1 = vec![128u8; 1 * 1 * 4];
+        let out1x1 = compress_mip(1, 1, &px1, CachedTexFormat::Bc3RgbaUnormSrgb);
+        assert_eq!(out1x1.len(), 16);
+
         // Bc5: 16B/ブロック, Bc1: 8B/ブロック
         let out5 = compress_mip(4, 4, &vec![128u8; 4 * 4 * 4], CachedTexFormat::Bc5RgUnorm);
         assert_eq!(out5.len(), 16);
         let out1 = compress_mip(4, 4, &vec![128u8; 4 * 4 * 4], CachedTexFormat::Bc1RgbaUnorm);
         assert_eq!(out1.len(), 8);
+        // Bc5 の末端ミップ（法線マップの 1×1）も 1 ブロック
+        let out5m = compress_mip(1, 1, &vec![128u8; 4], CachedTexFormat::Bc5RgUnorm);
+        assert_eq!(out5m.len(), 16);
+    }
+
+    /// エッジ複製パディング: 端ピクセルが物理領域へ複製される。
+    #[test]
+    fn pad_rgba_edge_replicates_border() {
+        // 1×1 の赤ピクセル → 4×4 全面が赤になる
+        let src = vec![255u8, 0, 0, 255];
+        let out = pad_rgba_edge(1, 1, &src, 4, 4);
+        assert_eq!(out.len(), 4 * 4 * 4);
+        for px in out.chunks_exact(4) {
+            assert_eq!(px, &[255, 0, 0, 255]);
+        }
+
+        // 2×1（左=赤, 右=緑）→ 4×4 で x=0,1 が赤 / x=2,3 が緑（右端の複製）
+        let src2 = vec![255u8, 0, 0, 255, 0, 255, 0, 255];
+        let out2 = pad_rgba_edge(2, 1, &src2, 4, 4);
+        for y in 0..4usize {
+            for x in 0..4usize {
+                let i = (y * 4 + x) * 4;
+                let expect: [u8; 4] = if x < 1 { [255, 0, 0, 255] } else if x == 1 { [0, 255, 0, 255] } else { [0, 255, 0, 255] };
+                assert_eq!(&out2[i..i + 4], &expect, "at ({x},{y})");
+            }
+        }
+    }
+
+    /// v2 コンテナ（メタ + 生ブロブ）のエンコード → デコードのラウンドトリップ。
+    /// 頂点・インデックス・LOD・ミップの全ブロブが復元されることを検証する。
+    #[test]
+    fn model_cache_roundtrip() {
+        use super::super::model::*;
+
+        // ── テスト用 Model 構築 ─────────────────────────────
+        let vertices = vec![
+            Vertex { position: [1.0, 2.0, 3.0], ..Default::default() },
+            Vertex { position: [4.0, 5.0, 6.0], ..Default::default() },
+            Vertex { position: [7.0, 8.0, 9.0], ..Default::default() },
+        ];
+        let indices = vec![0u32, 1, 2];
+        let lod_indices = vec![vec![0u32, 1, 2], vec![2u32, 1, 0]];
+        let mips = vec![vec![1u8; 64], vec![2u8; 16], vec![3u8; 16]];
+
+        let mut model = Model {
+            name: "roundtrip".to_string(),
+            nodes: vec![],
+            root_nodes: vec![],
+            meshes: vec![Mesh {
+                name: "m".to_string(),
+                primitives: vec![Primitive {
+                    vertices: vertices.clone(),
+                    skin_vertices: vec![],
+                    indices: indices.clone(),
+                    material_index: Some(0),
+                    lod_indices: lod_indices.clone(),
+                }],
+            }],
+            materials: vec![Material::default()],
+            textures: vec![TextureData {
+                name: Some("t".to_string()),
+                source: TextureSource::Ready {
+                    format: CachedTexFormat::Bc3RgbaUnormSrgb,
+                    width: 8,
+                    height: 8,
+                    mips: mips.clone(),
+                },
+                sampler: SamplerData::default(),
+                linear: false,
+            }],
+            animations: vec![],
+            skins: vec![],
+        };
+
+        // ── エンコード（&mut だが復元されること）────────────
+        let stamp = (11u64, 22u32, 33u64);
+        let bc = bc_supported();
+        let buf = encode_model_cache(&mut model, stamp, bc).expect("encode failed");
+
+        // encode 後も元 Model は破壊されていない
+        assert_eq!(model.meshes[0].primitives[0].vertices.len(), 3);
+        assert_eq!(model.meshes[0].primitives[0].indices, indices);
+        match &model.textures[0].source {
+            TextureSource::Ready { mips: m, .. } => assert_eq!(m, &mips),
+            _ => panic!("texture source mutated"),
+        }
+
+        // ── デコード ─────────────────────────────────────────
+        let decoded = decode_model_cache(&buf, stamp).expect("decode failed");
+        assert_eq!(decoded.name, "roundtrip");
+        let prim = &decoded.meshes[0].primitives[0];
+        assert_eq!(prim.vertices.len(), 3);
+        assert_eq!(prim.vertices[1].position, [4.0, 5.0, 6.0]);
+        assert_eq!(prim.indices, indices);
+        assert_eq!(prim.lod_indices, lod_indices);
+        match &decoded.textures[0].source {
+            TextureSource::Ready { format, width, height, mips: m } => {
+                assert_eq!(*format, CachedTexFormat::Bc3RgbaUnormSrgb);
+                assert_eq!((*width, *height), (8, 8));
+                assert_eq!(m, &mips);
+            }
+            _ => panic!("wrong texture source"),
+        }
+
+        // ── stamp 不一致 → None ─────────────────────────────
+        assert!(decode_model_cache(&buf, (11, 22, 34)).is_none());
+
+        // ── 末尾切り詰め（破損）→ None（panic しない）────────
+        assert!(decode_model_cache(&buf[..buf.len() - 10], stamp).is_none());
     }
 
     /// ヘッダの書き込み → 検証のラウンドトリップ。

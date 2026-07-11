@@ -87,8 +87,9 @@ pub fn load_model(path: &Path) -> Result<Model, LoadError> {
     let tex_ms = t_tex.elapsed().as_secs_f64() * 1000.0;
 
     // ── ④ キャッシュ書き出し（ベストエフォート）────────────────────
+    // ブロブ分離のため &mut を渡すが、書き出し後に内容は元通り復元される。
     let t_store = Instant::now();
-    asset_cache::store_model(path, &model);
+    asset_cache::store_model(path, &mut model);
     let store_ms = t_store.elapsed().as_secs_f64() * 1000.0;
 
     eprintln!(
