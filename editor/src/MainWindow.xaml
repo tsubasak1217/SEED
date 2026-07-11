@@ -1419,6 +1419,39 @@
                                                         </StackPanel>
                                                     </Expander>
 
+                                                    <!-- ▶ 環境光（アンビエント：全ライト強度 0 でも見える底上げ光） -->
+                                                    <Expander Header="環境光" IsExpanded="True"
+                                                              Style="{StaticResource DarkExpanderStyle}"
+                                                              Margin="0,8,0,0">
+                                                        <StackPanel Margin="8,6,0,2">
+                                                            <!-- 色（クリックでカラーピッカー） -->
+                                                            <Grid Margin="0,0,0,6">
+                                                                <Grid.ColumnDefinitions>
+                                                                    <ColumnDefinition Width="52"/>
+                                                                    <ColumnDefinition Width="*"/>
+                                                                </Grid.ColumnDefinitions>
+                                                                <TextBlock Text="色" Foreground="#CCCCCC" FontSize="11" VerticalAlignment="Center"/>
+                                                                <Border x:Name="AmbientColorSwatch" Grid.Column="1"
+                                                                        Height="22" HorizontalAlignment="Left" Width="120"
+                                                                        BorderBrush="#555555" BorderThickness="1"
+                                                                        Background="White" Cursor="Hand"
+                                                                        MouseLeftButtonDown="OnAmbientColorClicked"/>
+                                                            </Grid>
+                                                            <!-- 強度（0=完全な暗闇。既定 0.05 で従来の見た目） -->
+                                                            <Grid Margin="0,0,0,4">
+                                                                <Grid.ColumnDefinitions>
+                                                                    <ColumnDefinition Width="52"/>
+                                                                    <ColumnDefinition Width="*"/>
+                                                                </Grid.ColumnDefinitions>
+                                                                <TextBlock Text="強度" Foreground="#CCCCCC" FontSize="11" VerticalAlignment="Center"/>
+                                                                <Slider x:Name="SldAmbientIntensity" Grid.Column="1"
+                                                                        Style="{StaticResource DarkSliderStyle}"
+                                                                        Minimum="0" Maximum="1" Value="0.05"
+                                                                        ValueChanged="OnAmbientSliderChanged" VerticalAlignment="Center"/>
+                                                            </Grid>
+                                                        </StackPanel>
+                                                    </Expander>
+
                                                     <!-- ▶ 透明描画（半透明オブジェクトの合成方式） -->
                                                     <Expander Header="透明描画" IsExpanded="True"
                                                               Style="{StaticResource DarkExpanderStyle}"

@@ -132,6 +132,10 @@ pub enum IpcCommand {
         bloom_intensity: f32,
         transparency: crate::engine::core::renderer::TransparencyMode,
     },
+    /// 環境光（アンビエント）の色・強度（Phase R1.5）。
+    /// フォーマット: `SET_AMBIENT:{r},{g},{b},{intensity}`（色はリニア RGB）。
+    /// intensity=0 で完全な暗闇。既定は白×0.05（従来のハードコード値）。
+    SetAmbient { color: [f32; 3], intensity: f32 },
     /// 軸ギズモ表示オンオフ
     SetShowAxisGizmo(bool),
     /// アクターを指定パスへ保存（アクター編集モードのアクティブ世界線）
@@ -809,6 +813,25 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                                     .unwrap_or("sort"),
                             );
                             Some(IpcCommand::SetPostFx { bloom, fxaa, bloom_intensity, transparency })
+                        }
+                        // 環境光（Phase R1.5）。"SET_AMBIENT:{r},{g},{b},{intensity}"。
+                        // 4 要素に満たない／パース不能な場合は無視する（None）。
+                        s if s.starts_with("SET_AMBIENT:") => {
+                            let body = &s["SET_AMBIENT:".len()..];
+                            let parts: Vec<&str> = body.split(',').collect();
+                            if parts.len() == 4 {
+                                if let (Ok(r), Ok(g), Ok(b), Ok(i)) = (
+                                    parts[0].parse::<f32>(),
+                                    parts[1].parse::<f32>(),
+                                    parts[2].parse::<f32>(),
+                                    parts[3].parse::<f32>(),
+                                ) {
+                                    Some(IpcCommand::SetAmbient {
+                                        color:     [r.max(0.0), g.max(0.0), b.max(0.0)],
+                                        intensity: i.max(0.0),
+                                    })
+                                } else { None }
+                            } else { None }
                         }
                         "SHOW_AXIS_GIZMO:1"     => Some(IpcCommand::SetShowAxisGizmo(true)),
                         "SHOW_AXIS_GIZMO:0"     => Some(IpcCommand::SetShowAxisGizmo(false)),

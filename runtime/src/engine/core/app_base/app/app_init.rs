@@ -339,6 +339,20 @@ impl App {
         self.post_fx.transparency = crate::engine::core::renderer::TransparencyMode::from_str(
             v["transparency"].as_str().unwrap_or("sort"),
         );
+        // 環境光（Phase R1.5, 既定 白 × 0.05 ＝従来のハードコード値）。読み側は unwrap_or でデフォルト維持。
+        // `ambient_color` は [r,g,b] 配列（欠落・不正時は白）。`ambient_intensity` は 0..1 想定（0 で暗闇）。
+        use crate::engine::core::renderer::{DEFAULT_AMBIENT_COLOR, DEFAULT_AMBIENT_INTENSITY};
+        if let Some(arr) = v["ambient_color"].as_array() {
+            if arr.len() == 3 {
+                self.ambient_color = [
+                    arr[0].as_f64().unwrap_or(DEFAULT_AMBIENT_COLOR[0] as f64) as f32,
+                    arr[1].as_f64().unwrap_or(DEFAULT_AMBIENT_COLOR[1] as f64) as f32,
+                    arr[2].as_f64().unwrap_or(DEFAULT_AMBIENT_COLOR[2] as f64) as f32,
+                ];
+            }
+        }
+        self.ambient_intensity =
+            v["ambient_intensity"].as_f64().unwrap_or(DEFAULT_AMBIENT_INTENSITY as f64) as f32;
         eprintln!(
             "[SEED INIT] graphics settings loaded  rt_shadows={} post_vignette={} bloom={} fxaa={} transparency={}",
             self.rt_shadows, self.post_vignette_enabled,

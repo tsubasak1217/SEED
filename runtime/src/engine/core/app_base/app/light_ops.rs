@@ -83,6 +83,7 @@ impl App {
             "outer_angle"  => if let Ok(v) = value.parse::<f32>() { lc.outer_angle_deg = v.clamp(0.0, 89.0); },
             "rect_width"   => if let Ok(v) = value.parse::<f32>() { lc.rect_width = v.max(0.0); },
             "rect_height"  => if let Ok(v) = value.parse::<f32>() { lc.rect_height = v.max(0.0); },
+            "soft_radius"  => if let Ok(v) = value.parse::<f32>() { lc.soft_radius = v.max(0.0); },
             "cast_shadows" => lc.cast_shadows = value == "1" || value == "true",
             _ => return,
         }
@@ -165,6 +166,21 @@ fn collect_lights_recursive(actors: &[Actor], world: &World, wl: u32, out: &mut 
             // 実スロット（方向光 0 / スポット 0..3）は ShadowResources::prepare_frame が
             // 採用可否とともに確定させる。false は -1.0（影なし）のまま。
             gpu.shadow_index = if lc.cast_shadows { 1.0 } else { -1.0 };
+
+            // ソフト影の見込み半径（Phase R8）。種別で意味が異なるためここで GpuLight 用へ換算する:
+            //   - directional: soft_radius は角径（度）。シェーダは tan(角径) を分散スロープに使うため
+            //     ここで度→ラジアン→tan を事前計算する（微小角では ≒ ラジアン値）。距離非依存。
+            //   - point/spot/rect: soft_radius はワールド半径。シェーダ側で radius/距離＝見込み角に
+            //     換算するため、そのまま渡す。
+            // 0 のときは 0 のまま（シェーダはハードシャドウ 1 本へ分岐）。
+            let sr = lc.soft_radius.max(0.0);
+            gpu.soft_radius = if sr <= 0.0 {
+                0.0
+            } else if lc.kind == LightKind::Directional {
+                sr.to_radians().tan()
+            } else {
+                sr
+            };
             out.push(gpu);
         }
 

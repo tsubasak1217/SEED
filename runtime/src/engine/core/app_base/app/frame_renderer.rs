@@ -854,7 +854,10 @@ impl App {
 
                     // ライト配列を GPU へアップロードする（全メッシュ描画が group 4 で共用）。
                     // メタ（ライト数・RT 影フラグ）も同時に更新される。shadow_index 確定後にアップロードする。
-                    draw_ctx.light_buffer.update(&draw_ctx.queue, &frame_lights, rt_on);
+                    draw_ctx.light_buffer.update(
+                        &draw_ctx.queue, &frame_lights, rt_on,
+                        self.ambient_color, self.ambient_intensity,
+                    );
 
                     // シーンモード・アクター編集モード共通: world_line の全 MC を収集する
                     // タプル: (id_base, dfs_id, slot_i, &ModelComponent)

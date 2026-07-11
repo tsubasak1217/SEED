@@ -126,6 +126,60 @@ public partial class MainWindow
         SendPostFx();
     }
 
+    // ── 環境光（アンビエント） ───────────────────────────────────
+
+    /// <summary>環境光の色（リニア RGB）。既定は白。ランタイム側の DEFAULT_AMBIENT_COLOR と一致させる。</summary>
+    private float _ambientR = 1f, _ambientG = 1f, _ambientB = 1f;
+
+    /// <summary>
+    /// 環境光（アンビエント）の色・強度をランタイムへ送信する（SET_AMBIENT:{r},{g},{b},{intensity}）。
+    /// 色はリニア RGB。強度 0 で完全な暗闇になる。UI 変更時のみ送信し、起動時は
+    /// project_settings.json のランタイム側読込値を尊重する（ここからは自動送信しない）。
+    /// </summary>
+    private void SendAmbient()
+    {
+        if (!_viewportSettingsInitialized) return;
+        double intensity = SldAmbientIntensity?.Value ?? 0.05;
+        var ci = System.Globalization.CultureInfo.InvariantCulture;
+        _runtimeManager?.SendToRuntime(
+            $"SET_AMBIENT:{_ambientR.ToString(ci)},{_ambientG.ToString(ci)},{_ambientB.ToString(ci)},{intensity.ToString(ci)}");
+    }
+
+    /// <summary>環境光カラースウォッチのクリック: カラーピッカーを開いて色を選び、ランタイムへ送信する。</summary>
+    private void OnAmbientColorClicked(object sender, MouseButtonEventArgs e)
+    {
+        // ライト色と同様にアルファは持たない（a=1 固定）。入出力はリニア RGB。
+        var result = ColorPickerWindow.ShowDialog(Window.GetWindow(this), _ambientR, _ambientG, _ambientB, 1f);
+        if (result is null) return;
+        (_ambientR, _ambientG, _ambientB, _) = result.Value;
+        UpdateAmbientSwatch();
+        SendAmbient();
+    }
+
+    /// <summary>SldAmbientIntensity の ValueChanged から呼ばれるハンドラ（環境光強度）。</summary>
+    private void OnAmbientSliderChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        if (_updatingControls) return;
+        SendAmbient();
+    }
+
+    /// <summary>環境光カラースウォッチの背景を現在のリニア色から更新する（リニア→sRGB 表示）。</summary>
+    private void UpdateAmbientSwatch()
+    {
+        if (AmbientColorSwatch == null) return;
+        AmbientColorSwatch.Background = new SolidColorBrush(Color.FromRgb(
+            LinearToSrgbByte(_ambientR), LinearToSrgbByte(_ambientG), LinearToSrgbByte(_ambientB)));
+    }
+
+    /// <summary>リニア RGB 成分（0..1）を sRGB の 8bit 値へ変換する（スウォッチ表示用）。</summary>
+    private static byte LinearToSrgbByte(float c)
+    {
+        c = Math.Clamp(c, 0f, 1f);
+        // sRGB 伝達関数（IEC 61966-2-1）。ColorPickerWindow の LinearToSrgb と同一。
+        double s = c <= 0.0031308 ? c * 12.92 : 1.055 * Math.Pow(c, 1.0 / 2.4) - 0.055;
+        return (byte)Math.Clamp((int)Math.Round(s * 255.0), 0, 255);
+    }
+
     // ── デバッグカメラ 2D（正射投影）トグル ────────────────────────
 
     /// <summary>デバッグカメラが 2D（正射投影）モードなら true。</summary>

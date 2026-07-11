@@ -16,6 +16,14 @@ fn rt_shadow_enabled() -> bool {
 }
 
 /// 遮蔽率（1=非遮蔽/照射, 0=遮蔽/影）。スタブは常に非遮蔽。
-fn rt_shadow_factor(origin: vec3<f32>, n: vec3<f32>, l: vec3<f32>, tmax: f32) -> f32 {
+/// シグネチャは rt_shadow_on.wgsl と一致させること（ソフト影の cone_radius / frag_xy を含む）。
+fn rt_shadow_factor(
+    origin:      vec3<f32>,
+    n:           vec3<f32>,
+    l:           vec3<f32>,
+    tmax:        f32,
+    cone_radius: f32,
+    frag_xy:     vec2<f32>,
+) -> f32 {
     return 1.0;
 }

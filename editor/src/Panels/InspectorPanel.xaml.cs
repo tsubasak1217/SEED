@@ -441,6 +441,8 @@ public partial class InspectorPanel : UserControl
         float LightInnerAngle = 25f, float LightOuterAngle = 35f,
         float LightRectWidth = 1f, float LightRectHeight = 1f,
         bool LightCastShadows = true,
+        // ソフト影の見込み半径（directional=角径(度) / 局所光=ワールド半径。0 でハード影。RT 影時のみ効果）
+        float LightSoftRadius = 0.25f,
         // ModelComponent 用フィールド（影を落とすか。シャドウマップレンダリングで使用）
         bool ModelCastShadows = true);
 
@@ -679,6 +681,7 @@ public partial class InspectorPanel : UserControl
             var lightOuterAngle  = comp.TryGetProperty("outer_angle",  out var loa) ? loa.GetSingle() : 35f;
             var lightRectWidth   = comp.TryGetProperty("rect_width",   out var lrw) ? lrw.GetSingle() : 1f;
             var lightRectHeight  = comp.TryGetProperty("rect_height",  out var lrh) ? lrh.GetSingle() : 1f;
+            var lightSoftRadius  = comp.TryGetProperty("soft_radius",  out var lsr) ? lsr.GetSingle() : 0.25f;
             var lightCastShadows = comp.TryGetProperty("cast_shadows", out var lcs) ? ReadJsonBool(lcs, true) : true;
 
             var info = new SlotInfo(slotIdx, compName, compType, modelPath, width, height,
@@ -712,6 +715,7 @@ public partial class InspectorPanel : UserControl
                 LightInnerAngle: lightInnerAngle, LightOuterAngle: lightOuterAngle,
                 LightRectWidth: lightRectWidth, LightRectHeight: lightRectHeight,
                 LightCastShadows: lightCastShadows,
+                LightSoftRadius: lightSoftRadius,
                 ModelCastShadows: modelCastShadows);
             _slotInfos.Add(info);
 
@@ -3782,6 +3786,9 @@ public partial class InspectorPanel : UserControl
         var outerRow  = AddFloatRow("外側角 (°)",        info.LightOuterAngle,  "outer_angle");
         var rectWRow  = AddFloatRow("矩形 幅",            info.LightRectWidth,   "rect_width");
         var rectHRow  = AddFloatRow("矩形 高さ",          info.LightRectHeight,  "rect_height");
+        // ソフト影半径: directional は角径(度)、point/spot/rect はワールド半径。0 でハード影。
+        // RT 影が有効なときのみ影のボケに反映される（品質オプション）。全種別で表示。
+        AddFloatRow("ソフト影半径", info.LightSoftRadius, "soft_radius");
 
         // ── 影を落とす（R2 で使用）────────────────────────────
         var shadowRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 4, 0, 2) };

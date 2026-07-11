@@ -43,6 +43,13 @@ fn default_rect_width() -> f32 { 1.0 }
 fn default_rect_height() -> f32 { 1.0 }
 /// cast_shadows の既定値（true）。R2 のシャドウで使用（R1 では保存のみ）。
 fn default_cast_shadows() -> bool { true }
+/// ソフト影の見込み半径の既定値（Phase R8 ソフトシャドウ）。
+///
+/// 意味は種別で異なる（GpuLight へ変換する light_ops.rs 側で解釈）:
+///   - directional: 光源の角径（度）。既定 0.25 は太陽の実角径に近く、影が「わずかに柔らかく」なる。
+///   - point/spot/rect: 光源のワールド半径。0.25 単位程度の面光源として扱う。
+/// 0 にするとハードシャドウ（遮蔽レイ 1 本）になる。RT 影が有効なときのみ効果がある。
+fn default_soft_radius() -> f32 { 0.25 }
 
 // ─── LightKind ───────────────────────────────────────────────
 
@@ -140,6 +147,10 @@ pub struct LightComponentData {
     /// 影を落とすか（R2 のシャドウマップで使用。R1 では保存のみ）。既定 true。
     #[serde(default = "default_cast_shadows")]
     pub cast_shadows: bool,
+    /// ソフト影の見込み半径（Phase R8）。directional=角径(度) / 局所光=ワールド半径。
+    /// 0 でハードシャドウ。RT 影が有効なときのみ効く。既定 0.25。
+    #[serde(default = "default_soft_radius")]
+    pub soft_radius: f32,
 }
 
 impl Default for LightComponentData {
@@ -154,6 +165,7 @@ impl Default for LightComponentData {
             rect_width:      default_rect_width(),
             rect_height:     default_rect_height(),
             cast_shadows:    default_cast_shadows(),
+            soft_radius:     default_soft_radius(),
         }
     }
 }
@@ -175,6 +187,7 @@ pub struct LightComponent {
     pub rect_width:      f32,
     pub rect_height:     f32,
     pub cast_shadows:    bool,
+    pub soft_radius:     f32,
 }
 
 impl LightComponent {
@@ -190,6 +203,7 @@ impl LightComponent {
             rect_width:      data.rect_width,
             rect_height:     data.rect_height,
             cast_shadows:    data.cast_shadows,
+            soft_radius:     data.soft_radius,
         }
     }
 
@@ -205,6 +219,7 @@ impl LightComponent {
             rect_width:      self.rect_width,
             rect_height:     self.rect_height,
             cast_shadows:    self.cast_shadows,
+            soft_radius:     self.soft_radius,
         }
     }
 }

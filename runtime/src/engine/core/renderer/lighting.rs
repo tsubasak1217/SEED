@@ -34,6 +34,11 @@ pub const MAX_LIGHTS: usize = 64;
 // ─── ライト種別コード ─────────────────────────────────────────
 // LightKind::to_code() およびシェーダの LIGHT_KIND_* 定数と一致させること。
 
+/// 環境光（アンビエント）の既定色（白）。従来のハードコード値と同一の見た目を維持する。
+pub const DEFAULT_AMBIENT_COLOR: [f32; 3] = [1.0, 1.0, 1.0];
+/// 環境光（アンビエント）の既定強度。旧シェーダの `vec3(0.05)` と一致（0 で完全な暗闇）。
+pub const DEFAULT_AMBIENT_INTENSITY: f32 = 0.05;
+
 /// 平行光
 pub const LIGHT_KIND_DIRECTIONAL: u32 = 0;
 /// 点光源
@@ -65,7 +70,7 @@ pub const LIGHT_KIND_RECT: u32 = 3;
 /// |  64    | rect_right       |  12  |
 /// |  76    | shadow_index     |   4  |
 /// |  80    | rect_up          |  12  |
-/// |  92    | _pad1            |   4  |
+/// |  92    | soft_radius      |   4  |
 /// 合計 96（16 の倍数 → array stride も 96）
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -100,8 +105,11 @@ pub struct GpuLight {
     pub shadow_index:     f32,
     /// rect の上方向ベクトル（面の縦軸、正規化）。
     pub rect_up:          [f32; 3],
-    /// アライメント用パディング。
-    pub _pad1:            f32,
+    /// ソフト影の見込み半径（Phase R8 ソフトシャドウ）。0 = ハードシャドウ。
+    /// directional: tan(角径) の無次元スロープ（collect_gpu_lights で度→tan 変換済み）。
+    /// point/spot/rect: 光源のワールド半径（シェーダで radius/距離＝見込み角に換算）。
+    /// 旧レイアウトの _pad1（offset 92）を再利用するため 96 バイトは不変。
+    pub soft_radius:      f32,
 }
 
 impl GpuLight {
@@ -126,7 +134,7 @@ impl GpuLight {
             rect_right:       [0.0; 3],
             shadow_index:     -1.0,
             rect_up:          [0.0; 3],
-            _pad1:            0.0,
+            soft_radius:      0.0,
         }
     }
 
@@ -146,7 +154,7 @@ impl GpuLight {
             rect_right:       [0.0; 3],
             shadow_index:     -1.0,
             rect_up:          [0.0; 3],
-            _pad1:            0.0,
+            soft_radius:      0.0,
         }
     }
 
@@ -180,7 +188,7 @@ impl GpuLight {
             rect_right:       [0.0; 3],
             shadow_index:     -1.0,
             rect_up:          [0.0; 3],
-            _pad1:            0.0,
+            soft_radius:      0.0,
         }
     }
 
@@ -212,7 +220,7 @@ impl GpuLight {
             rect_right:       normalize(right),
             shadow_index:     -1.0,
             rect_up:          normalize(up),
-            _pad1:            0.0,
+            soft_radius:      0.0,
         }
     }
 }
@@ -225,9 +233,21 @@ fn normalize(v: [f32; 3]) -> [f32; 3] {
 
 // ─── LightMeta ───────────────────────────────────────────────
 
-/// ライト配列のメタ情報 uniform（16 bytes）。
+/// ライト配列のメタ情報 uniform（32 bytes）。
 ///
-/// count と rt_shadows が意味を持ち、残りは 16 バイト境界のためのパディング。
+/// count / rt_shadows / ambient_* が意味を持ち、_pad は 16 バイト境界のためのパディング。
+/// WGSL 側 LightMeta（shader_common.wgsl）と厳密に一致させること:
+///   先頭スカラー 4 つ（16B）→ ambient_color: vec3（16B 境界, offset 16）→ ambient_intensity（offset 28）。
+///
+/// | offset | field             | size |
+/// |--------|-------------------|------|
+/// |   0    | count             |   4  |
+/// |   4    | rt_shadows        |   4  |
+/// |   8    | _pad[0]           |   4  |
+/// |  12    | _pad[1]           |   4  |
+/// |  16    | ambient_color     |  12  |
+/// |  28    | ambient_intensity |   4  |
+/// 合計 32
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct LightMeta {
@@ -237,8 +257,12 @@ pub struct LightMeta {
     /// RT 対応 GPU でのみ RT パイプラインが読む。有効時は全ライト種で遮蔽レイを飛ばし、
     /// 無効時（および RT 非対応パイプライン）は従来のシャドウマップ経路を使う。
     pub rt_shadows: u32,
-    /// アライメント用パディング。
+    /// アライメント用パディング（ambient_color を 16 バイト境界へ揃える）。
     pub _pad:       [u32; 2],
+    /// 環境光の色（リニア RGB, Phase R1.5）。既定は白。
+    pub ambient_color: [f32; 3],
+    /// 環境光の強度（Phase R1.5）。既定 0.05（従来のハードコード値）。0 で完全な暗闇。
+    pub ambient_intensity: f32,
 }
 
 // ─── LightBuffer ─────────────────────────────────────────────
@@ -273,7 +297,13 @@ impl LightBuffer {
             usage:    wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
 
-        let init_meta = LightMeta { count: 0, rt_shadows: 0, _pad: [0; 2] };
+        let init_meta = LightMeta {
+            count:             0,
+            rt_shadows:        0,
+            _pad:              [0; 2],
+            ambient_color:     DEFAULT_AMBIENT_COLOR,
+            ambient_intensity: DEFAULT_AMBIENT_INTENSITY,
+        };
         let meta_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label:    Some("Light Meta Uniform"),
             contents: bytemuck::bytes_of(&init_meta),
@@ -305,7 +335,16 @@ impl LightBuffer {
     ///
     /// - `rt_shadows`: このフレームでインラインレイトレ影を使うか（Phase R8）。
     ///   RT パイプラインのフラグメントはこの値でシャドウマップ/RT を実行時分岐する。
-    pub fn update(&self, queue: &wgpu::Queue, lights: &[GpuLight], rt_shadows: bool) {
+    /// - `ambient_color` / `ambient_intensity`: 環境光（Phase R1.5）。
+    ///   フラグメントの `ambient = ambient_color * ambient_intensity * albedo * ao`。
+    pub fn update(
+        &self,
+        queue:             &wgpu::Queue,
+        lights:            &[GpuLight],
+        rt_shadows:        bool,
+        ambient_color:     [f32; 3],
+        ambient_intensity: f32,
+    ) {
         let count = lights.len().min(MAX_LIGHTS);
         if count > 0 {
             queue.write_buffer(&self.lights_buffer, 0, bytemuck::cast_slice(&lights[..count]));
@@ -314,6 +353,8 @@ impl LightBuffer {
             count:      count as u32,
             rt_shadows: if rt_shadows { 1 } else { 0 },
             _pad:       [0; 2],
+            ambient_color,
+            ambient_intensity,
         };
         queue.write_buffer(&self.meta_buffer, 0, bytemuck::bytes_of(&meta));
     }
@@ -343,6 +384,36 @@ impl LightBuffer {
                 wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::AccelerationStructure(tlas) },
             ],
         })
+    }
+}
+
+// ─── レイアウト検証テスト ──────────────────────────────────────
+//
+// GpuLight / LightMeta の repr(C) レイアウトは shader_common.wgsl の WGSL 構造体と
+// バイト単位で一致していなければならない（不一致は静かに描画バグを生む）。
+// 変更時に気づけるよう、サイズ・オフセットを固定値で検証する。
+#[cfg(test)]
+mod layout_tests {
+    use super::*;
+    use std::mem::{size_of, offset_of};
+
+    /// GpuLight は 96 バイト（array stride も 96）。soft_radius は旧 _pad1 の offset 92 を再利用。
+    #[test]
+    fn gpu_light_layout() {
+        assert_eq!(size_of::<GpuLight>(), 96, "GpuLight は 96 バイト（WGSL stride と一致）");
+        assert_eq!(offset_of!(GpuLight, shadow_index), 76);
+        assert_eq!(offset_of!(GpuLight, rect_up),      80);
+        assert_eq!(offset_of!(GpuLight, soft_radius),  92);
+    }
+
+    /// LightMeta は 32 バイト。ambient_color は 16 バイト境界（offset 16）、ambient_intensity は offset 28。
+    #[test]
+    fn light_meta_layout() {
+        assert_eq!(size_of::<LightMeta>(), 32, "LightMeta は 32 バイト（WGSL uniform と一致）");
+        assert_eq!(offset_of!(LightMeta, count),             0);
+        assert_eq!(offset_of!(LightMeta, rt_shadows),        4);
+        assert_eq!(offset_of!(LightMeta, ambient_color),     16);
+        assert_eq!(offset_of!(LightMeta, ambient_intensity), 28);
     }
 }
 

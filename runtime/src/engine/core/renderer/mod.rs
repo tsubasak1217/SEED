@@ -29,7 +29,8 @@ pub use pipeline::{MeshPipeline, SkinnedMeshPipeline, UnlitPipeline, CullPipelin
                    SpritePipeline, SpriteOutlinePipeline, CanvasIdPipeline, CanvasIdUniform,
                    CameraPreviewBlitPipeline, ShadowDepthPipelines,
                    BarFillPipeline, BarFillUniform};
-pub use lighting::{GpuLight, LightBuffer, LightMeta, MAX_LIGHTS};
+pub use lighting::{GpuLight, LightBuffer, LightMeta, MAX_LIGHTS,
+                   DEFAULT_AMBIENT_COLOR, DEFAULT_AMBIENT_INTENSITY};
 pub use shadow::{ShadowResources, ShadowPlan, ShadowMatricesUbo,
                  CSM_CASCADE_COUNT, MAX_SHADOW_SPOTS, SHADOW_DEPTH_FORMAT};
 pub use rt_shadow::RtShadowResources;

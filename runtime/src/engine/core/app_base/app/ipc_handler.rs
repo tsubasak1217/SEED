@@ -479,6 +479,12 @@ impl App {
                     // 透明描画方式（距離ソート / WBOIT）のライブ切替（Phase R5）。
                     self.post_fx.transparency    = transparency;
                 }
+                IpcCommand::SetAmbient { color, intensity } => {
+                    // 環境光（アンビエント）をエディタからのライブ切替で更新する（Phase R1.5）。
+                    // 次フレームの LightBuffer::update で LightMeta へ反映される。
+                    self.ambient_color     = color;
+                    self.ambient_intensity = intensity;
+                }
                 IpcCommand::SetShowAxisGizmo(v) => {
                     self.show_axis_gizmo = v;
                 }

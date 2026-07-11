@@ -28,6 +28,19 @@
 ## フェーズ計画（実装しやすい依存順）
 
 ### Phase R1: ライトECS＋ライトバッファ 【状況: 完了（master ce551ee、rect=最近接点近似・LTCはR1.5 TODO）】
+
+#### R1.5 アンビエント制御（2026-07 追加, 実機検証待ち）
+- 環境光をハードコード定数 `vec3(0.05)*albedo*ao` から制御可能化。`LightMeta`（lighting.rs / shader_common.wgsl）に
+  `ambient_color: vec3` ＋ `ambient_intensity: f32` を追加（16→32 バイト。offset: color=16, intensity=28。
+  layout_tests で固定検証）。shade_pbr のアンビエント項を `ambient_color * ambient_intensity * albedo * ao` に置換。
+  既定は白×0.05（従来と同一の見た目）。`ambient_intensity=0` で完全な暗闇。
+- 経路: App.ambient_color/ambient_intensity → 毎フレーム `LightBuffer::update` で LightMeta へ。IPC は独立
+  `SET_AMBIENT:{r},{g},{b},{intensity}`（PostFx はポスト用のため別 IPC が自然と判断）。起動時
+  `load_graphics_settings` が project_settings.json の `ambient_color`(配列)/`ambient_intensity` を unwrap_or 既定で読む
+  （コミット禁止）。エディタはビューポート設定ポップアップに「環境光」Expander（カラースウォッチ＋強度スライダ 0〜1）を追加。
+  エディタは起動時に自動送信せず、ランタイム側の起動時読込値を尊重する（UI 変更時のみ送信）。
+- 残 TODO: rect の LTC（本項とは独立）。IBL（環境マップ irradiance）は将来。
+
 - LightComponent（ComponentKind::Light）: kind(directional/point/spot/rect), color, intensity,
   range, スポットの内外角, rectの幅高, cast_shadows フラグ。向き/位置はActorTransformから。
 - シェーダ: ハードコード方向光を廃止し、ライト配列（storage buffer、上限は定数 MAX_LIGHTS）＋
@@ -314,9 +327,17 @@
   で `App.rt_shadows` へ。エディタのチェックボックス→IPC `RT_SHADOWS:0/1`→`SetRtShadows`
   で実行中切替（`App.rt_shadows`）。TLAS再構築/RT用BindGroup bind は rt_on 時のみ＝RT無効時
   コスト増ゼロ。非対応GPUでONにしても `pipelines.rt=None` のためシャドウマップ継続。
-- TODO（R8残）: rect/point のソフトシャドウ（面光源の複数サンプル。v1はハード1本）・
-  スキンメッシュのRT影（スキン済み頂点からのBLAS毎フレーム再構築）・カメラプレビュー/
-  ギズモモデルのRT影（現状は従来パイプライン固定で影を受けない）・実機での視覚検証。
+- ソフトシャドウ（2026-07 追加, 実機検証待ち）: 面光源サンプリングで「遮蔽物から遠い影ほどボケる」
+  物理挙動を実装。`LightComponent.soft_radius`（serde default 0.25。directional=角径(度)/局所光=ワールド半径。
+  0 でハード。Inspector に「ソフト影半径」行、IPC `SET_LIGHT_FIELD ...,soft_radius`）を追加し、
+  `GpuLight.soft_radius`（旧 _pad1 offset92 を再利用＝96B 不変）へ搬送。directional は collect_gpu_lights で
+  度→tan 変換、局所光は raw 半径。`rt_shadow_on.wgsl` は cone_radius（directional=soft_radius, 局所光=
+  soft_radius/距離）から l 中心の円錐内へ `RT_SHADOW_SAMPLES=4` 本を Vogel ディスク分布＋フラグメント座標
+  由来の IGN 回転（時間項なし＝TAA非前提でちらつき無し）で分散し平均。cone_radius=0 は 1 本ハードへ分岐で高速維持。
+  負荷: soft_radius>0 のライトで RT 影レイが 4 倍（品質オプション。サンプル数は定数、可変化は将来）。
+  シグネチャは `rt_shadow_off.wgsl` スタブと一致。naga RAY_QUERY テストで全4バリアント再検証済み。
+- TODO（R8残）: スキンメッシュのRT影（スキン済み頂点からのBLAS毎フレーム再構築）・カメラプレビュー/
+  ギズモモデルのRT影（現状は従来パイプライン固定で影を受けない）・ソフト影サンプル数の SET_POST_FX 可変化・実機での視覚検証。
 
 ### ブラー系実装の方針（ユーザー指定・必読）
 今後ガウシアンフィルタ相当の処理（ブラー・被写界深度・大半径ブルーム等）を実装する際は、

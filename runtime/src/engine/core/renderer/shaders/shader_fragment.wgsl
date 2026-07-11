@@ -192,10 +192,23 @@ fn shade_pbr(in: VertexOutput) -> vec4<f32> {
 
         // ── シャドウ減衰（2 経路を実行時分岐）─────────────────
         if rt_shadow_enabled() {
-            // インラインレイトレ影（Phase R8）: 全ライト種で表面→ライト方向の遮蔽レイ 1 本。
+            // インラインレイトレ影（Phase R8）: 全ライト種で表面→ライト方向の遮蔽レイ。
             // shadow_index に依存せず、cast_shadows=true のキャスターは TLAS 側で登録済み。
             // directional は tmax=大定数、point/spot/rect は light_dist（ライトまでの距離）。
-            radiance = radiance * rt_shadow_factor(in.world_pos, N, L, light_dist);
+            //
+            // ソフトシャドウ: light.soft_radius から「見込み半径（cone_radius）」を求める。
+            //   directional : soft_radius は tan(角径) の無次元スロープ（距離非依存）。
+            //   point/spot/rect: soft_radius はワールド半径なので radius/距離＝見込み角に換算する。
+            // cone_radius=0 のとき rt_shadow_factor はハード 1 本へ分岐して高速を保つ。
+            var cone_radius: f32 = 0.0;
+            if light.soft_radius > 0.0 {
+                if light.kind == LIGHT_KIND_DIRECTIONAL {
+                    cone_radius = light.soft_radius;
+                } else {
+                    cone_radius = light.soft_radius / max(light_dist, 1e-4);
+                }
+            }
+            radiance = radiance * rt_shadow_factor(in.world_pos, N, L, light_dist, cone_radius, in.clip_pos.xy);
         } else {
             // 従来のシャドウマップ経路（group 4 binding 2〜5, shadow.wgsl）。
             // shadow_index < 0 のライトは影計算をスキップ（cast_shadows=false 含む）。
@@ -214,10 +227,13 @@ fn shade_pbr(in: VertexOutput) -> vec4<f32> {
         Lo += shade_light(N, V, L, albedo, F0, metallic, roughness, radiance);
     }
 
-    // ── アンビエント ──────────────────────────────────────────
-    // 当面は定数。将来は IBL（環境マップの irradiance / prefiltered specular）へ置換する。
-    // TODO(IBL): 環境光を一定値から画像ベースライティングへ。
-    let ambient = vec3<f32>(0.05) * albedo * ao;
+    // ── アンビエント（環境光）──────────────────────────────────
+    // 制御可能な環境光（Phase R1.5）。色・強度は LightMeta（group 4 binding 1）から供給し、
+    // エディタのビューポート設定／project_settings.json（SET_AMBIENT）で変更できる。
+    // ambient_intensity=0 で完全な暗闇になる（全ライト強度 0 と合わせて真っ暗）。
+    // 既定は色白×強度 0.05（従来のハードコード値と同一の見た目）。
+    // TODO(IBL): 将来は一定値から画像ベースライティング（環境マップ irradiance）へ。
+    let ambient = u_light_meta.ambient_color * u_light_meta.ambient_intensity * albedo * ao;
 
     let hdr_color = ambient + Lo + emissive;
 

@@ -586,6 +586,12 @@ pub struct App {
     /// ブルーム／FXAA のポストエフェクト設定（Phase R4, 既定すべて OFF）。
     /// project_settings.json（起動時）＋ IPC `SET_POST_FX:{json}`（実行時）で更新する。
     post_fx: crate::engine::core::renderer::PostFxSettings,
+    /// 環境光（アンビエント）の色（リニア RGB, Phase R1.5, 既定 白）。
+    /// 毎フレーム LightBuffer::update 経由で LightMeta.ambient_color へアップロードする。
+    ambient_color: [f32; 3],
+    /// 環境光（アンビエント）の強度（Phase R1.5, 既定 0.05）。0 で完全な暗闇。
+    /// project_settings.json（起動時, `ambient_intensity`）＋ IPC `SET_AMBIENT`（実行時）で更新する。
+    ambient_intensity: f32,
 
     // ── カメラプレビュー ─────────────────────────────────────────
     /// カメラアクター選択時のビューポートプレビュー描画リソース。
@@ -914,6 +920,8 @@ impl App {
             rt_pool:                     crate::engine::core::renderer::RtPool::new(),
             post_vignette_enabled:       false,
             post_fx:                     crate::engine::core::renderer::PostFxSettings::default(),
+            ambient_color:               crate::engine::core::renderer::DEFAULT_AMBIENT_COLOR,
+            ambient_intensity:           crate::engine::core::renderer::DEFAULT_AMBIENT_INTENSITY,
             camera_preview:              None,
             camera_preview_target_size:  None,
             camera_gizmo:                None,

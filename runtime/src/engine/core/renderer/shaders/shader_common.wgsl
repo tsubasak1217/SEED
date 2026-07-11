@@ -87,17 +87,23 @@ struct GpuLight {
     rect_right:       vec3<f32>,   // 64
     shadow_index:     f32,         // 76  影スロット（-1=影なし / dir:0=CSM有効 / spot:0..3=レイヤ）
     rect_up:          vec3<f32>,   // 80
-    _pad1:            f32,         // 92
+    soft_radius:      f32,         // 92  ソフト影の見込み半径（Phase R8 ソフトシャドウ）
+                                   //     directional: tan(角径) の無次元スロープ（Rust 側で度→tan 変換済み）
+                                   //     point/spot/rect: 光源のワールド半径（シェーダで radius/距離＝見込み角に換算）
+                                   //     0 = ハードシャドウ（従来の遮蔽レイ 1 本）
 }
 
 // count = 有効ライト数、rt_shadows = インラインレイトレ影フラグ（Phase R8, 0/1）。
-// パディングは 16 バイト境界のためのスカラー 2 つ
-// （vec3<u32> を使うと align 16 で構造体が 32 バイトになり Rust 側 16 バイトと不一致になる）。
+// ambient_* は制御可能な環境光（Phase R1.5）。先頭スカラー 4 つで 16 バイト、その後に
+// vec3 の ambient_color（16 バイト境界）＋ ambient_intensity で計 32 バイト。
+// Rust 側 lighting.rs の LightMeta（repr(C), 32 バイト）と厳密に一致させること。
 struct LightMeta {
-    count:      u32,
-    rt_shadows: u32,
-    _pad1:      u32,
-    _pad2:      u32,
+    count:             u32,
+    rt_shadows:        u32,
+    _pad1:             u32,
+    _pad2:             u32,
+    ambient_color:     vec3<f32>,   // 16  環境光の色（リニア RGB）
+    ambient_intensity: f32,         // 28  環境光の強度（0 で完全な暗闇）
 }
 
 @group(4) @binding(0) var<storage, read> u_lights:     array<GpuLight>;
