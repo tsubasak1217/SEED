@@ -12,6 +12,7 @@ pub(crate) mod animator;
 pub(crate) mod lighting;
 pub(crate) mod shadow;
 pub(crate) mod rt_shadow;
+pub(crate) mod post;
 
 pub use uniforms::{CameraUniform, ModelUniform, MaterialUniform, JointUniform, ColorVertex,
                    GpuCullData, FrustumUniform, GizmoVertex};
@@ -28,6 +29,7 @@ pub use lighting::{GpuLight, LightBuffer, LightMeta, MAX_LIGHTS};
 pub use shadow::{ShadowResources, ShadowPlan, ShadowMatricesUbo,
                  CSM_CASCADE_COUNT, MAX_SHADOW_SPOTS, SHADOW_DEPTH_FORMAT};
 pub use rt_shadow::RtShadowResources;
+pub use post::{RtPool, PostContext, VignetteParams, VignetteStage, RT_SCENE_HDR, RT_POST_INTER};
 
 // ============================================================
 //  Renderer 本体
@@ -44,6 +46,14 @@ use winit::window::Window;
 // Depth24PlusStencil8: ステンシルバッファを使用するため結合フォーマットを選択。
 // Hi-Z 深度サンプリング用には DepthOnly ビューを別途作成する。
 pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth24PlusStencil8;
+
+/// シーン描画先の HDR オフスクリーンフォーマット（Phase R3）。
+///
+/// 3D メッシュ・スプライト・ギズモ等のメインパス＋キャンバスオーバーレイを
+/// この Rgba16Float オフスクリーンへ描画し、フルスクリーンのトーンマップパスで
+/// スワップチェーンへ出力する。全「シーン描画」パイプラインのカラーターゲット
+/// フォーマットはこの値に合わせる（スワップチェーンフォーマットではない）。
+pub const HDR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
 /// wgpu の COPY_BYTES_PER_ROW_ALIGNMENT 要件 (256 バイト境界)。
 const COPY_ROW_ALIGNMENT: u32 = 256;
@@ -563,6 +573,110 @@ impl<'r> RenderFrame<'r> {
             occlusion_query_set: None,
             timestamp_writes:    None,
         })
+    }
+
+    /// スワップチェーンの実サーフェスサイズ（ピクセル）を返す。
+    ///
+    /// HDR オフスクリーンをスワップチェーンと 1:1 で確保するために使う。
+    pub fn surface_size(&self) -> (u32, u32) {
+        let s = self.output.texture.size();
+        (s.width, s.height)
+    }
+
+    /// スワップチェーンのカラービューへの参照を返す（トーンマップ出力先）。
+    pub fn swapchain_view(&self) -> &wgpu::TextureView { &self.color_view }
+
+    /// 外部カラービュー（HDR オフスクリーン等）へメインレンダーパスを開始する（Phase R3）。
+    ///
+    /// `begin_render_pass` と同じクリア/深度/ステンシル構成だが、カラーターゲットのみ
+    /// 呼び出し側指定のビュー（Rgba16Float の HDR オフスクリーン）へ差し替える。
+    /// 深度・ステンシルは従来どおり共有深度テクスチャを使う（ID パス等がこの深度を参照する）。
+    pub fn begin_scene_pass_to<'f>(
+        &'f mut self,
+        color_view:  &'f wgpu::TextureView,
+        clear_color: wgpu::Color,
+    ) -> wgpu::RenderPass<'f>
+    where
+        'r: 'f,
+    {
+        self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("Main Render Pass (HDR)"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view:           color_view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load:  wgpu::LoadOp::Clear(clear_color),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: self.depth_view,
+                depth_ops: Some(wgpu::Operations {
+                    load:  wgpu::LoadOp::Clear(1.0),
+                    store: wgpu::StoreOp::Store,
+                }),
+                // begin_render_pass と同じくステンシルを 0 にクリア（アウトライン用）。
+                stencil_ops: Some(wgpu::Operations {
+                    load:  wgpu::LoadOp::Clear(0),
+                    store: wgpu::StoreOp::Store,
+                }),
+            }),
+            occlusion_query_set: None,
+            timestamp_writes:    None,
+        })
+    }
+
+    /// 外部カラービュー（HDR オフスクリーン）へキャンバスオーバーレイパスを開始する（Phase R3）。
+    ///
+    /// `begin_canvas_overlay_pass` と同じ（カラー Load・深度 Clear）だが、カラーターゲットを
+    /// 呼び出し側指定の HDR ビューへ差し替える（メインパスと同じ HDR へ合成する）。
+    pub fn begin_canvas_overlay_pass_to<'f>(
+        &'f mut self,
+        color_view: &'f wgpu::TextureView,
+    ) -> wgpu::RenderPass<'f>
+    where
+        'r: 'f,
+    {
+        self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("Canvas Overlay Pass (HDR)"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view:           color_view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load:  wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: self.depth_view,
+                depth_ops: Some(wgpu::Operations {
+                    load:  wgpu::LoadOp::Clear(1.0),
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: Some(wgpu::Operations {
+                    load:  wgpu::LoadOp::Clear(0),
+                    store: wgpu::StoreOp::Store,
+                }),
+            }),
+            occlusion_query_set: None,
+            timestamp_writes:    None,
+        })
+    }
+
+    /// HDR オフスクリーンをトーンマップ（＋任意ビネット）してスワップチェーンへ出力する（Phase R3）。
+    ///
+    /// メインパス＋キャンバスオーバーレイ（HDR）の後・カメラプレビューブリットの前に呼ぶ。
+    /// `post` の静的リソースと `hdr_view`（RtPool のシーン HDR）を使い、内部のエンコーダで
+    /// フルスクリーンのトーンマップパスを記録する。
+    pub fn tonemap_to_swapchain(
+        &mut self,
+        post:     &PostContext,
+        device:   &wgpu::Device,
+        hdr_view: &wgpu::TextureView,
+        vignette: Option<VignetteStage<'_>>,
+    ) {
+        // self.encoder（可変）と self.color_view（不変）は別フィールドのため同時借用可。
+        post.run(device, &mut self.encoder, hdr_view, &self.color_view, vignette);
     }
 
     /// キャンバスオーバーレイパスを開始する。

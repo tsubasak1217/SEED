@@ -81,6 +81,12 @@ fn fs_main(in: VertOut) -> @location(0) vec4<f32> {
     let at_edge = in.uv.x < bw.x || in.uv.y < bw.y
                || in.uv.x > 1.0 - bw.x || in.uv.y > 1.0 - bw.y;
 
-    let tex_color = textureSample(t_preview, s_preview, in.uv);
+    // プレビューは HDR オフスクリーン（Rgba16Float, Phase R3）のため、ここで
+    // トーンマップ（tonemap_ops.wgsl の輝度ベース Reinhard）を適用してから表示する。
+    // メインシーンのトーンマップパスと同一演算子で見た目を揃える。
+    let hdr       = textureSample(t_preview, s_preview, in.uv);
+    let mapped    = tonemap_apply(hdr.rgb, TONEMAP_REINHARD_LUMA);
+    let tex_color = vec4<f32>(mapped, hdr.a);
+    // ボーダーは表示色（LDR）のためトーンマップ対象外。
     return select(tex_color, BORDER_COLOR, at_edge);
 }

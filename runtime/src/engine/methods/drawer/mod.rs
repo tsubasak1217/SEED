@@ -34,6 +34,8 @@ pub use crate::engine::core::renderer::{
     ShadowResources, ShadowPlan, ShadowDepthPipelines,
     // インラインレイトレ影（Phase R8）
     RtShadowResources,
+    // HDR ポストプロセス土台（Phase R3）
+    PostContext,
 };
 
 // 描画関数
@@ -83,6 +85,10 @@ pub struct DrawContext {
     /// DrawContext は `&self` で共有参照されるため、フレーム内で BLAS/TLAS を再構築する
     /// （`&mut` が要る）には内部可変性が必要。model_cache と同じく RefCell で包む。
     pub rt_shadow:        Option<RefCell<RtShadowResources>>,
+    /// HDR ポストプロセスの静的リソース一式（Phase R3）。
+    /// トーンマップ／ビネットのパイプライン・共有サンプラー・既定マスクを保持する。
+    /// 動的なレンダーターゲット（HDR オフスクリーン等）は App 側の RtPool が持つ。
+    pub post:             PostContext,
     /// パス → 解析済み CPU モデルのキャッシュ。
     /// 同じパスのモデルを繰り返し build_actor/rebuild するときにディスク読み込みとパースを省く。
     pub model_cache:      RefCell<HashMap<String, Arc<Model>>>,
@@ -95,11 +101,16 @@ impl DrawContext {
     pub fn new(
         device:         Arc<wgpu::Device>,
         queue:          Arc<wgpu::Queue>,
+        scene_format:   wgpu::TextureFormat,
         surface_format: wgpu::TextureFormat,
         depth_format:   wgpu::TextureFormat,
         cache:          Option<&wgpu::PipelineCache>,
     ) -> Self {
-        let pipelines = DrawPipelines::new(&device, &queue, surface_format, depth_format, cache);
+        // シーン描画パイプラインは HDR（scene_format）でビルドし、トーンマップ後に
+        // スワップチェーンへ直接描くパスのみ surface_format を使う（Phase R3）。
+        let pipelines = DrawPipelines::new(&device, &queue, scene_format, surface_format, depth_format, cache);
+        // HDR ポストプロセスの静的リソース（トーンマップ／ビネットのパイプライン等）。
+        let post      = PostContext::new(&device, &queue, scene_format, surface_format, cache);
         let defaults  = DefaultTex::new(&device, &queue);
         // シャドウリソース（深度配列・比較サンプラー・シャドウ行列 UBO）を先に生成し、
         // ライトバッファが group 4 の複合 BindGroup（ライト binding 0/1 ＋
@@ -121,6 +132,7 @@ impl DrawContext {
             light_buffer,
             shadow,
             rt_shadow,
+            post,
             model_cache:      RefCell::new(HashMap::new()),
             sprite_tex_cache: RefCell::new(HashMap::new()),
         }

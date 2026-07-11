@@ -1,0 +1,15 @@
+# post_vignette.toml — ビネット ポストパス（サンプル実装）
+# ポストパス抽象の実証用（Phase R3）。入力テクスチャ＋マスク＋パラメータ UBO を取り、
+# フルスクリーン三角形で処理する。トーンマップ前段に挿すため出力は HDR 中間ターゲット
+# （PostPipeline 構築時に渡すフォーマット = Rgba16Float）へ解決される。
+
+shader_sources = ["fullscreen.wgsl", "post_vignette.wgsl"]
+vertex_entry   = "fs_vs"
+fragment_entry = "vig_fs"
+vertex_slots   = []
+
+topology     = "TriangleList"
+cull_mode    = "None"
+color_format = "surface"
+blend        = "Replace"
+no_depth     = true

@@ -1,4 +1,5 @@
-shader_sources  = ["camera_preview_blit.wgsl"]
+# tonemap_ops.wgsl を連結して HDR プレビューをトーンマップする（Phase R3）。
+shader_sources  = ["tonemap_ops.wgsl", "camera_preview_blit.wgsl"]
 vertex_entry    = "vs_main"
 fragment_entry  = "fs_main"
 vertex_slots    = []

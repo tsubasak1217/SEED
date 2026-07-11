@@ -64,9 +64,12 @@ impl App {
             DEFAULT_CAMERA_POSITION[2],
         );
 
+        // scene_format = HDR オフスクリーン（Rgba16Float）。シーン描画パイプラインは
+        // これでビルドし、トーンマップ後の直描き（プレビューブリット）のみ surface_format。
         let ctx = DrawContext::new(
             renderer.device(),
             renderer.queue(),
+            crate::engine::core::renderer::HDR_FORMAT,
             renderer.surface_format(),
             renderer.depth_format(),
             renderer.pipeline_cache(),
@@ -93,15 +96,18 @@ impl App {
             use crate::engine::core::font::icon_overlay::IconOverlay;
             let dev = &self.draw_ctx.as_ref().unwrap().device;
             let que = &self.draw_ctx.as_ref().unwrap().queue;
+            // 軸ギズモ・アイコンオーバーレイはメインパス（HDR オフスクリーン）へ描くため
+            // HDR_FORMAT でビルドする（Phase R3）。
+            let scene_fmt = crate::engine::core::renderer::HDR_FORMAT;
             self.axis_gizmo = Some(AxisGizmo::new(
                 dev,
-                renderer.surface_format(),
+                scene_fmt,
                 renderer.depth_format(),
             ));
             self.icon_overlay = Some(IconOverlay::new(
                 dev,
                 que,
-                renderer.surface_format(),
+                scene_fmt,
                 renderer.depth_format(),
             ));
             eprintln!("[SEED INIT] axis_gizmo + icon_overlay created");
@@ -317,7 +323,12 @@ impl App {
         let Ok(json) = asset_fs::read_string("assets://project_settings.json") else { return };
         let Ok(v) = serde_json::from_str::<serde_json::Value>(&json) else { return };
         self.rt_shadows = v["rt_shadows"].as_bool().unwrap_or(false);
-        eprintln!("[SEED INIT] graphics settings loaded  rt_shadows={}", self.rt_shadows);
+        // ビネットポストパス（Phase R3, 既定 OFF）。キーが無ければ false のまま。
+        self.post_vignette_enabled = v["post_vignette"].as_bool().unwrap_or(false);
+        eprintln!(
+            "[SEED INIT] graphics settings loaded  rt_shadows={} post_vignette={}",
+            self.rt_shadows, self.post_vignette_enabled,
+        );
     }
 
     pub(super) fn load_play_scene(&mut self) {

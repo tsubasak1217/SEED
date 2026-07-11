@@ -27,6 +27,9 @@ fn get_shader_source(name: &str) -> &'static str {
         "sprite_outline.wgsl"        => include_str!("shaders/sprite_outline.wgsl"),
         "canvas_id.wgsl"             => include_str!("shaders/canvas_id.wgsl"),
         "camera_preview_blit.wgsl"   => include_str!("shaders/camera_preview_blit.wgsl"),
+        // トーンマップ演算子（純関数）。カメラプレビューブリットが HDR プレビューを
+        // トーンマップするために連結する（Phase R3）。
+        "tonemap_ops.wgsl"           => include_str!("shaders/tonemap_ops.wgsl"),
         "bar_fill.wgsl"              => include_str!("shaders/bar_fill.wgsl"),
         other => panic!("unknown shader source: {other}"),
     }
@@ -946,11 +949,19 @@ impl DrawPipelines {
     pub fn new(
         device:         &wgpu::Device,
         queue:          &wgpu::Queue,
+        scene_format:   wgpu::TextureFormat,
         surface_format: wgpu::TextureFormat,
         depth_format:   wgpu::TextureFormat,
         cache:          Option<&wgpu::PipelineCache>,
     ) -> Self {
-        let sf = surface_format;
+        // scene_format: シーン描画先の HDR オフスクリーンフォーマット（Rgba16Float, Phase R3）。
+        //   3D メッシュ・スプライト・ギズモ・アウトライン・帯塗り等、メインパス／キャンバス
+        //   オーバーレイへ描くパイプラインはすべてこのフォーマットを使う。
+        // surface_format: スワップチェーンフォーマット。トーンマップ後に直接描くパス
+        //   （カメラプレビューブリット）のみが使う。
+        // ※ ID パス（Rgba32Float）・深度/シャドウパス（カラーなし）はパイプライン内部で
+        //   固定フォーマットを使うため sf の値に依存しない。
+        let sf = scene_format;
         let df = depth_format;
         // cache を全パイプラインに渡す。
         // 初回は通常コンパイル（15 秒程度）してキャッシュに記録し、
@@ -975,7 +986,8 @@ impl DrawPipelines {
         let sprite              = SpritePipeline::new(device, queue, sf, df, cache);
         let sprite_outline      = SpriteOutlinePipeline::new(device, sf, df, cache);
         let canvas_id           = CanvasIdPipeline::new(device, queue, df, cache);
-        let camera_preview_blit = CameraPreviewBlitPipeline::new(device, sf, df, cache);
+        // カメラプレビューブリットはトーンマップ後にスワップチェーンへ直接描くため surface_format。
+        let camera_preview_blit = CameraPreviewBlitPipeline::new(device, surface_format, df, cache);
         let bar_fill            = BarFillPipeline::new(device, sf, df, cache);
         Self { mesh, skinned_mesh, rt, unlit_line, cull, skin_compute, depth_prepass, shadow_depth, id_pass, outline, sprite, sprite_outline, canvas_id, camera_preview_blit, bar_fill }
     }

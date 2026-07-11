@@ -129,14 +129,18 @@ impl CameraPreviewResources {
         width:  u32,
         height: u32,
     ) -> Self {
-        // オフスクリーンカラーテクスチャ（Bgra8UnormSrgb: スワップチェーンと同フォーマット）
+        // オフスクリーンカラーテクスチャ（HDR: Rgba16Float）。
+        // Phase R3 でメッシュシェーダから Reinhard を撤去したため、プレビューも HDR で
+        // 描画し、ブリット時（camera_preview_blit.wgsl）にトーンマップして表示する。
+        // メインシーンのパイプラインは HDR_FORMAT でビルドされるため、プレビューの
+        // レンダーターゲットも同フォーマットに揃える必要がある。
         let color_texture = device.create_texture(&wgpu::TextureDescriptor {
             label:           Some("Camera Preview Color"),
             size:            wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
             mip_level_count: 1,
             sample_count:    1,
             dimension:       wgpu::TextureDimension::D2,
-            format:          wgpu::TextureFormat::Bgra8UnormSrgb,
+            format:          crate::engine::core::renderer::HDR_FORMAT,
             usage:           wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats:    &[],
         });
@@ -570,6 +574,16 @@ pub struct App {
     /// Edit モードかつシーン世界線（world_line = 0）でのみ参照される。
     edit_view_mode: EditViewMode,
 
+    // ── HDR ポストプロセス（Phase R3）────────────────────────────
+    /// 名前付きレンダーターゲットプール（シーン HDR オフスクリーン等の確保・再利用）。
+    /// 毎フレーム ensure でサーフェスサイズに追従する。静的リソース（トーンマップ等の
+    /// パイプライン）は DrawContext.post が持つ。
+    rt_pool: crate::engine::core::renderer::RtPool,
+    /// ビネットポストパスの有効フラグ（デフォルト OFF）。
+    /// project_settings.json の `post_vignette`（bool, 既定 false）を起動時に読み込む。
+    /// 有効時はトーンマップ前段にビネットを挿す（ポストパスチェーンの実証）。
+    post_vignette_enabled: bool,
+
     // ── カメラプレビュー ─────────────────────────────────────────
     /// カメラアクター選択時のビューポートプレビュー描画リソース。
     /// 選択時に初期化され、選択解除時には None のまま。
@@ -894,6 +908,8 @@ impl App {
             canvas_edit_sessions:  HashMap::new(),
             canvas_screen_space_overlay: false,
             edit_view_mode:              EditViewMode::View3D,
+            rt_pool:                     crate::engine::core::renderer::RtPool::new(),
+            post_vignette_enabled:       false,
             camera_preview:              None,
             camera_preview_target_size:  None,
             camera_gizmo:                None,

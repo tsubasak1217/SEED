@@ -213,13 +213,10 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     let hdr_color = ambient + Lo + emissive;
 
-    // 輝度ベース Reinhard トーンマッピング（HDR → [0, 1] リニア空間）
-    // チャンネル毎 Reinhard では高輝度時に彩度が失われるため、
-    // 輝度で Reinhard した後スケールを乗算して色相を保持する。
-    let luma   = dot(hdr_color, vec3<f32>(0.2126, 0.7152, 0.0722));
-    let mapped = hdr_color * (1.0 / (luma + 1.0));
-
-    // ガンマ補正は sRGB サーフェス（Bgra8UnormSrgb）に委ねる。
-    // GPU がレンダーターゲット書き込み時に linear → sRGB エンコードを自動適用する。
-    return vec4<f32>(mapped, base_color.a);
+    // トーンマッピングは撤去し、リニア HDR 色をそのまま HDR オフスクリーン
+    // （Rgba16Float, renderer::HDR_FORMAT）へ出力する（Phase R3）。
+    // 輝度ベース Reinhard は全メッシュシェーダから撤去され、フルスクリーンの
+    // トーンマップパス（post_tonemap.wgsl）へ一元化された。ガンマ補正（sRGB
+    // エンコード）はトーンマップ出力先のスワップチェーンが担う。
+    return vec4<f32>(hdr_color, base_color.a);
 }

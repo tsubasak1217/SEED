@@ -2545,6 +2545,34 @@ impl App {
                         )
                     } else { None };
 
+                    // ── HDR オフスクリーンの確保（Phase R3）──────────────
+                    // シーン（メインパス＋キャンバスオーバーレイ）を Rgba16Float の HDR
+                    // オフスクリーンへ描画し、後段のトーンマップパスでスワップチェーンへ出力する。
+                    // ビネット有効時はトーンマップ前段用の HDR 中間も確保する。
+                    // ※ ensure（&mut rt_pool）を view 取得（&rt_pool）より前に済ませ、ビュー借用が
+                    //   メインパス〜キャンバスオーバーレイ〜トーンマップの全区間で安定するようにする。
+                    //   hdr_view/inter_view はメインパスのブロック外でも参照するため、ここで宣言する。
+                    let (surf_w, surf_h) = frame.surface_size();
+                    let vignette_on = self.post_vignette_enabled;
+                    self.rt_pool.ensure(
+                        &draw_ctx.device,
+                        crate::engine::core::renderer::RT_SCENE_HDR,
+                        surf_w, surf_h,
+                        crate::engine::core::renderer::HDR_FORMAT,
+                    );
+                    if vignette_on {
+                        self.rt_pool.ensure(
+                            &draw_ctx.device,
+                            crate::engine::core::renderer::RT_POST_INTER,
+                            surf_w, surf_h,
+                            crate::engine::core::renderer::HDR_FORMAT,
+                        );
+                    }
+                    let hdr_view   = self.rt_pool.view(crate::engine::core::renderer::RT_SCENE_HDR);
+                    let inter_view = if vignette_on {
+                        Some(self.rt_pool.view(crate::engine::core::renderer::RT_POST_INTER))
+                    } else { None };
+
                     // ── メインレンダーパス ────────────────
                     let _perf_t_main = std::time::Instant::now();
                     {
@@ -2619,7 +2647,7 @@ impl App {
                             .map(|r| &r.bind_group)
                             .unwrap_or(&draw_ctx.light_buffer.bind_group);
 
-                        let mut pass = frame.begin_render_pass(clear_color);
+                        let mut pass = frame.begin_scene_pass_to(hdr_view, clear_color);
 
                         // LetterBox / PillarBox 時: ビューポート設定前に帯エリアを帯カラーで塗る。
                         // LoadOp::Clear はサーフェス全体をクリアするため、ゲーム以外のエリアを
@@ -3053,7 +3081,9 @@ impl App {
                     // アクター編集タブは camera_buf が 2D なのでメインパスで済む。
                     if scene_canvas_ss {
                         if let Some(canvas_cam_buf) = self.canvas_overlay_camera_buf.as_ref() {
-                            let mut overlay_pass = frame.begin_canvas_overlay_pass();
+                            // キャンバスオーバーレイもメインシーンと同じ HDR オフスクリーンへ合成する
+                            // （Phase R3）。トーンマップは後段で一元適用する。
+                            let mut overlay_pass = frame.begin_canvas_overlay_pass_to(hdr_view);
 
                             // 前面ゾーンの 2D キャンバススプライト
                             //（アウトラインより前に描画してアウトラインを前面に）。
@@ -3136,6 +3166,30 @@ impl App {
                             }
 
                         }
+                    }
+
+                    // ── トーンマップ（HDR → スワップチェーン, Phase R3）──────────
+                    // メインパス＋キャンバスオーバーレイ（HDR オフスクリーン）の後、
+                    // カメラプレビューブリット（トーンマップ後のスワップチェーンへ直描き）の前に
+                    // 一元的にトーンマップする。ビネット有効時はトーンマップ前段に挿す
+                    //（チェーン実行: hdr → ビネット(HDR中間) → トーンマップ(スワップチェーン)）。
+                    {
+                        // ビネット強度（土台のサンプル値。将来はプロジェクト設定でデータ駆動化）。
+                        const VIGNETTE_INTENSITY: f32 = 0.4;
+                        let vignette_stage = inter_view.map(|iv| {
+                            crate::engine::core::renderer::VignetteStage {
+                                inter_view: iv,
+                                params: crate::engine::core::renderer::VignetteParams {
+                                    intensity: VIGNETTE_INTENSITY,
+                                    ..Default::default()
+                                },
+                                // マスク未指定（全面適用）。任意のマスクをここで渡せる設計。
+                                mask: None,
+                            }
+                        });
+                        frame.tonemap_to_swapchain(
+                            &draw_ctx.post, &draw_ctx.device, hdr_view, vignette_stage,
+                        );
                     }
 
                     // ── カメラプレビューブリット（選択カメラがある場合のみ）──────
