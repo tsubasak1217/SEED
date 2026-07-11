@@ -99,13 +99,39 @@
 - インスペクタ: スロット一覧＋.matのD&D割当＋主要値のインライン編集。ProjectPanelで.mat新規作成。
 - 受入: マルチメッシュ/マルチマテリアルのglTFで、特定スロットだけ色や粗さを差し替えられる。
 
-### Phase R8: インラインRT影（品質オプション） 【状況: 未着手】
+### Phase R8: インラインRT影（品質オプション） 【状況: 実装済み（実機検証待ち, v1ハードシャドウ）】
 - EXPERIMENTAL_RAY_TRACING_ACCELERATION_STRUCTURE / EXPERIMENTAL_RAY_QUERY を要求する
   「RT対応デバイス」初期化経路を追加（非対応GPUは自動でシャドウマップへフォールバック）。
 - BLAS（メッシュごと）/TLAS（フレームごと更新）の構築・更新管理が工数の本体。
 - 影解決: ライティング時に rayQuery で遮蔽判定（シャドウマップの代替）。rect/pointの
   ソフトシャドウはRT側が得意（面光源サンプリング）。
 - 実験的APIのため、wgpu更新で追従コストが発生しうる点を認識しておく。
+
+#### 実装メモ（2026-07, 実機検証待ち）
+- リソース: `renderer/rt_shadow.rs`（`RtShadowResources`）。BLASキャッシュ（source_path+
+  mesh+prim 粒度, 非スキンのみ, 初回のみ構築）＋TLAS（`MAX_RT_INSTANCES=4096`, 毎フレーム
+  cast_shadows=true の全インスタンス＝カメラカリング前から再構築）。RT対応フラグは
+  グローバル `rt_shadow::set/rt_shadows_supported`（`renderer/mod.rs` で確定, 起動ログ
+  `[SEED RT]`）。BLAS入力は既存頂点/インデックスバッファに `BLAS_INPUT` 用途を足す
+  （対応GPUのみ, 位置は Vertex 先頭 offset0 の Float32x3・ストライド72）。
+- 能力ベースの静的パイプライン選択＋実行時フラグ設計: RT対応時は常に RT バリアント
+  パイプライン（`mesh_rt.toml`/`skinned_mesh_rt.toml`, group4 binding6 に
+  `acceleration_structure` を追加。グループ数は5維持で R2 の起動時アサートに適合）を使い、
+  設定 `rt_shadows` の オン/オフは `LightMeta.rt_shadows` フラグでフラグメントが実行時分岐
+  （RT ↔ シャドウマップ）。→ 設定変更でパイプライン差し替え不要（features は起動時固定要求）。
+- シェーダ: `shader_fragment.wgsl` のライトループが `rt_shadow_enabled()`/`rt_shadow_factor()`
+  を呼ぶ。実体は連結される `rt_shadow_on.wgsl`（accel宣言＋rayQuery, 有効時は全ライト種で
+  遮蔽レイ1本＝ハードシャドウ。tmax は directional=大定数/局所光=ライト距離、自己交差防止に
+  法線オフセット＋tmin）と `rt_shadow_off.wgsl`（スタブ, 常にシャドウマップ経路）が供給。
+  非対応GPUは `rt_shadow_off.wgsl` 側のみをロードし従来シェーダが完全に無変更で動作。
+  naga parse+validate（RAY_QUERYケイパビリティ）を `rt_shadow.rs` の #[test] で全4バリアント検証。
+- 反映経路: プロジェクト設定 `rt_shadows`(bool, 既定false)→起動時 `load_graphics_settings`
+  で `App.rt_shadows` へ。エディタのチェックボックス→IPC `RT_SHADOWS:0/1`→`SetRtShadows`
+  で実行中切替（`App.rt_shadows`）。TLAS再構築/RT用BindGroup bind は rt_on 時のみ＝RT無効時
+  コスト増ゼロ。非対応GPUでONにしても `pipelines.rt=None` のためシャドウマップ継続。
+- TODO（R8残）: rect/point のソフトシャドウ（面光源の複数サンプル。v1はハード1本）・
+  スキンメッシュのRT影（スキン済み頂点からのBLAS毎フレーム再構築）・カメラプレビュー/
+  ギズモモデルのRT影（現状は従来パイプライン固定で影を受けない）・実機での視覚検証。
 
 ### 継続タスク（全フェーズ共通）
 - frame_renderer.rs の該当パスを触るたびにモジュール分割（passes/ サブフォルダへ）。

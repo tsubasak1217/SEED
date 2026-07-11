@@ -227,14 +227,18 @@ fn normalize(v: [f32; 3]) -> [f32; 3] {
 
 /// ライト配列のメタ情報 uniform（16 bytes）。
 ///
-/// count のみ意味を持ち、残りは 16 バイト境界のためのパディング。
+/// count と rt_shadows が意味を持ち、残りは 16 バイト境界のためのパディング。
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct LightMeta {
     /// 有効なライト数（シェーダはこの数だけループする）。
-    pub count: u32,
+    pub count:      u32,
+    /// インラインレイトレ影の有効フラグ（Phase R8, 0=無効/1=有効）。
+    /// RT 対応 GPU でのみ RT パイプラインが読む。有効時は全ライト種で遮蔽レイを飛ばし、
+    /// 無効時（および RT 非対応パイプライン）は従来のシャドウマップ経路を使う。
+    pub rt_shadows: u32,
     /// アライメント用パディング。
-    pub _pad:  [u32; 3],
+    pub _pad:       [u32; 2],
 }
 
 // ─── LightBuffer ─────────────────────────────────────────────
@@ -269,7 +273,7 @@ impl LightBuffer {
             usage:    wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
 
-        let init_meta = LightMeta { count: 0, _pad: [0; 3] };
+        let init_meta = LightMeta { count: 0, rt_shadows: 0, _pad: [0; 2] };
         let meta_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label:    Some("Light Meta Uniform"),
             contents: bytemuck::bytes_of(&init_meta),
@@ -298,13 +302,47 @@ impl LightBuffer {
     ///
     /// storage 配列の未使用スロットは前フレームの値が残るが、meta.count で
     /// ループ範囲を制限するためシェーディングには影響しない。
-    pub fn update(&self, queue: &wgpu::Queue, lights: &[GpuLight]) {
+    ///
+    /// - `rt_shadows`: このフレームでインラインレイトレ影を使うか（Phase R8）。
+    ///   RT パイプラインのフラグメントはこの値でシャドウマップ/RT を実行時分岐する。
+    pub fn update(&self, queue: &wgpu::Queue, lights: &[GpuLight], rt_shadows: bool) {
         let count = lights.len().min(MAX_LIGHTS);
         if count > 0 {
             queue.write_buffer(&self.lights_buffer, 0, bytemuck::cast_slice(&lights[..count]));
         }
-        let meta = LightMeta { count: count as u32, _pad: [0; 3] };
+        let meta = LightMeta {
+            count:      count as u32,
+            rt_shadows: if rt_shadows { 1 } else { 0 },
+            _pad:       [0; 2],
+        };
         queue.write_buffer(&self.meta_buffer, 0, bytemuck::bytes_of(&meta));
+    }
+
+    /// RT 影用の group 4 複合 BindGroup を生成する（Phase R8, RT 対応時のみ）。
+    ///
+    /// 通常の bind group（binding 0〜5）に TLAS（binding 6）を加えたもの。
+    /// ライトバッファ・シャドウ資源は通常 BG と同一のものを共有し、TLAS のみ追加する。
+    /// `rt_lights_bgl` は mesh_rt パイプライン由来（acceleration_structure を含む group 4）。
+    pub fn create_rt_bind_group(
+        &self,
+        device:        &wgpu::Device,
+        rt_lights_bgl: &wgpu::BindGroupLayout,
+        shadow:        &ShadowResources,
+        tlas:          &wgpu::Tlas,
+    ) -> wgpu::BindGroup {
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label:   Some("Lights+Shadow+TLAS BG (group 4, RT)"),
+            layout:  rt_lights_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: self.lights_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: self.meta_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&shadow.dir_array_view) },
+                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&shadow.spot_array_view) },
+                wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::Sampler(&shadow.sampler) },
+                wgpu::BindGroupEntry { binding: 5, resource: shadow.ubo.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::AccelerationStructure(tlas) },
+            ],
+        })
     }
 }
 

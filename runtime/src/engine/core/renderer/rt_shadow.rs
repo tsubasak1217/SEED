@@ -1,0 +1,322 @@
+// ============================================================
+//  rt_shadow.rs — インラインレイトレ影の加速構造管理（Phase R8）
+//
+//  「品質オプション」としてのインラインレイトレ影を提供する。RT 対応 GPU
+//  （EXPERIMENTAL_RAY_QUERY + EXPERIMENTAL_RAY_TRACING_ACCELERATION_STRUCTURE）
+//  でのみ有効化され、非対応 GPU では一切のリソースを生成せず従来の
+//  シャドウマップ経路（renderer/shadow.rs）が完全に無変更で動作する。
+//
+//  【役割分担（ECS/単一責任）】
+//    - 本モジュール: BLAS（メッシュプリミティブ単位）と TLAS（フレーム単位）の
+//      構築・キャッシュ・更新、および RT 影サンプリング用の group 4 複合
+//      BindGroup（既存ライト/シャドウ binding 0〜5 ＋ TLAS binding 6）の保持。
+//    - frame_renderer 側は「キャスター（GpuModel・バッチ）を渡して
+//      prepare_and_build を呼ぶ」だけに留める。
+//
+//  【設計方針】
+//    - シェーダバリアントは GPU 能力で静的に選ぶ（RT 対応時は常に RT パイプライン）。
+//      設定 rt_shadows のオン/オフは LightMeta.rt_shadows フラグで実行時切替する。
+//      → 設定変更でパイプラインを差し替える必要がない（再起動不要）。
+//    - BLAS は「source_path + メッシュ index + プリミティブ index」粒度で一度だけ構築し
+//      キャッシュする（非スキンのみ）。TLAS は cast_shadows=true の全インスタンス
+//      （カメラカリング前）から毎フレーム再構築する（画面外キャスターも影を落とせる）。
+//
+//  【v1 の割り切り（TODO）】
+//    - スキンメッシュは対象外（TLAS に入れない）。スキン済み頂点からの BLAS 毎フレーム
+//      再構築が必要（TODO）。
+//    - rect/point のソフトシャドウ（複数サンプル面光源）は未対応。v1 はハード 1 本。
+// ============================================================
+
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use wgpu::{
+    AccelerationStructureFlags, AccelerationStructureGeometryFlags,
+    AccelerationStructureUpdateMode, BlasBuildEntry, BlasGeometries,
+    BlasGeometrySizeDescriptors, BlasTriangleGeometry, BlasTriangleGeometrySizeDescriptor,
+    CreateBlasDescriptor, CreateTlasDescriptor, TlasInstance, TlasPackage,
+};
+
+use super::gpu_resources::{GpuModel, GpuPrimitive, InstancedModelBatch};
+use super::lighting::LightBuffer;
+use super::shadow::ShadowResources;
+
+// ─── グローバル対応フラグ ────────────────────────────────────
+//
+// デバイス初期化（renderer/mod.rs）で 1 回だけ確定させる。gpu_resources が
+// 頂点/インデックスバッファへ BLAS_INPUT 用途を付与するか判断するために参照し、
+// DrawContext が RT パイプライン/リソースを生成するか判断するためにも参照する。
+static RT_SHADOWS_SUPPORTED: AtomicBool = AtomicBool::new(false);
+
+/// RT 対応フラグを設定する（デバイス初期化時に 1 回）。
+pub fn set_rt_shadows_supported(v: bool) {
+    RT_SHADOWS_SUPPORTED.store(v, Ordering::Relaxed);
+}
+
+/// RT 対応フラグを取得する。
+pub fn rt_shadows_supported() -> bool {
+    RT_SHADOWS_SUPPORTED.load(Ordering::Relaxed)
+}
+
+// ─── 定数 ────────────────────────────────────────────────────
+
+/// TLAS に格納できるインスタンス（キャスター×メッシュノードプリミティブ）の上限。
+/// これを超えるキャスターは影を落とさない（オーバーフロー時に 1 回だけ警告）。
+pub const MAX_RT_INSTANCES: u32 = 4096;
+
+/// メッシュ頂点 1 個のバイトストライド（Vertex 構造体サイズ）。
+/// 位置は各頂点の先頭（offset 0）の Float32x3。BLAS はこのストライドで位置のみを読む。
+const VERTEX_STRIDE: wgpu::BufferAddress =
+    std::mem::size_of::<crate::engine::core::loader::model::Vertex>() as wgpu::BufferAddress;
+
+// ─── BLAS キャッシュキー ─────────────────────────────────────
+
+/// BLAS を一意に識別するキー（共有モデルパス＋メッシュ index＋プリミティブ index）。
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct BlasKey {
+    source_path: String,
+    mesh_idx:    usize,
+    prim_idx:    usize,
+}
+
+impl BlasKey {
+    fn new(source_path: &str, mesh_idx: usize, prim_idx: usize) -> Self {
+        Self { source_path: source_path.to_string(), mesh_idx, prim_idx }
+    }
+}
+
+// ─── RtShadowResources ───────────────────────────────────────
+
+/// RT 影の加速構造一式（RT 対応 GPU でのみ生成される）。DrawContext が Option で保持。
+pub struct RtShadowResources {
+    /// TLAS（安全版パッケージ）。毎フレーム instances を書き換えて再ビルドする。
+    /// TLAS 本体は生成後不変（同一リソースを再ビルドで更新）のため、下記 bind group は
+    /// 起動時 1 回生成で使い回せる。
+    tlas_package: TlasPackage,
+    /// BLAS キャッシュ（キー = source_path+mesh+prim, 非スキンのみ）。初回のみ構築。
+    blas_cache:   HashMap<BlasKey, wgpu::Blas>,
+    /// group 4 複合 BindGroup（ライト binding0/1 ＋ シャドウ binding2〜5 ＋ TLAS binding6）。
+    /// mesh_rt / skinned_mesh_rt パイプラインの描画で bind する。
+    /// この BindGroup を実際に bind するのは RT 影オン時のみ。オン時は毎フレーム
+    /// メインパス直前に TLAS を（再）ビルドするため、bind 時点で必ずビルド済みが保証される。
+    pub bind_group: wgpu::BindGroup,
+    /// インスタンス上限超過の警告を出したか（ログ爆発防止）。
+    warned_overflow: bool,
+}
+
+impl RtShadowResources {
+    /// RT 影リソースを生成する（RT 対応時のみ呼ぶこと）。
+    ///
+    /// - `rt_lights_bgl`: mesh_rt パイプラインの group 4 レイアウト
+    ///   （ライト＋シャドウ＋TLAS の複合。binding 6 に acceleration_structure を含む）。
+    /// - `shadow`:        シャドウ資源（binding 2〜5 を供給）。
+    /// - `light_buffer`:  ライトバッファ（binding 0/1 を供給）。
+    pub fn new(
+        device:        &wgpu::Device,
+        rt_lights_bgl: &wgpu::BindGroupLayout,
+        shadow:        &ShadowResources,
+        light_buffer:  &LightBuffer,
+    ) -> Self {
+        // TLAS を生成する。フラグは高速ビルド優先（毎フレーム再構築のため）。
+        let tlas = device.create_tlas(&CreateTlasDescriptor {
+            label:         Some("RT Shadow TLAS"),
+            max_instances: MAX_RT_INSTANCES,
+            flags:         AccelerationStructureFlags::PREFER_FAST_BUILD,
+            update_mode:   AccelerationStructureUpdateMode::Build,
+        });
+
+        // TLAS を参照する group 4 複合 BindGroup を生成する。
+        // as_binding() は &tlas を借用するため、TlasPackage へ move する前に生成する。
+        // 生成された bind group は内部で TLAS リソース（Arc）を保持するため、以後
+        // TlasPackage へ move しても有効であり、再ビルドで内容が更新されても使い回せる。
+        let bind_group = light_buffer.create_rt_bind_group(device, rt_lights_bgl, shadow, &tlas);
+
+        let tlas_package = TlasPackage::new(tlas);
+
+        Self {
+            tlas_package,
+            blas_cache: HashMap::new(),
+            bind_group,
+            warned_overflow: false,
+        }
+    }
+
+    /// BLAS（新規のみ）と TLAS を command encoder へ記録する。
+    ///
+    /// - `casters`: (source_path, GpuModel, バッチ) の並び。cast_shadows=true で
+    ///   事前フィルタ済み。TLAS へは各バッチの「カメラカリング前・全インスタンス」×
+    ///   「非スキンのメッシュノードプリミティブ」を登録する。
+    ///
+    /// フレーム先頭（シャドウパスの位置）で呼ぶこと。build_acceleration_structures は
+    /// 「BLAS をビルドしてから同一呼び出し内で TLAS が参照する」ことを許すため、
+    /// 新規 BLAS のビルドと TLAS ビルドを 1 回の呼び出しにまとめる。
+    pub fn prepare_and_build(
+        &mut self,
+        device:  &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        casters: &[(&str, &GpuModel, &InstancedModelBatch)],
+    ) {
+        // ── 1. 新規 BLAS の作成対象を収集（キャッシュ未登録の非スキンプリミティブ）──
+        // 借用衝突を避けるため、先に「作成すべきキー＋対象プリミティブ参照」を集める。
+        let mut to_build: Vec<(BlasKey, &GpuPrimitive)> = Vec::new();
+        for (path, gpu, _batch) in casters {
+            for (mesh_idx, mesh) in gpu.meshes.iter().enumerate() {
+                for (prim_idx, prim) in mesh.primitives.iter().enumerate() {
+                    // スキン用頂点を持つプリミティブは v1 対象外
+                    // （静止時姿勢の頂点で BLAS を作っても変形後と一致しないため）。
+                    if prim.skin_vertex_buffer.is_some() { continue; }
+                    let key = BlasKey::new(path, mesh_idx, prim_idx);
+                    if self.blas_cache.contains_key(&key) { continue; }
+                    // 同一フレーム内で同一キーが複数キャスターに現れる場合の重複追加も防ぐ。
+                    if to_build.iter().any(|(k, _)| *k == key) { continue; }
+                    to_build.push((key, prim));
+                }
+            }
+        }
+
+        // ── 2. BLAS を create_blas してキャッシュへ挿入（初回のみ・ログ）──
+        for (key, prim) in &to_build {
+            let blas = create_blas_for_prim(device, prim);
+            self.blas_cache.insert(key.clone(), blas);
+            eprintln!(
+                "[SEED RT] BLAS 構築: {} mesh#{} prim#{}（頂点 {} / インデックス {}）",
+                key.source_path, key.mesh_idx, key.prim_idx, prim.vertex_count, prim.index_count
+            );
+        }
+
+        // ── 3. 新規 BLAS のビルドエントリを構築 ──────────────────
+        // サイズ記述子はビルド呼び出しまで生存させる必要があるため Vec に確保する。
+        let size_descs: Vec<BlasTriangleGeometrySizeDescriptor> =
+            to_build.iter().map(|(_, p)| blas_size_desc(p)).collect();
+        let blas_entries: Vec<BlasBuildEntry> = to_build.iter().enumerate()
+            .map(|(i, (key, prim))| {
+                let blas = self.blas_cache.get(key).unwrap();
+                BlasBuildEntry {
+                    blas,
+                    geometry: BlasGeometries::TriangleGeometries(vec![BlasTriangleGeometry {
+                        size:                    &size_descs[i],
+                        vertex_buffer:           &prim.vertex_buffer,
+                        first_vertex:            0,
+                        vertex_stride:           VERTEX_STRIDE,
+                        index_buffer:            Some(&prim.index_buffer),
+                        first_index:             Some(0),
+                        transform_buffer:        None,
+                        transform_buffer_offset: None,
+                    }]),
+                }
+            })
+            .collect();
+
+        // ── 4. TLAS インスタンスを詰め直す（全 None → キャスター順に登録）──
+        let mut inst_count: usize = 0;
+        {
+            // disjoint フィールド借用: blas_cache（不変）と tlas_package（可変）。
+            let cache = &self.blas_cache;
+            let instances = self.tlas_package
+                .get_mut_slice(0..MAX_RT_INSTANCES as usize)
+                .expect("TLAS スライス範囲は max_instances 以内");
+            for slot in instances.iter_mut() { *slot = None; }
+
+            let mut overflow = false;
+            for (path, _gpu, batch) in casters {
+                batch.rt_enumerate(|mesh_idx, prim_idx, transform| {
+                    if inst_count >= MAX_RT_INSTANCES as usize { overflow = true; return; }
+                    let key = BlasKey::new(path, mesh_idx, prim_idx);
+                    if let Some(blas) = cache.get(&key) {
+                        // custom_data はデバッグ用にインスタンス番号、mask は全ビット（cull なし）。
+                        instances[inst_count] = Some(TlasInstance::new(blas, transform, inst_count as u32, 0xFF));
+                        inst_count += 1;
+                    }
+                });
+                if overflow { break; }
+            }
+
+            if overflow && !self.warned_overflow {
+                self.warned_overflow = true;
+                eprintln!(
+                    "[SEED RT] 警告: RT 影キャスターのインスタンス数が上限 {} を超過しました。\
+                     超過分は影を落としません（MAX_RT_INSTANCES を増やすか対象を減らしてください）",
+                    MAX_RT_INSTANCES
+                );
+            }
+        }
+
+        // ── 5. BLAS（新規）と TLAS を 1 回の呼び出しでビルド ──────
+        encoder.build_acceleration_structures(blas_entries.iter(), std::iter::once(&self.tlas_package));
+    }
+}
+
+// ─── BLAS 構築ヘルパー ───────────────────────────────────────
+
+/// プリミティブ 1 個分の BLAS サイズ記述子を作る。
+///
+/// 位置フォーマットは Float32x3（EXPERIMENTAL_RAY_TRACING_ACCELERATION_STRUCTURE の
+/// 標準対応形式）、インデックスは Uint32。OPAQUE フラグは必須
+/// （naga には candidate intersection が無く、OPAQUE 無しの BLAS は WGSL でヒットしない）。
+fn blas_size_desc(prim: &GpuPrimitive) -> BlasTriangleGeometrySizeDescriptor {
+    BlasTriangleGeometrySizeDescriptor {
+        vertex_format: wgpu::VertexFormat::Float32x3,
+        vertex_count:  prim.vertex_count,
+        index_format:  Some(wgpu::IndexFormat::Uint32),
+        index_count:   Some(prim.index_count),
+        flags:         AccelerationStructureGeometryFlags::OPAQUE,
+    }
+}
+
+/// プリミティブ 1 個分の BLAS を生成する（ビルドは呼び出し側の
+/// build_acceleration_structures で行う）。
+fn create_blas_for_prim(device: &wgpu::Device, prim: &GpuPrimitive) -> wgpu::Blas {
+    let size = blas_size_desc(prim);
+    device.create_blas(
+        &CreateBlasDescriptor {
+            label:       Some("RT Shadow BLAS"),
+            // 静的シーンジオメトリ向けに高速トレース優先（構築は初回のみ）。
+            flags:       AccelerationStructureFlags::PREFER_FAST_TRACE,
+            update_mode: AccelerationStructureUpdateMode::Build,
+        },
+        BlasGeometrySizeDescriptors::Triangles { descriptors: vec![size] },
+    )
+}
+
+// ─── シェーダバリアントの静的検証（naga parse + validate）────────
+//
+// RT バリアント（mesh_rt / skinned_mesh_rt）は RT 対応 GPU の実行時にのみパイプラインが
+// 構築されるため、cargo build だけでは WGSL が検証されない。ここで全 4 バリアントを
+// naga で parse + validate（RAY_QUERY ケイパビリティ付き）し、rayQuery 構文や
+// acceleration_structure 宣言・共有フラグメントの整合性を CI/ローカルビルドで担保する。
+#[cfg(test)]
+mod tests {
+    /// mesh / skinned × RT オン/オフ の 4 バリアントを結合し、naga で parse + validate する。
+    /// 連結順は pipelines/*.toml の shader_sources と一致させること。
+    #[test]
+    fn rt_shader_variants_parse_and_validate() {
+        let common   = include_str!("shaders/shader_common.wgsl");
+        let shadow   = include_str!("shaders/shadow.wgsl");
+        let rt_on    = include_str!("shaders/rt_shadow_on.wgsl");
+        let rt_off   = include_str!("shaders/rt_shadow_off.wgsl");
+        let static_v = include_str!("shaders/shader_static_vertex.wgsl");
+        let skin_v   = include_str!("shaders/shader_skinned_vertex.wgsl");
+        let frag     = include_str!("shaders/shader_fragment.wgsl");
+
+        let variants: [(&str, Vec<&str>); 4] = [
+            ("mesh_rt",         vec![common, shadow, rt_on,  static_v, frag]),
+            ("skinned_mesh_rt", vec![common, shadow, rt_on,  skin_v,   frag]),
+            ("mesh",            vec![common, shadow, rt_off, static_v, frag]),
+            ("skinned_mesh",    vec![common, shadow, rt_off, skin_v,   frag]),
+        ];
+
+        for (name, parts) in variants {
+            let src = parts.join("\n");
+            let module = naga::front::wgsl::parse_str(&src)
+                .unwrap_or_else(|e| panic!("[{name}] WGSL parse 失敗: {e:?}"));
+            let mut validator = naga::valid::Validator::new(
+                naga::valid::ValidationFlags::all(),
+                // 加速構造/レイクエリを使う RT バリアントの検証に RAY_QUERY が必須。
+                naga::valid::Capabilities::RAY_QUERY,
+            );
+            validator
+                .validate(&module)
+                .unwrap_or_else(|e| panic!("[{name}] WGSL validate 失敗: {e:?}"));
+        }
+    }
+}

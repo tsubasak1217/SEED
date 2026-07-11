@@ -16,6 +16,8 @@ fn get_shader_source(name: &str) -> &'static str {
         "shader_skinned_vertex.wgsl" => include_str!("shaders/shader_skinned_vertex.wgsl"),
         "shader_fragment.wgsl"       => include_str!("shaders/shader_fragment.wgsl"),
         "shadow.wgsl"                => include_str!("shaders/shadow.wgsl"),
+        "rt_shadow_off.wgsl"         => include_str!("shaders/rt_shadow_off.wgsl"),
+        "rt_shadow_on.wgsl"          => include_str!("shaders/rt_shadow_on.wgsl"),
         "unlit.wgsl"                 => include_str!("shaders/unlit.wgsl"),
         "gizmo_line.wgsl"            => include_str!("shaders/gizmo_line.wgsl"),
         "depth_prepass.wgsl"         => include_str!("shaders/depth_prepass.wgsl"),
@@ -110,6 +112,63 @@ impl SkinnedMeshPipeline {
         let joint_bgl    = it.next().unwrap(); // group 3
         let _lights_bgl  = it.next().unwrap(); // group 4（LightBuffer は mesh 側 BGL で生成し共用）
         Self { pipeline, camera_bgl, model_bgl, material_bgl, joint_bgl }
+    }
+}
+
+// ============================================================
+//  RtMeshPipelines — RT 影バリアント（Phase R8, RT 対応 GPU のみ）
+// ============================================================
+
+/// mesh / skinned_mesh の RT 影バリアント一式。
+///
+/// 通常パイプラインとの違いは group 4 に TLAS（binding 6, acceleration_structure）が
+/// 加わる点のみ。RT 対応 GPU でのみ生成され、DrawPipelines.rt に Option で保持される。
+/// フラグメントは LightMeta.rt_shadows で RT/シャドウマップを実行時分岐するため、
+/// このパイプラインは「RT 対応時は常に」使い、設定によるパイプライン差し替えは不要。
+pub struct RtMeshPipelines {
+    /// スタティックメッシュ RT パイプライン。
+    pub mesh:       wgpu::RenderPipeline,
+    /// スキンメッシュ RT パイプライン。
+    pub skinned:    wgpu::RenderPipeline,
+    /// group 4 レイアウト（ライト＋シャドウ＋TLAS 複合）。RT 用複合 BindGroup の生成に使う。
+    pub lights_bgl: wgpu::BindGroupLayout,
+    /// mesh RT パイプラインの group 3（空 gap）用 BindGroup（非スキン描画で必須セット）。
+    pub empty_bg3:  wgpu::BindGroup,
+}
+
+impl RtMeshPipelines {
+    /// RT 影バリアントを生成する（RT 対応時のみ呼ぶこと）。
+    ///
+    /// group 4 に acceleration_structure を含む WGSL をリフレクションするため、
+    /// EXPERIMENTAL_RAY_QUERY を有効化したデバイスでのみ成功する。
+    pub fn new(device: &wgpu::Device, sf: wgpu::TextureFormat, df: wgpu::TextureFormat, cache: Option<&wgpu::PipelineCache>) -> Self {
+        // mesh_rt: group 番号順 (0=camera, 1=model, 2=material, 3=gap, 4=lights+shadow+tlas)。
+        let (mesh, bgls_m) =
+            RenderPipelineBuilder::new(device, include_str!("pipelines/mesh_rt.toml"), sf, df)
+                .with_label("mesh_pbr_rt")
+                .with_cache(cache)
+                .build(get_shader_source);
+        // group 番号順に所有権で取り出す。group 3 = 空 gap、group 4 = ライト＋シャドウ＋TLAS。
+        let mut it_m = bgls_m.into_iter();
+        let _camera_bgl   = it_m.next().unwrap(); // group 0
+        let _model_bgl    = it_m.next().unwrap(); // group 1
+        let _material_bgl = it_m.next().unwrap(); // group 2
+        let gap_bgl       = it_m.next().unwrap(); // group 3（空レイアウト）
+        let lights_bgl    = it_m.next().unwrap(); // group 4（ライト＋シャドウ＋TLAS）
+        let empty_bg3 = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label:   Some("Mesh RT Empty BG (group 3)"),
+            layout:  &gap_bgl,
+            entries: &[],
+        });
+
+        // skinned_mesh_rt: レイアウトは (0,1,2,3=joints,4=lights+shadow+tlas)。パイプラインのみ使う。
+        let (skinned, _bgls_s) =
+            RenderPipelineBuilder::new(device, include_str!("pipelines/skinned_mesh_rt.toml"), sf, df)
+                .with_label("skinned_mesh_pbr_rt")
+                .with_cache(cache)
+                .build(get_shader_source);
+
+        Self { mesh, skinned, lights_bgl, empty_bg3 }
     }
 }
 
@@ -866,6 +925,9 @@ impl SpriteOutlinePipeline {
 pub struct DrawPipelines {
     pub mesh:                 MeshPipeline,
     pub skinned_mesh:         SkinnedMeshPipeline,
+    /// RT 影バリアント（Phase R8）。RT 対応 GPU でのみ Some。
+    /// 非対応時は None で、mesh/skinned_mesh の従来パイプラインのみを使う。
+    pub rt:                   Option<RtMeshPipelines>,
     pub unlit_line:           UnlitPipeline,
     pub cull:                 CullPipeline,
     pub skin_compute:         SkinComputePipeline,
@@ -895,6 +957,14 @@ impl DrawPipelines {
         // 2 回目以降はキャッシュから復元するためコンパイルをスキップする。
         let mesh                = MeshPipeline::new(device, sf, df, cache);
         let skinned_mesh        = SkinnedMeshPipeline::new(device, sf, df, cache);
+        // RT 影バリアントは RT 対応 GPU でのみ生成する（非対応時は None＝従来経路のみ）。
+        // acceleration_structure を含むシェーダは非対応デバイスではモジュール作成に失敗し得るため、
+        // 対応判定を通った場合だけビルドする。これにより非対応 GPU は完全に無変更で動作する。
+        let rt = if super::rt_shadow::rt_shadows_supported() {
+            Some(RtMeshPipelines::new(device, sf, df, cache))
+        } else {
+            None
+        };
         let unlit_line          = UnlitPipeline::new(device, sf, df, cache);
         let cull                = CullPipeline::new(device, cache);
         let skin_compute        = SkinComputePipeline::new(device, cache);
@@ -907,6 +977,6 @@ impl DrawPipelines {
         let canvas_id           = CanvasIdPipeline::new(device, queue, df, cache);
         let camera_preview_blit = CameraPreviewBlitPipeline::new(device, sf, df, cache);
         let bar_fill            = BarFillPipeline::new(device, sf, df, cache);
-        Self { mesh, skinned_mesh, unlit_line, cull, skin_compute, depth_prepass, shadow_depth, id_pass, outline, sprite, sprite_outline, canvas_id, camera_preview_blit, bar_fill }
+        Self { mesh, skinned_mesh, rt, unlit_line, cull, skin_compute, depth_prepass, shadow_depth, id_pass, outline, sprite, sprite_outline, canvas_id, camera_preview_blit, bar_fill }
     }
 }

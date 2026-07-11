@@ -59,6 +59,7 @@ public partial class ProjectSettingsWindow : Window
         {
             new("resolution",     "解像度設定", IsImplemented: true),
             new("render_quality", "レンダリング品質"),
+            new("rt_shadows",     "RTシャドウ", IsImplemented: true),
         }),
         // ── オーディオ設定（将来実装）──────────────────────────────
         new("audio", "オーディオ", new()
@@ -147,6 +148,15 @@ public partial class ProjectSettingsWindow : Window
     /// </summary>
     private Dictionary<string, CheckBox> _pluginCheckBoxes = new();
 
+    /// <summary>「RTシャドウ」設定パネルのチェックボックス（未表示のパネルでは null）。</summary>
+    private CheckBox? _rtShadowsCheckBox;
+
+    /// <summary>
+    /// 実行中ランタイムへの IPC 送信口。MainWindow から渡されなかった場合は null になり、
+    /// その場合ライブ切替は行わず保存のみ（次回起動時に反映）となる。
+    /// </summary>
+    private readonly SEEDEditor.Runtime.RuntimeManager? _runtimeManager;
+
     // ── コンストラクタ ────────────────────────────────────────
 
     /// <summary>
@@ -158,7 +168,15 @@ public partial class ProjectSettingsWindow : Window
     /// 現在ビューポートで開いているシーンの絶対パス（未保存なら null）。
     /// シーンマネージャの「現在のシーンを追加」ボタンで使用する。
     /// </param>
-    public ProjectSettingsWindow(string assetsPath, string editorPluginsPath = "", string? currentScenePath = null)
+    /// <param name="runtimeManager">
+    /// 実行中ランタイムへの IPC 送信口（MainWindow が保持するインスタンス）。
+    /// RTシャドウ等のライブ切替設定を即時反映するために使う。未指定時はライブ反映を行わない。
+    /// </param>
+    public ProjectSettingsWindow(
+        string assetsPath,
+        string editorPluginsPath = "",
+        string? currentScenePath = null,
+        SEEDEditor.Runtime.RuntimeManager? runtimeManager = null)
     {
         InitializeComponent();
         _assetsPath        = assetsPath;
@@ -166,6 +184,7 @@ public partial class ProjectSettingsWindow : Window
         _currentScenePath  = currentScenePath;
         _settingsPath      = Path.Combine(assetsPath, "project_settings.json");
         _data              = ProjectSettingsData.LoadFrom(_settingsPath);
+        _runtimeManager    = runtimeManager;
     }
 
     // ── ウィンドウ初期化 ─────────────────────────────────────
@@ -320,6 +339,7 @@ public partial class ProjectSettingsWindow : Window
             "game_name"      => BuildGameNamePanel(),
             "scene_manager"  => BuildSceneManagerPanel(),
             "resolution"     => BuildResolutionPanel(),
+            "rt_shadows"     => BuildRtShadowsPanel(),
             "plugin_manage"  => BuildPluginManagePanel(),
             _                => BuildPlaceholderPanel(GetSubItemLabel(subItemId)),
         };
@@ -791,6 +811,52 @@ public partial class ProjectSettingsWindow : Window
     }
 
     /// <summary>
+    /// 「RTシャドウ」設定パネルを構築して返す。
+    /// チェックボックスの ON/OFF はチェック時に即座に IPC (RT_SHADOWS:1/0) でランタイムへ送信し、
+    /// 実行中のプレビューにライブ反映する（保存前でも確認できる）。保存時にも _data へ反映される。
+    /// </summary>
+    private UIElement BuildRtShadowsPanel()
+    {
+        var panel = new StackPanel();
+
+        panel.Children.Add(BuildPanelHeader(
+            "RTシャドウ",
+            "インラインレイトレーシングによる影描画を有効にします。\n" +
+            "レイトレーシング対応 GPU でのみ効果があります（非対応環境では通常のシャドウマップにフォールバックします）。"));
+
+        panel.Children.Add(new Border
+        {
+            Height     = 1,
+            Background = new SolidColorBrush(Color.FromRgb(0x3A, 0x3A, 0x3A)),
+            Margin     = new Thickness(0, 0, 0, 16),
+        });
+
+        _rtShadowsCheckBox = new CheckBox
+        {
+            Content   = "RTシャドウ（レイトレース影）を有効にする",
+            IsChecked = _data.RtShadows,
+            FontSize  = 12,
+        };
+        // トグル時に即座にランタイムへ IPC 送信し、実行中プレビューへライブ反映する
+        _rtShadowsCheckBox.Checked   += OnRtShadowsChanged;
+        _rtShadowsCheckBox.Unchecked += OnRtShadowsChanged;
+        panel.Children.Add(_rtShadowsCheckBox);
+
+        return panel;
+    }
+
+    /// <summary>
+    /// 「RTシャドウ」チェックボックスの状態変化ハンドラ。
+    /// _data へ即時反映しつつ、実行中ランタイムがあれば IPC で RT_SHADOWS:1/0 を送信する。
+    /// </summary>
+    private void OnRtShadowsChanged(object sender, RoutedEventArgs e)
+    {
+        bool enabled = _rtShadowsCheckBox?.IsChecked == true;
+        _data.RtShadows = enabled;
+        _runtimeManager?.SendToRuntime($"RT_SHADOWS:{(enabled ? "1" : "0")}");
+    }
+
+    /// <summary>
     /// 未実装の設定項目に表示するプレースホルダーパネルを構築して返す。
     /// </summary>
     /// <param name="itemLabel">設定項目のラベル名。</param>
@@ -845,6 +911,10 @@ public partial class ProjectSettingsWindow : Window
         try
         {
             _data.SaveTo(_settingsPath);
+            // 保存確定時にも RTシャドウの状態をランタイムへ送信する
+            // （パネルを開かずデフォルト値のまま保存した場合など、Checked/Unchecked が
+            // 一度も発火していないケースを含めて確実に同期するため）
+            _runtimeManager?.SendToRuntime($"RT_SHADOWS:{(_data.RtShadows ? "1" : "0")}");
             Close();
         }
         catch (Exception ex)
@@ -897,6 +967,10 @@ public partial class ProjectSettingsWindow : Window
                     _data.WindowHeight = Math.Clamp(h, ResolutionMin, ResolutionMax);
             }
         }
+
+        // 「RTシャドウ」パネルのチェック状態を収集する
+        if (_rtShadowsCheckBox is not null)
+            _data.RtShadows = _rtShadowsCheckBox.IsChecked == true;
 
         // プラグイン有効/無効状態を収集する（CheckBox が存在する場合のみ）
         if (_pluginCheckBoxes.Count > 0)

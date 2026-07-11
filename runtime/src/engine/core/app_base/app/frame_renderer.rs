@@ -835,9 +835,14 @@ impl App {
                         shadow_has_casters && saved_shadow_cam.is_some(),
                     );
 
+                    // このフレームで RT 影を使うか（RT 対応 GPU かつ 設定 rt_shadows オン）。
+                    // フラグメントの実行時分岐（LightMeta.rt_shadows）と、後段のメインパスでの
+                    // RT パイプライン/複合 BindGroup 選択の両方に使う（Phase R8）。
+                    let rt_on = draw_ctx.rt_active(self.rt_shadows);
+
                     // ライト配列を GPU へアップロードする（全メッシュ描画が group 4 で共用）。
-                    // メタ（ライト数）も同時に更新される。shadow_index 確定後にアップロードする。
-                    draw_ctx.light_buffer.update(&draw_ctx.queue, &frame_lights);
+                    // メタ（ライト数・RT 影フラグ）も同時に更新される。shadow_index 確定後にアップロードする。
+                    draw_ctx.light_buffer.update(&draw_ctx.queue, &frame_lights, rt_on);
 
                     // シーンモード・アクター編集モード共通: world_line の全 MC を収集する
                     // タプル: (id_base, dfs_id, slot_i, &ModelComponent)
@@ -1231,11 +1236,12 @@ impl App {
                             // モデルを統合バッチで描画（per-MC バッチは使用しない）
                             for (path, sd) in &self.shared_model_batches {
                                 if let Some(&gpu) = gpu_model_by_path.get(path.as_str()) {
+                                    // カメラプレビューは従来パイプライン（RT なし）で描画する。
                                     draw_model_indirect(
                                         &mut preview_pass, gpu, &sd.batch,
                                         &preview_mesh_cam_buf.bind_group,
                                         &draw_ctx.light_buffer.bind_group,
-                                        &draw_ctx.pipelines,
+                                        &draw_ctx.pipelines, None,
                                     );
                                 }
                             }
@@ -2570,6 +2576,30 @@ impl App {
                             }
                         }
 
+                        // ── RT 影の加速構造ビルド（Phase R8, メインパス直前）──────────
+                        // RT 影オン時（rt_on）のみ実行。BLAS（メッシュ単位, 初回のみキャッシュ）と
+                        // TLAS（cast_shadows=true の全インスタンス, カメラカリング前）をこの command
+                        // encoder に記録する。RT 影オフ時は一切ビルドしない（コスト・ログともゼロ）。
+                        // RT 用 BindGroup を bind するのも rt_on のときだけなので、bind 時点で必ず
+                        // このビルドが同フレーム先行しており TLAS はビルド済みが保証される。
+                        if rt_on {
+                            if let Some(rt_cell) = draw_ctx.rt_shadow.as_ref() {
+                                let mut rt = rt_cell.borrow_mut();
+                                let rt_casters: Vec<(
+                                    &str,
+                                    &crate::engine::methods::drawer::GpuModel,
+                                    &crate::engine::methods::drawer::InstancedModelBatch,
+                                )> = self.shared_model_batches.iter()
+                                    .filter(|(path, _)| shadow_caster_paths.contains(path.as_str()))
+                                    .filter_map(|(path, sd)| {
+                                        gpu_model_by_path.get(path.as_str())
+                                            .map(|&gpu| (path.as_str(), gpu, &sd.batch))
+                                    })
+                                    .collect();
+                                rt.prepare_and_build(&draw_ctx.device, frame.encoder_mut(), &rt_casters);
+                            }
+                        }
+
                         let clear_color = if self.mode == RuntimeMode::Play && !self.paused {
                             let [r, g, b, a] = game_clear_color;
                             wgpu::Color { r: r as f64, g: g as f64, b: b as f64, a: a as f64 }
@@ -2578,6 +2608,17 @@ impl App {
                         } else {
                             wgpu::Color { r: 0.1,  g: 0.1,  b: 0.1,  a: 1.0 }
                         };
+                        // RT 影オン時のメインパス用の選択（Phase R8）。
+                        // - rt_draw_ref: RT 影リソースの共有借用（bind_group をパス全体で参照するため保持）。
+                        // - rt_pipes:    RT バリアントパイプライン（Some のとき draw_model_indirect が使う）。
+                        // - scene_lights_bg: メッシュ描画の group 4。RT オン時は TLAS を含む複合 BG。
+                        let rt_draw_ref = if rt_on { draw_ctx.rt_shadow.as_ref().map(|c| c.borrow()) } else { None };
+                        let rt_pipes = if rt_on { draw_ctx.pipelines.rt.as_ref() } else { None };
+                        let scene_lights_bg: &wgpu::BindGroup = rt_draw_ref
+                            .as_ref()
+                            .map(|r| &r.bind_group)
+                            .unwrap_or(&draw_ctx.light_buffer.bind_group);
+
                         let mut pass = frame.begin_render_pass(clear_color);
 
                         // LetterBox / PillarBox 時: ビューポート設定前に帯エリアを帯カラーで塗る。
@@ -2652,8 +2693,8 @@ impl App {
                                 if let Some(&gpu) = gpu_model_by_path.get(path.as_str()) {
                                     draw_model_indirect(
                                         &mut pass, gpu, &sd.batch,
-                                        &camera_buf.bind_group, &draw_ctx.light_buffer.bind_group,
-                                        &draw_ctx.pipelines,
+                                        &camera_buf.bind_group, scene_lights_bg,
+                                        &draw_ctx.pipelines, rt_pipes,
                                     );
                                 }
                             }
@@ -2954,10 +2995,11 @@ impl App {
                         // camera.glb を InstancedModelBatch で描画する
                         if !scene_canvas_ss && !cam_gizmo_actor_mats.is_empty() {
                             if let Some(gizmo) = &self.camera_gizmo {
+                                // カメラギズモモデルは従来パイプライン（RT なし）で描画する。
                                 draw_model_indirect(
                                     &mut pass, &gizmo.gpu_model, &gizmo.batch,
                                     &camera_buf.bind_group, &draw_ctx.light_buffer.bind_group,
-                                    &draw_ctx.pipelines,
+                                    &draw_ctx.pipelines, None,
                                 );
                             }
                         }

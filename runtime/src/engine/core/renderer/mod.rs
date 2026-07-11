@@ -11,6 +11,7 @@ pub(crate) mod skin_system;
 pub(crate) mod animator;
 pub(crate) mod lighting;
 pub(crate) mod shadow;
+pub(crate) mod rt_shadow;
 
 pub use uniforms::{CameraUniform, ModelUniform, MaterialUniform, JointUniform, ColorVertex,
                    GpuCullData, FrustumUniform, GizmoVertex};
@@ -26,6 +27,7 @@ pub use pipeline::{MeshPipeline, SkinnedMeshPipeline, UnlitPipeline, CullPipelin
 pub use lighting::{GpuLight, LightBuffer, LightMeta, MAX_LIGHTS};
 pub use shadow::{ShadowResources, ShadowPlan, ShadowMatricesUbo,
                  CSM_CASCADE_COUNT, MAX_SHADOW_SPOTS, SHADOW_DEPTH_FORMAT};
+pub use rt_shadow::RtShadowResources;
 
 // ============================================================
 //  Renderer 本体
@@ -153,13 +155,44 @@ impl Renderer {
             .contains(wgpu::Features::TEXTURE_COMPRESSION_BC);
         crate::engine::core::loader::asset_cache::set_bc_supported(supports_bc);
 
+        // インラインレイトレ影（Phase R8）のための実験的 RT フィーチャー対応判定。
+        // wgpu 25 は DX12/Vulkan で EXPERIMENTAL_RAY_QUERY（シェーダの rayQuery 構文）と
+        // EXPERIMENTAL_RAY_TRACING_ACCELERATION_STRUCTURE（BLAS/TLAS 構築）を公開する。
+        // 影のレイクエリには両方が必須のため、両対応の場合のみ RT 対応とみなす
+        // （ドライバによっては片方のみ対応もあり得るため個別に確認する）。
+        let af = adapter.features();
+        let supports_rt = af.contains(wgpu::Features::EXPERIMENTAL_RAY_QUERY)
+            && af.contains(wgpu::Features::EXPERIMENTAL_RAY_TRACING_ACCELERATION_STRUCTURE);
+        // 対応フラグをグローバルへ設定する。頂点/インデックスバッファ生成時に
+        // BLAS_INPUT 用途を付与するか否か（gpu_resources）を本フラグで判断する。
+        // request_device より前に設定する必要はないが、以降のリソース生成に効くよう早めに設定。
+        rt_shadow::set_rt_shadows_supported(supports_rt);
+        if supports_rt {
+            eprintln!("[SEED RT] インラインレイトレ: 対応（EXPERIMENTAL_RAY_QUERY + ACCELERATION_STRUCTURE を要求）");
+        } else {
+            // 非対応理由をできるだけ具体的に出す（両フィーチャーのどちらが欠けているか）。
+            let has_q = af.contains(wgpu::Features::EXPERIMENTAL_RAY_QUERY);
+            let has_a = af.contains(wgpu::Features::EXPERIMENTAL_RAY_TRACING_ACCELERATION_STRUCTURE);
+            let reason = match (has_q, has_a) {
+                (false, false) => "RAY_QUERY と ACCELERATION_STRUCTURE の両方が非対応",
+                (true,  false) => "ACCELERATION_STRUCTURE が非対応",
+                (false, true ) => "RAY_QUERY が非対応",
+                (true,  true ) => "不明",
+            };
+            eprintln!("[SEED RT] インラインレイトレ: 非対応（{reason}）→ シャドウマップ経路を使用");
+        }
+
         let (device, queue) = pollster::block_on(adapter.request_device(
             &wgpu::DeviceDescriptor {
                 label:             None,
                 required_features: wgpu::Features::MULTI_DRAW_INDIRECT
                                  | wgpu::Features::INDIRECT_FIRST_INSTANCE
                                  | if supports_bc { wgpu::Features::TEXTURE_COMPRESSION_BC } else { wgpu::Features::empty() }
-                                 | if supports_pipeline_cache { wgpu::Features::PIPELINE_CACHE } else { wgpu::Features::empty() },
+                                 | if supports_pipeline_cache { wgpu::Features::PIPELINE_CACHE } else { wgpu::Features::empty() }
+                                 // RT 影は「対応していれば常に要求」する。設定によるオン/オフは
+                                 // シェーダバリアント（RT対応時は常に RT パイプライン）と実行時フラグ
+                                 // （LightMeta.rt_shadows）で切り替えるため、features は起動時固定でよい。
+                                 | if supports_rt { wgpu::Features::EXPERIMENTAL_RAY_QUERY | wgpu::Features::EXPERIMENTAL_RAY_TRACING_ACCELERATION_STRUCTURE } else { wgpu::Features::empty() },
                 required_limits:   wgpu::Limits {
                     max_storage_buffers_per_shader_stage: 12,
                     max_bind_groups: 5,

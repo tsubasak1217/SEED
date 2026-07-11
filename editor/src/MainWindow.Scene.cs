@@ -49,7 +49,7 @@ public partial class MainWindow
 
         // 現在開いているシーンのパスを渡す（シーンマネージャの「現在のシーンを追加」用）
         var win = new SEEDEditor.ProjectSettings.ProjectSettingsWindow(
-            AssetsPath, EditorPluginsPath, _currentScenePath)
+            AssetsPath, EditorPluginsPath, _currentScenePath, _runtimeManager)
         {
             // Owner 指定によりエディタ本体より常に前面に表示される（モーダレスでも維持）
             Owner = this,

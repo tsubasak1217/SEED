@@ -121,6 +121,8 @@ pub enum IpcCommand {
     SetCameraFar(f32),
     /// グリッド描画オンオフ
     SetShowGrid(bool),
+    /// インラインレイトレ影オンオフ（RT対応GPUのみ効果あり）
+    SetRtShadows(bool),
     /// 軸ギズモ表示オンオフ
     SetShowAxisGizmo(bool),
     /// アクターを指定パスへ保存（アクター編集モードのアクティブ世界線）
@@ -758,6 +760,8 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                         }
                         "SHOW_GRID:1"           => Some(IpcCommand::SetShowGrid(true)),
                         "SHOW_GRID:0"           => Some(IpcCommand::SetShowGrid(false)),
+                        "RT_SHADOWS:1"          => Some(IpcCommand::SetRtShadows(true)),
+                        "RT_SHADOWS:0"          => Some(IpcCommand::SetRtShadows(false)),
                         "SHOW_AXIS_GIZMO:1"     => Some(IpcCommand::SetShowAxisGizmo(true)),
                         "SHOW_AXIS_GIZMO:0"     => Some(IpcCommand::SetShowAxisGizmo(false)),
                         "CANVAS_SS_OVERLAY:1"   => Some(IpcCommand::SetCanvasScreenSpaceOverlay(true)),

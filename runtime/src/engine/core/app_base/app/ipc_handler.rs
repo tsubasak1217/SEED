@@ -466,6 +466,10 @@ impl App {
                 IpcCommand::SetShowGrid(v) => {
                     self.show_grid = v;
                 }
+                IpcCommand::SetRtShadows(v) => {
+                    // インラインレイトレ影フラグをエディタからのライブ切替で更新する
+                    self.rt_shadows = v;
+                }
                 IpcCommand::SetShowAxisGizmo(v) => {
                     self.show_axis_gizmo = v;
                 }

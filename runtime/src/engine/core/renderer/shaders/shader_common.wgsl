@@ -90,13 +90,14 @@ struct GpuLight {
     _pad1:            f32,         // 92
 }
 
-// count のみ有効。パディングは 16 バイト境界のためのスカラー 3 つ
+// count = 有効ライト数、rt_shadows = インラインレイトレ影フラグ（Phase R8, 0/1）。
+// パディングは 16 バイト境界のためのスカラー 2 つ
 // （vec3<u32> を使うと align 16 で構造体が 32 バイトになり Rust 側 16 バイトと不一致になる）。
 struct LightMeta {
-    count: u32,
-    _pad0: u32,
-    _pad1: u32,
-    _pad2: u32,
+    count:      u32,
+    rt_shadows: u32,
+    _pad1:      u32,
+    _pad2:      u32,
 }
 
 @group(4) @binding(0) var<storage, read> u_lights:     array<GpuLight>;

@@ -124,6 +124,9 @@ impl App {
         // スクリプトの SEED.Scene.Load / Transition("名前") の名前解決に使う。
         self.load_scene_registry();
 
+        // プロジェクト設定のグラフィックス項目（rt_shadows 等）を起動時に読み込む。
+        self.load_graphics_settings();
+
         // Play モードでは指定シーン（または start_scene）を自動ロードする。
         // シーンロード・モデルロードはメインスレッドをブロックするため、
         // ウィンドウ表示より先に完了させる。
@@ -301,6 +304,20 @@ impl App {
             }
         }
         eprintln!("[SEED INIT] scene registry loaded  count={}", self.scene_registry.len());
+    }
+
+    /// project_settings.json のグラフィックス関連設定を読み込み、App の対応フィールドへ反映する。
+    ///
+    /// 現状は `rt_shadows`（インラインレイトレ影の有効フラグ）のみ。
+    /// エディタからは IPC の `RT_SHADOWS:1` / `RT_SHADOWS:0` でも実行中に切替可能（起動時はここが初期値）。
+    /// ファイルが無い／パース不可／キーが無い場合は既定値 false のまま変更しない。
+    pub(super) fn load_graphics_settings(&mut self) {
+        use crate::engine::asset_fs;
+
+        let Ok(json) = asset_fs::read_string("assets://project_settings.json") else { return };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&json) else { return };
+        self.rt_shadows = v["rt_shadows"].as_bool().unwrap_or(false);
+        eprintln!("[SEED INIT] graphics settings loaded  rt_shadows={}", self.rt_shadows);
     }
 
     pub(super) fn load_play_scene(&mut self) {

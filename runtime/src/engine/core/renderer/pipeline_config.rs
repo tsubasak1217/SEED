@@ -387,6 +387,16 @@ fn to_binding_type(
             };
             Some((binding_ty, wgpu::ShaderStages::FRAGMENT))
         },
+        // 加速構造（インラインレイトレ影 Phase R8, group 4 binding 6）
+        // WGSL の `var accel: acceleration_structure;` を反映する。これを扱わないと
+        // リフレクションが binding を握り潰し、パイプラインレイアウトと BindGroup が
+        // 食い違って検証エラーになる。フラグメントのライトループから rayQuery で参照する。
+        naga::TypeInner::AccelerationStructure { .. } => {
+            Some((
+                wgpu::BindingType::AccelerationStructure { vertex_return: false },
+                wgpu::ShaderStages::FRAGMENT,
+            ))
+        },
         // サンプラー
         naga::TypeInner::Sampler { comparison } => {
             let st = if *comparison {

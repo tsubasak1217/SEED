@@ -1,0 +1,19 @@
+# skinned_mesh.toml の RT 影バリアント（Phase R8）。
+# スキンメッシュ自身は TLAS に入らない（キャスターにならない）が、RT 有効時に
+# 影を「受ける」ためフラグメントは RT 影経路を通す必要があり、RT パイプラインが要る。
+# rt_shadow_on を連結し group 4 に TLAS（binding 6）を追加する。他は skinned_mesh.toml と同一。
+shader_sources  = ["shader_common.wgsl", "shadow.wgsl", "rt_shadow_on.wgsl", "shader_skinned_vertex.wgsl", "shader_fragment.wgsl"]
+vertex_entry    = "vs_main"
+fragment_entry  = "fs_main"
+vertex_slots    = ["mesh_vertex", "skin_vertex"]
+
+topology        = "TriangleList"
+cull_mode       = "Back"
+front_face      = "Ccw"
+
+depth_write     = true
+depth_compare   = "Less"
+
+color_format    = "surface"
+blend           = "Replace"
+write_mask      = "all"

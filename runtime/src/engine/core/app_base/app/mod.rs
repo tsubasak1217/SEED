@@ -519,6 +519,8 @@ pub struct App {
     fps_frame_start: std::time::Instant,
     /// グリッド描画フラグ（エディタモードのみ）。
     show_grid: bool,
+    /// インラインレイトレ影の有効フラグ（RT対応GPUのみ効果あり。プロジェクト設定 rt_shadows / IPC RT_SHADOWS で切替）。
+    pub(crate) rt_shadows: bool,
     /// 軸ギズモ表示フラグ（エディタモードのみ）。
     show_axis_gizmo: bool,
     /// 軸ギズモのホバー状態（どのドットにカーソルが当たっているか）。
@@ -861,6 +863,7 @@ impl App {
             fps_frame_count:       0,
             fps_frame_start:       std::time::Instant::now(),
             show_grid:       true,
+            rt_shadows:      false,
             show_axis_gizmo: true,
             axis_gizmo_hovered: None,
             camera_snap_anim:   None,

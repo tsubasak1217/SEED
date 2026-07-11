@@ -32,6 +32,8 @@ pub use crate::engine::core::renderer::{
     GpuLight, LightBuffer, MAX_LIGHTS,
     // シャドウ（Phase R2）
     ShadowResources, ShadowPlan, ShadowDepthPipelines,
+    // インラインレイトレ影（Phase R8）
+    RtShadowResources,
 };
 
 // 描画関数
@@ -73,6 +75,14 @@ pub struct DrawContext {
     /// サンプリング用資源は light_buffer.bind_group（group 4 複合 BG の binding 2〜5）
     /// 経由で全メッシュ描画に共用される。
     pub shadow:           ShadowResources,
+    /// RT 影用リソース一式（Phase R8）。RT 対応 GPU でのみ Some。
+    /// 毎フレーム（RT 影オン時）prepare_and_build で BLAS/TLAS を更新し、
+    /// bind_group（group 4 に TLAS を加えた複合 BG）を RT パイプライン描画で使う。
+    /// 非対応時は None で、従来のシャドウマップ経路が完全に無変更で動作する。
+    ///
+    /// DrawContext は `&self` で共有参照されるため、フレーム内で BLAS/TLAS を再構築する
+    /// （`&mut` が要る）には内部可変性が必要。model_cache と同じく RefCell で包む。
+    pub rt_shadow:        Option<RefCell<RtShadowResources>>,
     /// パス → 解析済み CPU モデルのキャッシュ。
     /// 同じパスのモデルを繰り返し build_actor/rebuild するときにディスク読み込みとパースを省く。
     pub model_cache:      RefCell<HashMap<String, Arc<Model>>>,
@@ -98,6 +108,11 @@ impl DrawContext {
         // レイアウトは mesh パイプライン由来（skinned とレイアウト互換のため共用）。
         let shadow       = ShadowResources::new(&device, &pipelines.mesh.camera_bgl);
         let light_buffer = LightBuffer::new(&device, &pipelines.mesh.lights_bgl, &shadow);
+        // RT 影リソースは RT パイプラインが生成できた場合（＝ RT 対応 GPU）のみ生成する。
+        // group 4 に TLAS を加えた複合 BindGroup を、RT パイプラインの group 4 レイアウトで作る。
+        let rt_shadow = pipelines.rt.as_ref().map(|rtp| {
+            RefCell::new(RtShadowResources::new(&device, &rtp.lights_bgl, &shadow, &light_buffer))
+        });
         Self {
             device,
             queue,
@@ -105,9 +120,16 @@ impl DrawContext {
             defaults,
             light_buffer,
             shadow,
+            rt_shadow,
             model_cache:      RefCell::new(HashMap::new()),
             sprite_tex_cache: RefCell::new(HashMap::new()),
         }
+    }
+
+    /// このフレームで RT 影を実際に使うか（RT 対応 かつ 設定オン）。
+    /// フラグメントの実行時分岐（LightMeta.rt_shadows）とパイプライン選択の両方に使う。
+    pub fn rt_active(&self, rt_setting: bool) -> bool {
+        self.rt_shadow.is_some() && rt_setting
     }
 
     pub fn upload_model(&self, model: &Model) -> GpuModelInner {

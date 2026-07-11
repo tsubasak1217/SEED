@@ -83,7 +83,16 @@ public class ProjectSettingsData
     [JsonPropertyName("plugins")]
     public List<PluginEntry> Plugins { get; set; } = new();
 
-    // ── グラフィックス設定（将来実装） ─────────────────────────
+    // ── グラフィックス設定 ────────────────────────────────────
+
+    /// <summary>
+    /// インラインレイトレ影の有効フラグ（RT対応GPUのみ効果あり）。
+    /// ランタイム起動時に App.rt_shadows へ反映され、エディタからは IPC の
+    /// RT_SHADOWS:1 / RT_SHADOWS:0 でライブ切替できる。
+    /// </summary>
+    [JsonPropertyName("rt_shadows")]
+    public bool RtShadows { get; set; } = false;
+
     // ── オーディオ設定（将来実装） ──────────────────────────────
     // ── 物理設定（将来実装） ────────────────────────────────────
     // ── 入力設定（将来実装） ────────────────────────────────────

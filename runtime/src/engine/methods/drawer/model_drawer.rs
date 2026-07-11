@@ -8,7 +8,7 @@
 
 use super::{
     gpu_resources::{GpuModel, InstancedModelBatch, NUM_LODS},
-    pipeline::DrawPipelines,
+    pipeline::{DrawPipelines, RtMeshPipelines},
 };
 
 // ============================================================
@@ -19,6 +19,9 @@ use super::{
 ///
 /// `batch.node_prim_list` は `(is_skinned, material_idx)` でソート済みのため、
 /// パイプライン・マテリアル切り替え回数を最小に抑える。
+/// `rt_pipes` が Some のとき（RT 影オン）は mesh/skinned の RT バリアントパイプラインと
+/// その group 3 空 BG を使う。この場合 `lights_bg` には RT 用複合 BindGroup（TLAS 含む）を
+/// 渡すこと。None のときは従来パイプライン＋従来 group 4 BG を使う。
 pub fn draw_model_indirect<'pass>(
     render_pass: &mut wgpu::RenderPass<'pass>,
     gpu_model:   &'pass GpuModel,
@@ -26,8 +29,16 @@ pub fn draw_model_indirect<'pass>(
     camera_bg:   &'pass wgpu::BindGroup,
     lights_bg:   &'pass wgpu::BindGroup,
     pipelines:   &'pass DrawPipelines,
+    rt_pipes:    Option<&'pass RtMeshPipelines>,
 ) {
     if batch.n_prims == 0 { return; }
+
+    // RT 影オン時は RT バリアント、オフ/非対応時は従来パイプラインを選ぶ。
+    // フラグメントは LightMeta.rt_shadows で RT/シャドウマップを分岐するため、
+    // ここでの選択は「TLAS バインディングを持つレイアウトか否か」の違いに対応する。
+    let mesh_pipeline    = rt_pipes.map_or(&pipelines.mesh.pipeline,         |r| &r.mesh);
+    let skinned_pipeline = rt_pipes.map_or(&pipelines.skinned_mesh.pipeline, |r| &r.skinned);
+    let empty_bg3        = rt_pipes.map_or(&pipelines.mesh.empty_bg3,        |r| &r.empty_bg3);
 
     for lod in 0..NUM_LODS {
         let visible = batch.lod_visible_counts[lod];
@@ -54,7 +65,7 @@ pub fn draw_model_indirect<'pass>(
             // ── パイプライン切り替え ──────────────────────────────
             if cur_skinned != Some(draw.is_skinned) {
                 if draw.is_skinned {
-                    render_pass.set_pipeline(&pipelines.skinned_mesh.pipeline);
+                    render_pass.set_pipeline(skinned_pipeline);
                     // GPU スキニング: コンピュートシェーダが書き込んだ joint BG を設定
                     if let Some(jbg) = joint_bg {
                         render_pass.set_bind_group(3, jbg, &[]);
@@ -62,14 +73,14 @@ pub fn draw_model_indirect<'pass>(
                         render_pass.set_bind_group(3, &gpu_model.identity_joints_bg, &[]);
                     }
                 } else {
-                    render_pass.set_pipeline(&pipelines.mesh.pipeline);
+                    render_pass.set_pipeline(mesh_pipeline);
                     // group 3: mesh パイプラインではライト（group 4）参照の都合で
                     // レイアウト上「空の gap グループ」になる。wgpu はレイアウトに
                     // 存在する全 group への BindGroup 設定を要求する（未設定のまま
                     // draw すると "expects a BindGroup to be set at index 3" の
                     // 検証エラー＝Sponza 等の非スキン glTF がクラッシュ）ため、
                     // 使い回しの空 BG を必ずセットする。
-                    render_pass.set_bind_group(3, &pipelines.mesh.empty_bg3, &[]);
+                    render_pass.set_bind_group(3, empty_bg3, &[]);
                 }
                 render_pass.set_bind_group(0, camera_bg, &[]);
                 // group 4: ライト＋シャドウ複合（lights storage + メタ + CSM/スポット

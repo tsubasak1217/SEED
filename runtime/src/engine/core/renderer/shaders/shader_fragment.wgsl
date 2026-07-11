@@ -10,7 +10,15 @@
 // per-fragment ループで加算する。ライト 0 灯でもアンビエントのみで破綻しない。
 //
 // クラスタリング／タイル分割は将来課題（現状は全ライトを線形走査）。
+//
+// 影は 2 経路を実行時分岐する（Phase R2/R8）:
+//   - rt_shadow_enabled()==false: シャドウマップ（shadow.wgsl, group4 binding2〜5）。
+//   - rt_shadow_enabled()==true : インラインレイトレ（rt_shadow_on.wgsl, group4 binding6）。
+// rt_shadow_enabled()/rt_shadow_factor() の実体は連結される rt_shadow_{on,off}.wgsl が供給する。
 // ============================================================
+
+/// 平行光の RT 影レイの最大距離（実質無限。ライトまでの距離が定義できないため大定数）。
+const RT_DIR_TMAX: f32 = 10000.0;
 
 // ── ライト減衰ヘルパー ────────────────────────────────────────
 
@@ -126,6 +134,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         var L        = vec3<f32>(0.0, 0.0, 1.0);
         var radiance = vec3<f32>(0.0);
         let base_col = light.color * light.intensity;
+        // RT 影レイの最大距離。directional は大定数、局所ライトはライトまでの距離を代入する。
+        var light_dist: f32 = RT_DIR_TMAX;
 
         if light.kind == LIGHT_KIND_DIRECTIONAL {
             // 平行光: L = -照射方向。減衰なし（従来の 1 方向光と同等）。
@@ -137,6 +147,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             let to_light = light.position - in.world_pos;
             let dist     = length(to_light);
             L            = to_light / max(dist, 1e-4);
+            light_dist   = dist;
             radiance     = base_col * distance_attenuation(dist, light.range);
 
         } else if light.kind == LIGHT_KIND_SPOT {
@@ -144,6 +155,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             let to_light = light.position - in.world_pos;
             let dist     = length(to_light);
             L            = to_light / max(dist, 1e-4);
+            light_dist   = dist;
             // 照射軸（light.direction）と「光源→フラグメント」方向の角度で円錐判定。
             let cos_ang  = dot(light.direction, -L);
             // outer_cos → inner_cos で 0→1（inner 内側は全光量、outer 外側は 0）。
@@ -164,21 +176,30 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             let to_light   = closest - in.world_pos;
             let dist       = length(to_light);
             L              = to_light / max(dist, 1e-4);
+            light_dist     = dist;
             // 前面判定: フラグメントが発光面の表側（direction 側）にあるほど強い。
             let facing     = clamp(dot(light.direction, -L), 0.0, 1.0);
             radiance       = base_col * distance_attenuation(dist, light.range) * facing;
         }
 
-        // ── シャドウ減衰（group 4 binding 2〜5, shadow.wgsl）──
-        // shadow_index < 0 のライトは影計算をスキップ（cast_shadows=false 含む）。
-        // 方向光は CSM、スポットは自身のマップを PCF 3x3 でサンプルして減衰する。
-        // point/rect の影は R2 対象外（TODO: R8 RT 影 or キューブマップ）。
-        let sidx = i32(light.shadow_index);
-        if sidx >= 0 {
-            if light.kind == LIGHT_KIND_DIRECTIONAL {
-                radiance = radiance * sample_shadow_dir(in.world_pos, view_z);
-            } else if light.kind == LIGHT_KIND_SPOT {
-                radiance = radiance * sample_shadow_spot(in.world_pos, sidx);
+        // ── シャドウ減衰（2 経路を実行時分岐）─────────────────
+        if rt_shadow_enabled() {
+            // インラインレイトレ影（Phase R8）: 全ライト種で表面→ライト方向の遮蔽レイ 1 本。
+            // shadow_index に依存せず、cast_shadows=true のキャスターは TLAS 側で登録済み。
+            // directional は tmax=大定数、point/spot/rect は light_dist（ライトまでの距離）。
+            radiance = radiance * rt_shadow_factor(in.world_pos, N, L, light_dist);
+        } else {
+            // 従来のシャドウマップ経路（group 4 binding 2〜5, shadow.wgsl）。
+            // shadow_index < 0 のライトは影計算をスキップ（cast_shadows=false 含む）。
+            // 方向光は CSM、スポットは自身のマップを PCF 3x3 でサンプルして減衰する。
+            // point/rect の影はシャドウマップ非対応（RT 影経路で対応）。
+            let sidx = i32(light.shadow_index);
+            if sidx >= 0 {
+                if light.kind == LIGHT_KIND_DIRECTIONAL {
+                    radiance = radiance * sample_shadow_dir(in.world_pos, view_z);
+                } else if light.kind == LIGHT_KIND_SPOT {
+                    radiance = radiance * sample_shadow_spot(in.world_pos, sidx);
+                }
             }
         }
 

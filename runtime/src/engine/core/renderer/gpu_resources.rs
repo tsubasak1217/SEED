@@ -376,6 +376,8 @@ impl GpuMaterial {
 
 pub struct GpuPrimitive {
     pub vertex_buffer:        wgpu::Buffer,
+    /// 頂点数（RT 影 Phase R8: BLAS サイズ記述子で使用）。
+    pub vertex_count:         u32,
     pub skin_vertex_buffer:   Option<wgpu::Buffer>,
     /// アウトライン描画用スムーズ法線（位置が同じ頂点の法線を平均化したもの）
     pub smooth_normal_buffer: wgpu::Buffer,
@@ -402,10 +404,26 @@ impl GpuPrimitive {
     fn upload(device: &wgpu::Device, prim: &Primitive) -> Self {
         use crate::engine::core::loader::model::{Vertex, SkinVertex};
 
+        // RT 影（Phase R8）対応 GPU では、頂点/インデックスバッファに BLAS_INPUT 用途を足す。
+        // BLAS は各頂点先頭（offset 0）の位置 Float32x3 を Vertex ストライドで直接読むため、
+        // 位置のみの別バッファは作らず既存バッファへ用途を足す（キャッシュ v2 ロード経路でも同一）。
+        // 非対応 GPU では用途を足さない（従来と完全に同一のバッファ）。
+        let rt = super::rt_shadow::rt_shadows_supported();
+        let vertex_usage = if rt {
+            wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::BLAS_INPUT
+        } else {
+            wgpu::BufferUsages::VERTEX
+        };
+        let index_usage = if rt {
+            wgpu::BufferUsages::INDEX | wgpu::BufferUsages::BLAS_INPUT
+        } else {
+            wgpu::BufferUsages::INDEX
+        };
+
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label:    Some("Vertex Buffer"),
             contents: bytemuck::cast_slice::<Vertex, u8>(&prim.vertices),
-            usage:    wgpu::BufferUsages::VERTEX,
+            usage:    vertex_usage,
         });
 
         let smooth_normals = compute_smooth_normals(&prim.vertices, &prim.indices);
@@ -445,6 +463,7 @@ impl GpuPrimitive {
 
         Self {
             vertex_buffer,
+            vertex_count:   prim.vertices.len() as u32,
             skin_vertex_buffer,
             smooth_normal_buffer,
             index_buffer,
@@ -1073,6 +1092,45 @@ impl InstancedModelBatch {
     pub fn joint_vs_bg(&self, lod: usize) -> Option<&wgpu::BindGroup> {
         self.skin.as_ref().map(|s| &s.lod_joint_vs_bgs[lod])
     }
+
+    /// RT 影 TLAS 構築用: 全インスタンス × 全メッシュノードプリミティブ（非スキン）を
+    /// `(mesh_idx, prim_idx, 3x4 行優先ワールド変換)` でコールバックに列挙する（Phase R8）。
+    ///
+    /// - カメラカリング前の全インスタンス（`num_instances`）を対象とする
+    ///   （RT 影は画面外キャスターも影を落とせるのが利点）。
+    /// - 各ノードのワールド行列は `world_mats_cache`（dirty 時に再計算する CPU キャッシュ）
+    ///   から取得する。キャッシュは列優先（GPU 用に転置済み）で保持されているため、
+    ///   TLAS が要求する 3x4 行優先アフィン変換 `[f32; 12]` へ変換して渡す。
+    /// - スキンプリミティブは変形後頂点で BLAS を作らない v1 制約のため除外する。
+    pub fn rt_enumerate<F: FnMut(usize, usize, [f32; 12])>(&self, mut f: F) {
+        // ワールド行列キャッシュが未生成（update 未実行）なら何もしない。
+        if self.world_mats_cache.is_empty() || self.n_mesh_nodes == 0 { return; }
+        let n_inst = self.num_instances as usize;
+        for inst in 0..n_inst {
+            for draw in &self.node_prim_list {
+                if draw.is_skinned { continue; }
+                let Some(pos) = self.node_pos_map[draw.node_idx] else { continue };
+                let cache_idx = inst * self.n_mesh_nodes + pos;
+                let Some(mu) = self.world_mats_cache.get(cache_idx) else { continue };
+                f(draw.mesh_idx, draw.prim_idx, model_uniform_to_tlas_transform(&mu.model));
+            }
+        }
+    }
+}
+
+/// 列優先で格納されたモデル行列（`ModelUniform.model`, `model[col][row]`）を
+/// TLAS が要求する 3x4 行優先アフィン変換 `[f32; 12]`（row-major, `t[row*4+col]`）へ変換する。
+///
+/// `ModelUniform.model` は `transpose(world)` を保持するため `model[col][row] = world[row][col]`。
+/// TLAS 変換の要素は `t[row*4+col] = world[row][col] = model[col][row]`。
+fn model_uniform_to_tlas_transform(model: &[[f32; 4]; 4]) -> [f32; 12] {
+    let mut t = [0.0f32; 12];
+    for row in 0..3 {
+        for col in 0..4 {
+            t[row * 4 + col] = model[col][row];
+        }
+    }
+    t
 }
 
 /// インスタンス 1 件分のシーングラフをトラバースし、
