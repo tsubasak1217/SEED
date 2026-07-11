@@ -329,14 +329,29 @@ impl Renderer {
         adapters.retain(|a| a.is_surface_supported(surface));
         adapters.sort_by_key(|a| core::cmp::Reverse(adapter_score(&a.get_info())));
 
-        adapters.into_iter().next().unwrap_or_else(|| {
+        let adapter = adapters.into_iter().next().unwrap_or_else(|| {
+            // enumerate_adapters が空（環境依存でまれに発生）の場合のフォールバック。
+            // HighPerformance を明示して dGPU を優先させる（iGPU への揺れを防ぐ）。
             pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference:       wgpu::PowerPreference::HighPerformance,
                 compatible_surface:     Some(surface),
                 force_fallback_adapter: false,
             }))
             .expect("Failed to find a suitable GPU adapter")
-        })
+        });
+
+        // ── 選択アダプターを起動ログに必ず出力する ─────────────────────────
+        // 「起動ごとに FPS が数倍変わる」不具合の第一容疑は、iGPU/dGPU の選択揺れ。
+        // 20fps を引いたときにどの GPU・バックエンド・ドライバが選ばれたか一目で
+        // 分かるよう、名前・種別・バックエンド・ドライバ情報を必ず出す。
+        let info = adapter.get_info();
+        eprintln!(
+            "[SEED INIT] adapter={} type={:?} backend={:?} driver={} driver_info={} vendor=0x{:04x} device=0x{:04x}",
+            info.name, info.device_type, info.backend,
+            info.driver, info.driver_info, info.vendor, info.device,
+        );
+
+        adapter
     }
 
     // ── アクセサ ────────────────────────────────────────────────

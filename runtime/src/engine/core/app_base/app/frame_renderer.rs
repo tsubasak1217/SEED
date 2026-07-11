@@ -208,6 +208,12 @@ impl App {
         let mut perf_grid_ms:       f64 = 0.0;
         // コライダーワイヤーフレームバッチ生成にかかった時間 [ms]
         let mut perf_collider_ms:   f64 = 0.0;
+        // RT 影の TLAS/BLAS 加速構造ビルド（build_acceleration_structures 記録）にかかった時間 [ms]
+        let mut perf_tlas_ms:       f64 = 0.0;
+        // このフレームで TLAS を実際に再構築したか（false=静止スキップ）
+        let mut perf_tlas_built:    bool = false;
+        // TLAS に登録されているインスタンス数
+        let mut perf_tlas_insts:    u32 = 0;
         // メインレンダーパス全体（begin〜pass drop）にかかった時間 [ms]
         let mut perf_main_pass_ms:  f64 = 0.0;
         // pass.drop() だけにかかった時間 [ms]（wgpu デバッグ検証オーバーヘッドの指標）
@@ -2777,7 +2783,11 @@ impl App {
                                             .map(|&gpu| (path.as_str(), gpu, &sd.batch))
                                     })
                                     .collect();
-                                rt.prepare_and_build(&draw_ctx.device, frame.encoder_mut(), &rt_casters);
+                                let _perf_t_tlas = std::time::Instant::now();
+                                let stat = rt.prepare_and_build(&draw_ctx.device, frame.encoder_mut(), &rt_casters);
+                                perf_tlas_ms    = _perf_t_tlas.elapsed().as_secs_f64() * 1000.0;
+                                perf_tlas_built = stat.built;
+                                perf_tlas_insts = stat.instances;
                             }
                         }
 
@@ -3913,10 +3923,12 @@ impl App {
                              physics={phys_total_ms:.3}ms(3d={perf_physics_ms:.3}ms+snap={perf_snapshot_ms:.3}ms+2d={perf_physics2d_ms:.3}ms) \
                              bf={perf_begin_frame_ms:.3}ms ipc={perf_ipc_ms:.3}ms \
                              batch={perf_batch_ms:.3}ms skin={perf_skin_ms:.3}ms \
+                             tlas={perf_tlas_ms:.3}ms({}/{perf_tlas_insts}inst) \
                              main_pass={perf_main_pass_ms:.3}ms(draw={perf_draw_ms:.3}ms+pass_drop={perf_pass_drop_ms:.3}ms+rest={main_rest_ms:.3}ms) \
                              sprites={perf_sprite_insts}枚/{perf_sprite_draws}draws \
                              id={perf_id_ms:.3}ms grid={perf_grid_ms:.3}ms collider={perf_collider_ms:.3}ms \
-                             finish={perf_finish_ms:.3}ms other={other_ms:.3}ms"
+                             finish={perf_finish_ms:.3}ms other={other_ms:.3}ms",
+                            if perf_tlas_built { "build" } else { "skip" },
                         );
                     }
 

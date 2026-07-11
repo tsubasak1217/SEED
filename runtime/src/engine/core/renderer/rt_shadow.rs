@@ -104,6 +104,24 @@ pub struct RtShadowResources {
     warned_overflow: bool,
     /// BLAS_INPUT 用途不足の警告を出したプリミティブ（毎フレーム同一警告のログ爆発防止）。
     warned_usage: std::collections::HashSet<BlasKey>,
+
+    // ── 静止シーンの TLAS 再構築スキップ用（性能最適化）───────────────
+    /// 直前フレームで TLAS を構築した際のインスタンス内容シグネチャ（ハッシュ）。
+    /// `None` = 未構築（初回は必ず構築する）。次フレームで同一シグネチャなら
+    /// GPU 上の TLAS は前回内容と完全一致するため build_acceleration_structures を省く。
+    /// シグネチャは「キャスターパス＋(mesh,prim)＋ワールド変換ビット列」を全インスタンス
+    /// 順序どおりにハッシュしたもの。変換・追加削除・cast_shadows 変化で必ず変わる。
+    last_tlas_sig: Option<u64>,
+    /// 直近に TLAS へ登録したインスタンス数（[PERF] 表示用）。
+    last_inst_count: u32,
+}
+
+/// `prepare_and_build` の結果統計（[PERF] ログ用）。
+pub struct RtBuildStat {
+    /// このフレームで実際に TLAS を（再）構築したか。false = 静止スキップ。
+    pub built: bool,
+    /// TLAS に登録されているインスタンス数（構築時は今回値、スキップ時は前回値）。
+    pub instances: u32,
 }
 
 impl RtShadowResources {
@@ -141,6 +159,8 @@ impl RtShadowResources {
             bind_group,
             warned_overflow: false,
             warned_usage: std::collections::HashSet::new(),
+            last_tlas_sig: None,
+            last_inst_count: 0,
         }
     }
 
@@ -158,7 +178,7 @@ impl RtShadowResources {
         device:  &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
         casters: &[(&str, &GpuModel, &InstancedModelBatch)],
-    ) {
+    ) -> RtBuildStat {
         // ── 1. 新規 BLAS の作成対象を収集（キャッシュ未登録の非スキンプリミティブ）──
         // 借用衝突を避けるため、先に「作成すべきキー＋対象プリミティブ参照」を集める。
         let mut to_build: Vec<(BlasKey, &GpuPrimitive)> = Vec::new();
@@ -207,6 +227,41 @@ impl RtShadowResources {
                 key.source_path, key.mesh_idx, key.prim_idx, prim.vertex_count, prim.index_count
             );
         }
+
+        // ── 2.5. 静止シーン判定（TLAS 再構築スキップ）─────────────────
+        // TLAS の内容は「キャスターパス × (mesh,prim) × ワールド変換」で完全に決まる。
+        // これらを順序どおりにハッシュしたシグネチャが前フレームと一致し、かつ今回
+        // 新規 BLAS を作っていなければ、GPU 上の TLAS は前回内容と完全一致するため
+        // build_acceleration_structures（数百インスタンスの GPU 再構築）を丸ごと省ける。
+        // エディタで何も動かしていない間はほぼ毎フレームここでスキップされる。
+        //
+        // 【正しさ】シグネチャはキャッシュ有無に関わらず全列挙インスタンスを対象にする
+        // （過剰無効化は許容＝安全側、見逃しは不可）。変換変更／アクタ追加削除／
+        // cast_shadows 変化（casters 集合が変わる）／モデル差替（新規 BLAS→強制再構築）で
+        // 必ずシグネチャが変わるか new_blas_built=true になり、確実に再構築される。
+        let new_blas_built = !to_build.is_empty();
+        let new_sig = {
+            use std::hash::Hasher;
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            for (path, _gpu, batch) in casters {
+                // パスはキャスター単位で 1 回だけ混ぜる（列挙順がグループを保つ）。
+                hasher.write(path.as_bytes());
+                hasher.write_u8(0xff); // 区切り
+                batch.rt_enumerate(|mesh_idx, prim_idx, transform| {
+                    hasher.write_usize(mesh_idx);
+                    hasher.write_usize(prim_idx);
+                    for v in &transform { hasher.write_u32(v.to_bits()); }
+                });
+            }
+            hasher.finish()
+        };
+
+        // 初回（last_tlas_sig=None）は必ず構築する。新規 BLAS があるフレームも必ず構築する。
+        if !new_blas_built && self.last_tlas_sig == Some(new_sig) {
+            // 静止フレーム: GPU 上の TLAS は前回のまま有効。CPU 詰め直し・GPU ビルドを共に省く。
+            return RtBuildStat { built: false, instances: self.last_inst_count };
+        }
+        self.last_tlas_sig = Some(new_sig);
 
         // ── 3. 新規 BLAS のビルドエントリを構築 ──────────────────
         // サイズ記述子はビルド呼び出しまで生存させる必要があるため Vec に確保する。
@@ -267,6 +322,9 @@ impl RtShadowResources {
 
         // ── 5. BLAS（新規）と TLAS を 1 回の呼び出しでビルド ──────
         encoder.build_acceleration_structures(blas_entries.iter(), std::iter::once(&self.tlas_package));
+
+        self.last_inst_count = inst_count as u32;
+        RtBuildStat { built: true, instances: inst_count as u32 }
     }
 }
 

@@ -2730,6 +2730,10 @@ public partial class InspectorPanel : UserControl
     /// <summary>
     /// マテリアルスロット一覧セクションを構築する。materials が空/無し（後方互換の旧シーン等）なら null を返し、
     /// 呼び出し側で一覧そのものを表示しない。
+    /// 個々のスロット Expander をコンポーネントアコーディオン風の「まとめヘッダー」（▼/▶ + "マテリアル (N)"）
+    /// で束ね、1クリックで一覧全体を開閉できるようにする。既定は閉（スロット数が多い場合に Inspector が
+    /// 縦に長くなり過ぎないようにするため）。まとめヘッダー右側の「すべて展開/折りたたみ」ボタンで
+    /// 配下スロットの個別 Expander を一括操作できる。
     /// </summary>
     private UIElement? BuildModelMaterialsSection(SlotInfo info)
     {
@@ -2737,14 +2741,95 @@ public partial class InspectorPanel : UserControl
         if (mats.Count == 0) return null;
 
         var outer = new StackPanel { Margin = new Thickness(0, 8, 0, 0) };
-        outer.Children.Add(new TextBlock
-        {
-            Text = "マテリアル", FontWeight = FontWeights.Bold,
-            Foreground = new SolidColorBrush(Color.FromRgb(0xAA, 0xAA, 0xAA)),
-            FontSize = 11, Margin = new Thickness(0, 0, 0, 4),
-        });
+
+        // ── 配下スロット一覧（まとめヘッダーの開閉対象。既定は閉なので非表示で構築）──
+        var slotsPanel = new StackPanel { Visibility = Visibility.Collapsed };
+        var slotExpanders = new List<Expander>();
         foreach (var mat in mats)
-            outer.Children.Add(BuildMaterialSlotExpander(info, mat));
+        {
+            var expander = (Expander)BuildMaterialSlotExpander(info, mat);
+            slotExpanders.Add(expander);
+            slotsPanel.Children.Add(expander);
+        }
+
+        var isGroupExpanded = false; // 既定「閉」
+
+        // ── まとめヘッダー（コンポーネントアコーディオンの見た目に寄せる: 矢印 + タイトル）──
+        var header = new Border
+        {
+            Background      = new SolidColorBrush(Color.FromRgb(0x2A, 0x2A, 0x2A)),
+            BorderBrush     = new SolidColorBrush(Color.FromRgb(0x3F, 0x3F, 0x46)),
+            BorderThickness = new Thickness(0, 0, 0, 1),
+            Padding         = new Thickness(6, 5, 6, 5),
+            Cursor          = Cursors.Hand,
+        };
+
+        var headerGrid = new Grid();
+        headerGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });                      // 矢印
+        headerGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) }); // タイトル
+        headerGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });                      // 一括展開/折畳
+
+        var arrow = new TextBlock
+        {
+            Text              = "▶",
+            Foreground        = new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88)),
+            FontSize          = 8,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin            = new Thickness(0, 0, 6, 0),
+        };
+        Grid.SetColumn(arrow, 0);
+        headerGrid.Children.Add(arrow);
+
+        var titleBlock = new TextBlock
+        {
+            Text              = $"マテリアル ({mats.Count})",
+            FontWeight        = FontWeights.Bold,
+            FontSize          = 11,
+            Foreground        = new SolidColorBrush(Color.FromRgb(0xAA, 0xAA, 0xAA)),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        Grid.SetColumn(titleBlock, 1);
+        headerGrid.Children.Add(titleBlock);
+
+        var bulkToggleBtn = new TextBlock
+        {
+            Text              = "すべて展開",
+            FontSize          = 10,
+            Foreground        = new SolidColorBrush(Color.FromRgb(0x55, 0xAA, 0xFF)),
+            Cursor            = Cursors.Hand,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        Grid.SetColumn(bulkToggleBtn, 2);
+        headerGrid.Children.Add(bulkToggleBtn);
+
+        header.Child = headerGrid;
+
+        void SetGroupExpanded(bool expand)
+        {
+            isGroupExpanded = expand;
+            slotsPanel.Visibility = expand ? Visibility.Visible : Visibility.Collapsed;
+            arrow.Text = expand ? "▼" : "▶";
+        }
+
+        header.MouseLeftButtonDown += (_, e) =>
+        {
+            e.Handled = true;
+            SetGroupExpanded(!isGroupExpanded);
+        };
+
+        // 「すべて展開/折りたたみ」: 配下スロットの個別 Expander を一括操作する。
+        // まとめヘッダー自体が閉じていると操作結果が見えないため、実行時にまとめヘッダーも開く。
+        bulkToggleBtn.MouseLeftButtonDown += (_, e) =>
+        {
+            e.Handled = true; // ヘッダーの開閉トグルへ伝播させない
+            if (!isGroupExpanded) SetGroupExpanded(true);
+            var expandAll = slotExpanders.Any(x => !x.IsExpanded);
+            foreach (var x in slotExpanders) x.IsExpanded = expandAll;
+            bulkToggleBtn.Text = expandAll ? "すべて折りたたみ" : "すべて展開";
+        };
+
+        outer.Children.Add(header);
+        outer.Children.Add(slotsPanel);
         return outer;
     }
 
