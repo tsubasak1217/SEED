@@ -96,9 +96,11 @@ impl App {
                 return;
             }
         };
+        // モデルが変わるとマテリアルスロットの数・意味が変わるため、
+        // 既存のマテリアルオーバーライドは破棄する（新モデルに対応しないスロット指定が残るのを防ぐ）。
         let (gpu_model, instanced_batch) = {
             let ctx = self.draw_ctx.as_ref().unwrap();
-            (ctx.upload_model(&model), ctx.create_instanced_batch(&model, 1))
+            (ctx.upload_model_with_overrides(&model, &[]), ctx.create_instanced_batch(&model, 1))
         };
         // Arc 化してキャッシュに登録する
         let model_arc: std::sync::Arc<crate::engine::core::loader::model::Model> = {
@@ -125,6 +127,7 @@ impl App {
             mc.model           = Some(model_arc);
             mc.gpu_model       = Some(gpu_model);
             mc.instanced_batch = Some(instanced_batch);
+            mc.material_overrides.clear();
             true
         } else { false };
         if found {
@@ -162,6 +165,103 @@ impl App {
         match key {
             "cast_shadows" => mc.cast_shadows = value == "1" || value == "true",
             _ => return,
+        }
+
+        self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
+        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+    }
+
+    /// インスペクタからのマテリアルオーバーライド設定/解除（SET_MATERIAL_OVERRIDE IPC, Phase R7）。
+    ///
+    /// - `mat_slot`: Model::materials のインデックス（＝ そのマテリアルスロット）。
+    /// - `json` が空文字列 または `{"kind":"embedded"}` の場合: そのスロットのオーバーライドを
+    ///   削除し、glTF 埋込マテリアルへ戻す。
+    /// - それ以外: `MaterialOverrideKind`（`{"kind":"mat_asset","path":".."}` /
+    ///   `{"kind":"inline",...}`）としてパースし、同一 slot の既存エントリを置換（無ければ追加）する。
+    ///
+    /// 変更を反映するため、対象 ModelComponent の `gpu_model` を
+    /// `upload_model_with_overrides` で再構築する（GpuModel は per-MC 専有のため、
+    /// この MC 以外の描画には一切影響しない）。
+    ///
+    /// 【借用の扱い】`scene`（World 可変参照）と `draw_ctx`（GPU アップロード）を同時に
+    /// 借用できないため、(1) モデル Arc の取得 → (2) material_overrides の更新（scene のみ）→
+    /// (3) scene 借用を落として draw_ctx で GpuModel を再構築 → (4) 結果を scene へ書き戻す、
+    /// の 4 段階に分け、各段階でブロックスコープを閉じて前段の借用を確実に解放する
+    /// （handle_set_model_path と同じ流儀）。
+    pub(super) fn handle_set_material_override(
+        &mut self,
+        actor_dfs_id: u32,
+        slot_idx:     u32,
+        mat_slot:     u32,
+        json:         &str,
+    ) {
+        if self.draw_ctx.is_none() || self.scene.is_none() { return; }
+        let wl = self.active_world_line;
+
+        // 対象スロットの entity を解決する（Model コンポーネントのみ対象）
+        let slot_entity = {
+            let Some(scene) = &self.scene else { return };
+            let mut c = 0u32;
+            find_actor_by_dfs(&scene.actors, wl, actor_dfs_id, &mut c)
+                .and_then(|a| a.slots().get(slot_idx as usize))
+                .filter(|s| s.kind == ComponentKind::Model)
+                .map(|s| s.entity)
+        };
+        let Some(entity) = slot_entity else { return };
+
+        // json をパースする。空 or {"kind":"embedded"} は「削除（埋込に戻す）」の合図。
+        const EMBEDDED_JSON: &str = r#"{"kind":"embedded"}"#;
+        let trimmed = json.trim();
+        let new_kind: Option<crate::engine::components::MaterialOverrideKind> =
+            if trimmed.is_empty() || trimmed == EMBEDDED_JSON {
+                None
+            } else {
+                match serde_json::from_str(trimmed) {
+                    Ok(k)  => Some(k),
+                    Err(e) => {
+                        eprintln!("[SEED] SET_MATERIAL_OVERRIDE: json パース失敗（{e}）: {trimmed}");
+                        return;
+                    }
+                }
+            };
+
+        // (1) モデル Arc を取得（無ければ何もしない：未ロード ModelComponent への操作は無効）
+        let model_arc = {
+            let Some(scene) = &self.scene else { return };
+            match scene.world.get::<ModelComponent>(entity).and_then(|mc| mc.model.clone()) {
+                Some(m) => m,
+                None    => return,
+            }
+        };
+
+        // (2) material_overrides を更新する（同一 slot は置換）
+        {
+            let Some(scene) = &mut self.scene else { return };
+            let Some(mc) = scene.world.get_mut::<ModelComponent>(entity) else { return };
+            mc.material_overrides.retain(|o| o.slot != mat_slot as usize);
+            if let Some(kind) = new_kind {
+                mc.material_overrides.push(crate::engine::components::MaterialOverride {
+                    slot: mat_slot as usize,
+                    kind,
+                });
+            }
+        }
+
+        // (3) scene 借用を落としてから draw_ctx で GpuModel を再構築する
+        let new_gpu_model = {
+            let Some(scene) = &self.scene else { return };
+            let Some(mc) = scene.world.get::<ModelComponent>(entity) else { return };
+            let ctx = self.draw_ctx.as_ref().unwrap();
+            ctx.upload_model_with_overrides(&model_arc, &mc.material_overrides)
+        };
+
+        // (4) 再構築結果を書き戻し、バッチ更新をマークする
+        {
+            let Some(scene) = &mut self.scene else { return };
+            if let Some(mc) = scene.world.get_mut::<ModelComponent>(entity) {
+                mc.gpu_model = Some(new_gpu_model);
+                mc.mark_batch_dirty();
+            }
         }
 
         self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
@@ -292,6 +392,7 @@ impl App {
                         next_group_id:   mc_data.next_group_id,
                         anim_drive:      None,
                         cast_shadows,
+                        material_overrides: mc_data.material_overrides,
                     }
                 } else {
                     let path = std::path::Path::new(&mc_data.model_path);
@@ -315,7 +416,7 @@ impl App {
                             }
                         }
                     };
-                    let gpu_model       = ctx.upload_model(&*model_arc);
+                    let gpu_model       = ctx.upload_model_with_overrides(&*model_arc, &mc_data.material_overrides);
                     let instanced_batch = ctx.create_instanced_batch(&*model_arc, mc_data.instances.len() as u32);
                     ModelComponent {
                         source_path:     mc_data.model_path,
@@ -328,6 +429,7 @@ impl App {
                         next_group_id:   mc_data.next_group_id,
                         anim_drive:      None,
                         cast_shadows,
+                        material_overrides: mc_data.material_overrides,
                     }
                 };
                 let slot_entity = scene.world.spawn();
@@ -563,6 +665,7 @@ impl App {
                             next_group_id:   mc_data.next_group_id,
                             anim_drive:      None,
                             cast_shadows,
+                            material_overrides: mc_data.material_overrides,
                         }
                     } else {
                         let path = std::path::Path::new(&mc_data.model_path);
@@ -582,7 +685,7 @@ impl App {
                                 }
                             }
                         };
-                        let gpu_model       = ctx.upload_model(&*model_arc);
+                        let gpu_model       = ctx.upload_model_with_overrides(&*model_arc, &mc_data.material_overrides);
                         let instanced_batch = ctx.create_instanced_batch(&*model_arc, mc_data.instances.len() as u32);
                         ModelComponent {
                             source_path:     mc_data.model_path,
@@ -595,6 +698,7 @@ impl App {
                             next_group_id:   mc_data.next_group_id,
                             anim_drive:      None,
                             cast_shadows,
+                            material_overrides: mc_data.material_overrides,
                         }
                     };
                     scene.world.insert(slot_entity, mc);

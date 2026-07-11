@@ -23,6 +23,8 @@ pub mod rigidbody_component;
 pub mod audio_component;
 pub mod animator_component;
 pub mod light_component;
+/// マテリアルオーバーライド（Phase R7: .mat マテリアル＋マルチマテリアル編集）
+pub mod material_override;
 
 pub use transform::Transform;
 pub use canvas_transform::CanvasTransform;
@@ -30,6 +32,7 @@ pub use model_component::{
     ModelComponent, ModelComponentData, ModelAnimDrive,
     InstanceMeta, GroupMeta, GROUP_ID_BASE,
 };
+pub use material_override::{MaterialOverride, MaterialOverrideKind, overrides_signature};
 pub use script_component::{
     ScriptComponent, PlaceholderScriptSlot, ScriptComponentData,
 };

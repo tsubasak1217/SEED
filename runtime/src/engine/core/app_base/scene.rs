@@ -483,6 +483,7 @@ pub fn build_actor(
                         next_group_id:   mc_data.next_group_id,
                         anim_drive:      None,
                         cast_shadows,
+                        material_overrides: mc_data.material_overrides,
                     });
                 } else {
                     use std::sync::Arc;
@@ -499,7 +500,7 @@ pub fn build_actor(
                         }
                     };
                     let total = mc_data.instances.len();
-                    let gpu_model       = ctx.upload_model(&*model);
+                    let gpu_model       = ctx.upload_model_with_overrides(&*model, &mc_data.material_overrides);
                     let instanced_batch = ctx.create_instanced_batch(&*model, total as u32);
                     let mut meta = mc_data.meta;
                     if meta.len() < total {
@@ -518,6 +519,7 @@ pub fn build_actor(
                         next_group_id:   mc_data.next_group_id,
                         anim_drive:      None,
                         cast_shadows,
+                        material_overrides: mc_data.material_overrides,
                     });
                 }
                 actor.add_slot_typed::<ModelComponent>(slot_name, ComponentKind::Model, slot_entity);

@@ -14,6 +14,11 @@ use serde::{Deserialize, Serialize};
 use crate::engine::ecs::Component;
 use crate::engine::core::loader::model::Model;
 use crate::engine::methods::drawer::{GpuModel, InstancedModelBatch};
+use super::material_override::{MaterialOverride, overrides_signature};
+
+/// `batch_key()` でオーバーライド署名を source_path に連結する際の区切り文字。
+/// ファイルパスに通常出現しない制御文字（SOH）を使い、パス文字列との衝突を避ける。
+const BATCH_KEY_SEPARATOR: char = '\u{1}';
 
 // ─── 定数 ─────────────────────────────────────────────────────────────────────
 
@@ -73,6 +78,10 @@ pub struct ModelComponentData {
     /// 影を落とすか（シャドウマップレンダリングで使用）。既定 true。
     #[serde(default = "default_cast_shadows")]
     pub cast_shadows: bool,
+    /// マテリアルスロットごとのオーバーライド（Phase R7）。
+    /// 旧 .scene にはフィールドが存在しないため、欠落時は空 Vec（=オーバーライド無し）にフォールバックする。
+    #[serde(default)]
+    pub material_overrides: Vec<MaterialOverride>,
 }
 
 // ─── ModelAnimDrive ─────────────────────────────────────────────────────────
@@ -115,6 +124,10 @@ pub struct ModelComponent {
     pub anim_drive:      Option<ModelAnimDrive>,
     /// 影を落とすか（シャドウマップレンダリングで使用）。既定 true。
     pub cast_shadows:    bool,
+    /// マテリアルスロットごとのオーバーライド（Phase R7）。
+    /// GpuModel 構築時にこの内容が `apply_overrides` で焼き込まれる。
+    /// `batch_key()` の署名計算にも使われる（インスタンスバッチのマージキー）。
+    pub material_overrides: Vec<MaterialOverride>,
 }
 
 impl ModelComponent {
@@ -131,6 +144,7 @@ impl ModelComponent {
             next_group_id:   GROUP_ID_BASE,
             anim_drive:      None,
             cast_shadows:    true,
+            material_overrides: Vec::new(),
         }
     }
 
@@ -139,6 +153,22 @@ impl ModelComponent {
     /// instanced_batch に「次回更新が必要」フラグを立てる。
     pub fn mark_batch_dirty(&mut self) {
         if let Some(b) = &mut self.instanced_batch { b.mark_dirty(); }
+    }
+
+    /// インスタンスバッチのマージキーを返す（frame_renderer 側の shared_model_batches が使用）。
+    ///
+    /// マテリアルオーバーライドが無ければ `source_path` とビット単位で完全一致する
+    /// （＝旧シーン・オーバーライド未使用モデルの描画経路・性能を一切変えない）。
+    /// オーバーライドがある場合のみ、オーバーライドの内容から決まる署名を
+    /// 区切り文字（SOH）で連結し、異なるオーバーライドを持つ ModelComponent 同士が
+    /// 誤って同一バッチにマージされないようにする（per-アクタ整合、方式(a)の最軽量形）。
+    pub fn batch_key(&self) -> String {
+        let sig = overrides_signature(&self.material_overrides);
+        if sig.is_empty() {
+            self.source_path.clone()
+        } else {
+            format!("{}{BATCH_KEY_SEPARATOR}{}", self.source_path, sig)
+        }
     }
 
     pub fn rendering_refs(&self) -> Option<(&GpuModel, &InstancedModelBatch)> {
@@ -220,6 +250,7 @@ impl ModelComponent {
             groups:        self.group_meta.clone(),
             next_group_id: self.next_group_id,
             cast_shadows:  self.cast_shadows,
+            material_overrides: self.material_overrides.clone(),
         }
     }
 }

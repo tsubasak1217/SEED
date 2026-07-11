@@ -207,6 +207,12 @@ pub enum IpcCommand {
     /// SetLightField と同流儀）
     /// フォーマット: SET_MODEL_FIELD:{actor_dfs_id},{slot_idx},{key},{value}
     SetModelField { actor_dfs_id: u32, slot_idx: u32, key: String, value: String },
+    /// マテリアルスロットのオーバーライドを設定/解除する（Phase R7: .mat マテリアル＋
+    /// マルチマテリアル編集）。json が空 or `{"kind":"embedded"}` で解除（埋込に戻す）、
+    /// それ以外は `MaterialOverrideKind` の JSON（`{"kind":"mat_asset","path":".."}` /
+    /// `{"kind":"inline",...}`）。
+    /// フォーマット: SET_MATERIAL_OVERRIDE:{actor_dfs_id},{slot_idx},{mat_slot},{json}
+    SetMaterialOverride { actor_dfs_id: u32, slot_idx: u32, mat_slot: u32, json: String },
     /// ScriptComponent の [SerializeField] フィールド値を設定する
     /// フォーマット: SET_SCRIPT_FIELD:{actor_dfs_id},{slot_idx},{field_name},{value}
     SetScriptField { actor_dfs_id: u32, slot_idx: u32, field: String, value: String },
@@ -549,6 +555,21 @@ fn parse2u(rest: &str) -> Option<(u32, u32)> {
 fn parse2u_tail(rest: &str) -> Option<(u32, u32, &str)> {
     let mut it = rest.splitn(3, ',');
     Some((
+        it.next()?.trim().parse().ok()?,
+        it.next()?.trim().parse().ok()?,
+        it.next()?,
+    ))
+}
+
+/// `rest` から `u32, u32, u32, <tail>` をカンマ区切りでパースして (a, b, c, tail) を返す。
+/// tail にカンマが含まれてもよい（JSON 文字列等）。json の中身にカンマがあるため
+/// `splitn(4, ',')` で先頭 3 フィールドのみを厳密に切り出し、残り全部を tail とする
+/// （`split_once` を連鎖させると json 内カンマで壊れるため使わない）。
+#[inline]
+fn parse3u_tail(rest: &str) -> Option<(u32, u32, u32, &str)> {
+    let mut it = rest.splitn(4, ',');
+    Some((
+        it.next()?.trim().parse().ok()?,
         it.next()?.trim().parse().ok()?,
         it.next()?.trim().parse().ok()?,
         it.next()?,
@@ -987,6 +1008,13 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                                     key: key.to_string(), value: value.to_string(),
                                 })
                             })
+                        }
+                        s if s.starts_with("SET_MATERIAL_OVERRIDE:") => {
+                            // フォーマット: SET_MATERIAL_OVERRIDE:{actor_dfs_id},{slot_idx},{mat_slot},{json}
+                            parse3u_tail(&s["SET_MATERIAL_OVERRIDE:".len()..])
+                                .map(|(a, sl, ms, json)| IpcCommand::SetMaterialOverride {
+                                    actor_dfs_id: a, slot_idx: sl, mat_slot: ms, json: json.to_string(),
+                                })
                         }
                         s if s.starts_with("SET_SCRIPT_FIELD:") => {
                             // フォーマット: SET_SCRIPT_FIELD:{actor_dfs_id},{slot_idx},{field_name},{value}

@@ -783,7 +783,9 @@ impl App {
                 collect_mcs_in_world_line(&scene.actors, &scene.world, self.active_world_line)
                     .into_iter()
                     .filter(|(_, _, _, mc)| mc.cast_shadows && !mc.source_path.is_empty())
-                    .map(|(_, _, _, mc)| mc.source_path.clone())
+                    // Phase R7: シャドウキャスター集合も batch_key で識別する
+                    // （shared_model_batches のキーが batch_key のため一致させる）。
+                    .map(|(_, _, _, mc)| mc.batch_key())
                     .collect()
             } else {
                 std::collections::HashSet::new()
@@ -893,7 +895,13 @@ impl App {
                             if amc.source_path.is_empty()  { continue; }
                             if amc.gpu_model.is_none()     { continue; }
                             let Some(arc_m) = amc.model.as_ref() else { continue };
-                            let e = map.entry(amc.source_path.clone())
+                            // Phase R7: マージキーは「モデルパス＋マテリアルオーバーライド署名」。
+                            // オーバーライド無し（署名空）の MC は batch_key == source_path となり、
+                            // 従来どおり 1 バッチへ統合される（描画経路・性能ともに不変）。
+                            // オーバーライドを持つ MC は署名が異なるため別バッチへ分離され、
+                            // その代表 GpuModel（各 MC が自前で焼き込み済み）で描画される＝方式(a)。
+                            let batch_key = amc.batch_key();
+                            let e = map.entry(batch_key.clone())
                                 .or_insert_with(|| MergeInfo {
                                     cpu_model: arc_m.clone(),
                                     mats:      Vec::new(),
@@ -908,7 +916,7 @@ impl App {
                             let n_insts      = amc.instance_mats.len() as u32;
                             mc_outline_map.insert(
                                 (dfs_id, slot_i),
-                                (amc.source_path.clone(), merged_start, n_insts),
+                                (batch_key, merged_start, n_insts),
                             );
                             for (inst_i, &mat) in amc.instance_mats.iter().enumerate() {
                                 e.mats.push(mat);
@@ -974,16 +982,19 @@ impl App {
                         }
                     }
 
-                    // ③ draw 時に参照する source_path → &GpuModel マッピング
-                    // all_mcs の最初の該当 MC の GpuModel を借用する（全 MC が同一 GPU データを持つ）
+                    // ③ draw 時に参照する batch_key → &GpuModel マッピング
+                    // 各 batch_key（モデルパス＋オーバーライド署名）の代表 MC の GpuModel を借用する。
+                    // 同一 batch_key の全 MC は同一 GPU データ（オーバーライド焼き込み済み）を持つため
+                    // どれを代表に選んでも等価。オーバーライド無しなら batch_key==source_path で従来と同一。
+                    // キー型は batch_key() が所有 String を返すため &str ではなく String とする。
                     let gpu_model_by_path: std::collections::HashMap<
-                        &str,
+                        String,
                         &crate::engine::methods::drawer::GpuModel,
                     > = all_mcs.iter()
                         .filter_map(|&(_, _, _, amc)| {
                             if amc.source_path.is_empty() { return None; }
                             amc.gpu_model.as_ref()
-                                .map(|gpu| (amc.source_path.as_str(), gpu))
+                                .map(|gpu| (amc.batch_key(), gpu))
                         })
                         .collect();
                     // ─── 統合モデルバッチ更新 終了 ──────────────────────────────────────────

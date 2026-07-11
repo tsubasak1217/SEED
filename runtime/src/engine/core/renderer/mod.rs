@@ -15,6 +15,8 @@ pub(crate) mod rt_shadow;
 pub(crate) mod post;
 pub(crate) mod transparency;
 pub(crate) mod batch2d;
+/// .mat マテリアルアセット（Phase R7: マルチマテリアル編集）
+pub mod material_asset;
 
 pub use uniforms::{CameraUniform, ModelUniform, MaterialUniform, JointUniform, ColorVertex,
                    GpuCullData, FrustumUniform, GizmoVertex};

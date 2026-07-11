@@ -867,6 +867,9 @@ impl App {
                 IpcCommand::SetModelField { actor_dfs_id, slot_idx, key, value } => {
                     self.handle_set_model_field(actor_dfs_id, slot_idx, &key, &value);
                 }
+                IpcCommand::SetMaterialOverride { actor_dfs_id, slot_idx, mat_slot, json } => {
+                    self.handle_set_material_override(actor_dfs_id, slot_idx, mat_slot, &json);
+                }
                 IpcCommand::SetScriptField { actor_dfs_id, slot_idx, field, value } => {
                     self.handle_set_script_field(actor_dfs_id, slot_idx, &field, &value);
                 }

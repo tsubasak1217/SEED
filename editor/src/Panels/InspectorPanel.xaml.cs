@@ -2615,7 +2615,440 @@ public partial class InspectorPanel : UserControl
         shadowRow.Children.Add(shadowCheck);
         sp.Children.Add(shadowRow);
 
+        // ── マテリアル一覧（Phase R7: .mat マテリアル＋マルチマテリアル編集） ──────
+        // materials 配列が無い/空の場合は後方互換のため何も表示しない。
+        var materialsSection = BuildModelMaterialsSection(info);
+        if (materialsSection is not null)
+            sp.Children.Add(materialsSection);
+
         return sp;
+    }
+
+    // ── ModelComponent マテリアル編集（Phase R7） ──────────────
+
+    /// <summary>
+    /// ACTOR_COMPONENTS の 1 マテリアルスロット分のデータ（現在の実効値）。
+    /// mode は "embedded"（glTF埋込・既定）/ "mat"（.mat割当）/ "inline"（インライン上書き）。
+    /// base_color/emissive はリニア RGB(A)。
+    /// </summary>
+    private sealed record MaterialSlotData(
+        int Slot, string Name, string Mode,
+        float R, float G, float B, float A,
+        float Metallic, float Roughness,
+        float ER, float EG, float EB,
+        string AlphaMode, float AlphaCutoff, string Path);
+
+    /// <summary>
+    /// SET_MATERIAL_OVERRIDE の "kind":"mat_asset" 送信用 JSON ペイロード（System.Text.Json でシリアライズ）。
+    /// </summary>
+    private sealed class MatAssetOverridePayload
+    {
+        public string kind { get; set; } = "mat_asset";
+        public string path { get; set; } = "";
+    }
+
+    /// <summary>
+    /// SET_MATERIAL_OVERRIDE の "kind":"inline" 送信用 JSON ペイロード（System.Text.Json でシリアライズ）。
+    /// System.Text.Json の数値書式はスレッドカルチャに依存せず常に InvariantCulture 相当のため、
+    /// ここで数値を文字列補間しない限り CultureInfo を明示指定する必要はない。
+    /// </summary>
+    private sealed class InlineOverridePayload
+    {
+        public string kind { get; set; } = "inline";
+        public float[] base_color { get; set; } = [1f, 1f, 1f, 1f];
+        public float metallic { get; set; } = 1f;
+        public float roughness { get; set; } = 1f;
+        public float[] emissive { get; set; } = [0f, 0f, 0f];
+        public string alpha_mode { get; set; } = "opaque";
+        public float alpha_cutoff { get; set; } = 0.5f;
+    }
+
+    /// <summary>
+    /// 現在のアクターが持つ、指定 Model スロット（info.SlotIdx）の materials 配列を
+    /// ACTOR_COMPONENTS の生 JSON（<see cref="_lastComponentsJson"/>）から読み取る。
+    /// "slot" フィールドでコンポーネントスロットを一意に特定するため、
+    /// GetModelSlotAnimations と異なり同一アクターに複数 Model スロットがあっても取り違えない。
+    /// materials キー自体が無い/空配列の場合は空リストを返す（後方互換：一覧 UI 非表示のトリガー）。
+    /// </summary>
+    private List<MaterialSlotData> GetModelSlotMaterials(SlotInfo info)
+    {
+        var result = new List<MaterialSlotData>();
+        if (string.IsNullOrEmpty(_lastComponentsJson)) return result;
+        try
+        {
+            using var doc = JsonDocument.Parse(_lastComponentsJson);
+            if (!doc.RootElement.TryGetProperty("components", out var comps)) return result;
+            foreach (var comp in comps.EnumerateArray())
+            {
+                var slotIdx = comp.TryGetProperty("slot", out var si) ? si.GetInt32() : -1;
+                if (slotIdx != info.SlotIdx) continue;
+                var type = comp.TryGetProperty("type", out var tp) ? tp.GetString() ?? "" : "";
+                if (type != "ModelComponent") return result;
+                if (!comp.TryGetProperty("materials", out var matsEl) || matsEl.ValueKind != JsonValueKind.Array)
+                    return result;
+
+                foreach (var m in matsEl.EnumerateArray())
+                {
+                    int slot   = m.TryGetProperty("slot", out var ms) ? ms.GetInt32()    : 0;
+                    var name   = m.TryGetProperty("name", out var mn) ? mn.GetString() ?? "" : "";
+                    var mode   = m.TryGetProperty("mode", out var mm) ? mm.GetString() ?? "embedded" : "embedded";
+
+                    float r = 1f, g = 1f, b = 1f, a = 1f;
+                    if (m.TryGetProperty("base_color", out var bc) && bc.ValueKind == JsonValueKind.Array)
+                    {
+                        var arr = bc.EnumerateArray().ToArray();
+                        if (arr.Length > 0) r = arr[0].GetSingle();
+                        if (arr.Length > 1) g = arr[1].GetSingle();
+                        if (arr.Length > 2) b = arr[2].GetSingle();
+                        if (arr.Length > 3) a = arr[3].GetSingle();
+                    }
+                    var metallic  = m.TryGetProperty("metallic",  out var mt) ? mt.GetSingle() : 1f;
+                    var roughness = m.TryGetProperty("roughness", out var ro) ? ro.GetSingle() : 1f;
+
+                    float er = 0f, eg = 0f, eb = 0f;
+                    if (m.TryGetProperty("emissive", out var em) && em.ValueKind == JsonValueKind.Array)
+                    {
+                        var arr = em.EnumerateArray().ToArray();
+                        if (arr.Length > 0) er = arr[0].GetSingle();
+                        if (arr.Length > 1) eg = arr[1].GetSingle();
+                        if (arr.Length > 2) eb = arr[2].GetSingle();
+                    }
+                    var alphaMode   = m.TryGetProperty("alpha_mode",   out var am) ? am.GetString() ?? "opaque" : "opaque";
+                    var alphaCutoff = m.TryGetProperty("alpha_cutoff", out var ac) ? ac.GetSingle() : 0.5f;
+                    var path        = m.TryGetProperty("path",        out var mp) ? mp.GetString() ?? ""       : "";
+
+                    result.Add(new MaterialSlotData(slot, name, mode, r, g, b, a, metallic, roughness,
+                        er, eg, eb, alphaMode, alphaCutoff, path));
+                }
+                return result;
+            }
+        }
+        catch (JsonException) { /* 不正 JSON は空リスト扱い（後方互換） */ }
+        return result;
+    }
+
+    /// <summary>
+    /// マテリアルスロット一覧セクションを構築する。materials が空/無し（後方互換の旧シーン等）なら null を返し、
+    /// 呼び出し側で一覧そのものを表示しない。
+    /// </summary>
+    private UIElement? BuildModelMaterialsSection(SlotInfo info)
+    {
+        var mats = GetModelSlotMaterials(info);
+        if (mats.Count == 0) return null;
+
+        var outer = new StackPanel { Margin = new Thickness(0, 8, 0, 0) };
+        outer.Children.Add(new TextBlock
+        {
+            Text = "マテリアル", FontWeight = FontWeights.Bold,
+            Foreground = new SolidColorBrush(Color.FromRgb(0xAA, 0xAA, 0xAA)),
+            FontSize = 11, Margin = new Thickness(0, 0, 0, 4),
+        });
+        foreach (var mat in mats)
+            outer.Children.Add(BuildMaterialSlotExpander(info, mat));
+        return outer;
+    }
+
+    /// <summary>
+    /// マテリアル 1 スロット分の折りたたみセクション（スロット番号 + 名前 + 現在モードをヘッダーに表示）。
+    /// モード切替コンボで 埋込/.mat/インライン を選び、選択モードに応じた編集ウィジェットを表示する。
+    /// </summary>
+    private UIElement BuildMaterialSlotExpander(SlotInfo info, MaterialSlotData mat)
+    {
+        string ModeLabel(string mode) => mode switch
+        {
+            "mat"    => ".matアセット",
+            "inline" => "インライン上書き",
+            _        => "埋め込み(glTF)",
+        };
+
+        var content = new StackPanel { Margin = new Thickness(6, 2, 0, 2) };
+
+        // ── モード切替コンボ ──────────────────────────────────
+        var modeRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 2, 0, 4) };
+        modeRow.Children.Add(new TextBlock
+        {
+            Text = "モード", Foreground = new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88)),
+            FontSize = 11, Width = 52, VerticalAlignment = VerticalAlignment.Center,
+        });
+        var modeCombo = new ComboBox { Width = 150, FontSize = 11 };
+        modeCombo.Items.Add("埋め込み(glTF)");
+        modeCombo.Items.Add(".matアセット");
+        modeCombo.Items.Add("インライン上書き");
+        modeCombo.SelectedIndex = mat.Mode switch { "mat" => 1, "inline" => 2, _ => 0 };
+        modeRow.Children.Add(modeCombo);
+        content.Children.Add(modeRow);
+
+        // ── .matアセット割当 UI（FileRefBuilder: D&D + 参照ボタン）────
+        var matFileRow = (FrameworkElement)FileRefBuilder.Build(
+            ".matファイル", mat.Path, [".mat"],
+            () =>
+            {
+                var dlg = new OpenFileDialog
+                {
+                    Title  = "マテリアルファイルを選択",
+                    Filter = "マテリアル|*.mat|すべてのファイル|*.*",
+                };
+                return dlg.ShowDialog(Window.GetWindow(this)) == true ? dlg.FileName : null;
+            },
+            path =>
+            {
+                if (_currentActorId < 0) return;
+                // 絶対パスを assets:// 仮想パスへ変換してから送信する（アセット外の場合は絶対パスのまま）。
+                var virtualPath = VirtualPath.ToVirtual(path, _assetsPath);
+                var json = JsonSerializer.Serialize(new MatAssetOverridePayload { kind = "mat_asset", path = virtualPath });
+                _runtime?.SendToRuntime($"SET_MATERIAL_OVERRIDE:{_currentActorId},{info.SlotIdx},{mat.Slot},{json}");
+            });
+        matFileRow.Visibility = mat.Mode == "mat" ? Visibility.Visible : Visibility.Collapsed;
+        content.Children.Add(matFileRow);
+
+        // ── インライン編集 UI ────────────────────────────────
+        // 現在値をローカル変数として保持し、いずれかの編集操作のたびに全フィールドをまとめて送信する。
+        float curR = mat.R, curG = mat.G, curB = mat.B, curA = mat.A;
+        float curMetallic = mat.Metallic, curRoughness = mat.Roughness;
+        float curER = mat.ER, curEG = mat.EG, curEB = mat.EB;
+        string curAlphaMode = mat.AlphaMode;
+        float curAlphaCutoff = mat.AlphaCutoff;
+
+        var inlinePanel = new StackPanel { Visibility = mat.Mode == "inline" ? Visibility.Visible : Visibility.Collapsed };
+
+        void SendInline()
+        {
+            if (_currentActorId < 0) return;
+            var payload = new InlineOverridePayload
+            {
+                kind         = "inline",
+                base_color   = [curR, curG, curB, curA],
+                metallic     = curMetallic,
+                roughness    = curRoughness,
+                emissive     = [curER, curEG, curEB],
+                alpha_mode   = curAlphaMode,
+                alpha_cutoff = curAlphaCutoff,
+            };
+            var json = JsonSerializer.Serialize(payload);
+            _runtime?.SendToRuntime($"SET_MATERIAL_OVERRIDE:{_currentActorId},{info.SlotIdx},{mat.Slot},{json}");
+        }
+
+        // base_color スウォッチ（Sprite カラーの市松実装を流用）
+        var baseColorSwatch = BuildColorSwatch(curR, curG, curB, curA);
+        baseColorSwatch.swatch.MouseLeftButtonUp += (_, _) =>
+        {
+            var result = ColorPickerWindow.ShowDialog(Window.GetWindow(this), curR, curG, curB, curA);
+            if (result is null) return;
+            (curR, curG, curB, curA) = result.Value;
+            baseColorSwatch.setColor(curR, curG, curB, curA);
+            SendInline();
+        };
+        var baseColorRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 2, 0, 2) };
+        baseColorRow.Children.Add(new TextBlock
+        {
+            Text = "ベースカラー", Foreground = new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88)),
+            FontSize = 11, Width = 90, VerticalAlignment = VerticalAlignment.Center,
+        });
+        baseColorRow.Children.Add(baseColorSwatch.swatch);
+        inlinePanel.Children.Add(baseColorRow);
+
+        // metallic / roughness スライダー（0..1）
+        inlinePanel.Children.Add(BuildMaterialSliderRow("メタリック", curMetallic, v => { curMetallic = v; SendInline(); }));
+        inlinePanel.Children.Add(BuildMaterialSliderRow("ラフネス", curRoughness, v => { curRoughness = v; SendInline(); }));
+
+        // emissive スウォッチ（RGB のみ。ColorPickerWindow は a 必須のため a=1 固定で呼び出し RGB だけ使う）
+        var emissiveSwatch = BuildColorSwatch(curER, curEG, curEB, 1f);
+        emissiveSwatch.swatch.MouseLeftButtonUp += (_, _) =>
+        {
+            var result = ColorPickerWindow.ShowDialog(Window.GetWindow(this), curER, curEG, curEB, 1f);
+            if (result is null) return;
+            (curER, curEG, curEB, _) = result.Value;
+            emissiveSwatch.setColor(curER, curEG, curEB, 1f);
+            SendInline();
+        };
+        var emissiveRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 2, 0, 2) };
+        emissiveRow.Children.Add(new TextBlock
+        {
+            Text = "発光色", Foreground = new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88)),
+            FontSize = 11, Width = 90, VerticalAlignment = VerticalAlignment.Center,
+        });
+        emissiveRow.Children.Add(emissiveSwatch.swatch);
+        inlinePanel.Children.Add(emissiveRow);
+
+        // alpha_mode ドロップダウン（opaque/mask/blend）
+        var alphaModeRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 2, 0, 2) };
+        alphaModeRow.Children.Add(new TextBlock
+        {
+            Text = "アルファモード", Foreground = new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88)),
+            FontSize = 11, Width = 90, VerticalAlignment = VerticalAlignment.Center,
+        });
+        var alphaModeCombo = new ComboBox { Width = 100, FontSize = 11 };
+        string[] alphaModeValues = ["opaque", "mask", "blend"];
+        string[] alphaModeLabels = ["不透明", "マスク", "ブレンド"];
+        foreach (var lbl in alphaModeLabels) alphaModeCombo.Items.Add(lbl);
+        alphaModeCombo.SelectedIndex = Math.Max(0, Array.IndexOf(alphaModeValues, curAlphaMode));
+        alphaModeCombo.SelectionChanged += (_, _) =>
+        {
+            if (alphaModeCombo.SelectedIndex < 0) return;
+            curAlphaMode = alphaModeValues[alphaModeCombo.SelectedIndex];
+            SendInline();
+        };
+        alphaModeRow.Children.Add(alphaModeCombo);
+        inlinePanel.Children.Add(alphaModeRow);
+
+        // alpha_cutoff 数値フィールド（alpha_mode=mask のときに参照される閾値）
+        var cutoffRow = BuildLabeledNumberRow("カットオフ", curAlphaCutoff, "F2");
+        cutoffRow.textBox.LostFocus += (_, _) => CommitCutoff();
+        cutoffRow.textBox.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { CommitCutoff(); e.Handled = true; } };
+        NumericDragBehavior.SetOnDrag(cutoffRow.textBox, CommitCutoff);
+        void CommitCutoff()
+        {
+            if (float.TryParse(cutoffRow.textBox.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var v))
+                curAlphaCutoff = v;
+            SendInline();
+        }
+        inlinePanel.Children.Add(cutoffRow.element);
+
+        content.Children.Add(inlinePanel);
+
+        // ── 埋込に戻すボタン ─────────────────────────────────
+        var resetBtn = new Button
+        {
+            Content = "埋込に戻す",
+            Background = new SolidColorBrush(Color.FromRgb(0x33, 0x28, 0x20)),
+            Foreground = new SolidColorBrush(Color.FromRgb(0xBB, 0xBB, 0xBB)), BorderThickness = new Thickness(0),
+            Padding = new Thickness(8, 2, 8, 2), FontSize = 10, Margin = new Thickness(0, 6, 0, 0),
+            Cursor = Cursors.Hand, HorizontalAlignment = HorizontalAlignment.Left,
+        };
+        resetBtn.Click += (_, _) =>
+        {
+            if (_currentActorId < 0) return;
+            _runtime?.SendToRuntime($"SET_MATERIAL_OVERRIDE:{_currentActorId},{info.SlotIdx},{mat.Slot},{{\"kind\":\"embedded\"}}");
+            modeCombo.SelectedIndex = 0;
+        };
+        content.Children.Add(resetBtn);
+
+        // モード切替でウィジェットの表示/非表示を切り替える。
+        // "mat"/"inline" へ切り替えた瞬間はまだユーザーが値を選んでいないため送信しない
+        // （.mat はファイル選択時、インラインは編集操作時にそれぞれ SendInline/割当処理が送信する）。
+        // ただし埋込へ戻す場合は即座に送信する（値の再選択を要求しないため）。
+        modeCombo.SelectionChanged += (_, _) =>
+        {
+            var idx = modeCombo.SelectedIndex;
+            matFileRow.Visibility  = idx == 1 ? Visibility.Visible : Visibility.Collapsed;
+            inlinePanel.Visibility = idx == 2 ? Visibility.Visible : Visibility.Collapsed;
+            if (idx == 0 && _currentActorId >= 0)
+                _runtime?.SendToRuntime($"SET_MATERIAL_OVERRIDE:{_currentActorId},{info.SlotIdx},{mat.Slot},{{\"kind\":\"embedded\"}}");
+        };
+
+        var header = new TextBlock
+        {
+            Text = $"#{mat.Slot} {(string.IsNullOrEmpty(mat.Name) ? "(無名)" : mat.Name)}  [{ModeLabel(mat.Mode)}]",
+            FontSize = 11, Foreground = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)),
+        };
+        return new Expander
+        {
+            Header = header, IsExpanded = false, Content = content,
+            Margin = new Thickness(0, 2, 0, 2),
+            Foreground = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)),
+        };
+    }
+
+    /// <summary>
+    /// 市松背景付きのカラースウォッチ（Border）を生成する。クリックイベントは呼び出し側で購読し、
+    /// 色更新時は返り値の setColor でスウォッチ表示を更新する（Sprite カラー編集 UI の実装を共通化）。
+    /// </summary>
+    private (Border swatch, Action<float, float, float, float> setColor) BuildColorSwatch(float r, float g, float b, float a)
+    {
+        var checkerGrid = new Grid();
+        for (int ci = 0; ci < 2; ci++)
+            checkerGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        for (int ri = 0; ri < 2; ri++)
+            checkerGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        for (int ri = 0; ri < 2; ri++)
+            for (int ci = 0; ci < 2; ci++)
+            {
+                bool dark = (ri + ci) % 2 == 0;
+                var cell = new Border { Background = dark
+                    ? new SolidColorBrush(Color.FromRgb(0x60, 0x60, 0x60))
+                    : new SolidColorBrush(Color.FromRgb(0x99, 0x99, 0x99)) };
+                Grid.SetRow(cell, ri); Grid.SetColumn(cell, ci);
+                checkerGrid.Children.Add(cell);
+            }
+        var overlay = new Border
+        {
+            Background = new SolidColorBrush(
+                Color.FromArgb((byte)(a * 255), LinearToSrgbByte(r), LinearToSrgbByte(g), LinearToSrgbByte(b))),
+        };
+        var panel = new Grid();
+        panel.Children.Add(checkerGrid);
+        panel.Children.Add(overlay);
+
+        var swatch = new Border
+        {
+            Width = 120, Height = 20, Margin = new Thickness(0, 1, 0, 1),
+            BorderBrush = new SolidColorBrush(Color.FromRgb(0x55, 0x55, 0x55)),
+            BorderThickness = new Thickness(1),
+            Cursor = Cursors.Hand,
+            Child = panel,
+        };
+
+        void SetColor(float nr, float ng, float nb, float na) =>
+            overlay.Background = new SolidColorBrush(
+                Color.FromArgb((byte)(na * 255), LinearToSrgbByte(nr), LinearToSrgbByte(ng), LinearToSrgbByte(nb)));
+
+        return (swatch, SetColor);
+    }
+
+    /// <summary>[0..1] レンジのスライダー + 数値ボックス行を生成する（メタリック/ラフネス用）。</summary>
+    private UIElement BuildMaterialSliderRow(string label, float value, Action<float> onChange)
+    {
+        var grid = new Grid { Margin = new Thickness(0, 2, 0, 2) };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(90) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(44) });
+
+        var lbl = new TextBlock
+        {
+            Text = label, Foreground = new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88)),
+            FontSize = 11, VerticalAlignment = VerticalAlignment.Center,
+        };
+        var slider = new Slider
+        {
+            Minimum = 0, Maximum = 1, Value = value, VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(2, 0, 4, 0),
+        };
+        var box = new TextBox
+        {
+            Text = value.ToString("F2", CultureInfo.InvariantCulture),
+            FontSize = 11, VerticalAlignment = VerticalAlignment.Center,
+            Background = new SolidColorBrush(Color.FromRgb(0x1A, 0x1A, 0x1A)),
+            Foreground = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)),
+            BorderBrush = new SolidColorBrush(Color.FromRgb(0x3F, 0x3F, 0x46)),
+        };
+
+        bool updating = false;
+        slider.ValueChanged += (_, e) =>
+        {
+            if (updating) return;
+            updating = true;
+            box.Text = ((float)e.NewValue).ToString("F2", CultureInfo.InvariantCulture);
+            onChange((float)e.NewValue);
+            updating = false;
+        };
+        void CommitBox()
+        {
+            if (updating) return;
+            if (!float.TryParse(box.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) return;
+            v = Math.Clamp(v, 0f, 1f);
+            updating = true;
+            box.Text = v.ToString("F2", CultureInfo.InvariantCulture);
+            slider.Value = v;
+            updating = false;
+            onChange(v);
+        }
+        box.LostFocus += (_, _) => CommitBox();
+        box.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { CommitBox(); e.Handled = true; } };
+
+        Grid.SetColumn(lbl, 0);    grid.Children.Add(lbl);
+        Grid.SetColumn(slider, 1); grid.Children.Add(slider);
+        Grid.SetColumn(box, 2);    grid.Children.Add(box);
+        return grid;
     }
 
     // ── SpriteComponent inspector ─────────────────────────────

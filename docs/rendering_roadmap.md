@@ -242,12 +242,47 @@
 - 実機テスト観点: 2D/3Dキャンバス両方・SS合成/非SS・アクター編集タブ・カメラプレビュー・選択アウトラインで
   レイヤー順/ブレンド/UV/色が従来と一致すること。多数スプライトで `[PERF]` の draws が枚数より大幅に少ないこと。
 
-### Phase R7: .matマテリアル＋マルチマテリアル編集 【状況: 未着手】
+### Phase R7: .matマテリアル＋マルチマテリアル編集 【状況: 実装済み（実機検証待ち）】
 - .mat（JSON）: base_color/metallic/roughness/emissive/テクスチャパス群/alpha_mode/cutoff。
 - ModelComponent: マテリアルスロット一覧（サブメッシュ→マテリアルの対応を表示）、
   スロットごとに「glTF埋込（既定）/.mat割当/インライン上書き」を選択可能に。
 - インスペクタ: スロット一覧＋.matのD&D割当＋主要値のインライン編集。ProjectPanelで.mat新規作成。
 - 受入: マルチメッシュ/マルチマテリアルのglTFで、特定スロットだけ色や粗さを差し替えられる。
+
+#### 実装メモ（2026-07, 実機検証待ち）
+- **方式: (a) の最軽量形＝「各 MC の GpuModel へオーバーライドを焼き込み＋マージキー分離」**。
+  各 ModelComponent は自前の `gpu_model`（Arc 共有でなく MC 単位所有。CPU の Arc<Model> のみ
+  model_cache 共有）を持ち、描画/透明/シャドウ/RT の全経路はマテリアルと alpha_mode を
+  `GpuModel.materials` / `primitive_alpha_mode()` **からのみ**読む。よってオーバーライドを
+  ビルド時に GpuModel へ焼き込むだけで **draw_model_indirect / transparency.rs / shadow.rs /
+  rt_shadow.rs を一切変更せず**全経路へ反映される。per-アクタ整合は「マージキー＝
+  `source_path + オーバーライド署名`」で担保（`ModelComponent::batch_key()`）。オーバーライド
+  無しは署名空＝`batch_key == source_path` でビット一致し、旧シーン互換・描画経路・性能とも不変。
+- 新設 `renderer/material_asset.rs`（`MaterialAsset`/`MatTextures`＝.mat JSON, 全 serde default,
+  `OnceLock<Mutex<HashMap>>` キャッシュ＋`load`/`reload`/`clear_cache`, `parse_alpha_mode`）。
+  .mat テクスチャは `TextureSource::FilePath` 経由でアップロード（`asset_fs::read_image` が
+  assets:// 仮想パス／PAK を解決）。
+- 新設 `components/material_override.rs`（`MaterialOverride{slot,kind}`, `MaterialOverrideKind`＝
+  `MatAsset{path}`/`Inline{base_color/metallic/roughness/emissive/alpha_mode/alpha_cutoff の Option 群}`,
+  `#[serde(tag="kind")]`, `overrides_signature()`＝空 Vec は空文字列）。
+- `ModelComponent`＋`ModelComponentData` に `material_overrides: Vec<MaterialOverride>`
+  （`#[serde(default)]`）を追加。`GpuModel::apply_overrides`（gpu_resources.rs）が Inline＝埋込
+  Material を clone して factor/alpha を上書き（テクスチャ参照は維持）、MatAsset＝.mat の
+  factor/alpha＋テクスチャを適用（新規テクスチャは self.textures へ push して GpuModel が所有）。
+  `drawer::upload_model_with_overrides` が upload_model→apply_overrides を実行。gpu_model 構築の
+  全箇所（scene ロード/slot_ops/component_ops/複製）を overrides 対応化。SET_MODEL_PATH で
+  overrides をクリア（スロット意味が変わるため）。
+- IPC: `SET_MATERIAL_OVERRIDE:{actor},{slot_idx},{mat_slot},{json}`（json は
+  `{"kind":"embedded"}`＝埋込に戻す／`{"kind":"mat_asset","path":..}`／`{"kind":"inline",..}`）。
+  受信で該当 MC の `material_overrides` を更新し gpu_model を再構築、ACTOR_COMPONENTS 再送。
+  ACTOR_COMPONENTS の Model スロットに `materials`（各 slot の name/mode(embedded|mat|inline)/
+  現在実効値/path）を追加（R8 の animations 追加と同流儀）。
+- エディタ: InspectorPanel の Model セクションにマテリアルスロット一覧（.mat 割当 D&D＋
+  カラーピッカー/スライダのインライン編集/埋込に戻す）。ProjectPanel で .mat 新規作成＆
+  .mat ダブルクリックで外部エディタ起動。
+- スコープ外（TODO）: テクスチャのインライン差替 UI（.mat 経由では可）・.mat ライブファイル
+  ウォッチ・シェーダバリアント・material_index が None のプリミティブへの割当・RT 影 BLAS の
+  override 群での重複（幾何は同一のため正しく描けるが batch_key ごとに BLAS が重複＝微小メモリ増）。
 
 ### Phase R8: インラインRT影（品質オプション） 【状況: 実装済み（実機検証待ち, v1ハードシャドウ）】
 - EXPERIMENTAL_RAY_TRACING_ACCELERATION_STRUCTURE / EXPERIMENTAL_RAY_QUERY を要求する

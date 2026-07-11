@@ -166,6 +166,29 @@ impl DrawContext {
         )
     }
 
+    /// モデルをアップロードし、マテリアルオーバーライド（Phase R7）を GPU マテリアルへ
+    /// 焼き込んだ `GpuModel` を返す。
+    ///
+    /// `overrides` が空スライスなら `apply_overrides` のループが 0 回実行されるだけで
+    /// `upload_model` と完全に同一の結果になる（オーバーライド無しモデルの描画経路・
+    /// 性能は一切変わらない）。
+    pub fn upload_model_with_overrides(
+        &self,
+        model:     &Model,
+        overrides: &[crate::engine::components::MaterialOverride],
+    ) -> GpuModelInner {
+        let mut gpu_model = self.upload_model(model);
+        gpu_model.apply_overrides(
+            &self.device,
+            &self.queue,
+            model,
+            overrides,
+            &self.pipelines.mesh.material_bgl,
+            &self.defaults,
+        );
+        gpu_model
+    }
+
     pub fn create_instanced_batch(&self, model: &Model, num_instances: u32) -> BatchInner {
         BatchInner::new(
             &self.device,

@@ -3,12 +3,26 @@ use wgpu::util::DeviceExt;
 use rayon::prelude::*;
 use crate::engine::core::loader::model::{
     Model, ModelNode, Primitive, Vertex, TextureData, TextureSource, SamplerData,
-    FilterMode, WrapMode, Material, AlphaMode, CachedTexFormat,
+    FilterMode, WrapMode, Material, AlphaMode, CachedTexFormat, TextureInfo,
+    NormalTextureInfo, OcclusionTextureInfo,
 };
 use super::uniforms::{CameraUniform, ModelUniform, MaterialUniform, JointUniform, ColorVertex,
                       GpuCullData, FrustumUniform, GizmoVertex};
 use super::skin_system::SkinComputeSystem;
 use super::pipeline::SkinComputePipeline;
+use super::material_asset;
+use crate::engine::components::material_override::{MaterialOverride, MaterialOverrideKind};
+
+// ============================================================
+//  マテリアルオーバーライド適用（Phase R7）で使うマジックナンバー排除用定数
+// ============================================================
+
+/// オーバーライドで新規追加するテクスチャの UV セット番号（既定は UV0 のみサポート）。
+const OVERRIDE_TEX_COORD_SET: u32 = 0;
+/// オーバーライド法線マップの強度スケール既定値（フル強度）。
+const OVERRIDE_NORMAL_SCALE: f32 = 1.0;
+/// オーバーライド AO テクスチャの強度既定値（フル適用）。
+const OVERRIDE_OCCLUSION_STRENGTH: f32 = 1.0;
 
 // ============================================================
 //  デフォルトテクスチャ（テクスチャなし時のフォールバック）
@@ -615,6 +629,142 @@ impl GpuModel {
         });
 
         Self { meshes, materials, default_material, identity_joints_bg, textures: gpu_textures }
+    }
+
+    /// マテリアルオーバーライドを GPU マテリアルへ焼き込む（Phase R7）。
+    ///
+    /// 【設計の核心】描画コード（draw_model_indirect / transparency.rs / shadow.rs /
+    /// rt_shadow.rs）は `self.materials` と `primitive_alpha_mode()` からのみ
+    /// マテリアル・アルファモードを読む。よってここで `self.materials[slot]` を
+    /// 差し替えるだけで、描画コードを一切変更せずオーバーライドが全経路に反映される。
+    ///
+    /// - `slot` が `self.materials` の範囲外のオーバーライドは無視する（安全側）。
+    /// - `default_material`（プリミティブに material_index が無い場合のフォールバック）は
+    ///   対象外（オーバーライドは常に slot 指定＝materials 配列前提のため）。
+    /// - `overrides` が空ならループが 0 回実行されるだけで、以前の挙動と完全に同一。
+    pub fn apply_overrides(
+        &mut self,
+        device:       &wgpu::Device,
+        queue:        &wgpu::Queue,
+        model:        &Model,
+        overrides:    &[MaterialOverride],
+        material_bgl: &wgpu::BindGroupLayout,
+        defaults:     &DefaultTextures,
+    ) {
+        // MatAsset オーバーライドが追加するローカルテクスチャの texture_index 起点。
+        // Inline オーバーライドは埋込テクスチャのインデックス（0..base_tex_count）をそのまま
+        // 使い回すため、self.textures の「元モデル分」の範囲だけを渡して意図しない
+        // 追加テクスチャの混入を避ける（複数オーバーライドを連続適用する場合の安全策）。
+        let base_tex_count = model.textures.len();
+
+        for ovr in overrides {
+            // slot が範囲外のオーバーライドは無視する（安全側フォールバック）。
+            if ovr.slot >= self.materials.len() { continue; }
+
+            match &ovr.kind {
+                // ── インライン差し替え: 埋込マテリアルを複製し、指定フィールドのみ上書き ──
+                MaterialOverrideKind::Inline {
+                    base_color, metallic, roughness, emissive, alpha_mode, alpha_cutoff,
+                } => {
+                    let Some(base) = model.materials.get(ovr.slot) else { continue };
+                    let mut eff: Material = base.clone();
+                    if let Some(v) = base_color   { eff.base_color_factor = *v; }
+                    if let Some(v) = metallic     { eff.metallic_factor   = *v; }
+                    if let Some(v) = roughness    { eff.roughness_factor  = *v; }
+                    if let Some(v) = emissive     { eff.emissive_factor   = *v; }
+                    if let Some(v) = alpha_mode   { eff.alpha_mode        = material_asset::parse_alpha_mode(v); }
+                    if let Some(v) = alpha_cutoff { eff.alpha_cutoff      = *v; }
+                    // テクスチャ参照は維持（texture_index は元モデルのテクスチャ列を指したまま）。
+
+                    let tex_slice = &self.textures[..base_tex_count.min(self.textures.len())];
+                    let gpu_mat = GpuMaterial::upload(
+                        device, queue, &eff, &model.textures, tex_slice, material_bgl, defaults,
+                    );
+                    self.materials[ovr.slot] = gpu_mat;
+                }
+
+                // ── .mat アセット差し替え: アセットの factor/alpha + テクスチャを丸ごと適用 ──
+                MaterialOverrideKind::MatAsset { path } => {
+                    if path.is_empty() { continue; }
+                    let Some(asset) = material_asset::load(path) else {
+                        eprintln!("[SEED gpu_resources] MaterialOverride: .mat ロード失敗（path={path}）。オーバーライドをスキップします。");
+                        continue;
+                    };
+
+                    let mut eff = Material {
+                        name:              asset.name.clone(),
+                        base_color_factor: asset.base_color,
+                        metallic_factor:   asset.metallic,
+                        roughness_factor:  asset.roughness,
+                        emissive_factor:   asset.emissive,
+                        alpha_mode:        material_asset::parse_alpha_mode(&asset.alpha_mode),
+                        alpha_cutoff:      asset.alpha_cutoff,
+                        ..Material::default()
+                    };
+
+                    // .mat が指すテクスチャをこの呼び出し専用にアップロードし、self.textures へ
+                    // 追加する（GpuModel が所有権を保持し続ける必要があるため：GpuMaterial は
+                    // テクスチャを所有せず view/sampler の参照のみを bind group に焼き込む）。
+                    // (テクスチャパス, linear フラグ, 差し込み先) の一覧。
+                    // linear: albedo/emissive は sRGB(false)、normal/mr/occlusion は線形(true)。
+                    let tex_path = &asset.textures;
+                    if !tex_path.albedo.is_empty() {
+                        let idx = Self::upload_override_texture(device, queue, &tex_path.albedo, false, &mut self.textures);
+                        eff.base_color_texture = Some(TextureInfo { texture_index: idx, tex_coord_set: OVERRIDE_TEX_COORD_SET });
+                    }
+                    if !tex_path.normal.is_empty() {
+                        let idx = Self::upload_override_texture(device, queue, &tex_path.normal, true, &mut self.textures);
+                        eff.normal_texture = Some(NormalTextureInfo {
+                            texture_index: idx, tex_coord_set: OVERRIDE_TEX_COORD_SET, scale: OVERRIDE_NORMAL_SCALE,
+                        });
+                    }
+                    if !tex_path.metallic_roughness.is_empty() {
+                        let idx = Self::upload_override_texture(device, queue, &tex_path.metallic_roughness, true, &mut self.textures);
+                        eff.metallic_roughness_texture = Some(TextureInfo { texture_index: idx, tex_coord_set: OVERRIDE_TEX_COORD_SET });
+                    }
+                    if !tex_path.occlusion.is_empty() {
+                        let idx = Self::upload_override_texture(device, queue, &tex_path.occlusion, true, &mut self.textures);
+                        eff.occlusion_texture = Some(OcclusionTextureInfo {
+                            texture_index: idx, tex_coord_set: OVERRIDE_TEX_COORD_SET, strength: OVERRIDE_OCCLUSION_STRENGTH,
+                        });
+                    }
+                    if !tex_path.emissive.is_empty() {
+                        let idx = Self::upload_override_texture(device, queue, &tex_path.emissive, false, &mut self.textures);
+                        eff.emissive_texture = Some(TextureInfo { texture_index: idx, tex_coord_set: OVERRIDE_TEX_COORD_SET });
+                    }
+
+                    // texture_index は self.textures（元モデル分 + 今回追加分）を直接指すため、
+                    // gpu_textures には self.textures 全体を渡す。
+                    let gpu_mat = GpuMaterial::upload(
+                        device, queue, &eff, &model.textures, &self.textures, material_bgl, defaults,
+                    );
+                    self.materials[ovr.slot] = gpu_mat;
+                }
+            }
+        }
+    }
+
+    /// オーバーライド用テクスチャ 1 枚をアップロードし `textures` 末尾へ追加、その
+    /// インデックスを返すヘルパー（`apply_overrides` の MatAsset 分岐から使用）。
+    ///
+    /// `path` は `.mat` に記述された任意パス（assets:// 仮想パス / 絶対パスいずれも可）。
+    /// `TextureSource::FilePath` 経由でアップロードすることで `asset_fs`（PAK 対応）を通す。
+    fn upload_override_texture(
+        device:  &wgpu::Device,
+        queue:   &wgpu::Queue,
+        path:    &str,
+        linear:  bool,
+        textures: &mut Vec<GpuTexture>,
+    ) -> usize {
+        let tex_data = TextureData {
+            name:    Some(path.to_string()),
+            source:  TextureSource::FilePath(std::path::PathBuf::from(path)),
+            sampler: SamplerData::default(),
+            linear,
+        };
+        let gpu_tex = upload_texture_data(device, queue, &tex_data, linear);
+        textures.push(gpu_tex);
+        textures.len() - 1
     }
 }
 

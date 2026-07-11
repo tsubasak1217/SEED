@@ -544,6 +544,11 @@ public partial class ProjectPanel : UserControl
                 else if (entry is FileInfo animFile &&
                          animFile.Extension.Equals(".anim", StringComparison.OrdinalIgnoreCase))
                     AnimFileOpened?.Invoke(animFile.FullName);
+                else if (entry is FileInfo matFile &&
+                         matFile.Extension.Equals(".mat", StringComparison.OrdinalIgnoreCase))
+                    // Phase R7 最小実装: 専用エディタパネルは未実装のため、既定の関連付けアプリ（テキストエディタ等）
+                    // で開く。JSON テキストなので Windows の既定関連付けがあれば十分編集可能。
+                    OpenMaterialFile(matFile.FullName);
             }
             else if (e.ClickCount == 1)
             {
@@ -1026,6 +1031,7 @@ public partial class ProjectPanel : UserControl
         var menu = new ContextMenu();
 
         Add(menu, "新規フォルダを作成",     null, CreateNewFolder);
+        Add(menu, "新規マテリアル",         null, CreateNewMaterial);
         menu.Items.Add(new Separator());
         Add(menu, "エクスプローラーで開く", null, () =>
             System.Diagnostics.Process.Start("explorer.exe", _currentPath));
@@ -1033,6 +1039,63 @@ public partial class ProjectPanel : UserControl
         menu.PlacementTarget = FileScrollViewer;
         menu.Placement       = System.Windows.Controls.Primitives.PlacementMode.MousePoint;
         menu.IsOpen          = true;
+    }
+
+    /// <summary>
+    /// Phase R7: 現在表示中のフォルダに既定内容の .mat マテリアルファイルを新規作成する。
+    /// ファイル名は CreateNewFolder に倣い重複時に連番を付与する（NewMaterial.mat / NewMaterial_1.mat ...）。
+    /// UTF-8 (BOM なし) で書き込み、作成後にファイルグリッドを更新する。
+    /// </summary>
+    private void CreateNewMaterial()
+    {
+        const string baseName = "NewMaterial";
+        string name = $"{baseName}.mat";
+        string path = Path.Combine(_currentPath, name);
+        int n = 1;
+        while (File.Exists(path) || Directory.Exists(path))
+        {
+            name = $"{baseName}_{n++}.mat";
+            path = Path.Combine(_currentPath, name);
+        }
+
+        // 既定のマテリアル JSON（PBR: ベースカラー・メタリック・ラフネス・発光色・アルファ設定・テクスチャ参照）
+        const string defaultJson = """
+        {
+          "name": "NewMaterial",
+          "base_color": [1.0, 1.0, 1.0, 1.0],
+          "metallic": 1.0,
+          "roughness": 1.0,
+          "emissive": [0.0, 0.0, 0.0],
+          "alpha_mode": "opaque",
+          "alpha_cutoff": 0.5,
+          "textures": { "albedo": "", "normal": "", "metallic_roughness": "", "occlusion": "", "emissive": "" }
+        }
+        """;
+        try
+        {
+            // BOM なし UTF-8 で書き込む（new UTF8Encoding(false) は BOM を付与しない）。
+            File.WriteAllText(path, defaultJson, new UTF8Encoding(false));
+            _pendingRenameFolder = path;
+            RefreshFileGrid();
+        }
+        catch { }
+    }
+
+    /// <summary>
+    /// Phase R7 最小実装: .mat ファイルをダブルクリックした際、専用パネルを新設せず
+    /// Windows の既定関連付けアプリ（未関連付けなら「アプリの選択」ダイアログ）で開く。
+    /// UseShellExecute=true で ShellExecute 経由起動する（プロセス起動失敗は無視して黙って何もしない）。
+    /// </summary>
+    private static void OpenMaterialFile(string fullPath)
+    {
+        try
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(fullPath)
+            {
+                UseShellExecute = true,
+            });
+        }
+        catch { }
     }
 
     private static void Add(ContextMenu menu, string header, string? gesture, Action action)

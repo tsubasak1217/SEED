@@ -24,6 +24,91 @@ use super::{
     App, find_actor_by_dfs, find_actor_by_dfs_mut, find_actor_root_info,
 };
 
+// ============================================================
+//  マテリアルスロット一覧 JSON 構築（Phase R7）
+// ============================================================
+
+/// `AlphaMode` をインスペクター送信用の文字列表現に変換する。
+fn alpha_mode_str(mode: crate::engine::core::loader::model::AlphaMode) -> &'static str {
+    use crate::engine::core::loader::model::AlphaMode;
+    match mode {
+        AlphaMode::Opaque => "opaque",
+        AlphaMode::Mask   => "mask",
+        AlphaMode::Blend  => "blend",
+    }
+}
+
+/// ModelComponent のマテリアルスロット一覧を ACTOR_COMPONENTS 用 JSON 配列文字列にする。
+///
+/// 各要素は `{"slot":i,"name":..,"mode":"embedded"|"mat"|"inline","base_color":[..],
+/// "metallic":..,"roughness":..,"emissive":[..],"alpha_mode":"..","alpha_cutoff":..,"path":".."}`。
+/// - `mode` は該当スロットに `material_overrides` があるかどうかで決まる。
+/// - factor/alpha 系フィールドは常に「現在の実効値」（オーバーライド適用後。無ければ glTF 埋込値）。
+/// - `path` は MatAsset オーバーライドのときのみ非空。
+/// - `mc` が None（モデル未ロード等）または `model` が未ロードの場合は空配列 `[]` を返す。
+fn build_materials_json(mc: Option<&ModelComponent>) -> String {
+    use crate::engine::components::MaterialOverrideKind;
+    use crate::engine::core::renderer::material_asset;
+
+    let Some(mc)    = mc else { return "[]".to_string() };
+    let Some(model) = mc.model.as_ref() else { return "[]".to_string() };
+
+    let mut items = Vec::with_capacity(model.materials.len());
+    for (i, mat) in model.materials.iter().enumerate() {
+        // 埋込値をベースラインとして用意する
+        let mut base_color   = mat.base_color_factor;
+        let mut metallic     = mat.metallic_factor;
+        let mut roughness    = mat.roughness_factor;
+        let mut emissive     = mat.emissive_factor;
+        let mut alpha_mode   = alpha_mode_str(mat.alpha_mode).to_string();
+        let mut alpha_cutoff = mat.alpha_cutoff;
+        let mut path         = String::new();
+        let mut mode         = "embedded";
+
+        if let Some(ovr) = mc.material_overrides.iter().find(|o| o.slot == i) {
+            match &ovr.kind {
+                MaterialOverrideKind::Inline {
+                    base_color: bc, metallic: mt, roughness: rg, emissive: em,
+                    alpha_mode: am, alpha_cutoff: ac,
+                } => {
+                    mode = "inline";
+                    if let Some(v) = bc { base_color   = *v; }
+                    if let Some(v) = mt { metallic     = *v; }
+                    if let Some(v) = rg { roughness    = *v; }
+                    if let Some(v) = em { emissive     = *v; }
+                    if let Some(v) = am { alpha_mode   = v.clone(); }
+                    if let Some(v) = ac { alpha_cutoff = *v; }
+                }
+                MaterialOverrideKind::MatAsset { path: p } => {
+                    mode = "mat";
+                    path = p.clone();
+                    // .mat のロードに成功すればその内容を実効値として表示する。
+                    // 失敗時（ファイル無し等）は埋込値のままフォールバック表示する。
+                    if let Some(asset) = material_asset::load(p) {
+                        base_color   = asset.base_color;
+                        metallic     = asset.metallic;
+                        roughness    = asset.roughness;
+                        emissive     = asset.emissive;
+                        alpha_mode   = asset.alpha_mode.clone();
+                        alpha_cutoff = asset.alpha_cutoff;
+                    }
+                }
+            }
+        }
+
+        let name_json = serde_json::to_string(&mat.name).unwrap_or_default();
+        let path_json = serde_json::to_string(&path).unwrap_or_default();
+        items.push(format!(
+            r#"{{"slot":{i},"name":{name_json},"mode":"{mode}","base_color":[{:.4},{:.4},{:.4},{:.4}],"metallic":{:.4},"roughness":{:.4},"emissive":[{:.4},{:.4},{:.4}],"alpha_mode":"{alpha_mode}","alpha_cutoff":{:.4},"path":{path_json}}}"#,
+            base_color[0], base_color[1], base_color[2], base_color[3],
+            metallic, roughness,
+            emissive[0], emissive[1], emissive[2],
+            alpha_cutoff,
+        ));
+    }
+    format!("[{}]", items.join(","))
+}
+
 impl App {
     /// インスペクターの「コンポーネントを追加」リクエストを処理する（旧スタイル）。
     ///
@@ -86,6 +171,7 @@ impl App {
                     next_group_id:   GROUP_ID_BASE,
                     anim_drive:      None,
                     cast_shadows:    true,
+                    material_overrides: Vec::new(),
                 };
 
                 // スロット専用エンティティを spawn して world に insert し、スロットを登録する
@@ -172,22 +258,30 @@ impl App {
             let (type_name, extra) = match &slot_data.component {
                 ComponentData::ModelComponent(d) => {
                     let path_json = serde_json::to_string(&d.model_path).unwrap_or_default();
-                    // glTF モデル内蔵アニメ名一覧を添付する（C# の「内蔵アニメを追加」UI 用）。
                     // components は filter_map で構築されスロットと 1:1 対応しないため、
                     // 同一 source_path の ModelComponent をこのアクターの Model スロットから探す。
-                    // 名前は解決キー（AnimClipRef.anim）と一致させるため raw 値をそのまま送る
-                    // （無名アニメは空文字。C# 側での表示・重複扱いは C# ウェーブで対応）。
-                    let anims: Vec<String> = actor.slots().iter()
+                    // アニメ一覧・マテリアル一覧（Phase R7）の両方で同じ mc を参照する。
+                    let mc_opt = actor.slots().iter()
                         .filter(|s| s.kind == ComponentKind::Model)
                         .filter_map(|s| scene.world.get::<ModelComponent>(s.entity))
-                        .find(|mc| mc.source_path == d.model_path)
+                        .find(|mc| mc.source_path == d.model_path);
+
+                    // glTF モデル内蔵アニメ名一覧を添付する（C# の「内蔵アニメを追加」UI 用）。
+                    // 名前は解決キー（AnimClipRef.anim）と一致させるため raw 値をそのまま送る
+                    // （無名アニメは空文字。C# 側での表示・重複扱いは C# ウェーブで対応）。
+                    let anims: Vec<String> = mc_opt
                         .and_then(|mc| mc.model.as_ref())
                         .map(|m| m.animations.iter().map(|a| a.name.clone()).collect())
                         .unwrap_or_default();
                     let anims_json = serde_json::to_string(&anims).unwrap_or_else(|_| "[]".to_string());
+
+                    // マテリアルスロット一覧（Phase R7: .mat マテリアル＋マルチマテリアル編集）。
+                    // 各スロットの現在の実効値（オーバーライド適用後、無ければ glTF 埋込値）を送る。
+                    let materials_json = build_materials_json(mc_opt);
+
                     // 影を落とすかをインスペクター用に送信する（LightComponent.cast_shadows と同一慣例）
                     ("ModelComponent", format!(
-                        r#","model_path":{path_json},"animations":{anims_json},"cast_shadows":{}"#,
+                        r#","model_path":{path_json},"animations":{anims_json},"materials":{materials_json},"cast_shadows":{}"#,
                         d.cast_shadows as u8,
                     ))
                 }
@@ -453,6 +547,7 @@ impl App {
                         next_group_id:   GROUP_ID_BASE,
                         anim_drive:      None,
                         cast_shadows:    true,
+                        material_overrides: Vec::new(),
                     }
                 };
                 let name = slot_name.to_string();

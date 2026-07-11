@@ -147,7 +147,10 @@ pub struct SkinVertex {
 // ============================================================
 
 /// PBR マテリアル（glTF2.0 metallic-roughness ワークフロー準拠）。
-#[derive(Serialize, Deserialize)]
+///
+/// `Clone` は Phase R7 のマテリアルオーバーライド（gpu_resources::GpuModel::apply_overrides）が
+/// 埋込マテリアルを複製して factor 等を差し替えた「実効マテリアル」を作るために必要。
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Material {
     pub name: String,
 
@@ -208,13 +211,13 @@ pub enum AlphaMode {
 }
 
 /// テクスチャ参照（Material → TextureData のインデックス）。
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct TextureInfo {
     pub texture_index: usize,
     pub tex_coord_set: u32,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct NormalTextureInfo {
     pub texture_index: usize,
     pub tex_coord_set: u32,
@@ -222,7 +225,7 @@ pub struct NormalTextureInfo {
     pub scale: f32,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct OcclusionTextureInfo {
     pub texture_index: usize,
     pub tex_coord_set: u32,
