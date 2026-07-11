@@ -443,13 +443,16 @@ impl GpuPrimitive {
             }))
         };
 
+        // LOD0（フル解像度）インデックスバッファ。BLAS 構築（rt_shadow.rs）はこのバッファを
+        // 参照するため、RT 対応時は BLAS_INPUT 用途（index_usage）が必須。
         let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label:    Some("Index Buffer"),
             contents: bytemuck::cast_slice(&prim.indices),
-            usage:    wgpu::BufferUsages::INDEX,
+            usage:    index_usage,
         });
 
         // LOD インデックスバッファをアップロード
+        // （BLAS は LOD0 の index_buffer のみを使うため、LOD1〜3 に BLAS_INPUT は不要）
         let lod_index_buffers: Vec<wgpu::Buffer> = prim.lod_indices.iter()
             .map(|lod_idx| device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label:    Some("LOD Index Buffer"),

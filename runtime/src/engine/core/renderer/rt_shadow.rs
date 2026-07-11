@@ -102,6 +102,8 @@ pub struct RtShadowResources {
     pub bind_group: wgpu::BindGroup,
     /// インスタンス上限超過の警告を出したか（ログ爆発防止）。
     warned_overflow: bool,
+    /// BLAS_INPUT 用途不足の警告を出したプリミティブ（毎フレーム同一警告のログ爆発防止）。
+    warned_usage: std::collections::HashSet<BlasKey>,
 }
 
 impl RtShadowResources {
@@ -138,6 +140,7 @@ impl RtShadowResources {
             blas_cache: HashMap::new(),
             bind_group,
             warned_overflow: false,
+            warned_usage: std::collections::HashSet::new(),
         }
     }
 
@@ -169,6 +172,27 @@ impl RtShadowResources {
                     if self.blas_cache.contains_key(&key) { continue; }
                     // 同一フレーム内で同一キーが複数キャスターに現れる場合の重複追加も防ぐ。
                     if to_build.iter().any(|(k, _)| *k == key) { continue; }
+                    // ── 防御チェック: BLAS 入力バッファの用途検証 ──────────
+                    // 頂点/インデックスバッファに BLAS_INPUT 用途が無いまま
+                    // build_acceleration_structures へ渡すと wgpu の検証パニックで
+                    // アプリ全体が落ちる（実機で発生済み: 'Index Buffer' の用途漏れ）。
+                    // 生成経路の見落とし・将来の新経路追加に備えてここで検証し、
+                    // 不足時は警告ログ＋そのプリミティブをスキップ（RT 影を落とさない
+                    // だけの縮退動作）にする。パニックはさせない。
+                    let vb_ok = prim.vertex_buffer.usage().contains(wgpu::BufferUsages::BLAS_INPUT);
+                    let ib_ok = prim.index_buffer.usage().contains(wgpu::BufferUsages::BLAS_INPUT);
+                    if !vb_ok || !ib_ok {
+                        // 同一プリミティブの警告は 1 回だけ（毎フレーム呼ばれるため）。
+                        if self.warned_usage.insert(key.clone()) {
+                            eprintln!(
+                                "[SEED RT] 警告: {} mesh#{} prim#{} のバッファに BLAS_INPUT 用途が\
+                                 ありません（vertex={vb_ok}, index={ib_ok}）。このプリミティブは\
+                                 RT 影を落としません（gpu_resources.rs の生成経路を確認してください）",
+                                key.source_path, key.mesh_idx, key.prim_idx
+                            );
+                        }
+                        continue;
+                    }
                     to_build.push((key, prim));
                 }
             }
