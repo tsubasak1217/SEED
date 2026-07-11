@@ -61,8 +61,14 @@ fn shade_light(
     return (kD * albedo / PI + specular) * radiance * ndl;
 }
 
-@fragment
-fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+/// PBR ライティングを評価して HDR カラー（rgb）＋アルファ（a）を返す純関数。
+///
+/// fs_main（不透明・Mask パス）と shader_wboit.wgsl の fs_wboit（透明 WBOIT パス）が
+/// 同一のライティングを共有するために本体をここへ切り出した（Phase R5）。
+/// Mask モードのアルファテスト（discard）も本関数内で行うため、両パスで
+/// カットオフ挙動が一致する。alpha_cutoff は非 Mask マテリアルでは 0.0 のため
+/// Opaque/Blend は影響を受けない（GpuMaterial::upload 参照）。
+fn shade_pbr(in: VertexOutput) -> vec4<f32> {
 
     // ── ベースカラー ──────────────────────────────────────────
     var base_color = u_material.base_color_factor;
@@ -71,10 +77,12 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     }
     base_color *= in.color;
 
-    // アルファテスト（Mask モード: alpha_cutoff > 0）
-    //if u_material.alpha_cutoff > 0.0 && base_color.a < u_material.alpha_cutoff {
-    //    discard;
-    //}
+    // アルファテスト（Mask モード: alpha_cutoff > 0）。
+    // GpuMaterial::upload により alpha_cutoff は Mask のときのみ正値、
+    // Opaque/Blend では 0.0 になるため、この分岐は Mask のみで発火する。
+    if u_material.alpha_cutoff > 0.0 && base_color.a < u_material.alpha_cutoff {
+        discard;
+    }
 
     // ── メタリック・ラフネス ──────────────────────────────────
     var metallic  = u_material.metallic_factor;
@@ -219,4 +227,12 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // トーンマップパス（post_tonemap.wgsl）へ一元化された。ガンマ補正（sRGB
     // エンコード）はトーンマップ出力先のスワップチェーンが担う。
     return vec4<f32>(hdr_color, base_color.a);
+}
+
+// ── 不透明／Mask パスのフラグメントエントリ ──────────────────
+// ライティング本体は shade_pbr に集約済み。単一カラーターゲット
+// （@location(0)）へ HDR 色＋アルファを出力する。
+@fragment
+fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+    return shade_pbr(in);
 }

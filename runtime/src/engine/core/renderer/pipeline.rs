@@ -943,6 +943,8 @@ pub struct DrawPipelines {
     pub canvas_id:            CanvasIdPipeline,
     pub camera_preview_blit:  CameraPreviewBlitPipeline,
     pub bar_fill:             BarFillPipeline,
+    /// 透明描画パイプライン一式（距離ソート / WBOIT, Phase R5）。
+    pub transparent:          super::transparency::TransparentPipelines,
 }
 
 impl DrawPipelines {
@@ -989,6 +991,8 @@ impl DrawPipelines {
         // カメラプレビューブリットはトーンマップ後にスワップチェーンへ直接描くため surface_format。
         let camera_preview_blit = CameraPreviewBlitPipeline::new(device, surface_format, df, cache);
         let bar_fill            = BarFillPipeline::new(device, sf, df, cache);
-        Self { mesh, skinned_mesh, rt, unlit_line, cull, skin_compute, depth_prepass, shadow_depth, id_pass, outline, sprite, sprite_outline, canvas_id, camera_preview_blit, bar_fill }
+        // 透明描画パイプライン（Phase R5）。シーン HDR（sf）へ描くため sf/df を渡す。
+        let transparent         = super::transparency::TransparentPipelines::new(device, sf, df, cache);
+        Self { mesh, skinned_mesh, rt, unlit_line, cull, skin_compute, depth_prepass, shadow_depth, id_pass, outline, sprite, sprite_outline, canvas_id, camera_preview_blit, bar_fill, transparent }
     }
 }

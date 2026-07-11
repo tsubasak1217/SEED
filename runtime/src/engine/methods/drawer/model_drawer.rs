@@ -54,6 +54,15 @@ pub fn draw_model_indirect<'pass>(
             let Some((_, model_bg)) = batch.lod_node_data[lod][draw.node_idx].as_ref()
                 else { continue };
 
+            // 半透明（Blend）プリミティブは不透明パスでは描かず、透明パス
+            // （transparency.rs）へ委ねる（Phase R5）。Opaque/Mask のみここで描画する。
+            // 全 Opaque シーンでは Blend が存在しないため挙動は従来と完全一致。
+            if gpu_model.primitive_alpha_mode(draw.material_idx)
+                == crate::engine::core::loader::model::AlphaMode::Blend
+            {
+                continue;
+            }
+
             let gpu_mesh = &gpu_model.meshes[draw.mesh_idx];
             let prim     = &gpu_mesh.primitives[draw.prim_idx];
 

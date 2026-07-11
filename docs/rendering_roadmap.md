@@ -150,12 +150,57 @@
   中央1タップのコピーになる。R3比の増分は「トーンマップ→LDR中間→最終コピー」の追加フルスクリーン
   コピー1回＋LDR中間RT(Rgba16Float, 全解像度)1枚のみ（下記R3課題解消と引き換え。GPU負荷は微小）。
 
-### Phase R5: 透明描画の整備 【状況: 未着手】
+### Phase R5: 透明描画の整備 【状況: 実装済み（実機検証待ち）】
 - 不透明/透明の描画分離（マテリアルのAlphaMode: Opaque/Mask/Blend で分類）。
 - Maskモードのdiscard復活（shader_fragment.wgslのコメントアウト解除＋alpha_cutoff結線）。
 - Blendは2方式を切替可能に: (a)距離ソート（後方→前方）、(b)WBOIT（accum/revealage 2RT＋合成パス。R3の土台使用）。
   切替はカメラ or プロジェクト設定。
 - 受入: 半透明同士の交差でWBOITが破綻なく、ソート方式では従来型の見た目になる。
+
+#### 実装メモ（2026-07, 実機検証待ち）
+- 分類: **プリミティブ（サブメッシュ）単位**。`GpuMaterial` に `alpha_mode` を保持し、
+  `GpuModel::primitive_alpha_mode(material_idx)` を唯一の判定源とする。Opaque/Mask は
+  従来のメイン HDR パス、Blend は透明パスへ分離（`draw_model_indirect` が Blend をスキップ）。
+- Mask discard 復活: `shader_fragment.wgsl` のコメントアウト解除。`alpha_cutoff` は
+  `GpuMaterial::upload` が Mask のときのみ正値（他は 0.0）を UBO へ入れるため、
+  **1 パイプライン共用**で Opaque/Blend は無影響。ライティング本体は `shade_pbr()` へ
+  切り出し、fs_main（不透明/Mask）と fs_wboit（WBOIT）が共有する。
+- 新設: `renderer/transparency.rs`（`TransparencyMode`{DistanceSort,Wboit}・
+  `TransparentPipelines`・gather/draw_sorted/draw_wboit/has_transparent/composite_wboit）。
+  WGSL: `shader_wboit.wgsl`（McGuire/Bavoil 深度依存重み, WBOIT_* 定数）・
+  `post_wboit_composite.wgsl`。TOML: `transparent_mesh/skinned.toml`
+  （blend=AlphaBlending, depth_write=false, LessEqual）・`post_wboit_composite.toml`。
+- 距離ソート方式（既定）: 粒度は**プリミティブ×インスタンス**。Indirect 構造は使わず、
+  インスタンス重心のカメラ距離二乗で背面→前面ソートし
+  `draw_indexed(0..n, 0, compact_idx..compact_idx+1)`（非ゼロ first_instance、outline と
+  同手法）で 1 件ずつ直接描画（透明は少数前提でドローコール増を許容する設計判断）。
+  メインパス内・不透明直後に描画。BGL 構造同一性により既存の
+  camera/model/material/joint/lights BindGroup をそのまま流用。
+- WBOIT 方式: accum=Rgba16Float（One/One 加算, クリア0）＋ reveal=R16Float
+  （(Zero, OneMinusSrc)＝dst*=(1-a), クリア1）の 2RT（RtPool `wboit_accum`/`wboit_reveal`）。
+  デュアル MRT パイプラインは TOML ビルダー非対応のため手動構築（ソート用ビルドの
+  リフレクション BGL を再利用、グループ数 5 維持）。深度はメインパス深度を Load・
+  書込なしで不透明に隠される。合成はフルスクリーンパスで
+  `vec4(accum.rgb/max(accum.a,ε), 1-reveal)` を **ブルーム前＝トーンマップ前**の
+  シーン HDR へ AlphaBlending（LoadOp::Load）合成。reveal≈1 のピクセルは discard。
+- 切替: `PostFxSettings.transparency`（既定 DistanceSort）。IPC は `SET_POST_FX` に
+  `"transparency":"sort"|"wboit"` を追加（欠落時 sort）。project_settings.json の
+  `transparency` を起動時 `load_graphics_settings` で読む（読み側 unwrap_or、コミット禁止）。
+  エディタはビューポート設定ポップアップに「透明描画」Expander＋ドロップダウン
+  （CmbTransparency: 距離ソート/WBOIT）を追加。実行時切替（両パイプライン起動時構築済み）。
+- 透明なしシーンのコスト: `has_transparent`（可視 Blend プリミティブの有無を安価走査）が
+  false のとき gather・透明パス・WBOIT RT 確保をすべてスキップ＝**追加コストほぼゼロ**
+  （残るのは (GpuModel,Batch) ペア収集の O(モデル数) Vec と走査のみ）。全 Opaque シーンの
+  見た目は完全不変（Blend が存在しないため不透明パスの skip 分岐が発火しない）。
+- カメラプレビュー: プレビューパスにも透明ソート描画を追加（プレビューカメラ位置基準）。
+  プレビューはグローバル設定にかかわらず**常に距離ソート**（WBOIT はプレビュー毎の
+  RT/合成が必要でコスト不相応。R8 のプレビュー簡易経路と同方針）。
+- naga parse+validate: `transparency.rs` の #[test] で WBOIT mesh/skinned・合成の 3 連結を
+  検証（post/rt_shadow の既存テストが shade_pbr 分割後の fs_main も再検証、全 pass）。
+- スコープ外（TODO）: スプライト 2D の透明（既存レイヤーソートのまま）・パーティクル・
+  透明の RT 影/シャドウキャスト（透明は非 RT ライト BG＝シャドウマップ受光のみ。
+  BLAS/シャドウキャスターからの Blend 除外は未実施——cast_shadows=false で回避可能）・
+  カメラプレビューの WBOIT・実機での視覚検証（交差半透明の WBOIT 破綻なし確認）。
 
 ### Phase R6: 汎用バッチング（同一形状一括描画） 【状況: 未着手】
 - スプライト: 1スプライト=1ドローコール＋毎フレームbuffer/BindGroup生成を撤廃。

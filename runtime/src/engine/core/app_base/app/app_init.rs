@@ -335,10 +335,15 @@ impl App {
         self.post_fx.bloom_knee      = v["bloom_knee"].as_f64().unwrap_or(DEFAULT_BLOOM_KNEE as f64) as f32;
         self.post_fx.bloom_intensity = v["bloom_intensity"].as_f64().unwrap_or(DEFAULT_BLOOM_INTENSITY as f64) as f32;
         self.post_fx.fxaa_enabled    = v["fxaa"].as_bool().unwrap_or(false);
+        // 透明描画方式（Phase R5, 既定 "sort" = 距離ソート）。キー欠落時も後方互換で距離ソート。
+        self.post_fx.transparency = crate::engine::core::renderer::TransparencyMode::from_str(
+            v["transparency"].as_str().unwrap_or("sort"),
+        );
         eprintln!(
-            "[SEED INIT] graphics settings loaded  rt_shadows={} post_vignette={} bloom={} fxaa={}",
+            "[SEED INIT] graphics settings loaded  rt_shadows={} post_vignette={} bloom={} fxaa={} transparency={}",
             self.rt_shadows, self.post_vignette_enabled,
             self.post_fx.bloom_enabled, self.post_fx.fxaa_enabled,
+            self.post_fx.transparency.as_str(),
         );
     }
 

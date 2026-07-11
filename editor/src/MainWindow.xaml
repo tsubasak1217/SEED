@@ -1419,6 +1419,32 @@
                                                         </StackPanel>
                                                     </Expander>
 
+                                                    <!-- ▶ 透明描画（半透明オブジェクトの合成方式） -->
+                                                    <Expander Header="透明描画" IsExpanded="True"
+                                                              Style="{StaticResource DarkExpanderStyle}"
+                                                              Margin="0,8,0,0">
+                                                        <StackPanel Margin="8,6,0,2">
+                                                            <Grid Margin="0,0,0,4">
+                                                                <Grid.ColumnDefinitions>
+                                                                    <ColumnDefinition Width="52"/>
+                                                                    <ColumnDefinition Width="*"/>
+                                                                </Grid.ColumnDefinitions>
+                                                                <TextBlock Text="方式" Foreground="#CCCCCC" FontSize="11" VerticalAlignment="Center"/>
+                                                                <!-- 距離ソート（既定）: 半透明オブジェクトをカメラからの距離でソートして描画。
+                                                                     WBOIT: Weighted Blended Order-Independent Transparency（描画順に依存しない合成）。
+                                                                     Tag には SET_POST_FX の "transparency" フィールド値をそのまま保持する。 -->
+                                                                <ComboBox x:Name="CmbTransparency" Grid.Column="1"
+                                                                          FontSize="11" Height="22"
+                                                                          VerticalAlignment="Center"
+                                                                          SelectedIndex="0"
+                                                                          SelectionChanged="OnTransparencyChanged">
+                                                                    <ComboBoxItem Content="距離ソート" Tag="sort"/>
+                                                                    <ComboBoxItem Content="WBOIT" Tag="wboit"/>
+                                                                </ComboBox>
+                                                            </Grid>
+                                                        </StackPanel>
+                                                    </Expander>
+
                                                     <!-- ▶ キャンバス -->
                                                     <Expander Header="キャンバス" IsExpanded="True"
                                                               Style="{StaticResource DarkExpanderStyle}"

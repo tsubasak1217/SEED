@@ -125,7 +125,13 @@ pub enum IpcCommand {
     SetRtShadows(bool),
     /// ブルーム／FXAA のポストエフェクト設定（Phase R4）。
     /// フィールド: (bloom有効, fxaa有効, bloom強度)。しきい値／ニーは定数既定を使う。
-    SetPostFx { bloom: bool, fxaa: bool, bloom_intensity: f32 },
+    /// Phase R5: 透明描画方式（距離ソート / WBOIT）も同 IPC で切り替える。
+    SetPostFx {
+        bloom: bool,
+        fxaa: bool,
+        bloom_intensity: f32,
+        transparency: crate::engine::core::renderer::TransparencyMode,
+    },
     /// 軸ギズモ表示オンオフ
     SetShowAxisGizmo(bool),
     /// アクターを指定パスへ保存（アクター編集モードのアクティブ世界線）
@@ -775,7 +781,13 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                             let bloom_intensity = v.as_ref()
                                 .and_then(|v| v["bloom_intensity"].as_f64())
                                 .unwrap_or(0.6) as f32;
-                            Some(IpcCommand::SetPostFx { bloom, fxaa, bloom_intensity })
+                            // 透明描画方式（欠落時は "sort" = 距離ソート）。
+                            let transparency = crate::engine::core::renderer::TransparencyMode::from_str(
+                                v.as_ref()
+                                    .and_then(|v| v["transparency"].as_str())
+                                    .unwrap_or("sort"),
+                            );
+                            Some(IpcCommand::SetPostFx { bloom, fxaa, bloom_intensity, transparency })
                         }
                         "SHOW_AXIS_GIZMO:1"     => Some(IpcCommand::SetShowAxisGizmo(true)),
                         "SHOW_AXIS_GIZMO:0"     => Some(IpcCommand::SetShowAxisGizmo(false)),

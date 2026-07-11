@@ -284,6 +284,10 @@ fn conv_filter(
 
 pub struct GpuMaterial {
     pub bind_group:     wgpu::BindGroup,
+    /// アルファ合成モード（Opaque / Mask / Blend）。
+    /// 透明描画の分類（Phase R5）の唯一の真実source。Opaque・Mask は不透明パス、
+    /// Blend は透明パスへ振り分ける。`Material::alpha_mode` を upload 時に複製する。
+    pub alpha_mode:     AlphaMode,
     #[allow(dead_code)]
     uniform_buffer:     wgpu::Buffer,
     // テクスチャのライフタイムを保持する
@@ -366,7 +370,7 @@ impl GpuMaterial {
             ],
         });
 
-        Self { bind_group, uniform_buffer, textures: Vec::new() }
+        Self { bind_group, alpha_mode: mat.alpha_mode, uniform_buffer, textures: Vec::new() }
     }
 }
 
@@ -547,6 +551,17 @@ pub struct GpuModel {
 }
 
 impl GpuModel {
+    /// プリミティブのマテリアルインデックスからアルファ合成モードを返す（Phase R5）。
+    ///
+    /// `material_idx` が None・範囲外のときは default_material のモード（既定 Opaque）を返す。
+    /// 透明描画の分類（不透明パス / 透明パス）で唯一の判定に用いる。
+    pub fn primitive_alpha_mode(&self, material_idx: Option<usize>) -> AlphaMode {
+        material_idx
+            .and_then(|mi| self.materials.get(mi))
+            .map(|m| m.alpha_mode)
+            .unwrap_or(self.default_material.alpha_mode)
+    }
+
     pub fn upload(
         device:       &wgpu::Device,
         queue:        &wgpu::Queue,
@@ -1071,6 +1086,19 @@ impl InstancedModelBatch {
             }
         }
         None
+    }
+
+    /// 指定インスタンスのワールド空間 AABB 中心（重心近似）を返す（Phase R5）。
+    ///
+    /// 透明描画の背面→前面ソートで、インスタンスのカメラ距離を求めるのに使う。
+    /// `world_aabbs` は dirty 時に再計算されるキャッシュで、`update()` 実行後に有効。
+    /// `inst_idx` が範囲外（未計算）の場合は None。
+    pub fn instance_centroid(&self, inst_idx: usize) -> Option<[f32; 3]> {
+        self.world_aabbs.get(inst_idx).map(|a| [
+            (a.aabb_min[0] + a.aabb_max[0]) * 0.5,
+            (a.aabb_min[1] + a.aabb_max[1]) * 0.5,
+            (a.aabb_min[2] + a.aabb_max[2]) * 0.5,
+        ])
     }
 
     /// GPU スキニング コンピュートシェーダを全 LOD 分 ComputePass に積む。

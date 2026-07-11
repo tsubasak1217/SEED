@@ -1,0 +1,580 @@
+// ============================================================
+//  transparency.rs — 透明描画の整備（Phase R5）
+//
+//  不透明パス（draw_model_indirect）が Blend マテリアルをスキップした分を、
+//  ここで 2 方式のいずれかで描画する:
+//    - DistanceSort: 半透明プリミティブを「インスタンス単位」で背面→前面に
+//      ソートし、通常フラグメント（fs_main）をアルファブレンド・深度書込なしで描く。
+//      少数の半透明物・凸形状で自然。半透明同士の相互交差は苦手。
+//    - Wboit: Weighted Blended OIT。順序独立で 2 枚の MRT（accum/reveal）へ蓄積し、
+//      フルスクリーン合成でシーン HDR へ重ねる。大量・交差する半透明に強い。
+//
+//  分類は GpuModel::primitive_alpha_mode（唯一の真実source）で行う。
+//  透明パイプラインは mesh/skinned と BGL レイアウトが構造的に同一のため、
+//  既存の camera/model/material/joint/lights BindGroup をそのまま流用する
+//  （canvas_id/collider_pick 等と同じく wgpu の BGL 等価性に依拠する既存慣例）。
+//
+//  透明はシャドウマップ影のみ受ける（非 RT ライト BG・非 RT パイプライン）。
+//  RT 影の受光は範囲外（TODO）。
+// ============================================================
+
+use super::gpu_resources::{GpuModel, InstancedModelBatch, NUM_LODS};
+use super::pipeline_config::{vertex_buffer_layout, parse_compare};
+use super::post::PostPipeline;
+use crate::engine::core::loader::model::AlphaMode;
+
+// ============================================================
+//  透明方式・RtPool ターゲット名・フォーマット定数
+// ============================================================
+
+/// 透明描画の方式（プロジェクト設定 / IPC で切り替え）。
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum TransparencyMode {
+    /// インスタンス単位の距離ソート（背面→前面）アルファブレンド。既定。
+    DistanceSort,
+    /// Weighted Blended OIT（順序独立）。
+    Wboit,
+}
+
+impl Default for TransparencyMode {
+    fn default() -> Self { TransparencyMode::DistanceSort }
+}
+
+impl TransparencyMode {
+    /// 設定文字列 → モード。"wboit" のみ Wboit、その他（"sort" 含む）は DistanceSort。
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "wboit" => TransparencyMode::Wboit,
+            _       => TransparencyMode::DistanceSort,
+        }
+    }
+    /// モード → 設定文字列（保存・ログ用）。
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            TransparencyMode::Wboit        => "wboit",
+            TransparencyMode::DistanceSort => "sort",
+        }
+    }
+}
+
+/// WBOIT の重み付き色蓄積ターゲット名（RtPool）。
+pub const RT_WBOIT_ACCUM:  &str = "wboit_accum";
+/// WBOIT の透過率蓄積ターゲット名（RtPool）。
+pub const RT_WBOIT_REVEAL: &str = "wboit_reveal";
+
+/// accum ターゲットのフォーマット（HDR 色 × 重み）。
+pub const WBOIT_ACCUM_FORMAT:  wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+/// reveal ターゲットのフォーマット（透過率の積、単チャンネル）。
+pub const WBOIT_REVEAL_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R16Float;
+
+/// accum のクリア値（蓄積前は 0）。加算合成の初期値。
+const WBOIT_ACCUM_CLEAR:  wgpu::Color = wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 0.0 };
+/// reveal のクリア値（透過率 1 = 何も遮っていない）。(Zero, OneMinusSrc) 合成の初期値。
+const WBOIT_REVEAL_CLEAR: wgpu::Color = wgpu::Color { r: 1.0, g: 1.0, b: 1.0, a: 1.0 };
+
+// ============================================================
+//  TransparentItem — ソート／描画対象の 1 単位
+// ============================================================
+
+/// 透明描画 1 件（プリミティブ × インスタンス）。
+struct TransparentItem {
+    /// `models` スライスへのインデックス。
+    model_idx:   usize,
+    /// `batch.lod_node_data[lod][node_idx]` 参照用。
+    node_idx:    usize,
+    /// `gpu.meshes[mesh_idx]` 参照用。
+    mesh_idx:    usize,
+    /// `mesh.primitives[prim_idx]` 参照用。
+    prim_idx:    usize,
+    /// スキンメッシュか（パイプライン・頂点バッファ選択）。
+    is_skinned:  bool,
+    /// LOD レベル。
+    lod:         usize,
+    /// この LOD のコンパクトインスタンス番号（first_instance に渡す）。
+    compact_idx: u32,
+    /// カメラからの距離二乗（背面→前面ソートのキー）。
+    dist_sq:     f32,
+}
+
+/// 描画対象の (GpuModel, Batch) ペアのスライス型エイリアス。
+pub type TransparentModels<'a> = [(&'a GpuModel, &'a InstancedModelBatch)];
+
+// ============================================================
+//  TransparentPipelines — 透明描画パイプライン一式（起動時 1 回生成）
+// ============================================================
+
+/// 距離ソート / WBOIT 両方式のパイプラインと合成資源。
+pub struct TransparentPipelines {
+    /// 距離ソート用（不透明と同一シェーダ・BGL、ブレンド有効・深度書込なし）。
+    sorted_mesh:    wgpu::RenderPipeline,
+    sorted_skinned: wgpu::RenderPipeline,
+    /// WBOIT 用（デュアル MRT、fs_wboit）。
+    wboit_mesh:     wgpu::RenderPipeline,
+    wboit_skinned:  wgpu::RenderPipeline,
+    /// group 3 の空 gap BindGroup（非スキン描画で必須セット）。
+    mesh_empty_bg3: wgpu::BindGroup,
+    /// WBOIT 合成パイプライン（accum/reveal → シーン HDR）。
+    wboit_composite: PostPipeline,
+    /// 合成入力サンプラー（accum/reveal 共通）。
+    composite_sampler: wgpu::Sampler,
+}
+
+/// 透明用シェーダソースを解決する（本モジュール自己完結）。
+fn resolve_shader(name: &str) -> &'static str {
+    match name {
+        "shader_common.wgsl"         => include_str!("shaders/shader_common.wgsl"),
+        "shadow.wgsl"                => include_str!("shaders/shadow.wgsl"),
+        "rt_shadow_off.wgsl"         => include_str!("shaders/rt_shadow_off.wgsl"),
+        "shader_static_vertex.wgsl"  => include_str!("shaders/shader_static_vertex.wgsl"),
+        "shader_skinned_vertex.wgsl" => include_str!("shaders/shader_skinned_vertex.wgsl"),
+        "shader_fragment.wgsl"       => include_str!("shaders/shader_fragment.wgsl"),
+        "shader_wboit.wgsl"          => include_str!("shaders/shader_wboit.wgsl"),
+        "fullscreen.wgsl"            => include_str!("shaders/fullscreen.wgsl"),
+        "post_wboit_composite.wgsl"  => include_str!("shaders/post_wboit_composite.wgsl"),
+        other => panic!("unknown transparency shader source: {other}"),
+    }
+}
+
+/// WBOIT MRT のブレンド定義を組み立てる。
+///   accum : One/One 加算（premultiplied color × weight を積む）。
+///   reveal: (Zero, OneMinusSrc) — dst *= (1 - src) で透過率を積む。
+fn wboit_color_targets() -> [Option<wgpu::ColorTargetState>; 2] {
+    // accum: 加算合成。
+    let accum = wgpu::ColorTargetState {
+        format: WBOIT_ACCUM_FORMAT,
+        blend: Some(wgpu::BlendState {
+            color: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::One,
+                dst_factor: wgpu::BlendFactor::One,
+                operation:  wgpu::BlendOperation::Add,
+            },
+            alpha: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::One,
+                dst_factor: wgpu::BlendFactor::One,
+                operation:  wgpu::BlendOperation::Add,
+            },
+        }),
+        write_mask: wgpu::ColorWrites::ALL,
+    };
+    // reveal: dst *= (1 - src)。src 係数 Zero、dst 係数 OneMinusSrc。
+    let reveal = wgpu::ColorTargetState {
+        format: WBOIT_REVEAL_FORMAT,
+        blend: Some(wgpu::BlendState {
+            color: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::Zero,
+                dst_factor: wgpu::BlendFactor::OneMinusSrc,
+                operation:  wgpu::BlendOperation::Add,
+            },
+            alpha: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::Zero,
+                dst_factor: wgpu::BlendFactor::OneMinusSrc,
+                operation:  wgpu::BlendOperation::Add,
+            },
+        }),
+        write_mask: wgpu::ColorWrites::ALL,
+    };
+    [Some(accum), Some(reveal)]
+}
+
+impl TransparentPipelines {
+    /// 透明描画パイプライン一式を生成する。
+    ///
+    /// - `sf` : シーン HDR フォーマット（Rgba16Float）。ソート出力・合成出力に使う。
+    /// - `df` : 深度フォーマット（メインパスと共有する Depth24PlusStencil8）。
+    pub fn new(
+        device: &wgpu::Device,
+        sf:     wgpu::TextureFormat,
+        df:     wgpu::TextureFormat,
+        cache:  Option<&wgpu::PipelineCache>,
+    ) -> Self {
+        use super::pipeline_config::RenderPipelineBuilder;
+
+        // ── 距離ソート用パイプライン（TOML + リフレクション）─────────
+        // 返り値 BGL は group 順 [camera, model, material, gap|joint, lights]。
+        // WBOIT の手動レイアウトでも同じ BGL を再利用する。
+        let (sorted_mesh, mesh_bgls) =
+            RenderPipelineBuilder::new(device, include_str!("pipelines/transparent_mesh.toml"), sf, df)
+                .with_label("transparent_mesh")
+                .with_cache(cache)
+                .build(resolve_shader);
+        let (sorted_skinned, skin_bgls) =
+            RenderPipelineBuilder::new(device, include_str!("pipelines/transparent_skinned.toml"), sf, df)
+                .with_label("transparent_skinned")
+                .with_cache(cache)
+                .build(resolve_shader);
+
+        // group 3 の空 gap BindGroup（mesh 用）。非スキン描画で必ず slot 3 にセットする。
+        let mesh_empty_bg3 = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label:   Some("Transparent Empty BG (group 3)"),
+            layout:  &mesh_bgls[3],
+            entries: &[],
+        });
+
+        // ── WBOIT パイプライン（デュアル MRT・手動構築）──────────────
+        // TOML ビルダーは 1 カラーターゲットのみ対応のため手動で組む。
+        // BGL は上のソート用ビルドの結果を再利用（構造同一のため既存 BG が使える）。
+        let wboit_mesh = build_wboit_pipeline(
+            device, df, cache, &mesh_bgls,
+            &["shader_common.wgsl", "shadow.wgsl", "rt_shadow_off.wgsl",
+              "shader_static_vertex.wgsl", "shader_fragment.wgsl", "shader_wboit.wgsl"],
+            &["mesh_vertex"],
+            "wboit_mesh",
+        );
+        let wboit_skinned = build_wboit_pipeline(
+            device, df, cache, &skin_bgls,
+            &["shader_common.wgsl", "shadow.wgsl", "rt_shadow_off.wgsl",
+              "shader_skinned_vertex.wgsl", "shader_fragment.wgsl", "shader_wboit.wgsl"],
+            &["mesh_vertex", "skin_vertex"],
+            "wboit_skinned",
+        );
+
+        // ── WBOIT 合成パイプライン（accum/reveal → HDR, AlphaBlending）──
+        let wboit_composite = PostPipeline::from_toml(
+            device, include_str!("pipelines/post_wboit_composite.toml"), sf, cache, resolve_shader,
+        );
+
+        let composite_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label:          Some("WBOIT Composite Sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter:     wgpu::FilterMode::Nearest,
+            min_filter:     wgpu::FilterMode::Nearest,
+            mipmap_filter:  wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+
+        Self {
+            sorted_mesh, sorted_skinned,
+            wboit_mesh, wboit_skinned,
+            mesh_empty_bg3,
+            wboit_composite,
+            composite_sampler,
+        }
+    }
+
+    /// WBOIT 合成: accum/reveal を読み、シーン HDR（`hdr_view`）へアルファブレンドで重ねる。
+    /// 出力は LoadOp::Load（既存 HDR を保持）。ブルーム／トーンマップより前に呼ぶこと。
+    pub fn composite_wboit(
+        &self,
+        device:      &wgpu::Device,
+        encoder:     &mut wgpu::CommandEncoder,
+        hdr_view:    &wgpu::TextureView,
+        accum_view:  &wgpu::TextureView,
+        reveal_view: &wgpu::TextureView,
+    ) {
+        // group 0: accum + サンプラー、group 1: reveal + サンプラー。
+        let bg0 = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label:   Some("WBOIT Composite BG0 accum"),
+            layout:  &self.wboit_composite.bgls[0],
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(accum_view) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.composite_sampler) },
+            ],
+        });
+        let bg1 = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label:   Some("WBOIT Composite BG1 reveal"),
+            layout:  &self.wboit_composite.bgls[1],
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(reveal_view) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.composite_sampler) },
+            ],
+        });
+
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("WBOIT Composite"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view:           hdr_view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load:  wgpu::LoadOp::Load, // 既存シーン HDR を保持して重ねる。
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            occlusion_query_set:      None,
+            timestamp_writes:         None,
+        });
+        pass.set_pipeline(&self.wboit_composite.pipeline);
+        pass.set_bind_group(0, &bg0, &[]);
+        pass.set_bind_group(1, &bg1, &[]);
+        pass.draw(0..3, 0..1);
+    }
+}
+
+/// WBOIT の手動レンダーパイプラインを構築する（デュアル MRT）。
+///
+/// `bgls` は距離ソート用ビルドで得た group 順 BGL（構造同一のため再利用）。
+/// レイアウトは [camera, model, material, gap|joint, lights] の 5 group。
+fn build_wboit_pipeline(
+    device:         &wgpu::Device,
+    df:             wgpu::TextureFormat,
+    cache:          Option<&wgpu::PipelineCache>,
+    bgls:           &[wgpu::BindGroupLayout],
+    shader_sources: &[&str],
+    vertex_slots:   &[&str],
+    label:          &str,
+) -> wgpu::RenderPipeline {
+    // ── シェーダモジュール（ソース連結）─────────────────────────
+    let combined: String = shader_sources.iter()
+        .map(|n| resolve_shader(n))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label:  Some(label),
+        source: wgpu::ShaderSource::Wgsl(combined.into()),
+    });
+
+    // ── パイプラインレイアウト（BGL を再利用）───────────────────
+    let bgl_refs: Vec<&wgpu::BindGroupLayout> = bgls.iter().collect();
+    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label:                Some(label),
+        bind_group_layouts:   &bgl_refs,
+        push_constant_ranges: &[],
+    });
+
+    // ── 頂点バッファレイアウト ──────────────────────────────────
+    let vbuffers: Vec<wgpu::VertexBufferLayout<'static>> =
+        vertex_slots.iter().map(|n| vertex_buffer_layout(n)).collect();
+
+    // ── デュアルカラーターゲット（accum + reveal）───────────────
+    let targets = wboit_color_targets();
+
+    // ── 深度: LessEqual・書込なし（メインパスの不透明深度でテスト）──
+    let depth_stencil = wgpu::DepthStencilState {
+        format:              df,
+        depth_write_enabled: false,
+        depth_compare:       parse_compare("LessEqual"),
+        stencil:             wgpu::StencilState::default(),
+        bias:                wgpu::DepthBiasState::default(),
+    };
+
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label:  Some(label),
+        layout: Some(&layout),
+        vertex: wgpu::VertexState {
+            module:              &shader,
+            entry_point:         Some("vs_main"),
+            buffers:             &vbuffers,
+            compilation_options: Default::default(),
+        },
+        fragment: Some(wgpu::FragmentState {
+            module:              &shader,
+            entry_point:         Some("fs_wboit"),
+            targets:             &targets,
+            compilation_options: Default::default(),
+        }),
+        primitive: wgpu::PrimitiveState {
+            topology:   wgpu::PrimitiveTopology::TriangleList,
+            front_face: wgpu::FrontFace::Ccw,
+            cull_mode:  Some(wgpu::Face::Back),
+            ..Default::default()
+        },
+        depth_stencil: Some(depth_stencil),
+        multisample:   wgpu::MultisampleState::default(),
+        multiview:     None,
+        cache,
+    })
+}
+
+// ============================================================
+//  収集・判定・描画
+// ============================================================
+
+/// このフレームに描画すべき半透明プリミティブが 1 件でもあるか（安価判定）。
+///
+/// 可視インスタンス（lod_visible_counts>0）を持ち、その LOD にノードデータのある
+/// Blend プリミティブが 1 つでもあれば true。false のとき呼び出し側は透明処理を
+/// 一切行わない（gather / パス / RT 確保すべてスキップ）= 全 Opaque シーンで
+/// 追加コストゼロを保証する。
+pub fn has_transparent(models: &TransparentModels) -> bool {
+    for (gpu, batch) in models {
+        for lod in 0..NUM_LODS {
+            if batch.lod_visible_counts[lod] == 0 { continue; }
+            for draw in &batch.node_prim_list {
+                if gpu.primitive_alpha_mode(draw.material_idx) != AlphaMode::Blend { continue; }
+                if batch.lod_node_data[lod][draw.node_idx].is_some() {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// 全モデルの可視な半透明 (プリミティブ×インスタンス) を収集する。
+fn gather_items(models: &TransparentModels, camera_pos: [f32; 3]) -> Vec<TransparentItem> {
+    let mut items: Vec<TransparentItem> = Vec::new();
+
+    for (model_idx, (gpu, batch)) in models.iter().enumerate() {
+        for lod in 0..NUM_LODS {
+            let visible = batch.lod_visible_counts[lod];
+            if visible == 0 { continue; }
+
+            // この LOD のコンパクト→元インスタンス対応と距離を事前計算。
+            let compacts = &batch.lod_compact_insts[lod];
+            for draw in &batch.node_prim_list {
+                // Blend 以外は不透明パスが担当済み。
+                if gpu.primitive_alpha_mode(draw.material_idx) != AlphaMode::Blend { continue; }
+                // この LOD にノードデータが無ければスキップ。
+                if batch.lod_node_data[lod][draw.node_idx].is_none() { continue; }
+
+                for compact_idx in 0..visible as usize {
+                    let orig = compacts[compact_idx];
+                    // インスタンス重心とカメラの距離二乗（ソートキー）。
+                    let dist_sq = batch.instance_centroid(orig)
+                        .map(|c| {
+                            let dx = c[0] - camera_pos[0];
+                            let dy = c[1] - camera_pos[1];
+                            let dz = c[2] - camera_pos[2];
+                            dx * dx + dy * dy + dz * dz
+                        })
+                        .unwrap_or(0.0);
+                    items.push(TransparentItem {
+                        model_idx,
+                        node_idx:    draw.node_idx,
+                        mesh_idx:    draw.mesh_idx,
+                        prim_idx:    draw.prim_idx,
+                        is_skinned:  draw.is_skinned,
+                        lod,
+                        compact_idx: compact_idx as u32,
+                        dist_sq,
+                    });
+                }
+            }
+        }
+    }
+    items
+}
+
+/// 1 アイテムを描画する（ソート／WBOIT 共通）。パイプラインは呼び出し側が選ぶ。
+#[allow(clippy::too_many_arguments)]
+fn draw_one<'p>(
+    pass:      &mut wgpu::RenderPass<'p>,
+    item:      &TransparentItem,
+    models:    &'p TransparentModels<'p>,
+    camera_bg: &'p wgpu::BindGroup,
+    lights_bg: &'p wgpu::BindGroup,
+    mesh_pipe: &'p wgpu::RenderPipeline,
+    skin_pipe: &'p wgpu::RenderPipeline,
+    empty_bg3: &'p wgpu::BindGroup,
+) {
+    let (gpu, batch) = &models[item.model_idx];
+    let Some((_, model_bg)) = batch.lod_node_data[item.lod][item.node_idx].as_ref() else { return };
+    let prim = &gpu.meshes[item.mesh_idx].primitives[item.prim_idx];
+
+    // マテリアル BG（プリミティブの material_index、無ければ default）。
+    let mat_bg: &wgpu::BindGroup = prim.material_index
+        .and_then(|mi| gpu.materials.get(mi))
+        .map(|m| &m.bind_group)
+        .unwrap_or(&gpu.default_material.bind_group);
+
+    if item.is_skinned {
+        pass.set_pipeline(skin_pipe);
+        pass.set_bind_group(0, camera_bg, &[]);
+        pass.set_bind_group(1, model_bg, &[]);
+        pass.set_bind_group(2, mat_bg, &[]);
+        // group 3: GPU スキニングが書き込んだジョイント BG。
+        let jbg = batch.joint_vs_bg(item.lod).unwrap_or(&gpu.identity_joints_bg);
+        pass.set_bind_group(3, jbg, &[]);
+    } else {
+        pass.set_pipeline(mesh_pipe);
+        pass.set_bind_group(0, camera_bg, &[]);
+        pass.set_bind_group(1, model_bg, &[]);
+        pass.set_bind_group(2, mat_bg, &[]);
+        pass.set_bind_group(3, empty_bg3, &[]); // 空 gap（必須セット）
+    }
+    pass.set_bind_group(4, lights_bg, &[]);
+
+    pass.set_vertex_buffer(0, prim.vertex_buffer.slice(..));
+    if item.is_skinned {
+        pass.set_vertex_buffer(1, prim.skin_vertex_buffer.as_ref().unwrap().slice(..));
+    }
+
+    let (idx_buf, idx_count) = prim.get_lod_index_buffer(item.lod);
+    pass.set_index_buffer(idx_buf.slice(..), wgpu::IndexFormat::Uint32);
+    // first_instance=compact_idx（INDIRECT_FIRST_INSTANCE 有効・outline 等で実証済み）。
+    // 頂点シェーダの @builtin(instance_index) がこの値になり u_instances[compact_idx] を読む。
+    pass.draw_indexed(0..idx_count, 0, item.compact_idx..item.compact_idx + 1);
+}
+
+/// 距離ソート方式で半透明を描画する（メインパス内、不透明描画の直後）。
+/// アイテムを背面→前面（dist_sq 降順）にソートして 1 インスタンスずつ描く。
+pub fn draw_sorted<'p>(
+    pass:       &mut wgpu::RenderPass<'p>,
+    models:     &'p TransparentModels<'p>,
+    camera_bg:  &'p wgpu::BindGroup,
+    lights_bg:  &'p wgpu::BindGroup,
+    tp:         &'p TransparentPipelines,
+    camera_pos: [f32; 3],
+) {
+    let mut items = gather_items(models, camera_pos);
+    if items.is_empty() { return; }
+    // 背面→前面（遠い順）。アルファブレンドは描画順に依存するため。
+    items.sort_by(|a, b| b.dist_sq.partial_cmp(&a.dist_sq).unwrap_or(std::cmp::Ordering::Equal));
+
+    for item in &items {
+        draw_one(
+            pass, item, models, camera_bg, lights_bg,
+            &tp.sorted_mesh, &tp.sorted_skinned, &tp.mesh_empty_bg3,
+        );
+    }
+}
+
+/// WBOIT 方式で半透明を描画する（accum/reveal パス内）。順序非依存のためソート不要。
+pub fn draw_wboit<'p>(
+    pass:       &mut wgpu::RenderPass<'p>,
+    models:     &'p TransparentModels<'p>,
+    camera_bg:  &'p wgpu::BindGroup,
+    lights_bg:  &'p wgpu::BindGroup,
+    tp:         &'p TransparentPipelines,
+    camera_pos: [f32; 3],
+) {
+    let items = gather_items(models, camera_pos);
+    for item in &items {
+        draw_one(
+            pass, item, models, camera_bg, lights_bg,
+            &tp.wboit_mesh, &tp.wboit_skinned, &tp.mesh_empty_bg3,
+        );
+    }
+}
+
+// ============================================================
+//  WGSL 静的検証（naga parse + validate）
+// ============================================================
+#[cfg(test)]
+mod tests {
+    /// 透明系の連結 WGSL（WBOIT mesh/skinned・合成）を naga で parse + validate する。
+    /// 連結順は transparency.rs のリゾルバ・TOML と一致させること。
+    #[test]
+    fn transparency_shaders_parse_and_validate() {
+        let common     = include_str!("shaders/shader_common.wgsl");
+        let shadow     = include_str!("shaders/shadow.wgsl");
+        let rt_off     = include_str!("shaders/rt_shadow_off.wgsl");
+        let static_v   = include_str!("shaders/shader_static_vertex.wgsl");
+        let skin_v     = include_str!("shaders/shader_skinned_vertex.wgsl");
+        let frag       = include_str!("shaders/shader_fragment.wgsl");
+        let wboit      = include_str!("shaders/shader_wboit.wgsl");
+        let fullscreen = include_str!("shaders/fullscreen.wgsl");
+        let composite  = include_str!("shaders/post_wboit_composite.wgsl");
+
+        let variants: [(&str, Vec<&str>); 3] = [
+            ("wboit_mesh",            vec![common, shadow, rt_off, static_v, frag, wboit]),
+            ("wboit_skinned",         vec![common, shadow, rt_off, skin_v,   frag, wboit]),
+            ("post_wboit_composite",  vec![fullscreen, composite]),
+        ];
+
+        for (name, parts) in variants {
+            let src = parts.join("\n");
+            let module = naga::front::wgsl::parse_str(&src)
+                .unwrap_or_else(|e| panic!("[{name}] WGSL parse 失敗: {e:?}"));
+            let mut validator = naga::valid::Validator::new(
+                naga::valid::ValidationFlags::all(),
+                naga::valid::Capabilities::empty(),
+            );
+            validator
+                .validate(&module)
+                .unwrap_or_else(|e| panic!("[{name}] WGSL validate 失敗: {e:?}"));
+        }
+    }
+}

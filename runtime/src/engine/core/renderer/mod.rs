@@ -13,6 +13,7 @@ pub(crate) mod lighting;
 pub(crate) mod shadow;
 pub(crate) mod rt_shadow;
 pub(crate) mod post;
+pub(crate) mod transparency;
 
 pub use uniforms::{CameraUniform, ModelUniform, MaterialUniform, JointUniform, ColorVertex,
                    GpuCullData, FrustumUniform, GizmoVertex};
@@ -33,6 +34,9 @@ pub use post::{RtPool, PostContext, VignetteParams, VignetteStage,
                PostFxSettings, BloomParams, BloomPipelines,
                DEFAULT_BLOOM_THRESHOLD, DEFAULT_BLOOM_KNEE, DEFAULT_BLOOM_INTENSITY,
                RT_SCENE_HDR, RT_POST_INTER, RT_LDR};
+pub use transparency::{TransparencyMode, TransparentPipelines,
+                       RT_WBOIT_ACCUM, RT_WBOIT_REVEAL,
+                       WBOIT_ACCUM_FORMAT, WBOIT_REVEAL_FORMAT};
 
 // ============================================================
 //  Renderer 本体
@@ -658,6 +662,58 @@ impl<'r> RenderFrame<'r> {
                 }),
                 stencil_ops: Some(wgpu::Operations {
                     load:  wgpu::LoadOp::Clear(0),
+                    store: wgpu::StoreOp::Store,
+                }),
+            }),
+            occlusion_query_set: None,
+            timestamp_writes:    None,
+        })
+    }
+
+    /// WBOIT の accum/reveal ターゲットへ透明描画パスを開始する（Phase R5）。
+    ///
+    /// - color0 = accum : LoadOp::Clear(0,0,0,0)（加算蓄積の初期値）。
+    /// - color1 = reveal: LoadOp::Clear(1,1,1,1)（透過率 1＝未遮蔽の初期値）。
+    /// - depth = メインパス共有の depth_view を LoadOp::Load（不透明深度でテスト、
+    ///   書き込みはパイプライン側 depth_write=false のため行わない）。
+    /// メインパス drop 後・ブルーム前に呼ぶこと。
+    pub fn begin_wboit_pass_to<'f>(
+        &'f mut self,
+        accum_view:  &'f wgpu::TextureView,
+        reveal_view: &'f wgpu::TextureView,
+    ) -> wgpu::RenderPass<'f>
+    where
+        'r: 'f,
+    {
+        self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("WBOIT Accum/Reveal Pass"),
+            color_attachments: &[
+                Some(wgpu::RenderPassColorAttachment {
+                    view:           accum_view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load:  wgpu::LoadOp::Clear(wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                }),
+                Some(wgpu::RenderPassColorAttachment {
+                    view:           reveal_view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load:  wgpu::LoadOp::Clear(wgpu::Color { r: 1.0, g: 1.0, b: 1.0, a: 1.0 }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                }),
+            ],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: self.depth_view,
+                depth_ops: Some(wgpu::Operations {
+                    load:  wgpu::LoadOp::Load, // 不透明の深度を保持（テストのみ）。
+                    store: wgpu::StoreOp::Store,
+                }),
+                // Depth24PlusStencil8 は stencil 面を持つため ops を明示（Load/Store）。
+                stencil_ops: Some(wgpu::Operations {
+                    load:  wgpu::LoadOp::Load,
                     store: wgpu::StoreOp::Store,
                 }),
             }),

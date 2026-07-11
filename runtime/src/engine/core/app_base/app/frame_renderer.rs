@@ -1227,6 +1227,23 @@ impl App {
                             prepare_sprites_from_mats(&draw_ctx.device, &draw_ctx.pipelines.sprite, &plain)
                         };
 
+                        // ── プレビュー用の半透明対象収集（Phase R5）─────────────
+                        // draw_model_indirect が Blend プリミティブをスキップするようになった
+                        // ため、プレビューでも透明パスを別途描かないと半透明物が消える。
+                        // has_transparent で安価に判定し、全 Opaque シーンではコストゼロ。
+                        let preview_tp_models: Vec<(
+                            &crate::engine::methods::drawer::GpuModel,
+                            &crate::engine::methods::drawer::InstancedModelBatch,
+                        )> = self.shared_model_batches.iter()
+                            .filter_map(|(path, sd)| {
+                                gpu_model_by_path.get(path.as_str()).map(|&gpu| (gpu, &sd.batch))
+                            })
+                            .collect();
+                        let preview_has_tp =
+                            crate::engine::core::renderer::transparency::has_transparent(
+                                &preview_tp_models,
+                            );
+
                         {
                             let mut preview_pass = frame.begin_offscreen_pass(
                                 &preview.color_view,
@@ -1245,6 +1262,27 @@ impl App {
                                     );
                                 }
                             }
+
+                            // ── 半透明の距離ソート描画（Phase R5）──────────────
+                            // プレビューはグローバルの透明方式設定にかかわらず常に距離ソート
+                            // を使う（WBOIT はプレビューごとの accum/reveal RT と合成パスが
+                            // 必要でコストに見合わないため。R8 でプレビューが RT パイプライン
+                            // を使わないのと同じ「プレビューは簡易経路」の方針）。
+                            // ソートの距離基準はプレビューカメラのワールド位置（cam_uniform.position）。
+                            // メインカメラの saved_camera_pos は別カメラのため使わない。
+                            // カリングはメイン視錐台とプレビュー視錐台の OR のため、
+                            // lod_compact_insts にはプレビュー可視インスタンスが含まれている。
+                            if preview_has_tp {
+                                crate::engine::core::renderer::transparency::draw_sorted(
+                                    &mut preview_pass,
+                                    &preview_tp_models,
+                                    &preview_mesh_cam_buf.bind_group,
+                                    &draw_ctx.light_buffer.bind_group,
+                                    &draw_ctx.pipelines.transparent,
+                                    cam_uniform.position,
+                                );
+                            }
+
                             // 3D Canvas スプライトをプレビューカメラで描画する
                             // SpritePipeline は mesh と同一カメラ BGL のため preview_mesh_cam_buf を流用する
                             if !preview_sprite_3d.is_empty() {
@@ -2553,6 +2591,32 @@ impl App {
                     //   メインパス〜キャンバスオーバーレイ〜トーンマップの全区間で安定するようにする。
                     //   hdr_view/inter_view はメインパスのブロック外でも参照するため、ここで宣言する。
                     let (surf_w, surf_h) = frame.surface_size();
+
+                    // ── 透明描画の対象収集（Phase R5）─────────────────────
+                    // Blend マテリアルを持つバッチを (GpuModel, Batch) ペアで集める。
+                    // 2D シーンビューは 3D を描かないため対象外。has_tp が false のときは
+                    // 以降の透明処理（gather / パス / RT 確保）を一切行わずコストゼロにする。
+                    let transparency_mode = self.post_fx.transparency;
+                    let transparent_models: Vec<(
+                        &crate::engine::methods::drawer::GpuModel,
+                        &crate::engine::methods::drawer::InstancedModelBatch,
+                    )> = if edit_view_2d {
+                        Vec::new()
+                    } else {
+                        self.shared_model_batches.iter()
+                            .filter_map(|(path, sd)| {
+                                gpu_model_by_path.get(path.as_str()).map(|&gpu| (gpu, &sd.batch))
+                            })
+                            .collect()
+                    };
+                    let has_tp = crate::engine::core::renderer::transparency::has_transparent(
+                        &transparent_models,
+                    );
+                    let tp_sorted = has_tp
+                        && transparency_mode == crate::engine::core::renderer::TransparencyMode::DistanceSort;
+                    let tp_wboit = has_tp
+                        && transparency_mode == crate::engine::core::renderer::TransparencyMode::Wboit;
+
                     let vignette_on = self.post_vignette_enabled;
                     // Phase R4: ブルーム／FXAA 設定（フレーム内で不変のためコピーしておく）。
                     let bloom_on = self.post_fx.bloom_enabled;
@@ -2586,8 +2650,32 @@ impl App {
                             crate::engine::core::renderer::HDR_FORMAT, surf_w, surf_h,
                         )
                     } else { Vec::new() };
+                    // WBOIT の accum/reveal RT（WBOIT 方式かつ透明物ありのときのみ確保）。
+                    if tp_wboit {
+                        self.rt_pool.ensure(
+                            &draw_ctx.device,
+                            crate::engine::core::renderer::RT_WBOIT_ACCUM,
+                            surf_w, surf_h,
+                            crate::engine::core::renderer::WBOIT_ACCUM_FORMAT,
+                        );
+                        self.rt_pool.ensure(
+                            &draw_ctx.device,
+                            crate::engine::core::renderer::RT_WBOIT_REVEAL,
+                            surf_w, surf_h,
+                            crate::engine::core::renderer::WBOIT_REVEAL_FORMAT,
+                        );
+                    }
                     let hdr_view   = self.rt_pool.view(crate::engine::core::renderer::RT_SCENE_HDR);
                     let ldr_view   = self.rt_pool.view(crate::engine::core::renderer::RT_LDR);
+                    // WBOIT ターゲットのビュー（確保済みのときのみ Some）。
+                    let (wboit_accum_view, wboit_reveal_view) = if tp_wboit {
+                        (
+                            Some(self.rt_pool.view(crate::engine::core::renderer::RT_WBOIT_ACCUM)),
+                            Some(self.rt_pool.view(crate::engine::core::renderer::RT_WBOIT_REVEAL)),
+                        )
+                    } else {
+                        (None, None)
+                    };
                     let inter_view = if vignette_on {
                         Some(self.rt_pool.view(crate::engine::core::renderer::RT_POST_INTER))
                     } else { None };
@@ -2744,6 +2832,21 @@ impl App {
                                         &draw_ctx.pipelines, rt_pipes,
                                     );
                                 }
+                            }
+
+                            // ── 半透明の距離ソート描画（Phase R5）──────────────
+                            // 不透明の直後・オーバーレイより前に、Blend プリミティブを
+                            // 背面→前面に並べてアルファブレンドで描く。透明はシャドウマップ
+                            // 影のみ受けるため NON-RT ライト BG・NON-RT パイプラインを使う。
+                            if tp_sorted {
+                                crate::engine::core::renderer::transparency::draw_sorted(
+                                    &mut pass,
+                                    &transparent_models,
+                                    &camera_buf.bind_group,
+                                    &draw_ctx.light_buffer.bind_group,
+                                    &draw_ctx.pipelines.transparent,
+                                    saved_camera_pos,
+                                );
                             }
                         }
                         perf_draw_ms = _perf_t_draw.elapsed().as_secs_f64() * 1000.0;
@@ -3095,6 +3198,35 @@ impl App {
                     }
 
                     perf_main_pass_ms = _perf_t_main.elapsed().as_secs_f64() * 1000.0;
+
+                    // ── WBOIT 透明描画（Phase R5, WBOIT 方式かつ透明物ありのとき）──────
+                    // メインパス drop 後・ブルーム前に、accum/reveal へ順序独立蓄積し、
+                    // フルスクリーン合成でシーン HDR へ重ねる。無効時は一切実行しない。
+                    if tp_wboit {
+                        if let (Some(accum_view), Some(reveal_view)) =
+                            (wboit_accum_view, wboit_reveal_view)
+                        {
+                            {
+                                let mut wpass = frame.begin_wboit_pass_to(accum_view, reveal_view);
+                                crate::engine::core::renderer::transparency::draw_wboit(
+                                    &mut wpass,
+                                    &transparent_models,
+                                    &camera_buf.bind_group,
+                                    &draw_ctx.light_buffer.bind_group,
+                                    &draw_ctx.pipelines.transparent,
+                                    saved_camera_pos,
+                                );
+                            }
+                            // accum/reveal → シーン HDR へアルファブレンド合成（LoadOp::Load）。
+                            draw_ctx.pipelines.transparent.composite_wboit(
+                                &draw_ctx.device,
+                                frame.encoder_mut(),
+                                hdr_view,
+                                accum_view,
+                                reveal_view,
+                            );
+                        }
+                    }
 
                     // ── ブルーム（Phase R4, 有効時のみ）───────────────────────────
                     // メインパス後・トーンマップ前に、シーン HDR から高輝度を抽出して

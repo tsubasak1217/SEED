@@ -76,27 +76,33 @@ public partial class MainWindow
         _runtimeManager?.SendToRuntime($"SHOW_AXIS_GIZMO:{(ChkShowAxisGizmo.IsChecked == true ? "1" : "0")}");
     }
 
-    // ── ポストプロセス（Bloom / FXAA） ───────────────────────────
+    // ── ポストプロセス（Bloom / FXAA / 透明描画） ───────────────────────────
 
     /// <summary>ブルーム強度のデフォルト値。見た目を変えない後方互換のため 0.6 とする。</summary>
     private const double DefaultBloomIntensity = 0.6;
 
+    /// <summary>透明描画方式のデフォルト値（距離ソート）。SET_POST_FX の "transparency" フィールドに使う。</summary>
+    private const string DefaultTransparencyMode = "sort";
+
     /// <summary>
-    /// ポストプロセス設定（Bloom 有効/強度・FXAA 有効）をまとめて 1 つの JSON にして
-    /// ランタイムへ送信する共通処理。CheckBox・Slider いずれの変更イベントからも
+    /// ポストプロセス設定（Bloom 有効/強度・FXAA 有効・透明描画方式）をまとめて 1 つの JSON にして
+    /// ランタイムへ送信する共通処理。CheckBox・Slider・ComboBox いずれの変更イベントからも
     /// この関数を呼び出すことで、送信フォーマット（SET_POST_FX:{json}）を一箇所に集約する。
     /// </summary>
     private void SendPostFx()
     {
         if (!_viewportSettingsInitialized) return;
 
-        // XAML 初期化中に ValueChanged/Checked が発火した場合に備え、
+        // XAML 初期化中に ValueChanged/Checked/SelectionChanged が発火した場合に備え、
         // 各コントロールの null チェックを行いデフォルト値へフォールバックする。
         bool bloom = ChkBloom?.IsChecked == true;
         bool fxaa  = ChkFxaa?.IsChecked == true;
         double intensity = SldBloomIntensity?.Value ?? DefaultBloomIntensity;
+        // CmbTransparency の選択アイテムの Tag（"sort" / "wboit"）を読み取る。未選択・null の場合は既定の距離ソート。
+        string transparency = (CmbTransparency?.SelectedItem as System.Windows.Controls.ComboBoxItem)?.Tag as string
+                               ?? DefaultTransparencyMode;
 
-        string json = $"{{\"bloom\":{(bloom ? "true" : "false")},\"fxaa\":{(fxaa ? "true" : "false")},\"bloom_intensity\":{intensity.ToString(System.Globalization.CultureInfo.InvariantCulture)}}}";
+        string json = $"{{\"bloom\":{(bloom ? "true" : "false")},\"fxaa\":{(fxaa ? "true" : "false")},\"bloom_intensity\":{intensity.ToString(System.Globalization.CultureInfo.InvariantCulture)},\"transparency\":\"{transparency}\"}}";
         _runtimeManager?.SendToRuntime($"SET_POST_FX:{json}");
     }
 
@@ -108,6 +114,13 @@ public partial class MainWindow
 
     /// <summary>SldBloomIntensity の ValueChanged から呼ばれる薄いハンドラ（Slider は戻り値の型が異なるため分離）。</summary>
     private void OnPostFxSliderChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        if (_updatingControls) return;
+        SendPostFx();
+    }
+
+    /// <summary>CmbTransparency の SelectionChanged から呼ばれるハンドラ。透明描画方式の変更をランタイムへ送信する。</summary>
+    private void OnTransparencyChanged(object sender, SelectionChangedEventArgs e)
     {
         if (_updatingControls) return;
         SendPostFx();
@@ -364,11 +377,12 @@ public partial class MainWindow
         ChkShowGrid.IsChecked          = true;
         ChkShowAxisGizmo.IsChecked     = true;
         ChkCanvasScreenSpace.IsChecked = false;
-        // ポストプロセス設定も既定値（Bloom/FXAA 無効・強度 0.6）へリセットする
+        // ポストプロセス設定も既定値（Bloom/FXAA 無効・強度 0.6・透明描画は距離ソート）へリセットする
         _updatingControls = true;
         ChkBloom.IsChecked           = false;
         ChkFxaa.IsChecked            = false;
         SldBloomIntensity.Value      = DefaultBloomIntensity;
+        if (CmbTransparency != null) CmbTransparency.SelectedIndex = 0;
         _updatingControls = false;
         if (_viewportSettingsInitialized)
         {

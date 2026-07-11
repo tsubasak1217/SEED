@@ -61,6 +61,8 @@ pub struct PostFxSettings {
     pub bloom_intensity: f32,
     /// FXAA 有効フラグ（最終 LDR 段）。
     pub fxaa_enabled:    bool,
+    /// 透明描画の方式（距離ソート / WBOIT）。既定は距離ソート（Phase R5）。
+    pub transparency:    super::transparency::TransparencyMode,
 }
 
 // ─── デフォルト値（マジックナンバー回避）──────────────────────
@@ -79,6 +81,7 @@ impl Default for PostFxSettings {
             bloom_knee:      DEFAULT_BLOOM_KNEE,
             bloom_intensity: DEFAULT_BLOOM_INTENSITY,
             fxaa_enabled:    false,
+            transparency:    super::transparency::TransparencyMode::DistanceSort,
         }
     }
 }

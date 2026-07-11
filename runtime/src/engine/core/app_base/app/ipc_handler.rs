@@ -470,12 +470,14 @@ impl App {
                     // インラインレイトレ影フラグをエディタからのライブ切替で更新する
                     self.rt_shadows = v;
                 }
-                IpcCommand::SetPostFx { bloom, fxaa, bloom_intensity } => {
+                IpcCommand::SetPostFx { bloom, fxaa, bloom_intensity, transparency } => {
                     // ブルーム／FXAA をエディタからのライブ切替で更新する（Phase R4）。
                     // しきい値／ニーは既定のまま（UI は最小構成のため強度のみ可変）。
                     self.post_fx.bloom_enabled   = bloom;
                     self.post_fx.fxaa_enabled    = fxaa;
                     self.post_fx.bloom_intensity = bloom_intensity;
+                    // 透明描画方式（距離ソート / WBOIT）のライブ切替（Phase R5）。
+                    self.post_fx.transparency    = transparency;
                 }
                 IpcCommand::SetShowAxisGizmo(v) => {
                     self.show_axis_gizmo = v;

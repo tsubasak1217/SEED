@@ -1,0 +1,66 @@
+// ============================================================
+//  shader_wboit.wgsl — Weighted Blended OIT フラグメント（Phase R5）
+//
+//  順序独立透明描画（McGuire & Bavoil 2013）の書き込み側。
+//  ライティングは shader_fragment.wgsl の shade_pbr() を共有し、その結果へ
+//  深度依存の重み w を掛けて 2 枚の MRT へ蓄積する:
+//    - @location(0) accum : Rgba16Float。sum(color.rgb * a * w, a * w)。加算合成。
+//    - @location(1) reveal: R16Float。   prod(1 - a)。 blend=(Zero, OneMinusSrc)。
+//  合成は post_wboit_composite.wgsl が accum/reveal から行う。
+//
+//  連結順（transparency.rs のリゾルバ）:
+//    shader_common → shadow → rt_shadow_off → (static|skinned)_vertex →
+//    shader_fragment（shade_pbr 提供）→ 本ファイル。
+//  ※ shader_fragment.wgsl の fs_main も同一モジュールに含まれるが、
+//    パイプラインは fragment_entry = "fs_wboit" を指定するため未使用。
+// ============================================================
+
+// ── McGuire 重み関数の定数（マジックナンバー回避）──────────────
+/// アルファに掛ける前段スケール（alpha を強調して近距離寄与を確保）。
+const WBOIT_ALPHA_SCALE:  f32 = 10.0;
+/// アルファ前段バイアス（極小アルファでも最小重みを持たせる）。
+const WBOIT_ALPHA_BIAS:   f32 = 0.01;
+/// 深度重みの全体スケール（近距離を強く優先させる係数）。
+const WBOIT_DEPTH_SCALE:  f32 = 1.0e8;
+/// 深度 z（0..1）に掛ける係数。1 に近い遠方ほど重みを急減させる。
+const WBOIT_DEPTH_Z_BIAS: f32 = 0.9;
+/// 重みの下限（数値的ゼロ割れ防止）。
+const WBOIT_W_MIN:        f32 = 1.0e-2;
+/// 重みの上限（近距離・高アルファでの発散防止）。
+const WBOIT_W_MAX:        f32 = 3.0e3;
+
+/// WBOIT の 2 ターゲット出力（accum / reveal）。
+struct WboitOut {
+    /// 重み付き色蓄積（premultiplied color * weight, alpha * weight）。
+    @location(0) accum:  vec4<f32>,
+    /// 透過率の積（1 - a の積）。R チャンネルのみ使用。
+    @location(1) reveal: vec4<f32>,
+}
+
+// ── WBOIT フラグメントエントリ ────────────────────────────────
+// 深度は VertexOutput.clip_pos（@builtin(position)）を利用する。
+// フラグメントステージでは clip_pos はフレームバッファ座標になり、
+// .z がその断片の深度（0..1）である。専用の @builtin(position) 引数を
+// 追加すると builtin が重複して検証エラーになるため VertexOutput から読む。
+@fragment
+fn fs_wboit(in: VertexOutput) -> WboitOut {
+    // shade_pbr は shader_fragment.wgsl 由来。ライティング結果 rgb と
+    // マテリアルアルファ a を返す（Mask discard も内部で処理される）。
+    let c = shade_pbr(in);
+    let a = clamp(c.a, 0.0, 1.0);
+
+    // 断片深度（0..1）。1 に近いほど遠方。
+    let z = in.clip_pos.z;
+
+    // McGuire/Bavoil の深度依存重み。近距離・高アルファほど大きな重みを持つ。
+    let depth_term = pow(1.0 - z * WBOIT_DEPTH_Z_BIAS, 3.0);
+    let alpha_term = pow(min(1.0, a * WBOIT_ALPHA_SCALE) + WBOIT_ALPHA_BIAS, 3.0);
+    let w = clamp(alpha_term * WBOIT_DEPTH_SCALE * depth_term, WBOIT_W_MIN, WBOIT_W_MAX);
+
+    var out: WboitOut;
+    // premultiplied color に重みを掛けて蓄積（加算合成: One/One）。
+    out.accum  = vec4<f32>(c.rgb * a, a) * w;
+    // reveal は (1 - a) の積。blend=(Zero, OneMinusSrc) により dst *= (1 - a) となる。
+    out.reveal = vec4<f32>(a, a, a, a);
+    return out;
+}
