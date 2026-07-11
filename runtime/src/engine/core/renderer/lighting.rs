@@ -54,7 +54,7 @@ pub const LIGHT_KIND_RECT: u32 = 3;
 /// |  56    | rect_half_width  |   4  |
 /// |  60    | rect_half_height |   4  |
 /// |  64    | rect_right       |  12  |
-/// |  76    | _pad0            |   4  |
+/// |  76    | shadow_index     |   4  |
 /// |  80    | rect_up          |  12  |
 /// |  92    | _pad1            |   4  |
 /// 合計 96（16 の倍数 → array stride も 96）
@@ -84,8 +84,11 @@ pub struct GpuLight {
     pub rect_half_height: f32,
     /// rect の右方向ベクトル（面の横軸、正規化）。
     pub rect_right:       [f32; 3],
-    /// アライメント用パディング。
-    pub _pad0:            f32,
+    /// 影スロット（Phase R2）。-1 = 影なし。
+    /// 方向光: 0 = CSM 有効（影付き方向光は最大 1 灯）。
+    /// スポット: 0..MAX_SHADOW_SPOTS-1 = スポットシャドウ配列のレイヤ番号。
+    /// シェーダ（shadow.wgsl / shader_fragment.wgsl）が f32→i32 で判定する。
+    pub shadow_index:     f32,
     /// rect の上方向ベクトル（面の縦軸、正規化）。
     pub rect_up:          [f32; 3],
     /// アライメント用パディング。
@@ -112,7 +115,7 @@ impl GpuLight {
             rect_half_width:  0.0,
             rect_half_height: 0.0,
             rect_right:       [0.0; 3],
-            _pad0:            0.0,
+            shadow_index:     -1.0,
             rect_up:          [0.0; 3],
             _pad1:            0.0,
         }
@@ -132,7 +135,7 @@ impl GpuLight {
             rect_half_width:  0.0,
             rect_half_height: 0.0,
             rect_right:       [0.0; 3],
-            _pad0:            0.0,
+            shadow_index:     -1.0,
             rect_up:          [0.0; 3],
             _pad1:            0.0,
         }
@@ -166,7 +169,7 @@ impl GpuLight {
             rect_half_width:  0.0,
             rect_half_height: 0.0,
             rect_right:       [0.0; 3],
-            _pad0:            0.0,
+            shadow_index:     -1.0,
             rect_up:          [0.0; 3],
             _pad1:            0.0,
         }
@@ -198,7 +201,7 @@ impl GpuLight {
             rect_half_width:  (width * 0.5).max(1e-4),
             rect_half_height: (height * 0.5).max(1e-4),
             rect_right:       normalize(right),
-            _pad0:            0.0,
+            shadow_index:     -1.0,
             rect_up:          normalize(up),
             _pad1:            0.0,
         }

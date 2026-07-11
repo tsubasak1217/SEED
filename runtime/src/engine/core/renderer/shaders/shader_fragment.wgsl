@@ -117,6 +117,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // group 4 の storage 配列を u_light_meta.count 件だけ走査して加算する。
     var Lo = vec3<f32>(0.0);
     let light_count = min(u_light_meta.count, arrayLength(&u_lights));
+    // シャドウ（group 5）用: フラグメントのビュー空間深度（正）をカスケード選択に使う。
+    // u_camera.view は列優先アップロード済みのため view*world で正しくビュー座標になる。
+    let view_z = (u_camera.view * vec4<f32>(in.world_pos, 1.0)).z;
     for (var i: u32 = 0u; i < light_count; i = i + 1u) {
         let light = u_lights[i];
 
@@ -164,6 +167,19 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             // 前面判定: フラグメントが発光面の表側（direction 側）にあるほど強い。
             let facing     = clamp(dot(light.direction, -L), 0.0, 1.0);
             radiance       = base_col * distance_attenuation(dist, light.range) * facing;
+        }
+
+        // ── シャドウ減衰（group 5）────────────────────────────
+        // shadow_index < 0 のライトは影計算をスキップ（cast_shadows=false 含む）。
+        // 方向光は CSM、スポットは自身のマップを PCF 3x3 でサンプルして減衰する。
+        // point/rect の影は R2 対象外（TODO: R8 RT 影 or キューブマップ）。
+        let sidx = i32(light.shadow_index);
+        if sidx >= 0 {
+            if light.kind == LIGHT_KIND_DIRECTIONAL {
+                radiance = radiance * sample_shadow_dir(in.world_pos, view_z);
+            } else if light.kind == LIGHT_KIND_SPOT {
+                radiance = radiance * sample_shadow_spot(in.world_pos, sidx);
+            }
         }
 
         Lo += shade_light(N, V, L, albedo, F0, metallic, roughness, radiance);

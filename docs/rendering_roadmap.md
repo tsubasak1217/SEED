@@ -27,7 +27,7 @@
 
 ## フェーズ計画（実装しやすい依存順）
 
-### Phase R1: ライトECS＋ライトバッファ 【状況: 未着手】
+### Phase R1: ライトECS＋ライトバッファ 【状況: 完了（master ce551ee、rect=最近接点近似・LTCはR1.5 TODO）】
 - LightComponent（ComponentKind::Light）: kind(directional/point/spot/rect), color, intensity,
   range, スポットの内外角, rectの幅高, cast_shadows フラグ。向き/位置はActorTransformから。
 - シェーダ: ハードコード方向光を廃止し、ライト配列（storage buffer、上限は定数 MAX_LIGHTS）＋
@@ -37,12 +37,29 @@
 - インスペクタ: ライト編集UI（種別・色・強度・角度等）。エディタ表示: ライトギズモ（アイコン＋範囲ワイヤ）。
 - 受入: シーンに複数ライトを置き、色・向き・減衰が正しく効く。ライト0灯でも破綻しない（アンビエントのみ）。
 
-### Phase R2: シャドウマップ 【状況: 未着手】
+### Phase R2: シャドウマップ 【状況: 実装済み（実機検証待ち）】
 - directional: CSM（カスケード数は定数、まず3）。spot: 単一深度マップ。
 - シャドウアトラス or ライトごとの深度テクスチャ配列。PCFフィルタ。
 - cast_shadows/receive_shadows の制御（ライト側＋ModelComponent側）。
 - 深度プリパス（死蔵資産）の接続をこのフェーズで検討（シャドウパスと同系の作業のため）。
 - 受入: 方向光CSMで接地影、スポットで円錐影。カメラ移動でカスケード境界が破綻しない。
+
+#### 実装メモ（2026-07, 実機検証待ち）
+- リソース: `renderer/shadow.rs`（`ShadowResources`）。CSM=Depth32Float Texture2DArray（2048×3レイヤ,
+  `CSM_CASCADE_COUNT=3`/`SHADOW_MAP_SIZE=2048`）、スポット=Depth32Float Texture2DArray
+  （1024×4レイヤ, `SPOT_SHADOW_SIZE=1024`/`MAX_SHADOW_SPOTS=4`）。group5=深度配列×2＋比較サンプラー
+  （LessEqual）＋`ShadowMatricesUbo`（cascade_vp×3＋spot_vp×4＋分割距離＋params）。
+- シャドウパス: 死蔵の depth_prepass.wgsl を流用（`ShadowDepthPipelines`, `shadow_depth_*.toml`）。
+  skin compute 後・メインパス直前に各カスケード/スポットレイヤへ深度専用描画。
+  シャドウ用 view-proj はレイヤごとに専用 `CameraBuffer`（group0）へアップロード。
+- CSM: practical split（`CSM_SPLIT_LAMBDA=0.5`）＋バウンディング球タイト正射＋テクセルスナップ。
+- シェーディング: `shadow.wgsl`（group5）で方向光=カスケード選択→PCF3x3、スポット=PCF3x3。
+  slope-scaled 深度バイアス（`shadow_depth_*.toml` の `depth_bias_*`）＋シェーダ定数バイアス併用。
+  影付きは「最初の cast_shadows=true な方向光1灯」＋スポット最大4。`GpuLight.shadow_index` で結線。
+- cast_shadows: `ModelComponent.cast_shadows`（既定true, インスペクタ「影を落とす」チェック）。
+  粒度は共有バッチ（source_path）単位（インスタンス単位除外は未対応）。
+- TODO（R2残）: カスケード別カリング・境界スムーズブレンド・receive_shadows・point/rect影・
+  Play正射/2Dビュー時のCSM・カスケード可視化デバッグ表示。
 
 ### Phase R3: HDR＋ポストプロセス土台 【状況: 未着手】
 - オフスクリーンHDRターゲット（Rgba16Float）へシーン描画→フルスクリーントーンマップパスで

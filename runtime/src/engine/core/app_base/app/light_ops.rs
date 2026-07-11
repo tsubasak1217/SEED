@@ -138,7 +138,7 @@ fn collect_lights_recursive(actors: &[Actor], world: &World, wl: u32, out: &mut 
             // forward() = +Z 前方（光が進む向き）。up()/right() で rect 面軸を作る。
             let direction = tf.map(|t| t.forward()).unwrap_or([0.0, 0.0, 1.0]);
 
-            let gpu = match lc.kind {
+            let mut gpu = match lc.kind {
                 LightKind::Directional => {
                     GpuLight::directional(direction, lc.color, lc.intensity)
                 }
@@ -161,6 +161,10 @@ fn collect_lights_recursive(actors: &[Actor], world: &World, wl: u32, out: &mut 
                     )
                 }
             };
+            // 影希望のセンチネル（Phase R2）: cast_shadows=true なら shadow_index=1.0。
+            // 実スロット（方向光 0 / スポット 0..3）は ShadowResources::prepare_frame が
+            // 採用可否とともに確定させる。false は -1.0（影なし）のまま。
+            gpu.shadow_index = if lc.cast_shadows { 1.0 } else { -1.0 };
             out.push(gpu);
         }
 

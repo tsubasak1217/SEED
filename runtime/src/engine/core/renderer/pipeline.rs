@@ -15,6 +15,7 @@ fn get_shader_source(name: &str) -> &'static str {
         "shader_static_vertex.wgsl"  => include_str!("shaders/shader_static_vertex.wgsl"),
         "shader_skinned_vertex.wgsl" => include_str!("shaders/shader_skinned_vertex.wgsl"),
         "shader_fragment.wgsl"       => include_str!("shaders/shader_fragment.wgsl"),
+        "shadow.wgsl"                => include_str!("shaders/shadow.wgsl"),
         "unlit.wgsl"                 => include_str!("shaders/unlit.wgsl"),
         "gizmo_line.wgsl"            => include_str!("shaders/gizmo_line.wgsl"),
         "depth_prepass.wgsl"         => include_str!("shaders/depth_prepass.wgsl"),
@@ -40,6 +41,9 @@ pub struct MeshPipeline {
     pub material_bgl: wgpu::BindGroupLayout,
     /// group 4: ライト（storage 配列 + メタ uniform）。LightBuffer の bind group 生成に使う。
     pub lights_bgl:   wgpu::BindGroupLayout,
+    /// group 5: シャドウ（深度配列 ×2 + 比較サンプラー + 行列 UBO）。
+    /// ShadowResources の group 5 bind group 生成に使う（skinned とレイアウト互換）。
+    pub shadow_bgl:   wgpu::BindGroupLayout,
     /// group 3 用の空 BindGroup。
     ///
     /// mesh パイプラインは fragment が group 4（ライト）を参照する都合で
@@ -58,8 +62,8 @@ impl MeshPipeline {
                 .with_label("mesh_pbr")
                 .with_cache(cache)
                 .build(get_shader_source);
-        // group 番号順 (0, 1, 2, 3=gap, 4=lights) にイテレートして取り出す。
-        // fragment の group 4 参照によりレイアウトは 5 グループになり、
+        // group 番号順 (0, 1, 2, 3=gap, 4=lights, 5=shadow) にイテレートして取り出す。
+        // fragment の group 4/5 参照によりレイアウトは 6 グループになり、
         // group 3 はスキンなしメッシュでは空の gap BGL になる。
         let mut it = bgls.into_iter();
         let camera_bgl   = it.next().unwrap(); // group 0
@@ -67,6 +71,7 @@ impl MeshPipeline {
         let material_bgl = it.next().unwrap(); // group 2
         let gap_bgl      = it.next().unwrap(); // group 3（空レイアウト）
         let lights_bgl   = it.next().unwrap(); // group 4
+        let shadow_bgl   = it.next().unwrap(); // group 5
 
         // group 3 の空 BindGroup を 1 個だけ生成して保持する（draw 時の必須セット用）。
         let empty_bg3 = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -75,7 +80,7 @@ impl MeshPipeline {
             entries: &[],
         });
 
-        Self { pipeline, camera_bgl, model_bgl, material_bgl, lights_bgl, empty_bg3 }
+        Self { pipeline, camera_bgl, model_bgl, material_bgl, lights_bgl, shadow_bgl, empty_bg3 }
     }
 }
 
@@ -98,13 +103,14 @@ impl SkinnedMeshPipeline {
                 .with_label("skinned_mesh_pbr")
                 .with_cache(cache)
                 .build(get_shader_source);
-        // group 番号順 (0, 1, 2, 3=joints, 4=lights) にイテレートして取り出す
+        // group 番号順 (0, 1, 2, 3=joints, 4=lights, 5=shadow) にイテレートして取り出す
         let mut it = bgls.into_iter();
         let camera_bgl   = it.next().unwrap(); // group 0
         let model_bgl    = it.next().unwrap(); // group 1
         let material_bgl = it.next().unwrap(); // group 2
         let joint_bgl    = it.next().unwrap(); // group 3
         let _lights_bgl  = it.next().unwrap(); // group 4（LightBuffer は mesh 側 BGL で生成し共用）
+        let _shadow_bgl  = it.next().unwrap(); // group 5（ShadowResources は mesh 側 BGL で生成し共用）
         Self { pipeline, camera_bgl, model_bgl, material_bgl, joint_bgl }
     }
 }
@@ -173,6 +179,51 @@ impl DepthPrepassPipelines {
                 .build(get_shader_source);
 
         Self { mesh, skinned }
+    }
+}
+
+// ============================================================
+//  ShadowDepthPipelines — シャドウマップ深度専用パイプライン（Phase R2）
+// ============================================================
+
+/// シャドウマップへ深度のみ書き込むパイプライン（カラー出力なし）。
+///
+/// depth_prepass.wgsl を流用し、深度フォーマットは SHADOW_DEPTH_FORMAT。
+/// group 0 = シャドウカメラ（light view-proj）, group 1 = モデル行列。
+/// skinned は group 3 = joints、group 2 は空 gap（`empty_bg2` を必ずセットする）。
+pub struct ShadowDepthPipelines {
+    pub mesh:      wgpu::RenderPipeline,
+    pub skinned:   wgpu::RenderPipeline,
+    /// skinned パイプラインの group 2（空 gap）用 BindGroup。描画時に必須セット。
+    pub empty_bg2: wgpu::BindGroup,
+}
+
+impl ShadowDepthPipelines {
+    pub fn new(device: &wgpu::Device, shadow_df: wgpu::TextureFormat, cache: Option<&wgpu::PipelineCache>) -> Self {
+        // color_format = "none" なので surface_format は使用されない
+        let sf_unused = wgpu::TextureFormat::Bgra8UnormSrgb;
+
+        let (mesh, _) =
+            RenderPipelineBuilder::new(device, include_str!("pipelines/shadow_depth_mesh.toml"), sf_unused, shadow_df)
+                .with_label("shadow_depth_mesh")
+                .with_cache(cache)
+                .build(get_shader_source);
+
+        let (skinned, bgls_s) =
+            RenderPipelineBuilder::new(device, include_str!("pipelines/shadow_depth_skinned.toml"), sf_unused, shadow_df)
+                .with_label("shadow_depth_skinned")
+                .with_cache(cache)
+                .build(get_shader_source);
+        // skinned のレイアウトは (0=camera, 1=instances, 2=gap, 3=joints)。
+        // group 2 の空 BindGroup を 1 個だけ生成して描画時に使い回す。
+        let gap2_bgl = &bgls_s[2];
+        let empty_bg2 = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label:   Some("Shadow Depth Empty BG (group 2)"),
+            layout:  gap2_bgl,
+            entries: &[],
+        });
+
+        Self { mesh, skinned, empty_bg2 }
     }
 }
 
@@ -821,6 +872,7 @@ pub struct DrawPipelines {
     pub cull:                 CullPipeline,
     pub skin_compute:         SkinComputePipeline,
     pub depth_prepass:        DepthPrepassPipelines,
+    pub shadow_depth:         ShadowDepthPipelines,
     pub id_pass:              IdPassPipeline,
     pub outline:              OutlinePipeline,
     pub sprite:               SpritePipeline,
@@ -849,6 +901,7 @@ impl DrawPipelines {
         let cull                = CullPipeline::new(device, cache);
         let skin_compute        = SkinComputePipeline::new(device, cache);
         let depth_prepass       = DepthPrepassPipelines::new(device, df, cache);
+        let shadow_depth        = ShadowDepthPipelines::new(device, super::shadow::SHADOW_DEPTH_FORMAT, cache);
         let id_pass             = IdPassPipeline::new(device, sf, df, cache);
         let outline             = OutlinePipeline::new(device, sf, df, cache);
         let sprite              = SpritePipeline::new(device, queue, sf, df, cache);
@@ -856,6 +909,6 @@ impl DrawPipelines {
         let canvas_id           = CanvasIdPipeline::new(device, queue, df, cache);
         let camera_preview_blit = CameraPreviewBlitPipeline::new(device, sf, df, cache);
         let bar_fill            = BarFillPipeline::new(device, sf, df, cache);
-        Self { mesh, skinned_mesh, unlit_line, cull, skin_compute, depth_prepass, id_pass, outline, sprite, sprite_outline, canvas_id, camera_preview_blit, bar_fill }
+        Self { mesh, skinned_mesh, unlit_line, cull, skin_compute, depth_prepass, shadow_depth, id_pass, outline, sprite, sprite_outline, canvas_id, camera_preview_blit, bar_fill }
     }
 }

@@ -496,6 +496,10 @@ impl App {
         // 統合バッチ更新で使うためここで宣言しておく（begin_frame ブロック外でも参照できるよう）
         let mut saved_frustum_planes: [[f32; 4]; 6] = [[0.0; 4]; 6];
         let mut saved_camera_pos:     [f32; 3]       = [0.0; 3];
+        // シャドウ（Phase R2）用のアクティブカメラ情報（3D パースペクティブ時のみ Some）。
+        // (view 行列, near, far, fov_y[rad], aspect)。CSM のカスケード分割・視錐台計算に使う。
+        // 2D オルソ・正射カメラ時は None（方向光 CSM は透視カメラ前提のため影を落とさない）。
+        let mut saved_shadow_cam: Option<(Mat4x4<f32>, f32, f32, f32, f32)> = None;
 
         if let (Some(scene), Some(camera_buf), Some(queue)) =
             (&mut self.scene, &self.camera_buf, queue)
@@ -507,7 +511,7 @@ impl App {
             //   - Edit モード         → デバッグカメラ
             // 2D オルソカメラビュー（アクター編集 2D タブ / 2D シーンビュー）は
             // canvas_cameras の 2D カメラをメインカメラとして使う。
-            let (view, proj, cam_pos_arr) = if use_ortho_2d_camera {
+            let (view, proj, cam_pos_arr, shadow_cam): (Mat4x4<f32>, Mat4x4<f32>, [f32; 3], Option<(f32, f32, f32, f32)>) = if use_ortho_2d_camera {
                 let cam_2d = self.canvas_cameras
                     .entry(self.active_world_line)
                     .or_insert_with(CanvasCameraData::default);
@@ -523,7 +527,7 @@ impl App {
                 let v = Mat4x4::look_at_lh(eye, center, up);
                 // Y-down: bottom=+half_h, top=-half_h でワールド Y 正方向 = スクリーン下
                 let p = Mat4x4::orthographic_lh(-half_w, half_w, half_h, -half_h, 0.0, 200.0);
-                (v, p, [cam_2d.pan_x, cam_2d.pan_y, -100.0])
+                (v, p, [cam_2d.pan_x, cam_2d.pan_y, -100.0], None) // 2D オルソは影なし
             } else if self.mode == RuntimeMode::Play && !self.paused {
                 // Play モード（非ポーズ時）: is_main=true の CameraComponent を探す
                 // スケーリングモードに応じたビューポート矩形・射影アスペクト比・実効 FOV を計算する
@@ -564,24 +568,48 @@ impl App {
                             )
                         }
                     };
-                    (v, p, [px, py, pz])
+                    // CSM は透視カメラ前提。ゲームカメラが正射のときは影なし。
+                    let shadow_opt = match cd.projection {
+                        crate::engine::components::CameraProjection::Perspective =>
+                            Some((cd.near, cd.far, fov_y_rad, proj_aspect)),
+                        crate::engine::components::CameraProjection::Orthographic => None,
+                    };
+                    (v, p, [px, py, pz], shadow_opt)
                 });
                 // メインカメラが未配置の場合はデバッグカメラにフォールバック
                 game_cam.unwrap_or_else(|| {
                     let v  = self.camera.view_matrix();
                     let p  = self.camera.projection_matrix();
                     let cp = self.camera.position();
-                    (v, p, [cp.x, cp.y, cp.z])
+                    // デバッグカメラ（透視）: near/far/fov/aspect を CSM に渡す。
+                    let sc = Some((
+                        self.camera.base.projection.near,
+                        self.camera.base.projection.far,
+                        self.camera.base.projection.fov_y_rad,
+                        self.camera.base.projection.aspect_ratio,
+                    ));
+                    (v, p, [cp.x, cp.y, cp.z], sc)
                 })
             } else {
                 // Edit モード: デバッグカメラ
                 let v  = self.camera.view_matrix();
                 let p  = self.camera.projection_matrix();
                 let cp = self.camera.position();
-                (v, p, [cp.x, cp.y, cp.z])
+                let sc = Some((
+                    self.camera.base.projection.near,
+                    self.camera.base.projection.far,
+                    self.camera.base.projection.fov_y_rad,
+                    self.camera.base.projection.aspect_ratio,
+                ));
+                (v, p, [cp.x, cp.y, cp.z], sc)
             };
 
             let view_proj = proj * view;
+
+            // シャドウ用にアクティブカメラ情報を保存する（3D 透視カメラ時のみ）。
+            if let Some((n, f, fo, a)) = shadow_cam {
+                saved_shadow_cam = Some((view, n, f, fo, a));
+            }
 
             let res = window_size.map_or([1280.0, 720.0], |s| {
                 [s.width as f32, s.height as f32]
@@ -730,12 +758,34 @@ impl App {
         // シーンの Light スロットを Transform とともに収集する。Play/Edit 両方で反映。
         // ライトが 0 灯なら後方互換フォールバックの方向光が返る（暗転しない）。
         // 可変借用（&mut self.renderer）に入る前に不変借用で確定しておく。
-        let frame_lights: Vec<crate::engine::methods::drawer::GpuLight> =
+        // collect_gpu_lights は cast_shadows=true のライトへ shadow_index=1.0（影希望の
+        // センチネル）を仮設定する。実スロット（方向光 0 / スポット 0..3）は
+        // ShadowResources::prepare_frame が採用可否とともに確定させる。
+        let mut frame_lights: Vec<crate::engine::methods::drawer::GpuLight> =
             if let Some(scene) = &self.scene {
                 super::light_ops::collect_gpu_lights(&scene.actors, &scene.world, self.active_world_line)
             } else {
                 Vec::new()
             };
+
+        // ── シャドウキャスター収集（Phase R2）──────────────────────
+        // cast_shadows=true な ModelComponent の source_path 集合。影パスは
+        // この集合に属する統合バッチ（shared_model_batches のキー）のみを描画する。
+        // 粒度は「共有バッチ（モデルパス）単位」。同一モデルを共有する複数アクターで
+        // cast_shadows が混在する場合、1 つでも true ならそのバッチ全体が影を落とす
+        // （インスタンス単位の影除外は R2 では未対応・TODO）。
+        let shadow_caster_paths: std::collections::HashSet<String> =
+            if let Some(scene) = &self.scene {
+                collect_mcs_in_world_line(&scene.actors, &scene.world, self.active_world_line)
+                    .into_iter()
+                    .filter(|(_, _, _, mc)| mc.cast_shadows && !mc.source_path.is_empty())
+                    .map(|(_, _, _, mc)| mc.source_path.clone())
+                    .collect()
+            } else {
+                std::collections::HashSet::new()
+            };
+        // 影を落とすモデルが 1 つでもあり、かつ 3D 表示（2D ビューでない）なら影を有効化。
+        let shadow_has_casters = !shadow_caster_paths.is_empty() && !edit_view_2d;
 
         // 選択アクターの種別（2D/3D）を可変借用の前に確定する。
         // self.renderer を可変借用した後は self の不変借用が取れないため。
@@ -773,8 +823,20 @@ impl App {
             perf_begin_frame_ms = _perf_t_bf.elapsed().as_secs_f64() * 1000.0;
             match begin_frame_result {
                 Ok(mut frame) => {
+                    // ── シャドウ行列の準備（Phase R2）──────────────────
+                    // カスケード/スポットの light view-proj を計算して UBO・シャドウカメラへ
+                    // 書き込み、frame_lights の shadow_index を確定させる（採用/不採用）。
+                    // 影パスの実描画は skin compute 後・メインパス直前に record で行う。
+                    let (sv, sn, sf, sfov, sasp) = saved_shadow_cam
+                        .unwrap_or((Mat4x4::identity(), 0.1, 100.0, std::f32::consts::FRAC_PI_4, 1.0));
+                    let shadow_plan = draw_ctx.shadow.prepare_frame(
+                        &draw_ctx.queue, &sv, sn, sf, sfov, sasp,
+                        &mut frame_lights,
+                        shadow_has_casters && saved_shadow_cam.is_some(),
+                    );
+
                     // ライト配列を GPU へアップロードする（全メッシュ描画が group 4 で共用）。
-                    // メタ（ライト数）も同時に更新される。
+                    // メタ（ライト数）も同時に更新される。shadow_index 確定後にアップロードする。
                     draw_ctx.light_buffer.update(&draw_ctx.queue, &frame_lights);
 
                     // シーンモード・アクター編集モード共通: world_line の全 MC を収集する
@@ -1173,6 +1235,7 @@ impl App {
                                         &mut preview_pass, gpu, &sd.batch,
                                         &preview_mesh_cam_buf.bind_group,
                                         &draw_ctx.light_buffer.bind_group,
+                                        &draw_ctx.shadow.group5_bg,
                                         &draw_ctx.pipelines,
                                     );
                                 }
@@ -2483,6 +2546,30 @@ impl App {
                         // Play モード: ゲームカメラのクリアカラーで全体クリア
                         // （帯エリアは begin_render_pass 後に BarFillPipeline で別途塗りつぶす）
                         // Edit モード: アクター編集タブ・2D シーンビューは紺色、通常はダークグレー
+                        // ── シャドウ深度パス（Phase R2, メインパス直前）──────────────
+                        // skin compute（joints 書き込み済み）後・メインパス前に、各カスケード/
+                        // スポットへシャドウキャスターの深度を描画する。メインパスが group 5 で
+                        // この深度をサンプルする。キャスターが無ければ 0 コストでスキップ。
+                        if shadow_plan.any() {
+                            let shadow_casters: Vec<(
+                                &crate::engine::methods::drawer::GpuModel,
+                                &crate::engine::methods::drawer::InstancedModelBatch,
+                            )> = self.shared_model_batches.iter()
+                                .filter(|(path, _)| shadow_caster_paths.contains(path.as_str()))
+                                .filter_map(|(path, sd)| {
+                                    gpu_model_by_path.get(path.as_str()).map(|&gpu| (gpu, &sd.batch))
+                                })
+                                .collect();
+                            if !shadow_casters.is_empty() {
+                                draw_ctx.shadow.record(
+                                    frame.encoder_mut(),
+                                    &draw_ctx.pipelines.shadow_depth,
+                                    &shadow_plan,
+                                    &shadow_casters,
+                                );
+                            }
+                        }
+
                         let clear_color = if self.mode == RuntimeMode::Play && !self.paused {
                             let [r, g, b, a] = game_clear_color;
                             wgpu::Color { r: r as f64, g: g as f64, b: b as f64, a: a as f64 }
@@ -2566,6 +2653,7 @@ impl App {
                                     draw_model_indirect(
                                         &mut pass, gpu, &sd.batch,
                                         &camera_buf.bind_group, &draw_ctx.light_buffer.bind_group,
+                                        &draw_ctx.shadow.group5_bg,
                                         &draw_ctx.pipelines,
                                     );
                                 }
@@ -2870,6 +2958,7 @@ impl App {
                                 draw_model_indirect(
                                     &mut pass, &gizmo.gpu_model, &gizmo.batch,
                                     &camera_buf.bind_group, &draw_ctx.light_buffer.bind_group,
+                                    &draw_ctx.shadow.group5_bg,
                                     &draw_ctx.pipelines,
                                 );
                             }

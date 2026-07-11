@@ -851,6 +851,9 @@ impl App {
                     let p = path.clone();
                     self.handle_set_model_path(actor_dfs_id, slot_idx, &p);
                 }
+                IpcCommand::SetModelField { actor_dfs_id, slot_idx, key, value } => {
+                    self.handle_set_model_field(actor_dfs_id, slot_idx, &key, &value);
+                }
                 IpcCommand::SetScriptField { actor_dfs_id, slot_idx, field, value } => {
                     self.handle_set_script_field(actor_dfs_id, slot_idx, &field, &value);
                 }

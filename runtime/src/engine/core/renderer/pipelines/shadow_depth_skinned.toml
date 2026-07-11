@@ -1,0 +1,19 @@
+# シャドウ深度（スキン）— depth_prepass.wgsl 流用、フラグメントなし
+# group 2 はシェーダに無いため空 BGL で埋める（group 3 に joint を配置する都合）。
+shader_sources  = ["depth_prepass.wgsl"]
+vertex_entry    = "vs_skinned"
+vertex_slots    = ["mesh_vertex", "skin_vertex"]
+num_bind_groups = 4
+
+topology        = "TriangleList"
+cull_mode       = "Back"
+front_face      = "Ccw"
+
+depth_write     = true
+depth_compare   = "Less"
+
+color_format    = "none"
+
+depth_bias_constant    = 2
+depth_bias_slope_scale = 2.0
+depth_bias_clamp       = 0.0

@@ -192,6 +192,10 @@ pub enum IpcCommand {
     /// ModelComponent のモデルパスを後から設定する
     /// フォーマット: SET_MODEL_PATH:{actor_dfs_id},{slot_idx},{path}
     SetModelPath { actor_dfs_id: u32, slot_idx: u32, path: String },
+    /// ModelComponent のフィールドを更新する（key: cast_shadows。LightComponent の
+    /// SetLightField と同流儀）
+    /// フォーマット: SET_MODEL_FIELD:{actor_dfs_id},{slot_idx},{key},{value}
+    SetModelField { actor_dfs_id: u32, slot_idx: u32, key: String, value: String },
     /// ScriptComponent の [SerializeField] フィールド値を設定する
     /// フォーマット: SET_SCRIPT_FIELD:{actor_dfs_id},{slot_idx},{field_name},{value}
     SetScriptField { actor_dfs_id: u32, slot_idx: u32, field: String, value: String },
@@ -942,6 +946,16 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                                 .map(|(a, sl, path)| IpcCommand::SetModelPath {
                                     actor_dfs_id: a, slot_idx: sl, path: path.to_string(),
                                 })
+                        }
+                        s if s.starts_with("SET_MODEL_FIELD:") => {
+                            // フォーマット: SET_MODEL_FIELD:{actor_dfs_id},{slot_idx},{key},{value}
+                            parse2u_tail(&s["SET_MODEL_FIELD:".len()..]).and_then(|(a, sl, tail)| {
+                                let (key, value) = tail.split_once(',')?;
+                                Some(IpcCommand::SetModelField {
+                                    actor_dfs_id: a, slot_idx: sl,
+                                    key: key.to_string(), value: value.to_string(),
+                                })
+                            })
                         }
                         s if s.starts_with("SET_SCRIPT_FIELD:") => {
                             // フォーマット: SET_SCRIPT_FIELD:{actor_dfs_id},{slot_idx},{field_name},{value}

@@ -85,6 +85,7 @@ impl App {
                     group_meta:      Vec::new(),
                     next_group_id:   GROUP_ID_BASE,
                     anim_drive:      None,
+                    cast_shadows:    true,
                 };
 
                 // スロット専用エンティティを spawn して world に insert し、スロットを登録する
@@ -184,7 +185,11 @@ impl App {
                         .map(|m| m.animations.iter().map(|a| a.name.clone()).collect())
                         .unwrap_or_default();
                     let anims_json = serde_json::to_string(&anims).unwrap_or_else(|_| "[]".to_string());
-                    ("ModelComponent", format!(r#","model_path":{path_json},"animations":{anims_json}"#))
+                    // 影を落とすかをインスペクター用に送信する（LightComponent.cast_shadows と同一慣例）
+                    ("ModelComponent", format!(
+                        r#","model_path":{path_json},"animations":{anims_json},"cast_shadows":{}"#,
+                        d.cast_shadows as u8,
+                    ))
                 }
                 ComponentData::ScriptComponent(d) => {
                     // スクリプトパスに加え [SerializeField] フィールドの現在値を送信する。
@@ -447,6 +452,7 @@ impl App {
                         group_meta:      Vec::new(),
                         next_group_id:   GROUP_ID_BASE,
                         anim_drive:      None,
+                        cast_shadows:    true,
                     }
                 };
                 let name = slot_name.to_string();

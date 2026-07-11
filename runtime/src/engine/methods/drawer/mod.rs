@@ -30,6 +30,8 @@ pub use crate::engine::core::renderer::{
     CameraPreviewBlitPipeline,
     // ライト
     GpuLight, LightBuffer, MAX_LIGHTS,
+    // シャドウ（Phase R2）
+    ShadowResources, ShadowPlan, ShadowDepthPipelines,
 };
 
 // 描画関数
@@ -66,6 +68,10 @@ pub struct DrawContext {
     /// ライト用 GPU バッファ一式（毎フレーム `update()` で有効ライトを書き込む）。
     /// group 4 の bind group を全メッシュ描画で共用する。
     pub light_buffer:     LightBuffer,
+    /// シャドウ用 GPU リソース一式（Phase R2）。
+    /// 毎フレーム prepare_frame でシャドウ行列を更新し、record で深度パスを記録する。
+    /// group 5 の bind group を全メッシュ描画で共用する。
+    pub shadow:           ShadowResources,
     /// パス → 解析済み CPU モデルのキャッシュ。
     /// 同じパスのモデルを繰り返し build_actor/rebuild するときにディスク読み込みとパースを省く。
     pub model_cache:      RefCell<HashMap<String, Arc<Model>>>,
@@ -87,12 +93,20 @@ impl DrawContext {
         // ライトバッファは mesh パイプラインの group 4 レイアウトから生成する
         // （skinned_mesh とレイアウト互換のため両パイプラインで共用できる）。
         let light_buffer = LightBuffer::new(&device, &pipelines.mesh.lights_bgl);
+        // シャドウリソースは mesh パイプラインの group 0（camera）と group 5（shadow）
+        // レイアウトから生成する（skinned とレイアウト互換のため両パイプラインで共用）。
+        let shadow = ShadowResources::new(
+            &device,
+            &pipelines.mesh.camera_bgl,
+            &pipelines.mesh.shadow_bgl,
+        );
         Self {
             device,
             queue,
             pipelines,
             defaults,
             light_buffer,
+            shadow,
             model_cache:      RefCell::new(HashMap::new()),
             sprite_tex_cache: RefCell::new(HashMap::new()),
         }

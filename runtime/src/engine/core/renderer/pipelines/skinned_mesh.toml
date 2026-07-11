@@ -1,4 +1,4 @@
-shader_sources  = ["shader_common.wgsl", "shader_skinned_vertex.wgsl", "shader_fragment.wgsl"]
+shader_sources  = ["shader_common.wgsl", "shadow.wgsl", "shader_skinned_vertex.wgsl", "shader_fragment.wgsl"]
 vertex_entry    = "vs_main"
 fragment_entry  = "fs_main"
 vertex_slots    = ["mesh_vertex", "skin_vertex"]

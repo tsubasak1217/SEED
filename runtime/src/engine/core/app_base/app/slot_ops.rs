@@ -133,6 +133,41 @@ impl App {
         }
     }
 
+    /// インスペクタからの ModelComponent フィールド更新（SET_MODEL_FIELD IPC）。
+    ///
+    /// LightComponent の handle_set_light_field と同流儀。
+    /// key: cast_shadows（現状はこれのみ。将来のフィールド追加もこの関数に集約する）。
+    /// 不正な key・value は無視する。
+    pub(super) fn handle_set_model_field(
+        &mut self,
+        actor_dfs_id: u32,
+        slot_idx:     u32,
+        key:          &str,
+        value:        &str,
+    ) {
+        let wl = self.active_world_line;
+        // 対象スロットのエンティティを解決する（handle_set_light_field と同流儀）。
+        let slot_entity = {
+            let Some(scene) = &self.scene else { return };
+            let mut c = 0u32;
+            find_actor_by_dfs(&scene.actors, wl, actor_dfs_id, &mut c)
+                .and_then(|a| a.slots().get(slot_idx as usize))
+                .filter(|s| s.kind == ComponentKind::Model)
+                .map(|s| s.entity)
+        };
+        let Some(entity) = slot_entity else { return };
+        let Some(scene) = &mut self.scene else { return };
+        let Some(mc) = scene.world.get_mut::<ModelComponent>(entity) else { return };
+
+        match key {
+            "cast_shadows" => mc.cast_shadows = value == "1" || value == "true",
+            _ => return,
+        }
+
+        self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
+        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+    }
+
     /// コンポーネントスロットを削除する。
     pub(super) fn handle_remove_component_slot(&mut self, actor_dfs_id: u32, slot_idx: u32) {
         let Some(_scene) = &self.scene else { return };
@@ -244,6 +279,7 @@ impl App {
         // スロット専用エンティティを spawn し、各スロットが独立したコンポーネントを持つ。
         let slot_added = match slot_data.component {
             ComponentData::ModelComponent(mc_data) => {
+                let cast_shadows = mc_data.cast_shadows;
                 let mc = if mc_data.model_path.is_empty() {
                     ModelComponent {
                         source_path:     String::new(),
@@ -255,6 +291,7 @@ impl App {
                         group_meta:      mc_data.groups,
                         next_group_id:   mc_data.next_group_id,
                         anim_drive:      None,
+                        cast_shadows,
                     }
                 } else {
                     let path = std::path::Path::new(&mc_data.model_path);
@@ -290,6 +327,7 @@ impl App {
                         group_meta:      mc_data.groups,
                         next_group_id:   mc_data.next_group_id,
                         anim_drive:      None,
+                        cast_shadows,
                     }
                 };
                 let slot_entity = scene.world.spawn();
@@ -512,6 +550,7 @@ impl App {
             let slot_entity = scene.world.spawn();
             match slot_data.component {
                 ComponentData::ModelComponent(mc_data) => {
+                    let cast_shadows = mc_data.cast_shadows;
                     let mc = if mc_data.model_path.is_empty() {
                         ModelComponent {
                             source_path:     String::new(),
@@ -523,6 +562,7 @@ impl App {
                             group_meta:      mc_data.groups,
                             next_group_id:   mc_data.next_group_id,
                             anim_drive:      None,
+                            cast_shadows,
                         }
                     } else {
                         let path = std::path::Path::new(&mc_data.model_path);
@@ -554,6 +594,7 @@ impl App {
                             group_meta:      mc_data.groups,
                             next_group_id:   mc_data.next_group_id,
                             anim_drive:      None,
+                            cast_shadows,
                         }
                     };
                     scene.world.insert(slot_entity, mc);

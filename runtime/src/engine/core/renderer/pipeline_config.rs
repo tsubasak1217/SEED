@@ -50,6 +50,12 @@ pub struct PipelineConfig {
 
     #[serde(default)]
     pub depth_bias_constant: i32,
+    /// slope-scaled 深度バイアス（傾き比例分）。シャドウのアクネ防止に使用。
+    #[serde(default)]
+    pub depth_bias_slope_scale: f32,
+    /// 深度バイアスのクランプ上限（0.0 = 無制限）。
+    #[serde(default)]
+    pub depth_bias_clamp: f32,
 
     /// true にするとデプスステンシルアタッチメントなしでパイプラインを生成する。
     /// begin_blit_pass など depth 未使用パスで使用。
@@ -220,8 +226,9 @@ impl<'d> RenderPipelineBuilder<'d> {
                 depth_compare,
                 stencil: stencil.unwrap_or_default(),
                 bias: wgpu::DepthBiasState {
-                    constant: cfg.depth_bias_constant,
-                    ..Default::default()
+                    constant:    cfg.depth_bias_constant,
+                    slope_scale: cfg.depth_bias_slope_scale,
+                    clamp:       cfg.depth_bias_clamp,
                 },
             })
         };

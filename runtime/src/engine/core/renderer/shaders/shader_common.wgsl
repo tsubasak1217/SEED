@@ -81,7 +81,7 @@ struct GpuLight {
     rect_half_width:  f32,         // 56
     rect_half_height: f32,         // 60
     rect_right:       vec3<f32>,   // 64
-    _pad0:            f32,         // 76
+    shadow_index:     f32,         // 76  影スロット（-1=影なし / dir:0=CSM有効 / spot:0..3=レイヤ）
     rect_up:          vec3<f32>,   // 80
     _pad1:            f32,         // 92
 }

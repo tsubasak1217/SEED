@@ -10,6 +10,7 @@ pub(crate) mod hiz;
 pub(crate) mod skin_system;
 pub(crate) mod animator;
 pub(crate) mod lighting;
+pub(crate) mod shadow;
 
 pub use uniforms::{CameraUniform, ModelUniform, MaterialUniform, JointUniform, ColorVertex,
                    GpuCullData, FrustumUniform, GizmoVertex};
@@ -20,9 +21,11 @@ pub use gpu_resources::{GpuTexture, GpuMaterial, GpuPrimitive, GpuMesh, GpuModel
 pub use pipeline::{MeshPipeline, SkinnedMeshPipeline, UnlitPipeline, CullPipeline, DrawPipelines,
                    SkinComputePipeline, IdPassPipeline, OutlinePipeline, DepthPrepassPipelines,
                    SpritePipeline, SpriteOutlinePipeline, CanvasIdPipeline, CanvasIdUniform,
-                   CameraPreviewBlitPipeline,
+                   CameraPreviewBlitPipeline, ShadowDepthPipelines,
                    BarFillPipeline, BarFillUniform};
 pub use lighting::{GpuLight, LightBuffer, LightMeta, MAX_LIGHTS};
+pub use shadow::{ShadowResources, ShadowPlan, ShadowMatricesUbo,
+                 CSM_CASCADE_COUNT, MAX_SHADOW_SPOTS, SHADOW_DEPTH_FORMAT};
 
 // ============================================================
 //  Renderer 本体

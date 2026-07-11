@@ -468,6 +468,7 @@ pub fn build_actor(
         match slot.component {
             ComponentData::ModelComponent(mc_data) => {
                 use std::path::Path;
+                let cast_shadows = mc_data.cast_shadows;
                 if mc_data.model_path.is_empty() {
                     // モデル未設定の空コンポーネント
                     let meta = mc_data.meta;
@@ -481,6 +482,7 @@ pub fn build_actor(
                         group_meta:      mc_data.groups,
                         next_group_id:   mc_data.next_group_id,
                         anim_drive:      None,
+                        cast_shadows,
                     });
                 } else {
                     use std::sync::Arc;
@@ -515,6 +517,7 @@ pub fn build_actor(
                         group_meta:      mc_data.groups,
                         next_group_id:   mc_data.next_group_id,
                         anim_drive:      None,
+                        cast_shadows,
                     });
                 }
                 actor.add_slot_typed::<ModelComponent>(slot_name, ComponentKind::Model, slot_entity);

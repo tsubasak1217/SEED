@@ -22,6 +22,11 @@ pub const GROUP_ID_BASE: u32 = 1_000_000;
 
 fn default_next_group_id() -> u32 { GROUP_ID_BASE }
 
+/// cast_shadows の既定値（true）。シャドウマップレンダリングで使用する
+/// （LightComponent.cast_shadows と同一の慣例。旧 .scene には存在しない
+/// フィールドのため、欠落時は #[serde(default = ...)] でこの値にフォールバックする）。
+fn default_cast_shadows() -> bool { true }
+
 // ─── InstanceMeta ─────────────────────────────────────────────────────────────
 
 /// インスタンスごとのメタデータ（ヒエラルキー・アニメーション）。
@@ -65,6 +70,9 @@ pub struct ModelComponentData {
     pub groups:        Vec<GroupMeta>,
     #[serde(default = "default_next_group_id")]
     pub next_group_id: u32,
+    /// 影を落とすか（シャドウマップレンダリングで使用）。既定 true。
+    #[serde(default = "default_cast_shadows")]
+    pub cast_shadows: bool,
 }
 
 // ─── ModelAnimDrive ─────────────────────────────────────────────────────────
@@ -105,6 +113,8 @@ pub struct ModelComponent {
     pub next_group_id:   u32,
     /// Animator 駆動のアニメ再生状態（揮発。None = デモ再生 / Animator 非駆動）
     pub anim_drive:      Option<ModelAnimDrive>,
+    /// 影を落とすか（シャドウマップレンダリングで使用）。既定 true。
+    pub cast_shadows:    bool,
 }
 
 impl ModelComponent {
@@ -120,6 +130,7 @@ impl ModelComponent {
             group_meta:      Vec::new(),
             next_group_id:   GROUP_ID_BASE,
             anim_drive:      None,
+            cast_shadows:    true,
         }
     }
 
@@ -208,6 +219,7 @@ impl ModelComponent {
             meta:          self.instance_meta.clone(),
             groups:        self.group_meta.clone(),
             next_group_id: self.next_group_id,
+            cast_shadows:  self.cast_shadows,
         }
     }
 }

@@ -1,0 +1,21 @@
+# シャドウ深度（非スキン）— depth_prepass.wgsl 流用、フラグメントなし
+# group 0(camera=light view-proj) + 1(instances) のみ使用。
+# depth_bias_* でシャドウアクネ（自己遮蔽の縞）を防ぐ。値が大きいとピーターパン。
+shader_sources  = ["depth_prepass.wgsl"]
+vertex_entry    = "vs_mesh"
+vertex_slots    = ["mesh_vertex"]
+num_bind_groups = 2
+
+topology        = "TriangleList"
+cull_mode       = "Back"
+front_face      = "Ccw"
+
+depth_write     = true
+depth_compare   = "Less"
+
+color_format    = "none"
+
+# 深度バイアス（constant はデプス最小単位の整数倍、slope は面の傾き比例）。
+depth_bias_constant    = 2
+depth_bias_slope_scale = 2.0
+depth_bias_clamp       = 0.0

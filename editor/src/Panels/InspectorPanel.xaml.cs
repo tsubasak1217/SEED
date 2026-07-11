@@ -440,7 +440,9 @@ public partial class InspectorPanel : UserControl
         float LightIntensity = 3f, float LightRange = 10f,
         float LightInnerAngle = 25f, float LightOuterAngle = 35f,
         float LightRectWidth = 1f, float LightRectHeight = 1f,
-        bool LightCastShadows = true);
+        bool LightCastShadows = true,
+        // ModelComponent 用フィールド（影を落とすか。シャドウマップレンダリングで使用）
+        bool ModelCastShadows = true);
 
     private List<SlotInfo> _slotInfos = new();
 
@@ -588,6 +590,8 @@ public partial class InspectorPanel : UserControl
             _slotEnabledMap[slotIdx] = !comp.TryGetProperty("enabled", out var env) || ReadJsonBool(env, true);
             var compType = comp.TryGetProperty("type",       out var ctp) ? ctp.GetString() ?? "" : "";
             var modelPath = comp.TryGetProperty("model_path", out var mp) ? mp.GetString() ?? "" : "";
+            // ModelComponent 用: 影を落とすか（シャドウマップレンダリングで使用。既定 true）
+            var modelCastShadows = comp.TryGetProperty("cast_shadows", out var mcs) ? ReadJsonBool(mcs, true) : true;
             // CanvasComponent 用: 幅・高さ・スケールモード
             var width          = comp.TryGetProperty("width",           out var wd)  ? wd.GetSingle()  : 0f;
             var height         = comp.TryGetProperty("height",          out var ht)  ? ht.GetSingle()  : 0f;
@@ -707,7 +711,8 @@ public partial class InspectorPanel : UserControl
                 LightIntensity: lightIntensity, LightRange: lightRange,
                 LightInnerAngle: lightInnerAngle, LightOuterAngle: lightOuterAngle,
                 LightRectWidth: lightRectWidth, LightRectHeight: lightRectHeight,
-                LightCastShadows: lightCastShadows);
+                LightCastShadows: lightCastShadows,
+                ModelCastShadows: modelCastShadows);
             _slotInfos.Add(info);
 
             // アコーディオンにパラメータ編集エリアを追加（ヘッダーがリネーム・削除・複製・選択を兼ねる）
@@ -2591,6 +2596,25 @@ public partial class InspectorPanel : UserControl
     {
         var sp = new StackPanel { Margin = new Thickness(0, 4, 0, 4) };
         sp.Children.Add(BuildModelPathRow(info));
+
+        // ── 影を落とす（シャドウマップレンダリングで使用）────────────
+        // LightComponent の同名チェックボックス（BuildLightSlotContent）とスタイル・配置を揃える。
+        var shadowRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 4, 0, 2) };
+        shadowRow.Children.Add(new TextBlock
+        {
+            Text = "影を落とす", Foreground = new SolidColorBrush(Color.FromRgb(0xAA, 0xAA, 0xAA)),
+            FontSize = 11, Width = 90, VerticalAlignment = VerticalAlignment.Center,
+        });
+        var shadowCheck = new CheckBox
+        {
+            IsChecked = info.ModelCastShadows, VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(4, 0, 0, 0),
+        };
+        shadowCheck.Checked   += (_, _) => _runtime?.SendToRuntime($"SET_MODEL_FIELD:{_currentActorId},{info.SlotIdx},cast_shadows,1");
+        shadowCheck.Unchecked += (_, _) => _runtime?.SendToRuntime($"SET_MODEL_FIELD:{_currentActorId},{info.SlotIdx},cast_shadows,0");
+        shadowRow.Children.Add(shadowCheck);
+        sp.Children.Add(shadowRow);
+
         return sp;
     }
 
