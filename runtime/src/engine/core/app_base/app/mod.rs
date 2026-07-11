@@ -583,6 +583,9 @@ pub struct App {
     /// project_settings.json の `post_vignette`（bool, 既定 false）を起動時に読み込む。
     /// 有効時はトーンマップ前段にビネットを挿す（ポストパスチェーンの実証）。
     post_vignette_enabled: bool,
+    /// ブルーム／FXAA のポストエフェクト設定（Phase R4, 既定すべて OFF）。
+    /// project_settings.json（起動時）＋ IPC `SET_POST_FX:{json}`（実行時）で更新する。
+    post_fx: crate::engine::core::renderer::PostFxSettings,
 
     // ── カメラプレビュー ─────────────────────────────────────────
     /// カメラアクター選択時のビューポートプレビュー描画リソース。
@@ -910,6 +913,7 @@ impl App {
             edit_view_mode:              EditViewMode::View3D,
             rt_pool:                     crate::engine::core::renderer::RtPool::new(),
             post_vignette_enabled:       false,
+            post_fx:                     crate::engine::core::renderer::PostFxSettings::default(),
             camera_preview:              None,
             camera_preview_target_size:  None,
             camera_gizmo:                None,

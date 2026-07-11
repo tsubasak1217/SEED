@@ -1,0 +1,13 @@
+# post_bloom_down.toml — ブルーム ダウンサンプル 13-tap（Phase R4）
+# ブルームチェーンを 1/2 ずつ縮小する。出力は HDR（Rgba16Float）。
+
+shader_sources = ["fullscreen.wgsl", "post_bloom_down.wgsl"]
+vertex_entry   = "fs_vs"
+fragment_entry = "bloom_down_fs"
+vertex_slots   = []
+
+topology     = "TriangleList"
+cull_mode    = "None"
+color_format = "surface"
+blend        = "Replace"
+no_depth     = true

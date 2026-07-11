@@ -325,9 +325,20 @@ impl App {
         self.rt_shadows = v["rt_shadows"].as_bool().unwrap_or(false);
         // ビネットポストパス（Phase R3, 既定 OFF）。キーが無ければ false のまま。
         self.post_vignette_enabled = v["post_vignette"].as_bool().unwrap_or(false);
+        // ブルーム／FXAA（Phase R4, 既定すべて OFF）。読み側は unwrap_or でデフォルト維持。
+        // project_settings.json はコミットしないため、キーが無くても後方互換で OFF になる。
+        use crate::engine::core::renderer::{
+            DEFAULT_BLOOM_THRESHOLD, DEFAULT_BLOOM_KNEE, DEFAULT_BLOOM_INTENSITY,
+        };
+        self.post_fx.bloom_enabled   = v["bloom"].as_bool().unwrap_or(false);
+        self.post_fx.bloom_threshold = v["bloom_threshold"].as_f64().unwrap_or(DEFAULT_BLOOM_THRESHOLD as f64) as f32;
+        self.post_fx.bloom_knee      = v["bloom_knee"].as_f64().unwrap_or(DEFAULT_BLOOM_KNEE as f64) as f32;
+        self.post_fx.bloom_intensity = v["bloom_intensity"].as_f64().unwrap_or(DEFAULT_BLOOM_INTENSITY as f64) as f32;
+        self.post_fx.fxaa_enabled    = v["fxaa"].as_bool().unwrap_or(false);
         eprintln!(
-            "[SEED INIT] graphics settings loaded  rt_shadows={} post_vignette={}",
+            "[SEED INIT] graphics settings loaded  rt_shadows={} post_vignette={} bloom={} fxaa={}",
             self.rt_shadows, self.post_vignette_enabled,
+            self.post_fx.bloom_enabled, self.post_fx.fxaa_enabled,
         );
     }
 

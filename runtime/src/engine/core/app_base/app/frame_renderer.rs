@@ -2554,9 +2554,20 @@ impl App {
                     //   hdr_view/inter_view はメインパスのブロック外でも参照するため、ここで宣言する。
                     let (surf_w, surf_h) = frame.surface_size();
                     let vignette_on = self.post_vignette_enabled;
+                    // Phase R4: ブルーム／FXAA 設定（フレーム内で不変のためコピーしておく）。
+                    let bloom_on = self.post_fx.bloom_enabled;
+                    let fxaa_on  = self.post_fx.fxaa_enabled;
                     self.rt_pool.ensure(
                         &draw_ctx.device,
                         crate::engine::core::renderer::RT_SCENE_HDR,
+                        surf_w, surf_h,
+                        crate::engine::core::renderer::HDR_FORMAT,
+                    );
+                    // R4: トーンマップ後 LDR 中間（常時確保）。2D オーバーレイをこの上へ描き、
+                    //     最終段 FXAA／コピーでスワップチェーンへ出す（R3 の 2D 暗化課題を解消）。
+                    self.rt_pool.ensure(
+                        &draw_ctx.device,
+                        crate::engine::core::renderer::RT_LDR,
                         surf_w, surf_h,
                         crate::engine::core::renderer::HDR_FORMAT,
                     );
@@ -2568,7 +2579,15 @@ impl App {
                             crate::engine::core::renderer::HDR_FORMAT,
                         );
                     }
+                    // R4: ブルーム mip 群（有効時のみ確保）。段数・サイズは解像度から算出。
+                    let bloom_targets = if bloom_on {
+                        crate::engine::core::renderer::BloomPipelines::ensure_targets(
+                            &mut self.rt_pool, &draw_ctx.device,
+                            crate::engine::core::renderer::HDR_FORMAT, surf_w, surf_h,
+                        )
+                    } else { Vec::new() };
                     let hdr_view   = self.rt_pool.view(crate::engine::core::renderer::RT_SCENE_HDR);
+                    let ldr_view   = self.rt_pool.view(crate::engine::core::renderer::RT_LDR);
                     let inter_view = if vignette_on {
                         Some(self.rt_pool.view(crate::engine::core::renderer::RT_POST_INTER))
                     } else { None };
@@ -3076,14 +3095,55 @@ impl App {
                     }
 
                     perf_main_pass_ms = _perf_t_main.elapsed().as_secs_f64() * 1000.0;
+
+                    // ── ブルーム（Phase R4, 有効時のみ）───────────────────────────
+                    // メインパス後・トーンマップ前に、シーン HDR から高輝度を抽出して
+                    // ダウン／アップサンプルし、intensity 倍でシーン HDR へ加算合成する。
+                    // 無効時はパスも RT 確保も一切行わない（コスト増ゼロ）。
+                    if bloom_on {
+                        let bloom_params = crate::engine::core::renderer::BloomParams {
+                            threshold: self.post_fx.bloom_threshold,
+                            knee:      self.post_fx.bloom_knee,
+                            intensity: self.post_fx.bloom_intensity,
+                        };
+                        draw_ctx.post.run_bloom(
+                            &draw_ctx.device, frame.encoder_mut(),
+                            &self.rt_pool, &bloom_targets, hdr_view, bloom_params,
+                        );
+                    }
+
+                    // ── トーンマップ（HDR → LDR 中間, Phase R4）───────────────────
+                    // R3 では直接スワップチェーンへ出していたが、R4 では 2D オーバーレイを
+                    // トーンマップ後の LDR へ描くため、いったん LDR 中間 RT へ出す。
+                    // ビネット有効時はトーンマップ前段に挿す（チェーン: hdr→ビネット→トーンマップ）。
+                    {
+                        // ビネット強度（土台のサンプル値。将来はプロジェクト設定でデータ駆動化）。
+                        const VIGNETTE_INTENSITY: f32 = 0.4;
+                        let vignette_stage = inter_view.map(|iv| {
+                            crate::engine::core::renderer::VignetteStage {
+                                inter_view: iv,
+                                params: crate::engine::core::renderer::VignetteParams {
+                                    intensity: VIGNETTE_INTENSITY,
+                                    ..Default::default()
+                                },
+                                mask: None,
+                            }
+                        });
+                        frame.tonemap_to_ldr(
+                            &draw_ctx.post, &draw_ctx.device, hdr_view, ldr_view, vignette_stage,
+                        );
+                    }
+
                     // ── シーンキャンバスオーバーレイパス（シーンSS専用）──────────────
                     // 3D シーンのカラーを保持しつつ、2D キャンバス要素を最前面に合成する。
                     // アクター編集タブは camera_buf が 2D なのでメインパスで済む。
+                    // Phase R4: 描画先をトーンマップ後の LDR 中間へ移し、UI がトーンマップで
+                    // 暗化しないようにした（R3 の既知課題を解消）。オーバーレイ用パイプラインは
+                    // HDR フォーマットのまま（LDR 中間も物理は Rgba16Float のため変更不要）。
                     if scene_canvas_ss {
                         if let Some(canvas_cam_buf) = self.canvas_overlay_camera_buf.as_ref() {
-                            // キャンバスオーバーレイもメインシーンと同じ HDR オフスクリーンへ合成する
-                            // （Phase R3）。トーンマップは後段で一元適用する。
-                            let mut overlay_pass = frame.begin_canvas_overlay_pass_to(hdr_view);
+                            // トーンマップ後の LDR 中間へ 2D 要素を直描き（トーンマップ非適用）。
+                            let mut overlay_pass = frame.begin_canvas_overlay_pass_to(ldr_view);
 
                             // 前面ゾーンの 2D キャンバススプライト
                             //（アウトラインより前に描画してアウトラインを前面に）。
@@ -3168,29 +3228,13 @@ impl App {
                         }
                     }
 
-                    // ── トーンマップ（HDR → スワップチェーン, Phase R3）──────────
-                    // メインパス＋キャンバスオーバーレイ（HDR オフスクリーン）の後、
-                    // カメラプレビューブリット（トーンマップ後のスワップチェーンへ直描き）の前に
-                    // 一元的にトーンマップする。ビネット有効時はトーンマップ前段に挿す
-                    //（チェーン実行: hdr → ビネット(HDR中間) → トーンマップ(スワップチェーン)）。
-                    {
-                        // ビネット強度（土台のサンプル値。将来はプロジェクト設定でデータ駆動化）。
-                        const VIGNETTE_INTENSITY: f32 = 0.4;
-                        let vignette_stage = inter_view.map(|iv| {
-                            crate::engine::core::renderer::VignetteStage {
-                                inter_view: iv,
-                                params: crate::engine::core::renderer::VignetteParams {
-                                    intensity: VIGNETTE_INTENSITY,
-                                    ..Default::default()
-                                },
-                                // マスク未指定（全面適用）。任意のマスクをここで渡せる設計。
-                                mask: None,
-                            }
-                        });
-                        frame.tonemap_to_swapchain(
-                            &draw_ctx.post, &draw_ctx.device, hdr_view, vignette_stage,
-                        );
-                    }
+                    // ── 最終段: FXAA／プレゼントコピー（LDR 中間 → スワップチェーン, Phase R4）
+                    // トーンマップ済み LDR（＋2D オーバーレイ）をスワップチェーンへ書き出す。
+                    // FXAA 有効時はエッジをなめらかにし、無効時は中央 1 タップのコピー。
+                    // この 1 パスがトーンマップ後 LDR → スワップチェーンの橋渡しを兼ねる。
+                    frame.present_to_swapchain(
+                        &draw_ctx.post, &draw_ctx.device, ldr_view, fxaa_on,
+                    );
 
                     // ── カメラプレビューブリット（選択カメラがある場合のみ）──────
                     // メインパスの後に、オフスクリーンプレビューをビューポート右下に貼り付ける。

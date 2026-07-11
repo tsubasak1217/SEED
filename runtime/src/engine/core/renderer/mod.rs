@@ -29,7 +29,10 @@ pub use lighting::{GpuLight, LightBuffer, LightMeta, MAX_LIGHTS};
 pub use shadow::{ShadowResources, ShadowPlan, ShadowMatricesUbo,
                  CSM_CASCADE_COUNT, MAX_SHADOW_SPOTS, SHADOW_DEPTH_FORMAT};
 pub use rt_shadow::RtShadowResources;
-pub use post::{RtPool, PostContext, VignetteParams, VignetteStage, RT_SCENE_HDR, RT_POST_INTER};
+pub use post::{RtPool, PostContext, VignetteParams, VignetteStage,
+               PostFxSettings, BloomParams, BloomPipelines,
+               DEFAULT_BLOOM_THRESHOLD, DEFAULT_BLOOM_KNEE, DEFAULT_BLOOM_INTENSITY,
+               RT_SCENE_HDR, RT_POST_INTER, RT_LDR};
 
 // ============================================================
 //  Renderer 本体
@@ -663,20 +666,33 @@ impl<'r> RenderFrame<'r> {
         })
     }
 
-    /// HDR オフスクリーンをトーンマップ（＋任意ビネット）してスワップチェーンへ出力する（Phase R3）。
+    /// HDR オフスクリーンをトーンマップ（＋任意ビネット）して LDR 中間 RT へ出力する（Phase R4）。
     ///
-    /// メインパス＋キャンバスオーバーレイ（HDR）の後・カメラプレビューブリットの前に呼ぶ。
-    /// `post` の静的リソースと `hdr_view`（RtPool のシーン HDR）を使い、内部のエンコーダで
-    /// フルスクリーンのトーンマップパスを記録する。
-    pub fn tonemap_to_swapchain(
+    /// R3 では直接スワップチェーンへ出していたが、R4 で 2D オーバーレイをトーンマップ後の
+    /// LDR へ描くため、いったん `ldr_view`（RtPool の RT_LDR, Rgba16Float）へ出す。
+    /// この後にオーバーレイを `ldr_view` へ描き、最終段 `present_to_swapchain` で書き出す。
+    pub fn tonemap_to_ldr(
         &mut self,
         post:     &PostContext,
         device:   &wgpu::Device,
         hdr_view: &wgpu::TextureView,
+        ldr_view: &wgpu::TextureView,
         vignette: Option<VignetteStage<'_>>,
     ) {
+        post.run(device, &mut self.encoder, hdr_view, ldr_view, vignette);
+    }
+
+    /// LDR 中間（＋オーバーレイ）をスワップチェーンへ書き出す最終段（FXAA or コピー, Phase R4）。
+    pub fn present_to_swapchain(
+        &mut self,
+        post:         &PostContext,
+        device:       &wgpu::Device,
+        ldr_view:     &wgpu::TextureView,
+        fxaa_enabled: bool,
+    ) {
+        let (w, h) = self.surface_size();
         // self.encoder（可変）と self.color_view（不変）は別フィールドのため同時借用可。
-        post.run(device, &mut self.encoder, hdr_view, &self.color_view, vignette);
+        post.present(device, &mut self.encoder, ldr_view, &self.color_view, w, h, fxaa_enabled);
     }
 
     /// キャンバスオーバーレイパスを開始する。

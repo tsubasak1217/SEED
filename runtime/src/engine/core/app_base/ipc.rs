@@ -123,6 +123,9 @@ pub enum IpcCommand {
     SetShowGrid(bool),
     /// インラインレイトレ影オンオフ（RT対応GPUのみ効果あり）
     SetRtShadows(bool),
+    /// ブルーム／FXAA のポストエフェクト設定（Phase R4）。
+    /// フィールド: (bloom有効, fxaa有効, bloom強度)。しきい値／ニーは定数既定を使う。
+    SetPostFx { bloom: bool, fxaa: bool, bloom_intensity: f32 },
     /// 軸ギズモ表示オンオフ
     SetShowAxisGizmo(bool),
     /// アクターを指定パスへ保存（アクター編集モードのアクティブ世界線）
@@ -762,6 +765,18 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                         "SHOW_GRID:0"           => Some(IpcCommand::SetShowGrid(false)),
                         "RT_SHADOWS:1"          => Some(IpcCommand::SetRtShadows(true)),
                         "RT_SHADOWS:0"          => Some(IpcCommand::SetRtShadows(false)),
+                        // ポストエフェクト設定（Phase R4）。JSON: {"bloom":bool,"fxaa":bool,"bloom_intensity":float}。
+                        // パース不能・キー欠落時は安全側（false / 既定強度）へフォールバックする。
+                        s if s.starts_with("SET_POST_FX:") => {
+                            let json = &s["SET_POST_FX:".len()..];
+                            let v = serde_json::from_str::<serde_json::Value>(json).ok();
+                            let bloom = v.as_ref().and_then(|v| v["bloom"].as_bool()).unwrap_or(false);
+                            let fxaa  = v.as_ref().and_then(|v| v["fxaa"].as_bool()).unwrap_or(false);
+                            let bloom_intensity = v.as_ref()
+                                .and_then(|v| v["bloom_intensity"].as_f64())
+                                .unwrap_or(0.6) as f32;
+                            Some(IpcCommand::SetPostFx { bloom, fxaa, bloom_intensity })
+                        }
                         "SHOW_AXIS_GIZMO:1"     => Some(IpcCommand::SetShowAxisGizmo(true)),
                         "SHOW_AXIS_GIZMO:0"     => Some(IpcCommand::SetShowAxisGizmo(false)),
                         "CANVAS_SS_OVERLAY:1"   => Some(IpcCommand::SetCanvasScreenSpaceOverlay(true)),

@@ -76,6 +76,43 @@ public partial class MainWindow
         _runtimeManager?.SendToRuntime($"SHOW_AXIS_GIZMO:{(ChkShowAxisGizmo.IsChecked == true ? "1" : "0")}");
     }
 
+    // ── ポストプロセス（Bloom / FXAA） ───────────────────────────
+
+    /// <summary>ブルーム強度のデフォルト値。見た目を変えない後方互換のため 0.6 とする。</summary>
+    private const double DefaultBloomIntensity = 0.6;
+
+    /// <summary>
+    /// ポストプロセス設定（Bloom 有効/強度・FXAA 有効）をまとめて 1 つの JSON にして
+    /// ランタイムへ送信する共通処理。CheckBox・Slider いずれの変更イベントからも
+    /// この関数を呼び出すことで、送信フォーマット（SET_POST_FX:{json}）を一箇所に集約する。
+    /// </summary>
+    private void SendPostFx()
+    {
+        if (!_viewportSettingsInitialized) return;
+
+        // XAML 初期化中に ValueChanged/Checked が発火した場合に備え、
+        // 各コントロールの null チェックを行いデフォルト値へフォールバックする。
+        bool bloom = ChkBloom?.IsChecked == true;
+        bool fxaa  = ChkFxaa?.IsChecked == true;
+        double intensity = SldBloomIntensity?.Value ?? DefaultBloomIntensity;
+
+        string json = $"{{\"bloom\":{(bloom ? "true" : "false")},\"fxaa\":{(fxaa ? "true" : "false")},\"bloom_intensity\":{intensity.ToString(System.Globalization.CultureInfo.InvariantCulture)}}}";
+        _runtimeManager?.SendToRuntime($"SET_POST_FX:{json}");
+    }
+
+    /// <summary>ChkBloom / ChkFxaa の Checked/Unchecked から呼ばれる共通ハンドラ。</summary>
+    private void OnPostFxChanged(object sender, RoutedEventArgs e)
+    {
+        SendPostFx();
+    }
+
+    /// <summary>SldBloomIntensity の ValueChanged から呼ばれる薄いハンドラ（Slider は戻り値の型が異なるため分離）。</summary>
+    private void OnPostFxSliderChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        if (_updatingControls) return;
+        SendPostFx();
+    }
+
     // ── デバッグカメラ 2D（正射投影）トグル ────────────────────────
 
     /// <summary>デバッグカメラが 2D（正射投影）モードなら true。</summary>
@@ -327,12 +364,19 @@ public partial class MainWindow
         ChkShowGrid.IsChecked          = true;
         ChkShowAxisGizmo.IsChecked     = true;
         ChkCanvasScreenSpace.IsChecked = false;
+        // ポストプロセス設定も既定値（Bloom/FXAA 無効・強度 0.6）へリセットする
+        _updatingControls = true;
+        ChkBloom.IsChecked           = false;
+        ChkFxaa.IsChecked            = false;
+        SldBloomIntensity.Value      = DefaultBloomIntensity;
+        _updatingControls = false;
         if (_viewportSettingsInitialized)
         {
             _runtimeManager?.SendToRuntime("VIEWPORT_FOV:45");
             _runtimeManager?.SendToRuntime("VIEWPORT_FAR:1000");
             _runtimeManager?.SendToRuntime("CAM_SPEED:5");
             _runtimeManager?.SendToRuntime("CANVAS_SS_OVERLAY:0");
+            SendPostFx();
         }
         TbCamPx.Text = "0"; TbCamPy.Text = "2"; TbCamPz.Text = "-10";
         TbCamEuX.Text = "0"; TbCamEuY.Text = "0"; TbCamEuZ.Text = "0";
@@ -353,6 +397,8 @@ public partial class MainWindow
         var spd = Math.Round(SldCamSpeed.Value, 2);
         TbSpeedInput.Text = $"{spd:F1}";
         _runtimeManager?.SendToRuntime($"CAM_SPEED:{spd.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
+        // ポストプロセス設定（Bloom/FXAA）を再同期する
+        SendPostFx();
         // 編集時物理設定は Edit runtime にのみ送信する（Play runtime へ送ると物理スレッドが停止する）
         if (_runtimeManager?.State == EditorState.Edit)
         {

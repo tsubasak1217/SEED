@@ -109,12 +109,46 @@
   わずかに暗くなる（白系ほど顕著。luma に応じ 1.0→0.83 前後）。3D メッシュ（本フェーズの主眼）と
   カメラプレビューは Reinhard 位置が移動するのみで一致。厳密な UI 非トーンマップ化は「トーンマップ後に
   オーバーレイを直描き」する構成が正道で、R4 の合成整理時に検討（本フェーズは最小構成で一元化を優先）。
-- TODO(R3残): 上記オーバーレイのトーンマップ回避（ポスト後合成）・露出制御(exposure UI)・
+  → **R4 で解消**（下記）。
+- TODO(R3残): ~~上記オーバーレイのトーンマップ回避（ポスト後合成）~~【R4で解消】・露出制御(exposure UI)・
   演算子切替 UI・ビネット強度のデータ駆動化。
+  - **R4での解消内容**: シーンキャンバスオーバーレイパス（`begin_canvas_overlay_pass_to`, 深度クリアで
+    前面化する既存挙動は維持）の描画先を HDR から **トーンマップ後の LDR 中間（`RT_LDR`）** へ移動。
+    描画順を シーンHDR→ブルーム→トーンマップ(HDR→LDR)→2Dオーバーレイ(LDR)→FXAA/プレゼント(→スワップ
+    チェーン) に再構成した。オーバーレイはトーンマップを通らなくなり暗化が解消。`RT_LDR` は物理
+    フォーマットを Rgba16Float（HDRと同一）にしたため、オーバーレイ用パイプライン（sprite/line/gizmo/
+    軸ギズモ, HDRフォーマットで構築済み）を一切変更せずそのまま描ける。sprite.wgsl 等に Reinhard は無く
+    影響なし。カメラプレビューブリットは従来どおり最終段の後にスワップチェーンへ重ねる（整合確認済み）。
+    ※メインパス冒頭の背景ゾーンスプライト（3Dワールドより奥）は3Dと深度整合するためHDR側のまま。
 
-### Phase R4: ブルーム＋FXAA 【状況: 未着手】
+### Phase R4: ブルーム＋FXAA 【状況: 実装済み（実機検証待ち）】
 - R3の土台上に。ブルーム（しきい値→ダウンサンプルチェーン→合成）、FXAA（最終段）。
 - カメラ/プロジェクト設定でON/OFF・強度をデータドリブンに。
+
+#### 実装メモ（2026-07, 実機検証待ち）
+- 新設: `renderer/post/bloom.rs`（`BloomPipelines`=プレフィルタ/ダウン/アップの3パイプライン、
+  `BloomParams`、`mip_plan`/`ensure_targets`/`record`）。定数 `MAX_BLOOM_MIPS=6`。
+  WGSL: `post_bloom_prefilter.wgsl`（ソフトニーしきい値抽出）・`post_bloom_down.wgsl`（13-tap
+  ダウンサンプル, CoD:AW方式）・`post_bloom_up.wgsl`（3x3テント＋加算合成）。TOML同名3本。
+- ブルーム構成: シーンHDR→プレフィルタ(半解像度=`bloom_0`)→ダウンサンプルチェーン(各1/2, 段数は
+  解像度から算出・下限8px/上限6段)→アップサンプル加算(小mip→大mipへテント拡大, `blend=Additive`
+  ＋`LoadOp::Load`)→合成(`bloom_0`×intensityをシーンHDRへ加算)。中間RTは全てRtPoolから
+  名前(`bloom_0`..`bloom_5`)で確保。合成式: `scene += tent(bloom_0) * intensity`。
+- FXAA: `post_fxaa.wgsl`（Timothy Lottes簡易版=FXAA 3.x相当）。トーンマップ後LDRの最終段
+  （スワップチェーン直前）に適用。`enabled=0`時は中央1タップのコピー（＝プレゼント兼用）で安価。
+  輝度はリニアRGBから算出（厳密にはsRGB空間が理想だが標準実装として許容）。
+- パイプライン: `pipeline_config.rs` に `blend="Additive"`（One/One加算）を追加。
+  `post_pass.rs` に `run_post_stage_load`（`LoadOp::Load`で加算合成用）を追加。
+- 設定: `PostFxSettings`（`renderer/post/mod.rs`）に bloom(enabled/threshold/knee/intensity)＋
+  fxaa(enabled) を集約。App.post_fx フィールド。project_settings.json（`bloom`/`bloom_threshold`/
+  `bloom_knee`/`bloom_intensity`/`fxaa`, 読み側unwrap_orでデフォルト, **コミット禁止**）を起動時
+  `load_graphics_settings` で読み、IPC `SET_POST_FX:{json}`（`SetPostFx`）で実行中変更。
+  エディタは MainWindow.xaml ビューポート設定ポップアップに「ポストプロセス」Expander
+  （ChkBloom/SldBloomIntensity/ChkFxaa）を追加し `SET_POST_FX` を送る。デフォルト bloom=OFF/fxaa=OFF。
+- naga parse+validate: `post/mod.rs` の `post_shaders_parse_and_validate` に新規4本を追加（全6本pass）。
+- 両OFF時のコスト: ブルームはRT確保・パスとも完全スキップ（コスト増ゼロ）。FXAA無効時は最終段が
+  中央1タップのコピーになる。R3比の増分は「トーンマップ→LDR中間→最終コピー」の追加フルスクリーン
+  コピー1回＋LDR中間RT(Rgba16Float, 全解像度)1枚のみ（下記R3課題解消と引き換え。GPU負荷は微小）。
 
 ### Phase R5: 透明描画の整備 【状況: 未着手】
 - 不透明/透明の描画分離（マテリアルのAlphaMode: Opaque/Mask/Blend で分類）。

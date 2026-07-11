@@ -1,0 +1,14 @@
+# post_fxaa.toml — FXAA／プレゼントコピー 最終段（Phase R4）
+# トーンマップ済み LDR 中間（＋2D オーバーレイ）をスワップチェーンへ書き出す。
+# color_format="surface" は PostPipeline 構築時に渡すスワップチェーンフォーマットへ解決される。
+
+shader_sources = ["fullscreen.wgsl", "post_fxaa.wgsl"]
+vertex_entry   = "fs_vs"
+fragment_entry = "fxaa_fs"
+vertex_slots   = []
+
+topology     = "TriangleList"
+cull_mode    = "None"
+color_format = "surface"
+blend        = "Replace"
+no_depth     = true

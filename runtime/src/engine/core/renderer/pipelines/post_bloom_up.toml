@@ -1,0 +1,14 @@
+# post_bloom_up.toml — ブルーム アップサンプル＋加算合成（Phase R4）
+# 1 段小さい mip を 3x3 テントで拡大し、加算合成（blend=Additive + LoadOp::Load）で
+# 大きい mip／シーン HDR へ足し込む。出力は HDR（Rgba16Float）。
+
+shader_sources = ["fullscreen.wgsl", "post_bloom_up.wgsl"]
+vertex_entry   = "fs_vs"
+fragment_entry = "bloom_up_fs"
+vertex_slots   = []
+
+topology     = "TriangleList"
+cull_mode    = "None"
+color_format = "surface"
+blend        = "Additive"
+no_depth     = true

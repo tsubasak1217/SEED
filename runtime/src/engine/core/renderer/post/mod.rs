@@ -18,15 +18,81 @@
 
 mod rt_pool;
 mod post_pass;
+mod bloom;
 
 pub use rt_pool::RtPool;
 pub use post_pass::{PostPipeline, run_post_stage};
+pub use bloom::{BloomPipelines, BloomParams};
+// run_post_stage_load / MAX_BLOOM_MIPS は post 配下（bloom.rs）でのみ使うため再公開しない。
+// PostFxSettings とそのデフォルト定数は本ファイル下部で定義・公開する。
 
 // ─── RtPool のターゲット名（フレーム間で安定させる）──────────────
 /// シーン描画先の HDR オフスクリーン（Rgba16Float）。
 pub const RT_SCENE_HDR: &str = "scene_hdr";
 /// ビネット等ポスト中間の HDR バッファ（トーンマップ前段の出力）。
 pub const RT_POST_INTER: &str = "post_inter";
+/// トーンマップ後の LDR 中間バッファ（Phase R4）。
+///
+/// トーンマップ済みの表示リニア色（[0,1] 近傍）を保持する Rgba16Float RT。
+/// 2D UI オーバーレイをこの上へ「トーンマップを通さず」直描きし（R3 の暗化課題を解消）、
+/// 最終段の FXAA／プレゼントコピーでスワップチェーンへ書き出す。物理フォーマットは
+/// HDR と同じ Rgba16Float にすることで、オーバーレイ用パイプライン（HDR フォーマットで
+/// 構築済み）を一切変更せずそのまま描ける。
+pub const RT_LDR: &str = "post_ldr";
+
+// ============================================================
+//  PostFxSettings — ブルーム／FXAA のランタイム設定（Phase R4）
+// ============================================================
+
+/// ポストエフェクト設定（renderer 側に集約）。
+///
+/// project_settings.json の起動時読み込み（読み側 unwrap_or でデフォルト）と、
+/// IPC `SET_POST_FX:{json}` による実行時変更の両方から更新される。
+/// デフォルトはブルーム／FXAA ともに OFF（見た目の後方互換を維持）。
+#[derive(Copy, Clone, Debug)]
+pub struct PostFxSettings {
+    /// ブルーム有効フラグ。
+    pub bloom_enabled:   bool,
+    /// ブルーム抽出しきい値。
+    pub bloom_threshold: f32,
+    /// ブルームのソフトニー幅係数（0..1）。
+    pub bloom_knee:      f32,
+    /// ブルーム合成強度。
+    pub bloom_intensity: f32,
+    /// FXAA 有効フラグ（最終 LDR 段）。
+    pub fxaa_enabled:    bool,
+}
+
+// ─── デフォルト値（マジックナンバー回避）──────────────────────
+/// ブルーム抽出しきい値の既定（この輝度以上をブルーム対象にする）。
+pub const DEFAULT_BLOOM_THRESHOLD: f32 = 1.0;
+/// ブルームのソフトニー幅係数の既定。
+pub const DEFAULT_BLOOM_KNEE:      f32 = 0.5;
+/// ブルーム合成強度の既定。
+pub const DEFAULT_BLOOM_INTENSITY: f32 = 0.6;
+
+impl Default for PostFxSettings {
+    fn default() -> Self {
+        Self {
+            bloom_enabled:   false,
+            bloom_threshold: DEFAULT_BLOOM_THRESHOLD,
+            bloom_knee:      DEFAULT_BLOOM_KNEE,
+            bloom_intensity: DEFAULT_BLOOM_INTENSITY,
+            fxaa_enabled:    false,
+        }
+    }
+}
+
+/// FXAA パラメータ UBO（post_fxaa.wgsl FxaaParams と #[repr(C)] 一致）。
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct FxaaParams {
+    /// 1 テクセルサイズ（1/幅, 1/高さ）。
+    inv_res: [f32; 2],
+    /// FXAA 有効フラグ（0=単純コピー, 1=FXAA）。
+    enabled: u32,
+    _pad:    u32,
+}
 
 // ============================================================
 //  トーンマップ / ビネット パラメータ
@@ -100,6 +166,10 @@ fn resolve_post_shader(name: &str) -> &'static str {
         "tonemap_ops.wgsl"   => include_str!("../shaders/tonemap_ops.wgsl"),
         "post_tonemap.wgsl"  => include_str!("../shaders/post_tonemap.wgsl"),
         "post_vignette.wgsl" => include_str!("../shaders/post_vignette.wgsl"),
+        "post_bloom_prefilter.wgsl" => include_str!("../shaders/post_bloom_prefilter.wgsl"),
+        "post_bloom_down.wgsl"      => include_str!("../shaders/post_bloom_down.wgsl"),
+        "post_bloom_up.wgsl"        => include_str!("../shaders/post_bloom_up.wgsl"),
+        "post_fxaa.wgsl"            => include_str!("../shaders/post_fxaa.wgsl"),
         other => panic!("unknown post shader source: {other}"),
     }
 }
@@ -113,10 +183,14 @@ fn resolve_post_shader(name: &str) -> &'static str {
 /// 動的なレンダーターゲット（サイズ追従が要る HDR バッファ群）は `RtPool` が持つ。
 /// PostContext は起動時に 1 回生成し、毎フレーム `run` で使い回す。
 pub struct PostContext {
-    /// トーンマップパス（HDR → スワップチェーン）。出力はスワップチェーンフォーマット。
+    /// トーンマップパス（HDR → LDR 中間）。出力は LDR 中間 RT（Rgba16Float, Phase R4）。
     tonemap:  PostPipeline,
     /// ビネットパス（サンプル）。出力は HDR 中間（トーンマップ前段に挿す）。
     vignette: PostPipeline,
+    /// ブルームパイプライン一式（プレフィルタ／ダウン／アップ, Phase R4）。出力は HDR。
+    bloom:    BloomPipelines,
+    /// FXAA／プレゼントコピー最終段（LDR 中間 → スワップチェーン, Phase R4）。
+    fxaa:     PostPipeline,
     /// 入力・マスク共通のリニア clamp サンプラー。
     sampler:  wgpu::Sampler,
     /// マスク未指定時の既定（白 1x1、全面適用）。
@@ -137,12 +211,19 @@ impl PostContext {
         surface_format: wgpu::TextureFormat,
         cache:          Option<&wgpu::PipelineCache>,
     ) -> Self {
-        // トーンマップ: 出力はスワップチェーン。ビネット: 出力は HDR 中間。
+        // トーンマップ: 出力は LDR 中間 RT（Rgba16Float = hdr_format, Phase R4）。
+        //   R3 ではスワップチェーンへ直接出していたが、R4 で 2D オーバーレイをトーンマップ後の
+        //   LDR へ描くため、いったん LDR 中間へ出す構成に変えた。
         let tonemap = PostPipeline::from_toml(
-            device, include_str!("../pipelines/post_tonemap.toml"), surface_format, cache, resolve_post_shader,
+            device, include_str!("../pipelines/post_tonemap.toml"), hdr_format, cache, resolve_post_shader,
         );
         let vignette = PostPipeline::from_toml(
             device, include_str!("../pipelines/post_vignette.toml"), hdr_format, cache, resolve_post_shader,
+        );
+        // ブルームは全パス HDR 出力。FXAA／プレゼントはスワップチェーンへ出す最終段。
+        let bloom = BloomPipelines::new(device, hdr_format, cache, resolve_post_shader);
+        let fxaa  = PostPipeline::from_toml(
+            device, include_str!("../pipelines/post_fxaa.toml"), surface_format, cache, resolve_post_shader,
         );
 
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -175,7 +256,53 @@ impl PostContext {
         );
         let white_view = white_tex.create_view(&wgpu::TextureViewDescriptor::default());
 
-        Self { tonemap, vignette, sampler, white_view, hdr_format }
+        Self { tonemap, vignette, bloom, fxaa, sampler, white_view, hdr_format }
+    }
+
+    /// ブルーム一式を記録し、シーン HDR へ加算合成する（Phase R4）。
+    ///
+    /// `targets` は `BloomPipelines::ensure_targets` で確保済みの mip 名＋サイズ。
+    /// `rt_pool` は `targets` と `scene_hdr` を含む確保済みプール。
+    pub fn run_bloom(
+        &self,
+        device:    &wgpu::Device,
+        encoder:   &mut wgpu::CommandEncoder,
+        rt_pool:   &RtPool,
+        targets:   &[(&'static str, u32, u32)],
+        scene_hdr: &wgpu::TextureView,
+        params:    BloomParams,
+    ) {
+        self.bloom.record(
+            device, encoder, rt_pool, targets, scene_hdr,
+            &self.sampler, &self.white_view, params,
+        );
+    }
+
+    /// LDR 中間をスワップチェーンへ書き出す最終段（FXAA or 単純コピー, Phase R4）。
+    ///
+    /// `fxaa_enabled` が真なら FXAA、偽なら中央 1 タップのコピー。いずれもこの 1 パスが
+    /// トーンマップ後 LDR → スワップチェーンの橋渡しを担う（常に実行）。
+    #[allow(clippy::too_many_arguments)]
+    pub fn present(
+        &self,
+        device:       &wgpu::Device,
+        encoder:      &mut wgpu::CommandEncoder,
+        ldr_view:     &wgpu::TextureView,
+        swapchain:    &wgpu::TextureView,
+        width:        u32,
+        height:       u32,
+        fxaa_enabled: bool,
+    ) {
+        let p = FxaaParams {
+            inv_res: [1.0 / width.max(1) as f32, 1.0 / height.max(1) as f32],
+            enabled: if fxaa_enabled { 1 } else { 0 },
+            _pad:    0,
+        };
+        run_post_stage(
+            device, encoder, &self.fxaa,
+            ldr_view, None, &self.white_view, &self.sampler,
+            bytemuck::bytes_of(&p), swapchain, "Post FXAA/Present",
+        );
     }
 
     /// シーン HDR をトーンマップ（＋任意でビネット）して最終ターゲットへ出力する。
@@ -231,10 +358,19 @@ mod tests {
         let tm_ops     = include_str!("../shaders/tonemap_ops.wgsl");
         let tonemap    = include_str!("../shaders/post_tonemap.wgsl");
         let vignette   = include_str!("../shaders/post_vignette.wgsl");
+        // Phase R4 追加分。
+        let bloom_pf   = include_str!("../shaders/post_bloom_prefilter.wgsl");
+        let bloom_dn   = include_str!("../shaders/post_bloom_down.wgsl");
+        let bloom_up   = include_str!("../shaders/post_bloom_up.wgsl");
+        let fxaa       = include_str!("../shaders/post_fxaa.wgsl");
 
-        let variants: [(&str, Vec<&str>); 2] = [
-            ("post_tonemap",  vec![fullscreen, tm_ops, tonemap]),
-            ("post_vignette", vec![fullscreen, vignette]),
+        let variants: [(&str, Vec<&str>); 6] = [
+            ("post_tonemap",          vec![fullscreen, tm_ops, tonemap]),
+            ("post_vignette",         vec![fullscreen, vignette]),
+            ("post_bloom_prefilter",  vec![fullscreen, bloom_pf]),
+            ("post_bloom_down",       vec![fullscreen, bloom_dn]),
+            ("post_bloom_up",         vec![fullscreen, bloom_up]),
+            ("post_fxaa",             vec![fullscreen, fxaa]),
         ];
 
         for (name, parts) in variants {

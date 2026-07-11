@@ -65,6 +65,9 @@ impl PostPipeline {
 ///
 /// バインドグループは `pipe.bgls` から動的に構築する。group 2（マスク）は
 /// パイプラインが 3 グループ以上を宣言している場合のみ設定する。
+///
+/// 出力は `LoadOp::Clear`（全面上書き）で行う。既存 RT 内容へ加算合成したい場合
+/// （ブルームのアップサンプル／合成）は `run_post_stage_load` を使う。
 #[allow(clippy::too_many_arguments)]
 pub fn run_post_stage(
     device:     &wgpu::Device,
@@ -77,6 +80,29 @@ pub fn run_post_stage(
     params:     &[u8],
     output:     &wgpu::TextureView,
     label:      &str,
+) {
+    // 既存の呼び出し互換のため Clear（全面上書き）で委譲する。
+    run_post_stage_load(device, encoder, pipe, input, mask, white_mask, sampler, params, output, label, false);
+}
+
+/// `run_post_stage` の拡張版。出力の LoadOp を選べる。
+///
+/// - `load = false`: `LoadOp::Clear`（全面上書き。前段出力→次段入力のチェーン用）
+/// - `load = true` : `LoadOp::Load`（既存 RT 内容を保持。パイプライン側 `blend = "Additive"`
+///   と組み合わせてブルームのアップサンプル寄与を積み上げる）
+#[allow(clippy::too_many_arguments)]
+pub fn run_post_stage_load(
+    device:     &wgpu::Device,
+    encoder:    &mut wgpu::CommandEncoder,
+    pipe:       &PostPipeline,
+    input:      &wgpu::TextureView,
+    mask:       Option<&wgpu::TextureView>,
+    white_mask: &wgpu::TextureView,
+    sampler:    &wgpu::Sampler,
+    params:     &[u8],
+    output:     &wgpu::TextureView,
+    label:      &str,
+    load:       bool,
 ) {
     use wgpu::util::DeviceExt;
 
@@ -124,8 +150,12 @@ pub fn run_post_stage(
             view:           output,
             resolve_target: None,
             ops: wgpu::Operations {
-                // フルスクリーン三角形が全ピクセルを書き込むため Clear で十分（Load 不要）。
-                load:  wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                // 通常は全面上書きの Clear。加算合成時（load=true）は既存内容を保持する Load。
+                load:  if load {
+                    wgpu::LoadOp::Load
+                } else {
+                    wgpu::LoadOp::Clear(wgpu::Color::BLACK)
+                },
                 store: wgpu::StoreOp::Store,
             },
         })],

@@ -41,7 +41,7 @@ pub struct PipelineConfig {
     /// "surface" → surface_format、"R32Uint" → R32Uint、"none" → fragment: None
     #[serde(default = "default_color_format")]
     pub color_format: String,
-    /// "Replace" | "AlphaBlending" | "None"
+    /// "Replace" | "AlphaBlending" | "Additive" | "None"
     #[serde(default = "default_blend")]
     pub blend:        String,
     /// "all" | "none"
@@ -208,6 +208,20 @@ impl<'d> RenderPipelineBuilder<'d> {
             };
             let blend = match cfg.blend.as_str() {
                 "AlphaBlending" => Some(wgpu::BlendState::ALPHA_BLENDING),
+                // 加算合成（src*1 + dst*1）。ブルームのアップサンプル／合成パスで、
+                // 既存の RT 内容へ寄与を積み上げる（LoadOp::Load と併用する）ために使う。
+                "Additive"      => Some(wgpu::BlendState {
+                    color: wgpu::BlendComponent {
+                        src_factor: wgpu::BlendFactor::One,
+                        dst_factor: wgpu::BlendFactor::One,
+                        operation:  wgpu::BlendOperation::Add,
+                    },
+                    alpha: wgpu::BlendComponent {
+                        src_factor: wgpu::BlendFactor::One,
+                        dst_factor: wgpu::BlendFactor::One,
+                        operation:  wgpu::BlendOperation::Add,
+                    },
+                }),
                 "None"          => None,
                 _               => Some(wgpu::BlendState::REPLACE),
             };

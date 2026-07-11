@@ -1386,6 +1386,39 @@
                                                         </StackPanel>
                                                     </Expander>
 
+                                                    <!-- ▶ ポストプロセス（Bloom / FXAA） -->
+                                                    <Expander Header="ポストプロセス" IsExpanded="True"
+                                                              Style="{StaticResource DarkExpanderStyle}"
+                                                              Margin="0,8,0,0">
+                                                        <StackPanel Margin="8,6,0,2">
+                                                            <CheckBox x:Name="ChkBloom"
+                                                                      Content="ブルーム"
+                                                                      Foreground="White" FontSize="11"
+                                                                      IsChecked="False"
+                                                                      Margin="0,0,0,4"
+                                                                      Checked="OnPostFxChanged"
+                                                                      Unchecked="OnPostFxChanged"/>
+                                                            <!-- ブルーム強度 -->
+                                                            <Grid Margin="0,0,0,8">
+                                                                <Grid.ColumnDefinitions>
+                                                                    <ColumnDefinition Width="52"/>
+                                                                    <ColumnDefinition Width="*"/>
+                                                                </Grid.ColumnDefinitions>
+                                                                <TextBlock Text="強度" Foreground="#CCCCCC" FontSize="11" VerticalAlignment="Center"/>
+                                                                <Slider x:Name="SldBloomIntensity" Grid.Column="1"
+                                                                        Style="{StaticResource DarkSliderStyle}"
+                                                                        Minimum="0" Maximum="2" Value="0.6"
+                                                                        ValueChanged="OnPostFxSliderChanged" VerticalAlignment="Center"/>
+                                                            </Grid>
+                                                            <CheckBox x:Name="ChkFxaa"
+                                                                      Content="FXAA（アンチエイリアス）"
+                                                                      Foreground="White" FontSize="11"
+                                                                      IsChecked="False"
+                                                                      Checked="OnPostFxChanged"
+                                                                      Unchecked="OnPostFxChanged"/>
+                                                        </StackPanel>
+                                                    </Expander>
+
                                                     <!-- ▶ キャンバス -->
                                                     <Expander Header="キャンバス" IsExpanded="True"
                                                               Style="{StaticResource DarkExpanderStyle}"
