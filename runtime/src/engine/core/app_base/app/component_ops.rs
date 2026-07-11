@@ -391,6 +391,27 @@ impl App {
                         d.cast_shadows as u8,
                     ))
                 }
+                ComponentData::ParticleEmitterComponent(d) => {
+                    // パーティクルエミッタ: 放出・寿命・初速・重力・サイズ・色・テクスチャ・
+                    // ブレンド・シミュレーション空間・再生フラグをインスペクター用に送信する。
+                    // texture_path は audio_path と同流儀で JSON 文字列としてエスケープする。
+                    let path_json = serde_json::to_string(&d.texture_path).unwrap_or_default();
+                    ("ParticleEmitterComponent", format!(
+                        r#","emit_rate":{:.4},"burst":{},"max_particles":{},"lifetime_min":{:.4},"lifetime_max":{:.4},"speed_min":{:.4},"speed_max":{:.4},"spread_angle":{:.4},"dir_x":{:.4},"dir_y":{:.4},"dir_z":{:.4},"gravity_x":{:.4},"gravity_y":{:.4},"gravity_z":{:.4},"drag":{:.4},"size_min":{:.4},"size_max":{:.4},"end_size_scale":{:.4},"sc_r":{:.4},"sc_g":{:.4},"sc_b":{:.4},"sc_a":{:.4},"ec_r":{:.4},"ec_g":{:.4},"ec_b":{:.4},"ec_a":{:.4},"texture_path":{path_json},"blend":"{}","sim_space":"{}","playing":{},"loop_emit":{}"#,
+                        d.emit_rate, d.burst, d.max_particles,
+                        d.lifetime[0], d.lifetime[1],
+                        d.initial_speed[0], d.initial_speed[1],
+                        d.spread_angle_deg,
+                        d.direction_local[0], d.direction_local[1], d.direction_local[2],
+                        d.gravity[0], d.gravity[1], d.gravity[2],
+                        d.drag,
+                        d.start_size[0], d.start_size[1], d.end_size_scale,
+                        d.start_color[0], d.start_color[1], d.start_color[2], d.start_color[3],
+                        d.end_color[0], d.end_color[1], d.end_color[2], d.end_color[3],
+                        d.blend.as_str(), d.sim_space.as_str(),
+                        d.playing as u8, d.loop_emit as u8,
+                    ))
+                }
                 ComponentData::CameraComponent(d) => {
                     // FOV / near / far / is_main / clear_color / scaling_mode / target_size /
                     // bar_color / projection / ortho_height をインスペクター用に送信する
@@ -759,6 +780,36 @@ impl App {
                     let mut c = 0u32;
                     if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
                         actor.add_slot_typed::<LightComponent>(name, ComponentKind::Light, slot_entity);
+                        true
+                    } else {
+                        scene.world.despawn(slot_entity);
+                        false
+                    }
+                };
+                if found {
+                    let after_slots = self.snapshot_actor_slots(wl, actor_dfs_id);
+                    self.undo_history.record(Box::new(ComponentSlotsSnapshotCommand {
+                        world_line: wl, actor_dfs_id, before_slots, after_slots,
+                    }));
+                    self.actor_virtual_selected_slot_idx = 0;
+                    self.selected_instances.clear();
+                    self.send_hierarchy();
+                    self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
+                    if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+                }
+            }
+            "ParticleEmitterComponent" => {
+                // デフォルト設定の ParticleEmitterComponent をアクターに追加する。
+                // 放出パラメータ・色・テクスチャなどはインスペクターまたはシーンファイルから設定する。
+                use crate::engine::components::ParticleEmitterComponent;
+                let name = slot_name.to_string();
+                let found = {
+                    let scene = self.scene.as_mut().unwrap();
+                    let slot_entity = scene.world.spawn();
+                    scene.world.insert(slot_entity, ParticleEmitterComponent::default());
+                    let mut c = 0u32;
+                    if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
+                        actor.add_slot_typed::<ParticleEmitterComponent>(name, ComponentKind::ParticleEmitter, slot_entity);
                         true
                     } else {
                         scene.world.despawn(slot_entity);

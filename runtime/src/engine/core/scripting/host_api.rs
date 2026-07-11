@@ -29,7 +29,8 @@
 use std::cell::{Cell, RefCell};
 
 use crate::engine::components::{
-    AnimatorComponent, AudioComponent, CameraComponent, CanvasTransform, SpriteComponent, Transform,
+    AnimatorComponent, AudioComponent, CameraComponent, CanvasTransform, ParticleEmitterComponent,
+    SpriteComponent, Transform,
 };
 use crate::engine::core::input::{Input, InputState};
 use crate::engine::ecs::{Entity, World};
@@ -311,6 +312,21 @@ fn read_floats(
                 _         => None,
             }
         }
+        // ── パーティクルエミッタ（スロット格納型: locate で解決）──
+        // Play/Stop/Burst は専用 FFI（ffi_particle_component）で扱う。
+        // ここでは単純な数値／bool フィールドの読み書きのみ公開する。
+        "ParticleEmitter" => {
+            let e = locate::<ParticleEmitterComponent>(world, entity)?;
+            let p = world.get::<ParticleEmitterComponent>(e)?;
+            match field {
+                "emit_rate"        => put(out, &[p.emit_rate]),
+                "drag"             => put(out, &[p.drag]),
+                "spread_angle_deg" => put(out, &[p.spread_angle_deg]),
+                "playing"          => put(out, &[if p.playing { 1.0 } else { 0.0 }]),
+                "loop_emit"        => put(out, &[if p.loop_emit { 1.0 } else { 0.0 }]),
+                _                  => None,
+            }
+        }
         _ => None,
     }
 }
@@ -406,6 +422,21 @@ fn write_floats(
                 _       => false,
             }
         }
+        // ── パーティクルエミッタ（スロット格納型: locate で解決）──
+        // 負値・範囲外は light_ops と同方針でクランプする（放出レート/抵抗は非負、
+        // spread は円錐半頂角なので 0..=180 度に収める）。
+        "ParticleEmitter" => {
+            let Some(e) = locate::<ParticleEmitterComponent>(world, entity) else { return false };
+            let Some(p) = world.get_mut::<ParticleEmitterComponent>(e) else { return false };
+            match field {
+                "emit_rate"        => take::<1>(v).map(|x| p.emit_rate = x[0].max(0.0)).is_some(),
+                "drag"             => take::<1>(v).map(|x| p.drag = x[0].max(0.0)).is_some(),
+                "spread_angle_deg" => take::<1>(v).map(|x| p.spread_angle_deg = x[0].clamp(0.0, 180.0)).is_some(),
+                "playing"          => take::<1>(v).map(|x| p.playing = x[0] != 0.0).is_some(),
+                "loop_emit"        => take::<1>(v).map(|x| p.loop_emit = x[0] != 0.0).is_some(),
+                _                  => false,
+            }
+        }
         _ => false,
     }
 }
@@ -497,6 +528,7 @@ fn has_component(world: &World, entity: Entity, component: &str) -> bool {
         "Camera"          => locate::<CameraComponent>(world, entity).is_some(),
         "Audio"           => locate::<AudioComponent>(world, entity).is_some(),
         "Animator"        => locate::<AnimatorComponent>(world, entity).is_some(),
+        "ParticleEmitter" => locate::<ParticleEmitterComponent>(world, entity).is_some(),
         _ => false,
     }
 }
@@ -1027,6 +1059,42 @@ unsafe extern "system" fn ffi_animator_component(
     }
 }
 
+/// ParticleEmitterComponent 操作の種別（C# 側 ParticleEmitter の定数と一致させる）。
+const PARTICLE_COMPONENT_PLAY: i32  = 0; // playing = true（放出開始）
+const PARTICLE_COMPONENT_STOP: i32  = 1; // playing = false（放出停止）
+const PARTICLE_COMPONENT_BURST: i32 = 2; // pending_burst に count を加算（即時一括放出）
+
+/// ParticleEmitterComponent を操作する。成功=1 / 失敗=0。
+///
+/// idx/gen は gameObject のルートエンティティ。ParticleEmitterComponent のスロットを
+/// locate で解決する。Play/Stop は playing フラグを直接切り替え、Burst は
+/// ランタイム専用の pending_burst（非シリアライズ）へ count を積む
+/// （GPU パーティクルシステムが毎フレーム消費してゼロに戻す契約）。
+///
+/// count: Burst 時のみ使用する放出個数（0 以下は 0 として無視。他 action では未使用）。
+unsafe extern "system" fn ffi_particle_component(
+    action: i32, idx: u32, generation: u32, count: i32,
+) -> i32 {
+    let ptr = WORLD_PTR.with(|p| p.get());
+    if ptr.is_null() { return 0; }
+    let world = &mut *ptr;
+    let entity = Entity::from_raw(idx, generation);
+    // ルートエンティティから ParticleEmitterComponent のスロットエンティティを解決する
+    let Some(slot) = locate::<ParticleEmitterComponent>(world, entity) else { return 0 };
+    let Some(p) = world.get_mut::<ParticleEmitterComponent>(slot) else { return 0 };
+
+    match action {
+        PARTICLE_COMPONENT_PLAY => { p.playing = true;  1 }
+        PARTICLE_COMPONENT_STOP => { p.playing = false; 1 }
+        PARTICLE_COMPONENT_BURST => {
+            // 負値は 0 として扱い、飽和加算でオーバーフローを防ぐ。
+            p.pending_burst = p.pending_burst.saturating_add(count.max(0) as u32);
+            1
+        }
+        _ => 0,
+    }
+}
+
 // ─── C# へ渡す関数ポインタ表 ─────────────────────────────────
 
 /// C# の #[StructLayout(Sequential)] ScriptHostApi と同一レイアウト。
@@ -1052,6 +1120,7 @@ pub struct ScriptHostApi {
     audio_component:   unsafe extern "system" fn(i32, u32, u32) -> i32,
     screen_position:   unsafe extern "system" fn(u32, u32, *mut f32) -> i32,
     animator_component: unsafe extern "system" fn(i32, u32, u32, *const u8, i32, f32) -> i32,
+    particle_component: unsafe extern "system" fn(i32, u32, u32, i32) -> i32,
 }
 
 // 関数ポインタは Sync。プロセス全体で 1 つの静的表を共有する。
@@ -1073,6 +1142,7 @@ static HOST_API: ScriptHostApi = ScriptHostApi {
     audio_component:   ffi_audio_component,
     screen_position:   ffi_screen_position,
     animator_component: ffi_animator_component,
+    particle_component: ffi_particle_component,
 };
 
 /// C# へ渡す関数ポインタ表へのポインタを返す（RegisterHostApi 用）。

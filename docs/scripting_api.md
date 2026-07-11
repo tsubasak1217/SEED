@@ -406,6 +406,26 @@ anim.Speed                  // float（get/set。再生速度倍率。1.0=等倍
 - `Play` で指定するクリップ名は、そのアクターの Animator に登録済み（`clips` 一覧に存在し、既にロード済み）である必要があります。未登録・未ロードの名前を指定すると警告ログを出して無視されます（例外は発生しません）。
 - クリップは Play モード開始時（初回フレーム、スクリプトの `Update` 等より前）に自動ロードされるため、通常のスクリプトライフサイクル関数から呼ぶ限り「まだロードされていない」状況は発生しません。
 
+### ParticleEmitter（GPU パーティクル放出源）
+
+エディタの「コンポーネント追加 → パーティクルエミッタ」で追加し、インスペクタで放出パラメータ（レート・寿命・色・ブレンドなど）を設定します。放出位置・向きは同じ GameObject の `transform` が決めます。
+
+```csharp
+var ps = gameObject.ParticleEmitter;
+ps.Play();                 // 放出を開始（playing = true）
+ps.Stop();                 // 放出を停止（既存パーティクルは寿命で消える）
+ps.Burst(50);              // 50 個を即時一括放出（継続放出とは独立）
+ps.IsPlaying               // bool（get のみ。放出中か。Playing の別名）
+
+ps.Playing                 // bool（get/set。放出中フラグ。Play()/Stop() と同じ切り替え）
+ps.EmitRate                // float（get/set。1 秒あたりの放出個数。負値は 0 にクランプ）
+ps.LoopEmit                // bool（get/set。寿命ループ放出するか）
+ps.Drag                    // float（get/set。空気抵抗係数。負値は 0 にクランプ）
+ps.SpreadAngle             // float（get/set。放出円錐の半頂角・度。0〜180 にクランプ）
+```
+
+- `Burst(n)` の放出リクエストは蓄積され、次フレームで GPU パーティクルシステムが消費します（`emit_rate` による継続放出とは別枠）。`n` が 0 以下なら何もしません。
+
 ### 利用可能なコンポーネント一覧
 
 | コンポーネント名 | アクセサ | 内容 |
@@ -416,6 +436,7 @@ anim.Speed                  // float（get/set。再生速度倍率。1.0=等倍
 | `Camera` | `gameObject.Camera` | FOV・クリップ距離・メインカメラ・クリアカラー・ベース解像度 |
 | `Audio` | `gameObject.AudioSource` | 音源パス・音量・ループ・3D 減衰・パン + Play/Stop |
 | `Animator` | `gameObject.Animator` | 再生中クリップ・再生位置・速度 + Play/Stop/Pause/Resume |
+| `ParticleEmitter` | `gameObject.ParticleEmitter` | 放出レート・ループ・抵抗・拡散角 + Play/Stop/Burst |
 
 他のコンポーネント（Collider / Rigidbody など物理系）は物理 API として順次対応予定で、対応済みのものは本節に追記されます。
 

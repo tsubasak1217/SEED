@@ -457,7 +457,7 @@ bullet.Transform.Position = transform.Position;   <span class="c">// 生成直�
 </section>
 
 <!-- ════════════════ 7.x コンポーネント ════════════════ -->
-<section id="sec-components" data-keywords="コンポーネント Transform CanvasTransform Sprite Camera AudioSource Animator アニメーション 一覧">
+<section id="sec-components" data-keywords="コンポーネント Transform CanvasTransform Sprite Camera AudioSource Animator ParticleEmitter パーティクル エミッタ 放出 Burst アニメーション 一覧">
   <h2>7.x コンポーネント</h2>
 
   <h3 id="cmp-transform">Transform（3D 位置・回転・スケール）</h3>
@@ -523,6 +523,18 @@ sprite.Color = <span class="t">SEED.Color</span>.White.WithAlpha(<span class="t"
   <div class="api"><code class="sig">anim.Speed</code><span class="desc">float（get/set。再生速度倍率。1.0=等倍、負値で逆再生）</span></div>
   <div class="warn">Play で指定するクリップ名は、そのアクターの Animator に登録済み（<code>clips</code> 一覧に存在し、既にロード済み）である必要があります。未登録・未ロードの名前を指定すると警告ログを出して無視されます（例外は発生しません）。クリップは Play モード開始時（初回フレーム、スクリプトの Update 等より前）に自動ロードされます。</div>
 
+  <h3 id="cmp-particleemitter">ParticleEmitter（GPU パーティクル放出源）</h3>
+  <p class="section-note">エディタの「コンポーネント追加 → パーティクルエミッタ」で追加し、インスペクタで放出パラメータを設定します。放出位置・向きは同じ GameObject の <code>transform</code> が決めます。</p>
+  <div class="api"><code class="sig">ps.Play()</code><span class="desc">放出を開始（playing = true）</span></div>
+  <div class="api"><code class="sig">ps.Stop()</code><span class="desc">放出を停止（既存パーティクルは寿命で消える）</span></div>
+  <div class="api"><code class="sig">ps.Burst(50)</code><span class="desc">50 個を即時一括放出（継続放出とは独立。次フレームで消費）</span></div>
+  <div class="api"><code class="sig">ps.IsPlaying</code><span class="desc">bool（get のみ。放出中か。Playing の別名）</span></div>
+  <div class="api"><code class="sig">ps.Playing</code><span class="desc">bool（get/set。放出中フラグ。Play()/Stop() と同じ切り替え）</span></div>
+  <div class="api"><code class="sig">ps.EmitRate</code><span class="desc">float（get/set。1 秒あたりの放出個数。負値は 0 にクランプ）</span></div>
+  <div class="api"><code class="sig">ps.LoopEmit</code><span class="desc">bool（get/set。寿命ループ放出するか）</span></div>
+  <div class="api"><code class="sig">ps.Drag</code><span class="desc">float（get/set。空気抵抗係数。負値は 0 にクランプ）</span></div>
+  <div class="api"><code class="sig">ps.SpreadAngle</code><span class="desc">float（get/set。放出円錐の半頂角・度。0〜180 にクランプ）</span></div>
+
   <h3>利用可能なコンポーネント一覧</h3>
   <table>
     <tr><th>コンポーネント名</th><th>アクセサ</th><th>内容</th></tr>
@@ -532,6 +544,7 @@ sprite.Color = <span class="t">SEED.Color</span>.White.WithAlpha(<span class="t"
     <tr><td><code>Camera</code></td><td><code>gameObject.Camera</code></td><td>FOV・クリップ距離・メインカメラ・クリアカラー・ベース解像度</td></tr>
     <tr><td><code>Audio</code></td><td><code>gameObject.AudioSource</code></td><td>音源パス・音量・ループ・3D 減衰・パン + Play/Stop</td></tr>
     <tr><td><code>Animator</code></td><td><code>gameObject.Animator</code></td><td>再生中クリップ・再生位置・速度 + Play/Stop/Pause/Resume</td></tr>
+    <tr><td><code>ParticleEmitter</code></td><td><code>gameObject.ParticleEmitter</code></td><td>放出レート・ループ・抵抗・拡散角 + Play/Stop/Burst</td></tr>
   </table>
   <p class="section-note">他のコンポーネント（Collider / Rigidbody など物理系）は物理 API として順次対応予定です。</p>
 </section>

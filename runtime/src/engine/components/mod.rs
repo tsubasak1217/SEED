@@ -23,6 +23,7 @@ pub mod rigidbody_component;
 pub mod audio_component;
 pub mod animator_component;
 pub mod light_component;
+pub mod particle_emitter_component;
 /// マテリアルオーバーライド（Phase R7: .mat マテリアル＋マルチマテリアル編集）
 pub mod material_override;
 
@@ -50,6 +51,10 @@ pub use rigidbody_component::RigidbodyComponentData;
 pub use audio_component::{AudioComponent, AudioComponentData};
 pub use animator_component::{AnimatorComponent, AnimatorComponentData, AnimClipRef, AnimClipKind, AnimClipLoop};
 pub use light_component::{LightComponent, LightComponentData, LightKind};
+pub use particle_emitter_component::{
+    ParticleEmitterComponent, ParticleEmitterComponentData,
+    ParticleBlend, ParticleSimSpace, MAX_PARTICLES_PER_EMITTER,
+};
 
 use serde::{Deserialize, Serialize};
 
@@ -88,6 +93,8 @@ pub enum ComponentKind {
     Animator,
     /// ライト（光源：directional / point / spot / rect）
     Light,
+    /// パーティクルエミッタ（GPU パーティクルの放出源）
+    ParticleEmitter,
 }
 
 impl ComponentKind {
@@ -107,6 +114,7 @@ impl ComponentKind {
             Self::Audio       => "AudioComponent",
             Self::Animator    => "AnimatorComponent",
             Self::Light       => "LightComponent",
+            Self::ParticleEmitter => "ParticleEmitterComponent",
         }
     }
 }
@@ -139,4 +147,6 @@ pub enum ComponentData {
     AnimatorComponent(AnimatorComponentData),
     /// ライト（光源：directional / point / spot / rect）
     LightComponent(LightComponentData),
+    /// パーティクルエミッタ（GPU パーティクルの放出源）
+    ParticleEmitterComponent(ParticleEmitterComponentData),
 }

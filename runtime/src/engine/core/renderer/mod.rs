@@ -15,6 +15,8 @@ pub(crate) mod rt_shadow;
 pub(crate) mod post;
 pub(crate) mod transparency;
 pub(crate) mod batch2d;
+/// GPU パーティクル シミュレーション＋描画（Phase RP）
+pub(crate) mod particle_system;
 /// .mat マテリアルアセット（Phase R7: マルチマテリアル編集）
 pub mod material_asset;
 
@@ -29,6 +31,7 @@ pub use pipeline::{MeshPipeline, SkinnedMeshPipeline, UnlitPipeline, CullPipelin
                    SpritePipeline, SpriteOutlinePipeline, CanvasIdPipeline, CanvasIdUniform,
                    CameraPreviewBlitPipeline, ShadowDepthPipelines,
                    BarFillPipeline, BarFillUniform};
+pub use particle_system::ParticleSystem;
 pub use lighting::{GpuLight, LightBuffer, LightMeta, MAX_LIGHTS,
                    DEFAULT_AMBIENT_COLOR, DEFAULT_AMBIENT_INTENSITY};
 pub use shadow::{ShadowResources, ShadowPlan, ShadowMatricesUbo,
@@ -730,6 +733,47 @@ impl<'r> RenderFrame<'r> {
                 view: self.depth_view,
                 depth_ops: Some(wgpu::Operations {
                     load:  wgpu::LoadOp::Load, // 不透明の深度を保持（テストのみ）。
+                    store: wgpu::StoreOp::Store,
+                }),
+                // Depth24PlusStencil8 は stencil 面を持つため ops を明示（Load/Store）。
+                stencil_ops: Some(wgpu::Operations {
+                    load:  wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                }),
+            }),
+            occlusion_query_set: None,
+            timestamp_writes:    None,
+        })
+    }
+
+    /// GPU パーティクル描画パスを開始する（Phase RP）。
+    ///
+    /// - color = `hdr_view`（シーン HDR）を LoadOp::Load（既存の描画へ加算／合成で重ねる）。
+    /// - depth = メインパス共有の depth_view を LoadOp::Load（不透明深度で遮蔽テストのみ。
+    ///   書き込みはパイプライン側 depth_write=false のため行わない）。
+    /// メインパス drop 後・WBOIT 合成後・ブルーム前に呼ぶこと（HDR・トーンマップ前）。
+    /// エミッタ 0 個ならそもそもこのパスを開かないこと（呼び出し側が has_emitters で判定）。
+    pub fn begin_particle_pass_to<'f>(
+        &'f mut self,
+        hdr_view: &'f wgpu::TextureView,
+    ) -> wgpu::RenderPass<'f>
+    where
+        'r: 'f,
+    {
+        self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("Particle Pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view:           hdr_view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load:  wgpu::LoadOp::Load, // 既存シーン HDR を保持して重ねる。
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: self.depth_view,
+                depth_ops: Some(wgpu::Operations {
+                    load:  wgpu::LoadOp::Load, // 不透明の深度を保持（テストのみ・書込なし）。
                     store: wgpu::StoreOp::Store,
                 }),
                 // Depth24PlusStencil8 は stencil 面を持つため ops を明示（Load/Store）。

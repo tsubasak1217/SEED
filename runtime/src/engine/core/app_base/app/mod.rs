@@ -46,7 +46,9 @@ mod script_scene_ops;
 mod audio_ops;
 mod animation_ops;
 pub(crate) mod light_ops;
+pub(crate) mod particle_ops;
 pub(crate) mod light_scene_gizmo;
+pub(crate) mod particle_scene_gizmo;
 mod prefab_ops;
 pub(crate) mod camera_scene_gizmo;
 
@@ -579,6 +581,10 @@ pub struct App {
     /// 毎フレーム ensure でサーフェスサイズに追従する。静的リソース（トーンマップ等の
     /// パイプライン）は DrawContext.post が持つ。
     rt_pool: crate::engine::core::renderer::RtPool,
+    /// GPU パーティクルシステム（Phase RP）。エミッタごとの GPU バッファ・CPU 状態を保持する。
+    /// rt_pool と同じく eager 構築（デバイス不要。GPU パイプラインは DrawContext.pipelines が持つ）。
+    /// 毎フレーム collect_and_consume（CPU）→ sync_gpu/dispatch/draw（GPU）で更新・描画する。
+    particle_system: crate::engine::core::renderer::ParticleSystem,
     /// ビネットポストパスの有効フラグ（デフォルト OFF）。
     /// project_settings.json の `post_vignette`（bool, 既定 false）を起動時に読み込む。
     /// 有効時はトーンマップ前段にビネットを挿す（ポストパスチェーンの実証）。
@@ -918,6 +924,7 @@ impl App {
             canvas_screen_space_overlay: false,
             edit_view_mode:              EditViewMode::View3D,
             rt_pool:                     crate::engine::core::renderer::RtPool::new(),
+            particle_system:             crate::engine::core::renderer::ParticleSystem::new(),
             post_vignette_enabled:       false,
             post_fx:                     crate::engine::core::renderer::PostFxSettings::default(),
             ambient_color:               crate::engine::core::renderer::DEFAULT_AMBIENT_COLOR,

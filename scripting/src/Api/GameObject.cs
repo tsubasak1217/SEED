@@ -42,6 +42,9 @@ public readonly struct GameObject
     /// <summary>この GameObject のアニメーター（キーフレームアニメーション再生）。</summary>
     public Animator Animator => new(_entity);
 
+    /// <summary>この GameObject のパーティクルエミッタ（GPU パーティクル放出源）。</summary>
+    public ParticleEmitter ParticleEmitter => new(_entity);
+
     // ── 保持判定 ─────────────────────────────────────────────
 
     /// <summary>指定名のコンポーネントを持つか（例 "Transform", "Sprite"）。</summary>

@@ -312,6 +312,10 @@ impl App {
                         use crate::engine::components::LightComponent;
                         scene.world.remove::<LightComponent>(slot_entity);
                     }
+                    ComponentKind::ParticleEmitter => {
+                        use crate::engine::components::ParticleEmitterComponent;
+                        scene.world.remove::<ParticleEmitterComponent>(slot_entity);
+                    }
                 }
                 scene.world.despawn(slot_entity);
                 // アクターのスロットリストから削除
@@ -587,6 +591,16 @@ impl App {
                 } else { scene.world.despawn(slot_entity); }
                 true
             }
+            ComponentData::ParticleEmitterComponent(pe_data) => {
+                use crate::engine::components::ParticleEmitterComponent;
+                let slot_entity = scene.world.spawn();
+                scene.world.insert(slot_entity, ParticleEmitterComponent::from_data(pe_data));
+                let mut c = 0u32;
+                if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
+                    actor.add_slot_typed::<ParticleEmitterComponent>(slot_data.name, ComponentKind::ParticleEmitter, slot_entity);
+                } else { scene.world.despawn(slot_entity); }
+                true
+            }
             ComponentData::LegacyRigidbodyComponent(_) => {
                 // 旧フォーマット互換: ColliderComponent に統合済みのためスロット追加しない
                 false
@@ -781,6 +795,11 @@ impl App {
                     use crate::engine::components::LightComponent;
                     scene.world.insert(slot_entity, LightComponent::from_data(lc_data));
                     new_slots.push(ComponentSlot::new::<LightComponent>(slot_data.name, ComponentKind::Light, slot_entity));
+                }
+                ComponentData::ParticleEmitterComponent(pe_data) => {
+                    use crate::engine::components::ParticleEmitterComponent;
+                    scene.world.insert(slot_entity, ParticleEmitterComponent::from_data(pe_data));
+                    new_slots.push(ComponentSlot::new::<ParticleEmitterComponent>(slot_data.name, ComponentKind::ParticleEmitter, slot_entity));
                 }
                 ComponentData::LegacyRigidbodyComponent(_) => {
                     // 旧フォーマット互換: ColliderComponent に統合済みのためスキップする

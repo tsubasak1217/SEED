@@ -344,6 +344,19 @@ public static unsafe class ScriptHost
         return _api.AudioComponent(action, e.Index, e.Generation) != 0;
     }
 
+    // ── パーティクルエミッタ ─────────────────────────────────────
+
+    /// <summary>
+    /// ParticleEmitterComponent を操作する（action: 0=Play/1=Stop/2=Burst）。
+    /// count は Burst 時のみ使用（放出個数。0 以下は無視）。他 action では無視される。
+    /// 成功なら true（エミッタを持たない・未登録なら false）。
+    /// </summary>
+    public static bool ParticleComponentAction(int action, Entity e, int count)
+    {
+        if (!_available || _api.ParticleComponent == null || !e.IsValid) return false;
+        return _api.ParticleComponent(action, e.Index, e.Generation, count) != 0;
+    }
+
     // ── アニメーター ─────────────────────────────────────────────
 
     /// <summary>
@@ -487,4 +500,6 @@ public unsafe struct ScriptHostApi
     public delegate* unmanaged[Cdecl]<uint, uint, float*, int> ScreenPosition;
     /// <summary>(action, idx, gen, clipName, clipNameLen, speed) → 1/0（action: 0=Play/1=Stop/2=Pause/3=Resume）</summary>
     public delegate* unmanaged[Cdecl]<int, uint, uint, byte*, int, float, int> AnimatorComponent;
+    /// <summary>(action, idx, gen, count) → 1/0（action: 0=Play/1=Stop/2=Burst。count は Burst の放出個数）</summary>
+    public delegate* unmanaged[Cdecl]<int, uint, uint, int, int> ParticleComponent;
 }

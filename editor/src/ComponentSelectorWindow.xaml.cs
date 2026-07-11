@@ -59,7 +59,10 @@ public partial class ComponentSelectorWindow : Window
         {
             new("LightComponent", "Light", "光源（directional / point / spot / rect）をアクターにアタッチ。向き・位置は Transform から", ActorTarget.Actor3D),
         }),
-        ("エフェクト", new()),
+        ("エフェクト", new()
+        {
+            new("ParticleEmitterComponent", "Particle Emitter", "GPUパーティクルエミッタ。放出レート・寿命・色・サイズ補間などをデータドリブンに設定", ActorTarget.Actor3D),
+        }),
         ("カメラ", new()
         {
             new("CameraComponent", "Camera", "Play モードで使用するゲームカメラ", ActorTarget.Actor3D),
@@ -311,6 +314,7 @@ public partial class ComponentSelectorWindow : Window
         "AudioComponent"      => "Audio",
         "AnimatorComponent"   => "Animator",
         "LightComponent"      => "Light",
+        "ParticleEmitterComponent" => "ParticleEmitter",
         // Plugin:{name} → プラグイン名をデフォルト名とする
         _ when typeId.StartsWith("Plugin:", StringComparison.Ordinal) => typeId["Plugin:".Length..],
         _                    => typeId,

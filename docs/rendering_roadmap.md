@@ -346,6 +346,52 @@
 近似できる（分離可能: 水平→垂直）。GPU実装は行/列prefix sum（compute）＋等幅区間和。
 大カーネルほどタップ数固定の従来法より高速。
 
+### Phase RP: GPUパーティクル 【状況: 実装済み（実機検証待ち）】
+GPU 上でパーティクルをシミュレート（compute）してビルボード描画（vertex pulling）する。
+ECS の `ParticleEmitterComponent`（データのみ・別担当）を入力に、エミッタごとの GPU バッファを
+確保してシミュレーション→HDR（トーンマップ前）へ加算/アルファ合成する。
+
+#### 実装メモ（2026-07, 実機検証待ち）
+- ソース: `renderer/particle_system.rs`（CPU/GPU 状態・収集・描画）、`renderer/shaders/particle_sim.wgsl`
+  （compute）、`renderer/shaders/particle_draw.wgsl`（描画）、`renderer/pipeline.rs`
+  （`ParticleComputePipeline` / `ParticlePipelines`, DrawPipelines へ登録）、
+  `app_base/app/particle_scene_gizmo.rs`（選択時の放出円錐ワイヤ）。
+- バッファレイアウト: `GpuParticle`（std430 storage, **stride 48**, `PARTICLE_STRIDE`）=
+  pos(vec3)+age / vel(vec3)+lifetime / seed(u32)+pad。`GpuEmitterParams`（uniform, **192B**）=
+  world_mat(mat4, 列優先=転置) / dt / emit_count / ring_start / max / frame_nonce / drag / spread_rad /
+  end_size_scale / direction_local(vec3)+speed_min/max / lifetime_min/max / size_min / gravity(vec3)+size_max /
+  start_color(vec4) / end_color(vec4) / sim_space / use_texture。vec3 の直後にスカラーを詰めて std140 に一致
+  （`layout_tests` でサイズ・オフセットを固定）。生成時ゼロ初期化＝全 dead（age>=lifetime か lifetime<=0）。
+- スポーン方式（リングカーソル・atomic なし）: CPU が `spawn_cursor`(=ring_start) と `emit_count` を
+  uniform で渡し、compute のスレッド i がリング区間 [ring_start, ring_start+emit_count)（mod max）に
+  入っていれば無条件で再スポーン（過剰放出時は生存粒子を上書き＝標準リング挙動）。乱数は wanghash/PCG 系
+  ハッシュ（seed=hash(i ^ hash(frame_nonce))）で寿命/初速/円錐方向を決定的に生成し、seed を保存して頂点
+  シェーダがサイズ乱数を再現する。円錐は spread 半頂角内の一様サンプリング（cosθ を [cos(spread),1] で一様）。
+- 空間シム: World=スポーン位置は行列の平行移動・方向は行列で回した円錐（放出後ワールド固定）。
+  Local=原点発生・ローカルでシムし描画時に行列変換（エミッタ追従）。
+- パス位置: メインパス drop 後・WBOIT 合成後・**ブルーム前**の HDR（トーンマップ前）へ描画
+  （`frame_renderer.rs` の WBOIT 合成直後）。compute dispatch は skin compute と同時期の専用 compute pass。
+  CPU の放出決定・`pending_burst` 消費（スクリプト Burst 要求）は World への &mut が要るため描画ブロック前
+  （`collect_and_consume`）で実施。ヘルパ `RenderFrame::begin_particle_pass_to`（color=hdr Load・
+  深度 Load でテストのみ・書込なし）を使う。
+- group 構成（≦5）: group0=camera（既存 CameraBuffer BG を流用＝同一 camera_bgl）、group1=particles(storage
+  read)+params(uniform)、group2=texture+sampler（未指定は既定白 1x1＋シェーダのプロシージャル円）。
+  描画は premultiplied alpha を出力し Additive=One/One・Alpha=One/OneMinusSrcA。深度=LessEqual・書込 OFF。
+- Edit 常時プレビュー: dt は Play=可変（ctx.delta_time）/ Edit=固定 1/60（time_running 非依存・物理の先例に倣う）。
+  playing=false は放出のみ停止し、既存粒子は自然消滅するまで更新を回す（常時 dispatch）。
+- 既定値: max_particles=1024（上限 `MAX_PARTICLES_PER_EMITTER`=65536）、emit_rate=100、lifetime[1,2]、
+  initial_speed[1,3]、spread=30°、direction_local=+Y、gravity=[0,-9.8,0]、start_size[0.1,0.2]、
+  start_color=白不透明→end_color=白透明（コンポーネント側 default）。
+- 追加コストゼロ: エミッタ 0 個のフレームは collect で frame が空になり、sync_gpu/dispatch/draw・パス生成・
+  バッファ確保がすべて即 return（早期リターンで担保）。
+- 検証: `particle_system.rs` の `layout_tests`（GpuParticle/GpuEmitterParams のサイズ・オフセット固定）と
+  `shader_tests`（particle_sim/particle_draw の naga parse+validate）。※本 crate は build.rs が
+  `/EXPORT:NvOptimusEnablement`（main.rs 定義）を全ターゲットへ付けるため lib テストの**リンク**が通らない
+  既知の制約がある（本実装外）。レイアウトは standalone rustc、WGSL は naga 25.0.1 で個別検証済み。
+- TODO: Alpha ブレンドのエミッタ単位粗ソート（現状は登録順）・indirect draw count（生存数に応じた
+  可変インスタンス数で無駄頂点削減）・ソフトパーティクル（深度フェード）・スキン/2D 対応・全粒子 dead 検出で
+  dispatch 打ち切り・エミッタの親ヒエラルキー追従（現状は Actor 自身の Transform のみ、ライトギズモと同慣例）。
+
 ### 継続タスク（全フェーズ共通）
 - frame_renderer.rs の該当パスを触るたびにモジュール分割（passes/ サブフォルダへ）。
 - 各フェーズでデバッグ表示を拡充（R1: ライトギズモ、R2: カスケード可視化、R5: OITバッファ可視化等）。

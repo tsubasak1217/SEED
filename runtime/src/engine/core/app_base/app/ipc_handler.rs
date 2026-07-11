@@ -915,6 +915,9 @@ impl App {
                 IpcCommand::SetLightField { actor_dfs_id, slot_idx, key, value } => {
                     self.handle_set_light_field(actor_dfs_id, slot_idx, &key, &value);
                 }
+                IpcCommand::SetParticleField { actor_dfs_id, slot_idx, key, value } => {
+                    self.handle_set_particle_field(actor_dfs_id, slot_idx, &key, &value);
+                }
                 IpcCommand::SetAudioField { actor_dfs_id, slot_idx, key, value } => {
                     self.handle_set_audio_field(actor_dfs_id, slot_idx, &key, &value);
                 }

@@ -924,6 +924,291 @@ impl SpriteOutlinePipeline {
     }
 }
 
+// ============================================================
+//  ParticleComputePipeline — GPU パーティクル シミュレーション compute
+// ============================================================
+
+/// パーティクルシミュレーションのコンピュートパイプライン（particle_sim.wgsl）。
+///
+/// Group 0 BGL:
+///   0 = particles (array<Particle>, storage read_write)
+///   1 = params    (EmitterParams,   uniform)
+/// CullPipeline / SkinComputePipeline と同じ手動 BGL 構築の流儀。
+pub struct ParticleComputePipeline {
+    pub pipeline: wgpu::ComputePipeline,
+    /// group 0 レイアウト（エミッタごとの compute BindGroup 生成に使う）。
+    pub bgl:      wgpu::BindGroupLayout,
+}
+
+impl ParticleComputePipeline {
+    fn new(device: &wgpu::Device, cache: Option<&wgpu::PipelineCache>) -> Self {
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label:  Some("Particle Sim Shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/particle_sim.wgsl").into()),
+        });
+
+        // binding 0: particles（storage read_write, COMPUTE）
+        // binding 1: params  （uniform,             COMPUTE）
+        let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label:   Some("Particle Compute BGL"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding:    0,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty:                 wgpu::BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size:   None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding:    1,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty:                 wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size:   None,
+                    },
+                    count: None,
+                },
+            ],
+        });
+
+        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label:                Some("Particle Compute Layout"),
+            bind_group_layouts:   &[&bgl],
+            push_constant_ranges: &[],
+        });
+        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label:               Some("Particle Compute Pipeline"),
+            layout:              Some(&layout),
+            module:              &shader,
+            entry_point:         Some("cs_main"),
+            compilation_options: Default::default(),
+            cache,
+        });
+
+        Self { pipeline, bgl }
+    }
+}
+
+// ============================================================
+//  ParticlePipelines — GPU パーティクル描画（ビルボード頂点プリング）
+// ============================================================
+
+/// パーティクル描画パイプライン一式（Additive / Alpha）と共有リソース。
+///
+/// group 0 = camera（既存 CameraBuffer.bind_group を流用。camera_bgl を共有）
+/// group 1 = particles（storage read）+ params（uniform）
+/// group 2 = texture + sampler（未指定時は既定白 1x1＋プロシージャル円）
+///
+/// 深度: テスト ON（LessEqual）・書込 OFF（透明物と同じく既存深度で遮蔽のみ判定）。
+/// 頂点バッファなし（vertex pulling）。フラグメントは premultiplied alpha を出力する。
+pub struct ParticlePipelines {
+    /// Additive ブレンド（src=One, dst=One）。
+    pub additive:         wgpu::RenderPipeline,
+    /// Alpha（premultiplied over: src=One, dst=OneMinusSrcAlpha）。
+    pub alpha:            wgpu::RenderPipeline,
+    /// group 1 レイアウト（particles ro + params uniform）。エミッタごとの draw BG 生成に使う。
+    pub particle_bgl:     wgpu::BindGroupLayout,
+    /// group 2 レイアウト（texture + sampler）。
+    pub tex_bgl:          wgpu::BindGroupLayout,
+    /// リニアサンプラー（テクスチャ BG・既定白 BG 共通）。
+    pub sampler:          wgpu::Sampler,
+    /// テクスチャ未指定エミッタ用の既定白 1x1 BindGroup（プロシージャル円と併用）。
+    pub default_white_bg: wgpu::BindGroup,
+}
+
+impl ParticlePipelines {
+    /// - `sf`         : シーン HDR フォーマット（HDR_FORMAT）。
+    /// - `df`         : 深度フォーマット（DEPTH_FORMAT, Depth24PlusStencil8）。
+    /// - `camera_bgl` : 既存メッシュの group 0 camera BGL（共有カメラ BG を流用するため同一 BGL を使う）。
+    fn new(
+        device:     &wgpu::Device,
+        queue:      &wgpu::Queue,
+        sf:         wgpu::TextureFormat,
+        df:         wgpu::TextureFormat,
+        camera_bgl: &wgpu::BindGroupLayout,
+        cache:      Option<&wgpu::PipelineCache>,
+    ) -> Self {
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label:  Some("Particle Draw Shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/particle_draw.wgsl").into()),
+        });
+
+        // group 1: particles（storage read, VERTEX）+ params（uniform, VERTEX|FRAGMENT）。
+        let particle_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label:   Some("Particle Draw BGL (group1)"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding:    0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty:                 wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size:   None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding:    1,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty:                 wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size:   None,
+                    },
+                    count: None,
+                },
+            ],
+        });
+
+        // group 2: texture + sampler（FRAGMENT）。
+        let tex_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label:   Some("Particle Texture BGL (group2)"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding:    0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type:    wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled:   false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding:    1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty:         wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count:      None,
+                },
+            ],
+        });
+
+        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label:                Some("Particle Draw Layout"),
+            bind_group_layouts:   &[camera_bgl, &particle_bgl, &tex_bgl],
+            push_constant_ranges: &[],
+        });
+
+        // 深度: LessEqual・書込 OFF（既存の不透明深度で遮蔽のみ。透明物と同じ方針）。
+        let depth_stencil = wgpu::DepthStencilState {
+            format:              df,
+            depth_write_enabled: false,
+            depth_compare:       parse_compare("LessEqual"),
+            stencil:             wgpu::StencilState::default(),
+            bias:                wgpu::DepthBiasState::default(),
+        };
+
+        // ブレンド別に 1 本ずつ構築するヘルパー。頂点バッファなし・カリングなし。
+        let build = |blend: wgpu::BlendState, label: &str| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label:  Some(label),
+                layout: Some(&layout),
+                vertex: wgpu::VertexState {
+                    module:              &shader,
+                    entry_point:         Some("vs_main"),
+                    buffers:             &[], // vertex pulling
+                    compilation_options: Default::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module:              &shader,
+                    entry_point:         Some("fs_main"),
+                    targets:             &[Some(wgpu::ColorTargetState {
+                        format:     sf,
+                        blend:      Some(blend),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: Default::default(),
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology:   wgpu::PrimitiveTopology::TriangleList,
+                    front_face: wgpu::FrontFace::Ccw,
+                    cull_mode:  None, // ビルボードクアッドは両面表示
+                    ..Default::default()
+                },
+                depth_stencil: Some(depth_stencil.clone()),
+                multisample:   wgpu::MultisampleState::default(),
+                multiview:     None,
+                cache,
+            })
+        };
+
+        // Additive: premultiplied 出力を One/One で加算。
+        let additive_blend = wgpu::BlendState {
+            color: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::One,
+                dst_factor: wgpu::BlendFactor::One,
+                operation:  wgpu::BlendOperation::Add,
+            },
+            alpha: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::One,
+                dst_factor: wgpu::BlendFactor::One,
+                operation:  wgpu::BlendOperation::Add,
+            },
+        };
+        // Alpha: premultiplied over（src=One, dst=OneMinusSrcAlpha）。
+        let alpha_blend = wgpu::BlendState {
+            color: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::One,
+                dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                operation:  wgpu::BlendOperation::Add,
+            },
+            alpha: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::One,
+                dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                operation:  wgpu::BlendOperation::Add,
+            },
+        };
+
+        let additive = build(additive_blend, "particle_additive");
+        let alpha    = build(alpha_blend,    "particle_alpha");
+
+        // リニアサンプラー（テクスチャ・既定白 共通）。
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label:          Some("Particle Sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter:     wgpu::FilterMode::Linear,
+            min_filter:     wgpu::FilterMode::Linear,
+            mipmap_filter:  wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+
+        // 既定白 1x1 テクスチャ（テクスチャ未指定エミッタ用。フラグメントの use_texture=0 と併用）。
+        let white_tex = device.create_texture(&wgpu::TextureDescriptor {
+            label:           Some("Particle White 1x1"),
+            size:            wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count:    1,
+            dimension:       wgpu::TextureDimension::D2,
+            format:          wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage:           wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats:    &[],
+        });
+        queue.write_texture(
+            white_tex.as_image_copy(),
+            &[255u8, 255, 255, 255],
+            wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(4), rows_per_image: Some(1) },
+            wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+        );
+        let white_view = white_tex.create_view(&Default::default());
+        let default_white_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label:   Some("Particle White BG"),
+            layout:  &tex_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&white_view) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&sampler) },
+            ],
+        });
+
+        Self { additive, alpha, particle_bgl, tex_bgl, sampler, default_white_bg }
+    }
+}
+
 pub struct DrawPipelines {
     pub mesh:                 MeshPipeline,
     pub skinned_mesh:         SkinnedMeshPipeline,
@@ -944,6 +1229,10 @@ pub struct DrawPipelines {
     pub bar_fill:             BarFillPipeline,
     /// 透明描画パイプライン一式（距離ソート / WBOIT, Phase R5）。
     pub transparent:          super::transparency::TransparentPipelines,
+    /// GPU パーティクル シミュレーション compute パイプライン（Phase RP）。
+    pub particle_compute:     ParticleComputePipeline,
+    /// GPU パーティクル描画パイプライン一式（Additive / Alpha, Phase RP）。
+    pub particles:            ParticlePipelines,
 }
 
 impl DrawPipelines {
@@ -992,6 +1281,10 @@ impl DrawPipelines {
         let bar_fill            = BarFillPipeline::new(device, sf, df, cache);
         // 透明描画パイプライン（Phase R5）。シーン HDR（sf）へ描くため sf/df を渡す。
         let transparent         = super::transparency::TransparentPipelines::new(device, sf, df, cache);
-        Self { mesh, skinned_mesh, rt, unlit_line, cull, skin_compute, depth_prepass, shadow_depth, id_pass, outline, sprite, sprite_outline, canvas_id, camera_preview_blit, bar_fill, transparent }
+        // GPU パーティクル（Phase RP）。描画は group0 に mesh の camera BGL を流用する
+        // （共有カメラ BindGroup をそのまま使うため同一 BGL オブジェクトを渡す）。
+        let particle_compute    = ParticleComputePipeline::new(device, cache);
+        let particles           = ParticlePipelines::new(device, queue, sf, df, &mesh.camera_bgl, cache);
+        Self { mesh, skinned_mesh, rt, unlit_line, cull, skin_compute, depth_prepass, shadow_depth, id_pass, outline, sprite, sprite_outline, canvas_id, camera_preview_blit, bar_fill, transparent, particle_compute, particles }
     }
 }

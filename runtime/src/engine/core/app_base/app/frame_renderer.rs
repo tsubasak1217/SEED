@@ -826,6 +826,25 @@ impl App {
         // 判定ロジックは gizmo_handler 側の操作抑制と共通（gizmo_suppressed_by_edit_view）。
         let gizmo_suppressed_by_view = self.gizmo_suppressed_by_edit_view();
 
+        // ── GPU パーティクル CPU 更新（Phase RP・フェーズ 1）──────────────
+        // 放出個数の決定・リングカーソル前進・pending_burst（スクリプトの Burst 要求）消費を行う。
+        // World への &mut が必要なため、描画ブロック（&self.scene で不変借用）に入る前にここで実施する。
+        // dt は Play モード（time_running）は可変（ctx.delta_time）、Edit モードは物理の先例に倣い
+        // 固定 1/60（time_running 非依存）＝エディタでも常時プレビューする（playing=false は放出のみ停止）。
+        {
+            let particle_dt = if time_running {
+                ctx.delta_time
+            } else {
+                crate::engine::core::clock::FIXED_DELTA
+            };
+            let awl = self.active_world_line;
+            if let Some(scene) = self.scene.as_mut() {
+                self.particle_system.collect_and_consume(
+                    &mut scene.world, &scene.actors, awl, particle_dt,
+                );
+            }
+        }
+
         if let (Some(renderer), Some(scene), Some(camera_buf), Some(draw_ctx)) =
             (&mut self.renderer, &self.scene, &self.camera_buf, &self.draw_ctx)
         {
@@ -1039,6 +1058,28 @@ impl App {
                     } // skin_pass がここでドロップされ ComputePass が終了する
                     perf_skin_ms = _perf_t_skin.elapsed().as_secs_f64() * 1000.0;
 
+                    // ── GPU パーティクル: バッファ同期＋シミュレーション dispatch（Phase RP）──
+                    // skin compute と同時期に行う。sync_gpu（バッファ確保・params 書込・テクスチャ
+                    // 差し替え）→ 専用 compute pass で全エミッタを dispatch する。CPU 側の放出決定・
+                    // pending_burst 消費は描画ブロック前（collect_and_consume）で済ませてある。
+                    // エミッタ 0 個なら sync_gpu/dispatch とも即 return（バッファ確保なし＝コスト増ゼロ）。
+                    if self.particle_system.has_emitters() {
+                        self.particle_system.sync_gpu(
+                            &draw_ctx.device, &draw_ctx.queue,
+                            &draw_ctx.pipelines.particle_compute,
+                            &draw_ctx.pipelines.particles,
+                        );
+                        let mut particle_pass = frame.encoder_mut().begin_compute_pass(
+                            &wgpu::ComputePassDescriptor {
+                                label:            Some("Particle Sim Pass"),
+                                timestamp_writes: None,
+                            },
+                        );
+                        self.particle_system.dispatch(
+                            &mut particle_pass, &draw_ctx.pipelines.particle_compute,
+                        );
+                    } // particle_pass がドロップされ ComputePass が終了する
+
                     // ── カメラシーンギズモ（Edit モード・3D シーンのみ）──────────
                     // カメラアイコン / フラスタム / プレビューはアクター編集 2D タブ・
                     // 2D シーンビュー以外で表示する。
@@ -1125,6 +1166,16 @@ impl App {
                     // 選択中ライトアクターのギズモ（種別ごとの範囲ワイヤ・矢印、3D シーン）。
                     let light_gizmo_batch = if is_3d_scene {
                         super::light_scene_gizmo::build_selected_light_gizmo_batch(
+                            &scene.actors, &scene.world,
+                            self.active_world_line,
+                            self.actor_virtual_selected_idx,
+                            &draw_ctx.device,
+                        )
+                    } else { None };
+
+                    // 選択中パーティクルエミッタアクターのギズモ（放出円錐ワイヤ、3D シーン）。
+                    let particle_gizmo_batch = if is_3d_scene {
+                        super::particle_scene_gizmo::build_selected_particle_gizmo_batch(
                             &scene.actors, &scene.world,
                             self.active_world_line,
                             self.actor_virtual_selected_idx,
@@ -3133,6 +3184,19 @@ impl App {
                             }
                         }
 
+                        // パーティクルエミッタギズモ（選択中エミッタアクターのみ、3D シーン）
+                        if !scene_canvas_ss {
+                            if let (Some(particle_gz), Some((_, line_bg))) =
+                                (&particle_gizmo_batch, &self.line_model_buf)
+                            {
+                                draw_line_batch(
+                                    &mut pass, particle_gz,
+                                    &camera_buf.bind_group, line_bg,
+                                    &draw_ctx.pipelines,
+                                );
+                            }
+                        }
+
                         // コライダーワイヤーフレーム（エディタモード + 3D シーン）
                         // scene_canvas_ss=true（3D + スクリーンスペース 2D の合成）でも
                         // 3D コライダーは 3D カメラパスで描画するためガードしない
@@ -3290,6 +3354,21 @@ impl App {
                                 reveal_view,
                             );
                         }
+                    }
+
+                    // ── GPU パーティクル描画（Phase RP）────────────────────────────
+                    // メインパス／透明合成（距離ソートはメインパス内・WBOIT は上）が完了した後、
+                    // ブルーム／トーンマップより前の HDR（トーンマップ前）へ加算/アルファ合成する。
+                    // color=hdr_view を LoadOp::Load、深度は共有深度を Load（テストのみ・書込なし）。
+                    // エミッタ 0 個ならパス自体を開かない（追加コストゼロ）。
+                    // TODO: Alpha ブレンドのエミッタ単位粗ソート（現状は登録順）。indirect draw count 化。
+                    if self.particle_system.has_emitters() {
+                        let mut ppass = frame.begin_particle_pass_to(hdr_view);
+                        self.particle_system.draw(
+                            &mut ppass,
+                            &draw_ctx.pipelines.particles,
+                            &camera_buf.bind_group,
+                        );
                     }
 
                     // ── ブルーム（Phase R4, 有効時のみ）───────────────────────────
