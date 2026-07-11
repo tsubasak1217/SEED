@@ -202,13 +202,45 @@
   BLAS/シャドウキャスターからの Blend 除外は未実施——cast_shadows=false で回避可能）・
   カメラプレビューの WBOIT・実機での視覚検証（交差半透明の WBOIT 破綻なし確認）。
 
-### Phase R6: 汎用バッチング（同一形状一括描画） 【状況: 未着手】
+### Phase R6: 汎用バッチング（同一形状一括描画） 【状況: 実装済み（実機検証待ち）】
 - スプライト: 1スプライト=1ドローコール＋毎フレームbuffer/BindGroup生成を撤廃。
   インスタンシング（クアッド1枚×インスタンスバッファ）＋テクスチャは配列 or アトラスで統合。
 - 汎用化: 「同一メッシュ形状＋同一パイプライン」を自動でインスタンス束ねる軽量バッチャを
   プリミティブ描画（ライン/ギズモ以外の形状描画）にも適用できる形で設計。
   ※3Dモデルは既存 InstancedModelBatch が担うため対象外（重複実装しない）。
 - 受入: スプライト1000枚でドローコールが数個に収まり、フレーム時間が現状比で大幅短縮。
+
+#### 実装メモ（2026-07, 実機検証待ち）
+- 新設: `renderer/batch2d.rs`（`SpriteBatcher`／`InstanceStream`／`SpriteInstance`(80B=model 4列+color)／
+  `SpriteBatchList`＋`draw_sprite_batches`／`draw_sprite_outline_batches`）。定数
+  `INITIAL_INSTANCE_CAPACITY=256`・`INSTANCE_GROWTH_FACTOR=2`・`SPRITE_INSTANCE_SIZE=80`。
+- インスタンスデータ: クアッド1枚（`SpritePipeline.unit_quad_vbuf`, 6頂点, per-vertex slot0）を全スプライトで
+  共有し、model行列（列優先 mat4x4=4×vec4, location2〜5）＋color（vec4, location6）を per-instance slot1
+  （`step_mode=Instance`, `pipeline_config.rs` の `"sprite_instance"` レイアウト, stride80）で供給する。
+  sprite.wgsl / sprite_outline.wgsl をインスタンス属性対応に改修（旧uniform方式=group1 SpriteUniformは撤去、
+  テクスチャがgroup1へ繰り上がり）。sprite.toml=2グループ・sprite_outline.toml=1グループ（camera のみ）。
+- 永続化＋書込: インスタンスバッファは永続化し毎フレーム `write_buffer`（容量不足時のみ倍々成長で再確保）。
+  BindGroupの毎フレーム生成を撤廃（テクスチャBindGroupは従来どおり `sprite_tex_cache` でテクスチャ単位に永続キャッシュ）。
+  `SpriteBatcher` は `DrawContext.sprites: RefCell<..>` が保持。バッファは `Arc<wgpu::Buffer>` で、記録前に
+  ローカルへ clone して `'rp` に渡す（RefCell の Ref を跨がない）。
+- バッチ区切り（ソート順維持）: 描画順は現行のレイヤーソート済み順を一切変更せず、`push` が
+  「連続する同一テクスチャ（`Arc::ptr_eq`）」のみ1バッチへ融合し、テクスチャが切り替わる境界で区切る。
+  各バッチは `inst_buf.slice(base..base+count)` ＋ `draw(0..6, 0..count)` の1ドロー。→ 見た目不変。
+- 2チャンネル: `main`（メイン／キャンバスオーバーレイパスの2D背景/前面/3Dキャンバス/選択アウトライン）と
+  `preview`（カメラプレビューパス）を分離。プレビューパスはメインのスプライト収集より前に記録されるため、
+  単一バッファ共有だとメイン収集時の再確保が記録済みプレビューコマンドの参照を無効化する。分離で回避。
+- テクスチャ配列/アトラスによる異テクスチャ統合は TODO（現行のテクスチャ管理を大改造しないため）。9-slice も TODO。
+- テキスト描画（font/）・アイコンオーバーレイ（icon_overlay.rs）は同種の毎フレーム `create_buffer_init` を
+  持つが、動的グリフ/アイコンジオメトリで頂点フォーマットも別（インスタンス化ではなく単一頂点バッチ）のため
+  本バッチャに乗らず、工数大＝TODO（別タスク）。ライン/ギズモは既存の `LineBatch`/`GizmoBatch` が担当（対象外）。
+- 計測: `[PERF]` 行に `sprites=<枚数>枚/<draws>draws` を追加（main チャンネルの総インスタンス数と
+  バッチ数=ドローコール数）。理論削減: 同一テクスチャの連続N枚 → 1ドローコール（旧: N枚=Nドロー＋N個の
+  uniform buffer/BindGroup生成）。スプライト0枚時は begin/upload が早期returnしRT確保も無く追加コストなし。
+- naga parse+validate: `batch2d.rs` の #[test] で sprite.wgsl / sprite_outline.wgsl を parse+validate（pass）。
+  `cargo build` 0エラー。旧経路（`sprite_drawer` の SpriteUniform／SpritePrepared／prepare_sprites(_from_mats)／
+  draw_sprites／draw_sprite_outline）は削除（sprite_drawer はテクスチャロードのみに縮小）。
+- 実機テスト観点: 2D/3Dキャンバス両方・SS合成/非SS・アクター編集タブ・カメラプレビュー・選択アウトラインで
+  レイヤー順/ブレンド/UV/色が従来と一致すること。多数スプライトで `[PERF]` の draws が枚数より大幅に少ないこと。
 
 ### Phase R7: .matマテリアル＋マルチマテリアル編集 【状況: 未着手】
 - .mat（JSON）: base_color/metallic/roughness/emissive/テクスチャパス群/alpha_mode/cutoff。

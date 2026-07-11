@@ -1,10 +1,10 @@
 shader_sources  = ["sprite_outline.wgsl"]
 vertex_entry    = "vs_main"
 fragment_entry  = "fs_main"
-# スプライトと同じ頂点レイアウト（position: vec2 + uv: vec2）
-vertex_slots    = ["sprite_vertex"]
-# テクスチャ不要のため 2 グループ（camera + sprite_uniform）
-num_bind_groups = 2
+# slot0 = ユニットクワッド頂点, slot1 = per-instance データ（sprite と同一, Phase R6）
+vertex_slots    = ["sprite_vertex", "sprite_instance"]
+# テクスチャ・uniform 不要のため 1 グループ（camera のみ）
+num_bind_groups = 1
 
 topology        = "TriangleList"
 cull_mode       = "None"

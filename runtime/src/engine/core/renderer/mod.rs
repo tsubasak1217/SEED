@@ -14,6 +14,7 @@ pub(crate) mod shadow;
 pub(crate) mod rt_shadow;
 pub(crate) mod post;
 pub(crate) mod transparency;
+pub(crate) mod batch2d;
 
 pub use uniforms::{CameraUniform, ModelUniform, MaterialUniform, JointUniform, ColorVertex,
                    GpuCullData, FrustumUniform, GizmoVertex};
@@ -37,6 +38,8 @@ pub use post::{RtPool, PostContext, VignetteParams, VignetteStage,
 pub use transparency::{TransparencyMode, TransparentPipelines,
                        RT_WBOIT_ACCUM, RT_WBOIT_REVEAL,
                        WBOIT_ACCUM_FORMAT, WBOIT_REVEAL_FORMAT};
+pub use batch2d::{SpriteBatcher, SpriteInstance, SpriteBatch, SpriteBatchList,
+                  SPRITE_INSTANCE_SIZE, draw_sprite_batches, draw_sprite_outline_batches};
 
 // ============================================================
 //  Renderer 本体

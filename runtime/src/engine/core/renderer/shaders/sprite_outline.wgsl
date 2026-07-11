@@ -1,13 +1,14 @@
 // ============================================================
 //  sprite_outline.wgsl — 選択スプライトのスクリーンスペース均一アウトライン
+//                        （Phase R6 インスタンシング）
 //
 //  3D モデルアウトライン (outline.wgsl) と同じ OUTLINE_THICKNESS を使用し、
 //  クリップ空間でコーナーを外側に押し出すことで、どこから見ても一定幅を実現する。
 //
 //  Group 0: CameraUniform（sprite.wgsl と同一レイアウト）
-//  Group 1: SpriteUniform（モデル行列 + カラー、sprite.wgsl と同一レイアウト）
 //
-//  テクスチャ不要（単色塗りつぶし）のためバインドグループは 2 つのみ。
+//  モデル行列・カラーは per-instance の頂点属性（sprite.wgsl と同一レイアウト）で供給する。
+//  テクスチャ不要（単色塗りつぶし）のためバインドグループは Group 0（Camera）のみ。
 // ============================================================
 
 struct CameraUniform {
@@ -20,25 +21,28 @@ struct CameraUniform {
 }
 @group(0) @binding(0) var<uniform> u_camera: CameraUniform;
 
-struct SpriteUniform {
-    model: mat4x4<f32>,
-    color: vec4<f32>,
-}
-@group(1) @binding(0) var<uniform> u_sprite: SpriteUniform;
-
 // 3D モデルアウトライン (outline.wgsl) の 1.5 倍の太さ
 const OUTLINE_THICKNESS: f32 = 0.0075 * 1.5;
 
 struct VsOut {
     @builtin(position) clip_pos: vec4<f32>,
+    @location(0)       color:    vec4<f32>,
 }
 
 @vertex
 fn vs_main(
+    // per-vertex（ユニットクワッド）
     @location(0) position: vec2<f32>,
     @location(1) uv:       vec2<f32>,
+    // per-instance（model 行列の 4 列 + カラー, 列優先）
+    @location(2) m0:    vec4<f32>,
+    @location(3) m1:    vec4<f32>,
+    @location(4) m2:    vec4<f32>,
+    @location(5) m3:    vec4<f32>,
+    @location(6) color: vec4<f32>,
 ) -> VsOut {
-    let mvp = u_camera.view_proj * u_sprite.model;
+    let model = mat4x4<f32>(m0, m1, m2, m3);
+    let mvp   = u_camera.view_proj * model;
 
     // 各コーナーをクリップ空間に変換する
     var clip = mvp * vec4<f32>(position, 0.0, 1.0);
@@ -60,10 +64,10 @@ fn vs_main(
         clip.y += ndc_dir.y / l * OUTLINE_THICKNESS * clip.w;
     }
 
-    return VsOut(clip);
+    return VsOut(clip, color);
 }
 
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
-    return u_sprite.color;
+    return in.color;
 }

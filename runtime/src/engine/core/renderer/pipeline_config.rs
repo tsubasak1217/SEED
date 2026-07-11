@@ -511,6 +511,19 @@ pub fn vertex_buffer_layout(name: &str) -> wgpu::VertexBufferLayout<'static> {
         VA { format: VF::Float32x2, offset: 0, shader_location: 0 },
         VA { format: VF::Float32x2, offset: 8, shader_location: 1 },
     ];
+    // SpriteInstance（Phase R6 汎用バッチング）: per-instance データ 80 bytes。
+    //   model 行列（列優先 mat4x4 = 4 × vec4, location 2〜5, offset 0/16/32/48）
+    //   + color（vec4, location 6, offset 64）。
+    // step_mode = Instance のため 6 頂点のユニットクワッドを共有しつつ、
+    // インスタンスごとに行列・カラーを切り替える。頂点属性 location 0/1 と衝突しないよう
+    // location 2 以降に割り当てる（sprite.wgsl / sprite_outline.wgsl の @location と一致必須）。
+    static SPRITE_INSTANCE_ATTRS: &[VA] = &[
+        VA { format: VF::Float32x4, offset: 0,  shader_location: 2 },  // model col0
+        VA { format: VF::Float32x4, offset: 16, shader_location: 3 },  // model col1
+        VA { format: VF::Float32x4, offset: 32, shader_location: 4 },  // model col2
+        VA { format: VF::Float32x4, offset: 48, shader_location: 5 },  // model col3
+        VA { format: VF::Float32x4, offset: 64, shader_location: 6 },  // color
+    ];
 
     match name {
         "mesh_vertex"   => VertexBufferLayout { array_stride: 72, step_mode: VertexStepMode::Vertex, attributes: MESH_ATTRS },
@@ -519,6 +532,8 @@ pub fn vertex_buffer_layout(name: &str) -> wgpu::VertexBufferLayout<'static> {
         "color_vertex"  => VertexBufferLayout { array_stride: 28, step_mode: VertexStepMode::Vertex, attributes: COLOR_ATTRS },
         "gizmo_vertex"  => VertexBufferLayout { array_stride: 48, step_mode: VertexStepMode::Vertex, attributes: GIZMO_ATTRS },
         "sprite_vertex" => VertexBufferLayout { array_stride: 16, step_mode: VertexStepMode::Vertex, attributes: SPRITE_ATTRS },
+        // 80 bytes / インスタンス・step_mode=Instance（Phase R6）
+        "sprite_instance" => VertexBufferLayout { array_stride: 80, step_mode: VertexStepMode::Instance, attributes: SPRITE_INSTANCE_ATTRS },
         other => panic!("unknown vertex slot preset: {other}"),
     }
 }

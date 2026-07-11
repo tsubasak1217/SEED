@@ -571,13 +571,13 @@ impl OutlinePipeline {
 /// ワールド空間テクスチャクワッドパイプライン。
 ///
 /// Group 0: CameraUniform（mesh パイプラインと同一レイアウト → camera_buf.bind_group と互換）
-/// Group 1: SpriteUniform（モデル行列 + カラー）
-/// Group 2: テクスチャ + サンプラー
+/// Group 1: テクスチャ + サンプラー
+///
+/// Phase R6 でモデル行列・カラーは per-instance 頂点属性へ移行したため、
+/// 旧 Group 1（SpriteUniform）は撤去済み。テクスチャは Group 1 に繰り上がった。
 pub struct SpritePipeline {
     pub pipeline:           wgpu::RenderPipeline,
-    /// Group 1: SpriteUniform バインドグループレイアウト
-    pub sprite_uniform_bgl: wgpu::BindGroupLayout,
-    /// Group 2: テクスチャ＋サンプラー バインドグループレイアウト
+    /// Group 1: テクスチャ＋サンプラー バインドグループレイアウト
     pub tex_bgl:            wgpu::BindGroupLayout,
     /// リニアフィルタリングサンプラー（テクスチャ BG 構築に使用）
     pub sampler:            wgpu::Sampler,
@@ -599,11 +599,10 @@ impl SpritePipeline {
             RenderPipelineBuilder::new(device, include_str!("pipelines/sprite.toml"), sf, df)
                 .with_cache(cache)
                 .build(get_shader_source);
-        // group 番号順 (0, 1, 2) にイテレートして取り出す
+        // group 番号順 (0, 1) にイテレートして取り出す
         let mut it = bgls.into_iter();
         let _camera_bgl_compat = it.next(); // group 0: camera_buf.bind_group と互換のため不使用
-        let sprite_uniform_bgl = it.next().unwrap(); // group 1
-        let tex_bgl            = it.next().unwrap(); // group 2
+        let tex_bgl            = it.next().unwrap(); // group 1: テクスチャ＋サンプラー
 
         // リニアフィルタリングサンプラー
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -671,7 +670,7 @@ impl SpritePipeline {
             usage:    wgpu::BufferUsages::VERTEX,
         });
 
-        Self { pipeline, sprite_uniform_bgl, tex_bgl, sampler, white_fallback_bg, unit_quad_vbuf }
+        Self { pipeline, tex_bgl, sampler, white_fallback_bg, unit_quad_vbuf }
     }
 }
 

@@ -46,7 +46,7 @@ use crate::engine::methods::drawer::{
     draw_outline_multi, draw_stencil_mask_multi,
     extract_frustum_planes, GizmoBatch, draw_gizmo_batch,
     LineBatch, draw_line_batch, draw_thick_line_batch,
-    prepare_sprites_from_mats, draw_sprites, draw_sprite_outline, GpuSpriteTexture,
+    draw_sprite_batches, draw_sprite_outline_batches, GpuSpriteTexture,
     NUM_LODS,
 };
 use crate::engine::methods::gizmo_interact::{screen_to_ray, GIZMO_SCREEN_RADIUS_RATIO};
@@ -198,6 +198,10 @@ impl App {
         let mut perf_skin_ms:       f64 = 0.0;
         // メインパスの draw_model_indirect コマンド記録にかかった CPU 時間 [ms]
         let mut perf_draw_ms:       f64 = 0.0;
+        // メインチャンネルのスプライトバッチ数（= ドローコール数）と総インスタンス数（Phase R6）。
+        // 汎用バッチングの効果（N 枚 → 数バッチ）を [PERF] で可視化する。
+        let mut perf_sprite_draws:  usize = 0;
+        let mut perf_sprite_insts:  usize = 0;
         // ID パスコマンド記録にかかった CPU 時間 [ms]
         let mut perf_id_ms:         f64 = 0.0;
         // グリッド GPU バッチ生成（CPU 線生成 + device.create_buffer_init）にかかった時間 [ms]
@@ -1221,11 +1225,20 @@ impl App {
                                     items[canvas_start..].sort_by_key(|&(_, _, _, _, layer)| layer);
                                 }
                             }
-                            // ゾーン・レイヤーを除いた (行列, カラー, テクスチャ) で GPU リソースを準備する
-                            let plain: Vec<_> = items.into_iter()
-                                .map(|(m, col, tex, _, _)| (m, col, tex)).collect();
-                            prepare_sprites_from_mats(&draw_ctx.device, &draw_ctx.pipelines.sprite, &plain)
+                            // ゾーン・レイヤーを除いた (行列, カラー, テクスチャ) を
+                            // preview チャンネルへ積み、テクスチャ境界でバッチ分割する（Phase R6）。
+                            // preview はメインのスプライト収集より前に記録されるため、
+                            // メインとは別の永続バッファ（preview ストリーム）を使う。
+                            let mut sb = draw_ctx.sprites.borrow_mut();
+                            sb.preview.begin();
+                            let list = sb.preview.push(
+                                items.into_iter().map(|(m, col, tex, _, _)| (m, col, tex))
+                            );
+                            sb.preview.upload(&draw_ctx.device, &draw_ctx.queue);
+                            list
                         };
+                        // preview パス記録で 'rp ライフタイムに使うためバッファハンドルを clone
+                        let preview_inst_buf = draw_ctx.sprites.borrow().preview.buffer();
 
                         // ── プレビュー用の半透明対象収集（Phase R5）─────────────
                         // draw_model_indirect が Blend プリミティブをスキップするようになった
@@ -1286,10 +1299,11 @@ impl App {
                             // 3D Canvas スプライトをプレビューカメラで描画する
                             // SpritePipeline は mesh と同一カメラ BGL のため preview_mesh_cam_buf を流用する
                             if !preview_sprite_3d.is_empty() {
-                                draw_sprites(
+                                draw_sprite_batches(
                                     &mut preview_pass,
                                     &draw_ctx.pipelines.sprite,
                                     &preview_mesh_cam_buf.bind_group,
+                                    &preview_inst_buf,
                                     &preview_sprite_3d,
                                 );
                             }
@@ -2246,15 +2260,16 @@ impl App {
                         items_2d_bg.sort_by_key(|&(_, _, _, _, layer)| layer);
                         items_2d_fg.sort_by_key(|&(_, _, _, _, layer)| layer);
 
-                        // ゾーン・レイヤーを除いた (行列, カラー, テクスチャ) で GPU リソースを準備する
-                        let strip = |v: Vec<([[f32; 4]; 4], [f32; 4], Option<std::sync::Arc<GpuSpriteTexture>>, CanvasDrawZone, i32)>| {
-                            v.into_iter().map(|(m, col, tex, _, _)| (m, col, tex)).collect::<Vec<_>>()
-                        };
-                        (
-                            prepare_sprites_from_mats(&draw_ctx.device, &draw_ctx.pipelines.sprite, &strip(items_2d_bg)),
-                            prepare_sprites_from_mats(&draw_ctx.device, &draw_ctx.pipelines.sprite, &strip(items_2d_fg)),
-                            prepare_sprites_from_mats(&draw_ctx.device, &draw_ctx.pipelines.sprite, &strip(items_3d)),
-                        )
+                        // ゾーン・レイヤーを除いた (行列, カラー, テクスチャ) を main チャンネルへ積む。
+                        // ここでは begin＋3 リスト分の push のみ行い、upload は後段（選択アウトラインを
+                        // 積み終えた後）で 1 度だけ行う（Phase R6, 同一 main バッファへ連続配置）。
+                        // 各 push はテクスチャ境界でバッチ分割し、描画順（ソート済み）は保つ。
+                        let mut sb = draw_ctx.sprites.borrow_mut();
+                        sb.main.begin();
+                        let list_bg = sb.main.push(items_2d_bg.into_iter().map(|(m, col, tex, _, _)| (m, col, tex)));
+                        let list_fg = sb.main.push(items_2d_fg.into_iter().map(|(m, col, tex, _, _)| (m, col, tex)));
+                        let list_3d = sb.main.push(items_3d.into_iter().map(|(m, col, tex, _, _)| (m, col, tex)));
+                        (list_bg, list_fg, list_3d)
                     };
 
                     // CanvasComponent 矩形アウトラインバッチ（エディタモード + 2D キャンバス世界線のみ）
@@ -2505,10 +2520,30 @@ impl App {
                         } else { vec![] }
                     } else { vec![] };
 
-                    // outline パイプライン用の GPU リソースを準備する（SpriteUniform のみ）
-                    let sprite_3d_outline_prepared = prepare_sprites_from_mats(
-                        &draw_ctx.device, &draw_ctx.pipelines.sprite, &sprite_3d_outline_items,
-                    );
+                    // 選択アウトラインを main チャンネルへ積む（全て tex=None → 通常 1 バッチ）。
+                    // 2D/3D スプライトと同一 main バッファへ連続配置し、ここで 1 度だけ upload する
+                    // （Phase R6）。以降 main パス／オーバーレイパスは main_inst_buf を参照する。
+                    let sprite_3d_outline_list = {
+                        let mut sb = draw_ctx.sprites.borrow_mut();
+                        let list = sb.main.push(sprite_3d_outline_items.into_iter());
+                        sb.main.upload(&draw_ctx.device, &draw_ctx.queue);
+                        list
+                    };
+                    // main パス記録で 'rp ライフタイムに使うためバッファハンドルを clone
+                    let main_inst_buf = draw_ctx.sprites.borrow().main.buffer();
+                    // ドローコール削減効果の [PERF] 可視化: main チャンネルの全リストの
+                    // バッチ数（= ドローコール数）と総インスタンス数（= スプライト枚数）を集計する。
+                    {
+                        let lists = [
+                            &sprite_prepared_2d_bg, &sprite_prepared_2d_fg,
+                            &sprite_prepared_3d,    &sprite_3d_outline_list,
+                        ];
+                        perf_sprite_draws = lists.iter().map(|l| l.batches.len()).sum();
+                        perf_sprite_insts = lists.iter()
+                            .flat_map(|l| l.batches.iter())
+                            .map(|b| b.count as usize)
+                            .sum();
+                    }
 
                     // 軸ギズモバッチ（エディタモード + show_axis_gizmo のみ）
                     // 2D シーンビューでは 3D カメラ方位ウィジェットは無意味のため非表示にする
@@ -2811,10 +2846,11 @@ impl App {
                         // 2D シーンビュー（edit_view_2d）はメインパスで bg → fg の順に描画する（後述）。
                         if scene_canvas_ss && !sprite_prepared_2d_bg.is_empty() {
                             if let Some(canvas_cam_buf) = self.canvas_overlay_camera_buf.as_ref() {
-                                draw_sprites(
+                                draw_sprite_batches(
                                     &mut pass,
                                     &draw_ctx.pipelines.sprite,
                                     &canvas_cam_buf.bind_group,
+                                    &main_inst_buf,
                                     &sprite_prepared_2d_bg,
                                 );
                             }
@@ -2878,13 +2914,14 @@ impl App {
                         // 3D Canvas 子スプライト選択アウトライン（sprite_outline パイプライン）
                         // クリップ空間でコーナーを押し出し 3D モデルと同一幅のアウトラインを実現する。
                         // 実スプライトより先に描画することで、外枠だけがオレンジとして残る。
-                        if !sprite_3d_outline_prepared.is_empty() {
-                            draw_sprite_outline(
+                        if !sprite_3d_outline_list.is_empty() {
+                            draw_sprite_outline_batches(
                                 &mut pass,
                                 &draw_ctx.pipelines.sprite,
                                 &draw_ctx.pipelines.sprite_outline,
                                 &camera_buf.bind_group,
-                                &sprite_3d_outline_prepared,
+                                &main_inst_buf,
+                                &sprite_3d_outline_list,
                             );
                         }
 
@@ -2893,10 +2930,11 @@ impl App {
                         // 3D Canvas スプライト: scene_canvas_ss に関わらず常にメインパスで描画する。
                         // 2D アクターが混在するシーン（scene_canvas_ss=true）でも 3D カメラを使うため。
                         if !sprite_prepared_3d.is_empty() {
-                            draw_sprites(
+                            draw_sprite_batches(
                                 &mut pass,
                                 &draw_ctx.pipelines.sprite,
                                 &camera_buf.bind_group,
+                                &main_inst_buf,
                                 &sprite_prepared_3d,
                             );
                         }
@@ -2906,18 +2944,20 @@ impl App {
                         // 背景ゾーン → 前面ゾーンの順に描画してレイヤリングをプレビューする。
                         if !scene_canvas_ss {
                             if !sprite_prepared_2d_bg.is_empty() {
-                                draw_sprites(
+                                draw_sprite_batches(
                                     &mut pass,
                                     &draw_ctx.pipelines.sprite,
                                     &camera_buf.bind_group,
+                                    &main_inst_buf,
                                     &sprite_prepared_2d_bg,
                                 );
                             }
                             if !sprite_prepared_2d_fg.is_empty() {
-                                draw_sprites(
+                                draw_sprite_batches(
                                     &mut pass,
                                     &draw_ctx.pipelines.sprite,
                                     &camera_buf.bind_group,
+                                    &main_inst_buf,
                                     &sprite_prepared_2d_fg,
                                 );
                             }
@@ -3282,10 +3322,11 @@ impl App {
                             // 背景ゾーンはメインパス冒頭（3D ワールドより先）で描画済み。
                             // 3D Canvas スプライトはメインパスで 3D カメラ描画済みのためここでは不要。
                             if !sprite_prepared_2d_fg.is_empty() {
-                                draw_sprites(
+                                draw_sprite_batches(
                                     &mut overlay_pass,
                                     &draw_ctx.pipelines.sprite,
                                     &canvas_cam_buf.bind_group,
+                                    &main_inst_buf,
                                     &sprite_prepared_2d_fg,
                                 );
                             }
@@ -3862,6 +3903,7 @@ impl App {
                              bf={perf_begin_frame_ms:.3}ms ipc={perf_ipc_ms:.3}ms \
                              batch={perf_batch_ms:.3}ms skin={perf_skin_ms:.3}ms \
                              main_pass={perf_main_pass_ms:.3}ms(draw={perf_draw_ms:.3}ms+pass_drop={perf_pass_drop_ms:.3}ms+rest={main_rest_ms:.3}ms) \
+                             sprites={perf_sprite_insts}枚/{perf_sprite_draws}draws \
                              id={perf_id_ms:.3}ms grid={perf_grid_ms:.3}ms collider={perf_collider_ms:.3}ms \
                              finish={perf_finish_ms:.3}ms other={other_ms:.3}ms"
                         );

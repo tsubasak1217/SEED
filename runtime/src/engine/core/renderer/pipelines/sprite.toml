@@ -1,7 +1,8 @@
 shader_sources  = ["sprite.wgsl"]
 vertex_entry    = "vs_main"
 fragment_entry  = "fs_main"
-vertex_slots    = ["sprite_vertex"]
+# slot0 = ユニットクワッド頂点（per-vertex）, slot1 = per-instance データ（Phase R6）
+vertex_slots    = ["sprite_vertex", "sprite_instance"]
 
 topology        = "TriangleList"
 cull_mode       = "None"

@@ -44,9 +44,12 @@ pub use id_pass::{IdBuffer, draw_id_pass, draw_canvas_id_items, draw_collider_pi
 pub use outline::{draw_outline, draw_stencil_mask, draw_outline_multi, draw_stencil_mask_multi};
 pub use primitive_drawer::{LineBatch, GizmoBatch, draw_line_batch, draw_gizmo_batch, draw_thick_line_batch};
 pub use sprite_drawer::{
-    GpuSpriteTexture, SpriteUniform, SpriteVertex,
-    load_sprite_texture, prepare_sprites, prepare_sprites_from_mats,
-    draw_sprites, draw_sprite_outline, SpritePrepared,
+    GpuSpriteTexture, SpriteVertex, load_sprite_texture,
+};
+// Phase R6: スプライトの汎用インスタンシングバッチャ（旧 prepare_sprites/draw_sprites を置換）
+pub use crate::engine::core::renderer::batch2d::{
+    SpriteBatcher, SpriteInstance, SpriteBatch, SpriteBatchList,
+    SPRITE_INSTANCE_SIZE, draw_sprite_batches, draw_sprite_outline_batches,
 };
 
 // ============================================================
@@ -95,6 +98,11 @@ pub struct DrawContext {
     /// パス → GPU スプライトテクスチャキャッシュ。
     /// Some(arc) = ロード成功、None = ロード失敗済み（毎フレームのリトライ・ログ爆発を防ぐ）。
     pub sprite_tex_cache: RefCell<HashMap<String, Option<Arc<GpuSpriteTexture>>>>,
+    /// スプライト汎用インスタンシングバッチャ（Phase R6）。
+    /// 永続インスタンスバッファを毎フレーム write_buffer し、同一テクスチャの連続
+    /// スプライトを 1 ドローコールへ束ねる。DrawContext は `&self` 共有のため
+    /// フレーム内で scratch/バッファを可変にできるよう RefCell で包む。
+    pub sprites:          RefCell<SpriteBatcher>,
 }
 
 impl DrawContext {
@@ -124,6 +132,8 @@ impl DrawContext {
         let rt_shadow = pipelines.rt.as_ref().map(|rtp| {
             RefCell::new(RtShadowResources::new(&device, &rtp.lights_bgl, &shadow, &light_buffer))
         });
+        // スプライトバッチャ（Phase R6）: 永続インスタンスバッファを初期容量で確保する。
+        let sprites = RefCell::new(SpriteBatcher::new(&device));
         Self {
             device,
             queue,
@@ -135,6 +145,7 @@ impl DrawContext {
             post,
             model_cache:      RefCell::new(HashMap::new()),
             sprite_tex_cache: RefCell::new(HashMap::new()),
+            sprites,
         }
     }
 
