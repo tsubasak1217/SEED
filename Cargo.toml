@@ -41,6 +41,12 @@ opt-level = 2
 # 画像デコード（png/jpeg）は初回ロードの支配的コストのため同様に最適化する。
 [profile.dev.package.texpresso]
 opt-level = 2
+# BC 圧縮はブロックあたり数百回の整数/浮動小数演算を行うため、
+# dev プロファイルで残る debug-assertions / overflow-checks が数倍の
+# オーバーヘッドになる。圧縮結果の正しさはユニットテストで担保されているため
+# このクレートに限り無効化する（4K テクスチャ 1 枚あたり数秒の短縮）。
+debug-assertions = false
+overflow-checks = false
 # メッシュ簡略化（LOD 生成）とメッシュレット分割（GPU カリング第1弾）。
 # C FFI（meshoptimizer）を含み、-O0 では初回生成が桁違いに遅くなるため最適化する。
 [profile.dev.package.meshopt]

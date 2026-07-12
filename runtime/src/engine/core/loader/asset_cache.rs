@@ -55,7 +55,10 @@ use super::model::{
 ///     1 枚ずつ「デコード → ミップ → BC 圧縮 → 即 drop」の有界並列で処理。
 ///     外部ファイル参照（FilePath）テクスチャもキャッシュに含まれるようになった。
 ///     ファイル書き出しも全体バッファを作らず逐次 write に変更。
-pub const CACHE_FORMAT_VERSION: u32 = 5;
+/// v6: BC1/BC3 圧縮を ClusterFit（texpresso デフォルト。4K 1 枚 8〜11 分）から
+///     RangeFit（高速・品質低-中）へ変更。v5 の低速形式で焼かれた途中キャッシュを
+///     バージョン不一致で自動再生成させるためインクリメント。
+pub const CACHE_FORMAT_VERSION: u32 = 6;
 
 /// モデルキャッシュファイルのマジック（8 バイト）。
 const MODEL_MAGIC: &[u8; 8] = b"SEEDMDL\0";
@@ -629,10 +632,15 @@ pub fn process_model_textures(model: &mut Model) -> usize {
                 Ok((w, h, rgba)) => {
                     src_bytes_sum.fetch_add(rgba.len(), Ordering::Relaxed);
                     td.source = build_ready_texture(w, h, &rgba, usage, bc);
+                    // 変換後フォーマット名（遅いフォーマットの特定用にログへ含める）
+                    let fmt_name = match &td.source {
+                        TextureSource::Ready { format, .. } => format!("{format:?}"),
+                        _ => "?".to_string(),
+                    };
                     let n = done.fetch_add(1, Ordering::Relaxed) + 1;
                     eprintln!(
-                        "[SEED cache]   tex {n}/{total}: {}x{} 変換 {:.0}ms",
-                        w, h, t0.elapsed().as_secs_f64() * 1000.0,
+                        "[SEED cache]   tex {n}/{total}: {}x{} {} 変換 {:.0}ms",
+                        w, h, fmt_name, t0.elapsed().as_secs_f64() * 1000.0,
                     );
                 }
                 // デコード不能 or 処理済み: 元の供給元へ戻す
@@ -846,10 +854,22 @@ fn compress_mip(width: u32, height: u32, rgba: &[u8], format: CachedTexFormat) -
         &padded
     };
 
+    // 【アルゴリズム選択 — RangeFit 必須】
+    // texpresso の Params::default() は Algorithm::ClusterFit（高品質・低速）で、
+    // BC1/BC3 のカラーブロックにのみ適用される。実機計測では 4K テクスチャの
+    // BC3 圧縮（アルベド/MR）が 1 枚 8〜11 分に達した一方、BC5（法線）は
+    // ClusterFit を通らない min/max コードブック経路のため同サイズ 3 秒だった
+    // （約 170 倍差）。RangeFit（主成分軸への端点フィット）はブロックあたり
+    // 定数コストの高速アルゴリズムで、品質低下はゲームテクスチャ用途では許容範囲。
+    let params = texpresso::Params {
+        algorithm: texpresso::Algorithm::RangeFit,
+        ..texpresso::Params::default()
+    };
+
     let (w, h) = (pw as usize, ph as usize);
     let size = tp.compressed_size(w, h);
     let mut out = vec![0u8; size];
-    tp.compress(src, w, h, texpresso::Params::default(), &mut out);
+    tp.compress(src, w, h, params, &mut out);
     out
 }
 
