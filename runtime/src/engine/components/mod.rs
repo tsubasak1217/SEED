@@ -54,9 +54,9 @@ pub use light_component::{LightComponent, LightComponentData, LightKind};
 pub use particle_emitter_component::{
     ParticleEmitterComponent, ParticleEmitterComponentData,
     ParticleBlend, ParticleSimSpace, ParticleShape, SpawnVolume, EmitMode,
-    ParamCurve, CurveChannel, CurveKey,
+    ParamCurve, CurveChannel, CurveKey, CurveInterp,
     MAX_PARTICLES_PER_EMITTER, MAX_PARTICLE_MODEL_VERTS, CURVE_LUT_SAMPLES,
-    DIRECTION_RANDOMNESS_MAX_HALF_ANGLE_DEG,
+    DIRECTION_RANDOMNESS_MAX_HALF_ANGLE_DEG, MAX_PARTICLE_TEXTURES,
 };
 
 use serde::{Deserialize, Serialize};

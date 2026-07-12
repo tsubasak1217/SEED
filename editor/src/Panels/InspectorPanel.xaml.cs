@@ -450,8 +450,8 @@ public partial class InspectorPanel : UserControl
         // 回転・サイズ・テクスチャ・ブレンド・空間）。デフォルト値は Rust 側
         // ParticleEmitterComponentData と一致させる（受信欠落時のフォールバックにも使用）。
         int PeMaxParticles = 1024,
-        // 形状（point/sphere/box/plane/model）と Model 形状時のパス
-        string PeShape = "point", string PeShapeModelPath = "",
+        // 形状（pixel/sphere/box/plane/model。旧 "point" は "pixel" に改名）と Model 形状時のパス
+        string PeShape = "pixel", string PeShapeModelPath = "",
         // 出現範囲（point/box/sphere）とパラメータ
         string PeSpawnVolume = "point",
         float PeSpawnBoxX = 0f, float PeSpawnBoxY = 0f, float PeSpawnBoxZ = 0f,
@@ -468,18 +468,36 @@ public partial class InspectorPanel : UserControl
         float PeDrag = 0f,
         float PeRotSpeedMin = 0f, float PeRotSpeedMax = 0f,
         float PeSizeMin = 1f, float PeSizeMax = 1f,
-        string PeTexturePath = "", string PeBlend = "additive", string PeSimSpace = "world",
+        // 初期回転範囲（度）。Pixel 形状時は UI 上非表示（意味を持たないため）。
+        float PeInitRotMin = 0f, float PeInitRotMax = 0f,
+        // ブレンド（none/normal/add/sub/mul/screen）とシミュレーション空間
+        string PeBlend = "add", string PeSimSpace = "world",
         bool PePlaying = true,
         // カーブ JSON（Rust ParamCurve の serde 形。カーブエディタで編集）。
-        // speed/rot_speed=1ch、scale=3ch(xyz)、color=4ch(HSVA)。random_colors は配列。
+        // speed/rot_speed=1ch、scale=3ch(xyz)。
         string PeSpeedCurveJson = "{}", string PeRotSpeedCurveJson = "{}",
-        string PeColorCurveJson = "{}", string PeScaleCurveJson = "{}",
-        string PeRandomColorCurvesJson = "[]");
+        string PeScaleCurveJson = "{}",
+        // 色カーブ配列（4ch HSVA ParamCurve の JSON 配列。必ず 1 要素以上）。
+        string PeColorCurvesJson = "[]",
+        // テクスチャパス配列（JSON 文字列配列。空可、最大 8）。
+        string PeTexturePathsJson = "[]");
 
     private List<SlotInfo> _slotInfos = new();
 
     /// <summary>スロット番号 → 有効フラグ（ACTOR_COMPONENTS の enabled）。ヘッダーのチェックボックス初期値に使う。</summary>
     private readonly Dictionary<int, bool> _slotEnabledMap = new();
+
+    /// <summary>
+    /// ParticleEmitterComponent のカーブ行 Expander（速度/回転速度/スケール/色カーブ各要素）の
+    /// 展開状態を「slotIdx:curveId[:index]」キーで保持する。
+    /// Rust は SET_PARTICLE_FIELD/SET_PARTICLE_CURVE 送信のたびに ACTOR_COMPONENTS を再送してくる仕様
+    /// （OnActorComponentsReceived 参照）ため、カーブ編集の確定（ダブルクリック追加/削除/Enter確定等）の
+    /// 直後に BuildActorComponentList が全 Expander を作り直してしまう。その際 IsExpanded=false の新規
+    /// Expander に置き換わって「編集した瞬間に閉じる」ように見える不具合の直接原因はこれ（イベント
+    /// バブリングではなく UI 全体再構築による状態消失）。このセットに開閉状態を退避し、再構築時に
+    /// 復元することで解決する。
+    /// </summary>
+    private readonly HashSet<string> _expandedParticleCurveRows = new();
     /// <summary>アクターのアクティブチェックボックス更新中の再帰イベント抑止。</summary>
     private bool _updatingActorActive;
 
@@ -717,7 +735,8 @@ public partial class InspectorPanel : UserControl
             // サイズ・テクスチャ・ブレンド・空間を受け取る。欠落時は Rust 側デフォルトと一致する
             // フォールバック値を用いる（カーブ JSON は今回未実装のカーブエディタでは未使用のため保持しない）。
             var peMaxParticles      = comp.TryGetProperty("max_particles",       out var pmp)  ? pmp.GetInt32()  : 1024;
-            var peShape             = comp.TryGetProperty("shape",               out var psh)  ? psh.GetString() ?? "point" : "point";
+            // 形状: 旧 "point" は "pixel" に改名済み。フォールバックも "pixel"。
+            var peShape             = comp.TryGetProperty("shape",               out var psh)  ? psh.GetString() ?? "pixel" : "pixel";
             var peShapeModelPath    = comp.TryGetProperty("shape_model_path",    out var pshp) ? pshp.GetString() ?? "" : "";
             var peSpawnVolume       = comp.TryGetProperty("spawn_volume",        out var psv)  ? psv.GetString() ?? "point" : "point";
             var peSpawnBoxX         = comp.TryGetProperty("spawn_box_x",         out var psbx) ? psbx.GetSingle() : 0f;
@@ -746,17 +765,21 @@ public partial class InspectorPanel : UserControl
             var peRotSpeedMax       = comp.TryGetProperty("rot_speed_max",       out var prsx) ? prsx.GetSingle() : 0f;
             var peSizeMin           = comp.TryGetProperty("size_min",            out var pszn) ? pszn.GetSingle() : 1f;
             var peSizeMax           = comp.TryGetProperty("size_max",            out var pszx) ? pszx.GetSingle() : 1f;
-            var peTexturePath       = comp.TryGetProperty("texture_path",        out var ptp)  ? ptp.GetString() ?? "" : "";
-            var peBlend             = comp.TryGetProperty("blend",               out var pbl)  ? pbl.GetString() ?? "additive" : "additive";
+            // 初期回転範囲（度）。
+            var peInitRotMin        = comp.TryGetProperty("initial_rot_min",     out var pirn) ? pirn.GetSingle() : 0f;
+            var peInitRotMax        = comp.TryGetProperty("initial_rot_max",     out var pirx) ? pirx.GetSingle() : 0f;
+            var peBlend             = comp.TryGetProperty("blend",               out var pbl)  ? pbl.GetString() ?? "add" : "add";
             var peSimSpace          = comp.TryGetProperty("sim_space",           out var pss)  ? pss.GetString() ?? "world" : "world";
             var pePlaying           = comp.TryGetProperty("playing",             out var ppl)  ? ReadJsonBool(ppl, true) : true;
-            // カーブ JSON（ParamCurve オブジェクト / random_colors は配列）を生 JSON のまま保持する。
+            // カーブ JSON（ParamCurve オブジェクトの生 JSON）を保持する。
             // 欠落耐性: プロパティが無い旧データでも空既定でフォールバックする。
             var peSpeedCurveJson         = comp.TryGetProperty("speed_curve",         out var pscv) ? pscv.GetRawText() : "{}";
             var peRotSpeedCurveJson      = comp.TryGetProperty("rot_speed_curve",     out var prcv) ? prcv.GetRawText() : "{}";
-            var peColorCurveJson         = comp.TryGetProperty("color_curve",         out var pccv) ? pccv.GetRawText() : "{}";
             var peScaleCurveJson         = comp.TryGetProperty("scale_curve",         out var pslv) ? pslv.GetRawText() : "{}";
-            var peRandomColorCurvesJson  = comp.TryGetProperty("random_color_curves", out var prcc) ? prcc.GetRawText() : "[]";
+            // 色カーブ配列（4ch HSVA ParamCurve の JSON 配列）。欠落時は空配列（UI 側で最低 1 本を生成する）。
+            var peColorCurvesJson        = comp.TryGetProperty("color_curves",        out var pccv) ? pccv.GetRawText() : "[]";
+            // テクスチャパス配列（JSON 文字列配列）。欠落時は空配列。
+            var peTexturePathsJson       = comp.TryGetProperty("texture_paths",       out var ptps) ? ptps.GetRawText() : "[]";
 
             var info = new SlotInfo(slotIdx, compName, compType, modelPath, width, height,
                 AutoScale: autoScale,
@@ -807,11 +830,13 @@ public partial class InspectorPanel : UserControl
                 PeDrag: peDrag,
                 PeRotSpeedMin: peRotSpeedMin, PeRotSpeedMax: peRotSpeedMax,
                 PeSizeMin: peSizeMin, PeSizeMax: peSizeMax,
-                PeTexturePath: peTexturePath, PeBlend: peBlend, PeSimSpace: peSimSpace,
+                PeInitRotMin: peInitRotMin, PeInitRotMax: peInitRotMax,
+                PeBlend: peBlend, PeSimSpace: peSimSpace,
                 PePlaying: pePlaying,
                 PeSpeedCurveJson: peSpeedCurveJson, PeRotSpeedCurveJson: peRotSpeedCurveJson,
-                PeColorCurveJson: peColorCurveJson, PeScaleCurveJson: peScaleCurveJson,
-                PeRandomColorCurvesJson: peRandomColorCurvesJson);
+                PeScaleCurveJson: peScaleCurveJson,
+                PeColorCurvesJson: peColorCurvesJson,
+                PeTexturePathsJson: peTexturePathsJson);
             _slotInfos.Add(info);
 
             // アコーディオンにパラメータ編集エリアを追加（ヘッダーがリネーム・削除・複製・選択を兼ねる）
@@ -3931,13 +3956,24 @@ public partial class InspectorPanel : UserControl
 
     /// <summary>
     /// ParticleEmitterComponent のインスペクター UI を構築して返す。
-    /// 再生・形状・出現範囲・放出制御・寿命/速度・方向・物理・回転/サイズ・テクスチャ・
+    /// 再生・形状・出現範囲・放出制御・寿命/速度・方向・物理・回転/サイズ・テクスチャリスト・
     /// ブレンド・空間を編集し、変更時は SET_PARTICLE_FIELD:{actor},{slot},{key},{value} を送信する。
-    /// カーブ（速度/回転/色/スケール）はカーブエディタ（次実装）のプレースホルダ表示のみ。
+    /// カーブ（速度/回転速度/スケール/色カーブ配列）は CurveEditorControl（per-key 補間タイプ対応）で編集する。
     /// </summary>
     private UIElement BuildParticleSlotContent(SlotInfo info)
     {
         var sp = new StackPanel { Margin = new Thickness(0, 4, 0, 4) };
+
+        // Pixel 形状時は無意味になる行（サイズ/スケール/回転関連）をここへ集め、
+        // 形状ドロップダウン変更時にまとめて表示/非表示を切り替える。
+        var pixelHiddenRows = new List<UIElement>();
+
+        // マジックナンバー禁止: フィールドごとの妥当な下限/上限をここで名前付き定数化する。
+        const double MinZero          = 0.0;                    // 秒/寿命/初速/サイズ/半径/drag/prewarm/delay/interval/particles_per_emit の下限
+        const double NoLimit          = double.PositiveInfinity; // 上限なし
+        const double MaxParticlesCap  = 65536.0;                 // max_particles の上限
+        const double RandomnessMax    = 1.0;                     // direction_randomness の上限（0..1）
+        const int    MaxTexturePaths  = 8;                       // texture_paths の要素数上限
 
         // フィールド変更をランタイムへ送信するローカル関数。
         // key は ACTOR_COMPONENTS の JSON フィールド名と同一（emit_interval / dir_x / shape / playing 等）。
@@ -3976,24 +4012,87 @@ public partial class InspectorPanel : UserControl
             sp.Children.Add(row);
         }
 
-        // 数値行を生成し、Enter / フォーカス喪失 / ドラッグで指定キーの値を送信するローカル関数。
-        // isInt=true のときは整数化してから送信する（max_particles 用）。
-        void AddFloatRow(string label, float value, string key, bool isInt = false)
+        // BuildLabeledNumberRow と同じ見た目の数値 TextBox を単体で作るローカル関数
+        // （横並び行を自前の Grid で組み立てるために使う。スタイルは既存 UI と統一する）。
+        TextBox MakeNumberBox(float value, string format)
         {
-            var row = BuildLabeledNumberRow(label, value, isInt ? "F0" : "F3");
-            sp.Children.Add(row.element);
-            void Commit()
+            var initText = value.ToString(format, CultureInfo.InvariantCulture);
+            var tb = new TextBox
             {
-                if (!float.TryParse(row.textBox.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) return;
-                var text = isInt
-                    ? ((int)MathF.Round(v)).ToString(CultureInfo.InvariantCulture)
-                    : v.ToString(CultureInfo.InvariantCulture);
-                SendField(key, text);
-            }
-            row.textBox.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { Commit(); e.Handled = true; } };
-            row.textBox.LostFocus += (_, _) => Commit();
-            NumericDragBehavior.SetOnDrag(row.textBox, Commit);
+                Text              = initText,
+                Background        = new SolidColorBrush(Color.FromRgb(0x1A, 0x1A, 0x1A)),
+                Foreground        = new SolidColorBrush(Colors.White),
+                BorderBrush       = new SolidColorBrush(Color.FromRgb(0x3F, 0x3F, 0x46)),
+                BorderThickness   = new Thickness(1),
+                FontSize          = 11,
+                Padding           = new Thickness(3, 1, 3, 1),
+                Margin            = new Thickness(1, 1, 2, 1),
+                VerticalAlignment = VerticalAlignment.Center,
+                SelectionBrush    = new SolidColorBrush(Color.FromArgb(0x66, 0x33, 0x99, 0xFF)),
+            };
+            AttachAutoSelectBehavior(tb);
+            return tb;
         }
+
+        // N 個の数値フィールドを 1 つのラベルの右に横並びで配置する行を生成する共通ヘルパー。
+        // fields は (初期値, 送信キー) の組。ドラッグ/Enter/フォーカス喪失で該当キーを個別に送信する。
+        // min/max はドラッグ中・確定時の両方でクランプする（NumericDragBehavior.Attach に一元化）。
+        UIElement AddFloatRowN(string label, (float value, string key)[] fields, bool isInt,
+                                double min = double.NegativeInfinity, double max = double.PositiveInfinity)
+        {
+            var row = new Grid { Margin = new Thickness(0, 2, 0, 2) };
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(110) });
+            for (int i = 0; i < fields.Length; i++)
+                row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+
+            var lbl = new TextBlock
+            {
+                Text = label, Foreground = new SolidColorBrush(Color.FromRgb(0xAA, 0xAA, 0xAA)),
+                FontSize = 11, VerticalAlignment = VerticalAlignment.Center,
+            };
+            Grid.SetColumn(lbl, 0);
+            row.Children.Add(lbl);
+
+            string fmt = isInt ? "F0" : "F3";
+            for (int i = 0; i < fields.Length; i++)
+            {
+                var (value, key) = fields[i];
+                var tb = MakeNumberBox(value, fmt);
+                Grid.SetColumn(tb, i + 1);
+                row.Children.Add(tb);
+
+                void Commit()
+                {
+                    if (!float.TryParse(tb.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) return;
+                    v = (float)Math.Clamp(v, min, max);
+                    var text = isInt
+                        ? ((int)MathF.Round(v)).ToString(CultureInfo.InvariantCulture)
+                        : v.ToString(CultureInfo.InvariantCulture);
+                    SendField(key, text);
+                }
+                tb.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { Commit(); e.Handled = true; } };
+                tb.LostFocus += (_, _) => Commit();
+                NumericDragBehavior.Attach(tb, sensitivity: isInt ? 1.0 : 0.1, isInteger: isInt, onDrag: Commit, min: min, max: max);
+            }
+            sp.Children.Add(row);
+            return row;
+        }
+
+        // 数値 1 個の行。Enter / フォーカス喪失 / ドラッグで指定キーの値を送信する。
+        // isInt=true のときは整数化してから送信する（max_particles 用）。min/max はドラッグ・確定時共にクランプ。
+        UIElement AddFloatRow(string label, float value, string key, bool isInt = false,
+                               double min = double.NegativeInfinity, double max = double.PositiveInfinity)
+            => AddFloatRowN(label, new[] { (value, key) }, isInt, min, max);
+
+        // 2 個の数値フィールド（min/max ペア等）を横並びで配置する行。
+        UIElement AddFloatRow2(string label, float v1, string k1, float v2, string k2,
+                                double min = double.NegativeInfinity, double max = double.PositiveInfinity)
+            => AddFloatRowN(label, new[] { (v1, k1), (v2, k2) }, false, min, max);
+
+        // 3 個の数値フィールド（XYZ 等）を横並びで配置する行。
+        UIElement AddFloatRow3(string label, float v1, string k1, float v2, string k2, float v3, string k3,
+                                double min = double.NegativeInfinity, double max = double.PositiveInfinity)
+            => AddFloatRowN(label, new[] { (v1, k1), (v2, k2), (v3, k3) }, false, min, max);
 
         // ドロップダウン（enum tag）行を生成するローカル関数。
         // options は (tag, label) のリスト。選択変更時に SendField(key, tag) を送る。
@@ -4031,14 +4130,14 @@ public partial class InspectorPanel : UserControl
 
         // ── 形状 ───────────────────────────────────────────────
         AddHeading("形状");
+        // "pixel" が旧 "point" 相当（先頭）。sphere/box/plane/model は据え置き。
         var shapeOptions = new (string, string)[]
         {
-            ("point", "点 (Point)"), ("sphere", "球 (Sphere)"), ("box", "箱 (Box)"),
+            ("pixel", "ピクセル (Pixel)"), ("sphere", "球 (Sphere)"), ("box", "箱 (Box)"),
             ("plane", "平面 (Plane)"), ("model", "モデル (Model)"),
         };
-        AddDropdownRow("形状", shapeOptions, info.PeShape, "shape");
-        // Model 形状時のモデルパス（常時表示。形状が Model 以外のときは無視される）。
-        sp.Children.Add(FileRefBuilder.Build(
+        // Model 形状時のみ意味を持つモデル参照行（要求11: shape!=model のとき非表示）。
+        var shapeModelRow = FileRefBuilder.Build(
             "形状モデル", info.PeShapeModelPath, [".gltf", ".glb"],
             () =>
             {
@@ -4054,7 +4153,15 @@ public partial class InspectorPanel : UserControl
                 if (_currentActorId < 0) return;
                 var virtualPath = VirtualPath.ToVirtual(path, _assetsPath);
                 SendField("shape_model_path", virtualPath);
-            }));
+            });
+        AddDropdownRow("形状", shapeOptions, info.PeShape, "shape",
+            extra: shape =>
+            {
+                UpdatePixelHiddenVisibility(pixelHiddenRows, shape);
+                shapeModelRow.Visibility = shape == "model" ? Visibility.Visible : Visibility.Collapsed;
+            });
+        sp.Children.Add(shapeModelRow);
+        shapeModelRow.Visibility = info.PeShape == "model" ? Visibility.Visible : Visibility.Collapsed;
 
         // ── 出現範囲 ───────────────────────────────────────────
         AddHeading("出現範囲");
@@ -4062,61 +4169,73 @@ public partial class InspectorPanel : UserControl
         {
             ("point", "点 (Point)"), ("box", "箱 (Box)"), ("sphere", "球 (Sphere)"),
         };
-        AddDropdownRow("出現範囲", spawnVolumeOptions, info.PeSpawnVolume, "spawn_volume");
-        AddFloatRow("箱 半径X", info.PeSpawnBoxX, "spawn_box_x");
-        AddFloatRow("箱 半径Y", info.PeSpawnBoxY, "spawn_box_y");
-        AddFloatRow("箱 半径Z", info.PeSpawnBoxZ, "spawn_box_z");
-        AddFloatRow("球 半径",  info.PeSpawnSphereRadius, "spawn_sphere_radius");
+        // ドロップダウン → 箱半径 → 球半径 の表示順で追加する。box/sphere 行への参照は
+        // まだ無いため、切替コールバックは行を作った後で AddDropdownRow の extra へ渡す
+        // （ローカル関数 UpdateSpawnVolumeVisibility を経由し、行変数の前方参照を避ける）。
+        List<UIElement>? spawnBoxRows = null, spawnSphereRows = null;
+        void UpdateSpawnVolumeVisibility(string volume)
+        {
+            if (spawnBoxRows    != null) foreach (var r in spawnBoxRows)    r.Visibility = volume == "box"    ? Visibility.Visible : Visibility.Collapsed;
+            if (spawnSphereRows != null) foreach (var r in spawnSphereRows) r.Visibility = volume == "sphere" ? Visibility.Visible : Visibility.Collapsed;
+        }
+        AddDropdownRow("出現範囲", spawnVolumeOptions, info.PeSpawnVolume, "spawn_volume",
+            extra: UpdateSpawnVolumeVisibility);
+        // 出現範囲が box/sphere のときだけ、それぞれ対応するパラメータ行を表示する（要求11）。
+        spawnBoxRows    = new List<UIElement> { AddFloatRow3("箱 半径 XYZ", info.PeSpawnBoxX, "spawn_box_x", info.PeSpawnBoxY, "spawn_box_y", info.PeSpawnBoxZ, "spawn_box_z", min: MinZero, max: NoLimit) };
+        spawnSphereRows = new List<UIElement> { AddFloatRow("球 半径",  info.PeSpawnSphereRadius, "spawn_sphere_radius", min: MinZero, max: NoLimit) };
+        UpdateSpawnVolumeVisibility(info.PeSpawnVolume);
 
         // ── 放出 ───────────────────────────────────────────────
         AddHeading("放出");
-        AddFloatRow("最大パーティクル数", info.PeMaxParticles, "max_particles", isInt: true);
+        AddFloatRow("最大パーティクル数", info.PeMaxParticles, "max_particles", isInt: true, min: 1, max: MaxParticlesCap);
         var emitModeOptions = new (string, string)[]
         {
             ("loop", "ループ"), ("once", "一回"), ("count", "回数指定"),
         };
-        AddDropdownRow("放出モード", emitModeOptions, info.PeEmitMode, "emit_mode");
-        AddFloatRow("放出総数",       info.PeEmitCountTotal,   "emit_count_total", isInt: true);
-        AddFloatRow("開始遅延(秒)",   info.PeInitialDelay,     "initial_delay");
-        AddFloatRow("プリウォーム(秒)", info.PePrewarmTime,     "prewarm_time");
-        AddFloatRow("放出間隔(秒)",   info.PeEmitInterval,     "emit_interval");
-        AddFloatRow("1回の放出数",    info.PeParticlesPerEmit, "particles_per_emit", isInt: true);
+        // 放出総数(emit_count_total)は emit_mode="count" のときのみ意味を持つ（要求11）。
+        UIElement? emitCountRow = null;
+        AddDropdownRow("放出モード", emitModeOptions, info.PeEmitMode, "emit_mode",
+            extra: mode => { if (emitCountRow != null) emitCountRow.Visibility = mode == "count" ? Visibility.Visible : Visibility.Collapsed; });
+        emitCountRow = AddFloatRow("放出総数", info.PeEmitCountTotal, "emit_count_total", isInt: true, min: MinZero, max: NoLimit);
+        emitCountRow.Visibility = info.PeEmitMode == "count" ? Visibility.Visible : Visibility.Collapsed;
+        AddFloatRow("開始遅延(秒)",   info.PeInitialDelay,     "initial_delay", min: MinZero, max: NoLimit);
+        AddFloatRow("プリウォーム(秒)", info.PePrewarmTime,     "prewarm_time", min: MinZero, max: NoLimit);
+        AddFloatRow("放出間隔(秒)",   info.PeEmitInterval,     "emit_interval", min: MinZero, max: NoLimit);
+        AddFloatRow("1回の放出数",    info.PeParticlesPerEmit, "particles_per_emit", isInt: true, min: MinZero, max: NoLimit);
 
         // ── 寿命 / 速度 ─────────────────────────────────────────
         AddHeading("寿命 / 速度");
-        AddFloatRow("寿命 最小(秒)", info.PeLifetimeMin, "lifetime_min");
-        AddFloatRow("寿命 最大(秒)", info.PeLifetimeMax, "lifetime_max");
-        AddFloatRow("初速 最小",     info.PeSpeedMin,    "speed_min");
-        AddFloatRow("初速 最大",     info.PeSpeedMax,    "speed_max");
+        AddFloatRow2("寿命(秒) min/max", info.PeLifetimeMin, "lifetime_min", info.PeLifetimeMax, "lifetime_max", min: MinZero, max: NoLimit);
+        AddFloatRow2("初速 min/max",     info.PeSpeedMin,    "speed_min",    info.PeSpeedMax,    "speed_max",    min: MinZero, max: NoLimit);
 
         // ── 方向 ───────────────────────────────────────────────
         AddHeading("方向");
-        AddFloatRow("放出方向 X (ローカル)", info.PeDirX, "dir_x");
-        AddFloatRow("放出方向 Y (ローカル)", info.PeDirY, "dir_y");
-        AddFloatRow("放出方向 Z (ローカル)", info.PeDirZ, "dir_z");
-        AddFloatRow("方向ランダム度(0..1)", info.PeDirectionRandomness, "direction_randomness");
+        // 符号付き（ローカル方向ベクトル）のため clamp なし。
+        AddFloatRow3("放出方向(ローカル) XYZ", info.PeDirX, "dir_x", info.PeDirY, "dir_y", info.PeDirZ, "dir_z");
+        AddFloatRow("方向ランダム度(0..1)", info.PeDirectionRandomness, "direction_randomness", min: MinZero, max: RandomnessMax);
 
         // ── 物理 ───────────────────────────────────────────────
         AddHeading("物理");
-        AddFloatRow("重力 X", info.PeGravityX, "gravity_x");
-        AddFloatRow("重力 Y", info.PeGravityY, "gravity_y");
-        AddFloatRow("重力 Z", info.PeGravityZ, "gravity_z");
-        AddFloatRow("空気抵抗 (Drag)", info.PeDrag, "drag");
+        // 重力は符号付きのため clamp なし。
+        AddFloatRow3("重力 XYZ", info.PeGravityX, "gravity_x", info.PeGravityY, "gravity_y", info.PeGravityZ, "gravity_z");
+        AddFloatRow("空気抵抗 (Drag)", info.PeDrag, "drag", min: MinZero, max: NoLimit);
 
         // ── 回転 / サイズ ───────────────────────────────────────
+        // Pixel 形状では意味を持たないため pixelHiddenRows に集約し、形状変更時に表示/非表示を切り替える。
         AddHeading("回転 / サイズ");
-        AddFloatRow("回転速度 min(度/秒)", info.PeRotSpeedMin, "rot_speed_min");
-        AddFloatRow("回転速度 max(度/秒)", info.PeRotSpeedMax, "rot_speed_max");
-        AddFloatRow("サイズ倍率 min", info.PeSizeMin, "size_min");
-        AddFloatRow("サイズ倍率 max", info.PeSizeMax, "size_max");
+        // 回転速度（度/秒）は符号付きのため clamp なし。
+        pixelHiddenRows.Add(AddFloatRow2("回転速度(度/秒) min/max", info.PeRotSpeedMin, "rot_speed_min", info.PeRotSpeedMax, "rot_speed_max"));
+        pixelHiddenRows.Add(AddFloatRow2("サイズ倍率 min/max", info.PeSizeMin, "size_min", info.PeSizeMax, "size_max", min: MinZero, max: NoLimit));
+        // 初期回転範囲（度）。符号付きのため clamp なし。
+        pixelHiddenRows.Add(AddFloatRow2("初期回転(度) min/max", info.PeInitRotMin, "initial_rot_min", info.PeInitRotMax, "initial_rot_max"));
 
         // ── カーブ ─────────────────────────────────────────────
-        // 速度/回転(1ch)・色(4ch=HSVA)・スケール(3ch=xyz) を CurveEditorControl で編集する。
+        // 速度/回転速度(1ch)・スケール(3ch=xyz) を CurveEditorControl（per-key 補間タイプ対応）で編集する。
         // 編集確定（CurveChanged）時に SET_PARTICLE_CURVE:{actor},{slot},{curve_id},{json} を送信する。
         AddHeading("カーブ");
 
-        // カーブ送信のローカル関数。curve_id ∈ speed|rot_speed|color|scale|random_colors。
-        // json は ParamCurve の serde JSON（random_colors のみ配列）。
+        // カーブ送信のローカル関数。curve_id ∈ speed|rot_speed|scale|colors。
+        // json は ParamCurve の serde JSON（colors のみ ParamCurve 配列）。
         void SendCurve(string curveId, string json)
         {
             if (_currentActorId < 0) return;
@@ -4124,8 +4243,12 @@ public partial class InspectorPanel : UserControl
         }
 
         // 折りたたみカーブ行（ラベル＋ミニプレビュー＋展開でエディタ）を作るローカル関数。
-        // channelCount はパース失敗時のフォールバック用チャンネル数（speed=1/scale=3/color=4）。
-        Expander BuildCurveRow(string label, string curveId, string json, bool isHsva, int channelCount)
+        // channelCount はパース失敗時のフォールバック用チャンネル数（speed/rot_speed=1、scale=3）。
+        // expandKey は _expandedParticleCurveRows での展開状態の永続化キー
+        // （Rust が SET_PARTICLE_FIELD/CURVE のたびに ACTOR_COMPONENTS を再送し、その結果
+        //   このパネル全体が再構築されて Expander が作り直される仕様のため、素の IsExpanded 初期値
+        //   だけでは編集直後に閉じたように見えてしまう。詳細は _expandedParticleCurveRows のコメント）。
+        Expander BuildCurveRow(string label, string curveId, string json, bool isHsva, int channelCount, string expandKey)
         {
             var curve  = ParamCurve.FromJson(json) ?? ParamCurve.DefaultWithChannels(channelCount);
             var editor = new CurveEditorControl(curve, isHsva);
@@ -4151,52 +4274,55 @@ public partial class InspectorPanel : UserControl
                 miniHost.Content = CurveEditorControl.BuildMiniPreview(editor.Curve, isHsva, 64, 18);
             };
 
-            return new Expander
+            var expander = new Expander
             {
-                Header = header, Content = editor, IsExpanded = false,
+                Header = header, Content = editor,
+                IsExpanded = _expandedParticleCurveRows.Contains(expandKey),
                 Margin = new Thickness(0, 1, 0, 1),
             };
+            expander.Expanded  += (_, _) => _expandedParticleCurveRows.Add(expandKey);
+            expander.Collapsed += (_, _) => _expandedParticleCurveRows.Remove(expandKey);
+            return expander;
         }
 
-        // speed(1ch) / rot_speed(1ch) / color(4ch HSVA) / scale(3ch xyz)。
-        sp.Children.Add(BuildCurveRow("速度",       "speed",     info.PeSpeedCurveJson,    isHsva: false, channelCount: 1));
-        sp.Children.Add(BuildCurveRow("回転速度",   "rot_speed", info.PeRotSpeedCurveJson, isHsva: false, channelCount: 1));
-        sp.Children.Add(BuildCurveRow("色(HSVA)",   "color",     info.PeColorCurveJson,    isHsva: true,  channelCount: 4));
-        sp.Children.Add(BuildCurveRow("スケール",   "scale",     info.PeScaleCurveJson,    isHsva: false, channelCount: 3));
+        // speed(1ch) / rot_speed(1ch) / scale(3ch xyz)。scale はサイズと同様 Pixel 時は非表示。
+        var speedCurveRow = BuildCurveRow("速度", "speed", info.PeSpeedCurveJson, isHsva: false, channelCount: 1, expandKey: $"{info.SlotIdx}:speed");
+        sp.Children.Add(speedCurveRow);
 
-        // ── ランダム色カーブ（random_color_curves：4ch HSVA の配列）───────────
-        // 空なら color_curve を使用。追加/削除ボタンと各要素のカーブエディタを持つ。
-        AddHeading("ランダム色カーブ");
-        var rndCurves = ParamCurve.ListFromJson(info.PeRandomColorCurvesJson);
-        var rndPanel  = new StackPanel { Margin = new Thickness(0, 2, 0, 2) };
+        var rotSpeedCurveRow = BuildCurveRow("回転速度", "rot_speed", info.PeRotSpeedCurveJson, isHsva: false, channelCount: 1, expandKey: $"{info.SlotIdx}:rot_speed");
+        sp.Children.Add(rotSpeedCurveRow);
+        pixelHiddenRows.Add(rotSpeedCurveRow);
 
-        // ランダム色配列全体をランタイムへ送信するローカル関数。
-        void SendRandomColors() => SendCurve("random_colors", ParamCurve.ToJsonArray(rndCurves));
+        var scaleCurveRow = BuildCurveRow("スケール", "scale", info.PeScaleCurveJson, isHsva: false, channelCount: 3, expandKey: $"{info.SlotIdx}:scale");
+        sp.Children.Add(scaleCurveRow);
+        pixelHiddenRows.Add(scaleCurveRow);
 
-        // ランダム色リスト UI を作り直すローカル関数（追加/削除で全再構築）。
-        void RebuildRandom()
+        // ── 色カーブ（color_curves：4ch HSVA の配列。最低 1 要素）──────────
+        // 単体の色カーブ／ランダム色カーブを廃止し、常に「色カーブのリスト」として編集する。
+        // 要素が 1 つだけのときは削除不可（最後の 1 本は必ず残す）。
+        AddHeading("色カーブ");
+        var colorCurves = ParamCurve.ListFromJson(info.PeColorCurvesJson);
+        if (colorCurves.Count == 0) colorCurves.Add(ParamCurve.DefaultWithChannels(4)); // 欠落時は最低 1 本を用意する
+        var colorPanel = new StackPanel { Margin = new Thickness(0, 2, 0, 2) };
+
+        // 色カーブ配列全体をランタイムへ送信するローカル関数（curve_id="colors"）。
+        void SendColorCurves() => SendCurve("colors", ParamCurve.ToJsonArray(colorCurves));
+
+        // 色カーブリスト UI を作り直すローカル関数（追加/削除で全再構築）。
+        void RebuildColorCurves()
         {
-            rndPanel.Children.Clear();
-            if (rndCurves.Count == 0)
-            {
-                rndPanel.Children.Add(new TextBlock
-                {
-                    Text = "（空：color_curve を使用）",
-                    Foreground = new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88)),
-                    FontSize = 10, FontStyle = FontStyles.Italic, Margin = new Thickness(0, 2, 0, 2),
-                });
-                return;
-            }
-            for (int i = 0; i < rndCurves.Count; i++)
+            colorPanel.Children.Clear();
+            for (int i = 0; i < colorCurves.Count; i++)
             {
                 int idx = i;
-                var editor = new CurveEditorControl(rndCurves[idx], isHsva: true);
+                var expandKey = $"{info.SlotIdx}:colors:{idx}";
+                var editor = new CurveEditorControl(colorCurves[idx], isHsva: true);
                 // 編集で該当要素を差し替えて配列全体を送信する。
-                editor.CurveChanged += (_, _) => { rndCurves[idx] = editor.Curve; SendRandomColors(); };
+                editor.CurveChanged += (_, _) => { colorCurves[idx] = editor.Curve; SendColorCurves(); };
 
                 var miniHost = new ContentControl
                 {
-                    Content = CurveEditorControl.BuildMiniPreview(rndCurves[idx], true, 64, 18),
+                    Content = CurveEditorControl.BuildMiniPreview(colorCurves[idx], true, 64, 18),
                     VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 0, 0, 0),
                 };
                 editor.CurveChanged += (_, _) => miniHost.Content = CurveEditorControl.BuildMiniPreview(editor.Curve, true, 64, 18);
@@ -4208,120 +4334,179 @@ public partial class InspectorPanel : UserControl
                     FontSize = 11, VerticalAlignment = VerticalAlignment.Center, Width = 32,
                 });
                 header.Children.Add(miniHost);
+                // 最後の 1 本は削除不可（色カーブは必ず 1 要素以上を維持する契約）。
                 var delBtn = new Button
                 {
                     Content = "削除", FontSize = 10, Width = 40, Height = 20,
                     Margin = new Thickness(8, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center,
+                    IsEnabled = colorCurves.Count > 1,
                 };
-                delBtn.Click += (_, _) => { rndCurves.RemoveAt(idx); SendRandomColors(); RebuildRandom(); };
+                delBtn.Click += (_, _) =>
+                {
+                    if (colorCurves.Count <= 1) return;
+                    colorCurves.RemoveAt(idx);
+                    _expandedParticleCurveRows.Remove(expandKey);
+                    SendColorCurves();
+                    RebuildColorCurves();
+                };
                 header.Children.Add(delBtn);
 
-                rndPanel.Children.Add(new Expander
+                var expander = new Expander
                 {
-                    Header = header, Content = editor, IsExpanded = false,
+                    Header = header, Content = editor,
+                    IsExpanded = _expandedParticleCurveRows.Contains(expandKey),
                     Margin = new Thickness(0, 1, 0, 1),
-                });
+                };
+                expander.Expanded  += (_, _) => _expandedParticleCurveRows.Add(expandKey);
+                expander.Collapsed += (_, _) => _expandedParticleCurveRows.Remove(expandKey);
+                colorPanel.Children.Add(expander);
             }
         }
-        RebuildRandom();
+        RebuildColorCurves();
 
         // 追加ボタン（既定 4ch HSVA カーブを 1 本追加）。
-        var addRndBtn = new Button
+        var addColorBtn = new Button
         {
-            Content = "＋ ランダム色を追加", FontSize = 11, Width = 150, Height = 22,
+            Content = "＋ 色カーブを追加", FontSize = 11, Width = 150, Height = 22,
             HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 2, 0, 2),
         };
-        addRndBtn.Click += (_, _) =>
+        addColorBtn.Click += (_, _) =>
         {
-            rndCurves.Add(ParamCurve.DefaultWithChannels(4));
-            SendRandomColors();
-            RebuildRandom();
+            colorCurves.Add(ParamCurve.DefaultWithChannels(4));
+            SendColorCurves();
+            RebuildColorCurves();
         };
-        sp.Children.Add(addRndBtn);
-        sp.Children.Add(rndPanel);
+        sp.Children.Add(addColorBtn);
+        sp.Children.Add(colorPanel);
 
-        // ── テクスチャ ─────────────────────────────────────────
+        // ── テクスチャ（texture_paths：文字列配列、最大 8）─────────────
         AddHeading("テクスチャ");
-        // Sprite と同じ画像拡張子リストを流用。空可（未設定でパーティクルは単色）。
-        sp.Children.Add(FileRefBuilder.Build(
-            "画像",
-            info.PeTexturePath,
-            [".png", ".jpg", ".jpeg", ".bmp", ".tga", ".webp"],
-            () =>
+        var texturePaths = ParseTexturePaths(info.PeTexturePathsJson);
+        var texturePanel = new StackPanel { Margin = new Thickness(0, 2, 0, 2) };
+
+        // テクスチャ配列全体をランタイムへ送信するローカル関数。
+        void SendTexturePaths() => SendField("texture_paths", JsonSerializer.Serialize(texturePaths));
+
+        void RebuildTexturePaths()
+        {
+            texturePanel.Children.Clear();
+            if (texturePaths.Count == 0)
             {
-                var dlg = new OpenFileDialog
+                texturePanel.Children.Add(new TextBlock
                 {
-                    Title  = "パーティクルテクスチャを選択",
-                    Filter = "画像ファイル|*.png;*.jpg;*.jpeg;*.bmp;*.tga;*.webp|すべてのファイル|*.*",
-                };
-                return dlg.ShowDialog(Window.GetWindow(this)) == true ? dlg.FileName : null;
-            },
-            path =>
+                    Text = "（空：単色で描画）",
+                    Foreground = new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88)),
+                    FontSize = 10, FontStyle = FontStyles.Italic, Margin = new Thickness(0, 2, 0, 2),
+                });
+            }
+            for (int i = 0; i < texturePaths.Count; i++)
             {
-                if (_currentActorId < 0) return;
-                // 絶対パスを assets:// 仮想パスへ変換してから送信する。
-                var virtualPath = VirtualPath.ToVirtual(path, _assetsPath);
-                SendField("texture_path", virtualPath);
-            }));
-        // テクスチャクリアボタン（FileRefBuilder はクリア機能を持たないため個別に用意する）。
-        var clearBtn = new Button
+                int idx = i;
+                var rowGrid = new Grid { Margin = new Thickness(0, 1, 0, 1) };
+                rowGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+                rowGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+                var fileRow = FileRefBuilder.Build(
+                    $"#{idx}", texturePaths[idx], [".png", ".jpg", ".jpeg", ".bmp", ".tga", ".webp"],
+                    () =>
+                    {
+                        var dlg = new OpenFileDialog
+                        {
+                            Title  = "パーティクルテクスチャを選択",
+                            Filter = "画像ファイル|*.png;*.jpg;*.jpeg;*.bmp;*.tga;*.webp|すべてのファイル|*.*",
+                        };
+                        return dlg.ShowDialog(Window.GetWindow(this)) == true ? dlg.FileName : null;
+                    },
+                    path =>
+                    {
+                        var virtualPath = VirtualPath.ToVirtual(path, _assetsPath);
+                        texturePaths[idx] = virtualPath;
+                        SendTexturePaths();
+                        RebuildTexturePaths();
+                    });
+                Grid.SetColumn(fileRow, 0);
+                rowGrid.Children.Add(fileRow);
+
+                var delBtn = new Button
+                {
+                    Content = "削除", FontSize = 10, Width = 40, Height = 20,
+                    Margin = new Thickness(4, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center,
+                };
+                delBtn.Click += (_, _) =>
+                {
+                    texturePaths.RemoveAt(idx);
+                    SendTexturePaths();
+                    RebuildTexturePaths();
+                };
+                Grid.SetColumn(delBtn, 1);
+                rowGrid.Children.Add(delBtn);
+
+                texturePanel.Children.Add(rowGrid);
+            }
+        }
+        RebuildTexturePaths();
+        sp.Children.Add(texturePanel);
+
+        var addTexBtn = new Button
         {
-            Content = "テクスチャをクリア", FontSize = 10,
-            Margin = new Thickness(0, 0, 0, 2), Padding = new Thickness(6, 1, 6, 1),
-            HorizontalAlignment = HorizontalAlignment.Left,
+            Content = "＋ テクスチャを追加", FontSize = 11, Width = 150, Height = 22,
+            HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 2, 0, 2),
         };
-        clearBtn.Click += (_, _) =>
+        addTexBtn.Click += (_, _) =>
         {
-            // 空文字を送信して未設定に戻す。再描画は次回の ACTOR_COMPONENTS 受信で反映される。
-            SendField("texture_path", "");
+            if (texturePaths.Count >= MaxTexturePaths) return; // 上限（最大 8 枚）を超えない
+            texturePaths.Add("");
+            SendTexturePaths();
+            RebuildTexturePaths();
         };
-        sp.Children.Add(clearBtn);
+        sp.Children.Add(addTexBtn);
 
         // ── ブレンド ───────────────────────────────────────────
         AddHeading("ブレンド");
-        var blends = new[] { ("additive", "加算 (Additive)"), ("alpha", "アルファ (Alpha)") };
-        var blendRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 4, 0, 2) };
-        blendRow.Children.Add(new TextBlock
+        var blends = new (string, string)[]
         {
-            Text = "合成方法", Foreground = new SolidColorBrush(Color.FromRgb(0xAA, 0xAA, 0xAA)),
-            FontSize = 11, Width = 110, VerticalAlignment = VerticalAlignment.Center,
-        });
-        var blendCombo = new ComboBox { Width = 150, FontSize = 11, Margin = new Thickness(4, 0, 0, 0) };
-        foreach (var (val, label) in blends)
-            blendCombo.Items.Add(new ComboBoxItem { Content = label, Tag = val });
-        var curBlendIdx = Array.FindIndex(blends, t => t.Item1 == info.PeBlend);
-        blendCombo.SelectedIndex = curBlendIdx >= 0 ? curBlendIdx : 0;
-        blendCombo.SelectionChanged += (_, _) =>
-        {
-            if (blendCombo.SelectedItem is ComboBoxItem item && item.Tag is string val)
-                SendField("blend", val);
+            ("none",   "不透明 (None)"),
+            ("normal", "通常 (Normal)"),
+            ("add",    "加算 (Add)"),
+            ("sub",    "減算 (Sub)"),
+            ("mul",    "乗算 (Mul)"),
+            ("screen", "スクリーン (Screen)"),
         };
-        blendRow.Children.Add(blendCombo);
-        sp.Children.Add(blendRow);
+        AddDropdownRow("合成方法", blends, info.PeBlend, "blend");
 
         // ── 空間 ───────────────────────────────────────────────
         AddHeading("シミュレーション空間");
-        var spaces = new[] { ("world", "ワールド (World)"), ("local", "ローカル (Local)") };
-        var spaceRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 4, 0, 2) };
-        spaceRow.Children.Add(new TextBlock
-        {
-            Text = "空間", Foreground = new SolidColorBrush(Color.FromRgb(0xAA, 0xAA, 0xAA)),
-            FontSize = 11, Width = 110, VerticalAlignment = VerticalAlignment.Center,
-        });
-        var spaceCombo = new ComboBox { Width = 150, FontSize = 11, Margin = new Thickness(4, 0, 0, 0) };
-        foreach (var (val, label) in spaces)
-            spaceCombo.Items.Add(new ComboBoxItem { Content = label, Tag = val });
-        var curSpaceIdx = Array.FindIndex(spaces, t => t.Item1 == info.PeSimSpace);
-        spaceCombo.SelectedIndex = curSpaceIdx >= 0 ? curSpaceIdx : 0;
-        spaceCombo.SelectionChanged += (_, _) =>
-        {
-            if (spaceCombo.SelectedItem is ComboBoxItem item && item.Tag is string val)
-                SendField("sim_space", val);
-        };
-        spaceRow.Children.Add(spaceCombo);
-        sp.Children.Add(spaceRow);
+        var spaces = new (string, string)[] { ("world", "ワールド (World)"), ("local", "ローカル (Local)") };
+        AddDropdownRow("空間", spaces, info.PeSimSpace, "sim_space");
+
+        // 初期構築時点での形状に合わせて Pixel 専用非表示行を反映する。
+        UpdatePixelHiddenVisibility(pixelHiddenRows, info.PeShape);
 
         return sp;
+    }
+
+    /// <summary>
+    /// パーティクルの形状が "pixel" のとき、サイズ/スケール/回転関連の行（意味を持たない）を
+    /// 一括で非表示にする。BuildParticleSlotContent の形状ドロップダウン変更時と初期構築時に呼ぶ。
+    /// </summary>
+    private static void UpdatePixelHiddenVisibility(List<UIElement> rows, string shape)
+    {
+        var visibility = shape == "pixel" ? Visibility.Collapsed : Visibility.Visible;
+        foreach (var row in rows) row.Visibility = visibility;
+    }
+
+    /// <summary>texture_paths の生 JSON（文字列配列）をパースする。失敗・欠落時は空リストを返す。</summary>
+    private static List<string> ParseTexturePaths(string json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return new List<string>();
+        try
+        {
+            return JsonSerializer.Deserialize<List<string>>(json) ?? new List<string>();
+        }
+        catch (JsonException)
+        {
+            return new List<string>();
+        }
     }
 
     /// <summary>

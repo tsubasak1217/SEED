@@ -14,9 +14,10 @@
 // ============================================================
 
 use crate::engine::components::{
-    ComponentKind, EmitMode, ParticleBlend, ParticleEmitterComponent, ParticleShape,
+    ComponentKind, EmitMode, ParamCurve, ParticleBlend, ParticleEmitterComponent, ParticleShape,
     ParticleSimSpace, SpawnVolume, MAX_PARTICLES_PER_EMITTER,
 };
+use crate::engine::components::particle_emitter_component::MAX_PARTICLE_TEXTURES;
 
 use super::App;
 
@@ -130,10 +131,24 @@ impl App {
             // 回転速度（度/秒）は符号付き（逆回転もありうる）ため clamp しない。
             "rot_speed_min"  => if let Ok(v) = value.parse::<f32>() { pe.rot_speed_range[0] = v; },
             "rot_speed_max"  => if let Ok(v) = value.parse::<f32>() { pe.rot_speed_range[1] = v; },
+            // 初期回転角（度）は符号付き（負角もありうる）ため clamp しない。
+            "initial_rot_min" => if let Ok(v) = value.parse::<f32>() { pe.initial_rotation_range[0] = v; },
+            "initial_rot_max" => if let Ok(v) = value.parse::<f32>() { pe.initial_rotation_range[1] = v; },
             "size_min"       => if let Ok(v) = value.parse::<f32>() { pe.size_range[0] = v.max(0.0); },
             "size_max"       => if let Ok(v) = value.parse::<f32>() { pe.size_range[1] = v.max(0.0); },
             // ─── その他 ─────────────────────────────────────────
-            "texture_path"   => pe.texture_path = value.to_string(),
+            // texture_paths: JSON 文字列配列（例 ["assets://a.png","assets://b.png"]）。
+            // 最大 MAX_PARTICLE_TEXTURES 枚に丸め、空文字要素は除く。
+            "texture_paths"  => if let Ok(list) = serde_json::from_str::<Vec<String>>(value) {
+                pe.texture_paths = list.into_iter()
+                    .filter(|p| !p.is_empty())
+                    .take(MAX_PARTICLE_TEXTURES)
+                    .collect();
+            },
+            // 旧単数キー（互換）: 空文字は空リスト、非空は 1 要素リストにする。
+            "texture_path"   => {
+                pe.texture_paths = if value.is_empty() { Vec::new() } else { vec![value.to_string()] };
+            },
             "blend"          => if let Some(b) = ParticleBlend::from_str_opt(value) { pe.blend = b; },
             "sim_space"      => if let Some(s) = ParticleSimSpace::from_str_opt(value) { pe.sim_space = s; },
             "playing"        => pe.playing = value == "1",
@@ -184,16 +199,37 @@ impl App {
                 Ok(c)  => { pe.rot_speed_curve = c; true }
                 Err(e) => { eprintln!("[SEED] SET_PARTICLE_CURVE(rot_speed): json パース失敗（{e}）: {json}"); false }
             },
-            "color" => match serde_json::from_str(json) {
-                Ok(c)  => { pe.color_curve = c; true }
-                Err(e) => { eprintln!("[SEED] SET_PARTICLE_CURVE(color): json パース失敗（{e}）: {json}"); false }
-            },
             "scale" => match serde_json::from_str(json) {
                 Ok(c)  => { pe.scale_curve = c; true }
                 Err(e) => { eprintln!("[SEED] SET_PARTICLE_CURVE(scale): json パース失敗（{e}）: {json}"); false }
             },
-            "random_colors" => match serde_json::from_str(json) {
-                Ok(c)  => { pe.random_color_curves = c; true }
+            // 色カーブリスト全体（Vec<ParamCurve>）。最低 1 本を保証する（空なら白フェード補完）。
+            "colors" => match serde_json::from_str::<Vec<ParamCurve>>(json) {
+                Ok(list) => {
+                    pe.color_curves = if list.is_empty() {
+                        ParticleEmitterComponent::default().color_curves
+                    } else {
+                        list
+                    };
+                    true
+                }
+                Err(e) => { eprintln!("[SEED] SET_PARTICLE_CURVE(colors): json パース失敗（{e}）: {json}"); false }
+            },
+            // 旧 curve_id 互換: "color"（単一）→ リストを 1 本で置換。
+            "color" => match serde_json::from_str::<ParamCurve>(json) {
+                Ok(c)  => { pe.color_curves = vec![c]; true }
+                Err(e) => { eprintln!("[SEED] SET_PARTICLE_CURVE(color): json パース失敗（{e}）: {json}"); false }
+            },
+            // 旧 curve_id 互換: "random_colors"（Vec）→ リスト置換（空なら既定で補完）。
+            "random_colors" => match serde_json::from_str::<Vec<ParamCurve>>(json) {
+                Ok(list) => {
+                    pe.color_curves = if list.is_empty() {
+                        ParticleEmitterComponent::default().color_curves
+                    } else {
+                        list
+                    };
+                    true
+                }
                 Err(e) => { eprintln!("[SEED] SET_PARTICLE_CURVE(random_colors): json パース失敗（{e}）: {json}"); false }
             },
             _ => false,

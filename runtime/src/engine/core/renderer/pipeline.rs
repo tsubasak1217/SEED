@@ -1018,19 +1018,50 @@ impl ParticleComputePipeline {
 /// 深度: テスト ON（LessEqual）・書込 OFF（透明物と同じく既存深度で遮蔽のみ判定）。
 /// 頂点バッファは形状メッシュ（particle_shapes.rs、位置 vec3 のみ）を 1 本バインドし、
 /// draw_indexed のインスタンスで粒子を引く。フラグメントは premultiplied alpha を出力する。
+/// パーティクルの合成モード数（None/Normal/Add/Sub/Mul/Screen。ParticleBlend::to_code と一致）。
+pub const PARTICLE_BLEND_COUNT: usize = 6;
+
 pub struct ParticlePipelines {
-    /// Additive ブレンド（src=One, dst=One）。
-    pub additive:         wgpu::RenderPipeline,
-    /// Alpha（premultiplied over: src=One, dst=OneMinusSrcAlpha）。
-    pub alpha:            wgpu::RenderPipeline,
+    /// メッシュ形状（TriangleList）描画パイプライン。索引 = ParticleBlend::to_code()。
+    pub mesh:             [wgpu::RenderPipeline; PARTICLE_BLEND_COUNT],
+    /// Pixel（PointList・1 頂点/インスタンス）描画パイプライン。索引 = ParticleBlend::to_code()。
+    pub pixel:            [wgpu::RenderPipeline; PARTICLE_BLEND_COUNT],
     /// group 1 レイアウト（particles ro + params uniform）。エミッタごとの draw BG 生成に使う。
     pub particle_bgl:     wgpu::BindGroupLayout,
-    /// group 2 レイアウト（texture + sampler）。
+    /// group 2 レイアウト（texture_2d_array + sampler）。
     pub tex_bgl:          wgpu::BindGroupLayout,
     /// リニアサンプラー（テクスチャ BG・既定白 BG 共通）。
     pub sampler:          wgpu::Sampler,
-    /// テクスチャ未指定エミッタ用の既定白 1x1 BindGroup（プロシージャル円と併用）。
+    /// テクスチャ未指定エミッタ用の既定白 1x1×1 レイヤ配列 BindGroup。
     pub default_white_bg: wgpu::BindGroup,
+}
+
+/// ParticleBlend::to_code() の各コードに対応する wgpu ブレンドステートを返す。
+///
+/// フラグメントは premultiplied alpha（rgb*a, a）を出力する前提。
+/// 0=None(不透明) / 1=Normal(over) / 2=Add / 3=Sub(reverse-subtract) /
+/// 4=Mul(Dst×Src) / 5=Screen(One + OneMinusSrcColor)。
+fn particle_blend_state(code: usize) -> wgpu::BlendState {
+    use wgpu::{BlendComponent, BlendFactor, BlendOperation, BlendState};
+    // 同一係数を color/alpha 両方へ使うブレンドを作るヘルパー。
+    let both = |src: BlendFactor, dst: BlendFactor, op: BlendOperation| BlendState {
+        color: BlendComponent { src_factor: src, dst_factor: dst, operation: op },
+        alpha: BlendComponent { src_factor: src, dst_factor: dst, operation: op },
+    };
+    match code {
+        // None: 不透明（置換 src=One / dst=Zero）。
+        0 => both(BlendFactor::One, BlendFactor::Zero, BlendOperation::Add),
+        // Normal: premultiplied over（src=One / dst=OneMinusSrcAlpha）。
+        1 => both(BlendFactor::One, BlendFactor::OneMinusSrcAlpha, BlendOperation::Add),
+        // Add: 加算（src=One / dst=One）。
+        2 => both(BlendFactor::One, BlendFactor::One, BlendOperation::Add),
+        // Sub: 減算（reverse-subtract = dst - src。src=One / dst=One）。
+        3 => both(BlendFactor::One, BlendFactor::One, BlendOperation::ReverseSubtract),
+        // Mul: 乗算（Dst×Src。src_factor=Dst / dst_factor=Zero）。
+        4 => both(BlendFactor::Dst, BlendFactor::Zero, BlendOperation::Add),
+        // Screen: One + OneMinusSrcColor（src=One / dst=OneMinusSrc）。
+        _ => both(BlendFactor::One, BlendFactor::OneMinusSrc, BlendOperation::Add),
+    }
 }
 
 impl ParticlePipelines {
@@ -1088,7 +1119,7 @@ impl ParticlePipelines {
             ],
         });
 
-        // group 2: texture + sampler（FRAGMENT）。
+        // group 2: texture_2d_array + sampler（FRAGMENT）。粒子ごとにレイヤを選ぶ。
         let tex_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label:   Some("Particle Texture BGL (group2)"),
             entries: &[
@@ -1097,7 +1128,7 @@ impl ParticlePipelines {
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Texture {
                         sample_type:    wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
+                        view_dimension: wgpu::TextureViewDimension::D2Array,
                         multisampled:   false,
                     },
                     count: None,
@@ -1126,17 +1157,26 @@ impl ParticlePipelines {
             bias:                wgpu::DepthBiasState::default(),
         };
 
-        // ブレンド別に 1 本ずつ構築するヘルパー。
-        // 頂点バッファは形状メッシュ（位置 vec3 のみ・particle_shapes::ShapeVertex）。
-        // カリングなし（ビルボード／Plane の両面表示のため）。
-        let build = |blend: wgpu::BlendState, label: &str| {
+        // 形状メッシュの頂点バッファレイアウト（位置 vec3 のみ・particle_shapes::ShapeVertex）。
+        // Pixel（PointList）は頂点バッファ不要（instance_index のみ）。
+        let mesh_buffers = [super::particle_shapes::ShapeVertex::LAYOUT];
+
+        // ブレンド × トポロジ（mesh=TriangleList / pixel=PointList）で 1 本ずつ構築する。
+        // カリングなし（Plane の両面表示のため）。
+        let build = |code: usize, is_pixel: bool| -> wgpu::RenderPipeline {
+            let (entry, buffers, topology): (&str, &[wgpu::VertexBufferLayout], wgpu::PrimitiveTopology) =
+                if is_pixel {
+                    ("vs_pixel", &[], wgpu::PrimitiveTopology::PointList)
+                } else {
+                    ("vs_main", &mesh_buffers, wgpu::PrimitiveTopology::TriangleList)
+                };
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label:  Some(label),
+                label:  Some(if is_pixel { "particle_pixel" } else { "particle_mesh" }),
                 layout: Some(&layout),
                 vertex: wgpu::VertexState {
                     module:              &shader,
-                    entry_point:         Some("vs_main"),
-                    buffers:             &[super::particle_shapes::ShapeVertex::LAYOUT],
+                    entry_point:         Some(entry),
+                    buffers,
                     compilation_options: Default::default(),
                 },
                 fragment: Some(wgpu::FragmentState {
@@ -1144,15 +1184,15 @@ impl ParticlePipelines {
                     entry_point:         Some("fs_main"),
                     targets:             &[Some(wgpu::ColorTargetState {
                         format:     sf,
-                        blend:      Some(blend),
+                        blend:      Some(particle_blend_state(code)),
                         write_mask: wgpu::ColorWrites::ALL,
                     })],
                     compilation_options: Default::default(),
                 }),
                 primitive: wgpu::PrimitiveState {
-                    topology:   wgpu::PrimitiveTopology::TriangleList,
+                    topology,
                     front_face: wgpu::FrontFace::Ccw,
-                    cull_mode:  None, // ビルボードクアッドは両面表示
+                    cull_mode:  None,
                     ..Default::default()
                 },
                 depth_stencil: Some(depth_stencil.clone()),
@@ -1162,35 +1202,9 @@ impl ParticlePipelines {
             })
         };
 
-        // Additive: premultiplied 出力を One/One で加算。
-        let additive_blend = wgpu::BlendState {
-            color: wgpu::BlendComponent {
-                src_factor: wgpu::BlendFactor::One,
-                dst_factor: wgpu::BlendFactor::One,
-                operation:  wgpu::BlendOperation::Add,
-            },
-            alpha: wgpu::BlendComponent {
-                src_factor: wgpu::BlendFactor::One,
-                dst_factor: wgpu::BlendFactor::One,
-                operation:  wgpu::BlendOperation::Add,
-            },
-        };
-        // Alpha: premultiplied over（src=One, dst=OneMinusSrcAlpha）。
-        let alpha_blend = wgpu::BlendState {
-            color: wgpu::BlendComponent {
-                src_factor: wgpu::BlendFactor::One,
-                dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
-                operation:  wgpu::BlendOperation::Add,
-            },
-            alpha: wgpu::BlendComponent {
-                src_factor: wgpu::BlendFactor::One,
-                dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
-                operation:  wgpu::BlendOperation::Add,
-            },
-        };
-
-        let additive = build(additive_blend, "particle_additive");
-        let alpha    = build(alpha_blend,    "particle_alpha");
+        // ブレンド 6 種 × トポロジ 2 種を索引 = ParticleBlend::to_code() で構築する。
+        let mesh:  [wgpu::RenderPipeline; PARTICLE_BLEND_COUNT] = std::array::from_fn(|i| build(i, false));
+        let pixel: [wgpu::RenderPipeline; PARTICLE_BLEND_COUNT] = std::array::from_fn(|i| build(i, true));
 
         // リニアサンプラー（テクスチャ・既定白 共通）。
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -1221,7 +1235,13 @@ impl ParticlePipelines {
             wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(4), rows_per_image: Some(1) },
             wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
         );
-        let white_view = white_tex.create_view(&Default::default());
+        // texture_2d_array レイアウトに合わせ、1 レイヤの配列ビューとして作る。
+        let white_view = white_tex.create_view(&wgpu::TextureViewDescriptor {
+            label:            Some("Particle White Array View"),
+            dimension:        Some(wgpu::TextureViewDimension::D2Array),
+            array_layer_count: Some(1),
+            ..Default::default()
+        });
         let default_white_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label:   Some("Particle White BG"),
             layout:  &tex_bgl,
@@ -1231,7 +1251,7 @@ impl ParticlePipelines {
             ],
         });
 
-        Self { additive, alpha, particle_bgl, tex_bgl, sampler, default_white_bg }
+        Self { mesh, pixel, particle_bgl, tex_bgl, sampler, default_white_bg }
     }
 }
 

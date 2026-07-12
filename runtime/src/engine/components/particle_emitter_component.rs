@@ -18,17 +18,25 @@
 //  1.0=半頂角180°＝全球ランダム）の線形マップ。
 //
 //  【カーブ（寿命正規化 t=0..1 で評価）】
-//  速度・回転速度・色(HSVA)・スケール(xyz) を `ParamCurve`（キーの線形補間）で
-//  与える。GPU では CPU で `CURVE_LUT_SAMPLES` 個へ焼いた LUT を storage buffer
-//  で渡して評価する（レンダラ側実装）。色は HSVA のまま LUT に格納し、シェーダで
-//  hsv→rgb 変換する（色相の正しい補間のため）。
+//  速度・回転速度・色(HSVA)・スケール(xyz) を `ParamCurve`（キーの補間）で
+//  与える。キーごとに補間タイプ（線形 / smooth=Catmull-Rom / step）を選べる。
+//  GPU では CPU で `CURVE_LUT_SAMPLES` 個へ焼いた LUT を storage buffer で渡して
+//  評価する（レンダラ側実装）。色は HSVA のまま LUT に格納し、シェーダで hsv→rgb
+//  変換する（色相の正しい補間のため）。色カーブは複数本（`color_curves`、最低 1 本）
+//  持ち、パーティクルごとにランダムに 1 本を選ぶ。
+//
+//  【テクスチャ】
+//  `texture_paths`（最大 `MAX_PARTICLE_TEXTURES` 本）をパーティクルごとにランダム
+//  選択する。GPU では texture_2d_array へまとめて載せる（サイズ不一致は先頭サイズへ
+//  CPU リサイズ。レンダラ側実装）。空なら白丸プロシージャル。
 //
 //  【シリアライズと後方互換】
 //  シリアライズ形は新スキーマ（`ParticleEmitterComponentData`）。旧 `.scene`
 //  （emit_rate / burst / spread_angle_deg / start_size / end_size_scale /
-//  start_color / end_color / loop_emit などの旧フィールド）は
-//  `ParticleEmitterComponentRaw` で `#[serde(default)]` として受け、
-//  `From<Raw>` で新スキーマへ変換して読み込む（`#[serde(from = ...)]`）。
+//  start_color / end_color / loop_emit / color_curve / random_color_curves /
+//  texture_path などの旧フィールド）は `ParticleEmitterComponentRaw` で
+//  `#[serde(default)]` として受け、`From<Raw>` で新スキーマへ変換して読み込む
+//  （`#[serde(from = ...)]`）。
 // ============================================================
 
 use serde::{Deserialize, Serialize};
@@ -45,7 +53,7 @@ use crate::engine::ecs::Component;
 /// （データはそのまま保持し、消費側で上限を適用する）。
 pub const MAX_PARTICLES_PER_EMITTER: u32 = 65536;
 
-/// Model 形状の頂点数上限。これを超えるモデルは警告して Point へフォールバックする
+/// Model 形状の頂点数上限。これを超えるモデルは警告して Pixel へフォールバックする
 /// （利用側＝レンダラで適用）。
 pub const MAX_PARTICLE_MODEL_VERTS: usize = 2048;
 
@@ -56,6 +64,9 @@ pub const CURVE_LUT_SAMPLES: usize = 64;
 /// direction_randomness=1.0 に対応する放出半頂角（度）。全球ランダム。
 /// half_angle_deg = direction_randomness * DIRECTION_RANDOMNESS_MAX_HALF_ANGLE_DEG。
 pub const DIRECTION_RANDOMNESS_MAX_HALF_ANGLE_DEG: f32 = 180.0;
+
+/// テクスチャリストの最大枚数（texture_2d_array のレイヤ上限。利用側で clamp）。
+pub const MAX_PARTICLE_TEXTURES: usize = 8;
 
 // ─── デフォルト値関数 ─────────────────────────────────────────
 // マジックナンバー禁止のため、非ゼロ既定値はすべて関数に切り出す。
@@ -83,46 +94,74 @@ fn default_playing() -> bool { true }
 
 /// パーティクルの合成（ブレンド）モード。
 ///
-/// - `Additive`: 加算合成（炎・光・魔法エフェクト向け。既定）。
-/// - `Alpha`   : 通常のアルファブレンド（煙・破片など不透明寄りの表現向け）。
+/// フラグメントは premultiplied alpha（rgb*a, a）を出力し、ブレンドステートで
+/// 各モードを表現する（詳細は pipeline.rs のブレンドステート表）。
+/// - `None`  : 不透明（置換。src=One / dst=Zero）。
+/// - `Normal`: 通常アルファ（premultiplied over。src=One / dst=OneMinusSrcAlpha）。
+/// - `Add`   : 加算（src=One / dst=One）。既定。
+/// - `Sub`   : 減算（reverse-subtract。dst - src）。
+/// - `Mul`   : 乗算（Dst×Src。src=Dst / dst=Zero）。
+/// - `Screen`: スクリーン（src=One / dst=OneMinusSrcColor）。
 #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum ParticleBlend {
-    /// 加算合成（既定）
-    Additive,
-    /// アルファブレンド
-    Alpha,
+    /// 不透明（置換）
+    None,
+    /// 通常アルファ（premultiplied over）。旧 "alpha"。
+    #[serde(alias = "alpha")]
+    Normal,
+    /// 加算（既定）。旧 "additive"。
+    #[serde(alias = "additive")]
+    Add,
+    /// 減算（reverse-subtract）
+    Sub,
+    /// 乗算（Dst×Src）
+    Mul,
+    /// スクリーン
+    Screen,
 }
 
 impl Default for ParticleBlend {
-    /// blend 省略時の既定は additive。
-    fn default() -> Self { ParticleBlend::Additive }
+    /// blend 省略時の既定は Add（加算）。
+    fn default() -> Self { ParticleBlend::Add }
 }
 
 impl ParticleBlend {
-    /// GPU / シェーダのブレンド分岐へ渡す種別コード（描画側の定数と一致させる）。
-    #[allow(dead_code)]
-    pub fn to_code(self) -> u32 {
+    /// 描画パイプライン選択に使う種別コード（pipeline.rs のブレンド配列順と一致）。
+    pub fn to_code(self) -> usize {
         match self {
-            ParticleBlend::Additive => 0,
-            ParticleBlend::Alpha    => 1,
+            ParticleBlend::None   => 0,
+            ParticleBlend::Normal => 1,
+            ParticleBlend::Add    => 2,
+            ParticleBlend::Sub    => 3,
+            ParticleBlend::Mul    => 4,
+            ParticleBlend::Screen => 5,
         }
     }
 
     /// IPC 文字列（インスペクタのドロップダウン Tag）との相互変換。
+    /// 旧名（additive / alpha）も互換受理する。
     pub fn from_str_opt(s: &str) -> Option<Self> {
         match s {
-            "additive" => Some(ParticleBlend::Additive),
-            "alpha"    => Some(ParticleBlend::Alpha),
-            _          => None,
+            "none"            => Some(ParticleBlend::None),
+            "normal" | "alpha"    => Some(ParticleBlend::Normal),
+            "add"    | "additive" => Some(ParticleBlend::Add),
+            "sub"             => Some(ParticleBlend::Sub),
+            "mul"             => Some(ParticleBlend::Mul),
+            "screen"          => Some(ParticleBlend::Screen),
+            _                 => None,
         }
     }
 
     /// インスペクタへ送る種別文字列。
     pub fn as_str(self) -> &'static str {
         match self {
-            ParticleBlend::Additive => "additive",
-            ParticleBlend::Alpha    => "alpha",
+            ParticleBlend::None   => "none",
+            ParticleBlend::Normal => "normal",
+            ParticleBlend::Add    => "add",
+            ParticleBlend::Sub    => "sub",
+            ParticleBlend::Mul    => "mul",
+            ParticleBlend::Screen => "screen",
         }
     }
 }
@@ -179,20 +218,23 @@ impl ParticleSimSpace {
 
 /// パーティクル 1 粒の見た目形状。
 ///
-/// - `Point` : 現行のカメラ向きビルボード（既定）。
+/// - `Pixel` : ポリゴンを作らない最軽量の 1 ピクセル描画（PointList トポロジで
+///             1 粒＝1 頂点＝1 フラグメント。既定）。旧 "point"。
 /// - `Sphere`: 組込み低ポリ icosphere（単位球）。
 /// - `Box`   : 組込み単位立方体。
 /// - `Plane` : 組込み両面クアッド（単位平面）。
 /// - `Model` : 既存ロード機構で読んだモデルの先頭プリミティブを流用。
-///             頂点数が `MAX_PARTICLE_MODEL_VERTS` を超えたら警告して Point へ
+///             頂点数が `MAX_PARTICLE_MODEL_VERTS` を超えたら警告して Pixel へ
 ///             フォールバックする（利用側＝レンダラで適用）。
 ///
-/// serde は externally tagged（`"point"` / `{"model":{"path":"..."}}`）。
+/// serde は externally tagged（`"pixel"` / `{"model":{"path":"..."}}`）。旧 "point" は
+/// alias で Pixel に読む。
 #[derive(Clone, PartialEq, Serialize, Deserialize, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum ParticleShape {
-    /// カメラ向きビルボード（既定）
-    Point,
+    /// 1 ピクセル描画（PointList・最軽量。既定）。旧 "point"。
+    #[serde(alias = "point")]
+    Pixel,
     /// 組込み単位球（低ポリ icosphere）
     Sphere,
     /// 組込み単位立方体
@@ -207,7 +249,7 @@ pub enum ParticleShape {
 }
 
 impl Default for ParticleShape {
-    fn default() -> Self { ParticleShape::Point }
+    fn default() -> Self { ParticleShape::Pixel }
 }
 
 impl ParticleShape {
@@ -215,7 +257,7 @@ impl ParticleShape {
     /// Model は組込みメッシュではないため実行時のロード結果で扱う（ここでは 4）。
     pub fn to_code(&self) -> u32 {
         match self {
-            ParticleShape::Point  => 0,
+            ParticleShape::Pixel  => 0,
             ParticleShape::Sphere => 1,
             ParticleShape::Box    => 2,
             ParticleShape::Plane  => 3,
@@ -226,7 +268,7 @@ impl ParticleShape {
     /// IPC のドロップダウン Tag 文字列。
     pub fn as_str(&self) -> &'static str {
         match self {
-            ParticleShape::Point  => "point",
+            ParticleShape::Pixel  => "pixel",
             ParticleShape::Sphere => "sphere",
             ParticleShape::Box    => "box",
             ParticleShape::Plane  => "plane",
@@ -235,10 +277,11 @@ impl ParticleShape {
     }
 
     /// IPC の Tag 文字列から形状を作る（Model のパスは現状を引き継ぐ。呼び出し側で補完）。
-    /// `keep_path` は tag=="model" のときに使う既存パス（Point 等へ変えた場合は無視）。
+    /// `keep_path` は tag=="model" のときに使う既存パス（Pixel 等へ変えた場合は無視）。
+    /// 旧 "point" も互換受理する。
     pub fn from_tag(tag: &str, keep_path: &str) -> Option<Self> {
         match tag {
-            "point"  => Some(ParticleShape::Point),
+            "pixel" | "point" => Some(ParticleShape::Pixel),
             "sphere" => Some(ParticleShape::Sphere),
             "box"    => Some(ParticleShape::Box),
             "plane"  => Some(ParticleShape::Plane),
@@ -390,13 +433,41 @@ impl EmitMode {
 
 // ─── カーブデータモデル（C# カーブエディタと共有する契約）──────
 
-/// カーブの 1 キー（t=正規化寿命 0..1、v=値）。v1 は線形補間。
+/// カーブキーの補間タイプ（キー単位で選択）。
+///
+/// セグメント [k0, k1] の補間は「先頭キー k0 の interp」で決まる。
+/// - `Linear`: 線形（既定）。
+/// - `Smooth`: Catmull-Rom（両隣のキーで接線を作る滑らか補間）。
+/// - `Step`  : ステップ（k1 の t に達するまで k0 の値を保持）。
+#[derive(Clone, Copy, Serialize, Deserialize, Debug, PartialEq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CurveInterp {
+    /// 線形補間（既定）
+    #[default]
+    Linear,
+    /// Catmull-Rom（滑らか）
+    Smooth,
+    /// ステップ（値保持）
+    Step,
+}
+
+/// カーブの 1 キー（t=正規化寿命 0..1、v=値、interp=次キーへの補間タイプ）。
 #[derive(Clone, Copy, Serialize, Deserialize, Debug, PartialEq)]
 pub struct CurveKey {
     /// 正規化寿命（0..1）。チャンネル内で昇順であること。
     pub t: f32,
     /// 値。
     pub v: f32,
+    /// このキーから次キーへの補間タイプ（省略時 Linear）。
+    #[serde(default)]
+    pub interp: CurveInterp,
+}
+
+impl CurveKey {
+    /// 線形補間キーを作る（interp=Linear）。
+    pub fn new(t: f32, v: f32) -> Self {
+        Self { t, v, interp: CurveInterp::Linear }
+    }
 }
 
 /// カーブの 1 チャンネル（1 成分の時系列。キーは t 昇順）。
@@ -406,21 +477,32 @@ pub struct CurveChannel {
     pub keys: Vec<CurveKey>,
 }
 
+/// Catmull-Rom（uniform）補間。p1..p2 を f∈[0,1] で補間（p0,p3 は両隣の制御点）。
+fn catmull_rom(p0: f32, p1: f32, p2: f32, p3: f32, f: f32) -> f32 {
+    let f2 = f * f;
+    let f3 = f2 * f;
+    0.5 * ((2.0 * p1)
+        + (-p0 + p2) * f
+        + (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) * f2
+        + (-p0 + 3.0 * p1 - 3.0 * p2 + p3) * f3)
+}
+
 impl CurveChannel {
     /// 定数チャンネル（両端 [0,v]..[1,v]）を作る。
     pub fn constant(v: f32) -> Self {
-        Self { keys: vec![CurveKey { t: 0.0, v }, CurveKey { t: 1.0, v }] }
+        Self { keys: vec![CurveKey::new(0.0, v), CurveKey::new(1.0, v)] }
     }
 
     /// 2 キー（t=0 が a、t=1 が b）の線形チャンネルを作る。
     pub fn linear(a: f32, b: f32) -> Self {
-        Self { keys: vec![CurveKey { t: 0.0, v: a }, CurveKey { t: 1.0, v: b }] }
+        Self { keys: vec![CurveKey::new(0.0, a), CurveKey::new(1.0, b)] }
     }
 
-    /// 正規化寿命 t での値を線形補間で評価する。
+    /// 正規化寿命 t での値を、各キーの補間タイプで評価する。
     ///
     /// - キー無し → 0.0。
     /// - t は端点でクランプ（最初のキー未満は最初の値、最後のキー超は最後の値）。
+    /// - セグメント [k0, k1] の補間は k0.interp（Linear / Smooth / Step）で決まる。
     pub fn eval(&self, t: f32) -> f32 {
         let keys = &self.keys;
         if keys.is_empty() { return 0.0; }
@@ -435,7 +517,18 @@ impl CurveChannel {
                 let span = k1.t - k0.t;
                 if span <= f32::EPSILON { return k0.v; }
                 let f = (t - k0.t) / span;
-                return k0.v + (k1.v - k0.v) * f;
+                return match k0.interp {
+                    // ステップ: 次キー時刻まで k0 の値を保持。
+                    CurveInterp::Step   => k0.v,
+                    // 線形。
+                    CurveInterp::Linear => k0.v + (k1.v - k0.v) * f,
+                    // Catmull-Rom: 両隣のキー（端は自身でクランプ）で接線を作る。
+                    CurveInterp::Smooth => {
+                        let p0 = if w > 0 { keys[w - 1].v } else { k0.v };
+                        let p3 = if w + 2 <= last { keys[w + 2].v } else { k1.v };
+                        catmull_rom(p0, k0.v, k1.v, p3, f)
+                    }
+                };
             }
         }
         keys[last].v
@@ -473,6 +566,7 @@ impl ParamCurve {
     /// カーブを `samples` 個の vec4 LUT へ焼く（t を 0..1 で等間隔サンプル）。
     ///
     /// GPU の storage buffer へ連結する用途。samples>=2 を想定（1 のときは t=0 のみ）。
+    /// キーごとの補間（Linear/Smooth/Step）は `eval` 経由で焼き込まれる。
     pub fn bake_lut(&self, samples: usize) -> Vec<[f32; 4]> {
         let n = samples.max(1);
         let mut out = Vec::with_capacity(n);
@@ -530,9 +624,9 @@ fn rgba_pair_to_hsva_curve(start: [f32; 4], end: [f32; 4]) -> ParamCurve {
 fn default_speed_curve() -> ParamCurve { ParamCurve::constant1(1.0) }
 /// rot_speed_curve の既定（定数 1.0）。
 fn default_rot_speed_curve() -> ParamCurve { ParamCurve::constant1(1.0) }
-/// color_curve の既定（HSVA：白 V=1, S=0, H=0、A は 1→0 でフェードアウト）。
+/// 1 本の白フェードアウト色カーブ（HSVA：H=0, S=0, V=1、A は 1→0）。
 /// 旧既定（start=白不透明 / end=白透明）と同等の見た目。
-fn default_color_curve() -> ParamCurve {
+fn white_fade_color_curve() -> ParamCurve {
     ParamCurve {
         channels: vec![
             CurveChannel::constant(0.0), // H
@@ -542,6 +636,8 @@ fn default_color_curve() -> ParamCurve {
         ],
     }
 }
+/// color_curves の既定（白フェードアウト 1 本）。最低 1 本を保証する。
+fn default_color_curves() -> Vec<ParamCurve> { vec![white_fade_color_curve()] }
 /// scale_curve の既定（xyz とも 1→0 で縮小消滅。旧 end_size_scale=0 と同等）。
 fn default_scale_curve() -> ParamCurve {
     ParamCurve {
@@ -551,6 +647,12 @@ fn default_scale_curve() -> ParamCurve {
             CurveChannel::linear(1.0, 0.0), // z
         ],
     }
+}
+
+/// color_curves が空なら白フェード 1 本で補完する（最低 1 本を強制）。
+fn ensure_nonempty_colors(mut v: Vec<ParamCurve>) -> Vec<ParamCurve> {
+    if v.is_empty() { v.push(white_fade_color_curve()); }
+    v
 }
 
 // ─── ParticleEmitterComponentData（シリアライズ用・新スキーマ）──
@@ -566,7 +668,7 @@ pub struct ParticleEmitterComponentData {
     pub max_particles: u32,
 
     // ── 形状・出現範囲 ──
-    /// パーティクル 1 粒の見た目形状。既定 Point。
+    /// パーティクル 1 粒の見た目形状。既定 Pixel。
     pub shape: ParticleShape,
     /// スポーン位置（出現範囲）。既定 Point。
     pub spawn_volume: SpawnVolume,
@@ -600,6 +702,8 @@ pub struct ParticleEmitterComponentData {
     pub drag: f32,
     /// 回転速度 [min, max]（度/秒）。既定 [0, 0]。
     pub rot_speed_range: [f32; 2],
+    /// 初期回転角 [min, max]（度）。スポーン時にハッシュ抽選。既定 [0, 0]。
+    pub initial_rotation_range: [f32; 2],
     /// 全体サイズ倍率 [min, max]。既定 [1, 1]。
     pub size_range: [f32; 2],
 
@@ -608,17 +712,17 @@ pub struct ParticleEmitterComponentData {
     pub speed_curve: ParamCurve,
     /// 回転速度倍率カーブ（x）。既定定数 1。
     pub rot_speed_curve: ParamCurve,
-    /// 色カーブ（xyzw=HSVA）。既定 白→フェードアウト。
-    pub color_curve: ParamCurve,
     /// スケールカーブ（xyz）。既定 1→0 縮小。
     pub scale_curve: ParamCurve,
-    /// ランダム色カーブ（HSVA のリスト）。非空ならパーティクルごとに 1 本を選ぶ。既定空。
-    pub random_color_curves: Vec<ParamCurve>,
+    /// 色カーブ（HSVA のリスト、最低 1 本）。パーティクルごとに 1 本を選ぶ。
+    /// 既定は白フェードアウト 1 本。
+    pub color_curves: Vec<ParamCurve>,
 
     // ── 見た目・その他 ──
-    /// テクスチャパス（assets:// 仮想パス）。空文字はプロシージャル白円。既定 ""。
-    pub texture_path: String,
-    /// 合成モード（additive / alpha）。既定 additive。
+    /// テクスチャパスのリスト（assets:// 仮想パス、最大 MAX_PARTICLE_TEXTURES）。
+    /// 空はプロシージャル白円。パーティクルごとに 1 枚を選ぶ。既定空。
+    pub texture_paths: Vec<String>,
+    /// 合成モード。既定 Add。
     pub blend: ParticleBlend,
     /// シミュレーション空間（world / local）。既定 world。
     pub sim_space: ParticleSimSpace,
@@ -644,13 +748,13 @@ impl Default for ParticleEmitterComponentData {
             gravity:             default_gravity(),
             drag:                0.0,
             rot_speed_range:     [0.0, 0.0],
+            initial_rotation_range: [0.0, 0.0],
             size_range:          default_size_range(),
             speed_curve:         default_speed_curve(),
             rot_speed_curve:     default_rot_speed_curve(),
-            color_curve:         default_color_curve(),
             scale_curve:         default_scale_curve(),
-            random_color_curves: Vec::new(),
-            texture_path:        String::new(),
+            color_curves:        default_color_curves(),
+            texture_paths:       Vec::new(),
             blend:               ParticleBlend::default(),
             sim_space:           ParticleSimSpace::default(),
             playing:             default_playing(),
@@ -673,7 +777,6 @@ struct ParticleEmitterComponentRaw {
     #[serde(default)] direction_local: Option<[f32; 3]>,
     #[serde(default)] gravity:         Option<[f32; 3]>,
     #[serde(default)] drag:            Option<f32>,
-    #[serde(default)] texture_path:    Option<String>,
     #[serde(default)] blend:           Option<ParticleBlend>,
     #[serde(default)] sim_space:       Option<ParticleSimSpace>,
     #[serde(default)] playing:         Option<bool>,
@@ -688,14 +791,18 @@ struct ParticleEmitterComponentRaw {
     #[serde(default)] particles_per_emit:  Option<u32>,
     #[serde(default)] direction_randomness:Option<f32>,
     #[serde(default)] rot_speed_range:     Option<[f32; 2]>,
+    #[serde(default)] initial_rotation_range: Option<[f32; 2]>,
     #[serde(default)] size_range:          Option<[f32; 2]>,
     #[serde(default)] speed_curve:         Option<ParamCurve>,
     #[serde(default)] rot_speed_curve:     Option<ParamCurve>,
-    #[serde(default)] color_curve:         Option<ParamCurve>,
     #[serde(default)] scale_curve:         Option<ParamCurve>,
-    #[serde(default)] random_color_curves: Option<Vec<ParamCurve>>,
+    #[serde(default)] color_curves:        Option<Vec<ParamCurve>>,
+    #[serde(default)] texture_paths:       Option<Vec<String>>,
 
     // 旧フィールド（互換変換用）
+    #[serde(default)] color_curve:         Option<ParamCurve>,
+    #[serde(default)] random_color_curves: Option<Vec<ParamCurve>>,
+    #[serde(default)] texture_path:        Option<String>,
     #[serde(default)] emit_rate:        Option<f32>,
     #[serde(default)] spread_angle_deg: Option<f32>,
     #[serde(default)] start_size:       Option<[f32; 2]>,
@@ -746,13 +853,29 @@ impl From<ParticleEmitterComponentRaw> for ParticleEmitterComponentData {
             r.start_size.unwrap_or(def.size_range)
         });
 
-        // color_curve: 新優先。無ければ旧 start_color/end_color を HSVA 2 キーカーブへ。
-        let color_curve = r.color_curve.unwrap_or_else(|| {
-            match (r.start_color, r.end_color) {
-                (Some(s), Some(e)) => rgba_pair_to_hsva_curve(s, e),
-                (Some(s), None)    => rgba_pair_to_hsva_curve(s, s),
-                (None, Some(e))    => rgba_pair_to_hsva_curve(e, e),
-                (None, None)       => def.color_curve.clone(),
+        // color_curves: 新優先。無ければ旧 color_curve（単体）＋ random_color_curves を
+        // 1 本のリストへ統合する。旧 start_color/end_color しか無ければ HSVA 2 キーへ。
+        // どれも無ければ既定（白フェード 1 本）。最終的に最低 1 本を保証する。
+        let color_curves = ensure_nonempty_colors(r.color_curves.unwrap_or_else(|| {
+            let mut list: Vec<ParamCurve> = Vec::new();
+            if let Some(c) = r.color_curve.clone() { list.push(c); }
+            if let Some(mut rc) = r.random_color_curves.clone() { list.append(&mut rc); }
+            if list.is_empty() {
+                match (r.start_color, r.end_color) {
+                    (Some(s), Some(e)) => list.push(rgba_pair_to_hsva_curve(s, e)),
+                    (Some(s), None)    => list.push(rgba_pair_to_hsva_curve(s, s)),
+                    (None, Some(e))    => list.push(rgba_pair_to_hsva_curve(e, e)),
+                    (None, None)       => {}
+                }
+            }
+            list
+        }));
+
+        // texture_paths: 新優先。無ければ旧 texture_path（単体、空文字は無視）をリスト化。
+        let texture_paths = r.texture_paths.unwrap_or_else(|| {
+            match r.texture_path {
+                Some(p) if !p.is_empty() => vec![p],
+                _ => def.texture_paths.clone(),
             }
         });
 
@@ -787,13 +910,13 @@ impl From<ParticleEmitterComponentRaw> for ParticleEmitterComponentData {
             gravity:             r.gravity.unwrap_or(def.gravity),
             drag:                r.drag.unwrap_or(def.drag),
             rot_speed_range:     r.rot_speed_range.unwrap_or(def.rot_speed_range),
+            initial_rotation_range: r.initial_rotation_range.unwrap_or(def.initial_rotation_range),
             size_range,
             speed_curve:         r.speed_curve.unwrap_or(def.speed_curve),
             rot_speed_curve:     r.rot_speed_curve.unwrap_or(def.rot_speed_curve),
-            color_curve,
             scale_curve,
-            random_color_curves: r.random_color_curves.unwrap_or(def.random_color_curves),
-            texture_path:        r.texture_path.unwrap_or(def.texture_path),
+            color_curves,
+            texture_paths,
             blend:               r.blend.unwrap_or(def.blend),
             sim_space:           r.sim_space.unwrap_or(def.sim_space),
             playing:             r.playing.unwrap_or(def.playing),
@@ -807,7 +930,7 @@ impl From<ParticleEmitterComponentRaw> for ParticleEmitterComponentData {
 ///
 /// 保持するのはエミッタのパラメータのみ。位置・向きは Actor の Transform から
 /// レンダラが解決し、個々のパーティクルの生存状態や GPU バッファはレンダラが
-/// 別管理する。揮発状態（pending_burst）以外は Data と同一構成。
+/// 別管理する。揮発状態（pending_burst / curve_generation）以外は Data と同一構成。
 #[derive(Clone, Debug)]
 pub struct ParticleEmitterComponent {
     pub max_particles:        u32,
@@ -825,13 +948,13 @@ pub struct ParticleEmitterComponent {
     pub gravity:              [f32; 3],
     pub drag:                 f32,
     pub rot_speed_range:      [f32; 2],
+    pub initial_rotation_range: [f32; 2],
     pub size_range:           [f32; 2],
     pub speed_curve:          ParamCurve,
     pub rot_speed_curve:      ParamCurve,
-    pub color_curve:          ParamCurve,
     pub scale_curve:          ParamCurve,
-    pub random_color_curves:  Vec<ParamCurve>,
-    pub texture_path:         String,
+    pub color_curves:         Vec<ParamCurve>,
+    pub texture_paths:        Vec<String>,
     pub blend:                ParticleBlend,
     pub sim_space:            ParticleSimSpace,
     pub playing:              bool,
@@ -866,13 +989,14 @@ impl ParticleEmitterComponent {
             gravity:              data.gravity,
             drag:                 data.drag,
             rot_speed_range:      data.rot_speed_range,
+            initial_rotation_range: data.initial_rotation_range,
             size_range:           data.size_range,
             speed_curve:          data.speed_curve,
             rot_speed_curve:      data.rot_speed_curve,
-            color_curve:          data.color_curve,
             scale_curve:          data.scale_curve,
-            random_color_curves:  data.random_color_curves,
-            texture_path:         data.texture_path,
+            // 最低 1 本を保証（データ側でも保証されるが二重に守る）。
+            color_curves:         ensure_nonempty_colors(data.color_curves),
+            texture_paths:        data.texture_paths,
             blend:                data.blend,
             sim_space:            data.sim_space,
             playing:              data.playing,
@@ -900,13 +1024,13 @@ impl ParticleEmitterComponent {
             gravity:              self.gravity,
             drag:                 self.drag,
             rot_speed_range:      self.rot_speed_range,
+            initial_rotation_range: self.initial_rotation_range,
             size_range:           self.size_range,
             speed_curve:          self.speed_curve.clone(),
             rot_speed_curve:      self.rot_speed_curve.clone(),
-            color_curve:          self.color_curve.clone(),
             scale_curve:          self.scale_curve.clone(),
-            random_color_curves:  self.random_color_curves.clone(),
-            texture_path:         self.texture_path.clone(),
+            color_curves:         self.color_curves.clone(),
+            texture_paths:        self.texture_paths.clone(),
             blend:                self.blend,
             sim_space:            self.sim_space,
             playing:              self.playing,
@@ -947,12 +1071,15 @@ mod tests {
         assert_eq!(data.particles_per_emit,  def.particles_per_emit);
         assert_eq!(data.lifetime,            def.lifetime);
         assert_eq!(data.direction_randomness,def.direction_randomness);
+        assert_eq!(data.initial_rotation_range, def.initial_rotation_range);
         assert_eq!(data.size_range,          def.size_range);
         assert_eq!(data.speed_curve,         def.speed_curve);
-        assert_eq!(data.color_curve,         def.color_curve);
         assert_eq!(data.scale_curve,         def.scale_curve);
-        assert!(data.random_color_curves.is_empty());
+        // 既定は白フェード 1 本。
+        assert_eq!(data.color_curves.len(),  1);
+        assert!(data.texture_paths.is_empty());
         assert_eq!(data.blend,               def.blend);
+        assert_eq!(data.blend,               ParticleBlend::Add);
         assert_eq!(data.playing,             def.playing);
     }
 
@@ -975,14 +1102,14 @@ mod tests {
             gravity:             [0.0, -1.0, 0.0],
             drag:                0.25,
             rot_speed_range:     [-90.0, 90.0],
+            initial_rotation_range: [-45.0, 45.0],
             size_range:          [0.5, 2.0],
             speed_curve:         ParamCurve::constant1(1.5),
             rot_speed_curve:     ParamCurve { channels: vec![CurveChannel::linear(0.0, 2.0)] },
-            color_curve:         default_color_curve(),
             scale_curve:         default_scale_curve(),
-            random_color_curves: vec![ParamCurve::constant1(0.3), default_color_curve()],
-            texture_path:        "assets://fx/spark.png".to_string(),
-            blend:               ParticleBlend::Alpha,
+            color_curves:        vec![white_fade_color_curve(), ParamCurve::constant1(0.3)],
+            texture_paths:       vec!["assets://fx/spark.png".to_string(), "assets://fx/spark2.png".to_string()],
+            blend:               ParticleBlend::Screen,
             sim_space:           ParticleSimSpace::Local,
             playing:             false,
         };
@@ -1008,20 +1135,21 @@ mod tests {
         assert_eq!(restored.gravity,             original.gravity);
         assert_eq!(restored.drag,                original.drag);
         assert_eq!(restored.rot_speed_range,     original.rot_speed_range);
+        assert_eq!(restored.initial_rotation_range, original.initial_rotation_range);
         assert_eq!(restored.size_range,          original.size_range);
         assert_eq!(restored.speed_curve,         original.speed_curve);
         assert_eq!(restored.rot_speed_curve,     original.rot_speed_curve);
-        assert_eq!(restored.color_curve,         original.color_curve);
         assert_eq!(restored.scale_curve,         original.scale_curve);
-        assert_eq!(restored.random_color_curves, original.random_color_curves);
-        assert_eq!(restored.texture_path,        original.texture_path);
+        assert_eq!(restored.color_curves,        original.color_curves);
+        assert_eq!(restored.texture_paths,       original.texture_paths);
         assert_eq!(restored.blend,               original.blend);
         assert_eq!(restored.sim_space,           original.sim_space);
         assert_eq!(restored.playing,             original.playing);
     }
 
     /// 旧スキーマ（emit_rate / spread_angle_deg / start_size / end_size_scale /
-    /// start_color / end_color / loop_emit / burst）が互換変換で読めること。
+    /// start_color / end_color / loop_emit / burst / color_curve / texture_path /
+    /// Additive / point）が互換変換で読めること。
     #[test]
     fn legacy_scene_converts() {
         // 旧 .scene のエミッタ JSON（旧フィールドのみ）。
@@ -1035,12 +1163,13 @@ mod tests {
             "direction_local": [0.0, 1.0, 0.0],
             "gravity": [0.0, -5.0, 0.0],
             "drag": 0.1,
+            "shape": "point",
             "start_size": [0.2, 0.4],
             "end_size_scale": 0.5,
             "start_color": [1.0, 0.0, 0.0, 1.0],
             "end_color": [0.0, 0.0, 1.0, 0.0],
             "texture_path": "assets://fx/old.png",
-            "blend": "alpha",
+            "blend": "additive",
             "sim_space": "local",
             "playing": true,
             "loop_emit": false
@@ -1058,20 +1187,27 @@ mod tests {
         assert!((data.direction_randomness - 0.5).abs() < 1e-6, "randomness 変換");
         // start_size → size_range。
         assert_eq!(data.size_range, [0.2, 0.4]);
+        // 旧 point → 新 Pixel。
+        assert_eq!(data.shape, ParticleShape::Pixel);
+        // 旧 additive → 新 Add。
+        assert_eq!(data.blend, ParticleBlend::Add);
+        // 旧 texture_path（単体）→ texture_paths（1 要素）。
+        assert_eq!(data.texture_paths, vec!["assets://fx/old.png".to_string()]);
         // 維持フィールド。
         assert_eq!(data.max_particles, 2048);
         assert_eq!(data.lifetime, [0.5, 1.5]);
         assert_eq!(data.gravity, [0.0, -5.0, 0.0]);
-        assert_eq!(data.blend, ParticleBlend::Alpha);
         assert_eq!(data.sim_space, ParticleSimSpace::Local);
-        // 色カーブは 4 チャンネル(HSVA)。赤→青、A 1→0。
-        assert_eq!(data.color_curve.channels.len(), 4);
-        let a0 = data.color_curve.channels[3].eval(0.0);
-        let a1 = data.color_curve.channels[3].eval(1.0);
+        // 色カーブは start/end から HSVA 1 本へ統合される。
+        assert_eq!(data.color_curves.len(), 1);
+        let cc = &data.color_curves[0];
+        assert_eq!(cc.channels.len(), 4);
+        let a0 = cc.channels[3].eval(0.0);
+        let a1 = cc.channels[3].eval(1.0);
         assert!((a0 - 1.0).abs() < 1e-6 && a1.abs() < 1e-6, "アルファのフェード");
         // 赤(H≈0)→青(H≈0.667) の色相補間。
-        let h0 = data.color_curve.channels[0].eval(0.0);
-        let h1 = data.color_curve.channels[0].eval(1.0);
+        let h0 = cc.channels[0].eval(0.0);
+        let h1 = cc.channels[0].eval(1.0);
         assert!(h0.abs() < 1e-4, "start H は赤(0)");
         assert!((h1 - 2.0/3.0).abs() < 1e-3, "end H は青(0.667)");
         // scale_curve は 1→0.5（end_size_scale）。
@@ -1079,17 +1215,69 @@ mod tests {
         assert!((data.scale_curve.channels[0].eval(1.0) - 0.5).abs() < 1e-6);
     }
 
+    /// 旧 color_curve（単体）＋ random_color_curves が color_curves へ統合されること。
+    #[test]
+    fn legacy_color_curves_merge() {
+        let legacy = r#"{
+            "color_curve": {"channels":[{"keys":[{"t":0.0,"v":0.1},{"t":1.0,"v":0.2}]}]},
+            "random_color_curves": [
+                {"channels":[{"keys":[{"t":0.0,"v":0.3},{"t":1.0,"v":0.4}]}]},
+                {"channels":[{"keys":[{"t":0.0,"v":0.5},{"t":1.0,"v":0.6}]}]}
+            ]
+        }"#;
+        let data: ParticleEmitterComponentData =
+            serde_json::from_str(legacy).expect("旧色カーブの互換読込に失敗");
+        // color_curve(1) + random_color_curves(2) = 3 本に統合。
+        assert_eq!(data.color_curves.len(), 3);
+        assert!((data.color_curves[0].channels[0].eval(0.0) - 0.1).abs() < 1e-6);
+        assert!((data.color_curves[1].channels[0].eval(0.0) - 0.3).abs() < 1e-6);
+        assert!((data.color_curves[2].channels[0].eval(0.0) - 0.5).abs() < 1e-6);
+    }
+
     /// ParamCurve::eval の端点クランプと線形補間。
     #[test]
     fn curve_eval_clamps_and_lerps() {
         let ch = CurveChannel { keys: vec![
-            CurveKey { t: 0.2, v: 1.0 },
-            CurveKey { t: 0.8, v: 3.0 },
+            CurveKey::new(0.2, 1.0),
+            CurveKey::new(0.8, 3.0),
         ]};
         assert_eq!(ch.eval(0.0), 1.0);  // 端点クランプ（左）
         assert_eq!(ch.eval(1.0), 3.0);  // 端点クランプ（右）
         assert_eq!(ch.eval(0.5), 2.0);  // 中点線形
         assert!(ch.eval(0.2) == 1.0 && ch.eval(0.8) == 3.0);
+    }
+
+    /// Step / Smooth 補間の挙動。
+    #[test]
+    fn curve_interp_step_and_smooth() {
+        // Step: k0 の値を次キー時刻まで保持。
+        let step = CurveChannel { keys: vec![
+            CurveKey { t: 0.0, v: 1.0, interp: CurveInterp::Step },
+            CurveKey { t: 1.0, v: 5.0, interp: CurveInterp::Linear },
+        ]};
+        assert_eq!(step.eval(0.5), 1.0, "Step は次キーまで k0 の値");
+        assert_eq!(step.eval(0.99), 1.0);
+        assert_eq!(step.eval(1.0), 5.0);
+
+        // Smooth: 端点は通過し、内部は Catmull-Rom。3 キー等間隔で中点は補間される。
+        let smooth = CurveChannel { keys: vec![
+            CurveKey { t: 0.0, v: 0.0, interp: CurveInterp::Smooth },
+            CurveKey { t: 0.5, v: 1.0, interp: CurveInterp::Smooth },
+            CurveKey { t: 1.0, v: 0.0, interp: CurveInterp::Smooth },
+        ]};
+        // キー点は正確に通過する。
+        assert!((smooth.eval(0.0) - 0.0).abs() < 1e-6);
+        assert!((smooth.eval(0.5) - 1.0).abs() < 1e-6);
+        assert!((smooth.eval(1.0) - 0.0).abs() < 1e-6);
+    }
+
+    /// interp フィールド無しの旧 CurveKey JSON が Linear で読めること。
+    #[test]
+    fn curve_key_interp_defaults_linear() {
+        let json = r#"{"channels":[{"keys":[{"t":0.0,"v":0.0},{"t":1.0,"v":1.0}]}]}"#;
+        let c: ParamCurve = serde_json::from_str(json).expect("interp 無し JSON の読込に失敗");
+        assert_eq!(c.channels[0].keys[0].interp, CurveInterp::Linear);
+        assert!((c.channels[0].eval(0.5) - 0.5).abs() < 1e-6);
     }
 
     /// bake_lut のサイズと端点。

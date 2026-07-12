@@ -388,6 +388,47 @@ ECS の `ParticleEmitterComponent`（データのみ）を入力に、エミッ�
 - **C# インスペクタ**: 新スカラー/enum の UI は実装済み。カーブ編集 UI（カーブエディタ）は次ウェーブ
   （現状プレースホルダ表示）。
 
+#### 改善ウェーブ（2026-07 第3ウェーブ, 実機検証待ち）— 12 件
+- **形状 Point→Pixel 改名＋軽量化**: 旧 Point（カメラ向きビルボード）を廃し、`Pixel`＝**PointList トポロジの
+  1 頂点/インスタンス＝1 ピクセル描画**（ポリゴン非生成の最軽量）へ。CS 直書き（HDR ストレージ＋手動深度）案は
+  6 ブレンドのアルファ正しさ・深度統合を壊すため不採用、**PointList 案を採用**（既存 render pass・深度・全ブレンドに
+  そのまま乗る）。既定形状は Pixel。旧 "point" は serde alias で Pixel。Model ロード失敗/頂点超過は **Pixel
+  フォールバック**（billboard モードは撤廃）。**注意（挙動変更）**: カメラ向き textured billboard は無くなった
+  （テクスチャは Plane/Sphere 等メッシュ形状で使う）。
+- **カーブキー補間タイプ**: `CurveKey.interp`（Linear 既定 / Smooth=Catmull-Rom / Step。serde default）。LUT 焼きは
+  `CurveChannel::eval` がキー単位で補間するため 3 種とも自動で焼き込まれる（GPU 側変更不要）。C# はキー選択時に切替 UI＋
+  プレビュー反映。
+- **初期回転**: `initial_rotation_range:[f32;2]`（度, 既定 [0,0]）。sim シェーダがスポーン時に `rot_angle` を抽選
+  （billboard=面内・mesh=軸角の初期角）。GPU 度→rad は CPU 変換。
+- **色カーブの一本化**: `color_curve`＋`random_color_curves` → `color_curves:Vec<ParamCurve>`（HSVA・**最低 1 本**）。
+  粒子ごとに seed で 1 本選択。C# は最後の 1 本を削除不可、Rust は空なら白フェード補完。IPC は curve_id=`colors`
+  （リスト全体 JSON。旧 `color`/`random_colors` も互換受理）。
+- **テクスチャリスト**: `texture_path`→`texture_paths:Vec<String>`（最大 `MAX_PARTICLE_TEXTURES`=8）。GPU は
+  **texture_2d_array** に載せ、サイズ不一致は**先頭サイズへ CPU リサイズ**（Triangle）、粒子ごとに seed でレイヤ選択。
+  空は既定白（1 レイヤ配列）。IPC は SET_PARTICLE_FIELD key=`texture_paths`（JSON 配列）。
+- **ブレンド拡充（6 種）**: None(不透明)/Normal(over)/Add/Sub(reverse-subtract)/Mul(Dst×Src)/Screen(One+OneMinusSrcColor)。
+  旧 Additive/Alpha は alias。パイプラインは **ブレンド 6 × トポロジ 2（mesh=TriangleList / pixel=PointList）＝12 本**を
+  `ParticleBlend::to_code()` 索引で構築。ブレンドステート表:
+  | code | 名称   | color/alpha src | dst              | op              |
+  |------|--------|-----------------|------------------|-----------------|
+  | 0    | None   | One             | Zero             | Add             |
+  | 1    | Normal | One             | OneMinusSrcAlpha | Add             |
+  | 2    | Add    | One             | One              | Add             |
+  | 3    | Sub    | One             | One              | ReverseSubtract |
+  | 4    | Mul    | Dst             | Zero             | Add             |
+  | 5    | Screen | One             | OneMinusSrc      | Add             |
+- **LUT 行レイアウト変更**: `[speed | rot_speed | scale | color_0..M-1]`（旧 `[speed|rot_speed|color|scale|
+  random_color_0..]`）。固定 3 本＋色カーブ M 本。scale=行 2S、color_j=行 (3+j)S。
+- **出現範囲ギズモ**: `particle_scene_gizmo.rs` に選択時の spawn_volume デバッグ描画を追加（Point=小十字 / Box=ワイヤ箱 /
+  Sphere=軸別 3 円。放出円錐と併描画、light ギズモの流儀）。
+- **Inspector 条件付き表示の徹底**: 形状 Model 以外→モデル参照非表示、spawn_volume 種別で寸法のみ、emit_mode=Count
+  以外→total 非表示、Pixel→サイズ/スケール/回転系非表示（Visibility.Collapsed）。横並びレイアウト・ドラッグ値の
+  フィールド別 clamp・カーブエディタ操作での Expander 誤開閉修正（e.Handled）も対応。
+- **ライト/エミッタのアイコン表示＋IDピック**: camera ギズモ方式（GLB＋InstancedModelBatch＋draw_id_pass＋ID空間
+  割り当て）を複製し、ワールド位置にアイコン表示＋クリックで該当アクター選択（`id_pass` に載せる）。
+- **GpuEmitterParams は 208B**（192B から拡張）: 末尾に `color_count / initial_rot_min / initial_rot_max /
+  tex_layer_count` を追加（`random_color_count` は `color_count` へ改名）。`layout_tests` を 208B・新オフセットへ更新。
+
 #### 実装メモ（2026-07 第1ウェーブ、以下は拡張後の値に更新済み）
 - ソース: `renderer/particle_system.rs`（CPU/GPU 状態・収集・LUT 焼き・描画）、`renderer/particle_shapes.rs`
   （組込み形状メッシュ＋Model キャッシュ）、`renderer/shaders/particle_sim.wgsl`

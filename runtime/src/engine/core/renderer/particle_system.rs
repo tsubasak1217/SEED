@@ -67,6 +67,7 @@ use crate::engine::components::particle_emitter_component::{
     EmitMode, ParamCurve, ParticleBlend, ParticleEmitterComponent, ParticleShape,
     ParticleSimSpace, SpawnVolume,
     CURVE_LUT_SAMPLES, DIRECTION_RANDOMNESS_MAX_HALF_ANGLE_DEG, MAX_PARTICLES_PER_EMITTER,
+    MAX_PARTICLE_TEXTURES,
 };
 use crate::engine::ecs::{Entity, World};
 use crate::engine::structs::objects::Actor;
@@ -93,14 +94,14 @@ const PREWARM_FIXED_DT: f32 = 1.0 / 60.0;
 /// プリウォームの最大ステップ数（prewarm_time が大きくても一括実行はここまで）。
 const MAX_PREWARM_STEPS: u32 = 600;
 
-/// 形状モード（GpuEmitterParams.shape_mode）: ビルボード（Point / Model フォールバック）。
-const SHAPE_MODE_BILLBOARD: u32 = 0;
-/// 形状モード: メッシュ（Sphere / Box / Plane / Model）。
+/// 形状モード（GpuEmitterParams.shape_mode）: メッシュ（Sphere / Box / Plane / Model）。
+/// Pixel は専用の PointList パイプラインで描くため shape_mode は常に mesh でよい
+/// （draw シェーダは現状 shape_mode を参照しないが、レイアウト維持のため保持する）。
 const SHAPE_MODE_MESH: u32 = 1;
 
-/// LUT に固定で並ぶカーブ本数（speed / rot_speed / color / scale）。
-/// random_color はこの後ろに可変本数で続く。
-const LUT_FIXED_CURVES: usize = 4;
+/// LUT に固定で並ぶカーブ本数（speed / rot_speed / scale）。
+/// 色カーブ（最低 1 本）はこの後ろに可変本数で続く。
+const LUT_FIXED_CURVES: usize = 3;
 
 // ─── GpuParticle（storage 要素・std430, 64 バイト）────────────
 
@@ -194,10 +195,17 @@ pub struct GpuEmitterParams {
     pub use_texture:         u32,
     /// カーブ LUT のサンプル数（CURVE_LUT_SAMPLES）。offset 180
     pub lut_samples:         u32,
-    /// ランダム色カーブ本数（0=color_curve を使用）。offset 184
-    pub random_color_count:  u32,
-    /// パディング（16 バイト境界）。offset 188
+    /// 色カーブ本数（最低 1。パーティクルごとに 1 本を seed で選ぶ）。offset 184
+    pub color_count:         u32,
+    /// 初期回転角 min（ラジアン。度→rad は CPU で変換）。offset 188
+    pub initial_rot_min:     f32,
+    /// 初期回転角 max（ラジアン）。offset 192
+    pub initial_rot_max:     f32,
+    /// テクスチャ配列レイヤ数（0/1=単層。粒子ごとに seed で選ぶ）。offset 196
+    pub tex_layer_count:     u32,
+    /// パディング（16 バイト境界）。offset 200/204
     pub _pad0:               u32,
+    pub _pad1:               u32,
 }
 
 // ─── CPU 側の永続状態（エミッタごと・デバイス不要）────────────
@@ -250,10 +258,12 @@ struct EmitterGpuState {
     compute_bg:    wgpu::BindGroup,
     /// 描画用バインドグループ（group1: particles ro + params + lut）。
     draw_bg:       wgpu::BindGroup,
-    /// テクスチャバインドグループ（group2）。未ロード時 None（既定白を使う）。
+    /// テクスチャバインドグループ（group2, texture_2d_array）。未ロード時 None（既定白を使う）。
     texture_bg:    Option<wgpu::BindGroup>,
-    /// 現在ロード済みのテクスチャパス（差し替え検知用）。
-    texture_path:  Option<String>,
+    /// 現在ロード済みのテクスチャパス列（差し替え検知用）。
+    texture_paths: Vec<String>,
+    /// ロード済みテクスチャ配列のレイヤ数（描画の tex_layer_count 用）。
+    tex_layer_count: u32,
     /// particle_buf の確保容量（max_particles 変更時の再確保判定）。
     buf_capacity:  u32,
     /// プリウォーム用の一時リソース（ステップごとの uniform バッファ＋compute BG）。
@@ -311,10 +321,11 @@ impl EmitterGpuState {
             lut_generation: Some(generation),
             compute_bg,
             draw_bg,
-            texture_bg:     None,
-            texture_path:   None,
-            buf_capacity:   capacity,
-            prewarm:        Vec::new(),
+            texture_bg:      None,
+            texture_paths:   Vec::new(),
+            tex_layer_count: 0,
+            buf_capacity:    capacity,
+            prewarm:         Vec::new(),
         }
     }
 
@@ -361,8 +372,8 @@ struct EmitterFrameDesc {
     blend:         ParticleBlend,
     /// プール容量（dispatch のワークグループ数・draw のインスタンス数）。
     max_particles: u32,
-    /// テクスチャパス（空＝プロシージャル）。sync_gpu が差し替え検知に使う。
-    texture_path:  String,
+    /// テクスチャパス列（空＝プロシージャル白）。sync_gpu が差し替え検知に使う。
+    texture_paths: Vec<String>,
     /// 形状（sync_gpu がメッシュ解決・Model ロードとフォールバック判定に使う）。
     shape:         ParticleShape,
     /// カーブ世代（sync_gpu が LUT 再焼き判定に使う）。
@@ -377,25 +388,28 @@ struct EmitterFrameDesc {
 
 /// LUT 焼き込みに必要なカーブ一式（フレーム記述に載せる clone）。
 struct FrameCurves {
-    speed:         ParamCurve,
-    rot_speed:     ParamCurve,
-    color:         ParamCurve,
-    scale:         ParamCurve,
-    random_colors: Vec<ParamCurve>,
+    speed:     ParamCurve,
+    rot_speed: ParamCurve,
+    scale:     ParamCurve,
+    /// 色カーブリスト（HSVA、最低 1 本。パーティクルごとに 1 本を選ぶ）。
+    colors:    Vec<ParamCurve>,
 }
 
 impl FrameCurves {
-    /// LUT へ焼く（連結順: speed / rot_speed / color / scale / random_color_0..N-1）。
+    /// LUT へ焼く（連結順: speed / rot_speed / scale / color_0..M-1）。M=colors.len()。
     fn bake(&self) -> Vec<[f32; 4]> {
-        let mut lut = Vec::with_capacity(
-            (LUT_FIXED_CURVES + self.random_colors.len()) * CURVE_LUT_SAMPLES,
-        );
+        let color_n = self.colors.len().max(1);
+        let mut lut = Vec::with_capacity((LUT_FIXED_CURVES + color_n) * CURVE_LUT_SAMPLES);
         lut.extend(self.speed.bake_lut(CURVE_LUT_SAMPLES));
         lut.extend(self.rot_speed.bake_lut(CURVE_LUT_SAMPLES));
-        lut.extend(self.color.bake_lut(CURVE_LUT_SAMPLES));
         lut.extend(self.scale.bake_lut(CURVE_LUT_SAMPLES));
-        for c in &self.random_colors {
-            lut.extend(c.bake_lut(CURVE_LUT_SAMPLES));
+        // 色カーブ（最低 1 本は保証されている前提。空なら白フェード相当の定数で埋める）。
+        if self.colors.is_empty() {
+            lut.extend(ParamCurve::default().bake_lut(CURVE_LUT_SAMPLES));
+        } else {
+            for c in &self.colors {
+                lut.extend(c.bake_lut(CURVE_LUT_SAMPLES));
+            }
         }
         lut
     }
@@ -441,10 +455,11 @@ struct RawEmitter {
     gravity:              [f32; 3],
     drag:                 f32,
     rot_speed_range:      [f32; 2],
+    initial_rotation_range: [f32; 2],
     size_range:           [f32; 2],
     curves:               FrameCurves,
     curve_generation:     u64,
-    texture_path:         String,
+    texture_paths:        Vec<String>,
     blend:                ParticleBlend,
     sim_space:            ParticleSimSpace,
     playing:              bool,
@@ -593,13 +608,8 @@ impl ParticleSystem {
                 spread_rad:          (raw.direction_randomness.clamp(0.0, 1.0)
                                         * DIRECTION_RANDOMNESS_MAX_HALF_ANGLE_DEG)
                                         .to_radians(),
-                // 仮の shape_mode（Point=billboard / 他=mesh）。Model のロード失敗
-                // フォールバックは sync_gpu が確定する。
-                shape_mode:          if matches!(raw.shape, ParticleShape::Point) {
-                                        SHAPE_MODE_BILLBOARD
-                                     } else {
-                                        SHAPE_MODE_MESH
-                                     },
+                // shape_mode は常に mesh（Pixel は専用 PointList パイプラインで描く）。
+                shape_mode:          SHAPE_MODE_MESH,
                 direction_local:     raw.direction_local,
                 speed_min:           raw.initial_speed[0],
                 speed_max:           raw.initial_speed[1],
@@ -615,11 +625,17 @@ impl ParticleSystem {
                 size_max:            raw.size_range[1],
                 spawn_volume:        raw.spawn_volume.to_code(),
                 sim_space:           raw.sim_space.to_code(),
-                // 仮の use_texture（テクスチャパス有無）。sync_gpu がロード結果で確定する。
-                use_texture:         if raw.texture_path.is_empty() { 0 } else { 1 },
+                // 仮の use_texture / tex_layer_count（sync_gpu がロード結果で確定する）。
+                use_texture:         if raw.texture_paths.is_empty() { 0 } else { 1 },
                 lut_samples:         CURVE_LUT_SAMPLES as u32,
-                random_color_count:  raw.curves.random_colors.len() as u32,
+                // 色カーブ本数（最低 1 を保証）。
+                color_count:         (raw.curves.colors.len().max(1)) as u32,
+                // 初期回転角（度→ラジアン）。
+                initial_rot_min:     raw.initial_rotation_range[0].to_radians(),
+                initial_rot_max:     raw.initial_rotation_range[1].to_radians(),
+                tex_layer_count:     0,
                 _pad0:               0,
+                _pad1:               0,
             }
         };
 
@@ -671,7 +687,7 @@ impl ParticleSystem {
             entity:           raw.entity,
             blend:            raw.blend,
             max_particles:    max,
-            texture_path:     raw.texture_path,
+            texture_paths:    raw.texture_paths,
             shape:            raw.shape,
             curve_generation: raw.curve_generation,
             curves:           raw.curves,
@@ -710,7 +726,7 @@ impl ParticleSystem {
             // frame[i] から必要な値をコピー／複製して以降の &mut self.gpu と競合させない。
             let entity     = self.frame[i].entity;
             let capacity   = self.frame[i].max_particles;
-            let tex_path   = self.frame[i].texture_path.clone();
+            let tex_paths  = self.frame[i].texture_paths.clone();
             let shape      = self.frame[i].shape.clone();
             let generation = self.frame[i].curve_generation;
             let mut params = self.frame[i].params;
@@ -755,34 +771,40 @@ impl ParticleSystem {
                 }
             }
 
-            // ③ Model 形状のロードとフォールバック確定（shape_mode の最終値）。
-            //    Model のロード失敗／頂点数超過は billboard（Point 相当）へ落とす。
+            // ③ Model 形状のロードを試みる（成否は draw が model_cached で見て、
+            //    未ロードなら Pixel パイプラインへフォールバックする）。
             if let ParticleShape::Model { path } = &shape {
-                let shapes = self.shapes.as_mut().expect("shape cache must exist");
-                if path.is_empty() || shapes.model(device, path).is_none() {
-                    params.shape_mode = SHAPE_MODE_BILLBOARD;
-                    self.frame[i].params.shape_mode = SHAPE_MODE_BILLBOARD;
+                if !path.is_empty() {
+                    let shapes = self.shapes.as_mut().expect("shape cache must exist");
+                    let _ = shapes.model(device, path);
                 }
             }
 
-            // ④ テクスチャの差し替え検知＆ロード、use_texture の確定。
+            // ④ テクスチャ配列の差し替え検知＆ロード、use_texture / tex_layer_count の確定。
             let mut use_texture = 0u32;
-            if !tex_path.is_empty() {
+            let mut tex_layers  = 0u32;
+            if !tex_paths.is_empty() {
                 let g = self.gpu.get_mut(&entity).expect("gpu state must exist");
-                let changed = g.texture_path.as_deref() != Some(tex_path.as_str())
-                    || g.texture_bg.is_none();
+                let changed = g.texture_paths != tex_paths || g.texture_bg.is_none();
                 if changed {
-                    g.texture_bg = load_particle_texture(
-                        device, queue, &tex_path, &draw_pl.tex_bgl, &draw_pl.sampler,
+                    let (bg, layers) = load_particle_textures(
+                        device, queue, &tex_paths, &draw_pl.tex_bgl, &draw_pl.sampler,
                     );
-                    g.texture_path = Some(tex_path.clone());
+                    g.texture_bg      = bg;
+                    g.tex_layer_count = layers;
+                    g.texture_paths   = tex_paths.clone();
                 }
-                if g.texture_bg.is_some() { use_texture = 1; }
+                if g.texture_bg.is_some() {
+                    use_texture = 1;
+                    tex_layers  = g.tex_layer_count;
+                }
             }
 
-            // ⑤ 確定した use_texture を params と frame[i]（draw が参照）へ反映する。
-            params.use_texture = use_texture;
-            self.frame[i].params.use_texture = use_texture;
+            // ⑤ 確定した use_texture / tex_layer_count を params と frame[i]（draw が参照）へ反映する。
+            params.use_texture     = use_texture;
+            params.tex_layer_count = tex_layers;
+            self.frame[i].params.use_texture     = use_texture;
+            self.frame[i].params.tex_layer_count = tex_layers;
 
             // ⑥ プリウォームステップの一時 uniform＋compute BG を作る。
             //    前フレームの一時リソースはここで破棄する（dispatch 済み）。
@@ -861,17 +883,24 @@ impl ParticleSystem {
     ) {
         if self.frame.is_empty() { return; }
         let Some(shapes) = &self.shapes else { return; }; // sync_gpu 前は描画しない
-        // group0（camera）は additive/alpha でレイアウト共通のため 1 度だけセットする。
+        // group0（camera）は全パイプラインでレイアウト共通のため 1 度だけセットする。
         pass.set_bind_group(0, camera_bg, &[]);
         for desc in &self.frame {
             let Some(g) = self.gpu.get(&desc.entity) else { continue; };
-            let pipe = match desc.blend {
-                ParticleBlend::Additive => &draw_pl.additive,
-                ParticleBlend::Alpha    => &draw_pl.alpha,
+            let code = desc.blend.to_code();
+
+            // 形状メッシュを解決する。Pixel、または Model のロード未完（None）は
+            // メッシュ無し＝Pixel（PointList）パイプラインの 1px 点で描く。
+            let mesh: Option<&ShapeMesh> = match &desc.shape {
+                ParticleShape::Pixel  => None,
+                ParticleShape::Sphere => Some(shapes.sphere()),
+                ParticleShape::Box    => Some(shapes.cube()),
+                ParticleShape::Plane  => Some(shapes.plane()),
+                ParticleShape::Model { path } => shapes.model_cached(path),
             };
-            pass.set_pipeline(pipe);
+
+            // 共通バインド（group1=particles/params/lut, group2=texture or 既定白）。
             pass.set_bind_group(1, &g.draw_bg, &[]);
-            // テクスチャ使用時は emitter の texture_bg、未使用時は既定白 1x1。
             let tex_bg = if desc.params.use_texture == 1 {
                 g.texture_bg.as_ref().unwrap_or(&draw_pl.default_white_bg)
             } else {
@@ -879,21 +908,20 @@ impl ParticleSystem {
             };
             pass.set_bind_group(2, tex_bg, &[]);
 
-            // 形状メッシュの解決（Model のフォールバックは shape_mode=billboard で表現済み）。
-            let mesh: &ShapeMesh = match &desc.shape {
-                ParticleShape::Point  => shapes.point(),
-                ParticleShape::Sphere => shapes.sphere(),
-                ParticleShape::Box    => shapes.cube(),
-                ParticleShape::Plane  => shapes.plane(),
-                ParticleShape::Model { path } => {
-                    // sync_gpu でロード試行済み。失敗時は Point クアッドで billboard 描画。
-                    shapes.model_cached(path).unwrap_or_else(|| shapes.point())
+            match mesh {
+                // メッシュ形状: ブレンド別 TriangleList パイプライン＋形状メッシュ×インスタンス。
+                Some(m) => {
+                    pass.set_pipeline(&draw_pl.mesh[code]);
+                    pass.set_vertex_buffer(0, m.vbuf.slice(..));
+                    pass.set_index_buffer(m.ibuf.slice(..), wgpu::IndexFormat::Uint32);
+                    pass.draw_indexed(0..m.index_count, 0, 0..desc.max_particles);
                 }
-            };
-            pass.set_vertex_buffer(0, mesh.vbuf.slice(..));
-            pass.set_index_buffer(mesh.ibuf.slice(..), wgpu::IndexFormat::Uint32);
-            // 形状インデックス × max_particles インスタンス（dead はシェーダで縮退）。
-            pass.draw_indexed(0..mesh.index_count, 0, 0..desc.max_particles);
+                // Pixel: ブレンド別 PointList パイプライン。頂点バッファ無し・1 頂点×インスタンス。
+                None => {
+                    pass.set_pipeline(&draw_pl.pixel[code]);
+                    pass.draw(0..1, 0..desc.max_particles);
+                }
+            }
         }
     }
 }
@@ -936,17 +964,17 @@ fn gather_emitters(world: &mut World, actors: &[Actor], wl: u32, out: &mut Vec<R
                             gravity:              c.gravity,
                             drag:                 c.drag,
                             rot_speed_range:      c.rot_speed_range,
+                            initial_rotation_range: c.initial_rotation_range,
                             size_range:           c.size_range,
                             // LUT 焼き込み用にカーブを clone する（エミッタ数は少数前提）。
                             curves: FrameCurves {
-                                speed:         c.speed_curve.clone(),
-                                rot_speed:     c.rot_speed_curve.clone(),
-                                color:         c.color_curve.clone(),
-                                scale:         c.scale_curve.clone(),
-                                random_colors: c.random_color_curves.clone(),
+                                speed:     c.speed_curve.clone(),
+                                rot_speed: c.rot_speed_curve.clone(),
+                                scale:     c.scale_curve.clone(),
+                                colors:    c.color_curves.clone(),
                             },
                             curve_generation:     c.curve_generation,
-                            texture_path:         c.texture_path.clone(),
+                            texture_paths:        c.texture_paths.clone(),
                             blend:                c.blend,
                             sim_space:            c.sim_space,
                             playing:              c.playing,
@@ -960,21 +988,47 @@ fn gather_emitters(world: &mut World, actors: &[Actor], wl: u32, out: &mut Vec<R
     }
 }
 
-/// テクスチャファイルを読み込んで group2（テクスチャ＋サンプラー）BindGroup を作る。
+/// テクスチャパス列を読み込み、texture_2d_array（最大 MAX_PARTICLE_TEXTURES レイヤ）の
+/// group2 BindGroup を作る。サイズ不一致は先頭テクスチャのサイズへ CPU リサイズする
+/// （Triangle フィルタ）。asset_fs::read_image 経由で assets:// / PAK に対応する。
 ///
-/// asset_fs::read_image を使うため assets:// / PAK に対応する（失敗時はマゼンタ 1x1）。
-fn load_particle_texture(
+/// 戻り値は (BindGroup, レイヤ数)。有効なパスが 1 つも無ければ (None, 0)＝既定白を使う。
+fn load_particle_textures(
     device:  &wgpu::Device,
     queue:   &wgpu::Queue,
-    path:    &str,
+    paths:   &[String],
     tex_bgl: &wgpu::BindGroupLayout,
     sampler: &wgpu::Sampler,
-) -> Option<wgpu::BindGroup> {
-    let rgba = crate::engine::asset_fs::read_image(path);
-    let (w, h) = rgba.dimensions();
+) -> (Option<wgpu::BindGroup>, u32) {
+    // 空でないパスのみを最大 MAX_PARTICLE_TEXTURES 枚まで採用する。
+    let sel: Vec<&String> = paths.iter()
+        .filter(|p| !p.is_empty())
+        .take(MAX_PARTICLE_TEXTURES)
+        .collect();
+    if sel.is_empty() { return (None, 0); }
+
+    // 先頭画像のサイズを配列全体の基準サイズにする（不一致レイヤはここへリサイズ）。
+    let first = crate::engine::asset_fs::read_image(sel[0]);
+    let (w, h) = first.dimensions();
+    if w == 0 || h == 0 { return (None, 0); }
+    let layers = sel.len() as u32;
+
+    // 各レイヤの RGBA バイト列を基準サイズへ揃えて連結する（レイヤ順に並べる）。
+    let mut data: Vec<u8> = Vec::with_capacity((w * h * 4) as usize * layers as usize);
+    for (i, p) in sel.iter().enumerate() {
+        let img = if i == 0 { first.clone() } else { crate::engine::asset_fs::read_image(p) };
+        if img.dimensions() == (w, h) {
+            data.extend_from_slice(img.as_raw());
+        } else {
+            let resized = image::imageops::resize(&img, w, h, image::imageops::FilterType::Triangle);
+            data.extend_from_slice(resized.as_raw());
+        }
+    }
+
+    // texture_2d_array を確保して全レイヤを一括アップロードする。
     let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label:           Some("Particle Texture"),
-        size:            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        label:           Some("Particle Texture Array"),
+        size:            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: layers },
         mip_level_count: 1,
         sample_count:    1,
         dimension:       wgpu::TextureDimension::D2,
@@ -984,16 +1038,20 @@ fn load_particle_texture(
     });
     queue.write_texture(
         texture.as_image_copy(),
-        &rgba,
-        // wgpu 25 の新名称（旧 ImageDataLayout は deprecated）。
+        &data,
         wgpu::TexelCopyBufferLayout {
             offset:         0,
             bytes_per_row:  Some(4 * w),
             rows_per_image: Some(h),
         },
-        wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        wgpu::Extent3d { width: w, height: h, depth_or_array_layers: layers },
     );
-    let view = texture.create_view(&Default::default());
+    let view = texture.create_view(&wgpu::TextureViewDescriptor {
+        label:             Some("Particle Texture Array View"),
+        dimension:         Some(wgpu::TextureViewDimension::D2Array),
+        array_layer_count: Some(layers),
+        ..Default::default()
+    });
     let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label:   Some("Particle Texture BG"),
         layout:  tex_bgl,
@@ -1002,7 +1060,7 @@ fn load_particle_texture(
             wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(sampler) },
         ],
     });
-    Some(bg)
+    (Some(bg), layers)
 }
 
 /// 行優先行列（CPU）→ 列優先行列（GPU）への転置（skin_system と同一）。
@@ -1036,11 +1094,11 @@ mod layout_tests {
         assert_eq!(offset_of!(GpuParticle, rot_angle),  52);
     }
 
-    /// GpuEmitterParams は 192 バイト。vec3 は 16 バイト境界に整列し、
+    /// GpuEmitterParams は 208 バイト。vec3 は 16 バイト境界に整列し、
     /// 直後のスカラーが 4 番目のスロットに同居する。
     #[test]
     fn gpu_emitter_params_layout() {
-        assert_eq!(size_of::<GpuEmitterParams>(), 192, "GpuEmitterParams は 192 バイト");
+        assert_eq!(size_of::<GpuEmitterParams>(), 208, "GpuEmitterParams は 208 バイト");
         assert_eq!(offset_of!(GpuEmitterParams, world_mat),           0);
         assert_eq!(offset_of!(GpuEmitterParams, dt),                  64);
         assert_eq!(offset_of!(GpuEmitterParams, emit_count),          68);
@@ -1066,40 +1124,45 @@ mod layout_tests {
         assert_eq!(offset_of!(GpuEmitterParams, sim_space),           172);
         assert_eq!(offset_of!(GpuEmitterParams, use_texture),         176);
         assert_eq!(offset_of!(GpuEmitterParams, lut_samples),         180);
-        assert_eq!(offset_of!(GpuEmitterParams, random_color_count),  184);
+        assert_eq!(offset_of!(GpuEmitterParams, color_count),         184);
+        assert_eq!(offset_of!(GpuEmitterParams, initial_rot_min),     188);
+        assert_eq!(offset_of!(GpuEmitterParams, initial_rot_max),     192);
+        assert_eq!(offset_of!(GpuEmitterParams, tex_layer_count),     196);
     }
 
-    /// LUT の連結順（speed / rot_speed / color / scale / random_color_0..）と行数。
+    /// LUT の連結順（speed / rot_speed / scale / color_0..M-1）と行数。
     #[test]
     fn lut_bake_layout() {
         use crate::engine::components::particle_emitter_component::CurveChannel;
         let curves = FrameCurves {
-            speed:         ParamCurve::constant1(2.0),
-            rot_speed:     ParamCurve::constant1(3.0),
-            color:         ParamCurve { channels: vec![
-                CurveChannel::constant(0.5),
-                CurveChannel::constant(0.6),
-                CurveChannel::constant(0.7),
-                CurveChannel::constant(0.8),
-            ]},
-            scale:         ParamCurve { channels: vec![
+            speed:     ParamCurve::constant1(2.0),
+            rot_speed: ParamCurve::constant1(3.0),
+            scale:     ParamCurve { channels: vec![
                 CurveChannel::constant(1.0),
                 CurveChannel::constant(1.0),
                 CurveChannel::constant(1.0),
             ]},
-            random_colors: vec![ParamCurve::constant1(9.0)],
+            colors:    vec![
+                ParamCurve { channels: vec![
+                    CurveChannel::constant(0.5),
+                    CurveChannel::constant(0.6),
+                    CurveChannel::constant(0.7),
+                    CurveChannel::constant(0.8),
+                ]},
+                ParamCurve::constant1(9.0),
+            ],
         };
         let lut = curves.bake();
         let s = CURVE_LUT_SAMPLES;
-        // 行数 = (固定 4 本 + random 1 本) × S。
-        assert_eq!(lut.len(), (LUT_FIXED_CURVES + 1) * s);
+        // 行数 = (固定 3 本 + color 2 本) × S。
+        assert_eq!(lut.len(), (LUT_FIXED_CURVES + 2) * s);
         // 各チャンネルの先頭行が正しい位置にあること。
         assert_eq!(lut[0][0],     2.0, "speed は行 0 から");
         assert_eq!(lut[s][0],     3.0, "rot_speed は行 S から");
-        assert_eq!(lut[2 * s][0], 0.5, "color は行 2S から（H）");
-        assert_eq!(lut[2 * s][3], 0.8, "color の A チャンネル");
-        assert_eq!(lut[3 * s][0], 1.0, "scale は行 3S から");
-        assert_eq!(lut[4 * s][0], 9.0, "random_color_0 は行 4S から");
+        assert_eq!(lut[2 * s][0], 1.0, "scale は行 2S から");
+        assert_eq!(lut[3 * s][0], 0.5, "color_0 は行 3S から（H）");
+        assert_eq!(lut[3 * s][3], 0.8, "color_0 の A チャンネル");
+        assert_eq!(lut[4 * s][0], 9.0, "color_1 は行 4S から");
     }
 }
 

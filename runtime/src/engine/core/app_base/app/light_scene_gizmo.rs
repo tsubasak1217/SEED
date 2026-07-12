@@ -62,7 +62,74 @@ fn add_circle(lb: &mut LineBatch, center: [f32; 3], u: [f32; 3], v: [f32; 3], r:
     }
 }
 
+/// アイコンのワールドスケール係数（アクターのスケールとは独立した固定サイズ）。
+/// アイコン GLB は camera_scene_gizmo と同じく camera.glb を暫定流用する。
+const LIGHT_ICON_SCALE: f32 = 0.35;
+
+/// アクター Transform からスケールを除いた回転+平行移動のみの 4x4 行列を返す。
+/// ライトアイコンは常に LIGHT_ICON_SCALE で固定描画するためスケールは無視する。
+fn icon_matrix(tf: &Transform) -> [[f32; 4]; 4] {
+    Transform {
+        position: tf.position,
+        rotation: tf.rotation,
+        scale:    [LIGHT_ICON_SCALE, LIGHT_ICON_SCALE, LIGHT_ICON_SCALE],
+    }.to_mat4()
+}
+
 // ── 公開 API ──────────────────────────────────────────────────
+
+/// LightComponent を持つ全アクターの (DFS ID, アイコン変換行列) リストを返す。
+///
+/// アイコン変換行列はアクターの位置・回転を保持しつつ
+/// `LIGHT_ICON_SCALE` で固定スケールを適用した 4x4 行列。
+/// GLB モデルを InstancedModelBatch で描画する際の `root_transforms` に使用する。
+///
+/// # 引数
+/// - `actors` : ルートアクターのスライス
+/// - `world`  : ECS ワールド（コンポーネント参照に使用）
+/// - `wl`     : 対象の世界線番号
+pub fn collect_light_actor_matrices(
+    actors: &[Actor],
+    world:  &World,
+    wl:     u32,
+) -> Vec<(usize, [[f32; 4]; 4])> {
+    let mut result  = Vec::new();
+    let mut counter = 0usize;
+    collect_light_matrices_recursive(actors, world, wl, &mut counter, &mut result);
+    result
+}
+
+/// アクターツリーを DFS 走査して LightComponent を持つ全アクターの
+/// (DFS ID, アイコン行列) を収集する。
+///
+/// DFS カウンタはすべての world_line 一致アクターを数えるため、
+/// LightComponent 非保持アクターもカウントのみ行う。
+fn collect_light_matrices_recursive(
+    actors:  &[Actor],
+    world:   &World,
+    wl:      u32,
+    counter: &mut usize,
+    result:  &mut Vec<(usize, [[f32; 4]; 4])>,
+) {
+    for actor in actors {
+        if actor.world_line != wl { continue; }
+        let dfs_id = *counter;
+        *counter += 1;
+
+        // LightComponent を持つアクターのみアイコン行列を追加する
+        if actor.has_kind(ComponentKind::Light) {
+            if let Some(light_entity) = actor.first_slot_entity_of_kind(ComponentKind::Light) {
+                if world.get::<LightComponent>(light_entity).is_some() {
+                    if let Some(tf) = world.get::<Transform>(actor.entity) {
+                        result.push((dfs_id, icon_matrix(tf)));
+                    }
+                }
+            }
+        }
+        // 子アクターを再帰処理
+        collect_light_matrices_recursive(actor.children(), world, wl, counter, result);
+    }
+}
 
 /// 選択中アクター（DFS 番号 `selected_dfs`）が LightComponent を持つ場合、
 /// その種別に応じたギズモの GpuLineBatch を構築して返す。

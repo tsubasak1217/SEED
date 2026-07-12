@@ -761,8 +761,35 @@ impl App {
             } else { vec![] }
         } else { vec![] };
         let camera_gizmo_count: u32 = cam_gizmo_actor_mats.len() as u32;
-        // キャンバス ID のベースオフセット（MC + カメラギズモの後）
-        let canvas_id_offset: u32 = mc_total_instances + camera_gizmo_count;
+
+        // ライトギズモアイコンの (DFS ID, アイコン行列) リスト（3D 編集モードのみ）。
+        // ピック情報としてカメラギズモの直後の ID 範囲に割り当てる。
+        let light_gizmo_actor_mats: Vec<(usize, [[f32; 4]; 4])> = if in_editor && !use_ortho_2d_camera {
+            if let Some(scene) = &self.scene {
+                super::light_scene_gizmo::collect_light_actor_matrices(
+                    &scene.actors, &scene.world, self.active_world_line,
+                )
+            } else { vec![] }
+        } else { vec![] };
+        let light_gizmo_count: u32 = light_gizmo_actor_mats.len() as u32;
+
+        // パーティクルエミッタギズモアイコンの (DFS ID, アイコン行列) リスト（3D 編集モードのみ）。
+        // ピック情報としてライトギズモの直後の ID 範囲に割り当てる。
+        let particle_gizmo_actor_mats: Vec<(usize, [[f32; 4]; 4])> = if in_editor && !use_ortho_2d_camera {
+            if let Some(scene) = &self.scene {
+                super::particle_scene_gizmo::collect_particle_actor_matrices(
+                    &scene.actors, &scene.world, self.active_world_line,
+                )
+            } else { vec![] }
+        } else { vec![] };
+        let particle_gizmo_count: u32 = particle_gizmo_actor_mats.len() as u32;
+
+        // ID 空間レイアウト: [MC | カメラギズモ | ライトギズモ | エミッタギズモ | キャンバス]
+        // 各ギズモの ID ベースオフセット（ピックのデコードと id_pass 描画で共有する）。
+        let light_gizmo_id_base:    u32 = mc_total_instances + camera_gizmo_count;
+        let particle_gizmo_id_base: u32 = light_gizmo_id_base + light_gizmo_count;
+        // キャンバス ID のベースオフセット（MC + 全ギズモアイコンの後）
+        let canvas_id_offset: u32 = particle_gizmo_id_base + particle_gizmo_count;
 
         // ── ライト収集（メッシュシェーディング用 GPU ライト配列）──────────────
         // シーンの Light スロットを Transform とともに収集する。Play/Edit 両方で反映。
@@ -1123,26 +1150,92 @@ impl App {
                             }
                         }
                     }
-                    // カメラギズモバッチを毎フレーム更新する（インスタンス変換・視錐台カリング）
-                    if is_3d_scene && !cam_gizmo_actor_mats.is_empty() {
+                    // ライト/パーティクルギズモモデルのレイジーロードと再生成判定
+                    // （カメラギズモと同じ camera.glb を暫定アイコンとして流用する）。
+                    // 同一 GLB でもバッチはギズモ種別ごとに独立させる（ID 範囲・行列が別のため）。
+                    if is_3d_scene
+                        && (!light_gizmo_actor_mats.is_empty() || !particle_gizmo_actor_mats.is_empty())
+                    {
+                        if let Some(ar) = self.editor_resources.clone() {
+                            let model_path = format!("{}/models/camera.glb", ar);
+                            // CPU モデルをキャッシュから取得するか、なければロードする
+                            let cpu_model_opt: Option<std::sync::Arc<crate::engine::core::loader::model::Model>> = {
+                                let mut cache = draw_ctx.model_cache.borrow_mut();
+                                if !cache.contains_key(&model_path) {
+                                    let path = std::path::Path::new(&model_path);
+                                    match crate::engine::core::loader::load_model(path) {
+                                        Ok(m)  => { cache.insert(model_path.clone(), std::sync::Arc::new(m)); }
+                                        Err(e) => { eprintln!("[SEED] icon gizmo model load failed: {e}"); }
+                                    }
+                                }
+                                cache.get(&model_path).cloned()
+                            };
+                            if let Some(cpu) = cpu_model_opt {
+                                // ライトギズモ: バッチ容量が不足している場合は再生成する
+                                if !light_gizmo_actor_mats.is_empty() {
+                                    let need_reinit = self.light_gizmo.as_ref()
+                                        .map(|g| g.capacity < light_gizmo_actor_mats.len())
+                                        .unwrap_or(true);
+                                    if need_reinit {
+                                        let cap = (light_gizmo_actor_mats.len() * 2).max(4);
+                                        let gpu_model = draw_ctx.upload_model(&cpu);
+                                        let batch     = draw_ctx.create_instanced_batch(&cpu, cap as u32);
+                                        self.light_gizmo = Some(CameraGizmoResources {
+                                            cpu_model: cpu.clone(), gpu_model, batch, capacity: cap,
+                                        });
+                                    }
+                                }
+                                // パーティクルエミッタギズモ: 同上
+                                if !particle_gizmo_actor_mats.is_empty() {
+                                    let need_reinit = self.particle_gizmo.as_ref()
+                                        .map(|g| g.capacity < particle_gizmo_actor_mats.len())
+                                        .unwrap_or(true);
+                                    if need_reinit {
+                                        let cap = (particle_gizmo_actor_mats.len() * 2).max(4);
+                                        let gpu_model = draw_ctx.upload_model(&cpu);
+                                        let batch     = draw_ctx.create_instanced_batch(&cpu, cap as u32);
+                                        self.particle_gizmo = Some(CameraGizmoResources {
+                                            cpu_model: cpu.clone(), gpu_model, batch, capacity: cap,
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // カメラ/ライト/パーティクルギズモバッチを毎フレーム更新する
+                    // （インスタンス変換・視錐台カリング）
+                    if is_3d_scene
+                        && (!cam_gizmo_actor_mats.is_empty()
+                            || !light_gizmo_actor_mats.is_empty()
+                            || !particle_gizmo_actor_mats.is_empty())
+                    {
                         let cp  = self.camera.position();
                         let v   = self.camera.view_matrix();
                         let p   = self.camera.projection_matrix();
                         let fp  = extract_frustum_planes(&(p * v).data);
                         let cpo = [cp.x, cp.y, cp.z];
-                        let transforms: Vec<[[f32; 4]; 4]> =
-                            cam_gizmo_actor_mats.iter().map(|&(_, m)| m).collect();
-                        if let Some(gizmo) = &mut self.camera_gizmo {
-                            gizmo.batch.mark_dirty();
-                            // カメラアイコンは常に表示するため extra_frustum なし
-                            gizmo.batch.update(
-                                &draw_ctx.queue,
-                                &gizmo.cpu_model,
-                                &transforms,
-                                &fp,
-                                None,
-                                cpo,
-                            );
+                        // (行列リスト, 対象ギズモ) の組を順に更新する（アイコンは常に表示のため extra_frustum なし）。
+                        let updates: [(&Vec<(usize, [[f32; 4]; 4])>, &mut Option<CameraGizmoResources>); 3] = [
+                            (&cam_gizmo_actor_mats,      &mut self.camera_gizmo),
+                            (&light_gizmo_actor_mats,    &mut self.light_gizmo),
+                            (&particle_gizmo_actor_mats, &mut self.particle_gizmo),
+                        ];
+                        for (mats, gizmo_slot) in updates {
+                            if mats.is_empty() { continue; }
+                            let transforms: Vec<[[f32; 4]; 4]> =
+                                mats.iter().map(|&(_, m)| m).collect();
+                            if let Some(gizmo) = gizmo_slot {
+                                gizmo.batch.mark_dirty();
+                                gizmo.batch.update(
+                                    &draw_ctx.queue,
+                                    &gizmo.cpu_model,
+                                    &transforms,
+                                    &fp,
+                                    None,
+                                    cpo,
+                                );
+                            }
                         }
                     }
 
@@ -3282,6 +3375,28 @@ impl App {
                             }
                         }
 
+                        // ライトアイコンモデル（全ライトアクター、3D シーン）
+                        if !scene_canvas_ss && !light_gizmo_actor_mats.is_empty() {
+                            if let Some(gizmo) = &self.light_gizmo {
+                                draw_model_indirect(
+                                    &mut pass, &gizmo.gpu_model, &gizmo.batch,
+                                    &camera_buf.bind_group, &draw_ctx.light_buffer.bind_group,
+                                    &draw_ctx.pipelines, None,
+                                );
+                            }
+                        }
+
+                        // パーティクルエミッタアイコンモデル（全エミッタアクター、3D シーン）
+                        if !scene_canvas_ss && !particle_gizmo_actor_mats.is_empty() {
+                            if let Some(gizmo) = &self.particle_gizmo {
+                                draw_model_indirect(
+                                    &mut pass, &gizmo.gpu_model, &gizmo.batch,
+                                    &camera_buf.bind_group, &draw_ctx.light_buffer.bind_group,
+                                    &draw_ctx.pipelines, None,
+                                );
+                            }
+                        }
+
                         // ギズモ（グリッド・アウトラインより前面、アイコンより背面）
                         // 3D アクター選択中はメインパスで描画（scene_canvas_ss でもスキップしない）。
                         // 2D アクター選択中 + scene_canvas_ss の場合のみオーバーレイパスへ移動。
@@ -3540,6 +3655,16 @@ impl App {
                                 let cam_gizmo_id_base_opt: Option<(wgpu::Buffer, wgpu::BindGroup)> =
                                     if !cam_gizmo_actor_mats.is_empty() && self.camera_gizmo.is_some() {
                                         Some(draw_ctx.create_id_base_bg(mc_total_instances))
+                                    } else { None };
+                                // ライトギズモ ID バインドグループ（ベース = light_gizmo_id_base）
+                                let light_gizmo_id_base_opt: Option<(wgpu::Buffer, wgpu::BindGroup)> =
+                                    if !light_gizmo_actor_mats.is_empty() && self.light_gizmo.is_some() {
+                                        Some(draw_ctx.create_id_base_bg(light_gizmo_id_base))
+                                    } else { None };
+                                // パーティクルエミッタギズモ ID バインドグループ（ベース = particle_gizmo_id_base）
+                                let particle_gizmo_id_base_opt: Option<(wgpu::Buffer, wgpu::BindGroup)> =
+                                    if !particle_gizmo_actor_mats.is_empty() && self.particle_gizmo.is_some() {
+                                        Some(draw_ctx.create_id_base_bg(particle_gizmo_id_base))
                                     } else { None };
 
                                 // キャンバスアクター ID アイテム収集
@@ -3908,6 +4033,34 @@ impl App {
                                     );
                                 }
 
+                                // ライトギズモ ID 描画
+                                // base = light_gizmo_id_base で全インスタンスを一括描画する。
+                                // インスタンス local_idx → light_gizmo_actor_mats[local_idx].0 = dfs_id
+                                if let (Some(gizmo), Some((_, light_id_bg))) =
+                                    (&self.light_gizmo, &light_gizmo_id_base_opt)
+                                {
+                                    draw_id_pass(
+                                        &mut id_pass,
+                                        &gizmo.gpu_model, &gizmo.batch,
+                                        &camera_buf.bind_group, &draw_ctx.pipelines,
+                                        light_id_bg,
+                                    );
+                                }
+
+                                // パーティクルエミッタギズモ ID 描画
+                                // base = particle_gizmo_id_base で全インスタンスを一括描画する。
+                                // インスタンス local_idx → particle_gizmo_actor_mats[local_idx].0 = dfs_id
+                                if let (Some(gizmo), Some((_, particle_id_bg))) =
+                                    (&self.particle_gizmo, &particle_gizmo_id_base_opt)
+                                {
+                                    draw_id_pass(
+                                        &mut id_pass,
+                                        &gizmo.gpu_model, &gizmo.batch,
+                                        &camera_buf.bind_group, &draw_ctx.pipelines,
+                                        particle_id_bg,
+                                    );
+                                }
+
                                 // 3D Canvas 子スプライト ID 描画（WS / perspective camera）
                                 // 3D MC・カメラギズモの後で描画し最前面に上書きする。
                                 // canvas_id_offset 以上の ID 範囲を使用するため既存の decode ロジックと互換。
@@ -4168,6 +4321,60 @@ impl App {
                         if let Some(&(dfs_id, _)) = cam_gizmo_actor_mats.get(cam_local_idx) {
                             self.actor_virtual_selected_slot_idx = 0;
                             if self.drag.ctrl_at_press {
+                                if self.selected_actor_dfs_ids.contains(&dfs_id) {
+                                    self.selected_actor_dfs_ids.retain(|&x| x != dfs_id);
+                                    if self.actor_virtual_selected_idx == Some(dfs_id) {
+                                        self.actor_virtual_selected_idx = self.selected_actor_dfs_ids.last().copied();
+                                    }
+                                } else {
+                                    self.selected_actor_dfs_ids.push(dfs_id);
+                                    self.actor_virtual_selected_idx = Some(dfs_id);
+                                }
+                            } else {
+                                self.actor_virtual_selected_idx = Some(dfs_id);
+                                self.selected_actor_dfs_ids     = vec![dfs_id];
+                            }
+                            self.selected_instances.clear();
+                            self.send_actor_components(dfs_id as u32, 0);
+                        }
+                    } else if global >= light_gizmo_id_base
+                        && global < light_gizmo_id_base + light_gizmo_count
+                        && !light_gizmo_actor_mats.is_empty()
+                    {
+                        // ライトギズモアイコン選択
+                        // global - light_gizmo_id_base = ライトギズモのローカルインスタンスインデックス
+                        let light_local_idx = (global - light_gizmo_id_base) as usize;
+                        if let Some(&(dfs_id, _)) = light_gizmo_actor_mats.get(light_local_idx) {
+                            self.actor_virtual_selected_slot_idx = 0;
+                            if self.drag.ctrl_at_press {
+                                // Ctrl+クリック: マルチ選択トグル（カメラギズモと同流儀）
+                                if self.selected_actor_dfs_ids.contains(&dfs_id) {
+                                    self.selected_actor_dfs_ids.retain(|&x| x != dfs_id);
+                                    if self.actor_virtual_selected_idx == Some(dfs_id) {
+                                        self.actor_virtual_selected_idx = self.selected_actor_dfs_ids.last().copied();
+                                    }
+                                } else {
+                                    self.selected_actor_dfs_ids.push(dfs_id);
+                                    self.actor_virtual_selected_idx = Some(dfs_id);
+                                }
+                            } else {
+                                self.actor_virtual_selected_idx = Some(dfs_id);
+                                self.selected_actor_dfs_ids     = vec![dfs_id];
+                            }
+                            self.selected_instances.clear();
+                            self.send_actor_components(dfs_id as u32, 0);
+                        }
+                    } else if global >= particle_gizmo_id_base
+                        && global < particle_gizmo_id_base + particle_gizmo_count
+                        && !particle_gizmo_actor_mats.is_empty()
+                    {
+                        // パーティクルエミッタギズモアイコン選択
+                        // global - particle_gizmo_id_base = エミッタギズモのローカルインスタンスインデックス
+                        let pe_local_idx = (global - particle_gizmo_id_base) as usize;
+                        if let Some(&(dfs_id, _)) = particle_gizmo_actor_mats.get(pe_local_idx) {
+                            self.actor_virtual_selected_slot_idx = 0;
+                            if self.drag.ctrl_at_press {
+                                // Ctrl+クリック: マルチ選択トグル（カメラギズモと同流儀）
                                 if self.selected_actor_dfs_ids.contains(&dfs_id) {
                                     self.selected_actor_dfs_ids.retain(|&x| x != dfs_id);
                                     if self.actor_virtual_selected_idx == Some(dfs_id) {

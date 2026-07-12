@@ -398,17 +398,16 @@ impl App {
                     // texture_path / shape_model_path は audio_path と同流儀で JSON 文字列と
                     // してエスケープする。カーブは ParamCurve の JSON をそのまま埋め込む
                     // （外側 JSON の値としてオブジェクト/配列を直接使う。二重クォートしない）。
-                    let path_json       = serde_json::to_string(&d.texture_path).unwrap_or_default();
+                    let paths_json      = serde_json::to_string(&d.texture_paths).unwrap_or_else(|_| "[]".to_string());
                     let model_path_json = serde_json::to_string(d.shape.model_path()).unwrap_or_default();
                     let box_half        = d.spawn_volume.box_half_extents();
                     let sphere_radius   = d.spawn_volume.sphere_radius();
-                    let speed_curve_json         = serde_json::to_string(&d.speed_curve).unwrap_or_else(|_| "{}".to_string());
-                    let rot_speed_curve_json     = serde_json::to_string(&d.rot_speed_curve).unwrap_or_else(|_| "{}".to_string());
-                    let color_curve_json         = serde_json::to_string(&d.color_curve).unwrap_or_else(|_| "{}".to_string());
-                    let scale_curve_json         = serde_json::to_string(&d.scale_curve).unwrap_or_else(|_| "{}".to_string());
-                    let random_color_curves_json = serde_json::to_string(&d.random_color_curves).unwrap_or_else(|_| "[]".to_string());
+                    let speed_curve_json     = serde_json::to_string(&d.speed_curve).unwrap_or_else(|_| "{}".to_string());
+                    let rot_speed_curve_json = serde_json::to_string(&d.rot_speed_curve).unwrap_or_else(|_| "{}".to_string());
+                    let scale_curve_json     = serde_json::to_string(&d.scale_curve).unwrap_or_else(|_| "{}".to_string());
+                    let color_curves_json    = serde_json::to_string(&d.color_curves).unwrap_or_else(|_| "[]".to_string());
                     ("ParticleEmitterComponent", format!(
-                        r#","max_particles":{},"shape":"{}","shape_model_path":{model_path_json},"spawn_volume":"{}","spawn_box_x":{:.4},"spawn_box_y":{:.4},"spawn_box_z":{:.4},"spawn_sphere_radius":{:.4},"emit_mode":"{}","emit_count_total":{},"initial_delay":{:.4},"prewarm_time":{:.4},"emit_interval":{:.4},"particles_per_emit":{},"lifetime_min":{:.4},"lifetime_max":{:.4},"speed_min":{:.4},"speed_max":{:.4},"dir_x":{:.4},"dir_y":{:.4},"dir_z":{:.4},"direction_randomness":{:.4},"gravity_x":{:.4},"gravity_y":{:.4},"gravity_z":{:.4},"drag":{:.4},"rot_speed_min":{:.4},"rot_speed_max":{:.4},"size_min":{:.4},"size_max":{:.4},"texture_path":{path_json},"blend":"{}","sim_space":"{}","playing":{},"speed_curve":{speed_curve_json},"rot_speed_curve":{rot_speed_curve_json},"color_curve":{color_curve_json},"scale_curve":{scale_curve_json},"random_color_curves":{random_color_curves_json}"#,
+                        r#","max_particles":{},"shape":"{}","shape_model_path":{model_path_json},"spawn_volume":"{}","spawn_box_x":{:.4},"spawn_box_y":{:.4},"spawn_box_z":{:.4},"spawn_sphere_radius":{:.4},"emit_mode":"{}","emit_count_total":{},"initial_delay":{:.4},"prewarm_time":{:.4},"emit_interval":{:.4},"particles_per_emit":{},"lifetime_min":{:.4},"lifetime_max":{:.4},"speed_min":{:.4},"speed_max":{:.4},"dir_x":{:.4},"dir_y":{:.4},"dir_z":{:.4},"direction_randomness":{:.4},"gravity_x":{:.4},"gravity_y":{:.4},"gravity_z":{:.4},"drag":{:.4},"rot_speed_min":{:.4},"rot_speed_max":{:.4},"initial_rot_min":{:.4},"initial_rot_max":{:.4},"size_min":{:.4},"size_max":{:.4},"texture_paths":{paths_json},"blend":"{}","sim_space":"{}","playing":{},"speed_curve":{speed_curve_json},"rot_speed_curve":{rot_speed_curve_json},"scale_curve":{scale_curve_json},"color_curves":{color_curves_json}"#,
                         d.max_particles,
                         d.shape.as_str(),
                         d.spawn_volume.as_str(),
@@ -423,6 +422,7 @@ impl App {
                         d.gravity[0], d.gravity[1], d.gravity[2],
                         d.drag,
                         d.rot_speed_range[0], d.rot_speed_range[1],
+                        d.initial_rotation_range[0], d.initial_rotation_range[1],
                         d.size_range[0], d.size_range[1],
                         d.blend.as_str(), d.sim_space.as_str(),
                         d.playing as u8,

@@ -31,19 +31,18 @@
 
 // ─── 定数 ─────────────────────────────────────────────────────
 const PI: f32 = 3.14159265359;
-// プロシージャル円のエッジのソフトネス幅（UV 距離の割合）。
-const CIRCLE_EDGE: f32 = 0.08;
 // 乱数ソルト（particle_sim.wgsl の系列と独立。seed から決定的に再現する）。
 const SALT_SIZE:      u32 = 0x165667B1u; // 全体サイズ倍率
-const SALT_COLORPICK: u32 = 0xB5297A4Du; // ランダム色カーブ選択
+const SALT_COLORPICK: u32 = 0xB5297A4Du; // 色カーブ選択（リストからランダム 1 本）
 const SALT_AXIS_COS:  u32 = 0x68E31DA4u; // 回転軸の cosθ
 const SALT_AXIS_PHI:  u32 = 0x1B56C4E9u; // 回転軸の方位角
+const SALT_TEXLAYER:  u32 = 0x2545F491u; // テクスチャ配列レイヤ選択
 // 混合ハッシュ乗数／XOR（sim と同一の系。決定的であればよい）。
 const HASH_MUL: u32 = 2654435769u;
 const HASH_XOR: u32 = 2747636419u;
 
-// 形状モード（Rust 側 shape_mode と一致）。
-const SHAPE_BILLBOARD: u32 = 0u;
+// LUT の固定カーブ本数（speed / rot_speed / scale）。色カーブはこの後ろに続く。
+const LUT_FIXED_CURVES: u32 = 3u;
 
 // ─── Group 0: カメラ（shader_common.wgsl の CameraUniform と同一レイアウト）──
 struct CameraUniform {
@@ -95,16 +94,21 @@ struct EmitterParams {
     sim_space:           u32,         // 172  0=World / 1=Local
     use_texture:         u32,         // 176
     lut_samples:         u32,         // 180  カーブ LUT のサンプル数 S
-    random_color_count:  u32,         // 184  ランダム色カーブ本数
-    _pad0:               u32,         // 188
+    color_count:         u32,         // 184  色カーブ本数（最低 1）
+    initial_rot_min:     f32,         // 188  初期回転角 min（ラジアン。描画では未使用）
+    initial_rot_max:     f32,         // 192  初期回転角 max（ラジアン。描画では未使用）
+    tex_layer_count:     u32,         // 196  テクスチャ配列レイヤ数
+    _pad0:               u32,         // 200
+    _pad1:               u32,         // 204
 };
 
 @group(1) @binding(0) var<storage, read> particles: array<Particle>;
 @group(1) @binding(1) var<uniform>       params:    EmitterParams;
 @group(1) @binding(2) var<storage, read> lut:       array<vec4<f32>>;
 
-// ─── Group 2: テクスチャ＋サンプラー ──────────────────────────
-@group(2) @binding(0) var t_particle: texture_2d<f32>;
+// ─── Group 2: テクスチャ配列＋サンプラー ──────────────────────
+// texture_2d_array（最大 MAX_PARTICLE_TEXTURES レイヤ）。粒子ごとに seed で 1 枚選ぶ。
+@group(2) @binding(0) var t_particle: texture_2d_array<f32>;
 @group(2) @binding(1) var s_particle: sampler;
 
 // ─── ハッシュ（seed から決定的に属性を再現する）───────────────
@@ -167,111 +171,120 @@ fn rotate_axis_angle(v: vec3<f32>, axis: vec3<f32>, angle: f32) -> vec3<f32> {
 
 // ─── 頂点出力 ─────────────────────────────────────────────────
 struct VsOut {
-    @builtin(position) clip:  vec4<f32>,
-    @location(0)       uv:    vec2<f32>,
-    @location(1)       color: vec4<f32>,
+    @builtin(position)              clip:  vec4<f32>,
+    @location(0)                    uv:    vec2<f32>,
+    @location(1)                    color: vec4<f32>,
+    // テクスチャ配列レイヤ（粒子ごとに一定＝flat 補間）。
+    @location(2) @interpolate(flat) layer: u32,
 };
 
-// ─── 頂点シェーダ ─────────────────────────────────────────────
+// ─── 粒子の共通属性（色・スケール・中心・dead・レイヤ）──────────
+struct ParticleAttr {
+    dead:   bool,
+    center: vec3<f32>,
+    scale3: vec3<f32>,
+    color:  vec4<f32>, // RGBA（HSV→RGB 済み）
+    layer:  u32,       // テクスチャ配列レイヤ
+};
+
+/// 粒子 1 個の描画用属性を seed から決定的に計算する（vs_main / vs_pixel 共通）。
+fn compute_attr(p: Particle) -> ParticleAttr {
+    var a: ParticleAttr;
+    a.dead = (p.lifetime <= 0.0) || (p.age >= p.lifetime);
+    let life = max(p.lifetime, 1e-6);
+    let t    = clamp(p.age / life, 0.0, 1.0);
+
+    // 全体サイズ倍率 × scale カーブ（行 2S..3S、xyz）。
+    let size_mult = mix(params.size_min, params.size_max, rand_f32(p.seed ^ SALT_SIZE));
+    a.scale3 = sample_lut(params.lut_samples * 2u, t).xyz * size_mult;
+
+    // 粒子中心のワールド座標（Local シムは行列変換）。
+    var center = p.pos;
+    if params.sim_space == 1u {
+        center = (params.world_mat * vec4<f32>(p.pos, 1.0)).xyz;
+    }
+    a.center = center;
+
+    // 色: 色カーブリスト（最低 1 本）から seed で 1 本選び、HSVA を RGB 化する。
+    // 色カーブは LUT の行 (LUT_FIXED_CURVES + j)S..（固定 3 本の後ろに並ぶ）。
+    let cc = max(params.color_count, 1u);
+    let j  = hash_u32(p.seed ^ SALT_COLORPICK) % cc;
+    let hsva = sample_lut(params.lut_samples * (LUT_FIXED_CURVES + j), t);
+    a.color = vec4<f32>(hsv2rgb(hsva.xyz), hsva.w);
+
+    // テクスチャ配列レイヤ選択（seed で 1 枚。tex_layer_count は最低 1 で割る）。
+    let lc = max(params.tex_layer_count, 1u);
+    a.layer = hash_u32(p.seed ^ SALT_TEXLAYER) % lc;
+    return a;
+}
+
+// ─── メッシュ形状の頂点シェーダ（Sphere/Box/Plane/Model）──────
+// 粒子ごとのランダム軸まわりに rot_angle の軸角回転（Rodrigues）を適用し、
+// scale_curve×サイズ倍率でスケールして粒子中心へ平行移動する。
 @vertex
 fn vs_main(
     @location(0)             vpos: vec3<f32>, // 単位メッシュのローカル頂点位置
     @builtin(instance_index) ii:   u32,
 ) -> VsOut {
     var out: VsOut;
-
     let p = particles[ii];
-    // dead 判定（未生成／寿命切れ）。サイズ 0 縮退で不可視にする。
-    let dead = (p.lifetime <= 0.0) || (p.age >= p.lifetime);
-    let life = max(p.lifetime, 1e-6);
-    let t    = clamp(p.age / life, 0.0, 1.0);
+    let a = compute_attr(p);
 
-    // 全体サイズ倍率: seed から size_range 乱数を再現し、scale_curve(t) を掛ける。
-    // scale チャンネルは LUT の行 3S..4S（xyz）。
-    let size_mult = mix(params.size_min, params.size_max, rand_f32(p.seed ^ SALT_SIZE));
-    let scale3    = sample_lut(params.lut_samples * 3u, t).xyz * size_mult;
-
-    // 粒子中心のワールド座標。Local シムは描画時に行列変換する。
-    var center = p.pos;
-    if params.sim_space == 1u {
-        center = (params.world_mat * vec4<f32>(p.pos, 1.0)).xyz;
-    }
+    // 粒子ごとのランダム回転軸（seed から球面一様に決定的生成）。
+    let cos_t = rand_f32(p.seed ^ SALT_AXIS_COS) * 2.0 - 1.0;
+    let sin_t = sqrt(max(0.0, 1.0 - cos_t * cos_t));
+    let phi   = rand_f32(p.seed ^ SALT_AXIS_PHI) * 2.0 * PI;
+    let axis  = vec3<f32>(sin_t * cos(phi), sin_t * sin(phi), cos_t);
+    // スケール → 軸角回転 → 平行移動。
+    let v = rotate_axis_angle(vpos * a.scale3, axis, p.rot_angle);
 
     var wp: vec3<f32>;
-    if params.shape_mode == SHAPE_BILLBOARD {
-        // ── ビルボード（Point）──
-        // ビュー行列の行 0/1（列優先なので [col][row]）＝カメラ右／上。
-        let right = vec3<f32>(u_camera.view[0][0], u_camera.view[1][0], u_camera.view[2][0]);
-        let up    = vec3<f32>(u_camera.view[0][1], u_camera.view[1][1], u_camera.view[2][1]);
-        // 面内回転（rot_angle）をローカル xy に適用してからカメラ基底で展開する。
-        // UV は回転前のコーナーから得る＝テクスチャはクアッドと一緒に回転して見える。
-        let ca = cos(p.rot_angle);
-        let sa = sin(p.rot_angle);
-        let rx = vpos.x * ca - vpos.y * sa;
-        let ry = vpos.x * sa + vpos.y * ca;
-        // ビルボードのサイズは scale の x 成分を全体サイズとして使う
-        // （Point 形状は等方サイズ。y/z チャンネルは未使用）。
-        wp = center + (right * rx + up * ry) * scale3.x;
+    if params.sim_space == 1u {
+        // Local シム: 頂点オフセットもローカル空間で足してから行列変換する。
+        wp = (params.world_mat * vec4<f32>(p.pos + v, 1.0)).xyz;
     } else {
-        // ── メッシュ形状（Sphere/Box/Plane/Model）──
-        // 粒子ごとのランダム回転軸（seed から球面一様に決定的生成）。
-        let cos_t = rand_f32(p.seed ^ SALT_AXIS_COS) * 2.0 - 1.0;
-        let sin_t = sqrt(max(0.0, 1.0 - cos_t * cos_t));
-        let phi   = rand_f32(p.seed ^ SALT_AXIS_PHI) * 2.0 * PI;
-        let axis  = vec3<f32>(sin_t * cos(phi), sin_t * sin(phi), cos_t);
-        // スケール → 軸角回転 → 平行移動。
-        let v = rotate_axis_angle(vpos * scale3, axis, p.rot_angle);
-        if params.sim_space == 1u {
-            // Local シム: 頂点オフセットもローカル空間で足してから行列変換する。
-            wp = (params.world_mat * vec4<f32>(p.pos + v, 1.0)).xyz;
-        } else {
-            wp = center + v;
-        }
+        wp = a.center + v;
     }
+    // dead はオフセットを潰して中心へ縮退させる（面積 0＝ラスタライズされない）。
+    wp = select(wp, a.center, a.dead);
 
-    // dead はオフセットを潰して 1 点に縮退させる（面積 0＝ラスタライズされない）。
-    wp = select(wp, center, dead);
-
-    // UV: ビルボードは回転前コーナー（±0.5 → 0..1）、メッシュは中心固定（v1 制限）。
-    if params.shape_mode == SHAPE_BILLBOARD {
-        out.uv = vpos.xy + vec2<f32>(0.5, 0.5);
-    } else {
-        out.uv = vec2<f32>(0.5, 0.5);
-    }
-
-    out.clip = u_camera.view_proj * vec4<f32>(wp, 1.0);
-
-    // ── 色: HSVA カーブを t でサンプルし RGB 化する ──
-    // random_color_count>0 なら seed ハッシュでランダム色カーブ（行 (4+j)S..）を選ぶ。
-    var color_base = params.lut_samples * 2u; // 既定は color チャンネル（行 2S..3S）
-    if params.random_color_count > 0u {
-        let j = hash_u32(p.seed ^ SALT_COLORPICK) % params.random_color_count;
-        color_base = params.lut_samples * (4u + j);
-    }
-    let hsva = sample_lut(color_base, t);
-    let rgb  = hsv2rgb(hsva.xyz);
-    // dead はアルファ 0（縮退と併用の保険）。
-    out.color = select(vec4<f32>(rgb, hsva.w), vec4<f32>(rgb, 0.0), dead);
+    out.clip  = u_camera.view_proj * vec4<f32>(wp, 1.0);
+    // UV: ローカル xy を 0..1 へ（Plane は正確・他形状は近似。v1 制限）。
+    out.uv    = clamp(vpos.xy + vec2<f32>(0.5), vec2<f32>(0.0), vec2<f32>(1.0));
+    out.color = select(a.color, vec4<f32>(a.color.rgb, 0.0), a.dead);
+    out.layer = a.layer;
     return out;
 }
 
-// ─── フラグメントシェーダ ─────────────────────────────────────
+// ─── Pixel（PointList）頂点シェーダ ───────────────────────────
+// ポリゴンを生成せず、粒子中心 1 点を 1 ピクセルとしてラスタライズする最軽量描画。
+// 頂点バッファは不要（instance_index のみ）。サイズ・回転は持たない（1px 固定）。
+@vertex
+fn vs_pixel(@builtin(instance_index) ii: u32) -> VsOut {
+    var out: VsOut;
+    let p = particles[ii];
+    let a = compute_attr(p);
+    // dead は NDC 範囲外へ飛ばして描画対象から外す（点は縮退で消せないため）。
+    var clip = u_camera.view_proj * vec4<f32>(a.center, 1.0);
+    if a.dead {
+        clip = vec4<f32>(2.0, 2.0, 2.0, 1.0);
+    }
+    out.clip  = clip;
+    out.uv    = vec2<f32>(0.5, 0.5);
+    out.color = a.color;
+    out.layer = a.layer;
+    return out;
+}
+
+// ─── フラグメントシェーダ（メッシュ・Pixel 共通）──────────────
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     var col = in.color;
-
     if params.use_texture == 1u {
-        // テクスチャ乗算（HDR・トーンマップなし）。
-        let tex = textureSample(t_particle, s_particle, in.uv);
-        col = col * tex;
-    } else {
-        // プロシージャル円: UV 中心からの距離場でソフトエッジのアルファを作る。
-        // メッシュ形状は UV 中心固定（d=0）のため常にフルアルファになる。
-        let d = distance(in.uv, vec2<f32>(0.5, 0.5)) * 2.0; // 0=中心, 1=外接円
-        let a = 1.0 - smoothstep(1.0 - CIRCLE_EDGE, 1.0, d);
-        col   = vec4<f32>(col.rgb, col.a * a);
+        // テクスチャ配列から粒子ごとのレイヤをサンプル（mip なし＝level 0 固定。
+        // 点プリミティブでも微分に依存しないよう SampleLevel を使う）。
+        col = col * textureSampleLevel(t_particle, s_particle, in.uv, i32(in.layer), 0.0);
     }
-
-    // premultiplied alpha を出力（Additive=One/One, Alpha=One/OneMinusSrcA 両対応）。
+    // premultiplied alpha を出力（各ブレンドステートは pipeline.rs で選択）。
     return vec4<f32>(col.rgb * col.a, col.a);
 }

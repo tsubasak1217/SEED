@@ -612,6 +612,18 @@ pub struct App {
     /// 3D 編集モードの初回フレームで遅延初期化される。
     camera_gizmo: Option<CameraGizmoResources>,
 
+    // ── ライトギズモアイコン ─────────────────────────────────────
+    /// ライト用アイコン（暫定的に camera.glb を流用）で全ライトアクター位置に
+    /// アイコンを描画するリソース。CameraGizmoResources と同一構造を流用する。
+    /// 3D 編集モードの初回フレームで遅延初期化される。
+    light_gizmo: Option<CameraGizmoResources>,
+
+    // ── パーティクルエミッタギズモアイコン ────────────────────────
+    /// パーティクルエミッタ用アイコン（暫定的に camera.glb を流用）で
+    /// 全エミッタアクター位置にアイコンを描画するリソース。
+    /// 3D 編集モードの初回フレームで遅延初期化される。
+    particle_gizmo: Option<CameraGizmoResources>,
+
     // ── 統合モデルバッチキャッシュ ──────────────────────────────────
     /// モデルパス → 統合バッチのキャッシュ。
     /// 同一モデルを参照する全アクターの行列を 1 つの InstancedModelBatch に統合し、
@@ -932,6 +944,8 @@ impl App {
             camera_preview:              None,
             camera_preview_target_size:  None,
             camera_gizmo:                None,
+            light_gizmo:                 None,
+            particle_gizmo:              None,
             shared_model_batches:    HashMap::new(),
             pending_drop:            None,
             pending_drop_hover: None,

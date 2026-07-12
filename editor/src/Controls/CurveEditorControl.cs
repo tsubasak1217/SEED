@@ -51,6 +51,7 @@ public sealed class CurveEditorControl : UserControl
     private const double RangeMargin     = 0.10;  // 表示レンジ上下の余白比率
     private const int    GradientStops   = 32;    // グラデーションプレビューのサンプル数
     private const double GradientHeight  = 16;    // グラデーションバーの高さ
+    private const int    PlotSamples     = 48;    // 折れ線描画のサンプル数（Smooth/Step を滑らかに表現するため線形補間の直結ではなく Eval サンプリングで描く）
 
     // チャンネル色（X=赤 / Y=緑 / Z=青 / W=灰）。
     private static readonly Color[] s_channelColors =
@@ -89,6 +90,7 @@ public sealed class CurveEditorControl : UserControl
     private readonly TextBox _vBox;           // 選択キー v 入力
     private readonly TextBlock _selInfo;      // 選択キー情報ラベル
     private readonly StackPanel _channelBar;  // チャンネルトグルボタン列
+    private readonly Button[] _interpButtons; // 補間タイプ切替ボタン（Linear/Smooth/Step）
 
     /// <summary>編集確定（ドラッグ終了/追加/削除/数値確定）時に発火する。</summary>
     public event EventHandler? CurveChanged;
@@ -175,16 +177,46 @@ public sealed class CurveEditorControl : UserControl
         _vBox = new TextBox { Width = 56, FontSize = 11, IsEnabled = false };
         editRow.Children.Add(_vBox);
         // t/v 入力の確定（Enter / フォーカス喪失）。
+        // PreviewKeyDown で Enter/Space を先取りして消費する（親 Expander のヘッダー
+        // ToggleButton がキーボードフォーカス経由で Space/Enter に反応して開閉してしまう
+        // ことがあるため。バブリングでの誤トグルを断つ実装判断。CommitNumberEdit 自体は
+        // KeyDown ハンドラで従来通り呼ぶ）。
+        _tBox.PreviewKeyDown += (_, e) => { if (e.Key is Key.Return or Key.Enter or Key.Space or Key.Delete) e.Handled = true; };
+        _vBox.PreviewKeyDown += (_, e) => { if (e.Key is Key.Return or Key.Enter or Key.Space or Key.Delete) e.Handled = true; };
         _tBox.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { CommitNumberEdit(); e.Handled = true; } };
         _tBox.LostFocus += (_, _) => CommitNumberEdit();
         _vBox.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { CommitNumberEdit(); e.Handled = true; } };
         _vBox.LostFocus += (_, _) => CommitNumberEdit();
         root.Children.Add(editRow);
 
+        // ── 補間タイプ切替行（選択キーの区間補間: Linear/Smooth/Step）─────
+        var interpRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 2, 0, 0) };
+        interpRow.Children.Add(new TextBlock
+        {
+            Text = "補間", Foreground = s_textBrush, FontSize = 10,
+            VerticalAlignment = VerticalAlignment.Center, Width = 70,
+        });
+        _interpButtons = new Button[3];
+        var interpValues = new[] { CurveInterp.Linear, CurveInterp.Smooth, CurveInterp.Step };
+        var interpLabels = new[] { "Linear", "Smooth", "Step" };
+        for (int i = 0; i < 3; i++)
+        {
+            var interp = interpValues[i];
+            var btn = new Button
+            {
+                Content = interpLabels[i], Width = 50, Height = 18, FontSize = 9,
+                Margin = new Thickness(0, 0, 2, 0), IsEnabled = false,
+            };
+            btn.Click += (_, _) => SetSelectedKeyInterp(interp);
+            _interpButtons[i] = btn;
+            interpRow.Children.Add(btn);
+        }
+        root.Children.Add(interpRow);
+
         // 操作ヒント。
         root.Children.Add(new TextBlock
         {
-            Text = "ダブルクリック=追加 / 右クリック=削除 / ドラッグ=移動",
+            Text = "ダブルクリック=追加 / 右クリック=削除 / ドラッグ=移動 / 補間=区間の形",
             Foreground = new SolidColorBrush(Color.FromRgb(0x77, 0x77, 0x77)),
             FontSize = 9, FontStyle = FontStyles.Italic, Margin = new Thickness(0, 2, 0, 0),
         });
@@ -352,15 +384,30 @@ public sealed class CurveEditorControl : UserControl
         var brush = new SolidColorBrush(color);
         double opacity = active ? 1.0 : InactiveOpacity;
 
-        // 折れ線。
+        // 折れ線。Eval() を PlotSamples 点でサンプリングして描く（キー間を直結するのではなく
+        // 区間ごとの補間方式（Linear/Smooth/Step）を折れ線の形で正しく反映するため）。
         if (ch.Keys.Count >= 2)
         {
+            float tMin = ch.Keys[0].T;
+            float tMax = ch.Keys[^1].T;
             var poly = new Polyline
             {
                 Stroke = brush, StrokeThickness = LineThickness, Opacity = opacity,
             };
-            foreach (var k in ch.Keys)
-                poly.Points.Add(new Point(TtoX(k.T), VtoY(k.V)));
+            if (tMax > tMin)
+            {
+                for (int s = 0; s < PlotSamples; s++)
+                {
+                    float t = tMin + (tMax - tMin) * s / (PlotSamples - 1);
+                    poly.Points.Add(new Point(TtoX(t), VtoY(ch.Eval(t))));
+                }
+            }
+            else
+            {
+                // 全キー同一 t（潰れたレンジ）: そのまま素通りに 2 点で結ぶ。
+                foreach (var k in ch.Keys)
+                    poly.Points.Add(new Point(TtoX(k.T), VtoY(k.V)));
+            }
             _canvas.Children.Add(poly);
         }
 
@@ -429,6 +476,7 @@ public sealed class CurveEditorControl : UserControl
             _selInfo.Text = "キー未選択";
             _tBox.IsEnabled = _vBox.IsEnabled = false;
             _tBox.Text = _vBox.Text = "";
+            foreach (var b in _interpButtons) { b.IsEnabled = false; b.FontWeight = FontWeights.Normal; }
             return;
         }
         var labels = _isHsva ? s_hsvaLabels : s_channelLabels;
@@ -437,6 +485,27 @@ public sealed class CurveEditorControl : UserControl
         _tBox.IsEnabled = _vBox.IsEnabled = true;
         _tBox.Text = k.T.ToString("0.###", CultureInfo.InvariantCulture);
         _vBox.Text = k.V.ToString("0.###", CultureInfo.InvariantCulture);
+
+        // 補間ボタン: 末尾キーは区間を持たないため無効化する。それ以外は現在値を強調表示する。
+        bool isLastKey = _selChannel >= 0 && _selChannel < _curve.Channels.Count &&
+                          _selKey == _curve.Channels[_selChannel].Keys.Count - 1;
+        var interpValues = new[] { CurveInterp.Linear, CurveInterp.Smooth, CurveInterp.Step };
+        for (int i = 0; i < _interpButtons.Length; i++)
+        {
+            _interpButtons[i].IsEnabled  = !isLastKey;
+            _interpButtons[i].FontWeight = k.Interp == interpValues[i] ? FontWeights.Bold : FontWeights.Normal;
+        }
+    }
+
+    /// <summary>選択中キーの補間タイプ（区間開始キーとしての Interp）を変更し、再描画・通知する。</summary>
+    private void SetSelectedKeyInterp(CurveInterp interp)
+    {
+        var k = SelectedKey();
+        if (k == null || k.Interp == interp) return;
+        k.Interp = interp;
+        UpdateSelectionUi();
+        Redraw();
+        RaiseChanged();
     }
 
     private CurveKey? SelectedKey()
@@ -498,12 +567,15 @@ public sealed class CurveEditorControl : UserControl
     {
         _canvas.Focus();
         var p = e.GetPosition(_canvas);
+        // キャンバス上のクリックは常にここで消費する（ヒットなしの単発クリックも含む）。
+        // 消費し忘れると未処理のまま親要素（例: このエディタを内包する Expander）まで
+        // バブリングし、意図しない副作用を招きうるため一律で止める。
+        e.Handled = true;
 
         // ダブルクリック=アクティブチャンネルへキー追加。
         if (e.ClickCount == 2)
         {
             AddKeyAt(p);
-            e.Handled = true;
             return;
         }
 
@@ -517,7 +589,6 @@ public sealed class CurveEditorControl : UserControl
             _canvas.CaptureMouse();
             UpdateSelectionUi();
             Redraw();
-            e.Handled = true;
         }
     }
 
@@ -548,11 +619,8 @@ public sealed class CurveEditorControl : UserControl
     {
         var p = e.GetPosition(_canvas);
         int hit = HitTestActiveKey(p);
-        if (hit >= 0)
-        {
-            DeleteKey(_activeChannel, hit);
-            e.Handled = true;
-        }
+        if (hit >= 0) DeleteKey(_activeChannel, hit);
+        e.Handled = true;
     }
 
     private void OnCanvasKeyDown(object sender, KeyEventArgs e)
@@ -561,7 +629,11 @@ public sealed class CurveEditorControl : UserControl
         {
             DeleteKey(_selChannel, _selKey);
             e.Handled = true;
+            return;
         }
+        // Space/Enter がキャンバス上で押されても親 ToggleButton（Expander ヘッダー）まで
+        // バブリングして開閉を誘発しないよう、キャンバスにフォーカスがある間は消費する。
+        if (e.Key is Key.Space or Key.Return or Key.Enter) e.Handled = true;
     }
 
     // アクティブチャンネルのキーをヒットテスト（最も近い HitRadius 内のキー）。
@@ -669,11 +741,23 @@ public sealed class CurveEditorControl : UserControl
             if (ch.Keys.Count < 2) continue;
             var color = s_channelColors[Math.Min(c, s_channelColors.Length - 1)];
             var poly = new Polyline { Stroke = new SolidColorBrush(color), StrokeThickness = 1.2 };
-            foreach (var k in ch.Keys)
+            // Eval() サンプリングで描く（Smooth/Step の形をミニプレビューにも反映するため）。
+            float tMin = ch.Keys[0].T;
+            float tMax = ch.Keys[^1].T;
+            if (tMax > tMin)
             {
-                double x = Math.Clamp(k.T, 0, 1) * width;
-                double y = (1 - (k.V - vMin) / span) * height;
-                poly.Points.Add(new Point(x, y));
+                for (int s = 0; s < PlotSamples; s++)
+                {
+                    float t = tMin + (tMax - tMin) * s / (PlotSamples - 1);
+                    double x = t * width;
+                    double y = (1 - (ch.Eval(t) - vMin) / span) * height;
+                    poly.Points.Add(new Point(x, y));
+                }
+            }
+            else
+            {
+                foreach (var k in ch.Keys)
+                    poly.Points.Add(new Point(Math.Clamp(k.T, 0, 1) * width, (1 - (k.V - vMin) / span) * height));
             }
             canvas.Children.Add(poly);
         }

@@ -49,6 +49,7 @@ const SALT_BOXX:     u32 = 0xD1B54A32u; // スポーン Box X
 const SALT_BOXY:     u32 = 0x9FB21C65u; // スポーン Box Y
 const SALT_BOXZ:     u32 = 0xCA5A8267u; // スポーン Box Z
 const SALT_SPH_R:    u32 = 0x6C8E9CF5u; // スポーン Sphere 半径係数
+const SALT_INITROT:  u32 = 0x45D9F3B3u; // 初期回転角（initial_rotation_range 内の乱数）
 // 混合ハッシュ用の奇数乗数（PCG/wanghash 系の定数）。
 const HASH_MUL: u32 = 2654435769u;
 const HASH_XOR: u32 = 2747636419u;
@@ -94,8 +95,12 @@ struct EmitterParams {
     sim_space:           u32,         // 172  0=World / 1=Local
     use_texture:         u32,         // 176  1=テクスチャ / 0=プロシージャル円（描画用）
     lut_samples:         u32,         // 180  カーブ LUT のサンプル数（CURVE_LUT_SAMPLES）
-    random_color_count:  u32,         // 184  ランダム色カーブ本数（描画用）
-    _pad0:               u32,         // 188
+    color_count:         u32,         // 184  色カーブ本数（最低 1。描画用）
+    initial_rot_min:     f32,         // 188  初期回転角 min（ラジアン）
+    initial_rot_max:     f32,         // 192  初期回転角 max（ラジアン）
+    tex_layer_count:     u32,         // 196  テクスチャ配列レイヤ数（描画用）
+    _pad0:               u32,         // 200
+    _pad1:               u32,         // 204
 };
 
 @group(0) @binding(0) var<storage, read_write> particles: array<Particle>;
@@ -218,7 +223,8 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         p.lifetime   = lifetime;
         p.base_speed = speed;
         p.vel        = vec3<f32>(0.0);       // 蓄積速度は 0 から（重力／抵抗を積む）
-        p.rot_angle  = 0.0;                  // 回転角は 0 から
+        // 初期回転角: initial_rotation_range 内で乱数抽選（ラジアン。CPU で度→rad 済み）。
+        p.rot_angle  = mix(params.initial_rot_min, params.initial_rot_max, rand_f32(base ^ SALT_INITROT));
         p._pad0      = 0u;
         p._pad1      = 0u;
 
