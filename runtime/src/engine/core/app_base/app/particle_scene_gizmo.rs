@@ -137,8 +137,11 @@ fn add_one_emitter_gizmo(lb: &mut LineBatch, tf: &Transform, pe: &ParticleEmitte
 
     // 円錐長さ＝初速 max × 寿命 max（放出粒子の到達距離の目安）。
     let len = (pe.initial_speed[1] * pe.lifetime[1] * CONE_LEN_FACTOR).max(CONE_LEN_MIN);
-    // 半頂角（度→ラジアン、発散回避のためクランプ）。
-    let half = pe.spread_angle_deg.clamp(0.0, CONE_HALF_ANGLE_MAX_DEG).to_radians();
+    // 半頂角（direction_randomness*180 度→ラジアン、発散回避のためクランプ）。
+    // 新スキーマでは spread_angle_deg を廃し direction_randomness(0..1) で表す。
+    let half_deg = pe.direction_randomness
+        * crate::engine::components::DIRECTION_RANDOMNESS_MAX_HALF_ANGLE_DEG;
+    let half = half_deg.clamp(0.0, CONE_HALF_ANGLE_MAX_DEG).to_radians();
     let base_r = len * half.tan();
     let base_c = add3(apex, scale3(axis, len));
 

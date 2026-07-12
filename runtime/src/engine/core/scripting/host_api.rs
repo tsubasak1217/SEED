@@ -318,12 +318,29 @@ fn read_floats(
         "ParticleEmitter" => {
             let e = locate::<ParticleEmitterComponent>(world, entity)?;
             let p = world.get::<ParticleEmitterComponent>(e)?;
+            // スクリプト API の互換レイヤ: フィールド名は従来どおり（emit_rate /
+            // spread_angle_deg / loop_emit）に保ち、新スキーマ（emit_interval +
+            // particles_per_emit / direction_randomness / emit_mode）へ換算して読む。
+            // C# ラッパー・docs/scripting_api.md（正典）の API 名は変えない。
             match field {
-                "emit_rate"        => put(out, &[p.emit_rate]),
+                // 実効放出レート（個/秒）= particles_per_emit / emit_interval。
+                "emit_rate"        => {
+                    let rate = if p.emit_interval > 0.0 {
+                        p.particles_per_emit as f32 / p.emit_interval
+                    } else { 0.0 };
+                    put(out, &[rate])
+                }
                 "drag"             => put(out, &[p.drag]),
-                "spread_angle_deg" => put(out, &[p.spread_angle_deg]),
+                // 円錐半頂角（度）= direction_randomness * 180。
+                "spread_angle_deg" => put(out, &[
+                    p.direction_randomness
+                        * crate::engine::components::DIRECTION_RANDOMNESS_MAX_HALF_ANGLE_DEG,
+                ]),
                 "playing"          => put(out, &[if p.playing { 1.0 } else { 0.0 }]),
-                "loop_emit"        => put(out, &[if p.loop_emit { 1.0 } else { 0.0 }]),
+                // loop_emit = emit_mode が Loop かどうか。
+                "loop_emit"        => put(out, &[
+                    if p.emit_mode == crate::engine::components::EmitMode::Loop { 1.0 } else { 0.0 },
+                ]),
                 _                  => None,
             }
         }
@@ -428,12 +445,33 @@ fn write_floats(
         "ParticleEmitter" => {
             let Some(e) = locate::<ParticleEmitterComponent>(world, entity) else { return false };
             let Some(p) = world.get_mut::<ParticleEmitterComponent>(e) else { return false };
+            // スクリプト API の互換レイヤ（read_floats と対）: 従来のフィールド名を
+            // 新スキーマへ換算して書き込む。C# ラッパー・docs の API 名は変えない。
             match field {
-                "emit_rate"        => take::<1>(v).map(|x| p.emit_rate = x[0].max(0.0)).is_some(),
+                // emit_rate（個/秒）→ emit_interval = particles_per_emit / rate。
+                // rate<=0 は「放出停止」の意図として emit_interval を 0 にせず
+                // 十分大きな間隔（f32::MAX）にする（interval=0 は毎フレーム放出の意味のため）。
+                "emit_rate"        => take::<1>(v).map(|x| {
+                    let rate = x[0].max(0.0);
+                    p.emit_interval = if rate > 0.0 {
+                        p.particles_per_emit.max(1) as f32 / rate
+                    } else { f32::MAX };
+                }).is_some(),
                 "drag"             => take::<1>(v).map(|x| p.drag = x[0].max(0.0)).is_some(),
-                "spread_angle_deg" => take::<1>(v).map(|x| p.spread_angle_deg = x[0].clamp(0.0, 180.0)).is_some(),
+                // spread_angle_deg（0..180）→ direction_randomness = deg / 180。
+                "spread_angle_deg" => take::<1>(v).map(|x| {
+                    p.direction_randomness = x[0].clamp(0.0, 180.0)
+                        / crate::engine::components::DIRECTION_RANDOMNESS_MAX_HALF_ANGLE_DEG;
+                }).is_some(),
                 "playing"          => take::<1>(v).map(|x| p.playing = x[0] != 0.0).is_some(),
-                "loop_emit"        => take::<1>(v).map(|x| p.loop_emit = x[0] != 0.0).is_some(),
+                // loop_emit: true → Loop / false → Once（Count 指定はエディタ側のみ）。
+                "loop_emit"        => take::<1>(v).map(|x| {
+                    p.emit_mode = if x[0] != 0.0 {
+                        crate::engine::components::EmitMode::Loop
+                    } else {
+                        crate::engine::components::EmitMode::Once
+                    };
+                }).is_some(),
                 _                  => false,
             }
         }

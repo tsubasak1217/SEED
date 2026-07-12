@@ -346,22 +346,62 @@
 近似できる（分離可能: 水平→垂直）。GPU実装は行/列prefix sum（compute）＋等幅区間和。
 大カーネルほどタップ数固定の従来法より高速。
 
-### Phase RP: GPUパーティクル 【状況: 実装済み（実機検証待ち）】
-GPU 上でパーティクルをシミュレート（compute）してビルボード描画（vertex pulling）する。
-ECS の `ParticleEmitterComponent`（データのみ・別担当）を入力に、エミッタごとの GPU バッファを
+### Phase RP: GPUパーティクル 【状況: 拡張実装済み（実機検証待ち）】
+GPU 上でパーティクルをシミュレート（compute）して形状メッシュ×インスタンスで描画する。
+ECS の `ParticleEmitterComponent`（データのみ）を入力に、エミッタごとの GPU バッファを
 確保してシミュレーション→HDR（トーンマップ前）へ加算/アルファ合成する。
 
-#### 実装メモ（2026-07, 実機検証待ち）
-- ソース: `renderer/particle_system.rs`（CPU/GPU 状態・収集・描画）、`renderer/shaders/particle_sim.wgsl`
+#### 拡張実装（2026-07 第2ウェーブ, 実機検証待ち）
+- **形状（shape）**: Point（ビルボード・既定）/ Sphere（icosphere 12頂点）/ Box / Plane（両面クアッド）/
+  Model{path}（既存ローダの先頭プリミティブ位置のみ流用。`MAX_PARTICLE_MODEL_VERTS`=2048 超・ロード失敗は
+  警告して Point フォールバック）。組込みメッシュは `renderer/particle_shapes.rs`（`ShapeMeshCache`、
+  全エミッタ共有・Model はパスごと遅延キャッシュ）。描画は頂点バッファ（位置 vec3 のみ）＋
+  `draw_indexed`×max インスタンス。billboard は面内回転、mesh は seed 由来ランダム軸の軸角回転（Rodrigues）。
+- **出現範囲（spawn_volume）**: Point / Box{half_extents} / Sphere{radius}。compute 内で体積内一様サンプル
+  （Box=各軸一様、Sphere=方向球面一様×半径 u^(1/3)）。
+- **emit 制御**: `emit_mode`（Loop/Once/Count{total}・旧 loop_emit を置換）＋ `initial_delay` ＋
+  `prewarm_time`（起動フレームに固定 1/60 の K ステップ一括 compute。`MAX_PREWARM_STEPS`=600 でクランプ。
+  ステップごとの一時 uniform＋BG を作って順次 dispatch する＝write_buffer 多重書きは不可のため）＋
+  `emit_interval`×`particles_per_emit`（旧 emit_rate を置換。互換変換 interval=1/rate, per_emit=1）＋
+  `direction_randomness`（0..1。half_angle_deg = randomness×180。旧 spread_angle_deg/180 から互換変換）。
+- **Vector4 カーブ**: `ParamCurve{channels:Vec<CurveChannel{keys:[{t,v}]}}`（線形補間・serde が C# カーブ
+  エディタとの共有契約）。speed_curve(x)/rot_speed_curve(x)/color_curve(HSVA)/scale_curve(xyz)/
+  random_color_curves(HSVA リスト。非空なら粒子ごとハッシュで 1 本選択)。GPU 化は各カーブを
+  `CURVE_LUT_SAMPLES`=64 行の vec4 に CPU で焼き、1 本の storage buffer に連結
+  （**行レイアウト: [speed | rot_speed | color | scale | random_color_0..N-1]**、オフセットはシェーダが
+  lut_samples から計算）。HSVA のまま格納しシェーダで hsv→rgb（色相の正しい補間）。再焼きは
+  コンポーネントの `curve_generation`（SET_PARTICLE_CURVE で bump）変化時のみ。
+- **ランダム範囲**: rot_speed_range（度/秒→GPU では rad/s）・size_range（全体倍率）・initial_speed・
+  lifetime。粒子ごと seed ハッシュ抽選（決定的）。
+- **速度モデル**: 射出速度 = emit_dir×base_speed×speed_curve(t)（毎フレーム再評価）＋ 蓄積速度 vel
+  （重力/drag のみ積分）。pos += (射出＋蓄積)×dt。
+- **IPC**: スカラー/enum は `SET_PARTICLE_FIELD`（新キー: shape/shape_model_path/spawn_volume/spawn_box_x..z/
+  spawn_sphere_radius/emit_mode/emit_count_total/initial_delay/prewarm_time/emit_interval/particles_per_emit/
+  direction_randomness/rot_speed_min/max/size_min/max 等）。カーブは新 IPC
+  `SET_PARTICLE_CURVE:{actor},{slot},{curve_id},{json}`（curve_id ∈ speed|rot_speed|color|scale|random_colors、
+  json は ParamCurve の serde 形。random_colors は配列）→ 差し替え→LUT 再焼き→ACTOR_COMPONENTS 再送。
+  ACTOR_COMPONENTS には全スカラー＋カーブ JSON を含める。
+- **後方互換**: 旧 .scene（emit_rate/burst/spread_angle_deg/start_size/end_size_scale/start_color/end_color/
+  loop_emit）は `ParticleEmitterComponentRaw` 経由で新スキーマへ変換して読める（テスト `legacy_scene_converts`）。
+  旧 start/end_color は RGB→HSVA の 2 キーカーブへ、start_size は size_range へ、end_size_scale は
+  scale_curve(1→es) へ。スクリプト API（EmitRate/SpreadAngle/LoopEmit）は host_api の互換レイヤで名前を維持。
+- **C# インスペクタ**: 新スカラー/enum の UI は実装済み。カーブ編集 UI（カーブエディタ）は次ウェーブ
+  （現状プレースホルダ表示）。
+
+#### 実装メモ（2026-07 第1ウェーブ、以下は拡張後の値に更新済み）
+- ソース: `renderer/particle_system.rs`（CPU/GPU 状態・収集・LUT 焼き・描画）、`renderer/particle_shapes.rs`
+  （組込み形状メッシュ＋Model キャッシュ）、`renderer/shaders/particle_sim.wgsl`
   （compute）、`renderer/shaders/particle_draw.wgsl`（描画）、`renderer/pipeline.rs`
   （`ParticleComputePipeline` / `ParticlePipelines`, DrawPipelines へ登録）、
   `app_base/app/particle_scene_gizmo.rs`（選択時の放出円錐ワイヤ）。
-- バッファレイアウト: `GpuParticle`（std430 storage, **stride 48**, `PARTICLE_STRIDE`）=
-  pos(vec3)+age / vel(vec3)+lifetime / seed(u32)+pad。`GpuEmitterParams`（uniform, **192B**）=
-  world_mat(mat4, 列優先=転置) / dt / emit_count / ring_start / max / frame_nonce / drag / spread_rad /
-  end_size_scale / direction_local(vec3)+speed_min/max / lifetime_min/max / size_min / gravity(vec3)+size_max /
-  start_color(vec4) / end_color(vec4) / sim_space / use_texture。vec3 の直後にスカラーを詰めて std140 に一致
-  （`layout_tests` でサイズ・オフセットを固定）。生成時ゼロ初期化＝全 dead（age>=lifetime か lifetime<=0）。
+- バッファレイアウト: `GpuParticle`（std430 storage, **stride 64**, `PARTICLE_STRIDE`）=
+  pos(vec3)+age / vel(vec3)+lifetime / emit_dir(vec3)+base_speed / seed+rot_angle+pad。
+  `GpuEmitterParams`（uniform, **192B**）= world_mat(mat4, 列優先=転置) / dt / emit_count / ring_start /
+  max / frame_nonce / drag / spread_rad / shape_mode / direction_local(vec3)+speed_min / speed_max /
+  lifetime_min/max / rot_speed_min / gravity(vec3)+rot_speed_max / spawn_box(vec3)+spawn_sphere_radius /
+  size_min/max / spawn_volume / sim_space / use_texture / lut_samples / random_color_count。
+  vec3 の直後にスカラーを詰めて std140 に一致（`layout_tests` でサイズ・オフセットを固定）。
+  生成時ゼロ初期化＝全 dead（age>=lifetime か lifetime<=0）。
 - スポーン方式（リングカーソル・atomic なし）: CPU が `spawn_cursor`(=ring_start) と `emit_count` を
   uniform で渡し、compute のスレッド i がリング区間 [ring_start, ring_start+emit_count)（mod max）に
   入っていれば無条件で再スポーン（過剰放出時は生存粒子を上書き＝標準リング挙動）。乱数は wanghash/PCG 系
@@ -375,13 +415,14 @@ ECS の `ParticleEmitterComponent`（データのみ・別担当）を入力に�
   （`collect_and_consume`）で実施。ヘルパ `RenderFrame::begin_particle_pass_to`（color=hdr Load・
   深度 Load でテストのみ・書込なし）を使う。
 - group 構成（≦5）: group0=camera（既存 CameraBuffer BG を流用＝同一 camera_bgl）、group1=particles(storage
-  read)+params(uniform)、group2=texture+sampler（未指定は既定白 1x1＋シェーダのプロシージャル円）。
+  read)+params(uniform)+lut(storage read)、group2=texture+sampler（未指定は既定白 1x1＋シェーダの
+  プロシージャル円。メッシュ形状は UV 中心固定＝フルアルファ）。compute の group0 も同様に particles+params+lut。
   描画は premultiplied alpha を出力し Additive=One/One・Alpha=One/OneMinusSrcA。深度=LessEqual・書込 OFF。
 - Edit 常時プレビュー: dt は Play=可変（ctx.delta_time）/ Edit=固定 1/60（time_running 非依存・物理の先例に倣う）。
   playing=false は放出のみ停止し、既存粒子は自然消滅するまで更新を回す（常時 dispatch）。
-- 既定値: max_particles=1024（上限 `MAX_PARTICLES_PER_EMITTER`=65536）、emit_rate=100、lifetime[1,2]、
-  initial_speed[1,3]、spread=30°、direction_local=+Y、gravity=[0,-9.8,0]、start_size[0.1,0.2]、
-  start_color=白不透明→end_color=白透明（コンポーネント側 default）。
+- 既定値: max_particles=1024（上限 `MAX_PARTICLES_PER_EMITTER`=65536）、emit_interval=0.05×per_emit=1、
+  lifetime[1,2]、initial_speed[1,3]、direction_randomness=0、direction_local=+Y、gravity=[0,-9.8,0]、
+  size_range[1,1]、color_curve=白 A:1→0、scale_curve=1→0（コンポーネント側 default）。
 - 追加コストゼロ: エミッタ 0 個のフレームは collect で frame が空になり、sync_gpu/dispatch/draw・パス生成・
   バッファ確保がすべて即 return（早期リターンで担保）。
 - 検証: `particle_system.rs` の `layout_tests`（GpuParticle/GpuEmitterParams のサイズ・オフセット固定）と

@@ -918,6 +918,9 @@ impl App {
                 IpcCommand::SetParticleField { actor_dfs_id, slot_idx, key, value } => {
                     self.handle_set_particle_field(actor_dfs_id, slot_idx, &key, &value);
                 }
+                IpcCommand::SetParticleCurve { actor_dfs_id, slot_idx, curve_id, json } => {
+                    self.handle_set_particle_curve(actor_dfs_id, slot_idx, &curve_id, &json);
+                }
                 IpcCommand::SetAudioField { actor_dfs_id, slot_idx, key, value } => {
                     self.handle_set_audio_field(actor_dfs_id, slot_idx, &key, &value);
                 }

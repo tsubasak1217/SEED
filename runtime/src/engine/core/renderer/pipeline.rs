@@ -931,8 +931,9 @@ impl SpriteOutlinePipeline {
 /// パーティクルシミュレーションのコンピュートパイプライン（particle_sim.wgsl）。
 ///
 /// Group 0 BGL:
-///   0 = particles (array<Particle>, storage read_write)
-///   1 = params    (EmitterParams,   uniform)
+///   0 = particles (array<Particle>,  storage read_write)
+///   1 = params    (EmitterParams,    uniform)
+///   2 = lut       (array<vec4<f32>>, storage read)  … カーブ LUT（連結）
 /// CullPipeline / SkinComputePipeline と同じ手動 BGL 構築の流儀。
 pub struct ParticleComputePipeline {
     pub pipeline: wgpu::ComputePipeline,
@@ -949,6 +950,7 @@ impl ParticleComputePipeline {
 
         // binding 0: particles（storage read_write, COMPUTE）
         // binding 1: params  （uniform,             COMPUTE）
+        // binding 2: lut     （storage read,        COMPUTE）… カーブ LUT
         let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label:   Some("Particle Compute BGL"),
             entries: &[
@@ -967,6 +969,16 @@ impl ParticleComputePipeline {
                     visibility: wgpu::ShaderStages::COMPUTE,
                     ty: wgpu::BindingType::Buffer {
                         ty:                 wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size:   None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding:    2,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty:                 wgpu::BufferBindingType::Storage { read_only: true },
                         has_dynamic_offset: false,
                         min_binding_size:   None,
                     },
@@ -994,17 +1006,18 @@ impl ParticleComputePipeline {
 }
 
 // ============================================================
-//  ParticlePipelines — GPU パーティクル描画（ビルボード頂点プリング）
+//  ParticlePipelines — GPU パーティクル描画（形状メッシュ×インスタンス）
 // ============================================================
 
 /// パーティクル描画パイプライン一式（Additive / Alpha）と共有リソース。
 ///
 /// group 0 = camera（既存 CameraBuffer.bind_group を流用。camera_bgl を共有）
-/// group 1 = particles（storage read）+ params（uniform）
+/// group 1 = particles（storage read）+ params（uniform）+ lut（storage read）
 /// group 2 = texture + sampler（未指定時は既定白 1x1＋プロシージャル円）
 ///
 /// 深度: テスト ON（LessEqual）・書込 OFF（透明物と同じく既存深度で遮蔽のみ判定）。
-/// 頂点バッファなし（vertex pulling）。フラグメントは premultiplied alpha を出力する。
+/// 頂点バッファは形状メッシュ（particle_shapes.rs、位置 vec3 のみ）を 1 本バインドし、
+/// draw_indexed のインスタンスで粒子を引く。フラグメントは premultiplied alpha を出力する。
 pub struct ParticlePipelines {
     /// Additive ブレンド（src=One, dst=One）。
     pub additive:         wgpu::RenderPipeline,
@@ -1037,7 +1050,8 @@ impl ParticlePipelines {
             source: wgpu::ShaderSource::Wgsl(include_str!("shaders/particle_draw.wgsl").into()),
         });
 
-        // group 1: particles（storage read, VERTEX）+ params（uniform, VERTEX|FRAGMENT）。
+        // group 1: particles（storage read, VERTEX）+ params（uniform, VERTEX|FRAGMENT）
+        //          + lut（storage read, VERTEX。色／スケールカーブは頂点で評価する）。
         let particle_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label:   Some("Particle Draw BGL (group1)"),
             entries: &[
@@ -1056,6 +1070,16 @@ impl ParticlePipelines {
                     visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty:                 wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size:   None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding:    2,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty:                 wgpu::BufferBindingType::Storage { read_only: true },
                         has_dynamic_offset: false,
                         min_binding_size:   None,
                     },
@@ -1102,7 +1126,9 @@ impl ParticlePipelines {
             bias:                wgpu::DepthBiasState::default(),
         };
 
-        // ブレンド別に 1 本ずつ構築するヘルパー。頂点バッファなし・カリングなし。
+        // ブレンド別に 1 本ずつ構築するヘルパー。
+        // 頂点バッファは形状メッシュ（位置 vec3 のみ・particle_shapes::ShapeVertex）。
+        // カリングなし（ビルボード／Plane の両面表示のため）。
         let build = |blend: wgpu::BlendState, label: &str| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label:  Some(label),
@@ -1110,7 +1136,7 @@ impl ParticlePipelines {
                 vertex: wgpu::VertexState {
                     module:              &shader,
                     entry_point:         Some("vs_main"),
-                    buffers:             &[], // vertex pulling
+                    buffers:             &[super::particle_shapes::ShapeVertex::LAYOUT],
                     compilation_options: Default::default(),
                 },
                 fragment: Some(wgpu::FragmentState {

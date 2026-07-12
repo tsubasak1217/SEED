@@ -17,6 +17,8 @@ pub(crate) mod transparency;
 pub(crate) mod batch2d;
 /// GPU パーティクル シミュレーション＋描画（Phase RP）
 pub(crate) mod particle_system;
+/// GPU パーティクルの組込み形状メッシュ（Point/Sphere/Box/Plane/Model）
+pub(crate) mod particle_shapes;
 /// .mat マテリアルアセット（Phase R7: マルチマテリアル編集）
 pub mod material_asset;
 

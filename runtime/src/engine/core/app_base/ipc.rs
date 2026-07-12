@@ -252,8 +252,13 @@ pub enum IpcCommand {
     /// （key: kind/color/intensity/range/inner_angle/outer_angle/rect_width/rect_height/cast_shadows）
     SetLightField { actor_dfs_id: u32, slot_idx: u32, key: String, value: String },
     /// ParticleEmitterComponent のフィールドを更新する
-    /// （key: emit_rate/burst/max_particles/lifetime_min/... 等。particle_ops.rs が処理）
+    /// （key: max_particles/shape/spawn_volume/emit_mode/lifetime_min/... 等。particle_ops.rs が処理）
     SetParticleField { actor_dfs_id: u32, slot_idx: u32, key: String, value: String },
+    /// ParticleEmitterComponent のカーブを差し替える（curve_id: speed/rot_speed/color/scale/
+    /// random_colors。json は ParamCurve のシリアライズ。random_colors のみ Vec<ParamCurve> の
+    /// JSON 配列）。particle_ops.rs の handle_set_particle_curve が処理する。
+    /// フォーマット: SET_PARTICLE_CURVE:{actor_dfs_id},{slot_idx},{curve_id},{json}
+    SetParticleCurve { actor_dfs_id: u32, slot_idx: u32, curve_id: String, json: String },
     /// CanvasTransform の anchor を設定する（正規化値 0.0〜1.0）
     /// フォーマット: SET_CANVAS_ANCHOR:{actor_dfs_id},{anchor_x},{anchor_y}
     SetCanvasAnchor { actor_dfs_id: u32, ax: f32, ay: f32 },
@@ -1152,6 +1157,18 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                                 Some(IpcCommand::SetParticleField {
                                     actor_dfs_id: a, slot_idx: sl,
                                     key: key.to_string(), value: value.to_string(),
+                                })
+                            })
+                        }
+                        s if s.starts_with("SET_PARTICLE_CURVE:") => {
+                            // フォーマット: SET_PARTICLE_CURVE:{actor_dfs_id},{slot_idx},{curve_id},{json}
+                            // json に "," を含むため（配列・複数キー）、curve_id だけを
+                            // 先頭で split_once して残り全部を json として扱う。
+                            parse2u_tail(&s["SET_PARTICLE_CURVE:".len()..]).and_then(|(a, sl, tail)| {
+                                let (curve_id, json) = tail.split_once(',')?;
+                                Some(IpcCommand::SetParticleCurve {
+                                    actor_dfs_id: a, slot_idx: sl,
+                                    curve_id: curve_id.to_string(), json: json.to_string(),
                                 })
                             })
                         }

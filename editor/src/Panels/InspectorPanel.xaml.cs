@@ -445,20 +445,30 @@ public partial class InspectorPanel : UserControl
         float LightSoftRadius = 0.25f,
         // ModelComponent 用フィールド（影を落とすか。シャドウマップレンダリングで使用）
         bool ModelCastShadows = true,
-        // ParticleEmitterComponent 用フィールド（放出・寿命・速度・形状・物理・見た目・テクスチャ・ブレンド・空間）
-        // デフォルト値は Rust 側 ParticleEmitterComponentData と一致させる（受信欠落時のフォールバックにも使用）。
-        float PeEmitRate = 100f, float PeBurst = 0f, int PeMaxParticles = 1024,
+        // ParticleEmitterComponent 用フィールド（形状・出現範囲・放出制御・寿命・速度・方向・物理・
+        // 回転・サイズ・テクスチャ・ブレンド・空間）。デフォルト値は Rust 側
+        // ParticleEmitterComponentData と一致させる（受信欠落時のフォールバックにも使用）。
+        int PeMaxParticles = 1024,
+        // 形状（point/sphere/box/plane/model）と Model 形状時のパス
+        string PeShape = "point", string PeShapeModelPath = "",
+        // 出現範囲（point/box/sphere）とパラメータ
+        string PeSpawnVolume = "point",
+        float PeSpawnBoxX = 0f, float PeSpawnBoxY = 0f, float PeSpawnBoxZ = 0f,
+        float PeSpawnSphereRadius = 0f,
+        // 放出制御（loop/once/count）
+        string PeEmitMode = "loop", int PeEmitCountTotal = 0,
+        float PeInitialDelay = 0f, float PePrewarmTime = 0f,
+        float PeEmitInterval = 0.05f, int PeParticlesPerEmit = 1,
         float PeLifetimeMin = 1f, float PeLifetimeMax = 2f,
         float PeSpeedMin = 1f, float PeSpeedMax = 3f,
-        float PeSpreadAngle = 30f,
         float PeDirX = 0f, float PeDirY = 1f, float PeDirZ = 0f,
+        float PeDirectionRandomness = 0f,
         float PeGravityX = 0f, float PeGravityY = -9.8f, float PeGravityZ = 0f,
         float PeDrag = 0f,
-        float PeSizeMin = 0.1f, float PeSizeMax = 0.2f, float PeEndSizeScale = 0f,
-        float PeStartR = 1f, float PeStartG = 1f, float PeStartB = 1f, float PeStartA = 1f,
-        float PeEndR = 1f, float PeEndG = 1f, float PeEndB = 1f, float PeEndA = 0f,
+        float PeRotSpeedMin = 0f, float PeRotSpeedMax = 0f,
+        float PeSizeMin = 1f, float PeSizeMax = 1f,
         string PeTexturePath = "", string PeBlend = "additive", string PeSimSpace = "world",
-        bool PePlaying = true, bool PeLoopEmit = true);
+        bool PePlaying = true);
 
     private List<SlotInfo> _slotInfos = new();
 
@@ -697,39 +707,43 @@ public partial class InspectorPanel : UserControl
             var lightRectHeight  = comp.TryGetProperty("rect_height",  out var lrh) ? lrh.GetSingle() : 1f;
             var lightSoftRadius  = comp.TryGetProperty("soft_radius",  out var lsr) ? lsr.GetSingle() : 0.25f;
             var lightCastShadows = comp.TryGetProperty("cast_shadows", out var lcs) ? ReadJsonBool(lcs, true) : true;
-            // ParticleEmitterComponent 用: 放出・寿命・速度・形状・物理・見た目・テクスチャ・ブレンド・空間。
-            // 欠落時は Rust 側デフォルトと一致するフォールバック値を用いる。
-            var peEmitRate      = comp.TryGetProperty("emit_rate",      out var per) ? per.GetSingle() : 100f;
-            var peBurst         = comp.TryGetProperty("burst",          out var pbu) ? pbu.GetSingle() : 0f;
-            var peMaxParticles  = comp.TryGetProperty("max_particles",  out var pmp) ? pmp.GetInt32()  : 1024;
-            var peLifetimeMin   = comp.TryGetProperty("lifetime_min",   out var plmn) ? plmn.GetSingle() : 1f;
-            var peLifetimeMax   = comp.TryGetProperty("lifetime_max",   out var plmx) ? plmx.GetSingle() : 2f;
-            var peSpeedMin      = comp.TryGetProperty("speed_min",      out var psmn) ? psmn.GetSingle() : 1f;
-            var peSpeedMax      = comp.TryGetProperty("speed_max",      out var psmx) ? psmx.GetSingle() : 3f;
-            var peSpreadAngle   = comp.TryGetProperty("spread_angle",   out var psa)  ? psa.GetSingle()  : 30f;
-            var peDirX          = comp.TryGetProperty("dir_x",          out var pdx)  ? pdx.GetSingle()  : 0f;
-            var peDirY          = comp.TryGetProperty("dir_y",          out var pdy)  ? pdy.GetSingle()  : 1f;
-            var peDirZ          = comp.TryGetProperty("dir_z",          out var pdz)  ? pdz.GetSingle()  : 0f;
-            var peGravityX      = comp.TryGetProperty("gravity_x",      out var pgx)  ? pgx.GetSingle()  : 0f;
-            var peGravityY      = comp.TryGetProperty("gravity_y",      out var pgy)  ? pgy.GetSingle()  : -9.8f;
-            var peGravityZ      = comp.TryGetProperty("gravity_z",      out var pgz)  ? pgz.GetSingle()  : 0f;
-            var peDrag          = comp.TryGetProperty("drag",           out var pdg)  ? pdg.GetSingle()  : 0f;
-            var peSizeMin       = comp.TryGetProperty("size_min",       out var pszn) ? pszn.GetSingle() : 0.1f;
-            var peSizeMax       = comp.TryGetProperty("size_max",       out var pszx) ? pszx.GetSingle() : 0.2f;
-            var peEndSizeScale  = comp.TryGetProperty("end_size_scale", out var pess) ? pess.GetSingle() : 0f;
-            var peStartR        = comp.TryGetProperty("sc_r",           out var pscr) ? pscr.GetSingle() : 1f;
-            var peStartG        = comp.TryGetProperty("sc_g",           out var pscg) ? pscg.GetSingle() : 1f;
-            var peStartB        = comp.TryGetProperty("sc_b",           out var pscb) ? pscb.GetSingle() : 1f;
-            var peStartA        = comp.TryGetProperty("sc_a",           out var psca) ? psca.GetSingle() : 1f;
-            var peEndR          = comp.TryGetProperty("ec_r",           out var pecr) ? pecr.GetSingle() : 1f;
-            var peEndG          = comp.TryGetProperty("ec_g",           out var pecg) ? pecg.GetSingle() : 1f;
-            var peEndB          = comp.TryGetProperty("ec_b",           out var pecb) ? pecb.GetSingle() : 1f;
-            var peEndA          = comp.TryGetProperty("ec_a",           out var peca) ? peca.GetSingle() : 0f;
-            var peTexturePath   = comp.TryGetProperty("texture_path",   out var ptp)  ? ptp.GetString() ?? "" : "";
-            var peBlend         = comp.TryGetProperty("blend",          out var pbl)  ? pbl.GetString() ?? "additive" : "additive";
-            var peSimSpace      = comp.TryGetProperty("sim_space",      out var pss)  ? pss.GetString() ?? "world" : "world";
-            var pePlaying       = comp.TryGetProperty("playing",        out var ppl)  ? ReadJsonBool(ppl, true) : true;
-            var peLoopEmit      = comp.TryGetProperty("loop_emit",      out var ple)  ? ReadJsonBool(ple, true) : true;
+            // ParticleEmitterComponent 用: 形状・出現範囲・放出制御・寿命・速度・方向・物理・回転・
+            // サイズ・テクスチャ・ブレンド・空間を受け取る。欠落時は Rust 側デフォルトと一致する
+            // フォールバック値を用いる（カーブ JSON は今回未実装のカーブエディタでは未使用のため保持しない）。
+            var peMaxParticles      = comp.TryGetProperty("max_particles",       out var pmp)  ? pmp.GetInt32()  : 1024;
+            var peShape             = comp.TryGetProperty("shape",               out var psh)  ? psh.GetString() ?? "point" : "point";
+            var peShapeModelPath    = comp.TryGetProperty("shape_model_path",    out var pshp) ? pshp.GetString() ?? "" : "";
+            var peSpawnVolume       = comp.TryGetProperty("spawn_volume",        out var psv)  ? psv.GetString() ?? "point" : "point";
+            var peSpawnBoxX         = comp.TryGetProperty("spawn_box_x",         out var psbx) ? psbx.GetSingle() : 0f;
+            var peSpawnBoxY         = comp.TryGetProperty("spawn_box_y",         out var psby) ? psby.GetSingle() : 0f;
+            var peSpawnBoxZ         = comp.TryGetProperty("spawn_box_z",         out var psbz) ? psbz.GetSingle() : 0f;
+            var peSpawnSphereRadius = comp.TryGetProperty("spawn_sphere_radius", out var pssr) ? pssr.GetSingle() : 0f;
+            var peEmitMode          = comp.TryGetProperty("emit_mode",           out var pem)  ? pem.GetString() ?? "loop" : "loop";
+            var peEmitCountTotal    = comp.TryGetProperty("emit_count_total",    out var pect) ? pect.GetInt32()  : 0;
+            var peInitialDelay      = comp.TryGetProperty("initial_delay",       out var pid)  ? pid.GetSingle()  : 0f;
+            var pePrewarmTime       = comp.TryGetProperty("prewarm_time",        out var pwt)  ? pwt.GetSingle()  : 0f;
+            var peEmitInterval      = comp.TryGetProperty("emit_interval",       out var pei)  ? pei.GetSingle()  : 0.05f;
+            var peParticlesPerEmit  = comp.TryGetProperty("particles_per_emit",  out var ppe)  ? ppe.GetInt32()   : 1;
+            var peLifetimeMin       = comp.TryGetProperty("lifetime_min",        out var plmn) ? plmn.GetSingle() : 1f;
+            var peLifetimeMax       = comp.TryGetProperty("lifetime_max",        out var plmx) ? plmx.GetSingle() : 2f;
+            var peSpeedMin          = comp.TryGetProperty("speed_min",           out var psmn) ? psmn.GetSingle() : 1f;
+            var peSpeedMax          = comp.TryGetProperty("speed_max",           out var psmx) ? psmx.GetSingle() : 3f;
+            var peDirX              = comp.TryGetProperty("dir_x",               out var pdx)  ? pdx.GetSingle()  : 0f;
+            var peDirY              = comp.TryGetProperty("dir_y",               out var pdy)  ? pdy.GetSingle()  : 1f;
+            var peDirZ              = comp.TryGetProperty("dir_z",               out var pdz)  ? pdz.GetSingle()  : 0f;
+            var peDirectionRandomness = comp.TryGetProperty("direction_randomness", out var pdr) ? pdr.GetSingle() : 0f;
+            var peGravityX          = comp.TryGetProperty("gravity_x",           out var pgx)  ? pgx.GetSingle()  : 0f;
+            var peGravityY          = comp.TryGetProperty("gravity_y",           out var pgy)  ? pgy.GetSingle()  : -9.8f;
+            var peGravityZ          = comp.TryGetProperty("gravity_z",           out var pgz)  ? pgz.GetSingle()  : 0f;
+            var peDrag              = comp.TryGetProperty("drag",                out var pdg)  ? pdg.GetSingle()  : 0f;
+            var peRotSpeedMin       = comp.TryGetProperty("rot_speed_min",       out var prsn) ? prsn.GetSingle() : 0f;
+            var peRotSpeedMax       = comp.TryGetProperty("rot_speed_max",       out var prsx) ? prsx.GetSingle() : 0f;
+            var peSizeMin           = comp.TryGetProperty("size_min",            out var pszn) ? pszn.GetSingle() : 1f;
+            var peSizeMax           = comp.TryGetProperty("size_max",            out var pszx) ? pszx.GetSingle() : 1f;
+            var peTexturePath       = comp.TryGetProperty("texture_path",        out var ptp)  ? ptp.GetString() ?? "" : "";
+            var peBlend             = comp.TryGetProperty("blend",               out var pbl)  ? pbl.GetString() ?? "additive" : "additive";
+            var peSimSpace          = comp.TryGetProperty("sim_space",           out var pss)  ? pss.GetString() ?? "world" : "world";
+            var pePlaying           = comp.TryGetProperty("playing",             out var ppl)  ? ReadJsonBool(ppl, true) : true;
 
             var info = new SlotInfo(slotIdx, compName, compType, modelPath, width, height,
                 AutoScale: autoScale,
@@ -764,18 +778,24 @@ public partial class InspectorPanel : UserControl
                 LightCastShadows: lightCastShadows,
                 LightSoftRadius: lightSoftRadius,
                 ModelCastShadows: modelCastShadows,
-                PeEmitRate: peEmitRate, PeBurst: peBurst, PeMaxParticles: peMaxParticles,
+                PeMaxParticles: peMaxParticles,
+                PeShape: peShape, PeShapeModelPath: peShapeModelPath,
+                PeSpawnVolume: peSpawnVolume,
+                PeSpawnBoxX: peSpawnBoxX, PeSpawnBoxY: peSpawnBoxY, PeSpawnBoxZ: peSpawnBoxZ,
+                PeSpawnSphereRadius: peSpawnSphereRadius,
+                PeEmitMode: peEmitMode, PeEmitCountTotal: peEmitCountTotal,
+                PeInitialDelay: peInitialDelay, PePrewarmTime: pePrewarmTime,
+                PeEmitInterval: peEmitInterval, PeParticlesPerEmit: peParticlesPerEmit,
                 PeLifetimeMin: peLifetimeMin, PeLifetimeMax: peLifetimeMax,
                 PeSpeedMin: peSpeedMin, PeSpeedMax: peSpeedMax,
-                PeSpreadAngle: peSpreadAngle,
                 PeDirX: peDirX, PeDirY: peDirY, PeDirZ: peDirZ,
+                PeDirectionRandomness: peDirectionRandomness,
                 PeGravityX: peGravityX, PeGravityY: peGravityY, PeGravityZ: peGravityZ,
                 PeDrag: peDrag,
-                PeSizeMin: peSizeMin, PeSizeMax: peSizeMax, PeEndSizeScale: peEndSizeScale,
-                PeStartR: peStartR, PeStartG: peStartG, PeStartB: peStartB, PeStartA: peStartA,
-                PeEndR: peEndR, PeEndG: peEndG, PeEndB: peEndB, PeEndA: peEndA,
+                PeRotSpeedMin: peRotSpeedMin, PeRotSpeedMax: peRotSpeedMax,
+                PeSizeMin: peSizeMin, PeSizeMax: peSizeMax,
                 PeTexturePath: peTexturePath, PeBlend: peBlend, PeSimSpace: peSimSpace,
-                PePlaying: pePlaying, PeLoopEmit: peLoopEmit);
+                PePlaying: pePlaying);
             _slotInfos.Add(info);
 
             // アコーディオンにパラメータ編集エリアを追加（ヘッダーがリネーム・削除・複製・選択を兼ねる）
@@ -3895,16 +3915,16 @@ public partial class InspectorPanel : UserControl
 
     /// <summary>
     /// ParticleEmitterComponent のインスペクター UI を構築して返す。
-    /// 再生・放出・寿命/速度・形状・物理・見た目（サイズ/色）・テクスチャ・ブレンド・空間を編集し、
-    /// 変更時は SET_PARTICLE_FIELD:{actor},{slot},{key},{value} を送信する。
-    /// 色は sc_r/sc_g/sc_b/sc_a・ec_r/ec_g/ec_b/ec_a を個別キーで送信する（Rust 側が JSON キー単位で受けるため）。
+    /// 再生・形状・出現範囲・放出制御・寿命/速度・方向・物理・回転/サイズ・テクスチャ・
+    /// ブレンド・空間を編集し、変更時は SET_PARTICLE_FIELD:{actor},{slot},{key},{value} を送信する。
+    /// カーブ（速度/回転/色/スケール）はカーブエディタ（次実装）のプレースホルダ表示のみ。
     /// </summary>
     private UIElement BuildParticleSlotContent(SlotInfo info)
     {
         var sp = new StackPanel { Margin = new Thickness(0, 4, 0, 4) };
 
         // フィールド変更をランタイムへ送信するローカル関数。
-        // key は ACTOR_COMPONENTS の JSON フィールド名と同一（emit_rate / dir_x / sc_r / blend / playing 等）。
+        // key は ACTOR_COMPONENTS の JSON フィールド名と同一（emit_interval / dir_x / shape / playing 等）。
         void SendField(string key, string value)
         {
             if (_currentActorId < 0) return;
@@ -3959,79 +3979,92 @@ public partial class InspectorPanel : UserControl
             NumericDragBehavior.SetOnDrag(row.textBox, Commit);
         }
 
-        // アルファ対応のカラースウォッチ行を生成するローカル関数。
-        // ColorPickerWindow はリニア RGBA 入出力（アルファ対応）なので、r/g/b/a を個別キーで送信する。
-        // 市松背景で透明部を可視化する（Sprite のカラースウォッチと同流儀）。
-        void AddColorRow(string label, float r, float g, float b, float a,
-                         string keyR, string keyG, string keyB, string keyA)
+        // ドロップダウン（enum tag）行を生成するローカル関数。
+        // options は (tag, label) のリスト。選択変更時に SendField(key, tag) を送る。
+        // extra は選択変更時の追加コールバック（表示切替などに使う。無ければ null）。
+        ComboBox AddDropdownRow(string label, (string tag, string text)[] options, string current, string key,
+                                 Action<string>? extra = null)
         {
-            float curR = r, curG = g, curB = b, curA = a;
-
-            var swatchOverlay = new Border
-            {
-                Background = new SolidColorBrush(
-                    Color.FromArgb((byte)(curA * 255), LinearToSrgbByte(curR), LinearToSrgbByte(curG), LinearToSrgbByte(curB))),
-            };
-
-            // 市松背景（透明部の視覚化）
-            var checkerGrid = new Grid();
-            for (int ci = 0; ci < 2; ci++)
-                checkerGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            for (int ri = 0; ri < 2; ri++)
-                checkerGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-            for (int ri = 0; ri < 2; ri++)
-                for (int ci = 0; ci < 2; ci++)
-                {
-                    bool dark = (ri + ci) % 2 == 0;
-                    var cell = new Border { Background = dark
-                        ? new SolidColorBrush(Color.FromRgb(0x60, 0x60, 0x60))
-                        : new SolidColorBrush(Color.FromRgb(0x99, 0x99, 0x99)) };
-                    Grid.SetRow(cell, ri); Grid.SetColumn(cell, ci);
-                    checkerGrid.Children.Add(cell);
-                }
-            var swatchPanel = new Grid();
-            swatchPanel.Children.Add(checkerGrid);
-            swatchPanel.Children.Add(swatchOverlay);
-
-            var colorSwatch = new Border
-            {
-                Width = 120, Height = 22, Margin = new Thickness(0, 2, 0, 2),
-                BorderBrush = new SolidColorBrush(Color.FromRgb(0x55, 0x55, 0x55)),
-                BorderThickness = new Thickness(1), Cursor = Cursors.Hand, Child = swatchPanel,
-            };
-            var colorRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 4, 0, 2) };
-            colorRow.Children.Add(new TextBlock
+            var row = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 4, 0, 2) };
+            row.Children.Add(new TextBlock
             {
                 Text = label, Foreground = new SolidColorBrush(Color.FromRgb(0xAA, 0xAA, 0xAA)),
                 FontSize = 11, Width = 110, VerticalAlignment = VerticalAlignment.Center,
             });
-            colorRow.Children.Add(colorSwatch);
-            colorSwatch.MouseLeftButtonUp += (_, _) =>
+            var combo = new ComboBox { Width = 150, FontSize = 11, Margin = new Thickness(4, 0, 0, 0) };
+            foreach (var (tag, text) in options)
+                combo.Items.Add(new ComboBoxItem { Content = text, Tag = tag });
+            var curIdx = Array.FindIndex(options, o => o.tag == current);
+            combo.SelectedIndex = curIdx >= 0 ? curIdx : 0;
+            combo.SelectionChanged += (_, _) =>
             {
-                var result = ColorPickerWindow.ShowDialog(Window.GetWindow(this), curR, curG, curB, curA);
-                if (result is null) return;
-                (curR, curG, curB, curA) = result.Value;
-                swatchOverlay.Background = new SolidColorBrush(
-                    Color.FromArgb((byte)(curA * 255), LinearToSrgbByte(curR), LinearToSrgbByte(curG), LinearToSrgbByte(curB)));
-                // Rust 側は JSON キー単位で受けるため r/g/b/a を個別に送信する。
-                SendField(keyR, curR.ToString(CultureInfo.InvariantCulture));
-                SendField(keyG, curG.ToString(CultureInfo.InvariantCulture));
-                SendField(keyB, curB.ToString(CultureInfo.InvariantCulture));
-                SendField(keyA, curA.ToString(CultureInfo.InvariantCulture));
+                if (combo.SelectedItem is ComboBoxItem item && item.Tag is string val)
+                {
+                    SendField(key, val);
+                    extra?.Invoke(val);
+                }
             };
-            sp.Children.Add(colorRow);
+            row.Children.Add(combo);
+            sp.Children.Add(row);
+            return combo;
         }
 
         // ── 再生 ───────────────────────────────────────────────
         AddHeading("再生");
-        AddCheckRow("再生",       info.PePlaying,  "playing");
-        AddCheckRow("ループ放出", info.PeLoopEmit, "loop_emit");
+        AddCheckRow("再生", info.PePlaying, "playing");
+
+        // ── 形状 ───────────────────────────────────────────────
+        AddHeading("形状");
+        var shapeOptions = new (string, string)[]
+        {
+            ("point", "点 (Point)"), ("sphere", "球 (Sphere)"), ("box", "箱 (Box)"),
+            ("plane", "平面 (Plane)"), ("model", "モデル (Model)"),
+        };
+        AddDropdownRow("形状", shapeOptions, info.PeShape, "shape");
+        // Model 形状時のモデルパス（常時表示。形状が Model 以外のときは無視される）。
+        sp.Children.Add(FileRefBuilder.Build(
+            "形状モデル", info.PeShapeModelPath, [".gltf", ".glb"],
+            () =>
+            {
+                var dlg = new OpenFileDialog
+                {
+                    Title  = "パーティクル形状モデルを選択",
+                    Filter = "モデルファイル|*.gltf;*.glb|すべてのファイル|*.*",
+                };
+                return dlg.ShowDialog(Window.GetWindow(this)) == true ? dlg.FileName : null;
+            },
+            path =>
+            {
+                if (_currentActorId < 0) return;
+                var virtualPath = VirtualPath.ToVirtual(path, _assetsPath);
+                SendField("shape_model_path", virtualPath);
+            }));
+
+        // ── 出現範囲 ───────────────────────────────────────────
+        AddHeading("出現範囲");
+        var spawnVolumeOptions = new (string, string)[]
+        {
+            ("point", "点 (Point)"), ("box", "箱 (Box)"), ("sphere", "球 (Sphere)"),
+        };
+        AddDropdownRow("出現範囲", spawnVolumeOptions, info.PeSpawnVolume, "spawn_volume");
+        AddFloatRow("箱 半径X", info.PeSpawnBoxX, "spawn_box_x");
+        AddFloatRow("箱 半径Y", info.PeSpawnBoxY, "spawn_box_y");
+        AddFloatRow("箱 半径Z", info.PeSpawnBoxZ, "spawn_box_z");
+        AddFloatRow("球 半径",  info.PeSpawnSphereRadius, "spawn_sphere_radius");
 
         // ── 放出 ───────────────────────────────────────────────
         AddHeading("放出");
-        AddFloatRow("放出レート(個/秒)", info.PeEmitRate,     "emit_rate");
-        AddFloatRow("バースト数",        info.PeBurst,        "burst");
         AddFloatRow("最大パーティクル数", info.PeMaxParticles, "max_particles", isInt: true);
+        var emitModeOptions = new (string, string)[]
+        {
+            ("loop", "ループ"), ("once", "一回"), ("count", "回数指定"),
+        };
+        AddDropdownRow("放出モード", emitModeOptions, info.PeEmitMode, "emit_mode");
+        AddFloatRow("放出総数",       info.PeEmitCountTotal,   "emit_count_total", isInt: true);
+        AddFloatRow("開始遅延(秒)",   info.PeInitialDelay,     "initial_delay");
+        AddFloatRow("プリウォーム(秒)", info.PePrewarmTime,     "prewarm_time");
+        AddFloatRow("放出間隔(秒)",   info.PeEmitInterval,     "emit_interval");
+        AddFloatRow("1回の放出数",    info.PeParticlesPerEmit, "particles_per_emit", isInt: true);
 
         // ── 寿命 / 速度 ─────────────────────────────────────────
         AddHeading("寿命 / 速度");
@@ -4040,12 +4073,12 @@ public partial class InspectorPanel : UserControl
         AddFloatRow("初速 最小",     info.PeSpeedMin,    "speed_min");
         AddFloatRow("初速 最大",     info.PeSpeedMax,    "speed_max");
 
-        // ── 形状 ───────────────────────────────────────────────
-        AddHeading("形状");
-        AddFloatRow("放出円錐角(度)", info.PeSpreadAngle, "spread_angle");
+        // ── 方向 ───────────────────────────────────────────────
+        AddHeading("方向");
         AddFloatRow("放出方向 X (ローカル)", info.PeDirX, "dir_x");
         AddFloatRow("放出方向 Y (ローカル)", info.PeDirY, "dir_y");
         AddFloatRow("放出方向 Z (ローカル)", info.PeDirZ, "dir_z");
+        AddFloatRow("方向ランダム度(0..1)", info.PeDirectionRandomness, "direction_randomness");
 
         // ── 物理 ───────────────────────────────────────────────
         AddHeading("物理");
@@ -4054,15 +4087,25 @@ public partial class InspectorPanel : UserControl
         AddFloatRow("重力 Z", info.PeGravityZ, "gravity_z");
         AddFloatRow("空気抵抗 (Drag)", info.PeDrag, "drag");
 
-        // ── 見た目 ─────────────────────────────────────────────
-        AddHeading("見た目");
-        AddFloatRow("サイズ 最小", info.PeSizeMin,      "size_min");
-        AddFloatRow("サイズ 最大", info.PeSizeMax,      "size_max");
-        AddFloatRow("終端サイズ倍率", info.PeEndSizeScale, "end_size_scale");
-        AddColorRow("開始カラー", info.PeStartR, info.PeStartG, info.PeStartB, info.PeStartA,
-                    "sc_r", "sc_g", "sc_b", "sc_a");
-        AddColorRow("終端カラー", info.PeEndR, info.PeEndG, info.PeEndB, info.PeEndA,
-                    "ec_r", "ec_g", "ec_b", "ec_a");
+        // ── 回転 / サイズ ───────────────────────────────────────
+        AddHeading("回転 / サイズ");
+        AddFloatRow("回転速度 min(度/秒)", info.PeRotSpeedMin, "rot_speed_min");
+        AddFloatRow("回転速度 max(度/秒)", info.PeRotSpeedMax, "rot_speed_max");
+        AddFloatRow("サイズ倍率 min", info.PeSizeMin, "size_min");
+        AddFloatRow("サイズ倍率 max", info.PeSizeMax, "size_max");
+
+        // ── カーブ ─────────────────────────────────────────────
+        // 速度/回転/色/スケールのカーブ編集 UI は次実装（カーブエディタ）。
+        // 現時点では SET_PARTICLE_CURVE IPC のみ実装済みで、UI からは未編集。
+        AddHeading("カーブ");
+        sp.Children.Add(new TextBlock
+        {
+            Text = "カーブ（速度/回転/色/スケール）: カーブエディタ（次実装）",
+            Foreground = new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88)),
+            FontSize = 10, FontStyle = FontStyles.Italic,
+            Margin = new Thickness(0, 2, 0, 2), TextWrapping = TextWrapping.Wrap,
+            IsEnabled = false,
+        });
 
         // ── テクスチャ ─────────────────────────────────────────
         AddHeading("テクスチャ");
