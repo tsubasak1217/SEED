@@ -344,10 +344,11 @@ impl App {
                     ))
                 }
                 ComponentData::SpriteComponent(d) => {
-                    // テクスチャパス・カラー・サイズ・レイヤーをインスペクター用に送信する
-                    let path_json = serde_json::to_string(&d.texture_path).unwrap_or_default();
+                    // テクスチャパス・カラー・サイズ・レイヤー・ポストエフェクト参照をインスペクター用に送信する
+                    let path_json   = serde_json::to_string(&d.texture_path).unwrap_or_default();
+                    let postfx_json = serde_json::to_string(&d.postfx_path).unwrap_or_default();
                     ("SpriteComponent", format!(
-                        r#","texture_path":{path_json},"cr":{:.4},"cg":{:.4},"cb":{:.4},"ca":{:.4},"sprite_w":{:.4},"sprite_h":{:.4},"layer":{}"#,
+                        r#","texture_path":{path_json},"cr":{:.4},"cg":{:.4},"cb":{:.4},"ca":{:.4},"sprite_w":{:.4},"sprite_h":{:.4},"layer":{},"postfx_path":{postfx_json}"#,
                         d.color[0], d.color[1], d.color[2], d.color[3], d.width, d.height,
                         d.layer,
                     ))

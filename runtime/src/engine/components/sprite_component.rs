@@ -32,6 +32,11 @@ pub struct SpriteComponentData {
     /// 旧データ互換のため #[serde(default)] で 0 として読み込む。
     #[serde(default)]
     pub layer: i32,
+    /// ポストエフェクトアセット（.postfx）パス（空文字列 = 無効）。
+    /// 指定時はテクスチャに .postfx のエフェクトチェーンを焼き込んで描画する
+    /// （旧データ互換のため #[serde(default)] で空文字列として読み込む）。
+    #[serde(default)]
+    pub postfx_path: String,
 }
 
 // ─── SpriteComponent ─────────────────────────────────────────────────────────
@@ -60,6 +65,10 @@ pub struct SpriteComponent {
     /// ワールドキャンバスはそのキャンバス内）で行われる。
     #[serde(default)]
     pub layer: i32,
+    /// ポストエフェクトアセット（.postfx）パス（空文字列 = 無効）。
+    /// 指定時はテクスチャに .postfx のエフェクトチェーンを焼き込んで描画する。
+    #[serde(default)]
+    pub postfx_path: String,
 }
 
 impl SpriteComponent {
@@ -71,6 +80,7 @@ impl SpriteComponent {
             width:        self.width,
             height:       self.height,
             layer:        self.layer,
+            postfx_path:  self.postfx_path.clone(),
         }
     }
 }
@@ -84,6 +94,7 @@ impl Default for SpriteComponent {
             width:        100.0,
             height:       100.0,
             layer:        0,
+            postfx_path:  String::new(),
         }
     }
 }

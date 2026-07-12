@@ -41,7 +41,38 @@ pub struct GpuSpriteTexture {
     pub bind_group: wgpu::BindGroup,
     /// テクスチャビュー（キャンバス ID パス等の別パイプラインでアルファ参照に使用）
     pub view:     wgpu::TextureView,
+    /// テクスチャ幅（画素）。ポストエフェクト焼き込み時の作業バッファサイズに使う。
+    pub width:    u32,
+    /// テクスチャ高さ（画素）。
+    pub height:   u32,
     _texture:     wgpu::Texture,
+}
+
+impl GpuSpriteTexture {
+    /// 既存の GPU テクスチャ（例: ポストエフェクト焼き込み出力）から
+    /// スプライト用の `GpuSpriteTexture` を構築する。
+    ///
+    /// `tex_bgl` / `sampler` はスプライトパイプライン（group 1）のものを渡す。
+    /// これにより焼き込みテクスチャを通常のスプライトと同一の描画経路で扱える。
+    pub fn from_texture(
+        device:  &wgpu::Device,
+        texture: wgpu::Texture,
+        tex_bgl: &wgpu::BindGroupLayout,
+        sampler: &wgpu::Sampler,
+        width:   u32,
+        height:  u32,
+    ) -> Arc<Self> {
+        let view = texture.create_view(&Default::default());
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label:   Some("Postfx Sprite Texture BG"),
+            layout:  tex_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(sampler) },
+            ],
+        });
+        Arc::new(GpuSpriteTexture { bind_group, view, width, height, _texture: texture })
+    }
 }
 
 /// テクスチャファイルを読み込んで GpuSpriteTexture を生成する。
@@ -95,5 +126,5 @@ pub fn load_sprite_texture(
             },
         ],
     });
-    Some(Arc::new(GpuSpriteTexture { bind_group, view, _texture: texture }))
+    Some(Arc::new(GpuSpriteTexture { bind_group, view, width: w, height: h, _texture: texture }))
 }

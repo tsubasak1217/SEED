@@ -1032,6 +1032,7 @@ public partial class ProjectPanel : UserControl
 
         Add(menu, "新規フォルダを作成",     null, CreateNewFolder);
         Add(menu, "新規マテリアル",         null, CreateNewMaterial);
+        Add(menu, "新規ポストエフェクト",   null, CreateNewPostFX);
         menu.Items.Add(new Separator());
         Add(menu, "エクスプローラーで開く", null, () =>
             System.Diagnostics.Process.Start("explorer.exe", _currentPath));
@@ -1069,6 +1070,44 @@ public partial class ProjectPanel : UserControl
           "alpha_mode": "opaque",
           "alpha_cutoff": 0.5,
           "textures": { "albedo": "", "normal": "", "metallic_roughness": "", "occlusion": "", "emissive": "" }
+        }
+        """;
+        try
+        {
+            // BOM なし UTF-8 で書き込む（new UTF8Encoding(false) は BOM を付与しない）。
+            File.WriteAllText(path, defaultJson, new UTF8Encoding(false));
+            _pendingRenameFolder = path;
+            RefreshFileGrid();
+        }
+        catch { }
+    }
+
+    /// <summary>
+    /// テクスチャ単位ポストエフェクト機能: 現在表示中のフォルダに既定内容の .postfx ファイルを新規作成する。
+    /// ファイル名・連番付与・UTF-8(BOM なし)書き込み・作成後リネームは CreateNewMaterial と完全に同じ流儀。
+    /// 既定内容は Rust 側の PostFxAsset スキーマ（every_frame / effects[blur, vignette, tint]）と厳密一致させる。
+    /// </summary>
+    private void CreateNewPostFX()
+    {
+        const string baseName = "NewPostFX";
+        string name = $"{baseName}.postfx";
+        string path = Path.Combine(_currentPath, name);
+        int n = 1;
+        while (File.Exists(path) || Directory.Exists(path))
+        {
+            name = $"{baseName}_{n++}.postfx";
+            path = Path.Combine(_currentPath, name);
+        }
+
+        // 既定のポストエフェクト JSON（毎フレーム適用フラグ・エフェクトリスト: ぼかし・ビネット・色調）
+        const string defaultJson = """
+        {
+          "every_frame": false,
+          "effects": [
+            { "type": "blur", "radius": 4 },
+            { "type": "vignette", "strength": 0.3, "mask": "" },
+            { "type": "tint", "color": [1.0, 0.95, 0.9, 1.0] }
+          ]
         }
         """;
         try

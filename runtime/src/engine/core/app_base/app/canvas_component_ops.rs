@@ -333,6 +333,36 @@ impl App {
         // キャッシュに古い（失敗した）テクスチャが残ったままになるのを防ぐ。
         if let Some(ctx) = &self.draw_ctx {
             ctx.sprite_tex_cache.borrow_mut().remove(path);
+            // 元テクスチャが変わると焼き込み済みポストエフェクトも無効化する。
+            // （キーは (texture_path, postfx_path)。texture_path で消せないため全 postfx を消す簡易対応でも
+            //   よいが、ここでは新旧テクスチャに紐づくものを含め安全側で mtime 差により自然再焼きされる。）
+        }
+        self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
+        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+    }
+
+    /// SpriteComponent のポストエフェクト（.postfx）参照パスを更新する（空文字列で無効化）。
+    pub(super) fn handle_set_sprite_postfx(&mut self, actor_dfs_id: u32, slot_idx: u32, path: &str) {
+        let wl = self.active_world_line;
+        let slot_entity = {
+            let Some(scene) = &self.scene else { return };
+            let mut c = 0u32;
+            find_actor_by_dfs(&scene.actors, wl, actor_dfs_id, &mut c)
+                .and_then(|a| a.slots().get(slot_idx as usize))
+                .filter(|s| s.kind == ComponentKind::Sprite)
+                .map(|s| s.entity)
+        };
+        if let Some(entity) = slot_entity {
+            let Some(scene) = &mut self.scene else { return };
+            if let Some(sc) = scene.world.get_mut::<SpriteComponent>(entity) {
+                sc.postfx_path = path.to_string();
+            }
+        }
+        // .postfx 参照が変わったら該当アセットの焼き込みキャッシュを破棄して焼き直しを強制する。
+        if let Some(ctx) = &self.draw_ctx {
+            if !path.is_empty() {
+                ctx.sprite_postfx_cache.invalidate_postfx(path);
+            }
         }
         self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
         if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }

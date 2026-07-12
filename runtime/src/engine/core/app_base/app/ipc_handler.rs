@@ -903,6 +903,10 @@ impl App {
                     let p = path.clone();
                     self.handle_set_sprite_path(actor_dfs_id, slot_idx, &p);
                 }
+                IpcCommand::SetSpritePostfx { actor_dfs_id, slot_idx, path } => {
+                    let p = path.clone();
+                    self.handle_set_sprite_postfx(actor_dfs_id, slot_idx, &p);
+                }
                 IpcCommand::SetSpriteColor { actor_dfs_id, slot_idx, r, g, b, a } => {
                     self.handle_set_sprite_color(actor_dfs_id, slot_idx, r, g, b, a);
                 }

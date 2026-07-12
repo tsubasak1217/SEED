@@ -1,0 +1,15 @@
+# postfx_tint.toml — テクスチャ単位ポスト tint（乗算色）／ ingest コピー
+# フルスクリーン三角形で入力テクスチャに定数色を乗算する（.postfx の tint エフェクト）。
+# color_format = "surface" は PostPipeline 構築時に渡す作業フォーマット（Rgba16Float）へ解決。
+# 深度は使わない（no_depth）。マスクは group2 で常時バインド可能。
+
+shader_sources = ["fullscreen.wgsl", "postfx_tint.wgsl"]
+vertex_entry   = "fs_vs"
+fragment_entry = "tint_fs"
+vertex_slots   = []
+
+topology     = "TriangleList"
+cull_mode    = "None"
+color_format = "surface"
+blend        = "Replace"
+no_depth     = true

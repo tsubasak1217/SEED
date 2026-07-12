@@ -237,6 +237,8 @@ pub enum IpcCommand {
     /// SpriteComponent のテクスチャパスを設定する
     /// フォーマット: SET_SPRITE_PATH:{actor_dfs_id},{slot_idx},{path}
     SetSpritePath { actor_dfs_id: u32, slot_idx: u32, path: String },
+    /// スプライトのポストエフェクト（.postfx）参照パスを設定する（空文字列で無効化）。
+    SetSpritePostfx { actor_dfs_id: u32, slot_idx: u32, path: String },
     /// SpriteComponent の RGBA カラーを設定する（正規化値 0.0〜1.0）
     /// フォーマット: SET_SPRITE_COLOR:{actor_dfs_id},{slot_idx},{r},{g},{b},{a}
     SetSpriteColor { actor_dfs_id: u32, slot_idx: u32, r: f32, g: f32, b: f32, a: f32 },
@@ -1102,6 +1104,13 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                             // フォーマット: SET_SPRITE_PATH:{actor_dfs_id},{slot_idx},{path}
                             parse2u_tail(&s["SET_SPRITE_PATH:".len()..])
                                 .map(|(a, sl, path)| IpcCommand::SetSpritePath {
+                                    actor_dfs_id: a, slot_idx: sl, path: path.to_string(),
+                                })
+                        }
+                        s if s.starts_with("SET_SPRITE_POSTFX:") => {
+                            // フォーマット: SET_SPRITE_POSTFX:{actor_dfs_id},{slot_idx},{path}
+                            parse2u_tail(&s["SET_SPRITE_POSTFX:".len()..])
+                                .map(|(a, sl, path)| IpcCommand::SetSpritePostfx {
                                     actor_dfs_id: a, slot_idx: sl, path: path.to_string(),
                                 })
                         }

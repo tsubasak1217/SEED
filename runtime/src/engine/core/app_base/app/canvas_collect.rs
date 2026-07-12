@@ -309,7 +309,7 @@ pub(super) fn collect_sprite_items(
                         ];
                         // テクスチャをキャッシュから取得または新規ロードする
                         // キャッシュ値: Some(arc)=成功 / None=失敗済み（毎フレームのリトライ・ログ爆発防止）
-                        let tex = if sc.texture_path.is_empty() {
+                        let mut tex = if sc.texture_path.is_empty() {
                             None
                         } else {
                             let path_str = sc.texture_path.clone();
@@ -329,6 +329,18 @@ pub(super) fn collect_sprite_items(
                             // Some(Some(arc))=成功 / Some(None)=失敗 → flatten で None に統一
                             cache.get(&sc.texture_path).and_then(|e| e.clone())
                         };
+                        // ポストエフェクト（.postfx）指定時: 元テクスチャにエフェクトチェーンを
+                        // 焼き込んだ専用テクスチャへ差し替える（テクスチャキャッシュ層で差し替えるため
+                        // スプライト描画コードは無変更）。焼き込み不能・エフェクト空なら元のまま。
+                        if !sc.postfx_path.is_empty() {
+                            if let Some(base) = tex.clone() {
+                                if let Some(baked) = crate::engine::core::renderer::postfx::resolve_baked(
+                                    draw_ctx, &base, &sc.texture_path, &sc.postfx_path,
+                                ) {
+                                    tex = Some(baked);
+                                }
+                            }
+                        }
                         // 描画ゾーン（ルートキャンバス継承）とレイヤー（スプライト個別）を添付する
                         out.push((gpu_mat, sc.color, tex, my_zone, sc.layer));
                     }

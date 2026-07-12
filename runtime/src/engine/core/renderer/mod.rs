@@ -23,6 +23,8 @@ pub(crate) mod particle_shapes;
 pub(crate) mod skybox;
 /// .mat マテリアルアセット（Phase R7: マルチマテリアル編集）
 pub mod material_asset;
+/// .postfx ポストエフェクトアセット＋テクスチャ単位ポストプロセス（Phase R3 応用）
+pub mod postfx;
 
 pub use uniforms::{CameraUniform, ModelUniform, MaterialUniform, JointUniform, ColorVertex,
                    GpuCullData, FrustumUniform, GizmoVertex};
@@ -51,6 +53,7 @@ pub use transparency::{TransparencyMode, TransparentPipelines,
                        WBOIT_ACCUM_FORMAT, WBOIT_REVEAL_FORMAT};
 pub use batch2d::{SpriteBatcher, SpriteInstance, SpriteBatch, SpriteBatchList,
                   SPRITE_INSTANCE_SIZE, draw_sprite_batches, draw_sprite_outline_batches};
+pub use postfx::{PostfxContext, SpritePostfxCache};
 
 // ============================================================
 //  Renderer 本体

@@ -36,6 +36,8 @@ pub use crate::engine::core::renderer::{
     RtShadowResources,
     // HDR ポストプロセス土台（Phase R3）
     PostContext,
+    // テクスチャ単位ポストプロセス（.postfx）
+    PostfxContext, SpritePostfxCache,
 };
 
 // 描画関数
@@ -92,6 +94,12 @@ pub struct DrawContext {
     /// トーンマップ／ビネットのパイプライン・共有サンプラー・既定マスクを保持する。
     /// 動的なレンダーターゲット（HDR オフスクリーン等）は App 側の RtPool が持つ。
     pub post:             PostContext,
+    /// テクスチャ単位ポストプロセス（.postfx）の静的リソース一式。
+    /// スプライトのポストエフェクト焼き込みで使うパイプライン・サンプラー・既定マスク。
+    pub postfx:           PostfxContext,
+    /// スプライトのポストエフェクト焼き込みキャッシュ（(texture_path, postfx_path) → 焼き込みテクスチャ）。
+    /// `&self` 共有下でフレーム内から焼き込み・参照するため内部可変（RefCell）を内包する。
+    pub sprite_postfx_cache: SpritePostfxCache,
     /// パス → 解析済み CPU モデルのキャッシュ。
     /// 同じパスのモデルを繰り返し build_actor/rebuild するときにディスク読み込みとパースを省く。
     pub model_cache:      RefCell<HashMap<String, Arc<Model>>>,
@@ -119,6 +127,8 @@ impl DrawContext {
         let pipelines = DrawPipelines::new(&device, &queue, scene_format, surface_format, depth_format, cache);
         // HDR ポストプロセスの静的リソース（トーンマップ／ビネットのパイプライン等）。
         let post      = PostContext::new(&device, &queue, scene_format, surface_format, cache);
+        // テクスチャ単位ポスト（.postfx）の静的リソース（作業フォーマットは常に Rgba16Float）。
+        let postfx    = PostfxContext::new(&device, &queue, cache);
         let defaults  = DefaultTex::new(&device, &queue);
         // シャドウリソース（深度配列・比較サンプラー・シャドウ行列 UBO）を先に生成し、
         // ライトバッファが group 4 の複合 BindGroup（ライト binding 0/1 ＋
@@ -143,6 +153,8 @@ impl DrawContext {
             shadow,
             rt_shadow,
             post,
+            postfx,
+            sprite_postfx_cache: SpritePostfxCache::new(),
             model_cache:      RefCell::new(HashMap::new()),
             sprite_tex_cache: RefCell::new(HashMap::new()),
             sprites,

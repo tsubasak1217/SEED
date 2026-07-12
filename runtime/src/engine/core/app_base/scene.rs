@@ -566,6 +566,7 @@ pub fn build_actor(
                     width:        sc_data.width,
                     height:       sc_data.height,
                     layer:        sc_data.layer,
+                    postfx_path:  sc_data.postfx_path,
                 });
                 actor.add_slot_typed::<SpriteComponent>(slot_name, ComponentKind::Sprite, slot_entity);
             }

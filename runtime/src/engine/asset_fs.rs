@@ -109,6 +109,22 @@ pub fn to_virtual(absolute: &str) -> String {
     absolute.to_string()
 }
 
+/// アセットファイルの最終更新時刻（UNIX 秒）を返す。
+///
+/// キャッシュ無効化キー用途（.postfx のライブ編集反映など）。
+/// - ファイルシステム上に実体があればその mtime を返す。
+/// - PAK 内アセット・解決不能・メタデータ取得失敗時は 0 を返す
+///   （0 は「不変」を意味し、パッケージモードでは一度焼けば再焼きしない）。
+pub fn mtime(path: &str) -> u64 {
+    let resolved = resolve(path);
+    std::fs::metadata(&resolved)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
 // ============================================================
 //  読み込み API
 // ============================================================

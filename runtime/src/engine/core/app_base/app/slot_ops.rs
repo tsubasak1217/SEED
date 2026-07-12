@@ -506,6 +506,7 @@ impl App {
                     width:        sc_data.width,
                     height:       sc_data.height,
                     layer:        sc_data.layer,
+                    postfx_path:  sc_data.postfx_path,
                 });
                 let mut c = 0u32;
                 if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
@@ -767,6 +768,7 @@ impl App {
                         width:        sc_data.width,
                         height:       sc_data.height,
                         layer:        sc_data.layer,
+                        postfx_path:  sc_data.postfx_path,
                     });
                     new_slots.push(ComponentSlot::new::<SpriteComponent>(slot_data.name, ComponentKind::Sprite, slot_entity));
                 }

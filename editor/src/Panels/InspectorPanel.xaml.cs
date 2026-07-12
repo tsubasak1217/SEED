@@ -404,6 +404,8 @@ public partial class InspectorPanel : UserControl
         float SpriteW = 100f, float SpriteH = 100f,
         // SpriteComponent 用描画優先度レイヤー（大きいほど手前・同値はヒエラルキー順）
         int SpriteLayer = 0,
+        // SpriteComponent 用: テクスチャ単位ポストエフェクト（.postfx アセット）参照。空文字列 = 未設定
+        string PostFxPath = "",
         // InputMapComponent 用フィールド
         string InputMapPath = "",
         // CameraComponent 用フィールド
@@ -671,6 +673,8 @@ public partial class InspectorPanel : UserControl
             var canvas3dPivotY = comp.TryGetProperty("pivot_y", out var pvy) ? pvy.GetSingle() : 0f;
             // SpriteComponent 用: テクスチャパス・RGBA・サイズ
             var texPath = comp.TryGetProperty("texture_path", out var tp2) ? tp2.GetString() ?? "" : "";
+            // SpriteComponent 用: テクスチャ単位ポストエフェクト（.postfx アセット）参照パス
+            var postFxPath = comp.TryGetProperty("postfx_path", out var pfp) ? pfp.GetString() ?? "" : "";
             var sprR = comp.TryGetProperty("cr", out var cr) ? cr.GetSingle() : 1f;
             var sprG = comp.TryGetProperty("cg", out var cg) ? cg.GetSingle() : 1f;
             var sprB = comp.TryGetProperty("cb", out var cb) ? cb.GetSingle() : 1f;
@@ -803,6 +807,7 @@ public partial class InspectorPanel : UserControl
                 TexturePath: texPath, SpriteR: sprR, SpriteG: sprG, SpriteB: sprB, SpriteA: sprA,
                 SpriteW: sprW, SpriteH: sprH,
                 SpriteLayer: sprLayer,
+                PostFxPath: postFxPath,
                 InputMapPath: inputMapPath,
                 FovYDeg: fovYDeg, CamNear: camNear, CamFar: camFar, IsMain: isMain,
                 CamCR: camCR, CamCG: camCG, CamCB: camCB, CamCA: camCA,
@@ -3305,6 +3310,28 @@ public partial class InspectorPanel : UserControl
                 // 絶対パスを仮想パスに変換してからランタイムへ送信する
                 var virtualPath = VirtualPath.ToVirtual(path, _assetsPath);
                 _runtime?.SendToRuntime($"SET_SPRITE_PATH:{_currentActorId},{info.SlotIdx},{virtualPath}");
+            }));
+
+        // ポストエフェクト参照行（.postfx アセット。テクスチャ参照と同じ FileRefBuilder + D&D の流儀）
+        // 空文字列 virtualPath を送るとランタイム側でポストエフェクト適用を無効化（クリア）する。
+        sp.Children.Add(FileRefBuilder.Build(
+            "PostFX", info.PostFxPath,
+            [".postfx"],
+            () =>
+            {
+                var dlg = new OpenFileDialog
+                {
+                    Title  = "ポストエフェクトファイルを選択",
+                    Filter = "ポストエフェクトファイル|*.postfx|すべてのファイル|*.*",
+                };
+                return dlg.ShowDialog(Window.GetWindow(this)) == true ? dlg.FileName : null;
+            },
+            path =>
+            {
+                if (_currentActorId < 0) return;
+                // 絶対パスを仮想パスに変換してからランタイムへ送信する
+                var virtualPath = VirtualPath.ToVirtual(path, _assetsPath);
+                _runtime?.SendToRuntime($"SET_SPRITE_POSTFX:{_currentActorId},{info.SlotIdx},{virtualPath}");
             }));
 
         // カラーピッカーボタン（現在色のスウォッチ表示）

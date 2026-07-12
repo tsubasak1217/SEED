@@ -509,6 +509,58 @@ equirectangular（正距円筒）画像 1 枚を天球として描画する。EC
 - **TODO**: キューブマップ 6 枚対応・真の HDR(.hdr float)ロード（現状 8bit×intensity）・
   CameraLocked のアクター回転による天球オリエンテーション（現状は無回転）・IBL 環境照明への流用。
 
+### Phase R10: .postfx テクスチャ単位ポストプロセス 【状況: 実装済み（実機検証待ち, v1）】
+Phase R3 のポスト土台（RtPool / post_pass 抽象 / マスク）を応用し、個々のテクスチャ
+（まずスプライト）へエフェクトチェーン（.postfx アセット）を焼き込む。「画面全体」ではなく
+「テクスチャ単位・マスク」を扱う土台の実利用例。
+
+#### .postfx アセット（JSON, material_asset.rs 流儀）
+- 新設 `renderer/postfx/`（`asset.rs`=.postfx スキーマ＋ロード＋`OnceLock<Mutex<HashMap>>` キャッシュ
+  ＋`load`/`reload`/`clear_cache`／`bake.rs`=焼き込み＋キャッシュ／`mod.rs`=`PostfxContext`＋params）。
+- スキーマ: `{"every_frame":bool, "effects":[{"type":..,..}]}`。全フィールド serde default 相当
+  （effects は `Vec<serde_json::Value>` で受け、`type` を手動ディスパッチ＝**未知 type は警告スキップ**）。
+  v1 エフェクト:
+  - **blur**（`radius`）: **いもす法（走査線ランニング和）ボックス 3 回近似ガウシアン**。
+    `postfx_blur.wgsl`（compute, workgroup 64）が 1 起動＝1 走査線を担当し、幅 (2r+1) の窓和を
+    「先頭を足し末尾を引く」ランニング和で更新（半径非依存 O(1)/画素）。分離可能性で水平（行走査）
+    →垂直（列走査）に分解し、H/V を 3 往復＝6 サブパス（temp 2 枚をピンポン）で box×3=ガウス近似。
+  - **vignette**（`strength`, `mask`）: 既存 `post_vignette.wgsl`／`VignetteParams` を作業フォーマットで
+    再構築して流用（strength→intensity, 形状は既定）。`mask` はテクスチャパス（group2, 未指定=白全面）。
+  - **tint**（`color`）: `postfx_tint.wgsl`（乗算色）。color=白で恒等コピー＝チェーン先頭の ingest 取り込みにも流用。
+- チェーン実行（`bake.rs::bake`）: ベース sRGB テクスチャ→ingest(tint 白)でリニア HDR(Rgba16Float)作業
+  バッファへ→各エフェクトを作業 2 枚のピンポンで適用→最終枚を `GpuSpriteTexture` に包む。全工程を
+  **リニア HDR（Rgba16Float）作業空間**で統一（sRGB ベースをサンプルした自動デコード値と、焼き上げ
+  Rgba16Float をサンプルした値が一致＝スプライト描画は元テクスチャと同一挙動。blur の rgba16float
+  storage とも整合）。作業テクスチャは RENDER_ATTACHMENT|TEXTURE_BINDING|STORAGE_BINDING の 3 用途兼用。
+
+#### スプライト統合（描画コード無変更＝テクスチャキャッシュ層で差し替え）
+- `SpriteComponent`＋`SpriteComponentData` に `postfx_path: String`（空=無効, `#[serde(default)]`,
+  ComponentKind 変更なし・フィールド追加のみ・旧 .scene 互換）を追加。
+- `collect_sprite_items`（canvas_collect.rs）でベーステクスチャ解決の直後、postfx_path 非空なら
+  `postfx::resolve_baked` で焼き込み済みテクスチャへ差し替える（batch2d 描画経路は一切無変更）。
+- **キャッシュ**（`SpritePostfxCache`, DrawContext 保持）: キー=(texture_path, postfx_path)、値に .postfx の
+  **mtime**（`asset_fs::mtime` 追加）を保持。元テクスチャ・.postfx 不変なら 1 回焼いて使い回す。.postfx が
+  mtime 変化したらアセット reload して焼き直し。`every_frame=true` は毎回焼き直す。焼き込みは
+  **フレームのメインエンコーダと独立した専用エンコーダを生成即 submit**するため、collect から `&DrawContext`
+  だけで完結し frame_renderer への割り込み不要（＝R3 土台の上に非侵襲で載る）。
+- IPC: `SET_SPRITE_POSTFX:{actor},{slot},{path}`（SET_SPRITE_PATH と対称。空でクリア）→
+  `handle_set_sprite_postfx` が SpriteComponent 更新＋該当キャッシュ invalidate＋ACTOR_COMPONENTS 再送。
+  ACTOR_COMPONENTS の SpriteComponent に `postfx_path` を追加。
+- エディタ: Inspector のスプライトに「ポストエフェクト」参照欄（D&D/ダイアログ, .postfx）。ProjectPanel
+  右クリック「新規ポストエフェクト」で雛形 .postfx 生成。
+- **検証**: `postfx/mod.rs` の `postfx_shaders_parse_and_validate`（tint/vignette/blur の naga parse+validate,
+  RAY_QUERY 不要 = Capabilities::empty）pass。cargo build 0 エラー。
+- **実機観点**: 焼き込みは初回のみ（キャッシュ）＝描画コスト増は微小。blur は大半径でも走査線ランニング和で
+  高速。postfx 無しスプライトは差し替え分岐が発火せず完全に従来経路（コスト増ゼロ）。
+- **スコープ外（TODO）**:
+  - **.mat のテクスチャへの .postfx 適用**（次段。material_asset の各テクスチャ参照へ postfx 焼き込みを掛ける）。
+  - **③ カメラ RTT（Render To Texture）**: カメラの描画結果をオフスクリーンテクスチャへ焼き、
+    スプライト/マテリアルのテクスチャとして参照可能にする（本 postfx チェーンの入力源に流用できる想定）。
+  - **④ カメラ紐づけの画面全体ポスト**: カメラ（or プロジェクト設定）に .postfx を紐づけ、画面全体へ
+    チェーン適用する経路（R3/R4 の全画面ポスト段に .postfx チェーンを差し込む形が自然）。
+  - every_frame の焼き込み先 RT 再利用（現状は毎フレーム新規テクスチャ確保＝GPU メモリ churn。opt-in 前提）・
+    追加エフェクト種（色収差・グロー・ディゾルブ等）・エフェクト単位マスクの全種対応（現状 vignette のみ）。
+
 ### 継続タスク（全フェーズ共通）
 - frame_renderer.rs の該当パスを触るたびにモジュール分割（passes/ サブフォルダへ）。
 - 各フェーズでデバッグ表示を拡充（R1: ライトギズモ、R2: カスケード可視化、R5: OITバッファ可視化等）。
