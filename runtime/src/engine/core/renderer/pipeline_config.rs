@@ -87,6 +87,10 @@ pub struct RenderPipelineBuilder<'d> {
     /// パイプラインのデバッグラベル（wgpu の検証エラーメッセージに表示される）。
     /// None の場合は vertex_entry 名（"vs_main" 等）にフォールバックする。
     label:          Option<&'d str>,
+    /// depth_write の上書き（Some のとき TOML の depth_write より優先）。
+    /// 同一 TOML から depth_write だけ異なる複数バリアントを作る用途（例: スカイボックスの
+    /// CameraLocked=false / WorldAnchored=true）。None なら TOML 値を使う。
+    depth_write_override: Option<bool>,
 }
 
 impl<'d> RenderPipelineBuilder<'d> {
@@ -99,7 +103,14 @@ impl<'d> RenderPipelineBuilder<'d> {
     ) -> Self {
         let cfg: PipelineConfig = toml::from_str(toml_src)
             .expect("invalid pipeline TOML");
-        Self { device, cfg, surface_format, depth_format, stencil: None, cache: None, label: None }
+        Self { device, cfg, surface_format, depth_format, stencil: None, cache: None, label: None, depth_write_override: None }
+    }
+
+    /// depth_write を上書きする（TOML の depth_write より優先）。
+    /// 同一 TOML から depth_write だけ異なるバリアントを構築する用途に使う。
+    pub fn with_depth_write(mut self, enabled: bool) -> Self {
+        self.depth_write_override = Some(enabled);
+        self
     }
 
     /// ステンシルステートを上書き設定する（アウトライン等の特殊用途）。
@@ -131,7 +142,7 @@ impl<'d> RenderPipelineBuilder<'d> {
     where
         F: Fn(&str) -> &'static str,
     {
-        let Self { device, cfg, surface_format, depth_format, stencil, cache, label } = self;
+        let Self { device, cfg, surface_format, depth_format, stencil, cache, label, depth_write_override } = self;
         // ラベル未指定時は vertex_entry 名を使う（従来の label: None から改善）。
         let pipeline_label = label.unwrap_or(cfg.vertex_entry.as_str());
 
@@ -254,7 +265,8 @@ impl<'d> RenderPipelineBuilder<'d> {
             let depth_compare = parse_compare(&cfg.depth_compare);
             Some(wgpu::DepthStencilState {
                 format:              depth_format,
-                depth_write_enabled: cfg.depth_write,
+                // 上書き指定があればそれを優先（同一 TOML からの depth_write バリアント生成用）。
+                depth_write_enabled: depth_write_override.unwrap_or(cfg.depth_write),
                 depth_compare,
                 stencil: stencil.unwrap_or_default(),
                 bias: wgpu::DepthBiasState {
@@ -498,6 +510,11 @@ pub fn vertex_buffer_layout(name: &str) -> wgpu::VertexBufferLayout<'static> {
         VA { format: VF::Float32x3, offset: 0,  shader_location: 0 },
         VA { format: VF::Float32x4, offset: 12, shader_location: 1 },
     ];
+    // 位置のみ頂点（12 bytes, location 0 = vec3）。スカイボックスの内向き球メッシュ等、
+    // 方向ベースでサンプルするジオメトリに使う（法線・UV は頂点に持たずシェーダで算出）。
+    static POS3_ATTRS: &[VA] = &[
+        VA { format: VF::Float32x3, offset: 0, shader_location: 0 },
+    ];
     // GizmoVertex: pos_a(0-11), t(12-15), pos_b(16-27), side(28-31), color(32-47)
     static GIZMO_ATTRS: &[VA] = &[
         VA { format: VF::Float32x3, offset: 0,  shader_location: 0 },
@@ -530,6 +547,7 @@ pub fn vertex_buffer_layout(name: &str) -> wgpu::VertexBufferLayout<'static> {
         "skin_vertex"   => VertexBufferLayout { array_stride: 24, step_mode: VertexStepMode::Vertex, attributes: SKIN_ATTRS },
         "smooth_normal" => VertexBufferLayout { array_stride: 12, step_mode: VertexStepMode::Vertex, attributes: SMOOTH_NORMAL_ATTRS },
         "color_vertex"  => VertexBufferLayout { array_stride: 28, step_mode: VertexStepMode::Vertex, attributes: COLOR_ATTRS },
+        "pos3"          => VertexBufferLayout { array_stride: 12, step_mode: VertexStepMode::Vertex, attributes: POS3_ATTRS },
         "gizmo_vertex"  => VertexBufferLayout { array_stride: 48, step_mode: VertexStepMode::Vertex, attributes: GIZMO_ATTRS },
         "sprite_vertex" => VertexBufferLayout { array_stride: 16, step_mode: VertexStepMode::Vertex, attributes: SPRITE_ATTRS },
         // 80 bytes / インスタンス・step_mode=Instance（Phase R6）

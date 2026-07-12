@@ -474,6 +474,41 @@ ECS の `ParticleEmitterComponent`（データのみ）を入力に、エミッ�
   可変インスタンス数で無駄頂点削減）・ソフトパーティクル（深度フェード）・スキン/2D 対応・全粒子 dead 検出で
   dispatch 打ち切り・エミッタの親ヒエラルキー追従（現状は Actor 自身の Transform のみ、ライトギズモと同慣例）。
 
+### Phase R9: スカイボックス（天球） 【状況: 実装済み（実機検証待ち）】
+equirectangular（正距円筒）画像 1 枚を天球として描画する。ECS の `SkyboxComponent`
+（データのみ）を入力に、内向き UV 球メッシュへ方向ベースでテクスチャをサンプルする。
+
+- **コンポーネント**: `SkyboxComponent`（`ComponentKind::Skybox`, 3D アクター用スロット）。
+  `texture_path`(assets://・equirect 1 枚) / `mode`(CameraLocked 既定 / WorldAnchored) /
+  `intensity`(既定 1) / `tint`([f32;3] 既定 白)。全 serde default で旧シーン互換。
+- **配置モード**:
+  - CameraLocked: カメラ位置中心・無限遠。頂点 VS で球をカメラ位置へ平行移動し `clip.z=clip.w`
+    で NDC 深度を far(1.0) に固定、depth 書込 OFF・LessEqual。標準スカイボックス。
+  - WorldAnchored: アクター Transform（位置・回転・スケール）で配置される内向き球。通常深度
+    （depth 書込 ON）で実体化し、接近／内外移動が可能。
+  - 複数時: CameraLocked は最初の 1 つのみ有効（以降は警告して無視, `skybox_system` の collect）。
+    WorldAnchored は複数可。テクスチャ未設定（空）は描画しない。
+- **描画統合**: 新設 `renderer/skybox.rs`（`SkyboxSystem`=collect/sync_gpu/draw＋`SkyboxPipelines`＋
+  内向き UV 球生成 `generate_uv_sphere` 24×48）＋`shaders/skybox.wgsl`＋`pipelines/skybox.toml`。
+  パイプラインは TOML から `RenderPipelineBuilder` で構築し、depth_write だけ異なる 2 バリアント
+  （builder に `with_depth_write` 上書きを追加）を同一 TOML から生成。頂点は位置のみの新スロット
+  `"pos3"`（pipeline_config.rs）。group0=camera（共有 CameraBuffer BG を流用・reflection の BGL 重複
+  排除で互換）, group1=skybox uniform+tex+sampler（≦5 グループ）。描画位置は **HDR メインパスの最初**
+  （`begin_scene_pass_to` 直後・Play ビューポート/シザー適用後・不透明より先）。unlit（intensity×tint×
+  テクスチャ）で HDR へ出すため intensity>1 は Bloom と連動。
+- **equirect サンプリング**: フラグメントで方向 `d=normalize(local_pos)` から
+  `u=atan2(d.z,d.x)/2π+0.5`, `v=acos(clamp(d.y,-1,1))/π`。`textureSampleLevel`(level 0) で
+  継ぎ目 derivative を回避。サンプラーは U=Repeat / V=ClampToEdge。テクスチャは `asset_fs::read_image`
+  （8bit sRGB）で `SkyboxSystem` がパス単位キャッシュ。
+- **エディタ**: ComponentSelector「レンダリング」カテゴリに追加。Inspector にテクスチャ参照(D&D)/
+  mode ドロップダウン/intensity/tint。`SET_SKYBOX_FIELD:{actor},{slot},{key},{value}`
+  （key=texture_path/mode/intensity/tint, tint="r,g,b"）で SET_LIGHT_FIELD 流儀。WorldAnchored 選択時は
+  配置ワイヤ球ギズモ（`skybox_scene_gizmo.rs`, light_scene_gizmo 流儀）。
+- **検証**: `skybox.rs` の layout_tests（SkyboxUniform=96B・UV 球本数）＋shader_tests（naga parse+validate）。
+  cargo build/test・dotnet build いずれも 0 エラー。
+- **TODO**: キューブマップ 6 枚対応・真の HDR(.hdr float)ロード（現状 8bit×intensity）・
+  CameraLocked のアクター回転による天球オリエンテーション（現状は無回転）・IBL 環境照明への流用。
+
 ### 継続タスク（全フェーズ共通）
 - frame_renderer.rs の該当パスを触るたびにモジュール分割（passes/ サブフォルダへ）。
 - 各フェーズでデバッグ表示を拡充（R1: ライトギズモ、R2: カスケード可視化、R5: OITバッファ可視化等）。

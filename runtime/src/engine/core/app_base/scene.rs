@@ -623,6 +623,12 @@ pub fn build_actor(
                 world.insert(slot_entity, ParticleEmitterComponent::from_data(pe_data));
                 actor.add_slot_typed::<ParticleEmitterComponent>(slot_name, ComponentKind::ParticleEmitter, slot_entity);
             }
+            ComponentData::SkyboxComponent(sb_data) => {
+                // スカイボックスコンポーネントを ECS ワールドに挿入してスロットを登録する
+                use crate::engine::components::SkyboxComponent;
+                world.insert(slot_entity, SkyboxComponent::from_data(sb_data));
+                actor.add_slot_typed::<SkyboxComponent>(slot_name, ComponentKind::Skybox, slot_entity);
+            }
             ComponentData::LegacyRigidbodyComponent(rb_data) => {
                 // 旧フォーマット（Rigidbody が独立コンポーネント）の後方互換マイグレーション。
                 // スロットエンティティは生成せず、同アクターの ColliderComponent にデータを適用する。

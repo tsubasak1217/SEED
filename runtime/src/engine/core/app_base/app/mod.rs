@@ -46,8 +46,10 @@ mod script_scene_ops;
 mod audio_ops;
 mod animation_ops;
 pub(crate) mod light_ops;
+pub(crate) mod skybox_ops;
 pub(crate) mod particle_ops;
 pub(crate) mod light_scene_gizmo;
+pub(crate) mod skybox_scene_gizmo;
 pub(crate) mod particle_scene_gizmo;
 mod prefab_ops;
 pub(crate) mod camera_scene_gizmo;
@@ -585,6 +587,11 @@ pub struct App {
     /// rt_pool と同じく eager 構築（デバイス不要。GPU パイプラインは DrawContext.pipelines が持つ）。
     /// 毎フレーム collect_and_consume（CPU）→ sync_gpu/dispatch/draw（GPU）で更新・描画する。
     particle_system: crate::engine::core::renderer::ParticleSystem,
+    /// スカイボックス（天球）システム（Phase R9）。Skybox スロットごとの GPU 状態
+    /// （uniform バッファ・BindGroup）とテクスチャキャッシュを保持する。particle_system と
+    /// 同じく eager 構築（パイプラインは DrawContext.pipelines.skybox が持つ）。
+    /// 毎フレーム collect（CPU）→ sync_gpu/draw（GPU）で更新・描画する。
+    skybox_system: crate::engine::core::renderer::SkyboxSystem,
     /// ビネットポストパスの有効フラグ（デフォルト OFF）。
     /// project_settings.json の `post_vignette`（bool, 既定 false）を起動時に読み込む。
     /// 有効時はトーンマップ前段にビネットを挿す（ポストパスチェーンの実証）。
@@ -937,6 +944,7 @@ impl App {
             edit_view_mode:              EditViewMode::View3D,
             rt_pool:                     crate::engine::core::renderer::RtPool::new(),
             particle_system:             crate::engine::core::renderer::ParticleSystem::new(),
+            skybox_system:               crate::engine::core::renderer::SkyboxSystem::new(),
             post_vignette_enabled:       false,
             post_fx:                     crate::engine::core::renderer::PostFxSettings::default(),
             ambient_color:               crate::engine::core::renderer::DEFAULT_AMBIENT_COLOR,

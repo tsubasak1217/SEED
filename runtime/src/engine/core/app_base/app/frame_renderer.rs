@@ -872,6 +872,16 @@ impl App {
             }
         }
 
+        // ── スカイボックス（天球）CPU 収集（Phase R9）──────────────
+        // Skybox スロットを走査して描画対象を確定する（CameraLocked は最初の 1 つのみ）。
+        // 読み取りのみ（&World）のため描画ブロック前にここで実施する。0 個なら以降即 return。
+        {
+            let awl = self.active_world_line;
+            if let Some(scene) = self.scene.as_ref() {
+                self.skybox_system.collect(&scene.world, &scene.actors, awl);
+            }
+        }
+
         if let (Some(renderer), Some(scene), Some(camera_buf), Some(draw_ctx)) =
             (&mut self.renderer, &self.scene, &self.camera_buf, &self.draw_ctx)
         {
@@ -1107,6 +1117,16 @@ impl App {
                         );
                     } // particle_pass がドロップされ ComputePass が終了する
 
+                    // ── スカイボックス: GPU 同期（Phase R9）────────────────────
+                    // uniform バッファ・BindGroup の確保／更新とテクスチャロードを行う。
+                    // 描画はメインパスの最初（begin_scene_pass_to 直後）で行う。0 個なら即 return。
+                    if self.skybox_system.has_skyboxes() {
+                        self.skybox_system.sync_gpu(
+                            &draw_ctx.device, &draw_ctx.queue,
+                            &draw_ctx.pipelines.skybox,
+                        );
+                    }
+
                     // ── カメラシーンギズモ（Edit モード・3D シーンのみ）──────────
                     // カメラアイコン / フラスタム / プレビューはアクター編集 2D タブ・
                     // 2D シーンビュー以外で表示する。
@@ -1269,6 +1289,16 @@ impl App {
                     // 選択中パーティクルエミッタアクターのギズモ（放出円錐ワイヤ、3D シーン）。
                     let particle_gizmo_batch = if is_3d_scene {
                         super::particle_scene_gizmo::build_selected_particle_gizmo_batch(
+                            &scene.actors, &scene.world,
+                            self.active_world_line,
+                            self.actor_virtual_selected_idx,
+                            &draw_ctx.device,
+                        )
+                    } else { None };
+
+                    // 選択中スカイボックスアクターのギズモ（WorldAnchored の配置ワイヤ球、3D シーン）。
+                    let skybox_gizmo_batch = if is_3d_scene {
+                        super::skybox_scene_gizmo::build_selected_skybox_gizmo_batch(
                             &scene.actors, &scene.world,
                             self.active_world_line,
                             self.actor_virtual_selected_idx,
@@ -3005,6 +3035,19 @@ impl App {
                             pass.set_scissor_rect(vp_x as u32, vp_y as u32, vp_w as u32, vp_h as u32);
                         }
 
+                        // ── スカイボックス（天球）：HDR メインパスの最初（不透明より先）に描く（Phase R9）──
+                        // CameraLocked は depth 書込 OFF・far 固定で背景として、WorldAnchored は
+                        // 通常深度で実体として描く。以降の 3D ワールド／不透明がその上に重なる。
+                        // Play のビューポート／シザー適用後に描くことで黒帯へのはみ出しを防ぐ。
+                        // 2D シーンビュー（edit_view_2d）では天球を描かない。
+                        if !edit_view_2d && self.skybox_system.has_skyboxes() {
+                            self.skybox_system.draw(
+                                &mut pass,
+                                &draw_ctx.pipelines.skybox,
+                                &camera_buf.bind_group,
+                            );
+                        }
+
                         // ── 背景ゾーンのキャンバススプライト（Phase C）────────────────
                         // 描画順（奥→手前）: 背景キャンバス | 3D ワールド | 前面キャンバス。
                         // クリア直後・3D ワールドより先に 2D オルソオーバーレイカメラで描画する。
@@ -3284,6 +3327,19 @@ impl App {
                             {
                                 draw_line_batch(
                                     &mut pass, particle_gz,
+                                    &camera_buf.bind_group, line_bg,
+                                    &draw_ctx.pipelines,
+                                );
+                            }
+                        }
+
+                        // スカイボックスギズモ（選択中 WorldAnchored スカイボックスのみ、3D シーン）
+                        if !scene_canvas_ss {
+                            if let (Some(skybox_gz), Some((_, line_bg))) =
+                                (&skybox_gizmo_batch, &self.line_model_buf)
+                            {
+                                draw_line_batch(
+                                    &mut pass, skybox_gz,
                                     &camera_buf.bind_group, line_bg,
                                     &draw_ctx.pipelines,
                                 );

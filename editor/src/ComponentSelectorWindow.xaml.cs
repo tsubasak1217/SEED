@@ -49,6 +49,7 @@ public partial class ComponentSelectorWindow : Window
         ("レンダリング", new()
         {
             new("ModelComponent", "Model", "3D モデルをアクタにアタッチ", ActorTarget.Actor3D),
+            new("SkyboxComponent", "Skybox", "equirectangular（正距円筒）画像1枚を天球として描画。CameraLocked/WorldAnchored", ActorTarget.Actor3D),
         }),
         ("UI", new()
         {
@@ -314,6 +315,7 @@ public partial class ComponentSelectorWindow : Window
         "AudioComponent"      => "Audio",
         "AnimatorComponent"   => "Animator",
         "LightComponent"      => "Light",
+        "SkyboxComponent"     => "Skybox",
         "ParticleEmitterComponent" => "ParticleEmitter",
         // Plugin:{name} → プラグイン名をデフォルト名とする
         _ when typeId.StartsWith("Plugin:", StringComparison.Ordinal) => typeId["Plugin:".Length..],

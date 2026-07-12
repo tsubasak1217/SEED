@@ -1,0 +1,31 @@
+# skybox.toml — スカイボックス（天球）描画パイプライン（Phase R9）
+#
+# 内向き UV 球メッシュ（位置のみ・"pos3" 頂点スロット）を描き、方向ベースで
+# equirectangular テクスチャをサンプルして天球を描画する（skybox.wgsl）。
+#
+# group 0 = camera（メッシュ描画と同じ共有 CameraBuffer BindGroup を流用）
+# group 1 = skybox uniform + texture + sampler
+#
+# color_format="surface" は builder 呼び出し側が渡す sf（= HDR_FORMAT, Rgba16Float）に解決される
+# （scene 描画パイプラインと同じ扱い）。ライティング非適用・不透明（blend=None）。
+# 深度: LessEqual・書込みは呼び出し側で depth_write を上書きする
+#   - CameraLocked  : depth_write=false（far 固定・背景として最初に描く）
+#   - WorldAnchored : depth_write=true （通常深度で実体化）
+# 本 TOML の depth_write 既定は CameraLocked 用に false とする。
+# カリングなし（内向き球のため、また内部へ入り込んでも破綻しないように両面描画）。
+
+shader_sources = ["skybox.wgsl"]
+vertex_entry   = "vs_main"
+fragment_entry = "fs_main"
+vertex_slots   = ["pos3"]
+
+topology   = "TriangleList"
+cull_mode  = "None"
+front_face = "Ccw"
+
+depth_write   = false
+depth_compare = "LessEqual"
+
+color_format = "surface"
+blend        = "None"
+write_mask   = "all"

@@ -251,6 +251,8 @@ pub enum IpcCommand {
     /// LightComponent のフィールドを更新する
     /// （key: kind/color/intensity/range/inner_angle/outer_angle/rect_width/rect_height/cast_shadows）
     SetLightField { actor_dfs_id: u32, slot_idx: u32, key: String, value: String },
+    /// SkyboxComponent のフィールドを更新する（key: texture_path/mode/intensity/tint。skybox_ops.rs が処理）
+    SetSkyboxField { actor_dfs_id: u32, slot_idx: u32, key: String, value: String },
     /// ParticleEmitterComponent のフィールドを更新する
     /// （key: max_particles/shape/spawn_volume/emit_mode/lifetime_min/... 等。particle_ops.rs が処理）
     SetParticleField { actor_dfs_id: u32, slot_idx: u32, key: String, value: String },
@@ -1144,6 +1146,17 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                             parse2u_tail(&s["SET_LIGHT_FIELD:".len()..]).and_then(|(a, sl, tail)| {
                                 let (key, value) = tail.split_once(',')?;
                                 Some(IpcCommand::SetLightField {
+                                    actor_dfs_id: a, slot_idx: sl,
+                                    key: key.to_string(), value: value.to_string(),
+                                })
+                            })
+                        }
+                        s if s.starts_with("SET_SKYBOX_FIELD:") => {
+                            // フォーマット: SET_SKYBOX_FIELD:{actor_dfs_id},{slot_idx},{key},{value}
+                            // value に "," を含む可能性がある（tint / texture_path）ため tail をそのまま value にする。
+                            parse2u_tail(&s["SET_SKYBOX_FIELD:".len()..]).and_then(|(a, sl, tail)| {
+                                let (key, value) = tail.split_once(',')?;
+                                Some(IpcCommand::SetSkyboxField {
                                     actor_dfs_id: a, slot_idx: sl,
                                     key: key.to_string(), value: value.to_string(),
                                 })

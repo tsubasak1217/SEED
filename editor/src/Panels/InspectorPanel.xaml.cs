@@ -446,6 +446,11 @@ public partial class InspectorPanel : UserControl
         float LightSoftRadius = 0.25f,
         // ModelComponent 用フィールド（影を落とすか。シャドウマップレンダリングで使用）
         bool ModelCastShadows = true,
+        // SkyboxComponent 用フィールド（equirectangular テクスチャパス・追従モード・強度・ティント）
+        string SkyboxTexturePath = "",
+        string SkyboxMode = "camera_locked",
+        float SkyboxIntensity = 1f,
+        float SkyboxTintR = 1f, float SkyboxTintG = 1f, float SkyboxTintB = 1f,
         // ParticleEmitterComponent 用フィールド（形状・出現範囲・放出制御・寿命・速度・方向・物理・
         // 回転・サイズ・テクスチャ・ブレンド・空間）。デフォルト値は Rust 側
         // ParticleEmitterComponentData と一致させる（受信欠落時のフォールバックにも使用）。
@@ -731,6 +736,13 @@ public partial class InspectorPanel : UserControl
             var lightRectHeight  = comp.TryGetProperty("rect_height",  out var lrh) ? lrh.GetSingle() : 1f;
             var lightSoftRadius  = comp.TryGetProperty("soft_radius",  out var lsr) ? lsr.GetSingle() : 0.25f;
             var lightCastShadows = comp.TryGetProperty("cast_shadows", out var lcs) ? ReadJsonBool(lcs, true) : true;
+            // SkyboxComponent 用: テクスチャパス（assets:// 仮想パス）・追従モード・強度・ティント（リニア RGB 各成分）
+            var skyboxTexturePath = comp.TryGetProperty("texture_path", out var sktp) ? sktp.GetString() ?? "" : "";
+            var skyboxMode        = comp.TryGetProperty("mode",         out var skmd) ? skmd.GetString() ?? "camera_locked" : "camera_locked";
+            var skyboxIntensity   = comp.TryGetProperty("intensity",    out var skin) ? skin.GetSingle() : 1f;
+            var skyboxTintR       = comp.TryGetProperty("tr",           out var sktr) ? sktr.GetSingle() : 1f;
+            var skyboxTintG       = comp.TryGetProperty("tg",           out var sktg) ? sktg.GetSingle() : 1f;
+            var skyboxTintB       = comp.TryGetProperty("tb",           out var sktb) ? sktb.GetSingle() : 1f;
             // ParticleEmitterComponent 用: 形状・出現範囲・放出制御・寿命・速度・方向・物理・回転・
             // サイズ・テクスチャ・ブレンド・空間を受け取る。欠落時は Rust 側デフォルトと一致する
             // フォールバック値を用いる（カーブ JSON は今回未実装のカーブエディタでは未使用のため保持しない）。
@@ -814,6 +826,9 @@ public partial class InspectorPanel : UserControl
                 LightCastShadows: lightCastShadows,
                 LightSoftRadius: lightSoftRadius,
                 ModelCastShadows: modelCastShadows,
+                SkyboxTexturePath: skyboxTexturePath, SkyboxMode: skyboxMode,
+                SkyboxIntensity: skyboxIntensity,
+                SkyboxTintR: skyboxTintR, SkyboxTintG: skyboxTintG, SkyboxTintB: skyboxTintB,
                 PeMaxParticles: peMaxParticles,
                 PeShape: peShape, PeShapeModelPath: peShapeModelPath,
                 PeSpawnVolume: peSpawnVolume,
@@ -902,6 +917,7 @@ public partial class InspectorPanel : UserControl
         "AudioComponent"      => Color.FromRgb(0x12, 0x2C, 0x34), // 暗青緑（オーディオ）
         "AnimatorComponent"   => Color.FromRgb(0x2C, 0x20, 0x38), // 暗紫（アニメーション）
         "LightComponent"      => Color.FromRgb(0x3A, 0x32, 0x10), // 暗黄橙（ライト）
+        "SkyboxComponent"     => Color.FromRgb(0x10, 0x1C, 0x38), // 暗青（スカイボックス）
         "PluginComponent"     => Color.FromRgb(0x34, 0x2C, 0x12), // 暗黄
         _                     => Color.FromRgb(0x2A, 0x2A, 0x2A), // ニュートラル（基本情報）
     };
@@ -920,6 +936,7 @@ public partial class InspectorPanel : UserControl
         "AudioComponent"      => "Audio Source",
         "AnimatorComponent"   => "Animator",
         "LightComponent"      => "Light",
+        "SkyboxComponent"     => "Skybox",
         "PluginComponent"     => "Plugin",
         _ when typeId.StartsWith("Plugin:", StringComparison.Ordinal) => typeId["Plugin:".Length..],
         _                     => typeId,
@@ -1141,6 +1158,7 @@ public partial class InspectorPanel : UserControl
             "AudioComponent"     => BuildAudioSlotContent(info),
             "AnimatorComponent"  => BuildAnimatorSlotContent(info),
             "LightComponent"     => BuildLightSlotContent(info),
+            "SkyboxComponent"    => BuildSkyboxSlotContent(info),
             "ParticleEmitterComponent" => BuildParticleSlotContent(info),
             "PluginComponent"    => BuildPluginSlotContent(info),
             "ColliderComponent"  => BuildColliderSlotContent(info),
@@ -3950,6 +3968,113 @@ public partial class InspectorPanel : UserControl
                 UpdateKindVisibility(kind);
             }
         };
+
+        return sp;
+    }
+
+    /// <summary>
+    /// SkyboxComponent のインスペクター UI を構築して返す。
+    /// equirectangular（正距円筒）テクスチャの参照・追従モード（カメラ固定/ワールド配置）・
+    /// 強度・ティント（リニア RGB）を編集し、変更時は SET_SKYBOX_FIELD:{actor},{slot},{key},{value} を送信する。
+    /// </summary>
+    private UIElement BuildSkyboxSlotContent(SlotInfo info)
+    {
+        var sp = new StackPanel { Margin = new Thickness(0, 4, 0, 4) };
+
+        // フィールド変更をランタイムへ送信するローカル関数。
+        void SendField(string key, string value)
+        {
+            if (_currentActorId < 0) return;
+            _runtime?.SendToRuntime($"SET_SKYBOX_FIELD:{_currentActorId},{info.SlotIdx},{key},{value}");
+        }
+
+        // ── テクスチャ参照（equirectangular 画像。SpriteComponent と同じ FileRefBuilder + D&D 流儀）──
+        sp.Children.Add(FileRefBuilder.Build(
+            "テクスチャ", info.SkyboxTexturePath,
+            [".png", ".jpg", ".jpeg", ".bmp", ".tga", ".webp", ".hdr"],
+            () =>
+            {
+                var dlg = new OpenFileDialog
+                {
+                    Title  = "Skybox テクスチャファイルを選択（equirectangular）",
+                    Filter = "画像ファイル|*.png;*.jpg;*.jpeg;*.bmp;*.tga;*.webp;*.hdr|すべてのファイル|*.*",
+                };
+                return dlg.ShowDialog(Window.GetWindow(this)) == true ? dlg.FileName : null;
+            },
+            path =>
+            {
+                if (_currentActorId < 0) return;
+                // 絶対パスを仮想パスに変換してからランタイムへ送信する
+                var virtualPath = VirtualPath.ToVirtual(path, _assetsPath);
+                SendField("texture_path", virtualPath);
+            }));
+
+        // ── 追従モード（カメラ固定 / ワールド配置）ドロップダウン ──
+        var modes = new[]
+        {
+            ("camera_locked",  "カメラ固定 (Camera Locked)"),
+            ("world_anchored", "ワールド配置 (World Anchored)"),
+        };
+        var modeRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 4, 0, 2) };
+        modeRow.Children.Add(new TextBlock
+        {
+            Text = "追従モード", Foreground = new SolidColorBrush(Color.FromRgb(0xAA, 0xAA, 0xAA)),
+            FontSize = 11, Width = 90, VerticalAlignment = VerticalAlignment.Center,
+        });
+        var modeCombo = new ComboBox { Width = 200, FontSize = 11, Margin = new Thickness(4, 0, 0, 0) };
+        foreach (var (val, label) in modes)
+            modeCombo.Items.Add(new ComboBoxItem { Content = label, Tag = val });
+        var curModeIdx = Array.FindIndex(modes, t => t.Item1 == info.SkyboxMode);
+        modeCombo.SelectedIndex = curModeIdx >= 0 ? curModeIdx : 0;
+        modeCombo.SelectionChanged += (_, _) =>
+        {
+            if (modeCombo.SelectedItem is ComboBoxItem item && item.Tag is string mode)
+                SendField("mode", mode);
+        };
+        modeRow.Children.Add(modeCombo);
+        sp.Children.Add(modeRow);
+
+        // ── 強度 ──
+        var intensityRow = BuildLabeledNumberRow("強度", info.SkyboxIntensity);
+        sp.Children.Add(intensityRow.element);
+        void CommitIntensity()
+        {
+            if (!float.TryParse(intensityRow.textBox.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) return;
+            SendField("intensity", v.ToString(CultureInfo.InvariantCulture));
+        }
+        intensityRow.textBox.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { CommitIntensity(); e.Handled = true; } };
+        intensityRow.textBox.LostFocus += (_, _) => CommitIntensity();
+        NumericDragBehavior.SetOnDrag(intensityRow.textBox, CommitIntensity);
+
+        // ── ティント（リニア RGB）────────────────────────────
+        float curR = info.SkyboxTintR, curG = info.SkyboxTintG, curB = info.SkyboxTintB;
+        var tintSwatch = new Border
+        {
+            Width = 120, Height = 22, Margin = new Thickness(0, 2, 0, 2),
+            BorderBrush = new SolidColorBrush(Color.FromRgb(0x55, 0x55, 0x55)),
+            BorderThickness = new Thickness(1),
+            Background = new SolidColorBrush(
+                Color.FromRgb(LinearToSrgbByte(curR), LinearToSrgbByte(curG), LinearToSrgbByte(curB))),
+            Cursor = Cursors.Hand,
+        };
+        var tintRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 4, 0, 2) };
+        tintRow.Children.Add(new TextBlock
+        {
+            Text = "ティント", Foreground = new SolidColorBrush(Color.FromRgb(0xAA, 0xAA, 0xAA)),
+            FontSize = 11, Width = 90, VerticalAlignment = VerticalAlignment.Center,
+        });
+        tintRow.Children.Add(tintSwatch);
+        tintSwatch.MouseLeftButtonDown += (_, _) =>
+        {
+            // ティントはアルファを持たない（a=1 固定）。ColorPickerWindow の a は無視する。
+            var result = ColorPickerWindow.ShowDialog(Window.GetWindow(this), curR, curG, curB, 1f);
+            if (result is null) return;
+            (curR, curG, curB, _) = result.Value;
+            tintSwatch.Background = new SolidColorBrush(
+                Color.FromRgb(LinearToSrgbByte(curR), LinearToSrgbByte(curG), LinearToSrgbByte(curB)));
+            SendField("tint", FormattableString.Invariant($"{curR},{curG},{curB}"));
+        };
+        sp.Children.Add(tintRow);
 
         return sp;
     }

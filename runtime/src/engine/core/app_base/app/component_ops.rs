@@ -428,6 +428,17 @@ impl App {
                         d.playing as u8,
                     ))
                 }
+                ComponentData::SkyboxComponent(d) => {
+                    // スカイボックス: テクスチャ参照・配置モード・強度・色味をインスペクター用に送信する。
+                    // texture_path は JSON 文字列としてエスケープする（audio_path / model_path と同流儀）。
+                    let path_json = serde_json::to_string(&d.texture_path).unwrap_or_else(|_| "\"\"".to_string());
+                    ("SkyboxComponent", format!(
+                        r#","texture_path":{path_json},"mode":"{}","intensity":{:.4},"tr":{:.4},"tg":{:.4},"tb":{:.4}"#,
+                        d.mode.as_str(),
+                        d.intensity,
+                        d.tint[0], d.tint[1], d.tint[2],
+                    ))
+                }
                 ComponentData::CameraComponent(d) => {
                     // FOV / near / far / is_main / clear_color / scaling_mode / target_size /
                     // bar_color / projection / ortho_height をインスペクター用に送信する
@@ -826,6 +837,36 @@ impl App {
                     let mut c = 0u32;
                     if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
                         actor.add_slot_typed::<ParticleEmitterComponent>(name, ComponentKind::ParticleEmitter, slot_entity);
+                        true
+                    } else {
+                        scene.world.despawn(slot_entity);
+                        false
+                    }
+                };
+                if found {
+                    let after_slots = self.snapshot_actor_slots(wl, actor_dfs_id);
+                    self.undo_history.record(Box::new(ComponentSlotsSnapshotCommand {
+                        world_line: wl, actor_dfs_id, before_slots, after_slots,
+                    }));
+                    self.actor_virtual_selected_slot_idx = 0;
+                    self.selected_instances.clear();
+                    self.send_hierarchy();
+                    self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
+                    if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+                }
+            }
+            "SkyboxComponent" => {
+                // デフォルト（テクスチャ未設定・CameraLocked）の SkyboxComponent をアクターに追加する。
+                // テクスチャ参照・モード・強度・色味はインスペクターまたはシーンファイルから設定する。
+                use crate::engine::components::SkyboxComponent;
+                let name = slot_name.to_string();
+                let found = {
+                    let scene = self.scene.as_mut().unwrap();
+                    let slot_entity = scene.world.spawn();
+                    scene.world.insert(slot_entity, SkyboxComponent::default());
+                    let mut c = 0u32;
+                    if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
+                        actor.add_slot_typed::<SkyboxComponent>(name, ComponentKind::Skybox, slot_entity);
                         true
                     } else {
                         scene.world.despawn(slot_entity);

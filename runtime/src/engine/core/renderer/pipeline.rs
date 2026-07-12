@@ -9,7 +9,7 @@ use super::pipeline_config::{RenderPipelineBuilder, parse_compare};
 //  シェーダーソースリゾルバ
 // ============================================================
 
-fn get_shader_source(name: &str) -> &'static str {
+pub(crate) fn get_shader_source(name: &str) -> &'static str {
     match name {
         "shader_common.wgsl"         => include_str!("shaders/shader_common.wgsl"),
         "shader_static_vertex.wgsl"  => include_str!("shaders/shader_static_vertex.wgsl"),
@@ -31,6 +31,7 @@ fn get_shader_source(name: &str) -> &'static str {
         // トーンマップするために連結する（Phase R3）。
         "tonemap_ops.wgsl"           => include_str!("shaders/tonemap_ops.wgsl"),
         "bar_fill.wgsl"              => include_str!("shaders/bar_fill.wgsl"),
+        "skybox.wgsl"                => include_str!("shaders/skybox.wgsl"),
         other => panic!("unknown shader source: {other}"),
     }
 }
@@ -1279,6 +1280,8 @@ pub struct DrawPipelines {
     pub particle_compute:     ParticleComputePipeline,
     /// GPU パーティクル描画パイプライン一式（Additive / Alpha, Phase RP）。
     pub particles:            ParticlePipelines,
+    /// スカイボックス（天球）描画パイプライン一式（Phase R9）。
+    pub skybox:               super::skybox::SkyboxPipelines,
 }
 
 impl DrawPipelines {
@@ -1331,6 +1334,8 @@ impl DrawPipelines {
         // （共有カメラ BindGroup をそのまま使うため同一 BGL オブジェクトを渡す）。
         let particle_compute    = ParticleComputePipeline::new(device, cache);
         let particles           = ParticlePipelines::new(device, queue, sf, df, &mesh.camera_bgl, cache);
-        Self { mesh, skinned_mesh, rt, unlit_line, cull, skin_compute, depth_prepass, shadow_depth, id_pass, outline, sprite, sprite_outline, canvas_id, camera_preview_blit, bar_fill, transparent, particle_compute, particles }
+        // スカイボックス（Phase R9）。シーン HDR（sf）へ描くため sf/df を渡す。
+        let skybox              = super::skybox::SkyboxPipelines::new(device, sf, df, cache);
+        Self { mesh, skinned_mesh, rt, unlit_line, cull, skin_compute, depth_prepass, shadow_depth, id_pass, outline, sprite, sprite_outline, canvas_id, camera_preview_blit, bar_fill, transparent, particle_compute, particles, skybox }
     }
 }

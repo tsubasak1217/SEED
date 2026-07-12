@@ -19,6 +19,8 @@ pub(crate) mod batch2d;
 pub(crate) mod particle_system;
 /// GPU パーティクルの組込み形状メッシュ（Point/Sphere/Box/Plane/Model）
 pub(crate) mod particle_shapes;
+/// スカイボックス（天球：equirectangular 背景, Phase R9）
+pub(crate) mod skybox;
 /// .mat マテリアルアセット（Phase R7: マルチマテリアル編集）
 pub mod material_asset;
 
@@ -34,6 +36,7 @@ pub use pipeline::{MeshPipeline, SkinnedMeshPipeline, UnlitPipeline, CullPipelin
                    CameraPreviewBlitPipeline, ShadowDepthPipelines,
                    BarFillPipeline, BarFillUniform};
 pub use particle_system::ParticleSystem;
+pub use skybox::{SkyboxSystem, SkyboxPipelines};
 pub use lighting::{GpuLight, LightBuffer, LightMeta, MAX_LIGHTS,
                    DEFAULT_AMBIENT_COLOR, DEFAULT_AMBIENT_INTENSITY};
 pub use shadow::{ShadowResources, ShadowPlan, ShadowMatricesUbo,

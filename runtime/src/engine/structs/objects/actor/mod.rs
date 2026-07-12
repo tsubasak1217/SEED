@@ -371,6 +371,10 @@ impl Actor {
                     world.get::<crate::engine::components::ParticleEmitterComponent>(slot.entity)
                         .map(|pe| ComponentData::ParticleEmitterComponent(pe.to_data()))
                 }
+                ComponentKind::Skybox => {
+                    world.get::<crate::engine::components::SkyboxComponent>(slot.entity)
+                        .map(|sb| ComponentData::SkyboxComponent(sb.to_data()))
+                }
             };
             data.map(|d| ComponentSlotData {
                 name:      slot.name.clone(),
