@@ -64,7 +64,11 @@ use super::model::{
 ///     （`gltf_loader::MESHLET_CONE_AXIS_SIGN`）。
 ///     既存キャッシュには誤った（反転前の）コーン軸が焼かれており、
 ///     そのままでは修正が効かないため必ず再生成させる。
-pub const CACHE_FORMAT_VERSION: u32 = 7;
+/// v8: `Material` にカリング面（`cull_face`）フィールドを追加。
+///     `Model`（materials 込み）は bincode で焼かれるが、bincode は自己記述型ではないため
+///     `#[serde(default)]` があっても旧レイアウトのバイト列は正しく読めない（フィールド追加＝
+///     バイナリ表現の変更）。旧 v7 キャッシュを確実に無効化して再生成させるためインクリメント。
+pub const CACHE_FORMAT_VERSION: u32 = 8;
 
 /// モデルキャッシュファイルのマジック（8 バイト）。
 const MODEL_MAGIC: &[u8; 8] = b"SEEDMDL\0";

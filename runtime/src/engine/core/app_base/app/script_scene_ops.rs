@@ -234,6 +234,10 @@ impl App {
         // 旧シーンを置き換える（World の Drop で旧スクリプトインスタンスも解放される）
         self.scene = Some(new_scene);
 
+        // GPU パーティクルを全解放する（生存エミッタ＋孤児プールとも）。
+        // 孤児（エミッタ消滅後も寿命まで生き残る粒子群）はシーンを跨いで残さない。
+        self.particle_system.clear_all();
+
         // コンポーネント音源を停止し、play_on_start の発火記録をリセットする
         //（新シーンの play_on_start を再発火させるため。BGM は継続する）
         if let Some(audio) = &mut self.audio {

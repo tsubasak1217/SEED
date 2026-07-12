@@ -41,7 +41,8 @@ fn alpha_mode_str(mode: crate::engine::core::loader::model::AlphaMode) -> &'stat
 /// ModelComponent のマテリアルスロット一覧を ACTOR_COMPONENTS 用 JSON 配列文字列にする。
 ///
 /// 各要素は `{"slot":i,"name":..,"mode":"embedded"|"mat"|"inline","base_color":[..],
-/// "metallic":..,"roughness":..,"emissive":[..],"alpha_mode":"..","alpha_cutoff":..,"path":".."}`。
+/// "metallic":..,"roughness":..,"emissive":[..],"alpha_mode":"..","alpha_cutoff":..,
+/// "cull_face":"back"|"front"|"none","path":".."}`。
 /// - `mode` は該当スロットに `material_overrides` があるかどうかで決まる。
 /// - factor/alpha 系フィールドは常に「現在の実効値」（オーバーライド適用後。無ければ glTF 埋込値）。
 /// - `path` は MatAsset オーバーライドのときのみ非空。
@@ -62,6 +63,8 @@ fn build_materials_json(mc: Option<&ModelComponent>) -> String {
         let mut emissive     = mat.emissive_factor;
         let mut alpha_mode   = alpha_mode_str(mat.alpha_mode).to_string();
         let mut alpha_cutoff = mat.alpha_cutoff;
+        // カリング面はインスペクタ表示・送信ともに小文字文字列（"back"|"front"|"none"）で扱う。
+        let mut cull_face    = mat.cull_face.as_str().to_ascii_lowercase();
         let mut path         = String::new();
         let mut mode         = "embedded";
 
@@ -69,7 +72,7 @@ fn build_materials_json(mc: Option<&ModelComponent>) -> String {
             match &ovr.kind {
                 MaterialOverrideKind::Inline {
                     base_color: bc, metallic: mt, roughness: rg, emissive: em,
-                    alpha_mode: am, alpha_cutoff: ac,
+                    alpha_mode: am, alpha_cutoff: ac, cull_face: cf,
                 } => {
                     mode = "inline";
                     if let Some(v) = bc { base_color   = *v; }
@@ -78,6 +81,7 @@ fn build_materials_json(mc: Option<&ModelComponent>) -> String {
                     if let Some(v) = em { emissive     = *v; }
                     if let Some(v) = am { alpha_mode   = v.clone(); }
                     if let Some(v) = ac { alpha_cutoff = *v; }
+                    if let Some(v) = cf { cull_face    = v.to_ascii_lowercase(); }
                 }
                 MaterialOverrideKind::MatAsset { path: p } => {
                     mode = "mat";
@@ -91,6 +95,7 @@ fn build_materials_json(mc: Option<&ModelComponent>) -> String {
                         emissive     = asset.emissive;
                         alpha_mode   = asset.alpha_mode.clone();
                         alpha_cutoff = asset.alpha_cutoff;
+                        cull_face    = asset.cull_face.to_ascii_lowercase();
                     }
                 }
             }
@@ -99,7 +104,7 @@ fn build_materials_json(mc: Option<&ModelComponent>) -> String {
         let name_json = serde_json::to_string(&mat.name).unwrap_or_default();
         let path_json = serde_json::to_string(&path).unwrap_or_default();
         items.push(format!(
-            r#"{{"slot":{i},"name":{name_json},"mode":"{mode}","base_color":[{:.4},{:.4},{:.4},{:.4}],"metallic":{:.4},"roughness":{:.4},"emissive":[{:.4},{:.4},{:.4}],"alpha_mode":"{alpha_mode}","alpha_cutoff":{:.4},"path":{path_json}}}"#,
+            r#"{{"slot":{i},"name":{name_json},"mode":"{mode}","base_color":[{:.4},{:.4},{:.4},{:.4}],"metallic":{:.4},"roughness":{:.4},"emissive":[{:.4},{:.4},{:.4}],"alpha_mode":"{alpha_mode}","alpha_cutoff":{:.4},"cull_face":"{cull_face}","path":{path_json}}}"#,
             base_color[0], base_color[1], base_color[2], base_color[3],
             metallic, roughness,
             emissive[0], emissive[1], emissive[2],

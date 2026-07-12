@@ -14,8 +14,19 @@
 // 【速度モデル（設計）】
 //   射出速度 = emit_dir * base_speed * speed_curve(t)   … 毎フレーム カーブで変調
 //   蓄積速度 vel                                        … 重力／空気抵抗のみを積分
-//   位置更新 pos += (射出速度 + vel) * dt
+//   位置更新 pos += 射出成分の変位 + 蓄積速度の変位
 //   → 射出成分はカーブでフレームごとに変わり、重力／抵抗は別の蓄積速度に持つ。
+//
+// 【フレームレート非依存（重要）】
+//   時間発展する量（位置・速度・回転角・寿命）は「すべて dt を経由」し、かつ
+//   dt の刻み方に依らず同じ軌道になる形で積分する:
+//     - 重力＋空気抵抗: dv/dt = g - k*v の【閉形式（指数減衰）】で厳密に 1 ステップ進める。
+//       旧実装の v *= (1 - k*dt) は 1 次近似で、終端速度が dt に依存し（＝FPS で速度が
+//       変わる）、k*dt >= 1 では速度が 0 に潰れていた。
+//     - カーブ変調される量（射出速度・回転速度）: 区間【中点】でカーブを評価する
+//       （中点則＝2 次精度）。左端評価は 1 次精度で dt に比例した誤差が残る。
+//     - 位置の重力寄与: 等加速度運動の厳密解 (v*dt + 0.5*g*dt^2) を使う。
+//       半陰的オイラー（pos += v_new*dt）は g*T*dt/2 の dt 依存誤差を残す。
 //
 // Group 0:
 //   0 = particles (array<Particle>, storage read_write)
@@ -53,6 +64,14 @@ const SALT_INITROT:  u32 = 0x45D9F3B3u; // 初期回転角（initial_rotation_ra
 // 混合ハッシュ用の奇数乗数（PCG/wanghash 系の定数）。
 const HASH_MUL: u32 = 2654435769u;
 const HASH_XOR: u32 = 2747636419u;
+
+/// 空気抵抗係数 k がこの値以下なら「抵抗なし」とみなすしきい値。
+/// 指数減衰の閉形式は v∞ = g/k を含むため、k→0 で 0 除算になる。
+/// この境界より下では等加速度運動の厳密解（こちらも dt 非依存）へ分岐する。
+const DRAG_EPSILON: f32 = 1e-4;
+
+/// 区間中点の係数（中点則でカーブを評価するときの dt 係数）。
+const MIDPOINT_RATIO: f32 = 0.5;
 
 // ─── パーティクル 1 個（std430 storage, stride 64）─────────────
 struct Particle {
@@ -248,25 +267,46 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // dead（未生成 or 寿命切れ）は放置。age は既に lifetime 以上なので描画側で縮退する。
     if p.lifetime <= 0.0 || p.age >= p.lifetime { return; }
 
-    // 正規化寿命 t（カーブ評価に使う）。
-    let t = clamp(p.age / p.lifetime, 0.0, 1.0);
+    // このステップの経過秒（全ての時間発展項はこの dt を経由する）。
+    let dt = params.dt;
 
-    // 射出速度はカーブで変調（毎フレーム再評価）。
-    let speed_mult = sample_lut(0u, t).x;
+    // カーブ評価用の正規化寿命。区間 [age, age+dt] の【中点】で評価する（中点則）。
+    // 左端（age）評価だと 1 ステップあたり O(dt) の誤差が出て、刻み幅（＝FPS）で
+    // 軌道が変わってしまう。中点なら O(dt^2) となり実用上フレームレート非依存。
+    let t_mid = clamp((p.age + dt * MIDPOINT_RATIO) / p.lifetime, 0.0, 1.0);
 
-    // 蓄積速度に重力を積み、空気抵抗で減衰させる。
-    p.vel = p.vel + params.gravity * params.dt;
-    p.vel = p.vel * max(0.0, 1.0 - params.drag * params.dt);
+    // ── 射出成分の変位（カーブ変調された射出速度 × dt）──
+    let speed_mult = sample_lut(0u, t_mid).x;
+    let emit_disp  = p.emit_dir * (p.base_speed * speed_mult * dt);
 
-    // 位置更新: 射出成分（カーブ変調）＋蓄積速度。
-    let emit_vel = p.emit_dir * (p.base_speed * speed_mult);
-    p.pos = p.pos + (emit_vel + p.vel) * params.dt;
+    // ── 重力＋空気抵抗の解析積分（フレームレート非依存の閉形式）──
+    //   支配方程式: dv/dt = g - k*v      （k = drag >= 0, g = gravity）
+    //   閉形式    : v(t+dt) = v∞ + (v - v∞) * exp(-k*dt)         , v∞ = g / k
+    //               Δx      = v∞*dt + (v - v∞) * (1 - exp(-k*dt)) / k
+    //   これは任意の dt に対する厳密解なので、dt=1/60 を 2 回積んだ結果と
+    //   dt=1/30 を 1 回積んだ結果が（丸め誤差を除き）完全に一致する。
+    let k = max(params.drag, 0.0);
+    var vel_disp: vec3<f32>;
+    if k > DRAG_EPSILON {
+        let decay = exp(-k * dt);            // 指数減衰係数
+        let v_inf = params.gravity / k;      // 終端速度 v∞ = g/k
+        let dv    = p.vel - v_inf;           // 終端速度からのずれ
+        vel_disp  = v_inf * dt + dv * (1.0 - decay) / k;
+        p.vel     = v_inf + dv * decay;
+    } else {
+        // 抵抗ほぼ 0: 上式は 0 除算になるため等加速度運動の厳密解へ分岐する。
+        vel_disp = p.vel * dt + params.gravity * (0.5 * dt * dt);
+        p.vel    = p.vel + params.gravity * dt;
+    }
 
-    // 回転角の更新: 基準回転速度（粒子ごと乱数）× 回転速度カーブ。
+    // 位置更新: 射出成分の変位 ＋ 蓄積速度（重力／抵抗）の変位。
+    p.pos = p.pos + emit_disp + vel_disp;
+
+    // 回転角の更新: 基準回転速度（粒子ごと乱数）× 回転速度カーブ（中点評価）× dt。
     let base_rot = mix(params.rot_speed_min, params.rot_speed_max, rand_f32(p.seed ^ SALT_ROT));
-    let rot_mult = sample_lut(params.lut_samples, t).x; // rot_speed チャンネルは行 S..2S
-    p.rot_angle = p.rot_angle + base_rot * rot_mult * params.dt;
+    let rot_mult = sample_lut(params.lut_samples, t_mid).x; // rot_speed チャンネルは行 S..2S
+    p.rot_angle = p.rot_angle + base_rot * rot_mult * dt;
 
-    p.age = p.age + params.dt;
+    p.age = p.age + dt;
     particles[i] = p;
 }

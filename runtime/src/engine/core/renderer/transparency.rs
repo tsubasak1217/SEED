@@ -19,9 +19,10 @@
 // ============================================================
 
 use super::gpu_resources::{GpuModel, InstancedModelBatch, NUM_LODS};
+use super::pipeline::CullPipelineSet;
 use super::pipeline_config::{vertex_buffer_layout, parse_compare};
 use super::post::PostPipeline;
-use crate::engine::core::loader::model::AlphaMode;
+use crate::engine::core::loader::model::{AlphaMode, CullFace, CULL_FACE_VARIANTS};
 
 // ============================================================
 //  透明方式・RtPool ターゲット名・フォーマット定数
@@ -104,13 +105,16 @@ pub type TransparentModels<'a> = [(&'a GpuModel, &'a InstancedModelBatch)];
 // ============================================================
 
 /// 距離ソート / WBOIT 両方式のパイプラインと合成資源。
+///
+/// 各パイプラインはマテリアルのカリング面（Back / Front / None）ごとの 3 バリアントを持つ
+/// （添字 = `CullFace::index()`）。半透明でも両面マテリアル（カーテン・葉など）は両面描画が要る。
 pub struct TransparentPipelines {
     /// 距離ソート用（不透明と同一シェーダ・BGL、ブレンド有効・深度書込なし）。
-    sorted_mesh:    wgpu::RenderPipeline,
-    sorted_skinned: wgpu::RenderPipeline,
+    sorted_mesh:    CullPipelineSet,
+    sorted_skinned: CullPipelineSet,
     /// WBOIT 用（デュアル MRT、fs_wboit）。
-    wboit_mesh:     wgpu::RenderPipeline,
-    wboit_skinned:  wgpu::RenderPipeline,
+    wboit_mesh:     CullPipelineSet,
+    wboit_skinned:  CullPipelineSet,
     /// group 3 の空 gap BindGroup（非スキン描画で必須セット）。
     mesh_empty_bg3: wgpu::BindGroup,
     /// WBOIT 合成パイプライン（accum/reveal → シーン HDR）。
@@ -192,16 +196,26 @@ impl TransparentPipelines {
         // ── 距離ソート用パイプライン（TOML + リフレクション）─────────
         // 返り値 BGL は group 順 [camera, model, material, gap|joint, lights]。
         // WBOIT の手動レイアウトでも同じ BGL を再利用する。
+        // カリング面 3 種のバリアントを、TOML の cull_mode を上書きして 1 ファイルから生成する。
+        let build_sorted = |toml_src: &str, label_base: &str| -> (CullPipelineSet, Vec<wgpu::BindGroupLayout>) {
+            let mut bgls: Option<Vec<wgpu::BindGroupLayout>> = None;
+            let pipes: CullPipelineSet = std::array::from_fn(|i| {
+                let face  = CULL_FACE_VARIANTS[i];
+                let label = format!("{label_base}_cull_{}", face.as_str());
+                let (p, b) = RenderPipelineBuilder::new(device, toml_src, sf, df)
+                    .with_label(&label)
+                    .with_cull_mode(face.as_str())
+                    .with_cache(cache)
+                    .build(resolve_shader);
+                if bgls.is_none() { bgls = Some(b); }
+                p
+            });
+            (pipes, bgls.expect("transparent: BGL が生成されていない"))
+        };
         let (sorted_mesh, mesh_bgls) =
-            RenderPipelineBuilder::new(device, include_str!("pipelines/transparent_mesh.toml"), sf, df)
-                .with_label("transparent_mesh")
-                .with_cache(cache)
-                .build(resolve_shader);
+            build_sorted(include_str!("pipelines/transparent_mesh.toml"), "transparent_mesh");
         let (sorted_skinned, skin_bgls) =
-            RenderPipelineBuilder::new(device, include_str!("pipelines/transparent_skinned.toml"), sf, df)
-                .with_label("transparent_skinned")
-                .with_cache(cache)
-                .build(resolve_shader);
+            build_sorted(include_str!("pipelines/transparent_skinned.toml"), "transparent_skinned");
 
         // group 3 の空 gap BindGroup（mesh 用）。非スキン描画で必ず slot 3 にセットする。
         let mesh_empty_bg3 = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -213,20 +227,23 @@ impl TransparentPipelines {
         // ── WBOIT パイプライン（デュアル MRT・手動構築）──────────────
         // TOML ビルダーは 1 カラーターゲットのみ対応のため手動で組む。
         // BGL は上のソート用ビルドの結果を再利用（構造同一のため既存 BG が使える）。
-        let wboit_mesh = build_wboit_pipeline(
+        // カリング面 3 種ぶん構築する（添字 = CullFace::index()）。
+        let wboit_mesh: CullPipelineSet = std::array::from_fn(|i| build_wboit_pipeline(
             device, df, cache, &mesh_bgls,
             &["shader_common.wgsl", "shadow.wgsl", "rt_shadow_off.wgsl",
               "shader_static_vertex.wgsl", "shader_fragment.wgsl", "shader_wboit.wgsl"],
             &["mesh_vertex"],
             "wboit_mesh",
-        );
-        let wboit_skinned = build_wboit_pipeline(
+            CULL_FACE_VARIANTS[i],
+        ));
+        let wboit_skinned: CullPipelineSet = std::array::from_fn(|i| build_wboit_pipeline(
             device, df, cache, &skin_bgls,
             &["shader_common.wgsl", "shadow.wgsl", "rt_shadow_off.wgsl",
               "shader_skinned_vertex.wgsl", "shader_fragment.wgsl", "shader_wboit.wgsl"],
             &["mesh_vertex", "skin_vertex"],
             "wboit_skinned",
-        );
+            CULL_FACE_VARIANTS[i],
+        ));
 
         // ── WBOIT 合成パイプライン（accum/reveal → HDR, AlphaBlending）──
         let wboit_composite = PostPipeline::from_toml(
@@ -306,6 +323,8 @@ impl TransparentPipelines {
 ///
 /// `bgls` は距離ソート用ビルドで得た group 順 BGL（構造同一のため再利用）。
 /// レイアウトは [camera, model, material, gap|joint, lights] の 5 group。
+/// `cull_face` はこのバリアントのカリング面（Back / Front / None）。
+#[allow(clippy::too_many_arguments)]
 fn build_wboit_pipeline(
     device:         &wgpu::Device,
     df:             wgpu::TextureFormat,
@@ -313,8 +332,13 @@ fn build_wboit_pipeline(
     bgls:           &[wgpu::BindGroupLayout],
     shader_sources: &[&str],
     vertex_slots:   &[&str],
-    label:          &str,
+    label_base:     &str,
+    cull_face:      CullFace,
 ) -> wgpu::RenderPipeline {
+    // バリアントを検証エラーで識別できるようラベルへカリング面を含める。
+    let label = format!("{label_base}_cull_{}", cull_face.as_str());
+    let label = label.as_str();
+
     // ── シェーダモジュール（ソース連結）─────────────────────────
     let combined: String = shader_sources.iter()
         .map(|n| resolve_shader(n))
@@ -367,7 +391,12 @@ fn build_wboit_pipeline(
         primitive: wgpu::PrimitiveState {
             topology:   wgpu::PrimitiveTopology::TriangleList,
             front_face: wgpu::FrontFace::Ccw,
-            cull_mode:  Some(wgpu::Face::Back),
+            // マテリアルのカリング面バリアント（None = 両面描画）。
+            cull_mode:  match cull_face {
+                CullFace::Back  => Some(wgpu::Face::Back),
+                CullFace::Front => Some(wgpu::Face::Front),
+                CullFace::None  => None,
+            },
             ..Default::default()
         },
         depth_stencil: Some(depth_stencil),
@@ -447,17 +476,21 @@ fn gather_items(models: &TransparentModels, camera_pos: [f32; 3]) -> Vec<Transpa
     items
 }
 
-/// 1 アイテムを描画する（ソート／WBOIT 共通）。パイプラインは呼び出し側が選ぶ。
+/// 1 アイテムを描画する（ソート／WBOIT 共通）。パイプライン**方式**は呼び出し側が選び、
+/// その中の**カリング面バリアント**は本関数がマテリアルから選ぶ。
+///
+/// 距離ソートは描画順が距離で決まるためカリング面でまとめられない（＝アイテムごとに
+/// set_pipeline する従来どおりの挙動）。バリアント選択が増えても set_pipeline 回数は変わらない。
 #[allow(clippy::too_many_arguments)]
 fn draw_one<'p>(
-    pass:      &mut wgpu::RenderPass<'p>,
-    item:      &TransparentItem,
-    models:    &'p TransparentModels<'p>,
-    camera_bg: &'p wgpu::BindGroup,
-    lights_bg: &'p wgpu::BindGroup,
-    mesh_pipe: &'p wgpu::RenderPipeline,
-    skin_pipe: &'p wgpu::RenderPipeline,
-    empty_bg3: &'p wgpu::BindGroup,
+    pass:       &mut wgpu::RenderPass<'p>,
+    item:       &TransparentItem,
+    models:     &'p TransparentModels<'p>,
+    camera_bg:  &'p wgpu::BindGroup,
+    lights_bg:  &'p wgpu::BindGroup,
+    mesh_pipes: &'p CullPipelineSet,
+    skin_pipes: &'p CullPipelineSet,
+    empty_bg3:  &'p wgpu::BindGroup,
 ) {
     let (gpu, batch) = &models[item.model_idx];
     let Some((_, model_bg)) = batch.lod_node_data[item.lod][item.node_idx].as_ref() else { return };
@@ -468,6 +501,11 @@ fn draw_one<'p>(
         .and_then(|mi| gpu.materials.get(mi))
         .map(|m| &m.bind_group)
         .unwrap_or(&gpu.default_material.bind_group);
+
+    // カリング面バリアントを選ぶ（両面マテリアルの半透明を裏面ごと描くため）。
+    let cull_idx   = gpu.primitive_cull_face(prim.material_index).index();
+    let mesh_pipe  = &mesh_pipes[cull_idx];
+    let skin_pipe  = &skin_pipes[cull_idx];
 
     if item.is_skinned {
         pass.set_pipeline(skin_pipe);

@@ -879,6 +879,10 @@ impl App {
                 self.particle_system.collect_and_consume(
                     &mut scene.world, &scene.actors, awl, particle_dt,
                 );
+            } else {
+                // シーンが無いフレームは孤児（エミッタ消滅後の粒子群）も含めて全解放する
+                // （前フレームの描画対象を持ち越して描き続けないため）。
+                self.particle_system.clear_all();
             }
         }
 

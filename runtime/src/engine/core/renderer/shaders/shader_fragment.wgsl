@@ -101,12 +101,25 @@ fn shade_light(
 /// Mask モードのアルファテスト（discard）も本関数内で行うため、両パスで
 /// カットオフ挙動が一致する。alpha_cutoff は非 Mask マテリアルでは 0.0 のため
 /// Opaque/Blend は影響を受けない（GpuMaterial::upload 参照）。
-fn shade_pbr(in: VertexOutput) -> vec4<f32> {
+///
+/// `front_facing` は `@builtin(front_facing)`（各エントリポイントが受け取る）。
+/// カリング面 None（両面描画）／Front のマテリアルでは裏面フラグメントが生成されるが、
+/// 頂点法線は表面向きに定義されているため、そのままだと N・V が逆半球になり
+/// ndl / ndv がほぼ 0 に潰れて面が真っ黒になる。裏面ではシェーディング法線 N と
+/// 幾何法線 Ng の両方を反転して「見えている側の法線」に揃える。
+fn shade_pbr(in: VertexOutput, front_facing: bool) -> vec4<f32> {
+
+    // 裏面のときだけ法線を反転させる符号（表面 = +1 / 裏面 = -1）。
+    // 背面カリング（CullFace::Back）のマテリアルでは裏面が生成されないため常に +1 となり、
+    // 従来と完全に同一の結果になる。
+    let facing_sign = select(-1.0, 1.0, front_facing);
 
     // ── 幾何法線（RT 影のレイ原点バイアス専用）────────────────
     // 画面微分（dpdx/dpdy）を使うため、discard やライトループなどの分岐に入る前
     // （＝一様制御フロー）でここ一度だけ求める。シェーディングには使わない。
-    let Ng = geometric_normal(in.world_pos, in.world_normal);
+    // Ng も裏面では反転する。反転しないと裏面でレイ原点のバイアス押し出しが面の内側
+    // （＝可視側と反対）へ向き、自分自身に遮蔽されて影が真っ黒になる。
+    let Ng = geometric_normal(in.world_pos, in.world_normal) * facing_sign;
 
     // ── ベースカラー ──────────────────────────────────────────
     var base_color = u_material.base_color_factor;
@@ -145,7 +158,8 @@ fn shade_pbr(in: VertexOutput) -> vec4<f32> {
     }
 
     // ── 法線（法線マップ対応）────────────────────────────────
-    var N = normalize(in.world_normal);
+    // 裏面では補間法線を反転してから TBN を組む（接空間法線マップも反転後の N を基準に載る）。
+    var N = normalize(in.world_normal) * facing_sign;
     if u_material.has_normal_tex != 0u {
         // 法線マップの Z は RG から再構築する。
         // BC5 圧縮（RG 2ch）フォーマットは B チャンネルを持たないため直接読めない。
@@ -289,7 +303,11 @@ fn shade_pbr(in: VertexOutput) -> vec4<f32> {
 // ── 不透明／Mask パスのフラグメントエントリ ──────────────────
 // ライティング本体は shade_pbr に集約済み。単一カラーターゲット
 // （@location(0)）へ HDR 色＋アルファを出力する。
+//
+// `@builtin(front_facing)` は「このフラグメントが三角形の表面（CCW 面）由来か」を示す。
+// 両面描画（cull_mode = None）・前面カリング（Front）のパイプラインでのみ false が来る。
+// 頂点シェーダ出力（VertexOutput）の変更は不要（builtin はフラグメント入力に直接足せる）。
 @fragment
-fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    return shade_pbr(in);
+fn fs_main(in: VertexOutput, @builtin(front_facing) front_facing: bool) -> @location(0) vec4<f32> {
+    return shade_pbr(in, front_facing);
 }

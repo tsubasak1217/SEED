@@ -260,6 +260,10 @@ fn load_materials(document: &gltf::Document) -> Vec<Material> {
             alpha_mode,
             alpha_cutoff: mat.alpha_cutoff().unwrap_or(0.5),
             double_sided:     mat.double_sided(),
+            // glTF の double_sided をカリング面へマップする（true → 両面描画＝カリング無し）。
+            // これで Sponza のカーテン等、片面しか描かれず裏から見ると消えていたマテリアルが
+            // 正しく両面描画される。
+            cull_face:        crate::engine::core::loader::model::cull_face_from_double_sided(mat.double_sided()),
         }
     }).collect()
 }

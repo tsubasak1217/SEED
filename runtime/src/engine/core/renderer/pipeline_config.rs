@@ -91,6 +91,11 @@ pub struct RenderPipelineBuilder<'d> {
     /// 同一 TOML から depth_write だけ異なる複数バリアントを作る用途（例: スカイボックスの
     /// CameraLocked=false / WorldAnchored=true）。None なら TOML 値を使う。
     depth_write_override: Option<bool>,
+    /// cull_mode の上書き（Some のとき TOML の cull_mode より優先）。
+    /// マテリアル単位のカリング面（Back / Front / None）を、1 つの TOML から
+    /// 3 本のパイプラインバリアントとして生成するために使う（TOML を 3 つに増やさない）。
+    /// 値は TOML と同じ文字列表現（"Back" | "Front" | "None"）。
+    cull_mode_override: Option<&'d str>,
 }
 
 impl<'d> RenderPipelineBuilder<'d> {
@@ -103,13 +108,22 @@ impl<'d> RenderPipelineBuilder<'d> {
     ) -> Self {
         let cfg: PipelineConfig = toml::from_str(toml_src)
             .expect("invalid pipeline TOML");
-        Self { device, cfg, surface_format, depth_format, stencil: None, cache: None, label: None, depth_write_override: None }
+        Self { device, cfg, surface_format, depth_format, stencil: None, cache: None, label: None,
+               depth_write_override: None, cull_mode_override: None }
     }
 
     /// depth_write を上書きする（TOML の depth_write より優先）。
     /// 同一 TOML から depth_write だけ異なるバリアントを構築する用途に使う。
     pub fn with_depth_write(mut self, enabled: bool) -> Self {
         self.depth_write_override = Some(enabled);
+        self
+    }
+
+    /// cull_mode を上書きする（TOML の cull_mode より優先）。
+    /// `mode` は "Back" | "Front" | "None"（`CullFace::as_str()` が返す表現）。
+    /// 同一 TOML からカリング面だけ異なる 3 バリアントを構築する用途に使う。
+    pub fn with_cull_mode(mut self, mode: &'d str) -> Self {
+        self.cull_mode_override = Some(mode);
         self
     }
 
@@ -142,7 +156,8 @@ impl<'d> RenderPipelineBuilder<'d> {
     where
         F: Fn(&str) -> &'static str,
     {
-        let Self { device, cfg, surface_format, depth_format, stencil, cache, label, depth_write_override } = self;
+        let Self { device, cfg, surface_format, depth_format, stencil, cache, label,
+                   depth_write_override, cull_mode_override } = self;
         // ラベル未指定時は vertex_entry 名を使う（従来の label: None から改善）。
         let pipeline_label = label.unwrap_or(cfg.vertex_entry.as_str());
 
@@ -283,7 +298,8 @@ impl<'d> RenderPipelineBuilder<'d> {
             "TriangleStrip" => wgpu::PrimitiveTopology::TriangleStrip,
             _               => wgpu::PrimitiveTopology::TriangleList,
         };
-        let cull_mode = match cfg.cull_mode.as_str() {
+        // 上書き指定があればそれを優先（同一 TOML からのカリング面バリアント生成用）。
+        let cull_mode = match cull_mode_override.unwrap_or(cfg.cull_mode.as_str()) {
             "None"  => None,
             "Front" => Some(wgpu::Face::Front),
             _       => Some(wgpu::Face::Back),

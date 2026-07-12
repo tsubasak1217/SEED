@@ -2810,13 +2810,14 @@ public partial class InspectorPanel : UserControl
     /// ACTOR_COMPONENTS の 1 マテリアルスロット分のデータ（現在の実効値）。
     /// mode は "embedded"（glTF埋込・既定）/ "mat"（.mat割当）/ "inline"（インライン上書き）。
     /// base_color/emissive はリニア RGB(A)。
+    /// CullFace は "back" | "front" | "none"（glTF の double_sided=true は "none" として届く）。
     /// </summary>
     private sealed record MaterialSlotData(
         int Slot, string Name, string Mode,
         float R, float G, float B, float A,
         float Metallic, float Roughness,
         float ER, float EG, float EB,
-        string AlphaMode, float AlphaCutoff, string Path);
+        string AlphaMode, float AlphaCutoff, string CullFace, string Path);
 
     /// <summary>
     /// SET_MATERIAL_OVERRIDE の "kind":"mat_asset" 送信用 JSON ペイロード（System.Text.Json でシリアライズ）。
@@ -2841,7 +2842,17 @@ public partial class InspectorPanel : UserControl
         public float[] emissive { get; set; } = [0f, 0f, 0f];
         public string alpha_mode { get; set; } = "opaque";
         public float alpha_cutoff { get; set; } = 0.5f;
+        /// <summary>カリング面 "back" | "front" | "none"。ランタイム側は大小文字非依存・不明値は Back 扱い。</summary>
+        public string cull_face { get; set; } = CullFaceValues[0];
     }
+
+    /// <summary>
+    /// カリング面の内部値（ランタイムへ送る文字列）と、それに対応する UI 表示ラベル。
+    /// 添字が 1:1 対応する前提でコンボボックスの選択インデックス⇔文字列変換に使う
+    /// （マジックナンバー禁止のため、ここを唯一の定義元とする）。
+    /// </summary>
+    private static readonly string[] CullFaceValues = ["back", "front", "none"];
+    private static readonly string[] CullFaceLabels = ["Back", "Front", "None"];
 
     /// <summary>
     /// 現在のアクターが持つ、指定 Model スロット（info.SlotIdx）の materials 配列を
@@ -2895,10 +2906,12 @@ public partial class InspectorPanel : UserControl
                     }
                     var alphaMode   = m.TryGetProperty("alpha_mode",   out var am) ? am.GetString() ?? "opaque" : "opaque";
                     var alphaCutoff = m.TryGetProperty("alpha_cutoff", out var ac) ? ac.GetSingle() : 0.5f;
+                    // cull_face キーを持たない旧ランタイムの ACTOR_COMPONENTS でも動くよう既定 "back" にフォールバックする。
+                    var cullFace    = m.TryGetProperty("cull_face",    out var cf) ? cf.GetString() ?? CullFaceValues[0] : CullFaceValues[0];
                     var path        = m.TryGetProperty("path",        out var mp) ? mp.GetString() ?? ""       : "";
 
                     result.Add(new MaterialSlotData(slot, name, mode, r, g, b, a, metallic, roughness,
-                        er, eg, eb, alphaMode, alphaCutoff, path));
+                        er, eg, eb, alphaMode, alphaCutoff, cullFace, path));
                 }
                 return result;
             }
@@ -3073,6 +3086,7 @@ public partial class InspectorPanel : UserControl
         float curER = mat.ER, curEG = mat.EG, curEB = mat.EB;
         string curAlphaMode = mat.AlphaMode;
         float curAlphaCutoff = mat.AlphaCutoff;
+        string curCullFace = mat.CullFace;
 
         var inlinePanel = new StackPanel { Visibility = mat.Mode == "inline" ? Visibility.Visible : Visibility.Collapsed };
 
@@ -3088,6 +3102,7 @@ public partial class InspectorPanel : UserControl
                 emissive     = [curER, curEG, curEB],
                 alpha_mode   = curAlphaMode,
                 alpha_cutoff = curAlphaCutoff,
+                cull_face    = curCullFace,
             };
             var json = JsonSerializer.Serialize(payload);
             _runtime?.SendToRuntime($"SET_MATERIAL_OVERRIDE:{_currentActorId},{info.SlotIdx},{mat.Slot},{json}");
@@ -3168,6 +3183,28 @@ public partial class InspectorPanel : UserControl
             SendInline();
         }
         inlinePanel.Children.Add(cutoffRow.element);
+
+        // cull_face ドロップダウン（back/front/none）。
+        // カリング面は全マテリアルで意味を持つが、値の送信経路はインライン上書き（SET_MATERIAL_OVERRIDE:"inline"）
+        // しか無いため、他のインライン項目と同じ inlinePanel 内に置く。
+        var cullFaceRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 2, 0, 2) };
+        cullFaceRow.Children.Add(new TextBlock
+        {
+            Text = "カリング面", Foreground = new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88)),
+            FontSize = 11, Width = 90, VerticalAlignment = VerticalAlignment.Center,
+        });
+        var cullFaceCombo = new ComboBox { Width = 100, FontSize = 11 };
+        foreach (var lbl in CullFaceLabels) cullFaceCombo.Items.Add(lbl);
+        // 未知値（旧データ・不正値）は先頭 = "back" にフォールバック（ランタイムの parse_cull_face と同じ扱い）。
+        cullFaceCombo.SelectedIndex = Math.Max(0, Array.IndexOf(CullFaceValues, curCullFace));
+        cullFaceCombo.SelectionChanged += (_, _) =>
+        {
+            if (cullFaceCombo.SelectedIndex < 0) return;
+            curCullFace = CullFaceValues[cullFaceCombo.SelectedIndex];
+            SendInline();
+        };
+        cullFaceRow.Children.Add(cullFaceCombo);
+        inlinePanel.Children.Add(cullFaceRow);
 
         content.Children.Add(inlinePanel);
 

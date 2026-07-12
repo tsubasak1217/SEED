@@ -42,11 +42,13 @@ struct WboitOut {
 // フラグメントステージでは clip_pos はフレームバッファ座標になり、
 // .z がその断片の深度（0..1）である。専用の @builtin(position) 引数を
 // 追加すると builtin が重複して検証エラーになるため VertexOutput から読む。
+// front_facing は両面描画（cull_mode = None）マテリアルの裏面で false になり、
+// shade_pbr が法線を反転する（不透明パスの fs_main と同じ扱い）。
 @fragment
-fn fs_wboit(in: VertexOutput) -> WboitOut {
+fn fs_wboit(in: VertexOutput, @builtin(front_facing) front_facing: bool) -> WboitOut {
     // shade_pbr は shader_fragment.wgsl 由来。ライティング結果 rgb と
     // マテリアルアルファ a を返す（Mask discard も内部で処理される）。
-    let c = shade_pbr(in);
+    let c = shade_pbr(in, front_facing);
     let a = clamp(c.a, 0.0, 1.0);
 
     // 断片深度（0..1）。1 に近いほど遠方。

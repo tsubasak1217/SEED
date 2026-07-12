@@ -611,6 +611,10 @@ impl App {
                                 }
                             }
                             self.scene = Some(new_scene);
+                            // GPU パーティクルを全解放する（生存エミッタ＋孤児プールとも）。
+                            // 孤児（エミッタ消滅後も寿命まで生き残る粒子群）が旧シーンから
+                            // 新シーンへ持ち越されないようにする。
+                            self.particle_system.clear_all();
                             self.selected_instances.clear();
                             self.actor_virtual_selected_idx = None;
                             self.actor_virtual_selected_slot_idx = 0;

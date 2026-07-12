@@ -10,6 +10,7 @@ use super::{
     gpu_resources::{GpuModel, InstancedModelBatch, NUM_LODS},
     pipeline::{DrawPipelines, RtMeshPipelines},
 };
+use crate::engine::core::loader::model::CullFace;
 
 // ============================================================
 //  draw_model_indirect — LOD + 視錐台カリング描画
@@ -40,15 +41,20 @@ pub fn draw_model_indirect<'pass>(
     // RT 影オン時は RT バリアント、オフ/非対応時は従来パイプラインを選ぶ。
     // フラグメントは LightMeta.rt_shadows で RT/シャドウマップを分岐するため、
     // ここでの選択は「TLAS バインディングを持つレイアウトか否か」の違いに対応する。
-    let mesh_pipeline    = rt_pipes.map_or(&pipelines.mesh.pipeline,         |r| &r.mesh);
-    let skinned_pipeline = rt_pipes.map_or(&pipelines.skinned_mesh.pipeline, |r| &r.skinned);
-    let empty_bg3        = rt_pipes.map_or(&pipelines.mesh.empty_bg3,        |r| &r.empty_bg3);
+    // 各々はさらにカリング面（Back/Front/None）の 3 バリアント配列で、
+    // プリミティブのマテリアルの CullFace で添字を引く。
+    let mesh_pipelines    = rt_pipes.map_or(&pipelines.mesh.pipelines,         |r| &r.mesh);
+    let skinned_pipelines = rt_pipes.map_or(&pipelines.skinned_mesh.pipelines, |r| &r.skinned);
+    let empty_bg3         = rt_pipes.map_or(&pipelines.mesh.empty_bg3,         |r| &r.empty_bg3);
 
     for lod in 0..NUM_LODS {
         let visible = batch.lod_visible_counts[lod];
         if visible == 0 { continue; }
 
-        let mut cur_skinned: Option<bool>                = None;
+        let mut cur_skinned: Option<bool>                   = None;
+        // 現在バインド中のカリング面。node_prim_list は (is_skinned, cull_face, material_idx) 順に
+        // ソート済みのため、同じカリング面が連続する区間では set_pipeline を省略できる。
+        let mut cur_cull:    Option<CullFace>               = None;
         let mut cur_mat_ptr: Option<*const wgpu::BindGroup> = None;
 
         // LOD のジョイント BG（スキンなしの場合は None）
@@ -75,10 +81,17 @@ pub fn draw_model_indirect<'pass>(
                 .map(|m| &m.bind_group)
                 .unwrap_or(&gpu_model.default_material.bind_group);
 
+            // このプリミティブのマテリアルのカリング面（オーバーライド適用後の実効値）。
+            let cull = gpu_model.primitive_cull_face(draw.material_idx);
+
             // ── パイプライン切り替え ──────────────────────────────
-            if cur_skinned != Some(draw.is_skinned) {
+            // スキン有無・カリング面のどちらかが変わったときだけ set_pipeline する。
+            // カリング面だけが変わる場合でもレイアウトは同一だが、group 0/3/4 の再設定は
+            // 従来どおりまとめて行う（数回/フレームのコストであり、レイアウト無効化の
+            // ルールを場合分けするより安全側に倒す）。
+            if cur_skinned != Some(draw.is_skinned) || cur_cull != Some(cull) {
                 if draw.is_skinned {
-                    render_pass.set_pipeline(skinned_pipeline);
+                    render_pass.set_pipeline(&skinned_pipelines[cull.index()]);
                     // GPU スキニング: コンピュートシェーダが書き込んだ joint BG を設定
                     if let Some(jbg) = joint_bg {
                         render_pass.set_bind_group(3, jbg, &[]);
@@ -86,7 +99,7 @@ pub fn draw_model_indirect<'pass>(
                         render_pass.set_bind_group(3, &gpu_model.identity_joints_bg, &[]);
                     }
                 } else {
-                    render_pass.set_pipeline(mesh_pipeline);
+                    render_pass.set_pipeline(&mesh_pipelines[cull.index()]);
                     // group 3: mesh パイプラインではライト（group 4）参照の都合で
                     // レイアウト上「空の gap グループ」になる。wgpu はレイアウトに
                     // 存在する全 group への BindGroup 設定を要求する（未設定のまま
@@ -103,6 +116,7 @@ pub fn draw_model_indirect<'pass>(
                 // 無効化されるため、camera と同様に切り替えのたびに再設定する。
                 render_pass.set_bind_group(4, lights_bg, &[]);
                 cur_skinned = Some(draw.is_skinned);
+                cur_cull    = Some(cull);
                 cur_mat_ptr = None;
             }
 

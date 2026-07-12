@@ -110,7 +110,9 @@ pub fn load(path: &Path) -> Result<Model, LoadError> {
                 emissive_texture:   None,
                 alpha_mode,
                 alpha_cutoff:       0.5,
+                // OBJ/MTL には両面フラグが無いため常に背面カリング（従来挙動）。
                 double_sided:       false,
+                cull_face:          crate::engine::core::loader::model::CullFace::Back,
             }
         }).collect()
     };

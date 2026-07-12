@@ -57,6 +57,10 @@ pub enum MaterialOverrideKind {
         alpha_mode: Option<String>,
         #[serde(default)]
         alpha_cutoff: Option<f32>,
+        /// カリング面 "back" | "front" | "none"（material_asset::parse_cull_face で変換）。
+        /// `None` なら埋込マテリアルの値（glTF の double_sided 由来）を維持する。
+        #[serde(default)]
+        cull_face: Option<String>,
     },
 }
 

@@ -50,12 +50,15 @@ struct DrawIndexedIndirect {
 }
 
 struct CullParams {
-    planes:         array<vec4<f32>, 6>, // 視錐台平面（未正規化。extract_frustum_planes と同一）
-    camera_pos:     vec4<f32>,           // xyz = カメラ位置
-    instance_count: u32,                 // 可視インスタンス数（LOD0）
-    meshlet_count:  u32,                 // このプリミティブのメッシュレット数
-    _pad0:          u32,
-    _pad1:          u32,
+    planes:            array<vec4<f32>, 6>, // 視錐台平面（未正規化。extract_frustum_planes と同一）
+    camera_pos:        vec4<f32>,           // xyz = カメラ位置
+    instance_count:    u32,                 // 可視インスタンス数（LOD0）
+    meshlet_count:     u32,                 // このプリミティブのメッシュレット数
+    // 法線コーン背面棄却を行うか（CONE_CULL_ENABLED = 行う / それ以外 = 行わない）。
+    // 背面カリング（CullFace::Back）マテリアルでのみ 1 が入る。両面描画（None）・
+    // 前面カリング（Front）では背面が可視になるため、コーン棄却は必ず無効化する。
+    cone_cull_enabled: u32,
+    _pad0:             u32,
 }
 
 @group(0) @binding(0) var<storage, read>       instances:  array<InstanceData>;
@@ -68,6 +71,9 @@ struct CullParams {
 const SPHERE_MARGIN: f32 = 0.01;
 // コーン棄却の保守マージン（cutoff に足して発火を弱める）。
 const CONE_MARGIN:   f32 = 0.02;
+// params.cone_cull_enabled がこの値のときのみ法線コーン背面棄却を行う
+// （gpu_resources::CONE_CULL_ON と一致させること）。
+const CONE_CULL_ENABLED: u32 = 1u;
 
 @compute @workgroup_size(64)
 fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
@@ -110,8 +116,11 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 
     // ── 法線コーン背面棄却（保守側）──────────────────────────
+    // 【前提】この棄却は「背面が描画されない（背面カリング有効）」ことに依存する最適化。
+    // 両面描画（CullFace::None）・前面カリング（Front）のマテリアルでは背面も可視なので、
+    // cone_cull_enabled = 0 が渡され、ここは丸ごとスキップされる（視錐台テストのみ効く）。
     // cone_cutoff が有効（<1）なメッシュレットのみ対象。法線は normal_matrix で変換。
-    if visible && ml.cone_cutoff < 0.999 {
+    if visible && params.cone_cull_enabled == CONE_CULL_ENABLED && ml.cone_cutoff < 0.999 {
         let axis_w = normalize((inst.normal_matrix * vec4<f32>(ml.cone_axis, 0.0)).xyz);
         let to_c   = center_w - params.camera_pos.xyz;
         let dist   = length(to_c);

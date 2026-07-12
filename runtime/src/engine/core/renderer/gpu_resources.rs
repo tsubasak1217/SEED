@@ -3,7 +3,7 @@ use wgpu::util::DeviceExt;
 use rayon::prelude::*;
 use crate::engine::core::loader::model::{
     Model, ModelNode, Primitive, Vertex, TextureData, TextureSource, SamplerData,
-    FilterMode, WrapMode, Material, AlphaMode, CachedTexFormat, TextureInfo,
+    FilterMode, WrapMode, Material, AlphaMode, CullFace, CachedTexFormat, TextureInfo,
     NormalTextureInfo, OcclusionTextureInfo,
 };
 use super::uniforms::{CameraUniform, ModelUniform, MaterialUniform, JointUniform, ColorVertex,
@@ -341,6 +341,11 @@ pub struct GpuMaterial {
     /// 透明描画の分類（Phase R5）の唯一の真実source。Opaque・Mask は不透明パス、
     /// Blend は透明パスへ振り分ける。`Material::alpha_mode` を upload 時に複製する。
     pub alpha_mode:     AlphaMode,
+    /// カリング面（Back / Front / None）。
+    /// 描画側はこの値でパイプラインバリアント（cull_mode 3 種）を選ぶ。
+    /// メッシュレットカリングの法線コーン背面棄却も Back のときのみ有効化する。
+    /// `Material::cull_face` を upload 時に複製する（オーバーライド適用後の実効値）。
+    pub cull_face:      CullFace,
     #[allow(dead_code)]
     uniform_buffer:     wgpu::Buffer,
     // テクスチャのライフタイムを保持する
@@ -423,7 +428,7 @@ impl GpuMaterial {
             ],
         });
 
-        Self { bind_group, alpha_mode: mat.alpha_mode, uniform_buffer, textures: Vec::new() }
+        Self { bind_group, alpha_mode: mat.alpha_mode, cull_face: mat.cull_face, uniform_buffer, textures: Vec::new() }
     }
 }
 
@@ -717,6 +722,18 @@ impl GpuModel {
             .unwrap_or(self.default_material.alpha_mode)
     }
 
+    /// プリミティブのマテリアルインデックスからカリング面を返す。
+    ///
+    /// `material_idx` が None・範囲外のときは default_material の値（既定 Back）を返す。
+    /// パイプラインバリアント選択（model_drawer / transparency）と、メッシュレットカリングの
+    /// 法線コーン棄却の有効/無効判定の、唯一の判定入口。
+    pub fn primitive_cull_face(&self, material_idx: Option<usize>) -> CullFace {
+        material_idx
+            .and_then(|mi| self.materials.get(mi))
+            .map(|m| m.cull_face)
+            .unwrap_or(self.default_material.cull_face)
+    }
+
     pub fn upload(
         device:       &wgpu::Device,
         queue:        &wgpu::Queue,
@@ -805,7 +822,7 @@ impl GpuModel {
             match &ovr.kind {
                 // ── インライン差し替え: 埋込マテリアルを複製し、指定フィールドのみ上書き ──
                 MaterialOverrideKind::Inline {
-                    base_color, metallic, roughness, emissive, alpha_mode, alpha_cutoff,
+                    base_color, metallic, roughness, emissive, alpha_mode, alpha_cutoff, cull_face,
                 } => {
                     let Some(base) = model.materials.get(ovr.slot) else { continue };
                     let mut eff: Material = base.clone();
@@ -815,6 +832,8 @@ impl GpuModel {
                     if let Some(v) = emissive     { eff.emissive_factor   = *v; }
                     if let Some(v) = alpha_mode   { eff.alpha_mode        = material_asset::parse_alpha_mode(v); }
                     if let Some(v) = alpha_cutoff { eff.alpha_cutoff      = *v; }
+                    // カリング面の上書き（None なら埋込値＝glTF double_sided 由来を維持）。
+                    if let Some(v) = cull_face    { eff.cull_face         = material_asset::parse_cull_face(v); }
                     // テクスチャ参照は維持（texture_index は元モデルのテクスチャ列を指したまま）。
 
                     let tex_slice = &self.textures[..base_tex_count.min(self.textures.len())];
@@ -840,6 +859,8 @@ impl GpuModel {
                         emissive_factor:   asset.emissive,
                         alpha_mode:        material_asset::parse_alpha_mode(&asset.alpha_mode),
                         alpha_cutoff:      asset.alpha_cutoff,
+                        // .mat が持つカリング面をそのまま適用する（キー欠落時は serde 既定の "back"）。
+                        cull_face:         material_asset::parse_cull_face(&asset.cull_face),
                         ..Material::default()
                     };
 
@@ -1137,13 +1158,22 @@ struct MeshletCullSlot {
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct MeshletCullParams {
-    planes:         [[f32; 4]; 6], // 96
-    camera_pos:     [f32; 4],      // 16
-    instance_count: u32,           // 112
-    meshlet_count:  u32,           // 116
-    _pad0:          u32,           // 120
-    _pad1:          u32,           // 124
-}                                  // 128
+    planes:            [[f32; 4]; 6], // 96
+    camera_pos:        [f32; 4],      // 16
+    instance_count:    u32,           // 112
+    meshlet_count:     u32,           // 116
+    /// 法線コーン背面棄却を行うか（1 = 行う / 0 = 行わない）。
+    /// 背面カリング（CullFace::Back）が有効なマテリアルでのみ 1。Front / None のマテリアルは
+    /// 背面も描画されるため、コーン棄却すると「見えているメッシュレット」が消えてしまう。
+    /// 視錐台テストはカリング面に関係なく常に有効（WGSL 側もこのフラグを見ない）。
+    cone_cull_enabled: u32,           // 120
+    _pad0:             u32,           // 124
+}                                     // 128
+
+/// `cone_cull_enabled` の有効値（コーン棄却を行う）。WGSL の CONE_CULL_ENABLED と一致させること。
+const CONE_CULL_ON:  u32 = 1;
+/// `cone_cull_enabled` の無効値（コーン棄却を行わない）。
+const CONE_CULL_OFF: u32 = 0;
 
 /// DrawIndexedIndirect のバイトサイズ（u32 × 5）。
 const DRAW_INDEXED_INDIRECT_SIZE: u64 = 20;
@@ -1189,9 +1219,25 @@ impl InstancedModelBatch {
         }
         let n_prims = prim_slot;
 
-        // ── ソート: (is_skinned, material_idx) 昇順 ────────────
+        // ── ソート: (is_skinned, cull_face, material_idx) 昇順 ────────────
+        // パイプライン切り替え（スキン有無 × カリング面の 2 軸）が連続描画で最小になるよう、
+        // パイプラインを決める要素を優先キーにする。カリング面はマテリアル由来のため、
+        // material_idx でソートしても Back/None が交互に並び得る（＝毎プリミティブで
+        // set_pipeline が走る）。カリング面を先にキーへ入れることで同一 cull_mode が連続し、
+        // model_drawer は set_pipeline を省略できる。
+        // マテリアル未指定（material_idx = None）のプリミティブは default_material（Back）扱い。
+        // ※ ここで見るのは埋込マテリアルの値。MaterialOverride でカリング面を変えた場合は
+        //   並びが最適でなくなる（set_pipeline 回数が増える）だけで、描画結果は変わらない
+        //   （描画側は GpuModel の実効マテリアルからカリング面を読むため）。
+        let cull_key = |material_idx: Option<usize>| -> u8 {
+            material_idx
+                .and_then(|mi| model.materials.get(mi))
+                .map(|m| m.cull_face)
+                .unwrap_or_default()
+                .index() as u8
+        };
         node_prim_list.sort_by_key(|d| {
-            (d.is_skinned as u8, d.material_idx.unwrap_or(usize::MAX))
+            (d.is_skinned as u8, cull_key(d.material_idx), d.material_idx.unwrap_or(usize::MAX))
         });
 
         // ── LOD ごとのノードインスタンスバッファ + bind group ────
@@ -1372,14 +1418,23 @@ impl InstancedModelBatch {
             let Some((inst_buf, _)) = self.lod_node_data[0].get(slot.node_idx)
                 .and_then(|o| o.as_ref()) else { continue };
 
+            // 法線コーン背面棄却は「背面カリングが有効」であることが前提の最適化。
+            // CullFace::None / Front のマテリアルは背面（あるいは前面）も描画されるため、
+            // コーン棄却を効かせると本来見えているメッシュレットが消える。Back のときだけ有効化する。
+            let cone_cull_enabled = if gpu_model.primitive_cull_face(draw.material_idx) == CullFace::Back {
+                CONE_CULL_ON
+            } else {
+                CONE_CULL_OFF
+            };
+
             // パラメータ UBO 更新＋カウント 0 リセット。
             let params = MeshletCullParams {
                 planes:         *planes,
                 camera_pos:     [camera_pos[0], camera_pos[1], camera_pos[2], 0.0],
                 instance_count: visible,
                 meshlet_count:  slot.meshlet_count,
+                cone_cull_enabled,
                 _pad0: 0,
-                _pad1: 0,
             };
             queue.write_buffer(&slot.params_buf, 0, bytemuck::bytes_of(&params));
             queue.write_buffer(&slot.count_buf, 0, bytemuck::bytes_of(&0u32));

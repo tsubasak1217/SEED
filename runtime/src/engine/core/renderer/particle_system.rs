@@ -48,6 +48,18 @@
 //    World: スポーン位置・方向をエミッタ行列で変換して固定（エミッタ移動に追従しない）。
 //    Local: ローカルでシムし、描画時にワールド行列で変換（エミッタに追従）。
 //
+//  【孤児パーティクル（エミッタ消滅後の生存）】
+//    ParticleEmitterComponent の削除やアクタ破棄でエミッタが消えても、発射済みの
+//    パーティクルはエミッタから独立した存在として寿命が尽きるまで生き続ける。
+//    エミッタが collect で見つからなくなったフレームに、その GPU リソース
+//    （EmitterGpuState）の所有権を「孤児プール（orphans）」へ移譲する。孤児は
+//    emit_count=0（放出停止）のまま compute と描画を継続し、TTL（= 削除時点で
+//    存在しうる粒子の最大寿命 + 余裕）が尽きたら解放する。生存数の判定に GPU→CPU
+//    readback は一切使わない（毎フレーム同期ゼロ）。
+//    孤児は削除時点のワールド行列を凍結して保持するため、元エミッタの Transform には
+//    追従しない（Local 空間シムの粒子もワールド空間上のその場に留まる）。
+//    シーン切り替え・プレイ停止時は clear_all() で孤児ごと即時解放する。
+//
 //  【追加コストゼロ（受入条件）】
 //    エミッタが 1 つも無いフレームは collect で frame が空になり、sync_gpu / dispatch /
 //    draw はすべて即 return する。バッファ確保も一切行わない。
@@ -102,6 +114,14 @@ const SHAPE_MODE_MESH: u32 = 1;
 /// LUT に固定で並ぶカーブ本数（speed / rot_speed / scale）。
 /// 色カーブ（最低 1 本）はこの後ろに可変本数で続く。
 const LUT_FIXED_CURVES: usize = 3;
+
+/// 孤児パーティクル（エミッタ消滅後も残る粒子群）の TTL に足す余裕秒。
+///
+/// エミッタが消えた瞬間に放出されていた粒子の残り寿命は最大でも lifetime_max。
+/// TTL = lifetime_max + この余裕 とすることで、収集フレームと dispatch フレームの
+/// 1 フレームずれや dt の丸めを吸収しつつ、確実に「全滅後」に解放できる。
+/// GPU からの readback（毎フレーム GPU→CPU 同期）を一切行わずに解放時刻を決めるための値。
+const ORPHAN_TTL_MARGIN_SECS: f32 = 0.25;
 
 // ─── GpuParticle（storage 要素・std430, 64 バイト）────────────
 
@@ -362,6 +382,44 @@ impl EmitterGpuState {
     }
 }
 
+// ─── 孤児パーティクル（エミッタ消滅後も生き残る粒子群）──────────
+
+/// 孤児化に必要なエミッタのスナップショット（シミュレーション継続と描画に要る最小情報）。
+///
+/// エミッタコンポーネントの削除・アクタ破棄の直前フレームの状態を焼き止めたもの。
+/// `params.world_mat` もここで凍結されるため、孤児粒子は元エミッタの Transform に
+/// 追従しない（World シムはそもそもワールド固定。Local シムの粒子も、削除時点の
+/// 行列を保持し続けることでワールド空間上のその場に留まる）。
+#[derive(Clone)]
+struct OrphanSeed {
+    /// 合成モード（描画パイプライン選択）。
+    blend:         ParticleBlend,
+    /// 形状（描画のメッシュ解決に使う。メッシュは ShapeMeshCache に残っている）。
+    shape:         ParticleShape,
+    /// プール容量（dispatch のワークグループ数・draw のインスタンス数）。
+    max_particles: u32,
+    /// 最後のフレームの GPU パラメータ（world_mat 凍結）。
+    /// 孤児は毎フレーム `dt` のみ差し替え、`emit_count` は常に 0（＝新規放出しない）。
+    params:        GpuEmitterParams,
+    /// この時点で存在しうる粒子の最大寿命（秒）。TTL の基準に使う。
+    max_lifetime:  f32,
+}
+
+/// 孤児パーティクル群（エミッタは消えたが寿命が残っている粒子のプール）。
+///
+/// エミッタが消えた時点で GPU リソース（`EmitterGpuState`）の所有権をここへ移譲する。
+/// 放出は止め（emit_count=0）、シミュレーション（compute）と描画は寿命が尽きるまで継続する。
+/// TTL が 0 以下になったら `Vec::retain` で drop され、GPU リソースが解放される
+/// （生存数の GPU→CPU readback は行わない＝毎フレーム同期ゼロ）。
+struct OrphanEmitter {
+    /// エミッタから移譲された GPU リソース（バッファ・BindGroup・テクスチャ）。
+    gpu:  EmitterGpuState,
+    /// 凍結したエミッタ状態（描画・パラメータ書き戻しに使う）。
+    seed: OrphanSeed,
+    /// 残り生存秒。collect_and_consume で dt ずつ減らし、0 以下で解放する。
+    ttl:  f32,
+}
+
 // ─── フレームごとの描画対象記述 ───────────────────────────────
 
 /// このフレームに dispatch / draw する 1 エミッタの記述。
@@ -427,7 +485,14 @@ pub struct ParticleSystem {
     cpu:    HashMap<Entity, EmitterCpuState>,
     /// エミッタ entity → GPU 状態（バッファ・BG）。
     gpu:    HashMap<Entity, EmitterGpuState>,
+    /// エミッタ entity → 直近フレームのスナップショット（孤児化の種）。
+    /// sync_gpu が毎フレーム更新し、エミッタ消滅時に OrphanEmitter へ移す。
+    seeds:  HashMap<Entity, OrphanSeed>,
+    /// 孤児パーティクル群（エミッタは消えたが寿命が残っている粒子のプール）。
+    /// 放出は止め、シミュレーションと描画のみ TTL が尽きるまで継続する。
+    orphans: Vec<OrphanEmitter>,
     /// 形状メッシュキャッシュ（組込み 4 種＋Model。デバイス取得後に遅延生成）。
+    /// 孤児がメッシュ形状のときも参照するため、エミッタ消滅後も保持し続ける。
     shapes: Option<ShapeMeshCache>,
     /// このフレームの描画対象（collect_and_consume が毎フレーム再構築する）。
     frame:  Vec<EmitterFrameDesc>,
@@ -475,14 +540,36 @@ impl ParticleSystem {
         Self {
             cpu:           HashMap::new(),
             gpu:           HashMap::new(),
+            seeds:         HashMap::new(),
+            orphans:       Vec::new(),
             shapes:        None,
             frame:         Vec::new(),
             frame_counter: 0,
         }
     }
 
-    /// このフレームに描画すべきエミッタが 1 つでもあるか（追加コストゼロ判定）。
-    pub fn has_emitters(&self) -> bool { !self.frame.is_empty() }
+    /// このフレームに sync/dispatch/draw すべき対象（エミッタ or 孤児）があるか
+    /// （追加コストゼロ判定）。孤児＝エミッタは消えたが寿命が残っている粒子群。
+    pub fn has_emitters(&self) -> bool {
+        !self.frame.is_empty() || !self.orphans.is_empty()
+    }
+
+    /// 全パーティクル資源（エミッタ・孤児とも）を即時解放する。
+    ///
+    /// シーン切り替え・プレイ停止など「粒子をシーンを跨いで残してはいけない」場面で呼ぶ。
+    /// 孤児プールも破棄するため、旧シーンの粒子が新シーンに残ることはない。
+    pub fn clear_all(&mut self) {
+        self.frame.clear();
+        self.cpu.clear();
+        self.gpu.clear();
+        self.seeds.clear();
+        self.orphans.clear();
+    }
+
+    /// プール容量からディスパッチするワークグループ数を求める（エミッタ／孤児で共用）。
+    fn workgroup_count(max_particles: u32) -> u32 {
+        max_particles.div_ceil(WORKGROUP_SIZE)
+    }
 
     // ── フェーズ 1: CPU 収集＋放出決定＋pending_burst 消費 ──────
 
@@ -511,9 +598,67 @@ impl ParticleSystem {
             self.process_emitter(raw, dt);
         }
 
-        // ③ シーンから消えたエミッタの CPU/GPU 状態を破棄する（メモリ・GPU 解放）。
+        // ③ 既存の孤児プールの時間を進め、寿命が尽きたものを解放する。
+        self.age_orphans(dt);
+
+        // ④ シーンから消えたエミッタの GPU リソースを孤児プールへ移譲する。
+        //    （即破棄すると発射済みの粒子まで消えてしまうため。放出のみ止める）
+        self.orphan_removed_emitters(&present);
+
+        // ⑤ 消えたエミッタの CPU 状態・スナップショットを破棄する。
+        //    GPU 状態は ④ で移譲済み（孤児にならなかったものは ④ 内で drop される）。
         self.cpu.retain(|e, _| present.contains(e));
-        self.gpu.retain(|e, _| present.contains(e));
+        self.seeds.retain(|e, _| present.contains(e));
+    }
+
+    /// 孤児プールの時間を進め、TTL が尽きたものを解放する（GPU リソースを drop）。
+    ///
+    /// 生存粒子数の判定に GPU→CPU readback は使わない。エミッタ削除時点で存在しうる
+    /// 粒子の最大寿命を TTL として持ち、経過したら「必ず全滅している」ことを根拠に解放する。
+    fn age_orphans(&mut self, dt: f32) {
+        for o in &mut self.orphans {
+            o.ttl -= dt;
+            // このステップの dt を反映する（シミュレーションは継続）。
+            o.seed.params.dt = dt;
+            // 孤児は新規放出しない（保険。移譲時にも 0 にしてある）。
+            o.seed.params.emit_count = 0;
+        }
+        // TTL 切れを解放（EmitterGpuState の drop で GPU バッファ・BG・テクスチャが解放される）。
+        self.orphans.retain(|o| o.ttl > 0.0);
+    }
+
+    /// シーンから消えたエミッタの GPU リソースを孤児プールへ移譲する。
+    ///
+    /// 「エミッタが消える」＝ ParticleEmitterComponent の削除・アクタ破棄・世界線切り替え。
+    /// 発射済みの粒子はエミッタから独立した存在として扱い、寿命が尽きるまで
+    /// シミュレーションと描画を継続する（新規の放出だけが止まる）。
+    fn orphan_removed_emitters(&mut self, present: &HashSet<Entity>) {
+        // 借用の都合で、消えた entity を先に列挙してから remove する。
+        let gone: Vec<Entity> = self.gpu.keys()
+            .filter(|e| !present.contains(e))
+            .copied()
+            .collect();
+
+        for e in gone {
+            // GPU 状態を取り出す（ここで self.gpu から外れる）。
+            let Some(mut gpu) = self.gpu.remove(&e) else { continue; };
+            // 直近フレームのスナップショットが無い＝一度も sync_gpu を通っていない
+            // （＝GPU 上に粒子が 1 つも存在しない）ので、そのまま解放してよい。
+            let Some(mut seed) = self.seeds.remove(&e) else { continue; };
+
+            // プリウォームの一時リソースは孤児には不要（放出しない）。ここで解放する。
+            gpu.prewarm.clear();
+            // 放出停止（孤児は既存粒子の更新・描画のみ）。
+            seed.params.emit_count = 0;
+
+            // TTL = 削除時点で存在しうる粒子の最大寿命 ＋ 余裕。
+            let ttl = seed.max_lifetime + ORPHAN_TTL_MARGIN_SECS;
+            if seed.max_lifetime <= 0.0 {
+                // 寿命 0 以下＝生存しうる粒子が無い。孤児化せず即解放する（gpu を drop）。
+                continue;
+            }
+            self.orphans.push(OrphanEmitter { gpu, seed, ttl });
+        }
     }
 
     /// 1 ステップぶんの放出個数を決定する（interval / delay / emit_mode を消化）。
@@ -706,8 +851,9 @@ impl ParticleSystem {
     /// - Model 形状はここでロード（失敗／頂点数超過は Point へフォールバック）。
     /// - use_texture / shape_mode はロード結果に応じて確定し、params を書き込む。
     /// - プリウォームステップがあれば一時 uniform＋BG を作る（dispatch が消費）。
+    /// - 孤児（エミッタ消滅後の粒子群）の params も dt 更新のため書き戻す。
     ///
-    /// エミッタ 0 個なら即 return（バッファ確保なし＝追加コストゼロ）。
+    /// エミッタも孤児も 0 個なら即 return（バッファ確保なし＝追加コストゼロ）。
     pub fn sync_gpu(
         &mut self,
         device:     &wgpu::Device,
@@ -715,7 +861,7 @@ impl ParticleSystem {
         compute_pl: &ParticleComputePipeline,
         draw_pl:    &ParticlePipelines,
     ) {
-        if self.frame.is_empty() { return; }
+        if self.frame.is_empty() && self.orphans.is_empty() { return; }
 
         // 形状メッシュキャッシュを遅延生成する（初回のみ。以降は全エミッタで共有）。
         if self.shapes.is_none() {
@@ -837,6 +983,24 @@ impl ParticleSystem {
 
             let g = self.gpu.get(&entity).expect("gpu state must exist");
             queue.write_buffer(&g.params_buf, 0, bytemuck::bytes_of(&params));
+
+            // ⑦ 孤児化の種（直近フレームのスナップショット）を更新する。
+            //    エミッタが次フレームに消えたとき、この内容のまま孤児として生き続ける
+            //    （world_mat もここで凍結される＝孤児はエミッタの Transform に追従しない）。
+            self.seeds.insert(entity, OrphanSeed {
+                blend:         self.frame[i].blend,
+                shape:         shape.clone(),
+                max_particles: capacity,
+                params,
+                // 存在しうる粒子の最大寿命（負値データは 0 に丸める）。
+                max_lifetime:  params.lifetime_max.max(0.0),
+            });
+        }
+
+        // 孤児のパラメータ uniform を書き戻す（dt 更新・emit_count=0）。
+        // バッファ／BindGroup は移譲済みのものをそのまま使うため再確保は発生しない。
+        for o in &self.orphans {
+            queue.write_buffer(&o.gpu.params_buf, 0, bytemuck::bytes_of(&o.seed.params));
         }
     }
 
@@ -845,16 +1009,17 @@ impl ParticleSystem {
     /// 全エミッタのシミュレーションを compute pass 内でディスパッチする。
     ///
     /// プリウォームステップ（一時 BG）があれば先に順次ディスパッチし、
-    /// 最後に通常ステップをディスパッチする。エミッタ 0 個なら即 return。
+    /// 最後に通常ステップをディスパッチする。エミッタ・孤児とも 0 個なら即 return。
     /// ※ playing=false のエミッタも「既存粒子が自然消滅するまで」常時ディスパッチする
     ///   （放出は collect 側で止めており、更新は回す）。全粒子 dead 判定は省略。
+    /// ※ 孤児（エミッタ消滅後の粒子群）も emit_count=0 のまま同じ compute を回す。
     ///   TODO: 全粒子 dead を検出して dispatch を打ち切れば更に省ける（エミッタ少数前提で未実装）。
     pub fn dispatch(&self, pass: &mut wgpu::ComputePass<'_>, compute_pl: &ParticleComputePipeline) {
-        if self.frame.is_empty() { return; }
+        if self.frame.is_empty() && self.orphans.is_empty() { return; }
         pass.set_pipeline(&compute_pl.pipeline);
         for desc in &self.frame {
             let Some(g) = self.gpu.get(&desc.entity) else { continue; };
-            let groups = (desc.max_particles + WORKGROUP_SIZE - 1) / WORKGROUP_SIZE;
+            let groups = Self::workgroup_count(desc.max_particles);
             // プリウォーム: ステップごとの一時 BG を順にディスパッチ（各自の uniform 値を読む）。
             for (_buf, bg) in &g.prewarm {
                 pass.set_bind_group(0, bg, &[]);
@@ -864,14 +1029,20 @@ impl ParticleSystem {
             pass.set_bind_group(0, &g.compute_bg, &[]);
             pass.dispatch_workgroups(groups, 1, 1);
         }
+        // 孤児: 放出は 0 のまま、既存粒子の更新（位置・速度・寿命）のみ回す。
+        for o in &self.orphans {
+            let groups = Self::workgroup_count(o.seed.max_particles);
+            pass.set_bind_group(0, &o.gpu.compute_bg, &[]);
+            pass.dispatch_workgroups(groups, 1, 1);
+        }
     }
 
     // ── フェーズ 4: 描画 ──────────────────────────────────────
 
-    /// 全エミッタをブレンド別パイプラインで描画する（形状メッシュ×インスタンス）。
+    /// 全エミッタ＋孤児をブレンド別パイプラインで描画する（形状メッシュ×インスタンス）。
     ///
     /// group0=camera（呼び出し側の共有カメラ BG）, group1=particles+params+lut,
-    /// group2=texture（未使用時は既定白）。エミッタ 0 個なら即 return。
+    /// group2=texture（未使用時は既定白）。エミッタ・孤児とも 0 個なら即 return。
     ///
     /// TODO: Alpha ブレンドのエミッタ単位粗ソート（現状は登録順で描画）。
     /// TODO: indirect draw count（生存数に応じた可変インスタンス数）で無駄頂点を削減。
@@ -881,46 +1052,75 @@ impl ParticleSystem {
         draw_pl:   &'p ParticlePipelines,
         camera_bg: &'p wgpu::BindGroup,
     ) {
-        if self.frame.is_empty() { return; }
+        if self.frame.is_empty() && self.orphans.is_empty() { return; }
         let Some(shapes) = &self.shapes else { return; }; // sync_gpu 前は描画しない
         // group0（camera）は全パイプラインでレイアウト共通のため 1 度だけセットする。
         pass.set_bind_group(0, camera_bg, &[]);
+
+        // 生存中のエミッタ。
         for desc in &self.frame {
             let Some(g) = self.gpu.get(&desc.entity) else { continue; };
-            let code = desc.blend.to_code();
+            Self::draw_pool(
+                pass, draw_pl, shapes, g,
+                desc.blend, &desc.shape, desc.max_particles, desc.params.use_texture,
+            );
+        }
+        // 孤児（エミッタは消えたが寿命が残っている粒子群）。凍結した seed で描く。
+        for o in &self.orphans {
+            Self::draw_pool(
+                pass, draw_pl, shapes, &o.gpu,
+                o.seed.blend, &o.seed.shape, o.seed.max_particles, o.seed.params.use_texture,
+            );
+        }
+    }
 
-            // 形状メッシュを解決する。Pixel、または Model のロード未完（None）は
-            // メッシュ無し＝Pixel（PointList）パイプラインの 1px 点で描く。
-            let mesh: Option<&ShapeMesh> = match &desc.shape {
-                ParticleShape::Pixel  => None,
-                ParticleShape::Sphere => Some(shapes.sphere()),
-                ParticleShape::Box    => Some(shapes.cube()),
-                ParticleShape::Plane  => Some(shapes.plane()),
-                ParticleShape::Model { path } => shapes.model_cached(path),
-            };
+    /// パーティクルプール 1 本を描画する（生存エミッタ／孤児で共用する内部ヘルパ）。
+    ///
+    /// 形状を解決して、ブレンド別のメッシュ／Pixel パイプラインでインスタンス描画する。
+    /// group0（camera）は呼び出し側でセット済みであること。
+    fn draw_pool<'p>(
+        pass:          &mut wgpu::RenderPass<'p>,
+        draw_pl:       &'p ParticlePipelines,
+        shapes:        &'p ShapeMeshCache,
+        gpu:           &'p EmitterGpuState,
+        blend:         ParticleBlend,
+        shape:         &ParticleShape,
+        max_particles: u32,
+        use_texture:   u32,
+    ) {
+        let code = blend.to_code();
 
-            // 共通バインド（group1=particles/params/lut, group2=texture or 既定白）。
-            pass.set_bind_group(1, &g.draw_bg, &[]);
-            let tex_bg = if desc.params.use_texture == 1 {
-                g.texture_bg.as_ref().unwrap_or(&draw_pl.default_white_bg)
-            } else {
-                &draw_pl.default_white_bg
-            };
-            pass.set_bind_group(2, tex_bg, &[]);
+        // 形状メッシュを解決する。Pixel、または Model のロード未完（None）は
+        // メッシュ無し＝Pixel（PointList）パイプラインの 1px 点で描く。
+        let mesh: Option<&ShapeMesh> = match shape {
+            ParticleShape::Pixel  => None,
+            ParticleShape::Sphere => Some(shapes.sphere()),
+            ParticleShape::Box    => Some(shapes.cube()),
+            ParticleShape::Plane  => Some(shapes.plane()),
+            ParticleShape::Model { path } => shapes.model_cached(path),
+        };
 
-            match mesh {
-                // メッシュ形状: ブレンド別 TriangleList パイプライン＋形状メッシュ×インスタンス。
-                Some(m) => {
-                    pass.set_pipeline(&draw_pl.mesh[code]);
-                    pass.set_vertex_buffer(0, m.vbuf.slice(..));
-                    pass.set_index_buffer(m.ibuf.slice(..), wgpu::IndexFormat::Uint32);
-                    pass.draw_indexed(0..m.index_count, 0, 0..desc.max_particles);
-                }
-                // Pixel: ブレンド別 PointList パイプライン。頂点バッファ無し・1 頂点×インスタンス。
-                None => {
-                    pass.set_pipeline(&draw_pl.pixel[code]);
-                    pass.draw(0..1, 0..desc.max_particles);
-                }
+        // 共通バインド（group1=particles/params/lut, group2=texture or 既定白）。
+        pass.set_bind_group(1, &gpu.draw_bg, &[]);
+        let tex_bg = if use_texture == 1 {
+            gpu.texture_bg.as_ref().unwrap_or(&draw_pl.default_white_bg)
+        } else {
+            &draw_pl.default_white_bg
+        };
+        pass.set_bind_group(2, tex_bg, &[]);
+
+        match mesh {
+            // メッシュ形状: ブレンド別 TriangleList パイプライン＋形状メッシュ×インスタンス。
+            Some(m) => {
+                pass.set_pipeline(&draw_pl.mesh[code]);
+                pass.set_vertex_buffer(0, m.vbuf.slice(..));
+                pass.set_index_buffer(m.ibuf.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..m.index_count, 0, 0..max_particles);
+            }
+            // Pixel: ブレンド別 PointList パイプライン。頂点バッファ無し・1 頂点×インスタンス。
+            None => {
+                pass.set_pipeline(&draw_pl.pixel[code]);
+                pass.draw(0..1, 0..max_particles);
             }
         }
     }
@@ -1166,9 +1366,136 @@ mod layout_tests {
     }
 }
 
+// ─── フレームレート非依存性の検証 ──────────────────────────────
+//
+// particle_sim.wgsl の重力＋空気抵抗は「指数減衰の閉形式」で積分している。
+// 下の参照実装はその閉形式を CPU に写したもの（テスト専用。GPU 側ロジックの
+// 二重実装ではなく、式そのものが dt の刻み方に依らないことを固定する検証用）。
+#[cfg(test)]
+mod framerate_independence_tests {
+    /// WGSL の DRAG_EPSILON と同じ「抵抗なし」しきい値。
+    const DRAG_EPSILON: f32 = 1e-4;
+
+    /// 重力 g・空気抵抗 k のもとで速度 v を dt 秒ぶん進める閉形式（particle_sim.wgsl と同一式）。
+    ///
+    ///   dv/dt = g - k*v
+    ///   v(t+dt) = v∞ + (v - v∞) * exp(-k*dt)          , v∞ = g/k
+    ///   Δx      = v∞*dt + (v - v∞) * (1 - exp(-k*dt)) / k
+    ///
+    /// 戻り値は (新しい速度, このステップの変位)。k≈0 は等加速度運動の厳密解へ分岐する。
+    fn integrate(v: f64, g: f64, k: f64, dt: f64) -> (f64, f64) {
+        if k > DRAG_EPSILON as f64 {
+            let decay = (-k * dt).exp();
+            let v_inf = g / k;
+            let dv    = v - v_inf;
+            (v_inf + dv * decay, v_inf * dt + dv * (1.0 - decay) / k)
+        } else {
+            (v + g * dt, v * dt + 0.5 * g * dt * dt)
+        }
+    }
+
+    /// 旧実装（線形近似の減衰 v *= 1 - k*dt）: フレームレート依存であることを示す対照。
+    fn integrate_legacy(v: f64, g: f64, k: f64, dt: f64) -> (f64, f64) {
+        let nv = (v + g * dt) * (1.0 - k * dt).max(0.0);
+        (nv, nv * dt) // 旧: pos += v_new * dt（半陰的オイラー）
+    }
+
+    /// 閉形式の積分は dt の刻み方に依らない（60fps×2 ステップ == 30fps×1 ステップ）。
+    #[test]
+    fn closed_form_integration_is_framerate_independent() {
+        let g = -9.8_f64;
+        // 抵抗あり／なし（k=0）／強い抵抗の 3 ケースで検証する。
+        for &k in &[0.0_f64, 0.5, 2.0, 30.0] {
+            let (dt_fast, dt_slow) = (1.0 / 60.0, 1.0 / 30.0);
+
+            // 60fps: 2 ステップ。
+            let (mut v_fast, mut x_fast) = (3.0_f64, 0.0_f64);
+            for _ in 0..2 {
+                let (nv, dx) = integrate(v_fast, g, k, dt_fast);
+                v_fast = nv;
+                x_fast += dx;
+            }
+            // 30fps: 1 ステップ（同じ 1/30 秒）。
+            let (v_slow, x_slow) = integrate(3.0, g, k, dt_slow);
+
+            assert!(
+                (v_fast - v_slow).abs() < 1e-9,
+                "drag={k}: 速度が dt 依存（60fps×2={v_fast} / 30fps×1={v_slow}）",
+            );
+            assert!(
+                (x_fast - x_slow).abs() < 1e-9,
+                "drag={k}: 位置が dt 依存（60fps×2={x_fast} / 30fps×1={x_slow}）",
+            );
+        }
+    }
+
+    /// 対照: 旧実装（v *= 1-k*dt ＋半陰的オイラー）は同条件で明確に食い違う
+    /// ＝これが「速度が FPS 依存」だった根本原因であることを固定する。
+    #[test]
+    fn legacy_linear_drag_was_framerate_dependent() {
+        let (g, k) = (-9.8_f64, 2.0_f64);
+        let (mut v_fast, mut x_fast) = (3.0_f64, 0.0_f64);
+        for _ in 0..2 {
+            let (nv, dx) = integrate_legacy(v_fast, g, k, 1.0 / 60.0);
+            v_fast = nv;
+            x_fast += dx;
+        }
+        let (v_slow, x_slow) = integrate_legacy(3.0, g, k, 1.0 / 30.0);
+        assert!(
+            (v_fast - v_slow).abs() > 1e-3,
+            "旧実装は FPS 依存だったはず（fast={v_fast} / slow={v_slow}）",
+        );
+        assert!((x_fast - x_slow).abs() > 1e-3, "旧実装は位置も FPS 依存だったはず");
+    }
+}
+
 // ─── WGSL 静的検証（naga parse + validate）─────────────────────
 #[cfg(test)]
 mod shader_tests {
+    /// particle_sim.wgsl の全ての時間発展項が dt を経由していること（静的検査）。
+    ///
+    /// 「dt を掛け忘れた項」「フレーム依存の減衰形（v *= 1 - k*dt）」の再混入を
+    /// コンパイル時ではなくテストで塞ぐ。WGSL ロジックを CPU に二重実装せずに
+    /// フレームレート非依存の構造を担保するためのガード。
+    #[test]
+    fn particle_sim_time_evolution_uses_dt() {
+        let src = include_str!("shaders/particle_sim.wgsl");
+
+        // ① 禁止パターン: 線形近似の減衰（終端速度が dt 依存になり k*dt>=1 で速度が潰れる）。
+        assert!(
+            !src.contains("1.0 - params.drag"),
+            "線形近似の空気抵抗（v *= 1 - drag*dt）が再混入している。exp(-k*dt) を使うこと",
+        );
+
+        // ② 必須パターン: 指数減衰の閉形式。
+        assert!(
+            src.contains("exp(-k * dt)"),
+            "空気抵抗が指数減衰の閉形式 exp(-k*dt) になっていない",
+        );
+
+        // ③ 粒子の状態（pos / vel / age / rot_angle）を「自分自身に積む」代入は、必ず
+        //    dt 由来の項を含むこと（変位変数 *_disp は dt を掛けて作られている）。
+        //    空白を除去して比較する（整形の揺れに影響されないようにするため）。
+        //    ※ スポーン節の初期化（p.xxx = 定数）は `p.x = p.x +` の形にならず対象外。
+        let fields = ["p.pos", "p.vel", "p.age", "p.rot_angle"];
+        let mut checked = 0usize;
+        for line in src.lines() {
+            let squashed: String = line.chars().filter(|c| !c.is_whitespace()).collect();
+            for f in fields {
+                if squashed.starts_with(&format!("{f}={f}+")) {
+                    checked += 1;
+                    assert!(
+                        squashed.contains("dt") || squashed.contains("_disp"),
+                        "時間発展の代入が dt を経由していない: {}",
+                        line.trim(),
+                    );
+                }
+            }
+        }
+        // 検査対象が 0 件＝パターンが変わって検査が空回りしている、を防ぐ。
+        assert!(checked >= 3, "時間発展の代入が検出できていない（検査が空回り）: {checked} 件");
+    }
+
     /// particle_sim.wgsl / particle_draw.wgsl を naga で parse + validate する。
     /// どちらも自己完結（外部連結不要）でパース可能な構成である。
     #[test]

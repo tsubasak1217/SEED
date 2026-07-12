@@ -4,6 +4,55 @@
 // コンピュートパイプライン（CullPipeline, SkinComputePipeline）は手動定義。
 
 use super::pipeline_config::{RenderPipelineBuilder, parse_compare};
+use crate::engine::core::loader::model::{CULL_FACE_COUNT, CULL_FACE_VARIANTS};
+
+// ============================================================
+//  カリング面バリアント（マテリアル単位のカリング面設定）
+// ============================================================
+
+/// カリング面 3 種（Back / Front / None）ぶんのレンダーパイプライン。
+/// 添字は `CullFace::index()`（0=Back, 1=Front, 2=None）。
+/// 描画側はプリミティブのマテリアルの `CullFace` でこの配列を引く。
+pub type CullPipelineSet = [wgpu::RenderPipeline; CULL_FACE_COUNT];
+
+/// 1 つの TOML から cull_mode だけを差し替えて 3 本のパイプラインを生成する。
+///
+/// TOML を 3 ファイルに増やす代わりに、`RenderPipelineBuilder::with_cull_mode` で
+/// cull_mode のみを上書きしてビルドする（設定の重複を作らないため）。
+/// TOML 側の `cull_mode` 値は本ヘルパー経由の生成では常に無視される。
+///
+/// 返り値の `Vec<BindGroupLayout>` は Back バリアントのビルド結果。3 本は同一 WGSL・同一
+/// レイアウトから作られるため、この BGL で作った BindGroup は 3 本すべてで使える
+/// （wgpu の BGL 等価性に依拠する既存慣例：canvas_id/collider_pick・transparent と同じ）。
+fn build_cull_variants<F>(
+    device:     &wgpu::Device,
+    toml_src:   &str,
+    sf:         wgpu::TextureFormat,
+    df:         wgpu::TextureFormat,
+    cache:      Option<&wgpu::PipelineCache>,
+    label_base: &str,
+    resolve:    F,
+) -> (CullPipelineSet, Vec<wgpu::BindGroupLayout>)
+where
+    F: Fn(&str) -> &'static str + Copy,
+{
+    // Back / Front / None の順にビルドし、BGL は最初（Back）のものだけ保持する。
+    let mut bgls: Option<Vec<wgpu::BindGroupLayout>> = None;
+    let pipelines: CullPipelineSet = std::array::from_fn(|i| {
+        let face  = CULL_FACE_VARIANTS[i];
+        // ラベルは "mesh_pbr_cull_Back" 等（wgpu の検証エラーでバリアントを特定できるように）。
+        let label = format!("{label_base}_cull_{}", face.as_str());
+        let (pipeline, built_bgls) = RenderPipelineBuilder::new(device, toml_src, sf, df)
+            .with_label(&label)
+            .with_cull_mode(face.as_str())
+            .with_cache(cache)
+            .build(resolve);
+        if bgls.is_none() { bgls = Some(built_bgls); }
+        pipeline
+    });
+    // from_fn は 0..CULL_FACE_COUNT を必ず 1 回以上呼ぶため bgls は必ず Some。
+    (pipelines, bgls.expect("build_cull_variants: BGL が生成されていない"))
+}
 
 // ============================================================
 //  シェーダーソースリゾルバ
@@ -41,7 +90,8 @@ pub(crate) fn get_shader_source(name: &str) -> &'static str {
 // ============================================================
 
 pub struct MeshPipeline {
-    pub pipeline:     wgpu::RenderPipeline,
+    /// カリング面 3 種（Back / Front / None）のパイプライン。添字 = `CullFace::index()`。
+    pub pipelines:    CullPipelineSet,
     pub camera_bgl:   wgpu::BindGroupLayout,
     pub model_bgl:    wgpu::BindGroupLayout,
     pub material_bgl: wgpu::BindGroupLayout,
@@ -62,11 +112,9 @@ pub struct MeshPipeline {
 
 impl MeshPipeline {
     fn new(device: &wgpu::Device, sf: wgpu::TextureFormat, df: wgpu::TextureFormat, cache: Option<&wgpu::PipelineCache>) -> Self {
-        let (pipeline, bgls) =
-            RenderPipelineBuilder::new(device, include_str!("pipelines/mesh.toml"), sf, df)
-                .with_label("mesh_pbr")
-                .with_cache(cache)
-                .build(get_shader_source);
+        // カリング面 3 種のバリアントを 1 つの TOML から生成する（マテリアル単位のカリング面）。
+        let (pipelines, bgls) = build_cull_variants(
+            device, include_str!("pipelines/mesh.toml"), sf, df, cache, "mesh_pbr", get_shader_source);
         // group 番号順 (0, 1, 2, 3=gap, 4=lights+shadow) にイテレートして取り出す。
         // fragment の group 4 参照によりレイアウトは 5 グループになり、
         // group 3 はスキンなしメッシュでは空の gap BGL になる。
@@ -85,7 +133,7 @@ impl MeshPipeline {
             entries: &[],
         });
 
-        Self { pipeline, camera_bgl, model_bgl, material_bgl, lights_bgl, empty_bg3 }
+        Self { pipelines, camera_bgl, model_bgl, material_bgl, lights_bgl, empty_bg3 }
     }
 }
 
@@ -94,7 +142,8 @@ impl MeshPipeline {
 // ============================================================
 
 pub struct SkinnedMeshPipeline {
-    pub pipeline:     wgpu::RenderPipeline,
+    /// カリング面 3 種（Back / Front / None）のパイプライン。添字 = `CullFace::index()`。
+    pub pipelines:    CullPipelineSet,
     pub camera_bgl:   wgpu::BindGroupLayout,
     pub model_bgl:    wgpu::BindGroupLayout,
     pub material_bgl: wgpu::BindGroupLayout,
@@ -103,11 +152,10 @@ pub struct SkinnedMeshPipeline {
 
 impl SkinnedMeshPipeline {
     fn new(device: &wgpu::Device, sf: wgpu::TextureFormat, df: wgpu::TextureFormat, cache: Option<&wgpu::PipelineCache>) -> Self {
-        let (pipeline, bgls) =
-            RenderPipelineBuilder::new(device, include_str!("pipelines/skinned_mesh.toml"), sf, df)
-                .with_label("skinned_mesh_pbr")
-                .with_cache(cache)
-                .build(get_shader_source);
+        // カリング面 3 種のバリアントを 1 つの TOML から生成する。
+        let (pipelines, bgls) = build_cull_variants(
+            device, include_str!("pipelines/skinned_mesh.toml"), sf, df, cache,
+            "skinned_mesh_pbr", get_shader_source);
         // group 番号順 (0, 1, 2, 3=joints, 4=lights+shadow) にイテレートして取り出す
         let mut it = bgls.into_iter();
         let camera_bgl   = it.next().unwrap(); // group 0
@@ -115,7 +163,7 @@ impl SkinnedMeshPipeline {
         let material_bgl = it.next().unwrap(); // group 2
         let joint_bgl    = it.next().unwrap(); // group 3
         let _lights_bgl  = it.next().unwrap(); // group 4（LightBuffer は mesh 側 BGL で生成し共用）
-        Self { pipeline, camera_bgl, model_bgl, material_bgl, joint_bgl }
+        Self { pipelines, camera_bgl, model_bgl, material_bgl, joint_bgl }
     }
 }
 
@@ -130,10 +178,10 @@ impl SkinnedMeshPipeline {
 /// フラグメントは LightMeta.rt_shadows で RT/シャドウマップを実行時分岐するため、
 /// このパイプラインは「RT 対応時は常に」使い、設定によるパイプライン差し替えは不要。
 pub struct RtMeshPipelines {
-    /// スタティックメッシュ RT パイプライン。
-    pub mesh:       wgpu::RenderPipeline,
-    /// スキンメッシュ RT パイプライン。
-    pub skinned:    wgpu::RenderPipeline,
+    /// スタティックメッシュ RT パイプライン（カリング面 3 種。添字 = `CullFace::index()`）。
+    pub mesh:       CullPipelineSet,
+    /// スキンメッシュ RT パイプライン（カリング面 3 種。添字 = `CullFace::index()`）。
+    pub skinned:    CullPipelineSet,
     /// group 4 レイアウト（ライト＋シャドウ＋TLAS 複合）。RT 用複合 BindGroup の生成に使う。
     pub lights_bgl: wgpu::BindGroupLayout,
     /// mesh RT パイプラインの group 3（空 gap）用 BindGroup（非スキン描画で必須セット）。
@@ -147,11 +195,9 @@ impl RtMeshPipelines {
     /// EXPERIMENTAL_RAY_QUERY を有効化したデバイスでのみ成功する。
     pub fn new(device: &wgpu::Device, sf: wgpu::TextureFormat, df: wgpu::TextureFormat, cache: Option<&wgpu::PipelineCache>) -> Self {
         // mesh_rt: group 番号順 (0=camera, 1=model, 2=material, 3=gap, 4=lights+shadow+tlas)。
-        let (mesh, bgls_m) =
-            RenderPipelineBuilder::new(device, include_str!("pipelines/mesh_rt.toml"), sf, df)
-                .with_label("mesh_pbr_rt")
-                .with_cache(cache)
-                .build(get_shader_source);
+        // 非 RT 版と同様、カリング面 3 種のバリアントを生成する。
+        let (mesh, bgls_m) = build_cull_variants(
+            device, include_str!("pipelines/mesh_rt.toml"), sf, df, cache, "mesh_pbr_rt", get_shader_source);
         // group 番号順に所有権で取り出す。group 3 = 空 gap、group 4 = ライト＋シャドウ＋TLAS。
         let mut it_m = bgls_m.into_iter();
         let _camera_bgl   = it_m.next().unwrap(); // group 0
@@ -166,11 +212,9 @@ impl RtMeshPipelines {
         });
 
         // skinned_mesh_rt: レイアウトは (0,1,2,3=joints,4=lights+shadow+tlas)。パイプラインのみ使う。
-        let (skinned, _bgls_s) =
-            RenderPipelineBuilder::new(device, include_str!("pipelines/skinned_mesh_rt.toml"), sf, df)
-                .with_label("skinned_mesh_pbr_rt")
-                .with_cache(cache)
-                .build(get_shader_source);
+        let (skinned, _bgls_s) = build_cull_variants(
+            device, include_str!("pipelines/skinned_mesh_rt.toml"), sf, df, cache,
+            "skinned_mesh_pbr_rt", get_shader_source);
 
         Self { mesh, skinned, lights_bgl, empty_bg3 }
     }

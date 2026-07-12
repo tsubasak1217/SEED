@@ -226,7 +226,17 @@ pub struct Material {
     pub alpha_mode:   AlphaMode,
     /// AlphaMode::Mask のときのカットオフ閾値
     pub alpha_cutoff: f32,
+    /// glTF 由来の両面フラグ（データ出所の記録用）。
+    /// 描画で参照されるのは `cull_face` であり、ロード時に本フラグから初期化される
+    /// （`cull_face_from_double_sided`）。
     pub double_sided: bool,
+
+    // ─── カリング面 ───────────────────────────────────────
+    /// このマテリアルを描画するときの背面/前面カリング設定。
+    /// 描画側（model_drawer / transparency）はこの値でパイプラインバリアントを選ぶ。
+    /// 旧データ（本フィールドが無い JSON など）では既定の `Back` になる。
+    #[serde(default)]
+    pub cull_face: CullFace,
 }
 
 impl Default for Material {
@@ -245,6 +255,7 @@ impl Default for Material {
             alpha_mode:                 AlphaMode::Opaque,
             alpha_cutoff:               0.5,
             double_sided:               false,
+            cull_face:                  CullFace::Back,
         }
     }
 }
@@ -257,6 +268,109 @@ pub enum AlphaMode {
     Mask,
     /// アルファブレンド（半透明）
     Blend,
+}
+
+// ============================================================
+//  カリング面（CullFace）
+// ============================================================
+
+/// マテリアル単位のカリング面設定。
+///
+/// レンダーパイプラインの `cull_mode` に 1:1 対応し、メッシュ系パイプラインは
+/// この 3 値ぶんのバリアントとして生成される（`pipeline.rs`）。
+/// 描画時はプリミティブのマテリアルの本値でパイプラインを選択する。
+///
+/// - `Back` : 背面カリング（既定。閉じた不透明形状の標準）。
+/// - `Front`: 前面カリング（内側から見る形状・特殊用途）。
+/// - `None` : カリングなし＝両面描画（glTF `double_sided` 相当。カーテン・葉・板ポリ）。
+///
+/// `Default` は `Back`。`#[serde(default)]` と組み合わせることで、本フィールドを持たない
+/// 旧データ（.mat / シーン JSON）を読んでも従来どおり背面カリングになる。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum CullFace {
+    /// 背面カリング（既定）
+    #[default]
+    Back,
+    /// 前面カリング
+    Front,
+    /// カリングなし（両面描画）
+    None,
+}
+
+/// カリング面の種類数（＝メッシュ系パイプラインのバリアント本数）。
+/// パイプライン配列の長さ・インデックス上限として使う（マジックナンバー回避）。
+pub const CULL_FACE_COUNT: usize = 3;
+
+/// カリング面の全バリアント。**並びは `CullFace::index()` と一致させること**
+/// （パイプライン配列を `std::array::from_fn` で生成する際の走査順に使う）。
+pub const CULL_FACE_VARIANTS: [CullFace; CULL_FACE_COUNT] =
+    [CullFace::Back, CullFace::Front, CullFace::None];
+
+impl CullFace {
+    /// パイプライン配列のインデックス（0..CULL_FACE_COUNT）。
+    /// `pipeline.rs` の `build_cull_variants` が生成する配列の並びと一致させること。
+    pub fn index(self) -> usize {
+        match self {
+            CullFace::Back  => 0,
+            CullFace::Front => 1,
+            CullFace::None  => 2,
+        }
+    }
+
+    /// パイプライン TOML の `cull_mode` 文字列表現（`pipeline_config` が解釈する値）。
+    /// IPC / .mat の文字列表現（小文字化して使う）とも共有する。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CullFace::Back  => "Back",
+            CullFace::Front => "Front",
+            CullFace::None  => "None",
+        }
+    }
+}
+
+/// glTF の `double_sided` フラグからカリング面を決める。
+///
+/// glTF 仕様上 `double_sided == true` は「両面を描画する」を意味するため `None`（カリング無し）、
+/// `false` は背面カリング（`Back`）に対応する。純関数として切り出してあるのは、
+/// glTF ドキュメントを用意せずにこのマッピングを単体テストできるようにするため。
+pub fn cull_face_from_double_sided(double_sided: bool) -> CullFace {
+    if double_sided { CullFace::None } else { CullFace::Back }
+}
+
+#[cfg(test)]
+mod cull_face_tests {
+    use super::*;
+
+    /// glTF の double_sided がカリング面へ正しくマップされること。
+    #[test]
+    fn double_sided_maps_to_cull_none() {
+        assert_eq!(cull_face_from_double_sided(true),  CullFace::None);
+        assert_eq!(cull_face_from_double_sided(false), CullFace::Back);
+    }
+
+    /// Material の既定カリング面は Back（従来挙動と同一）。
+    #[test]
+    fn default_material_culls_back() {
+        assert_eq!(Material::default().cull_face, CullFace::Back);
+        assert_eq!(CullFace::default(), CullFace::Back);
+    }
+
+    /// パイプライン配列インデックスが 0..CULL_FACE_COUNT に収まり、かつ全て相異なること。
+    #[test]
+    fn indices_are_unique_and_in_range() {
+        let idx = [CullFace::Back.index(), CullFace::Front.index(), CullFace::None.index()];
+        for i in idx { assert!(i < CULL_FACE_COUNT); }
+        assert_eq!(idx.iter().collect::<std::collections::HashSet<_>>().len(), CULL_FACE_COUNT);
+    }
+
+    /// CULL_FACE_VARIANTS の並びが index() と一致すること
+    /// （ズレるとパイプライン配列の添字と実際の cull_mode が食い違い、描画が静かに壊れる）。
+    #[test]
+    fn variants_order_matches_index() {
+        for (i, face) in CULL_FACE_VARIANTS.iter().enumerate() {
+            assert_eq!(face.index(), i, "CULL_FACE_VARIANTS の並びが CullFace::index() と不一致");
+        }
+    }
 }
 
 /// テクスチャ参照（Material → TextureData のインデックス）。
