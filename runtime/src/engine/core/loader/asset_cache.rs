@@ -58,7 +58,13 @@ use super::model::{
 /// v6: BC1/BC3 圧縮を ClusterFit（texpresso デフォルト。4K 1 枚 8〜11 分）から
 ///     RangeFit（高速・品質低-中）へ変更。v5 の低速形式で焼かれた途中キャッシュを
 ///     バージョン不一致で自動再生成させるためインクリメント。
-pub const CACHE_FORMAT_VERSION: u32 = 6;
+/// v7: メッシュレット法線コーン軸の符号補正（GPU カリングの誤棄却修正）。
+///     meshopt の代数的外積由来のコーン軸は、RH→LH 変換（Z 反転＝鏡映）済み頂点では
+///     外向き法線と逆を向くため、ロード時に反転するようにした
+///     （`gltf_loader::MESHLET_CONE_AXIS_SIGN`）。
+///     既存キャッシュには誤った（反転前の）コーン軸が焼かれており、
+///     そのままでは修正が効かないため必ず再生成させる。
+pub const CACHE_FORMAT_VERSION: u32 = 7;
 
 /// モデルキャッシュファイルのマジック（8 バイト）。
 const MODEL_MAGIC: &[u8; 8] = b"SEEDMDL\0";

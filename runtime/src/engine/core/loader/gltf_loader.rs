@@ -425,6 +425,36 @@ const MESHLET_MAX_TRIS: usize = 124;
 /// コーン生成の重み（0=クラスタサイズ優先 / 1=コーンカリング効率優先。中庸の 0.5）。
 const MESHLET_CONE_WEIGHT: f32 = 0.5;
 
+/// 法線コーン軸に掛ける符号補正係数（-1 = 反転）。
+///
+/// 【なぜ反転が必要か】
+/// meshopt の `compute_meshlet_bounds` は、三角形の **代数的外積**
+/// `cross(b - a, c - a)`（右手系規約）を面法線としてコーン軸を求める。
+///
+/// 一方、本エンジンは左手座標系（`Mat4x4::look_at_lh` / `perspective_lh`）で、
+/// ラスタライザは `front_face = Ccw` / `cull_mode = Back`（`pipelines/mesh.toml`）。
+/// glTF / OBJ ローダは右手系データを左手系へ変換する際、
+/// **位置・法線の Z 成分だけを反転し、インデックスの巻き順は据え置く**
+/// （スクリーン空間の CCW は `perspective_lh` により保存されるため巻き順反転は不要）。
+///
+/// Z 反転 `M = diag(1, 1, -1)` は行列式が -1 の鏡映変換であり、外積は
+/// `cross(M·u, M·v) = det(M) · M·cross(u, v) = -M·cross(u, v)`
+/// と符号が反転する。つまり **変換後の頂点データにおける代数的外積は、
+/// 変換後の（正しい外向き）頂点法線と必ず逆向き**になる。
+/// 法線自体は M で変換されるだけなので正しい向きを保つ（シェーディングは正常）が、
+/// 外積由来のコーン軸だけが裏返る、というズレが生じる。
+///
+/// この状態で `meshlet_cull.wgsl` の背面コーン棄却
+/// （`dot(center_w - camera_pos, axis_w) >= cutoff·dist + radius_w + margin`）を走らせると、
+/// 「カメラの方を向いている（＝見えている）メッシュレット」が背面と誤判定されて棄却される。
+/// 距離が遠いほど `radius/dist` 項が小さく成立しやすいため、
+/// 「遠景がまだらに消え、近づくと直る」という症状になる。
+///
+/// これは座標変換規約に由来する **常に成立する** 関係なので、条件判定ではなく
+/// 無条件反転で補正する（回帰テスト `meshlet_cone_axis_agrees_with_authored_normals` /
+/// `loader_rh_to_lh_flip_inverts_algebraic_face_normal` で担保）。
+const MESHLET_CONE_AXIS_SIGN: f32 = -1.0;
+
 /// LOD0 のインデックス/頂点から meshopt でメッシュレットを分割し、
 /// 各メッシュレットの境界球・法線コーンを計算して記述子を返す。
 ///
@@ -470,6 +500,18 @@ pub(super) fn build_meshlets_for_primitive(
     for i in 0..ms.len() {
         let raw    = &ms.meshlets[i]; // ffi: vertex_offset / triangle_offset / vertex_count / triangle_count
         let bounds = meshopt::compute_meshlet_bounds(ms.get(i), &adapter);
+
+        // 【コーン軸の符号補正】
+        // meshopt のコーン軸は代数的外積（右手系規約）由来のため、
+        // RH→LH 変換（Z 反転＝鏡映）済みの頂点データでは実際の外向き法線と逆を向く。
+        // エンジンの前面規約（左手系 + FrontFace::Ccw + Back カリング）に合わせて反転する。
+        // 詳細は MESHLET_CONE_AXIS_SIGN のコメントを参照。
+        let cone_axis = [
+            bounds.cone_axis[0] * MESHLET_CONE_AXIS_SIGN,
+            bounds.cone_axis[1] * MESHLET_CONE_AXIS_SIGN,
+            bounds.cone_axis[2] * MESHLET_CONE_AXIS_SIGN,
+        ];
+
         descs.push(MeshletDesc {
             vertex_offset:   raw.vertex_offset,
             triangle_offset: raw.triangle_offset,
@@ -477,7 +519,7 @@ pub(super) fn build_meshlets_for_primitive(
             triangle_count:  raw.triangle_count,
             center:      bounds.center,
             radius:      bounds.radius,
-            cone_axis:   bounds.cone_axis,
+            cone_axis,
             cone_cutoff: bounds.cone_cutoff,
         });
     }
@@ -800,6 +842,207 @@ mod meshlet_tests {
             let al = (d.cone_axis[0].powi(2) + d.cone_axis[1].powi(2) + d.cone_axis[2].powi(2)).sqrt();
             assert!((al - 1.0).abs() < 1e-2 || al == 0.0, "コーン軸が単位ベクトル: len={al}");
         }
+    }
+
+    // --------------------------------------------------------
+    //  コーン軸の符号（GPU メッシュレットカリングの誤棄却対策）
+    // --------------------------------------------------------
+
+    /// テスト用に「glTF 規約（右手系・表面 CCW・法線は外向き）」の UV 球を組み、
+    /// 最小構成の .gltf（バッファは data URI 埋め込み）としてテンポラリに書き出す。
+    ///
+    /// リポジトリ内の実モデル（A.gltf = 40 三角形・1 メッシュレット、BrainStem = スキン）は
+    /// メッシュレットが 1 個以下 or 対象外でコーンカリングの検証に使えないため、
+    /// 検証用ジオメトリをここで生成する。**実際のローダ経路（`super::load`）を通す**ので、
+    /// RH→LH 変換を含めた本番と同じ処理が検証対象になる。
+    ///
+    /// 戻り値: 書き出した .gltf のパス。
+    fn write_test_sphere_gltf(stacks: usize, sectors: usize) -> std::path::PathBuf {
+        use base64::Engine as _;
+
+        // ── 頂点（glTF 空間 = 右手系）─────────────────────────
+        // φ: +Y から下向き（0..π）、θ: XZ 平面の方位角（0..2π）
+        // p = (sinφcosθ, cosφ, sinφsinθ)、外向き法線 = p（単位球なので位置と一致）
+        let mut pos: Vec<[f32; 3]> = Vec::new();
+        for i in 0..=stacks {
+            let phi = std::f32::consts::PI * (i as f32 / stacks as f32);
+            for j in 0..=sectors {
+                let th = std::f32::consts::TAU * (j as f32 / sectors as f32);
+                pos.push([phi.sin() * th.cos(), phi.cos(), phi.sin() * th.sin()]);
+            }
+        }
+        let nrm = pos.clone(); // 単位球: 外向き法線 = 位置
+
+        // ── インデックス（右手系で外側から見て CCW）───────────
+        // 球面の接ベクトルを u=∂p/∂φ, v=∂p/∂θ とすると cross(v, u) = +sinφ·p（＝外向き）。
+        // よって a=(i,j) → b=(i,j+1)（+θ 方向）→ c=(i+1,j)（+φ 方向）の順で
+        // cross(b-a, c-a) が外向き法線と同符号になり、glTF の表面巻き順（CCW）を満たす。
+        let vid = |i: usize, j: usize| (i * (sectors + 1) + j) as u32;
+        let mut idx: Vec<u32> = Vec::new();
+        for i in 0..stacks {
+            for j in 0..sectors {
+                idx.extend_from_slice(&[vid(i, j),     vid(i, j + 1), vid(i + 1, j)]);
+                idx.extend_from_slice(&[vid(i, j + 1), vid(i + 1, j + 1), vid(i + 1, j)]);
+            }
+        }
+
+        // ── バイナリバッファ（POSITION | NORMAL | INDICES）────
+        let mut buf: Vec<u8> = Vec::new();
+        for p in &pos { for c in p { buf.extend_from_slice(&c.to_le_bytes()); } }
+        let n_off = buf.len();
+        for p in &nrm { for c in p { buf.extend_from_slice(&c.to_le_bytes()); } }
+        let i_off = buf.len();
+        for v in &idx { buf.extend_from_slice(&v.to_le_bytes()); }
+
+        let pos_len = n_off;
+        let nrm_len = i_off - n_off;
+        let idx_len = buf.len() - i_off;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&buf);
+
+        // glTF 定数: 5126 = FLOAT, 5125 = UNSIGNED_INT
+        const COMPONENT_TYPE_FLOAT: u32 = 5126;
+        const COMPONENT_TYPE_U32:   u32 = 5125;
+
+        let json = format!(r#"{{
+  "asset": {{ "version": "2.0" }},
+  "scene": 0,
+  "scenes": [ {{ "nodes": [0] }} ],
+  "nodes": [ {{ "mesh": 0 }} ],
+  "meshes": [ {{ "primitives": [ {{ "attributes": {{ "POSITION": 0, "NORMAL": 1 }}, "indices": 2 }} ] }} ],
+  "accessors": [
+    {{ "bufferView": 0, "componentType": {ct_f}, "count": {nv}, "type": "VEC3", "min": [-1.0,-1.0,-1.0], "max": [1.0,1.0,1.0] }},
+    {{ "bufferView": 1, "componentType": {ct_f}, "count": {nv}, "type": "VEC3" }},
+    {{ "bufferView": 2, "componentType": {ct_u}, "count": {ni}, "type": "SCALAR" }}
+  ],
+  "bufferViews": [
+    {{ "buffer": 0, "byteOffset": 0,        "byteLength": {pl} }},
+    {{ "buffer": 0, "byteOffset": {no},     "byteLength": {nl} }},
+    {{ "buffer": 0, "byteOffset": {io},     "byteLength": {il} }}
+  ],
+  "buffers": [ {{ "byteLength": {tl}, "uri": "data:application/octet-stream;base64,{b64}" }} ]
+}}"#,
+            ct_f = COMPONENT_TYPE_FLOAT, ct_u = COMPONENT_TYPE_U32,
+            nv = pos.len(), ni = idx.len(),
+            pl = pos_len, no = n_off, nl = nrm_len, io = i_off, il = idx_len,
+            tl = buf.len(), b64 = b64,
+        );
+
+        // 複数テストが並行実行されるためファイル名は分割数で一意化する。
+        let path = std::env::temp_dir()
+            .join(format!("seed_meshlet_cone_test_sphere_{stacks}x{sectors}.gltf"));
+        std::fs::write(&path, json).expect("テスト用 .gltf の書き出しに成功すること");
+        path
+    }
+
+    /// メッシュレットのコーン軸が「オーサリング済み頂点法線（＝実際に見える面の外向き法線）」
+    /// と同符号であることを保証する回帰テスト。
+    ///
+    /// 背景（このテストが守る不変条件）:
+    /// 本エンジンは左手座標系のため、ローダは glTF（右手系）の位置・法線の Z を反転する。
+    /// これは行列式が負の鏡映変換なので、変換後データの代数的外積 cross(b-a, c-a) は
+    /// 変換後の頂点法線と **逆向き** になる（巻き順は反転していないため）。
+    /// meshopt の `compute_meshlet_bounds` はこの代数的外積からコーン軸を作るので、
+    /// 補正しないとコーン軸が外向き法線の逆を向き、GPU カリングが
+    /// **表を向いたメッシュレットを背面と誤判定して棄却**する（＝見えているのに消える）。
+    /// → `build_meshlets_for_primitive` の符号補正が効いていることをここで担保する。
+    #[test]
+    fn meshlet_cone_axis_agrees_with_authored_normals() {
+        // 40×40 の UV 球（3200 三角形）→ 複数メッシュレットに分割され、
+        // 各メッシュレットの法線が十分揃うので有効な（cutoff < 1）コーンが生成される。
+        const STACKS:  usize = 40;
+        const SECTORS: usize = 40;
+        let path  = write_test_sphere_gltf(STACKS, SECTORS);
+        let model = super::load(&path).expect("テスト用 .gltf のロードに成功すること");
+
+        let mut total     = 0usize; // 判定対象メッシュレット数
+        let mut positive  = 0usize; // dot(cone_axis, 平均法線) > 0 の個数
+        let mut valid_cone= 0usize; // cone_cutoff < 1（＝実際にコーン棄却が発火しうる）個数
+        let mut dot_sum   = 0.0f64;
+        let mut dot_min   = f32::INFINITY;
+        let mut dot_max   = f32::NEG_INFINITY;
+
+        for mesh in &model.meshes {
+            for prim in &mesh.primitives {
+                for d in &prim.meshlets {
+                    // メッシュレット構成頂点の authored 法線を平均して代表法線 B を作る。
+                    let mut acc = [0.0f32; 3];
+                    for lv in 0..d.vertex_count as usize {
+                        let orig = prim.meshlet_vertices[d.vertex_offset as usize + lv] as usize;
+                        let nv   = prim.vertices[orig].normal;
+                        acc[0] += nv[0]; acc[1] += nv[1]; acc[2] += nv[2];
+                    }
+                    let len = (acc[0] * acc[0] + acc[1] * acc[1] + acc[2] * acc[2]).sqrt();
+                    if len < 1e-3 { continue; } // 法線が打ち消し合う場合は判定不能なので除外
+
+                    let b = [acc[0] / len, acc[1] / len, acc[2] / len];
+                    let a = d.cone_axis;
+                    // 軸が退化（0 ベクトル＝コーン無効）なら判定対象外。
+                    if a[0] == 0.0 && a[1] == 0.0 && a[2] == 0.0 { continue; }
+
+                    let dot = a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+                    total   += 1;
+                    dot_sum += dot as f64;
+                    if dot > 0.0 { positive += 1; }
+                    if d.cone_cutoff < 1.0 { valid_cone += 1; }
+                    dot_min = dot_min.min(dot);
+                    dot_max = dot_max.max(dot);
+                }
+            }
+        }
+
+        assert!(total > 0, "有効なコーン軸を持つメッシュレットが 1 つ以上あること");
+        let mean      = dot_sum / total as f64;
+        let pos_ratio = positive as f64 / total as f64;
+        eprintln!(
+            "[cone_axis stats] sphere{STACKS}x{SECTORS} meshlets={total} valid_cone={valid_cone} \
+             mean_dot={mean:.4} positive={positive} ({:.1}%) min={dot_min:.4} max={dot_max:.4}",
+            pos_ratio * 100.0
+        );
+
+        // 符号補正が効いていれば全メッシュレットで内積が正になる（球なので明確に正）。
+        assert_eq!(positive, total, "全メッシュレットでコーン軸が頂点法線と同符号であること");
+        assert!(mean > 0.5, "平均内積が明確に正であること: mean_dot={mean}");
+        assert!(dot_min > 0.0, "最小内積も正であること: min={dot_min}");
+    }
+
+    /// ローダの RH→LH 変換により、**変換後データの代数的外積は頂点法線と逆向きになる**
+    /// ことを直接確認するテスト（上のコーン軸補正が必要な理由そのものを固定する）。
+    ///
+    /// 位置・法線の Z のみを反転する変換は行列式 -1 の鏡映であり、
+    /// 巻き順（インデックス順）は据え置かれる。鏡映 M に対し
+    /// `cross(Mu, Mv) = det(M) · M·cross(u, v) = -M·cross(u, v)` が成り立つため、
+    /// 「変換後の外積」は「変換後の法線」の逆符号になる。
+    #[test]
+    fn loader_rh_to_lh_flip_inverts_algebraic_face_normal() {
+        let path  = write_test_sphere_gltf(8, 8);
+        let model = super::load(&path).expect("テスト用 .gltf のロードに成功すること");
+        let prim  = &model.meshes[0].primitives[0];
+
+        let mut checked = 0usize;
+        for tri in prim.indices.chunks_exact(3) {
+            let (a, b, c) = (
+                prim.vertices[tri[0] as usize].position,
+                prim.vertices[tri[1] as usize].position,
+                prim.vertices[tri[2] as usize].position,
+            );
+            let e1 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+            let e2 = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+            // 代数的外積（右手系規約。meshopt が面法線として使うもの）。
+            let cr = [
+                e1[1] * e2[2] - e1[2] * e2[1],
+                e1[2] * e2[0] - e1[0] * e2[2],
+                e1[0] * e2[1] - e1[1] * e2[0],
+            ];
+            let cl = (cr[0] * cr[0] + cr[1] * cr[1] + cr[2] * cr[2]).sqrt();
+            if cl < 1e-6 { continue; } // 極付近の縮退三角形はスキップ
+
+            // 頂点法線（変換後 = エンジン空間での正しい外向き法線）。
+            let n = prim.vertices[tri[0] as usize].normal;
+            let dot = (cr[0] * n[0] + cr[1] * n[1] + cr[2] * n[2]) / cl;
+            assert!(dot < 0.0, "変換後の代数的外積は頂点法線と逆向きになる: dot={dot}");
+            checked += 1;
+        }
+        assert!(checked > 0, "縮退でない三角形が存在すること");
     }
 
     /// スキンメッシュ・三角形なしは空を返す（従来経路へフォールバック）。
