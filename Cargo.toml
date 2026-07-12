@@ -41,6 +41,10 @@ opt-level = 2
 # 画像デコード（png/jpeg）は初回ロードの支配的コストのため同様に最適化する。
 [profile.dev.package.texpresso]
 opt-level = 2
+# メッシュ簡略化（LOD 生成）とメッシュレット分割（GPU カリング第1弾）。
+# C FFI（meshoptimizer）を含み、-O0 では初回生成が桁違いに遅くなるため最適化する。
+[profile.dev.package.meshopt]
+opt-level = 2
 [profile.dev.package.bincode]
 opt-level = 2
 [profile.dev.package.serde]

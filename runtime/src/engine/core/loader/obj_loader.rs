@@ -194,8 +194,11 @@ fn build_primitive(mesh: &tobj::Mesh) -> Primitive {
     }).collect();
 
     // LOD0 メッシュレット分割（GPU カリング第1弾）。OBJ は常に非スキン。
+    // gltf 同様に所要時間を計測して初回ロード内訳へ出力する。
+    let t_ml = std::time::Instant::now();
     let (meshlets, meshlet_vertices, meshlet_triangles) =
         super::gltf_loader::build_meshlets_for_primitive(&mesh.indices, &vertices, false);
+    super::gen_timing::add_meshlet(t_ml.elapsed());
 
     Primitive {
         vertices,

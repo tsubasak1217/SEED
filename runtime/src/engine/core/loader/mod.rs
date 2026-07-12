@@ -10,6 +10,37 @@ use std::fmt;
 use std::time::Instant;
 
 // ============================================================
+//  生成時間の内訳計測（LOD 簡略化 / メッシュレット分割）
+//
+//  初回ロード（キャッシュミス時）のホットスポットを特定できるよう、
+//  各ローダーが LOD 生成・メッシュレット分割の所要時間を累積し、
+//  `load_model` が [SEED cache] 初回ロード行に内訳として出力する。
+// ============================================================
+pub(crate) mod gen_timing {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// LOD インデックス生成（meshopt simplify）の累積ナノ秒。
+    static LOD_NANOS:     AtomicU64 = AtomicU64::new(0);
+    /// メッシュレット分割＋境界計算（meshopt build/bounds）の累積ナノ秒。
+    static MESHLET_NANOS: AtomicU64 = AtomicU64::new(0);
+
+    /// LOD 生成時間を累積する（各プリミティブのロードから呼ぶ）。
+    pub fn add_lod(d: std::time::Duration) {
+        LOD_NANOS.fetch_add(d.as_nanos() as u64, Ordering::Relaxed);
+    }
+    /// メッシュレット分割時間を累積する（各プリミティブのロードから呼ぶ）。
+    pub fn add_meshlet(d: std::time::Duration) {
+        MESHLET_NANOS.fetch_add(d.as_nanos() as u64, Ordering::Relaxed);
+    }
+    /// 累積値を (lod_ms, meshlet_ms) で取り出してリセットする（モデル 1 体分の内訳）。
+    pub fn take_ms() -> (f64, f64) {
+        let lod = LOD_NANOS.swap(0, Ordering::Relaxed) as f64 / 1.0e6;
+        let ml  = MESHLET_NANOS.swap(0, Ordering::Relaxed) as f64 / 1.0e6;
+        (lod, ml)
+    }
+}
+
+// ============================================================
 //  エラー型
 // ============================================================
 
@@ -79,6 +110,8 @@ pub fn load_model(path: &Path) -> Result<Model, LoadError> {
         ))),
     };
     let parse_ms = t_parse.elapsed().as_secs_f64() * 1000.0;
+    // parse 内で累積された LOD 生成・メッシュレット分割の内訳（このモデル 1 体分）。
+    let (lod_ms, meshlet_ms) = gen_timing::take_ms();
 
     // ── ③ テクスチャをミップ生成 + BC 圧縮して Ready 形式へ変換 ────────
     // （初回のみのコスト。BC7 圧縮は重いため高速プリセットを使用）
@@ -93,8 +126,9 @@ pub fn load_model(path: &Path) -> Result<Model, LoadError> {
     let store_ms = t_store.elapsed().as_secs_f64() * 1000.0;
 
     eprintln!(
-        "[SEED cache] 初回ロード: {} | parse {:.1}ms + tex処理 {:.1}ms ({} KiB, bc={}) + 書出 {:.1}ms",
-        path.display(), parse_ms, tex_ms, src_bytes / 1024, asset_cache::bc_supported(), store_ms,
+        "[SEED cache] 初回ロード: {} | parse {:.1}ms (内 lod={:.1}ms meshlet={:.1}ms) + tex処理 {:.1}ms ({} KiB, bc={}) + 書出 {:.1}ms",
+        path.display(), parse_ms, lod_ms, meshlet_ms, tex_ms, src_bytes / 1024,
+        asset_cache::bc_supported(), store_ms,
     );
 
     Ok(model)

@@ -126,7 +126,12 @@ impl Primitive {
 /// `vertex_offset` / `triangle_offset` は親プリミティブの `meshlet_vertices` /
 /// `meshlet_triangles` 配列へのオフセット。座標・法線はすべてモデルローカル空間で、
 /// GPU カリング compute がインスタンス行列でワールド空間へ変換する。
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+///
+/// `Pod` 派生はキャッシュ v4 で記述子列を生ブロブ領域（bytemuck ゼロコピー）へ
+/// 格納するために必須（数万要素の serde 要素単位シリアライズ/デシリアライズを回避）。
+/// 全フィールドが 4 バイト整列の u32/f32 × 12 ＝ 48 バイト・パディングなし。
+#[derive(Debug, Clone, Copy, Default, bytemuck::Pod, bytemuck::Zeroable, Serialize, Deserialize)]
+#[repr(C)]
 pub struct MeshletDesc {
     /// `meshlet_vertices` 先頭からのオフセット（要素単位）
     pub vertex_offset:   u32,

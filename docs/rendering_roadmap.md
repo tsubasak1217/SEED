@@ -610,10 +610,17 @@ R8 は影アーキテクチャ確定後かつ実験的API理解が必要なた�
 - `gltf_loader::build_meshlets_for_primitive`（OBJ も共用）が **非スキンプリミティブの LOD0** を
   `meshopt::build_meshlets` で分割し、`compute_meshlet_bounds` で境界球＋法線コーンを計算。
   スキン・三角形なし・生成失敗は空（＝従来経路）。
-- `Primitive` に `meshlets: Vec<MeshletDesc>`（記述子＝境界球/コーン/オフセット, bincode メタ）＋
-  `meshlet_vertices: Vec<u32>`／`meshlet_triangles: Vec<u8>`（連結配列, ブロブ）を追加。
-- キャッシュ `CACHE_FORMAT_VERSION` を **2→3** に更新（旧 v2 キャッシュは自動再生成）。連結配列は
-  `asset_cache::visit_blob_slots` のブロブ領域へ、記述子は bincode メタへ。ラウンドトリップ test 更新済み。
+- `Primitive` に `meshlets: Vec<MeshletDesc>`（記述子＝境界球/コーン/オフセット, Pod 48B）＋
+  `meshlet_vertices: Vec<u32>`／`meshlet_triangles: Vec<u8>`（連結配列）を追加。
+- キャッシュ `CACHE_FORMAT_VERSION` を **2→4** に更新（旧キャッシュは自動再生成）。v4 では記述子・連結配列
+  とも `asset_cache::visit_blob_slots` の生ブロブ領域（bytemuck ゼロコピー）へ格納し、bincode メタには
+  メッシュレット関連の大配列を一切残さない（Sponza 級=数万記述子の debug serde コスト回避）。
+  ラウンドトリップ test 更新済み。
+- **生成コスト実測（Intel New Sponza Main, 3.75M tris / 405 prims / 42k meshlets, debug）**:
+  メッシュレット分割＋境界計算＝**約 1.9 秒**（`[profile.dev.package.meshopt] opt-level=2` 追加後。
+  LOD simplify も同時に高速化）。キャッシュ増分は約 21 MiB。初回生成全体（parse 89s + tex 27s +
+  encode 12s ≒ 2 分強）の支配項は既存のテクスチャデコード/圧縮/書出であり、メッシュレットではない。
+  切り分け用に `[SEED cache] 初回ロード` 行へ内訳 `(内 lod=..ms meshlet=..ms)` を追加（`loader::gen_timing`）。
 
 #### カリングパス構成（compute）
 - 新規 `shaders/meshlet_cull.wgsl`＋`pipeline::MeshletCullPipeline`（compute, 単一 BindGroup）。

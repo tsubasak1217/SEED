@@ -355,10 +355,17 @@ fn load_primitive(
         Vec::new()
     };
 
+    // LOD 生成・メッシュレット分割は初回生成コストの主要因候補のため個別に計測する
+    // （[SEED cache] 初回ロード行へ内訳出力）。
+    let t_lod = std::time::Instant::now();
     let lod_indices = generate_lod_indices(&indices, &vertices);
+    super::gen_timing::add_lod(t_lod.elapsed());
+
     // LOD0 メッシュレット分割（GPU カリング第1弾）。スキンメッシュは対象外。
+    let t_ml = std::time::Instant::now();
     let (meshlets, meshlet_vertices, meshlet_triangles) =
         build_meshlets_for_primitive(&indices, &vertices, !skin_vertices.is_empty());
+    super::gen_timing::add_meshlet(t_ml.elapsed());
     Primitive {
         vertices,
         skin_vertices,
@@ -448,6 +455,10 @@ pub(super) fn build_meshlets_for_primitive(
     let mut mt = ms.triangles;
     mv.truncate(used_v);
     mt.truncate(used_t);
+    // truncate は容量を解放しないため、最悪ケース確保分（メッシュレット数×上限）の
+    // 余剰メモリを明示的に返す（多数プリミティブのモデルで保持メモリが膨らむのを防ぐ）。
+    mv.shrink_to_fit();
+    mt.shrink_to_fit();
 
     (descs, mv, mt)
 }
@@ -764,3 +775,5 @@ mod meshlet_tests {
         assert!(build_meshlets_for_primitive(&[], &verts, false).0.is_empty(), "三角形なしは空");
     }
 }
+
+

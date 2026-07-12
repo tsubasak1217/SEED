@@ -27,7 +27,7 @@ use std::time::{Instant, SystemTime};
 use rayon::prelude::*;
 
 use super::model::{
-    CachedTexFormat, Material, Model, SkinVertex, TextureSource, TextureUsage, Vertex,
+    CachedTexFormat, Material, MeshletDesc, Model, SkinVertex, TextureSource, TextureUsage, Vertex,
 };
 
 // ============================================================
@@ -46,7 +46,11 @@ use super::model::{
 /// v3: LOD0 メッシュレット（GPU カリング第1弾）を追加。Primitive に meshlet 記述子
 ///     （bincode メタ）＋ meshlet_vertices(u32 blob) ＋ meshlet_triangles(u8 blob) を格納。
 ///     バージョン更新により旧 v2 キャッシュは自動再生成される。
-pub const CACHE_FORMAT_VERSION: u32 = 3;
+/// v4: メッシュレット記述子（`MeshletDesc`, Pod 48B）も bincode メタから生ブロブ領域へ移動。
+///     Sponza 級（数万記述子）では debug ビルドの serde 要素単位シリアライズが
+///     opt-level 0 のモノモーフ化コードで実行され遅い（キャッシュヒット 115 秒問題と同根）ため。
+///     作りかけ/遅い形式の v3 キャッシュもバージョン不一致で自動再生成される。
+pub const CACHE_FORMAT_VERSION: u32 = 4;
 
 /// モデルキャッシュファイルのマジック（8 バイト）。
 const MODEL_MAGIC: &[u8; 8] = b"SEEDMDL\0";
@@ -176,6 +180,8 @@ enum BlobSlot<'a> {
     Skins(&'a mut Vec<SkinVertex>),
     /// インデックス配列（LOD0 / LOD1..3）
     U32s(&'a mut Vec<u32>),
+    /// メッシュレット記述子配列（v4: Pod 48B、生ブロブとしてゼロコピー格納）
+    Meshlets(&'a mut Vec<MeshletDesc>),
 }
 
 /// Model 内の全ブロブスロットを決定的な順序で訪問する。
@@ -203,10 +209,11 @@ fn visit_blob_slots(model: &mut Model, f: &mut impl FnMut(BlobSlot<'_>)) {
             for lod in prim.lod_indices.iter_mut() {
                 f(BlobSlot::U32s(lod));
             }
-            // メッシュレット（LOD0, v3）。記述子（境界球・コーン・オフセット）は
-            // bincode メタ側に残し、巨大な連結配列のみブロブ化する。
+            // メッシュレット（LOD0, v3/v4）。連結配列＋記述子（Pod）を全てブロブ化し、
+            // bincode メタにはメッシュレット関連の大配列を一切残さない。
             f(BlobSlot::U32s(&mut prim.meshlet_vertices));
             f(BlobSlot::Bytes(&mut prim.meshlet_triangles));
+            f(BlobSlot::Meshlets(&mut prim.meshlets));
         }
     }
 }
@@ -217,6 +224,7 @@ enum OwnedBlob {
     Verts(Vec<Vertex>),
     Skins(Vec<SkinVertex>),
     U32s(Vec<u32>),
+    Meshlets(Vec<MeshletDesc>),
 }
 
 impl OwnedBlob {
@@ -227,6 +235,7 @@ impl OwnedBlob {
             OwnedBlob::Verts(v) => bytemuck::cast_slice(v),
             OwnedBlob::Skins(v) => bytemuck::cast_slice(v),
             OwnedBlob::U32s(v)  => bytemuck::cast_slice(v),
+            OwnedBlob::Meshlets(v) => bytemuck::cast_slice(v),
         }
     }
 }
@@ -240,6 +249,7 @@ fn extract_blobs(model: &mut Model) -> Vec<OwnedBlob> {
             BlobSlot::Verts(v) => OwnedBlob::Verts(std::mem::take(v)),
             BlobSlot::Skins(v) => OwnedBlob::Skins(std::mem::take(v)),
             BlobSlot::U32s(v)  => OwnedBlob::U32s(std::mem::take(v)),
+            BlobSlot::Meshlets(v) => OwnedBlob::Meshlets(std::mem::take(v)),
         };
         blobs.push(blob);
     });
@@ -257,6 +267,7 @@ fn restore_blobs(model: &mut Model, blobs: Vec<OwnedBlob>) {
             (BlobSlot::Verts(v), OwnedBlob::Verts(b)) => *v = b,
             (BlobSlot::Skins(v), OwnedBlob::Skins(b)) => *v = b,
             (BlobSlot::U32s(v),  OwnedBlob::U32s(b))  => *v = b,
+            (BlobSlot::Meshlets(v), OwnedBlob::Meshlets(b)) => *v = b,
             // 型不一致は起こらない想定（同一トラバーサル）。安全側で無視。
             _ => {}
         }
@@ -278,6 +289,7 @@ fn inject_blob_bytes(model: &mut Model, slices: &[&[u8]]) -> bool {
             BlobSlot::Verts(v) => *v = bytemuck::pod_collect_to_vec(bytes),
             BlobSlot::Skins(v) => *v = bytemuck::pod_collect_to_vec(bytes),
             BlobSlot::U32s(v)  => *v = bytemuck::pod_collect_to_vec(bytes),
+            BlobSlot::Meshlets(v) => *v = bytemuck::pod_collect_to_vec(bytes),
         }
     });
     ok && i == slices.len()
@@ -977,3 +989,6 @@ mod tests {
         assert_eq!(usages[0], TextureUsage::NormalMap);
     }
 }
+
+
+
