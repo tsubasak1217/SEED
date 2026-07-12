@@ -312,6 +312,10 @@ impl App {
                         use crate::engine::components::LightComponent;
                         scene.world.remove::<LightComponent>(slot_entity);
                     }
+                    ComponentKind::JointAttach => {
+                        use crate::engine::components::JointAttachComponent;
+                        scene.world.remove::<JointAttachComponent>(slot_entity);
+                    }
                     ComponentKind::ParticleEmitter => {
                         use crate::engine::components::ParticleEmitterComponent;
                         scene.world.remove::<ParticleEmitterComponent>(slot_entity);
@@ -596,6 +600,16 @@ impl App {
                 } else { scene.world.despawn(slot_entity); }
                 true
             }
+            ComponentData::JointAttachComponent(ja_data) => {
+                use crate::engine::components::JointAttachComponent;
+                let slot_entity = scene.world.spawn();
+                scene.world.insert(slot_entity, JointAttachComponent::from_data(ja_data));
+                let mut c = 0u32;
+                if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
+                    actor.add_slot_typed::<JointAttachComponent>(slot_data.name, ComponentKind::JointAttach, slot_entity);
+                } else { scene.world.despawn(slot_entity); }
+                true
+            }
             ComponentData::ParticleEmitterComponent(pe_data) => {
                 use crate::engine::components::ParticleEmitterComponent;
                 let slot_entity = scene.world.spawn();
@@ -811,6 +825,11 @@ impl App {
                     use crate::engine::components::LightComponent;
                     scene.world.insert(slot_entity, LightComponent::from_data(lc_data));
                     new_slots.push(ComponentSlot::new::<LightComponent>(slot_data.name, ComponentKind::Light, slot_entity));
+                }
+                ComponentData::JointAttachComponent(ja_data) => {
+                    use crate::engine::components::JointAttachComponent;
+                    scene.world.insert(slot_entity, JointAttachComponent::from_data(ja_data));
+                    new_slots.push(ComponentSlot::new::<JointAttachComponent>(slot_data.name, ComponentKind::JointAttach, slot_entity));
                 }
                 ComponentData::ParticleEmitterComponent(pe_data) => {
                     use crate::engine::components::ParticleEmitterComponent;

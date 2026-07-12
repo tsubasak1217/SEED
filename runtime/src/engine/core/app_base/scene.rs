@@ -618,6 +618,12 @@ pub fn build_actor(
                 world.insert(slot_entity, LightComponent::from_data(lc_data));
                 actor.add_slot_typed::<LightComponent>(slot_name, ComponentKind::Light, slot_entity);
             }
+            ComponentData::JointAttachComponent(ja_data) => {
+                // ジョイントアタッチ（ソケット）コンポーネントを ECS ワールドに挿入してスロットを登録する
+                use crate::engine::components::JointAttachComponent;
+                world.insert(slot_entity, JointAttachComponent::from_data(ja_data));
+                actor.add_slot_typed::<JointAttachComponent>(slot_name, ComponentKind::JointAttach, slot_entity);
+            }
             ComponentData::ParticleEmitterComponent(pe_data) => {
                 // パーティクルエミッタコンポーネントを ECS ワールドに挿入してスロットを登録する
                 use crate::engine::components::ParticleEmitterComponent;

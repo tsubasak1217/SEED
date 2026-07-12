@@ -570,3 +570,31 @@ Phase R3 のポスト土台（RtPool / post_pass 抽象 / マスク）を応用�
 R1→R2 は依存関係（影はライトの上に）。R3→R4/R5 も依存（ポスト土台の上にブルーム/WBOIT合成）。
 R6/R7 は独立しており、R2とR3の間など任意の位置に差し込み可能（疲労分散・検証待ちの間に実施推奨）。
 R8 は影アーキテクチャ確定後かつ実験的API理解が必要なため最後。
+
+## 付録: JointAttachComponent（ソケット機構）
+
+レンダリング直系のフェーズではないが、モデルアニメ（スキニング）評価結果を利用して
+アクターをボーンへ追従させる機能のため、ここに設計を記録する。
+
+- **目的**: 剣を手のボーンへ持たせる・エフェクトを頭に固定する等の「ソケット」。
+- **コンポーネント**: `ComponentKind::JointAttach`（スロット）。フィールド `joint_name`（空=無効）/
+  `offset_pos` / `offset_rot_deg`（YXZ度）/ `offset_scale`（既定[1,1,1]）。全 `#[serde(default)]` で旧シーン互換。
+- **ターゲットモデル**: 本コンポーネントを持つアクターから**親（祖先）を上方向へ辿り、最初に Model
+  スロットを持つアクター**。`jointattach_ops::collect_attach_jobs` が祖先スタックで解決する。
+- **ジョイント解決（CPU）**: `renderer/animator.rs::compute_node_world_matrices(model, anim_idx, time)`
+  が `sample_joint_matrices` の①〜③（TRS補間→ローカル行列→シーングラフ走査）を切り出した純関数。
+  ノードのワールド行列（モデル空間）を返す（インバースバインドは掛けない＝ノード姿勢そのもの）。
+  `anim_idx` 無効（`usize::MAX`）でバインドポーズ＝静止 t0 相当。
+- **時刻源**: `ModelComponent.anim_drive`（Play 中の Animator 権威時刻）。無ければ静止（バインドポーズ）。
+- **キャッシュ**: `jointattach_ops::update_joint_attachments` が**モデルごと・フレームごとに1回**だけ
+  ノードワールド行列を計算し、同一モデルへの複数アタッチで共有する（キー=Model スロット entity）。
+- **書込**: `モデルアクタのワールド行列 × ジョイントワールド行列(モデル空間) × オフセット行列` を
+  自アクターの `Transform` と Model `instance_mats[0]` へ書き込む（registry の instance_mats 同期と同方針。
+  行列を直接書き込みシアーの丸めを避ける）。呼び出しは `frame_renderer` のアニメ評価後・描画収集前、
+  **Edit / Play 両モード毎フレーム**（パーティクル常時プレビューと同様）。
+- **エラー**: `joint_name` 不一致は (スロット, 名前) 単位で**1回だけ**警告し追従無効。
+- **エディタ**: ACTOR_COMPONENTS の Model 送信に `joints`（skin ジョイント名優先・無ければノード名）を追加。
+  Inspector にジョイントドロップダウン＋オフセット3行、`SET_JOINTATTACH_FIELD` IPC。選択時ギズモは
+  ソケット位置に RGB 軸十字（`jointattach_scene_gizmo`, light_scene_gizmo 流儀）。
+- **検証**: `animator::tests::node_world_matrices_compose_hierarchy_bind_pose`（親子ノードのワールド行列
+  階層合成）pass。cargo build / test・dotnet build 0 エラー。

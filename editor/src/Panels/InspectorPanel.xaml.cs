@@ -448,6 +448,13 @@ public partial class InspectorPanel : UserControl
         float LightSoftRadius = 0.25f,
         // ModelComponent 用フィールド（影を落とすか。シャドウマップレンダリングで使用）
         bool ModelCastShadows = true,
+        // JointAttachComponent 用フィールド（追従先ジョイント名・親モデルのジョイント一覧・
+        // 位置/回転(YXZオイラー角・度)/スケールのオフセット）。
+        // Joints が空/null の場合は「親アクターに Model がありません」の警告を表示する。
+        string JointName = "", string[]? Joints = null,
+        float JaOffPX = 0f, float JaOffPY = 0f, float JaOffPZ = 0f,
+        float JaOffEX = 0f, float JaOffEY = 0f, float JaOffEZ = 0f,
+        float JaOffSX = 1f, float JaOffSY = 1f, float JaOffSZ = 1f,
         // SkyboxComponent 用フィールド（equirectangular テクスチャパス・追従モード・強度・ティント）
         string SkyboxTexturePath = "",
         string SkyboxMode = "camera_locked",
@@ -740,6 +747,24 @@ public partial class InspectorPanel : UserControl
             var lightRectHeight  = comp.TryGetProperty("rect_height",  out var lrh) ? lrh.GetSingle() : 1f;
             var lightSoftRadius  = comp.TryGetProperty("soft_radius",  out var lsr) ? lsr.GetSingle() : 0.25f;
             var lightCastShadows = comp.TryGetProperty("cast_shadows", out var lcs) ? ReadJsonBool(lcs, true) : true;
+            // JointAttachComponent 用: 追従先ジョイント名・親モデルのジョイント名一覧（ドロップダウン選択肢）・
+            // 位置/回転(YXZオイラー角・度)/スケールのオフセット。joints は文字列配列。欠落時は空配列
+            // （＝親アクターに Model が無いことを示す）扱いにする。
+            var jaJointName = comp.TryGetProperty("joint_name", out var jjn) ? jjn.GetString() ?? "" : "";
+            string[] jaJoints;
+            if (comp.TryGetProperty("joints", out var jjs) && jjs.ValueKind == JsonValueKind.Array)
+                jaJoints = jjs.EnumerateArray().Select(e => e.GetString() ?? "").ToArray();
+            else
+                jaJoints = Array.Empty<string>();
+            var jaOffPX = comp.TryGetProperty("offset_px", out var japx) ? japx.GetSingle() : 0f;
+            var jaOffPY = comp.TryGetProperty("offset_py", out var japy) ? japy.GetSingle() : 0f;
+            var jaOffPZ = comp.TryGetProperty("offset_pz", out var japz) ? japz.GetSingle() : 0f;
+            var jaOffEX = comp.TryGetProperty("offset_ex", out var jaex) ? jaex.GetSingle() : 0f;
+            var jaOffEY = comp.TryGetProperty("offset_ey", out var jaey) ? jaey.GetSingle() : 0f;
+            var jaOffEZ = comp.TryGetProperty("offset_ez", out var jaez) ? jaez.GetSingle() : 0f;
+            var jaOffSX = comp.TryGetProperty("offset_sx", out var jasx) ? jasx.GetSingle() : 1f;
+            var jaOffSY = comp.TryGetProperty("offset_sy", out var jasy) ? jasy.GetSingle() : 1f;
+            var jaOffSZ = comp.TryGetProperty("offset_sz", out var jasz) ? jasz.GetSingle() : 1f;
             // SkyboxComponent 用: テクスチャパス（assets:// 仮想パス）・追従モード・強度・ティント（リニア RGB 各成分）
             var skyboxTexturePath = comp.TryGetProperty("texture_path", out var sktp) ? sktp.GetString() ?? "" : "";
             var skyboxMode        = comp.TryGetProperty("mode",         out var skmd) ? skmd.GetString() ?? "camera_locked" : "camera_locked";
@@ -831,6 +856,10 @@ public partial class InspectorPanel : UserControl
                 LightCastShadows: lightCastShadows,
                 LightSoftRadius: lightSoftRadius,
                 ModelCastShadows: modelCastShadows,
+                JointName: jaJointName, Joints: jaJoints,
+                JaOffPX: jaOffPX, JaOffPY: jaOffPY, JaOffPZ: jaOffPZ,
+                JaOffEX: jaOffEX, JaOffEY: jaOffEY, JaOffEZ: jaOffEZ,
+                JaOffSX: jaOffSX, JaOffSY: jaOffSY, JaOffSZ: jaOffSZ,
                 SkyboxTexturePath: skyboxTexturePath, SkyboxMode: skyboxMode,
                 SkyboxIntensity: skyboxIntensity,
                 SkyboxTintR: skyboxTintR, SkyboxTintG: skyboxTintG, SkyboxTintB: skyboxTintB,
@@ -922,6 +951,7 @@ public partial class InspectorPanel : UserControl
         "AudioComponent"      => Color.FromRgb(0x12, 0x2C, 0x34), // 暗青緑（オーディオ）
         "AnimatorComponent"   => Color.FromRgb(0x2C, 0x20, 0x38), // 暗紫（アニメーション）
         "LightComponent"      => Color.FromRgb(0x3A, 0x32, 0x10), // 暗黄橙（ライト）
+        "JointAttachComponent" => Color.FromRgb(0x30, 0x10, 0x2C), // 暗マゼンタ（ジョイントアタッチ。ライトと区別しやすい色）
         "SkyboxComponent"     => Color.FromRgb(0x10, 0x1C, 0x38), // 暗青（スカイボックス）
         "PluginComponent"     => Color.FromRgb(0x34, 0x2C, 0x12), // 暗黄
         _                     => Color.FromRgb(0x2A, 0x2A, 0x2A), // ニュートラル（基本情報）
@@ -941,6 +971,7 @@ public partial class InspectorPanel : UserControl
         "AudioComponent"      => "Audio Source",
         "AnimatorComponent"   => "Animator",
         "LightComponent"      => "Light",
+        "JointAttachComponent" => "JointAttach",
         "SkyboxComponent"     => "Skybox",
         "PluginComponent"     => "Plugin",
         _ when typeId.StartsWith("Plugin:", StringComparison.Ordinal) => typeId["Plugin:".Length..],
@@ -1163,6 +1194,7 @@ public partial class InspectorPanel : UserControl
             "AudioComponent"     => BuildAudioSlotContent(info),
             "AnimatorComponent"  => BuildAnimatorSlotContent(info),
             "LightComponent"     => BuildLightSlotContent(info),
+            "JointAttachComponent" => BuildJointAttachSlotContent(info),
             "SkyboxComponent"    => BuildSkyboxSlotContent(info),
             "ParticleEmitterComponent" => BuildParticleSlotContent(info),
             "PluginComponent"    => BuildPluginSlotContent(info),
@@ -3995,6 +4027,93 @@ public partial class InspectorPanel : UserControl
                 UpdateKindVisibility(kind);
             }
         };
+
+        return sp;
+    }
+
+    /// <summary>
+    /// JointAttachComponent のインスペクター UI を構築して返す。
+    /// 追従先ジョイント（親モデルのボーン）選択ドロップダウンと、位置/回転(YXZオイラー角・度)/
+    /// スケールのオフセット3行を提供する。変更時は SET_JOINTATTACH_FIELD:{actor},{slot},{key},{value}
+    /// を送信する（LightComponent の SET_LIGHT_FIELD と同じ流儀）。
+    /// 親アクターに ModelComponent が無い場合、ランタイムから joints は空配列で送られてくるため、
+    /// その場合はドロップダウンの代わりに警告テキストを表示する。
+    /// </summary>
+    private UIElement BuildJointAttachSlotContent(SlotInfo info)
+    {
+        var sp = new StackPanel { Margin = new Thickness(0, 4, 0, 4) };
+
+        // フィールド変更をランタイムへ送信するローカル関数。
+        void SendField(string key, string value)
+        {
+            if (_currentActorId < 0) return;
+            _runtime?.SendToRuntime($"SET_JOINTATTACH_FIELD:{_currentActorId},{info.SlotIdx},{key},{value}");
+        }
+
+        var joints = info.Joints ?? Array.Empty<string>();
+
+        // ── ジョイント選択ドロップダウン ─────────────────────────
+        if (joints.Length == 0)
+        {
+            // 親アクターに Model が無い（またはジョイント情報が空の）場合の警告表示。
+            sp.Children.Add(new TextBlock
+            {
+                Text = "親アクターに Model がありません",
+                Foreground = new SolidColorBrush(Color.FromRgb(0xCC, 0x88, 0x44)),
+                FontSize = 11, TextWrapping = TextWrapping.Wrap,
+                Margin = new Thickness(0, 4, 0, 4),
+            });
+        }
+        else
+        {
+            var jointRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 4, 0, 2) };
+            jointRow.Children.Add(new TextBlock
+            {
+                Text = "ジョイント", Foreground = new SolidColorBrush(Color.FromRgb(0xAA, 0xAA, 0xAA)),
+                FontSize = 11, Width = 90, VerticalAlignment = VerticalAlignment.Center,
+            });
+            var jointCombo = new ComboBox { Width = 170, FontSize = 11, Margin = new Thickness(4, 0, 0, 0) };
+            foreach (var j in joints)
+                jointCombo.Items.Add(new ComboBoxItem { Content = j, Tag = j });
+            var curJointIdx = Array.FindIndex(joints, j => j == info.JointName);
+            jointCombo.SelectedIndex = curJointIdx >= 0 ? curJointIdx : 0;
+            jointCombo.SelectionChanged += (_, _) =>
+            {
+                if (jointCombo.SelectedItem is ComboBoxItem item && item.Tag is string joint)
+                    SendField("joint_name", joint);
+            };
+            jointRow.Children.Add(jointCombo);
+            sp.Children.Add(jointRow);
+        }
+
+        // ── オフセット3行（位置/回転/スケール）を送信するローカル関数群 ──
+        // XYZ 3成分をまとめて "x,y,z" 形式でコミットする共通処理。
+        void AddOffsetRow(string label, float x, float y, float z, string key)
+        {
+            var row = BuildXYZRowSimple(label, x, y, z);
+            sp.Children.Add(row.element);
+            void Commit()
+            {
+                if (!float.TryParse(row.tx.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var vx)) return;
+                if (!float.TryParse(row.ty.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var vy)) return;
+                if (!float.TryParse(row.tz.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var vz)) return;
+                SendField(key, FormattableString.Invariant($"{vx},{vy},{vz}"));
+            }
+            row.tx.LostFocus += (_, _) => Commit(); row.tx.KeyDown += (_, e) => { if (e.Key is Key.Return or Key.Enter) { Commit(); e.Handled = true; } };
+            row.ty.LostFocus += (_, _) => Commit(); row.ty.KeyDown += (_, e) => { if (e.Key is Key.Return or Key.Enter) { Commit(); e.Handled = true; } };
+            row.tz.LostFocus += (_, _) => Commit(); row.tz.KeyDown += (_, e) => { if (e.Key is Key.Return or Key.Enter) { Commit(); e.Handled = true; } };
+            NumericDragBehavior.SetOnDrag(row.tx, Commit);
+            NumericDragBehavior.SetOnDrag(row.ty, Commit);
+            NumericDragBehavior.SetOnDrag(row.tz, Commit);
+        }
+
+        // 位置オフセット
+        AddOffsetRow("位置オフセット", info.JaOffPX, info.JaOffPY, info.JaOffPZ, "offset_pos");
+        // 回転オフセット（YXZ オイラー角・度）
+        AddOffsetRow("回転オフセット", info.JaOffEX, info.JaOffEY, info.JaOffEZ, "offset_rot");
+        // スケールオフセット（既定 1。負値はスケール反転になり得るため通常は正値を推奨するが、
+        // Light 同様の常識的な範囲として特にクランプはしない＝入力値をそのまま送信する）
+        AddOffsetRow("スケールオフセット", info.JaOffSX, info.JaOffSY, info.JaOffSZ, "offset_scale");
 
         return sp;
     }

@@ -460,6 +460,13 @@ impl App {
             if dbg { eprintln!("[SEED FRAME {dbg_frame}] game logic done"); }
         }
 
+        // ─ 1-7. ジョイントアタッチ（ソケット）追従 ─────────
+        // モデルアニメ評価（update_animations）後・描画インスタンス収集前に、
+        // JointAttach を持つアクターをターゲットモデルのジョイントへ追従させる。
+        // Edit / Play 両モードで毎フレーム走る（パーティクル常時プレビューと同様）。
+        // Edit では anim_drive が無いためモデル静止＝バインドポーズのジョイントへ吸着する。
+        self.update_joint_attachments();
+
         // ── GPU カメラ・インスタンスバッファ更新 ──────
         let window_size = self.window.as_ref().map(|w| w.inner_size());
         // Outdated ハンドラ用: &mut self.renderer を借用するブロック内では
@@ -1279,6 +1286,16 @@ impl App {
                     // 選択中ライトアクターのギズモ（種別ごとの範囲ワイヤ・矢印、3D シーン）。
                     let light_gizmo_batch = if is_3d_scene {
                         super::light_scene_gizmo::build_selected_light_gizmo_batch(
+                            &scene.actors, &scene.world,
+                            self.active_world_line,
+                            self.actor_virtual_selected_idx,
+                            &draw_ctx.device,
+                        )
+                    } else { None };
+
+                    // 選択中ジョイントアタッチアクターのギズモ（ソケット位置の RGB 軸十字、3D シーン）。
+                    let jointattach_gizmo_batch = if is_3d_scene {
+                        super::jointattach_scene_gizmo::build_selected_jointattach_gizmo_batch(
                             &scene.actors, &scene.world,
                             self.active_world_line,
                             self.actor_virtual_selected_idx,
@@ -3314,6 +3331,19 @@ impl App {
                             {
                                 draw_line_batch(
                                     &mut pass, light_gz,
+                                    &camera_buf.bind_group, line_bg,
+                                    &draw_ctx.pipelines,
+                                );
+                            }
+                        }
+
+                        // ジョイントアタッチギズモ（選択中アタッチアクターのみ、3D シーン）
+                        if !scene_canvas_ss {
+                            if let (Some(ja_gz), Some((_, line_bg))) =
+                                (&jointattach_gizmo_batch, &self.line_model_buf)
+                            {
+                                draw_line_batch(
+                                    &mut pass, ja_gz,
                                     &camera_buf.bind_group, line_bg,
                                     &draw_ctx.pipelines,
                                 );

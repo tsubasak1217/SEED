@@ -27,45 +27,10 @@ pub fn sample_joint_matrices(
         return vec![id; MAX_JOINTS];
     }
 
-    let anim = &model.animations[anim_idx];
     let skin = &model.skins[skin_idx];
-    let n_nodes = model.nodes.len();
 
-    // ── ① アニメーション補間後の TRS を収集 ──────────────────
-    let mut node_trs: Vec<Option<Trs>> = (0..n_nodes).map(|_| None).collect();
-    for ch in &anim.channels {
-        let ni = ch.target_node_index;
-        if ni >= n_nodes { continue; }
-        let trs = node_trs[ni].get_or_insert_with(Trs::identity);
-        let s   = &ch.sampler;
-        let t   = time.clamp(
-            s.timestamps.first().copied().unwrap_or(0.0),
-            s.timestamps.last().copied().unwrap_or(0.0),
-        );
-        match &s.outputs {
-            AnimationOutputs::Translations(v) => {
-                trs.translation = sample_vec3(s.interpolation, &s.timestamps, v, t);
-            }
-            AnimationOutputs::Rotations(v) => {
-                trs.rotation = sample_quat(s.interpolation, &s.timestamps, v, t);
-            }
-            AnimationOutputs::Scales(v) => {
-                trs.scale = sample_vec3(s.interpolation, &s.timestamps, v, t);
-            }
-            _ => {}
-        }
-    }
-
-    // ── ② ノードローカル行列 ─────────────────────────────────
-    let local_mats: Vec<[[f32; 4]; 4]> = (0..n_nodes).map(|i| {
-        node_trs[i].as_ref().map(trs_to_matrix).unwrap_or(model.nodes[i].local_matrix)
-    }).collect();
-
-    // ── ③ ワールド行列（シーングラフ走査）──────────────────────
-    let mut world_mats = vec![id; n_nodes];
-    for &root in &model.root_nodes {
-        compute_world(root, &id, &local_mats, &model.nodes, &mut world_mats);
-    }
+    // ── ①〜③ ノードのワールド行列（モデル空間）を計算 ──────────
+    let world_mats = compute_node_world_matrices(model, anim_idx, time);
 
     // ── ④ ジョイント行列 = world[joint.node] * ibm ──────────
     let mut result = vec![id; MAX_JOINTS];
@@ -74,6 +39,68 @@ pub fn sample_joint_matrices(
         result[ji] = mat4_mul(&world_mats[joint.node_index], &joint.inverse_bind_matrix);
     }
     result
+}
+
+/// アニメーション時刻 `time`（秒）で全ノードのワールド行列（モデル空間・行優先）を計算する。
+///
+/// `sample_joint_matrices` の①〜③（TRS 補間→ローカル行列→シーングラフ走査）を切り出した
+/// 純関数。ジョイントアタッチ（ソケット）機構が「ジョイントノードのワールド行列」を得るために
+/// 使う（インバースバインド行列は掛けない＝スキニング行列ではなくノードの姿勢そのもの）。
+///
+/// - `anim_idx` が範囲外（例: `usize::MAX`）または `model.animations` が空の場合は、
+///   アニメーションを適用せずバインドポーズ（各ノードの `local_matrix`）で解決する
+///   （＝「静止＝t0」相当の姿勢）。
+/// - 戻り値: `model.nodes.len()` 個の 4×4 行列（インデックスは `model.nodes` と一致）。
+///
+/// 出力はモデル空間（モデルルートを単位行列とした階層合成）。ワールド空間へ変換するには
+/// 呼び出し側でモデルアクターのワールド行列を左から掛ける。
+pub fn compute_node_world_matrices(
+    model:    &Model,
+    anim_idx: usize,
+    time:     f32,
+) -> Vec<[[f32; 4]; 4]> {
+    let id = identity();
+    let n_nodes = model.nodes.len();
+
+    // ── ① アニメーション補間後の TRS を収集（有効な anim_idx のときのみ）──
+    let mut node_trs: Vec<Option<Trs>> = (0..n_nodes).map(|_| None).collect();
+    if anim_idx < model.animations.len() {
+        let anim = &model.animations[anim_idx];
+        for ch in &anim.channels {
+            let ni = ch.target_node_index;
+            if ni >= n_nodes { continue; }
+            let trs = node_trs[ni].get_or_insert_with(Trs::identity);
+            let s   = &ch.sampler;
+            let t   = time.clamp(
+                s.timestamps.first().copied().unwrap_or(0.0),
+                s.timestamps.last().copied().unwrap_or(0.0),
+            );
+            match &s.outputs {
+                AnimationOutputs::Translations(v) => {
+                    trs.translation = sample_vec3(s.interpolation, &s.timestamps, v, t);
+                }
+                AnimationOutputs::Rotations(v) => {
+                    trs.rotation = sample_quat(s.interpolation, &s.timestamps, v, t);
+                }
+                AnimationOutputs::Scales(v) => {
+                    trs.scale = sample_vec3(s.interpolation, &s.timestamps, v, t);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // ── ② ノードローカル行列（TRS 無し＝バインドポーズの local_matrix）──
+    let local_mats: Vec<[[f32; 4]; 4]> = (0..n_nodes).map(|i| {
+        node_trs[i].as_ref().map(trs_to_matrix).unwrap_or(model.nodes[i].local_matrix)
+    }).collect();
+
+    // ── ③ ワールド行列（シーングラフ走査。ルートは単位行列）──
+    let mut world_mats = vec![id; n_nodes];
+    for &root in &model.root_nodes {
+        compute_world(root, &id, &local_mats, &model.nodes, &mut world_mats);
+    }
+    world_mats
 }
 
 fn compute_world(
@@ -236,4 +263,72 @@ pub fn mat4_mul(a: &[[f32; 4]; 4], b: &[[f32; 4]; 4]) -> [[f32; 4]; 4] {
         }
     }
     out
+}
+
+// ============================================================
+//  テスト
+// ============================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::core::loader::model::{Model, ModelNode};
+
+    /// 平行移動のみの行優先行列を作る（[row][3] に平行移動）。
+    fn translate_mat(t: [f32; 3]) -> [[f32; 4]; 4] {
+        let mut m = identity();
+        m[0][3] = t[0];
+        m[1][3] = t[1];
+        m[2][3] = t[2];
+        m
+    }
+
+    /// 平行移動のみのノードを作る。
+    fn node(name: &str, t: [f32; 3], children: Vec<usize>) -> ModelNode {
+        ModelNode {
+            name:         name.to_string(),
+            local_matrix: translate_mat(t),
+            translation:  t,
+            rotation:     [0.0, 0.0, 0.0, 1.0],
+            scale:        [1.0, 1.0, 1.0],
+            mesh_index:   None,
+            skin_index:   None,
+            children,
+            parent:       None,
+        }
+    }
+
+    /// アニメ無し（バインドポーズ）で親子ノードのワールド行列が階層合成されることを検証する。
+    ///
+    /// 親を (1,0,0)、子を親相対 (0,2,0) に置くと、子のワールド平行移動は (1,2,0) になる。
+    /// ジョイントアタッチはこの「ノードのワールド行列」を用いてソケット位置を決めるため、
+    /// 階層合成が正しいことが追従の前提となる。
+    #[test]
+    fn node_world_matrices_compose_hierarchy_bind_pose() {
+        let model = Model {
+            name:       "t".into(),
+            nodes:      vec![
+                node("root",  [1.0, 0.0, 0.0], vec![1]),
+                node("child", [0.0, 2.0, 0.0], vec![]),
+            ],
+            root_nodes: vec![0],
+            meshes:     vec![],
+            materials:  vec![],
+            textures:   vec![],
+            animations: vec![],
+            skins:      vec![],
+        };
+
+        // anim_idx を無効値にするとアニメ非適用（バインドポーズ＝各ノードの local_matrix）で解決される。
+        let world = compute_node_world_matrices(&model, usize::MAX, 0.0);
+        assert_eq!(world.len(), 2);
+
+        // 親のワールド平行移動 = (1,0,0)
+        assert!((world[0][0][3] - 1.0).abs() < 1e-5);
+        assert!((world[0][1][3] - 0.0).abs() < 1e-5);
+        // 子のワールド平行移動 = 親 (1,0,0) + 子相対 (0,2,0) = (1,2,0)
+        assert!((world[1][0][3] - 1.0).abs() < 1e-5, "child x = {}", world[1][0][3]);
+        assert!((world[1][1][3] - 2.0).abs() < 1e-5, "child y = {}", world[1][1][3]);
+        assert!((world[1][2][3] - 0.0).abs() < 1e-5);
+    }
 }

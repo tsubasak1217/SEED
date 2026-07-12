@@ -59,6 +59,7 @@ public partial class ComponentSelectorWindow : Window
         ("ライト", new()
         {
             new("LightComponent", "Light", "光源（directional / point / spot / rect）をアクターにアタッチ。向き・位置は Transform から", ActorTarget.Actor3D),
+            new("JointAttachComponent", "ジョイントアタッチ", "モデルのジョイント（ボーン）へ追従するソケット", ActorTarget.Actor3D),
         }),
         ("エフェクト", new()
         {

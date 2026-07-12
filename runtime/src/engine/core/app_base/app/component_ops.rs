@@ -279,9 +279,17 @@ impl App {
                     // 各スロットの現在の実効値（オーバーライド適用後、無ければ glTF 埋込値）を送る。
                     let materials_json = build_materials_json(mc_opt);
 
+                    // ジョイント（ボーン）名一覧を添付する（JointAttachComponent のソケット用）。
+                    // skin ジョイント名を優先し、skin が無ければ全ノード名を送る（animations 一覧と同流儀）。
+                    let joints: Vec<String> = mc_opt
+                        .and_then(|mc| mc.model.as_ref())
+                        .map(|m| super::jointattach_ops::model_joint_names(m))
+                        .unwrap_or_default();
+                    let joints_json = serde_json::to_string(&joints).unwrap_or_else(|_| "[]".to_string());
+
                     // 影を落とすかをインスペクター用に送信する（LightComponent.cast_shadows と同一慣例）
                     ("ModelComponent", format!(
-                        r#","model_path":{path_json},"animations":{anims_json},"materials":{materials_json},"cast_shadows":{}"#,
+                        r#","model_path":{path_json},"animations":{anims_json},"materials":{materials_json},"joints":{joints_json},"cast_shadows":{}"#,
                         d.cast_shadows as u8,
                     ))
                 }
@@ -390,6 +398,21 @@ impl App {
                         d.rect_width, d.rect_height,
                         d.soft_radius,
                         d.cast_shadows as u8,
+                    ))
+                }
+                ComponentData::JointAttachComponent(d) => {
+                    // ジョイントアタッチ: ジョイント名・位置/回転/スケールオフセットに加え、
+                    // ターゲットモデル（祖先アクターの最初の Model スロット）のジョイント名一覧を
+                    // 添付する（インスペクタのドロップダウン用。モデル無しは空配列）。
+                    let joint_json  = serde_json::to_string(&d.joint_name).unwrap_or_default();
+                    let joints      = super::jointattach_ops::collect_target_model_joints(
+                        &scene.actors, &scene.world, wl, dfs_id);
+                    let joints_json = serde_json::to_string(&joints).unwrap_or_else(|_| "[]".to_string());
+                    ("JointAttachComponent", format!(
+                        r#","joint_name":{joint_json},"joints":{joints_json},"offset_px":{:.4},"offset_py":{:.4},"offset_pz":{:.4},"offset_ex":{:.4},"offset_ey":{:.4},"offset_ez":{:.4},"offset_sx":{:.4},"offset_sy":{:.4},"offset_sz":{:.4}"#,
+                        d.offset_pos[0], d.offset_pos[1], d.offset_pos[2],
+                        d.offset_rot_deg[0], d.offset_rot_deg[1], d.offset_rot_deg[2],
+                        d.offset_scale[0], d.offset_scale[1], d.offset_scale[2],
                     ))
                 }
                 ComponentData::ParticleEmitterComponent(d) => {
@@ -808,6 +831,36 @@ impl App {
                     let mut c = 0u32;
                     if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
                         actor.add_slot_typed::<LightComponent>(name, ComponentKind::Light, slot_entity);
+                        true
+                    } else {
+                        scene.world.despawn(slot_entity);
+                        false
+                    }
+                };
+                if found {
+                    let after_slots = self.snapshot_actor_slots(wl, actor_dfs_id);
+                    self.undo_history.record(Box::new(ComponentSlotsSnapshotCommand {
+                        world_line: wl, actor_dfs_id, before_slots, after_slots,
+                    }));
+                    self.actor_virtual_selected_slot_idx = 0;
+                    self.selected_instances.clear();
+                    self.send_hierarchy();
+                    self.send_actor_components(actor_dfs_id, self.actor_virtual_selected_slot_idx);
+                    if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+                }
+            }
+            "JointAttachComponent" => {
+                // デフォルト（joint_name 空＝無効・オフセットなし）の JointAttachComponent を追加する。
+                // ジョイント名・オフセットはインスペクターまたはシーンファイルから設定する。
+                use crate::engine::components::JointAttachComponent;
+                let name = slot_name.to_string();
+                let found = {
+                    let scene = self.scene.as_mut().unwrap();
+                    let slot_entity = scene.world.spawn();
+                    scene.world.insert(slot_entity, JointAttachComponent::default());
+                    let mut c = 0u32;
+                    if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
+                        actor.add_slot_typed::<JointAttachComponent>(name, ComponentKind::JointAttach, slot_entity);
                         true
                     } else {
                         scene.world.despawn(slot_entity);

@@ -23,6 +23,7 @@ pub mod rigidbody_component;
 pub mod audio_component;
 pub mod animator_component;
 pub mod light_component;
+pub mod jointattach_component;
 pub mod skybox_component;
 pub mod particle_emitter_component;
 /// マテリアルオーバーライド（Phase R7: .mat マテリアル＋マルチマテリアル編集）
@@ -52,6 +53,7 @@ pub use rigidbody_component::RigidbodyComponentData;
 pub use audio_component::{AudioComponent, AudioComponentData};
 pub use animator_component::{AnimatorComponent, AnimatorComponentData, AnimClipRef, AnimClipKind, AnimClipLoop};
 pub use light_component::{LightComponent, LightComponentData, LightKind};
+pub use jointattach_component::{JointAttachComponent, JointAttachComponentData};
 pub use skybox_component::{SkyboxComponent, SkyboxComponentData, SkyboxMode};
 pub use particle_emitter_component::{
     ParticleEmitterComponent, ParticleEmitterComponentData,
@@ -98,6 +100,8 @@ pub enum ComponentKind {
     Animator,
     /// ライト（光源：directional / point / spot / rect）
     Light,
+    /// ジョイントアタッチ（別モデルのジョイントへ追従するソケット機構）
+    JointAttach,
     /// パーティクルエミッタ（GPU パーティクルの放出源）
     ParticleEmitter,
     /// スカイボックス（天球：equirectangular 背景・CameraLocked / WorldAnchored）
@@ -121,6 +125,7 @@ impl ComponentKind {
             Self::Audio       => "AudioComponent",
             Self::Animator    => "AnimatorComponent",
             Self::Light       => "LightComponent",
+            Self::JointAttach => "JointAttachComponent",
             Self::ParticleEmitter => "ParticleEmitterComponent",
             Self::Skybox      => "SkyboxComponent",
         }
@@ -155,6 +160,8 @@ pub enum ComponentData {
     AnimatorComponent(AnimatorComponentData),
     /// ライト（光源：directional / point / spot / rect）
     LightComponent(LightComponentData),
+    /// ジョイントアタッチ（別モデルのジョイントへ追従するソケット機構）
+    JointAttachComponent(JointAttachComponentData),
     /// パーティクルエミッタ（GPU パーティクルの放出源）
     ParticleEmitterComponent(ParticleEmitterComponentData),
     /// スカイボックス（天球：equirectangular 背景）

@@ -49,6 +49,8 @@ pub(crate) mod light_ops;
 pub(crate) mod skybox_ops;
 pub(crate) mod particle_ops;
 pub(crate) mod light_scene_gizmo;
+pub(crate) mod jointattach_ops;
+pub(crate) mod jointattach_scene_gizmo;
 pub(crate) mod skybox_scene_gizmo;
 pub(crate) mod particle_scene_gizmo;
 mod prefab_ops;
@@ -813,6 +815,12 @@ pub struct App {
     /// ANIM_PREVIEW_STOP 受信時にここから取り出して書き戻し、プレビュー中に
     /// 触れたプロパティを元の状態へ完全復元する。
     pub(super) anim_preview_saved: HashMap<u32, Vec<(String, crate::engine::animation::PropBinding, crate::engine::animation::AnimValue)>>,
+
+    // ── ジョイントアタッチ（ソケット）───────────────────────────────
+    /// JointAttachComponent のジョイント名解決失敗を「1 回だけ」警告するための既出集合。
+    /// キー = (JointAttach スロットの entity, 解決できなかった joint_name)。毎フレーム走査で
+    /// 同じ警告を繰り返さないために使う（jointattach_ops::update_joint_attachments が更新）。
+    pub(super) joint_attach_warned: std::collections::HashSet<(crate::engine::ecs::Entity, String)>,
 }
 
 /// プロジェクト設定が読めない場合のウィンドウ解像度既定値（Full HD）。
@@ -981,6 +989,7 @@ impl App {
             project_resolution: DEFAULT_PROJECT_RESOLUTION,
             anim_preview_cache: HashMap::new(),
             anim_preview_saved: HashMap::new(),
+            joint_attach_warned: std::collections::HashSet::new(),
         }
     }
 
