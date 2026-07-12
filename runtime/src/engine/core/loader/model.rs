@@ -332,6 +332,13 @@ pub enum TextureSource {
         /// ミップレベルごとのバイト列（BC ブロック連結、または RGBA8 行連結）
         mips:   Vec<Vec<u8>>,
     },
+    /// 未デコードの圧縮画像バイト列（PNG/JPG 等。GLB 埋め込み・data URI 由来）。
+    ///
+    /// 【遅延デコード】glTF ロード時に全画像を RGBA 展開するとピークメモリが
+    /// 数 GB に達するため（Sponza 級で約 4.6GB）、パース段階ではエンコード済み
+    /// バイトのまま保持し、`asset_cache::process_model_textures` が
+    /// ストリーミング（1 枚ずつデコード → ミップ → BC 圧縮 → 即 drop）で処理する。
+    EncodedBytes { bytes: Vec<u8> },
 }
 
 /// 派生キャッシュに格納する GPU テクスチャフォーマット。

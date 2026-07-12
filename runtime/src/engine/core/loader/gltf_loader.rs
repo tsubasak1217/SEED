@@ -10,24 +10,42 @@ use super::LoadError;
 pub fn load(path: &Path) -> Result<Model, LoadError> {
     let path_str = path.to_str().unwrap_or("");
 
+    // 【画像の遅延デコード】
+    // `gltf::import` は全画像を一括で RGBA 展開するため、Sponza 級のモデルでは
+    // 数 GB のピークメモリが発生する（エディタ同居環境ではスワップの原因になる）。
+    // ここでは document とジオメトリバッファのみをロードし、画像は
+    // 「エンコード済みバイト（GLB 埋め込み/data URI）」または「外部ファイルパス」の
+    // まま保持する。実デコードは asset_cache::process_model_textures が
+    // 1 枚ずつストリーミング（デコード → ミップ → BC 圧縮 → 即 drop）で行う。
+    //
     // assets:// 仮想パスの場合は PAK から読み込む（GLB 推奨: 自己完結形式）。
     // 通常の絶対パスはファイルシステムから直接読む。
-    let (document, buffers, images) = if path_str.starts_with(crate::engine::asset_fs::ASSETS_SCHEME) {
-        let bytes = crate::engine::asset_fs::read_bytes(path_str)
-            .map_err(|e| LoadError::Io(format!("PAK read failed for {path_str}: {e}")))?;
-        gltf::import_slice(&bytes)
-            .map_err(|e| LoadError::Parse(e.to_string()))?
-    } else {
-        gltf::import(path)
-            .map_err(|e| LoadError::Parse(e.to_string()))?
-    };
+    let (document, buffers, base_dir, virtual_base) =
+        if path_str.starts_with(crate::engine::asset_fs::ASSETS_SCHEME) {
+            let bytes = crate::engine::asset_fs::read_bytes(path_str)
+                .map_err(|e| LoadError::Io(format!("PAK read failed for {path_str}: {e}")))?;
+            let g = gltf::Gltf::from_slice(&bytes)
+                .map_err(|e| LoadError::Parse(e.to_string()))?;
+            let buffers = gltf::import_buffers(&g.document, None, g.blob)
+                .map_err(|e| LoadError::Parse(e.to_string()))?;
+            // 仮想ベースディレクトリ: "assets://dir/file.gltf" → "assets://dir"
+            let vbase = path_str.rsplit_once('/').map(|(b, _)| b.to_string());
+            (g.document, buffers, None, vbase)
+        } else {
+            let g = gltf::Gltf::open(path)
+                .map_err(|e| LoadError::Parse(e.to_string()))?;
+            let base = path.parent().map(|p| p.to_path_buf());
+            let buffers = gltf::import_buffers(&g.document, base.as_deref(), g.blob)
+                .map_err(|e| LoadError::Parse(e.to_string()))?;
+            (g.document, buffers, base, None)
+        };
 
     let name = path.file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("unnamed")
         .to_string();
 
-    let textures   = load_textures(&document, &images);
+    let textures   = load_textures(&document, &buffers, base_dir.as_deref(), virtual_base.as_deref());
     let materials  = load_materials(&document);
     let meshes     = load_meshes(&document, &buffers);
     let animations = load_animations(&document, &buffers);
@@ -42,8 +60,10 @@ pub fn load(path: &Path) -> Result<Model, LoadError> {
 // ============================================================
 
 fn load_textures(
-    document: &gltf::Document,
-    images: &[gltf::image::Data],
+    document:     &gltf::Document,
+    buffers:      &[gltf::buffer::Data],
+    base_dir:     Option<&Path>,
+    virtual_base: Option<&str>,
 ) -> Vec<TextureData> {
     // ── 線形テクスチャインデックスの事前収集 ──────────────────────
     // glTF spec:
@@ -71,8 +91,9 @@ fn load_textures(
         .collect();
 
     document.textures().map(|tex| {
-        let img     = &images[tex.source().index()];
-        let pixels  = normalize_to_rgba8(&img.pixels, img.format, img.width, img.height);
+        // 画像はデコードせず、供給元（バッファビュー/外部ファイル/data URI）を
+        // そのまま TextureSource に写し取る（遅延デコード）。
+        let source  = image_texture_source(&tex.source().source(), buffers, base_dir, virtual_base);
         let sampler = tex.sampler();
 
         // 用途に応じてフォーマットを切り替える
@@ -82,11 +103,7 @@ fn load_textures(
 
         TextureData {
             name:   tex.name().map(String::from),
-            source: TextureSource::Embedded {
-                width:  img.width,
-                height: img.height,
-                pixels,
-            },
+            source,
             linear,
             sampler: SamplerData {
                 mag_filter: sampler.mag_filter()
@@ -102,46 +119,65 @@ fn load_textures(
     }).collect()
 }
 
-/// glTF の様々なピクセル形式を RGBA8 に正規化する。
-fn normalize_to_rgba8(
-    src: &[u8],
-    format: gltf::image::Format,
-    _width: u32,
-    _height: u32,
-) -> Vec<u8> {
-    use gltf::image::Format::*;
-    match format {
-        R8G8B8A8 => src.to_vec(),
-        R8G8B8   => src.chunks_exact(3)
-            .flat_map(|c| [c[0], c[1], c[2], 255])
-            .collect(),
-        R8G8     => src.chunks_exact(2)
-            .flat_map(|c| [c[0], c[1], 0, 255])
-            .collect(),
-        R8       => src.iter()
-            .flat_map(|&r| [r, r, r, 255])
-            .collect(),
-        R16G16B16A16 => src.chunks_exact(8)
-            .flat_map(|c| {
-                let rgba = [
-                    u16::from_le_bytes([c[0], c[1]]),
-                    u16::from_le_bytes([c[2], c[3]]),
-                    u16::from_le_bytes([c[4], c[5]]),
-                    u16::from_le_bytes([c[6], c[7]]),
-                ];
-                rgba.map(|v| (v >> 8) as u8)
-            })
-            .collect(),
-        R16G16B16 => src.chunks_exact(6)
-            .flat_map(|c| {
-                let r = (u16::from_le_bytes([c[0], c[1]]) >> 8) as u8;
-                let g = (u16::from_le_bytes([c[2], c[3]]) >> 8) as u8;
-                let b = (u16::from_le_bytes([c[4], c[5]]) >> 8) as u8;
-                [r, g, b, 255]
-            })
-            .collect(),
-        // その他の形式はそのまま返す（GPU 側で処理）
-        _ => src.to_vec(),
+/// glTF 画像の供給元を（デコードせずに）`TextureSource` へ変換する。
+///
+/// - バッファビュー（GLB 埋め込み等）→ エンコード済みバイトをコピー（PNG/JPG のまま。小さい）
+/// - data URI → base64/パーセントデコードしてエンコード済みバイトに
+/// - 外部 URI → ファイルパスとして保持（実読み込みはテクスチャ処理時）
+///
+/// RGBA 展開はここでは一切行わないため、パース段階のピークメモリは
+/// 「圧縮画像バイトの合計」（RGBA 展開の 1/10 前後）に抑えられる。
+fn image_texture_source(
+    source:       &gltf::image::Source<'_>,
+    buffers:      &[gltf::buffer::Data],
+    base_dir:     Option<&Path>,
+    virtual_base: Option<&str>,
+) -> TextureSource {
+    match source {
+        // GLB 埋め込み: バッファビューの範囲をコピー（エンコード済みのまま）
+        gltf::image::Source::View { view, .. } => {
+            let start = view.offset();
+            let end   = start + view.length();
+            let bytes = buffers
+                .get(view.buffer().index())
+                .and_then(|b| b.get(start..end))
+                .map(|s| s.to_vec())
+                .unwrap_or_default();
+            TextureSource::EncodedBytes { bytes }
+        }
+        gltf::image::Source::Uri { uri, .. } => {
+            // data URI（インライン画像）
+            if let Some(bytes) = decode_data_uri(uri) {
+                return TextureSource::EncodedBytes { bytes };
+            }
+            // 外部ファイル: パーセントエンコーディング（%20 等）を解除して解決
+            let decoded = urlencoding::decode(uri)
+                .map(|c| c.into_owned())
+                .unwrap_or_else(|_| uri.to_string());
+            if let Some(base) = base_dir {
+                TextureSource::FilePath(base.join(&decoded))
+            } else if let Some(vbase) = virtual_base {
+                // PAK モード: 仮想パス "assets://dir/tex.png" として保持
+                //（asset_fs::read_bytes が PAK/FS の双方を解決する）
+                TextureSource::FilePath(std::path::PathBuf::from(format!("{vbase}/{decoded}")))
+            } else {
+                TextureSource::FilePath(std::path::PathBuf::from(decoded))
+            }
+        }
+    }
+}
+
+/// data URI（`data:<mime>[;base64],<payload>`）をバイト列にデコードする。
+/// data URI でない・デコード失敗の場合は None。
+fn decode_data_uri(uri: &str) -> Option<Vec<u8>> {
+    let rest = uri.strip_prefix("data:")?;
+    let (head, payload) = rest.split_once(',')?;
+    if head.ends_with(";base64") {
+        use base64::Engine as _;
+        base64::engine::general_purpose::STANDARD.decode(payload).ok()
+    } else {
+        // 非 base64 data URI（パーセントエンコードされた生バイト）
+        Some(urlencoding::decode_binary(payload.as_bytes()).into_owned())
     }
 }
 
@@ -777,3 +813,29 @@ mod meshlet_tests {
 }
 
 
+
+// ============================================================
+//  ユニットテスト
+// ============================================================
+
+#[cfg(test)]
+mod tests {
+    use super::decode_data_uri;
+
+    /// data URI のデコード: base64 / パーセントエンコード / 非 data URI。
+    #[test]
+    fn data_uri_decode_variants() {
+        // base64 形式（"ABC" の base64 は "QUJD"）
+        assert_eq!(
+            decode_data_uri("data:image/png;base64,QUJD"),
+            Some(b"ABC".to_vec()),
+        );
+        // 非 base64（パーセントエンコードされた生データ）
+        assert_eq!(
+            decode_data_uri("data:text/plain,A%20B"),
+            Some(b"A B".to_vec()),
+        );
+        // data URI でない通常の URI は None（外部ファイル扱い）
+        assert_eq!(decode_data_uri("textures/wall.png"), None);
+    }
+}

@@ -155,6 +155,24 @@ pub fn upload_texture_data(
             upload_ready(device, queue, *format, *width, *height, mips, &tex.sampler,
                          tex.name.as_deref())
         }
+        // 遅延デコード画像がキャッシュ処理を経ずに残った場合のフォールバック。
+        // （通常は process_model_textures が Ready 化するため到達しない）
+        TextureSource::EncodedBytes { bytes } => {
+            match image::load_from_memory(bytes) {
+                Ok(img) => {
+                    let rgba = img.to_rgba8();
+                    let (w, h) = rgba.dimensions();
+                    upload_rgba8(device, queue, w, h, &rgba, linear, &tex.sampler,
+                                 tex.name.as_deref())
+                }
+                Err(e) => {
+                    eprintln!("[SEED cache] 埋め込み画像のデコード失敗（マゼンタで代替）: err={e}");
+                    // 1×1 マゼンタ（エラー可視化用）
+                    upload_rgba8(device, queue, 1, 1, &[255, 0, 255, 255], linear,
+                                 &tex.sampler, tex.name.as_deref())
+                }
+            }
+        }
     }
 }
 

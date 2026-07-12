@@ -50,7 +50,12 @@ use super::model::{
 ///     Sponza 級（数万記述子）では debug ビルドの serde 要素単位シリアライズが
 ///     opt-level 0 のモノモーフ化コードで実行され遅い（キャッシュヒット 115 秒問題と同根）ため。
 ///     作りかけ/遅い形式の v3 キャッシュもバージョン不一致で自動再生成される。
-pub const CACHE_FORMAT_VERSION: u32 = 4;
+/// v5: テクスチャ処理のストリーミング化（ピークメモリ削減）。
+///     glTF 画像を遅延デコード（`TextureSource::EncodedBytes` 追加）にし、
+///     1 枚ずつ「デコード → ミップ → BC 圧縮 → 即 drop」の有界並列で処理。
+///     外部ファイル参照（FilePath）テクスチャもキャッシュに含まれるようになった。
+///     ファイル書き出しも全体バッファを作らず逐次 write に変更。
+pub const CACHE_FORMAT_VERSION: u32 = 5;
 
 /// モデルキャッシュファイルのマジック（8 バイト）。
 const MODEL_MAGIC: &[u8; 8] = b"SEEDMDL\0";
@@ -198,6 +203,9 @@ fn visit_blob_slots(model: &mut Model, f: &mut impl FnMut(BlobSlot<'_>)) {
                 }
             }
             TextureSource::Embedded { pixels, .. } => f(BlobSlot::Bytes(pixels)),
+            // 未デコード画像（通常はテクスチャ処理で Ready 化されるが、
+            // デコード失敗時などに残った場合もブロブとして格納する）
+            TextureSource::EncodedBytes { bytes } => f(BlobSlot::Bytes(bytes)),
             TextureSource::FilePath(_) => {}
         }
     }
@@ -306,40 +314,67 @@ fn inject_blob_bytes(model: &mut Model, slices: &[&[u8]]) -> bool {
 //    blobs                    … 生バイト列の連結
 // ============================================================
 
-/// Model をキャッシュファイルのバイト列（ヘッダ込み）へエンコードする。
+/// キャッシュコンテナ全体（ヘッダ + メタ + ブロブテーブル + ブロブ）を
+/// 任意のライターへ逐次書き出す。
 ///
-/// ブロブ取り出しのため `&mut` を取るが、書き出し後に必ず復元するので
-/// 呼び出し後の Model は元と同じ内容である。失敗時は None（警告のみ）。
-fn encode_model_cache(model: &mut Model, stamp: (u64, u32, u64), bc_used: bool) -> Option<Vec<u8>> {
+/// 【ストリーミング書き出し】
+/// 旧実装はファイル全体（Sponza 級で GB 単位）を 1 本の `Vec<u8>` に構築してから
+/// 書いていたため、Model 本体と合わせてピークメモリが約 2 倍になっていた。
+/// 本実装はブロブを 1 本ずつ `write_all` するため、追加メモリはメタデータ分のみ。
+///
+/// ブロブ取り出しのため `&mut Model` を取るが、成否に関わらず必ず復元する。
+fn write_model_cache<W: std::io::Write>(
+    w:       &mut W,
+    model:   &mut Model,
+    stamp:   (u64, u32, u64),
+    bc_used: bool,
+) -> std::io::Result<()> {
     // ── ブロブを取り出してメタデータを小さくする ──────────────
     let blobs = extract_blobs(model);
-    let meta = bincode::serialize(model);
-    // メタ直列化の成否に関わらず、まずブロブを Model へ戻す（呼び出し元の Model を壊さない）。
-    let meta = match meta {
+    let meta = match bincode::serialize(model) {
         Ok(m) => m,
         Err(e) => {
+            // メタ直列化失敗でも呼び出し元の Model は壊さない
             restore_blobs(model, blobs);
-            eprintln!("[SEED cache] モデルメタデータの直列化に失敗: err={e}");
-            return None;
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, e));
         }
     };
 
-    // ── コンテナ構築 ───────────────────────────────────────────
-    let total_blob_len: usize = blobs.iter().map(|b| b.as_bytes().len()).sum();
-    let mut buf = Vec::with_capacity(HEADER_LEN + meta.len() + total_blob_len + blobs.len() * 8 + 64);
-    write_header(&mut buf, stamp, bc_used);
-    buf.extend_from_slice(&(meta.len() as u64).to_le_bytes());
-    buf.extend_from_slice(&meta);
-    buf.extend_from_slice(&(blobs.len() as u32).to_le_bytes());
-    for b in &blobs {
-        buf.extend_from_slice(&(b.as_bytes().len() as u64).to_le_bytes());
-    }
-    for b in &blobs {
-        buf.extend_from_slice(b.as_bytes());
-    }
+    // ── 逐次書き出し（途中失敗でも必ずブロブを復元する）──────────
+    let result = (|| -> std::io::Result<()> {
+        let mut header = Vec::with_capacity(HEADER_LEN);
+        write_header(&mut header, stamp, bc_used);
+        w.write_all(&header)?;
+        w.write_all(&(meta.len() as u64).to_le_bytes())?;
+        w.write_all(&meta)?;
+        w.write_all(&(blobs.len() as u32).to_le_bytes())?;
+        for b in &blobs {
+            w.write_all(&(b.as_bytes().len() as u64).to_le_bytes())?;
+        }
+        for b in &blobs {
+            w.write_all(b.as_bytes())?;
+        }
+        Ok(())
+    })();
 
     restore_blobs(model, blobs);
-    Some(buf)
+    result
+}
+
+/// Model をキャッシュファイルのバイト列（ヘッダ込み）へエンコードする。
+///
+/// 実運用の `store_model` はファイルへ直接ストリーミング書き出しするため
+/// この関数を使わない。フォーマットのラウンドトリップ検証（ユニットテスト）用。
+#[cfg(test)]
+fn encode_model_cache(model: &mut Model, stamp: (u64, u32, u64), bc_used: bool) -> Option<Vec<u8>> {
+    let mut buf = Vec::new();
+    match write_model_cache(&mut buf, model, stamp, bc_used) {
+        Ok(())  => Some(buf),
+        Err(e)  => {
+            eprintln!("[SEED cache] モデルのエンコードに失敗: err={e}");
+            None
+        }
+    }
 }
 
 /// キャッシュファイルのバイト列から Model をデコードする。
@@ -448,12 +483,19 @@ pub fn store_model(src: &Path, model: &mut Model) {
     // このモデルが BC テクスチャを含むか（= 現在の GPU 能力）をフラグに記録する。
     let bc_used = bc_supported();
 
-    let Some(buf) = encode_model_cache(model, stamp, bc_used) else { return; };
-
-    // 一時ファイルに書いてからリネームし、途中失敗による破損キャッシュを避ける。
+    // 一時ファイルへストリーミング書き出ししてからリネームし、
+    // 途中失敗による破損キャッシュを避ける。
+    // 全体を Vec に構築しない（Sponza 級でファイルサイズ相当のピークメモリ増を防ぐ）。
     let tmp_path = cache_path.with_extension("smdl.tmp");
-    if let Err(e) = std::fs::write(&tmp_path, &buf) {
+    let write_result = std::fs::File::create(&tmp_path).and_then(|f| {
+        let mut w = std::io::BufWriter::new(f);
+        write_model_cache(&mut w, model, stamp, bc_used)?;
+        use std::io::Write as _;
+        w.flush()
+    });
+    if let Err(e) = write_result {
         eprintln!("[SEED cache] キャッシュ書き込み失敗: {tmp_path:?} err={e}");
+        let _ = std::fs::remove_file(&tmp_path);
         return;
     }
     if let Err(e) = std::fs::rename(&tmp_path, &cache_path) {
@@ -528,41 +570,127 @@ fn classify_one_material(mat: &Material, mark: &mut impl FnMut(usize, TextureUsa
 //  テクスチャ処理: Embedded → Ready（ミップ生成 + BC 圧縮）
 // ============================================================
 
-/// モデル内の埋め込みテクスチャ（`TextureSource::Embedded`）を、
-/// GPU 即アップロード可能な `TextureSource::Ready`（ミップ + BC 圧縮 or RGBA）へ変換する。
+/// テクスチャ処理の同時実行数（有界並列）。
 ///
-/// これによりキャッシュには圧縮済み・ミップ済みデータが保存され、
-/// 2 回目以降は画像デコードもミップ生成も BC 圧縮も不要になる。
-/// `FilePath` テクスチャ（OBJ 外部）はそのまま残し、ロード時に実ファイルから読む。
+/// 4K テクスチャ 1 枚あたりの一時メモリは RGBA 展開 64MiB + ミップチェーン ~21MiB
+/// + パディング/BC 出力 ~40MiB ≒ 最大 ~130MiB。全テクスチャ一斉（旧実装）だと
+/// Sponza 級で数 GB に達しエディタ同居環境でスワップを誘発するため、
+/// 同時枚数を定数で制限してピークを「この枚数 × 1 枚分」に抑える。
+const TEXTURE_PARALLELISM: usize = 3;
+
+/// モデル内のテクスチャを、GPU 即アップロード可能な
+/// `TextureSource::Ready`（ミップ + BC 圧縮 or RGBA）へ変換する。
 ///
-/// 戻り値: 圧縮に費やした概算バイト数（元 RGBA 合計。ログ用）。
+/// 【ストリーミング処理（ピークメモリ削減）】
+/// 旧実装は「全テクスチャを RGBA 展開したまま rayon で一斉圧縮」だったため、
+/// Sponza 級（RGBA 合計 ~4.6GB）でピークメモリが数 GB 積み上がっていた。
+/// 本実装は `TEXTURE_PARALLELISM` 枚ずつのチャンク単位で
+/// 「デコード → ミップ → BC 圧縮 → Ready 置換（入力バイトは即 drop）」を行い、
+/// チャンク間は逐次実行することで RGBA 展開の同時保持数を定数に制限する。
+///
+/// 対応する供給元:
+/// - `EncodedBytes`（glTF 遅延デコード: GLB 埋め込み/data URI）→ ここでデコード
+/// - `FilePath`（glTF 外部画像 / OBJ）→ ここで読み込み + デコード（失敗時は FilePath のまま
+///   残し、GPU アップロード時の従来フォールバックに任せる）
+/// - `Embedded`（デコード済み RGBA）→ ミップ + 圧縮のみ
+/// - `Ready` → 処理済みのためスキップ
+///
+/// 戻り値: 処理した元 RGBA の合計バイト数（ログ用）。
 pub fn process_model_textures(model: &mut Model) -> usize {
+    use std::sync::atomic::AtomicUsize;
+
     let usages = classify_textures(model);
     let bc = bc_supported();
-    let mut total_src_bytes = 0usize;
+    let total = model.textures.len();
+    if total == 0 { return 0; }
 
-    // テクスチャ間は独立なので rayon で並列処理する（BC 圧縮が支配的なため効果大）。
-    let converted: Vec<Option<(TextureSource, usize)>> = model.textures
-        .par_iter()
-        .zip(usages.par_iter())
-        .map(|(td, &usage)| {
-            if let TextureSource::Embedded { width, height, pixels } = &td.source {
-                let ready = build_ready_texture(*width, *height, pixels, usage, bc);
-                let src_bytes = pixels.len();
-                Some((ready, src_bytes))
-            } else {
-                None
+    // 進捗カウンタ（並列クロージャ間で共有。ユーザーがハングと進行を判別できるように
+    // 1 枚ごとに n/N を出力する）
+    let done          = AtomicUsize::new(0);
+    let src_bytes_sum = AtomicUsize::new(0);
+
+    // ── 有界並列ストリーミング ─────────────────────────────────
+    // チャンク内は rayon 並列、チャンク間は逐次。
+    // par_iter_mut により各テクスチャの source を並列に直接置換できる。
+    for (chunk_i, chunk) in model.textures.chunks_mut(TEXTURE_PARALLELISM).enumerate() {
+        let chunk_base = chunk_i * TEXTURE_PARALLELISM;
+        chunk.par_iter_mut().enumerate().for_each(|(k, td)| {
+            let usage = usages[chunk_base + k];
+            let t0 = Instant::now();
+
+            // 供給元を取り出す（プレースホルダと交換）。デコード失敗時は元に戻す。
+            let taken = std::mem::replace(
+                &mut td.source,
+                TextureSource::Embedded { width: 0, height: 0, pixels: Vec::new() },
+            );
+            match decode_source_rgba(taken) {
+                // デコード成功: ミップ + BC 圧縮して Ready に置換。
+                // rgba / 元のエンコード済みバイトはこのスコープで drop される。
+                Ok((w, h, rgba)) => {
+                    src_bytes_sum.fetch_add(rgba.len(), Ordering::Relaxed);
+                    td.source = build_ready_texture(w, h, &rgba, usage, bc);
+                    let n = done.fetch_add(1, Ordering::Relaxed) + 1;
+                    eprintln!(
+                        "[SEED cache]   tex {n}/{total}: {}x{} 変換 {:.0}ms",
+                        w, h, t0.elapsed().as_secs_f64() * 1000.0,
+                    );
+                }
+                // デコード不能 or 処理済み: 元の供給元へ戻す
+                //（FilePath はアップロード時の従来フォールバックが効く）
+                Err(original) => {
+                    let skipped = matches!(original, TextureSource::Ready { .. });
+                    td.source = original;
+                    let n = done.fetch_add(1, Ordering::Relaxed) + 1;
+                    if !skipped {
+                        eprintln!("[SEED cache]   tex {n}/{total}: デコード不可（未変換のままフォールバック）");
+                    }
+                }
             }
-        })
-        .collect();
-
-    for (td, conv) in model.textures.iter_mut().zip(converted.into_iter()) {
-        if let Some((ready, src_bytes)) = conv {
-            td.source = ready;
-            total_src_bytes += src_bytes;
-        }
+        });
     }
-    total_src_bytes
+    src_bytes_sum.load(Ordering::Relaxed)
+}
+
+/// テクスチャ供給元をデコードして (幅, 高さ, RGBA8) を返す。
+///
+/// 所有権を受け取り、デコードできない場合は元の供給元をそのまま Err で返す
+/// （呼び出し元が復元してフォールバック経路に委ねる）。
+fn decode_source_rgba(source: TextureSource) -> Result<(u32, u32, Vec<u8>), TextureSource> {
+    match source {
+        // デコード済み RGBA（コピーなしで所有権ごと使う）
+        TextureSource::Embedded { width, height, pixels } => Ok((width, height, pixels)),
+        // エンコード済みバイト（PNG/JPG 等）をデコード
+        TextureSource::EncodedBytes { bytes } => {
+            match image::load_from_memory(&bytes) {
+                Ok(img) => {
+                    let rgba = img.to_rgba8();
+                    let (w, h) = rgba.dimensions();
+                    Ok((w, h, rgba.into_raw()))
+                }
+                Err(e) => {
+                    eprintln!("[SEED cache] 埋め込み画像のデコード失敗: err={e}");
+                    Err(TextureSource::EncodedBytes { bytes })
+                }
+            }
+        }
+        // 外部ファイル（glTF 外部画像 / OBJ）。asset_fs 経由で PAK にも対応。
+        TextureSource::FilePath(path) => {
+            let path_str = path.to_string_lossy().to_string();
+            match crate::engine::asset_fs::read_bytes(&path_str)
+                .ok()
+                .and_then(|bytes| image::load_from_memory(&bytes).ok())
+            {
+                Some(img) => {
+                    let rgba = img.to_rgba8();
+                    let (w, h) = rgba.dimensions();
+                    Ok((w, h, rgba.into_raw()))
+                }
+                None => Err(TextureSource::FilePath(path)),
+            }
+        }
+        // 処理済み
+        ready @ TextureSource::Ready { .. } => Err(ready),
+    }
 }
 
 /// RGBA8 ピクセルからミップチェーンを生成し、用途に応じて BC 圧縮した `Ready` を作る。
@@ -876,17 +1004,26 @@ mod tests {
                 }],
             }],
             materials: vec![Material::default()],
-            textures: vec![TextureData {
-                name: Some("t".to_string()),
-                source: TextureSource::Ready {
-                    format: CachedTexFormat::Bc3RgbaUnormSrgb,
-                    width: 8,
-                    height: 8,
-                    mips: mips.clone(),
+            textures: vec![
+                TextureData {
+                    name: Some("t".to_string()),
+                    source: TextureSource::Ready {
+                        format: CachedTexFormat::Bc3RgbaUnormSrgb,
+                        width: 8,
+                        height: 8,
+                        mips: mips.clone(),
+                    },
+                    sampler: SamplerData::default(),
+                    linear: false,
                 },
-                sampler: SamplerData::default(),
-                linear: false,
-            }],
+                // 未デコード画像（v5: デコード失敗時などに残るケース）もブロブとして往復する
+                TextureData {
+                    name: Some("enc".to_string()),
+                    source: TextureSource::EncodedBytes { bytes: vec![9u8, 8, 7, 6, 5] },
+                    sampler: SamplerData::default(),
+                    linear: true,
+                },
+            ],
             animations: vec![],
             skins: vec![],
         };
@@ -927,6 +1064,10 @@ mod tests {
             }
             _ => panic!("wrong texture source"),
         }
+        match &decoded.textures[1].source {
+            TextureSource::EncodedBytes { bytes } => assert_eq!(bytes, &vec![9u8, 8, 7, 6, 5]),
+            _ => panic!("wrong encoded texture source"),
+        }
 
         // ── stamp 不一致 → None ─────────────────────────────
         assert!(decode_model_cache(&buf, (11, 22, 34)).is_none());
@@ -965,6 +1106,53 @@ mod tests {
 
         // 長さ不足 → None
         assert_eq!(validate_header(&buf[..HEADER_LEN - 1], stamp), None);
+    }
+
+    /// ストリーミングテクスチャ処理: Embedded / EncodedBytes(PNG) の両供給元が
+    /// Ready（ミップ付き）へ変換され、破損バイトはフォールバックで元のまま残る。
+    #[test]
+    fn process_textures_streaming_converts_sources() {
+        use super::super::model::*;
+        use std::io::Cursor;
+
+        // 8×8 の PNG をメモリ上でエンコード（EncodedBytes 供給元のテスト用）
+        let img = image::RgbaImage::from_pixel(8, 8, image::Rgba([10, 20, 30, 255]));
+        let mut png = Vec::new();
+        image::DynamicImage::ImageRgba8(img)
+            .write_to(&mut Cursor::new(&mut png), image::ImageFormat::Png)
+            .expect("png encode failed");
+
+        let mk = |source| TextureData {
+            name: None, source, sampler: SamplerData::default(), linear: false,
+        };
+        let mut model = Model {
+            name: String::new(), nodes: vec![], root_nodes: vec![], meshes: vec![],
+            materials: vec![],
+            textures: vec![
+                mk(TextureSource::Embedded { width: 4, height: 4, pixels: vec![128; 4 * 4 * 4] }),
+                mk(TextureSource::EncodedBytes { bytes: png }),
+                // 画像として不正なバイト列（デコード失敗 → フォールバックで残る）
+                mk(TextureSource::EncodedBytes { bytes: vec![0, 1, 2] }),
+            ],
+            animations: vec![], skins: vec![],
+        };
+
+        let processed = process_model_textures(&mut model);
+        // Embedded(4×4) + PNG(8×8) の RGBA 合計が集計される
+        assert!(processed >= 4 * 4 * 4 + 8 * 8 * 4);
+
+        // Embedded → Ready
+        assert!(matches!(model.textures[0].source, TextureSource::Ready { .. }));
+        // PNG → Ready（8,4,2,1 の 4 ミップ）
+        match &model.textures[1].source {
+            TextureSource::Ready { width, height, mips, .. } => {
+                assert_eq!((*width, *height), (8, 8));
+                assert_eq!(mips.len(), 4);
+            }
+            _ => panic!("PNG texture not converted"),
+        }
+        // 破損バイトは EncodedBytes のまま（クラッシュせずフォールバック）
+        assert!(matches!(model.textures[2].source, TextureSource::EncodedBytes { .. }));
     }
 
     /// テクスチャ用途分類: 法線が最優先で確定される。

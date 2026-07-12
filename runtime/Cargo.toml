@@ -24,6 +24,10 @@ bincode = "1"
 # 本プロジェクトがリンクする nethost.lib（/MT・静的 CRT）と RuntimeLibrary が
 # 衝突（LNK2038）しリンク不能なため、C 依存のない純 Rust の texpresso を採用。
 texpresso = "2"
+# glTF 画像の遅延デコード用（data URI の base64 / 外部 URI のパーセントデコード）。
+# いずれも gltf クレートの推移的依存として既にビルドツリーに存在する。
+base64 = "0.22"
+urlencoding = "2"
 naga = { version = "25", features = ["wgsl-in"] }
 toml  = "0.8"
 netcorehost = "0.20"

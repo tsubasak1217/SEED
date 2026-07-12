@@ -7,6 +7,7 @@ name = "SEED"
 version = "0.1.0"
 dependencies = [
  "ab_glyph",
+ "base64 0.22.1",
  "bincode",
  "bytemuck",
  "crossbeam-channel",
@@ -28,6 +29,7 @@ dependencies = [
  "texpresso",
  "tobj",
  "toml",
+ "urlencoding",
  "wgpu",
  "windows-sys 0.59.0",
  "winit",
