@@ -40,6 +40,7 @@ use wgpu::{
 use super::gpu_resources::{GpuModel, GpuPrimitive, InstancedModelBatch};
 use super::lighting::LightBuffer;
 use super::shadow::ShadowResources;
+use crate::engine::core::loader::model::AlphaMode;
 
 // ─── グローバル対応フラグ ────────────────────────────────────
 //
@@ -68,6 +69,50 @@ pub const MAX_RT_INSTANCES: u32 = 4096;
 /// 位置は各頂点の先頭（offset 0）の Float32x3。BLAS はこのストライドで位置のみを読む。
 const VERTEX_STRIDE: wgpu::BufferAddress =
     std::mem::size_of::<crate::engine::core::loader::model::Vertex>() as wgpu::BufferAddress;
+
+// ─── TLAS インスタンスマスク ─────────────────────────────────
+//
+// TLAS の各インスタンスへ「どの用途のレイに見えるか」を 8bit マスクで持たせ、
+// レイ側の `cull_mask`（rt_shadow_on.wgsl の RT_SHADOW_CULL_MASK）との AND が 0 の
+// インスタンスはトラバースから除外される（レイは素通りする）。
+//
+// これを使い、影のオクルーダを「不透明マテリアルのプリミティブ」だけに限定する。
+// BLAS ジオメトリは常に OPAQUE フラグ付き（＝ヒットが即確定）なので、マスクを分けない限り
+// Blend マテリアル（例: Sponza の dirt_decal＝汚れデカールの板ポリ）が完全不透明の遮蔽物として
+// 影を落としてしまう。ラスタでは半透明にしか見えないものが真っ黒な影を落とす、という不整合が
+// 発生していた。
+//
+// 【拡張余地】Mask（アルファテスト: 葉・鎖・フェンス等）を影に落としたい場合:
+//   - 正しく落とすには rayQuery の candidate 段階でヒット三角形のマテリアル／UV／
+//     ベースカラーテクスチャを引き、アルファテストしてから ConfirmIntersection する
+//     必要がある（naga 25 は rayQueryGetCandidateIntersection / rayQueryConfirmIntersection を
+//     サポートしており、WGSL 構文上の障害は無い）。
+//   - しかし「ヒットした三角形からマテリアルとテクスチャを引く」には bindless
+//     （binding_array + 頂点/インデックスバッファの storage 公開）が必要で、本エンジンの
+//     現在のバインドモデル（マテリアルごとの BindGroup 差し替え）とは根本的に噛み合わない。
+//     現状は非現実的と判断し、Mask も非オクルーダ（RT_MASK_NON_OPAQUE）として扱う。
+//   - 妥協案として「Mask だけ不透明扱いで影に含める」なら、下の mask 決定を
+//     `AlphaMode::Blend` のみ非不透明にすればよい（1 行の変更で切り替えられる）。
+
+/// 不透明（`AlphaMode::Opaque`）プリミティブのインスタンスマスク。影のオクルーダ。
+/// rt_shadow_on.wgsl の `RT_SHADOW_CULL_MASK` と値を一致させること（ユニットテストで担保）。
+pub const RT_MASK_OPAQUE: u8 = 0x01;
+
+/// 非不透明（`AlphaMode::Blend` / `AlphaMode::Mask`）プリミティブのインスタンスマスク。
+/// TLAS には登録するが影のレイからは見えない（将来 candidate 段階のアルファテストを
+/// 実装するときのために、ジオメトリ自体は TLAS に残しておく）。
+pub const RT_MASK_NON_OPAQUE: u8 = 0x02;
+
+/// プリミティブの alpha_mode から TLAS インスタンスマスクを決める。
+/// 「どのマテリアルが影を落とすか」の唯一の判断箇所（単一責任）。
+fn instance_mask_for(alpha_mode: AlphaMode) -> u8 {
+    match alpha_mode {
+        AlphaMode::Opaque => RT_MASK_OPAQUE,
+        // Blend: 半透明。不透明オクルーダにすると実物より濃い影が出る（症状の直接原因）。
+        // Mask : アルファテスト。正しく落とすには上記 bindless が必要なため v1 では落とさない。
+        AlphaMode::Blend | AlphaMode::Mask => RT_MASK_NON_OPAQUE,
+    }
+}
 
 // ─── BLAS キャッシュキー ─────────────────────────────────────
 
@@ -243,13 +288,16 @@ impl RtShadowResources {
         let new_sig = {
             use std::hash::Hasher;
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
-            for (path, _gpu, batch) in casters {
+            for (path, gpu, batch) in casters {
                 // パスはキャスター単位で 1 回だけ混ぜる（列挙順がグループを保つ）。
                 hasher.write(path.as_bytes());
                 hasher.write_u8(0xff); // 区切り
-                batch.rt_enumerate(|mesh_idx, prim_idx, transform| {
+                batch.rt_enumerate(|mesh_idx, prim_idx, material_idx, transform| {
                     hasher.write_usize(mesh_idx);
                     hasher.write_usize(prim_idx);
+                    // インスタンスマスク（alpha_mode 由来）も内容の一部。マテリアル差し替えで
+                    // Opaque⇔Blend が変わったときに TLAS 再構築を確実に発火させる。
+                    hasher.write_u8(instance_mask_for(gpu.primitive_alpha_mode(material_idx)));
                     for v in &transform { hasher.write_u32(v.to_bits()); }
                 });
             }
@@ -297,13 +345,15 @@ impl RtShadowResources {
             for slot in instances.iter_mut() { *slot = None; }
 
             let mut overflow = false;
-            for (path, _gpu, batch) in casters {
-                batch.rt_enumerate(|mesh_idx, prim_idx, transform| {
+            for (path, gpu, batch) in casters {
+                batch.rt_enumerate(|mesh_idx, prim_idx, material_idx, transform| {
                     if inst_count >= MAX_RT_INSTANCES as usize { overflow = true; return; }
                     let key = BlasKey::new(path, mesh_idx, prim_idx);
                     if let Some(blas) = cache.get(&key) {
-                        // custom_data はデバッグ用にインスタンス番号、mask は全ビット（cull なし）。
-                        instances[inst_count] = Some(TlasInstance::new(blas, transform, inst_count as u32, 0xFF));
+                        // custom_data はデバッグ用にインスタンス番号。
+                        // mask は alpha_mode 由来（不透明のみ影レイから見える）。
+                        let mask = instance_mask_for(gpu.primitive_alpha_mode(material_idx));
+                        instances[inst_count] = Some(TlasInstance::new(blas, transform, inst_count as u32, mask));
                         inst_count += 1;
                     }
                 });
@@ -333,8 +383,16 @@ impl RtShadowResources {
 /// プリミティブ 1 個分の BLAS サイズ記述子を作る。
 ///
 /// 位置フォーマットは Float32x3（EXPERIMENTAL_RAY_TRACING_ACCELERATION_STRUCTURE の
-/// 標準対応形式）、インデックスは Uint32。OPAQUE フラグは必須
-/// （naga には candidate intersection が無く、OPAQUE 無しの BLAS は WGSL でヒットしない）。
+/// 標準対応形式）、インデックスは Uint32。
+///
+/// 【OPAQUE フラグについて】全ジオメトリを OPAQUE で作る（＝ヒットが candidate 段階を経ずに
+/// 即確定する）。非 OPAQUE にすると committed intersection を得るために WGSL 側で
+/// candidate ループ＋`rayQueryConfirmIntersection` を書く必要がある。
+/// naga 25 は `rayQueryGetCandidateIntersection` / `rayQueryConfirmIntersection` を
+/// サポートしているため WGSL 構文上は書けるが、confirm の判断（アルファテスト）に必要な
+/// 「ヒット三角形のマテリアル・UV・テクスチャ」を引くには bindless が必要で現状は非現実的。
+/// 代わりに半透明・アルファテストのプリミティブは TLAS インスタンスマスク
+/// （RT_MASK_NON_OPAQUE）で影レイから除外している（上記マスク定数のコメント参照）。
 fn blas_size_desc(prim: &GpuPrimitive) -> BlasTriangleGeometrySizeDescriptor {
     BlasTriangleGeometrySizeDescriptor {
         vertex_format: wgpu::VertexFormat::Float32x3,
@@ -368,6 +426,63 @@ fn create_blas_for_prim(device: &wgpu::Device, prim: &GpuPrimitive) -> wgpu::Bla
 // acceleration_structure 宣言・共有フラグメントの整合性を CI/ローカルビルドで担保する。
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    /// WGSL の `RT_SHADOW_CULL_MASK` と Rust の `RT_MASK_OPAQUE` が同じ値であることを検証する。
+    ///
+    /// この 2 つがズレると「影が一切出ない（AND=0）」「Blend が再び影を落とす（0xFF に戻る）」
+    /// といった無言の破綻になり、コンパイルでも実行時エラーでも検出できない。
+    /// WGSL ソースを include_str! して定数宣言を直接パースし、値の一致を保証する。
+    #[test]
+    fn wgsl_cull_mask_matches_rust_mask() {
+        let src = include_str!("shaders/rt_shadow_on.wgsl");
+
+        // `const RT_SHADOW_CULL_MASK: u32 = 0x01u;` の右辺リテラルを取り出す。
+        let decl = src
+            .lines()
+            .map(str::trim)
+            .find(|l| l.starts_with("const RT_SHADOW_CULL_MASK"))
+            .expect("rt_shadow_on.wgsl に const RT_SHADOW_CULL_MASK の宣言が見つかりません");
+        let rhs = decl
+            .split('=')
+            .nth(1)
+            .expect("RT_SHADOW_CULL_MASK の宣言に '=' がありません")
+            .trim()
+            .trim_end_matches(';')
+            .trim()
+            .trim_end_matches('u'); // WGSL の u32 サフィックス
+
+        // 16 進（0x..）／10 進の双方を受け付ける。
+        let value = if let Some(hex) = rhs.strip_prefix("0x").or_else(|| rhs.strip_prefix("0X")) {
+            u8::from_str_radix(hex, 16).expect("RT_SHADOW_CULL_MASK が u8 の 16 進として解釈できません")
+        } else {
+            rhs.parse::<u8>().expect("RT_SHADOW_CULL_MASK が u8 として解釈できません")
+        };
+
+        assert_eq!(
+            value, RT_MASK_OPAQUE,
+            "WGSL の RT_SHADOW_CULL_MASK({value:#04x}) と Rust の RT_MASK_OPAQUE({RT_MASK_OPAQUE:#04x}) が\
+             一致していません。影レイのカリングマスクと TLAS インスタンスマスクは必ず対応させること"
+        );
+        // 不透明ビットと非不透明ビットが重なっていない（AND=0）ことも保証する。
+        assert_eq!(
+            RT_MASK_OPAQUE & RT_MASK_NON_OPAQUE, 0,
+            "RT_MASK_OPAQUE と RT_MASK_NON_OPAQUE のビットが重複しています（マスク分離が機能しません）"
+        );
+    }
+
+    /// alpha_mode → TLAS インスタンスマスクの割り当て（不透明のみ影を落とす）。
+    #[test]
+    fn only_opaque_is_shadow_occluder() {
+        assert_eq!(instance_mask_for(AlphaMode::Opaque), RT_MASK_OPAQUE);
+        assert_eq!(instance_mask_for(AlphaMode::Blend),  RT_MASK_NON_OPAQUE);
+        assert_eq!(instance_mask_for(AlphaMode::Mask),   RT_MASK_NON_OPAQUE);
+        // 影レイ（cull_mask = RT_MASK_OPAQUE）から見えるのは不透明だけ。
+        assert_ne!(instance_mask_for(AlphaMode::Opaque) & RT_MASK_OPAQUE, 0);
+        assert_eq!(instance_mask_for(AlphaMode::Blend)  & RT_MASK_OPAQUE, 0);
+        assert_eq!(instance_mask_for(AlphaMode::Mask)   & RT_MASK_OPAQUE, 0);
+    }
+
     /// mesh / skinned × RT オン/オフ の 4 バリアントを結合し、naga で parse + validate する。
     /// 連結順は pipelines/*.toml の shader_sources と一致させること。
     #[test]

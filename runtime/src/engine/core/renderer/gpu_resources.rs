@@ -1611,7 +1611,8 @@ impl InstancedModelBatch {
     }
 
     /// RT 影 TLAS 構築用: 全インスタンス × 全メッシュノードプリミティブ（非スキン）を
-    /// `(mesh_idx, prim_idx, 3x4 行優先ワールド変換)` でコールバックに列挙する（Phase R8）。
+    /// `(mesh_idx, prim_idx, material_idx, 3x4 行優先ワールド変換)` でコールバックに
+    /// 列挙する（Phase R8）。
     ///
     /// - カメラカリング前の全インスタンス（`num_instances`）を対象とする
     ///   （RT 影は画面外キャスターも影を落とせるのが利点）。
@@ -1619,7 +1620,11 @@ impl InstancedModelBatch {
     ///   から取得する。キャッシュは列優先（GPU 用に転置済み）で保持されているため、
     ///   TLAS が要求する 3x4 行優先アフィン変換 `[f32; 12]` へ変換して渡す。
     /// - スキンプリミティブは変形後頂点で BLAS を作らない v1 制約のため除外する。
-    pub fn rt_enumerate<F: FnMut(usize, usize, [f32; 12])>(&self, mut f: F) {
+    /// - `material_idx`（`None` = デフォルトマテリアル）をそのまま渡すのは、
+    ///   「どのマテリアルが影を落とすか」の判断を呼び出し側（rt_shadow.rs）へ委ねるため。
+    ///   バッチは幾何とマテリアル参照の列挙だけを担い、alpha_mode の解釈は行わない
+    ///   （`GpuModel::primitive_alpha_mode()` が解釈の単一の場所）。
+    pub fn rt_enumerate<F: FnMut(usize, usize, Option<usize>, [f32; 12])>(&self, mut f: F) {
         // ワールド行列キャッシュが未生成（update 未実行）なら何もしない。
         if self.world_mats_cache.is_empty() || self.n_mesh_nodes == 0 { return; }
         let n_inst = self.num_instances as usize;
@@ -1629,7 +1634,12 @@ impl InstancedModelBatch {
                 let Some(pos) = self.node_pos_map[draw.node_idx] else { continue };
                 let cache_idx = inst * self.n_mesh_nodes + pos;
                 let Some(mu) = self.world_mats_cache.get(cache_idx) else { continue };
-                f(draw.mesh_idx, draw.prim_idx, model_uniform_to_tlas_transform(&mu.model));
+                f(
+                    draw.mesh_idx,
+                    draw.prim_idx,
+                    draw.material_idx,
+                    model_uniform_to_tlas_transform(&mu.model),
+                );
             }
         }
     }

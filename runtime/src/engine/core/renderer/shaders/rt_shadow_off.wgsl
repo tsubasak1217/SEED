@@ -16,10 +16,12 @@ fn rt_shadow_enabled() -> bool {
 }
 
 /// 遮蔽率（1=非遮蔽/照射, 0=遮蔽/影）。スタブは常に非遮蔽。
-/// シグネチャは rt_shadow_on.wgsl と一致させること（ソフト影の cone_radius / frag_xy を含む）。
+/// シグネチャは rt_shadow_on.wgsl と一致させること
+/// （第 2 引数は**幾何法線 ng**、ソフト影の cone_radius / frag_xy を含む）。
+/// 引数が片方だけ増減するとパイプライン生成（シェーダコンパイル）が壊れる。
 fn rt_shadow_factor(
     origin:      vec3<f32>,
-    n:           vec3<f32>,
+    ng:          vec3<f32>,
     l:           vec3<f32>,
     tmax:        f32,
     cone_radius: f32,

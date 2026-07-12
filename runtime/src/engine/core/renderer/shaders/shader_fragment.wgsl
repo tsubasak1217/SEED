@@ -20,6 +20,39 @@
 /// 平行光の RT 影レイの最大距離（実質無限。ライトまでの距離が定義できないため大定数）。
 const RT_DIR_TMAX: f32 = 10000.0;
 
+/// 幾何法線を画面微分から復元する際の、外積の長さの下限。
+/// 三角形が画面上でほぼ縮退（面積ゼロ）していると cross(dpdx, dpdy) が 0 ベクトルになり
+/// normalize が NaN になるため、この閾値未満なら補間法線へフォールバックする。
+const GEOM_NORMAL_MIN_LEN: f32 = 1e-8;
+
+// ── 幾何法線（RT 影のレイ原点バイアス専用）──────────────────
+//
+/// フラグメントの**幾何法線**（＝三角形の面法線）をワールド位置の画面微分から復元する。
+///
+/// なぜ必要か: RT 影のレイ原点は「面から少し浮かせる」必要があるが、押し出し方向に
+/// 法線マップ適用後のシェーディング法線を使うと、法線が面から傾いている分だけ実効的な
+/// クリアランスが落ち、面が自分自身に遮蔽されて真っ黒になる（Sponza の壁・柱で発生）。
+/// 押し出しは必ず面そのものの向き（幾何法線）で行う。
+///
+/// - `world_pos`   : 補間済みワールド座標（dpdx/dpdy を取る＝フラグメントステージ限定）。
+/// - `world_normal`: 法線マップ適用**前**の補間法線。外積の向き（符号）合わせにのみ使う
+///                   （glTF の巻き順・スケール反転で外積の向きが反転しうるため）。
+///
+/// 注意: dpdx/dpdy は一様制御フロー内で呼ぶ必要があるため、必ず関数の先頭側
+///       （分岐・discard より前）で呼ぶこと。
+fn geometric_normal(world_pos: vec3<f32>, world_normal: vec3<f32>) -> vec3<f32> {
+    let n_interp = normalize(world_normal);
+    let ng_raw   = cross(dpdx(world_pos), dpdy(world_pos));
+    let ng_len   = length(ng_raw);
+    // 縮退時は補間法線で代用（従来挙動と同等の押し出しになる）。
+    if ng_len < GEOM_NORMAL_MIN_LEN {
+        return n_interp;
+    }
+    let ng = ng_raw / ng_len;
+    // 補間法線と同じ半球へ向ける（faceforward 相当）。
+    return select(-ng, ng, dot(ng, n_interp) >= 0.0);
+}
+
 // ── ライト減衰ヘルパー ────────────────────────────────────────
 
 /// 距離減衰（inverse-square ＋ range ウィンドウ）。
@@ -69,6 +102,11 @@ fn shade_light(
 /// カットオフ挙動が一致する。alpha_cutoff は非 Mask マテリアルでは 0.0 のため
 /// Opaque/Blend は影響を受けない（GpuMaterial::upload 参照）。
 fn shade_pbr(in: VertexOutput) -> vec4<f32> {
+
+    // ── 幾何法線（RT 影のレイ原点バイアス専用）────────────────
+    // 画面微分（dpdx/dpdy）を使うため、discard やライトループなどの分岐に入る前
+    // （＝一様制御フロー）でここ一度だけ求める。シェーディングには使わない。
+    let Ng = geometric_normal(in.world_pos, in.world_normal);
 
     // ── ベースカラー ──────────────────────────────────────────
     var base_color = u_material.base_color_factor;
@@ -208,7 +246,10 @@ fn shade_pbr(in: VertexOutput) -> vec4<f32> {
                     cone_radius = light.soft_radius / max(light_dist, 1e-4);
                 }
             }
-            radiance = radiance * rt_shadow_factor(in.world_pos, N, L, light_dist, cone_radius, in.clip_pos.xy);
+            // 第 2 引数はシェーディング法線 N ではなく**幾何法線 Ng**を渡す。
+            // レイ原点の押し出しと「幾何的な裏面＝即遮蔽」判定は面そのものの向きで行う必要がある
+            // （N は法線マップで傾いており、押し出しに使うと自己交差して真っ黒になる）。
+            radiance = radiance * rt_shadow_factor(in.world_pos, Ng, L, light_dist, cone_radius, in.clip_pos.xy);
         } else {
             // 従来のシャドウマップ経路（group 4 binding 2〜5, shadow.wgsl）。
             // shadow_index < 0 のライトは影計算をスキップ（cast_shadows=false 含む）。
