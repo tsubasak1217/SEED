@@ -12,6 +12,7 @@ using System.Windows.Input;
 using System.Windows.Media;
 using Microsoft.Win32;
 using SEEDEditor;
+using SEEDEditor.Controls;
 using SEEDEditor.Runtime;
 using SEEDEditor.Scripting;
 
@@ -468,7 +469,12 @@ public partial class InspectorPanel : UserControl
         float PeRotSpeedMin = 0f, float PeRotSpeedMax = 0f,
         float PeSizeMin = 1f, float PeSizeMax = 1f,
         string PeTexturePath = "", string PeBlend = "additive", string PeSimSpace = "world",
-        bool PePlaying = true);
+        bool PePlaying = true,
+        // カーブ JSON（Rust ParamCurve の serde 形。カーブエディタで編集）。
+        // speed/rot_speed=1ch、scale=3ch(xyz)、color=4ch(HSVA)。random_colors は配列。
+        string PeSpeedCurveJson = "{}", string PeRotSpeedCurveJson = "{}",
+        string PeColorCurveJson = "{}", string PeScaleCurveJson = "{}",
+        string PeRandomColorCurvesJson = "[]");
 
     private List<SlotInfo> _slotInfos = new();
 
@@ -744,6 +750,13 @@ public partial class InspectorPanel : UserControl
             var peBlend             = comp.TryGetProperty("blend",               out var pbl)  ? pbl.GetString() ?? "additive" : "additive";
             var peSimSpace          = comp.TryGetProperty("sim_space",           out var pss)  ? pss.GetString() ?? "world" : "world";
             var pePlaying           = comp.TryGetProperty("playing",             out var ppl)  ? ReadJsonBool(ppl, true) : true;
+            // カーブ JSON（ParamCurve オブジェクト / random_colors は配列）を生 JSON のまま保持する。
+            // 欠落耐性: プロパティが無い旧データでも空既定でフォールバックする。
+            var peSpeedCurveJson         = comp.TryGetProperty("speed_curve",         out var pscv) ? pscv.GetRawText() : "{}";
+            var peRotSpeedCurveJson      = comp.TryGetProperty("rot_speed_curve",     out var prcv) ? prcv.GetRawText() : "{}";
+            var peColorCurveJson         = comp.TryGetProperty("color_curve",         out var pccv) ? pccv.GetRawText() : "{}";
+            var peScaleCurveJson         = comp.TryGetProperty("scale_curve",         out var pslv) ? pslv.GetRawText() : "{}";
+            var peRandomColorCurvesJson  = comp.TryGetProperty("random_color_curves", out var prcc) ? prcc.GetRawText() : "[]";
 
             var info = new SlotInfo(slotIdx, compName, compType, modelPath, width, height,
                 AutoScale: autoScale,
@@ -795,7 +808,10 @@ public partial class InspectorPanel : UserControl
                 PeRotSpeedMin: peRotSpeedMin, PeRotSpeedMax: peRotSpeedMax,
                 PeSizeMin: peSizeMin, PeSizeMax: peSizeMax,
                 PeTexturePath: peTexturePath, PeBlend: peBlend, PeSimSpace: peSimSpace,
-                PePlaying: pePlaying);
+                PePlaying: pePlaying,
+                PeSpeedCurveJson: peSpeedCurveJson, PeRotSpeedCurveJson: peRotSpeedCurveJson,
+                PeColorCurveJson: peColorCurveJson, PeScaleCurveJson: peScaleCurveJson,
+                PeRandomColorCurvesJson: peRandomColorCurvesJson);
             _slotInfos.Add(info);
 
             // アコーディオンにパラメータ編集エリアを追加（ヘッダーがリネーム・削除・複製・選択を兼ねる）
@@ -4095,17 +4111,134 @@ public partial class InspectorPanel : UserControl
         AddFloatRow("サイズ倍率 max", info.PeSizeMax, "size_max");
 
         // ── カーブ ─────────────────────────────────────────────
-        // 速度/回転/色/スケールのカーブ編集 UI は次実装（カーブエディタ）。
-        // 現時点では SET_PARTICLE_CURVE IPC のみ実装済みで、UI からは未編集。
+        // 速度/回転(1ch)・色(4ch=HSVA)・スケール(3ch=xyz) を CurveEditorControl で編集する。
+        // 編集確定（CurveChanged）時に SET_PARTICLE_CURVE:{actor},{slot},{curve_id},{json} を送信する。
         AddHeading("カーブ");
-        sp.Children.Add(new TextBlock
+
+        // カーブ送信のローカル関数。curve_id ∈ speed|rot_speed|color|scale|random_colors。
+        // json は ParamCurve の serde JSON（random_colors のみ配列）。
+        void SendCurve(string curveId, string json)
         {
-            Text = "カーブ（速度/回転/色/スケール）: カーブエディタ（次実装）",
-            Foreground = new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88)),
-            FontSize = 10, FontStyle = FontStyles.Italic,
-            Margin = new Thickness(0, 2, 0, 2), TextWrapping = TextWrapping.Wrap,
-            IsEnabled = false,
-        });
+            if (_currentActorId < 0) return;
+            _runtime?.SendToRuntime($"SET_PARTICLE_CURVE:{_currentActorId},{info.SlotIdx},{curveId},{json}");
+        }
+
+        // 折りたたみカーブ行（ラベル＋ミニプレビュー＋展開でエディタ）を作るローカル関数。
+        // channelCount はパース失敗時のフォールバック用チャンネル数（speed=1/scale=3/color=4）。
+        Expander BuildCurveRow(string label, string curveId, string json, bool isHsva, int channelCount)
+        {
+            var curve  = ParamCurve.FromJson(json) ?? ParamCurve.DefaultWithChannels(channelCount);
+            var editor = new CurveEditorControl(curve, isHsva);
+
+            // ヘッダー: ラベル＋ミニプレビュー（編集で作り直す）。
+            var miniHost = new ContentControl
+            {
+                Content = CurveEditorControl.BuildMiniPreview(curve, isHsva, 64, 18),
+                VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 0, 0, 0),
+            };
+            var header = new StackPanel { Orientation = Orientation.Horizontal };
+            header.Children.Add(new TextBlock
+            {
+                Text = label, Foreground = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)),
+                FontSize = 11, VerticalAlignment = VerticalAlignment.Center, Width = 90,
+            });
+            header.Children.Add(miniHost);
+
+            // 編集確定でランタイムへ送信し、ミニプレビューを更新する。
+            editor.CurveChanged += (_, _) =>
+            {
+                SendCurve(curveId, editor.Curve.ToJson());
+                miniHost.Content = CurveEditorControl.BuildMiniPreview(editor.Curve, isHsva, 64, 18);
+            };
+
+            return new Expander
+            {
+                Header = header, Content = editor, IsExpanded = false,
+                Margin = new Thickness(0, 1, 0, 1),
+            };
+        }
+
+        // speed(1ch) / rot_speed(1ch) / color(4ch HSVA) / scale(3ch xyz)。
+        sp.Children.Add(BuildCurveRow("速度",       "speed",     info.PeSpeedCurveJson,    isHsva: false, channelCount: 1));
+        sp.Children.Add(BuildCurveRow("回転速度",   "rot_speed", info.PeRotSpeedCurveJson, isHsva: false, channelCount: 1));
+        sp.Children.Add(BuildCurveRow("色(HSVA)",   "color",     info.PeColorCurveJson,    isHsva: true,  channelCount: 4));
+        sp.Children.Add(BuildCurveRow("スケール",   "scale",     info.PeScaleCurveJson,    isHsva: false, channelCount: 3));
+
+        // ── ランダム色カーブ（random_color_curves：4ch HSVA の配列）───────────
+        // 空なら color_curve を使用。追加/削除ボタンと各要素のカーブエディタを持つ。
+        AddHeading("ランダム色カーブ");
+        var rndCurves = ParamCurve.ListFromJson(info.PeRandomColorCurvesJson);
+        var rndPanel  = new StackPanel { Margin = new Thickness(0, 2, 0, 2) };
+
+        // ランダム色配列全体をランタイムへ送信するローカル関数。
+        void SendRandomColors() => SendCurve("random_colors", ParamCurve.ToJsonArray(rndCurves));
+
+        // ランダム色リスト UI を作り直すローカル関数（追加/削除で全再構築）。
+        void RebuildRandom()
+        {
+            rndPanel.Children.Clear();
+            if (rndCurves.Count == 0)
+            {
+                rndPanel.Children.Add(new TextBlock
+                {
+                    Text = "（空：color_curve を使用）",
+                    Foreground = new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88)),
+                    FontSize = 10, FontStyle = FontStyles.Italic, Margin = new Thickness(0, 2, 0, 2),
+                });
+                return;
+            }
+            for (int i = 0; i < rndCurves.Count; i++)
+            {
+                int idx = i;
+                var editor = new CurveEditorControl(rndCurves[idx], isHsva: true);
+                // 編集で該当要素を差し替えて配列全体を送信する。
+                editor.CurveChanged += (_, _) => { rndCurves[idx] = editor.Curve; SendRandomColors(); };
+
+                var miniHost = new ContentControl
+                {
+                    Content = CurveEditorControl.BuildMiniPreview(rndCurves[idx], true, 64, 18),
+                    VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 0, 0, 0),
+                };
+                editor.CurveChanged += (_, _) => miniHost.Content = CurveEditorControl.BuildMiniPreview(editor.Curve, true, 64, 18);
+
+                var header = new StackPanel { Orientation = Orientation.Horizontal };
+                header.Children.Add(new TextBlock
+                {
+                    Text = $"#{idx}", Foreground = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)),
+                    FontSize = 11, VerticalAlignment = VerticalAlignment.Center, Width = 32,
+                });
+                header.Children.Add(miniHost);
+                var delBtn = new Button
+                {
+                    Content = "削除", FontSize = 10, Width = 40, Height = 20,
+                    Margin = new Thickness(8, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center,
+                };
+                delBtn.Click += (_, _) => { rndCurves.RemoveAt(idx); SendRandomColors(); RebuildRandom(); };
+                header.Children.Add(delBtn);
+
+                rndPanel.Children.Add(new Expander
+                {
+                    Header = header, Content = editor, IsExpanded = false,
+                    Margin = new Thickness(0, 1, 0, 1),
+                });
+            }
+        }
+        RebuildRandom();
+
+        // 追加ボタン（既定 4ch HSVA カーブを 1 本追加）。
+        var addRndBtn = new Button
+        {
+            Content = "＋ ランダム色を追加", FontSize = 11, Width = 150, Height = 22,
+            HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 2, 0, 2),
+        };
+        addRndBtn.Click += (_, _) =>
+        {
+            rndCurves.Add(ParamCurve.DefaultWithChannels(4));
+            SendRandomColors();
+            RebuildRandom();
+        };
+        sp.Children.Add(addRndBtn);
+        sp.Children.Add(rndPanel);
 
         // ── テクスチャ ─────────────────────────────────────────
         AddHeading("テクスチャ");
