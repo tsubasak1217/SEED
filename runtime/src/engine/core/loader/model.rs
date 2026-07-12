@@ -96,10 +96,54 @@ pub struct Primitive {
     pub material_index: Option<usize>,
     /// ロード時生成の LOD インデックスバッファ群
     pub lod_indices:   Vec<Vec<u32>>,
+
+    // ── メッシュレット（GPU カリング第1弾, LOD0 のみ）─────────────
+    /// LOD0 を meshopt で分割したメッシュレット記述子（境界球・法線コーン込み）。
+    /// 空 = メッシュレット未生成（三角形数が少ない / スキン / 生成失敗）。この場合は
+    /// 従来の LOD0 描画経路がそのまま使われる。`meshlet_vertices` / `meshlet_triangles`
+    /// と組で意味を持つ。
+    #[serde(default)]
+    pub meshlets: Vec<MeshletDesc>,
+    /// 全メッシュレットの「メッシュレットローカル頂点番号 → 元頂点インデックス」表を連結したもの。
+    /// メッシュレット m の頂点は `meshlet_vertices[m.vertex_offset .. + m.vertex_count]`。
+    #[serde(default)]
+    pub meshlet_vertices: Vec<u32>,
+    /// 全メッシュレットの「三角形コーナー → メッシュレットローカル頂点番号(0..vertex_count)」を
+    /// 連結したもの（1 三角形 = 3 バイト）。三角形 t のコーナーは
+    /// `meshlet_triangles[m.triangle_offset + t*3 .. +3]`。
+    #[serde(default)]
+    pub meshlet_triangles: Vec<u8>,
 }
 
 impl Primitive {
     pub fn is_skinned(&self) -> bool { !self.skin_vertices.is_empty() }
+    /// LOD0 のメッシュレットデータを持つか（GPU メッシュレットカリングの対象か）。
+    pub fn has_meshlets(&self) -> bool { !self.meshlets.is_empty() }
+}
+
+/// 1 メッシュレットの記述子。境界球（視錐台カリング用）と法線コーン（背面棄却用）を持つ。
+///
+/// `vertex_offset` / `triangle_offset` は親プリミティブの `meshlet_vertices` /
+/// `meshlet_triangles` 配列へのオフセット。座標・法線はすべてモデルローカル空間で、
+/// GPU カリング compute がインスタンス行列でワールド空間へ変換する。
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+pub struct MeshletDesc {
+    /// `meshlet_vertices` 先頭からのオフセット（要素単位）
+    pub vertex_offset:   u32,
+    /// `meshlet_triangles` 先頭からのオフセット（バイト=コーナー単位）
+    pub triangle_offset: u32,
+    /// このメッシュレットが参照する元頂点の数（<= MESHLET_MAX_VERTS）
+    pub vertex_count:    u32,
+    /// このメッシュレットの三角形数（<= MESHLET_MAX_TRIS）
+    pub triangle_count:  u32,
+    /// 境界球中心（モデルローカル空間）
+    pub center:      [f32; 3],
+    /// 境界球半径（モデルローカル空間）
+    pub radius:      f32,
+    /// 法線コーン軸（単位ベクトル・モデルローカル空間）
+    pub cone_axis:   [f32; 3],
+    /// 法線コーンの cutoff（cos。`dot(normalize(center-cam), axis) >= cutoff + r/dist` で背面＝棄却可）
+    pub cone_cutoff: f32,
 }
 
 /// 頂点データ（GPU バッファに直接アップロードできる `repr(C)` レイアウト）。

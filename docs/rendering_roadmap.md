@@ -598,3 +598,70 @@ R8 は影アーキテクチャ確定後かつ実験的API理解が必要なた�
   ソケット位置に RGB 軸十字（`jointattach_scene_gizmo`, light_scene_gizmo 流儀）。
 - **検証**: `animator::tests::node_world_matrices_compose_hierarchy_bind_pose`（親子ノードのワールド行列
   階層合成）pass。cargo build / test・dotnet build 0 エラー。
+
+### Phase RM: GPU メッシュレットカリング（第1弾） 【状況: 実装済み（実機検証待ち, LOD0 不透明のみ）】
+
+不透明メッシュの LOD0 描画を「メッシュレット単位の GPU カリング＋間接描画」に置換する第1弾。
+**最重要要件は既存描画との見た目一致（トグル OFF ＝完全に従来経路）**。スキン/透明/Mask/
+シャドウ/RT影/ID ピック/アウトラインは一切変更しない。LOD1〜3 も従来経路のまま（遠距離は安全側）。
+
+#### メッシュレット焼き込み（ロード時 → .smdl v3）
+- 定数: `MESHLET_MAX_VERTS=64` / `MESHLET_MAX_TRIS=124`（4 の倍数, meshopt 制約）/ `MESHLET_CONE_WEIGHT=0.5`。
+- `gltf_loader::build_meshlets_for_primitive`（OBJ も共用）が **非スキンプリミティブの LOD0** を
+  `meshopt::build_meshlets` で分割し、`compute_meshlet_bounds` で境界球＋法線コーンを計算。
+  スキン・三角形なし・生成失敗は空（＝従来経路）。
+- `Primitive` に `meshlets: Vec<MeshletDesc>`（記述子＝境界球/コーン/オフセット, bincode メタ）＋
+  `meshlet_vertices: Vec<u32>`／`meshlet_triangles: Vec<u8>`（連結配列, ブロブ）を追加。
+- キャッシュ `CACHE_FORMAT_VERSION` を **2→3** に更新（旧 v2 キャッシュは自動再生成）。連結配列は
+  `asset_cache::visit_blob_slots` のブロブ領域へ、記述子は bincode メタへ。ラウンドトリップ test 更新済み。
+
+#### カリングパス構成（compute）
+- 新規 `shaders/meshlet_cull.wgsl`＋`pipeline::MeshletCullPipeline`（compute, 単一 BindGroup）。
+  group0: 0=instances(ModelUniform 配列, RO) / 1=meshlets(`GpuMeshlet` 配列, RO) /
+  2=draw_cmds(DrawIndexedIndirect 配列, RW) / 3=draw_count(atomic<u32>, RW) / 4=params(uniform)。
+- スレッド = 可視 LOD0 インスタンス × メッシュレット。各スレッドが境界球をインスタンス行列で
+  ワールド空間へ変換（中心=model 行列, 半径=基底ベクトル長 max で保守的過大評価, コーン軸=normal_matrix）し、
+  ①視錐台 6 平面（`extract_frustum_planes` と同一・未正規化平面を都度正規化, 球マージン `SPHERE_MARGIN`）
+  ②法線コーン背面棄却（meshopt 球ベース式・`cone_cutoff<0.999` のみ・`CONE_MARGIN` で保守側）
+  を通過したものだけ `atomicAdd(draw_count)` で先頭からコンパクトに DrawIndexedIndirect を書き出す。
+- `GpuPrimitive` は upload 時に**展開済みメッシュレットインデックス**（各三角形コーナー→元頂点
+  インデックスへ解決し連結, INDEX バッファ）＋**記述子 storage バッファ**（`GpuMeshlet`, stride48,
+  offset 0/4/16/28/32/44 を layout_test で固定）を構築。
+
+#### 間接描画統合
+- `InstancedModelBatch` が `node_prim_list` と同順の per-prim スロット
+  （cmd/count/params バッファ・毎フレーム再構築 BindGroup・ディスパッチ数）を保持。
+  `prepare_meshlet_cull`（compute パス前: params 更新・count 0 リセット・BG 構築・Blend/非対象スキップ）→
+  `record_meshlet_cull`（専用 compute パスで dispatch）。
+- `draw_model_indirect` に `meshlet_cull: bool` 引数を追加。**LOD0 かつ 非スキン かつ アクティブスロット**の
+  ときのみ、展開インデックスを張り `multi_draw_indexed_indirect_count(cmd, 0, count, 0, capacity)` で描画。
+  それ以外（LOD1〜3・スキン・Blend・メッシュレット無し・非対応）は従来 `draw_indexed` へ自動フォールバック。
+  `first_instance`（各コマンド）＝可視インスタンス番号で、メッシュ VS の group1 インスタンス行列を index。
+  既存 mesh パイプライン・全 BindGroup をそのまま流用（`INDIRECT_FIRST_INSTANCE` は既存要求）。
+- 呼び出し: メインパス不透明 LOD0 のみ `meshlet_active` を渡す。カメラプレビュー・ギズモは `false`（従来経路）。
+
+#### トグルとフォールバック
+- 実行時トグル `PostFxSettings.meshlet_cull`（既定 **true**）。`SET_POST_FX` JSON に `"meshlet_cull":bool`
+  （欠落時 true）を追加、`load_graphics_settings` が `project_settings.json` の `meshlet_cull`(既定 true) を読む
+  （**コミット禁止**）。
+- `meshlet_active = 設定 && MULTI_DRAW_INDIRECT_COUNT 対応`。**非対応 GPU は本値に関わらず完全に従来経路**
+  （`gpu_resources::set/meshlet_cull_supported`, `mod.rs` で対応判定＋条件付き feature 要求＋起動ログ `[SEED MESHLET]`）。
+- **OFF＝完全に従来経路**（compute 前処理・dispatch・間接描画をすべてスキップ）＝ A/B パリティ検証用。
+
+#### パリティ担保の設計
+- OFF は draw コードの分岐が一切発火せずビット単位で従来と同一。ON でもカリングは**保守側**（境界球マージン・
+  コーン cutoff マージン・未正規化平面の安全処理・スキップ時フォールバック）に倒し、
+  「本来見えるメッシュレットを誤って捨てない」ことで見た目一致を担保。展開インデックスは元の巻き順を保持し
+  back-face カリング挙動も不変。
+
+#### ビルド・テスト
+- `cargo build` / `cargo test --bin SEED` 0 エラー（35 passed）。追加 test: `meshlet_tests`（分割の三角形
+  網羅・境界球が全構成頂点を内包・コーン軸単位性・スキン/縮退で空）／`meshlet_gpu_tests`（`GpuMeshlet` 48B
+  レイアウト固定・`meshlet_cull.wgsl` の naga parse+validate）／cache v3 ラウンドトリップ。
+
+#### 実機観点・残 TODO（第2弾以降）
+- **[PERF]** に `meshlet=<考慮数>考慮`（このフレームに評価したメッシュレット×インスタンス総数）。
+  **生存数の表示は GPU→CPU リードバックが必要なため未実装（TODO）**。現状は「総数（考慮数）」のみ。
+- スキンメッシュのメッシュレットカリング（毎フレーム境界再計算）／LOD1〜3 への拡張／間接コマンドの
+  真のコンパクション統計リードバック／per-prim ではなく全プリミティブ統合ディスパッチ／Hi-Z オクルージョン併用。
+- **実機での視覚 A/B 検証（トグル ON/OFF で見た目一致）が受入の最終条件。GPU 実行環境が無いため本実装は未検証。**

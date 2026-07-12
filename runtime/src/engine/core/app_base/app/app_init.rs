@@ -339,6 +339,9 @@ impl App {
         self.post_fx.transparency = crate::engine::core::renderer::TransparencyMode::from_str(
             v["transparency"].as_str().unwrap_or("sort"),
         );
+        // GPU メッシュレットカリング（第1弾, 既定 true）。キー欠落時も有効。
+        // MULTI_DRAW_INDIRECT_COUNT 非対応 GPU では本値に関わらず実行時に従来経路へフォールバック。
+        self.post_fx.meshlet_cull = v["meshlet_cull"].as_bool().unwrap_or(true);
         // 環境光（Phase R1.5, 既定 白 × 0.05 ＝従来のハードコード値）。読み側は unwrap_or でデフォルト維持。
         // `ambient_color` は [r,g,b] 配列（欠落・不正時は白）。`ambient_intensity` は 0..1 想定（0 で暗闇）。
         use crate::engine::core::renderer::{DEFAULT_AMBIENT_COLOR, DEFAULT_AMBIENT_INTENSITY};

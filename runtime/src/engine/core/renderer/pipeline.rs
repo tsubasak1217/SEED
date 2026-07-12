@@ -362,6 +362,81 @@ impl CullPipeline {
 }
 
 // ============================================================
+//  MeshletCullPipeline — GPU メッシュレットカリング（第1弾）
+// ============================================================
+
+/// GPU メッシュレットカリング コンピュートパイプライン。
+///
+/// Group 0 BGL（`shaders/meshlet_cull.wgsl` と一致）:
+///   0 = instances   (array<InstanceData>,        Storage RO)
+///   1 = meshlets     (array<Meshlet>,             Storage RO)
+///   2 = draw_cmds    (array<DrawIndexedIndirect>, Storage RW)
+///   3 = draw_count   (atomic<u32>,                Storage RW)
+///   4 = params       (CullParams,                 Uniform)
+pub struct MeshletCullPipeline {
+    pub pipeline: wgpu::ComputePipeline,
+    pub bgl:      wgpu::BindGroupLayout,
+}
+
+impl MeshletCullPipeline {
+    fn new(device: &wgpu::Device, cache: Option<&wgpu::PipelineCache>) -> Self {
+        let src    = include_str!("shaders/meshlet_cull.wgsl");
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label:  Some("Meshlet Cull Shader"),
+            source: wgpu::ShaderSource::Wgsl(src.into()),
+        });
+
+        let make_storage = |binding: u32, read_only: bool| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Buffer {
+                ty:                 wgpu::BufferBindingType::Storage { read_only },
+                has_dynamic_offset: false,
+                min_binding_size:   None,
+            },
+            count: None,
+        };
+        let make_uniform = |binding: u32| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Buffer {
+                ty:                 wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size:   None,
+            },
+            count: None,
+        };
+
+        let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label:   Some("Meshlet Cull BGL"),
+            entries: &[
+                make_storage(0, true),  // instances
+                make_storage(1, true),  // meshlets
+                make_storage(2, false), // draw_cmds
+                make_storage(3, false), // draw_count (atomic)
+                make_uniform(4),        // params
+            ],
+        });
+
+        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label:                Some("Meshlet Cull Pipeline Layout"),
+            bind_group_layouts:   &[&bgl],
+            push_constant_ranges: &[],
+        });
+        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label:               Some("Meshlet Cull Compute Pipeline"),
+            layout:              Some(&layout),
+            module:              &shader,
+            entry_point:         Some("cs_main"),
+            compilation_options: Default::default(),
+            cache,
+        });
+
+        Self { pipeline, bgl }
+    }
+}
+
+// ============================================================
 //  SkinComputePipeline — GPU スキニング コンピュートパイプライン
 // ============================================================
 
@@ -1264,6 +1339,8 @@ pub struct DrawPipelines {
     pub rt:                   Option<RtMeshPipelines>,
     pub unlit_line:           UnlitPipeline,
     pub cull:                 CullPipeline,
+    /// GPU メッシュレットカリング compute パイプライン（第1弾）。
+    pub meshlet_cull:         MeshletCullPipeline,
     pub skin_compute:         SkinComputePipeline,
     pub depth_prepass:        DepthPrepassPipelines,
     pub shadow_depth:         ShadowDepthPipelines,
@@ -1317,6 +1394,7 @@ impl DrawPipelines {
         };
         let unlit_line          = UnlitPipeline::new(device, sf, df, cache);
         let cull                = CullPipeline::new(device, cache);
+        let meshlet_cull        = MeshletCullPipeline::new(device, cache);
         let skin_compute        = SkinComputePipeline::new(device, cache);
         let depth_prepass       = DepthPrepassPipelines::new(device, df, cache);
         let shadow_depth        = ShadowDepthPipelines::new(device, super::shadow::SHADOW_DEPTH_FORMAT, cache);
@@ -1336,6 +1414,6 @@ impl DrawPipelines {
         let particles           = ParticlePipelines::new(device, queue, sf, df, &mesh.camera_bgl, cache);
         // スカイボックス（Phase R9）。シーン HDR（sf）へ描くため sf/df を渡す。
         let skybox              = super::skybox::SkyboxPipelines::new(device, sf, df, cache);
-        Self { mesh, skinned_mesh, rt, unlit_line, cull, skin_compute, depth_prepass, shadow_depth, id_pass, outline, sprite, sprite_outline, canvas_id, camera_preview_blit, bar_fill, transparent, particle_compute, particles, skybox }
+        Self { mesh, skinned_mesh, rt, unlit_line, cull, meshlet_cull, skin_compute, depth_prepass, shadow_depth, id_pass, outline, sprite, sprite_outline, canvas_id, camera_preview_blit, bar_fill, transparent, particle_compute, particles, skybox }
     }
 }

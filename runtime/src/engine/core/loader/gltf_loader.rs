@@ -356,13 +356,100 @@ fn load_primitive(
     };
 
     let lod_indices = generate_lod_indices(&indices, &vertices);
+    // LOD0 メッシュレット分割（GPU カリング第1弾）。スキンメッシュは対象外。
+    let (meshlets, meshlet_vertices, meshlet_triangles) =
+        build_meshlets_for_primitive(&indices, &vertices, !skin_vertices.is_empty());
     Primitive {
         vertices,
         skin_vertices,
         indices,
         material_index: prim.material().index(),
         lod_indices,
+        meshlets,
+        meshlet_vertices,
+        meshlet_triangles,
     }
+}
+
+// ============================================================
+//  メッシュレット分割（GPU カリング第1弾, LOD0 のみ）
+// ============================================================
+
+/// 1 メッシュレットの最大頂点数（meshopt 制約: <= 64）。
+const MESHLET_MAX_VERTS: usize = 64;
+/// 1 メッシュレットの最大三角形数（meshopt 制約: <= 126 かつ 4 の倍数）。
+const MESHLET_MAX_TRIS: usize = 124;
+/// コーン生成の重み（0=クラスタサイズ優先 / 1=コーンカリング効率優先。中庸の 0.5）。
+const MESHLET_CONE_WEIGHT: f32 = 0.5;
+
+/// LOD0 のインデックス/頂点から meshopt でメッシュレットを分割し、
+/// 各メッシュレットの境界球・法線コーンを計算して記述子を返す。
+///
+/// 戻り値: `(記述子, meshlet_vertices, meshlet_triangles)`。
+/// スキンメッシュ（`skinned=true`）や分割不能・失敗時は全て空を返す
+/// （→ 従来の LOD0 描画経路が使われる）。
+pub(super) fn build_meshlets_for_primitive(
+    indices:  &[u32],
+    vertices: &[Vertex],
+    skinned:  bool,
+) -> (Vec<MeshletDesc>, Vec<u32>, Vec<u8>) {
+    use meshopt::VertexDataAdapter;
+
+    let empty = (Vec::new(), Vec::new(), Vec::new());
+
+    // スキンメッシュはロード時の静的境界が毎フレームの変形で無効になるため対象外。
+    if skinned { return empty; }
+    // 三角形が無い / 不正なインデックス数なら分割しない。
+    if indices.len() < 3 || indices.len() % 3 != 0 { return empty; }
+
+    // position は Vertex の先頭フィールド（offset 0, ストライド = size_of::<Vertex>()）。
+    let adapter = match VertexDataAdapter::new(
+        bytemuck::cast_slice::<Vertex, u8>(vertices),
+        std::mem::size_of::<Vertex>(),
+        0,
+    ) {
+        Ok(a) => a,
+        Err(_) => return empty,
+    };
+
+    // meshopt でメッシュレット分割。
+    let ms = meshopt::build_meshlets(
+        indices,
+        &adapter,
+        MESHLET_MAX_VERTS,
+        MESHLET_MAX_TRIS,
+        MESHLET_CONE_WEIGHT,
+    );
+    if ms.meshlets.is_empty() { return empty; }
+
+    // 各メッシュレットの境界球・法線コーンを計算して記述子を組む。
+    let mut descs = Vec::with_capacity(ms.len());
+    for i in 0..ms.len() {
+        let raw    = &ms.meshlets[i]; // ffi: vertex_offset / triangle_offset / vertex_count / triangle_count
+        let bounds = meshopt::compute_meshlet_bounds(ms.get(i), &adapter);
+        descs.push(MeshletDesc {
+            vertex_offset:   raw.vertex_offset,
+            triangle_offset: raw.triangle_offset,
+            vertex_count:    raw.vertex_count,
+            triangle_count:  raw.triangle_count,
+            center:      bounds.center,
+            radius:      bounds.radius,
+            cone_axis:   bounds.cone_axis,
+            cone_cutoff: bounds.cone_cutoff,
+        });
+    }
+
+    // build_meshlets の vertices/triangles は最悪ケース長（メッシュレット数×上限）で
+    // 確保されるため、実使用範囲まで切り詰めてキャッシュサイズを抑える。
+    // オフセットは切り詰め後も不変（先頭からの絶対位置のため）。
+    let used_v = descs.iter().map(|d| (d.vertex_offset + d.vertex_count) as usize).max().unwrap_or(0);
+    let used_t = descs.iter().map(|d| (d.triangle_offset + d.triangle_count * 3) as usize).max().unwrap_or(0);
+    let mut mv = ms.vertices;
+    let mut mt = ms.triangles;
+    mv.truncate(used_v);
+    mt.truncate(used_t);
+
+    (descs, mv, mt)
 }
 
 // ============================================================
@@ -585,4 +672,95 @@ fn load_skins(
             root_joint,
         }
     }).collect()
+}
+
+// ============================================================
+//  テスト
+// ============================================================
+
+#[cfg(test)]
+mod meshlet_tests {
+    use super::*;
+
+    /// 平面グリッド（N×N クアッド）を生成してメッシュレット分割の健全性を検証する。
+    /// - 全三角形が過不足なくいずれかのメッシュレットに割り当てられる
+    /// - 各メッシュレットのオフセット/カウントが連結配列の範囲内
+    /// - 三角形が参照するローカル頂点番号が vertex_count 未満
+    /// - 境界球中心・半径が有限で、全構成頂点を（マージン内で）内包する
+    /// - 法線コーン軸が概ね単位ベクトル（全法線 +Y なので軸も +Y 付近）
+    #[test]
+    fn meshlets_cover_all_triangles_and_bounds_are_sane() {
+        // 32×32 頂点のグリッド（= 31×31×2 三角形 ≒ 1922 枚）。1 メッシュレット 124 枚上限を
+        // 超えるため複数メッシュレットに分割される。
+        const N: usize = 32;
+        let mut vertices = Vec::new();
+        for z in 0..N {
+            for x in 0..N {
+                vertices.push(Vertex {
+                    position: [x as f32, 0.0, z as f32],
+                    normal:   [0.0, 1.0, 0.0],
+                    ..Default::default()
+                });
+            }
+        }
+        let mut indices: Vec<u32> = Vec::new();
+        for z in 0..N - 1 {
+            for x in 0..N - 1 {
+                let i = (z * N + x) as u32;
+                let r = i + N as u32;
+                indices.extend_from_slice(&[i, r, i + 1, i + 1, r, r + 1]);
+            }
+        }
+        let tri_count = indices.len() / 3;
+
+        let (descs, mv, mt) = build_meshlets_for_primitive(&indices, &vertices, false);
+        assert!(!descs.is_empty(), "メッシュレットが生成されること");
+        assert!(descs.len() >= 2, "上限超えで複数メッシュレットに分割されること");
+
+        // 三角形総数がメッシュレット三角形数の合計と一致する。
+        let sum_tris: u32 = descs.iter().map(|d| d.triangle_count).sum();
+        assert_eq!(sum_tris as usize, tri_count, "全三角形が割り当てられる");
+
+        for d in &descs {
+            assert!(d.vertex_count as usize <= MESHLET_MAX_VERTS);
+            assert!(d.triangle_count as usize <= MESHLET_MAX_TRIS);
+            // オフセット + カウントが連結配列の範囲内。
+            assert!((d.vertex_offset + d.vertex_count) as usize <= mv.len());
+            assert!((d.triangle_offset + d.triangle_count * 3) as usize <= mt.len());
+
+            // 三角形コーナーの参照するローカル頂点番号は vertex_count 未満。
+            for c in 0..(d.triangle_count * 3) as usize {
+                let local = mt[d.triangle_offset as usize + c] as u32;
+                assert!(local < d.vertex_count, "ローカル頂点番号が範囲内");
+            }
+
+            // 境界: 有限・正の半径。
+            assert!(d.radius.is_finite() && d.radius >= 0.0);
+            assert!(d.center.iter().all(|v| v.is_finite()));
+
+            // 境界球が全構成頂点を（数値マージン込みで）内包する。
+            for lv in 0..d.vertex_count as usize {
+                let orig = mv[d.vertex_offset as usize + lv] as usize;
+                let p = vertices[orig].position;
+                let dx = p[0] - d.center[0];
+                let dy = p[1] - d.center[1];
+                let dz = p[2] - d.center[2];
+                let dist = (dx * dx + dy * dy + dz * dz).sqrt();
+                assert!(dist <= d.radius + 1e-2, "頂点が境界球内: dist={dist} r={}", d.radius);
+            }
+
+            // 法線コーン軸は概ね単位ベクトル。
+            let al = (d.cone_axis[0].powi(2) + d.cone_axis[1].powi(2) + d.cone_axis[2].powi(2)).sqrt();
+            assert!((al - 1.0).abs() < 1e-2 || al == 0.0, "コーン軸が単位ベクトル: len={al}");
+        }
+    }
+
+    /// スキンメッシュ・三角形なしは空を返す（従来経路へフォールバック）。
+    #[test]
+    fn skinned_and_degenerate_yield_no_meshlets() {
+        let verts = vec![Vertex::default(); 3];
+        let idx = vec![0u32, 1, 2];
+        assert!(build_meshlets_for_primitive(&idx, &verts, true).0.is_empty(), "スキンは空");
+        assert!(build_meshlets_for_primitive(&[], &verts, false).0.is_empty(), "三角形なしは空");
+    }
 }

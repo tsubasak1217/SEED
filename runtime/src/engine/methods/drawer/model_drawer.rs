@@ -30,6 +30,10 @@ pub fn draw_model_indirect<'pass>(
     lights_bg:   &'pass wgpu::BindGroup,
     pipelines:   &'pass DrawPipelines,
     rt_pipes:    Option<&'pass RtMeshPipelines>,
+    // GPU メッシュレットカリング（第1弾）を LOD0 で使うか。true でも対象外プリミティブ
+    // （スキン/メッシュレット無し/Blend/非アクティブスロット）は従来 draw_indexed へ自動フォールバック。
+    // preview/gizmo 等の呼び出しは false を渡し、従来経路と完全一致（パリティ担保）。
+    meshlet_cull: bool,
 ) {
     if batch.n_prims == 0 { return; }
 
@@ -50,7 +54,7 @@ pub fn draw_model_indirect<'pass>(
         // LOD のジョイント BG（スキンなしの場合は None）
         let joint_bg = batch.joint_vs_bg(lod);
 
-        for draw in &batch.node_prim_list {
+        for (draw_idx, draw) in batch.node_prim_list.iter().enumerate() {
             let Some((_, model_bg)) = batch.lod_node_data[lod][draw.node_idx].as_ref()
                 else { continue };
 
@@ -112,12 +116,29 @@ pub fn draw_model_indirect<'pass>(
             // ── モデル行列 bind group（group 1）───────────────────
             render_pass.set_bind_group(1, model_bg, &[]);
 
-            // ── 頂点・インデックスバッファ ─────────────────────────
+            // ── 頂点バッファ ───────────────────────────────────────
             render_pass.set_vertex_buffer(0, prim.vertex_buffer.slice(..));
             if draw.is_skinned {
                 render_pass.set_vertex_buffer(1, prim.skin_vertex_buffer.as_ref().unwrap().slice(..));
             }
 
+            // ── メッシュレット間接描画（LOD0 のみ、対象プリミティブのみ）──────
+            // 対象条件を満たすとき: 展開済みメッシュレットインデックスを張り、
+            // カリング compute が詰めた DrawIndexedIndirect を multi_draw_indexed_indirect_count で描画。
+            // instance_index は各コマンドの first_instance（= 可視インスタンス番号）から供給される。
+            if meshlet_cull && lod == 0 && !draw.is_skinned {
+                if let (Some(mi_buf), Some((cmd_buf, count_buf, capacity))) =
+                    (prim.meshlet_index_buffer.as_ref(), batch.meshlet_draw(draw_idx))
+                {
+                    render_pass.set_index_buffer(mi_buf.slice(..), wgpu::IndexFormat::Uint32);
+                    render_pass.multi_draw_indexed_indirect_count(
+                        cmd_buf, 0, count_buf, 0, capacity,
+                    );
+                    continue;
+                }
+            }
+
+            // ── 従来経路（CPU カリング済み draw_indexed）──────────────
             let (idx_buf, idx_count) = prim.get_lod_index_buffer(lod);
             render_pass.set_index_buffer(idx_buf.slice(..), wgpu::IndexFormat::Uint32);
 

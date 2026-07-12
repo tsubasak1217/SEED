@@ -226,6 +226,9 @@ impl App {
         let mut perf_skin_mc_count: usize = 0;
         // 実際に dispatch したスキン LOD 数（visible_count > 0 のもの）
         let mut perf_skin_dispatches: u32 = 0;
+        // GPU メッシュレットカリング（第1弾）: このフレームに考慮した
+        // メッシュレット×インスタンス総数（LOD0 不透明・可視インスタンス分）。
+        let mut perf_meshlet_considered: u32 = 0;
         // 3D 物理同期 update_physics()（recv/書き戻し/kinematic送信/ドラッグ押し戻し同期問い合わせ）[ms]
         let mut perf_physics_ms:    f64 = 0.0;
         // 編集時スナップショット記録 try_record_physics_snapshot()（ECS 状態のキャプチャ）[ms]
@@ -915,6 +918,12 @@ impl App {
                     // RT パイプライン/複合 BindGroup 選択の両方に使う（Phase R8）。
                     let rt_on = draw_ctx.rt_active(self.rt_shadows);
 
+                    // このフレームで GPU メッシュレットカリング（第1弾）を使うか。
+                    // 設定 meshlet_cull オン かつ GPU が MULTI_DRAW_INDIRECT_COUNT 対応のときのみ。
+                    // false のときはメインパス不透明 LOD0 も完全に従来 draw_indexed 経路（パリティ担保）。
+                    let meshlet_active = self.post_fx.meshlet_cull
+                        && crate::engine::core::renderer::gpu_resources::meshlet_cull_supported();
+
                     // ライト配列を GPU へアップロードする（全メッシュ描画が group 4 で共用）。
                     // メタ（ライト数・RT 影フラグ）も同時に更新される。shadow_index 確定後にアップロードする。
                     draw_ctx.light_buffer.update(
@@ -1123,6 +1132,43 @@ impl App {
                             &mut particle_pass, &draw_ctx.pipelines.particle_compute,
                         );
                     } // particle_pass がドロップされ ComputePass が終了する
+
+                    // ── GPU メッシュレットカリング（第1弾）: 前処理＋ compute ディスパッチ ──
+                    // meshlet_active（設定オン かつ MULTI_DRAW_INDIRECT_COUNT 対応）のときのみ。
+                    // 前処理: 可視 LOD0 インスタンス × メッシュレットのパラメータ更新・カウント 0 リセット・
+                    //         BindGroup 構築。compute: 生存メッシュレットを間接コマンドへ詰める。
+                    // 出力（cmd/count バッファ）はメインパスの multi_draw_indexed_indirect_count が読む。
+                    if meshlet_active {
+                        // 前処理（BindGroup 構築・パラメータ更新）。batch は可変、GpuModel は
+                        // gpu_model_by_path から借用（all_mcs 由来＝shared_model_batches と非交差）。
+                        for (path, sd) in self.shared_model_batches.iter_mut() {
+                            if !sd.batch.has_meshlet_slots() { continue; }
+                            if let Some(&gpu) = gpu_model_by_path.get(path.as_str()) {
+                                perf_meshlet_considered += sd.batch.prepare_meshlet_cull(
+                                    &draw_ctx.queue,
+                                    &draw_ctx.device,
+                                    gpu,
+                                    &draw_ctx.pipelines.meshlet_cull.bgl,
+                                    &saved_frustum_planes,
+                                    saved_camera_pos,
+                                );
+                            }
+                        }
+                        // compute ディスパッチ（前処理で active になったスロットのみ）。
+                        if perf_meshlet_considered > 0 {
+                            let mut cull_pass = frame.encoder_mut().begin_compute_pass(
+                                &wgpu::ComputePassDescriptor {
+                                    label:            Some("Meshlet Cull Pass"),
+                                    timestamp_writes: None,
+                                },
+                            );
+                            for sd in self.shared_model_batches.values() {
+                                sd.batch.record_meshlet_cull(
+                                    &mut cull_pass, &draw_ctx.pipelines.meshlet_cull,
+                                );
+                            }
+                        } // cull_pass ドロップで ComputePass 終了
+                    }
 
                     // ── スカイボックス: GPU 同期（Phase R9）────────────────────
                     // uniform バッファ・BindGroup の確保／更新とテクスチャロードを行う。
@@ -1482,7 +1528,7 @@ impl App {
                                         &mut preview_pass, gpu, &sd.batch,
                                         &preview_mesh_cam_buf.bind_group,
                                         &draw_ctx.light_buffer.bind_group,
-                                        &draw_ctx.pipelines, None,
+                                        &draw_ctx.pipelines, None, false,
                                     );
                                 }
                             }
@@ -3093,7 +3139,7 @@ impl App {
                                     draw_model_indirect(
                                         &mut pass, gpu, &sd.batch,
                                         &camera_buf.bind_group, scene_lights_bg,
-                                        &draw_ctx.pipelines, rt_pipes,
+                                        &draw_ctx.pipelines, rt_pipes, meshlet_active,
                                     );
                                 }
                             }
@@ -3456,7 +3502,7 @@ impl App {
                                 draw_model_indirect(
                                     &mut pass, &gizmo.gpu_model, &gizmo.batch,
                                     &camera_buf.bind_group, &draw_ctx.light_buffer.bind_group,
-                                    &draw_ctx.pipelines, None,
+                                    &draw_ctx.pipelines, None, false,
                                 );
                             }
                         }
@@ -3467,7 +3513,7 @@ impl App {
                                 draw_model_indirect(
                                     &mut pass, &gizmo.gpu_model, &gizmo.batch,
                                     &camera_buf.bind_group, &draw_ctx.light_buffer.bind_group,
-                                    &draw_ctx.pipelines, None,
+                                    &draw_ctx.pipelines, None, false,
                                 );
                             }
                         }
@@ -3478,7 +3524,7 @@ impl App {
                                 draw_model_indirect(
                                     &mut pass, &gizmo.gpu_model, &gizmo.batch,
                                     &camera_buf.bind_group, &draw_ctx.light_buffer.bind_group,
-                                    &draw_ctx.pipelines, None,
+                                    &draw_ctx.pipelines, None, false,
                                 );
                             }
                         }
@@ -4247,6 +4293,7 @@ impl App {
                              tlas={perf_tlas_ms:.3}ms({}/{perf_tlas_insts}inst) \
                              main_pass={perf_main_pass_ms:.3}ms(draw={perf_draw_ms:.3}ms+pass_drop={perf_pass_drop_ms:.3}ms+rest={main_rest_ms:.3}ms) \
                              sprites={perf_sprite_insts}枚/{perf_sprite_draws}draws \
+                             meshlet={perf_meshlet_considered}考慮 \
                              id={perf_id_ms:.3}ms grid={perf_grid_ms:.3}ms collider={perf_collider_ms:.3}ms \
                              finish={perf_finish_ms:.3}ms other={other_ms:.3}ms",
                             if perf_tlas_built { "build" } else { "skip" },

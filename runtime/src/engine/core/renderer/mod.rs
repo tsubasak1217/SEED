@@ -216,11 +216,22 @@ impl Renderer {
             eprintln!("[SEED RT] インラインレイトレ: 非対応（{reason}）→ シャドウマップ経路を使用");
         }
 
+        // GPU メッシュレットカリング（第1弾）は MULTI_DRAW_INDIRECT_COUNT に依存する。
+        // 非対応 GPU では従来の CPU カリング＋draw_indexed 経路へ完全フォールバックする。
+        let supports_mdi_count = af.contains(wgpu::Features::MULTI_DRAW_INDIRECT_COUNT);
+        gpu_resources::set_meshlet_cull_supported(supports_mdi_count);
+        if supports_mdi_count {
+            eprintln!("[SEED MESHLET] メッシュレットカリング: 対応（MULTI_DRAW_INDIRECT_COUNT を要求）");
+        } else {
+            eprintln!("[SEED MESHLET] メッシュレットカリング: 非対応 → 従来 CPU カリング経路を使用");
+        }
+
         let (device, queue) = pollster::block_on(adapter.request_device(
             &wgpu::DeviceDescriptor {
                 label:             None,
                 required_features: wgpu::Features::MULTI_DRAW_INDIRECT
                                  | wgpu::Features::INDIRECT_FIRST_INSTANCE
+                                 | if supports_mdi_count { wgpu::Features::MULTI_DRAW_INDIRECT_COUNT } else { wgpu::Features::empty() }
                                  | if supports_bc { wgpu::Features::TEXTURE_COMPRESSION_BC } else { wgpu::Features::empty() }
                                  | if supports_pipeline_cache { wgpu::Features::PIPELINE_CACHE } else { wgpu::Features::empty() }
                                  // RT 影は「対応していれば常に要求」する。設定によるオン/オフは

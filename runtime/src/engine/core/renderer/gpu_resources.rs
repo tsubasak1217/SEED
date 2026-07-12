@@ -9,9 +9,30 @@ use crate::engine::core::loader::model::{
 use super::uniforms::{CameraUniform, ModelUniform, MaterialUniform, JointUniform, ColorVertex,
                       GpuCullData, FrustumUniform, GizmoVertex};
 use super::skin_system::SkinComputeSystem;
-use super::pipeline::SkinComputePipeline;
+use super::pipeline::{SkinComputePipeline, MeshletCullPipeline};
 use super::material_asset;
 use crate::engine::components::material_override::{MaterialOverride, MaterialOverrideKind};
+
+// ============================================================
+//  GPU メッシュレットカリング対応フラグ（第1弾）
+// ============================================================
+
+/// GPU が MULTI_DRAW_INDIRECT_COUNT に対応しているか。
+/// レンダラ初期化時に `set_meshlet_cull_supported` で設定する。デフォルト false。
+/// false のデバイスではメッシュレットカリング経路は完全に無効化され、
+/// 従来の CPU カリング＋`draw_indexed` 経路がそのまま使われる（フォールバック）。
+static MESHLET_CULL_SUPPORTED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// GPU の MULTI_DRAW_INDIRECT_COUNT 対応可否を設定する（デバイス生成時に一度呼ぶ）。
+pub fn set_meshlet_cull_supported(v: bool) {
+    MESHLET_CULL_SUPPORTED.store(v, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// GPU が MULTI_DRAW_INDIRECT_COUNT に対応しているか（メッシュレットカリング可否）。
+pub fn meshlet_cull_supported() -> bool {
+    MESHLET_CULL_SUPPORTED.load(std::sync::atomic::Ordering::Relaxed)
+}
 
 // ============================================================
 //  マテリアルオーバーライド適用（Phase R7）で使うマジックナンバー排除用定数
@@ -392,6 +413,27 @@ impl GpuMaterial {
 //  GpuPrimitive / GpuMesh / GpuModel
 // ============================================================
 
+/// GPU メッシュレット記述子（std430 storage, stride 48）。
+///
+/// `index_offset` / `index_count` は `meshlet_index_buffer`（展開済みインデックス）への
+/// オフセット・長さで、カリング compute が生存メッシュレットの `DrawIndexedIndirect` へ
+/// そのまま書き込む。境界球・法線コーンはモデルローカル空間で、compute がインスタンス
+/// 行列でワールド空間へ変換して視錐台/背面テストに使う。
+///
+/// レイアウトは `shaders/meshlet_cull.wgsl` の `Meshlet` 構造体と一致させること。
+#[repr(C)]
+#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct GpuMeshlet {
+    pub index_offset: u32,   // offset 0
+    pub index_count:  u32,   // offset 4
+    pub _pad0:        u32,   // offset 8
+    pub _pad1:        u32,   // offset 12
+    pub center:       [f32; 3], // offset 16
+    pub radius:       f32,   // offset 28
+    pub cone_axis:    [f32; 3], // offset 32
+    pub cone_cutoff:  f32,   // offset 44
+}                            // size 48
+
 pub struct GpuPrimitive {
     pub vertex_buffer:        wgpu::Buffer,
     /// 頂点数（RT 影 Phase R8: BLAS サイズ記述子で使用）。
@@ -406,6 +448,16 @@ pub struct GpuPrimitive {
     pub lod_index_buffers:    Vec<wgpu::Buffer>,
     pub lod_index_counts:     Vec<u32>,
     pub material_index:       Option<usize>,
+
+    // ── メッシュレット（GPU カリング第1弾, LOD0 のみ）─────────────
+    /// 展開済みメッシュレットインデックスバッファ（Uint32）。各メッシュレットの三角形を
+    /// 元頂点インデックスに解決して連結したもの。間接描画時の INDEX バッファとして使う。
+    /// メッシュレット未生成のプリミティブでは None。
+    pub meshlet_index_buffer: Option<wgpu::Buffer>,
+    /// メッシュレット記述子バッファ（storage, `GpuMeshlet` 配列）。カリング compute が読む。
+    pub meshlet_desc_buffer:  Option<wgpu::Buffer>,
+    /// メッシュレット数。0 = メッシュレット未生成。
+    pub meshlet_count:        u32,
 }
 
 impl GpuPrimitive {
@@ -482,6 +534,12 @@ impl GpuPrimitive {
             .map(|lod_idx| lod_idx.len() as u32)
             .collect();
 
+        // ── メッシュレット GPU バッファ（LOD0, GPU カリング第1弾）──────────
+        // 展開済みインデックス（元頂点インデックス）と記述子（境界球・コーン）を構築。
+        // メッシュレット未生成（スキン/微小/失敗）のプリミティブは None のまま。
+        let (meshlet_index_buffer, meshlet_desc_buffer, meshlet_count) =
+            Self::build_meshlet_buffers(device, prim);
+
         Self {
             vertex_buffer,
             vertex_count:   prim.vertices.len() as u32,
@@ -492,7 +550,72 @@ impl GpuPrimitive {
             lod_index_buffers,
             lod_index_counts,
             material_index: prim.material_index,
+            meshlet_index_buffer,
+            meshlet_desc_buffer,
+            meshlet_count,
         }
+    }
+
+    /// LOD0 メッシュレットの GPU バッファ（展開インデックス + 記述子）を構築する。
+    ///
+    /// - 展開インデックス: 各メッシュレットの三角形（ローカル頂点番号）を
+    ///   `meshlet_vertices` を介して元頂点インデックスへ解決し連結する。間接描画の
+    ///   INDEX バッファとして使い、記述子の `index_offset`/`index_count` が各メッシュレットの
+    ///   範囲を指す。
+    /// - 記述子: `GpuMeshlet`（境界球・法線コーン + 展開インデックス範囲）。
+    ///
+    /// メッシュレット未生成なら `(None, None, 0)` を返す（従来経路で描画される）。
+    fn build_meshlet_buffers(
+        device: &wgpu::Device,
+        prim:   &Primitive,
+    ) -> (Option<wgpu::Buffer>, Option<wgpu::Buffer>, u32) {
+        if !prim.has_meshlets() {
+            return (None, None, 0);
+        }
+
+        let mut expanded: Vec<u32> = Vec::new();
+        let mut gpu_meshlets: Vec<GpuMeshlet> = Vec::with_capacity(prim.meshlets.len());
+
+        for m in &prim.meshlets {
+            let index_offset = expanded.len() as u32;
+            let vbase = m.vertex_offset as usize;
+            let tbase = m.triangle_offset as usize;
+            let corner_count = (m.triangle_count * 3) as usize;
+            // 各三角形コーナー: ローカル頂点番号 → メッシュレット頂点表 → 元頂点インデックス。
+            for c in 0..corner_count {
+                let local = prim.meshlet_triangles[tbase + c] as usize;
+                let orig  = prim.meshlet_vertices[vbase + local];
+                expanded.push(orig);
+            }
+            gpu_meshlets.push(GpuMeshlet {
+                index_offset,
+                index_count: m.triangle_count * 3,
+                _pad0: 0,
+                _pad1: 0,
+                center:      m.center,
+                radius:      m.radius,
+                cone_axis:   m.cone_axis,
+                cone_cutoff: m.cone_cutoff,
+            });
+        }
+
+        // 展開インデックスが空（理論上到達しない）の場合は無効化。
+        if expanded.is_empty() || gpu_meshlets.is_empty() {
+            return (None, None, 0);
+        }
+
+        let index_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label:    Some("Meshlet Index Buffer"),
+            contents: bytemuck::cast_slice(&expanded),
+            usage:    wgpu::BufferUsages::INDEX,
+        });
+        let desc_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label:    Some("Meshlet Desc Buffer"),
+            contents: bytemuck::cast_slice(&gpu_meshlets),
+            usage:    wgpu::BufferUsages::STORAGE,
+        });
+
+        (Some(index_buf), Some(desc_buf), gpu_meshlets.len() as u32)
     }
 }
 
@@ -961,7 +1084,51 @@ pub struct InstancedModelBatch {
     /// `None` または要素なしのインスタンスは静止（先頭フレームで凍結）。
     /// 毎フレーム `set_anim_time_overrides` で更新する。
     pub anim_time_overrides: Vec<Option<f32>>,
+
+    // ── GPU メッシュレットカリング（第1弾）─────────────────────
+    /// `node_prim_list`（ソート後）と同順・同長。メッシュレットを持つ非スキンプリミティブに
+    /// 対してのみ Some。LOD0 の間接描画用リソース（コマンド/カウント/パラメータバッファ）と
+    /// 毎フレーム再構築する BindGroup・ディスパッチ数を保持する。
+    meshlet_cull: Vec<Option<MeshletCullSlot>>,
 }
+
+/// 1 プリミティブ（LOD0）のメッシュレットカリング GPU リソース。
+///
+/// バッファ（cmd/count/params）は容量固定で永続化し、BindGroup とディスパッチ数は
+/// `prepare_meshlet_cull` が毎フレーム再構築する（GpuModel 差し替え耐性のため）。
+struct MeshletCullSlot {
+    /// インスタンス行列バッファ参照用のノードインデックス（`lod_node_data[0][node_idx]`）。
+    node_idx:      usize,
+    /// このプリミティブのメッシュレット数。
+    meshlet_count: u32,
+    /// draw_cmds の最大コマンド数（= meshlet_count × num_instances(最大)）。
+    capacity:      u32,
+    /// DrawIndexedIndirect コマンドバッファ（compute が生存分を先頭から詰める）。
+    cmd_buf:       wgpu::Buffer,
+    /// 生存コマンド数（atomic）。indirect count バッファ。毎フレーム 0 リセット。
+    count_buf:     wgpu::Buffer,
+    /// カリング compute のパラメータ UBO（視錐台・カメラ・カウント）。
+    params_buf:    wgpu::Buffer,
+    /// このフレームの compute BindGroup（prepare で構築）。None = 今フレーム非アクティブ。
+    bind_group:    Option<wgpu::BindGroup>,
+    /// このフレームのディスパッチワークグループ数（prepare で算出）。
+    workgroups:    u32,
+}
+
+/// メッシュレットカリング compute のパラメータ UBO（meshlet_cull.wgsl CullParams と一致, 128B）。
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct MeshletCullParams {
+    planes:         [[f32; 4]; 6], // 96
+    camera_pos:     [f32; 4],      // 16
+    instance_count: u32,           // 112
+    meshlet_count:  u32,           // 116
+    _pad0:          u32,           // 120
+    _pad1:          u32,           // 124
+}                                  // 128
+
+/// DrawIndexedIndirect のバイトサイズ（u32 × 5）。
+const DRAW_INDEXED_INDIRECT_SIZE: u64 = 20;
 
 impl InstancedModelBatch {
     pub fn new(
@@ -1065,8 +1232,50 @@ impl InstancedModelBatch {
             .collect();
         let (lod_id_buffers, lod_id_bgs): (Vec<_>, Vec<_>) = id_data.into_iter().unzip();
 
+        // ── メッシュレットカリング スロット（node_prim_list と同順・同長）──────
+        // メッシュレットを持つ非スキンプリミティブにのみ Some。容量は
+        // meshlet_count × num_instances(最大) 分のコマンドを確保する。
+        let meshlet_cull: Vec<Option<MeshletCullSlot>> = node_prim_list.iter().map(|draw| {
+            if draw.is_skinned { return None; }
+            let prim = &model.meshes[draw.mesh_idx].primitives[draw.prim_idx];
+            let ml_count = prim.meshlets.len() as u32;
+            if ml_count == 0 { return None; }
+
+            let capacity = ml_count.saturating_mul(n as u32).max(1);
+            let cmd_buf = device.create_buffer(&wgpu::BufferDescriptor {
+                label:              Some("Meshlet Cull Cmd Buffer"),
+                size:               capacity as u64 * DRAW_INDEXED_INDIRECT_SIZE,
+                usage:              wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::INDIRECT,
+                mapped_at_creation: false,
+            });
+            let count_buf = device.create_buffer(&wgpu::BufferDescriptor {
+                label:              Some("Meshlet Cull Count Buffer"),
+                size:               4,
+                usage:              wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::INDIRECT
+                                  | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            let params_buf = device.create_buffer(&wgpu::BufferDescriptor {
+                label:              Some("Meshlet Cull Params Buffer"),
+                size:               std::mem::size_of::<MeshletCullParams>() as u64,
+                usage:              wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            Some(MeshletCullSlot {
+                node_idx: draw.node_idx,
+                meshlet_count: ml_count,
+                capacity,
+                cmd_buf,
+                count_buf,
+                params_buf,
+                bind_group: None,
+                workgroups: 0,
+            })
+        }).collect();
+
         let n_mesh_nodes = mesh_node_indices.len();
         Self {
+            meshlet_cull,
             lod_node_data,
             num_instances,
             lod_visible_counts: [0; NUM_LODS],
@@ -1097,6 +1306,115 @@ impl InstancedModelBatch {
     pub fn set_anim_time_overrides(&mut self, overrides: &[Option<f32>]) {
         self.anim_time_overrides.clear();
         self.anim_time_overrides.extend_from_slice(overrides);
+    }
+
+    // ── GPU メッシュレットカリング（第1弾）─────────────────────
+
+    /// このバッチにメッシュレットカリング対象プリミティブが 1 つでもあるか。
+    /// 追加コストゼロ判定（対象ゼロなら compute パス生成をスキップできる）。
+    pub fn has_meshlet_slots(&self) -> bool {
+        self.meshlet_cull.iter().any(|s| s.is_some())
+    }
+
+    /// 毎フレームの前処理（compute パス開始前に呼ぶ）。
+    ///
+    /// LOD0 の可視インスタンス × メッシュレットに対し、パラメータ UBO 更新・カウント 0 リセット・
+    /// compute BindGroup 構築・ディスパッチ数算出を行う。`update()` の後（`lod_visible_counts`
+    /// 確定後）に呼ぶこと。Blend プリミティブ・メッシュレット非対応プリミティブはスキップする。
+    ///
+    /// 戻り値: このフレームに考慮したメッシュレット×インスタンス総数（PERF 表示用）。
+    pub fn prepare_meshlet_cull(
+        &mut self,
+        queue:      &wgpu::Queue,
+        device:     &wgpu::Device,
+        gpu_model:  &GpuModel,
+        cull_bgl:   &wgpu::BindGroupLayout,
+        planes:     &[[f32; 4]; 6],
+        camera_pos: [f32; 3],
+    ) -> u32 {
+        let visible = self.lod_visible_counts[0];
+        let mut considered = 0u32;
+
+        for (i, slot_opt) in self.meshlet_cull.iter_mut().enumerate() {
+            let Some(slot) = slot_opt.as_mut() else { continue };
+            // 毎フレームリセット（前フレームの活性状態を持ち越さない）。
+            slot.bind_group = None;
+            slot.workgroups = 0;
+            if visible == 0 { continue; }
+
+            let draw = &self.node_prim_list[i];
+            // Blend は透明パスで描くため compute も走らせない（従来経路と一致）。
+            if gpu_model.primitive_alpha_mode(draw.material_idx) == AlphaMode::Blend { continue; }
+
+            // GPU プリミティブのメッシュレット記述子バッファ。
+            let Some(gpu_prim) = gpu_model.meshes.get(draw.mesh_idx)
+                .and_then(|m| m.primitives.get(draw.prim_idx)) else { continue };
+            let Some(desc_buf) = gpu_prim.meshlet_desc_buffer.as_ref() else { continue };
+            // このノードの LOD0 可視インスタンス行列バッファ。
+            let Some((inst_buf, _)) = self.lod_node_data[0].get(slot.node_idx)
+                .and_then(|o| o.as_ref()) else { continue };
+
+            // パラメータ UBO 更新＋カウント 0 リセット。
+            let params = MeshletCullParams {
+                planes:         *planes,
+                camera_pos:     [camera_pos[0], camera_pos[1], camera_pos[2], 0.0],
+                instance_count: visible,
+                meshlet_count:  slot.meshlet_count,
+                _pad0: 0,
+                _pad1: 0,
+            };
+            queue.write_buffer(&slot.params_buf, 0, bytemuck::bytes_of(&params));
+            queue.write_buffer(&slot.count_buf, 0, bytemuck::bytes_of(&0u32));
+
+            // compute BindGroup を毎フレーム再構築（GpuModel 差し替え耐性）。
+            let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label:   Some("Meshlet Cull BG"),
+                layout:  cull_bgl,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: inst_buf.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 1, resource: desc_buf.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 2, resource: slot.cmd_buf.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 3, resource: slot.count_buf.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 4, resource: slot.params_buf.as_entire_binding() },
+                ],
+            });
+            slot.bind_group = Some(bg);
+
+            let total = visible.saturating_mul(slot.meshlet_count);
+            slot.workgroups = total.div_ceil(64);
+            considered = considered.saturating_add(total);
+        }
+        considered
+    }
+
+    /// compute パス内で全アクティブスロットのカリングディスパッチを記録する。
+    pub fn record_meshlet_cull<'p>(
+        &'p self,
+        pass:     &mut wgpu::ComputePass<'p>,
+        pipeline: &'p MeshletCullPipeline,
+    ) {
+        let mut pipeline_set = false;
+        for slot_opt in &self.meshlet_cull {
+            let Some(slot) = slot_opt.as_ref() else { continue };
+            let Some(bg) = slot.bind_group.as_ref() else { continue };
+            if slot.workgroups == 0 { continue; }
+            if !pipeline_set {
+                pass.set_pipeline(&pipeline.pipeline);
+                pipeline_set = true;
+            }
+            pass.set_bind_group(0, bg, &[]);
+            pass.dispatch_workgroups(slot.workgroups, 1, 1);
+        }
+    }
+
+    /// `node_prim_list[idx]` に対応するアクティブなメッシュレット間接描画リソースを返す。
+    /// このフレームに `prepare_meshlet_cull` でアクティブ化されたスロットのみ Some。
+    /// 戻り値: `(コマンドバッファ, カウントバッファ, 最大コマンド数)`。
+    /// None のとき呼び出し元は従来の `draw_indexed` へフォールバックする。
+    pub fn meshlet_draw(&self, idx: usize) -> Option<(&wgpu::Buffer, &wgpu::Buffer, u32)> {
+        let slot = self.meshlet_cull.get(idx)?.as_ref()?;
+        if slot.bind_group.is_none() || slot.workgroups == 0 { return None; }
+        Some((&slot.cmd_buf, &slot.count_buf, slot.capacity))
     }
 
     /// 毎フレーム呼び出す更新関数。
@@ -1455,5 +1773,47 @@ impl GpuGizmoBatch {
             tri_buffer,
             tri_count:  tris.len() as u32,
         }
+    }
+}
+
+// ============================================================
+//  テスト: メッシュレット GPU レイアウト + WGSL 検証
+// ============================================================
+
+#[cfg(test)]
+mod meshlet_gpu_tests {
+    use super::GpuMeshlet;
+
+    /// GpuMeshlet は std430 想定の 48 バイト・各フィールドオフセットを固定する。
+    /// meshlet_cull.wgsl の Meshlet 構造体とバイト一致していること。
+    #[test]
+    fn gpu_meshlet_layout_is_48_bytes() {
+        assert_eq!(std::mem::size_of::<GpuMeshlet>(), 48);
+        let base = std::mem::MaybeUninit::<GpuMeshlet>::uninit();
+        let p = base.as_ptr();
+        unsafe {
+            let b = p as usize;
+            assert_eq!((std::ptr::addr_of!((*p).index_offset) as usize) - b, 0);
+            assert_eq!((std::ptr::addr_of!((*p).index_count)  as usize) - b, 4);
+            assert_eq!((std::ptr::addr_of!((*p).center)       as usize) - b, 16);
+            assert_eq!((std::ptr::addr_of!((*p).radius)       as usize) - b, 28);
+            assert_eq!((std::ptr::addr_of!((*p).cone_axis)    as usize) - b, 32);
+            assert_eq!((std::ptr::addr_of!((*p).cone_cutoff)  as usize) - b, 44);
+        }
+    }
+
+    /// meshlet_cull.wgsl を naga で parse + validate する（自己完結）。
+    #[test]
+    fn meshlet_cull_shader_parses_and_validates() {
+        let src = include_str!("shaders/meshlet_cull.wgsl");
+        let module = naga::front::wgsl::parse_str(src)
+            .unwrap_or_else(|e| panic!("meshlet_cull WGSL parse 失敗: {e:?}"));
+        let mut validator = naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::empty(),
+        );
+        validator
+            .validate(&module)
+            .unwrap_or_else(|e| panic!("meshlet_cull WGSL validate 失敗: {e:?}"));
     }
 }

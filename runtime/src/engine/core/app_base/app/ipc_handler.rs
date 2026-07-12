@@ -470,7 +470,7 @@ impl App {
                     // インラインレイトレ影フラグをエディタからのライブ切替で更新する
                     self.rt_shadows = v;
                 }
-                IpcCommand::SetPostFx { bloom, fxaa, bloom_intensity, transparency } => {
+                IpcCommand::SetPostFx { bloom, fxaa, bloom_intensity, transparency, meshlet_cull } => {
                     // ブルーム／FXAA をエディタからのライブ切替で更新する（Phase R4）。
                     // しきい値／ニーは既定のまま（UI は最小構成のため強度のみ可変）。
                     self.post_fx.bloom_enabled   = bloom;
@@ -478,6 +478,8 @@ impl App {
                     self.post_fx.bloom_intensity = bloom_intensity;
                     // 透明描画方式（距離ソート / WBOIT）のライブ切替（Phase R5）。
                     self.post_fx.transparency    = transparency;
+                    // GPU メッシュレットカリング（第1弾）のライブ切替。
+                    self.post_fx.meshlet_cull    = meshlet_cull;
                 }
                 IpcCommand::SetAmbient { color, intensity } => {
                     // 環境光（アンビエント）をエディタからのライブ切替で更新する（Phase R1.5）。

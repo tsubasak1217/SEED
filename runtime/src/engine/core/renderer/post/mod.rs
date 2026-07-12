@@ -63,6 +63,10 @@ pub struct PostFxSettings {
     pub fxaa_enabled:    bool,
     /// 透明描画の方式（距離ソート / WBOIT）。既定は距離ソート（Phase R5）。
     pub transparency:    super::transparency::TransparencyMode,
+    /// GPU メッシュレットカリング有効フラグ（第1弾）。既定 true。
+    /// OFF で完全に従来経路（CPU カリング＋draw_indexed）＝A/B パリティ検証用。
+    /// MULTI_DRAW_INDIRECT_COUNT 非対応 GPU では本フラグに関わらず従来経路。
+    pub meshlet_cull:    bool,
 }
 
 // ─── デフォルト値（マジックナンバー回避）──────────────────────
@@ -82,6 +86,7 @@ impl Default for PostFxSettings {
             bloom_intensity: DEFAULT_BLOOM_INTENSITY,
             fxaa_enabled:    false,
             transparency:    super::transparency::TransparencyMode::DistanceSort,
+            meshlet_cull:    true,
         }
     }
 }

@@ -1416,6 +1416,14 @@
                                                                       IsChecked="False"
                                                                       Checked="OnPostFxChanged"
                                                                       Unchecked="OnPostFxChanged"/>
+                                                            <!-- GPU メッシュレットカリング（第1弾）。OFF で従来経路＝A/B パリティ検証用。 -->
+                                                            <CheckBox x:Name="ChkMeshletCull"
+                                                                      Content="メッシュレットカリング（GPU）"
+                                                                      Foreground="White" FontSize="11"
+                                                                      Margin="0,4,0,0"
+                                                                      IsChecked="True"
+                                                                      Checked="OnPostFxChanged"
+                                                                      Unchecked="OnPostFxChanged"/>
                                                         </StackPanel>
                                                     </Expander>
 

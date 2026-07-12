@@ -131,6 +131,8 @@ pub enum IpcCommand {
         fxaa: bool,
         bloom_intensity: f32,
         transparency: crate::engine::core::renderer::TransparencyMode,
+        /// GPU メッシュレットカリング有効フラグ（第1弾）。欠落時は true。
+        meshlet_cull: bool,
     },
     /// 環境光（アンビエント）の色・強度（Phase R1.5）。
     /// フォーマット: `SET_AMBIENT:{r},{g},{b},{intensity}`（色はリニア RGB）。
@@ -827,7 +829,11 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                                     .and_then(|v| v["transparency"].as_str())
                                     .unwrap_or("sort"),
                             );
-                            Some(IpcCommand::SetPostFx { bloom, fxaa, bloom_intensity, transparency })
+                            // メッシュレットカリング（欠落時は true = 有効）。
+                            let meshlet_cull = v.as_ref()
+                                .and_then(|v| v["meshlet_cull"].as_bool())
+                                .unwrap_or(true);
+                            Some(IpcCommand::SetPostFx { bloom, fxaa, bloom_intensity, transparency, meshlet_cull })
                         }
                         // 環境光（Phase R1.5）。"SET_AMBIENT:{r},{g},{b},{intensity}"。
                         // 4 要素に満たない／パース不能な場合は無視する（None）。

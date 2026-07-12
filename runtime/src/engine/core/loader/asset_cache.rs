@@ -43,7 +43,10 @@ use super::model::{
 /// v2: ミップを物理サイズ（4 の倍数）で圧縮するよう変更。
 ///     巨大バイト列（頂点・インデックス・ミップ）を bincode から分離し
 ///     生ブロブ領域として格納する形式に変更（デシリアライズの大幅高速化）。
-pub const CACHE_FORMAT_VERSION: u32 = 2;
+/// v3: LOD0 メッシュレット（GPU カリング第1弾）を追加。Primitive に meshlet 記述子
+///     （bincode メタ）＋ meshlet_vertices(u32 blob) ＋ meshlet_triangles(u8 blob) を格納。
+///     バージョン更新により旧 v2 キャッシュは自動再生成される。
+pub const CACHE_FORMAT_VERSION: u32 = 3;
 
 /// モデルキャッシュファイルのマジック（8 バイト）。
 const MODEL_MAGIC: &[u8; 8] = b"SEEDMDL\0";
@@ -200,6 +203,10 @@ fn visit_blob_slots(model: &mut Model, f: &mut impl FnMut(BlobSlot<'_>)) {
             for lod in prim.lod_indices.iter_mut() {
                 f(BlobSlot::U32s(lod));
             }
+            // メッシュレット（LOD0, v3）。記述子（境界球・コーン・オフセット）は
+            // bincode メタ側に残し、巨大な連結配列のみブロブ化する。
+            f(BlobSlot::U32s(&mut prim.meshlet_vertices));
+            f(BlobSlot::Bytes(&mut prim.meshlet_triangles));
         }
     }
 }
@@ -830,6 +837,14 @@ mod tests {
         let indices = vec![0u32, 1, 2];
         let lod_indices = vec![vec![0u32, 1, 2], vec![2u32, 1, 0]];
         let mips = vec![vec![1u8; 64], vec![2u8; 16], vec![3u8; 16]];
+        // メッシュレット（v3）: 記述子（メタ）＋連結配列（ブロブ）のラウンドトリップを検証。
+        let meshlets = vec![MeshletDesc {
+            vertex_offset: 0, triangle_offset: 0, vertex_count: 3, triangle_count: 1,
+            center: [1.0, 2.0, 3.0], radius: 4.0,
+            cone_axis: [0.0, 0.0, 1.0], cone_cutoff: 0.5,
+        }];
+        let meshlet_vertices = vec![0u32, 1, 2];
+        let meshlet_triangles = vec![0u8, 1, 2];
 
         let mut model = Model {
             name: "roundtrip".to_string(),
@@ -843,6 +858,9 @@ mod tests {
                     indices: indices.clone(),
                     material_index: Some(0),
                     lod_indices: lod_indices.clone(),
+                    meshlets: meshlets.clone(),
+                    meshlet_vertices: meshlet_vertices.clone(),
+                    meshlet_triangles: meshlet_triangles.clone(),
                 }],
             }],
             materials: vec![Material::default()],
@@ -882,6 +900,13 @@ mod tests {
         assert_eq!(prim.vertices[1].position, [4.0, 5.0, 6.0]);
         assert_eq!(prim.indices, indices);
         assert_eq!(prim.lod_indices, lod_indices);
+        // メッシュレット: 記述子（メタ）と連結配列（ブロブ）が復元される。
+        assert_eq!(prim.meshlets.len(), 1);
+        assert_eq!(prim.meshlets[0].vertex_count, 3);
+        assert_eq!(prim.meshlets[0].center, [1.0, 2.0, 3.0]);
+        assert_eq!(prim.meshlets[0].cone_cutoff, 0.5);
+        assert_eq!(prim.meshlet_vertices, meshlet_vertices);
+        assert_eq!(prim.meshlet_triangles, meshlet_triangles);
         match &decoded.textures[0].source {
             TextureSource::Ready { format, width, height, mips: m } => {
                 assert_eq!(*format, CachedTexFormat::Bc3RgbaUnormSrgb);

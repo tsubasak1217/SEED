@@ -101,8 +101,10 @@ public partial class MainWindow
         // CmbTransparency の選択アイテムの Tag（"sort" / "wboit"）を読み取る。未選択・null の場合は既定の距離ソート。
         string transparency = (CmbTransparency?.SelectedItem as System.Windows.Controls.ComboBoxItem)?.Tag as string
                                ?? DefaultTransparencyMode;
+        // GPU メッシュレットカリング（第1弾）。null（未初期化）時は既定 true。
+        bool meshletCull = ChkMeshletCull?.IsChecked != false;
 
-        string json = $"{{\"bloom\":{(bloom ? "true" : "false")},\"fxaa\":{(fxaa ? "true" : "false")},\"bloom_intensity\":{intensity.ToString(System.Globalization.CultureInfo.InvariantCulture)},\"transparency\":\"{transparency}\"}}";
+        string json = $"{{\"bloom\":{(bloom ? "true" : "false")},\"fxaa\":{(fxaa ? "true" : "false")},\"bloom_intensity\":{intensity.ToString(System.Globalization.CultureInfo.InvariantCulture)},\"transparency\":\"{transparency}\",\"meshlet_cull\":{(meshletCull ? "true" : "false")}}}";
         _runtimeManager?.SendToRuntime($"SET_POST_FX:{json}");
     }
 
@@ -437,6 +439,8 @@ public partial class MainWindow
         ChkFxaa.IsChecked            = false;
         SldBloomIntensity.Value      = DefaultBloomIntensity;
         if (CmbTransparency != null) CmbTransparency.SelectedIndex = 0;
+        // メッシュレットカリング（第1弾）は既定 true（有効）へリセットする。
+        if (ChkMeshletCull != null) ChkMeshletCull.IsChecked = true;
         _updatingControls = false;
         if (_viewportSettingsInitialized)
         {

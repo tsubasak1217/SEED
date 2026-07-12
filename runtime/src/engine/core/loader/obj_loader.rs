@@ -193,11 +193,18 @@ fn build_primitive(mesh: &tobj::Mesh) -> Primitive {
         }
     }).collect();
 
+    // LOD0 メッシュレット分割（GPU カリング第1弾）。OBJ は常に非スキン。
+    let (meshlets, meshlet_vertices, meshlet_triangles) =
+        super::gltf_loader::build_meshlets_for_primitive(&mesh.indices, &vertices, false);
+
     Primitive {
         vertices,
         skin_vertices: Vec::new(),
         indices: mesh.indices.clone(),
         material_index: None,  // 呼び出し元で上書きする
         lod_indices:    Vec::new(),
+        meshlets,
+        meshlet_vertices,
+        meshlet_triangles,
     }
 }
