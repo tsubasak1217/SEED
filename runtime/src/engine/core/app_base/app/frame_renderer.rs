@@ -866,14 +866,22 @@ impl App {
         // ── GPU パーティクル CPU 更新（Phase RP・フェーズ 1）──────────────
         // 放出個数の決定・リングカーソル前進・pending_burst（スクリプトの Burst 要求）消費を行う。
         // World への &mut が必要なため、描画ブロック（&self.scene で不変借用）に入る前にここで実施する。
-        // dt は Play モード（time_running）は可変（ctx.delta_time）、Edit モードは物理の先例に倣い
-        // 固定 1/60（time_running 非依存）＝エディタでも常時プレビューする（playing=false は放出のみ停止）。
+        //
+        // 【dt は Play / Edit とも実フレーム時間（ctx.delta_time）を使う】
+        // かつては Edit モードで固定 1/60 を渡していたが、これは誤りだった。
+        // 物理は「固定ステップを accumulator で必要回数だけ刻む」ので固定 dt が正しいが、
+        // パーティクルは 1 フレーム 1 ステップしか進めないため、固定 dt にすると経過時間が
+        // 「フレーム数 × 1/60 秒」になり、実時間ではなく FPS に比例して速度が変わってしまう
+        // （120fps なら 2 倍速）。実フレーム時間を渡すことで実時間基準になる。
+        // Edit モードでも常時プレビューする方針は不変（playing=false は放出のみ停止）。
+        //
+        // 長時間ストール（シーンロード・ブレークポイント等）明けの巨大 dt で粒子が
+        // 瞬間移動しないよう上限でクランプする（1 フレームで進める最大シミュレーション時間）。
         {
-            let particle_dt = if time_running {
-                ctx.delta_time
-            } else {
-                crate::engine::core::clock::FIXED_DELTA
-            };
+            /// パーティクルの 1 ステップで進める最大シミュレーション時間 [秒]。
+            /// これを超える dt はクランプする（ストール明けの瞬間移動を防ぐ）。
+            const PARTICLE_MAX_STEP_SECS: f32 = 1.0 / 15.0;
+            let particle_dt = ctx.delta_time.clamp(0.0, PARTICLE_MAX_STEP_SECS);
             let awl = self.active_world_line;
             if let Some(scene) = self.scene.as_mut() {
                 self.particle_system.collect_and_consume(
