@@ -815,6 +815,17 @@ impl App {
                 Vec::new()
             };
 
+        // ── Clustered Lighting: ライト配列を「平行光 → 局所ライト」へ安定分割（Phase C1）──
+        // 平行光は視錐台全体に影響するためクラスタに入れず、フラグメントが常に全ピクセルで
+        // 評価する（配列先頭 [0, dir_count) がその範囲）。クラスタ構築 compute は
+        // dir_count 以降の局所ライト（point/spot/rect）だけを対象にする。
+        //
+        // ここで分割してから ShadowResources::prepare_frame（shadow_index 確定）と
+        // light_buffer.update（GPU アップロード）を行う。分割は安定（グループ内の相対順序を
+        // 保つ）なので、CSM の採用ライト・スポットのシャドウ配列レイヤ割り当ては変わらない。
+        let frame_dir_count =
+            crate::engine::methods::drawer::partition_directional_first(&mut frame_lights);
+
         // ── シャドウキャスター収集（Phase R2）──────────────────────
         // cast_shadows=true な ModelComponent の source_path 集合。影パスは
         // この集合に属する統合バッチ（shared_model_batches のキー）のみを描画する。
@@ -1536,10 +1547,18 @@ impl App {
                             for (path, sd) in &self.shared_model_batches {
                                 if let Some(&gpu) = gpu_model_by_path.get(path.as_str()) {
                                     // カメラプレビューは従来パイプライン（RT なし）で描画する。
+                                    //
+                                    // 【Clustered Lighting・最重要】group 4 は必ず
+                                    // bind_group_unclustered（ClusterParams.enabled=0）を使う。
+                                    // クラスタは near/far/fov/ビューポートに依存する＝カメラごとに
+                                    // 固有であり、メインカメラ基準で構築したクラスタをこのパスへ
+                                    // 適用するとプレビューのライティングが壊れる（ライトが落ちて
+                                    // 暗くなる・別の場所のライトが乗る）。無効側 BG を使うことで
+                                    // プレビューは従来どおり全ライトを線形走査する。
                                     draw_model_indirect(
                                         &mut preview_pass, gpu, &sd.batch,
                                         &preview_mesh_cam_buf.bind_group,
-                                        &draw_ctx.light_buffer.bind_group,
+                                        &draw_ctx.light_buffer.bind_group_unclustered,
                                         &draw_ctx.pipelines, None, false,
                                     );
                                 }
@@ -1554,12 +1573,13 @@ impl App {
                             // メインカメラの saved_camera_pos は別カメラのため使わない。
                             // カリングはメイン視錐台とプレビュー視錐台の OR のため、
                             // lod_compact_insts にはプレビュー可視インスタンスが含まれている。
+                            // group 4 は上の不透明描画と同じくクラスタ無効側を使う（別カメラのため）。
                             if preview_has_tp {
                                 crate::engine::core::renderer::transparency::draw_sorted(
                                     &mut preview_pass,
                                     &preview_tp_models,
                                     &preview_mesh_cam_buf.bind_group,
-                                    &draw_ctx.light_buffer.bind_group,
+                                    &draw_ctx.light_buffer.bind_group_unclustered,
                                     &draw_ctx.pipelines.transparent,
                                     cam_uniform.position,
                                 );
@@ -3040,6 +3060,55 @@ impl App {
                                 perf_tlas_ms    = _perf_t_tlas.elapsed().as_secs_f64() * 1000.0;
                                 perf_tlas_built = stat.built;
                                 perf_tlas_insts = stat.instances;
+                            }
+                        }
+
+                        // ── Clustered Lighting: クラスタ構築 compute（Phase C1）─────────
+                        // メインカメラの視錐台を 16×9×24 の 3D フロクセルへ分割し、各クラスタへ
+                        // 影響する局所ライト（point/spot/rect）のインデックスを集める。
+                        // メインパス（不透明・距離ソート透明・WBOIT・ギズモアイコン）の
+                        // フラグメントはこの結果だけを走査する。
+                        //
+                        // 【クラスタはカメラごとに固有】ここで作るのは**メインカメラぶんだけ**。
+                        // カメラプレビューのパス（上で記録済み）はクラスタ無効の BindGroup を
+                        // bind しており、この結果に一切依存しない（従来の全ライト線形走査）。
+                        //
+                        // 【透視カメラ以外は無効化】2D オルソ・正射ゲームカメラでは
+                        // saved_shadow_cam が None になる。指数 Z スライスは透視前提のため、
+                        // その場合はクラスタを無効化して線形走査へフォールバックする
+                        // （＝ライトが落ちて暗転することはない）。
+                        {
+                            // 実際に set_viewport する矩形。Play のレターボックス時はゲーム領域。
+                            // frag_coord はフレームバッファ基準なので、タイル分割の正規化は
+                            // この矩形で行わないと構築側（NDC 等分）とズレる。
+                            let cluster_vp = if self.mode == RuntimeMode::Play && !self.paused {
+                                game_viewport
+                            } else {
+                                (0.0, 0.0, win_w_f, win_h_f)
+                            };
+                            let (cview, cnear, cfar, cfov, casp) = saved_shadow_cam
+                                .map(|(v, n, f, fo, a)| (v, n, f, fo, a))
+                                .unwrap_or((Mat4x4::identity(), 0.0, 0.0, 0.0, 0.0));
+                            let cluster_on = draw_ctx.clusters.update(
+                                &draw_ctx.queue,
+                                saved_shadow_cam.is_some(),
+                                // CameraUniform.view と同じ流儀（転置＝列優先アップロード）。
+                                cview.transpose().data,
+                                cnear, cfar, cfov, casp,
+                                cluster_vp,
+                                frame_dir_count,
+                                frame_lights.len() as u32,
+                            );
+                            if cluster_on {
+                                let mut cpass = frame.encoder_mut().begin_compute_pass(
+                                    &wgpu::ComputePassDescriptor {
+                                        label:            Some("Cluster Build Pass"),
+                                        timestamp_writes: None,
+                                    },
+                                );
+                                draw_ctx.clusters.dispatch(
+                                    &mut cpass, &draw_ctx.pipelines.cluster_build.pipeline,
+                                );
                             }
                         }
 

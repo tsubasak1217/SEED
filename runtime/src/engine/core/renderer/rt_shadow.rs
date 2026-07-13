@@ -176,11 +176,13 @@ impl RtShadowResources {
     ///   （ライト＋シャドウ＋TLAS の複合。binding 6 に acceleration_structure を含む）。
     /// - `shadow`:        シャドウ資源（binding 2〜5 を供給）。
     /// - `light_buffer`:  ライトバッファ（binding 0/1 を供給）。
+    /// - `clusters`:      クラスタ資源（binding 7〜9 を供給。Phase C1）。
     pub fn new(
         device:        &wgpu::Device,
         rt_lights_bgl: &wgpu::BindGroupLayout,
         shadow:        &ShadowResources,
         light_buffer:  &LightBuffer,
+        clusters:      &super::clustered::ClusterResources,
     ) -> Self {
         // TLAS を生成する。フラグは高速ビルド優先（毎フレーム再構築のため）。
         let tlas = device.create_tlas(&CreateTlasDescriptor {
@@ -194,7 +196,7 @@ impl RtShadowResources {
         // as_binding() は &tlas を借用するため、TlasPackage へ move する前に生成する。
         // 生成された bind group は内部で TLAS リソース（Arc）を保持するため、以後
         // TlasPackage へ move しても有効であり、再ビルドで内容が更新されても使い回せる。
-        let bind_group = light_buffer.create_rt_bind_group(device, rt_lights_bgl, shadow, &tlas);
+        let bind_group = light_buffer.create_rt_bind_group(device, rt_lights_bgl, shadow, clusters, &tlas);
 
         let tlas_package = TlasPackage::new(tlas);
 
@@ -487,6 +489,10 @@ mod tests {
     /// 連結順は pipelines/*.toml の shader_sources と一致させること。
     #[test]
     fn rt_shader_variants_parse_and_validate() {
+        // クラスタ共有定義（定数・構造体・索引関数）。shader_common.wgsl の group 4
+        // binding 7〜9 が ClusterCell / ClusterParams を参照するため、**必ず先に**連結する
+        // （pipelines/*.toml の shader_sources と同じ順序）。
+        let cluster  = include_str!("shaders/cluster_common.wgsl");
         let common   = include_str!("shaders/shader_common.wgsl");
         let shadow   = include_str!("shaders/shadow.wgsl");
         let rt_on    = include_str!("shaders/rt_shadow_on.wgsl");
@@ -499,11 +505,17 @@ mod tests {
         let light_ev = include_str!("shaders/lighting_eval.wgsl");
         let frag     = include_str!("shaders/shader_fragment.wgsl");
 
-        let variants: [(&str, Vec<&str>); 4] = [
-            ("mesh_rt",         vec![common, shadow, rt_on,  static_v, surf, gather, light_ev, frag]),
-            ("skinned_mesh_rt", vec![common, shadow, rt_on,  skin_v,   surf, gather, light_ev, frag]),
-            ("mesh",            vec![common, shadow, rt_off, static_v, surf, gather, light_ev, frag]),
-            ("skinned_mesh",    vec![common, shadow, rt_off, skin_v,   surf, gather, light_ev, frag]),
+        // WBOIT（半透明）バリアントも同じライト評価を共有するため併せて検証する
+        // （transparency.rs が同じ連結でパイプラインを構築している）。
+        let wboit    = include_str!("shaders/shader_wboit.wgsl");
+
+        let variants: [(&str, Vec<&str>); 6] = [
+            ("mesh_rt",         vec![cluster, common, shadow, rt_on,  static_v, surf, gather, light_ev, frag]),
+            ("skinned_mesh_rt", vec![cluster, common, shadow, rt_on,  skin_v,   surf, gather, light_ev, frag]),
+            ("mesh",            vec![cluster, common, shadow, rt_off, static_v, surf, gather, light_ev, frag]),
+            ("skinned_mesh",    vec![cluster, common, shadow, rt_off, skin_v,   surf, gather, light_ev, frag]),
+            ("wboit_mesh",      vec![cluster, common, shadow, rt_off, static_v, surf, gather, light_ev, frag, wboit]),
+            ("wboit_skinned",   vec![cluster, common, shadow, rt_off, skin_v,   surf, gather, light_ev, frag, wboit]),
         ];
 
         for (name, parts) in variants {

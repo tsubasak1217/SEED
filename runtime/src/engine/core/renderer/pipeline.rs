@@ -60,6 +60,10 @@ where
 
 pub(crate) fn get_shader_source(name: &str) -> &'static str {
     match name {
+        // Clustered Lighting の共有定義（定数・構造体・索引関数。バインディングなし）。
+        // shader_common.wgsl の group 4 binding 7〜9 がこの構造体を参照するため、
+        // TOML の shader_sources では必ず shader_common.wgsl より前に置くこと（Phase C1）。
+        "cluster_common.wgsl"        => include_str!("shaders/cluster_common.wgsl"),
         "shader_common.wgsl"         => include_str!("shaders/shader_common.wgsl"),
         "shader_static_vertex.wgsl"  => include_str!("shaders/shader_static_vertex.wgsl"),
         "shader_skinned_vertex.wgsl" => include_str!("shaders/shader_skinned_vertex.wgsl"),
@@ -1132,6 +1136,86 @@ impl ParticleComputePipeline {
 }
 
 // ============================================================
+//  ClusterBuildPipeline — Clustered Lighting のクラスタ構築 compute（Phase C1）
+// ============================================================
+
+/// クラスタ（3D フロクセル）ごとの影響ライトリストを構築する compute パイプライン。
+///
+/// シェーダ: cluster_common.wgsl（共有定義）＋ cluster_build.wgsl（バインディング＋エントリ）。
+/// shader_common.wgsl は連結しない（group 2/4 のバインディングが混入し、
+/// 手動で組む group 0 のレイアウトと食い違うため。GpuLight は cluster_build 側でミラーする）。
+///
+/// Group 0 BGL（cluster_build.wgsl の宣言と一致させること）:
+///   0 = lights  (array<GpuLight>,   storage read)   … LightBuffer と同一バッファを共有
+///   1 = params  (ClusterParams,     uniform)
+///   2 = grid    (array<ClusterCell>,storage rw)
+///   3 = indices (array<u32>,        storage rw)
+///   4 = cursor  (atomic<u32>,       storage rw)
+/// CullPipeline / ParticleComputePipeline と同じ手動 BGL 構築の流儀。
+pub struct ClusterBuildPipeline {
+    pub pipeline: wgpu::ComputePipeline,
+    /// group 0 レイアウト（ClusterResources::attach_lights が BindGroup 生成に使う）。
+    pub bgl:      wgpu::BindGroupLayout,
+}
+
+impl ClusterBuildPipeline {
+    fn new(device: &wgpu::Device, cache: Option<&wgpu::PipelineCache>) -> Self {
+        // 共有定義 → 実装の順で連結する（ClusterParams / ClusterCell を先に宣言する）。
+        let src = format!(
+            "{}\n{}",
+            include_str!("shaders/cluster_common.wgsl"),
+            include_str!("shaders/cluster_build.wgsl"),
+        );
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label:  Some("Cluster Build Shader"),
+            source: wgpu::ShaderSource::Wgsl(src.into()),
+        });
+
+        // storage/uniform のヘルパー（同じ記述の繰り返しを避ける）。
+        let buf = |binding: u32, storage: bool, read_only: bool| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Buffer {
+                ty: if storage {
+                    wgpu::BufferBindingType::Storage { read_only }
+                } else {
+                    wgpu::BufferBindingType::Uniform
+                },
+                has_dynamic_offset: false,
+                min_binding_size:   None,
+            },
+            count: None,
+        };
+        let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label:   Some("Cluster Build BGL"),
+            entries: &[
+                buf(0, true,  true),   // lights  (storage read)
+                buf(1, false, false),  // params  (uniform)
+                buf(2, true,  false),  // grid    (storage rw)
+                buf(3, true,  false),  // indices (storage rw)
+                buf(4, true,  false),  // cursor  (storage rw / atomic)
+            ],
+        });
+
+        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label:                Some("Cluster Build Layout"),
+            bind_group_layouts:   &[&bgl],
+            push_constant_ranges: &[],
+        });
+        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label:               Some("Cluster Build Pipeline"),
+            layout:              Some(&layout),
+            module:              &shader,
+            entry_point:         Some("cs_main"),
+            compilation_options: Default::default(),
+            cache,
+        });
+
+        Self { pipeline, bgl }
+    }
+}
+
+// ============================================================
 //  ParticlePipelines — GPU パーティクル描画（形状メッシュ×インスタンス）
 // ============================================================
 
@@ -1405,6 +1489,8 @@ pub struct DrawPipelines {
     pub transparent:          super::transparency::TransparentPipelines,
     /// GPU パーティクル シミュレーション compute パイプライン（Phase RP）。
     pub particle_compute:     ParticleComputePipeline,
+    /// Clustered Lighting のクラスタ構築 compute パイプライン（Phase C1）。
+    pub cluster_build:        ClusterBuildPipeline,
     /// GPU パーティクル描画パイプライン一式（Additive / Alpha, Phase RP）。
     pub particles:            ParticlePipelines,
     /// スカイボックス（天球）描画パイプライン一式（Phase R9）。
@@ -1464,6 +1550,8 @@ impl DrawPipelines {
         let particles           = ParticlePipelines::new(device, queue, sf, df, &mesh.camera_bgl, cache);
         // スカイボックス（Phase R9）。シーン HDR（sf）へ描くため sf/df を渡す。
         let skybox              = super::skybox::SkyboxPipelines::new(device, sf, df, cache);
-        Self { mesh, skinned_mesh, rt, unlit_line, cull, meshlet_cull, skin_compute, depth_prepass, shadow_depth, id_pass, outline, sprite, sprite_outline, canvas_id, camera_preview_blit, bar_fill, transparent, particle_compute, particles, skybox }
+        // Clustered Lighting のクラスタ構築 compute（Phase C1）。
+        let cluster_build       = ClusterBuildPipeline::new(device, cache);
+        Self { mesh, skinned_mesh, rt, unlit_line, cull, meshlet_cull, skin_compute, depth_prepass, shadow_depth, id_pass, outline, sprite, sprite_outline, canvas_id, camera_preview_blit, bar_fill, transparent, particle_compute, particles, skybox, cluster_build }
     }
 }

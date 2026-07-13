@@ -30,6 +30,8 @@ pub use crate::engine::core::renderer::{
     CameraPreviewBlitPipeline,
     // ライト
     GpuLight, LightBuffer, MAX_LIGHTS,
+    // Clustered Lighting（Phase C1）
+    ClusterResources, partition_directional_first,
     // シャドウ（Phase R2）
     ShadowResources, ShadowPlan, ShadowDepthPipelines,
     // インラインレイトレ影（Phase R8）
@@ -76,7 +78,16 @@ pub struct DrawContext {
     pub defaults:         DefaultTex,
     /// ライト用 GPU バッファ一式（毎フレーム `update()` で有効ライトを書き込む）。
     /// group 4 の bind group を全メッシュ描画で共用する。
+    /// クラスタ有効（メインカメラ用）と無効（カメラプレビュー用）の 2 本を持つ。
     pub light_buffer:     LightBuffer,
+    /// Clustered Lighting のクラスタ資源一式（Phase C1）。
+    /// 毎フレーム `update()` でメインカメラのパラメータを書き、compute で
+    /// クラスタごとの影響ライトリストを構築する。group 4 の binding 7〜9 を供給する。
+    ///
+    /// クラスタは**カメラごとに固有**なので、カメラプレビューのパスでは
+    /// `light_buffer.bind_group_unclustered`（enabled=0）を bind して
+    /// 従来の全ライト線形走査へフォールバックさせること。
+    pub clusters:         ClusterResources,
     /// シャドウ用 GPU リソース一式（Phase R2）。
     /// 毎フレーム prepare_frame でシャドウ行列を更新し、record で深度パスを記録する。
     /// サンプリング用資源は light_buffer.bind_group（group 4 複合 BG の binding 2〜5）
@@ -136,11 +147,21 @@ impl DrawContext {
         // max_bind_groups=5（group 0〜4）のデバイスがあるため group 5 は使わない。
         // レイアウトは mesh パイプライン由来（skinned とレイアウト互換のため共用）。
         let shadow       = ShadowResources::new(&device, &pipelines.mesh.camera_bgl);
-        let light_buffer = LightBuffer::new(&device, &pipelines.mesh.lights_bgl, &shadow);
+        // クラスタ資源（Phase C1）: group 4 の binding 7〜9 を供給する。
+        // 生成順は「クラスタバッファ → LightBuffer（クラスタを参照する複合 BG を作る）
+        // → クラスタの compute BindGroup（ライトバッファを参照する）」の 2 段構え。
+        // 相互参照になるため attach_lights を後から呼ぶ。
+        let mut clusters = ClusterResources::new(&device);
+        let light_buffer = LightBuffer::new(&device, &pipelines.mesh.lights_bgl, &shadow, &clusters);
+        clusters.attach_lights(
+            &device, &pipelines.cluster_build.bgl, light_buffer.lights_buffer(),
+        );
         // RT 影リソースは RT パイプラインが生成できた場合（＝ RT 対応 GPU）のみ生成する。
         // group 4 に TLAS を加えた複合 BindGroup を、RT パイプラインの group 4 レイアウトで作る。
         let rt_shadow = pipelines.rt.as_ref().map(|rtp| {
-            RefCell::new(RtShadowResources::new(&device, &rtp.lights_bgl, &shadow, &light_buffer))
+            RefCell::new(RtShadowResources::new(
+                &device, &rtp.lights_bgl, &shadow, &light_buffer, &clusters,
+            ))
         });
         // スプライトバッチャ（Phase R6）: 永続インスタンスバッファを初期容量で確保する。
         let sprites = RefCell::new(SpriteBatcher::new(&device));
@@ -150,6 +171,7 @@ impl DrawContext {
             pipelines,
             defaults,
             light_buffer,
+            clusters,
             shadow,
             rt_shadow,
             post,

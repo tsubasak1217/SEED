@@ -67,11 +67,12 @@ struct MaterialUniform {
 // GpuLight のレイアウトは Rust 側 lighting.rs の repr(C) 構造体と
 // 厳密に一致させること（vec3 は 16 バイト境界、合計 96 バイト）。
 
-/// ライト種別コード（Rust: LIGHT_KIND_*、LightKind::to_code() と一致）。
-const LIGHT_KIND_DIRECTIONAL: u32 = 0u;
-const LIGHT_KIND_POINT:       u32 = 1u;
-const LIGHT_KIND_SPOT:        u32 = 2u;
-const LIGHT_KIND_RECT:        u32 = 3u;
+// ライト種別コード（LIGHT_KIND_*）は cluster_common.wgsl へ移設した。
+// クラスタ構築 compute（cluster_build.wgsl）も種別ごとのバウンディング体積を求めるのに
+// 必要だが、compute は本ファイルを連結できない（group 2/4 のバインディングが混入する）ため、
+// 「バインディングを持たない共有定義ファイル」である cluster_common.wgsl が唯一の定義元になる。
+// 本ファイルを使う全パイプライン（mesh / skinned / transparent 系）の TOML は
+// cluster_common.wgsl を本ファイルより先に連結すること。
 
 struct GpuLight {
     color:            vec3<f32>,   // 0
@@ -108,6 +109,28 @@ struct LightMeta {
 
 @group(4) @binding(0) var<storage, read> u_lights:     array<GpuLight>;
 @group(4) @binding(1) var<uniform>       u_light_meta: LightMeta;
+
+// ─── Group 4: Clustered Lighting（binding 7〜9, Phase C1）─────
+//
+// 視錐台を X×Y タイル × Z 深度スライスへ分割したクラスタごとに、影響する局所ライト
+// （point/spot/rect）のインデックスを compute（cluster_build.wgsl）が集めておく。
+// フラグメント（lighting_eval.wgsl）は「自分のクラスタのリスト ＋ 全平行光」だけを走査する。
+//
+// 構造体・定数・索引関数は cluster_common.wgsl（バインディングを持たない共有定義）にある。
+// バッファ実体と BindGroup は Rust 側 renderer/clustered.rs / lighting.rs が持つ。
+//
+// binding 6 は RT 影の TLAS（rt_shadow_on.wgsl）。番号の重複を避けて 7 から始める。
+//
+// 【カメラごとに固有】u_cluster_params は**パスごとに差し替わる**。メインカメラのパスは
+// enabled=1 のパラメータ、カメラプレビューのパスは enabled=0 のパラメータを bind する
+// （後者ではクラスタを一切参照せず、従来どおり全ライトを線形走査する）。
+
+/// クラスタごとの (offset, count)。CLUSTER_COUNT 要素。
+@group(4) @binding(7) var<storage, read> u_cluster_grid:   array<ClusterCell>;
+/// グローバルライトインデックスリスト（クラスタの offset..offset+count が自分のライト）。
+@group(4) @binding(8) var<storage, read> u_cluster_lights: array<u32>;
+/// クラスタパラメータ（カメラ／ビューポート／有効フラグ）。
+@group(4) @binding(9) var<uniform>       u_cluster_params: ClusterParams;
 
 // ─── 頂点シェーダ出力 / フラグメントシェーダ入力 ─────────────
 

@@ -25,10 +25,14 @@
 // そのためフラグメント以外のステージ（将来の compute ベースのライティング等）からも
 // 呼べる。画面微分に依存するのは surface_gather.wgsl 側だけである。
 //
-// ## 将来（Clustered Lighting）
-// 「u_light_meta.count 件の線形走査」を「クラスタ（タイル×深度スライス）の
-// ライトインデックスリスト走査」へ差し替えるのは、本ファイルのライトループ冒頭
-// （light_count の求め方と u_lights のインデックス方法）だけで完結する。
+// ## Clustered Lighting（Phase C1・実装済み）
+// ライトの走査対象は「全ライトの線形走査」から「そのフラグメントが属するクラスタの
+// ライトリスト ＋ 全平行光」へ置き換わった。変更はライトループ冒頭に閉じ込めてある
+// （gather_surface / shade_pbr のシグネチャは不変）。
+//   - 依存: cluster_common.wgsl（定数・構造体・索引）／shader_common.wgsl（group4 binding 7〜9）
+//   - 構築: cluster_build.wgsl（compute。毎フレーム メインカメラぶんだけ構築）
+//   - 無効化: u_cluster_params.enabled == 0 のとき従来の線形走査へフォールバックする
+//             （カメラプレビューのパス・透視でないカメラ）。
 // ============================================================
 
 /// 平行光の RT 影レイの最大距離（実質無限。ライトまでの距離が定義できないため大定数）。
@@ -86,7 +90,7 @@ fn shade_light(
 /// （u_light_meta.count）から供給される（shader_common.wgsl 参照）。
 /// directional / point / spot / rect の 4 種を per-fragment ループで加算する。
 /// ライト 0 灯でもアンビエントのみで破綻しない。
-/// クラスタリング／タイル分割は将来課題（現状は全ライトを線形走査）。
+/// 走査対象はクラスタ（3D フロクセル）でカリング済み（Phase C1。下記ライトループ参照）。
 ///
 /// 影は 2 経路を実行時分岐する（Phase R2/R8）:
 ///   - rt_shadow_enabled()==false: シャドウマップ（shadow.wgsl, group4 binding2〜5）。
@@ -106,15 +110,57 @@ fn evaluate_lighting(s: Surface) -> vec3<f32> {
     // 誘電体は F0 = 0.04、金属は albedo を F0 として使用
     let F0 = mix(vec3<f32>(0.04), albedo, metallic);
 
-    // ── ライトループ ──────────────────────────────────────────
-    // group 4 の storage 配列を u_light_meta.count 件だけ走査して加算する。
+    // ── ライトループ（Clustered Lighting, Phase C1）────────────
+    //
+    // 走査対象は 2 通り（u_cluster_params.enabled で切り替わる）:
+    //
+    //   enabled = 1（メインカメラのパス）:
+    //     [0, local_light_offset) の**平行光**（視錐台全体に影響するためクラスタに入れない）
+    //     ＋ このフラグメントが属するクラスタのライトリスト（局所ライトのみ）。
+    //
+    //   enabled = 0（カメラプレビューのパス／透視でないカメラ）:
+    //     従来どおり [0, count) の**全ライト線形走査**。
+    //     クラスタはカメラごとに固有（near/far/fov/ビューポート依存）なので、メインカメラ
+    //     基準で構築したクラスタを別カメラのパスで使うとライティングが壊れる。プレビューは
+    //     クラスタを一切参照しないこの経路へ落とす（バッファは共有しつつ params だけ差し替え）。
+    //
+    // クラスタの構築は cluster_build.wgsl（compute）が毎フレーム行う。
+    // 索引・定数は cluster_common.wgsl（Rust: renderer/clustered.rs と定数一致をテストで担保）。
     var Lo = vec3<f32>(0.0);
     let light_count = min(u_light_meta.count, arrayLength(&u_lights));
     // シャドウ（group 4 binding 2〜5, shadow.wgsl）用: ビュー空間深度（正）をカスケード選択に使う。
+    // クラスタの Z スライス選択にも同じ値を使う。
     // u_camera.view は列優先アップロード済みのため view*world で正しくビュー座標になる。
     let view_z = (u_camera.view * vec4<f32>(s.world_pos, 1.0)).z;
-    for (var i: u32 = 0u; i < light_count; i = i + 1u) {
-        let light = u_lights[i];
+
+    // 走査範囲の決定。use_cluster=false のときは dir_end=light_count / list_count=0 となり、
+    // ループは従来と完全に同一（[0, count) の線形走査）になる。
+    let use_cluster = u_cluster_params.enabled != 0u;
+    var dir_end:     u32 = light_count;   // 無条件に走査する範囲の終端（平行光）
+    var list_offset: u32 = 0u;            // クラスタのライトリスト先頭
+    var list_count:  u32 = 0u;            // クラスタのライト数
+    // light_count == 0（ライト 0 灯）のときはクラスタも参照しない。
+    // グリッドに前フレームの内容が残っていても走査しないため、下の light_count - 1u が
+    // アンダーフローすることはない（ループにも入らない）。
+    if use_cluster && light_count > 0u {
+        dir_end = min(u_cluster_params.local_light_offset, light_count);
+        let cell = u_cluster_grid[cluster_index_for_fragment(s.frag_coord, view_z, u_cluster_params)];
+        list_offset = cell.offset;
+        list_count  = min(cell.count, MAX_LIGHTS_PER_CLUSTER);
+    }
+
+    let iter_count = dir_end + list_count;
+    for (var it: u32 = 0u; it < iter_count; it = it + 1u) {
+        // 前半 = 平行光（または非クラスタ時の全ライト）、後半 = クラスタのライトリスト。
+        var li: u32 = 0u;
+        if it < dir_end {
+            li = it;
+        } else {
+            li = u_cluster_lights[list_offset + (it - dir_end)];
+        }
+        // 破損したインデックス（ありえないが）で配列外を読まないための保険。
+        // light_count == 0 ならこのループには入らないため減算は安全。
+        let light = u_lights[min(li, light_count - 1u)];
 
         var L        = vec3<f32>(0.0, 0.0, 1.0);
         var radiance = vec3<f32>(0.0);

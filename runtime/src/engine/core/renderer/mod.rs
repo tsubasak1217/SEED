@@ -10,6 +10,8 @@ pub(crate) mod hiz;
 pub(crate) mod skin_system;
 pub(crate) mod animator;
 pub(crate) mod lighting;
+/// Clustered Lighting（3D フロクセル単位のライトカリング, Phase C1）
+pub(crate) mod clustered;
 pub(crate) mod shadow;
 pub(crate) mod rt_shadow;
 pub(crate) mod post;
@@ -41,6 +43,9 @@ pub use particle_system::ParticleSystem;
 pub use skybox::{SkyboxSystem, SkyboxPipelines};
 pub use lighting::{GpuLight, LightBuffer, LightMeta, MAX_LIGHTS,
                    DEFAULT_AMBIENT_COLOR, DEFAULT_AMBIENT_INTENSITY};
+pub use clustered::{ClusterResources, partition_directional_first,
+                    CLUSTER_TILES_X, CLUSTER_TILES_Y, CLUSTER_SLICES_Z, CLUSTER_COUNT,
+                    MAX_LIGHTS_PER_CLUSTER};
 pub use shadow::{ShadowResources, ShadowPlan, ShadowMatricesUbo,
                  CSM_CASCADE_COUNT, MAX_SHADOW_SPOTS, SHADOW_DEPTH_FORMAT};
 pub use rt_shadow::RtShadowResources;

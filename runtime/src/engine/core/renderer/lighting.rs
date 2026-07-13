@@ -17,7 +17,11 @@
 //    binding 3: スポット深度配列（texture_depth_2d_array, ShadowResources 所有）
 //    binding 4: 比較サンプラー（LessEqual, ShadowResources 所有）
 //    binding 5: ShadowMatrices UBO（ShadowResources 所有）
-//  シェーダの宣言（shader_common.wgsl / shadow.wgsl の group 4）と
+//    binding 6: TLAS（RT 影バリアントのみ。RtShadowResources 所有）
+//    binding 7: array<ClusterCell>（storage, read。ClusterResources 所有・Phase C1）
+//    binding 8: array<u32> クラスタライトインデックス（storage, read。同上）
+//    binding 9: ClusterParams（uniform。同上。**BG ごとに差し替わる**）
+//  シェーダの宣言（cluster_common.wgsl / shader_common.wgsl / shadow.wgsl の group 4）と
 //  厳密に一致させること。
 // ============================================================
 
@@ -28,8 +32,14 @@ use super::shadow::ShadowResources;
 /// GPU に送れるライトの最大数。
 ///
 /// storage buffer を固定容量で確保し、毎フレーム有効なライトのみ書き込む。
-/// フォワードのper-fragmentループのため、多すぎるとフラグメント負荷が増える。
-pub const MAX_LIGHTS: usize = 64;
+///
+/// Phase C1（Clustered Lighting）で 64 → 1024 へ引き上げた。フラグメントは
+/// 全ライトではなく「自分のクラスタのライトリスト ＋ 全平行光」しか走査しないため、
+/// 灯数を増やしてもフラグメント負荷は増えない（増えるのはクラスタ構築 compute の
+/// コストと storage buffer の容量 = 1024 × 96B ≒ 96KB だけ）。
+/// 上限を更に上げる場合は renderer/clustered.rs の MAX_LIGHTS_PER_CLUSTER
+/// （1 クラスタが保持できる灯数）も併せて検討すること。
+pub const MAX_LIGHTS: usize = 1024;
 
 // ─── ライト種別コード ─────────────────────────────────────────
 // LightKind::to_code() およびシェーダの LIGHT_KIND_* 定数と一致させること。
@@ -273,22 +283,46 @@ pub struct LightMeta {
 /// 有効ライトのみを書き込み、メタにライト数を書く。
 pub struct LightBuffer {
     /// array<GpuLight>（storage, read）。容量 MAX_LIGHTS 固定。
+    /// クラスタ構築 compute（clustered.rs）も同じバッファを group 0 で読む。
     lights_buffer: wgpu::Buffer,
     /// LightMeta（uniform）。
     meta_buffer:   wgpu::Buffer,
     /// group 4 の複合 bind group（binding 0 = lights, 1 = meta,
-    /// 2 = CSM 深度配列, 3 = スポット深度配列, 4 = 比較サンプラー, 5 = シャドウ行列 UBO）。
-    /// ライトバッファもシャドウ資源も生成後不変のため、起動時 1 回だけ生成して使い回す
-    /// （中身の更新は queue.write_buffer / 深度パス描画で行われ、BG 再生成は不要）。
+    /// 2 = CSM 深度配列, 3 = スポット深度配列, 4 = 比較サンプラー, 5 = シャドウ行列 UBO,
+    /// 7 = クラスタグリッド, 8 = クラスタライトインデックス, 9 = クラスタパラメータ）。
+    /// ライトバッファもシャドウ資源もクラスタバッファも生成後不変のため、
+    /// 起動時 1 回だけ生成して使い回す（中身の更新は queue.write_buffer /
+    /// 深度パス描画 / compute で行われ、BG 再生成は不要）。
+    ///
+    /// **こちらは「クラスタ有効」側**（binding 9 = メインカメラ用 ClusterParams）。
+    /// メインカメラで描く全パス（不透明・距離ソート透明・WBOIT・ギズモアイコン）で使う。
     pub bind_group: wgpu::BindGroup,
+    /// **クラスタ無効**側の group 4 複合 bind group（Phase C1）。
+    ///
+    /// binding 9 に enabled=0 固定の ClusterParams を差した以外は `bind_group` と同一
+    /// （ライト・シャドウ・クラスタバッファはすべて共有する）。
+    /// これを bind したパスのフラグメントは、クラスタを一切参照せず従来どおり
+    /// 全ライトを線形走査する。
+    ///
+    /// クラスタは**カメラごとに固有**（near/far/fov/ビューポート依存）であり、
+    /// メインカメラ基準で構築したクラスタをカメラプレビューのパスで使うと
+    /// プレビューのライティングが壊れる（ライトが飛ぶ／暗くなる）。
+    /// カメラプレビューのパスは必ずこちらを bind すること（frame_renderer.rs）。
+    pub bind_group_unclustered: wgpu::BindGroup,
 }
 
 impl LightBuffer {
-    /// ライトバッファ一式と group 4 複合 bind group を生成する。
+    /// ライトバッファ一式と group 4 複合 bind group（クラスタ有効／無効の 2 本）を生成する。
     ///
-    /// - `bgl`:    mesh パイプラインの group 4 レイアウト（ライト＋シャドウ複合）。
-    /// - `shadow`: シャドウ資源（binding 2〜5 のビュー・サンプラー・UBO を供給）。
-    pub fn new(device: &wgpu::Device, bgl: &wgpu::BindGroupLayout, shadow: &ShadowResources) -> Self {
+    /// - `bgl`:      mesh パイプラインの group 4 レイアウト（ライト＋シャドウ＋クラスタ複合）。
+    /// - `shadow`:   シャドウ資源（binding 2〜5 のビュー・サンプラー・UBO を供給）。
+    /// - `clusters`: クラスタ資源（binding 7〜9 のグリッド・インデックス・パラメータを供給）。
+    pub fn new(
+        device:   &wgpu::Device,
+        bgl:      &wgpu::BindGroupLayout,
+        shadow:   &ShadowResources,
+        clusters: &super::clustered::ClusterResources,
+    ) -> Self {
         // storage 配列は最初から MAX_LIGHTS 分ゼロ確保する（実行時サイズ変更を避ける）。
         let init_lights = vec![GpuLight::zeroed(); MAX_LIGHTS];
         let lights_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -310,23 +344,37 @@ impl LightBuffer {
             usage:    wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
-        // group 4 複合 BG（ライト binding 0/1 ＋ シャドウ binding 2〜5）。
+        // group 4 複合 BG（ライト binding 0/1 ＋ シャドウ binding 2〜5 ＋ クラスタ binding 7〜9）。
         // shadow.wgsl / shader_common.wgsl の group 4 宣言と一致させること。
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label:   Some("Lights+Shadow BG (group 4)"),
-            layout:  bgl,
-            entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: lights_buffer.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: meta_buffer.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&shadow.dir_array_view) },
-                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&shadow.spot_array_view) },
-                wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::Sampler(&shadow.sampler) },
-                wgpu::BindGroupEntry { binding: 5, resource: shadow.ubo.as_entire_binding() },
-            ],
-        });
+        // クラスタ有効／無効は binding 9（ClusterParams）だけが異なる 2 本を作る。
+        let make_bg = |label: &str, params: &wgpu::Buffer| {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label:   Some(label),
+                layout:  bgl,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: lights_buffer.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 1, resource: meta_buffer.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&shadow.dir_array_view) },
+                    wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&shadow.spot_array_view) },
+                    wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::Sampler(&shadow.sampler) },
+                    wgpu::BindGroupEntry { binding: 5, resource: shadow.ubo.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 7, resource: clusters.grid_buffer().as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 8, resource: clusters.indices_buffer().as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 9, resource: params.as_entire_binding() },
+                ],
+            })
+        };
+        let bind_group = make_bg("Lights+Shadow+Cluster BG (group 4)", clusters.params_buffer());
+        let bind_group_unclustered = make_bg(
+            "Lights+Shadow+Cluster BG (group 4, cluster disabled)",
+            clusters.params_disabled_buffer(),
+        );
 
-        Self { lights_buffer, meta_buffer, bind_group }
+        Self { lights_buffer, meta_buffer, bind_group, bind_group_unclustered }
     }
+
+    /// ライト storage buffer への参照（クラスタ構築 compute の BindGroup 生成に使う）。
+    pub fn lights_buffer(&self) -> &wgpu::Buffer { &self.lights_buffer }
 
     /// 有効ライト配列を GPU へアップロードする（MAX_LIGHTS を超える分は切り捨て）。
     ///
@@ -361,18 +409,22 @@ impl LightBuffer {
 
     /// RT 影用の group 4 複合 BindGroup を生成する（Phase R8, RT 対応時のみ）。
     ///
-    /// 通常の bind group（binding 0〜5）に TLAS（binding 6）を加えたもの。
-    /// ライトバッファ・シャドウ資源は通常 BG と同一のものを共有し、TLAS のみ追加する。
+    /// 通常の bind group（binding 0〜5 ＋ クラスタ 7〜9）に TLAS（binding 6）を加えたもの。
+    /// ライトバッファ・シャドウ資源・クラスタ資源は通常 BG と同一のものを共有し、TLAS のみ追加する。
     /// `rt_lights_bgl` は mesh_rt パイプライン由来（acceleration_structure を含む group 4）。
+    ///
+    /// RT パイプラインを使うのはメインカメラのパスだけなので、クラスタは常に有効側
+    /// （params_buffer）を差す（カメラプレビューは RT を使わない＝R8 からの方針）。
     pub fn create_rt_bind_group(
         &self,
         device:        &wgpu::Device,
         rt_lights_bgl: &wgpu::BindGroupLayout,
         shadow:        &ShadowResources,
+        clusters:      &super::clustered::ClusterResources,
         tlas:          &wgpu::Tlas,
     ) -> wgpu::BindGroup {
         device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label:   Some("Lights+Shadow+TLAS BG (group 4, RT)"),
+            label:   Some("Lights+Shadow+Cluster+TLAS BG (group 4, RT)"),
             layout:  rt_lights_bgl,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: self.lights_buffer.as_entire_binding() },
@@ -382,6 +434,9 @@ impl LightBuffer {
                 wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::Sampler(&shadow.sampler) },
                 wgpu::BindGroupEntry { binding: 5, resource: shadow.ubo.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::AccelerationStructure(tlas) },
+                wgpu::BindGroupEntry { binding: 7, resource: clusters.grid_buffer().as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 8, resource: clusters.indices_buffer().as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 9, resource: clusters.params_buffer().as_entire_binding() },
             ],
         })
     }
