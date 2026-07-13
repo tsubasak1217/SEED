@@ -672,3 +672,74 @@ R8 は影アーキテクチャ確定後かつ実験的API理解が必要なた�
 - スキンメッシュのメッシュレットカリング（毎フレーム境界再計算）／LOD1〜3 への拡張／間接コマンドの
   真のコンパクション統計リードバック／per-prim ではなく全プリミティブ統合ディスパッチ／Hi-Z オクルージョン併用。
 - **実機での視覚 A/B 検証（トグル ON/OFF で見た目一致）が受入の最終条件。GPU 実行環境が無いため本実装は未検証。**
+
+---
+
+# フェーズ D: Deferred + Clustered Lighting 化（2026-07-13 開始）
+
+## 目標構成（ユーザー合意・確定）
+
+**不透明 = Deferred（G-Buffer）+ Clustered Lighting / 半透明 = Forward（WBOIT）**
+
+ハイエンド（AAA 級）を目標とし、**デカール・SSAO・SSR を確実に実装する**という要件が確定したため、
+G-Buffer を土台として据える。G-Buffer はこれらスクリーンスペース効果の前提そのものなので、
+後から足すより最初から持つほうが安い。
+
+Forward+ ではなく Deferred を選ぶ根拠: 多灯対応だけなら Forward+ で足りるが、
+デカール／SSAO／SSR を入れるなら G-Buffer が要る。逆に Deferred のデメリット
+（MSAA と相性が悪い）は、本エンジンが元々 MSAA を使っていない（FXAA）ため損失ゼロ。
+
+## 二重メンテ問題への構造的対策（最重要）
+
+ハイブリッド構成である以上、「G-Buffer ライティングパス」と「フォワード半透明パス」の
+2 つがライトを評価する。ここで実装が二重化すると、BRDF・ライト種別・影の方式を変えるたびに
+2 箇所を同期する羽目になる。
+
+→ **`evaluate_lighting(Surface) -> vec3` を唯一のライト評価実装とし、両パスから呼ぶ。**
+   `Surface` は VertexOutput に依存しないので、G-Buffer から復元した Surface でもそのまま使える。
+   Clustered 化も `lighting_eval.wgsl` のループ冒頭だけで完結する。
+
+## フェーズ
+
+- **D1 shade_pbr の分割: 完了**（master abe1d82, 2026-07-13）
+  surface.wgsl（Surface 定義のみ）/ surface_gather.wgsl（採取・group2 依存）/
+  lighting_eval.wgsl（evaluate_lighting・group0/4 のみ依存）/ shader_fragment.wgsl（薄いラッパ）。
+  見た目不変（式のオペランド順・演算子とも無変更であることを行単位差分で確認）。
+  **Surface 定義だけを単独ファイルに切るのが要点**: pipeline_config::reflect_bgls は
+  global_variables を使用有無に関わらず走査して BGL を作るため、将来のライティングパスが
+  Surface 定義欲しさに surface_gather.wgsl を連結すると、使わない group2（テクスチャ 11 binding）を
+  要求する壊れたレイアウトになる。
+
+- **D2 Clustered Lighting: 完了・実機検証待ち**（master 524b315, 2026-07-13）
+  16×9×24=3456 フロクセル、Z は指数分割。MAX_LIGHTS 64 → 1024。
+  Directional はクラスタに入れず別枠（配列先頭へ安定分割し常時評価）。
+  ライト境界は全て保守側（Spot は円錐を厳密に包含する球、クラスタ体積は錐台セルを包む AABB、
+  接触も交差、半径に 1.05 マージン）。**ライトが誤って落ちると暗くなり原因追跡が困難なため。**
+  group4 に binding 7=グリッド / 8=ライトインデックス / 9=ClusterParams を追加
+  （新規 group を増やすと max_bind_groups=5 で起動失敗する既知の地雷を回避）。
+  **複数カメラ問題**: クラスタはカメラ固有なので、メインカメラ基準のクラスタをカメラプレビューで
+  使うとライティングが壊れる。ClusterParams.enabled で切替え、プレビュー・非透視カメラ・
+  near/far/fov 不正・ライト0灯は enabled=0（従来の全ライト線形走査）へフォールバックする。
+  最悪でも「速くならない」だけで暗くはならない設計。
+
+- **D3 G-Buffer + Deferred 不透明パス: 未着手**
+  fs_gbuffer が gather_surface の結果を MRT へ焼き、フルスクリーンのライティングパスが
+  G-Buffer から Surface を復元して evaluate_lighting をそのまま呼ぶ。半透明は WBOIT フォワードのまま。
+  RT 影はデファードのほうが安くなる（可視ピクセルのみレイを飛ばす）。
+  メッシュレットカリング（compute + multi_draw_indirect_count）は G-Buffer パスでもそのまま使える。
+
+- **D4 SSAO: 未着手**（G-Buffer の深度＋法線から。**ブラーはいもす法（累積和）で実装すること**）
+- **D5 Deferred Decal: 未着手**
+- **D6 SSR: 未着手**
+
+## 影について（今回スコープ外・ユーザー判断）
+
+現状のシャドウマップは Directional 1 灯（CSM）＋ Spot 最大 4 灯が上限。多灯すべてに影を落としたい
+場合はインラインRT影（全ライト種対応済み）を使う運用になる。シャドウアトラス導入は将来課題。
+
+## 事実訂正（よくある誤解）
+
+- SEED は **DirectX12 直叩きではなく wgpu**（DX12/Vulkan バックエンド）。
+- **メッシュシェーダーは使っていない**。メッシュレット分割はしているが、実体は compute による
+  カリング + `multi_draw_indexed_indirect_count`（wgpu の EXPERIMENTAL_MESH_SHADER は未成熟）。
+- **MSAA は未使用**（AA は FXAA）。よって「Deferred は MSAA と相性が悪い」は本エンジンでは損失ゼロ。
