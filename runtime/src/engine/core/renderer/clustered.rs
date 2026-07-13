@@ -22,10 +22,11 @@
 //  本実装は方式 (b)「クラスタ無効モード」を採る:
 //    - ClusterParams.enabled = 1（メインカメラ用パラメータ）→ クラスタのリストを走査
 //    - ClusterParams.enabled = 0（プレビュー用パラメータ）  → 従来どおり全ライトを線形走査
-//  ライトバッファ・シャドウ資源・クラスタバッファはすべて共有したまま、
-//  **ClusterParams uniform だけが異なる 2 つの group 4 BindGroup** を持つ
-//  （LightBuffer::bind_group / LightBuffer::bind_group_unclustered）。
-//  プレビューは後者を bind するため、クラスタの内容に一切依存しない＝壊れない。
+//  ライトバッファ・クラスタバッファは共有したまま、**ClusterParams uniform が異なる**
+//  2 つの group 4 BindGroup を持つ（LightBuffer::bind_group(LightingPass::…) で選ぶ）。
+//  プレビューは無効側を bind するため、クラスタの内容に一切依存しない＝壊れない。
+//  なお、同じく**カメラ固有**であるシャドウ資源（CSM）も同じ 2 本の BindGroup で
+//  メイン用／プレビュー用に差し替わっている（lighting.rs / shadow.rs 参照）。
 //  透視カメラ以外（2D オルソ・正射ゲームカメラ）でも enabled=0 にして線形走査へ落とす。
 // ============================================================
 

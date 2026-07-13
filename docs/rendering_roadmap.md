@@ -332,10 +332,20 @@
   0 でハード。Inspector に「ソフト影半径」行、IPC `SET_LIGHT_FIELD ...,soft_radius`）を追加し、
   `GpuLight.soft_radius`（旧 _pad1 offset92 を再利用＝96B 不変）へ搬送。directional は collect_gpu_lights で
   度→tan 変換、局所光は raw 半径。`rt_shadow_on.wgsl` は cone_radius（directional=soft_radius, 局所光=
-  soft_radius/距離）から l 中心の円錐内へ `RT_SHADOW_SAMPLES=4` 本を Vogel ディスク分布＋フラグメント座標
+  soft_radius/距離）から l 中心の円錐内へレイを Vogel ディスク分布＋フラグメント座標
   由来の IGN 回転（時間項なし＝TAA非前提でちらつき無し）で分散し平均。cone_radius=0 は 1 本ハードへ分岐で高速維持。
-  負荷: soft_radius>0 のライトで RT 影レイが 4 倍（品質オプション。サンプル数は定数、可変化は将来）。
-  シグネチャは `rt_shadow_off.wgsl` スタブと一致。naga RAY_QUERY テストで全4バリアント再検証済み。
+  シグネチャは `rt_shadow_off.wgsl` スタブと一致。naga RAY_QUERY テストで全バリアント再検証済み。
+- ソフト影のディザノイズ修正（2026-07, 実機検証待ち）: ライト近傍の面が点描状のまだらになり暗く潰れる不具合。
+  原因は 局所光の cone_radius = soft_radius/距離 に上限が無く、近づくほど円錐が発散 →(a) 固定4本では遮蔽率が
+  5段階に量子化されて IGN 回転と相まってディザ化 (b) 面の幾何的地平線より下を向いたサンプルが自己ジオメトリに
+  当たり偽遮蔽。対処: ①`lighting_eval.wgsl` の `RT_SHADOW_MAX_CONE_RADIUS=0.5`(tan半角≈26.6°)でクランプ
+  ②地平線より下（dot(Ng,dir) <= `RT_SHADOW_HORIZON_MIN_COS`=0.01）のサンプルを平均の**母数から除外**（有効0本なら完全遮蔽）
+  ③サンプル数を cone_radius に応じ適応化（`RT_SHADOW_SAMPLES_MIN=4` 〜 `RT_SHADOW_SAMPLES_MAX=16`、
+  傾き `RT_SHADOW_CONE_RADIUS_PER_SAMPLE=0.03125`=上限cone/最大本数）。ループ上限は定数で静的に固定。
+  負荷: soft_radius>0 のライト 1 灯あたり最悪 16 本／ピクセル（cone_radius=0 なら従来どおり 1 本＝増加ゼロ）。
+  定数整合は `rt_shadow.rs::wgsl_soft_shadow_constants_are_consistent` が担保。
+  残課題: 16本でも遮蔽率は17段階の量子化が残るため、空間デノイズ（いもす法ベースの可変半径ブラー）or
+  時間的蓄積 or ブルーノイズ（IGN からの差し替え）の追加を検討。
 - TODO（R8残）: スキンメッシュのRT影（スキン済み頂点からのBLAS毎フレーム再構築）・カメラプレビュー/
   ギズモモデルのRT影（現状は従来パイプライン固定で影を受けない）・ソフト影サンプル数の SET_POST_FX 可変化・実機での視覚検証。
 

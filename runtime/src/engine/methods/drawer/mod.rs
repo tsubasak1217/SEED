@@ -28,8 +28,8 @@ pub use crate::engine::core::renderer::{
     SkinComputePipeline, IdPassPipeline, OutlinePipeline, DepthPrepassPipelines,
     SpritePipeline, SpriteOutlinePipeline, CanvasIdPipeline, CanvasIdUniform,
     CameraPreviewBlitPipeline,
-    // ライト
-    GpuLight, LightBuffer, MAX_LIGHTS,
+    // ライト（LightingPass = group 4 の BG を「どのカメラのパスか」で選ぶ型）
+    GpuLight, LightBuffer, LightingPass, MAX_LIGHTS,
     // Clustered Lighting（Phase C1）
     ClusterResources, partition_directional_first,
     // シャドウ（Phase R2）
@@ -78,21 +78,31 @@ pub struct DrawContext {
     pub defaults:         DefaultTex,
     /// ライト用 GPU バッファ一式（毎フレーム `update()` で有効ライトを書き込む）。
     /// group 4 の bind group を全メッシュ描画で共用する。
-    /// クラスタ有効（メインカメラ用）と無効（カメラプレビュー用）の 2 本を持つ。
+    /// 「どのカメラのパスか」で選ぶ 2 本（`bind_group(LightingPass::…)`）を持つ。
     pub light_buffer:     LightBuffer,
     /// Clustered Lighting のクラスタ資源一式（Phase C1）。
     /// 毎フレーム `update()` でメインカメラのパラメータを書き、compute で
     /// クラスタごとの影響ライトリストを構築する。group 4 の binding 7〜9 を供給する。
     ///
     /// クラスタは**カメラごとに固有**なので、カメラプレビューのパスでは
-    /// `light_buffer.bind_group_unclustered`（enabled=0）を bind して
+    /// `light_buffer.bind_group(LightingPass::CameraPreview)`（enabled=0）を bind して
     /// 従来の全ライト線形走査へフォールバックさせること。
     pub clusters:         ClusterResources,
-    /// シャドウ用 GPU リソース一式（Phase R2）。
+    /// **メインカメラ用**シャドウ GPU リソース一式（Phase R2）。
     /// 毎フレーム prepare_frame でシャドウ行列を更新し、record で深度パスを記録する。
-    /// サンプリング用資源は light_buffer.bind_group（group 4 複合 BG の binding 2〜5）
-    /// 経由で全メッシュ描画に共用される。
+    /// サンプリング用資源は `light_buffer.bind_group(LightingPass::MainCamera)`
+    /// （group 4 複合 BG の binding 2〜5）経由でメインパスの全メッシュ描画に共用される。
     pub shadow:           ShadowResources,
+    /// **カメラプレビュー用**シャドウ GPU リソース一式。
+    ///
+    /// CSM のカスケードは**カメラ視錐台にフィットさせる＝カメラ固有**である。
+    /// エディタのカメラプレビューはゲームカメラの映像なので、メインカメラ
+    /// （Edit ではデバッグカメラ）基準の CSM を使うと、プレビューの影が
+    /// デバッグカメラの向きで変わってしまう（＝プレビューがゲームカメラの映像でなくなる）。
+    /// そのためプレビュー専用の実体を持ち、プレビューカメラ基準でカスケードを組み、
+    /// プレビューパスの直前に深度を描く（frame_renderer.rs）。
+    /// サンプリングは `light_buffer.bind_group(LightingPass::CameraPreview)` 経由。
+    pub shadow_preview:   ShadowResources,
     /// RT 影用リソース一式（Phase R8）。RT 対応 GPU でのみ Some。
     /// 毎フレーム（RT 影オン時）prepare_and_build で BLAS/TLAS を更新し、
     /// bind_group（group 4 に TLAS を加えた複合 BG）を RT パイプライン描画で使う。
@@ -147,12 +157,18 @@ impl DrawContext {
         // max_bind_groups=5（group 0〜4）のデバイスがあるため group 5 は使わない。
         // レイアウトは mesh パイプライン由来（skinned とレイアウト互換のため共用）。
         let shadow       = ShadowResources::new(&device, &pipelines.mesh.camera_bgl);
+        // カメラプレビュー用のシャドウ実体（同一構成・別テクスチャ）。
+        // CSM はカメラ視錐台にフィットさせる＝カメラ固有のため、プレビュー
+        // （ゲームカメラの映像）はメインカメラの CSM を流用できない。
+        let shadow_preview = ShadowResources::new(&device, &pipelines.mesh.camera_bgl);
         // クラスタ資源（Phase C1）: group 4 の binding 7〜9 を供給する。
         // 生成順は「クラスタバッファ → LightBuffer（クラスタを参照する複合 BG を作る）
         // → クラスタの compute BindGroup（ライトバッファを参照する）」の 2 段構え。
         // 相互参照になるため attach_lights を後から呼ぶ。
         let mut clusters = ClusterResources::new(&device);
-        let light_buffer = LightBuffer::new(&device, &pipelines.mesh.lights_bgl, &shadow, &clusters);
+        let light_buffer = LightBuffer::new(
+            &device, &pipelines.mesh.lights_bgl, &shadow, &shadow_preview, &clusters,
+        );
         clusters.attach_lights(
             &device, &pipelines.cluster_build.bgl, light_buffer.lights_buffer(),
         );
@@ -173,6 +189,7 @@ impl DrawContext {
             light_buffer,
             clusters,
             shadow,
+            shadow_preview,
             rt_shadow,
             post,
             postfx,

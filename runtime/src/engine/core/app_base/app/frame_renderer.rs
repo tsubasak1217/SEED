@@ -47,6 +47,9 @@ use crate::engine::methods::drawer::{
     extract_frustum_planes, GizmoBatch, draw_gizmo_batch,
     LineBatch, draw_line_batch, draw_thick_line_batch,
     draw_sprite_batches, draw_sprite_outline_batches, GpuSpriteTexture,
+    // group 4（ライト＋シャドウ＋クラスタ複合 BG）を「どのカメラのパスか」で選ぶ型。
+    // カメラ固有資源（CSM・クラスタ）の取り違えを防ぐため、BG は必ずこれ経由で取る。
+    LightingPass,
     NUM_LODS,
 };
 use crate::engine::methods::gizmo_interact::{screen_to_ray, GIZMO_SCREEN_RADIUS_RATIO};
@@ -930,6 +933,17 @@ impl App {
                     // 影パスの実描画は skin compute 後・メインパス直前に record で行う。
                     let (sv, sn, sf, sfov, sasp) = saved_shadow_cam
                         .unwrap_or((Mat4x4::identity(), 0.1, 100.0, std::f32::consts::FRAC_PI_4, 1.0));
+
+                    // カメラプレビュー用 CSM を組むためのライト配列スナップショット。
+                    //
+                    // prepare_frame は「影を希望する」センチネル（shadow_index≈1.0）を
+                    // 採用結果（方向光=0.0 / スポット=レイヤ番号 / 不採用=-1.0）へ**書き換える**。
+                    // つまり 2 回目以降の呼び出しではセンチネルが残っておらず、影が 1 つも
+                    // 採用されない。プレビュー用の prepare_frame（別カメラ・別シャドウ資源）へは
+                    // 必ず「書き換え前」の配列を渡す必要があるため、ここで控えておく。
+                    // 採用スロットの割り当てはカメラ非依存なので、両者の shadow_index は一致する。
+                    let lights_before_shadow_assign = frame_lights.clone();
+
                     let shadow_plan = draw_ctx.shadow.prepare_frame(
                         &draw_ctx.queue, &sv, sn, sf, sfov, sasp,
                         &mut frame_lights,
@@ -1537,6 +1551,66 @@ impl App {
                                 &preview_tp_models,
                             );
 
+                        // ══════════════════════════════════════════════════════════
+                        // 以下のマーカー間は「ゲームカメラの映像」を描く区間である。
+                        // group 4（ライト＋シャドウ＋クラスタの複合 BG）には**カメラ固有の資源**
+                        // （CSM・クラスタ）が入っているため、この区間では必ずプレビュー側
+                        // （LightingPass::CameraPreview / draw_ctx.shadow_preview）だけを使うこと。
+                        // メインカメラ用の資源を 1 箇所でも混ぜると、プレビューのライティングが
+                        // デバッグカメラの向きで変わってしまう（実際に起きたバグ）。
+                        // マーカー間にメインカメラ用資源が現れないことは、本ファイル末尾の
+                        // ユニットテスト（camera_preview_pass_uses_preview_lighting_resources）が
+                        // ソース走査で検証する。
+                        // ══════════════════════════════════════════════════════════
+                        // [CAMERA-PREVIEW-PASS-BEGIN]
+
+                        // ── プレビューカメラ基準の CSM を構築する ────────────────────
+                        // CSM のカスケードはカメラ視錐台にフィットさせる＝**カメラ固有**。
+                        // メインカメラ（Edit ではデバッグカメラ）基準の CSM をここで流用すると、
+                        // プレビューの影がデバッグカメラの向きで変わってしまう。
+                        // 加えて、メインの影パスが記録されるのはこのパスより**後**なので、
+                        // 流用すると 1 フレーム前の深度を読むことにもなる。
+                        // → 専用資源（draw_ctx.shadow_preview）へプレビューカメラ基準の
+                        //   カスケードを組み、この小窓パスの直前に深度を描く。
+                        let preview_shadow_plan = {
+                            // 正射ゲームカメラは CSM（透視錐台前提の分割）を組めないため影なしへ落とす。
+                            let sp = cam_data.shadow_params(preview_aspect);
+                            let (pv, pn, pf, pfov, pasp) = sp.unwrap_or((
+                                Mat4x4::identity(), 0.1, 100.0, std::f32::consts::FRAC_PI_4, 1.0,
+                            ));
+                            // prepare_frame はライト配列の shadow_index（影希望センチネル）を
+                            // 書き換えるため、GPU へ上げ済みの frame_lights ではなく
+                            // 「書き換え前スナップショット」の複製を渡す。
+                            // 採用スロットの割り当てはカメラ非依存なので結果の shadow_index は
+                            // メイン側と一致する（＝GPU 上のライト配列と齟齬は生じない）。
+                            let mut preview_lights = lights_before_shadow_assign.clone();
+                            draw_ctx.shadow_preview.prepare_frame(
+                                &draw_ctx.queue, &pv, pn, pf, pfov, pasp,
+                                &mut preview_lights,
+                                shadow_has_casters && sp.is_some(),
+                            )
+                        };
+                        if preview_shadow_plan.any() {
+                            // 影キャスター（cast_shadows=true のバッチ）はメインの影パスと同一集合。
+                            let preview_casters: Vec<(
+                                &crate::engine::methods::drawer::GpuModel,
+                                &crate::engine::methods::drawer::InstancedModelBatch,
+                            )> = self.shared_model_batches.iter()
+                                .filter(|(path, _)| shadow_caster_paths.contains(path.as_str()))
+                                .filter_map(|(path, sd)| {
+                                    gpu_model_by_path.get(path.as_str()).map(|&gpu| (gpu, &sd.batch))
+                                })
+                                .collect();
+                            if !preview_casters.is_empty() {
+                                draw_ctx.shadow_preview.record(
+                                    frame.encoder_mut(),
+                                    &draw_ctx.pipelines.shadow_depth,
+                                    &preview_shadow_plan,
+                                    &preview_casters,
+                                );
+                            }
+                        }
+
                         {
                             let mut preview_pass = frame.begin_offscreen_pass(
                                 &preview.color_view,
@@ -1548,17 +1622,16 @@ impl App {
                                 if let Some(&gpu) = gpu_model_by_path.get(path.as_str()) {
                                     // カメラプレビューは従来パイプライン（RT なし）で描画する。
                                     //
-                                    // 【Clustered Lighting・最重要】group 4 は必ず
-                                    // bind_group_unclustered（ClusterParams.enabled=0）を使う。
-                                    // クラスタは near/far/fov/ビューポートに依存する＝カメラごとに
-                                    // 固有であり、メインカメラ基準で構築したクラスタをこのパスへ
-                                    // 適用するとプレビューのライティングが壊れる（ライトが落ちて
-                                    // 暗くなる・別の場所のライトが乗る）。無効側 BG を使うことで
-                                    // プレビューは従来どおり全ライトを線形走査する。
+                                    // 【最重要】group 4 は必ず CameraPreview 側の BG を使う。
+                                    // この BG だけがカメラ固有資源をプレビュー用に差し替えてある:
+                                    //   - ClusterParams.enabled=0（クラスタは near/far/fov/ビューポート
+                                    //     依存＝カメラ固有。メインカメラ基準のクラスタを適用すると
+                                    //     ライトが落ちて暗くなる／別の場所のライトが乗る）
+                                    //   - CSM = プレビューカメラ基準（上でこのパス直前に描いた深度）
                                     draw_model_indirect(
                                         &mut preview_pass, gpu, &sd.batch,
                                         &preview_mesh_cam_buf.bind_group,
-                                        &draw_ctx.light_buffer.bind_group_unclustered,
+                                        draw_ctx.light_buffer.bind_group(LightingPass::CameraPreview),
                                         &draw_ctx.pipelines, None, false,
                                     );
                                 }
@@ -1573,13 +1646,13 @@ impl App {
                             // メインカメラの saved_camera_pos は別カメラのため使わない。
                             // カリングはメイン視錐台とプレビュー視錐台の OR のため、
                             // lod_compact_insts にはプレビュー可視インスタンスが含まれている。
-                            // group 4 は上の不透明描画と同じくクラスタ無効側を使う（別カメラのため）。
+                            // group 4 は上の不透明描画と同じく CameraPreview 側を使う（別カメラのため）。
                             if preview_has_tp {
                                 crate::engine::core::renderer::transparency::draw_sorted(
                                     &mut preview_pass,
                                     &preview_tp_models,
                                     &preview_mesh_cam_buf.bind_group,
-                                    &draw_ctx.light_buffer.bind_group_unclustered,
+                                    draw_ctx.light_buffer.bind_group(LightingPass::CameraPreview),
                                     &draw_ctx.pipelines.transparent,
                                     cam_uniform.position,
                                 );
@@ -1597,6 +1670,7 @@ impl App {
                                 );
                             }
                         }
+                        // [CAMERA-PREVIEW-PASS-END]
                     }
 
                     // ギズモ GPU バッファ（レンダーパスの前に生成）
@@ -3070,8 +3144,10 @@ impl App {
                         // フラグメントはこの結果だけを走査する。
                         //
                         // 【クラスタはカメラごとに固有】ここで作るのは**メインカメラぶんだけ**。
-                        // カメラプレビューのパス（上で記録済み）はクラスタ無効の BindGroup を
-                        // bind しており、この結果に一切依存しない（従来の全ライト線形走査）。
+                        // カメラプレビューのパス（上で記録済み）は CameraPreview 側の BindGroup
+                        // （ClusterParams.enabled=0）を bind しており、この結果に一切依存しない
+                        // （従来の全ライト線形走査）。同様にプレビューの CSM も専用資源
+                        // （draw_ctx.shadow_preview）で別に構築済みで、メインカメラに依存しない。
                         //
                         // 【透視カメラ以外は無効化】2D オルソ・正射ゲームカメラでは
                         // saved_shadow_cam が None になる。指数 Z スライスは透視前提のため、
@@ -3129,7 +3205,7 @@ impl App {
                         let scene_lights_bg: &wgpu::BindGroup = rt_draw_ref
                             .as_ref()
                             .map(|r| &r.bind_group)
-                            .unwrap_or(&draw_ctx.light_buffer.bind_group);
+                            .unwrap_or(draw_ctx.light_buffer.bind_group(LightingPass::MainCamera));
 
                         let mut pass = frame.begin_scene_pass_to(hdr_view, clear_color);
 
@@ -3234,7 +3310,7 @@ impl App {
                                     &mut pass,
                                     &transparent_models,
                                     &camera_buf.bind_group,
-                                    &draw_ctx.light_buffer.bind_group,
+                                    draw_ctx.light_buffer.bind_group(LightingPass::MainCamera),
                                     &draw_ctx.pipelines.transparent,
                                     saved_camera_pos,
                                 );
@@ -3582,7 +3658,7 @@ impl App {
                                 // カメラギズモモデルは従来パイプライン（RT なし）で描画する。
                                 draw_model_indirect(
                                     &mut pass, &gizmo.gpu_model, &gizmo.batch,
-                                    &camera_buf.bind_group, &draw_ctx.light_buffer.bind_group,
+                                    &camera_buf.bind_group, draw_ctx.light_buffer.bind_group(LightingPass::MainCamera),
                                     &draw_ctx.pipelines, None, false,
                                 );
                             }
@@ -3593,7 +3669,7 @@ impl App {
                             if let Some(gizmo) = &self.light_gizmo {
                                 draw_model_indirect(
                                     &mut pass, &gizmo.gpu_model, &gizmo.batch,
-                                    &camera_buf.bind_group, &draw_ctx.light_buffer.bind_group,
+                                    &camera_buf.bind_group, draw_ctx.light_buffer.bind_group(LightingPass::MainCamera),
                                     &draw_ctx.pipelines, None, false,
                                 );
                             }
@@ -3604,7 +3680,7 @@ impl App {
                             if let Some(gizmo) = &self.particle_gizmo {
                                 draw_model_indirect(
                                     &mut pass, &gizmo.gpu_model, &gizmo.batch,
-                                    &camera_buf.bind_group, &draw_ctx.light_buffer.bind_group,
+                                    &camera_buf.bind_group, draw_ctx.light_buffer.bind_group(LightingPass::MainCamera),
                                     &draw_ctx.pipelines, None, false,
                                 );
                             }
@@ -3668,7 +3744,7 @@ impl App {
                                     &mut wpass,
                                     &transparent_models,
                                     &camera_buf.bind_group,
-                                    &draw_ctx.light_buffer.bind_group,
+                                    draw_ctx.light_buffer.bind_group(LightingPass::MainCamera),
                                     &draw_ctx.pipelines.transparent,
                                     saved_camera_pos,
                                 );
@@ -4734,5 +4810,73 @@ impl App {
         // 暴走ループと、それに伴う毎フレーム Debug.Log の氾濫を防ぐ）。
         self.pace_frame_if_unfocused(perf_t_total);
         if let Some(window) = &self.window { window.request_redraw(); }
+    }
+}
+
+// ============================================================
+//  カメラプレビューのライティング資源に関する静的検証
+//
+//  group 4（ライト＋シャドウ＋クラスタの複合 BindGroup）には**カメラ固有の資源**が
+//  含まれる:
+//    - CSM（binding 2/5）  : カスケードはカメラ視錐台にフィットさせる
+//    - クラスタ（binding 7〜9）: フロクセル分割は near/far/fov/ビューポート依存
+//  そのため「ゲームカメラの映像」であるカメラプレビューのパスでメインカメラ用の資源を
+//  使うと、プレビューのライティングがデバッグカメラの向きで変わってしまう
+//  （＝プレビューがゲームカメラの映像でなくなる）。これは実際に発生したバグである。
+//
+//  この取りこぼしはコンパイルでも実行時エラーでも検出できない（型は同じ &BindGroup /
+//  &ShadowResources）ため、プレビューパス区間をマーカーで囲み、その中にメインカメラ用の
+//  資源が現れないことをソース走査で検証する。
+// ============================================================
+#[cfg(test)]
+mod camera_preview_lighting_tests {
+    /// プレビューパス区間の開始マーカー（frame_renderer.rs 内のコメント）。
+    const PREVIEW_BEGIN: &str = "[CAMERA-PREVIEW-PASS-BEGIN]";
+    /// プレビューパス区間の終了マーカー。
+    const PREVIEW_END:   &str = "[CAMERA-PREVIEW-PASS-END]";
+
+    /// カメラプレビューのパス区間が、プレビュー専用のライティング資源だけを使うこと。
+    ///
+    /// 禁止（メインカメラ固有の資源）:
+    ///   - `LightingPass::MainCamera` … クラスタ有効＋メインカメラ基準 CSM の group 4 BG
+    ///   - `draw_ctx.shadow.`         … メインカメラ基準の CSM 実体（プレビューは shadow_preview）
+    /// 必須:
+    ///   - `LightingPass::CameraPreview` … プレビュー用 group 4 BG（クラスタ無効＋プレビュー CSM）
+    ///   - `shadow_preview`              … プレビューカメラ基準の CSM 構築・記録
+    #[test]
+    fn camera_preview_pass_uses_preview_lighting_resources() {
+        let src = include_str!("frame_renderer.rs");
+
+        let begin = src.find(PREVIEW_BEGIN)
+            .expect("プレビューパスの開始マーカーが見つかりません（区間を消さないこと）");
+        let end = src.find(PREVIEW_END)
+            .expect("プレビューパスの終了マーカーが見つかりません（区間を消さないこと）");
+        assert!(begin < end, "プレビューパスのマーカーの順序が逆です");
+
+        // マーカー間＝プレビュー（ゲームカメラ）を描く区間。
+        let region = &src[begin..end];
+
+        assert!(
+            !region.contains("LightingPass::MainCamera"),
+            "カメラプレビューのパスでメインカメラ用の group 4 BindGroup を使っています。\
+             クラスタ（カメラ固有）とメインカメラ基準の CSM が適用され、プレビューの\
+             ライティングがデバッグカメラの向きで変わります。\
+             LightingPass::CameraPreview を使ってください。"
+        );
+        assert!(
+            !region.contains("draw_ctx.shadow."),
+            "カメラプレビューのパスでメインカメラ基準のシャドウ資源（draw_ctx.shadow）を\
+             使っています。CSM のカスケードはカメラ視錐台にフィットする＝カメラ固有のため、\
+             プレビューの影がデバッグカメラの向きで変わります。\
+             draw_ctx.shadow_preview を使ってください。"
+        );
+        assert!(
+            region.contains("LightingPass::CameraPreview"),
+            "カメラプレビューのパスがプレビュー用の group 4 BindGroup を使っていません"
+        );
+        assert!(
+            region.contains("shadow_preview"),
+            "カメラプレビューのパスがプレビューカメラ基準の CSM を構築していません"
+        );
     }
 }

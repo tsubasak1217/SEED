@@ -29,6 +29,30 @@ use wgpu::util::DeviceExt;
 
 use super::shadow::ShadowResources;
 
+// ─── LightingPass ────────────────────────────────────────────
+
+/// ライティングを行う描画パスの種別（＝**どのカメラのパスか**）。
+///
+/// group 4（ライト＋シャドウ＋クラスタの複合 BindGroup）の中には
+/// **カメラ固有の資源**が 2 つ含まれる:
+///   - シャドウ資源（binding 2/5）: CSM のカスケードはカメラ視錐台にフィットさせる。
+///   - クラスタ資源（binding 7〜9）: フロクセル分割は near/far/fov/ビューポート依存。
+/// そのためパスごとに正しい BindGroup を選ぶ必要がある。誤って別カメラ用の BG を
+/// 渡すと「そのパスのライティングが、別のカメラの向きで変わる」という追跡困難な
+/// バグになる（実際に発生した）。
+///
+/// 呼び出し側が BindGroup を直に触れないよう、LightBuffer の BG フィールドは private とし、
+/// **本 enum で「どのカメラのパスか」を名指しさせる**ことで取り違えを防ぐ。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LightingPass {
+    /// メインカメラのパス（Edit=デバッグカメラ / Play=ゲームカメラ）。
+    /// クラスタ有効・メインカメラ基準の CSM を使う。
+    MainCamera,
+    /// エディタのカメラプレビュー（選択中ゲームカメラの小窓）のパス。
+    /// クラスタ無効（線形走査）・**プレビューカメラ基準の CSM** を使う。
+    CameraPreview,
+}
+
 /// GPU に送れるライトの最大数。
 ///
 /// storage buffer を固定容量で確保し、毎フレーム有効なライトのみ書き込む。
@@ -294,34 +318,45 @@ pub struct LightBuffer {
     /// 起動時 1 回だけ生成して使い回す（中身の更新は queue.write_buffer /
     /// 深度パス描画 / compute で行われ、BG 再生成は不要）。
     ///
-    /// **こちらは「クラスタ有効」側**（binding 9 = メインカメラ用 ClusterParams）。
+    /// **メインカメラ用**: クラスタ有効（binding 9 = メインカメラ用 ClusterParams）＋
+    /// メインカメラ基準の CSM（binding 2/5 = ShadowResources 本体）。
     /// メインカメラで描く全パス（不透明・距離ソート透明・WBOIT・ギズモアイコン）で使う。
-    pub bind_group: wgpu::BindGroup,
-    /// **クラスタ無効**側の group 4 複合 bind group（Phase C1）。
     ///
-    /// binding 9 に enabled=0 固定の ClusterParams を差した以外は `bind_group` と同一
-    /// （ライト・シャドウ・クラスタバッファはすべて共有する）。
-    /// これを bind したパスのフラグメントは、クラスタを一切参照せず従来どおり
-    /// 全ライトを線形走査する。
+    /// 取り違え防止のため private。参照は `bind_group(LightingPass)` 経由で行う。
+    bind_group_main: wgpu::BindGroup,
+    /// **カメラプレビュー用**の group 4 複合 bind group。
     ///
-    /// クラスタは**カメラごとに固有**（near/far/fov/ビューポート依存）であり、
-    /// メインカメラ基準で構築したクラスタをカメラプレビューのパスで使うと
-    /// プレビューのライティングが壊れる（ライトが飛ぶ／暗くなる）。
-    /// カメラプレビューのパスは必ずこちらを bind すること（frame_renderer.rs）。
-    pub bind_group_unclustered: wgpu::BindGroup,
+    /// メインカメラ用と異なるのは「カメラ固有の資源」だけ:
+    ///   - binding 9: enabled=0 固定の ClusterParams
+    ///     → フラグメントはクラスタを一切参照せず、従来どおり全ライトを線形走査する。
+    ///       クラスタは near/far/fov/ビューポート依存＝カメラ固有のため、メインカメラ
+    ///       基準のクラスタをプレビューで使うとライトが飛ぶ／暗くなる。
+    ///   - binding 2/5: **プレビューカメラ基準の CSM**（ShadowResources のプレビュー実体）
+    ///     → CSM のカスケードはカメラ視錐台にフィットさせるためカメラ固有。メインカメラ
+    ///       （Edit ではデバッグカメラ）基準の CSM をプレビューで使うと、プレビューの影が
+    ///       デバッグカメラの向きで変わってしまう。
+    /// ライト配列・メタ・スポット以外の共有資源（binding 0/1/3/4/7/8）はメイン用と共有する。
+    ///
+    /// 取り違え防止のため private。参照は `bind_group(LightingPass)` 経由で行う。
+    bind_group_preview: wgpu::BindGroup,
 }
 
 impl LightBuffer {
-    /// ライトバッファ一式と group 4 複合 bind group（クラスタ有効／無効の 2 本）を生成する。
+    /// ライトバッファ一式と group 4 複合 bind group（メインカメラ用／プレビュー用の 2 本）を生成する。
     ///
-    /// - `bgl`:      mesh パイプラインの group 4 レイアウト（ライト＋シャドウ＋クラスタ複合）。
-    /// - `shadow`:   シャドウ資源（binding 2〜5 のビュー・サンプラー・UBO を供給）。
-    /// - `clusters`: クラスタ資源（binding 7〜9 のグリッド・インデックス・パラメータを供給）。
+    /// 2 本の違いは**カメラ固有の資源だけ**（シャドウ実体とクラスタパラメータ）。
+    /// ライト storage / メタ / クラスタバッファ本体は共有する。
+    ///
+    /// - `bgl`:            mesh パイプラインの group 4 レイアウト（ライト＋シャドウ＋クラスタ複合）。
+    /// - `shadow_main`:    メインカメラ基準の CSM を持つシャドウ資源（binding 2〜5）。
+    /// - `shadow_preview`: カメラプレビュー基準の CSM を持つシャドウ資源（binding 2〜5）。
+    /// - `clusters`:       クラスタ資源（binding 7〜9 のグリッド・インデックス・パラメータを供給）。
     pub fn new(
-        device:   &wgpu::Device,
-        bgl:      &wgpu::BindGroupLayout,
-        shadow:   &ShadowResources,
-        clusters: &super::clustered::ClusterResources,
+        device:         &wgpu::Device,
+        bgl:            &wgpu::BindGroupLayout,
+        shadow_main:    &ShadowResources,
+        shadow_preview: &ShadowResources,
+        clusters:       &super::clustered::ClusterResources,
     ) -> Self {
         // storage 配列は最初から MAX_LIGHTS 分ゼロ確保する（実行時サイズ変更を避ける）。
         let init_lights = vec![GpuLight::zeroed(); MAX_LIGHTS];
@@ -346,8 +381,12 @@ impl LightBuffer {
 
         // group 4 複合 BG（ライト binding 0/1 ＋ シャドウ binding 2〜5 ＋ クラスタ binding 7〜9）。
         // shadow.wgsl / shader_common.wgsl の group 4 宣言と一致させること。
-        // クラスタ有効／無効は binding 9（ClusterParams）だけが異なる 2 本を作る。
-        let make_bg = |label: &str, params: &wgpu::Buffer| {
+        //
+        // メインカメラ用とプレビュー用で異なるのは「カメラ固有の資源」だけ:
+        //   binding 2/5 = シャドウ実体（CSM はカメラ視錐台にフィット）
+        //   binding 9   = ClusterParams（フロクセル分割は near/far/fov/ビューポート依存）
+        // それ以外（ライト配列・メタ・スポット深度・サンプラー・クラスタバッファ本体）は共有する。
+        let make_bg = |label: &str, shadow: &ShadowResources, params: &wgpu::Buffer| {
             device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label:   Some(label),
                 layout:  bgl,
@@ -364,13 +403,30 @@ impl LightBuffer {
                 ],
             })
         };
-        let bind_group = make_bg("Lights+Shadow+Cluster BG (group 4)", clusters.params_buffer());
-        let bind_group_unclustered = make_bg(
-            "Lights+Shadow+Cluster BG (group 4, cluster disabled)",
+        let bind_group_main = make_bg(
+            "Lights+Shadow+Cluster BG (group 4, main camera)",
+            shadow_main,
+            clusters.params_buffer(),
+        );
+        let bind_group_preview = make_bg(
+            "Lights+Shadow+Cluster BG (group 4, camera preview: cluster disabled + preview CSM)",
+            shadow_preview,
             clusters.params_disabled_buffer(),
         );
 
-        Self { lights_buffer, meta_buffer, bind_group, bind_group_unclustered }
+        Self { lights_buffer, meta_buffer, bind_group_main, bind_group_preview }
+    }
+
+    /// そのパス（＝そのカメラ）で bind すべき group 4 複合 BindGroup を返す。
+    ///
+    /// 呼び出し側は「どのカメラのパスか」を名指しするだけでよく、
+    /// カメラ固有資源（CSM・クラスタ）の組み合わせを間違えられない。
+    /// RT 影パイプラインのメインパスだけは TLAS 入りの別 BG（`create_rt_bind_group`）を使う。
+    pub fn bind_group(&self, pass: LightingPass) -> &wgpu::BindGroup {
+        match pass {
+            LightingPass::MainCamera    => &self.bind_group_main,
+            LightingPass::CameraPreview => &self.bind_group_preview,
+        }
     }
 
     /// ライト storage buffer への参照（クラスタ構築 compute の BindGroup 生成に使う）。

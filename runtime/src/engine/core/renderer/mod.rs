@@ -41,7 +41,7 @@ pub use pipeline::{MeshPipeline, SkinnedMeshPipeline, UnlitPipeline, CullPipelin
                    BarFillPipeline, BarFillUniform};
 pub use particle_system::ParticleSystem;
 pub use skybox::{SkyboxSystem, SkyboxPipelines};
-pub use lighting::{GpuLight, LightBuffer, LightMeta, MAX_LIGHTS,
+pub use lighting::{GpuLight, LightBuffer, LightMeta, LightingPass, MAX_LIGHTS,
                    DEFAULT_AMBIENT_COLOR, DEFAULT_AMBIENT_INTENSITY};
 pub use clustered::{ClusterResources, partition_directional_first,
                     CLUSTER_TILES_X, CLUSTER_TILES_Y, CLUSTER_SLICES_Z, CLUSTER_COUNT,

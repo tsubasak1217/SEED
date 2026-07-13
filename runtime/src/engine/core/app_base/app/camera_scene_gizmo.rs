@@ -317,10 +317,36 @@ pub struct SelectedCameraData {
     pub ortho_height: f32,
 }
 
+/// ニアクリップの下限（0 以下・極小値は射影行列を破綻させるためクランプする）。
+const MIN_NEAR: f32 = 0.01;
+/// ニア〜ファーの最小の間隔（far <= near を防ぐ）。
+const MIN_DEPTH_RANGE: f32 = 0.1;
+/// 正射投影の縦範囲の下限（0 以下を防ぐ）。
+const MIN_ORTHO_HEIGHT: f32 = 0.01;
+
 impl SelectedCameraData {
     /// ターゲット解像度からアスペクト比（width / height）を返す。
     pub fn target_aspect(&self) -> f32 {
         self.target_width.max(1) as f32 / self.target_height.max(1) as f32
+    }
+
+    /// クランプ済みのニア・ファー（射影行列と CSM のカスケード分割で共通利用する）。
+    fn clamped_near_far(&self) -> (f32, f32) {
+        let near = self.near.max(MIN_NEAR);
+        let far  = self.far.max(near + MIN_DEPTH_RANGE);
+        (near, far)
+    }
+
+    /// カメラのビュー行列（ワールド → ビュー）。
+    pub fn view_matrix(&self) -> Mat4x4<f32> {
+        let tf = &self.transform;
+        let [px, py, pz] = tf.position;
+        let [fx, fy, fz] = tf.forward();
+        let [ux, uy, uz] = tf.up();
+        let pos    = Vector3::new(px, py, pz);
+        let target = pos + Vector3::new(fx, fy, fz);
+        let up_vec = Vector3::new(ux, uy, uz);
+        Mat4x4::look_at_lh(pos, target, up_vec)
     }
 
     /// 投影方式に応じた射影行列を返す（透視 or 正射）。
@@ -328,17 +354,31 @@ impl SelectedCameraData {
     /// フラスタムカリング・プレビュー・カメラ描画で共通利用し、投影の一貫性を保つ。
     /// 正射は縦 `ortho_height`・横 `ortho_height * aspect` の範囲を中央基準（Y-up）で写す。
     pub fn proj_matrix(&self, aspect: f32) -> Mat4x4<f32> {
-        let near = self.near.max(0.01);
-        let far  = self.far.max(near + 0.1);
+        let (near, far) = self.clamped_near_far();
         match self.projection {
             CameraProjection::Perspective => {
                 Mat4x4::perspective_lh(self.fov_y_deg.to_radians(), aspect, near, far)
             }
             CameraProjection::Orthographic => {
-                let half_h = (self.ortho_height.max(0.01)) * 0.5;
+                let half_h = (self.ortho_height.max(MIN_ORTHO_HEIGHT)) * 0.5;
                 let half_w = half_h * aspect;
                 Mat4x4::orthographic_lh(-half_w, half_w, -half_h, half_h, near, far)
             }
+        }
+    }
+
+    /// CSM 構築用のカメラ情報 `(view, near, far, fov_y[rad], aspect)` を返す。
+    ///
+    /// 透視カメラのときだけ `Some`。CSM のカスケード分割は透視錐台前提
+    /// （fov から視錐台の隅を求める）のため、正射カメラでは `None` を返し、
+    /// 呼び出し側は影なしへフォールバックする（frame_renderer の saved_shadow_cam と同じ方針）。
+    pub fn shadow_params(&self, aspect: f32) -> Option<(Mat4x4<f32>, f32, f32, f32, f32)> {
+        match self.projection {
+            CameraProjection::Perspective => {
+                let (near, far) = self.clamped_near_far();
+                Some((self.view_matrix(), near, far, self.fov_y_deg.to_radians(), aspect))
+            }
+            CameraProjection::Orthographic => None,
         }
     }
 }
@@ -402,16 +442,11 @@ pub fn build_camera_uniform(
     aspect:   f32,
     res:      [f32; 2],
 ) -> CameraUniform {
-    let tf = &cam_data.transform;
-    let [px, py, pz] = tf.position;
-    let [fx, fy, fz] = tf.forward();
-    let [ux, uy, uz] = tf.up();
+    let [px, py, pz] = cam_data.transform.position;
 
-    let pos    = Vector3::new(px, py, pz);
-    let target = pos + Vector3::new(fx, fy, fz);
-    let up_vec = Vector3::new(ux, uy, uz);
-
-    let view = Mat4x4::look_at_lh(pos, target, up_vec);
+    // ビュー行列は SelectedCameraData::view_matrix() に一元化する
+    // （プレビューの CSM 構築 shadow_params() と同一のビューを使うため）。
+    let view = cam_data.view_matrix();
     let proj = cam_data.proj_matrix(aspect);
     let view_proj = proj * view;
 

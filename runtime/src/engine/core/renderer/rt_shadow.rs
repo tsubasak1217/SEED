@@ -473,6 +473,90 @@ mod tests {
         );
     }
 
+    /// WGSL ソースから `const NAME: TYPE = VALUE;` の右辺（数値リテラル）を文字列で取り出す。
+    /// 型サフィックス（u32 の `u` / f32 の `f`）は落とす。定数の値をシェーダ側の 1 箇所に保ち、
+    /// Rust 側テストからは「読み取って検証するだけ」にするためのヘルパー。
+    fn wgsl_const_literal(src: &str, name: &str) -> String {
+        let decl = src
+            .lines()
+            .map(str::trim)
+            .find(|l| l.starts_with(&format!("const {name}")))
+            .unwrap_or_else(|| panic!("WGSL に const {name} の宣言が見つかりません"));
+        decl.split('=')
+            .nth(1)
+            .unwrap_or_else(|| panic!("const {name} の宣言に '=' がありません"))
+            .trim()
+            .trim_end_matches(';')
+            .trim()
+            .trim_end_matches(['u', 'f'])
+            .to_string()
+    }
+
+    /// ソフト影の定数群（クランプ上限・サンプル数・適応の傾き・地平線マージン）の妥当性を固定する。
+    ///
+    /// これらは「ライト近傍の面がディザ状のまだらノイズになり真っ黒に潰れる」不具合の再発防止線である:
+    ///   - cone_radius に上限が無いと、ライトに近い面ほど円錐が発散してノイズと偽遮蔽を生む。
+    ///   - サンプル数が固定 4 本だと、広い円錐で遮蔽率が 5 段階に量子化されディザになる。
+    /// 3 定数（上限 cone_radius / 最大サンプル数 / 1 サンプルが受け持つ幅）が整合していないと
+    /// 「上限まで広げてもサンプルが増えない」等の噛み合わせ崩れが無言で起きるため、ここで縛る。
+    #[test]
+    fn wgsl_soft_shadow_constants_are_consistent() {
+        let rt_on    = include_str!("shaders/rt_shadow_on.wgsl");
+        let light_ev = include_str!("shaders/lighting_eval.wgsl");
+
+        let max_cone: f32 = wgsl_const_literal(light_ev, "RT_SHADOW_MAX_CONE_RADIUS")
+            .parse()
+            .expect("RT_SHADOW_MAX_CONE_RADIUS が f32 として解釈できません");
+        let samples_min: u32 = wgsl_const_literal(rt_on, "RT_SHADOW_SAMPLES_MIN")
+            .parse()
+            .expect("RT_SHADOW_SAMPLES_MIN が u32 として解釈できません");
+        let samples_max: u32 = wgsl_const_literal(rt_on, "RT_SHADOW_SAMPLES_MAX")
+            .parse()
+            .expect("RT_SHADOW_SAMPLES_MAX が u32 として解釈できません");
+        let per_sample: f32 = wgsl_const_literal(rt_on, "RT_SHADOW_CONE_RADIUS_PER_SAMPLE")
+            .parse()
+            .expect("RT_SHADOW_CONE_RADIUS_PER_SAMPLE が f32 として解釈できません");
+        let horizon: f32 = wgsl_const_literal(rt_on, "RT_SHADOW_HORIZON_MIN_COS")
+            .parse()
+            .expect("RT_SHADOW_HORIZON_MIN_COS が f32 として解釈できません");
+
+        // 見込み半径の上限は「有限かつ実用的な広さ」に収まっていること。
+        // tan(半角) = 1.0 は見込み半角 45°＝半球の大半を覆う。これを超えるとペナンブラの
+        // 概念が破綻し、サンプル数を増やしてもノイズが残るだけになる。
+        assert!(
+            max_cone > 0.0 && max_cone <= 1.0,
+            "RT_SHADOW_MAX_CONE_RADIUS({max_cone}) は (0, 1] の範囲であること（発散防止）"
+        );
+
+        // サンプル数の上下限。1 本未満は無意味、上限は 1 ピクセルあたりの最悪レイ本数を決める。
+        assert!(
+            samples_min >= 1 && samples_min <= samples_max,
+            "RT_SHADOW_SAMPLES_MIN({samples_min}) は 1 以上かつ MAX({samples_max}) 以下であること"
+        );
+        assert!(
+            samples_max <= 32,
+            "RT_SHADOW_SAMPLES_MAX({samples_max}) が過大です（1 ライトあたりのレイ本数がコストに直結する）"
+        );
+
+        // 適応サンプルの傾きは「上限 cone_radius でちょうど最大サンプル数に到達する」よう決める。
+        // ズレると、上限まで広がった円錐でも本数が増えない（＝ディザが残る）／
+        // 小さな円錐で即座に最大本数へ張り付く（＝無駄なコスト）といった破綻になる。
+        let expected_per_sample = max_cone / samples_max as f32;
+        assert!(
+            (per_sample - expected_per_sample).abs() <= f32::EPSILON * 8.0,
+            "RT_SHADOW_CONE_RADIUS_PER_SAMPLE({per_sample}) は \
+             RT_SHADOW_MAX_CONE_RADIUS({max_cone}) / RT_SHADOW_SAMPLES_MAX({samples_max}) \
+             = {expected_per_sample} と一致させること"
+        );
+
+        // 地平線マージンは「ほぼ 0 だが正」であること（正でないと地平線すれすれの偽遮蔽を拾う。
+        // 大きすぎると有効サンプルを削りすぎて影が濃くなる）。
+        assert!(
+            horizon > 0.0 && horizon < 0.1,
+            "RT_SHADOW_HORIZON_MIN_COS({horizon}) は (0, 0.1) の範囲であること"
+        );
+    }
+
     /// alpha_mode → TLAS インスタンスマスクの割り当て（不透明のみ影を落とす）。
     #[test]
     fn only_opaque_is_shadow_occluder() {

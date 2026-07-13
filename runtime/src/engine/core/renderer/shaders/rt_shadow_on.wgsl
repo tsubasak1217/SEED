@@ -13,7 +13,10 @@
 //
 // ソフトシャドウ: 面光源の見込み半径（cone_radius）に応じて円錐内へ複数レイを分散する。
 //   cone_radius=0 のとき従来どおりハード 1 本へ分岐（コスト増ゼロ）。
-//   ライト種別ごとの cone_radius の求め方は shader_fragment.wgsl 側で行う。
+//   cone_radius>0 のときは本数を適応化（RT_SHADOW_SAMPLES_MIN..MAX）し、面の幾何的地平線
+//   より下を向いたサンプルは平均の母数から除外する。
+//   ライト種別ごとの cone_radius の求め方と上限クランプは lighting_eval.wgsl 側で行う
+//   （RT_SHADOW_MAX_CONE_RADIUS）。
 // ============================================================
 
 /// group 4 binding 6: RT 影用 TLAS。
@@ -44,9 +47,33 @@ const RT_SHADOW_SLOPE_MIN_COS: f32 = 0.1;
 /// 将来 Mask（葉・鎖など）を影に含めるなら RT_MASK_NON_OPAQUE のビットもここに OR する
 /// （ただし正しいアルファテストには bindless が必要。rt_shadow.rs のコメント参照）。
 const RT_SHADOW_CULL_MASK: u32 = 0x01u;
-/// ソフトシャドウのサンプル数（円錐内へ分散する遮蔽レイの本数）。
-/// 品質と負荷のトレードオフ。4 で概ね自然なペナンブラ。増やすほど滑らかだが線形にコスト増。
-const RT_SHADOW_SAMPLES: u32 = 4u;
+/// ソフトシャドウの最小サンプル数（cone_radius > 0 のときに必ず飛ばす遮蔽レイの本数）。
+/// 4 本＝遮蔽率が 5 段階に量子化される。細いペナンブラ（cone_radius が小さい）ならこの
+/// 粗さは影の境界の数ピクセルに閉じるため知覚されない。
+const RT_SHADOW_SAMPLES_MIN: u32 = 4u;
+/// ソフトシャドウの最大サンプル数（適応サンプルの上限）。
+/// ループ回数を必ずこの定数で縛ること（cone_radius がどれだけ大きくても 1 ライトあたりの
+/// レイ本数がこれを超えない＝最悪コストが静的に決まる）。
+/// 16 本＝遮蔽率が 17 段階になり、IGN 回転と合わせればディザが視認しづらい程度に細かい。
+/// これ以上増やしてもノイズの低減は √N でしか効かず、コストは線形に増える。
+const RT_SHADOW_SAMPLES_MAX: u32 = 16u;
+/// 適応サンプル数の傾き: 「サンプル 1 本が受け持つ cone_radius の幅」。
+/// samples = clamp(ceil(cone_radius / この値), MIN, MAX) とすることで、ペナンブラが
+/// 広い（＝1 サンプルあたりの担当立体角が大きい＝量子化が目立つ）ほど本数を増やす。
+///
+/// 値 0.03125 の根拠: lighting_eval.wgsl の RT_SHADOW_MAX_CONE_RADIUS(=0.5) を
+/// RT_SHADOW_SAMPLES_MAX(=16) で割った値。すなわち「クランプ上限まで広がった円錐で
+/// ちょうど最大サンプル数に到達する」ように傾きを決めている。3 定数の整合は Rust 側の
+/// ユニットテスト（rt_shadow.rs::wgsl_soft_shadow_constants_are_consistent）が担保する。
+const RT_SHADOW_CONE_RADIUS_PER_SAMPLE: f32 = 0.03125;
+/// 有効サンプルとみなす dot(Ng, dir) の下限（幾何的地平線のマージン）。
+/// 円錐が広がると一部のサンプル方向が面の地平線より下（dot <= 0）を向く。そこから来る光は
+/// そもそもこの面を照らさないため、遮蔽 0 として平均に混ぜてはならない（不当に暗くなる）。
+/// 平均の母数から除外する。
+/// 0.01（≒ 89.4°）とわずかに正のマージンを取るのは、地平線ちょうどをかすめるレイが
+/// 自身のジオメトリと交差して偽の遮蔽を返しやすいため（原点の法線オフセットは円錐中心
+/// 方向の dot(Ng,L) で決めており、地平線すれすれの方向には足りない）。
+const RT_SHADOW_HORIZON_MIN_COS: f32 = 0.01;
 /// 円周率（本ファイルで自己完結させる）。
 const RT_SHADOW_PI: f32 = 3.14159265359;
 /// 黄金角（ラジアン）。Vogel ディスク分布のサンプル間角度。
@@ -89,6 +116,17 @@ fn rt_shadow_ign(p: vec2<f32>) -> f32 {
     return fract(52.9829189 * fract(dot(p, vec2<f32>(0.06711056, 0.00583715))));
 }
 
+/// ペナンブラの広さ（cone_radius）に応じた適応サンプル数を返す。
+/// - cone_radius が小さい（＝影の境界が細い）ほど少なく、広いほど多く。
+/// - 戻り値は必ず [RT_SHADOW_SAMPLES_MIN, RT_SHADOW_SAMPLES_MAX] に収まる。
+/// 呼び出し側は cone_radius > 0 のときだけ使う（0 はハード 1 本経路）。
+fn rt_shadow_sample_count(cone_radius: f32) -> u32 {
+    // 1 本が受け持つ円錐幅を RT_SHADOW_CONE_RADIUS_PER_SAMPLE に保つ本数を求め、上下限で締める。
+    let raw = ceil(cone_radius / RT_SHADOW_CONE_RADIUS_PER_SAMPLE);
+    let n   = clamp(raw, f32(RT_SHADOW_SAMPLES_MIN), f32(RT_SHADOW_SAMPLES_MAX));
+    return u32(n);
+}
+
 /// ベクトル v に直交する任意の単位ベクトルを 1 本作る（円錐サンプル基底の第 1 軸）。
 fn rt_shadow_perp(v: vec3<f32>) -> vec3<f32> {
     // v と平行になりにくい軸を選んで外積を取る。
@@ -104,10 +142,18 @@ fn rt_shadow_perp(v: vec3<f32>) -> vec3<f32> {
 /// - `cone_radius`: 面光源の見込み半径（tan 相当）。0 でハード 1 本、>0 で円錐内 N サンプル平均。
 /// - `frag_xy`    : フラグメント座標（サンプル回転のノイズ源。時間項なし）。
 ///
-/// ソフトシャドウは l を中心とする円錐内へ RT_SHADOW_SAMPLES 本を Vogel ディスク分布で
-/// 分散し、フラグメント座標由来の回転を掛けて平均する。遮蔽物から遠い影ほど l の
-/// 分散角が実効的に大きくなり（cone_radius は directional では距離非依存、局所光では
-/// radius/距離）、物理的に正しく「遠いほどボケる」挙動になる。
+/// ソフトシャドウは l を中心とする円錐内へ Vogel ディスク分布でレイを分散し、フラグメント
+/// 座標由来の回転を掛けて平均する。遮蔽物から遠い影ほど l の分散角が実効的に大きくなり
+/// （cone_radius は directional では距離非依存、局所光では radius/距離）、物理的に正しく
+/// 「遠いほどボケる」挙動になる。
+///
+/// サンプル本数は cone_radius に応じて適応的に増やす（rt_shadow_sample_count 参照）。
+/// 広い円錐を固定 4 本で積分すると遮蔽率が 5 段階に量子化され、ピクセルごとの IGN 回転と
+/// 相まってディザ状のまだらノイズになるため（＝ライト近傍の面が点描状に崩れる不具合の主因）。
+///
+/// さらに、円錐が広がって面の幾何的地平線より下（dot(ng, dir) <= 0）を向いたサンプルは
+/// 平均から**除外**する。その方向から来る光はそもそもこの面を照らさないため、遮蔽 0 として
+/// 足し込むと不当に暗くなる（＆自己ジオメトリに当たって偽の遮蔽を返す）。
 fn rt_shadow_factor(
     origin:      vec3<f32>,
     ng:          vec3<f32>,
@@ -130,10 +176,13 @@ fn rt_shadow_factor(
     // 実距離を角度に依らず一定に保つ。max(..., RT_SHADOW_SLOPE_MIN_COS) で発散を防ぐ。
     let o = origin + ng * (RT_SHADOW_NORMAL_BIAS / max(ndl, RT_SHADOW_SLOPE_MIN_COS));
 
-    // ハードシャドウ経路（面積ゼロ）: 従来どおり 1 本のみで高速。
+    // ハードシャドウ経路（面積ゼロ）: 従来どおり 1 本のみで高速（コスト増ゼロを維持）。
     if cone_radius <= 0.0 {
         return rt_trace_occlusion(o, l, tmax);
     }
+
+    // ペナンブラの広さに応じたサンプル本数（MIN..MAX に必ず収まる）。
+    let samples = rt_shadow_sample_count(cone_radius);
 
     // 円錐サンプル用の直交基底（l に垂直な 2 軸）。
     let t = rt_shadow_perp(l);
@@ -141,16 +190,37 @@ fn rt_shadow_factor(
     // フラグメントごとの回転（バンディング回避）。時間項を含まないため静止画で安定。
     let rot = rt_shadow_ign(frag_xy) * 2.0 * RT_SHADOW_PI;
 
-    var sum = 0.0;
-    for (var i: u32 = 0u; i < RT_SHADOW_SAMPLES; i = i + 1u) {
+    var sum   = 0.0;   // 有効サンプルの遮蔽率の総和
+    var valid = 0u;    // 地平線より上を向いた（＝光を受けうる）サンプル数
+
+    // ループ上限は必ず定数 RT_SHADOW_SAMPLES_MAX で縛る（samples は clamp 済みだが、
+    // 万一の異常値でも 1 ピクセルあたりのレイ本数が静的上限を超えないことを保証する）。
+    for (var i: u32 = 0u; i < RT_SHADOW_SAMPLES_MAX; i = i + 1u) {
+        if i >= samples {
+            break;
+        }
         // Vogel ディスク: 半径 √((i+0.5)/N)、角度 i*黄金角 + 回転。
         let fi    = f32(i) + 0.5;
-        let r     = sqrt(fi / f32(RT_SHADOW_SAMPLES));
+        let r     = sqrt(fi / f32(samples));
         let theta = f32(i) * RT_SHADOW_GOLDEN_ANGLE + rot;
         let disk  = vec2<f32>(cos(theta), sin(theta)) * r * cone_radius;
         // l を円錐内へずらして正規化（見込み半径 cone_radius のディスクを張る）。
         let dir   = normalize(l + t * disk.x + b * disk.y);
-        sum += rt_trace_occlusion(o, dir, tmax);
+
+        // 地平線カリング: 面の裏側へ潜ったサンプルは母数からも除外する（0 を足さない）。
+        if dot(ng, dir) <= RT_SHADOW_HORIZON_MIN_COS {
+            continue;
+        }
+        sum   += rt_trace_occlusion(o, dir, tmax);
+        valid += 1u;
     }
-    return sum / f32(RT_SHADOW_SAMPLES);
+
+    // 有効サンプルが 1 本も無い＝この面から見て光源はほぼ地平線下にある。
+    // 幾何的に光を受けないので完全遮蔽（0.0）を返す。
+    // （中心方向は ndl > 0 が保証されているため、ここに来るのは ndl がごく小さく、かつ円錐が
+    //   極端に広い場合のみ。その領域は shade_light の ndl 係数でどのみち寄与がほぼ 0 になる。）
+    if valid == 0u {
+        return 0.0;
+    }
+    return sum / f32(valid);
 }

@@ -38,6 +38,26 @@
 /// 平行光の RT 影レイの最大距離（実質無限。ライトまでの距離が定義できないため大定数）。
 const RT_DIR_TMAX: f32 = 10000.0;
 
+/// RT ソフト影の「見込み半径（cone_radius）」の上限。
+///
+/// cone_radius は「ライト方向 l を軸とする円錐の、l の単位長あたりの横方向の広がり」
+/// ＝ tan(見込み半角) である。局所ライトでは cone_radius = soft_radius / light_dist と
+/// 距離に反比例するため、フラグメントがライトに近づくほど**無限に発散する**。
+/// 上限を設けないと:
+///   - 円錐サンプルが半球全体に広がり、面の幾何的地平線より下を向くレイが大量に出る。
+///   - ペナンブラ（半影）の幅がピクセル間で暴れ、少ないサンプル数では量子化ノイズ
+///     （ディザ状のまだら）として可視化される。
+/// そもそも light_dist <= soft_radius（＝ライトの発光球の内部に入り込んだ状態）では
+/// 「点から見た光源の見込み角」という近似そのものが破綻しており、これ以上広げても
+/// 物理的な意味はない。
+///
+/// 値 0.5 の根拠: tan(半角) = 0.5 → 見込み半角 ≈ 26.6°（直径 53°）。太陽（0.5°）や
+/// 一般的な室内光源の見込み角を大きく上回り、実用上のペナンブラ表現には十分広い。
+/// これを超える広がりは「面光源に埋まっている」領域であり、サンプル数を増やしても
+/// ノイズが残るだけで見た目の利得がない。この値は rt_shadow_on.wgsl の適応サンプル数
+/// （RT_SHADOW_SAMPLES_MAX に到達する cone_radius）とも対応させている。
+const RT_SHADOW_MAX_CONE_RADIUS: f32 = 0.5;
+
 // ── ライト減衰ヘルパー ────────────────────────────────────────
 
 /// 距離減衰（inverse-square ＋ range ウィンドウ）。
@@ -223,6 +243,12 @@ fn evaluate_lighting(s: Surface) -> vec3<f32> {
             //   directional : soft_radius は tan(角径) の無次元スロープ（距離非依存）。
             //   point/spot/rect: soft_radius はワールド半径なので radius/距離＝見込み角に換算する。
             // cone_radius=0 のとき rt_shadow_factor はハード 1 本へ分岐して高速を保つ。
+            //
+            // 局所ライトの radius/距離 は距離が縮むと発散するため、必ず
+            // RT_SHADOW_MAX_CONE_RADIUS でクランプする（未クランプだとライト近傍の面が
+            // 半球全域へレイを撒き、ディザ状のノイズと偽の自己遮蔽で真っ黒になる）。
+            // directional 側も同じ上限を掛ける（インスペクタから非現実的な角径を入れられても
+            // 同じ破綻を起こすため、経路によらず一箇所で頭を押さえる）。
             var cone_radius: f32 = 0.0;
             if light.soft_radius > 0.0 {
                 if light.kind == LIGHT_KIND_DIRECTIONAL {
@@ -230,6 +256,7 @@ fn evaluate_lighting(s: Surface) -> vec3<f32> {
                 } else {
                     cone_radius = light.soft_radius / max(light_dist, 1e-4);
                 }
+                cone_radius = min(cone_radius, RT_SHADOW_MAX_CONE_RADIUS);
             }
             // 第 2 引数はシェーディング法線 N ではなく**幾何法線 Ng**を渡す。
             // レイ原点の押し出しと「幾何的な裏面＝即遮蔽」判定は面そのものの向きで行う必要がある
