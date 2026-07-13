@@ -492,10 +492,10 @@ mod tests {
             .to_string()
     }
 
-    /// ソフト影の定数群（クランプ上限・サンプル数・適応の傾き・地平線リフト・ターミネータ帯・
-    /// 各種バイアス）の妥当性を固定する。
+    /// ソフト影の定数群（クランプ上限・サンプル数・適応の傾き・ターミネータ帯・各種バイアス）の
+    /// 妥当性を固定する。
     ///
-    /// これらは 2 つの退行の再発防止線である:
+    /// これらは 3 つの退行の再発防止線である:
     ///
     /// 1. 「ライト近傍の面がディザ状のまだらノイズになり真っ黒に潰れる」
     ///   - cone_radius に上限が無いと、ライトに近い面ほど円錐が発散してノイズと偽遮蔽を生む。
@@ -506,8 +506,14 @@ mod tests {
     /// 2. 「三角形の面境界に沿った硬い黒帯（ファセット状の影）」
     ///   影の減衰判定にフラットな幾何法線 Ng を使うと面境界で判定が飛ぶ。現実装は
     ///   補間法線 Nv による smoothstep ランプ（RT_SHADOW_TERMINATOR_BAND_COS）で滑らかに落とし、
-    ///   Ng は自己交差回避（RT_SHADOW_GEO_CLEARANCE / RT_SHADOW_GEO_HORIZON_MIN_COS）だけに使う。
+    ///   Ng はレイ原点の最小クリアランス（RT_SHADOW_GEO_CLEARANCE）だけに使う。
     ///   これらの定数が壊れる（0 になる・過大になる）と黒帯か光漏れのどちらかが再発するため縛る。
+    ///
+    /// 3. 「一枚布（カーテン）の、光が当たっていないはずの面に点描状の光漏れが出る」
+    ///   地平線より下を向くサンプル方向を Ng 方向へ「起こす（リフトする）」実装が原因だった。
+    ///   薄い面の裏側へ抜けるべきレイが手前側へ折り返され、遮蔽なし＝照射と誤判定される。
+    ///   現実装はリフトせず「地平線より下は 0（遮蔽）として母数に数える」。
+    ///   リフト機構が復活していないことをソースレベルで縛る（下の assert 参照）。
     #[test]
     fn wgsl_soft_shadow_constants_are_consistent() {
         let rt_on    = include_str!("shaders/rt_shadow_on.wgsl");
@@ -525,11 +531,6 @@ mod tests {
         let per_sample: f32 = wgsl_const_literal(rt_on, "RT_SHADOW_CONE_RADIUS_PER_SAMPLE")
             .parse()
             .expect("RT_SHADOW_CONE_RADIUS_PER_SAMPLE が f32 として解釈できません");
-        // 地平線「リフト」の最小仰角 cos（Ng 基準）。旧 RT_SHADOW_HORIZON_MIN_COS（母数からの
-        // 除外しきい値）を置き換えたもの。除外はピクセルごとに分母を変えてノイズ源になるため廃止した。
-        let horizon: f32 = wgsl_const_literal(rt_on, "RT_SHADOW_GEO_HORIZON_MIN_COS")
-            .parse()
-            .expect("RT_SHADOW_GEO_HORIZON_MIN_COS が f32 として解釈できません");
         let band: f32 = wgsl_const_literal(rt_on, "RT_SHADOW_TERMINATOR_BAND_COS")
             .parse()
             .expect("RT_SHADOW_TERMINATOR_BAND_COS が f32 として解釈できません");
@@ -575,14 +576,6 @@ mod tests {
              = {expected_per_sample} と一致させること"
         );
 
-        // 地平線リフトの最小仰角は「小さいが正」であること。
-        //   0 以下 → レイが自分の三角形の平面を這い、偽の自己遮蔽（黒ずみ）を拾う。
-        //   大きすぎ → サンプル方向の歪みが目に見える範囲まで持ち上がる（影の形が狂う）。
-        assert!(
-            horizon > 0.0 && horizon < 0.1,
-            "RT_SHADOW_GEO_HORIZON_MIN_COS({horizon}) は (0, 0.1) の範囲であること"
-        );
-
         // ターミネータランプの帯幅は「正、かつ狭い」こと。
         //   0 以下 → 硬いカットオフに逆戻り（面境界での不連続＝黒帯の再発）。
         //   広すぎ → 正当に照らされている領域まで影の係数で減光し、全体が暗く沈む。
@@ -592,13 +585,15 @@ mod tests {
             "RT_SHADOW_TERMINATOR_BAND_COS({band}) は (0, 0.5] の範囲であること\
              （0 以下は硬いカットオフ＝ファセット状の黒帯の再発、広すぎは全体の沈み込み）"
         );
-        // 地平線リフトはターミネータ帯の内側に収まっていること。
-        // リフトで方向が歪むのは「幾何的な地平線のすぐ上」だけであり、その領域は
-        // ターミネータランプで既に減光されている＝歪みが見た目に出ない、という前提を固定する。
+        // 地平線「リフト」機構が復活していないこと（光漏れの再発防止線）。
+        // サンプル方向を幾何法線 Ng 側へ起こすと、厚みのない面（カーテン）の裏にライトがある
+        // とき、面を貫くはずのレイが手前へ折り返されて空へ逃げ、「照らされている」と誤判定される
+        // （＝点描状の光漏れ）。地平線より下のサンプルは起こさず 0（遮蔽）として数えること。
         assert!(
-            horizon < band,
-            "RT_SHADOW_GEO_HORIZON_MIN_COS({horizon}) は RT_SHADOW_TERMINATOR_BAND_COS({band}) より\
-             小さいこと（リフトによる方向の歪みがランプの減光域に隠れる前提）"
+            !rt_on.contains("RT_SHADOW_GEO_HORIZON_MIN_COS") && !rt_on.contains("lift_above_horizon"),
+            "rt_shadow_on.wgsl に地平線リフト機構が復活しています。\
+             サンプル方向を Ng で起こすと薄い面で光漏れが再発します。\
+             地平線より下（dot(nv,dir) <= 0）のサンプルは 0（遮蔽）として母数に数えること"
         );
 
         // バイアスの大小関係。
