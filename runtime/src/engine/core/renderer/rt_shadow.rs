@@ -492,13 +492,22 @@ mod tests {
             .to_string()
     }
 
-    /// ソフト影の定数群（クランプ上限・サンプル数・適応の傾き・地平線マージン）の妥当性を固定する。
+    /// ソフト影の定数群（クランプ上限・サンプル数・適応の傾き・地平線リフト・ターミネータ帯・
+    /// 各種バイアス）の妥当性を固定する。
     ///
-    /// これらは「ライト近傍の面がディザ状のまだらノイズになり真っ黒に潰れる」不具合の再発防止線である:
+    /// これらは 2 つの退行の再発防止線である:
+    ///
+    /// 1. 「ライト近傍の面がディザ状のまだらノイズになり真っ黒に潰れる」
     ///   - cone_radius に上限が無いと、ライトに近い面ほど円錐が発散してノイズと偽遮蔽を生む。
     ///   - サンプル数が固定 4 本だと、広い円錐で遮蔽率が 5 段階に量子化されディザになる。
-    /// 3 定数（上限 cone_radius / 最大サンプル数 / 1 サンプルが受け持つ幅）が整合していないと
-    /// 「上限まで広げてもサンプルが増えない」等の噛み合わせ崩れが無言で起きるため、ここで縛る。
+    ///   3 定数（上限 cone_radius / 最大サンプル数 / 1 サンプルが受け持つ幅）が整合していないと
+    ///   「上限まで広げてもサンプルが増えない」等の噛み合わせ崩れが無言で起きるため、ここで縛る。
+    ///
+    /// 2. 「三角形の面境界に沿った硬い黒帯（ファセット状の影）」
+    ///   影の減衰判定にフラットな幾何法線 Ng を使うと面境界で判定が飛ぶ。現実装は
+    ///   補間法線 Nv による smoothstep ランプ（RT_SHADOW_TERMINATOR_BAND_COS）で滑らかに落とし、
+    ///   Ng は自己交差回避（RT_SHADOW_GEO_CLEARANCE / RT_SHADOW_GEO_HORIZON_MIN_COS）だけに使う。
+    ///   これらの定数が壊れる（0 になる・過大になる）と黒帯か光漏れのどちらかが再発するため縛る。
     #[test]
     fn wgsl_soft_shadow_constants_are_consistent() {
         let rt_on    = include_str!("shaders/rt_shadow_on.wgsl");
@@ -516,9 +525,26 @@ mod tests {
         let per_sample: f32 = wgsl_const_literal(rt_on, "RT_SHADOW_CONE_RADIUS_PER_SAMPLE")
             .parse()
             .expect("RT_SHADOW_CONE_RADIUS_PER_SAMPLE が f32 として解釈できません");
-        let horizon: f32 = wgsl_const_literal(rt_on, "RT_SHADOW_HORIZON_MIN_COS")
+        // 地平線「リフト」の最小仰角 cos（Ng 基準）。旧 RT_SHADOW_HORIZON_MIN_COS（母数からの
+        // 除外しきい値）を置き換えたもの。除外はピクセルごとに分母を変えてノイズ源になるため廃止した。
+        let horizon: f32 = wgsl_const_literal(rt_on, "RT_SHADOW_GEO_HORIZON_MIN_COS")
             .parse()
-            .expect("RT_SHADOW_HORIZON_MIN_COS が f32 として解釈できません");
+            .expect("RT_SHADOW_GEO_HORIZON_MIN_COS が f32 として解釈できません");
+        let band: f32 = wgsl_const_literal(rt_on, "RT_SHADOW_TERMINATOR_BAND_COS")
+            .parse()
+            .expect("RT_SHADOW_TERMINATOR_BAND_COS が f32 として解釈できません");
+        let normal_bias: f32 = wgsl_const_literal(rt_on, "RT_SHADOW_NORMAL_BIAS")
+            .parse()
+            .expect("RT_SHADOW_NORMAL_BIAS が f32 として解釈できません");
+        let geo_clearance: f32 = wgsl_const_literal(rt_on, "RT_SHADOW_GEO_CLEARANCE")
+            .parse()
+            .expect("RT_SHADOW_GEO_CLEARANCE が f32 として解釈できません");
+        let tmin: f32 = wgsl_const_literal(rt_on, "RT_SHADOW_TMIN")
+            .parse()
+            .expect("RT_SHADOW_TMIN が f32 として解釈できません");
+        let slope_min: f32 = wgsl_const_literal(rt_on, "RT_SHADOW_SLOPE_MIN_COS")
+            .parse()
+            .expect("RT_SHADOW_SLOPE_MIN_COS が f32 として解釈できません");
 
         // 見込み半径の上限は「有限かつ実用的な広さ」に収まっていること。
         // tan(半角) = 1.0 は見込み半角 45°＝半球の大半を覆う。これを超えるとペナンブラの
@@ -549,11 +575,47 @@ mod tests {
              = {expected_per_sample} と一致させること"
         );
 
-        // 地平線マージンは「ほぼ 0 だが正」であること（正でないと地平線すれすれの偽遮蔽を拾う。
-        // 大きすぎると有効サンプルを削りすぎて影が濃くなる）。
+        // 地平線リフトの最小仰角は「小さいが正」であること。
+        //   0 以下 → レイが自分の三角形の平面を這い、偽の自己遮蔽（黒ずみ）を拾う。
+        //   大きすぎ → サンプル方向の歪みが目に見える範囲まで持ち上がる（影の形が狂う）。
         assert!(
             horizon > 0.0 && horizon < 0.1,
-            "RT_SHADOW_HORIZON_MIN_COS({horizon}) は (0, 0.1) の範囲であること"
+            "RT_SHADOW_GEO_HORIZON_MIN_COS({horizon}) は (0, 0.1) の範囲であること"
+        );
+
+        // ターミネータランプの帯幅は「正、かつ狭い」こと。
+        //   0 以下 → 硬いカットオフに逆戻り（面境界での不連続＝黒帯の再発）。
+        //   広すぎ → 正当に照らされている領域まで影の係数で減光し、全体が暗く沈む。
+        //   上限 0.5（入射角 60°）は「BRDF の ndl が半分以上ある領域を影で減光しない」線。
+        assert!(
+            band > 0.0 && band <= 0.5,
+            "RT_SHADOW_TERMINATOR_BAND_COS({band}) は (0, 0.5] の範囲であること\
+             （0 以下は硬いカットオフ＝ファセット状の黒帯の再発、広すぎは全体の沈み込み）"
+        );
+        // 地平線リフトはターミネータ帯の内側に収まっていること。
+        // リフトで方向が歪むのは「幾何的な地平線のすぐ上」だけであり、その領域は
+        // ターミネータランプで既に減光されている＝歪みが見た目に出ない、という前提を固定する。
+        assert!(
+            horizon < band,
+            "RT_SHADOW_GEO_HORIZON_MIN_COS({horizon}) は RT_SHADOW_TERMINATOR_BAND_COS({band}) より\
+             小さいこと（リフトによる方向の歪みがランプの減光域に隠れる前提）"
+        );
+
+        // バイアスの大小関係。
+        //   geo_clearance > tmin : 平面からのクリアランスが tmin の打ち切りに埋もれない。
+        //   geo_clearance < normal_bias : 主防御はあくまで補間法線方向のオフセット。
+        //     幾何法線方向は「必ず平面から浮いている」ことを保証する最小量に留め、
+        //     大きくしすぎると接地点の影（コンタクトシャドウ）が痩せて浮いて見える。
+        assert!(
+            geo_clearance > tmin && geo_clearance < normal_bias,
+            "RT_SHADOW_GEO_CLEARANCE({geo_clearance}) は RT_SHADOW_TMIN({tmin}) より大きく、\
+             RT_SHADOW_NORMAL_BIAS({normal_bias}) より小さいこと"
+        );
+        // スロープスケールの下限 cos。0 だと 0 除算（∞ オフセット＝光漏れ）、
+        // 1 だとスロープスケールが無効化されグレージングで自己交差する。
+        assert!(
+            slope_min > 0.0 && slope_min < 1.0,
+            "RT_SHADOW_SLOPE_MIN_COS({slope_min}) は (0, 1) の範囲であること"
         );
     }
 

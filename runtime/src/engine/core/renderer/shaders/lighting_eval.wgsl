@@ -56,6 +56,18 @@ const RT_DIR_TMAX: f32 = 10000.0;
 /// これを超える広がりは「面光源に埋まっている」領域であり、サンプル数を増やしても
 /// ノイズが残るだけで見た目の利得がない。この値は rt_shadow_on.wgsl の適応サンプル数
 /// （RT_SHADOW_SAMPLES_MAX に到達する cone_radius）とも対応させている。
+///
+/// ## 「影が硬くなった」原因ではない（再検討の記録）
+/// このクランプ導入と同時に影が硬く・黒くなったが、原因はクランプではなく
+/// rt_shadow_on.wgsl 側で**フラットな幾何法線 Ng を影の減衰判定に使っていたこと**だった
+/// （面境界で判定が 0/1 に飛び、ファセット状の黒帯になる）。判定を補間法線 Nv に移して解決済み。
+/// クランプを緩める（例 1.0）と:
+///   - 見た目のボケ幅は増えるが、16 本のサンプル予算では 1 本あたりの担当立体角が広がり、
+///     遮蔽率の量子化がそのままディザノイズとして再発する（クランプ導入前の症状）。
+///   - 平行光（太陽・見込み角 0.5° ⇒ cone_radius ≈ 0.009）には一切影響しない。
+///     すなわち主光源の影のボケ幅はこのクランプでは決まらない（soft_radius が決める）。
+/// ゆえに 0.5 のまま据え置く。ボケが足りない場合はライトの soft_radius を上げること
+/// （こちらは cone_radius がクランプに達しない範囲で自由に効き、サンプル数も適応で増える）。
 const RT_SHADOW_MAX_CONE_RADIUS: f32 = 0.5;
 
 // ── ライト減衰ヘルパー ────────────────────────────────────────
@@ -117,8 +129,12 @@ fn shade_light(
 ///   - rt_shadow_enabled()==true : インラインレイトレ（rt_shadow_on.wgsl, group4 binding6）。
 /// rt_shadow_enabled()/rt_shadow_factor() の実体は連結される rt_shadow_{on,off}.wgsl が供給する。
 fn evaluate_lighting(s: Surface) -> vec3<f32> {
-    // シェーディング法線 N と幾何法線 Ng は採取段で裏面反転済み（surface_gather.wgsl）。
+    // 3 本の法線（いずれも採取段で裏面反転済み。surface.wgsl の解説を参照）。
+    //   N  : 法線マップ後のシェーディング法線 → BRDF 専用
+    //   Nv : 補間頂点法線（滑らか）           → RT 影の減衰判定（ターミネータ／バイアス）
+    //   Ng : フラットな面法線                 → RT 影の自己交差回避専用
     let N  = s.normal;
+    let Nv = s.vertex_normal;
     let Ng = s.geo_normal;
 
     let V = normalize(u_camera.position - s.world_pos);
@@ -258,10 +274,14 @@ fn evaluate_lighting(s: Surface) -> vec3<f32> {
                 }
                 cone_radius = min(cone_radius, RT_SHADOW_MAX_CONE_RADIUS);
             }
-            // 第 2 引数はシェーディング法線 N ではなく**幾何法線 Ng**を渡す。
-            // レイ原点の押し出しと「幾何的な裏面＝即遮蔽」判定は面そのものの向きで行う必要がある
-            // （N は法線マップで傾いており、押し出しに使うと自己交差して真っ黒になる）。
-            radiance = radiance * rt_shadow_factor(s.world_pos, Ng, L, light_dist, cone_radius, s.frag_coord);
+            // 影には Ng（フラットな面法線）と Nv（滑らかな補間頂点法線）の**両方**を渡す。
+            //   Ng → レイ原点の最小クリアランス／レイ方向の地平線リフト（自己交差回避のみ）
+            //   Nv → ターミネータのランプ／スロープスケールバイアス（減衰カーブの判定）
+            // Ng を減衰判定に使うと三角形の面境界で判定が飛び、ファセット状の硬い黒帯になる。
+            // シェーディング法線 N（法線マップ後）は影へは渡さない（BRDF 専用）。
+            radiance = radiance * rt_shadow_factor(
+                s.world_pos, Ng, Nv, L, light_dist, cone_radius, s.frag_coord,
+            );
         } else {
             // 従来のシャドウマップ経路（group 4 binding 2〜5, shadow.wgsl）。
             // shadow_index < 0 のライトは影計算をスキップ（cast_shadows=false 含む）。

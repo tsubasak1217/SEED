@@ -123,7 +123,12 @@ fn gather_surface(in: VertexOutput, front_facing: bool) -> Surface {
 
     // ── 法線（法線マップ対応）────────────────────────────────
     // 裏面では補間法線を反転してから TBN を組む（接空間法線マップも反転後の N を基準に載る）。
-    var N = normalize(in.world_normal) * facing_sign;
+    //
+    // Nv（補間頂点法線・法線マップ適用前）は Surface へそのまま持ち越す。
+    // RT 影の減衰カーブ（ターミネータのランプ／スロープスケールバイアス）は、
+    // フラットな Ng ではなくこの滑らかな Nv で判定する（surface.wgsl の解説を参照）。
+    let Nv = normalize(in.world_normal) * facing_sign;
+    var N = Nv;
     if u_material.has_normal_tex != 0u {
         // 法線マップの Z は RG から再構築する。
         // BC5 圧縮（RG 2ch）フォーマットは B チャンネルを持たないため直接読めない。
@@ -141,9 +146,10 @@ fn gather_surface(in: VertexOutput, front_facing: bool) -> Surface {
     // ── Surface へ詰める ──────────────────────────────────────
     // UV（uv0 / uv1）と接空間（world_tan / world_bitan）はここで役目を終えるため持ち越さない。
     var s: Surface;
-    s.world_pos  = in.world_pos;
-    s.normal     = N;
-    s.geo_normal = Ng;
+    s.world_pos     = in.world_pos;
+    s.normal        = N;
+    s.geo_normal    = Ng;
+    s.vertex_normal = Nv;
     s.albedo     = base_color.rgb;
     s.alpha      = base_color.a;
     s.metallic   = metallic;
