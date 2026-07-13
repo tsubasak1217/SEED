@@ -63,6 +63,12 @@ pub(crate) fn get_shader_source(name: &str) -> &'static str {
         "shader_common.wgsl"         => include_str!("shaders/shader_common.wgsl"),
         "shader_static_vertex.wgsl"  => include_str!("shaders/shader_static_vertex.wgsl"),
         "shader_skinned_vertex.wgsl" => include_str!("shaders/shader_skinned_vertex.wgsl"),
+        // PBR シェーディングの 3 段分割（採取 → ライト評価 → エントリ）。
+        // 将来の G-Buffer ライティングパスからも lighting_eval.wgsl を再利用するため、
+        // マテリアル採取（surface_gather）とライト評価（lighting_eval）を別ファイルにしている。
+        "surface.wgsl"               => include_str!("shaders/surface.wgsl"),
+        "surface_gather.wgsl"        => include_str!("shaders/surface_gather.wgsl"),
+        "lighting_eval.wgsl"         => include_str!("shaders/lighting_eval.wgsl"),
         "shader_fragment.wgsl"       => include_str!("shaders/shader_fragment.wgsl"),
         "shadow.wgsl"                => include_str!("shaders/shadow.wgsl"),
         "rt_shadow_off.wgsl"         => include_str!("shaders/rt_shadow_off.wgsl"),

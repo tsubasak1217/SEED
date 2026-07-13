@@ -493,13 +493,17 @@ mod tests {
         let rt_off   = include_str!("shaders/rt_shadow_off.wgsl");
         let static_v = include_str!("shaders/shader_static_vertex.wgsl");
         let skin_v   = include_str!("shaders/shader_skinned_vertex.wgsl");
+        // PBR シェーディングの 3 段分割（Surface / マテリアル採取 / ライト評価）。
+        let surf     = include_str!("shaders/surface.wgsl");
+        let gather   = include_str!("shaders/surface_gather.wgsl");
+        let light_ev = include_str!("shaders/lighting_eval.wgsl");
         let frag     = include_str!("shaders/shader_fragment.wgsl");
 
         let variants: [(&str, Vec<&str>); 4] = [
-            ("mesh_rt",         vec![common, shadow, rt_on,  static_v, frag]),
-            ("skinned_mesh_rt", vec![common, shadow, rt_on,  skin_v,   frag]),
-            ("mesh",            vec![common, shadow, rt_off, static_v, frag]),
-            ("skinned_mesh",    vec![common, shadow, rt_off, skin_v,   frag]),
+            ("mesh_rt",         vec![common, shadow, rt_on,  static_v, surf, gather, light_ev, frag]),
+            ("skinned_mesh_rt", vec![common, shadow, rt_on,  skin_v,   surf, gather, light_ev, frag]),
+            ("mesh",            vec![common, shadow, rt_off, static_v, surf, gather, light_ev, frag]),
+            ("skinned_mesh",    vec![common, shadow, rt_off, skin_v,   surf, gather, light_ev, frag]),
         ];
 
         for (name, parts) in variants {

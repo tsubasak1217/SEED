@@ -1,4 +1,4 @@
-shader_sources  = ["shader_common.wgsl", "shadow.wgsl", "rt_shadow_off.wgsl", "shader_static_vertex.wgsl", "shader_fragment.wgsl"]
+shader_sources  = ["shader_common.wgsl", "shadow.wgsl", "rt_shadow_off.wgsl", "shader_static_vertex.wgsl", "surface.wgsl", "surface_gather.wgsl", "lighting_eval.wgsl", "shader_fragment.wgsl"]
 vertex_entry    = "vs_main"
 fragment_entry  = "fs_main"
 vertex_slots    = ["mesh_vertex"]

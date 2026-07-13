@@ -131,6 +131,11 @@ fn resolve_shader(name: &str) -> &'static str {
         "rt_shadow_off.wgsl"         => include_str!("shaders/rt_shadow_off.wgsl"),
         "shader_static_vertex.wgsl"  => include_str!("shaders/shader_static_vertex.wgsl"),
         "shader_skinned_vertex.wgsl" => include_str!("shaders/shader_skinned_vertex.wgsl"),
+        // PBR シェーディングの 3 段分割（Surface 定義／マテリアル採取／ライト評価）。
+        // 半透明パスも不透明パスと同一のライト評価（lighting_eval.wgsl）を共有する。
+        "surface.wgsl"               => include_str!("shaders/surface.wgsl"),
+        "surface_gather.wgsl"        => include_str!("shaders/surface_gather.wgsl"),
+        "lighting_eval.wgsl"         => include_str!("shaders/lighting_eval.wgsl"),
         "shader_fragment.wgsl"       => include_str!("shaders/shader_fragment.wgsl"),
         "shader_wboit.wgsl"          => include_str!("shaders/shader_wboit.wgsl"),
         "fullscreen.wgsl"            => include_str!("shaders/fullscreen.wgsl"),
@@ -231,7 +236,8 @@ impl TransparentPipelines {
         let wboit_mesh: CullPipelineSet = std::array::from_fn(|i| build_wboit_pipeline(
             device, df, cache, &mesh_bgls,
             &["shader_common.wgsl", "shadow.wgsl", "rt_shadow_off.wgsl",
-              "shader_static_vertex.wgsl", "shader_fragment.wgsl", "shader_wboit.wgsl"],
+              "shader_static_vertex.wgsl", "surface.wgsl", "surface_gather.wgsl",
+              "lighting_eval.wgsl", "shader_fragment.wgsl", "shader_wboit.wgsl"],
             &["mesh_vertex"],
             "wboit_mesh",
             CULL_FACE_VARIANTS[i],
@@ -239,7 +245,8 @@ impl TransparentPipelines {
         let wboit_skinned: CullPipelineSet = std::array::from_fn(|i| build_wboit_pipeline(
             device, df, cache, &skin_bgls,
             &["shader_common.wgsl", "shadow.wgsl", "rt_shadow_off.wgsl",
-              "shader_skinned_vertex.wgsl", "shader_fragment.wgsl", "shader_wboit.wgsl"],
+              "shader_skinned_vertex.wgsl", "surface.wgsl", "surface_gather.wgsl",
+              "lighting_eval.wgsl", "shader_fragment.wgsl", "shader_wboit.wgsl"],
             &["mesh_vertex", "skin_vertex"],
             "wboit_skinned",
             CULL_FACE_VARIANTS[i],
@@ -591,14 +598,18 @@ mod tests {
         let rt_off     = include_str!("shaders/rt_shadow_off.wgsl");
         let static_v   = include_str!("shaders/shader_static_vertex.wgsl");
         let skin_v     = include_str!("shaders/shader_skinned_vertex.wgsl");
+        // PBR シェーディングの 3 段分割（Surface / 採取 / ライト評価）。
+        let surf       = include_str!("shaders/surface.wgsl");
+        let gather     = include_str!("shaders/surface_gather.wgsl");
+        let light_eval = include_str!("shaders/lighting_eval.wgsl");
         let frag       = include_str!("shaders/shader_fragment.wgsl");
         let wboit      = include_str!("shaders/shader_wboit.wgsl");
         let fullscreen = include_str!("shaders/fullscreen.wgsl");
         let composite  = include_str!("shaders/post_wboit_composite.wgsl");
 
         let variants: [(&str, Vec<&str>); 3] = [
-            ("wboit_mesh",            vec![common, shadow, rt_off, static_v, frag, wboit]),
-            ("wboit_skinned",         vec![common, shadow, rt_off, skin_v,   frag, wboit]),
+            ("wboit_mesh",            vec![common, shadow, rt_off, static_v, surf, gather, light_eval, frag, wboit]),
+            ("wboit_skinned",         vec![common, shadow, rt_off, skin_v,   surf, gather, light_eval, frag, wboit]),
             ("post_wboit_composite",  vec![fullscreen, composite]),
         ];
 

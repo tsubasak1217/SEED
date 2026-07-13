@@ -2,7 +2,7 @@
 # skinned_mesh.toml と同一のシェーダ連結・BGL レイアウトだが、アルファブレンド有効・
 # 深度書き込みなし・depth_compare=LessEqual にする。詳細は transparent_mesh.toml 参照。
 
-shader_sources  = ["shader_common.wgsl", "shadow.wgsl", "rt_shadow_off.wgsl", "shader_skinned_vertex.wgsl", "shader_fragment.wgsl"]
+shader_sources  = ["shader_common.wgsl", "shadow.wgsl", "rt_shadow_off.wgsl", "shader_skinned_vertex.wgsl", "surface.wgsl", "surface_gather.wgsl", "lighting_eval.wgsl", "shader_fragment.wgsl"]
 vertex_entry    = "vs_main"
 fragment_entry  = "fs_main"
 vertex_slots    = ["mesh_vertex", "skin_vertex"]
