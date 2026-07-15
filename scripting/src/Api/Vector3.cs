@@ -71,7 +71,7 @@ public readonly struct Vector3 : IEquatable<Vector3>
     /// <summary>a→b を t（0..1、クランプ）で線形補間する。</summary>
     public static Vector3 Lerp(Vector3 a, Vector3 b, float t)
     {
-        t = Mathf.Clamp01(t);
+        t = Mathf.Clamped01(t);
         return new Vector3(a.x + (b.x - a.x) * t,
                            a.y + (b.y - a.y) * t,
                            a.z + (b.z - a.z) * t);
@@ -89,7 +89,7 @@ public readonly struct Vector3 : IEquatable<Vector3>
     {
         float denom = a.Magnitude * b.Magnitude;
         if (denom < Mathf.Epsilon) return 0f;
-        float cos = Mathf.Clamp(Dot(a, b) / denom, -1f, 1f);
+        float cos = Mathf.Clamped(Dot(a, b) / denom, -1f, 1f);
         return Mathf.Acos(cos) * Mathf.Rad2Deg;
     }
     /// <summary>成分ごとの最小値。</summary>

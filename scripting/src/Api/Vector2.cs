@@ -60,7 +60,7 @@ public readonly struct Vector2 : IEquatable<Vector2>
     /// <summary>a→b を t（0..1、クランプ）で線形補間する。</summary>
     public static Vector2 Lerp(Vector2 a, Vector2 b, float t)
     {
-        t = Mathf.Clamp01(t);
+        t = Mathf.Clamped01(t);
         return new Vector2(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t);
     }
     /// <summary>成分ごとの最小値。</summary>

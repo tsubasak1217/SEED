@@ -98,7 +98,7 @@ public readonly struct Quaternion : IEquatable<Quaternion>
         {
             // YXZ 順の分解（X がピッチ、Y がヨー、Z がロール）
             float sinX = 2f * (w * x - y * z);
-            sinX = Mathf.Clamp(sinX, -1f, 1f);
+            sinX = Mathf.Clamped(sinX, -1f, 1f);
             float ex = Mathf.Asin(sinX);
             float ey = Mathf.Atan2(2f * (w * y + x * z), 1f - 2f * (x * x + y * y));
             float ez = Mathf.Atan2(2f * (w * z + x * y), 1f - 2f * (x * x + z * z));

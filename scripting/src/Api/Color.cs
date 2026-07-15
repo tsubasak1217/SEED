@@ -46,7 +46,7 @@ public readonly struct Color : IEquatable<Color>
     /// <summary>a→b を t（0..1、クランプ）で線形補間する。</summary>
     public static Color Lerp(Color a, Color b, float t)
     {
-        t = Mathf.Clamp01(t);
+        t = Mathf.Clamped01(t);
         return new Color(
             a.r + (b.r - a.r) * t,
             a.g + (b.g - a.g) * t,
