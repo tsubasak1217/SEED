@@ -1442,6 +1442,15 @@
                                                                       IsChecked="True"
                                                                       Checked="OnPostFxChanged"
                                                                       Unchecked="OnPostFxChanged"/>
+                                                            <!-- Deferred レンダリング（G-Buffer + フルスクリーン・ライティング）。
+                                                                 OFF で従来のフォワード経路へ完全フォールバック＝A/B パリティ検証用。 -->
+                                                            <CheckBox x:Name="ChkDeferred"
+                                                                      Content="Deferred レンダリング"
+                                                                      Foreground="White" FontSize="11"
+                                                                      Margin="0,4,0,0"
+                                                                      IsChecked="True"
+                                                                      Checked="OnPostFxChanged"
+                                                                      Unchecked="OnPostFxChanged"/>
                                                         </StackPanel>
                                                     </Expander>
 

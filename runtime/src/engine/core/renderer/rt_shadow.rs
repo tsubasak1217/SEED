@@ -651,6 +651,8 @@ mod tests {
         // （pipelines/*.toml の shader_sources と同じ順序）。
         let cluster  = include_str!("shaders/cluster_common.wgsl");
         let common   = include_str!("shaders/shader_common.wgsl");
+        let pbr_c    = include_str!("shaders/pbr_common.wgsl");
+        let light_c  = include_str!("shaders/light_common.wgsl");
         let shadow   = include_str!("shaders/shadow.wgsl");
         let rt_on    = include_str!("shaders/rt_shadow_on.wgsl");
         let rt_off   = include_str!("shaders/rt_shadow_off.wgsl");
@@ -667,12 +669,12 @@ mod tests {
         let wboit    = include_str!("shaders/shader_wboit.wgsl");
 
         let variants: [(&str, Vec<&str>); 6] = [
-            ("mesh_rt",         vec![cluster, common, shadow, rt_on,  static_v, surf, gather, light_ev, frag]),
-            ("skinned_mesh_rt", vec![cluster, common, shadow, rt_on,  skin_v,   surf, gather, light_ev, frag]),
-            ("mesh",            vec![cluster, common, shadow, rt_off, static_v, surf, gather, light_ev, frag]),
-            ("skinned_mesh",    vec![cluster, common, shadow, rt_off, skin_v,   surf, gather, light_ev, frag]),
-            ("wboit_mesh",      vec![cluster, common, shadow, rt_off, static_v, surf, gather, light_ev, frag, wboit]),
-            ("wboit_skinned",   vec![cluster, common, shadow, rt_off, skin_v,   surf, gather, light_ev, frag, wboit]),
+            ("mesh_rt",         vec![cluster, pbr_c, common, light_c, shadow, rt_on,  static_v, surf, gather, light_ev, frag]),
+            ("skinned_mesh_rt", vec![cluster, pbr_c, common, light_c, shadow, rt_on,  skin_v,   surf, gather, light_ev, frag]),
+            ("mesh",            vec![cluster, pbr_c, common, light_c, shadow, rt_off, static_v, surf, gather, light_ev, frag]),
+            ("skinned_mesh",    vec![cluster, pbr_c, common, light_c, shadow, rt_off, skin_v,   surf, gather, light_ev, frag]),
+            ("wboit_mesh",      vec![cluster, pbr_c, common, light_c, shadow, rt_off, static_v, surf, gather, light_ev, frag, wboit]),
+            ("wboit_skinned",   vec![cluster, pbr_c, common, light_c, shadow, rt_off, skin_v,   surf, gather, light_ev, frag, wboit]),
         ];
 
         for (name, parts) in variants {

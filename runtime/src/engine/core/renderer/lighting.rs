@@ -21,7 +21,7 @@
 //    binding 7: array<ClusterCell>（storage, read。ClusterResources 所有・Phase C1）
 //    binding 8: array<u32> クラスタライトインデックス（storage, read。同上）
 //    binding 9: ClusterParams（uniform。同上。**BG ごとに差し替わる**）
-//  シェーダの宣言（cluster_common.wgsl / shader_common.wgsl / shadow.wgsl の group 4）と
+//  シェーダの宣言（cluster_common.wgsl / light_common.wgsl / shadow.wgsl の group 4）と
 //  厳密に一致させること。
 // ============================================================
 
@@ -270,7 +270,7 @@ fn normalize(v: [f32; 3]) -> [f32; 3] {
 /// ライト配列のメタ情報 uniform（32 bytes）。
 ///
 /// count / rt_shadows / view_mode / ambient_* が意味を持ち、_pad は 16 バイト境界のためのパディング。
-/// WGSL 側 LightMeta（shader_common.wgsl）と厳密に一致させること:
+/// WGSL 側 LightMeta（light_common.wgsl）と厳密に一致させること:
 ///   先頭スカラー 4 つ（16B）→ ambient_color: vec3（16B 境界, offset 16）→ ambient_intensity（offset 28）。
 ///
 /// | offset | field             | size |
@@ -398,7 +398,7 @@ impl LightBuffer {
         });
 
         // group 4 複合 BG（ライト binding 0/1 ＋ シャドウ binding 2〜5 ＋ クラスタ binding 7〜9）。
-        // shadow.wgsl / shader_common.wgsl の group 4 宣言と一致させること。
+        // shadow.wgsl / light_common.wgsl の group 4 宣言と一致させること。
         //
         // メインカメラ用とプレビュー用で異なるのは「カメラ固有の資源」だけ:
         //   binding 2/5 = シャドウ実体（CSM はカメラ視錐台にフィット）
@@ -533,7 +533,7 @@ impl LightBuffer {
 
 // ─── レイアウト検証テスト ──────────────────────────────────────
 //
-// GpuLight / LightMeta の repr(C) レイアウトは shader_common.wgsl の WGSL 構造体と
+// GpuLight / LightMeta の repr(C) レイアウトは light_common.wgsl の WGSL 構造体と
 // バイト単位で一致していなければならない（不一致は静かに描画バグを生む）。
 // 変更時に気づけるよう、サイズ・オフセットを固定値で検証する。
 #[cfg(test)]
@@ -552,7 +552,7 @@ mod layout_tests {
 
     /// LightMeta は 32 バイト。view_mode は offset 8（旧 _pad[0] を再利用）、
     /// ambient_color は 16 バイト境界（offset 16）、ambient_intensity は offset 28。
-    /// WGSL 側 shader_common.wgsl の LightMeta（count/rt_shadows/view_mode/_pad2/ambient_*）と一致。
+    /// WGSL 側 light_common.wgsl の LightMeta（count/rt_shadows/view_mode/_pad2/ambient_*）と一致。
     #[test]
     fn light_meta_layout() {
         assert_eq!(size_of::<LightMeta>(), 32, "LightMeta は 32 バイト（WGSL uniform と一致）");

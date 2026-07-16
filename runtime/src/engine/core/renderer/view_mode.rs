@@ -62,6 +62,15 @@ impl SceneViewMode {
     pub fn is_wireframe(self) -> bool {
         matches!(self, SceneViewMode::Wireframe)
     }
+
+    /// このモードがフル PBR ライティング（Lit）かどうか。
+    ///
+    /// デファード（G-Buffer + フルスクリーン・ライティング）は Lit 専用パスであり、
+    /// Unlit／Wireframe はフォワードへフォールバックする（frame_renderer.rs の
+    /// deferred_active 判定を参照）。
+    pub fn is_lit(self) -> bool {
+        matches!(self, SceneViewMode::Lit)
+    }
 }
 
 // ─── ワイヤーフレーム対応フラグ（GPU フィーチャー依存）──────────

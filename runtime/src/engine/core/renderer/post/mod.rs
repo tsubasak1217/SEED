@@ -67,6 +67,12 @@ pub struct PostFxSettings {
     /// OFF で完全に従来経路（CPU カリング＋draw_indexed）＝A/B パリティ検証用。
     /// MULTI_DRAW_INDIRECT_COUNT 非対応 GPU では本フラグに関わらず従来経路。
     pub meshlet_cull:    bool,
+    /// Deferred（G-Buffer）レンダリング有効フラグ（Phase D3 Deferred Phase B）。既定 true。
+    /// OFF で完全に従来のフォワード経路（不透明を direct にシーン HDR へ描く）にフォールバックする
+    /// （A/B パリティ検証用）。デファードはメインカメラの不透明・Lit のみが対象で、
+    /// unlit／ワイヤーフレーム／2D シーンビュー等は本フラグに関わらず常にフォワードで描く
+    /// （frame_renderer.rs の deferred_active 判定を参照）。
+    pub deferred:        bool,
 }
 
 // ─── デフォルト値（マジックナンバー回避）──────────────────────
@@ -87,6 +93,7 @@ impl Default for PostFxSettings {
             fxaa_enabled:    false,
             transparency:    super::transparency::TransparencyMode::DistanceSort,
             meshlet_cull:    true,
+            deferred:        true,
         }
     }
 }

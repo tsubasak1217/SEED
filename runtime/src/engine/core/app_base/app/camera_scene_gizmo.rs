@@ -450,13 +450,16 @@ pub fn build_camera_uniform(
     let proj = cam_data.proj_matrix(aspect);
     let view_proj = proj * view;
 
+    // 特異行列（逆行列なし）の場合は単位行列へフォールバックする（パニックさせない）。
+    let inv_view_proj = view_proj.inverse().unwrap_or_else(Mat4x4::identity);
     CameraUniform {
-        view_proj:  view_proj.transpose().data,
-        view:       view.transpose().data,
-        position:   [px, py, pz],
-        _pad:       0.0,
-        resolution: res,
-        _pad2:      [0.0; 2],
+        view_proj:      view_proj.transpose().data,
+        view:           view.transpose().data,
+        position:       [px, py, pz],
+        _pad:           0.0,
+        resolution:     res,
+        _pad2:          [0.0; 2],
+        inv_view_proj:  inv_view_proj.transpose().data,
     }
 }
 

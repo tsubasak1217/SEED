@@ -13,15 +13,17 @@
 
 /// カメラのビュー×プロジェクション行列一式。
 ///
-/// WGSL レイアウト（計 160 bytes）:
-/// | オフセット | フィールド  | サイズ |
-/// |-----------|------------|--------|
-/// |   0       | view_proj  |  64    |
-/// |  64       | view       |  64    |
-/// | 128       | position   |  12    |
-/// | 140       | _pad       |   4    |
-/// | 144       | resolution |   8    |
-/// | 152       | _pad2      |   8    |
+/// WGSL レイアウト（計 224 bytes, Phase D3: G-Buffer デファード化 Phase A で末尾に
+/// inv_view_proj を追加。160→224 bytes）:
+/// | オフセット | フィールド     | サイズ |
+/// |-----------|---------------|--------|
+/// |   0       | view_proj     |  64    |
+/// |  64       | view          |  64    |
+/// | 128       | position      |  12    |
+/// | 140       | _pad          |   4    |
+/// | 144       | resolution    |   8    |
+/// | 152       | _pad2         |   8    |
+/// | 160       | inv_view_proj |  64    |
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct CameraUniform {
@@ -33,6 +35,15 @@ pub struct CameraUniform {
     /// ビューポートの解像度（ピクセル）。ギズモ太線計算に使用。
     pub resolution: [f32; 2],
     pub _pad2:      [f32; 2],
+    /// 逆 ViewProjection 行列（NDC → ワールド座標の復元用）。
+    ///
+    /// Phase D3（G-Buffer デファード化）のライティングパス（deferred_lighting.wgsl）が、
+    /// 深度バッファから読んだ NDC 座標をワールド座標へ復元するために使う
+    /// （G-Buffer はワールド座標そのものを焼かない＝帯域節約のため、深度から逆算する）。
+    /// `view_proj.inverse()` が特異行列で失敗した場合は呼び出し側が単位行列で
+    /// フォールバックする（パニックさせない。Mat4x4::inverse() -> Option<Self> 参照）。
+    /// 値は他のフィールドと同じ規約（列優先アップロード＝ `.transpose().data`）。
+    pub inv_view_proj: [[f32; 4]; 4],
 }
 
 impl CameraUniform {
@@ -44,7 +55,7 @@ impl CameraUniform {
             [0.0, 0.0, 0.0, 1.0],
         ];
         Self { view_proj: id, view: id, position: [0.0; 3], _pad: 0.0,
-               resolution: [1280.0, 720.0], _pad2: [0.0; 2] }
+               resolution: [1280.0, 720.0], _pad2: [0.0; 2], inv_view_proj: id }
     }
 }
 
@@ -245,4 +256,21 @@ pub struct GizmoVertex {
     pub pos_b: [f32; 3],
     pub side:  f32,
     pub color: [f32; 4],
+}
+
+
+// ============================================================
+//  レイアウト検証テスト
+// ============================================================
+#[cfg(test)]
+mod layout_tests {
+    use super::*;
+
+    /// CameraUniform が Rust/WGSL 双方で 224 バイト（160→224, inv_view_proj 追加分 +64）
+    /// であることを固定する。ズレると shader_common.wgsl / deferred_lighting.wgsl の
+    /// CameraUniform 定義との対応が崩れ、GPU が誤ったバイトを読む（静かな描画バグ）。
+    #[test]
+    fn camera_uniform_size_is_224_bytes() {
+        assert_eq!(std::mem::size_of::<CameraUniform>(), 224);
+    }
 }

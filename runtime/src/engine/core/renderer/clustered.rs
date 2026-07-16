@@ -527,13 +527,13 @@ mod tests {
         assert_eq!(dims, vec![CLUSTER_WG_X, CLUSTER_WG_Y, CLUSTER_WG_Z]);
     }
 
-    /// GpuLight 構造体が shader_common.wgsl と cluster_build.wgsl で同一であること。
+    /// GpuLight 構造体が light_common.wgsl と cluster_build.wgsl で同一であること。
     ///
-    /// compute は shader_common.wgsl を連結できない（group 2/4 のバインディングが混入する）
+    /// compute は light_common.wgsl を連結できない（group 4 のバインディングが混入する）
     /// ため GpuLight をミラーしている。ズレると compute が読むライト位置・range が
     /// 別のフィールドになり、ライトが無言で落ちる（画面が暗くなる）。
     #[test]
-    fn wgsl_gpu_light_struct_mirrors_shader_common() {
+    fn wgsl_gpu_light_struct_mirrors_light_common() {
         /// `struct GpuLight { ... }` の中身をフィールド行（コメント除去済み）として抽出する。
         fn fields(src: &str) -> Vec<String> {
             let start = src.find("struct GpuLight {")
@@ -547,12 +547,12 @@ mod tests {
                 .filter(|l| !l.is_empty())
                 .collect()
         }
-        let common = fields(include_str!("shaders/shader_common.wgsl"));
+        let common = fields(include_str!("shaders/light_common.wgsl"));
         let build  = fields(include_str!("shaders/cluster_build.wgsl"));
-        assert!(!common.is_empty(), "shader_common.wgsl の GpuLight が空です");
+        assert!(!common.is_empty(), "light_common.wgsl の GpuLight が空です");
         assert_eq!(
             common, build,
-            "shader_common.wgsl と cluster_build.wgsl の GpuLight のフィールドが一致しません\
+            "light_common.wgsl と cluster_build.wgsl の GpuLight のフィールドが一致しません\
              （96 バイトのレイアウトがズレると compute が誤ったライトを読みます）"
         );
     }
