@@ -584,6 +584,44 @@ mod layout_tests {
         assert_eq!(offset_of!(LightMeta, ambient_color),     16);
         assert_eq!(offset_of!(LightMeta, ambient_intensity), 28);
     }
+
+    /// 【回帰ガード】WGSL 側 GpuLight の実レイアウト（naga が計算する storage stride）が
+    /// Rust の `size_of::<GpuLight>()` と一致すること。
+    ///
+    /// Rust 側の offset テスト（gpu_light_layout）だけでは WGSL 側のズレを検出できない。
+    /// 実際に「パディングを vec3<f32> で書いたため WGSL の align 16 規則で stride が
+    /// 112→128 になり、配列 2 要素目以降のライトが全て化けて point/spot/rect が消える」
+    /// という実機バグが起きた（平行光は配列先頭に分割されるため生き残り、原因が
+    /// 分かりにくい）。naga に WGSL を実際に解釈させて struct サイズを取り、
+    /// Rust と機械的に突き合わせることで、この種のズレを CI で止める。
+    #[test]
+    fn wgsl_gpu_light_stride_matches_rust() {
+        // light_common.wgsl は cluster_common.wgsl の型（ClusterCell 等）を参照するため
+        // 実パイプラインと同じ順で連結して parse する。
+        let src = format!(
+            "{}\n{}",
+            include_str!("shaders/cluster_common.wgsl"),
+            include_str!("shaders/light_common.wgsl"),
+        );
+        let module = naga::front::wgsl::parse_str(&src)
+            .expect("cluster_common + light_common の parse に失敗");
+
+        // GpuLight 型を名前で探し、naga の Layouter に storage バッファ規則で
+        // サイズ（= array stride の元）を計算させる。
+        let (handle, _) = module.types.iter()
+            .find(|(_, t)| t.name.as_deref() == Some("GpuLight"))
+            .expect("WGSL に struct GpuLight が見つかりません");
+        let mut layouter = naga::proc::Layouter::default();
+        layouter.update(module.to_ctx()).expect("naga Layouter の計算に失敗");
+        let wgsl_size = layouter[handle].size as usize;
+
+        assert_eq!(
+            wgsl_size, size_of::<GpuLight>(),
+            "WGSL の GpuLight サイズ（naga 計算）が Rust と一致しません。\
+             vec3 パディング等の align 16 押し出しを疑うこと\
+             （スカラー f32 ×3 で詰めるのが正しい）"
+        );
+    }
 }
 
 
