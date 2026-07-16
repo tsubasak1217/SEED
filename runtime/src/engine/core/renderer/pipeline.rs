@@ -636,8 +636,15 @@ impl SkinComputePipeline {
 // ============================================================
 
 pub struct IdPassPipeline {
-    pub mesh_pipeline:    wgpu::RenderPipeline,
-    pub skinned_pipeline: wgpu::RenderPipeline,
+    /// スタティックメッシュ用 ID 書き込みパイプライン（カリング面 3 種。添字 = `CullFace::index()`）。
+    ///
+    /// メインパス（`MeshPipeline::pipelines`）と同様にマテリアル単位のカリング面へ追従させる。
+    /// これをしないと両面マテリアル（glTF double_sided → CullFace::None）を裏面から
+    /// クリックしたとき、ID パスだけが背面カリングで裏面を描かず ID バッファが空になり、
+    /// ピッキングで選択できなくなる（メインパスは両面を描くため表示はされる）。
+    pub mesh_pipelines:    CullPipelineSet,
+    /// スキンメッシュ用 ID 書き込みパイプライン（カリング面 3 種。添字 = `CullFace::index()`）。
+    pub skinned_pipelines: CullPipelineSet,
     pub camera_bgl:       wgpu::BindGroupLayout,
     pub model_bgl:        wgpu::BindGroupLayout,
     pub id_data_bgl:      wgpu::BindGroupLayout,
@@ -649,14 +656,23 @@ impl IdPassPipeline {
     fn new(device: &wgpu::Device, _sf: wgpu::TextureFormat, df: wgpu::TextureFormat, cache: Option<&wgpu::PipelineCache>) -> Self {
         // ID パスはオフスクリーン Rgba32Float テクスチャへ描画するため、
         // サーフェスフォーマット (_sf) ではなく固定フォーマットを使う。
-        let build = |toml: &str| {
-            RenderPipelineBuilder::new(device, toml, wgpu::TextureFormat::Rgba32Float, df)
-                .with_cache(cache)
-                .build(get_shader_source)
+        // メインパス／G-Buffer と同じ流儀で、1 つの TOML から cull_mode だけを差し替えた
+        // Back / Front / None の 3 バリアントを生成する（TOML 側の cull_mode 値は無視される）。
+        let build = |toml: &str, label_base: &str| {
+            build_cull_variants(
+                device,
+                toml,
+                wgpu::TextureFormat::Rgba32Float,
+                df,
+                cache,
+                label_base,
+                get_shader_source,
+            )
         };
 
         // mesh: num_bind_groups=5 → bgls[0..4] = [camera, model, id_data, joint, id_base]
-        let (mesh_pipeline, mut bgls_m) = build(include_str!("pipelines/id_pass_mesh.toml"));
+        // build_cull_variants の返す BGL は Back バリアントのもの（3 本は同一レイアウト）。
+        let (mesh_pipelines, mut bgls_m) = build(include_str!("pipelines/id_pass_mesh.toml"), "id_pass_mesh");
         let id_base_bgl  = bgls_m.pop().unwrap(); // group 4
         let _joint_bgl_m = bgls_m.pop().unwrap(); // group 3 (mesh では未使用だが layout は存在)
         let id_data_bgl  = bgls_m.pop().unwrap(); // group 2
@@ -664,14 +680,26 @@ impl IdPassPipeline {
         let camera_bgl   = bgls_m.pop().unwrap(); // group 0
 
         // skinned: num_bind_groups=5 → 同様。group 3 の joint_bgl だけ取り出す
-        let (skinned_pipeline, mut bgls_s) = build(include_str!("pipelines/id_pass_skinned.toml"));
+        let (skinned_pipelines, mut bgls_s) = build(include_str!("pipelines/id_pass_skinned.toml"), "id_pass_skinned");
         let _id_base_bgl_s = bgls_s.pop().unwrap(); // group 4 (mesh 側と同レイアウト)
         let joint_bgl      = bgls_s.pop().unwrap(); // group 3
         let _ = bgls_s;
 
-        Self { mesh_pipeline, skinned_pipeline, camera_bgl, model_bgl, id_data_bgl, joint_bgl, id_base_bgl }
+        Self { mesh_pipelines, skinned_pipelines, camera_bgl, model_bgl, id_data_bgl, joint_bgl, id_base_bgl }
     }
 }
+
+// ID パスのカリング面バリアントがメインパスと同一の `CullPipelineSet`
+// （= 添字 0..CULL_FACE_COUNT の 3 本）であることをコンパイル時に固定する回帰ガード。
+// 誰かが ID パスを単一 `RenderPipeline` へ戻すと（＝両面ピッキング不具合の再発）
+// この型注釈が型検査に失敗してビルドが通らなくなる。実行時コストはゼロ。
+const _: fn() = || {
+    fn _assert_id_pass_matches_main_pass_cull_variants(m: &MeshPipeline, id: &IdPassPipeline) {
+        let _: &CullPipelineSet = &m.pipelines;
+        let _: &CullPipelineSet = &id.mesh_pipelines;
+        let _: &CullPipelineSet = &id.skinned_pipelines;
+    }
+};
 
 // ============================================================
 //  OutlinePipeline — バックフェース膨張法アウトライン

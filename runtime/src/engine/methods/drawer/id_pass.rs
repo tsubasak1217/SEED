@@ -14,6 +14,7 @@ use super::{
     gpu_resources::{GpuModel, InstancedModelBatch, NUM_LODS},
     pipeline::{DrawPipelines, CanvasIdUniform},
 };
+use crate::engine::core::loader::model::CullFace;
 
 // ピクセルあたりのバイト数 (Rgba32Float = 4 × 4bytes)
 const BYTES_PER_PIXEL: usize = 16;
@@ -240,7 +241,11 @@ pub fn draw_id_pass<'pass>(
         if visible == 0 { continue; }
 
         let joint_bg = batch.joint_vs_bg(lod);
-        let mut cur_skinned: Option<bool> = None;
+        let mut cur_skinned: Option<bool>     = None;
+        // 現在バインド中のカリング面。node_prim_list は (is_skinned, cull_face, material_idx)
+        // 順にソート済みのため、同じカリング面が連続する区間では set_pipeline を省略できる。
+        // メインパス（model_drawer.rs）と同じ選択ロジックで、マテリアルのカリング面に追従する。
+        let mut cur_cull:    Option<CullFace> = None;
 
         for draw in &batch.node_prim_list {
             let Some((_, model_bg)) = batch.lod_node_data[lod][draw.node_idx].as_ref()
@@ -249,22 +254,27 @@ pub fn draw_id_pass<'pass>(
             let gpu_mesh = &gpu_model.meshes[draw.mesh_idx];
             let prim     = &gpu_mesh.primitives[draw.prim_idx];
 
-            if cur_skinned != Some(draw.is_skinned) {
+            // このプリミティブのマテリアルの実効カリング面（オーバーライド適用後）。
+            let cull = gpu_model.primitive_cull_face(draw.material_idx);
+
+            // スキン有無・カリング面のどちらかが変わったときだけ set_pipeline する。
+            if cur_skinned != Some(draw.is_skinned) || cur_cull != Some(cull) {
                 if draw.is_skinned {
-                    render_pass.set_pipeline(&pipelines.id_pass.skinned_pipeline);
+                    render_pass.set_pipeline(&pipelines.id_pass.skinned_pipelines[cull.index()]);
                     if let Some(jbg) = joint_bg {
                         render_pass.set_bind_group(3, jbg, &[]);
                     } else {
                         render_pass.set_bind_group(3, &gpu_model.identity_joints_bg, &[]);
                     }
                 } else {
-                    render_pass.set_pipeline(&pipelines.id_pass.mesh_pipeline);
+                    render_pass.set_pipeline(&pipelines.id_pass.mesh_pipelines[cull.index()]);
                     render_pass.set_bind_group(3, &gpu_model.identity_joints_bg, &[]);
                 }
                 render_pass.set_bind_group(0, camera_bg, &[]);
                 render_pass.set_bind_group(2, &batch.lod_id_bgs[lod], &[]);
                 render_pass.set_bind_group(4, id_base_bg, &[]);
                 cur_skinned = Some(draw.is_skinned);
+                cur_cull    = Some(cull);
             }
 
             render_pass.set_bind_group(1, model_bg, &[]);
