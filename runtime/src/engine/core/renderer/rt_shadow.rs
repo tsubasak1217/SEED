@@ -543,9 +543,6 @@ mod tests {
         let tmin: f32 = wgsl_const_literal(rt_on, "RT_SHADOW_TMIN")
             .parse()
             .expect("RT_SHADOW_TMIN が f32 として解釈できません");
-        let slope_min: f32 = wgsl_const_literal(rt_on, "RT_SHADOW_SLOPE_MIN_COS")
-            .parse()
-            .expect("RT_SHADOW_SLOPE_MIN_COS が f32 として解釈できません");
 
         // 見込み半径の上限は「有限かつ実用的な広さ」に収まっていること。
         // tan(半角) = 1.0 は見込み半角 45°＝半球の大半を覆う。これを超えるとペナンブラの
@@ -606,11 +603,30 @@ mod tests {
             "RT_SHADOW_GEO_CLEARANCE({geo_clearance}) は RT_SHADOW_TMIN({tmin}) より大きく、\
              RT_SHADOW_NORMAL_BIAS({normal_bias}) より小さいこと"
         );
-        // スロープスケールの下限 cos。0 だと 0 除算（∞ オフセット＝光漏れ）、
-        // 1 だとスロープスケールが無効化されグレージングで自己交差する。
+        // レイ原点の総オフセットが「定数の和」で静的に抑えられていること（光漏れの再発防止線）。
+        // スロープスケール（NORMAL_BIAS を dot(nv,l) で除算してグレージングで押し出しを増やす機構）が
+        // 復活すると、下限 0.1 で最大 0.2 ワールド単位（Sponza=20cm）まで膨らみ、薄い布のヒダ間隔
+        // （数 cm）を越えてレイ原点が隣のヒダを突き抜け、遮蔽が外れてリム状の光漏れが再発する。
+        // よって (a) スロープ下限定数が復活していないこと、(b) レイ原点式に除算が現れないことを
+        // ソースレベルで縛る。総オフセットは NORMAL_BIAS + GEO_CLEARANCE の固定和に限定される。
         assert!(
-            slope_min > 0.0 && slope_min < 1.0,
-            "RT_SHADOW_SLOPE_MIN_COS({slope_min}) は (0, 1) の範囲であること"
+            !rt_on.contains("RT_SHADOW_SLOPE_MIN_COS"),
+            "rt_shadow_on.wgsl にスロープスケールの下限定数 RT_SHADOW_SLOPE_MIN_COS が復活しています。             グレージングでレイ原点オフセットが最大 20cm まで膨らみ薄い布で光漏れが再発します。             レイ原点は固定量（NORMAL_BIAS + GEO_CLEARANCE）だけで押し出すこと"
+        );
+        // レイ原点式（`let o = origin ...;`）にスロープスケール由来の除算が無いこと。
+        // 原点計算のブロック（`let o = origin` から次の ';' まで）を抽出し、除算 '/' を含まないと縛る。
+        let o_expr = {
+            let start = rt_on
+                .find("let o = origin")
+                .expect("rt_shadow_on.wgsl にレイ原点式 `let o = origin` が見つかりません");
+            let rel_end = rt_on[start..]
+                .find(';')
+                .expect("レイ原点式が ';' で終わっていません");
+            &rt_on[start..start + rel_end]
+        };
+        assert!(
+            !o_expr.contains('/'),
+            "レイ原点式に除算が含まれています（スロープスケール復活の疑い）: {o_expr:?}。             オフセットは NORMAL_BIAS と GEO_CLEARANCE の固定量の和だけにすること"
         );
     }
 
