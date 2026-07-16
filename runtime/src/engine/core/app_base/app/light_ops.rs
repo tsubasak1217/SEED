@@ -84,6 +84,8 @@ impl App {
             "rect_width"   => if let Ok(v) = value.parse::<f32>() { lc.rect_width = v.max(0.0); },
             "rect_height"  => if let Ok(v) = value.parse::<f32>() { lc.rect_height = v.max(0.0); },
             "soft_radius"  => if let Ok(v) = value.parse::<f32>() { lc.soft_radius = v.max(0.0); },
+            // 疑似バウンス（間接光近似）の強度。負値は 0 にクランプ（上限は設けない）。
+            "bounce_intensity" => if let Ok(v) = value.parse::<f32>() { lc.bounce_intensity = v.max(0.0); },
             "cast_shadows" => lc.cast_shadows = value == "1" || value == "true",
             _ => return,
         }
@@ -181,6 +183,16 @@ fn collect_lights_recursive(actors: &[Actor], world: &World, wl: u32, out: &mut 
             } else {
                 sr
             };
+
+            // 疑似バウンス（間接光近似）の強度を GpuLight へ反映する。
+            // directional は減衰の基準距離が無いため対象外＝常に 0 に固定する
+            // （Inspector 側でも項目を隠すが、データ層でも二重に保証する）。
+            gpu.bounce_intensity = if lc.kind == LightKind::Directional {
+                0.0
+            } else {
+                lc.bounce_intensity.max(0.0)
+            };
+
             out.push(gpu);
         }
 

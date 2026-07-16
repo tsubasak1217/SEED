@@ -50,6 +50,8 @@ struct GpuLight {
     shadow_index:     f32,
     rect_up:          vec3<f32>,
     soft_radius:      f32,
+    bounce_intensity: f32,          // Rust GpuLight（112B）とレイアウトを一致させるため保持（compute では未使用）
+    _pad_bounce:      vec3<f32>,    // stride 112 へ揃えるパディング
 }
 
 // ─── バインディング（group 0・compute 専用の手動レイアウト）─────

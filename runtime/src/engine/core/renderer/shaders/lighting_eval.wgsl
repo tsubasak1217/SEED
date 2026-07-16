@@ -351,6 +351,28 @@ fn evaluate_lighting(s: Surface) -> vec3<f32> {
         // 掛けない（方向性がなく漏れではないため）。
         let geo_gate = select(0.0, 1.0, dot(Ng, L) > RT_GEO_SHADOW_MIN_COS);
         Lo += geo_gate * shade_light(N, V, L, albedo, F0, metallic, roughness, radiance);
+
+        // ── 疑似バウンス（間接光近似・Phase 間接光）──────────────
+        // ライトに照らされた周囲の面からの 1 バウンスを「ライト位置からの無方向光」で
+        // 近似する。レイトレ無しで「影の中にも光が回り込む」間接光風の見た目を出すのが目的。
+        //   - 影係数（rt_shadow_factor / sample_shadow_*）は掛けない（影の中へ届くのが目的）。
+        //   - geo_gate も掛けない（面がライトへ背を向けても回り込む）。
+        //   - スポットの円錐減衰・rect の前面判定も掛けない（照射範囲の外へ回り込むのが本質）。
+        //     radiance ではなく base_col（color*intensity）に距離減衰だけを掛ける。
+        //   - AO（s.occlusion）は掛ける（隅は間接光も届きにくい）。
+        //   - wrap = dot(N,L)*0.5+0.5（wrap lighting）。完全裏面でも 0.5 残り＝回り込み。
+        // directional は Rust 側（light_ops）で bounce_intensity=0 に固定されるため寄与しない
+        // （減衰の基準距離が無い。全体の底上げは既存のアンビエントで行う）。
+        // クラスタ整合: 距離減衰（range ウィンドウ）で range を超えると 0 になる。バウンスは
+        // ライトの影響半径 range 内に収まる＝このライトはこのフラグメントのクラスタに必ず
+        // 入っているので、クラスタ走査のまま（追加のライトを引かず）正しく効く。
+        if light.bounce_intensity > 0.0 {
+            let wrap   = dot(N, L) * 0.5 + 0.5;
+            let bounce = albedo / PI * base_col
+                       * distance_attenuation(light_dist, light.range)
+                       * light.bounce_intensity * wrap * s.occlusion;
+            Lo += bounce;
+        }
     }
 
     // ── アンビエント（環境光）──────────────────────────────────

@@ -151,6 +151,15 @@ pub struct LightComponentData {
     /// 0 でハードシャドウ。RT 影が有効なときのみ効く。既定 0.25。
     #[serde(default = "default_soft_radius")]
     pub soft_radius: f32,
+    /// 疑似バウンス（間接光近似）の強度。既定 0.0（＝無効：既存シーンの見た目を一切変えない）。
+    ///
+    /// レイトレ無しで「影の中に光が回り込む」間接光風の見た目を出すための係数。
+    /// ライトの周囲に無方向・影非適用・幾何ゲート非適用の淡い光を距離減衰つきで撒く
+    /// （物理的に正しい GI ではなく 1 バウンスの近似）。0..1 目安だが上限クランプはしない
+    /// （強めに盛れる自由を残す）。directional は減衰の基準距離が無いため対象外。
+    /// 旧 .scene 互換のため 0.0 既定（f32 の型既定値）で `#[serde(default)]`。
+    #[serde(default)]
+    pub bounce_intensity: f32,
 }
 
 impl Default for LightComponentData {
@@ -164,8 +173,9 @@ impl Default for LightComponentData {
             outer_angle_deg: default_outer_angle_deg(),
             rect_width:      default_rect_width(),
             rect_height:     default_rect_height(),
-            cast_shadows:    default_cast_shadows(),
-            soft_radius:     default_soft_radius(),
+            cast_shadows:     default_cast_shadows(),
+            soft_radius:      default_soft_radius(),
+            bounce_intensity: 0.0,
         }
     }
 }
@@ -188,6 +198,7 @@ pub struct LightComponent {
     pub rect_height:     f32,
     pub cast_shadows:    bool,
     pub soft_radius:     f32,
+    pub bounce_intensity: f32,
 }
 
 impl LightComponent {
@@ -202,8 +213,9 @@ impl LightComponent {
             outer_angle_deg: data.outer_angle_deg,
             rect_width:      data.rect_width,
             rect_height:     data.rect_height,
-            cast_shadows:    data.cast_shadows,
-            soft_radius:     data.soft_radius,
+            cast_shadows:     data.cast_shadows,
+            soft_radius:      data.soft_radius,
+            bounce_intensity: data.bounce_intensity,
         }
     }
 
@@ -218,8 +230,9 @@ impl LightComponent {
             outer_angle_deg: self.outer_angle_deg,
             rect_width:      self.rect_width,
             rect_height:     self.rect_height,
-            cast_shadows:    self.cast_shadows,
-            soft_radius:     self.soft_radius,
+            cast_shadows:     self.cast_shadows,
+            soft_radius:      self.soft_radius,
+            bounce_intensity: self.bounce_intensity,
         }
     }
 }

@@ -60,7 +60,7 @@ pub enum LightingPass {
 /// Phase C1（Clustered Lighting）で 64 → 1024 へ引き上げた。フラグメントは
 /// 全ライトではなく「自分のクラスタのライトリスト ＋ 全平行光」しか走査しないため、
 /// 灯数を増やしてもフラグメント負荷は増えない（増えるのはクラスタ構築 compute の
-/// コストと storage buffer の容量 = 1024 × 96B ≒ 96KB だけ）。
+/// コストと storage buffer の容量 = 1024 × 112B ≒ 112KB だけ）。
 /// 上限を更に上げる場合は renderer/clustered.rs の MAX_LIGHTS_PER_CLUSTER
 /// （1 クラスタが保持できる灯数）も併せて検討すること。
 pub const MAX_LIGHTS: usize = 1024;
@@ -84,7 +84,7 @@ pub const LIGHT_KIND_RECT: u32 = 3;
 
 // ─── GpuLight ────────────────────────────────────────────────
 
-/// GPU の storage buffer に格納する 1 ライト分のデータ（96 bytes）。
+/// GPU の storage buffer に格納する 1 ライト分のデータ（112 bytes）。
 ///
 /// WGSL storage の std430 相当アライメント（vec3 は 16 バイト境界）に合わせ、
 /// 明示的なパディングフィールドで詰める。bytemuck::Pod のため隙間バイトを残さない。
@@ -105,7 +105,13 @@ pub const LIGHT_KIND_RECT: u32 = 3;
 /// |  76    | shadow_index     |   4  |
 /// |  80    | rect_up          |  12  |
 /// |  92    | soft_radius      |   4  |
-/// 合計 96（16 の倍数 → array stride も 96）
+/// |  96    | bounce_intensity |   4  |
+/// | 100    | _pad_bounce[3]   |  12  |
+/// 合計 112（16 の倍数 → array stride も 112）
+///
+/// bounce_intensity（疑似バウンス）は既存レイアウトに空き（16 バイト境界のパディング）が
+/// 無かったため、96→112 へ拡張して追加した。offset 96 は 16 の倍数なので、bounce_intensity
+/// ＋ 3 つのパディング f32 で末尾に 1 つの 16 バイトスロットを足した形になる。
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GpuLight {
@@ -142,8 +148,14 @@ pub struct GpuLight {
     /// ソフト影の見込み半径（Phase R8 ソフトシャドウ）。0 = ハードシャドウ。
     /// directional: tan(角径) の無次元スロープ（collect_gpu_lights で度→tan 変換済み）。
     /// point/spot/rect: 光源のワールド半径（シェーダで radius/距離＝見込み角に換算）。
-    /// 旧レイアウトの _pad1（offset 92）を再利用するため 96 バイトは不変。
+    /// 旧レイアウトの _pad1（offset 92）を再利用するため 92 のオフセットは不変。
     pub soft_radius:      f32,
+    /// 疑似バウンス（間接光近似）の強度。0.0 = 無効（既定）。
+    /// シェーダ（lighting_eval.wgsl）が「無方向・影非適用・幾何ゲート非適用の淡い光を
+    /// 距離減衰つきで撒く」項の係数に使う。directional では常に 0（対象外）。
+    pub bounce_intensity: f32,
+    /// 16 バイト境界（array stride 112）へ揃えるためのパディング（未使用）。
+    pub _pad_bounce:      [f32; 3],
 }
 
 impl GpuLight {
@@ -169,6 +181,8 @@ impl GpuLight {
             shadow_index:     -1.0,
             rect_up:          [0.0; 3],
             soft_radius:      0.0,
+            bounce_intensity: 0.0,
+            _pad_bounce:      [0.0; 3],
         }
     }
 
@@ -189,6 +203,8 @@ impl GpuLight {
             shadow_index:     -1.0,
             rect_up:          [0.0; 3],
             soft_radius:      0.0,
+            bounce_intensity: 0.0,
+            _pad_bounce:      [0.0; 3],
         }
     }
 
@@ -223,6 +239,8 @@ impl GpuLight {
             shadow_index:     -1.0,
             rect_up:          [0.0; 3],
             soft_radius:      0.0,
+            bounce_intensity: 0.0,
+            _pad_bounce:      [0.0; 3],
         }
     }
 
@@ -255,6 +273,8 @@ impl GpuLight {
             shadow_index:     -1.0,
             rect_up:          normalize(up),
             soft_radius:      0.0,
+            bounce_intensity: 0.0,
+            _pad_bounce:      [0.0; 3],
         }
     }
 }
@@ -541,13 +561,15 @@ mod layout_tests {
     use super::*;
     use std::mem::{size_of, offset_of};
 
-    /// GpuLight は 96 バイト（array stride も 96）。soft_radius は旧 _pad1 の offset 92 を再利用。
+    /// GpuLight は 112 バイト（array stride も 112）。soft_radius は旧 _pad1 の offset 92 を再利用し、
+    /// bounce_intensity は 96→112 拡張で offset 96 に追加（以降 12 バイトはパディング）。
     #[test]
     fn gpu_light_layout() {
-        assert_eq!(size_of::<GpuLight>(), 96, "GpuLight は 96 バイト（WGSL stride と一致）");
-        assert_eq!(offset_of!(GpuLight, shadow_index), 76);
-        assert_eq!(offset_of!(GpuLight, rect_up),      80);
-        assert_eq!(offset_of!(GpuLight, soft_radius),  92);
+        assert_eq!(size_of::<GpuLight>(), 112, "GpuLight は 112 バイト（WGSL stride と一致）");
+        assert_eq!(offset_of!(GpuLight, shadow_index),     76);
+        assert_eq!(offset_of!(GpuLight, rect_up),          80);
+        assert_eq!(offset_of!(GpuLight, soft_radius),      92);
+        assert_eq!(offset_of!(GpuLight, bounce_intensity), 96);
     }
 
     /// LightMeta は 32 バイト。view_mode は offset 8（旧 _pad[0] を再利用）、
