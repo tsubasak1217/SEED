@@ -470,7 +470,7 @@ impl App {
                     // インラインレイトレ影フラグをエディタからのライブ切替で更新する
                     self.rt_shadows = v;
                 }
-                IpcCommand::SetPostFx { bloom, fxaa, bloom_intensity, transparency, meshlet_cull, deferred, view_mode } => {
+                IpcCommand::SetPostFx { bloom, fxaa, bloom_intensity, transparency, meshlet_cull, deferred, view_mode, gi } => {
                     // ブルーム／FXAA をエディタからのライブ切替で更新する（Phase R4）。
                     // しきい値／ニーは既定のまま（UI は最小構成のため強度のみ可変）。
                     self.post_fx.bloom_enabled   = bloom;
@@ -485,6 +485,9 @@ impl App {
                     // エディタのシーンビュー表示モード（Lit / Unlit / Wireframe）のライブ切替。
                     // Edit モードのメインカメラのパスにのみ効く（frame_renderer でゲート）。
                     self.scene_view_mode         = view_mode;
+                    // DDGI（レイトレGI）設定のライブ切替（Phase RT-GI）。
+                    // enabled は RT 非対応 GPU では frame_renderer 側で強制無効化される。
+                    self.post_fx.gi              = gi;
                 }
                 IpcCommand::SetAmbient { color, intensity } => {
                     // 環境光（アンビエント）をエディタからのライブ切替で更新する（Phase R1.5）。

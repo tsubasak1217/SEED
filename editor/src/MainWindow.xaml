@@ -1451,6 +1451,26 @@
                                                                       IsChecked="True"
                                                                       Checked="OnPostFxChanged"
                                                                       Unchecked="OnPostFxChanged"/>
+                                                            <!-- RT-GI（レイトレ間接光, Phase RT-GI）-->
+                                                            <CheckBox x:Name="ChkRtGi"
+                                                                      Content="RT-GI（レイトレ間接光）"
+                                                                      Foreground="White" FontSize="11"
+                                                                      Margin="0,4,0,0"
+                                                                      IsChecked="True"
+                                                                      Checked="OnPostFxChanged"
+                                                                      Unchecked="OnPostFxChanged"/>
+                                                            <!-- GI 強度 -->
+                                                            <Grid Margin="0,0,0,8">
+                                                                <Grid.ColumnDefinitions>
+                                                                    <ColumnDefinition Width="52"/>
+                                                                    <ColumnDefinition Width="*"/>
+                                                                </Grid.ColumnDefinitions>
+                                                                <TextBlock Text="GI強度" Foreground="#CCCCCC" FontSize="11" VerticalAlignment="Center"/>
+                                                                <Slider x:Name="SldGiIntensity" Grid.Column="1"
+                                                                        Style="{StaticResource DarkSliderStyle}"
+                                                                        Minimum="0" Maximum="2" Value="1.0"
+                                                                        ValueChanged="OnPostFxSliderChanged" VerticalAlignment="Center"/>
+                                                            </Grid>
                                                         </StackPanel>
                                                     </Expander>
 

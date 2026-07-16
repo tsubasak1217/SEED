@@ -97,6 +97,7 @@ pub(crate) fn get_shader_source(name: &str) -> &'static str {
         "shader_common.wgsl"         => include_str!("shaders/shader_common.wgsl"),
         // ライト（GpuLight/LightMeta）＋クラスタ参照。shader_common.wgsl の直後に連結すること
         // （cluster_common → shader_common → light_common の順。Phase D3 Phase A で分離）。
+        "ddgi_common.wgsl"           => include_str!("shaders/ddgi_common.wgsl"),
         "light_common.wgsl"          => include_str!("shaders/light_common.wgsl"),
         "shader_static_vertex.wgsl"  => include_str!("shaders/shader_static_vertex.wgsl"),
         "shader_skinned_vertex.wgsl" => include_str!("shaders/shader_skinned_vertex.wgsl"),
@@ -1299,6 +1300,111 @@ impl ClusterBuildPipeline {
         Self { pipeline, bgl }
     }
 }
+// ============================================================
+//  GiUpdatePipeline - DDGI probe-update compute (Phase RT-GI)
+// ============================================================
+//
+// cluster_common + ddgi_common + ddgi_probe_update concatenation (rayQuery compute).
+// Built only on RT-capable GPUs (EXPERIMENTAL_RAY_QUERY); DrawPipelines holds it as
+// Option. The manual group-0 BGL MUST match GiResources::attach (resources.rs).
+pub struct GiUpdatePipeline {
+    pub pipeline: wgpu::ComputePipeline,
+    pub bgl:      wgpu::BindGroupLayout,
+}
+
+impl GiUpdatePipeline {
+    fn new(device: &wgpu::Device, cache: Option<&wgpu::PipelineCache>) -> Self {
+        let src = format!(
+            "{}
+{}
+{}",
+            include_str!("shaders/cluster_common.wgsl"),
+            include_str!("shaders/ddgi_common.wgsl"),
+            include_str!("shaders/ddgi_probe_update.wgsl"),
+        );
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label:  Some("GI Probe Update Shader"),
+            source: wgpu::ShaderSource::Wgsl(src.into()),
+        });
+
+        let vis = wgpu::ShaderStages::COMPUTE;
+        let buf = |binding: u32, storage: bool, read_only: bool| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: vis,
+            ty: wgpu::BindingType::Buffer {
+                ty: if storage {
+                    wgpu::BufferBindingType::Storage { read_only }
+                } else {
+                    wgpu::BufferBindingType::Uniform
+                },
+                has_dynamic_offset: false,
+                min_binding_size:   None,
+            },
+            count: None,
+        };
+        let sampled_tex = |binding: u32| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: vis,
+            ty: wgpu::BindingType::Texture {
+                sample_type:    wgpu::TextureSampleType::Float { filterable: true },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled:   false,
+            },
+            count: None,
+        };
+        let storage_tex = |binding: u32| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: vis,
+            ty: wgpu::BindingType::StorageTexture {
+                access:         wgpu::StorageTextureAccess::WriteOnly,
+                format:         super::ddgi::GI_ATLAS_FORMAT,
+                view_dimension: wgpu::TextureViewDimension::D2,
+            },
+            count: None,
+        };
+
+        let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label:   Some("GI Update BGL"),
+            entries: &[
+                buf(0, false, false),  // GiParams (uniform)
+                buf(1, true,  true),   // lights (storage read)
+                buf(2, false, false),  // LightMeta (uniform)
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: vis,
+                    ty: wgpu::BindingType::AccelerationStructure { vertex_return: false },
+                    count: None,
+                },
+                buf(4, true, true),    // avg albedo (storage read)
+                sampled_tex(5),        // hist irradiance
+                sampled_tex(6),        // hist visibility
+                wgpu::BindGroupLayoutEntry {
+                    binding: 7,
+                    visibility: vis,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                storage_tex(8),        // out irradiance
+                storage_tex(9),        // out visibility
+            ],
+        });
+
+        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label:                Some("GI Update Layout"),
+            bind_group_layouts:   &[&bgl],
+            push_constant_ranges: &[],
+        });
+        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label:               Some("GI Update Pipeline"),
+            layout:              Some(&layout),
+            module:              &shader,
+            entry_point:         Some("cs_main"),
+            compilation_options: Default::default(),
+            cache,
+        });
+        Self { pipeline, bgl }
+    }
+}
 
 // ============================================================
 //  ParticlePipelines — GPU パーティクル描画（形状メッシュ×インスタンス）
@@ -1576,6 +1682,8 @@ pub struct DrawPipelines {
     pub particle_compute:     ParticleComputePipeline,
     /// Clustered Lighting のクラスタ構築 compute パイプライン（Phase C1）。
     pub cluster_build:        ClusterBuildPipeline,
+    /// DDGI プローブ更新 compute パイプライン（Phase RT-GI, RT 対応 GPU のみ Some）。
+    pub gi_update:            Option<GiUpdatePipeline>,
     /// GPU パーティクル描画パイプライン一式（Additive / Alpha, Phase RP）。
     pub particles:            ParticlePipelines,
     /// スカイボックス（天球）描画パイプライン一式（Phase R9）。
@@ -1643,12 +1751,18 @@ impl DrawPipelines {
         let skybox              = super::skybox::SkyboxPipelines::new(device, sf, df, cache);
         // Clustered Lighting のクラスタ構築 compute（Phase C1）。
         let cluster_build       = ClusterBuildPipeline::new(device, cache);
+        // DDGI プローブ更新 compute（Phase RT-GI）。RT 対応 GPU でのみ構築する。
+        let gi_update           = if super::rt_shadow::rt_shadows_supported() {
+            Some(GiUpdatePipeline::new(device, cache))
+        } else {
+            None
+        };
         // G-Buffer 書き込み（Phase D3 Phase A）。mesh/skinned_mesh の BGL を借りて構築するため
         // それらの構築後に呼ぶ（モジュール冒頭コメントの BGL 再利用方針を参照）。
         let gbuffer              = super::gbuffer::GBufferPipelines::new(device, &mesh, &skinned_mesh, df, cache);
         // デファードのフルスクリーン・ライティング復元（Phase D3 Phase A）。
         // sf（シーン HDR）へ出力する（PostPipeline 等と同じ HDR オフスクリーン規約）。
         let deferred              = super::deferred::DeferredLightingPipelines::new(device, sf, df, cache);
-        Self { mesh, skinned_mesh, rt, unlit_line, cull, meshlet_cull, skin_compute, depth_prepass, shadow_depth, id_pass, outline, sprite, sprite_outline, canvas_id, camera_preview_blit, bar_fill, transparent, particle_compute, particles, skybox, cluster_build, gbuffer, deferred }
+        Self { mesh, skinned_mesh, rt, unlit_line, cull, meshlet_cull, skin_compute, depth_prepass, shadow_depth, id_pass, outline, sprite, sprite_outline, canvas_id, camera_preview_blit, bar_fill, transparent, particle_compute, particles, skybox, cluster_build, gi_update, gbuffer, deferred }
     }
 }

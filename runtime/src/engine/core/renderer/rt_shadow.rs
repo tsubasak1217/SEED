@@ -159,6 +159,11 @@ pub struct RtShadowResources {
     last_tlas_sig: Option<u64>,
     /// 直近に TLAS へ登録したインスタンス数（[PERF] 表示用）。
     last_inst_count: u32,
+
+    /// TLAS インスタンス順（custom_data 順）のプリミティブ平均アルベド storage（Phase RT-GI）。
+    /// DDGI のヒット点近似シェーディングで、ヒットした instance_custom_data で引く。
+    /// 容量 MAX_RT_INSTANCES。TLAS を（再）構築したフレームにのみ詰め直してアップロードする。
+    albedo_buffer: wgpu::Buffer,
 }
 
 /// `prepare_and_build` の結果統計（[PERF] ログ用）。
@@ -183,6 +188,7 @@ impl RtShadowResources {
         shadow:        &ShadowResources,
         light_buffer:  &LightBuffer,
         clusters:      &super::clustered::ClusterResources,
+        gi:            &super::ddgi::GiResources,
     ) -> Self {
         // TLAS を生成する。フラグは高速ビルド優先（毎フレーム再構築のため）。
         let tlas = device.create_tlas(&CreateTlasDescriptor {
@@ -196,7 +202,15 @@ impl RtShadowResources {
         // as_binding() は &tlas を借用するため、TlasPackage へ move する前に生成する。
         // 生成された bind group は内部で TLAS リソース（Arc）を保持するため、以後
         // TlasPackage へ move しても有効であり、再ビルドで内容が更新されても使い回せる。
-        let bind_group = light_buffer.create_rt_bind_group(device, rt_lights_bgl, shadow, clusters, &tlas);
+        let bind_group = light_buffer.create_rt_bind_group(device, rt_lights_bgl, shadow, clusters, gi, &tlas);
+
+        // 平均アルベド storage（Phase RT-GI）。容量 = MAX_RT_INSTANCES × vec4<f32>（16B）。
+        let albedo_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label:              Some("RT Instance Avg Albedo"),
+            size:               (MAX_RT_INSTANCES as u64) * 16,
+            usage:              wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
 
         let tlas_package = TlasPackage::new(tlas);
 
@@ -208,8 +222,15 @@ impl RtShadowResources {
             warned_usage: std::collections::HashSet::new(),
             last_tlas_sig: None,
             last_inst_count: 0,
+            albedo_buffer,
         }
     }
+
+    /// GI compute 用の TLAS 参照（RtShadowResources と共有する加速構造）。
+    pub fn tlas(&self) -> &wgpu::Tlas { self.tlas_package.tlas() }
+
+    /// TLAS インスタンス順の平均アルベド storage への参照（GI compute の binding4 に使う）。
+    pub fn albedo_buffer(&self) -> &wgpu::Buffer { &self.albedo_buffer }
 
     /// BLAS（新規のみ）と TLAS を command encoder へ記録する。
     ///
@@ -223,6 +244,7 @@ impl RtShadowResources {
     pub fn prepare_and_build(
         &mut self,
         device:  &wgpu::Device,
+        queue:   &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
         casters: &[(&str, &GpuModel, &InstancedModelBatch)],
     ) -> RtBuildStat {
@@ -338,6 +360,8 @@ impl RtShadowResources {
 
         // ── 4. TLAS インスタンスを詰め直す（全 None → キャスター順に登録）──
         let mut inst_count: usize = 0;
+        // 平均アルベド（Phase RT-GI）を TLAS インスタンスと同順（custom_data 順）で詰める。
+        let mut albedos: Vec<[f32; 4]> = vec![[0.0f32; 4]; MAX_RT_INSTANCES as usize];
         {
             // disjoint フィールド借用: blas_cache（不変）と tlas_package（可変）。
             let cache = &self.blas_cache;
@@ -352,9 +376,11 @@ impl RtShadowResources {
                     if inst_count >= MAX_RT_INSTANCES as usize { overflow = true; return; }
                     let key = BlasKey::new(path, mesh_idx, prim_idx);
                     if let Some(blas) = cache.get(&key) {
-                        // custom_data はデバッグ用にインスタンス番号。
+                        // custom_data はインスタンス番号（GI が平均アルベドを引くキーでもある）。
                         // mask は alpha_mode 由来（不透明のみ影レイから見える）。
                         let mask = instance_mask_for(gpu.primitive_alpha_mode(material_idx));
+                        // 平均アルベド（Phase RT-GI）を同じ index に詰める（custom_data と一致）。
+                        albedos[inst_count] = gpu.primitive_avg_albedo(material_idx);
                         instances[inst_count] = Some(TlasInstance::new(blas, transform, inst_count as u32, mask));
                         inst_count += 1;
                     }
@@ -373,6 +399,9 @@ impl RtShadowResources {
         }
 
         // ── 5. BLAS（新規）と TLAS を 1 回の呼び出しでビルド ──────
+        // 平均アルベド storage を（再構築フレームのみ）アップロードする（TLAS と同じ更新周期）。
+        queue.write_buffer(&self.albedo_buffer, 0, bytemuck::cast_slice(&albedos));
+
         encoder.build_acceleration_structures(blas_entries.iter(), std::iter::once(&self.tlas_package));
 
         self.last_inst_count = inst_count as u32;
@@ -652,6 +681,7 @@ mod tests {
         let cluster  = include_str!("shaders/cluster_common.wgsl");
         let common   = include_str!("shaders/shader_common.wgsl");
         let pbr_c    = include_str!("shaders/pbr_common.wgsl");
+        let ddgi_c   = include_str!("shaders/ddgi_common.wgsl");
         let light_c  = include_str!("shaders/light_common.wgsl");
         let shadow   = include_str!("shaders/shadow.wgsl");
         let rt_on    = include_str!("shaders/rt_shadow_on.wgsl");
@@ -669,12 +699,12 @@ mod tests {
         let wboit    = include_str!("shaders/shader_wboit.wgsl");
 
         let variants: [(&str, Vec<&str>); 6] = [
-            ("mesh_rt",         vec![cluster, pbr_c, common, light_c, shadow, rt_on,  static_v, surf, gather, light_ev, frag]),
-            ("skinned_mesh_rt", vec![cluster, pbr_c, common, light_c, shadow, rt_on,  skin_v,   surf, gather, light_ev, frag]),
-            ("mesh",            vec![cluster, pbr_c, common, light_c, shadow, rt_off, static_v, surf, gather, light_ev, frag]),
-            ("skinned_mesh",    vec![cluster, pbr_c, common, light_c, shadow, rt_off, skin_v,   surf, gather, light_ev, frag]),
-            ("wboit_mesh",      vec![cluster, pbr_c, common, light_c, shadow, rt_off, static_v, surf, gather, light_ev, frag, wboit]),
-            ("wboit_skinned",   vec![cluster, pbr_c, common, light_c, shadow, rt_off, skin_v,   surf, gather, light_ev, frag, wboit]),
+            ("mesh_rt",         vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_on,  static_v, surf, gather, light_ev, frag]),
+            ("skinned_mesh_rt", vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_on,  skin_v,   surf, gather, light_ev, frag]),
+            ("mesh",            vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_off, static_v, surf, gather, light_ev, frag]),
+            ("skinned_mesh",    vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_off, skin_v,   surf, gather, light_ev, frag]),
+            ("wboit_mesh",      vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_off, static_v, surf, gather, light_ev, frag, wboit]),
+            ("wboit_skinned",   vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_off, skin_v,   surf, gather, light_ev, frag, wboit]),
         ];
 
         for (name, parts) in variants {

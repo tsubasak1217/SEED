@@ -237,7 +237,19 @@ pub struct Material {
     /// 旧データ（本フィールドが無い JSON など）では既定の `Back` になる。
     #[serde(default)]
     pub cull_face: CullFace,
+
+    // ─── 平均アルベド（Phase RT-GI）─────────────────────────
+    /// ベースカラーテクスチャのアルファ加重平均（リニア RGB）× base_color_factor を焼いた
+    /// プリミティブ平均アルベド。DDGI のヒット点シェーディング近似（bindless 回避）で使う。
+    /// テクスチャ無しマテリアルは base_color_factor をそのまま実効アルベドにする。
+    /// asset_cache::process_model_textures がデコード済み RGBA から算出（CACHE_FORMAT_VERSION 9）。
+    /// 旧キャッシュとの互換のため #[serde(default)]（既定は白）。
+    #[serde(default = "default_avg_albedo")]
+    pub avg_albedo: [f32; 4],
 }
+
+/// avg_albedo の serde 既定（白）。旧キャッシュ/JSON にキーが無い場合のフォールバック。
+fn default_avg_albedo() -> [f32; 4] { [1.0, 1.0, 1.0, 1.0] }
 
 impl Default for Material {
     fn default() -> Self {
@@ -256,6 +268,7 @@ impl Default for Material {
             alpha_cutoff:               0.5,
             double_sided:               false,
             cull_face:                  CullFace::Back,
+            avg_albedo:                 [1.0, 1.0, 1.0, 1.0],
         }
     }
 }

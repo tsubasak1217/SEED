@@ -840,3 +840,76 @@ Forward+ ではなく Deferred を選ぶ根拠: 多灯対応だけなら Forward
 - **メッシュシェーダーは使っていない**。メッシュレット分割はしているが、実体は compute による
   カリング + `multi_draw_indexed_indirect_count`（wgpu の EXPERIMENTAL_MESH_SHADER は未成熟）。
 - **MSAA は未使用**（AA は FXAA）。よって「Deferred は MSAA と相性が悪い」は本エンジンでは損失ゼロ。
+
+---
+
+## フェーズ RT-GI（DDGI — プローブ格子方式のリアルタイム レイトレース GI）
+
+間接光（1 バウンス以上）を、画面解像度から独立したプローブ格子のレイトレで動的に計算する。
+`lighting_eval.wgsl` のアンビエント項を「プローブ補間による間接放射照度」で置き換える（deferred /
+forward 両対応が自動で付く）。RT 対応 GPU（`EXPERIMENTAL_RAY_QUERY`）でのみ有効。非対応 GPU では
+従来のフラットアンビエントへ完全フォールバックする。
+
+### 構成（新規/変更ファイル）
+- `renderer/ddgi/`（新規モジュール）
+  - `octahedral.rs` … 八面体 dir↔uv（WGSL と往復一致をテスト）
+  - `grid.rs` … プローブ格子の幾何・AABB フィット・番号/座標/ワールド変換
+  - `params.rs` … `GiParams`（GPU uniform, 80B スカラー詰め）と naga サイズ照合
+  - `resources.rs` … `GiResources`（アトラス2枚＋履歴2枚・GiParams バッファ・更新 compute BG・ディスパッチ）
+- `shaders/ddgi_common.wgsl`（新規・バインディングなし共有定義）… `GiParams`／八面体／格子・アトラス索引／
+  `ddgi_sample_irradiance`（トライリニア＋チェビシェフ可視性＋法線余弦重み）。fragment と compute が共有。
+- `shaders/ddgi_probe_update.wgsl`（新規・compute）… 1 ワークグループ=1 プローブ。rayQuery でレイを飛ばし、
+  ヒット点をシェーディングして八面体タイル（放射輝度8×8／可視性16×16）へ積分・時間蓄積・ガター複製。
+- `light_common.wgsl` … group4 に GI バインディング 10〜13 を追加（`GiParams` uniform ＋ アトラス2枚 ＋ サンプラ）。
+- `lighting_eval.wgsl` … アンビエント項を `evaluate_gi_ambient`（GI 有効時はプローブ補間、無効時は従来値）へ。
+- `pipeline.rs` … `GiUpdatePipeline`（compute, RT 対応 GPU のみ）。
+- `rt_shadow.rs` … 影用 TLAS を GI と共有。TLAS パッキングに相乗りして「インスタンス順の平均アルベド storage」を詰める。
+- `gpu_resources.rs` / `loader/*` … `Material.avg_albedo`（プリミティブ平均アルベド）を追加。`CACHE_FORMAT_VERSION` 8→9。
+
+### ヒット点シェーディングの近似（bindless 回避）
+inline RT ではヒット三角形のマテリアルテクスチャ・頂点属性を引けない。以下で回避する:
+- **プリミティブ平均アルベド**: ローダでベースカラーテクスチャのアルファ加重平均（リニア）×`base_color_factor`
+  を焼き、`asset_cache`（v9）に格納。TLAS `custom_data`（インスタンス番号）で storage を引く。
+- **ヒット法線 = −レイ方向**（頂点フェッチ不可のため）。表面はおおむねレイ原点側を向くという近似。
+- ヒット放射輝度 = albedo/π ×（各ライトの直接光: 距離減衰＋ndl(近似法線)＋**主要光1灯へのシャドウレイ1本**）
+  ＋ **前フレームのプローブ照度をヒット点でサンプル**（多重バウンス、`recursive_weight` 係数）。
+
+### 近似の限界（実機で意識する点）
+- **平均アルベド**: プリミティブ内でテクスチャの色ムラ（模様）を平均で潰すため、色付きバウンスは大まかになる。
+- **擬似法線（−レイ方向）**: 凹面・薄板で法線が実際とズレ、直接光の ndl とバウンス方向が不正確になり得る。
+- **GI ジオメトリ = 影キャスター**: TLAS を影と共有するため、`cast_shadows=false` の静的メッシュは GI に寄与しない。
+- **画面外を拾える**（SSGI との本質的差）: プローブは全方位レイなので、画面外/オフスクリーンの光源・遮蔽も反映する。
+- **プローブが壁内**: 裏面検出をしていない（擬似法線のため）。壁に埋まったプローブは暗くなり得る（チェビシェフで緩和）。
+- **可視性フォーマット**: 仕様の Rg16Float ではなく **Rgba16Float**（コアの storage 対応フォーマット制約。`.rg` のみ使用）。
+- **格子フィット**: 全静的バッチのワールド AABB 合併へ毎フレーム簡易フィット（`world_aabbs` キャッシュ由来で 1 フレーム遅延あり）。
+  次元は 16×8×16 固定（UI では変えない）。
+
+### ノブ（`GiSettings`、SET_POST_FX に相乗り。UI は enabled＋intensity のみ、詳細は IPC で受ける）
+- `gi_enabled`（既定 true。RT 非対応で強制 false） / `gi_intensity`（既定 1.0）
+- `gi_probes_per_frame`（既定 256／2048 プローブ中） / `gi_rays_per_probe`（既定 64、上限 64）
+- `gi_hysteresis`（既定 0.97、時間的蓄積） / `gi_recursive_weight`（既定 0.5、多重バウンス）
+
+### GPU リソース概算（既定 16×8×16=2048 プローブ）
+- 放射輝度アトラス 2560×80、可視性アトラス 4608×144（各 Rgba16Float、履歴コピー各 1 枚）… 合計 ≈ 14 MB VRAM。
+- 平均アルベド storage: 4096 インスタンス × 16B = 64 KB。
+- 1 フレームのレイ本数（既定）: 256 プローブ × 64 レイ ≈ 16K 本 ＋ 主要光シャドウレイ最大 16K 本 ≈ 32K 本／フレーム（解像度非依存）。
+
+### バインディング/ストレージ本数（上限に対する余裕）
+- group 数は 0〜4 のまま（`max_bind_groups=5` を厳守。新グループ無し）。group4 は RT バリアントで binding 0〜13（14 本）。
+- フラグメント stage の storage buffer: group4 で 0/7/8 の **3 本**（GI 追加ぶんは uniform＋texture＋sampler で storage 増なし）。
+  `max_storage_buffers_per_shader_stage=12` に対し十分な余裕。
+- GI 更新 compute の storage buffer: lights(1)＋albedo(4) の **2 本** ＋ storage テクスチャ 2 枚（書込）。いずれも上限内。
+
+### 実機確認観点（監督者のスモークテスト・ユーザーの目視）
+- 起動ログ `[SEED GI] DDGI: 有効（プローブ 2048 個 / 更新 256個×64レイ/フレーム）`（非対応時はフォールバックログ）。
+- 起動時にビュー設定の「RT-GI」チェック ON で、影の中・軒下・室内が真っ黒でなく回り込み光で持ち上がること（数フレームで収束）。
+- 強度スライダーで間接光が滑らかに増減すること。OFF で従来のフラットアンビエントに戻ること。
+- カメラプレビュー小窓・Unlit/Wireframe 表示に GI が漏れ出ないこと（GiParams.enabled=0 経路）。
+- 20〜30fps を維持できること（RTX 3060 Laptop 35W）。重ければ `gi_probes_per_frame` / `gi_rays_per_probe` を下げる。
+- 時間的ちらつき（プローブ更新ローテーションのバンディング）が許容範囲か。強い場合は `gi_hysteresis` を上げる。
+
+### 検証（実装時点）
+- `cargo test`: 81 passed（+9: 八面体往復・格子往復・GiParams naga サイズ・プローブ更新 compute の naga parse+validate 等）。
+- 全フラグメントバリアント（mesh/skinned × RT on/off・deferred on/off・WBOIT）の WGSL 連結が naga validate を通過。
+- `cargo build` / `cd editor && dotnet build` ともに 0 エラー。
+- **未検証（実機 GPU 無し）**: 実際のレンダリング結果・fps・バインドグループの実行時整合はスモークテストで確認すること。

@@ -41,6 +41,8 @@ pub use crate::engine::core::renderer::{
     // テクスチャ単位ポストプロセス（.postfx）
     PostfxContext, SpritePostfxCache,
 };
+// DDGI（Phase RT-GI）
+use crate::engine::core::renderer::ddgi::GiResources;
 
 // 描画関数
 pub use model_drawer::draw_model_indirect;
@@ -111,6 +113,9 @@ pub struct DrawContext {
     /// DrawContext は `&self` で共有参照されるため、フレーム内で BLAS/TLAS を再構築する
     /// （`&mut` が要る）には内部可変性が必要。model_cache と同じく RefCell で包む。
     pub rt_shadow:        Option<RefCell<RtShadowResources>>,
+    /// DDGI リソース一式（Phase RT-GI）。アトラス・GiParams・更新 compute BindGroup を持つ。
+    /// RT 非対応 GPU でもリソースは生成する（compute は attach されず GI は無効）。
+    pub gi:               GiResources,
     /// HDR ポストプロセスの静的リソース一式（Phase R3）。
     /// トーンマップ／ビネットのパイプライン・共有サンプラー・既定マスクを保持する。
     /// 動的なレンダーターゲット（HDR オフスクリーン等）は App 側の RtPool が持つ。
@@ -166,8 +171,13 @@ impl DrawContext {
         // → クラスタの compute BindGroup（ライトバッファを参照する）」の 2 段構え。
         // 相互参照になるため attach_lights を後から呼ぶ。
         let mut clusters = ClusterResources::new(&device);
+        // DDGI リソース（Phase RT-GI）。group 4 binding 10〜13 を供給するため LightBuffer より先に作る。
+        // 次元は固定・原点/間隔はシーンフィット（frame_renderer が gi.fit を呼ぶ）。
+        let mut gi = GiResources::new(
+            &device, crate::engine::core::renderer::rt_shadow::rt_shadows_supported(),
+        );
         let light_buffer = LightBuffer::new(
-            &device, &pipelines.mesh.lights_bgl, &shadow, &shadow_preview, &clusters,
+            &device, &pipelines.mesh.lights_bgl, &shadow, &shadow_preview, &clusters, &gi,
         );
         clusters.attach_lights(
             &device, &pipelines.cluster_build.bgl, light_buffer.lights_buffer(),
@@ -176,9 +186,20 @@ impl DrawContext {
         // group 4 に TLAS を加えた複合 BindGroup を、RT パイプラインの group 4 レイアウトで作る。
         let rt_shadow = pipelines.rt.as_ref().map(|rtp| {
             RefCell::new(RtShadowResources::new(
-                &device, &rtp.lights_bgl, &shadow, &light_buffer, &clusters,
+                &device, &rtp.lights_bgl, &shadow, &light_buffer, &clusters, &gi,
             ))
         });
+        // GI 更新 compute の BindGroup を接続する（RT 対応 GPU のみ。TLAS/平均アルベドを共有）。
+        if let (Some(rt_cell), Some(gip)) = (rt_shadow.as_ref(), pipelines.gi_update.as_ref()) {
+            let rt = rt_cell.borrow();
+            gi.attach(
+                &device, &gip.bgl,
+                light_buffer.lights_buffer(),
+                light_buffer.meta_main_buffer(),
+                rt.tlas(),
+                rt.albedo_buffer(),
+            );
+        }
         // スプライトバッチャ（Phase R6）: 永続インスタンスバッファを初期容量で確保する。
         let sprites = RefCell::new(SpriteBatcher::new(&device));
         Self {
@@ -191,6 +212,7 @@ impl DrawContext {
             shadow,
             shadow_preview,
             rt_shadow,
+            gi,
             post,
             postfx,
             sprite_postfx_cache: SpritePostfxCache::new(),

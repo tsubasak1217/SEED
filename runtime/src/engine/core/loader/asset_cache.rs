@@ -68,7 +68,10 @@ use super::model::{
 ///     `Model`（materials 込み）は bincode で焼かれるが、bincode は自己記述型ではないため
 ///     `#[serde(default)]` があっても旧レイアウトのバイト列は正しく読めない（フィールド追加＝
 ///     バイナリ表現の変更）。旧 v7 キャッシュを確実に無効化して再生成させるためインクリメント。
-pub const CACHE_FORMAT_VERSION: u32 = 8;
+/// v9: `Material` にプリミティブ平均アルベド（`avg_albedo`）フィールドを追加（Phase RT-GI）。
+///     DDGI のヒット点シェーディング近似で使う。ベースカラーテクスチャのアルファ加重平均
+///     （リニア）× base_color_factor を焼く。bincode のバイナリ表現が変わるため旧 v8 を無効化する。
+pub const CACHE_FORMAT_VERSION: u32 = 9;
 
 /// モデルキャッシュファイルのマジック（8 バイト）。
 const MODEL_MAGIC: &[u8; 8] = b"SEEDMDL\0";
@@ -536,6 +539,97 @@ fn resolve_src(src: &Path) -> PathBuf {
 /// 1 枚が複数スロットで参照される場合の優先順位は
 /// NormalMap > ColorSrgb > LinearData（法線を誤って sRGB 化しないことを最優先）。
 /// どのマテリアルからも参照されないテクスチャは `linear` フラグで振り分ける。
+// ============================================================
+//  平均アルベド（Phase RT-GI）— DDGI のヒット点近似用
+// ============================================================
+
+/// sRGB 1 成分（0..1）をリニアへ変換する（IEC 61966-2-1）。
+fn srgb_to_linear(c: f32) -> f32 {
+    if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+}
+
+/// RGBA8 バイト列のアルファ加重平均色（リニア RGB）を返す。
+/// 完全透明（アルファ総和 0）の場合はアルファ無視の単純平均へフォールバックする。
+fn alpha_weighted_linear_avg(rgba: &[u8]) -> [f32; 3] {
+    let mut wsum = 0.0f64;
+    let mut acc = [0.0f64; 3];
+    let mut acc_uw = [0.0f64; 3];
+    let mut n = 0.0f64;
+    for px in rgba.chunks_exact(4) {
+        let a = px[3] as f32 / 255.0;
+        let lin = [
+            srgb_to_linear(px[0] as f32 / 255.0) as f64,
+            srgb_to_linear(px[1] as f32 / 255.0) as f64,
+            srgb_to_linear(px[2] as f32 / 255.0) as f64,
+        ];
+        for i in 0..3 { acc[i] += lin[i] * a as f64; acc_uw[i] += lin[i]; }
+        wsum += a as f64;
+        n += 1.0;
+    }
+    if wsum > 1e-6 {
+        [(acc[0] / wsum) as f32, (acc[1] / wsum) as f32, (acc[2] / wsum) as f32]
+    } else if n > 0.0 {
+        [(acc_uw[0] / n) as f32, (acc_uw[1] / n) as f32, (acc_uw[2] / n) as f32]
+    } else {
+        [1.0, 1.0, 1.0]
+    }
+}
+
+/// テクスチャソースを消費せずに RGBA8 へデコードする（平均計算用）。
+/// `Ready`（処理済み）は None。デコード不能も None。
+fn decode_ref_rgba(src: &TextureSource) -> Option<(u32, u32, Vec<u8>)> {
+    match src {
+        TextureSource::Embedded { width, height, pixels } => Some((*width, *height, pixels.clone())),
+        TextureSource::EncodedBytes { bytes } => {
+            image::load_from_memory(bytes).ok().map(|img| {
+                let r = img.to_rgba8();
+                let (w, h) = r.dimensions();
+                (w, h, r.into_raw())
+            })
+        }
+        TextureSource::FilePath(path) => {
+            let path_str = path.to_string_lossy().to_string();
+            crate::engine::asset_fs::read_bytes(&path_str)
+                .ok()
+                .and_then(|bytes| image::load_from_memory(&bytes).ok())
+                .map(|img| {
+                    let r = img.to_rgba8();
+                    let (w, h) = r.dimensions();
+                    (w, h, r.into_raw())
+                })
+        }
+        TextureSource::Ready { .. } => None,
+    }
+}
+
+/// 各マテリアルのプリミティブ平均アルベド（`Material.avg_albedo`）を算出して焼く（Phase RT-GI）。
+///
+/// ベースカラーテクスチャのアルファ加重平均（リニア RGB）× base_color_factor を実効アルベドとする。
+/// テクスチャ無しマテリアルは base_color_factor をそのまま使う。アルファ成分は base_color_factor.a。
+///
+/// `process_model_textures`（テクスチャを Ready へ変換＝デコード元を破棄する）より **前** に
+/// 呼ぶこと。ここでデコードした結果はキャッシュ（v9）へ焼かれるため、キャッシュヒット時は
+/// 再計算されない（Material が復元される）。
+pub fn compute_material_avg_albedo(model: &mut Model) {
+    let usages = classify_textures(model);
+    let n = model.textures.len();
+    // ColorSrgb（ベースカラー/エミッシブ）テクスチャの平均リニア色。ベースカラーのみ参照する。
+    let mut tex_avg: Vec<Option<[f32; 3]>> = vec![None; n];
+    for (i, td) in model.textures.iter().enumerate() {
+        if usages.get(i).copied() != Some(TextureUsage::ColorSrgb) { continue; }
+        if let Some((_, _, rgba)) = decode_ref_rgba(&td.source) {
+            tex_avg[i] = Some(alpha_weighted_linear_avg(&rgba));
+        }
+    }
+    for mat in &mut model.materials {
+        let f = mat.base_color_factor;
+        let tex_rgb = mat.base_color_texture.as_ref()
+            .and_then(|t| tex_avg.get(t.texture_index).copied().flatten())
+            .unwrap_or([1.0, 1.0, 1.0]);
+        mat.avg_albedo = [tex_rgb[0] * f[0], tex_rgb[1] * f[1], tex_rgb[2] * f[2], f[3]];
+    }
+}
+
 fn classify_textures(model: &Model) -> Vec<TextureUsage> {
     let n = model.textures.len();
     // None = 未参照。Some(usage) = 確定済み。

@@ -3192,7 +3192,11 @@ impl App {
                         // encoder に記録する。RT 影オフ時は一切ビルドしない（コスト・ログともゼロ）。
                         // RT 用 BindGroup を bind するのも rt_on のときだけなので、bind 時点で必ず
                         // このビルドが同フレーム先行しており TLAS はビルド済みが保証される。
-                        if rt_on {
+                        // DDGI（Phase RT-GI）を今フレーム走らせるか。RT 対応（attach 済み）かつ
+                        // 設定 enabled。GI は TLAS を必要とするため、RT 影が無効でも GI 有効なら
+                        // TLAS を構築する（下のゲートは rt_on || gi_on）。
+                        let gi_on = draw_ctx.gi.is_attached() && self.post_fx.gi.enabled;
+                        if rt_on || gi_on {
                             if let Some(rt_cell) = draw_ctx.rt_shadow.as_ref() {
                                 let mut rt = rt_cell.borrow_mut();
                                 let rt_casters: Vec<(
@@ -3207,10 +3211,43 @@ impl App {
                                     })
                                     .collect();
                                 let _perf_t_tlas = std::time::Instant::now();
-                                let stat = rt.prepare_and_build(&draw_ctx.device, frame.encoder_mut(), &rt_casters);
+                                let stat = rt.prepare_and_build(&draw_ctx.device, &draw_ctx.queue, frame.encoder_mut(), &rt_casters);
                                 perf_tlas_ms    = _perf_t_tlas.elapsed().as_secs_f64() * 1000.0;
                                 perf_tlas_built = stat.built;
                                 perf_tlas_insts = stat.instances;
+                            }
+                        }
+
+                        // ── DDGI: プローブ更新 compute（Phase RT-GI）─────────────────
+                        // 上で構築した TLAS（RT 影と共有）へレイを飛ばし、プローブの八面体アトラス
+                        // （放射輝度＋可視性）をローテーション更新する。GiParams は毎フレーム書き込む
+                        // （gi_on=false のときは enabled=0 を書き、描画側はフラットアンビエントへ戻る）。
+                        {
+                            // プローブ格子をシーン（全静的バッチのワールド AABB 合併）へフィットさせる。
+                            // world_aabbs は描画カリングで計算・キャッシュされるため 1 フレーム遅れることがある
+                            // （静止シーンでは安定。理想はモデル変化時のみ再計算）。
+                            let mut any = false;
+                            let mut mn = [f32::INFINITY; 3];
+                            let mut mx = [f32::NEG_INFINITY; 3];
+                            for (_path, sd) in &self.shared_model_batches {
+                                if let Some((bmn, bmx)) = sd.batch.world_bounds() {
+                                    any = true;
+                                    for i in 0..3 {
+                                        mn[i] = mn[i].min(bmn[i]);
+                                        mx[i] = mx[i].max(bmx[i]);
+                                    }
+                                }
+                            }
+                            if any {
+                                draw_ctx.gi.fit(mn, mx);
+                            }
+                            // GiParams を書き込み、更新プローブ数（ディスパッチ数）を得る。
+                            let gi_ppf = draw_ctx.gi.update_params(&draw_ctx.queue, &self.post_fx.gi, gi_on);
+                            // 有効時のみ compute を記録（履歴コピー → プローブ更新）。
+                            if gi_on {
+                                if let Some(gip) = draw_ctx.pipelines.gi_update.as_ref() {
+                                    draw_ctx.gi.record(frame.encoder_mut(), &gip.pipeline, gi_ppf);
+                                }
                             }
                         }
 

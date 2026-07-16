@@ -116,6 +116,9 @@ pub fn load_model(path: &Path) -> Result<Model, LoadError> {
     // ── ③ テクスチャをミップ生成 + BC 圧縮して Ready 形式へ変換 ────────
     // （初回のみのコスト。BC7 圧縮は重いため高速プリセットを使用）
     let t_tex = Instant::now();
+    // プリミティブ平均アルベド（Phase RT-GI）を、テクスチャを Ready へ変換する前に算出して焼く。
+    // （process_model_textures がデコード元を破棄するため、その前に一度だけデコードして平均を取る）
+    asset_cache::compute_material_avg_albedo(&mut model);
     let src_bytes = asset_cache::process_model_textures(&mut model);
     let tex_ms = t_tex.elapsed().as_secs_f64() * 1000.0;
 

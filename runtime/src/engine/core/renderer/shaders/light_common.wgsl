@@ -119,3 +119,14 @@ struct LightMeta {
 @group(4) @binding(8) var<storage, read> u_cluster_lights: array<u32>;
 /// クラスタパラメータ（カメラ／ビューポート／有効フラグ）。
 @group(4) @binding(9) var<uniform>       u_cluster_params: ClusterParams;
+
+// --- Group 4: DDGI probe atlases (bindings 10-13, Phase RT-GI) ---
+// GiParams struct comes from ddgi_common.wgsl (concatenated before this file).
+// Two octahedral atlases (radiance 8x8 / visibility 16x16, both Rgba16Float) + a
+// linear-clamp sampler. Rust side supplies these in lighting.rs make_bg /
+// create_rt_bind_group. On non-RT GPUs / preview passes u_gi_params.enabled==0 and
+// evaluate_lighting falls back to flat ambient (the atlases are still bound, unused).
+@group(4) @binding(10) var<uniform> u_gi_params:     GiParams;
+@group(4) @binding(11) var          t_gi_irradiance: texture_2d<f32>;
+@group(4) @binding(12) var          t_gi_visibility: texture_2d<f32>;
+@group(4) @binding(13) var          s_gi:            sampler;

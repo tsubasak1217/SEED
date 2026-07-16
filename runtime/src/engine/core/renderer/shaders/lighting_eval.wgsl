@@ -156,6 +156,20 @@ fn shade_light(
 ///   - rt_shadow_enabled()==false: シャドウマップ（shadow.wgsl, group4 binding2〜5）。
 ///   - rt_shadow_enabled()==true : インラインレイトレ（rt_shadow_on.wgsl, group4 binding6）。
 /// rt_shadow_enabled()/rt_shadow_factor() の実体は連結される rt_shadow_{on,off}.wgsl が供給する。
+// --- DDGI ambient (Phase RT-GI) ---
+// Replaces the flat ambient term. When GI is disabled (u_gi_params.enabled==0, i.e.
+// RT-unsupported GPU, GI off, or the camera-preview pass which binds a disabled
+// GiParams) it returns the previous flat ambient, keeping full backward compatibility.
+// When enabled it interpolates the 8 surrounding probes (trilinear + Chebyshev
+// visibility + cosine weight; see ddgi_common.wgsl) and scales by intensity.
+fn evaluate_gi_ambient(world_pos: vec3<f32>, n: vec3<f32>, albedo: vec3<f32>, occlusion: f32) -> vec3<f32> {
+    if u_gi_params.enabled == 0u {
+        return u_light_meta.ambient_color * u_light_meta.ambient_intensity * albedo * occlusion;
+    }
+    let irr = ddgi_sample_irradiance(u_gi_params, world_pos, n, t_gi_irradiance, t_gi_visibility, s_gi);
+    return irr * albedo * occlusion * u_gi_params.intensity;
+}
+
 fn evaluate_lighting(s: Surface) -> vec3<f32> {
     // ── ビューモード分岐（エディタのシーンビュー専用・アンリット／ワイヤ）──────
     // u_light_meta.view_mode が 0 以外（Unlit=1 / Wireframe=2）のときは、ライティング
@@ -381,7 +395,7 @@ fn evaluate_lighting(s: Surface) -> vec3<f32> {
     // ambient_intensity=0 で完全な暗闇になる（全ライト強度 0 と合わせて真っ暗）。
     // 既定は色白×強度 0.05（従来のハードコード値と同一の見た目）。
     // TODO(IBL): 将来は一定値から画像ベースライティング（環境マップ irradiance）へ。
-    let ambient = u_light_meta.ambient_color * u_light_meta.ambient_intensity * albedo * s.occlusion;
+    let ambient = evaluate_gi_ambient(s.world_pos, N, albedo, s.occlusion);
 
     // リニア HDR 色（トーンマップ前）。トーンマップは post_tonemap.wgsl が一元的に行う。
     return ambient + Lo + s.emissive;
