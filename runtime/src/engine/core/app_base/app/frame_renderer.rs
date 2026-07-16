@@ -637,13 +637,17 @@ impl App {
             let res = window_size.map_or([1280.0, 720.0], |s| {
                 [s.width as f32, s.height as f32]
             });
+            // 逆 ViewProjection（デファードのライティングパスが深度→ワールド座標復元に使う）。
+            // 特異行列（逆行列なし）の場合は単位行列へフォールバックする（パニックさせない）。
+            let inv_view_proj = view_proj.inverse().unwrap_or_else(Mat4x4::identity);
             camera_buf.update(&queue, &CameraUniform {
-                view_proj:  view_proj.transpose().data,
-                view:       view.transpose().data,
-                position:   cam_pos_arr,
-                _pad:       0.0,
-                resolution: res,
-                _pad2:      [0.0; 2],
+                view_proj:      view_proj.transpose().data,
+                view:           view.transpose().data,
+                position:       cam_pos_arr,
+                _pad:           0.0,
+                resolution:     res,
+                _pad2:          [0.0; 2],
+                inv_view_proj:  inv_view_proj.transpose().data,
             });
 
             // シーンスクリーンスペース専用: 2D オルソオーバーレイカメラを更新する。
@@ -663,13 +667,17 @@ impl App {
                     let cv  = Mat4x4::look_at_lh(eye_c, center_c, up_c);
                     let cp2 = Mat4x4::orthographic_lh(-half_w, half_w, half_h, -half_h, 0.0, 200.0);
                     let cvp = cp2 * cv;
+                    // 2D オルソオーバーレイカメラはデファードのライティングパス対象外だが、
+                    // CameraUniform 構造体を埋める必要があるため一律で逆行列を計算する。
+                    let cvp_inv = cvp.inverse().unwrap_or_else(Mat4x4::identity);
                     canvas_cam_buf.update(&queue, &CameraUniform {
-                        view_proj:  cvp.transpose().data,
-                        view:       cv.transpose().data,
-                        position:   [0.0, 0.0, -100.0],
-                        _pad:       0.0,
-                        resolution: [vp_w, vp_h],
-                        _pad2:      [0.0; 2],
+                        view_proj:      cvp.transpose().data,
+                        view:           cv.transpose().data,
+                        position:       [0.0, 0.0, -100.0],
+                        _pad:           0.0,
+                        resolution:     [vp_w, vp_h],
+                        _pad2:          [0.0; 2],
+                        inv_view_proj:  cvp_inv.transpose().data,
                     });
                 }
             }
@@ -3027,6 +3035,22 @@ impl App {
                     let tp_wboit = has_tp
                         && transparency_mode == crate::engine::core::renderer::TransparencyMode::Wboit;
 
+                    // ── デファード（G-Buffer + フルスクリーン・ライティング）経路にするか（Phase D3 Deferred Phase B）
+                    // G-Buffer RT の確保要否をこの時点で判定する必要があるため、メインパス直前の
+                    // scene_wireframe（後段で use_rt／メインパスにも使う）より前に前倒しで計算する（同じ self フィールドの
+                    // みに依存するため、フレーム内で値が変わることはない）。
+                    // デファードはメインカメラの不透明・Lit のみが対象。unlit／ワイヤーフレーム／
+                    // 2D シーンビューは常にフォワード（従来経路）で描く（G-Buffer 書き込みは Lit 専用
+                    // パスであり、gbuffer.rs の draw_gbuffer_indirect コメント参照）。
+                    let scene_wireframe = self.mode == RuntimeMode::Edit
+                        && self.scene_view_mode.is_wireframe()
+                        && crate::engine::core::renderer::wireframe_supported();
+                    // scene_is_lit: Play 中・非 Edit は常に Lit 扱い（scene_view_mode_code と同じ規約、
+                    // 972-980 行目参照）。Edit 中はシーンビューの表示モードに従う。
+                    let scene_is_lit = self.mode != RuntimeMode::Edit || self.scene_view_mode.is_lit();
+                    let deferred_active = self.post_fx.deferred
+                        && !edit_view_2d && !scene_wireframe && scene_is_lit;
+
                     let vignette_on = self.post_vignette_enabled;
                     // Phase R4: ブルーム／FXAA 設定（フレーム内で不変のためコピーしておく）。
                     let bloom_on = self.post_fx.bloom_enabled;
@@ -3075,6 +3099,35 @@ impl App {
                             crate::engine::core::renderer::WBOIT_REVEAL_FORMAT,
                         );
                     }
+                    // G-Buffer 4 枚（deferred_active のときのみ確保。OFF 時は 0 コスト）。
+                    // フォーマットは gbuffer.rs の GBUFFER0..3_FORMAT（RtPool 側は名前でキャッシュ／
+                    // フォーマット変更時に再生成する既存の ensure 流儀）。
+                    if deferred_active {
+                        self.rt_pool.ensure(
+                            &draw_ctx.device,
+                            crate::engine::core::renderer::gbuffer::GBUFFER0_RT_NAME,
+                            surf_w, surf_h,
+                            crate::engine::core::renderer::gbuffer::GBUFFER0_FORMAT,
+                        );
+                        self.rt_pool.ensure(
+                            &draw_ctx.device,
+                            crate::engine::core::renderer::gbuffer::GBUFFER1_RT_NAME,
+                            surf_w, surf_h,
+                            crate::engine::core::renderer::gbuffer::GBUFFER1_FORMAT,
+                        );
+                        self.rt_pool.ensure(
+                            &draw_ctx.device,
+                            crate::engine::core::renderer::gbuffer::GBUFFER2_RT_NAME,
+                            surf_w, surf_h,
+                            crate::engine::core::renderer::gbuffer::GBUFFER2_FORMAT,
+                        );
+                        self.rt_pool.ensure(
+                            &draw_ctx.device,
+                            crate::engine::core::renderer::gbuffer::GBUFFER3_RT_NAME,
+                            surf_w, surf_h,
+                            crate::engine::core::renderer::gbuffer::GBUFFER3_FORMAT,
+                        );
+                    }
                     let hdr_view   = self.rt_pool.view(crate::engine::core::renderer::RT_SCENE_HDR);
                     let ldr_view   = self.rt_pool.view(crate::engine::core::renderer::RT_LDR);
                     // WBOIT ターゲットのビュー（確保済みのときのみ Some）。
@@ -3085,6 +3138,18 @@ impl App {
                         )
                     } else {
                         (None, None)
+                    };
+                    // G-Buffer 4 枚ぶんのビュー（deferred_active のときのみ Some）。
+                    // ensure を全て済ませてから view を取る（&mut → & の借用切り替え、既存の WBOIT と同じ規約）。
+                    let (g0v, g1v, g2v, g3v) = if deferred_active {
+                        (
+                            Some(self.rt_pool.view(crate::engine::core::renderer::gbuffer::GBUFFER0_RT_NAME)),
+                            Some(self.rt_pool.view(crate::engine::core::renderer::gbuffer::GBUFFER1_RT_NAME)),
+                            Some(self.rt_pool.view(crate::engine::core::renderer::gbuffer::GBUFFER2_RT_NAME)),
+                            Some(self.rt_pool.view(crate::engine::core::renderer::gbuffer::GBUFFER3_RT_NAME)),
+                        )
+                    } else {
+                        (None, None, None, None)
                     };
                     let inter_view = if vignette_on {
                         Some(self.rt_pool.view(crate::engine::core::renderer::RT_POST_INTER))
@@ -3216,9 +3281,8 @@ impl App {
                         // ワイヤ用パイプラインは非 RT レイアウトのため、ワイヤ時は RT を使わず
                         // 非 RT のメインカメラ用 lights BG と組み合わせる。非対応 GPU では false と
                         // なり、通常の塗り経路（フラグメントは view_mode によりアンリット）へ落ちる。
-                        let scene_wireframe = self.mode == RuntimeMode::Edit
-                            && self.scene_view_mode.is_wireframe()
-                            && crate::engine::core::renderer::wireframe_supported();
+                        // scene_wireframe は G-Buffer RT の確保要否判定のため既に上（3040 行目付近）で
+                        // 算出済み（deferred_active と同時に前倒し計算）。ここでは再計算しない。
                         // ワイヤ時は RT を無効化する（塗り／RT とワイヤの経路を混在させない）。
                         let use_rt = rt_on && !scene_wireframe;
                         let rt_draw_ref = if use_rt { draw_ctx.rt_shadow.as_ref().map(|c| c.borrow()) } else { None };
@@ -3228,7 +3292,97 @@ impl App {
                             .map(|r| &r.bind_group)
                             .unwrap_or(draw_ctx.light_buffer.bind_group(LightingPass::MainCamera));
 
-                        let mut pass = frame.begin_scene_pass_to(hdr_view, clear_color);
+                        // ── デファード: G-Buffer 書き込み → ライティング復元（Phase D3 Deferred Phase B）
+                        // メインパス（フォワード）を開く前に、不透明ジオメトリを G-Buffer へ焼き、
+                        // フルスクリーン・ライティングパスで HDR シーンへ復元する。以降のメインパスは
+                        // Load で再開し、半透明・スカイボックス・ギズモ等のフォワード要素だけを重ねる。
+                        if deferred_active {
+                            // g0v..g3v は deferred_active のときのみ Some（RT ensure 済みのため必ず値がある）。
+                            let (g0, g1, g2, g3) = (
+                                g0v.expect("gbuffer0 view must exist when deferred_active"),
+                                g1v.expect("gbuffer1 view must exist when deferred_active"),
+                                g2v.expect("gbuffer2 view must exist when deferred_active"),
+                                g3v.expect("gbuffer3 view must exist when deferred_active"),
+                            );
+
+                            // A. G-Buffer パス: 不透明ジオメトリのみを 4 枚の MRT + 深度へ焼く。
+                            //    2D シーンビューは deferred_active=false になるため edit_view_2d 分岐は不要。
+                            {
+                                let mut gpass = frame.begin_gbuffer_pass_to(g0, g1, g2, g3);
+                                // Play時はメインパスと同じ viewport/scissor をG-Bufferにも適用する
+                                // （レターボックス帯の外にジオメトリを焼かないため）。
+                                if self.mode == RuntimeMode::Play && !self.paused {
+                                    let (vp_x, vp_y, vp_w, vp_h) = game_viewport;
+                                    gpass.set_viewport(vp_x, vp_y, vp_w, vp_h, 0.0, 1.0);
+                                    gpass.set_scissor_rect(vp_x as u32, vp_y as u32, vp_w as u32, vp_h as u32);
+                                }
+                                for (path, sd) in &self.shared_model_batches {
+                                    if let Some(&gpu) = gpu_model_by_path.get(path.as_str()) {
+                                        crate::engine::core::renderer::gbuffer::draw_gbuffer_indirect(
+                                            &mut gpass, gpu, &sd.batch, &camera_buf.bind_group,
+                                            &draw_ctx.pipelines.gbuffer, meshlet_active,
+                                        );
+                                    }
+                                }
+                            }
+
+                            // B. G-Buffer BindGroup 生成 + フルスクリーン・ライティングパス。
+                            {
+                                let gbuffer_bg = crate::engine::core::renderer::deferred::create_gbuffer_bind_group(
+                                    &draw_ctx.device, &draw_ctx.pipelines.deferred.gbuffer_bgl,
+                                    g0, g1, g2, g3,
+                                    frame.depth_only_view(), &draw_ctx.pipelines.deferred.gbuffer_sampler,
+                                );
+                                let mut lpass = frame.begin_deferred_lighting_pass_to(hdr_view, clear_color);
+                                if self.mode == RuntimeMode::Play && !self.paused {
+                                    let (vp_x, vp_y, vp_w, vp_h) = game_viewport;
+                                    lpass.set_viewport(vp_x, vp_y, vp_w, vp_h, 0.0, 1.0);
+                                    lpass.set_scissor_rect(vp_x as u32, vp_y as u32, vp_w as u32, vp_h as u32);
+                                }
+                                // RT 対応時は rt バリアントを使う（use_rt と同条件）。scene_lights_bg は
+                                // 既に RT複合／MainCamera を選択済み。
+                                // 前提: use_rt が真のときは draw_ctx.pipelines.rt が必ず Some
+                                // （rt_on は RT 対応 GPU かつ設定オン時のみ真になり、RT 非対応 GPU では
+                                // rt_on 自体が偽になるため rt_pipes の Some/None と use_rt は連動する。
+                                // pipeline.rs の RtMeshPipelines / deferred.rs の DeferredLightingPipelines.rt
+                                // は同じ rt_shadow::rt_shadows_supported() 判定で構築されるため、
+                                // use_rt=true のときに deferred.rt が None になることは想定しない）。
+                                // ただし万一の不整合（非対応 GPU 等）に備え、deferred.rt が None のときは
+                                // 安全側で rt_off パイプライン + 非RT ライト BG へフォールバックする。
+                                let lit_pipe = if use_rt {
+                                    draw_ctx.pipelines.deferred.rt.as_ref()
+                                        .unwrap_or(&draw_ctx.pipelines.deferred.pipeline)
+                                } else {
+                                    &draw_ctx.pipelines.deferred.pipeline
+                                };
+                                // lit_pipe が rt_off にフォールバックした場合でも scene_lights_bg が
+                                // RT 複合 BG（binding6=TLAS 付き）だと group4 レイアウトが不整合になる。
+                                // 前提が保証される通常経路では use_rt=true → deferred.rt=Some のため
+                                // 到達しないが、安全側として lights BG もフォールバックを合わせる。
+                                let lit_use_rt = use_rt && draw_ctx.pipelines.deferred.rt.is_some();
+                                let lit_lights_bg: &wgpu::BindGroup = if lit_use_rt {
+                                    scene_lights_bg
+                                } else {
+                                    draw_ctx.light_buffer.bind_group(LightingPass::MainCamera)
+                                };
+                                lpass.set_pipeline(lit_pipe);
+                                lpass.set_bind_group(0, &camera_buf.bind_group, &[]);
+                                lpass.set_bind_group(1, &gbuffer_bg, &[]);
+                                lpass.set_bind_group(2, &draw_ctx.pipelines.deferred.empty_bg2, &[]);
+                                lpass.set_bind_group(3, &draw_ctx.pipelines.deferred.empty_bg3, &[]);
+                                lpass.set_bind_group(4, lit_lights_bg, &[]);
+                                lpass.draw(0..3, 0..1);
+                            }
+                        }
+
+                        // メインパス開始: デファード時は G-Buffer/ライティングパスが書いた HDR・深度・
+                        // ステンシルを Load で保持（半透明・スカイボックス・ギズモをその上に重ねる）。
+                        // フォワード時は従来どおりクリアして開始する。
+                        let mut pass = if deferred_active {
+                            frame.begin_scene_pass_load_to(hdr_view)
+                        } else {
+                            frame.begin_scene_pass_to(hdr_view, clear_color)
+                        };
 
                         // LetterBox / PillarBox 時: ビューポート設定前に帯エリアを帯カラーで塗る。
                         // LoadOp::Clear はサーフェス全体をクリアするため、ゲーム以外のエリアを
@@ -3312,14 +3466,19 @@ impl App {
                         // 2D シーンビューでは 3D モデルを描画しない（3D シーン非表示）
                         let _perf_t_draw = std::time::Instant::now();
                         if !edit_view_2d {
-                            for (path, sd) in &self.shared_model_batches {
-                                if let Some(&gpu) = gpu_model_by_path.get(path.as_str()) {
-                                    draw_model_indirect(
-                                        &mut pass, gpu, &sd.batch,
-                                        &camera_buf.bind_group, scene_lights_bg,
-                                        &draw_ctx.pipelines, rt_pipes, meshlet_active,
-                                        scene_wireframe,
-                                    );
+                            // デファード時は不透明を G-Buffer 経由で既に描画済み（このメインパスは
+                            // Load で再開しており、半透明・スカイボックス・ギズモ等のみを重ねる）。
+                            // フォワード時のみ従来どおり draw_model_indirect で不透明を描く。
+                            if !deferred_active {
+                                for (path, sd) in &self.shared_model_batches {
+                                    if let Some(&gpu) = gpu_model_by_path.get(path.as_str()) {
+                                        draw_model_indirect(
+                                            &mut pass, gpu, &sd.batch,
+                                            &camera_buf.bind_group, scene_lights_bg,
+                                            &draw_ctx.pipelines, rt_pipes, meshlet_active,
+                                            scene_wireframe,
+                                        );
+                                    }
                                 }
                             }
 
@@ -3327,6 +3486,8 @@ impl App {
                             // 不透明の直後・オーバーレイより前に、Blend プリミティブを
                             // 背面→前面に並べてアルファブレンドで描く。透明はシャドウマップ
                             // 影のみ受けるため NON-RT ライト BG・NON-RT パイプラインを使う。
+                            // デファードでも半透明はフォワードで描く（G-Buffer 深度を Load してテスト、
+                            // メインパスが Load で再開しているためこの深度テストは正しく機能する）。
                             if tp_sorted {
                                 crate::engine::core::renderer::transparency::draw_sorted(
                                     &mut pass,

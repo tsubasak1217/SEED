@@ -29,6 +29,10 @@ pub mod material_asset;
 pub mod postfx;
 /// エディタのシーンビュー表示モード（Lit / Unlit / Wireframe）
 pub(crate) mod view_mode;
+/// G-Buffer リソース＋MRT ジオメトリパイプライン（Phase D3 Deferred Phase A）
+pub(crate) mod gbuffer;
+/// フルスクリーン・ライティングパイプライン（G-Buffer 復元, Phase D3 Deferred Phase A）
+pub(crate) mod deferred;
 
 pub use uniforms::{CameraUniform, ModelUniform, MaterialUniform, JointUniform, ColorVertex,
                    GpuCullData, FrustumUniform, GizmoVertex};
@@ -544,6 +548,14 @@ impl<'r> RenderFrame<'r> {
     /// 深度バッファビューへの参照を返す（Hi-Z ピラミッド生成用、DepthOnly aspect）。
     pub fn depth_view(&self) -> &wgpu::TextureView { self.depth_only_view }
 
+    /// 深度テクスチャの DepthOnly aspect ビューを返す（G-Buffer 深度サンプリング用）。
+    ///
+    /// `depth_view()` と全く同じビューを指すが、デファードのライティングパスが
+    /// 「深度をテクスチャとしてサンプルする」用途であることを呼び出し側で明示するための別名。
+    /// アタッチメント用途（レンダーパスの depth_stencil_attachment）には引き続き
+    /// `depth_view` フィールド（All aspect）側を使う（begin_gbuffer_pass_to 等を参照）。
+    pub fn depth_only_view(&self) -> &wgpu::TextureView { self.depth_only_view }
+
     // ── 深度プリパス（カラー出力なし、深度クリアあり）────────────
 
     /// 深度のみ書き込むプリパスを開始する。
@@ -817,6 +829,124 @@ impl<'r> RenderFrame<'r> {
                     store: wgpu::StoreOp::Store,
                 }),
                 // Depth24PlusStencil8 は stencil 面を持つため ops を明示（Load/Store）。
+                stencil_ops: Some(wgpu::Operations {
+                    load:  wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                }),
+            }),
+            occlusion_query_set: None,
+            timestamp_writes:    None,
+        })
+    }
+
+    // ── デファード（G-Buffer + フルスクリーン・ライティング）パス（Phase D3 Deferred Phase B）───
+
+    /// G-Buffer 書き込みパスを開始する（4 枚の MRT + 深度）。
+    ///
+    /// 各 RT は LoadOp::Clear(0,0,0,0)（不透明ジオメトリで上書きするため加算合成は行わない。
+    /// クリア値 0 は「ジオメトリが存在しない画素＝背景」を意味し、ライティングパス側は
+    /// 深度 >= 1.0（背景）を discard することで区別する。gbuffer_write.wgsl 側のクリア規約と一致）。
+    /// 深度は `begin_scene_pass_to` と同じ規約（Clear(1.0) / ステンシル Clear(0)）で新規に確保し直す
+    /// （デファードのフレームでは本パスが「深度を最初に書く」パスになるため）。
+    pub fn begin_gbuffer_pass_to<'f>(
+        &'f mut self,
+        g0: &'f wgpu::TextureView,
+        g1: &'f wgpu::TextureView,
+        g2: &'f wgpu::TextureView,
+        g3: &'f wgpu::TextureView,
+    ) -> wgpu::RenderPass<'f>
+    where
+        'r: 'f,
+    {
+        let mrt_clear = wgpu::Operations {
+            load:  wgpu::LoadOp::Clear(wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }),
+            store: wgpu::StoreOp::Store,
+        };
+        self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("GBuffer Pass"),
+            color_attachments: &[
+                Some(wgpu::RenderPassColorAttachment { view: g0, resolve_target: None, ops: mrt_clear }),
+                Some(wgpu::RenderPassColorAttachment { view: g1, resolve_target: None, ops: mrt_clear }),
+                Some(wgpu::RenderPassColorAttachment { view: g2, resolve_target: None, ops: mrt_clear }),
+                Some(wgpu::RenderPassColorAttachment { view: g3, resolve_target: None, ops: mrt_clear }),
+            ],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: self.depth_view,
+                depth_ops: Some(wgpu::Operations {
+                    load:  wgpu::LoadOp::Clear(1.0),
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: Some(wgpu::Operations {
+                    load:  wgpu::LoadOp::Clear(0),
+                    store: wgpu::StoreOp::Store,
+                }),
+            }),
+            occlusion_query_set: None,
+            timestamp_writes:    None,
+        })
+    }
+
+    /// G-Buffer からライティングを復元するフルスクリーンパスを開始する（HDR シーンへ出力）。
+    ///
+    /// - color = `hdr` を LoadOp::Clear(clear)（背景色でクリアしてからフルスクリーン三角形で
+    ///   ライティング結果を上書きする。深度 >= 1.0＝背景の画素はシェーダ側で discard するため
+    ///   クリア色がそのまま残る＝メインパス clear と同じ見た目になる）。
+    /// - depth_stencil_attachment = None（本パスは深度を「アタッチメント」としては持たない。
+    ///   G-Buffer 深度は `depth_only_view` からテクスチャとしてサンプルして使うため）。
+    pub fn begin_deferred_lighting_pass_to<'f>(
+        &'f mut self,
+        hdr:   &'f wgpu::TextureView,
+        clear: wgpu::Color,
+    ) -> wgpu::RenderPass<'f>
+    where
+        'r: 'f,
+    {
+        self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("Deferred Lighting Pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view:           hdr,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load:  wgpu::LoadOp::Clear(clear),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            occlusion_query_set: None,
+            timestamp_writes:    None,
+        })
+    }
+
+    /// デファードのメインシーンパスを「Load」で再開する（G-Buffer パス＋ライティングパスが
+    /// 書いた HDR／深度／ステンシルを一切クリアせず保持する）。
+    ///
+    /// `begin_scene_pass_to` の Load 版：半透明・スカイボックス・ギズモ等、フォワードで
+    /// 描き続ける要素をデファードのライティング結果の上に重ねるためのパス。
+    /// Depth24PlusStencil8 はステンシル面を持つため ops を明示（Load/Store）する
+    /// （`begin_wboit_pass_to` 等の既存 Load パスと同じ規約）。
+    pub fn begin_scene_pass_load_to<'f>(
+        &'f mut self,
+        hdr: &'f wgpu::TextureView,
+    ) -> wgpu::RenderPass<'f>
+    where
+        'r: 'f,
+    {
+        self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("Main Render Pass (HDR, Deferred Load)"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view:           hdr,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load:  wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: self.depth_view,
+                depth_ops: Some(wgpu::Operations {
+                    load:  wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                }),
                 stencil_ops: Some(wgpu::Operations {
                     load:  wgpu::LoadOp::Load,
                     store: wgpu::StoreOp::Store,

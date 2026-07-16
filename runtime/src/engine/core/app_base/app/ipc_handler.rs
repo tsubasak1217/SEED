@@ -470,7 +470,7 @@ impl App {
                     // インラインレイトレ影フラグをエディタからのライブ切替で更新する
                     self.rt_shadows = v;
                 }
-                IpcCommand::SetPostFx { bloom, fxaa, bloom_intensity, transparency, meshlet_cull, view_mode } => {
+                IpcCommand::SetPostFx { bloom, fxaa, bloom_intensity, transparency, meshlet_cull, deferred, view_mode } => {
                     // ブルーム／FXAA をエディタからのライブ切替で更新する（Phase R4）。
                     // しきい値／ニーは既定のまま（UI は最小構成のため強度のみ可変）。
                     self.post_fx.bloom_enabled   = bloom;
@@ -480,6 +480,8 @@ impl App {
                     self.post_fx.transparency    = transparency;
                     // GPU メッシュレットカリング（第1弾）のライブ切替。
                     self.post_fx.meshlet_cull    = meshlet_cull;
+                    // Deferred（G-Buffer）レンダリングのライブ切替（Phase D3 Deferred Phase B）。
+                    self.post_fx.deferred        = deferred;
                     // エディタのシーンビュー表示モード（Lit / Unlit / Wireframe）のライブ切替。
                     // Edit モードのメインカメラのパスにのみ効く（frame_renderer でゲート）。
                     self.scene_view_mode         = view_mode;

@@ -87,10 +87,17 @@ fn build_wireframe_variant(
 pub(crate) fn get_shader_source(name: &str) -> &'static str {
     match name {
         // Clustered Lighting の共有定義（定数・構造体・索引関数。バインディングなし）。
-        // shader_common.wgsl の group 4 binding 7〜9 がこの構造体を参照するため、
-        // TOML の shader_sources では必ず shader_common.wgsl より前に置くこと（Phase C1）。
+        // light_common.wgsl の group 4 binding 7〜9 がこの構造体を参照するため、
+        // TOML の shader_sources では必ず cluster_common.wgsl → shader_common.wgsl →
+        // light_common.wgsl の順に置くこと（Phase C1／Phase D3 Phase A）。
         "cluster_common.wgsl"        => include_str!("shaders/cluster_common.wgsl"),
+        // PBR ヘルパー関数（distribution_ggx 等。バインディングなし）。shader_common.wgsl と
+        // デファードのライティングパスの両方から連結する（Phase D3 Phase A で分離）。
+        "pbr_common.wgsl"            => include_str!("shaders/pbr_common.wgsl"),
         "shader_common.wgsl"         => include_str!("shaders/shader_common.wgsl"),
+        // ライト（GpuLight/LightMeta）＋クラスタ参照。shader_common.wgsl の直後に連結すること
+        // （cluster_common → shader_common → light_common の順。Phase D3 Phase A で分離）。
+        "light_common.wgsl"          => include_str!("shaders/light_common.wgsl"),
         "shader_static_vertex.wgsl"  => include_str!("shaders/shader_static_vertex.wgsl"),
         "shader_skinned_vertex.wgsl" => include_str!("shaders/shader_skinned_vertex.wgsl"),
         // PBR シェーディングの 3 段分割（採取 → ライト評価 → エントリ）。
@@ -117,6 +124,10 @@ pub(crate) fn get_shader_source(name: &str) -> &'static str {
         "tonemap_ops.wgsl"           => include_str!("shaders/tonemap_ops.wgsl"),
         "bar_fill.wgsl"              => include_str!("shaders/bar_fill.wgsl"),
         "skybox.wgsl"                => include_str!("shaders/skybox.wgsl"),
+        // G-Buffer 書き込み（Phase D3: Deferred 化 Phase A）。
+        "gbuffer_write.wgsl"         => include_str!("shaders/gbuffer_write.wgsl"),
+        // デファードのフルスクリーン・ライティング復元（Phase D3: Deferred 化 Phase A）。
+        "deferred_lighting.wgsl"     => include_str!("shaders/deferred_lighting.wgsl"),
         other => panic!("unknown shader source: {other}"),
     }
 }
@@ -1188,7 +1199,7 @@ impl ParticleComputePipeline {
 /// クラスタ（3D フロクセル）ごとの影響ライトリストを構築する compute パイプライン。
 ///
 /// シェーダ: cluster_common.wgsl（共有定義）＋ cluster_build.wgsl（バインディング＋エントリ）。
-/// shader_common.wgsl は連結しない（group 2/4 のバインディングが混入し、
+/// shader_common.wgsl / light_common.wgsl は連結しない（group 2/4 のバインディングが混入し、
 /// 手動で組む group 0 のレイアウトと食い違うため。GpuLight は cluster_build 側でミラーする）。
 ///
 /// Group 0 BGL（cluster_build.wgsl の宣言と一致させること）:
@@ -1541,6 +1552,12 @@ pub struct DrawPipelines {
     pub particles:            ParticlePipelines,
     /// スカイボックス（天球）描画パイプライン一式（Phase R9）。
     pub skybox:               super::skybox::SkyboxPipelines,
+    /// G-Buffer 書き込みパイプライン一式（Phase D3: Deferred 化 Phase A）。
+    /// Phase A 時点ではフレームループへ未接続（Phase B で接続予定）。
+    pub gbuffer:              super::gbuffer::GBufferPipelines,
+    /// デファードのフルスクリーン・ライティング復元パイプライン一式（Phase D3 Phase A）。
+    /// Phase A 時点ではフレームループへ未接続（Phase B で接続予定）。
+    pub deferred:             super::deferred::DeferredLightingPipelines,
 }
 
 impl DrawPipelines {
@@ -1598,6 +1615,12 @@ impl DrawPipelines {
         let skybox              = super::skybox::SkyboxPipelines::new(device, sf, df, cache);
         // Clustered Lighting のクラスタ構築 compute（Phase C1）。
         let cluster_build       = ClusterBuildPipeline::new(device, cache);
-        Self { mesh, skinned_mesh, rt, unlit_line, cull, meshlet_cull, skin_compute, depth_prepass, shadow_depth, id_pass, outline, sprite, sprite_outline, canvas_id, camera_preview_blit, bar_fill, transparent, particle_compute, particles, skybox, cluster_build }
+        // G-Buffer 書き込み（Phase D3 Phase A）。mesh/skinned_mesh の BGL を借りて構築するため
+        // それらの構築後に呼ぶ（モジュール冒頭コメントの BGL 再利用方針を参照）。
+        let gbuffer              = super::gbuffer::GBufferPipelines::new(device, &mesh, &skinned_mesh, df, cache);
+        // デファードのフルスクリーン・ライティング復元（Phase D3 Phase A）。
+        // sf（シーン HDR）へ出力する（PostPipeline 等と同じ HDR オフスクリーン規約）。
+        let deferred              = super::deferred::DeferredLightingPipelines::new(device, sf, df, cache);
+        Self { mesh, skinned_mesh, rt, unlit_line, cull, meshlet_cull, skin_compute, depth_prepass, shadow_depth, id_pass, outline, sprite, sprite_outline, canvas_id, camera_preview_blit, bar_fill, transparent, particle_compute, particles, skybox, cluster_build, gbuffer, deferred }
     }
 }

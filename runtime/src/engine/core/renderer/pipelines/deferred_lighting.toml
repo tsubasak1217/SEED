@@ -1,0 +1,22 @@
+# deferred_lighting.toml — G-Buffer デファードのフルスクリーン・ライティング復元（rt_off 版）
+# Phase D3: Deferred + Clustered 化 Phase A。
+#
+# G-Buffer（gbuffer_write.wgsl が焼いた 4 枚の MRT + 深度）を読み、evaluate_lighting を
+# 呼ぶだけのフルスクリーン三角形パス。shader_common.wgsl / surface_gather.wgsl は連結せず、
+# group2（マテリアル）を一切要求しない（deferred_lighting.wgsl が group0/1 を自前で宣言する）。
+# 深度は G-Buffer 側で書き込み済みのテクスチャをサンプルするだけなので、本パス自体は
+# 深度アタッチメントを持たない（no_depth = true）。
+shader_sources  = ["cluster_common.wgsl", "pbr_common.wgsl", "light_common.wgsl", "shadow.wgsl", "rt_shadow_off.wgsl", "surface.wgsl", "lighting_eval.wgsl", "deferred_lighting.wgsl"]
+vertex_entry    = "vs_fullscreen"
+fragment_entry  = "fs_deferred"
+vertex_slots    = []
+
+topology        = "TriangleList"
+cull_mode       = "None"
+front_face      = "Ccw"
+
+no_depth        = true
+
+color_format    = "surface"
+blend           = "None"
+write_mask      = "all"

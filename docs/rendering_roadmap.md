@@ -732,15 +732,102 @@ Forward+ ではなく Deferred を選ぶ根拠: 多灯対応だけなら Forward
   near/far/fov 不正・ライト0灯は enabled=0（従来の全ライト線形走査）へフォールバックする。
   最悪でも「速くならない」だけで暗くはならない設計。
 
-- **D3 G-Buffer + Deferred 不透明パス: 未着手**
+- **D3 G-Buffer + Deferred 不透明パス: 実装済み・実機検証待ち**（Phase A: gbuffer.rs/deferred.rs 基盤、
+  Phase B: フレームループ接続・IPC 切替・エディタ UI・本ドキュメント）
   fs_gbuffer が gather_surface の結果を MRT へ焼き、フルスクリーンのライティングパスが
-  G-Buffer から Surface を復元して evaluate_lighting をそのまま呼ぶ。半透明は WBOIT フォワードのまま。
+  G-Buffer から Surface を復元して evaluate_lighting をそのまま呼ぶ。半透明は WBOIT／距離ソートの
+  フォワードのまま（G-Buffer 深度を Load してテストする）。
   RT 影はデファードのほうが安くなる（可視ピクセルのみレイを飛ばす）。
   メッシュレットカリング（compute + multi_draw_indirect_count）は G-Buffer パスでもそのまま使える。
+
+  **G-Buffer レイアウト**（gbuffer.rs / gbuffer_write.wgsl が正典）:
+  | RT | フォーマット | 内容 |
+  |----|------------|------|
+  | RT0 gbuffer0 | Rgba8Unorm | albedo.rgb + occlusion.a |
+  | RT1 gbuffer1 | Rgba16Float | world normal.xyz + 0 |
+  | RT2 gbuffer2 | Rgba8Unorm | metallic.r + roughness.g + 予約(b,a) |
+  | RT3 gbuffer3 | Rgba16Float | emissive.rgb(HDR) + 0 |
+
+  **Surface 復元の焼く・復元・代用対応表**（surface_gather.wgsl で採取する Surface フィールドと
+  G-Buffer 4 枚＋深度の対応。フルスクリーン・ライティングパスは deferred_lighting.wgsl が
+  この対応でテクスチャから Surface を再構築してから evaluate_lighting を呼ぶ）:
+  | Surface フィールド | 由来 |
+  |---------------------|------|
+  | albedo | gbuffer0.rgb |
+  | occlusion | gbuffer0.a |
+  | normal（world） | gbuffer1.xyz |
+  | metallic | gbuffer2.r |
+  | roughness | gbuffer2.g |
+  | emissive | gbuffer3.rgb |
+  | world position | depth（DepthOnly aspect）+ inv_view_proj から再構築（G-Buffer に位置は焼かない） |
+  | ライト方向・視線方向等 | ライティングパスの CameraUniform（自前宣言、shader_common.wgsl と同一
+    レイアウト）とスクリーン UV から算出 |
+
+  **パス順序**（deferred_active＝true のフレーム、frame_renderer.rs のメインシーンパス直前に挿入）:
+  1. G-Buffer パス（`begin_gbuffer_pass_to`）: 不透明ジオメトリのみを 4 枚の MRT + 深度へ焼く
+     （深度は Clear(1.0) で新規に確保し直す＝このパスが「深度を最初に書く」パスになる）。
+  2. G-Buffer BindGroup 生成（`create_gbuffer_bind_group`）＋ フルスクリーン・ライティングパス
+     （`begin_deferred_lighting_pass_to`）: HDR シーンへ Clear(clear_color) してから 3 頂点の
+     フルスクリーン三角形でライティングを復元する（深度 >= 1.0＝背景は shader 側で discard、
+     クリア色がそのまま残るためメインパス clear と同じ見た目になる）。
+  3. メインシーンパスを **Load** で再開（`begin_scene_pass_load_to`）: G-Buffer パス・
+     ライティングパスが書いた HDR／深度／ステンシルを一切クリアせず保持し、
+     スカイボックス・半透明（距離ソート／WBOIT）・ギズモ・2D オーバーレイ等の
+     フォワード要素だけを重ねて描く（不透明の draw_model_indirect 呼び出しはスキップする）。
+     スカイボックスは深度 LessEqual テストにより背景（depth=1.0）のみに正しく出る。
+
+  **deferred=false（フォールバック）**: `PostFxSettings.deferred` が false のときは
+  上記 1〜3 を一切スキップし、従来どおり `begin_scene_pass_to`（Clear）から不透明を
+  `draw_model_indirect` で直接 HDR へ描く完全フォワード経路になる（コード的に無改変）。
+  デファードはメインカメラの不透明・Lit のみが対象で、Unlit／ワイヤーフレーム表示・
+  2D シーンビューは `deferred_active` 判定により常にフォワードへフォールバックする
+  （`frame_renderer.rs` の `deferred_active` 算出コメント参照）。
+
+  **light_common.wgsl・pbr_common.wgsl の抽出**: 旧 shader_common.wgsl はマテリアル
+  （group2）とライト（group4）を同居させていたため、「ライトだけ使いたい」デファードの
+  ライティングパスも shader_common.wgsl を連結せざるを得ず、不要な group2 バインディングが
+  リフレクションに載って破綻していた。そこでバインディングを持たない PBR ヘルパー群を
+  pbr_common.wgsl、ライト構造体・binding 宣言を light_common.wgsl として shader_common.wgsl
+  から分離し、deferred_lighting.wgsl は shader_common.wgsl を一切連結せず pbr_common.wgsl /
+  light_common.wgsl だけを連結する（フォワード系は従来どおり
+  cluster_common→pbr_common→shader_common→light_common の順で連結し、shader_common.wgsl
+  経由で両方を利用する）。gbuffer_write.wgsl 側は逆にライティングを一切必要としないため
+  light_common.wgsl / pbr_common.wgsl のどちらも連結しない（マテリアル採取のみで完結し、
+  使わない group4 バインディングをリフレクションに載せないため）。
+
+  **IPC / 設定**: `SET_POST_FX` JSON に `"deferred":bool` を追加（欠落時 true）。
+  `project_settings.json` の `deferred` キー（起動時読込, 欠落時 true）。
+  エディタはビューポート設定ポップアップ「ポストプロセス」内チェックボックス
+  `ChkDeferred`（既定チェック）から切り替える。
 
 - **D4 SSAO: 未着手**（G-Buffer の深度＋法線から。**ブラーはいもす法（累積和）で実装すること**）
 - **D5 Deferred Decal: 未着手**
 - **D6 SSR: 未着手**
+
+## D3 実機テスト観点（GPU 実機確認が必要。開発環境では cargo build/test までしか検証できない）
+
+- **見た目パリティ**: 同一シーンで `deferred` ON/OFF を切り替え、不透明の見た目（アルベド・法線・
+  金属度・粗さ・エミッシブ・影）が一致すること。
+- **Mask discard**: AlphaMode::Mask のマテリアルが G-Buffer パスでも正しく discard されること。
+- **両面（cull None）**: CullFace::None のマテリアルが G-Buffer パスでも両面描画されること。
+- **メッシュレットカリング**: `meshlet_cull` ON 時、G-Buffer パスの LOD0・非スキンでも
+  multi_draw_indexed_indirect_count 経路が正しく機能すること（deferred/meshlet_cull 両方 ON の組合せ）。
+- **RT 影**（RT 対応 GPU）: デファードのライティングパスで `deferred_lighting_rt` バリアントが選択され、
+  RT 影が正しく落ちること。RT 非対応 GPU では rt_off バリアント＋非 RT ライト BG に安全側フォールバック
+  すること。
+- **半透明の重なり**: 距離ソート／WBOIT いずれも、デファードの不透明（G-Buffer 深度）と正しく前後関係
+  が取れること（メインパスが Load で深度を保持しているため）。
+- **スカイボックス背景**: CameraLocked/WorldAnchored いずれも背景として正しく見えること
+  （深度 LessEqual テストにより G-Buffer ジオメトリの手前に出ないこと）。
+- **カメラプレビュー不変**: カメラプレビュー小窓は本 Phase B の変更対象外（メインカメラのみ
+  デファード化）であり、見た目が変わらないこと。
+- **Play letterbox の帯**: LetterBox/PillarBox 時、G-Buffer パス・ライティングパスにも
+  viewport/scissor が正しく適用され、帯エリアにジオメトリが漏れないこと。
+- **ワイヤ・unlit 時フォワードフォールバック**: エディタのシーンビュー表示モードを
+  Unlit／Wireframe に切り替えると `deferred_active` が false になり、フォワード経路（従来どおり）
+  で描画されること。
+- **環境光・エミッシブ**: アンビエントライトとエミッシブがデファードのライティングパスでも
+  フォワードと同じ強度で反映されること。
 
 ## 影について（今回スコープ外・ユーザー判断）
 

@@ -352,14 +352,20 @@ fn wants_shadow(l: &GpuLight) -> bool { l.shadow_index > 0.5 }
 
 /// Mat4x4（行優先）を CameraUniform（GPU 列優先 view_proj）へ変換する。
 /// 深度シェーダ（depth_prepass.wgsl）は u_camera.view_proj のみ参照する。
+///
+/// inv_view_proj はこのシャドウ深度カメラでは使われないが（deferred_lighting.wgsl 専用の
+/// フィールド）、CameraUniform 構造体を埋める必要があるため一律で計算する。
+/// 特異行列（逆行列なし）の場合は単位行列へフォールバックする（パニックさせない）。
 fn view_proj_uniform(vp: &Mat4x4<f32>, size: f32) -> CameraUniform {
+    let inv_vp = vp.inverse().unwrap_or_else(Mat4x4::identity);
     CameraUniform {
-        view_proj:  vp.transpose().data,
-        view:       Mat4x4::identity().data,
-        position:   [0.0, 0.0, 0.0],
-        _pad:       0.0,
-        resolution: [size, size],
-        _pad2:      [0.0, 0.0],
+        view_proj:      vp.transpose().data,
+        view:           Mat4x4::identity().data,
+        position:       [0.0, 0.0, 0.0],
+        _pad:           0.0,
+        resolution:     [size, size],
+        _pad2:          [0.0, 0.0],
+        inv_view_proj:  inv_vp.transpose().data,
     }
 }
 

@@ -106,11 +106,13 @@ public partial class MainWindow
                                ?? DefaultTransparencyMode;
         // GPU メッシュレットカリング（第1弾）。null（未初期化）時は既定 true。
         bool meshletCull = ChkMeshletCull?.IsChecked != false;
+        // Deferred レンダリング（G-Buffer + フルスクリーン・ライティング）。null（未初期化）時は既定 true。
+        bool deferred = ChkDeferred?.IsChecked != false;
         // シーンビュー表示モード（"lit" / "unlit" / "wireframe"）。未選択・null 時は既定の "lit"。
         string viewMode = (CmbViewMode?.SelectedItem as System.Windows.Controls.ComboBoxItem)?.Tag as string
                           ?? DefaultViewMode;
 
-        string json = $"{{\"bloom\":{(bloom ? "true" : "false")},\"fxaa\":{(fxaa ? "true" : "false")},\"bloom_intensity\":{intensity.ToString(System.Globalization.CultureInfo.InvariantCulture)},\"transparency\":\"{transparency}\",\"meshlet_cull\":{(meshletCull ? "true" : "false")},\"view_mode\":\"{viewMode}\"}}";
+        string json = $"{{\"bloom\":{(bloom ? "true" : "false")},\"fxaa\":{(fxaa ? "true" : "false")},\"bloom_intensity\":{intensity.ToString(System.Globalization.CultureInfo.InvariantCulture)},\"transparency\":\"{transparency}\",\"meshlet_cull\":{(meshletCull ? "true" : "false")},\"deferred\":{(deferred ? "true" : "false")},\"view_mode\":\"{viewMode}\"}}";
         _runtimeManager?.SendToRuntime($"SET_POST_FX:{json}");
     }
 

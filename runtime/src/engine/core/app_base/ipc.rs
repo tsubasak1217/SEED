@@ -133,6 +133,9 @@ pub enum IpcCommand {
         transparency: crate::engine::core::renderer::TransparencyMode,
         /// GPU メッシュレットカリング有効フラグ（第1弾）。欠落時は true。
         meshlet_cull: bool,
+        /// Deferred（G-Buffer）レンダリング有効フラグ（Phase D3 Deferred Phase B）。欠落時は true。
+        /// OFF で従来のフォワード経路（deferred=false）にフォールバックする（A/B パリティ検証用）。
+        deferred: bool,
         /// エディタのシーンビュー表示モード（Lit / Unlit / Wireframe）。欠落時は Lit。
         /// SET_POST_FX に相乗りしているのは、エディタが全ビューポート描画設定を 1 本の
         /// SendPostFx()／1 個の SET_POST_FX ハンドラへ集約しているため（追加配線を増やさない）。
@@ -837,13 +840,17 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                             let meshlet_cull = v.as_ref()
                                 .and_then(|v| v["meshlet_cull"].as_bool())
                                 .unwrap_or(true);
+                            // Deferred レンダリング（欠落時は true = 有効。Phase D3 Deferred Phase B）。
+                            let deferred = v.as_ref()
+                                .and_then(|v| v["deferred"].as_bool())
+                                .unwrap_or(true);
                             // ビューモード（欠落・未知時は "lit" = ライティング ON）。
                             let view_mode = crate::engine::core::renderer::SceneViewMode::from_str(
                                 v.as_ref()
                                     .and_then(|v| v["view_mode"].as_str())
                                     .unwrap_or("lit"),
                             );
-                            Some(IpcCommand::SetPostFx { bloom, fxaa, bloom_intensity, transparency, meshlet_cull, view_mode })
+                            Some(IpcCommand::SetPostFx { bloom, fxaa, bloom_intensity, transparency, meshlet_cull, deferred, view_mode })
                         }
                         // 環境光（Phase R1.5）。"SET_AMBIENT:{r},{g},{b},{intensity}"。
                         // 4 要素に満たない／パース不能な場合は無視する（None）。

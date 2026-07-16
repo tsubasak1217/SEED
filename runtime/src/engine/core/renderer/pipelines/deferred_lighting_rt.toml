@@ -1,0 +1,17 @@
+# deferred_lighting_rt.toml — deferred_lighting.toml の RT 影バリアント（Phase R8 対応 GPU のみ）
+# rt_shadow_off の代わりに rt_shadow_on を連結し、group4 に TLAS（binding 6）を追加する。
+# それ以外の設定は deferred_lighting.toml と完全に同一（レイアウト互換）。
+shader_sources  = ["cluster_common.wgsl", "pbr_common.wgsl", "light_common.wgsl", "shadow.wgsl", "rt_shadow_on.wgsl", "surface.wgsl", "lighting_eval.wgsl", "deferred_lighting.wgsl"]
+vertex_entry    = "vs_fullscreen"
+fragment_entry  = "fs_deferred"
+vertex_slots    = []
+
+topology        = "TriangleList"
+cull_mode       = "None"
+front_face      = "Ccw"
+
+no_depth        = true
+
+color_format    = "surface"
+blend           = "None"
+write_mask      = "all"

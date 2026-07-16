@@ -5,10 +5,22 @@
 // ─── Group 0: カメラ ──────────────────────────────────────────
 
 struct CameraUniform {
-    view_proj:  mat4x4<f32>,
-    view:       mat4x4<f32>,
-    position:   vec3<f32>,
-    _pad:       f32,
+    view_proj:      mat4x4<f32>,
+    view:           mat4x4<f32>,
+    position:       vec3<f32>,
+    _pad:           f32,
+    // 以下、Rust 側 uniforms::CameraUniform と完全一致させるための末尾フィールド。
+    // mesh/skinned のフラグメントは resolution/inv_view_proj を参照しないため未使用のまま
+    // でよいが、宣言を欠くと（G-Buffer デファードパスが独自に持つ同名構造体との）
+    // オフセット規約がズレて見えるため、常に Rust と 1:1 で保つ（実害はないが保守事故防止）。
+    resolution:     vec2<f32>,
+    _pad2:          vec2<f32>,
+    // 逆 ViewProjection 行列（Phase D3: G-Buffer デファード化の準備で追加）。
+    // 本ファイルを連結する mesh/skinned 系フラグメントは使わない
+    // （ライティングパスは deferred_lighting.wgsl が shader_common を連結せず
+    //   自前の CameraUniform を宣言して使う。ここでは Rust 構造体との
+    //   バイトレイアウト一致だけを保つために宣言している）。
+    inv_view_proj:  mat4x4<f32>,
 }
 @group(0) @binding(0) var<uniform> u_camera: CameraUniform;
 
@@ -54,86 +66,20 @@ struct MaterialUniform {
 @group(2) @binding(9)  var          t_emissive:           texture_2d<f32>;
 @group(2) @binding(10) var          s_emissive:           sampler;
 
-// ─── Group 4: ライト（binding 0/1）＋シャドウ（binding 2〜5）───
+// ─── Group 4: ライト／クラスタ参照は light_common.wgsl へ移設 ─────────
 //
-// storage buffer に全ライト（最大 MAX_LIGHTS）を格納し、
-// uniform（u_light_meta.count）で有効ライト数を渡す。
-// フラグメントシェーダのライトループがこの配列を count 件だけ走査する。
+// GpuLight / LightMeta 構造体、group 4 binding 0/1（ライト）、
+// binding 7〜9（クラスタ参照）は light_common.wgsl（本ファイルより後方に連結）へ
+// 移設した（Phase D3: G-Buffer デファード化 Phase A）。
 //
-// binding 2〜5 は Phase R2 のシャドウ資源（shadow.wgsl で宣言）。
-// デバイスの max_bind_groups=5（group 0〜4）環境があるため group 5 は新設せず、
-// シャドウを本グループへ同居させている（Rust 側の複合 BindGroup は lighting.rs）。
-//
-// GpuLight のレイアウトは Rust 側 lighting.rs の repr(C) 構造体と
-// 厳密に一致させること（vec3 は 16 バイト境界、合計 96 バイト）。
+// 理由: デファードのライティングパス（deferred_lighting.wgsl）は group 4 のライト／
+// クラスタ参照だけを必要とし、本ファイルが持つ group 2（マテリアル 11 binding）は
+// 不要である。両方を同じファイルに同居させると、ライティングパスが本ファイルを
+// 連結した時点で使わない group 2 のバインディングまでリフレクションに載ってしまう
+// （pipeline_config::reflect_bgls は module.global_variables を無条件に走査するため）。
+// そのため mesh / skinned / transparent 系の TOML は本ファイルの直後に
+// light_common.wgsl を連結すること（cluster_common → shader_common → light_common の順）。
 
-// ライト種別コード（LIGHT_KIND_*）は cluster_common.wgsl へ移設した。
-// クラスタ構築 compute（cluster_build.wgsl）も種別ごとのバウンディング体積を求めるのに
-// 必要だが、compute は本ファイルを連結できない（group 2/4 のバインディングが混入する）ため、
-// 「バインディングを持たない共有定義ファイル」である cluster_common.wgsl が唯一の定義元になる。
-// 本ファイルを使う全パイプライン（mesh / skinned / transparent 系）の TOML は
-// cluster_common.wgsl を本ファイルより先に連結すること。
-
-struct GpuLight {
-    color:            vec3<f32>,   // 0
-    intensity:        f32,         // 12
-    position:         vec3<f32>,   // 16
-    range:            f32,         // 28
-    direction:        vec3<f32>,   // 32  光が進む向き（L = -direction）
-    kind:             u32,         // 44
-    inner_cos:        f32,         // 48
-    outer_cos:        f32,         // 52
-    rect_half_width:  f32,         // 56
-    rect_half_height: f32,         // 60
-    rect_right:       vec3<f32>,   // 64
-    shadow_index:     f32,         // 76  影スロット（-1=影なし / dir:0=CSM有効 / spot:0..3=レイヤ）
-    rect_up:          vec3<f32>,   // 80
-    soft_radius:      f32,         // 92  ソフト影の見込み半径（Phase R8 ソフトシャドウ）
-                                   //     directional: tan(角径) の無次元スロープ（Rust 側で度→tan 変換済み）
-                                   //     point/spot/rect: 光源のワールド半径（シェーダで radius/距離＝見込み角に換算）
-                                   //     0 = ハードシャドウ（従来の遮蔽レイ 1 本）
-}
-
-// count = 有効ライト数、rt_shadows = インラインレイトレ影フラグ（Phase R8, 0/1）。
-// ambient_* は制御可能な環境光（Phase R1.5）。先頭スカラー 4 つで 16 バイト、その後に
-// vec3 の ambient_color（16 バイト境界）＋ ambient_intensity で計 32 バイト。
-// Rust 側 lighting.rs の LightMeta（repr(C), 32 バイト）と厳密に一致させること。
-struct LightMeta {
-    count:             u32,
-    rt_shadows:        u32,
-    // エディタのシーンビュー表示モード（0=Lit / 1=Unlit / 2=Wireframe。SceneViewMode::to_code）。
-    // 0 以外のとき evaluate_lighting はライティングを行わずアルベド＋エミッシブを返す。
-    // メインカメラ用 LightMeta のみ非 0 になり得る（プレビュー用は常に 0＝Lit）。
-    view_mode:         u32,         //  8
-    _pad2:             u32,         // 12
-    ambient_color:     vec3<f32>,   // 16  環境光の色（リニア RGB）
-    ambient_intensity: f32,         // 28  環境光の強度（0 で完全な暗闇）
-}
-
-@group(4) @binding(0) var<storage, read> u_lights:     array<GpuLight>;
-@group(4) @binding(1) var<uniform>       u_light_meta: LightMeta;
-
-// ─── Group 4: Clustered Lighting（binding 7〜9, Phase C1）─────
-//
-// 視錐台を X×Y タイル × Z 深度スライスへ分割したクラスタごとに、影響する局所ライト
-// （point/spot/rect）のインデックスを compute（cluster_build.wgsl）が集めておく。
-// フラグメント（lighting_eval.wgsl）は「自分のクラスタのリスト ＋ 全平行光」だけを走査する。
-//
-// 構造体・定数・索引関数は cluster_common.wgsl（バインディングを持たない共有定義）にある。
-// バッファ実体と BindGroup は Rust 側 renderer/clustered.rs / lighting.rs が持つ。
-//
-// binding 6 は RT 影の TLAS（rt_shadow_on.wgsl）。番号の重複を避けて 7 から始める。
-//
-// 【カメラごとに固有】u_cluster_params は**パスごとに差し替わる**。メインカメラのパスは
-// enabled=1 のパラメータ、カメラプレビューのパスは enabled=0 のパラメータを bind する
-// （後者ではクラスタを一切参照せず、従来どおり全ライトを線形走査する）。
-
-/// クラスタごとの (offset, count)。CLUSTER_COUNT 要素。
-@group(4) @binding(7) var<storage, read> u_cluster_grid:   array<ClusterCell>;
-/// グローバルライトインデックスリスト（クラスタの offset..offset+count が自分のライト）。
-@group(4) @binding(8) var<storage, read> u_cluster_lights: array<u32>;
-/// クラスタパラメータ（カメラ／ビューポート／有効フラグ）。
-@group(4) @binding(9) var<uniform>       u_cluster_params: ClusterParams;
 
 // ─── 頂点シェーダ出力 / フラグメントシェーダ入力 ─────────────
 
@@ -148,30 +94,11 @@ struct VertexOutput {
     @location(6)       color:        vec4<f32>,
 }
 
-// ─── PBR ヘルパー関数 ────────────────────────────────────────
-
-const PI: f32 = 3.14159265359;
-
-fn distribution_ggx(N: vec3<f32>, H: vec3<f32>, roughness: f32) -> f32 {
-    let a  = roughness * roughness;
-    let a2 = a * a;
-    let ndh = max(dot(N, H), 0.0);
-    let d   = ndh * ndh * (a2 - 1.0) + 1.0;
-    return a2 / (PI * d * d);
-}
-
-fn geometry_schlick_ggx(ndv: f32, roughness: f32) -> f32 {
-    let r = roughness + 1.0;
-    let k = (r * r) / 8.0;
-    return ndv / (ndv * (1.0 - k) + k);
-}
-
-fn geometry_smith(N: vec3<f32>, V: vec3<f32>, L: vec3<f32>, roughness: f32) -> f32 {
-    let ndv = max(dot(N, V), 0.0);
-    let ndl = max(dot(N, L), 0.0);
-    return geometry_schlick_ggx(ndv, roughness) * geometry_schlick_ggx(ndl, roughness);
-}
-
-fn fresnel_schlick(cos_theta: f32, F0: vec3<f32>) -> vec3<f32> {
-    return F0 + (1.0 - F0) * pow(clamp(1.0 - cos_theta, 0.0, 1.0), 5.0);
-}
+// ─── PBR ヘルパー関数は pbr_common.wgsl へ移設 ───────────────
+//
+// distribution_ggx / geometry_smith / fresnel_schlick / PI は pbr_common.wgsl
+// （バインディングを持たない共有定義）へ移設した（Phase D3: G-Buffer デファード化 Phase A）。
+// 理由は光源系構造体の分離（本ファイル冒頭の Group 4 のコメント参照）と同じ:
+// デファードのライティングパスが shader_common.wgsl を連結せずに evaluate_lighting を
+// 呼べるようにするため。本ファイルを連結する全 TOML は pbr_common.wgsl も連結すること
+// （例: ["cluster_common.wgsl", "pbr_common.wgsl", "shader_common.wgsl", "light_common.wgsl", ...]）。

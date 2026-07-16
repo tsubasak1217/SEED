@@ -129,7 +129,10 @@ fn resolve_shader(name: &str) -> &'static str {
         // Clustered Lighting の共有定義（定数・構造体・索引関数）。shader_common.wgsl の
         // group 4 binding 7〜9 がこの構造体を参照するため、必ず先に連結する（Phase C1）。
         "cluster_common.wgsl"        => include_str!("shaders/cluster_common.wgsl"),
+        "pbr_common.wgsl"            => include_str!("shaders/pbr_common.wgsl"),
         "shader_common.wgsl"         => include_str!("shaders/shader_common.wgsl"),
+        // ライト（GpuLight/LightMeta）＋クラスタ参照（Phase D3 Phase A で shader_common から分離）。
+        "light_common.wgsl"          => include_str!("shaders/light_common.wgsl"),
         "shadow.wgsl"                => include_str!("shaders/shadow.wgsl"),
         "rt_shadow_off.wgsl"         => include_str!("shaders/rt_shadow_off.wgsl"),
         "shader_static_vertex.wgsl"  => include_str!("shaders/shader_static_vertex.wgsl"),
@@ -238,7 +241,7 @@ impl TransparentPipelines {
         // カリング面 3 種ぶん構築する（添字 = CullFace::index()）。
         let wboit_mesh: CullPipelineSet = std::array::from_fn(|i| build_wboit_pipeline(
             device, df, cache, &mesh_bgls,
-            &["cluster_common.wgsl", "shader_common.wgsl", "shadow.wgsl", "rt_shadow_off.wgsl",
+            &["cluster_common.wgsl", "pbr_common.wgsl", "shader_common.wgsl", "light_common.wgsl", "shadow.wgsl", "rt_shadow_off.wgsl",
               "shader_static_vertex.wgsl", "surface.wgsl", "surface_gather.wgsl",
               "lighting_eval.wgsl", "shader_fragment.wgsl", "shader_wboit.wgsl"],
             &["mesh_vertex"],
@@ -247,7 +250,7 @@ impl TransparentPipelines {
         ));
         let wboit_skinned: CullPipelineSet = std::array::from_fn(|i| build_wboit_pipeline(
             device, df, cache, &skin_bgls,
-            &["cluster_common.wgsl", "shader_common.wgsl", "shadow.wgsl", "rt_shadow_off.wgsl",
+            &["cluster_common.wgsl", "pbr_common.wgsl", "shader_common.wgsl", "light_common.wgsl", "shadow.wgsl", "rt_shadow_off.wgsl",
               "shader_skinned_vertex.wgsl", "surface.wgsl", "surface_gather.wgsl",
               "lighting_eval.wgsl", "shader_fragment.wgsl", "shader_wboit.wgsl"],
             &["mesh_vertex", "skin_vertex"],
@@ -600,6 +603,8 @@ mod tests {
         // ClusterCell / ClusterParams を参照するため、必ず先に連結する）。
         let cluster    = include_str!("shaders/cluster_common.wgsl");
         let common     = include_str!("shaders/shader_common.wgsl");
+        let pbr_c      = include_str!("shaders/pbr_common.wgsl");
+        let light_c    = include_str!("shaders/light_common.wgsl");
         let shadow     = include_str!("shaders/shadow.wgsl");
         let rt_off     = include_str!("shaders/rt_shadow_off.wgsl");
         let static_v   = include_str!("shaders/shader_static_vertex.wgsl");
@@ -614,8 +619,8 @@ mod tests {
         let composite  = include_str!("shaders/post_wboit_composite.wgsl");
 
         let variants: [(&str, Vec<&str>); 3] = [
-            ("wboit_mesh",            vec![cluster, common, shadow, rt_off, static_v, surf, gather, light_eval, frag, wboit]),
-            ("wboit_skinned",         vec![cluster, common, shadow, rt_off, skin_v,   surf, gather, light_eval, frag, wboit]),
+            ("wboit_mesh",            vec![cluster, pbr_c, common, light_c, shadow, rt_off, static_v, surf, gather, light_eval, frag, wboit]),
+            ("wboit_skinned",         vec![cluster, pbr_c, common, light_c, shadow, rt_off, skin_v,   surf, gather, light_eval, frag, wboit]),
             ("post_wboit_composite",  vec![fullscreen, composite]),
         ];
 

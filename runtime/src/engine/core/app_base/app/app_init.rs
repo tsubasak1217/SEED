@@ -342,6 +342,9 @@ impl App {
         // GPU メッシュレットカリング（第1弾, 既定 true）。キー欠落時も有効。
         // MULTI_DRAW_INDIRECT_COUNT 非対応 GPU では本値に関わらず実行時に従来経路へフォールバック。
         self.post_fx.meshlet_cull = v["meshlet_cull"].as_bool().unwrap_or(true);
+        // Deferred（G-Buffer）レンダリング（Phase D3 Deferred Phase B, 既定 true）。キー欠落時も有効。
+        // OFF で従来のフォワード経路へ完全フォールバックする（A/B パリティ検証用）。
+        self.post_fx.deferred = v["deferred"].as_bool().unwrap_or(true);
         // 環境光（Phase R1.5, 既定 白 × 0.05 ＝従来のハードコード値）。読み側は unwrap_or でデフォルト維持。
         // `ambient_color` は [r,g,b] 配列（欠落・不正時は白）。`ambient_intensity` は 0..1 想定（0 で暗闇）。
         use crate::engine::core::renderer::{DEFAULT_AMBIENT_COLOR, DEFAULT_AMBIENT_INTENSITY};
@@ -357,10 +360,10 @@ impl App {
         self.ambient_intensity =
             v["ambient_intensity"].as_f64().unwrap_or(DEFAULT_AMBIENT_INTENSITY as f64) as f32;
         eprintln!(
-            "[SEED INIT] graphics settings loaded  rt_shadows={} post_vignette={} bloom={} fxaa={} transparency={}",
+            "[SEED INIT] graphics settings loaded  rt_shadows={} post_vignette={} bloom={} fxaa={} transparency={} deferred={}",
             self.rt_shadows, self.post_vignette_enabled,
             self.post_fx.bloom_enabled, self.post_fx.fxaa_enabled,
-            self.post_fx.transparency.as_str(),
+            self.post_fx.transparency.as_str(), self.post_fx.deferred,
         );
     }
 
