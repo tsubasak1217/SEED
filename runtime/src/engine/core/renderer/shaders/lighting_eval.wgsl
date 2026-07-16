@@ -157,6 +157,16 @@ fn shade_light(
 ///   - rt_shadow_enabled()==true : インラインレイトレ（rt_shadow_on.wgsl, group4 binding6）。
 /// rt_shadow_enabled()/rt_shadow_factor() の実体は連結される rt_shadow_{on,off}.wgsl が供給する。
 fn evaluate_lighting(s: Surface) -> vec3<f32> {
+    // ── ビューモード分岐（エディタのシーンビュー専用・アンリット／ワイヤ）──────
+    // u_light_meta.view_mode が 0 以外（Unlit=1 / Wireframe=2）のときは、ライティング
+    // 計算（アンビエント・ライトループ・影）を一切行わず、アルベド（頂点カラー・ベース
+    // カラー畳み込み済み）＋エミッシブをそのまま返すフラット表示にする。
+    // この分岐が効くのはメインカメラのパスだけ（プレビュー用 LightMeta は常に view_mode=0）。
+    // Wireframe も色はアンリットで同一（線と塗りの違いはパイプラインの PolygonMode が担う）。
+    if u_light_meta.view_mode != 0u {
+        return s.albedo + s.emissive;
+    }
+
     // 3 本の法線（いずれも採取段で裏面反転済み。surface.wgsl の解説を参照）。
     //   N  : 法線マップ後のシェーディング法線 → BRDF 専用
     //   Nv : 補間頂点法線（滑らか）           → RT 影の減衰判定（ターミネータ／バイアス）

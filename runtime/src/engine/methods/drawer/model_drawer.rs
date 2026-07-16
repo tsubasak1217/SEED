@@ -35,6 +35,13 @@ pub fn draw_model_indirect<'pass>(
     // （スキン/メッシュレット無し/Blend/非アクティブスロット）は従来 draw_indexed へ自動フォールバック。
     // preview/gizmo 等の呼び出しは false を渡し、従来経路と完全一致（パリティ担保）。
     meshlet_cull: bool,
+    // エディタのシーンビュー「ワイヤーフレーム」モードで描くか（メインカメラのパスのみ true）。
+    // true かつワイヤ用パイプラインが存在するとき、cull=None・PolygonMode::Line の単一
+    // パイプラインで線描画する（カリング面バリアントは使わない）。
+    // ワイヤ用パイプラインは非 RT・非対応 GPU では None のため、その場合は通常の塗り
+    // （フラグメントは LightMeta.view_mode によりアンリット表示）へ自動フォールバックする。
+    // 呼び出し側はワイヤ時に rt_pipes=None・メインカメラ用（非 RT）lights_bg を渡すこと。
+    wireframe: bool,
 ) {
     if batch.n_prims == 0 { return; }
 
@@ -46,6 +53,11 @@ pub fn draw_model_indirect<'pass>(
     let mesh_pipelines    = rt_pipes.map_or(&pipelines.mesh.pipelines,         |r| &r.mesh);
     let skinned_pipelines = rt_pipes.map_or(&pipelines.skinned_mesh.pipelines, |r| &r.skinned);
     let empty_bg3         = rt_pipes.map_or(&pipelines.mesh.empty_bg3,         |r| &r.empty_bg3);
+
+    // ワイヤ用パイプライン（対応 GPU かつ wireframe 指定時のみ Some）。
+    // Some のとき set_pipeline はカリング面バリアントの代わりにこの単一パイプラインを使う。
+    let wire_mesh    = if wireframe { pipelines.mesh.wireframe.as_ref() }         else { None };
+    let wire_skinned = if wireframe { pipelines.skinned_mesh.wireframe.as_ref() } else { None };
 
     for lod in 0..NUM_LODS {
         let visible = batch.lod_visible_counts[lod];
@@ -91,7 +103,8 @@ pub fn draw_model_indirect<'pass>(
             // ルールを場合分けするより安全側に倒す）。
             if cur_skinned != Some(draw.is_skinned) || cur_cull != Some(cull) {
                 if draw.is_skinned {
-                    render_pass.set_pipeline(&skinned_pipelines[cull.index()]);
+                    // ワイヤ用があればそれを、なければ従来のカリング面バリアントを使う。
+                    render_pass.set_pipeline(wire_skinned.unwrap_or(&skinned_pipelines[cull.index()]));
                     // GPU スキニング: コンピュートシェーダが書き込んだ joint BG を設定
                     if let Some(jbg) = joint_bg {
                         render_pass.set_bind_group(3, jbg, &[]);
@@ -99,7 +112,7 @@ pub fn draw_model_indirect<'pass>(
                         render_pass.set_bind_group(3, &gpu_model.identity_joints_bg, &[]);
                     }
                 } else {
-                    render_pass.set_pipeline(&mesh_pipelines[cull.index()]);
+                    render_pass.set_pipeline(wire_mesh.unwrap_or(&mesh_pipelines[cull.index()]));
                     // group 3: mesh パイプラインではライト（group 4）参照の都合で
                     // レイアウト上「空の gap グループ」になる。wgpu はレイアウトに
                     // 存在する全 group への BindGroup 設定を要求する（未設定のまま
@@ -140,7 +153,9 @@ pub fn draw_model_indirect<'pass>(
             // 対象条件を満たすとき: 展開済みメッシュレットインデックスを張り、
             // カリング compute が詰めた DrawIndexedIndirect を multi_draw_indexed_indirect_count で描画。
             // instance_index は各コマンドの first_instance（= 可視インスタンス番号）から供給される。
-            if meshlet_cull && lod == 0 && !draw.is_skinned {
+            // ワイヤ時はメッシュレット間接描画を使わず従来 draw_indexed で線描画する
+            // （ワイヤ用パイプラインとの経路を単純化し、想定外の相互作用を避ける）。
+            if meshlet_cull && !wireframe && lod == 0 && !draw.is_skinned {
                 if let (Some(mi_buf), Some((cmd_buf, count_buf, capacity))) =
                     (prim.meshlet_index_buffer.as_ref(), batch.meshlet_draw(draw_idx))
                 {

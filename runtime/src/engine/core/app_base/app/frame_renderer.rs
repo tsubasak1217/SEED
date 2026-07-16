@@ -961,10 +961,21 @@ impl App {
                     let meshlet_active = self.post_fx.meshlet_cull
                         && crate::engine::core::renderer::gpu_resources::meshlet_cull_supported();
 
+                    // エディタのシーンビュー表示モード（デバッグカメラ専用）。
+                    // Play 中・非 Edit では Lit（0）に固定し、ゲーム本編の見た目へ一切影響させない。
+                    // メインカメラ用 LightMeta にのみ書き込まれ、プレビュー小窓（別 LightMeta・
+                    // view_mode=0 固定）は常にライティング表示のまま維持される。
+                    let scene_view_mode_code = if self.mode == RuntimeMode::Edit {
+                        self.scene_view_mode.to_code()
+                    } else {
+                        0
+                    };
+
                     // ライト配列を GPU へアップロードする（全メッシュ描画が group 4 で共用）。
-                    // メタ（ライト数・RT 影フラグ）も同時に更新される。shadow_index 確定後にアップロードする。
+                    // メタ（ライト数・RT 影フラグ・ビューモード）も同時に更新される。shadow_index 確定後にアップロードする。
                     draw_ctx.light_buffer.update(
                         &draw_ctx.queue, &frame_lights, rt_on,
+                        scene_view_mode_code,
                         self.ambient_color, self.ambient_intensity,
                     );
 
@@ -1632,7 +1643,8 @@ impl App {
                                         &mut preview_pass, gpu, &sd.batch,
                                         &preview_mesh_cam_buf.bind_group,
                                         draw_ctx.light_buffer.bind_group(LightingPass::CameraPreview),
-                                        &draw_ctx.pipelines, None, false,
+                                        // プレビュー小窓は常にライティング ON・塗り（ワイヤなし）。
+                                        &draw_ctx.pipelines, None, false, false,
                                     );
                                 }
                             }
@@ -3200,8 +3212,17 @@ impl App {
                         // - rt_draw_ref: RT 影リソースの共有借用（bind_group をパス全体で参照するため保持）。
                         // - rt_pipes:    RT バリアントパイプライン（Some のとき draw_model_indirect が使う）。
                         // - scene_lights_bg: メッシュ描画の group 4。RT オン時は TLAS を含む複合 BG。
-                        let rt_draw_ref = if rt_on { draw_ctx.rt_shadow.as_ref().map(|c| c.borrow()) } else { None };
-                        let rt_pipes = if rt_on { draw_ctx.pipelines.rt.as_ref() } else { None };
+                        // ワイヤーフレーム表示（エディタのシーンビュー・対応 GPU のみ）。
+                        // ワイヤ用パイプラインは非 RT レイアウトのため、ワイヤ時は RT を使わず
+                        // 非 RT のメインカメラ用 lights BG と組み合わせる。非対応 GPU では false と
+                        // なり、通常の塗り経路（フラグメントは view_mode によりアンリット）へ落ちる。
+                        let scene_wireframe = self.mode == RuntimeMode::Edit
+                            && self.scene_view_mode.is_wireframe()
+                            && crate::engine::core::renderer::wireframe_supported();
+                        // ワイヤ時は RT を無効化する（塗り／RT とワイヤの経路を混在させない）。
+                        let use_rt = rt_on && !scene_wireframe;
+                        let rt_draw_ref = if use_rt { draw_ctx.rt_shadow.as_ref().map(|c| c.borrow()) } else { None };
+                        let rt_pipes = if use_rt { draw_ctx.pipelines.rt.as_ref() } else { None };
                         let scene_lights_bg: &wgpu::BindGroup = rt_draw_ref
                             .as_ref()
                             .map(|r| &r.bind_group)
@@ -3297,6 +3318,7 @@ impl App {
                                         &mut pass, gpu, &sd.batch,
                                         &camera_buf.bind_group, scene_lights_bg,
                                         &draw_ctx.pipelines, rt_pipes, meshlet_active,
+                                        scene_wireframe,
                                     );
                                 }
                             }
@@ -3659,7 +3681,8 @@ impl App {
                                 draw_model_indirect(
                                     &mut pass, &gizmo.gpu_model, &gizmo.batch,
                                     &camera_buf.bind_group, draw_ctx.light_buffer.bind_group(LightingPass::MainCamera),
-                                    &draw_ctx.pipelines, None, false,
+                                    // エディタギズモアイコンはワイヤ化しない（従来どおり塗りで表示）。
+                                    &draw_ctx.pipelines, None, false, false,
                                 );
                             }
                         }
@@ -3670,7 +3693,7 @@ impl App {
                                 draw_model_indirect(
                                     &mut pass, &gizmo.gpu_model, &gizmo.batch,
                                     &camera_buf.bind_group, draw_ctx.light_buffer.bind_group(LightingPass::MainCamera),
-                                    &draw_ctx.pipelines, None, false,
+                                    &draw_ctx.pipelines, None, false, false,
                                 );
                             }
                         }
@@ -3681,7 +3704,7 @@ impl App {
                                 draw_model_indirect(
                                     &mut pass, &gizmo.gpu_model, &gizmo.batch,
                                     &camera_buf.bind_group, draw_ctx.light_buffer.bind_group(LightingPass::MainCamera),
-                                    &draw_ctx.pipelines, None, false,
+                                    &draw_ctx.pipelines, None, false, false,
                                 );
                             }
                         }

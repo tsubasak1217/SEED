@@ -269,7 +269,7 @@ fn normalize(v: [f32; 3]) -> [f32; 3] {
 
 /// ライト配列のメタ情報 uniform（32 bytes）。
 ///
-/// count / rt_shadows / ambient_* が意味を持ち、_pad は 16 バイト境界のためのパディング。
+/// count / rt_shadows / view_mode / ambient_* が意味を持ち、_pad は 16 バイト境界のためのパディング。
 /// WGSL 側 LightMeta（shader_common.wgsl）と厳密に一致させること:
 ///   先頭スカラー 4 つ（16B）→ ambient_color: vec3（16B 境界, offset 16）→ ambient_intensity（offset 28）。
 ///
@@ -277,8 +277,8 @@ fn normalize(v: [f32; 3]) -> [f32; 3] {
 /// |--------|-------------------|------|
 /// |   0    | count             |   4  |
 /// |   4    | rt_shadows        |   4  |
-/// |   8    | _pad[0]           |   4  |
-/// |  12    | _pad[1]           |   4  |
+/// |   8    | view_mode         |   4  |
+/// |  12    | _pad              |   4  |
 /// |  16    | ambient_color     |  12  |
 /// |  28    | ambient_intensity |   4  |
 /// 合計 32
@@ -291,8 +291,13 @@ pub struct LightMeta {
     /// RT 対応 GPU でのみ RT パイプラインが読む。有効時は全ライト種で遮蔽レイを飛ばし、
     /// 無効時（および RT 非対応パイプライン）は従来のシャドウマップ経路を使う。
     pub rt_shadows: u32,
+    /// エディタのシーンビュー表示モード（0=Lit / 1=Unlit / 2=Wireframe。SceneViewMode::to_code）。
+    /// 0 以外のとき evaluate_lighting はライティングを行わずアルベド＋エミッシブを返す。
+    /// メインカメラ用 LightMeta にのみ非 0 を書き込み、プレビュー用は常に 0（＝Lit）にすることで、
+    /// アンリット／ワイヤをエディタのシーンビュー（デバッグカメラ）だけに限定する。
+    pub view_mode:  u32,
     /// アライメント用パディング（ambient_color を 16 バイト境界へ揃える）。
-    pub _pad:       [u32; 2],
+    pub _pad:       u32,
     /// 環境光の色（リニア RGB, Phase R1.5）。既定は白。
     pub ambient_color: [f32; 3],
     /// 環境光の強度（Phase R1.5）。既定 0.05（従来のハードコード値）。0 で完全な暗闇。
@@ -309,8 +314,13 @@ pub struct LightBuffer {
     /// array<GpuLight>（storage, read）。容量 MAX_LIGHTS 固定。
     /// クラスタ構築 compute（clustered.rs）も同じバッファを group 0 で読む。
     lights_buffer: wgpu::Buffer,
-    /// LightMeta（uniform）。
-    meta_buffer:   wgpu::Buffer,
+    /// **メインカメラ用** LightMeta（uniform）。view_mode に実際の表示モードが入り得る。
+    /// メインカメラで描く全パス（不透明・距離ソート透明・WBOIT・RT・ギズモアイコン）が読む。
+    meta_buffer_main:    wgpu::Buffer,
+    /// **カメラプレビュー用** LightMeta（uniform）。view_mode は常に 0（＝Lit）。
+    /// count / rt_shadows / ambient は main と同値を書くが、view_mode だけは 0 に固定することで、
+    /// エディタのシーンビューがアンリット／ワイヤでもプレビュー小窓は常にライティング表示になる。
+    meta_buffer_preview: wgpu::Buffer,
     /// group 4 の複合 bind group（binding 0 = lights, 1 = meta,
     /// 2 = CSM 深度配列, 3 = スポット深度配列, 4 = 比較サンプラー, 5 = シャドウ行列 UBO,
     /// 7 = クラスタグリッド, 8 = クラスタライトインデックス, 9 = クラスタパラメータ）。
@@ -366,15 +376,23 @@ impl LightBuffer {
             usage:    wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
 
+        // メインカメラ用・プレビュー用の 2 本の LightMeta を確保する。
+        // 初期値は両方 view_mode=0（Lit）。以降 update() で毎フレーム書き換える。
         let init_meta = LightMeta {
             count:             0,
             rt_shadows:        0,
-            _pad:              [0; 2],
+            view_mode:         0,
+            _pad:              0,
             ambient_color:     DEFAULT_AMBIENT_COLOR,
             ambient_intensity: DEFAULT_AMBIENT_INTENSITY,
         };
-        let meta_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label:    Some("Light Meta Uniform"),
+        let meta_buffer_main = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label:    Some("Light Meta Uniform (main camera)"),
+            contents: bytemuck::bytes_of(&init_meta),
+            usage:    wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+        let meta_buffer_preview = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label:    Some("Light Meta Uniform (camera preview, view_mode=0 固定)"),
             contents: bytemuck::bytes_of(&init_meta),
             usage:    wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
@@ -386,13 +404,15 @@ impl LightBuffer {
         //   binding 2/5 = シャドウ実体（CSM はカメラ視錐台にフィット）
         //   binding 9   = ClusterParams（フロクセル分割は near/far/fov/ビューポート依存）
         // それ以外（ライト配列・メタ・スポット深度・サンプラー・クラスタバッファ本体）は共有する。
-        let make_bg = |label: &str, shadow: &ShadowResources, params: &wgpu::Buffer| {
+        // meta 引数はパスごとに差し替える（main = meta_buffer_main / preview = meta_buffer_preview）。
+        // これにより view_mode（アンリット／ワイヤ）をメインカメラのパスだけに効かせられる。
+        let make_bg = |label: &str, shadow: &ShadowResources, params: &wgpu::Buffer, meta: &wgpu::Buffer| {
             device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label:   Some(label),
                 layout:  bgl,
                 entries: &[
                     wgpu::BindGroupEntry { binding: 0, resource: lights_buffer.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 1, resource: meta_buffer.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 1, resource: meta.as_entire_binding() },
                     wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&shadow.dir_array_view) },
                     wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&shadow.spot_array_view) },
                     wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::Sampler(&shadow.sampler) },
@@ -407,14 +427,16 @@ impl LightBuffer {
             "Lights+Shadow+Cluster BG (group 4, main camera)",
             shadow_main,
             clusters.params_buffer(),
+            &meta_buffer_main,
         );
         let bind_group_preview = make_bg(
             "Lights+Shadow+Cluster BG (group 4, camera preview: cluster disabled + preview CSM)",
             shadow_preview,
             clusters.params_disabled_buffer(),
+            &meta_buffer_preview,
         );
 
-        Self { lights_buffer, meta_buffer, bind_group_main, bind_group_preview }
+        Self { lights_buffer, meta_buffer_main, meta_buffer_preview, bind_group_main, bind_group_preview }
     }
 
     /// そのパス（＝そのカメラ）で bind すべき group 4 複合 BindGroup を返す。
@@ -439,6 +461,9 @@ impl LightBuffer {
     ///
     /// - `rt_shadows`: このフレームでインラインレイトレ影を使うか（Phase R8）。
     ///   RT パイプラインのフラグメントはこの値でシャドウマップ/RT を実行時分岐する。
+    /// - `view_mode`: エディタのシーンビュー表示モードコード（SceneViewMode::to_code。
+    ///   0=Lit / 1=Unlit / 2=Wireframe）。**メインカメラ用 LightMeta にのみ**書き込み、
+    ///   プレビュー用は常に 0（Lit）に固定する。呼び出し側は Play 中や非 Edit では 0 を渡すこと。
     /// - `ambient_color` / `ambient_intensity`: 環境光（Phase R1.5）。
     ///   フラグメントの `ambient = ambient_color * ambient_intensity * albedo * ao`。
     pub fn update(
@@ -446,6 +471,7 @@ impl LightBuffer {
         queue:             &wgpu::Queue,
         lights:            &[GpuLight],
         rt_shadows:        bool,
+        view_mode:         u32,
         ambient_color:     [f32; 3],
         ambient_intensity: f32,
     ) {
@@ -453,14 +479,19 @@ impl LightBuffer {
         if count > 0 {
             queue.write_buffer(&self.lights_buffer, 0, bytemuck::cast_slice(&lights[..count]));
         }
-        let meta = LightMeta {
+        // メインカメラ用: view_mode をそのまま反映（アンリット／ワイヤが効く）。
+        let meta_main = LightMeta {
             count:      count as u32,
             rt_shadows: if rt_shadows { 1 } else { 0 },
-            _pad:       [0; 2],
+            view_mode,
+            _pad:       0,
             ambient_color,
             ambient_intensity,
         };
-        queue.write_buffer(&self.meta_buffer, 0, bytemuck::bytes_of(&meta));
+        queue.write_buffer(&self.meta_buffer_main, 0, bytemuck::bytes_of(&meta_main));
+        // プレビュー用: view_mode を 0（Lit）に固定。それ以外は main と同値。
+        let meta_preview = LightMeta { view_mode: 0, ..meta_main };
+        queue.write_buffer(&self.meta_buffer_preview, 0, bytemuck::bytes_of(&meta_preview));
     }
 
     /// RT 影用の group 4 複合 BindGroup を生成する（Phase R8, RT 対応時のみ）。
@@ -484,7 +515,9 @@ impl LightBuffer {
             layout:  rt_lights_bgl,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: self.lights_buffer.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: self.meta_buffer.as_entire_binding() },
+                // RT パイプラインはメインカメラのパス専用のため、メインカメラ用 LightMeta を使う
+                // （view_mode がアンリット時はフラグメントが早期リターンし、RT レイは飛ばさない）。
+                wgpu::BindGroupEntry { binding: 1, resource: self.meta_buffer_main.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&shadow.dir_array_view) },
                 wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&shadow.spot_array_view) },
                 wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::Sampler(&shadow.sampler) },
@@ -517,12 +550,15 @@ mod layout_tests {
         assert_eq!(offset_of!(GpuLight, soft_radius),  92);
     }
 
-    /// LightMeta は 32 バイト。ambient_color は 16 バイト境界（offset 16）、ambient_intensity は offset 28。
+    /// LightMeta は 32 バイト。view_mode は offset 8（旧 _pad[0] を再利用）、
+    /// ambient_color は 16 バイト境界（offset 16）、ambient_intensity は offset 28。
+    /// WGSL 側 shader_common.wgsl の LightMeta（count/rt_shadows/view_mode/_pad2/ambient_*）と一致。
     #[test]
     fn light_meta_layout() {
         assert_eq!(size_of::<LightMeta>(), 32, "LightMeta は 32 バイト（WGSL uniform と一致）");
         assert_eq!(offset_of!(LightMeta, count),             0);
         assert_eq!(offset_of!(LightMeta, rt_shadows),        4);
+        assert_eq!(offset_of!(LightMeta, view_mode),         8);
         assert_eq!(offset_of!(LightMeta, ambient_color),     16);
         assert_eq!(offset_of!(LightMeta, ambient_intensity), 28);
     }

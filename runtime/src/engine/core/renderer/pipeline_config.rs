@@ -96,6 +96,10 @@ pub struct RenderPipelineBuilder<'d> {
     /// 3 本のパイプラインバリアントとして生成するために使う（TOML を 3 つに増やさない）。
     /// 値は TOML と同じ文字列表現（"Back" | "Front" | "None"）。
     cull_mode_override: Option<&'d str>,
+    /// polygon_mode の上書き（Some のとき既定の Fill より優先）。
+    /// 同一 TOML から塗り（Fill）とワイヤ（Line）のバリアントを作るために使う。
+    /// Line は Features::POLYGON_MODE_LINE（ネイティブ限定）対応 GPU でのみ有効。
+    polygon_mode_override: Option<wgpu::PolygonMode>,
 }
 
 impl<'d> RenderPipelineBuilder<'d> {
@@ -109,7 +113,7 @@ impl<'d> RenderPipelineBuilder<'d> {
         let cfg: PipelineConfig = toml::from_str(toml_src)
             .expect("invalid pipeline TOML");
         Self { device, cfg, surface_format, depth_format, stencil: None, cache: None, label: None,
-               depth_write_override: None, cull_mode_override: None }
+               depth_write_override: None, cull_mode_override: None, polygon_mode_override: None }
     }
 
     /// depth_write を上書きする（TOML の depth_write より優先）。
@@ -124,6 +128,15 @@ impl<'d> RenderPipelineBuilder<'d> {
     /// 同一 TOML からカリング面だけ異なる 3 バリアントを構築する用途に使う。
     pub fn with_cull_mode(mut self, mode: &'d str) -> Self {
         self.cull_mode_override = Some(mode);
+        self
+    }
+
+    /// polygon_mode を上書きする（既定 Fill より優先）。
+    /// 同一 TOML から Fill（塗り）と Line（ワイヤ）のバリアントを構築する用途に使う。
+    /// `wgpu::PolygonMode::Line` は Features::POLYGON_MODE_LINE 対応 GPU でのみ使えるため、
+    /// 呼び出し側が対応可否（view_mode::wireframe_supported）を確認してから指定すること。
+    pub fn with_polygon_mode(mut self, mode: wgpu::PolygonMode) -> Self {
+        self.polygon_mode_override = Some(mode);
         self
     }
 
@@ -157,7 +170,7 @@ impl<'d> RenderPipelineBuilder<'d> {
         F: Fn(&str) -> &'static str,
     {
         let Self { device, cfg, surface_format, depth_format, stencil, cache, label,
-                   depth_write_override, cull_mode_override } = self;
+                   depth_write_override, cull_mode_override, polygon_mode_override } = self;
         // ラベル未指定時は vertex_entry 名を使う（従来の label: None から改善）。
         let pipeline_label = label.unwrap_or(cfg.vertex_entry.as_str());
 
@@ -321,6 +334,8 @@ impl<'d> RenderPipelineBuilder<'d> {
                 topology,
                 front_face,
                 cull_mode,
+                // 上書き指定があればそれを優先（同一 TOML からの Fill/Line バリアント生成用）。
+                polygon_mode: polygon_mode_override.unwrap_or(wgpu::PolygonMode::Fill),
                 ..Default::default()
             },
             depth_stencil,
