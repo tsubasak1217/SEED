@@ -120,6 +120,10 @@ pub struct PostFxSettings {
     pub deferred:        bool,
     /// DDGI（レイトレGI）設定（Phase RT-GI）。相乗りで SET_POST_FX から更新される。
     pub gi:              GiSettings,
+    /// 反射（SSR / RT）の強度倍率（Phase D6）。SET_POST_FX から更新される。
+    /// 反射の有効/無効・方式は RenderFeatures.reflection（ReflectionMode）が決め、
+    /// 本値は反射寄与の全体スケール（既定 1.0）のみを保持する。
+    pub reflection_intensity: f32,
 }
 
 // ─── デフォルト値（マジックナンバー回避）──────────────────────
@@ -142,6 +146,7 @@ impl Default for PostFxSettings {
             meshlet_cull:    true,
             deferred:        true,
             gi:              GiSettings::default(),
+            reflection_intensity: super::reflection::DEFAULT_REFLECTION_INTENSITY,
         }
     }
 }
