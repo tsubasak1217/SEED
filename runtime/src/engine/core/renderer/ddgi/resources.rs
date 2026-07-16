@@ -203,7 +203,43 @@ impl GiResources {
     ///
     /// `active` は「GI をこのフレーム実際に走らせるか」（RT 対応 && 設定 enabled && attach 済み）。
     /// 非 active でも params は enabled=0 で書き、描画側はフラットアンビエントへフォールバックする。
+    /// アトラス4枚（現行＋履歴）をゼロで初期化する（初回のみ）。
+    ///
+    /// 【なぜ encoder.clear_texture ではないか】clear_texture は wgpu の
+    /// Features::CLEAR_TEXTURE を要求し、本エンジンは要求していないため
+    /// 実行時に検証パニックする（実機スモークテストで発覚）。
+    /// Queue::write_texture はコア機能でフィーチャー不要のため、ゼロ埋めデータの
+    /// アップロードで初期化する。1 回きり（数 MB）なのでコストは無視できる。
+    fn ensure_zero_init(&self, queue: &wgpu::Queue) {
+        if self.cleared.get() {
+            return;
+        }
+        /// Rgba16Float の 1 ピクセルあたりバイト数（4ch × f16 2バイト）。
+        const BYTES_PER_PIXEL: u32 = 8;
+        let mut zero_fill = |tex: &wgpu::Texture| {
+            let size = tex.size();
+            let bytes = vec![0u8; (size.width * size.height * BYTES_PER_PIXEL) as usize];
+            queue.write_texture(
+                tex.as_image_copy(),
+                &bytes,
+                wgpu::TexelCopyBufferLayout {
+                    offset:         0,
+                    bytes_per_row:  Some(size.width * BYTES_PER_PIXEL),
+                    rows_per_image: Some(size.height),
+                },
+                size,
+            );
+        };
+        zero_fill(&self.irradiance_tex);
+        zero_fill(&self.irradiance_hist_tex);
+        zero_fill(&self.visibility_tex);
+        zero_fill(&self.visibility_hist_tex);
+        self.cleared.set(true);
+    }
+
     pub fn update_params(&self, queue: &wgpu::Queue, gi: &GiSettings, active: bool) -> u32 {
+        // 初回のみアトラスをゼロ初期化（未初期化 storage テクスチャの読みを避ける）。
+        self.ensure_zero_init(queue);
         let grid = self.grid.get();
         let probe_count = grid.probe_count().max(1);
         let base = self.probe_cursor.get() % probe_count;
@@ -238,15 +274,8 @@ impl GiResources {
         let Some(bg) = self.compute_bg.as_ref() else { return; };
         if probes_this_frame == 0 { return; }
 
-        // 1. 初回クリア（未初期化の storage テクスチャの読みを避ける）。
-        if !self.cleared.get() {
-            let range = wgpu::ImageSubresourceRange::default();
-            encoder.clear_texture(&self.irradiance_tex, &range);
-            encoder.clear_texture(&self.irradiance_hist_tex, &range);
-            encoder.clear_texture(&self.visibility_tex, &range);
-            encoder.clear_texture(&self.visibility_hist_tex, &range);
-            self.cleared.set(true);
-        }
+        // 1. 初回クリアは update_params 内の ensure_zero_init（write_texture 方式）で
+        //    実施済み（clear_texture は CLEAR_TEXTURE フィーチャーが必要なため使わない）。
 
         // 2. atlas -> history コピー（全面）。
         let copy = |enc: &mut wgpu::CommandEncoder, src: &wgpu::Texture, dst: &wgpu::Texture| {
