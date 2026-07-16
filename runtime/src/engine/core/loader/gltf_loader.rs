@@ -264,6 +264,8 @@ fn load_materials(document: &gltf::Document) -> Vec<Material> {
             // これで Sponza のカーテン等、片面しか描かれず裏から見ると消えていたマテリアルが
             // 正しく両面描画される。
             cull_face:        crate::engine::core::loader::model::cull_face_from_double_sided(mat.double_sided()),
+            // 平均アルベド（Phase RT-GI）は既定（白）。ロード後 compute_material_avg_albedo が焼き直す。
+            avg_albedo:       [1.0, 1.0, 1.0, 1.0],
         }
     }).collect()
 }

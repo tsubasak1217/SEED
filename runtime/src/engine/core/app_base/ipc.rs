@@ -140,6 +140,8 @@ pub enum IpcCommand {
         /// SET_POST_FX に相乗りしているのは、エディタが全ビューポート描画設定を 1 本の
         /// SendPostFx()／1 個の SET_POST_FX ハンドラへ集約しているため（追加配線を増やさない）。
         view_mode: crate::engine::core::renderer::SceneViewMode,
+        /// DDGI（レイトレGI）設定（Phase RT-GI）。欠落キーは既定値。
+        gi: crate::engine::core::renderer::GiSettings,
     },
     /// 環境光（アンビエント）の色・強度（Phase R1.5）。
     /// フォーマット: `SET_AMBIENT:{r},{g},{b},{intensity}`（色はリニア RGB）。
@@ -850,7 +852,17 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                                     .and_then(|v| v["view_mode"].as_str())
                                     .unwrap_or("lit"),
                             );
-                            Some(IpcCommand::SetPostFx { bloom, fxaa, bloom_intensity, transparency, meshlet_cull, deferred, view_mode })
+                            // DDGI（Phase RT-GI）。既定値から出発し、存在するキーだけ上書きする。
+                            let mut gi = crate::engine::core::renderer::GiSettings::default();
+                            if let Some(vv) = v.as_ref() {
+                                if let Some(b) = vv["gi_enabled"].as_bool()          { gi.enabled = b; }
+                                if let Some(x) = vv["gi_intensity"].as_f64()         { gi.intensity = x as f32; }
+                                if let Some(x) = vv["gi_probes_per_frame"].as_u64()  { gi.probes_per_frame = x as u32; }
+                                if let Some(x) = vv["gi_rays_per_probe"].as_u64()    { gi.rays_per_probe = x as u32; }
+                                if let Some(x) = vv["gi_hysteresis"].as_f64()        { gi.hysteresis = x as f32; }
+                                if let Some(x) = vv["gi_recursive_weight"].as_f64()  { gi.recursive_weight = x as f32; }
+                            }
+                            Some(IpcCommand::SetPostFx { bloom, fxaa, bloom_intensity, transparency, meshlet_cull, deferred, view_mode, gi })
                         }
                         // 環境光（Phase R1.5）。"SET_AMBIENT:{r},{g},{b},{intensity}"。
                         // 4 要素に満たない／パース不能な場合は無視する（None）。

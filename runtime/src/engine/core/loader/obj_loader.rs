@@ -113,6 +113,8 @@ pub fn load(path: &Path) -> Result<Model, LoadError> {
                 // OBJ/MTL には両面フラグが無いため常に背面カリング（従来挙動）。
                 double_sided:       false,
                 cull_face:          crate::engine::core::loader::model::CullFace::Back,
+                // 平均アルベド（Phase RT-GI）は既定（白）。ロード後 compute_material_avg_albedo が焼き直す。
+                avg_albedo:         [1.0, 1.0, 1.0, 1.0],
             }
         }).collect()
     };

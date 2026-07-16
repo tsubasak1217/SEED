@@ -345,6 +345,14 @@ impl App {
         // Deferred（G-Buffer）レンダリング（Phase D3 Deferred Phase B, 既定 true）。キー欠落時も有効。
         // OFF で従来のフォワード経路へ完全フォールバックする（A/B パリティ検証用）。
         self.post_fx.deferred = v["deferred"].as_bool().unwrap_or(true);
+        // DDGI（Phase RT-GI, 既定 有効・強度 1.0）。既定値から出発し、存在するキーだけ上書きする。
+        // enabled は RT 非対応 GPU では実行時に強制無効化される（frame_renderer のゲート）。
+        if let Some(b) = v["gi_enabled"].as_bool()          { self.post_fx.gi.enabled = b; }
+        if let Some(x) = v["gi_intensity"].as_f64()         { self.post_fx.gi.intensity = x as f32; }
+        if let Some(x) = v["gi_probes_per_frame"].as_u64()  { self.post_fx.gi.probes_per_frame = x as u32; }
+        if let Some(x) = v["gi_rays_per_probe"].as_u64()    { self.post_fx.gi.rays_per_probe = x as u32; }
+        if let Some(x) = v["gi_hysteresis"].as_f64()        { self.post_fx.gi.hysteresis = x as f32; }
+        if let Some(x) = v["gi_recursive_weight"].as_f64()  { self.post_fx.gi.recursive_weight = x as f32; }
         // 環境光（Phase R1.5, 既定 白 × 0.05 ＝従来のハードコード値）。読み側は unwrap_or でデフォルト維持。
         // `ambient_color` は [r,g,b] 配列（欠落・不正時は白）。`ambient_intensity` は 0..1 想定（0 で暗闇）。
         use crate::engine::core::renderer::{DEFAULT_AMBIENT_COLOR, DEFAULT_AMBIENT_INTENSITY};
@@ -360,10 +368,11 @@ impl App {
         self.ambient_intensity =
             v["ambient_intensity"].as_f64().unwrap_or(DEFAULT_AMBIENT_INTENSITY as f64) as f32;
         eprintln!(
-            "[SEED INIT] graphics settings loaded  rt_shadows={} post_vignette={} bloom={} fxaa={} transparency={} deferred={}",
+            "[SEED INIT] graphics settings loaded  rt_shadows={} post_vignette={} bloom={} fxaa={} transparency={} deferred={} gi={} gi_intensity={}",
             self.rt_shadows, self.post_vignette_enabled,
             self.post_fx.bloom_enabled, self.post_fx.fxaa_enabled,
             self.post_fx.transparency.as_str(), self.post_fx.deferred,
+            self.post_fx.gi.enabled, self.post_fx.gi.intensity,
         );
     }
 

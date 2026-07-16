@@ -705,9 +705,21 @@ pub struct GpuModel {
     pub default_material: GpuMaterial,
     /// スキンなしノード用の単位行列ジョイント bind group
     pub identity_joints_bg: wgpu::BindGroup,
+    /// マテリアルごとのプリミティブ平均アルベド（Phase RT-GI, リニア RGBA）。
+    /// materials と同順・同数。DDGI の TLAS パッキング（rt_shadow.rs）が material_index で引く。
+    pub avg_albedos: Vec<[f32; 4]>,
+    /// material_index が無い/範囲外のプリミティブ用の平均アルベド（既定マテリアル由来）。
+    pub default_avg_albedo: [f32; 4],
     // テクスチャ所有権
     #[allow(dead_code)]
     textures: Vec<GpuTexture>,
+}
+
+/// 実効マテリアルからプリミティブ平均アルベド（リニア RGBA）を導く（Phase RT-GI）。
+/// baked 値（テクスチャ平均×元factor）が既定白でなければそれを使い、白なら base_color_factor を使う。
+fn eff_avg_albedo(eff: &Material) -> [f32; 4] {
+    let a = eff.avg_albedo;
+    if a != [1.0, 1.0, 1.0, 1.0] { a } else { eff.base_color_factor }
 }
 
 impl GpuModel {
@@ -732,6 +744,15 @@ impl GpuModel {
             .and_then(|mi| self.materials.get(mi))
             .map(|m| m.cull_face)
             .unwrap_or(self.default_material.cull_face)
+    }
+
+    /// プリミティブのマテリアルインデックスからプリミティブ平均アルベドを返す（Phase RT-GI）。
+    /// `material_idx` が None・範囲外のときは default_avg_albedo を返す。
+    /// DDGI のヒット点近似シェーディング（rt_shadow.rs の TLAS パッキング）で唯一の引き当て入口。
+    pub fn primitive_avg_albedo(&self, material_idx: Option<usize>) -> [f32; 4] {
+        material_idx
+            .and_then(|mi| self.avg_albedos.get(mi).copied())
+            .unwrap_or(self.default_avg_albedo)
     }
 
     pub fn upload(
@@ -761,6 +782,10 @@ impl GpuModel {
         let default_material = GpuMaterial::upload(
             device, queue, &default_mat_data, &[], &[], material_bgl, defaults);
 
+        // プリミティブ平均アルベド（Phase RT-GI）。materials と同順で焼く（DDGI の TLAS 引き当て用）。
+        let avg_albedos: Vec<[f32; 4]> = model.materials.iter().map(|m| m.avg_albedo).collect();
+        let default_avg_albedo = default_mat_data.avg_albedo;
+
         // ── メッシュ ───────────────────────────────────────────
         let meshes: Vec<GpuMesh> = model.meshes.iter().map(|mesh| {
             GpuMesh {
@@ -786,7 +811,7 @@ impl GpuModel {
             }],
         });
 
-        Self { meshes, materials, default_material, identity_joints_bg, textures: gpu_textures }
+        Self { meshes, materials, default_material, identity_joints_bg, avg_albedos, default_avg_albedo, textures: gpu_textures }
     }
 
     /// マテリアルオーバーライドを GPU マテリアルへ焼き込む（Phase R7）。
@@ -841,6 +866,9 @@ impl GpuModel {
                         device, queue, &eff, &model.textures, tex_slice, material_bgl, defaults,
                     );
                     self.materials[ovr.slot] = gpu_mat;
+                    // 平均アルベド（Phase RT-GI）も追従させる。baked 値（テクスチャ平均×元factor）を
+                    // 優先し、無い（既定白）ときは base_color_factor を折り込む（近似）。
+                    self.avg_albedos[ovr.slot] = eff_avg_albedo(&eff);
                 }
 
                 // ── .mat アセット差し替え: アセットの factor/alpha + テクスチャを丸ごと適用 ──
@@ -901,6 +929,9 @@ impl GpuModel {
                         device, queue, &eff, &model.textures, &self.textures, material_bgl, defaults,
                     );
                     self.materials[ovr.slot] = gpu_mat;
+                    // 平均アルベド（Phase RT-GI）。.mat の実効マテリアルには baked 平均が無いため
+                    // base_color_factor を折り込む（テクスチャ色味は反映されない近似。docs 参照）。
+                    self.avg_albedos[ovr.slot] = eff_avg_albedo(&eff);
                 }
             }
         }
@@ -1679,6 +1710,21 @@ impl InstancedModelBatch {
     ///   「どのマテリアルが影を落とすか」の判断を呼び出し側（rt_shadow.rs）へ委ねるため。
     ///   バッチは幾何とマテリアル参照の列挙だけを担い、alpha_mode の解釈は行わない
     ///   （`GpuModel::primitive_alpha_mode()` が解釈の単一の場所）。
+    /// このバッチの全インスタンスのワールド AABB を包む境界（DDGI 格子フィット用, Phase RT-GI）。
+    /// world_aabbs（描画時のカリングで計算・キャッシュ）が空なら None。
+    pub fn world_bounds(&self) -> Option<([f32; 3], [f32; 3])> {
+        if self.world_aabbs.is_empty() { return None; }
+        let mut mn = [f32::INFINITY; 3];
+        let mut mx = [f32::NEG_INFINITY; 3];
+        for a in &self.world_aabbs {
+            for i in 0..3 {
+                mn[i] = mn[i].min(a.aabb_min[i]);
+                mx[i] = mx[i].max(a.aabb_max[i]);
+            }
+        }
+        Some((mn, mx))
+    }
+
     pub fn rt_enumerate<F: FnMut(usize, usize, Option<usize>, [f32; 12])>(&self, mut f: F) {
         // ワールド行列キャッシュが未生成（update 未実行）なら何もしない。
         if self.world_mats_cache.is_empty() || self.n_mesh_nodes == 0 { return; }

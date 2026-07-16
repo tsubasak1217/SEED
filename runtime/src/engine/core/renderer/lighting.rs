@@ -387,6 +387,7 @@ impl LightBuffer {
         shadow_main:    &ShadowResources,
         shadow_preview: &ShadowResources,
         clusters:       &super::clustered::ClusterResources,
+        gi:             &super::ddgi::GiResources,
     ) -> Self {
         // storage 配列は最初から MAX_LIGHTS 分ゼロ確保する（実行時サイズ変更を避ける）。
         let init_lights = vec![GpuLight::zeroed(); MAX_LIGHTS];
@@ -426,7 +427,7 @@ impl LightBuffer {
         // それ以外（ライト配列・メタ・スポット深度・サンプラー・クラスタバッファ本体）は共有する。
         // meta 引数はパスごとに差し替える（main = meta_buffer_main / preview = meta_buffer_preview）。
         // これにより view_mode（アンリット／ワイヤ）をメインカメラのパスだけに効かせられる。
-        let make_bg = |label: &str, shadow: &ShadowResources, params: &wgpu::Buffer, meta: &wgpu::Buffer| {
+        let make_bg = |label: &str, shadow: &ShadowResources, params: &wgpu::Buffer, meta: &wgpu::Buffer, gi_params: &wgpu::Buffer| {
             device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label:   Some(label),
                 layout:  bgl,
@@ -440,6 +441,11 @@ impl LightBuffer {
                     wgpu::BindGroupEntry { binding: 7, resource: clusters.grid_buffer().as_entire_binding() },
                     wgpu::BindGroupEntry { binding: 8, resource: clusters.indices_buffer().as_entire_binding() },
                     wgpu::BindGroupEntry { binding: 9, resource: params.as_entire_binding() },
+                    // DDGI（Phase RT-GI）: GiParams（binding10）＋放射輝度/可視性アトラス（11/12）＋サンプラ（13）。
+                    wgpu::BindGroupEntry { binding: 10, resource: gi_params.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 11, resource: wgpu::BindingResource::TextureView(gi.irradiance_view()) },
+                    wgpu::BindGroupEntry { binding: 12, resource: wgpu::BindingResource::TextureView(gi.visibility_view()) },
+                    wgpu::BindGroupEntry { binding: 13, resource: wgpu::BindingResource::Sampler(gi.sampler()) },
                 ],
             })
         };
@@ -448,12 +454,14 @@ impl LightBuffer {
             shadow_main,
             clusters.params_buffer(),
             &meta_buffer_main,
+            gi.params_buffer(),
         );
         let bind_group_preview = make_bg(
             "Lights+Shadow+Cluster BG (group 4, camera preview: cluster disabled + preview CSM)",
             shadow_preview,
             clusters.params_disabled_buffer(),
             &meta_buffer_preview,
+            gi.params_disabled_buffer(),
         );
 
         Self { lights_buffer, meta_buffer_main, meta_buffer_preview, bind_group_main, bind_group_preview }
@@ -473,6 +481,9 @@ impl LightBuffer {
 
     /// ライト storage buffer への参照（クラスタ構築 compute の BindGroup 生成に使う）。
     pub fn lights_buffer(&self) -> &wgpu::Buffer { &self.lights_buffer }
+
+    /// メインカメラ用 LightMeta uniform への参照（GI compute の binding2 に使う）。
+    pub fn meta_main_buffer(&self) -> &wgpu::Buffer { &self.meta_buffer_main }
 
     /// 有効ライト配列を GPU へアップロードする（MAX_LIGHTS を超える分は切り捨て）。
     ///
@@ -528,6 +539,7 @@ impl LightBuffer {
         rt_lights_bgl: &wgpu::BindGroupLayout,
         shadow:        &ShadowResources,
         clusters:      &super::clustered::ClusterResources,
+        gi:            &super::ddgi::GiResources,
         tlas:          &wgpu::Tlas,
     ) -> wgpu::BindGroup {
         device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -546,6 +558,11 @@ impl LightBuffer {
                 wgpu::BindGroupEntry { binding: 7, resource: clusters.grid_buffer().as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 8, resource: clusters.indices_buffer().as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 9, resource: clusters.params_buffer().as_entire_binding() },
+                // DDGI（Phase RT-GI）。RT パスはメインカメラ専用のためライブ GiParams を差す。
+                wgpu::BindGroupEntry { binding: 10, resource: gi.params_buffer().as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 11, resource: wgpu::BindingResource::TextureView(gi.irradiance_view()) },
+                wgpu::BindGroupEntry { binding: 12, resource: wgpu::BindingResource::TextureView(gi.visibility_view()) },
+                wgpu::BindGroupEntry { binding: 13, resource: wgpu::BindingResource::Sampler(gi.sampler()) },
             ],
         })
     }
@@ -599,8 +616,9 @@ mod layout_tests {
         // light_common.wgsl は cluster_common.wgsl の型（ClusterCell 等）を参照するため
         // 実パイプラインと同じ順で連結して parse する。
         let src = format!(
-            "{}\n{}",
+            "{}\n{}\n{}",
             include_str!("shaders/cluster_common.wgsl"),
+            include_str!("shaders/ddgi_common.wgsl"),
             include_str!("shaders/light_common.wgsl"),
         );
         let module = naga::front::wgsl::parse_str(&src)

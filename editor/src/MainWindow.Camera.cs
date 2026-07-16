@@ -80,6 +80,8 @@ public partial class MainWindow
 
     /// <summary>ブルーム強度のデフォルト値。見た目を変えない後方互換のため 0.6 とする。</summary>
     private const double DefaultBloomIntensity = 0.6;
+    /// <summary>GI 強度のデフォルト値（Phase RT-GI）。SET_POST_FX の "gi_intensity" フィールドに使う。</summary>
+    private const double DefaultGiIntensity = 1.0;
 
     /// <summary>透明描画方式のデフォルト値（距離ソート）。SET_POST_FX の "transparency" フィールドに使う。</summary>
     private const string DefaultTransparencyMode = "sort";
@@ -111,8 +113,12 @@ public partial class MainWindow
         // シーンビュー表示モード（"lit" / "unlit" / "wireframe"）。未選択・null 時は既定の "lit"。
         string viewMode = (CmbViewMode?.SelectedItem as System.Windows.Controls.ComboBoxItem)?.Tag as string
                           ?? DefaultViewMode;
+        // RT-GI（レイトレ間接光, Phase RT-GI）。null（未初期化）時は既定 true。強度スライダは既定 1.0。
+        // enabled は RT 非対応 GPU ではランタイム側で強制無効化される。
+        bool giEnabled = ChkRtGi?.IsChecked != false;
+        double giIntensity = SldGiIntensity?.Value ?? DefaultGiIntensity;
 
-        string json = $"{{\"bloom\":{(bloom ? "true" : "false")},\"fxaa\":{(fxaa ? "true" : "false")},\"bloom_intensity\":{intensity.ToString(System.Globalization.CultureInfo.InvariantCulture)},\"transparency\":\"{transparency}\",\"meshlet_cull\":{(meshletCull ? "true" : "false")},\"deferred\":{(deferred ? "true" : "false")},\"view_mode\":\"{viewMode}\"}}";
+        string json = $"{{\"bloom\":{(bloom ? "true" : "false")},\"fxaa\":{(fxaa ? "true" : "false")},\"bloom_intensity\":{intensity.ToString(System.Globalization.CultureInfo.InvariantCulture)},\"transparency\":\"{transparency}\",\"meshlet_cull\":{(meshletCull ? "true" : "false")},\"deferred\":{(deferred ? "true" : "false")},\"view_mode\":\"{viewMode}\",\"gi_enabled\":{(giEnabled ? "true" : "false")},\"gi_intensity\":{giIntensity.ToString(System.Globalization.CultureInfo.InvariantCulture)}}}";
         _runtimeManager?.SendToRuntime($"SET_POST_FX:{json}");
     }
 
@@ -458,6 +464,9 @@ public partial class MainWindow
         if (ChkMeshletCull != null) ChkMeshletCull.IsChecked = true;
         // シーンビュー表示モードは既定「ライティングON」（index 0）へリセットする。
         if (CmbViewMode != null) CmbViewMode.SelectedIndex = 0;
+        // RT-GI（Phase RT-GI）は既定 有効・強度 1.0 へリセットする。
+        if (ChkRtGi != null) ChkRtGi.IsChecked = true;
+        if (SldGiIntensity != null) SldGiIntensity.Value = DefaultGiIntensity;
         _updatingControls = false;
         if (_viewportSettingsInitialized)
         {

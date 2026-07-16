@@ -41,6 +41,54 @@ pub const RT_POST_INTER: &str = "post_inter";
 pub const RT_LDR: &str = "post_ldr";
 
 // ============================================================
+//  GiSettings - DDGI（プローブ格子レイトレGI）のランタイム設定
+// ============================================================
+
+/// GI 強度の既定（アンビエント項に対する間接光の倍率）。
+pub const DEFAULT_GI_INTENSITY: f32 = 1.0;
+/// 1 フレームで更新するプローブ数の既定（ローテーション）。
+pub const DEFAULT_GI_PROBES_PER_FRAME: u32 = 256;
+/// 1 プローブあたりのレイ本数の既定。
+pub const DEFAULT_GI_RAYS_PER_PROBE: u32 = 64;
+/// ヒステリシス（時間的蓄積で前フレームを保持する割合）の既定。
+pub const DEFAULT_GI_HYSTERESIS: f32 = 0.97;
+/// 多重バウンス再帰項の重みの既定。
+pub const DEFAULT_GI_RECURSIVE_WEIGHT: f32 = 0.5;
+
+/// DDGI の設定（SET_POST_FX に相乗り。欠落キーは既定値）。
+///
+/// `enabled` の既定は true だが、RT 非対応 GPU では実行時に強制 false へ落とす
+/// （renderer/mod.rs のケイパビリティ判定 / frame_renderer のゲート）。
+#[derive(Copy, Clone, Debug)]
+pub struct GiSettings {
+    /// GI 有効フラグ（RT 非対応 GPU では強制無効）。
+    pub enabled: bool,
+    /// 間接光の強度倍率。
+    pub intensity: f32,
+    /// 1 フレームで更新するプローブ数（ローテーション）。
+    pub probes_per_frame: u32,
+    /// 1 プローブあたりのレイ本数。
+    pub rays_per_probe: u32,
+    /// 時間的蓄積のヒステリシス（0..1、大きいほど滑らか・遅い）。
+    pub hysteresis: f32,
+    /// 多重バウンス再帰項の重み。
+    pub recursive_weight: f32,
+}
+
+impl Default for GiSettings {
+    fn default() -> Self {
+        Self {
+            enabled:          true,
+            intensity:        DEFAULT_GI_INTENSITY,
+            probes_per_frame: DEFAULT_GI_PROBES_PER_FRAME,
+            rays_per_probe:   DEFAULT_GI_RAYS_PER_PROBE,
+            hysteresis:       DEFAULT_GI_HYSTERESIS,
+            recursive_weight: DEFAULT_GI_RECURSIVE_WEIGHT,
+        }
+    }
+}
+
+// ============================================================
 //  PostFxSettings — ブルーム／FXAA のランタイム設定（Phase R4）
 // ============================================================
 
@@ -73,6 +121,8 @@ pub struct PostFxSettings {
     /// unlit／ワイヤーフレーム／2D シーンビュー等は本フラグに関わらず常にフォワードで描く
     /// （frame_renderer.rs の deferred_active 判定を参照）。
     pub deferred:        bool,
+    /// DDGI（レイトレGI）設定（Phase RT-GI）。相乗りで SET_POST_FX から更新される。
+    pub gi:              GiSettings,
 }
 
 // ─── デフォルト値（マジックナンバー回避）──────────────────────
@@ -94,6 +144,7 @@ impl Default for PostFxSettings {
             transparency:    super::transparency::TransparencyMode::DistanceSort,
             meshlet_cull:    true,
             deferred:        true,
+            gi:              GiSettings::default(),
         }
     }
 }

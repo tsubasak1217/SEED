@@ -175,13 +175,14 @@ mod tests {
         let cluster  = include_str!("shaders/cluster_common.wgsl");
         let pbr_c    = include_str!("shaders/pbr_common.wgsl");
         let light_c  = include_str!("shaders/light_common.wgsl");
+        let ddgi_c   = include_str!("shaders/ddgi_common.wgsl");
         let shadow   = include_str!("shaders/shadow.wgsl");
         let rt_off   = include_str!("shaders/rt_shadow_off.wgsl");
         let surf     = include_str!("shaders/surface.wgsl");
         let light_ev = include_str!("shaders/lighting_eval.wgsl");
         let deferred = include_str!("shaders/deferred_lighting.wgsl");
 
-        let src = [cluster, pbr_c, light_c, shadow, rt_off, surf, light_ev, deferred].join("\n");
+        let src = [cluster, pbr_c, ddgi_c, light_c, shadow, rt_off, surf, light_ev, deferred].join("\n");
         let module = naga::front::wgsl::parse_str(&src)
             .unwrap_or_else(|e| panic!("[deferred_lighting rt_off] WGSL parse 失敗: {e:?}"));
         let mut validator = naga::valid::Validator::new(
@@ -200,13 +201,14 @@ mod tests {
         let cluster  = include_str!("shaders/cluster_common.wgsl");
         let pbr_c    = include_str!("shaders/pbr_common.wgsl");
         let light_c  = include_str!("shaders/light_common.wgsl");
+        let ddgi_c   = include_str!("shaders/ddgi_common.wgsl");
         let shadow   = include_str!("shaders/shadow.wgsl");
         let rt_on    = include_str!("shaders/rt_shadow_on.wgsl");
         let surf     = include_str!("shaders/surface.wgsl");
         let light_ev = include_str!("shaders/lighting_eval.wgsl");
         let deferred = include_str!("shaders/deferred_lighting.wgsl");
 
-        let src = [cluster, pbr_c, light_c, shadow, rt_on, surf, light_ev, deferred].join("\n");
+        let src = [cluster, pbr_c, ddgi_c, light_c, shadow, rt_on, surf, light_ev, deferred].join("\n");
         let module = naga::front::wgsl::parse_str(&src)
             .unwrap_or_else(|e| panic!("[deferred_lighting rt_on] WGSL parse 失敗: {e:?}"));
         let mut validator = naga::valid::Validator::new(

@@ -12,6 +12,7 @@ pub(crate) mod animator;
 pub(crate) mod lighting;
 /// Clustered Lighting（3D フロクセル単位のライトカリング, Phase C1）
 pub(crate) mod clustered;
+pub(crate) mod ddgi;
 pub(crate) mod shadow;
 pub(crate) mod rt_shadow;
 pub(crate) mod post;
@@ -58,7 +59,7 @@ pub use rt_shadow::RtShadowResources;
 pub use post::{RtPool, PostContext, VignetteParams, VignetteStage,
                PostFxSettings, BloomParams, BloomPipelines,
                DEFAULT_BLOOM_THRESHOLD, DEFAULT_BLOOM_KNEE, DEFAULT_BLOOM_INTENSITY,
-               RT_SCENE_HDR, RT_POST_INTER, RT_LDR};
+               RT_SCENE_HDR, RT_POST_INTER, RT_LDR, GiSettings};
 pub use transparency::{TransparencyMode, TransparentPipelines,
                        RT_WBOIT_ACCUM, RT_WBOIT_REVEAL,
                        WBOIT_ACCUM_FORMAT, WBOIT_REVEAL_FORMAT};
@@ -226,6 +227,22 @@ impl Renderer {
                 (true,  true ) => "不明",
             };
             eprintln!("[SEED RT] インラインレイトレ: 非対応（{reason}）→ シャドウマップ経路を使用");
+        }
+
+        // DDGI（Phase RT-GI）は EXPERIMENTAL_RAY_QUERY（プローブ更新 compute の rayQuery）に依存する
+        // ため、RT 対応と同一条件で有効になる。非対応 GPU では GI 無効＝従来のフラットアンビエント。
+        {
+            let dims = ddgi::GI_DEFAULT_DIMS;
+            let probes = dims[0] * dims[1] * dims[2];
+            let ppf = crate::engine::core::renderer::post::DEFAULT_GI_PROBES_PER_FRAME;
+            let rpp = crate::engine::core::renderer::post::DEFAULT_GI_RAYS_PER_PROBE;
+            if supports_rt {
+                eprintln!(
+                    "[SEED GI] DDGI: 有効（プローブ {probes} 個 / 更新 {ppf}個×{rpp}レイ/フレーム）"
+                );
+            } else {
+                eprintln!("[SEED GI] DDGI: 非対応（EXPERIMENTAL_RAY_QUERY 非対応）→ フラットアンビエントを使用");
+            }
         }
 
         // GPU メッシュレットカリング（第1弾）は MULTI_DRAW_INDIRECT_COUNT に依存する。
