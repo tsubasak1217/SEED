@@ -39,7 +39,7 @@
 // シャドウを本グループへ同居させている（Rust 側の複合 BindGroup は lighting.rs）。
 //
 // GpuLight のレイアウトは Rust 側 lighting.rs の repr(C) 構造体と
-// 厳密に一致させること（vec3 は 16 バイト境界、合計 96 バイト）。
+// 厳密に一致させること（vec3 は 16 バイト境界、合計 112 バイト）。
 
 // ライト種別コード（LIGHT_KIND_*）は cluster_common.wgsl へ移設済み。
 // クラスタ構築 compute（cluster_build.wgsl）も種別ごとのバウンディング体積を求めるのに
@@ -66,6 +66,10 @@ struct GpuLight {
                                    //     directional: tan(角径) の無次元スロープ（Rust 側で度→tan 変換済み）
                                    //     point/spot/rect: 光源のワールド半径（シェーダで radius/距離＝見込み角に換算）
                                    //     0 = ハードシャドウ（従来の遮蔽レイ 1 本）
+    bounce_intensity: f32,         // 96  疑似バウンス（間接光近似）の強度。0 = 無効。
+                                   //     lighting_eval.wgsl が無方向・影非適用・幾何ゲート非適用の
+                                   //     淡い光を距離減衰つきで撒く項の係数。directional は常に 0。
+    _pad_bounce:      vec3<f32>,   // 100 stride 112（16 の倍数）へ揃えるパディング（未使用）
 }
 
 // count = 有効ライト数、rt_shadows = インラインレイトレ影フラグ（Phase R8, 0/1）。

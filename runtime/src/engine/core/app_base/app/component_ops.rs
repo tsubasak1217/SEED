@@ -395,13 +395,14 @@ impl App {
                     // ライト: 種別・色・強度・range・スポット内外角・rect サイズ・影フラグを
                     // インスペクター用に送信する（種別ごとに関連フィールドのみ UI 側で表示する）。
                     ("LightComponent", format!(
-                        r#","kind":"{}","lr":{:.4},"lg":{:.4},"lb":{:.4},"intensity":{:.4},"range":{:.4},"inner_angle":{:.4},"outer_angle":{:.4},"rect_width":{:.4},"rect_height":{:.4},"soft_radius":{:.4},"cast_shadows":{}"#,
+                        r#","kind":"{}","lr":{:.4},"lg":{:.4},"lb":{:.4},"intensity":{:.4},"range":{:.4},"inner_angle":{:.4},"outer_angle":{:.4},"rect_width":{:.4},"rect_height":{:.4},"soft_radius":{:.4},"bounce_intensity":{:.4},"cast_shadows":{}"#,
                         d.kind.as_str(),
                         d.color[0], d.color[1], d.color[2],
                         d.intensity, d.range,
                         d.inner_angle_deg, d.outer_angle_deg,
                         d.rect_width, d.rect_height,
                         d.soft_radius,
+                        d.bounce_intensity,
                         d.cast_shadows as u8,
                     ))
                 }

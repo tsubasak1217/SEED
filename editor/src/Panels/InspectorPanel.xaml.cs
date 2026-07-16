@@ -446,6 +446,8 @@ public partial class InspectorPanel : UserControl
         bool LightCastShadows = true,
         // ソフト影の見込み半径（directional=角径(度) / 局所光=ワールド半径。0 でハード影。RT 影時のみ効果）
         float LightSoftRadius = 0.25f,
+        // 疑似バウンス（間接光近似）の強度。0 で無効（既定）。directional では非表示。
+        float LightBounceIntensity = 0f,
         // ModelComponent 用フィールド（影を落とすか。シャドウマップレンダリングで使用）
         bool ModelCastShadows = true,
         // JointAttachComponent 用フィールド（追従先ジョイント名・親モデルのジョイント一覧・
@@ -746,6 +748,7 @@ public partial class InspectorPanel : UserControl
             var lightRectWidth   = comp.TryGetProperty("rect_width",   out var lrw) ? lrw.GetSingle() : 1f;
             var lightRectHeight  = comp.TryGetProperty("rect_height",  out var lrh) ? lrh.GetSingle() : 1f;
             var lightSoftRadius  = comp.TryGetProperty("soft_radius",  out var lsr) ? lsr.GetSingle() : 0.25f;
+            var lightBounce      = comp.TryGetProperty("bounce_intensity", out var lbi) ? lbi.GetSingle() : 0f;
             var lightCastShadows = comp.TryGetProperty("cast_shadows", out var lcs) ? ReadJsonBool(lcs, true) : true;
             // JointAttachComponent 用: 追従先ジョイント名・親モデルのジョイント名一覧（ドロップダウン選択肢）・
             // 位置/回転(YXZオイラー角・度)/スケールのオフセット。joints は文字列配列。欠落時は空配列
@@ -855,6 +858,7 @@ public partial class InspectorPanel : UserControl
                 LightRectWidth: lightRectWidth, LightRectHeight: lightRectHeight,
                 LightCastShadows: lightCastShadows,
                 LightSoftRadius: lightSoftRadius,
+                LightBounceIntensity: lightBounce,
                 ModelCastShadows: modelCastShadows,
                 JointName: jaJointName, Joints: jaJoints,
                 JaOffPX: jaOffPX, JaOffPY: jaOffPY, JaOffPZ: jaOffPZ,
@@ -4024,6 +4028,9 @@ public partial class InspectorPanel : UserControl
         // ソフト影半径: directional は角径(度)、point/spot/rect はワールド半径。0 でハード影。
         // RT 影が有効なときのみ影のボケに反映される（品質オプション）。全種別で表示。
         AddFloatRow("ソフト影半径", info.LightSoftRadius, "soft_radius");
+        // 疑似バウンス（間接光近似）強度。0..1 目安・既定 0。影の中にも光が回り込む見た目を出す。
+        // directional は減衰の基準距離が無いため対象外＝directional 選択時は非表示にする。
+        var bounceRow = AddFloatRow("バウンス強度", info.LightBounceIntensity, "bounce_intensity");
 
         // ── 影を落とす（R2 で使用）────────────────────────────
         var shadowRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 4, 0, 2) };
@@ -4054,6 +4061,8 @@ public partial class InspectorPanel : UserControl
             outerRow.Visibility = isSpot ? Visibility.Visible : Visibility.Collapsed;
             rectWRow.Visibility = isRect ? Visibility.Visible : Visibility.Collapsed;
             rectHRow.Visibility = isRect ? Visibility.Visible : Visibility.Collapsed;
+            // バウンス（疑似間接光）は directional 以外（point/spot/rect）でのみ表示する。
+            bounceRow.Visibility = (isPoint || isSpot || isRect) ? Visibility.Visible : Visibility.Collapsed;
         }
         UpdateKindVisibility(info.LightKind);
         kindCombo.SelectionChanged += (_, _) =>
