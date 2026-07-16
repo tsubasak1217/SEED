@@ -911,6 +911,24 @@
                                                 Height="28"
                                                 Visibility="Visible">
                                             <DockPanel>
+                                                <!-- 右端固定: シーンビュー表示モード（ライティングON / OFF / ワイヤーフレーム）。
+                                                     エディタのシーンビュー（デバッグカメラ）だけに効き、ゲームカメラの
+                                                     プレビュー小窓・Play の見た目には影響しない（ランタイム側でゲート）。
+                                                     Tag は SET_POST_FX の "view_mode" フィールド値をそのまま保持する。
+                                                     セッション内のみ有効（永続化なし）＝既定は毎起動「ライティングON」。 -->
+                                                <ComboBox x:Name="CmbViewMode"
+                                                          DockPanel.Dock="Right"
+                                                          Width="140" Height="22"
+                                                          Margin="4,3"
+                                                          FontSize="11"
+                                                          VerticalAlignment="Center"
+                                                          SelectedIndex="0"
+                                                          ToolTip="シーンビュー（デバッグカメラ）の表示モードを切り替え（プレビュー小窓・Play には影響しません）"
+                                                          SelectionChanged="OnViewModeChanged">
+                                                    <ComboBoxItem Content="ライティングON" Tag="lit"/>
+                                                    <ComboBoxItem Content="ライティングOFF" Tag="unlit"/>
+                                                    <ComboBoxItem Content="ワイヤーフレーム" Tag="wireframe"/>
+                                                </ComboBox>
                                                 <!-- 右端固定: デバッグカメラ 2D(正射)⇄3D(透視) トグル -->
                                                 <Button x:Name="Btn2DCamToggle"
                                                         DockPanel.Dock="Right"

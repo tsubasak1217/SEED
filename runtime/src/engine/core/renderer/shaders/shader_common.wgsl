@@ -101,8 +101,11 @@ struct GpuLight {
 struct LightMeta {
     count:             u32,
     rt_shadows:        u32,
-    _pad1:             u32,
-    _pad2:             u32,
+    // エディタのシーンビュー表示モード（0=Lit / 1=Unlit / 2=Wireframe。SceneViewMode::to_code）。
+    // 0 以外のとき evaluate_lighting はライティングを行わずアルベド＋エミッシブを返す。
+    // メインカメラ用 LightMeta のみ非 0 になり得る（プレビュー用は常に 0＝Lit）。
+    view_mode:         u32,         //  8
+    _pad2:             u32,         // 12
     ambient_color:     vec3<f32>,   // 16  環境光の色（リニア RGB）
     ambient_intensity: f32,         // 28  環境光の強度（0 で完全な暗闇）
 }

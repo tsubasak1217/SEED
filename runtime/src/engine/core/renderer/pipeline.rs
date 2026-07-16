@@ -54,6 +54,32 @@ where
     (pipelines, bgls.expect("build_cull_variants: BGL が生成されていない"))
 }
 
+/// TOML から polygon_mode=Line・cull_mode=None のワイヤーフレームバリアントを 1 本生成する。
+///
+/// エディタのシーンビュー「ワイヤーフレーム」モード専用。通常パイプラインと同一 TOML・
+/// 同一 group4 レイアウトのため、既存の lights BindGroup をそのまま使える。
+/// `PolygonMode::Line` は Features::POLYGON_MODE_LINE（ネイティブ限定）対応 GPU でのみ有効なため、
+/// 非対応時は `None` を返し、描画側は塗り（Unlit）へフォールバックする（クラッシュさせない）。
+fn build_wireframe_variant(
+    device:     &wgpu::Device,
+    toml_src:   &str,
+    sf:         wgpu::TextureFormat,
+    df:         wgpu::TextureFormat,
+    cache:      Option<&wgpu::PipelineCache>,
+    label:      &str,
+) -> Option<wgpu::RenderPipeline> {
+    if !super::view_mode::wireframe_supported() {
+        return None;
+    }
+    let (pipeline, _bgls) = RenderPipelineBuilder::new(device, toml_src, sf, df)
+        .with_label(label)
+        .with_cull_mode("None")
+        .with_polygon_mode(wgpu::PolygonMode::Line)
+        .with_cache(cache)
+        .build(get_shader_source);
+    Some(pipeline)
+}
+
 // ============================================================
 //  シェーダーソースリゾルバ
 // ============================================================
@@ -102,6 +128,11 @@ pub(crate) fn get_shader_source(name: &str) -> &'static str {
 pub struct MeshPipeline {
     /// カリング面 3 種（Back / Front / None）のパイプライン。添字 = `CullFace::index()`。
     pub pipelines:    CullPipelineSet,
+    /// ワイヤーフレーム（PolygonMode::Line）バリアント。エディタのシーンビューの
+    /// 「ワイヤーフレーム」モード専用。cull_mode=None の単一パイプライン（表裏とも線描画）。
+    /// POLYGON_MODE_LINE 非対応 GPU では None（描画側は塗り＝Unlit へフォールバック）。
+    /// 通常パイプラインと同一 TOML・同一 group4 レイアウトのため lights BG をそのまま使える。
+    pub wireframe:    Option<wgpu::RenderPipeline>,
     pub camera_bgl:   wgpu::BindGroupLayout,
     pub model_bgl:    wgpu::BindGroupLayout,
     pub material_bgl: wgpu::BindGroupLayout,
@@ -143,7 +174,13 @@ impl MeshPipeline {
             entries: &[],
         });
 
-        Self { pipelines, camera_bgl, model_bgl, material_bgl, lights_bgl, empty_bg3 }
+        // ワイヤーフレーム（PolygonMode::Line）バリアントを対応 GPU でのみ生成する。
+        // 同一 TOML（mesh.toml）から polygon_mode だけ Line へ差し替え、cull_mode=None で
+        // 表裏とも線を描く。非対応 GPU では生成せず、描画側が塗り（Unlit）へフォールバックする。
+        let wireframe = build_wireframe_variant(
+            device, include_str!("pipelines/mesh.toml"), sf, df, cache, "mesh_pbr_wireframe");
+
+        Self { pipelines, wireframe, camera_bgl, model_bgl, material_bgl, lights_bgl, empty_bg3 }
     }
 }
 
@@ -154,6 +191,9 @@ impl MeshPipeline {
 pub struct SkinnedMeshPipeline {
     /// カリング面 3 種（Back / Front / None）のパイプライン。添字 = `CullFace::index()`。
     pub pipelines:    CullPipelineSet,
+    /// ワイヤーフレーム（PolygonMode::Line）バリアント。MeshPipeline と同じ扱い（cull=None・
+    /// 非対応 GPU では None）。スキン頂点レイアウト・group3=joints は通常版と同一。
+    pub wireframe:    Option<wgpu::RenderPipeline>,
     pub camera_bgl:   wgpu::BindGroupLayout,
     pub model_bgl:    wgpu::BindGroupLayout,
     pub material_bgl: wgpu::BindGroupLayout,
@@ -173,7 +213,13 @@ impl SkinnedMeshPipeline {
         let material_bgl = it.next().unwrap(); // group 2
         let joint_bgl    = it.next().unwrap(); // group 3
         let _lights_bgl  = it.next().unwrap(); // group 4（LightBuffer は mesh 側 BGL で生成し共用）
-        Self { pipelines, camera_bgl, model_bgl, material_bgl, joint_bgl }
+
+        // ワイヤーフレーム（PolygonMode::Line）バリアント（対応 GPU のみ）。
+        let wireframe = build_wireframe_variant(
+            device, include_str!("pipelines/skinned_mesh.toml"), sf, df, cache,
+            "skinned_mesh_pbr_wireframe");
+
+        Self { pipelines, wireframe, camera_bgl, model_bgl, material_bgl, joint_bgl }
     }
 }
 

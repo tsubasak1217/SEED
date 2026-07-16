@@ -84,6 +84,9 @@ public partial class MainWindow
     /// <summary>透明描画方式のデフォルト値（距離ソート）。SET_POST_FX の "transparency" フィールドに使う。</summary>
     private const string DefaultTransparencyMode = "sort";
 
+    /// <summary>シーンビュー表示モードのデフォルト値（ライティングON）。SET_POST_FX の "view_mode" フィールドに使う。</summary>
+    private const string DefaultViewMode = "lit";
+
     /// <summary>
     /// ポストプロセス設定（Bloom 有効/強度・FXAA 有効・透明描画方式）をまとめて 1 つの JSON にして
     /// ランタイムへ送信する共通処理。CheckBox・Slider・ComboBox いずれの変更イベントからも
@@ -103,8 +106,11 @@ public partial class MainWindow
                                ?? DefaultTransparencyMode;
         // GPU メッシュレットカリング（第1弾）。null（未初期化）時は既定 true。
         bool meshletCull = ChkMeshletCull?.IsChecked != false;
+        // シーンビュー表示モード（"lit" / "unlit" / "wireframe"）。未選択・null 時は既定の "lit"。
+        string viewMode = (CmbViewMode?.SelectedItem as System.Windows.Controls.ComboBoxItem)?.Tag as string
+                          ?? DefaultViewMode;
 
-        string json = $"{{\"bloom\":{(bloom ? "true" : "false")},\"fxaa\":{(fxaa ? "true" : "false")},\"bloom_intensity\":{intensity.ToString(System.Globalization.CultureInfo.InvariantCulture)},\"transparency\":\"{transparency}\",\"meshlet_cull\":{(meshletCull ? "true" : "false")}}}";
+        string json = $"{{\"bloom\":{(bloom ? "true" : "false")},\"fxaa\":{(fxaa ? "true" : "false")},\"bloom_intensity\":{intensity.ToString(System.Globalization.CultureInfo.InvariantCulture)},\"transparency\":\"{transparency}\",\"meshlet_cull\":{(meshletCull ? "true" : "false")},\"view_mode\":\"{viewMode}\"}}";
         _runtimeManager?.SendToRuntime($"SET_POST_FX:{json}");
     }
 
@@ -123,6 +129,13 @@ public partial class MainWindow
 
     /// <summary>CmbTransparency の SelectionChanged から呼ばれるハンドラ。透明描画方式の変更をランタイムへ送信する。</summary>
     private void OnTransparencyChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_updatingControls) return;
+        SendPostFx();
+    }
+
+    /// <summary>CmbViewMode の SelectionChanged から呼ばれるハンドラ。シーンビュー表示モードの変更をランタイムへ送信する。</summary>
+    private void OnViewModeChanged(object sender, SelectionChangedEventArgs e)
     {
         if (_updatingControls) return;
         SendPostFx();
@@ -441,6 +454,8 @@ public partial class MainWindow
         if (CmbTransparency != null) CmbTransparency.SelectedIndex = 0;
         // メッシュレットカリング（第1弾）は既定 true（有効）へリセットする。
         if (ChkMeshletCull != null) ChkMeshletCull.IsChecked = true;
+        // シーンビュー表示モードは既定「ライティングON」（index 0）へリセットする。
+        if (CmbViewMode != null) CmbViewMode.SelectedIndex = 0;
         _updatingControls = false;
         if (_viewportSettingsInitialized)
         {

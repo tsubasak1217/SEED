@@ -601,6 +601,11 @@ pub struct App {
     /// ブルーム／FXAA のポストエフェクト設定（Phase R4, 既定すべて OFF）。
     /// project_settings.json（起動時）＋ IPC `SET_POST_FX:{json}`（実行時）で更新する。
     post_fx: crate::engine::core::renderer::PostFxSettings,
+    /// エディタのシーンビュー（デバッグカメラ）表示モード（既定 Lit=フル PBR）。
+    /// IPC `SET_POST_FX:{json}` の `view_mode` で切り替える。Edit モードのメインカメラ
+    /// のパスにのみ効き、プレビュー小窓・Play の見た目には影響しない（frame_renderer 参照）。
+    /// セッション内のみ有効（永続化しない）。
+    scene_view_mode: crate::engine::core::renderer::SceneViewMode,
     /// 環境光（アンビエント）の色（リニア RGB, Phase R1.5, 既定 白）。
     /// 毎フレーム LightBuffer::update 経由で LightMeta.ambient_color へアップロードする。
     ambient_color: [f32; 3],
@@ -955,6 +960,7 @@ impl App {
             skybox_system:               crate::engine::core::renderer::SkyboxSystem::new(),
             post_vignette_enabled:       false,
             post_fx:                     crate::engine::core::renderer::PostFxSettings::default(),
+            scene_view_mode:             crate::engine::core::renderer::SceneViewMode::default(),
             ambient_color:               crate::engine::core::renderer::DEFAULT_AMBIENT_COLOR,
             ambient_intensity:           crate::engine::core::renderer::DEFAULT_AMBIENT_INTENSITY,
             camera_preview:              None,

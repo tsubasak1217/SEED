@@ -27,6 +27,8 @@ pub(crate) mod skybox;
 pub mod material_asset;
 /// .postfx ポストエフェクトアセット＋テクスチャ単位ポストプロセス（Phase R3 応用）
 pub mod postfx;
+/// エディタのシーンビュー表示モード（Lit / Unlit / Wireframe）
+pub(crate) mod view_mode;
 
 pub use uniforms::{CameraUniform, ModelUniform, MaterialUniform, JointUniform, ColorVertex,
                    GpuCullData, FrustumUniform, GizmoVertex};
@@ -59,6 +61,7 @@ pub use transparency::{TransparencyMode, TransparentPipelines,
 pub use batch2d::{SpriteBatcher, SpriteInstance, SpriteBatch, SpriteBatchList,
                   SPRITE_INSTANCE_SIZE, draw_sprite_batches, draw_sprite_outline_batches};
 pub use postfx::{PostfxContext, SpritePostfxCache};
+pub use view_mode::{SceneViewMode, set_wireframe_supported, wireframe_supported};
 
 // ============================================================
 //  Renderer 本体
@@ -231,12 +234,25 @@ impl Renderer {
             eprintln!("[SEED MESHLET] メッシュレットカリング: 非対応 → 従来 CPU カリング経路を使用");
         }
 
+        // エディタのシーンビュー「ワイヤーフレーム」モードは POLYGON_MODE_LINE（ネイティブ限定）
+        // に依存する。非対応 GPU ではワイヤ用パイプラインを生成せず、ワイヤ選択時も Unlit 表示へ
+        // フォールバックする（クラッシュさせない）。対応可否は起動時に一度だけログする。
+        let supports_wireframe = af.contains(wgpu::Features::POLYGON_MODE_LINE);
+        view_mode::set_wireframe_supported(supports_wireframe);
+        if supports_wireframe {
+            eprintln!("[SEED VIEWMODE] ワイヤーフレーム: 対応（POLYGON_MODE_LINE を要求）");
+        } else {
+            eprintln!("[SEED VIEWMODE] ワイヤーフレーム: 非対応 → ワイヤ選択時は Unlit 表示にフォールバック");
+        }
+
         let (device, queue) = pollster::block_on(adapter.request_device(
             &wgpu::DeviceDescriptor {
                 label:             None,
                 required_features: wgpu::Features::MULTI_DRAW_INDIRECT
                                  | wgpu::Features::INDIRECT_FIRST_INSTANCE
                                  | if supports_mdi_count { wgpu::Features::MULTI_DRAW_INDIRECT_COUNT } else { wgpu::Features::empty() }
+                                 // ワイヤーフレーム描画（PolygonMode::Line）。対応時のみ要求する。
+                                 | if supports_wireframe { wgpu::Features::POLYGON_MODE_LINE } else { wgpu::Features::empty() }
                                  | if supports_bc { wgpu::Features::TEXTURE_COMPRESSION_BC } else { wgpu::Features::empty() }
                                  | if supports_pipeline_cache { wgpu::Features::PIPELINE_CACHE } else { wgpu::Features::empty() }
                                  // RT 影は「対応していれば常に要求」する。設定によるオン/オフは
