@@ -183,6 +183,10 @@ impl App {
         let dbg = dbg_frame < DEBUG_LOG_FRAMES;
         if dbg { eprintln!("[SEED FRAME {dbg_frame}] start  mode={:?}  paused={}", self.mode, self.paused); }
 
+        // レンダリング機能マトリクスの実効モードが変わっていれば [SEED FEATURES] を出す
+        // （起動時・スタンドアロン時もここで拾う。IPC 切替は各ハンドラでも即ログ）。
+        self.log_render_features_if_changed();
+
         // ── パフォーマンス計測変数 ─────────────────────────────────────────────
         // 60 フレームごとに各処理の CPU 消費時間を eprintln! でログ出力する。
         // GPU コマンド記録時間（CPU 側）を計測するため、実際の GPU 実行時間は含まない。
@@ -958,10 +962,16 @@ impl App {
                         shadow_has_casters && saved_shadow_cam.is_some(),
                     );
 
-                    // このフレームで RT 影を使うか（RT 対応 GPU かつ 設定 rt_shadows オン）。
+                    // 実効モード（GPU 対応可否で降格済み）を解決する。以降の RT 影 / GI / TLAS
+                    // 構築ゲートはすべてこの resolved_features を参照する（生の render_features は見ない）。
+                    // NOTE: self.resolved_features() だと &self 全体を借用し、上位の &mut self.renderer
+                    //       借用と衝突する。render_features は Copy な単一フィールドなので disjoint 借用で解決。
+                    let resolved_features = self.render_features
+                        .resolve(crate::engine::core::renderer::rt_shadow::rt_shadows_supported());
+                    // このフレームで RT 影を使うか（実効の影方式が Rt かつ RT 対応 GPU）。
                     // フラグメントの実行時分岐（LightMeta.rt_shadows）と、後段のメインパスでの
                     // RT パイプライン/複合 BindGroup 選択の両方に使う（Phase R8）。
-                    let rt_on = draw_ctx.rt_active(self.rt_shadows);
+                    let rt_on = draw_ctx.rt_active(resolved_features.rt_shadow());
 
                     // このフレームで GPU メッシュレットカリング（第1弾）を使うか。
                     // 設定 meshlet_cull オン かつ GPU が MULTI_DRAW_INDIRECT_COUNT 対応のときのみ。
@@ -3193,10 +3203,14 @@ impl App {
                         // RT 用 BindGroup を bind するのも rt_on のときだけなので、bind 時点で必ず
                         // このビルドが同フレーム先行しており TLAS はビルド済みが保証される。
                         // DDGI（Phase RT-GI）を今フレーム走らせるか。RT 対応（attach 済み）かつ
-                        // 設定 enabled。GI は TLAS を必要とするため、RT 影が無効でも GI 有効なら
-                        // TLAS を構築する（下のゲートは rt_on || gi_on）。
-                        let gi_on = draw_ctx.gi.is_attached() && self.post_fx.gi.enabled;
-                        if rt_on || gi_on {
+                        // 実効 GI モードが Rt。GI は TLAS を必要とするため、needs_tlas() 経由で
+                        // RT 影が無効でも GI が Rt なら TLAS を構築する（下のゲート参照）。
+                        let gi_on = draw_ctx.gi.is_attached() && resolved_features.rt_gi();
+                        // TLAS 構築ゲートの一般化: いずれかの機能が Rt に解決されれば構築する。
+                        // 将来 Reflection/AO/Translucency の Rt が resolve を通れば、ここを触らず
+                        // 自動で TLAS が構築される（needs_tlas() に集約）。RT 加速構造リソース
+                        // （rt_shadow）が無い GPU では構築しない。
+                        if draw_ctx.rt_shadow.is_some() && resolved_features.needs_tlas() {
                             if let Some(rt_cell) = draw_ctx.rt_shadow.as_ref() {
                                 let mut rt = rt_cell.borrow_mut();
                                 let rt_casters: Vec<(

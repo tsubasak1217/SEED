@@ -913,3 +913,81 @@ inline RT ではヒット三角形のマテリアルテクスチャ・頂点属�
 - 全フラグメントバリアント（mesh/skinned × RT on/off・deferred on/off・WBOIT）の WGSL 連結が naga validate を通過。
 - `cargo build` / `cd editor && dotnet build` ともに 0 エラー。
 - **未検証（実機 GPU 無し）**: 実際のレンダリング結果・fps・バインドグループの実行時整合はスモークテストで確認すること。
+
+---
+
+## レンダリング機能マトリクス（機能 × モード）
+
+2026-07 追加。RT-Shadow / RT-GI / RT-Reflection / RT-AO / RT-Translucency を**機能ごとに独立して
+モード選択**できるフレームワーク。各機能は「レイトレ実装」と「代替（スクリーンスペース系／ラスタ／なし）」を
+モードとして持つ。RT 非対応 GPU や未実装モードは**一箇所**（`RenderFeatures::resolve`）で代替へ自動降格する。
+
+正典コード: `runtime/src/engine/core/renderer/render_features.rs`。
+
+### モード一覧と実装状況
+
+| 機能 | enum | モード（文字列） | 既定 | 実装状況 |
+|------|------|------------------|------|----------|
+| 影 | `ShadowMode` | `rt` / `shadowmap` | `shadowmap` | 両方実装済み（LightMeta.rt_shadows で実行時分岐） |
+| GI | `GiMode` | `rt` / `flat` | `flat`※ | 両方実装済み（DDGI / フラットアンビエント）。将来 `ssgi` 追加予定 |
+| 反射 | `ReflectionMode` | `rt` / `ssr` / `off` | `off` | **未実装**（`rt`/`ssr` は選択可だが resolve で `off` へ降格＝現状動作） |
+| AO | `AoMode` | `rt` / `ssao` / `off` | `off` | **未実装**（`off`＝マテリアル AO のみ。`rt`/`ssao` は resolve で `off` へ降格） |
+| 半透明 | `TranslucencyMode` | `rt` / `raster` | `raster` | `raster`＝従来 WBOIT/距離ソート（実装済み）。`rt` は**未実装**（resolve で `raster` へ降格） |
+
+※ `GiMode` の型既定は `flat` だが、**旧 `GiSettings.enabled` の既定は true** だったため、
+プロジェクト設定に `gi_enabled` キーが無い場合は移行時に `rt`（GI 有効）へ写像し、現状の見た目を維持する
+（`app_init.rs::load_graphics_settings`）。エディタの GI コンボも既定 `rt`（DDGI）。
+
+### 降格・未実装判定の集約点
+
+- `RenderFeatures::resolve(rt_supported) -> ResolvedFeatures` が**唯一の判定入口**。
+  - RT 非対応 GPU（`rt_shadow::rt_shadows_supported()==false`）では `shadow=rt→shadowmap` / `gi=rt→flat`。
+  - 反射/AO/半透明の `rt`/`ssr`/`ssao` は実体未実装のため、`rt_supported` に関わらず常に `off`/`raster` へ降格。
+- 実行時分岐（`frame_renderer.rs` 等）は必ず `ResolvedFeatures` を参照し、生の `RenderFeatures` を直接見ない。
+- 起動時・切替時に実効モードを `[SEED FEATURES] shadow=… gi=… reflection=off(未実装) …` の 1 行でログ
+  （`App::log_render_features_if_changed`、変化時のみ・重複抑制）。
+
+### TLAS 構築ゲートの一般化
+
+`ResolvedFeatures::needs_tlas()` は「解決後モードのいずれかが `rt` か」を返す。`frame_renderer.rs` の
+TLAS 構築は `draw_ctx.rt_shadow.is_some() && resolved.needs_tlas()` の 1 判定に集約されており、
+将来 Reflection/AO/Translucency の `rt` が resolve を通るようになれば、**ゲート側を触らずに** TLAS が構築される。
+
+### IPC / 旧キー互換
+
+- 新キー: `SET_POST_FX:{…,"features":{"shadow":"…","gi":"…","reflection":"…","ao":"…","translucency":"…"}}`。
+  欠落キーは serde default（各 enum の Default）で埋まる。
+- 旧キー互換:
+  - `RT_SHADOWS:1/0`（IPC コマンド）→ `render_features.shadow` を `rt`/`shadowmap` に写像。
+  - `SET_POST_FX` の旧 `gi_enabled`（bool）→ `features` が無いときだけ `render_features.gi` を `rt`/`flat` に写像。
+  - プロジェクト設定 `project_settings.json` の `rt_shadows` / `gi_enabled` は読み側で `RenderFeatures` へ変換（ファイルは不変）。
+- `GiSettings` は**数値パラメータ専用**（強度／プローブ数／レイ数／ヒステリシス／再帰重み）に縮小。有効/無効は `GiMode` へ移行。
+
+### エディタ UI
+
+ビューポート設定（ギア）ポップアップの「レンダリング機能」セクションに 5 コンボ（影/GI/反射/AO/半透明）。
+`OnRenderFeatureChanged` → `SendPostFx()` が `features` を組んで送る。「（未実装）」項目は選択可（選ぶと従来動作＋ログ）。
+実装されたらラベルの「（未実装）」を外すだけでよい。
+
+### 今後の拡張手順（新モード追加 / 未実装モードの実体化で触る箇所）
+
+**A. 新しいモードを enum に追加する（例: `GiMode::Ssgi`）**
+1. `render_features.rs`: 対象 enum にバリアント追加（serde 文字列は小文字）＋ `mode_str_*` の match 追加。
+2. `render_features.rs::resolve`: そのモードをどう解決するか（対応可否・降格先）を該当腕に記述。
+3. `render_features.rs::ResolvedFeatures::needs_tlas`: RT を要するモードなら OR 条件に追加。
+4. エディタ `MainWindow.xaml`: 対象コンボに `<ComboBoxItem>` を追加（Tag＝小文字文字列）。
+5. ユニットテスト（serde 往復・resolve 降格）を追加。
+
+**B. 未実装モードの実体を実装する（例: SSR / RT-Reflection）**
+1. `render_features.rs::resolve`: 該当機能の腕を「フォールバック固定」から「`rt_supported` 条件で通す／Ssr は常に通す」へ変更。
+2. `frame_renderer.rs`: `resolved.reflection` 等を参照する描画パス（SSR パス／RT レイ発射）を追加。
+   TLAS が要るモードなら `needs_tlas()` が自動で true になるため、TLAS 構築ゲートは触らなくてよい。
+3. 必要な GPU リソース（G-Buffer 追加ターゲット・パイプライン・BindGroup）を用意。
+4. エディタ: 対象コンボのラベルから「（未実装）」を外す。
+5. `[SEED FEATURES]` の未実装注記（`log_line`）は resolve が実効モードを返すようになれば自動で消える。
+
+### 検証（実装時点）
+
+- `cargo test`: 87 passed（+6: `render_features` の serde 往復・旧キー欠落既定・resolve 降格・needs_tlas・log_line 注記）。
+- `cargo build` / `cd editor && dotnet build` ともに 0 エラー。
+- **未検証（実機 GPU 無し）**: `[SEED FEATURES]` ログの実値・従来動作の維持はスモークテストで確認すること。

@@ -322,7 +322,12 @@ impl App {
 
         let Ok(json) = asset_fs::read_string("assets://project_settings.json") else { return };
         let Ok(v) = serde_json::from_str::<serde_json::Value>(&json) else { return };
-        self.rt_shadows = v["rt_shadows"].as_bool().unwrap_or(false);
+        // 影方式（旧キー rt_shadows: bool）→ ShadowMode。既定 false=ShadowMap（後方互換）。
+        self.render_features.shadow = if v["rt_shadows"].as_bool().unwrap_or(false) {
+            crate::engine::core::renderer::ShadowMode::Rt
+        } else {
+            crate::engine::core::renderer::ShadowMode::ShadowMap
+        };
         // ビネットポストパス（Phase R3, 既定 OFF）。キーが無ければ false のまま。
         self.post_vignette_enabled = v["post_vignette"].as_bool().unwrap_or(false);
         // ブルーム／FXAA（Phase R4, 既定すべて OFF）。読み側は unwrap_or でデフォルト維持。
@@ -347,12 +352,24 @@ impl App {
         self.post_fx.deferred = v["deferred"].as_bool().unwrap_or(true);
         // DDGI（Phase RT-GI, 既定 有効・強度 1.0）。既定値から出発し、存在するキーだけ上書きする。
         // enabled は RT 非対応 GPU では実行時に強制無効化される（frame_renderer のゲート）。
-        if let Some(b) = v["gi_enabled"].as_bool()          { self.post_fx.gi.enabled = b; }
+        // GI 方式（旧キー gi_enabled: bool）→ GiMode。旧既定は enabled=true のため、
+        // キー欠落時は Rt（従来「GI 有効」）へ写像し現状の見た目を維持する。
+        self.render_features.gi = if v["gi_enabled"].as_bool().unwrap_or(true) {
+            crate::engine::core::renderer::GiMode::Rt
+        } else {
+            crate::engine::core::renderer::GiMode::Flat
+        };
         if let Some(x) = v["gi_intensity"].as_f64()         { self.post_fx.gi.intensity = x as f32; }
         if let Some(x) = v["gi_probes_per_frame"].as_u64()  { self.post_fx.gi.probes_per_frame = x as u32; }
         if let Some(x) = v["gi_rays_per_probe"].as_u64()    { self.post_fx.gi.rays_per_probe = x as u32; }
         if let Some(x) = v["gi_hysteresis"].as_f64()        { self.post_fx.gi.hysteresis = x as f32; }
         if let Some(x) = v["gi_recursive_weight"].as_f64()  { self.post_fx.gi.recursive_weight = x as f32; }
+        // 新キー features（あれば機能マトリクス全体を上書き。project_settings.json 将来対応）。
+        if let Some(fv) = v.get("features") {
+            if let Ok(f) = serde_json::from_value::<crate::engine::core::renderer::RenderFeatures>(fv.clone()) {
+                self.render_features = f;
+            }
+        }
         // 環境光（Phase R1.5, 既定 白 × 0.05 ＝従来のハードコード値）。読み側は unwrap_or でデフォルト維持。
         // `ambient_color` は [r,g,b] 配列（欠落・不正時は白）。`ambient_intensity` は 0..1 想定（0 で暗闇）。
         use crate::engine::core::renderer::{DEFAULT_AMBIENT_COLOR, DEFAULT_AMBIENT_INTENSITY};
@@ -368,12 +385,23 @@ impl App {
         self.ambient_intensity =
             v["ambient_intensity"].as_f64().unwrap_or(DEFAULT_AMBIENT_INTENSITY as f64) as f32;
         eprintln!(
-            "[SEED INIT] graphics settings loaded  rt_shadows={} post_vignette={} bloom={} fxaa={} transparency={} deferred={} gi={} gi_intensity={}",
-            self.rt_shadows, self.post_vignette_enabled,
+            "[SEED INIT] graphics settings loaded  shadow={:?} post_vignette={} bloom={} fxaa={} transparency={} deferred={} gi={:?} gi_intensity={}",
+            self.render_features.shadow, self.post_vignette_enabled,
             self.post_fx.bloom_enabled, self.post_fx.fxaa_enabled,
             self.post_fx.transparency.as_str(), self.post_fx.deferred,
-            self.post_fx.gi.enabled, self.post_fx.gi.intensity,
+            self.render_features.gi, self.post_fx.gi.intensity,
         );
+    }
+
+    /// render_features が前回ログ時から変わっていれば [SEED FEATURES] 行を 1 回出力する。
+    /// 起動時・IPC 切替時の実効モード（降格・未実装の注記を含む）を可視化する集約点。
+    pub(crate) fn log_render_features_if_changed(&mut self) {
+        let rt_sup = crate::engine::core::renderer::rt_shadow::rt_shadows_supported();
+        let key = (self.render_features, rt_sup);
+        if self.features_log_state != Some(key) {
+            eprintln!("[SEED FEATURES] {}", self.render_features.log_line(rt_sup));
+            self.features_log_state = Some(key);
+        }
     }
 
     pub(super) fn load_play_scene(&mut self) {

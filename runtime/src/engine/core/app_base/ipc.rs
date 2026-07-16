@@ -140,8 +140,13 @@ pub enum IpcCommand {
         /// SET_POST_FX に相乗りしているのは、エディタが全ビューポート描画設定を 1 本の
         /// SendPostFx()／1 個の SET_POST_FX ハンドラへ集約しているため（追加配線を増やさない）。
         view_mode: crate::engine::core::renderer::SceneViewMode,
-        /// DDGI（レイトレGI）設定（Phase RT-GI）。欠落キーは既定値。
+        /// DDGI（レイトレGI）の数値設定（Phase RT-GI）。有効/無効は features.gi へ移行済み。
         gi: crate::engine::core::renderer::GiSettings,
+        /// レンダリング機能マトリクス（新キー "features"）。新エディタは常に Some を送る。
+        /// None（旧エディタ）のときは影など他機能を据え置き、legacy_gi_enabled のみ反映する。
+        features: Option<crate::engine::core::renderer::RenderFeatures>,
+        /// 旧キー "gi_enabled"（後方互換）。features==None のときだけ GI モードへ反映する。
+        legacy_gi_enabled: Option<bool>,
     },
     /// 環境光（アンビエント）の色・強度（Phase R1.5）。
     /// フォーマット: `SET_AMBIENT:{r},{g},{b},{intensity}`（色はリニア RGB）。
@@ -852,17 +857,22 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                                     .and_then(|v| v["view_mode"].as_str())
                                     .unwrap_or("lit"),
                             );
-                            // DDGI（Phase RT-GI）。既定値から出発し、存在するキーだけ上書きする。
+                            // DDGI の数値設定（Phase RT-GI）。既定値から出発し、存在するキーだけ上書きする。
                             let mut gi = crate::engine::core::renderer::GiSettings::default();
+                            // 旧キー "gi_enabled"（後方互換）。features 無しの旧エディタからの GI 有効/無効。
+                            let legacy_gi_enabled = v.as_ref().and_then(|vv| vv["gi_enabled"].as_bool());
                             if let Some(vv) = v.as_ref() {
-                                if let Some(b) = vv["gi_enabled"].as_bool()          { gi.enabled = b; }
                                 if let Some(x) = vv["gi_intensity"].as_f64()         { gi.intensity = x as f32; }
                                 if let Some(x) = vv["gi_probes_per_frame"].as_u64()  { gi.probes_per_frame = x as u32; }
                                 if let Some(x) = vv["gi_rays_per_probe"].as_u64()    { gi.rays_per_probe = x as u32; }
                                 if let Some(x) = vv["gi_hysteresis"].as_f64()        { gi.hysteresis = x as f32; }
                                 if let Some(x) = vv["gi_recursive_weight"].as_f64()  { gi.recursive_weight = x as f32; }
                             }
-                            Some(IpcCommand::SetPostFx { bloom, fxaa, bloom_intensity, transparency, meshlet_cull, deferred, view_mode, gi })
+                            // 新キー "features"（機能マトリクス）。欠落キーは serde default で埋まる。
+                            let features = v.as_ref()
+                                .and_then(|vv| vv.get("features"))
+                                .and_then(|fv| serde_json::from_value::<crate::engine::core::renderer::RenderFeatures>(fv.clone()).ok());
+                            Some(IpcCommand::SetPostFx { bloom, fxaa, bloom_intensity, transparency, meshlet_cull, deferred, view_mode, gi, features, legacy_gi_enabled })
                         }
                         // 環境光（Phase R1.5）。"SET_AMBIENT:{r},{g},{b},{intensity}"。
                         // 4 要素に満たない／パース不能な場合は無視する（None）。

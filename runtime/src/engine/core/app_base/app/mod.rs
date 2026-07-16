@@ -529,8 +529,12 @@ pub struct App {
     fps_frame_start: std::time::Instant,
     /// グリッド描画フラグ（エディタモードのみ）。
     show_grid: bool,
-    /// インラインレイトレ影の有効フラグ（RT対応GPUのみ効果あり。プロジェクト設定 rt_shadows / IPC RT_SHADOWS で切替）。
-    pub(crate) rt_shadows: bool,
+    /// レンダリング機能マトリクス（影/GI/反射/AO/半透明のモード集合）。
+    /// プロジェクト設定・IPC（RT_SHADOWS / SET_POST_FX の features）で更新する。
+    /// 実行時分岐は resolve() 済みの ResolvedFeatures を参照する（frame_renderer）。
+    pub(crate) render_features: crate::engine::core::renderer::RenderFeatures,
+    /// [SEED FEATURES] ログの重複抑制キャッシュ（前回ログした (features, rt_supported)）。
+    features_log_state: Option<(crate::engine::core::renderer::RenderFeatures, bool)>,
     /// 軸ギズモ表示フラグ（エディタモードのみ）。
     show_axis_gizmo: bool,
     /// 軸ギズモのホバー状態（どのドットにカーソルが当たっているか）。
@@ -924,7 +928,8 @@ impl App {
             fps_frame_count:       0,
             fps_frame_start:       std::time::Instant::now(),
             show_grid:       true,
-            rt_shadows:      false,
+            render_features:    crate::engine::core::renderer::RenderFeatures::default(),
+            features_log_state: None,
             show_axis_gizmo: true,
             axis_gizmo_hovered: None,
             camera_snap_anim:   None,

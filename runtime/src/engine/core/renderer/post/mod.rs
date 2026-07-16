@@ -55,14 +55,12 @@ pub const DEFAULT_GI_HYSTERESIS: f32 = 0.97;
 /// 多重バウンス再帰項の重みの既定。
 pub const DEFAULT_GI_RECURSIVE_WEIGHT: f32 = 0.5;
 
-/// DDGI の設定（SET_POST_FX に相乗り。欠落キーは既定値）。
+/// DDGI の**数値**設定（SET_POST_FX に相乗り。欠落キーは既定値）。
 ///
-/// `enabled` の既定は true だが、RT 非対応 GPU では実行時に強制 false へ落とす
-/// （renderer/mod.rs のケイパビリティ判定 / frame_renderer のゲート）。
+/// GI の有効/無効は `RenderFeatures.gi`（GiMode）へ移行済み。本構造体は強度・
+/// プローブ数などの数値パラメータのみを保持する。
 #[derive(Copy, Clone, Debug)]
 pub struct GiSettings {
-    /// GI 有効フラグ（RT 非対応 GPU では強制無効）。
-    pub enabled: bool,
     /// 間接光の強度倍率。
     pub intensity: f32,
     /// 1 フレームで更新するプローブ数（ローテーション）。
@@ -78,7 +76,6 @@ pub struct GiSettings {
 impl Default for GiSettings {
     fn default() -> Self {
         Self {
-            enabled:          true,
             intensity:        DEFAULT_GI_INTENSITY,
             probes_per_frame: DEFAULT_GI_PROBES_PER_FRAME,
             rays_per_probe:   DEFAULT_GI_RAYS_PER_PROBE,

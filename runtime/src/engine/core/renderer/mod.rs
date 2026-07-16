@@ -34,6 +34,8 @@ pub(crate) mod view_mode;
 pub(crate) mod gbuffer;
 /// フルスクリーン・ライティングパイプライン（G-Buffer 復元, Phase D3 Deferred Phase A）
 pub(crate) mod deferred;
+/// レンダリング機能マトリクス（RT/代替のモード管理）
+pub(crate) mod render_features;
 
 pub use uniforms::{CameraUniform, ModelUniform, MaterialUniform, JointUniform, ColorVertex,
                    GpuCullData, FrustumUniform, GizmoVertex};
@@ -67,6 +69,8 @@ pub use batch2d::{SpriteBatcher, SpriteInstance, SpriteBatch, SpriteBatchList,
                   SPRITE_INSTANCE_SIZE, draw_sprite_batches, draw_sprite_outline_batches};
 pub use postfx::{PostfxContext, SpritePostfxCache};
 pub use view_mode::{SceneViewMode, set_wireframe_supported, wireframe_supported};
+pub use render_features::{RenderFeatures, ResolvedFeatures, ShadowMode, GiMode,
+                          ReflectionMode, AoMode, TranslucencyMode};
 
 // ============================================================
 //  Renderer 本体
