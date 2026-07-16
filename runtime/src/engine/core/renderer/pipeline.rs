@@ -129,6 +129,11 @@ pub(crate) fn get_shader_source(name: &str) -> &'static str {
         "gbuffer_write.wgsl"         => include_str!("shaders/gbuffer_write.wgsl"),
         // デファードのフルスクリーン・ライティング復元（Phase D3: Deferred 化 Phase A）。
         "deferred_lighting.wgsl"     => include_str!("shaders/deferred_lighting.wgsl"),
+        // 反射（SSR / RT）フルスクリーンパス＋合成（Phase D6）。
+        "reflection_common.wgsl"     => include_str!("shaders/reflection_common.wgsl"),
+        "reflection_ssr.wgsl"        => include_str!("shaders/reflection_ssr.wgsl"),
+        "reflection_rt.wgsl"         => include_str!("shaders/reflection_rt.wgsl"),
+        "reflection_composite.wgsl"  => include_str!("shaders/reflection_composite.wgsl"),
         other => panic!("unknown shader source: {other}"),
     }
 }
@@ -1694,6 +1699,9 @@ pub struct DrawPipelines {
     /// デファードのフルスクリーン・ライティング復元パイプライン一式（Phase D3 Phase A）。
     /// Phase A 時点ではフレームループへ未接続（Phase B で接続予定）。
     pub deferred:             super::deferred::DeferredLightingPipelines,
+    /// 反射（SSR / RT）フルスクリーンパス＋合成パイプライン一式（Phase D6）。
+    /// Deferred 有効時のみ frame_renderer が使う（G-Buffer＋scene_hdr 入力→RT_REFLECTION→加算合成）。
+    pub reflection:           super::reflection::ReflectionPipelines,
 }
 
 impl DrawPipelines {
@@ -1763,6 +1771,9 @@ impl DrawPipelines {
         // デファードのフルスクリーン・ライティング復元（Phase D3 Phase A）。
         // sf（シーン HDR）へ出力する（PostPipeline 等と同じ HDR オフスクリーン規約）。
         let deferred              = super::deferred::DeferredLightingPipelines::new(device, sf, df, cache);
-        Self { mesh, skinned_mesh, rt, unlit_line, cull, meshlet_cull, skin_compute, depth_prepass, shadow_depth, id_pass, outline, sprite, sprite_outline, canvas_id, camera_preview_blit, bar_fill, transparent, particle_compute, particles, skybox, cluster_build, gi_update, gbuffer, deferred }
+        // 反射（Phase D6）。deferred の camera_bgl/gbuffer_bgl を借りて構築するため deferred の後に呼ぶ。
+        // 出力先は sf（scene_hdr / RT_REFLECTION と同じ HDR）。
+        let reflection            = super::reflection::ReflectionPipelines::new(device, &deferred, sf, cache);
+        Self { mesh, skinned_mesh, rt, unlit_line, cull, meshlet_cull, skin_compute, depth_prepass, shadow_depth, id_pass, outline, sprite, sprite_outline, canvas_id, camera_preview_blit, bar_fill, transparent, particle_compute, particles, skybox, cluster_build, gi_update, gbuffer, deferred, reflection }
     }
 }

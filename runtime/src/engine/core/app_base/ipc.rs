@@ -142,6 +142,8 @@ pub enum IpcCommand {
         view_mode: crate::engine::core::renderer::SceneViewMode,
         /// DDGI（レイトレGI）の数値設定（Phase RT-GI）。有効/無効は features.gi へ移行済み。
         gi: crate::engine::core::renderer::GiSettings,
+        /// 反射（SSR / RT）の強度（Phase D6）。欠落時は既定 1.0。有効/無効・方式は features.reflection。
+        reflection_intensity: f32,
         /// レンダリング機能マトリクス（新キー "features"）。新エディタは常に Some を送る。
         /// None（旧エディタ）のときは影など他機能を据え置き、legacy_gi_enabled のみ反映する。
         features: Option<crate::engine::core::renderer::RenderFeatures>,
@@ -868,11 +870,15 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                                 if let Some(x) = vv["gi_hysteresis"].as_f64()        { gi.hysteresis = x as f32; }
                                 if let Some(x) = vv["gi_recursive_weight"].as_f64()  { gi.recursive_weight = x as f32; }
                             }
+                            // 反射強度（Phase D6）。欠落時は既定 1.0。
+                            let reflection_intensity = v.as_ref()
+                                .and_then(|vv| vv["reflection_intensity"].as_f64())
+                                .unwrap_or(crate::engine::core::renderer::DEFAULT_REFLECTION_INTENSITY as f64) as f32;
                             // 新キー "features"（機能マトリクス）。欠落キーは serde default で埋まる。
                             let features = v.as_ref()
                                 .and_then(|vv| vv.get("features"))
                                 .and_then(|fv| serde_json::from_value::<crate::engine::core::renderer::RenderFeatures>(fv.clone()).ok());
-                            Some(IpcCommand::SetPostFx { bloom, fxaa, bloom_intensity, transparency, meshlet_cull, deferred, view_mode, gi, features, legacy_gi_enabled })
+                            Some(IpcCommand::SetPostFx { bloom, fxaa, bloom_intensity, transparency, meshlet_cull, deferred, view_mode, gi, reflection_intensity, features, legacy_gi_enabled })
                         }
                         // 環境光（Phase R1.5）。"SET_AMBIENT:{r},{g},{b},{intensity}"。
                         // 4 要素に満たない／パース不能な場合は無視する（None）。

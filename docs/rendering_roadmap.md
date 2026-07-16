@@ -802,7 +802,16 @@ Forward+ ではなく Deferred を選ぶ根拠: 多灯対応だけなら Forward
 
 - **D4 SSAO: 未着手**（G-Buffer の深度＋法線から。**ブラーはいもす法（累積和）で実装すること**）
 - **D5 Deferred Decal: 未着手**
-- **D6 SSR: 未着手**
+- **D6 SSR / RT 反射: 実装済み（Phase D6）**。Deferred 有効時のみ動く独立フルスクリーンパス。
+  不透明 Deferred ライティング完成後に G-Buffer＋scene_hdr を入力に専用 RT（RT_REFLECTION,
+  Rgba16Float, Clear=0）へ反射色を描き、Additive(One/One)+LoadOp::Load で scene_hdr へ加算合成する。
+  scene_hdr は入力（読み）・RT_REFLECTION は出力（書き）で別テクスチャのため読み書き競合が起きない。
+  SSR は RAY_QUERY 不要のビュー空間線形マーチ＋二分リファイン、RT は TLAS への closest-hit 1 本＋
+  ヒット点近似シェーディング（`ddgi_probe_update.wgsl` の直接光/バウンスを移植・★同期必須★）。
+  粗面は roughness 0.30→0.55 でフェード、SSR はヒット UV に画面端フェード。強度は
+  `PostFxSettings.reflection_intensity`（既定 1.0, SET_POST_FX の `reflection_intensity`）。
+  BindGroup: SSR=group0..3（4）/ RT=group0..4（5＝max_bind_groups 上限）/ composite=group0（1）。
+  実装: `renderer/reflection.rs`, `shaders/reflection_common|ssr|rt|composite.wgsl`, `frame_renderer.rs` 配線。
 
 ## D3 実機テスト観点（GPU 実機確認が必要。開発環境では cargo build/test までしか検証できない）
 
@@ -930,7 +939,7 @@ inline RT ではヒット三角形のマテリアルテクスチャ・頂点属�
 |------|------|------------------|------|----------|
 | 影 | `ShadowMode` | `rt` / `shadowmap` | `shadowmap` | 両方実装済み（LightMeta.rt_shadows で実行時分岐） |
 | GI | `GiMode` | `rt` / `flat` | `flat`※ | 両方実装済み（DDGI / フラットアンビエント）。将来 `ssgi` 追加予定 |
-| 反射 | `ReflectionMode` | `rt` / `ssr` / `off` | `off` | **未実装**（`rt`/`ssr` は選択可だが resolve で `off` へ降格＝現状動作） |
+| 反射 | `ReflectionMode` | `rt` / `ssr` / `off` | `off` | **実装済み（SSR / RT, Phase D6）**。`rt`＝RT 反射（RT 対応 GPU）、`ssr`＝スクリーンスペース反射。RT 非対応で `rt` 要求時は `ssr` へ降格。deferred 有効時のみ動作 |
 | AO | `AoMode` | `rt` / `ssao` / `off` | `off` | **未実装**（`off`＝マテリアル AO のみ。`rt`/`ssao` は resolve で `off` へ降格） |
 | 半透明 | `TranslucencyMode` | `rt` / `raster` | `raster` | `raster`＝従来 WBOIT/距離ソート（実装済み）。`rt` は**未実装**（resolve で `raster` へ降格） |
 
@@ -942,9 +951,20 @@ inline RT ではヒット三角形のマテリアルテクスチャ・頂点属�
 
 - `RenderFeatures::resolve(rt_supported) -> ResolvedFeatures` が**唯一の判定入口**。
   - RT 非対応 GPU（`rt_shadow::rt_shadows_supported()==false`）では `shadow=rt→shadowmap` / `gi=rt→flat`。
-  - 反射/AO/半透明の `rt`/`ssr`/`ssao` は実体未実装のため、`rt_supported` に関わらず常に `off`/`raster` へ降格。
+  - 反射: `rt`＝RT 対応時のみ通す／RT 非対応時は `ssr` へ降格、`ssr`＝常に `ssr`、`off`＝`off`（Phase D6 実装済み）。
+  - AO/半透明の `rt`/`ssao` は実体未実装のため、`rt_supported` に関わらず常に `off`/`raster` へ降格。
 - 実行時分岐（`frame_renderer.rs` 等）は必ず `ResolvedFeatures` を参照し、生の `RenderFeatures` を直接見ない。
-- 起動時・切替時に実効モードを `[SEED FEATURES] shadow=… gi=… reflection=off(未実装) …` の 1 行でログ
+- 起動時・切替時に実効モードを `[SEED FEATURES] shadow=… gi=… reflection=rt …` の 1 行でログ
+  （反射は実装済みのため `(未実装)` は付かない。RT 非対応で SSR 降格時のみ `reflection=ssr(rt非対応→ssr)`。
+  反射要求ありで deferred 無効なら `反射:deferred無効のため停止` を追記）
+
+### D6 反射 実機テスト観点（GPU 実機確認が必要。開発環境では cargo build/test まで）
+- SSR/RT を切り替えると鏡面（低 roughness）の床・金属に反射像が出ること。
+- roughness を上げると 0.30→0.55 で反射がフェードして消えること。
+- `deferred` を OFF にすると反射が完全に消えること（反射は G-Buffer 有効時のみ動く独立パス）。
+- RT 非対応 GPU で `rt` を選ぶと自動で SSR が動くこと（`reflection=ssr(rt非対応→ssr)` ログ）。
+- `reflection_intensity` を変えると反射の強さがスケールすること。
+- SSR は画面外・裏面ヒットでミスし、GI 有効時は粗い環境反射、無効時は反射なし（黒＝加算無害）になること。
   （`App::log_render_features_if_changed`、変化時のみ・重複抑制）。
 
 ### TLAS 構築ゲートの一般化

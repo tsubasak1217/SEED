@@ -34,6 +34,8 @@ pub(crate) mod view_mode;
 pub(crate) mod gbuffer;
 /// フルスクリーン・ライティングパイプライン（G-Buffer 復元, Phase D3 Deferred Phase A）
 pub(crate) mod deferred;
+/// 反射（SSR / RT）フルスクリーンパス＋合成（Phase D6）
+pub(crate) mod reflection;
 /// レンダリング機能マトリクス（RT/代替のモード管理）
 pub(crate) mod render_features;
 
@@ -58,6 +60,8 @@ pub use clustered::{ClusterResources, partition_directional_first,
 pub use shadow::{ShadowResources, ShadowPlan, ShadowMatricesUbo,
                  CSM_CASCADE_COUNT, MAX_SHADOW_SPOTS, SHADOW_DEPTH_FORMAT};
 pub use rt_shadow::RtShadowResources;
+pub use reflection::{ReflectionPipelines, ReflectionParams,
+                     RT_REFLECTION_NAME, REFLECTION_FORMAT, DEFAULT_REFLECTION_INTENSITY};
 pub use post::{RtPool, PostContext, VignetteParams, VignetteStage,
                PostFxSettings, BloomParams, BloomPipelines,
                DEFAULT_BLOOM_THRESHOLD, DEFAULT_BLOOM_KNEE, DEFAULT_BLOOM_INTENSITY,
@@ -973,6 +977,65 @@ impl<'r> RenderFrame<'r> {
                     store: wgpu::StoreOp::Store,
                 }),
             }),
+            occlusion_query_set: None,
+            timestamp_writes:    None,
+        })
+    }
+
+    // ── 反射（SSR / RT）パス（Phase D6）─────────────────────────
+
+    /// 反射専用 RT（RT_REFLECTION）へ反射パスを開始する（G-Buffer＋scene_hdr 入力→反射色）。
+    ///
+    /// - color = `reflection` を LoadOp::Clear(0,0,0,0)（反射の無い画素は 0＝合成加算で無害）。
+    /// - depth = None（フルスクリーン三角形。深度は G-Buffer 深度をテクスチャとして読む）。
+    /// scene_hdr（不透明ライティング完成済み）はサンプル入力として読むため、描画先が別テクスチャ
+    /// （RT_REFLECTION）である本パスでは読み書き競合が起きない（SSR 自己参照制約の回避）。
+    pub fn begin_reflection_pass_to<'f>(
+        &'f mut self,
+        reflection: &'f wgpu::TextureView,
+    ) -> wgpu::RenderPass<'f>
+    where
+        'r: 'f,
+    {
+        self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("Reflection Pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view:           reflection,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load:  wgpu::LoadOp::Clear(wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            occlusion_query_set: None,
+            timestamp_writes:    None,
+        })
+    }
+
+    /// 反射合成パスを開始する（RT_REFLECTION を scene_hdr へ Additive 加算）。
+    ///
+    /// - color = `hdr`（scene_hdr）を LoadOp::Load（不透明ライティング結果を保持）。
+    ///   合成パイプライン側が One/One の Additive ブレンドで反射色を足し込む。
+    /// - depth = None（フルスクリーン三角形・深度不要。合成パイプラインも depth_stencil なし）。
+    pub fn begin_reflection_composite_pass_to<'f>(
+        &'f mut self,
+        hdr: &'f wgpu::TextureView,
+    ) -> wgpu::RenderPass<'f>
+    where
+        'r: 'f,
+    {
+        self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("Reflection Composite Pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view:           hdr,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load:  wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
             occlusion_query_set: None,
             timestamp_writes:    None,
         })

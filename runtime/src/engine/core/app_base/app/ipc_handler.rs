@@ -475,7 +475,7 @@ impl App {
                     };
                     self.log_render_features_if_changed();
                 }
-                IpcCommand::SetPostFx { bloom, fxaa, bloom_intensity, transparency, meshlet_cull, deferred, view_mode, gi, features, legacy_gi_enabled } => {
+                IpcCommand::SetPostFx { bloom, fxaa, bloom_intensity, transparency, meshlet_cull, deferred, view_mode, gi, reflection_intensity, features, legacy_gi_enabled } => {
                     // ブルーム／FXAA をエディタからのライブ切替で更新する（Phase R4）。
                     self.post_fx.bloom_enabled   = bloom;
                     self.post_fx.fxaa_enabled    = fxaa;
@@ -490,6 +490,8 @@ impl App {
                     self.scene_view_mode         = view_mode;
                     // DDGI の数値設定（強度／プローブ数等）のライブ切替（Phase RT-GI）。
                     self.post_fx.gi              = gi;
+                    // 反射（SSR / RT）強度のライブ切替（Phase D6）。
+                    self.post_fx.reflection_intensity = reflection_intensity;
                     // レンダリング機能マトリクス。新エディタは features を送る（全機能を一括更新）。
                     if let Some(f) = features {
                         self.render_features = f;

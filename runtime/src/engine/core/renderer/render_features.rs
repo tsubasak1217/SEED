@@ -163,10 +163,14 @@ impl RenderFeatures {
                 GiMode::Rt if rt_supported => GiMode::Rt,
                 _ => GiMode::Flat,
             },
-            // 反射: 実体未実装。常に Off へ倒す。
-            //   実装時 →  ReflectionMode::Rt  if rt_supported => Rt,
-            //             ReflectionMode::Ssr                 => Ssr,
-            reflection: ReflectionMode::Off,
+            // 反射: RT 対応時のみ Rt を通す。RT 非対応で Rt 要求時は SSR へ降格
+            //   （SSR は GPU 非依存のため代替として常に使える）。Ssr は Ssr、Off は Off。
+            reflection: match self.reflection {
+                ReflectionMode::Rt if rt_supported => ReflectionMode::Rt,
+                ReflectionMode::Rt                 => ReflectionMode::Ssr,
+                ReflectionMode::Ssr                => ReflectionMode::Ssr,
+                ReflectionMode::Off                => ReflectionMode::Off,
+            },
             // AO: 実体未実装。常に Off へ倒す（マテリアル AO のみ）。
             ao: AoMode::Off,
             // 半透明: Rt 未実装。常に Raster（従来経路）へ倒す。
@@ -176,11 +180,15 @@ impl RenderFeatures {
 
     /// [SEED FEATURES] ログ 1 行を生成する（要求と実効の差＝降格／未実装を注記する）。
     ///
-    /// 例: shadow=rt gi=rt reflection=off(未実装) ao=off(未実装) translucency=raster
-    /// - Rt/Ssr/Ssao など「要求したが実効が代替に落ちた」機能には (未実装) を付ける。
+    /// 例: shadow=rt gi=rt reflection=rt ao=off(未実装) translucency=raster
+    /// - AO/半透明の Rt/Ssao など「要求したが実効が代替に落ちた（未実装）」機能には (未実装) を付ける。
+    /// - 反射は実装済み。RT 非対応で SSR へ降格したときだけ (rt非対応→ssr) を付ける。
     pub fn log_line(&self, rt_supported: bool) -> String {
         let r = self.resolve(rt_supported);
-        let refl_note  = if self.reflection   != ReflectionMode::Off  { "(未実装)" } else { "" };
+        // 反射は実装済み（SSR/RT）。RT 要求が RT 非対応で SSR へ降格したときのみ注記する。
+        let refl_note  = if self.reflection == ReflectionMode::Rt && r.reflection == ReflectionMode::Ssr {
+            "(rt非対応→ssr)"
+        } else { "" };
         let ao_note    = if self.ao           != AoMode::Off          { "(未実装)" } else { "" };
         let trans_note = if self.translucency == TranslucencyMode::Rt { "(未実装)" } else { "" };
         format!(
@@ -322,12 +330,15 @@ mod tests {
         let r = f.resolve(false);
         assert_eq!(r.shadow, ShadowMode::ShadowMap);
         assert_eq!(r.gi, GiMode::Flat);
+        // 反射: RT 非対応時は Rt 要求が SSR へ降格（Off ではない）。SSR は TLAS 不要。
+        assert_eq!(r.reflection, ReflectionMode::Ssr);
         assert!(!r.needs_tlas());
 
         let r = f.resolve(true);
         assert_eq!(r.shadow, ShadowMode::Rt);
         assert_eq!(r.gi, GiMode::Rt);
-        assert_eq!(r.reflection, ReflectionMode::Off);
+        // 反射: RT 対応時は Rt がそのまま通る（TLAS 要求に寄与する）。
+        assert_eq!(r.reflection, ReflectionMode::Rt);
         assert_eq!(r.ao, AoMode::Off);
         assert_eq!(r.translucency, TranslucencyMode::Raster);
         assert!(r.needs_tlas());
@@ -346,6 +357,28 @@ mod tests {
         assert!(!f.resolve(true).needs_tlas());
     }
 
+    /// 反射の降格表（Off/Ssr/Rt × rt対応/非対応 → 実効）。
+    #[test]
+    fn resolve_reflection_downgrade_table() {
+        let mk = |m: ReflectionMode| RenderFeatures { reflection: m, ..Default::default() };
+        // Off はどちらでも Off。
+        assert_eq!(mk(ReflectionMode::Off).resolve(false).reflection, ReflectionMode::Off);
+        assert_eq!(mk(ReflectionMode::Off).resolve(true).reflection,  ReflectionMode::Off);
+        // Ssr は GPU 非依存で常に Ssr。
+        assert_eq!(mk(ReflectionMode::Ssr).resolve(false).reflection, ReflectionMode::Ssr);
+        assert_eq!(mk(ReflectionMode::Ssr).resolve(true).reflection,  ReflectionMode::Ssr);
+        // Rt は対応時 Rt / 非対応時 Ssr へ降格。
+        assert_eq!(mk(ReflectionMode::Rt).resolve(false).reflection,  ReflectionMode::Ssr);
+        assert_eq!(mk(ReflectionMode::Rt).resolve(true).reflection,   ReflectionMode::Rt);
+        // Ssr は TLAS 不要・Rt のみ TLAS 要求。
+        assert!(!mk(ReflectionMode::Ssr).resolve(true).needs_tlas());
+        assert!(mk(ReflectionMode::Rt).resolve(true).needs_tlas());
+        // log_line: Rt 非対応降格時のみ注記、それ以外は素の実効値。
+        assert!(mk(ReflectionMode::Rt).log_line(false).contains("reflection=ssr(rt非対応→ssr)"));
+        assert!(mk(ReflectionMode::Rt).log_line(true).contains("reflection=rt"));
+        assert!(!mk(ReflectionMode::Ssr).log_line(true).contains("(rt非対応→ssr)"));
+    }
+
     /// ログ行が未実装注記を含むこと。
     #[test]
     fn log_line_annotates_unimplemented() {
@@ -359,7 +392,8 @@ mod tests {
         let line = f.log_line(true);
         assert!(line.contains("shadow=rt"), "{line}");
         assert!(line.contains("gi=rt"), "{line}");
-        assert!(line.contains("reflection=off(未実装)"), "{line}");
+        assert!(line.contains("reflection=ssr"), "{line}");
+        assert!(!line.contains("reflection=ssr(未実装)"), "反射は実装済み: {line}");
         assert!(line.contains("ao=off(未実装)"), "{line}");
         assert!(line.contains("translucency=raster(未実装)"), "{line}");
     }

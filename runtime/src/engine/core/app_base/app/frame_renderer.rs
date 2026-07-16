@@ -3060,6 +3060,13 @@ impl App {
                     let scene_is_lit = self.mode != RuntimeMode::Edit || self.scene_view_mode.is_lit();
                     let deferred_active = self.post_fx.deferred
                         && !edit_view_2d && !scene_wireframe && scene_is_lit;
+                    // 反射（Phase D6）: deferred 有効時のみ・resolved の実効反射モード。
+                    // フォワード（deferred 無効）時は反射パスを一切走らせない（Off）。
+                    let reflection_effective = if deferred_active {
+                        resolved_features.reflection
+                    } else {
+                        crate::engine::core::renderer::ReflectionMode::Off
+                    };
 
                     let vignette_on = self.post_vignette_enabled;
                     // Phase R4: ブルーム／FXAA 設定（フレーム内で不変のためコピーしておく）。
@@ -3138,6 +3145,16 @@ impl App {
                             crate::engine::core::renderer::gbuffer::GBUFFER3_FORMAT,
                         );
                     }
+                    // 反射 RT（Phase D6）: deferred 有効かつ反射モードが Off でないときのみ確保。
+                    // SSR/RT どちらも同じ RT_REFLECTION（HDR）へ描く。
+                    if reflection_effective != crate::engine::core::renderer::ReflectionMode::Off {
+                        self.rt_pool.ensure(
+                            &draw_ctx.device,
+                            crate::engine::core::renderer::RT_REFLECTION_NAME,
+                            surf_w, surf_h,
+                            crate::engine::core::renderer::REFLECTION_FORMAT,
+                        );
+                    }
                     let hdr_view   = self.rt_pool.view(crate::engine::core::renderer::RT_SCENE_HDR);
                     let ldr_view   = self.rt_pool.view(crate::engine::core::renderer::RT_LDR);
                     // WBOIT ターゲットのビュー（確保済みのときのみ Some）。
@@ -3163,6 +3180,10 @@ impl App {
                     };
                     let inter_view = if vignette_on {
                         Some(self.rt_pool.view(crate::engine::core::renderer::RT_POST_INTER))
+                    } else { None };
+                    // 反射 RT のビュー（確保済みのときのみ Some）。ensure 済み後に view を取る規約。
+                    let reflection_view = if reflection_effective != crate::engine::core::renderer::ReflectionMode::Off {
+                        Some(self.rt_pool.view(crate::engine::core::renderer::RT_REFLECTION_NAME))
                     } else { None };
 
                     // ── メインレンダーパス ────────────────
@@ -3423,6 +3444,85 @@ impl App {
                                 lpass.set_bind_group(3, &draw_ctx.pipelines.deferred.empty_bg3, &[]);
                                 lpass.set_bind_group(4, lit_lights_bg, &[]);
                                 lpass.draw(0..3, 0..1);
+                            }
+                        }
+
+                        // ── 反射（SSR / RT）パス（Phase D6）──────────────────────────
+                        // deferred ライティング完了後・メインフォワード再開前に、G-Buffer＋scene_hdr から
+                        // 反射色を RT_REFLECTION へ描き、Additive 合成で scene_hdr へ加算する。
+                        // scene_hdr は入力（読み）・RT_REFLECTION は出力（書き）で別テクスチャのため競合しない。
+                        if let Some(refl_view) = reflection_view {
+                            use crate::engine::core::renderer::ReflectionMode;
+                            let refl = &draw_ctx.pipelines.reflection;
+                            // intensity を UBO へ反映。
+                            refl.write_params(&draw_ctx.queue, self.post_fx.reflection_intensity);
+                            // group1（G-Buffer）は deferred の gbuffer_bgl から再作成する
+                            // （デファードブロック B のものはスコープ外のため）。
+                            let (rg0, rg1, rg2, rg3) = (
+                                g0v.expect("gbuffer0 view (reflection)"),
+                                g1v.expect("gbuffer1 view (reflection)"),
+                                g2v.expect("gbuffer2 view (reflection)"),
+                                g3v.expect("gbuffer3 view (reflection)"),
+                            );
+                            let refl_gbuffer_bg = crate::engine::core::renderer::deferred::create_gbuffer_bind_group(
+                                &draw_ctx.device, &draw_ctx.pipelines.deferred.gbuffer_bgl,
+                                rg0, rg1, rg2, rg3,
+                                frame.depth_only_view(), &draw_ctx.pipelines.deferred.gbuffer_sampler,
+                            );
+                            let input_bg = refl.create_input_bg(&draw_ctx.device, hdr_view);
+                            let gi_bg    = refl.create_gi_bg(&draw_ctx.device, &draw_ctx.gi);
+
+                            // RT 反射は TLAS/平均アルベドが要る。reflection==Rt かつ RT パイプライン存在時のみ
+                            // rt_shadow を借用して RT データ BG を作る（TLAS は needs_tlas で構築済み保証）。
+                            // 借用は共有（RefCell::borrow）なので既存 rt_draw_ref と共存できる。
+                            let use_rt_refl = reflection_effective == ReflectionMode::Rt && refl.rt.is_some();
+                            let rt_refl_ref = if use_rt_refl {
+                                draw_ctx.rt_shadow.as_ref().map(|c| c.borrow())
+                            } else { None };
+                            let rt_data_bg = rt_refl_ref.as_ref().map(|r| {
+                                refl.create_rt_data_bg(
+                                    &draw_ctx.device,
+                                    draw_ctx.light_buffer.lights_buffer(),
+                                    draw_ctx.light_buffer.meta_main_buffer(),
+                                    r.tlas(), r.albedo_buffer(),
+                                )
+                            });
+                            // RT データが得られたら RT、そうでなければ SSR（安全側フォールバック）。
+                            let do_rt = rt_data_bg.is_some();
+
+                            // A. 反射パス（RT_REFLECTION へ Clear0）。
+                            {
+                                let mut rpass = frame.begin_reflection_pass_to(refl_view);
+                                if self.mode == RuntimeMode::Play && !self.paused {
+                                    let (vp_x, vp_y, vp_w, vp_h) = game_viewport;
+                                    rpass.set_viewport(vp_x, vp_y, vp_w, vp_h, 0.0, 1.0);
+                                    rpass.set_scissor_rect(vp_x as u32, vp_y as u32, vp_w as u32, vp_h as u32);
+                                }
+                                rpass.set_bind_group(0, &camera_buf.bind_group, &[]);
+                                rpass.set_bind_group(1, &refl_gbuffer_bg, &[]);
+                                rpass.set_bind_group(2, &input_bg, &[]);
+                                if do_rt {
+                                    rpass.set_pipeline(refl.rt.as_ref().unwrap());
+                                    rpass.set_bind_group(3, rt_data_bg.as_ref().unwrap(), &[]);
+                                    rpass.set_bind_group(4, &gi_bg, &[]);
+                                } else {
+                                    rpass.set_pipeline(&refl.ssr);
+                                    rpass.set_bind_group(3, &gi_bg, &[]);
+                                }
+                                rpass.draw(0..3, 0..1);
+                            }
+                            // B. 合成パス（RT_REFLECTION を scene_hdr へ Additive 加算）。
+                            {
+                                let composite_bg = refl.create_composite_bg(&draw_ctx.device, refl_view);
+                                let mut cpass = frame.begin_reflection_composite_pass_to(hdr_view);
+                                if self.mode == RuntimeMode::Play && !self.paused {
+                                    let (vp_x, vp_y, vp_w, vp_h) = game_viewport;
+                                    cpass.set_viewport(vp_x, vp_y, vp_w, vp_h, 0.0, 1.0);
+                                    cpass.set_scissor_rect(vp_x as u32, vp_y as u32, vp_w as u32, vp_h as u32);
+                                }
+                                cpass.set_pipeline(&refl.composite);
+                                cpass.set_bind_group(0, &composite_bg, &[]);
+                                cpass.draw(0..3, 0..1);
                             }
                         }
 

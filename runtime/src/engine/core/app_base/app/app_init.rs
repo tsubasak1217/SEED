@@ -364,6 +364,8 @@ impl App {
         if let Some(x) = v["gi_rays_per_probe"].as_u64()    { self.post_fx.gi.rays_per_probe = x as u32; }
         if let Some(x) = v["gi_hysteresis"].as_f64()        { self.post_fx.gi.hysteresis = x as f32; }
         if let Some(x) = v["gi_recursive_weight"].as_f64()  { self.post_fx.gi.recursive_weight = x as f32; }
+        // 反射（SSR / RT）強度（Phase D6）。欠落時は既定 1.0 を維持。
+        if let Some(x) = v["reflection_intensity"].as_f64() { self.post_fx.reflection_intensity = x as f32; }
         // 新キー features（あれば機能マトリクス全体を上書き。project_settings.json 将来対応）。
         if let Some(fv) = v.get("features") {
             if let Ok(f) = serde_json::from_value::<crate::engine::core::renderer::RenderFeatures>(fv.clone()) {
@@ -400,6 +402,13 @@ impl App {
         let key = (self.render_features, rt_sup);
         if self.features_log_state != Some(key) {
             eprintln!("[SEED FEATURES] {}", self.render_features.log_line(rt_sup));
+            // 反射は deferred（G-Buffer）有効時のみ動く独立パス。反射を要求していても
+            // deferred が無効なら反射パスは一切走らないため、その旨を 1 行付記する（Phase D6）。
+            if self.render_features.reflection != crate::engine::core::renderer::ReflectionMode::Off
+                && !self.post_fx.deferred
+            {
+                eprintln!("[SEED FEATURES] 反射:deferred無効のため停止（反射は G-Buffer 有効時のみ動作）");
+            }
             self.features_log_state = Some(key);
         }
     }
