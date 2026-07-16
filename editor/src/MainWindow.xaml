@@ -1451,15 +1451,7 @@
                                                                       IsChecked="True"
                                                                       Checked="OnPostFxChanged"
                                                                       Unchecked="OnPostFxChanged"/>
-                                                            <!-- RT-GI（レイトレ間接光, Phase RT-GI）-->
-                                                            <CheckBox x:Name="ChkRtGi"
-                                                                      Content="RT-GI（レイトレ間接光）"
-                                                                      Foreground="White" FontSize="11"
-                                                                      Margin="0,4,0,0"
-                                                                      IsChecked="True"
-                                                                      Checked="OnPostFxChanged"
-                                                                      Unchecked="OnPostFxChanged"/>
-                                                            <!-- GI 強度 -->
+                                                            <!-- GI 強度（GI モードは「レンダリング機能」セクションのコンボで選択）-->
                                                             <Grid Margin="0,0,0,8">
                                                                 <Grid.ColumnDefinitions>
                                                                     <ColumnDefinition Width="52"/>
@@ -1470,6 +1462,94 @@
                                                                         Style="{StaticResource DarkSliderStyle}"
                                                                         Minimum="0" Maximum="2" Value="1.0"
                                                                         ValueChanged="OnPostFxSliderChanged" VerticalAlignment="Center"/>
+                                                            </Grid>
+                                                        </StackPanel>
+                                                    </Expander>
+
+                                                    <!-- ▶ レンダリング機能（RT／代替のモードを機能ごとに選択） -->
+                                                    <!--   影/GI/反射/AO/半透明を独立して ON/OFF。RT が選べない GPU では
+                                                           ランタイム側で自動的に代替へ降格する（[SEED FEATURES] ログ参照）。
+                                                           「（未実装）」項目は選択可だが従来動作＋未実装ログになる。 -->
+                                                    <Expander Header="レンダリング機能" IsExpanded="True"
+                                                              Style="{StaticResource DarkExpanderStyle}"
+                                                              Margin="0,8,0,0">
+                                                        <StackPanel Margin="8,6,0,2">
+                                                            <!-- 影: シャドウマップ（従来）/ レイトレ -->
+                                                            <Grid Margin="0,0,0,4">
+                                                                <Grid.ColumnDefinitions>
+                                                                    <ColumnDefinition Width="64"/>
+                                                                    <ColumnDefinition Width="*"/>
+                                                                </Grid.ColumnDefinitions>
+                                                                <TextBlock Text="影" Foreground="#CCCCCC" FontSize="11" VerticalAlignment="Center"/>
+                                                                <ComboBox x:Name="CmbShadow" Grid.Column="1"
+                                                                          FontSize="11" Height="22" VerticalAlignment="Center"
+                                                                          SelectedIndex="0"
+                                                                          SelectionChanged="OnRenderFeatureChanged">
+                                                                    <ComboBoxItem Content="シャドウマップ" Tag="shadowmap"/>
+                                                                    <ComboBoxItem Content="レイトレ" Tag="rt"/>
+                                                                </ComboBox>
+                                                            </Grid>
+                                                            <!-- GI: なし（環境光）/ レイトレ（DDGI）。既定は現状維持の DDGI。 -->
+                                                            <Grid Margin="0,0,0,4">
+                                                                <Grid.ColumnDefinitions>
+                                                                    <ColumnDefinition Width="64"/>
+                                                                    <ColumnDefinition Width="*"/>
+                                                                </Grid.ColumnDefinitions>
+                                                                <TextBlock Text="GI" Foreground="#CCCCCC" FontSize="11" VerticalAlignment="Center"/>
+                                                                <ComboBox x:Name="CmbGi" Grid.Column="1"
+                                                                          FontSize="11" Height="22" VerticalAlignment="Center"
+                                                                          SelectedIndex="1"
+                                                                          SelectionChanged="OnRenderFeatureChanged">
+                                                                    <ComboBoxItem Content="なし（環境光）" Tag="flat"/>
+                                                                    <ComboBoxItem Content="レイトレ（DDGI）" Tag="rt"/>
+                                                                </ComboBox>
+                                                            </Grid>
+                                                            <!-- 反射: なし / SSR（未実装）/ レイトレ（未実装） -->
+                                                            <Grid Margin="0,0,0,4">
+                                                                <Grid.ColumnDefinitions>
+                                                                    <ColumnDefinition Width="64"/>
+                                                                    <ColumnDefinition Width="*"/>
+                                                                </Grid.ColumnDefinitions>
+                                                                <TextBlock Text="反射" Foreground="#CCCCCC" FontSize="11" VerticalAlignment="Center"/>
+                                                                <ComboBox x:Name="CmbReflection" Grid.Column="1"
+                                                                          FontSize="11" Height="22" VerticalAlignment="Center"
+                                                                          SelectedIndex="0"
+                                                                          SelectionChanged="OnRenderFeatureChanged">
+                                                                    <ComboBoxItem Content="なし" Tag="off"/>
+                                                                    <ComboBoxItem Content="SSR（未実装）" Tag="ssr"/>
+                                                                    <ComboBoxItem Content="レイトレ（未実装）" Tag="rt"/>
+                                                                </ComboBox>
+                                                            </Grid>
+                                                            <!-- AO: なし / SSAO（未実装）/ レイトレ（未実装） -->
+                                                            <Grid Margin="0,0,0,4">
+                                                                <Grid.ColumnDefinitions>
+                                                                    <ColumnDefinition Width="64"/>
+                                                                    <ColumnDefinition Width="*"/>
+                                                                </Grid.ColumnDefinitions>
+                                                                <TextBlock Text="AO" Foreground="#CCCCCC" FontSize="11" VerticalAlignment="Center"/>
+                                                                <ComboBox x:Name="CmbAo" Grid.Column="1"
+                                                                          FontSize="11" Height="22" VerticalAlignment="Center"
+                                                                          SelectedIndex="0"
+                                                                          SelectionChanged="OnRenderFeatureChanged">
+                                                                    <ComboBoxItem Content="なし" Tag="off"/>
+                                                                    <ComboBoxItem Content="SSAO（未実装）" Tag="ssao"/>
+                                                                    <ComboBoxItem Content="レイトレ（未実装）" Tag="rt"/>
+                                                                </ComboBox>
+                                                            </Grid>
+                                                            <!-- 半透明: ラスタ（従来）/ レイトレ（未実装）。ラスタ内部方式は「透明描画」で選ぶ。 -->
+                                                            <Grid Margin="0,0,0,4">
+                                                                <Grid.ColumnDefinitions>
+                                                                    <ColumnDefinition Width="64"/>
+                                                                    <ColumnDefinition Width="*"/>
+                                                                </Grid.ColumnDefinitions>
+                                                                <TextBlock Text="半透明" Foreground="#CCCCCC" FontSize="11" VerticalAlignment="Center"/>
+                                                                <ComboBox x:Name="CmbTranslucency" Grid.Column="1"
+                                                                          FontSize="11" Height="22" VerticalAlignment="Center"
+                                                                          SelectedIndex="0"
+                                                                          SelectionChanged="OnRenderFeatureChanged">
+                                                                    <ComboBoxItem Content="ラスタ（従来）" Tag="raster"/>
+                                                                    <ComboBoxItem Content="レイトレ（未実装）" Tag="rt"/>
+                                                                </ComboBox>
                                                             </Grid>
                                                         </StackPanel>
                                                     </Expander>

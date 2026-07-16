@@ -113,12 +113,21 @@ public partial class MainWindow
         // シーンビュー表示モード（"lit" / "unlit" / "wireframe"）。未選択・null 時は既定の "lit"。
         string viewMode = (CmbViewMode?.SelectedItem as System.Windows.Controls.ComboBoxItem)?.Tag as string
                           ?? DefaultViewMode;
-        // RT-GI（レイトレ間接光, Phase RT-GI）。null（未初期化）時は既定 true。強度スライダは既定 1.0。
-        // enabled は RT 非対応 GPU ではランタイム側で強制無効化される。
-        bool giEnabled = ChkRtGi?.IsChecked != false;
+        // GI 強度（DDGI の数値パラメータ）。null（未初期化）時は既定 1.0。
         double giIntensity = SldGiIntensity?.Value ?? DefaultGiIntensity;
+        // レンダリング機能マトリクス（影/GI/反射/AO/半透明）。各コンボの Tag（小文字モード文字列）を読む。
+        // 未初期化・null 時は現状維持の既定へフォールバックする（GI のみ現状維持のため既定 "rt"）。
+        // 「（未実装）」の ssr/ssao/rt を選んでもランタイム側で従来動作へフォールバックする。
+        string shadow       = (CmbShadow?.SelectedItem       as System.Windows.Controls.ComboBoxItem)?.Tag as string ?? "shadowmap";
+        string giMode       = (CmbGi?.SelectedItem           as System.Windows.Controls.ComboBoxItem)?.Tag as string ?? "rt";
+        string reflection   = (CmbReflection?.SelectedItem   as System.Windows.Controls.ComboBoxItem)?.Tag as string ?? "off";
+        string ao           = (CmbAo?.SelectedItem           as System.Windows.Controls.ComboBoxItem)?.Tag as string ?? "off";
+        string translucency = (CmbTranslucency?.SelectedItem as System.Windows.Controls.ComboBoxItem)?.Tag as string ?? "raster";
 
-        string json = $"{{\"bloom\":{(bloom ? "true" : "false")},\"fxaa\":{(fxaa ? "true" : "false")},\"bloom_intensity\":{intensity.ToString(System.Globalization.CultureInfo.InvariantCulture)},\"transparency\":\"{transparency}\",\"meshlet_cull\":{(meshletCull ? "true" : "false")},\"deferred\":{(deferred ? "true" : "false")},\"view_mode\":\"{viewMode}\",\"gi_enabled\":{(giEnabled ? "true" : "false")},\"gi_intensity\":{giIntensity.ToString(System.Globalization.CultureInfo.InvariantCulture)}}}";
+        var ci = System.Globalization.CultureInfo.InvariantCulture;
+        // 新キー "features"（機能マトリクス）。旧キー gi_enabled は features.gi へ移行したため送らない。
+        string features = $"\"features\":{{\"shadow\":\"{shadow}\",\"gi\":\"{giMode}\",\"reflection\":\"{reflection}\",\"ao\":\"{ao}\",\"translucency\":\"{translucency}\"}}";
+        string json = $"{{\"bloom\":{(bloom ? "true" : "false")},\"fxaa\":{(fxaa ? "true" : "false")},\"bloom_intensity\":{intensity.ToString(ci)},\"transparency\":\"{transparency}\",\"meshlet_cull\":{(meshletCull ? "true" : "false")},\"deferred\":{(deferred ? "true" : "false")},\"view_mode\":\"{viewMode}\",\"gi_intensity\":{giIntensity.ToString(ci)},{features}}}";
         _runtimeManager?.SendToRuntime($"SET_POST_FX:{json}");
     }
 
@@ -144,6 +153,16 @@ public partial class MainWindow
 
     /// <summary>CmbViewMode の SelectionChanged から呼ばれるハンドラ。シーンビュー表示モードの変更をランタイムへ送信する。</summary>
     private void OnViewModeChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_updatingControls) return;
+        SendPostFx();
+    }
+
+    /// <summary>
+    /// レンダリング機能コンボ（影/GI/反射/AO/半透明）の SelectionChanged 共通ハンドラ。
+    /// いずれのモード変更も SendPostFx で "features" として一括送信する。
+    /// </summary>
+    private void OnRenderFeatureChanged(object sender, SelectionChangedEventArgs e)
     {
         if (_updatingControls) return;
         SendPostFx();
@@ -464,9 +483,14 @@ public partial class MainWindow
         if (ChkMeshletCull != null) ChkMeshletCull.IsChecked = true;
         // シーンビュー表示モードは既定「ライティングON」（index 0）へリセットする。
         if (CmbViewMode != null) CmbViewMode.SelectedIndex = 0;
-        // RT-GI（Phase RT-GI）は既定 有効・強度 1.0 へリセットする。
-        if (ChkRtGi != null) ChkRtGi.IsChecked = true;
-        if (SldGiIntensity != null) SldGiIntensity.Value = DefaultGiIntensity;
+        // レンダリング機能マトリクスを既定（現状維持）へリセットする。
+        //   影=シャドウマップ / GI=DDGI（現状維持のため index 1）/ 反射=なし / AO=なし / 半透明=ラスタ。
+        if (CmbShadow != null)       CmbShadow.SelectedIndex = 0;
+        if (CmbGi != null)           CmbGi.SelectedIndex = 1;
+        if (CmbReflection != null)   CmbReflection.SelectedIndex = 0;
+        if (CmbAo != null)           CmbAo.SelectedIndex = 0;
+        if (CmbTranslucency != null) CmbTranslucency.SelectedIndex = 0;
+        if (SldGiIntensity != null)  SldGiIntensity.Value = DefaultGiIntensity;
         _updatingControls = false;
         if (_viewportSettingsInitialized)
         {

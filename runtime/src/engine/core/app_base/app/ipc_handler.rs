@@ -467,12 +467,16 @@ impl App {
                     self.show_grid = v;
                 }
                 IpcCommand::SetRtShadows(v) => {
-                    // インラインレイトレ影フラグをエディタからのライブ切替で更新する
-                    self.rt_shadows = v;
+                    // 影方式をエディタからのライブ切替で更新する（旧 RT_SHADOWS:1/0 互換）。
+                    self.render_features.shadow = if v {
+                        crate::engine::core::renderer::ShadowMode::Rt
+                    } else {
+                        crate::engine::core::renderer::ShadowMode::ShadowMap
+                    };
+                    self.log_render_features_if_changed();
                 }
-                IpcCommand::SetPostFx { bloom, fxaa, bloom_intensity, transparency, meshlet_cull, deferred, view_mode, gi } => {
+                IpcCommand::SetPostFx { bloom, fxaa, bloom_intensity, transparency, meshlet_cull, deferred, view_mode, gi, features, legacy_gi_enabled } => {
                     // ブルーム／FXAA をエディタからのライブ切替で更新する（Phase R4）。
-                    // しきい値／ニーは既定のまま（UI は最小構成のため強度のみ可変）。
                     self.post_fx.bloom_enabled   = bloom;
                     self.post_fx.fxaa_enabled    = fxaa;
                     self.post_fx.bloom_intensity = bloom_intensity;
@@ -482,12 +486,24 @@ impl App {
                     self.post_fx.meshlet_cull    = meshlet_cull;
                     // Deferred（G-Buffer）レンダリングのライブ切替（Phase D3 Deferred Phase B）。
                     self.post_fx.deferred        = deferred;
-                    // エディタのシーンビュー表示モード（Lit / Unlit / Wireframe）のライブ切替。
-                    // Edit モードのメインカメラのパスにのみ効く（frame_renderer でゲート）。
+                    // シーンビュー表示モード（Lit / Unlit / Wireframe）のライブ切替。
                     self.scene_view_mode         = view_mode;
-                    // DDGI（レイトレGI）設定のライブ切替（Phase RT-GI）。
-                    // enabled は RT 非対応 GPU では frame_renderer 側で強制無効化される。
+                    // DDGI の数値設定（強度／プローブ数等）のライブ切替（Phase RT-GI）。
                     self.post_fx.gi              = gi;
+                    // レンダリング機能マトリクス。新エディタは features を送る（全機能を一括更新）。
+                    if let Some(f) = features {
+                        self.render_features = f;
+                    } else if let Some(en) = legacy_gi_enabled {
+                        // 旧エディタ互換: features 無し・gi_enabled のみ → GI モードだけ反映。
+                        // 影など他機能は据え置く（RT_SHADOWS コマンドが別途担う）。
+                        self.render_features.gi = if en {
+                            crate::engine::core::renderer::GiMode::Rt
+                        } else {
+                            crate::engine::core::renderer::GiMode::Flat
+                        };
+                    }
+                    // 実効モード（降格・未実装を含む）が変わっていればログする。
+                    self.log_render_features_if_changed();
                 }
                 IpcCommand::SetAmbient { color, intensity } => {
                     // 環境光（アンビエント）をエディタからのライブ切替で更新する（Phase R1.5）。
