@@ -69,7 +69,14 @@ struct GpuLight {
     bounce_intensity: f32,         // 96  疑似バウンス（間接光近似）の強度。0 = 無効。
                                    //     lighting_eval.wgsl が無方向・影非適用・幾何ゲート非適用の
                                    //     淡い光を距離減衰つきで撒く項の係数。directional は常に 0。
-    _pad_bounce:      vec3<f32>,   // 100 stride 112（16 の倍数）へ揃えるパディング（未使用）
+    // 100 stride 112（16 の倍数）へ揃えるパディング（未使用）。
+    // 【重要】vec3<f32> にしてはいけない。WGSL の vec3 は align 16 のため offset 112 へ
+    // 押し出され stride が 128 になり、Rust GpuLight(112B) と食い違って
+    // 配列 2 要素目以降のライトが全て化ける（平行光は先頭に分割されるため
+    // 「point/spot/rect だけ消える」という症状になる）。スカラー 3 本で詰めること。
+    _pad_bounce0:     f32,
+    _pad_bounce1:     f32,
+    _pad_bounce2:     f32,
 }
 
 // count = 有効ライト数、rt_shadows = インラインレイトレ影フラグ（Phase R8, 0/1）。
