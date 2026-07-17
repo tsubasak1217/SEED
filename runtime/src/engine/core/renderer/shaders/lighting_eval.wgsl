@@ -162,10 +162,29 @@ fn shade_light(
 // GiParams) it returns the previous flat ambient, keeping full backward compatibility.
 // When enabled it interpolates the 8 surrounding probes (trilinear + Chebyshev
 // visibility + cosine weight; see ddgi_common.wgsl) and scales by intensity.
-fn evaluate_gi_ambient(world_pos: vec3<f32>, n: vec3<f32>, albedo: vec3<f32>, occlusion: f32) -> vec3<f32> {
+fn evaluate_gi_ambient(world_pos: vec3<f32>, n: vec3<f32>, albedo: vec3<f32>, occlusion: f32, screen_gi: vec4<f32>) -> vec3<f32> {
+    // フラットアンビエント（従来値）。GI 無効時・SSGI フォワードフォールバック時の共通フォールバック。
+    let flat_ambient = u_light_meta.ambient_color * u_light_meta.ambient_intensity * albedo * occlusion;
+
+    // enabled==0（RT 非対応・GI オフ・プレビューパス）は方式に関わらずフラットへ。
     if u_gi_params.enabled == 0u {
-        return u_light_meta.ambient_color * u_light_meta.ambient_intensity * albedo * occlusion;
+        return flat_ambient;
     }
+
+    // SSGI（スクリーンスペース GI, 1 フレーム遅延）。
+    // deferred ライティングパスだけが screen_gi.a=1 で有効な間接光を供給する。
+    // フォワードパス（screen_gi.a<=0）はスクリーン入力が不透明前提のためフラットへフォールバックする
+    // （半透明フォワードに SSGI を効かせない設計。screen_gi はゼロ初期化＝.a=0 で自動的にこの枝へ）。
+    if u_gi_params.gi_mode == GI_MODE_SSGI {
+        if screen_gi.a > 0.5 {
+            // screen_gi.rgb は「拾った間接放射照度（ミスはフラットアンビエント色で埋め済み）」。
+            // × albedo × occlusion × intensity（gi_intensity ノブ。DDGI と共通）。
+            return screen_gi.rgb * albedo * occlusion * u_gi_params.intensity;
+        }
+        return flat_ambient;
+    }
+
+    // DDGI（プローブ補間）。
     let irr = ddgi_sample_irradiance(u_gi_params, world_pos, n, t_gi_irradiance, t_gi_visibility, s_gi);
     return irr * albedo * occlusion * u_gi_params.intensity;
 }
@@ -395,7 +414,7 @@ fn evaluate_lighting(s: Surface) -> vec3<f32> {
     // ambient_intensity=0 で完全な暗闇になる（全ライト強度 0 と合わせて真っ暗）。
     // 既定は色白×強度 0.05（従来のハードコード値と同一の見た目）。
     // TODO(IBL): 将来は一定値から画像ベースライティング（環境マップ irradiance）へ。
-    let ambient = evaluate_gi_ambient(s.world_pos, N, albedo, s.occlusion);
+    let ambient = evaluate_gi_ambient(s.world_pos, N, albedo, s.occlusion, s.screen_gi);
 
     // リニア HDR 色（トーンマップ前）。トーンマップは post_tonemap.wgsl が一元的に行う。
     return ambient + Lo + s.emissive;

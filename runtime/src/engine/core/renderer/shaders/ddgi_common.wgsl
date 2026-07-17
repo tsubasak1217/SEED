@@ -44,8 +44,14 @@ struct GiParams {
     intensity: f32,
     hysteresis: f32,
     recursive_weight: f32,
-    _pad0: u32,
+    // GI 方式コード（旧 _pad0 を転用・サイズ 80B 不変）。GI_MODE_* と一致。
+    gi_mode: u32,
 }
+
+// GI 方式コード（Rust ddgi/params.rs の GI_MODE_* と一致させること）。
+const GI_MODE_FLAT: u32 = 0u; // フラットアンビエント（間接光なし）
+const GI_MODE_DDGI: u32 = 1u; // DDGI（プローブ格子）
+const GI_MODE_SSGI: u32 = 2u; // SSGI（スクリーンスペース GI）
 
 fn oct_encode(dir: vec3<f32>) -> vec2<f32> {
     let l1 = abs(dir.x) + abs(dir.y) + abs(dir.z);

@@ -237,7 +237,16 @@ impl GiResources {
         self.cleared.set(true);
     }
 
-    pub fn update_params(&self, queue: &wgpu::Queue, gi: &GiSettings, active: bool) -> u32 {
+    /// このフレームのライブ GiParams を書き込む。
+    ///
+    /// - `active`  : GI をこのフレーム実際に走らせるか（enabled フラグに反映）。
+    ///               false なら描画側はフラットアンビエントへフォールバックする。
+    /// - `gi_mode` : GI 方式コード（GI_MODE_FLAT/DDGI/SSGI）。描画側 evaluate_gi_ambient の
+    ///               分岐に使う。SSGI モードでは DDGI compute は走らせない（呼び出し側が
+    ///               gi_on=false で record をスキップする）が、描画側が t_ssgi を参照できるよう
+    ///               enabled=true・gi_mode=SSGI で書く（初回/リサイズの未収束フレームだけは
+    ///               呼び出し側が active=false で 1 フレームだけフラットに倒す）。
+    pub fn update_params(&self, queue: &wgpu::Queue, gi: &GiSettings, active: bool, gi_mode: u32) -> u32 {
         // 初回のみアトラスをゼロ初期化（未初期化 storage テクスチャの読みを避ける）。
         self.ensure_zero_init(queue);
         let grid = self.grid.get();
@@ -247,7 +256,7 @@ impl GiResources {
         let ppf = gi.probes_per_frame.clamp(1, probe_count);
 
         let live = GiParams::new(
-            &grid, active, gi.rays_per_probe, base, frame,
+            &grid, active, gi_mode, gi.rays_per_probe, base, frame,
             gi.intensity, gi.hysteresis, gi.recursive_weight,
         );
         queue.write_buffer(&self.params_buffer, 0, bytemuck::bytes_of(&live));

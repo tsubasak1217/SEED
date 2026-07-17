@@ -61,6 +61,15 @@ struct CameraUniform {
 // gbuffer_bgl はこの 2 binding を含む 8 entry へ拡張済み（deferred.rs 参照）。
 @group(1) @binding(6) var t_ao: texture_2d<f32>;
 @group(1) @binding(7) var s_ao: sampler;
+// ── SSGI 入力（半解像度スクリーンスペース GI を 1 フレーム遅延で読む）───────────
+// t_ssgi は SSGI パス（ssgi_gen.wgsl＋いもす法カラーブラー）の**前フレーム**の出力
+// （.rgb に 1 バウンス間接放射照度。ミスはフラットアンビエント色で埋め済み）。
+// SSGI 非使用時（DDGI/フラット/未収束フレーム）はダミー 1x1 がバインドされる（GiParams.gi_mode で
+// 分岐するため中身は参照されない）。s_ssgi は Filtering（linear）で半解像度→フル解像度のバイリニア。
+// この group1 は deferred ライティング専用（フォワードの group1 とは別レイアウト）なので、
+// 共有 evaluate_gi_ambient には SSGI テクスチャを持ち込まず、ここで採取して Surface.screen_gi へ渡す。
+@group(1) @binding(8) var t_ssgi: texture_2d<f32>;
+@group(1) @binding(9) var s_ssgi: sampler;
 
 // ─── フルスクリーン三角形の頂点定数 ───────────────────────────
 //
@@ -164,6 +173,12 @@ fn fs_deferred(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     let ao = textureSampleLevel(t_ao, s_ao, uv, 0.0).r;
     s.occlusion     = occlusion * ao;
     s.frag_coord    = frag.xy;
+    // SSGI（スクリーンスペース GI）の間接光を採取し Surface へ渡す（.a=1＝deferred で有効）。
+    // 半解像度 t_ssgi をフル解像度 UV でバイリニアアップサンプルする（AO と同じ流儀）。
+    // GI_MODE_SSGI 以外（DDGI/フラット）のときは evaluate_gi_ambient がこの値を無視するため、
+    // ダミーがバインドされていても無害。1 フレーム遅延方式（前フレームの HDR から計算した結果）。
+    let ssgi = textureSampleLevel(t_ssgi, s_ssgi, uv, 0.0).rgb;
+    s.screen_gi     = vec4<f32>(ssgi, 1.0);
 
     return vec4<f32>(evaluate_lighting(s), 1.0);
 }

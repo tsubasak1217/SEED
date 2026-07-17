@@ -1522,9 +1522,10 @@
                                                                 <TextBlock Text="GI" Foreground="#CCCCCC" FontSize="11" VerticalAlignment="Center"/>
                                                                 <ComboBox x:Name="CmbGi" Grid.Column="1"
                                                                           FontSize="11" Height="22" VerticalAlignment="Center"
-                                                                          SelectedIndex="1"
+                                                                          SelectedIndex="2"
                                                                           SelectionChanged="OnRenderFeatureChanged">
                                                                     <ComboBoxItem Content="なし（環境光）" Tag="flat"/>
+                                                                    <ComboBoxItem Content="SSGI" Tag="ssgi"/>
                                                                     <ComboBoxItem Content="レイトレ（DDGI）" Tag="rt"/>
                                                                 </ComboBox>
                                                             </Grid>

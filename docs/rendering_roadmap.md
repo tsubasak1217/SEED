@@ -360,7 +360,7 @@
 単一チャンネル（`.r`）分離ボックスブラーの compute パイプライン＋ping-pong 実行ヘルパー（`ImosBlur::record`、
 結果は必ず `t1` に残る不変条件つき）。アルゴリズムは `postfx_blur.wgsl` と同一式。ストレージは
 `Rgba16Float`（単一チャンネル R16Float は core WebGPU の storage 非対応のため。`.r` のみ使用）。
-**AO（SSAO / RT-AO）で初適用**。SSGI（カラーブラー）へは load/store を `.r`→`.rgb` に広げるだけで転用可
+**AO（SSAO / RT-AO）で初適用**。**SSGI（カラーブラー）へ転用済み**：`imos_blur.wgsl` の load/store を `.r`→`.rgb` に広げた（ランニング和はチャンネル独立のため AO の `.r` 運用は不変）
 （フォーマット変更不要）。CPU 参照一致・WGSL naga 検証のユニットテストつき。
 
 ### Phase RP: GPUパーティクル 【状況: 拡張実装済み（実機検証待ち）】
@@ -824,6 +824,27 @@ Forward+ ではなく Deferred を選ぶ根拠: 多灯対応だけなら Forward
   `PostFxSettings.reflection_intensity`（既定 1.0, SET_POST_FX の `reflection_intensity`）。
   BindGroup: SSR=group0..3（4）/ RT=group0..4（5＝max_bind_groups 上限）/ composite=group0（1）。
   実装: `renderer/reflection.rs`, `shaders/reflection_common|ssr|rt|composite.wgsl`, `frame_renderer.rs` 配線。
+- **SSGI（スクリーンスペース GI）: 実装済み（Phase SSGI）**。GI の第 3 モード（`GiMode::Ssgi`）。
+  Deferred 有効時のみ動く独立フルスクリーン AO の**カラー版**パス。G-Buffer の深度＋ワールド法線から
+  コサイン半球方向へ 3 本（`SSGI_NUM_DIRS`）のスクリーンスペースレイを 16 ステップ×最大 5m でマーチし、
+  ヒットしたら scene_hdr（不透明ライティング済み）の色を拾ってコサイン平均＝1 バウンス間接光。
+  ミスはフラットアンビエント色で埋める（黒にしない）。半解像度 `ssgi_raw`（`Rgba16Float`）へ焼き、
+  ピクセルごとの IGN 回転＋いもす法カラーブラー 3 反復（`renderer/imos_blur.rs` の `.rgb` 対応）で
+  デノイズする。時間的蓄積はしない（モーションベクタが無い。TODO(SSGI-Temporal)）。
+  **1 フレーム遅延方式**: `evaluate_gi_ambient`（`lighting_eval.wgsl`）は同じライティングパス内にあり
+  今フレームの HDR をすぐ使えないため、G-Buffer → デファードライティング（**前フレーム** の `ssgi_b` を
+  `t_ssgi` で読む）→ SSGI 生成パス（**今フレーム** の HDR → 次フレーム用 `ssgi_b`）の順で走らせる。
+  初回/リサイズ/有効化直後の 1 フレームだけ `GiParams.enabled=0` でフラットに倒す（`SsgiTargets::ensure`
+  の再確保通知で検知）＝ゼロクリアがフラットアンビエントと等価になる。強度は `gi_intensity`（DDGI と共通）。
+  **バインディング配置**: `t_ssgi`/`s_ssgi` は deferred ライティング専用の group1（binding 8/9）に置き、
+  共有 `evaluate_gi_ambient` には持ち込まない。deferred の fragment だけが採取して `Surface.screen_gi`
+  （`.rgb`＝間接光, `.a`＝有効フラグ）へ渡す。**半透明フォワード**（WBOIT/距離ソート）は `Surface` を
+  `var s: Surface;` でゼロ初期化する＝`screen_gi.a=0` となり、`evaluate_gi_ambient` は SSGI モードでも
+  フラットアンビエントへフォールバックする（スクリーン入力は不透明前提のため半透明に効かせない）。
+  `GiParams.gi_mode`（旧 `_pad0` を転用・サイズ 80B 不変）が `flat/ddgi/ssgi` を切り替える。
+  実装: `renderer/ssgi.rs`（`SsgiPipelines`/`SsgiTargets`/`SsgiParams`）＋ `shaders/ssgi_common.wgsl` /
+  `ssgi_gen.wgsl`、`deferred_lighting.wgsl`（group1 binding8/9）、`lighting_eval.wgsl`（SSGI 分岐）、
+  `surface.wgsl`（`screen_gi`）、`frame_renderer.rs` 配線。BindGroup: 生成 group0..2（3, 上限内）。
 
 ## D3 実機テスト観点（GPU 実機確認が必要。開発環境では cargo build/test までしか検証できない）
 
@@ -950,19 +971,21 @@ inline RT ではヒット三角形のマテリアルテクスチャ・頂点属�
 | 機能 | enum | モード（文字列） | 既定 | 実装状況 |
 |------|------|------------------|------|----------|
 | 影 | `ShadowMode` | `rt` / `shadowmap` | `shadowmap` | 両方実装済み（LightMeta.rt_shadows で実行時分岐） |
-| GI | `GiMode` | `rt` / `flat` | `flat`※ | 両方実装済み（DDGI / フラットアンビエント）。将来 `ssgi` 追加予定 |
+| GI | `GiMode` | `rt` / `ssgi` / `off`(=`flat`) | `flat`※ | **3 方式すべて実装済み**（`rt`＝DDGI / `ssgi`＝スクリーンスペース GI / `flat`＝フラットアンビエント）。`rt`＝プローブ格子レイトレ（RT 対応 GPU）、`ssgi`＝1 フレーム遅延の半解像度 SS-GI（RT 不要・deferred 有効時のみ）。RT 非対応で `rt` 要求時は `ssgi` へ降格。強度は `gi_intensity`（DDGI と共通） |
 | 反射 | `ReflectionMode` | `rt` / `ssr` / `off` | `off` | **実装済み（SSR / RT, Phase D6）**。`rt`＝RT 反射（RT 対応 GPU）、`ssr`＝スクリーンスペース反射。RT 非対応で `rt` 要求時は `ssr` へ降格。deferred 有効時のみ動作 |
 | AO | `AoMode` | `rt` / `ssao` / `off` | `off` | **実装済み（SSAO / RT-AO, Phase D4）**。`rt`＝RT-AO（RT 対応 GPU）、`ssao`＝SSAO。RT 非対応で `rt` 要求時は `ssao` へ降格。deferred 有効時のみ動作。強度は `ao_intensity` |
 | 半透明 | `TranslucencyMode` | `rt` / `raster` | `raster` | `raster`＝従来 WBOIT/距離ソート（実装済み）。`rt` は**未実装**（resolve で `raster` へ降格） |
 
 ※ `GiMode` の型既定は `flat` だが、**旧 `GiSettings.enabled` の既定は true** だったため、
 プロジェクト設定に `gi_enabled` キーが無い場合は移行時に `rt`（GI 有効）へ写像し、現状の見た目を維持する
-（`app_init.rs::load_graphics_settings`）。エディタの GI コンボも既定 `rt`（DDGI）。
+（`app_init.rs::load_graphics_settings`）。エディタの GI コンボは「なし（環境光）」`flat`／「SSGI」`ssgi`／「レイトレ（DDGI）」`rt` の 3 択で既定 `rt`（DDGI）。
 
 ### 降格・未実装判定の集約点
 
 - `RenderFeatures::resolve(rt_supported) -> ResolvedFeatures` が**唯一の判定入口**。
-  - RT 非対応 GPU（`rt_shadow::rt_shadows_supported()==false`）では `shadow=rt→shadowmap` / `gi=rt→flat`。
+  - RT 非対応 GPU（`rt_shadow::rt_shadows_supported()==false`）では `shadow=rt→shadowmap` / `gi=rt→ssgi`（SSGI は RT 不要で DDGI の次善。`flat` ではなく間接光を残す）。
+  - GI: `rt`＝RT 対応時のみ通す／RT 非対応時は `ssgi` へ降格、`ssgi`＝常に `ssgi`、`flat`＝`flat`（3 方式実装済み）。
+    ただし `ssgi` は deferred 有効時のみ動作（deferred ゲートは `frame_renderer` 側 `ssgi_active` で判定。無効時はフラットへ）。
   - 反射: `rt`＝RT 対応時のみ通す／RT 非対応時は `ssr` へ降格、`ssr`＝常に `ssr`、`off`＝`off`（Phase D6 実装済み）。
   - AO: `rt`＝RT 対応時のみ通す／RT 非対応時は `ssao` へ降格、`ssao`＝常に `ssao`、`off`＝`off`（Phase D4 実装済み）。
     ただし `ssao`/`rt` は deferred 有効時のみ動作（deferred ゲートは `frame_renderer` 側 `ao_effective` で判定）。
@@ -970,7 +993,8 @@ inline RT ではヒット三角形のマテリアルテクスチャ・頂点属�
 - 実行時分岐（`frame_renderer.rs` 等）は必ず `ResolvedFeatures` を参照し、生の `RenderFeatures` を直接見ない。
 - 起動時・切替時に実効モードを `[SEED FEATURES] shadow=… gi=… reflection=rt …` の 1 行でログ
   （反射は実装済みのため `(未実装)` は付かない。RT 非対応で SSR 降格時のみ `reflection=ssr(rt非対応→ssr)`。
-  反射要求ありで deferred 無効なら `反射:deferred無効のため停止` を追記）
+  RT 非対応で GI が SSGI 降格時は `gi=ssgi(rt非対応→ssgi)`。反射要求ありで deferred 無効なら
+  `反射:deferred無効のため停止`、実効 GI が `ssgi` で deferred 無効なら `GI(SSGI):deferred無効のため停止` を追記）
 
 ### D6 反射 実機テスト観点（GPU 実機確認が必要。開発環境では cargo build/test まで）
 - SSR/RT を切り替えると鏡面（低 roughness）の床・金属に反射像が出ること。

@@ -31,7 +31,7 @@ use super::grid::GiGrid;
 /// |  64    | intensity (f32)   |
 /// |  68    | hysteresis (f32)  |
 /// |  72    | recursive_weight  |
-/// |  76    | _pad0 (u32)       |
+/// |  76    | gi_mode (u32)     |
 /// 合計 80（16 の倍数）。
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -58,14 +58,26 @@ pub struct GiParams {
     pub intensity: f32,
     pub hysteresis: f32,
     pub recursive_weight: f32,
-    pub _pad0: u32,
+    /// GI の方式コード（描画側 evaluate_gi_ambient の分岐に使う）。
+    /// GI_MODE_FLAT=0（フラットアンビエント）/ GI_MODE_DDGI=1（プローブ補間）/
+    /// GI_MODE_SSGI=2（スクリーンスペース GI テクスチャ）。
+    /// enabled==0 のときは方式に関わらずフラットへフォールバックする（描画側の分岐順）。
+    /// 旧 _pad0（末尾パディング）を転用したためサイズは 80B のまま不変。
+    pub gi_mode: u32,
 }
+
+/// GI 方式コード: フラットアンビエント（間接光なし）。
+pub const GI_MODE_FLAT: u32 = 0;
+/// GI 方式コード: DDGI（プローブ格子レイトレ）。
+pub const GI_MODE_DDGI: u32 = 1;
+/// GI 方式コード: SSGI（スクリーンスペース GI・1 フレーム遅延テクスチャ）。
+pub const GI_MODE_SSGI: u32 = 2;
 
 impl GiParams {
     /// 無効状態（enabled=0）の GiParams。格子だけは有効値を入れておく
     /// （描画側が万一参照しても NaN/0除算を起こさないため）。
     pub fn disabled(grid: &GiGrid) -> Self {
-        Self::new(grid, false, 1, 0, 0, 1.0, 0.97, 0.5)
+        Self::new(grid, false, GI_MODE_FLAT, 1, 0, 0, 1.0, 0.97, 0.5)
     }
 
     /// 格子とノブから GiParams を構築する。
@@ -73,6 +85,7 @@ impl GiParams {
     pub fn new(
         grid:              &GiGrid,
         enabled:           bool,
+        gi_mode:           u32,
         rays_per_probe:    u32,
         probe_update_base: u32,
         frame_index:       u32,
@@ -100,7 +113,7 @@ impl GiParams {
             intensity,
             hysteresis,
             recursive_weight,
-            _pad0: 0,
+            gi_mode,
         }
     }
 }

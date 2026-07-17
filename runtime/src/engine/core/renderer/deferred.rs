@@ -153,6 +153,14 @@ pub fn create_gbuffer_bind_group(
     // deferred_lighting.wgsl が group1 binding6/7 を宣言するため gbuffer_bgl は 8 entry。
     ao_view:     &wgpu::TextureView,
     ao_sampler:  &wgpu::Sampler,
+    // ── SSGI 入力（Phase SSGI: スクリーンスペース GI, 1 フレーム遅延）───────────────
+    // binding 8=SSGI テクスチャ（半解像度 .rgb の間接放射照度。SSGI 非使用時はダミー 1x1）、
+    // binding 9=SSGI サンプラー（Filtering=linear。半解像度→フル解像度のバイリニア用）。
+    // deferred_lighting.wgsl が group1 binding8/9 を宣言するため gbuffer_bgl は 10 entry。
+    // AO 生成・反射パスも本関数を使うが、それらの WGSL は group1 の 0..5 のみ宣言する（subset は
+    // 合法）ため、それらの呼び出しではダミー SSGI テクスチャ／サンプラーを渡してよい。
+    ssgi_view:    &wgpu::TextureView,
+    ssgi_sampler: &wgpu::Sampler,
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label:  Some("Deferred GBuffer BG (group 1)"),
@@ -166,6 +174,8 @@ pub fn create_gbuffer_bind_group(
             wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::Sampler(sampler) },
             wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::TextureView(ao_view) },
             wgpu::BindGroupEntry { binding: 7, resource: wgpu::BindingResource::Sampler(ao_sampler) },
+            wgpu::BindGroupEntry { binding: 8, resource: wgpu::BindingResource::TextureView(ssgi_view) },
+            wgpu::BindGroupEntry { binding: 9, resource: wgpu::BindingResource::Sampler(ssgi_sampler) },
         ],
     })
 }

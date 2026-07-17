@@ -593,6 +593,14 @@ pub struct App {
     /// STORAGE_BINDING を要するため RtPool には載せられず本フィールドが専有する。
     /// 毎フレーム ensure で半解像度サイズに追従する（AO 生成パイプラインは DrawContext.pipelines.ao）。
     ao_targets: crate::engine::core::renderer::AoTargets,
+    /// SSGI（スクリーンスペース GI, Phase SSGI）の半解像度テクスチャ群（ssgi_raw / ssgi_a / ssgi_b）。
+    /// AoTargets と同型だが .rgb カラー・**フレーム跨ぎ永続**（1 フレーム遅延方式で ssgi_b が前フレーム
+    /// 結果を保持する）。毎フレーム ensure で半解像度サイズに追従する（生成は DrawContext.pipelines.ssgi）。
+    ssgi_targets: crate::engine::core::renderer::SsgiTargets,
+    /// SSGI が「収束済み」か（ssgi_b に有効な前フレーム結果があるか）。false のフレームは
+    /// GiParams を enabled=false でフラットに倒す（初回・リサイズ直後・SSGI 有効化直後の 1 フレーム）。
+    /// SsgiTargets::ensure の再確保通知と「前フレームも SSGI が active だったか」で更新する。
+    ssgi_warmed: bool,
     /// GPU パーティクルシステム（Phase RP）。エミッタごとの GPU バッファ・CPU 状態を保持する。
     /// rt_pool と同じく eager 構築（デバイス不要。GPU パイプラインは DrawContext.pipelines が持つ）。
     /// 毎フレーム collect_and_consume（CPU）→ sync_gpu/dispatch/draw（GPU）で更新・描画する。
@@ -966,6 +974,8 @@ impl App {
             edit_view_mode:              EditViewMode::View3D,
             rt_pool:                     crate::engine::core::renderer::RtPool::new(),
             ao_targets:                  crate::engine::core::renderer::AoTargets::new(),
+            ssgi_targets:                crate::engine::core::renderer::SsgiTargets::new(),
+            ssgi_warmed:                 false,
             particle_system:             crate::engine::core::renderer::ParticleSystem::new(),
             skybox_system:               crate::engine::core::renderer::SkyboxSystem::new(),
             post_vignette_enabled:       false,
