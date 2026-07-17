@@ -350,6 +350,16 @@ impl RtShadowResources {
                     // インスタンスマスク（alpha_mode 由来）も内容の一部。マテリアル差し替えで
                     // Opaque⇔Blend が変わったときに TLAS 再構築を確実に発火させる。
                     hasher.write_u8(instance_mask_for(gpu.primitive_alpha_mode(material_idx)));
+                    // 色付き影（RT-Translucency）の平均アルベド storage は TLAS 再構築フレームでしか
+                    // 再アップロードされない（下の queue.write_buffer は build 経路のみ）。よって
+                    // その中身＝各インスタンスの平均アルベド（.rgb 色相・.a 不透明度）と透過率も
+                    // シグネチャに含める。含めないと、alpha_mode/変換を変えないマテリアルの
+                    // in-place 編集（アルファ・色・透過率のスライダー）で shadow 用アルベドが変わっても
+                    // シグネチャが不変のまま静止スキップが発火し、GPU 上の albedo_buffer が古い値で
+                    // 固定され、色付き影に編集が反映されない（＝実行時のアルファ/色変更が影に出ない）。
+                    let alb = gpu.primitive_avg_albedo(material_idx);
+                    for v in &alb { hasher.write_u32(v.to_bits()); }
+                    hasher.write_u32(gpu.primitive_transmission(material_idx).to_bits());
                     for v in &transform { hasher.write_u32(v.to_bits()); }
                 });
             }

@@ -783,11 +783,31 @@ pub struct GpuModel {
     textures: Vec<GpuTexture>,
 }
 
-/// 実効マテリアルからプリミティブ平均アルベド（リニア RGBA）を導く（Phase RT-GI）。
-/// baked 値（テクスチャ平均×元factor）が既定白でなければそれを使い、白なら base_color_factor を使う。
+/// 実効マテリアルからプリミティブ平均アルベド（リニア RGBA）を導く（Phase RT-GI / RT-Translucency）。
+///
+/// - `.rgb`（GI のバウンス色・色付き影の色相）: baked 値（テクスチャ平均×ロード時 factor）の rgb が
+///   既定白でなければそれを使い、白（テクスチャ無し等）なら base_color_factor の rgb を使う。
+/// - `.a`（色付き影の「影の不透明度」）: **常に override 適用後の `base_color_factor.a` を使う**。
+///
+/// 【なぜ .a を baked から取ってはいけないか（色付き影の退行・check C）】
+/// baked `avg_albedo.a` は `compute_material_avg_albedo` が **ロード時** の `base_color_factor.a` を
+/// 焼き込んだ値であり、その後の実行時オーバーライド（インスペクタで Opaque→Blend 化・アルファ変更）を
+/// 一切反映しない。テクスチャ付きマテリアル（NewSponza の大半＝baked rgb が非白）では、下の分岐が
+/// baked 値を丸ごと返すため `.a` がロード時アルファのまま固定され、「実行時にアルファを下げても
+/// 影の透過度が変わらない／Blend 化しても影が追従しない」という不整合になっていた。
+/// 影の不透明度は必ず現在の（override 適用後の）`base_color_factor.a` を単一の真実source とする
+/// （透過率 transmission の折り込みは呼び出し側 rt_shadow.rs が `.a *= 1 - transmission` で行う）。
 fn eff_avg_albedo(eff: &Material) -> [f32; 4] {
     let a = eff.avg_albedo;
-    if a != [1.0, 1.0, 1.0, 1.0] { a } else { eff.base_color_factor }
+    // .rgb は baked（テクスチャ平均色）を優先。rgb のみで白判定し、.a は判定に混ぜない
+    //（baked の .a はロード時アルファなので、.a=1 かどうかで色相ソースを切り替えるのは誤り）。
+    let rgb = if [a[0], a[1], a[2]] != [1.0, 1.0, 1.0] {
+        [a[0], a[1], a[2]]
+    } else {
+        [eff.base_color_factor[0], eff.base_color_factor[1], eff.base_color_factor[2]]
+    };
+    // .a は常に override 適用後の base_color_factor.a（実行時の Blend 化・アルファ変更を影へ反映）。
+    [rgb[0], rgb[1], rgb[2], eff.base_color_factor[3]]
 }
 
 impl GpuModel {
@@ -1059,11 +1079,13 @@ impl GpuModel {
         // ② cull_face はパイプラインバリアント選択に効く（uniform 外）。draw 時に
         //    primitive_cull_face() が GpuMaterial.cull_face を読むため、フィールド更新で次フレームに反映。
         self.materials[slot].cull_face = eff.cull_face;
-        // ③ 平均アルベド（Phase RT-GI）も追従させる（フル経路と同一の eff_avg_albedo）。
+        // ③ 平均アルベド（Phase RT-GI / RT 色付き影）も追従させる（フル経路と同一の eff_avg_albedo）。
         self.avg_albedos[slot] = eff_avg_albedo(&eff);
-        // ④ 透過率（ガラス表現）も追従させる。RT 色付き影のバッファは TLAS 再構築時のみ
-        //    再アップロードされるため、色付き影への反映は次の TLAS 再構築フレームからになる
-        //    （表面のスクリーンスペース屈折・透過合成は uniform 経由で即時反映される）。
+        // ④ 透過率（ガラス表現）も追従させる。
+        //    RT 色付き影の平均アルベド storage は TLAS 再構築フレームでしか再アップロードされないが、
+        //    この avg_albedos/transmissions の更新は rt_shadow.rs の静止スキップ シグネチャに
+        //    含まれる（平均アルベド・透過率をハッシュ）ため、in-place 編集の次フレームに TLAS が
+        //    確実に再構築され、色付き影へ反映される（アルファ・色・透過率のスライダー編集が即時に効く）。
         self.transmissions[slot] = eff.transmission;
 
         InlineUpdateResult::Updated
@@ -2209,5 +2231,34 @@ mod inline_bake_tests {
         // offset 68 の 4 バイトが全ゼロ＝旧 _pad0(f32 0.0) とビット一致であることを直接確認。
         let bytes = bytemuck::bytes_of(&uni);
         assert_eq!(&bytes[68..72], &[0u8; 4], "offset 68 の 4 バイトは旧 _pad0(0.0) とビット一致");
+    }
+
+    /// 色付き影の「影の不透明度」（eff_avg_albedo の `.a`）は、baked のロード時アルファではなく
+    /// 常に override 適用後の `base_color_factor.a` を採る（Phase RT-Translucency, check C の回帰ガード）。
+    ///
+    /// テクスチャ付きマテリアルは baked `avg_albedo` が非白になり、以前はこの分岐が baked 値を
+    /// 丸ごと返していたため `.a` がロード時アルファに固定され、実行時の Blend 化・アルファ変更が
+    /// 色付き影に反映されなかった（テクスチャ物体の影が実物のアルファ変更に追従しない退行）。
+    #[test]
+    fn eff_avg_albedo_alpha_tracks_current_base_color_factor() {
+        use super::eff_avg_albedo;
+
+        // ── テクスチャ付き想定: baked avg_albedo は非白・ロード時アルファ 1.0 ──
+        let mut mat = Material::default();
+        mat.avg_albedo        = [0.2, 0.1, 0.05, 1.0]; // ロード時に焼いた平均（.a=ロード時アルファ）
+        mat.base_color_factor = [1.0, 1.0, 1.0, 0.3];  // 実行時に Blend 化＋アルファを 0.3 へ
+
+        let out = eff_avg_albedo(&mat);
+        // .rgb は baked（テクスチャ平均色）を維持する。
+        assert_eq!([out[0], out[1], out[2]], [0.2, 0.1, 0.05], ".rgb は baked のテクスチャ平均色");
+        // .a は override 適用後の base_color_factor.a（0.3）。baked の 1.0 を返してはならない。
+        assert_eq!(out[3], 0.3, ".a は現在の base_color_factor.a を反映する（baked のロード時アルファではない）");
+
+        // ── テクスチャ無し想定: baked が白なら .rgb は base_color_factor から採る ──
+        let mut untex = Material::default();
+        untex.avg_albedo        = [1.0, 1.0, 1.0, 1.0]; // 白＝未焼き（テクスチャ無し）
+        untex.base_color_factor = [0.1, 0.2, 0.3, 0.5];
+        let out2 = eff_avg_albedo(&untex);
+        assert_eq!(out2, [0.1, 0.2, 0.3, 0.5], "白 baked のときは rgb/a とも base_color_factor");
     }
 }
