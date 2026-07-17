@@ -1013,11 +1013,16 @@ RT 非対応 GPU では `raster` へ降格する（`render_features.rs::resolve`
 - RT シャドウレイ（`rt_shadow_on.wgsl`）は従来 cull_mask 0x01（不透明のみ）。色付き影では、不透明で
   遮蔽されていないとき**第 2 のクエリ（cull_mask 0x02＝`RT_MASK_NON_OPAQUE`。半透明レイヤーは TLAS 登録済み）**を
   発射し、透過色を累積する。inline ray query は最近ヒットしか返さないため、**tmin をヒットの先へ進めながら
-  最大 `RT_TRANSLUCENT_MAX_HITS`(=4) 回再トレース**して重なったガラスを貫く:
-  `tint *= mix(vec3(1), avg_albedo.rgb, avg_albedo.a)`。
+  最大 `RT_TRANSLUCENT_MAX_HITS`(=4) 回再トレース**して重なったガラスを貫く。1 枚の Blend 面を通る光の
+  RGB 透過率は **`T = (1-α) + α·transmission·avg_albedo.rgb`**（`tint *= T`）。透過光は baseColor で濾過される
+  という KHR_materials_transmission の物理に合わせ、**transmission=1 でも影は消えず avg_albedo 色に染まる**
+  （ステンドグラスの床に色付き光）。α=被覆（`base_color_factor.a`）, tr=透過率。
 - 平均アルベドは DDGI 用の per-instance storage（`rt_shadow.rs` 所有・16B/インスタンス・TLAS `custom_data` で引く）を
   **シャドウレイでも読めるように group4 に binding14 を追加**（`rt_shadow_on.wgsl` 宣言＋`lighting.rs::create_rt_bind_group`
-  で bind）。不透明度は既存 `avg_albedo.a`（= `base_color_factor.a`）を流用＝**キャッシュ昇格不要**。
+  で bind）＝**キャッシュ昇格不要**。α と transmission は GI/反射が読まない `.a` に **各 8bit 固定小数でビットパック**
+  して相乗りさせる（`.a = round(α*255)*256 + round(tr*255)`。`.rgb` は生アルベドのまま＝GI/反射に不干渉）。
+  パック/デコードは Rust `rt_shadow.rs::pack_shadow_alpha_transmission` と WGSL `rt_trace_translucent_tint` の対で、
+  往復＋真理値表テスト（`shadow_pack_roundtrip_and_transmittance`）と WGSL 定数一致で担保する。
 - `rt_shadow_factor` の戻り値を **f32 → vec3<f32>（RGB 透過率）**へ変更。`rt_shadow_off.wgsl` スタブも一致
   （`vec3(1)`）。`lighting_eval.wgsl` は `radiance = radiance * factor`（vec3×vec3）で変更不要。deferred/forward の
   全 RT バリアントに波及（naga 全バリアント検証で担保）。スカラー可視性（不透明の遮蔽平均）× ターミネータ ×
@@ -1090,11 +1095,14 @@ RT-Translucency の屈折を土台に、「本物のガラス」を作れる 2 �
   - **後方互換（transmission=0 でビット一致）**: transmission==0 のとき early-return で従来式そのものを返す
     （屈折オフ→`(c*a,a)`、屈折オン→`(rgb0,1)`）。`a*(1-0)=a`・`c*a` 不変・`mix(x,y,0)=x` の恒等性で
     ビット一致を担保（WGSL naga 検証済み。従来の RT-Translucency パリティを保存）。
-- **RT 色付き影への反映**: 影の透過量 = `mix(従来のα由来, 高透過=白(素通り), transmission)`。
-  これは `平均アルベドバッファ .a = base_color_factor.a * (1 - transmission)` を `rt_shadow.rs` でパックする
-  ことで実現（rt_shadow_on.wgsl の `tint *= mix(vec3(1), .rgb, .a)` はそのまま。transmission=0 で従来一致、
-  transmission=1 で .a=0＝完全素通り＝影が明るくなる）。**.a の意味変更**は色付き影専用で、GI compute は
-  `.rgb` のみ参照するため GI は不変（`ddgi_probe_update.wgsl` 確認済み）。`GpuModel.transmissions` を
+- **RT 色付き影への反映**: 影の透過率 = **`T = (1-α) + α·transmission·avg_albedo.rgb`**（`rt_shadow_on.wgsl`）。
+  透過光は baseColor で濾過されるという物理（KHR_materials_transmission）に合わせ、`transmission=1` でも
+  影は消えず avg_albedo 色に染まる。**挙動変更**: 旧モデル（`.a = α·(1-tr)`, `tint *= mix(白, .rgb, .a)`）では
+  `transmission=1` で影が完全に消え、`α=1,tr=0` はアルベド色の影だった。新モデルは `α=1,tr=1 → 影=アルベド色`、
+  **`α=1,tr=0 → 影=0（暗い影。透過しない被覆面は光を通さない。意図的な挙動変更）`**、`α=0 → 影なし`。
+  α（`base_color_factor.a`）と transmission は GI/反射が読まない avg_albedo の `.a` に各 8bit 固定小数でパック
+  （`rt_shadow.rs::pack_shadow_alpha_transmission`）。`.rgb` は生アルベドのままで GI compute（`ddgi_probe_update.wgsl`）
+  ・RT リフレクション（`reflection_rt.wgsl`）は `.rgb` のみ参照するため両者は不変。`GpuModel.transmissions` を
   materials 同順で保持し `primitive_transmission()` で引く（in-place 編集は次の TLAS 再構築で反映）。
 
 ### B. すりガラス（roughness 連動の屈折ぼかし）

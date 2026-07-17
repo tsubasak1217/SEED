@@ -68,9 +68,12 @@
 /// group 4 binding 6: RT 影用 TLAS。
 @group(4) @binding(6) var rt_accel: acceleration_structure;
 
-/// group 4 binding 14: TLAS インスタンス順の平均アルベド（.rgb）＋不透明度（.a）。
+/// group 4 binding 14: TLAS インスタンス順の平均アルベド（.rgb）＋パック済み α/transmission（.a）。
 /// 色付き影（半透明レイヤー越しの光を染める）で、半透明ヒットの custom_data を添字に引く。
-/// GI compute が別 BindGroup（binding4）で読むのと同一バッファ（rt_shadow.rs 所有）。
+/// GI compute（binding4）と RT リフレクション（別 group）が読むのと同一バッファ（rt_shadow.rs 所有）。
+/// - `.rgb`: 生の平均アルベド。**GI/反射が「生アルベド」として読む共有値。意味を変えてはならない**。
+/// - `.a`  : 色付き影専用。α（base_color_factor.a）と transmission を各 8bit 固定小数で相乗り
+///           （rt_shadow.rs::pack_shadow_alpha_transmission と対。GI/反射は .a を読まないため不干渉）。
 @group(4) @binding(14) var<storage, read> rt_shadow_albedo: array<vec4<f32>>;
 
 // ─── 定数 ────────────────────────────────────────────────────
@@ -130,6 +133,17 @@ const RT_TRANSLUCENT_MAX_HITS: u32 = 4u;
 /// 再トレース時に tmin を「直前ヒットの t＋この量」へ進める微小オフセット（同一面の再ヒット防止）。
 /// RT_SHADOW_TMIN と同オーダー。ヒット面の厚みより十分小さく、次のレイヤーは取りこぼさない。
 const RT_TRANSLUCENT_T_STEP: f32 = 0.002;
+
+/// 色付き影のパック定数（Rust の rt_shadow.rs::pack_shadow_alpha_transmission と対）。
+/// rt_shadow_albedo[.a] へ α（base_color_factor.a）と transmission を各 8bit 固定小数で相乗りさせる。
+/// .rgb は GI/反射が読む生アルベドなので触れず、GI が読まない .a にだけ 2 値を詰めている。
+///   パック: a_q=round(α*QUANT), t_q=round(tr*QUANT), .a = a_q*RADIX + t_q（最大 65535＝f32 整数域内）
+///   デコード（下記 rt_trace_translucent_tint）: a_q=floor(.a/RADIX), t_q=.a - a_q*RADIX
+/// 値は Rust 側定数と一致させること（rt_shadow.rs のユニットテスト shadow_pack_roundtrip_and_transmittance が担保）。
+/// 1 チャンネルの量子化段数（8bit）。Rust の rt_shadow.rs::SHADOW_PACK_QUANT と一致させること。
+const SHADOW_PACK_QUANT: f32 = 255.0;
+/// α を上位バイトへ寄せる基数（t_q と衝突しない）。Rust の SHADOW_PACK_RADIX と一致させること。
+const SHADOW_PACK_RADIX: f32 = 256.0;
 
 /// ソフトシャドウの最小サンプル数（cone_radius > 0 のときに必ず飛ばす遮蔽レイの本数）。
 /// 4 本＝遮蔽率が 5 段階に量子化される。細いペナンブラ（cone_radius が小さい）ならこの
@@ -220,9 +234,9 @@ fn rt_trace_occlusion(o: vec3<f32>, dir: vec3<f32>, tmax: f32) -> f32 {
 
 /// 半透明レイヤー（cull_mask 0x02）越しの光を染める透過率（RGB）を返す（色付き影）。
 /// 不透明で遮蔽されていない方向へ、半透明インスタンスだけをトレースし、ヒットするたびに
-/// そのプリミティブの平均アルベドと不透明度で光をフィルタする。inline ray query は最近ヒット
-/// しか返さないため、tmin をヒットの先へ進めながら最大 RT_TRANSLUCENT_MAX_HITS 回再トレースして
-/// 重なったガラスを貫く。ヒットが無ければ vec3(1)（＝色を付けない）。
+/// そのプリミティブの平均アルベド・被覆 α・透過率 tr で光をフィルタする（T = (1-α)+α·tr·albedo）。
+/// inline ray query は最近ヒットしか返さないため、tmin をヒットの先へ進めながら最大
+/// RT_TRANSLUCENT_MAX_HITS 回再トレースして重なったガラスを貫く。ヒットが無ければ vec3(1)（＝色を付けない）。
 /// - `o`   : レイ原点（自己交差防止のオフセット適用済み）。
 /// - `dir` : 光源方向（rt_trace_occlusion と同じ向き）。
 /// - `tmax`: レイ最大距離（光源までの距離 or directional の大定数）。
@@ -251,17 +265,29 @@ fn rt_trace_translucent_tint(o: vec3<f32>, dir: vec3<f32>, tmax: f32) -> vec3<f3
             break;
         }
 
-        // 平均アルベド（.rgb）＋影の不透明度（.a）を custom_data で引く。
-        // .a は base_color_factor.a に透過率を折り込んだ値（rt_shadow.rs でパック）:
-        //   .a = base_color_factor.a * (1 - transmission)。透過率が高いほど影が素通り（明るく）。
+        // 平均アルベド（.rgb）＋パック済み α/transmission（.a）を custom_data で引く。
+        // .a は rt_shadow.rs::pack_shadow_alpha_transmission が
+        //   a_q = round(α * SHADOW_PACK_QUANT), t_q = round(tr * SHADOW_PACK_QUANT)
+        //   .a  = a_q * SHADOW_PACK_RADIX + t_q
+        // と詰めた固定小数（f32 の整数完全表現域内）。ここでその逆でデコードする。
+        // 範囲外インデックスは何もフィルタしない（tint 不変＝白のまま＝色を付けない）。
         let ai = hit.instance_custom_data;
-        var a = vec4<f32>(1.0, 1.0, 1.0, 1.0);
         if ai < arrayLength(&rt_shadow_albedo) {
-            a = rt_shadow_albedo[ai];
+            let entry  = rt_shadow_albedo[ai];
+            let packed = entry.a;
+            let a_q    = floor(packed / SHADOW_PACK_RADIX);
+            let t_q    = packed - a_q * SHADOW_PACK_RADIX;
+            let alpha  = clamp(a_q / SHADOW_PACK_QUANT, 0.0, 1.0); // 被覆（base_color_factor.a）
+            let tr     = clamp(t_q / SHADOW_PACK_QUANT, 0.0, 1.0); // 透過率（KHR_materials_transmission）
+            // 1 枚の Blend 面を通る光の RGB 透過率:
+            //   T = (1-α) + α·transmission·albedo.rgb
+            //   ・α=1, tr=1 → T = albedo   （色の付いた影＝色ガラスは baseColor で透過光を濾過する）
+            //   ・α=1, tr=0 → T = 0        （透過しない被覆面は光を通さない＝暗い影）
+            //   ・α=0        → T = 1        （影なし）
+            // 非透過成分 α·(1-tr) は光を通さない（＝0）ため式に現れない。透過光だけがアルベドで色付く。
+            let layer_t = vec3<f32>(1.0 - alpha) + alpha * tr * entry.rgb;
+            tint = tint * layer_t;
         }
-        // ガラスを通った光は「白（素通り）→ ガラス色」を不透明度で内挿した色でフィルタされる。
-        // 不透明度が高いほどガラス色が濃く乗り、低いほど素通りに近い。
-        tint = tint * mix(vec3<f32>(1.0, 1.0, 1.0), a.rgb, clamp(a.a, 0.0, 1.0));
 
         // 次のレイヤーへ: tmin を直前ヒットの手前まで進める（同一面の再ヒットを避ける）。
         tmin = hit.t + RT_TRANSLUCENT_T_STEP;
