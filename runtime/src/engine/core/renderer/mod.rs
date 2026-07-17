@@ -49,7 +49,7 @@ pub(crate) mod render_features;
 
 pub use uniforms::{CameraUniform, ModelUniform, MaterialUniform, JointUniform, ColorVertex,
                    GpuCullData, FrustumUniform, GizmoVertex};
-pub use gpu_resources::{GpuTexture, GpuMaterial, GpuPrimitive, GpuMesh, GpuModel,
+pub use gpu_resources::{GpuTexture, GpuMaterial, GpuPrimitive, GpuMesh, GpuModel, InlineUpdateResult,
                         InstancedModelBatch, NodePrimDraw, GpuLineBatch, GpuGizmoBatch,
                         DefaultTextures, CameraBuffer,
                         extract_frustum_planes, test_aabb_frustum, NUM_LODS};

@@ -484,6 +484,7 @@ pub fn build_actor(
                         anim_drive:      None,
                         cast_shadows,
                         material_overrides: mc_data.material_overrides,
+                        batch_instance_id: crate::engine::components::next_batch_instance_id(),
                     });
                 } else {
                     use std::sync::Arc;
@@ -520,6 +521,7 @@ pub fn build_actor(
                         anim_drive:      None,
                         cast_shadows,
                         material_overrides: mc_data.material_overrides,
+                        batch_instance_id: crate::engine::components::next_batch_instance_id(),
                     });
                 }
                 actor.add_slot_typed::<ModelComponent>(slot_name, ComponentKind::Model, slot_entity);

@@ -180,6 +180,7 @@ impl App {
                     anim_drive:      None,
                     cast_shadows:    true,
                     material_overrides: Vec::new(),
+                    batch_instance_id: crate::engine::components::next_batch_instance_id(),
                 };
 
                 // スロット専用エンティティを spawn して world に insert し、スロットを登録する
@@ -630,6 +631,7 @@ impl App {
                         anim_drive:      None,
                         cast_shadows:    true,
                         material_overrides: Vec::new(),
+                        batch_instance_id: crate::engine::components::next_batch_instance_id(),
                     }
                 };
                 let name = slot_name.to_string();

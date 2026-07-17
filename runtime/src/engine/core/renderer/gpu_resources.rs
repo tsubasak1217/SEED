@@ -353,6 +353,63 @@ pub struct GpuMaterial {
     textures:           Vec<GpuTexture>,
 }
 
+/// `Material` から GPU 用 `MaterialUniform`（std140 レイアウト）を組み立てる純関数。
+///
+/// 【単一の真実source】マテリアル uniform のビット表現をここ 1 か所に集約する。
+/// フルアップロード経路（`GpuMaterial::upload`）とインライン in-place 更新経路
+/// （`GpuModel::update_material_inline`）の両方がこれを使うことで、同じ `Material` からは
+/// 必ず 1 ビットも違わない同一 uniform が生成されることを保証する（値解釈のズレ防止）。
+pub(crate) fn build_material_uniform(mat: &Material) -> MaterialUniform {
+    // Mask のときだけカットオフを有効にする（それ以外は 0.0 = 破棄なし）。
+    let alpha_cutoff = match mat.alpha_mode {
+        AlphaMode::Mask => mat.alpha_cutoff,
+        _               => 0.0,
+    };
+    MaterialUniform {
+        base_color_factor:  mat.base_color_factor,
+        metallic_factor:    mat.metallic_factor,
+        roughness_factor:   mat.roughness_factor,
+        alpha_cutoff,
+        has_base_color_tex: mat.base_color_texture.is_some() as u32,
+        emissive_factor:    mat.emissive_factor,
+        has_normal_tex:     mat.normal_texture.is_some() as u32,
+        has_mr_tex:         mat.metallic_roughness_texture.is_some() as u32,
+        has_occlusion_tex:  mat.occlusion_texture.is_some() as u32,
+        has_emissive_tex:   mat.emissive_texture.is_some() as u32,
+        ior:                mat.ior,
+    }
+}
+
+/// インラインオーバーライドを埋込マテリアルへ焼き込んで「実効マテリアル」を作る純関数。
+///
+/// 【単一の真実source】インライン各フィールドの解釈（parse_alpha_mode / parse_cull_face 含む）を
+/// ここ 1 か所に集約する。`apply_overrides`（フル再アップロード経路）と
+/// `GpuModel::update_material_inline`（in-place 更新経路）が同じ関数を通るため、
+/// 同じインライン値からは必ず同一の実効マテリアルが得られる（両経路の結果が一致する保証）。
+///
+/// `kind` が `Inline` 以外なら `None`（呼び出し側で `MatAsset` 等を別処理する）。
+/// `None` のフィールドは `base`（埋込値）をそのまま維持する。
+pub(crate) fn bake_inline_material(base: &Material, kind: &MaterialOverrideKind) -> Option<Material> {
+    let MaterialOverrideKind::Inline {
+        base_color, metallic, roughness, emissive, alpha_mode, alpha_cutoff, ior, cull_face,
+    } = kind else {
+        return None;
+    };
+    let mut eff: Material = base.clone();
+    if let Some(v) = base_color   { eff.base_color_factor = *v; }
+    if let Some(v) = metallic     { eff.metallic_factor   = *v; }
+    if let Some(v) = roughness    { eff.roughness_factor  = *v; }
+    if let Some(v) = emissive     { eff.emissive_factor   = *v; }
+    if let Some(v) = alpha_mode   { eff.alpha_mode        = material_asset::parse_alpha_mode(v); }
+    if let Some(v) = alpha_cutoff { eff.alpha_cutoff      = *v; }
+    // 屈折率の上書き（None なら埋込値を維持）。RT-Translucency の屈折で使う。
+    if let Some(v) = ior          { eff.ior               = *v; }
+    // カリング面の上書き（None なら埋込値＝glTF double_sided 由来を維持）。
+    if let Some(v) = cull_face    { eff.cull_face         = material_asset::parse_cull_face(v); }
+    // テクスチャ参照は維持（texture_index は元モデルのテクスチャ列を指したまま）。
+    Some(eff)
+}
+
 impl GpuMaterial {
     pub fn upload(
         device:   &wgpu::Device,
@@ -364,29 +421,14 @@ impl GpuMaterial {
         defaults: &DefaultTextures,
     ) -> Self {
         // ── ユニフォームバッファ ─────────────────────────────
-        let alpha_cutoff = match mat.alpha_mode {
-            AlphaMode::Mask   => mat.alpha_cutoff,
-            _                 => 0.0,
-        };
+        let uniform = build_material_uniform(mat);
 
-        let uniform = MaterialUniform {
-            base_color_factor:  mat.base_color_factor,
-            metallic_factor:    mat.metallic_factor,
-            roughness_factor:   mat.roughness_factor,
-            alpha_cutoff,
-            has_base_color_tex: mat.base_color_texture.is_some() as u32,
-            emissive_factor:    mat.emissive_factor,
-            has_normal_tex:     mat.normal_texture.is_some() as u32,
-            has_mr_tex:         mat.metallic_roughness_texture.is_some() as u32,
-            has_occlusion_tex:  mat.occlusion_texture.is_some() as u32,
-            has_emissive_tex:   mat.emissive_texture.is_some() as u32,
-            ior:                mat.ior,
-        };
-
+        // COPY_DST を付与して、インライン値編集時に uniform を in-place で
+        // `queue.write_buffer` 更新できるようにする（GpuModel 全体の再生成を回避＝OOM 対策）。
         let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label:    Some("Material Uniform"),
             contents: bytemuck::bytes_of(&uniform),
-            usage:    wgpu::BufferUsages::UNIFORM,
+            usage:    wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
         // ── テクスチャ参照のヘルパー ─────────────────────────
@@ -698,6 +740,17 @@ pub struct GpuMesh {
 }
 
 /// モデル全体の GPU リソース。
+/// `GpuModel::update_material_inline` の結果（in-place 更新の可否）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InlineUpdateResult {
+    /// in-place 更新に成功。バッチ・BLAS の再構築は不要。
+    Updated,
+    /// alpha_mode が変わるため in-place 不可。呼び出し側でフル再構築すること。
+    NeedsRebuild,
+    /// slot 範囲外 or Inline 以外。呼び出し側でフォールバックすること。
+    NotApplicable,
+}
+
 pub struct GpuModel {
     pub meshes:           Vec<GpuMesh>,
     pub materials:        Vec<GpuMaterial>,
@@ -846,22 +899,10 @@ impl GpuModel {
 
             match &ovr.kind {
                 // ── インライン差し替え: 埋込マテリアルを複製し、指定フィールドのみ上書き ──
-                MaterialOverrideKind::Inline {
-                    base_color, metallic, roughness, emissive, alpha_mode, alpha_cutoff, ior, cull_face,
-                } => {
+                MaterialOverrideKind::Inline { .. } => {
                     let Some(base) = model.materials.get(ovr.slot) else { continue };
-                    let mut eff: Material = base.clone();
-                    if let Some(v) = base_color   { eff.base_color_factor = *v; }
-                    if let Some(v) = metallic     { eff.metallic_factor   = *v; }
-                    if let Some(v) = roughness    { eff.roughness_factor  = *v; }
-                    if let Some(v) = emissive     { eff.emissive_factor   = *v; }
-                    if let Some(v) = alpha_mode   { eff.alpha_mode        = material_asset::parse_alpha_mode(v); }
-                    if let Some(v) = alpha_cutoff { eff.alpha_cutoff      = *v; }
-                    // 屈折率の上書き（None なら埋込値を維持）。RT-Translucency の屈折で使う。
-                    if let Some(v) = ior          { eff.ior               = *v; }
-                    // カリング面の上書き（None なら埋込値＝glTF double_sided 由来を維持）。
-                    if let Some(v) = cull_face    { eff.cull_face         = material_asset::parse_cull_face(v); }
-                    // テクスチャ参照は維持（texture_index は元モデルのテクスチャ列を指したまま）。
+                    // 焼き込みは共有関数に委譲（in-place 更新経路と 1 ビットもズレない）。
+                    let Some(eff) = bake_inline_material(base, &ovr.kind) else { continue };
 
                     let tex_slice = &self.textures[..base_tex_count.min(self.textures.len())];
                     let gpu_mat = GpuMaterial::upload(
@@ -939,6 +980,54 @@ impl GpuModel {
                 }
             }
         }
+    }
+
+    /// 1 スロットのインラインオーバーライド値を **GpuModel を作り直さずに** in-place 反映する。
+    ///
+    /// 【なぜ必要か】インライン値のスライダー編集は毎イベント届く。従来はそのたびに
+    /// `upload_model_with_overrides` で GpuModel（全テクスチャ＋全メッシュ）を再アップロードし、
+    /// wgpu の遅延破棄と相まって瞬間 VRAM 2 倍需要 → OOM を起こしていた。インラインは
+    /// テクスチャを差し替えないため、対象マテリアルの uniform（＋ cull_face）だけを書き換えれば
+    /// 描画結果は同一になる。ここでは `write_buffer` 1 回（＋ CPU フィールド更新）で完結する。
+    ///
+    /// 戻り値で「再構築が必要か」を呼び出し側へ返す:
+    /// - `Updated`       … in-place 更新成功。バッチ・BLAS 再構築は不要。
+    /// - `NeedsRebuild`  … alpha_mode（不透明/半透明の描画パス分類）が変わるため in-place 不可。
+    ///                     呼び出し側でフル再構築すること（描画パス・TLAS マスクが追従しないため）。
+    /// - `NotApplicable` … slot 範囲外 or kind が Inline でない（呼び出し側でフォールバック）。
+    pub fn update_material_inline(
+        &mut self,
+        queue: &wgpu::Queue,
+        model: &Model,
+        slot:  usize,
+        kind:  &MaterialOverrideKind,
+    ) -> InlineUpdateResult {
+        if slot >= self.materials.len() { return InlineUpdateResult::NotApplicable; }
+        let Some(base) = model.materials.get(slot) else { return InlineUpdateResult::NotApplicable; };
+        // フル経路と同一の共有関数で実効マテリアルを作る（値解釈が 1 ビットもズレない）。
+        let Some(eff) = bake_inline_material(base, kind) else { return InlineUpdateResult::NotApplicable; };
+
+        // alpha_mode（Opaque/Mask/Blend）が変わると不透明パス⇔半透明パスの振り分け自体が
+        // 変わる。in-place では統合バッチの分類・RT の TLAS インスタンスマスクが追従しないため、
+        // これだけは呼び出し側のフル再構築に委ねる（安全側）。
+        if eff.alpha_mode != self.materials[slot].alpha_mode {
+            return InlineUpdateResult::NeedsRebuild;
+        }
+
+        // ① uniform を in-place 更新（write_buffer 1 回。フル経路と同一の build_material_uniform）。
+        let uniform = build_material_uniform(&eff);
+        queue.write_buffer(
+            &self.materials[slot].uniform_buffer,
+            0,
+            bytemuck::bytes_of(&uniform),
+        );
+        // ② cull_face はパイプラインバリアント選択に効く（uniform 外）。draw 時に
+        //    primitive_cull_face() が GpuMaterial.cull_face を読むため、フィールド更新で次フレームに反映。
+        self.materials[slot].cull_face = eff.cull_face;
+        // ③ 平均アルベド（Phase RT-GI）も追従させる（フル経路と同一の eff_avg_albedo）。
+        self.avg_albedos[slot] = eff_avg_albedo(&eff);
+
+        InlineUpdateResult::Updated
     }
 
     /// オーバーライド用テクスチャ 1 枚をアップロードし `textures` 末尾へ追加、その
@@ -1948,5 +2037,101 @@ mod meshlet_gpu_tests {
         validator
             .validate(&module)
             .unwrap_or_else(|e| panic!("meshlet_cull WGSL validate 失敗: {e:?}"));
+    }
+}
+
+// ============================================================
+//  テスト（インライン焼き込みの共有化）
+// ============================================================
+
+#[cfg(test)]
+mod inline_bake_tests {
+    use super::{bake_inline_material, build_material_uniform};
+    use crate::engine::core::loader::model::{Material, AlphaMode, CullFace};
+    use crate::engine::components::material_override::MaterialOverrideKind;
+
+    /// 全フィールドを指定したインライン kind を作るヘルパー。
+    fn inline(
+        base_color: Option<[f32; 4]>, metallic: Option<f32>, roughness: Option<f32>,
+        emissive: Option<[f32; 3]>, alpha_mode: Option<&str>, alpha_cutoff: Option<f32>,
+        ior: Option<f32>, cull_face: Option<&str>,
+    ) -> MaterialOverrideKind {
+        MaterialOverrideKind::Inline {
+            base_color, metallic, roughness, emissive,
+            alpha_mode: alpha_mode.map(|s| s.to_string()),
+            alpha_cutoff, ior,
+            cull_face: cull_face.map(|s| s.to_string()),
+        }
+    }
+
+    /// bake_inline_material が各フィールドを正しく上書きする（None は埋込維持）。
+    #[test]
+    fn bake_overrides_fields_correctly() {
+        let mut base = Material::default();
+        base.base_color_factor = [1.0, 1.0, 1.0, 1.0];
+        base.metallic_factor   = 0.0;
+        base.cull_face         = CullFace::Back;
+
+        let kind = inline(
+            Some([0.2, 0.4, 0.6, 0.8]), Some(0.3), Some(0.7),
+            Some([1.0, 0.0, 0.0]), None, None, Some(1.5), Some("none"),
+        );
+        let eff = bake_inline_material(&base, &kind).expect("Inline は Some を返す");
+        assert_eq!(eff.base_color_factor, [0.2, 0.4, 0.6, 0.8]);
+        assert_eq!(eff.metallic_factor, 0.3);
+        assert_eq!(eff.roughness_factor, 0.7);
+        assert_eq!(eff.emissive_factor, [1.0, 0.0, 0.0]);
+        assert_eq!(eff.ior, 1.5);
+        assert_eq!(eff.cull_face, CullFace::None);
+        // alpha_mode は None なので埋込（既定）を維持する。
+        assert_eq!(eff.alpha_mode, base.alpha_mode);
+    }
+
+    /// in-place 経路とフル経路は同じ `MaterialUniform` を生む。
+    ///
+    /// 両経路とも `bake_inline_material` → `build_material_uniform` を通るため、同じ base と
+    /// 同じ kind からは 1 ビットも違わない uniform が得られることを、独立に 2 回計算して確認する
+    /// （update_material_inline とフル再アップロードで値解釈がズレないことの回帰テスト）。
+    #[test]
+    fn in_place_and_full_paths_produce_identical_uniform() {
+        let base = Material::default();
+        let kind = inline(
+            Some([0.1, 0.2, 0.3, 1.0]), Some(0.9), Some(0.1),
+            Some([0.0, 0.5, 0.0]), Some("mask"), Some(0.5), Some(1.33), Some("front"),
+        );
+        // フル経路の uniform（GpuMaterial::upload 相当）。
+        let eff_full = bake_inline_material(&base, &kind).unwrap();
+        let uni_full = build_material_uniform(&eff_full);
+        // in-place 経路の uniform（update_material_inline 相当）。
+        let eff_inplace = bake_inline_material(&base, &kind).unwrap();
+        let uni_inplace = build_material_uniform(&eff_inplace);
+        assert_eq!(
+            bytemuck::bytes_of(&uni_full),
+            bytemuck::bytes_of(&uni_inplace),
+            "in-place とフル経路の MaterialUniform はビット一致すること",
+        );
+    }
+
+    /// alpha_cutoff は Mask のときだけ uniform に反映される（それ以外は 0.0）。
+    #[test]
+    fn alpha_cutoff_only_applies_in_mask_mode() {
+        let base = Material::default();
+        // Opaque（alpha_mode 未指定）＋ cutoff 指定 → uniform では 0.0。
+        let opaque = inline(None, None, None, None, None, Some(0.5), None, None);
+        let eff_o = bake_inline_material(&base, &opaque).unwrap();
+        assert_eq!(build_material_uniform(&eff_o).alpha_cutoff, 0.0);
+        // Mask ＋ cutoff 指定 → uniform に反映。
+        let mask = inline(None, None, None, None, Some("mask"), Some(0.5), None, None);
+        let eff_m = bake_inline_material(&base, &mask).unwrap();
+        assert_eq!(eff_m.alpha_mode, AlphaMode::Mask);
+        assert_eq!(build_material_uniform(&eff_m).alpha_cutoff, 0.5);
+    }
+
+    /// MatAsset kind には bake_inline_material は適用されない（None を返す）。
+    #[test]
+    fn mat_asset_kind_returns_none() {
+        let base = Material::default();
+        let kind = MaterialOverrideKind::MatAsset { path: "assets://x.mat".to_string() };
+        assert!(bake_inline_material(&base, &kind).is_none());
     }
 }
