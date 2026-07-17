@@ -215,6 +215,12 @@ impl RefractPyramid {
         self.full_view.as_ref().expect("RefractPyramid: full_view 未確保（ensure を先に呼ぶこと）")
     }
 
+    /// ミップチェーン本体テクスチャ（COPY_DST）。距離ソート逐次グラブ（transparency::regrab_mip0）が
+    /// scene_hdr を mip0 へ再コピーするコピー先に使う。ensure 済みであること。
+    pub fn texture(&self) -> &wgpu::Texture {
+        self.tex.as_ref().expect("RefractPyramid: tex 未確保（ensure を先に呼ぶこと）")
+    }
+
     /// ミップチェーンを生成する（不透明ライティング完成後・半透明パス前に呼ぶ）。
     /// mip0 に scene_hdr をコピーし、以降のミップをダウンサンプル→いもすブラーで作る。
     pub fn record(

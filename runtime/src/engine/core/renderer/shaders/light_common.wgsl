@@ -100,15 +100,24 @@ struct LightMeta {
     translucency_rt:   u32,         // 12
     ambient_color:     vec3<f32>,   // 16  環境光の色（リニア RGB）
     ambient_intensity: f32,         // 28  環境光の強度（0 で完全な暗闇）
+    // 半透明表面反射（Phase RT-Reflection）の強度ノブ。ガラス面のミニ SSR／プローブ反射の
+    // 出力に乗る（refract_common.wgsl の glass_reflection）。旧 32B からの拡張（→ 48B）。
+    // vec3 パディング禁止（align16 トラップ）のためスカラー 3 本で 16 バイト境界へ詰める。
+    reflection_intensity: f32,      // 32
+    _pad_refl0:           f32,      // 36
+    _pad_refl1:           f32,      // 40
+    _pad_refl2:           f32,      // 44
 }
 
-// LightMeta.translucency_rt のビットマスク（Phase RT-Translucency）。
+// LightMeta.translucency_rt のビットマスク（Phase RT-Translucency / RT-Reflection）。
 //   bit0: 色付き影を有効化（translucency==Rt。RT 影シェーダが半透明レイヤーの透過色を影に乗せる）。
 //   bit1: 屈折の背景（refract_bg）が有効＝このフレームで屈折可能（deferred 有効＋コピー済み）。
-// 2 機能で解決タイミングが違う（色付き影は forward-RT でも効くが、屈折は deferred の背景コピーが要る）
+//   bit2: 半透明表面反射が有効＝ReflectionMode!=Off（ガラス面にミニ SSR／プローブ反射を乗せる）。
+// 機能で解決タイミングが違う（色付き影は forward-RT でも効く／屈折・反射は背景コピーの有無で品質が変わる）
 // ため 1 つの u32 に別ビットで載せる。
 const TRANSLUCENCY_RT_COLORED_SHADOW: u32 = 1u;
 const TRANSLUCENCY_RT_REFRACTION:     u32 = 2u;
+const TRANSLUCENCY_RT_REFLECTION:     u32 = 4u;
 
 @group(4) @binding(0) var<storage, read> u_lights:     array<GpuLight>;
 @group(4) @binding(1) var<uniform>       u_light_meta: LightMeta;
