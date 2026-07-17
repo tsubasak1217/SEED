@@ -2821,7 +2821,7 @@ public partial class InspectorPanel : UserControl
         float R, float G, float B, float A,
         float Metallic, float Roughness,
         float ER, float EG, float EB,
-        string AlphaMode, float AlphaCutoff, string CullFace, string Path);
+        string AlphaMode, float AlphaCutoff, float Ior, string CullFace, string Path);
 
     /// <summary>
     /// SET_MATERIAL_OVERRIDE の "kind":"mat_asset" 送信用 JSON ペイロード（System.Text.Json でシリアライズ）。
@@ -2846,6 +2846,8 @@ public partial class InspectorPanel : UserControl
         public float[] emissive { get; set; } = [0f, 0f, 0f];
         public string alpha_mode { get; set; } = "opaque";
         public float alpha_cutoff { get; set; } = 0.5f;
+        /// <summary>屈折率（IOR, Phase RT-Translucency）。1.0=屈折なし。Blend のときのみ意味を持つ。</summary>
+        public float ior { get; set; } = 1f;
         /// <summary>カリング面 "back" | "front" | "none"。ランタイム側は大小文字非依存・不明値は Back 扱い。</summary>
         public string cull_face { get; set; } = CullFaceValues[0];
     }
@@ -2910,12 +2912,14 @@ public partial class InspectorPanel : UserControl
                     }
                     var alphaMode   = m.TryGetProperty("alpha_mode",   out var am) ? am.GetString() ?? "opaque" : "opaque";
                     var alphaCutoff = m.TryGetProperty("alpha_cutoff", out var ac) ? ac.GetSingle() : 0.5f;
+                    // ior キーを持たない旧ランタイムの ACTOR_COMPONENTS でも動くよう既定 1.0（屈折なし）にフォールバックする。
+                    var ior         = m.TryGetProperty("ior",          out var io) ? io.GetSingle() : 1f;
                     // cull_face キーを持たない旧ランタイムの ACTOR_COMPONENTS でも動くよう既定 "back" にフォールバックする。
                     var cullFace    = m.TryGetProperty("cull_face",    out var cf) ? cf.GetString() ?? CullFaceValues[0] : CullFaceValues[0];
                     var path        = m.TryGetProperty("path",        out var mp) ? mp.GetString() ?? ""       : "";
 
                     result.Add(new MaterialSlotData(slot, name, mode, r, g, b, a, metallic, roughness,
-                        er, eg, eb, alphaMode, alphaCutoff, cullFace, path));
+                        er, eg, eb, alphaMode, alphaCutoff, ior, cullFace, path));
                 }
                 return result;
             }
@@ -3090,6 +3094,7 @@ public partial class InspectorPanel : UserControl
         float curER = mat.ER, curEG = mat.EG, curEB = mat.EB;
         string curAlphaMode = mat.AlphaMode;
         float curAlphaCutoff = mat.AlphaCutoff;
+        float curIor = mat.Ior;
         string curCullFace = mat.CullFace;
 
         var inlinePanel = new StackPanel { Visibility = mat.Mode == "inline" ? Visibility.Visible : Visibility.Collapsed };
@@ -3106,6 +3111,7 @@ public partial class InspectorPanel : UserControl
                 emissive     = [curER, curEG, curEB],
                 alpha_mode   = curAlphaMode,
                 alpha_cutoff = curAlphaCutoff,
+                ior          = curIor,
                 cull_face    = curCullFace,
             };
             var json = JsonSerializer.Serialize(payload);
@@ -3154,6 +3160,10 @@ public partial class InspectorPanel : UserControl
         emissiveRow.Children.Add(emissiveSwatch.swatch);
         inlinePanel.Children.Add(emissiveRow);
 
+        // 屈折率（IOR）行への前方参照。alpha_mode コンボの変更時に表示/非表示を切り替えるため、
+        // コンボのハンドラより前に宣言する（クロージャは変数を捕捉するので後から代入した実体が見える）。
+        UIElement? iorRowElement = null;
+
         // alpha_mode ドロップダウン（opaque/mask/blend）
         var alphaModeRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 2, 0, 2) };
         alphaModeRow.Children.Add(new TextBlock
@@ -3170,6 +3180,10 @@ public partial class InspectorPanel : UserControl
         {
             if (alphaModeCombo.SelectedIndex < 0) return;
             curAlphaMode = alphaModeValues[alphaModeCombo.SelectedIndex];
+            // 屈折率は Blend のときのみ意味を持つため、その行だけ表示/非表示を切り替える
+            //（条件付き表示の基本方針。ライトの UpdateKindVisibility と同じ流儀）。
+            if (iorRowElement != null)
+                iorRowElement.Visibility = curAlphaMode == "blend" ? Visibility.Visible : Visibility.Collapsed;
             SendInline();
         };
         alphaModeRow.Children.Add(alphaModeCombo);
@@ -3187,6 +3201,24 @@ public partial class InspectorPanel : UserControl
             SendInline();
         }
         inlinePanel.Children.Add(cutoffRow.element);
+
+        // 屈折率（IOR, Phase RT-Translucency）。AlphaMode=Blend のときだけ表示する（条件付き表示）。
+        // レンダリング機能の「半透明＝レイトレ」選択時、Blend マテリアルのスクリーンスペース屈折に使う。
+        // 1.0=屈折なし、ガラス≈1.5、水≈1.33。
+        var iorRow = BuildLabeledNumberRow("屈折率", curIor, "F2");
+        iorRow.textBox.LostFocus += (_, _) => CommitIor();
+        iorRow.textBox.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { CommitIor(); e.Handled = true; } };
+        NumericDragBehavior.SetOnDrag(iorRow.textBox, CommitIor);
+        void CommitIor()
+        {
+            if (float.TryParse(iorRow.textBox.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var v))
+                curIor = Math.Clamp(v, 1.0f, 2.5f); // 現実的な屈折率レンジにクランプ（1.0=なし〜ダイヤ級 2.4）
+            SendInline();
+        }
+        // 初期表示は現在の alpha_mode に応じる（Blend のみ表示）。
+        iorRow.element.Visibility = curAlphaMode == "blend" ? Visibility.Visible : Visibility.Collapsed;
+        iorRowElement = iorRow.element;
+        inlinePanel.Children.Add(iorRow.element);
 
         // cull_face ドロップダウン（back/front/none）。
         // カリング面は全マテリアルで意味を持つが、値の送信経路はインライン上書き（SET_MATERIAL_OVERRIDE:"inline"）

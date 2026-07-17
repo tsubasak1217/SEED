@@ -52,7 +52,8 @@ struct MaterialUniform {
     has_mr_tex:         u32,
     has_occlusion_tex:  u32,
     has_emissive_tex:   u32,
-    _pad:               u32,
+    // 屈折率（IOR, Phase RT-Translucency）。旧 _pad（offset 60）を転用。1.0=屈折なし。
+    ior:                f32,
 }
 @group(2) @binding(0)  var<uniform> u_material:          MaterialUniform;
 @group(2) @binding(1)  var          t_base_color:         texture_2d<f32>;

@@ -380,7 +380,7 @@ impl GpuMaterial {
             has_mr_tex:         mat.metallic_roughness_texture.is_some() as u32,
             has_occlusion_tex:  mat.occlusion_texture.is_some() as u32,
             has_emissive_tex:   mat.emissive_texture.is_some() as u32,
-            _pad:               0,
+            ior:                mat.ior,
         };
 
         let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -847,7 +847,7 @@ impl GpuModel {
             match &ovr.kind {
                 // ── インライン差し替え: 埋込マテリアルを複製し、指定フィールドのみ上書き ──
                 MaterialOverrideKind::Inline {
-                    base_color, metallic, roughness, emissive, alpha_mode, alpha_cutoff, cull_face,
+                    base_color, metallic, roughness, emissive, alpha_mode, alpha_cutoff, ior, cull_face,
                 } => {
                     let Some(base) = model.materials.get(ovr.slot) else { continue };
                     let mut eff: Material = base.clone();
@@ -857,6 +857,8 @@ impl GpuModel {
                     if let Some(v) = emissive     { eff.emissive_factor   = *v; }
                     if let Some(v) = alpha_mode   { eff.alpha_mode        = material_asset::parse_alpha_mode(v); }
                     if let Some(v) = alpha_cutoff { eff.alpha_cutoff      = *v; }
+                    // 屈折率の上書き（None なら埋込値を維持）。RT-Translucency の屈折で使う。
+                    if let Some(v) = ior          { eff.ior               = *v; }
                     // カリング面の上書き（None なら埋込値＝glTF double_sided 由来を維持）。
                     if let Some(v) = cull_face    { eff.cull_face         = material_asset::parse_cull_face(v); }
                     // テクスチャ参照は維持（texture_index は元モデルのテクスチャ列を指したまま）。
@@ -887,6 +889,8 @@ impl GpuModel {
                         emissive_factor:   asset.emissive,
                         alpha_mode:        material_asset::parse_alpha_mode(&asset.alpha_mode),
                         alpha_cutoff:      asset.alpha_cutoff,
+                        // .mat が持つ屈折率をそのまま適用する（キー欠落時は serde 既定の 1.0）。
+                        ior:               asset.ior,
                         // .mat が持つカリング面をそのまま適用する（キー欠落時は serde 既定の "back"）。
                         cull_face:         material_asset::parse_cull_face(&asset.cull_face),
                         ..Material::default()

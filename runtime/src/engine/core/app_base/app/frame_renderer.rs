@@ -989,11 +989,20 @@ impl App {
                         0
                     };
 
+                    // このフレームで RT-Translucency（高品質半透明＝色付き影＋屈折）を使うか。
+                    // 実効の半透明方式が Rt（RT 対応 GPU でのみ resolve を通る）のとき有効。
+                    // LightMeta.translucency_rt としてフラグメントへ渡り、RT 影シェーダの色付き影・
+                    // 半透明フォワードの屈折の両方をゲートする。
+                    let translucency_rt_on = resolved_features.translucency
+                        == crate::engine::core::renderer::render_features::TranslucencyMode::Rt;
+
                     // ライト配列を GPU へアップロードする（全メッシュ描画が group 4 で共用）。
-                    // メタ（ライト数・RT 影フラグ・ビューモード）も同時に更新される。shadow_index 確定後にアップロードする。
+                    // メタ（ライト数・RT 影フラグ・ビューモード・RT-Translucency フラグ）も同時に更新される。
+                    // shadow_index 確定後にアップロードする。
                     draw_ctx.light_buffer.update(
                         &draw_ctx.queue, &frame_lights, rt_on,
                         scene_view_mode_code,
+                        translucency_rt_on,
                         self.ambient_color, self.ambient_intensity,
                     );
 
@@ -1640,6 +1649,21 @@ impl App {
                             }
                         }
 
+                        // プレビュー用の透明 group4 BindGroup（Phase RT-Translucency）。
+                        // 透明パイプラインは group4 に屈折背景（binding15/16）を要求するため、
+                        // プレビューでも専用 BG が要る（屈折はプレビュー無効＝ダミー背景・LightMeta も屈折ビット 0）。
+                        // preview_pass より長生きさせる必要があるためパスの外（この scope）で生成する。
+                        let preview_tp_bg = draw_ctx.light_buffer.create_transparent_bind_group(
+                            &draw_ctx.device,
+                            &draw_ctx.pipelines.transparent.lights_bgl,
+                            &draw_ctx.shadow_preview,
+                            &draw_ctx.clusters,
+                            &draw_ctx.gi,
+                            LightingPass::CameraPreview,
+                            draw_ctx.pipelines.transparent.dummy_refract_view(),
+                            &draw_ctx.pipelines.transparent.refract_sampler,
+                        );
+
                         {
                             let mut preview_pass = frame.begin_offscreen_pass(
                                 &preview.color_view,
@@ -1682,7 +1706,7 @@ impl App {
                                     &mut preview_pass,
                                     &preview_tp_models,
                                     &preview_mesh_cam_buf.bind_group,
-                                    draw_ctx.light_buffer.bind_group(LightingPass::CameraPreview),
+                                    &preview_tp_bg,
                                     &draw_ctx.pipelines.transparent,
                                     cam_uniform.position,
                                 );
@@ -3197,7 +3221,41 @@ impl App {
                             crate::engine::core::renderer::REFLECTION_FORMAT,
                         );
                     }
+                    // 屈折の背景 RT（Phase RT-Translucency）: translucency=Rt かつ deferred 有効かつ
+                    // 半透明ありのフレームで確保する。scene_hdr と同サイズ・同フォーマット
+                    // （copy_texture_to_texture のコピー元／先を揃えるため）。屈折はスクリーンスペースだが
+                    // 背景コピーを deferred の不透明ライティング完成後に置くため deferred 有効を条件にする。
+                    let refract_active = translucency_rt_on && deferred_active && has_tp;
+                    if refract_active {
+                        self.rt_pool.ensure(
+                            &draw_ctx.device,
+                            crate::engine::core::renderer::transparency::RT_REFRACT_BG,
+                            surf_w, surf_h,
+                            crate::engine::core::renderer::HDR_FORMAT,
+                        );
+                    }
                     let hdr_view   = self.rt_pool.view(crate::engine::core::renderer::RT_SCENE_HDR);
+                    // メインカメラ用の透明 group4 BindGroup（Phase RT-Translucency）。
+                    // 透明パイプラインは group4 に屈折背景（binding15/16）を要求するため、距離ソート／WBOIT
+                    // 両方で使うこの BG をパスより前に生成して長生きさせる（refract_active なら実背景、
+                    // 非 active はダミー 1x1）。屈折ビット（bit1）は背景コピー時に LightMeta へ追記する。
+                    let transparent_bg_main = {
+                        let refract_view = if refract_active {
+                            self.rt_pool.view(crate::engine::core::renderer::transparency::RT_REFRACT_BG)
+                        } else {
+                            draw_ctx.pipelines.transparent.dummy_refract_view()
+                        };
+                        draw_ctx.light_buffer.create_transparent_bind_group(
+                            &draw_ctx.device,
+                            &draw_ctx.pipelines.transparent.lights_bgl,
+                            &draw_ctx.shadow,
+                            &draw_ctx.clusters,
+                            &draw_ctx.gi,
+                            LightingPass::MainCamera,
+                            refract_view,
+                            &draw_ctx.pipelines.transparent.refract_sampler,
+                        )
+                    };
                     let ldr_view   = self.rt_pool.view(crate::engine::core::renderer::RT_LDR);
                     // WBOIT ターゲットのビュー（確保済みのときのみ Some）。
                     let (wboit_accum_view, wboit_reveal_view) = if tp_wboit {
@@ -3709,6 +3767,37 @@ impl App {
                             }
                         }
 
+                        // 屈折の背景コピー（Phase RT-Translucency）: 不透明ライティング完成後の scene_hdr を
+                        // refract_bg へコピーし、半透明フラグメントがガラス越しに歪めてサンプルできるようにする
+                        // （scene_hdr を直接読むとメインパスの書き込みと競合するため別 RT へ退避）。
+                        // 背景には skybox（メインパスで描画）は含まれない（既知の制限）。deferred 前提。
+                        // 併せて LightMeta.translucency_rt に屈折ビット（bit1）を追記する
+                        //（bit0＝色付き影は light_buffer.update で設定済み。この追記は queue submit 時に
+                        //  透明パスより前へ適用されるため同フレームで有効）。
+                        if refract_active {
+                            frame.encoder_mut().copy_texture_to_texture(
+                                wgpu::ImageCopyTexture {
+                                    texture:   self.rt_pool.texture(crate::engine::core::renderer::RT_SCENE_HDR),
+                                    mip_level: 0,
+                                    origin:    wgpu::Origin3d::ZERO,
+                                    aspect:    wgpu::TextureAspect::All,
+                                },
+                                wgpu::ImageCopyTexture {
+                                    texture:   self.rt_pool.texture(crate::engine::core::renderer::transparency::RT_REFRACT_BG),
+                                    mip_level: 0,
+                                    origin:    wgpu::Origin3d::ZERO,
+                                    aspect:    wgpu::TextureAspect::All,
+                                },
+                                wgpu::Extent3d { width: surf_w, height: surf_h, depth_or_array_layers: 1 },
+                            );
+                            // 屈折ビット（bit1）を追記（bit0＝色付き影は既に立っている）。offset 12＝translucency_rt。
+                            let flag = crate::engine::core::renderer::lighting::TRANSLUCENCY_RT_COLORED_SHADOW
+                                     | crate::engine::core::renderer::lighting::TRANSLUCENCY_RT_REFRACTION;
+                            draw_ctx.queue.write_buffer(
+                                draw_ctx.light_buffer.meta_main_buffer(), 12, bytemuck::bytes_of(&flag),
+                            );
+                        }
+
                         // メインパス開始: デファード時は G-Buffer/ライティングパスが書いた HDR・深度・
                         // ステンシルを Load で保持（半透明・スカイボックス・ギズモをその上に重ねる）。
                         // フォワード時は従来どおりクリアして開始する。
@@ -3827,7 +3916,7 @@ impl App {
                                     &mut pass,
                                     &transparent_models,
                                     &camera_buf.bind_group,
-                                    draw_ctx.light_buffer.bind_group(LightingPass::MainCamera),
+                                    &transparent_bg_main,
                                     &draw_ctx.pipelines.transparent,
                                     saved_camera_pos,
                                 );
@@ -4262,7 +4351,7 @@ impl App {
                                     &mut wpass,
                                     &transparent_models,
                                     &camera_buf.bind_group,
-                                    draw_ctx.light_buffer.bind_group(LightingPass::MainCamera),
+                                    &transparent_bg_main,
                                     &draw_ctx.pipelines.transparent,
                                     saved_camera_pos,
                                 );

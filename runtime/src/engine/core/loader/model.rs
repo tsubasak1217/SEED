@@ -226,6 +226,14 @@ pub struct Material {
     pub alpha_mode:   AlphaMode,
     /// AlphaMode::Mask のときのカットオフ閾値
     pub alpha_cutoff: f32,
+
+    // ─── 屈折率（Phase RT-Translucency）───────────────────
+    /// 屈折率（IOR）。RT-Translucency（translucency=Rt）有効時、AlphaMode::Blend の
+    /// 半透明フラグメントがスクリーンスペース屈折の強さに使う（1.0=屈折なし）。
+    /// glTF の KHR_materials_ior 拡張から読む（無ければ 1.0）。ガラス≈1.5、水≈1.33。
+    /// 旧データ互換のため #[serde(default = "default_ior")]（既定 1.0）。
+    #[serde(default = "default_ior")]
+    pub ior: f32,
     /// glTF 由来の両面フラグ（データ出所の記録用）。
     /// 描画で参照されるのは `cull_face` であり、ロード時に本フラグから初期化される
     /// （`cull_face_from_double_sided`）。
@@ -251,6 +259,9 @@ pub struct Material {
 /// avg_albedo の serde 既定（白）。旧キャッシュ/JSON にキーが無い場合のフォールバック。
 fn default_avg_albedo() -> [f32; 4] { [1.0, 1.0, 1.0, 1.0] }
 
+/// ior の serde 既定（1.0＝屈折なし）。旧キャッシュ/JSON にキーが無い場合のフォールバック。
+fn default_ior() -> f32 { 1.0 }
+
 impl Default for Material {
     fn default() -> Self {
         Self {
@@ -266,6 +277,7 @@ impl Default for Material {
             emissive_texture:           None,
             alpha_mode:                 AlphaMode::Opaque,
             alpha_cutoff:               0.5,
+            ior:                        1.0,
             double_sided:               false,
             cull_face:                  CullFace::Back,
             avg_albedo:                 [1.0, 1.0, 1.0, 1.0],

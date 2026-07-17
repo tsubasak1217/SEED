@@ -58,6 +58,10 @@ pub struct MaterialAsset {
     /// alpha_mode == "mask" のときのカットオフ閾値
     #[serde(default = "def_cutoff")]
     pub alpha_cutoff: f32,
+    /// 屈折率（IOR, Phase RT-Translucency）。既定 1.0（屈折なし）。ガラス≈1.5、水≈1.33。
+    /// RT-Translucency 有効・alpha_mode=="blend" のときスクリーンスペース屈折に使う。
+    #[serde(default = "def_one")]
+    pub ior: f32,
     /// カリング面 "back" | "front" | "none"（大文字小文字は問わない。不明値は back 扱い）。
     /// `#[serde(default)]` により、本キーを持たない既存 .mat は従来どおり背面カリングになる。
     #[serde(default = "def_cull_face")]
@@ -94,6 +98,7 @@ pub fn default_mat_json() -> String {
         emissive:     [0.0; 3],
         alpha_mode:   def_opaque(),
         alpha_cutoff: def_cutoff(),
+        ior:          def_one(),
         cull_face:    def_cull_face(),
         textures:     MatTextures::default(),
     };

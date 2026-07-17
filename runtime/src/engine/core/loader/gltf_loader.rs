@@ -259,6 +259,12 @@ fn load_materials(document: &gltf::Document) -> Vec<Material> {
             emissive_texture,
             alpha_mode,
             alpha_cutoff: mat.alpha_cutoff().unwrap_or(0.5),
+            // 屈折率（Phase RT-Translucency）。既定 1.0（屈折なし）。
+            // ※ 現行の gltf クレート（Cargo.toml version="1" が解決するバージョン）には
+            //   KHR_materials_ior 用の `Material::ior()` ヘルパが無いため、glTF からは読まず既定に倒す。
+            //   IOR はエディタの Inspector（Blend 時のみ表示）または .mat / インライン上書きで設定する。
+            //   仕様「KHR_materials_ior があれば読む。無ければ既定」の後段に従う。
+            ior: 1.0,
             double_sided:     mat.double_sided(),
             // glTF の double_sided をカリング面へマップする（true → 両面描画＝カリング無し）。
             // これで Sponza のカーテン等、片面しか描かれず裏から見ると消えていたマテリアルが
