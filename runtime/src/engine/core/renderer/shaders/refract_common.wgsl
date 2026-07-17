@@ -79,6 +79,84 @@ fn refract_background(n_world: vec3<f32>, frag_xy: vec2<f32>, ior: f32, roughnes
     return textureSampleLevel(t_refract_bg, s_refract_bg, final_uv, mip).rgb;
 }
 
+// ── ガラス表面の反射（ミニ SSR ＋ プローブ／アンビエント フォールバック, Phase RT-Reflection）──
+//
+// 不透明用の反射（SSR/RT, RT_REFLECTION）はガラス面には効かない（G-Buffer は不透明のみ）。
+// そこで半透明フォワードのフラグメントで、既にバインド済みの資源だけを使って簡易反射を足す:
+//   - 屈折背景ピラミッド（binding15/16, 不透明シーン HDR のミップ付きコピー）＝ミニ SSR のヒット色
+//   - DDGI プローブ照度（binding10-13）＝ミス／画面外のフォールバック
+//   - 環境光（u_light_meta.ambient_*）＝GI 無効時のフォールバック（真っ黒にしない）
+// 深度は透明パスにバインドされていない（メイン深度は同パスのアタッチメントで読めない）。
+// よって深度テスト付きの厳密な SSR は行わず、反射レイを画面へ射影して「画面内に留まる最遠点」を
+// ヒットとみなす**深度レス近似**にする（限界: 遮蔽テストが無いためゴースト反射が出る＝ロードマップに明記）。
+
+/// ミニ SSR のマーチステップ数（コスト上限。8〜12 の中庸）。深度レスのため多くしても情報は増えない。
+const MINI_SSR_STEPS:    i32 = 10;
+/// ミニ SSR のワールド単位到達距離（反射レイをこの距離まで画面へ射影して辿る）。
+const MINI_SSR_MAX_DIST: f32 = 20.0;
+/// 1 ステップ前進量（= MAX_DIST / STEPS）。
+const MINI_SSR_STEP:     f32 = MINI_SSR_MAX_DIST / 10.0;
+/// 反射の粗さフェード（reflection_common.wgsl と同値の意図＝1 本レイ反射は粗面で嘘になる）。
+/// ここまで全反射 → ここで反射 0。透明パスは reflection_common を連結しないため定数を再掲する
+/// （Rust reflection.rs 側の値と乖離しないこと。ガラスは概ね低粗さ＝この範囲で十分）。
+const REFL_ROUGHNESS_FADE_START: f32 = 0.30;
+const REFL_ROUGHNESS_FADE_END:   f32 = 0.55;
+
+/// ガラス面の反射色（リニア HDR RGB）を返す。呼び出し側で material_refracts かつ反射ビットが
+/// 立っていることを確認済みであること。weight（フレネル×粗さフェード×強度）まで畳み込んで返す。
+/// - `surf`      : 面情報（world_pos / normal / roughness）。
+/// - `V`         : 視線ベクトル（面→カメラ, 正規化済み）。
+/// - `ndv`       : max(dot(N,V), eps)。
+/// - `ssr_enabled`: 屈折背景ピラミッドがこのフレームに存在するか（bit1）。true のときのみミニ SSR。
+fn glass_reflection(surf: Surface, V: vec3<f32>, ndv: f32, ssr_enabled: bool) -> vec3<f32> {
+    // 粗さフェード: 粗面では 1 本レイ反射が破綻するので落とす（0 で反射なし）。
+    let smooth_w = 1.0 - smoothstep(REFL_ROUGHNESS_FADE_START, REFL_ROUGHNESS_FADE_END, surf.roughness);
+    if smooth_w <= 0.0 {
+        return vec3<f32>(0.0, 0.0, 0.0);
+    }
+    let N = normalize(surf.normal);
+    let R = normalize(reflect(-V, N));
+    // フレネル（誘電体 F0）。視線角が浅いほど反射が強い（ガラスのエッジ光り）。
+    let fr = glass_fresnel(ndv, glass_f0_from_ior(u_material.ior));
+
+    // ── ミニ SSR（深度レス近似）: 反射レイを画面へ射影し、画面内に留まる最遠点をヒットとする ──
+    var hit    = false;
+    var hit_uv = vec2<f32>(0.0, 0.0);
+    if ssr_enabled {
+        var t = MINI_SSR_STEP;
+        for (var i: i32 = 0; i < MINI_SSR_STEPS; i = i + 1) {
+            let p    = surf.world_pos + R * t;
+            let clip = u_camera.view_proj * vec4<f32>(p, 1.0);
+            if clip.w <= 0.0 { break; }            // カメラ後方へ抜けた
+            let ndc = clip.xyz / clip.w;
+            let uv  = vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
+            if all(uv >= vec2<f32>(0.0)) && all(uv <= vec2<f32>(1.0)) {
+                hit_uv = uv;   // 画面内: 反射先候補を更新（より遠い＝より反射像らしい点を残す）
+                hit    = true;
+            } else {
+                break;         // 画面外へ抜けた: それ以上辿らない
+            }
+            t = t + MINI_SSR_STEP;
+        }
+    }
+
+    var refl: vec3<f32>;
+    if hit {
+        // ヒット: 屈折背景ピラミッドをサンプル（roughness でミップ選択＝ぼけた反射）。
+        let mip = clamp(surf.roughness * REFRACT_ROUGHNESS_TO_MIP, 0.0, REFRACT_MAX_MIP);
+        refl = textureSampleLevel(t_refract_bg, s_refract_bg, hit_uv, mip).rgb;
+    } else {
+        // ミス／画面外／SSR 無効: DDGI プローブ照度（反射方向）→ 無ければアンビエント。
+        if u_gi_params.enabled != 0u {
+            refl = ddgi_sample_irradiance(u_gi_params, surf.world_pos, R, t_gi_irradiance, t_gi_visibility, s_gi);
+        } else {
+            refl = u_light_meta.ambient_color * u_light_meta.ambient_intensity;
+        }
+    }
+    // weight: フレネル × 粗さフェード × 反射強度ノブ（LightMeta.reflection_intensity）。
+    return refl * fr * smooth_w * u_light_meta.reflection_intensity;
+}
+
 // ── ガラス透過（transmission）合成 ────────────────────────────
 
 /// IOR から垂直入射のフレネル反射率 F0（誘電体）。ior=1.5 → 0.04 付近。
@@ -123,6 +201,17 @@ struct GlassOut {
 fn glass_composite(c: vec3<f32>, a: f32, in: VertexOutput, front_facing: bool) -> GlassOut {
     var o: GlassOut;
     let tr = clamp(u_material.transmission, 0.0, 1.0);
+
+    // ── 透過 0 の動的裏面カリング（Phase RT-Translucency, シェーダ discard）─────────────────
+    // 透過率が 0（＝実質不透明な Blend＝光を透過しないガラス）のとき、自分の裏面（front_facing==false）は
+    // 原理的に前面に隠れて見えないはずなので破棄する。これで「透過しないガラスの裏面が自分越しに
+    // 透けて見える」不具合が消える。透過率>0 のガラスは両面を残す（厚み感・奥行きの見えを維持）。
+    // マテリアルの cull_face=None（両面）設定より優先されるのは**意図的**（透過 0 なら裏面は
+    // 見えないという物理的根拠）。既知の限界: 単層両面 Blend（透過 0 のカーテン等）は裏面が
+    // 消えて片面化する＝ロードマップに明記。透過するファブリック（transmission>0）は対象外で安全。
+    if !front_facing && u_material.transmission <= 0.0 {
+        discard;
+    }
     // grab-pass 置き換え合成（背景を自前で歪めて合成し a_eff=1 で確定表示する）は、
     // 「実際に屈折/透過するマテリアル」だけに限定する。すなわち:
     //   ・ior > 1.0 + IOR_EPSILON  … スクリーンスペース屈折を持つ（ガラス・水など）
@@ -133,44 +222,59 @@ fn glass_composite(c: vec3<f32>, a: f32, in: VertexOutput, front_facing: bool) -
     // 屈折/透過を意図しない Blend へ波及して描画順（先に描いた半透明・スカイボックス）を
     // 壊すことを防ぐ。translucency_rt の屈折ビットが立っていない場合も従来どおり非屈折。
     let material_refracts = u_material.ior > 1.0 + IOR_EPSILON || tr > 0.0;
-    let refract_on = (u_light_meta.translucency_rt & TRANSLUCENCY_RT_REFRACTION) != 0u && material_refracts;
+    // 屈折背景ピラミッドがこのフレームに存在するか（bit1）。ミニ SSR のヒット色に使える。
+    let refract_bit = (u_light_meta.translucency_rt & TRANSLUCENCY_RT_REFRACTION) != 0u;
+    let refract_on  = refract_bit && material_refracts;
+    // 半透明表面反射（bit2）が有効か。ガラス（material_refracts）にのみ乗せる。
+    let reflect_on  = (u_light_meta.translucency_rt & TRANSLUCENCY_RT_REFLECTION) != 0u && material_refracts;
 
-    if !refract_on {
-        // 屈折背景が無い経路（grab-pass 非実行）。babf5f1 と**ビット一致**の素の
-        // premultiplied over（premult=c*a, a_eff=a）に落とす。透過率（transmission）の
-        // 本来の効果は「背景をガラス色で色付けして透過させる」ことで、これは背景コピー
-        // （grab-pass）を持つ屈折オン経路でのみ意味を持つ。
+    if !material_refracts {
+        // 素の Blend（ガラスでない）: babf5f1 と**ビット一致**の premultiplied over
+        // （premult=c*a, a_eff=a）。反射・屈折・透過はいずれも波及させない（Raster パリティ保証）。
         //
-        // 【重要 / 回帰修正】以前ここは a_eff = a*(1-tr) で被覆を下げていたが、これが:
-        //   ・距離ソート: premult over の実効被覆を下げ「アルファを下げただけ」の見た目に。
-        //   ・WBOIT: a_eff→0 で reveal がクリア値 1 のまま残り、post_wboit_composite が
-        //     `reveal > 1-eps` で discard（かつ coverage=1-reveal≈0）→ ガラスが完全に消える。
-        // という 2 症状を招いていた。屈折オフでは transmission を被覆に反映せず、babf5f1
-        // 同等の可視性（素のアルファ）を保証する（色付き透過は屈折オン経路が担う）。
+        // 【重要 / 回帰修正】以前ここは a_eff = a*(1-tr) で被覆を下げていたが、これが距離ソートの
+        // アルファ低下・WBOIT の discard（reveal=1 残り）を招いた。透過 0 の Blend は素のアルファを保つ。
         o.premult = c * a;
         o.a_eff   = a;
         return o;
     }
 
-    // 屈折オン: 背景を roughness 連動でぼかしつつ歪めてサンプルし、自前合成する。
+    // ── ガラス（material_refracts=true）: 面情報を 1 回だけ採取し反射／屈折を合成する ──
     let surf = gather_surface(in, front_facing);
+    let V    = normalize(u_camera.position - surf.world_pos);
+    let ndv  = max(dot(normalize(surf.normal), V), 1e-4);
+
+    // 表面反射（ミニ SSR ＋ プローブ／アンビエント フォールバック）。反射ビット時のみ、
+    // ミニ SSR は屈折ピラミッドがあるフレーム（refract_bit）だけ。無いフレームはフォールバック項のみ。
+    var reflection_col = vec3<f32>(0.0, 0.0, 0.0);
+    if reflect_on {
+        reflection_col = glass_reflection(surf, V, ndv, refract_bit);
+    }
+
+    if !refract_on {
+        // ガラスだが屈折背景がこのフレームに無い（forward／非 deferred／背景未コピー）。
+        // 素のアルファブレンドに、フォールバック反射（真っ黒にしない）を加算する。
+        o.premult = c * a + reflection_col;
+        o.a_eff   = a;
+        return o;
+    }
+
+    // 屈折オン: 背景を roughness 連動でぼかしつつ歪めてサンプルし、自前合成する。
     let bg   = refract_background(surf.normal, in.clip_pos.xy, u_material.ior, surf.roughness);
     let tint = u_material.base_color_factor.rgb;
-    // 従来式（transmission=0 の端点＝屈折オンの既存挙動）。
+    // 従来式（transmission=0 の端点＝屈折オンの既存挙動）＋ 表面反射。
     let rgb0 = c * a + bg * tint * (1.0 - a);
     if tr <= 0.0 {
-        o.premult = rgb0;
+        o.premult = rgb0 + reflection_col;
         o.a_eff   = 1.0;
         return o;
     }
     // 透過率>0 の端点: フレネルで反射／透過を配分。ハイライト c は被覆として残し、
     // 背景はガラス色で色付けして (1-F) 分だけ透過させる（表面成分をアルファに依存させない）。
-    let V   = normalize(u_camera.position - surf.world_pos);
-    let ndv = max(dot(normalize(surf.normal), V), 0.0);
     let fr  = glass_fresnel(ndv, glass_f0_from_ior(u_material.ior));
     let rgb1 = c + bg * tint * (1.0 - fr);
     // transmission で 従来式 rgb0 → 透過端点 rgb1 へ補間。mix(x,y,0)=x で tr=0 の互換は上で分岐済み。
-    o.premult = mix(rgb0, rgb1, tr);
+    o.premult = mix(rgb0, rgb1, tr) + reflection_col;
     o.a_eff   = 1.0;
     return o;
 }
