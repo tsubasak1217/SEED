@@ -238,6 +238,28 @@ impl RtShadowResources {
     /// TLAS インスタンス順の平均アルベド storage への参照（GI compute の binding4 に使う）。
     pub fn albedo_buffer(&self) -> &wgpu::Buffer { &self.albedo_buffer }
 
+    /// 解放された統合バッチキー（batch_key）に紐づく BLAS キャッシュと警告集合を追従解放する。
+    ///
+    /// BLAS は「source_path（＝ frame_renderer が渡す batch_key）＋mesh＋prim」粒度でキャッシュされ、
+    /// これまで削除経路が無かった。マテリアルのインライン編集で署名付きの batch_key が量産されると、
+    /// 巨大な BLAS が無制限に蓄積して VRAM が枯渇する（本修正の主因）。frame_renderer 側で stale と
+    /// 判定された batch_key を受け取り、`BlasKey.source_path` が一致するエントリを解放する。
+    ///
+    /// - キー一致は「完全一致」（`source_path == freed_key`）。`source_path` は連結済みの batch_key
+    ///   そのものなので前方一致は不要で、部分一致による誤解放も避けられる。
+    /// - TLAS は毎フレーム casters から詰め直すため、BLAS がキャッシュから消えれば登録されなくなる
+    ///   （`prepare_and_build` は `blas_cache.get(&key)` が None のインスタンスをスキップする）。
+    ///
+    /// 返り値: 解放した BLAS エントリ数（ログ表示用）。
+    pub fn prune_source_paths(&mut self, freed_keys: &[String]) -> usize {
+        if freed_keys.is_empty() { return 0; }
+        let before = self.blas_cache.len();
+        self.blas_cache.retain(|k, _| !freed_keys.iter().any(|f| k.source_path == *f));
+        // 警告集合（BLAS_INPUT 用途不足）も同じキーで掃除し、無限成長を防ぐ。
+        self.warned_usage.retain(|k| !freed_keys.iter().any(|f| k.source_path == *f));
+        before - self.blas_cache.len()
+    }
+
     /// BLAS（新規のみ）と TLAS を command encoder へ記録する。
     ///
     /// - `casters`: (source_path, GpuModel, バッチ) の並び。cast_shadows=true で
