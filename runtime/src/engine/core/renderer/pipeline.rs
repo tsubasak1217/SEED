@@ -137,6 +137,8 @@ pub(crate) fn get_shader_source(name: &str) -> &'static str {
         // AO（SSAO / RT-AO）フルスクリーンパス＋いもす法ブラー（Phase D4）。
         "ao_common.wgsl"             => include_str!("shaders/ao_common.wgsl"),
         "ao_ssao.wgsl"               => include_str!("shaders/ao_ssao.wgsl"),
+        "ssgi_common.wgsl"           => include_str!("shaders/ssgi_common.wgsl"),
+        "ssgi_gen.wgsl"              => include_str!("shaders/ssgi_gen.wgsl"),
         "ao_rt.wgsl"                 => include_str!("shaders/ao_rt.wgsl"),
         other => panic!("unknown shader source: {other}"),
     }
@@ -1710,6 +1712,9 @@ pub struct DrawPipelines {
     /// Deferred 有効かつ AO モードが Off でないときのみ frame_renderer が使う
     /// （G-Buffer＋深度 → 半解像度 ao_raw → ブラー ao_b → deferred の occlusion 乗算）。
     pub ao:                   super::ao::AoPipelines,
+    /// SSGI（スクリーンスペース GI, Phase SSGI）。deferred の camera_bgl/gbuffer_bgl を借りて構築。
+    /// 生成パス＋いもす法カラーブラー＋半解像度リソースの一式（frame_renderer が 1F 遅延で駆動）。
+    pub ssgi:                 super::ssgi::SsgiPipelines,
 }
 
 impl DrawPipelines {
@@ -1785,6 +1790,9 @@ impl DrawPipelines {
         // AO（Phase D4）。deferred の camera_bgl/gbuffer_bgl を借りて構築するため deferred の後に呼ぶ。
         // 白 1x1 の初期化に queue を使う（AO=Off 時の t_ao スロット用）。
         let ao                    = super::ao::AoPipelines::new(device, queue, &deferred, cache);
-        Self { mesh, skinned_mesh, rt, unlit_line, cull, meshlet_cull, skin_compute, depth_prepass, shadow_depth, id_pass, outline, sprite, sprite_outline, canvas_id, camera_preview_blit, bar_fill, transparent, particle_compute, particles, skybox, cluster_build, gi_update, gbuffer, deferred, reflection, ao }
+        // SSGI（Phase SSGI）。deferred の camera_bgl/gbuffer_bgl を借りるため deferred の後に呼ぶ。
+        // ダミー 1x1 の初期化に queue を使う（SSGI 非使用時の t_ssgi スロット用）。
+        let ssgi                  = super::ssgi::SsgiPipelines::new(device, queue, &deferred, cache);
+        Self { mesh, skinned_mesh, rt, unlit_line, cull, meshlet_cull, skin_compute, depth_prepass, shadow_depth, id_pass, outline, sprite, sprite_outline, canvas_id, camera_preview_blit, bar_fill, transparent, particle_compute, particles, skybox, cluster_build, gi_update, gbuffer, deferred, reflection, ao, ssgi }
     }
 }

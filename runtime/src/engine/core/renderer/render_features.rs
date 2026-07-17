@@ -52,9 +52,11 @@ impl Default for ShadowMode {
 pub enum GiMode {
     /// DDGI（プローブ格子レイトレ GI, Phase RT-GI, RT 対応 GPU のみ）。
     Rt,
+    /// SSGI（スクリーンスペース GI, Phase RT-GI/SSGI）。RT 不要で GPU 非依存だが
+    /// deferred（G-Buffer）有効時のみ動作する。1 フレーム遅延方式。
+    Ssgi,
     /// フラット（環境光のみ・間接光なし）。既定。
     Flat,
-    // 将来追加予定: Ssgi（スクリーンスペース GI）。
 }
 
 impl Default for GiMode {
@@ -160,10 +162,15 @@ impl RenderFeatures {
                 ShadowMode::Rt if rt_supported => ShadowMode::Rt,
                 _ => ShadowMode::ShadowMap,
             },
-            // GI: RT 対応時のみ Rt を通す。非対応ならフラットへ。
+            // GI: RT 対応時のみ Rt を通す。RT 非対応で Rt 要求時は Ssgi へ降格
+            //   （SSGI は RT 不要で GPU 非依存＝DDGI の次善。フラットではなく間接光を残す）。
+            //   Ssgi は Ssgi、Flat は Flat。Ssgi→Flat（deferred 無効）ゲートは frame_renderer 側
+            //   （反射・AO と同様に resolve は rt_supported しか受けないため deferred ゲートは持たない）。
             gi: match self.gi {
                 GiMode::Rt if rt_supported => GiMode::Rt,
-                _ => GiMode::Flat,
+                GiMode::Rt                 => GiMode::Ssgi, // RT 非対応→SSGI 降格
+                GiMode::Ssgi               => GiMode::Ssgi,
+                GiMode::Flat               => GiMode::Flat,
             },
             // 反射: RT 対応時のみ Rt を通す。RT 非対応で Rt 要求時は SSR へ降格
             //   （SSR は GPU 非依存のため代替として常に使える）。Ssr は Ssr、Off は Off。
@@ -196,6 +203,10 @@ impl RenderFeatures {
     /// - 反射・AO は実装済み。RT 非対応で SSR/SSAO へ降格したときだけ (rt非対応→ssr)/(rt非対応→ssao) を付ける。
     pub fn log_line(&self, rt_supported: bool) -> String {
         let r = self.resolve(rt_supported);
+        // GI は実装済み（DDGI/SSGI/フラット）。RT 要求が RT 非対応で SSGI へ降格したときのみ注記する。
+        let gi_note    = if self.gi == GiMode::Rt && r.gi == GiMode::Ssgi {
+            "(rt非対応→ssgi)"
+        } else { "" };
         // 反射は実装済み（SSR/RT）。RT 要求が RT 非対応で SSR へ降格したときのみ注記する。
         let refl_note  = if self.reflection == ReflectionMode::Rt && r.reflection == ReflectionMode::Ssr {
             "(rt非対応→ssr)"
@@ -206,9 +217,9 @@ impl RenderFeatures {
         } else { "" };
         let trans_note = if self.translucency == TranslucencyMode::Rt { "(未実装)" } else { "" };
         format!(
-            "shadow={} gi={} reflection={}{} ao={}{} translucency={}{}",
+            "shadow={} gi={}{} reflection={}{} ao={}{} translucency={}{}",
             mode_str_shadow(r.shadow),
-            mode_str_gi(r.gi),
+            mode_str_gi(r.gi), gi_note,
             mode_str_reflection(r.reflection), refl_note,
             mode_str_ao(r.ao), ao_note,
             mode_str_translucency(r.translucency), trans_note,
@@ -263,7 +274,7 @@ fn mode_str_shadow(m: ShadowMode) -> &'static str {
     match m { ShadowMode::Rt => "rt", ShadowMode::ShadowMap => "shadowmap" }
 }
 fn mode_str_gi(m: GiMode) -> &'static str {
-    match m { GiMode::Rt => "rt", GiMode::Flat => "flat" }
+    match m { GiMode::Rt => "rt", GiMode::Ssgi => "ssgi", GiMode::Flat => "flat" }
 }
 fn mode_str_reflection(m: ReflectionMode) -> &'static str {
     match m { ReflectionMode::Rt => "rt", ReflectionMode::Ssr => "ssr", ReflectionMode::Off => "off" }
@@ -315,6 +326,12 @@ mod tests {
 
         let sm = serde_json::to_string(&ShadowMode::ShadowMap).unwrap();
         assert_eq!(sm, "\"shadowmap\"");
+
+        // GiMode::Ssgi の serde 文字列が "ssgi"（往復）。
+        let gs = serde_json::to_string(&GiMode::Ssgi).unwrap();
+        assert_eq!(gs, "\"ssgi\"");
+        let back_gi: GiMode = serde_json::from_str("\"ssgi\"").unwrap();
+        assert_eq!(back_gi, GiMode::Ssgi);
     }
 
     /// 欠落キーは serde default（各 enum の Default）で埋まること（旧エディタ互換）。
@@ -343,7 +360,8 @@ mod tests {
         };
         let r = f.resolve(false);
         assert_eq!(r.shadow, ShadowMode::ShadowMap);
-        assert_eq!(r.gi, GiMode::Flat);
+        // GI: RT 非対応時は Rt 要求が SSGI へ降格（Flat ではない）。SSGI は TLAS 不要。
+        assert_eq!(r.gi, GiMode::Ssgi);
         // 反射: RT 非対応時は Rt 要求が SSR へ降格（Off ではない）。SSR は TLAS 不要。
         assert_eq!(r.reflection, ReflectionMode::Ssr);
         assert!(!r.needs_tlas());
@@ -414,6 +432,28 @@ mod tests {
         assert!(mk(AoMode::Rt).log_line(false).contains("ao=ssao(rt非対応→ssao)"));
         assert!(mk(AoMode::Rt).log_line(true).contains("ao=rt"));
         assert!(!mk(AoMode::Ssao).log_line(true).contains("(rt非対応→ssao)"));
+    }
+
+    /// GI の降格表（Flat/Ssgi/Rt × rt対応/非対応 → 実効）。反射・AO の手本と同型。
+    #[test]
+    fn resolve_gi_downgrade_table() {
+        let mk = |m: GiMode| RenderFeatures { gi: m, ..Default::default() };
+        // Flat はどちらでも Flat。
+        assert_eq!(mk(GiMode::Flat).resolve(false).gi, GiMode::Flat);
+        assert_eq!(mk(GiMode::Flat).resolve(true).gi,  GiMode::Flat);
+        // Ssgi は GPU 非依存で常に Ssgi（deferred ゲートは frame_renderer 側）。
+        assert_eq!(mk(GiMode::Ssgi).resolve(false).gi, GiMode::Ssgi);
+        assert_eq!(mk(GiMode::Ssgi).resolve(true).gi,  GiMode::Ssgi);
+        // Rt は対応時 Rt / 非対応時 Ssgi へ降格。
+        assert_eq!(mk(GiMode::Rt).resolve(false).gi,  GiMode::Ssgi);
+        assert_eq!(mk(GiMode::Rt).resolve(true).gi,   GiMode::Rt);
+        // Ssgi は TLAS 不要・Rt のみ TLAS 要求。
+        assert!(!mk(GiMode::Ssgi).resolve(true).needs_tlas());
+        assert!(mk(GiMode::Rt).resolve(true).needs_tlas());
+        // log_line: Rt 非対応降格時のみ注記、それ以外は素の実効値。
+        assert!(mk(GiMode::Rt).log_line(false).contains("gi=ssgi(rt非対応→ssgi)"));
+        assert!(mk(GiMode::Rt).log_line(true).contains("gi=rt"));
+        assert!(!mk(GiMode::Ssgi).log_line(true).contains("(rt非対応→ssgi)"));
     }
 
     /// ログ行が未実装注記を含むこと。

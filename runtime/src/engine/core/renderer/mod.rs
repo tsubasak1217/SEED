@@ -40,6 +40,8 @@ pub(crate) mod reflection;
 pub(crate) mod imos_blur;
 /// AO（SSAO / RT-AO）フルスクリーンパス＋いもす法ブラー＋半解像度リソース（Phase D4）
 pub(crate) mod ao;
+/// SSGI（スクリーンスペース GI）フルスクリーンパス＋いもす法カラーブラー＋半解像度リソース（Phase SSGI）
+pub(crate) mod ssgi;
 /// レンダリング機能マトリクス（RT/代替のモード管理）
 pub(crate) mod render_features;
 
@@ -69,6 +71,7 @@ pub use reflection::{ReflectionPipelines, ReflectionParams,
 pub use imos_blur::{ImosBlur, ImosBlurParams, IMOS_BLUR_FORMAT};
 pub use ao::{AoPipelines, AoTargets, AoParams, AO_FORMAT, AO_RESOLUTION_DIVISOR,
              AO_SSAO_WORLD_RADIUS, AO_RTAO_WORLD_RADIUS, DEFAULT_AO_INTENSITY};
+pub use ssgi::{SsgiPipelines, SsgiTargets, SsgiParams, SSGI_FORMAT, SSGI_RESOLUTION_DIVISOR};
 pub use post::{RtPool, PostContext, VignetteParams, VignetteStage,
                PostFxSettings, BloomParams, BloomPipelines,
                DEFAULT_BLOOM_THRESHOLD, DEFAULT_BLOOM_KNEE, DEFAULT_BLOOM_INTENSITY,
@@ -1012,6 +1015,38 @@ impl<'r> RenderFrame<'r> {
                 resolve_target: None,
                 ops: wgpu::Operations {
                     load:  wgpu::LoadOp::Clear(wgpu::Color { r: 1.0, g: 1.0, b: 1.0, a: 1.0 }),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            occlusion_query_set: None,
+            timestamp_writes:    None,
+        })
+    }
+
+    // ── SSGI（スクリーンスペース GI）生成パス（Phase SSGI）─────────
+
+    /// 半解像度 SSGI ターゲット（ssgi_raw）へ生成パスを開始する（G-Buffer＋scene_hdr → 間接光 .rgb）。
+    ///
+    /// - color = `ssgi` を LoadOp::Clear(0,0,0,0)（フルスクリーン三角形が全画素を上書きするため
+    ///   クリア値は保険）。 - depth = None（フルスクリーン三角形。G-Buffer 深度はテクスチャとして読む）。
+    /// scene_hdr（不透明ライティング済み）はサンプル入力として読む＝描画先が別テクスチャ（ssgi_raw）の
+    /// ため読み書き競合しない。この後にいもす法カラーブラー（compute）を同一エンコーダで走らせ、
+    /// 結果 ssgi_b を **次フレーム** の deferred ライティングの group1 binding8（t_ssgi）へ供給する。
+    pub fn begin_ssgi_pass_to<'f>(
+        &'f mut self,
+        ssgi: &'f wgpu::TextureView,
+    ) -> wgpu::RenderPass<'f>
+    where
+        'r: 'f,
+    {
+        self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("SSGI Generation Pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view:           ssgi,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load:  wgpu::LoadOp::Clear(wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }),
                     store: wgpu::StoreOp::Store,
                 },
             })],

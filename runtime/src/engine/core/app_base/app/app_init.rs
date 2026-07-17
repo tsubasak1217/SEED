@@ -410,6 +410,13 @@ impl App {
             {
                 eprintln!("[SEED FEATURES] 反射:deferred無効のため停止（反射は G-Buffer 有効時のみ動作）");
             }
+            // SSGI も deferred（G-Buffer）有効時のみ動く独立パス。実効 GI が Ssgi でも deferred が
+            // 無効なら SSGI は走らずフラットアンビエントで描画されるため、その旨を 1 行付記する（Phase SSGI）。
+            if self.render_features.resolve(rt_sup).gi == crate::engine::core::renderer::GiMode::Ssgi
+                && !self.post_fx.deferred
+            {
+                eprintln!("[SEED FEATURES] GI(SSGI):deferred無効のため停止（フラットアンビエントで描画）");
+            }
             self.features_log_state = Some(key);
         }
     }

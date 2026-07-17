@@ -30,7 +30,7 @@ pub mod params;
 pub mod resources;
 
 pub use grid::GiGrid;
-pub use params::GiParams;
+pub use params::{GiParams, GI_MODE_FLAT, GI_MODE_DDGI, GI_MODE_SSGI};
 pub use resources::GiResources;
 
 // ─── プローブ格子の既定寸法 ───────────────────────────────────

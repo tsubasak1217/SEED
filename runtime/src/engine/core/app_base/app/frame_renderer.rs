@@ -3075,6 +3075,11 @@ impl App {
                     } else {
                         crate::engine::core::renderer::AoMode::Off
                     };
+                    // SSGI（Phase SSGI）: deferred 有効かつ実効 GI モードが Ssgi のときのみ走る独立パス。
+                    // フォワード（deferred 無効）時は SSGI を一切走らせず GI はフラットへ倒れる
+                    //（Ssgi→Flat の deferred ゲート。render_features::resolve は RT 降格のみ担当）。
+                    let ssgi_active = deferred_active
+                        && resolved_features.gi == crate::engine::core::renderer::GiMode::Ssgi;
 
                     let vignette_on = self.post_vignette_enabled;
                     // Phase R4: ブルーム／FXAA 設定（フレーム内で不変のためコピーしておく）。
@@ -3164,6 +3169,24 @@ impl App {
                             (surf_h / div).max(1),
                         );
                     }
+                    // SSGI（Phase SSGI）半解像度テクスチャ（ssgi_raw/ssgi_a/ssgi_b）。SSGI 有効時のみ確保。
+                    // ensure が再確保（初回・リサイズ）を返したら ssgi_b の前フレーム履歴が消えるため、
+                    // この 1 フレームは未収束扱い（ssgi_warmed=false）にして GI をフラットに倒す。
+                    // 前フレームが SSGI 非 active だった場合も履歴が古い可能性があるため未収束扱いにする。
+                    let ssgi_reallocated = if ssgi_active {
+                        let div = crate::engine::core::renderer::SSGI_RESOLUTION_DIVISOR;
+                        self.ssgi_targets.ensure(
+                            &draw_ctx.device,
+                            (surf_w / div).max(1),
+                            (surf_h / div).max(1),
+                        )
+                    } else { false };
+                    // このフレームで SSGI を実際に「読める」か（前フレームの ssgi_b が有効か）。
+                    // ssgi_active かつ 前フレームも収束済み（self.ssgi_warmed）かつ 今フレーム再確保なし。
+                    let ssgi_readable = ssgi_active && self.ssgi_warmed && !ssgi_reallocated;
+                    // 次フレーム用の収束フラグを更新: 今フレーム SSGI パスを走らせる（ssgi_active）なら、
+                    // このフレーム末に ssgi_b へ結果が残るので次フレームは読める。非 active なら false。
+                    self.ssgi_warmed = ssgi_active;
                     // 反射 RT（Phase D6）: deferred 有効かつ反射モードが Off でないときのみ確保。
                     // SSR/RT どちらも同じ RT_REFLECTION（HDR）へ描く。
                     if reflection_effective != crate::engine::core::renderer::ReflectionMode::Off {
@@ -3295,9 +3318,23 @@ impl App {
                             if any {
                                 draw_ctx.gi.fit(mn, mx);
                             }
+                            // GI 方式コードと enabled を決める（evaluate_gi_ambient の分岐に使う）。
+                            //   DDGI 有効（gi_on）      → enabled=1, gi_mode=DDGI（compute も走らせる）
+                            //   SSGI 読み取り可          → enabled=1, gi_mode=SSGI（compute は走らせない）
+                            //   それ以外（フラット/未収束）→ enabled=0, gi_mode=FLAT（描画側フラットへ）
+                            // ※SSGI の未収束（初回/リサイズ/有効化直後）フレームは ssgi_readable=false と
+                            //   なりここでフラットに倒れる（＝初回はゼロクリア＝フラットアンビエントと等価）。
+                            use crate::engine::core::renderer::ddgi::{GI_MODE_FLAT, GI_MODE_DDGI, GI_MODE_SSGI};
+                            let (gi_enabled, gi_mode_code) = if gi_on {
+                                (true, GI_MODE_DDGI)
+                            } else if ssgi_readable {
+                                (true, GI_MODE_SSGI)
+                            } else {
+                                (false, GI_MODE_FLAT)
+                            };
                             // GiParams を書き込み、更新プローブ数（ディスパッチ数）を得る。
-                            let gi_ppf = draw_ctx.gi.update_params(&draw_ctx.queue, &self.post_fx.gi, gi_on);
-                            // 有効時のみ compute を記録（履歴コピー → プローブ更新）。
+                            let gi_ppf = draw_ctx.gi.update_params(&draw_ctx.queue, &self.post_fx.gi, gi_enabled, gi_mode_code);
+                            // DDGI 有効時のみ compute を記録（履歴コピー → プローブ更新）。SSGI は compute 不要。
                             if gi_on {
                                 if let Some(gip) = draw_ctx.pipelines.gi_update.as_ref() {
                                     draw_ctx.gi.record(frame.encoder_mut(), &gip.pipeline, gi_ppf);
@@ -3439,6 +3476,8 @@ impl App {
                                     g0, g1, g2, g3,
                                     frame.depth_only_view(), &draw_ctx.pipelines.deferred.gbuffer_sampler,
                                     &ao_p.white_view, &ao_p.linear_sampler,
+                                    // AO 生成シェーダは group1 の 0..5 のみ宣言＝SSGI スロットは未参照。ダミーを渡す。
+                                    &draw_ctx.pipelines.ssgi.dummy_view, &draw_ctx.pipelines.ssgi.linear_sampler,
                                 );
                                 let ao_params_bg = ao_p.create_params_bg(&draw_ctx.device);
                                 // RT-AO データ（TLAS）。needs_tlas() 経由で構築済み保証。共有借用（RefCell）。
@@ -3474,6 +3513,15 @@ impl App {
                                 &draw_ctx.pipelines.ao.white_view
                             };
 
+                            // SSGI 入力ビュー（前フレームの ssgi_b）。読み取り可なら実テクスチャ、
+                            // 未収束（初回/リサイズ/有効化直後）なら黒ダミー（この 1 フレームは GiParams が
+                            // enabled=0＝フラットに倒れているため deferred は screen_gi を無視する）。
+                            let ssgi_result_view: &wgpu::TextureView = if ssgi_readable {
+                                self.ssgi_targets.b_view()
+                            } else {
+                                &draw_ctx.pipelines.ssgi.dummy_view
+                            };
+                            let ssgi_sampler = &draw_ctx.pipelines.ssgi.linear_sampler;
                             // B. G-Buffer BindGroup 生成 + フルスクリーン・ライティングパス。
                             {
                                 let gbuffer_bg = crate::engine::core::renderer::deferred::create_gbuffer_bind_group(
@@ -3481,6 +3529,8 @@ impl App {
                                     g0, g1, g2, g3,
                                     frame.depth_only_view(), &draw_ctx.pipelines.deferred.gbuffer_sampler,
                                     ao_result_view, ao_sampler,
+                                    // SSGI（1 フレーム遅延）: deferred_lighting.wgsl の group1 binding8/9。
+                                    ssgi_result_view, ssgi_sampler,
                                 );
                                 let mut lpass = frame.begin_deferred_lighting_pass_to(hdr_view, clear_color);
                                 if self.mode == RuntimeMode::Play && !self.paused {
@@ -3524,6 +3574,51 @@ impl App {
                             }
                         }
 
+                        // ── SSGI 生成パス（Phase SSGI, 1 フレーム遅延）────────────────
+                        // deferred ライティング完了後・反射より前に、今フレームの scene_hdr（不透明
+                        // ライティング済み）＋ G-Buffer から半解像度 ssgi_raw へ 1 バウンス間接光を焼き、
+                        // いもす法カラーブラーで ssgi_b へ均す。結果 ssgi_b は **次フレーム** の deferred
+                        // ライティング（group1 t_ssgi）が読む（1 フレーム遅延方式）。scene_hdr は入力（読み）・
+                        // ssgi_raw は出力（書き）で別テクスチャのため読み書き競合しない。
+                        if ssgi_active {
+                            let sp = &draw_ctx.pipelines.ssgi;
+                            // ミス埋め色＝フラットアンビエント放射照度（ambient_color * ambient_intensity）。
+                            // レイが画面外/背景へ抜けたピクセルをこの色で埋め、黒縁を出さない。
+                            let amb = [
+                                self.ambient_color[0] * self.ambient_intensity,
+                                self.ambient_color[1] * self.ambient_intensity,
+                                self.ambient_color[2] * self.ambient_intensity,
+                            ];
+                            sp.write_params(&draw_ctx.queue, amb);
+                            let (sg0, sg1, sg2, sg3) = (
+                                g0v.expect("gbuffer0 view (ssgi)"),
+                                g1v.expect("gbuffer1 view (ssgi)"),
+                                g2v.expect("gbuffer2 view (ssgi)"),
+                                g3v.expect("gbuffer3 view (ssgi)"),
+                            );
+                            // group1（G-Buffer）。SSGI 生成は 0..5 のみ参照。AO/SSGI スロットはダミーを渡す。
+                            let ssgi_gbuffer_bg = crate::engine::core::renderer::deferred::create_gbuffer_bind_group(
+                                &draw_ctx.device, &draw_ctx.pipelines.deferred.gbuffer_bgl,
+                                sg0, sg1, sg2, sg3,
+                                frame.depth_only_view(), &draw_ctx.pipelines.deferred.gbuffer_sampler,
+                                &draw_ctx.pipelines.ao.white_view, &draw_ctx.pipelines.ao.linear_sampler,
+                                &sp.dummy_view, &sp.linear_sampler,
+                            );
+                            // group2（SsgiParams + scene_hdr + sampler）。scene_hdr は今フレームの不透明 HDR。
+                            let ssgi_input_bg = sp.create_input_bg(&draw_ctx.device, hdr_view);
+                            // A. 生成パス（半解像度 ssgi_raw へ Clear0）。半解像度・UV ベースのため viewport 不要。
+                            {
+                                let mut spass = frame.begin_ssgi_pass_to(self.ssgi_targets.raw_view());
+                                spass.set_pipeline(&sp.gen_pipeline);
+                                spass.set_bind_group(0, &camera_buf.bind_group, &[]);
+                                spass.set_bind_group(1, &ssgi_gbuffer_bg, &[]);
+                                spass.set_bind_group(2, &ssgi_input_bg, &[]);
+                                spass.draw(0..3, 0..1);
+                            }
+                            // B. いもす法カラーブラー（ssgi_raw → ssgi_a/ssgi_b, 結果は必ず ssgi_b）。
+                            sp.blur(&draw_ctx.device, frame.encoder_mut(), &self.ssgi_targets);
+                        }
+
                         // ── 反射（SSR / RT）パス（Phase D6）──────────────────────────
                         // deferred ライティング完了後・メインフォワード再開前に、G-Buffer＋scene_hdr から
                         // 反射色を RT_REFLECTION へ描き、Additive 合成で scene_hdr へ加算する。
@@ -3554,6 +3649,8 @@ impl App {
                                 rg0, rg1, rg2, rg3,
                                 frame.depth_only_view(), &draw_ctx.pipelines.deferred.gbuffer_sampler,
                                 refl_ao_view, refl_ao_sampler,
+                                // 反射シェーダは group1 の 0..5 のみ宣言＝SSGI スロットは未参照。ダミーを渡す。
+                                &draw_ctx.pipelines.ssgi.dummy_view, &draw_ctx.pipelines.ssgi.linear_sampler,
                             );
                             let input_bg = refl.create_input_bg(&draw_ctx.device, hdr_view);
                             let gi_bg    = refl.create_gi_bg(&draw_ctx.device, &draw_ctx.gi);
