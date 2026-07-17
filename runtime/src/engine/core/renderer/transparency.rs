@@ -709,4 +709,74 @@ mod tests {
                 .unwrap_or_else(|e| panic!("[{name}] WGSL validate 失敗: {e:?}"));
         }
     }
+
+    /// grab-pass（屈折の背景置き換え合成）ゲートの判定表を検証する回帰テスト。
+    ///
+    /// refract_common.wgsl の glass_composite が grab-pass に入る条件は
+    ///   material_refracts = (ior > 1.0 + IOR_EPSILON) || (transmission > 0.0)
+    /// であり、素の Blend（ior==1.0 かつ transmission==0）は必ず通常アルファブレンド経路
+    /// （!refract_on）へ落ちる。ここでの狙いは「素の Blend が屈折 grab-pass に漏れて
+    /// 背景コピーで dst を上書きし a_eff=1 になる＝描画順が壊れる」回帰の再発防止。
+    ///
+    /// WGSL は cargo からは実行できないため、(1) 同一定数・同一述語を Rust でミラーして
+    /// 判定表を固定し、(2) その述語がシェーダ本文に実在することをソース照合で担保する
+    /// （ミラーがシェーダから静かに乖離しないようにする）二段構えで検証する。
+    #[test]
+    fn grab_pass_gate_truth_table() {
+        // refract_common.wgsl の IOR_EPSILON と一致させること（下のソース照合で担保）。
+        const IOR_EPSILON: f32 = 1.0e-4;
+        // シェーダ本文の material_refracts と同一の述語（屈折/透過するマテリアルか）。
+        let material_refracts = |ior: f32, transmission: f32| -> bool {
+            ior > 1.0 + IOR_EPSILON || transmission > 0.0
+        };
+
+        // 素の Blend（ior==1, transmission==0）→ 屈折しない＝通常アルファブレンド経路。
+        assert!(!material_refracts(1.0, 0.0), "素の Blend は grab-pass に入らないこと");
+        // 浮動小数の丸め（1.0 直近）も非屈折側へ吸収されること。
+        assert!(!material_refracts(1.0 + IOR_EPSILON * 0.5, 0.0), "ior≈1.0 は非屈折側");
+        // ガラス（ior>1）→ 屈折 grab-pass 経路。
+        assert!(material_refracts(1.5, 0.0), "ior>1 は屈折経路");
+        assert!(material_refracts(1.33, 0.0), "水(ior=1.33)も屈折経路");
+        // 透過率>0（色付きガラス越し）→ ior==1 でも grab-pass 経路。
+        assert!(material_refracts(1.0, 0.5), "transmission>0 は屈折経路(ior=1でも)");
+        assert!(material_refracts(1.5, 1.0), "ガラス＋全透過も屈折経路");
+
+        // ミラーがシェーダ実体と乖離していないことを保証する（述語・定数の実在照合）。
+        let refract_src = include_str!("shaders/refract_common.wgsl");
+        assert!(
+            refract_src.contains("const IOR_EPSILON: f32 = 1.0e-4;"),
+            "refract_common.wgsl の IOR_EPSILON 定義がミラー値と一致すること"
+        );
+        assert!(
+            refract_src.contains("u_material.ior > 1.0 + IOR_EPSILON || tr > 0.0"),
+            "refract_common.wgsl の grab-pass ゲート述語が想定どおりであること"
+        );
+    }
+
+    /// 屈折オフ経路（!refract_on）の実効被覆が babf5f1 パリティ（a_eff = a）であることを固定する
+    /// 回帰テスト。かつて a_eff = a*(1-transmission) で被覆を下げていたため、
+    ///   ・距離ソート: 実効被覆が下がり「アルファを下げただけ」の見た目（症状2）
+    ///   ・WBOIT: a_eff→0 で reveal がクリア値 1 のまま残り post_wboit_composite が discard →
+    ///     ガラスが完全に消える（症状1）
+    /// を招いていた。屈折オフでは transmission を被覆へ反映せず素のアルファ (c*a, a) を保つこと。
+    ///
+    /// WGSL は cargo から実行できないため、シェーダ本文へのソース照合で不変条件を担保する。
+    #[test]
+    fn refract_off_alpha_parity_with_babf5f1() {
+        let refract_src = include_str!("shaders/refract_common.wgsl");
+        // !refract_on ブロックが素のアルファ (premult=c*a, a_eff=a) を返すこと。
+        assert!(
+            refract_src.contains("o.premult = c * a;"),
+            "屈折オフ経路の premult は c*a（straight over と等価）であること"
+        );
+        assert!(
+            refract_src.contains("o.a_eff   = a;"),
+            "屈折オフ経路の a_eff は a（babf5f1 パリティ）であること。a*(1-tr) への再退行を禁止する"
+        );
+        // 屈折オフ経路で transmission による被覆低下（a*(1-tr) 系）が復活していないこと。
+        assert!(
+            !refract_src.contains("a * (1.0 - tr)"),
+            "屈折オフ経路で a_eff = a*(1-tr) は禁止（WBOIT discard／距離ソートのアルファ低下を招く）"
+        );
+    }
 }
