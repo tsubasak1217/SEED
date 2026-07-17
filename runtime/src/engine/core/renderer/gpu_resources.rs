@@ -778,12 +778,6 @@ pub struct GpuModel {
     pub transmissions: Vec<f32>,
     /// material_index が無い/範囲外のプリミティブ用の透過率（既定マテリアル由来＝0.0）。
     pub default_transmission: f32,
-    /// マテリアルごとの屈折率 ior（ガラス表現, >=1.0）。materials と同順・同数。
-    /// 距離ソート逐次グラブ（transparency.rs plan_sorted）が「屈折するマテリアルか」の判定
-    /// （material_refracts = ior>1 || transmission>0）に material_index で引く。
-    pub iors: Vec<f32>,
-    /// material_index が無い/範囲外のプリミティブ用の ior（既定マテリアル由来＝1.0）。
-    pub default_ior: f32,
     // テクスチャ所有権
     #[allow(dead_code)]
     textures: Vec<GpuTexture>,
@@ -858,15 +852,6 @@ impl GpuModel {
             .unwrap_or(self.default_transmission)
     }
 
-    /// プリミティブのマテリアルインデックスから屈折率 ior（ガラス表現, >=1.0）を返す。
-    /// `material_idx` が None・範囲外のときは default_ior（1.0）を返す。
-    /// 距離ソート逐次グラブ（transparency.rs plan_sorted）の material_refracts 判定で使う。
-    pub fn primitive_ior(&self, material_idx: Option<usize>) -> f32 {
-        material_idx
-            .and_then(|mi| self.iors.get(mi).copied())
-            .unwrap_or(self.default_ior)
-    }
-
     pub fn upload(
         device:       &wgpu::Device,
         queue:        &wgpu::Queue,
@@ -900,8 +885,6 @@ impl GpuModel {
         // 透過率（ガラス表現）。materials と同順で焼く（RT 色付き影の引き当て用）。
         let transmissions: Vec<f32> = model.materials.iter().map(|m| m.transmission).collect();
         let default_transmission = default_mat_data.transmission;
-        let iors: Vec<f32> = model.materials.iter().map(|m| m.ior).collect();
-        let default_ior = default_mat_data.ior;
 
         // ── メッシュ ───────────────────────────────────────────
         let meshes: Vec<GpuMesh> = model.meshes.iter().map(|mesh| {
@@ -928,7 +911,7 @@ impl GpuModel {
             }],
         });
 
-        Self { meshes, materials, default_material, identity_joints_bg, avg_albedos, default_avg_albedo, transmissions, default_transmission, iors, default_ior, textures: gpu_textures }
+        Self { meshes, materials, default_material, identity_joints_bg, avg_albedos, default_avg_albedo, transmissions, default_transmission, textures: gpu_textures }
     }
 
     /// マテリアルオーバーライドを GPU マテリアルへ焼き込む（Phase R7）。
@@ -978,7 +961,6 @@ impl GpuModel {
                     self.avg_albedos[ovr.slot] = eff_avg_albedo(&eff);
                     // 透過率（ガラス表現）も追従させる（RT 色付き影の引き当て用）。
                     self.transmissions[ovr.slot] = eff.transmission;
-                    self.iors[ovr.slot] = eff.ior;
                 }
 
                 // ── .mat アセット差し替え: アセットの factor/alpha + テクスチャを丸ごと適用 ──
@@ -1050,7 +1032,6 @@ impl GpuModel {
                     self.avg_albedos[ovr.slot] = eff_avg_albedo(&eff);
                     // 透過率（ガラス表現）も追従させる（RT 色付き影の引き当て用）。
                     self.transmissions[ovr.slot] = eff.transmission;
-                    self.iors[ovr.slot] = eff.ior;
                 }
             }
         }
@@ -1106,7 +1087,6 @@ impl GpuModel {
         //    含まれる（平均アルベド・透過率をハッシュ）ため、in-place 編集の次フレームに TLAS が
         //    確実に再構築され、色付き影へ反映される（アルファ・色・透過率のスライダー編集が即時に効く）。
         self.transmissions[slot] = eff.transmission;
-        self.iors[slot] = eff.ior;
 
         InlineUpdateResult::Updated
     }

@@ -303,9 +303,6 @@ fn normalize(v: [f32; 3]) -> [f32; 3] {
 pub const TRANSLUCENCY_RT_COLORED_SHADOW: u32 = 1;
 /// bit1: 屈折の背景（refract_bg）が有効＝このフレームで屈折可能（deferred 有効＋背景コピー済み）。
 pub const TRANSLUCENCY_RT_REFRACTION: u32 = 2;
-/// bit2: 半透明表面反射が有効＝ReflectionMode!=Off（ガラス面にミニ SSR／プローブ反射を乗せる）。
-/// WGSL 側 light_common.wgsl の TRANSLUCENCY_RT_REFLECTION と値を一致させること。
-pub const TRANSLUCENCY_RT_REFLECTION: u32 = 4;
 
 // ─── LightMeta ───────────────────────────────────────────────
 
@@ -351,12 +348,6 @@ pub struct LightMeta {
     pub ambient_color: [f32; 3],
     /// 環境光の強度（Phase R1.5）。既定 0.05（従来のハードコード値）。0 で完全な暗闇。
     pub ambient_intensity: f32,
-    /// 半透明表面反射の強度（Phase RT-Reflection, offset 32）。ガラス面のミニ SSR／プローブ反射の
-    /// 出力に乗る（refract_common.wgsl の glass_reflection）。反射ビット（bit2）が立つフレームでのみ意味を持つ。
-    /// これに合わせて LightMeta は 32→48 バイトへ拡張した（WGSL 側もスカラー 3 本で 16 境界へ詰める）。
-    pub reflection_intensity: f32,
-    /// 16 バイト境界へ揃えるパディング（未使用）。vec3<f32> にすると align16 で押し出されるためスカラー 3 本。
-    pub _pad_refl: [f32; 3],
 }
 
 // ─── LightBuffer ─────────────────────────────────────────────
@@ -441,8 +432,6 @@ impl LightBuffer {
             translucency_rt:   0,
             ambient_color:     DEFAULT_AMBIENT_COLOR,
             ambient_intensity: DEFAULT_AMBIENT_INTENSITY,
-            reflection_intensity: 0.0,
-            _pad_refl:         [0.0; 3],
         };
         let meta_buffer_main = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label:    Some("Light Meta Uniform (main camera)"),
@@ -559,10 +548,6 @@ impl LightBuffer {
             translucency_rt: if translucency_rt { 1 } else { 0 },
             ambient_color,
             ambient_intensity,
-            // 反射ビット（bit2）・反射強度は frame_renderer が反射モード確定後に write_buffer で追記する
-            // （屈折ビット bit1 と同じ後追い方式。reflection_effective は update より後で算出されるため）。
-            reflection_intensity: 0.0,
-            _pad_refl: [0.0; 3],
         };
         queue.write_buffer(&self.meta_buffer_main, 0, bytemuck::bytes_of(&meta_main));
         // プレビュー用: view_mode を 0（Lit）に固定。RT-Translucency もプレビューでは無効
@@ -711,15 +696,12 @@ mod layout_tests {
     /// WGSL 側 light_common.wgsl の LightMeta（count/rt_shadows/view_mode/_pad2/ambient_*）と一致。
     #[test]
     fn light_meta_layout() {
-        // Phase RT-Reflection で reflection_intensity（offset 32）を追加し 32→48 バイトへ拡張。
-        assert_eq!(size_of::<LightMeta>(), 48, "LightMeta は 48 バイト（WGSL uniform と一致）");
-        assert_eq!(offset_of!(LightMeta, count),                0);
-        assert_eq!(offset_of!(LightMeta, rt_shadows),           4);
-        assert_eq!(offset_of!(LightMeta, view_mode),            8);
-        assert_eq!(offset_of!(LightMeta, translucency_rt),      12);
-        assert_eq!(offset_of!(LightMeta, ambient_color),        16);
-        assert_eq!(offset_of!(LightMeta, ambient_intensity),    28);
-        assert_eq!(offset_of!(LightMeta, reflection_intensity), 32);
+        assert_eq!(size_of::<LightMeta>(), 32, "LightMeta は 32 バイト（WGSL uniform と一致）");
+        assert_eq!(offset_of!(LightMeta, count),             0);
+        assert_eq!(offset_of!(LightMeta, rt_shadows),        4);
+        assert_eq!(offset_of!(LightMeta, view_mode),         8);
+        assert_eq!(offset_of!(LightMeta, ambient_color),     16);
+        assert_eq!(offset_of!(LightMeta, ambient_intensity), 28);
     }
 
     /// 【回帰ガード】WGSL 側 GpuLight の実レイアウト（naga が計算する storage stride）が

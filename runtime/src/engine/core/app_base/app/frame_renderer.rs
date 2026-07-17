@@ -3948,31 +3948,11 @@ impl App {
                         if refract_active {
                             let scene_hdr = self.rt_pool.texture(crate::engine::core::renderer::RT_SCENE_HDR);
                             self.refract_pyramid.record(&draw_ctx.device, frame.encoder_mut(), scene_hdr);
-                        }
-                        // ── LightMeta.translucency_rt ビットマスク＋反射強度を最終確定（Phase RT-Reflection）──
-                        // update() は bit0（色付き影）だけを書いているため、フレーム依存の bit1（屈折）・
-                        // bit2（反射）をここで OR して offset12 を一括上書きする。反射モードは update() より
-                        // 後で確定するのでこの後追い方式にする（屈折ビットと同じ思想）。反射強度は offset32。
-                        // これらの write_buffer は同フレーム・透明パス（距離ソート／WBOIT）より前に submit 適用される。
-                        let reflection_on = reflection_effective
-                            != crate::engine::core::renderer::ReflectionMode::Off;
-                        {
-                            use crate::engine::core::renderer::lighting::{
-                                TRANSLUCENCY_RT_COLORED_SHADOW, TRANSLUCENCY_RT_REFRACTION,
-                                TRANSLUCENCY_RT_REFLECTION,
-                            };
-                            let mut tr_flags: u32 = 0;
-                            if translucency_rt_on { tr_flags |= TRANSLUCENCY_RT_COLORED_SHADOW; }
-                            if refract_active     { tr_flags |= TRANSLUCENCY_RT_REFRACTION; }
-                            if reflection_on      { tr_flags |= TRANSLUCENCY_RT_REFLECTION; }
+                            // 屈折ビット（bit1）を追記（bit0＝色付き影は既に立っている）。offset 12＝translucency_rt。
+                            let flag = crate::engine::core::renderer::lighting::TRANSLUCENCY_RT_COLORED_SHADOW
+                                     | crate::engine::core::renderer::lighting::TRANSLUCENCY_RT_REFRACTION;
                             draw_ctx.queue.write_buffer(
-                                draw_ctx.light_buffer.meta_main_buffer(), 12, bytemuck::bytes_of(&tr_flags),
-                            );
-                            // 反射強度（offset32）。反射オフ時は 0（ガラス面でも反射項が乗らない＝完全スキップ）。
-                            let refl_intensity: f32 =
-                                if reflection_on { self.post_fx.reflection_intensity } else { 0.0 };
-                            draw_ctx.queue.write_buffer(
-                                draw_ctx.light_buffer.meta_main_buffer(), 32, bytemuck::bytes_of(&refl_intensity),
+                                draw_ctx.light_buffer.meta_main_buffer(), 12, bytemuck::bytes_of(&flag),
                             );
                         }
 
@@ -4090,73 +4070,14 @@ impl App {
                             // デファードでも半透明はフォワードで描く（G-Buffer 深度を Load してテスト、
                             // メインパスが Load で再開しているためこの深度テストは正しく機能する）。
                             if tp_sorted {
-                                use crate::engine::core::renderer::transparency;
-                                // Part B（半透明同士の屈折）: 距離ソートは奥→手前順に描くため、屈折する
-                                // オブジェクトを描く直前に scene_hdr→refract mip0 を再グラブすると、手前の
-                                // ガラスが「既に描いた奥のガラス」を屈折で拾える。再グラブは refract_active
-                                // （屈折背景ピラミッド存在）のフレームのみ・最大 REFRACT_REGRAB_MAX 回・手前優先。
-                                let plan = transparency::plan_sorted(
-                                    &transparent_models, saved_camera_pos, refract_active,
+                                crate::engine::core::renderer::transparency::draw_sorted(
+                                    &mut pass,
+                                    &transparent_models,
+                                    &camera_buf.bind_group,
+                                    &transparent_bg_main,
+                                    &draw_ctx.pipelines.transparent,
+                                    saved_camera_pos,
                                 );
-                                if plan.regrab_before.is_empty() {
-                                    // 従来経路（再グラブ不要）: 単一パスで全アイテムを描く。
-                                    for i in 0..plan.len() {
-                                        transparency::draw_planned(
-                                            &mut pass, &plan, i, &transparent_models,
-                                            &camera_buf.bind_group, &transparent_bg_main,
-                                            &draw_ctx.pipelines.transparent,
-                                        );
-                                    }
-                                } else {
-                                    // 再グラブあり: メインパスをグラブ境界で分割する（scene_hdr が現レンダー
-                                    // ターゲットのため、コピー前にパスを閉じる必要がある）。分割後の各セグメントは
-                                    // begin_scene_pass_load_to で深度/HDR を Load して再開し、Play ビューポート/
-                                    // シザーを再適用する。最終セグメントは後続描画（グリッド/ギズモ）のため開いたまま
-                                    // pass へ再代入する。
-                                    let scene_hdr_tex =
-                                        self.rt_pool.texture(crate::engine::core::renderer::RT_SCENE_HDR);
-                                    let pyramid_tex = self.refract_pyramid.texture();
-                                    let play_vp = self.mode == RuntimeMode::Play && !self.paused;
-                                    drop(pass);
-                                    let mut seg_start = 0usize;
-                                    for &rb in &plan.regrab_before {
-                                        {
-                                            let mut sp = frame.begin_scene_pass_load_to(hdr_view);
-                                            if play_vp {
-                                                let (vx, vy, vw, vh) = game_viewport;
-                                                sp.set_viewport(vx, vy, vw, vh, 0.0, 1.0);
-                                                sp.set_scissor_rect(vx as u32, vy as u32, vw as u32, vh as u32);
-                                            }
-                                            for i in seg_start..rb {
-                                                transparency::draw_planned(
-                                                    &mut sp, &plan, i, &transparent_models,
-                                                    &camera_buf.bind_group, &transparent_bg_main,
-                                                    &draw_ctx.pipelines.transparent,
-                                                );
-                                            }
-                                        }
-                                        // 再グラブ: scene_hdr → refract mip0（mip0 のみ更新。深いミップは初回のまま）。
-                                        transparency::regrab_mip0(
-                                            frame.encoder_mut(), scene_hdr_tex, pyramid_tex, surf_w, surf_h,
-                                        );
-                                        seg_start = rb;
-                                    }
-                                    // 最終セグメント（開いたまま pass へ再代入）。
-                                    let mut sp = frame.begin_scene_pass_load_to(hdr_view);
-                                    if play_vp {
-                                        let (vx, vy, vw, vh) = game_viewport;
-                                        sp.set_viewport(vx, vy, vw, vh, 0.0, 1.0);
-                                        sp.set_scissor_rect(vx as u32, vy as u32, vw as u32, vh as u32);
-                                    }
-                                    for i in seg_start..plan.len() {
-                                        transparency::draw_planned(
-                                            &mut sp, &plan, i, &transparent_models,
-                                            &camera_buf.bind_group, &transparent_bg_main,
-                                            &draw_ctx.pipelines.transparent,
-                                        );
-                                    }
-                                    pass = sp;
-                                }
                             }
                         }
                         perf_draw_ms = _perf_t_draw.elapsed().as_secs_f64() * 1000.0;
