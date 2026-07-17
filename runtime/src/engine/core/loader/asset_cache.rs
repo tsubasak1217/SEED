@@ -74,7 +74,10 @@ use super::model::{
 /// v10: `Material` に屈折率（`ior`）フィールドを追加（Phase RT-Translucency）。
 ///     RT-Translucency の屈折で使う。glTF の KHR_materials_ior から読む（無ければ 1.0）。
 ///     bincode のバイナリ表現が変わるため旧 v9 を無効化して再生成させる。
-pub const CACHE_FORMAT_VERSION: u32 = 10;
+/// v11: `Material` に透過率（`transmission`）フィールドを追加（ガラス表現）。
+///     アルファと分離した透け具合。glTF の KHR_materials_transmission から読む（無ければ 0.0）。
+///     bincode のバイナリ表現が変わるため旧 v10 を無効化して再生成させる。
+pub const CACHE_FORMAT_VERSION: u32 = 11;
 
 /// モデルキャッシュファイルのマジック（8 バイト）。
 const MODEL_MAGIC: &[u8; 8] = b"SEEDMDL\0";

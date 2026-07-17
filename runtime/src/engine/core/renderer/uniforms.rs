@@ -119,7 +119,7 @@ fn normal_matrix_from_model(m: &[[f32; 4]; 4]) -> [[f32; 4]; 4] {
 
 /// PBR マテリアルパラメータ。
 ///
-/// WGSL レイアウト（計 64 bytes）:
+/// WGSL レイアウト（計 80 bytes。ガラス表現で transmission を追加し 64→80 へ拡張）:
 /// | オフセット | フィールド         | サイズ |
 /// |-----------|-------------------|--------|
 /// |  0        | base_color_factor |  16    |
@@ -133,6 +133,10 @@ fn normal_matrix_from_model(m: &[[f32; 4]; 4]) -> [[f32; 4]; 4] {
 /// | 52        | has_occlusion_tex |   4    |
 /// | 56        | has_emissive_tex  |   4    |
 /// | 60        | ior               |   4    |  ← 旧 _pad を転用（Phase RT-Translucency）
+/// | 64        | transmission      |   4    |  ← ガラス表現（透過率）で追加
+/// | 68        | _pad0             |   4    |  ← std140 で構造体サイズを 16 の倍数（80）へ揃える
+/// | 72        | _pad1             |   4    |
+/// | 76        | _pad2             |   4    |
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct MaterialUniform {
@@ -150,6 +154,13 @@ pub struct MaterialUniform {
     /// 屈折率（IOR, Phase RT-Translucency）。旧 _pad（offset 60）を転用。
     /// RT-Translucency 有効時、Blend 半透明のスクリーンスペース屈折で使う（1.0=屈折なし）。
     pub ior:                f32,
+    /// 透過率（transmission, 0..1。ガラス表現）。アルファ（被覆）と分離した透け具合。
+    /// 0.0=従来動作（後方互換）。半透明フラグメントの合成でフレネル配分に使う。
+    pub transmission:       f32,
+    /// std140 の 16 バイトアラインへ構造体サイズを揃えるパディング（GPU では未使用）。
+    pub _pad0:              f32,
+    pub _pad1:              f32,
+    pub _pad2:              f32,
 }
 
 // ── スキニング用ジョイント行列 (Group 3, Binding 0) ───────────
@@ -274,5 +285,24 @@ mod layout_tests {
     #[test]
     fn camera_uniform_size_is_224_bytes() {
         assert_eq!(std::mem::size_of::<CameraUniform>(), 224);
+    }
+
+    /// MaterialUniform が Rust/WGSL 双方で 80 バイト（ガラス表現で 64→80 へ拡張）であることと、
+    /// 主要フィールドのオフセットを固定する。ズレると shader_common.wgsl の MaterialUniform 定義
+    /// との対応が崩れ、GPU が誤ったバイトを読む（静かな描画バグ）。
+    #[test]
+    fn material_uniform_layout_is_80_bytes() {
+        assert_eq!(std::mem::size_of::<MaterialUniform>(), 80, "MaterialUniform は 80 バイト");
+        // 代表オフセットの検証（base アドレスからのバイト差）。
+        let m = MaterialUniform {
+            base_color_factor: [0.0; 4], metallic_factor: 0.0, roughness_factor: 0.0,
+            alpha_cutoff: 0.0, has_base_color_tex: 0, emissive_factor: [0.0; 3],
+            has_normal_tex: 0, has_mr_tex: 0, has_occlusion_tex: 0, has_emissive_tex: 0,
+            ior: 0.0, transmission: 0.0, _pad0: 0.0, _pad1: 0.0, _pad2: 0.0,
+        };
+        let base = &m as *const _ as usize;
+        let off = |p: *const f32| p as usize - base;
+        assert_eq!(off(&m.ior),          60, "ior は offset 60");
+        assert_eq!(off(&m.transmission), 64, "transmission は offset 64");
     }
 }

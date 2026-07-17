@@ -2821,7 +2821,7 @@ public partial class InspectorPanel : UserControl
         float R, float G, float B, float A,
         float Metallic, float Roughness,
         float ER, float EG, float EB,
-        string AlphaMode, float AlphaCutoff, float Ior, string CullFace, string Path);
+        string AlphaMode, float AlphaCutoff, float Ior, float Transmission, string CullFace, string Path);
 
     /// <summary>
     /// SET_MATERIAL_OVERRIDE の "kind":"mat_asset" 送信用 JSON ペイロード（System.Text.Json でシリアライズ）。
@@ -2848,6 +2848,8 @@ public partial class InspectorPanel : UserControl
         public float alpha_cutoff { get; set; } = 0.5f;
         /// <summary>屈折率（IOR, Phase RT-Translucency）。1.0=屈折なし。Blend のときのみ意味を持つ。</summary>
         public float ior { get; set; } = 1f;
+        /// <summary>透過率（transmission, ガラス表現）。0..1。0=従来動作。Blend のときのみ意味を持つ。</summary>
+        public float transmission { get; set; } = 0f;
         /// <summary>カリング面 "back" | "front" | "none"。ランタイム側は大小文字非依存・不明値は Back 扱い。</summary>
         public string cull_face { get; set; } = CullFaceValues[0];
     }
@@ -2914,12 +2916,14 @@ public partial class InspectorPanel : UserControl
                     var alphaCutoff = m.TryGetProperty("alpha_cutoff", out var ac) ? ac.GetSingle() : 0.5f;
                     // ior キーを持たない旧ランタイムの ACTOR_COMPONENTS でも動くよう既定 1.0（屈折なし）にフォールバックする。
                     var ior         = m.TryGetProperty("ior",          out var io) ? io.GetSingle() : 1f;
+                    // transmission キーを持たない旧ランタイムの ACTOR_COMPONENTS でも動くよう既定 0.0（透過なし）にフォールバックする。
+                    var transmission = m.TryGetProperty("transmission", out var tr) ? tr.GetSingle() : 0f;
                     // cull_face キーを持たない旧ランタイムの ACTOR_COMPONENTS でも動くよう既定 "back" にフォールバックする。
                     var cullFace    = m.TryGetProperty("cull_face",    out var cf) ? cf.GetString() ?? CullFaceValues[0] : CullFaceValues[0];
                     var path        = m.TryGetProperty("path",        out var mp) ? mp.GetString() ?? ""       : "";
 
                     result.Add(new MaterialSlotData(slot, name, mode, r, g, b, a, metallic, roughness,
-                        er, eg, eb, alphaMode, alphaCutoff, ior, cullFace, path));
+                        er, eg, eb, alphaMode, alphaCutoff, ior, transmission, cullFace, path));
                 }
                 return result;
             }
@@ -3095,6 +3099,7 @@ public partial class InspectorPanel : UserControl
         string curAlphaMode = mat.AlphaMode;
         float curAlphaCutoff = mat.AlphaCutoff;
         float curIor = mat.Ior;
+        float curTransmission = mat.Transmission;
         string curCullFace = mat.CullFace;
 
         var inlinePanel = new StackPanel { Visibility = mat.Mode == "inline" ? Visibility.Visible : Visibility.Collapsed };
@@ -3112,6 +3117,7 @@ public partial class InspectorPanel : UserControl
                 alpha_mode   = curAlphaMode,
                 alpha_cutoff = curAlphaCutoff,
                 ior          = curIor,
+                transmission = curTransmission,
                 cull_face    = curCullFace,
             };
             var json = JsonSerializer.Serialize(payload);
@@ -3160,9 +3166,10 @@ public partial class InspectorPanel : UserControl
         emissiveRow.Children.Add(emissiveSwatch.swatch);
         inlinePanel.Children.Add(emissiveRow);
 
-        // 屈折率（IOR）行への前方参照。alpha_mode コンボの変更時に表示/非表示を切り替えるため、
+        // 屈折率（IOR）／透過率行への前方参照。alpha_mode コンボの変更時に表示/非表示を切り替えるため、
         // コンボのハンドラより前に宣言する（クロージャは変数を捕捉するので後から代入した実体が見える）。
         UIElement? iorRowElement = null;
+        UIElement? transmissionRowElement = null;
 
         // alpha_mode ドロップダウン（opaque/mask/blend）
         var alphaModeRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 2, 0, 2) };
@@ -3180,10 +3187,11 @@ public partial class InspectorPanel : UserControl
         {
             if (alphaModeCombo.SelectedIndex < 0) return;
             curAlphaMode = alphaModeValues[alphaModeCombo.SelectedIndex];
-            // 屈折率は Blend のときのみ意味を持つため、その行だけ表示/非表示を切り替える
+            // 屈折率・透過率は Blend のときのみ意味を持つため、その行だけ表示/非表示を切り替える
             //（条件付き表示の基本方針。ライトの UpdateKindVisibility と同じ流儀）。
-            if (iorRowElement != null)
-                iorRowElement.Visibility = curAlphaMode == "blend" ? Visibility.Visible : Visibility.Collapsed;
+            var showGlass = curAlphaMode == "blend" ? Visibility.Visible : Visibility.Collapsed;
+            if (iorRowElement != null)          iorRowElement.Visibility = showGlass;
+            if (transmissionRowElement != null) transmissionRowElement.Visibility = showGlass;
             SendInline();
         };
         alphaModeRow.Children.Add(alphaModeCombo);
@@ -3219,6 +3227,24 @@ public partial class InspectorPanel : UserControl
         iorRow.element.Visibility = curAlphaMode == "blend" ? Visibility.Visible : Visibility.Collapsed;
         iorRowElement = iorRow.element;
         inlinePanel.Children.Add(iorRow.element);
+
+        // 透過率（transmission, ガラス表現）。AlphaMode=Blend のときだけ表示する（条件付き表示）。
+        // アルファ（被覆）と分離した「向こうがどれだけ透けるか」。0.0=従来動作、1.0=最大透過。
+        // レンダリング機能の「半透明＝レイトレ」選択時、Blend マテリアルの屈折透過合成に使う。
+        var transmissionRow = BuildLabeledNumberRow("透過率", curTransmission, "F2");
+        transmissionRow.textBox.LostFocus += (_, _) => CommitTransmission();
+        transmissionRow.textBox.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) { CommitTransmission(); e.Handled = true; } };
+        NumericDragBehavior.SetOnDrag(transmissionRow.textBox, CommitTransmission);
+        void CommitTransmission()
+        {
+            if (float.TryParse(transmissionRow.textBox.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var v))
+                curTransmission = Math.Clamp(v, 0.0f, 1.0f); // 透過率は 0..1
+            SendInline();
+        }
+        // 初期表示は現在の alpha_mode に応じる（Blend のみ表示）。
+        transmissionRow.element.Visibility = curAlphaMode == "blend" ? Visibility.Visible : Visibility.Collapsed;
+        transmissionRowElement = transmissionRow.element;
+        inlinePanel.Children.Add(transmissionRow.element);
 
         // cull_face ドロップダウン（back/front/none）。
         // カリング面は全マテリアルで意味を持つが、値の送信経路はインライン上書き（SET_MATERIAL_OVERRIDE:"inline"）

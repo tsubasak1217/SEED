@@ -61,6 +61,10 @@ pub enum MaterialOverrideKind {
         /// RT-Translucency 有効・Blend のときスクリーンスペース屈折に使う（1.0=屈折なし）。
         #[serde(default)]
         ior: Option<f32>,
+        /// 透過率（transmission, 0..1。ガラス表現）。`None` なら埋込値を維持する。
+        /// アルファと分離した透け具合。RT-Translucency の合成でフレネル配分に使う。
+        #[serde(default)]
+        transmission: Option<f32>,
         /// カリング面 "back" | "front" | "none"（material_asset::parse_cull_face で変換）。
         /// `None` なら埋込マテリアルの値（glTF の double_sided 由来）を維持する。
         #[serde(default)]

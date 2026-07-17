@@ -377,6 +377,10 @@ pub(crate) fn build_material_uniform(mat: &Material) -> MaterialUniform {
         has_occlusion_tex:  mat.occlusion_texture.is_some() as u32,
         has_emissive_tex:   mat.emissive_texture.is_some() as u32,
         ior:                mat.ior,
+        transmission:       mat.transmission,
+        _pad0:              0.0,
+        _pad1:              0.0,
+        _pad2:              0.0,
     }
 }
 
@@ -391,7 +395,7 @@ pub(crate) fn build_material_uniform(mat: &Material) -> MaterialUniform {
 /// `None` のフィールドは `base`（埋込値）をそのまま維持する。
 pub(crate) fn bake_inline_material(base: &Material, kind: &MaterialOverrideKind) -> Option<Material> {
     let MaterialOverrideKind::Inline {
-        base_color, metallic, roughness, emissive, alpha_mode, alpha_cutoff, ior, cull_face,
+        base_color, metallic, roughness, emissive, alpha_mode, alpha_cutoff, ior, transmission, cull_face,
     } = kind else {
         return None;
     };
@@ -404,6 +408,8 @@ pub(crate) fn bake_inline_material(base: &Material, kind: &MaterialOverrideKind)
     if let Some(v) = alpha_cutoff { eff.alpha_cutoff      = *v; }
     // 屈折率の上書き（None なら埋込値を維持）。RT-Translucency の屈折で使う。
     if let Some(v) = ior          { eff.ior               = *v; }
+    // 透過率の上書き（None なら埋込値を維持）。ガラス表現の透け具合。
+    if let Some(v) = transmission { eff.transmission      = *v; }
     // カリング面の上書き（None なら埋込値＝glTF double_sided 由来を維持）。
     if let Some(v) = cull_face    { eff.cull_face         = material_asset::parse_cull_face(v); }
     // テクスチャ参照は維持（texture_index は元モデルのテクスチャ列を指したまま）。
@@ -763,6 +769,11 @@ pub struct GpuModel {
     pub avg_albedos: Vec<[f32; 4]>,
     /// material_index が無い/範囲外のプリミティブ用の平均アルベド（既定マテリアル由来）。
     pub default_avg_albedo: [f32; 4],
+    /// マテリアルごとの透過率（ガラス表現, 0..1）。materials と同順・同数。
+    /// RT 色付き影の「影の透過量」計算（rt_shadow.rs）が material_index で引く。
+    pub transmissions: Vec<f32>,
+    /// material_index が無い/範囲外のプリミティブ用の透過率（既定マテリアル由来＝0.0）。
+    pub default_transmission: f32,
     // テクスチャ所有権
     #[allow(dead_code)]
     textures: Vec<GpuTexture>,
@@ -808,6 +819,15 @@ impl GpuModel {
             .unwrap_or(self.default_avg_albedo)
     }
 
+    /// プリミティブのマテリアルインデックスから透過率（ガラス表現, 0..1）を返す。
+    /// `material_idx` が None・範囲外のときは default_transmission（0.0）を返す。
+    /// RT 色付き影の「影の透過量」計算（rt_shadow.rs）で唯一の引き当て入口。
+    pub fn primitive_transmission(&self, material_idx: Option<usize>) -> f32 {
+        material_idx
+            .and_then(|mi| self.transmissions.get(mi).copied())
+            .unwrap_or(self.default_transmission)
+    }
+
     pub fn upload(
         device:       &wgpu::Device,
         queue:        &wgpu::Queue,
@@ -838,6 +858,9 @@ impl GpuModel {
         // プリミティブ平均アルベド（Phase RT-GI）。materials と同順で焼く（DDGI の TLAS 引き当て用）。
         let avg_albedos: Vec<[f32; 4]> = model.materials.iter().map(|m| m.avg_albedo).collect();
         let default_avg_albedo = default_mat_data.avg_albedo;
+        // 透過率（ガラス表現）。materials と同順で焼く（RT 色付き影の引き当て用）。
+        let transmissions: Vec<f32> = model.materials.iter().map(|m| m.transmission).collect();
+        let default_transmission = default_mat_data.transmission;
 
         // ── メッシュ ───────────────────────────────────────────
         let meshes: Vec<GpuMesh> = model.meshes.iter().map(|mesh| {
@@ -864,7 +887,7 @@ impl GpuModel {
             }],
         });
 
-        Self { meshes, materials, default_material, identity_joints_bg, avg_albedos, default_avg_albedo, textures: gpu_textures }
+        Self { meshes, materials, default_material, identity_joints_bg, avg_albedos, default_avg_albedo, transmissions, default_transmission, textures: gpu_textures }
     }
 
     /// マテリアルオーバーライドを GPU マテリアルへ焼き込む（Phase R7）。
@@ -912,6 +935,8 @@ impl GpuModel {
                     // 平均アルベド（Phase RT-GI）も追従させる。baked 値（テクスチャ平均×元factor）を
                     // 優先し、無い（既定白）ときは base_color_factor を折り込む（近似）。
                     self.avg_albedos[ovr.slot] = eff_avg_albedo(&eff);
+                    // 透過率（ガラス表現）も追従させる（RT 色付き影の引き当て用）。
+                    self.transmissions[ovr.slot] = eff.transmission;
                 }
 
                 // ── .mat アセット差し替え: アセットの factor/alpha + テクスチャを丸ごと適用 ──
@@ -932,6 +957,8 @@ impl GpuModel {
                         alpha_cutoff:      asset.alpha_cutoff,
                         // .mat が持つ屈折率をそのまま適用する（キー欠落時は serde 既定の 1.0）。
                         ior:               asset.ior,
+                        // .mat が持つ透過率をそのまま適用する（キー欠落時は serde 既定の 0.0＝後方互換）。
+                        transmission:      asset.transmission,
                         // .mat が持つカリング面をそのまま適用する（キー欠落時は serde 既定の "back"）。
                         cull_face:         material_asset::parse_cull_face(&asset.cull_face),
                         ..Material::default()
@@ -977,6 +1004,8 @@ impl GpuModel {
                     // 平均アルベド（Phase RT-GI）。.mat の実効マテリアルには baked 平均が無いため
                     // base_color_factor を折り込む（テクスチャ色味は反映されない近似。docs 参照）。
                     self.avg_albedos[ovr.slot] = eff_avg_albedo(&eff);
+                    // 透過率（ガラス表現）も追従させる（RT 色付き影の引き当て用）。
+                    self.transmissions[ovr.slot] = eff.transmission;
                 }
             }
         }
@@ -1026,6 +1055,10 @@ impl GpuModel {
         self.materials[slot].cull_face = eff.cull_face;
         // ③ 平均アルベド（Phase RT-GI）も追従させる（フル経路と同一の eff_avg_albedo）。
         self.avg_albedos[slot] = eff_avg_albedo(&eff);
+        // ④ 透過率（ガラス表現）も追従させる。RT 色付き影のバッファは TLAS 再構築時のみ
+        //    再アップロードされるため、色付き影への反映は次の TLAS 再構築フレームからになる
+        //    （表面のスクリーンスペース屈折・透過合成は uniform 経由で即時反映される）。
+        self.transmissions[slot] = eff.transmission;
 
         InlineUpdateResult::Updated
     }
@@ -2051,15 +2084,16 @@ mod inline_bake_tests {
     use crate::engine::components::material_override::MaterialOverrideKind;
 
     /// 全フィールドを指定したインライン kind を作るヘルパー。
+    #[allow(clippy::too_many_arguments)]
     fn inline(
         base_color: Option<[f32; 4]>, metallic: Option<f32>, roughness: Option<f32>,
         emissive: Option<[f32; 3]>, alpha_mode: Option<&str>, alpha_cutoff: Option<f32>,
-        ior: Option<f32>, cull_face: Option<&str>,
+        ior: Option<f32>, transmission: Option<f32>, cull_face: Option<&str>,
     ) -> MaterialOverrideKind {
         MaterialOverrideKind::Inline {
             base_color, metallic, roughness, emissive,
             alpha_mode: alpha_mode.map(|s| s.to_string()),
-            alpha_cutoff, ior,
+            alpha_cutoff, ior, transmission,
             cull_face: cull_face.map(|s| s.to_string()),
         }
     }
@@ -2074,7 +2108,7 @@ mod inline_bake_tests {
 
         let kind = inline(
             Some([0.2, 0.4, 0.6, 0.8]), Some(0.3), Some(0.7),
-            Some([1.0, 0.0, 0.0]), None, None, Some(1.5), Some("none"),
+            Some([1.0, 0.0, 0.0]), None, None, Some(1.5), Some(0.9), Some("none"),
         );
         let eff = bake_inline_material(&base, &kind).expect("Inline は Some を返す");
         assert_eq!(eff.base_color_factor, [0.2, 0.4, 0.6, 0.8]);
@@ -2082,6 +2116,7 @@ mod inline_bake_tests {
         assert_eq!(eff.roughness_factor, 0.7);
         assert_eq!(eff.emissive_factor, [1.0, 0.0, 0.0]);
         assert_eq!(eff.ior, 1.5);
+        assert_eq!(eff.transmission, 0.9);
         assert_eq!(eff.cull_face, CullFace::None);
         // alpha_mode は None なので埋込（既定）を維持する。
         assert_eq!(eff.alpha_mode, base.alpha_mode);
@@ -2097,7 +2132,7 @@ mod inline_bake_tests {
         let base = Material::default();
         let kind = inline(
             Some([0.1, 0.2, 0.3, 1.0]), Some(0.9), Some(0.1),
-            Some([0.0, 0.5, 0.0]), Some("mask"), Some(0.5), Some(1.33), Some("front"),
+            Some([0.0, 0.5, 0.0]), Some("mask"), Some(0.5), Some(1.33), Some(0.6), Some("front"),
         );
         // フル経路の uniform（GpuMaterial::upload 相当）。
         let eff_full = bake_inline_material(&base, &kind).unwrap();
@@ -2117,11 +2152,11 @@ mod inline_bake_tests {
     fn alpha_cutoff_only_applies_in_mask_mode() {
         let base = Material::default();
         // Opaque（alpha_mode 未指定）＋ cutoff 指定 → uniform では 0.0。
-        let opaque = inline(None, None, None, None, None, Some(0.5), None, None);
+        let opaque = inline(None, None, None, None, None, Some(0.5), None, None, None);
         let eff_o = bake_inline_material(&base, &opaque).unwrap();
         assert_eq!(build_material_uniform(&eff_o).alpha_cutoff, 0.0);
         // Mask ＋ cutoff 指定 → uniform に反映。
-        let mask = inline(None, None, None, None, Some("mask"), Some(0.5), None, None);
+        let mask = inline(None, None, None, None, Some("mask"), Some(0.5), None, None, None);
         let eff_m = bake_inline_material(&base, &mask).unwrap();
         assert_eq!(eff_m.alpha_mode, AlphaMode::Mask);
         assert_eq!(build_material_uniform(&eff_m).alpha_cutoff, 0.5);

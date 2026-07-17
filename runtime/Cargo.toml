@@ -8,7 +8,7 @@ winit = "0.30"
 wgpu = "25"
 pollster = "0.3"
 raw-window-handle = "0.6"
-gltf = { version = "1", features = ["utils"] }
+gltf = { version = "1", features = ["utils", "KHR_materials_transmission"] }
 tobj = "4"
 bytemuck = { version = "1", features = ["derive"] }
 ab_glyph = "0.2"

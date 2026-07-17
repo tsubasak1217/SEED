@@ -265,6 +265,12 @@ fn load_materials(document: &gltf::Document) -> Vec<Material> {
             //   IOR はエディタの Inspector（Blend 時のみ表示）または .mat / インライン上書きで設定する。
             //   仕様「KHR_materials_ior があれば読む。無ければ既定」の後段に従う。
             ior: 1.0,
+            // 透過率（ガラス表現）。gltf クレートの KHR_materials_transmission 機能
+            // （runtime/Cargo.toml で features に追加済み）で transmission_factor を読む。
+            // 拡張が無いマテリアルは None → 0.0（透過なし＝従来動作）にフォールバックする。
+            transmission:     mat.transmission()
+                .map(|t| t.transmission_factor())
+                .unwrap_or(0.0),
             double_sided:     mat.double_sided(),
             // glTF の double_sided をカリング面へマップする（true → 両面描画＝カリング無し）。
             // これで Sponza のカーテン等、片面しか描かれず裏から見ると消えていたマテリアルが

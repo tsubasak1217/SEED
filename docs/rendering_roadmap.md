@@ -1043,6 +1043,71 @@ RT 非対応 GPU では `raster` へ降格する（`render_features.rs::resolve`
 
 ---
 
+## フェーズ ガラス表現（透過率の分離 ＋ すりガラス） 【状況: 実装済み（実機検証待ち）】
+
+RT-Translucency の屈折を土台に、「本物のガラス」を作れる 2 機能を追加した。
+`Material` に `transmission: f32`（0..1, 既定 0.0）を追加し、`MaterialUniform` を 64→80 バイトへ拡張
+（offset 64。`layout_tests::material_uniform_layout_is_80_bytes` で固定）。`CACHE_FORMAT_VERSION` 10→11。
+
+### A. transmission（透過率）— アルファとの分離
+- 従来は Blend のアルファが「カバレッジ（被覆）」と「透過（透け具合）」を兼ねていたため、
+  「ハイライトは強いのに向こうがよく透ける」ガラスが作れなかった。transmission でこれを分離する。
+- 配線は ior と完全に同一経路: `model.rs`(serde default 0.0) / `.mat`(material_asset) /
+  `MaterialOverride::Inline` / Inspector（**Blend 選択時のみ表示**） / `MaterialUniform` /
+  ACTOR_COMPONENTS / **in-place 更新経路（bake_inline_material / build_material_uniform）**。
+  ドラッグ編集も write_buffer 1 回で即反映（uniform 経由）。
+- **glTF**: gltf クレート 1.4.1 の `KHR_materials_transmission` 機能を `runtime/Cargo.toml` の features に
+  追加し、`Material::transmission().map(|t| t.transmission_factor())` で読む（拡張が無ければ 0.0）。
+  ※ ior は依然 gltf 側では読まない（`KHR_materials_ior` feature 未追加。既存踏襲）。
+- **合成式**（`refract_common.wgsl::glass_composite`。距離ソート `fs_transparent_sorted` と WBOIT `fs_wboit` が共有）:
+  - 屈折オフ（背景コピー無し）: `premult=c*a`, `a_eff=a*(1-transmission)`。透過率で被覆を下げて背後を見せる
+    （固定関数ブレンドでは dst を色付けできないため、色付き透過は屈折経路のみ）。
+  - 屈折オン: 従来式 `rgb0 = c*a + bg*tint*(1-a)`（transmission=0 の端点）と、フレネル配分した
+    透過端点 `rgb1 = c + bg*tint*(1-F)`（表面ハイライト c を被覆として残し、背景をガラス色で色付けして
+    (1-F) 分だけ透過）を `mix(rgb0, rgb1, transmission)` で補間する。
+  - **後方互換（transmission=0 でビット一致）**: transmission==0 のとき early-return で従来式そのものを返す
+    （屈折オフ→`(c*a,a)`、屈折オン→`(rgb0,1)`）。`a*(1-0)=a`・`c*a` 不変・`mix(x,y,0)=x` の恒等性で
+    ビット一致を担保（WGSL naga 検証済み。従来の RT-Translucency パリティを保存）。
+- **RT 色付き影への反映**: 影の透過量 = `mix(従来のα由来, 高透過=白(素通り), transmission)`。
+  これは `平均アルベドバッファ .a = base_color_factor.a * (1 - transmission)` を `rt_shadow.rs` でパックする
+  ことで実現（rt_shadow_on.wgsl の `tint *= mix(vec3(1), .rgb, .a)` はそのまま。transmission=0 で従来一致、
+  transmission=1 で .a=0＝完全素通り＝影が明るくなる）。**.a の意味変更**は色付き影専用で、GI compute は
+  `.rgb` のみ参照するため GI は不変（`ddgi_probe_update.wgsl` 確認済み）。`GpuModel.transmissions` を
+  materials 同順で保持し `primitive_transmission()` で引く（in-place 編集は次の TLAS 再構築で反映）。
+
+### B. すりガラス（roughness 連動の屈折ぼかし）
+- 屈折背景をミップチェーン化し、下位ミップほど強くぼかす。屈折サンプル時に roughness からミップレベルを選ぶ
+  （`refract_common.wgsl::refract_background` の `textureSampleLevel(t, s, uv, mip)`。roughness 0=mip0=シャープ、
+  roughness 高=深いミップ=すりガラス）。サンプラーは mipmap_filter=Linear（トライリニア＝ミップ境界の滑らか化）。
+- **実体**: `renderer/refract_pyramid.rs`（`RefractPyramid`）。旧 RtPool 単一 RT（`refract_bg`）を撤去し置換。
+  mip0 = 不透明シーン HDR のコピー。mip m (1..N) = mip(m-1) を 13-tap（ブルーム共用 `post_bloom_down`）で
+  1/2 ダウンサンプル → **いもす法ボックスブラー**（`imos_blur.rs`。ao.rs の raw/a/b と同 usage 分離で
+  ping-pong）→ 結果を copy_texture_to_texture でミップへ書き戻す。ダウンサンプル＋ブラー累積で下位ほど強くぼける。
+- **名前付き定数**: `REFRACT_MIP_COUNT=5`（refract_pyramid.rs）／WGSL `REFRACT_MAX_MIP=4.0`
+  （= MIP_COUNT-1。`wgsl_max_mip_matches_rust_mip_count` テストで整合固定）。ブラー半径 `REFRACT_BLUR_RADIUS=2`・
+  反復 `REFRACT_BLUR_ITERATIONS=2`。roughness→ミップは線形 `mip = roughness * REFRACT_MAX_MIP`（GGX の視覚ぼけ量が
+  roughness に概ね比例するため）。
+- **VRAM 増分（概算, Rgba16Float=8B/px, 1920×1080）**: ミップチェーン ≈1.33·WH·8B≈22MB、スクラッチ
+  3 枚×Σ(WH/4^m, m=1..4)≈3·0.33·WH·8B≈16.5MB。合計 ≈38.5MB。旧 refract_bg 単一（≈16.6MB）比で **+約22MB**
+  （解像度に比例。translucency=rt かつ deferred かつ半透明ありのフレームのみ確保＝それ以外は 0）。
+- ゲートは既存の屈折と同一（translucency=Rt かつ deferred 有効のフレームのみ。`refract_active`）。
+
+### 検証（実装時点）
+- `cargo build` 0 エラー / `cargo test --bin SEED` **129 passed**（+3: material_uniform 80B レイアウト・
+  すりガラス mip 整合・max_mips）。`cd editor && dotnet build` 0 エラー。transmission=0 のビット一致は
+  glass_composite の early-return ＋ WGSL naga 検証で担保。
+- **未検証（実機 GPU 無し）**: すりガラスのミップ生成（ダウンサンプル→いもす→書き戻しの実描画）・
+  roughness 連動ぼけ・透過率の見た目・色付き影の明るさ変化・VRAM 実測は実機スモークで確認すること。
+
+### 将来課題（ユーザーと合意済みの積み残し）
+- **拡散透過（diffuse transmission）**: 葉の逆光透け等（`KHR_materials_diffuse_transmission` 相当）。
+  現状の transmission は鏡面的な屈折透過のみ。裏面ライトの拡散的な滲み出しは別項として未実装。
+- **スクリーンスペース SSS（肌）**: サブサーフェススキャタリングのスクリーンスペース近似。
+  本フェーズで作った**いもす法ブラー基盤（可変半径・分離ボックス）がそのまま適用可能**（拡散プロファイル
+  のぼかしに転用）。透過率／すりガラスのミップ生成と同じパイプライン部品を再利用する想定。
+
+---
+
 ## レンダリング機能マトリクス（機能 × モード）
 
 2026-07 追加。RT-Shadow / RT-GI / RT-Reflection / RT-AO / RT-Translucency を**機能ごとに独立して

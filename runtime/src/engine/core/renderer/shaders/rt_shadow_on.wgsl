@@ -251,7 +251,9 @@ fn rt_trace_translucent_tint(o: vec3<f32>, dir: vec3<f32>, tmax: f32) -> vec3<f3
             break;
         }
 
-        // 平均アルベド（.rgb）＋不透明度（.a = base_color_factor.a）を custom_data で引く。
+        // 平均アルベド（.rgb）＋影の不透明度（.a）を custom_data で引く。
+        // .a は base_color_factor.a に透過率を折り込んだ値（rt_shadow.rs でパック）:
+        //   .a = base_color_factor.a * (1 - transmission)。透過率が高いほど影が素通り（明るく）。
         let ai = hit.instance_custom_data;
         var a = vec4<f32>(1.0, 1.0, 1.0, 1.0);
         if ai < arrayLength(&rt_shadow_albedo) {
