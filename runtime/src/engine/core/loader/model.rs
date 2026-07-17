@@ -277,10 +277,26 @@ pub struct Material {
     /// 旧キャッシュとの互換のため #[serde(default)]（既定は白）。
     #[serde(default = "default_avg_albedo")]
     pub avg_albedo: [f32; 4],
+
+    /// ベースカラーテクスチャのアルファ加重平均（リニア RGB）**のみ**（base_color_factor を掛ける前）。
+    /// テクスチャ無しマテリアルは白 [1,1,1]。`avg_albedo.rgb` は本値 × `base_color_factor.rgb` である。
+    ///
+    /// 【なぜ factor 抜きの値を別に持つか（色付き影の退行修正）】
+    /// インライン マテリアル編集で `base_color_factor` を変えたとき、実効アルベド（GI/色付き影の色相）は
+    /// **テクスチャ平均 × 新しい factor** に更新されなければならない。`avg_albedo`（factor 折込済み）だけを
+    /// 持っていると、新 factor を折り込むためにテクスチャ平均を復元する必要があるが、元 factor が 0 成分を
+    /// 含む（例: 黒ベースの駒 factor=[0,0,0]）と `avg_albedo / 元factor` で復元できない（0/0）。よって
+    /// factor を掛ける前のテクスチャ平均を独立に保持し、`eff_avg_albedo` が新 factor を掛け直せるようにする。
+    /// 旧キャッシュ互換のため #[serde(default)]（既定は白＝テクスチャ無し相当）。
+    #[serde(default = "default_base_color_tex_avg")]
+    pub base_color_tex_avg: [f32; 3],
 }
 
 /// avg_albedo の serde 既定（白）。旧キャッシュ/JSON にキーが無い場合のフォールバック。
 fn default_avg_albedo() -> [f32; 4] { [1.0, 1.0, 1.0, 1.0] }
+
+/// base_color_tex_avg の serde 既定（白＝テクスチャ無し相当）。旧キャッシュ/JSON にキーが無い場合のフォールバック。
+fn default_base_color_tex_avg() -> [f32; 3] { [1.0, 1.0, 1.0] }
 
 /// ior の serde 既定（1.0＝屈折なし）。旧キャッシュ/JSON にキーが無い場合のフォールバック。
 fn default_ior() -> f32 { 1.0 }
@@ -309,6 +325,7 @@ impl Default for Material {
             double_sided:               false,
             cull_face:                  CullFace::Back,
             avg_albedo:                 [1.0, 1.0, 1.0, 1.0],
+            base_color_tex_avg:         [1.0, 1.0, 1.0],
         }
     }
 }

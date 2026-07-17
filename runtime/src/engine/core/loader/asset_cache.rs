@@ -80,7 +80,12 @@ use super::model::{
 /// v12: `Material` に MR テクスチャ無視トグル（`mr_tex_ignore`）フィールドを追加。
 ///     true で metallic/roughness テクスチャの乗算をスキップし factor を実効値にする（既定 false）。
 ///     bincode のバイナリ表現が変わるため旧 v11 を無効化して再生成させる。
-pub const CACHE_FORMAT_VERSION: u32 = 12;
+/// v13: `Material` にテクスチャ平均（`base_color_tex_avg`＝base_color_factor を掛ける前の
+///     ベースカラーテクスチャのアルファ加重平均）を追加。インライン編集で base_color_factor を
+///     変えたとき、色付き影／GI の実効アルベドを「テクスチャ平均 × 新 factor」で正しく再計算する
+///     ため（factor 折込済みの avg_albedo だけでは元 factor が 0 成分を含むと復元不能）。
+///     bincode のバイナリ表現が変わるため旧 v12 を無効化して再生成させる。
+pub const CACHE_FORMAT_VERSION: u32 = 13;
 
 /// モデルキャッシュファイルのマジック（8 バイト）。
 const MODEL_MAGIC: &[u8; 8] = b"SEEDMDL\0";
@@ -635,6 +640,10 @@ pub fn compute_material_avg_albedo(model: &mut Model) {
         let tex_rgb = mat.base_color_texture.as_ref()
             .and_then(|t| tex_avg.get(t.texture_index).copied().flatten())
             .unwrap_or([1.0, 1.0, 1.0]);
+        // テクスチャ平均（factor 抜き）を独立に焼く。インライン編集で base_color_factor を
+        // 変えたとき、eff_avg_albedo が「テクスチャ平均 × 新 factor」を再計算できるようにする
+        // （factor 折込済みの avg_albedo だけだと、元 factor が 0 成分を含む場合に復元不能）。
+        mat.base_color_tex_avg = tex_rgb;
         mat.avg_albedo = [tex_rgb[0] * f[0], tex_rgb[1] * f[1], tex_rgb[2] * f[2], f[3]];
     }
 }

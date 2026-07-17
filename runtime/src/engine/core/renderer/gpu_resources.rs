@@ -785,29 +785,29 @@ pub struct GpuModel {
 
 /// 実効マテリアルからプリミティブ平均アルベド（リニア RGBA）を導く（Phase RT-GI / RT-Translucency）。
 ///
-/// - `.rgb`（GI のバウンス色・色付き影の色相）: baked 値（テクスチャ平均×ロード時 factor）の rgb が
-///   既定白でなければそれを使い、白（テクスチャ無し等）なら base_color_factor の rgb を使う。
+/// - `.rgb`（GI のバウンス色・色付き影の色相）: **テクスチャ平均 × 現在の（override 適用後の）
+///   `base_color_factor.rgb`**。テクスチャ無しなら `base_color_tex_avg` が白なので base_color_factor そのもの。
 /// - `.a`（色付き影の「影の不透明度」）: **常に override 適用後の `base_color_factor.a` を使う**。
 ///
-/// 【なぜ .a を baked から取ってはいけないか（色付き影の退行・check C）】
-/// baked `avg_albedo.a` は `compute_material_avg_albedo` が **ロード時** の `base_color_factor.a` を
-/// 焼き込んだ値であり、その後の実行時オーバーライド（インスペクタで Opaque→Blend 化・アルファ変更）を
-/// 一切反映しない。テクスチャ付きマテリアル（NewSponza の大半＝baked rgb が非白）では、下の分岐が
-/// baked 値を丸ごと返すため `.a` がロード時アルファのまま固定され、「実行時にアルファを下げても
-/// 影の透過度が変わらない／Blend 化しても影が追従しない」という不整合になっていた。
-/// 影の不透明度は必ず現在の（override 適用後の）`base_color_factor.a` を単一の真実source とする
-/// （透過率 transmission の折り込みは呼び出し側 rt_shadow.rs が `.a *= 1 - transmission` で行う）。
+/// 【なぜ「テクスチャ平均 × 現 factor」で再計算するのか（色付き影の退行・check C / 濃い黒の影）】
+/// 旧実装は baked `avg_albedo`（＝テクスチャ平均 × **ロード時** factor）の rgb を、非白なら丸ごと採用し、
+/// 白（＝[1,1,1]）のときだけ base_color_factor を使っていた。これは 2 つの退行を招いていた:
+///   1. **.a の固定**: baked `.a` はロード時アルファのままで、実行時の Blend 化・アルファ変更を反映しない。
+///   2. **色相の固定（本修正の主眼）**: baked `.rgb` はロード時 factor を折り込んでいるため、インライン編集で
+///      base_color を（例）シアンへ変えても、baked が非白なら旧色が採用され新色が影に出ない。とりわけ
+///      **黒ベースの駒**（テクスチャ無し・ロード時 factor=[0,0,0]）を「シアンのガラス」に編集した場合、
+///      baked=[0,0,0]（非白）が採用され、透過モデル T=(1-α)+α·tr·albedo の albedo が黒になって
+///      **影が濃い黒**になる（表面は base_color_factor=シアンで正しくシアンに見えるのに影だけ黒）。
+/// 実効アルベドは「テクスチャの色味（factor 抜き平均）× 現在の factor」が唯一の正しい定義なので、
+/// factor を掛ける前の `base_color_tex_avg`（compute_material_avg_albedo が焼く）に現 factor を掛け直す。
+/// これで表面色（base_color_texture × base_color_factor）と影の色相が一致する。
+/// （透過率 transmission の折り込みは呼び出し側 rt_shadow.rs が α/tr パックで行う）。
 fn eff_avg_albedo(eff: &Material) -> [f32; 4] {
-    let a = eff.avg_albedo;
-    // .rgb は baked（テクスチャ平均色）を優先。rgb のみで白判定し、.a は判定に混ぜない
-    //（baked の .a はロード時アルファなので、.a=1 かどうかで色相ソースを切り替えるのは誤り）。
-    let rgb = if [a[0], a[1], a[2]] != [1.0, 1.0, 1.0] {
-        [a[0], a[1], a[2]]
-    } else {
-        [eff.base_color_factor[0], eff.base_color_factor[1], eff.base_color_factor[2]]
-    };
-    // .a は常に override 適用後の base_color_factor.a（実行時の Blend 化・アルファ変更を影へ反映）。
-    [rgb[0], rgb[1], rgb[2], eff.base_color_factor[3]]
+    // テクスチャ平均（factor 抜き）× 現在の base_color_factor.rgb ＝ 実効アルベドの色味。
+    // テクスチャ無しマテリアルは base_color_tex_avg=[1,1,1] なので base_color_factor そのものになる。
+    let t = eff.base_color_tex_avg;
+    let f = eff.base_color_factor;
+    [t[0] * f[0], t[1] * f[1], t[2] * f[2], f[3]]
 }
 
 impl GpuModel {
@@ -2233,32 +2233,49 @@ mod inline_bake_tests {
         assert_eq!(&bytes[68..72], &[0u8; 4], "offset 68 の 4 バイトは旧 _pad0(0.0) とビット一致");
     }
 
-    /// 色付き影の「影の不透明度」（eff_avg_albedo の `.a`）は、baked のロード時アルファではなく
-    /// 常に override 適用後の `base_color_factor.a` を採る（Phase RT-Translucency, check C の回帰ガード）。
+    /// 実効アルベド（eff_avg_albedo）は「テクスチャ平均 × 現在の base_color_factor」で、
+    /// `.rgb`（色相）も `.a`（影の不透明度）も override 適用後の値に追従する
+    /// （Phase RT-Translucency, check C ＋ 濃い黒の影の回帰ガード）。
     ///
-    /// テクスチャ付きマテリアルは baked `avg_albedo` が非白になり、以前はこの分岐が baked 値を
-    /// 丸ごと返していたため `.a` がロード時アルファに固定され、実行時の Blend 化・アルファ変更が
-    /// 色付き影に反映されなかった（テクスチャ物体の影が実物のアルファ変更に追従しない退行）。
+    /// 旧実装は baked `avg_albedo`（ロード時 factor 折込済み）の rgb を非白なら丸ごと返していたため:
+    ///   - `.a` がロード時アルファに固定（実行時の Blend 化・アルファ変更が影に出ない）、
+    ///   - `.rgb` の色相がロード時 factor に固定（インライン編集の新色が影に出ない）
+    /// という 2 退行があった。特に黒ベースの駒（factor=[0,0,0]）をシアンへ編集すると影だけ濃い黒になった。
     #[test]
-    fn eff_avg_albedo_alpha_tracks_current_base_color_factor() {
+    fn eff_avg_albedo_tracks_current_base_color_factor() {
         use super::eff_avg_albedo;
 
-        // ── テクスチャ付き想定: baked avg_albedo は非白・ロード時アルファ 1.0 ──
+        // ── テクスチャ付き想定: tex 平均は非白。現 factor（アルファ 0.3・色 白）を掛ける ──
         let mut mat = Material::default();
-        mat.avg_albedo        = [0.2, 0.1, 0.05, 1.0]; // ロード時に焼いた平均（.a=ロード時アルファ）
-        mat.base_color_factor = [1.0, 1.0, 1.0, 0.3];  // 実行時に Blend 化＋アルファを 0.3 へ
-
+        mat.base_color_tex_avg = [0.2, 0.1, 0.05];      // テクスチャの色味（factor 抜き）
+        mat.base_color_factor  = [1.0, 1.0, 1.0, 0.3];  // 実行時に Blend 化＋アルファを 0.3 へ
         let out = eff_avg_albedo(&mat);
-        // .rgb は baked（テクスチャ平均色）を維持する。
-        assert_eq!([out[0], out[1], out[2]], [0.2, 0.1, 0.05], ".rgb は baked のテクスチャ平均色");
-        // .a は override 適用後の base_color_factor.a（0.3）。baked の 1.0 を返してはならない。
-        assert_eq!(out[3], 0.3, ".a は現在の base_color_factor.a を反映する（baked のロード時アルファではない）");
+        assert_eq!([out[0], out[1], out[2]], [0.2, 0.1, 0.05], ".rgb = tex 平均 × factor.rgb（白 factor なので tex 平均）");
+        assert_eq!(out[3], 0.3, ".a は現在の base_color_factor.a（baked のロード時アルファではない）");
 
-        // ── テクスチャ無し想定: baked が白なら .rgb は base_color_factor から採る ──
+        // ── テクスチャ無し想定: tex 平均は白なので base_color_factor そのもの ──
         let mut untex = Material::default();
-        untex.avg_albedo        = [1.0, 1.0, 1.0, 1.0]; // 白＝未焼き（テクスチャ無し）
-        untex.base_color_factor = [0.1, 0.2, 0.3, 0.5];
+        untex.base_color_tex_avg = [1.0, 1.0, 1.0];     // テクスチャ無し
+        untex.base_color_factor  = [0.1, 0.2, 0.3, 0.5];
         let out2 = eff_avg_albedo(&untex);
-        assert_eq!(out2, [0.1, 0.2, 0.3, 0.5], "白 baked のときは rgb/a とも base_color_factor");
+        assert_eq!(out2, [0.1, 0.2, 0.3, 0.5], "テクスチャ無しは rgb/a とも base_color_factor");
+
+        // ── 症状 1 の回帰ガード: 黒ベースの駒（元 factor=[0,0,0]）をシアンのガラスへ編集 ──
+        // インライン override 後の実効マテリアル eff は base_color_factor=シアンを持つ。テクスチャは
+        // 無い（tex 平均=白）ので実効アルベドはシアンでなければならない。旧実装は baked=[0,0,0] を
+        // 非白として採用し影 tint を黒にしていた（表面はシアンなのに影だけ濃い黒＝症状 1）。
+        let mut cyan_glass = Material::default();
+        cyan_glass.base_color_tex_avg = [1.0, 1.0, 1.0]; // テクスチャ無し（白）
+        cyan_glass.base_color_factor  = [0.0, 1.0, 1.0, 1.0]; // シアン・α=1
+        let out3 = eff_avg_albedo(&cyan_glass);
+        assert_eq!(out3, [0.0, 1.0, 1.0, 1.0], "シアンのガラスの実効アルベド＝シアン（影 tint がシアンになる根拠）");
+        // 透過モデル T=(1-α)+α·tr·albedo に α=1,tr=1 を入れると T=albedo=シアン（濃い黒でない）ことを確認。
+        let (a, tr) = (out3[3], 1.0f32);
+        let t = [
+            (1.0 - a) + a * tr * out3[0],
+            (1.0 - a) + a * tr * out3[1],
+            (1.0 - a) + a * tr * out3[2],
+        ];
+        assert_eq!(t, [0.0, 1.0, 1.0], "α=1,tr=1 の透過率 T はシアン（R を遮り G/B を通す色影。黒ではない）");
     }
 }
