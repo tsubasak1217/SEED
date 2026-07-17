@@ -1069,6 +1069,9 @@ public partial class ProjectPanel : UserControl
           "emissive": [0.0, 0.0, 0.0],
           "alpha_mode": "opaque",
           "alpha_cutoff": 0.5,
+          "cull_face": "back",
+          "ior": 1.0,
+          "transmission": 0.0,
           "textures": { "albedo": "", "normal": "", "metallic_roughness": "", "occlusion": "", "emissive": "" }
         }
         """;
