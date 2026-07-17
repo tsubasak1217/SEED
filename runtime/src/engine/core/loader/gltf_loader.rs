@@ -281,6 +281,8 @@ fn load_materials(document: &gltf::Document) -> Vec<Material> {
             cull_face:        crate::engine::core::loader::model::cull_face_from_double_sided(mat.double_sided()),
             // 平均アルベド（Phase RT-GI）は既定（白）。ロード後 compute_material_avg_albedo が焼き直す。
             avg_albedo:       [1.0, 1.0, 1.0, 1.0],
+            // テクスチャ平均（factor 抜き）も既定（白）。同じく compute_material_avg_albedo が焼き直す。
+            base_color_tex_avg: [1.0, 1.0, 1.0],
         }
     }).collect()
 }
