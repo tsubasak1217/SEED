@@ -26,6 +26,11 @@
 //                  変換後の N を持てば十分 → Surface に載せない。
 // ============================================================
 
+/// RT ソフト影マスクのスロット数（＝Surface.shadow_mask のレイヤ数）。
+/// Rust shadow_mask::RT_SHADOW_MASK_LIGHTS / shadow_mask.wgsl SHADOW_MASK_LAYERS と一致必須
+/// （rt_shadow.rs のユニットテストが 3 者の一致を担保する）。
+const SURFACE_SHADOW_MASK_SLOTS: u32 = 4u;
+
 /// シェーディングに必要な面の情報一式。
 ///
 /// ライト評価（evaluate_lighting）はこの構造体**だけ**を入力とする。
@@ -114,4 +119,17 @@ struct Surface {
     /// フォールバックする（半透明フォワードに SSGI を効かせない設計）。
     /// deferred ライティングパスだけが `s.screen_gi = vec4(ssgi_rgb, 1.0)` を設定する。
     screen_gi:   vec4<f32>,
+
+    /// RT ソフト影マスク（Phase RT-Shadow-Denoise）。スロット i（0..SURFACE_SHADOW_MASK_SLOTS-1）の
+    /// .rgb ＝そのライトのデノイズ済み遮蔽率（色付き影込みの透過率）。**deferred ライティングパスのみ**が
+    /// 半解像度マスク（texture_2d_array）を各レイヤぶんサンプルして設定する。ライトループは
+    /// light.shadow_mask_slot（>=0）が指すレイヤをここから引く（レイを飛ばさずデノイズ済み値を使う）。
+    shadow_mask: array<vec4<f32>, SURFACE_SHADOW_MASK_SLOTS>,
+
+    /// shadow_mask が有効か。1.0=deferred が設定済み（マスク経路を使える）／0.0=無効。
+    ///
+    /// **フォワード／WBOIT パスはこのフィールドを設定しない**（`var s: Surface;` のゼロ初期化で 0.0）。
+    /// evaluate_lighting は shadow_mask_valid<=0 のときマスク対象ライトでもインライン rt_shadow_factor へ
+    /// フォールバックする（マスクは deferred の全画面パスでしか焼けないため。screen_gi.a と同じ流儀）。
+    shadow_mask_valid: f32,
 }

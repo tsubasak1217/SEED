@@ -35,40 +35,10 @@
 //             （カメラプレビューのパス・透視でないカメラ）。
 // ============================================================
 
-/// 平行光の RT 影レイの最大距離（実質無限。ライトまでの距離が定義できないため大定数）。
-const RT_DIR_TMAX: f32 = 10000.0;
-
-/// RT ソフト影の「見込み半径（cone_radius）」の上限。
-///
-/// cone_radius は「ライト方向 l を軸とする円錐の、l の単位長あたりの横方向の広がり」
-/// ＝ tan(見込み半角) である。局所ライトでは cone_radius = soft_radius / light_dist と
-/// 距離に反比例するため、フラグメントがライトに近づくほど**無限に発散する**。
-/// 上限を設けないと:
-///   - 円錐サンプルが半球全体に広がり、面の幾何的地平線より下を向くレイが大量に出る。
-///   - ペナンブラ（半影）の幅がピクセル間で暴れ、少ないサンプル数では量子化ノイズ
-///     （ディザ状のまだら）として可視化される。
-/// そもそも light_dist <= soft_radius（＝ライトの発光球の内部に入り込んだ状態）では
-/// 「点から見た光源の見込み角」という近似そのものが破綻しており、これ以上広げても
-/// 物理的な意味はない。
-///
-/// 値 0.5 の根拠: tan(半角) = 0.5 → 見込み半角 ≈ 26.6°（直径 53°）。太陽（0.5°）や
-/// 一般的な室内光源の見込み角を大きく上回り、実用上のペナンブラ表現には十分広い。
-/// これを超える広がりは「面光源に埋まっている」領域であり、サンプル数を増やしても
-/// ノイズが残るだけで見た目の利得がない。この値は rt_shadow_on.wgsl の適応サンプル数
-/// （RT_SHADOW_SAMPLES_MAX に到達する cone_radius）とも対応させている。
-///
-/// ## 「影が硬くなった」原因ではない（再検討の記録）
-/// このクランプ導入と同時に影が硬く・黒くなったが、原因はクランプではなく
-/// rt_shadow_on.wgsl 側で**フラットな幾何法線 Ng を影の減衰判定に使っていたこと**だった
-/// （面境界で判定が 0/1 に飛び、ファセット状の黒帯になる）。判定を補間法線 Nv に移して解決済み。
-/// クランプを緩める（例 1.0）と:
-///   - 見た目のボケ幅は増えるが、16 本のサンプル予算では 1 本あたりの担当立体角が広がり、
-///     遮蔽率の量子化がそのままディザノイズとして再発する（クランプ導入前の症状）。
-///   - 平行光（太陽・見込み角 0.5° ⇒ cone_radius ≈ 0.009）には一切影響しない。
-///     すなわち主光源の影のボケ幅はこのクランプでは決まらない（soft_radius が決める）。
-/// ゆえに 0.5 のまま据え置く。ボケが足りない場合はライトの soft_radius を上げること
-/// （こちらは cone_radius がクランプに達しない範囲で自由に効き、サンプル数も適応で増える）。
-const RT_SHADOW_MAX_CONE_RADIUS: f32 = 0.5;
+// RT_DIR_TMAX（平行光レイの最大距離）と RT_SHADOW_MAX_CONE_RADIUS（見込み半径の上限）、
+// および L・光源距離・cone_radius を求める light_shadow_geometry は light_common.wgsl へ移設した
+// （Phase RT-Shadow-Denoise）。インライン影（本ファイル）と事前計算マスク（shadow_mask.wgsl）が
+// 同一実装を共有し、両経路で影がズレないことを保証するため。詳細な根拠コメントは移設先を参照。
 
 /// 幾何法線による直接光の自己シャドウ・ゲートのしきい値 cos（Ng・L の下限）。
 ///
@@ -269,55 +239,34 @@ fn evaluate_lighting(s: Surface) -> vec3<f32> {
         // light_count == 0 ならこのループには入らないため減算は安全。
         let light = u_lights[min(li, light_count - 1u)];
 
-        var L        = vec3<f32>(0.0, 0.0, 1.0);
-        var radiance = vec3<f32>(0.0);
         let base_col = light.color * light.intensity;
-        // RT 影レイの最大距離。directional は大定数、局所ライトはライトまでの距離を代入する。
-        var light_dist: f32 = RT_DIR_TMAX;
+        // L・光源距離・見込み半径は共有関数（light_common.wgsl の light_shadow_geometry）で求める。
+        // 事前計算マスク経路（shadow_mask.wgsl）と**同一実装**なので、インライン影とマスク影で
+        // L/距離/cone_radius が食い違わない（両経路で影が一致する保証）。
+        let geo        = light_shadow_geometry(light, s.world_pos);
+        let L          = geo.L;
+        let light_dist = geo.dist;
+        var radiance   = vec3<f32>(0.0);
 
         if light.kind == LIGHT_KIND_DIRECTIONAL {
-            // 平行光: L = -照射方向。減衰なし（従来の 1 方向光と同等）。
-            L        = normalize(-light.direction);
+            // 平行光: 減衰なし（従来の 1 方向光と同等）。
             radiance = base_col;
-
         } else if light.kind == LIGHT_KIND_POINT {
-            // 点光源: 位置から全方向。inverse-square ＋ range ウィンドウで減衰。
-            let to_light = light.position - s.world_pos;
-            let dist     = length(to_light);
-            L            = to_light / max(dist, 1e-4);
-            light_dist   = dist;
-            radiance     = base_col * distance_attenuation(dist, light.range);
-
+            // 点光源: inverse-square ＋ range ウィンドウで減衰。
+            radiance = base_col * distance_attenuation(light_dist, light.range);
         } else if light.kind == LIGHT_KIND_SPOT {
             // スポット光: point の減衰に加え、内外コーン角のスムーズ円錐減衰を掛ける。
-            let to_light = light.position - s.world_pos;
-            let dist     = length(to_light);
-            L            = to_light / max(dist, 1e-4);
-            light_dist   = dist;
             // 照射軸（light.direction）と「光源→フラグメント」方向の角度で円錐判定。
-            let cos_ang  = dot(light.direction, -L);
+            let cos_ang = dot(light.direction, -L);
             // outer_cos → inner_cos で 0→1（inner 内側は全光量、outer 外側は 0）。
-            let cone     = smoothstep(light.outer_cos, light.inner_cos, cos_ang);
-            radiance     = base_col * distance_attenuation(dist, light.range) * cone;
-
+            let cone    = smoothstep(light.outer_cos, light.inner_cos, cos_ang);
+            radiance    = base_col * distance_attenuation(light_dist, light.range) * cone;
         } else {
-            // 矩形エリアライト（LIGHT_KIND_RECT）。
-            // ── R1 簡易近似（最近接点近似）──
-            //   矩形上でフラグメントに最も近い点を求め、その点からの点光源として扱う。
-            //   さらに発光面の表側（direction を法線とする前面）に対してのみ寄与させる。
-            //   物理的に正しい面積分（LTC: Linearly Transformed Cosines）は
-            //   TODO(R1.5) として別途実装する。
-            let d          = s.world_pos - light.position;
-            let px         = clamp(dot(d, light.rect_right), -light.rect_half_width,  light.rect_half_width);
-            let py         = clamp(dot(d, light.rect_up),    -light.rect_half_height, light.rect_half_height);
-            let closest    = light.position + light.rect_right * px + light.rect_up * py;
-            let to_light   = closest - s.world_pos;
-            let dist       = length(to_light);
-            L              = to_light / max(dist, 1e-4);
-            light_dist     = dist;
-            // 前面判定: フラグメントが発光面の表側（direction 側）にあるほど強い。
-            let facing     = clamp(dot(light.direction, -L), 0.0, 1.0);
-            radiance       = base_col * distance_attenuation(dist, light.range) * facing;
+            // 矩形エリアライト（LIGHT_KIND_RECT）。R1 簡易近似（最近接点は light_shadow_geometry が算出）。
+            //   発光面の表側（direction を法線とする前面）に対してのみ寄与させる。
+            //   物理的に正しい面積分（LTC: Linearly Transformed Cosines）は TODO(R1.5)。
+            let facing = clamp(dot(light.direction, -L), 0.0, 1.0);
+            radiance   = base_col * distance_attenuation(light_dist, light.range) * facing;
         }
 
         // ── シャドウ減衰（2 経路を実行時分岐）─────────────────
@@ -326,33 +275,29 @@ fn evaluate_lighting(s: Surface) -> vec3<f32> {
             // shadow_index に依存せず、cast_shadows=true のキャスターは TLAS 側で登録済み。
             // directional は tmax=大定数、point/spot/rect は light_dist（ライトまでの距離）。
             //
-            // ソフトシャドウ: light.soft_radius から「見込み半径（cone_radius）」を求める。
-            //   directional : soft_radius は tan(角径) の無次元スロープ（距離非依存）。
-            //   point/spot/rect: soft_radius はワールド半径なので radius/距離＝見込み角に換算する。
-            // cone_radius=0 のとき rt_shadow_factor はハード 1 本へ分岐して高速を保つ。
-            //
-            // 局所ライトの radius/距離 は距離が縮むと発散するため、必ず
-            // RT_SHADOW_MAX_CONE_RADIUS でクランプする（未クランプだとライト近傍の面が
-            // 半球全域へレイを撒き、ディザ状のノイズと偽の自己遮蔽で真っ黒になる）。
-            // directional 側も同じ上限を掛ける（インスペクタから非現実的な角径を入れられても
-            // 同じ破綻を起こすため、経路によらず一箇所で頭を押さえる）。
-            var cone_radius: f32 = 0.0;
-            if light.soft_radius > 0.0 {
-                if light.kind == LIGHT_KIND_DIRECTIONAL {
-                    cone_radius = light.soft_radius;
-                } else {
-                    cone_radius = light.soft_radius / max(light_dist, 1e-4);
-                }
-                cone_radius = min(cone_radius, RT_SHADOW_MAX_CONE_RADIUS);
+            // 見込み半径（cone_radius）は共有関数が算出済み（geo.cone_radius）。
+            //   directional : soft_radius=tan(角径)（距離非依存）／局所: soft_radius/距離。
+            //   RT_SHADOW_MAX_CONE_RADIUS で発散をクランプ済み。0 のときハード 1 本。
+            let cone_radius = geo.cone_radius;
+
+            // ── ソフト影マスク経路（Phase RT-Shadow-Denoise）───────────────
+            // deferred ライティング（s.shadow_mask_valid>0）で、このライトがマスク対象
+            // （shadow_mask_slot>=0）なら、レイを飛ばさず**事前計算したデノイズ済み半解像度マスク**を
+            // サンプルして遮蔽率にする（ディザ状ガサガサの根治）。マスク対象外（5 灯目以降のソフト影・
+            // ハード影）や forward パス（shadow_mask_valid=0＝ゼロ初期化）は従来どおりインラインで評価する。
+            let slot = i32(light.shadow_mask_slot);
+            if s.shadow_mask_valid > 0.5 && slot >= 0 {
+                // マスクは色付き影込みの透過率（rgb）。レイヤ=スロット。上限はマスク配列サイズで縛る。
+                radiance = radiance * s.shadow_mask[clamp(slot, 0, i32(SURFACE_SHADOW_MASK_SLOTS) - 1)].rgb;
+            } else {
+                // 影には Ng（フラットな面法線）と Nv（滑らかな補間頂点法線）の**両方**を渡す。
+                //   Ng → レイ原点の最小クリアランス（自己交差回避のみ）
+                //   Nv → ターミネータのランプ（減衰カーブの判定）
+                // シェーディング法線 N（法線マップ後）は影へは渡さない（BRDF 専用）。
+                radiance = radiance * rt_shadow_factor(
+                    s.world_pos, Ng, Nv, L, light_dist, cone_radius, s.frag_coord,
+                );
             }
-            // 影には Ng（フラットな面法線）と Nv（滑らかな補間頂点法線）の**両方**を渡す。
-            //   Ng → レイ原点の最小クリアランス／レイ方向の地平線リフト（自己交差回避のみ）
-            //   Nv → ターミネータのランプ／スロープスケールバイアス（減衰カーブの判定）
-            // Ng を減衰判定に使うと三角形の面境界で判定が飛び、ファセット状の硬い黒帯になる。
-            // シェーディング法線 N（法線マップ後）は影へは渡さない（BRDF 専用）。
-            radiance = radiance * rt_shadow_factor(
-                s.world_pos, Ng, Nv, L, light_dist, cone_radius, s.frag_coord,
-            );
         } else {
             // 従来のシャドウマップ経路（group 4 binding 2〜5, shadow.wgsl）。
             // shadow_index < 0 のライトは影計算をスキップ（cast_shadows=false 含む）。

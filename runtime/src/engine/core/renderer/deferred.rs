@@ -53,6 +53,15 @@ pub struct DeferredLightingPipelines {
     /// deferred_lighting.wgsl の group1 binding5（s_gbuffer）を満たすために保持する
     /// （将来のフィルタ処理拡張に備えた予約バインディング。deferred_lighting.wgsl 参照）。
     pub gbuffer_sampler: wgpu::Sampler,
+    /// シャドウマスク非対象時に group1 binding10（t_shadow_mask）を埋めるダミー 1x1×4 配列（白＝遮蔽なし）。
+    /// RT 非対応 GPU でも deferred は走るため、常に存在するここに置く（gbuffer_bgl が D2Array を要求する）。
+    #[allow(dead_code)]
+    mask_dummy_tex:  wgpu::Texture,
+    /// ダミーマスクの D2Array ビュー（Phase RT-Shadow-Denoise）。
+    pub mask_dummy_view: wgpu::TextureView,
+    /// シャドウマスク（半解像度）をフル解像度へバイリニアアップサンプルする Filtering サンプラー。
+    /// group1 binding11（s_shadow_mask）に渡す。実マスク・ダミーとも共用する。
+    pub mask_sampler: wgpu::Sampler,
 }
 
 impl DeferredLightingPipelines {
@@ -63,6 +72,7 @@ impl DeferredLightingPipelines {
     ///                  RenderPipelineBuilder::new のシグネチャを満たすためのダミー値。
     pub fn new(
         device:     &wgpu::Device,
+        queue:      &wgpu::Queue,
         out_format: wgpu::TextureFormat,
         df:         wgpu::TextureFormat,
         cache:      Option<&wgpu::PipelineCache>,
@@ -124,7 +134,46 @@ impl DeferredLightingPipelines {
             ..Default::default()
         });
 
-        Self { pipeline, rt, camera_bgl, gbuffer_bgl, gap_bgl2, gap_bgl3, empty_bg2, empty_bg3, gbuffer_sampler }
+        // シャドウマスク用ダミー 1x1×4 配列（白＝遮蔽なし）＋ Filtering サンプラー（Phase RT-Shadow-Denoise）。
+        // マスク非対象フレーム／RT 非対応 GPU の group1 binding10/11 を埋める（常在させる）。
+        let mask_dummy_tex = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Deferred Shadow Mask Dummy 1x1x4"),
+            size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: super::shadow_mask::RT_SHADOW_MASK_LIGHTS },
+            mip_level_count: 1, sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: super::shadow_mask::SHADOW_MASK_FORMAT,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        // 全レイヤの 1 texel を白（R=G=B=A=1.0）で埋める。Rgba16Float の 1.0 は f16 0x3C00（LE: 00 3C）。
+        // 1 texel=8 バイト、rows_per_image=1 で 1 レイヤ=1 行。RT_SHADOW_MASK_LIGHTS レイヤぶんを一括書き込み。
+        let white_texel: [u8; 8] = [0x00, 0x3C, 0x00, 0x3C, 0x00, 0x3C, 0x00, 0x3C];
+        let mut mask_white = Vec::with_capacity(8 * super::shadow_mask::RT_SHADOW_MASK_LIGHTS as usize);
+        for _ in 0..super::shadow_mask::RT_SHADOW_MASK_LIGHTS { mask_white.extend_from_slice(&white_texel); }
+        queue.write_texture(
+            mask_dummy_tex.as_image_copy(),
+            &mask_white,
+            wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(8), rows_per_image: Some(1) },
+            wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: super::shadow_mask::RT_SHADOW_MASK_LIGHTS },
+        );
+        let mask_dummy_view = mask_dummy_tex.create_view(&wgpu::TextureViewDescriptor {
+            label: Some("Deferred Shadow Mask Dummy View"),
+            dimension: Some(wgpu::TextureViewDimension::D2Array),
+            ..Default::default()
+        });
+        let mask_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("Deferred Shadow Mask Sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+
+        Self { pipeline, rt, camera_bgl, gbuffer_bgl, gap_bgl2, gap_bgl3, empty_bg2, empty_bg3, gbuffer_sampler,
+               mask_dummy_tex, mask_dummy_view, mask_sampler }
     }
 }
 
@@ -161,6 +210,12 @@ pub fn create_gbuffer_bind_group(
     // 合法）ため、それらの呼び出しではダミー SSGI テクスチャ／サンプラーを渡してよい。
     ssgi_view:    &wgpu::TextureView,
     ssgi_sampler: &wgpu::Sampler,
+    // ── シャドウマスク入力（Phase RT-Shadow-Denoise）: deferred_lighting.wgsl の group1 binding10/11 ──
+    // binding 10 = 半解像度 4 レイヤの texture_2d_array（.rgb にデノイズ済み遮蔽率）、非対象時はダミー白。
+    // binding 11 = Filtering サンプラー（半解像度→フル解像度のバイリニア）。AO/SSGI/反射パスは group1 を
+    // 0..5 のみ宣言する（subset 合法）ため、それらの呼び出しでは deferred.mask_dummy_view/mask_sampler を渡す。
+    mask_view:    &wgpu::TextureView,
+    mask_sampler: &wgpu::Sampler,
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label:  Some("Deferred GBuffer BG (group 1)"),
@@ -176,6 +231,8 @@ pub fn create_gbuffer_bind_group(
             wgpu::BindGroupEntry { binding: 7, resource: wgpu::BindingResource::Sampler(ao_sampler) },
             wgpu::BindGroupEntry { binding: 8, resource: wgpu::BindingResource::TextureView(ssgi_view) },
             wgpu::BindGroupEntry { binding: 9, resource: wgpu::BindingResource::Sampler(ssgi_sampler) },
+            wgpu::BindGroupEntry { binding: 10, resource: wgpu::BindingResource::TextureView(mask_view) },
+            wgpu::BindGroupEntry { binding: 11, resource: wgpu::BindingResource::Sampler(mask_sampler) },
         ],
     })
 }

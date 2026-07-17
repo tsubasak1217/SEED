@@ -996,6 +996,15 @@ impl App {
                     let translucency_rt_on = resolved_features.translucency
                         == crate::engine::core::renderer::render_features::TranslucencyMode::Rt;
 
+                    // ── RT ソフト影マスク対象ライトの選定（Phase RT-Shadow-Denoise）─────────────
+                    // soft_radius>0 の上位 intensity ライト（最大 RT_SHADOW_MASK_LIGHTS 灯）へ
+                    // shadow_mask_slot を書き込む。deferred+RT 影+ソフト影ありのフレームで、deferred
+                    // ライティングが該当レイヤ（事前計算・デノイズ済みマスク）をサンプルしてディザ状の
+                    // ガサガサを解消する。マスク非対象ライトは -1（既定）のまま従来のインライン
+                    // rt_shadow_factor 経路になる。GPU アップロード前に書き込むこと。
+                    let shadow_mask_selection =
+                        crate::engine::core::renderer::assign_shadow_mask_slots(&mut frame_lights);
+
                     // ライト配列を GPU へアップロードする（全メッシュ描画が group 4 で共用）。
                     // メタ（ライト数・RT 影フラグ・ビューモード・RT-Translucency フラグ）も同時に更新される。
                     // shadow_index 確定後にアップロードする。
@@ -3193,6 +3202,22 @@ impl App {
                             (surf_h / div).max(1),
                         );
                     }
+                    // RT ソフト影マスク（Phase RT-Shadow-Denoise）半解像度 4 レイヤテクスチャ。
+                    // deferred 有効かつ RT 影オンかつソフト影ライト選定ありかつ RT 対応 GPU
+                    // （shadow_mask パイプライン存在）のときだけ確保・生成する（それ以外は 0 コスト）。
+                    // このとき scene_lights_bg は RT 複合 BG（TLAS 入り）になる（use_rt=rt_on）。
+                    let shadow_mask_active = deferred_active
+                        && rt_on
+                        && !shadow_mask_selection.is_empty()
+                        && draw_ctx.pipelines.shadow_mask.is_some();
+                    if shadow_mask_active {
+                        let div = crate::engine::core::renderer::SHADOW_MASK_RESOLUTION_DIVISOR;
+                        self.shadow_mask_targets.ensure(
+                            &draw_ctx.device,
+                            (surf_w / div).max(1),
+                            (surf_h / div).max(1),
+                        );
+                    }
                     // SSGI（Phase SSGI）半解像度テクスチャ（ssgi_raw/ssgi_a/ssgi_b）。SSGI 有効時のみ確保。
                     // ensure が再確保（初回・リサイズ）を返したら ssgi_b の前フレーム履歴が消えるため、
                     // この 1 フレームは未収束扱い（ssgi_warmed=false）にして GI をフラットに倒す。
@@ -3534,8 +3559,9 @@ impl App {
                                     g0, g1, g2, g3,
                                     frame.depth_only_view(), &draw_ctx.pipelines.deferred.gbuffer_sampler,
                                     &ao_p.white_view, &ao_p.linear_sampler,
-                                    // AO 生成シェーダは group1 の 0..5 のみ宣言＝SSGI スロットは未参照。ダミーを渡す。
+                                    // AO 生成シェーダは group1 の 0..5 のみ宣言＝SSGI/マスクスロットは未参照。ダミーを渡す。
                                     &draw_ctx.pipelines.ssgi.dummy_view, &draw_ctx.pipelines.ssgi.linear_sampler,
+                                    &draw_ctx.pipelines.deferred.mask_dummy_view, &draw_ctx.pipelines.deferred.mask_sampler,
                                 );
                                 let ao_params_bg = ao_p.create_params_bg(&draw_ctx.device);
                                 // RT-AO データ（TLAS）。needs_tlas() 経由で構築済み保証。共有借用（RefCell）。
@@ -3563,6 +3589,44 @@ impl App {
                                 ao_p.blur(&draw_ctx.device, frame.encoder_mut(), &self.ao_targets);
                             }
 
+                            // ── RT ソフト影マスク生成パス + いもす法デノイズ（Phase RT-Shadow-Denoise）─────
+                            // G-Buffer＋TLAS から半解像度 4 レイヤ mask_raw へ選定ソフト影の透過率を焼き、各レイヤを
+                            // いもす法でブラーして mask_b へ均す。deferred ライティングが mask_b をサンプルして
+                            // ディザ状ガサガサの無い滑らかな半影にする。scene_lights_bg は shadow_mask_active の条件
+                            // （rt_on）から RT 複合 BG（TLAS/平均アルベド入り）であることが保証される。
+                            if shadow_mask_active {
+                                let smp = draw_ctx.pipelines.shadow_mask.as_ref().unwrap();
+                                smp.write_params(&draw_ctx.queue, &shadow_mask_selection);
+                                // group1（G-Buffer）: マスク生成は 0..5 のみ参照。AO/SSGI/マスクスロットはダミーを渡す。
+                                let mask_gbuffer_bg = crate::engine::core::renderer::deferred::create_gbuffer_bind_group(
+                                    &draw_ctx.device, &draw_ctx.pipelines.deferred.gbuffer_bgl,
+                                    g0, g1, g2, g3,
+                                    frame.depth_only_view(), &draw_ctx.pipelines.deferred.gbuffer_sampler,
+                                    &draw_ctx.pipelines.ao.white_view, &draw_ctx.pipelines.ao.linear_sampler,
+                                    &draw_ctx.pipelines.ssgi.dummy_view, &draw_ctx.pipelines.ssgi.linear_sampler,
+                                    &draw_ctx.pipelines.deferred.mask_dummy_view, &draw_ctx.pipelines.deferred.mask_sampler,
+                                );
+                                let mask_params_bg = smp.create_params_bg(&draw_ctx.device);
+                                {
+                                    let mut mpass = frame.begin_shadow_mask_pass_to(
+                                        self.shadow_mask_targets.raw_layer_view(0),
+                                        self.shadow_mask_targets.raw_layer_view(1),
+                                        self.shadow_mask_targets.raw_layer_view(2),
+                                        self.shadow_mask_targets.raw_layer_view(3),
+                                    );
+                                    // 半解像度・UV ベースのため viewport は設定しない（背景はシェーダが 1 を返す）。
+                                    mpass.set_pipeline(&smp.mask);
+                                    mpass.set_bind_group(0, &camera_buf.bind_group, &[]);
+                                    mpass.set_bind_group(1, &mask_gbuffer_bg, &[]);
+                                    mpass.set_bind_group(2, &mask_params_bg, &[]);
+                                    mpass.set_bind_group(3, &draw_ctx.pipelines.deferred.empty_bg3, &[]);
+                                    mpass.set_bind_group(4, scene_lights_bg, &[]);
+                                    mpass.draw(0..3, 0..1);
+                                }
+                                // いもす法ブラー（各レイヤ mask_raw → mask_a/mask_b, 結果は必ず mask_b）。
+                                smp.blur(&draw_ctx.device, frame.encoder_mut(), &self.shadow_mask_targets);
+                            }
+
                             // AO 結果ビュー（ライティングの group1 binding6 へ渡す）。AO=Off 時は白 1x1（ao=1.0）。
                             let ao_sampler = &draw_ctx.pipelines.ao.linear_sampler;
                             let ao_result_view: &wgpu::TextureView = if ao_effective != crate::engine::core::renderer::AoMode::Off {
@@ -3580,6 +3644,14 @@ impl App {
                                 &draw_ctx.pipelines.ssgi.dummy_view
                             };
                             let ssgi_sampler = &draw_ctx.pipelines.ssgi.linear_sampler;
+                            // シャドウマスク結果ビュー（group1 binding10 へ渡す, Phase RT-Shadow-Denoise）。
+                            // マスク生成したフレームは mask_b の D2Array、非対象フレームはダミー白（-1 スロットで不参照）。
+                            let mask_result_view: &wgpu::TextureView = if shadow_mask_active {
+                                self.shadow_mask_targets.b_array_view()
+                            } else {
+                                &draw_ctx.pipelines.deferred.mask_dummy_view
+                            };
+                            let mask_sampler = &draw_ctx.pipelines.deferred.mask_sampler;
                             // B. G-Buffer BindGroup 生成 + フルスクリーン・ライティングパス。
                             {
                                 let gbuffer_bg = crate::engine::core::renderer::deferred::create_gbuffer_bind_group(
@@ -3589,6 +3661,8 @@ impl App {
                                     ao_result_view, ao_sampler,
                                     // SSGI（1 フレーム遅延）: deferred_lighting.wgsl の group1 binding8/9。
                                     ssgi_result_view, ssgi_sampler,
+                                    // シャドウマスク（Phase RT-Shadow-Denoise）: deferred_lighting.wgsl の group1 binding10/11。
+                                    mask_result_view, mask_sampler,
                                 );
                                 let mut lpass = frame.begin_deferred_lighting_pass_to(hdr_view, clear_color);
                                 if self.mode == RuntimeMode::Play && !self.paused {
@@ -3654,13 +3728,14 @@ impl App {
                                 g2v.expect("gbuffer2 view (ssgi)"),
                                 g3v.expect("gbuffer3 view (ssgi)"),
                             );
-                            // group1（G-Buffer）。SSGI 生成は 0..5 のみ参照。AO/SSGI スロットはダミーを渡す。
+                            // group1（G-Buffer）。SSGI 生成は 0..5 のみ参照。AO/SSGI/マスクスロットはダミーを渡す。
                             let ssgi_gbuffer_bg = crate::engine::core::renderer::deferred::create_gbuffer_bind_group(
                                 &draw_ctx.device, &draw_ctx.pipelines.deferred.gbuffer_bgl,
                                 sg0, sg1, sg2, sg3,
                                 frame.depth_only_view(), &draw_ctx.pipelines.deferred.gbuffer_sampler,
                                 &draw_ctx.pipelines.ao.white_view, &draw_ctx.pipelines.ao.linear_sampler,
                                 &sp.dummy_view, &sp.linear_sampler,
+                                &draw_ctx.pipelines.deferred.mask_dummy_view, &draw_ctx.pipelines.deferred.mask_sampler,
                             );
                             // group2（SsgiParams + scene_hdr + sampler）。scene_hdr は今フレームの不透明 HDR。
                             let ssgi_input_bg = sp.create_input_bg(&draw_ctx.device, hdr_view);
@@ -3707,8 +3782,9 @@ impl App {
                                 rg0, rg1, rg2, rg3,
                                 frame.depth_only_view(), &draw_ctx.pipelines.deferred.gbuffer_sampler,
                                 refl_ao_view, refl_ao_sampler,
-                                // 反射シェーダは group1 の 0..5 のみ宣言＝SSGI スロットは未参照。ダミーを渡す。
+                                // 反射シェーダは group1 の 0..5 のみ宣言＝SSGI/マスクスロットは未参照。ダミーを渡す。
                                 &draw_ctx.pipelines.ssgi.dummy_view, &draw_ctx.pipelines.ssgi.linear_sampler,
+                                &draw_ctx.pipelines.deferred.mask_dummy_view, &draw_ctx.pipelines.deferred.mask_sampler,
                             );
                             let input_bg = refl.create_input_bg(&draw_ctx.device, hdr_view);
                             let gi_bg    = refl.create_gi_bg(&draw_ctx.device, &draw_ctx.gi);
