@@ -1475,6 +1475,18 @@
                                                                         Minimum="0" Maximum="2" Value="1.0"
                                                                         ValueChanged="OnPostFxSliderChanged" VerticalAlignment="Center"/>
                                                             </Grid>
+                                                            <!-- AO 強度（AO モードは「レンダリング機能」セクションのコンボで選択）-->
+                                                            <Grid Margin="0,0,0,8">
+                                                                <Grid.ColumnDefinitions>
+                                                                    <ColumnDefinition Width="52"/>
+                                                                    <ColumnDefinition Width="*"/>
+                                                                </Grid.ColumnDefinitions>
+                                                                <TextBlock Text="AO 強度" Foreground="#CCCCCC" FontSize="11" VerticalAlignment="Center"/>
+                                                                <Slider x:Name="SldAoIntensity" Grid.Column="1"
+                                                                        Style="{StaticResource DarkSliderStyle}"
+                                                                        Minimum="0" Maximum="2" Value="1.0"
+                                                                        ValueChanged="OnPostFxSliderChanged" VerticalAlignment="Center"/>
+                                                            </Grid>
                                                         </StackPanel>
                                                     </Expander>
 
@@ -1532,7 +1544,7 @@
                                                                     <ComboBoxItem Content="レイトレ" Tag="rt"/>
                                                                 </ComboBox>
                                                             </Grid>
-                                                            <!-- AO: なし / SSAO（未実装）/ レイトレ（未実装） -->
+                                                            <!-- AO: なし / SSAO / レイトレ（Phase D4 実装済み） -->
                                                             <Grid Margin="0,0,0,4">
                                                                 <Grid.ColumnDefinitions>
                                                                     <ColumnDefinition Width="64"/>
@@ -1544,8 +1556,8 @@
                                                                           SelectedIndex="0"
                                                                           SelectionChanged="OnRenderFeatureChanged">
                                                                     <ComboBoxItem Content="なし" Tag="off"/>
-                                                                    <ComboBoxItem Content="SSAO（未実装）" Tag="ssao"/>
-                                                                    <ComboBoxItem Content="レイトレ（未実装）" Tag="rt"/>
+                                                                    <ComboBoxItem Content="SSAO" Tag="ssao"/>
+                                                                    <ComboBoxItem Content="レイトレ" Tag="rt"/>
                                                                 </ComboBox>
                                                             </Grid>
                                                             <!-- 半透明: ラスタ（従来）/ レイトレ（未実装）。ラスタ内部方式は「透明描画」で選ぶ。 -->

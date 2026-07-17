@@ -36,6 +36,10 @@ pub(crate) mod gbuffer;
 pub(crate) mod deferred;
 /// 反射（SSR / RT）フルスクリーンパス＋合成（Phase D6）
 pub(crate) mod reflection;
+/// いもす法（累積和）単一チャンネル分離ボックスブラー基盤（Phase D4。AO で初適用・SSGI へ転用可）
+pub(crate) mod imos_blur;
+/// AO（SSAO / RT-AO）フルスクリーンパス＋いもす法ブラー＋半解像度リソース（Phase D4）
+pub(crate) mod ao;
 /// レンダリング機能マトリクス（RT/代替のモード管理）
 pub(crate) mod render_features;
 
@@ -62,6 +66,9 @@ pub use shadow::{ShadowResources, ShadowPlan, ShadowMatricesUbo,
 pub use rt_shadow::RtShadowResources;
 pub use reflection::{ReflectionPipelines, ReflectionParams,
                      RT_REFLECTION_NAME, REFLECTION_FORMAT, DEFAULT_REFLECTION_INTENSITY};
+pub use imos_blur::{ImosBlur, ImosBlurParams, IMOS_BLUR_FORMAT};
+pub use ao::{AoPipelines, AoTargets, AoParams, AO_FORMAT, AO_RESOLUTION_DIVISOR,
+             AO_SSAO_WORLD_RADIUS, AO_RTAO_WORLD_RADIUS, DEFAULT_AO_INTENSITY};
 pub use post::{RtPool, PostContext, VignetteParams, VignetteStage,
                PostFxSettings, BloomParams, BloomPipelines,
                DEFAULT_BLOOM_THRESHOLD, DEFAULT_BLOOM_KNEE, DEFAULT_BLOOM_INTENSITY,
@@ -977,6 +984,38 @@ impl<'r> RenderFrame<'r> {
                     store: wgpu::StoreOp::Store,
                 }),
             }),
+            occlusion_query_set: None,
+            timestamp_writes:    None,
+        })
+    }
+
+    // ── AO（SSAO / RT-AO）生成パス（Phase D4）─────────────────
+
+    /// 半解像度 AO ターゲット（ao_raw）へ AO 生成パスを開始する（G-Buffer＋深度 → AO=1..0）。
+    ///
+    /// - color = `ao` を LoadOp::Clear(1,1,1,1)（AO=1＝遮蔽なし。フルスクリーン三角形が全画素を
+    ///   上書きするためクリア値は保険。背景画素はシェーダが AO=1 を返す）。
+    /// - depth = None（フルスクリーン三角形。G-Buffer 深度はテクスチャとして読む）。
+    /// この後にいもす法ブラー（compute）を同一エンコーダで走らせ、結果 ao_b を deferred
+    /// ライティングの group1 binding6（t_ao）へ供給する。
+    pub fn begin_ao_pass_to<'f>(
+        &'f mut self,
+        ao: &'f wgpu::TextureView,
+    ) -> wgpu::RenderPass<'f>
+    where
+        'r: 'f,
+    {
+        self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("AO Generation Pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view:           ao,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load:  wgpu::LoadOp::Clear(wgpu::Color { r: 1.0, g: 1.0, b: 1.0, a: 1.0 }),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
             occlusion_query_set: None,
             timestamp_writes:    None,
         })

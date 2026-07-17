@@ -366,6 +366,7 @@ impl App {
         if let Some(x) = v["gi_recursive_weight"].as_f64()  { self.post_fx.gi.recursive_weight = x as f32; }
         // 反射（SSR / RT）強度（Phase D6）。欠落時は既定 1.0 を維持。
         if let Some(x) = v["reflection_intensity"].as_f64() { self.post_fx.reflection_intensity = x as f32; }
+        if let Some(x) = v["ao_intensity"].as_f64() { self.post_fx.ao_intensity = x as f32; }
         // 新キー features（あれば機能マトリクス全体を上書き。project_settings.json 将来対応）。
         if let Some(fv) = v.get("features") {
             if let Ok(f) = serde_json::from_value::<crate::engine::core::renderer::RenderFeatures>(fv.clone()) {

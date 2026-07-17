@@ -9,9 +9,10 @@
 //
 //  ■ 降格・未実装判定の集約点 = `RenderFeatures::resolve()`
 //    - RT 非対応 GPU では Rt 系モードを実効不可なので代替へ自動降格する。
-//    - Reflection / AO / Translucency の Rt/Ssr/Ssao は「フレームワークのみ・実体未実装」。
-//      resolve は常にフォールバック（Off / Raster）へ倒す。実装が入ったら resolve の
-//      該当腕を「rt_supported 条件で通す」よう変えるだけでよい（呼び出し側は不変）。
+//    - Translucency の Rt は「フレームワークのみ・実体未実装」。resolve は常にフォールバック
+//      （Raster）へ倒す。実装が入ったら resolve の該当腕を「rt_supported 条件で通す」よう
+//      変えるだけでよい（呼び出し側は不変）。Reflection（Phase D6）・AO（Phase D4）は実装済みで、
+//      Rt は rt_supported 時のみ通し、非対応時は Ssr / Ssao へ降格する。
 //    実行時に分岐する箇所（frame_renderer 等）は必ず resolve() の結果
 //    （ResolvedFeatures）を参照すること。生の RenderFeatures を直接見ないこと。
 //
@@ -77,14 +78,15 @@ impl Default for ReflectionMode {
     fn default() -> Self { ReflectionMode::Off }
 }
 
-/// AO の方式。既定 Off ＝現状のマテリアル AO のみ。
-/// Rt/Ssao は**未実装**で、選ばれても Off へフォールバックする。
+/// AO の方式。既定 Off ＝追加 AO なし（マテリアル AO のみ）。
+/// Ssao（Phase D4）は GPU 非依存で常に使え、Rt は RT 対応 GPU でのみ通り、非対応時は Ssao へ降格。
+/// いずれも deferred 有効時のみ動作する（deferred ゲートは frame_renderer 側）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AoMode {
-    /// レイトレ AO（未実装）。
+    /// レイトレ AO（Phase D4, RT 対応 GPU のみ。非対応時は Ssao へ降格）。
     Rt,
-    /// スクリーンスペース AO（未実装）。
+    /// スクリーンスペース AO（Phase D4, GPU 非依存で常に使える）。
     Ssao,
     /// 追加 AO なし（既定・マテリアル AO のみ）。
     Off,
@@ -171,8 +173,17 @@ impl RenderFeatures {
                 ReflectionMode::Ssr                => ReflectionMode::Ssr,
                 ReflectionMode::Off                => ReflectionMode::Off,
             },
-            // AO: 実体未実装。常に Off へ倒す（マテリアル AO のみ）。
-            ao: AoMode::Off,
+            // AO: RT 対応時のみ Rt を通す。RT 非対応で Rt 要求時は SSAO へ降格
+            //   （SSAO は GPU 非依存のため代替として常に使える）。Ssao は Ssao、Off は Off。
+            //   deferred 有効ゲートは frame_renderer 側（ao_effective 算出で deferred_active 判定）で
+            //   行う。resolve は rt_supported しか受けないため RT 降格のみ担当（反射も同様に
+            //   deferred ゲートは frame_renderer 側 reflection_effective で行っている）。
+            ao: match self.ao {
+                AoMode::Rt if rt_supported => AoMode::Rt,
+                AoMode::Rt                 => AoMode::Ssao,  // RT 非対応→SSAO 降格
+                AoMode::Ssao               => AoMode::Ssao,
+                AoMode::Off                => AoMode::Off,
+            },
             // 半透明: Rt 未実装。常に Raster（従来経路）へ倒す。
             translucency: TranslucencyMode::Raster,
         }
@@ -180,16 +191,19 @@ impl RenderFeatures {
 
     /// [SEED FEATURES] ログ 1 行を生成する（要求と実効の差＝降格／未実装を注記する）。
     ///
-    /// 例: shadow=rt gi=rt reflection=rt ao=off(未実装) translucency=raster
-    /// - AO/半透明の Rt/Ssao など「要求したが実効が代替に落ちた（未実装）」機能には (未実装) を付ける。
-    /// - 反射は実装済み。RT 非対応で SSR へ降格したときだけ (rt非対応→ssr) を付ける。
+    /// 例: shadow=rt gi=rt reflection=rt ao=ssao(rt非対応→ssao) translucency=raster(未実装)
+    /// - 半透明の Rt は「要求したが実効が代替に落ちた（未実装）」機能なので (未実装) を付ける。
+    /// - 反射・AO は実装済み。RT 非対応で SSR/SSAO へ降格したときだけ (rt非対応→ssr)/(rt非対応→ssao) を付ける。
     pub fn log_line(&self, rt_supported: bool) -> String {
         let r = self.resolve(rt_supported);
         // 反射は実装済み（SSR/RT）。RT 要求が RT 非対応で SSR へ降格したときのみ注記する。
         let refl_note  = if self.reflection == ReflectionMode::Rt && r.reflection == ReflectionMode::Ssr {
             "(rt非対応→ssr)"
         } else { "" };
-        let ao_note    = if self.ao           != AoMode::Off          { "(未実装)" } else { "" };
+        // AO は実装済み（SSAO/RT）。RT 要求が RT 非対応で SSAO へ降格したときのみ注記する。
+        let ao_note    = if self.ao == AoMode::Rt && r.ao == AoMode::Ssao {
+            "(rt非対応→ssao)"
+        } else { "" };
         let trans_note = if self.translucency == TranslucencyMode::Rt { "(未実装)" } else { "" };
         format!(
             "shadow={} gi={} reflection={}{} ao={}{} translucency={}{}",
@@ -217,7 +231,7 @@ pub struct ResolvedFeatures {
     pub gi: GiMode,
     /// 実効の反射方式（現状は常に Off）。
     pub reflection: ReflectionMode,
-    /// 実効の AO 方式（現状は常に Off）。
+    /// 実効の AO 方式（rt=RT-AO / ssao=SSAO / off=なし。deferred 有効時のみ動作）。
     pub ao: AoMode,
     /// 実効の半透明方式（現状は常に Raster）。
     pub translucency: TranslucencyMode,
@@ -339,7 +353,8 @@ mod tests {
         assert_eq!(r.gi, GiMode::Rt);
         // 反射: RT 対応時は Rt がそのまま通る（TLAS 要求に寄与する）。
         assert_eq!(r.reflection, ReflectionMode::Rt);
-        assert_eq!(r.ao, AoMode::Off);
+        // AO: RT 対応時は Rt がそのまま通る（TLAS 要求に寄与する）。
+        assert_eq!(r.ao, AoMode::Rt);
         assert_eq!(r.translucency, TranslucencyMode::Raster);
         assert!(r.needs_tlas());
     }
@@ -379,6 +394,28 @@ mod tests {
         assert!(!mk(ReflectionMode::Ssr).log_line(true).contains("(rt非対応→ssr)"));
     }
 
+    /// AO の降格表（Off/Ssao/Rt × rt対応/非対応 → 実効）。反射の手本と同型。
+    #[test]
+    fn resolve_ao_downgrade_table() {
+        let mk = |m: AoMode| RenderFeatures { ao: m, ..Default::default() };
+        // Off はどちらでも Off。
+        assert_eq!(mk(AoMode::Off).resolve(false).ao, AoMode::Off);
+        assert_eq!(mk(AoMode::Off).resolve(true).ao,  AoMode::Off);
+        // Ssao は GPU 非依存で常に Ssao。
+        assert_eq!(mk(AoMode::Ssao).resolve(false).ao, AoMode::Ssao);
+        assert_eq!(mk(AoMode::Ssao).resolve(true).ao,  AoMode::Ssao);
+        // Rt は対応時 Rt / 非対応時 Ssao へ降格。
+        assert_eq!(mk(AoMode::Rt).resolve(false).ao,  AoMode::Ssao);
+        assert_eq!(mk(AoMode::Rt).resolve(true).ao,   AoMode::Rt);
+        // Ssao は TLAS 不要・Rt のみ TLAS 要求。
+        assert!(!mk(AoMode::Ssao).resolve(true).needs_tlas());
+        assert!(mk(AoMode::Rt).resolve(true).needs_tlas());
+        // log_line: Rt 非対応降格時のみ注記、それ以外は素の実効値。
+        assert!(mk(AoMode::Rt).log_line(false).contains("ao=ssao(rt非対応→ssao)"));
+        assert!(mk(AoMode::Rt).log_line(true).contains("ao=rt"));
+        assert!(!mk(AoMode::Ssao).log_line(true).contains("(rt非対応→ssao)"));
+    }
+
     /// ログ行が未実装注記を含むこと。
     #[test]
     fn log_line_annotates_unimplemented() {
@@ -394,7 +431,9 @@ mod tests {
         assert!(line.contains("gi=rt"), "{line}");
         assert!(line.contains("reflection=ssr"), "{line}");
         assert!(!line.contains("reflection=ssr(未実装)"), "反射は実装済み: {line}");
-        assert!(line.contains("ao=off(未実装)"), "{line}");
+        // AO は実装済み（Phase D4）。ao=rt がそのまま通り (未実装) は付かない。
+        assert!(line.contains("ao=rt"), "{line}");
+        assert!(!line.contains("ao=rt(未実装)"), "AO は実装済み: {line}");
         assert!(line.contains("translucency=raster(未実装)"), "{line}");
     }
 }

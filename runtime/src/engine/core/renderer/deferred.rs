@@ -137,8 +137,7 @@ impl DeferredLightingPipelines {
 /// Phase B でフレームループが「G-Buffer 確保 → 本関数で BindGroup 生成 → ライティングパス
 /// 実行」の順に呼ぶ想定（G-Buffer はウィンドウリサイズ時に再生成されるため、本関数も
 /// 毎フレーム・毎リサイズで呼び直すことになる。post::rt_pool.rs の RtPool 経由の
-/// テクスチャビューをそのまま渡す想定）。Phase A では未使用のため `#[allow(dead_code)]`。
-#[allow(dead_code)]
+/// テクスチャビューをそのまま渡す想定）。Phase D4 で AO 入力（binding6/7）を追加した。
 pub fn create_gbuffer_bind_group(
     device:      &wgpu::Device,
     gbuffer_bgl: &wgpu::BindGroupLayout,
@@ -148,6 +147,12 @@ pub fn create_gbuffer_bind_group(
     g3_view:     &wgpu::TextureView,
     depth_view:  &wgpu::TextureView,
     sampler:     &wgpu::Sampler,
+    // ── AO 入力（Phase D4: SSAO / RT-AO）───────────────────────────
+    // binding 6=AO テクスチャ（半解像度 AO の .r。AO=Off 時は白 1x1）、
+    // binding 7=AO サンプラー（Filtering=linear。半解像度→フル解像度のバイリニア用）。
+    // deferred_lighting.wgsl が group1 binding6/7 を宣言するため gbuffer_bgl は 8 entry。
+    ao_view:     &wgpu::TextureView,
+    ao_sampler:  &wgpu::Sampler,
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label:  Some("Deferred GBuffer BG (group 1)"),
@@ -159,6 +164,8 @@ pub fn create_gbuffer_bind_group(
             wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(g3_view) },
             wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(depth_view) },
             wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::Sampler(sampler) },
+            wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::TextureView(ao_view) },
+            wgpu::BindGroupEntry { binding: 7, resource: wgpu::BindingResource::Sampler(ao_sampler) },
         ],
     })
 }
