@@ -42,8 +42,10 @@ pub(crate) mod imos_blur;
 pub(crate) mod ao;
 /// SSGI（スクリーンスペース GI）フルスクリーンパス＋いもす法カラーブラー＋半解像度リソース（Phase SSGI）
 pub(crate) mod ssgi;
-/// RT ソフト影マスク生成＋いもす法デノイズ＋半解像度リソース（Phase RT-Shadow-Denoise）
+/// RT ソフト影マスク生成＋バイラテラルデノイズ＋半解像度リソース（Phase RT-Shadow-Denoise）
 pub(crate) mod shadow_mask;
+/// 影マスク専用 separable バイラテラルブラー基盤（深度エッジ保持。imos とは別物）
+pub(crate) mod shadow_mask_bilateral;
 /// レンダリング機能マトリクス（RT/代替のモード管理）
 pub(crate) mod render_features;
 /// すりガラス用の屈折背景ミップチェーン（ダウンサンプル→いもす法ブラー。ガラス表現）
@@ -80,6 +82,7 @@ pub use ssgi::{SsgiPipelines, SsgiTargets, SsgiParams, SSGI_FORMAT, SSGI_RESOLUT
 pub use shadow_mask::{ShadowMaskPipelines, ShadowMaskTargets, ShadowMaskParams,
                       RT_SHADOW_MASK_LIGHTS, SHADOW_MASK_FORMAT, SHADOW_MASK_RESOLUTION_DIVISOR,
                       select_shadow_mask_lights, assign_shadow_mask_slots};
+pub use shadow_mask_bilateral::{ShadowMaskBilateral, ShadowMaskBilateralParams};
 pub use post::{RtPool, PostContext, VignetteParams, VignetteStage,
                PostFxSettings, BloomParams, BloomPipelines,
                DEFAULT_BLOOM_THRESHOLD, DEFAULT_BLOOM_KNEE, DEFAULT_BLOOM_INTENSITY,
@@ -1068,11 +1071,13 @@ impl<'r> RenderFrame<'r> {
 
     /// 半解像度シャドウマスク（texture_2d_array の 4 レイヤ）へマスク生成パスを開始する。
     ///
-    /// - color = 4 レイヤぶんの単層 2D ビューを MRT（location 0..3）として LoadOp::Clear(1,1,1,1)
-    ///   （透過率 1＝遮蔽なし。count 未満のスロット・背景はシェーダがこの既定値を返す）。
+    /// - color location 0..3 = 4 レイヤぶんの単層 2D ビューを MRT として LoadOp::Clear(1,1,1,1)
+    ///   （.rgb=透過率 1＝遮蔽なし。count 未満のスロット・背景はシェーダが .rgb=既定値を返す）。
+    ///   各レイヤの .a には half-res ビュー空間深度が同梱される（バイラテラルブラーの深度ガイド。
+    ///   全テクセルがシェーダで上書きされるため .a のクリア値は結果に影響しない）。
     /// - depth = None（フルスクリーン三角形。G-Buffer 深度はテクスチャとして読む）。
-    /// この後にいもす法ブラー（各レイヤ・compute）を同一エンコーダで走らせ、結果 mask_b を deferred
-    /// ライティングの group1 binding10（t_shadow_mask）へ供給する。
+    /// この後にバイラテラルブラー（各レイヤ・compute）を同一エンコーダで走らせ、結果 mask_b を
+    /// deferred ライティングの group1 binding10（t_shadow_mask）へ供給する。
     pub fn begin_shadow_mask_pass_to<'f>(
         &'f mut self,
         l0: &'f wgpu::TextureView,

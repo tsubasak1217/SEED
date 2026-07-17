@@ -110,7 +110,20 @@ fn mask_eval_slot(slot: u32, world_pos: vec3<f32>, ng: vec3<f32>, nv: vec3<f32>,
     return rt_shadow_factor(world_pos, ng, nv, geo.L, geo.dist, geo.cone_radius, frag_xy);
 }
 
-// ─── マスク生成フラグメント（4 レイヤぶんを MRT で同時出力）───
+// ─── マスク生成フラグメント（4 レイヤを MRT で同時出力。rgb=透過率, a=半解像度深度）───
+// location 0..3: 各ソフト影ライトの出力（rgba16float, レイヤ=スロット）。
+//   .rgb = 透過率（色付き影込み）／.a = 半解像度ビュー空間深度（バイラテラルブラーの深度ガイド）。
+//
+// 【なぜ .a に同梱するか（別 R32Float アタッチメント不可）】
+//   4×Rgba16Float=32B に R32Float の 4B を足すと 36B となり、WebGPU 既定の
+//   max_color_attachment_bytes_per_sample=32 を超過して create_render_pipeline がパニックする。
+//   マスクの .a は未使用だったため、ここへビュー空間深度を載せてバイト予算内（32B）に収める。
+//
+// 【f16 精度の妥当性】.a は f16（仮数 ~11bit ＝相対誤差 ~0.05%）へ量子化されるが、深度類似度の
+//   許容幅は相対 5%（BILATERAL_DEPTH_TOL_FRAC）なので、数十〜数百 m レンジでも
+//   f16 誤差（~0.05%）<< 許容幅（5%）で重み計算に影響しない。全レイヤ同じ深度でよい
+//   （深度は画素固有でライト非依存）。※ deferred のアップサンプルはフル解像度深度から同一写像で
+//   復元するため .a は参照しない（.a はブラーの深度ガイド専用）。
 struct MaskOut {
     @location(0) l0: vec4<f32>,
     @location(1) l1: vec4<f32>,
@@ -121,11 +134,6 @@ struct MaskOut {
 @fragment
 fn fs_mask(in: MaskVsOut) -> MaskOut {
     var out: MaskOut;
-    // 既定は全レイヤ透過率 1（遮蔽なし）。count 未満のスロット・背景はこのまま。
-    out.l0 = vec4<f32>(1.0);
-    out.l1 = vec4<f32>(1.0);
-    out.l2 = vec4<f32>(1.0);
-    out.l3 = vec4<f32>(1.0);
 
     let uv  = in.uv;
     let pix = mask_full_pix(uv);
@@ -134,6 +142,16 @@ fn fs_mask(in: MaskVsOut) -> MaskOut {
     // 幾何法線 Ng は深度復元ワールド座標の画面微分から作る（deferred_lighting.wgsl と同式）。
     // dpdx/dpdy は一様制御フローで呼ぶ必要があるため、背景の早期 return より**前**に計算する。
     let world_pos = mask_world_pos(uv, depth);
+    // 半解像度ビュー空間深度（バイラテラルブラーの深度ガイド）。全レイヤの .a へ同梱する。
+    // deferred の mask_half_texel_view_z と同式（view * world_pos の z）にし、生成時と
+    // ブラー時・アップサンプル時の深度基準を一致させる。背景も含め全テクセルで書き込む。
+    let view_z = (u_mask_camera.view * vec4<f32>(world_pos, 1.0)).z;
+    // 既定は全レイヤ rgb=1（遮蔽なし）＋ a=view_z（深度ガイド）。count 未満のスロット・背景はこのまま。
+    out.l0 = vec4<f32>(1.0, 1.0, 1.0, view_z);
+    out.l1 = vec4<f32>(1.0, 1.0, 1.0, view_z);
+    out.l2 = vec4<f32>(1.0, 1.0, 1.0, view_z);
+    out.l3 = vec4<f32>(1.0, 1.0, 1.0, view_z);
+
     let N         = normalize(textureLoad(t_gbuffer1, pix, 0).xyz);
     let ng_raw    = cross(dpdx(world_pos), dpdy(world_pos));
     let ng_len    = length(ng_raw);
@@ -147,17 +165,18 @@ fn fs_mask(in: MaskVsOut) -> MaskOut {
         Ng = -Ng;
     }
 
-    // 背景（深度クリア値以上）＝遮蔽物なし。全レイヤ 1（既定値）で返す。
+    // 背景（深度クリア値以上）＝遮蔽物なし。全レイヤ rgb=1（既定値）＋ a=view_z で返す。
     if depth >= MASK_BACKGROUND_DEPTH {
         return out;
     }
 
     // IGN 種は半解像度フラグ座標（マスクはこの後デノイズするためノイズは均される）。
+    // 各スロットは .rgb=透過率, .a=view_z（深度ガイド）で出力する。
     let frag_xy = in.pos.xy;
     let cnt     = min(u_mask.count, SHADOW_MASK_LAYERS);
-    if cnt > 0u { out.l0 = vec4<f32>(mask_eval_slot(0u, world_pos, Ng, N, frag_xy), 1.0); }
-    if cnt > 1u { out.l1 = vec4<f32>(mask_eval_slot(1u, world_pos, Ng, N, frag_xy), 1.0); }
-    if cnt > 2u { out.l2 = vec4<f32>(mask_eval_slot(2u, world_pos, Ng, N, frag_xy), 1.0); }
-    if cnt > 3u { out.l3 = vec4<f32>(mask_eval_slot(3u, world_pos, Ng, N, frag_xy), 1.0); }
+    if cnt > 0u { out.l0 = vec4<f32>(mask_eval_slot(0u, world_pos, Ng, N, frag_xy), view_z); }
+    if cnt > 1u { out.l1 = vec4<f32>(mask_eval_slot(1u, world_pos, Ng, N, frag_xy), view_z); }
+    if cnt > 2u { out.l2 = vec4<f32>(mask_eval_slot(2u, world_pos, Ng, N, frag_xy), view_z); }
+    if cnt > 3u { out.l3 = vec4<f32>(mask_eval_slot(3u, world_pos, Ng, N, frag_xy), view_z); }
     return out;
 }

@@ -4,20 +4,21 @@
 //  ## 役割（単一責任）
 //  Deferred（G-Buffer）有効かつ RT 影オンのとき、CPU が選定した最大 RT_SHADOW_MASK_LIGHTS 灯の
 //  ソフト影ライトについて、既存 rt_shadow_factor（rt_shadow_on.wgsl・無改変）を半解像度で評価し
-//  texture_2d_array（レイヤ=スロット, Rgba16Float）へ透過率を書き出すフルスクリーン MRT パスと、
-//  そのデノイズ（いもす法ブラーを各レイヤに反復）・半解像度リソース・選定ロジックを持つ。
-//  手本は ao.rs / ssgi.rs（half-res + imos）と reflection.rs（group4 TLAS 借用）。
+//  texture_2d_array（レイヤ=スロット, Rgba16Float）へ .rgb=透過率／.a=half-res ビュー空間深度を
+//  書き出すフルスクリーン MRT パスと、そのデノイズ（影マスク専用 separable バイラテラルブラーを
+//  各レイヤに適用。.a の深度をガイドにエッジ保持）・半解像度リソース・選定ロジックを持つ。
+//  手本は ao.rs / ssgi.rs（half-res）と reflection.rs（group4 TLAS 借用）。
 //
 //  ## パス順（frame_renderer が制御）
 //    G-Buffer 書き込み → AO 生成
-//      → シャドウマスク生成（G-Buffer＋TLAS → 半解像度 mask_raw の 4 レイヤ）
-//      → いもす法ブラー（各レイヤ mask_raw → mask_a/mask_b、結果 mask_b）
+//      → シャドウマスク生成（G-Buffer＋TLAS → 半解像度 mask_raw の 4 レイヤ。.rgb=透過率/.a=深度）
+//      → バイラテラルブラー（各レイヤ mask_raw → mask_a → mask_b、.a 深度でエッジ保持。結果 mask_b）
 //      → デファードライティング（group1 binding10 に mask_b をバイリニアで供給し、ライトループが
 //         light.shadow_mask_slot の指すレイヤをサンプルして遮蔽率にする）
 //
 //  ## なぜ半解像度マスク＋ブラーで根治するか
 //  ソフト影のディザ状ガサガサは「ピクセルごとの IGN 回転 × 確率的サンプリングの量子化ノイズ」。
-//  1 ライトを画面全体でまとめて評価し、空間ブラー（いもす法）で均せば低周波の滑らかな半影になる。
+//  1 ライトを画面全体でまとめて評価し、空間ブラー（影マスク専用バイラテラル）で均せば滑らかな半影になる。
 //  半解像度化でレイ本数も従来比 ~1/4。ハード影（cone_radius=0）は元々ノイズが無く、マスクにも
 //  正しく載る（rt_shadow_factor がそのまま 1 本レイへ分岐）。
 //
@@ -27,15 +28,18 @@
 //  レイアウトも RtMeshPipelines.lights_bgl を流用する（レイアウト等価＝借用が合法）。ゆえに本パイプラインは
 //  RT 対応 GPU（rt_lights_bgl が存在する）でのみ構築される（DrawPipelines.shadow_mask は Option）。
 //
-//  ## フォーマット（Rgba16Float 単一運用）
+//  ## フォーマット（Rgba16Float 単一運用。.a に深度同梱）
 //  mask_raw/mask_a/mask_b はすべて IMOS_BLUR_FORMAT=Rgba16Float。storage・filterable・
 //  render-attachment を core 保証で満たす（ao.rs / imos_blur.rs のフォーマット解説と一致）。
+//  .rgb=透過率／.a=half-res ビュー空間深度（別 R32Float アタッチメントは 4×16B=32B に 4B を足すと
+//  max_color_attachment_bytes_per_sample=32 を超過するため不可。未使用の .a へ同梱してバイト予算内に収める）。
 // ============================================================
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::deferred::DeferredLightingPipelines;
-use super::imos_blur::{ImosBlur, IMOS_BLUR_FORMAT};
+use super::imos_blur::IMOS_BLUR_FORMAT;
+use super::shadow_mask_bilateral::ShadowMaskBilateral;
 use super::lighting::GpuLight;
 use super::pipeline::get_shader_source;
 
@@ -53,10 +57,8 @@ pub const SHADOW_MASK_FORMAT: wgpu::TextureFormat = IMOS_BLUR_FORMAT;
 /// マスク計算解像度の分母（フル解像度に対する 1/N）。2＝半解像度（コスト 1/4）。
 pub const SHADOW_MASK_RESOLUTION_DIVISOR: u32 = 2;
 
-/// いもす法ブラーの反復回数（H→V を 1 反復）。ソフト影のディザは強めなので SSGI と同じ 3 反復。
-pub const SHADOW_MASK_BLUR_ITERATIONS: u32 = 3;
-
-/// いもす法ブラーのボックス半径（半解像度画素。2〜3px 目安）。ガサガサを均す幅。
+/// バイラテラルブラーの半径（半解像度画素）。窓は [-radius, radius]＝(2r+1) タップ。
+/// 小半径（深度エッジ保持のため固定タップ。σ・深度許容は WGSL 側の名前付き定数）。
 pub const SHADOW_MASK_BLUR_RADIUS: i32 = 3;
 
 /// ソフト影ライトが上限を超えたときの警告を 1 度だけ出すためのフラグ（ログ爆発防止）。
@@ -141,14 +143,14 @@ pub fn assign_shadow_mask_slots(lights: &mut [GpuLight]) -> Vec<u32> {
 
 /// シャドウマスク生成パイプライン一式（RT 対応 GPU でのみ構築）。起動時 1 回・不変。
 pub struct ShadowMaskPipelines {
-    /// マスク生成パイプライン（RAY_QUERY 必須・4 カラーターゲット MRT）。
+    /// マスク生成パイプライン（RAY_QUERY 必須・4 カラーターゲット MRT。各 .rgb=透過率／.a=深度同梱）。
     pub mask:          wgpu::RenderPipeline,
     /// group2: ShadowMaskParams のレイアウト。
     pub params_bgl:    wgpu::BindGroupLayout,
     /// ShadowMaskParams UBO（毎フレーム選定インデックスを書き込む）。
     pub params_buffer: wgpu::Buffer,
-    /// いもす法ブラー基盤（各レイヤ mask_raw → mask_a/mask_b を均す）。
-    pub imos:          ImosBlur,
+    /// 影マスク専用 separable バイラテラルブラー基盤（深度エッジ保持。各レイヤ mask_raw→mask_a→mask_b）。
+    pub bilateral:     ShadowMaskBilateral,
 }
 
 impl ShadowMaskPipelines {
@@ -197,6 +199,8 @@ impl ShadowMaskPipelines {
         });
 
         // 4 レイヤぶんを MRT で同時出力（location 0..3）。全ターゲット SHADOW_MASK_FORMAT・blend なし。
+        // 各レイヤの .rgb=透過率, .a=half-res ビュー空間深度（バイラテラルブラーの深度ガイド）を同梱する
+        //（別 R32Float アタッチメントは 32B+4B=36B で max_color_attachment_bytes_per_sample=32 超過のため不可）。
         let color_target = wgpu::ColorTargetState {
             format: SHADOW_MASK_FORMAT, blend: None, write_mask: wgpu::ColorWrites::ALL,
         };
@@ -228,9 +232,9 @@ impl ShadowMaskPipelines {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let imos = ImosBlur::new(device, cache);
+        let bilateral = ShadowMaskBilateral::new(device, cache);
 
-        Self { mask, params_bgl, params_buffer, imos }
+        Self { mask, params_bgl, params_buffer, bilateral }
     }
 
     /// 選定インデックス列（スロット順）を ShadowMaskParams UBO へ書き込む（毎フレーム パス直前）。
@@ -249,16 +253,17 @@ impl ShadowMaskPipelines {
         })
     }
 
-    /// 各レイヤぶん mask_raw → (mask_a/mask_b ping-pong) をいもす法でブラーする。結果は必ず mask_b。
-    /// texture_2d_array に対しレイヤごとの 2D ビューで既存の単層ブラーを RT_SHADOW_MASK_LIGHTS 回掛ける
-    /// （imos_blur は単層 2D 前提のため。設計判断: 最小変更でカラー対応済みの実績ブラーをそのまま使う）。
+    /// 各レイヤぶん mask_raw → (mask_a 経由 H→V) → mask_b を separable バイラテラルでブラーする。
+    /// 結果は必ず mask_b。深度ガイドは各レイヤ自身の .a（マスク生成時に同梱した half-res ビュー空間 z）を
+    /// 読み、深度エッジを跨ぐ影値の混合（＝カーテンのフチのハロー）を断つ。texture_2d_array に対し
+    /// レイヤごとの 2D ビューで RT_SHADOW_MASK_LIGHTS 回掛ける（バイラテラルは単層 2D 前提のため）。
     pub fn blur(&self, device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder, targets: &ShadowMaskTargets) {
         for layer in 0..RT_SHADOW_MASK_LIGHTS as usize {
-            self.imos.record(
+            self.bilateral.record_layer(
                 device, encoder,
                 targets.raw_layer_view(layer), targets.a_layer_view(layer), targets.b_layer_view(layer),
                 targets.width() as i32, targets.height() as i32,
-                SHADOW_MASK_BLUR_RADIUS, SHADOW_MASK_BLUR_ITERATIONS,
+                SHADOW_MASK_BLUR_RADIUS,
             );
         }
     }
@@ -277,14 +282,15 @@ struct LayeredTex {
 }
 
 /// 半解像度 4 レイヤのマスクテクスチャ 3 枚（mask_raw=生成 / mask_a,mask_b=ブラー ping-pong）。
+/// 各レイヤの .rgb=透過率, .a=half-res ビュー空間深度（バイラテラルブラーの深度ガイドを同梱）。
 /// STORAGE_BINDING を要するため RtPool には載せられず本構造体が専有する（AoTargets の 4 レイヤ版）。
-/// ブラー後の最終マスクは各レイヤとも mask_b に残る（imos_blur / ShadowMaskPipelines::blur の不変条件）。
+/// ブラー後の最終マスクは各レイヤとも mask_b に残る（ShadowMaskPipelines::blur の不変条件）。
 pub struct ShadowMaskTargets {
-    raw: Option<LayeredTex>,
-    a:   Option<LayeredTex>,
-    b:   Option<LayeredTex>,
-    hw:  u32,
-    hh:  u32,
+    raw:   Option<LayeredTex>,
+    a:     Option<LayeredTex>,
+    b:     Option<LayeredTex>,
+    hw:    u32,
+    hh:    u32,
 }
 
 impl Default for ShadowMaskTargets {
@@ -293,7 +299,9 @@ impl Default for ShadowMaskTargets {
 
 impl ShadowMaskTargets {
     /// 空の（未確保の）ターゲット群を生成する（device 不要・eager 構築可）。
-    pub fn new() -> Self { Self { raw: None, a: None, b: None, hw: 0, hh: 0 } }
+    pub fn new() -> Self {
+        Self { raw: None, a: None, b: None, hw: 0, hh: 0 }
+    }
 
     /// 半解像度サイズへ追従する。既存が同サイズなら何もしない（AoTargets.ensure の流儀）。
     pub fn ensure(&mut self, device: &wgpu::Device, hw: u32, hh: u32) {
@@ -302,12 +310,12 @@ impl ShadowMaskTargets {
         if self.raw.is_some() && self.hw == hw && self.hh == hh {
             return;
         }
-        // mask_raw: 生成パスの MRT 出力＋ブラー入力。
+        // mask_raw: 生成パスの MRT 出力＋ブラー入力（.a に view_z 同梱）。
         let raw = make_layered(
             device, "shadow_mask_raw", hw, hh,
             wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
         );
-        // mask_a / mask_b: いもす法ブラーの storage ping-pong（write）＋次段/サンプル入力。
+        // mask_a / mask_b: バイラテラルブラーの storage ping-pong（write）＋次段/サンプル入力。
         let storage = wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING;
         let a = make_layered(device, "shadow_mask_a", hw, hh, storage);
         let b = make_layered(device, "shadow_mask_b", hw, hh, storage);

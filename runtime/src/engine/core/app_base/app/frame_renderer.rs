@@ -3682,11 +3682,12 @@ impl App {
                                 ao_p.blur(&draw_ctx.device, frame.encoder_mut(), &self.ao_targets);
                             }
 
-                            // ── RT ソフト影マスク生成パス + いもす法デノイズ（Phase RT-Shadow-Denoise）─────
-                            // G-Buffer＋TLAS から半解像度 4 レイヤ mask_raw へ選定ソフト影の透過率を焼き、各レイヤを
-                            // いもす法でブラーして mask_b へ均す。deferred ライティングが mask_b をサンプルして
-                            // ディザ状ガサガサの無い滑らかな半影にする。scene_lights_bg は shadow_mask_active の条件
-                            // （rt_on）から RT 複合 BG（TLAS/平均アルベド入り）であることが保証される。
+                            // ── RT ソフト影マスク生成パス + バイラテラルデノイズ（Phase RT-Shadow-Denoise）─────
+                            // G-Buffer＋TLAS から半解像度 4 レイヤ mask_raw へ選定ソフト影の透過率（.rgb）と
+                            // half-res ビュー空間深度（.a に同梱）を焼く。各レイヤを深度ガイド付き separable
+                            // バイラテラルで mask_b へ均し（深度エッジを跨がずカーテンのフチのハローを断つ）、
+                            // deferred ライティングが mask_b をサンプルする。scene_lights_bg は shadow_mask_active の
+                            // 条件（rt_on）から RT 複合 BG（TLAS/平均アルベド入り）であることが保証される。
                             if shadow_mask_active {
                                 let smp = draw_ctx.pipelines.shadow_mask.as_ref().unwrap();
                                 smp.write_params(&draw_ctx.queue, &shadow_mask_selection);
@@ -3716,7 +3717,7 @@ impl App {
                                     mpass.set_bind_group(4, scene_lights_bg, &[]);
                                     mpass.draw(0..3, 0..1);
                                 }
-                                // いもす法ブラー（各レイヤ mask_raw → mask_a/mask_b, 結果は必ず mask_b）。
+                                // バイラテラルブラー（各レイヤ mask_raw → mask_a → mask_b, 深度エッジ保持。結果は mask_b）。
                                 smp.blur(&draw_ctx.device, frame.encoder_mut(), &self.shadow_mask_targets);
                             }
 
