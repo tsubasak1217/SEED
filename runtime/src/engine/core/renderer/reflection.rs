@@ -408,4 +408,51 @@ mod tests {
         assert_eq!(size_of("GpuLightR"), 112, "GpuLightR は 112B（lighting.rs GpuLight と一致）");
         assert_eq!(size_of("LightMetaR"), 32, "LightMetaR は 32B（lighting.rs LightMeta と一致）");
     }
+
+    /// 粗さフェードが roughness=1（＝完全に粗い面）で反射寄与を**厳密に 0** にすることを保証する。
+    ///
+    /// バグ「roughness=1 なのに鏡面反射が出る」の回帰ガード。反射シェーダ（SSR/RT）は
+    /// `reflection_smoothness_weight(r) = 1 - smoothstep(FADE_START, FADE_END, r)` を計算し、
+    /// `smooth_w <= 0.0` で早期 return する（reflection_ssr.wgsl / reflection_rt.wgsl）。ゆえに
+    /// weight が roughness>=FADE_END で 0 になる（＝FADE_END<=1.0）ことが「roughness=1 で反射 0」の
+    /// 数学的根拠である。本テストは WGSL からフェード定数を抽出し、その端点性質を Rust で再現検証する。
+    ///
+    /// なお実機で「roughness を上げても反射が残る」場合、原因はこのフェードではなく
+    /// **実効 roughness = roughness_factor × MRテクスチャ.g（surface_gather.wgsl）が FADE_END 未満に
+    /// 留まっている**ケースである（factor は乗算係数のため、MR テクスチャ持ちの面はスライダ最大でも
+    /// 実効 roughness を FADE_END 以上へ持ち上げられない）。反射パスのチャンネル対応・バインドは正当。
+    #[test]
+    fn roughness_one_gives_zero_reflection_weight() {
+        // reflection_common.wgsl から `const NAME: f32 = <値>;` を抽出する小さなパーサ。
+        let src = include_str!("shaders/reflection_common.wgsl");
+        let parse_f32 = |name: &str| -> f32 {
+            let line = src.lines().map(str::trim)
+                .find(|l| l.starts_with(&format!("const {name}")))
+                .unwrap_or_else(|| panic!("reflection_common.wgsl に const {name} が見つかりません"));
+            // `const NAME: f32 = 0.30; // ...` → `=` の後ろから `;` までを数値化。
+            let rhs = line.split('=').nth(1).unwrap();
+            let num: String = rhs.trim().chars()
+                .take_while(|c| c.is_ascii_digit() || *c == '.' || *c == '-')
+                .collect();
+            num.parse::<f32>().unwrap_or_else(|_| panic!("const {name} を f32 として解釈できません: {num:?}"))
+        };
+        let start = parse_f32("REFLECTION_ROUGHNESS_FADE_START");
+        let end   = parse_f32("REFLECTION_ROUGHNESS_FADE_END");
+
+        // WGSL smoothstep(e0,e1,x) と同一（clamp 後に 3t^2-2t^3）。weight = 1 - smoothstep。
+        let smoothstep = |e0: f32, e1: f32, x: f32| -> f32 {
+            let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
+            t * t * (3.0 - 2.0 * t)
+        };
+        let weight = |r: f32| -> f32 { 1.0 - smoothstep(start, end, r) };
+
+        // 定数の健全性: START < END <= 1.0。END>1.0 だと roughness=1 でも weight>0 となり漏れる。
+        assert!(start < end, "FADE_START({start}) < FADE_END({end}) であること");
+        assert!(end <= 1.0, "FADE_END({end}) <= 1.0（roughness=1 で必ず 0 にするため）");
+
+        // 端点性質: roughness=1 で厳密に 0（＝反射寄与 0）。FADE_END でも 0。FADE_START 以下で全反射(1)。
+        assert_eq!(weight(1.0), 0.0, "roughness=1 で反射フェード weight は厳密に 0 であること");
+        assert_eq!(weight(end), 0.0, "roughness=FADE_END で weight は 0 であること");
+        assert_eq!(weight(start), 1.0, "roughness<=FADE_START で weight は 1（全反射）であること");
+    }
 }
