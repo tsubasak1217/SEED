@@ -589,6 +589,10 @@ pub struct App {
     /// 毎フレーム ensure でサーフェスサイズに追従する。静的リソース（トーンマップ等の
     /// パイプライン）は DrawContext.post が持つ。
     rt_pool: crate::engine::core::renderer::RtPool,
+    /// すりガラス用の屈折背景ミップチェーン（ガラス表現）。translucency=Rt かつ deferred かつ
+    /// 半透明ありのフレームで、不透明シーン HDR のミップ（下位ほど強くぼかし）を作る。
+    /// 半透明フラグメントが roughness からミップレベルを選んで「すりガラス」を表現する。
+    refract_pyramid: crate::engine::core::renderer::RefractPyramid,
     /// AO（SSAO / RT-AO, Phase D4）の半解像度テクスチャ群（ao_raw / ao_a / ao_b）。
     /// STORAGE_BINDING を要するため RtPool には載せられず本フィールドが専有する。
     /// 毎フレーム ensure で半解像度サイズに追従する（AO 生成パイプラインは DrawContext.pipelines.ao）。
@@ -987,6 +991,7 @@ impl App {
             canvas_screen_space_overlay: false,
             edit_view_mode:              EditViewMode::View3D,
             rt_pool:                     crate::engine::core::renderer::RtPool::new(),
+            refract_pyramid:             crate::engine::core::renderer::RefractPyramid::new(),
             ao_targets:                  crate::engine::core::renderer::AoTargets::new(),
             ssgi_targets:                crate::engine::core::renderer::SsgiTargets::new(),
             shadow_mask_targets:         crate::engine::core::renderer::ShadowMaskTargets::new(),

@@ -3348,12 +3348,9 @@ impl App {
                     // 背景コピーを deferred の不透明ライティング完成後に置くため deferred 有効を条件にする。
                     let refract_active = translucency_rt_on && deferred_active && has_tp;
                     if refract_active {
-                        self.rt_pool.ensure(
-                            &draw_ctx.device,
-                            crate::engine::core::renderer::transparency::RT_REFRACT_BG,
-                            surf_w, surf_h,
-                            crate::engine::core::renderer::HDR_FORMAT,
-                        );
+                        // すりガラス用の屈折背景ミップチェーン（ガラス表現）を確保する。
+                        // mip0=不透明シーン HDR のコピー・以降=ダウンサンプル→いもす法ブラー。
+                        self.refract_pyramid.ensure(&draw_ctx.device, surf_w, surf_h);
                     }
                     let hdr_view   = self.rt_pool.view(crate::engine::core::renderer::RT_SCENE_HDR);
                     // メインカメラ用の透明 group4 BindGroup（Phase RT-Translucency）。
@@ -3362,7 +3359,7 @@ impl App {
                     // 非 active はダミー 1x1）。屈折ビット（bit1）は背景コピー時に LightMeta へ追記する。
                     let transparent_bg_main = {
                         let refract_view = if refract_active {
-                            self.rt_pool.view(crate::engine::core::renderer::transparency::RT_REFRACT_BG)
+                            self.refract_pyramid.full_view()
                         } else {
                             draw_ctx.pipelines.transparent.dummy_refract_view()
                         };
@@ -3939,29 +3936,17 @@ impl App {
                             }
                         }
 
-                        // 屈折の背景コピー（Phase RT-Translucency）: 不透明ライティング完成後の scene_hdr を
-                        // refract_bg へコピーし、半透明フラグメントがガラス越しに歪めてサンプルできるようにする
-                        // （scene_hdr を直接読むとメインパスの書き込みと競合するため別 RT へ退避）。
+                        // 屈折の背景ミップチェーン生成（ガラス表現）: 不透明ライティング完成後の scene_hdr を
+                        // mip0 へコピーし、以降のミップをダウンサンプル→いもす法ブラーで作る。半透明
+                        // フラグメントが roughness からミップを選んでガラス越しに歪めてサンプルできる
+                        // （scene_hdr を直接読むとメインパスの書き込みと競合するため別テクスチャへ退避）。
                         // 背景には skybox（メインパスで描画）は含まれない（既知の制限）。deferred 前提。
                         // 併せて LightMeta.translucency_rt に屈折ビット（bit1）を追記する
                         //（bit0＝色付き影は light_buffer.update で設定済み。この追記は queue submit 時に
                         //  透明パスより前へ適用されるため同フレームで有効）。
                         if refract_active {
-                            frame.encoder_mut().copy_texture_to_texture(
-                                wgpu::ImageCopyTexture {
-                                    texture:   self.rt_pool.texture(crate::engine::core::renderer::RT_SCENE_HDR),
-                                    mip_level: 0,
-                                    origin:    wgpu::Origin3d::ZERO,
-                                    aspect:    wgpu::TextureAspect::All,
-                                },
-                                wgpu::ImageCopyTexture {
-                                    texture:   self.rt_pool.texture(crate::engine::core::renderer::transparency::RT_REFRACT_BG),
-                                    mip_level: 0,
-                                    origin:    wgpu::Origin3d::ZERO,
-                                    aspect:    wgpu::TextureAspect::All,
-                                },
-                                wgpu::Extent3d { width: surf_w, height: surf_h, depth_or_array_layers: 1 },
-                            );
+                            let scene_hdr = self.rt_pool.texture(crate::engine::core::renderer::RT_SCENE_HDR);
+                            self.refract_pyramid.record(&draw_ctx.device, frame.encoder_mut(), scene_hdr);
                             // 屈折ビット（bit1）を追記（bit0＝色付き影は既に立っている）。offset 12＝translucency_rt。
                             let flag = crate::engine::core::renderer::lighting::TRANSLUCENCY_RT_COLORED_SHADOW
                                      | crate::engine::core::renderer::lighting::TRANSLUCENCY_RT_REFRACTION;

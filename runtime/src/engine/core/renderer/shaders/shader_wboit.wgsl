@@ -59,27 +59,19 @@ fn fs_wboit(in: VertexOutput, @builtin(front_facing) front_facing: bool) -> Wboi
     let alpha_term = pow(min(1.0, a * WBOIT_ALPHA_SCALE) + WBOIT_ALPHA_BIAS, 3.0);
     let w = clamp(alpha_term * WBOIT_DEPTH_SCALE * depth_term, WBOIT_W_MIN, WBOIT_W_MAX);
 
-    // ── RT-Translucency の屈折（Phase RT-Translucency）─────────────
+    // ── ガラス合成（屈折・透過率・アルファ。refract_common.wgsl の共有関数）─────────────
     // premultiplied 色（被覆込み）と実効被覆 a_eff を作る。
-    //   屈折オフ（translucency_rt==0 or ior<=1）: 従来どおり（premult=c.rgb*a, a_eff=a）。
+    //   transmission=0 かつ 屈折オフ: 従来どおり（premult=c.rgb*a, a_eff=a）。
     //     → 合成 avg=accum.rgb/accum.a=c.rgb, final=avg*(1-reveal)=c.rgb*被覆＝従来と一致（パリティ）。
-    //   屈折オン: 背景（不透明シーンのコピー）をガラス越しに歪めた透過成分を premult へ加え、
+    //   transmission=0 かつ 屈折オン: 背景をガラス越しに歪めた透過成分を premult へ加え、
     //     a_eff=1 として背景をこのフラグメントで確定表示する（reveal→(1-1)=0 で dst 背景を隠す）。
-    var premult = c.rgb * a;
-    var a_eff   = a;
-    if (u_light_meta.translucency_rt & TRANSLUCENCY_RT_REFRACTION) != 0u && u_material.ior > 1.0 {
-        let surf = gather_surface(in, front_facing);
-        let bg   = refract_background(surf.normal, in.clip_pos.xy, u_material.ior);
-        let tint = u_material.base_color_factor.rgb;
-        // premult = ライティング成分(lit*a) ＋ 透過成分(bg×tint×(1-a))。被覆は自前合成のため 1。
-        premult = c.rgb * a + bg * tint * (1.0 - a);
-        a_eff   = 1.0;
-    }
+    //   transmission>0: フレネルで反射／透過を配分（glass_composite 内）。
+    let g = glass_composite(c.rgb, a, in, front_facing);
 
     var out: WboitOut;
     // premultiplied color に重みを掛けて蓄積（加算合成: One/One）。accum.a は合成の正規化に使う。
-    out.accum  = vec4<f32>(premult, a_eff) * w;
+    out.accum  = vec4<f32>(g.premult, g.a_eff) * w;
     // reveal は (1 - a_eff) の積。blend=(Zero, OneMinusSrc) により dst *= (1 - a_eff) となる。
-    out.reveal = vec4<f32>(a_eff, a_eff, a_eff, a_eff);
+    out.reveal = vec4<f32>(g.a_eff, g.a_eff, g.a_eff, g.a_eff);
     return out;
 }

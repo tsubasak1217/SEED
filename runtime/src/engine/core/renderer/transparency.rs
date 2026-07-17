@@ -58,9 +58,8 @@ impl TransparencyMode {
     }
 }
 
-/// 屈折の背景ターゲット名（RtPool）。不透明ライティング完成後の scene_hdr をコピーして、
-/// 半透明フラグメントが読む（read/write 競合回避のための別 RT）。Phase RT-Translucency。
-pub const RT_REFRACT_BG: &str = "refract_bg";
+// 屈折の背景は refract_pyramid::RefractPyramid（ミップチェーン付き）が専有する（ガラス表現）。
+// 旧 RtPool 単一 RT（RT_REFRACT_BG）は撤去（すりガラスのミップ生成に STORAGE が要り RtPool 非対応）。
 
 /// WBOIT の重み付き色蓄積ターゲット名（RtPool）。
 pub const RT_WBOIT_ACCUM:  &str = "wboit_accum";
@@ -299,7 +298,9 @@ impl TransparentPipelines {
         // group4 レイアウト（binding15/16 を含む superset）はソート用ビルドの結果を使う
         // （WBOIT も同じ連結＝同一 BGL 構造。wgpu の BGL 等価性で使い回せる）。
         let lights_bgl = mesh_bgls[4].clone();
-        // 屈折背景サンプラー（線形・ClampToEdge。画面外は端色でクランプ）。
+        // 屈折背景サンプラー（線形・トライリニア・ClampToEdge。画面外は端色でクランプ）。
+        // すりガラスのミップチェーン（refract_pyramid）を roughness 連動でサンプルするため、
+        // mipmap_filter=Linear にしてミップ間をトライリニア補間する（ミップ境界のジャンプを防ぐ）。
         let refract_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label:          Some("Refraction Background Sampler"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
@@ -307,7 +308,7 @@ impl TransparentPipelines {
             address_mode_w: wgpu::AddressMode::ClampToEdge,
             mag_filter:     wgpu::FilterMode::Linear,
             min_filter:     wgpu::FilterMode::Linear,
-            mipmap_filter:  wgpu::FilterMode::Nearest,
+            mipmap_filter:  wgpu::FilterMode::Linear,
             ..Default::default()
         });
         // 屈折オフ時に差すダミー背景（1x1）。透明パイプラインの group4 を常に満たすため。

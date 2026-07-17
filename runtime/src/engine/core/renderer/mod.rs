@@ -46,6 +46,8 @@ pub(crate) mod ssgi;
 pub(crate) mod shadow_mask;
 /// レンダリング機能マトリクス（RT/代替のモード管理）
 pub(crate) mod render_features;
+/// すりガラス用の屈折背景ミップチェーン（ダウンサンプル→いもす法ブラー。ガラス表現）
+pub(crate) mod refract_pyramid;
 
 pub use uniforms::{CameraUniform, ModelUniform, MaterialUniform, JointUniform, ColorVertex,
                    GpuCullData, FrustumUniform, GizmoVertex};
@@ -68,6 +70,7 @@ pub use clustered::{ClusterResources, partition_directional_first,
 pub use shadow::{ShadowResources, ShadowPlan, ShadowMatricesUbo,
                  CSM_CASCADE_COUNT, MAX_SHADOW_SPOTS, SHADOW_DEPTH_FORMAT};
 pub use rt_shadow::RtShadowResources;
+pub use refract_pyramid::{RefractPyramid, REFRACT_MIP_COUNT};
 pub use reflection::{ReflectionPipelines, ReflectionParams,
                      RT_REFLECTION_NAME, REFLECTION_FORMAT, DEFAULT_REFLECTION_INTENSITY};
 pub use imos_blur::{ImosBlur, ImosBlurParams, IMOS_BLUR_FORMAT};

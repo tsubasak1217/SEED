@@ -24,6 +24,8 @@ use crate::engine::core::loader::model::{AlphaMode, CullFace};
 fn def_white() -> [f32; 4] { [1.0, 1.0, 1.0, 1.0] }
 /// metallic / roughness の既定値（glTF PBR の慣例に合わせフルスケール）
 fn def_one() -> f32 { 1.0 }
+/// transmission（透過率）の既定値（0.0＝透過なし＝従来動作）。
+fn def_zero() -> f32 { 0.0 }
 /// alpha_mode の既定値
 fn def_opaque() -> String { "opaque".to_string() }
 /// alpha_cutoff（Mask モード時の閾値）の既定値
@@ -62,6 +64,10 @@ pub struct MaterialAsset {
     /// RT-Translucency 有効・alpha_mode=="blend" のときスクリーンスペース屈折に使う。
     #[serde(default = "def_one")]
     pub ior: f32,
+    /// 透過率（transmission, 0..1。ガラス表現）。既定 0.0（透過なし＝従来動作）。
+    /// アルファと分離した「向こうがどれだけ透けるか」。RT-Translucency の合成でフレネル配分に使う。
+    #[serde(default = "def_zero")]
+    pub transmission: f32,
     /// カリング面 "back" | "front" | "none"（大文字小文字は問わない。不明値は back 扱い）。
     /// `#[serde(default)]` により、本キーを持たない既存 .mat は従来どおり背面カリングになる。
     #[serde(default = "def_cull_face")]
@@ -99,6 +105,7 @@ pub fn default_mat_json() -> String {
         alpha_mode:   def_opaque(),
         alpha_cutoff: def_cutoff(),
         ior:          def_one(),
+        transmission: def_zero(),
         cull_face:    def_cull_face(),
         textures:     MatTextures::default(),
     };

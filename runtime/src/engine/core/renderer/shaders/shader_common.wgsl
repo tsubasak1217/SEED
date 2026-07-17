@@ -54,6 +54,12 @@ struct MaterialUniform {
     has_emissive_tex:   u32,
     // 屈折率（IOR, Phase RT-Translucency）。旧 _pad（offset 60）を転用。1.0=屈折なし。
     ior:                f32,
+    // 透過率（transmission, 0..1。ガラス表現）。offset 64。0.0=従来動作（後方互換）。
+    transmission:       f32,
+    // std140 で構造体サイズを 16 の倍数（80）へ揃えるパディング（未使用）。Rust uniforms::MaterialUniform と 1:1。
+    _pad0:              f32,
+    _pad1:              f32,
+    _pad2:              f32,
 }
 @group(2) @binding(0)  var<uniform> u_material:          MaterialUniform;
 @group(2) @binding(1)  var          t_base_color:         texture_2d<f32>;

@@ -408,7 +408,17 @@ impl RtShadowResources {
                         // mask は alpha_mode 由来（不透明のみ影レイから見える）。
                         let mask = instance_mask_for(gpu.primitive_alpha_mode(material_idx));
                         // 平均アルベド（Phase RT-GI）を同じ index に詰める（custom_data と一致）。
-                        albedos[inst_count] = gpu.primitive_avg_albedo(material_idx);
+                        // .rgb=平均アルベド（GI のバウンス色。ddgi_probe_update は .rgb のみ参照）。
+                        // .a=RT 色付き影の「影の透過量」用の不透明度。ガラス表現の透過率を折り込む:
+                        //   影の透過量 = mix(従来のα由来, 高透過(素通り), transmission)
+                        //   ⇔ shadow_opacity = base_color_factor.a * (1 - transmission)
+                        // rt_shadow_on.wgsl は tint *= mix(vec3(1), .rgb, .a) で使うため、
+                        // transmission=0 で従来（.a=α）と一致し、transmission=1 で .a=0＝完全素通り。
+                        // GI は .a を読まないため色付き影のためだけの .a 変更で GI は不変。
+                        let mut alb = gpu.primitive_avg_albedo(material_idx);
+                        let trans = gpu.primitive_transmission(material_idx).clamp(0.0, 1.0);
+                        alb[3] *= 1.0 - trans;
+                        albedos[inst_count] = alb;
                         instances[inst_count] = Some(TlasInstance::new(blas, transform, inst_count as u32, mask));
                         inst_count += 1;
                     }

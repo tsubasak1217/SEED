@@ -234,6 +234,17 @@ pub struct Material {
     /// 旧データ互換のため #[serde(default = "default_ior")]（既定 1.0）。
     #[serde(default = "default_ior")]
     pub ior: f32,
+
+    // ─── 透過率（ガラス表現）───────────────────────────────
+    /// 透過率（transmission, 0..1）。KHR_materials_transmission 相当。
+    /// アルファ（カバレッジ／被覆）と分離した「向こうがどれだけ透けるか」を制御する。
+    /// 0.0 = 従来動作（アルファのみで透け具合が決まる）。1.0 = 最大限に透過する
+    /// （ハイライトを保ったまま背景がよく透ける本物のガラス）。
+    /// glTF の KHR_materials_transmission 拡張の transmission_factor から読む（無ければ 0.0）。
+    /// 旧データ互換のため #[serde(default = "default_transmission")]（既定 0.0＝後方互換）。
+    #[serde(default = "default_transmission")]
+    pub transmission: f32,
+
     /// glTF 由来の両面フラグ（データ出所の記録用）。
     /// 描画で参照されるのは `cull_face` であり、ロード時に本フラグから初期化される
     /// （`cull_face_from_double_sided`）。
@@ -262,6 +273,9 @@ fn default_avg_albedo() -> [f32; 4] { [1.0, 1.0, 1.0, 1.0] }
 /// ior の serde 既定（1.0＝屈折なし）。旧キャッシュ/JSON にキーが無い場合のフォールバック。
 fn default_ior() -> f32 { 1.0 }
 
+/// transmission の serde 既定（0.0＝透過なし＝従来動作）。旧キャッシュ/JSON にキーが無い場合のフォールバック。
+fn default_transmission() -> f32 { 0.0 }
+
 impl Default for Material {
     fn default() -> Self {
         Self {
@@ -278,6 +292,7 @@ impl Default for Material {
             alpha_mode:                 AlphaMode::Opaque,
             alpha_cutoff:               0.5,
             ior:                        1.0,
+            transmission:               0.0,
             double_sided:               false,
             cull_face:                  CullFace::Back,
             avg_albedo:                 [1.0, 1.0, 1.0, 1.0],

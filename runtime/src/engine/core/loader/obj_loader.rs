@@ -112,6 +112,8 @@ pub fn load(path: &Path) -> Result<Model, LoadError> {
                 alpha_cutoff:       0.5,
                 // OBJ/MTL には屈折率（IOR）拡張が無いため既定 1.0（屈折なし）。
                 ior:                1.0,
+                // OBJ/MTL には透過率（transmission）拡張が無いため既定 0.0（透過なし＝従来動作）。
+                transmission:       0.0,
                 // OBJ/MTL には両面フラグが無いため常に背面カリング（従来挙動）。
                 double_sided:       false,
                 cull_face:          crate::engine::core::loader::model::CullFace::Back,

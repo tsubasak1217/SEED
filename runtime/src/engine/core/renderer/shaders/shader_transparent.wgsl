@@ -20,18 +20,9 @@ fn fs_transparent_sorted(in: VertexOutput, @builtin(front_facing) front_facing: 
     let c = shade_pbr(in, front_facing);
     let a = clamp(c.a, 0.0, 1.0);
 
-    // 屈折オフ: 通常の premultiplied over（gate off パリティ）。
-    // 屈折ビット（bit1）が立っていない（deferred 無効／背景未コピー）か ior<=1 ならここで返す。
-    if (u_light_meta.translucency_rt & TRANSLUCENCY_RT_REFRACTION) == 0u || u_material.ior <= 1.0 {
-        return vec4<f32>(c.rgb * a, a);
-    }
-
-    // 屈折オン: 背景をガラス越しに歪めて透過成分を作る。
-    let surf = gather_surface(in, front_facing);
-    let bg   = refract_background(surf.normal, in.clip_pos.xy, u_material.ior);
-    // ガラスの色付け＝ベースカラーで背景をフィルタ（色付きガラス）。
-    let tint = u_material.base_color_factor.rgb;
-    // 反射/ライティング成分（lit*a）＋ 透過成分（bg×tint×(1-a)）。alpha=1 で背景を自前合成。
-    let out_rgb = c.rgb * a + bg * tint * (1.0 - a);
-    return vec4<f32>(out_rgb, 1.0);
+    // ガラス合成（屈折・透過率・アルファを統合。refract_common.wgsl の共有関数）。
+    // transmission=0 かつ 屈折オフ → (c*a, a)（従来とビット一致）。
+    // transmission=0 かつ 屈折オン → (c*a + bg*tint*(1-a), 1)（従来の屈折合成とビット一致）。
+    let g = glass_composite(c.rgb, a, in, front_facing);
+    return vec4<f32>(g.premult, g.a_eff);
 }
