@@ -140,6 +140,8 @@ pub(crate) fn get_shader_source(name: &str) -> &'static str {
         "ssgi_common.wgsl"           => include_str!("shaders/ssgi_common.wgsl"),
         "ssgi_gen.wgsl"              => include_str!("shaders/ssgi_gen.wgsl"),
         "ao_rt.wgsl"                 => include_str!("shaders/ao_rt.wgsl"),
+        // RT ソフト影マスク生成（Phase RT-Shadow-Denoise）。
+        "shadow_mask.wgsl"           => include_str!("shaders/shadow_mask.wgsl"),
         other => panic!("unknown shader source: {other}"),
     }
 }
@@ -1715,6 +1717,10 @@ pub struct DrawPipelines {
     /// SSGI（スクリーンスペース GI, Phase SSGI）。deferred の camera_bgl/gbuffer_bgl を借りて構築。
     /// 生成パス＋いもす法カラーブラー＋半解像度リソースの一式（frame_renderer が 1F 遅延で駆動）。
     pub ssgi:                 super::ssgi::SsgiPipelines,
+    /// RT ソフト影マスク生成＋いもす法デノイズ（Phase RT-Shadow-Denoise）。RT 対応 GPU でのみ Some
+    /// （group4 に TLAS を含む rt.lights_bgl を借用するため）。deferred 有効かつ RT 影オンかつソフト影
+    /// ライトがあるときだけ frame_renderer が使う。
+    pub shadow_mask:          Option<super::shadow_mask::ShadowMaskPipelines>,
 }
 
 impl DrawPipelines {
@@ -1783,7 +1789,7 @@ impl DrawPipelines {
         let gbuffer              = super::gbuffer::GBufferPipelines::new(device, &mesh, &skinned_mesh, df, cache);
         // デファードのフルスクリーン・ライティング復元（Phase D3 Phase A）。
         // sf（シーン HDR）へ出力する（PostPipeline 等と同じ HDR オフスクリーン規約）。
-        let deferred              = super::deferred::DeferredLightingPipelines::new(device, sf, df, cache);
+        let deferred              = super::deferred::DeferredLightingPipelines::new(device, queue, sf, df, cache);
         // 反射（Phase D6）。deferred の camera_bgl/gbuffer_bgl を借りて構築するため deferred の後に呼ぶ。
         // 出力先は sf（scene_hdr / RT_REFLECTION と同じ HDR）。
         let reflection            = super::reflection::ReflectionPipelines::new(device, &deferred, sf, cache);
@@ -1793,6 +1799,11 @@ impl DrawPipelines {
         // SSGI（Phase SSGI）。deferred の camera_bgl/gbuffer_bgl を借りるため deferred の後に呼ぶ。
         // ダミー 1x1 の初期化に queue を使う（SSGI 非使用時の t_ssgi スロット用）。
         let ssgi                  = super::ssgi::SsgiPipelines::new(device, queue, &deferred, cache);
-        Self { mesh, skinned_mesh, rt, unlit_line, cull, meshlet_cull, skin_compute, depth_prepass, shadow_depth, id_pass, outline, sprite, sprite_outline, canvas_id, camera_preview_blit, bar_fill, transparent, particle_compute, particles, skybox, cluster_build, gi_update, gbuffer, deferred, reflection, ao, ssgi }
+        // RT ソフト影マスク（Phase RT-Shadow-Denoise）。RT 対応 GPU（rt=Some）でのみ構築する
+        // （group4 に TLAS を含む rt.lights_bgl を借用するため）。deferred の後に呼ぶ。
+        let shadow_mask           = rt.as_ref().map(|r| {
+            super::shadow_mask::ShadowMaskPipelines::new(device, &deferred, &r.lights_bgl, cache)
+        });
+        Self { mesh, skinned_mesh, rt, unlit_line, cull, meshlet_cull, skin_compute, depth_prepass, shadow_depth, id_pass, outline, sprite, sprite_outline, canvas_id, camera_preview_blit, bar_fill, transparent, particle_compute, particles, skybox, cluster_build, gi_update, gbuffer, deferred, reflection, ao, ssgi, shadow_mask }
     }
 }

@@ -69,12 +69,17 @@ struct GpuLight {
     bounce_intensity: f32,         // 96  疑似バウンス（間接光近似）の強度。0 = 無効。
                                    //     lighting_eval.wgsl が無方向・影非適用・幾何ゲート非適用の
                                    //     淡い光を距離減衰つきで撒く項の係数。directional は常に 0。
-    // 100 stride 112（16 の倍数）へ揃えるパディング（未使用）。
+    // ソフト影マスクのレイヤ番号（Phase RT-Shadow-Denoise）。offset 100（旧 _pad_bounce0 を転用）。
+    //   -1.0                           = マスク非対象（従来どおりインライン rt_shadow_factor を評価）。
+    //   0.0 .. RT_SHADOW_MASK_LIGHTS-1 = 事前計算した半解像度シャドウマスク（デノイズ済み）のレイヤ番号。
+    // CPU（shadow_mask.rs の選定＝soft_radius>0 の上位 intensity）が毎フレーム書き込み、deferred
+    // ライティングパスが該当レイヤをサンプルして遮蔽率にする（forward はマスク無効＝インライン）。
+    shadow_mask_slot: f32,         // 100
+    // 104 → stride 112（16 の倍数）へ揃えるパディング（未使用）。
     // 【重要】vec3<f32> にしてはいけない。WGSL の vec3 は align 16 のため offset 112 へ
     // 押し出され stride が 128 になり、Rust GpuLight(112B) と食い違って
     // 配列 2 要素目以降のライトが全て化ける（平行光は先頭に分割されるため
-    // 「point/spot/rect だけ消える」という症状になる）。スカラー 3 本で詰めること。
-    _pad_bounce0:     f32,
+    // 「point/spot/rect だけ消える」という症状になる）。スカラー 2 本で詰めること。
     _pad_bounce1:     f32,
     _pad_bounce2:     f32,
 }
@@ -140,3 +145,80 @@ const TRANSLUCENCY_RT_REFRACTION:     u32 = 2u;
 @group(4) @binding(11) var          t_gi_irradiance: texture_2d<f32>;
 @group(4) @binding(12) var          t_gi_visibility: texture_2d<f32>;
 @group(4) @binding(13) var          s_gi:            sampler;
+
+// ============================================================
+// RT 影の共有ジオメトリ（インライン経路＝lighting_eval.wgsl とマスク経路＝shadow_mask.wgsl の
+// 唯一の実装）。バインディングを持たない純関数なので、ライト BG を持たない compute 等以外の
+// すべての連結から安全に使える（本ファイルは既に GpuLight を定義しているため置き場所として適切）。
+// ============================================================
+
+/// 平行光の RT 影レイの最大距離（実質無限。ライトまでの距離が定義できないため大定数）。
+/// 旧 lighting_eval.wgsl のローカル定数を共有へ移設した（マスク生成でも同値が要るため）。
+const RT_DIR_TMAX: f32 = 10000.0;
+
+/// RT ソフト影の「見込み半径（cone_radius）」の上限（＝tan(見込み半角)）。
+///
+/// 局所ライトでは cone_radius = soft_radius / light_dist と距離に反比例して発散するため、
+/// 上限を設けないと円錐が半球全体へ広がり、少ないサンプル数では量子化ノイズ（ディザ）になる。
+/// 値 0.5 → 見込み半角 ≈ 26.6°（直径 53°）。太陽や一般的な室内光源を大きく上回る実用十分な広さ。
+/// 平行光（soft_radius=tan(角径)）はこの上限に達しないため主光源のボケ幅には影響しない。
+///
+/// ## この定数の整合はテストで担保される
+/// rt_shadow.rs の `wgsl_soft_shadow_constants_are_consistent` が、本値と rt_shadow_on.wgsl の
+/// RT_SHADOW_SAMPLES_MAX / RT_SHADOW_CONE_RADIUS_PER_SAMPLE の噛み合わせ（上限まで広がった円錐で
+/// ちょうど最大サンプル数に到達する）を検証する。旧 lighting_eval.wgsl から共有へ移設した。
+const RT_SHADOW_MAX_CONE_RADIUS: f32 = 0.5;
+
+/// RT 影のためのライトごとの共有ジオメトリ（放射輝度は含まない。影の L/距離/見込み半径のみ）。
+struct LightShadowGeo {
+    /// 面から光源への方向（正規化済み）。
+    L:           vec3<f32>,
+    /// 光源までの距離（レイ tmax。directional は RT_DIR_TMAX）。
+    dist:        f32,
+    /// ソフト影の見込み半径（RT_SHADOW_MAX_CONE_RADIUS でクランプ済み。0=ハード 1 本）。
+    cone_radius: f32,
+}
+
+/// ライトと着目点から、RT 影に必要な L・光源距離・見込み半径を求める（種別ごとに分岐）。
+///
+/// **この関数が L・距離・cone_radius の唯一の実装である**。インライン影（lighting_eval.wgsl）と
+/// 事前計算マスク（shadow_mask.wgsl）が同じ値を使うことを保証し、両経路で影がズレないようにする。
+/// 放射輝度（減衰・スポット円錐・rect 前面判定）は呼び出し側が geo.L / geo.dist から別途求める。
+fn light_shadow_geometry(light: GpuLight, world_pos: vec3<f32>) -> LightShadowGeo {
+    var g: LightShadowGeo;
+    g.L    = vec3<f32>(0.0, 0.0, 1.0);
+    g.dist = RT_DIR_TMAX;
+
+    if light.kind == LIGHT_KIND_DIRECTIONAL {
+        // 平行光: L = -照射方向。距離は無限（大定数）。
+        g.L = normalize(-light.direction);
+    } else if light.kind == LIGHT_KIND_RECT {
+        // 矩形エリアライト: 矩形上の最近接点を点光源とみなす（lighting_eval.wgsl の R1 近似と同一）。
+        let d       = world_pos - light.position;
+        let px      = clamp(dot(d, light.rect_right), -light.rect_half_width,  light.rect_half_width);
+        let py      = clamp(dot(d, light.rect_up),    -light.rect_half_height, light.rect_half_height);
+        let closest = light.position + light.rect_right * px + light.rect_up * py;
+        let to_l    = closest - world_pos;
+        g.dist      = length(to_l);
+        g.L         = to_l / max(g.dist, 1e-4);
+    } else {
+        // point / spot: 位置から着目点への方向。
+        let to_l = light.position - world_pos;
+        g.dist   = length(to_l);
+        g.L      = to_l / max(g.dist, 1e-4);
+    }
+
+    // 見込み半径（cone_radius）。directional は soft_radius（tan(角径)・距離非依存）、
+    // 局所は soft_radius/距離。0 のときはハード 1 本（cone_radius=0）のまま。上限で発散を止める。
+    var cone: f32 = 0.0;
+    if light.soft_radius > 0.0 {
+        if light.kind == LIGHT_KIND_DIRECTIONAL {
+            cone = light.soft_radius;
+        } else {
+            cone = light.soft_radius / max(g.dist, 1e-4);
+        }
+        cone = min(cone, RT_SHADOW_MAX_CONE_RADIUS);
+    }
+    g.cone_radius = cone;
+    return g;
+}

@@ -106,7 +106,8 @@ pub const LIGHT_KIND_RECT: u32 = 3;
 /// |  80    | rect_up          |  12  |
 /// |  92    | soft_radius      |   4  |
 /// |  96    | bounce_intensity |   4  |
-/// | 100    | _pad_bounce[3]   |  12  |
+/// | 100    | shadow_mask_slot |   4  |
+/// | 104    | _pad_bounce[2]   |   8  |
 /// 合計 112（16 の倍数 → array stride も 112）
 ///
 /// bounce_intensity（疑似バウンス）は既存レイアウトに空き（16 バイト境界のパディング）が
@@ -154,8 +155,13 @@ pub struct GpuLight {
     /// シェーダ（lighting_eval.wgsl）が「無方向・影非適用・幾何ゲート非適用の淡い光を
     /// 距離減衰つきで撒く」項の係数に使う。directional では常に 0（対象外）。
     pub bounce_intensity: f32,
-    /// 16 バイト境界（array stride 112）へ揃えるためのパディング（未使用）。
-    pub _pad_bounce:      [f32; 3],
+    /// ソフト影マスクのレイヤ番号（Phase RT-Shadow-Denoise, offset 100）。旧 _pad_bounce[0] を転用。
+    /// -1.0 = マスク非対象（インライン rt_shadow_factor）／0.0..RT_SHADOW_MASK_LIGHTS-1 = マスクのレイヤ。
+    /// CPU 側は shadow_mask::assign_shadow_mask_slots が毎フレーム設定する（既定 -1.0）。
+    /// WGSL 側 light_common.wgsl の GpuLight.shadow_mask_slot（offset 100）と一致させること。
+    pub shadow_mask_slot: f32,
+    /// 16 バイト境界（array stride 112）へ揃えるためのパディング（未使用, offset 104/108）。
+    pub _pad_bounce:      [f32; 2],
 }
 
 impl GpuLight {
@@ -182,7 +188,8 @@ impl GpuLight {
             rect_up:          [0.0; 3],
             soft_radius:      0.0,
             bounce_intensity: 0.0,
-            _pad_bounce:      [0.0; 3],
+            shadow_mask_slot: -1.0,
+            _pad_bounce:      [0.0; 2],
         }
     }
 
@@ -204,7 +211,8 @@ impl GpuLight {
             rect_up:          [0.0; 3],
             soft_radius:      0.0,
             bounce_intensity: 0.0,
-            _pad_bounce:      [0.0; 3],
+            shadow_mask_slot: -1.0,
+            _pad_bounce:      [0.0; 2],
         }
     }
 
@@ -240,7 +248,8 @@ impl GpuLight {
             rect_up:          [0.0; 3],
             soft_radius:      0.0,
             bounce_intensity: 0.0,
-            _pad_bounce:      [0.0; 3],
+            shadow_mask_slot: -1.0,
+            _pad_bounce:      [0.0; 2],
         }
     }
 
@@ -274,7 +283,8 @@ impl GpuLight {
             rect_up:          normalize(up),
             soft_radius:      0.0,
             bounce_intensity: 0.0,
-            _pad_bounce:      [0.0; 3],
+            shadow_mask_slot: -1.0,
+            _pad_bounce:      [0.0; 2],
         }
     }
 }
@@ -678,6 +688,7 @@ mod layout_tests {
         assert_eq!(offset_of!(GpuLight, rect_up),          80);
         assert_eq!(offset_of!(GpuLight, soft_radius),      92);
         assert_eq!(offset_of!(GpuLight, bounce_intensity), 96);
+        assert_eq!(offset_of!(GpuLight, shadow_mask_slot), 100);
     }
 
     /// LightMeta は 32 バイト。view_mode は offset 8（旧 _pad[0] を再利用）、

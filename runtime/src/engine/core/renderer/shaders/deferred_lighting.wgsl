@@ -70,6 +70,12 @@ struct CameraUniform {
 // 共有 evaluate_gi_ambient には SSGI テクスチャを持ち込まず、ここで採取して Surface.screen_gi へ渡す。
 @group(1) @binding(8) var t_ssgi: texture_2d<f32>;
 @group(1) @binding(9) var s_ssgi: sampler;
+// ── シャドウマスク入力（Phase RT-Shadow-Denoise）: 半解像度 texture_2d_array（レイヤ=スロット）───
+// deferred 専用。各レイヤ .rgb ＝そのソフト影ライトのデノイズ済み遮蔽率（色付き影込みの透過率）。
+// マスク非対象フレーム（RT 影オフ・ソフト影 0 灯）はダミー 1x1×4（白＝遮蔽なし）がバインドされる。
+// s_shadow_mask は Filtering（linear）で半解像度→フル解像度のバイリニアアップサンプル（AO/SSGI と同流儀）。
+@group(1) @binding(10) var t_shadow_mask: texture_2d_array<f32>;
+@group(1) @binding(11) var s_shadow_mask: sampler;
 
 // ─── フルスクリーン三角形の頂点定数 ───────────────────────────
 //
@@ -179,6 +185,15 @@ fn fs_deferred(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     // ダミーがバインドされていても無害。1 フレーム遅延方式（前フレームの HDR から計算した結果）。
     let ssgi = textureSampleLevel(t_ssgi, s_ssgi, uv, 0.0).rgb;
     s.screen_gi     = vec4<f32>(ssgi, 1.0);
+
+    // RT ソフト影マスク（Phase RT-Shadow-Denoise）: 半解像度 4 レイヤをフル解像度 UV でバイリニア
+    // アップサンプルして Surface へ載せる。ライトループが light.shadow_mask_slot の指すレイヤを引く。
+    // deferred は常に valid=1（マスク非対象のライトは shadow_mask_slot=-1 で参照されず無害。マスク非対象
+    // フレームはダミー白がバインドされ、どのスロットも -1＝サンプルされないため見た目に影響しない）。
+    for (var mi: u32 = 0u; mi < SURFACE_SHADOW_MASK_SLOTS; mi = mi + 1u) {
+        s.shadow_mask[mi] = textureSampleLevel(t_shadow_mask, s_shadow_mask, uv, mi, 0.0);
+    }
+    s.shadow_mask_valid = 1.0;
 
     return vec4<f32>(evaluate_lighting(s), 1.0);
 }

@@ -597,6 +597,10 @@ pub struct App {
     /// AoTargets と同型だが .rgb カラー・**フレーム跨ぎ永続**（1 フレーム遅延方式で ssgi_b が前フレーム
     /// 結果を保持する）。毎フレーム ensure で半解像度サイズに追従する（生成は DrawContext.pipelines.ssgi）。
     ssgi_targets: crate::engine::core::renderer::SsgiTargets,
+    /// RT ソフト影マスク（Phase RT-Shadow-Denoise）の半解像度 4 レイヤテクスチャ群（mask_raw/a/b）。
+    /// STORAGE_BINDING を要するため RtPool には載せられず本フィールドが専有する。deferred+RT 影+ソフト影
+    /// ありのフレームのみ ensure する（生成は DrawContext.pipelines.shadow_mask）。
+    shadow_mask_targets: crate::engine::core::renderer::ShadowMaskTargets,
     /// SSGI が「収束済み」か（ssgi_b に有効な前フレーム結果があるか）。false のフレームは
     /// GiParams を enabled=false でフラットに倒す（初回・リサイズ直後・SSGI 有効化直後の 1 フレーム）。
     /// SsgiTargets::ensure の再確保通知と「前フレームも SSGI が active だったか」で更新する。
@@ -975,6 +979,7 @@ impl App {
             rt_pool:                     crate::engine::core::renderer::RtPool::new(),
             ao_targets:                  crate::engine::core::renderer::AoTargets::new(),
             ssgi_targets:                crate::engine::core::renderer::SsgiTargets::new(),
+            shadow_mask_targets:         crate::engine::core::renderer::ShadowMaskTargets::new(),
             ssgi_warmed:                 false,
             particle_system:             crate::engine::core::renderer::ParticleSystem::new(),
             skybox_system:               crate::engine::core::renderer::SkyboxSystem::new(),

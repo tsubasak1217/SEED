@@ -42,6 +42,8 @@ pub(crate) mod imos_blur;
 pub(crate) mod ao;
 /// SSGI（スクリーンスペース GI）フルスクリーンパス＋いもす法カラーブラー＋半解像度リソース（Phase SSGI）
 pub(crate) mod ssgi;
+/// RT ソフト影マスク生成＋いもす法デノイズ＋半解像度リソース（Phase RT-Shadow-Denoise）
+pub(crate) mod shadow_mask;
 /// レンダリング機能マトリクス（RT/代替のモード管理）
 pub(crate) mod render_features;
 
@@ -72,6 +74,9 @@ pub use imos_blur::{ImosBlur, ImosBlurParams, IMOS_BLUR_FORMAT};
 pub use ao::{AoPipelines, AoTargets, AoParams, AO_FORMAT, AO_RESOLUTION_DIVISOR,
              AO_SSAO_WORLD_RADIUS, AO_RTAO_WORLD_RADIUS, DEFAULT_AO_INTENSITY};
 pub use ssgi::{SsgiPipelines, SsgiTargets, SsgiParams, SSGI_FORMAT, SSGI_RESOLUTION_DIVISOR};
+pub use shadow_mask::{ShadowMaskPipelines, ShadowMaskTargets, ShadowMaskParams,
+                      RT_SHADOW_MASK_LIGHTS, SHADOW_MASK_FORMAT, SHADOW_MASK_RESOLUTION_DIVISOR,
+                      select_shadow_mask_lights, assign_shadow_mask_slots};
 pub use post::{RtPool, PostContext, VignetteParams, VignetteStage,
                PostFxSettings, BloomParams, BloomPipelines,
                DEFAULT_BLOOM_THRESHOLD, DEFAULT_BLOOM_KNEE, DEFAULT_BLOOM_INTENSITY,
@@ -1050,6 +1055,43 @@ impl<'r> RenderFrame<'r> {
                     store: wgpu::StoreOp::Store,
                 },
             })],
+            depth_stencil_attachment: None,
+            occlusion_query_set: None,
+            timestamp_writes:    None,
+        })
+    }
+
+    // ── RT ソフト影マスク生成パス（Phase RT-Shadow-Denoise）─────────
+
+    /// 半解像度シャドウマスク（texture_2d_array の 4 レイヤ）へマスク生成パスを開始する。
+    ///
+    /// - color = 4 レイヤぶんの単層 2D ビューを MRT（location 0..3）として LoadOp::Clear(1,1,1,1)
+    ///   （透過率 1＝遮蔽なし。count 未満のスロット・背景はシェーダがこの既定値を返す）。
+    /// - depth = None（フルスクリーン三角形。G-Buffer 深度はテクスチャとして読む）。
+    /// この後にいもす法ブラー（各レイヤ・compute）を同一エンコーダで走らせ、結果 mask_b を deferred
+    /// ライティングの group1 binding10（t_shadow_mask）へ供給する。
+    pub fn begin_shadow_mask_pass_to<'f>(
+        &'f mut self,
+        l0: &'f wgpu::TextureView,
+        l1: &'f wgpu::TextureView,
+        l2: &'f wgpu::TextureView,
+        l3: &'f wgpu::TextureView,
+    ) -> wgpu::RenderPass<'f>
+    where
+        'r: 'f,
+    {
+        let clear = wgpu::Operations {
+            load:  wgpu::LoadOp::Clear(wgpu::Color { r: 1.0, g: 1.0, b: 1.0, a: 1.0 }),
+            store: wgpu::StoreOp::Store,
+        };
+        self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("Shadow Mask Generation Pass"),
+            color_attachments: &[
+                Some(wgpu::RenderPassColorAttachment { view: l0, resolve_target: None, ops: clear }),
+                Some(wgpu::RenderPassColorAttachment { view: l1, resolve_target: None, ops: clear }),
+                Some(wgpu::RenderPassColorAttachment { view: l2, resolve_target: None, ops: clear }),
+                Some(wgpu::RenderPassColorAttachment { view: l3, resolve_target: None, ops: clear }),
+            ],
             depth_stencil_attachment: None,
             occlusion_query_set: None,
             timestamp_writes:    None,

@@ -845,6 +845,28 @@ Forward+ ではなく Deferred を選ぶ根拠: 多灯対応だけなら Forward
   実装: `renderer/ssgi.rs`（`SsgiPipelines`/`SsgiTargets`/`SsgiParams`）＋ `shaders/ssgi_common.wgsl` /
   `ssgi_gen.wgsl`、`deferred_lighting.wgsl`（group1 binding8/9）、`lighting_eval.wgsl`（SSGI 分岐）、
   `surface.wgsl`（`screen_gi`）、`frame_renderer.rs` 配線。BindGroup: 生成 group0..2（3, 上限内）。
+- **RT ソフト影のデノイズ（半解像度マスク＋いもす法）: 実装済み（Phase RT-Shadow-Denoise）**。
+  RT ソフト影の半影が「砂を撒いたようなガサガサのディザ」に見える症状（ピクセルごとの IGN 回転×確率的
+  サンプリングによる遮蔽率の量子化ノイズ）を根治する。**deferred 有効かつ影方式が Rt かつ soft_radius>0 の
+  ライトがあるフレーム**でのみ動く独立フルスクリーンパス（AO/SSGI と同じ half-res + いもす法基盤）。
+  CPU（`shadow_mask.rs::assign_shadow_mask_slots`）が soft_radius>0 のライトを intensity 降順で最大
+  `RT_SHADOW_MASK_LIGHTS=4` 灯選び、各 `GpuLight.shadow_mask_slot`（offset 100・旧 `_pad_bounce0` を転用・
+  112B 不変）へスロット番号を書く（溢れた分と 5 灯目以降・ハード影は従来のインライン経路＝1 度だけ警告ログ）。
+  マスク生成パスは G-Buffer＋TLAS から半解像度 `mask_raw`（**texture_2d_array・4 レイヤ・Rgba16Float**）へ、
+  選定ライトごとに既存の `rt_shadow_factor`（無改変・色付き影込みの vec3 透過率）を評価して MRT で 4 レイヤ
+  同時出力し、いもす法ブラー（半径 3px・3 反復）を**レイヤごとに 4 回**掛けて `mask_b` へデノイズする
+  （`imos_blur` が単層 2D 前提のためレイヤ 2D ビューで既存ブラーを流用＝最小変更）。deferred ライティングは
+  `mask_b` を group1 binding10（D2Array）でバイリニアサンプルし `Surface.shadow_mask[slot]`／`shadow_mask_valid=1`
+  を載せ、ライトループがマスク対象ライトでレイを飛ばさずこの値を遮蔽率にする。**forward/WBOIT**（`Surface`
+  ゼロ初期化＝`shadow_mask_valid=0`）とマスク非対象ライト（`slot<0`）は従来どおりインライン `rt_shadow_factor`。
+  半解像度化でレイ本数は従来比 ~1/4。ハード影（`cone_radius=0`）は完全に不変。`L`／光源距離／`cone_radius`
+  はインライン経路とマスク経路で共有関数 `light_shadow_geometry`（`light_common.wgsl`。`RT_DIR_TMAX`／
+  `RT_SHADOW_MAX_CONE_RADIUS` も `lighting_eval.wgsl` から移設）で算出し両経路の影が一致する。
+  BindGroup: group0=camera/1=G-Buffer/2=`ShadowMaskParams`/3=gap/4=ライト+TLAS（RT 複合 BG 借用・上限 5 内）。
+  実装: `renderer/shadow_mask.rs`（`ShadowMaskPipelines`/`ShadowMaskTargets`/`ShadowMaskParams`＋選定）＋
+  `shaders/shadow_mask.wgsl`、`light_common.wgsl`（`shadow_mask_slot`／共有ジオメトリ）、`surface.wgsl`
+  （`shadow_mask`／`shadow_mask_valid`）、`deferred_lighting.wgsl`（group1 binding10/11）、`lighting_eval.wgsl`
+  （マスク or インライン分岐）、`deferred.rs`（ダミー 4 レイヤ配列＋Filtering サンプラー）、`frame_renderer.rs` 配線。
 
 ## D3 実機テスト観点（GPU 実機確認が必要。開発環境では cargo build/test までしか検証できない）
 

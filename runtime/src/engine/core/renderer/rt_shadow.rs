@@ -572,9 +572,11 @@ mod tests {
     #[test]
     fn wgsl_soft_shadow_constants_are_consistent() {
         let rt_on    = include_str!("shaders/rt_shadow_on.wgsl");
-        let light_ev = include_str!("shaders/lighting_eval.wgsl");
+        // RT_SHADOW_MAX_CONE_RADIUS は light_common.wgsl へ移設（Phase RT-Shadow-Denoise。
+        // インライン影とマスク生成が共有するため）。ここも移設先から読む。
+        let light_c  = include_str!("shaders/light_common.wgsl");
 
-        let max_cone: f32 = wgsl_const_literal(light_ev, "RT_SHADOW_MAX_CONE_RADIUS")
+        let max_cone: f32 = wgsl_const_literal(light_c, "RT_SHADOW_MAX_CONE_RADIUS")
             .parse()
             .expect("RT_SHADOW_MAX_CONE_RADIUS が f32 として解釈できません");
         let samples_min: u32 = wgsl_const_literal(rt_on, "RT_SHADOW_SAMPLES_MIN")

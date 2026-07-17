@@ -51,9 +51,12 @@ struct GpuLight {
     rect_up:          vec3<f32>,
     soft_radius:      f32,
     bounce_intensity: f32,          // Rust GpuLight（112B）とレイアウトを一致させるため保持（compute では未使用）
+    // offset 100: ソフト影マスクのレイヤ番号（light_common.wgsl と同一。compute では未使用）。
+    // 旧 _pad_bounce0 を転用。フィールド名・並びは light_common.wgsl の GpuLight と厳密一致させること
+    // （clustered.rs の wgsl_gpu_light_struct_mirrors_light_common が字面一致を検証する）。
+    shadow_mask_slot: f32,
     // stride 112 へ揃えるパディング。vec3<f32> は align 16 で stride が 128 になり
-    // Rust(112B) と食い違うため、必ずスカラー 3 本で詰める（light_common.wgsl と同一）。
-    _pad_bounce0:     f32,
+    // Rust(112B) と食い違うため、必ずスカラー 2 本で詰める（light_common.wgsl と同一）。
     _pad_bounce1:     f32,
     _pad_bounce2:     f32,
 }
