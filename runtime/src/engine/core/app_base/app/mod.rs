@@ -665,6 +665,16 @@ pub struct App {
     /// に削減することで RenderPass::drop() のオーバーヘッドを大幅に低減する。
     shared_model_batches: HashMap<String, SharedModelData>,
 
+    /// 統合バッチキー（batch_key = モデルパス＋マテリアルオーバーライド署名）ごとの
+    /// 「このフレームの描画対象に不在だった連続フレーム数」。
+    /// マテリアルのインライン編集（スライダードラッグ等）は署名が変わるたびに新しい
+    /// batch_key を生む。以前は `shared_model_batches` にも RT の BLAS キャッシュにも
+    /// 削除処理が無く、編集のたびにユニークキーの GPU リソース（インスタンスバッファ・
+    /// 巨大 BLAS・全テクスチャ込みの GpuModel）が無制限に蓄積して数秒で VRAM が枯渇していた。
+    /// このマップで「N フレーム連続で不在」を検出し、遅延して安全に解放する（誤解放防止）。
+    /// alive（今フレーム存在）になったキーはエントリを除去してカウンタをリセットする。
+    batch_absent_frames: HashMap<String, u32>,
+
     // ── ドラッグ&ドロップ ───────────────────────────────────────
     /// DROP_ACTOR コマンドを受け取ったときに設定する。
     /// 次フレームの ID パス後にワールド座標を読み出してアクターを配置する。
@@ -994,6 +1004,7 @@ impl App {
             light_gizmo:                 None,
             particle_gizmo:              None,
             shared_model_batches:    HashMap::new(),
+            batch_absent_frames:     HashMap::new(),
             pending_drop:            None,
             pending_drop_hover: None,
             drop_preview_pos:   None,

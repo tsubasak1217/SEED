@@ -21,6 +21,15 @@ static DEBUG_FRAME: AtomicU64 = AtomicU64::new(0);
 /// このフレーム数だけ詳細ログを出力する。
 const DEBUG_LOG_FRAMES: u64 = 10;
 
+/// 統合バッチ／BLAS キャッシュの遅延 prune のしきい値（フレーム数）。
+/// batch_key がこの数だけ連続で「そのフレームの描画対象」に不在なら、
+/// 対応する `shared_model_batches` エントリと RT の BLAS キャッシュを解放する。
+/// 即時解放にしないのは、非同期ロード中に gpu_model が一瞬 None になる等で batch_key が
+/// 一時的に消えたフレームでの誤解放→再ロードのスラッシングを避けるため。60fps で約 1 秒。
+/// マテリアルのインライン編集を止めれば、この猶予の後に stale バッチがまとめて解放され
+/// VRAM が定常状態へ戻る。
+const STALE_BATCH_PRUNE_FRAMES: u32 = 60;
+
 /// パフォーマンスログ用フレームカウンター。
 /// PERF_LOG_INTERVAL フレームごとに各処理の CPU 消費時間と MC/スキン数をログ出力する。
 static PERF_FRAME: AtomicU64 = AtomicU64::new(0);
@@ -70,6 +79,53 @@ use super::{
     CameraGizmoResources,
     CANVAS_WORLD_SCALE,
 };
+
+// ============================================================
+//  compute_stale_batch_prune — stale 統合バッチの遅延 prune 計算
+// ============================================================
+
+/// stale な統合バッチ（batch_key）の遅延 prune を計算する純関数（GPU 非依存・テスト可能）。
+///
+/// マテリアルのインライン編集は署名が変わるたびに新しい batch_key を生む。対応する
+/// `shared_model_batches` エントリと RT の BLAS キャッシュには削除処理が無く、編集のたびに
+/// ユニークキーの GPU リソースが無制限に蓄積して VRAM が枯渇していた（本修正の対象）。
+/// 誤解放（非同期ロード等で一瞬だけ描画対象から消えたキーを即解放→再ロード）を避けるため、
+/// 「`threshold` フレーム連続で不在」を検出してから解放する遅延方式にする。
+///
+/// - `cache_keys`: 現在キャッシュに存在する batch_key 集合（`shared_model_batches` のキー）。
+/// - `alive`:      このフレームの描画対象に存在する batch_key 集合（`merge_map` のキー）。
+/// - `absent`:     batch_key → 連続不在フレーム数（呼び出しをまたいで保持する状態マップ）。
+/// - `threshold`:  この数だけ連続不在になったら解放対象にする（>= で判定）。
+///
+/// 返り値: 解放すべき batch_key 一覧。副作用として `absent` を更新する:
+///   - alive なキーはカウンタをリセット（`absent` から除去）。
+///   - 不在キーはカウント +1。`threshold` 到達で解放対象へ入れ、`absent` から除去。
+///   - `cache_keys` に無い（既に外部で消えた）`absent` エントリも掃除し、状態マップの肥大も防ぐ。
+fn compute_stale_batch_prune(
+    cache_keys: &std::collections::HashSet<String>,
+    alive:      &std::collections::HashSet<String>,
+    absent:     &mut std::collections::HashMap<String, u32>,
+    threshold:  u32,
+) -> Vec<String> {
+    let mut to_free = Vec::new();
+    for key in cache_keys {
+        if alive.contains(key) {
+            // 今フレーム描画対象に復帰 → 不在カウンタをリセットする。
+            absent.remove(key);
+        } else {
+            // 不在フレームを 1 加算し、しきい値到達で解放対象にする。
+            let c = absent.entry(key.clone()).or_insert(0);
+            *c += 1;
+            if *c >= threshold {
+                to_free.push(key.clone());
+            }
+        }
+    }
+    // 解放したキーと、既に cache から消えたキーの absent エントリを掃除する。
+    for k in &to_free { absent.remove(k); }
+    absent.retain(|k, _| cache_keys.contains(k));
+    to_free
+}
 
 // ============================================================
 //  compute_game_viewport — スケーリングモード別ビューポート計算
@@ -1144,6 +1200,46 @@ impl App {
                                     );
                                 }
                             }
+                        }
+                    }
+
+                    // ─── stale 統合バッチ／BLAS キャッシュの遅延 prune ──────────────
+                    // マテリアルのインライン編集（スライダードラッグ等）は署名が変わるたびに
+                    // 新しい batch_key を生む。以前は shared_model_batches も RT の BLAS キャッシュも
+                    // 追加のみで削除が無く、編集のたびに巨大な GPU リソースが無制限に蓄積して
+                    // 数秒で VRAM が枯渇（OOM パニック）していた。ここで「このフレームの描画対象
+                    // （merge_map のキー）に STALE_BATCH_PRUNE_FRAMES 連続で不在」の batch_key を解放する。
+                    // alive 集合（merge_map のキー）由来なので、解放するのは「もう描かれていない」
+                    // ものだけ＝描画結果は不変。遅延方式で非同期ロード時の誤解放も避ける。
+                    {
+                        let alive: std::collections::HashSet<String> =
+                            merge_map.keys().cloned().collect();
+                        let cache_keys: std::collections::HashSet<String> =
+                            self.shared_model_batches.keys().cloned().collect();
+                        let freed = compute_stale_batch_prune(
+                            &cache_keys,
+                            &alive,
+                            &mut self.batch_absent_frames,
+                            STALE_BATCH_PRUNE_FRAMES,
+                        );
+                        if !freed.is_empty() {
+                            // ① 統合バッチ本体（インスタンスバッファ・GpuModel 借用元は MC 側）を解放。
+                            for k in &freed {
+                                self.shared_model_batches.remove(k);
+                            }
+                            // ② RT の BLAS キャッシュ／警告集合も同一キー（BlasKey.source_path == batch_key）で
+                            //    追従解放する。TLAS は毎フレーム casters から詰め直すため、キャッシュから
+                            //    消えれば自然に登録されなくなる（rt_shadow.rs prepare_and_build 参照）。
+                            let mut freed_blas = 0usize;
+                            if let Some(rt_cell) = draw_ctx.rt_shadow.as_ref() {
+                                freed_blas = rt_cell.borrow_mut().prune_source_paths(&freed);
+                            }
+                            // リーク再発の可視化: 解放が走ったフレームのみログ（定常時は無出力）。
+                            eprintln!(
+                                "[SEED PRUNE] stale 統合バッチ {} 件を解放（追従 BLAS {} 件）。\
+                                 マテリアル編集で蓄積したユニーク署名キーの回収です。",
+                                freed.len(), freed_blas
+                            );
                         }
                     }
 
@@ -5561,5 +5657,100 @@ mod camera_preview_lighting_tests {
             region.contains("shadow_preview"),
             "カメラプレビューのパスがプレビューカメラ基準の CSM を構築していません"
         );
+    }
+}
+
+#[cfg(test)]
+mod stale_prune_tests {
+    use super::compute_stale_batch_prune;
+    use std::collections::{HashMap, HashSet};
+
+    /// テスト用ヘルパ: &str スライスを HashSet<String> にする。
+    fn set(keys: &[&str]) -> HashSet<String> {
+        keys.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// N-1 フレーム連続不在では保持し、N フレーム目で解放されること（境界）。
+    #[test]
+    fn frees_only_after_threshold_frames() {
+        const N: u32 = 60;
+        let cache = set(&["modelA"]);      // キャッシュには常に modelA が存在
+        let alive = HashSet::<String>::new(); // 一度も描画対象に現れない（不在が続く）
+        let mut absent = HashMap::new();
+
+        // N-1 フレームまでは解放されない（保持）。
+        for frame in 1..N {
+            let freed = compute_stale_batch_prune(&cache, &alive, &mut absent, N);
+            assert!(freed.is_empty(), "フレーム{frame}: N未満では解放しない");
+            assert_eq!(absent.get("modelA"), Some(&frame), "不在カウンタが加算されること");
+        }
+        // N フレーム目でちょうど解放される。
+        let freed = compute_stale_batch_prune(&cache, &alive, &mut absent, N);
+        assert_eq!(freed, vec!["modelA".to_string()], "N フレーム連続不在で解放されること");
+        // 解放後は absent からも消えている。
+        assert!(!absent.contains_key("modelA"), "解放後は不在カウンタも掃除されること");
+    }
+
+    /// 再出現でカウンタがリセットされ、以後 alive の間は決して解放されないこと。
+    #[test]
+    fn reappearing_resets_counter() {
+        const N: u32 = 60;
+        let cache = set(&["modelA"]);
+        let absent_alive = HashSet::<String>::new();
+        let present_alive = set(&["modelA"]);
+        let mut absent = HashMap::new();
+
+        // N-1 フレーム不在にしてカウンタを閾値直前まで進める。
+        for _ in 1..N {
+            let freed = compute_stale_batch_prune(&cache, &absent_alive, &mut absent, N);
+            assert!(freed.is_empty());
+        }
+        assert_eq!(absent.get("modelA"), Some(&(N - 1)));
+
+        // ここで 1 フレームだけ再出現 → カウンタがリセットされる。
+        let freed = compute_stale_batch_prune(&cache, &present_alive, &mut absent, N);
+        assert!(freed.is_empty(), "再出現フレームでは解放しない");
+        assert!(!absent.contains_key("modelA"), "再出現でカウンタがリセット（絶不在エントリ除去）");
+
+        // 再びカウントし直しになる（N-1 フレーム不在ではまだ解放されない）。
+        for _ in 1..N {
+            let freed = compute_stale_batch_prune(&cache, &absent_alive, &mut absent, N);
+            assert!(freed.is_empty(), "リセット後は再度 N フレーム必要");
+        }
+        let freed = compute_stale_batch_prune(&cache, &absent_alive, &mut absent, N);
+        assert_eq!(freed, vec!["modelA".to_string()]);
+    }
+
+    /// alive なキーは即座（1 フレーム目）でも解放されず、absent にも積まれないこと。
+    #[test]
+    fn alive_keys_are_never_pruned() {
+        let cache = set(&["a", "b"]);
+        let alive = set(&["a", "b"]);
+        let mut absent = HashMap::new();
+        for _ in 0..1000 {
+            let freed = compute_stale_batch_prune(&cache, &alive, &mut absent, 60);
+            assert!(freed.is_empty());
+        }
+        assert!(absent.is_empty(), "alive なキーは不在マップに積まれないこと");
+    }
+
+    /// cache から外部で消えたキーの absent エントリは掃除され、状態マップが肥大しないこと。
+    #[test]
+    fn absent_map_does_not_leak_for_removed_cache_keys() {
+        const N: u32 = 60;
+        let alive = HashSet::<String>::new();
+        let mut absent = HashMap::new();
+
+        // フレーム1: cache に stale が居て不在 → absent に積まれる。
+        let cache1 = set(&["stale"]);
+        let freed = compute_stale_batch_prune(&cache1, &alive, &mut absent, N);
+        assert!(freed.is_empty());
+        assert_eq!(absent.get("stale"), Some(&1));
+
+        // フレーム2: cache から "stale" が外部で消えた（別経路で除去）→ absent も掃除される。
+        let cache2 = HashSet::<String>::new();
+        let freed = compute_stale_batch_prune(&cache2, &alive, &mut absent, N);
+        assert!(freed.is_empty());
+        assert!(absent.is_empty(), "cache に無いキーの不在エントリは掃除されること（状態マップの肥大防止）");
     }
 }
