@@ -57,6 +57,10 @@ pub enum MaterialOverrideKind {
         alpha_mode: Option<String>,
         #[serde(default)]
         alpha_cutoff: Option<f32>,
+        /// 屈折率（IOR, Phase RT-Translucency）。`None` なら埋込値を維持する。
+        /// RT-Translucency 有効・Blend のときスクリーンスペース屈折に使う（1.0=屈折なし）。
+        #[serde(default)]
+        ior: Option<f32>,
         /// カリング面 "back" | "front" | "none"（material_asset::parse_cull_face で変換）。
         /// `None` なら埋込マテリアルの値（glTF の double_sided 由来）を維持する。
         #[serde(default)]

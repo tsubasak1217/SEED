@@ -285,11 +285,20 @@ fn normalize(v: [f32; 3]) -> [f32; 3] {
     if len < 1e-6 { [0.0, 0.0, 1.0] } else { [v[0] / len, v[1] / len, v[2] / len] }
 }
 
+// ─── RT-Translucency ビットマスク（LightMeta.translucency_rt）─────
+//
+// WGSL 側 light_common.wgsl の TRANSLUCENCY_RT_* 定数と値を一致させること。
+
+/// bit0: 色付き影を有効化（translucency==Rt）。RT 影シェーダが半透明レイヤーの透過色を影に乗せる。
+pub const TRANSLUCENCY_RT_COLORED_SHADOW: u32 = 1;
+/// bit1: 屈折の背景（refract_bg）が有効＝このフレームで屈折可能（deferred 有効＋背景コピー済み）。
+pub const TRANSLUCENCY_RT_REFRACTION: u32 = 2;
+
 // ─── LightMeta ───────────────────────────────────────────────
 
 /// ライト配列のメタ情報 uniform（32 bytes）。
 ///
-/// count / rt_shadows / view_mode / ambient_* が意味を持ち、_pad は 16 バイト境界のためのパディング。
+/// count / rt_shadows / view_mode / translucency_rt / ambient_* が意味を持つ。
 /// WGSL 側 LightMeta（light_common.wgsl）と厳密に一致させること:
 ///   先頭スカラー 4 つ（16B）→ ambient_color: vec3（16B 境界, offset 16）→ ambient_intensity（offset 28）。
 ///
@@ -298,7 +307,7 @@ fn normalize(v: [f32; 3]) -> [f32; 3] {
 /// |   0    | count             |   4  |
 /// |   4    | rt_shadows        |   4  |
 /// |   8    | view_mode         |   4  |
-/// |  12    | _pad              |   4  |
+/// |  12    | translucency_rt   |   4  |
 /// |  16    | ambient_color     |  12  |
 /// |  28    | ambient_intensity |   4  |
 /// 合計 32
@@ -316,8 +325,15 @@ pub struct LightMeta {
     /// メインカメラ用 LightMeta にのみ非 0 を書き込み、プレビュー用は常に 0（＝Lit）にすることで、
     /// アンリット／ワイヤをエディタのシーンビュー（デバッグカメラ）だけに限定する。
     pub view_mode:  u32,
-    /// アライメント用パディング（ambient_color を 16 バイト境界へ揃える）。
-    pub _pad:       u32,
+    /// RT-Translucency（高品質半透明）のビットマスク（Phase RT-Translucency）。旧 `_pad`（offset 12）を転用。
+    /// - bit0（`TRANSLUCENCY_RT_COLORED_SHADOW`=1）: 色付き影。translucency==Rt のフレームで立つ。
+    ///   RT 影シェーダ（rt_shadow_on.wgsl）が半透明レイヤーへの第 2 遮蔽クエリでガラスの透過色を影に乗せる。
+    /// - bit1（`TRANSLUCENCY_RT_REFRACTION`=2）: 屈折の背景（refract_bg）が有効。translucency==Rt かつ
+    ///   deferred 有効かつ背景コピー済みのフレームで立つ。半透明フォワード（refract_common.wgsl）が屈折する。
+    /// 2 機能で解決タイミングが違う（色付き影は forward-RT でも効く／屈折は deferred の背景コピーが要る）
+    /// ため別ビットに載せる。`update()` が bit0 を書き、frame_renderer が屈折可能なフレームで bit1 を追記する。
+    /// メインカメラ用にのみ立て、プレビュー用は常に 0（屈折・色付き影ともプレビューでは無効）。
+    pub translucency_rt: u32,
     /// 環境光の色（リニア RGB, Phase R1.5）。既定は白。
     pub ambient_color: [f32; 3],
     /// 環境光の強度（Phase R1.5）。既定 0.05（従来のハードコード値）。0 で完全な暗闇。
@@ -403,7 +419,7 @@ impl LightBuffer {
             count:             0,
             rt_shadows:        0,
             view_mode:         0,
-            _pad:              0,
+            translucency_rt:   0,
             ambient_color:     DEFAULT_AMBIENT_COLOR,
             ambient_intensity: DEFAULT_AMBIENT_INTENSITY,
         };
@@ -495,6 +511,9 @@ impl LightBuffer {
     /// - `view_mode`: エディタのシーンビュー表示モードコード（SceneViewMode::to_code。
     ///   0=Lit / 1=Unlit / 2=Wireframe）。**メインカメラ用 LightMeta にのみ**書き込み、
     ///   プレビュー用は常に 0（Lit）に固定する。呼び出し側は Play 中や非 Edit では 0 を渡すこと。
+    /// - `translucency_rt`: このフレームで RT-Translucency（色付き影＋屈折）を使うか
+    ///   （Phase RT-Translucency。resolved.translucency==Rt）。メインカメラ用にのみ反映し、
+    ///   プレビュー用は常に 0（プレビューでは色付き影・屈折とも無効）。
     /// - `ambient_color` / `ambient_intensity`: 環境光（Phase R1.5）。
     ///   フラグメントの `ambient = ambient_color * ambient_intensity * albedo * ao`。
     pub fn update(
@@ -503,6 +522,7 @@ impl LightBuffer {
         lights:            &[GpuLight],
         rt_shadows:        bool,
         view_mode:         u32,
+        translucency_rt:   bool,
         ambient_color:     [f32; 3],
         ambient_intensity: f32,
     ) {
@@ -515,13 +535,14 @@ impl LightBuffer {
             count:      count as u32,
             rt_shadows: if rt_shadows { 1 } else { 0 },
             view_mode,
-            _pad:       0,
+            translucency_rt: if translucency_rt { 1 } else { 0 },
             ambient_color,
             ambient_intensity,
         };
         queue.write_buffer(&self.meta_buffer_main, 0, bytemuck::bytes_of(&meta_main));
-        // プレビュー用: view_mode を 0（Lit）に固定。それ以外は main と同値。
-        let meta_preview = LightMeta { view_mode: 0, ..meta_main };
+        // プレビュー用: view_mode を 0（Lit）に固定。RT-Translucency もプレビューでは無効
+        //   （プレビュー透明は距離ソートのみ・屈折用の背景 RT / 専用 BG を持たないため）。
+        let meta_preview = LightMeta { view_mode: 0, translucency_rt: 0, ..meta_main };
         queue.write_buffer(&self.meta_buffer_preview, 0, bytemuck::bytes_of(&meta_preview));
     }
 
@@ -533,6 +554,10 @@ impl LightBuffer {
     ///
     /// RT パイプラインを使うのはメインカメラのパスだけなので、クラスタは常に有効側
     /// （params_buffer）を差す（カメラプレビューは RT を使わない＝R8 からの方針）。
+    ///
+    /// `rt_albedo` は TLAS インスタンス順の平均アルベド storage（binding 14, Phase RT-Translucency）。
+    /// 色付き影（rt_shadow_on.wgsl）が半透明レイヤーのヒットで透過色を引くために使う。GI compute が
+    /// binding4 で使うのと同一バッファ（rt_shadow.rs 所有）。RT 影を使わないフレームでも bind は無害。
     pub fn create_rt_bind_group(
         &self,
         device:        &wgpu::Device,
@@ -541,6 +566,7 @@ impl LightBuffer {
         clusters:      &super::clustered::ClusterResources,
         gi:            &super::ddgi::GiResources,
         tlas:          &wgpu::Tlas,
+        rt_albedo:     &wgpu::Buffer,
     ) -> wgpu::BindGroup {
         device.create_bind_group(&wgpu::BindGroupDescriptor {
             label:   Some("Lights+Shadow+Cluster+TLAS BG (group 4, RT)"),
@@ -563,6 +589,71 @@ impl LightBuffer {
                 wgpu::BindGroupEntry { binding: 11, resource: wgpu::BindingResource::TextureView(gi.irradiance_view()) },
                 wgpu::BindGroupEntry { binding: 12, resource: wgpu::BindingResource::TextureView(gi.visibility_view()) },
                 wgpu::BindGroupEntry { binding: 13, resource: wgpu::BindingResource::Sampler(gi.sampler()) },
+                // 平均アルベド storage（Phase RT-Translucency）: 色付き影が半透明ヒットで透過色を引く。
+                wgpu::BindGroupEntry { binding: 14, resource: rt_albedo.as_entire_binding() },
+            ],
+        })
+    }
+
+    /// 半透明フォワードパス用の group 4 複合 BindGroup を生成する（Phase RT-Translucency）。
+    ///
+    /// 通常の非 RT ライト BG（binding 0〜5, 7〜13）に、屈折の背景テクスチャ（binding 15）＋
+    /// サンプラー（binding 16）を加えた superset。透明パイプライン（ソート／WBOIT）の group4
+    /// レイアウト（`TransparentPipelines.lights_bgl`）に一致する。毎フレーム生成する
+    /// （屈折背景 RT がリサイズ・オン/オフで差し替わるため）。
+    ///
+    /// - `pass`:            MainCamera（ライブクラスタ／GI＋メイン LightMeta）or
+    ///                      CameraPreview（無効クラスタ／GI＋プレビュー LightMeta＝屈折フラグ 0）。
+    /// - `shadow`:          そのカメラ基準の CSM を持つシャドウ資源。
+    /// - `refract_view`:    屈折の背景（不透明 scene_hdr のコピー）。オフ時はダミー 1x1。
+    /// - `refract_sampler`: 背景サンプラー（線形・ClampToEdge）。
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_transparent_bind_group(
+        &self,
+        device:          &wgpu::Device,
+        transparent_bgl: &wgpu::BindGroupLayout,
+        shadow:          &ShadowResources,
+        clusters:        &super::clustered::ClusterResources,
+        gi:              &super::ddgi::GiResources,
+        pass:            LightingPass,
+        refract_view:    &wgpu::TextureView,
+        refract_sampler: &wgpu::Sampler,
+    ) -> wgpu::BindGroup {
+        // カメラ固有資源（メタ・クラスタパラメータ・GI パラメータ）をパスで選ぶ。
+        //   MainCamera : ライブ（クラスタ有効・GI 有効・LightMeta.translucency_rt はメイン値）。
+        //   Preview    : 無効側（クラスタ無効・GI 無効・LightMeta.translucency_rt=0＝屈折オフ）。
+        let (meta, cluster_params, gi_params) = match pass {
+            LightingPass::MainCamera => (
+                &self.meta_buffer_main,
+                clusters.params_buffer(),
+                gi.params_buffer(),
+            ),
+            LightingPass::CameraPreview => (
+                &self.meta_buffer_preview,
+                clusters.params_disabled_buffer(),
+                gi.params_disabled_buffer(),
+            ),
+        };
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label:   Some("Lights+Shadow+Cluster+Refract BG (group 4, transparent)"),
+            layout:  transparent_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: self.lights_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: meta.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&shadow.dir_array_view) },
+                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&shadow.spot_array_view) },
+                wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::Sampler(&shadow.sampler) },
+                wgpu::BindGroupEntry { binding: 5, resource: shadow.ubo.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 7, resource: clusters.grid_buffer().as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 8, resource: clusters.indices_buffer().as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 9, resource: cluster_params.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 10, resource: gi_params.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 11, resource: wgpu::BindingResource::TextureView(gi.irradiance_view()) },
+                wgpu::BindGroupEntry { binding: 12, resource: wgpu::BindingResource::TextureView(gi.visibility_view()) },
+                wgpu::BindGroupEntry { binding: 13, resource: wgpu::BindingResource::Sampler(gi.sampler()) },
+                // 屈折の背景（Phase RT-Translucency）: scene_hdr のコピー or ダミー 1x1。
+                wgpu::BindGroupEntry { binding: 15, resource: wgpu::BindingResource::TextureView(refract_view) },
+                wgpu::BindGroupEntry { binding: 16, resource: wgpu::BindingResource::Sampler(refract_sampler) },
             ],
         })
     }
@@ -638,6 +729,31 @@ mod layout_tests {
             "WGSL の GpuLight サイズ（naga 計算）が Rust と一致しません。\
              vec3 パディング等の align 16 押し出しを疑うこと\
              （スカラー f32 ×3 で詰めるのが正しい）"
+        );
+    }
+
+    /// 【回帰ガード】WGSL 側 LightMeta（naga 計算サイズ）が Rust の size_of と一致すること。
+    /// translucency_rt（旧 _pad2 転用）を追加しても 32 バイト不変であることを機械的に担保する。
+    #[test]
+    fn wgsl_light_meta_size_matches_rust() {
+        let src = format!(
+            "{}\n{}\n{}",
+            include_str!("shaders/cluster_common.wgsl"),
+            include_str!("shaders/ddgi_common.wgsl"),
+            include_str!("shaders/light_common.wgsl"),
+        );
+        let module = naga::front::wgsl::parse_str(&src)
+            .expect("cluster_common + ddgi_common + light_common の parse に失敗");
+        let (handle, _) = module.types.iter()
+            .find(|(_, t)| t.name.as_deref() == Some("LightMeta"))
+            .expect("WGSL に struct LightMeta が見つかりません");
+        let mut layouter = naga::proc::Layouter::default();
+        layouter.update(module.to_ctx()).expect("naga Layouter の計算に失敗");
+        let wgsl_size = layouter[handle].size as usize;
+        assert_eq!(
+            wgsl_size, size_of::<LightMeta>(),
+            "WGSL の LightMeta サイズ（naga 計算）が Rust と一致しません（translucency_rt の追加で\
+             オフセットがズレていないか確認すること）"
         );
     }
 }

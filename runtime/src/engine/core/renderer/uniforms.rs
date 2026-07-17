@@ -132,7 +132,7 @@ fn normal_matrix_from_model(m: &[[f32; 4]; 4]) -> [[f32; 4]; 4] {
 /// | 48        | has_mr_tex        |   4    |
 /// | 52        | has_occlusion_tex |   4    |
 /// | 56        | has_emissive_tex  |   4    |
-/// | 60        | _pad              |   4    |
+/// | 60        | ior               |   4    |  ← 旧 _pad を転用（Phase RT-Translucency）
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct MaterialUniform {
@@ -147,7 +147,9 @@ pub struct MaterialUniform {
     pub has_mr_tex:         u32,
     pub has_occlusion_tex:  u32,
     pub has_emissive_tex:   u32,
-    pub _pad:               u32,
+    /// 屈折率（IOR, Phase RT-Translucency）。旧 _pad（offset 60）を転用。
+    /// RT-Translucency 有効時、Blend 半透明のスクリーンスペース屈折で使う（1.0=屈折なし）。
+    pub ior:                f32,
 }
 
 // ── スキニング用ジョイント行列 (Group 3, Binding 0) ───────────

@@ -4,9 +4,9 @@
 # カラーフォーマットは HDR（PostPipeline 同様 color_format="surface" が
 # ビルド時に渡す scene_format=Rgba16Float へ解決される）。
 
-shader_sources  = ["cluster_common.wgsl", "pbr_common.wgsl", "shader_common.wgsl", "ddgi_common.wgsl", "light_common.wgsl", "shadow.wgsl", "rt_shadow_off.wgsl", "shader_static_vertex.wgsl", "surface.wgsl", "surface_gather.wgsl", "lighting_eval.wgsl", "shader_fragment.wgsl"]
+shader_sources  = ["cluster_common.wgsl", "pbr_common.wgsl", "shader_common.wgsl", "ddgi_common.wgsl", "light_common.wgsl", "shadow.wgsl", "rt_shadow_off.wgsl", "shader_static_vertex.wgsl", "surface.wgsl", "surface_gather.wgsl", "lighting_eval.wgsl", "shader_fragment.wgsl", "refract_common.wgsl", "shader_transparent.wgsl"]
 vertex_entry    = "vs_main"
-fragment_entry  = "fs_main"
+fragment_entry  = "fs_transparent_sorted"
 vertex_slots    = ["mesh_vertex"]
 
 topology        = "TriangleList"
@@ -17,5 +17,7 @@ depth_write     = false
 depth_compare   = "LessEqual"
 
 color_format    = "surface"
-blend           = "AlphaBlending"
+# premultiplied over（RT-Translucency）。fs_transparent_sorted が premultiplied 色を出力する。
+# 屈折オフ時は (lit*a, a) を出すため straight AlphaBlending と等価＝Raster 見た目一致。
+blend           = "PremultipliedAlpha"
 write_mask      = "all"

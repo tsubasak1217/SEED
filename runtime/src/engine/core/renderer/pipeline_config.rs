@@ -261,6 +261,11 @@ impl<'d> RenderPipelineBuilder<'d> {
                         operation:  wgpu::BlendOperation::Add,
                     },
                 }),
+                // Premultiplied over（src*1 + dst*(1-srcA)）。フラグメントが premultiplied 色
+                // （色に被覆を折り込んだ値）を出力する前提の「over」合成。straight AlphaBlending と
+                // 数学的に等価だが、屈折フラグメント（背景を自前合成し alpha=1 を出す）が dst を
+                // 隠せるのはこのモード。RT-Translucency の距離ソート半透明で使う。
+                "PremultipliedAlpha" => Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
                 "None"          => None,
                 _               => Some(wgpu::BlendState::REPLACE),
             };

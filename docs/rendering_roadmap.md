@@ -958,6 +958,69 @@ inline RT ではヒット三角形のマテリアルテクスチャ・頂点属�
 
 ---
 
+## フェーズ RT-Translucency（高品質半透明＝色付き影＋屈折） 【状況: 実装済み（実機検証待ち）】
+
+`TranslucencyMode::Rt` を実体化する。**Rt = 「色付き影[RT シャドウレイ]＋屈折[スクリーンスペース]」の
+パッケージ**（屈折はスクリーンスペースだが、色付き影が RT 前提のため RT 対応 GPU をまとめて要求する）。
+RT 非対応 GPU では `raster` へ降格する（`render_features.rs::resolve`）。ゲートは `LightMeta.translucency_rt`
+（旧 `_pad`, offset 12）に**ビットマスク**で載せる: bit0=色付き影 / bit1=屈折可能。
+
+### A. 色付き影（ガラス越しの光が染まる）
+- RT シャドウレイ（`rt_shadow_on.wgsl`）は従来 cull_mask 0x01（不透明のみ）。色付き影では、不透明で
+  遮蔽されていないとき**第 2 のクエリ（cull_mask 0x02＝`RT_MASK_NON_OPAQUE`。半透明レイヤーは TLAS 登録済み）**を
+  発射し、透過色を累積する。inline ray query は最近ヒットしか返さないため、**tmin をヒットの先へ進めながら
+  最大 `RT_TRANSLUCENT_MAX_HITS`(=4) 回再トレース**して重なったガラスを貫く:
+  `tint *= mix(vec3(1), avg_albedo.rgb, avg_albedo.a)`。
+- 平均アルベドは DDGI 用の per-instance storage（`rt_shadow.rs` 所有・16B/インスタンス・TLAS `custom_data` で引く）を
+  **シャドウレイでも読めるように group4 に binding14 を追加**（`rt_shadow_on.wgsl` 宣言＋`lighting.rs::create_rt_bind_group`
+  で bind）。不透明度は既存 `avg_albedo.a`（= `base_color_factor.a`）を流用＝**キャッシュ昇格不要**。
+- `rt_shadow_factor` の戻り値を **f32 → vec3<f32>（RGB 透過率）**へ変更。`rt_shadow_off.wgsl` スタブも一致
+  （`vec3(1)`）。`lighting_eval.wgsl` は `radiance = radiance * factor`（vec3×vec3）で変更不要。deferred/forward の
+  全 RT バリアントに波及（naga 全バリアント検証で担保）。スカラー可視性（不透明の遮蔽平均）× ターミネータ ×
+  透過色（中心方向 L に 1 本、コスト有界）で合成。
+- **注意**: 色付き影は shadow=rt のときだけ効く（シャドウマップは二値で色を持てない）。translucency=rt かつ
+  shadow=shadowmap では色付き影は不発（屈折のみ）。`[SEED FEATURES]` に注記。
+
+### B. 屈折（スクリーンスペース）
+- RT 屈折レイは採用しない（ヒット先が平均アルベドのベタ塗りになるため）。**不透明シーン HDR のコピーを
+  IOR ベースのオフセットでサンプルする Screen-Space Refraction** をフォワード半透明（距離ソート／WBOIT 両方）に入れる。
+- 反射パスの read/write 分離を流用: scene_hdr を `refract_bg`（RtPool・別 RT）へ `copy_texture_to_texture` してから
+  半透明フラグメントが読む（同一 scene_hdr の読み書き競合回避）。RtPool の usage に COPY_SRC|COPY_DST を追加。
+  コピーは**不透明ライティング＋反射完成後・メインパス再開前**に置く（deferred 前提。skybox はメインパス描画のため
+  背景に含まれない＝既知の制限）。
+- Material に `ior: f32`（既定 1.0）を追加。`MaterialUniform`（group2）の旧 `_pad`(offset60) を転用（64B 不変）。
+  loader（glTF の `Material::ior()` は現行 gltf クレートに無いため既定 1.0。`.mat`／インライン上書き／Inspector で設定）・
+  `.mat`・`MaterialOverride::Inline`・ACTOR_COMPONENTS・Inspector（**AlphaMode=Blend のときだけ表示**）へ配線。
+  Material がキャッシュに焼かれるため **`CACHE_FORMAT_VERSION` 9→10**。
+- **合成式**（gate off ＝屈折ビット未設定時は従来の見た目に一致するよう設計）:
+  - 距離ソート: 専用 fragment `fs_transparent_sorted` が **premultiplied over**（新 blend `PremultipliedAlpha`）で出力。
+    屈折オフ→`(lit*a, a)`（straight AlphaBlending と数学的に等価＝Raster パリティ）。屈折オン→
+    `out.rgb = lit*a + bg*tint*(1-a)`, `out.a = 1`（背景をフラグメントで自前合成し置換）。`tint = base_color.rgb`（色付きガラス）。
+  - WBOIT: 屈折オフ→従来（`accum=(lit*a, a)*w`, `reveal=a`）。屈折オン→`premult = lit*a + bg*tint*(1-a)`,
+    実効被覆 `a_eff=1`（`accum=(premult, 1)*w`, `reveal=1`）→ 合成で背景を確定表示。
+  - 背景 UV は法線のビュー空間傾き × `strength=1-1/ior` × 上限比率でオフセット。画面外は素の UV へフェード。
+- **バインドグループ**（`max_bind_groups=5` 厳守）: 透明パイプラインの group4 を「lights（0〜13）＋屈折背景
+  （15=tex/16=sampler）」の superset にした（`refract_common.wgsl` を透明シェーダにのみ連結）。frame_renderer が
+  `LightBuffer::create_transparent_bind_group` で毎フレーム透明用 group4 BG を生成（メイン＝実背景 or ダミー、
+  プレビュー＝ダミー・屈折ビット 0）。屈折オフのフレームは**ダミー 1x1 を bind**するため透明描画は常に成立
+  （Raster 既定でも壊れない）。
+
+### C. resolve / needs_tlas / UI
+- resolve: `Rt → (rt非対応) → Raster`（色付き影が RT 前提）。`needs_tlas()` は translucency==Rt で true（一般化済み）。
+- UI: 半透明コンボの「（未実装）」を撤去。IOR は Inspector のマテリアル編集（Blend のみ表示）。
+
+### 検証（実装時点）
+- `cargo test --bin SEED`: 107 passed（+2: `render_features` の translucency resolve 降格・`lighting` の WGSL LightMeta
+  naga サイズ照合。既存の cull mask テストへ 0x02=`RT_MASK_NON_OPAQUE` の照合、log_line テストを実装済みへ更新）。
+- 全フラグメントバリアント（mesh/skinned × RT on/off・deferred on/off・WBOIT・距離ソート）＋屈折 refract_common・
+  色付き影 binding14 の WGSL 連結が naga validate を通過。
+- `cargo build` / `cd editor && dotnet build` ともに 0 エラー。
+- **未検証（実機 GPU 無し）**: 実レンダリング結果（色付き影の染まり・屈折の歪み）・バインドグループの実行時整合・
+  fps はスモークテストで確認すること。**監督者スモーク**: translucency=rt で従来シーン（Raster 相当・非 Blend）が
+  壊れないこと（ダミー背景 bind ＋ premultiplied パリティで担保）。
+
+---
+
 ## レンダリング機能マトリクス（機能 × モード）
 
 2026-07 追加。RT-Shadow / RT-GI / RT-Reflection / RT-AO / RT-Translucency を**機能ごとに独立して
@@ -974,7 +1037,7 @@ inline RT ではヒット三角形のマテリアルテクスチャ・頂点属�
 | GI | `GiMode` | `rt` / `ssgi` / `off`(=`flat`) | `flat`※ | **3 方式すべて実装済み**（`rt`＝DDGI / `ssgi`＝スクリーンスペース GI / `flat`＝フラットアンビエント）。`rt`＝プローブ格子レイトレ（RT 対応 GPU）、`ssgi`＝1 フレーム遅延の半解像度 SS-GI（RT 不要・deferred 有効時のみ）。RT 非対応で `rt` 要求時は `ssgi` へ降格。強度は `gi_intensity`（DDGI と共通） |
 | 反射 | `ReflectionMode` | `rt` / `ssr` / `off` | `off` | **実装済み（SSR / RT, Phase D6）**。`rt`＝RT 反射（RT 対応 GPU）、`ssr`＝スクリーンスペース反射。RT 非対応で `rt` 要求時は `ssr` へ降格。deferred 有効時のみ動作 |
 | AO | `AoMode` | `rt` / `ssao` / `off` | `off` | **実装済み（SSAO / RT-AO, Phase D4）**。`rt`＝RT-AO（RT 対応 GPU）、`ssao`＝SSAO。RT 非対応で `rt` 要求時は `ssao` へ降格。deferred 有効時のみ動作。強度は `ao_intensity` |
-| 半透明 | `TranslucencyMode` | `rt` / `raster` | `raster` | `raster`＝従来 WBOIT/距離ソート（実装済み）。`rt` は**未実装**（resolve で `raster` へ降格） |
+| 半透明 | `TranslucencyMode` | `rt` / `raster` | `raster` | **実装済み（Phase RT-Translucency）**。`raster`＝従来 WBOIT/距離ソート。`rt`＝高品質半透明パッケージ＝**色付き影[RT シャドウレイ]＋屈折[スクリーンスペース]**。RT 非対応で `rt` 要求時は `raster` へ降格（色付き影が RT 前提のため）。屈折は deferred 有効時のみ動作（背景コピーの都合） |
 
 ※ `GiMode` の型既定は `flat` だが、**旧 `GiSettings.enabled` の既定は true** だったため、
 プロジェクト設定に `gi_enabled` キーが無い場合は移行時に `rt`（GI 有効）へ写像し、現状の見た目を維持する
@@ -989,12 +1052,15 @@ inline RT ではヒット三角形のマテリアルテクスチャ・頂点属�
   - 反射: `rt`＝RT 対応時のみ通す／RT 非対応時は `ssr` へ降格、`ssr`＝常に `ssr`、`off`＝`off`（Phase D6 実装済み）。
   - AO: `rt`＝RT 対応時のみ通す／RT 非対応時は `ssao` へ降格、`ssao`＝常に `ssao`、`off`＝`off`（Phase D4 実装済み）。
     ただし `ssao`/`rt` は deferred 有効時のみ動作（deferred ゲートは `frame_renderer` 側 `ao_effective` で判定）。
-  - 半透明の `rt` は実体未実装のため、`rt_supported` に関わらず常に `raster` へ降格。
+  - 半透明: `rt`＝RT 対応時のみ通す／RT 非対応時は `raster` へ降格（色付き影が RT 前提のため。屈折だけ欲しいケースの分離は将来課題）、`raster`＝常に `raster`（Phase RT-Translucency 実装済み）。
 - 実行時分岐（`frame_renderer.rs` 等）は必ず `ResolvedFeatures` を参照し、生の `RenderFeatures` を直接見ない。
-- 起動時・切替時に実効モードを `[SEED FEATURES] shadow=… gi=… reflection=rt …` の 1 行でログ
+- 起動時・切替時に実効モードを `[SEED FEATURES] shadow=… gi=… reflection=rt … translucency=rt …` の 1 行でログ
   （反射は実装済みのため `(未実装)` は付かない。RT 非対応で SSR 降格時のみ `reflection=ssr(rt非対応→ssr)`。
   RT 非対応で GI が SSGI 降格時は `gi=ssgi(rt非対応→ssgi)`。反射要求ありで deferred 無効なら
   `反射:deferred無効のため停止`、実効 GI が `ssgi` で deferred 無効なら `GI(SSGI):deferred無効のため停止` を追記）
+  - 半透明も実装済みのため `(未実装)` は付かない。RT 非対応で降格時のみ `translucency=raster(rt非対応→raster)`。
+    Rt が通っても影が RT でない（shadow≠rt）ときは `translucency=rt(影=rt時のみ色付き影/屈折のみ)` と注記する
+    （シャドウマップは二値で色を持てないため色付き影は不発。屈折はスクリーンスペースなので影の方式に依らず有効）。
 
 ### D6 反射 実機テスト観点（GPU 実機確認が必要。開発環境では cargo build/test まで）
 - SSR/RT を切り替えると鏡面（低 roughness）の床・金属に反射像が出ること。

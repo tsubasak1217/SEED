@@ -13,8 +13,7 @@ use std::collections::HashMap;
 
 /// プールが保持する 1 枚のレンダーターゲット。
 struct RtEntry {
-    /// GPU テクスチャ本体（RENDER_ATTACHMENT | TEXTURE_BINDING）。
-    #[allow(dead_code)]
+    /// GPU テクスチャ本体（RENDER_ATTACHMENT | TEXTURE_BINDING | COPY_SRC | COPY_DST）。
     texture: wgpu::Texture,
     /// 描画・サンプリング両用のビュー。
     view:    wgpu::TextureView,
@@ -72,8 +71,13 @@ impl RtPool {
             sample_count:    1,
             dimension:       wgpu::TextureDimension::D2,
             format,
+            // RENDER_ATTACHMENT | TEXTURE_BINDING（ポスト入出力の両用）に加え、
+            // COPY_SRC | COPY_DST を許可する。RT-Translucency の屈折で scene_hdr を
+            // refract_bg へ copy_texture_to_texture するために必要（両テクスチャとも同プール）。
             usage:           wgpu::TextureUsages::RENDER_ATTACHMENT
-                           | wgpu::TextureUsages::TEXTURE_BINDING,
+                           | wgpu::TextureUsages::TEXTURE_BINDING
+                           | wgpu::TextureUsages::COPY_SRC
+                           | wgpu::TextureUsages::COPY_DST,
             view_formats:    &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -92,5 +96,17 @@ impl RtPool {
             .get(name)
             .unwrap_or_else(|| panic!("RtPool: ターゲット '{name}' が未確保（ensure を先に呼ぶこと）"))
             .view
+    }
+
+    /// 確保済みターゲットのテクスチャ本体を返す（`ensure` 済みであること）。
+    /// copy_texture_to_texture（屈折の scene_hdr→refract_bg コピー）で使う。
+    ///
+    /// # panics
+    /// 未確保の名前を指定した場合はパニックする。
+    pub fn texture(&self, name: &str) -> &wgpu::Texture {
+        &self.entries
+            .get(name)
+            .unwrap_or_else(|| panic!("RtPool: ターゲット '{name}' が未確保（ensure を先に呼ぶこと）"))
+            .texture
     }
 }

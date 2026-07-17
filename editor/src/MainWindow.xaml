@@ -1561,7 +1561,7 @@
                                                                     <ComboBoxItem Content="レイトレ" Tag="rt"/>
                                                                 </ComboBox>
                                                             </Grid>
-                                                            <!-- 半透明: ラスタ（従来）/ レイトレ（未実装）。ラスタ内部方式は「透明描画」で選ぶ。 -->
+                                                            <!-- 半透明: ラスタ（従来）/ レイトレ（色付き影＋屈折）。ラスタ内部方式は「透明描画」で選ぶ。 -->
                                                             <Grid Margin="0,0,0,4">
                                                                 <Grid.ColumnDefinitions>
                                                                     <ColumnDefinition Width="64"/>
@@ -1573,7 +1573,7 @@
                                                                           SelectedIndex="0"
                                                                           SelectionChanged="OnRenderFeatureChanged">
                                                                     <ComboBoxItem Content="ラスタ（従来）" Tag="raster"/>
-                                                                    <ComboBoxItem Content="レイトレ（未実装）" Tag="rt"/>
+                                                                    <ComboBoxItem Content="レイトレ（色付き影＋屈折）" Tag="rt"/>
                                                                 </ComboBox>
                                                             </Grid>
                                                         </StackPanel>

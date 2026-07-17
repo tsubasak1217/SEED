@@ -71,7 +71,10 @@ use super::model::{
 /// v9: `Material` にプリミティブ平均アルベド（`avg_albedo`）フィールドを追加（Phase RT-GI）。
 ///     DDGI のヒット点シェーディング近似で使う。ベースカラーテクスチャのアルファ加重平均
 ///     （リニア）× base_color_factor を焼く。bincode のバイナリ表現が変わるため旧 v8 を無効化する。
-pub const CACHE_FORMAT_VERSION: u32 = 9;
+/// v10: `Material` に屈折率（`ior`）フィールドを追加（Phase RT-Translucency）。
+///     RT-Translucency の屈折で使う。glTF の KHR_materials_ior から読む（無ければ 1.0）。
+///     bincode のバイナリ表現が変わるため旧 v9 を無効化して再生成させる。
+pub const CACHE_FORMAT_VERSION: u32 = 10;
 
 /// モデルキャッシュファイルのマジック（8 バイト）。
 const MODEL_MAGIC: &[u8; 8] = b"SEEDMDL\0";

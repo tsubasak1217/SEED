@@ -198,19 +198,25 @@ impl RtShadowResources {
             update_mode:   AccelerationStructureUpdateMode::Build,
         });
 
-        // TLAS を参照する group 4 複合 BindGroup を生成する。
-        // as_binding() は &tlas を借用するため、TlasPackage へ move する前に生成する。
-        // 生成された bind group は内部で TLAS リソース（Arc）を保持するため、以後
-        // TlasPackage へ move しても有効であり、再ビルドで内容が更新されても使い回せる。
-        let bind_group = light_buffer.create_rt_bind_group(device, rt_lights_bgl, shadow, clusters, gi, &tlas);
-
         // 平均アルベド storage（Phase RT-GI）。容量 = MAX_RT_INSTANCES × vec4<f32>（16B）。
+        // TLAS インスタンス順（custom_data）に平均アルベド（.rgb）＋不透明度（.a=base_color_factor.a）を
+        // 詰める。GI compute の binding4 と、色付き影（rt_shadow_on.wgsl の group4 binding14）の両方が読む。
+        // BindGroup 生成前に作る（create_rt_bind_group が binding14 として参照するため）。
         let albedo_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label:              Some("RT Instance Avg Albedo"),
             size:               (MAX_RT_INSTANCES as u64) * 16,
             usage:              wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+
+        // TLAS を参照する group 4 複合 BindGroup を生成する。
+        // as_binding() は &tlas を借用するため、TlasPackage へ move する前に生成する。
+        // 生成された bind group は内部で TLAS リソース（Arc）を保持するため、以後
+        // TlasPackage へ move しても有効であり、再ビルドで内容が更新されても使い回せる。
+        // 平均アルベド storage（binding14）も同時に bind し、半透明レイヤーの色付き影に使う。
+        let bind_group = light_buffer.create_rt_bind_group(
+            device, rt_lights_bgl, shadow, clusters, gi, &tlas, &albedo_buffer,
+        );
 
         let tlas_package = TlasPackage::new(tlas);
 
@@ -500,6 +506,26 @@ mod tests {
             RT_MASK_OPAQUE & RT_MASK_NON_OPAQUE, 0,
             "RT_MASK_OPAQUE と RT_MASK_NON_OPAQUE のビットが重複しています（マスク分離が機能しません）"
         );
+
+        // 色付き影（Phase RT-Translucency）: 第 2 クエリの cull_mask（RT_TRANSLUCENT_CULL_MASK）が
+        // Rust の RT_MASK_NON_OPAQUE と一致すること。ズレると半透明レイヤーの透過色を拾えない。
+        let tdecl = src
+            .lines()
+            .map(str::trim)
+            .find(|l| l.starts_with("const RT_TRANSLUCENT_CULL_MASK"))
+            .expect("rt_shadow_on.wgsl に const RT_TRANSLUCENT_CULL_MASK の宣言が見つかりません");
+        let trhs = tdecl
+            .split('=').nth(1).expect("RT_TRANSLUCENT_CULL_MASK の宣言に '=' がありません")
+            .trim().trim_end_matches(';').trim().trim_end_matches('u');
+        let tvalue = if let Some(hex) = trhs.strip_prefix("0x").or_else(|| trhs.strip_prefix("0X")) {
+            u8::from_str_radix(hex, 16).expect("RT_TRANSLUCENT_CULL_MASK が u8 の 16 進として解釈できません")
+        } else {
+            trhs.parse::<u8>().expect("RT_TRANSLUCENT_CULL_MASK が u8 として解釈できません")
+        };
+        assert_eq!(
+            tvalue, RT_MASK_NON_OPAQUE,
+            "WGSL の RT_TRANSLUCENT_CULL_MASK({tvalue:#04x}) と Rust の RT_MASK_NON_OPAQUE({RT_MASK_NON_OPAQUE:#04x}) が一致していません"
+        );
     }
 
     /// WGSL ソースから `const NAME: TYPE = VALUE;` の右辺（数値リテラル）を文字列で取り出す。
@@ -696,15 +722,17 @@ mod tests {
 
         // WBOIT（半透明）バリアントも同じライト評価を共有するため併せて検証する
         // （transparency.rs が同じ連結でパイプラインを構築している）。
+        // RT-Translucency: WBOIT は屈折ヘルパ refract_common.wgsl（group4 binding15/16）を含む。
         let wboit    = include_str!("shaders/shader_wboit.wgsl");
+        let refract  = include_str!("shaders/refract_common.wgsl");
 
         let variants: [(&str, Vec<&str>); 6] = [
             ("mesh_rt",         vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_on,  static_v, surf, gather, light_ev, frag]),
             ("skinned_mesh_rt", vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_on,  skin_v,   surf, gather, light_ev, frag]),
             ("mesh",            vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_off, static_v, surf, gather, light_ev, frag]),
             ("skinned_mesh",    vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_off, skin_v,   surf, gather, light_ev, frag]),
-            ("wboit_mesh",      vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_off, static_v, surf, gather, light_ev, frag, wboit]),
-            ("wboit_skinned",   vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_off, skin_v,   surf, gather, light_ev, frag, wboit]),
+            ("wboit_mesh",      vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_off, static_v, surf, gather, light_ev, frag, refract, wboit]),
+            ("wboit_skinned",   vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_off, skin_v,   surf, gather, light_ev, frag, refract, wboit]),
         ];
 
         for (name, parts) in variants {

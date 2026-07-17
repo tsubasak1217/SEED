@@ -9,10 +9,10 @@
 //
 //  ■ 降格・未実装判定の集約点 = `RenderFeatures::resolve()`
 //    - RT 非対応 GPU では Rt 系モードを実効不可なので代替へ自動降格する。
-//    - Translucency の Rt は「フレームワークのみ・実体未実装」。resolve は常にフォールバック
-//      （Raster）へ倒す。実装が入ったら resolve の該当腕を「rt_supported 条件で通す」よう
-//      変えるだけでよい（呼び出し側は不変）。Reflection（Phase D6）・AO（Phase D4）は実装済みで、
-//      Rt は rt_supported 時のみ通し、非対応時は Ssr / Ssao へ降格する。
+//    - Translucency の Rt は実装済み（Phase RT-Translucency = 色付き影[RT]＋屈折[SS] のパッケージ）。
+//      Rt は rt_supported 時のみ通し、非対応時は Raster へ降格する（色付き影が RT 前提のため）。
+//      Reflection（Phase D6）・AO（Phase D4）も実装済みで、Rt は rt_supported 時のみ通し、
+//      非対応時は Ssr / Ssao へ降格する。
 //    実行時に分岐する箇所（frame_renderer 等）は必ず resolve() の結果
 //    （ResolvedFeatures）を参照すること。生の RenderFeatures を直接見ないこと。
 //
@@ -99,11 +99,12 @@ impl Default for AoMode {
 }
 
 /// 半透明の描画方式。既定 Raster ＝現行の WBOIT/距離ソート経路。
-/// Rt は**未実装**で、選ばれても Raster へフォールバックする。
+/// Rt は「高品質半透明」パッケージ（色付き影[RT シャドウレイ]＋屈折[スクリーンスペース]）。
+/// RT 対応 GPU でのみ通り、非対応時は Raster へ降格する。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TranslucencyMode {
-    /// レイトレ半透明（未実装）。
+    /// レイトレ半透明（色付き影＋屈折。RT 対応 GPU のみ）。
     Rt,
     /// ラスタ半透明（既定・従来の WBOIT/距離ソート）。
     Raster,
@@ -151,10 +152,9 @@ impl RenderFeatures {
     ///   （rt_shadow::rt_shadows_supported()）。
     ///
     /// 降格規則:
-    /// - Shadow::Rt / Gi::Rt … rt_supported==false なら代替（ShadowMap / Flat）へ降格。
-    /// - Reflection / Ao / Translucency … Rt/Ssr/Ssao はいずれも**未実装**のため、
-    ///   rt_supported に関わらず常にフォールバック（Off / Raster）へ倒す。
-    ///   実装完了時は該当腕を「rt_supported 条件付きで通す」よう変更する。
+    /// - Shadow::Rt / Gi::Rt / Reflection::Rt / Ao::Rt / Translucency::Rt …
+    ///   rt_supported==false なら代替（ShadowMap / Ssgi / Ssr / Ssao / Raster）へ降格。
+    /// - Gi::Ssgi / Reflection::Ssr / Ao::Ssao … GPU 非依存で常に通す（deferred ゲートは frame_renderer 側）。
     pub fn resolve(&self, rt_supported: bool) -> ResolvedFeatures {
         ResolvedFeatures {
             // 影: RT 対応時のみ Rt を通す。非対応ならシャドウマップへ。
@@ -191,15 +191,24 @@ impl RenderFeatures {
                 AoMode::Ssao               => AoMode::Ssao,
                 AoMode::Off                => AoMode::Off,
             },
-            // 半透明: Rt 未実装。常に Raster（従来経路）へ倒す。
-            translucency: TranslucencyMode::Raster,
+            // 半透明: RT 対応時のみ Rt を通す。RT 非対応で Rt 要求時は Raster へ降格。
+            //   Rt = 高品質半透明（色付き影[RT]＋屈折[SS]）のパッケージ。色付き影は RT 前提
+            //   （半透明レイヤーへの遮蔽レイが要る）ため、色付き影を主目的として RT 非対応時は
+            //   Raster へ倒す（屈折だけ欲しいケースの分離は将来課題）。Rt が通ると needs_tlas()
+            //   が true になり TLAS が構築される（frame_renderer 側のゲートは無改修）。
+            translucency: match self.translucency {
+                TranslucencyMode::Rt if rt_supported => TranslucencyMode::Rt,
+                _ => TranslucencyMode::Raster,
+            },
         }
     }
 
     /// [SEED FEATURES] ログ 1 行を生成する（要求と実効の差＝降格／未実装を注記する）。
     ///
-    /// 例: shadow=rt gi=rt reflection=rt ao=ssao(rt非対応→ssao) translucency=raster(未実装)
-    /// - 半透明の Rt は「要求したが実効が代替に落ちた（未実装）」機能なので (未実装) を付ける。
+    /// 例: shadow=rt gi=rt reflection=rt ao=ssao(rt非対応→ssao) translucency=rt(影=rt時のみ色付き影/屈折のみ)
+    /// - 半透明は実装済み（Rt = 色付き影[RT]＋屈折[SS] のパッケージ）。RT 非対応で Raster へ降格した
+    ///   ときだけ (rt非対応→raster) を付ける。Rt が通っても影が RT でない（shadow!=rt）ときは色付き影が
+    ///   不発（屈折のみ有効）になる旨を注記する。
     /// - 反射・AO は実装済み。RT 非対応で SSR/SSAO へ降格したときだけ (rt非対応→ssr)/(rt非対応→ssao) を付ける。
     pub fn log_line(&self, rt_supported: bool) -> String {
         let r = self.resolve(rt_supported);
@@ -215,7 +224,14 @@ impl RenderFeatures {
         let ao_note    = if self.ao == AoMode::Rt && r.ao == AoMode::Ssao {
             "(rt非対応→ssao)"
         } else { "" };
-        let trans_note = if self.translucency == TranslucencyMode::Rt { "(未実装)" } else { "" };
+        // 半透明は実装済み（Rt = 色付き影[RT]＋屈折[SS]）。RT 非対応で Raster へ降格したときは
+        // (rt非対応→raster) を付す。Rt が通っても影が RT でない（shadow!=rt）ときは、シャドウマップが
+        // 二値で色を持てないため色付き影は不発＝屈折のみ有効になる旨を注記する。
+        let trans_note = if self.translucency == TranslucencyMode::Rt && r.translucency == TranslucencyMode::Raster {
+            "(rt非対応→raster)"
+        } else if r.translucency == TranslucencyMode::Rt && r.shadow != ShadowMode::Rt {
+            "(影=rt時のみ色付き影/屈折のみ)"
+        } else { "" };
         format!(
             "shadow={} gi={}{} reflection={}{} ao={}{} translucency={}{}",
             mode_str_shadow(r.shadow),
@@ -240,11 +256,11 @@ pub struct ResolvedFeatures {
     pub shadow: ShadowMode,
     /// 実効の GI 方式。
     pub gi: GiMode,
-    /// 実効の反射方式（現状は常に Off）。
+    /// 実効の反射方式（rt=RT反射 / ssr=SSR / off=なし。deferred 有効時のみ動作）。
     pub reflection: ReflectionMode,
     /// 実効の AO 方式（rt=RT-AO / ssao=SSAO / off=なし。deferred 有効時のみ動作）。
     pub ao: AoMode,
-    /// 実効の半透明方式（現状は常に Raster）。
+    /// 実効の半透明方式（rt=色付き影＋屈折 / raster=従来 WBOIT/距離ソート）。
     pub translucency: TranslucencyMode,
 }
 
@@ -364,6 +380,8 @@ mod tests {
         assert_eq!(r.gi, GiMode::Ssgi);
         // 反射: RT 非対応時は Rt 要求が SSR へ降格（Off ではない）。SSR は TLAS 不要。
         assert_eq!(r.reflection, ReflectionMode::Ssr);
+        // 半透明: RT 非対応時は Rt 要求が Raster へ降格。
+        assert_eq!(r.translucency, TranslucencyMode::Raster);
         assert!(!r.needs_tlas());
 
         let r = f.resolve(true);
@@ -373,7 +391,8 @@ mod tests {
         assert_eq!(r.reflection, ReflectionMode::Rt);
         // AO: RT 対応時は Rt がそのまま通る（TLAS 要求に寄与する）。
         assert_eq!(r.ao, AoMode::Rt);
-        assert_eq!(r.translucency, TranslucencyMode::Raster);
+        // 半透明: RT 対応時は Rt がそのまま通る（TLAS 要求に寄与する）。
+        assert_eq!(r.translucency, TranslucencyMode::Rt);
         assert!(r.needs_tlas());
     }
 
@@ -456,9 +475,9 @@ mod tests {
         assert!(!mk(GiMode::Ssgi).log_line(true).contains("(rt非対応→ssgi)"));
     }
 
-    /// ログ行が未実装注記を含むこと。
+    /// ログ行の注記（全機能実装済み＝どこにも「(未実装)」が付かないこと）。
     #[test]
-    fn log_line_annotates_unimplemented() {
+    fn log_line_has_no_unimplemented_note() {
         let f = RenderFeatures {
             shadow: ShadowMode::Rt,
             gi: GiMode::Rt,
@@ -470,10 +489,30 @@ mod tests {
         assert!(line.contains("shadow=rt"), "{line}");
         assert!(line.contains("gi=rt"), "{line}");
         assert!(line.contains("reflection=ssr"), "{line}");
-        assert!(!line.contains("reflection=ssr(未実装)"), "反射は実装済み: {line}");
-        // AO は実装済み（Phase D4）。ao=rt がそのまま通り (未実装) は付かない。
+        // AO は実装済み（Phase D4）。ao=rt がそのまま通る。
         assert!(line.contains("ao=rt"), "{line}");
-        assert!(!line.contains("ao=rt(未実装)"), "AO は実装済み: {line}");
-        assert!(line.contains("translucency=raster(未実装)"), "{line}");
+        // 半透明は実装済み（Phase RT-Translucency）。shadow=rt なので色付き影も有効＝屈折注記も付かない。
+        assert!(line.contains("translucency=rt"), "{line}");
+        // どの機能にも「(未実装)」注記は付かない。
+        assert!(!line.contains("(未実装)"), "全機能実装済み: {line}");
+    }
+
+    /// 半透明の降格表（Raster/Rt × rt対応/非対応 → 実効）。反射・AO・GI の手本と同型。
+    #[test]
+    fn resolve_translucency_downgrade_table() {
+        let mk = |m: TranslucencyMode| RenderFeatures { translucency: m, ..Default::default() };
+        // Raster はどちらでも Raster。
+        assert_eq!(mk(TranslucencyMode::Raster).resolve(false).translucency, TranslucencyMode::Raster);
+        assert_eq!(mk(TranslucencyMode::Raster).resolve(true).translucency,  TranslucencyMode::Raster);
+        // Rt は対応時 Rt / 非対応時 Raster へ降格（色付き影が RT 前提のため）。
+        assert_eq!(mk(TranslucencyMode::Rt).resolve(false).translucency, TranslucencyMode::Raster);
+        assert_eq!(mk(TranslucencyMode::Rt).resolve(true).translucency,  TranslucencyMode::Rt);
+        // Raster は TLAS 不要・Rt のみ TLAS 要求。
+        assert!(!mk(TranslucencyMode::Raster).resolve(true).needs_tlas());
+        assert!(mk(TranslucencyMode::Rt).resolve(true).needs_tlas());
+        // log_line: Rt 非対応降格時は (rt非対応→raster)。対応時は素の translucency=rt を含む
+        //   （既定 shadow=shadowmap なので色付き影は不発＝屈折のみ注記が付くが translucency=rt は部分一致する）。
+        assert!(mk(TranslucencyMode::Rt).log_line(false).contains("translucency=raster(rt非対応→raster)"));
+        assert!(mk(TranslucencyMode::Rt).log_line(true).contains("translucency=rt"));
     }
 }

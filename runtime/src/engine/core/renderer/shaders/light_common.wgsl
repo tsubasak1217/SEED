@@ -90,10 +90,20 @@ struct LightMeta {
     // 0 以外のとき evaluate_lighting はライティングを行わずアルベド＋エミッシブを返す。
     // メインカメラ用 LightMeta のみ非 0 になり得る（プレビュー用は常に 0＝Lit）。
     view_mode:         u32,         //  8
-    _pad2:             u32,         // 12
+    // RT-Translucency（色付き影＋屈折）の有効フラグ（Phase RT-Translucency, 0/1）。旧 _pad2 を転用。
+    // rt_shadow_on.wgsl の色付き影・refract_common.wgsl の屈折を実行時ゲートする。
+    translucency_rt:   u32,         // 12
     ambient_color:     vec3<f32>,   // 16  環境光の色（リニア RGB）
     ambient_intensity: f32,         // 28  環境光の強度（0 で完全な暗闇）
 }
+
+// LightMeta.translucency_rt のビットマスク（Phase RT-Translucency）。
+//   bit0: 色付き影を有効化（translucency==Rt。RT 影シェーダが半透明レイヤーの透過色を影に乗せる）。
+//   bit1: 屈折の背景（refract_bg）が有効＝このフレームで屈折可能（deferred 有効＋コピー済み）。
+// 2 機能で解決タイミングが違う（色付き影は forward-RT でも効くが、屈折は deferred の背景コピーが要る）
+// ため 1 つの u32 に別ビットで載せる。
+const TRANSLUCENCY_RT_COLORED_SHADOW: u32 = 1u;
+const TRANSLUCENCY_RT_REFRACTION:     u32 = 2u;
 
 @group(4) @binding(0) var<storage, read> u_lights:     array<GpuLight>;
 @group(4) @binding(1) var<uniform>       u_light_meta: LightMeta;

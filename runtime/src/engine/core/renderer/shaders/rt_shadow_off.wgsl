@@ -15,8 +15,8 @@ fn rt_shadow_enabled() -> bool {
     return false;
 }
 
-/// 遮蔽率（1=非遮蔽/照射, 0=遮蔽/影）。スタブは常に非遮蔽。
-/// シグネチャは rt_shadow_on.wgsl と一致させること。
+/// 影の透過率（RGB, vec3(1)=非遮蔽/照射, vec3(0)=遮蔽/影）。スタブは常に非遮蔽の白。
+/// 戻り値は rt_shadow_on.wgsl と同じく vec3<f32>（色付き影のため）。シグネチャを一致させること。
 /// 引数は順に:
 ///   origin      : 表面のワールド座標
 ///   ng          : **幾何法線**（フラットな面法線。レイ原点の最小クリアランス専用）
@@ -34,6 +34,6 @@ fn rt_shadow_factor(
     tmax:        f32,
     cone_radius: f32,
     frag_xy:     vec2<f32>,
-) -> f32 {
-    return 1.0;
+) -> vec3<f32> {
+    return vec3<f32>(1.0, 1.0, 1.0);
 }
