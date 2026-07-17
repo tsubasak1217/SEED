@@ -134,6 +134,10 @@ pub(crate) fn get_shader_source(name: &str) -> &'static str {
         "reflection_ssr.wgsl"        => include_str!("shaders/reflection_ssr.wgsl"),
         "reflection_rt.wgsl"         => include_str!("shaders/reflection_rt.wgsl"),
         "reflection_composite.wgsl"  => include_str!("shaders/reflection_composite.wgsl"),
+        // AO（SSAO / RT-AO）フルスクリーンパス＋いもす法ブラー（Phase D4）。
+        "ao_common.wgsl"             => include_str!("shaders/ao_common.wgsl"),
+        "ao_ssao.wgsl"               => include_str!("shaders/ao_ssao.wgsl"),
+        "ao_rt.wgsl"                 => include_str!("shaders/ao_rt.wgsl"),
         other => panic!("unknown shader source: {other}"),
     }
 }
@@ -1702,6 +1706,10 @@ pub struct DrawPipelines {
     /// 反射（SSR / RT）フルスクリーンパス＋合成パイプライン一式（Phase D6）。
     /// Deferred 有効時のみ frame_renderer が使う（G-Buffer＋scene_hdr 入力→RT_REFLECTION→加算合成）。
     pub reflection:           super::reflection::ReflectionPipelines,
+    /// AO（SSAO / RT-AO）フルスクリーンパス＋いもす法ブラー一式（Phase D4）。
+    /// Deferred 有効かつ AO モードが Off でないときのみ frame_renderer が使う
+    /// （G-Buffer＋深度 → 半解像度 ao_raw → ブラー ao_b → deferred の occlusion 乗算）。
+    pub ao:                   super::ao::AoPipelines,
 }
 
 impl DrawPipelines {
@@ -1774,6 +1782,9 @@ impl DrawPipelines {
         // 反射（Phase D6）。deferred の camera_bgl/gbuffer_bgl を借りて構築するため deferred の後に呼ぶ。
         // 出力先は sf（scene_hdr / RT_REFLECTION と同じ HDR）。
         let reflection            = super::reflection::ReflectionPipelines::new(device, &deferred, sf, cache);
-        Self { mesh, skinned_mesh, rt, unlit_line, cull, meshlet_cull, skin_compute, depth_prepass, shadow_depth, id_pass, outline, sprite, sprite_outline, canvas_id, camera_preview_blit, bar_fill, transparent, particle_compute, particles, skybox, cluster_build, gi_update, gbuffer, deferred, reflection }
+        // AO（Phase D4）。deferred の camera_bgl/gbuffer_bgl を借りて構築するため deferred の後に呼ぶ。
+        // 白 1x1 の初期化に queue を使う（AO=Off 時の t_ao スロット用）。
+        let ao                    = super::ao::AoPipelines::new(device, queue, &deferred, cache);
+        Self { mesh, skinned_mesh, rt, unlit_line, cull, meshlet_cull, skin_compute, depth_prepass, shadow_depth, id_pass, outline, sprite, sprite_outline, canvas_id, camera_preview_blit, bar_fill, transparent, particle_compute, particles, skybox, cluster_build, gi_update, gbuffer, deferred, reflection, ao }
     }
 }

@@ -3067,6 +3067,14 @@ impl App {
                     } else {
                         crate::engine::core::renderer::ReflectionMode::Off
                     };
+                    // AO（Phase D4）: deferred 有効時のみ・resolved の実効 AO モード。
+                    // フォワード（deferred 無効）時は AO パスを一切走らせない（Off）。
+                    // deferred ゲートはここで行う（render_features::resolve は RT 降格のみ担当）。
+                    let ao_effective = if deferred_active {
+                        resolved_features.ao
+                    } else {
+                        crate::engine::core::renderer::AoMode::Off
+                    };
 
                     let vignette_on = self.post_vignette_enabled;
                     // Phase R4: ブルーム／FXAA 設定（フレーム内で不変のためコピーしておく）。
@@ -3143,6 +3151,17 @@ impl App {
                             crate::engine::core::renderer::gbuffer::GBUFFER3_RT_NAME,
                             surf_w, surf_h,
                             crate::engine::core::renderer::gbuffer::GBUFFER3_FORMAT,
+                        );
+                    }
+                    // AO（Phase D4）半解像度テクスチャ（ao_raw/ao_a/ao_b）。deferred 有効かつ
+                    // AO モードが Off でないときのみ確保（Off 時は 0 コスト）。STORAGE 用途のため
+                    // RtPool ではなく AoTargets が専有する（half-res でコスト 1/4）。
+                    if deferred_active && ao_effective != crate::engine::core::renderer::AoMode::Off {
+                        let div = crate::engine::core::renderer::AO_RESOLUTION_DIVISOR;
+                        self.ao_targets.ensure(
+                            &draw_ctx.device,
+                            (surf_w / div).max(1),
+                            (surf_h / div).max(1),
                         );
                     }
                     // 反射 RT（Phase D6）: deferred 有効かつ反射モードが Off でないときのみ確保。
@@ -3398,12 +3417,70 @@ impl App {
                                 }
                             }
 
+                            // ── AO 生成パス + いもす法ブラー（Phase D4）─────────────────
+                            // G-Buffer 完成後・deferred ライティング前に半解像度 ao_raw へ AO を焼き、
+                            // いもす法で ao_b へ均す。ライティングは group1 に ao_b をバイリニアで受け取り
+                            // occlusion に乗算する（アンビエント/DDGI/バウンスにのみ効く）。
+                            if ao_effective != crate::engine::core::renderer::AoMode::Off {
+                                let ao_p = &draw_ctx.pipelines.ao;
+                                // RT-AO は TLAS が要る。ao==Rt かつ RT パイプライン存在時のみ RT、
+                                // それ以外は SSAO（安全側フォールバック）。半径は方式ごとの定数。
+                                let use_rt_ao = ao_effective == crate::engine::core::renderer::AoMode::Rt
+                                    && ao_p.rt.is_some();
+                                let ao_radius = if use_rt_ao {
+                                    crate::engine::core::renderer::AO_RTAO_WORLD_RADIUS
+                                } else {
+                                    crate::engine::core::renderer::AO_SSAO_WORLD_RADIUS
+                                };
+                                ao_p.write_params(&draw_ctx.queue, self.post_fx.ao_intensity, ao_radius);
+                                // group1（G-Buffer）: AO 生成時点では ao_b 未計算のため t_ao スロットは白。
+                                let ao_gbuffer_bg = crate::engine::core::renderer::deferred::create_gbuffer_bind_group(
+                                    &draw_ctx.device, &draw_ctx.pipelines.deferred.gbuffer_bgl,
+                                    g0, g1, g2, g3,
+                                    frame.depth_only_view(), &draw_ctx.pipelines.deferred.gbuffer_sampler,
+                                    &ao_p.white_view, &ao_p.linear_sampler,
+                                );
+                                let ao_params_bg = ao_p.create_params_bg(&draw_ctx.device);
+                                // RT-AO データ（TLAS）。needs_tlas() 経由で構築済み保証。共有借用（RefCell）。
+                                let ao_rt_ref = if use_rt_ao {
+                                    draw_ctx.rt_shadow.as_ref().map(|c| c.borrow())
+                                } else { None };
+                                let ao_rt_bg = ao_rt_ref.as_ref().map(|r| ao_p.create_rt_bg(&draw_ctx.device, r.tlas()));
+                                // RT データが得られたら RT、そうでなければ SSAO（安全側フォールバック）。
+                                let do_rt_ao = ao_rt_bg.is_some();
+                                {
+                                    let mut apass = frame.begin_ao_pass_to(self.ao_targets.raw_view());
+                                    // 半解像度・UV ベースのため viewport は設定しない（背景は下流で discard）。
+                                    apass.set_bind_group(0, &camera_buf.bind_group, &[]);
+                                    apass.set_bind_group(1, &ao_gbuffer_bg, &[]);
+                                    apass.set_bind_group(2, &ao_params_bg, &[]);
+                                    if do_rt_ao {
+                                        apass.set_pipeline(ao_p.rt.as_ref().unwrap());
+                                        apass.set_bind_group(3, ao_rt_bg.as_ref().unwrap(), &[]);
+                                    } else {
+                                        apass.set_pipeline(&ao_p.ssao);
+                                    }
+                                    apass.draw(0..3, 0..1);
+                                }
+                                // いもす法ブラー（ao_raw → ao_a/ao_b, 結果は必ず ao_b）。
+                                ao_p.blur(&draw_ctx.device, frame.encoder_mut(), &self.ao_targets);
+                            }
+
+                            // AO 結果ビュー（ライティングの group1 binding6 へ渡す）。AO=Off 時は白 1x1（ao=1.0）。
+                            let ao_sampler = &draw_ctx.pipelines.ao.linear_sampler;
+                            let ao_result_view: &wgpu::TextureView = if ao_effective != crate::engine::core::renderer::AoMode::Off {
+                                self.ao_targets.b_view()
+                            } else {
+                                &draw_ctx.pipelines.ao.white_view
+                            };
+
                             // B. G-Buffer BindGroup 生成 + フルスクリーン・ライティングパス。
                             {
                                 let gbuffer_bg = crate::engine::core::renderer::deferred::create_gbuffer_bind_group(
                                     &draw_ctx.device, &draw_ctx.pipelines.deferred.gbuffer_bgl,
                                     g0, g1, g2, g3,
                                     frame.depth_only_view(), &draw_ctx.pipelines.deferred.gbuffer_sampler,
+                                    ao_result_view, ao_sampler,
                                 );
                                 let mut lpass = frame.begin_deferred_lighting_pass_to(hdr_view, clear_color);
                                 if self.mode == RuntimeMode::Play && !self.paused {
@@ -3464,10 +3541,19 @@ impl App {
                                 g2v.expect("gbuffer2 view (reflection)"),
                                 g3v.expect("gbuffer3 view (reflection)"),
                             );
+                            // AO 結果ビュー（反射の group1 にも同じく供給。AO=Off 時は白 1x1）。
+                            // ao_effective は上位スコープで算出済み（deferred 有効時のみ非 Off）。
+                            let refl_ao_sampler = &draw_ctx.pipelines.ao.linear_sampler;
+                            let refl_ao_view: &wgpu::TextureView = if ao_effective != crate::engine::core::renderer::AoMode::Off {
+                                self.ao_targets.b_view()
+                            } else {
+                                &draw_ctx.pipelines.ao.white_view
+                            };
                             let refl_gbuffer_bg = crate::engine::core::renderer::deferred::create_gbuffer_bind_group(
                                 &draw_ctx.device, &draw_ctx.pipelines.deferred.gbuffer_bgl,
                                 rg0, rg1, rg2, rg3,
                                 frame.depth_only_view(), &draw_ctx.pipelines.deferred.gbuffer_sampler,
+                                refl_ao_view, refl_ao_sampler,
                             );
                             let input_bg = refl.create_input_bg(&draw_ctx.device, hdr_view);
                             let gi_bg    = refl.create_gi_bg(&draw_ctx.device, &draw_ctx.gi);

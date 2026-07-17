@@ -144,6 +144,8 @@ pub enum IpcCommand {
         gi: crate::engine::core::renderer::GiSettings,
         /// 反射（SSR / RT）の強度（Phase D6）。欠落時は既定 1.0。有効/無効・方式は features.reflection。
         reflection_intensity: f32,
+        /// AO（SSAO / RT-AO）の強度（Phase D4）。欠落時は既定 1.0。有効/無効・方式は features.ao。
+        ao_intensity: f32,
         /// レンダリング機能マトリクス（新キー "features"）。新エディタは常に Some を送る。
         /// None（旧エディタ）のときは影など他機能を据え置き、legacy_gi_enabled のみ反映する。
         features: Option<crate::engine::core::renderer::RenderFeatures>,
@@ -874,11 +876,15 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                             let reflection_intensity = v.as_ref()
                                 .and_then(|vv| vv["reflection_intensity"].as_f64())
                                 .unwrap_or(crate::engine::core::renderer::DEFAULT_REFLECTION_INTENSITY as f64) as f32;
+                            // AO 強度（Phase D4）。欠落時は既定 1.0。
+                            let ao_intensity = v.as_ref()
+                                .and_then(|vv| vv["ao_intensity"].as_f64())
+                                .unwrap_or(crate::engine::core::renderer::DEFAULT_AO_INTENSITY as f64) as f32;
                             // 新キー "features"（機能マトリクス）。欠落キーは serde default で埋まる。
                             let features = v.as_ref()
                                 .and_then(|vv| vv.get("features"))
                                 .and_then(|fv| serde_json::from_value::<crate::engine::core::renderer::RenderFeatures>(fv.clone()).ok());
-                            Some(IpcCommand::SetPostFx { bloom, fxaa, bloom_intensity, transparency, meshlet_cull, deferred, view_mode, gi, reflection_intensity, features, legacy_gi_enabled })
+                            Some(IpcCommand::SetPostFx { bloom, fxaa, bloom_intensity, transparency, meshlet_cull, deferred, view_mode, gi, reflection_intensity, ao_intensity, features, legacy_gi_enabled })
                         }
                         // 環境光（Phase R1.5）。"SET_AMBIENT:{r},{g},{b},{intensity}"。
                         // 4 要素に満たない／パース不能な場合は無視する（None）。

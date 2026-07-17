@@ -54,6 +54,13 @@ struct CameraUniform {
 @group(1) @binding(3) var t_gbuffer3: texture_2d<f32>;       // emissive.rgb (HDR)
 @group(1) @binding(4) var t_depth:    texture_depth_2d;      // 深度（textureLoad 専用）
 @group(1) @binding(5) var s_gbuffer:  sampler;               // 予約（本パスでは未使用）
+// ── AO 入力（半解像度 AO をフル解像度 UV でバイリニアアップサンプル）───────────
+// t_ao は AO パス（SSAO / RT-AO）の出力テクスチャ（.r に AO 値、1=遮蔽なし）。
+// AO=Off 時は白 1x1（R=1）がバインドされ AO=1.0（無効果）になる。s_ao は Filtering
+// （linear）サンプラーで、半解像度 AO をフル解像度へバイリニアアップサンプルする。
+// gbuffer_bgl はこの 2 binding を含む 8 entry へ拡張済み（deferred.rs 参照）。
+@group(1) @binding(6) var t_ao: texture_2d<f32>;
+@group(1) @binding(7) var s_ao: sampler;
 
 // ─── フルスクリーン三角形の頂点定数 ───────────────────────────
 //
@@ -150,7 +157,12 @@ fn fs_deferred(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     s.metallic      = metallic;
     s.roughness     = roughness;
     s.emissive      = emissive;
-    s.occlusion     = occlusion;
+    // AO 乗算: 半解像度 AO をフル解像度 UV（frag.xy/resolution）でバイリニアサンプルし
+    // occlusion に掛ける。これにより AO はアンビエント（evaluate_gi_ambient）・DDGI・
+    // 疑似バウンス項にのみ効く（直接光は lighting_eval.wgsl の shade_light が occlusion を
+    // 使わないため暗くならない）。AO=Off 時は白テクスチャで ao=1.0＝従来と同一の見た目。
+    let ao = textureSampleLevel(t_ao, s_ao, uv, 0.0).r;
+    s.occlusion     = occlusion * ao;
     s.frag_coord    = frag.xy;
 
     return vec4<f32>(evaluate_lighting(s), 1.0);

@@ -84,6 +84,8 @@ public partial class MainWindow
     private const double DefaultGiIntensity = 1.0;
     /// <summary>反射強度のデフォルト値。SET_POST_FX の "reflection_intensity" フィールドに使う。</summary>
     private const double DefaultReflectionIntensity = 1.0;
+    /// <summary>AO 強度のデフォルト値（Phase D4）。SET_POST_FX の "ao_intensity" フィールドに使う。</summary>
+    private const double DefaultAoIntensity = 1.0;
 
     /// <summary>透明描画方式のデフォルト値（距離ソート）。SET_POST_FX の "transparency" フィールドに使う。</summary>
     private const string DefaultTransparencyMode = "sort";
@@ -119,6 +121,8 @@ public partial class MainWindow
         double giIntensity = SldGiIntensity?.Value ?? DefaultGiIntensity;
         // 反射強度（SSR/RT 反射の数値パラメータ）。null（未初期化）時は既定 1.0。
         double reflectionIntensity = SldReflectionIntensity?.Value ?? DefaultReflectionIntensity;
+        // AO 強度（SSAO/RT-AO の数値パラメータ, Phase D4）。null（未初期化）時は既定 1.0。
+        double aoIntensity = SldAoIntensity?.Value ?? DefaultAoIntensity;
         // レンダリング機能マトリクス（影/GI/反射/AO/半透明）。各コンボの Tag（小文字モード文字列）を読む。
         // 未初期化・null 時は現状維持の既定へフォールバックする（GI のみ現状維持のため既定 "rt"）。
         // 「（未実装）」の ssr/ssao/rt を選んでもランタイム側で従来動作へフォールバックする。
@@ -131,7 +135,7 @@ public partial class MainWindow
         var ci = System.Globalization.CultureInfo.InvariantCulture;
         // 新キー "features"（機能マトリクス）。旧キー gi_enabled は features.gi へ移行したため送らない。
         string features = $"\"features\":{{\"shadow\":\"{shadow}\",\"gi\":\"{giMode}\",\"reflection\":\"{reflection}\",\"ao\":\"{ao}\",\"translucency\":\"{translucency}\"}}";
-        string json = $"{{\"bloom\":{(bloom ? "true" : "false")},\"fxaa\":{(fxaa ? "true" : "false")},\"bloom_intensity\":{intensity.ToString(ci)},\"transparency\":\"{transparency}\",\"meshlet_cull\":{(meshletCull ? "true" : "false")},\"deferred\":{(deferred ? "true" : "false")},\"view_mode\":\"{viewMode}\",\"gi_intensity\":{giIntensity.ToString(ci)},\"reflection_intensity\":{reflectionIntensity.ToString(ci)},{features}}}";
+        string json = $"{{\"bloom\":{(bloom ? "true" : "false")},\"fxaa\":{(fxaa ? "true" : "false")},\"bloom_intensity\":{intensity.ToString(ci)},\"transparency\":\"{transparency}\",\"meshlet_cull\":{(meshletCull ? "true" : "false")},\"deferred\":{(deferred ? "true" : "false")},\"view_mode\":\"{viewMode}\",\"gi_intensity\":{giIntensity.ToString(ci)},\"reflection_intensity\":{reflectionIntensity.ToString(ci)},\"ao_intensity\":{aoIntensity.ToString(ci)},{features}}}";
         _runtimeManager?.SendToRuntime($"SET_POST_FX:{json}");
     }
 
@@ -496,6 +500,7 @@ public partial class MainWindow
         if (CmbTranslucency != null) CmbTranslucency.SelectedIndex = 0;
         if (SldGiIntensity != null)  SldGiIntensity.Value = DefaultGiIntensity;
         if (SldReflectionIntensity != null) SldReflectionIntensity.Value = DefaultReflectionIntensity;
+        if (SldAoIntensity != null) SldAoIntensity.Value = DefaultAoIntensity;
         _updatingControls = false;
         if (_viewportSettingsInitialized)
         {

@@ -124,6 +124,10 @@ pub struct PostFxSettings {
     /// 反射の有効/無効・方式は RenderFeatures.reflection（ReflectionMode）が決め、
     /// 本値は反射寄与の全体スケール（既定 1.0）のみを保持する。
     pub reflection_intensity: f32,
+    /// AO（SSAO / RT-AO）の強度倍率（Phase D4）。SET_POST_FX から更新される。
+    /// AO の有効/無効・方式は RenderFeatures.ao（AoMode）が決め、本値は AO 寄与の
+    /// 全体スケール（既定 1.0）のみを保持する。
+    pub ao_intensity: f32,
 }
 
 // ─── デフォルト値（マジックナンバー回避）──────────────────────
@@ -147,6 +151,7 @@ impl Default for PostFxSettings {
             deferred:        true,
             gi:              GiSettings::default(),
             reflection_intensity: super::reflection::DEFAULT_REFLECTION_INTENSITY,
+            ao_intensity:         super::ao::DEFAULT_AO_INTENSITY,
         }
     }
 }

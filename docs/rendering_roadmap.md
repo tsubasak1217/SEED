@@ -356,6 +356,13 @@
 近似できる（分離可能: 水平→垂直）。GPU実装は行/列prefix sum（compute）＋等幅区間和。
 大カーネルほどタップ数固定の従来法より高速。
 
+**基盤の実体（Phase D4 で作成・再利用可）**: `renderer/imos_blur.rs` ＋ `shaders/imos_blur.wgsl`。
+単一チャンネル（`.r`）分離ボックスブラーの compute パイプライン＋ping-pong 実行ヘルパー（`ImosBlur::record`、
+結果は必ず `t1` に残る不変条件つき）。アルゴリズムは `postfx_blur.wgsl` と同一式。ストレージは
+`Rgba16Float`（単一チャンネル R16Float は core WebGPU の storage 非対応のため。`.r` のみ使用）。
+**AO（SSAO / RT-AO）で初適用**。SSGI（カラーブラー）へは load/store を `.r`→`.rgb` に広げるだけで転用可
+（フォーマット変更不要）。CPU 参照一致・WGSL naga 検証のユニットテストつき。
+
 ### Phase RP: GPUパーティクル 【状況: 拡張実装済み（実機検証待ち）】
 GPU 上でパーティクルをシミュレート（compute）して形状メッシュ×インスタンスで描画する。
 ECS の `ParticleEmitterComponent`（データのみ）を入力に、エミッタごとの GPU バッファを
@@ -800,7 +807,12 @@ Forward+ ではなく Deferred を選ぶ根拠: 多灯対応だけなら Forward
   エディタはビューポート設定ポップアップ「ポストプロセス」内チェックボックス
   `ChkDeferred`（既定チェック）から切り替える。
 
-- **D4 SSAO: 未着手**（G-Buffer の深度＋法線から。**ブラーはいもす法（累積和）で実装すること**）
+- **D4 SSAO / RT-AO: 実装済み（Phase D4）**。Deferred 有効時のみ動く独立フルスクリーン AO パス。
+  G-Buffer の深度＋ワールド法線から半解像度 `ao_raw`（`Rgba16Float`）へ AO を焼き、いもす法ブラー
+  （`renderer/imos_blur.rs`）で `ao_b` へ均し、deferred ライティングの `occlusion` へバイリニアで乗算する
+  （アンビエント/DDGI/疑似バウンスにのみ効き、直接光は暗くしない）。SSAO＝半球カーネル法（RAY_QUERY 不要・
+  常時）、RT-AO＝コサイン半球の短レイ（RT 対応 GPU のみ、非対応は SSAO へ降格）。強度は `ao_intensity` ノブ。
+  実装: `renderer/ao.rs`（`AoPipelines`/`AoTargets`）＋ `shaders/ao_common.wgsl` / `ao_ssao.wgsl` / `ao_rt.wgsl`。
 - **D5 Deferred Decal: 未着手**
 - **D6 SSR / RT 反射: 実装済み（Phase D6）**。Deferred 有効時のみ動く独立フルスクリーンパス。
   不透明 Deferred ライティング完成後に G-Buffer＋scene_hdr を入力に専用 RT（RT_REFLECTION,
@@ -940,7 +952,7 @@ inline RT ではヒット三角形のマテリアルテクスチャ・頂点属�
 | 影 | `ShadowMode` | `rt` / `shadowmap` | `shadowmap` | 両方実装済み（LightMeta.rt_shadows で実行時分岐） |
 | GI | `GiMode` | `rt` / `flat` | `flat`※ | 両方実装済み（DDGI / フラットアンビエント）。将来 `ssgi` 追加予定 |
 | 反射 | `ReflectionMode` | `rt` / `ssr` / `off` | `off` | **実装済み（SSR / RT, Phase D6）**。`rt`＝RT 反射（RT 対応 GPU）、`ssr`＝スクリーンスペース反射。RT 非対応で `rt` 要求時は `ssr` へ降格。deferred 有効時のみ動作 |
-| AO | `AoMode` | `rt` / `ssao` / `off` | `off` | **未実装**（`off`＝マテリアル AO のみ。`rt`/`ssao` は resolve で `off` へ降格） |
+| AO | `AoMode` | `rt` / `ssao` / `off` | `off` | **実装済み（SSAO / RT-AO, Phase D4）**。`rt`＝RT-AO（RT 対応 GPU）、`ssao`＝SSAO。RT 非対応で `rt` 要求時は `ssao` へ降格。deferred 有効時のみ動作。強度は `ao_intensity` |
 | 半透明 | `TranslucencyMode` | `rt` / `raster` | `raster` | `raster`＝従来 WBOIT/距離ソート（実装済み）。`rt` は**未実装**（resolve で `raster` へ降格） |
 
 ※ `GiMode` の型既定は `flat` だが、**旧 `GiSettings.enabled` の既定は true** だったため、
@@ -952,7 +964,9 @@ inline RT ではヒット三角形のマテリアルテクスチャ・頂点属�
 - `RenderFeatures::resolve(rt_supported) -> ResolvedFeatures` が**唯一の判定入口**。
   - RT 非対応 GPU（`rt_shadow::rt_shadows_supported()==false`）では `shadow=rt→shadowmap` / `gi=rt→flat`。
   - 反射: `rt`＝RT 対応時のみ通す／RT 非対応時は `ssr` へ降格、`ssr`＝常に `ssr`、`off`＝`off`（Phase D6 実装済み）。
-  - AO/半透明の `rt`/`ssao` は実体未実装のため、`rt_supported` に関わらず常に `off`/`raster` へ降格。
+  - AO: `rt`＝RT 対応時のみ通す／RT 非対応時は `ssao` へ降格、`ssao`＝常に `ssao`、`off`＝`off`（Phase D4 実装済み）。
+    ただし `ssao`/`rt` は deferred 有効時のみ動作（deferred ゲートは `frame_renderer` 側 `ao_effective` で判定）。
+  - 半透明の `rt` は実体未実装のため、`rt_supported` に関わらず常に `raster` へ降格。
 - 実行時分岐（`frame_renderer.rs` 等）は必ず `ResolvedFeatures` を参照し、生の `RenderFeatures` を直接見ない。
 - 起動時・切替時に実効モードを `[SEED FEATURES] shadow=… gi=… reflection=rt …` の 1 行でログ
   （反射は実装済みのため `(未実装)` は付かない。RT 非対応で SSR 降格時のみ `reflection=ssr(rt非対応→ssr)`。

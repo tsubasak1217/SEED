@@ -589,6 +589,10 @@ pub struct App {
     /// 毎フレーム ensure でサーフェスサイズに追従する。静的リソース（トーンマップ等の
     /// パイプライン）は DrawContext.post が持つ。
     rt_pool: crate::engine::core::renderer::RtPool,
+    /// AO（SSAO / RT-AO, Phase D4）の半解像度テクスチャ群（ao_raw / ao_a / ao_b）。
+    /// STORAGE_BINDING を要するため RtPool には載せられず本フィールドが専有する。
+    /// 毎フレーム ensure で半解像度サイズに追従する（AO 生成パイプラインは DrawContext.pipelines.ao）。
+    ao_targets: crate::engine::core::renderer::AoTargets,
     /// GPU パーティクルシステム（Phase RP）。エミッタごとの GPU バッファ・CPU 状態を保持する。
     /// rt_pool と同じく eager 構築（デバイス不要。GPU パイプラインは DrawContext.pipelines が持つ）。
     /// 毎フレーム collect_and_consume（CPU）→ sync_gpu/dispatch/draw（GPU）で更新・描画する。
@@ -961,6 +965,7 @@ impl App {
             canvas_screen_space_overlay: false,
             edit_view_mode:              EditViewMode::View3D,
             rt_pool:                     crate::engine::core::renderer::RtPool::new(),
+            ao_targets:                  crate::engine::core::renderer::AoTargets::new(),
             particle_system:             crate::engine::core::renderer::ParticleSystem::new(),
             skybox_system:               crate::engine::core::renderer::SkyboxSystem::new(),
             post_vignette_enabled:       false,
