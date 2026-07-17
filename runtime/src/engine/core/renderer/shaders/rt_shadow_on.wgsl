@@ -233,10 +233,27 @@ fn rt_trace_occlusion(o: vec3<f32>, dir: vec3<f32>, tmax: f32) -> f32 {
 }
 
 /// 半透明レイヤー（cull_mask 0x02）越しの光を染める透過率（RGB）を返す（色付き影）。
-/// 不透明で遮蔽されていない方向へ、半透明インスタンスだけをトレースし、ヒットするたびに
-/// そのプリミティブの平均アルベド・被覆 α・透過率 tr で光をフィルタする（T = (1-α)+α·tr·albedo）。
+/// 不透明で遮蔽されていない方向へ、半透明インスタンスだけをトレースし、**入射面（front-facing）
+/// のヒットごと**にそのプリミティブの平均アルベド・被覆 α・透過率 tr で光をフィルタする
+/// （T = (1-α)+α·tr·albedo）。
 /// inline ray query は最近ヒットしか返さないため、tmin をヒットの先へ進めながら最大
 /// RT_TRANSLUCENT_MAX_HITS 回再トレースして重なったガラスを貫く。ヒットが無ければ vec3(1)（＝色を付けない）。
+///
+/// ## 入射面（front_face）だけでフィルタする理由（＝色が二乗になって暗すぎる不具合の修正）
+/// 吸収・透過は媒質（物体）1 個につき 1 回起きる物理量である。ところがガラスの駒のような
+/// **閉じたメッシュは、レイが表面（入射面）と裏面（出射面）の 2 枚を貫く**。ヒットするたびに
+/// 一律 T を掛けると、同じ物体で色フィルタが 2 回掛かって二乗になり、影が暗くなりすぎる
+/// （例: シアン albedo=0.6 → 0.6²=0.36）。これは面ごとの二重計上で、物理的に誤り。
+/// naga 25 の committed intersection は三角形の表裏を `front_face`（bool）で返すので、
+/// **入射面（front_face==true）のヒットでだけ T を掛け、裏面（出射面）は tmin を進めるだけ**にする。
+/// これで閉メッシュ 1 個につき T が 1 回だけ掛かり、影が「表面色そのままの明るさ」になる。
+///
+/// ## 片面ポリゴン（カーテン等の一枚布）での妥当性
+/// 巻き順が信頼できない一枚布では front_face 判定が視線（レイ）方向依存になるが、
+/// **一枚布はレイが 1 回しか貫かない**ため、その 1 回が front と判定されようが back と判定されようが
+/// T の適用回数は最大 1 回で変わらない（二重計上が起きない）。ゆえに実害はない。
+/// 表側から見て裏向きと判定された 1 枚が素通り（T 未適用＝色が乗らない）になり得るが、
+/// 一枚布は透過色より被覆 α の寄与が主で、色付き影としての見え方への影響は無視できる。
 /// - `o`   : レイ原点（自己交差防止のオフセット適用済み）。
 /// - `dir` : 光源方向（rt_trace_occlusion と同じ向き）。
 /// - `tmax`: レイ最大距離（光源までの距離 or directional の大定数）。
@@ -265,6 +282,12 @@ fn rt_trace_translucent_tint(o: vec3<f32>, dir: vec3<f32>, tmax: f32) -> vec3<f3
             break;
         }
 
+        // 入射面（front-facing）のヒットでだけ色フィルタを掛ける。
+        // 閉メッシュは表面（入射）＋裏面（出射）の 2 枚を貫くため、両方で掛けると
+        // 色フィルタが二乗になって暗すぎる。裏面（front_face==false）は下で tmin を
+        // 進めるだけにして、媒質 1 個あたり T を 1 回だけに保つ（関数 doc の詳細参照）。
+        // naga 25 の committed intersection では front_face は bool（type_gen.rs で検証済み）。
+        if hit.front_face {
         // 平均アルベド（.rgb）＋パック済み α/transmission（.a）を custom_data で引く。
         // .a は rt_shadow.rs::pack_shadow_alpha_transmission が
         //   a_q = round(α * SHADOW_PACK_QUANT), t_q = round(tr * SHADOW_PACK_QUANT)
@@ -288,6 +311,7 @@ fn rt_trace_translucent_tint(o: vec3<f32>, dir: vec3<f32>, tmax: f32) -> vec3<f3
             let layer_t = vec3<f32>(1.0 - alpha) + alpha * tr * entry.rgb;
             tint = tint * layer_t;
         }
+        } // if hit.front_face（裏面ヒットはフィルタせず tmin を進めるだけ）
 
         // 次のレイヤーへ: tmin を直前ヒットの手前まで進める（同一面の再ヒットを避ける）。
         tmin = hit.t + RT_TRANSLUCENT_T_STEP;
