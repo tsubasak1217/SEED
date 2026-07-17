@@ -294,4 +294,52 @@ mod tests {
             .validate(&module)
             .unwrap_or_else(|e| panic!("[deferred_lighting rt_on] WGSL validate 失敗: {e:?}"));
     }
+
+    /// RT ソフト影マスクの「深度考慮アップサンプル（joint bilateral）」の深度重みの境界性質を検証する。
+    ///
+    /// deferred_lighting.wgsl は半解像度マスクをフル解像度へ拡大する際、周囲 4 テクセルを
+    /// バイリニア重み × 深度類似度重み `exp(-|d_half - d_full| / tol)` で正規化平均する
+    /// （tol = FRAC × max(|d_full|, MIN)）。深度が大きく食い違うテクセルの重みが確実に
+    /// フォールバック閾値 UPSAMPLE_MIN_WEIGHT を下回ること（＝別深度面を混ぜず、フチのにじみが
+    /// 消えること）を、WGSL から抽出した実定数で数値検証する回帰ガード。
+    #[test]
+    fn shadow_mask_upsample_depth_weight_boundaries() {
+        let src = include_str!("shaders/deferred_lighting.wgsl");
+        // `const NAME: f32 = <値>;` を抽出（reflection.rs のフェード定数テストと同じ流儀）。
+        let parse_f32 = |name: &str| -> f32 {
+            let line = src.lines().map(str::trim)
+                .find(|l| l.starts_with(&format!("const {name}")))
+                .unwrap_or_else(|| panic!("deferred_lighting.wgsl に const {name} が見つかりません"));
+            let rhs = line.split('=').nth(1).unwrap();
+            let num: String = rhs.trim().chars()
+                .take_while(|c| c.is_ascii_digit() || *c == '.' || *c == '-' || *c == 'e' || *c == 'E')
+                .collect();
+            num.parse::<f32>().unwrap_or_else(|_| panic!("const {name} を f32 解釈できません: {num:?}"))
+        };
+        let frac       = parse_f32("SHADOW_MASK_DEPTH_TOLERANCE_FRAC");
+        let min_tol     = parse_f32("SHADOW_MASK_DEPTH_TOLERANCE_MIN");
+        let min_weight = parse_f32("SHADOW_MASK_UPSAMPLE_MIN_WEIGHT");
+
+        // 定数の健全性。
+        assert!(frac > 0.0 && frac < 1.0, "TOLERANCE_FRAC({frac}) は (0,1)");
+        assert!(min_tol > 0.0, "TOLERANCE_MIN({min_tol}) > 0（極近距離の 0 割れ防止）");
+        assert!(min_weight > 0.0 && min_weight < 0.01, "UPSAMPLE_MIN_WEIGHT({min_weight}) は小さい正値");
+
+        // WGSL と同一の深度重み。tol は基準深度に対する相対許容幅。
+        let depth_weight = |d_full: f32, d_half: f32| -> f32 {
+            let tol = frac * f32::max(d_full.abs(), min_tol);
+            (-(d_half - d_full).abs() / tol).exp()
+        };
+
+        // 同一深度 → 重み 1（バイリニアに一致＝平坦面で従来挙動を保つ）。
+        assert_eq!(depth_weight(10.0, 10.0), 1.0, "深度一致で重みは 1");
+        // 1×tol の差 → exp(-1)≈0.368（近傍は緩やかに減衰）。
+        let one_tol = 10.0 + frac * 10.0;
+        assert!((depth_weight(10.0, one_tol) - (-1.0f32).exp()).abs() < 1e-5, "diff=tol で exp(-1)");
+        // 大きな深度不連続（カーテンと床のフチ相当, 10×tol）→ 単独テクセルでも重みが
+        // フォールバック閾値を下回る＝別深度面は必ず棄却される（にじみ根絶の要）。
+        let far = 10.0 + 10.0 * (frac * 10.0);
+        assert!(depth_weight(10.0, far) < min_weight,
+            "深度不連続テクセルの重み({}) < UPSAMPLE_MIN_WEIGHT({min_weight})", depth_weight(10.0, far));
+    }
 }

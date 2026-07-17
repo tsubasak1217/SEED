@@ -73,8 +73,12 @@ struct CameraUniform {
 // ── シャドウマスク入力（Phase RT-Shadow-Denoise）: 半解像度 texture_2d_array（レイヤ=スロット）───
 // deferred 専用。各レイヤ .rgb ＝そのソフト影ライトのデノイズ済み遮蔽率（色付き影込みの透過率）。
 // マスク非対象フレーム（RT 影オフ・ソフト影 0 灯）はダミー 1x1×4（白＝遮蔽なし）がバインドされる。
-// s_shadow_mask は Filtering（linear）で半解像度→フル解像度のバイリニアアップサンプル（AO/SSGI と同流儀）。
+// フル解像度化は fs_deferred 内の joint bilateral upsample（深度考慮の手動 4 テクセル補間）で行う。
 @group(1) @binding(10) var t_shadow_mask: texture_2d_array<f32>;
+// s_shadow_mask（Filtering サンプラー）は深度非考慮のバイリニアがフチをにじませていたため未使用に
+// なった（textureLoad + 深度重みに置換）。ただし宣言は残す: gbuffer_bgl は WGSL の宣言済み全
+// バインディングから自動導出される（pipeline_config::reflect_bgls）ため、削除すると create_gbuffer_bind_group
+// が供給する binding 11 とレイアウトが食い違う。将来 binding を整理するなら Rust 側も同時に直すこと。
 @group(1) @binding(11) var s_shadow_mask: sampler;
 
 // ─── フルスクリーン三角形の頂点定数 ───────────────────────────
@@ -100,6 +104,46 @@ fn vs_fullscreen(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4<f32>
 /// この値以上の深度＝「何も描かれていない背景ピクセル」とみなし、ライティングせず
 /// discard する（既存のクリア色／スカイボックスをそのまま残すため）。
 const DEFERRED_BACKGROUND_DEPTH: f32 = 1.0;
+
+// ── RT ソフト影マスクの「深度を考慮した」アップサンプル定数（Phase RT-Shadow-Denoise 改良）──
+//
+// 症状: 半解像度マスク（いもす法ボックスブラー済み）をバイリニアでフル解像度へ拡大すると、
+//       深度不連続な境界（カーテンと床のフチ）で手前・奥の影値が混ざり、影のフチが薄く
+//       にじむ。対策として joint bilateral upsample（バイリニア重み × 深度類似度重み）に変える。
+//
+/// 深度類似度の許容幅（ビュー空間深度に対する相対割合）。full と half の深度差が
+/// この割合×深度 を超えると重みが急減し、別の深度面（奥の床など）のテクセルを混ぜない。
+/// 相対にするのはシーンのスケール非依存にするため（遠景ほど絶対深度差は大きくなる）。
+const SHADOW_MASK_DEPTH_TOLERANCE_FRAC: f32 = 0.05;
+/// 相対許容幅の下限（ビュー空間距離・ワールド単位）。極近距離で許容幅が 0 に潰れて
+/// 過敏になる（同一面まで棄却してしまう）のを防ぐ床値。
+const SHADOW_MASK_DEPTH_TOLERANCE_MIN: f32 = 0.05;
+/// 4 テクセルの合計重みがこの値未満なら「全テクセル棄却」とみなし、最も深度が近い 1 テクセル
+/// だけを採用する（にじみゼロを優先。境界の細い特徴で多少のエイリアスが出るのは許容）。
+const SHADOW_MASK_UPSAMPLE_MIN_WEIGHT: f32 = 1e-4;
+
+/// 半解像度マスクテクセル `hcoord` の「代表ビュー空間深度」を復元する。
+///
+/// 深度を別テクスチャに焼かず（.a 同梱はいもす法ブラーが深度を混ぜて壊すため不可）、
+/// 既にバインド済みのフル解像度深度 t_depth から、マスク生成パス（shadow_mask.wgsl の
+/// mask_full_pix）と**同一の写像**で各半解像度テクセルが評価に使ったフル解像度テクセルを
+/// 引き当てて深度を読む。これにより「ブラーは深度に一切触れない」かつ「マスクが評価された
+/// 深度と厳密一致」を新テクスチャ・帯域・binding 追加なしで両立する。
+/// - `hcoord`   : 半解像度テクセル整数座標。
+/// - `half_dims`: 半解像度テクスチャの寸法（textureDimensions(t_shadow_mask)）。
+/// - `full_dims`: フル解像度 G-Buffer の寸法（textureDimensions(t_gbuffer0)）。
+fn mask_half_texel_view_z(hcoord: vec2<i32>, half_dims: vec2<f32>, full_dims: vec2<f32>) -> f32 {
+    // 半解像度テクセル中心の UV（fs_mask の vs_fullscreen が出す [0,1] UV 規約と一致）。
+    let uv = (vec2<f32>(hcoord) + vec2<f32>(0.5, 0.5)) / half_dims;
+    // fs_mask の mask_full_pix と同一のフル解像度テクセル選択（同じ深度を復元するため）。
+    let fp   = clamp(uv * full_dims, vec2<f32>(0.0, 0.0), full_dims - vec2<f32>(1.0, 1.0));
+    let d    = textureLoad(t_depth, vec2<i32>(fp), 0);
+    // 深度→ワールド→ビュー空間 z（fs_deferred / shadow_mask.wgsl の mask_world_pos と同式・同カメラ）。
+    let ndc  = vec3<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, d);
+    let clip = u_camera.inv_view_proj * vec4<f32>(ndc, 1.0);
+    let wp   = clip.xyz / clip.w;
+    return (u_camera.view * vec4<f32>(wp, 1.0)).z;
+}
 
 @fragment
 fn fs_deferred(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
@@ -186,12 +230,78 @@ fn fs_deferred(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     let ssgi = textureSampleLevel(t_ssgi, s_ssgi, uv, 0.0).rgb;
     s.screen_gi     = vec4<f32>(ssgi, 1.0);
 
-    // RT ソフト影マスク（Phase RT-Shadow-Denoise）: 半解像度 4 レイヤをフル解像度 UV でバイリニア
-    // アップサンプルして Surface へ載せる。ライトループが light.shadow_mask_slot の指すレイヤを引く。
-    // deferred は常に valid=1（マスク非対象のライトは shadow_mask_slot=-1 で参照されず無害。マスク非対象
-    // フレームはダミー白がバインドされ、どのスロットも -1＝サンプルされないため見た目に影響しない）。
-    for (var mi: u32 = 0u; mi < SURFACE_SHADOW_MASK_SLOTS; mi = mi + 1u) {
-        s.shadow_mask[mi] = textureSampleLevel(t_shadow_mask, s_shadow_mask, uv, mi, 0.0);
+    // ── RT ソフト影マスク（Phase RT-Shadow-Denoise）: 深度考慮アップサンプル（joint bilateral）──
+    // 従来は半解像度 4 レイヤを s_shadow_mask（Filtering）でそのままバイリニア拡大していたが、
+    // 深度不連続な境界（カーテンと床のフチ）で手前・奥の影値が混ざり、影のフチが薄くにじんでいた。
+    // 対策: 周囲 4 テクセルを textureLoad し、バイリニア重み × 深度類似度重み で正規化平均する。
+    // 深度は mask_half_texel_view_z がフル解像度 t_depth から生成時と同一写像で復元する（別テクスチャ
+    // に焼かない＝いもす法ブラーが深度を混ぜて壊す問題を回避しつつ、生成時の深度と厳密一致）。
+    //
+    // 【将来課題】いもす法ブラー自体はエッジを跨いで汚染されている（半解像度マスクの各テクセルが
+    // 境界跨ぎで既に混ざっている）。深度アップサンプルで境界の**フル解像度**ピクセルが「同じ深度側の
+    // 半解像度テクセルだけ」を拾うため実用上のにじみは消えるが、生成時のガイド付きブラー（深度で
+    // ブラーを止める）は累積和方式のいもす法と両立しないため将来課題とする。
+    //
+    // deferred は常に valid=1（マスク非対象ライトは shadow_mask_slot=-1 で参照されず無害。マスク非対象
+    // フレームはダミー白（半解像度 1x1）がバインドされ、どのスロットも -1＝参照されないため無影響）。
+    {
+        let full_dims = vec2<f32>(textureDimensions(t_gbuffer0));
+        let half_dims = vec2<f32>(textureDimensions(t_shadow_mask));
+        // フル解像度ピクセルのビュー空間深度（アップサンプルの基準深度）。
+        let d_full = (u_camera.view * vec4<f32>(world_pos, 1.0)).z;
+
+        // 半解像度サンプル位置（テクセル中心合わせに -0.5）と 4 近傍の整数座標・バイリニア重み。
+        let hp   = uv * half_dims - vec2<f32>(0.5, 0.5);
+        let base = floor(hp);
+        let f    = hp - base;
+        let bi   = vec2<i32>(base);
+        let maxc = vec2<i32>(half_dims) - vec2<i32>(1, 1);
+        var coords: array<vec2<i32>, 4>;
+        coords[0] = clamp(bi + vec2<i32>(0, 0), vec2<i32>(0, 0), maxc);
+        coords[1] = clamp(bi + vec2<i32>(1, 0), vec2<i32>(0, 0), maxc);
+        coords[2] = clamp(bi + vec2<i32>(0, 1), vec2<i32>(0, 0), maxc);
+        coords[3] = clamp(bi + vec2<i32>(1, 1), vec2<i32>(0, 0), maxc);
+        var bw: array<f32, 4>;
+        bw[0] = (1.0 - f.x) * (1.0 - f.y);
+        bw[1] = f.x * (1.0 - f.y);
+        bw[2] = (1.0 - f.x) * f.y;
+        bw[3] = f.x * f.y;
+
+        // 深度類似度重み（相対許容幅）。full と half の深度差が大きいテクセルを排除する。
+        // 併せて「最も深度が近いテクセル」を全棄却時のフォールバック用に控える。
+        let tol = SHADOW_MASK_DEPTH_TOLERANCE_FRAC * max(abs(d_full), SHADOW_MASK_DEPTH_TOLERANCE_MIN);
+        var w: array<f32, 4>;
+        var w_sum   = 0.0;
+        var best_i  = 0;
+        var best_df = 1.0e30;
+        for (var k: i32 = 0; k < 4; k = k + 1) {
+            let dz   = mask_half_texel_view_z(coords[k], half_dims, full_dims);
+            let diff = abs(dz - d_full);
+            w[k]     = bw[k] * exp(-diff / tol);
+            w_sum    = w_sum + w[k];
+            if diff < best_df {
+                best_df = diff;
+                best_i  = k;
+            }
+        }
+
+        if w_sum < SHADOW_MASK_UPSAMPLE_MIN_WEIGHT {
+            // 全テクセル棄却級（深度が全近傍と大きく食い違う細い特徴）: 最も深度が近い 1 テクセルを採用。
+            let c = coords[best_i];
+            for (var mi: u32 = 0u; mi < SURFACE_SHADOW_MASK_SLOTS; mi = mi + 1u) {
+                s.shadow_mask[mi] = vec4<f32>(textureLoad(t_shadow_mask, c, i32(mi), 0).rgb, 1.0);
+            }
+        } else {
+            // 通常時: 深度が近いテクセルだけを重み付き平均（境界を跨がない）。
+            let inv = 1.0 / w_sum;
+            for (var mi: u32 = 0u; mi < SURFACE_SHADOW_MASK_SLOTS; mi = mi + 1u) {
+                var acc = vec3<f32>(0.0, 0.0, 0.0);
+                for (var k: i32 = 0; k < 4; k = k + 1) {
+                    acc = acc + textureLoad(t_shadow_mask, coords[k], i32(mi), 0).rgb * w[k];
+                }
+                s.shadow_mask[mi] = vec4<f32>(acc * inv, 1.0);
+            }
+        }
     }
     s.shadow_mask_valid = 1.0;
 
