@@ -114,6 +114,40 @@ fn instance_mask_for(alpha_mode: AlphaMode) -> u8 {
     }
 }
 
+// ─── 色付き影（RT-Translucency）の α×transmission パッキング ──────────
+//
+// 平均アルベド storage の .rgb は DDGI（ddgi_probe_update.wgsl:`gi_albedo[ai].rgb`）と
+// RT リフレクション（reflection_rt.wgsl:`rt_albedo[ai].rgb`）が「生のアルベド」として読む共有バッファ。
+// **.rgb の意味は変えてはならない**。色付き影が必要とする 2 値（α＝base_color_factor.a と
+// transmission）は、GI/反射が読まない .a に固定小数でビットパックして相乗りさせる。
+// こうすることで第 2 storage を増やさずに済む（binding14/GI binding4/反射 binding3 の
+// 三経路の bind group 配線を触らない）。
+//
+//   量子化: a_q = round(α * SHADOW_PACK_QUANT), t_q = round(tr * SHADOW_PACK_QUANT)（各 0..255）
+//   パック: .a = a_q * SHADOW_PACK_RADIX + t_q（最大 255*256+255 = 65535）
+//   → 65535 は f32 の整数完全表現域（2^24 = 16_777_216）内なので往復で誤差 0。
+//   デコードは WGSL 側 rt_shadow_on.wgsl の rt_trace_translucent_tint と対（同名定数を共有）。
+//
+// 【透過モデル（1 枚の Blend 面を通る光の RGB 透過率 T）】
+//   T = (1-α) + α·transmission·albedo.rgb
+//   - α=1, tr=1 → T = albedo（色の付いた影＝色ガラスは baseColor で透過光を濾過する）
+//   - α=1, tr=0 → T = 0    （透過しない被覆面は光を通さない＝暗い影）
+//   - α=0        → T = 1    （影なし）
+
+/// 影の透過率パックの 1 チャンネル量子化段数（8bit）。WGSL の SHADOW_PACK_QUANT と一致させること。
+const SHADOW_PACK_QUANT: f32 = 255.0;
+/// α を上位バイトへ寄せる基数。WGSL の SHADOW_PACK_RADIX と一致させること。
+const SHADOW_PACK_RADIX: f32 = 256.0;
+
+/// α（base_color_factor.a）と transmission を平均アルベド storage の .a へ詰める固定小数パック値を返す。
+/// WGSL 側 rt_shadow_on.wgsl のデコードと必ず対にすること（往復テスト shadow_pack_roundtrip_and_transmittance が担保）。
+fn pack_shadow_alpha_transmission(alpha: f32, transmission: f32) -> f32 {
+    // round-to-nearest（+0.5 して floor）で 0..255 に量子化。clamp で範囲外入力も安全に丸める。
+    let a_q = (alpha.clamp(0.0, 1.0) * SHADOW_PACK_QUANT + 0.5).floor();
+    let t_q = (transmission.clamp(0.0, 1.0) * SHADOW_PACK_QUANT + 0.5).floor();
+    a_q * SHADOW_PACK_RADIX + t_q
+}
+
 // ─── BLAS キャッシュキー ─────────────────────────────────────
 
 /// BLAS を一意に識別するキー（共有モデルパス＋メッシュ index＋プリミティブ index）。
@@ -352,11 +386,12 @@ impl RtShadowResources {
                     hasher.write_u8(instance_mask_for(gpu.primitive_alpha_mode(material_idx)));
                     // 色付き影（RT-Translucency）の平均アルベド storage は TLAS 再構築フレームでしか
                     // 再アップロードされない（下の queue.write_buffer は build 経路のみ）。よって
-                    // その中身＝各インスタンスの平均アルベド（.rgb 色相・.a 不透明度）と透過率も
-                    // シグネチャに含める。含めないと、alpha_mode/変換を変えないマテリアルの
-                    // in-place 編集（アルファ・色・透過率のスライダー）で shadow 用アルベドが変わっても
+                    // パックの入力そのもの＝平均アルベド（.rgb 色相・.a=被覆 α）と透過率 transmission を
+                    // シグネチャに含める（パック値ではなく生の入力を混ぜるので、pack 方式が変わっても
+                    // 追従は保たれる）。含めないと、alpha_mode/変換を変えないマテリアルの in-place 編集
+                    //（アルファ・色・透過率のスライダー）で shadow 用の .a パックが変わっても
                     // シグネチャが不変のまま静止スキップが発火し、GPU 上の albedo_buffer が古い値で
-                    // 固定され、色付き影に編集が反映されない（＝実行時のアルファ/色変更が影に出ない）。
+                    // 固定され、色付き影に編集が反映されない（＝実行時のアルファ/色/透過率変更が影に出ない）。
                     let alb = gpu.primitive_avg_albedo(material_idx);
                     for v in &alb { hasher.write_u32(v.to_bits()); }
                     hasher.write_u32(gpu.primitive_transmission(material_idx).to_bits());
@@ -418,16 +453,17 @@ impl RtShadowResources {
                         // mask は alpha_mode 由来（不透明のみ影レイから見える）。
                         let mask = instance_mask_for(gpu.primitive_alpha_mode(material_idx));
                         // 平均アルベド（Phase RT-GI）を同じ index に詰める（custom_data と一致）。
-                        // .rgb=平均アルベド（GI のバウンス色。ddgi_probe_update は .rgb のみ参照）。
-                        // .a=RT 色付き影の「影の透過量」用の不透明度。ガラス表現の透過率を折り込む:
-                        //   影の透過量 = mix(従来のα由来, 高透過(素通り), transmission)
-                        //   ⇔ shadow_opacity = base_color_factor.a * (1 - transmission)
-                        // rt_shadow_on.wgsl は tint *= mix(vec3(1), .rgb, .a) で使うため、
-                        // transmission=0 で従来（.a=α）と一致し、transmission=1 で .a=0＝完全素通り。
-                        // GI は .a を読まないため色付き影のためだけの .a 変更で GI は不変。
-                        let mut alb = gpu.primitive_avg_albedo(material_idx);
+                        // .rgb=平均アルベド（GI/反射のバウンス色。ddgi_probe_update / reflection_rt は .rgb のみ参照）。
+                        // .a =RT 色付き影専用。α（base_color_factor.a）と transmission を固定小数でパックして相乗り。
+                        //   シェーダ側は透過率 T = (1-α) + α·transmission·albedo.rgb を評価する:
+                        //     α=1,tr=1 → 影 = アルベド色（色ガラスは baseColor で透過光を濾過）
+                        //     α=1,tr=0 → 影 = 0（透過しない被覆面は光を通さない＝暗い影）
+                        //     α=0      → 影なし。
+                        // GI/反射は .a を読まないため、色付き影のためだけの .a パックで GI/反射は不変。
+                        let mut alb = gpu.primitive_avg_albedo(material_idx); // [r,g,b,a]（.a=base_color_factor.a）
+                        let alpha = alb[3].clamp(0.0, 1.0);
                         let trans = gpu.primitive_transmission(material_idx).clamp(0.0, 1.0);
-                        alb[3] *= 1.0 - trans;
+                        alb[3] = pack_shadow_alpha_transmission(alpha, trans); // .rgb は生アルベドのまま
                         albedos[inst_count] = alb;
                         instances[inst_count] = Some(TlasInstance::new(blas, transform, inst_count as u32, mask));
                         inst_count += 1;
@@ -739,6 +775,84 @@ mod tests {
         assert_ne!(instance_mask_for(AlphaMode::Opaque) & RT_MASK_OPAQUE, 0);
         assert_eq!(instance_mask_for(AlphaMode::Blend)  & RT_MASK_OPAQUE, 0);
         assert_eq!(instance_mask_for(AlphaMode::Mask)   & RT_MASK_OPAQUE, 0);
+    }
+
+    /// 色付き影の α×transmission パッキングの往復と、透過率 T の式の真理値表を固定する。
+    ///
+    /// 検証する不変条件:
+    ///  1. WGSL の SHADOW_PACK_QUANT / SHADOW_PACK_RADIX が Rust 定数と一致（デコードが対になる根拠）。
+    ///  2. 往復: Rust パック → WGSL 相当デコードで α/transmission を量子化精度（1/255）内に復元できる。
+    ///     かつパック値は f32 の整数完全表現域（≤65535）に収まる（往復で桁落ちしない根拠）。
+    ///  3. 透過率 T = (1-α) + α·transmission·albedo の真理値表:
+    ///     α=1,tr=1 → albedo（色ガラス） / α=1,tr=0 → 0（暗い影） / α=0 → 1（影なし） / 中間値。
+    #[test]
+    fn shadow_pack_roundtrip_and_transmittance() {
+        let rt_on = include_str!("shaders/rt_shadow_on.wgsl");
+
+        // ── 1. WGSL 定数と Rust 定数の一致（ズレるとデコードが破綻し色付き影が壊れる）──
+        let wq: f32 = wgsl_const_literal(rt_on, "SHADOW_PACK_QUANT")
+            .parse().expect("SHADOW_PACK_QUANT が f32 として解釈できません");
+        let wr: f32 = wgsl_const_literal(rt_on, "SHADOW_PACK_RADIX")
+            .parse().expect("SHADOW_PACK_RADIX が f32 として解釈できません");
+        assert_eq!(wq, SHADOW_PACK_QUANT,
+            "WGSL の SHADOW_PACK_QUANT({wq}) と Rust の {SHADOW_PACK_QUANT} が一致していません");
+        assert_eq!(wr, SHADOW_PACK_RADIX,
+            "WGSL の SHADOW_PACK_RADIX({wr}) と Rust の {SHADOW_PACK_RADIX} が一致していません");
+
+        // WGSL の rt_trace_translucent_tint と同じ算術でデコードする（floor(.a/RADIX) / 残余）。
+        let unpack = |packed: f32| -> (f32, f32) {
+            let a_q = (packed / wr).floor();
+            let t_q = packed - a_q * wr;
+            ((a_q / wq).clamp(0.0, 1.0), (t_q / wq).clamp(0.0, 1.0))
+        };
+        // WGSL の layer_t = (1-α) + α·tr·albedo と同じ式。
+        let transmittance = |albedo: [f32; 3], a: f32, tr: f32| -> [f32; 3] {
+            [
+                (1.0 - a) + a * tr * albedo[0],
+                (1.0 - a) + a * tr * albedo[1],
+                (1.0 - a) + a * tr * albedo[2],
+            ]
+        };
+        let approx3 = |got: [f32; 3], want: [f32; 3]| {
+            for k in 0..3 {
+                assert!((got[k] - want[k]).abs() <= 1e-5,
+                    "T の成分[{k}] が想定と一致しません: got={got:?} want={want:?}");
+            }
+        };
+
+        // ── 2. 往復（量子化精度内で復元・整数域内）──
+        let tol = 1.0 / SHADOW_PACK_QUANT + 1e-6; // 量子化 1 段ぶんの許容
+        for &alpha in &[0.0f32, 0.2, 0.5, 0.6, 0.999, 1.0] {
+            for &tr in &[0.0f32, 0.1, 0.5, 0.75, 1.0] {
+                let packed = pack_shadow_alpha_transmission(alpha, tr);
+                assert!(
+                    packed >= 0.0 && packed <= 65535.0 && packed.fract() == 0.0,
+                    "パック値 {packed} が f32 整数域（0..=65535）外です（往復桁落ちの恐れ）"
+                );
+                let (da, dt) = unpack(packed);
+                assert!((da - alpha).abs() <= tol, "α の往復誤差過大: in={alpha} out={da}");
+                assert!((dt - tr).abs() <= tol, "transmission の往復誤差過大: in={tr} out={dt}");
+            }
+        }
+
+        // ── 3. 透過率 T の真理値表（albedo=赤 [1,0,0]。色ガラスの代表）──
+        let red = [1.0f32, 0.0, 0.0];
+        // 式そのもの（連続値）。
+        approx3(transmittance(red, 1.0, 1.0), red);              // α=1,tr=1 → アルベド色（色ガラス）
+        approx3(transmittance(red, 1.0, 0.0), [0.0, 0.0, 0.0]);  // α=1,tr=0 → 0（暗い影・挙動変更点）
+        approx3(transmittance(red, 0.0, 0.5), [1.0, 1.0, 1.0]);  // α=0 → 1（影なし・tr 無関係）
+        approx3(transmittance(red, 0.5, 1.0), [1.0, 0.5, 0.5]);  // 中間: 0.5 + 0.5·red
+        approx3(transmittance(red, 1.0, 0.5), [0.5, 0.0, 0.0]);  // 中間: 0.5·red
+
+        // 実運用パス（pack → decode → T）の end-to-end 真理値表（量子化後も端点が保たれる）。
+        for &(alpha, tr, want) in &[
+            (1.0f32, 1.0f32, red),
+            (1.0,    0.0,    [0.0, 0.0, 0.0]),
+            (0.0,    0.5,    [1.0, 1.0, 1.0]),
+        ] {
+            let (a, t) = unpack(pack_shadow_alpha_transmission(alpha, tr));
+            approx3(transmittance(red, a, t), want);
+        }
     }
 
     /// mesh / skinned × RT オン/オフ の 4 バリアントを結合し、naga で parse + validate する。
