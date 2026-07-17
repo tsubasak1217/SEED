@@ -363,6 +363,12 @@
 **AO（SSAO / RT-AO）で初適用**。**SSGI（カラーブラー）へ転用済み**：`imos_blur.wgsl` の load/store を `.r`→`.rgb` に広げた（ランニング和はチャンネル独立のため AO の `.r` 運用は不変）
 （フォーマット変更不要）。CPU 参照一致・WGSL naga 検証のユニットテストつき。
 
+**例外（エッジ保持が必須な用途はバイラテラル）**: 影マスク（`shadow_mask`）だけは `imos_blur` を使わず、
+専用の separable バイラテラルブラー（`shadow_mask_bilateral.rs`＋`shaders/shadow_mask_bilateral.wgsl`）を使う。
+いもす法（累積和）は走査中に窓和を保持する構造上バイラテラル化できず、深度エッジを跨いで影値を混ぜて
+ハロー（フチの薄い帯）を生むため。**いもす法は AO/SSGI/すりガラス等の低周波用途（エッジ滲みが問題化しない）**、
+**バイラテラルは影マスクのようにエッジ保持が必須な用途**、と使い分ける。
+
 ### Phase RP: GPUパーティクル 【状況: 拡張実装済み（実機検証待ち）】
 GPU 上でパーティクルをシミュレート（compute）して形状メッシュ×インスタンスで描画する。
 ECS の `ParticleEmitterComponent`（データのみ）を入力に、エミッタごとの GPU バッファを
@@ -845,28 +851,44 @@ Forward+ ではなく Deferred を選ぶ根拠: 多灯対応だけなら Forward
   実装: `renderer/ssgi.rs`（`SsgiPipelines`/`SsgiTargets`/`SsgiParams`）＋ `shaders/ssgi_common.wgsl` /
   `ssgi_gen.wgsl`、`deferred_lighting.wgsl`（group1 binding8/9）、`lighting_eval.wgsl`（SSGI 分岐）、
   `surface.wgsl`（`screen_gi`）、`frame_renderer.rs` 配線。BindGroup: 生成 group0..2（3, 上限内）。
-- **RT ソフト影のデノイズ（半解像度マスク＋いもす法）: 実装済み（Phase RT-Shadow-Denoise）**。
+- **RT ソフト影のデノイズ（半解像度マスク＋バイラテラル）: 実装済み（Phase RT-Shadow-Denoise）**。
   RT ソフト影の半影が「砂を撒いたようなガサガサのディザ」に見える症状（ピクセルごとの IGN 回転×確率的
   サンプリングによる遮蔽率の量子化ノイズ）を根治する。**deferred 有効かつ影方式が Rt かつ soft_radius>0 の
-  ライトがあるフレーム**でのみ動く独立フルスクリーンパス（AO/SSGI と同じ half-res + いもす法基盤）。
+  ライトがあるフレーム**でのみ動く独立フルスクリーンパス（AO/SSGI と同じ half-res 基盤）。
   CPU（`shadow_mask.rs::assign_shadow_mask_slots`）が soft_radius>0 のライトを intensity 降順で最大
   `RT_SHADOW_MASK_LIGHTS=4` 灯選び、各 `GpuLight.shadow_mask_slot`（offset 100・旧 `_pad_bounce0` を転用・
   112B 不変）へスロット番号を書く（溢れた分と 5 灯目以降・ハード影は従来のインライン経路＝1 度だけ警告ログ）。
-  マスク生成パスは G-Buffer＋TLAS から半解像度 `mask_raw`（**texture_2d_array・4 レイヤ・Rgba16Float**）へ、
-  選定ライトごとに既存の `rt_shadow_factor`（無改変・色付き影込みの vec3 透過率）を評価して MRT で 4 レイヤ
-  同時出力し、いもす法ブラー（半径 3px・3 反復）を**レイヤごとに 4 回**掛けて `mask_b` へデノイズする
-  （`imos_blur` が単層 2D 前提のためレイヤ 2D ビューで既存ブラーを流用＝最小変更）。deferred ライティングは
-  `mask_b` を group1 binding10（D2Array）でバイリニアサンプルし `Surface.shadow_mask[slot]`／`shadow_mask_valid=1`
-  を載せ、ライトループがマスク対象ライトでレイを飛ばさずこの値を遮蔽率にする。**forward/WBOIT**（`Surface`
-  ゼロ初期化＝`shadow_mask_valid=0`）とマスク非対象ライト（`slot<0`）は従来どおりインライン `rt_shadow_factor`。
-  半解像度化でレイ本数は従来比 ~1/4。ハード影（`cone_radius=0`）は完全に不変。`L`／光源距離／`cone_radius`
-  はインライン経路とマスク経路で共有関数 `light_shadow_geometry`（`light_common.wgsl`。`RT_DIR_TMAX`／
-  `RT_SHADOW_MAX_CONE_RADIUS` も `lighting_eval.wgsl` から移設）で算出し両経路の影が一致する。
+  マスク生成パスは G-Buffer＋TLAS から半解像度 `mask_raw`（**texture_2d_array・4 レイヤ・Rgba16Float**）へ
+  選定ライトごとに既存の `rt_shadow_factor`（無改変・色付き影込みの vec3 透過率）を評価して MRT 4 レイヤ出力する。
+  **各レイヤの `.rgb`=透過率／`.a`=half-res ビュー空間深度**（バイラテラルブラーの深度ガイドを同梱）。
+  別 R32Float アタッチメント方式は 4×Rgba16Float=32B に 4B を足して `max_color_attachment_bytes_per_sample=32` を
+  超過して `create_render_pipeline` がパニックするため採らず、未使用だった `.a` へ深度を載せる（f16 精度＝相対
+  ~0.05% で、深度許容幅 相対 5% に対し十分。全レイヤ同じ深度＝画素固有・ライト非依存）。
+  **デノイズは影マスク専用の separable バイラテラルブラー**（`shadow_mask_bilateral.rs`＋
+  `shaders/shadow_mask_bilateral.wgsl`。半径 3px・ガウス空間重み×深度類似度重み `exp(-|dz-dc|/tol)`）を
+  **レイヤごとに H→V の 2 パス**掛けて `mask_b` へデノイズする（深度ガイドは各レイヤ自身の `.a` を読む。深度自体は
+  ブラーせず出力 `.a` は中心タップの深度を素通し＝次パス・下流の深度基準を維持）。
+  **なぜバイラテラルか**: いもす法（累積和）は走査中に窓和を保持する構造上バイラテラル化できず、深度エッジを
+  跨いで影値を混ぜてカーテンのフチにハロー（薄い帯）を生む。エッジ保持が必須な影マスクだけ固定タップの
+  バイラテラルに切替（AO/SSGI/すりガラスは低周波用途でこの滲みが問題化しないため `imos_blur` を継続使用）。
+  deferred ライティングは `mask_b` を group1 binding10（D2Array・`.rgb`）で**深度考慮の joint bilateral アップサンプル**
+  （4 テクセル×バイリニア重み×深度類似度。深度はフル解像度 `t_depth` から生成時と同一写像で復元＝追加 binding
+  なし。上流バイラテラルと合わせ上流・下流の両方でエッジを保つ）して `Surface.shadow_mask[slot]`／
+  `shadow_mask_valid=1` を載せ、ライトループがマスク対象ライトでレイを飛ばさずこの値を遮蔽率にする。
+  **forward/WBOIT**（`Surface` ゼロ初期化＝`shadow_mask_valid=0`）とマスク非対象ライト（`slot<0`）は従来どおり
+  インライン `rt_shadow_factor`。半解像度化でレイ本数は従来比 ~1/4。ハード影（`cone_radius=0`）は完全に不変。
+  `L`／光源距離／`cone_radius` はインライン経路とマスク経路で共有関数 `light_shadow_geometry`
+  （`light_common.wgsl`。`RT_DIR_TMAX`／`RT_SHADOW_MAX_CONE_RADIUS` も `lighting_eval.wgsl` から移設）で算出し
+  両経路の影が一致する。
   BindGroup: group0=camera/1=G-Buffer/2=`ShadowMaskParams`/3=gap/4=ライト+TLAS（RT 複合 BG 借用・上限 5 内）。
-  実装: `renderer/shadow_mask.rs`（`ShadowMaskPipelines`/`ShadowMaskTargets`/`ShadowMaskParams`＋選定）＋
-  `shaders/shadow_mask.wgsl`、`light_common.wgsl`（`shadow_mask_slot`／共有ジオメトリ）、`surface.wgsl`
-  （`shadow_mask`／`shadow_mask_valid`）、`deferred_lighting.wgsl`（group1 binding10/11）、`lighting_eval.wgsl`
-  （マスク or インライン分岐）、`deferred.rs`（ダミー 4 レイヤ配列＋Filtering サンプラー）、`frame_renderer.rs` 配線。
+  マスク生成 MRT は 4 レイヤ（Rgba16Float・blend None・`.a` に深度同梱）。バイラテラルブラー BindGroup:
+  group0（0=params/1=src マスク（`.a`=深度ガイド）/2=dst storage）。実装: `renderer/shadow_mask.rs`
+  （`ShadowMaskPipelines`/`ShadowMaskTargets`＝mask_raw/a/b/`ShadowMaskParams`＋選定）＋
+  `renderer/shadow_mask_bilateral.rs`（`ShadowMaskBilateral`）＋`shaders/shadow_mask.wgsl`（`.a` に深度同梱）／
+  `shaders/shadow_mask_bilateral.wgsl`、`light_common.wgsl`（`shadow_mask_slot`／共有ジオメトリ）、`surface.wgsl`
+  （`shadow_mask`／`shadow_mask_valid`）、`deferred_lighting.wgsl`（group1 binding10/11＋joint bilateral アップサンプル）、
+  `lighting_eval.wgsl`（マスク or インライン分岐）、`deferred.rs`（ダミー 4 レイヤ配列＋Filtering サンプラー）、
+  `frame_renderer.rs` 配線。
 
 ## D3 実機テスト観点（GPU 実機確認が必要。開発環境では cargo build/test までしか検証できない）
 
