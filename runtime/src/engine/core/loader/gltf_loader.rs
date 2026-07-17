@@ -271,6 +271,9 @@ fn load_materials(document: &gltf::Document) -> Vec<Material> {
             transmission:     mat.transmission()
                 .map(|t| t.transmission_factor())
                 .unwrap_or(0.0),
+            // MR テクスチャを無視するトグル。glTF ロード時は常に従来動作（false＝乗算）。
+            // 有効化はエディタの Inspector（常時表示）または .mat / インライン上書きで行う。
+            mr_tex_ignore:    false,
             double_sided:     mat.double_sided(),
             // glTF の double_sided をカリング面へマップする（true → 両面描画＝カリング無し）。
             // これで Sponza のカーテン等、片面しか描かれず裏から見ると消えていたマテリアルが

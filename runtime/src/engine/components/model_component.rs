@@ -328,7 +328,7 @@ mod batch_key_tests {
             kind: MaterialOverrideKind::Inline {
                 base_color: Some(c),
                 metallic: None, roughness: None, emissive: None,
-                alpha_mode: None, alpha_cutoff: None, ior: None, transmission: None, cull_face: None,
+                alpha_mode: None, alpha_cutoff: None, ior: None, transmission: None, mr_tex_ignore: None, cull_face: None,
             },
         }
     }

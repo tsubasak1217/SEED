@@ -378,7 +378,9 @@ pub(crate) fn build_material_uniform(mat: &Material) -> MaterialUniform {
         has_emissive_tex:   mat.emissive_texture.is_some() as u32,
         ior:                mat.ior,
         transmission:       mat.transmission,
-        _pad0:              0.0,
+        // MR テクスチャ無視トグル（旧 _pad0 を転用, offset 68）。1=無視（factor 直値）。
+        // シェーダ側 surface_gather.wgsl の MR 採取 1 箇所が参照する（forward/G-Buffer 共通）。
+        mr_tex_ignore:      mat.mr_tex_ignore as u32,
         _pad1:              0.0,
         _pad2:              0.0,
     }
@@ -395,7 +397,7 @@ pub(crate) fn build_material_uniform(mat: &Material) -> MaterialUniform {
 /// `None` のフィールドは `base`（埋込値）をそのまま維持する。
 pub(crate) fn bake_inline_material(base: &Material, kind: &MaterialOverrideKind) -> Option<Material> {
     let MaterialOverrideKind::Inline {
-        base_color, metallic, roughness, emissive, alpha_mode, alpha_cutoff, ior, transmission, cull_face,
+        base_color, metallic, roughness, emissive, alpha_mode, alpha_cutoff, ior, transmission, mr_tex_ignore, cull_face,
     } = kind else {
         return None;
     };
@@ -410,6 +412,8 @@ pub(crate) fn bake_inline_material(base: &Material, kind: &MaterialOverrideKind)
     if let Some(v) = ior          { eff.ior               = *v; }
     // 透過率の上書き（None なら埋込値を維持）。ガラス表現の透け具合。
     if let Some(v) = transmission { eff.transmission      = *v; }
+    // MR テクスチャ無視トグルの上書き（None なら埋込値を維持）。true で MR テクスチャを無視。
+    if let Some(v) = mr_tex_ignore { eff.mr_tex_ignore    = *v; }
     // カリング面の上書き（None なら埋込値＝glTF double_sided 由来を維持）。
     if let Some(v) = cull_face    { eff.cull_face         = material_asset::parse_cull_face(v); }
     // テクスチャ参照は維持（texture_index は元モデルのテクスチャ列を指したまま）。
@@ -959,6 +963,8 @@ impl GpuModel {
                         ior:               asset.ior,
                         // .mat が持つ透過率をそのまま適用する（キー欠落時は serde 既定の 0.0＝後方互換）。
                         transmission:      asset.transmission,
+                        // .mat が持つ MR テクスチャ無視トグルを適用する（キー欠落時は serde 既定の false）。
+                        mr_tex_ignore:     asset.mr_tex_ignore,
                         // .mat が持つカリング面をそのまま適用する（キー欠落時は serde 既定の "back"）。
                         cull_face:         material_asset::parse_cull_face(&asset.cull_face),
                         ..Material::default()
@@ -2088,12 +2094,12 @@ mod inline_bake_tests {
     fn inline(
         base_color: Option<[f32; 4]>, metallic: Option<f32>, roughness: Option<f32>,
         emissive: Option<[f32; 3]>, alpha_mode: Option<&str>, alpha_cutoff: Option<f32>,
-        ior: Option<f32>, transmission: Option<f32>, cull_face: Option<&str>,
+        ior: Option<f32>, transmission: Option<f32>, mr_tex_ignore: Option<bool>, cull_face: Option<&str>,
     ) -> MaterialOverrideKind {
         MaterialOverrideKind::Inline {
             base_color, metallic, roughness, emissive,
             alpha_mode: alpha_mode.map(|s| s.to_string()),
-            alpha_cutoff, ior, transmission,
+            alpha_cutoff, ior, transmission, mr_tex_ignore,
             cull_face: cull_face.map(|s| s.to_string()),
         }
     }
@@ -2108,7 +2114,7 @@ mod inline_bake_tests {
 
         let kind = inline(
             Some([0.2, 0.4, 0.6, 0.8]), Some(0.3), Some(0.7),
-            Some([1.0, 0.0, 0.0]), None, None, Some(1.5), Some(0.9), Some("none"),
+            Some([1.0, 0.0, 0.0]), None, None, Some(1.5), Some(0.9), Some(true), Some("none"),
         );
         let eff = bake_inline_material(&base, &kind).expect("Inline は Some を返す");
         assert_eq!(eff.base_color_factor, [0.2, 0.4, 0.6, 0.8]);
@@ -2117,6 +2123,7 @@ mod inline_bake_tests {
         assert_eq!(eff.emissive_factor, [1.0, 0.0, 0.0]);
         assert_eq!(eff.ior, 1.5);
         assert_eq!(eff.transmission, 0.9);
+        assert!(eff.mr_tex_ignore, "mr_tex_ignore=Some(true) が反映されること");
         assert_eq!(eff.cull_face, CullFace::None);
         // alpha_mode は None なので埋込（既定）を維持する。
         assert_eq!(eff.alpha_mode, base.alpha_mode);
@@ -2132,7 +2139,7 @@ mod inline_bake_tests {
         let base = Material::default();
         let kind = inline(
             Some([0.1, 0.2, 0.3, 1.0]), Some(0.9), Some(0.1),
-            Some([0.0, 0.5, 0.0]), Some("mask"), Some(0.5), Some(1.33), Some(0.6), Some("front"),
+            Some([0.0, 0.5, 0.0]), Some("mask"), Some(0.5), Some(1.33), Some(0.6), Some(true), Some("front"),
         );
         // フル経路の uniform（GpuMaterial::upload 相当）。
         let eff_full = bake_inline_material(&base, &kind).unwrap();
@@ -2152,11 +2159,11 @@ mod inline_bake_tests {
     fn alpha_cutoff_only_applies_in_mask_mode() {
         let base = Material::default();
         // Opaque（alpha_mode 未指定）＋ cutoff 指定 → uniform では 0.0。
-        let opaque = inline(None, None, None, None, None, Some(0.5), None, None, None);
+        let opaque = inline(None, None, None, None, None, Some(0.5), None, None, None, None);
         let eff_o = bake_inline_material(&base, &opaque).unwrap();
         assert_eq!(build_material_uniform(&eff_o).alpha_cutoff, 0.0);
         // Mask ＋ cutoff 指定 → uniform に反映。
-        let mask = inline(None, None, None, None, Some("mask"), Some(0.5), None, None, None);
+        let mask = inline(None, None, None, None, Some("mask"), Some(0.5), None, None, None, None);
         let eff_m = bake_inline_material(&base, &mask).unwrap();
         assert_eq!(eff_m.alpha_mode, AlphaMode::Mask);
         assert_eq!(build_material_uniform(&eff_m).alpha_cutoff, 0.5);
@@ -2168,5 +2175,39 @@ mod inline_bake_tests {
         let base = Material::default();
         let kind = MaterialOverrideKind::MatAsset { path: "assets://x.mat".to_string() };
         assert!(bake_inline_material(&base, &kind).is_none());
+    }
+
+    /// mr_tex_ignore=true の uniform は MR フラグが 1 で factor が保存される（実効値＝factor）。
+    ///
+    /// 実際の「MR テクスチャを無視して factor を実効値にする」乗算スキップはシェーダ
+    /// （surface_gather.wgsl）で行われるため、CPU 側の焼き込みが検証できるのは
+    /// 「uniform に mr_tex_ignore=1 が載り、metallic/roughness factor が素通りする」ことである。
+    #[test]
+    fn mr_tex_ignore_true_sets_flag_and_preserves_factors() {
+        let base = Material::default();
+        // metallic=0.2 / roughness=0.9 を factor に、mr_tex_ignore=true を指定。
+        let kind = inline(None, Some(0.2), Some(0.9), None, None, None, None, None, Some(true), None);
+        let eff = bake_inline_material(&base, &kind).unwrap();
+        let uni = build_material_uniform(&eff);
+        assert_eq!(uni.mr_tex_ignore, 1, "mr_tex_ignore=true は uniform で 1");
+        // シェーダはこの factor をテクスチャ乗算せずそのまま実効値にする。
+        assert_eq!(uni.metallic_factor, 0.2, "metallic factor は素通り（実効値＝factor）");
+        assert_eq!(uni.roughness_factor, 0.9, "roughness factor は素通り（実効値＝factor）");
+    }
+
+    /// mr_tex_ignore=false（既定）の uniform は、この機能を追加する前とビット一致する。
+    ///
+    /// 旧レイアウトでは当該 4 バイト（offset 68）は `_pad0: f32 = 0.0`（＝全ビット 0）だった。
+    /// トグルを u32 として転用しても false→0u は全ビット 0 なので、既定マテリアルの uniform は
+    /// 追加前と 1 ビットも変わらない（後方互換＝焼き込みビット一致）。
+    #[test]
+    fn mr_tex_ignore_false_is_bit_compatible_with_old_layout() {
+        // 既定（mr_tex_ignore=false）のマテリアルから uniform を作る。
+        let eff = Material::default();
+        let uni = build_material_uniform(&eff);
+        assert_eq!(uni.mr_tex_ignore, 0, "既定は 0（無視しない＝従来の乗算）");
+        // offset 68 の 4 バイトが全ゼロ＝旧 _pad0(f32 0.0) とビット一致であることを直接確認。
+        let bytes = bytemuck::bytes_of(&uni);
+        assert_eq!(&bytes[68..72], &[0u8; 4], "offset 68 の 4 バイトは旧 _pad0(0.0) とビット一致");
     }
 }

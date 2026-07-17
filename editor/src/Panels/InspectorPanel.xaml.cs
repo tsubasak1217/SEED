@@ -2821,7 +2821,7 @@ public partial class InspectorPanel : UserControl
         float R, float G, float B, float A,
         float Metallic, float Roughness,
         float ER, float EG, float EB,
-        string AlphaMode, float AlphaCutoff, float Ior, float Transmission, string CullFace, string Path);
+        string AlphaMode, float AlphaCutoff, float Ior, float Transmission, bool MrTexIgnore, string CullFace, string Path);
 
     /// <summary>
     /// SET_MATERIAL_OVERRIDE の "kind":"mat_asset" 送信用 JSON ペイロード（System.Text.Json でシリアライズ）。
@@ -2850,6 +2850,8 @@ public partial class InspectorPanel : UserControl
         public float ior { get; set; } = 1f;
         /// <summary>透過率（transmission, ガラス表現）。0..1。0=従来動作。Blend のときのみ意味を持つ。</summary>
         public float transmission { get; set; } = 0f;
+        /// <summary>MR テクスチャ無視トグル。true で metallic/roughness テクスチャの乗算をスキップし factor を実効値にする（既定 false）。</summary>
+        public bool mr_tex_ignore { get; set; } = false;
         /// <summary>カリング面 "back" | "front" | "none"。ランタイム側は大小文字非依存・不明値は Back 扱い。</summary>
         public string cull_face { get; set; } = CullFaceValues[0];
     }
@@ -2918,12 +2920,14 @@ public partial class InspectorPanel : UserControl
                     var ior         = m.TryGetProperty("ior",          out var io) ? io.GetSingle() : 1f;
                     // transmission キーを持たない旧ランタイムの ACTOR_COMPONENTS でも動くよう既定 0.0（透過なし）にフォールバックする。
                     var transmission = m.TryGetProperty("transmission", out var tr) ? tr.GetSingle() : 0f;
+                    // mr_tex_ignore キーを持たない旧ランタイムの ACTOR_COMPONENTS でも動くよう既定 false（乗算）にフォールバックする。
+                    var mrTexIgnore  = m.TryGetProperty("mr_tex_ignore", out var mi) && mi.ValueKind == JsonValueKind.True;
                     // cull_face キーを持たない旧ランタイムの ACTOR_COMPONENTS でも動くよう既定 "back" にフォールバックする。
                     var cullFace    = m.TryGetProperty("cull_face",    out var cf) ? cf.GetString() ?? CullFaceValues[0] : CullFaceValues[0];
                     var path        = m.TryGetProperty("path",        out var mp) ? mp.GetString() ?? ""       : "";
 
                     result.Add(new MaterialSlotData(slot, name, mode, r, g, b, a, metallic, roughness,
-                        er, eg, eb, alphaMode, alphaCutoff, ior, transmission, cullFace, path));
+                        er, eg, eb, alphaMode, alphaCutoff, ior, transmission, mrTexIgnore, cullFace, path));
                 }
                 return result;
             }
@@ -3100,6 +3104,7 @@ public partial class InspectorPanel : UserControl
         float curAlphaCutoff = mat.AlphaCutoff;
         float curIor = mat.Ior;
         float curTransmission = mat.Transmission;
+        bool curMrTexIgnore = mat.MrTexIgnore;
         string curCullFace = mat.CullFace;
 
         var inlinePanel = new StackPanel { Visibility = mat.Mode == "inline" ? Visibility.Visible : Visibility.Collapsed };
@@ -3118,6 +3123,7 @@ public partial class InspectorPanel : UserControl
                 alpha_cutoff = curAlphaCutoff,
                 ior          = curIor,
                 transmission = curTransmission,
+                mr_tex_ignore = curMrTexIgnore,
                 cull_face    = curCullFace,
             };
             var json = JsonSerializer.Serialize(payload);
@@ -3146,6 +3152,26 @@ public partial class InspectorPanel : UserControl
         // metallic / roughness スライダー（0..1）
         inlinePanel.Children.Add(BuildMaterialSliderRow("メタリック", curMetallic, v => { curMetallic = v; SendInline(); }));
         inlinePanel.Children.Add(BuildMaterialSliderRow("ラフネス", curRoughness, v => { curRoughness = v; SendInline(); }));
+
+        // MR テクスチャ無視トグル（常時表示）。glTF PBR は実効 metallic/roughness = factor × MR テクスチャのため、
+        // MR テクスチャ持ちの面はスライダを最大にしても実効 roughness をテクスチャ値以上へ上げられない。
+        // ON にすると MR テクスチャの乗算をスキップし、上の metallic/roughness スライダ値を実効値にする。
+        // MR テクスチャの有無はエディタからは判別できないため、条件表示せず常に出す。
+        var mrIgnoreRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 2, 0, 2) };
+        mrIgnoreRow.Children.Add(new TextBlock
+        {
+            Text = "MRテクスチャを無視", Foreground = new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88)),
+            FontSize = 11, Width = 90, VerticalAlignment = VerticalAlignment.Center,
+        });
+        var mrIgnoreCheck = new CheckBox
+        {
+            IsChecked = curMrTexIgnore, VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(4, 0, 0, 0),
+        };
+        mrIgnoreCheck.Checked   += (_, _) => { curMrTexIgnore = true;  SendInline(); };
+        mrIgnoreCheck.Unchecked += (_, _) => { curMrTexIgnore = false; SendInline(); };
+        mrIgnoreRow.Children.Add(mrIgnoreCheck);
+        inlinePanel.Children.Add(mrIgnoreRow);
 
         // emissive スウォッチ（RGB のみ。ColorPickerWindow は a 必須のため a=1 固定で呼び出し RGB だけ使う）
         var emissiveSwatch = BuildColorSwatch(curER, curEG, curEB, 1f);
