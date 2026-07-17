@@ -127,8 +127,18 @@ const RT_TRANSLUCENT_CULL_MASK: u32 = 0x02u;
 
 /// 色付き影の透過色を累積する最大ヒット数（tmin を先へ進めながら再トレースする回数上限）。
 /// inline ray query は最近ヒットしか返さないため、重なった半透明レイヤーを N 枚まで貫く。
-/// 4 枚＝ガラスが数枚重なっても色が乗る。これ以上は稀かつコスト線形増のため打ち切る。
-const RT_TRANSLUCENT_MAX_HITS: u32 = 4u;
+///
+/// 経路ごとに 2 値を分ける（半影品質とコストの綱引き）:
+/// - CENTER（ハード影の中心 1 本）: 4 枚。中心 1 本しか飛ばさないのでコスト余裕があり、
+///   ガラスが数枚重なっても色が乗る。これ以上は稀かつコスト線形増のため打ち切る。
+/// - SAMPLE（ソフト影の円錐サンプルごと）: 2 枚。ソフト影は最大 RT_SHADOW_SAMPLES_MAX(16) 本 ×
+///   最大 4 灯（半解像度マスク）で走るため、貫通数を各サンプルで掛けると最悪レイ数が跳ね上がる。
+///   実測上「半透明レイヤーが 3 枚以上重なる」画素は希少で、そこに貫通数を割くより、遮蔽されて
+///   いない全サンプルで tint を平均して**半影に色の減衰を付ける**方が見た目の効きが大きい。
+///   ゆえにサンプルごとは 2 枚に抑え、最悪コスト（16×2）を有界に保つ。
+/// ループの静的上限は両者の大きい方（CENTER）で縛り、SAMPLE 経路は早期 break で打ち切る。
+const RT_TRANSLUCENT_MAX_HITS_CENTER: u32 = 4u;
+const RT_TRANSLUCENT_MAX_HITS_SAMPLE: u32 = 2u;
 
 /// 再トレース時に tmin を「直前ヒットの t＋この量」へ進める微小オフセット（同一面の再ヒット防止）。
 /// RT_SHADOW_TMIN と同オーダー。ヒット面の厚みより十分小さく、次のレイヤーは取りこぼさない。
@@ -237,7 +247,8 @@ fn rt_trace_occlusion(o: vec3<f32>, dir: vec3<f32>, tmax: f32) -> f32 {
 /// のヒットごと**にそのプリミティブの平均アルベド・被覆 α・透過率 tr で光をフィルタする
 /// （T = (1-α)+α·tr·albedo）。
 /// inline ray query は最近ヒットしか返さないため、tmin をヒットの先へ進めながら最大
-/// RT_TRANSLUCENT_MAX_HITS 回再トレースして重なったガラスを貫く。ヒットが無ければ vec3(1)（＝色を付けない）。
+/// max_hits 回（呼び出し側が CENTER=4 / SAMPLE=2 を渡す）再トレースして重なったガラスを貫く。
+/// ヒットが無ければ vec3(1)（＝色を付けない）。
 ///
 /// ## 入射面（front_face）だけでフィルタする理由（＝色が二乗になって暗すぎる不具合の修正）
 /// 吸収・透過は媒質（物体）1 個につき 1 回起きる物理量である。ところがガラスの駒のような
@@ -257,12 +268,19 @@ fn rt_trace_occlusion(o: vec3<f32>, dir: vec3<f32>, tmax: f32) -> f32 {
 /// - `o`   : レイ原点（自己交差防止のオフセット適用済み）。
 /// - `dir` : 光源方向（rt_trace_occlusion と同じ向き）。
 /// - `tmax`: レイ最大距離（光源までの距離 or directional の大定数）。
-fn rt_trace_translucent_tint(o: vec3<f32>, dir: vec3<f32>, tmax: f32) -> vec3<f32> {
+/// - `max_hits`: 貫通する半透明レイヤーの最大枚数（CENTER=4 / SAMPLE=2）。ループの静的上限は
+///               常に RT_TRANSLUCENT_MAX_HITS_CENTER（両者の大きい方）で、これを超える反復は
+///               `i >= max_hits` で早期 break する（1 ピクセルあたりのレイ本数を静的に有界化）。
+fn rt_trace_translucent_tint(o: vec3<f32>, dir: vec3<f32>, tmax: f32, max_hits: u32) -> vec3<f32> {
     var tint = vec3<f32>(1.0, 1.0, 1.0);
     var tmin = RT_SHADOW_TMIN;
 
     // ループ上限は定数で静的に固定（1 ピクセルあたりのレイ本数が上限を超えない）。
-    for (var i: u32 = 0u; i < RT_TRANSLUCENT_MAX_HITS; i = i + 1u) {
+    // 実効上限は引数 max_hits（<= CENTER）で、下の early break で締める。
+    for (var i: u32 = 0u; i < RT_TRANSLUCENT_MAX_HITS_CENTER; i = i + 1u) {
+        if i >= max_hits {
+            break;
+        }
         var desc: RayDesc;
         // 最近ヒットを取り、次の反復で tmin をその先へ進める（TERMINATE は付けない）。
         desc.flags     = RAY_FLAG_NONE;
@@ -372,9 +390,13 @@ fn rt_shadow_perp(v: vec3<f32>) -> vec3<f32> {
 ///    サンプルは**レイを飛ばさず 0（遮蔽）として加算**する。方向を起こしてはならない
 ///    （＝一枚布の裏側へ抜けるべきレイが手前へ逃げ、光漏れになる。ファイル冒頭参照）。
 ///    サンプルは 1 本も捨てない（分母は常に samples ＝ ディザノイズが出ない）。
-/// 4. 平均 × ターミネータ係数（スカラー可視性）に、半透明レイヤーの透過色（RGB）を掛けて返す。
-///    透過色は u_light_meta.translucency_rt==1（RT-Translucency 有効）かつ不透明で遮蔽されて
-///    いないときだけ累積する。無効時は vec3(1)（色を付けない＝従来の白い影）。
+/// 4. 半透明レイヤーの透過色（RGB）をサンプルごとに評価して平均する。
+///    - ハード経路（cone_radius=0）: 中心方向 L の 1 本だけ透過色を評価（最大 CENTER=4 枚貫通）。
+///    - ソフト経路（cone_radius>0）: 遮蔽されていない各サンプル方向 dir で透過色を評価
+///      （最大 SAMPLE=2 枚貫通）し、遮蔽・地平線下のサンプルは vec3(0) として母数 samples で平均。
+///      ガラスを外れたサンプルは白（素通り）、掠めたサンプルだけ染まるため**色付き影にも半影が付く**。
+///    透過色は u_light_meta.translucency_rt に色付き影ビットが立っているときだけ評価する。
+///    立っていなければ tint 評価自体をスキップし従来コストのまま（白い影）。
 ///
 /// 戻り値は vec3<f32>（RGB 透過率）。呼び出し側 lighting_eval.wgsl は `radiance *= factor` を
 /// 成分ごとの積として評価する（ガラス越しの光が色を帯びる）。
@@ -408,62 +430,80 @@ fn rt_shadow_factor(
           + nv * RT_SHADOW_NORMAL_BIAS
           + ng * RT_SHADOW_GEO_CLEARANCE;
 
-    // ── 3. 不透明レイヤーのスカラー可視性（0..1）を求める ─────────
-    var vis: f32;
+    // ── 3+4. 不透明可視性 × 半透明透過色（RGB）を同時に求める ─────
+    // 色付き影（RT-Translucency）が有効か。無効なら tint 評価を一切スキップし従来コストのまま。
+    let colored = (u_light_meta.translucency_rt & TRANSLUCENCY_RT_COLORED_SHADOW) != 0u;
+
     if cone_radius <= 0.0 {
-        // ハードシャドウ経路（面積ゼロ）: 1 本のみで高速（コスト増ゼロを維持）。
+        // ── ハードシャドウ経路（面積ゼロ・1 本）: コスト増ゼロを維持 ──
         // 方向は l そのまま。ng でリフトしてはならない（薄い面の裏側へ抜けるべきレイが
         // 手前へ折り返され、光漏れになる）。dot(nv,l) > 0 は上の早期 return で保証済み。
-        vis = rt_trace_occlusion(o, l, tmax);
-    } else {
-        // ソフトシャドウ経路: ペナンブラの広さに応じたサンプル本数（MIN..MAX に必ず収まる）。
-        let samples = rt_shadow_sample_count(cone_radius);
-
-        // 円錐サンプル用の直交基底（l に垂直な 2 軸）。
-        let t = rt_shadow_perp(l);
-        let b = cross(l, t);
-        // フラグメントごとの回転（バンディング回避）。時間項を含まないため静止画で安定。
-        let rot = rt_shadow_ign(frag_xy) * 2.0 * RT_SHADOW_PI;
-
-        var sum = 0.0;
-
-        // ループ上限は必ず定数 RT_SHADOW_SAMPLES_MAX で縛る（samples は clamp 済みだが、
-        // 万一の異常値でも 1 ピクセルあたりのレイ本数が静的上限を超えないことを保証する）。
-        for (var i: u32 = 0u; i < RT_SHADOW_SAMPLES_MAX; i = i + 1u) {
-            if i >= samples {
-                break;
-            }
-            // Vogel ディスク: 半径 √((i+0.5)/N)、角度 i*黄金角 + 回転。
-            let fi    = f32(i) + 0.5;
-            let r     = sqrt(fi / f32(samples));
-            let theta = f32(i) * RT_SHADOW_GOLDEN_ANGLE + rot;
-            let disk  = vec2<f32>(cos(theta), sin(theta)) * r * cone_radius;
-            // l を円錐内へずらして正規化（見込み半径 cone_radius のディスクを張る）。
-            let dir   = normalize(l + t * disk.x + b * disk.y);
-
-            // 地平線判定（**滑らかな nv 基準**。ng だと三角形ごとに飛んでファセット状の黒帯になる）。
-            // 面の裏側を向くサンプルは幾何的に光を受け取れない。0（遮蔽）として**加算せず**、
-            // レイも飛ばさない（トレース 1 本ぶん速い）。捨てない＝分母は samples のまま一定。
-            if dot(nv, dir) <= 0.0 {
-                continue;
-            }
-            sum += rt_trace_occlusion(o, dir, tmax);
+        let vis = rt_trace_occlusion(o, l, tmax);
+        // 不透明で完全遮蔽されていない（vis>0）ときだけ、中心方向 L の透過色を 1 本累積する
+        // （最大 CENTER=4 枚貫通・コスト有界）。無効・遮蔽時は白のまま（従来どおり）。
+        var tint = vec3<f32>(1.0, 1.0, 1.0);
+        if colored && vis > 0.0 {
+            tint = rt_trace_translucent_tint(o, l, tmax, RT_TRANSLUCENT_MAX_HITS_CENTER);
         }
-
-        // 分母は常に samples（地平線より下のサンプルも 0 として母数に含む）。
-        // ピクセルごとの IGN 回転で分母が変動しない＝ディザ状のまだらノイズが出ない。
-        vis = sum / f32(samples);
+        // スカラー可視性 × ターミネータ係数 × 透過色。
+        return vec3<f32>(terminator * vis) * tint;
     }
 
-    // ── 4. 色付き影（半透明レイヤーの透過色）─────────────────────
-    // RT-Translucency 有効（translucency_rt==1）かつ不透明で完全遮蔽されていない（vis>0）ときだけ、
-    // 中心方向 L に沿って半透明レイヤーの透過色を 1 本累積する（コスト有界）。無効時は白のまま。
-    // シャドウマップ（二値）では色を持てないため、色付き影は影=rt のときだけ効く。
-    var tint = vec3<f32>(1.0, 1.0, 1.0);
-    if (u_light_meta.translucency_rt & TRANSLUCENCY_RT_COLORED_SHADOW) != 0u && vis > 0.0 {
-        tint = rt_trace_translucent_tint(o, l, tmax);
+    // ── ソフトシャドウ経路（円錐内 N サンプルの RGB 平均）──
+    // ペナンブラの広さに応じたサンプル本数（MIN..MAX に必ず収まる）。
+    let samples = rt_shadow_sample_count(cone_radius);
+
+    // 円錐サンプル用の直交基底（l に垂直な 2 軸）。
+    let t = rt_shadow_perp(l);
+    let b = cross(l, t);
+    // フラグメントごとの回転（バンディング回避）。時間項を含まないため静止画で安定。
+    let rot = rt_shadow_ign(frag_xy) * 2.0 * RT_SHADOW_PI;
+
+    // サンプルごとに「不透明で遮蔽されていなければ、その方向の半透明透過色（RGB）」を累積する。
+    // 遮蔽サンプル・地平線より下のサンプルは vec3(0) を加算（＝寄与 0）。母数は常に samples。
+    // → ガラスを外れたサンプルは白（素通り＝tint=1）、ガラスを掠めたサンプルだけ色が乗るため、
+    //   スカラー影と同じく**色付き影にも半影（掠め度合いに応じた色の減衰）が付く**。
+    //   旧実装は中心 L の 1 本だけで tint を評価し全体へ一律に掛けていたため、半影で減衰せず
+    //   シルエットどおりの硬さ・濃さで色が落ちていた（この症状の原因）。
+    var sum_rgb = vec3<f32>(0.0, 0.0, 0.0);
+
+    // ループ上限は必ず定数 RT_SHADOW_SAMPLES_MAX で縛る（samples は clamp 済みだが、
+    // 万一の異常値でも 1 ピクセルあたりのレイ本数が静的上限を超えないことを保証する）。
+    for (var i: u32 = 0u; i < RT_SHADOW_SAMPLES_MAX; i = i + 1u) {
+        if i >= samples {
+            break;
+        }
+        // Vogel ディスク: 半径 √((i+0.5)/N)、角度 i*黄金角 + 回転。
+        let fi    = f32(i) + 0.5;
+        let r     = sqrt(fi / f32(samples));
+        let theta = f32(i) * RT_SHADOW_GOLDEN_ANGLE + rot;
+        let disk  = vec2<f32>(cos(theta), sin(theta)) * r * cone_radius;
+        // l を円錐内へずらして正規化（見込み半径 cone_radius のディスクを張る）。
+        let dir   = normalize(l + t * disk.x + b * disk.y);
+
+        // 地平線判定（**滑らかな nv 基準**。ng だと三角形ごとに飛んでファセット状の黒帯になる）。
+        // 面の裏側を向くサンプルは幾何的に光を受け取れない。0（遮蔽）として**加算せず**、
+        // レイも飛ばさない（トレース 1 本ぶん速い）。捨てない＝分母は samples のまま一定。
+        if dot(nv, dir) <= 0.0 {
+            continue;
+        }
+        // 不透明遮蔽レイ（従来どおり）。当たれば寄与 0（sum_rgb へ加算しない）。
+        let occ = rt_trace_occlusion(o, dir, tmax);
+        if occ <= 0.0 {
+            continue;
+        }
+        // 遮蔽されていないサンプルだけ、その方向で半透明透過色を評価する（最大 SAMPLE=2 枚貫通）。
+        // 色付き影が無効なら白（vec3(1)）のまま＝従来どおり追加レイを飛ばさない。
+        var tint_i = vec3<f32>(1.0, 1.0, 1.0);
+        if colored {
+            tint_i = rt_trace_translucent_tint(o, dir, tmax, RT_TRANSLUCENT_MAX_HITS_SAMPLE);
+        }
+        // occ==1.0（非遮蔽）なので、そのサンプルの寄与は tint_i そのもの。
+        sum_rgb += tint_i;
     }
 
-    // スカラー可視性 × ターミネータ係数（幾何的に光へ背を向ける側へ滑らかに 0）× 透過色。
-    return vec3<f32>(terminator * vis) * tint;
+    // 分母は常に samples（地平線より下・遮蔽のサンプルも vec3(0) として母数に含む）。
+    // ピクセルごとの IGN 回転で分母が変動しない＝ディザ状のまだらノイズが出ない。
+    // 最後にターミネータ係数（幾何的に光へ背を向ける側へ滑らかに 0）を掛ける。
+    return (sum_rgb / f32(samples)) * terminator;
 }

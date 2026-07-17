@@ -763,6 +763,39 @@ mod tests {
             !o_expr.contains('/'),
             "レイ原点式に除算が含まれています（スロープスケール復活の疑い）: {o_expr:?}。             オフセットは NORMAL_BIAS と GEO_CLEARANCE の固定量の和だけにすること"
         );
+
+        // 色付き影の貫通枚数定数の分離（CENTER=4 / SAMPLE=2）。半影品質とコストの綱引きの前提。
+        // ソフト影はサンプルごとに tint を評価する（半影に色の減衰を付ける）ため、最悪レイ数を
+        // 有界に保つ目的で SAMPLE 経路の貫通枚数を CENTER より小さくする。ここが崩れると
+        //   ・SAMPLE >= CENTER: ソフト影の最悪コスト（samples×hits）が跳ね上がる
+        //   ・どちらか 0     : 貫通ループが回らず色付き影が無効化される
+        // といった噛み合わせ崩れが無言で起きるため縛る。ループの静的上限は必ず CENTER 側を使う。
+        let hits_center: u32 = wgsl_const_literal(rt_on, "RT_TRANSLUCENT_MAX_HITS_CENTER")
+            .parse()
+            .expect("RT_TRANSLUCENT_MAX_HITS_CENTER が u32 として解釈できません");
+        let hits_sample: u32 = wgsl_const_literal(rt_on, "RT_TRANSLUCENT_MAX_HITS_SAMPLE")
+            .parse()
+            .expect("RT_TRANSLUCENT_MAX_HITS_SAMPLE が u32 として解釈できません");
+        assert_eq!(
+            hits_center, 4,
+            "RT_TRANSLUCENT_MAX_HITS_CENTER({hits_center}) は 4（ハード影の中心 1 本用）であること"
+        );
+        assert_eq!(
+            hits_sample, 2,
+            "RT_TRANSLUCENT_MAX_HITS_SAMPLE({hits_sample}) は 2（ソフト影のサンプルごと・コスト有界化）であること"
+        );
+        assert!(
+            hits_sample >= 1 && hits_sample < hits_center,
+            "RT_TRANSLUCENT_MAX_HITS_SAMPLE({hits_sample}) は 1 以上かつ CENTER({hits_center}) 未満であること\
+             （サンプルごと評価の最悪コストを中心 1 本用より小さく抑える前提）"
+        );
+        // 貫通ループの静的上限は両者の大きい方（CENTER）で縛られていること
+        //（SAMPLE 経路は早期 break で締める）。上限を SAMPLE 側にすると CENTER 経路が途中で切れる。
+        assert!(
+            rt_on.contains("i < RT_TRANSLUCENT_MAX_HITS_CENTER"),
+            "rt_trace_translucent_tint のループ静的上限は RT_TRANSLUCENT_MAX_HITS_CENTER で縛ること\
+             （両経路の最大枚数を包含する静的上限）"
+        );
     }
 
     /// alpha_mode → TLAS インスタンスマスクの割り当て（不透明のみ影を落とす）。
