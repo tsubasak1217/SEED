@@ -65,6 +65,10 @@ pub enum MaterialOverrideKind {
         /// アルファと分離した透け具合。RT-Translucency の合成でフレネル配分に使う。
         #[serde(default)]
         transmission: Option<f32>,
+        /// MR テクスチャ無視トグル。`None` なら埋込値を維持する。
+        /// true で metallic/roughness テクスチャの乗算をスキップし factor を実効値にする（既定 false＝乗算）。
+        #[serde(default)]
+        mr_tex_ignore: Option<bool>,
         /// カリング面 "back" | "front" | "none"（material_asset::parse_cull_face で変換）。
         /// `None` なら埋込マテリアルの値（glTF の double_sided 由来）を維持する。
         #[serde(default)]

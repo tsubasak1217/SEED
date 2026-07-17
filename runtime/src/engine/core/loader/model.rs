@@ -245,6 +245,18 @@ pub struct Material {
     #[serde(default = "default_transmission")]
     pub transmission: f32,
 
+    // ─── MR テクスチャを無視（実効 metallic/roughness を factor 直値に）───
+    /// メタリック・ラフネス（MR）テクスチャを無視するトグル（既定 false）。
+    /// glTF PBR では実効 metallic/roughness = factor × MR テクスチャ値のため、MR テクスチャ
+    /// 持ちの面はスライダを最大にしても実効 roughness をテクスチャ値以上へ上げられない
+    /// （「roughness=1 にしたのに反射が残る」混乱の原因）。
+    /// true のとき MR テクスチャのサンプルをスキップし、metallic_factor / roughness_factor を
+    /// そのまま最終値にする（ベースカラー・法線・AO・エミッシブのテクスチャには影響しない。MR のみ）。
+    /// 分岐は surface_gather.wgsl の MR 採取 1 箇所（forward / G-Buffer 共通の合流点）で行う。
+    /// 旧データ互換のため #[serde(default)]（bool の既定は false＝従来動作＝乗算）。
+    #[serde(default)]
+    pub mr_tex_ignore: bool,
+
     /// glTF 由来の両面フラグ（データ出所の記録用）。
     /// 描画で参照されるのは `cull_face` であり、ロード時に本フラグから初期化される
     /// （`cull_face_from_double_sided`）。
@@ -293,6 +305,7 @@ impl Default for Material {
             alpha_cutoff:               0.5,
             ior:                        1.0,
             transmission:               0.0,
+            mr_tex_ignore:              false,
             double_sided:               false,
             cull_face:                  CullFace::Back,
             avg_albedo:                 [1.0, 1.0, 1.0, 1.0],

@@ -102,7 +102,10 @@ fn gather_surface(in: VertexOutput, front_facing: bool) -> Surface {
     // ── メタリック・ラフネス ──────────────────────────────────
     var metallic  = u_material.metallic_factor;
     var roughness = u_material.roughness_factor;
-    if u_material.has_mr_tex != 0u {
+    // MR テクスチャ無視トグル（mr_tex_ignore）が立っているときはテクスチャ乗算をスキップし、
+    // metallic/roughness factor をそのまま実効値にする（glTF 標準の乗算は既定で維持）。
+    // これは forward / G-Buffer 双方が通る唯一の MR 採取箇所なので、両パスへ自動で効く。
+    if u_material.has_mr_tex != 0u && u_material.mr_tex_ignore == 0u {
         let mr = textureSample(t_metallic_roughness, s_metallic_roughness, in.uv0);
         metallic  *= mr.b;   // glTF: B = metallic
         roughness *= mr.g;   // glTF: G = roughness

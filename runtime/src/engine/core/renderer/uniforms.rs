@@ -134,7 +134,7 @@ fn normal_matrix_from_model(m: &[[f32; 4]; 4]) -> [[f32; 4]; 4] {
 /// | 56        | has_emissive_tex  |   4    |
 /// | 60        | ior               |   4    |  ← 旧 _pad を転用（Phase RT-Translucency）
 /// | 64        | transmission      |   4    |  ← ガラス表現（透過率）で追加
-/// | 68        | _pad0             |   4    |  ← std140 で構造体サイズを 16 の倍数（80）へ揃える
+/// | 68        | mr_tex_ignore     |   4    |  ← 旧 _pad0 を転用（MR テクスチャ無視トグル, 0/1）
 /// | 72        | _pad1             |   4    |
 /// | 76        | _pad2             |   4    |
 #[repr(C)]
@@ -157,8 +157,11 @@ pub struct MaterialUniform {
     /// 透過率（transmission, 0..1。ガラス表現）。アルファ（被覆）と分離した透け具合。
     /// 0.0=従来動作（後方互換）。半透明フラグメントの合成でフレネル配分に使う。
     pub transmission:       f32,
+    /// MR テクスチャ無視トグル（旧 _pad0, offset 68 を転用）。0=無視しない（従来の乗算）、
+    /// 1=無視（metallic/roughness factor をそのまま実効値にする）。surface_gather.wgsl の
+    /// MR 採取 1 箇所が参照する（forward / G-Buffer 共通の合流点）。
+    pub mr_tex_ignore:      u32,
     /// std140 の 16 バイトアラインへ構造体サイズを揃えるパディング（GPU では未使用）。
-    pub _pad0:              f32,
     pub _pad1:              f32,
     pub _pad2:              f32,
 }
@@ -298,11 +301,12 @@ mod layout_tests {
             base_color_factor: [0.0; 4], metallic_factor: 0.0, roughness_factor: 0.0,
             alpha_cutoff: 0.0, has_base_color_tex: 0, emissive_factor: [0.0; 3],
             has_normal_tex: 0, has_mr_tex: 0, has_occlusion_tex: 0, has_emissive_tex: 0,
-            ior: 0.0, transmission: 0.0, _pad0: 0.0, _pad1: 0.0, _pad2: 0.0,
+            ior: 0.0, transmission: 0.0, mr_tex_ignore: 0, _pad1: 0.0, _pad2: 0.0,
         };
         let base = &m as *const _ as usize;
         let off = |p: *const f32| p as usize - base;
         assert_eq!(off(&m.ior),          60, "ior は offset 60");
         assert_eq!(off(&m.transmission), 64, "transmission は offset 64");
+        assert_eq!(&m.mr_tex_ignore as *const u32 as usize - base, 68, "mr_tex_ignore は offset 68");
     }
 }

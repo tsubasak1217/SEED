@@ -56,8 +56,10 @@ struct MaterialUniform {
     ior:                f32,
     // 透過率（transmission, 0..1。ガラス表現）。offset 64。0.0=従来動作（後方互換）。
     transmission:       f32,
+    // MR テクスチャ無視トグル（旧 _pad0, offset 68 を転用）。0=無視しない（従来の乗算）、
+    // 1=無視（metallic/roughness factor をそのまま実効値にする）。MR 採取分岐で参照。
+    mr_tex_ignore:      u32,
     // std140 で構造体サイズを 16 の倍数（80）へ揃えるパディング（未使用）。Rust uniforms::MaterialUniform と 1:1。
-    _pad0:              f32,
     _pad1:              f32,
     _pad2:              f32,
 }

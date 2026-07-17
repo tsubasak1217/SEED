@@ -68,6 +68,11 @@ pub struct MaterialAsset {
     /// アルファと分離した「向こうがどれだけ透けるか」。RT-Translucency の合成でフレネル配分に使う。
     #[serde(default = "def_zero")]
     pub transmission: f32,
+    /// MR テクスチャ無視トグル（既定 false）。true で metallic/roughness テクスチャの乗算を
+    /// スキップし、metallic/roughness factor をそのまま最終値にする（glTF 標準の乗算は既定で維持）。
+    /// `#[serde(default)]` により、本キーを持たない既存 .mat は従来どおり乗算する。
+    #[serde(default)]
+    pub mr_tex_ignore: bool,
     /// カリング面 "back" | "front" | "none"（大文字小文字は問わない。不明値は back 扱い）。
     /// `#[serde(default)]` により、本キーを持たない既存 .mat は従来どおり背面カリングになる。
     #[serde(default = "def_cull_face")]
@@ -106,6 +111,7 @@ pub fn default_mat_json() -> String {
         alpha_cutoff: def_cutoff(),
         ior:          def_one(),
         transmission: def_zero(),
+        mr_tex_ignore: false,
         cull_face:    def_cull_face(),
         textures:     MatTextures::default(),
     };
@@ -164,6 +170,29 @@ mod tests {
     fn default_mat_json_contains_cull_face() {
         let asset: MaterialAsset = serde_json::from_str(&default_mat_json()).expect("既定 .mat のパースに失敗");
         assert_eq!(parse_cull_face(&asset.cull_face), CullFace::Back);
+    }
+
+    /// mr_tex_ignore キーを持たない既存 .mat が壊れず、既定（false＝乗算）で読めること（serde 互換）。
+    #[test]
+    fn legacy_mat_without_mr_tex_ignore_defaults_to_false() {
+        let json = r#"{"name":"Old","base_color":[1,1,1,1],"metallic":1,"roughness":1}"#;
+        let asset: MaterialAsset = serde_json::from_str(json).expect("旧 .mat のパースに失敗");
+        assert!(!asset.mr_tex_ignore, "キー欠落時は false（従来の乗算）");
+    }
+
+    /// mr_tex_ignore=true を明示した .mat が正しく読めること。
+    #[test]
+    fn mat_with_mr_tex_ignore_true_parses() {
+        let json = r#"{"name":"NoMR","base_color":[1,1,1,1],"metallic":1,"roughness":1,"mr_tex_ignore":true}"#;
+        let asset: MaterialAsset = serde_json::from_str(json).expect("mr_tex_ignore 付き .mat のパースに失敗");
+        assert!(asset.mr_tex_ignore, "true を指定したら true");
+    }
+
+    /// 新規 .mat の既定 JSON に mr_tex_ignore が含まれ、false として読めること。
+    #[test]
+    fn default_mat_json_contains_mr_tex_ignore_false() {
+        let asset: MaterialAsset = serde_json::from_str(&default_mat_json()).expect("既定 .mat のパースに失敗");
+        assert!(!asset.mr_tex_ignore, "既定 .mat は false");
     }
 }
 
