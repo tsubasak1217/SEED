@@ -20,7 +20,7 @@ pub use crate::engine::core::renderer::{
     CameraUniform, ModelUniform, MaterialUniform, JointUniform, ColorVertex, GizmoVertex,
     GpuCullData, FrustumUniform,
     // GPU リソース型
-    GpuTexture, GpuMaterial, GpuPrimitive, GpuMesh, GpuModel,
+    GpuTexture, GpuMaterial, GpuPrimitive, GpuMesh, GpuModel, InlineUpdateResult,
     InstancedModelBatch, NodePrimDraw, GpuLineBatch, DefaultTextures,
     GpuGizmoBatch, CameraBuffer, extract_frustum_planes, test_aabb_frustum, NUM_LODS,
     // パイプライン型

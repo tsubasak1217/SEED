@@ -10,15 +10,38 @@
 
 use std::any::Any;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use serde::{Deserialize, Serialize};
 use crate::engine::ecs::Component;
 use crate::engine::core::loader::model::Model;
 use crate::engine::methods::drawer::{GpuModel, InstancedModelBatch};
-use super::material_override::{MaterialOverride, overrides_signature};
+use super::material_override::{MaterialOverride, MaterialOverrideKind, overrides_signature};
 
 /// `batch_key()` でオーバーライド署名を source_path に連結する際の区切り文字。
 /// ファイルパスに通常出現しない制御文字（SOH）を使い、パス文字列との衝突を避ける。
 const BATCH_KEY_SEPARATOR: char = '\u{1}';
+
+/// インライン編集の「安定バッチキー」に付ける接頭辞。
+/// 署名（16 進ハッシュ = `[0-9a-f]` のみ）と衝突しないよう `#` を先頭に置く。
+const INLINE_STABLE_KEY_PREFIX: char = '#';
+
+/// MC ごとに一意な「バッチインスタンス ID」を採番するプロセス内カウンタ。
+///
+/// 【なぜ必要か】インラインオーバーライドは per-instance の値編集用途であり、値をドラッグ
+/// 編集するたびに署名（＝バッチキー）が変わると統合バッチ・GpuModel・BLAS が丸ごと再生成され、
+/// VRAM が瞬間 2 倍需要 → OOM を起こしていた（本修正の対象）。そこでインラインを含む MC の
+/// バッチキーを「値に依存しない安定キー（source_path ＋ この ID）」にする。値をいくら編集しても
+/// キーが不変になり、既存 GpuModel の material uniform を in-place 更新するだけで済む
+/// （バッチ・BLAS 再構築ゼロ）。
+///
+/// 揮発（非シリアライズ）で構わない。バッチキーはフレーム内グルーピングにしか使わず、
+/// セッションをまたいで安定である必要はない（再ロード時は GpuModel ごと作り直すため）。
+static NEXT_BATCH_INSTANCE_ID: AtomicU64 = AtomicU64::new(1);
+
+/// 新しい MC 用のバッチインスタンス ID を採番する（プロセス内で単調増加・一意）。
+pub fn next_batch_instance_id() -> u64 {
+    NEXT_BATCH_INSTANCE_ID.fetch_add(1, Ordering::Relaxed)
+}
 
 // ─── 定数 ─────────────────────────────────────────────────────────────────────
 
@@ -128,6 +151,10 @@ pub struct ModelComponent {
     /// GpuModel 構築時にこの内容が `apply_overrides` で焼き込まれる。
     /// `batch_key()` の署名計算にも使われる（インスタンスバッチのマージキー）。
     pub material_overrides: Vec<MaterialOverride>,
+    /// この MC を一意に識別する揮発 ID（非シリアライズ）。
+    /// インラインオーバーライドを持つ MC の `batch_key()` に使い、値編集でキーが変わらない
+    /// 「安定バッチキー」を実現する（詳細は `next_batch_instance_id` のコメント参照）。
+    pub batch_instance_id: u64,
 }
 
 impl ModelComponent {
@@ -145,6 +172,7 @@ impl ModelComponent {
             anim_drive:      None,
             cast_shadows:    true,
             material_overrides: Vec::new(),
+            batch_instance_id: next_batch_instance_id(),
         }
     }
 
@@ -162,13 +190,32 @@ impl ModelComponent {
     /// オーバーライドがある場合のみ、オーバーライドの内容から決まる署名を
     /// 区切り文字（SOH）で連結し、異なるオーバーライドを持つ ModelComponent 同士が
     /// 誤って同一バッチにマージされないようにする（per-アクタ整合、方式(a)の最軽量形）。
+    /// オーバーライドの中に 1 件でも Inline があるか（＝安定キーを使うべきか）。
+    fn has_inline_override(&self) -> bool {
+        self.material_overrides.iter()
+            .any(|o| matches!(o.kind, MaterialOverrideKind::Inline { .. }))
+    }
+
     pub fn batch_key(&self) -> String {
-        let sig = overrides_signature(&self.material_overrides);
-        if sig.is_empty() {
-            self.source_path.clone()
-        } else {
-            format!("{}{BATCH_KEY_SEPARATOR}{}", self.source_path, sig)
+        // ① オーバーライド無し → source_path とビット一致（旧シーン・性能を一切変えない）。
+        if self.material_overrides.is_empty() {
+            return self.source_path.clone();
         }
+        // ② Inline を含む → 値に依存しない「安定キー」（source_path ＋ 一意 ID）。
+        //    インラインは per-instance の値編集用途なので、値をいくら編集してもキーが変わらず、
+        //    統合バッチ・GpuModel・BLAS の再生成が一切起きない（in-place uniform 更新で反映）。
+        //    副作用: 同一インライン値を持つ別 MC 同士はインスタンシングされなくなる（=別バッチ）。
+        //    per-instance 編集用途では実害がなく、OOM 回避の利益が上回るため許容する。
+        if self.has_inline_override() {
+            return format!(
+                "{}{BATCH_KEY_SEPARATOR}{INLINE_STABLE_KEY_PREFIX}{}",
+                self.source_path, self.batch_instance_id,
+            );
+        }
+        // ③ MatAsset のみ → 従来どおり署名キー。同じ .mat を共有する複数 MC の
+        //    インスタンシング（1 バッチ統合）を保つ。
+        let sig = overrides_signature(&self.material_overrides);
+        format!("{}{BATCH_KEY_SEPARATOR}{}", self.source_path, sig)
     }
 
     pub fn rendering_refs(&self) -> Option<(&GpuModel, &InstancedModelBatch)> {
@@ -257,3 +304,77 @@ impl ModelComponent {
 
 // ECS コンポーネントとして登録
 impl Component for ModelComponent {}
+
+// ============================================================
+//  テスト（安定バッチキー）
+// ============================================================
+
+#[cfg(test)]
+mod batch_key_tests {
+    use super::*;
+    use crate::engine::components::material_override::{MaterialOverride, MaterialOverrideKind};
+
+    /// source_path だけ設定した空 MC を作る（GPU リソースなし）。
+    fn mc_with(path: &str, ovr: Vec<MaterialOverride>) -> ModelComponent {
+        let mut mc = ModelComponent::empty();
+        mc.source_path = path.to_string();
+        mc.material_overrides = ovr;
+        mc
+    }
+
+    fn inline_base_color(c: [f32; 4]) -> MaterialOverride {
+        MaterialOverride {
+            slot: 0,
+            kind: MaterialOverrideKind::Inline {
+                base_color: Some(c),
+                metallic: None, roughness: None, emissive: None,
+                alpha_mode: None, alpha_cutoff: None, ior: None, cull_face: None,
+            },
+        }
+    }
+
+    /// オーバーライド無しは source_path とビット一致（旧挙動不変）。
+    #[test]
+    fn no_override_key_equals_source_path() {
+        let mc = mc_with("chess.glb", vec![]);
+        assert_eq!(mc.batch_key(), "chess.glb");
+    }
+
+    /// インライン値を変更してもバッチキーは不変（安定キー）。
+    #[test]
+    fn inline_value_change_keeps_key_stable() {
+        let mut mc = mc_with("chess.glb", vec![inline_base_color([1.0, 0.0, 0.0, 1.0])]);
+        let k1 = mc.batch_key();
+        // 値だけ変える（署名は変わるが、安定キーなのでバッチキーは不変であるべき）。
+        mc.material_overrides = vec![inline_base_color([0.0, 1.0, 0.0, 1.0])];
+        let k2 = mc.batch_key();
+        assert_eq!(k1, k2, "インライン値編集でバッチキーが変わってはならない");
+        // 安定キーは source_path を接頭辞に持つ。
+        assert!(k1.starts_with("chess.glb"), "安定キーは source_path 起点であること");
+    }
+
+    /// エンティティ（MC）が違えばインラインキーも違う（別バッチに分離）。
+    #[test]
+    fn different_mc_have_different_inline_keys() {
+        let a = mc_with("chess.glb", vec![inline_base_color([1.0, 0.0, 0.0, 1.0])]);
+        let b = mc_with("chess.glb", vec![inline_base_color([1.0, 0.0, 0.0, 1.0])]);
+        assert_ne!(a.batch_key(), b.batch_key(),
+            "別 MC の同一インライン値でもキーは分かれること（per-instance 編集）");
+    }
+
+    /// MatAsset は署名キー（同一 .mat 共有 MC は同一キー＝インスタンシング維持）。
+    #[test]
+    fn mat_asset_uses_signature_key_shared_across_mcs() {
+        let asset = |p: &str| MaterialOverride {
+            slot: 0,
+            kind: MaterialOverrideKind::MatAsset { path: p.to_string() },
+        };
+        let a = mc_with("chess.glb", vec![asset("assets://red.mat")]);
+        let b = mc_with("chess.glb", vec![asset("assets://red.mat")]);
+        // 同一 .mat → 同一署名キー（別 MC でも一致）。
+        assert_eq!(a.batch_key(), b.batch_key(), "同一 .mat 共有 MC は同一キーであること");
+        // 別 .mat → キーが変わる。
+        let c = mc_with("chess.glb", vec![asset("assets://blue.mat")]);
+        assert_ne!(a.batch_key(), c.batch_key(), ".mat が変われば署名キーも変わること");
+    }
+}

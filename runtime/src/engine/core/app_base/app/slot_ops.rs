@@ -179,15 +179,19 @@ impl App {
     /// - それ以外: `MaterialOverrideKind`（`{"kind":"mat_asset","path":".."}` /
     ///   `{"kind":"inline",...}`）としてパースし、同一 slot の既存エントリを置換（無ければ追加）する。
     ///
-    /// 変更を反映するため、対象 ModelComponent の `gpu_model` を
-    /// `upload_model_with_overrides` で再構築する（GpuModel は per-MC 専有のため、
-    /// この MC 以外の描画には一切影響しない）。
+    /// 【反映方式（VRAM OOM 対策）】
+    /// - インライン値の編集で **バッチキーが不変**（安定キー）かつ alpha_mode 不変のときは、
+    ///   GpuModel を作り直さず対象マテリアルの uniform（＋ cull_face）を `write_buffer` で
+    ///   in-place 更新する（`GpuModel::update_material_inline`）。テクスチャ・メッシュの
+    ///   再アップロードが一切起きず、VRAM 需要が跳ねない。スライダー編集はこの経路。
+    /// - 上記に当てはまらないとき（オーバーライドの付け外しでキーが変わる／alpha_mode 変更／
+    ///   .mat 差し替え／削除）はフル再構築する。その際 **旧 GpuModel を drop → `device.poll(Wait)`
+    ///   で解放を確定 → 新規アップロード** の順にして、遅延破棄由来の「瞬間 VRAM 2 倍需要 → OOM」を防ぐ。
+    /// GpuModel は per-MC 専有のため、いずれの経路もこの MC 以外の描画には影響しない。
     ///
     /// 【借用の扱い】`scene`（World 可変参照）と `draw_ctx`（GPU アップロード）を同時に
-    /// 借用できないため、(1) モデル Arc の取得 → (2) material_overrides の更新（scene のみ）→
-    /// (3) scene 借用を落として draw_ctx で GpuModel を再構築 → (4) 結果を scene へ書き戻す、
-    /// の 4 段階に分け、各段階でブロックスコープを閉じて前段の借用を確実に解放する
-    /// （handle_set_model_path と同じ流儀）。
+    /// 借用できないため、各段階をブロックスコープで区切り、前段の借用を確実に解放してから
+    /// 次段へ進む（Arc<Queue>/Arc<Device> は clone で借用を持ち越す）。
     pub(super) fn handle_set_material_override(
         &mut self,
         actor_dfs_id: u32,
@@ -234,7 +238,15 @@ impl App {
             }
         };
 
-        // (2) material_overrides を更新する（同一 slot は置換）
+        // (2) 変更前のバッチキーを控える（in-place 可否判定に使う）。
+        //     安定キー方式では、インライン値の編集だけならこの前後でキーが一致する。
+        let old_batch_key = {
+            let Some(scene) = &self.scene else { return };
+            let Some(mc) = scene.world.get::<ModelComponent>(entity) else { return };
+            mc.batch_key()
+        };
+
+        // (3) material_overrides を更新する（同一 slot は置換）
         {
             let Some(scene) = &mut self.scene else { return };
             let Some(mc) = scene.world.get_mut::<ModelComponent>(entity) else { return };
@@ -247,19 +259,77 @@ impl App {
             }
         }
 
-        // (3) scene 借用を落としてから draw_ctx で GpuModel を再構築する
-        let new_gpu_model = {
+        // (4) 変更後の状態を読む: 新バッチキー・gpu_model 有無・この slot の新 override が Inline か。
+        let (new_batch_key, has_gpu, slot_is_inline) = {
             let Some(scene) = &self.scene else { return };
             let Some(mc) = scene.world.get::<ModelComponent>(entity) else { return };
-            let ctx = self.draw_ctx.as_ref().unwrap();
-            ctx.upload_model_with_overrides(&model_arc, &mc.material_overrides)
+            let is_inline = mc.material_overrides.iter()
+                .find(|o| o.slot == mat_slot as usize)
+                .map(|o| matches!(o.kind, crate::engine::components::MaterialOverrideKind::Inline { .. }))
+                .unwrap_or(false);
+            (mc.batch_key(), mc.gpu_model.is_some(), is_inline)
         };
 
-        // (4) 再構築結果を書き戻し、バッチ更新をマークする
-        {
+        // (5) in-place 更新を試みる条件:
+        //   - この slot の新 override が Inline（テクスチャを差し替えない値編集）
+        //   - バッチキーが不変（= 安定キー。統合バッチ/BLAS を作り直さなくてよい）
+        //   - 既存 gpu_model がある
+        // 満たすなら GpuModel を作り直さず、対象マテリアルの uniform（＋ cull_face）を
+        // write_buffer で in-place 更新するだけ（VRAM 2 倍需要・再アップロードを完全回避）。
+        // alpha_mode が変わる場合のみ update_material_inline が NeedsRebuild を返し、下の再構築へ落ちる。
+        let did_in_place = if slot_is_inline && has_gpu && old_batch_key == new_batch_key {
+            // Arc<Queue> を先に clone して draw_ctx の借用を解放（この後 scene を可変借用するため）。
+            let queue = self.draw_ctx.as_ref().unwrap().queue.clone();
+            let Some(scene) = &mut self.scene else { return };
+            let Some(mc) = scene.world.get_mut::<ModelComponent>(entity) else { return };
+            // この slot の Inline kind を取り出す（clone。直後に gpu_model を可変借用するため）。
+            let kind = mc.material_overrides.iter()
+                .find(|o| o.slot == mat_slot as usize)
+                .map(|o| o.kind.clone());
+            match (kind, mc.gpu_model.as_mut()) {
+                (Some(kind), Some(gpu)) => matches!(
+                    gpu.update_material_inline(&queue, &model_arc, mat_slot as usize, &kind),
+                    crate::engine::methods::drawer::InlineUpdateResult::Updated
+                ),
+                _ => false,
+            }
+        } else {
+            false
+        };
+
+        // (6) in-place できなければフル再構築する。
+        //     【安全化】旧 GpuModel を先に drop → device.poll(Wait) で解放を確定 → その後に新規アップロード。
+        //     wgpu の遅延破棄により「旧解放前に新 create_texture」が走ると瞬間 VRAM 2 倍需要で
+        //     OOM したため、間に poll を挟んで 2 倍需要を消す（編集操作時のみの 1 フレームヒッチは許容）。
+        if !did_in_place {
+            // 旧 GpuModel を drop（この MC 専有のため他描画に影響なし）。
+            {
+                let Some(scene) = &mut self.scene else { return };
+                if let Some(mc) = scene.world.get_mut::<ModelComponent>(entity) {
+                    mc.gpu_model = None;
+                }
+            }
+            // 遅延破棄を今ここで確定させる（GPU アイドル待ち）。wgpu 25 の poll API。
+            if let Some(ctx) = self.draw_ctx.as_ref() {
+                let _ = ctx.device.poll(wgpu::PollType::Wait);
+            }
+            // 新 GpuModel をアップロードして書き戻す。
+            let new_gpu_model = {
+                let Some(scene) = &self.scene else { return };
+                let Some(mc) = scene.world.get::<ModelComponent>(entity) else { return };
+                let ctx = self.draw_ctx.as_ref().unwrap();
+                ctx.upload_model_with_overrides(&model_arc, &mc.material_overrides)
+            };
             let Some(scene) = &mut self.scene else { return };
             if let Some(mc) = scene.world.get_mut::<ModelComponent>(entity) {
                 mc.gpu_model = Some(new_gpu_model);
+            }
+        }
+
+        // (7) バッチ更新をマークする（in-place / 再構築どちらでも必要）。
+        {
+            let Some(scene) = &mut self.scene else { return };
+            if let Some(mc) = scene.world.get_mut::<ModelComponent>(entity) {
                 mc.mark_batch_dirty();
             }
         }
@@ -405,6 +475,7 @@ impl App {
                         anim_drive:      None,
                         cast_shadows,
                         material_overrides: mc_data.material_overrides,
+                        batch_instance_id: crate::engine::components::next_batch_instance_id(),
                     }
                 } else {
                     let path = std::path::Path::new(&mc_data.model_path);
@@ -442,6 +513,7 @@ impl App {
                         anim_drive:      None,
                         cast_shadows,
                         material_overrides: mc_data.material_overrides,
+                        batch_instance_id: crate::engine::components::next_batch_instance_id(),
                     }
                 };
                 let slot_entity = scene.world.spawn();
@@ -709,6 +781,7 @@ impl App {
                             anim_drive:      None,
                             cast_shadows,
                             material_overrides: mc_data.material_overrides,
+                            batch_instance_id: crate::engine::components::next_batch_instance_id(),
                         }
                     } else {
                         let path = std::path::Path::new(&mc_data.model_path);
@@ -742,6 +815,7 @@ impl App {
                             anim_drive:      None,
                             cast_shadows,
                             material_overrides: mc_data.material_overrides,
+                            batch_instance_id: crate::engine::components::next_batch_instance_id(),
                         }
                     };
                     scene.world.insert(slot_entity, mc);

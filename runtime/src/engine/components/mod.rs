@@ -33,7 +33,7 @@ pub use transform::Transform;
 pub use canvas_transform::CanvasTransform;
 pub use model_component::{
     ModelComponent, ModelComponentData, ModelAnimDrive,
-    InstanceMeta, GroupMeta, GROUP_ID_BASE,
+    InstanceMeta, GroupMeta, GROUP_ID_BASE, next_batch_instance_id,
 };
 pub use material_override::{MaterialOverride, MaterialOverrideKind, overrides_signature};
 pub use script_component::{
