@@ -378,3 +378,118 @@ mod batch_key_tests {
         assert_ne!(a.batch_key(), c.batch_key(), ".mat が変われば署名キーも変わること");
     }
 }
+
+// ============================================================
+//  テスト（material_overrides の serde ラウンドトリップ）
+//
+//  シーン保存→ロードで material_overrides の全フィールド
+//  （ior / transmission / cull_face / mr_tex_ignore 含む）が
+//  往復することを保証する回帰テスト。`.scene` は ModelComponentData を
+//  そのまま JSON 化する（scene.rs の SceneData 経由）ため、
+//  ここで ModelComponentData の JSON 往復を検証すれば保存経路全体を代表できる。
+// ============================================================
+
+#[cfg(test)]
+mod override_serde_tests {
+    use super::*;
+    use crate::engine::components::material_override::{MaterialOverride, MaterialOverrideKind};
+
+    /// 全フィールドを埋めたインライン + MatAsset の 2 スロット構成で
+    /// JSON へシリアライズ → デシリアライズしても内容が 1 ビットも変わらないこと。
+    #[test]
+    fn model_component_data_material_overrides_roundtrip() {
+        let original = ModelComponentData {
+            model_path:    "assets://chess.glb".to_string(),
+            instances:     vec![[[1.0, 0.0, 0.0, 0.0],
+                                 [0.0, 1.0, 0.0, 0.0],
+                                 [0.0, 0.0, 1.0, 0.0],
+                                 [0.0, 0.0, 0.0, 1.0]]],
+            meta:          vec![InstanceMeta::new("Instance_0")],
+            groups:        vec![],
+            next_group_id: GROUP_ID_BASE,
+            cast_shadows:  true,
+            material_overrides: vec![
+                // インライン: 全フィールドを非 None で埋める（往復漏れの検出のため）。
+                MaterialOverride {
+                    slot: 0,
+                    kind: MaterialOverrideKind::Inline {
+                        base_color:    Some([0.1, 0.2, 0.3, 0.4]),
+                        metallic:      Some(0.55),
+                        roughness:     Some(0.66),
+                        emissive:      Some([0.7, 0.8, 0.9]),
+                        alpha_mode:    Some("blend".to_string()),
+                        alpha_cutoff:  Some(0.25),
+                        ior:           Some(1.45),
+                        transmission:  Some(0.9),
+                        mr_tex_ignore: Some(true),
+                        cull_face:     Some("none".to_string()),
+                    },
+                },
+                // MatAsset: パスが往復すること。
+                MaterialOverride {
+                    slot: 2,
+                    kind: MaterialOverrideKind::MatAsset {
+                        path: "assets://materials/red.mat".to_string(),
+                    },
+                },
+            ],
+        };
+
+        // シリアライズ → デシリアライズ。
+        let json = serde_json::to_string(&original).expect("serialize");
+        let restored: ModelComponentData =
+            serde_json::from_str(&json).expect("deserialize");
+
+        // 復元後を再シリアライズして原本 JSON と完全一致するか比較する
+        // （MaterialOverride[Kind] は PartialEq を持たないため、正規化 JSON 同士で全フィールドを検証する）。
+        let json_again = serde_json::to_string(&restored).expect("re-serialize");
+        assert_eq!(json, json_again, "material_overrides の全フィールドが往復すること");
+
+        // 主要フィールドを個別にも検証（JSON 比較のすり抜け防止）。
+        assert_eq!(restored.material_overrides.len(), 2);
+        match &restored.material_overrides[0].kind {
+            MaterialOverrideKind::Inline {
+                base_color, metallic, roughness, emissive,
+                alpha_mode, alpha_cutoff, ior, transmission, mr_tex_ignore, cull_face,
+            } => {
+                assert_eq!(*base_color, Some([0.1, 0.2, 0.3, 0.4]));
+                assert_eq!(*metallic, Some(0.55));
+                assert_eq!(*roughness, Some(0.66));
+                assert_eq!(*emissive, Some([0.7, 0.8, 0.9]));
+                assert_eq!(alpha_mode.as_deref(), Some("blend"));
+                assert_eq!(*alpha_cutoff, Some(0.25));
+                assert_eq!(*ior, Some(1.45));
+                assert_eq!(*transmission, Some(0.9));
+                assert_eq!(*mr_tex_ignore, Some(true));
+                assert_eq!(cull_face.as_deref(), Some("none"));
+            }
+            _ => panic!("slot 0 は Inline であること"),
+        }
+        assert_eq!(restored.material_overrides[0].slot, 0);
+        match &restored.material_overrides[1].kind {
+            MaterialOverrideKind::MatAsset { path } =>
+                assert_eq!(path, "assets://materials/red.mat"),
+            _ => panic!("slot 2 は MatAsset であること"),
+        }
+        assert_eq!(restored.material_overrides[1].slot, 2);
+    }
+
+    /// 旧 `.scene` 互換: material_overrides / cast_shadows キーが無い JSON でも
+    /// デシリアライズが失敗せず、既定（空 Vec / cast_shadows=true）にフォールバックすること。
+    /// serde(default) 付与漏れの回帰を防ぐ。
+    #[test]
+    fn old_scene_without_material_overrides_deserializes() {
+        // material_overrides も cast_shadows も持たない旧フォーマット。
+        let old_json = r#"{
+            "model_path": "assets://chess.glb",
+            "instances": [],
+            "meta": [],
+            "groups": [],
+            "next_group_id": 1000000
+        }"#;
+        let data: ModelComponentData =
+            serde_json::from_str(old_json).expect("旧 .scene が読めること（serde default 必須）");
+        assert!(data.material_overrides.is_empty(), "欠落時は空 Vec へフォールバック");
+        assert!(data.cast_shadows, "欠落時は cast_shadows=true へフォールバック");
+    }
+}

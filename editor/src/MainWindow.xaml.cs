@@ -290,6 +290,12 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         ApplyDarkTitleBar();
         EditorLog.Write($"OnWindowLoaded — RuntimeExePath={RuntimeExePath}");
 
+        // ビューポート設定（ポストFX・機能マトリクス・各強度）を project_settings.json から
+        // ツールバー UI へ復元する。ランタイム接続（OnRuntimeHwndAvailable → SyncViewportSettings）
+        // より前に UI を正しい値にしておくことで、SyncViewportSettings が既定値で
+        // ランタイム設定を上書きするのを防ぐ。
+        LoadViewportSettingsIntoUi();
+
         _runtimeManager = new RuntimeManager(RuntimeExePath)
         {
             AssetsPath          = AssetsPath,

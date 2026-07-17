@@ -93,6 +93,16 @@ public class ProjectSettingsData
     [JsonPropertyName("rt_shadows")]
     public bool RtShadows { get; set; } = false;
 
+    /// <summary>
+    /// このクラスがモデル化していない未知キーを保持するバケット。
+    /// ビューポートツールバーが書き込むグラフィックスキー（features / bloom / gi_intensity など）や
+    /// ランタイム専用キー（ambient_* / post_vignette 等）は ProjectSettingsData に無いため、
+    /// これが無いと ProjectSettingsWindow の保存（強い型付きシリアライズ）でそれらが消えてしまう。
+    /// JsonExtensionData で LoadFrom→SaveTo の往復に未知キーを保全する。
+    /// </summary>
+    [JsonExtensionData]
+    public Dictionary<string, JsonElement> ExtraData { get; set; } = new();
+
     // ── オーディオ設定（将来実装） ──────────────────────────────
     // ── 物理設定（将来実装） ────────────────────────────────────
     // ── 入力設定（将来実装） ────────────────────────────────────

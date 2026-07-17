@@ -11,6 +11,8 @@
 // ============================================================
 
 using System;
+using System.IO;
+using System.Text.Json.Nodes;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -137,6 +139,165 @@ public partial class MainWindow
         string features = $"\"features\":{{\"shadow\":\"{shadow}\",\"gi\":\"{giMode}\",\"reflection\":\"{reflection}\",\"ao\":\"{ao}\",\"translucency\":\"{translucency}\"}}";
         string json = $"{{\"bloom\":{(bloom ? "true" : "false")},\"fxaa\":{(fxaa ? "true" : "false")},\"bloom_intensity\":{intensity.ToString(ci)},\"transparency\":\"{transparency}\",\"meshlet_cull\":{(meshletCull ? "true" : "false")},\"deferred\":{(deferred ? "true" : "false")},\"view_mode\":\"{viewMode}\",\"gi_intensity\":{giIntensity.ToString(ci)},\"reflection_intensity\":{reflectionIntensity.ToString(ci)},\"ao_intensity\":{aoIntensity.ToString(ci)},{features}}}";
         _runtimeManager?.SendToRuntime($"SET_POST_FX:{json}");
+
+        // ビューポート設定を project_settings.json へ永続化する（次回起動時に UI とランタイムの
+        // load_graphics_settings が同じ値を復元できるようにする）。view_mode はセッション限りの
+        // 表示モードのため永続化しない。既存の他キー（start_scene / scenes / plugins 等）は保全する。
+        PersistViewportSettings(
+            bloom, fxaa, intensity, transparency, meshletCull, deferred,
+            giIntensity, reflectionIntensity, aoIntensity,
+            shadow, giMode, reflection, ao, translucency);
+    }
+
+    /// <summary>
+    /// ビューポート設定（ポストFX・機能マトリクス・各強度）を project_settings.json へ書き戻す。
+    /// ランタイムの load_graphics_settings が読むキー名と 1 対 1 で対応させる。
+    /// 既存 JSON をノードとして読み、対象キーだけを差し替えて書き戻すため、
+    /// このメソッドが関知しない他キー（game_name / start_scene / scenes / plugins / ambient_* 等）は保全される。
+    /// </summary>
+    private void PersistViewportSettings(
+        bool bloom, bool fxaa, double bloomIntensity, string transparency,
+        bool meshletCull, bool deferred,
+        double giIntensity, double reflectionIntensity, double aoIntensity,
+        string shadow, string giMode, string reflection, string ao, string translucency)
+    {
+        try
+        {
+            var path = Path.Combine(AssetsPath, "project_settings.json");
+
+            // 既存ファイルをノードとして読み込む（無ければ空オブジェクトから始める）。
+            JsonObject root;
+            if (File.Exists(path))
+            {
+                var existing = JsonNode.Parse(File.ReadAllText(path)) as JsonObject;
+                root = existing ?? new JsonObject();
+            }
+            else
+            {
+                root = new JsonObject();
+            }
+
+            // スカラー系（ランタイム load_graphics_settings のキー名に一致させる）。
+            root["bloom"]                = bloom;
+            root["fxaa"]                 = fxaa;
+            root["bloom_intensity"]      = bloomIntensity;
+            root["transparency"]         = transparency;
+            root["meshlet_cull"]         = meshletCull;
+            root["deferred"]             = deferred;
+            root["gi_intensity"]         = giIntensity;
+            root["reflection_intensity"] = reflectionIntensity;
+            root["ao_intensity"]         = aoIntensity;
+
+            // 機能マトリクス（features オブジェクト）。ランタイムは RenderFeatures として読む。
+            root["features"] = new JsonObject
+            {
+                ["shadow"]       = shadow,
+                ["gi"]           = giMode,
+                ["reflection"]   = reflection,
+                ["ao"]           = ao,
+                ["translucency"] = translucency,
+            };
+
+            var opts = new System.Text.Json.JsonSerializerOptions { WriteIndented = true };
+            File.WriteAllText(path, root.ToJsonString(opts));
+        }
+        catch (Exception ex)
+        {
+            // 永続化失敗は致命的でない（ライブ設定は IPC 済み）。ログのみ残して継続する。
+            EditorLog.Write($"PersistViewportSettings — 失敗: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// 起動時に project_settings.json からビューポート設定を読み、ツールバー UI（コンボ/スライダー/
+    /// チェック）を初期化する。これを行わないと SyncViewportSettings → SendPostFx が UI の既定値を
+    /// ランタイムへ送り、ランタイムが load_graphics_settings で読んだ設定を上書きしてしまう
+    /// （＝毎起動で既定値へ戻る不具合）。UI 設定中は _updatingControls / 未初期化フラグで
+    /// イベントの再送・永続化を抑制する。view_mode はセッション限りのため復元しない。
+    /// </summary>
+    private void LoadViewportSettingsIntoUi()
+    {
+        var path = Path.Combine(AssetsPath, "project_settings.json");
+        if (!File.Exists(path)) return;
+
+        JsonObject? root;
+        try
+        {
+            root = JsonNode.Parse(File.ReadAllText(path)) as JsonObject;
+        }
+        catch (Exception ex)
+        {
+            EditorLog.Write($"LoadViewportSettingsIntoUi — パース失敗: {ex.Message}");
+            return;
+        }
+        if (root is null) return;
+
+        // 初期化中はイベントハンドラ（SendPostFx/永続化）を完全に抑制する。
+        bool prevInit = _viewportSettingsInitialized;
+        _viewportSettingsInitialized = false;
+        _updatingControls = true;
+        try
+        {
+            if (root["bloom"] is JsonNode b && ChkBloom != null)
+                ChkBloom.IsChecked = b.GetValue<bool>();
+            if (root["fxaa"] is JsonNode f && ChkFxaa != null)
+                ChkFxaa.IsChecked = f.GetValue<bool>();
+            if (root["bloom_intensity"] is JsonNode bi && SldBloomIntensity != null)
+                SldBloomIntensity.Value = bi.GetValue<double>();
+            if (root["meshlet_cull"] is JsonNode mc && ChkMeshletCull != null)
+                ChkMeshletCull.IsChecked = mc.GetValue<bool>();
+            if (root["deferred"] is JsonNode df && ChkDeferred != null)
+                ChkDeferred.IsChecked = df.GetValue<bool>();
+            if (root["gi_intensity"] is JsonNode gi && SldGiIntensity != null)
+                SldGiIntensity.Value = gi.GetValue<double>();
+            if (root["reflection_intensity"] is JsonNode ri && SldReflectionIntensity != null)
+                SldReflectionIntensity.Value = ri.GetValue<double>();
+            if (root["ao_intensity"] is JsonNode ai && SldAoIntensity != null)
+                SldAoIntensity.Value = ai.GetValue<double>();
+            if (root["transparency"] is JsonNode tr)
+                SelectComboByTag(CmbTransparency, tr.GetValue<string>());
+
+            // 機能マトリクス（features オブジェクト）→ 各コンボを Tag で選択する。
+            if (root["features"] is JsonObject fv)
+            {
+                if (fv["shadow"]       is JsonNode s)  SelectComboByTag(CmbShadow,       s.GetValue<string>());
+                if (fv["gi"]           is JsonNode g)  SelectComboByTag(CmbGi,           g.GetValue<string>());
+                if (fv["reflection"]   is JsonNode rf) SelectComboByTag(CmbReflection,   rf.GetValue<string>());
+                if (fv["ao"]           is JsonNode a)  SelectComboByTag(CmbAo,           a.GetValue<string>());
+                if (fv["translucency"] is JsonNode t)  SelectComboByTag(CmbTranslucency, t.GetValue<string>());
+            }
+            else if (root["rt_shadows"] is JsonNode rts)
+            {
+                // 旧フォーマット互換: features が無く legacy rt_shadows のみを持つ project_settings.json
+                // では、ランタイムの load_graphics_settings と同じく rt_shadows で影方式を決める。
+                // これを行わないと、features 未書き込みの既存プロジェクトで初回起動時に影コンボが
+                // XAML 既定（shadowmap）になり、SyncViewportSettings が rt_shadows=true を潰してしまう。
+                SelectComboByTag(CmbShadow, rts.GetValue<bool>() ? "rt" : "shadowmap");
+            }
+        }
+        catch (Exception ex)
+        {
+            EditorLog.Write($"LoadViewportSettingsIntoUi — 適用失敗: {ex.Message}");
+        }
+        finally
+        {
+            _updatingControls = false;
+            _viewportSettingsInitialized = prevInit;
+        }
+    }
+
+    /// <summary>ComboBox から Tag が一致する ComboBoxItem を選択する（見つからなければ無変更）。</summary>
+    private static void SelectComboByTag(ComboBox? combo, string? tag)
+    {
+        if (combo == null || tag == null) return;
+        foreach (var obj in combo.Items)
+        {
+            if (obj is ComboBoxItem item && (item.Tag as string) == tag)
+            {
+                combo.SelectedItem = item;
+                return;
+            }
+        }
     }
 
     /// <summary>ChkBloom / ChkFxaa の Checked/Unchecked から呼ばれる共通ハンドラ。</summary>
