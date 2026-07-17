@@ -73,8 +73,9 @@ pub use shadow::{ShadowResources, ShadowPlan, ShadowMatricesUbo,
                  CSM_CASCADE_COUNT, MAX_SHADOW_SPOTS, SHADOW_DEPTH_FORMAT};
 pub use rt_shadow::RtShadowResources;
 pub use refract_pyramid::{RefractPyramid, REFRACT_MIP_COUNT};
-pub use reflection::{ReflectionPipelines, ReflectionParams,
-                     RT_REFLECTION_NAME, REFLECTION_FORMAT, DEFAULT_REFLECTION_INTENSITY};
+pub use reflection::{ReflectionPipelines, ReflectionParams, ReflectionHistory,
+                     RT_REFLECTION_NAME, REFLECTION_FORMAT, REFLECTION_HISTORY_FORMAT,
+                     DEFAULT_REFLECTION_INTENSITY, history_readable as reflection_history_readable};
 pub use imos_blur::{ImosBlur, ImosBlurParams, IMOS_BLUR_FORMAT};
 pub use ao::{AoPipelines, AoTargets, AoParams, AO_FORMAT, AO_RESOLUTION_DIVISOR,
              AO_SSAO_WORLD_RADIUS, AO_RTAO_WORLD_RADIUS, DEFAULT_AO_INTENSITY};
