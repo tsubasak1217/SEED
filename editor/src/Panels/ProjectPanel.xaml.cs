@@ -1072,6 +1072,7 @@ public partial class ProjectPanel : UserControl
           "cull_face": "back",
           "ior": 1.0,
           "transmission": 0.0,
+          "diffuse_transmission": 0.0,
           "mr_tex_ignore": false,
           "textures": { "albedo": "", "normal": "", "metallic_roughness": "", "occlusion": "", "emissive": "" }
         }

@@ -114,6 +114,8 @@ pub fn load(path: &Path) -> Result<Model, LoadError> {
                 ior:                1.0,
                 // OBJ/MTL には透過率（transmission）拡張が無いため既定 0.0（透過なし＝従来動作）。
                 transmission:       0.0,
+                // OBJ/MTL には拡散透過拡張が無いため既定 0.0（拡散透過なし＝従来動作）。
+                diffuse_transmission: 0.0,
                 // OBJ/MTL に MR テクスチャは無いためトグルは常に false（従来動作＝乗算）。
                 mr_tex_ignore:      false,
                 // OBJ/MTL には両面フラグが無いため常に背面カリング（従来挙動）。

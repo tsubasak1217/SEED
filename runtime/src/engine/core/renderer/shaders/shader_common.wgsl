@@ -59,8 +59,10 @@ struct MaterialUniform {
     // MR テクスチャ無視トグル（旧 _pad0, offset 68 を転用）。0=無視しない（従来の乗算）、
     // 1=無視（metallic/roughness factor をそのまま実効値にする）。MR 採取分岐で参照。
     mr_tex_ignore:      u32,
+    // 拡散透過（diffuse_transmission, 0..1。葉・布・紙の逆光透け）。旧 _pad1（offset 72）を転用。
+    // 0.0=従来動作。gather_surface が Surface.diffuse_transmission へ渡し lighting_eval の逆光項が使う。
+    diffuse_transmission: f32,
     // std140 で構造体サイズを 16 の倍数（80）へ揃えるパディング（未使用）。Rust uniforms::MaterialUniform と 1:1。
-    _pad1:              f32,
     _pad2:              f32,
 }
 @group(2) @binding(0)  var<uniform> u_material:          MaterialUniform;

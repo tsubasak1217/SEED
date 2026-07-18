@@ -65,6 +65,10 @@ pub enum MaterialOverrideKind {
         /// アルファと分離した透け具合。RT-Translucency の合成でフレネル配分に使う。
         #[serde(default)]
         transmission: Option<f32>,
+        /// 拡散透過（diffuse_transmission, 0..1。葉・布・紙の逆光透け）。`None` なら埋込値を維持する。
+        /// ガラスの鏡面透過（上の transmission）とは別物で、屈折を伴わない内部散乱の逆光透け。
+        #[serde(default)]
+        diffuse_transmission: Option<f32>,
         /// MR テクスチャ無視トグル。`None` なら埋込値を維持する。
         /// true で metallic/roughness テクスチャの乗算をスキップし factor を実効値にする（既定 false＝乗算）。
         #[serde(default)]

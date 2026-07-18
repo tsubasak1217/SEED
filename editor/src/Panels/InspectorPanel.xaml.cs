@@ -2821,7 +2821,7 @@ public partial class InspectorPanel : UserControl
         float R, float G, float B, float A,
         float Metallic, float Roughness,
         float ER, float EG, float EB,
-        string AlphaMode, float AlphaCutoff, float Ior, float Transmission, bool MrTexIgnore, string CullFace, string Path);
+        string AlphaMode, float AlphaCutoff, float Ior, float Transmission, float DiffuseTransmission, bool MrTexIgnore, string CullFace, string Path);
 
     /// <summary>
     /// SET_MATERIAL_OVERRIDE の "kind":"mat_asset" 送信用 JSON ペイロード（System.Text.Json でシリアライズ）。
@@ -2850,6 +2850,8 @@ public partial class InspectorPanel : UserControl
         public float ior { get; set; } = 1f;
         /// <summary>透過率（transmission, ガラス表現）。0..1。0=従来動作。Blend のときのみ意味を持つ。</summary>
         public float transmission { get; set; } = 0f;
+        /// <summary>拡散透過（葉・布・紙の逆光透け）。0..1。0=従来動作。AlphaMode に関わらず常時有効。</summary>
+        public float diffuse_transmission { get; set; } = 0f;
         /// <summary>MR テクスチャ無視トグル。true で metallic/roughness テクスチャの乗算をスキップし factor を実効値にする（既定 false）。</summary>
         public bool mr_tex_ignore { get; set; } = false;
         /// <summary>カリング面 "back" | "front" | "none"。ランタイム側は大小文字非依存・不明値は Back 扱い。</summary>
@@ -2920,6 +2922,8 @@ public partial class InspectorPanel : UserControl
                     var ior         = m.TryGetProperty("ior",          out var io) ? io.GetSingle() : 1f;
                     // transmission キーを持たない旧ランタイムの ACTOR_COMPONENTS でも動くよう既定 0.0（透過なし）にフォールバックする。
                     var transmission = m.TryGetProperty("transmission", out var tr) ? tr.GetSingle() : 0f;
+                    // diffuse_transmission キーを持たない旧ランタイムの ACTOR_COMPONENTS でも動くよう既定 0.0（拡散透過なし）にフォールバックする。
+                    var diffuseTransmission = m.TryGetProperty("diffuse_transmission", out var dt) ? dt.GetSingle() : 0f;
                     // mr_tex_ignore キーを持たない旧ランタイムの ACTOR_COMPONENTS でも動くよう既定 false（乗算）にフォールバックする。
                     var mrTexIgnore  = m.TryGetProperty("mr_tex_ignore", out var mi) && mi.ValueKind == JsonValueKind.True;
                     // cull_face キーを持たない旧ランタイムの ACTOR_COMPONENTS でも動くよう既定 "back" にフォールバックする。
@@ -2927,7 +2931,7 @@ public partial class InspectorPanel : UserControl
                     var path        = m.TryGetProperty("path",        out var mp) ? mp.GetString() ?? ""       : "";
 
                     result.Add(new MaterialSlotData(slot, name, mode, r, g, b, a, metallic, roughness,
-                        er, eg, eb, alphaMode, alphaCutoff, ior, transmission, mrTexIgnore, cullFace, path));
+                        er, eg, eb, alphaMode, alphaCutoff, ior, transmission, diffuseTransmission, mrTexIgnore, cullFace, path));
                 }
                 return result;
             }
@@ -3104,6 +3108,7 @@ public partial class InspectorPanel : UserControl
         float curAlphaCutoff = mat.AlphaCutoff;
         float curIor = mat.Ior;
         float curTransmission = mat.Transmission;
+        float curDiffuseTransmission = mat.DiffuseTransmission;
         bool curMrTexIgnore = mat.MrTexIgnore;
         string curCullFace = mat.CullFace;
 
@@ -3123,6 +3128,7 @@ public partial class InspectorPanel : UserControl
                 alpha_cutoff = curAlphaCutoff,
                 ior          = curIor,
                 transmission = curTransmission,
+                diffuse_transmission = curDiffuseTransmission,
                 mr_tex_ignore = curMrTexIgnore,
                 cull_face    = curCullFace,
             };
@@ -3152,6 +3158,12 @@ public partial class InspectorPanel : UserControl
         // metallic / roughness スライダー（0..1）
         inlinePanel.Children.Add(BuildMaterialSliderRow("メタリック", curMetallic, v => { curMetallic = v; SendInline(); }));
         inlinePanel.Children.Add(BuildMaterialSliderRow("ラフネス", curRoughness, v => { curRoughness = v; SendInline(); }));
+
+        // 拡散透過スライダー（0..1。葉・布・紙の逆光透け＝KHR_materials_diffuse_transmission 簡易版）。
+        // 【常時表示の理由】ガラス系の屈折率／透過率は Blend 限定で条件表示するが、拡散透過は
+        // 葉（Mask で描く）・布（Opaque で描く）でも使うため、AlphaMode に関わらず常に表示する
+        // （ガラスの鏡面透過とは効き方も対象マテリアルも異なる、意図的な差異）。
+        inlinePanel.Children.Add(BuildMaterialSliderRow("拡散透過", curDiffuseTransmission, v => { curDiffuseTransmission = v; SendInline(); }));
 
         // MR テクスチャ無視トグル（常時表示）。glTF PBR は実効 metallic/roughness = factor × MR テクスチャのため、
         // MR テクスチャ持ちの面はスライダを最大にしても実効 roughness をテクスチャ値以上へ上げられない。
