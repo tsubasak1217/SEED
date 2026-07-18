@@ -1183,8 +1183,16 @@ RT-Translucency の屈折を土台に、「本物のガラス」を作れる 2 �
 ### 将来課題（ユーザーと合意済みの積み残し）
 - **界面法線の取得（多重界面の正確な再屈折）**: `BindlessInstanceRecord` に頂点/法線参照＋ior を足し、
   ヒット点の実法線・実 ior で界面ごとに正確に再屈折する（バインドレス tint を透明パスへ広げる拡張）。
-- **拡散透過（diffuse transmission）**: 葉の逆光透け等（`KHR_materials_diffuse_transmission` 相当）。
-  現状の transmission は鏡面的な屈折透過のみ。裏面ライトの拡散的な滲み出しは別項として未実装。
+- **拡散透過（diffuse transmission）〔実装済み〕**: 葉・布・紙の逆光透け（`KHR_materials_diffuse_transmission`
+  相当の簡易版）。`Material.diffuse_transmission`（0..1・既定 0）を追加し、`lighting_eval.wgsl` の
+  evaluate_lighting のライトループ内で、面がライトに背を向けている側の逆光を
+  `radiance × saturate(-dot(N,L)) × diffuse_transmission × albedo / PI` として加算する（透過色は base_color を
+  流用）。**幾何ゲート（geo_gate）も影も掛けない**（裏からの光が本体であり geo_gate は目的が真逆／薄物の自己遮蔽で
+  逆光透けが潰れるのを避けるため。手前の別遮蔽物の影が透けに落ちない限界は許容）。スポット円錐・距離減衰は radiance に
+  含まれるため効く。forward / deferred 両対応（deferred は G-Buffer RT2.b に格納）。配線は ior/transmission と同経路
+  （model.rs・.mat・Inline・MaterialUniform offset 72＝旧 _pad1・CACHE_FORMAT_VERSION 13→14）。Inspector は
+  「拡散透過」スライダーを **AlphaMode に関わらず常時表示**（葉=Mask・布=Opaque でも使うため。ガラス系 ior/透過率が
+  Blend 限定なのとは意図的に異なる）。glTF 拡張は gltf 1.4.1 クレートに未対応のため glTF ロードでは既定 0（.mat/Inline で設定）。
 - **スクリーンスペース SSS（肌）**: サブサーフェススキャタリングのスクリーンスペース近似。
   本フェーズで作った**いもす法ブラー基盤（可変半径・分離ボックス）がそのまま適用可能**（拡散プロファイル
   のぼかしに転用）。透過率／すりガラスのミップ生成と同じパイプライン部品を再利用する想定。

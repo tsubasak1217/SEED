@@ -245,6 +245,19 @@ pub struct Material {
     #[serde(default = "default_transmission")]
     pub transmission: f32,
 
+    // ─── 拡散透過（葉・布・紙の逆光透け）───────────────────────
+    /// 拡散透過（diffuse_transmission, 0..1）。KHR_materials_diffuse_transmission 相当の簡易版。
+    /// 薄い面（葉・布・紙）が**逆光で色付きに透ける**内部散乱を表す。ガラスの鏡面透過
+    /// （上の `transmission`）とは別物で、屈折を伴わず base_color で色付けした拡散光が裏へ回る。
+    /// 0.0 = 従来動作（不変）。1.0 = 最大限に裏側の光を拾う。
+    /// 透過色は base_color を流用する（専用の拡散透過色は将来拡張。glTF 拡張の
+    /// diffuseTransmissionColorFactor に相当）。
+    /// glTF ロードでは既定 0.0（gltf 1.4 クレートに KHR_materials_diffuse_transmission ヘルパが
+    /// 無いため。Inspector の「拡散透過」スライダー／.mat／インライン上書きで設定する）。
+    /// 旧データ互換のため #[serde(default = "default_diffuse_transmission")]（既定 0.0＝後方互換）。
+    #[serde(default = "default_diffuse_transmission")]
+    pub diffuse_transmission: f32,
+
     // ─── MR テクスチャを無視（実効 metallic/roughness を factor 直値に）───
     /// メタリック・ラフネス（MR）テクスチャを無視するトグル（既定 false）。
     /// glTF PBR では実効 metallic/roughness = factor × MR テクスチャ値のため、MR テクスチャ
@@ -304,6 +317,9 @@ fn default_ior() -> f32 { 1.0 }
 /// transmission の serde 既定（0.0＝透過なし＝従来動作）。旧キャッシュ/JSON にキーが無い場合のフォールバック。
 fn default_transmission() -> f32 { 0.0 }
 
+/// diffuse_transmission の serde 既定（0.0＝拡散透過なし＝従来動作）。旧キャッシュ/JSON にキーが無い場合のフォールバック。
+fn default_diffuse_transmission() -> f32 { 0.0 }
+
 impl Default for Material {
     fn default() -> Self {
         Self {
@@ -321,6 +337,7 @@ impl Default for Material {
             alpha_cutoff:               0.5,
             ior:                        1.0,
             transmission:               0.0,
+            diffuse_transmission:       0.0,
             mr_tex_ignore:              false,
             double_sided:               false,
             cull_face:                  CullFace::Back,

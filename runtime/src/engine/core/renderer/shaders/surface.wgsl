@@ -96,6 +96,12 @@ struct Surface {
     /// ラフネス（clamp 済み）。テクスチャ・ファクタ適用済み。
     roughness:   f32,
 
+    /// 拡散透過（diffuse_transmission, 0..1。葉・布・紙の逆光透け）。0.0=従来動作。
+    /// evaluate_lighting のライトループが、面がライトに背を向けている側の逆光を
+    /// radiance×saturate(-dot(N,L))×diffuse_transmission×albedo/PI で加算するのに使う。
+    /// G-Buffer（deferred）では RT2.b に焼く（Rgba8Unorm 8bit で 0..1 に十分）。
+    diffuse_transmission: f32,
+
     /// エミッシブ（自己発光・リニア HDR）。ライト評価の最後に加算する。
     emissive:    vec3<f32>,
 

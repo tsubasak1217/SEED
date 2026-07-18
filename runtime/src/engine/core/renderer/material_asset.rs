@@ -68,6 +68,11 @@ pub struct MaterialAsset {
     /// アルファと分離した「向こうがどれだけ透けるか」。RT-Translucency の合成でフレネル配分に使う。
     #[serde(default = "def_zero")]
     pub transmission: f32,
+    /// 拡散透過（diffuse_transmission, 0..1。葉・布・紙の逆光透け）。既定 0.0（拡散透過なし＝従来動作）。
+    /// ガラスの鏡面透過（上の transmission）とは別物で、屈折を伴わない内部散乱の逆光透け。
+    /// `#[serde(default = "def_zero")]` により、本キーを持たない既存 .mat は従来どおり不透過扱いになる。
+    #[serde(default = "def_zero")]
+    pub diffuse_transmission: f32,
     /// MR テクスチャ無視トグル（既定 false）。true で metallic/roughness テクスチャの乗算を
     /// スキップし、metallic/roughness factor をそのまま最終値にする（glTF 標準の乗算は既定で維持）。
     /// `#[serde(default)]` により、本キーを持たない既存 .mat は従来どおり乗算する。
@@ -111,6 +116,7 @@ pub fn default_mat_json() -> String {
         alpha_cutoff: def_cutoff(),
         ior:          def_one(),
         transmission: def_zero(),
+        diffuse_transmission: def_zero(),
         mr_tex_ignore: false,
         cull_face:    def_cull_face(),
         textures:     MatTextures::default(),

@@ -9,7 +9,7 @@
 // ## G-Buffer レイアウト（確定・帯域概算 24 byte/px + 深度）
 //   RT0 Rgba8Unorm  : albedo.rgb（リニア） + occlusion.a
 //   RT1 Rgba16Float : world normal N.xyz（法線マップ適用後のシェーディング法線）, .w = 0
-//   RT2 Rgba8Unorm  : metallic(.r) + roughness(.g) + 0(.b) + 0(.a)  ※空き 2ch は将来用
+//   RT2 Rgba8Unorm  : metallic(.r) + roughness(.g) + diffuse_transmission(.b) + 0(.a)  ※.a は将来用
 //   RT3 Rgba16Float : emissive.rgb（HDR） , .w = 0
 //
 // 設計判断（コメントとして残す）:
@@ -34,7 +34,7 @@ struct GBufferOut {
     @location(0) albedo_occ: vec4<f32>,
     /// RT1: world normal(xyz) + 0(w)
     @location(1) normal:     vec4<f32>,
-    /// RT2: metallic(r) + roughness(g) + 予約(b,a)
+    /// RT2: metallic(r) + roughness(g) + diffuse_transmission(b) + 予約(a)
     @location(2) mr:         vec4<f32>,
     /// RT3: emissive(rgb, HDR) + 0(w)
     @location(3) emissive:   vec4<f32>,
@@ -52,7 +52,8 @@ fn fs_gbuffer(in: VertexOutput, @builtin(front_facing) front_facing: bool) -> GB
     var o: GBufferOut;
     o.albedo_occ = vec4<f32>(s.albedo, s.occlusion);
     o.normal     = vec4<f32>(s.normal, 0.0);
-    o.mr         = vec4<f32>(s.metallic, s.roughness, 0.0, 0.0);
+    // .b に拡散透過（葉・布・紙の逆光透け）を焼く。deferred_lighting が g2.b から復元する。
+    o.mr         = vec4<f32>(s.metallic, s.roughness, s.diffuse_transmission, 0.0);
     o.emissive   = vec4<f32>(s.emissive, 0.0);
     return o;
 }

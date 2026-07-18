@@ -85,7 +85,10 @@ use super::model::{
 ///     変えたとき、色付き影／GI の実効アルベドを「テクスチャ平均 × 新 factor」で正しく再計算する
 ///     ため（factor 折込済みの avg_albedo だけでは元 factor が 0 成分を含むと復元不能）。
 ///     bincode のバイナリ表現が変わるため旧 v12 を無効化して再生成させる。
-pub const CACHE_FORMAT_VERSION: u32 = 13;
+/// v14: `Material` に拡散透過（`diffuse_transmission`＝葉・布・紙の逆光透け, 0..1）を追加。
+///     KHR_materials_diffuse_transmission 相当の簡易版で、ガラスの鏡面透過とは別の内部散乱。
+///     bincode のバイナリ表現が変わるため旧 v13 を無効化して再生成させる。
+pub const CACHE_FORMAT_VERSION: u32 = 14;
 
 /// モデルキャッシュファイルのマジック（8 バイト）。
 const MODEL_MAGIC: &[u8; 8] = b"SEEDMDL\0";

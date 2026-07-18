@@ -157,6 +157,9 @@ fn gather_surface(in: VertexOutput, front_facing: bool) -> Surface {
     s.alpha      = base_color.a;
     s.metallic   = metallic;
     s.roughness  = roughness;
+    // 拡散透過（葉・布・紙の逆光透け）。テクスチャは持たず uniform 直値をそのまま持ち越す
+    // （forward / G-Buffer 双方が通る唯一の採取点。G-Buffer 化では fs_gbuffer が RT2.b へ焼く）。
+    s.diffuse_transmission = u_material.diffuse_transmission;
     s.emissive   = emissive;
     s.occlusion  = ao;
     // clip_pos はフラグメントステージではフレームバッファ座標（ピクセル単位）。

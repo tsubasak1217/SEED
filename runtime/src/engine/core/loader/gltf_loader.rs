@@ -271,6 +271,12 @@ fn load_materials(document: &gltf::Document) -> Vec<Material> {
             transmission:     mat.transmission()
                 .map(|t| t.transmission_factor())
                 .unwrap_or(0.0),
+            // 拡散透過（葉・布・紙の逆光透け）。既定 0.0（透過なし＝従来動作）。
+            // ※ 現行の gltf クレート（1.4.1）には KHR_materials_diffuse_transmission 用の
+            //   ヘルパ（Material::diffuse_transmission() / feature）が存在しないため、glTF からは
+            //   読まず既定に倒す。拡散透過はエディタの Inspector（「拡散透過」スライダー・常時表示）
+            //   または .mat / インライン上書きで設定する。仕様「拡張があれば読む。無ければ既定」の後段に従う。
+            diffuse_transmission: 0.0,
             // MR テクスチャを無視するトグル。glTF ロード時は常に従来動作（false＝乗算）。
             // 有効化はエディタの Inspector（常時表示）または .mat / インライン上書きで行う。
             mr_tex_ignore:    false,

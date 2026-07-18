@@ -269,6 +269,11 @@ fn evaluate_lighting(s: Surface) -> vec3<f32> {
             radiance   = base_col * distance_attenuation(light_dist, light.range) * facing;
         }
 
+        // 拡散透過（逆光透け）用に、影を掛ける前の radiance を退避する。
+        // この時点の radiance は「color×intensity × 距離減衰 × スポット円錐/rect 前面」を含み、
+        // 影（この後の乗算）は含まない。逆光透け項は影を掛けない（後述の理由）ため、この値を使う。
+        let radiance_direct = radiance;
+
         // ── シャドウ減衰（2 経路を実行時分岐）─────────────────
         if rt_shadow_enabled() {
             // インラインレイトレ影（Phase R8）: 全ライト種で表面→ライト方向の遮蔽レイ。
@@ -329,6 +334,29 @@ fn evaluate_lighting(s: Surface) -> vec3<f32> {
         // 掛けない（方向性がなく漏れではないため）。
         let geo_gate = select(0.0, 1.0, dot(Ng, L) > RT_GEO_SHADOW_MIN_COS);
         Lo += geo_gate * shade_light(N, V, L, albedo, F0, metallic, roughness, radiance);
+
+        // ── 拡散透過（葉・布・紙の逆光透け, KHR_materials_diffuse_transmission 簡易版）──
+        // 薄い面が「面の裏側にあるライト」の光を内部散乱で拾い、base_color で色付いて透ける表現。
+        // ガラスの鏡面透過（屈折）とは別物で、屈折を伴わない拡散（ランバート）透過。
+        //   back = saturate(-dot(N, L))  … 面がライトに背を向けている側の逆光の強さ
+        //                                   （N は法線マップ後のシェーディング法線）。
+        //   Lo  += radiance_direct × back × diffuse_transmission × albedo / PI
+        // 透過色は albedo（base_color）を流用する（専用の拡散透過色は将来拡張）。
+        //
+        // ★ geo_gate（幾何ゲート）は掛けない。geo_gate は「面が幾何的に光へ背を向けたら直接光を 0 に
+        //    する光漏れ防止ゲート」で、まさに dot(Ng,L)<=0（＝逆光側）を殺す。拡散透過は**その逆光側の
+        //    光こそが本体**なので、目的が正反対のこのゲートを掛けてはならない。
+        // ★ 影（rt_shadow_factor / シャドウマップ）も掛けない。ゆえに影を含まない radiance_direct を使う。
+        //    薄い一枚面では、自身の面がシャドウレイをすぐ遮って自己遮蔽になり、逆光透けが常に真っ黒へ
+        //    潰れてしまう。葉の逆光透けは「影なしで光る」近似とする。
+        //    〔限界〕このため、透ける面と光源の間に**別の遮蔽物**があっても透けは減衰しない
+        //           （手前の枝の影が葉の透けに落ちない）。厳密には「自身の面だけをレイ除外した
+        //           薄物専用シャドウ」等が要るが、本実装では割り切る（将来の拡張余地）。
+        // ★ スポットの円錐減衰・距離減衰は掛ける（radiance_direct に既に含まれている）。
+        if s.diffuse_transmission > 0.0 {
+            let back = saturate(-dot(N, L));
+            Lo += radiance_direct * back * s.diffuse_transmission * albedo / PI;
+        }
 
         // ── 疑似バウンス（間接光近似・Phase 間接光）──────────────
         // ライトに照らされた周囲の面からの 1 バウンスを「ライト位置からの無方向光」で

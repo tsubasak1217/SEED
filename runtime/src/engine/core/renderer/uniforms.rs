@@ -135,7 +135,7 @@ fn normal_matrix_from_model(m: &[[f32; 4]; 4]) -> [[f32; 4]; 4] {
 /// | 60        | ior               |   4    |  ← 旧 _pad を転用（Phase RT-Translucency）
 /// | 64        | transmission      |   4    |  ← ガラス表現（透過率）で追加
 /// | 68        | mr_tex_ignore     |   4    |  ← 旧 _pad0 を転用（MR テクスチャ無視トグル, 0/1）
-/// | 72        | _pad1             |   4    |
+/// | 72        | diffuse_transmission | 4  |  ← 旧 _pad1 を転用（拡散透過＝葉/布の逆光透け, 0..1）
 /// | 76        | _pad2             |   4    |
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -161,8 +161,11 @@ pub struct MaterialUniform {
     /// 1=無視（metallic/roughness factor をそのまま実効値にする）。surface_gather.wgsl の
     /// MR 採取 1 箇所が参照する（forward / G-Buffer 共通の合流点）。
     pub mr_tex_ignore:      u32,
+    /// 拡散透過（diffuse_transmission, 0..1。葉・布・紙の逆光透け）。旧 _pad1（offset 72）を転用。
+    /// 0.0=従来動作（後方互換）。lighting_eval.wgsl の逆光項（radiance×back×dt×albedo/PI）で使う。
+    /// Surface.diffuse_transmission 経由で forward / G-Buffer（RT2.b）双方に届く。
+    pub diffuse_transmission: f32,
     /// std140 の 16 バイトアラインへ構造体サイズを揃えるパディング（GPU では未使用）。
-    pub _pad1:              f32,
     pub _pad2:              f32,
 }
 
@@ -301,12 +304,13 @@ mod layout_tests {
             base_color_factor: [0.0; 4], metallic_factor: 0.0, roughness_factor: 0.0,
             alpha_cutoff: 0.0, has_base_color_tex: 0, emissive_factor: [0.0; 3],
             has_normal_tex: 0, has_mr_tex: 0, has_occlusion_tex: 0, has_emissive_tex: 0,
-            ior: 0.0, transmission: 0.0, mr_tex_ignore: 0, _pad1: 0.0, _pad2: 0.0,
+            ior: 0.0, transmission: 0.0, mr_tex_ignore: 0, diffuse_transmission: 0.0, _pad2: 0.0,
         };
         let base = &m as *const _ as usize;
         let off = |p: *const f32| p as usize - base;
         assert_eq!(off(&m.ior),          60, "ior は offset 60");
         assert_eq!(off(&m.transmission), 64, "transmission は offset 64");
         assert_eq!(&m.mr_tex_ignore as *const u32 as usize - base, 68, "mr_tex_ignore は offset 68");
+        assert_eq!(off(&m.diffuse_transmission), 72, "diffuse_transmission は offset 72");
     }
 }

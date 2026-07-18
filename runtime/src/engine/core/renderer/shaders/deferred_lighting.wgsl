@@ -177,6 +177,8 @@ fn fs_deferred(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     let N         = normalize(g1.xyz);
     let metallic  = g2.r;
     let roughness = g2.g;
+    // 拡散透過（葉・布・紙の逆光透け）は RT2.b に焼かれている（gbuffer_write.wgsl）。
+    let diffuse_transmission = g2.b;
     let emissive  = g3.rgb;
 
     // ── 4) 幾何法線 Ng の復元 ───────────────────────────────────
@@ -215,6 +217,8 @@ fn fs_deferred(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     s.alpha         = 1.0; // 不透明のみ（半透明は Forward パスが別途処理する）
     s.metallic      = metallic;
     s.roughness     = roughness;
+    // 拡散透過（RT2.b から復元）。逆光透け項は forward と同一の evaluate_lighting で効く。
+    s.diffuse_transmission = diffuse_transmission;
     s.emissive      = emissive;
     // AO 乗算: 半解像度 AO をフル解像度 UV（frag.xy/resolution）でバイリニアサンプルし
     // occlusion に掛ける。これにより AO はアンビエント（evaluate_gi_ambient）・DDGI・
