@@ -3688,6 +3688,22 @@ impl App {
                                 ao_p.blur(&draw_ctx.device, frame.encoder_mut(), &self.ao_targets);
                             }
 
+                            // ── 色付き影バインドレス group3 BG（B3）───────────────────────────────
+                            // RT 対応 かつ バインドレス対応 GPU（deferred.colored_shadow_bgl が Some）のとき、
+                            // shadow_mask 生成パスと deferred ライティングパスの group3 に bind する
+                            // 色付き影資源（instance_table/UV/index/テクスチャ配列/サンプラー）を 1 回だけ組む。
+                            // 非対応 GPU／縮退時は None＝従来の空 gap（empty_bg3）を使う。
+                            let colored_shadow_bg: Option<wgpu::BindGroup> = if use_rt {
+                                match (&draw_ctx.bindless, draw_ctx.pipelines.deferred.colored_shadow_bgl.as_ref()) {
+                                    (Some(bl_cell), Some(cs_bgl)) => {
+                                        Some(bl_cell.borrow().create_colored_shadow_bind_group(&draw_ctx.device, cs_bgl))
+                                    }
+                                    _ => None,
+                                }
+                            } else {
+                                None
+                            };
+
                             // ── RT ソフト影マスク生成パス + バイラテラルデノイズ（Phase RT-Shadow-Denoise）─────
                             // G-Buffer＋TLAS から半解像度 4 レイヤ mask_raw へ選定ソフト影の透過率（.rgb）と
                             // half-res ビュー空間深度（.a に同梱）を焼く。各レイヤを深度ガイド付き separable
@@ -3715,11 +3731,18 @@ impl App {
                                         self.shadow_mask_targets.raw_layer_view(3),
                                     );
                                     // 半解像度・UV ベースのため viewport は設定しない（背景はシェーダが 1 を返す）。
-                                    mpass.set_pipeline(&smp.mask);
+                                    // バインドレス対応時（mask_bindless かつ colored_shadow_bg 確定）は色付き影
+                                    // バリアントを使い group3 に色付き影資源を bind、そうでなければ従来の平均色＋空 gap。
+                                    let (mask_pipe, mask_g3): (&wgpu::RenderPipeline, &wgpu::BindGroup) =
+                                        match (smp.mask_bindless.as_ref(), colored_shadow_bg.as_ref()) {
+                                            (Some(mb), Some(bg)) => (mb, bg),
+                                            _ => (&smp.mask, &draw_ctx.pipelines.deferred.empty_bg3),
+                                        };
+                                    mpass.set_pipeline(mask_pipe);
                                     mpass.set_bind_group(0, &camera_buf.bind_group, &[]);
                                     mpass.set_bind_group(1, &mask_gbuffer_bg, &[]);
                                     mpass.set_bind_group(2, &mask_params_bg, &[]);
-                                    mpass.set_bind_group(3, &draw_ctx.pipelines.deferred.empty_bg3, &[]);
+                                    mpass.set_bind_group(3, mask_g3, &[]);
                                     mpass.set_bind_group(4, scene_lights_bg, &[]);
                                     mpass.draw(0..3, 0..1);
                                 }
@@ -3780,27 +3803,40 @@ impl App {
                                 // use_rt=true のときに deferred.rt が None になることは想定しない）。
                                 // ただし万一の不整合（非対応 GPU 等）に備え、deferred.rt が None のときは
                                 // 安全側で rt_off パイプライン + 非RT ライト BG へフォールバックする。
-                                let lit_pipe = if use_rt {
-                                    draw_ctx.pipelines.deferred.rt.as_ref()
-                                        .unwrap_or(&draw_ctx.pipelines.deferred.pipeline)
-                                } else {
-                                    &draw_ctx.pipelines.deferred.pipeline
-                                };
                                 // lit_pipe が rt_off にフォールバックした場合でも scene_lights_bg が
                                 // RT 複合 BG（binding6=TLAS 付き）だと group4 レイアウトが不整合になる。
                                 // 前提が保証される通常経路では use_rt=true → deferred.rt=Some のため
                                 // 到達しないが、安全側として lights BG もフォールバックを合わせる。
                                 let lit_use_rt = use_rt && draw_ctx.pipelines.deferred.rt.is_some();
+                                // バインドレス色付き影（B3）: RT かつ colored_shadow_bg 確定かつ rt_bindless 構築済み。
+                                // 成立時は group3 に色付き影資源を bind してヒット点テクスチャ実サンプル＋Mask
+                                // アルファ抜きの影にする。非成立時は従来の rt / rt_off ＋空 gap。
+                                let use_bindless_lit = lit_use_rt
+                                    && colored_shadow_bg.is_some()
+                                    && draw_ctx.pipelines.deferred.rt_bindless.is_some();
+                                let lit_pipe = if use_bindless_lit {
+                                    draw_ctx.pipelines.deferred.rt_bindless.as_ref().unwrap()
+                                } else if lit_use_rt {
+                                    draw_ctx.pipelines.deferred.rt.as_ref().unwrap()
+                                } else {
+                                    &draw_ctx.pipelines.deferred.pipeline
+                                };
                                 let lit_lights_bg: &wgpu::BindGroup = if lit_use_rt {
                                     scene_lights_bg
                                 } else {
                                     draw_ctx.light_buffer.bind_group(LightingPass::MainCamera)
                                 };
+                                // group3: バインドレス時は色付き影資源、通常時は空 gap。
+                                let lit_g3: &wgpu::BindGroup = if use_bindless_lit {
+                                    colored_shadow_bg.as_ref().unwrap()
+                                } else {
+                                    &draw_ctx.pipelines.deferred.empty_bg3
+                                };
                                 lpass.set_pipeline(lit_pipe);
                                 lpass.set_bind_group(0, &camera_buf.bind_group, &[]);
                                 lpass.set_bind_group(1, &gbuffer_bg, &[]);
                                 lpass.set_bind_group(2, &draw_ctx.pipelines.deferred.empty_bg2, &[]);
-                                lpass.set_bind_group(3, &draw_ctx.pipelines.deferred.empty_bg3, &[]);
+                                lpass.set_bind_group(3, lit_g3, &[]);
                                 lpass.set_bind_group(4, lit_lights_bg, &[]);
                                 lpass.draw(0..3, 0..1);
                             }

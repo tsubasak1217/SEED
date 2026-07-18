@@ -2,7 +2,7 @@
 # rt_shadow_off の代わりに rt_shadow_on を連結し、group 4 に TLAS（binding 6）を追加する。
 # RT 対応 GPU でのみビルドされ、フラグメントは LightMeta.rt_shadows で RT/シャドウマップを分岐する。
 # それ以外の設定は mesh.toml と完全に同一（レイアウト互換）。
-shader_sources  = ["cluster_common.wgsl", "pbr_common.wgsl", "shader_common.wgsl", "ddgi_common.wgsl", "light_common.wgsl", "shadow.wgsl", "rt_shadow_on.wgsl", "shader_static_vertex.wgsl", "surface.wgsl", "surface_gather.wgsl", "lighting_eval.wgsl", "shader_fragment.wgsl"]
+shader_sources  = ["cluster_common.wgsl", "pbr_common.wgsl", "shader_common.wgsl", "ddgi_common.wgsl", "light_common.wgsl", "shadow.wgsl", "rt_shadow_on.wgsl", "rt_shadow_tint_avg.wgsl", "shader_static_vertex.wgsl", "surface.wgsl", "surface_gather.wgsl", "lighting_eval.wgsl", "shader_fragment.wgsl"]
 vertex_entry    = "vs_main"
 fragment_entry  = "fs_main"
 vertex_slots    = ["mesh_vertex"]

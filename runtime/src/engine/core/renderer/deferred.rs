@@ -35,6 +35,14 @@ pub struct DeferredLightingPipelines {
     pub pipeline:    wgpu::RenderPipeline,
     /// RT 影対応バリアント。RT 対応 GPU でのみ Some（rt_shadow::rt_shadows_supported() 参照）。
     pub rt:          Option<wgpu::RenderPipeline>,
+    /// RT 影＋バインドレス色付き影バリアント（B3）。RT 対応 かつ バインドレス対応 GPU でのみ Some。
+    /// group3 に色付き影のバインドレス資源（instance_table/UV/index/テクスチャ配列/サンプラー）を
+    /// 置き、ヒット点テクスチャ実サンプル＋Mask アルファ抜きで影を染める。draw は group3 に
+    /// bindless.create_colored_shadow_bind_group で作った BG を bind する（frame_renderer）。
+    pub rt_bindless: Option<wgpu::RenderPipeline>,
+    /// group3: 色付き影バインドレス資源の BGL（B3, バインドレス対応時のみ Some）。
+    /// frame_renderer が per-frame BG 構築に使う。shadow_mask も同一 BGL を借用する。
+    pub colored_shadow_bgl: Option<wgpu::BindGroupLayout>,
     /// group0: カメラ（deferred_lighting.wgsl 自前宣言の CameraUniform、shader_common.wgsl
     /// と同一レイアウト）。
     pub camera_bgl:  wgpu::BindGroupLayout,
@@ -109,16 +117,69 @@ impl DeferredLightingPipelines {
         // ── RT オン版（RT 対応 GPU でのみ構築） ─────────────────
         // acceleration_structure を含むシェーダは非対応デバイスではモジュール作成に
         // 失敗し得るため、対応判定を通った場合だけビルドする（RtMeshPipelines と同じ方針）。
+        // rt 変種の group4（ライト＋シャドウ＋TLAS binding6/albedo binding14）BGL を捕まえておく。
+        // バインドレス変種の手動レイアウト構築（group4）に流用する（両者は同一 group4 レイアウト）。
+        let mut rt_group4_bgl: Option<wgpu::BindGroupLayout> = None;
         let rt = if super::rt_shadow::rt_shadows_supported() {
-            let (rt_pipeline, _bgls_rt) = RenderPipelineBuilder::new(
+            let (rt_pipeline, bgls_rt) = RenderPipelineBuilder::new(
                 device, include_str!("pipelines/deferred_lighting_rt.toml"), out_format, df,
             )
             .with_label("deferred_lighting_rt")
             .with_cache(cache)
             .build(get_shader_source);
+            // group 順 [0 camera,1 gbuffer,2 gap,3 gap,4 lights+TLAS]。group4 を控える。
+            rt_group4_bgl = bgls_rt.into_iter().nth(4);
             Some(rt_pipeline)
         } else {
             None
+        };
+
+        // ── RT 影＋バインドレス色付き影バリアント（B3, RT 対応 かつ バインドレス対応 GPU のみ）──
+        // group3 に色付き影のバインドレス資源（uniform を含まない＝binding_array と両立）を置く。
+        // group4 は rt 変種と同一（rt_group4_bgl）。手動レイアウト（reflection.rs / shadow_mask.rs と同流儀）。
+        let use_bindless = super::rt_shadow::rt_shadows_supported() && super::bindless::bindless_supported();
+        let (rt_bindless, colored_shadow_bgl) = if use_bindless {
+            let g4 = rt_group4_bgl.as_ref()
+                .expect("RT 対応時は rt_group4_bgl が必ず確定している");
+            let cs_bgl = super::bindless::colored_shadow_bgl(device, super::bindless::bindless_capacity());
+            // 連結順（deferred.rs テスト deferred_lighting_shaders_parse_and_validate_rt_bindless と一致）。
+            let combined: String = [
+                "cluster_common.wgsl", "pbr_common.wgsl", "ddgi_common.wgsl", "light_common.wgsl",
+                "shadow.wgsl", "rt_shadow_on.wgsl", "bindless_common.wgsl", "rt_shadow_tint_bindless.wgsl",
+                "surface.wgsl", "lighting_eval.wgsl", "deferred_lighting.wgsl",
+            ].iter().map(|n| get_shader_source(n)).collect::<Vec<_>>().join("\n");
+            let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label:  Some("deferred_lighting_rt_bindless"),
+                source: wgpu::ShaderSource::Wgsl(combined.into()),
+            });
+            let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("deferred_lighting_rt_bindless"),
+                bind_group_layouts: &[&camera_bgl, &gbuffer_bgl, &gap_bgl2, &cs_bgl, g4],
+                push_constant_ranges: &[],
+            });
+            let pipe = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label:  Some("deferred_lighting_rt_bindless"),
+                layout: Some(&layout),
+                vertex: wgpu::VertexState {
+                    module: &shader, entry_point: Some("vs_fullscreen"),
+                    buffers: &[], compilation_options: Default::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader, entry_point: Some("fs_deferred"),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: out_format, blend: None, write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: Default::default(),
+                }),
+                primitive:     wgpu::PrimitiveState::default(),
+                depth_stencil: None,
+                multisample:   wgpu::MultisampleState::default(),
+                multiview:     None,
+                cache,
+            });
+            (Some(pipe), Some(cs_bgl))
+        } else {
+            (None, None)
         };
 
         // G-Buffer は textureLoad で読むため厳密には不要だが、group1 binding5 の
@@ -172,7 +233,8 @@ impl DeferredLightingPipelines {
             ..Default::default()
         });
 
-        Self { pipeline, rt, camera_bgl, gbuffer_bgl, gap_bgl2, gap_bgl3, empty_bg2, empty_bg3, gbuffer_sampler,
+        Self { pipeline, rt, rt_bindless, colored_shadow_bgl, camera_bgl, gbuffer_bgl, gap_bgl2, gap_bgl3,
+               empty_bg2, empty_bg3, gbuffer_sampler,
                mask_dummy_tex, mask_dummy_view, mask_sampler }
     }
 }
@@ -278,11 +340,12 @@ mod tests {
         let ddgi_c   = include_str!("shaders/ddgi_common.wgsl");
         let shadow   = include_str!("shaders/shadow.wgsl");
         let rt_on    = include_str!("shaders/rt_shadow_on.wgsl");
+        let tint_avg = include_str!("shaders/rt_shadow_tint_avg.wgsl");
         let surf     = include_str!("shaders/surface.wgsl");
         let light_ev = include_str!("shaders/lighting_eval.wgsl");
         let deferred = include_str!("shaders/deferred_lighting.wgsl");
 
-        let src = [cluster, pbr_c, ddgi_c, light_c, shadow, rt_on, surf, light_ev, deferred].join("\n");
+        let src = [cluster, pbr_c, ddgi_c, light_c, shadow, rt_on, tint_avg, surf, light_ev, deferred].join("\n");
         let module = naga::front::wgsl::parse_str(&src)
             .unwrap_or_else(|e| panic!("[deferred_lighting rt_on] WGSL parse 失敗: {e:?}"));
         let mut validator = naga::valid::Validator::new(
@@ -293,6 +356,36 @@ mod tests {
         validator
             .validate(&module)
             .unwrap_or_else(|e| panic!("[deferred_lighting rt_on] WGSL validate 失敗: {e:?}"));
+    }
+
+    /// バインドレス色付き影バリアント（B3）。rt_shadow_tint_bindless.wgsl を連結し、group3 の
+    /// binding_array（テクスチャ配列）＋ヒット点テクスチャサンプル＋Mask アルファ抜きを含む。
+    /// deferred_lighting_rt のバインドレス影パイプライン（deferred.rs で手動構築）と同一連結順。
+    /// 連結順は deferred.rs の rt_bindless 構築と一致させること。
+    #[test]
+    fn deferred_lighting_shaders_parse_and_validate_rt_bindless() {
+        let cluster   = include_str!("shaders/cluster_common.wgsl");
+        let pbr_c     = include_str!("shaders/pbr_common.wgsl");
+        let light_c   = include_str!("shaders/light_common.wgsl");
+        let ddgi_c    = include_str!("shaders/ddgi_common.wgsl");
+        let shadow    = include_str!("shaders/shadow.wgsl");
+        let rt_on     = include_str!("shaders/rt_shadow_on.wgsl");
+        let bindless  = include_str!("shaders/bindless_common.wgsl");
+        let tint_bl   = include_str!("shaders/rt_shadow_tint_bindless.wgsl");
+        let surf      = include_str!("shaders/surface.wgsl");
+        let light_ev  = include_str!("shaders/lighting_eval.wgsl");
+        let deferred  = include_str!("shaders/deferred_lighting.wgsl");
+
+        let src = [cluster, pbr_c, ddgi_c, light_c, shadow, rt_on, bindless, tint_bl, surf, light_ev, deferred].join("\n");
+        let module = naga::front::wgsl::parse_str(&src)
+            .unwrap_or_else(|e| panic!("[deferred_lighting rt_bindless] WGSL parse 失敗: {e:?}"));
+        // binding_array の非一様インデックス＋RAY_QUERY を要求（reflection_rt on と同じ）。
+        let caps = naga::valid::Capabilities::RAY_QUERY
+            | naga::valid::Capabilities::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING;
+        let mut validator = naga::valid::Validator::new(naga::valid::ValidationFlags::all(), caps);
+        validator
+            .validate(&module)
+            .unwrap_or_else(|e| panic!("[deferred_lighting rt_bindless] WGSL validate 失敗: {e:?}"));
     }
 
     /// RT ソフト影マスクの「深度考慮アップサンプル（joint bilateral）」の深度重みの境界性質を検証する。

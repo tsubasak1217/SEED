@@ -37,7 +37,7 @@ use wgpu::{
     CreateBlasDescriptor, CreateTlasDescriptor, TlasInstance, TlasPackage,
 };
 
-use super::bindless::{BindlessResources, BindlessInstanceRecord, BINDLESS_FLAG_ELIGIBLE, BINDLESS_DUMMY_TEX_INDEX};
+use super::bindless::{BindlessResources, BindlessInstanceRecord, BINDLESS_FLAG_ELIGIBLE, BINDLESS_FLAG_MASK, BINDLESS_DUMMY_TEX_INDEX};
 use super::gpu_resources::{GpuModel, GpuPrimitive, InstancedModelBatch};
 use super::lighting::LightBuffer;
 use super::shadow::ShadowResources;
@@ -408,6 +408,12 @@ impl RtShadowResources {
                         let bcf = gpu.primitive_base_color_factor(material_idx);
                         for v in &bcf { hasher.write_u32(v.to_bits()); }
                         hasher.write_u32(gpu.primitive_bindless_albedo_tex_index(material_idx));
+                        // B3: Mask 判別（instance_mask_for は Blend/Mask を同一 0x02 に潰すため、
+                        // Mask フラグと alpha_cutoff はここで別途混ぜる。含めないと Blend⇔Mask 切替や
+                        // カットオフ編集で instance_table が古いまま固定され、葉の形の影に反映されない）。
+                        let is_mask = matches!(gpu.primitive_alpha_mode(material_idx), AlphaMode::Mask);
+                        hasher.write_u8(is_mask as u8);
+                        hasher.write_u32(gpu.primitive_alpha_cutoff(material_idx).to_bits());
                         if let Some(gp) = gpu.meshes.get(mesh_idx)
                             .and_then(|m| m.primitives.get(prim_idx)) {
                             hasher.write_u32(gp.bindless_uv_offset);
@@ -501,14 +507,22 @@ impl RtShadowResources {
                                 .map(|gp| (gp.bindless_eligible, gp.bindless_uv_offset, gp.bindless_index_offset))
                                 .unwrap_or((false, 0, 0));
                             let elig = geom_elig.0 && tex_index != BINDLESS_DUMMY_TEX_INDEX;
+                            // Mask マテリアル（アルファテスト）は色付き影の第 2 クエリでテクスチャ α を
+                            // alpha_cutoff と比較して葉の形の影を落とす（B3）。flag を立て cutoff を積む。
+                            let is_mask = matches!(gpu.primitive_alpha_mode(material_idx), AlphaMode::Mask);
+                            let mut flags = if elig { BINDLESS_FLAG_ELIGIBLE } else { 0 };
+                            if is_mask { flags |= BINDLESS_FLAG_MASK; }
                             records[inst_count] = BindlessInstanceRecord {
                                 avg_albedo:        alb, // 先頭 16B は既存 storage と同一（.a=パック済み）
                                 base_color_factor: gpu.primitive_base_color_factor(material_idx),
                                 albedo_tex_index:  tex_index,
                                 uv_offset:         geom_elig.1,
                                 index_offset:      geom_elig.2,
-                                flags:             if elig { BINDLESS_FLAG_ELIGIBLE } else { 0 },
-                                _pad:              [0; 4],
+                                flags,
+                                // Mask のときだけ有効な閾値（Blend では 0.0）。BINDLESS_FLAG_MASK が
+                                // 立っているインスタンスでのみシェーダが参照する。
+                                alpha_cutoff:      if is_mask { gpu.primitive_alpha_cutoff(material_idx) } else { 0.0 },
+                                _pad:              [0; 3],
                             };
                         }
                         instances[inst_count] = Some(TlasInstance::new(blas, transform, inst_count as u32, mask));
@@ -844,10 +858,19 @@ mod tests {
         );
         // 貫通ループの静的上限は両者の大きい方（CENTER）で縛られていること
         //（SAMPLE 経路は早期 break で締める）。上限を SAMPLE 側にすると CENTER 経路が途中で切れる。
+        // B3 で rt_trace_translucent_tint はコア（rt_shadow_on.wgsl）から tint バリアント 2 本へ分離した
+        // （平均アルベド版／バインドレス版）。両方でループ静的上限が CENTER で縛られていること。
+        let tint_avg = include_str!("shaders/rt_shadow_tint_avg.wgsl");
+        let tint_bl  = include_str!("shaders/rt_shadow_tint_bindless.wgsl");
         assert!(
-            rt_on.contains("i < RT_TRANSLUCENT_MAX_HITS_CENTER"),
-            "rt_trace_translucent_tint のループ静的上限は RT_TRANSLUCENT_MAX_HITS_CENTER で縛ること\
-             （両経路の最大枚数を包含する静的上限）"
+            tint_avg.contains("i < RT_TRANSLUCENT_MAX_HITS_CENTER"),
+            "rt_shadow_tint_avg.wgsl の rt_trace_translucent_tint のループ静的上限は\
+             RT_TRANSLUCENT_MAX_HITS_CENTER で縛ること（両経路の最大枚数を包含する静的上限）"
+        );
+        assert!(
+            tint_bl.contains("i < RT_TRANSLUCENT_MAX_HITS_CENTER"),
+            "rt_shadow_tint_bindless.wgsl の rt_trace_translucent_tint のループ静的上限は\
+             RT_TRANSLUCENT_MAX_HITS_CENTER で縛ること（両経路の最大枚数を包含する静的上限）"
         );
     }
 
@@ -956,6 +979,9 @@ mod tests {
         let shadow   = include_str!("shaders/shadow.wgsl");
         let rt_on    = include_str!("shaders/rt_shadow_on.wgsl");
         let rt_off   = include_str!("shaders/rt_shadow_off.wgsl");
+        // 色付き影の透過色 tint（B3）: rt_shadow_on コアが呼ぶ rt_trace_translucent_tint を供給。
+        // rt_on を含む連結には必ず tint バリアントを 1 本並べること（未定義参照で validate が落ちる）。
+        let tint_avg = include_str!("shaders/rt_shadow_tint_avg.wgsl");
         let static_v = include_str!("shaders/shader_static_vertex.wgsl");
         let skin_v   = include_str!("shaders/shader_skinned_vertex.wgsl");
         // PBR シェーディングの 3 段分割（Surface / マテリアル採取 / ライト評価）。
@@ -971,8 +997,8 @@ mod tests {
         let refract  = include_str!("shaders/refract_common.wgsl");
 
         let variants: [(&str, Vec<&str>); 6] = [
-            ("mesh_rt",         vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_on,  static_v, surf, gather, light_ev, frag]),
-            ("skinned_mesh_rt", vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_on,  skin_v,   surf, gather, light_ev, frag]),
+            ("mesh_rt",         vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_on, tint_avg,  static_v, surf, gather, light_ev, frag]),
+            ("skinned_mesh_rt", vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_on, tint_avg,  skin_v,   surf, gather, light_ev, frag]),
             ("mesh",            vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_off, static_v, surf, gather, light_ev, frag]),
             ("skinned_mesh",    vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_off, skin_v,   surf, gather, light_ev, frag]),
             ("wboit_mesh",      vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_off, static_v, surf, gather, light_ev, frag, refract, wboit]),

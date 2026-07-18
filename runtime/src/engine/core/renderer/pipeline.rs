@@ -111,6 +111,8 @@ pub(crate) fn get_shader_source(name: &str) -> &'static str {
         "shadow.wgsl"                => include_str!("shaders/shadow.wgsl"),
         "rt_shadow_off.wgsl"         => include_str!("shaders/rt_shadow_off.wgsl"),
         "rt_shadow_on.wgsl"          => include_str!("shaders/rt_shadow_on.wgsl"),
+        "rt_shadow_tint_avg.wgsl"      => include_str!("shaders/rt_shadow_tint_avg.wgsl"),
+        "rt_shadow_tint_bindless.wgsl" => include_str!("shaders/rt_shadow_tint_bindless.wgsl"),
         "unlit.wgsl"                 => include_str!("shaders/unlit.wgsl"),
         "gizmo_line.wgsl"            => include_str!("shaders/gizmo_line.wgsl"),
         "depth_prepass.wgsl"         => include_str!("shaders/depth_prepass.wgsl"),

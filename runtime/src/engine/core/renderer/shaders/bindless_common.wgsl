@@ -22,6 +22,11 @@ const BINDLESS_DUMMY_TEX_INDEX: u32 = 0u;
 // Rust の BINDLESS_FLAG_ELIGIBLE と一致させること。
 const BINDLESS_FLAG_ELIGIBLE: u32 = 1u;
 
+// このインスタンスが Mask マテリアル（アルファテスト）であることを示すフラグ（B3）。
+// Rust の BINDLESS_FLAG_MASK と一致させること。色付き影の第 2 クエリで Mask 面にヒットしたとき、
+// テクスチャ α を alpha_cutoff と比較して完全遮蔽 or 素通りを決める（葉の形の影）。
+const BINDLESS_FLAG_MASK: u32 = 2u;
+
 // TLAS custom_data（インスタンス番号）で引く 1 レコード（std430, 64B, 16B 整列）。
 // フィールド順・オフセットは renderer/bindless.rs の BindlessInstanceRecord と一致させること。
 //   offset 0  : avg_albedo        vec4<f32>  (.rgb=生アルベド, .a=α/transmission パック)
@@ -30,7 +35,8 @@ const BINDLESS_FLAG_ELIGIBLE: u32 = 1u;
 //   offset 36 : uv_offset         u32        (vec2 単位)
 //   offset 40 : index_offset      u32        (u32 単位)
 //   offset 44 : flags             u32
-//   offset 48 : _pad0.._pad3      u32 ×4     (16B 整列パディング)
+//   offset 48 : alpha_cutoff      f32        (Mask のアルファカットオフ, B3)
+//   offset 52 : _pad0.._pad2      u32 ×3     (16B 整列パディング)
 struct BindlessInstanceRecord {
     avg_albedo:        vec4<f32>,
     base_color_factor: vec4<f32>,
@@ -38,8 +44,8 @@ struct BindlessInstanceRecord {
     uv_offset:         u32,
     index_offset:      u32,
     flags:             u32,
+    alpha_cutoff:      f32,
     _pad0:             u32,
     _pad1:             u32,
     _pad2:             u32,
-    _pad3:             u32,
 };
