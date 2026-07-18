@@ -19,8 +19,11 @@
 //  ※ SkyboxUniform の repr(C) レイアウトは shaders/skybox.wgsl の SkyboxUniform と
 //    バイト単位で一致させること（末尾 layout_tests が固定検証する）。
 //
-//  TODO: キューブマップ 6 枚対応（現状 equirect 1 枚のみ）。真の HDR（.hdr float）ロード
-//        （現状 asset_fs::read_image の 8bit sRGB を intensity 倍で HDR 化）。
+//  【HDR 対応】.hdr（Radiance RGBE）/ .exr（OpenEXR）は float デコードし Rgba16Float（リニア）で
+//    アップロードする（sRGB 変換なし・1.0 超の輝度を保持）。png/jpeg 等の LDR は従来通り
+//    Rgba8UnormSrgb。分岐は拡張子で行う（load_equirect_texture）。
+//
+//  TODO: キューブマップ 6 枚対応（現状 equirect 1 枚のみ）。
 // ============================================================
 
 use std::collections::{HashMap, HashSet};
@@ -372,9 +375,37 @@ fn create_skybox_bg(
 
 /// equirectangular テクスチャをロードして 2D テクスチャビューを返す（失敗時 None）。
 ///
-/// asset_fs::read_image が assets:// 仮想パス／PAK を解決する（8bit sRGB）。
-/// HDR は intensity 倍で HDR メインパスへ載せる（真の float HDR ロードは将来 TODO）。
+/// 拡張子で LDR / HDR を分岐する:
+///   - `.hdr`（Radiance RGBE）/ `.exr`（OpenEXR）: float デコードし **Rgba16Float**（リニア）で
+///     アップロードする。sRGB 変換はしない（HDR は既にリニア）。1.0 超の輝度が保持され、
+///     HDR メインパスでそのまま生き、Bloom で太陽が発光する。
+///   - それ以外（png/jpeg 等）: 従来通り asset_fs::read_image が 8bit **Rgba8UnormSrgb** で解決する。
+///     HDR 化は intensity 倍に委ねる。
+///
+/// ※ シェーダ（skybox.wgsl）は texture_2d<f32> で受けるため、両フォーマットとも
+///   equirect サンプリングの扱いは同一（分岐不要）。
+///
+/// TODO: 将来課題 — マテリアル等の他テクスチャ経路への .hdr 対応拡張（現状はスカイボックスのみ）。
 fn load_equirect_texture(
+    device: &wgpu::Device,
+    queue:  &wgpu::Queue,
+    path:   &str,
+) -> Option<wgpu::TextureView> {
+    if is_hdr_path(path) {
+        load_equirect_texture_hdr(device, queue, path)
+    } else {
+        load_equirect_texture_ldr(device, queue, path)
+    }
+}
+
+/// パスが HDR（float）フォーマットか拡張子で判定する（大文字小文字非依存）。
+fn is_hdr_path(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    lower.ends_with(".hdr") || lower.ends_with(".exr")
+}
+
+/// LDR 画像（png/jpeg 等）を Rgba8UnormSrgb でアップロードする（従来経路）。
+fn load_equirect_texture_ldr(
     device: &wgpu::Device,
     queue:  &wgpu::Queue,
     path:   &str,
@@ -386,7 +417,7 @@ fn load_equirect_texture(
         return None;
     }
     let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label:           Some("Skybox Equirect Texture"),
+        label:           Some("Skybox Equirect Texture (LDR sRGB)"),
         size:            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
         mip_level_count: 1,
         sample_count:    1,
@@ -406,6 +437,86 @@ fn load_equirect_texture(
         wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
     );
     Some(texture.create_view(&wgpu::TextureViewDescriptor::default()))
+}
+
+/// HDR 画像（.hdr / .exr）を float デコードして Rgba16Float（リニア）でアップロードする。
+///
+/// 失敗（読み込み不能・デコード不能・寸法 0）時は明確なエラーログを出して None を返す
+/// （呼び出し側 sync_gpu が描画対象から除外し、ピンクのプレースホルダにはしない）。
+fn load_equirect_texture_hdr(
+    device: &wgpu::Device,
+    queue:  &wgpu::Queue,
+    path:   &str,
+) -> Option<wgpu::TextureView> {
+    // ① バイト列を取得（assets:// 仮想パス／PAK を解決）。
+    let bytes = match crate::engine::asset_fs::read_bytes(path) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("[SEED skybox] HDR 読み込み失敗: path={path:?} err={e} → 描画スキップ");
+            return None;
+        }
+    };
+
+    // ② float デコードして (w, h, Rgba16 データ) を得る。
+    let (w, h, texels) = match decode_hdr_rgba16f(&bytes) {
+        Some(v) => v,
+        None => {
+            eprintln!(
+                "[SEED skybox] HDR デコード失敗（壊れたファイル / 非対応フォーマット）: \
+                 path={path:?} → 描画スキップ"
+            );
+            return None;
+        }
+    };
+    if w == 0 || h == 0 {
+        eprintln!("[SEED skybox] HDR テクスチャの寸法が不正: path={path:?} → 描画スキップ");
+        return None;
+    }
+
+    // ③ Rgba16Float テクスチャを確保（sRGB なし＝リニア。1.0 超の輝度を保持）。
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label:           Some("Skybox Equirect Texture (HDR Rgba16Float)"),
+        size:            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count:    1,
+        dimension:       wgpu::TextureDimension::D2,
+        format:          wgpu::TextureFormat::Rgba16Float,
+        usage:           wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats:    &[],
+    });
+    // Rgba16Float: 1 テクセル = 4 チャンネル × 2 バイト = 8 バイト。
+    const BYTES_PER_TEXEL: u32 = 8;
+    queue.write_texture(
+        texture.as_image_copy(),
+        bytemuck::cast_slice(&texels),
+        wgpu::TexelCopyBufferLayout {
+            offset:         0,
+            bytes_per_row:  Some(BYTES_PER_TEXEL * w),
+            rows_per_image: Some(h),
+        },
+        wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+    );
+    Some(texture.create_view(&wgpu::TextureViewDescriptor::default()))
+}
+
+/// HDR バイト列を float デコードし、(幅, 高さ, Rgba16Float テクセル列) を返す（失敗時 None）。
+///
+/// image クレート（hdr / exr feature）が Radiance HDR / OpenEXR を自動判別して float デコードする。
+/// RGB(f32) を Rgba(f16) へ変換する（アルファは常に 1.0）。
+fn decode_hdr_rgba16f(bytes: &[u8]) -> Option<(u32, u32, Vec<half::f16>)> {
+    // フォーマットは image 側でマジックバイトから自動判別（.hdr=RGBE / .exr=OpenEXR）。
+    let img = image::load_from_memory(bytes).ok()?;
+    let rgb = img.to_rgb32f(); // ImageBuffer<Rgb<f32>, Vec<f32>>（リニア float）
+    let (w, h) = rgb.dimensions();
+    let mut texels: Vec<half::f16> = Vec::with_capacity((w as usize * h as usize) * 4);
+    let one = half::f16::from_f32(1.0);
+    for px in rgb.pixels() {
+        texels.push(half::f16::from_f32(px[0]));
+        texels.push(half::f16::from_f32(px[1]));
+        texels.push(half::f16::from_f32(px[2]));
+        texels.push(one); // アルファ（天球は不透明）。
+    }
+    Some((w, h, texels))
 }
 
 /// シーンを DFS 走査してスカイボックスを収集する（CameraLocked は 1 つのみ）。
@@ -551,6 +662,53 @@ mod layout_tests {
         assert_eq!(idx.len(), (4 * 6 * 6) as usize);
         // 半径 1 の球面上にあること（先頭頂点は北極 y=1）。
         assert!((pos[0][1] - 1.0).abs() < 1e-5);
+    }
+
+    /// 拡張子による HDR / LDR 判定（大文字小文字・仮想パスを含む）。
+    #[test]
+    fn hdr_path_detection() {
+        assert!(is_hdr_path("assets://sky/day.hdr"));
+        assert!(is_hdr_path("assets://sky/DAY.HDR"));
+        assert!(is_hdr_path("C:/x/env.exr"));
+        assert!(!is_hdr_path("assets://sky/day.png"));
+        assert!(!is_hdr_path("assets://sky/day.jpg"));
+        assert!(!is_hdr_path("noextension"));
+    }
+
+    /// Radiance HDR（RGBE）を生成 → float デコード → Rgba16Float 変換を検証する。
+    ///
+    /// 1.0 超の輝度（4.0）が f16 で保持されること（HDR パイプラインで生きる前提）を確認する。
+    #[test]
+    fn decode_hdr_preserves_high_luminance() {
+        use image::codecs::hdr::HdrEncoder;
+        use image::Rgb;
+
+        // 2×2 の HDR 画像を生成（各ピクセル R=1.0, G=2.0, B=4.0）。
+        // 2 の冪は RGBE エンコードで（ほぼ）正確に往復する。
+        const W: usize = 2;
+        const H: usize = 2;
+        let pixels = vec![Rgb([1.0f32, 2.0, 4.0]); W * H];
+
+        let mut buf: Vec<u8> = Vec::new();
+        HdrEncoder::new(&mut buf)
+            .encode(&pixels, W, H)
+            .expect("HDR エンコード成功");
+
+        // float デコード（本番と同一経路）。
+        let (w, h, texels) = decode_hdr_rgba16f(&buf).expect("HDR デコード成功");
+        assert_eq!((w, h), (W as u32, H as u32));
+        assert_eq!(texels.len(), W * H * 4, "Rgba16 = 4 チャンネル/テクセル");
+
+        // 先頭テクセルの RGBA を f32 に戻して検証（RGBE 量子化 + f16 で許容誤差あり）。
+        let r = texels[0].to_f32();
+        let g = texels[1].to_f32();
+        let b = texels[2].to_f32();
+        let a = texels[3].to_f32();
+        assert!((r - 1.0).abs() < 0.05, "R≈1.0 だが {r}");
+        assert!((g - 2.0).abs() < 0.05, "G≈2.0 だが {g}");
+        // 1.0 超が保持されていること（クランプされていない）が最重要。
+        assert!(b > 3.5, "B は 1.0 超（≈4.0）を保持すべきだが {b}");
+        assert!((a - 1.0).abs() < 1e-3, "アルファは 1.0 固定だが {a}");
     }
 }
 

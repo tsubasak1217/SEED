@@ -12,7 +12,10 @@ gltf = { version = "1", features = ["utils", "KHR_materials_transmission"] }
 tobj = "4"
 bytemuck = { version = "1", features = ["derive"] }
 ab_glyph = "0.2"
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp", "tga", "webp"] }
+# hdr = Radiance HDR(.hdr / RGBE), exr = OpenEXR(.exr)。いずれも float デコード対応（スカイボックス HDR 用）。
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp", "tga", "webp", "hdr", "exr"] }
+# f32 → f16 変換（HDR テクスチャを Rgba16Float でアップロードするため。wgpu の推移的依存として既にビルドツリーに存在）。
+half = { version = "2", features = ["bytemuck"] }
 rayon = "1"
 meshopt = "0.2"
 serde = { version = "1", features = ["derive"] }
