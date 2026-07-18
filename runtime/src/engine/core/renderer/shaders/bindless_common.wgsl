@@ -27,6 +27,11 @@ const BINDLESS_FLAG_ELIGIBLE: u32 = 1u;
 // テクスチャ α を alpha_cutoff と比較して完全遮蔽 or 素通りを決める（葉の形の影）。
 const BINDLESS_FLAG_MASK: u32 = 2u;
 
+// このインスタンスがバインドレス**ジオメトリ**（UV/index/**法線**）を登録済みであることを示すフラグ。
+// Rust の BINDLESS_FLAG_GEOM と一致させること。ELIGIBLE（ジオメトリ＋テクスチャ）とは独立で、
+// テクスチャ無しの素ガラスでも法線を引ける。RT 屈折の界面法線復元は**このビット**で判定する。
+const BINDLESS_FLAG_GEOM: u32 = 4u;
+
 // TLAS custom_data（インスタンス番号）で引く 1 レコード（std430, 64B, 16B 整列）。
 // フィールド順・オフセットは renderer/bindless.rs の BindlessInstanceRecord と一致させること。
 //   offset 0  : avg_albedo        vec4<f32>  (.rgb=生アルベド, .a=α/transmission パック)
@@ -36,7 +41,8 @@ const BINDLESS_FLAG_MASK: u32 = 2u;
 //   offset 40 : index_offset      u32        (u32 単位)
 //   offset 44 : flags             u32
 //   offset 48 : alpha_cutoff      f32        (Mask のアルファカットオフ, B3)
-//   offset 52 : _pad0.._pad2      u32 ×3     (16B 整列パディング)
+//   offset 52 : normal_offset     u32        (八面体エンコード u32 単位・頂点順, RT 屈折)
+//   offset 56 : _pad0.._pad1      u32 ×2     (16B 整列パディング)
 struct BindlessInstanceRecord {
     avg_albedo:        vec4<f32>,
     base_color_factor: vec4<f32>,
@@ -45,7 +51,20 @@ struct BindlessInstanceRecord {
     index_offset:      u32,
     flags:             u32,
     alpha_cutoff:      f32,
+    normal_offset:     u32,
     _pad0:             u32,
     _pad1:             u32,
-    _pad2:             u32,
 };
+
+// 八面体エンコード u32（下位16=x, 上位16=y）を単位法線へ復号する。
+// Rust 側 bindless::oct_encode_normal / oct_decode_normal のミラー（`bindless::tests::oct_roundtrip_*`
+// が Rust の往復不変を担保し、`wgsl_mirror_has_oct_decode` が本関数の実在＋16bit 分解を照合する）。
+fn oct_decode_normal(u: u32) -> vec3<f32> {
+    let ex = f32(u & 0xffffu) / 65535.0 * 2.0 - 1.0;
+    let ey = f32((u >> 16u) & 0xffffu) / 65535.0 * 2.0 - 1.0;
+    var n = vec3<f32>(ex, ey, 1.0 - abs(ex) - abs(ey));
+    let t = max(-n.z, 0.0);
+    n.x += select(t, -t, n.x >= 0.0);
+    n.y += select(t, -t, n.y >= 0.0);
+    return normalize(n);
+}

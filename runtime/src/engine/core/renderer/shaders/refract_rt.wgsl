@@ -21,21 +21,23 @@
 // DDGI（10-13）・屈折背景（15/16）は light_common.wgsl / refract_common.wgsl が既に宣言済み。
 //
 // 【SS 版に対する優位（本物の屈折レイで解決すること）】
-//   (a) ガラス越しのガラスが映る（界面トレースで後続の半透明レイヤーの色が乗る）。
+//   (a) ガラス越しのガラスが映る（界面トレースで後続の半透明レイヤーで**実際に再屈折**する）。
 //   (b) 自己屈折（厚み）: 入射面→出射面を貫くため、厚みぶんの色付き吸収が乗る。
 //   (c) 視差が正確: 背景はレイのヒット点を実際に画面へ射影して得る（画面歪み近似ではない）。
 //
-// 【既知の限界（正直に記す）】
-//   ・後続界面ではレイを再屈折しない（＝一次屈折の方向のまま直進して界面色だけ累積する）:
-//     inline ray query の committed intersection は**ヒット三角形の法線を返さない**
-//     （バインドレス頂点フェッチは今回スコープ外）。法線が無いと界面での屈折方向を正しく
-//     求められない（レイ正対で近似すると dot(N,I)=±1 の縮退で refract がレイを反転させるなど
-//     破綻する）。そこで後続界面では**方向を更新せず**、界面色（tint）だけを累積して直進させる。
-//     これでも **一次屈折（シェーディング表面 N は本物）** により視差・ガラス越し・厚み色は
-//     得られる（多重界面の二次的な再屈折だけが省略）。正確な多重再屈折にはヒット点の実法線が要り、
-//     将来 BindlessInstanceRecord に頂点/法線参照を足せば界面ごとに正確化できる拡張余地がある。
-//     後続界面の ior も同様にインスタンス個別値がテーブルに無いため（rt_shadow_albedo には ior が
-//     入っていない）、正確な再屈折を行うなら ior も同レコードへ足す必要がある。
+// 【界面ごとの本物の再屈折（バインドレス法線メガバッファ）】
+//   inline ray query の committed intersection は**ヒット三角形の頂点法線を直接は返さない**が、
+//   primitive_index＋barycentrics＋instance_custom_data から、group4 の追加バインディング
+//   （instance_table 17／index メガバッファ 18／法線メガバッファ 19。bindless.rs 所有）を引いて
+//   **ヒット三角形の補間法線をオブジェクト空間で復元**し、hit.world_to_object の転置でワールド法線化する。
+//   これを使い、front_face（入射＝空気→ガラス, eta=1/ior）／back_face（出射＝ガラス→空気, eta=ior）に
+//   応じて **refract() で界面ごとに実屈折**する（多重ガラスが正しく屈折して重なる）。
+//   ・法線が引けないインスタンス（BINDLESS_FLAG_GEOM 非立＝ジオメトリ未登録／範囲外 custom_data）は、
+//     方向を更新せず直進して界面色（tint）だけ累積する従来近似へ**その界面だけ縮退**する（安全）。
+//   ・ior は界面インスタンス個別値がテーブルに無いため、シェーディング面の material.ior を全界面に流用する
+//     （限界。正確化するにはレコードに ior を積む必要がある）。
+//   ・全反射（TIR）: refract が 0 ベクトルを返す界面では**方向を更新せず直進**する（レイ反転や
+//     同一面ループを避けるため。入射面の一次屈折は shading 面 N で別途処理済み）。
 //   ・背景 refract_bg は不透明のみのコピーなので、レイが最終的に当たる不透明面の色は
 //     「画面内に見えていれば」正しく引ける。画面外／不透明ミスは DDGI（無効ならアンビエント）へ。
 //     深度一致チェックは不要（refract_bg は不透明のみのコピーで遮蔽関係が単純＝手前の半透明が
@@ -54,6 +56,16 @@
 /// - `.a`  : α（base_color_factor.a）と transmission を各 8bit 固定小数でパック
 ///           （rt_shadow.rs::pack_shadow_alpha_transmission と対）。
 @group(4) @binding(14) var<storage, read> rt_shadow_albedo: array<vec4<f32>>;
+
+/// group4 binding17: バインドレス インスタンステーブル（BindlessInstanceRecord 配列）。
+/// TLAS custom_data で引き、界面ヒット先の index_offset / normal_offset / flags を得る。
+/// bindless.rs 所有（色付き影の group3 binding0 と同一バッファ）。storage なので uniform と同居可。
+@group(4) @binding(17) var<storage, read> refr_records: array<BindlessInstanceRecord>;
+/// group4 binding18: インデックス メガバッファ（u32・三角形の頂点番号）。bindless.rs 所有。
+@group(4) @binding(18) var<storage, read> refr_index:   array<u32>;
+/// group4 binding19: 法線メガバッファ（八面体エンコード u32・頂点順）。bindless.rs 所有。
+/// index メガバッファ経由で三角形の 3 頂点法線を引き、barycentrics で補間する。
+@group(4) @binding(19) var<storage, read> refr_normal:  array<u32>;
 
 // ─── 定数 ────────────────────────────────────────────────────
 
@@ -132,6 +144,31 @@ fn refract_rt_fallback(pos: vec3<f32>, dir: vec3<f32>) -> vec3<f32> {
     return u_light_meta.ambient_color * u_light_meta.ambient_intensity;
 }
 
+/// ヒット三角形の頂点法線を八面体デコード＋重心補間し、ワールド空間の単位法線を返す。
+/// - `rec`        : ヒット先インスタンスのレコード（index_offset / normal_offset を持つ）。
+/// - `prim_index` : hit.primitive_index（三角形番号）。
+/// - `bary`       : hit.barycentrics（頂点 1,2 の重み。頂点 0 の重み = 1-bary.x-bary.y）。
+/// - `w2o`        : hit.world_to_object（mat4x3。ワールド→オブジェクトのアフィン）。
+///
+/// オブジェクト空間の補間法線 n_obj を、法線変換 = 逆転置(object_to_world) = 転置(world_to_object の線形部)
+/// でワールドへ移す（非一様スケールでも正しい向きになる）。BLAS はオブジェクト空間の頂点位置で
+/// 構築され、法線メガバッファも同じオブジェクト空間の頂点法線を保持するため整合する。
+fn refr_hit_world_normal(rec: BindlessInstanceRecord, prim_index: u32, bary: vec2<f32>,
+                         w2o: mat4x3<f32>) -> vec3<f32> {
+    let tri = rec.index_offset + prim_index * 3u;
+    let i0  = refr_index[tri + 0u];
+    let i1  = refr_index[tri + 1u];
+    let i2  = refr_index[tri + 2u];
+    let n0  = oct_decode_normal(refr_normal[rec.normal_offset + i0]);
+    let n1  = oct_decode_normal(refr_normal[rec.normal_offset + i1]);
+    let n2  = oct_decode_normal(refr_normal[rec.normal_offset + i2]);
+    let w   = vec3<f32>(1.0 - bary.x - bary.y, bary.x, bary.y);
+    let n_obj = n0 * w.x + n1 * w.y + n2 * w.z;
+    // world_to_object の線形部（列 0..2）の 3x3。法線ワールド化 = 転置(線形部) * n_obj。
+    let m = mat3x3<f32>(w2o[0], w2o[1], w2o[2]);
+    return normalize(transpose(m) * n_obj);
+}
+
 // ─── 背景取得本体（refract_common.wgsl の refract_sample_bg を RT で供給）─────
 
 /// 本物の RT 屈折で背景色（リニア HDR RGB）を返す。glass_composite から呼ばれる。
@@ -177,15 +214,38 @@ fn refract_sample_bg(surf: Surface, frag_xy: vec2<f32>, ior: f32) -> vec3<f32> {
         }
 
         let hit_pos = origin + dir * hit.t;
+        let ai      = hit.instance_custom_data;
 
         // 入射面（front_face）でだけ界面色を乗せる（色付き影と同一規約＝二重計上防止）。
         // 裏面（出射面）は tint を掛けない（媒質 1 個につき透過色は入射面で 1 回だけ）。
         if hit.front_face {
-            tint = tint * refract_layer_tint(hit.instance_custom_data);
+            tint = tint * refract_layer_tint(ai);
         }
 
-        // 後続界面では方向を更新しない（一次屈折の方向のまま直進して界面色だけ累積する）。
-        // inline RQ はヒット法線を返さず、法線無しの再屈折は破綻するため（限界はファイル冒頭参照）。
+        // ── 界面ごとの本物の再屈折 ──────────────────────────────
+        // i==0 かつ front_face のヒットは「シェーディング面自身の入射面」＝一次屈折（上で
+        // shading 面 N により処理済み）なので**再屈折しない**（原点を法線側へ押し出しているため
+        // 最初に自分の表面を踏む。ここで再度 refract すると入射屈折が二重に掛かる）。それ以外の
+        // 界面（自分の出射面・後続ガラスの入射/出射面）は補間法線で実屈折する。
+        let do_refract = (i > 0u) || (!hit.front_face);
+        if do_refract && ai < arrayLength(&refr_records) {
+            let rec = refr_records[ai];
+            // ジオメトリ（法線）登録済みインスタンスのみ再屈折。未登録は直進近似へ縮退（安全）。
+            if (rec.flags & BINDLESS_FLAG_GEOM) != 0u {
+                var n = refr_hit_world_normal(rec, hit.primitive_index, hit.barycentrics,
+                                              hit.world_to_object);
+                // refract() は N が入射側（-dir 側）を向くことを要求する。レイと同じ側なら反転。
+                if dot(dir, n) > 0.0 { n = -n; }
+                // front_face=入射（空気→ガラス, eta=1/ior）／back_face=出射（ガラス→空気, eta=ior）。
+                let eta = select(ior, 1.0 / max(ior, 1.0), hit.front_face);
+                let refr = refract(dir, n, eta);
+                // 全反射（0 ベクトル）でなければ方向を更新。TIR は直進のまま（限界はファイル冒頭参照）。
+                if dot(refr, refr) >= REFRACT_RT_TIR_EPS {
+                    dir = normalize(refr);
+                }
+            }
+        }
+
         // 次のレイへ: 原点をヒット点へ進める（tmin は上の select で微小前進に切替）。
         origin = hit_pos;
     }

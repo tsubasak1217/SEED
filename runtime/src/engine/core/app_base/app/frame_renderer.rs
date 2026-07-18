@@ -3489,11 +3489,15 @@ impl App {
                         // wgpu の内部参照で TLAS を生かすため、rt の共有借用はここで閉じてよい（描画時まで有効）。
                         // use_rt_refract ⟹ refract_active ⟹ refract_pyramid は ensure 済み（full_view が有効）。
                         if use_rt_refract {
-                            if let (Some(rt_cell), Some(rt_tp)) = (
+                            // RT 屈折パイプライン（rt_tp）はバインドレス対応時のみ構築されるため、
+                            // ここでバインドレス資源も必ず Some（界面法線復元の storage を binding17/18/19 に差す）。
+                            if let (Some(rt_cell), Some(rt_tp), Some(bl_cell)) = (
                                 draw_ctx.rt_shadow.as_ref(),
                                 draw_ctx.pipelines.transparent.rt.as_ref(),
+                                draw_ctx.bindless.as_ref(),
                             ) {
                                 let rt = rt_cell.borrow();
+                                let bl = bl_cell.borrow();
                                 let refract_view = self.refract_pyramid.full_view();
                                 transparent_rt_bg_main = Some(draw_ctx.light_buffer.create_transparent_rt_bind_group(
                                     &draw_ctx.device,
@@ -3505,6 +3509,9 @@ impl App {
                                     rt.albedo_buffer(),
                                     refract_view,
                                     &draw_ctx.pipelines.transparent.refract_sampler,
+                                    bl.instance_table_buffer(),
+                                    bl.index_buffer(),
+                                    bl.normal_buffer(),
                                 ));
                             }
                         }

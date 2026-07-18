@@ -104,6 +104,15 @@ pub const BINDLESS_UV_ELEM_BYTES: u64 = 8;
 /// インデックス要素 1 個のバイト数（u32）。
 pub const BINDLESS_INDEX_ELEM_BYTES: u64 = 4;
 
+/// 法線メガバッファの既定容量（バイト）。八面体エンコード u32=4B/頂点。
+/// UV メガバッファ（8B/頂点・64MB ≒ 800 万頂点）と同じ頂点数を収めるため、
+/// その半分の 32MB とする（4B/頂点 × 800 万頂点 = 32MB）。屈折の界面ごとの本物の
+/// 補間法線復元に使う（RT 屈折の多重界面再屈折）。あふれたら平均色ベールへ縮退（安全）。
+pub const BINDLESS_NORMAL_BUFFER_BYTES: u64 = 32 * 1024 * 1024;
+
+/// 法線要素 1 個のバイト数（八面体エンコード u32）。
+pub const BINDLESS_NORMAL_ELEM_BYTES: u64 = 4;
+
 /// TLAS インスタンス数の上限（= rt_shadow::MAX_RT_INSTANCES）。インスタンステーブルの容量。
 /// rt_shadow 側の定数と一致させること（レイアウトテストで担保）。
 pub const BINDLESS_MAX_INSTANCES: u32 = super::rt_shadow::MAX_RT_INSTANCES;
@@ -121,6 +130,60 @@ pub const BINDLESS_FLAG_ELIGIBLE: u32 = 1 << 0;
 /// 従来どおり透過色フィルタ（色付き影）で処理する。
 /// WGSL ミラー bindless_common.wgsl の BINDLESS_FLAG_MASK と一致させること。
 pub const BINDLESS_FLAG_MASK: u32 = 1 << 1;
+
+/// このインスタンスがバインドレス**ジオメトリ**（UV/index/**法線**）を登録済みであることを示すフラグ。
+/// `BINDLESS_FLAG_ELIGIBLE`（= ジオメトリ＋テクスチャ）とは独立で、テクスチャ無し（base_color_factor
+/// のみの素ガラス）でも法線は引ける。RT 屈折の界面ごとの本物の法線復元は**このビット**で判定する
+/// （テクスチャ有無に依存させない）。WGSL ミラー bindless_common.wgsl の BINDLESS_FLAG_GEOM と一致させること。
+pub const BINDLESS_FLAG_GEOM: u32 = 1 << 2;
+
+// ============================================================
+//  八面体法線エンコード（u32・4B/頂点）— Rust ↔ WGSL 往復一致
+// ============================================================
+//
+// 単位法線 vec3 を八面体マッピングで 2 成分（[-1,1]）へ畳み、各成分を 16bit 固定小数へ
+// 量子化して 1 個の u32（下位16=x, 上位16=y）へ詰める。省メモリ（12B→4B/頂点）のため。
+// WGSL 側 bindless_common.wgsl の `oct_decode_normal` とビット単位で対応させること
+// （`bindless::tests::oct_roundtrip_*` が Rust 側の往復一致を担保する）。
+
+/// 八面体の下半球（z<0）を折り返す補助（Cigolle et al. の標準式）。
+fn oct_wrap(x: f32, y: f32) -> (f32, f32) {
+    let sx = if x >= 0.0 { 1.0 } else { -1.0 };
+    let sy = if y >= 0.0 { 1.0 } else { -1.0 };
+    ((1.0 - y.abs()) * sx, (1.0 - x.abs()) * sy)
+}
+
+/// 単位法線 `n`（正規化前でも可・内部で L1 正規化）を八面体エンコード u32 にする。
+/// 下位 16bit = x 成分、上位 16bit = y 成分（各 [-1,1]→[0,65535] の量子化）。
+pub fn oct_encode_normal(n: [f32; 3]) -> u32 {
+    let inv_l1 = 1.0 / (n[0].abs() + n[1].abs() + n[2].abs()).max(1.0e-8);
+    let mut ex = n[0] * inv_l1;
+    let mut ey = n[1] * inv_l1;
+    if n[2] < 0.0 {
+        let (wx, wy) = oct_wrap(ex, ey);
+        ex = wx;
+        ey = wy;
+    }
+    // [-1,1] → [0,65535] 量子化（round-nearest）。
+    let qx = ((ex * 0.5 + 0.5).clamp(0.0, 1.0) * 65535.0).round() as u32;
+    let qy = ((ey * 0.5 + 0.5).clamp(0.0, 1.0) * 65535.0).round() as u32;
+    (qy << 16) | (qx & 0xffff)
+}
+
+/// 八面体エンコード u32 を単位法線へ復号する（WGSL `oct_decode_normal` のミラー・テスト用）。
+#[cfg(test)]
+fn oct_decode_normal(u: u32) -> [f32; 3] {
+    let ex = (u & 0xffff) as f32 / 65535.0 * 2.0 - 1.0;
+    let ey = ((u >> 16) & 0xffff) as f32 / 65535.0 * 2.0 - 1.0;
+    let mut nx = ex;
+    let mut ny = ey;
+    let nz = 1.0 - ex.abs() - ey.abs();
+    let t = (-nz).max(0.0);
+    nx += if nx >= 0.0 { -t } else { t };
+    ny += if ny >= 0.0 { -t } else { t };
+    let len = (nx * nx + ny * ny + nz * nz).sqrt().max(1.0e-8);
+    [nx / len, ny / len, nz / len]
+}
 
 // ============================================================
 //  BindlessInstanceRecord — TLAS custom_data で引く 1 レコード
@@ -158,8 +221,11 @@ pub struct BindlessInstanceRecord {
     /// インスタンスでのみ意味を持つ。色付き影の第 2 クエリで「サンプルした α >= alpha_cutoff なら
     /// 完全遮蔽（葉の形の影）」の閾値。Blend では未使用（0.0）。
     pub alpha_cutoff: f32,
-    /// offset 52..64: 16B 整列のためのパディング（vec3 パディング禁止＝明示的に埋める）。
-    pub _pad: [u32; 3],
+    /// offset 52: 法線メガバッファ内の先頭要素オフセット（八面体 u32 単位・頂点順）。
+    /// `BINDLESS_FLAG_GEOM` が立っているとき有効。RT 屈折の界面ごとの補間法線復元に使う。
+    pub normal_offset: u32,
+    /// offset 56..64: 16B 整列のためのパディング（vec3 パディング禁止＝明示的に埋める）。
+    pub _pad: [u32; 2],
 }
 
 impl BindlessInstanceRecord {
@@ -173,7 +239,8 @@ impl BindlessInstanceRecord {
             index_offset:      0,
             flags:             0,
             alpha_cutoff:      0.0,
-            _pad:              [0; 3],
+            normal_offset:     0,
+            _pad:              [0; 2],
         }
     }
 }
@@ -452,6 +519,8 @@ struct BindlessFree {
     uv:  Vec<(u32, u32)>,
     /// 解放するインデックス領域 `(要素オフセット, 要素数)` 群。
     idx: Vec<(u32, u32)>,
+    /// 解放する法線領域 `(要素オフセット, 要素数)` 群。
+    nrm: Vec<(u32, u32)>,
 }
 
 /// 遅延解放キュー本体。`BindlessModelAlloc` の Drop（任意スレッド・任意タイミング）から
@@ -468,12 +537,13 @@ pub struct BindlessModelAlloc {
     tex:   Vec<u32>,
     uv:    Vec<(u32, u32)>,
     idx:   Vec<(u32, u32)>,
+    nrm:   Vec<(u32, u32)>,
 }
 
 impl BindlessModelAlloc {
     /// 空のハンドルを作る（キューを共有）。以後 `record_*` で登録内容を積む。
     fn new(queue: BindlessFreeQueue) -> Self {
-        Self { queue, tex: Vec::new(), uv: Vec::new(), idx: Vec::new() }
+        Self { queue, tex: Vec::new(), uv: Vec::new(), idx: Vec::new(), nrm: Vec::new() }
     }
     /// 登録した albedo テクスチャ index を記録する（ダミー 0 番は記録しない＝解放不要）。
     fn record_texture(&mut self, index: u32) {
@@ -487,9 +557,13 @@ impl BindlessModelAlloc {
     fn record_index(&mut self, elem_offset: u32, elem_count: u32) {
         if elem_count > 0 { self.idx.push((elem_offset, elem_count)); }
     }
+    /// 登録した法線領域（要素オフセット・要素数）を記録する。
+    fn record_normal(&mut self, elem_offset: u32, elem_count: u32) {
+        if elem_count > 0 { self.nrm.push((elem_offset, elem_count)); }
+    }
     /// 何も登録していないか（Drop の無操作判定・テスト用）。
     fn is_empty(&self) -> bool {
-        self.tex.is_empty() && self.uv.is_empty() && self.idx.is_empty()
+        self.tex.is_empty() && self.uv.is_empty() && self.idx.is_empty() && self.nrm.is_empty()
     }
 }
 
@@ -502,6 +576,7 @@ impl Drop for BindlessModelAlloc {
             tex: std::mem::take(&mut self.tex),
             uv:  std::mem::take(&mut self.uv),
             idx: std::mem::take(&mut self.idx),
+            nrm: std::mem::take(&mut self.nrm),
         };
         // ロック失敗（poison）時も解放要求を捨てない（リーク回避）。into_inner ではなく
         // ロックを取り直す代わりに、poison でも guard を得て push する。
@@ -548,13 +623,18 @@ pub struct BindlessResources {
     /// インデックス メガバッファ（u32 連結, storage）。
     index_buffer: wgpu::Buffer,
     index_alloc: MegaAllocator,
+    /// 法線メガバッファ（八面体エンコード u32 連結, storage）。頂点順で index メガバッファ経由で引く。
+    /// RT 屈折の界面ごとの本物の補間法線復元に使う（UV/index と同じ仕組み）。
+    normal_buffer: wgpu::Buffer,
+    normal_alloc: MegaAllocator,
 
     /// BindlessInstanceRecord テーブル（TLAS custom_data で引く, storage）。容量 = MAX_INSTANCES。
     instance_table: wgpu::Buffer,
 
-    /// UV/index 容量オーバー警告の抑止（ログ爆発防止）。
+    /// UV/index/法線 容量オーバー警告の抑止（ログ爆発防止）。
     warned_uv_overflow: bool,
     warned_index_overflow: bool,
+    warned_normal_overflow: bool,
 
     /// 遅延解放キュー。GpuModel が持つ `BindlessModelAlloc` の Drop から解放要求が積まれ、
     /// `process_pending_frees` が registry/allocator へ返却する（リーク・二重解放防止の要）。
@@ -643,6 +723,12 @@ impl BindlessResources {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        let normal_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Bindless Normal Megabuffer"),
+            size: BINDLESS_NORMAL_BUFFER_BYTES,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
 
         // ── インスタンステーブル ────────────────────────────
         let instance_table = device.create_buffer(&wgpu::BufferDescriptor {
@@ -667,9 +753,12 @@ impl BindlessResources {
             uv_alloc: MegaAllocator::new(BINDLESS_UV_BUFFER_BYTES),
             index_buffer,
             index_alloc: MegaAllocator::new(BINDLESS_INDEX_BUFFER_BYTES),
+            normal_buffer,
+            normal_alloc: MegaAllocator::new(BINDLESS_NORMAL_BUFFER_BYTES),
             instance_table,
             warned_uv_overflow: false,
             warned_index_overflow: false,
+            warned_normal_overflow: false,
             free_queue: Arc::new(Mutex::new(Vec::new())),
         }
     }
@@ -698,6 +787,7 @@ impl BindlessResources {
             for t in f.tex          { self.registry.free(t); }
             for (o, c) in f.uv      { self.uv_alloc.free(o as u64 * BINDLESS_UV_ELEM_BYTES,   c as u64 * BINDLESS_UV_ELEM_BYTES); }
             for (o, c) in f.idx     { self.index_alloc.free(o as u64 * BINDLESS_INDEX_ELEM_BYTES, c as u64 * BINDLESS_INDEX_ELEM_BYTES); }
+            for (o, c) in f.nrm     { self.normal_alloc.free(o as u64 * BINDLESS_NORMAL_ELEM_BYTES, c as u64 * BINDLESS_NORMAL_ELEM_BYTES); }
         }
         if n > 0 { self.dirty = true; } // テクスチャ配列 BindGroup を作り直させる
         n
@@ -797,6 +887,38 @@ impl BindlessResources {
         );
     }
 
+    /// 八面体エンコード済み法線（u32）配列を法線メガバッファへ追記し、先頭要素オフセット
+    /// （u32 単位）を返す。容量オーバーなら `None`（呼び出し側はバインドレス対象外にする）。
+    pub fn append_normals(&mut self, queue: &wgpu::Queue, normals: &[u32]) -> Option<u32> {
+        let bytes = (normals.len() as u64) * BINDLESS_NORMAL_ELEM_BYTES;
+        let off = match self.normal_alloc.alloc(bytes, BINDLESS_NORMAL_ELEM_BYTES) {
+            Some(o) => o,
+            None => {
+                if !self.warned_normal_overflow {
+                    self.warned_normal_overflow = true;
+                    eprintln!(
+                        "[SEED BINDLESS] 警告: 法線メガバッファ容量 {} バイトを超過。\
+                         以降のプリミティブはバインドレス対象外（ダミー扱い）になります。",
+                        BINDLESS_NORMAL_BUFFER_BYTES
+                    );
+                }
+                return None;
+            }
+        };
+        if !normals.is_empty() {
+            queue.write_buffer(&self.normal_buffer, off, bytemuck::cast_slice(normals));
+        }
+        Some((off / BINDLESS_NORMAL_ELEM_BYTES) as u32)
+    }
+
+    /// 法線領域を解放する。
+    pub fn free_normals(&mut self, elem_offset: u32, elem_count: u32) {
+        self.normal_alloc.free(
+            elem_offset as u64 * BINDLESS_NORMAL_ELEM_BYTES,
+            elem_count as u64 * BINDLESS_NORMAL_ELEM_BYTES,
+        );
+    }
+
     // ── インスタンステーブル API ────────────────────────────
 
     /// インスタンステーブル全体を GPU へアップロードする（TLAS 再構築フレームで呼ぶ想定）。
@@ -849,31 +971,41 @@ impl BindlessResources {
 
     // ── プリミティブ ジオメトリ登録（B2 のライブ配線）──────────
 
-    /// プリミティブ 1 個の UV（頂点順）とインデックス（三角形リスト）をメガバッファへ登録し、
-    /// `(uv_offset, index_offset, eligible)` を返す。`alloc` に領域を記録して RAII 解放させる。
+    /// プリミティブ 1 個の UV（頂点順）・インデックス（三角形リスト）・八面体エンコード法線
+    /// （頂点順）をメガバッファへ登録し、`(uv_offset, index_offset, normal_offset, eligible)` を返す。
+    /// `alloc` に領域を記録して RAII 解放させる。
     ///
-    /// 【部分あふれの後始末】UV かインデックスの一方だけ確保できた場合は、確保できた側を
-    /// **即座に解放**して `eligible=false`（バインドレス対象外＝従来の平均色へ縮退）にする。
-    /// 片方だけ残すとリーク＋対を成さないゴミ領域になるため。両方成功時のみ eligible=true。
+    /// 【部分あふれの後始末】UV・インデックス・法線のいずれかが確保できなかった場合は、確保
+    /// できた側を**即座にすべて解放**して `eligible=false`（バインドレス対象外＝従来の平均色へ縮退）
+    /// にする。片方だけ残すとリーク＋対を成さないゴミ領域になるため。3 者すべて成功時のみ
+    /// eligible=true（3 バッファは頂点番号で相互参照するため揃って初めて意味を持つ）。
+    ///
+    /// `normals_oct` は `uvs` と同じ頂点順・同じ要素数の八面体エンコード u32 列であること。
     pub fn register_primitive_geometry(
         &mut self,
-        queue:   &wgpu::Queue,
-        uvs:     &[[f32; 2]],
-        indices: &[u32],
-        alloc:   &mut BindlessModelAlloc,
-    ) -> (u32, u32, bool) {
+        queue:       &wgpu::Queue,
+        uvs:         &[[f32; 2]],
+        indices:     &[u32],
+        normals_oct: &[u32],
+        alloc:       &mut BindlessModelAlloc,
+    ) -> (u32, u32, u32, bool) {
         let uv_off  = self.append_uv(queue, uvs);
         let idx_off = self.append_indices(queue, indices);
-        match (uv_off, idx_off) {
-            (Some(u), Some(x)) => {
+        let nrm_off = self.append_normals(queue, normals_oct);
+        match (uv_off, idx_off, nrm_off) {
+            (Some(u), Some(x), Some(n)) => {
                 alloc.record_uv(u, uvs.len() as u32);
                 alloc.record_index(x, indices.len() as u32);
-                (u, x, true)
+                alloc.record_normal(n, normals_oct.len() as u32);
+                (u, x, n, true)
             }
-            // 片方だけ確保できた → 確保できた側を即解放して縮退（対象外）。
-            (Some(u), None) => { self.free_uv(u, uvs.len() as u32);      (0, 0, false) }
-            (None, Some(x)) => { self.free_indices(x, indices.len() as u32); (0, 0, false) }
-            (None, None)    => (0, 0, false),
+            // いずれか欠けた → 確保できた側をすべて即解放して縮退（対象外）。
+            (u, x, n) => {
+                if let Some(u) = u { self.free_uv(u, uvs.len() as u32); }
+                if let Some(x) = x { self.free_indices(x, indices.len() as u32); }
+                if let Some(n) = n { self.free_normals(n, normals_oct.len() as u32); }
+                (0, 0, 0, false)
+            }
         }
     }
 
@@ -909,6 +1041,8 @@ impl BindlessResources {
     pub fn uv_buffer(&self) -> &wgpu::Buffer { &self.uv_buffer }
     /// インデックス メガバッファ。
     pub fn index_buffer(&self) -> &wgpu::Buffer { &self.index_buffer }
+    /// 法線メガバッファ（八面体エンコード u32）。RT 屈折の界面法線復元に使う。
+    pub fn normal_buffer(&self) -> &wgpu::Buffer { &self.normal_buffer }
     /// インスタンステーブル。
     pub fn instance_table_buffer(&self) -> &wgpu::Buffer { &self.instance_table }
     /// 共有サンプラー。
@@ -940,7 +1074,8 @@ mod tests {
         assert_eq!(offset_of!(BindlessInstanceRecord, index_offset), 40);
         assert_eq!(offset_of!(BindlessInstanceRecord, flags), 44);
         assert_eq!(offset_of!(BindlessInstanceRecord, alpha_cutoff), 48);
-        assert_eq!(offset_of!(BindlessInstanceRecord, _pad), 52);
+        assert_eq!(offset_of!(BindlessInstanceRecord, normal_offset), 52);
+        assert_eq!(offset_of!(BindlessInstanceRecord, _pad), 56);
     }
 
     /// WGSL ミラーの構造体宣言が Rust と同じ 8 フィールド（合計 64B 相当）を持つことを、
@@ -949,7 +1084,7 @@ mod tests {
     fn wgsl_mirror_has_record_fields() {
         let src = include_str!("shaders/bindless_common.wgsl");
         for field in ["avg_albedo", "base_color_factor", "albedo_tex_index",
-                      "uv_offset", "index_offset", "flags", "alpha_cutoff"] {
+                      "uv_offset", "index_offset", "flags", "alpha_cutoff", "normal_offset"] {
             assert!(src.contains(field),
                 "bindless_common.wgsl に BindlessInstanceRecord.{field} が見つかりません");
         }
@@ -978,6 +1113,66 @@ mod tests {
                    BINDLESS_FLAG_ELIGIBLE);
         assert_eq!(read("BINDLESS_FLAG_MASK").parse::<u32>().unwrap(),
                    BINDLESS_FLAG_MASK);
+        assert_eq!(read("BINDLESS_FLAG_GEOM").parse::<u32>().unwrap(),
+                   BINDLESS_FLAG_GEOM);
+    }
+
+    // ── 八面体法線エンコードの往復一致（Rust ↔ WGSL ミラーの基準）──
+
+    /// `oct_encode_normal` → `oct_decode_normal` の往復が単位法線を高精度で復元すること
+    /// （16bit/成分の量子化誤差以内）。WGSL 側 `oct_decode_normal` は同一式のミラーで、この
+    /// Rust テストが往復不変を担保する（GPU では実行できないため）。
+    #[test]
+    fn oct_roundtrip_dense_sphere() {
+        // 球面を格子状に走査し、全方向で往復誤差が閾値以内であることを確認する。
+        let mut max_err: f32 = 0.0;
+        let steps = 64;
+        for i in 0..=steps {
+            for j in 0..=steps {
+                let u = i as f32 / steps as f32; // [0,1]
+                let v = j as f32 / steps as f32;
+                // 一様に近い球面サンプル（緯度 θ・経度 φ）。
+                let theta = (2.0 * v - 1.0).clamp(-1.0, 1.0).acos(); // [0,π]
+                let phi = u * std::f32::consts::TAU;
+                let n = [
+                    theta.sin() * phi.cos(),
+                    theta.sin() * phi.sin(),
+                    theta.cos(),
+                ];
+                let d = oct_decode_normal(oct_encode_normal(n));
+                // 復号は正規化済み。元 n も単位長。誤差 = 1 - cosθ。
+                let dot = (n[0] * d[0] + n[1] * d[1] + n[2] * d[2]).clamp(-1.0, 1.0);
+                max_err = max_err.max(1.0 - dot);
+            }
+        }
+        // 16bit/成分の八面体で、1-cos の最悪誤差は 1e-4 未満に収まる（十分に精密）。
+        assert!(max_err < 1.0e-4, "八面体往復の最悪誤差が大きすぎる: {max_err}");
+    }
+
+    /// 軸方向法線（±X/±Y/±Z）は往復でほぼ完全一致すること（境界の折り返しの健全性）。
+    #[test]
+    fn oct_roundtrip_axis_normals() {
+        let axes = [
+            [1.0, 0.0, 0.0], [-1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0], [0.0, -1.0, 0.0],
+            [0.0, 0.0, 1.0], [0.0, 0.0, -1.0],
+        ];
+        for n in axes {
+            let d = oct_decode_normal(oct_encode_normal(n));
+            let dot = n[0] * d[0] + n[1] * d[1] + n[2] * d[2];
+            assert!(dot > 0.9999, "軸法線 {n:?} の往復誤差: dot={dot}");
+        }
+    }
+
+    /// WGSL ミラー bindless_common.wgsl に `oct_decode_normal` が存在し、Rust と同じ 16bit 分解
+    /// （65535.0）で復号していることをソース照合する（往復一致の前提）。
+    #[test]
+    fn wgsl_mirror_has_oct_decode() {
+        let src = include_str!("shaders/bindless_common.wgsl");
+        assert!(src.contains("fn oct_decode_normal"),
+            "bindless_common.wgsl に oct_decode_normal が無い");
+        assert!(src.contains("65535.0"),
+            "bindless_common.wgsl の oct_decode_normal は 16bit 分解（65535.0）であること");
     }
 
     // ── MegaAllocator ───────────────────────────────────────
