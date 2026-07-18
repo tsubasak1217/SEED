@@ -91,8 +91,12 @@ pub const BINDLESS_DUMMY_TEX_INDEX: u32 = 0;
 /// これを超えたプリミティブは append が None を返し、バインドレス対象外（ダミー扱い）になる。
 pub const BINDLESS_UV_BUFFER_BYTES: u64 = 64 * 1024 * 1024;
 
-/// インデックス メガバッファの既定容量（バイト）。u32=4B/インデックス。32MB ≒ 800 万インデックス分。
-pub const BINDLESS_INDEX_BUFFER_BYTES: u64 = 32 * 1024 * 1024;
+/// インデックス メガバッファの既定容量（バイト）。u32=4B/インデックス。128MB ≒ 3200 万インデックス分。
+/// 【実測根拠】初期値 32MB（800 万）は Sponza 級 1 シーンで超過した
+/// （Sponza main だけで約 1100 万インデックス ≒ 44MB。あふれた後続プリミティブが平均色へ
+/// 縮退し「カーテンだけベタ塗りで反射する」症状になった）。複数の大型モデルの同時ロードに
+/// 余裕を持たせて 128MB とする。それでも超えた場合は従来どおり警告ログ＋平均色縮退（安全）。
+pub const BINDLESS_INDEX_BUFFER_BYTES: u64 = 128 * 1024 * 1024;
 
 /// UV 要素 1 個のバイト数（vec2<f32>）。
 pub const BINDLESS_UV_ELEM_BYTES: u64 = 8;
