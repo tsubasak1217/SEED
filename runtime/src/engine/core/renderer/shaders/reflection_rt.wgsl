@@ -2,8 +2,14 @@
 // reflection_rt.wgsl — レイトレ反射（fragment fs_rt, RAY_QUERY 必須）
 //
 // G-Buffer から反射ベクトル R を作り、TLAS へ closest-hit レイを 1 本飛ばす。
-// ヒット点を近似シェーディング（albedo*(direct+bounce)/PI）し、フレネル・粗面フェードを
-// 掛けて RT_REFLECTION へ出力する。ミス時は DDGI（無効なら環境光）へフォールバックする。
+// ヒット点は【ハイブリッド】でシェーディングする:
+//   画面内かつ深度一致（そのヒット面が本画面で実際に見えている）→ scene_hdr（本画面の
+//     不透明ライティング済みコピー）を射影 UV でサンプル。本画面と同一のソフト影・GI・AO・
+//     バウンスが反射に乗る＝「実際の影の濃さで反射」。
+//   画面外／深度不一致（本画面で遮蔽され見えていない面）→ 従来の解析近似
+//     （albedo*(direct/π + indirect)。間接光は本画面アンビエント規約に合わせ /π なし）。
+// いずれもフレネル・粗面フェードを掛けて RT_REFLECTION へ出力する。
+// レイのミス時は DDGI（無効なら環境光）へフォールバックする。
 //
 // 連結順: [cluster_common, reflection_common, ddgi_common, reflection_rt]
 //   cluster_common   : LIGHT_KIND_* 定数
@@ -41,6 +47,14 @@ const RT_REFLECTION_HIT_LIGHTS: u32 = 2u;
 // 0.0 = 近似可視率を素通し（上位灯が完全遮蔽なら残りも 0 まで落ちる）。
 // 上げると残りライトが影の中でも底上げされ、反射像のコントラストが緩む。
 const REST_LIGHT_MIN_VISIBILITY: f32 = 0.0;
+
+// 画面内ヒット採用（ハイブリッド）の深度一致許容（相対）。
+// 反射レイのヒット点を screen へ射影し、その UV の G-Buffer 深度から復元したビュー深度と
+// ヒット点のビュー深度の【相対差】がこの割合以内なら「そのヒット面は本画面で実際に見えている」
+// と判定し、解析近似ではなく scene_hdr（本画面の不透明ライティング済みコピー）をサンプルして
+// 反射色に採用する。本画面と同一のソフト影・GI・AO・バウンスが反射に乗る＝影の濃さが一致する。
+// 相対 5% は shadow_mask / joint bilateral の深度一致判定と同じ流儀に揃えたもの。
+const HIT_DEPTH_TOLERANCE: f32 = 0.05;
 
 struct GpuLightR {
     color:            vec3<f32>,
@@ -108,6 +122,34 @@ fn rt_refl_shadow_ray(o: vec3<f32>, dir: vec3<f32>, tmax: f32) -> f32 {
         return 0.0;
     }
     return 1.0;
+}
+
+// ワールド座標のビュー空間 Z（カメラ前方が負）。画面内ヒットの深度一致判定に使う。
+// u_camera.view は列優先アップロード済みのため view*world で正しくビュー座標になる
+// （lighting_eval.wgsl / reflection_ssr.wgsl の ssr_view_z と同一）。
+fn rt_refl_view_z(world_pos: vec3<f32>) -> f32 {
+    return (u_camera.view * vec4<f32>(world_pos, 1.0)).z;
+}
+
+// ワールド座標 → screen UV 射影の結果（UV と画面内フラグ）。
+struct RtReflProj { uv: vec2<f32>, valid: bool }
+
+// ワールド座標を view_proj で screen UV へ射影する（逆行列不要）。
+// clip.w<=0（カメラ背後）や UV が [0,1] の外なら valid=false。
+// reflection_ssr.wgsl の ssr_project と同一手法（RT でも共有したいが SSR ファイルは RT へ
+// 連結されないため、ここに同式を置く）。
+fn rt_refl_project(world_pos: vec3<f32>) -> RtReflProj {
+    var r: RtReflProj;
+    let clip = u_camera.view_proj * vec4<f32>(world_pos, 1.0);
+    if clip.w <= 0.0 {
+        r.uv    = vec2<f32>(0.0, 0.0);
+        r.valid = false;
+        return r;
+    }
+    let ndc = clip.xyz / clip.w;
+    r.uv    = vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
+    r.valid = all(r.uv >= vec2<f32>(0.0, 0.0)) && all(r.uv <= vec2<f32>(1.0, 1.0));
+    return r;
 }
 
 // 反射ヒット点の直接光放射照度 E を返す。
@@ -272,17 +314,59 @@ fn fs_rt(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     } else {
         let hit_pos = desc.origin + R * hit.t;
         let n_hit   = -R;
-        // ヒット先のベースカラー アルベド。実体は連結される reflection_rt_hit_{on,off}.wgsl が供給する:
-        //   on（バインドレス対応）: instance_custom_data → instance_table → UV 補間 → テクスチャサンプル
-        //   off（従来）          : instance_custom_data で平均アルベド storage を引く（ベタ塗り）
-        // ミップは 0 固定（レイ微分は将来課題）。フォールバック（flags 対象外・tex 0）は on 側で平均色へ。
-        let albedo  = rt_hit_base_color(hit.instance_custom_data, hit.primitive_index, hit.barycentrics);
-        let direct = rt_refl_direct_irradiance(hit_pos, n_hit);
-        // 間接光の床（GI 有効なら DDGI プローブ、無効ならフラットアンビエント）。
-        // 従来は enabled に関わらず DDGI を無条件サンプルしていたが、GI 無効時にフラットアンビエントへ
-        // フォールバックする分岐へ変更（本画面 evaluate_gi_ambient・ミス時 rt_refl_fallback と整合）。
-        let indirect = rt_refl_hit_indirect(hit_pos, n_hit);
-        reflected = albedo * (direct + indirect) / RT_REFL_PI;
+
+        // ── ハイブリッド：画面内に見えているヒットは本画面のライティング結果を採用 ──
+        // 反射レイのヒット点を screen へ射影し、その UV の G-Buffer 深度から復元したビュー深度と
+        // ヒット点のビュー深度が相対一致（= その面が本画面で実際に見えており、手前で遮蔽されて
+        // いない）なら、scene_hdr（本フレームの不透明ライティング済みコピー。SSR と同じ入力を
+        // group2 で共有）をその UV でサンプルして反射色に採用する。これで本画面と同一のソフト影・
+        // SSGI/DDGI・AO・疑似バウンスがそのまま反射に乗る＝ユーザー要望「実際の影の濃さで反射」。
+        var used_screen      = false;
+        var reflected_screen = vec3<f32>(0.0, 0.0, 0.0);
+        let proj = rt_refl_project(hit_pos);
+        if proj.valid {
+            let spix   = vec2<i32>(proj.uv * u_camera.resolution);
+            let sdepth = textureLoad(t_depth, spix, 0);
+            // 背景（深度 1.0）は面が無い＝一致対象外。手前に別の面があるケースも下の相対差で弾く。
+            if sdepth < 1.0 {
+                let scene_world = reflection_world_pos(proj.uv, sdepth);
+                let scene_vz    = rt_refl_view_z(scene_world);
+                let hit_vz      = rt_refl_view_z(hit_pos);
+                // 相対深度一致（HIT_DEPTH_TOLERANCE, 相対 5%）。一致＝その UV の可視面がヒット面本人。
+                if abs(scene_vz - hit_vz) <= HIT_DEPTH_TOLERANCE * max(abs(hit_vz), 1e-4) {
+                    reflected_screen = textureSampleLevel(t_scene_hdr, s_scene, proj.uv, 0.0).rgb;
+                    used_screen      = true;
+                }
+            }
+        }
+
+        if used_screen {
+            // 画面内ヒット：本画面の最終ライティング色をそのまま反射色に。影の濃さが本画面と一致する。
+            reflected = reflected_screen;
+        } else {
+            // ── 画面外／深度不一致（本画面で遮蔽され見えていない面）は従来の解析近似へ ──
+            // ヒット先のベースカラー アルベド。実体は連結される reflection_rt_hit_{on,off}.wgsl が供給する:
+            //   on（バインドレス対応）: instance_custom_data → instance_table → UV 補間 → テクスチャサンプル
+            //   off（従来）          : instance_custom_data で平均アルベド storage を引く（ベタ塗り）
+            // ミップは 0 固定（レイ微分は将来課題）。フォールバック（flags 対象外・tex 0）は on 側で平均色へ。
+            let albedo  = rt_hit_base_color(hit.instance_custom_data, hit.primitive_index, hit.barycentrics);
+            let direct  = rt_refl_direct_irradiance(hit_pos, n_hit);
+            // 間接光の床（GI 有効なら DDGI プローブ、無効ならフラットアンビエント）。
+            // 従来は enabled に関わらず DDGI を無条件サンプルしていたが、GI 無効時にフラットアンビエントへ
+            // フォールバックする分岐へ変更（本画面 evaluate_gi_ambient・ミス時 rt_refl_fallback と整合）。
+            let indirect = rt_refl_hit_indirect(hit_pos, n_hit);
+            // ── 明るさ規約を本画面 evaluate_lighting へ揃える（画面内⇔画面外の境界の飛びを抑える）──
+            //   直接光: 拡散 Lambert = albedo/π × E（shade_light の kD*albedo/PI 相当）。BRDF どおり /π を残す。
+            //   間接光: albedo × E（/π なし）。本画面アンビエント（ambient_color*intensity*albedo・
+            //           evaluate_gi_ambient）は /π を掛けないため、従来の /π は本画面より約 1/π 暗かった。
+            //           ここで間接光の /π を外して本画面と同一規約に補正する。
+            // 【限界（完全一致は不可能）】画面内 scene_hdr サンプルとの境界には明るさ差が残る:
+            //   - specular の視点依存（scene_hdr は本画面視点、反射は反射視点）
+            //   - AO/occlusion の有無（解析側はヒット点の occlusion を持たない）
+            //   - 影の質（解析側は上位 RT_REFLECTION_HIT_LIGHTS 灯のハード影、本画面はソフト影/デノイズ）
+            //   境界のシームを完全には消せないが、/π 補正で段差を最小化する。
+            reflected = albedo * (direct / RT_REFL_PI + indirect);
+        }
     }
 
     let color = reflected * fresnel * smooth_w * u_reflection.intensity;

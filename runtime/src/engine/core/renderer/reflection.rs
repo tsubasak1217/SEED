@@ -568,4 +568,26 @@ mod tests {
             .unwrap_or_else(|_| panic!("RT_REFLECTION_HIT_LIGHTS を u32 として解釈できません: {num:?}"));
         assert!(k >= 1, "RT_REFLECTION_HIT_LIGHTS({k}) は 1 以上であること（0 だと反射直接光が常時 0）");
     }
+
+    /// RT 反射のハイブリッド（画面内ヒット採用）の深度一致許容 HIT_DEPTH_TOLERANCE の健全性。
+    /// 相対許容（ヒット深度に対する割合）であり、0 だと浮動小数の丸めで一致がほぼ成立せず常に
+    /// 解析近似へフォールバックする（機能無効化）。逆に大きすぎると手前で遮蔽された別の面まで
+    /// 「一致」と誤判定して誤った scene_hdr 色を反射に採用する。よって (0, 0.5) の範囲に収める
+    /// （shadow_mask / joint bilateral と同じ相対 5% 前後の流儀）。
+    #[test]
+    fn rt_reflection_hit_depth_tolerance_is_valid() {
+        let src = include_str!("shaders/reflection_rt.wgsl");
+        // `const HIT_DEPTH_TOLERANCE: f32 = 0.05;` の右辺から数値部分を抽出する。
+        let line = src.lines().map(str::trim)
+            .find(|l| l.starts_with("const HIT_DEPTH_TOLERANCE"))
+            .expect("reflection_rt.wgsl に const HIT_DEPTH_TOLERANCE が見つかりません");
+        let rhs = line.split('=').nth(1).expect("HIT_DEPTH_TOLERANCE の右辺がありません");
+        let num: String = rhs.trim().chars()
+            .take_while(|c| c.is_ascii_digit() || *c == '.')
+            .collect();
+        let t: f32 = num.parse()
+            .unwrap_or_else(|_| panic!("HIT_DEPTH_TOLERANCE を f32 として解釈できません: {num:?}"));
+        assert!(t > 0.0, "HIT_DEPTH_TOLERANCE({t}) は 0 より大（0 だと一致成立せず機能無効化）");
+        assert!(t < 0.5, "HIT_DEPTH_TOLERANCE({t}) は 0.5 未満（遮蔽面の誤一致を防ぐ許容幅）");
+    }
 }
