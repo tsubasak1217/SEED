@@ -551,4 +551,21 @@ mod tests {
         assert_eq!(weight(end), 0.0, "roughness=FADE_END で weight は 0 であること");
         assert_eq!(weight(start), 1.0, "roughness<=FADE_START で weight は 1（全反射）であること");
     }
+
+    /// RT 反射のヒット直接光で影付き評価する上位ライト数 RT_REFLECTION_HIT_LIGHTS の健全性。
+    /// 1 未満だと反射ヒット点で一切影が出ず（症状再発）、また 0 だとスロット配列が空になり
+    /// 直接光が常時 0 になる。よって下限 >=1 を保証する（設計上の推奨は 2 以上）。
+    #[test]
+    fn rt_reflection_hit_lights_is_valid() {
+        let src = include_str!("shaders/reflection_rt.wgsl");
+        // `const RT_REFLECTION_HIT_LIGHTS: u32 = 2u;` の右辺から数値部分を抽出する。
+        let line = src.lines().map(str::trim)
+            .find(|l| l.starts_with("const RT_REFLECTION_HIT_LIGHTS"))
+            .expect("reflection_rt.wgsl に const RT_REFLECTION_HIT_LIGHTS が見つかりません");
+        let rhs = line.split('=').nth(1).expect("RT_REFLECTION_HIT_LIGHTS の右辺がありません");
+        let num: String = rhs.trim().chars().take_while(|c| c.is_ascii_digit()).collect();
+        let k: u32 = num.parse()
+            .unwrap_or_else(|_| panic!("RT_REFLECTION_HIT_LIGHTS を u32 として解釈できません: {num:?}"));
+        assert!(k >= 1, "RT_REFLECTION_HIT_LIGHTS({k}) は 1 以上であること（0 だと反射直接光が常時 0）");
+    }
 }

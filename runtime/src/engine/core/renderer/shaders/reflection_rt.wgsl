@@ -10,9 +10,14 @@
 //   reflection_common: group0/1/2・純関数・reflection_world_pos
 //   ddgi_common      : GiParams・ddgi_sample_irradiance
 //
-// ★同期必須★ 下記 rt_refl_* のヒット近似は shaders/ddgi_probe_update.wgsl の
-// gi_distance_atten / gi_direct_irradiance / gi_shadow_ray / gi_cast_ray の移植である。
-// ddgi_probe_update.wgsl 側を変えたら本ファイルも合わせること（逆も同様）。
+// ★同期必須★ 下記 rt_refl_distance_atten / rt_refl_shadow_ray は shaders/ddgi_probe_update.wgsl の
+// gi_distance_atten / gi_shadow_ray の移植である。これらを変えたら両ファイルを合わせること。
+// ただし rt_refl_direct_irradiance は DDGI の gi_direct_irradiance から【意図的に分岐】している:
+//   DDGI  : 全灯を加算し、影は主要光(index 0)1灯のみ。プローブは面積積分なので多少の影漏れは平滑化される。
+//   反射  : 強度上位 RT_REFLECTION_HIT_LIGHTS 灯だけを各1本のシャドウレイ付きで加算し、残りは捨てる。
+//           鏡面反射はヒット点がそのまま見えるため、影なしのライトを足すと「反射像に影が出ない」症状に直結する
+//           （実機確認済み）。上位以外を捨てて暗くする方向の誤差は鏡面反射では知覚されにくい。
+// この分岐は反射固有の品質要件によるもので、DDGI 側は従来のまま（触らない）。
 // 別ファイルにしている理由: ddgi_probe_update.wgsl は group0 に compute 専用バインディングを
 // 宣言しており、反射（fragment, group3/4）へ連結するとグループが混入して破綻するため。
 // ============================================================
@@ -22,6 +27,11 @@ const RT_REFL_RAY_TMIN:  f32 = 0.001;
 const RT_REFL_ORIGIN_N:  f32 = 0.02;
 const RT_REFL_RAY_TMAX:  f32 = 1.0e4;
 const RT_REFL_CULL_MASK: u32 = 0x01u;
+
+// 反射ヒット点で直接光を影付き評価する最大ライト数。反射レイごとに全灯へシャドウレイを
+// 撃つとコストが跳ねるため、実効寄与が大きい上位この本数だけを影付きで加算し、残りは捨てる。
+// 1 灯だと従来と同じ「主要光しか影が出ない」制限に戻るため 2 以上を推奨（>=1 が下限）。
+const RT_REFLECTION_HIT_LIGHTS: u32 = 2u;
 
 struct GpuLightR {
     color:            vec3<f32>,
@@ -91,8 +101,27 @@ fn rt_refl_shadow_ray(o: vec3<f32>, dir: vec3<f32>, tmax: f32) -> f32 {
     return 1.0;
 }
 
+// 反射ヒット点の直接光放射照度 E を返す。
+//   選定方針: 全灯を走査して各ライトの【実効寄与】(放射輝度 × N・L) を求め、その輝度が上位
+//   RT_REFLECTION_HIT_LIGHTS 灯だけを各1本のシャドウレイ付きで加算する。上位以外は捨てる。
+//   純粋な light.intensity 比較ではなく実効寄与で選ぶ理由: 距離減衰・スポット角・法線向きを
+//   反映しないと、遠方や裏向きの強ライトを誤って上位に選び、近接の弱ライトの影を落としてしまう。
+//   捨てる（影なしで足さない）理由: 影なしで足すと「反射像に影が出ない」症状が残るため。
+//   鏡面反射では暗くなる方向の誤差は知覚されにくいので、上位以外の寄与は無視して良い。
 fn rt_refl_direct_irradiance(hit_pos: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
-    var e = vec3<f32>(0.0, 0.0, 0.0);
+    // 上位 K 灯のスロット。昇順（index 0 が最弱）で維持し、最弱を追い出しながら K 灯を選抜する。
+    // 各スロットは加算に必要な情報一式を持つ: 実効寄与ベクトル・ライト方向・シャドウレイ tmax・選定スコア。
+    var top_contrib: array<vec3<f32>, RT_REFLECTION_HIT_LIGHTS>;
+    var top_l:       array<vec3<f32>, RT_REFLECTION_HIT_LIGHTS>;
+    var top_dist:    array<f32, RT_REFLECTION_HIT_LIGHTS>;
+    var top_score:   array<f32, RT_REFLECTION_HIT_LIGHTS>;
+    for (var s: u32 = 0u; s < RT_REFLECTION_HIT_LIGHTS; s = s + 1u) {
+        top_contrib[s] = vec3<f32>(0.0, 0.0, 0.0);
+        top_l[s]       = vec3<f32>(0.0, 0.0, 1.0);
+        top_dist[s]    = RT_REFL_RAY_TMAX;
+        top_score[s]   = 0.0;
+    }
+
     let count = min(rt_meta.count, arrayLength(&rt_lights));
     for (var i: u32 = 0u; i < count; i = i + 1u) {
         let light = rt_lights[i];
@@ -113,11 +142,33 @@ fn rt_refl_direct_irradiance(hit_pos: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
         }
         let ndl = max(dot(n, l), 0.0);
         if ndl <= 0.0 { continue; }
-        var shadow = 1.0;
-        if i == 0u {
-            shadow = rt_refl_shadow_ray(hit_pos + n * RT_REFL_RAY_TMIN, l, dist);
+        let contrib = radiance * ndl;
+        // 選定スコアは実効寄与の輝度（Rec.709）。0 以下は候補にならない。
+        let score = dot(contrib, vec3<f32>(0.2126, 0.7152, 0.0722));
+        if score <= 0.0 { continue; }
+        // 最弱スロット(index 0)より強ければ差し替え、隣接スワップで昇順を復元する（挿入ソート）。
+        if score > top_score[0] {
+            top_contrib[0] = contrib;
+            top_l[0]       = l;
+            top_dist[0]    = dist;
+            top_score[0]   = score;
+            for (var s: u32 = 0u; s + 1u < RT_REFLECTION_HIT_LIGHTS; s = s + 1u) {
+                if top_score[s] > top_score[s + 1u] {
+                    let tc = top_contrib[s]; top_contrib[s] = top_contrib[s + 1u]; top_contrib[s + 1u] = tc;
+                    let tl = top_l[s];       top_l[s]       = top_l[s + 1u];       top_l[s + 1u]       = tl;
+                    let td = top_dist[s];    top_dist[s]    = top_dist[s + 1u];    top_dist[s + 1u]    = td;
+                    let ts = top_score[s];   top_score[s]   = top_score[s + 1u];   top_score[s + 1u]   = ts;
+                }
+            }
         }
-        e = e + radiance * ndl * shadow;
+    }
+
+    // 選抜した上位 K 灯だけに各1本のシャドウレイを撃ち、遮蔽されていなければ加算する。
+    var e = vec3<f32>(0.0, 0.0, 0.0);
+    for (var s: u32 = 0u; s < RT_REFLECTION_HIT_LIGHTS; s = s + 1u) {
+        if top_score[s] <= 0.0 { continue; }
+        let shadow = rt_refl_shadow_ray(hit_pos + n * RT_REFL_RAY_TMIN, top_l[s], top_dist[s]);
+        e = e + top_contrib[s] * shadow;
     }
     return e;
 }
