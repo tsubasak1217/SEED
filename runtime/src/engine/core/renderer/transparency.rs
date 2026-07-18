@@ -133,6 +133,30 @@ pub struct TransparentPipelines {
     /// 屈折オフ時にバインドするダミー背景テクスチャ（1x1）。屈折オンでも背景が未確保のフレームは
     /// これを差すことで、透明パイプラインの group4 レイアウトが常に満たされ描画が壊れない。
     dummy_refract_view: wgpu::TextureView,
+    /// 本物の RT 屈折バリアント一式（EXPERIMENTAL_RAY_QUERY 対応 GPU のみ Some）。
+    /// 非対応時は None で、上の SS 版（sorted_mesh 等）だけを使う（完全フォールバック）。
+    /// frame_renderer は translucency=Rt かつ Some のときだけ RT 版を描く。
+    pub rt: Option<TransparentRtPipelines>,
+}
+
+/// 本物の RT 屈折の透明パイプライン一式（RT 対応 GPU のみ生成）。
+///
+/// SS 版（`TransparentPipelines` の sorted_mesh 等）と同一のブレンド／深度／フラグメントだが、
+/// 背景取得が refract_rt.wgsl（TLAS 屈折レイ）。refract_rt.wgsl が group4 に TLAS(binding6)＋
+/// 平均アルベド(binding14) を追加宣言するため、group4 レイアウト（`lights_bgl`）は
+/// 「ライト＋シャドウ＋クラスタ＋DDGI＋TLAS＋アルベド＋屈折背景(15/16)」の superset になる。
+/// この superset に一致する BindGroup は `LightBuffer::create_transparent_rt_bind_group` が供給する。
+pub struct TransparentRtPipelines {
+    /// 距離ソート用 RT（カリング面 3 バリアント）。
+    sorted_mesh:    CullPipelineSet,
+    sorted_skinned: CullPipelineSet,
+    /// WBOIT 用 RT（デュアル MRT、fs_wboit）。
+    wboit_mesh:     CullPipelineSet,
+    wboit_skinned:  CullPipelineSet,
+    /// group3 の空 gap BindGroup（非スキン描画で必須セット。RT 版レイアウト由来）。
+    mesh_empty_bg3: wgpu::BindGroup,
+    /// RT 透明の group4 レイアウト（TLAS＋アルベド込みの superset）。RT 用複合 BG の生成に使う。
+    pub lights_bgl: wgpu::BindGroupLayout,
 }
 
 /// 透明用シェーダソースを解決する（本モジュール自己完結）。
@@ -157,9 +181,12 @@ fn resolve_shader(name: &str) -> &'static str {
         "lighting_eval.wgsl"         => include_str!("shaders/lighting_eval.wgsl"),
         "shader_fragment.wgsl"       => include_str!("shaders/shader_fragment.wgsl"),
         "shader_wboit.wgsl"          => include_str!("shaders/shader_wboit.wgsl"),
-        // RT-Translucency（Phase RT-Translucency）: 屈折の共有ヘルパ（group4 binding15/16）と
-        // 距離ソート専用フラグメント。半透明パスにのみ連結する。
+        // RT-Translucency（Phase RT-Translucency）: 屈折の共有ヘルパ（group4 binding15/16・
+        // glass_composite）と背景取得 2 方式（SS フォールバック / RT 本物）、距離ソート専用フラグメント。
+        // refract_ss / refract_rt は排他（refract_sample_bg を 1 本だけ供給する）。半透明パスにのみ連結する。
         "refract_common.wgsl"        => include_str!("shaders/refract_common.wgsl"),
+        "refract_ss.wgsl"            => include_str!("shaders/refract_ss.wgsl"),
+        "refract_rt.wgsl"            => include_str!("shaders/refract_rt.wgsl"),
         "shader_transparent.wgsl"    => include_str!("shaders/shader_transparent.wgsl"),
         "fullscreen.wgsl"            => include_str!("shaders/fullscreen.wgsl"),
         "post_wboit_composite.wgsl"  => include_str!("shaders/post_wboit_composite.wgsl"),
@@ -259,11 +286,12 @@ impl TransparentPipelines {
         // 連結末尾に refract_common.wgsl（屈折ヘルパ＋group4 binding15/16）を足す。
         // これで WBOIT の group4 BGL も距離ソートと同じ「lights + refract」の superset になり、
         // 両者で同一の透明用 group4 BindGroup（create_transparent_bind_group）を使い回せる。
+        // WBOIT SS 版: 背景取得は refract_ss.wgsl（refract_common の後ろに連結）。
         let wboit_mesh: CullPipelineSet = std::array::from_fn(|i| build_wboit_pipeline(
             device, df, cache, &mesh_bgls,
             &["cluster_common.wgsl", "pbr_common.wgsl", "shader_common.wgsl", "ddgi_common.wgsl", "light_common.wgsl", "shadow.wgsl", "rt_shadow_off.wgsl",
               "shader_static_vertex.wgsl", "surface.wgsl", "surface_gather.wgsl",
-              "lighting_eval.wgsl", "shader_fragment.wgsl", "refract_common.wgsl", "shader_wboit.wgsl"],
+              "lighting_eval.wgsl", "shader_fragment.wgsl", "refract_common.wgsl", "refract_ss.wgsl", "shader_wboit.wgsl"],
             &["mesh_vertex"],
             "wboit_mesh",
             CULL_FACE_VARIANTS[i],
@@ -272,7 +300,7 @@ impl TransparentPipelines {
             device, df, cache, &skin_bgls,
             &["cluster_common.wgsl", "pbr_common.wgsl", "shader_common.wgsl", "ddgi_common.wgsl", "light_common.wgsl", "shadow.wgsl", "rt_shadow_off.wgsl",
               "shader_skinned_vertex.wgsl", "surface.wgsl", "surface_gather.wgsl",
-              "lighting_eval.wgsl", "shader_fragment.wgsl", "refract_common.wgsl", "shader_wboit.wgsl"],
+              "lighting_eval.wgsl", "shader_fragment.wgsl", "refract_common.wgsl", "refract_ss.wgsl", "shader_wboit.wgsl"],
             &["mesh_vertex", "skin_vertex"],
             "wboit_skinned",
             CULL_FACE_VARIANTS[i],
@@ -314,6 +342,16 @@ impl TransparentPipelines {
         // 屈折オフ時に差すダミー背景（1x1）。透明パイプラインの group4 を常に満たすため。
         let dummy_refract_view = create_dummy_refract_view(device);
 
+        // ── 本物の RT 屈折バリアント（EXPERIMENTAL_RAY_QUERY 対応 GPU のみ）─────────────
+        // acceleration_structure を宣言する RT 連結は非対応デバイスでモジュール作成に失敗し得るため、
+        // RT 影と同じ対応判定（rt_shadows_supported）を通ったときだけビルドする。非対応 GPU は
+        // rt=None で SS 版のみを使い、完全に無変更で動作する（フォールバック）。
+        let rt = if super::rt_shadow::rt_shadows_supported() {
+            Some(TransparentRtPipelines::new(device, sf, df, cache))
+        } else {
+            None
+        };
+
         Self {
             sorted_mesh, sorted_skinned,
             wboit_mesh, wboit_skinned,
@@ -323,6 +361,7 @@ impl TransparentPipelines {
             lights_bgl,
             refract_sampler,
             dummy_refract_view,
+            rt,
         }
     }
 
@@ -375,6 +414,81 @@ impl TransparentPipelines {
         pass.set_bind_group(0, &bg0, &[]);
         pass.set_bind_group(1, &bg1, &[]);
         pass.draw(0..3, 0..1);
+    }
+}
+
+impl TransparentRtPipelines {
+    /// 本物の RT 屈折の透明パイプライン一式を生成する（RT 対応時のみ呼ぶこと）。
+    ///
+    /// SS 版と同じ手順（TOML＋リフレクションで距離ソート、WBOIT は同一 BGL を再利用して手動構築）
+    /// だが、連結末尾の背景取得を refract_rt.wgsl（TLAS 屈折レイ）にする。距離ソート RT のビルドで
+    /// 得た group4 BGL（TLAS binding6＋アルベド binding14 を含む superset）を WBOIT RT でも再利用する。
+    pub fn new(
+        device: &wgpu::Device,
+        sf:     wgpu::TextureFormat,
+        df:     wgpu::TextureFormat,
+        cache:  Option<&wgpu::PipelineCache>,
+    ) -> Self {
+        use super::pipeline_config::RenderPipelineBuilder;
+
+        // 距離ソート RT（TOML＋リフレクション）。カリング面 3 種を 1 ファイルから生成する。
+        let build_sorted_rt = |toml_src: &str, label_base: &str| -> (CullPipelineSet, Vec<wgpu::BindGroupLayout>) {
+            let mut bgls: Option<Vec<wgpu::BindGroupLayout>> = None;
+            let pipes: CullPipelineSet = std::array::from_fn(|i| {
+                let face  = CULL_FACE_VARIANTS[i];
+                let label = format!("{label_base}_cull_{}", face.as_str());
+                let (p, b) = RenderPipelineBuilder::new(device, toml_src, sf, df)
+                    .with_label(&label)
+                    .with_cull_mode(face.as_str())
+                    .with_cache(cache)
+                    .build(resolve_shader);
+                if bgls.is_none() { bgls = Some(b); }
+                p
+            });
+            (pipes, bgls.expect("transparent RT: BGL が生成されていない"))
+        };
+        let (sorted_mesh, mesh_bgls) =
+            build_sorted_rt(include_str!("pipelines/transparent_mesh_rt.toml"), "transparent_mesh_rt");
+        let (sorted_skinned, skin_bgls) =
+            build_sorted_rt(include_str!("pipelines/transparent_skinned_rt.toml"), "transparent_skinned_rt");
+
+        // group3 空 gap BindGroup（mesh 用）。
+        let mesh_empty_bg3 = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label:   Some("Transparent RT Empty BG (group 3)"),
+            layout:  &mesh_bgls[3],
+            entries: &[],
+        });
+
+        // WBOIT RT（デュアル MRT・手動構築）。連結末尾に refract_rt.wgsl＋shader_wboit.wgsl を置く。
+        // BGL は距離ソート RT のビルド結果（TLAS＋アルベド込み group4）を再利用する。
+        let wboit_mesh: CullPipelineSet = std::array::from_fn(|i| build_wboit_pipeline(
+            device, df, cache, &mesh_bgls,
+            &["cluster_common.wgsl", "pbr_common.wgsl", "shader_common.wgsl", "ddgi_common.wgsl", "light_common.wgsl", "shadow.wgsl", "rt_shadow_off.wgsl",
+              "shader_static_vertex.wgsl", "surface.wgsl", "surface_gather.wgsl",
+              "lighting_eval.wgsl", "shader_fragment.wgsl", "refract_common.wgsl", "refract_rt.wgsl", "shader_wboit.wgsl"],
+            &["mesh_vertex"],
+            "wboit_mesh_rt",
+            CULL_FACE_VARIANTS[i],
+        ));
+        let wboit_skinned: CullPipelineSet = std::array::from_fn(|i| build_wboit_pipeline(
+            device, df, cache, &skin_bgls,
+            &["cluster_common.wgsl", "pbr_common.wgsl", "shader_common.wgsl", "ddgi_common.wgsl", "light_common.wgsl", "shadow.wgsl", "rt_shadow_off.wgsl",
+              "shader_skinned_vertex.wgsl", "surface.wgsl", "surface_gather.wgsl",
+              "lighting_eval.wgsl", "shader_fragment.wgsl", "refract_common.wgsl", "refract_rt.wgsl", "shader_wboit.wgsl"],
+            &["mesh_vertex", "skin_vertex"],
+            "wboit_skinned_rt",
+            CULL_FACE_VARIANTS[i],
+        ));
+
+        // group4 レイアウト（TLAS＋アルベド込み superset）は距離ソート RT のビルド結果を使う。
+        let lights_bgl = mesh_bgls[4].clone();
+
+        Self {
+            sorted_mesh, sorted_skinned,
+            wboit_mesh, wboit_skinned,
+            mesh_empty_bg3,
+            lights_bgl,
+        }
     }
 }
 
@@ -636,6 +750,48 @@ pub fn draw_wboit<'p>(
     }
 }
 
+/// 距離ソート方式で半透明を描画する（本物の RT 屈折バリアント）。
+/// SS 版 `draw_sorted` と同一だが、RT 用パイプライン集合（TLAS＋アルベド込み group4）を使う。
+/// `lights_bg` は `create_transparent_rt_bind_group` が作った RT superset BindGroup であること。
+/// 呼び出し側は translucency=Rt かつ `tp.rt` が Some のときだけ本関数を使う（gating は frame_renderer）。
+pub fn draw_sorted_rt<'p>(
+    pass:       &mut wgpu::RenderPass<'p>,
+    models:     &'p TransparentModels<'p>,
+    camera_bg:  &'p wgpu::BindGroup,
+    lights_bg:  &'p wgpu::BindGroup,
+    rt:         &'p TransparentRtPipelines,
+    camera_pos: [f32; 3],
+) {
+    let mut items = gather_items(models, camera_pos);
+    if items.is_empty() { return; }
+    items.sort_by(|a, b| b.dist_sq.partial_cmp(&a.dist_sq).unwrap_or(std::cmp::Ordering::Equal));
+    for item in &items {
+        draw_one(
+            pass, item, models, camera_bg, lights_bg,
+            &rt.sorted_mesh, &rt.sorted_skinned, &rt.mesh_empty_bg3,
+        );
+    }
+}
+
+/// WBOIT 方式で半透明を描画する（本物の RT 屈折バリアント）。
+/// SS 版 `draw_wboit` と同一だが、RT 用パイプライン集合を使う。gating は frame_renderer。
+pub fn draw_wboit_rt<'p>(
+    pass:       &mut wgpu::RenderPass<'p>,
+    models:     &'p TransparentModels<'p>,
+    camera_bg:  &'p wgpu::BindGroup,
+    lights_bg:  &'p wgpu::BindGroup,
+    rt:         &'p TransparentRtPipelines,
+    camera_pos: [f32; 3],
+) {
+    let items = gather_items(models, camera_pos);
+    for item in &items {
+        draw_one(
+            pass, item, models, camera_bg, lights_bg,
+            &rt.wboit_mesh, &rt.wboit_skinned, &rt.mesh_empty_bg3,
+        );
+    }
+}
+
 /// 屈折オフ時に差すダミー背景テクスチャ（1x1, HDR フォーマット）を作りビューを返す。
 /// 中身は不定（屈折オフのフラグメントはサンプルしない）。透明パイプラインの group4 binding15 を
 /// 常に満たすためだけに存在する。
@@ -680,23 +836,26 @@ mod tests {
         let light_eval = include_str!("shaders/lighting_eval.wgsl");
         let frag       = include_str!("shaders/shader_fragment.wgsl");
         let wboit      = include_str!("shaders/shader_wboit.wgsl");
-        // RT-Translucency: 屈折ヘルパ（group4 binding15/16）＋距離ソート専用フラグメント。
+        // RT-Translucency: 屈折ヘルパ（group4 binding15/16・glass_composite）＋背景取得 2 方式
+        // （SS フォールバック / RT 本物）＋距離ソート専用フラグメント。
         let refract    = include_str!("shaders/refract_common.wgsl");
+        let refract_ss = include_str!("shaders/refract_ss.wgsl");
+        let refract_rt = include_str!("shaders/refract_rt.wgsl");
         let transp     = include_str!("shaders/shader_transparent.wgsl");
         let fullscreen = include_str!("shaders/fullscreen.wgsl");
         let composite  = include_str!("shaders/post_wboit_composite.wgsl");
 
-        // 連結順は transparency.rs のリゾルバ・TOML と一致させること。
-        // 距離ソート（fs_transparent_sorted）と WBOIT（fs_wboit）はいずれも refract_common を含み、
-        // group4 に屈折背景（binding15/16）を宣言する superset レイアウトになる。
-        let variants: [(&str, Vec<&str>); 4] = [
-            ("sorted_mesh",           vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_off, static_v, surf, gather, light_eval, frag, refract, transp]),
-            ("wboit_mesh",            vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_off, static_v, surf, gather, light_eval, frag, refract, wboit]),
-            ("wboit_skinned",         vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_off, skin_v,   surf, gather, light_eval, frag, refract, wboit]),
+        // ── SS 版（非 RT・Capabilities::empty で validate）─────────────────────────
+        // 連結順は transparency.rs のリゾルバ・TOML と一致させること。背景取得は refract_ss。
+        // 距離ソート（fs_transparent_sorted）と WBOIT（fs_wboit）はいずれも refract_common＋refract_ss を
+        // 含み、group4 に屈折背景（binding15/16）を宣言する superset レイアウトになる。
+        let ss_variants: [(&str, Vec<&str>); 4] = [
+            ("sorted_mesh",           vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_off, static_v, surf, gather, light_eval, frag, refract, refract_ss, transp]),
+            ("wboit_mesh",            vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_off, static_v, surf, gather, light_eval, frag, refract, refract_ss, wboit]),
+            ("wboit_skinned",         vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_off, skin_v,   surf, gather, light_eval, frag, refract, refract_ss, wboit]),
             ("post_wboit_composite",  vec![fullscreen, composite]),
         ];
-
-        for (name, parts) in variants {
+        for (name, parts) in ss_variants {
             let src = parts.join("\n");
             let module = naga::front::wgsl::parse_str(&src)
                 .unwrap_or_else(|e| panic!("[{name}] WGSL parse 失敗: {e:?}"));
@@ -708,6 +867,48 @@ mod tests {
                 .validate(&module)
                 .unwrap_or_else(|e| panic!("[{name}] WGSL validate 失敗: {e:?}"));
         }
+
+        // ── RT 版（本物の屈折レイ・RAY_QUERY capability で validate）───────────────
+        // 背景取得は refract_rt.wgsl（group4 に TLAS binding6＋アルベド binding14 を追加宣言）。
+        // 影経路は rt_off（シャドウマップのみ・TLAS 非宣言）＝TLAS/アルベドは refract_rt が単独で宣言する。
+        // acceleration_structure / rayQuery* を含むため RAY_QUERY capability が要る（empty では validate 失敗）。
+        let rt_variants: [(&str, Vec<&str>); 3] = [
+            ("sorted_mesh_rt",  vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_off, static_v, surf, gather, light_eval, frag, refract, refract_rt, transp]),
+            ("wboit_mesh_rt",   vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_off, static_v, surf, gather, light_eval, frag, refract, refract_rt, wboit]),
+            ("wboit_skinned_rt",vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_off, skin_v,   surf, gather, light_eval, frag, refract, refract_rt, wboit]),
+        ];
+        for (name, parts) in rt_variants {
+            let src = parts.join("\n");
+            let module = naga::front::wgsl::parse_str(&src)
+                .unwrap_or_else(|e| panic!("[{name}] WGSL parse 失敗: {e:?}"));
+            let mut validator = naga::valid::Validator::new(
+                naga::valid::ValidationFlags::all(),
+                naga::valid::Capabilities::RAY_QUERY,
+            );
+            validator
+                .validate(&module)
+                .unwrap_or_else(|e| panic!("[{name}] WGSL validate 失敗: {e:?}"));
+        }
+    }
+
+    /// refract_rt.wgsl の界面パック定数・マスク定数が Rust 側（rt_shadow.rs）と一致することの
+    /// ソース照合（WGSL は cargo から実行できないため、定数の実在＋値をソースで固定する）。
+    #[test]
+    fn refract_rt_constants_match_rust() {
+        let rt_src = include_str!("shaders/refract_rt.wgsl");
+        // 色付き影と同一のパック定数（rt_shadow.rs::SHADOW_PACK_QUANT=255 / SHADOW_PACK_RADIX=256）。
+        assert!(rt_src.contains("const REFRACT_PACK_QUANT: f32 = 255.0;"),
+            "refract_rt の量子化段数は 255（rt_shadow.rs::SHADOW_PACK_QUANT と一致）");
+        assert!(rt_src.contains("const REFRACT_PACK_RADIX: f32 = 256.0;"),
+            "refract_rt の基数は 256（rt_shadow.rs::SHADOW_PACK_RADIX と一致）");
+        // インスタンスカリングマスク（rt_shadow.rs::RT_MASK_OPAQUE=0x01 / RT_MASK_NON_OPAQUE=0x02）。
+        assert!(rt_src.contains("const REFRACT_RT_MASK_OPAQUE: u32 = 0x01u;"),
+            "不透明マスクは 0x01（rt_shadow.rs::RT_MASK_OPAQUE と一致）");
+        assert!(rt_src.contains("const REFRACT_RT_MASK_TRANSLUCENT: u32 = 0x02u;"),
+            "半透明マスクは 0x02（rt_shadow.rs::RT_MASK_NON_OPAQUE と一致）");
+        // 界面トレースの上限は 4（コスト有界＝最大 4 界面 + 1 不透明 = 5 レイ/px）。
+        assert!(rt_src.contains("const REFRACT_MAX_INTERFACES: u32 = 4u;"),
+            "界面トレース上限は 4（5 レイ/px の有界コスト）");
     }
 
     /// grab-pass（屈折の背景置き換え合成）ゲートの判定表を検証する回帰テスト。

@@ -1,15 +1,26 @@
 // ============================================================
-// refract_common.wgsl — スクリーンスペース屈折＋ガラス透過の共有定義
+// refract_common.wgsl — ガラス透過（屈折）合成の共有定義（背景取得の方式非依存部）
 //
 // 半透明フォワードパス（距離ソート fs_transparent_sorted / WBOIT fs_wboit）だけに連結する。
 // 「不透明シーン HDR のコピー（背景）」を group4 の追加バインディング（15/16）で受け取り、
-// 半透明フラグメントの法線と屈折率（IOR）から背景を歪めてサンプルする。
+// 半透明フラグメントから見た背景色を求めて透過成分として合成する（glass_composite）。
+//
+// 【背景取得の方式は 2 種を差し替え可能（tint_avg / tint_bindless と同じ分離方式）】
+//   本ファイルは方式非依存の共有部（背景バインディング 15/16・すりガラスのミップ選択・
+//   フレネル配分・glass_composite）だけを持ち、実際の「背景色 bg をどう得るか」＝
+//   `refract_sample_bg(surf, frag_xy, ior)` は、連結される **どちらか 1 本** が供給する:
+//     - refract_ss.wgsl : スクリーンスペース屈折（法線のビュー空間傾きで背景 UV をずらす安価な近似）。
+//                         非 RT 対応 GPU・および translucency≠Rt のフォールバック経路。
+//     - refract_rt.wgsl : TLAS を使う本物の屈折レイ（入射屈折→界面トレース→不透明トレース→
+//                         ヒット点を画面へ射影して背景サンプル or DDGI フォールバック）。RT 対応 GPU の
+//                         translucency=Rt 経路のみ。group4 に TLAS(6)＋平均アルベド(14) を追加宣言する。
+//   glass_composite は `refract_sample_bg` を呼ぶだけで、合成式（premult / a_eff / フレネル配分）は
+//   両方式で完全共有される（差分は背景取得のみ）。距離ソート／WBOIT も glass_composite 共有で両対応。
 //
 // 【機能】
-//   1. スクリーンスペース屈折（Phase RT-Translucency）: 法線のビュー空間傾きで背景 UV をずらす。
-//   2. すりガラス（ガラス表現）: 背景 RT のミップチェーン（下位ミップほど強くぼかす）を
-//      roughness からミップレベルを選んでサンプルする（textureSampleLevel）。
-//   3. 透過率（transmission）合成: アルファ（被覆）と分離した「向こうがどれだけ透けるか」を
+//   1. すりガラス（ガラス表現）: 背景 RT のミップチェーン（下位ミップほど強くぼかす）を
+//      roughness からミップレベルを選んでサンプルする（refract_bg_sample）。両方式が共有する。
+//   2. 透過率（transmission）合成: アルファ（被覆）と分離した「向こうがどれだけ透けるか」を
 //      フレネルで反射／透過へ配分して合成する（glass_composite）。
 //
 // 【バインドグループ】group4（ライト binding0/1・シャドウ 2〜5・クラスタ 7〜9・DDGI 10〜13 と同居）
@@ -20,6 +31,7 @@
 //
 // u_camera（group0）/ u_material（group2）/ u_light_meta（group4）は連結順で先に宣言済み
 // （shader_common.wgsl / light_common.wgsl）。TRANSLUCENCY_RT_REFRACTION も light_common.wgsl。
+// Surface（surf 引数の型）は surface.wgsl で先に宣言済み（連結順で本ファイルより前）。
 // ============================================================
 
 /// group4 binding15: 不透明シーン HDR のコピー（屈折の背景テクスチャ。ミップチェーン付き）。
@@ -27,9 +39,7 @@
 /// group4 binding16: 背景サンプラー（線形・トライリニア・ClampToEdge）。
 @group(4) @binding(16) var s_refract_bg: sampler;
 
-/// 屈折による画面内 UV オフセットの上限（画面幅に対する比率）。
-/// これ以上ずらすと背景の別物が透けて不自然になるため上限で頭を押さえる。
-const REFRACT_MAX_OFFSET: f32 = 0.06;
+// REFRACT_MAX_OFFSET（SS 屈折の画面内 UV オフセット上限）は SS 専用のため refract_ss.wgsl へ移動した。
 
 /// すりガラス用ミップチェーンの最大ミップレベル（0 起点）。
 /// Rust 側 transparency::REFRACT_MIP_COUNT（=5）と一致させること（= REFRACT_MIP_COUNT - 1）。
@@ -49,35 +59,24 @@ const REFRACT_ROUGHNESS_TO_MIP: f32 = REFRACT_MAX_MIP;
 /// この値未満の ior は「屈折しないマテリアル」として通常アルファブレンド経路へ流す。
 const IOR_EPSILON: f32 = 1.0e-4;
 
-/// 屈折した背景色（リニア HDR RGB）を返す。roughness からミップレベルを選んで
-/// すりガラス（ぼけた屈折）を表現する。
-/// - `n_world`  : 表面のワールド法線（シェーディング法線）。ビュー空間 xy が「画面内の傾き」。
-/// - `frag_xy`  : フラグメントのフレームバッファ座標（@builtin(position).xy＝ピクセル単位）。
-/// - `ior`      : 屈折率（1.0 で歪みゼロ＝素の背景）。ガラス≈1.5、水≈1.33。
-/// - `roughness`: 表面のラフネス（0=鏡面のシャープな屈折、高=すりガラス）。
-///
-/// 実装方針: 厳密な屈折レイではなく、法線のビュー空間傾きに比例した安価な画面歪み
-/// （scattered thin-glass 近似）。ior=1 で offset=0（背景そのまま）。画面外へ出るサンプルは
-/// 素の UV へフェードして端の引き伸ばしアーティファクトを避ける。
-fn refract_background(n_world: vec3<f32>, frag_xy: vec2<f32>, ior: f32, roughness: f32) -> vec3<f32> {
-    // 画面 UV（[0,1]）。resolution は CameraUniform（group0, shader_common.wgsl）。
-    let res = max(u_camera.resolution, vec2<f32>(1.0, 1.0));
-    let uv  = frag_xy / res;
-    // 法線をビュー空間へ回転（view の 3x3 部分）。ビュー空間 xy が画面内の傾き方向。
-    let n_view = normalize((u_camera.view * vec4<f32>(n_world, 0.0)).xyz);
-    // 屈折の強さ = 1 - 1/ior。ior=1 で 0（歪みなし）。ガラス 1.5 → 0.333。
-    let strength = clamp(1.0 - 1.0 / max(ior, 1.0), 0.0, 1.0);
-    // 画面内オフセット（y は UV 座標系に合わせて反転）。
-    let offset = vec2<f32>(n_view.x, -n_view.y) * strength * REFRACT_MAX_OFFSET;
-    let suv = uv + offset;
-    // 画面外（0..1 を外れる）はオフセットを打ち消し素の背景へ（端アーティファクト回避）。
-    let inside = all(suv >= vec2<f32>(0.0, 0.0)) && all(suv <= vec2<f32>(1.0, 1.0));
-    let final_uv = select(uv, suv, inside);
-    // roughness からミップレベルを選ぶ（すりガラス）。0=ミップ0（シャープ）、高=深いミップ（強ぼかし）。
-    // サンプラーは mipmap_filter=Linear なのでミップ間はトライリニア補間される（滑らかな遷移）。
-    let mip = clamp(roughness * REFRACT_ROUGHNESS_TO_MIP, 0.0, REFRACT_MAX_MIP);
-    return textureSampleLevel(t_refract_bg, s_refract_bg, final_uv, mip).rgb;
+/// roughness → 背景ミップレベル（すりガラス）。0=ミップ0（シャープ）、高=深いミップ（強ぼかし）。
+/// SS / RT どちらの背景取得も、最終的にこの規則で背景ピラミッドをサンプルする（すりガラス共有）。
+fn refract_bg_mip(roughness: f32) -> f32 {
+    return clamp(roughness * REFRACT_ROUGHNESS_TO_MIP, 0.0, REFRACT_MAX_MIP);
 }
+
+/// 屈折背景ピラミッド（binding15）を UV＋roughness で 1 回サンプルする共有ヘルパ。
+/// サンプラーは mipmap_filter=Linear なのでミップ間はトライリニア補間される（滑らかな遷移）。
+/// SS 版（歪めた UV）も RT 版（ヒット点を画面へ射影した UV）もこれを最終段で使う。
+fn refract_bg_sample(uv: vec2<f32>, roughness: f32) -> vec3<f32> {
+    return textureSampleLevel(t_refract_bg, s_refract_bg, uv, refract_bg_mip(roughness)).rgb;
+}
+
+// ── 背景取得 refract_sample_bg(surf, frag_xy, ior) は【別ファイル】が供給する ──
+//   refract_ss.wgsl : スクリーンスペース屈折（フォールバック）。
+//   refract_rt.wgsl : TLAS 本物屈折レイ（RT 対応 GPU・translucency=Rt）。
+// glass_composite（下記）から前方参照で呼ばれる（WGSL は宣言順に依存しない）。
+// 連結時は本ファイルの後ろにいずれか 1 本だけを必ず並べること（両方＝重複定義／どちらも無し＝未定義）。
 
 // ── ガラス透過（transmission）合成 ────────────────────────────
 
@@ -152,9 +151,11 @@ fn glass_composite(c: vec3<f32>, a: f32, in: VertexOutput, front_facing: bool) -
         return o;
     }
 
-    // 屈折オン: 背景を roughness 連動でぼかしつつ歪めてサンプルし、自前合成する。
+    // 屈折オン: 背景を取得（方式は連結された refract_ss / refract_rt が供給する refract_sample_bg）。
+    // SS 版は法線傾きで背景 UV を歪め、RT 版は TLAS へ屈折レイを撃ってヒット点を画面へ射影する。
+    // どちらも最終段は roughness 連動のミップ（refract_bg_sample）で背景ピラミッドを引く（すりガラス共有）。
     let surf = gather_surface(in, front_facing);
-    let bg   = refract_background(surf.normal, in.clip_pos.xy, u_material.ior, surf.roughness);
+    let bg   = refract_sample_bg(surf, in.clip_pos.xy, u_material.ior);
     let tint = u_material.base_color_factor.rgb;
     // 従来式（transmission=0 の端点＝屈折オンの既存挙動）。
     let rgb0 = c * a + bg * tint * (1.0 - a);
