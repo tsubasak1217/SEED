@@ -37,7 +37,7 @@ use wgpu::{
     CreateBlasDescriptor, CreateTlasDescriptor, TlasInstance, TlasPackage,
 };
 
-use super::bindless::{BindlessResources, BindlessInstanceRecord, BINDLESS_FLAG_ELIGIBLE, BINDLESS_FLAG_MASK, BINDLESS_DUMMY_TEX_INDEX};
+use super::bindless::{BindlessResources, BindlessInstanceRecord, BINDLESS_FLAG_ELIGIBLE, BINDLESS_FLAG_MASK, BINDLESS_FLAG_GEOM, BINDLESS_DUMMY_TEX_INDEX};
 use super::gpu_resources::{GpuModel, GpuPrimitive, InstancedModelBatch};
 use super::lighting::LightBuffer;
 use super::shadow::ShadowResources;
@@ -502,27 +502,33 @@ impl RtShadowResources {
                         // どちらか欠ければ flags=0 で、ヒットシェーダは平均色（avg_albedo）へ縮退する。
                         if !records.is_empty() {
                             let tex_index = gpu.primitive_bindless_albedo_tex_index(material_idx);
-                            let geom_elig = gpu.meshes.get(mesh_idx)
+                            let geom = gpu.meshes.get(mesh_idx)
                                 .and_then(|m| m.primitives.get(prim_idx))
-                                .map(|gp| (gp.bindless_eligible, gp.bindless_uv_offset, gp.bindless_index_offset))
-                                .unwrap_or((false, 0, 0));
-                            let elig = geom_elig.0 && tex_index != BINDLESS_DUMMY_TEX_INDEX;
+                                .map(|gp| (gp.bindless_eligible, gp.bindless_uv_offset,
+                                           gp.bindless_index_offset, gp.bindless_normal_offset))
+                                .unwrap_or((false, 0, 0, 0));
+                            let geom_registered = geom.0; // UV/index/法線をメガバッファへ登録済みか。
+                            let elig = geom_registered && tex_index != BINDLESS_DUMMY_TEX_INDEX;
                             // Mask マテリアル（アルファテスト）は色付き影の第 2 クエリでテクスチャ α を
                             // alpha_cutoff と比較して葉の形の影を落とす（B3）。flag を立て cutoff を積む。
                             let is_mask = matches!(gpu.primitive_alpha_mode(material_idx), AlphaMode::Mask);
                             let mut flags = if elig { BINDLESS_FLAG_ELIGIBLE } else { 0 };
                             if is_mask { flags |= BINDLESS_FLAG_MASK; }
+                            // ジオメトリ（法線）登録済みなら GEOM を立てる（テクスチャ有無に依存しない）。
+                            // RT 屈折の界面ごとの本物の再屈折はこのビットで法線復元可否を判定する。
+                            if geom_registered { flags |= BINDLESS_FLAG_GEOM; }
                             records[inst_count] = BindlessInstanceRecord {
                                 avg_albedo:        alb, // 先頭 16B は既存 storage と同一（.a=パック済み）
                                 base_color_factor: gpu.primitive_base_color_factor(material_idx),
                                 albedo_tex_index:  tex_index,
-                                uv_offset:         geom_elig.1,
-                                index_offset:      geom_elig.2,
+                                uv_offset:         geom.1,
+                                index_offset:      geom.2,
                                 flags,
                                 // Mask のときだけ有効な閾値（Blend では 0.0）。BINDLESS_FLAG_MASK が
                                 // 立っているインスタンスでのみシェーダが参照する。
                                 alpha_cutoff:      if is_mask { gpu.primitive_alpha_cutoff(material_idx) } else { 0.0 },
-                                _pad:              [0; 3],
+                                normal_offset:     geom.3,
+                                _pad:              [0; 2],
                             };
                         }
                         instances[inst_count] = Some(TlasInstance::new(blas, transform, inst_count as u32, mask));

@@ -685,6 +685,10 @@ impl LightBuffer {
     /// - `rt_albedo`:          TLAS インスタンス順の平均アルベド storage（界面の透過色付けに使う）。
     /// - `refract_view`:       屈折の背景（不透明 scene_hdr のコピー・ピラミッド）。オフ時はダミー 1x1。
     /// - `refract_sampler`:    背景サンプラー（線形・ClampToEdge）。
+    /// - `bindless_records`:   バインドレス インスタンステーブル（binding17。界面の index/normal offset を引く）。
+    /// - `bindless_index`:     インデックス メガバッファ（binding18。三角形の頂点番号）。
+    /// - `bindless_normal`:    法線メガバッファ（binding19。八面体エンコード頂点法線）。
+    ///   3 つとも `BindlessResources`（RT 屈折はバインドレス対応 GPU でのみ構築）が所有する storage。
     #[allow(clippy::too_many_arguments)]
     pub fn create_transparent_rt_bind_group(
         &self,
@@ -697,6 +701,9 @@ impl LightBuffer {
         rt_albedo:       &wgpu::Buffer,
         refract_view:    &wgpu::TextureView,
         refract_sampler: &wgpu::Sampler,
+        bindless_records: &wgpu::Buffer,
+        bindless_index:   &wgpu::Buffer,
+        bindless_normal:  &wgpu::Buffer,
     ) -> wgpu::BindGroup {
         device.create_bind_group(&wgpu::BindGroupDescriptor {
             label:   Some("Lights+Shadow+Cluster+TLAS+Albedo+Refract BG (group 4, transparent RT)"),
@@ -724,6 +731,11 @@ impl LightBuffer {
                 // 屈折の背景（不透明 scene_hdr のコピー・ピラミッド）。
                 wgpu::BindGroupEntry { binding: 15, resource: wgpu::BindingResource::TextureView(refract_view) },
                 wgpu::BindGroupEntry { binding: 16, resource: wgpu::BindingResource::Sampler(refract_sampler) },
+                // 界面ごとの本物の再屈折用（refract_rt.wgsl binding17/18/19）: インスタンステーブル／
+                // インデックス メガバッファ／法線メガバッファ（すべて BindlessResources 所有の storage）。
+                wgpu::BindGroupEntry { binding: 17, resource: bindless_records.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 18, resource: bindless_index.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 19, resource: bindless_normal.as_entire_binding() },
             ],
         })
     }

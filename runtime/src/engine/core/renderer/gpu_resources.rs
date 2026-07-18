@@ -571,7 +571,10 @@ pub struct GpuPrimitive {
     pub bindless_index_offset: u32,
     /// 登録したインデックス要素数（= index_count）。
     pub bindless_index_count:  u32,
-    /// バインドレス対象か（UV・インデックスの両方をメガバッファへ登録できた）。
+    /// 法線メガバッファ内の先頭要素オフセット（八面体 u32 単位・頂点順）。非対応/未登録は 0。
+    /// RT 屈折の界面法線復元に使う（UV/index と同じ頂点番号で引く）。
+    pub bindless_normal_offset: u32,
+    /// バインドレス対象か（UV・インデックス・法線の 3 者すべてをメガバッファへ登録できた）。
     /// false のとき B2 のヒットシェーダは従来の平均色へ縮退する。
     pub bindless_eligible:     bool,
 }
@@ -674,6 +677,7 @@ impl GpuPrimitive {
             bindless_uv_count:     0,
             bindless_index_offset: 0,
             bindless_index_count:  0,
+            bindless_normal_offset: 0,
             bindless_eligible:     false,
         }
     }
@@ -974,15 +978,20 @@ impl GpuModel {
                 // スキップ）＝インスタンステーブルに載らないため、メガバッファへ登録しない
                 // （UV/index 予算の浪費回避）。bindless_eligible は既定 false のまま。
                 if !prim.skin_vertices.is_empty() { continue; }
-                // UV0 を頂点順に抽出（メガバッファは頂点番号で引くため頂点順が必須）。
+                // UV0 と法線を頂点順に抽出（メガバッファは頂点番号で引くため頂点順が必須）。
+                // 法線は八面体エンコード u32（4B/頂点）へ畳んで省メモリ化する（RT 屈折の界面法線復元用）。
                 let uvs: Vec<[f32; 2]> = prim.vertices.iter().map(|v| v.uv0).collect();
-                let (uv_off, idx_off, elig) =
-                    bindless.register_primitive_geometry(queue, &uvs, &prim.indices, &mut alloc);
-                gp.bindless_uv_offset    = uv_off;
-                gp.bindless_uv_count     = if elig { uvs.len() as u32 } else { 0 };
-                gp.bindless_index_offset = idx_off;
-                gp.bindless_index_count  = if elig { prim.indices.len() as u32 } else { 0 };
-                gp.bindless_eligible     = elig;
+                let normals: Vec<u32> = prim.vertices.iter()
+                    .map(|v| crate::engine::core::renderer::bindless::oct_encode_normal(v.normal))
+                    .collect();
+                let (uv_off, idx_off, nrm_off, elig) =
+                    bindless.register_primitive_geometry(queue, &uvs, &prim.indices, &normals, &mut alloc);
+                gp.bindless_uv_offset     = uv_off;
+                gp.bindless_uv_count      = if elig { uvs.len() as u32 } else { 0 };
+                gp.bindless_index_offset  = idx_off;
+                gp.bindless_index_count   = if elig { prim.indices.len() as u32 } else { 0 };
+                gp.bindless_normal_offset = nrm_off;
+                gp.bindless_eligible      = elig;
             }
         }
 

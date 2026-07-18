@@ -1163,26 +1163,45 @@ RT-Translucency の屈折を土台に、「本物のガラス」を作れる 2 �
   非対応 GPU・`translucency≠Rt` は `rt=None` で SS 版へ完全フォールバック（追加コストゼロ）。屈折レイは
   `material_refracts` の半透明ピクセルのみ。
 
-#### 既知の限界（正直に記す）
-- **後続界面の再屈折は近似**: inline ray query の committed intersection は**ヒット三角形の法線を返さない**
-  （バインドレス頂点フェッチは今回スコープ外）。ゆえに界面法線を「レイ正対（front:-dir / back:+dir）」で近似する。
-  この近似は head-on となり `refract` がほぼ曲げないため、**後続界面では実質「界面色を乗せつつ直進」へ縮退**する。
-  一次屈折（表面 N は本物）で視差・ガラス越し・厚み色は得られるが、多重界面の正確な再屈折には法線が要る。
-- **後続界面の ior は自身の ior で近似**: インスタンス個別の ior が平均アルベド storage に無いため。
-  将来 `BindlessInstanceRecord` に ior を足せば `custom_data` から実 ior を引いて界面ごとに正確化できる拡張余地。
-- **背景は不透明のみのコピー**: レイが最終的に当たる不透明面は「画面内に写っていれば」正しく引ける。
-  画面外／不透明ミスは DDGI（無効ならアンビエント）で近似する。
+#### 界面ごとの本物の再屈折（バインドレス法線メガバッファ・2026-07 実装）
+- **後続界面も実屈折する**: inline ray query は committed intersection の `primitive_index`＋`barycentrics`＋
+  `instance_custom_data` を返す。これを使い、group4 の追加バインディング（instance_table 17／index メガ
+  バッファ 18／**法線メガバッファ** 19＝すべて `bindless.rs` 所有の storage）から**ヒット三角形の補間法線を
+  オブジェクト空間で復元**し、`hit.world_to_object` の線形部の**転置**でワールド法線化する（逆転置＝非一様
+  スケール対応）。front_face（空気→ガラス, eta=1/ior）／back_face（ガラス→空気, eta=ior）で `refract()` を
+  界面ごとに適用する。**ガラス越しのガラスが正しく屈折して重なる**（多重界面の再屈折を実体化）。
+  - 法線メガバッファは UV/index と同じメガアロケータ方式。**八面体エンコード u32（4B/頂点）**で省メモリ化
+    （容量 32MB＝UV 64MB の半分＝同じ頂点数）。エンコード/デコードは Rust/WGSL 両方に実装し往復一致をテスト。
+  - `BindlessInstanceRecord` は 64B のまま（旧 `_pad[3]` の 1 枠を `normal_offset` に転用）。ジオメトリ（法線）
+    登録済みは `BINDLESS_FLAG_GEOM`（テクスチャ有無に非依存）で示し、屈折シェーダはこのビットで法線復元可否を判定。
+  - **一次屈折の非二重化**: 原点を法線側へ押し出す都合で最初に踏む「自分の表面（i==0 かつ front_face）」は
+    shading 面 N で処理済みの入射屈折なので**再屈折しない**（`do_refract = (i>0) || !front_face`）。
+  - **配線はバインドレス対応 GPU 限定**: 3 バッファは storage（uniform 同居可）だが実体は `BindlessResources`
+    が確保するため、RT 屈折パイプラインは **RAY_QUERY ＋ バインドレス両対応**時のみ構築（非対応は SS 屈折へ
+    フォールバック。実 GPU では RT 対応＝ほぼ常にバインドレス対応のため実害は理論上のみ）。
+- **限界（正直に記す）**:
+  - **界面の ior は自身の ior で近似**: インスタンス個別 ior はレコードに無いため、シェーディング面の
+    `material.ior` を全界面に流用する。レコードに ior を積めば界面ごとに正確化できる拡張余地。
+  - **全反射（TIR）は直進**: `refract` が 0 ベクトルを返す界面では方向を更新せず直進する（レイ反転や同一面
+    ループ回避。入射面の一次屈折は shading 面 N で別処理済み）。
+  - **Mask のアルファ抜きは未対応**: テクスチャ実サンプルには `binding_array`（group3 の色付き影方式）が要るが、
+    透明 group4 は uniform を含み `binding_array` と同居不可・グループ上限 5 も満杯のため、界面のアルファ抜きは
+    現状の平均色ベール維持（`refract_layer_tint`・front_face のみ）。
+  - **背景は不透明のみのコピー**: レイが最終的に当たる不透明面は「画面内に写っていれば」正しく引ける。
+    画面外／不透明ミスは DDGI（無効ならアンビエント）で近似する。
 
 ### 検証（本物の RT 屈折・実装時点）
 - `cargo build` 0 エラー / `cargo test` 0 失敗。naga 全バリアント通過（SS 3＝`Capabilities::empty`／
   **RT 3＝`Capabilities::RAY_QUERY`**＝`sorted_mesh_rt`・`wboit_mesh_rt`・`wboit_skinned_rt`）＋屈折 RT 定数の
   Rust/WGSL 一致（マスク 0x01/0x02・パック 255/256・界面上限 4）。
-- **未検証（実機 GPU 無し）**: ガラス越しのガラス・厚みのある屈折・すりガラス維持・非対応 GPU の SS 縮退・
-  後続界面近似の見え方は実機スモークで確認すること。
+- **要実機確認**: ガラス越しのガラスの再屈折・厚みのある屈折・すりガラス維持・非対応 GPU の SS 縮退。
+  八面体法線の往復一致は Rust 単体テスト（`bindless::tests::oct_roundtrip_*`）で担保済み。
 
 ### 将来課題（ユーザーと合意済みの積み残し）
-- **界面法線の取得（多重界面の正確な再屈折）**: `BindlessInstanceRecord` に頂点/法線参照＋ior を足し、
-  ヒット点の実法線・実 ior で界面ごとに正確に再屈折する（バインドレス tint を透明パスへ広げる拡張）。
+- **界面 ior の正確化**: `BindlessInstanceRecord` に ior を足し、`custom_data` から界面ごとの実 ior を引いて
+  再屈折する（現状は shading 面の `material.ior` を全界面に流用）。※界面法線の復元は実装済み（上記）。
+- **界面のアルファ抜き（Mask）**: 透明 group4 に `binding_array` を持ち込めれば界面のテクスチャ α で抜ける
+  （現状はグループ制約で不可＝平均色ベール維持）。group4 の uniform 分離 or グループ再編が要る。
 - **拡散透過（diffuse transmission）〔実装済み〕**: 葉・布・紙の逆光透け（`KHR_materials_diffuse_transmission`
   相当の簡易版）。`Material.diffuse_transmission`（0..1・既定 0）を追加し、`lighting_eval.wgsl` の
   evaluate_lighting のライトループ内で、面がライトに背を向けている側の逆光を

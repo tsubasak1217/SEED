@@ -184,6 +184,9 @@ fn resolve_shader(name: &str) -> &'static str {
         // RT-Translucency（Phase RT-Translucency）: 屈折の共有ヘルパ（group4 binding15/16・
         // glass_composite）と背景取得 2 方式（SS フォールバック / RT 本物）、距離ソート専用フラグメント。
         // refract_ss / refract_rt は排他（refract_sample_bg を 1 本だけ供給する）。半透明パスにのみ連結する。
+        // バインドレス基盤ミラー（BindlessInstanceRecord 定義＋八面体法線デコード＋GEOM フラグ）。
+        // RT 屈折（refract_rt.wgsl）が界面法線復元に参照するため、その前に連結する。
+        "bindless_common.wgsl"       => include_str!("shaders/bindless_common.wgsl"),
         "refract_common.wgsl"        => include_str!("shaders/refract_common.wgsl"),
         "refract_ss.wgsl"            => include_str!("shaders/refract_ss.wgsl"),
         "refract_rt.wgsl"            => include_str!("shaders/refract_rt.wgsl"),
@@ -342,11 +345,16 @@ impl TransparentPipelines {
         // 屈折オフ時に差すダミー背景（1x1）。透明パイプラインの group4 を常に満たすため。
         let dummy_refract_view = create_dummy_refract_view(device);
 
-        // ── 本物の RT 屈折バリアント（EXPERIMENTAL_RAY_QUERY 対応 GPU のみ）─────────────
+        // ── 本物の RT 屈折バリアント（RAY_QUERY ＋ バインドレス対応 GPU のみ）─────────────
         // acceleration_structure を宣言する RT 連結は非対応デバイスでモジュール作成に失敗し得るため、
-        // RT 影と同じ対応判定（rt_shadows_supported）を通ったときだけビルドする。非対応 GPU は
-        // rt=None で SS 版のみを使い、完全に無変更で動作する（フォールバック）。
-        let rt = if super::rt_shadow::rt_shadows_supported() {
+        // RT 影と同じ対応判定（rt_shadows_supported）を通ったときだけビルドする。
+        // さらに、界面ごとの本物の再屈折は group4 の追加バインディング（instance_table 17／index 18／
+        // 法線 19＝すべて bindless.rs 所有の storage）を要するため、**バインドレス対応も必須**にする。
+        // これらは storage バッファ（binding_array ではない）なので group4 の uniform と同居できるが、
+        // 実体は BindlessResources が確保する＝バインドレス非対応 GPU では存在しないため、その場合は
+        // RT 屈折パイプラインを作らず SS 屈折（refract_ss）へフォールバックする（実 GPU では RT 対応＝
+        // ほぼ常にバインドレスも対応のため、実害は理論上のみ）。
+        let rt = if super::rt_shadow::rt_shadows_supported() && super::bindless::bindless_supported() {
             Some(TransparentRtPipelines::new(device, sf, df, cache))
         } else {
             None
@@ -465,7 +473,7 @@ impl TransparentRtPipelines {
             device, df, cache, &mesh_bgls,
             &["cluster_common.wgsl", "pbr_common.wgsl", "shader_common.wgsl", "ddgi_common.wgsl", "light_common.wgsl", "shadow.wgsl", "rt_shadow_off.wgsl",
               "shader_static_vertex.wgsl", "surface.wgsl", "surface_gather.wgsl",
-              "lighting_eval.wgsl", "shader_fragment.wgsl", "refract_common.wgsl", "refract_rt.wgsl", "shader_wboit.wgsl"],
+              "lighting_eval.wgsl", "shader_fragment.wgsl", "bindless_common.wgsl", "refract_common.wgsl", "refract_rt.wgsl", "shader_wboit.wgsl"],
             &["mesh_vertex"],
             "wboit_mesh_rt",
             CULL_FACE_VARIANTS[i],
@@ -474,7 +482,7 @@ impl TransparentRtPipelines {
             device, df, cache, &skin_bgls,
             &["cluster_common.wgsl", "pbr_common.wgsl", "shader_common.wgsl", "ddgi_common.wgsl", "light_common.wgsl", "shadow.wgsl", "rt_shadow_off.wgsl",
               "shader_skinned_vertex.wgsl", "surface.wgsl", "surface_gather.wgsl",
-              "lighting_eval.wgsl", "shader_fragment.wgsl", "refract_common.wgsl", "refract_rt.wgsl", "shader_wboit.wgsl"],
+              "lighting_eval.wgsl", "shader_fragment.wgsl", "bindless_common.wgsl", "refract_common.wgsl", "refract_rt.wgsl", "shader_wboit.wgsl"],
             &["mesh_vertex", "skin_vertex"],
             "wboit_skinned_rt",
             CULL_FACE_VARIANTS[i],
@@ -841,6 +849,8 @@ mod tests {
         let refract    = include_str!("shaders/refract_common.wgsl");
         let refract_ss = include_str!("shaders/refract_ss.wgsl");
         let refract_rt = include_str!("shaders/refract_rt.wgsl");
+        // RT 屈折の界面法線復元が参照するバインドレス基盤ミラー（BindlessInstanceRecord＋八面体デコード）。
+        let bindless_c = include_str!("shaders/bindless_common.wgsl");
         let transp     = include_str!("shaders/shader_transparent.wgsl");
         let fullscreen = include_str!("shaders/fullscreen.wgsl");
         let composite  = include_str!("shaders/post_wboit_composite.wgsl");
@@ -873,9 +883,9 @@ mod tests {
         // 影経路は rt_off（シャドウマップのみ・TLAS 非宣言）＝TLAS/アルベドは refract_rt が単独で宣言する。
         // acceleration_structure / rayQuery* を含むため RAY_QUERY capability が要る（empty では validate 失敗）。
         let rt_variants: [(&str, Vec<&str>); 3] = [
-            ("sorted_mesh_rt",  vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_off, static_v, surf, gather, light_eval, frag, refract, refract_rt, transp]),
-            ("wboit_mesh_rt",   vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_off, static_v, surf, gather, light_eval, frag, refract, refract_rt, wboit]),
-            ("wboit_skinned_rt",vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_off, skin_v,   surf, gather, light_eval, frag, refract, refract_rt, wboit]),
+            ("sorted_mesh_rt",  vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_off, static_v, surf, gather, light_eval, frag, bindless_c, refract, refract_rt, transp]),
+            ("wboit_mesh_rt",   vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_off, static_v, surf, gather, light_eval, frag, bindless_c, refract, refract_rt, wboit]),
+            ("wboit_skinned_rt",vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_off, skin_v,   surf, gather, light_eval, frag, bindless_c, refract, refract_rt, wboit]),
         ];
         for (name, parts) in rt_variants {
             let src = parts.join("\n");
