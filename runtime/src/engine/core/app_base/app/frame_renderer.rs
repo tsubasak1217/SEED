@@ -3334,8 +3334,7 @@ impl App {
                     self.ssgi_warmed = ssgi_active;
                     // 反射 RT（Phase D6）: deferred 有効かつ反射モードが Off でないときのみ確保。
                     // SSR/RT どちらも同じ RT_REFLECTION（HDR）へ描く。
-                    let reflection_active = reflection_effective != crate::engine::core::renderer::ReflectionMode::Off;
-                    if reflection_active {
+                    if reflection_effective != crate::engine::core::renderer::ReflectionMode::Off {
                         self.rt_pool.ensure(
                             &draw_ctx.device,
                             crate::engine::core::renderer::RT_REFLECTION_NAME,
@@ -3343,20 +3342,6 @@ impl App {
                             crate::engine::core::renderer::REFLECTION_FORMAT,
                         );
                     }
-                    // SSR 前フレーム参照履歴（Phase D6, 反射に半透明を映す 1 フレーム遅延方式）。
-                    // 反射有効時のみフル解像度で確保する。ensure が再確保（初回・リサイズ）を返したら
-                    // 前フレームのコピーが失われるため、この 1 フレームは未収束扱い（履歴フォールバック）。
-                    let reflection_history_reallocated = if reflection_active {
-                        self.reflection_history.ensure(&draw_ctx.device, surf_w, surf_h)
-                    } else { false };
-                    // このフレームで SSR が履歴（前フレーム完成 HDR）を読めるか。
-                    // reflection_active かつ 前フレームも収束済み（self.reflection_history_warmed）かつ 今フレーム再確保なし。
-                    let reflection_history_readable = crate::engine::core::renderer::reflection_history_readable(
-                        reflection_active, self.reflection_history_warmed, reflection_history_reallocated,
-                    );
-                    // 次フレーム用の収束フラグ更新: 今フレーム反射 active なら末尾で履歴コピーするので次フレームは読める。
-                    // 非 active なら履歴は古くなるため false（前フレームが非 active でも未収束扱いにするのと同義）。
-                    self.reflection_history_warmed = reflection_active;
                     // 屈折の背景 RT（Phase RT-Translucency）: translucency=Rt かつ deferred 有効かつ
                     // 半透明ありのフレームで確保する。scene_hdr と同サイズ・同フォーマット
                     // （copy_texture_to_texture のコピー元／先を揃えるため）。屈折はスクリーンスペースだが
@@ -3895,16 +3880,7 @@ impl App {
                                 &draw_ctx.pipelines.ssgi.dummy_view, &draw_ctx.pipelines.ssgi.linear_sampler,
                                 &draw_ctx.pipelines.deferred.mask_dummy_view, &draw_ctx.pipelines.deferred.mask_sampler,
                             );
-                            // SSR ヒット色サンプル元: 履歴が読めるなら「前フレーム完成 HDR」（半透明込み）、
-                            // 読めない初回/リサイズ/有効化直後フレームは従来の「今フレーム不透明のみ scene_hdr」。
-                            // RT 反射（fs_rt）は TLAS ベースで t_scene_hdr を一切サンプルしないため、この差し替えは
-                            // SSR にのみ影響する（RT は group2 の params UBO だけ使い binding1 のテクスチャは無視）。
-                            let ssr_hit_source: &wgpu::TextureView = if reflection_history_readable {
-                                self.reflection_history.view()
-                            } else {
-                                hdr_view
-                            };
-                            let input_bg = refl.create_input_bg(&draw_ctx.device, ssr_hit_source);
+                            let input_bg = refl.create_input_bg(&draw_ctx.device, hdr_view);
                             let gi_bg    = refl.create_gi_bg(&draw_ctx.device, &draw_ctx.gi);
 
                             // RT 反射は TLAS/平均アルベドが要る。reflection==Rt かつ RT パイプライン存在時のみ
@@ -4561,21 +4537,6 @@ impl App {
                             &mut ppass,
                             &draw_ctx.pipelines.particles,
                             &camera_buf.bind_group,
-                        );
-                    }
-
-                    // ── SSR 前フレーム参照履歴のコピー（Phase D6, 1 フレーム遅延方式）───────────
-                    // ここは「完成 HDR（不透明ライティング＋反射合成＋スカイボックス＋半透明＋パーティクル）」が
-                    // 揃った直後・ブルーム/トーンマップ（ポスト処理）より前。この scene_hdr を reflection_history へ
-                    // コピーしておくと、次フレームの SSR がヒット色をここからサンプルでき、半透明（ガラス等）が
-                    // 反射に映る。ポスト後を混ぜないためブルームより前でコピーする。反射有効時のみ実行（VRAM も同）。
-                    // トレードオフ: 反射内の動体は 1F 遅れ・反射の再帰が起きるが、フレネル×粗さフェードで自然減衰する。
-                    if reflection_active {
-                        let scene_hdr = self.rt_pool.texture(crate::engine::core::renderer::RT_SCENE_HDR);
-                        frame.encoder_mut().copy_texture_to_texture(
-                            scene_hdr.as_image_copy(),
-                            self.reflection_history.texture().as_image_copy(),
-                            wgpu::Extent3d { width: surf_w.max(1), height: surf_h.max(1), depth_or_array_layers: 1 },
                         );
                     }
 
