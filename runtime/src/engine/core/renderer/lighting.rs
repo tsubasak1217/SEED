@@ -433,15 +433,20 @@ impl LightBuffer {
             ambient_color:     DEFAULT_AMBIENT_COLOR,
             ambient_intensity: DEFAULT_AMBIENT_INTENSITY,
         };
+        // STORAGE 用途も付与する: RT 反射（バインドレス B2）の group3 は binding_array を含み、
+        // WebGPU の制約で「binding_array と uniform buffer は同一 bind group に同居不可」。
+        // そのため reflection_rt は meta を read-only storage として読む（レイアウトは 32B・
+        // vec3 が 16B 整列で std140/std430 一致＝値は不変）。他パスの uniform バインドは
+        // 用途のスーパーセットなので不変（両用途を持つバッファは uniform でも storage でもバインド可）。
         let meta_buffer_main = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label:    Some("Light Meta Uniform (main camera)"),
             contents: bytemuck::bytes_of(&init_meta),
-            usage:    wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            usage:    wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
         let meta_buffer_preview = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label:    Some("Light Meta Uniform (camera preview, view_mode=0 固定)"),
             contents: bytemuck::bytes_of(&init_meta),
-            usage:    wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            usage:    wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
 
         // group 4 複合 BG（ライト binding 0/1 ＋ シャドウ binding 2〜5 ＋ クラスタ binding 7〜9）。

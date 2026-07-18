@@ -54,7 +54,9 @@ struct LightMetaR {
 }
 
 @group(3) @binding(0) var<storage, read> rt_lights: array<GpuLightR>;
-@group(3) @binding(1) var<uniform>       rt_meta:   LightMetaR;
+// meta は storage で読む（バインドレス B2: group3 は binding_array を含むため uniform 不可。
+// レイアウトは 32B で uniform と一致。reflection.rs 側 BGL も storage_ro(1) に合わせる）。
+@group(3) @binding(1) var<storage, read> rt_meta:   LightMetaR;
 @group(3) @binding(2) var                rt_tlas:   acceleration_structure;
 @group(3) @binding(3) var<storage, read> rt_albedo: array<vec4<f32>>;
 
@@ -176,11 +178,11 @@ fn fs_rt(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     } else {
         let hit_pos = desc.origin + R * hit.t;
         let n_hit   = -R;
-        var albedo  = vec3<f32>(0.5, 0.5, 0.5);
-        let ai = hit.instance_custom_data;
-        if ai < arrayLength(&rt_albedo) {
-            albedo = rt_albedo[ai].rgb;
-        }
+        // ヒット先のベースカラー アルベド。実体は連結される reflection_rt_hit_{on,off}.wgsl が供給する:
+        //   on（バインドレス対応）: instance_custom_data → instance_table → UV 補間 → テクスチャサンプル
+        //   off（従来）          : instance_custom_data で平均アルベド storage を引く（ベタ塗り）
+        // ミップは 0 固定（レイ微分は将来課題）。フォールバック（flags 対象外・tex 0）は on 側で平均色へ。
+        let albedo  = rt_hit_base_color(hit.instance_custom_data, hit.primitive_index, hit.barycentrics);
         let direct = rt_refl_direct_irradiance(hit_pos, n_hit);
         let bounce = ddgi_sample_irradiance(rt_gi, hit_pos, n_hit, t_gi_irr, t_gi_vis, s_gi)
                    * rt_gi.recursive_weight;

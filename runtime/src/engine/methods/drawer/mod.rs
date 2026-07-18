@@ -247,7 +247,11 @@ impl DrawContext {
         self.rt_shadow.is_some() && rt_setting
     }
 
-    pub fn upload_model(&self, model: &Model) -> GpuModelInner {
+    /// GPU モデルを構築する（バインドレス登録なし）。`upload_model` /
+    /// `upload_model_with_overrides` が実効マテリアル確定後に `finalize_bindless` を呼ぶため、
+    /// 生の構築だけをここに分離する（オーバーライドで texture/factor が変わっても登録が
+    /// 一度で済むようにするため＝二重登録を避ける）。
+    fn upload_model_raw(&self, model: &Model) -> GpuModelInner {
         GpuModelInner::upload(
             &self.device,
             &self.queue,
@@ -256,6 +260,21 @@ impl DrawContext {
             &self.pipelines.skinned_mesh.joint_bgl,
             &self.defaults,
         )
+    }
+
+    /// バインドレス（B2）対応 GPU でのみ、実効マテリアル確定後の GpuModel を
+    /// テクスチャ配列・UV/index メガバッファへ登録する（非対応 GPU では何もしない）。
+    fn finalize_bindless(&self, gpu: &mut GpuModelInner, model: &Model) {
+        if let Some(cell) = &self.bindless {
+            let mut b = cell.borrow_mut();
+            gpu.register_bindless(model, &self.queue, &mut b);
+        }
+    }
+
+    pub fn upload_model(&self, model: &Model) -> GpuModelInner {
+        let mut gpu = self.upload_model_raw(model);
+        self.finalize_bindless(&mut gpu, model);
+        gpu
     }
 
     /// モデルをアップロードし、マテリアルオーバーライド（Phase R7）を GPU マテリアルへ
@@ -269,7 +288,7 @@ impl DrawContext {
         model:     &Model,
         overrides: &[crate::engine::components::MaterialOverride],
     ) -> GpuModelInner {
-        let mut gpu_model = self.upload_model(model);
+        let mut gpu_model = self.upload_model_raw(model);
         gpu_model.apply_overrides(
             &self.device,
             &self.queue,
@@ -278,6 +297,8 @@ impl DrawContext {
             &self.pipelines.mesh.material_bgl,
             &self.defaults,
         );
+        // オーバーライドで texture/factor が確定した後に一度だけバインドレス登録する。
+        self.finalize_bindless(&mut gpu_model, model);
         gpu_model
     }
 

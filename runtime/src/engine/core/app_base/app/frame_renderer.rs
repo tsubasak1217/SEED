@@ -3464,7 +3464,13 @@ impl App {
                                     })
                                     .collect();
                                 let _perf_t_tlas = std::time::Instant::now();
-                                let stat = rt.prepare_and_build(&draw_ctx.device, &draw_ctx.queue, frame.encoder_mut(), &rt_casters);
+                                // バインドレス（B2）: 対応 GPU では instance_table も同時に詰めさせる。
+                                // rt_shadow とは別 RefCell のため共有借用で共存できる。
+                                let bindless_ref = draw_ctx.bindless.as_ref().map(|c| c.borrow());
+                                let stat = rt.prepare_and_build(
+                                    &draw_ctx.device, &draw_ctx.queue, frame.encoder_mut(),
+                                    &rt_casters, bindless_ref.as_deref(),
+                                );
                                 perf_tlas_ms    = _perf_t_tlas.elapsed().as_secs_f64() * 1000.0;
                                 perf_tlas_built = stat.built;
                                 perf_tlas_insts = stat.instances;
@@ -3890,13 +3896,24 @@ impl App {
                             let rt_refl_ref = if use_rt_refl {
                                 draw_ctx.rt_shadow.as_ref().map(|c| c.borrow())
                             } else { None };
+                            // バインドレス（B2）対応 GPU では、group3 に instance_table・UV・index・
+                            // テクスチャ配列・サンプラーを同居させた拡張 BG を作る（refl.rt も拡張
+                            // レイアウトで構築済み）。非対応 GPU では従来の 4 binding BG（平均色経路）。
                             let rt_data_bg = rt_refl_ref.as_ref().map(|r| {
-                                refl.create_rt_data_bg(
-                                    &draw_ctx.device,
-                                    draw_ctx.light_buffer.lights_buffer(),
-                                    draw_ctx.light_buffer.meta_main_buffer(),
-                                    r.tlas(), r.albedo_buffer(),
-                                )
+                                let lights = draw_ctx.light_buffer.lights_buffer();
+                                let meta   = draw_ctx.light_buffer.meta_main_buffer();
+                                if let Some(bl_cell) = &draw_ctx.bindless {
+                                    let bl = bl_cell.borrow();
+                                    refl.create_rt_data_bg_bindless(
+                                        &draw_ctx.device, lights, meta,
+                                        r.tlas(), r.albedo_buffer(), &bl,
+                                    )
+                                } else {
+                                    refl.create_rt_data_bg(
+                                        &draw_ctx.device, lights, meta,
+                                        r.tlas(), r.albedo_buffer(),
+                                    )
+                                }
                             });
                             // RT データが得られたら RT、そうでなければ SSR（安全側フォールバック）。
                             let do_rt = rt_data_bg.is_some();

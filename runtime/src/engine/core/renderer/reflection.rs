@@ -137,19 +137,50 @@ impl ReflectionPipelines {
             label: Some("Reflection GI BGL"),
             entries: &[uniform(0), tex(1), tex(2), samp(3)],
         });
-        // RT データ（lights storage + meta uniform + tlas + albedo storage）。RT group3。
+        // バインドレス（B2）: RT 影対応 かつ バインドレス対応の GPU でのみ、RT 反射のヒット
+        // シェーディングをテクスチャサンプルに差し替える。片方でも欠ければ従来の平均色経路。
+        // 非対応 GPU で binding_array を宣言すると BGL 生成が失敗するため、**BGL/パイプライン
+        // レベルで分岐**する（シェーダ内分岐では不可）。
+        let use_bindless = super::rt_shadow::rt_shadows_supported() && super::bindless::bindless_supported();
+
+        // RT データ（group3）: lights storage + meta storage + tlas + albedo storage。
+        // meta は **storage** で持つ（WebGPU 制約: binding_array と uniform buffer は同一 bind group
+        // に同居不可。バインドレス時 group3 は binding_array を含むため meta を uniform にできない。
+        // レイアウト 32B は uniform と一致＝値は不変。非バインドレス時も同レイアウトに揃える）。
+        // バインドレス時は instance_table(4) + UV(5) + index(6) + テクスチャ配列(7) + サンプラー(8)
+        // を同居させる（reflection_rt は専用パイプラインなので group 配置の自由度が高い）。
+        // storage 本数: 非バインドレス 3（lights/meta/albedo）/ バインドレス 6（+instance_table/UV/index）。
+        // いずれもフラグメント段の上限 12 以内。group3 に uniform は無い（binding_array と両立）。
+        let mut rt_entries = vec![
+            storage_ro(0),
+            storage_ro(1),
+            wgpu::BindGroupLayoutEntry {
+                binding: 2, visibility: vis,
+                ty: wgpu::BindingType::AccelerationStructure { vertex_return: false },
+                count: None,
+            },
+            storage_ro(3),
+        ];
+        if use_bindless {
+            // テクスチャ配列容量（アダプタ上限でクランプ済みの確定値）。
+            let cap = super::bindless::bindless_capacity().max(1);
+            rt_entries.push(storage_ro(4)); // instance_table（BindlessInstanceRecord 配列）
+            rt_entries.push(storage_ro(5)); // UV メガバッファ（vec2<f32> 配列）
+            rt_entries.push(storage_ro(6)); // index メガバッファ（u32 配列）
+            rt_entries.push(wgpu::BindGroupLayoutEntry {
+                binding: 7, visibility: vis,
+                ty: wgpu::BindingType::Texture {
+                    sample_type:    wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2, multisampled: false,
+                },
+                // binding_array（count=cap）。max_binding_array_elements_per_shader_stage=cap に一致。
+                count: Some(std::num::NonZeroU32::new(cap).unwrap()),
+            });
+            rt_entries.push(samp(8)); // 共有サンプラー（リニア・リピート）
+        }
         let rt_data_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Reflection RT Data BGL (group3)"),
-            entries: &[
-                storage_ro(0),
-                uniform(1),
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2, visibility: vis,
-                    ty: wgpu::BindingType::AccelerationStructure { vertex_return: false },
-                    count: None,
-                },
-                storage_ro(3),
-            ],
+            entries: &rt_entries,
         });
         // composite の group0（反射 RT テクスチャ＋サンプラー）。
         let composite_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -166,12 +197,23 @@ impl ReflectionPipelines {
         );
 
         // RT 反射パイプライン（group0..4, RT 対応 GPU のみ）。
+        // ヒットシェーディングはバインドレス可否で連結シェーダを切り替える:
+        //   bindless: reflection_rt_hit_on.wgsl（UV 補間＋テクスチャサンプル。binding_array 宣言あり）
+        //   従来    : reflection_rt_hit_off.wgsl（平均色。binding_array 宣言なし）
         let rt = if super::rt_shadow::rt_shadows_supported() {
+            let mut srcs: Vec<&str> = vec![
+                "cluster_common.wgsl", "reflection_common.wgsl", "ddgi_common.wgsl", "reflection_rt.wgsl",
+            ];
+            if use_bindless {
+                srcs.push("bindless_common.wgsl");         // BindlessInstanceRecord 定義
+                srcs.push("reflection_rt_hit_on.wgsl");    // 配列宣言＋UV サンプル
+            } else {
+                srcs.push("reflection_rt_hit_off.wgsl");   // 平均色フォールバック
+            }
             Some(build_reflection_pipeline(
                 device, cache,
                 &[&deferred.camera_bgl, &deferred.gbuffer_bgl, &input_bgl, &rt_data_bgl, &gi_bgl],
-                &["cluster_common.wgsl", "reflection_common.wgsl", "ddgi_common.wgsl", "reflection_rt.wgsl"],
-                "vs_fullscreen", "fs_rt", "reflection_rt", out_format, None,
+                &srcs, "vs_fullscreen", "fs_rt", "reflection_rt", out_format, None,
             ))
         } else {
             None
@@ -267,6 +309,36 @@ impl ReflectionPipelines {
         })
     }
 
+    /// RT データの拡張 BindGroup（バインドレス B2）を生成する（RT の group3）。
+    /// lights/meta/tlas/albedo（0..3）に加え、instance_table(4)・UV(5)・index(6)・
+    /// テクスチャ配列(7)・共有サンプラー(8) を同居させる。`rt_data_bgl` が `use_bindless=true` で
+    /// 構築されている前提（`ReflectionPipelines::new`）。テクスチャ配列は毎フレーム全スロット
+    /// （登録済み＝実 view / 空き＝ダミー白）を並べて構築する（登録変化の追従は再構築で担保）。
+    pub fn create_rt_data_bg_bindless(
+        &self, device: &wgpu::Device,
+        lights: &wgpu::Buffer, meta: &wgpu::Buffer,
+        tlas: &wgpu::Tlas, albedo: &wgpu::Buffer,
+        bindless: &super::bindless::BindlessResources,
+    ) -> wgpu::BindGroup {
+        // capacity 個の view 参照列（登録済み or ダミー）。TextureViewArray はこのスライスを要求する。
+        let views = bindless.texture_view_list();
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Reflection RT Data BG (bindless)"),
+            layout: &self.rt_data_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: lights.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: meta.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::AccelerationStructure(tlas) },
+                wgpu::BindGroupEntry { binding: 3, resource: albedo.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 4, resource: bindless.instance_table_buffer().as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 5, resource: bindless.uv_buffer().as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 6, resource: bindless.index_buffer().as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 7, resource: wgpu::BindingResource::TextureViewArray(&views) },
+                wgpu::BindGroupEntry { binding: 8, resource: wgpu::BindingResource::Sampler(bindless.shared_sampler()) },
+            ],
+        })
+    }
+
     /// 合成の group0 BindGroup を生成する（反射 RT テクスチャ＋サンプラー）。
     pub fn create_composite_bg(&self, device: &wgpu::Device, refl_view: &wgpu::TextureView) -> wgpu::BindGroup {
         device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -355,19 +427,42 @@ mod tests {
         v.validate(&module).unwrap_or_else(|e| panic!("[reflection_ssr] validate 失敗: {e:?}"));
     }
 
-    /// RT 反射連結（RAY_QUERY 必須）を naga で parse + validate する。
+    /// RT 反射連結（従来・平均色フォールバック, RAY_QUERY 必須）を naga で parse + validate する。
+    /// reflection_rt.wgsl は `rt_hit_base_color` を連結先（hit_off）に委ねるため、単体では
+    /// 未定義関数で落ちる。よってヒットファイルを必ず連結して検証する。
     #[test]
-    fn reflection_rt_shader_parses() {
+    fn reflection_rt_off_shader_parses() {
         let cluster = include_str!("shaders/cluster_common.wgsl");
         let refl_c  = include_str!("shaders/reflection_common.wgsl");
         let ddgi_c  = include_str!("shaders/ddgi_common.wgsl");
         let rt      = include_str!("shaders/reflection_rt.wgsl");
-        let src = [cluster, refl_c, ddgi_c, rt].join("\n");
+        let hit_off = include_str!("shaders/reflection_rt_hit_off.wgsl");
+        let src = [cluster, refl_c, ddgi_c, rt, hit_off].join("\n");
         let module = naga::front::wgsl::parse_str(&src)
-            .unwrap_or_else(|e| panic!("[reflection_rt] WGSL parse 失敗: {e:?}"));
+            .unwrap_or_else(|e| panic!("[reflection_rt off] WGSL parse 失敗: {e:?}"));
         let mut v = naga::valid::Validator::new(
             naga::valid::ValidationFlags::all(), naga::valid::Capabilities::RAY_QUERY);
-        v.validate(&module).unwrap_or_else(|e| panic!("[reflection_rt] validate 失敗: {e:?}"));
+        v.validate(&module).unwrap_or_else(|e| panic!("[reflection_rt off] validate 失敗: {e:?}"));
+    }
+
+    /// RT 反射連結（バインドレス・本物のテクスチャ色）を naga で parse + validate する。
+    /// binding_array（テクスチャ配列）が RAY_QUERY と共存して validate を通ること（B2 の要）。
+    /// 非一様インデックスのため SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING を要求する。
+    #[test]
+    fn reflection_rt_on_bindless_shader_parses() {
+        let cluster  = include_str!("shaders/cluster_common.wgsl");
+        let refl_c   = include_str!("shaders/reflection_common.wgsl");
+        let ddgi_c   = include_str!("shaders/ddgi_common.wgsl");
+        let rt       = include_str!("shaders/reflection_rt.wgsl");
+        let bindless = include_str!("shaders/bindless_common.wgsl");
+        let hit_on   = include_str!("shaders/reflection_rt_hit_on.wgsl");
+        let src = [cluster, refl_c, ddgi_c, rt, bindless, hit_on].join("\n");
+        let module = naga::front::wgsl::parse_str(&src)
+            .unwrap_or_else(|e| panic!("[reflection_rt on] WGSL parse 失敗: {e:?}"));
+        let caps = naga::valid::Capabilities::RAY_QUERY
+            | naga::valid::Capabilities::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING;
+        let mut v = naga::valid::Validator::new(naga::valid::ValidationFlags::all(), caps);
+        v.validate(&module).unwrap_or_else(|e| panic!("[reflection_rt on] validate 失敗: {e:?}"));
     }
 
     /// 合成連結（自前完結）を naga で parse + validate する。
@@ -395,7 +490,8 @@ mod tests {
         let refl_c  = include_str!("shaders/reflection_common.wgsl");
         let ddgi_c  = include_str!("shaders/ddgi_common.wgsl");
         let rt      = include_str!("shaders/reflection_rt.wgsl");
-        let src = [cluster, refl_c, ddgi_c, rt].join("\n");
+        let hit_off = include_str!("shaders/reflection_rt_hit_off.wgsl");
+        let src = [cluster, refl_c, ddgi_c, rt, hit_off].join("\n");
         let module = naga::front::wgsl::parse_str(&src).expect("RT 反射連結の parse に失敗");
         let mut layouter = naga::proc::Layouter::default();
         layouter.update(module.to_ctx()).expect("naga Layouter 計算に失敗");

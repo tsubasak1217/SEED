@@ -1235,7 +1235,7 @@ TLAS 構築は `draw_ctx.rt_shadow.is_some() && resolved.needs_tlas()` の 1 判
 
 ---
 
-## フェーズ B: バインドレス基盤（RT ヒットシェーディングの土台）【状況: B1 実装済み（実機検証待ち）／ B2・B3 未着手】
+## フェーズ B: バインドレス基盤（RT ヒットシェーディングの土台）【状況: B1・B2 実装済み（実機検証待ち）／ B3 未着手】
 
 ### 背景・目的
 
@@ -1247,9 +1247,10 @@ inline RT のヒットシェーディング（色付き影・DDGI・RT 反射）
 方針は 3 段階（各段で見た目を壊さない・非対応 GPU は従来経路を維持）:
 
 - **B1（本フェーズ・実装済み）**: 基盤の確保・API・充填のみ。**消費側は無し＝見た目は一切変わらない**。
-- **B2（未着手）**: 消費側の配線。group4（raster 連結）と各 RT パスの専用グループへ
-  「テクスチャ配列 / サンプラー / UV / index / インスタンステーブル」を追加し、ヒット先の
-  ベースカラーを実際にサンプルする。
+- **B2（実装済み）**: 消費側の配線＋ライブ充填。RT 反射パス（reflection_rt）の専用グループ
+  （group3）へ「インスタンステーブル / UV / index / テクスチャ配列 / サンプラー」を追加し、
+  ヒット先のベースカラーを **UV でテクスチャサンプルした本物の色**にする（詳細は下記「B2 の実装内容」）。
+  raster 連結（group4）への追加は B3（色付き影）に委譲。
 - **B3（未着手）**: normal/MR など属性の拡張、Mask（アルファテスト）オクルーダの candidate 段階での
   正しい影付け等。
 
@@ -1327,3 +1328,81 @@ group4（raster 連結）へ `binding17=テクスチャ配列, 18=サンプラ�
   **消費側バインディングと同時に B2 で行う**。理由: B1 では読み手が無く配線の正しさをスモークで
   検証できないうえ、ホットパス（upload/prune/rt_shadow）へ触れるのはリグレッション面が大きいため、
   「消費と同時に配線して実データで検証する」方が安全（ゼロリグレッション優先）。
+
+### B2 の実装内容（ライブ配線＋RT 反射ヒットのテクスチャサンプル化）
+
+RT 反射のヒット色を「プリミティブ平均色のベタ塗り」から「**ヒット点の UV でベースカラー
+テクスチャをサンプルした本物の色 × base_color_factor**」へ差し替えた。B1 で先送りした
+登録・充填・解放のライブ配線も本フェーズで実施。**非対応 GPU・縮退時は従来の平均色を維持**。
+
+#### ライフサイクル（登録・解放）— RAII 遅延解放キューを採用
+- **設計判断: 明示解放でなく RAII（Drop）**。GpuModel は多数の地点で drop される（MC の
+  `Option<GpuModel>` 置換・stale バッチ prune・スロット再割当・シーン再読込・複製・ギズモ）。
+  明示解放は全 drop 地点の網羅が必要でリーク源になり、二重解放も招く。そこで登録の対価として
+  GpuModel に `BindlessModelAlloc`（RAII ハンドル, `renderer/bindless.rs`）を持たせ、その **Drop で
+  解放要求を共有キュー（`Arc<Mutex<Vec<BindlessFree>>>`）へ積む**。GpuModel は Clone 不可＝Drop は
+  ちょうど 1 回のため、どこで drop されても **必ず 1 回だけ**解放要求が積まれる（リーク・二重解放が
+  構造的に起こらない）。実返却は `BindlessResources::process_pending_frees` が次のモデル登録直前に
+  まとめて行う（解放スロット/領域を再利用）。**テスト**: `register_then_drop_drain_balances_no_leak`
+  （登録数＝解放数の整合）・`model_alloc_drop_enqueues_exactly_once`（二重解放なし）・
+  `model_alloc_empty_or_dummy_drop_is_noop`。
+- **登録タイミング**: `DrawContext::upload_model` / `upload_model_with_overrides` が実効マテリアル・
+  テクスチャ確定後（apply_overrides の後）に `GpuModel::register_bindless` を 1 回だけ呼ぶ
+  （生の構築 `upload_model_raw` と分離し二重登録を回避）。テクスチャ登録は `GpuModel.textures[base_color
+  _texture.texture_index].view`、UV/index は CPU `Model` の `prim.vertices[].uv0` / `prim.indices` から
+  読む（GpuPrimitive は CPU 配列を保持しないため）。スキンメッシュは RT の BLAS 対象外なので登録スキップ。
+- **あふれ縮退**: UV/index メガバッファ満杯時は `register_primitive_geometry` が片側確保分を即解放し
+  `eligible=false`（バインドレス対象外＝平均色へ縮退）。テクスチャ満杯はダミー 0 番。
+- **保持するインデックス**: `GpuMaterial` に `base_color_factor` / `base_color_tex_index` /
+  `bindless_albedo_tex_index`、`GpuPrimitive` に `bindless_uv_offset/uv_count/index_offset/index_count/
+  eligible`。in-place マテリアル編集（`update_material_inline`）は `base_color_factor` フィールドも追従。
+
+#### インスタンステーブル充填（rt_shadow）
+- `rt_shadow.rs::prepare_and_build` に `bindless: Option<&BindlessResources>` を追加。TLAS 詰め直しの
+  **同一ループ・同順（custom_data=inst_count 順）**で `BindlessInstanceRecord` を組んで
+  `upload_instance_records`（albedo_buffer と同じ更新周期＝再構築フレームのみ）。既存の平均アルベド
+  storage（16B）は併存（DDGI/色付き影/reflection のフォールバックが読むため不変＝ゼロリグレッション）。
+- `flags=ELIGIBLE` は「UV/index 登録済み **かつ** albedo テクスチャ登録済み（tex≠0）」のときのみ。
+  `avg_albedo`（先頭 16B）は既存 storage と同一（`.a`=色付き影のパック値）でフォールバックに使える。
+- **静止スキップ シグネチャ**に新フィールド（`base_color_factor` / `albedo_tex_index` / `uv_offset` /
+  `index_offset` / `eligible`）を追加。マテリアルの in-place 編集で instance_table が古いまま固定される
+  退行を防ぐ（bindless 有効時のみハッシュに混ぜる）。
+
+#### RT 反射ヒットシェーディング（reflection_rt.wgsl）
+- `fs_rt` のヒット色を `rt_hit_base_color(instance_custom_data, primitive_index, barycentrics)` へ委譲。
+  naga の `RayIntersection` フィールド名は `instance_custom_data` / `primitive_index` / `barycentrics`
+  （vec2, offset28）を naga-25.0.1 `front/type_gen.rs` で裏取り済み。
+- **UV 補間**: `bl_index[index_offset + primitive_index*3 + i]` で三角形の頂点番号 →
+  `bl_uv[uv_offset + 頂点番号]` で UV3 点 → 重心座標 `(1-x-y, x, y)` で補間 →
+  `textureSampleLevel(bl_tex[albedo_tex_index], 共有サンプラー, uv, 0.0) × base_color_factor.rgb`
+  （ミップ 0 固定。レイ微分は将来課題）。直接光近似＋DDGI バウンスの構成は従来どおり（アルベドのみ本物化）。
+- **フォールバック分岐は 2 段構え**:
+  1. **パイプライン/BG レベル（必須）**: 非対応 GPU で `binding_array` を宣言すると BGL 生成が失敗する
+     ため、`reflection.rs` が `use_bindless = rt_shadows_supported() && bindless_supported()` で group3
+     レイアウトとヒットシェーダ連結（`reflection_rt_hit_on.wgsl` ↔ `reflection_rt_hit_off.wgsl`）を切替。
+     非対応 GPU は配列を一切宣言しない従来シェーダのみをロード。
+  2. **シェーダ内分岐（縮退）**: 対応 GPU でも `flags` 非 ELIGIBLE・`tex_index=0` のときは平均アルベド
+     （`rt_albedo[ai].rgb`）へ縮退。
+
+#### バインディング配置（reflection_rt 専用パイプライン, group ≦5）
+- group0=camera / group1=G-Buffer / group2=input / **group3=RT データ（拡張）** / group4=GI（＝5 groups）。
+- group3 拡張: `0=lights(storage) 1=meta(storage) 2=tlas(accel) 3=avg_albedo(storage) 4=instance_table(storage)
+  5=UV(storage) 6=index(storage) 7=テクスチャ配列(binding_array, count=容量) 8=共有サンプラー`。
+- **meta は storage（uniform でない）**: WebGPU 制約「binding_array と uniform buffer は同一 bind group に
+  同居不可」のため、meta（LightMetaR, 32B）を read-only storage で読む（レイアウトは std140/std430 一致＝
+  値不変。LightBuffer の meta バッファへ STORAGE 用途を追加。他パスの uniform バインドは用途スーパーセットで不変）。
+  group3 に uniform は 1 つも無い構成（binding_array と両立）。
+- **本数**: フラグメント段の storage buffer=6（lights/meta/albedo/instance_table/UV/index, 上限 12 以内）、
+  binding_array 要素=容量（=
+  `max_binding_array_elements_per_shader_stage`, ちょうど上限一致で pass）。**テクスチャ配列は
+  `max_sampled_textures_per_shader_stage` に計上されない**（wgpu-core 25 `binding_model.rs:345` で
+  binding_array 要素は `binding_array_elements` のみに加算）ため G-Buffer/GI テクスチャと競合しない
+  → mod.rs のリミット計算は変更不要。
+
+#### 検証
+- `cargo build` 0 エラー / `cargo test` **164 passed**（B1 の 160 から +4: RAII 遅延解放の整合 3 本＋
+  reflection_rt の bindless-on WGSL parse+validate。binding_array が RAY_QUERY と共存して naga validate を
+  `SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING` 付きで通ることを固定）。
+- **未検証（実機 GPU 無し・スモークで確認）**: RT 反射に模様（テクスチャ）が映ること・非対応/縮退で
+  従来のベタ塗りに戻ること・非一様インデックスの実機動作・VRAM 増（UV 64MB+index 32MB+テーブル
+  4096×64B の常設）・性能（ヒットごとの storage/テクスチャフェッチ増分）。

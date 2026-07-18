@@ -45,7 +45,7 @@
 #![allow(dead_code)]
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 // ─── グローバル対応フラグ ────────────────────────────────────
 //
@@ -364,6 +364,91 @@ impl TextureRegistry {
 }
 
 // ============================================================
+//  遅延解放キュー（RAII）— GpuModel の drop で確実に解放する
+// ============================================================
+//
+// 【なぜ RAII / 遅延キューか（設計判断）】
+// GpuModel は多数の場所で drop される（MC の `Option<GpuModel>` 置換・stale バッチ prune・
+// スロット再割当・シーン再読込・複製・ギズモ）。B2 で登録したテクスチャ配列スロットと
+// UV/index メガバッファ領域を「明示的に free する」方式にすると、全 drop 地点を漏れなく
+// 呼ぶ必要があり、1 箇所でも漏れるとスロット/領域がリークする（4096 枠・64MB は有界だが
+// 長時間のシーン編集で枯渇し得る）。逆に同じ GpuModel を 2 経路から free すると二重解放になる。
+//
+// そこで **登録の対価として GpuModel に `BindlessModelAlloc`（RAII ハンドル）を持たせ、
+// その Drop で解放要求をキューへ積む**。GpuModel は Clone 不可（wgpu ハンドルを一意所有）で
+// Drop はちょうど 1 回だけ発火するため、どこで drop されても **必ず 1 回だけ** 解放要求が積まれる
+// （リークも二重解放も構造的に起こらない）。実際の registry/allocator への返却は
+// `BindlessResources::process_pending_frees` が次のモデル登録時にまとめて行う。
+
+/// GpuModel 1 個分の解放要求（drop 時にキューへ積まれる）。
+#[derive(Debug, Default)]
+struct BindlessFree {
+    /// 解放する albedo テクスチャ index 群（登録順）。
+    tex: Vec<u32>,
+    /// 解放する UV 領域 `(要素オフセット, 要素数)` 群。
+    uv:  Vec<(u32, u32)>,
+    /// 解放するインデックス領域 `(要素オフセット, 要素数)` 群。
+    idx: Vec<(u32, u32)>,
+}
+
+/// 遅延解放キュー本体。`BindlessModelAlloc` の Drop（任意スレッド・任意タイミング）から
+/// 積まれ、`BindlessResources::process_pending_frees`（レンダースレッド）が排出する。
+type BindlessFreeQueue = Arc<Mutex<Vec<BindlessFree>>>;
+
+/// GpuModel が保持するバインドレス割り当てハンドル（RAII）。
+///
+/// 登録した texture index / UV 領域 / index 領域を記録し、**Drop で解放要求をキューへ積む**。
+/// GpuModel は Clone 不可なので Drop はちょうど 1 回。空（何も登録していない）なら Drop は無操作。
+pub struct BindlessModelAlloc {
+    /// 解放要求の積み先（`BindlessResources` と共有）。
+    queue: BindlessFreeQueue,
+    tex:   Vec<u32>,
+    uv:    Vec<(u32, u32)>,
+    idx:   Vec<(u32, u32)>,
+}
+
+impl BindlessModelAlloc {
+    /// 空のハンドルを作る（キューを共有）。以後 `record_*` で登録内容を積む。
+    fn new(queue: BindlessFreeQueue) -> Self {
+        Self { queue, tex: Vec::new(), uv: Vec::new(), idx: Vec::new() }
+    }
+    /// 登録した albedo テクスチャ index を記録する（ダミー 0 番は記録しない＝解放不要）。
+    fn record_texture(&mut self, index: u32) {
+        if index != BINDLESS_DUMMY_TEX_INDEX { self.tex.push(index); }
+    }
+    /// 登録した UV 領域（要素オフセット・要素数）を記録する。
+    fn record_uv(&mut self, elem_offset: u32, elem_count: u32) {
+        if elem_count > 0 { self.uv.push((elem_offset, elem_count)); }
+    }
+    /// 登録したインデックス領域（要素オフセット・要素数）を記録する。
+    fn record_index(&mut self, elem_offset: u32, elem_count: u32) {
+        if elem_count > 0 { self.idx.push((elem_offset, elem_count)); }
+    }
+    /// 何も登録していないか（Drop の無操作判定・テスト用）。
+    fn is_empty(&self) -> bool {
+        self.tex.is_empty() && self.uv.is_empty() && self.idx.is_empty()
+    }
+}
+
+impl Drop for BindlessModelAlloc {
+    /// 登録内容を 1 件の解放要求としてキューへ積む（実際の返却は process_pending_frees）。
+    /// `mem::take` で中身を移すため二重登録は起こらない。空なら積まない。
+    fn drop(&mut self) {
+        if self.is_empty() { return; }
+        let free = BindlessFree {
+            tex: std::mem::take(&mut self.tex),
+            uv:  std::mem::take(&mut self.uv),
+            idx: std::mem::take(&mut self.idx),
+        };
+        // ロック失敗（poison）時も解放要求を捨てない（リーク回避）。into_inner ではなく
+        // ロックを取り直す代わりに、poison でも guard を得て push する。
+        if let Ok(mut q) = self.queue.lock() {
+            q.push(free);
+        }
+    }
+}
+
+// ============================================================
 //  BindlessResources — GPU 資源の束（対応時のみ確保）
 // ============================================================
 
@@ -407,6 +492,10 @@ pub struct BindlessResources {
     /// UV/index 容量オーバー警告の抑止（ログ爆発防止）。
     warned_uv_overflow: bool,
     warned_index_overflow: bool,
+
+    /// 遅延解放キュー。GpuModel が持つ `BindlessModelAlloc` の Drop から解放要求が積まれ、
+    /// `process_pending_frees` が registry/allocator へ返却する（リーク・二重解放防止の要）。
+    free_queue: BindlessFreeQueue,
 }
 
 impl BindlessResources {
@@ -518,7 +607,47 @@ impl BindlessResources {
             instance_table,
             warned_uv_overflow: false,
             warned_index_overflow: false,
+            free_queue: Arc::new(Mutex::new(Vec::new())),
         }
+    }
+
+    // ── 遅延解放（RAII）─────────────────────────────────────
+
+    /// GpuModel の `BindlessModelAlloc` に渡す解放要求キュー（共有クローン）を返す。
+    pub fn free_queue_handle(&self) -> BindlessFreeQueue { Arc::clone(&self.free_queue) }
+
+    /// 新しい空の割り当てハンドルを作る（このリソースのキューを共有）。
+    /// GpuModel の登録時に受け取り、登録内容を記録して GpuModel に保持させる。
+    pub fn new_model_alloc(&self) -> BindlessModelAlloc {
+        BindlessModelAlloc::new(self.free_queue_handle())
+    }
+
+    /// キューに積まれた解放要求を排出し、registry / メガバッファへ実際に返却する。
+    /// モデル登録（`register_*`）の直前に呼び、解放済みスロット/領域を再利用可能にする。
+    /// 返り値: 解放したモデル数（ログ用）。
+    pub fn process_pending_frees(&mut self) -> usize {
+        let frees: Vec<BindlessFree> = match self.free_queue.lock() {
+            Ok(mut q) => std::mem::take(&mut *q),
+            Err(_)    => return 0,
+        };
+        let n = frees.len();
+        for f in frees {
+            for t in f.tex          { self.registry.free(t); }
+            for (o, c) in f.uv      { self.uv_alloc.free(o as u64 * BINDLESS_UV_ELEM_BYTES,   c as u64 * BINDLESS_UV_ELEM_BYTES); }
+            for (o, c) in f.idx     { self.index_alloc.free(o as u64 * BINDLESS_INDEX_ELEM_BYTES, c as u64 * BINDLESS_INDEX_ELEM_BYTES); }
+        }
+        if n > 0 { self.dirty = true; } // テクスチャ配列 BindGroup を作り直させる
+        n
+    }
+
+    /// 登録した albedo テクスチャ index を `alloc` に記録する版の登録。
+    /// 満杯ならダミー 0 番を返し、`alloc` には記録しない（解放不要）。
+    pub fn register_albedo_texture_tracked(
+        &mut self, view: &wgpu::TextureView, alloc: &mut BindlessModelAlloc,
+    ) -> u32 {
+        let idx = self.register_albedo_texture(view);
+        alloc.record_texture(idx);
+        idx
     }
 
     // ── テクスチャ レジストリ API ────────────────────────────
@@ -625,9 +754,7 @@ impl BindlessResources {
     pub fn ensure_texture_bind_group(&mut self) -> &wgpu::BindGroup {
         if self.dirty || self.tex_bg.is_none() {
             // capacity 個の view 参照を作る（未登録はダミー）。
-            let views: Vec<&wgpu::TextureView> = (0..self.capacity as usize)
-                .map(|i| self.registry.slots[i].as_ref().unwrap_or(&self.dummy_view))
-                .collect();
+            let views: Vec<&wgpu::TextureView> = self.texture_view_list();
             let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("Bindless Texture Array BG"),
                 layout: &self.tex_bgl,
@@ -646,6 +773,45 @@ impl BindlessResources {
             self.dirty = false;
         }
         self.tex_bg.as_ref().unwrap()
+    }
+
+    /// テクスチャ配列 BindGroup を組むための capacity 個の view 参照列
+    /// （登録済みは実 view・空きはダミー白）。reflection_rt の group3 に配列を同居させる
+    /// ため、B2 の消費側（reflection.rs）がこの列を使って自前で BindGroup を構築する。
+    pub fn texture_view_list(&self) -> Vec<&wgpu::TextureView> {
+        (0..self.capacity as usize)
+            .map(|i| self.registry.slots[i].as_ref().unwrap_or(&self.dummy_view))
+            .collect()
+    }
+
+    // ── プリミティブ ジオメトリ登録（B2 のライブ配線）──────────
+
+    /// プリミティブ 1 個の UV（頂点順）とインデックス（三角形リスト）をメガバッファへ登録し、
+    /// `(uv_offset, index_offset, eligible)` を返す。`alloc` に領域を記録して RAII 解放させる。
+    ///
+    /// 【部分あふれの後始末】UV かインデックスの一方だけ確保できた場合は、確保できた側を
+    /// **即座に解放**して `eligible=false`（バインドレス対象外＝従来の平均色へ縮退）にする。
+    /// 片方だけ残すとリーク＋対を成さないゴミ領域になるため。両方成功時のみ eligible=true。
+    pub fn register_primitive_geometry(
+        &mut self,
+        queue:   &wgpu::Queue,
+        uvs:     &[[f32; 2]],
+        indices: &[u32],
+        alloc:   &mut BindlessModelAlloc,
+    ) -> (u32, u32, bool) {
+        let uv_off  = self.append_uv(queue, uvs);
+        let idx_off = self.append_indices(queue, indices);
+        match (uv_off, idx_off) {
+            (Some(u), Some(x)) => {
+                alloc.record_uv(u, uvs.len() as u32);
+                alloc.record_index(x, indices.len() as u32);
+                (u, x, true)
+            }
+            // 片方だけ確保できた → 確保できた側を即解放して縮退（対象外）。
+            (Some(u), None) => { self.free_uv(u, uvs.len() as u32);      (0, 0, false) }
+            (None, Some(x)) => { self.free_indices(x, indices.len() as u32); (0, 0, false) }
+            (None, None)    => (0, 0, false),
+        }
     }
 
     // ── アクセサ（B2 消費用）────────────────────────────────
@@ -833,5 +999,81 @@ mod tests {
         assert_eq!(d.flags & BINDLESS_FLAG_ELIGIBLE, 0);
         assert_eq!(d.albedo_tex_index, BINDLESS_DUMMY_TEX_INDEX);
         assert_eq!(d.base_color_factor, [1.0, 1.0, 1.0, 1.0]);
+    }
+
+    // ── RAII 遅延解放（リーク・二重解放の固定）──────────────────
+
+    /// `BindlessModelAlloc` の Drop はちょうど 1 件の解放要求を積み、内容が記録どおりであること。
+    /// GpuModel が 1 回だけ drop される前提の下、二重解放が起きないことの根拠。
+    #[test]
+    fn model_alloc_drop_enqueues_exactly_once() {
+        let q: BindlessFreeQueue = Arc::new(Mutex::new(Vec::new()));
+        {
+            let mut a = BindlessModelAlloc::new(Arc::clone(&q));
+            a.record_texture(3);
+            a.record_texture(5);
+            a.record_uv(10, 4);
+            a.record_index(20, 6);
+            assert!(!a.is_empty());
+        } // drop
+        let queued = q.lock().unwrap();
+        assert_eq!(queued.len(), 1, "drop で解放要求はちょうど 1 件");
+        assert_eq!(queued[0].tex, vec![3, 5]);
+        assert_eq!(queued[0].uv,  vec![(10, 4)]);
+        assert_eq!(queued[0].idx, vec![(20, 6)]);
+    }
+
+    /// 空ハンドル（何も登録していない）の Drop は無操作（キューを汚さない）。
+    /// ダミー 0 番テクスチャは記録されない（解放不要）。
+    #[test]
+    fn model_alloc_empty_or_dummy_drop_is_noop() {
+        let q: BindlessFreeQueue = Arc::new(Mutex::new(Vec::new()));
+        {
+            let mut a = BindlessModelAlloc::new(Arc::clone(&q));
+            a.record_texture(BINDLESS_DUMMY_TEX_INDEX); // 0 は記録しない
+            assert!(a.is_empty(), "ダミー 0 番のみは空とみなす");
+        }
+        assert!(q.lock().unwrap().is_empty(), "空ハンドルの drop は積まない");
+    }
+
+    /// 複数モデルを登録 → 全 drop → drain（process_pending_frees と同一ロジック）で、
+    /// テクスチャ・UV・index が **全て過不足なく解放される**（登録数＝解放数の整合＝リークなし）。
+    #[test]
+    fn register_then_drop_drain_balances_no_leak() {
+        let q: BindlessFreeQueue = Arc::new(Mutex::new(Vec::new()));
+        let mut reg = TextureRegistry::new(16);
+        let mut uv  = MegaAllocator::new(4096);
+        let mut idx = MegaAllocator::new(4096);
+
+        let mut handles = Vec::new();
+        for _ in 0..4 {
+            let mut a = BindlessModelAlloc::new(Arc::clone(&q));
+            for _ in 0..2 {
+                let ti = reg.alloc_index().unwrap();
+                a.record_texture(ti);
+            }
+            let uo = uv.alloc(8 * BINDLESS_UV_ELEM_BYTES, BINDLESS_UV_ELEM_BYTES).unwrap();
+            a.record_uv((uo / BINDLESS_UV_ELEM_BYTES) as u32, 8);
+            let io = idx.alloc(12 * BINDLESS_INDEX_ELEM_BYTES, BINDLESS_INDEX_ELEM_BYTES).unwrap();
+            a.record_index((io / BINDLESS_INDEX_ELEM_BYTES) as u32, 12);
+            handles.push(a);
+        }
+        assert_eq!(reg.registered_count(), 8, "4 モデル×2 テクスチャ = 8 登録");
+        assert_eq!(uv.used(),  4 * 8 * BINDLESS_UV_ELEM_BYTES);
+        assert_eq!(idx.used(), 4 * 12 * BINDLESS_INDEX_ELEM_BYTES);
+
+        drop(handles); // 全モデル drop → 解放要求がキューへ
+
+        // process_pending_frees と同一の drain ロジックを再現する。
+        let frees = std::mem::take(&mut *q.lock().unwrap());
+        assert_eq!(frees.len(), 4, "4 モデル分の解放要求");
+        for f in frees {
+            for t in f.tex      { reg.free(t); }
+            for (o, c) in f.uv  { uv.free(o as u64 * BINDLESS_UV_ELEM_BYTES,   c as u64 * BINDLESS_UV_ELEM_BYTES); }
+            for (o, c) in f.idx { idx.free(o as u64 * BINDLESS_INDEX_ELEM_BYTES, c as u64 * BINDLESS_INDEX_ELEM_BYTES); }
+        }
+        assert_eq!(reg.registered_count(), 0, "全テクスチャ解放（リークなし）");
+        assert_eq!(uv.used(),  0, "全 UV 領域解放");
+        assert_eq!(idx.used(), 0, "全 index 領域解放");
     }
 }

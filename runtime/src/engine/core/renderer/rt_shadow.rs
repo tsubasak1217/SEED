@@ -37,6 +37,7 @@ use wgpu::{
     CreateBlasDescriptor, CreateTlasDescriptor, TlasInstance, TlasPackage,
 };
 
+use super::bindless::{BindlessResources, BindlessInstanceRecord, BINDLESS_FLAG_ELIGIBLE, BINDLESS_DUMMY_TEX_INDEX};
 use super::gpu_resources::{GpuModel, GpuPrimitive, InstancedModelBatch};
 use super::lighting::LightBuffer;
 use super::shadow::ShadowResources;
@@ -309,6 +310,10 @@ impl RtShadowResources {
         queue:   &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
         casters: &[(&str, &GpuModel, &InstancedModelBatch)],
+        // バインドレス（B2）: 対応 GPU でのみ Some。TLAS 詰め直しと同順（custom_data 順）で
+        // `BindlessInstanceRecord` テーブルを埋め、RT 反射のヒットシェーディングが引く。
+        // 既存の平均アルベド storage（albedo_buffer）は当面併存（DDGI/色付き影の読み手を壊さない）。
+        bindless: Option<&BindlessResources>,
     ) -> RtBuildStat {
         // ── 1. 新規 BLAS の作成対象を収集（キャッシュ未登録の非スキンプリミティブ）──
         // 借用衝突を避けるため、先に「作成すべきキー＋対象プリミティブ参照」を集める。
@@ -395,6 +400,21 @@ impl RtShadowResources {
                     let alb = gpu.primitive_avg_albedo(material_idx);
                     for v in &alb { hasher.write_u32(v.to_bits()); }
                     hasher.write_u32(gpu.primitive_transmission(material_idx).to_bits());
+                    // バインドレス（B2）: instance_table は build 経路でしか再アップロードされない
+                    // ため、レコードを左右する値（base_color_factor・albedo tex index・UV/index
+                    // オフセット）もシグネチャに含める。含めないと、変換/alpha_mode を変えない
+                    // マテリアルの in-place 編集（factor）や再登録でのオフセット変化が反映されない。
+                    if bindless.is_some() {
+                        let bcf = gpu.primitive_base_color_factor(material_idx);
+                        for v in &bcf { hasher.write_u32(v.to_bits()); }
+                        hasher.write_u32(gpu.primitive_bindless_albedo_tex_index(material_idx));
+                        if let Some(gp) = gpu.meshes.get(mesh_idx)
+                            .and_then(|m| m.primitives.get(prim_idx)) {
+                            hasher.write_u32(gp.bindless_uv_offset);
+                            hasher.write_u32(gp.bindless_index_offset);
+                            hasher.write_u8(gp.bindless_eligible as u8);
+                        }
+                    }
                     for v in &transform { hasher.write_u32(v.to_bits()); }
                 });
             }
@@ -435,6 +455,12 @@ impl RtShadowResources {
         let mut inst_count: usize = 0;
         // 平均アルベド（Phase RT-GI）を TLAS インスタンスと同順（custom_data 順）で詰める。
         let mut albedos: Vec<[f32; 4]> = vec![[0.0f32; 4]; MAX_RT_INSTANCES as usize];
+        // バインドレス（B2）: インスタンステーブルを同順で詰める（対応 GPU のみ確保）。
+        let mut records: Vec<BindlessInstanceRecord> = if bindless.is_some() {
+            vec![BindlessInstanceRecord::dummy(); MAX_RT_INSTANCES as usize]
+        } else {
+            Vec::new()
+        };
         {
             // disjoint フィールド借用: blas_cache（不変）と tlas_package（可変）。
             let cache = &self.blas_cache;
@@ -465,6 +491,26 @@ impl RtShadowResources {
                         let trans = gpu.primitive_transmission(material_idx).clamp(0.0, 1.0);
                         alb[3] = pack_shadow_alpha_transmission(alpha, trans); // .rgb は生アルベドのまま
                         albedos[inst_count] = alb;
+                        // ── バインドレス（B2）: インスタンステーブルを同 index（custom_data）に詰める ──
+                        // eligible = UV/index 登録済み かつ albedo テクスチャ登録済み（tex≠0）。
+                        // どちらか欠ければ flags=0 で、ヒットシェーダは平均色（avg_albedo）へ縮退する。
+                        if !records.is_empty() {
+                            let tex_index = gpu.primitive_bindless_albedo_tex_index(material_idx);
+                            let geom_elig = gpu.meshes.get(mesh_idx)
+                                .and_then(|m| m.primitives.get(prim_idx))
+                                .map(|gp| (gp.bindless_eligible, gp.bindless_uv_offset, gp.bindless_index_offset))
+                                .unwrap_or((false, 0, 0));
+                            let elig = geom_elig.0 && tex_index != BINDLESS_DUMMY_TEX_INDEX;
+                            records[inst_count] = BindlessInstanceRecord {
+                                avg_albedo:        alb, // 先頭 16B は既存 storage と同一（.a=パック済み）
+                                base_color_factor: gpu.primitive_base_color_factor(material_idx),
+                                albedo_tex_index:  tex_index,
+                                uv_offset:         geom_elig.1,
+                                index_offset:      geom_elig.2,
+                                flags:             if elig { BINDLESS_FLAG_ELIGIBLE } else { 0 },
+                                _pad:              [0; 4],
+                            };
+                        }
                         instances[inst_count] = Some(TlasInstance::new(blas, transform, inst_count as u32, mask));
                         inst_count += 1;
                     }
@@ -485,6 +531,13 @@ impl RtShadowResources {
         // ── 5. BLAS（新規）と TLAS を 1 回の呼び出しでビルド ──────
         // 平均アルベド storage を（再構築フレームのみ）アップロードする（TLAS と同じ更新周期）。
         queue.write_buffer(&self.albedo_buffer, 0, bytemuck::cast_slice(&albedos));
+        // バインドレス（B2）: インスタンステーブルを同じ更新周期でアップロードする
+        // （custom_data 順で albedos と一致）。対応 GPU のみ（records 非空）。
+        if let Some(b) = bindless {
+            if !records.is_empty() {
+                b.upload_instance_records(queue, &records[..inst_count]);
+            }
+        }
 
         encoder.build_acceleration_structures(blas_entries.iter(), std::iter::once(&self.tlas_package));
 
