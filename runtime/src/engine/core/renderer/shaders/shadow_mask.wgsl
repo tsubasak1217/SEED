@@ -107,7 +107,9 @@ fn mask_eval_slot(slot: u32, world_pos: vec3<f32>, ng: vec3<f32>, nv: vec3<f32>,
     // L・光源距離・見込み半径（cone_radius）は lighting_eval.wgsl と共通の共有関数で求める
     //（インライン経路とマスク経路で L が食い違わないことを保証する単一実装）。
     let geo = light_shadow_geometry(light, world_pos);
-    return rt_shadow_factor(world_pos, ng, nv, geo.L, geo.dist, geo.cone_radius, frag_xy);
+    // deterministic_tint=false: マスクはこの後 separable バイラテラルでデノイズされるため、
+    // ソフト影の色付き tint はサンプルごとに評価してよい（均されて色にも半影勾配が乗る＝高品質）。
+    return rt_shadow_factor(world_pos, ng, nv, geo.L, geo.dist, geo.cone_radius, frag_xy, false);
 }
 
 // ─── マスク生成フラグメント（4 レイヤを MRT で同時出力。rgb=透過率, a=半解像度深度）───

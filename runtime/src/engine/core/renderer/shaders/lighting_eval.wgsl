@@ -299,8 +299,12 @@ fn evaluate_lighting(s: Surface) -> vec3<f32> {
                 //   Ng → レイ原点の最小クリアランス（自己交差回避のみ）
                 //   Nv → ターミネータのランプ（減衰カーブの判定）
                 // シェーディング法線 N（法線マップ後）は影へは渡さない（BRDF 専用）。
+                // deterministic_tint=true: このインライン経路はバイラテラルで均されず、
+                // ソフト影の per-sample 色付き tint がそのまま scene_hdr へ焼かれて赤い斑点ノイズに
+                // なる。よってソフト影の tint は中心 L の決定的 1 評価へ縮退させる（可視性の
+                // ソフトサンプリングは維持）。マスク経路（shadow_mask.wgsl）は false で高品質側。
                 radiance = radiance * rt_shadow_factor(
-                    s.world_pos, Ng, Nv, L, light_dist, cone_radius, s.frag_coord,
+                    s.world_pos, Ng, Nv, L, light_dist, cone_radius, s.frag_coord, true,
                 );
             }
         } else {

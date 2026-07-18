@@ -291,6 +291,16 @@ fn rt_shadow_perp(v: vec3<f32>) -> vec3<f32> {
 /// - `tmax`       : レイの最大距離。directional は大定数、局所光はライトまでの距離。
 /// - `cone_radius`: 面光源の見込み半径（tan 相当）。0 でハード 1 本、>0 で円錐内 N サンプル平均。
 /// - `frag_xy`    : フラグメント座標（サンプル回転のノイズ源。時間項なし）。
+/// - `deterministic_tint`: ソフト経路（cone_radius>0）での**色付き tint の評価方法**を切り替える。
+///     false（マスク経路 shadow_mask.wgsl）: 従来どおりサンプルごとに tint を評価して平均する。
+///                生成直後はノイジーだが、後段の影マスク専用バイラテラルブラーが空間的に均すため、
+///                tint にも半影の色勾配が乗る（高品質）。
+///     true （インライン経路 lighting_eval.wgsl）: tint をサンプルごとに評価せず、中心方向 L の
+///                決定的評価を 1 回だけ行って可視性平均へ一律に掛ける。バイラテラルで均されない
+///                インライン経路では、per-sample tint の IGN 依存ノイズ（色付き斑点）が scene_hdr へ
+///                直に焼かれてしまうため、それを断つ。tint のペナンブラ勾配は失われる（既知の品質差）。
+///     可視性（スカラー）の Vogel ソフトサンプリングはどちらでも維持する（影の柔らかさは不変）。
+///     ハード経路（cone_radius=0）はこのフラグの影響を受けない（元々中心 tint 1 本のため）。
 ///
 /// ## 手順
 /// 1. ターミネータ係数 = smoothstep(0, BAND, dot(nv, l))。0 なら即 0.0（レイも飛ばさない）。
@@ -305,11 +315,16 @@ fn rt_shadow_perp(v: vec3<f32>) -> vec3<f32> {
 ///    サンプルは**レイを飛ばさず 0（遮蔽）として加算**する。方向を起こしてはならない
 ///    （＝一枚布の裏側へ抜けるべきレイが手前へ逃げ、光漏れになる。ファイル冒頭参照）。
 ///    サンプルは 1 本も捨てない（分母は常に samples ＝ ディザノイズが出ない）。
-/// 4. 半透明レイヤーの透過色（RGB）をサンプルごとに評価して平均する。
+/// 4. 半透明レイヤーの透過色（RGB）を評価する。可視性（スカラー）はどちらの経路でも
+///    Vogel サンプルの平均（ソフトな半影）で、tint の扱いだけを deterministic_tint で切り替える。
 ///    - ハード経路（cone_radius=0）: 中心方向 L の 1 本だけ透過色を評価（最大 CENTER=4 枚貫通）。
-///    - ソフト経路（cone_radius>0）: 遮蔽されていない各サンプル方向 dir で透過色を評価
-///      （最大 SAMPLE=2 枚貫通）し、遮蔽・地平線下のサンプルは vec3(0) として母数 samples で平均。
-///      ガラスを外れたサンプルは白（素通り）、掠めたサンプルだけ染まるため**色付き影にも半影が付く**。
+///    - ソフト経路（cone_radius>0）:
+///        deterministic_tint == false（マスク経路）: 遮蔽されていない各サンプル方向 dir で透過色を
+///          評価（最大 SAMPLE=2 枚貫通）し、遮蔽・地平線下は寄与 0 として母数 samples で平均。
+///          掠めたサンプルだけ染まるため色にも半影が付く（後段バイラテラルがノイズを均す前提）。
+///        deterministic_tint == true（インライン経路）: per-sample tint は評価せず、可視性平均に
+///          中心方向 L の決定的 tint 1 評価（最大 CENTER=4 枚貫通）を一律に掛ける。IGN 依存の
+///          色付き斑点ノイズを断つための縮退（バイラテラルが無い経路のため。上の引数解説参照）。
 ///    透過色は u_light_meta.translucency_rt に色付き影ビットが立っているときだけ評価する。
 ///    立っていなければ tint 評価自体をスキップし従来コストのまま（白い影）。
 ///
@@ -323,6 +338,7 @@ fn rt_shadow_factor(
     tmax:        f32,
     cone_radius: f32,
     frag_xy:     vec2<f32>,
+    deterministic_tint: bool,
 ) -> vec3<f32> {
     // ── 1. シャドウターミネータ（滑らかなランプ）────────────────
     // 幾何的な入射角は**補間法線**で測る。フラットな面法線で測ると面境界で不連続になる。
@@ -364,7 +380,7 @@ fn rt_shadow_factor(
         return vec3<f32>(terminator * vis) * tint;
     }
 
-    // ── ソフトシャドウ経路（円錐内 N サンプルの RGB 平均）──
+    // ── ソフトシャドウ経路（円錐内 N サンプル平均）──
     // ペナンブラの広さに応じたサンプル本数（MIN..MAX に必ず収まる）。
     let samples = rt_shadow_sample_count(cone_radius);
 
@@ -374,13 +390,16 @@ fn rt_shadow_factor(
     // フラグメントごとの回転（バンディング回避）。時間項を含まないため静止画で安定。
     let rot = rt_shadow_ign(frag_xy) * 2.0 * RT_SHADOW_PI;
 
-    // サンプルごとに「不透明で遮蔽されていなければ、その方向の半透明透過色（RGB）」を累積する。
-    // 遮蔽サンプル・地平線より下のサンプルは vec3(0) を加算（＝寄与 0）。母数は常に samples。
-    // → ガラスを外れたサンプルは白（素通り＝tint=1）、ガラスを掠めたサンプルだけ色が乗るため、
-    //   スカラー影と同じく**色付き影にも半影（掠め度合いに応じた色の減衰）が付く**。
-    //   旧実装は中心 L の 1 本だけで tint を評価し全体へ一律に掛けていたため、半影で減衰せず
-    //   シルエットどおりの硬さ・濃さで色が落ちていた（この症状の原因）。
-    var sum_rgb = vec3<f32>(0.0, 0.0, 0.0);
+    // 可視性（スカラー）は deterministic_tint に関わらず Vogel サンプルの平均で求める
+    //（＝影の柔らかさ／半影はどちらの経路でも同一）。tint（色）の扱いだけを切り替える:
+    //   ・マスク経路（deterministic_tint == false）: サンプルごとに tint を評価して tint_sum に累積。
+    //     生成直後はノイジーだが後段の影マスク専用バイラテラルブラーが均すので、色にも半影勾配が乗る。
+    //   ・インライン経路（deterministic_tint == true）: per-sample tint は評価しない（IGN 依存の
+    //     色付き斑点ノイズを scene_hdr へ直に焼かないため）。ループ後に中心 L の tint 1 評価だけ掛ける。
+    //     旧実装はインライン経路でもサンプルごとに tint を評価しており、バイラテラルで均されないまま
+    //     scene_hdr へ焼かれて**赤い斑点ノイズ**（カーテンを掠めたサンプルだけ赤 tint）になっていた。
+    var vis_sum  = 0.0;                       // 非遮蔽・地平線上サンプルの可視性の総和（両経路共通）
+    var tint_sum = vec3<f32>(0.0, 0.0, 0.0);  // per-sample tint 累積（マスク経路のみ使用）
 
     // ループ上限は必ず定数 RT_SHADOW_SAMPLES_MAX で縛る（samples は clamp 済みだが、
     // 万一の異常値でも 1 ピクセルあたりのレイ本数が静的上限を超えないことを保証する）。
@@ -397,28 +416,46 @@ fn rt_shadow_factor(
         let dir   = normalize(l + t * disk.x + b * disk.y);
 
         // 地平線判定（**滑らかな nv 基準**。ng だと三角形ごとに飛んでファセット状の黒帯になる）。
-        // 面の裏側を向くサンプルは幾何的に光を受け取れない。0（遮蔽）として**加算せず**、
+        // 面の裏側を向くサンプルは幾何的に光を受け取れない。寄与 0 として**加算せず**、
         // レイも飛ばさない（トレース 1 本ぶん速い）。捨てない＝分母は samples のまま一定。
         if dot(nv, dir) <= 0.0 {
             continue;
         }
-        // 不透明遮蔽レイ（従来どおり）。当たれば寄与 0（sum_rgb へ加算しない）。
+        // 不透明遮蔽レイ（従来どおり）。当たれば寄与 0（可視性・tint とも加算しない）。
         let occ = rt_trace_occlusion(o, dir, tmax);
         if occ <= 0.0 {
             continue;
         }
-        // 遮蔽されていないサンプルだけ、その方向で半透明透過色を評価する（最大 SAMPLE=2 枚貫通）。
-        // 色付き影が無効なら白（vec3(1)）のまま＝従来どおり追加レイを飛ばさない。
-        var tint_i = vec3<f32>(1.0, 1.0, 1.0);
-        if colored {
-            tint_i = rt_trace_translucent_tint(o, dir, tmax, RT_TRANSLUCENT_MAX_HITS_SAMPLE);
+        // 非遮蔽サンプル: スカラー可視性を 1 加算（両経路共通）。
+        vis_sum += 1.0;
+        // マスク経路のときだけ、そのサンプル方向で半透明透過色を評価して累積する
+        //（最大 SAMPLE=2 枚貫通）。インライン経路は per-sample tint を評価しない＝色ノイズ源を断つ。
+        if colored && !deterministic_tint {
+            tint_sum += rt_trace_translucent_tint(o, dir, tmax, RT_TRANSLUCENT_MAX_HITS_SAMPLE);
         }
-        // occ==1.0（非遮蔽）なので、そのサンプルの寄与は tint_i そのもの。
-        sum_rgb += tint_i;
     }
 
-    // 分母は常に samples（地平線より下・遮蔽のサンプルも vec3(0) として母数に含む）。
+    // 分母は常に samples（地平線より下・遮蔽のサンプルも寄与 0 として母数に含む）。
     // ピクセルごとの IGN 回転で分母が変動しない＝ディザ状のまだらノイズが出ない。
-    // 最後にターミネータ係数（幾何的に光へ背を向ける側へ滑らかに 0）を掛ける。
-    return (sum_rgb / f32(samples)) * terminator;
+    let inv = 1.0 / f32(samples);
+
+    if deterministic_tint {
+        // ── インライン経路（バイラテラル無し）: tint を中心 L の決定的 1 評価へ縮退 ──
+        // colored かつ可視サンプルが 1 本でもある（vis_sum>0）ときだけ中心 tint を評価し、
+        // 可視性平均へ一律に掛ける（IGN 依存の per-pixel 色ノイズが乗らない）。
+        // トレードオフ: tint のペナンブラ勾配が失われ、影のシルエットどおりの硬い色境界になる。
+        var tint_c = vec3<f32>(1.0, 1.0, 1.0);
+        if colored && vis_sum > 0.0 {
+            tint_c = rt_trace_translucent_tint(o, l, tmax, RT_TRANSLUCENT_MAX_HITS_CENTER);
+        }
+        return vec3<f32>(vis_sum * inv) * terminator * tint_c;
+    }
+
+    // ── マスク経路: サンプルごとの tint 平均（後段バイラテラルで均され、色にも半影勾配が付く）──
+    // 非 colored のときは tint_sum が 0 のままなので、スカラー可視性平均 vis_sum を使う
+    //（＝従来の「白い影」を再現。tint_sum を使うと 0 になり真っ黒になってしまう）。
+    if colored {
+        return (tint_sum * inv) * terminator;
+    }
+    return vec3<f32>(vis_sum * inv) * terminator;
 }
