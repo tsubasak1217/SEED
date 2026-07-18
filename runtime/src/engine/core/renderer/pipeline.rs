@@ -133,6 +133,9 @@ pub(crate) fn get_shader_source(name: &str) -> &'static str {
         "reflection_common.wgsl"     => include_str!("shaders/reflection_common.wgsl"),
         "reflection_ssr.wgsl"        => include_str!("shaders/reflection_ssr.wgsl"),
         "reflection_rt.wgsl"         => include_str!("shaders/reflection_rt.wgsl"),
+        "reflection_rt_hit_on.wgsl"  => include_str!("shaders/reflection_rt_hit_on.wgsl"),
+        "reflection_rt_hit_off.wgsl" => include_str!("shaders/reflection_rt_hit_off.wgsl"),
+        "bindless_common.wgsl"       => include_str!("shaders/bindless_common.wgsl"),
         "reflection_composite.wgsl"  => include_str!("shaders/reflection_composite.wgsl"),
         // AO（SSAO / RT-AO）フルスクリーンパス＋いもす法ブラー（Phase D4）。
         "ao_common.wgsl"             => include_str!("shaders/ao_common.wgsl"),

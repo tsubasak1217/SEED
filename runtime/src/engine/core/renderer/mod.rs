@@ -78,9 +78,9 @@ pub use rt_shadow::RtShadowResources;
 // B2/B3 が消費する API 群。B1 時点ではエンジン内から一部しか参照しないため未使用警告が出るが、
 // 公開 API 面の一覧として明示的に re-export しておく（消費側 B2 が pub パスで使う）。
 #[allow(unused_imports)]
-pub use bindless::{BindlessResources, BindlessInstanceRecord,
+pub use bindless::{BindlessResources, BindlessInstanceRecord, BindlessModelAlloc,
                    BINDLESS_MAX_TEXTURES, BINDLESS_DUMMY_TEX_INDEX, BINDLESS_FLAG_ELIGIBLE,
-                   set_bindless_supported, bindless_supported};
+                   set_bindless_supported, bindless_supported, bindless_capacity};
 pub use refract_pyramid::{RefractPyramid, REFRACT_MIP_COUNT};
 pub use reflection::{ReflectionPipelines, ReflectionParams,
                      RT_REFLECTION_NAME, REFLECTION_FORMAT, DEFAULT_REFLECTION_INTENSITY};

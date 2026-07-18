@@ -346,6 +346,17 @@ pub struct GpuMaterial {
     /// メッシュレットカリングの法線コーン背面棄却も Back のときのみ有効化する。
     /// `Material::cull_face` を upload 時に複製する（オーバーライド適用後の実効値）。
     pub cull_face:      CullFace,
+    /// 実効ベースカラー係数（override 適用後）。バインドレス（B2）の RT 反射ヒット
+    /// シェーディングで、サンプルした albedo テクスチャ値へ乗算するために保持する。
+    /// avg_albedo（テクスチャ平均×factor）と違い、テクスチャ生値へ掛ける「係数そのもの」。
+    pub base_color_factor: [f32; 4],
+    /// ベースカラーテクスチャの `GpuModel.textures` インデックス（テクスチャ無しは None）。
+    /// バインドレス登録（B2）で、このマテリアルの albedo テクスチャ view を引くために保持する。
+    pub base_color_tex_index: Option<usize>,
+    /// バインドレス テクスチャ配列に登録した albedo テクスチャの安定インデックス
+    /// （未登録・非対応 GPU は `BINDLESS_DUMMY_TEX_INDEX`=0）。B2 の RT 反射が引く。
+    /// `GpuModel::register_bindless` が対応 GPU でのみ非 0 を書き込む。
+    pub bindless_albedo_tex_index: u32,
     #[allow(dead_code)]
     uniform_buffer:     wgpu::Buffer,
     // テクスチャのライフタイムを保持する
@@ -480,7 +491,16 @@ impl GpuMaterial {
             ],
         });
 
-        Self { bind_group, alpha_mode: mat.alpha_mode, cull_face: mat.cull_face, uniform_buffer, textures: Vec::new() }
+        Self {
+            bind_group,
+            alpha_mode: mat.alpha_mode,
+            cull_face:  mat.cull_face,
+            base_color_factor:      mat.base_color_factor,
+            base_color_tex_index:   base_color_idx,
+            bindless_albedo_tex_index: crate::engine::core::renderer::BINDLESS_DUMMY_TEX_INDEX,
+            uniform_buffer,
+            textures: Vec::new(),
+        }
     }
 }
 
@@ -533,6 +553,19 @@ pub struct GpuPrimitive {
     pub meshlet_desc_buffer:  Option<wgpu::Buffer>,
     /// メッシュレット数。0 = メッシュレット未生成。
     pub meshlet_count:        u32,
+
+    // ── バインドレス（B2）: メガバッファ登録結果 ────────────────
+    /// UV メガバッファ内の先頭要素オフセット（vec2 単位）。非対応/未登録は 0。
+    pub bindless_uv_offset:    u32,
+    /// 登録した UV 要素数（= 頂点数）。RAII 解放と整合検証用。
+    pub bindless_uv_count:     u32,
+    /// インデックス メガバッファ内の先頭要素オフセット（u32 単位）。非対応/未登録は 0。
+    pub bindless_index_offset: u32,
+    /// 登録したインデックス要素数（= index_count）。
+    pub bindless_index_count:  u32,
+    /// バインドレス対象か（UV・インデックスの両方をメガバッファへ登録できた）。
+    /// false のとき B2 のヒットシェーダは従来の平均色へ縮退する。
+    pub bindless_eligible:     bool,
 }
 
 impl GpuPrimitive {
@@ -628,6 +661,12 @@ impl GpuPrimitive {
             meshlet_index_buffer,
             meshlet_desc_buffer,
             meshlet_count,
+            // バインドレス登録は GpuModel::register_bindless が後段で埋める（既定は非対象）。
+            bindless_uv_offset:    0,
+            bindless_uv_count:     0,
+            bindless_index_offset: 0,
+            bindless_index_count:  0,
+            bindless_eligible:     false,
         }
     }
 
@@ -781,6 +820,11 @@ pub struct GpuModel {
     // テクスチャ所有権
     #[allow(dead_code)]
     textures: Vec<GpuTexture>,
+    /// バインドレス（B2）割り当ての RAII ハンドル。対応 GPU で `register_bindless` 済みのとき Some。
+    /// **この GpuModel が drop されると Drop が発火し、登録した texture 配列スロット・UV/index
+    /// メガバッファ領域の解放要求が自動でキューへ積まれる**（どの drop 地点でも 1 回だけ＝
+    /// リーク・二重解放なし）。非対応 GPU では常に None（従来経路と完全に同一）。
+    bindless_alloc: Option<crate::engine::core::renderer::BindlessModelAlloc>,
 }
 
 /// 実効マテリアルからプリミティブ平均アルベド（リニア RGBA）を導く（Phase RT-GI / RT-Translucency）。
@@ -852,6 +896,81 @@ impl GpuModel {
             .unwrap_or(self.default_transmission)
     }
 
+    /// プリミティブのマテリアルインデックスから実効ベースカラー係数を返す（バインドレス B2）。
+    /// `material_idx` が None・範囲外のときは default_material の値（白）を返す。
+    pub fn primitive_base_color_factor(&self, material_idx: Option<usize>) -> [f32; 4] {
+        material_idx
+            .and_then(|mi| self.materials.get(mi))
+            .map(|m| m.base_color_factor)
+            .unwrap_or(self.default_material.base_color_factor)
+    }
+
+    /// プリミティブのマテリアルインデックスからバインドレス albedo テクスチャ index を返す（B2）。
+    /// `material_idx` が None・範囲外のときは default_material の値（既定ダミー 0）を返す。
+    pub fn primitive_bindless_albedo_tex_index(&self, material_idx: Option<usize>) -> u32 {
+        material_idx
+            .and_then(|mi| self.materials.get(mi))
+            .map(|m| m.bindless_albedo_tex_index)
+            .unwrap_or(self.default_material.bindless_albedo_tex_index)
+    }
+
+    /// バインドレス（B2）: このモデルの albedo テクスチャと全プリミティブの UV/インデックスを
+    /// テクスチャ配列・メガバッファへ登録し、RT 反射のヒットシェーディングで引けるようにする。
+    ///
+    /// - 呼ぶのは対応 GPU（`bindless` が Some）で **upload / apply_overrides の完了後**（実効
+    ///   マテリアル・テクスチャが確定した後）に一度だけ。`DrawContext::upload_model[_with_overrides]` が呼ぶ。
+    /// - `model`: UV（頂点順）とインデックス（三角形リスト）の CPU ソース。GpuPrimitive は
+    ///   これらを保持しないため CPU モデルから読む（メッシュ/プリミティブは GpuModel::upload と 1:1）。
+    /// - 解放は本モデルが drop されると RAII（`bindless_alloc` の Drop）で自動的にキューへ積まれる。
+    ///   再登録前に `process_pending_frees` を呼んで解放済みスロット/領域を再利用する。
+    pub fn register_bindless(
+        &mut self,
+        model:    &Model,
+        queue:    &wgpu::Queue,
+        bindless: &mut crate::engine::core::renderer::BindlessResources,
+    ) {
+        use crate::engine::core::renderer::BINDLESS_DUMMY_TEX_INDEX;
+        // drop 済みモデルの解放要求を先に回収し、スロット/領域を再利用可能にする。
+        bindless.process_pending_frees();
+        let mut alloc = bindless.new_model_alloc();
+
+        // ── マテリアル: ベースカラーテクスチャを配列へ登録 ──────────
+        for mi in 0..self.materials.len() {
+            let idx = match self.materials[mi].base_color_tex_index {
+                Some(ti) if ti < self.textures.len() => {
+                    bindless.register_albedo_texture_tracked(&self.textures[ti].view, &mut alloc)
+                }
+                // テクスチャ無し → ダミー 0。ヒット時は平均色へ縮退する（B2 シェーダのフォールバック）。
+                _ => BINDLESS_DUMMY_TEX_INDEX,
+            };
+            self.materials[mi].bindless_albedo_tex_index = idx;
+        }
+
+        // ── プリミティブ: UV とインデックスをメガバッファへ登録 ──────
+        // model.meshes と self.meshes は同順・同数（GpuModel::upload が 1:1 で構築）。
+        for (mesh_i, mesh) in model.meshes.iter().enumerate() {
+            let Some(gpu_mesh) = self.meshes.get_mut(mesh_i) else { break; };
+            for (prim_i, prim) in mesh.primitives.iter().enumerate() {
+                let Some(gp) = gpu_mesh.primitives.get_mut(prim_i) else { break; };
+                // スキンメッシュは RT の BLAS 対象外（rt_shadow.rs が skin_vertex_buffer 有りを
+                // スキップ）＝インスタンステーブルに載らないため、メガバッファへ登録しない
+                // （UV/index 予算の浪費回避）。bindless_eligible は既定 false のまま。
+                if !prim.skin_vertices.is_empty() { continue; }
+                // UV0 を頂点順に抽出（メガバッファは頂点番号で引くため頂点順が必須）。
+                let uvs: Vec<[f32; 2]> = prim.vertices.iter().map(|v| v.uv0).collect();
+                let (uv_off, idx_off, elig) =
+                    bindless.register_primitive_geometry(queue, &uvs, &prim.indices, &mut alloc);
+                gp.bindless_uv_offset    = uv_off;
+                gp.bindless_uv_count     = if elig { uvs.len() as u32 } else { 0 };
+                gp.bindless_index_offset = idx_off;
+                gp.bindless_index_count  = if elig { prim.indices.len() as u32 } else { 0 };
+                gp.bindless_eligible     = elig;
+            }
+        }
+
+        self.bindless_alloc = Some(alloc);
+    }
+
     pub fn upload(
         device:       &wgpu::Device,
         queue:        &wgpu::Queue,
@@ -911,7 +1030,7 @@ impl GpuModel {
             }],
         });
 
-        Self { meshes, materials, default_material, identity_joints_bg, avg_albedos, default_avg_albedo, transmissions, default_transmission, textures: gpu_textures }
+        Self { meshes, materials, default_material, identity_joints_bg, avg_albedos, default_avg_albedo, transmissions, default_transmission, textures: gpu_textures, bindless_alloc: None }
     }
 
     /// マテリアルオーバーライドを GPU マテリアルへ焼き込む（Phase R7）。
@@ -1079,6 +1198,10 @@ impl GpuModel {
         // ② cull_face はパイプラインバリアント選択に効く（uniform 外）。draw 時に
         //    primitive_cull_face() が GpuMaterial.cull_face を読むため、フィールド更新で次フレームに反映。
         self.materials[slot].cull_face = eff.cull_face;
+        // ②' バインドレス（B2）: RT 反射ヒットの base_color_factor も追従させる（テクスチャは
+        //     不変＝bindless_albedo_tex_index はそのまま）。次フレームの TLAS 再構築で
+        //     instance_table へ反映される（静止スキップ シグネチャに base_color_factor を含む）。
+        self.materials[slot].base_color_factor = eff.base_color_factor;
         // ③ 平均アルベド（Phase RT-GI / RT 色付き影）も追従させる（フル経路と同一の eff_avg_albedo）。
         self.avg_albedos[slot] = eff_avg_albedo(&eff);
         // ④ 透過率（ガラス表現）も追従させる。
