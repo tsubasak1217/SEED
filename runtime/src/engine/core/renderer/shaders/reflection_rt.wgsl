@@ -14,9 +14,10 @@
 // gi_distance_atten / gi_shadow_ray の移植である。これらを変えたら両ファイルを合わせること。
 // ただし rt_refl_direct_irradiance は DDGI の gi_direct_irradiance から【意図的に分岐】している:
 //   DDGI  : 全灯を加算し、影は主要光(index 0)1灯のみ。プローブは面積積分なので多少の影漏れは平滑化される。
-//   反射  : 強度上位 RT_REFLECTION_HIT_LIGHTS 灯だけを各1本のシャドウレイ付きで加算し、残りは捨てる。
-//           鏡面反射はヒット点がそのまま見えるため、影なしのライトを足すと「反射像に影が出ない」症状に直結する
-//           （実機確認済み）。上位以外を捨てて暗くする方向の誤差は鏡面反射では知覚されにくい。
+//   反射  : 強度上位 RT_REFLECTION_HIT_LIGHTS 灯だけを各1本のシャドウレイ付きで影評価する。
+//           残りのライトは「捨てず」に、上位灯のシャドウレイ平均可視率で近似減衰して加算する（局所遮蔽の近似）。
+//           影なし加算（反射に影が出ない）と全捨て（反射が黒く沈む）の中間を狙うバランス設計。
+//           加えてヒット点へアンビエント/DDGI の床（rt_refl_hit_indirect）を足し、影の中でも黒つぶれさせない。
 // この分岐は反射固有の品質要件によるもので、DDGI 側は従来のまま（触らない）。
 // 別ファイルにしている理由: ddgi_probe_update.wgsl は group0 に compute 専用バインディングを
 // 宣言しており、反射（fragment, group3/4）へ連結するとグループが混入して破綻するため。
@@ -29,9 +30,17 @@ const RT_REFL_RAY_TMAX:  f32 = 1.0e4;
 const RT_REFL_CULL_MASK: u32 = 0x01u;
 
 // 反射ヒット点で直接光を影付き評価する最大ライト数。反射レイごとに全灯へシャドウレイを
-// 撃つとコストが跳ねるため、実効寄与が大きい上位この本数だけを影付きで加算し、残りは捨てる。
+// 撃つとコストが跳ねるため、実効寄与が大きい上位この本数だけを各1本のシャドウレイで影評価する。
+// 上位以外は捨てず、上位灯の平均可視率で近似減衰して加算する（rt_refl_direct_irradiance 参照）。
 // 1 灯だと従来と同じ「主要光しか影が出ない」制限に戻るため 2 以上を推奨（>=1 が下限）。
 const RT_REFLECTION_HIT_LIGHTS: u32 = 2u;
+
+// 上位灯以外（＝シャドウレイを撃たない残りのライト）に掛ける近似可視率の下限。
+// 残りライトの合計寄与に「上位灯のシャドウレイ平均可視率」を掛けて局所遮蔽を近似するが、
+// その可視率をこの値でクランプして下限を持たせる（調整用ノブ）。
+// 0.0 = 近似可視率を素通し（上位灯が完全遮蔽なら残りも 0 まで落ちる）。
+// 上げると残りライトが影の中でも底上げされ、反射像のコントラストが緩む。
+const REST_LIGHT_MIN_VISIBILITY: f32 = 0.0;
 
 struct GpuLightR {
     color:            vec3<f32>,
@@ -102,12 +111,13 @@ fn rt_refl_shadow_ray(o: vec3<f32>, dir: vec3<f32>, tmax: f32) -> f32 {
 }
 
 // 反射ヒット点の直接光放射照度 E を返す。
-//   選定方針: 全灯を走査して各ライトの【実効寄与】(放射輝度 × N・L) を求め、その輝度が上位
-//   RT_REFLECTION_HIT_LIGHTS 灯だけを各1本のシャドウレイ付きで加算する。上位以外は捨てる。
+//   上位選定: 全灯を走査して各ライトの【実効寄与】(放射輝度 × N・L) を求め、その輝度が上位
+//   RT_REFLECTION_HIT_LIGHTS 灯だけを各1本のシャドウレイ付きで影評価する。
+//   残りライト: 捨てず、上位灯のシャドウレイ平均可視率（テスト灯が無ければ 1）で近似減衰して加算する。
+//   REST_LIGHT_MIN_VISIBILITY で可視率の下限を持たせる。影ゼロ（反射に影なし）と全捨て（反射が黒沈み）の中間。
 //   純粋な light.intensity 比較ではなく実効寄与で選ぶ理由: 距離減衰・スポット角・法線向きを
 //   反映しないと、遠方や裏向きの強ライトを誤って上位に選び、近接の弱ライトの影を落としてしまう。
-//   捨てる（影なしで足さない）理由: 影なしで足すと「反射像に影が出ない」症状が残るため。
-//   鏡面反射では暗くなる方向の誤差は知覚されにくいので、上位以外の寄与は無視して良い。
+//   影の 0/1 ハード影（1灯1本レイ）は当面許容する。反射内のソフト影（1灯複数レイ）はコスト大のため将来課題。
 fn rt_refl_direct_irradiance(hit_pos: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
     // 上位 K 灯のスロット。昇順（index 0 が最弱）で維持し、最弱を追い出しながら K 灯を選抜する。
     // 各スロットは加算に必要な情報一式を持つ: 実効寄与ベクトル・ライト方向・シャドウレイ tmax・選定スコア。
@@ -121,6 +131,9 @@ fn rt_refl_direct_irradiance(hit_pos: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
         top_dist[s]    = RT_REFL_RAY_TMAX;
         top_score[s]   = 0.0;
     }
+
+    // 全ライトの実効寄与の総和。上位灯ぶんを差し引いて「残りライトの合計寄与」を得るのに使う。
+    var all_contrib_sum = vec3<f32>(0.0, 0.0, 0.0);
 
     let count = min(rt_meta.count, arrayLength(&rt_lights));
     for (var i: u32 = 0u; i < count; i = i + 1u) {
@@ -146,6 +159,8 @@ fn rt_refl_direct_irradiance(hit_pos: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
         // 選定スコアは実効寄与の輝度（Rec.709）。0 以下は候補にならない。
         let score = dot(contrib, vec3<f32>(0.2126, 0.7152, 0.0722));
         if score <= 0.0 { continue; }
+        // このライトの寄与を全体総和へ加える（後で上位灯ぶんを引いて「残り」を得る）。
+        all_contrib_sum = all_contrib_sum + contrib;
         // 最弱スロット(index 0)より強ければ差し替え、隣接スワップで昇順を復元する（挿入ソート）。
         if score > top_score[0] {
             top_contrib[0] = contrib;
@@ -163,14 +178,42 @@ fn rt_refl_direct_irradiance(hit_pos: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
         }
     }
 
-    // 選抜した上位 K 灯だけに各1本のシャドウレイを撃ち、遮蔽されていなければ加算する。
-    var e = vec3<f32>(0.0, 0.0, 0.0);
+    // 選抜した上位 K 灯だけに各1本のシャドウレイを撃ち、遮蔽率（0/1）で減衰して加算する。
+    // 同時に、上位灯ぶんの寄与総和・可視率の平均を集計する（残りライトの近似減衰に使う）。
+    var e            = vec3<f32>(0.0, 0.0, 0.0);
+    var top_contrib_sum = vec3<f32>(0.0, 0.0, 0.0);
+    var vis_sum      = 0.0;
+    var vis_count    = 0u;
     for (var s: u32 = 0u; s < RT_REFLECTION_HIT_LIGHTS; s = s + 1u) {
         if top_score[s] <= 0.0 { continue; }
         let shadow = rt_refl_shadow_ray(hit_pos + n * RT_REFL_RAY_TMIN, top_l[s], top_dist[s]);
-        e = e + top_contrib[s] * shadow;
+        e               = e + top_contrib[s] * shadow;
+        top_contrib_sum = top_contrib_sum + top_contrib[s];
+        vis_sum         = vis_sum + shadow;
+        vis_count       = vis_count + 1u;
     }
+
+    // 残りライト（上位 K 灯以外）の合計寄与を、上位灯のシャドウレイ平均可視率で近似減衰して加算する。
+    // 全灯へシャドウレイを撃つコストを避けつつ、局所的な遮蔽度合いをもっともらしく反映する近似。
+    // テスト灯が無い（K=0 相当・上位が全て score<=0）ときは可視率 1（減衰なし）。
+    // REST_LIGHT_MIN_VISIBILITY で可視率に下限を持たせる（0.0 なら素通し）。
+    let rest_contrib = max(all_contrib_sum - top_contrib_sum, vec3<f32>(0.0, 0.0, 0.0));
+    let avg_vis      = select(1.0, vis_sum / f32(max(vis_count, 1u)), vis_count > 0u);
+    let rest_vis     = clamp(avg_vis, REST_LIGHT_MIN_VISIBILITY, 1.0);
+    e = e + rest_contrib * rest_vis;
     return e;
+}
+
+// 反射ヒット点の間接光（アンビエントの床）放射照度を返す。本画面の evaluate_gi_ambient と同じ分岐:
+//   GI 有効（rt_gi.enabled != 0）: DDGI プローブ照度を補間し、recursive_weight で反射内の再帰爆発を抑える。
+//   GI 無効（0：RT 非対応・GI オフ・プレビューパス）: フラットアンビエント ambient_color × ambient_intensity。
+// これがヒット照度の下限（床）になり、直接光が影で 0 になっても反射像が黒くつぶれない。
+// ミス時のフォールバック rt_refl_fallback と同じ分岐方針（GI 有効ならプローブ、無効ならフラット）。
+fn rt_refl_hit_indirect(hit_pos: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
+    if rt_gi.enabled != 0u {
+        return ddgi_sample_irradiance(rt_gi, hit_pos, n, t_gi_irr, t_gi_vis, s_gi) * rt_gi.recursive_weight;
+    }
+    return rt_meta.ambient_color * rt_meta.ambient_intensity;
 }
 
 fn rt_refl_fallback(world_pos: vec3<f32>, r_dir: vec3<f32>) -> vec3<f32> {
@@ -235,9 +278,11 @@ fn fs_rt(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
         // ミップは 0 固定（レイ微分は将来課題）。フォールバック（flags 対象外・tex 0）は on 側で平均色へ。
         let albedo  = rt_hit_base_color(hit.instance_custom_data, hit.primitive_index, hit.barycentrics);
         let direct = rt_refl_direct_irradiance(hit_pos, n_hit);
-        let bounce = ddgi_sample_irradiance(rt_gi, hit_pos, n_hit, t_gi_irr, t_gi_vis, s_gi)
-                   * rt_gi.recursive_weight;
-        reflected = albedo * (direct + bounce) / RT_REFL_PI;
+        // 間接光の床（GI 有効なら DDGI プローブ、無効ならフラットアンビエント）。
+        // 従来は enabled に関わらず DDGI を無条件サンプルしていたが、GI 無効時にフラットアンビエントへ
+        // フォールバックする分岐へ変更（本画面 evaluate_gi_ambient・ミス時 rt_refl_fallback と整合）。
+        let indirect = rt_refl_hit_indirect(hit_pos, n_hit);
+        reflected = albedo * (direct + indirect) / RT_REFL_PI;
     }
 
     let color = reflected * fresnel * smooth_w * u_reflection.intensity;
