@@ -1,0 +1,19 @@
+# transparent_skinned_rt.toml — 距離ソート透明スキンメッシュ（本物の RT 屈折バリアント）。
+# transparent_skinned.toml の背景取得を refract_rt.wgsl（TLAS 屈折レイ）へ差し替えたもの。
+# 詳細は transparent_mesh_rt.toml 参照。EXPERIMENTAL_RAY_QUERY 対応 GPU でのみビルドする。
+
+shader_sources  = ["cluster_common.wgsl", "pbr_common.wgsl", "shader_common.wgsl", "ddgi_common.wgsl", "light_common.wgsl", "shadow.wgsl", "rt_shadow_off.wgsl", "shader_skinned_vertex.wgsl", "surface.wgsl", "surface_gather.wgsl", "lighting_eval.wgsl", "shader_fragment.wgsl", "refract_common.wgsl", "refract_rt.wgsl", "shader_transparent.wgsl"]
+vertex_entry    = "vs_main"
+fragment_entry  = "fs_transparent_sorted"
+vertex_slots    = ["mesh_vertex", "skin_vertex"]
+
+topology        = "TriangleList"
+cull_mode       = "Back"
+front_face      = "Ccw"
+
+depth_write     = false
+depth_compare   = "LessEqual"
+
+color_format    = "surface"
+blend           = "PremultipliedAlpha"
+write_mask      = "all"

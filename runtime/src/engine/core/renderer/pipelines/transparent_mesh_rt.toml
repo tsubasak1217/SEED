@@ -1,0 +1,25 @@
+# transparent_mesh_rt.toml — 距離ソート透明スタティックメッシュ（本物の RT 屈折バリアント）。
+# transparent_mesh.toml と同一のブレンド／深度／フォーマット／フラグメント（fs_transparent_sorted）だが、
+# 背景取得を refract_ss.wgsl（スクリーンスペース近似）から refract_rt.wgsl（TLAS 屈折レイ）へ差し替える。
+# refract_rt.wgsl が group4 に TLAS(binding6)＋平均アルベド(binding14) を追加宣言するため、
+# この TOML から生成される group4 BGL は「ライト＋シャドウ＋クラスタ＋DDGI＋TLAS＋アルベド＋屈折背景」の
+# superset になる（lighting.rs::create_transparent_rt_bind_group が一致する BindGroup を供給する）。
+#
+# EXPERIMENTAL_RAY_QUERY 対応 GPU でのみビルドする（acceleration_structure を宣言するため）。
+# 影経路は rt_shadow_off（シャドウマップのみ）＝今回のスコープは「屈折のみ」（受光影は変更しない）。
+
+shader_sources  = ["cluster_common.wgsl", "pbr_common.wgsl", "shader_common.wgsl", "ddgi_common.wgsl", "light_common.wgsl", "shadow.wgsl", "rt_shadow_off.wgsl", "shader_static_vertex.wgsl", "surface.wgsl", "surface_gather.wgsl", "lighting_eval.wgsl", "shader_fragment.wgsl", "refract_common.wgsl", "refract_rt.wgsl", "shader_transparent.wgsl"]
+vertex_entry    = "vs_main"
+fragment_entry  = "fs_transparent_sorted"
+vertex_slots    = ["mesh_vertex"]
+
+topology        = "TriangleList"
+cull_mode       = "Back"
+front_face      = "Ccw"
+
+depth_write     = false
+depth_compare   = "LessEqual"
+
+color_format    = "surface"
+blend           = "PremultipliedAlpha"
+write_mask      = "all"

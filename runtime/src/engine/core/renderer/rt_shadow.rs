@@ -992,17 +992,20 @@ mod tests {
 
         // WBOIT（半透明）バリアントも同じライト評価を共有するため併せて検証する
         // （transparency.rs が同じ連結でパイプラインを構築している）。
-        // RT-Translucency: WBOIT は屈折ヘルパ refract_common.wgsl（group4 binding15/16）を含む。
-        let wboit    = include_str!("shaders/shader_wboit.wgsl");
-        let refract  = include_str!("shaders/refract_common.wgsl");
+        // RT-Translucency: WBOIT は屈折ヘルパ refract_common.wgsl（group4 binding15/16・glass_composite）と、
+        // 背景取得の SS 実装 refract_ss.wgsl（glass_composite が呼ぶ refract_sample_bg を供給）を含む。
+        // 本物の RT 屈折（refract_rt.wgsl）バリアントは transparency.rs 側の naga テストが検証する。
+        let wboit      = include_str!("shaders/shader_wboit.wgsl");
+        let refract    = include_str!("shaders/refract_common.wgsl");
+        let refract_ss = include_str!("shaders/refract_ss.wgsl");
 
         let variants: [(&str, Vec<&str>); 6] = [
             ("mesh_rt",         vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_on, tint_avg,  static_v, surf, gather, light_ev, frag]),
             ("skinned_mesh_rt", vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_on, tint_avg,  skin_v,   surf, gather, light_ev, frag]),
             ("mesh",            vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_off, static_v, surf, gather, light_ev, frag]),
             ("skinned_mesh",    vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_off, skin_v,   surf, gather, light_ev, frag]),
-            ("wboit_mesh",      vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_off, static_v, surf, gather, light_ev, frag, refract, wboit]),
-            ("wboit_skinned",   vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_off, skin_v,   surf, gather, light_ev, frag, refract, wboit]),
+            ("wboit_mesh",      vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_off, static_v, surf, gather, light_ev, frag, refract, refract_ss, wboit]),
+            ("wboit_skinned",   vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_off, skin_v,   surf, gather, light_ev, frag, refract, refract_ss, wboit]),
         ];
 
         for (name, parts) in variants {

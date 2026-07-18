@@ -3374,6 +3374,12 @@ impl App {
                             &draw_ctx.pipelines.transparent.refract_sampler,
                         )
                     };
+                    // 本物の RT 屈折を使うか（Phase RT-Translucency）。translucency=Rt で屈折背景アクティブかつ
+                    // RT 透明パイプラインが存在（＝RT 対応 GPU）のとき。実 BindGroup は TLAS 構築後（メインパス
+                    // 内）に代入する（needs_tlas()＝translucency=Rt で TLAS 構築が保証される）。None のときは
+                    // SS 版フォールバック（transparent_bg_main）を使う（非対応 GPU・translucency≠Rt と完全同一経路）。
+                    let use_rt_refract = refract_active && draw_ctx.pipelines.transparent.rt.is_some();
+                    let mut transparent_rt_bg_main: Option<wgpu::BindGroup> = None;
                     let ldr_view   = self.rt_pool.view(crate::engine::core::renderer::RT_LDR);
                     // WBOIT ターゲットのビュー（確保済みのときのみ Some）。
                     let (wboit_accum_view, wboit_reveal_view) = if tp_wboit {
@@ -3474,6 +3480,32 @@ impl App {
                                 perf_tlas_ms    = _perf_t_tlas.elapsed().as_secs_f64() * 1000.0;
                                 perf_tlas_built = stat.built;
                                 perf_tlas_insts = stat.instances;
+                            }
+                        }
+
+                        // ── 本物の RT 屈折の透明用 group4 BG（Phase RT-Translucency）─────────
+                        // TLAS 構築の直後に作る（use_rt_refract のときだけ）。屈折レイの TLAS(6)＋界面の
+                        // 平均アルベド(14)＋屈折背景(15/16) を含む superset を 1 本にまとめる。BindGroup は
+                        // wgpu の内部参照で TLAS を生かすため、rt の共有借用はここで閉じてよい（描画時まで有効）。
+                        // use_rt_refract ⟹ refract_active ⟹ refract_pyramid は ensure 済み（full_view が有効）。
+                        if use_rt_refract {
+                            if let (Some(rt_cell), Some(rt_tp)) = (
+                                draw_ctx.rt_shadow.as_ref(),
+                                draw_ctx.pipelines.transparent.rt.as_ref(),
+                            ) {
+                                let rt = rt_cell.borrow();
+                                let refract_view = self.refract_pyramid.full_view();
+                                transparent_rt_bg_main = Some(draw_ctx.light_buffer.create_transparent_rt_bind_group(
+                                    &draw_ctx.device,
+                                    &rt_tp.lights_bgl,
+                                    &draw_ctx.shadow,
+                                    &draw_ctx.clusters,
+                                    &draw_ctx.gi,
+                                    rt.tlas(),
+                                    rt.albedo_buffer(),
+                                    refract_view,
+                                    &draw_ctx.pipelines.transparent.refract_sampler,
+                                ));
                             }
                         }
 
@@ -4123,14 +4155,30 @@ impl App {
                             // デファードでも半透明はフォワードで描く（G-Buffer 深度を Load してテスト、
                             // メインパスが Load で再開しているためこの深度テストは正しく機能する）。
                             if tp_sorted {
-                                crate::engine::core::renderer::transparency::draw_sorted(
-                                    &mut pass,
-                                    &transparent_models,
-                                    &camera_buf.bind_group,
-                                    &transparent_bg_main,
-                                    &draw_ctx.pipelines.transparent,
-                                    saved_camera_pos,
-                                );
+                                // 本物の RT 屈折が使えるフレームは RT パイプライン＋RT superset BG で描く。
+                                // それ以外（非対応 GPU・translucency≠Rt・屈折背景オフ）は SS 版へ完全フォールバック。
+                                if let (Some(rt_bg), Some(rt_tp)) = (
+                                    transparent_rt_bg_main.as_ref(),
+                                    draw_ctx.pipelines.transparent.rt.as_ref(),
+                                ) {
+                                    crate::engine::core::renderer::transparency::draw_sorted_rt(
+                                        &mut pass,
+                                        &transparent_models,
+                                        &camera_buf.bind_group,
+                                        rt_bg,
+                                        rt_tp,
+                                        saved_camera_pos,
+                                    );
+                                } else {
+                                    crate::engine::core::renderer::transparency::draw_sorted(
+                                        &mut pass,
+                                        &transparent_models,
+                                        &camera_buf.bind_group,
+                                        &transparent_bg_main,
+                                        &draw_ctx.pipelines.transparent,
+                                        saved_camera_pos,
+                                    );
+                                }
                             }
                         }
                         perf_draw_ms = _perf_t_draw.elapsed().as_secs_f64() * 1000.0;
@@ -4558,14 +4606,29 @@ impl App {
                         {
                             {
                                 let mut wpass = frame.begin_wboit_pass_to(accum_view, reveal_view);
-                                crate::engine::core::renderer::transparency::draw_wboit(
-                                    &mut wpass,
-                                    &transparent_models,
-                                    &camera_buf.bind_group,
-                                    &transparent_bg_main,
-                                    &draw_ctx.pipelines.transparent,
-                                    saved_camera_pos,
-                                );
+                                // 距離ソートと同じ分岐: RT 屈折が使えるなら RT 版、そうでなければ SS 版。
+                                if let (Some(rt_bg), Some(rt_tp)) = (
+                                    transparent_rt_bg_main.as_ref(),
+                                    draw_ctx.pipelines.transparent.rt.as_ref(),
+                                ) {
+                                    crate::engine::core::renderer::transparency::draw_wboit_rt(
+                                        &mut wpass,
+                                        &transparent_models,
+                                        &camera_buf.bind_group,
+                                        rt_bg,
+                                        rt_tp,
+                                        saved_camera_pos,
+                                    );
+                                } else {
+                                    crate::engine::core::renderer::transparency::draw_wboit(
+                                        &mut wpass,
+                                        &transparent_models,
+                                        &camera_buf.bind_group,
+                                        &transparent_bg_main,
+                                        &draw_ctx.pipelines.transparent,
+                                        saved_camera_pos,
+                                    );
+                                }
                             }
                             // accum/reveal → シーン HDR へアルファブレンド合成（LoadOp::Load）。
                             draw_ctx.pipelines.transparent.composite_wboit(

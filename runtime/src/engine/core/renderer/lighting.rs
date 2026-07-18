@@ -672,6 +672,61 @@ impl LightBuffer {
             ],
         })
     }
+
+    /// 本物の RT 屈折の透明フォワードパス用 group4 複合 BindGroup を生成する（Phase RT-Translucency）。
+    ///
+    /// RT 透明パイプライン（refract_rt.wgsl 連結）の group4 レイアウトは、RT 複合 BG（0〜14, TLAS binding6＋
+    /// 平均アルベド binding14 込み）と屈折背景（15/16）の **和集合**（superset）になる。この関数は
+    /// `create_rt_bind_group`（0〜14）＋`create_transparent_bind_group`（15/16）を 1 本にまとめる。
+    /// メインカメラ専用（RT 屈折はプレビューでは使わない）＝ライブクラスタ／GI＋メイン LightMeta を差す。
+    ///
+    /// - `transparent_rt_bgl`: `TransparentRtPipelines.lights_bgl`（TLAS＋アルベド込み superset）。
+    /// - `tlas`:               このフレームに構築済みの TLAS（needs_tlas()＝translucency=Rt で構築保証）。
+    /// - `rt_albedo`:          TLAS インスタンス順の平均アルベド storage（界面の透過色付けに使う）。
+    /// - `refract_view`:       屈折の背景（不透明 scene_hdr のコピー・ピラミッド）。オフ時はダミー 1x1。
+    /// - `refract_sampler`:    背景サンプラー（線形・ClampToEdge）。
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_transparent_rt_bind_group(
+        &self,
+        device:          &wgpu::Device,
+        transparent_rt_bgl: &wgpu::BindGroupLayout,
+        shadow:          &ShadowResources,
+        clusters:        &super::clustered::ClusterResources,
+        gi:              &super::ddgi::GiResources,
+        tlas:            &wgpu::Tlas,
+        rt_albedo:       &wgpu::Buffer,
+        refract_view:    &wgpu::TextureView,
+        refract_sampler: &wgpu::Sampler,
+    ) -> wgpu::BindGroup {
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label:   Some("Lights+Shadow+Cluster+TLAS+Albedo+Refract BG (group 4, transparent RT)"),
+            layout:  transparent_rt_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0,  resource: self.lights_buffer.as_entire_binding() },
+                // RT 屈折はメインカメラ専用のためメイン LightMeta を差す（アンビエントのフォールバックにも使う）。
+                wgpu::BindGroupEntry { binding: 1,  resource: self.meta_buffer_main.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2,  resource: wgpu::BindingResource::TextureView(&shadow.dir_array_view) },
+                wgpu::BindGroupEntry { binding: 3,  resource: wgpu::BindingResource::TextureView(&shadow.spot_array_view) },
+                wgpu::BindGroupEntry { binding: 4,  resource: wgpu::BindingResource::Sampler(&shadow.sampler) },
+                wgpu::BindGroupEntry { binding: 5,  resource: shadow.ubo.as_entire_binding() },
+                // 屈折レイの TLAS（refract_rt.wgsl binding6）。
+                wgpu::BindGroupEntry { binding: 6,  resource: wgpu::BindingResource::AccelerationStructure(tlas) },
+                wgpu::BindGroupEntry { binding: 7,  resource: clusters.grid_buffer().as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 8,  resource: clusters.indices_buffer().as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 9,  resource: clusters.params_buffer().as_entire_binding() },
+                // DDGI（ミス／画面外ヒットのフォールバック照度）。メインカメラ＝ライブ GiParams。
+                wgpu::BindGroupEntry { binding: 10, resource: gi.params_buffer().as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 11, resource: wgpu::BindingResource::TextureView(gi.irradiance_view()) },
+                wgpu::BindGroupEntry { binding: 12, resource: wgpu::BindingResource::TextureView(gi.visibility_view()) },
+                wgpu::BindGroupEntry { binding: 13, resource: wgpu::BindingResource::Sampler(gi.sampler()) },
+                // 平均アルベド storage（界面の透過色付け。refract_rt.wgsl binding14）。
+                wgpu::BindGroupEntry { binding: 14, resource: rt_albedo.as_entire_binding() },
+                // 屈折の背景（不透明 scene_hdr のコピー・ピラミッド）。
+                wgpu::BindGroupEntry { binding: 15, resource: wgpu::BindingResource::TextureView(refract_view) },
+                wgpu::BindGroupEntry { binding: 16, resource: wgpu::BindingResource::Sampler(refract_sampler) },
+            ],
+        })
+    }
 }
 
 // ─── レイアウト検証テスト ──────────────────────────────────────

@@ -4,7 +4,9 @@
 # カラーフォーマットは HDR（PostPipeline 同様 color_format="surface" が
 # ビルド時に渡す scene_format=Rgba16Float へ解決される）。
 
-shader_sources  = ["cluster_common.wgsl", "pbr_common.wgsl", "shader_common.wgsl", "ddgi_common.wgsl", "light_common.wgsl", "shadow.wgsl", "rt_shadow_off.wgsl", "shader_static_vertex.wgsl", "surface.wgsl", "surface_gather.wgsl", "lighting_eval.wgsl", "shader_fragment.wgsl", "refract_common.wgsl", "shader_transparent.wgsl"]
+# 背景取得はスクリーンスペース（refract_ss.wgsl）。RT 対応 GPU・translucency=Rt では
+# transparent_mesh_rt.toml が refract_rt.wgsl（本物の屈折レイ）で置き換える。
+shader_sources  = ["cluster_common.wgsl", "pbr_common.wgsl", "shader_common.wgsl", "ddgi_common.wgsl", "light_common.wgsl", "shadow.wgsl", "rt_shadow_off.wgsl", "shader_static_vertex.wgsl", "surface.wgsl", "surface_gather.wgsl", "lighting_eval.wgsl", "shader_fragment.wgsl", "refract_common.wgsl", "refract_ss.wgsl", "shader_transparent.wgsl"]
 vertex_entry    = "vs_main"
 fragment_entry  = "fs_transparent_sorted"
 vertex_slots    = ["mesh_vertex"]

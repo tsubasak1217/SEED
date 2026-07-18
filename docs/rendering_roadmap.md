@@ -1129,7 +1129,60 @@ RT-Translucency の屈折を土台に、「本物のガラス」を作れる 2 �
 - **未検証（実機 GPU 無し）**: すりガラスのミップ生成（ダウンサンプル→いもす→書き戻しの実描画）・
   roughness 連動ぼけ・透過率の見た目・色付き影の明るさ変化・VRAM 実測は実機スモークで確認すること。
 
+### C. 本物の RT 屈折（TLAS 屈折レイ・スクリーンスペースはフォールバックへ降格） 【状況: 実装済み（実機検証待ち）】
+スクリーンスペース屈折（IOR オフセットで不透明背景コピーをサンプル）の原理的限界
+（(a) ガラス越しのガラスが映らない (b) 自己屈折＝厚みの屈折がない (c) 視差が不正確）を、
+**TLAS への本物の屈折レイ**で解消する（ユーザー決定・正攻法）。SS 版は非対応 GPU／`translucency≠Rt` の
+**フォールバックとして温存**する（完全同一経路）。
+
+- **背景取得の 2 方式を差し替え可能に分離**（`rt_shadow_tint_avg` / `_bindless` と同じ排他分離方式）:
+  `refract_common.wgsl` が方式非依存の共有部（背景バインディング 15/16・すりガラスのミップ選択・
+  `glass_composite`）を持ち、`glass_composite` は背景取得 `refract_sample_bg(surf, frag_xy, ior)` を呼ぶだけ。
+  実装は連結される **どちらか 1 本**が供給する:
+  - `refract_ss.wgsl`: スクリーンスペース屈折（従来の `refract_background` を移設。フォールバック）。
+  - `refract_rt.wgsl`: TLAS 屈折レイ（本物）。group4 に **TLAS(binding6)＋平均アルベド(binding14)** を追加宣言する。
+- **RT トレースアルゴリズム**（`refract_rt.wgsl::refract_sample_bg`。**最大 4 界面 + 1 不透明 = 5 レイ/px** で有界）:
+  1. **入射屈折**: シェーディング表面で `refract(-V, N, 1/ior)`（**表面 N は本物**＝一次屈折は正確）。
+     全反射（refract が 0 ベクトル）なら鏡面反射方向へ切り替え。
+  2. **界面トレースループ**（半透明マスク `0x02` のみ・最近ヒット・最大 `REFRACT_MAX_INTERFACES=4`）:
+     入射面（`front_face`）でだけ界面色 `T=(1-α)+α·tr·albedo`（色付き影と同一の透過モデル・平均アルベド storage を
+     `custom_data` で引く）を `tint` へ乗算。裏面（出射面）は掛けない（媒質 1 個につき 1 回＝二重計上防止）。
+  3. **最終背景**: 現在の方向で不透明（`0x01`）を最近トレース → ヒット点を `view_proj` で画面へ射影 →
+     **画面内なら `refract_bg`（不透明のみのコピー）をその UV で roughness 連動サンプル**（すりガラス維持）。
+     画面外 or 不透明ミスは **DDGI プローブ照度（GI 有効時）or フラットアンビエント**（`evaluate_gi_ambient`・
+     反射 RT の fallback と同じ分岐）。深度一致チェックは不要（`refract_bg` は不透明のみのコピーで遮蔽関係が単純）。
+  4. 背景の光は貫いた界面群の `tint` でフィルタ（ガラス越しのガラス・厚み色）。シェーディング面自身の色は
+     `glass_composite` の `base_color_factor` で別途乗る（二重計上しない）。
+- **パイプライン**: RT 対応 GPU（`rt_shadows_supported()`）でのみ RT 透明バリアント一式（`transparent_mesh_rt` /
+  `transparent_skinned_rt` ＋ WBOIT RT）を生成し `TransparentPipelines.rt: Option<..>` に保持
+  （`RtMeshPipelines` と同流儀）。距離ソート／WBOIT 両対応（`glass_composite` 共有）。group4 は
+  「ライト＋シャドウ＋クラスタ＋DDGI＋TLAS＋アルベド＋屈折背景」の superset（`create_transparent_rt_bind_group`）。
+  影経路は従来どおり `rt_shadow_off`（シャドウマップのみ）＝**今回のスコープは屈折のみ**（透明パスの受光影は不変）。
+- **TLAS ライフタイム**: `needs_tlas()` は既に `translucency==Rt` を含むため、メインパス前に TLAS 構築済み保証。
+- **ゲート／コスト**: `translucency=Rt` かつ RT 対応かつ屈折背景アクティブ（`refract_active`）のときだけ RT 版で描く。
+  非対応 GPU・`translucency≠Rt` は `rt=None` で SS 版へ完全フォールバック（追加コストゼロ）。屈折レイは
+  `material_refracts` の半透明ピクセルのみ。
+
+#### 既知の限界（正直に記す）
+- **後続界面の再屈折は近似**: inline ray query の committed intersection は**ヒット三角形の法線を返さない**
+  （バインドレス頂点フェッチは今回スコープ外）。ゆえに界面法線を「レイ正対（front:-dir / back:+dir）」で近似する。
+  この近似は head-on となり `refract` がほぼ曲げないため、**後続界面では実質「界面色を乗せつつ直進」へ縮退**する。
+  一次屈折（表面 N は本物）で視差・ガラス越し・厚み色は得られるが、多重界面の正確な再屈折には法線が要る。
+- **後続界面の ior は自身の ior で近似**: インスタンス個別の ior が平均アルベド storage に無いため。
+  将来 `BindlessInstanceRecord` に ior を足せば `custom_data` から実 ior を引いて界面ごとに正確化できる拡張余地。
+- **背景は不透明のみのコピー**: レイが最終的に当たる不透明面は「画面内に写っていれば」正しく引ける。
+  画面外／不透明ミスは DDGI（無効ならアンビエント）で近似する。
+
+### 検証（本物の RT 屈折・実装時点）
+- `cargo build` 0 エラー / `cargo test` 0 失敗。naga 全バリアント通過（SS 3＝`Capabilities::empty`／
+  **RT 3＝`Capabilities::RAY_QUERY`**＝`sorted_mesh_rt`・`wboit_mesh_rt`・`wboit_skinned_rt`）＋屈折 RT 定数の
+  Rust/WGSL 一致（マスク 0x01/0x02・パック 255/256・界面上限 4）。
+- **未検証（実機 GPU 無し）**: ガラス越しのガラス・厚みのある屈折・すりガラス維持・非対応 GPU の SS 縮退・
+  後続界面近似の見え方は実機スモークで確認すること。
+
 ### 将来課題（ユーザーと合意済みの積み残し）
+- **界面法線の取得（多重界面の正確な再屈折）**: `BindlessInstanceRecord` に頂点/法線参照＋ior を足し、
+  ヒット点の実法線・実 ior で界面ごとに正確に再屈折する（バインドレス tint を透明パスへ広げる拡張）。
 - **拡散透過（diffuse transmission）**: 葉の逆光透け等（`KHR_materials_diffuse_transmission` 相当）。
   現状の transmission は鏡面的な屈折透過のみ。裏面ライトの拡散的な滲み出しは別項として未実装。
 - **スクリーンスペース SSS（肌）**: サブサーフェススキャタリングのスクリーンスペース近似。
