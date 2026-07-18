@@ -113,6 +113,13 @@ pub struct DrawContext {
     /// DrawContext は `&self` で共有参照されるため、フレーム内で BLAS/TLAS を再構築する
     /// （`&mut` が要る）には内部可変性が必要。model_cache と同じく RefCell で包む。
     pub rt_shadow:        Option<RefCell<RtShadowResources>>,
+    /// バインドレス基盤（フェーズ B1）。対応 GPU でのみ Some。
+    /// テクスチャ配列レジストリ・UV/index メガバッファ・インスタンステーブルを保持する。
+    /// B1 では確保のみ（消費側 B2/B3 は後続）。登録／解放でダーティ化する BindGroup キャッシュを
+    /// 内包するため `&mut` が要り、DrawContext は `&self` 共有のため RefCell で包む。
+    /// B1 時点では確保のみで読み出し側が無いため未使用警告が出るが、B2 が消費する（意図的保持）。
+    #[allow(dead_code)]
+    pub bindless:         Option<RefCell<crate::engine::core::renderer::BindlessResources>>,
     /// DDGI リソース一式（Phase RT-GI）。アトラス・GiParams・更新 compute BindGroup を持つ。
     /// RT 非対応 GPU でもリソースは生成する（compute は attach されず GI は無効）。
     pub gi:               GiResources,
@@ -200,6 +207,17 @@ impl DrawContext {
                 rt.albedo_buffer(),
             );
         }
+        // バインドレス基盤（フェーズ B1）。対応 GPU でのみ確保する。
+        // 確定容量はデバイス初期化時に global へ設定済み（mod.rs）。非対応 GPU では None で、
+        // 一切の GPU 資源を確保しない（＝従来経路と完全に同一）。
+        let bindless = if crate::engine::core::renderer::bindless_supported() {
+            let cap = crate::engine::core::renderer::bindless::bindless_capacity();
+            Some(RefCell::new(
+                crate::engine::core::renderer::BindlessResources::new(&device, &queue, cap),
+            ))
+        } else {
+            None
+        };
         // スプライトバッチャ（Phase R6）: 永続インスタンスバッファを初期容量で確保する。
         let sprites = RefCell::new(SpriteBatcher::new(&device));
         Self {
@@ -212,6 +230,7 @@ impl DrawContext {
             shadow,
             shadow_preview,
             rt_shadow,
+            bindless,
             gi,
             post,
             postfx,
