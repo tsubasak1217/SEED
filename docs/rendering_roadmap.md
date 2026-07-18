@@ -1232,3 +1232,98 @@ TLAS 構築は `draw_ctx.rt_shadow.is_some() && resolved.needs_tlas()` の 1 判
 - `cargo test`: 87 passed（+6: `render_features` の serde 往復・旧キー欠落既定・resolve 降格・needs_tlas・log_line 注記）。
 - `cargo build` / `cd editor && dotnet build` ともに 0 エラー。
 - **未検証（実機 GPU 無し）**: `[SEED FEATURES]` ログの実値・従来動作の維持はスモークテストで確認すること。
+
+---
+
+## フェーズ B: バインドレス基盤（RT ヒットシェーディングの土台）【状況: B1 実装済み（実機検証待ち）／ B2・B3 未着手】
+
+### 背景・目的
+
+inline RT のヒットシェーディング（色付き影・DDGI・RT 反射）は現在「プリミティブ平均色」の
+近似に留まっている。根本原因は「ヒットした三角形のテクスチャ・頂点属性（UV）を GPU 側で引けない」
+こと。マテリアルごとに BindGroup を差し替える従来モデルでは、レイがどのプリミティブに当たったかを
+実行時に解決してそのテクスチャ／UV を引く手段が無い。これを解消する土台が**バインドレス**である。
+
+方針は 3 段階（各段で見た目を壊さない・非対応 GPU は従来経路を維持）:
+
+- **B1（本フェーズ・実装済み）**: 基盤の確保・API・充填のみ。**消費側は無し＝見た目は一切変わらない**。
+- **B2（未着手）**: 消費側の配線。group4（raster 連結）と各 RT パスの専用グループへ
+  「テクスチャ配列 / サンプラー / UV / index / インスタンステーブル」を追加し、ヒット先の
+  ベースカラーを実際にサンプルする。
+- **B3（未着手）**: normal/MR など属性の拡張、Mask（アルファテスト）オクルーダの candidate 段階での
+  正しい影付け等。
+
+### 非対応 GPU フォールバック方針
+
+バインドレスは以下を要求フィーチャー／リミットとする。**いずれか欠ける GPU では基盤を一切確保せず**、
+既存の平均色経路が現状どおり動く（B2/B3 でも消費側は「対象外＝ダミー」で縮退する）。
+
+- `Features::TEXTURE_BINDING_ARRAY`（`binding_array<texture_2d>` 宣言）
+- `Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING`
+  （ヒットごとに非一様なインデックスで配列を引く）
+- `Limits::max_binding_array_elements_per_shader_stage > 0`（wgpu 25 既定 0＝配列不可）
+- `Features::PARTIALLY_BOUND_BINDING_ARRAY` は**任意**（対応時のみ要求）。B1 は全スロットを
+  ダミー白で埋めて BindGroup を構築するため、部分バインド非対応でも動く。
+
+対応時は `max_sampled_textures_per_shader_stage` / `max_binding_array_elements_per_shader_stage` を
+テクスチャ配列容量（`BINDLESS_MAX_TEXTURES=4096` をアダプタ上限でクランプした値）まで
+**アダプタ上限の範囲で**引き上げる。RTX 3060（Vulkan/DX12）では上限が十分大きく 4096 が確保される。
+起動ログ `[SEED BINDLESS] 対応/非対応` に確定容量・部分バインド可否を出す。
+
+### B1 の実装内容（renderer/bindless.rs）
+
+- **テクスチャレジストリ**: ベースカラー（albedo）テクスチャに安定インデックスを割り当てる。
+  index 0 は 1x1 白ダミー（未登録・解放後の安全弁）。解放スロットはフリーリストで再利用。
+  `binding_array<texture_2d<f32>>`（binding0）＋共有サンプラー（binding1・リニア／リピート）を
+  1 個の BindGroup にまとめる。まず albedo のみ対象（normal/MR は B3 で別配列を増設できる設計）。
+- **メガバッファ方式**（buffer の binding_array は使わない＝GPU 互換・単純さ優先）:
+  - `bindless_uv_buffer`（既定 64MB）: 全プリミティブの UV（vec2）を連結。
+  - `bindless_index_buffer`（既定 32MB）: 全プリミティブの三角形インデックス（u32）を連結。
+  - サブアロケータ `MegaAllocator`（バンプ＋フリーリスト・隣接コアレス）。あふれたら警告ログ＋
+    そのプリミティブはバインドレス対象外（ダミー扱い）。断片化でコンパクションは将来課題。
+- **インスタンステーブル**（`BindlessInstanceRecord`, 64B, 16B 整列, TLAS custom_data で引く）:
+  `avg_albedo`（offset 0・既存 16B と同レイアウト）／`base_color_factor`／`albedo_tex_index`／
+  `uv_offset`／`index_offset`／`flags`。WGSL ミラー `shaders/bindless_common.wgsl` と
+  Rust `bindless::tests` でレイアウトを照合する。
+
+### 既存の平均アルベド storage との互換（重要）
+
+既存の平均アルベド storage（16B/inst, `array<vec4<f32>>`）は rt_shadow_on.wgsl(group4 b14) /
+ddgi_probe_update.wgsl(group0 b4) / reflection_rt.wgsl(group3 b3) の 3 経路が `.rgb`/`.a` を読む。
+このストライドを変えると 3 シェーダが無言で壊れるため、**B1 では既存バッファを一切変更せず**、
+`BindlessInstanceRecord` を**別個の新バッファ**として確保する（＝ゼロリグレッション・シェーダ変更なし）。
+`BindlessInstanceRecord` の先頭 16B は既存と同じ `avg_albedo vec4` にしてあり、B2/B3 で両バッファを
+統合する際に先頭 16B をそのまま流用できる。
+
+### B2 が消費する API（renderer::BindlessResources）
+
+- `texture_bind_group_layout()` / `ensure_texture_bind_group()`（テクスチャ配列＋サンプラーの BGL/BG）
+- `uv_buffer()` / `index_buffer()` / `instance_table_buffer()`（storage バインド用）
+- `register_albedo_texture(view) -> u32` / `free_albedo_texture(idx)`（登録・解放）
+- `append_uv(queue, &[[f32;2]]) -> Option<u32>` / `append_indices(queue, &[u32]) -> Option<u32>` /
+  `free_uv` / `free_indices`（メガバッファ追記・解放）
+- `upload_instance_records(queue, &[BindlessInstanceRecord])`（テーブル一括アップロード）
+
+### バインディング配置（B2 で行う・B1 では触らない）
+
+group4（raster 連結）へ `binding17=テクスチャ配列, 18=サンプラー, 19=UV, 20=index,
+21=インスタンステーブル` を予約追加するのは **B2**。B1 は既存パイプラインのバインディングを
+一切変えない（`max_bind_groups=5` は不変）。
+
+### 検証（B1 実装時点）
+
+- `cargo test`: 159 passed（+11: レコードのレイアウト照合／WGSL ミラー定数一致・parse／
+  アロケータのバンプ・整列パディング・解放再利用・コアレス・あふれ縮退・0 サイズ／
+  レジストリの採番・再利用・ダミー0番／インスタンス容量一致／dummy レコード）。
+- `cargo build`: 0 エラー。既存の naga シェーダバリアント検証も通過（B1 はシェーダ未連結）。
+- **未検証（実機 GPU 無し）**: 起動ログ `[SEED BINDLESS]` の実値・確定容量、非対応 GPU での
+  従来経路維持はスモークテストで確認すること（B1 の観測差分は起動ログのみの想定）。
+
+### B1 の割り切り（B2 へ引き継ぐ TODO）
+
+- **ライブ充填の配線は B2 に委譲**。B1 はレジストリ登録／メガバッファ追記／テーブル充填の各 API を
+  完成・単体テストし、`BindlessResources` を対応 GPU で確保するところまで。実際にモデルアップロード
+  （gpu_resources）・stale prune・TLAS 詰め直し（rt_shadow）へ配線してデータを流し込むのは、
+  **消費側バインディングと同時に B2 で行う**。理由: B1 では読み手が無く配線の正しさをスモークで
+  検証できないうえ、ホットパス（upload/prune/rt_shadow）へ触れるのはリグレッション面が大きいため、
+  「消費と同時に配線して実データで検証する」方が安全（ゼロリグレッション優先）。

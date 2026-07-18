@@ -50,6 +50,9 @@ pub(crate) mod shadow_mask_bilateral;
 pub(crate) mod render_features;
 /// すりガラス用の屈折背景ミップチェーン（ダウンサンプル→いもす法ブラー。ガラス表現）
 pub(crate) mod refract_pyramid;
+/// バインドレス基盤（フェーズ B1）: テクスチャ配列レジストリ・UV/index メガバッファ・
+/// インスタンステーブル。RT ヒットシェーディングの土台（消費は B2/B3）。
+pub(crate) mod bindless;
 
 pub use uniforms::{CameraUniform, ModelUniform, MaterialUniform, JointUniform, ColorVertex,
                    GpuCullData, FrustumUniform, GizmoVertex};
@@ -72,6 +75,12 @@ pub use clustered::{ClusterResources, partition_directional_first,
 pub use shadow::{ShadowResources, ShadowPlan, ShadowMatricesUbo,
                  CSM_CASCADE_COUNT, MAX_SHADOW_SPOTS, SHADOW_DEPTH_FORMAT};
 pub use rt_shadow::RtShadowResources;
+// B2/B3 が消費する API 群。B1 時点ではエンジン内から一部しか参照しないため未使用警告が出るが、
+// 公開 API 面の一覧として明示的に re-export しておく（消費側 B2 が pub パスで使う）。
+#[allow(unused_imports)]
+pub use bindless::{BindlessResources, BindlessInstanceRecord,
+                   BINDLESS_MAX_TEXTURES, BINDLESS_DUMMY_TEX_INDEX, BINDLESS_FLAG_ELIGIBLE,
+                   set_bindless_supported, bindless_supported};
 pub use refract_pyramid::{RefractPyramid, REFRACT_MIP_COUNT};
 pub use reflection::{ReflectionPipelines, ReflectionParams,
                      RT_REFLECTION_NAME, REFLECTION_FORMAT, DEFAULT_REFLECTION_INTENSITY};
@@ -274,6 +283,46 @@ impl Renderer {
             }
         }
 
+        // バインドレス基盤（フェーズ B1）の対応判定。
+        // inline RT のヒットシェーディングでヒット先の albedo テクスチャ・UV を引くための土台。
+        // 必要フィーチャー:
+        //   - TEXTURE_BINDING_ARRAY: `binding_array<texture_2d>` 宣言そのもの。
+        //   - SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING:
+        //     ヒットごとに異なる（＝非一様な）インデックスで配列を引くために必須。
+        //   - PARTIALLY_BOUND_BINDING_ARRAY は「望ましい」だけで必須ではない（B1 は全スロットを
+        //     ダミーで埋めて構築するため非対応でも動く）。対応していれば併せて要求する。
+        // さらに wgpu 25 は binding_array のサイズを `max_binding_array_elements_per_shader_stage`
+        // （既定 0＝配列不可）で制限するため、アダプタがこれを 1 以上公開していることも条件にする。
+        let adapter_limits = adapter.limits();
+        let bindless_feat = af.contains(wgpu::Features::TEXTURE_BINDING_ARRAY)
+            && af.contains(wgpu::Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING);
+        let bindless_array_cap = adapter_limits.max_binding_array_elements_per_shader_stage;
+        let supports_bindless = bindless_feat && bindless_array_cap > 0;
+        // テクスチャ配列容量 = 目安上限をアダプタ上限（配列要素数・sampled テクスチャ数）でクランプ。
+        let bindless_capacity = BINDLESS_MAX_TEXTURES
+            .min(bindless_array_cap)
+            .min(adapter_limits.max_sampled_textures_per_shader_stage)
+            .max(1);
+        let supports_partially_bound = af.contains(wgpu::Features::PARTIALLY_BOUND_BINDING_ARRAY);
+        bindless::set_bindless_supported(supports_bindless);
+        bindless::set_bindless_capacity(if supports_bindless { bindless_capacity } else { 0 });
+        if supports_bindless {
+            eprintln!(
+                "[SEED BINDLESS] 対応（TEXTURE_BINDING_ARRAY + 非一様インデックス）。\
+                 テクスチャ配列容量={bindless_capacity}（要求目安 {BINDLESS_MAX_TEXTURES} / \
+                 アダプタ上限: 配列要素 {bindless_array_cap} / sampled {}）, 部分バインド={}",
+                adapter_limits.max_sampled_textures_per_shader_stage,
+                if supports_partially_bound { "対応" } else { "非対応（全スロットをダミーで充填）" }
+            );
+        } else {
+            let reason = if !bindless_feat {
+                "TEXTURE_BINDING_ARRAY / 非一様インデックスが非対応"
+            } else {
+                "binding_array 要素数上限が 0"
+            };
+            eprintln!("[SEED BINDLESS] 非対応（{reason}）→ 従来の平均色経路を使用");
+        }
+
         // GPU メッシュレットカリング（第1弾）は MULTI_DRAW_INDIRECT_COUNT に依存する。
         // 非対応 GPU では従来の CPU カリング＋draw_indexed 経路へ完全フォールバックする。
         let supports_mdi_count = af.contains(wgpu::Features::MULTI_DRAW_INDIRECT_COUNT);
@@ -308,10 +357,30 @@ impl Renderer {
                                  // RT 影は「対応していれば常に要求」する。設定によるオン/オフは
                                  // シェーダバリアント（RT対応時は常に RT パイプライン）と実行時フラグ
                                  // （LightMeta.rt_shadows）で切り替えるため、features は起動時固定でよい。
-                                 | if supports_rt { wgpu::Features::EXPERIMENTAL_RAY_QUERY | wgpu::Features::EXPERIMENTAL_RAY_TRACING_ACCELERATION_STRUCTURE } else { wgpu::Features::empty() },
+                                 | if supports_rt { wgpu::Features::EXPERIMENTAL_RAY_QUERY | wgpu::Features::EXPERIMENTAL_RAY_TRACING_ACCELERATION_STRUCTURE } else { wgpu::Features::empty() }
+                                 // バインドレス基盤（フェーズ B1）。対応時のみ要求する。
+                                 // 部分バインドは任意（対応していれば要求＝将来のスパースな配列に備える）。
+                                 | if supports_bindless {
+                                       wgpu::Features::TEXTURE_BINDING_ARRAY
+                                     | wgpu::Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING
+                                     | if supports_partially_bound { wgpu::Features::PARTIALLY_BOUND_BINDING_ARRAY } else { wgpu::Features::empty() }
+                                   } else { wgpu::Features::empty() },
                 required_limits:   wgpu::Limits {
                     max_storage_buffers_per_shader_stage: 12,
                     max_bind_groups: 5,
+                    // バインドレス対応時のみ、テクスチャ配列に必要なリミットをアダプタ上限内で引き上げる。
+                    // 既定（sampled=16, binding_array 要素=0）のままでは容量分の配列を宣言できない。
+                    // 非対応時は既定値のまま（＝従来と完全に同一）。
+                    max_sampled_textures_per_shader_stage: if supports_bindless {
+                        bindless_capacity.max(wgpu::Limits::default().max_sampled_textures_per_shader_stage)
+                    } else {
+                        wgpu::Limits::default().max_sampled_textures_per_shader_stage
+                    },
+                    max_binding_array_elements_per_shader_stage: if supports_bindless {
+                        bindless_capacity
+                    } else {
+                        wgpu::Limits::default().max_binding_array_elements_per_shader_stage
+                    },
                     ..wgpu::Limits::default()
                 },
                 memory_hints:      wgpu::MemoryHints::default(),
