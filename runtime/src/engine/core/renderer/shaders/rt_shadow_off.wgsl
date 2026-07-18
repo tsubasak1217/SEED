@@ -25,6 +25,7 @@ fn rt_shadow_enabled() -> bool {
 ///   tmax        : レイ最大距離
 ///   cone_radius : 面光源の見込み半径（ソフト影）
 ///   frag_xy     : フラグメント座標（サンプル回転のノイズ源）
+///   deterministic_tint : ソフト影の色付き tint 評価方法の切替（本スタブは無視。rt_shadow_on 参照）
 /// 引数が片方だけ増減するとパイプライン生成（シェーダコンパイル）が壊れる。
 fn rt_shadow_factor(
     origin:      vec3<f32>,
@@ -34,6 +35,7 @@ fn rt_shadow_factor(
     tmax:        f32,
     cone_radius: f32,
     frag_xy:     vec2<f32>,
+    deterministic_tint: bool,
 ) -> vec3<f32> {
     return vec3<f32>(1.0, 1.0, 1.0);
 }

@@ -48,7 +48,18 @@ use super::pipeline::get_shader_source;
 /// 事前計算シャドウマスクの対象ライト上限（＝レイヤ数＝MRT 出力数）。
 /// WGSL 側 shadow_mask.wgsl SHADOW_MASK_LAYERS / surface.wgsl SURFACE_SHADOW_MASK_SLOTS と一致必須
 /// （下のユニットテスト shadow_mask_layer_count_matches_wgsl が 3 者一致を担保）。
-/// これを超えるソフト影ライトは従来のインライン（ノイズあり）経路になる。
+/// これを超えるソフト影ライト（選外＝shadow_mask_slot<0）は、デノイズ済みマスクを経由せず
+/// lighting_eval.wgsl から rt_shadow_factor をインライン評価する。
+///
+/// 【選外ソフト光の色付き tint は決定的評価に縮退する（赤斑点ノイズの根治）】
+/// インライン経路はバイラテラルで均されないため、ソフト影の**色付き tint をサンプルごとに評価**すると
+/// IGN 依存の per-pixel 色ノイズ（カーテンを掠めたサンプルだけ赤 tint）がそのまま scene_hdr へ焼かれ、
+/// 不透明面の赤斑点・ガラス越し背景の砂嵐になる。よって rt_shadow_factor は deterministic_tint 引数で
+/// 挙動を切り替える: インライン経路（lighting_eval.wgsl, =true）は tint を中心 L の決定的 1 評価へ縮退し
+/// （可視性の Vogel ソフトサンプリングは維持＝影の柔らかさは不変）、マスク生成経路（shadow_mask.wgsl,
+/// =false）は従来どおりサンプルごとに tint を評価する（後段バイラテラルで均され色の半影勾配も残る）。
+/// 縮退の代償は tint のペナンブラ勾配喪失（マスク経路との既知の品質差）。詳細は rt_shadow_on.wgsl の
+/// rt_shadow_factor / deterministic_tint 引数解説を参照。
 pub const RT_SHADOW_MASK_LIGHTS: u32 = 4;
 
 /// マスクテクスチャ（raw/a/b）の共通フォーマット。imos の storage フォーマットと一致必須。
@@ -100,8 +111,9 @@ impl ShadowMaskParams {
 /// soft_radius>0 のライトから最大 RT_SHADOW_MASK_LIGHTS 灯を intensity 降順で選ぶ。
 ///
 /// 戻り値は選定ライトの**グローバルインデックス**（u_lights 配列内の位置）をスロット順で並べたもの。
-/// 上限を超えたソフト影ライトは選ばれず、従来のインライン rt_shadow_factor（ノイズあり）経路になる
-/// （初回のみ警告を出す）。ハード影（soft_radius=0）は対象外（元々ノイズが無い）。
+/// 上限を超えたソフト影ライトは選ばれず、インライン rt_shadow_factor（deterministic_tint=true）経路になる。
+/// この経路は色付き tint を中心決定的評価へ縮退させるため色斑点ノイズは出ないが、tint のペナンブラ勾配は
+/// マスク経路より劣る（初回のみ超過警告を出す）。ハード影（soft_radius=0）は対象外（元々ノイズが無い）。
 pub fn select_shadow_mask_lights(lights: &[GpuLight]) -> Vec<u32> {
     let mut cand: Vec<u32> = lights.iter().enumerate()
         .filter(|(_, l)| l.soft_radius > 0.0)
