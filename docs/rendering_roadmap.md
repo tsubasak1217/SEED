@@ -1235,7 +1235,7 @@ TLAS 構築は `draw_ctx.rt_shadow.is_some() && resolved.needs_tlas()` の 1 判
 
 ---
 
-## フェーズ B: バインドレス基盤（RT ヒットシェーディングの土台）【状況: B1・B2 実装済み（実機検証待ち）／ B3 未着手】
+## フェーズ B: バインドレス基盤（RT ヒットシェーディングの土台）【状況: B1・B2・B3 実装済み（実機検証待ち）】
 
 ### 背景・目的
 
@@ -1251,8 +1251,9 @@ inline RT のヒットシェーディング（色付き影・DDGI・RT 反射）
   （group3）へ「インスタンステーブル / UV / index / テクスチャ配列 / サンプラー」を追加し、
   ヒット先のベースカラーを **UV でテクスチャサンプルした本物の色**にする（詳細は下記「B2 の実装内容」）。
   raster 連結（group4）への追加は B3（色付き影）に委譲。
-- **B3（未着手）**: normal/MR など属性の拡張、Mask（アルファテスト）オクルーダの candidate 段階での
-  正しい影付け等。
+- **B3（実装済み）**: 色付き影の tint をヒット点テクスチャの実サンプルへ、Mask（アルファテスト）
+  オクルーダの影付け（葉の形の影）、色付き影バインドレス配線（deferred / shadow_mask）。詳細は下記
+  「B3 の実装内容」。normal/MR 属性の拡張は将来課題（B3 では albedo のみ）。
 
 ### 非対応 GPU フォールバック方針
 
@@ -1406,3 +1407,62 @@ RT 反射のヒット色を「プリミティブ平均色のベタ塗り」か�
 - **未検証（実機 GPU 無し・スモークで確認）**: RT 反射に模様（テクスチャ）が映ること・非対応/縮退で
   従来のベタ塗りに戻ること・非一様インデックスの実機動作・VRAM 増（UV 64MB+index 32MB+テーブル
   4096×64B の常設）・性能（ヒットごとの storage/テクスチャフェッチ増分）。
+
+### B3 の実装内容（色付き影のテクスチャ実サンプル＋Mask アルファ抜き影）
+
+RT 色付き影の透過色を「プリミティブ平均アルベド」から「**ヒット点 UV でベースカラーテクスチャを
+実サンプルした色 × base_color_factor**」へ差し替え（ステンドグラスの模様がそのまま床の影に落ちる）、
+さらに Mask マテリアル（アルファテスト）を**テクスチャ α のアルファテストで影に落とす**（葉の形の影）。
+**非対応 GPU・縮退時は従来の平均アルベド経路を維持**（ゼロリグレッション）。
+
+#### バインディング設計（uniform × binding_array 同居問題の解法）
+- **問題**: 色付き影は raster 連結（deferred_lighting / shadow_mask）の group4 で動くが、**WebGPU 制約
+  「binding_array と uniform buffer は同一 bind group に同居不可」**（B2 で実機クラッシュ済み）により、
+  uniform を複数持つ group4（LightMeta b1 / ShadowMatrices b5 / ClusterParams b9 / GiParams b10）に
+  binding_array を置けない。
+- **解法（採用）**: **uniform を一切含まない新しい group3 にバインドレス資源を隔離する**。deferred /
+  shadow_mask は group3 が空き（gap）であり、そこへ `0=instance_table / 1=UV / 2=index /
+  3=テクスチャ配列(binding_array) / 4=サンプラー`（`bindless::colored_shadow_bgl`）を置く。group4 の
+  uniform 群には binding_array を置かないため制約を構成上満たす（storage 化などの広い改修は不要）。
+  → uniform 群の storage 化（候補 a）は影響範囲が大きいため不採用。別グループ隔離（候補 b）を採った。
+- **対応パス**: **deferred_lighting_rt と shadow_mask の両方**をバインドレス影対応にした（両者とも
+  group3 が空きで、共通の group3 BGL を借用する）。deferred が既定経路・shadow_mask が半解像度の
+  事前計算マスクのため、不透明サーフェスへ落ちる影（＝視認できる色付き影・葉形影）は全ライト種で
+  カバーされる。**forward（透明パスの影＝mesh_rt/skinned）は group が全て埋まっており空きが無いため
+  平均アルベドのまま**（段階的対応・実用上十分）。非対応 GPU は従来の平均アルベド経路。
+
+#### シェーダ分割（tint バリアント）
+- `rt_shadow_on.wgsl`（コア）から `rt_trace_translucent_tint` を分離し、2 本の tint バリアントへ:
+  - `rt_shadow_tint_avg.wgsl`      : 平均アルベド storage（binding14）で染める従来経路。forward・
+    非バインドレスの deferred/shadow_mask が連結。
+  - `rt_shadow_tint_bindless.wgsl` : group3 のバインドレス資源でヒット点 UV のベースカラーを実サンプル
+    （B2 の hit_on と同じ補間手順）し、透過モデル `T=(1-α)+α·tr·texel.rgb`（α=texel.a×factor.a、
+    tr は avg_albedo.a のパック値から復号）。Mask 面は `texel.a×factor.a >= alpha_cutoff` なら
+    **完全遮蔽（tint=0 で即終了）**、未満なら**素通り（tmin を進める）**。deferred/shadow_mask の
+    バインドレス影バリアントが連結。
+  - コアの `rt_shadow_factor` は前方参照で `rt_trace_translucent_tint` を呼ぶ（連結時に tint を 1 本並べる）。
+
+#### インスタンステーブル拡張（BindlessInstanceRecord）
+- `alpha_cutoff: f32`（offset 48, Mask 用）と `BINDLESS_FLAG_MASK`（flags のビット 1）を追加（サイズ 64B
+  不変・既存フィールドのオフセット不変）。Rust `bindless.rs` ↔ WGSL `bindless_common.wgsl` の
+  レイアウト照合テストを更新。rt_shadow.rs が TLAS 詰め直し（custom_data 順）で Mask フラグ＋cutoff を記録。
+- `GpuMaterial.alpha_cutoff` を追加（`Material` から複製）。`update_material_inline` が in-place で追従
+  （Mask cutoff の実行時編集が影に反映される）。**静止スキップ シグネチャに Mask 判別（Blend/Mask は
+  同一 0x02 に潰れるため別途）＋alpha_cutoff を追加**（in-place 編集の TLAS 再構築を確実に発火）。
+
+#### バインドレス影 group3 BindGroup（frame_renderer）
+- deferred 有効フレームで RT 対応 かつ バインドレス対応のとき、`create_colored_shadow_bind_group` で
+  group3 BG を 1 回組み、shadow_mask 生成パス／deferred ライティングパスの両方で bind（テクスチャ配列は
+  毎フレーム全スロットを「登録済み=実 view／空き=ダミー白」で並べる。reflection_rt と同流儀）。
+  非対応・縮退時は従来の空 gap（empty_bg3）。**色付き影の実行時トグル `translucency_rt` が OFF なら
+  第 2 クエリ自体をスキップ**するため、Mask 影・色付き影とも OFF 時は従来コスト（追加レイ 0）。
+
+#### 検証
+- `cargo build` 0 エラー / `cargo test` **169 passed**（B2 の 164 から +5: レコードのレイアウト照合
+  更新（alpha_cutoff/MASK フラグ）＋deferred/shadow_mask のバインドレス連結 naga parse+validate
+  （binding_array×RAY_QUERY×非一様インデックス）2 本＋ tint 分割の整合。既存の cull_mask/pack
+  往復・ソフト影定数整合も維持）。naga 全バリアント（forward avg / deferred avg / deferred bindless /
+  shadow_mask avg / shadow_mask bindless）が pass し、**binding_array×uniform の同居が無いことを構成上保証**。
+- **未検証（実機 GPU 無し・スモークで確認）**: ステンドグラスの模様が床の影に落ちること・葉っぱの形の
+  影が落ちること・非対応 GPU で従来の平均アルベド影に縮退すること・性能（Mask/Blend の第 2 クエリで
+  ヒットごとテクスチャフェッチ増）・group3 追加による fragment storage buffer 本数（≈7）が実機リミット内。

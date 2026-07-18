@@ -5,9 +5,10 @@
 // ヒット点は【ハイブリッド】でシェーディングする:
 //   画面内かつ深度一致（そのヒット面が本画面で実際に見えている）→ scene_hdr（本画面の
 //     不透明ライティング済みコピー）を射影 UV でサンプル。本画面と同一のソフト影・GI・AO・
-//     バウンスが反射に乗る＝「実際の影の濃さで反射」。
-//   画面外／深度不一致（本画面で遮蔽され見えていない面）→ 従来の解析近似
+//     バウンスが乗る＝「画面内ヒットは実レンダリング結果（影込み）で反射する」。
+//   画面外／深度不一致（本画面で遮蔽され見えていない面）→ 解析近似
 //     （albedo*(direct/π + indirect)。間接光は本画面アンビエント規約に合わせ /π なし）。
+//     ★この解析近似は【影なし】である（下記「設計判断」）。画面外ヒットは影を反射しない。★
 // いずれもフレネル・粗面フェードを掛けて RT_REFLECTION へ出力する。
 // レイのミス時は DDGI（無効なら環境光）へフォールバックする。
 //
@@ -16,15 +17,16 @@
 //   reflection_common: group0/1/2・純関数・reflection_world_pos
 //   ddgi_common      : GiParams・ddgi_sample_irradiance
 //
-// ★同期必須★ 下記 rt_refl_distance_atten / rt_refl_shadow_ray は shaders/ddgi_probe_update.wgsl の
-// gi_distance_atten / gi_shadow_ray の移植である。これらを変えたら両ファイルを合わせること。
-// ただし rt_refl_direct_irradiance は DDGI の gi_direct_irradiance から【意図的に分岐】している:
-//   DDGI  : 全灯を加算し、影は主要光(index 0)1灯のみ。プローブは面積積分なので多少の影漏れは平滑化される。
-//   反射  : 強度上位 RT_REFLECTION_HIT_LIGHTS 灯だけを各1本のシャドウレイ付きで影評価する。
-//           残りのライトは「捨てず」に、上位灯のシャドウレイ平均可視率で近似減衰して加算する（局所遮蔽の近似）。
-//           影なし加算（反射に影が出ない）と全捨て（反射が黒く沈む）の中間を狙うバランス設計。
-//           加えてヒット点へアンビエント/DDGI の床（rt_refl_hit_indirect）を足し、影の中でも黒つぶれさせない。
-// この分岐は反射固有の品質要件によるもので、DDGI 側は従来のまま（触らない）。
+// ★同期必須★ 下記 rt_refl_distance_atten は shaders/ddgi_probe_update.wgsl の
+// gi_distance_atten の移植である。これを変えたら両ファイルを合わせること。
+//
+// ── 設計判断（ユーザー決定 2026-07）: 画面外ヒットは影の反射なし ──
+//   画面内ヒットは scene_hdr サンプル＝本画面の実レンダリング結果（ソフト影込み）を採用する。
+//   一方、画面外ヒット（解析近似側）は【影の反射なしで OK】と決定された。よって
+//   rt_refl_direct_irradiance は全ライトを影なしで加算する（距離減衰・スポット角・N·L は維持）。
+//   加えてヒット点へアンビエント/DDGI の床（rt_refl_hit_indirect）を足し、直接光の下限を持たせる。
+//   反射レイあたりのシャドウレイは 0 本（従来の上位灯シャドウレイ機構を撤去＝コスト削減）。
+//   なお DDGI 側 gi_direct_irradiance は従来のまま（主要光1灯のみ影）で、本ファイルとは独立（触らない）。
 // 別ファイルにしている理由: ddgi_probe_update.wgsl は group0 に compute 専用バインディングを
 // 宣言しており、反射（fragment, group3/4）へ連結するとグループが混入して破綻するため。
 // ============================================================
@@ -34,19 +36,6 @@ const RT_REFL_RAY_TMIN:  f32 = 0.001;
 const RT_REFL_ORIGIN_N:  f32 = 0.02;
 const RT_REFL_RAY_TMAX:  f32 = 1.0e4;
 const RT_REFL_CULL_MASK: u32 = 0x01u;
-
-// 反射ヒット点で直接光を影付き評価する最大ライト数。反射レイごとに全灯へシャドウレイを
-// 撃つとコストが跳ねるため、実効寄与が大きい上位この本数だけを各1本のシャドウレイで影評価する。
-// 上位以外は捨てず、上位灯の平均可視率で近似減衰して加算する（rt_refl_direct_irradiance 参照）。
-// 1 灯だと従来と同じ「主要光しか影が出ない」制限に戻るため 2 以上を推奨（>=1 が下限）。
-const RT_REFLECTION_HIT_LIGHTS: u32 = 2u;
-
-// 上位灯以外（＝シャドウレイを撃たない残りのライト）に掛ける近似可視率の下限。
-// 残りライトの合計寄与に「上位灯のシャドウレイ平均可視率」を掛けて局所遮蔽を近似するが、
-// その可視率をこの値でクランプして下限を持たせる（調整用ノブ）。
-// 0.0 = 近似可視率を素通し（上位灯が完全遮蔽なら残りも 0 まで落ちる）。
-// 上げると残りライトが影の中でも底上げされ、反射像のコントラストが緩む。
-const REST_LIGHT_MIN_VISIBILITY: f32 = 0.0;
 
 // 画面内ヒット採用（ハイブリッド）の深度一致許容（相対）。
 // 反射レイのヒット点を screen へ射影し、その UV の G-Buffer 深度から復元したビュー深度と
@@ -106,24 +95,6 @@ fn rt_refl_distance_atten(dist: f32, range: f32) -> f32 {
     return inv_sqr * window * window;
 }
 
-fn rt_refl_shadow_ray(o: vec3<f32>, dir: vec3<f32>, tmax: f32) -> f32 {
-    var desc: RayDesc;
-    desc.flags     = RAY_FLAG_TERMINATE_ON_FIRST_HIT;
-    desc.cull_mask = RT_REFL_CULL_MASK;
-    desc.tmin      = RT_REFL_RAY_TMIN;
-    desc.tmax      = max(tmax, RT_REFL_RAY_TMIN);
-    desc.origin    = o;
-    desc.dir       = dir;
-    var rq: ray_query;
-    rayQueryInitialize(&rq, rt_tlas, desc);
-    rayQueryProceed(&rq);
-    let hit = rayQueryGetCommittedIntersection(&rq);
-    if hit.kind != RAY_QUERY_INTERSECTION_NONE {
-        return 0.0;
-    }
-    return 1.0;
-}
-
 // ワールド座標のビュー空間 Z（カメラ前方が負）。画面内ヒットの深度一致判定に使う。
 // u_camera.view は列優先アップロード済みのため view*world で正しくビュー座標になる
 // （lighting_eval.wgsl / reflection_ssr.wgsl の ssr_view_z と同一）。
@@ -152,42 +123,27 @@ fn rt_refl_project(world_pos: vec3<f32>) -> RtReflProj {
     return r;
 }
 
-// 反射ヒット点の直接光放射照度 E を返す。
-//   上位選定: 全灯を走査して各ライトの【実効寄与】(放射輝度 × N・L) を求め、その輝度が上位
-//   RT_REFLECTION_HIT_LIGHTS 灯だけを各1本のシャドウレイ付きで影評価する。
-//   残りライト: 捨てず、上位灯のシャドウレイ平均可視率（テスト灯が無ければ 1）で近似減衰して加算する。
-//   REST_LIGHT_MIN_VISIBILITY で可視率の下限を持たせる。影ゼロ（反射に影なし）と全捨て（反射が黒沈み）の中間。
-//   純粋な light.intensity 比較ではなく実効寄与で選ぶ理由: 距離減衰・スポット角・法線向きを
-//   反映しないと、遠方や裏向きの強ライトを誤って上位に選び、近接の弱ライトの影を落としてしまう。
-//   影の 0/1 ハード影（1灯1本レイ）は当面許容する。反射内のソフト影（1灯複数レイ）はコスト大のため将来課題。
+// 反射ヒット点の直接光放射照度 E を返す（【影なし】）。
+//   全ライトを走査し、各ライトの実効寄与（放射輝度 × N·L）を影なしで加算する。
+//   距離減衰（point/spot）・スポット角の smoothstep・N·L は維持する（明るさ規約は本画面と同一）。
+//   シャドウレイは 1 本も飛ばさない（ユーザー決定: 画面外ヒットは影の反射なしで OK）。
+//   これにより反射レイあたりのシャドウレイが 0 本になり、旧実装（上位2灯シャドウレイ＋残り近似）
+//   の分岐・挿入ソート・追加レイをすべて撤去できる（コスト削減）。
+//   画面内で見えているヒットは fs_rt 側で scene_hdr（本画面の影込み結果）を採用するため、
+//   影付きの反射はそちらが担う。本関数が担うのは「本画面で見えていない面」の下地色だけである。
 fn rt_refl_direct_irradiance(hit_pos: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
-    // 上位 K 灯のスロット。昇順（index 0 が最弱）で維持し、最弱を追い出しながら K 灯を選抜する。
-    // 各スロットは加算に必要な情報一式を持つ: 実効寄与ベクトル・ライト方向・シャドウレイ tmax・選定スコア。
-    var top_contrib: array<vec3<f32>, RT_REFLECTION_HIT_LIGHTS>;
-    var top_l:       array<vec3<f32>, RT_REFLECTION_HIT_LIGHTS>;
-    var top_dist:    array<f32, RT_REFLECTION_HIT_LIGHTS>;
-    var top_score:   array<f32, RT_REFLECTION_HIT_LIGHTS>;
-    for (var s: u32 = 0u; s < RT_REFLECTION_HIT_LIGHTS; s = s + 1u) {
-        top_contrib[s] = vec3<f32>(0.0, 0.0, 0.0);
-        top_l[s]       = vec3<f32>(0.0, 0.0, 1.0);
-        top_dist[s]    = RT_REFL_RAY_TMAX;
-        top_score[s]   = 0.0;
-    }
-
-    // 全ライトの実効寄与の総和。上位灯ぶんを差し引いて「残りライトの合計寄与」を得るのに使う。
-    var all_contrib_sum = vec3<f32>(0.0, 0.0, 0.0);
+    var e = vec3<f32>(0.0, 0.0, 0.0);
 
     let count = min(rt_meta.count, arrayLength(&rt_lights));
     for (var i: u32 = 0u; i < count; i = i + 1u) {
         let light = rt_lights[i];
         var l = vec3<f32>(0.0, 0.0, 1.0);
         var radiance = light.color * light.intensity;
-        var dist = RT_REFL_RAY_TMAX;
         if light.kind == LIGHT_KIND_DIRECTIONAL {
             l = normalize(-light.direction);
         } else {
             let to_light = light.position - hit_pos;
-            dist = length(to_light);
+            let dist = length(to_light);
             l = to_light / max(dist, 1e-4);
             radiance = radiance * rt_refl_distance_atten(dist, light.range);
             if light.kind == LIGHT_KIND_SPOT {
@@ -197,52 +153,9 @@ fn rt_refl_direct_irradiance(hit_pos: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
         }
         let ndl = max(dot(n, l), 0.0);
         if ndl <= 0.0 { continue; }
-        let contrib = radiance * ndl;
-        // 選定スコアは実効寄与の輝度（Rec.709）。0 以下は候補にならない。
-        let score = dot(contrib, vec3<f32>(0.2126, 0.7152, 0.0722));
-        if score <= 0.0 { continue; }
-        // このライトの寄与を全体総和へ加える（後で上位灯ぶんを引いて「残り」を得る）。
-        all_contrib_sum = all_contrib_sum + contrib;
-        // 最弱スロット(index 0)より強ければ差し替え、隣接スワップで昇順を復元する（挿入ソート）。
-        if score > top_score[0] {
-            top_contrib[0] = contrib;
-            top_l[0]       = l;
-            top_dist[0]    = dist;
-            top_score[0]   = score;
-            for (var s: u32 = 0u; s + 1u < RT_REFLECTION_HIT_LIGHTS; s = s + 1u) {
-                if top_score[s] > top_score[s + 1u] {
-                    let tc = top_contrib[s]; top_contrib[s] = top_contrib[s + 1u]; top_contrib[s + 1u] = tc;
-                    let tl = top_l[s];       top_l[s]       = top_l[s + 1u];       top_l[s + 1u]       = tl;
-                    let td = top_dist[s];    top_dist[s]    = top_dist[s + 1u];    top_dist[s + 1u]    = td;
-                    let ts = top_score[s];   top_score[s]   = top_score[s + 1u];   top_score[s + 1u]   = ts;
-                }
-            }
-        }
+        // 影なしで加算（シャドウレイなし）。
+        e = e + radiance * ndl;
     }
-
-    // 選抜した上位 K 灯だけに各1本のシャドウレイを撃ち、遮蔽率（0/1）で減衰して加算する。
-    // 同時に、上位灯ぶんの寄与総和・可視率の平均を集計する（残りライトの近似減衰に使う）。
-    var e            = vec3<f32>(0.0, 0.0, 0.0);
-    var top_contrib_sum = vec3<f32>(0.0, 0.0, 0.0);
-    var vis_sum      = 0.0;
-    var vis_count    = 0u;
-    for (var s: u32 = 0u; s < RT_REFLECTION_HIT_LIGHTS; s = s + 1u) {
-        if top_score[s] <= 0.0 { continue; }
-        let shadow = rt_refl_shadow_ray(hit_pos + n * RT_REFL_RAY_TMIN, top_l[s], top_dist[s]);
-        e               = e + top_contrib[s] * shadow;
-        top_contrib_sum = top_contrib_sum + top_contrib[s];
-        vis_sum         = vis_sum + shadow;
-        vis_count       = vis_count + 1u;
-    }
-
-    // 残りライト（上位 K 灯以外）の合計寄与を、上位灯のシャドウレイ平均可視率で近似減衰して加算する。
-    // 全灯へシャドウレイを撃つコストを避けつつ、局所的な遮蔽度合いをもっともらしく反映する近似。
-    // テスト灯が無い（K=0 相当・上位が全て score<=0）ときは可視率 1（減衰なし）。
-    // REST_LIGHT_MIN_VISIBILITY で可視率に下限を持たせる（0.0 なら素通し）。
-    let rest_contrib = max(all_contrib_sum - top_contrib_sum, vec3<f32>(0.0, 0.0, 0.0));
-    let avg_vis      = select(1.0, vis_sum / f32(max(vis_count, 1u)), vis_count > 0u);
-    let rest_vis     = clamp(avg_vis, REST_LIGHT_MIN_VISIBILITY, 1.0);
-    e = e + rest_contrib * rest_vis;
     return e;
 }
 
@@ -363,8 +276,8 @@ fn fs_rt(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
             // 【限界（完全一致は不可能）】画面内 scene_hdr サンプルとの境界には明るさ差が残る:
             //   - specular の視点依存（scene_hdr は本画面視点、反射は反射視点）
             //   - AO/occlusion の有無（解析側はヒット点の occlusion を持たない）
-            //   - 影の質（解析側は上位 RT_REFLECTION_HIT_LIGHTS 灯のハード影、本画面はソフト影/デノイズ）
-            //   境界のシームを完全には消せないが、/π 補正で段差を最小化する。
+            //   - 影の有無（解析側は【影なし】＝ユーザー決定、本画面はソフト影/デノイズ）
+            //   境界のシームを完全には消せないが、/π 補正で明るさの段差を最小化する。
             reflected = albedo * (direct / RT_REFL_PI + indirect);
         }
     }

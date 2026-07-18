@@ -114,6 +114,14 @@ pub const BINDLESS_MAX_INSTANCES: u32 = super::rt_shadow::MAX_RT_INSTANCES;
 /// 0 なら B2/B3 の消費側は従来の平均色フォールバックを使う（縮退動作）。
 pub const BINDLESS_FLAG_ELIGIBLE: u32 = 1 << 0;
 
+/// このインスタンスが Mask マテリアル（アルファテスト＝葉・鎖・フェンス等）であることを示すフラグ（B3）。
+/// 色付き影の第 2 クエリ（RT_MASK_NON_OPAQUE 0x02）で Mask 面にヒットしたとき、消費側
+/// （rt_shadow_tint_bindless.wgsl）は「テクスチャ α を alpha_cutoff と比較し、α>=cutoff なら
+/// 完全遮蔽（葉の形の影）、α<cutoff なら素通り」する。立っていない（Blend）インスタンスは
+/// 従来どおり透過色フィルタ（色付き影）で処理する。
+/// WGSL ミラー bindless_common.wgsl の BINDLESS_FLAG_MASK と一致させること。
+pub const BINDLESS_FLAG_MASK: u32 = 1 << 1;
+
 // ============================================================
 //  BindlessInstanceRecord — TLAS custom_data で引く 1 レコード
 // ============================================================
@@ -144,10 +152,14 @@ pub struct BindlessInstanceRecord {
     pub uv_offset: u32,
     /// offset 40: インデックス メガバッファ内の先頭要素オフセット（u32 単位）。
     pub index_offset: u32,
-    /// offset 44: フラグ（`BINDLESS_FLAG_ELIGIBLE` 等）。
+    /// offset 44: フラグ（`BINDLESS_FLAG_ELIGIBLE` / `BINDLESS_FLAG_MASK` 等）。
     pub flags: u32,
-    /// offset 48..64: 16B 整列のためのパディング（vec3 パディング禁止＝明示的に埋める）。
-    pub _pad: [u32; 4],
+    /// offset 48: Mask マテリアルのアルファカットオフ（B3）。`BINDLESS_FLAG_MASK` が立っている
+    /// インスタンスでのみ意味を持つ。色付き影の第 2 クエリで「サンプルした α >= alpha_cutoff なら
+    /// 完全遮蔽（葉の形の影）」の閾値。Blend では未使用（0.0）。
+    pub alpha_cutoff: f32,
+    /// offset 52..64: 16B 整列のためのパディング（vec3 パディング禁止＝明示的に埋める）。
+    pub _pad: [u32; 3],
 }
 
 impl BindlessInstanceRecord {
@@ -160,7 +172,8 @@ impl BindlessInstanceRecord {
             uv_offset:         0,
             index_offset:      0,
             flags:             0,
-            _pad:              [0; 4],
+            alpha_cutoff:      0.0,
+            _pad:              [0; 3],
         }
     }
 }
@@ -285,6 +298,52 @@ impl MegaAllocator {
 /// `v` を `align`（2 の冪）境界へ切り上げる。
 fn align_up(v: u64, align: u64) -> u64 {
     (v + align - 1) & !(align - 1)
+}
+
+/// 色付き影（B3）用 group3 の BindGroupLayout を作る（インスタンス不要＝パイプライン構築時に呼べる）。
+///
+/// deferred_lighting_rt / shadow_mask のバインドレス影バリアントの group3 に置く。**group3 には
+/// uniform を一切置かない**（WebGPU 制約: binding_array と uniform buffer は同一 bind group に同居不可。
+/// binding_array を含むこのグループは uniform 禁止）。group4（ライト＋シャドウ＋TLAS）に uniform は
+/// 残るが、そちらには binding_array を置かないため制約を満たす（＝設計上、両立が構成として保証される）。
+///
+/// バインディング（rt_shadow_tint_bindless.wgsl と一致）:
+///   0=instance_table(storage) / 1=UV(storage) / 2=index(storage) /
+///   3=テクスチャ配列(binding_array<texture_2d>, count=capacity) / 4=共有サンプラー
+///
+/// `capacity` はアダプタ上限でクランプ済みの確定容量（`bindless_capacity()`）。
+pub fn colored_shadow_bgl(device: &wgpu::Device, capacity: u32) -> wgpu::BindGroupLayout {
+    let cap = capacity.max(1);
+    let vis = wgpu::ShaderStages::FRAGMENT;
+    let storage_ro = |binding: u32| wgpu::BindGroupLayoutEntry {
+        binding, visibility: vis,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Storage { read_only: true },
+            has_dynamic_offset: false, min_binding_size: None,
+        },
+        count: None,
+    };
+    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("Bindless Colored Shadow BGL (group3)"),
+        entries: &[
+            storage_ro(0), // instance_table（BindlessInstanceRecord 配列）
+            storage_ro(1), // UV メガバッファ（vec2<f32>）
+            storage_ro(2), // index メガバッファ（u32）
+            wgpu::BindGroupLayoutEntry {
+                binding: 3, visibility: vis,
+                ty: wgpu::BindingType::Texture {
+                    sample_type:    wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2, multisampled: false,
+                },
+                count: Some(std::num::NonZeroU32::new(cap).unwrap()),
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 4, visibility: vis,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+        ],
+    })
 }
 
 // ============================================================
@@ -820,6 +879,30 @@ impl BindlessResources {
 
     // ── アクセサ（B2 消費用）────────────────────────────────
 
+    /// 色付き影（B3）用 group3 BindGroup を（インスタンステーブル/UV/index/テクスチャ配列/
+    /// サンプラーを並べて）生成する。deferred_lighting_rt / shadow_mask のバインドレス影バリアントが
+    /// 毎フレーム bind する（reflection.rs の create_rt_data_bg_bindless と同じ流儀＝毎フレーム全スロット
+    /// を「登録済み＝実 view / 空き＝ダミー白」で並べて構築。登録変化の追従は再構築で担保）。
+    ///
+    /// `bgl` は `colored_shadow_bgl` で作った同一レイアウトであること（deferred.rs が保持）。
+    /// バインディング: 0=instance_table / 1=UV / 2=index / 3=テクスチャ配列 / 4=共有サンプラー。
+    pub fn create_colored_shadow_bind_group(
+        &self, device: &wgpu::Device, bgl: &wgpu::BindGroupLayout,
+    ) -> wgpu::BindGroup {
+        let views = self.texture_view_list();
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Bindless Colored Shadow BG (group3)"),
+            layout: bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: self.instance_table.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: self.uv_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: self.index_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureViewArray(&views) },
+                wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+            ],
+        })
+    }
+
     /// テクスチャ配列 BindGroupLayout（B2 が消費側パイプライン構築に使う）。
     pub fn texture_bind_group_layout(&self) -> &wgpu::BindGroupLayout { &self.tex_bgl }
     /// UV メガバッファ。
@@ -856,7 +939,8 @@ mod tests {
         assert_eq!(offset_of!(BindlessInstanceRecord, uv_offset), 36);
         assert_eq!(offset_of!(BindlessInstanceRecord, index_offset), 40);
         assert_eq!(offset_of!(BindlessInstanceRecord, flags), 44);
-        assert_eq!(offset_of!(BindlessInstanceRecord, _pad), 48);
+        assert_eq!(offset_of!(BindlessInstanceRecord, alpha_cutoff), 48);
+        assert_eq!(offset_of!(BindlessInstanceRecord, _pad), 52);
     }
 
     /// WGSL ミラーの構造体宣言が Rust と同じ 8 フィールド（合計 64B 相当）を持つことを、
@@ -865,7 +949,7 @@ mod tests {
     fn wgsl_mirror_has_record_fields() {
         let src = include_str!("shaders/bindless_common.wgsl");
         for field in ["avg_albedo", "base_color_factor", "albedo_tex_index",
-                      "uv_offset", "index_offset", "flags"] {
+                      "uv_offset", "index_offset", "flags", "alpha_cutoff"] {
             assert!(src.contains(field),
                 "bindless_common.wgsl に BindlessInstanceRecord.{field} が見つかりません");
         }
@@ -892,6 +976,8 @@ mod tests {
                    BINDLESS_DUMMY_TEX_INDEX);
         assert_eq!(read("BINDLESS_FLAG_ELIGIBLE").parse::<u32>().unwrap(),
                    BINDLESS_FLAG_ELIGIBLE);
+        assert_eq!(read("BINDLESS_FLAG_MASK").parse::<u32>().unwrap(),
+                   BINDLESS_FLAG_MASK);
     }
 
     // ── MegaAllocator ───────────────────────────────────────

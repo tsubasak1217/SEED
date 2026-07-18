@@ -341,6 +341,10 @@ pub struct GpuMaterial {
     /// 透明描画の分類（Phase R5）の唯一の真実source。Opaque・Mask は不透明パス、
     /// Blend は透明パスへ振り分ける。`Material::alpha_mode` を upload 時に複製する。
     pub alpha_mode:     AlphaMode,
+    /// アルファテスト（Mask）のカットオフ閾値（B3）。`Material::alpha_cutoff` を upload 時に複製する
+    /// （生値。Mask 以外では使わない）。色付き影のバインドレス Mask アルファ抜きで、ヒット点テクスチャ
+    /// α をこの閾値と比較して葉の形の影を落とす。rt_shadow.rs が BINDLESS_FLAG_MASK と併せて記録する。
+    pub alpha_cutoff:   f32,
     /// カリング面（Back / Front / None）。
     /// 描画側はこの値でパイプラインバリアント（cull_mode 3 種）を選ぶ。
     /// メッシュレットカリングの法線コーン背面棄却も Back のときのみ有効化する。
@@ -494,6 +498,7 @@ impl GpuMaterial {
         Self {
             bind_group,
             alpha_mode: mat.alpha_mode,
+            alpha_cutoff: mat.alpha_cutoff,
             cull_face:  mat.cull_face,
             base_color_factor:      mat.base_color_factor,
             base_color_tex_index:   base_color_idx,
@@ -905,6 +910,16 @@ impl GpuModel {
             .unwrap_or(self.default_material.base_color_factor)
     }
 
+    /// プリミティブのマテリアルインデックスからアルファカットオフ（Mask のアルファテスト閾値）を返す（B3）。
+    /// `material_idx` が None・範囲外のときは default_material の値を返す。生値を返す（Mask 判定は
+    /// alpha_mode 側で行い、色付き影の記録では BINDLESS_FLAG_MASK が立つ Mask のときだけ使う）。
+    pub fn primitive_alpha_cutoff(&self, material_idx: Option<usize>) -> f32 {
+        material_idx
+            .and_then(|mi| self.materials.get(mi))
+            .map(|m| m.alpha_cutoff)
+            .unwrap_or_else(|| self.default_material.alpha_cutoff)
+    }
+
     /// プリミティブのマテリアルインデックスからバインドレス albedo テクスチャ index を返す（B2）。
     /// `material_idx` が None・範囲外のときは default_material の値（既定ダミー 0）を返す。
     pub fn primitive_bindless_albedo_tex_index(&self, material_idx: Option<usize>) -> u32 {
@@ -1202,6 +1217,12 @@ impl GpuModel {
         //     不変＝bindless_albedo_tex_index はそのまま）。次フレームの TLAS 再構築で
         //     instance_table へ反映される（静止スキップ シグネチャに base_color_factor を含む）。
         self.materials[slot].base_color_factor = eff.base_color_factor;
+        // ②'' バインドレス色付き影（B3）: Mask アルファ抜きのカットオフも追従させる。alpha_mode が
+        //      Mask のまま cutoff だけ変えた in-place 編集で GpuMaterial.alpha_cutoff が古いままだと、
+        //      静止スキップ シグネチャ（primitive_alpha_cutoff を含む）が不変になり TLAS/instance_table が
+        //      再構築されず、葉の形の影のカットオフ編集が反映されない。ここで追従させて次フレームの
+        //      TLAS 再構築を確実に発火させる（テクスチャは不変＝tex index はそのまま）。
+        self.materials[slot].alpha_cutoff = eff.alpha_cutoff;
         // ③ 平均アルベド（Phase RT-GI / RT 色付き影）も追従させる（フル経路と同一の eff_avg_albedo）。
         self.avg_albedos[slot] = eff_avg_albedo(&eff);
         // ④ 透過率（ガラス表現）も追従させる。

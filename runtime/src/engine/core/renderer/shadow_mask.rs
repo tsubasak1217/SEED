@@ -144,7 +144,12 @@ pub fn assign_shadow_mask_slots(lights: &mut [GpuLight]) -> Vec<u32> {
 /// シャドウマスク生成パイプライン一式（RT 対応 GPU でのみ構築）。起動時 1 回・不変。
 pub struct ShadowMaskPipelines {
     /// マスク生成パイプライン（RAY_QUERY 必須・4 カラーターゲット MRT。各 .rgb=透過率／.a=深度同梱）。
+    /// 従来（平均アルベド）経路。非バインドレス GPU／縮退時に使う。
     pub mask:          wgpu::RenderPipeline,
+    /// バインドレス色付き影バリアント（B3。RT 対応 かつ バインドレス対応 GPU でのみ Some）。
+    /// group3 に色付き影のバインドレス資源を bind し、ヒット点テクスチャ実サンプル＋Mask アルファ抜きで
+    /// マスク .rgb（透過率）を染める。frame_renderer が bindless 対応時にこちらを使う。
+    pub mask_bindless: Option<wgpu::RenderPipeline>,
     /// group2: ShadowMaskParams のレイアウト。
     pub params_bgl:    wgpu::BindGroupLayout,
     /// ShadowMaskParams UBO（毎フレーム選定インデックスを書き込む）。
@@ -177,27 +182,6 @@ impl ShadowMaskPipelines {
             }],
         });
 
-        // 連結順（RAY_QUERY 必須）: cluster_common → ddgi_common → light_common → rt_shadow_on → shadow_mask。
-        let combined: String = [
-            "cluster_common.wgsl", "ddgi_common.wgsl", "light_common.wgsl",
-            "rt_shadow_on.wgsl", "shadow_mask.wgsl",
-        ].iter().map(|n| get_shader_source(n)).collect::<Vec<_>>().join("\n");
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label:  Some("shadow_mask"),
-            source: wgpu::ShaderSource::Wgsl(combined.into()),
-        });
-
-        // パイプラインレイアウト: [camera, gbuffer, params, gap3, lights+TLAS]。
-        // group3 は deferred の空 gap を流用（描画時 empty_bg3 をセット）。group4 は rt_lights_bgl。
-        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("shadow_mask"),
-            bind_group_layouts: &[
-                &deferred.camera_bgl, &deferred.gbuffer_bgl, &params_bgl,
-                &deferred.gap_bgl3, rt_lights_bgl,
-            ],
-            push_constant_ranges: &[],
-        });
-
         // 4 レイヤぶんを MRT で同時出力（location 0..3）。全ターゲット SHADOW_MASK_FORMAT・blend なし。
         // 各レイヤの .rgb=透過率, .a=half-res ビュー空間深度（バイラテラルブラーの深度ガイド）を同梱する
         //（別 R32Float アタッチメントは 32B+4B=36B で max_color_attachment_bytes_per_sample=32 超過のため不可）。
@@ -208,22 +192,63 @@ impl ShadowMaskPipelines {
             Some(color_target.clone()), Some(color_target.clone()),
             Some(color_target.clone()), Some(color_target),
         ];
-        let mask = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label:  Some("shadow_mask"),
-            layout: Some(&layout),
-            vertex: wgpu::VertexState {
-                module: &shader, entry_point: Some("vs_fullscreen"),
-                buffers: &[], compilation_options: Default::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader, entry_point: Some("fs_mask"),
-                targets: &targets, compilation_options: Default::default(),
-            }),
-            primitive:     wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample:   wgpu::MultisampleState::default(),
-            multiview:     None,
-            cache,
+
+        // マスク生成パイプラインを 1 本組むヘルパー（連結ソース＋group3 BGL を差し替えて 2 変種を作る）。
+        // group レイアウト: [camera, gbuffer, params, group3, lights+TLAS]。
+        //   avg      : group3 = deferred の空 gap（描画時 empty_bg3）。
+        //   bindless : group3 = 色付き影バインドレス BGL（描画時 create_colored_shadow_bind_group）。
+        let build_mask = |label: &str, sources: &[&str], group3_bgl: &wgpu::BindGroupLayout| -> wgpu::RenderPipeline {
+            let combined: String = sources.iter().map(|n| get_shader_source(n)).collect::<Vec<_>>().join("\n");
+            let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label:  Some(label),
+                source: wgpu::ShaderSource::Wgsl(combined.into()),
+            });
+            let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some(label),
+                bind_group_layouts: &[
+                    &deferred.camera_bgl, &deferred.gbuffer_bgl, &params_bgl,
+                    group3_bgl, rt_lights_bgl,
+                ],
+                push_constant_ranges: &[],
+            });
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label:  Some(label),
+                layout: Some(&layout),
+                vertex: wgpu::VertexState {
+                    module: &shader, entry_point: Some("vs_fullscreen"),
+                    buffers: &[], compilation_options: Default::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader, entry_point: Some("fs_mask"),
+                    targets: &targets, compilation_options: Default::default(),
+                }),
+                primitive:     wgpu::PrimitiveState::default(),
+                depth_stencil: None,
+                multisample:   wgpu::MultisampleState::default(),
+                multiview:     None,
+                cache,
+            })
+        };
+
+        // 従来（平均アルベド）: 連結順 cluster → ddgi → light → rt_shadow_on → rt_shadow_tint_avg → shadow_mask。
+        // group3 は deferred の空 gap（描画時 empty_bg3）。
+        let mask = build_mask(
+            "shadow_mask",
+            &["cluster_common.wgsl", "ddgi_common.wgsl", "light_common.wgsl",
+              "rt_shadow_on.wgsl", "rt_shadow_tint_avg.wgsl", "shadow_mask.wgsl"],
+            &deferred.gap_bgl3,
+        );
+
+        // バインドレス色付き影（B3）: deferred が色付き影 BGL を持つ（＝対応 GPU）ときのみ構築。
+        // 連結順は tint_avg を tint_bindless に差し替え、bindless_common（レコード定義）を前に挿す。
+        // group3 は色付き影バインドレス BGL。
+        let mask_bindless = deferred.colored_shadow_bgl.as_ref().map(|cs_bgl| {
+            build_mask(
+                "shadow_mask_bindless",
+                &["cluster_common.wgsl", "ddgi_common.wgsl", "light_common.wgsl",
+                  "rt_shadow_on.wgsl", "bindless_common.wgsl", "rt_shadow_tint_bindless.wgsl", "shadow_mask.wgsl"],
+                cs_bgl,
+            )
         });
 
         let params_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -234,7 +259,7 @@ impl ShadowMaskPipelines {
         });
         let bilateral = ShadowMaskBilateral::new(device, cache);
 
-        Self { mask, params_bgl, params_buffer, bilateral }
+        Self { mask, mask_bindless, params_bgl, params_buffer, bilateral }
     }
 
     /// 選定インデックス列（スロット順）を ShadowMaskParams UBO へ書き込む（毎フレーム パス直前）。
@@ -403,6 +428,7 @@ mod tests {
             include_str!("shaders/ddgi_common.wgsl"),
             include_str!("shaders/light_common.wgsl"),
             include_str!("shaders/rt_shadow_on.wgsl"),
+            include_str!("shaders/rt_shadow_tint_avg.wgsl"),
             include_str!("shaders/shadow_mask.wgsl"),
         ].join("\n");
         let module = naga::front::wgsl::parse_str(&src).expect("shadow_mask 連結の parse に失敗");
@@ -423,6 +449,7 @@ mod tests {
             include_str!("shaders/ddgi_common.wgsl"),
             include_str!("shaders/light_common.wgsl"),
             include_str!("shaders/rt_shadow_on.wgsl"),
+            include_str!("shaders/rt_shadow_tint_avg.wgsl"),
             include_str!("shaders/shadow_mask.wgsl"),
         ].join("\n");
         let module = naga::front::wgsl::parse_str(&src)
@@ -430,6 +457,30 @@ mod tests {
         let mut v = naga::valid::Validator::new(
             naga::valid::ValidationFlags::all(), naga::valid::Capabilities::RAY_QUERY);
         v.validate(&module).unwrap_or_else(|e| panic!("[shadow_mask] validate 失敗: {e:?}"));
+    }
+
+    /// バインドレス色付き影マスク（B3）: rt_shadow_tint_bindless.wgsl を連結し、group3 の
+    /// binding_array（テクスチャ配列）＋ヒット点テクスチャサンプル＋Mask アルファ抜きを含む。
+    /// ShadowMaskPipelines::new の mask_bindless と同一連結順（cluster→ddgi→light→rt_shadow_on
+    /// →bindless_common→rt_shadow_tint_bindless→shadow_mask）。binding_array の非一様インデックス＋
+    /// RAY_QUERY を要求する。
+    #[test]
+    fn shadow_mask_bindless_shader_parses_and_validates() {
+        let src = [
+            include_str!("shaders/cluster_common.wgsl"),
+            include_str!("shaders/ddgi_common.wgsl"),
+            include_str!("shaders/light_common.wgsl"),
+            include_str!("shaders/rt_shadow_on.wgsl"),
+            include_str!("shaders/bindless_common.wgsl"),
+            include_str!("shaders/rt_shadow_tint_bindless.wgsl"),
+            include_str!("shaders/shadow_mask.wgsl"),
+        ].join("\n");
+        let module = naga::front::wgsl::parse_str(&src)
+            .unwrap_or_else(|e| panic!("[shadow_mask bindless] WGSL parse 失敗: {e:?}"));
+        let caps = naga::valid::Capabilities::RAY_QUERY
+            | naga::valid::Capabilities::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING;
+        let mut v = naga::valid::Validator::new(naga::valid::ValidationFlags::all(), caps);
+        v.validate(&module).unwrap_or_else(|e| panic!("[shadow_mask bindless] validate 失敗: {e:?}"));
     }
 
     /// RT_SHADOW_MASK_LIGHTS（Rust）＝ SHADOW_MASK_LAYERS（shadow_mask.wgsl）＝
