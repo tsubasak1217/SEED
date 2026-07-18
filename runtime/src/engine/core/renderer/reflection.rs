@@ -32,10 +32,6 @@ use super::pipeline::get_shader_source;
 pub const RT_REFLECTION_NAME: &str = "reflection";
 /// 反射 RT のフォーマット（scene_hdr と同じ HDR。加算合成で HDR を保つため）。
 pub const REFLECTION_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
-/// SSR 前フレーム参照履歴テクスチャのフォーマット。scene_hdr（HDR_FORMAT）と一致必須
-/// （copy_texture_to_texture はコピー元／先で同一フォーマットを要求するため）。HDR_FORMAT は
-/// Rgba16Float（renderer::HDR_FORMAT）＝フル解像度 1 枚で 1080p 約 16.6MB。
-pub const REFLECTION_HISTORY_FORMAT: wgpu::TextureFormat = super::HDR_FORMAT;
 /// 反射強度の既定（PostFxSettings.reflection_intensity の初期値）。
 pub const DEFAULT_REFLECTION_INTENSITY: f32 = 1.0;
 
@@ -338,125 +334,12 @@ fn build_reflection_pipeline(
     })
 }
 
-// ─── ReflectionHistory（SSR 前フレーム参照履歴）─────────────────
-
-/// SSR のヒット色サンプル元となる「前フレームの完成 HDR」を保持するフル解像度テクスチャ 1 枚。
-///
-/// ## なぜ必要か（1 フレーム遅延方式・SSGI と同じ実績ある流儀）
-/// 反射パスは不透明ライティング直後（半透明・スカイボックス・パーティクル描画より前）の
-/// scene_hdr を読むため、そのままでは後から描かれる半透明（ガラス等）が反射に映らない。
-/// そこで **毎フレーム末尾（半透明等の描画後・ポスト処理前）の完成 HDR を本テクスチャへコピー**
-/// しておき、次フレームの SSR がこれをサンプルする。これにより半透明も反射へ含められる。
-///
-/// ## 既知トレードオフ（コメント＋ロードマップに明記）
-/// - 動くものは反射内で 1 フレーム遅れる（幾何は今フレーム深度・色は前フレーム）。
-/// - 反射の中に反射（フィードバック）が生じるが、フレネル×粗さフェードで自然減衰し実用上問題にならない。
-///
-/// ## 履歴の有効性（`history_readable`）
-/// 初回フレーム・リサイズ・無効→有効の直後は前フレームのコピーが無い（または解像度不一致）ため、
-/// その 1 フレームは従来の「不透明のみ scene_hdr」へフォールバックする（SSGI の ssgi_readable と同流儀）。
-pub struct ReflectionHistory {
-    /// テクスチャ本体＋ビュー（未確保なら None）。
-    tex: Option<(wgpu::Texture, wgpu::TextureView)>,
-    /// 確保済み幅。
-    w:   u32,
-    /// 確保済み高さ。
-    h:   u32,
-}
-
-impl Default for ReflectionHistory {
-    fn default() -> Self { Self::new() }
-}
-
-impl ReflectionHistory {
-    /// 空の（未確保の）履歴を生成する（device 不要・eager 構築可）。
-    pub fn new() -> Self { Self { tex: None, w: 0, h: 0 } }
-
-    /// フル解像度サイズへ追従する。既存が同サイズなら何もしない（SsgiTargets::ensure の流儀）。
-    ///
-    /// 戻り値: 再確保（初回 or サイズ変更）が起きたら true（＝前フレーム履歴が失われ 1 フレーム未収束）。
-    /// usage は COPY_DST（scene_hdr からのコピー先）＋ TEXTURE_BINDING（SSR でのサンプル）。
-    /// RENDER_ATTACHMENT は不要（描画先にはしない）。
-    pub fn ensure(&mut self, device: &wgpu::Device, w: u32, h: u32) -> bool {
-        let w = w.max(1);
-        let h = h.max(1);
-        if self.tex.is_some() && self.w == w && self.h == h {
-            return false;
-        }
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("Reflection History (SSR prev-frame HDR)"),
-            size:  wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
-            mip_level_count: 1, sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format:    REFLECTION_HISTORY_FORMAT,
-            usage:     wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
-        });
-        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        self.tex = Some((texture, view));
-        self.w = w; self.h = h;
-        true
-    }
-
-    /// 履歴ビュー（SSR の group2 binding1 に渡す。ensure 済みであること）。
-    pub fn view(&self) -> &wgpu::TextureView {
-        &self.tex.as_ref().expect("ReflectionHistory: ensure 未実行").1
-    }
-
-    /// 履歴テクスチャ本体（scene_hdr → 本テクスチャの copy_texture_to_texture コピー先。ensure 済みであること）。
-    pub fn texture(&self) -> &wgpu::Texture {
-        &self.tex.as_ref().expect("ReflectionHistory: ensure 未実行").0
-    }
-}
-
-/// このフレームで SSR が履歴（前フレーム完成 HDR）を「読める」かを判定する純関数。
-///
-/// SSGI の `ssgi_readable = ssgi_active && ssgi_warmed && !ssgi_reallocated` と同一の三条件:
-/// - `active`      : 今フレーム反射パスを走らせる（reflection_effective != Off）。
-/// - `warmed`      : 前フレームも反射 active でフレーム末に履歴コピーを済ませた。
-/// - `reallocated` : 今フレーム履歴を再確保した（初回 or リサイズ）＝前フレーム内容が失われた。
-///
-/// 全て満たすときのみ true。false のときは従来の「不透明のみ scene_hdr」へフォールバックする。
-pub fn history_readable(active: bool, warmed: bool, reallocated: bool) -> bool {
-    active && warmed && !reallocated
-}
-
 // ============================================================
 //  WGSL 静的検証（naga parse + validate）＋レイアウト照合
 // ============================================================
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// 履歴有効判定 `history_readable` の真理値（初回/リサイズ/無効化の扱いを固定）。
-    ///
-    /// SSGI の ssgi_readable と同じ三条件（active && warmed && !reallocated）を検証する。
-    /// 実機の「床の反射にガラスが映る」経路はこの判定が true になって初めて成立するため回帰ガードとして重要。
-    #[test]
-    fn history_readable_truth_table() {
-        // 収束済みの通常フレームのみ true。
-        assert!(history_readable(true, true, false), "active＋warmed＋未再確保 → 読める");
-
-        // 反射 Off（非 active）は常に false（履歴を参照しない）。
-        assert!(!history_readable(false, true, false), "非 active は読めない");
-        assert!(!history_readable(false, false, false), "非 active は読めない（warmed 無関係）");
-
-        // 前フレームで履歴コピー未実施（初回・無効→有効の直後）は false。
-        assert!(!history_readable(true, false, false), "warmed でない（初回/有効化直後）は読めない");
-
-        // 今フレーム再確保（初回・リサイズ）は前フレーム内容が失われるため false。
-        assert!(!history_readable(true, true, true), "再確保（リサイズ）フレームは読めない");
-        assert!(!history_readable(true, false, true), "warmed でない かつ 再確保 は読めない");
-    }
-
-    /// 履歴フォーマットは scene_hdr（HDR_FORMAT）と一致すること。
-    /// copy_texture_to_texture はコピー元／先で同一フォーマットを要求するため不一致だとパニックする。
-    #[test]
-    fn history_format_matches_scene_hdr() {
-        assert_eq!(REFLECTION_HISTORY_FORMAT, super::super::HDR_FORMAT,
-            "履歴フォーマットは scene_hdr（HDR_FORMAT）と一致必須（コピー要件）");
-    }
-
 
     /// SSR 連結（RAY_QUERY 不要）を naga で parse + validate する。
     #[test]

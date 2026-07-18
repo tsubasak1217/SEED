@@ -830,17 +830,6 @@ Forward+ ではなく Deferred を選ぶ根拠: 多灯対応だけなら Forward
   `PostFxSettings.reflection_intensity`（既定 1.0, SET_POST_FX の `reflection_intensity`）。
   BindGroup: SSR=group0..3（4）/ RT=group0..4（5＝max_bind_groups 上限）/ composite=group0（1）。
   実装: `renderer/reflection.rs`, `shaders/reflection_common|ssr|rt|composite.wgsl`, `frame_renderer.rs` 配線。
-  - **SSR に半透明を映す（1 フレーム遅延の履歴参照, 2026-07 追加）**: SSR のヒット色サンプル元を
-    「不透明のみ scene_hdr」から `ReflectionHistory`（フル解像度 Rgba16Float 1 枚・1080p 約 16.6MB・反射有効時のみ確保）
-    へ差し替えた。毎フレーム末尾（半透明・スカイボックス・パーティクル描画後・**ポスト処理＝ブルーム/トーンマップより前**）の
-    完成 HDR を `copy_texture_to_texture` で履歴へ退避し、次フレームの SSR がここをサンプルする（SSGI と同じ実績ある
-    1 フレーム遅延方式）。これで床など不透明面の反射にガラス（半透明）が映る。レイマーチの**深度は今フレームの
-    G-Buffer 深度のまま**で幾何は今フレーム・色だけ前フレーム（標準的妥協）。初回/リサイズ/無効→有効の履歴が無い
-    フレームは従来の不透明コピーへフォールバック（`reflection_history_readable = active && warmed && !reallocated`。
-    SSGI の `ssgi_readable` と同流儀）。**RT リフレクション（`reflection_rt.wgsl`）は不変**（TLAS ベースで
-    `t_scene_hdr` を一切サンプルせず、この差し替えは SSR のみに効く）。既知トレードオフ: 反射内の動体は 1F 遅れ／
-    反射の中に反射（フィードバック）が生じるが、フレネル×粗さフェードで自然減衰し実用上問題にならない。
-    実装追加: `ReflectionHistory`（`reflection.rs`）＋ App の `reflection_history`/`reflection_history_warmed`。
 - **SSGI（スクリーンスペース GI）: 実装済み（Phase SSGI）**。GI の第 3 モード（`GiMode::Ssgi`）。
   Deferred 有効時のみ動く独立フルスクリーン AO の**カラー版**パス。G-Buffer の深度＋ワールド法線から
   コサイン半球方向へ 3 本（`SSGI_NUM_DIRS`）のスクリーンスペースレイを 16 ステップ×最大 5m でマーチし、
@@ -1197,10 +1186,6 @@ RT-Translucency の屈折を土台に、「本物のガラス」を作れる 2 �
 - RT 非対応 GPU で `rt` を選ぶと自動で SSR が動くこと（`reflection=ssr(rt非対応→ssr)` ログ）。
 - `reflection_intensity` を変えると反射の強さがスケールすること。
 - SSR は画面外・裏面ヒットでミスし、GI 有効時は粗い環境反射、無効時は反射なし（黒＝加算無害）になること。
-- **SSR の履歴参照（1F 遅延）**: 床など鏡面の反射に**ガラス（半透明）の駒が映る**こと。反射内の動体を動かすと
-  反射像が 1 フレーム遅れて追従すること。ガラス→床→ガラス…の反射の再帰がフレネル×粗さフェードで減衰し破綻しないこと。
-  初回表示・ウィンドウリサイズ・反射 OFF→ON の直後 1 フレームだけ半透明が反射に映らない（不透明のみへフォールバック）が、
-  次フレームで映ること（ちらつきが 1F で収束する）。
   （`App::log_render_features_if_changed`、変化時のみ・重複抑制）。
 
 ### TLAS 構築ゲートの一般化

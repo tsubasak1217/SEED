@@ -609,15 +609,6 @@ pub struct App {
     /// GiParams を enabled=false でフラットに倒す（初回・リサイズ直後・SSGI 有効化直後の 1 フレーム）。
     /// SsgiTargets::ensure の再確保通知と「前フレームも SSGI が active だったか」で更新する。
     ssgi_warmed: bool,
-    /// SSR 前フレーム参照履歴（Phase D6, 反射に半透明を映すための 1 フレーム遅延テクスチャ）。
-    /// 毎フレーム末尾（半透明・スカイボックス・パーティクル描画後・ポスト処理前）の完成 HDR を
-    /// コピーして保持し、次フレームの SSR がヒット色サンプル元として読む（SSGI と同じ実績方式）。
-    /// 反射有効時のみ ensure でフル解像度に追従する（コピーは frame_renderer が制御）。
-    reflection_history: crate::engine::core::renderer::ReflectionHistory,
-    /// 反射履歴が「収束済み」か（reflection_history に有効な前フレーム完成 HDR があるか）。
-    /// false のフレーム（初回・リサイズ直後・反射有効化直後）は SSR を従来の「不透明のみ scene_hdr」
-    /// へフォールバックさせる。ReflectionHistory::ensure の再確保通知と「前フレームも反射 active か」で更新。
-    reflection_history_warmed: bool,
     /// GPU パーティクルシステム（Phase RP）。エミッタごとの GPU バッファ・CPU 状態を保持する。
     /// rt_pool と同じく eager 構築（デバイス不要。GPU パイプラインは DrawContext.pipelines が持つ）。
     /// 毎フレーム collect_and_consume（CPU）→ sync_gpu/dispatch/draw（GPU）で更新・描画する。
@@ -1005,8 +996,6 @@ impl App {
             ssgi_targets:                crate::engine::core::renderer::SsgiTargets::new(),
             shadow_mask_targets:         crate::engine::core::renderer::ShadowMaskTargets::new(),
             ssgi_warmed:                 false,
-            reflection_history:          crate::engine::core::renderer::ReflectionHistory::new(),
-            reflection_history_warmed:   false,
             particle_system:             crate::engine::core::renderer::ParticleSystem::new(),
             skybox_system:               crate::engine::core::renderer::SkyboxSystem::new(),
             post_vignette_enabled:       false,
