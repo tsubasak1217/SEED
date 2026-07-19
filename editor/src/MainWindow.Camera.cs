@@ -116,6 +116,8 @@ public partial class MainWindow
         bool meshletCull = ChkMeshletCull?.IsChecked != false;
         // Deferred レンダリング（G-Buffer + フルスクリーン・ライティング）。null（未初期化）時は既定 true。
         bool deferred = ChkDeferred?.IsChecked != false;
+        // RT屈折の逐次グラブ。null（未初期化）時は既定 false（重いオプションのため）。
+        bool refractSequentialGrab = ChkRefractSeqGrab?.IsChecked == true;
         // シーンビュー表示モード（"lit" / "unlit" / "wireframe"）。未選択・null 時は既定の "lit"。
         string viewMode = (CmbViewMode?.SelectedItem as System.Windows.Controls.ComboBoxItem)?.Tag as string
                           ?? DefaultViewMode;
@@ -137,14 +139,14 @@ public partial class MainWindow
         var ci = System.Globalization.CultureInfo.InvariantCulture;
         // 新キー "features"（機能マトリクス）。旧キー gi_enabled は features.gi へ移行したため送らない。
         string features = $"\"features\":{{\"shadow\":\"{shadow}\",\"gi\":\"{giMode}\",\"reflection\":\"{reflection}\",\"ao\":\"{ao}\",\"translucency\":\"{translucency}\"}}";
-        string json = $"{{\"bloom\":{(bloom ? "true" : "false")},\"fxaa\":{(fxaa ? "true" : "false")},\"bloom_intensity\":{intensity.ToString(ci)},\"transparency\":\"{transparency}\",\"meshlet_cull\":{(meshletCull ? "true" : "false")},\"deferred\":{(deferred ? "true" : "false")},\"view_mode\":\"{viewMode}\",\"gi_intensity\":{giIntensity.ToString(ci)},\"reflection_intensity\":{reflectionIntensity.ToString(ci)},\"ao_intensity\":{aoIntensity.ToString(ci)},{features}}}";
+        string json = $"{{\"bloom\":{(bloom ? "true" : "false")},\"fxaa\":{(fxaa ? "true" : "false")},\"bloom_intensity\":{intensity.ToString(ci)},\"transparency\":\"{transparency}\",\"meshlet_cull\":{(meshletCull ? "true" : "false")},\"deferred\":{(deferred ? "true" : "false")},\"refract_sequential_grab\":{(refractSequentialGrab ? "true" : "false")},\"view_mode\":\"{viewMode}\",\"gi_intensity\":{giIntensity.ToString(ci)},\"reflection_intensity\":{reflectionIntensity.ToString(ci)},\"ao_intensity\":{aoIntensity.ToString(ci)},{features}}}";
         _runtimeManager?.SendToRuntime($"SET_POST_FX:{json}");
 
         // ビューポート設定を project_settings.json へ永続化する（次回起動時に UI とランタイムの
         // load_graphics_settings が同じ値を復元できるようにする）。view_mode はセッション限りの
         // 表示モードのため永続化しない。既存の他キー（start_scene / scenes / plugins 等）は保全する。
         PersistViewportSettings(
-            bloom, fxaa, intensity, transparency, meshletCull, deferred,
+            bloom, fxaa, intensity, transparency, meshletCull, deferred, refractSequentialGrab,
             giIntensity, reflectionIntensity, aoIntensity,
             shadow, giMode, reflection, ao, translucency);
     }
@@ -157,7 +159,7 @@ public partial class MainWindow
     /// </summary>
     private void PersistViewportSettings(
         bool bloom, bool fxaa, double bloomIntensity, string transparency,
-        bool meshletCull, bool deferred,
+        bool meshletCull, bool deferred, bool refractSequentialGrab,
         double giIntensity, double reflectionIntensity, double aoIntensity,
         string shadow, string giMode, string reflection, string ao, string translucency)
     {
@@ -184,6 +186,7 @@ public partial class MainWindow
             root["transparency"]         = transparency;
             root["meshlet_cull"]         = meshletCull;
             root["deferred"]             = deferred;
+            root["refract_sequential_grab"] = refractSequentialGrab;
             root["gi_intensity"]         = giIntensity;
             root["reflection_intensity"] = reflectionIntensity;
             root["ao_intensity"]         = aoIntensity;
@@ -248,6 +251,9 @@ public partial class MainWindow
                 ChkMeshletCull.IsChecked = mc.GetValue<bool>();
             if (root["deferred"] is JsonNode df && ChkDeferred != null)
                 ChkDeferred.IsChecked = df.GetValue<bool>();
+            // キー無し（既存プロジェクト）は既定 false のため未設定のままでよい。
+            if (root["refract_sequential_grab"] is JsonNode rsg && ChkRefractSeqGrab != null)
+                ChkRefractSeqGrab.IsChecked = rsg.GetValue<bool>();
             if (root["gi_intensity"] is JsonNode gi && SldGiIntensity != null)
                 SldGiIntensity.Value = gi.GetValue<double>();
             if (root["reflection_intensity"] is JsonNode ri && SldReflectionIntensity != null)
@@ -274,6 +280,10 @@ public partial class MainWindow
                 // XAML 既定（shadowmap）になり、SyncViewportSettings が rt_shadows=true を潰してしまう。
                 SelectComboByTag(CmbShadow, rts.GetValue<bool>() ? "rt" : "shadowmap");
             }
+
+            // 復元した CmbTransparency / CmbTranslucency の組み合わせに応じて
+            // 屈折の逐次グラブのチェック可否を確定する。
+            UpdateRefractSeqGrabEnabled();
         }
         catch (Exception ex)
         {
@@ -284,6 +294,22 @@ public partial class MainWindow
             _updatingControls = false;
             _viewportSettingsInitialized = prevInit;
         }
+    }
+
+    /// <summary>
+    /// 「屈折の逐次グラブ」チェックボックスの有効/無効を、透明描画方式（距離ソート/WBOIT）と
+    /// 半透明モード（レイトレ/ラスタ）の組み合わせから確定する。このオプションは
+    /// 「距離ソート」かつ「半透明=レイトレ」のときにのみ意味を持つ（ガラスを1つ描くたびに
+    /// 屈折背景を再取得し、ガラス越しの別ガラスを映すため）。それ以外の組み合わせでは
+    /// グレーアウトしてチェック操作自体を禁止する。
+    /// XAML 初期化順の都合で InitializeComponent 前に呼ばれる可能性があるため null チェックする。
+    /// </summary>
+    private void UpdateRefractSeqGrabEnabled()
+    {
+        if (ChkRefractSeqGrab == null) return;
+        string? transparency = (CmbTransparency?.SelectedItem as ComboBoxItem)?.Tag as string;
+        string? translucency = (CmbTranslucency?.SelectedItem as ComboBoxItem)?.Tag as string;
+        ChkRefractSeqGrab.IsEnabled = transparency == "sort" && translucency == "rt";
     }
 
     /// <summary>ComboBox から Tag が一致する ComboBoxItem を選択する（見つからなければ無変更）。</summary>
@@ -316,6 +342,7 @@ public partial class MainWindow
     /// <summary>CmbTransparency の SelectionChanged から呼ばれるハンドラ。透明描画方式の変更をランタイムへ送信する。</summary>
     private void OnTransparencyChanged(object sender, SelectionChangedEventArgs e)
     {
+        UpdateRefractSeqGrabEnabled();
         if (_updatingControls) return;
         SendPostFx();
     }
@@ -333,6 +360,7 @@ public partial class MainWindow
     /// </summary>
     private void OnRenderFeatureChanged(object sender, SelectionChangedEventArgs e)
     {
+        UpdateRefractSeqGrabEnabled();
         if (_updatingControls) return;
         SendPostFx();
     }
@@ -647,6 +675,7 @@ public partial class MainWindow
         ChkBloom.IsChecked           = false;
         ChkFxaa.IsChecked            = false;
         SldBloomIntensity.Value      = DefaultBloomIntensity;
+        if (ChkRefractSeqGrab != null) ChkRefractSeqGrab.IsChecked = false;
         if (CmbTransparency != null) CmbTransparency.SelectedIndex = 0;
         // メッシュレットカリング（第1弾）は既定 true（有効）へリセットする。
         if (ChkMeshletCull != null) ChkMeshletCull.IsChecked = true;
@@ -662,6 +691,7 @@ public partial class MainWindow
         if (SldGiIntensity != null)  SldGiIntensity.Value = DefaultGiIntensity;
         if (SldReflectionIntensity != null) SldReflectionIntensity.Value = DefaultReflectionIntensity;
         if (SldAoIntensity != null) SldAoIntensity.Value = DefaultAoIntensity;
+        UpdateRefractSeqGrabEnabled();
         _updatingControls = false;
         if (_viewportSettingsInitialized)
         {

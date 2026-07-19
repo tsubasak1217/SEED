@@ -1451,6 +1451,18 @@
                                                                       IsChecked="True"
                                                                       Checked="OnPostFxChanged"
                                                                       Unchecked="OnPostFxChanged"/>
+                                                            <!-- RT屈折の逐次グラブ。半透明=レイトレ かつ 透明描画=距離ソートのときのみ
+                                                                 意味を持つ（ガラス越しの別ガラスを映すため、1枚描くたびに屈折背景を
+                                                                 再取得する＝重い）。それ以外の組み合わせでは UpdateRefractSeqGrabEnabled
+                                                                 によりグレーアウトされる。 -->
+                                                            <CheckBox x:Name="ChkRefractSeqGrab"
+                                                                      Content="屈折の逐次グラブ（ガラス越しのガラスを映す・重い）"
+                                                                      Foreground="White" FontSize="11"
+                                                                      Margin="0,4,0,0"
+                                                                      IsChecked="False"
+                                                                      ToolTip="半透明=レイトレ かつ 透明描画=距離ソート のときのみ有効。ガラスを1つ描くたびに屈折背景を再生成するため重い。"
+                                                                      Checked="OnPostFxChanged"
+                                                                      Unchecked="OnPostFxChanged"/>
                                                             <!-- GI 強度（GI モードは「レンダリング機能」セクションのコンボで選択）-->
                                                             <Grid Margin="0,0,0,8">
                                                                 <Grid.ColumnDefinitions>

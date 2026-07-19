@@ -475,7 +475,7 @@ impl App {
                     };
                     self.log_render_features_if_changed();
                 }
-                IpcCommand::SetPostFx { bloom, fxaa, bloom_intensity, transparency, meshlet_cull, deferred, view_mode, gi, reflection_intensity, ao_intensity, features, legacy_gi_enabled } => {
+                IpcCommand::SetPostFx { bloom, fxaa, bloom_intensity, transparency, meshlet_cull, deferred, refract_sequential_grab, view_mode, gi, reflection_intensity, ao_intensity, features, legacy_gi_enabled } => {
                     // ブルーム／FXAA をエディタからのライブ切替で更新する（Phase R4）。
                     self.post_fx.bloom_enabled   = bloom;
                     self.post_fx.fxaa_enabled    = fxaa;
@@ -486,6 +486,8 @@ impl App {
                     self.post_fx.meshlet_cull    = meshlet_cull;
                     // Deferred（G-Buffer）レンダリングのライブ切替（Phase D3 Deferred Phase B）。
                     self.post_fx.deferred        = deferred;
+                    // RT屈折の逐次グラブ（ガラス越しガラスの多重屈折）のライブ切替。既定 OFF の重量オプション。
+                    self.post_fx.refract_sequential_grab = refract_sequential_grab;
                     // シーンビュー表示モード（Lit / Unlit / Wireframe）のライブ切替。
                     self.scene_view_mode         = view_mode;
                     // DDGI の数値設定（強度／プローブ数等）のライブ切替（Phase RT-GI）。

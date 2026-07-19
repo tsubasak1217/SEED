@@ -1197,6 +1197,49 @@ RT-Translucency の屈折を土台に、「本物のガラス」を作れる 2 �
 - **要実機確認**: ガラス越しのガラスの再屈折・厚みのある屈折・すりガラス維持・非対応 GPU の SS 縮退。
   八面体法線の往復一致は Rust 単体テスト（`bindless::tests::oct_roundtrip_*`）で担保済み。
 
+### D. sequential grab（屈折の逐次グラブ・オプション） 【状況: 実装済み（実機スモーク済み）】
+本物の RT 屈折でも、最終的に**画面へ写った背景を引く先は `refract_bg`（不透明シーン HDR のコピー＋
+ミップぼかしピラミッド）で不透明のみ**である（RT/SS 共通）。そのため「ガラス越しの別ガラス」は界面 tint の
+ベール（シルエット）が上限で、後ろのガラスの**屈折像**そのものは背景に含まれない。これを解消する任意方式が
+**sequential grab**: 半透明ガラスを 1 個描くごとに `scene_hdr`（先に描いた半透明を含む）を屈折背景ピラミッドへ
+**再グラブ**し、後続のガラスがそれを背景としてサンプルする。**既定 OFF・距離ソート専用・重い**。
+
+- **設定（データ駆動・スカラー bool）**: `PostFxSettings.refract_sequential_grab`（既定 false）。
+  `deferred` と同じ経路: `project_settings.json` の `refract_sequential_grab` キー（未記載＝serde 相当の
+  `as_bool().unwrap_or(false)` で OFF）→ 起動ログ `[SEED INIT] graphics settings ... seq_grab={}` →
+  IPC `SetPostFx.refract_sequential_grab` → `ipc_handler` で `self.post_fx` へ反映。エディタは
+  チェックボックス「屈折の逐次グラブ（ガラス越しのガラスを映す・重い）」を追加し、**透明描画=距離ソート
+  かつ 半透明=レイトレのときだけ有効化（それ以外はグレーアウト）**（WBOIT は本方式が成立しないため）。
+- **実行ゲート**: `refract_sequential_active = tp_sorted && refract_active && post_fx.refract_sequential_grab`。
+  **WBOIT は設定 ON でも従来動作**（accum/reveal へ順序独立に蓄積する方式で「先に描いたガラス」という概念が
+  無く、逐次背景更新が意味を成さないため）。RT/SS どちらの屈折経路も**同じ屈折背景ピラミッド（full_view）**を
+  サンプルするため、本方式は両経路に等しく効く（背景テクスチャの中身が更新されるだけで BindGroup は不変）。
+- **再グラブの粒度と pass 分割**（`transparency::plan_sorted_sequential` ＋ `draw_sequential_one`、
+  ドライバは `frame_renderer.rs` のメインパス内）: メインパスを一旦閉じ、背面→前面ソート済みアイテムを走査。
+  **屈折に関与する**（`primitive_ior>1+ε || primitive_transmission>0`＝`refract_common.wgsl::material_refracts`
+  と同一述語。ε=`REFRACT_IOR_EPSILON`=1.0e-4 を Rust/WGSL で一致固定）アイテムの手前で、**直近グラブ以降に
+  半透明が描かれていれば**（dirty フラグ）パスを閉じて `refract_pyramid.record`（scene_hdr→背景）で再グラブし、
+  パスを開き直す（**パス内では自身の出力テクスチャ由来の背景をサンプルできない**ための必須分割）。
+  **間に挟まる非屈折半透明（素の Blend＝アルファ板等）は再グラブ不要なのでまとめて 1 パスで描く**。初回の
+  屈折アイテムはメインパス前（`refract_active` で毎フレーム実行済み）の**不透明のみの背景を再利用**して余計な
+  再グラブを避ける。描き終えたらメインパスを `begin_scene_pass_load_to` で再開し、以降のスプライト/ギズモへ
+  **レイヤリングを維持したまま**戻る（Play 時はビューポート/シザーを各パス開き直しで再適用）。
+- **屈折関与判定のための CPU ミラー**: `GpuModel.iors`（＋`default_ior`・アクセサ `primitive_ior`）を
+  `transmissions` と**同一の更新経路**（コンストラクタ＋override 3 箇所＋inline 更新）で追加。materials と常に同期。
+- **軽量化の判断（mip0-only を見送り）**: 再グラブは毎回**フル**（mip0 コピー＋ぼかしミップ 4 段再生成）。
+  「roughness>0 のガラスが無ければぼかしミップ再生成を省く（mip0 コピーのみ）」最適化は、roughness の CPU
+  ミラー追加（別の staleness 源）を要し、想定ガラス枚数では blur 再生成が支配的コストになる証跡も無いため見送った。
+  分割点はアイテム単位のみ（非屈折半透明はまとめる）に留め、必要になれば `record` に blur 省略フラグを足す余地を残す。
+- **コスト（実機スモーク・RenderTest.scene・distance-sort＋translucency=Rt、RT 対応 GPU）**:
+  同一 sort+rt 経路で seq_grab を OFF/ON 比較。**OFF**: total≈29〜36ms・`main_pass`≈5〜8ms・`draw`≈0.01ms。
+  **ON**: total≈50〜51ms・`main_pass`≈19〜21ms・`draw`≈14ms。屈折ガラス 1 枚ごとの背景ピラミッド再生成
+  （mip0 コピー＋4 ミップ blur）＋パス分割の追加 draw call/pass のエンコードが `draw`/`main_pass` に約 +14〜15ms
+  乗る（「重い」設定として妥当）。両条件で `actors=9`・パニック 0。
+- **既知のトレードオフ**: (1) 描画パス数・GPU バリア数が屈折ガラス枚数に比例して増える。(2) 非逐次時は距離ソート
+  半透明をメインパス**内**で描くが、逐次時はメインパスを分割して描く（WBOIT が既にメインパス後に描くのと同じ
+  パス分割の系譜。オーバーレイのレイヤリングは reopen で維持）。(3) roughness 高のガラスも下位ミップ（先に描いた
+  ガラスを含むぼかし背景）を毎回更新するため、blur コストは枚数×ミップ段で効く。
+
 ### 将来課題（ユーザーと合意済みの積み残し）
 - **界面 ior の正確化**: `BindlessInstanceRecord` に ior を足し、`custom_data` から界面ごとの実 ior を引いて
   再屈折する（現状は shading 面の `material.ior` を全界面に流用）。※界面法線の復元は実装済み（上記）。

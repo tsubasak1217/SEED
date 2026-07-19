@@ -3352,6 +3352,16 @@ impl App {
                         // mip0=不透明シーン HDR のコピー・以降=ダウンサンプル→いもす法ブラー。
                         self.refract_pyramid.ensure(&draw_ctx.device, surf_w, surf_h);
                     }
+                    // sequential grab（屈折の逐次グラブ）を実行するか（Phase RT-Translucency 拡張）。
+                    // 距離ソート（tp_sorted）かつ 屈折背景アクティブ（refract_active）かつ 設定 ON のときのみ。
+                    // 有効時は、半透明ガラスを 1 つ描くたびに scene_hdr → 屈折背景ピラミッドを再グラブし、
+                    // 後続のガラスが「先に描かれたガラス」を背景として拾えるようにする（ガラス越しのガラス）。
+                    // WBOIT（tp_wboit）は accum/reveal へ順序独立に蓄積する方式で「先に描いたガラス」という
+                    // 概念が無く、逐次背景更新が意味を成さないため、設定 ON でも従来動作（本フラグは false のまま）。
+                    // RT/SS どちらの屈折経路も同じ屈折背景ピラミッド（full_view）をサンプルするため、
+                    // 本方式は両経路に等しく効く（背景の中身が更新されるだけで BindGroup は不変）。
+                    let refract_sequential_active =
+                        tp_sorted && refract_active && self.post_fx.refract_sequential_grab;
                     let hdr_view   = self.rt_pool.view(crate::engine::core::renderer::RT_SCENE_HDR);
                     // メインカメラ用の透明 group4 BindGroup（Phase RT-Translucency）。
                     // 透明パイプラインは group4 に屈折背景（binding15/16）を要求するため、距離ソート／WBOIT
@@ -4162,9 +4172,13 @@ impl App {
                             // デファードでも半透明はフォワードで描く（G-Buffer 深度を Load してテスト、
                             // メインパスが Load で再開しているためこの深度テストは正しく機能する）。
                             if tp_sorted {
-                                // 本物の RT 屈折が使えるフレームは RT パイプライン＋RT superset BG で描く。
-                                // それ以外（非対応 GPU・translucency≠Rt・屈折背景オフ）は SS 版へ完全フォールバック。
-                                if let (Some(rt_bg), Some(rt_tp)) = (
+                                if refract_sequential_active {
+                                    // sequential grab 有効時はメインパス内では描かない。この直後の
+                                    // 逐次ループがメインパスを一旦閉じ、屈折アイテムの手前で背景を
+                                    // 再グラブしながら 1 アイテムずつ別パスで描く（下の分岐を参照）。
+                                } else if let (Some(rt_bg), Some(rt_tp)) = (
+                                    // 本物の RT 屈折が使えるフレームは RT パイプライン＋RT superset BG で描く。
+                                    // それ以外（非対応 GPU・translucency≠Rt・屈折背景オフ）は SS 版へ完全フォールバック。
                                     transparent_rt_bg_main.as_ref(),
                                     draw_ctx.pipelines.transparent.rt.as_ref(),
                                 ) {
@@ -4185,6 +4199,84 @@ impl App {
                                         &draw_ctx.pipelines.transparent,
                                         saved_camera_pos,
                                     );
+                                }
+                            }
+
+                            // ── sequential grab（屈折の逐次グラブ）本体 ──────────────────
+                            // 半透明ガラスを 1 つ描くたびに scene_hdr → 屈折背景ピラミッドを再グラブし、
+                            // 後続のガラスが「先に描かれたガラス」を背景として拾えるようにする。
+                            // 実装: メインパスを一旦閉じ、背面→前面ソート済みアイテムを走査。屈折する
+                            // アイテムの手前で（直近グラブ以降に半透明が描かれていれば）パスを閉じて
+                            // 背景を再グラブしパスを開き直す（パス内では自身の出力由来の背景をサンプル
+                            // できないための必須分割）。間に挟まる非屈折半透明はまとめて 1 パスで描く。
+                            // 描き終えたらメインパスを Load で再開し、以降のオーバーレイへレイヤリングを
+                            // 維持したまま戻る。sorted 時のみ・重い（設定 refract_sequential_grab で明示 ON）。
+                            if refract_sequential_active {
+                                drop(pass);
+                                let seq_plan = crate::engine::core::renderer::transparency::plan_sorted_sequential(
+                                    &transparent_models, saved_camera_pos,
+                                );
+                                if !seq_plan.is_empty() {
+                                    // RT/SS のパイプライン・BindGroup 選択は in-pass 版と同一規約。
+                                    let use_rt = transparent_rt_bg_main.is_some()
+                                        && draw_ctx.pipelines.transparent.rt.is_some();
+                                    let seq_lights_bg: &wgpu::BindGroup = if use_rt {
+                                        transparent_rt_bg_main.as_ref().unwrap()
+                                    } else {
+                                        &transparent_bg_main
+                                    };
+                                    let seq_rt = if use_rt {
+                                        draw_ctx.pipelines.transparent.rt.as_ref()
+                                    } else {
+                                        None
+                                    };
+                                    // 再グラブのコピー元（半透明の描画先＝屈折背景 mip0 のコピー元）。
+                                    let scene_hdr_tex = self.rt_pool.texture(
+                                        crate::engine::core::renderer::RT_SCENE_HDR,
+                                    );
+                                    // 直近グラブ以降に scene_hdr が変化したか。初期は false: メインパス前
+                                    // （屈折ビット追記と同時）に不透明のみの背景を既にグラブ済みのため、
+                                    // 初回の屈折アイテムはその背景を再利用して余計な再グラブを避ける。
+                                    let mut dirty = false;
+                                    let mut seq_pass = frame.begin_scene_pass_load_to(hdr_view);
+                                    if self.mode == RuntimeMode::Play && !self.paused {
+                                        let (vp_x, vp_y, vp_w, vp_h) = game_viewport;
+                                        seq_pass.set_viewport(vp_x, vp_y, vp_w, vp_h, 0.0, 1.0);
+                                        seq_pass.set_scissor_rect(vp_x as u32, vp_y as u32, vp_w as u32, vp_h as u32);
+                                    }
+                                    for sp in &seq_plan {
+                                        if sp.refracts && dirty {
+                                            drop(seq_pass);
+                                            // mip0 コピー＋ぼかしミップ再生成（フル）。roughness>0 のガラスは
+                                            // 下位ミップ（先に描いたガラスを含むぼかし背景）をサンプルするため、
+                                            // 逐次でもブラーを毎回更新する（mip0 のみの軽量化は roughness 信号が
+                                            // 要るため見送り＝docs のトレードオフ節参照）。
+                                            self.refract_pyramid.record(
+                                                &draw_ctx.device, frame.encoder_mut(), scene_hdr_tex,
+                                            );
+                                            seq_pass = frame.begin_scene_pass_load_to(hdr_view);
+                                            if self.mode == RuntimeMode::Play && !self.paused {
+                                                let (vp_x, vp_y, vp_w, vp_h) = game_viewport;
+                                                seq_pass.set_viewport(vp_x, vp_y, vp_w, vp_h, 0.0, 1.0);
+                                                seq_pass.set_scissor_rect(vp_x as u32, vp_y as u32, vp_w as u32, vp_h as u32);
+                                            }
+                                            dirty = false;
+                                        }
+                                        crate::engine::core::renderer::transparency::draw_sequential_one(
+                                            &mut seq_pass, sp, &transparent_models,
+                                            &camera_buf.bind_group, seq_lights_bg,
+                                            &draw_ctx.pipelines.transparent, seq_rt,
+                                        );
+                                        dirty = true;
+                                    }
+                                    drop(seq_pass);
+                                }
+                                // メインパスを Load で再開し、以降のオーバーレイ描画へ戻る（レイヤリング維持）。
+                                pass = frame.begin_scene_pass_load_to(hdr_view);
+                                if self.mode == RuntimeMode::Play && !self.paused {
+                                    let (vp_x, vp_y, vp_w, vp_h) = game_viewport;
+                                    pass.set_viewport(vp_x, vp_y, vp_w, vp_h, 0.0, 1.0);
+                                    pass.set_scissor_rect(vp_x as u32, vp_y as u32, vp_w as u32, vp_h as u32);
                                 }
                             }
                         }

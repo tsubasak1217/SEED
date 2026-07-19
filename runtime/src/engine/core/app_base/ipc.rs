@@ -136,6 +136,10 @@ pub enum IpcCommand {
         /// Deferred（G-Buffer）レンダリング有効フラグ（Phase D3 Deferred Phase B）。欠落時は true。
         /// OFF で従来のフォワード経路（deferred=false）にフォールバックする（A/B パリティ検証用）。
         deferred: bool,
+        /// RT屈折の逐次グラブ有効フラグ。欠落時は false（既定 OFF）。
+        /// ON でガラス 1 個描画ごとに背景ミップチェーンを再グラブし、ガラス越しガラスの多重屈折を表現する
+        /// （重い。距離ソート透明経路＋RT translucency 有効時のみ意味を持つ）。
+        refract_sequential_grab: bool,
         /// エディタのシーンビュー表示モード（Lit / Unlit / Wireframe）。欠落時は Lit。
         /// SET_POST_FX に相乗りしているのは、エディタが全ビューポート描画設定を 1 本の
         /// SendPostFx()／1 個の SET_POST_FX ハンドラへ集約しているため（追加配線を増やさない）。
@@ -855,6 +859,10 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                             let deferred = v.as_ref()
                                 .and_then(|v| v["deferred"].as_bool())
                                 .unwrap_or(true);
+                            // RT屈折の逐次グラブ（欠落時は false = 無効。既定 OFF の重量オプション）。
+                            let refract_sequential_grab = v.as_ref()
+                                .and_then(|v| v["refract_sequential_grab"].as_bool())
+                                .unwrap_or(false);
                             // ビューモード（欠落・未知時は "lit" = ライティング ON）。
                             let view_mode = crate::engine::core::renderer::SceneViewMode::from_str(
                                 v.as_ref()
@@ -884,7 +892,7 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                             let features = v.as_ref()
                                 .and_then(|vv| vv.get("features"))
                                 .and_then(|fv| serde_json::from_value::<crate::engine::core::renderer::RenderFeatures>(fv.clone()).ok());
-                            Some(IpcCommand::SetPostFx { bloom, fxaa, bloom_intensity, transparency, meshlet_cull, deferred, view_mode, gi, reflection_intensity, ao_intensity, features, legacy_gi_enabled })
+                            Some(IpcCommand::SetPostFx { bloom, fxaa, bloom_intensity, transparency, meshlet_cull, deferred, refract_sequential_grab, view_mode, gi, reflection_intensity, ao_intensity, features, legacy_gi_enabled })
                         }
                         // 環境光（Phase R1.5）。"SET_AMBIENT:{r},{g},{b},{intensity}"。
                         // 4 要素に満たない／パース不能な場合は無視する（None）。

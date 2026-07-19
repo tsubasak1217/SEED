@@ -800,6 +800,77 @@ pub fn draw_wboit_rt<'p>(
     }
 }
 
+// ============================================================
+//  sequential grab（屈折の逐次グラブ）— 距離ソート専用
+// ============================================================
+
+/// 屈折関与判定の IOR 閾値。refract_common.wgsl の `IOR_EPSILON`（= 1.0e-4）と一致させること。
+/// ズレると「屈折するガラス」の判定がシェーダの grab-pass ゲート（material_refracts）と食い違い、
+/// 逐次グラブの再グラブ地点がシェーダの実際のサンプル要否とずれる（下のソース照合テストで担保）。
+const REFRACT_IOR_EPSILON: f32 = 1.0e-4;
+
+/// sequential grab の 1 描画単位。距離ソート済みアイテムに「屈折に関与するか」を付帯させる。
+///
+/// `refracts` は refract_common.wgsl の `material_refracts`（ior>1+eps || transmission>0）と同一述語。
+/// true のアイテムは屈折背景をサンプルするため、描画の手前で最新の背景（＝先に描いた半透明を含む
+/// scene_hdr のコピー＋ブラーピラミッド）が要る。false（素の Blend＝アルファ板等）は背景を読まないので
+/// 手前での再グラブは不要（＝連続する非屈折半透明は 1 パスにまとめられる）。
+pub struct SequentialItem {
+    /// 描画対象（`draw_one` に渡す内部アイテム）。
+    item:         TransparentItem,
+    /// 屈折背景をサンプルするマテリアルか（描画手前で最新背景が要るか）。
+    pub refracts: bool,
+}
+
+/// sequential grab 用: 半透明を背面→前面（dist_sq 降順）にソートし、各アイテムの屈折関与フラグを付ける。
+///
+/// ソート規約は `draw_sorted` と同一（アルファブレンドの描画順依存を満たす）。屈折関与は GpuModel の
+/// `primitive_ior` / `primitive_transmission`（materials と同期した CPU ミラー）から純粋計算で決まる。
+pub fn plan_sorted_sequential(
+    models:     &TransparentModels,
+    camera_pos: [f32; 3],
+) -> Vec<SequentialItem> {
+    let mut items = gather_items(models, camera_pos);
+    // 背面→前面（遠い順）。draw_sorted と同一のソートキー。
+    items.sort_by(|a, b| b.dist_sq.partial_cmp(&a.dist_sq).unwrap_or(std::cmp::Ordering::Equal));
+    items.into_iter().map(|item| {
+        let (gpu, _) = &models[item.model_idx];
+        let prim = &gpu.meshes[item.mesh_idx].primitives[item.prim_idx];
+        let mi = prim.material_index;
+        // refract_common.wgsl の material_refracts と同一述語（屈折/透過するマテリアルか）。
+        let refracts = gpu.primitive_ior(mi) > 1.0 + REFRACT_IOR_EPSILON
+            || gpu.primitive_transmission(mi) > 0.0;
+        SequentialItem { item, refracts }
+    }).collect()
+}
+
+/// sequential grab 用: 1 アイテムを描画する（`draw_sorted` の 1 反復ぶんを外から駆動できるように分離）。
+///
+/// `rt` が Some なら本物の RT 屈折パイプライン集合を、None なら SS 版を使う（`draw_sorted` /
+/// `draw_sorted_rt` と同じパイプライン選択）。frame_renderer が屈折アイテムの手前で背景を再グラブしつつ
+/// このメソッドをアイテム単位に呼ぶことで逐次グラブを実現する。
+pub fn draw_sequential_one<'p>(
+    pass:      &mut wgpu::RenderPass<'p>,
+    sp:        &'p SequentialItem,
+    models:    &'p TransparentModels<'p>,
+    camera_bg: &'p wgpu::BindGroup,
+    lights_bg: &'p wgpu::BindGroup,
+    tp:        &'p TransparentPipelines,
+    rt:        Option<&'p TransparentRtPipelines>,
+) {
+    if let Some(rt) = rt {
+        draw_one(
+            pass, &sp.item, models, camera_bg, lights_bg,
+            &rt.sorted_mesh, &rt.sorted_skinned, &rt.mesh_empty_bg3,
+        );
+    } else {
+        draw_one(
+            pass, &sp.item, models, camera_bg, lights_bg,
+            &tp.sorted_mesh, &tp.sorted_skinned, &tp.mesh_empty_bg3,
+        );
+    }
+}
+
 /// 屈折オフ時に差すダミー背景テクスチャ（1x1, HDR フォーマット）を作りビューを返す。
 /// 中身は不定（屈折オフのフラグメントはサンプルしない）。透明パイプラインの group4 binding15 を
 /// 常に満たすためだけに存在する。
@@ -988,6 +1059,33 @@ mod tests {
         assert!(
             !refract_src.contains("a * (1.0 - tr)"),
             "屈折オフ経路で a_eff = a*(1-tr) は禁止（WBOIT discard／距離ソートのアルファ低下を招く）"
+        );
+    }
+
+    /// sequential grab（屈折の逐次グラブ）の屈折関与述語が、シェーダの grab-pass ゲートと
+    /// 同一の閾値・同一の述語であることを固定する回帰テスト。
+    ///
+    /// `plan_sorted_sequential` は「再グラブが要るアイテムか」を
+    ///   refracts = ior > 1.0 + REFRACT_IOR_EPSILON || transmission > 0.0
+    /// で決める。これは refract_common.wgsl の material_refracts
+    ///   (u_material.ior > 1.0 + IOR_EPSILON || tr > 0.0)
+    /// と同一でなければならない（ズレると、屈折するガラスの手前で背景が再グラブされず
+    /// 古い背景を拾う／逆に非屈折半透明で無駄に再グラブする）。定数値とシェーダ実体を照合する。
+    #[test]
+    fn sequential_refract_predicate_matches_shader_gate() {
+        // Rust ミラー定数が 1.0e-4 であること（refract_common.wgsl の IOR_EPSILON と一致）。
+        assert_eq!(
+            super::REFRACT_IOR_EPSILON, 1.0e-4_f32,
+            "REFRACT_IOR_EPSILON は refract_common.wgsl の IOR_EPSILON（1.0e-4）と一致すること",
+        );
+        let refract_src = include_str!("shaders/refract_common.wgsl");
+        assert!(
+            refract_src.contains("const IOR_EPSILON: f32 = 1.0e-4;"),
+            "refract_common.wgsl の IOR_EPSILON 定義がミラー値と一致すること",
+        );
+        assert!(
+            refract_src.contains("u_material.ior > 1.0 + IOR_EPSILON || tr > 0.0"),
+            "refract_common.wgsl の grab-pass ゲート述語が sequential 側ミラーと同一であること",
         );
     }
 }
