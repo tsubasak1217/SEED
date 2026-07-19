@@ -241,8 +241,19 @@
   RT/合成が必要でコスト不相応。R8 のプレビュー簡易経路と同方針）。
 - naga parse+validate: `transparency.rs` の #[test] で WBOIT mesh/skinned・合成の 3 連結を
   検証（post/rt_shadow の既存テストが shade_pbr 分割後の fs_main も再検証、全 pass）。
+- **ガラス面の RT 受光影（実装 B）: 実装済み**。RT 屈折の透明パイプライン（`transparent_mesh_rt` /
+  `transparent_skinned_rt` と WBOIT RT）の影経路を `rt_shadow_off`（シャドウマップのみ）から
+  `rt_shadow_on` + `rt_shadow_tint_avg`（インライン RT 影・平均アルベド色付き影）へ差し替え、
+  ガラス面も不透明面（`mesh_rt`）と同じインライン RT 影を受ける。フォワードはシャドウマスク非対応のため
+  `lighting_eval` のインライン経路（slot<0・`deterministic_tint=true`）で評価される（tint は中心 L の決定的 1 評価に縮退）。
+  **binding 重複の解消**: `refract_rt.wgsl` が自前宣言していた TLAS(binding6)/平均アルベド(binding14) は
+  `rt_shadow_on` が宣言するため、`refract_rt` 側の再宣言を撤去（同名グローバルの重複定義回避。両ファイルは常にセット連結）。
+  group4 BGL は不変（`create_transparent_rt_bind_group` は元から 6/14 を供給）＝Rust 配線変更なし。
+  実装: `pipelines/transparent_{mesh,skinned}_rt.toml`, `transparency.rs`（resolver＋WBOIT 連結＋naga テスト）,
+  `shaders/refract_rt.wgsl`（binding 撤去）。実機確認: RenderTest でシアン王駒が受光影で陰影付く。
+  **SS 版（非 RT 透明）は `rt_shadow_off` のまま**（シャドウマップ受光のみ・変更なし）。
 - スコープ外（TODO）: スプライト 2D の透明（既存レイヤーソートのまま）・パーティクル・
-  透明の RT 影/シャドウキャスト（透明は非 RT ライト BG＝シャドウマップ受光のみ。
+  透明のシャドウキャスト（Blend 面が他面へ RT 影を落とす側は 0x02 マスクの色付き影で対応済みだが、
   BLAS/シャドウキャスターからの Blend 除外は未実施——cast_shadows=false で回避可能）・
   カメラプレビューの WBOIT・実機での視覚検証（交差半透明の WBOIT 破綻なし確認）。
 
@@ -861,6 +872,15 @@ Forward+ ではなく Deferred を選ぶ根拠: 多灯対応だけなら Forward
   `PostFxSettings.reflection_intensity`（既定 1.0, SET_POST_FX の `reflection_intensity`）。
   BindGroup: SSR=group0..3（4）/ RT=group0..4（5＝max_bind_groups 上限）/ composite=group0（1）。
   実装: `renderer/reflection.rs`, `shaders/reflection_common|ssr|rt|composite.wgsl`, `frame_renderer.rs` 配線。
+- **RT 反射のガラス対応（実装 A）: 実装済み**。従来 RT 反射レイは `RT_REFL_CULL_MASK=0x01`（不透明のみ）で
+  ガラスを素通りし、反射面にガラスが映らなかった。修正: 不透明トレース（0x01）とは別に、同じ原点・方向で
+  **半透明（0x02）だけを最大 4 枚トレース**（`rt_refl_glass`）し、入射面ごとに透過色 T=(1-α)+α·tr·albedo を
+  乗算累積（`rt_albedo` の .a パック α/tr をデコード。`refract_layer_tint` と同セマンティクス）＋遮蔽量
+  （1−luminance(T)）に比例した中立ツヤ（sheen）を加算。最終不透明反射色へ `reflected*tint + sheen` で合成する。
+  これで反射面（床・磨かれた駒）にガラスの色付きシルエット＋ツヤが映る（RenderTest でシアン王駒が床に映ることを実機確認）。
+  **ハイライトは視点依存フレネルではなく中立ツヤ近似**: 反射パス group3 に頂点法線メガバッファが未バインドで、
+  反射レイヒット面の補間法線を復元できない（＝フレネル cosθ が作れない）。BGL/配線を増やす価値は薄いと判断し
+  簡易ツヤで代替（`reflection_rt.wgsl` の設計判断コメント参照）。実装: `shaders/reflection_rt.wgsl` のみ（Rust 不変）。
 - **SSGI（スクリーンスペース GI）: 実装済み（Phase SSGI）**。GI の第 3 モード（`GiMode::Ssgi`）。
   Deferred 有効時のみ動く独立フルスクリーン AO の**カラー版**パス。G-Buffer の深度＋ワールド法線から
   コサイン半球方向へ 3 本（`SSGI_NUM_DIRS`）のスクリーンスペースレイを 16 ステップ×最大 5m でマーチし、

@@ -178,6 +178,11 @@ fn resolve_shader(name: &str) -> &'static str {
         "light_common.wgsl"          => include_str!("shaders/light_common.wgsl"),
         "shadow.wgsl"                => include_str!("shaders/shadow.wgsl"),
         "rt_shadow_off.wgsl"         => include_str!("shaders/rt_shadow_off.wgsl"),
+        // インライン RT 影（本体＋平均アルベド tint）。RT 屈折の透明パイプライン（実装 B）が連結し、
+        // ガラス面も不透明面と同じインライン RT 影を受ける。TLAS(binding6)/平均アルベド(binding14) は
+        // rt_shadow_on が宣言し、後続の refract_rt がそれを共用する（refract_rt 側の重複宣言は撤去済み）。
+        "rt_shadow_on.wgsl"          => include_str!("shaders/rt_shadow_on.wgsl"),
+        "rt_shadow_tint_avg.wgsl"    => include_str!("shaders/rt_shadow_tint_avg.wgsl"),
         "shader_static_vertex.wgsl"  => include_str!("shaders/shader_static_vertex.wgsl"),
         "shader_skinned_vertex.wgsl" => include_str!("shaders/shader_skinned_vertex.wgsl"),
         // PBR シェーディングの 3 段分割（Surface 定義／マテリアル採取／ライト評価）。
@@ -501,7 +506,7 @@ impl TransparentRtPipelines {
         // BGL は距離ソート RT のビルド結果（TLAS＋アルベド込み group4）を再利用する。
         let wboit_mesh: CullPipelineSet = std::array::from_fn(|i| build_wboit_pipeline(
             device, df, cache, &mesh_bgls,
-            &["cluster_common.wgsl", "pbr_common.wgsl", "shader_common.wgsl", "ddgi_common.wgsl", "light_common.wgsl", "shadow.wgsl", "rt_shadow_off.wgsl",
+            &["cluster_common.wgsl", "pbr_common.wgsl", "shader_common.wgsl", "ddgi_common.wgsl", "light_common.wgsl", "shadow.wgsl", "rt_shadow_on.wgsl", "rt_shadow_tint_avg.wgsl",
               "shader_static_vertex.wgsl", "surface.wgsl", "surface_gather.wgsl",
               "lighting_eval.wgsl", "shader_fragment.wgsl", "bindless_common.wgsl", "refract_common.wgsl", "refract_rt.wgsl", "shader_wboit.wgsl"],
             &["mesh_vertex"],
@@ -510,7 +515,7 @@ impl TransparentRtPipelines {
         ));
         let wboit_skinned: CullPipelineSet = std::array::from_fn(|i| build_wboit_pipeline(
             device, df, cache, &skin_bgls,
-            &["cluster_common.wgsl", "pbr_common.wgsl", "shader_common.wgsl", "ddgi_common.wgsl", "light_common.wgsl", "shadow.wgsl", "rt_shadow_off.wgsl",
+            &["cluster_common.wgsl", "pbr_common.wgsl", "shader_common.wgsl", "ddgi_common.wgsl", "light_common.wgsl", "shadow.wgsl", "rt_shadow_on.wgsl", "rt_shadow_tint_avg.wgsl",
               "shader_skinned_vertex.wgsl", "surface.wgsl", "surface_gather.wgsl",
               "lighting_eval.wgsl", "shader_fragment.wgsl", "bindless_common.wgsl", "refract_common.wgsl", "refract_rt.wgsl", "shader_wboit.wgsl"],
             &["mesh_vertex", "skin_vertex"],
@@ -937,6 +942,11 @@ mod tests {
         let ddgi_c     = include_str!("shaders/ddgi_common.wgsl");
         let shadow     = include_str!("shaders/shadow.wgsl");
         let rt_off     = include_str!("shaders/rt_shadow_off.wgsl");
+        // 実装 B: RT 屈折の透明パイプラインはインライン RT 影（rt_shadow_on）＋平均アルベド tint
+        // （rt_shadow_tint_avg）を連結する。TLAS(6)/平均アルベド(14) は rt_shadow_on が宣言し、
+        // 後続 refract_rt がそれを共用する（refract_rt 側の重複宣言は撤去済み）。
+        let rt_on      = include_str!("shaders/rt_shadow_on.wgsl");
+        let tint_avg   = include_str!("shaders/rt_shadow_tint_avg.wgsl");
         let static_v   = include_str!("shaders/shader_static_vertex.wgsl");
         let skin_v     = include_str!("shaders/shader_skinned_vertex.wgsl");
         // PBR シェーディングの 3 段分割（Surface / 採取 / ライト評価）。
@@ -980,13 +990,15 @@ mod tests {
         }
 
         // ── RT 版（本物の屈折レイ・RAY_QUERY capability で validate）───────────────
-        // 背景取得は refract_rt.wgsl（group4 に TLAS binding6＋アルベド binding14 を追加宣言）。
-        // 影経路は rt_off（シャドウマップのみ・TLAS 非宣言）＝TLAS/アルベドは refract_rt が単独で宣言する。
+        // 影経路は rt_shadow_on＋rt_shadow_tint_avg（インライン RT 影・実装 B）。TLAS binding6＋
+        // 平均アルベド binding14 は rt_shadow_on が宣言し、後続 refract_rt がそれを共用する
+        // （refract_rt は自前の重複宣言を撤去済み＝rt_shadow_on 無しでは rt_accel/rt_shadow_albedo が未定義）。
+        // 連結順は TOML・WBOIT ビルダー（rt_shadow_on, rt_shadow_tint_avg を shadow の直後）と一致させること。
         // acceleration_structure / rayQuery* を含むため RAY_QUERY capability が要る（empty では validate 失敗）。
         let rt_variants: [(&str, Vec<&str>); 3] = [
-            ("sorted_mesh_rt",  vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_off, static_v, surf, gather, light_eval, frag, bindless_c, refract, refract_rt, transp]),
-            ("wboit_mesh_rt",   vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_off, static_v, surf, gather, light_eval, frag, bindless_c, refract, refract_rt, wboit]),
-            ("wboit_skinned_rt",vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_off, skin_v,   surf, gather, light_eval, frag, bindless_c, refract, refract_rt, wboit]),
+            ("sorted_mesh_rt",  vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_on, tint_avg, static_v, surf, gather, light_eval, frag, bindless_c, refract, refract_rt, transp]),
+            ("wboit_mesh_rt",   vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_on, tint_avg, static_v, surf, gather, light_eval, frag, bindless_c, refract, refract_rt, wboit]),
+            ("wboit_skinned_rt",vec![cluster, pbr_c, common, ddgi_c, light_c, shadow, rt_on, tint_avg, skin_v,   surf, gather, light_eval, frag, bindless_c, refract, refract_rt, wboit]),
         ];
         for (name, parts) in rt_variants {
             let src = parts.join("\n");
