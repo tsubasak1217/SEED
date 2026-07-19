@@ -1306,6 +1306,15 @@ RT-Translucency の屈折を土台に、「本物のガラス」を作れる 2 �
   （model.rs・.mat・Inline・MaterialUniform offset 72＝旧 _pad1・CACHE_FORMAT_VERSION 13→14）。Inspector は
   「拡散透過」スライダーを **AlphaMode に関わらず常時表示**（葉=Mask・布=Opaque でも使うため。ガラス系 ior/透過率が
   Blend 限定なのとは意図的に異なる）。glTF 拡張は gltf 1.4.1 クレートに未対応のため glTF ロードでは既定 0（.mat/Inline で設定）。
+  - **RT 厚み減衰・遮蔽対応済み**（`rt_diffuse_transmission_factor`, `rt_shadow_on.wgsl`）: 上の薄物向け近似は厚い
+    不透明物体（石のルーク等）に付けると (1) 厚み減衰が無く前面が一様発光し「薄い紙の塔」に見え、(2) 自身の厚い胴で
+    自己遮蔽された部分まで明るくなる。RT 有効時は、シェーディング点→光源方向へ 1 本レイを飛ばして不透明（TLAS mask
+    0x01）の内部通過厚みを **front→back 面ペア**（最大 4 組）で積算し、逆光項へ Beer-Lambert 係数 `exp(-σ·thickness)`
+    を乗じる（σ=`DT_THICKNESS_SIGMA`=12 /m。ワールド=メートル前提で 数 cm≈非減衰・30cm≈0）。別の不透明遮蔽物も内部
+    区間として厚みに積まれるため遮蔽部が明るくならない（(2) の解消）。片面ジオメトリ（葉・布）は back が続かず厚み 0＝
+    係数 1.0＝従来どおり透ける。半透明（0x02）は cull_mask 除外で素通し（色付き影と役割が被るため）。tmax は既存影レイと
+    同流儀（directional=`RT_DIR_TMAX` / 局所=光源距離）。RT 非対応/オフ（`rt_shadow_off.wgsl`・実行時 `rt_shadows=0`）は
+    係数 1.0＝この拡張前の挙動に一致。naga 連結検証は deferred（rt_off/on/bindless）・forward RT 透明で担保。
 - **スクリーンスペース SSS（肌）**: サブサーフェススキャタリングのスクリーンスペース近似。
   本フェーズで作った**いもす法ブラー基盤（可変半径・分離ボックス）がそのまま適用可能**（拡散プロファイル
   のぼかしに転用）。透過率／すりガラスのミップ生成と同じパイプライン部品を再利用する想定。
