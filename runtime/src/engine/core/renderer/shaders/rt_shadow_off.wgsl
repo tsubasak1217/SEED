@@ -40,12 +40,12 @@ fn rt_shadow_factor(
     return vec3<f32>(1.0, 1.0, 1.0);
 }
 
-/// 拡散透過（逆光透け）の厚み減衰係数（スタブ）。非 RT パイプラインでは TLAS が無いため常に 1.0
-/// （＝減衰なし＝拡散透過の従来動作）を返す。rt_shadow_on.wgsl と**同一シグネチャ**にすること
-/// （lighting_eval.wgsl から同じ呼び出しで参照される。引数が片方だけ増減するとパイプライン生成が壊れる）。
+/// 拡散透過（逆光透け）の色付き透過係数（スタブ）。非 RT パイプラインでは TLAS が無いため常に
+/// vec3(1)（＝減衰なし＝拡散透過の従来動作）を返す。rt_shadow_on.wgsl と**同一シグネチャ**にすること
+/// （lighting_eval.wgsl から同じ呼び出しで参照される。戻り型・引数が片方でも食い違うとパイプライン生成が壊れる）。
 ///   p    : シェーディング点ワールド座標
 ///   l    : 面 → 光源方向
 ///   tmax : レイ最大距離（本スタブは無視）
-fn rt_diffuse_transmission_factor(p: vec3<f32>, l: vec3<f32>, tmax: f32) -> f32 {
-    return 1.0;
+fn rt_diffuse_transmission_factor(p: vec3<f32>, l: vec3<f32>, tmax: f32) -> vec3<f32> {
+    return vec3<f32>(1.0, 1.0, 1.0);
 }

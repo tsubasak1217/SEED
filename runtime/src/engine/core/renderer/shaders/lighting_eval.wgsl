@@ -369,10 +369,13 @@ fn evaluate_lighting(s: Surface) -> vec3<f32> {
         //    tmax は既存影レイと同流儀（light_dist=geo.dist: directional=RT_DIR_TMAX / 局所=光源距離）。
         if s.diffuse_transmission > 0.0 {
             let back = saturate(-dot(N, L));
-            var dt_atten = 1.0;
+            // 厚み減衰（スカラー）× 半透明遮蔽物越しの色付き透過率（RGB）を 1 本の vec3 係数で受ける。
+            // RT 無効時は vec3(1)＝この拡張前の挙動（純粋な逆光透け）に一致する。
+            var dt_atten = vec3<f32>(1.0, 1.0, 1.0);
             if rt_shadow_enabled() {
                 dt_atten = rt_diffuse_transmission_factor(s.world_pos, L, light_dist);
             }
+            // dt_atten は成分ごとに乗じる（半透明の青カーテンの陰では透けが暗く、色ガラス越しでは色付く）。
             Lo += radiance_direct * back * s.diffuse_transmission * albedo / PI * dt_atten;
         }
 

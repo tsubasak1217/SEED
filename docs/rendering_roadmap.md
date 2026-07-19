@@ -1312,9 +1312,20 @@ RT-Translucency の屈折を土台に、「本物のガラス」を作れる 2 �
     0x01）の内部通過厚みを **front→back 面ペア**（最大 4 組）で積算し、逆光項へ Beer-Lambert 係数 `exp(-σ·thickness)`
     を乗じる（σ=`DT_THICKNESS_SIGMA`=12 /m。ワールド=メートル前提で 数 cm≈非減衰・30cm≈0）。別の不透明遮蔽物も内部
     区間として厚みに積まれるため遮蔽部が明るくならない（(2) の解消）。片面ジオメトリ（葉・布）は back が続かず厚み 0＝
-    係数 1.0＝従来どおり透ける。半透明（0x02）は cull_mask 除外で素通し（色付き影と役割が被るため）。tmax は既存影レイと
-    同流儀（directional=`RT_DIR_TMAX` / 局所=光源距離）。RT 非対応/オフ（`rt_shadow_off.wgsl`・実行時 `rt_shadows=0`）は
-    係数 1.0＝この拡張前の挙動に一致。naga 連結検証は deferred（rt_off/on/bindless）・forward RT 透明で担保。
+    係数 1.0＝従来どおり透ける。tmax は既存影レイと同流儀（directional=`RT_DIR_TMAX` / 局所=光源距離）。RT 非対応/オフ
+    （`rt_shadow_off.wgsl`・実行時 `rt_shadows=0`）は係数 vec3(1)＝この拡張前の挙動に一致。naga 連結検証は
+    deferred（rt_off/on/bindless）・forward RT 透明で担保。
+  - **半透明遮蔽物の色付き遮蔽対応済み**（本コミット。戻り値を f32→**vec3** へ拡張）: 上の厚み減衰は不透明（0x01）
+    しか見ず、半透明（0x02, Blend/Mask）は素通しだった。このため「表側に掛かった青カーテン（Mask）の陰でも逆光透けが
+    明るいまま」問題が残った（ユーザー報告: Sponza 赤カーテンの裏面透けに青カーテンの影が落ちない）。是正として、係数を
+    `exp(-σ·thickness_opaque) × Π T_translucent`（RGB）へ拡張。半透明項は色付き影の `rt_trace_translucent_tint`
+    （avg=平均アルベド / bindless=テクスチャ実サンプル＋Mask アルファ抜き。連結された版のセマンティクスをそのまま再利用）を
+    上限 `RT_TRANSLUCENT_MAX_HITS_CENTER`=4 枚で呼ぶ。Mask の青カーテン（α≈1・tr≈0）は T≈0 で透けをブロックし、色ガラスは
+    色付きで透ける。**自己二重計上防止**: P の面自身（逆光透けそのもの）が最初に自ヒットするのを避けるため、tint トレース
+    原点を L 方向へ `DT_SELF_SKIP_EPS`=0.015（1.5cm）前進させ自面を原点背後へ落とす（遠い折り重なりは減衰対象に残る）。
+    半透明項は色付き影ビット（`TRANSLUCENCY_RT_COLORED_SHADOW`）が立つときだけ評価し、無効時は tint=白＝0x02 素通しの
+    従来動作へ縮退（コスト増ゼロ）。呼び出し側 `lighting_eval.wgsl` は係数を成分積で乗じ、`rt_shadow_off.wgsl` スタブも
+    vec3(1) へ同期。
 - **スクリーンスペース SSS（肌）**: サブサーフェススキャタリングのスクリーンスペース近似。
   本フェーズで作った**いもす法ブラー基盤（可変半径・分離ボックス）がそのまま適用可能**（拡散プロファイル
   のぼかしに転用）。透過率／すりガラスのミップ生成と同じパイプライン部品を再利用する想定。
