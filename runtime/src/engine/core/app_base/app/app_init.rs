@@ -350,6 +350,9 @@ impl App {
         // Deferred（G-Buffer）レンダリング（Phase D3 Deferred Phase B, 既定 true）。キー欠落時も有効。
         // OFF で従来のフォワード経路へ完全フォールバックする（A/B パリティ検証用）。
         self.post_fx.deferred = v["deferred"].as_bool().unwrap_or(true);
+        // RT屈折の逐次グラブ（既定 false）。キー欠落時は無効＝従来の 1 回グラブ共有挙動を維持する。
+        // ガラス 1 個描画ごとに背景ミップチェーンを再グラブし、ガラス越しガラスの多重屈折を表現する重い設定。
+        self.post_fx.refract_sequential_grab = v["refract_sequential_grab"].as_bool().unwrap_or(false);
         // DDGI（Phase RT-GI, 既定 有効・強度 1.0）。既定値から出発し、存在するキーだけ上書きする。
         // enabled は RT 非対応 GPU では実行時に強制無効化される（frame_renderer のゲート）。
         // GI 方式（旧キー gi_enabled: bool）→ GiMode。旧既定は enabled=true のため、
@@ -388,10 +391,11 @@ impl App {
         self.ambient_intensity =
             v["ambient_intensity"].as_f64().unwrap_or(DEFAULT_AMBIENT_INTENSITY as f64) as f32;
         eprintln!(
-            "[SEED INIT] graphics settings loaded  shadow={:?} post_vignette={} bloom={} fxaa={} transparency={} deferred={} gi={:?} gi_intensity={}",
+            "[SEED INIT] graphics settings loaded  shadow={:?} post_vignette={} bloom={} fxaa={} transparency={} deferred={} seq_grab={} gi={:?} gi_intensity={}",
             self.render_features.shadow, self.post_vignette_enabled,
             self.post_fx.bloom_enabled, self.post_fx.fxaa_enabled,
             self.post_fx.transparency.as_str(), self.post_fx.deferred,
+            self.post_fx.refract_sequential_grab,
             self.render_features.gi, self.post_fx.gi.intensity,
         );
     }

@@ -829,6 +829,13 @@ pub struct GpuModel {
     pub transmissions: Vec<f32>,
     /// material_index が無い/範囲外のプリミティブ用の透過率（既定マテリアル由来＝0.0）。
     pub default_transmission: f32,
+    /// マテリアルごとの屈折率（ガラス表現, 通常 1.0..2.0）。materials と同順・同数。
+    /// sequential grab（屈折の逐次グラブ）が「このプリミティブが屈折に関与するか
+    /// （ior>1 または transmission>0）」を距離ソート描画中に判定するために引く。
+    /// transmissions と完全に同じ更新経路（コンストラクタ＋override 3 箇所）で常に同期させる。
+    pub iors: Vec<f32>,
+    /// material_index が無い/範囲外のプリミティブ用の屈折率（既定マテリアル由来＝1.0）。
+    pub default_ior: f32,
     // テクスチャ所有権
     #[allow(dead_code)]
     textures: Vec<GpuTexture>,
@@ -906,6 +913,16 @@ impl GpuModel {
         material_idx
             .and_then(|mi| self.transmissions.get(mi).copied())
             .unwrap_or(self.default_transmission)
+    }
+
+    /// プリミティブのマテリアルインデックスから屈折率（ガラス表現, 通常 1.0..2.0）を返す。
+    /// `material_idx` が None・範囲外のときは default_ior（1.0）を返す。
+    /// sequential grab（屈折の逐次グラブ）が「このプリミティブが屈折に関与するか」を
+    /// 距離ソート描画中に判定する唯一の引き当て入口（transmission と組で refract 述語を成す）。
+    pub fn primitive_ior(&self, material_idx: Option<usize>) -> f32 {
+        material_idx
+            .and_then(|mi| self.iors.get(mi).copied())
+            .unwrap_or(self.default_ior)
     }
 
     /// プリミティブのマテリアルインデックスから実効ベースカラー係数を返す（バインドレス B2）。
@@ -1031,6 +1048,9 @@ impl GpuModel {
         // 透過率（ガラス表現）。materials と同順で焼く（RT 色付き影の引き当て用）。
         let transmissions: Vec<f32> = model.materials.iter().map(|m| m.transmission).collect();
         let default_transmission = default_mat_data.transmission;
+        // 屈折率（ガラス表現）。materials と同順で焼く（sequential grab の屈折関与判定用）。
+        let iors: Vec<f32> = model.materials.iter().map(|m| m.ior).collect();
+        let default_ior = default_mat_data.ior;
 
         // ── メッシュ ───────────────────────────────────────────
         let meshes: Vec<GpuMesh> = model.meshes.iter().map(|mesh| {
@@ -1057,7 +1077,7 @@ impl GpuModel {
             }],
         });
 
-        Self { meshes, materials, default_material, identity_joints_bg, avg_albedos, default_avg_albedo, transmissions, default_transmission, textures: gpu_textures, bindless_alloc: None }
+        Self { meshes, materials, default_material, identity_joints_bg, avg_albedos, default_avg_albedo, transmissions, default_transmission, iors, default_ior, textures: gpu_textures, bindless_alloc: None }
     }
 
     /// マテリアルオーバーライドを GPU マテリアルへ焼き込む（Phase R7）。
@@ -1107,6 +1127,8 @@ impl GpuModel {
                     self.avg_albedos[ovr.slot] = eff_avg_albedo(&eff);
                     // 透過率（ガラス表現）も追従させる（RT 色付き影の引き当て用）。
                     self.transmissions[ovr.slot] = eff.transmission;
+                    // 屈折率も追従させる（sequential grab の屈折関与判定用。transmissions と同期）。
+                    self.iors[ovr.slot] = eff.ior;
                 }
 
                 // ── .mat アセット差し替え: アセットの factor/alpha + テクスチャを丸ごと適用 ──
@@ -1180,6 +1202,8 @@ impl GpuModel {
                     self.avg_albedos[ovr.slot] = eff_avg_albedo(&eff);
                     // 透過率（ガラス表現）も追従させる（RT 色付き影の引き当て用）。
                     self.transmissions[ovr.slot] = eff.transmission;
+                    // 屈折率も追従させる（sequential grab の屈折関与判定用。transmissions と同期）。
+                    self.iors[ovr.slot] = eff.ior;
                 }
             }
         }
@@ -1245,6 +1269,8 @@ impl GpuModel {
         //    含まれる（平均アルベド・透過率をハッシュ）ため、in-place 編集の次フレームに TLAS が
         //    確実に再構築され、色付き影へ反映される（アルファ・色・透過率のスライダー編集が即時に効く）。
         self.transmissions[slot] = eff.transmission;
+        // ⑤ 屈折率も追従させる（sequential grab の屈折関与判定用。transmissions と同期）。
+        self.iors[slot] = eff.ior;
 
         InlineUpdateResult::Updated
     }

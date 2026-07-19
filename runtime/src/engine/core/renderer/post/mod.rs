@@ -118,6 +118,15 @@ pub struct PostFxSettings {
     /// unlit／ワイヤーフレーム／2D シーンビュー等は本フラグに関わらず常にフォワードで描く
     /// （frame_renderer.rs の deferred_active 判定を参照）。
     pub deferred:        bool,
+    /// RT屈折の「逐次グラブ」有効フラグ。既定 false。
+    /// RT屈折（TLAS屈折レイ）は背景を捉えたミップチェーンをサンプルして屈折表現するが、通常は
+    /// フレーム先頭で 1 回だけグラブしたミップチェーンを全ガラスで共有する。本フラグを ON にすると、
+    /// 半透明ガラスを 1 個描画するたびに背景ミップチェーンを再グラブし直し、「ガラス越しに別のガラスが
+    /// 映り込む」多重屈折表現を実現する（1 回グラブの共有チェーンでは既に屈折済みの背景しか映せない）。
+    /// 引き換えにガラスの枚数だけ背景グラブ＋ミップ生成コストが乗るため重い。
+    /// 距離ソート透明経路（TransparencyMode::DistanceSort）かつ RT translucency 有効時のみ意味を持ち、
+    /// それ以外（WBOIT 等）では効果がない。既定 OFF（従来の 1 回グラブ挙動を維持）。
+    pub refract_sequential_grab: bool,
     /// DDGI（レイトレGI）設定（Phase RT-GI）。相乗りで SET_POST_FX から更新される。
     pub gi:              GiSettings,
     /// 反射（SSR / RT）の強度倍率（Phase D6）。SET_POST_FX から更新される。
@@ -149,6 +158,7 @@ impl Default for PostFxSettings {
             transparency:    super::transparency::TransparencyMode::DistanceSort,
             meshlet_cull:    true,
             deferred:        true,
+            refract_sequential_grab: false,
             gi:              GiSettings::default(),
             reflection_intensity: super::reflection::DEFAULT_REFLECTION_INTENSITY,
             ao_intensity:         super::ao::DEFAULT_AO_INTENSITY,
