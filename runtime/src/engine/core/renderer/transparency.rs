@@ -1120,7 +1120,7 @@ mod tests {
     }
 
     // ============================================================
-    //  色付き透過率 WBOIT（per-channel transmittance）の合成数式の CPU 参照テスト
+    //  色付き透過率＋屈折歪み WBOIT（凸結合ハイブリッド）の合成数式の CPU 参照テスト
     // ============================================================
 
     /// per-channel 透過率 T_frag = clamp((1-a) + a*tr*albedo, 0, 1)。
@@ -1134,69 +1134,83 @@ mod tests {
     }
 
     /// N 枚の同一フラグメントを合成した最終色を CPU で参照計算する。
-    /// post_wboit_composite.wgsl の 2 パス合成（final = scene*ΠT + avg*coverage）と同一式。
-    /// 同一層 N 枚なので avg（accum の重み平均）= self（重みに依らず一定）。
-    fn composite_n(n: u32, scene: [f32; 3], self_lit: [f32; 3], a: f32, tr: f32, albedo: [f32; 3]) -> [f32; 3] {
+    /// post_wboit_composite.wgsl の 2 パス合成（チャンネルごとの凸結合）と同一式:
+    ///   final_c = scene_c*ΠT_c + avg_c*(1-ΠT_c) = lerp(avg_c, scene_c, ΠT_c)。
+    /// 同一層 N 枚なので avg（accum の重み平均）= frag（premult。重みに依らず一定）。
+    fn composite_n(n: u32, scene: [f32; 3], frag: [f32; 3], a: f32, tr: f32, albedo: [f32; 3]) -> [f32; 3] {
         let t = t_frag(a, tr, albedo);
         // reveal.rgb = Π T_frag（乗算累積）。クリア値 1 から N 回掛ける。
         let mut reveal = [1.0f32; 3];
         for _ in 0..n {
             for i in 0..3 { reveal[i] *= t[i]; }
         }
-        // coverage = 1 - mean(reveal.rgb)。
-        let mean_t = (reveal[0] + reveal[1] + reveal[2]) / 3.0;
-        let coverage = (1.0 - mean_t).clamp(0.0, 1.0);
-        // avg = self（同一層のため重み平均は self そのもの）。final = scene*reveal + avg*coverage。
+        // 凸結合: final_c = scene_c*ΠT_c + avg_c*(1-ΠT_c)。avg=frag（同一層の重み平均）。
         let mut out = [0.0f32; 3];
         for i in 0..3 {
-            out[i] = scene[i] * reveal[i] + self_lit[i] * coverage;
+            out[i] = scene[i] * reveal[i] + frag[i] * (1.0 - reveal[i]);
         }
         out
     }
 
-    /// 【核心】純赤フィルタ（a=1, tr=1, albedo=(1,0,0)）は重ね数 N に依存しない＝「1赤+1赤=1赤」。
-    /// Π T=(1,0,0) が飽和し、coverage=1-1/3 も一定になるため、N=1/2/8/64 で完全一致すること。
+    /// 【核心】純赤フィルタ（a=1, tr=1, albedo=(1,0,0)）は重ね数 N に依存しない＝「1赤+1赤≈1赤」。
+    /// Π T=(1,0,0) が飽和し、混合係数 (1-ΠT)=(0,1,1) も一定になるため、N=1/2/8/64 で完全一致すること。
     #[test]
     fn wboit_colored_pure_red_is_n_independent() {
         let scene = [0.3, 0.7, 0.2];      // 任意の背景。
-        let selfc = [0.8, 0.1, 0.1];      // 赤い面の自色。
+        let fragc = [0.8, 0.1, 0.1];      // フラグメント色（曲がった背景×赤 + 自色）。
         let albedo = [1.0, 0.0, 0.0];     // 純赤フィルタ。
-        let base = composite_n(1, scene, selfc, 1.0, 1.0, albedo);
+        let base = composite_n(1, scene, fragc, 1.0, 1.0, albedo);
         for &n in &[2u32, 8, 64] {
-            let got = composite_n(n, scene, selfc, 1.0, 1.0, albedo);
+            let got = composite_n(n, scene, fragc, 1.0, 1.0, albedo);
             for i in 0..3 {
                 assert!((got[i] - base[i]).abs() < 1.0e-6,
                     "純赤フィルタは N={n} でも N=1 と一致すること (ch{i}: {} vs {})", got[i], base[i]);
             }
         }
-        // 純赤なので緑・青チャンネルの背景は完全に遮断される（reveal.g=reveal.b=0）。
-        assert!((base[1] - selfc[1] * (2.0 / 3.0)).abs() < 1.0e-6, "緑は背景遮断＝自色×coverage のみ");
-        assert!((base[2] - selfc[2] * (2.0 / 3.0)).abs() < 1.0e-6, "青は背景遮断＝自色×coverage のみ");
+        // 純赤: 赤は scene が素通り（ΠT.r=1）、緑青は背景遮断で frag（カーテン色）が出る（ΠT.g=ΠT.b=0）。
+        assert!((base[0] - scene[0]).abs() < 1.0e-6, "赤は背景が素通り（ΠT.r=1）");
+        assert!((base[1] - fragc[1]).abs() < 1.0e-6, "緑は背景遮断＝フラグメント色のみ");
+        assert!((base[2] - fragc[2]).abs() < 1.0e-6, "青は背景遮断＝フラグメント色のみ");
     }
 
-    /// 半透明の色付きガラス（a=0.5, tr=1, 赤）は N で単調に飽和し、発散しない（足し算的増加の禁止）。
-    /// 赤チャンネルの透過率 T.r=1 は N によらず背景の赤を素通しし、緑青は Π で 0 へ収束する。
+    /// 凸結合はエネルギーが min/max(scene, frag) の範囲に必ず収まる（加算的発散が起きない）。
+    /// 背景を premult に焼き込んでも二重計上で明るくならないことの担保（今回の折衷案の要点）。
+    #[test]
+    fn wboit_colored_convex_combination_is_bounded() {
+        let scene = [1.0, 0.9, 0.8];
+        let fragc = [0.6, 0.2, 0.9];      // 曲がった背景を焼き込んだフラグメント色。
+        let albedo = [0.9, 0.2, 0.2];
+        for &n in &[1u32, 2, 4, 16, 64] {
+            let got = composite_n(n, scene, fragc, 0.5, 1.0, albedo);
+            for i in 0..3 {
+                let lo = scene[i].min(fragc[i]) - 1.0e-6;
+                let hi = scene[i].max(fragc[i]) + 1.0e-6;
+                assert!(got[i] >= lo && got[i] <= hi,
+                    "N={n} ch{i} が凸結合の範囲 [min,max(scene,frag)] に収まること: {} not in [{},{}]",
+                    got[i], lo, hi);
+            }
+        }
+    }
+
+    /// 半透明の色付きガラス（a=0.5, tr=1, 赤）は N で frag（カーテン色）へ単調に漸近し発散しない。
+    /// 緑チャンネルは ΠT.g→0 につれ scene(1.0) から frag.g へ単調に近づく。
     #[test]
     fn wboit_colored_semi_red_saturates_not_adds() {
         let scene = [1.0, 1.0, 1.0];
-        let selfc = [0.5, 0.0, 0.0];
+        let fragc = [0.5, 0.1, 0.1];
         let albedo = [1.0, 0.0, 0.0];
         let mut prev_g = f32::INFINITY;
         for &n in &[1u32, 2, 4, 16] {
-            let got = composite_n(n, scene, selfc, 0.5, 1.0, albedo);
-            // 全チャンネル [0, scene+self] に有界（加算的発散が無い）。
-            for i in 0..3 {
-                assert!(got[i] >= -1.0e-6 && got[i] <= scene[i] + selfc[i] + 1.0e-6,
-                    "N={n} ch{i} が有界であること: {}", got[i]);
-            }
-            // 緑チャンネルは N 増加で単調減少（背景の緑が層ごとに濾過されて暗くなる＝飽和方向）。
+            let got = composite_n(n, scene, fragc, 0.5, 1.0, albedo);
+            // 緑チャンネルは N 増加で単調減少（scene=1.0 から frag.g=0.1 へ漸近＝飽和方向）。
             assert!(got[1] <= prev_g + 1.0e-6, "緑は N 増加で単調減少（飽和）: N={n} {}", got[1]);
+            assert!(got[1] >= fragc[1] - 1.0e-6, "緑は frag.g を下回らない（凸結合の下限）: N={n} {}", got[1]);
             prev_g = got[1];
         }
     }
 
     /// 素の Blend（tr=0）は per-channel 透過率が (1-a) のスカラー（全チャンネル等しい）になり、
-    /// 従来スカラー WBOIT の revealage=Π(1-a)・coverage=1-Π(1-a) と一致する（パリティ）。
+    /// 凸結合が従来スカラー WBOIT（final=avg*(1-Π(1-a))+scene*Π(1-a)）と一致する（パリティ）。
     #[test]
     fn wboit_plain_blend_matches_scalar_parity() {
         let a = 0.4f32;
@@ -1204,14 +1218,13 @@ mod tests {
         for i in 0..3 {
             assert!((t[i] - (1.0 - a)).abs() < 1.0e-6, "tr=0 は T=(1-a) のスカラー（ch{i}）");
         }
-        // 2 枚重ね: reveal=(1-a)^2、coverage=1-(1-a)^2。標準 WBOIT と一致。
+        // 2 枚重ね: reveal=(1-a)^2。凸結合 final = scene*reveal + frag*(1-reveal)＝標準 WBOIT と一致。
         let scene = [0.5, 0.5, 0.5];
-        let selfc = [0.2, 0.6, 0.9];
-        let got = composite_n(2, scene, selfc, a, 0.0, [0.0, 0.0, 0.0]);
+        let fragc = [0.2, 0.6, 0.9];
+        let got = composite_n(2, scene, fragc, a, 0.0, [0.0, 0.0, 0.0]);
         let reveal = (1.0 - a) * (1.0 - a);
-        let coverage = 1.0 - reveal;
         for i in 0..3 {
-            let expect = scene[i] * reveal + selfc[i] * coverage;
+            let expect = scene[i] * reveal + fragc[i] * (1.0 - reveal);
             assert!((got[i] - expect).abs() < 1.0e-6, "素の Blend は標準 WBOIT と一致（ch{i}）");
         }
     }
@@ -1226,21 +1239,30 @@ mod tests {
             refract_src.contains("clamp(vec3<f32>(1.0 - a) + a * tr * albedo, vec3<f32>(0.0), vec3<f32>(1.0))"),
             "glass_composite_wboit の T_frag 式が CPU ミラーと一致すること",
         );
-        // reveal 出力: rgb=T_frag, a=1-a_eff。
+        // フラグメントは距離ソートと同じ glass_composite で曲がった背景を焼き込む（屈折歪み復活）。
+        assert!(
+            refract_src.contains("let base   = glass_composite(c, a, in, front_facing);"),
+            "glass_composite_wboit が glass_composite の premult（曲がった背景焼き込み）を使うこと",
+        );
+        // reveal 出力: rgb=T_frag, a=1-a_eff。accum 出力: premult*w。
         let wboit_src = include_str!("shaders/shader_wboit.wgsl");
         assert!(
             wboit_src.contains("out.reveal = vec4<f32>(g.transmit, 1.0 - g.a_eff);"),
             "fs_wboit の reveal 出力が per-channel T_frag + スカラー(1-a) であること",
         );
         assert!(
-            wboit_src.contains("out.accum  = vec4<f32>(g.self_lit * g.a_eff, g.a_eff) * w;"),
-            "fs_wboit の accum 出力が self*a_eff*w であること",
+            wboit_src.contains("out.accum  = vec4<f32>(g.premult, g.a_eff) * w;"),
+            "fs_wboit の accum 出力が premult*w（屈折歪み込み）であること",
         );
-        // 合成: coverage = 1 - mean(reveal.rgb)。
+        // 合成: 凸結合の src 項 avg*(1-ΠT)（per-channel）。
         let comp_src = include_str!("shaders/post_wboit_composite.wgsl");
         assert!(
-            comp_src.contains("let coverage = clamp(1.0 - mean_t, 0.0, 1.0);"),
-            "合成の coverage が 1 - mean(T_rgb) であること（N 飽和量）",
+            comp_src.contains("let mix_self = clamp(vec3<f32>(1.0) - reveal.rgb, vec3<f32>(0.0), vec3<f32>(1.0));"),
+            "合成の混合係数が (1 - ΠT)（per-channel の凸結合）であること",
+        );
+        assert!(
+            comp_src.contains("return vec4<f32>(avg * mix_self, 0.0);"),
+            "透明色混合パスが avg*(1-ΠT) を出力すること（凸結合の src 項）",
         );
         assert!(
             comp_src.contains("return vec4<f32>(reveal.rgb, 1.0);"),
