@@ -134,14 +134,20 @@ fn refract_rt_project(world_pos: vec3<f32>) -> RefractRtProj {
     return r;
 }
 
-/// 背景の最終フォールバック（不透明ミス／画面外ヒット）。
-/// GI 有効（DDGI）ならプローブ照度を、無効ならフラットアンビエントを返す
-/// （本画面 evaluate_gi_ambient・反射 RT の rt_refl_fallback と同じ分岐方針）。
-fn refract_rt_fallback(pos: vec3<f32>, dir: vec3<f32>) -> vec3<f32> {
-    if u_gi_params.enabled != 0u {
-        return ddgi_sample_irradiance(u_gi_params, pos, dir, t_gi_irradiance, t_gi_visibility, s_gi);
-    }
-    return u_light_meta.ambient_color * u_light_meta.ambient_intensity;
+/// 背景の最終フォールバック（不透明ミス／画面外ヒット）＝**フラグメント自身の直進背景**。
+/// frag_xy をそのまま画面 UV に使い、不透明シーンコピー（refract_bg）を roughness 連動でサンプルする。
+///
+/// 【なぜ DDGI/アンビエントではなく直進背景か（黒ガラス回帰の根治）】
+///   高屈折（ior=2.5）ガラス 2 枚の重なりでは、手前ガラスの屈折レイが 2 枚目を貫いて大きく曲がり、
+///   最終不透明トレースがミス／画面外射影になりやすい。従来はここで DDGI プローブ照度（暗所では
+///   ほぼ 0）やアンビエントを返していたため、bg≈0 → premult≈自色（暗）→ WBOIT 平均（手前ガラスが
+///   深度重みで支配）が暗転 → 合成 C=1 で scene が消え **ピュアブラックの塊**になっていた（実機症状）。
+///   直進背景（このピクセルの真後ろの不透明色）を返せば、屈折レイが解けない領域でも「素通しの背景」が
+///   見え、色フィルタ ΠT が乗って `背景×フィルタ` のオーダーに収まる（黒くならない）。SS 屈折の画面外
+///   フェード（素の UV へ戻す）と同じ穏当な縮退で、視差だけ失い色・明るさは背景相当を保つ。
+fn refract_rt_fallback_straight(frag_xy: vec2<f32>, roughness: f32) -> vec3<f32> {
+    let res = max(u_camera.resolution, vec2<f32>(1.0, 1.0));
+    return refract_bg_sample(frag_xy / res, roughness);
 }
 
 /// ヒット三角形の頂点法線を八面体デコード＋重心補間し、ワールド空間の単位法線を返す。
@@ -173,7 +179,7 @@ fn refr_hit_world_normal(rec: BindlessInstanceRecord, prim_index: u32, bary: vec
 
 /// 本物の RT 屈折で背景色（リニア HDR RGB）を返す。glass_composite から呼ばれる。
 /// - `surf`   : シェーディング面（world_pos/normal/roughness を使う。normal は front 反転済み）。
-/// - `frag_xy`: フラグメント座標（未使用だが SS 版とシグネチャを一致させる）。
+/// - `frag_xy`: フラグメント座標（不透明ミス／画面外時のフォールバック＝直進背景 UV に使う。SS 版とも一致）。
 /// - `ior`    : 屈折率（>1）。material_refracts のときのみ呼ばれる（ior<=1 は glass_composite 手前で除外）。
 fn refract_sample_bg(surf: Surface, frag_xy: vec2<f32>, ior: f32) -> vec3<f32> {
     // 視線ベクトル V（面→カメラ）。入射レイ方向は -V（カメラ→面）。
@@ -292,12 +298,12 @@ fn refract_sample_bg(surf: Surface, frag_xy: vec2<f32>, ior: f32) -> vec3<f32> {
         if proj.valid {
             bg = refract_bg_sample(proj.uv, surf.roughness);
         } else {
-            // 画面外ヒット（本画面に写っていない不透明面）→ DDGI プローブ照度 or アンビエント。
-            bg = refract_rt_fallback(opos, dir);
+            // 画面外ヒット（本画面に写っていない不透明面）→ フラグメント直進背景（黒転回避）。
+            bg = refract_rt_fallback_straight(frag_xy, surf.roughness);
         }
     } else {
-        // 不透明ミス（空・開けた方向）→ DDGI プローブ照度 or アンビエント。
-        bg = refract_rt_fallback(origin, dir);
+        // 不透明ミス（空・開けた方向・高屈折で曲がりすぎ）→ フラグメント直進背景（黒転回避）。
+        bg = refract_rt_fallback_straight(frag_xy, surf.roughness);
     }
 
     // 背景の光は貫いた界面群の透過色でフィルタされる（ガラス越しのガラス・厚み色）。

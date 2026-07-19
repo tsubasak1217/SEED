@@ -1289,4 +1289,103 @@ mod tests {
             "WBOIT_REVEAL_FORMAT が Rgba16Float（色付き透過率）であること",
         );
     }
+
+    // ============================================================
+    //  ガラス重なりの黒転回帰（RT 屈折ミス時の暗フォールバック）の根因固定テスト
+    // ============================================================
+
+    /// 前ガラス+後ガラスの 2 フラグメント重なりを合成する CPU 参照。
+    /// WBOIT: accum に premult*w を積み、avg=accum.rgb/accum.a（a_eff=1 のガラス）。
+    /// reveal.rgb=ΠT、reveal.a=Π(1-a_eff)=0 → C=1 → final = avg × ΠT。
+    /// 手前ガラスは深度重み wf が大きく avg を支配する（近距離ほど WBOIT 重みが大）。
+    fn composite_two_glass(
+        scene: [f32; 3],
+        premult_front: [f32; 3], premult_back: [f32; 3],
+        wf: f32, wb: f32,
+        t_front: [f32; 3], t_back: [f32; 3],
+    ) -> [f32; 3] {
+        let a_eff = 1.0f32; // 屈折ガラスは a_eff=1。
+        let mut out = [0.0f32; 3];
+        let accum_a = a_eff * (wf + wb);
+        let reveal_a = (1.0 - a_eff) * (1.0 - a_eff); // =0（ガラス2枚）。
+        let coverage = 1.0 - reveal_a;                // C=1。
+        for i in 0..3 {
+            let accum_rgb = premult_front[i] * wf + premult_back[i] * wb;
+            let avg = accum_rgb / accum_a.max(1.0e-5);
+            let reveal_rgb = t_front[i] * t_back[i];
+            let bent = scene[i] * (1.0 - coverage) + avg * coverage; // = avg（C=1）。
+            out[i] = bent * reveal_rgb;
+        }
+        out
+    }
+
+    /// 【根因の再現】手前ガラスの屈折レイがミス→背景 bg≈0（暗フォールバック）だと、
+    /// 手前が深度重みで avg を支配し、C=1 で scene も消えるため final がほぼ黒になる（実機症状）。
+    /// この振る舞いを固定して「修正が必要な条件」を明示する（＝直進背景フォールバックの動機）。
+    #[test]
+    fn wboit_two_glass_dark_bg_goes_black_reproduces_bug() {
+        let scene = [0.20, 0.60, 0.60];       // 背景（真後ろの不透明）。
+        let t_cyan = [0.0, 1.0, 0.98];        // シアンガラスの色フィルタ。
+        // 手前ガラス: RT ミスで bg≈0 → premult ≈ 自色（暗）のみ（raw1 = c + bg*(1-fr) の bg=0）。
+        let front_dark = [0.02, 0.02, 0.02];
+        // 後ガラス: bg 良好（少ない界面でヒット）。
+        let back_ok = [0.05, 0.45, 0.44];
+        // 手前が深度重み支配（wf >> wb）。
+        let got = composite_two_glass(scene, front_dark, back_ok, 100.0, 1.0, t_cyan, t_cyan);
+        // 緑チャンネルは背景×フィルタ²（≈0.6）であるべきなのに、暗 bg のせいで ~0.02 に潰れる＝黒転。
+        assert!(got[1] < 0.05, "暗 bg フォールバックだと緑がほぼ黒に潰れる（根因の再現）: {}", got[1]);
+    }
+
+    /// 【修正の担保】不透明ミス時に「直進背景」を返すと、手前ガラスの premult に背景が乗るため
+    /// avg が背景相当になり、final ≈ 背景×フィルタ² のオーダーに収まる（黒転しない）。
+    #[test]
+    fn wboit_two_glass_straight_bg_not_black() {
+        let scene = [0.20, 0.60, 0.60];
+        let t_cyan = [0.0, 1.0, 0.98];
+        let fr = 0.2f32; // フレネル（透過寄与 1-fr）。
+        // 手前ガラス（修正後）: bg=直進背景=scene → premult = 自色(小) + scene*(1-fr)。
+        let c_self = [0.02, 0.02, 0.02];
+        let front_fixed = [
+            c_self[0] + scene[0] * (1.0 - fr),
+            c_self[1] + scene[1] * (1.0 - fr),
+            c_self[2] + scene[2] * (1.0 - fr),
+        ];
+        let back_ok = [0.05, 0.45, 0.44];
+        let got = composite_two_glass(scene, front_fixed, back_ok, 100.0, 1.0, t_cyan, t_cyan);
+        // ΠT.g = 1*1 = 1。期待オーダー = 背景×フィルタ² 緑 = scene.g*ΠT.g = 0.6。
+        let expect_order = scene[1] * (t_cyan[1] * t_cyan[1]);
+        // 「背景×フィルタ² のオーダーから大きく暗転しない」= 少なくともその半分以上（黒ではない）。
+        assert!(got[1] >= 0.5 * expect_order,
+            "直進背景フォールバックで緑が背景×フィルタ²の半分以上（黒転しない）: {} >= {}", got[1], 0.5 * expect_order);
+        // 赤は完全遮断（T_cyan.r=0）で 0＝これはシアンとして正しい（黒ではなく色遮断）。
+        assert!(got[0].abs() < 1.0e-6, "赤はシアンフィルタで遮断（0）");
+        // 有界（scene を超えて増えない）。
+        assert!(got[1] <= scene[1] + 1.0e-6 && got[2] <= scene[2] + 1.0e-6, "背景を超えて増えない");
+    }
+
+    /// シェーダ実体照合: RT 屈折の不透明ミス／画面外フォールバックが「直進背景」になっていること。
+    /// 旧: DDGI/アンビエント（refract_rt_fallback）。新: refract_rt_fallback_straight（frag_xy 直進）。
+    #[test]
+    fn refract_rt_fallback_is_straight_background() {
+        let rt_src = include_str!("shaders/refract_rt.wgsl");
+        // 直進背景フォールバック関数が存在し、frag_xy を画面 UV に使うこと。
+        assert!(
+            rt_src.contains("fn refract_rt_fallback_straight(frag_xy: vec2<f32>, roughness: f32)"),
+            "直進背景フォールバック関数 refract_rt_fallback_straight が存在すること",
+        );
+        assert!(
+            rt_src.contains("return refract_bg_sample(frag_xy / res, roughness);"),
+            "フォールバックがフラグメント直進 UV（frag_xy/res）で背景をサンプルすること",
+        );
+        // 不透明ミス／画面外の両経路が直進背景を使うこと。
+        assert_eq!(
+            rt_src.matches("refract_rt_fallback_straight(frag_xy, surf.roughness)").count(), 2,
+            "不透明ミスと画面外ヒットの 2 経路とも直進背景フォールバックを使うこと",
+        );
+        // 旧 DDGI/アンビエントのフォールバック（暗転の原因）が屈折 RT から除かれていること。
+        assert!(
+            !rt_src.contains("fn refract_rt_fallback(pos:"),
+            "旧 refract_rt_fallback（DDGI/アンビエント＝黒転原因）が撤去されていること",
+        );
+    }
 }
