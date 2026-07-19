@@ -48,6 +48,24 @@
 /// 完全透過（透明物なし）判定のしきい値に使う。
 const WBOIT_EPSILON: f32 = 1.0e-5;
 
+/// 透明物「自身の見え」（自色反射＋曲がった背景）の色フィルタ下限（最低可視度）。
+///
+/// 【なぜ必要か（黒転バグの根治）】
+///   合成は透明物の見え avg（＝自色反射＋曲がった背景）に色フィルタ ΠT を掛ける。ところが
+///   補色の透明物が重なると（例: シアンガラス T≈(0,.8,.9) × 赤/不透明ガラス T≈(1,0,0)）
+///   ΠT が**全チャンネルで≈0**になり、背景だけでなく**ガラス表面の反射光まで 0 に潰れて
+///   ピュアブラック**になる（実機で確認）。物理的には、背景の透過光は補色フィルタで確かに
+///   遮断されるが、ガラス表面の反射光（フレネル反射・スペキュラ）は透過光ではないのでガラスの
+///   透過率で減衰しない＝完全な黒にはならない。自色反射を別ターゲットに分離するのが厳密だが
+///   （MRT 追加コスト）、ここでは「全チャンネルが下限を下回るときだけ灰色リフトで最低可視度を
+///   与える」近似で真っ黒を回避する。
+///
+/// 【重要: 通常の色ガラスは無影響（減彩しない）】
+///   リフトは max(全チャンネル) が下限未満のときだけ効く。単色ガラス（例: 純赤 ΠT=(1,0,0)、
+///   シアン ΠT=(0,.8,.9)）は明るいチャンネルがあるので lift=0 ＝色そのまま。補色重なり／不透明色
+///   （全チャンネル≈0）だけがリフトされ、灰色の最低可視度で見える。
+const WBOIT_SELF_MIN_FILTER: f32 = 0.2;
+
 @group(0) @binding(0) var t_accum:  texture_2d<f32>;
 @group(0) @binding(1) var s_accum:  sampler;
 
@@ -58,6 +76,7 @@ const WBOIT_EPSILON: f32 = 1.0e-5;
 /// (1-C) = reveal.a（= Π(1-a)）、ΠT = reveal.rgb なので src.rgb = reveal.a * reveal.rgb。
 /// blend=WboitBgMultiply（src=Zero, dst=Src）で dst_new = dst * src.rgb = scene * (1-C)*ΠT。
 /// 透明物の無いピクセルは reveal=(1,1,1,1) で (1-C)*ΠT=1 のため乗算恒等。reveal.a≈1 で discard。
+/// ※ 背景（透過光）は補色フィルタで正しく遮断されるべきなので下限は掛けない（パス2 の自色のみ下限）。
 @fragment
 fn composite_bg_fs(in: FsOut) -> @location(0) vec4<f32> {
     let reveal = textureSample(t_reveal, s_reveal, in.uv);
@@ -70,9 +89,11 @@ fn composite_bg_fs(in: FsOut) -> @location(0) vec4<f32> {
     return vec4<f32>(reveal.a * reveal.rgb, 1.0);
 }
 
-/// パス2: 曲がった透明色の加算。dst += avg * C*ΠT を実現する（凸結合の avg 側 + 色フィルタ）。
+/// パス2: 透明物「自身の見え」の加算。dst += avg * C * max(ΠT, F0) を実現する。
 /// C = 1 - reveal.a、ΠT = reveal.rgb、avg = accum.rgb/max(accum.a,ε)。
-/// blend=Additive（src=One, dst=One）で dst_new = scene*(1-C)*ΠT + avg*C*ΠT = lerp(scene,avg,C)*ΠT。
+/// 色フィルタに下限 WBOIT_SELF_MIN_FILTER（誘電体反射 F0）を設け、補色重なりで ΠT→0 でも
+/// ガラスの見えが真っ黒に潰れないようにする（表面反射は透過率で消えないことの近似）。
+/// blend=Additive（src=One, dst=One）で dst_new = scene*(1-C)*ΠT + avg*C*max(ΠT,F0)。
 @fragment
 fn composite_self_fs(in: FsOut) -> @location(0) vec4<f32> {
     let accum = textureSample(t_accum, s_accum, in.uv);
@@ -81,12 +102,15 @@ fn composite_self_fs(in: FsOut) -> @location(0) vec4<f32> {
         discard;
     }
     let reveal = textureSample(t_reveal, s_reveal, in.uv);
-    // 重み平均（生の曲がった背景 bent_bg + 自色）。accum.rgb は premult*w の和、accum.a は a_eff*w の和。
-    // 正規化（÷accum.a）なので層が増えても総和のように膨らまない（重なりの二重計上を防ぐ核心）。
+    // 重み平均（生の曲がった背景 bent_bg + 自色反射）。accum.rgb は premult*w の和、accum.a は a_eff*w の和。
     let avg = accum.rgb / max(accum.a, WBOIT_EPSILON);
     // カバレッジ C = 1 - Π(1-a)（reveal.a に Π(1-a) を保存済み）。ガラスがあれば 1 に近づく。
     let coverage = clamp(1.0 - reveal.a, 0.0, 1.0);
-    // src.rgb = avg * C * ΠT（曲がった透明色 avg を C で混ぜ、色フィルタ ΠT=reveal.rgb で着色）。
-    // alpha は src=One,dst=One だが src.a=0 のため dst.a は不変（背景の曲げ濾過パスと同じく HDR.a を保つ）。
-    return vec4<f32>(avg * coverage * reveal.rgb, 0.0);
+    // 全チャンネルが暗い（補色重なり／不透明色ガラス＝黒転条件）ときだけ灰色リフトで最低可視度を与える。
+    // 明るいチャンネルを持つ通常の色ガラスは lift=0 ＝色そのまま（減彩なし）。
+    let max_ch = max(reveal.r, max(reveal.g, reveal.b));
+    let lift   = max(WBOIT_SELF_MIN_FILTER - max_ch, 0.0);
+    let filt   = reveal.rgb + vec3<f32>(lift);
+    // src.rgb = avg * C * filt。alpha は src.a=0 で dst.a 不変（背景の曲げ濾過パスと同じく HDR.a を保つ）。
+    return vec4<f32>(avg * coverage * filt, 0.0);
 }

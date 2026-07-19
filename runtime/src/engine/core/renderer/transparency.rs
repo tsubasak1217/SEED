@@ -1133,10 +1133,15 @@ mod tests {
         o
     }
 
+    /// 自色最低可視度の下限（post_wboit_composite.wgsl の WBOIT_SELF_MIN_FILTER と一致）。
+    const WBOIT_SELF_MIN_FILTER: f32 = 0.2;
+
     /// N 枚の同一フラグメントを合成した最終色を CPU で参照計算する。
-    /// post_wboit_composite.wgsl の 2 パス合成（曲げと色フィルタの分離）と同一式:
+    /// post_wboit_composite.wgsl の 2 パス合成（曲げと色フィルタの分離＋自色最低可視度）と同一式:
     ///   ΠT = 各層 T_frag の積（reveal.rgb）、Π(1-a_eff) = reveal.a、C = 1 - Π(1-a_eff)、
-    ///   final = lerp(scene, avg, C) × ΠT  （= scene*(1-C)*ΠT + avg*C*ΠT）。
+    ///   max_ch = max(ΠT)、lift = max(FLOOR - max_ch, 0)、filt = ΠT + lift（全 ch 暗時のみ灰色リフト）、
+    ///   final = scene*(1-C)*ΠT  +  avg*C*filt。
+    /// 単色ガラス（明チャンネルあり）は lift=0 ＝ filt=ΠT で従来と一致（減彩なし）。
     /// 同一層 N 枚なので avg（accum の重み平均 = premult/a_eff）= frag（重みに依らず一定）。
     /// `a_eff` は accum.a の重み（屈折ガラス=1.0・素の Blend=a）を明示的に渡す。
     fn composite_n(
@@ -1151,13 +1156,16 @@ mod tests {
             for i in 0..3 { reveal_rgb[i] *= t[i]; }
             reveal_a *= 1.0 - a_eff;
         }
-        // C = 1 - Π(1-a_eff)（スカラーのカバレッジ）。曲げ: bent = lerp(scene, avg, C)。
+        // C = 1 - Π(1-a_eff)（スカラーのカバレッジ）。
         let coverage = (1.0 - reveal_a).clamp(0.0, 1.0);
-        // final = bent × ΠT。avg=frag（同一層の重み平均）。
+        // 全チャンネルが下限未満のときだけ灰色リフト（黒転回避）。単色ガラスは lift=0。
+        let max_ch = reveal_rgb[0].max(reveal_rgb[1]).max(reveal_rgb[2]);
+        let lift = (WBOIT_SELF_MIN_FILTER - max_ch).max(0.0);
+        // final = scene*(1-C)*ΠT（背景・純 ΠT） + avg*C*filt（自色・下限付き filt）。avg=frag。
         let mut out = [0.0f32; 3];
         for i in 0..3 {
-            let bent = scene[i] * (1.0 - coverage) + frag[i] * coverage;
-            out[i] = bent * reveal_rgb[i];
+            let filt = reveal_rgb[i] + lift;
+            out[i] = scene[i] * (1.0 - coverage) * reveal_rgb[i] + frag[i] * coverage * filt;
         }
         out
     }
@@ -1200,25 +1208,48 @@ mod tests {
         assert!(base[1].abs() < 1.0e-6 && base[2].abs() < 1.0e-6, "緑青は完全遮断（T=0）");
     }
 
-    /// 【性質3】半透明 a<1 のフェード端: C と ΠT の双方に α が効き軽微に過減衰するが、有界・単調。
-    /// 素の Blend（tr=0, a=0.5, a_eff=a）で緑チャンネルが N 増加で単調減少し発散しないことを固定。
+    /// 【性質3】半透明 a<1 のフェード（素の Blend, tr=0, a_eff=a）: 有界で加算的発散が無く、
+    /// 深いスタック（ΠT→0）でも自色最低可視度リフトにより黒転しない（≈ avg*FLOOR で下げ止まる）。
     #[test]
-    fn wboit_semi_alpha_fade_bounded_monotonic() {
+    fn wboit_semi_alpha_fade_bounded_and_nonblack() {
         let scene = [1.0, 1.0, 1.0];
         let avg   = [0.2, 0.6, 0.9];
         let a = 0.5f32;
-        let mut prev = [f32::INFINITY; 3];
-        for &n in &[1u32, 2, 4, 16] {
+        for &n in &[1u32, 2, 4, 16, 64] {
             // 素の Blend: tr=0, a_eff=a（屈折なし）。T=(1-a) スカラー。
             let got = composite_n(n, scene, avg, a, 0.0, [0.0, 0.0, 0.0], a);
             for i in 0..3 {
                 // 有界: [0, max(scene,avg)] に収まる（加算的発散なし）。
                 let hi = scene[i].max(avg[i]) + 1.0e-6;
                 assert!(got[i] >= -1.0e-6 && got[i] <= hi, "N={n} ch{i} 有界: {}", got[i]);
-                // 単調減少（scene から暗くなる方向。C と ΠT がともに増える）。
-                assert!(got[i] <= prev[i] + 1.0e-6, "N={n} ch{i} 単調減少: {} <= {}", got[i], prev[i]);
-                prev[i] = got[i];
             }
+        }
+        // 深いスタック（ΠT≈0）でも自色 avg が最低可視度 FLOOR ぶん残る＝黒転しない。
+        let deep = composite_n(64, scene, avg, a, 0.0, [0.0, 0.0, 0.0], a);
+        for i in 0..3 {
+            assert!(deep[i] >= avg[i] * WBOIT_SELF_MIN_FILTER * 0.9,
+                "深いスタックでも黒転しない（≈avg*FLOOR）: ch{i} {} >= {}", deep[i], avg[i] * WBOIT_SELF_MIN_FILTER * 0.9);
+        }
+    }
+
+    /// 【黒転回帰の根治】補色の透明物が重なると色フィルタ ΠT が全チャンネル≈0 になり、
+    /// 従来は avg も 0 に潰れてピュアブラックになった（実機: シアンガラス越しに別ガラスが真っ黒）。
+    /// 灰色リフト（全 ch 暗時のみ）で avg*FLOOR ぶんが残り、真っ黒にならないことを固定する。
+    #[test]
+    fn wboit_complementary_overlap_is_not_black() {
+        let scene = [0.5, 0.5, 0.5];
+        // 手前ガラスの見え（自色反射＋曲がった背景）。真っ黒でなく可視の色を持つ。
+        let avg   = [0.3, 0.4, 0.5];
+        // シアン（T≈(0,0.8,0.9)）× 赤（T≈(1,0,0)）の重なり → ΠT ≈ (0,0,0)（補色で全遮断）。
+        // composite_two_glass 相当を composite_n で近似できないため、ここは直接 ΠT≈0 を作る:
+        // 2 枚のフィルタ積が全チャンネル 0 になるケースを、単一「全遮断」フィルタ (a=1,tr=0) で代表させる。
+        let got = composite_n(2, scene, avg, 1.0, 0.0, [0.0, 0.0, 0.0], 1.0); // T=(0,0,0), ΠT=(0,0,0)
+        // ΠT=(0,0,0)・C=1・lift=FLOOR → final = avg*FLOOR（背景 scene 項は ΠT=0 で 0）。
+        for i in 0..3 {
+            let expect = avg[i] * WBOIT_SELF_MIN_FILTER;
+            assert!((got[i] - expect).abs() < 1.0e-6,
+                "補色/全遮断の重なりは avg*FLOOR で下げ止まる（黒転しない）: ch{i} {} vs {}", got[i], expect);
+            assert!(got[i] > 0.02, "ch{i} が黒（0）でないこと: {}", got[i]);
         }
     }
 
@@ -1263,7 +1294,7 @@ mod tests {
             wboit_src.contains("out.accum  = vec4<f32>(g.premult, g.a_eff) * w;"),
             "fs_wboit の accum 出力が premult*w（生曲背景+自色）であること",
         );
-        // 合成: パス1 = (1-C)*ΠT = reveal.a*reveal.rgb、パス2 = avg*C*ΠT。
+        // 合成: パス1 = (1-C)*ΠT = reveal.a*reveal.rgb、パス2 = avg*C*filt（filt=ΠT+灰色リフト）。
         let comp_src = include_str!("shaders/post_wboit_composite.wgsl");
         assert!(
             comp_src.contains("return vec4<f32>(reveal.a * reveal.rgb, 1.0);"),
@@ -1273,9 +1304,19 @@ mod tests {
             comp_src.contains("let coverage = clamp(1.0 - reveal.a, 0.0, 1.0);"),
             "合成のカバレッジ C = 1 - Π(1-a) = 1 - reveal.a であること",
         );
+        // 自色最低可視度: 全チャンネル暗時のみ灰色リフト（黒転回避）。単色ガラスは lift=0。
         assert!(
-            comp_src.contains("return vec4<f32>(avg * coverage * reveal.rgb, 0.0);"),
-            "曲がった透明色パスが avg*C*ΠT を出力すること",
+            comp_src.contains("let lift   = max(WBOIT_SELF_MIN_FILTER - max_ch, 0.0);"),
+            "全チャンネル暗時のみ灰色リフト（黒転回避）を行うこと",
+        );
+        assert!(
+            comp_src.contains("return vec4<f32>(avg * coverage * filt, 0.0);"),
+            "透明色パスが avg*C*filt（filt=ΠT+lift）を出力すること",
+        );
+        // CPU ミラー定数がシェーダの下限値と一致すること。
+        assert!(
+            comp_src.contains("const WBOIT_SELF_MIN_FILTER: f32 = 0.2;"),
+            "自色最低可視度の下限が CPU ミラー（0.2）と一致すること",
         );
         // reveal ブレンドが乗算累積（Dst, Zero）であること。
         let transp_src = include_str!("transparency.rs");
