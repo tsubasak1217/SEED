@@ -288,19 +288,44 @@ const DT_ORIGIN_BACKOFF: f32 = 0.02;
 /// RT_SHADOW_TMIN と同オーダー。ヒット面の厚みより十分小さく、次の界面を取りこぼさない。
 const DT_TRACE_T_STEP: f32 = 0.002;
 
-/// 拡散透過（逆光透け）の厚み減衰係数を返す（1.0=非減衰＝従来動作 / 0..1=厚みで減衰）。
-/// シェーディング点 P から光源方向 L へ 1 本のレイを進め、不透明ジオメトリ（0x01）の内部を通過した
-/// 積算距離に Beer-Lambert 則 exp(-σ·thickness) を適用する。lighting_eval.wgsl の逆光項へ乗じる。
+/// 半透明遮蔽（0x02）トレースで「自分自身の面」を二重計上しないための自己スキップ距離 [ワールド単位]。
+/// シェーディング点 P は（赤カーテンのような）逆光透け面そのものの上にある。この面が半透明(0x02)の
+/// とき、P から光源へ 0x02 をトレースすると**最初に自ヒットする**のが P の面自身で、自分の透過色で
+/// 逆光透けを減衰させてしまう（＝透けが本来より暗くなる誤り）。これを避けるため、tint トレースの
+/// 原点を光源方向 L へ本量だけ前進させ、P の面（および本量以内の折り重なり）をレイ原点の背後
+/// （t<0）へ落とす。これより遠い同一メッシュ（カーテンの折り目・ヒダの重なり）は前方に残るため
+/// 正しく減衰対象になる（＝表側の青カーテンの陰は暗くなる）。
+/// 値 0.015（1.5cm）の根拠: カーテンの折り目どうしの間隔は数 cm（本ファイル上部の光漏れ解説参照）。
+/// 1.5cm なら自面と密着した折り返しだけを確実に飛ばし、3cm 以上離れた別ヒダは取りこぼさない。
+/// 影の RT_SHADOW_NORMAL_BIAS(0.02) 弱・DT_ORIGIN_BACKOFF(0.02) 弱の同オーダーに収める。
+const DT_SELF_SKIP_EPS: f32 = 0.015;
+
+/// 拡散透過（逆光透け）の**色付き**透過係数を返す（vec3(1)=非減衰＝従来動作 / 0..1=厚み＋半透明で減衰）。
+/// シェーディング点 P から光源方向 L へレイを進め、以下 2 つの減衰を相乗して 1 本の RGB 係数にする:
+///   (A) 不透明ジオメトリ（0x01）の内部通過厚みへ Beer-Lambert 則 exp(-σ·thickness)（スカラー）。
+///   (B) 半透明ジオメトリ（0x02, Blend/Mask）越しの色付き透過率 Π T_translucent（RGB）。
+/// 戻り値 = exp(-σ·thickness_opaque) × Π T_translucent。lighting_eval.wgsl の逆光項へ成分積で乗じる。
+///
+/// (A) 不透明厚み:
 /// - 不透明ヒットを front（入射）→ back（出射）でペア化し、(back_t - front_t) を厚みへ加算する。
 /// - 片面ジオメトリ（葉・布）は back が続かない＝厚み 0＝減衰なし（薄物は従来どおり透ける／正しい）。
-/// - 半透明（0x02）は cull_mask で除外＝素通し（色付き影と役割が被るため。ファイル上部の規約）。
 /// - 別の不透明遮蔽物も内部区間として厚みに積算＝遮蔽部が明るくならない（ユーザー報告②の解消）。
+///
+/// (B) 半透明透過（本コミットで追加。ユーザー報告: 表側の青カーテン Mask の陰まで明るい問題の是正）:
+/// - 色付き影（rt_trace_translucent_tint）と**同一のセマンティクス**で 0x02 面を評価する（関数を再利用。
+///   avg 版なら平均アルベド、bindless 版ならテクスチャ実サンプル＋Mask アルファ抜き。連結物に追従）。
+///   Mask の青カーテン（α≈1・tr≈0）は T≈0 で逆光透けをブロックし、色ガラスは色付きで透ける。
+/// - **自己二重計上防止**: P の面自身（逆光透けそのもの）がレイ最初に自ヒットするのを避けるため、
+///   tint トレースの原点を L 方向へ DT_SELF_SKIP_EPS だけ前進させ、自面を原点の背後へ落とす。
+///   これより遠い折り重なりは正しく減衰対象（定数コメント参照）。
+/// - u_light_meta の色付き影ビットが立っているときだけ (B) を評価する（立っていなければ tint=白＝
+///   0x02 素通しの従来動作へ縮退＝コスト増ゼロ）。
 ///
 /// 引数:
 ///   p    : シェーディング点のワールド座標（逆光面上）。
 ///   l    : 面→光源方向（正規化済み）。
 ///   tmax : レイ最大距離（directional=大定数 RT_DIR_TMAX / 局所光=光源距離。既存影レイと同流儀）。
-fn rt_diffuse_transmission_factor(p: vec3<f32>, l: vec3<f32>, tmax: f32) -> f32 {
+fn rt_diffuse_transmission_factor(p: vec3<f32>, l: vec3<f32>, tmax: f32) -> vec3<f32> {
     // 原点を逆光側（-L）へ微小後退（近面を front ヒットとして確実に拾うため。定数コメント参照）。
     let o = p - l * DT_ORIGIN_BACKOFF;
 
@@ -347,8 +372,27 @@ fn rt_diffuse_transmission_factor(p: vec3<f32>, l: vec3<f32>, tmax: f32) -> f32 
         tmin = hit.t + DT_TRACE_T_STEP;
     }
 
-    // Beer-Lambert。厚み 0（薄物・非交差）なら exp(0)=1.0＝従来動作へ縮退する。
-    return exp(-DT_THICKNESS_SIGMA * thickness);
+    // (A) Beer-Lambert（スカラー）。厚み 0（薄物・非交差）なら exp(0)=1.0＝従来動作へ縮退する。
+    let opaque_atten = exp(-DT_THICKNESS_SIGMA * thickness);
+
+    // (B) 半透明レイヤー（0x02）越しの色付き透過率（RGB）。色付き影ビットが立つときだけ評価する。
+    // 立っていなければ白のまま＝0x02 素通しの従来動作（コスト増ゼロ）。
+    var tint = vec3<f32>(1.0, 1.0, 1.0);
+    let colored = (u_light_meta.translucency_rt & TRANSLUCENCY_RT_COLORED_SHADOW) != 0u;
+    if colored {
+        // 自己二重計上防止: 原点を L 方向へ DT_SELF_SKIP_EPS 前進させ、P の面（＝逆光透けそのもの）と
+        // それに密着した折り返しをレイ原点の背後（t<0）へ落とす。tint 関数内部の tmin(=RT_SHADOW_TMIN)
+        // は前方のみを走査するため、これで自面は必ず除外され、遠い折り重なりだけが減衰対象に残る。
+        // 色付き影（rt_shadow_factor）と同一の rt_trace_translucent_tint を再利用する（avg/bindless の
+        // どちらが連結されていても、その版のセマンティクスがそのまま適用される）。上限は既存の色付き影と
+        // 同等の CENTER=4 枚（重なった半透明レイヤーを最大 4 枚まで貫く。コスト有界）。
+        let o_tint = p + l * DT_SELF_SKIP_EPS;
+        tint = rt_trace_translucent_tint(o_tint, l, tmax, RT_TRANSLUCENT_MAX_HITS_CENTER);
+    }
+
+    // (A) スカラー厚み減衰 × (B) RGB 半透明透過率。半透明の青カーテン（Mask, tr≈0）は tint≈0 で
+    // 逆光透けを暗く落とし、色ガラスは色付きで透ける。
+    return vec3<f32>(opaque_atten) * tint;
 }
 
 // ── 半透明レイヤーの透過色 rt_trace_translucent_tint は【別ファイル（tint バリアント）】が供給する ──
