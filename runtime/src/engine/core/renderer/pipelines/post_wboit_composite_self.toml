@@ -1,0 +1,15 @@
+# post_wboit_composite_self.toml — WBOIT 合成 パス2: 自色加算（色付き透過率）
+# accum を coverage=1-mean(reveal.rgb) で重み付けした自色 avg*coverage を、背景濾過済み HDR へ加算する。
+# blend=Additive（src=One/dst=One）＝final += avg*coverage。src.a=0 のため HDR.a は不変。
+# パス1（背景濾過）の後に描くこと（自色は背景透過率 T で減衰させない）。composite_wboit が順序を保証する。
+
+shader_sources = ["fullscreen.wgsl", "post_wboit_composite.wgsl"]
+vertex_entry   = "fs_vs"
+fragment_entry = "composite_self_fs"
+vertex_slots   = []
+
+topology     = "TriangleList"
+cull_mode    = "None"
+color_format = "surface"
+blend        = "Additive"
+no_depth     = true

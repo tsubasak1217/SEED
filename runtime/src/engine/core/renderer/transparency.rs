@@ -68,8 +68,11 @@ pub const RT_WBOIT_REVEAL: &str = "wboit_reveal";
 
 /// accum ターゲットのフォーマット（HDR 色 × 重み）。
 pub const WBOIT_ACCUM_FORMAT:  wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
-/// reveal ターゲットのフォーマット（透過率の積、単チャンネル）。
-pub const WBOIT_REVEAL_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R16Float;
+/// reveal ターゲットのフォーマット（色付き透過率の積）。
+/// 色付き透過率（per-channel transmittance）方式のため RGBA へ拡張:
+///   rgb = Π T_frag（per-channel の背景透過率）、a = Π(1 - a)（スカラー予備）。
+/// 旧スカラー方式（R16Float）比でピクセルあたり +6 バイト（2→8 バイト）。バンディング回避で Float を維持。
+pub const WBOIT_REVEAL_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
 /// accum のクリア値（蓄積前は 0）。加算合成の初期値。
 const WBOIT_ACCUM_CLEAR:  wgpu::Color = wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 0.0 };
@@ -120,8 +123,11 @@ pub struct TransparentPipelines {
     wboit_skinned:  CullPipelineSet,
     /// group 3 の空 gap BindGroup（非スキン描画で必須セット）。
     mesh_empty_bg3: wgpu::BindGroup,
-    /// WBOIT 合成パイプライン（accum/reveal → シーン HDR）。
-    wboit_composite: PostPipeline,
+    /// WBOIT 合成 パス1: 背景濾過（scene *= Π T_frag。blend=WboitBgMultiply）。
+    wboit_composite_bg: PostPipeline,
+    /// WBOIT 合成 パス2: 自色加算（final += avg * coverage。blend=Additive）。
+    /// パス1 と同一シェーダ・同一 BGL（accum group0 + reveal group1）を共有する。
+    wboit_composite_self: PostPipeline,
     /// 合成入力サンプラー（accum/reveal 共通）。
     composite_sampler: wgpu::Sampler,
     /// 透明の group4 レイアウト（ライト＋屈折背景 15/16 の superset）。ソート／WBOIT 共通。
@@ -197,9 +203,11 @@ fn resolve_shader(name: &str) -> &'static str {
     }
 }
 
-/// WBOIT MRT のブレンド定義を組み立てる。
-///   accum : One/One 加算（premultiplied color × weight を積む）。
-///   reveal: (Zero, OneMinusSrc) — dst *= (1 - src) で透過率を積む。
+/// WBOIT MRT のブレンド定義を組み立てる（色付き透過率 / per-channel transmittance 方式）。
+///   accum : One/One 加算（self 色 × a_eff × weight を積む）。
+///   reveal: (Dst, Zero) — dst *= src（チャンネルごとの乗算累積）。
+///           フラグメントが per-channel 透過率 T_frag（rgb）とスカラー (1-a)（a）を出し、
+///           dst_new = src * dst で Π T_frag（rgb）と Π(1-a)（a）を作る（クリア値 1）。
 fn wboit_color_targets() -> [Option<wgpu::ColorTargetState>; 2] {
     // accum: 加算合成。
     let accum = wgpu::ColorTargetState {
@@ -218,18 +226,20 @@ fn wboit_color_targets() -> [Option<wgpu::ColorTargetState>; 2] {
         }),
         write_mask: wgpu::ColorWrites::ALL,
     };
-    // reveal: dst *= (1 - src)。src 係数 Zero、dst 係数 OneMinusSrc。
+    // reveal: dst *= src（乗算累積）。src 係数 Dst、dst 係数 Zero → result = src*dst + dst*0 = src*dst。
+    // これで per-channel の透過率の積 Π T_frag（rgb）とスカラー Π(1-a)（a）が同時に貯まる。
+    // 乗算は可換なので順序独立（WBOIT の要件）を満たす。
     let reveal = wgpu::ColorTargetState {
         format: WBOIT_REVEAL_FORMAT,
         blend: Some(wgpu::BlendState {
             color: wgpu::BlendComponent {
-                src_factor: wgpu::BlendFactor::Zero,
-                dst_factor: wgpu::BlendFactor::OneMinusSrc,
+                src_factor: wgpu::BlendFactor::Dst,
+                dst_factor: wgpu::BlendFactor::Zero,
                 operation:  wgpu::BlendOperation::Add,
             },
             alpha: wgpu::BlendComponent {
-                src_factor: wgpu::BlendFactor::Zero,
-                dst_factor: wgpu::BlendFactor::OneMinusSrc,
+                src_factor: wgpu::BlendFactor::Dst,
+                dst_factor: wgpu::BlendFactor::Zero,
                 operation:  wgpu::BlendOperation::Add,
             },
         }),
@@ -309,9 +319,15 @@ impl TransparentPipelines {
             CULL_FACE_VARIANTS[i],
         ));
 
-        // ── WBOIT 合成パイプライン（accum/reveal → HDR, AlphaBlending）──
-        let wboit_composite = PostPipeline::from_toml(
-            device, include_str!("pipelines/post_wboit_composite.toml"), sf, cache, resolve_shader,
+        // ── WBOIT 合成パイプライン（色付き透過率＝2 パス）──
+        // パス1: 背景濾過（scene *= Π T_frag）。パス2: 自色加算（final += avg*coverage）。
+        // 両 TOML は同一シェーダ（post_wboit_composite.wgsl）を指し、リフレクションが
+        // 両エントリの global（accum group0 + reveal group1）から同一 BGL を得る（BindGroup 共有）。
+        let wboit_composite_bg = PostPipeline::from_toml(
+            device, include_str!("pipelines/post_wboit_composite_bg.toml"), sf, cache, resolve_shader,
+        );
+        let wboit_composite_self = PostPipeline::from_toml(
+            device, include_str!("pipelines/post_wboit_composite_self.toml"), sf, cache, resolve_shader,
         );
 
         let composite_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -364,7 +380,8 @@ impl TransparentPipelines {
             sorted_mesh, sorted_skinned,
             wboit_mesh, wboit_skinned,
             mesh_empty_bg3,
-            wboit_composite,
+            wboit_composite_bg,
+            wboit_composite_self,
             composite_sampler,
             lights_bgl,
             refract_sampler,
@@ -376,8 +393,15 @@ impl TransparentPipelines {
     /// 屈折オフ時のダミー背景ビュー（1x1）への参照。屈折用 RT が未確保のフレームで使う。
     pub fn dummy_refract_view(&self) -> &wgpu::TextureView { &self.dummy_refract_view }
 
-    /// WBOIT 合成: accum/reveal を読み、シーン HDR（`hdr_view`）へアルファブレンドで重ねる。
-    /// 出力は LoadOp::Load（既存 HDR を保持）。ブルーム／トーンマップより前に呼ぶこと。
+    /// WBOIT 合成（色付き透過率＝2 パス）: accum/reveal を読み、シーン HDR（`hdr_view`）へ
+    ///   final = scene * Π T_frag + avg * coverage
+    /// を合成する。出力は LoadOp::Load（既存 HDR を保持）。ブルーム／トーンマップより前に呼ぶこと。
+    ///
+    /// 2 パスは同一の色アタッチメント（同一レンダーパス内）で順に描く:
+    ///   パス1（背景濾過）: blend=WboitBgMultiply で scene *= Π T_frag。
+    ///   パス2（自色加算）: blend=Additive        で final += avg * coverage。
+    /// パス1→パス2 の順序が必須（自色は背景透過率で減衰させない）。BindGroup は両パスで共有する
+    /// （両パイプラインが同一シェーダ由来で同一 BGL のため）。
     pub fn composite_wboit(
         &self,
         device:      &wgpu::Device,
@@ -386,10 +410,12 @@ impl TransparentPipelines {
         accum_view:  &wgpu::TextureView,
         reveal_view: &wgpu::TextureView,
     ) {
-        // group 0: accum + サンプラー、group 1: reveal + サンプラー。
+        // group 0: accum + サンプラー、group 1: reveal + サンプラー。両パス共通。
+        // BGL は bg/self どちらのパイプラインでも同一（同一シェーダのリフレクション結果）なので
+        // 片方（背景濾過パス）の bgls から作り、両パイプラインで使い回す。
         let bg0 = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label:   Some("WBOIT Composite BG0 accum"),
-            layout:  &self.wboit_composite.bgls[0],
+            layout:  &self.wboit_composite_bg.bgls[0],
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(accum_view) },
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.composite_sampler) },
@@ -397,7 +423,7 @@ impl TransparentPipelines {
         });
         let bg1 = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label:   Some("WBOIT Composite BG1 reveal"),
-            layout:  &self.wboit_composite.bgls[1],
+            layout:  &self.wboit_composite_bg.bgls[1],
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(reveal_view) },
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.composite_sampler) },
@@ -418,9 +444,13 @@ impl TransparentPipelines {
             occlusion_query_set:      None,
             timestamp_writes:         None,
         });
-        pass.set_pipeline(&self.wboit_composite.pipeline);
         pass.set_bind_group(0, &bg0, &[]);
         pass.set_bind_group(1, &bg1, &[]);
+        // パス1: 背景濾過（scene *= Π T_frag）。
+        pass.set_pipeline(&self.wboit_composite_bg.pipeline);
+        pass.draw(0..3, 0..1);
+        // パス2: 自色加算（final += avg * coverage）。必ずパス1 の後。
+        pass.set_pipeline(&self.wboit_composite_self.pipeline);
         pass.draw(0..3, 0..1);
     }
 }
@@ -1086,6 +1116,146 @@ mod tests {
         assert!(
             refract_src.contains("u_material.ior > 1.0 + IOR_EPSILON || tr > 0.0"),
             "refract_common.wgsl の grab-pass ゲート述語が sequential 側ミラーと同一であること",
+        );
+    }
+
+    // ============================================================
+    //  色付き透過率 WBOIT（per-channel transmittance）の合成数式の CPU 参照テスト
+    // ============================================================
+
+    /// per-channel 透過率 T_frag = clamp((1-a) + a*tr*albedo, 0, 1)。
+    /// refract_common.wgsl の glass_composite_wboit と同一式（下のソース照合で乖離を防ぐ）。
+    fn t_frag(a: f32, tr: f32, albedo: [f32; 3]) -> [f32; 3] {
+        let mut o = [0.0f32; 3];
+        for i in 0..3 {
+            o[i] = ((1.0 - a) + a * tr * albedo[i]).clamp(0.0, 1.0);
+        }
+        o
+    }
+
+    /// N 枚の同一フラグメントを合成した最終色を CPU で参照計算する。
+    /// post_wboit_composite.wgsl の 2 パス合成（final = scene*ΠT + avg*coverage）と同一式。
+    /// 同一層 N 枚なので avg（accum の重み平均）= self（重みに依らず一定）。
+    fn composite_n(n: u32, scene: [f32; 3], self_lit: [f32; 3], a: f32, tr: f32, albedo: [f32; 3]) -> [f32; 3] {
+        let t = t_frag(a, tr, albedo);
+        // reveal.rgb = Π T_frag（乗算累積）。クリア値 1 から N 回掛ける。
+        let mut reveal = [1.0f32; 3];
+        for _ in 0..n {
+            for i in 0..3 { reveal[i] *= t[i]; }
+        }
+        // coverage = 1 - mean(reveal.rgb)。
+        let mean_t = (reveal[0] + reveal[1] + reveal[2]) / 3.0;
+        let coverage = (1.0 - mean_t).clamp(0.0, 1.0);
+        // avg = self（同一層のため重み平均は self そのもの）。final = scene*reveal + avg*coverage。
+        let mut out = [0.0f32; 3];
+        for i in 0..3 {
+            out[i] = scene[i] * reveal[i] + self_lit[i] * coverage;
+        }
+        out
+    }
+
+    /// 【核心】純赤フィルタ（a=1, tr=1, albedo=(1,0,0)）は重ね数 N に依存しない＝「1赤+1赤=1赤」。
+    /// Π T=(1,0,0) が飽和し、coverage=1-1/3 も一定になるため、N=1/2/8/64 で完全一致すること。
+    #[test]
+    fn wboit_colored_pure_red_is_n_independent() {
+        let scene = [0.3, 0.7, 0.2];      // 任意の背景。
+        let selfc = [0.8, 0.1, 0.1];      // 赤い面の自色。
+        let albedo = [1.0, 0.0, 0.0];     // 純赤フィルタ。
+        let base = composite_n(1, scene, selfc, 1.0, 1.0, albedo);
+        for &n in &[2u32, 8, 64] {
+            let got = composite_n(n, scene, selfc, 1.0, 1.0, albedo);
+            for i in 0..3 {
+                assert!((got[i] - base[i]).abs() < 1.0e-6,
+                    "純赤フィルタは N={n} でも N=1 と一致すること (ch{i}: {} vs {})", got[i], base[i]);
+            }
+        }
+        // 純赤なので緑・青チャンネルの背景は完全に遮断される（reveal.g=reveal.b=0）。
+        assert!((base[1] - selfc[1] * (2.0 / 3.0)).abs() < 1.0e-6, "緑は背景遮断＝自色×coverage のみ");
+        assert!((base[2] - selfc[2] * (2.0 / 3.0)).abs() < 1.0e-6, "青は背景遮断＝自色×coverage のみ");
+    }
+
+    /// 半透明の色付きガラス（a=0.5, tr=1, 赤）は N で単調に飽和し、発散しない（足し算的増加の禁止）。
+    /// 赤チャンネルの透過率 T.r=1 は N によらず背景の赤を素通しし、緑青は Π で 0 へ収束する。
+    #[test]
+    fn wboit_colored_semi_red_saturates_not_adds() {
+        let scene = [1.0, 1.0, 1.0];
+        let selfc = [0.5, 0.0, 0.0];
+        let albedo = [1.0, 0.0, 0.0];
+        let mut prev_g = f32::INFINITY;
+        for &n in &[1u32, 2, 4, 16] {
+            let got = composite_n(n, scene, selfc, 0.5, 1.0, albedo);
+            // 全チャンネル [0, scene+self] に有界（加算的発散が無い）。
+            for i in 0..3 {
+                assert!(got[i] >= -1.0e-6 && got[i] <= scene[i] + selfc[i] + 1.0e-6,
+                    "N={n} ch{i} が有界であること: {}", got[i]);
+            }
+            // 緑チャンネルは N 増加で単調減少（背景の緑が層ごとに濾過されて暗くなる＝飽和方向）。
+            assert!(got[1] <= prev_g + 1.0e-6, "緑は N 増加で単調減少（飽和）: N={n} {}", got[1]);
+            prev_g = got[1];
+        }
+    }
+
+    /// 素の Blend（tr=0）は per-channel 透過率が (1-a) のスカラー（全チャンネル等しい）になり、
+    /// 従来スカラー WBOIT の revealage=Π(1-a)・coverage=1-Π(1-a) と一致する（パリティ）。
+    #[test]
+    fn wboit_plain_blend_matches_scalar_parity() {
+        let a = 0.4f32;
+        let t = t_frag(a, 0.0, [1.0, 0.0, 0.0]); // tr=0 なら albedo は無関係。
+        for i in 0..3 {
+            assert!((t[i] - (1.0 - a)).abs() < 1.0e-6, "tr=0 は T=(1-a) のスカラー（ch{i}）");
+        }
+        // 2 枚重ね: reveal=(1-a)^2、coverage=1-(1-a)^2。標準 WBOIT と一致。
+        let scene = [0.5, 0.5, 0.5];
+        let selfc = [0.2, 0.6, 0.9];
+        let got = composite_n(2, scene, selfc, a, 0.0, [0.0, 0.0, 0.0]);
+        let reveal = (1.0 - a) * (1.0 - a);
+        let coverage = 1.0 - reveal;
+        for i in 0..3 {
+            let expect = scene[i] * reveal + selfc[i] * coverage;
+            assert!((got[i] - expect).abs() < 1.0e-6, "素の Blend は標準 WBOIT と一致（ch{i}）");
+        }
+    }
+
+    /// CPU 参照ミラーがシェーダ実体から静かに乖離しないよう、式・ブレンド・フォーマットの
+    /// キー文字列をソース照合で固定する（既存テスト群と同じ二段構え）。
+    #[test]
+    fn wboit_colored_shader_sources_match_mirror() {
+        // フラグメント: T_frag = clamp((1-a) + a*tr*albedo, [0,1])。
+        let refract_src = include_str!("shaders/refract_common.wgsl");
+        assert!(
+            refract_src.contains("clamp(vec3<f32>(1.0 - a) + a * tr * albedo, vec3<f32>(0.0), vec3<f32>(1.0))"),
+            "glass_composite_wboit の T_frag 式が CPU ミラーと一致すること",
+        );
+        // reveal 出力: rgb=T_frag, a=1-a_eff。
+        let wboit_src = include_str!("shaders/shader_wboit.wgsl");
+        assert!(
+            wboit_src.contains("out.reveal = vec4<f32>(g.transmit, 1.0 - g.a_eff);"),
+            "fs_wboit の reveal 出力が per-channel T_frag + スカラー(1-a) であること",
+        );
+        assert!(
+            wboit_src.contains("out.accum  = vec4<f32>(g.self_lit * g.a_eff, g.a_eff) * w;"),
+            "fs_wboit の accum 出力が self*a_eff*w であること",
+        );
+        // 合成: coverage = 1 - mean(reveal.rgb)。
+        let comp_src = include_str!("shaders/post_wboit_composite.wgsl");
+        assert!(
+            comp_src.contains("let coverage = clamp(1.0 - mean_t, 0.0, 1.0);"),
+            "合成の coverage が 1 - mean(T_rgb) であること（N 飽和量）",
+        );
+        assert!(
+            comp_src.contains("return vec4<f32>(reveal.rgb, 1.0);"),
+            "背景濾過パスが reveal.rgb（Π T_frag）を出力すること",
+        );
+        // reveal ブレンドが乗算累積（Dst, Zero）であること。
+        let transp_src = include_str!("transparency.rs");
+        assert!(
+            transp_src.contains("src_factor: wgpu::BlendFactor::Dst,"),
+            "reveal ブレンドが (Dst, Zero) の乗算累積であること",
+        );
+        // reveal フォーマットが RGBA（色付き透過率）へ拡張されていること。
+        assert!(
+            transp_src.contains("pub const WBOIT_REVEAL_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;"),
+            "WBOIT_REVEAL_FORMAT が Rgba16Float（色付き透過率）であること",
         );
     }
 }
