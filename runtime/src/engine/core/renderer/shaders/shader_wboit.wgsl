@@ -4,9 +4,18 @@
 //  順序独立透明描画（McGuire & Bavoil 2013）の書き込み側。
 //  ライティングは shader_fragment.wgsl の shade_pbr() を共有し、その結果へ
 //  深度依存の重み w を掛けて 2 枚の MRT へ蓄積する:
-//    - @location(0) accum : Rgba16Float。sum(color.rgb * a * w, a * w)。加算合成。
-//    - @location(1) reveal: R16Float。   prod(1 - a)。 blend=(Zero, OneMinusSrc)。
+//    - @location(0) accum : Rgba16Float。sum(self.rgb * a * w, a * w)。加算合成（One/One）。
+//    - @location(1) reveal: Rgba16Float。prod(T_frag)（per-channel 色付き透過率）を rgb に、
+//      スカラーの prod(1 - a) を a に積む。 blend=(Dst, Zero)＝dst *= src（乗算累積）。
 //  合成は post_wboit_composite.wgsl が accum/reveal から行う。
+//
+//  【色付き透過率（per-channel transmittance）方式】
+//    従来は reveal をスカラー Π(1-a) にし、背景を各屈折フラグメントで焼き込んでいたため、
+//    同色の半透明が重なると足し算的に明るくなった（赤カーテンのシワ）。本方式では
+//    背景を焼き込まず、各フラグメントが per-channel 透過率 T_frag を出し、reveal に
+//    Π T_frag（乗算累積）を積む。合成パスが背景 HDR に Π T_frag を乗算するため、
+//    純赤フィルタ T=(1,0,0) は Π で飽和し、何枚重ねても「1赤+1赤=1赤」になる（乗算は可換＝順序独立）。
+//    詳細は refract_common.wgsl の glass_composite_wboit を参照。
 //
 //  連結順（transparency.rs のリゾルバ）:
 //    shader_common → shadow → rt_shadow_off → (static|skinned)_vertex →
@@ -31,9 +40,10 @@ const WBOIT_W_MAX:        f32 = 3.0e3;
 
 /// WBOIT の 2 ターゲット出力（accum / reveal）。
 struct WboitOut {
-    /// 重み付き色蓄積（premultiplied color * weight, alpha * weight）。
+    /// 重み付き自色蓄積（self.rgb * a * weight, a * weight）。加算合成（One/One）。
     @location(0) accum:  vec4<f32>,
-    /// 透過率の積（1 - a の積）。R チャンネルのみ使用。
+    /// 色付き透過率の積: rgb = Π T_frag（per-channel）、a = Π(1 - a)（スカラー）。
+    /// blend=(Dst, Zero) により dst *= src（チャンネルごとの乗算累積）。
     @location(1) reveal: vec4<f32>,
 }
 
@@ -59,19 +69,19 @@ fn fs_wboit(in: VertexOutput, @builtin(front_facing) front_facing: bool) -> Wboi
     let alpha_term = pow(min(1.0, a * WBOIT_ALPHA_SCALE) + WBOIT_ALPHA_BIAS, 3.0);
     let w = clamp(alpha_term * WBOIT_DEPTH_SCALE * depth_term, WBOIT_W_MIN, WBOIT_W_MAX);
 
-    // ── ガラス合成（屈折・透過率・アルファ。refract_common.wgsl の共有関数）─────────────
-    // premultiplied 色（被覆込み）と実効被覆 a_eff を作る。
-    //   transmission=0 かつ 屈折オフ: 従来どおり（premult=c.rgb*a, a_eff=a）。
-    //     → 合成 avg=accum.rgb/accum.a=c.rgb, final=avg*(1-reveal)=c.rgb*被覆＝従来と一致（パリティ）。
-    //   transmission=0 かつ 屈折オン: 背景をガラス越しに歪めた透過成分を premult へ加え、
-    //     a_eff=1 として背景をこのフラグメントで確定表示する（reveal→(1-1)=0 で dst 背景を隠す）。
-    //   transmission>0: フレネルで反射／透過を配分（glass_composite 内）。
-    let g = glass_composite(c.rgb, a, in, front_facing);
+    // ── 色付き透過率 WBOIT 合成（refract_common.wgsl の共有関数）─────────────
+    // 自色 self_lit（背景を含まない）・被覆 a_eff・per-channel 透過率 transmit を得る。
+    //   transmission=0（素の Blend）: transmit=(1-a) のスカラー＝従来 WBOIT の revealage と一致（パリティ）。
+    //   transmission>0（色付きガラス）: transmit=(1-a)+a*tr*albedo で背景を色フィルタとして減衰させる。
+    //   ※ WBOIT は順序独立のため屈折の曲がった背景は焼き込まない（合成パスで Π transmit を背景へ乗算）。
+    let g = glass_composite_wboit(c.rgb, a);
 
     var out: WboitOut;
-    // premultiplied color に重みを掛けて蓄積（加算合成: One/One）。accum.a は合成の正規化に使う。
-    out.accum  = vec4<f32>(g.premult, g.a_eff) * w;
-    // reveal は (1 - a_eff) の積。blend=(Zero, OneMinusSrc) により dst *= (1 - a_eff) となる。
-    out.reveal = vec4<f32>(g.a_eff, g.a_eff, g.a_eff, g.a_eff);
+    // 自色に被覆 a_eff と深度重み w を掛けて蓄積（加算合成: One/One）。
+    // 合成パスで avg = accum.rgb/accum.a = a_eff・w 重み付き平均色に戻す（正規化＝足し算にならない）。
+    out.accum  = vec4<f32>(g.self_lit * g.a_eff, g.a_eff) * w;
+    // reveal: rgb に per-channel 透過率 T_frag、a にスカラー (1 - a_eff)。
+    // blend=(Dst, Zero) により dst *= src ＝ rgb は Π T_frag、a は Π(1 - a_eff)（乗算累積）。
+    out.reveal = vec4<f32>(g.transmit, 1.0 - g.a_eff);
     return out;
 }

@@ -175,3 +175,53 @@ fn glass_composite(c: vec3<f32>, a: f32, in: VertexOutput, front_facing: bool) -
     o.a_eff   = 1.0;
     return o;
 }
+
+// ── 色付き透過率 WBOIT（per-channel transmittance）専用の合成 ────────────────
+//
+// 【なぜ WBOIT 専用の別関数なのか】
+//   距離ソート（glass_composite）は「背景を自前で合成して premultiplied over で dst を隠す」
+//   grab-pass 方式で、描画順が保証されるからこそ屈折の曲がった背景を焼き込める。
+//   これに対し WBOIT は順序独立でなければならず、背景を各フラグメントで焼き込むと
+//   「重なった層ごとに背景が足し算される」二重計上になる（症状: 赤カーテンのシワが重なり数
+//   ぶん明るくなる）。そこで WBOIT では背景を各フラグメントで焼かず、**背景の減衰を
+//   チャンネルごとの透過率の積 Π T_i として合成パスへ一本化**する。乗算は可換なので
+//   順序独立の WBOIT の枠組みにそのまま乗る（純赤フィルタ T=(1,0,0) は T^N=T で飽和し、
+//   何枚重ねても「1赤+1赤=1赤」になる）。
+//
+// 【出力の意味】
+//   self_lit : このフラグメントの自色（ライティング／スペキュラ／エミッシブ。背景を含まない）。
+//              accum に a_eff（被覆）と深度重み w を掛けて積む前段の straight 色。
+//   a_eff    : 自色の被覆（accum.a の重み・自色の存在度）。素のアルファ a をそのまま使う。
+//   transmit : このフラグメントを通り抜ける背景の per-channel 透過率 T_frag。
+//              合成パスで Π T_frag を作り、背景 HDR に乗算して色フィルタの積で濾過する。
+//
+// 【T_frag の式（色付き影・refract_layer_tint と同じセマンティクス）】
+//   T_frag = (1 - a) + a * tr * albedo
+//     ・(1 - a)        : 被覆されない部分は素通り（無着色）。
+//     ・a * tr * albedo : 被覆部のうち transmission=tr の割合が、ガラス色 albedo で色付けされて透ける。
+//   例) 純赤ガラス（a=1, tr=1, albedo=(1,0,0)）→ T=(1,0,0)。Π で N 枚重ねても (1,0,0) のまま＝飽和。
+//       半透明赤（a=0.5, tr=1, albedo=(1,0,0)）→ T=(1,0.5,0.5)。N 枚で (1,0.5^N,0.5^N)→(1,0,0) へ収束。
+//       素の Blend（tr=0）→ T=(1-a) のスカラー（全チャンネル等しい）＝従来 WBOIT の revealage と一致（パリティ）。
+//   transmittance は物理的に [0,1] なので、albedo が HDR（>1）でも clamp して増幅を防ぐ。
+struct WboitGlass {
+    /// 自色（背景を含まないライティング結果）。accum に a_eff*w を掛けて積む。
+    self_lit: vec3<f32>,
+    /// 自色の被覆（accum.a の重み）。素のアルファ。
+    a_eff:    f32,
+    /// per-channel 透過率 T_frag（合成パスで Π を作り背景へ乗算）。
+    transmit: vec3<f32>,
+}
+
+/// 色付き透過率 WBOIT のフラグメント合成。屈折背景はサンプルせず（＝曲がった背景表現は
+/// WBOIT では失われる。制約として明文化）、自色と per-channel 透過率だけを返す。
+fn glass_composite_wboit(c: vec3<f32>, a: f32) -> WboitGlass {
+    var o: WboitGlass;
+    let tr     = clamp(u_material.transmission, 0.0, 1.0);
+    let albedo = u_material.base_color_factor.rgb;
+    // 自色はライティング結果そのまま（背景非依存）。
+    o.self_lit = c;
+    o.a_eff    = a;
+    // T_frag = (1-a) + a*tr*albedo。物理透過率として [0,1] にクランプ（HDR albedo の増幅防止）。
+    o.transmit = clamp(vec3<f32>(1.0 - a) + a * tr * albedo, vec3<f32>(0.0), vec3<f32>(1.0));
+    return o;
+}

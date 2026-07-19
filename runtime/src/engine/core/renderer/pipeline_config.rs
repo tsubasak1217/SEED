@@ -41,7 +41,7 @@ pub struct PipelineConfig {
     /// "surface" → surface_format、"R32Uint" → R32Uint、"none" → fragment: None
     #[serde(default = "default_color_format")]
     pub color_format: String,
-    /// "Replace" | "AlphaBlending" | "Additive" | "None"
+    /// "Replace" | "AlphaBlending" | "Additive" | "PremultipliedAlpha" | "WboitBgMultiply" | "None"
     #[serde(default = "default_blend")]
     pub blend:        String,
     /// "all" | "none"
@@ -266,6 +266,21 @@ impl<'d> RenderPipelineBuilder<'d> {
                 // 数学的に等価だが、屈折フラグメント（背景を自前合成し alpha=1 を出す）が dst を
                 // 隠せるのはこのモード。RT-Translucency の距離ソート半透明で使う。
                 "PremultipliedAlpha" => Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                // 色付き透過率 WBOIT の背景濾過パス。final.rgb = dst.rgb * src.rgb（＝scene * Π T_frag）。
+                // color: src*Zero + dst*Src = dst*src.rgb（per-channel の乗算）。
+                // alpha: src*Zero + dst*One = dst.a（HDR のアルファを保持し、自色加算パスと非破壊に連鎖する）。
+                "WboitBgMultiply" => Some(wgpu::BlendState {
+                    color: wgpu::BlendComponent {
+                        src_factor: wgpu::BlendFactor::Zero,
+                        dst_factor: wgpu::BlendFactor::Src,
+                        operation:  wgpu::BlendOperation::Add,
+                    },
+                    alpha: wgpu::BlendComponent {
+                        src_factor: wgpu::BlendFactor::Zero,
+                        dst_factor: wgpu::BlendFactor::One,
+                        operation:  wgpu::BlendOperation::Add,
+                    },
+                }),
                 "None"          => None,
                 _               => Some(wgpu::BlendState::REPLACE),
             };
