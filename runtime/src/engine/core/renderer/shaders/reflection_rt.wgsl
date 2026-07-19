@@ -37,6 +37,26 @@ const RT_REFL_ORIGIN_N:  f32 = 0.02;
 const RT_REFL_RAY_TMAX:  f32 = 1.0e4;
 const RT_REFL_CULL_MASK: u32 = 0x01u;
 
+// ── ガラス対応（実装 A）用の定数 ─────────────────────────────
+/// 反射レイに映すガラス（半透明レイヤー）のインスタンスマスク（0x02）。rt_shadow.rs::RT_MASK_NON_OPAQUE と一致。
+const RT_REFL_TRANSLUCENT_MASK: u32 = 0x02u;
+/// 反射レイが貫くガラス層の最大枚数（tmin を進めながら再トレースする上限＝コスト有界。定数化）。
+const RT_REFL_MAX_GLASS_HITS: u32 = 4u;
+/// ガラス層の再トレース時に tmin を直前ヒットの先へ進める微小オフセット（同一面の再ヒット回避）。
+const RT_REFL_GLASS_T_STEP: f32 = 0.002;
+/// 色付き影と同一のパック定数（rt_shadow.rs::SHADOW_PACK_QUANT / SHADOW_PACK_RADIX と一致させること）。
+/// rt_albedo[.a] から被覆 α・透過率 transmission をデコードする（refract_rt.wgsl::refract_layer_tint と同一）。
+const RT_REFL_PACK_QUANT: f32 = 255.0;
+const RT_REFL_PACK_RADIX: f32 = 256.0;
+/// ガラス表面ツヤ（フレネル反射の代用）の強さ。
+/// 【判断根拠（ハイライト近似）】法線メガバッファは反射パスの group3 に**バインドされていない**
+/// （reflection.rs の rt_data_bgl は instance_table/UV/index/テクスチャ配列のみで、頂点法線
+/// メガバッファを含まない）。よって反射レイが当たったガラス面の補間法線を復元できず、
+/// 視点依存のフレネル項（f0 + (1-f0)(1-cosθ)^5）を計算できない。BGL＋frame_renderer 配線を
+/// 増やして法線を追加バインドする手もあるが、ツヤは副次的な見た目でありコストに見合わないと判断し、
+/// (1-T) ベースの中立ツヤ（層の遮蔽量に比例した白ツヤ）で近似する（タスクの簡易案どおり）。
+const RT_REFL_GLASS_SHEEN: f32 = 0.06;
+
 // 画面内ヒット採用（ハイブリッド）の深度一致許容（相対）。
 // 反射レイのヒット点を screen へ射影し、その UV の G-Buffer 深度から復元したビュー深度と
 // ヒット点のビュー深度の【相対差】がこの割合以内なら「そのヒット面は本画面で実際に見えている」
@@ -178,6 +198,73 @@ fn rt_refl_fallback(world_pos: vec3<f32>, r_dir: vec3<f32>) -> vec3<f32> {
     return rt_meta.ambient_color * rt_meta.ambient_intensity;
 }
 
+// 1 枚のガラス層を通る光の RGB 透過率 T を平均アルベド storage（rt_albedo, group3 binding3）から求める。
+// rt_albedo は rt_shadow.rs が所有する共有バッファで、.rgb=生アルベド・.a=パック済み α/transmission。
+// モデルは refract_rt.wgsl::refract_layer_tint / 色付き影 rt_shadow_tint_avg と同一:
+//   T = (1-α) + α·transmission·albedo.rgb
+//     ・α=1, tr=1 → T = albedo（色ガラスは baseColor で透過光を濾過）
+//     ・α=1, tr=0 → T = 0     （不透明被覆＝反射に黒シルエット）
+//     ・α=0        → T = 1     （素通り＝色を付けない）
+// 範囲外インデックスは vec3(1)（色を付けない）。
+fn rt_refl_layer_tint(ai: u32) -> vec3<f32> {
+    if ai >= arrayLength(&rt_albedo) {
+        return vec3<f32>(1.0, 1.0, 1.0);
+    }
+    let entry  = rt_albedo[ai];
+    let packed = entry.a;
+    let a_q    = floor(packed / RT_REFL_PACK_RADIX);
+    let t_q    = packed - a_q * RT_REFL_PACK_RADIX;
+    let alpha  = clamp(a_q / RT_REFL_PACK_QUANT, 0.0, 1.0);
+    let tr     = clamp(t_q / RT_REFL_PACK_QUANT, 0.0, 1.0);
+    return vec3<f32>(1.0 - alpha) + alpha * tr * entry.rgb;
+}
+
+/// 反射レイが貫くガラス層の累積透過色（tint）と表面ツヤ（sheen）。
+struct RtReflGlass { tint: vec3<f32>, sheen: vec3<f32> }
+
+// 反射レイ方向 dir に沿ってガラス（0x02）だけを最大 RT_REFL_MAX_GLASS_HITS 枚トレースし、
+// 入射面（front_face）ごとに透過色 T を tint に乗算累積、遮蔽量に比例した中立ツヤを sheen に加算する。
+// tmax は不透明ヒットまでの距離（不透明ミス時は大定数）＝不透明背景より手前にあるガラス層だけを数える。
+//   ・入射面のみでフィルタ＝閉メッシュの表裏で色が二乗になる二重計上を防ぐ（rt_shadow_tint_avg と同一規約）。
+//   ・inline ray query は最近ヒットしか返さないため、tmin をヒットの先へ進めながら重なったガラスを貫く。
+fn rt_refl_glass(origin: vec3<f32>, dir: vec3<f32>, tmax: f32) -> RtReflGlass {
+    var g: RtReflGlass;
+    g.tint  = vec3<f32>(1.0, 1.0, 1.0);
+    g.sheen = vec3<f32>(0.0, 0.0, 0.0);
+    var tmin = RT_REFL_RAY_TMIN;
+
+    for (var i: u32 = 0u; i < RT_REFL_MAX_GLASS_HITS; i = i + 1u) {
+        var desc: RayDesc;
+        desc.flags     = 0u;                        // 最近ヒットを取り、次反復で tmin を先へ進める（TERMINATE なし）。
+        desc.cull_mask = RT_REFL_TRANSLUCENT_MASK;  // 半透明（ガラス）のみを対象。
+        desc.tmin      = tmin;
+        desc.tmax      = max(tmax, tmin);
+        desc.origin    = origin;
+        desc.dir       = dir;
+        var grq: ray_query;
+        rayQueryInitialize(&grq, rt_tlas, desc);
+        loop {
+            if !rayQueryProceed(&grq) { break; }
+        }
+        let hit = rayQueryGetCommittedIntersection(&grq);
+        if hit.kind == RAY_QUERY_INTERSECTION_NONE {
+            break; // これ以上のガラス層は無い＝現在の tint/sheen で確定。
+        }
+        // 入射面でだけ色フィルタ＋ツヤを乗せる。裏面（出射面）は tmin を進めるだけ（二重計上防止）。
+        if hit.front_face {
+            let layer = rt_refl_layer_tint(hit.instance_custom_data);
+            g.tint = g.tint * layer;
+            // 中立ツヤ: 層の遮蔽量（1 - 相対輝度(T)）に比例した白ツヤ。視点依存フレネルの代用（上の判断根拠参照）。
+            let block = clamp(1.0 - dot(layer, vec3<f32>(0.2126, 0.7152, 0.0722)), 0.0, 1.0);
+            g.sheen = g.sheen + vec3<f32>(RT_REFL_GLASS_SHEEN * block);
+        }
+        // 次のガラス層へ: tmin を直前ヒットの先へ進める（同一面の再ヒットを避ける）。
+        tmin = hit.t + RT_REFL_GLASS_T_STEP;
+        if tmin >= tmax { break; }
+    }
+    return g;
+}
+
 @fragment
 fn fs_rt(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     let pix = vec2<i32>(frag.xy);
@@ -281,6 +368,18 @@ fn fs_rt(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
             reflected = albedo * (direct / RT_REFL_PI + indirect);
         }
     }
+
+    // ── ガラス対応（実装 A）: 反射レイ方向のガラス層を色フィルタ＋ツヤとして反射に乗せる ──
+    // 上の不透明トレース（0x01）はガラスを素通りする＝反射面にガラスが映らない。ここで反射レイと
+    // 同じ原点・方向で 0x02（ガラス）だけを別途トレースし、不透明ヒットまで（ミス時は大定数まで）に
+    // ある各ガラス層の透過色 T の積を不透明反射色へ乗算、ガラス表面のツヤ（中立色）を加算する。
+    //   ・reflected は「画面内=scene_hdr（不透明のみ）／画面外=解析近似」いずれも不透明由来のため、
+    //     ガラス色は含まない＝ここで乗算しても二重計上にならない。
+    //   ・tmax は不透明ヒット距離（不透明ミス時は大定数）＝不透明背景より手前のガラスだけを数える。
+    // これで反射面（床・磨かれた駒）にガラスの色付きシルエット＋ツヤが映る。
+    let glass_tmax = select(RT_REFL_RAY_TMAX, hit.t, hit.kind != RAY_QUERY_INTERSECTION_NONE);
+    let glass = rt_refl_glass(desc.origin, R, glass_tmax);
+    reflected = reflected * glass.tint + glass.sheen;
 
     let color = reflected * fresnel * smooth_w * u_reflection.intensity;
     return vec4<f32>(color, 1.0);

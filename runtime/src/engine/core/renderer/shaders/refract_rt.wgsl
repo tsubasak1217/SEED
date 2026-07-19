@@ -7,17 +7,18 @@
 // パイプラインだけがこのファイルを連結する（非対応 GPU・translucency≠Rt は refract_ss.wgsl を
 // 連結する。両者は排他＝同名 refract_sample_bg を 1 本だけ供給する）。
 //
-// 連結順（距離ソート RT 例）:
+// 連結順（距離ソート RT 例・実装 B）:
 //   [cluster_common, pbr_common, shader_common, ddgi_common, light_common, shadow,
-//    rt_shadow_off, static_vertex, surface, surface_gather, lighting_eval, shader_fragment,
-//    refract_common, refract_rt, shader_transparent]
-//   ※影経路は rt_shadow_off（シャドウマップのみ・TLAS 非宣言）。TLAS は本ファイルが binding6 に宣言する。
-//     今回のスコープは「屈折のみ」＝透明パスの受光影は変更しない（従来どおりシャドウマップ）。
+//    rt_shadow_on, rt_shadow_tint_avg, static_vertex, surface, surface_gather, lighting_eval,
+//    shader_fragment, bindless_common, refract_common, refract_rt, shader_transparent]
+//   ※影経路は rt_shadow_on（インライン RT 影・実装 B）＝ガラス面も不透明面と同じ RT 影を受ける。
+//     rt_shadow_on が TLAS(binding6)＋平均アルベド(binding14) を宣言し、本ファイルはそれを共用する。
 //
-// 【group4 追加バインディング】本ファイルが自前で宣言する（rt_shadow_off は宣言しないため衝突なし）:
-//   binding 6 : rt_accel（TLAS。屈折レイのトレース対象）
-//   binding 14: rt_shadow_albedo（TLAS インスタンス順の平均アルベド .rgb ＋パック α/tr .a）
-//               色付き影（rt_shadow_tint_avg.wgsl）が読むのと同一バッファ。界面の透過色付けに使う。
+// 【group4 バインディングの所有】
+//   binding 6 (rt_accel) / binding 14 (rt_shadow_albedo) は **rt_shadow_on.wgsl が宣言**する
+//     （以前は rt_shadow_off で影を切っていたため本ファイルが宣言していたが、実装 B で撤去。上記
+//      「連結される rt_shadow_on…」のコメント参照。単体連結では未定義になるため必ずセットで連結）。
+//   binding 17/18/19（instance_table / index / 法線メガバッファ）は本ファイルが宣言する（界面法線復元用）。
 // DDGI（10-13）・屈折背景（15/16）は light_common.wgsl / refract_common.wgsl が既に宣言済み。
 //
 // 【SS 版に対する優位（本物の屈折レイで解決すること）】
@@ -47,15 +48,15 @@
 //   界面 + 1 不透明 = 5 レイ/px。ゲート（translucency=Rt）オフや SS フォールバック時は増分ゼロ。
 // ============================================================
 
-/// group4 binding6: 屈折レイの TLAS。rt_shadow_off は TLAS を宣言しないため本ファイルが宣言する。
-@group(4) @binding(6) var rt_accel: acceleration_structure;
-
-/// group4 binding14: TLAS インスタンス順の平均アルベド（.rgb）＋パック α/transmission（.a）。
-/// rt_shadow.rs 所有・色付き影 / GI / 反射と同一バッファ。界面の透過色（tint）付けに custom_data で引く。
-/// - `.rgb`: 生の平均アルベド（GI/反射が読む共有値。意味を変えない）。
-/// - `.a`  : α（base_color_factor.a）と transmission を各 8bit 固定小数でパック
-///           （rt_shadow.rs::pack_shadow_alpha_transmission と対）。
-@group(4) @binding(14) var<storage, read> rt_shadow_albedo: array<vec4<f32>>;
+// group4 binding6（rt_accel: TLAS）と binding14（rt_shadow_albedo: 平均アルベド .rgb＋パック α/tr .a）は、
+// **連結される rt_shadow_on.wgsl が宣言する**（実装 B）。本ファイルはそれを同名で共用する:
+//   ・rt_accel         … 屈折レイ／界面トレース／最終不透明トレースの対象 TLAS。
+//   ・rt_shadow_albedo … 界面の透過色付け（refract_layer_tint が custom_data で引く）。
+// 以前は影経路が rt_shadow_off（何も宣言しない）だったため本ファイルが両者を自前宣言していたが、
+// 実装 B で影経路を rt_shadow_on（両者を宣言）へ切り替えたことにより、ここで再宣言すると
+// 同名グローバルの重複定義（redefinition）になる。よって本ファイルからは宣言を撤去した。
+// 【重要】本ファイルは必ず rt_shadow_on.wgsl とセットで連結すること（単体連結では rt_accel /
+//   rt_shadow_albedo が未定義になる。transparency.rs の naga テスト rt_variants も rt_shadow_on を含む）。
 
 /// group4 binding17: バインドレス インスタンステーブル（BindlessInstanceRecord 配列）。
 /// TLAS custom_data で引き、界面ヒット先の index_offset / normal_offset / flags を得る。

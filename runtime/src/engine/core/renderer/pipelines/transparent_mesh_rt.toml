@@ -6,9 +6,13 @@
 # superset になる（lighting.rs::create_transparent_rt_bind_group が一致する BindGroup を供給する）。
 #
 # EXPERIMENTAL_RAY_QUERY 対応 GPU でのみビルドする（acceleration_structure を宣言するため）。
-# 影経路は rt_shadow_off（シャドウマップのみ）＝今回のスコープは「屈折のみ」（受光影は変更しない）。
+# 影経路は rt_shadow_on（インライン RT 影・色付き影 tint は rt_shadow_tint_avg の平均アルベド経路）
+# ＝ガラス面も不透明面と同じインライン RT 影を受ける（実装 B）。フォワードはシャドウマスク非対応の
+# ため lighting_eval のインライン経路（slot<0・deterministic_tint=true）で評価される。
+# TLAS(binding6)・平均アルベド(binding14) は rt_shadow_on が宣言し、refract_rt はそれを共用する
+# （両者が同名 rt_accel / rt_shadow_albedo を宣言すると重複定義になるため、refract_rt 側の宣言は撤去済み）。
 
-shader_sources  = ["cluster_common.wgsl", "pbr_common.wgsl", "shader_common.wgsl", "ddgi_common.wgsl", "light_common.wgsl", "shadow.wgsl", "rt_shadow_off.wgsl", "shader_static_vertex.wgsl", "surface.wgsl", "surface_gather.wgsl", "lighting_eval.wgsl", "shader_fragment.wgsl", "bindless_common.wgsl", "refract_common.wgsl", "refract_rt.wgsl", "shader_transparent.wgsl"]
+shader_sources  = ["cluster_common.wgsl", "pbr_common.wgsl", "shader_common.wgsl", "ddgi_common.wgsl", "light_common.wgsl", "shadow.wgsl", "rt_shadow_on.wgsl", "rt_shadow_tint_avg.wgsl", "shader_static_vertex.wgsl", "surface.wgsl", "surface_gather.wgsl", "lighting_eval.wgsl", "shader_fragment.wgsl", "bindless_common.wgsl", "refract_common.wgsl", "refract_rt.wgsl", "shader_transparent.wgsl"]
 vertex_entry    = "vs_main"
 fragment_entry  = "fs_transparent_sorted"
 vertex_slots    = ["mesh_vertex"]
