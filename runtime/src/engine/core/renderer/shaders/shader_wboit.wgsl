@@ -5,18 +5,20 @@
 //  ライティングは shader_fragment.wgsl の shade_pbr() を共有し、その結果へ
 //  深度依存の重み w を掛けて 2 枚の MRT へ蓄積する:
 //    - @location(0) accum : Rgba16Float。sum(premult * w, a_eff * w)。加算合成（One/One）。
-//      premult は「曲がった背景×ガラス色 + 自色」（屈折歪みを焼き込んだ色）。
-//    - @location(1) reveal: Rgba16Float。prod(T_frag)（per-channel 色付き透過率）を rgb に、
+//      premult は「生の曲がった背景 bent_bg + 自色」（**ガラス色 tint は掛けない**）。
+//    - @location(1) reveal: Rgba16Float。prod(T_frag)（per-channel 色フィルタ）を rgb に、
 //      スカラーの prod(1 - a) を a に積む。 blend=(Dst, Zero)＝dst *= src（乗算累積）。
-//  合成は post_wboit_composite.wgsl が accum/reveal からチャンネルごとの凸結合で行う。
+//      reveal.a = Π(1-a) は合成でカバレッジ C = 1 − Π(1-a) に使う（曲げの幾何係数）。
+//  合成は post_wboit_composite.wgsl が「曲げ（カバレッジ lerp）」と「色フィルタ（×ΠT）」を分離して行う。
 //
-//  【色付き透過率＋屈折歪み（凸結合ハイブリッド）方式】
-//    屈折の曲がった背景を premult に焼き込む（＝ガラスの存在感を保つ）一方、背景の減衰は
-//    per-channel 透過率の積 Π T_frag として reveal に別途貯める。合成は加算ではなく
-//      final_c = scene_c · ΠT_c + avg_c · (1 − ΠT_c)   （c = R,G,B）
-//    のチャンネルごとの凸結合（lerp）にする。凸結合はエネルギーが max(scene, avg) を超えないため、
-//    premult に背景が焼き込まれていても重なりで足し算的に明るくならない。N 枚重なると ΠT が
-//    下がって avg（曲がった背景の重み平均＝カーテン色）へ漸近するだけ（純赤 T=(1,0,0) は N 非依存）。
+//  【色付き透過率＋屈折歪み（曲げと色フィルタの分離）方式】
+//    屈折の曲がった背景を premult に焼き込む（＝ガラスの存在感を保つ）が、**色フィルタ tint は
+//    premult に掛けず** reveal の Π T_frag が持つ。合成は:
+//      C = 1 − Π(1-a)（スカラーのカバレッジ）
+//      final = lerp(scene, avg, C) × ΠT   （bent_mix=scene·(1-C)+avg·C を色フィルタで着色）
+//    にする。C は色に依らず「背景を直進 scene から曲がった avg へ置き換える」度合いを与えるため、
+//    よく通す色チャンネルでも曲がった背景が見える（前案の「よく通す色ほど歪まない」矛盾を解消）。
+//    N 枚重ねても ΠT が飽和し（純赤 T=(1,0,0) は N 非依存）、avg は重み平均で膨らまない。
 //    詳細は refract_common.wgsl の glass_composite_wboit を参照。
 //
 //  連結順（transparency.rs のリゾルバ）:
@@ -73,17 +75,17 @@ fn fs_wboit(in: VertexOutput, @builtin(front_facing) front_facing: bool) -> Wboi
     let w = clamp(alpha_term * WBOIT_DEPTH_SCALE * depth_term, WBOIT_W_MIN, WBOIT_W_MAX);
 
     // ── 色付き透過率＋屈折歪み WBOIT 合成（refract_common.wgsl の共有関数）─────────────
-    // premult（曲がった背景×ガラス色 + 自色）・被覆 a_eff・per-channel 透過率 transmit を得る。
-    //   transmission=0（素の Blend）: transmit=(1-a) のスカラー＝従来 WBOIT の revealage と一致（パリティ）。
-    //   transmission>0（色付きガラス）: transmit=(1-a)+a*tr*albedo で背景を色フィルタとして減衰させる。
-    //   ※ premult に曲がった背景を焼き込み（屈折歪みを保つ）、合成の凸結合で二重計上を回避する。
+    // premult（生の曲がった背景 bent_bg + 自色。**tint 非乗算**）・被覆 a_eff・
+    // per-channel 色フィルタ transmit を得る。
+    //   transmission=0（素の Blend）: transmit=(1-a) のスカラー、premult=c*a（曲げなし・自色のみ）。
+    //   transmission>0（色付きガラス）: premult に生の曲がった背景を焼き込み、色 tint は transmit(ΠT) が持つ。
     let g = glass_composite_wboit(c.rgb, a, in, front_facing);
 
     var out: WboitOut;
-    // premult（屈折歪み込み）に深度重み w を掛けて蓄積（加算合成: One/One）。
+    // premult（生の曲がった背景 + 自色）に深度重み w を掛けて蓄積（加算合成: One/One）。
     // 合成パスで avg = accum.rgb/accum.a = 重み付き平均色に戻す（正規化＝足し算にならない）。
     out.accum  = vec4<f32>(g.premult, g.a_eff) * w;
-    // reveal: rgb に per-channel 透過率 T_frag、a にスカラー (1 - a_eff)（予備）。
+    // reveal: rgb に per-channel 色フィルタ T_frag、a にスカラー (1 - a_eff)（合成のカバレッジ C 用）。
     // blend=(Dst, Zero) により dst *= src ＝ rgb は Π T_frag、a は Π(1 - a_eff)（乗算累積）。
     out.reveal = vec4<f32>(g.transmit, 1.0 - g.a_eff);
     return out;
