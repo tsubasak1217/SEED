@@ -387,7 +387,11 @@ fn rt_diffuse_transmission_factor(p: vec3<f32>, l: vec3<f32>, tmax: f32) -> vec3
         // どちらが連結されていても、その版のセマンティクスがそのまま適用される）。上限は既存の色付き影と
         // 同等の CENTER=4 枚（重なった半透明レイヤーを最大 4 枚まで貫く。コスト有界）。
         let o_tint = p + l * DT_SELF_SKIP_EPS;
-        tint = rt_trace_translucent_tint(o_tint, l, tmax, RT_TRANSLUCENT_MAX_HITS_CENTER);
+        // pair_back=true: 拡散透過遮蔽レイ専用のペアリング規則を有効化する。表側に掛かった
+        // 青カーテンを赤カーテンの裏から見る構図では、青カーテンに**裏面から**当たる。閉メッシュの
+        // 出射面（＝二重計上）と、裏から当たった一枚シート（＝遮蔽すべき）を instance id で区別し、
+        // 後者にだけ T を掛ける（色付き影の 4 呼び出し点は front-only のまま＝pair_back=false）。
+        tint = rt_trace_translucent_tint(o_tint, l, tmax, RT_TRANSLUCENT_MAX_HITS_CENTER, true);
     }
 
     // (A) スカラー厚み減衰 × (B) RGB 半透明透過率。半透明の青カーテン（Mask, tr≈0）は tint≈0 で
@@ -405,7 +409,7 @@ fn rt_diffuse_transmission_factor(p: vec3<f32>, l: vec3<f32>, tmax: f32) -> vec3
 //                                    ヒット点 UV のベースカラーを実サンプルし、Mask 面はテクスチャ α を
 //                                    alpha_cutoff と比較して葉の形の影を落とす。deferred/shadow_mask の
 //                                    バインドレス影バリアント（対応 GPU）が連結。
-// どちらも `fn rt_trace_translucent_tint(o, dir, tmax, max_hits) -> vec3<f32>` の同一シグネチャで、
+// どちらも `fn rt_trace_translucent_tint(o, dir, tmax, max_hits, pair_back) -> vec3<f32>` の同一シグネチャで、
 // rt_shadow_factor（下記）から前方参照で呼ばれる（WGSL はモジュール内の関数を宣言順に依存しない）。
 // 連結時は本ファイルの後ろにいずれか 1 本だけを必ず並べること（両方／どちらも無しは重複定義／未定義になる）。
 
@@ -527,7 +531,8 @@ fn rt_shadow_factor(
         // （最大 CENTER=4 枚貫通・コスト有界）。無効・遮蔽時は白のまま（従来どおり）。
         var tint = vec3<f32>(1.0, 1.0, 1.0);
         if colored && vis > 0.0 {
-            tint = rt_trace_translucent_tint(o, l, tmax, RT_TRANSLUCENT_MAX_HITS_CENTER);
+            // pair_back=false: 色付き影は従来どおり front-only（挙動不変）。
+            tint = rt_trace_translucent_tint(o, l, tmax, RT_TRANSLUCENT_MAX_HITS_CENTER, false);
         }
         // スカラー可視性 × ターミネータ係数 × 透過色。
         return vec3<f32>(terminator * vis) * tint;
@@ -584,7 +589,7 @@ fn rt_shadow_factor(
         // マスク経路のときだけ、そのサンプル方向で半透明透過色を評価して累積する
         //（最大 SAMPLE=2 枚貫通）。インライン経路は per-sample tint を評価しない＝色ノイズ源を断つ。
         if colored && !deterministic_tint {
-            tint_sum += rt_trace_translucent_tint(o, dir, tmax, RT_TRANSLUCENT_MAX_HITS_SAMPLE);
+            tint_sum += rt_trace_translucent_tint(o, dir, tmax, RT_TRANSLUCENT_MAX_HITS_SAMPLE, false);
         }
     }
 
@@ -599,7 +604,7 @@ fn rt_shadow_factor(
         // トレードオフ: tint のペナンブラ勾配が失われ、影のシルエットどおりの硬い色境界になる。
         var tint_c = vec3<f32>(1.0, 1.0, 1.0);
         if colored && vis_sum > 0.0 {
-            tint_c = rt_trace_translucent_tint(o, l, tmax, RT_TRANSLUCENT_MAX_HITS_CENTER);
+            tint_c = rt_trace_translucent_tint(o, l, tmax, RT_TRANSLUCENT_MAX_HITS_CENTER, false);
         }
         return vec3<f32>(vis_sum * inv) * terminator * tint_c;
     }
