@@ -109,6 +109,11 @@ struct LightMeta {
 // ため 1 つの u32 に別ビットで載せる。
 const TRANSLUCENCY_RT_COLORED_SHADOW: u32 = 1u;
 const TRANSLUCENCY_RT_REFRACTION:     u32 = 2u;
+//   bit2: 実効の半透明方式が WBOIT（順序独立）。WBOIT は半透明相互の遮蔽が無いため、
+//         RT 屈折の界面 tint（奥の半透明レイヤーの透過色）と奥レイヤー自身の WBOIT 描画とで
+//         同じ色が二重計上される。このビットが立つとき refract_rt.wgsl は界面 tint 累積をスキップし、
+//         奥レイヤーの色を WBOIT 平均で本人が 1 回だけ寄与させる（距離ソート時は本ビット 0＝従来どおり）。
+const TRANSLUCENCY_RT_WBOIT:          u32 = 4u;
 
 @group(4) @binding(0) var<storage, read> u_lights:     array<GpuLight>;
 @group(4) @binding(1) var<uniform>       u_light_meta: LightMeta;

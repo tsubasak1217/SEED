@@ -4051,8 +4051,16 @@ impl App {
                             let scene_hdr = self.rt_pool.texture(crate::engine::core::renderer::RT_SCENE_HDR);
                             self.refract_pyramid.record(&draw_ctx.device, frame.encoder_mut(), scene_hdr);
                             // 屈折ビット（bit1）を追記（bit0＝色付き影は既に立っている）。offset 12＝translucency_rt。
-                            let flag = crate::engine::core::renderer::lighting::TRANSLUCENCY_RT_COLORED_SHADOW
+                            let mut flag = crate::engine::core::renderer::lighting::TRANSLUCENCY_RT_COLORED_SHADOW
                                      | crate::engine::core::renderer::lighting::TRANSLUCENCY_RT_REFRACTION;
+                            // WBOIT（順序独立）方式のときは bit2 を追記する。WBOIT は半透明相互の遮蔽が
+                            // 無いため、RT 屈折の界面 tint（奥の半透明レイヤーの透過色）と奥レイヤー自身の
+                            // WBOIT 描画とで同じ色が二重計上される（手前ガラス越しの奥ガラスが極端に濃くなる）。
+                            // このビットを見て refract_rt.wgsl が界面 tint 累積をスキップし、奥レイヤーの色を
+                            // WBOIT 平均で本人 1 回だけに一本化する。距離ソート時は立てない（従来どおり tint 累積）。
+                            if tp_wboit {
+                                flag |= crate::engine::core::renderer::lighting::TRANSLUCENCY_RT_WBOIT;
+                            }
                             draw_ctx.queue.write_buffer(
                                 draw_ctx.light_buffer.meta_main_buffer(), 12, bytemuck::bytes_of(&flag),
                             );

@@ -303,6 +303,13 @@ fn normalize(v: [f32; 3]) -> [f32; 3] {
 pub const TRANSLUCENCY_RT_COLORED_SHADOW: u32 = 1;
 /// bit1: 屈折の背景（refract_bg）が有効＝このフレームで屈折可能（deferred 有効＋背景コピー済み）。
 pub const TRANSLUCENCY_RT_REFRACTION: u32 = 2;
+/// bit2: 実効の半透明方式が WBOIT（順序独立）である。
+/// WBOIT は半透明相互の遮蔽が無いため、RT 屈折の界面 tint（奥の半透明レイヤーの透過色）と、
+/// その奥のレイヤー自身の WBOIT 描画とで**同じ色が二重計上**される（例: 手前ガラス越しの奥ガラス
+/// カーテンが極端に濃く見える）。このビットが立つとき、refract_rt.wgsl は界面 tint 累積を
+/// スキップし、奥レイヤーの色は WBOIT 平均で本人が 1 回だけ寄与する形へ一本化する。
+/// 距離ソート時（本ビット 0）は手前が奥を上書きするため二重計上が起きず、従来どおり tint を累積する。
+pub const TRANSLUCENCY_RT_WBOIT: u32 = 4;
 
 // ─── LightMeta ───────────────────────────────────────────────
 
