@@ -227,7 +227,17 @@ fn refract_sample_bg(surf: Surface, frag_xy: vec2<f32>, ior: f32) -> vec3<f32> {
         // base_color=[0,1,0.9773], transmission=1）で背景がベタッと濃い色ベールになる（症状2）。
         // よって i==0 の自己入射面は tint を掛けず、i>=1 の後続界面（自分の出射面＝back_face は
         // 元々スキップ／2 枚目以降のガラスの入射面）だけ tint を累積する。
-        if hit.front_face && i > 0u {
+        //
+        // 【WBOIT では界面 tint を一切累積しない（半透明相互の遮蔽が無いことによる二重計上の回避）】
+        // 距離ソートでは手前ガラスが奥の半透明ピクセルを a_eff=1 で上書きするため、奥レイヤー
+        // （例: 奥ガラスのカーテン）の色は「手前ガラスの背景 tint」として 1 回だけ現れる＝正しい。
+        // ところが WBOIT は半透明同士を遮蔽できず全フラグメントが平均へ加算されるため、奥レイヤーは
+        // (a) 手前ガラスの refract_sample_bg が乗せる界面 tint と、(b) 奥レイヤー自身の WBOIT 寄与、の
+        // **2 回**計上され、色が過剰に濃く彩度過多になる（実機症状: 緑ガラス越しの赤カーテンがベッタリ）。
+        // そこで WBOIT のときは界面 tint 累積を落とし（レイの屈折・最終不透明背景サンプルは維持）、
+        // 奥レイヤーの色は WBOIT 平均で本人（b）が 1 回だけ寄与する形へ一本化する。
+        let wboit_mode = (u_light_meta.translucency_rt & TRANSLUCENCY_RT_WBOIT) != 0u;
+        if hit.front_face && i > 0u && !wboit_mode {
             tint = tint * refract_layer_tint(ai);
         }
 
