@@ -60,6 +60,23 @@ fn bls_sample_texel(rec: BindlessInstanceRecord, prim_index: u32, bary: vec2<f32
     return textureSampleLevel(bls_tex[rec.albedo_tex_index], bls_smp, uv, 0.0);
 }
 
+/// Blend 面 1 枚の RGB 透過率 T（バインドレス: ヒット点テクスチャ実サンプル）を返す。
+/// front/back 共通の評価（呼び出し側がどちらの面で掛けるかを決める）。
+/// albedo/α は eligible ならテクスチャ実サンプル×factor、非 ELIGIBLE なら平均アルベドへ縮退。
+/// 透過率 tr はテクスチャに無いマテリアル値のため avg_albedo.a のパック値から復号。
+/// T = (1-α) + α·tr·albedo。
+fn bls_blend_layer_t(rec: BindlessInstanceRecord, eligible: bool, prim_index: u32, bary: vec2<f32>) -> vec3<f32> {
+    let tr = bls_unpack_transmission(rec.avg_albedo.a);
+    var albedo = rec.avg_albedo.rgb;          // 非 ELIGIBLE の縮退＝平均アルベド
+    var alpha  = bls_unpack_alpha(rec.avg_albedo.a);
+    if eligible {
+        let texel = bls_sample_texel(rec, prim_index, bary);
+        albedo = texel.rgb * rec.base_color_factor.rgb; // ステンドグラスの模様
+        alpha  = clamp(texel.a * rec.base_color_factor.a, 0.0, 1.0);
+    }
+    return vec3<f32>(1.0 - alpha) + alpha * tr * albedo;
+}
+
 /// 半透明レイヤー（cull_mask 0x02）越しの光を染める透過率（RGB）を返す（色付き影・バインドレス）。
 /// rt_shadow_tint_avg.wgsl と同一シグネチャ。差分は「ヒット点テクスチャ実サンプル」＋「Mask アルファ抜き」。
 ///
@@ -67,13 +84,24 @@ fn bls_sample_texel(rec: BindlessInstanceRecord, prim_index: u32, bary: vec2<f32
 ///   - Mask（BINDLESS_FLAG_MASK）: テクスチャ α（×factor.a）を alpha_cutoff と比較。
 ///       α>=cutoff → 完全遮蔽（vec3(0) を返して即終了＝葉の形の影）。α<cutoff → 素通り。
 ///       front/back は問わない（一枚カードは 1 回貫くだけ。表裏どちらでも遮蔽判定は同じ）。
-///   - Blend: 入射面（front_face）でのみ透過色フィルタ。albedo/α はテクスチャ実サンプル×factor、
-///       透過率 tr は avg_albedo.a のパック値から復号。T = (1-α)+α·tr·albedo。
+///       ⇒ Mask は pair_back に依らず表裏どちらから当たっても遮蔽するため、青カーテンが
+///          Mask なら本経路では元々遮蔽される（本タスクの裏面対応は下の Blend 分岐が担う）。
+///   - Blend: 透過色フィルタ。avg 版と同じ pair_back 規則で裏面の扱いを切り替える（下記）。
 ///   - 非 ELIGIBLE（UV/tex 未登録）: 平均アルベド（avg_albedo）へ縮退（従来のベタ塗り相当）。
 ///   - 範囲外 custom_data: 何もせず tmin を進める（tint 不変）。
-fn rt_trace_translucent_tint(o: vec3<f32>, dir: vec3<f32>, tmax: f32, max_hits: u32) -> vec3<f32> {
+///
+/// `pair_back`（avg 版と同一セマンティクス。Blend 面にのみ作用。Mask は常に表裏遮蔽で不変）:
+///   false（色付き影の 4 呼び出し点）: Blend は front-face のみフィルタ・裏面スキップ（挙動不変）。
+///   true （rt_diffuse_transmission_factor 専用）: 直前 front と同一 instance の裏面はスキップ
+///          （閉ガラスの出射面）、対の無い裏面は T を掛ける（裏から当たった一枚 Blend シート）。
+fn rt_trace_translucent_tint(o: vec3<f32>, dir: vec3<f32>, tmax: f32, max_hits: u32, pair_back: bool) -> vec3<f32> {
     var tint = vec3<f32>(1.0, 1.0, 1.0);
     var tmin = RT_SHADOW_TMIN;
+
+    // 拡散透過ペアリング状態（pair_back==true のときだけ使う。avg 版と同一）。
+    // Blend 面の閉メッシュ出射面を 1 組だけ追跡する（Mask 分岐はこの状態を触らない）。
+    var front_active   = false; // 直前に「front 通過中」の Blend instance があるか
+    var front_instance = 0u;    // その instance の custom_data
 
     // ループ上限は定数で静的に固定（1 ピクセルあたりのレイ本数が上限を超えない）。
     for (var i: u32 = 0u; i < RT_TRANSLUCENT_MAX_HITS_CENTER; i = i + 1u) {
@@ -107,6 +135,7 @@ fn rt_trace_translucent_tint(o: vec3<f32>, dir: vec3<f32>, tmax: f32, max_hits: 
             if is_mask {
                 // ── Mask（アルファテスト）: テクスチャ α を alpha_cutoff と比較 ──
                 // 被覆 α はテクスチャ実サンプル（×factor.a）。未登録なら平均 α へ縮退。
+                // front/back を問わず遮蔽する（一枚カードは表裏どちらでも同じ）ため pair_back 非依存。
                 var alpha = bls_unpack_alpha(rec.avg_albedo.a);
                 if eligible {
                     let texel = bls_sample_texel(rec, hit.primitive_index, hit.barycentrics);
@@ -118,20 +147,25 @@ fn rt_trace_translucent_tint(o: vec3<f32>, dir: vec3<f32>, tmax: f32, max_hits: 
                 }
                 // α<cutoff は素通り（フィルタせず tmin を進めるだけ）。
             } else {
-                // ── Blend（半透明）: 入射面でのみ透過色フィルタ（二重計上防止）──
+                // ── Blend（半透明）: avg 版と同じ pair_back 規則で裏面の扱いを切り替える ──
                 if hit.front_face {
-                    let tr = bls_unpack_transmission(rec.avg_albedo.a);
-                    var albedo = rec.avg_albedo.rgb;          // 非 ELIGIBLE の縮退＝平均アルベド
-                    var alpha  = bls_unpack_alpha(rec.avg_albedo.a);
-                    if eligible {
-                        let texel = bls_sample_texel(rec, hit.primitive_index, hit.barycentrics);
-                        albedo = texel.rgb * rec.base_color_factor.rgb; // ステンドグラスの模様
-                        alpha  = clamp(texel.a * rec.base_color_factor.a, 0.0, 1.0);
+                    // 入射面: 常にフィルタ。閉メッシュの二重計上回避は下の裏面分岐が担う。
+                    tint = tint * bls_blend_layer_t(rec, eligible, hit.primitive_index, hit.barycentrics);
+                    if pair_back {
+                        front_active   = true;
+                        front_instance = ai;
                     }
-                    // T = (1-α) + α·tr·albedo（1 枚の Blend 面を通る光の RGB 透過率）。
-                    let layer_t = vec3<f32>(1.0 - alpha) + alpha * tr * albedo;
-                    tint = tint * layer_t;
+                } else if pair_back {
+                    // 裏面 ＋ 拡散透過遮蔽レイ: ペアリングで扱いを決める。
+                    if front_active && front_instance == ai {
+                        // 直前 front と同一 instance＝閉メッシュの出射面。二重計上しない。
+                        front_active = false;
+                    } else {
+                        // 対の無い裏面＝裏から当たった一枚 Blend シート。T を掛けて遮蔽する。
+                        tint = tint * bls_blend_layer_t(rec, eligible, hit.primitive_index, hit.barycentrics);
+                    }
                 }
+                // 裏面 ＋ pair_back==false（色付き影）: 従来どおりスキップ（front-only 規則を維持）。
             }
         }
 

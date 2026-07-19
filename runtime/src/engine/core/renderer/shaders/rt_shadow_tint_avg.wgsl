@@ -16,6 +16,30 @@
 // 両者は排他（rt_shadow_factor から呼ばれる同名関数を 1 本だけ供給する）。
 // ============================================================
 
+/// 半透明面 1 枚の RGB 透過率 T（平均アルベド経路）を custom_data 添字で引いて返す。
+/// front/back 共通の評価（呼び出し側がどちらの面で掛けるかを決める）。
+/// .a は rt_shadow.rs::pack_shadow_alpha_transmission が
+///   a_q = round(α * SHADOW_PACK_QUANT), t_q = round(tr * SHADOW_PACK_QUANT)
+///   .a  = a_q * SHADOW_PACK_RADIX + t_q
+/// と詰めた固定小数（f32 の整数完全表現域内）。ここでその逆でデコードする。
+/// 範囲外インデックスは vec3(1)（＝色を付けない）。T = (1-α) + α·transmission·albedo.rgb:
+///   ・α=1, tr=1 → T = albedo（色ガラスは baseColor で透過光を濾過）
+///   ・α=1, tr=0 → T = 0     （透過しない被覆面は光を通さない＝暗い影）
+///   ・α=0        → T = 1     （影なし）
+/// 非透過成分 α·(1-tr) は光を通さない（＝0）ため式に現れない。透過光だけがアルベドで色付く。
+fn avg_translucent_layer_t(ai: u32) -> vec3<f32> {
+    if ai < arrayLength(&rt_shadow_albedo) {
+        let entry  = rt_shadow_albedo[ai];
+        let packed = entry.a;
+        let a_q    = floor(packed / SHADOW_PACK_RADIX);
+        let t_q    = packed - a_q * SHADOW_PACK_RADIX;
+        let alpha  = clamp(a_q / SHADOW_PACK_QUANT, 0.0, 1.0); // 被覆（base_color_factor.a）
+        let tr     = clamp(t_q / SHADOW_PACK_QUANT, 0.0, 1.0); // 透過率（KHR_materials_transmission）
+        return vec3<f32>(1.0 - alpha) + alpha * tr * entry.rgb;
+    }
+    return vec3<f32>(1.0, 1.0, 1.0);
+}
+
 /// 半透明レイヤー（cull_mask 0x02）越しの光を染める透過率（RGB）を返す（色付き影）。
 /// 不透明で遮蔽されていない方向へ、半透明インスタンスだけをトレースし、**入射面（front-facing）
 /// のヒットごと**にそのプリミティブの平均アルベド・被覆 α・透過率 tr で光をフィルタする
@@ -45,9 +69,30 @@
 /// - `max_hits`: 貫通する半透明レイヤーの最大枚数（CENTER=4 / SAMPLE=2）。ループの静的上限は
 ///               常に RT_TRANSLUCENT_MAX_HITS_CENTER（両者の大きい方）で、これを超える反復は
 ///               `i >= max_hits` で早期 break する（1 ピクセルあたりのレイ本数を静的に有界化）。
-fn rt_trace_translucent_tint(o: vec3<f32>, dir: vec3<f32>, tmax: f32, max_hits: u32) -> vec3<f32> {
+/// - `pair_back`: **裏面（front_face==false）ヒットの扱い**を切り替える（拡散透過の遮蔽レイ専用）。
+///     false（色付き影の 4 呼び出し点）: 従来どおり front-face だけフィルタし裏面はスキップする
+///                （閉ガラスの入射/出射での色の二乗を防ぐ front-only 規則。挙動不変）。
+///     true （rt_diffuse_transmission_factor 専用）: 下記のペアリング規則。裏から当たった一枚シート
+///                （＝表側に掛かった青カーテンを赤カーテンの裏から見る構図）も遮蔽するため、
+///                対になる front を伴わない裏面には T を掛ける。
+///
+/// ## pair_back==true のペアリング規則（拡散透過遮蔽レイ専用）
+/// 直前に「front を通過した半透明 instance」を 1 組だけ覚えておく:
+///   - front ヒット: T を掛け、その instance を「front 通過中」として記録する。
+///   - back  ヒット: 直前の front 通過中が**同一 instance**なら閉メッシュの出射面とみなしスキップ
+///                   （＝入射で 1 回掛けた T を二重計上しない）。異なる／記録が無ければ、対の無い
+///                   裏面＝**裏から当たった一枚シート**とみなし T を掛ける（青カーテンを遮蔽）。
+/// 多重に入れ子になった半透明メッシュの完全追跡はしない（front は 1 組しか覚えない。限界）。
+/// カーテンやガラス板の実用範囲（同一 instance の入射→出射が t 順で隣接）ではこれで足りる。
+fn rt_trace_translucent_tint(o: vec3<f32>, dir: vec3<f32>, tmax: f32, max_hits: u32, pair_back: bool) -> vec3<f32> {
     var tint = vec3<f32>(1.0, 1.0, 1.0);
     var tmin = RT_SHADOW_TMIN;
+
+    // 拡散透過ペアリング状態（pair_back==true のときだけ使う）。
+    // 直前に front を通過した半透明 instance を 1 組だけ保持し、その閉メッシュ出射面の
+    // 二重計上を防ぐ。色付き影（pair_back==false）ではこの状態は参照されない。
+    var front_active   = false; // 直前に「front 通過中」の instance があるか
+    var front_instance = 0u;    // その instance の custom_data
 
     // ループ上限は定数で静的に固定（1 ピクセルあたりのレイ本数が上限を超えない）。
     // 実効上限は引数 max_hits（<= CENTER）で、下の early break で締める。
@@ -74,36 +119,31 @@ fn rt_trace_translucent_tint(o: vec3<f32>, dir: vec3<f32>, tmax: f32, max_hits: 
             break;
         }
 
-        // 入射面（front-facing）のヒットでだけ色フィルタを掛ける。
-        // 閉メッシュは表面（入射）＋裏面（出射）の 2 枚を貫くため、両方で掛けると
-        // 色フィルタが二乗になって暗すぎる。裏面（front_face==false）は下で tmin を
-        // 進めるだけにして、媒質 1 個あたり T を 1 回だけに保つ（関数 doc の詳細参照）。
         // naga 25 の committed intersection では front_face は bool（type_gen.rs で検証済み）。
-        if hit.front_face {
-        // 平均アルベド（.rgb）＋パック済み α/transmission（.a）を custom_data で引く。
-        // .a は rt_shadow.rs::pack_shadow_alpha_transmission が
-        //   a_q = round(α * SHADOW_PACK_QUANT), t_q = round(tr * SHADOW_PACK_QUANT)
-        //   .a  = a_q * SHADOW_PACK_RADIX + t_q
-        // と詰めた固定小数（f32 の整数完全表現域内）。ここでその逆でデコードする。
-        // 範囲外インデックスは何もフィルタしない（tint 不変＝白のまま＝色を付けない）。
         let ai = hit.instance_custom_data;
-        if ai < arrayLength(&rt_shadow_albedo) {
-            let entry  = rt_shadow_albedo[ai];
-            let packed = entry.a;
-            let a_q    = floor(packed / SHADOW_PACK_RADIX);
-            let t_q    = packed - a_q * SHADOW_PACK_RADIX;
-            let alpha  = clamp(a_q / SHADOW_PACK_QUANT, 0.0, 1.0); // 被覆（base_color_factor.a）
-            let tr     = clamp(t_q / SHADOW_PACK_QUANT, 0.0, 1.0); // 透過率（KHR_materials_transmission）
-            // 1 枚の Blend 面を通る光の RGB 透過率:
-            //   T = (1-α) + α·transmission·albedo.rgb
-            //   ・α=1, tr=1 → T = albedo   （色の付いた影＝色ガラスは baseColor で透過光を濾過する）
-            //   ・α=1, tr=0 → T = 0        （透過しない被覆面は光を通さない＝暗い影）
-            //   ・α=0        → T = 1        （影なし）
-            // 非透過成分 α·(1-tr) は光を通さない（＝0）ため式に現れない。透過光だけがアルベドで色付く。
-            let layer_t = vec3<f32>(1.0 - alpha) + alpha * tr * entry.rgb;
-            tint = tint * layer_t;
+        if hit.front_face {
+            // 入射面（front-facing）: 常に色フィルタを掛ける（色付き影・拡散透過とも共通）。
+            // 閉メッシュは表面（入射）＋裏面（出射）の 2 枚を貫くため、両方で掛けると色フィルタが
+            // 二乗になって暗すぎる。二重計上の回避は下の裏面分岐で行う（関数 doc 参照）。
+            tint = tint * avg_translucent_layer_t(ai);
+            if pair_back {
+                // この instance の入射を記録（次に来る同一 instance の裏面をスキップするため）。
+                front_active   = true;
+                front_instance = ai;
+            }
+        } else if pair_back {
+            // 裏面（front_face==false）＋拡散透過遮蔽レイ: ペアリングで扱いを決める。
+            if front_active && front_instance == ai {
+                // 直前 front と同一 instance＝閉メッシュの出射面。入射で掛けた T を二重計上しない。
+                front_active = false;
+            } else {
+                // 対になる front が無い裏面＝**裏から当たった一枚シート**（表側の青カーテンを
+                // 赤カーテンの裏から見る構図）。ここで T を掛けて遮蔽する（本タスクの是正点）。
+                tint = tint * avg_translucent_layer_t(ai);
+            }
         }
-        } // if hit.front_face（裏面ヒットはフィルタせず tmin を進めるだけ）
+        // 裏面 ＋ pair_back==false（色付き影）: 従来どおりフィルタせず tmin を進めるだけ
+        //（front-only 規則を維持し、色付き影の既存挙動を不変に保つ）。
 
         // 次のレイヤーへ: tmin を直前ヒットの手前まで進める（同一面の再ヒットを避ける）。
         tmin = hit.t + RT_TRANSLUCENT_T_STEP;
