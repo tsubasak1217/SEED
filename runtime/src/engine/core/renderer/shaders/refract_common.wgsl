@@ -178,56 +178,83 @@ fn glass_composite(c: vec3<f32>, a: f32, in: VertexOutput, front_facing: bool) -
 
 // ── 色付き透過率 WBOIT（per-channel transmittance）＋屈折歪みの合成 ────────────────
 //
-// 【方針（凸結合ハイブリッド）】
-//   実機確認の結果、屈折の曲がった背景を完全に落とすと WBOIT ガラスの存在感が消え、
-//   セロファンを貼ったような平坦な見た目になった。そこで:
-//     (1) フラグメントは距離ソートと同じ glass_composite で「曲がった背景×ガラス色 + 自色
-//         ライティング」を焼き込んだ premult を出す（屈折歪みを復活）。
-//     (2) 背景の減衰はチャンネルごとの透過率の積 Π T_frag として reveal に別途貯める（維持）。
-//     (3) 合成は **加算ではなくチャンネルごとの凸結合（lerp）**:
-//           final_c = scene_c · ΠT_c + avg_c · (1 − ΠT_c)
-//         にする。凸結合はエネルギーが max(scene, avg) を超えないため、premult に背景が
-//         焼き込まれていても「重なった層ぶん足し算されて明るくなる」二重計上が起きない。
-//   N 枚重なると ΠT_c が下がり avg（曲がった背景の重み平均＝カーテンの見た目）へ漸近する
-//   だけで、加算的増強にはならない（純赤 T=(1,0,0) は ΠT が飽和し N 非依存＝「1赤+1赤≈1赤」）。
-//   ※ avg = accum.rgb/accum.a は重み平均（正規化）なので、層数が増えても総和のようには膨らまない。
+// 【方針（「曲げ」と「色フィルタ」の分離）】
+//   前案（チャンネルごとの凸結合 final_c = scene_c·ΠT_c + avg_c·(1−ΠT_c)）は、透過率の高い
+//   チャンネル（シアンガラスの G/B 等）で scene（**直進**背景）がほぼ全量を占め、avg（曲がった
+//   背景）の重み (1−ΠT_c)≈0 となり歪みが消えた（＝「よく通す色ほど歪まない」自己矛盾）。
+//   そこで **曲げ（幾何）と 色フィルタ（分光透過）を分離**する:
+//     ・幾何（曲げ）: スカラーのカバレッジ C = 1 − Π(1-a) で「背景を直進 scene から曲がった avg へ
+//       置き換える」度合いを決める（全チャンネル共通＝色に依らず曲がる）。
+//     ・色フィルタ: per-channel の Π T_frag を、置き換え後の背景 bent_mix 全体に掛ける。
+//   合成: final = lerp(scene, avg, C) × ΠT   （bent_mix = scene·(1-C) + avg·C）。
 //
-// 【出力の意味】
-//   premult  : 曲がった背景×ガラス色 + 自色ライティング（distance-sort と同じ glass_composite の premult）。
-//              accum に深度重み w を掛けて積む。合成で avg=accum.rgb/accum.a に戻す。
-//   a_eff    : accum.a の重み（glass は 1.0・素の Blend は a）。glass_composite と同一。
-//   transmit : このフラグメントを通り抜ける背景の per-channel 透過率 T_frag。
-//              合成パスで Π T_frag（reveal.rgb）を作り、凸結合の混合係数に使う。
+//   これで **よく通す色チャンネルでも「曲がった avg」が見える**（C はガラスがあれば 1 に近づき、
+//   ΠT はそのチャンネルの色付けだけを担う）。N 枚重ねても ΠT が飽和し（純赤 T=(1,0,0) は N 非依存）、
+//   avg は重み平均で膨らまないため足し算的増強も起きない。
+//
+// 【自色（スペキュラ等）の扱い — 判断】
+//   自色ライティング c を bent_bg と一緒に accum（avg）へ入れるため、合成で **まとめて ×ΠT が掛かる**
+//   （＝スペキュラがガラス色でわずかに色付く）。分離するには自色専用の 3 枚目 MRT が要り、BGL/
+//   パイプライン同期のコスト増に見合わないため **束ねる方を採用**。スペキュラ寄与は微小で許容範囲。
+//
+// 【出力の意味（前案からの変更点）】
+//   premult  : **色フィルタ（tint）を掛けない**「生の曲がった背景 bent_bg + 自色 c」（premultiplied）。
+//              色フィルタは reveal の Π T_frag が持つため、ここでは掛けない（前案との最大の差）。
+//   a_eff    : accum.a の重み（glass=1.0・素の Blend=a）。glass_composite と同一。
+//   transmit : per-channel 透過率 T_frag（合成で Π を作り bent_mix 全体へ掛ける色フィルタ）。
 //
 // 【T_frag の式（色付き影・refract_layer_tint と同じセマンティクス）】
 //   T_frag = (1 - a) + a * tr * albedo
-//     ・(1 - a)        : 被覆されない部分は素通り（無着色）。
-//     ・a * tr * albedo : 被覆部のうち transmission=tr の割合が、ガラス色 albedo で色付けされて透ける。
 //   例) 純赤ガラス（a=1, tr=1, albedo=(1,0,0)）→ T=(1,0,0)。Π で N 枚重ねても (1,0,0) のまま＝飽和。
-//       半透明赤（a=0.5, tr=1, albedo=(1,0,0)）→ T=(1,0.5,0.5)。N 枚で (1,0.5^N,0.5^N)→(1,0,0) へ収束。
-//       素の Blend（tr=0）→ T=(1-a) のスカラー（全チャンネル等しい）＝従来 WBOIT の revealage と一致（パリティ）。
 //   transmittance は物理的に [0,1] なので、albedo が HDR（>1）でも clamp して増幅を防ぐ。
 struct WboitGlass {
-    /// 曲がった背景×ガラス色 + 自色（glass_composite の premult）。accum に w を掛けて積む。
+    /// 生の曲がった背景 bent_bg + 自色 c（**tint 非乗算**・premultiplied）。accum に w を掛けて積む。
     premult:  vec3<f32>,
     /// accum.a の重み（glass=1.0・素の Blend=a）。glass_composite と同一。
     a_eff:    f32,
-    /// per-channel 透過率 T_frag（合成パスで Π を作り凸結合の混合係数にする）。
+    /// per-channel 透過率 T_frag（合成で Π を作り bent_mix 全体へ掛ける色フィルタ）。
     transmit: vec3<f32>,
 }
 
-/// 色付き透過率 WBOIT のフラグメント合成。屈折歪みを保つため距離ソートと同じ glass_composite で
-/// 「曲がった背景×ガラス色 + 自色」を焼き込んだ premult / a_eff を得つつ、背景減衰用の
-/// per-channel 透過率 T_frag を別途返す（合成パスの凸結合で二重計上を回避する）。
+/// 色付き透過率＋屈折歪み WBOIT のフラグメント合成。glass_composite と同じ屈折幾何（曲がった背景
+/// サンプル・フレネル配分）を使うが、**ガラス色 tint の乗算は外す**（色フィルタは reveal の ΠT が担う）。
+/// これにより合成側で「曲げ（カバレッジ lerp）」と「色フィルタ（×ΠT）」を分離でき、よく通す色でも
+/// 曲がった背景が見える。素の Blend（非屈折）は従来どおり自色 premultiplied (c*a, a) に落とす。
 fn glass_composite_wboit(c: vec3<f32>, a: f32, in: VertexOutput, front_facing: bool) -> WboitGlass {
     var o: WboitGlass;
-    // 距離ソートと同一の合成（曲がった背景を焼き込む）。RT 版は TLAS 屈折レイ、SS 版は grab-pass。
-    let base   = glass_composite(c, a, in, front_facing);
-    o.premult  = base.premult;
-    o.a_eff    = base.a_eff;
     let tr     = clamp(u_material.transmission, 0.0, 1.0);
     let albedo = u_material.base_color_factor.rgb;
-    // T_frag = (1-a) + a*tr*albedo。物理透過率として [0,1] にクランプ（HDR albedo の増幅防止）。
+    // 色フィルタ（reveal に乗算累積）。屈折の有無に依らず常に同じ式。
     o.transmit = clamp(vec3<f32>(1.0 - a) + a * tr * albedo, vec3<f32>(0.0), vec3<f32>(1.0));
+
+    // 屈折関与判定は glass_composite と同一述語（ミラーが乖離しないよう同じ式）。
+    let material_refracts = u_material.ior > 1.0 + IOR_EPSILON || tr > 0.0;
+    let refract_on = (u_light_meta.translucency_rt & TRANSLUCENCY_RT_REFRACTION) != 0u && material_refracts;
+
+    if !refract_on {
+        // 屈折なし（素の Blend）: 曲がった背景は無い（直進 scene は合成の scene 項が担う）。
+        // 自色のみ premultiplied over（合成で avg=c に戻る）。glass_composite の !refract_on とビット一致。
+        o.premult = c * a;
+        o.a_eff   = a;
+        return o;
+    }
+
+    // 屈折オン: glass_composite と同じ屈折幾何で「生の曲がった背景」を取る（tint は掛けない）。
+    let surf = gather_surface(in, front_facing);
+    let bg   = refract_sample_bg(surf, in.clip_pos.xy, u_material.ior);
+    // 透過率=0 端点（glass_composite の rgb0 から tint を外したもの）: 自色 c*a + 生曲背景*(1-a)。
+    let raw0 = c * a + bg * (1.0 - a);
+    if tr <= 0.0 {
+        o.premult = raw0;
+        o.a_eff   = 1.0;
+        return o;
+    }
+    // 透過端点（rgb1 から tint を外す）: 自色 c + 生曲背景*(1-fr)。フレネルで反射／透過を配分。
+    let V   = normalize(u_camera.position - surf.world_pos);
+    let ndv = max(dot(normalize(surf.normal), V), 0.0);
+    let fr  = glass_fresnel(ndv, glass_f0_from_ior(u_material.ior));
+    let raw1 = c + bg * (1.0 - fr);
+    o.premult = mix(raw0, raw1, tr);
+    o.a_eff   = 1.0;
     return o;
 }

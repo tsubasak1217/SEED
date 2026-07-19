@@ -1,5 +1,5 @@
-# post_wboit_composite_bg.toml — WBOIT 合成 パス1: 背景濾過（色付き透過率）
-# reveal.rgb = Π T_frag を読み、シーン HDR（dst）へ per-channel 乗算する（final = scene * T_rgb）。
+# post_wboit_composite_bg.toml — WBOIT 合成 パス1: 背景の曲げ＋濾過（曲げと色フィルタの分離）
+# reveal.a*reveal.rgb = (1-C)*ΠT を読み、シーン HDR（dst）へ per-channel 乗算する（dst = scene*(1-C)*ΠT）。
 # blend=WboitBgMultiply（color: src=Zero/dst=Src, alpha: src=Zero/dst=One）＝dst.rgb*=src.rgb, dst.a 保持。
 # 出力は HDR（color_format="surface" が hdr_format=Rgba16Float へ解決）。LoadOp::Load は composite_wboit が行う。
 # 同一シェーダに自色加算パス（composite_self_fs）も同居し、両者は同じ accum/reveal BGL を共有する。
