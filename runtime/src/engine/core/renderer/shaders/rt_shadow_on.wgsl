@@ -242,6 +242,115 @@ fn rt_trace_occlusion(o: vec3<f32>, dir: vec3<f32>, tmax: f32) -> f32 {
     return 1.0;
 }
 
+// ─── 拡散透過の厚み減衰（Beer-Lambert）＋遮蔽 ──────────────────
+//
+// 拡散透過（逆光透け, lighting_eval.wgsl の逆光項）は薄物（葉・布）向けに「影・幾何ゲート
+// 非適用」で実装したが、厚い不透明物体（石のルーク等）に付けると (1) 厚み減衰が無く前面全体が
+// 一様に発光して「薄い紙の塔」に見え、(2) 自身の厚い胴で自己遮蔽されている部分まで明るくなる。
+// これを是正するため、シェーディング点→光源方向へ 1 本レイを飛ばし、不透明ジオメトリの内部を
+// 通過した積算距離に Beer-Lambert 則 exp(-σ·thickness) を掛ける係数を供給する（下記関数）。
+// 別の不透明遮蔽物も内部区間として厚みに積まれるため、遮蔽部が明るくならない（(2) の解消）。
+
+/// 拡散透過の厚み減衰（Beer-Lambert）の吸収係数 σ [1/ワールド単位]。
+/// exp(-σ·thickness) を逆光透け項へ掛ける。thickness は光源レイが不透明内部を通過した積算距離。
+///
+/// 【σ の決め方（このシーンのスケール感）】ワールド単位はメートル（Sponza 基準・同シーン内に配置）。
+///   RenderTest.scene のチェスセット（ABeautifulGame を約 3 倍スケールで配置）の駒は厚み数 cm〜十数 cm。
+///   σ=12 のとき:  2cm→exp(-0.24)=0.79（ほぼ非減衰） / 8cm→exp(-0.96)=0.38 /
+///                 30cm→exp(-3.6)=0.027（ほぼ 0）。
+///   ⇒「数 cm はほぼ非減衰・30cm 超でほぼ 0」のオーダーに収まる。薄い葉・布（厚み <1cm・片面）は
+///     ほぼ 1.0＝従来どおり透け、厚いルークは中心ほど暗い厚み勾配が付いて一様発光にならない。
+/// 【将来のマテリアルパラメータ化余地】KHR_materials_volume の attenuationDistance 相当を持たせるなら
+///   σ = 1/attenuationDistance をマテリアルから供給する。現状は全マテリアル共通の名前付き定数。
+const DT_THICKNESS_SIGMA: f32 = 12.0;
+
+/// 内部通過距離を積算する front→back ペアの最大数（コスト有界・マジックナンバー禁止）。
+/// 凸物体なら 1 ペアで足りるが、王冠状のルーク上部など複数の中実区間を跨ぐ形状のため 4 ペアまで積む。
+/// これを超える区間は無視する（既に十分厚く exp(-σ·t)≈0 に達しており打ち切っても見た目に影響しない）。
+const DT_MAX_INTERIOR_PAIRS: u32 = 4u;
+
+/// 厚み積算トレースの静的ループ上限（= 2×ペア数。1 ペアあたり front と back で最大 2 ヒット）。
+/// 片面ジオメトリや順序の乱れで未ペアのヒットが混じっても、1px あたりのレイ本数がこの定数を
+/// 超えないことを保証する（最悪コストが静的に決まる）。
+const DT_TRACE_MAX_HITS: u32 = 8u;
+
+/// レイ原点を -L 方向（光源と反対＝逆光側）へ後退させる微小量 [ワールド単位]。
+/// シェーディング点 P は透過物体の**逆光面**の上にある。P からそのまま +L へ飛ばすと自分の入射面
+/// （近面）が t≈0 に落ちて tmin で切り捨てられ、最初のヒットが**出射面（back）**になってペアが崩れる
+/// （＝厚み 0 と誤判定して前面が発光する＝直そうとしている症状そのもの）。原点を -L 側へ僅かに
+/// 後退させると近面が t≈backoff の front ヒットとして確実に拾え、front→back ペアが成立する。
+/// 逆光透けは back=-dot(N,L) が大きい（＝-L が N とよく揃う）ほど強く効くので、-L 後退はまさに効きが
+/// 強い所ほど良く近面をクリアする（自己整合）。厚みは exit_t-enter_t で相殺され backoff 自体は積算厚みに
+/// 含まれない（原点固定・両 t は同一原点基準）。値 0.02 は影の RT_SHADOW_NORMAL_BIAS と同オーダー。
+const DT_ORIGIN_BACKOFF: f32 = 0.02;
+
+/// 同一面の再ヒット回避のため、次レイの tmin を「直前ヒット t＋この量」へ進める微小オフセット。
+/// RT_SHADOW_TMIN と同オーダー。ヒット面の厚みより十分小さく、次の界面を取りこぼさない。
+const DT_TRACE_T_STEP: f32 = 0.002;
+
+/// 拡散透過（逆光透け）の厚み減衰係数を返す（1.0=非減衰＝従来動作 / 0..1=厚みで減衰）。
+/// シェーディング点 P から光源方向 L へ 1 本のレイを進め、不透明ジオメトリ（0x01）の内部を通過した
+/// 積算距離に Beer-Lambert 則 exp(-σ·thickness) を適用する。lighting_eval.wgsl の逆光項へ乗じる。
+/// - 不透明ヒットを front（入射）→ back（出射）でペア化し、(back_t - front_t) を厚みへ加算する。
+/// - 片面ジオメトリ（葉・布）は back が続かない＝厚み 0＝減衰なし（薄物は従来どおり透ける／正しい）。
+/// - 半透明（0x02）は cull_mask で除外＝素通し（色付き影と役割が被るため。ファイル上部の規約）。
+/// - 別の不透明遮蔽物も内部区間として厚みに積算＝遮蔽部が明るくならない（ユーザー報告②の解消）。
+///
+/// 引数:
+///   p    : シェーディング点のワールド座標（逆光面上）。
+///   l    : 面→光源方向（正規化済み）。
+///   tmax : レイ最大距離（directional=大定数 RT_DIR_TMAX / 局所光=光源距離。既存影レイと同流儀）。
+fn rt_diffuse_transmission_factor(p: vec3<f32>, l: vec3<f32>, tmax: f32) -> f32 {
+    // 原点を逆光側（-L）へ微小後退（近面を front ヒットとして確実に拾うため。定数コメント参照）。
+    let o = p - l * DT_ORIGIN_BACKOFF;
+
+    var thickness = 0.0;    // 不透明内部の積算通過距離（ワールド単位）
+    var enter_t   = -1.0;   // 直近の未ペア front ヒットの t（-1=保留なし）
+    var pairs     = 0u;     // 成立した front→back ペア数
+    var tmin      = RT_SHADOW_TMIN;
+
+    // ループ上限は必ず定数 DT_TRACE_MAX_HITS で縛る（未ペアのヒットが続いても静的上限を超えない）。
+    for (var i: u32 = 0u; i < DT_TRACE_MAX_HITS; i = i + 1u) {
+        var desc: RayDesc;
+        desc.flags     = RAY_FLAG_NONE;       // 最近ヒットを取り、次反復で tmin を先へ進める（TERMINATE なし）。
+        desc.cull_mask = RT_SHADOW_CULL_MASK; // 不透明のみ（半透明 0x02 は素通し）。
+        desc.tmin      = tmin;
+        desc.tmax      = max(tmax, RT_SHADOW_TMIN);
+        desc.origin    = o;
+        desc.dir       = l;
+
+        var rq: ray_query;
+        rayQueryInitialize(&rq, rt_accel, desc);
+        rayQueryProceed(&rq);
+        let hit = rayQueryGetCommittedIntersection(&rq);
+        if hit.kind == RAY_QUERY_INTERSECTION_NONE {
+            break; // これ以上の不透明ヒットは無い。
+        }
+
+        if hit.front_face {
+            // 入射面（中実へ入る）。直前の未ペア front は上書きする（連続 front の保険）。
+            enter_t = hit.t;
+        } else {
+            // 出射面（中実から出る）。直前に front があればペア成立＝その区間長を厚みへ加算。
+            if enter_t >= 0.0 {
+                thickness += max(hit.t - enter_t, 0.0);
+                enter_t = -1.0;
+                pairs = pairs + 1u;
+                if pairs >= DT_MAX_INTERIOR_PAIRS {
+                    break; // 十分厚い（exp(-σ·t)≈0）。以降は打ち切ってコストを有界に保つ。
+                }
+            }
+            // front を伴わない back（片面ジオメトリの裏／原点が中実内から始まった等）は無視する。
+        }
+
+        // 次のレイ: tmin を直前ヒットの少し先へ進める（同一面の再ヒット回避）。
+        tmin = hit.t + DT_TRACE_T_STEP;
+    }
+
+    // Beer-Lambert。厚み 0（薄物・非交差）なら exp(0)=1.0＝従来動作へ縮退する。
+    return exp(-DT_THICKNESS_SIGMA * thickness);
+}
+
 // ── 半透明レイヤーの透過色 rt_trace_translucent_tint は【別ファイル（tint バリアント）】が供給する ──
 //
 // 色付き影（B3）で「平均アルベド」経路と「バインドレス＝ヒット点テクスチャ実サンプル＋Mask アルファ抜き」

@@ -357,9 +357,23 @@ fn evaluate_lighting(s: Surface) -> vec3<f32> {
         //           （手前の枝の影が葉の透けに落ちない）。厳密には「自身の面だけをレイ除外した
         //           薄物専用シャドウ」等が要るが、本実装では割り切る（将来の拡張余地）。
         // ★ スポットの円錐減衰・距離減衰は掛ける（radiance_direct に既に含まれている）。
+        //
+        // ★ 厚み減衰（Beer-Lambert）＋遮蔽（Phase RT-DiffTrans-Thickness）。
+        //    薄物向けの上記近似は、厚い不透明物体（石のルーク等）に付けると (1) 厚み減衰が無く
+        //    前面全体が一様発光して「薄い紙の塔」に見え、(2) 自身の厚い胴で自己遮蔽された部分まで
+        //    明るくなる。そこで RT 有効時は、シェーディング点→光源方向へ 1 本レイを飛ばして不透明
+        //    内部の通過厚みを測り、exp(-σ·thickness) を逆光項へ乗じる（rt_diffuse_transmission_factor）。
+        //    別の不透明遮蔽物も内部区間として厚みに積まれるため遮蔽部が明るくならない（(2) の解消）。
+        //    片面の薄物（葉・布）は front→back ペアが成立せず厚み 0＝係数 1.0 で従来どおり透ける。
+        //    RT 無効（rt_shadow_off／実行時 rt_shadows=0）は係数 1.0＝この拡張前の挙動に一致する。
+        //    tmax は既存影レイと同流儀（light_dist=geo.dist: directional=RT_DIR_TMAX / 局所=光源距離）。
         if s.diffuse_transmission > 0.0 {
             let back = saturate(-dot(N, L));
-            Lo += radiance_direct * back * s.diffuse_transmission * albedo / PI;
+            var dt_atten = 1.0;
+            if rt_shadow_enabled() {
+                dt_atten = rt_diffuse_transmission_factor(s.world_pos, L, light_dist);
+            }
+            Lo += radiance_direct * back * s.diffuse_transmission * albedo / PI * dt_atten;
         }
 
         // ── 疑似バウンス（間接光近似・Phase 間接光）──────────────
