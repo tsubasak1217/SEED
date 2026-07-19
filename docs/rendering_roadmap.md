@@ -189,29 +189,30 @@
   同手法）で 1 件ずつ直接描画（透明は少数前提でドローコール増を許容する設計判断）。
   メインパス内・不透明直後に描画。BGL 構造同一性により既存の
   camera/model/material/joint/lights BindGroup をそのまま流用。
-- WBOIT 方式（**色付き透過率 / per-channel transmittance**）: accum=Rgba16Float
-  （One/One 加算, クリア0, self色×a_eff×w を積む）＋ reveal=**Rgba16Float**
-  （(Dst, Zero)＝dst*=src の乗算累積, クリア1）の 2RT（RtPool `wboit_accum`/`wboit_reveal`）。
-  デュアル MRT パイプラインは TOML ビルダー非対応のため手動構築（ソート用ビルドの
-  リフレクション BGL を再利用、グループ数 5 維持）。深度はメインパス深度を Load・
-  書込なしで不透明に隠される。
+- WBOIT 方式（**色付き透過率＋屈折歪み / 凸結合ハイブリッド**）: accum=Rgba16Float
+  （One/One 加算, クリア0, premult×w を積む＝屈折歪みを焼き込んだ色）＋ reveal=**Rgba16Float**
+  （(Dst, Zero)＝dst*=src の乗算累積, クリア1, Π T_frag を rgb・Π(1-a) を a）の 2RT
+  （RtPool `wboit_accum`/`wboit_reveal`）。デュアル MRT パイプラインは TOML ビルダー非対応のため
+  手動構築（ソート用ビルドのリフレクション BGL を再利用、グループ数 5 維持）。深度はメインパス
+  深度を Load・書込なしで不透明に隠される。
   - **色付き透過率の狙い**: 同色の半透明が N 枚重なると足し算的に明るくなる問題（赤カーテンの
     シワ）を解消する。背景の透過はチャンネルごとの乗算 Π T_i であり、**乗算は可換＝順序不問**
     なので WBOIT の枠組みにそのまま乗る。各フラグメントは per-channel 透過率
     `T_frag = clamp((1-a) + a·tr·albedo, 0, 1)`（色付き影・refract_layer_tint と同セマンティクス）を
-    reveal.rgb へ乗算累積し、スカラー Π(1-a) を reveal.a に残す（予備）。純赤フィルタ T=(1,0,0) は
-    T^N=T で飽和し、何枚重ねても「1赤+1赤=1赤」。自色（ライティング/スペキュラ/エミッシブ）は
-    accum に別途蓄積（背景を含まない）。式は refract_common.wgsl の `glass_composite_wboit`。
-  - **合成は 2 パス**（固定機能ブレンドは 1 パスで「per-channel 乗算係数」と「加算の自色項」の
-    両方を出せず、本エンジンは dual-source ブレンド feature 未要求のため）:
-    パス1 背景濾過（blend=WboitBgMultiply, `scene *= Π T_frag`）→ パス2 自色加算
-    （blend=Additive, `final += avg·coverage`, `avg=accum.rgb/max(accum.a,ε)`,
-    `coverage=1-mean(T_rgb)`）。同一 HDR（LoadOp::Load, **ブルーム前＝トーンマップ前**）へ
-    順に描く。coverage に mean(T_rgb) を選ぶのは重なり N に対して飽和するため（1-max は純赤で
-    自色が消えるため不採用）。パス1 は reveal.rgb≈1、パス2 は accum.a≈0 のピクセルを discard。
-  - **屈折背景の扱い**: WBOIT では屈折の曲がった背景（grab-pass）は焼き込まない（順序独立を保つため
-    背景は合成の `scene×Π T_frag` に一本化）。＝WBOIT の制約として**曲がった屈折像は失われる**
-    （距離ソート方式は従来どおり grab-pass で曲がった背景を焼き込む＝**完全不変**）。
+    reveal.rgb へ乗算累積する。純赤フィルタ T=(1,0,0) は T^N=T で飽和し、何枚重ねても「1赤+1赤≈1赤」。
+  - **屈折歪みは保つ**（実機フィードバック反映）: 背景を落とすとガラスの存在感が消え平坦化したため、
+    フラグメントは距離ソートと同じ `glass_composite` で「曲がった背景×ガラス色 + 自色」を premult に
+    焼き込む（RT 版は TLAS 屈折レイ、SS 版は grab-pass）。式は refract_common.wgsl の `glass_composite_wboit`。
+  - **合成はチャンネルごとの凸結合（lerp）**: `final_c = scene_c·ΠT_c + avg_c·(1-ΠT_c)`
+    （`avg=accum.rgb/max(accum.a,ε)`）。**加算ではなく凸結合**にするのが要点で、エネルギーが
+    min/max(scene,avg) の範囲に収まるため、premult に背景を焼き込んでも重なりの二重計上で
+    明るくならない。N 枚で ΠT が下がり avg（曲がった背景の重み平均＝カーテン色）へ漸近するだけ。
+    素の Blend（tr=0）は `avg*(1-Π(1-a))+scene*Π(1-a)` で従来スカラー WBOIT と一致（パリティ）。
+  - **合成は 2 パス**（合成先シーン HDR は dst でありサンプル不可＝1 パス lerp 不可、dual-source feature も未要求）:
+    パス1 背景濾過（blend=WboitBgMultiply, `dst = scene·ΠT`）→ パス2 透明色混合
+    （blend=Additive, `dst += avg·(1-ΠT)`）。合計が凸結合と一致。同一 HDR（LoadOp::Load,
+    **ブルーム前＝トーンマップ前**）へ順に描く（パス1→パス2 順序必須）。パス1 は reveal.rgb≈1、
+    パス2 は accum.a≈0 のピクセルを discard。
   - メモリ: reveal が R16Float→Rgba16Float でピクセルあたり +6 バイト（surf 解像度ぶん）。
 - 切替: `PostFxSettings.transparency`（既定 DistanceSort）。IPC は `SET_POST_FX` に
   `"transparency":"sort"|"wboit"` を追加（欠落時 sort）。project_settings.json の
