@@ -218,7 +218,16 @@ fn refract_sample_bg(surf: Surface, frag_xy: vec2<f32>, ior: f32) -> vec3<f32> {
 
         // 入射面（front_face）でだけ界面色を乗せる（色付き影と同一規約＝二重計上防止）。
         // 裏面（出射面）は tint を掛けない（媒質 1 個につき透過色は入射面で 1 回だけ）。
-        if hit.front_face {
+        //
+        // 【i==0 の自己入射面は必ずスキップ（二重計上防止・本修正の主眼）】
+        // 原点を法線側へ押し出しているため i==0 のヒットは「シェーディング面自身の入射面」
+        // （＝自分のガラスへ入る面）である。この面の透過色（自分のガラス自身の base_color）は
+        // glass_composite 側で `bg * base_color_factor` として別途 1 回乗る（refract_common.wgsl
+        // line 161/172）。ここでも乗せると自分のガラス色が **二乗** され、色ガラス（例: シアン
+        // base_color=[0,1,0.9773], transmission=1）で背景がベタッと濃い色ベールになる（症状2）。
+        // よって i==0 の自己入射面は tint を掛けず、i>=1 の後続界面（自分の出射面＝back_face は
+        // 元々スキップ／2 枚目以降のガラスの入射面）だけ tint を累積する。
+        if hit.front_face && i > 0u {
             tint = tint * refract_layer_tint(ai);
         }
 

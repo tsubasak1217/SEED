@@ -194,6 +194,9 @@ pub struct RtShadowResources {
     last_tlas_sig: Option<u64>,
     /// 直近に TLAS へ登録したインスタンス数（[PERF] 表示用）。
     last_inst_count: u32,
+    /// 【診断】直近にログ出力した (0x02 総数<<16 | GEOM 数) のパック値。変化時のみ再ログ（ログ爆発防止）。
+    /// RT 屈折の界面再屈折可否（GEOM 付与率）の裏取り用（毎フレームではなく内容変化時のみ 1 行）。
+    last_geom_log: u32,
 
     /// TLAS インスタンス順（custom_data 順）のプリミティブ平均アルベド storage（Phase RT-GI）。
     /// DDGI のヒット点近似シェーディングで、ヒットした instance_custom_data で引く。
@@ -263,6 +266,7 @@ impl RtShadowResources {
             warned_usage: std::collections::HashSet::new(),
             last_tlas_sig: None,
             last_inst_count: 0,
+            last_geom_log: u32::MAX, // 初回は必ずログを出す（0 と衝突しない番兵）。
             albedo_buffer,
         }
     }
@@ -459,6 +463,11 @@ impl RtShadowResources {
 
         // ── 4. TLAS インスタンスを詰め直す（全 None → キャスター順に登録）──
         let mut inst_count: usize = 0;
+        // 【診断】RT 屈折の界面再屈折可否の裏取り。0x02（半透明）インスタンス総数と、そのうち
+        // 法線ジオメトリ登録済み（BINDLESS_FLAG_GEOM 付与＝界面で実屈折できる）数を数える。
+        // GEOM 付与率が低い＝法線メガバッファ枯渇等で glass が直進近似へ縮退している証跡になる。
+        let mut translucent_total: usize = 0;
+        let mut translucent_geom:  usize = 0;
         // 平均アルベド（Phase RT-GI）を TLAS インスタンスと同順（custom_data 順）で詰める。
         let mut albedos: Vec<[f32; 4]> = vec![[0.0f32; 4]; MAX_RT_INSTANCES as usize];
         // バインドレス（B2）: インスタンステーブルを同順で詰める（対応 GPU のみ確保）。
@@ -484,6 +493,8 @@ impl RtShadowResources {
                         // custom_data はインスタンス番号（GI が平均アルベドを引くキーでもある）。
                         // mask は alpha_mode 由来（不透明のみ影レイから見える）。
                         let mask = instance_mask_for(gpu.primitive_alpha_mode(material_idx));
+                        // 【診断】0x02（半透明）インスタンス総数を数える（GEOM 付与率の分母）。
+                        if mask == RT_MASK_NON_OPAQUE { translucent_total += 1; }
                         // 平均アルベド（Phase RT-GI）を同じ index に詰める（custom_data と一致）。
                         // .rgb=平均アルベド（GI/反射のバウンス色。ddgi_probe_update / reflection_rt は .rgb のみ参照）。
                         // .a =RT 色付き影専用。α（base_color_factor.a）と transmission を固定小数でパックして相乗り。
@@ -517,6 +528,8 @@ impl RtShadowResources {
                             // ジオメトリ（法線）登録済みなら GEOM を立てる（テクスチャ有無に依存しない）。
                             // RT 屈折の界面ごとの本物の再屈折はこのビットで法線復元可否を判定する。
                             if geom_registered { flags |= BINDLESS_FLAG_GEOM; }
+                            // 【診断】0x02 のうち GEOM 付与済み（界面で実屈折できる）数を数える。
+                            if mask == RT_MASK_NON_OPAQUE && geom_registered { translucent_geom += 1; }
                             records[inst_count] = BindlessInstanceRecord {
                                 avg_albedo:        alb, // 先頭 16B は既存 storage と同一（.a=パック済み）
                                 base_color_factor: gpu.primitive_base_color_factor(material_idx),
@@ -544,6 +557,20 @@ impl RtShadowResources {
                     "[SEED RT] 警告: RT 影キャスターのインスタンス数が上限 {} を超過しました。\
                      超過分は影を落としません（MAX_RT_INSTANCES を増やすか対象を減らしてください）",
                     MAX_RT_INSTANCES
+                );
+            }
+        }
+
+        // 【診断】0x02（半透明）インスタンス総数と GEOM 付与数を、値が変化したときだけ 1 行ログ。
+        // 毎フレームではなく TLAS 再構築フレームのうち内容が変わったときのみ（ログ爆発防止）。
+        // GEOM 付与率が低いと RT 屈折の界面再屈折が直進近似へ縮退している証跡になる（法線メガバッファ枯渇等）。
+        {
+            let packed = ((translucent_total as u32) << 16) | (translucent_geom as u32 & 0xffff);
+            if self.last_geom_log != packed {
+                self.last_geom_log = packed;
+                eprintln!(
+                    "[SEED BINDLESS] 0x02(半透明) TLAS インスタンス総数={} / うち GEOM 付き={}（RT屈折の界面再屈折可能数）",
+                    translucent_total, translucent_geom
                 );
             }
         }
