@@ -318,6 +318,10 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         // キャンバス編集タブ開始応答（EDIT_CANVAS_BEGIN → CANVAS_EDIT_WL）
         _runtimeManager.CanvasEditStarted             += OnCanvasEditStarted;
         _runtimeManager.FpsReceived                   += OnFpsReceived;
+        // 地形（terrain）編集: 初期化/保存/ブラシの結果をステータス表示へ反映する。
+        _runtimeManager.TerrainInitCompleted          += OnTerrainInitCompleted;
+        _runtimeManager.TerrainSaveCompleted          += OnTerrainSaveCompleted;
+        _runtimeManager.TerrainBrushResult            += OnTerrainBrushResult;
 
         PanelHierarchy.SetRuntime(_runtimeManager);
         PanelHierarchy.SetAssetsPath(AssetsPath);
@@ -427,6 +431,11 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         LocationChanged                     += (_, _) => UpdateFrozenFramePreviewRect();
 
         InstallKeyboardHook();
+        // 地形ブラシ入力用の低レベルマウスフック。常設だが terrain モード時のみ作用する
+        // （ビューポート上の左ドラッグを地形ブラシに転用し、選択/ギズモへ届く左クリックを飲み込む）。
+        InstallTerrainMouseHook();
+        // 地形ツールバー UI（スライダー表示ラベル等）の初期同期。
+        InitTerrainUi();
 
         // デバッグ操作のショートカット（F5/F10/F11）。停止中のみ機能する。
         // PreviewKeyDown（トンネル）でエディタより先に捕捉する。
@@ -749,6 +758,7 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         SaveLayout();
         ReleasePlayClamp();
         UninstallKeyboardHook();
+        UninstallTerrainMouseHook();
         ReleaseAllCamKeys();
         if (_viewportHost != null) RevokeDragDrop(_viewportHost.ContainerHwnd);
         _vpDragOverlay?.Close();

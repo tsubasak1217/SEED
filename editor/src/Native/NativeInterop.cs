@@ -19,6 +19,9 @@ internal static class NativeInterop
     /// <summary>低レベルキーボードフックのコールバック型。</summary>
     public delegate nint LowLevelKeyboardProc(int nCode, nint wParam, nint lParam);
 
+    /// <summary>低レベルマウスフックのコールバック型（シグネチャはキーボードと同一）。</summary>
+    public delegate nint LowLevelMouseProc(int nCode, nint wParam, nint lParam);
+
     // ── 構造体 ────────────────────────────────────────────────
 
     /// <summary>低レベルキーボードフックの情報構造体。</summary>
@@ -27,6 +30,17 @@ internal static class NativeInterop
     {
         public uint  vkCode;
         public uint  scanCode;
+        public uint  flags;
+        public uint  time;
+        public nint  dwExtraInfo;
+    }
+
+    /// <summary>低レベルマウスフックの情報構造体（WH_MOUSE_LL）。pt は画面物理座標。</summary>
+    [StructLayout(LayoutKind.Sequential)]
+    public struct MSLLHOOKSTRUCT
+    {
+        public POINT pt;
+        public uint  mouseData;
         public uint  flags;
         public uint  time;
         public nint  dwExtraInfo;
@@ -59,12 +73,19 @@ internal static class NativeInterop
     // フックタイプ
     /// <summary>低レベルキーボードフックの識別子。</summary>
     public const int WH_KEYBOARD_LL = 13;
+    /// <summary>低レベルマウスフックの識別子。</summary>
+    public const int WH_MOUSE_LL    = 14;
 
     // ウィンドウメッセージ
     public const int WM_KEYDOWN     = 0x0100;
     public const int WM_KEYUP       = 0x0101;
     public const int WM_SYSKEYDOWN  = 0x0104;
     public const int WM_SYSKEYUP    = 0x0105;
+
+    // マウスメッセージ（WH_MOUSE_LL の wParam に入る）
+    public const int WM_MOUSEMOVE   = 0x0200;
+    public const int WM_LBUTTONDOWN = 0x0201;
+    public const int WM_LBUTTONUP   = 0x0202;
     public const int WM_SYSCOMMAND  = 0x0112;
     public const int WM_EXITSIZEMOVE = 0x0232;
 
@@ -85,6 +106,10 @@ internal static class NativeInterop
 
     /// <summary>低レベルキーボードフックをインストールする。</summary>
     [DllImport("user32.dll")] public static extern nint SetWindowsHookEx(int idHook, LowLevelKeyboardProc lpfn, nint hMod, uint dwThreadId);
+
+    /// <summary>低レベルマウスフックをインストールする（コールバック型違いのオーバーロード）。</summary>
+    [DllImport("user32.dll", EntryPoint = "SetWindowsHookEx")]
+    public static extern nint SetWindowsHookExMouse(int idHook, LowLevelMouseProc lpfn, nint hMod, uint dwThreadId);
 
     /// <summary>インストール済みフックを削除する。</summary>
     [DllImport("user32.dll")] public static extern bool UnhookWindowsHookEx(nint hhk);
