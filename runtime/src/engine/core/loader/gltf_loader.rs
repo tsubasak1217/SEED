@@ -289,6 +289,9 @@ fn load_materials(document: &gltf::Document) -> Vec<Material> {
             avg_albedo:       [1.0, 1.0, 1.0, 1.0],
             // テクスチャ平均（factor 抜き）も既定（白）。同じく compute_material_avg_albedo が焼き直す。
             base_color_tex_avg: [1.0, 1.0, 1.0],
+            // 地形レイヤブレンド（Terrain T2）。glTF/OBJ 由来のマテリアルは常に false
+            // （true を立てるのは地形メッシュを組む terrain_mesh_build.rs だけ）。
+            terrain_layers: false,
         }
     }).collect()
 }

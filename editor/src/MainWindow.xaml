@@ -1199,6 +1199,32 @@
                                                              ToolTip="平坦化（ブラシ中心の高さへそろえる）"
                                                              Content="平坦化"
                                                              Checked="OnTerrainToolChanged"/>
+                                                <!-- レイヤペイント（Terrain T2）。密度は変えずレイヤ重みだけを塗る。 -->
+                                                <RadioButton x:Name="BtnTerrainPaint"
+                                                             GroupName="TerrainTools"
+                                                             Style="{StaticResource TerrainToolBtnStyle}"
+                                                             ToolTip="ペイント（地形マテリアルレイヤを手で塗る。形状は変えない）"
+                                                             Content="ペイント"
+                                                             Checked="OnTerrainToolChanged"/>
+
+                                                <!-- レイヤ選択（ペイントツール選択時のみ表示）。
+                                                     項目は assets/terrain/layers.json の並びに対応する。 -->
+                                                <StackPanel x:Name="TerrainLayerPanel"
+                                                            Orientation="Horizontal" VerticalAlignment="Center"
+                                                            Visibility="Collapsed">
+                                                    <Border Width="1" Background="#3A3A3A" Margin="8,2"/>
+                                                    <TextBlock Text="レイヤ" Foreground="#AAAAAA" FontSize="11"
+                                                               VerticalAlignment="Center" Margin="0,0,4,0"/>
+                                                    <ComboBox x:Name="CmbTerrainLayer"
+                                                              Width="90" VerticalAlignment="Center"
+                                                              FontSize="11" SelectedIndex="0"
+                                                              ToolTip="塗る対象の地形レイヤ（layers.json の並び順）">
+                                                        <ComboBoxItem Content="0: grass"/>
+                                                        <ComboBoxItem Content="1: dirt"/>
+                                                        <ComboBoxItem Content="2: rock"/>
+                                                        <ComboBoxItem Content="3: sand"/>
+                                                    </ComboBox>
+                                                </StackPanel>
 
                                                 <Border Width="1" Background="#3A3A3A" Margin="8,2"/>
 

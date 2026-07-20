@@ -14,9 +14,15 @@ pub mod marching_cubes;
 pub mod brush;
 pub mod tvox;
 pub mod heightmap;
+pub mod layers;
+pub mod paint;
 
 #[cfg(test)]
 mod tests;
+
+/// レイヤブレンド（T2）専用のユニットテスト（役割単位でファイル分割）。
+#[cfg(test)]
+mod tests_layers;
 
 pub use settings::TerrainSettings;
 pub use chunk_coord::ChunkCoord;
@@ -25,3 +31,8 @@ pub use marching_cubes::{generate, generate_standalone, TerrainMesh};
 pub use brush::{apply, chunks_in_brush_aabb, BrushOp, SampleField, SphereBrush};
 pub use tvox::{read_chunk, write_chunk, TvoxError, TVOX_MAGIC, TVOX_VERSION};
 pub use heightmap::HeightmapField;
+pub use layers::{
+    blend_rule_and_paint, LayerRule, LayerWeights, TerrainLayer, TerrainLayerSet,
+    TERRAIN_LAYER_COUNT,
+};
+pub use paint::{apply_paint, PaintField};

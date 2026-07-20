@@ -242,6 +242,10 @@ impl App {
                         .unwrap_or(crate::engine::terrain::BrushOp::Add);
                     self.handle_terrain_brush(brush_op, screen_x, screen_y, radius, strength);
                 }
+                IpcCommand::TerrainPaint { layer, screen_x, screen_y, radius, strength } => {
+                    // 地形レイヤペイント（密度は変えずスプラット重みだけを押し上げる）。
+                    self.handle_terrain_paint(layer as usize, screen_x, screen_y, radius, strength);
+                }
                 IpcCommand::TerrainSave => {
                     // ボクセル地形の全チャンクを .tvox として保存する。
                     self.handle_terrain_save();

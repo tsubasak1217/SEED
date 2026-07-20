@@ -129,6 +129,8 @@ pub(crate) fn get_shader_source(name: &str) -> &'static str {
         "skybox.wgsl"                => include_str!("shaders/skybox.wgsl"),
         // G-Buffer 書き込み（Phase D3: Deferred 化 Phase A）。
         "gbuffer_write.wgsl"         => include_str!("shaders/gbuffer_write.wgsl"),
+        // 地形レイヤブレンド G-Buffer 書き込み（Terrain T2・terrain_gbuffer.rs が連結する）。
+        "terrain_gbuffer_write.wgsl" => include_str!("shaders/terrain_gbuffer_write.wgsl"),
         // デファードのフルスクリーン・ライティング復元（Phase D3: Deferred 化 Phase A）。
         "deferred_lighting.wgsl"     => include_str!("shaders/deferred_lighting.wgsl"),
         // 反射（SSR / RT）フルスクリーンパス＋合成（Phase D6）。

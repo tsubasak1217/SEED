@@ -303,6 +303,19 @@ pub struct Material {
     /// 旧キャッシュ互換のため #[serde(default)]（既定は白＝テクスチャ無し相当）。
     #[serde(default = "default_base_color_tex_avg")]
     pub base_color_tex_avg: [f32; 3],
+
+    // ─── 地形レイヤブレンド（Terrain T2）─────────────────────
+    /// このマテリアルを「地形スプラットレイヤ」として描画するフラグ（既定 false）。
+    ///
+    /// true のとき、G-Buffer ジオメトリパスは通常の単一マテリアルシェーダではなく
+    /// 地形専用パイプライン（terrain_gbuffer.rs / terrain_gbuffer_write.wgsl）を選び、
+    /// 頂点カラー（= レイヤ重み 4 成分）と group3 のレイヤ定義から triplanar で
+    /// base_color / roughness / metallic を合成して G-Buffer へ焼く。
+    /// 地形メッシュ以外がこのフラグを立てることは想定していない
+    /// （terrain_mesh_build.rs だけが true を設定する）。
+    /// 旧データ互換のため #[serde(default)]（bool の既定は false＝従来動作）。
+    #[serde(default)]
+    pub terrain_layers: bool,
 }
 
 /// avg_albedo の serde 既定（白）。旧キャッシュ/JSON にキーが無い場合のフォールバック。
@@ -343,6 +356,7 @@ impl Default for Material {
             cull_face:                  CullFace::Back,
             avg_albedo:                 [1.0, 1.0, 1.0, 1.0],
             base_color_tex_avg:         [1.0, 1.0, 1.0],
+            terrain_layers:             false,
         }
     }
 }

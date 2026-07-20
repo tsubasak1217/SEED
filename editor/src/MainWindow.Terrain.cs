@@ -45,6 +45,13 @@ public partial class MainWindow
     private const int TerrainOpSmooth  = 2; // Smooth  = 均す
     private const int TerrainOpFlatten = 3; // Flatten = 平坦化
 
+    /// <summary>
+    /// ペイントツールを表す擬似 op 値（Terrain T2）。
+    /// ランタイムの BrushOp には存在せず、この値のときだけ TERRAIN_BRUSH ではなく
+    /// TERRAIN_PAINT を送る（密度編集とレイヤペイントで IPC コマンドが別のため）。
+    /// </summary>
+    private const int TerrainOpPaint = 100;
+
     /// <summary>Ctrl+ホイール 1 ノッチあたりのブラシ半径倍率変化量（乗算式。0.10=±10%）。</summary>
     private const double TerrainRadiusWheelFactor = 0.10;
 
@@ -266,6 +273,16 @@ public partial class MainWindow
         double radius   = SldTerrainRadius?.Value   ?? 3.0;
         double strength = SldTerrainStrength?.Value ?? 0.5;
         var ci = CultureInfo.InvariantCulture;
+
+        // ペイントツールはレイヤ重みだけを編集する別コマンド（TERRAIN_PAINT）へ振り分ける。
+        // 半径/強度スライダーとストローク（undo 単位）の扱いは密度ブラシと共通。
+        if (_terrainOp == TerrainOpPaint)
+        {
+            _runtimeManager.SendToRuntime(
+                $"TERRAIN_PAINT:{GetSelectedTerrainLayer()},{lx},{ly},{radius.ToString(ci)},{strength.ToString(ci)}");
+            return;
+        }
+
         _runtimeManager.SendToRuntime(
             $"TERRAIN_BRUSH:{_terrainOp},{lx},{ly},{radius.ToString(ci)},{strength.ToString(ci)}");
     }
@@ -375,6 +392,25 @@ public partial class MainWindow
         else if (BtnTerrainCarve?.IsChecked == true)   _terrainOp = TerrainOpCarve;
         else if (BtnTerrainSmooth?.IsChecked == true)  _terrainOp = TerrainOpSmooth;
         else if (BtnTerrainFlatten?.IsChecked == true) _terrainOp = TerrainOpFlatten;
+        else if (BtnTerrainPaint?.IsChecked == true)   _terrainOp = TerrainOpPaint;
+
+        // レイヤ選択 UI はペイントツールのときだけ意味を持つため、それ以外では隠す
+        // （選択に無関係なパラメータは出さない、というインスペクタ方針に合わせる）。
+        if (TerrainLayerPanel != null)
+        {
+            TerrainLayerPanel.Visibility =
+                _terrainOp == TerrainOpPaint ? Visibility.Visible : Visibility.Collapsed;
+        }
+    }
+
+    /// <summary>
+    /// ツールバーのレイヤ選択コンボから、塗る対象レイヤ番号（0 起点）を返す。
+    /// 未選択・UI 未生成のときは 0（先頭レイヤ）にフォールバックする。
+    /// </summary>
+    private int GetSelectedTerrainLayer()
+    {
+        int idx = CmbTerrainLayer?.SelectedIndex ?? 0;
+        return idx < 0 ? 0 : idx;
     }
 
     /// <summary>「地形を初期化」ボタン: TERRAIN_INIT を送る（再初期化は確認する）。</summary>

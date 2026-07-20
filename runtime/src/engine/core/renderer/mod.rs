@@ -32,6 +32,8 @@ pub mod postfx;
 pub(crate) mod view_mode;
 /// G-Buffer リソース＋MRT ジオメトリパイプライン（Phase D3 Deferred Phase A）
 pub(crate) mod gbuffer;
+/// 地形レイヤブレンド用 G-Buffer パイプライン（Terrain T2）。
+pub(crate) mod terrain_gbuffer;
 /// フルスクリーン・ライティングパイプライン（G-Buffer 復元, Phase D3 Deferred Phase A）
 pub(crate) mod deferred;
 /// 反射（SSR / RT）フルスクリーンパス＋合成（Phase D6）
