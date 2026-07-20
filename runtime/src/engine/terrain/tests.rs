@@ -22,6 +22,10 @@ use super::tvox::{read_chunk, write_chunk, TvoxError, TVOX_MAGIC};
 const SPHERE_CENTER: [f32; 3] = [8.0, 8.0, 8.0];
 /// 球 SDF テストの半径（チャンク内に完全に収まる）
 const SPHERE_RADIUS: f32 = 5.0;
+/// 巻き順判定で「縮退（面積ほぼ 0）」とみなす |cross(b-a, c-a)|² の閾値。
+/// MC の辺補間で 3 頂点がほぼ同一点へ潰れた三角形は向きが定義できず、
+/// ラスタライザでも面積 0 で描かれないため巻き順の検証対象から除く。
+const DEGENERATE_AREA_EPSILON: f32 = 1.0e-18;
 
 /// density = |p - center| - radius の符号付き距離場でチャンクを埋める。
 /// inside(<0)=solid, outside(>0)=air（規約に一致）。
@@ -133,7 +137,7 @@ fn sphere_winding_matches_engine_front_face_convention() {
     assert!(mesh.triangle_count() > 0, "mesh should be non-empty");
 
     let mut ok = 0usize;
-    let total = mesh.triangle_count();
+    let mut total = 0usize;
     for tri in mesh.indices.chunks_exact(3) {
         let pa = mesh.positions[tri[0] as usize];
         let pb = mesh.positions[tri[1] as usize];
@@ -148,6 +152,13 @@ fn sphere_winding_matches_engine_front_face_convention() {
             ab[0] * ac[1] - ab[1] * ac[0],
         ];
 
+        // 縮退（面積ほぼ 0）三角形は向きが定義できず描画もされないので除外する。
+        let glen2 = geo[0] * geo[0] + geo[1] * geo[1] + geo[2] * geo[2];
+        if glen2 < DEGENERATE_AREA_EPSILON {
+            continue;
+        }
+        total += 1;
+
         // ─── 三角形重心から見た球の外向き方向（＝正しい外向き法線） ───
         let cx = (pa[0] + pb[0] + pc[0]) / 3.0 - SPHERE_CENTER[0];
         let cy = (pa[1] + pb[1] + pc[1]) / 3.0 - SPHERE_CENTER[1];
@@ -159,11 +170,331 @@ fn sphere_winding_matches_engine_front_face_convention() {
         }
     }
 
-    // 縮退三角形（外積ほぼ 0）が僅かに混じり得るため 98% を閾値とする。
+    assert!(total > 0, "non-degenerate triangles should exist");
+    // 縮退を除いた三角形は 1 枚残らず規約を満たすこと（100%）。
+    assert_eq!(
+        ok, total,
+        "{}/{total} triangles violate the engine front-face winding convention",
+        total - ok
+    );
+}
+
+/// 空洞（洞窟）SDF でチャンクを埋める。
+/// density = radius - |p - center| ⇒ 球の内側は density>0 = **air**、外側は density<0 = **solid**。
+/// つまり「固体の中にくり抜かれた球状の空洞」であり、掘削で生じる内壁と同じ形状。
+fn make_cavity_chunk(settings: &TerrainSettings) -> TerrainChunkData {
+    let mut chunk = TerrainChunkData::new_filled(settings, 0.0);
+    let s = settings.samples_per_axis();
+    let voxel = settings.voxel_size;
+    for iz in 0..s {
+        for iy in 0..s {
+            for ix in 0..s {
+                let p = [ix as f32 * voxel, iy as f32 * voxel, iz as f32 * voxel];
+                let dx = p[0] - SPHERE_CENTER[0];
+                let dy = p[1] - SPHERE_CENTER[1];
+                let dz = p[2] - SPHERE_CENTER[2];
+                let dist = (dx * dx + dy * dy + dz * dz).sqrt();
+                // 固体球の符号を反転＝空洞。
+                chunk.set_sample(ix, iy, iz, SPHERE_RADIUS - dist);
+            }
+        }
+    }
+    chunk
+}
+
+/// テスト2c：**空洞（洞窟内壁）** でも巻き順がエンジン規約を満たすことを検証する。
+///
+/// 空洞では air が球の内側にあるため、密度勾配（＝air 方向）は球中心を向く。
+/// エンジン規約 `dot(cross(b-a, c-a), air 側法線) < 0` は固体球と同じ規則で
+/// 成り立たねばならない（＝洞窟内壁が表面として描かれる）。
+/// これが破れると `cull_face=Back` の地形では内壁が丸ごと消え、穴の中が真っ黒になる。
+///
+/// 【縮退三角形の除外】空洞側は固体球より縮退（面積ほぼ 0）三角形が多く出る
+/// （MC の辺補間で 3 頂点がほぼ同一点に潰れるケース）。外積が 0 の三角形は
+/// 向きが定義できず、描画上も面積 0 でラスタライズされないため判定から除く。
+/// 除いた残り（＝実際に描かれる三角形）は **例外なく** 規約を満たさねばならない。
+#[test]
+fn cavity_winding_matches_engine_front_face_convention() {
+    let settings = TerrainSettings::default();
+    let chunk = make_cavity_chunk(&settings);
+    let mesh = generate_standalone(&chunk, &settings);
+
+    assert!(mesh.triangle_count() > 0, "cavity mesh should be non-empty");
+
+    let mut ok = 0usize;
+    let mut total = 0usize;
+    for tri in mesh.indices.chunks_exact(3) {
+        let pa = mesh.positions[tri[0] as usize];
+        let pb = mesh.positions[tri[1] as usize];
+        let pc = mesh.positions[tri[2] as usize];
+
+        let ab = [pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]];
+        let ac = [pc[0] - pa[0], pc[1] - pa[1], pc[2] - pa[2]];
+        let geo = [
+            ab[1] * ac[2] - ab[2] * ac[1],
+            ab[2] * ac[0] - ab[0] * ac[2],
+            ab[0] * ac[1] - ab[1] * ac[0],
+        ];
+
+        // 縮退（面積ほぼ 0）三角形は向きが定義できず描画もされないので除外する。
+        let glen2 = geo[0] * geo[0] + geo[1] * geo[1] + geo[2] * geo[2];
+        if glen2 < DEGENERATE_AREA_EPSILON {
+            continue;
+        }
+        total += 1;
+
+        // 空洞の air 側方向 = 重心から球中心へ向かう向き（＝法線が向くべき向き）。
+        let ix = SPHERE_CENTER[0] - (pa[0] + pb[0] + pc[0]) / 3.0;
+        let iy = SPHERE_CENTER[1] - (pa[1] + pb[1] + pc[1]) / 3.0;
+        let iz = SPHERE_CENTER[2] - (pa[2] + pb[2] + pc[2]) / 3.0;
+
+        if geo[0] * ix + geo[1] * iy + geo[2] * iz < 0.0 {
+            ok += 1;
+        }
+    }
+
+    assert!(total > 0, "cavity: non-degenerate triangles should exist");
+    // 縮退を除いた三角形は 1 枚残らず規約を満たすこと（100%）。
+    assert_eq!(
+        ok, total,
+        "cavity: {}/{total} triangles violate the engine front-face winding convention",
+        total - ok
+    );
+}
+
+/// テスト2d：空洞の頂点法線が空洞内部（air 側＝球中心）を向くこと。
+#[test]
+fn cavity_normals_point_into_the_void() {
+    let settings = TerrainSettings::default();
+    let chunk = make_cavity_chunk(&settings);
+    let mesh = generate_standalone(&chunk, &settings);
+
+    let mut ok = 0usize;
+    let total = mesh.positions.len();
+    for (pos, nrm) in mesh.positions.iter().zip(mesh.normals.iter()) {
+        // 球中心へ向かう方向（＝空洞の内側＝air 側）。
+        let dir = [
+            SPHERE_CENTER[0] - pos[0],
+            SPHERE_CENTER[1] - pos[1],
+            SPHERE_CENTER[2] - pos[2],
+        ];
+        let len = (dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]).sqrt();
+        if len <= f32::EPSILON {
+            continue;
+        }
+        let d = (nrm[0] * dir[0] + nrm[1] * dir[1] + nrm[2] * dir[2]) / len;
+        if d > 0.0 {
+            ok += 1;
+        }
+    }
+
     let ratio = ok as f32 / total as f32;
     assert!(
         ratio >= 0.98,
-        "only {ok}/{total} ({:.1}%) triangles match the engine front-face winding convention",
+        "cavity: only {ok}/{total} ({:.1}%) normals point into the void",
+        ratio * 100.0
+    );
+}
+
+/// 掘削テストのブラシ半径（メートル）。チャンク中央に収まる大きさ。
+const DIG_BRUSH_RADIUS: f32 = 5.0;
+/// 掘削テストのブラシ強度×dt（地表を確実に貫くだけの量）。
+const DIG_BRUSH_STRENGTH: f32 = 8.0;
+/// 掘削テストのブラシ適用時間（秒）。
+const DIG_BRUSH_DT: f32 = 1.0;
+/// 法線の向きを密度場で検証するときのプローブ距離（サンプル間隔単位）。
+const NORMAL_PROBE_SAMPLES: f32 = 1.0;
+/// 「掘った穴の内壁」とみなす法線の水平成分の下限（平坦地表は 0）。
+const WALL_HORIZONTAL_MIN: f32 = 0.3;
+
+/// 掘削テスト用の単一チャンク場。地表をチャンク中央の高さに置く。
+///
+/// `from_ground_plane` は密度＝ワールド Y なので、チャンク (0,0,0) では地表が
+/// チャンク最下面（y=0）に来てしまい、セル内を surface が横切らず**メッシュが空**になる。
+/// 掘削の内壁を見たいので、ここでは地表がチャンク中央に来るよう密度をオフセットする。
+struct MidGroundField {
+    settings: TerrainSettings,
+    chunk:    TerrainChunkData,
+    /// 地表のワールド Y（＝チャンク中央高さ）。
+    ground_y: f32,
+}
+
+impl MidGroundField {
+    fn new(settings: TerrainSettings) -> Self {
+        let ground_y = settings.chunk_extent() * 0.5;
+        // density = world_y - ground_y ⇒ 地表より下（density<0）が solid。
+        let mut chunk = TerrainChunkData::new_filled(&settings, 0.0);
+        let s = settings.samples_per_axis();
+        let voxel = settings.voxel_size;
+        for iz in 0..s {
+            for iy in 0..s {
+                let d = iy as f32 * voxel - ground_y;
+                for ix in 0..s {
+                    chunk.set_sample(ix, iy, iz, d);
+                }
+            }
+        }
+        Self { settings, chunk, ground_y }
+    }
+
+    /// グローバルサンプル座標をチャンク内へクランプする。
+    fn clamped(&self, g: i32) -> usize {
+        let s = self.settings.samples_per_axis() as i32;
+        g.clamp(0, s - 1) as usize
+    }
+}
+
+impl SampleField for MidGroundField {
+    fn settings(&self) -> &TerrainSettings {
+        &self.settings
+    }
+
+    fn read_global(&self, gx: i32, gy: i32, gz: i32) -> f32 {
+        self.chunk.sample(self.clamped(gx), self.clamped(gy), self.clamped(gz))
+    }
+
+    fn write_global(&mut self, gx: i32, gy: i32, gz: i32, v: f32) {
+        // 範囲外は捨てる（クランプして書くと壁面が歪むため）。
+        let s = self.settings.samples_per_axis() as i32;
+        if (0..s).contains(&gx) && (0..s).contains(&gy) && (0..s).contains(&gz) {
+            self.chunk.set_sample(gx as usize, gy as usize, gz as usize, v);
+        }
+    }
+
+    fn world_of_global(&self, gx: i32, gy: i32, gz: i32) -> [f32; 3] {
+        let v = self.settings.voxel_size;
+        [gx as f32 * v, gy as f32 * v, gz as f32 * v]
+    }
+}
+
+/// テスト2e：**実際の掘削（Subtract ブラシ）で生じた穴の内壁** が
+/// 巻き順・法線ともエンジン規約を満たすことを検証する。
+///
+/// 空洞 SDF テスト（2c/2d）は解析的な球で理想的な密度場を与えるが、こちらは
+/// 「平坦地面 → ブラシ編集 → 再メッシュ」というエディタと同じ経路を通る。
+/// 掘った穴の内壁が `cull_face=Back` で消えない（＝穴の中が真っ黒にならない）ことの
+/// 直接的な回帰テストである。
+///
+/// 【法線の検証方法】穴の形は解析式で書けないので、密度場そのものを基準にする。
+/// 法線 n が air 側を向くなら、頂点から +n へ進んだ点の密度は -n へ進んだ点より
+/// 大きい（density 大 = air）。これを実測して確かめる。
+#[test]
+fn dug_hole_walls_match_winding_and_normal_convention() {
+    let settings = TerrainSettings::default();
+    let mut field = MidGroundField::new(settings.clone());
+
+    // ── 掘削前のメッシュ（平坦地表）が存在することを確かめる ──
+    let before = generate_standalone(&field.chunk, &settings);
+    assert!(before.triangle_count() > 0, "掘削前の地表メッシュが空（前提の崩れ）");
+
+    // ── 地表中央を掘る ──
+    let extent = settings.chunk_extent();
+    let brush = SphereBrush {
+        center:   [extent * 0.5, field.ground_y, extent * 0.5],
+        radius:   DIG_BRUSH_RADIUS,
+        strength: DIG_BRUSH_STRENGTH,
+    };
+    let touched = apply(&mut field, &brush, BrushOp::Subtract, DIG_BRUSH_DT);
+    assert!(!touched.is_empty(), "掘削がどのチャンクにも影響していない");
+
+    // ── 編集後を再メッシュする ──
+    let mesh = generate_standalone(&field.chunk, &settings);
+    assert!(mesh.triangle_count() > 0, "掘削後のメッシュが空");
+
+    // ── ① 巻き順：非縮退な三角形はすべてエンジン規約を満たすこと ──
+    //    基準の「air 側法線」は 3 頂点法線の平均（法線自体は②で独立に検証する）。
+    let mut win_ok = 0usize;
+    let mut win_total = 0usize;
+    for tri in mesh.indices.chunks_exact(3) {
+        let pa = mesh.positions[tri[0] as usize];
+        let pb = mesh.positions[tri[1] as usize];
+        let pc = mesh.positions[tri[2] as usize];
+        let ab = [pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]];
+        let ac = [pc[0] - pa[0], pc[1] - pa[1], pc[2] - pa[2]];
+        let geo = [
+            ab[1] * ac[2] - ab[2] * ac[1],
+            ab[2] * ac[0] - ab[0] * ac[2],
+            ab[0] * ac[1] - ab[1] * ac[0],
+        ];
+        if geo[0] * geo[0] + geo[1] * geo[1] + geo[2] * geo[2] < DEGENERATE_AREA_EPSILON {
+            continue;
+        }
+        win_total += 1;
+
+        let na = mesh.normals[tri[0] as usize];
+        let nb = mesh.normals[tri[1] as usize];
+        let nc = mesh.normals[tri[2] as usize];
+        let avg = [na[0] + nb[0] + nc[0], na[1] + nb[1] + nc[1], na[2] + nb[2] + nc[2]];
+
+        // 規約: 外積は air 側法線と「逆向き」。
+        if geo[0] * avg[0] + geo[1] * avg[1] + geo[2] * avg[2] < 0.0 {
+            win_ok += 1;
+        }
+    }
+    assert!(win_total > 0, "非縮退な三角形が無い");
+    assert_eq!(
+        win_ok, win_total,
+        "掘削後: {}/{win_total} 枚の三角形が front-face 規約に違反（穴の内壁が消える）",
+        win_total - win_ok
+    );
+
+    // ── ② 法線：密度場を直接プローブして air 側を向いていることを確かめる ──
+    //    穴の内壁（下向き成分を持つ法線）が実際に生成されていることも同時に確認し、
+    //    テストが平坦な地表だけを見て通ってしまうのを防ぐ。
+    let voxel = settings.voxel_size;
+    let s = settings.samples_per_axis() as i32;
+    let sample_clamped = |x: i32, y: i32, z: i32| -> f32 {
+        field.chunk.sample(
+            x.clamp(0, s - 1) as usize,
+            y.clamp(0, s - 1) as usize,
+            z.clamp(0, s - 1) as usize,
+        )
+    };
+
+    let mut n_ok = 0usize;
+    let mut n_total = 0usize;
+    let mut wall_vertices = 0usize;
+    for (pos, nrm) in mesh.positions.iter().zip(mesh.normals.iter()) {
+        // 穴の内壁＝法線が明確な水平成分を持つ頂点。
+        // 平坦な地表は n=(0,1,0) なので水平成分 0。掘って初めて傾いた壁面が生まれる。
+        let horiz = (nrm[0] * nrm[0] + nrm[2] * nrm[2]).sqrt();
+        if horiz > WALL_HORIZONTAL_MIN {
+            wall_vertices += 1;
+        }
+
+        // 頂点のサンプル座標。
+        let gp = [pos[0] / voxel, pos[1] / voxel, pos[2] / voxel];
+        let probe = |sign: f32| -> f32 {
+            let p = [
+                gp[0] + sign * nrm[0] * NORMAL_PROBE_SAMPLES,
+                gp[1] + sign * nrm[1] * NORMAL_PROBE_SAMPLES,
+                gp[2] + sign * nrm[2] * NORMAL_PROBE_SAMPLES,
+            ];
+            sample_clamped(p[0].round() as i32, p[1].round() as i32, p[2].round() as i32)
+        };
+        let d_air   = probe(1.0);   // +n 方向（air 側のはず＝密度大）
+        let d_solid = probe(-1.0);  // -n 方向（solid 側のはず＝密度小）
+
+        // 密度差が無い（クランプ域など）頂点は判定不能なので除外する。
+        if (d_air - d_solid).abs() <= f32::EPSILON {
+            continue;
+        }
+        n_total += 1;
+        if d_air > d_solid {
+            n_ok += 1;
+        }
+    }
+
+    assert!(
+        wall_vertices > 0,
+        "傾いた内壁頂点が生成されていない（掘削できていない＝テストが形骸化）"
+    );
+    assert!(n_total > 0, "法線の向きを判定できる頂点が無い");
+    // 離散サンプルへの丸めがあるため 98% を閾値とする。
+    let ratio = n_ok as f32 / n_total as f32;
+    assert!(
+        ratio >= 0.98,
+        "掘削後: {n_ok}/{n_total} ({:.1}%) の法線しか air 側を向いていない",
         ratio * 100.0
     );
 }
@@ -466,3 +797,4 @@ fn mc_regen_timing() {
         tri_total / iterations as usize,
     );
 }
+
