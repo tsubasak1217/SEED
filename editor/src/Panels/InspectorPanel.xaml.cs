@@ -574,7 +574,24 @@ public partial class InspectorPanel : UserControl
 
         // ── 基本情報 アコーディオン ────────────────────────────────────
         UIElement transformContent;
-        if (root.TryGetProperty("canvas_transform", out var ct))
+        // フォルダノード判定（最優先）。フォルダは整理専用でTransformを持たないため、
+        // ACTOR_COMPONENTS のルートに transform / canvas_transform フィールド自体が含まれない。
+        // 通常アクターの「トランスフォームデータなし」（旧JSON/異常系フォールバック）とは別物として
+        // 明示的にフォルダ用の説明文を出す。
+        var isFolder = root.TryGetProperty("is_folder", out var ifj) && ReadJsonBool(ifj, false);
+        if (isFolder)
+        {
+            // フォルダは 2D/3D どちらでもないため 2D アクター判定は false に固定する
+            _isActor2D = false;
+            transformContent = new TextBlock
+            {
+                Text       = "フォルダ（整理用ノード・Transform なし）",
+                Foreground = new SolidColorBrush(Color.FromRgb(0x66, 0x66, 0x66)),
+                FontSize   = 11,
+                Margin     = new Thickness(0, 4, 0, 4),
+            };
+        }
+        else if (root.TryGetProperty("canvas_transform", out var ct))
         {
             // 2D アクター: CanvasTransform（位置XY・回転・スケールXY・ピボットXY・アンカーXY）
             _isActor2D = true;

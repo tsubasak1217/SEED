@@ -243,9 +243,15 @@ impl App {
         let is_viewport_root_canvas = is_root && root_is_2d
             && actor.slots().iter().any(|s| s.kind == ComponentKind::Canvas);
 
+        // フォルダノードは Transform を一切持たない整理専用ノード。
+        // Inspector に Transform / CanvasTransform 欄を出さない（名前変更程度）ため、
+        // transform_json を空にし、下のルート JSON に is_folder フラグを付ける。
+        let is_folder = actor.is_folder();
         // 2D Actor は CanvasTransform、3D Actor は Transform を World から取得する
         let is_2d = actor.is_2d();
-        let transform_json = if is_2d {
+        let transform_json = if is_folder {
+            String::new()
+        } else if is_2d {
             // CanvasTransform: position(XY), rotation(Z 回転), scale(XY), pivot(XY), anchor(XY),
             // スケールモード(scale_transform/scale_size/keep_aspect_ratio: 1|0,
             // aspect_ratio_axis: 0=Width/1=Height)
@@ -573,8 +579,8 @@ impl App {
         // 祖先の状態はヒエラルキー側の実効 active 表示が担う）
         // prefab_source: プレハブ参照リンク（null = リンクなし）
         let json = format!(
-            r#"{{"id":{dfs_id},"name":{name_json},"selected_slot":{selected_slot_idx},"is_root":{},"is_vp":{},"active":{},"prefab_source":{prefab_source_json}{transform_json},"components":{comps_json}}}"#,
-            is_root as u8, root_is_2d as u8, actor.active as u8,
+            r#"{{"id":{dfs_id},"name":{name_json},"selected_slot":{selected_slot_idx},"is_root":{},"is_vp":{},"active":{},"is_folder":{},"prefab_source":{prefab_source_json}{transform_json},"components":{comps_json}}}"#,
+            is_root as u8, root_is_2d as u8, actor.active as u8, is_folder as u8,
         );
         ipc.send(&format!("ACTOR_COMPONENTS:{json}"));
     }

@@ -465,15 +465,15 @@ impl App {
         let mut slot_map: Vec<(ChunkCoord, Entity)> = Vec::new();
         {
             let scene = self.scene.as_mut().unwrap();
+            // 地形ルートはフォルダノード（Transform 非保持・透過）で作る。
+            // 子（チャンク・メッシュ）のワールド変換に一切影響しない整理専用ノード。
             let root_entity = scene.world.spawn();
-            scene.world.insert(root_entity, ActorTransform::default());
-            let mut root_actor = Actor::new(root_entity, TERRAIN_ROOT_NAME);
+            let mut root_actor = Actor::new_folder(root_entity, TERRAIN_ROOT_NAME);
 
             for (coord, model, gpu, batch) in prebuilt {
-                // チャンクフォルダアクター（描画なし・整理用）。
+                // チャンクフォルダノード（描画なし・整理用・Transform 非保持）。
                 let folder_entity = scene.world.spawn();
-                scene.world.insert(folder_entity, ActorTransform::default());
-                let mut folder = Actor::new(
+                let mut folder = Actor::new_folder(
                     folder_entity,
                     format!("chunk_{}_{}_{}", coord.x, coord.y, coord.z),
                 );
@@ -763,8 +763,41 @@ impl App {
         }
         // 地形状態をリセットしてシーン名を取り込む。
         self.terrain = TerrainState::default();
-        let Some(scene_ref) = self.scene.as_ref() else { return };
-        self.terrain.scene_name = scene_ref.name.clone();
+        let scene_name = match self.scene.as_ref() { Some(s) => s.name.clone(), None => return };
+        self.terrain.scene_name = scene_name;
+
+        // ── 旧シーン（アクター親子版 terrain）→ フォルダ版への移行 ──
+        //   本機能導入前に保存された .scene では terrain ルート・チャンク器が
+        //   「Transform を持つ通常アクター」として保存されている。ロード時にこれらを
+        //   フォルダノード（is_folder=true・Transform 非保持）へ作り直し、以後の保存で
+        //   フォルダ版へ移行させる。メッシュアクター（Model/TerrainChunk スロット持ち）は
+        //   そのまま残す。対象は「name==TERRAIN_ROOT_NAME のトップレベルアクター」と
+        //   「その直下のコンポーネント無しの器アクター（chunk_X_Y_Z）」のみ。
+        //   既にフォルダ化済み（新規保存）のシーンでは何もしない（冪等）。
+        {
+            let scene = self.scene.as_mut().unwrap();
+            let mut strip_tf: Vec<Entity> = Vec::new();
+            for root in scene.actors.iter_mut() {
+                if root.name != TERRAIN_ROOT_NAME {
+                    continue;
+                }
+                if !root.is_folder {
+                    root.is_folder = true;
+                    strip_tf.push(root.entity);
+                }
+                // 直下の器（コンポーネント＝スロットを持たないアクター）だけをフォルダ化する。
+                for child in root.children_mut().iter_mut() {
+                    if child.slots().is_empty() && !child.is_folder {
+                        child.is_folder = true;
+                        strip_tf.push(child.entity);
+                    }
+                }
+            }
+            // フォルダ化したノードから Transform を取り除く（透過ノードの不変条件を回復）。
+            for e in strip_tf {
+                scene.world.remove::<ActorTransform>(e);
+            }
+        }
 
         // ── 走査: TerrainChunkComponent と同一アクター上の ModelComponent スロットを対にして集める ──
         // (チャンク座標, .tvox パス, メッシュ ModelComponent スロット entity)

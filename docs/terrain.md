@@ -16,8 +16,10 @@
 - **単位**: ボクセル 0.5 m、チャンク 16 m 角（= 32 セル／軸、サンプル 33/軸）。すべて `TerrainSettings` で設定化。
 - **密度規約**: `density < iso_level` ⇒ SOLID（内部）、`density > iso_level` ⇒ AIR（外部）、`== iso_level` が表面。
   平坦地面は `density(p) = p.y`（y=0 が地表、下が SOLID）。
-- **ヒエラルキー**: シーンルート直下に空アクター `terrain` → その中にチャンク毎の空アクター `chunk_X_Y_Z`
-  → さらに中に地形メッシュアクター（`ModelComponent` を持つ）。将来ここに木・草アクターを足す。
+- **ヒエラルキー**: シーンルート直下に **フォルダノード** `terrain`（`is_folder`・Transform 非保持）
+  → その中にチャンク毎のフォルダノード `chunk_X_Y_Z` → さらに中に地形メッシュアクター
+  （`ModelComponent` + `Transform` を持つ通常アクター）。フォルダは子のワールド変換に影響しない
+  整理専用ノード（§11「ヒエラルキーの器」参照）。将来ここに木・草アクターを足す。
 
 ---
 
@@ -299,34 +301,48 @@ IPC を叩けない環境（エディタ非接続）で地形生成・編集を�
 
 ---
 
-### ヒエラルキーの器：親子付け vs グループフォルダ（調査結果・未着手）
+### ヒエラルキーの器：フォルダノード機構（実装済み）
 
-**現状**: `handle_terrain_init` は地形を **アクターの親子付け**（`terrain` ルート →
-`chunk_X_Y_Z` フォルダアクター → `mesh` アクター）で構築する。各チャンクメッシュは
-**それぞれ固有ジオメトリを持つ独立した ModelComponent**（1 アクター 1 メッシュ）である。
+**方式**: 汎用の **フォルダノード**（`Actor.is_folder` フラグ）を新設し、地形ルートと
+チャンクの器をこれで構築する。ヒエラルキーは `terrain`（フォルダ）→ `chunk_X_Y_Z`（フォルダ）
+→ `mesh`（通常アクター＝ `ModelComponent` + `Transform` 保持）となる。各チャンクメッシュは
+従来どおり **固有ジオメトリを持つ独立した ModelComponent**（1 アクター 1 メッシュ）である。
 
-**「グループフォルダ」機構の実体**（`CREATE_GROUP` / `GroupMeta` / エディタの `is_group`）:
-グループフォルダは `ModelComponent.group_meta`（`GroupMeta{id,name,parent}`）として保持され、
-**単一 ModelComponent 内の複数インスタンス**（`instance_meta[].parent` がグループ id を指す）を
-整理する仕組みである。適用先は「1 MC＋多数インスタンス」パラダイム（アクター編集タブ等の
-world_line）で、`CreateGroup` ハンドラも `find_component_in_world_line_mut::<ModelComponent>` で
-アクティブ world_line の代表 MC に対して働く。シーン（WL0）の `do_send_hierarchy` は
-アクターツリーを走査し `is_group=false` 固定で送るため、**独立したシーンアクターをグループ
-フォルダに束ねる経路は存在しない**。
+**フォルダノードの性質**:
+- **Transform / CanvasTransform を一切持たない**整理専用の透過ノード。子のワールド変換に
+  影響しない（描画・物理・スクリプトの走査からは「コンポーネント無しアクター」として素通し
+  される。既存の 2D アクターが Transform を持たないのと同じく、走査系は `world.get::<T>()` の
+  `Option` を安全に処理するためパニックしない）。
+- 保存/ロードで永続化。`ActorData.is_folder`（`#[serde(default, skip_serializing_if=false)]`）で
+  往復し、**既存シーンは省略＝ false（通常アクター）としてバイト互換に読める**。
+- `build_actor` は `is_folder` のとき Transform/CanvasTransform を挿入しない分岐を持つ
+  （ロード・プレハブ再展開・クリップボード貼り付けすべてがこの経路を通る）。
 
-**結論（停止・別判断）**: 地形チャンクは各々別メッシュの独立アクターであり、単一 MC の
-インスタンス群ではないため、**既存のグループフォルダ機構では器を置き換えられない**。
-アクター単位のフォルダ（`Transform` 親子を持たない整理専用ノード）は現状の `ActorKind`
-（Actor3D/Actor2D のみ）にも存在せず、これを新設するのは「フォルダ機構の新設」＝別判断のため
-本作業では**未着手**とする。将来対応する場合の設計候補:
-- `ActorKind::Folder`（またはアクターの `is_folder` フラグ）を追加し、`do_send_hierarchy` の
-  `is_group` をこのフラグから供給。フォルダは Transform を持たず、ドラッグ伝播
-  （`apply_delta_to_actor_subtree`）の対象外にする。
-- 移行: `handle_terrain_init` の冪等除去（`TERRAIN_ROOT_NAME` サブツリー despawn）は流用でき、
-  ルート/チャンクの器をフォルダ種別で作り直す。既存 `.scene`（アクター親子版）はロード時に
-  `terrain` ルートを検出したらフォルダ構造へ作り直す（または再初期化を促す）。
-- チャンクメッシュはフォルダ直下にフラット配置し、`mesh_tf.position=world_origin`・
-  `instance_mats` はワールド空間のまま（親子 Transform 合成に依存しない現構造をそのまま活かせる）。
+**ヒエラルキー送信 / エディタ表示**:
+- `collect_actor_nodes` → `build_hierarchy_json` が `is_folder` を HIERARCHY JSON へ出力する。
+  フォルダは同時に `is_group=true` としても送り、エディタ既存のグループ系ロジック（選択種別
+  スキップ・ソート・エクスポート除外）と整合させる。
+- エディタ（`HierarchyPanel`）はフォルダを **専用アイコン（`▤`・落ち着いた黄土色）** で
+  グループ（黄 `▶`）とも通常アクター（`◆`）とも視覚区別する。
+- `send_actor_components` はフォルダのとき `transform`/`canvas_transform` を送らず `is_folder` を
+  付す。`InspectorPanel` はフォルダ選択時に **Transform セクションを出さず**「フォルダ（整理用
+  ノード・Transform なし）」表示にする（名前変更・アクティブ切替は可能）。
+
+**移行（既存シーンのフォルダ化）**: `rebuild_terrain_after_load`（ロード末尾）に移行ステップを
+置いた。`name==terrain` のトップレベルアクターと、その直下のコンポーネント無しの器アクター
+（`chunk_X_Y_Z`）を検出して `is_folder=true` へ作り直し、Transform を取り除く。メッシュアクター
+（Model/TerrainChunk スロット持ち）はそのまま。既にフォルダ化済み（新規保存）のシーンでは
+何もしない冪等処理。`handle_terrain_init` の冪等除去（`TERRAIN_ROOT_NAME` サブツリー despawn）は
+そのまま流用でき、ルート/チャンクの器を `Actor::new_folder` で作り直す。
+
+**チャンクメッシュ**はフォルダ直下にフラット配置し、`mesh_tf.position=world_origin`・
+`instance_mats` はワールド空間のまま（親子 Transform 合成に依存しない現構造をそのまま活かす）。
+
+**既知の制限**: スクリプト `Scene.Destroy()` はエンティティの生存確認に Transform/CanvasTransform
+の有無を使うため、両方を持たないフォルダは破棄要求が拒否される（安全側に倒れるだけでパニック
+はしない）。地形フォルダは `terrain_ops` が直接 despawn し、エディタ削除は DFS id 経由の
+`REMOVE_ACTOR`/`DELETE_RECURSIVE` で行うため実害はない。スクリプトからフォルダを破棄させたい
+場合は `ffi_destroy` の生存確認を is_folder 対応へ拡張する余地がある。
 
 ## 12. 拡張余地（T2 / T3）
 

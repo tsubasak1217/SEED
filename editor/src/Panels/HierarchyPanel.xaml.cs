@@ -46,6 +46,12 @@ public class ActorNode
     /// Hierarchy 上で Unity 風に青系テキスト + プレハブアイコンで区別表示する。
     /// </summary>
     public bool            IsPrefab { get; set; }
+    /// <summary>
+    /// 整理専用のフォルダノードか否か。Rust 側は Transform を持たないため
+    /// Hierarchy 上ではグループとは別の専用アイコン・色で区別表示する。
+    /// フォルダは同時に IsGroup=true でも届く（選択種別スキップ等の既存グループ挙動を流用するため）。
+    /// </summary>
+    public bool            IsFolder { get; set; }
     public List<ActorNode> Children { get; } = new();
 }
 
@@ -166,6 +172,11 @@ public partial class HierarchyPanel : UserControl
     private static readonly SolidColorBrush BrushActor2DIcon = MakeFrozen(Color.FromRgb(0xFF, 0x88, 0x44));
     /// <summary>プレハブインスタンスルートのテキスト色（Unity 風の読みやすい水色）。</summary>
     private static readonly SolidColorBrush BrushPrefabText  = MakeFrozen(Color.FromRgb(0x7F, 0xB2, 0xE5));
+    /// <summary>
+    /// フォルダノードのアイコン色（落ち着いた黄土/クリーム系）。
+    /// グループの黄色（0xFFCC44）とはトーンを明確に分け、グループとフォルダを一目で区別できるようにする。
+    /// </summary>
+    private static readonly SolidColorBrush BrushFolderIcon  = MakeFrozen(Color.FromRgb(0xD8, 0xB4, 0x6B));
 
     private static SolidColorBrush MakeFrozen(Color c)
     {
@@ -427,6 +438,8 @@ public partial class HierarchyPanel : UserControl
                     HasCanvas = e.TryGetProperty("has_canvas", out var hc) && hc.GetBoolean(),
                     // プレハブインスタンスのルートか（旧 JSON にフィールドが無ければ false）
                     IsPrefab  = e.TryGetProperty("is_prefab", out var ip) && ip.GetBoolean(),
+                    // 整理専用フォルダノードか（旧 JSON にフィールドが無ければ false）
+                    IsFolder  = e.TryGetProperty("is_folder", out var iff) && iff.GetBoolean(),
                 })
                 .ToList();
 
@@ -494,11 +507,16 @@ public partial class HierarchyPanel : UserControl
     private static TextBlock BuildItemHeader(ActorNode node)
     {
         var tb = new TextBlock { VerticalAlignment = VerticalAlignment.Center };
+        // フォルダ: 黄土色 ▤（最優先判定。フォルダは IsGroup も true で届くため先に弾く）、
         // IsGroup: 黄色 ▶、2D アクター: オレンジ ◆、3D アクター: 青 ◆
-        var iconBrush = node.IsGroup ? BrushGroupIcon
-                      : node.Is2D   ? BrushActor2DIcon
-                      :               BrushActorIcon;
-        tb.Inlines.Add(new Run(node.IsGroup ? "▶ " : "◆ ")
+        var iconBrush = node.IsFolder ? BrushFolderIcon
+                      : node.IsGroup  ? BrushGroupIcon
+                      : node.Is2D     ? BrushActor2DIcon
+                      :                 BrushActorIcon;
+        var iconGlyph = node.IsFolder ? "▤ "
+                      : node.IsGroup  ? "▶ "
+                      :                 "◆ ";
+        tb.Inlines.Add(new Run(iconGlyph)
         {
             Foreground = iconBrush,
             FontSize   = 9,
