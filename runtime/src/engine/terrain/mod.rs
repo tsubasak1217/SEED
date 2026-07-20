@@ -32,7 +32,7 @@ pub use brush::{apply, chunks_in_brush_aabb, BrushOp, SampleField, SphereBrush};
 pub use tvox::{read_chunk, write_chunk, TvoxError, TVOX_MAGIC, TVOX_VERSION};
 pub use heightmap::HeightmapField;
 pub use layers::{
-    blend_rule_and_paint, LayerRule, LayerWeights, TerrainLayer, TerrainLayerSet,
-    TERRAIN_LAYER_COUNT,
+    blend_rule_and_paint_all, expand_slots, select_top_slots, BlendSlots, DetileMode, LayerRule,
+    LayerWeights, TerrainLayer, TerrainLayerSet, TERRAIN_BLEND_SLOTS, TERRAIN_MAX_LAYERS,
 };
 pub use paint::{apply_paint, PaintField};

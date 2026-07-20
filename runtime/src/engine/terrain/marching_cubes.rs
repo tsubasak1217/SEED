@@ -30,7 +30,7 @@
 use std::collections::HashMap;
 
 use super::chunk_data::TerrainChunkData;
-use super::layers::{LayerWeights, TERRAIN_LAYER_COUNT};
+use super::layers::{expand_slots, select_top_slots, BlendSlots, TERRAIN_MAX_LAYERS};
 use super::settings::TerrainSettings;
 
 // ─── 勾配（法線）計算のステップ幅（サンプル間隔単位） ────────────────────────
@@ -45,10 +45,10 @@ pub struct TerrainMesh {
     pub positions: Vec<[f32; 3]>,
     pub normals: Vec<[f32; 3]>,
     pub indices: Vec<u32>,
-    /// 各頂点の「手ペイントされたレイヤ重み」（辺の両端サンプルから線形補間）。
-    /// ルールによる自動下地はここには含まれない（layers.rs の blend_rule_and_paint で
+    /// 各頂点の「手ペイントされたレイヤ番号＋重み」（辺の両端サンプルから線形補間）。
+    /// ルールによる自動下地はここには含まれない（layers.rs の blend_rule_and_paint_all で
     /// メッシュ→Model 変換時に合成する）。positions と同じ長さ。
-    pub paint: Vec<LayerWeights>,
+    pub paint: Vec<BlendSlots>,
     /// 各頂点のペイント量（0=未ペイント〜1=完全に手描き優先）。positions と同じ長さ。
     pub paint_amount: Vec<f32>,
 }
@@ -231,12 +231,24 @@ fn generate_core(
                         //   位置と同じ補間係数 t を使うことで、頂点属性が位置と整合する。
                         //   lo/hi はどちらもセルのコーナー＝自チャンク内のサンプルなので
                         //   隣接チャンクを読む必要はない（境界サンプルは write 側で同期済み）。
-                        let p_lo = chunk.paint_weights(lo[0] as usize, lo[1] as usize, lo[2] as usize);
-                        let p_hi = chunk.paint_weights(hi[0] as usize, hi[1] as usize, hi[2] as usize);
-                        let mut paint: LayerWeights = [0.0; TERRAIN_LAYER_COUNT];
-                        for k in 0..TERRAIN_LAYER_COUNT {
-                            paint[k] = p_lo[k] + t * (p_hi[k] - p_lo[k]);
+                        //
+                        //   【なぜ密ベクトル経由で補間するか — T2b】
+                        //     BlendSlots はスロット番号とレイヤ番号の対応が
+                        //     サンプルごとに違い得る（lo のスロット 0 が岩でも
+                        //     hi のスロット 0 は砂かもしれない）。スロット添字で
+                        //     直接 lerp すると別レイヤ同士を混ぜてしまい、境界に
+                        //     まったく塗っていない層が湧く。よって一度
+                        //     レイヤ番号を添字とする密ベクトルへ展開してから lerp し、
+                        //     改めて上位 4 層を選び直す（正しさ優先）。
+                        let p_lo = chunk.paint_slots(lo[0] as usize, lo[1] as usize, lo[2] as usize);
+                        let p_hi = chunk.paint_slots(hi[0] as usize, hi[1] as usize, hi[2] as usize);
+                        let d_lo_w = expand_slots(&p_lo, TERRAIN_MAX_LAYERS);
+                        let d_hi_w = expand_slots(&p_hi, TERRAIN_MAX_LAYERS);
+                        let mut dense = [0.0f32; TERRAIN_MAX_LAYERS];
+                        for k in 0..TERRAIN_MAX_LAYERS {
+                            dense[k] = d_lo_w[k] + t * (d_hi_w[k] - d_lo_w[k]);
                         }
+                        let paint = select_top_slots(&dense);
                         let a_lo = chunk.paint_amount(lo[0] as usize, lo[1] as usize, lo[2] as usize);
                         let a_hi = chunk.paint_amount(hi[0] as usize, hi[1] as usize, hi[2] as usize);
                         let paint_amount = a_lo + t * (a_hi - a_lo);

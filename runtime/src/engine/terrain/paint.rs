@@ -9,22 +9,27 @@
 //    このファイルはチャンクの格納方式を一切知らない（純粋・境界安全）。
 //
 //  【ペイントの意味論】
-//    各サンプルは (paint_weights, paint_amount) の 2 値を持つ。
-//      - paint_weights : 手で塗ったレイヤ重み（総和 1 に正規化）
-//      - paint_amount  : どれだけ手描きを優先するか（0=ルール任せ、1=完全手描き）
-//    最終的な描画用重みは layers::blend_rule_and_paint で
-//      lerp(ルール自動重み, paint_weights, paint_amount)
+//    各サンプルは (paint_slots, paint_amount) の 2 値を持つ。
+//      - paint_slots  : 手で塗った「レイヤ番号＋重み」を最大 4 スロット（総和 1）
+//      - paint_amount : どれだけ手描きを優先するか（0=ルール任せ、1=完全手描き）
+//    最終的な描画用重みは layers::blend_rule_and_paint_all で
+//      lerp(ルール自動重み, paint_slots を展開した重み, paint_amount)
 //    として合成される。ブラシは両者を同じ減衰係数で押し上げる:
-//      paint_weights[layer] += delta → 正規化（他レイヤは相対的に減衰）
-//      paint_amount        += delta → clamp(0,1)
+//      対象レイヤのスロット重み += delta → 正規化（他スロットは相対的に減衰）
+//      paint_amount            += delta → clamp(0,1)
 //    これにより「塗るほどルールから離れて、その層一色へ寄っていく」挙動になる。
+//
+//  【スロットが埋まっているとき】
+//    対象レイヤが既存スロットに無く、4 スロットすべてが埋まっている場合は
+//    **最小重みスロットを置換**する（そのサンプルで最も影響の小さい層を捨てる）。
+//    1 サンプルが同時に持てる層は 4 までという設計上の制約に由来する。
 // ============================================================
 
 use std::collections::HashSet;
 
 use super::brush::{falloff, SphereBrush};
 use super::chunk_coord::ChunkCoord;
-use super::layers::{normalize_weights, LayerWeights, TERRAIN_LAYER_COUNT};
+use super::layers::{BlendSlots, TERRAIN_BLEND_SLOTS, TERRAIN_MAX_LAYERS};
 use super::settings::TerrainSettings;
 
 /// 実効ペイント量がこの値以下のサンプルは書き込みをスキップする。
@@ -38,12 +43,12 @@ const PAINT_MIN_AMOUNT: f32 = 1.0e-4;
 pub trait PaintField {
     /// 地形設定への参照。
     fn settings(&self) -> &TerrainSettings;
-    /// グローバルサンプル整数座標の (手ペイント重み, ペイント量) を読む。
-    /// 未初期化・範囲外は ([0;L], 0.0) を返すこと。
-    fn read_paint_global(&self, gx: i32, gy: i32, gz: i32) -> (LayerWeights, f32);
-    /// グローバルサンプル整数座標へ (手ペイント重み, ペイント量) を書く。
+    /// グローバルサンプル整数座標の (手ペイントスロット, ペイント量) を読む。
+    /// 未初期化・範囲外は (重み全 0 の BlendSlots, 0.0) を返すこと。
+    fn read_paint_global(&self, gx: i32, gy: i32, gz: i32) -> (BlendSlots, f32);
+    /// グローバルサンプル整数座標へ (手ペイントスロット, ペイント量) を書く。
     /// 境界で重複する全チャンクに同一値を書き込むこと（同期）。
-    fn write_paint_global(&mut self, gx: i32, gy: i32, gz: i32, w: LayerWeights, amount: f32);
+    fn write_paint_global(&mut self, gx: i32, gy: i32, gz: i32, slots: &BlendSlots, amount: f32);
     /// グローバルサンプル整数座標のワールド空間位置（メートル）。
     fn world_of_global(&self, gx: i32, gy: i32, gz: i32) -> [f32; 3];
 }
@@ -61,9 +66,52 @@ fn owning_chunks_on_axis(g: i32, chunk_cells: i32, out: &mut Vec<i32>) {
     }
 }
 
+/// スロットへ delta を加算する（対象レイヤが無ければ最小重みスロットを置換）。
+///
+/// 戻り値は正規化済みの新しいスロット。
+///
+/// 【置換規則】
+///   対象レイヤが既存スロットにあれば単にその重みを押し上げる。
+///   無い場合は最も重みの小さいスロット（＝そのサンプルで最も影響の薄い層）を
+///   対象レイヤで置き換え、重みを delta にする。未使用スロット（重み 0）が
+///   あれば必然的にそれが最小になるので、同じ 1 本の規則で両ケースを扱える。
+fn add_layer_weight(slots: &BlendSlots, layer_index: u32, delta: f32) -> BlendSlots {
+    let mut out = *slots;
+
+    // ─── 既存スロットを探しつつ、最小重みスロットも記録する ───
+    let mut found: Option<usize> = None;
+    let mut min_slot = 0usize;
+    for k in 0..TERRAIN_BLEND_SLOTS {
+        if out.index[k] == layer_index && out.weight[k] > 0.0 {
+            found = Some(k);
+            break;
+        }
+        if out.weight[k] < out.weight[min_slot] {
+            min_slot = k;
+        }
+    }
+
+    match found {
+        // 既にこの層を塗っている → 重みを押し上げる。
+        Some(k) => out.weight[k] = (out.weight[k] + delta).min(1.0),
+        // 新しい層 → 最小重みスロットを置き換える（最も影響の薄い層を捨てる）。
+        None => {
+            out.index[min_slot] = layer_index;
+            out.weight[min_slot] = delta.min(1.0);
+        }
+    }
+
+    // ─── 総和 1 へ戻す（他スロットが相対的に減衰する）───
+    //   select_top_slots は正規化＋降順ソート＋縮退補正を一括で行う。
+    //   4 スロットしか無いので上位 4 選択は恒等変換になる。
+    let dense_len = (out.index.iter().copied().max().unwrap_or(0) as usize) + 1;
+    let dense = super::layers::expand_slots(&out, dense_len);
+    super::layers::select_top_slots(&dense)
+}
+
 /// 球ブラシで指定レイヤをペイントし、変化したサンプルを所有するチャンク集合を返す。
 ///
-/// - `layer_index`: 塗るレイヤ番号（0..TERRAIN_LAYER_COUNT）。範囲外は何もしない。
+/// - `layer_index`: 塗るレイヤ番号（0..TERRAIN_MAX_LAYERS）。範囲外は何もしない。
 /// - `dt`:          フレーム時間相当（strength と掛けて 1 回の押し上げ量になる）。
 ///
 /// 手順は brush::apply と同じ 2 フェーズ（計算 → 一括書き込み）。
@@ -72,11 +120,12 @@ fn owning_chunks_on_axis(g: i32, chunk_cells: i32, out: &mut Vec<i32>) {
 pub fn apply_paint(
     field: &mut impl PaintField,
     brush: &SphereBrush,
-    layer_index: usize,
+    layer_index: u32,
     dt: f32,
 ) -> Vec<ChunkCoord> {
     // ─── レイヤ番号の検証（不正なら無操作）───
-    if layer_index >= TERRAIN_LAYER_COUNT {
+    //   レイヤ定義の実数はここでは分からないため、定義上限で弾く。
+    if layer_index as usize >= TERRAIN_MAX_LAYERS {
         return Vec::new();
     }
 
@@ -96,7 +145,7 @@ pub fn apply_paint(
     let r2 = brush.radius * brush.radius;
 
     // ─── フェーズ 1：新スプラット値を計算する ───
-    let mut writes: Vec<([i32; 3], LayerWeights, f32)> = Vec::new();
+    let mut writes: Vec<([i32; 3], BlendSlots, f32)> = Vec::new();
     for gz in gz0..=gz1 {
         for gy in gy0..=gy1 {
             for gx in gx0..=gx1 {
@@ -118,13 +167,12 @@ pub fn apply_paint(
                 }
 
                 // ── 対象レイヤの重みを押し上げ、正規化で他レイヤを減衰させる ──
-                let (mut w, amount) = field.read_paint_global(gx, gy, gz);
-                w[layer_index] = (w[layer_index] + delta).min(1.0);
-                normalize_weights(&mut w);
+                let (slots, amount) = field.read_paint_global(gx, gy, gz);
+                let new_slots = add_layer_weight(&slots, layer_index, delta);
                 // ── ペイント量も同じ減衰で 1 へ寄せる（ルールからの離脱度）──
                 let new_amount = (amount + delta).clamp(0.0, 1.0);
 
-                writes.push(([gx, gy, gz], w, new_amount));
+                writes.push(([gx, gy, gz], new_slots, new_amount));
             }
         }
     }
@@ -134,8 +182,8 @@ pub fn apply_paint(
     let mut owners_x = Vec::new();
     let mut owners_y = Vec::new();
     let mut owners_z = Vec::new();
-    for ([gx, gy, gz], w, amount) in writes {
-        field.write_paint_global(gx, gy, gz, w, amount);
+    for ([gx, gy, gz], slots, amount) in writes {
+        field.write_paint_global(gx, gy, gz, &slots, amount);
         owning_chunks_on_axis(gx, chunk_cells, &mut owners_x);
         owning_chunks_on_axis(gy, chunk_cells, &mut owners_y);
         owning_chunks_on_axis(gz, chunk_cells, &mut owners_z);

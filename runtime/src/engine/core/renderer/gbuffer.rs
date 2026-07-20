@@ -27,6 +27,8 @@ use crate::engine::core::loader::model::{CullFace, CULL_FACE_VARIANTS};
 use super::pipeline::{get_shader_source, CullPipelineSet, MeshPipeline, SkinnedMeshPipeline};
 use super::pipeline_config::vertex_buffer_layout;
 use super::gpu_resources::{GpuModel, InstancedModelBatch, NUM_LODS};
+// 地形レイヤのブレンドスロット数（＝パレット長。Terrain T2b）。
+use crate::engine::terrain::layers::TERRAIN_BLEND_SLOTS;
 
 // ============================================================
 //  G-Buffer フォーマット定数
@@ -269,10 +271,14 @@ pub fn draw_gbuffer_indirect<'pass>(
     // GPU メッシュレットカリング（第1弾）を LOD0 で使うか。model_drawer.rs の
     // draw_model_indirect と同じ条件（LOD0・非スキンのみ対象、他は自動フォールバック）。
     meshlet_cull: bool,
-    // 地形レイヤ定義のバインドグループ（group3・Terrain T2）。
+    // 地形レイヤの GPU リソース（group3・Terrain T2b）。
     // `None`（レイヤ未初期化＝地形が無いシーン）のときは地形パイプラインへ切り替えず、
     // 通常のマテリアル経路で描く（group3 未バインドでの描画パニックを避ける）。
-    terrain_layer_bg: Option<&'pass wgpu::BindGroup>,
+    //
+    // T2b からはチャンクごとに「レイヤ番号パレット」が違うため、単一のバインドグループ
+    // ではなく `TerrainLayerResources`（パレット → BG のキャッシュ）を受け取り、
+    // プリミティブのマテリアルが持つパレットで引き当てる。
+    terrain_layers: Option<&'pass super::terrain_gbuffer::TerrainLayerResources>,
 ) {
     if batch.n_prims == 0 { return; }
 
@@ -285,6 +291,9 @@ pub fn draw_gbuffer_indirect<'pass>(
         let mut cur_mat_ptr: Option<*const wgpu::BindGroup> = None;
         // 直前のドローが地形パイプラインだったか（パイプライン切り替え判定に使う）。
         let mut cur_terrain: Option<bool>                   = None;
+        // 直前に group3 へバインドした地形パレット（Terrain T2b）。
+        // パレットが変わると group3 のバインドグループも変わるため再バインドが要る。
+        let mut cur_palette: Option<[u32; TERRAIN_BLEND_SLOTS]> = None;
 
         let joint_bg = batch.joint_vs_bg(lod);
 
@@ -312,21 +321,32 @@ pub fn draw_gbuffer_indirect<'pass>(
             // ── 地形レイヤブレンド対象か（Terrain T2）────────────────
             //   レイヤ定義 BG が用意できているときだけ地形パイプラインへ振り分ける。
             //   スキンメッシュは地形になり得ないため、地形判定はスキン判定より優先する。
-            let is_terrain = terrain_layer_bg.is_some()
+            let is_terrain = terrain_layers.is_some()
                 && !draw.is_skinned
                 && gpu_model.primitive_terrain_layers(draw.material_idx);
 
+            // ── このプリミティブの地形パレット（非地形なら None）────────
+            let palette = if is_terrain {
+                Some(gpu_model.primitive_terrain_palette(draw.material_idx))
+            } else {
+                None
+            };
+
             // ── パイプライン切り替え ──────────────────────────────
+            //   パレットが変わっただけのときもパイプラインは同じだが、group3 の
+            //   バインドグループが変わるため、ここでまとめて再バインドする。
             if cur_skinned != Some(draw.is_skinned)
                 || cur_cull != Some(cull)
                 || cur_terrain != Some(is_terrain)
+                || (is_terrain && cur_palette != palette)
             {
+                cur_palette = palette;
                 if is_terrain {
                     render_pass.set_pipeline(&pipelines.terrain.pipes[cull.index()]);
-                    // group3 = 地形レイヤ定義（uniform + レイヤテクスチャ 4 枚）。
-                    // is_terrain が true になるのは terrain_layer_bg が Some のときだけ。
-                    if let Some(tbg) = terrain_layer_bg {
-                        render_pass.set_bind_group(3, tbg, &[]);
+                    // group3 = 地形レイヤ定義（uniform + パレット + 配列テクスチャ 3 本）。
+                    // is_terrain が true になるのは terrain_layers が Some のときだけ。
+                    if let (Some(res), Some(p)) = (terrain_layers, palette) {
+                        render_pass.set_bind_group(3, res.bind_group(p), &[]);
                     }
                 } else if draw.is_skinned {
                     render_pass.set_pipeline(&pipelines.skinned[cull.index()]);

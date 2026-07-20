@@ -3685,8 +3685,9 @@ impl App {
                                         crate::engine::core::renderer::gbuffer::draw_gbuffer_indirect(
                                             &mut gpass, gpu, &sd.batch, &camera_buf.bind_group,
                                             &draw_ctx.pipelines.gbuffer, meshlet_active,
-                                            // 地形レイヤ定義（group3）。地形が未初期化なら None＝通常マテリアル描画へフォールバック。
-                                            self.terrain.layer_bind_group.as_ref(),
+                                            // 地形レイヤリソース（group3）。パレット別のバインドグループを内部に持つ。
+                                            // 地形が未初期化なら None＝通常マテリアル描画へフォールバック。
+                                            self.terrain.layer_resources.as_ref(),
                                         );
                                     }
                                 }

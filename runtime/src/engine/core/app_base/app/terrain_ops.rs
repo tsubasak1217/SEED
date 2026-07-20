@@ -32,8 +32,9 @@ use crate::engine::core::loader::model::Model;
 use crate::engine::methods::drawer::{DrawContext, GpuModel, InstancedModelBatch};
 use crate::engine::structs::objects::Actor;
 use crate::engine::terrain::{
-    self, BrushOp, ChunkCoord, LayerWeights, PaintField, SampleField, SphereBrush,
-    TerrainChunkData, TerrainLayerSet, TerrainSettings, TERRAIN_LAYER_COUNT, tvox,
+    self, BlendSlots, BrushOp, ChunkCoord, PaintField, SampleField, SphereBrush,
+    TerrainChunkData, TerrainLayerSet, TerrainSettings, TERRAIN_BLEND_SLOTS, TERRAIN_MAX_LAYERS,
+    tvox,
 };
 
 use super::App;
@@ -43,6 +44,15 @@ use super::terrain_mesh_build::terrain_mesh_to_model;
 
 /// 地形レイヤ定義アセットの仮想パス（データドリブン。ここを差し替えれば層構成が変わる）。
 const TERRAIN_LAYERS_ASSET: &str = "assets://terrain/layers.json";
+
+/// レイヤ定義の読み込み元を差し替える環境変数名。
+///
+/// 検証・デバッグ用の常設フック。絶対パスを渡すと `TERRAIN_LAYERS_ASSET` の代わりに
+/// そのファイルを読む（`asset_fs` は絶対パスをそのまま読める）。
+/// プロジェクトの `assets/terrain/layers.json` を書き換えずに、
+/// 別のレイヤ構成（テクスチャ付き・detile 設定違いなど）を実機で試すために使う。
+/// 未設定時は従来どおりアセットから読むため、通常運用の挙動は一切変わらない。
+const TERRAIN_LAYERS_PATH_ENV: &str = "SEED_TERRAIN_LAYERS";
 
 /// 地形ルートアクターの名前。
 const TERRAIN_ROOT_NAME: &str = "terrain";
@@ -147,8 +157,10 @@ pub struct TerrainEdit {
 pub struct ChunkSnapshot {
     /// 密度サンプル（f32 × samples³）。
     pub density: Vec<f32>,
-    /// 手ペイントレイヤ重み（u8 × TERRAIN_LAYER_COUNT × samples³）。
-    pub paint: Vec<[u8; TERRAIN_LAYER_COUNT]>,
+    /// 手ペイントスロットのレイヤ番号（u8 × TERRAIN_BLEND_SLOTS × samples³）。
+    pub paint_index: Vec<[u8; TERRAIN_BLEND_SLOTS]>,
+    /// 手ペイントスロットの重み（u8 × TERRAIN_BLEND_SLOTS × samples³）。
+    pub paint_weight: Vec<[u8; TERRAIN_BLEND_SLOTS]>,
     /// ペイント量（u8 × samples³）。
     pub paint_amount: Vec<u8>,
 }
@@ -158,7 +170,8 @@ impl ChunkSnapshot {
     pub fn capture(chunk: &TerrainChunkData) -> Self {
         Self {
             density:      chunk.raw_density().to_vec(),
-            paint:        chunk.raw_paint().to_vec(),
+            paint_index:  chunk.raw_paint_index().to_vec(),
+            paint_weight: chunk.raw_paint_weight().to_vec(),
             paint_amount: chunk.raw_paint_amount().to_vec(),
         }
     }
@@ -166,7 +179,8 @@ impl ChunkSnapshot {
     /// 控えた状態をチャンクへ書き戻す。
     pub fn restore(&self, chunk: &mut TerrainChunkData) {
         chunk.set_raw_density(self.density.clone());
-        chunk.set_raw_paint(self.paint.clone());
+        chunk.set_raw_paint_index(self.paint_index.clone());
+        chunk.set_raw_paint_weight(self.paint_weight.clone());
         chunk.set_raw_paint_amount(self.paint_amount.clone());
     }
 }
@@ -198,9 +212,12 @@ pub struct TerrainState {
     /// 地形マテリアルレイヤ定義（assets/terrain/layers.json 由来。読めなければ既定セット）。
     /// 斜度／高度ルールの供給元であり、GPU のレイヤ uniform／テクスチャの元でもある。
     pub layers: TerrainLayerSet,
-    /// レイヤ定義の GPU バインドグループ（group3）。地形描画時に G-Buffer パスへ渡す。
+    /// レイヤ定義の GPU リソース一式（group3）。地形描画時に G-Buffer パスへ渡す。
+    /// パレット（レイヤ番号 4 つ）別のバインドグループをキャッシュする（Terrain T2b）。
     /// `None` のときは地形専用パイプラインへ切り替えない（通常マテリアル描画へフォールバック）。
-    pub layer_bind_group: Option<wgpu::BindGroup>,
+    pub layer_resources: Option<
+        crate::engine::core::renderer::terrain_gbuffer::TerrainLayerResources,
+    >,
     /// ペイントブラシで塗る対象レイヤ番号（エディタのレイヤ選択 UI と対応）。
     pub paint_layer: usize,
     /// terrain 専用 undo スタック（末尾が最新）。上限 TERRAIN_UNDO_MAX。
@@ -221,7 +238,7 @@ impl Default for TerrainState {
             stroke_active: false,
             stroke_before: HashMap::new(),
             layers: TerrainLayerSet::default(),
-            layer_bind_group: None,
+            layer_resources: None,
             paint_layer: 0,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
@@ -317,7 +334,7 @@ fn read_paint_global_impl(
     gx: i32,
     gy: i32,
     gz: i32,
-) -> (LayerWeights, f32) {
+) -> (BlendSlots, f32) {
     let (ox, nx) = axis_owners(gx, cells);
     let (oy, ny) = axis_owners(gy, cells);
     let (oz, nz) = axis_owners(gz, cells);
@@ -327,15 +344,18 @@ fn read_paint_global_impl(
                 let coord = ChunkCoord::new(ox[i].0, oy[j].0, oz[k].0);
                 if let Some(chunk) = chunks.get(&coord) {
                     return (
-                        chunk.paint_weights(ox[i].1, oy[j].1, oz[k].1),
+                        chunk.paint_slots(ox[i].1, oy[j].1, oz[k].1),
                         chunk.paint_amount(ox[i].1, oy[j].1, oz[k].1),
                     );
                 }
             }
         }
     }
-    // 地形外 = 未ペイント（＝ルール自動生成に従う）。
-    ([0.0; TERRAIN_LAYER_COUNT], 0.0)
+    // 地形外 = 未ペイント（＝ルール自動生成に従う）。重みは全 0 で返す。
+    (
+        BlendSlots { index: [0; TERRAIN_BLEND_SLOTS], weight: [0.0; TERRAIN_BLEND_SLOTS] },
+        0.0,
+    )
 }
 
 /// グローバルサンプル座標へ (手ペイント重み, ペイント量) を書く。
@@ -348,7 +368,7 @@ fn write_paint_global_impl(
     gx: i32,
     gy: i32,
     gz: i32,
-    w: LayerWeights,
+    slots: &BlendSlots,
     amount: f32,
 ) {
     let (ox, nx) = axis_owners(gx, cells);
@@ -359,7 +379,7 @@ fn write_paint_global_impl(
             for k in 0..nz {
                 let coord = ChunkCoord::new(ox[i].0, oy[j].0, oz[k].0);
                 if let Some(chunk) = chunks.get_mut(&coord) {
-                    chunk.set_paint_weights(ox[i].1, oy[j].1, oz[k].1, w);
+                    chunk.set_paint_slots(ox[i].1, oy[j].1, oz[k].1, slots);
                     chunk.set_paint_amount(ox[i].1, oy[j].1, oz[k].1, amount);
                 }
             }
@@ -448,14 +468,14 @@ impl<'a> PaintField for FieldView<'a> {
         self.settings
     }
 
-    fn read_paint_global(&self, gx: i32, gy: i32, gz: i32) -> (LayerWeights, f32) {
+    fn read_paint_global(&self, gx: i32, gy: i32, gz: i32) -> (BlendSlots, f32) {
         let cells = self.settings.chunk_cells as i32;
         read_paint_global_impl(self.chunks, cells, gx, gy, gz)
     }
 
-    fn write_paint_global(&mut self, gx: i32, gy: i32, gz: i32, w: LayerWeights, amount: f32) {
+    fn write_paint_global(&mut self, gx: i32, gy: i32, gz: i32, slots: &BlendSlots, amount: f32) {
         let cells = self.settings.chunk_cells as i32;
-        write_paint_global_impl(self.chunks, cells, gx, gy, gz, w, amount);
+        write_paint_global_impl(self.chunks, cells, gx, gy, gz, slots, amount);
     }
 
     fn world_of_global(&self, gx: i32, gy: i32, gz: i32) -> [f32; 3] {
@@ -519,7 +539,9 @@ fn build_chunk_render(
         read_global_impl(chunks, cells, clamp, base[0] + lx, base[1] + ly, base[2] + lz)
     });
     // レイヤ重みはワールド Y（高度ルール）を要するため、チャンク原点を渡す。
-    let model = terrain_mesh_to_model(
+    // 第 2 戻り値はこのチャンクのレイヤパレット（頂点カラー各成分が指すレイヤ番号）。
+    // GPU への結線は未実装のため、ここでは受けるだけにしておく。
+    let (model, _palette) = terrain_mesh_to_model(
         &mesh,
         &format!("terrain_{}_{}_{}", coord.x, coord.y, coord.z),
         coord.world_origin(settings),
@@ -681,6 +703,8 @@ impl App {
                 }
             }
         }
+        // 地形チャンクが使うパレットを group3 へ登録する（描画前に済ませる必要がある）。
+        self.ensure_terrain_palettes(prebuilt.iter().map(|p| p.1.as_ref()));
 
         // ── フェーズ 3: アクターツリー（root/フォルダ/メッシュ）を構築してコンポーネントを挿入 ──
         //   self.terrain への書き込みは借用衝突を避けるためローカルへ退避してから反映する。
@@ -767,7 +791,12 @@ impl App {
     /// レイヤ色は出ないが描画自体は通常マテリアルで成立する（安全側）。
     pub(super) fn ensure_terrain_layers(&mut self) {
         // ── ① 定義を読む（アセットが無ければ既定セット）──
-        let set = match crate::engine::asset_fs::read_string(TERRAIN_LAYERS_ASSET) {
+        //   環境変数 SEED_TERRAIN_LAYERS が指定されていればそちらを優先する（検証用フック）。
+        let source = std::env::var(TERRAIN_LAYERS_PATH_ENV)
+            .ok()
+            .filter(|p| !p.is_empty())
+            .unwrap_or_else(|| TERRAIN_LAYERS_ASSET.to_string());
+        let set = match crate::engine::asset_fs::read_string(&source) {
             Ok(text) => match TerrainLayerSet::from_json_str(&text) {
                 Ok(set) => set,
                 Err(e) => {
@@ -780,15 +809,17 @@ impl App {
             Err(_) => {
                 // ファイルが無いのは正常な運用（未整備プロジェクト）なのでログレベルを落とす。
                 eprintln!(
-                    "[SEED terrain] {TERRAIN_LAYERS_ASSET} が見つかりません; 既定レイヤセット（単色 4 層）を使用します"
+                    "[SEED terrain] {source} が見つかりません; 既定レイヤセット（単色 4 層）を使用します"
                 );
                 TerrainLayerSet::default()
             }
         };
 
-        // ── ② GPU バインドグループを作る（レイヤテクスチャの読み込みを伴う）──
-        let bg = self.draw_ctx.as_ref().map(|ctx| {
-            crate::engine::core::renderer::terrain_gbuffer::create_layer_bind_group(
+        // ── ② GPU リソースを作る（レイヤテクスチャ配列の読み込み／リサイズを伴う）──
+        //   パレット別バインドグループのキャッシュもここで初期化される
+        //   （既定パレット＝レイヤ 0..3 の素通しぶんは必ず作られる）。
+        let res = self.draw_ctx.as_ref().map(|ctx| {
+            crate::engine::core::renderer::terrain_gbuffer::TerrainLayerResources::new(
                 &ctx.device,
                 &ctx.queue,
                 &ctx.pipelines.gbuffer.terrain.layer_bgl,
@@ -797,7 +828,25 @@ impl App {
         });
 
         self.terrain.layers = set;
-        self.terrain.layer_bind_group = bg;
+        self.terrain.layer_resources = res;
+    }
+
+    /// 地形チャンクのモデル群が使うパレットを group3 のバインドグループとして登録する。
+    ///
+    /// 描画中（RenderPass 生存中）は `&self` でしか触れないため、**チャンク構築直後に**
+    /// ここで登録しておく必要がある。未登録のパレットは描画時に既定パレットへ
+    /// フォールバックする（レイヤ割り当てがずれるだけで、描画は落ちない）。
+    pub(super) fn ensure_terrain_palettes<'a>(
+        &mut self,
+        models: impl IntoIterator<Item = &'a Model>,
+    ) {
+        // draw_ctx とレイヤリソースの両方が揃っているときだけ意味を持つ。
+        let Some(ctx) = self.draw_ctx.as_ref() else { return };
+        let Some(res) = self.terrain.layer_resources.as_mut() else { return };
+        let layout = &ctx.pipelines.gbuffer.terrain.layer_bgl;
+        for model in models {
+            res.ensure_palettes_from_model(&ctx.device, layout, model);
+        }
     }
 
     /// レイヤペイントブラシ（TERRAIN_PAINT）。
@@ -827,7 +876,10 @@ impl App {
             return;
         };
 
-        self.terrain.paint_layer = layer.min(TERRAIN_LAYER_COUNT - 1);
+        // 定義済みレイヤ数でクランプする（T2b でレイヤ総数は可変になったため、
+        // 同時ブレンド数 TERRAIN_BLEND_SLOTS ではなく定義数が上限になる）。
+        let max_layer = self.terrain.layers.layers.len().min(TERRAIN_MAX_LAYERS).saturating_sub(1);
+        self.terrain.paint_layer = layer.min(max_layer);
         self.handle_terrain_paint_world(self.terrain.paint_layer, center, radius, strength);
 
         // プレビュー球をペイント着弾点へ追従させる（密度ブラシと同じ扱い）。
@@ -883,7 +935,7 @@ impl App {
                 settings: &terrain.settings,
                 chunks: &mut terrain.chunks,
             };
-            terrain::paint::apply_paint(&mut view, &brush, layer, BRUSH_DT)
+            terrain::paint::apply_paint(&mut view, &brush, layer as u32, BRUSH_DT)
         };
         if affected.is_empty() {
             return;
@@ -1166,6 +1218,8 @@ impl App {
                 }
             }
         }
+        // 地形チャンクが使うパレットを group3 へ登録する（描画前に済ませる必要がある）。
+        self.ensure_terrain_palettes(prebuilt.iter().map(|p| p.1.as_ref()));
 
         // ── VRAM 安全な差し替え（slot_ops::handle_set_material_override と同じ手順）──
         for (coord, model, gpu, batch) in prebuilt {
@@ -1439,6 +1493,8 @@ impl App {
                 }
             }
         }
+        // 地形チャンクが使うパレットを group3 へ登録する（描画前に済ませる必要がある）。
+        self.ensure_terrain_palettes(prebuilt.iter().map(|p| p.1.as_ref()));
 
         // ── フェーズ 3: ロード時に model=None で作られた ModelComponent を埋める ──
         if let Some(scene) = self.scene.as_mut() {

@@ -1,9 +1,12 @@
-# Terrain（地形エディタ）設計メモ — T1 ランタイム基盤 ＋ T2 レイヤブレンド
+# Terrain（地形エディタ）設計メモ — T1 ランタイム基盤 ＋ T2/T2b レイヤブレンド
 
 本書は SEED の地形（terrain）機能の設計正典である。
 **T1: ランタイム基盤**（ボクセル SDF ＋ marching cubes による洞窟対応の破壊可能地形）と、
 **T2: 地形マテリアルのレイヤブレンド**（スプラット × triplanar・斜度/高度ルールによる自動下地・
-ペイントブラシによる手修正）をカバーする。
+ペイントブラシによる手修正）と、
+**T2b: レイヤ拡張・テクスチャ・タイリング解消**（レイヤ定義を最大 16 層へ拡張しつつ
+チャンク単位パレットで同時ブレンド 4 層の頂点フォーマットを維持・レイヤテクスチャの
+2D 配列対応・3 種のタイリング解消モード）をカバーする。
 
 > スコープ外（未実装）: 木/草散布、LOD／ストリーミング。これらは T3 で追加する（末尾「拡張余地」参照）。
 
@@ -173,33 +176,40 @@ source_path のみ保持）し、後述の再構築パスで tvox から埋め�
   `tvox::read_chunk` の戻り値が `TerrainSettings` を返さないため。既定構成では問題ないが、非既定 voxel_size プロジェクトを
   完全復元するには tvox ヘッダの voxel_size/samples を `TerrainState` へ反映する小改修が要る（T2 で対応）。
 
-### tvox フォーマット（v2・リトルエンディアン）
+### tvox フォーマット（v3・リトルエンディアン）— T2b でレイヤ番号付きに拡張
 
 | オフセット | 型 | 内容 |
 |---|---|---|
 | 0 | u8[4] | マジック `"TVOX"` |
-| 4 | u32 | バージョン（現在 `2`） |
+| 4 | u32 | バージョン（現在 `3`） |
 | 8 | i32 | チャンク座標 x |
 | 12 | i32 | チャンク座標 y |
 | 16 | i32 | チャンク座標 z |
 | 20 | u32 | samples_per_axis（例 33） |
 | 24 | f32 | voxel_size（m） |
-| 28 | u32 | **layer_count**（スプラットのレイヤ数。v2 で追加） |
+| 28 | u32 | **slot_count**（1 サンプルのブレンドスロット数。v3 では `TERRAIN_BLEND_SLOTS`=4） |
 | 32 | f32 × N | 密度サンプル（N = samples_per_axis³, row-major） |
-| … | u8 × N×L | **手ペイントレイヤ重み**（L = layer_count・サンプルごとに L バイト・u8 量子化） |
+| … | u8 × N×S | **スロットのレイヤ番号**（S = slot_count・サンプルごとに S バイト。v3 で追加） |
+| … | u8 × N×S | **スロットの手ペイント重み**（u8 量子化。paint_index と添字対応） |
 | … | u8 × N | **ペイント量**（0=未ペイント〜255=完全に手描き優先） |
 
-ヘッダ v2 = 32 バイト（v1 = 28 バイト）。`read_chunk` は magic/version を検証し、
+ヘッダ v3 = 32 バイト（v2 と同じヘッダ長。28 バイト目の意味が layer_count→slot_count に変わるだけ。
+v1 = 28 バイト）。`read_chunk` は magic/version を検証し、
 `TvoxError{BadMagic, BadVersion, Truncated, DimMismatch}` を返す。
 
-**v1 後方互換**: v1（密度のみ・layer_count 無し）も `read_chunk` が受け付ける。
+**v2 後方互換（T2b で追加）**: v2 は「レイヤ番号なし・レイヤ 0..L-1 の重みを密に並べる」形式だった
+（T2b 以前のフォーマット）。v2 を読む場合はスロットのレイヤ番号を `[0,1,2,3]`（の先頭 `min(L,4)` 個）と
+みなして重みだけを取り込む。T2b 以前のセーブデータもそのまま開ける。
+
+**v1 後方互換**: v1（密度のみ・レイヤ情報無し）も `read_chunk` が受け付ける。
 その場合スプラットは「全サンプル未ペイント」で復元される。未ペイント＝斜度/高度ルールによる
 自動下地が全面に適用されるため、旧セーブデータも正しくレイヤブレンドされた地形として表示される
 （重みが欠落して黒落ちする、といった破綻は起きない）。
-保存は常に v2 で行う（v1 の書き手 `write_chunk_v1` はテスト・移行用のみ）。
+保存は常に v3 で行う（v1/v2 の書き手 `write_chunk_v1`/`write_chunk_v2` はテスト・移行用のみ）。
 
-**レイヤ数が変わったとき**: ファイルの `layer_count` が現在の `TERRAIN_LAYER_COUNT` と異なる場合、
-共通する先頭 `min(L_file, L_now)` 層だけを読み、残りは 0 で埋める（定義の増減でロード不能にしない）。
+**スロット数が変わったとき**: ファイルの `slot_count`（v2 では `layer_count`）が現在の
+`TERRAIN_BLEND_SLOTS` と異なる場合、共通する先頭 `min(S_file, S_now)` 個だけを読み、
+残りは 0 で埋める（定義の増減でロード不能にしない）。
 保存先: `<assets_root>/terrain/<scene>/chunk_X_Y_Z.tvox`（`std::fs::create_dir_all`＋`std::fs::write`。読みは `asset_fs::read_bytes` で PAK 対応）。
 
 ---
@@ -295,6 +305,14 @@ serde/JSON ではない。地形コマンドは以下の 3 つ。エディタ側
 起動直後に `TERRAIN_INIT` → デバッグカメラを地形フットプリント俯瞰位置へ（設定から算出、マジックナンバー無し）→
 `Add`（盛り上がり）と `Subtract`（掘り＝穴/洞窟）を数回自動適用する。通常の play/edit では動かない。
 IPC を叩けない環境（エディタ非接続）で地形生成・編集を実機確認するための手段。
+
+### レイヤ定義の差し替えフック（環境変数 `SEED_TERRAIN_LAYERS`）
+
+`ensure_terrain_layers()`（`terrain_ops.rs`）はレイヤ定義を読む際、環境変数
+**`SEED_TERRAIN_LAYERS`** に絶対パスが設定されていれば `assets://terrain/layers.json` の代わりに
+そのファイルを読む（空文字は無視）。プロジェクトのアセットを一切書き換えずに、
+別のレイヤ構成（テクスチャ付き・16 層フル定義・detile モード違い等）を実機で試すための
+恒常フック。未設定時の挙動は従来どおり（`assets://terrain/layers.json` → 読めなければ既定 4 層）。
 
 ---
 
@@ -422,9 +440,13 @@ IPC を叩けない環境（エディタ非接続）で地形生成・編集を�
 AAA 定番の **スプラット（レイヤ重み）× triplanar** 方式。
 「斜度/高度ルールによる自動下地生成」と「ブラシによる手ペイント修正」の**両方**に対応する。
 
+> 本節は T2 時点の基本設計（1 頂点が同時に持てるレイヤは 4 種まで＝レイヤ定義自体の上限も 4）を
+> 記す。レイヤ定義数を 16 まで拡張し、頂点フォーマットは変えずに済ませる T2b の設計は §12.7 以降を参照。
+
 ### 12.1 レイヤ定義（データドリブン）— `assets/terrain/layers.json`
 
 レイヤ構成はアセットで定義する。値を書き換えるだけで塗り分けが変わる（コード変更不要）。
+サンプルは §12.7 のテクスチャ・detile 付き例を参照（本節の最小例は base_color のみの単色レイヤ）。
 
 ```jsonc
 {
@@ -446,7 +468,8 @@ AAA 定番の **スプラット（レイヤ重み）× triplanar** 方式。
         "priority": 1.0                // 同条件で複数層が立つときの配分比
       }
     }
-    // … 最大 4 層（TERRAIN_LAYER_COUNT）。超過分は先頭 4 層へ切り詰め
+    // … 最大 16 層（TERRAIN_MAX_LAYERS。T2 時点は 4 層＝TERRAIN_BLEND_SLOTS が上限だった）。
+    // 超過分は先頭 16 層へ切り詰め
   ]
 }
 ```
@@ -454,33 +477,38 @@ AAA 定番の **スプラット（レイヤ重み）× triplanar** 方式。
 - 正典実装: `runtime/src/engine/terrain/layers.rs`（純粋データ層。IO/GPU 非依存）。
 - ファイルが無い／壊れている場合は**既定セット（単色 4 層: 草・土・岩・砂）へフォールバック**する。
   アセット未整備でもブレンドが目視でき、データドリブンな試作を止めない。
-- レイヤ数上限 `TERRAIN_LAYER_COUNT = 4` は**定数**（layers.rs）。WGSL 側の
-  `const TERRAIN_LAYER_COUNT: u32 = 4u` と一致必須（`terrain_gbuffer.rs` のテストが検証）。
+- レイヤ定義数の上限は `TERRAIN_MAX_LAYERS = 16`（layers.rs）。GPU 側のレイヤテクスチャ配列の
+  枚数上限と一致させてある。**同時にブレンドできる数（4）とは別の定数**であることに注意
+  （§12.7「レイヤ数の拡張とチャンク単位パレット」参照）。
 
 ### 12.2 スプラット（レイヤ重み）の保持方法とメモリ
 
-密度と同じ 33³ グリッド上に、**手ペイント分だけ**を保持する（`chunk_data.rs`）:
+密度と同じ 33³ グリッド上に、**手ペイント分だけ**を保持する（`chunk_data.rs`）。
+T2b で「どのレイヤ番号に塗ったか」を持ち回る必要が生じたため、重みだけでなくスロットごとの
+**レイヤ番号**も保持するようになった（旧: 重みのみ 4 成分 → 新: レイヤ番号 4 ＋重み 4）:
 
 | 配列 | 型 | サイズ/チャンク |
 |---|---|---|
 | `density` | f32 × 1 | 143.7 KB |
-| `paint`（手ペイント重み） | u8 × 4 | 143.7 KB |
+| `paint_index`（スロットのレイヤ番号・T2b で追加） | u8 × 4 | 143.7 KB |
+| `paint_weight`（スロットの手ペイント重み） | u8 × 4 | 143.7 KB |
 | `paint_amount`（ペイント量 0..1） | u8 × 1 | 35.9 KB |
-| **合計** | | **323.4 KB/チャンク**（T1 比 +125%） |
+| **合計** | | **467.0 KB/チャンク** |
 
-既定の地面 4×4×3 = 48 チャンクで約 **15.5 MB**。
-u8 量子化を採ったのは、f32 のままだと `paint` だけで 575 KB/チャンク（density の 4 倍）に膨らむため。
-重みは 0..1 の被覆率であり 8bit で視覚的に十分。
+既定の地面 4×4×3 = 48 チャンクで約 **22.4 MB**。
+u8 量子化を採ったのは、f32 のままだと `paint_weight` だけで 575 KB/チャンク（density の 4 倍）に
+膨らむため。重みは 0..1 の被覆率であり 8bit で視覚的に十分。レイヤ番号も u8 で足りる
+（`TERRAIN_MAX_LAYERS = 16 << 255`）。
 
 **斜度/高度ルールによる自動下地はグリッドに保存しない。** メッシュ生成時に法線と高度から毎回計算する。
 理由は、ルールが `layers.json` で後から差し替えられるべきで、グリッドへ焼き込むと差し替えが効かなくなるため。
 
 ### 12.3 ルール自動生成と手ペイントの共存
 
-最終的なレイヤ重みは 1 本の式で決まる（`layers::blend_rule_and_paint`）:
+最終的なレイヤ重みは 1 本の式で決まる（T2b では任意レイヤ数版 `layers::blend_rule_and_paint_all`）:
 
 ```
-result = normalize( lerp(rule_weights, paint_weights, paint_amount) )
+result = normalize( lerp(rule_weights, paint_slots を展開した重み, paint_amount) )
 ```
 
 | `paint_amount` | 挙動 |
@@ -492,9 +520,11 @@ result = normalize( lerp(rule_weights, paint_weights, paint_amount) )
 ペイント済みを真偽フラグではなく**連続値**（`paint_amount`）にしたのが要点で、
 これによりブラシ縁の段差が出ず、「上書きしない」という要件も同時に満たす。
 
-`rule_weights(normal_y, world_y)` は
+`rule_weights_all(normal_y, world_y)` は
 斜度 = `acos(|n.y|)`（度）と高度 = ワールド Y に対する台形ウィンドウの積 × `priority` を、
-総和 1 へ正規化したもの。全ルールが 0 になる縮退時はレイヤ 0 に 1.0 を寄せる（黒落ち防止）。
+**レイヤ定義数ぶんの密ベクトルとして**総和 1 へ正規化したもの（T2 時点は固定 4 要素だったが、
+T2b で任意のレイヤ定義数 `layers.len()` に対応した）。全ルールが 0 になる縮退時はレイヤ 0 に
+1.0 を寄せる（黒落ち防止）。
 
 ### 12.4 GPU への運び方（頂点カラー転用）
 
@@ -506,8 +536,15 @@ forward / shadow / depth / id / outline / RT を含む**全パイプラインが
 これを転用するのが最小の差分で、既存の頂点アップロード経路をそのまま使える。
 → 同時ブレンド可能なレイヤ数が 4 に固定される、というトレードオフ。
 
-マーチングキューブスは辺の両端サンプルから `paint` / `paint_amount` を位置と同じ係数 `t` で線形補間し
-（`marching_cubes.rs`）、`terrain_mesh_to_model` がそこへルール重みを合成して頂点カラーへ焼く。
+**T2 時点はこれが「レイヤ定義数そのものの上限」でもあった**（4 層固定）。T2b では
+「1 頂点が同時にブレンドできる数（4・`TERRAIN_BLEND_SLOTS`）」と「レイヤ定義の総数（最大 16・
+`TERRAIN_MAX_LAYERS`）」を分離し、後者だけを拡張した。頂点カラーの意味は変わらず「重み」のままで、
+「その重みがどのレイヤ番号を指すか」をチャンク単位の uniform（パレット）で運ぶようにしたのが
+T2b の核心である（詳細は §12.7）。
+
+マーチングキューブスは辺の両端サンプルから `paint`（T2b では `paint_index`/`paint_weight`）/
+`paint_amount` を位置と同じ係数 `t` で線形補間し（`marching_cubes.rs`）、
+`terrain_mesh_to_model` がそこへルール重みを合成して頂点カラーへ焼く。
 
 ### 12.5 シェーディング（既存 deferred G-Buffer への統合）
 
@@ -518,14 +555,15 @@ forward / shadow / depth / id / outline / RT を含む**全パイプラインが
 - 連結順: `["shader_common.wgsl", "shader_static_vertex.wgsl", "terrain_gbuffer_write.wgsl"]`
   （`surface.wgsl` / `surface_gather.wgsl` は連結しない。Surface を経由せず直接 MRT を作る）
 - バインドグループ: `group0=camera / 1=model / 2=material`（`MeshPipeline` から借用）＋
-  **`group3` = 地形レイヤ定義**（uniform 1 + サンプラ 1 + レイヤテクスチャ 4）。
+  **`group3` = 地形レイヤ定義**。**T2b でレイアウトが変わり**、レイヤテクスチャは個別バインディングではなく
+  2D 配列テクスチャ 3 本になった（正確なレイアウトは §12.8 の表を参照）。
   非スキンの地形では group3 が空いているため、ここに差すのが最小差分。
 - MRT カラーターゲットは通常の G-Buffer と**完全に同一**（`gbuffer_color_targets()` を共有）。
 
 フラグメントは
 ①頂点カラー（レイヤ重み）を再正規化 → ②法線から triplanar ブレンド重み `pow(|n|, sharpness)` を求める →
-③各レイヤをワールド座標由来 UV で 3 平面サンプル（最大 4 層 × 3 平面 = 12 タップ）→
-④重みで線形合成した `albedo / metallic / roughness` を G-Buffer へ書く。
+③各レイヤをワールド座標由来 UV で 3 平面サンプル → ④重みで線形合成した
+`albedo / normal / metallic / roughness` を G-Buffer へ書く。
 合成済みの値を通常レイアウトへ出すため、**ライティング・シャドウ・SSAO・RT 反射・SSGI は既存パスがそのまま効く**。
 
 パイプライン選択は `Material::terrain_layers`（bool）が唯一のスイッチで、
@@ -533,27 +571,244 @@ forward / shadow / depth / id / outline / RT を含む**全パイプラインが
 このフラグを立てるのは `terrain_mesh_build.rs` だけ。
 レイヤ定義の BindGroup が未用意（地形が無いシーン・GPU 未初期化）のときは切り替えず、通常マテリアル描画へ倒す。
 
-レイヤテクスチャは 2D 配列テクスチャではなく**個別バインディング 4 枚**にしてある
-（配列は全レイヤで同一サイズ・同一フォーマットを強制するため）。
-パス未指定・読み込み失敗のレイヤには 1×1 白テクスチャを割り当て、`base_color` の単色レイヤとして機能させる。
-
 ### 12.6 ペイントブラシ
 
 - 純粋アルゴリズム: `runtime/src/engine/terrain/paint.rs`（`PaintField` トレイト＋`apply_paint`）。
   密度ブラシ（`brush.rs`）と同じ減衰カーブ（`falloff`）・同じ境界重複同期規約を使う。
-- 1 サンプルあたり `paint[layer] += delta` → 正規化（他レイヤは相対的に減衰）、`paint_amount += delta` を clamp。
+- 1 サンプルあたり対象レイヤのスロット重みへ `+= delta` → 正規化（他スロットは相対的に減衰）、
+  `paint_amount += delta` を clamp。**T2b の変更**: 対象レイヤが既存の 4 スロットのどれにも
+  無い場合は、そのサンプルで**最小重みスロットを対象レイヤへ置換**する（`add_layer_weight`。
+  最も影響の薄い層を捨てる規則。詳細は §12.7 のペイント保存形式変更を参照）。
 - エンジン統合: `terrain_ops.rs::handle_terrain_paint`（レイキャスト経路）と `handle_terrain_paint_world`（共通経路）。
-- undo: 密度ブラシと同じ `stroke_before` を共有する。1 エントリは `ChunkSnapshot{density, paint, paint_amount}` を
-  丸ごと控えるため、密度編集とペイントが混在したストロークも 1 回の undo で完全に戻る。
+- undo: 密度ブラシと同じ `stroke_before` を共有する。1 エントリはチャンクスナップショット
+  （`density`/`paint_index`/`paint_weight`/`paint_amount`）を丸ごと控えるため、密度編集とペイントが
+  混在したストロークも 1 回の undo で完全に戻る。
 
 ---
 
-## 13. 拡張余地（T3）
+## 12.7 T2b: レイヤ数の拡張とチャンク単位パレット
 
-- **レイヤ法線マップ**: T2 ではレイヤごとの base_color テクスチャのみ対応。法線マップを足す場合は
-  group3 にテクスチャ 4 枚を追加し、triplanar の 3 平面それぞれで接空間法線を合成する（Whiteout blend）。
-- **レイヤ数の拡張（>4）**: 頂点カラー転用をやめ、専用の頂点属性スロット（`Unorm8x4` を 2 本など）を
-  追加する必要がある（§12.4 のトレードオフ参照）。
+### なぜ頂点属性を増やさなかったか
+
+T2 の「拡張余地」では『レイヤ数を 4 を超えて増やすには専用の頂点属性が要る』としていたが、
+これは採用しなかった。理由は 3 つ:
+
+1. **影響範囲**: `mesh_vertex` レイアウト（72B）は forward / shadow / depth / id / outline / RT を
+   含む **22 本のパイプラインが共有**しており、属性を 1 つ増やすだけでも全パイプラインへ波及する。
+2. **flat 補間の継ぎ目問題**: レイヤ番号は（重みと違って）補間されては困る値なので
+   `@interpolate(flat)` にする必要がある。しかし三角形の 3 頂点でパレット（どのレイヤ番号を
+   運ぶか）が食い違うと、どの頂点が「代表」になるかが provoking vertex 依存になり、
+   ハードな継ぎ目が三角形単位で出てしまう。
+3. **業界標準との整合**: Unreal Engine の Landscape も component（チャンク相当）単位の
+   weightmap でレイヤを割り当てており、チャンク単位パレットは特殊な妥協ではなく王道の解法。
+
+代わりに採った設計は「**頂点カラーは重みのみを運び、レイヤ番号はチャンクごとの
+パレット `[u32; 4]` として uniform で渡す**」というもの。頂点フォーマットを一切変えずに、
+レイヤ定義数を 4 → 16（`TERRAIN_MAX_LAYERS`）へ拡張できる。
+
+### 定数の分離
+
+- `TERRAIN_BLEND_SLOTS = 4`（旧 `TERRAIN_LAYER_COUNT` からリネーム）: 1 頂点／1 チャンクが
+  同時にブレンドできるレイヤ数。頂点カラー RGBA の成分数のまま変わらない。
+- `TERRAIN_MAX_LAYERS = 16`（新設）: `layers.json` に定義できるレイヤ数の上限。
+  GPU 側のレイヤテクスチャ配列の枚数上限と一致。
+
+どちらも `runtime/src/engine/terrain/layers.rs` の定数で、WGSL 側
+`terrain_gbuffer_write.wgsl` の同名 `const` と一致必須（`terrain_gbuffer.rs` のテストが
+文字列一致で検証する）。
+
+### パレットの決め方（`terrain_mesh_build.rs` の 2 パス）
+
+チャンクのメッシュ化時に、`TerrainMesh` → `Model` 変換（`terrain_mesh_to_model`）が
+以下の 2 パスでチャンク固有のパレットを決める:
+
+1. **パス 1**: 全頂点についてルール重み＋手ペイントを合成した密重みベクトル
+   （長さ = `layers.len()`）を求めつつ、チャンク全体の合計 `chunk_total[layer]` を累積する。
+2. **パレット決定**: `select_top_slots(chunk_total)` で合計上位 4 層を選び、
+   `BlendSlots{ index: [u32;4], weight: [f32;4] }` を得る。この `index` がそのチャンクの
+   **パレット**になる。
+3. **パス 2**: 各頂点の密重みを、決まったパレットの 4 成分へ射影し直し、総和 1 へ再正規化して
+   `Vertex.color` に焼く。
+
+戻り値はパレット `[u32; TERRAIN_BLEND_SLOTS]` も含む（呼び出し側が GPU の uniform／
+バインドグループ選択に使う）。
+
+### 設計上の限界（必ず把握しておくこと）
+
+**1 チャンク（既定 16m 角）内で同時に使えるレイヤは 4 種まで。** パレットはチャンク全体の
+重み合計で決まるため、チャンク内の一部分にしか出ない 5 番目以降の層は、そのチャンクでは
+パレットから落ちる（残り 4 層へ再正規化されて描かれるので、意図しない層で塗られたように見える）。
+チャンクをまたげば別パレットになるので、レイヤの局所性が高いほど問題になりにくい
+（局所的にしか出ない層が 1 チャンク内で 5 種以上重なる構成は避けること）。
+
+---
+
+## 12.8 T2b: レイヤテクスチャ対応
+
+`layers.json` の `base_color_texture` / `normal_texture` / `roughness_texture` を実際に
+読み込み、triplanar でサンプルする（T2 では base_color の単色のみだった）。
+
+### texture_2d_array を選んだ理由（bindless を採らなかった理由）
+
+素直な代替は bindless（`binding_array<texture_2d<f32>>`）だが、**wgpu では
+`binding_array` と `uniform` を同一バインドグループへ置けない**（実機の BGL 構築でパニックする
+既往あり）。地形の `group3` にはレイヤパラメータの `uniform` が同居必須で、かつ `group0`〜`group3`
+がすべて埋まっているため uniform を別グループへ逃がす余地が無い。
+`texture_2d_array` なら uniform と同居でき、追加の GPU 機能フラグ（`TEXTURE_BINDING_ARRAY`）も
+不要で全環境で動く。代償は「配列内の全レイヤが同一解像度・同一フォーマットを強制される」ことで、
+これは共通解像度へのリサイズで吸収する（`terrain_layer_textures.rs`）。
+
+- 共通解像度: `TERRAIN_LAYER_TEXTURE_SIZE = 512`（2 のべき乗。ミップ段数計算の前提）。
+- ミップ連鎖は **CPU 生成**（`image::imageops::resize` を段ごとに適用）。GPU ミップ生成
+  （ブリット連鎖）は専用パイプラインを要するため、レイヤ枚数が高々 16・構築が起動時 1 回
+  であることを踏まえ CPU 側の方が総コストが小さい。
+- 同一パス文字列は `HashMap<String, RgbaImage>` でデコード結果をキャッシュする
+  （同じ PNG を複数レイヤ・複数マップが参照しても 1 回しかデコードしない）。
+- **配列の層数は実際の定義レイヤ数に合わせる**（`set.layers.len().clamp(1, TERRAIN_MAX_LAYERS)`）。
+  常に 16 層ぶん確保すると、4 層構成でも 512² × RGBA × 16 層 × 3 マップ ≒ **64MB** を占有してしまう
+  ため（4 層構成なら約 16MB で済む）。
+- sRGB: base_color のみ `Rgba8UnormSrgb`（サンプル時に自動でリニア展開）。normal/roughness は
+  数値データなのでリニア `Rgba8Unorm`。
+- **テクスチャ未指定レイヤは単色（base_color のみ）へフォールバック** — T2 と同じ見た目になる
+  （`base_color.a` が「テクスチャ有無」フラグを兼ねる。§12.9 の表を参照）。
+- 法線マップは triplanar の **whiteout ブレンド**（Ben Golus 方式）でワールド空間の法線を合成する
+  （3 平面の接空間タンジェント法線を頂点法線の対応成分へ加算する近似。地形は UV 展開を持たず
+  正しい接空間が存在しないため、この近似が事実上の標準解）。
+- ラフネスはテクスチャの R チャンネル × スカラ係数（`roughness`）。
+
+---
+
+## 12.9 group3 のバインドレイアウト（T2b）
+
+| binding | 種別 | 内容 |
+|---|---|---|
+| 0 | uniform | `TerrainLayerUniform`（800B: `TerrainLayerParams`×16 + `palette: vec4<u32>` + `params: vec4<f32>`） |
+| 1 | sampler | Repeat（u/v/w すべて）・トライリニア（ミップ線形。CPU 生成ミップに対応） |
+| 2 | `texture_2d_array<f32>` | base_color（`Rgba8UnormSrgb`） |
+| 3 | `texture_2d_array<f32>` | normal（`Rgba8Unorm`） |
+| 4 | `texture_2d_array<f32>` | roughness（`Rgba8Unorm`） |
+
+`TerrainLayerParams`（48B・レイヤ 1 枚ぶん）:
+
+| フィールド | 内容 |
+|---|---|
+| `base_color: vec4<f32>` | rgb = ベースカラー係数（リニア）、a = ベースカラーテクスチャ有無（0/1） |
+| `surface: vec4<f32>` | x=metallic, y=roughness, z=triplanar UV スケール, w=detile モードコード |
+| `extra: vec4<f32>` | x=法線テクスチャ有無, y=ラフネステクスチャ有無, z=detile 強度, w=予約 |
+
+`palette: [u32; 4]` は「このチャンクが使うレイヤ番号 4 つ」＝頂点カラー成分 → レイヤ番号の対応表
+（§12.7 参照）。**パレットごとにバインドグループを `HashMap<[u32;4], wgpu::BindGroup>` でキャッシュ**
+する（`TerrainLayerResources::bind_groups`。テクスチャ配列・サンプラ・レイヤパラメータは全チャンクで
+共有し、パレット違いのぶんだけ小さな uniform バッファ＋BindGroup を追加で持つ）。未登録パレットは
+既定パレット `IDENTITY_PALETTE = [0,1,2,3]` へフォールバックし、描画をパニックさせない。
+
+---
+
+## 12.10 T2b: タイリング解消（detile）
+
+`layers.json` の per-layer `"detile"` フィールドで、レイヤごとに 3 モードから選べる
+（既定 `"none"` は従来どおりの単純タイリングで、後方互換のため既定値）。
+
+| モード | 内容 |
+|---|---|
+| `"none"`（既定） | 単純タイリング。従来（T2）どおりの見た目。 |
+| `"stochastic"` | 六角格子の確率的タイリング（Heitz-Neyret 風）。UV を六角（三角）格子へ写し、最近傍 3 セル＋重心座標を求め、セルごとにハッシュ関数でずらした UV で 3 タップサンプルする。重心を `pow(w, 7)`（`DETILE_BLEND_SHARPNESS`）で鋭くしてから再正規化し、3 タップが均等に混ざるぼやけ領域を狭める。`detile_strength` で `none`（無変換）とのブレンド量を制御する。 |
+| `"macro"` | 第 2 スケール（元スケール比 `0.13`）のテクスチャ重ね＋大スケール value ノイズによる明度変調。安価（3 タップに収まる）。**タイル格子そのものは消さない**——大局的な単調さを減らす（明るさのムラを付ける）用途に限る。 |
+
+**stochastic モードの既知の限界（必ず把握しておくこと）**: Heitz-Neyret 本来の手法にある
+「ヒストグラム保存（inverse CDF によるコントラスト補正）」は実装していない。3 タップを単純な
+線形ブレンドしているだけなので、タイル重なり領域でコントラスト（分散）が理論値より低下し、
+わずかに眠い（ぼやけた）絵になる。ヒストグラム保存には前処理でガウス化した変換テクスチャと
+逆変換 LUT の生成が要り、アセットパイプラインの追加が必要なため T2b の範囲外とした。
+
+### WGSL の一様制御フロー制約への対応（`textureSampleGrad` への統一）
+
+全テクスチャサンプルを `textureSampleGrad`（明示 grad 版）に統一している。
+`dpdx(world_pos)` / `dpdy(world_pos)` はフラグメント関数の先頭（一様制御フロー内）で
+**1 回だけ**取り、UV スケール倍して各サンプル呼び出しへ配る。理由は 2 つ:
+
+1. WGSL の暗黙 derivative（`textureSample`）は**一様制御フロー内でしか呼べない**。明示
+   `textureSampleGrad` なら非一様分岐の中でも合法にサンプルでき、「重み 0 のスロットを
+   丸ごとスキップする」「寄与が極小の triplanar 面をスキップする」といった最適化が可能になる
+   （最悪 4 スロット×3 平面×3 タップ×3 マップ＝108 タップを、実用域まで削減できる）。
+2. 確率的タイリングはタイルごとに UV を不連続にずらす。暗黙 derivative のままだと、
+   ずらし目でミップ段差＝シームが必ず出る。元 UV（ずらす前）の grad を使い回すことで、
+   タイル境界のシームを消している。
+
+---
+
+## 12.11 layers.json 書式の後方互換（T2b）
+
+- T2b で追加したフィールド（`normal_texture` / `roughness_texture` / `detile` /
+  `detile_strength` 等）はすべて `#[serde(default)]`。**T2 時点の 4 層 layers.json
+  （テクスチャ・detile 未指定）はそのまま読める**。`detile` 未指定は `"none"` になる。
+- 17 層以上を書くと `TERRAIN_MAX_LAYERS`（16）へ切り詰められる（エラーにはしない＝
+  データ差し替えでの試行錯誤を止めないため）。
+
+テクスチャ・detile 指定込みのサンプル:
+
+```jsonc
+{
+  "layers": [
+    {
+      "name": "grass",
+      "base_color": [0.16, 0.38, 0.12],
+      "roughness": 0.9,
+      "uv_scale": 0.25,
+      "base_color_texture": "terrain/textures/grass_basecolor.png",
+      "normal_texture": "terrain/textures/grass_normal.png",
+      "roughness_texture": "terrain/textures/grass_roughness.png",
+      "detile": "stochastic",
+      "detile_strength": 1.0,
+      "rule": { "slope_min_deg": 0.0, "slope_max_deg": 22.0, "slope_fade_deg": 10.0, "priority": 1.0 }
+    },
+    {
+      "name": "rock",
+      "base_color": [0.4, 0.4, 0.42],
+      "roughness": 0.7,
+      "base_color_texture": "terrain/textures/rock_basecolor.png",
+      "detile": "macro",
+      "detile_strength": 0.6,
+      "rule": { "slope_min_deg": 38.0, "slope_max_deg": 90.0, "slope_fade_deg": 10.0, "priority": 1.2 }
+    }
+  ]
+}
+```
+
+---
+
+## 12.12 ペイント保存形式の変更（T2b）
+
+- ペイントは T2 では重みのみ `[u8; 4]` だったが、T2b では**レイヤ番号＋重み**
+  （`paint_index: [u8; 4]` ＋ `paint_weight: [u8; 4]`）へ変更した（§12.2 参照）。
+- `apply_paint`（`paint.rs`）は対象レイヤが既存の 4 スロットのどれにも無い場合、
+  **最小重みスロットを対象レイヤへ置換**する（`add_layer_weight`。そのサンプルで最も
+  影響の薄い層を捨てる規則。未使用スロット＝重み 0 は必然的に最小になるため、
+  「空きスロットへ入れる」と「既存最小を置換する」を同じ 1 本の規則で扱える）。
+- 永続化フォーマットは **tvox v3** になった（§8 参照。書き出しは常に v3、v2/v1 は読み込みのみ
+  後方互換）。
+
+---
+
+## 13. 拡張余地（T3 以降）
+
+- **レイヤ数の拡張（>4 = 頂点属性の追加）**: T2b で「頂点フォーマットを変えずにレイヤ定義数を
+  16 まで拡張する」ことは解決済み（§12.7）。頂点属性そのものを増やす方向はもはや不要。
+- **確率的タイリングのヒストグラム保存**: `"stochastic"` detile はヒストグラム保存
+  （inverse CDF）未実装で、重なり領域のコントラストがやや落ちる（§12.10 参照）。前処理
+  テクスチャ変換＋LUT のアセットパイプラインが要る。
+- **チャンク内 5 層以上の同時ブレンド**: パレットはチャンク全体の重み合計で決まるため、
+  1 チャンク内に局所的にしか出ない 5 番目以降の層は落ちる（§12.7「設計上の限界」）。
+  必要ならチャンクサイズを小さくする、あるいはパレット選択をチャンク内サブ領域単位に
+  分割する等の再設計が要る。
+- **レイヤテクスチャの共通解像度リサイズの是非**: 全レイヤを 512² へ強制リサイズしている
+  （§12.8）。高解像度が必要なレイヤと低解像度で十分なレイヤが混在する場合、解像度を
+  レイヤごとに選べるようにするには texture_2d_array をやめる（＝bindless 化。wgpu の
+  binding_array と uniform の非共存制約への対処が要る）か、マップ種別ごとに複数の配列
+  テクスチャへ分割する設計変更が要る。
+- **VRAM**: レイヤテクスチャは 16 層フル定義で約 64MB（512² × RGBA × 16 層 × 3 マップ、
+  ミップ込みで実際はやや増える）。プロジェクトのレイヤ数が少なければ比例して小さい
+  （§12.8）。
 - **tvox 拡張**: voxel_size/samples をロード後 `TerrainState` へ反映（§8 の限界解消）。密度の i8 量子化（ディスク 1/4）。
 - **T3 散布物**: チャンクフォルダ内に木・草アクターを追加（ヒエラルキーは既に対応）。地表サンプルから配置点を算出。
 - **T3 LOD/ストリーミング**: 遠距離チャンクの粗メッシュ（セル間引き）・視錐台外チャンクのアンロード。
