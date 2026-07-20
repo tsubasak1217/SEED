@@ -232,6 +232,20 @@ impl App {
                         }
                     }
                 }
+                IpcCommand::TerrainInit => {
+                    // ボクセル地形を初期化する（地形ツリー生成＋初期地面のメッシュ化）。
+                    self.handle_terrain_init();
+                }
+                IpcCommand::TerrainBrush { op, screen_x, screen_y, radius, strength } => {
+                    // op を BrushOp へ復元（未知値は Add にフォールバック）。
+                    let brush_op = crate::engine::terrain::BrushOp::from_u32(op)
+                        .unwrap_or(crate::engine::terrain::BrushOp::Add);
+                    self.handle_terrain_brush(brush_op, screen_x, screen_y, radius, strength);
+                }
+                IpcCommand::TerrainSave => {
+                    // ボクセル地形の全チャンクを .tvox として保存する。
+                    self.handle_terrain_save();
+                }
                 IpcCommand::SaveActor(path) => {
                     let wl = self.active_world_line;
                     let result: Result<(), String> = (|| {
@@ -654,6 +668,9 @@ impl App {
                             // （ルート Transform/name/active/world_line は維持）。
                             // undo_history リセットの前に実行する（ロードの一部でありUndo対象外）。
                             self.apply_prefab_links_on_load();
+                            // 地形チャンク（TerrainChunkComponent 付き）を .tvox から復元し、
+                            // terrain:// ガードで model=None のまま読まれた ModelComponent を埋める。
+                            self.rebuild_terrain_after_load();
                             self.undo_history = crate::engine::core::app_base::undo::UndoHistory::new();
                             if let Some(cam) = cam_data {
                                 self.apply_camera_data(&cam);

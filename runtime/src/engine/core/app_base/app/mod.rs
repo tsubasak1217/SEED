@@ -55,6 +55,8 @@ pub(crate) mod skybox_scene_gizmo;
 pub(crate) mod particle_scene_gizmo;
 mod prefab_ops;
 pub(crate) mod camera_scene_gizmo;
+pub(super) mod terrain_ops;
+mod terrain_mesh_build;
 
 // ── 外部クレート・標準ライブラリ ────────────────────────────
 use std::collections::{HashMap, HashSet};
@@ -860,6 +862,12 @@ pub struct App {
     /// キー = (JointAttach スロットの entity, 解決できなかった joint_name)。毎フレーム走査で
     /// 同じ警告を繰り返さないために使う（jointattach_ops::update_joint_attachments が更新）。
     pub(super) joint_attach_warned: std::collections::HashSet<(crate::engine::ecs::Entity, String)>,
+
+    // ── ボクセル地形（Terrain Editor ランタイム）────────────────────
+    /// 地形の実行時状態（設定・全チャンクの密度・チャンク→メッシュスロット対応・
+    /// 編集ダーティ集合）。シーン非依存の terrain ライブラリと ECS/GPU を橋渡しする。
+    /// 詳細は terrain_ops::TerrainState を参照。
+    pub(super) terrain: terrain_ops::TerrainState,
 }
 
 /// プロジェクト設定が読めない場合のウィンドウ解像度既定値（Full HD）。
@@ -1037,6 +1045,7 @@ impl App {
             anim_preview_cache: HashMap::new(),
             anim_preview_saved: HashMap::new(),
             joint_attach_warned: std::collections::HashSet::new(),
+            terrain:             terrain_ops::TerrainState::default(),
         }
     }
 

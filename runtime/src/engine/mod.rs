@@ -9,3 +9,4 @@ pub mod plugin;
 pub mod physics;
 pub mod systems;
 pub mod animation;
+pub mod terrain;
