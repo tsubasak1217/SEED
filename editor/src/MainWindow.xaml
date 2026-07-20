@@ -1206,6 +1206,43 @@
                                                              ToolTip="ペイント（地形マテリアルレイヤを手で塗る。形状は変えない）"
                                                              Content="ペイント"
                                                              Checked="OnTerrainToolChanged"/>
+                                                <!-- 散布（Terrain T3）。地形の形状もレイヤも変えず、プロップを撒く／消す。 -->
+                                                <RadioButton x:Name="BtnTerrainScatter"
+                                                             GroupName="TerrainTools"
+                                                             Style="{StaticResource TerrainToolBtnStyle}"
+                                                             ToolTip="散布（草・木などのプロップを手で撒く。形状もレイヤも変えない）"
+                                                             Content="散布"
+                                                             Checked="OnTerrainToolChanged"/>
+
+                                                <!-- プロップ選択＋密度＋消去モード（散布ツール選択時のみ表示）。
+                                                     項目は assets/terrain/props.json の並びに対応する。 -->
+                                                <StackPanel x:Name="TerrainScatterPanel"
+                                                            Orientation="Horizontal" VerticalAlignment="Center"
+                                                            Visibility="Collapsed">
+                                                    <Border Width="1" Background="#3A3A3A" Margin="8,2"/>
+                                                    <TextBlock Text="プロップ" Foreground="#AAAAAA" FontSize="11"
+                                                               VerticalAlignment="Center" Margin="0,0,4,0"/>
+                                                    <!-- 項目は props.json から動的に生成する（RefreshTerrainPropCombo）。 -->
+                                                    <ComboBox x:Name="CmbTerrainProp"
+                                                              Width="140" VerticalAlignment="Center"
+                                                              FontSize="11"
+                                                              ToolTip="撒く対象のプロップ（props.json の並び順）"/>
+
+                                                    <TextBlock Text="密度" Foreground="#AAAAAA" FontSize="11"
+                                                               VerticalAlignment="Center" Margin="8,0,4,0"/>
+                                                    <Slider x:Name="SldTerrainDensity"
+                                                            Width="80" VerticalAlignment="Center"
+                                                            Minimum="0.1" Maximum="32" Value="4"
+                                                            ToolTip="ブラシ 1 回あたりの散布密度（点/m²）"/>
+                                                    <TextBlock x:Name="TxtTerrainDensity" Text="4.0"
+                                                               Foreground="#CCCCCC" FontSize="11" FontFamily="Consolas"
+                                                               VerticalAlignment="Center" Margin="4,0,0,0" MinWidth="30"/>
+
+                                                    <CheckBox x:Name="ChkTerrainScatterErase"
+                                                              Content="消去" Foreground="#CCCCCC" FontSize="11"
+                                                              VerticalAlignment="Center" Margin="8,0,0,0"
+                                                              ToolTip="ONにすると、撒くかわりにブラシ範囲のプロップを消す"/>
+                                                </StackPanel>
 
                                                 <!-- レイヤ選択（ペイントツール選択時のみ表示）。
                                                      項目は assets/terrain/layers.json の並びに対応する。 -->
@@ -1236,16 +1273,21 @@
                                                            Foreground="#CCCCCC" FontSize="11" FontFamily="Consolas"
                                                            VerticalAlignment="Center" Margin="4,0,10,0" MinWidth="40"/>
 
-                                                <!-- ブラシ強度スライダー（0〜1）-->
-                                                <TextBlock Text="強度" Foreground="#AAAAAA" FontSize="11"
-                                                           VerticalAlignment="Center" Margin="0,0,4,0"/>
-                                                <Slider x:Name="SldTerrainStrength"
-                                                        Width="90" VerticalAlignment="Center"
-                                                        Minimum="0" Maximum="1" Value="0.5"
-                                                        ToolTip="ブラシ強度（0〜1）"/>
-                                                <TextBlock x:Name="TxtTerrainStrength" Text="0.50"
-                                                           Foreground="#CCCCCC" FontSize="11" FontFamily="Consolas"
-                                                           VerticalAlignment="Center" Margin="4,0,10,0" MinWidth="34"/>
+                                                <!-- ブラシ強度スライダー（0〜1）。
+                                                     散布ツール選択時は意味を持たないため、パネルごと隠す
+                                                     （OnTerrainToolChanged が Visibility を切り替える）。 -->
+                                                <StackPanel x:Name="TerrainStrengthPanel"
+                                                            Orientation="Horizontal" VerticalAlignment="Center">
+                                                    <TextBlock Text="強度" Foreground="#AAAAAA" FontSize="11"
+                                                               VerticalAlignment="Center" Margin="0,0,4,0"/>
+                                                    <Slider x:Name="SldTerrainStrength"
+                                                            Width="90" VerticalAlignment="Center"
+                                                            Minimum="0" Maximum="1" Value="0.5"
+                                                            ToolTip="ブラシ強度（0〜1）"/>
+                                                    <TextBlock x:Name="TxtTerrainStrength" Text="0.50"
+                                                               Foreground="#CCCCCC" FontSize="11" FontFamily="Consolas"
+                                                               VerticalAlignment="Center" Margin="4,0,10,0" MinWidth="34"/>
+                                                </StackPanel>
 
                                                 <Border Width="1" Background="#3A3A3A" Margin="8,2"/>
 

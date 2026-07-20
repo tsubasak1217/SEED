@@ -233,6 +233,13 @@ public sealed class RuntimeManager : IDisposable
     /// </summary>
     public event Action<bool, string>? TerrainAddChunksCompleted;
 
+    /// <summary>
+    /// 散布完了通知（TERRAIN_SCATTER_OK:総インスタンス数 / TERRAIN_SCATTER_ERROR:msg）。
+    /// true=成功（引数=散布された総インスタンス数）/ false=失敗（引数=エラーメッセージ）。
+    /// ルールによる再散布（TERRAIN_SCATTER_RULES）への応答として受信する。
+    /// </summary>
+    public event Action<bool, string>? TerrainScatterCompleted;
+
     // ── コンストラクタ ─────────────────────────────────────────
 
     public RuntimeManager(string runtimeExePath)
@@ -800,6 +807,30 @@ public sealed class RuntimeManager : IDisposable
             var err = msg["TERRAIN_ADD_CHUNKS_ERROR:".Length..];
             EditorLog.Write($"[Runtime→Editor] TERRAIN_ADD_CHUNKS_ERROR {err}");
             TerrainAddChunksCompleted?.Invoke(false, err);
+        }
+        // 散布ブラシの結果は、ドラッグ中に 40ms 間隔で届く高頻度メッセージ。
+        // 密度ブラシ（TERRAIN_BRUSH_OK / _MISS）と同じく TerrainBrushResult へ流し、
+        // UI 更新は行わない。ここで拾わないと未知メッセージとして毎回ログへ書かれ、
+        // 1 ストロークでエディタログが埋まってしまう。
+        else if (msg.StartsWith("TERRAIN_SCATTER_BRUSH_OK:", StringComparison.Ordinal))
+        {
+            TerrainBrushResult?.Invoke(true, msg["TERRAIN_SCATTER_BRUSH_OK:".Length..]);
+        }
+        else if (msg == "TERRAIN_SCATTER_BRUSH_MISS")
+        {
+            TerrainBrushResult?.Invoke(false, "");
+        }
+        else if (msg.StartsWith("TERRAIN_SCATTER_OK:", StringComparison.Ordinal))
+        {
+            var total = msg["TERRAIN_SCATTER_OK:".Length..];
+            EditorLog.Write($"[Runtime→Editor] TERRAIN_SCATTER_OK total={total}");
+            TerrainScatterCompleted?.Invoke(true, total);
+        }
+        else if (msg.StartsWith("TERRAIN_SCATTER_ERROR:", StringComparison.Ordinal))
+        {
+            var err = msg["TERRAIN_SCATTER_ERROR:".Length..];
+            EditorLog.Write($"[Runtime→Editor] TERRAIN_SCATTER_ERROR {err}");
+            TerrainScatterCompleted?.Invoke(false, err);
         }
         else if (msg.StartsWith("ACTOR_DATA:", StringComparison.Ordinal))
         {

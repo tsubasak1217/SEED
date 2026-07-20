@@ -131,6 +131,9 @@ pub(crate) fn get_shader_source(name: &str) -> &'static str {
         "gbuffer_write.wgsl"         => include_str!("shaders/gbuffer_write.wgsl"),
         // 地形レイヤブレンド G-Buffer 書き込み（Terrain T2・terrain_gbuffer.rs が連結する）。
         "terrain_gbuffer_write.wgsl" => include_str!("shaders/terrain_gbuffer_write.wgsl"),
+        // プロシージャル草の G-Buffer 書き込み（grass_gbuffer.rs が単体で使う）。
+        // 自己完結シェーダのため他ソースと連結しない（CameraUniform を自前宣言している）。
+        "grass_gbuffer.wgsl"         => include_str!("shaders/grass_gbuffer.wgsl"),
         // デファードのフルスクリーン・ライティング復元（Phase D3: Deferred 化 Phase A）。
         "deferred_lighting.wgsl"     => include_str!("shaders/deferred_lighting.wgsl"),
         // 反射（SSR / RT）フルスクリーンパス＋合成（Phase D6）。

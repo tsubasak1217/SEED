@@ -124,6 +124,96 @@
                 </Grid>
             </TabItem>
 
+            <!-- ── 散布タブ: props.json の編集（Terrain T3）─────────────────
+                 プロップ（草・木などの散布物）定義の一覧と、選択プロップの
+                 パラメータ編集（草／風／散布／ルール）。右ペインの中身は
+                 レイヤタブと同じくコードビハインドで組み立てる
+                 （kind による条件付き表示をコードで一元管理するため）。 -->
+            <TabItem Header="散布">
+                <Grid Margin="6">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="*"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="230"/>
+                        <ColumnDefinition Width="6"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+
+                    <!-- 左: プロップ一覧＋操作ボタン。並び順が props.json の並び（prop 添字）になる。 -->
+                    <DockPanel Grid.Row="0" Grid.Column="0">
+                        <TextBlock DockPanel.Dock="Top"
+                                   Text="プロップ一覧（草・木などの散布物）"
+                                   Foreground="#999999" TextWrapping="Wrap" Margin="0,0,0,4"/>
+
+                        <WrapPanel DockPanel.Dock="Bottom" Margin="0,6,0,0">
+                            <Button x:Name="BtnAddProp"       Style="{StaticResource ToolButtonStyle}"
+                                    Content="追加"   ToolTip="新しいプロップを末尾に追加する"
+                                    Click="OnAddProp"/>
+                            <Button x:Name="BtnDuplicateProp" Style="{StaticResource ToolButtonStyle}"
+                                    Content="複製"   ToolTip="選択中のプロップを複製する"
+                                    Click="OnDuplicateProp"/>
+                            <Button x:Name="BtnRemoveProp"    Style="{StaticResource ToolButtonStyle}"
+                                    Content="削除"   ToolTip="選択中のプロップを削除する（最低 1 種は残る）"
+                                    Click="OnRemoveProp"/>
+                            <Button x:Name="BtnMovePropUp"    Style="{StaticResource ToolButtonStyle}"
+                                    Content="▲"     ToolTip="1 つ上へ移動"
+                                    Click="OnMovePropUp"/>
+                            <Button x:Name="BtnMovePropDown"  Style="{StaticResource ToolButtonStyle}"
+                                    Content="▼"     ToolTip="1 つ下へ移動"
+                                    Click="OnMovePropDown"/>
+                        </WrapPanel>
+
+                        <ListBox x:Name="LstProps"
+                                 Background="#252526" Foreground="#DDDDDD"
+                                 BorderBrush="#3A3A3A" BorderThickness="1"
+                                 SelectionChanged="OnPropSelectionChanged"/>
+                    </DockPanel>
+
+                    <GridSplitter Grid.Row="0" Grid.Column="1" Width="6" HorizontalAlignment="Stretch"
+                                  Background="#2D2D30"/>
+
+                    <!-- 右: 選択プロップのプロパティ（kind に応じて表示項目が変わる）。 -->
+                    <ScrollViewer Grid.Row="0" Grid.Column="2" VerticalScrollBarVisibility="Auto">
+                        <StackPanel x:Name="PanelPropProperties" Margin="8,0,4,0"/>
+                    </ScrollViewer>
+
+                    <!-- 下: ルールによる再散布。シードを固定すれば同じ配置を再現できる。 -->
+                    <Border Grid.Row="1" Grid.ColumnSpan="3"
+                            Background="#252526" BorderBrush="#3A3A3A" BorderThickness="1"
+                            Padding="6" Margin="0,6,0,0">
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                            <TextBlock Text="対象" Foreground="#AAAAAA"
+                                       VerticalAlignment="Center" Margin="0,0,4,0"/>
+                            <ComboBox x:Name="CmbScatterTarget" Width="150" VerticalAlignment="Center"
+                                      ToolTip="再散布するプロップ（すべて＝全プロップを一括で撒き直す）">
+                                <ComboBoxItem Content="選択中のプロップ" IsSelected="True" Tag="selected"/>
+                                <ComboBoxItem Content="すべて" Tag="all"/>
+                            </ComboBox>
+
+                            <TextBlock Text="シード" Foreground="#AAAAAA"
+                                       VerticalAlignment="Center" Margin="12,0,4,0"/>
+                            <TextBox x:Name="TxtScatterSeed" Text="0"
+                                     Width="120" VerticalAlignment="Center"
+                                     Background="#1A1A1A" Foreground="#DDDDDD"
+                                     BorderBrush="#3F3F46" BorderThickness="1"
+                                     FontFamily="Consolas" Padding="3,1"
+                                     ToolTip="乱数シード（同じ値なら同じ配置になる）"/>
+                            <Button x:Name="BtnScatterRandomSeed" Style="{StaticResource ToolButtonStyle}"
+                                    Content="ランダム" Margin="4,0,0,0"
+                                    ToolTip="新しいシードを生成する"
+                                    Click="OnScatterRandomSeed"/>
+
+                            <Button x:Name="BtnScatterRules" Style="{StaticResource ToolButtonStyle}"
+                                    Content="ルールで再散布" Padding="14,4" Margin="12,0,0,0"
+                                    ToolTip="TERRAIN_SCATTER_RULES を送り、ルールに従って全チャンクを撒き直す（手ペイントした散布は失われる）"
+                                    Click="OnScatterRules"/>
+                        </StackPanel>
+                    </Border>
+                </Grid>
+            </TabItem>
+
             <!-- ── ブラシタブ: 将来拡張用の器 ─────────────────────────────
                  ブラシテクスチャ（ハイトマップ状のスタンプ）・ブラシプリセットなどを
                  ここへ足す想定。中身が空でもタブを置いておくことで、追加時に

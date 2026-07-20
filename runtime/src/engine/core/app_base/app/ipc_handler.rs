@@ -292,6 +292,19 @@ impl App {
                     // （エディタの地形設定ウィンドウでレイヤを保存した直後の即時反映）。
                     self.handle_terrain_reload_layers();
                 }
+                IpcCommand::TerrainScatterRules { prop_id, seed } => {
+                    // 散布プロップをルールで全チャンクへ自動散布し直す。
+                    // prop_id が空文字なら全プロップが対象。
+                    self.handle_terrain_scatter_rules(prop_id, seed);
+                }
+                IpcCommand::TerrainScatterBrush {
+                    prop_id, screen_x, screen_y, radius, density, erase,
+                } => {
+                    // 散布プロップの手描き追加／消去（球ブラシ）。
+                    self.handle_terrain_scatter_brush(
+                        prop_id, screen_x, screen_y, radius, density, erase,
+                    );
+                }
                 IpcCommand::TerrainHeightmap { path, height_scale, config } => {
                     // ハイトマップ画像から地形を敷き直す（config 付きなら構成も反映）。
                     self.handle_terrain_heightmap(path, height_scale, config);

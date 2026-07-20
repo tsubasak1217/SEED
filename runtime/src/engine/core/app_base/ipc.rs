@@ -174,6 +174,25 @@ pub enum IpcCommand {
     ///   height_scale: 輝度 1.0（白）が対応する高さ（メートル）。
     /// `config` が `Some` のときだけチャンク構成を上書きしてから敷き直す。
     TerrainHeightmap { path: String, height_scale: f32, config: Option<TerrainChunkConfig> },
+    /// 散布プロップをルールで全チャンクへ自動散布し直す（Terrain T3）。
+    /// ワイヤ形式: `TERRAIN_SCATTER_RULES:{prop_id},{seed}`
+    ///   prop_id: props.json のプロップ ID。**空文字なら全プロップ**が対象。
+    ///   seed   : ルール散布の大域シード（同じ値なら必ず同じ草原が再現される）。
+    /// prop_id は末尾の seed 以外すべてとして切り出す（ID は先頭・seed は末尾固定）。
+    TerrainScatterRules { prop_id: String, seed: u64 },
+    /// 散布プロップを球ブラシで手描き追加／消去する（Terrain T3）。
+    /// ワイヤ形式: `TERRAIN_SCATTER_BRUSH:{prop_id},{screen_x},{screen_y},{radius},{density},{erase}`
+    ///   prop_id: props.json のプロップ ID（消去時は無視される＝半径内の全種が消える）。
+    ///   density: 1 m² あたりの目標本数。erase: 0=追加 / 1=消去。
+    /// 着弾点は密度ブラシと同じレイマーチで求める（プレビュー球と必ず一致させるため）。
+    TerrainScatterBrush {
+        prop_id: String,
+        screen_x: f32,
+        screen_y: f32,
+        radius: f32,
+        density: f32,
+        erase: bool,
+    },
     /// グループフォルダ作成（parent=None はルート）
     CreateGroup { name: String, parent: Option<u32> },
     /// グループフォルダ作成 + 子を一括移動
@@ -649,6 +668,10 @@ const TERRAIN_CHUNK_CONFIG_FIELDS: usize = 4;
 /// ハイトマップ新形式の総フィールド数（構成 4 + height_scale 1 + path 1）。
 const TERRAIN_HEIGHTMAP_FIELDS: usize = TERRAIN_CHUNK_CONFIG_FIELDS + 2;
 
+/// `TERRAIN_SCATTER_BRUSH:` の引数個数
+/// （prop_id, screen_x, screen_y, radius, density, erase）。
+const TERRAIN_SCATTER_BRUSH_FIELDS: usize = 6;
+
 /// ハイトマップ**新形式**をパースする。
 /// `"chunks_x,chunks_z,chunk_cells,voxel_size,height_scale,path"`（path は末尾・カンマ可）。
 ///
@@ -768,6 +791,34 @@ fn parse_terrain_command(s: &str) -> Option<IpcCommand> {
                     radius:   fs[2],
                     strength: fs[3],
                 }
+            })
+        }
+        // 散布ルール実行: "prop_id,seed"。
+        // prop_id は空文字（= 全プロップ）を許すため、`rsplit_once(',')` で
+        // **末尾の seed** を切り離し、残り全部を prop_id とする
+        // （先頭から split すると空 prop_id と引数不足が区別できない）。
+        s if s.starts_with("TERRAIN_SCATTER_RULES:") => {
+            let rest = &s["TERRAIN_SCATTER_RULES:".len()..];
+            let (prop_id, seed_s) = rest.rsplit_once(',')?;
+            let seed = seed_s.trim().parse::<u64>().ok()?;
+            Some(IpcCommand::TerrainScatterRules { prop_id: prop_id.to_string(), seed })
+        }
+        // 散布ブラシ: "prop_id,screen_x,screen_y,radius,density,erase"。
+        // 先頭が文字列 ID なので数値ヘルパは使えず、固定 6 フィールドで切り出す。
+        s if s.starts_with("TERRAIN_SCATTER_BRUSH:") => {
+            let rest = &s["TERRAIN_SCATTER_BRUSH:".len()..];
+            let parts: Vec<&str> = rest.split(',').collect();
+            if parts.len() != TERRAIN_SCATTER_BRUSH_FIELDS {
+                return None;
+            }
+            Some(IpcCommand::TerrainScatterBrush {
+                prop_id:  parts[0].to_string(),
+                screen_x: parts[1].trim().parse::<f32>().ok()?,
+                screen_y: parts[2].trim().parse::<f32>().ok()?,
+                radius:   parts[3].trim().parse::<f32>().ok()?,
+                density:  parts[4].trim().parse::<f32>().ok()?,
+                // erase は 0/1。0 以外はすべて「消去」として扱う（寛容側）。
+                erase:    parts[5].trim().parse::<u32>().ok()? != 0,
             })
         }
         // 地形レイヤペイント: "layer,screen_x,screen_y,radius,strength"。
@@ -2032,6 +2083,85 @@ mod tests {
             Some(IpcCommand::TerrainPaint { layer, .. }) => assert_eq!(layer, 3),
             _ => panic!("TerrainPaint を期待した"),
         }
+    }
+
+    /// 散布ルール実行コマンドが prop_id と seed へ正しく分解されること。
+    ///
+    /// 空 prop_id（= 全プロップ対象）が「引数不足」と混同されないことが要点。
+    #[test]
+    fn scatter_rules_parses() {
+        // ─── 通常形（ID 指定）───
+        match parse_terrain_command("TERRAIN_SCATTER_RULES:grass_field,12345") {
+            Some(IpcCommand::TerrainScatterRules { prop_id, seed }) => {
+                assert_eq!(prop_id, "grass_field");
+                assert_eq!(seed, 12345);
+            }
+            _ => panic!("TerrainScatterRules を期待した"),
+        }
+
+        // ─── 空 prop_id = 全プロップ対象（先頭 split だと壊れる境界）───
+        match parse_terrain_command("TERRAIN_SCATTER_RULES:,7") {
+            Some(IpcCommand::TerrainScatterRules { prop_id, seed }) => {
+                assert_eq!(prop_id, "", "空 prop_id は「全プロップ」を意味する");
+                assert_eq!(seed, 7);
+            }
+            _ => panic!("空 prop_id でも TerrainScatterRules を期待した"),
+        }
+
+        // ─── 境界: seed=0 と u64 上限 ───
+        match parse_terrain_command("TERRAIN_SCATTER_RULES:g,0") {
+            Some(IpcCommand::TerrainScatterRules { seed, .. }) => assert_eq!(seed, 0),
+            _ => panic!("seed=0 を期待した"),
+        }
+        let max = u64::MAX;
+        match parse_terrain_command(&format!("TERRAIN_SCATTER_RULES:g,{max}")) {
+            Some(IpcCommand::TerrainScatterRules { seed, .. }) => assert_eq!(seed, max),
+            _ => panic!("seed=u64::MAX を期待した"),
+        }
+
+        // ─── 不正形: seed 欠落／seed が数値でない／u64 溢れ ───
+        assert!(parse_terrain_command("TERRAIN_SCATTER_RULES:grass_field").is_none());
+        assert!(parse_terrain_command("TERRAIN_SCATTER_RULES:grass_field,abc").is_none());
+        assert!(parse_terrain_command("TERRAIN_SCATTER_RULES:g,-1").is_none());
+    }
+
+    /// 散布ブラシコマンドが 6 フィールドへ正しく分解されること。
+    #[test]
+    fn scatter_brush_parses() {
+        match parse_terrain_command("TERRAIN_SCATTER_BRUSH:grass_field,100,200,3.5,8,0") {
+            Some(IpcCommand::TerrainScatterBrush {
+                prop_id, screen_x, screen_y, radius, density, erase,
+            }) => {
+                assert_eq!(prop_id, "grass_field");
+                assert_eq!(screen_x, 100.0);
+                assert_eq!(screen_y, 200.0);
+                assert_eq!(radius, 3.5);
+                assert_eq!(density, 8.0);
+                assert!(!erase, "erase=0 は追加");
+            }
+            _ => panic!("TerrainScatterBrush を期待した"),
+        }
+
+        // ─── erase=1 は消去 ───
+        match parse_terrain_command("TERRAIN_SCATTER_BRUSH:g,1,2,3,4,1") {
+            Some(IpcCommand::TerrainScatterBrush { erase, .. }) => assert!(erase),
+            _ => panic!("erase=1 を期待した"),
+        }
+
+        // ─── 境界: 半径・密度 0（パースは通る。妥当性は実行側の責務）───
+        match parse_terrain_command("TERRAIN_SCATTER_BRUSH:g,0,0,0,0,0") {
+            Some(IpcCommand::TerrainScatterBrush { radius, density, .. }) => {
+                assert_eq!(radius, 0.0);
+                assert_eq!(density, 0.0);
+            }
+            _ => panic!("0 値でもパースは通ること"),
+        }
+
+        // ─── 不正形: フィールド不足／過多／数値でない ───
+        assert!(parse_terrain_command("TERRAIN_SCATTER_BRUSH:g,1,2,3,4").is_none());
+        assert!(parse_terrain_command("TERRAIN_SCATTER_BRUSH:g,1,2,3,4,0,9").is_none());
+        assert!(parse_terrain_command("TERRAIN_SCATTER_BRUSH:g,x,2,3,4,0").is_none());
+        assert!(parse_terrain_command("TERRAIN_SCATTER_BRUSH:g,1,2,3,4,x").is_none());
     }
 
     /// 旧形式のハイトマップはカンマを含むパスでも右端のカンマで分割されること。

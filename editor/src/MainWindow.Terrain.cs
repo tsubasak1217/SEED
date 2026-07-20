@@ -52,6 +52,23 @@ public partial class MainWindow
     /// </summary>
     private const int TerrainOpPaint = 100;
 
+    /// <summary>
+    /// 散布ツールを表す擬似 op 値（Terrain T3）。
+    /// ペイントと同様にランタイムの BrushOp には存在せず、この値のときだけ
+    /// TERRAIN_SCATTER_BRUSH を送る（形状編集・レイヤペイントとは別コマンドのため）。
+    /// </summary>
+    private const int TerrainOpScatter = 101;
+
+    /// <summary>散布ブラシの消去フラグ値（IPC 文字列の erase 引数。ランタイムと一致させる）。</summary>
+    private const int TerrainScatterEraseOff = 0;
+    private const int TerrainScatterEraseOn  = 1;
+
+    /// <summary>プロップ選択コンボが空／未選択のときに使う散布ブラシのフォールバック prop_id（空＝ランタイム側で無効扱い）。</summary>
+    private const string TerrainScatterFallbackPropId = "";
+
+    /// <summary>散布密度スライダーが未生成のときのフォールバック密度（点/m²）。</summary>
+    private const double TerrainScatterDensityFallback = 4.0;
+
     /// <summary>Ctrl+ホイール 1 ノッチあたりのブラシ半径倍率変化量（乗算式。0.10=±10%）。</summary>
     private const double TerrainRadiusWheelFactor = 0.10;
 
@@ -87,6 +104,12 @@ public partial class MainWindow
     /// <summary>プレビュー（ワイヤスフィア）を現在表示中か。ビューポート離脱時に OFF を 1 度だけ送るために追跡する。</summary>
     private bool _terrainPreviewActive;
 
+    /// <summary>
+    /// プロップ選択コンボの各行に対応する prop_id（props.json の並び順）。
+    /// コンボの表示文字列は「名前 (ID)」なので、IPC へ渡す ID はここから引く。
+    /// </summary>
+    private readonly System.Collections.Generic.List<string> _terrainPropIds = new();
+
     /// <summary>低レベルマウスフックのコールバック（GC 回収防止のためフィールド保持）。</summary>
     private LowLevelMouseProc? _terrainMouseProc;
 
@@ -114,8 +137,57 @@ public partial class MainWindow
             SldTerrainStrength.ValueChanged += (_, _) => UpdateTerrainStrengthLabel();
             UpdateTerrainStrengthLabel();
         }
+        if (SldTerrainDensity != null)
+        {
+            SldTerrainDensity.ValueChanged += (_, _) => UpdateTerrainDensityLabel();
+            UpdateTerrainDensityLabel();
+        }
         // レイヤ選択コンボは layers.json（レイヤ総数自由）から動的に作る。
         RefreshTerrainLayerCombo();
+        // プロップ選択コンボは props.json（プロップ総数自由）から動的に作る。
+        RefreshTerrainPropCombo();
+    }
+
+    /// <summary>
+    /// ツールバーのプロップ選択コンボを props.json の内容から作り直す。
+    /// <para>
+    /// レイヤコンボ（<see cref="RefreshTerrainLayerCombo"/>）と同じ流儀。
+    /// 地形設定ウィンドウの散布タブでプロップを増減・並べ替えて保存した直後にも呼ばれる。
+    /// 選択位置は可能な限り維持する（範囲外になった場合は先頭へ戻す）。
+    /// IPC へ渡す prop_id は表示文字列ではなく <see cref="_terrainPropIds"/> から引く。
+    /// </para>
+    /// </summary>
+    private void RefreshTerrainPropCombo()
+    {
+        if (CmbTerrainProp == null) return;
+
+        int previous = CmbTerrainProp.SelectedIndex;
+        var doc = SEEDEditor.Terrain.TerrainPropsDocument.Load(AssetsPath);
+
+        CmbTerrainProp.Items.Clear();
+        _terrainPropIds.Clear();
+        foreach (var p in doc.Props)
+        {
+            CmbTerrainProp.Items.Add(
+                SEEDEditor.Terrain.TerrainSettingsWindow.FormatPropComboEntry(p.Name, p.Id));
+            _terrainPropIds.Add(p.Id);
+        }
+
+        CmbTerrainProp.SelectedIndex = _terrainPropIds.Count == 0
+            ? -1
+            : Math.Clamp(previous < 0 ? 0 : previous, 0, _terrainPropIds.Count - 1);
+    }
+
+    /// <summary>
+    /// ツールバーのプロップ選択コンボから、撒く対象のプロップ ID を返す。
+    /// 未選択・UI 未生成のときは空文字を返す（ランタイム側で無効な散布として弾かれる）。
+    /// </summary>
+    private string GetSelectedTerrainPropId()
+    {
+        int idx = CmbTerrainProp?.SelectedIndex ?? -1;
+        return idx >= 0 && idx < _terrainPropIds.Count
+            ? _terrainPropIds[idx]
+            : TerrainScatterFallbackPropId;
     }
 
     /// <summary>
@@ -165,8 +237,8 @@ public partial class MainWindow
             AssetsPath,
             // ランタイム未起動でも設定編集自体は可能にする（送信だけ黙って捨てる）。
             sendToRuntime: msg => _runtimeManager?.SendToRuntime(msg),
-            // 保存後はツールバーのレイヤ選択コンボを作り直して構成変更を反映する。
-            onSaved: RefreshTerrainLayerCombo)
+            // 保存後はツールバーのレイヤ／プロップ選択コンボを作り直して構成変更を反映する。
+            onSaved: () => { RefreshTerrainLayerCombo(); RefreshTerrainPropCombo(); })
         {
             Owner = this,
         };
@@ -185,6 +257,12 @@ public partial class MainWindow
     {
         if (TxtTerrainStrength != null && SldTerrainStrength != null)
             TxtTerrainStrength.Text = $"{SldTerrainStrength.Value:F2}";
+    }
+
+    private void UpdateTerrainDensityLabel()
+    {
+        if (TxtTerrainDensity != null && SldTerrainDensity != null)
+            TxtTerrainDensity.Text = $"{SldTerrainDensity.Value:F1}";
     }
 
     /// <summary>
@@ -282,6 +360,10 @@ public partial class MainWindow
                             {
                                 if (ctrl)
                                     AdjustTerrainRadiusByWheel(notches);
+                                else if (_terrainOp == TerrainOpScatter)
+                                    // 散布ツールでは「強度」が無意味なので、Shift+ホイールは密度に効かせる
+                                    // （半径＝Ctrl・第 2 パラメータ＝Shift、という操作規則自体は共通に保つ）。
+                                    AdjustTerrainDensityByWheel(notches);
                                 else
                                     AdjustTerrainStrengthByWheel(notches);
                                 SendTerrainPreviewNow(); // スライダー変更を即プレビューへ反映
@@ -320,6 +402,19 @@ public partial class MainWindow
     }
 
     /// <summary>
+    /// Shift+ホイールで散布密度を乗算式に変化させる（1 ノッチ ±10%）。
+    /// 密度は 0.1〜32 と桁が広いレンジなので、強度（加算式）ではなく
+    /// 半径と同じ乗算式にして、どの値域でも同じ感覚で調整できるようにする。
+    /// </summary>
+    private void AdjustTerrainDensityByWheel(int notches)
+    {
+        if (SldTerrainDensity == null) return;
+        double val = SldTerrainDensity.Value;
+        double newVal = val * (1.0 + TerrainRadiusWheelFactor * notches);
+        SldTerrainDensity.Value = Math.Clamp(newVal, SldTerrainDensity.Minimum, SldTerrainDensity.Maximum);
+    }
+
+    /// <summary>
     /// 現在のカーソル位置（ビューポートローカル物理ピクセル）と、ツールバーの
     /// ブラシ半径/強度を用いて TERRAIN_BRUSH を送信する。
     /// カーソルがビューポート矩形外なら送信しない。
@@ -345,6 +440,20 @@ public partial class MainWindow
         {
             _runtimeManager.SendToRuntime(
                 $"TERRAIN_PAINT:{GetSelectedTerrainLayer()},{lx},{ly},{radius.ToString(ci)},{strength.ToString(ci)}");
+            return;
+        }
+
+        // 散布ツールはプロップを撒く／消す別コマンド（TERRAIN_SCATTER_BRUSH）へ振り分ける。
+        // 強度スライダーは使わず、専用の密度スライダーと消去チェックを使う。
+        if (_terrainOp == TerrainOpScatter)
+        {
+            double density = SldTerrainDensity?.Value ?? TerrainScatterDensityFallback;
+            int erase = ChkTerrainScatterErase?.IsChecked == true
+                ? TerrainScatterEraseOn
+                : TerrainScatterEraseOff;
+            _runtimeManager.SendToRuntime(
+                $"TERRAIN_SCATTER_BRUSH:{GetSelectedTerrainPropId()},{lx},{ly},"
+                + $"{radius.ToString(ci)},{density.ToString(ci)},{erase.ToString(ci)}");
             return;
         }
 
@@ -458,6 +567,7 @@ public partial class MainWindow
         else if (BtnTerrainSmooth?.IsChecked == true)  _terrainOp = TerrainOpSmooth;
         else if (BtnTerrainFlatten?.IsChecked == true) _terrainOp = TerrainOpFlatten;
         else if (BtnTerrainPaint?.IsChecked == true)   _terrainOp = TerrainOpPaint;
+        else if (BtnTerrainScatter?.IsChecked == true) _terrainOp = TerrainOpScatter;
 
         // レイヤ選択 UI はペイントツールのときだけ意味を持つため、それ以外では隠す
         // （選択に無関係なパラメータは出さない、というインスペクタ方針に合わせる）。
@@ -465,6 +575,20 @@ public partial class MainWindow
         {
             TerrainLayerPanel.Visibility =
                 _terrainOp == TerrainOpPaint ? Visibility.Visible : Visibility.Collapsed;
+        }
+
+        // プロップ選択・密度・消去は散布ツールのときだけ意味を持つため、同じ方針で隠す。
+        if (TerrainScatterPanel != null)
+        {
+            TerrainScatterPanel.Visibility =
+                _terrainOp == TerrainOpScatter ? Visibility.Visible : Visibility.Collapsed;
+        }
+
+        // 強度スライダーは散布ツールでは使わない（密度スライダーが代わりを務める）。
+        if (TerrainStrengthPanel != null)
+        {
+            TerrainStrengthPanel.Visibility =
+                _terrainOp == TerrainOpScatter ? Visibility.Collapsed : Visibility.Visible;
         }
     }
 
@@ -604,6 +728,16 @@ public partial class MainWindow
     {
         Dispatcher.BeginInvoke(() =>
             SetTerrainStatus(ok ? $"チャンクを追加しました（{arg}）" : $"チャンク追加失敗: {arg}", ok));
+    }
+
+    /// <summary>
+    /// 散布完了通知（TERRAIN_SCATTER_OK:総インスタンス数 / TERRAIN_SCATTER_ERROR:msg）。
+    /// 地形設定ウィンドウの「ルールで再散布」から送った TERRAIN_SCATTER_RULES への応答。
+    /// </summary>
+    private void OnTerrainScatterCompleted(bool ok, string arg)
+    {
+        Dispatcher.BeginInvoke(() =>
+            SetTerrainStatus(ok ? $"散布しました（{arg} インスタンス）" : $"散布失敗: {arg}", ok));
     }
 
     /// <summary>

@@ -40,6 +40,10 @@ use crate::engine::terrain::{
     TERRAIN_BLEND_SLOTS, TERRAIN_MAX_LAYERS, tvox,
 };
 
+// 散布プロップ（Terrain T3）。状態の器だけをここで持ち、処理は terrain_scatter_ops.rs にある。
+use crate::engine::core::renderer::grass_gbuffer::GrassInstanceBuffer;
+use crate::engine::terrain::scatter::{ScatterInstance, TerrainPropSet};
+
 use super::App;
 use super::terrain_mesh_build::{
     compute_layer_colors, rebuild_terrain_model_with_colors, terrain_mesh_to_model,
@@ -181,10 +185,48 @@ static SMOKE_DEFERRED_FRAME_COUNTER: std::sync::atomic::AtomicU32 =
 static SMOKE_DEFERRED_ENABLED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
+// ── スモークのクローズアップカメラ（草の 1 本 1 本を画面上で解像させるための構図）──
+//   広角の全景では草丈 0.4m が 1 画素未満になり、風で揺れても目視できない。
+//   指定フレームで散布データを基準に近接カメラへ切り替え、葉の動きを撮れるようにする。
+
+/// クローズアップへ切り替えるフレーム番号を指定する環境変数名（未指定なら切り替えない）。
+const ENV_SMOKE_CLOSEUP_FRAME: &str = "SEED_SMOKE_CLOSEUP_FRAME";
+/// クローズアップ時、注視点からカメラまでの水平距離（メートル）。
+const SMOKE_CLOSEUP_DISTANCE: f32 = 1.1;
+/// クローズアップ時、注視点に対するカメラの高さ（メートル）。ほぼ水平に見る。
+const SMOKE_CLOSEUP_EYE_HEIGHT: f32 = 0.30;
+/// クローズアップ時、接地点から注視点を持ち上げる量（メートル）。草丈の半分程度。
+const SMOKE_CLOSEUP_TARGET_LIFT: f32 = 0.20;
+/// クローズアップ時の垂直画角（度）。狭めにして被写体を大きく写す。
+const SMOKE_CLOSEUP_FOV_DEG: f32 = 35.0;
+/// クローズアップ時のカメラ遠クリップ（メートル）。近接なので短くてよい。
+const SMOKE_CLOSEUP_FAR: f32 = 200.0;
+/// クローズアップ時のデバッグカメラ移動速度（メートル/秒）。構図固定なので使わないが必須項目。
+const SMOKE_CLOSEUP_SPEED: f32 = 2.0;
+/// クローズアップの被写体に選ぶプロップ添字（0 = props.json の先頭 = grass_field）。
+const SMOKE_CLOSEUP_PROP_INDEX: u32 = 0;
+
+/// クローズアップ切替フレーム（環境変数 `SEED_SMOKE_CLOSEUP_FRAME`）。未指定なら `None`。
+static SMOKE_CLOSEUP_FRAME: std::sync::LazyLock<Option<u32>> =
+    std::sync::LazyLock::new(|| {
+        std::env::var(ENV_SMOKE_CLOSEUP_FRAME).ok()?.trim().parse::<u32>().ok()
+    });
+/// クローズアップ判定用のフレームカウンタ（描画開始後のフレーム数）。
+static SMOKE_CLOSEUP_COUNTER: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(0);
+/// クローズアップへの切り替えが済んだか（1 度だけ実行するためのラッチ）。
+static SMOKE_CLOSEUP_DONE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 /// スモークのプレビュー球（ワイヤスフィア）半径（メートル）。
 const SMOKE_PREVIEW_RADIUS: f32 = 5.0;
 /// スモークのプレビュー球の強度（色の確認用。0.85=高強度寄りのオレンジに近い色になる）。
 const SMOKE_PREVIEW_STRENGTH: f32 = 0.85;
+
+/// スモークテストの散布対象 prop_id。空文字 = props.json の全プロップ。
+const SMOKE_SCATTER_ALL_PROPS: &str = "";
+/// スモークテストのルール散布シード（結果を毎回同一にするための固定値）。
+const SMOKE_SCATTER_SEED: u64 = 0x5EED_5CA7_0000_0001;
 /// スモークの undo/redo 確認用ストロークをフットプリント中心からずらす量（メートル）。
 const SMOKE_UNDO_TEST_OFFSET: f32 = 16.0;
 /// スモークの undo/redo 確認ストロークで適用するブラシ回数。
@@ -358,6 +400,22 @@ pub struct TerrainState {
     pub undo_stack: Vec<TerrainEdit>,
     /// terrain 専用 redo スタック（末尾が最新）。undo 実行で積まれ、新規編集で clear される。
     pub redo_stack: Vec<TerrainEdit>,
+
+    // ─── 散布プロップ（Terrain T3。実装は terrain_scatter_ops.rs）──────────────
+    /// 散布プロップ定義（assets/terrain/props.json 由来。読めなければ既定セット）。
+    pub props: TerrainPropSet,
+    /// チャンク → 散布インスタンス配列（.tscatter の実体）。
+    pub scatter: HashMap<ChunkCoord, Vec<ScatterInstance>>,
+    /// 散布が編集されて未保存のチャンク集合（handle_terrain_save でクリア）。
+    pub scatter_dirty: HashSet<ChunkCoord>,
+    /// GPU 側の草インスタンスバッファ（プロップ添字 -> バッファ）。再構築待ちなら None。
+    pub grass_buffers: HashMap<usize, GrassInstanceBuffer>,
+    /// 草 GPU バッファの再構築が必要かどうか（散布が変わったら true）。
+    pub grass_gpu_dirty: bool,
+    /// 散布ブラシで使う現在のプロップ添字（エディタの選択と対応）。
+    pub scatter_prop: usize,
+    /// ルール散布の大域シード（決定性の要。UI から変えられる）。
+    pub scatter_seed: u64,
 }
 
 impl Default for TerrainState {
@@ -379,9 +437,28 @@ impl Default for TerrainState {
             paint_layer: 0,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
+
+            // ─── 散布（Terrain T3）───
+            //   props は「空」で始める。実際の props.json 読み込みは
+            //   最初の散布コマンド（ensure_terrain_props）まで遅延させる。
+            //   TerrainState::default() は地形リセットのたびに呼ばれるため、
+            //   ここでファイル IO を走らせると無駄が多いという判断である。
+            props: TerrainPropSet { props: Vec::new() },
+            scatter: HashMap::new(),
+            scatter_dirty: HashSet::new(),
+            grass_buffers: HashMap::new(),
+            grass_gpu_dirty: false,
+            scatter_prop: 0,
+            scatter_seed: DEFAULT_SCATTER_SEED,
         }
     }
 }
+
+/// ルール散布の既定グローバルシード。
+///
+/// 0 だと「未設定」と紛らわしいので、意味のない固定値を置く。
+/// これを変えると既存シーンの草が全て生え変わるため変更禁止。
+const DEFAULT_SCATTER_SEED: u64 = 0x5EED_5CA7_7E12_0001;
 
 // ============================================================
 //  グローバルサンプル座標 ⇄ チャンク格納の変換ヘルパー
@@ -413,8 +490,11 @@ fn axis_owners(g: i32, cells: i32) -> ([(i32, usize); 2], usize) {
 ///
 /// 「地形外を AIR とみなす」か「地形外だと分かりたい」かは呼び出し側で分かれるため、
 /// 所有チャンク探索だけをここへ切り出して両者で共有する（DRY）。
+///
+/// `pub(super)`: 散布のレイヤ重み判定（terrain_scatter_ops.rs）が、ワールド座標の
+/// 最近傍サンプルから手ペイント情報（BlendSlots / paint_amount）を読むために使う。
 #[inline]
-fn find_owner<'a>(
+pub(super) fn find_owner<'a>(
     chunks: &'a HashMap<ChunkCoord, TerrainChunkData>,
     cells: i32,
     gx: i32,
@@ -553,7 +633,11 @@ fn write_paint_global_impl(
 }
 
 /// ワールド座標 `p` の密度をトライリニア補間で求める（レイマーチ用）。
-fn sample_density_world(
+///
+/// `pub(super)`: 散布の接地判定（terrain_scatter_ops.rs の `ScatterField` 実装）が
+/// **同一の密度サンプリング**を使う必要があるため公開している。
+/// 別実装にすると「ブラシは当たったのに草が生えない」ずれが出る。
+pub(super) fn sample_density_world(
     chunks: &HashMap<ChunkCoord, TerrainChunkData>,
     settings: &TerrainSettings,
     p: [f32; 3],
@@ -1850,6 +1934,14 @@ impl App {
                 std::mem::take(&mut self.terrain.pending_remesh).into_iter().collect();
             coords.sort_by_key(|c| (c.x, c.y, c.z));
             self.remesh_chunks(&coords);
+            // ── 密度編集で地面が動いた → 散布プロップを新しい地表へ貼り直す ──
+            //   ここは密度ブラシ由来の経路（pending_remesh）専用である。
+            //   ペイント高速パス（下の ②）では **意図的に呼ばない**：
+            //   ペイントは密度グリッドを一切変えないため頂点が動かず、
+            //   草が宙に浮くことも埋まることも構造的に起こり得ない。
+            //   一方でペイントは 1 ストロークで何十回も飛んでくるので、
+            //   そこで全インスタンスの柱探索を走らせると目に見えて重くなる。
+            self.restick_scatter_for_chunks(&coords);
         }
 
         // ── ② 頂点カラーだけの更新待ちを消化する（ペイント高速パス）──
@@ -2346,6 +2438,15 @@ impl App {
             }
         }
         self.remesh_chunks(&touched);
+        // ── 密度を戻すと地面も戻るので、散布プロップを新しい地表へ貼り直す ──
+        //   【散布そのものは undo されない（T3 第1段のスコープ外）】
+        //   undo/redo スタックが持つのは密度とスプラットのスナップショットだけで、
+        //   .tscatter の内容は含まれない。したがって「草を生やす → undo」で
+        //   草は消えない。
+        //   それでも再接地だけは掛ける。掛けないと「undo したら草だけ空中に
+        //   取り残される」という明確に壊れた見た目になるからである。
+        //   再接地により「草は常に今の地面に載っている」という不変条件は保たれる。
+        self.restick_scatter_for_chunks(&touched);
         self.terrain.redo_stack.push(edit);
     }
 
@@ -2363,6 +2464,8 @@ impl App {
             }
         }
         self.remesh_chunks(&touched);
+        // undo と同じ理由で再接地する（散布自体は redo の対象外）。
+        self.restick_scatter_for_chunks(&touched);
         self.terrain.undo_stack.push(edit);
     }
 
@@ -2401,8 +2504,20 @@ impl App {
         }
         self.terrain.dirty.clear();
 
+        // ── 散布データ（.tscatter）を .tvox の隣へ保存する ──
+        //   密度と散布は更新頻度が独立しているため別ファイルだが、保存は同時に行う
+        //   （片方だけ保存できると地形と草がずれた状態がディスクに残るため）。
+        //   インスタンスが 0 本のチャンクはファイルを **削除** する。残すと
+        //   次回ロードで消したはずの草が復活する。
+        let (scatter_written, scatter_removed) = self.save_terrain_scatter(&dir);
+
         if let Some(ipc) = &self.ipc {
             ipc.send(&format!("TERRAIN_SAVE_OK:{count}"));
+        }
+        if *PERF_TERRAIN_LOG_ENABLED {
+            eprintln!(
+                "[SEED terrain] save: tvox={count} tscatter written={scatter_written} removed={scatter_removed}"
+            );
         }
     }
 
@@ -2511,6 +2626,9 @@ impl App {
         let mut adopted: Option<tvox::TvoxHeader> = None;
         let mut mismatched = 0u32;
         let mut loaded: Vec<(ChunkCoord, Entity)> = Vec::new();
+        // 散布データ読み込み用の (チャンク座標, .tvox 仮想パス) 対。
+        // .tscatter のパスは .tvox の拡張子を差し替えて導く（規則を 1 か所に閉じる）。
+        let mut scatter_paths: Vec<(ChunkCoord, String)> = Vec::new();
         for (coord, path, mc_slot) in &found {
             let bytes = match crate::engine::asset_fs::read_bytes(path) {
                 Ok(b) => b,
@@ -2562,6 +2680,9 @@ impl App {
                     self.terrain.chunks.insert(*coord, chunk);
                     self.terrain.chunk_slot_entity.insert(*coord, *mc_slot);
                     loaded.push((*coord, *mc_slot));
+                    // 散布データ（.tscatter）は .tvox の隣に置かれている。
+                    // 読み込みは密度が全チャンク揃ってから行う（下のフェーズ 1.5）。
+                    scatter_paths.push((*coord, path.clone()));
                 }
                 Err(e) => {
                     eprintln!("[SEED terrain] tvox decode failed, skip: {path} err={e:?}");
@@ -2577,6 +2698,13 @@ impl App {
         if loaded.is_empty() {
             return;
         }
+
+        // ── フェーズ 1.5: 散布データ（.tscatter）を読む ──
+        //   ファイルが無いのは **エラーではない**（散布機能より前に保存された
+        //   シーンには存在しない）。欠落チャンクは単に散布 0 本として扱う。
+        //   プロップ定義も併せて読む（インスタンスの prop_id を解決するのに要る）。
+        self.ensure_terrain_props();
+        self.load_terrain_scatter(&scatter_paths);
 
         // ── フェーズ 2: 全チャンク読込後にメッシュ化（隣接読みが揃った状態で継ぎ目を正しく作る）──
         //   レイヤ定義もここで読み直す（.tvox v1 のようにスプラットを持たないデータでも
@@ -2854,6 +2982,27 @@ impl App {
             );
         }
 
+        // ── 散布プロップ（草）のルール自動散布（Terrain T3）──
+        //   目視確認のための本命。TERRAIN_SCATTER_RULES が通るのと同じ経路
+        //   （handle_terrain_scatter_rules）をそのまま呼ぶ。
+        //   prop_id を空文字にして全プロップを対象にする（草地レイヤに grass_field、
+        //   土レイヤに grass_dry が乗るので、レイヤの塗り分けと草の生え分けが
+        //   一致しているかを 1 枚のスクリーンショットで検証できる）。
+        {
+            let scatter_start = std::time::Instant::now();
+            self.handle_terrain_scatter_rules(
+                SMOKE_SCATTER_ALL_PROPS.to_string(),
+                SMOKE_SCATTER_SEED,
+            );
+            let total: usize = self.terrain.scatter.values().map(|v| v.len()).sum();
+            eprintln!(
+                "[SEED terrain] smoke: scattered {total} instances in {:?} (chunks={}, props={})",
+                scatter_start.elapsed(),
+                self.terrain.scatter.len(),
+                self.terrain.props.active_count(),
+            );
+        }
+
         // ── プレビュー球の模擬 ──
         //   エディタ経由でしか出ないワイヤスフィアを、スモークでも直接セットして映す。
         //   footprint 中心の地表付近に置く（レイマーチのヒット点に相当）。
@@ -2874,6 +3023,98 @@ impl App {
         // ここまではすべて 1 フレーム目より前の処理。描画開始後の編集を検証するため、
         // 遅延掘削ステップを有効化する（tick_terrain_smoke_deferred が毎フレーム見る）。
         SMOKE_DEFERRED_ENABLED.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// スモークの「クローズアップカメラへ切り替える」ステップ（毎フレーム先頭の自己ゲート付きフック）。
+    ///
+    /// 環境変数 `SEED_SMOKE_CLOSEUP_FRAME` が未指定なら何もしない。指定されていれば
+    /// そのフレームで 1 度だけ、実際に散布された草インスタンスを被写体にして
+    /// デバッグカメラを近接姿勢へ移す。全景では 1 画素未満になる草の葉を画面上で
+    /// 解像させ、風アニメーションの動きをスクリーンショットで比較できるようにするため。
+    ///
+    /// 被写体は「対象プロップのインスタンスが最も多いチャンクの重心付近の 1 本」を選ぶ。
+    /// ハードコードした座標ではなく散布データから引くので、地形やルールを変えても追従する。
+    pub(super) fn tick_terrain_smoke_closeup(&mut self) {
+        use std::sync::atomic::Ordering;
+        let Some(target_frame) = *SMOKE_CLOSEUP_FRAME else { return };
+        if SMOKE_CLOSEUP_DONE.load(Ordering::Relaxed) {
+            return;
+        }
+        let n = SMOKE_CLOSEUP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        if n != target_frame {
+            return;
+        }
+        SMOKE_CLOSEUP_DONE.store(true, Ordering::Relaxed);
+
+        // 対象プロップのインスタンスが最も多いチャンクを選ぶ（草が濃い場所＝絵になる場所）。
+        let Some((_, instances)) = self
+            .terrain
+            .scatter
+            .iter()
+            .map(|(coord, list)| {
+                let count = list.iter().filter(|i| i.prop_id == SMOKE_CLOSEUP_PROP_INDEX).count();
+                (coord, list, count)
+            })
+            .max_by_key(|(_, _, count)| *count)
+            .map(|(coord, list, _)| (coord, list))
+        else {
+            eprintln!("[SEED terrain] smoke: closeup 対象の散布データがありません");
+            return;
+        };
+        // そのチャンク内の対象プロップ重心に最も近い 1 本を被写体にする
+        // （重心そのものは草が無い窪みに落ちることがあるため、実在インスタンスへ吸着させる）。
+        let picked: Vec<[f32; 3]> = instances
+            .iter()
+            .filter(|i| i.prop_id == SMOKE_CLOSEUP_PROP_INDEX)
+            .map(|i| i.pos)
+            .collect();
+        if picked.is_empty() {
+            eprintln!("[SEED terrain] smoke: closeup 対象プロップのインスタンスがありません");
+            return;
+        }
+        let inv = 1.0 / picked.len() as f32;
+        let centroid = picked.iter().fold([0.0f32; 3], |acc, p| {
+            [acc[0] + p[0] * inv, acc[1] + p[1] * inv, acc[2] + p[2] * inv]
+        });
+        let subject = *picked
+            .iter()
+            .min_by(|a, b| {
+                let d = |p: &[f32; 3]| {
+                    (p[0] - centroid[0]).powi(2)
+                        + (p[1] - centroid[1]).powi(2)
+                        + (p[2] - centroid[2]).powi(2)
+                };
+                d(a).total_cmp(&d(b))
+            })
+            .expect("空でないことは上で確認済み");
+
+        // 注視点は被写体の少し上（草の中ほど）。カメラは -Z 側からほぼ水平に見る。
+        let target = [subject[0], subject[1] + SMOKE_CLOSEUP_TARGET_LIFT, subject[2]];
+        let eye = [
+            target[0],
+            subject[1] + SMOKE_CLOSEUP_EYE_HEIGHT,
+            target[2] - SMOKE_CLOSEUP_DISTANCE,
+        ];
+        // yaw/pitch は debug_camera の規約（forward → yaw = atan2(fwd.x, fwd.z), pitch = asin(-fwd.y)）。
+        let dir = [target[0] - eye[0], target[1] - eye[1], target[2] - eye[2]];
+        let len = (dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]).sqrt().max(f32::EPSILON);
+        let fwd = [dir[0] / len, dir[1] / len, dir[2] / len];
+        let cam = crate::engine::core::app_base::scene::DebugCameraData {
+            position: eye,
+            yaw:      fwd[0].atan2(fwd[2]),
+            pitch:    (-fwd[1]).clamp(-1.0, 1.0).asin(),
+            fov_deg:  SMOKE_CLOSEUP_FOV_DEG,
+            far:      SMOKE_CLOSEUP_FAR,
+            speed:    SMOKE_CLOSEUP_SPEED,
+        };
+        self.apply_camera_data(&cam);
+        // ブラシのプレビュー球は近接では画面を覆ってしまうので消す。
+        self.terrain.brush_preview = None;
+        eprintln!(
+            "[SEED terrain] smoke: closeup camera at frame {n} eye={eye:?} target={target:?} \
+             (subject instances in chunk={})",
+            picked.len()
+        );
     }
 
     /// スモークの「描画開始後に掘る」ステップ（毎フレーム先頭から呼ばれる自己ゲート付きフック）。

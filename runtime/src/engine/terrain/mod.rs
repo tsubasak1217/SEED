@@ -16,6 +16,7 @@ pub mod tvox;
 pub mod heightmap;
 pub mod layers;
 pub mod paint;
+pub mod scatter;
 
 #[cfg(test)]
 mod tests;
@@ -45,3 +46,12 @@ pub use layers::{
     LayerWeights, TerrainLayer, TerrainLayerSet, TERRAIN_BLEND_SLOTS, TERRAIN_MAX_LAYERS,
 };
 pub use paint::{apply_paint, PaintField};
+// 散布（T3）。tvox の read_chunk / write_chunk と名前が衝突するため、
+// 関数は `scatter::` 経由で使う前提とし、ここでは型と定数のみ再エクスポートする。
+#[allow(unused_imports)]
+pub use scatter::{
+    GrassParams, LayerCondition, PropKind, ScatterField, ScatterInstance, ScatterParams,
+    ScatterRng, ScatterRule, TerrainProp, TerrainPropSet, TscatterError, TscatterHeader,
+    WindParams, GRASS_MAX_SEGMENTS, MAX_SCATTER_GRID_PER_AXIS, MIN_INSTANCE_SPACING_FACTOR,
+    TERRAIN_MAX_PROPS, TSCATTER_MAGIC, TSCATTER_VERSION,
+};
