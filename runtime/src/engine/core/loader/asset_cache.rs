@@ -1021,6 +1021,66 @@ fn pad_rgba_edge(w: u32, h: u32, rgba: &[u8], pw: u32, ph: u32) -> Vec<u8> {
 mod tests {
     use super::*;
 
+    /// `Material` の bincode バイト長を固定する（キャッシュ無効化の退行ガード）。
+    ///
+    /// 【なぜ必要か】
+    /// bincode は自己記述型ではないため、`Material` にフィールドを 1 つ足すだけで
+    /// 既存 `.smdl` キャッシュ全体が読めなくなる（`#[serde(default)]` でも救えない）。
+    /// ヘッダの `CACHE_FORMAT_VERSION` は一致したままなので検証を素通りし、
+    /// 本体の bincode デシリアライズで初めて失敗する＝全モデルが glTF から再インポート
+    /// される。Sponza 級では 1 回あたり実測 100 秒（キャッシュヒット時は 4 秒）。
+    ///
+    /// 実際に Terrain T2（044bf34）が `terrain_layers: bool` を無告知で追加してこれを踏んだ。
+    ///
+    /// 【このテストが落ちたら】
+    /// `Material` のシリアライズ表現を変えた合図。次のどちらかを必ず選ぶこと:
+    ///   1. そのフィールドがランタイム専用（キャッシュに焼く必要がない）なら
+    ///      `#[serde(skip)]` を付ける → バイト長が変わらないので旧キャッシュを維持できる。
+    ///   2. 本当に焼く必要があるなら `CACHE_FORMAT_VERSION` をインクリメントし、
+    ///      下の期待値を更新する → 旧キャッシュはヘッダ段階で無効化され安全に再生成される。
+    /// 期待値を「ただ更新するだけ」で済ませてはいけない（＝利用者に無言で再インポートを強いる）。
+    #[test]
+    fn material_bincode_layout_is_pinned() {
+        // 既定値の Material をシリアライズしたバイト長。
+        // CACHE_FORMAT_VERSION 14 時点の表現を固定する。
+        const MATERIAL_BINCODE_LEN: usize = 110;
+
+        let mat = Material::default();
+        let bytes = bincode::serialize(&mat).expect("Material のシリアライズに失敗");
+        assert_eq!(
+            bytes.len(),
+            MATERIAL_BINCODE_LEN,
+            "Material の bincode 表現が変化している。既存の .smdl キャッシュが\
+             全て無効化され、Sponza 級で 1 回 100 秒の再インポートが発生する。\
+             関数コメントの手順（serde(skip) か CACHE_FORMAT_VERSION の更新）に従うこと",
+        );
+    }
+
+    /// ランタイム専用フラグ `terrain_layers` がキャッシュのバイト表現に含まれないこと。
+    ///
+    /// 地形メッシュはランタイムが組み立てるものでキャッシュ経路に乗らないため、
+    /// このフラグは焼く必要がない。`#[serde(skip)]` が外れると
+    /// 旧キャッシュが一斉に無効化されるので、値に依存しないことを直接検証する。
+    #[test]
+    fn terrain_layers_is_not_serialized() {
+        let mut off = Material::default();
+        off.terrain_layers = false;
+        let mut on = Material::default();
+        on.terrain_layers = true;
+
+        let a = bincode::serialize(&off).expect("シリアライズに失敗");
+        let b = bincode::serialize(&on).expect("シリアライズに失敗");
+        assert_eq!(
+            a, b,
+            "terrain_layers がキャッシュに焼かれている。ランタイム専用フラグなので \
+             #[serde(skip)] を維持すること",
+        );
+
+        // デシリアライズ側でも既定（false）に戻ることを確認する。
+        let back: Material = bincode::deserialize(&b).expect("デシリアライズに失敗");
+        assert!(!back.terrain_layers, "skip されたフィールドは既定値になる");
+    }
+
     /// ミップチェーンのレベル数と各レベルのピクセルバイト長を検証する。
     #[test]
     fn mip_chain_dims_and_len() {
