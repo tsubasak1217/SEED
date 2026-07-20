@@ -93,6 +93,47 @@ const SMOKE_BRUSH_OFFSET: f32 = 8.0;
 const SMOKE_STROKE_STEPS: u32 = 10;
 /// スモークの連続ストロークで 1 ステップあたり進む距離（メートル）。
 const SMOKE_STROKE_SPACING: f32 = 2.0;
+// ─── スモークの検証用方向光（影の確認に必須） ───────────────────────
+/// スモークが置く方向光アクターの名前。
+const SMOKE_LIGHT_ACTOR_NAME: &str = "SmokeSun";
+/// スモークが置く方向光の Light スロット名。
+const SMOKE_LIGHT_SLOT_NAME: &str = "Light";
+/// 方向光の X 回転（度）。正で forward.y が負＝下向きになる（斜め上から照らす）。
+const SMOKE_LIGHT_PITCH_DEG: f32 = 55.0;
+/// 方向光の Y 回転（度）。真横からではなく斜めに振り、穴の側面に陰影差を作る。
+const SMOKE_LIGHT_YAW_DEG: f32 = 30.0;
+/// 方向光の色（白）。
+const SMOKE_LIGHT_COLOR: [f32; 3] = [1.0, 1.0, 1.0];
+/// 方向光の強度。
+const SMOKE_LIGHT_INTENSITY: f32 = 3.0;
+/// 方向光の range（平行光では未使用だが 0 除算回避のため正値を入れる）。
+const SMOKE_LIGHT_RANGE: f32 = 100.0;
+/// 方向光のソフト影角径（度）。0 にするとハードシャドウになる。
+const SMOKE_LIGHT_SOFT_RADIUS_DEG: f32 = 0.25;
+
+// ─── スモークの「描画開始後の編集」検証 ─────────────────────────────
+// 本体のスモークは初期化フェーズ（1 フレーム目より前）で完結するため、
+// 「既に描画されているシーンをリアルタイムに掘る」状況を再現できない。
+// レンダラ側の派生キャッシュ（BLAS・統合バッチ）が絡む不具合はその状況でしか
+// 出ないため、数フレーム描画してから掘るステップを別に持つ。
+/// 遅延掘削を発火させるフレーム番号（描画が数フレーム進み、加速構造が構築済みになった後）。
+const SMOKE_DEFERRED_DIG_FRAME: u32 = 30;
+/// 遅延掘削の半径（メートル）。穴の内部が画面上ではっきり見える大きさにする。
+const SMOKE_DEFERRED_DIG_RADIUS: f32 = 14.0;
+/// 遅延掘削の強度。
+const SMOKE_DEFERRED_DIG_STRENGTH: f32 = 1.0;
+/// 遅延掘削を縦に積む段数（地表 Y が未知でも確実に貫くため）。
+const SMOKE_DEFERRED_DIG_COLUMN_STEPS: u32 = 6;
+/// 遅延掘削を縦に積むときの 1 段あたりの高さ（メートル）。
+const SMOKE_DEFERRED_DIG_COLUMN_STEP_Y: f32 = 3.0;
+/// 遅延掘削の状態カウンタ（0 = 無効／1 以上 = スモーク有効時のフレーム計数）。
+/// App にフィールドを増やさずデバッグフックを閉じ込めるための静的状態。
+static SMOKE_DEFERRED_FRAME_COUNTER: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(0);
+/// 遅延掘削が有効か（run_terrain_smoke が立てる）。
+static SMOKE_DEFERRED_ENABLED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 /// スモークのプレビュー球（ワイヤスフィア）半径（メートル）。
 const SMOKE_PREVIEW_RADIUS: f32 = 5.0;
 /// スモークのプレビュー球の強度（色の確認用。0.85=高強度寄りのオレンジに近い色になる）。
@@ -929,9 +970,15 @@ impl App {
         }
 
         // チャンク → メッシュスロット対応を反映する。
+        let mut rebuilt_keys: Vec<String> = Vec::with_capacity(slot_map.len());
         for (coord, entity) in slot_map {
             self.terrain.chunk_slot_entity.insert(coord, entity);
+            rebuilt_keys.push(terrain_source_path(&scene_name, coord));
         }
+        // 同一シーンで 2 回目以降の初期化／ハイトマップ再読込を行うと、チャンクの
+        // batch_key（合成 source_path）が 1 回目と完全に一致する。ジオメトリ由来の
+        // 派生キャッシュ（BLAS・統合バッチ）は前回のまま残るため、ここで破棄する。
+        self.invalidate_geometry_caches(&rebuilt_keys);
 
         self.send_hierarchy();
         true
@@ -1635,6 +1682,10 @@ impl App {
         self.ensure_terrain_palettes(prebuilt.iter().map(|p| p.1.as_ref()));
 
         // ── VRAM 安全な差し替え（slot_ops::handle_set_material_override と同じ手順）──
+        // 差し替えたチャンクの batch_key（= ModelComponent::source_path。地形チャンクは
+        // マテリアルオーバーライドを持たないため batch_key とビット一致）を集め、
+        // 後段でジオメトリ由来の派生キャッシュを破棄する。
+        let mut swapped_keys: Vec<String> = Vec::new();
         for (coord, model, gpu, batch) in prebuilt {
             let slot_entity = match self.terrain.chunk_slot_entity.get(&coord) {
                 Some(&e) => e,
@@ -1658,9 +1709,57 @@ impl App {
                     mc.instanced_batch = batch;
                     // (4) バッチ更新をマークする。
                     mc.mark_batch_dirty();
+                    swapped_keys.push(mc.source_path.clone());
                 }
             }
             self.terrain.dirty.insert(coord);
+        }
+
+        // (5) ジオメトリ由来の派生キャッシュを破棄する（下記メソッドの説明を参照）。
+        self.invalidate_geometry_caches(&swapped_keys);
+    }
+
+    /// 同一 batch_key のままメッシュを差し替えたときに、レンダラ側の
+    /// 「batch_key をキーにしたジオメトリ派生キャッシュ」を破棄する。
+    ///
+    /// 【なぜ必要か】
+    ///   地形チャンクの `ModelComponent::source_path`（= `terrain://<scene>/chunk_X_Y_Z`）は
+    ///   掘削・盛り上げで再メッシュ化しても不変であり、マテリアルオーバーライドも持たないため
+    ///   `batch_key()` は編集の前後で完全に一致する。レンダラは batch_key をキーにして
+    ///   ジオメトリ由来のリソースをキャッシュしているので、キーが変わらない差し替えでは
+    ///   キャッシュヒットして「古い形状」が使われ続ける。
+    ///
+    ///   - `RtShadowResources::blas_cache`（BlasKey.source_path == batch_key）
+    ///     古い BLAS が残るため、レイトレ影は編集前の地形を遮蔽物として辿る。掘った穴の
+    ///     内部が「まだ地面がある」と判定されて全面遮蔽＝真っ黒になる（本バグの主因）。
+    ///     さらに TLAS の静止スキップ判定（シグネチャ）も変換・マテリアル依存で
+    ///     ジオメトリを含まないため、放置すると TLAS 再構築すら走らない。
+    ///     エントリを消せば次フレームに新頂点で BLAS が再構築され、
+    ///     `new_blas_built = true` により TLAS も必ず再構築される。
+    ///   - `App::shared_model_batches`（キー = batch_key）
+    ///     `SharedModelData.cpu_model` は容量不足時しか作り直されないため、古い CPU モデル
+    ///     （＝古いローカル AABB・ノード/プリミティブ構成）でカリング用データが計算され続ける。
+    ///     エントリを消せば次フレームに新メッシュで統合バッチが作り直される。
+    ///
+    ///   シーンを開き直すと直るのは、これらのキャッシュが起動/ロード時に空だからである。
+    ///
+    /// `keys` は差し替えたモデルの batch_key 一覧（空なら何もしない）。
+    fn invalidate_geometry_caches(&mut self, keys: &[String]) {
+        if keys.is_empty() {
+            return;
+        }
+        // ① 統合バッチキャッシュ（cpu_model を焼き込み済み）を破棄する。
+        //    不在フレーム計数も一緒に消し、遅延 prune の状態を持ち越さない。
+        for key in keys {
+            self.shared_model_batches.remove(key);
+            self.batch_absent_frames.remove(key);
+        }
+        // ② RT 加速構造の BLAS キャッシュ（＋用途警告集合）を破棄する。
+        //    RT 非対応 GPU では draw_ctx.rt_shadow が None のため何もしない。
+        if let Some(ctx) = self.draw_ctx.as_ref() {
+            if let Some(rt_cell) = ctx.rt_shadow.as_ref() {
+                rt_cell.borrow_mut().prune_source_paths(keys);
+            }
         }
     }
 
@@ -1964,6 +2063,7 @@ impl App {
         self.ensure_terrain_palettes(prebuilt.iter().map(|p| p.1.as_ref()));
 
         // ── フェーズ 3: ロード時に model=None で作られた ModelComponent を埋める ──
+        let mut loaded_keys: Vec<String> = Vec::new();
         if let Some(scene) = self.scene.as_mut() {
             for (mc_slot, model, gpu, batch) in prebuilt {
                 if let Some(mc) = scene.world.get_mut::<ModelComponent>(mc_slot) {
@@ -1976,9 +2076,13 @@ impl App {
                         mc.instance_meta.push(InstanceMeta::new("chunk"));
                     }
                     mc.mark_batch_dirty();
+                    loaded_keys.push(mc.source_path.clone());
                 }
             }
         }
+        // 同一シーンを同一セッション中に再ロードすると batch_key が前回と一致するため、
+        // ジオメトリ由来の派生キャッシュ（BLAS・統合バッチ）を破棄して作り直させる。
+        self.invalidate_geometry_caches(&loaded_keys);
     }
 
     /// スモークテスト（環境変数 SEED_TERRAIN_SMOKE=1）専用の常設デバッグフック。
@@ -2049,6 +2153,39 @@ impl App {
             speed: SMOKE_CAM_SPEED,
         };
         self.apply_camera_data(&cam);
+
+        // ── 影を落とす方向光を 1 灯置く（RT 影／シャドウマップの実機確認用）──
+        //   ライト不在シーンのフォールバック光は shadow_index=-1（影なし）で入るため、
+        //   影の検証には実体の Light スロットが要る。掘った穴の内部が正しく明るいか／
+        //   古い加速構造で黒く潰れないかは、この光が無いと画面に出ない。
+        //   向きは「斜め上から見下ろす」= forward が下向き＋わずかに傾く姿勢にする。
+        if let Some(scene) = self.scene.as_mut() {
+            let light_entity = scene.world.spawn();
+            scene.world.insert(light_entity, ActorTransform {
+                position: [center[0], span * SMOKE_CAM_UP_RATIO, center[2]],
+                rotation: [SMOKE_LIGHT_PITCH_DEG, SMOKE_LIGHT_YAW_DEG, 0.0],
+                scale:    [1.0, 1.0, 1.0],
+            });
+            let mut light_actor = Actor::new(light_entity, SMOKE_LIGHT_ACTOR_NAME);
+            let light_slot = scene.world.spawn();
+            scene.world.insert(light_slot, crate::engine::components::LightComponent {
+                kind:             crate::engine::components::LightKind::Directional,
+                color:            SMOKE_LIGHT_COLOR,
+                intensity:        SMOKE_LIGHT_INTENSITY,
+                range:            SMOKE_LIGHT_RANGE,
+                inner_angle_deg:  0.0,
+                outer_angle_deg:  0.0,
+                rect_width:       0.0,
+                rect_height:      0.0,
+                cast_shadows:     true,
+                soft_radius:      SMOKE_LIGHT_SOFT_RADIUS_DEG,
+                bounce_intensity: 0.0,
+            });
+            light_actor.add_slot_typed::<crate::engine::components::LightComponent>(
+                SMOKE_LIGHT_SLOT_NAME, ComponentKind::Light, light_slot,
+            );
+            scene.actors.push(light_actor);
+        }
 
         // ── 地面を明確に変形させる：盛り（Add）1・掘り（Subtract）1 ──
         //   Add は密度を下げて solid を増やす（隆起）、Subtract は密度を上げて air を増やす（陥没/洞窟）。
@@ -2190,6 +2327,53 @@ impl App {
             SMOKE_STROKE_STEPS,
             self.terrain.chunks.len()
         );
+
+        // ここまではすべて 1 フレーム目より前の処理。描画開始後の編集を検証するため、
+        // 遅延掘削ステップを有効化する（tick_terrain_smoke_deferred が毎フレーム見る）。
+        SMOKE_DEFERRED_ENABLED.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// スモークの「描画開始後に掘る」ステップ（毎フレーム先頭から呼ばれる自己ゲート付きフック）。
+    ///
+    /// スモークが無効なら即 return する。有効なときはフレームを数え、
+    /// `SMOKE_DEFERRED_DIG_FRAME` 到達フレームで 1 度だけフットプリント中心を掘る。
+    /// エディタでドラッグして掘る操作と同じ経路（handle_terrain_brush_world → remesh_chunks）を通り、
+    /// 「既に BLAS／統合バッチが構築済みの状態でメッシュが差し替わる」状況を再現する。
+    pub(super) fn tick_terrain_smoke_deferred(&mut self) {
+        use std::sync::atomic::Ordering;
+        if !SMOKE_DEFERRED_ENABLED.load(Ordering::Relaxed) {
+            return;
+        }
+        let n = SMOKE_DEFERRED_FRAME_COUNTER.fetch_add(1, Ordering::Relaxed);
+        if n != SMOKE_DEFERRED_DIG_FRAME {
+            return;
+        }
+        // フットプリント中心（run_terrain_smoke のカメラ注視点と同じ計算式）。
+        let settings = self.terrain.settings.clone();
+        let extent = settings.chunk_extent();
+        let center = [
+            settings.ground_chunks_x as f32 * extent * 0.5,
+            0.0,
+            settings.ground_chunks_z as f32 * extent * 0.5,
+        ];
+        // ハイトマップ適用後の地表 Y はレイ無しには求まらないため、同じ XZ で Y を変えながら
+        // 縦に掘削球を積み、確実に地表を貫いて穴の内部（側面・底）を露出させる。
+        for i in 0..SMOKE_DEFERRED_DIG_COLUMN_STEPS {
+            let y = i as f32 * SMOKE_DEFERRED_DIG_COLUMN_STEP_Y;
+            self.handle_terrain_brush_world(
+                BrushOp::Subtract,
+                [center[0], y, center[2]],
+                SMOKE_DEFERRED_DIG_RADIUS,
+                SMOKE_DEFERRED_DIG_STRENGTH,
+            );
+        }
+        self.handle_terrain_stroke_end();
+        // 掘った位置が見えるよう、プレビュー球は消しておく（穴の内部を覆わないため）。
+        self.terrain.brush_preview = None;
+        eprintln!(
+            "[SEED terrain] smoke: deferred dig at frame {n} center={center:?} r={SMOKE_DEFERRED_DIG_RADIUS}"
+        );
+        SMOKE_DEFERRED_ENABLED.store(false, Ordering::Relaxed);
     }
 }
 
