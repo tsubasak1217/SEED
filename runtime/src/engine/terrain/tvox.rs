@@ -74,6 +74,50 @@ pub enum TvoxError {
     DimMismatch,
 }
 
+/// TVOX ヘッダから読み取れる「そのチャンクが作られたときの構成」。
+///
+/// シーンロード時に、保存された地形が現在の `TerrainSettings` と同じ分割数・
+/// ボクセルサイズで作られているかを突き合わせるために使う。
+/// 本体（密度・スプラット）を読まずに済むため、複数チャンクの整合検査が安価に回せる。
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct TvoxHeader {
+    /// ファイルに記録されたチャンク格子座標。
+    pub coord: ChunkCoord,
+    /// 1 軸あたりのサンプル数（= chunk_cells + 1）。
+    pub samples_per_axis: u32,
+    /// 1 ボクセル辺のサイズ（メートル）。
+    pub voxel_size: f32,
+}
+
+impl TvoxHeader {
+    /// ヘッダから逆算したチャンク 1 軸のセル数（= samples_per_axis - 1）。
+    pub fn chunk_cells(&self) -> u32 {
+        self.samples_per_axis.saturating_sub(1)
+    }
+}
+
+/// TVOX バイト列の**ヘッダのみ**を読む（本体は検証しない）。
+///
+/// マジックとバージョンだけ検証し、座標・サンプル数・ボクセルサイズを返す。
+/// v1 / v2 / v3 いずれも先頭 28 バイトのレイアウトが共通なので同じ経路で読める。
+pub fn read_header(bytes: &[u8]) -> Result<TvoxHeader, TvoxError> {
+    if bytes.len() < HEADER_LEN_V1 {
+        return Err(TvoxError::Truncated);
+    }
+    if bytes[0..4] != TVOX_MAGIC {
+        return Err(TvoxError::BadMagic);
+    }
+    let version = read_u32_le(bytes, 4);
+    if version != TVOX_VERSION && version != TVOX_VERSION_V2 && version != TVOX_VERSION_V1 {
+        return Err(TvoxError::BadVersion);
+    }
+    Ok(TvoxHeader {
+        coord: ChunkCoord::new(read_i32_le(bytes, 8), read_i32_le(bytes, 12), read_i32_le(bytes, 16)),
+        samples_per_axis: read_u32_le(bytes, 20),
+        voxel_size: read_f32_le(bytes, 24),
+    })
+}
+
 /// チャンク（密度＋スプラット）を TVOX v3 バイト列へ直列化する。
 pub fn write_chunk(
     chunk: &TerrainChunkData,

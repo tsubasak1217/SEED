@@ -226,7 +226,9 @@ serde/JSON ではない。地形コマンドは以下の 3 つ。エディタ側
 
 | コマンド（送信） | 引数 | 応答（受信） |
 |---|---|---|
-| `TERRAIN_INIT` | なし | `TERRAIN_INIT_OK` |
+| `TERRAIN_INIT` | なし（旧形式・現在の設定で初期化） | `TERRAIN_INIT_OK` |
+| `TERRAIN_INIT:{chunks_x},{chunks_z},{chunk_cells},{voxel_size}` | u32×3 + f32。チャンク構成を反映してから初期化（§9.6） | `TERRAIN_INIT_OK` |
+| `TERRAIN_ADD_CHUNKS:{min_x},{min_z},{max_x},{max_z}` | i32×4（チャンク座標範囲・**両端含む**）。既存チャンクは温存（§9.7） | `TERRAIN_ADD_CHUNKS_OK:{追加数},{再メッシュした隣接数}`／`TERRAIN_ADD_CHUNKS_ERROR:{msg}` |
 | `TERRAIN_BRUSH:{op},{screen_x},{screen_y},{radius},{strength}` | `op`:u32（0=Add,1=Subtract,2=Smooth,3=Flatten）／他 f32。`screen_x/y` はビューポート左上原点のピクセル座標 | ヒット時 `TERRAIN_BRUSH_OK:{hx},{hy},{hz}`（ワールドヒット点）／非ヒット `TERRAIN_BRUSH_MISS` |
 | `TERRAIN_PAINT:{layer},{screen_x},{screen_y},{radius},{strength}` | `layer`:u32（塗る対象レイヤ番号・0 起点／`layers.json` の並び順）／他 f32 | ヒット時 `TERRAIN_PAINT_OK:{layer},{hx},{hy},{hz}`／非ヒット `TERRAIN_PAINT_MISS` |
 | `TERRAIN_SAVE` | なし | `TERRAIN_SAVE_OK:{count}`（保存チャンク数）／`TERRAIN_SAVE_ERROR:{msg}` |
@@ -235,7 +237,8 @@ serde/JSON ではない。地形コマンドは以下の 3 つ。エディタ側
 | `TERRAIN_UNDO` | なし | 応答なし。地形専用 undo スタックを 1 ストローク分戻す（下記 §9.1） |
 | `TERRAIN_REDO` | なし | 応答なし。地形専用 undo を 1 ストローク分やり直す |
 | `TERRAIN_STROKE_END` | なし | 応答なし。進行中ストロークを 1 undo エントリとして確定する（左ボタン解放時に送る） |
-| `TERRAIN_HEIGHTMAP:{path},{height_scale}` | `path`=画像の実ファイル絶対パス（png/jpg）、`height_scale`:f32（最大高さ m）。`path` にカンマが含まれても壊れないよう **最後のカンマで path / height_scale を分割** する | `TERRAIN_HEIGHTMAP_OK:{ms}`（処理ミリ秒）／`TERRAIN_HEIGHTMAP_ERROR:{msg}` |
+| `TERRAIN_HEIGHTMAP:{path},{height_scale}` | 旧形式。`path`=画像の実ファイル絶対パス（png/jpg）、`height_scale`:f32（最大高さ m）。`path` にカンマが含まれても壊れないよう **最後のカンマで path / height_scale を分割** する | `TERRAIN_HEIGHTMAP_OK:{ms}`（処理ミリ秒）／`TERRAIN_HEIGHTMAP_ERROR:{msg}` |
+| `TERRAIN_HEIGHTMAP:{chunks_x},{chunks_z},{chunk_cells},{voxel_size},{height_scale},{path}` | 新形式。**path を末尾に置く**ことで前 5 個の数値フィールドを固定個数（`splitn(6, ',')`）で切り出せる（§9.6） | 同上 |
 | `TERRAIN_RELOAD_LAYERS` | なし | `TERRAIN_RELOAD_LAYERS_OK:{count}`（再メッシュしたチャンク数）。`layers.json` を読み直し、レイヤテクスチャ配列と全チャンクを作り直す（下記 §9.5） |
 
 - `TERRAIN_INIT`: terrain ルート＋初期平地（`ground_chunks_x × ground_chunks_z × [y_min..=y_max]` チャンク、y=0 に地面）を生成。
@@ -265,6 +268,105 @@ serde/JSON ではない。地形コマンドは以下の 3 つ。エディタ側
   クリアする（旧エントリを適用すると座標が食い違って壊れるため。コード内コメント明記）。
 - エディタは terrain モード中の Ctrl+Z / Ctrl+Y を（通常の `UNDO`/`REDO` ではなく）`TERRAIN_UNDO`/`TERRAIN_REDO`
   として送り、左ボタン解放とモード離脱で `TERRAIN_STROKE_END` を送る。
+
+### 9.6 チャンク構成の設定（TERRAIN_INIT / TERRAIN_HEIGHTMAP のパラメータ）
+
+**背景**：`voxel_size`(0.5m) / `chunk_cells`(32) / 初期平地の枚数(4×4) はすべて `settings.rs` の
+定数固定で、UI から変えられなかった。これを IPC 引数で渡せるようにした。
+
+**ワイヤ形式**（下位互換のため旧形式もそのまま受け付ける）:
+
+```
+TERRAIN_INIT                                                          ← 旧形式（現在の設定で初期化）
+TERRAIN_INIT:{chunks_x},{chunks_z},{chunk_cells},{voxel_size}         ← 新形式
+TERRAIN_HEIGHTMAP:{path},{height_scale}                               ← 旧形式
+TERRAIN_HEIGHTMAP:{chunks_x},{chunks_z},{chunk_cells},{voxel_size},{height_scale},{path}
+```
+
+- **ハイトマップの引数順が新旧で逆になっている理由**：`path` は Windows パスでカンマを含みうるため、
+  可変長フィールドは端に置くしかない。旧形式は「path が先頭・右端のカンマで分割」、新形式は
+  「**path が末尾**・`splitn(6, ',')` で前 5 個を固定個数で切り出す」。判別はパーサが
+  「6 フィールドあり、前 5 個がすべて数値として読める」かで行い、読めなければ旧形式へフォールバックする
+  （旧形式の path は先頭フィールドが `C:\…` のように数値にならないため衝突しない）。
+- **値域の検証は 1 箇所に集約**：パース層は「文字列 → 型」までしかやらない。上下限のクランプは
+  `TerrainSettings::apply_chunk_config()` が一手に担う（`settings.rs`）。
+
+| 項目 | 下限 | 上限 | 既定 |
+|---|---|---|---|
+| `chunks_x` / `chunks_z` | 1 | 32 | 4 |
+| `chunk_cells` | 4 | 64 | 32 |
+| `voxel_size` (m) | 0.05 | 8.0 | 0.5 |
+| チャンク総数（`TERRAIN_ADD_CHUNKS` の安全弁） | — | 4096 | — |
+
+- `chunk_cells` の上限が 64 なのは、サンプル数が `(cells+1)³` で効くため。
+  cells=64 → 65³ ≒ 275k サンプル ⇒ 約 3.6 MB/チャンク。cells=128 では約 28 MB/チャンクとなり実用外。
+- `density_clamp` は「1 チャンク分の広がり」の派生値なので `apply_chunk_config` 内で再計算する。
+  これを怠ると旧構成の 16.0 が残り、大きなチャンクでブラシ編集の密度が頭打ちになる。
+- `build_terrain_with` は状態リセット時に `TerrainState::default()` を代入するが、**settings だけは
+  退避して復元する**。さもないと IPC で渡された構成が即座に既定値へ潰される。
+
+#### chunk_cells / voxel_size 変更の安全策（採った設計と理由）
+
+分割数・ボクセルサイズを変えると 1 チャンクのサンプル数と実寸が変わり、既存の密度配列とも
+保存済み `.tvox` とも**ビット互換でなくなる**。採った設計は次の 2 段構え。
+
+1. **構成変更は「地形を丸ごと作り直す経路」からのみ許す**。
+   `apply_chunk_config` を呼ぶのは `TERRAIN_INIT` と `TERRAIN_HEIGHTMAP` だけで、どちらも既存地形を
+   破棄して敷き直す。編集中の地形へ後から分割数だけを差し込む API は**作らない**
+   （`TERRAIN_ADD_CHUNKS` は構成を一切変更しない）。再サンプリングによる移行は採らなかった
+   ── 密度の再サンプルは表面を必ず鈍らせ、手ペイントのスプラットは補間の意味が定義できないため、
+   「静かに劣化する」より「作り直しを明示させる」方が壊れ方が分かりやすい。
+2. **読み込み時は `.tvox` ヘッダを正とする**。`tvox::read_header()`（本体を読まずヘッダ 28 バイトだけ
+   読む軽量版）で `samples_per_axis` / `voxel_size` を取り、
+   `rebuild_terrain_after_load` は **最初に読めた 1 枚の構成を地形全体の構成として settings へ採用**する。
+   2 枚目以降でヘッダが食い違うチャンク（分割数変更後に古い `.tvox` が残っている状態）は
+   警告ログを出して**読み飛ばす**（読み込むと配列長が食い違い、描画・編集が破綻するため）。
+
+エディタ側は設定ウィンドウ「地形」タブに常時警告を出し、変更後は初期化し直すよう促す（§14.5）。
+
+### 9.7 チャンク追加（TERRAIN_ADD_CHUNKS）
+
+編集中の地形を保ったまま、指定したチャンク座標範囲へチャンクを増やす。
+
+```
+TERRAIN_ADD_CHUNKS:{min_x},{min_z},{max_x},{max_z}   ← i32×4・両端含む・反転指定も正規化される
+→ TERRAIN_ADD_CHUNKS_OK:{追加数},{再メッシュした隣接数}
+→ TERRAIN_ADD_CHUNKS_ERROR:{msg}   （"terrain not initialized" / "chunk limit exceeded …" 等）
+```
+
+- 縦方向（Y）の段数は現在の設定（`ground_chunk_y_min..=ground_chunk_y_max`）に従う。
+- **既存チャンクの温存**：追加対象の列挙は純粋関数 `collect_new_chunk_coords()` に切り出してあり、
+  既に存在する座標を結果に含めない。よって「上書きしようがない」ことが戻り値だけで保証される
+  （ユニットテスト `collect_new_chunks_excludes_existing`）。範囲がすべて既存なら `OK:0,0` を返す。
+- 地形が未初期化のときはエラー（構成もツリーも未確定な状態での「追加」は意味が定まらないため、
+  先に `TERRAIN_INIT` させる）。
+
+#### 継ぎ目の処理（境界が不連続にならない仕組み）
+
+グローバルサンプル座標の規約上、隣り合うチャンクは接する面のサンプルを**重複所有**する（§5）。
+ブラシ編集は `write_global_impl` が全所有チャンクへ同じ値を書くのでこの重複は常に一致しているが、
+新しく作ったチャンクは平地の初期値を持つため、隣が編集済みだと**同じ座標のサンプルが 2 つの
+異なる値を持つ**ことになり、MC が両側で別々の等値面を出して継ぎ目に穴・段差が生じる。
+
+対処は 3 段階：
+
+1. 新規チャンクを `from_ground_plane` で作る。
+2. `sync_new_chunk_boundary()` で、**既存側の値を正として**新規チャンクの境界サンプル
+   （ローカル添字が 0 または `cells` のもの＝6 面）へ引き写す。密度だけでなく
+   **手ペイントスロット（レイヤ番号＋重み）とペイント量も**引き写す（色の継ぎ目も出さないため）。
+   走査は境界面に限定し、内部サンプルは触らない（既存の編集内容が新しい地面へ波及しないため）。
+   この関数は **新規チャンクを `chunks` へ insert する前に**呼ぶ必要がある
+   （insert 済みだと新規チャンク自身が主所有者として見つかり、自分の初期値で自分を上書きするだけになる）。
+3. 新規チャンクの **26 近傍にある既存チャンクを再メッシュ化**する。既存チャンクのサンプル自体は
+   変わらないが、メッシュ生成時に読む「外側 1 サンプル」が地形外（＝AIR 相当の `density_clamp`）から
+   実際の密度へ変わるため、境界の三角形と法線が変化する。これを怠ると継ぎ目に隙間・陰影の段差が残る。
+
+回帰テストは `terrain_ops.rs` の `mod tests` に置いた（`new_chunk_boundary_matches_existing_neighbor` /
+`new_chunk_keeps_ground_plane_where_no_neighbor` / `isolated_new_chunk_is_untouched`）。
+App も wgpu も要らない純粋関数へ切り出してあるため GPU 無しで検証できる。
+
+- 追加チャンクは `dirty` に入るので、`TERRAIN_SAVE` で `.tvox` が書き出される。
+- undo スタックは触らない（既存チャンクを座標で参照しているだけで、追加によって無効化されないため）。
 
 ### 9.2 ハイトマップ読込（TERRAIN_HEIGHTMAP）
 
@@ -854,6 +956,7 @@ terrain ツールバー右端の **「⚙ 設定」** ボタンで開く**独立
 
 | タブ | 内容 |
 |---|---|
+| 地形 | チャンク構成（枚数・分割数・ボクセルサイズ）＋チャンク追加（実装済み・§14.5） |
 | レイヤ | `assets/terrain/layers.json` の編集（実装済み） |
 | ブラシ | ブラシテクスチャ（スタンプ画像）・プリセット等を置く予定の空タブ |
 
@@ -894,3 +997,26 @@ terrain ツールバー右端の **「⚙ 設定」** ボタンで開く**独立
 - ツールバーの**レイヤ選択コンボは `layers.json` から動的生成**する（`MainWindow.RefreshTerrainLayerCombo`）。
   レイヤ総数は自由なので XAML に固定項目は持たない。設定ウィンドウでの保存直後にも呼ばれ、増減・並べ替えが即反映される。
   選択中のレイヤ番号は可能な限り維持し、範囲外になった場合は先頭へ戻す。
+
+### 14.5 地形タブ — チャンク構成とチャンク追加
+
+**永続化**：`assets/terrain/chunk_config.json`（`editor/src/Terrain/TerrainChunkConfigDocument.cs`）。
+`layers.json` と違いランタイムは**このファイルを読まない**。値はあくまで IPC 引数として渡される
+（`TERRAIN_INIT:` / `TERRAIN_HEIGHTMAP:` の新形式。§9.6）。ランタイム側の正典は
+実行時の `TerrainSettings` と、保存済み地形については `.tvox` ヘッダである。
+
+| セクション | 項目 |
+|---|---|
+| チャンク構成 | チャンク数 X／チャンク数 Z／チャンク分割数（`chunk_cells`）／ボクセルサイズ (m) |
+| 計算値（読み取り専用） | チャンク 1 辺の実寸（= `voxel_size × chunk_cells`）／地形全体のフットプリント／総チャンク数 |
+| チャンクを追加 | `min_x` / `min_z` / `max_x` / `max_z` ＋「追加」ボタン（`TERRAIN_ADD_CHUNKS` を送る） |
+
+- 上部に**常時警告**を表示する:
+  > 「チャンク分割数・ボクセルサイズの変更は、『地形を初期化』または『ハイトマップ読込』で地形を
+  > 作り直したときにのみ反映されます。既存の地形（保存済み .tvox ファイル）とはボクセル配置が
+  > 非互換になるため、変更後は必ず地形を初期化し直してください。」
+- 「保存して適用」は `chunk_config.json` を保存するだけで、**`TERRAIN_INIT` は送らない**
+  （破壊的操作なのでツールバーの「地形を初期化」ボタン経由に限定する。そちらは確認ダイアログに
+  これから作られる構成を明記する）。
+- ツールバーの「地形を初期化」「ハイトマップ読込」は `chunk_config.json` を読んで**新形式**で送る。
+  ハイトマップは path が末尾になったため、パス中のカンマ問題が構造的に解消した。

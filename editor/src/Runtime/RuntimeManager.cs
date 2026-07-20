@@ -227,6 +227,12 @@ public sealed class RuntimeManager : IDisposable
     /// <summary>ハイトマップ反映完了通知（TERRAIN_HEIGHTMAP_OK:ms / TERRAIN_HEIGHTMAP_ERROR:msg）。true=成功（引数=処理時間ms）/ false=失敗（引数=エラーメッセージ）。</summary>
     public event Action<bool, string>? TerrainHeightmapCompleted;
 
+    /// <summary>
+    /// チャンク追加完了通知（TERRAIN_ADD_CHUNKS_OK:追加数,再メッシュ数 / TERRAIN_ADD_CHUNKS_ERROR:msg）。
+    /// true=成功（引数="追加チャンク数,再メッシュしたチャンク数"）/ false=失敗（引数=エラーメッセージ）。
+    /// </summary>
+    public event Action<bool, string>? TerrainAddChunksCompleted;
+
     // ── コンストラクタ ─────────────────────────────────────────
 
     public RuntimeManager(string runtimeExePath)
@@ -782,6 +788,18 @@ public sealed class RuntimeManager : IDisposable
             var err = msg["TERRAIN_HEIGHTMAP_ERROR:".Length..];
             EditorLog.Write($"[Runtime→Editor] TERRAIN_HEIGHTMAP_ERROR {err}");
             TerrainHeightmapCompleted?.Invoke(false, err);
+        }
+        else if (msg.StartsWith("TERRAIN_ADD_CHUNKS_OK:", StringComparison.Ordinal))
+        {
+            var counts = msg["TERRAIN_ADD_CHUNKS_OK:".Length..];
+            EditorLog.Write($"[Runtime→Editor] TERRAIN_ADD_CHUNKS_OK counts={counts}");
+            TerrainAddChunksCompleted?.Invoke(true, counts);
+        }
+        else if (msg.StartsWith("TERRAIN_ADD_CHUNKS_ERROR:", StringComparison.Ordinal))
+        {
+            var err = msg["TERRAIN_ADD_CHUNKS_ERROR:".Length..];
+            EditorLog.Write($"[Runtime→Editor] TERRAIN_ADD_CHUNKS_ERROR {err}");
+            TerrainAddChunksCompleted?.Invoke(false, err);
         }
         else if (msg.StartsWith("ACTOR_DATA:", StringComparison.Ordinal))
         {

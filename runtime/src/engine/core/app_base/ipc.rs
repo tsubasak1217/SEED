@@ -49,6 +49,26 @@ impl Default for GizmoSpace {
 }
 
 // ============================================================
+//  TerrainChunkConfig — 地形チャンク構成のワイヤ表現
+// ============================================================
+
+/// エディタから受け取る地形チャンク構成（`TERRAIN_INIT` / `TERRAIN_HEIGHTMAP` の引数）。
+///
+/// ここでは**値を検証しない**（パース層の責務は「文字列 → 型」まで）。
+/// 上下限のクランプは `TerrainSettings::apply_chunk_config` が一手に担う。
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct TerrainChunkConfig {
+    /// 初期地面の X 方向チャンク数。
+    pub chunks_x: u32,
+    /// 初期地面の Z 方向チャンク数。
+    pub chunks_z: u32,
+    /// チャンク 1 軸あたりのセル数（ボクセル分割数）。
+    pub chunk_cells: u32,
+    /// 1 ボクセル辺のサイズ（メートル）。
+    pub voxel_size: f32,
+}
+
+// ============================================================
 //  IpcCommand — エディタから受け取るコマンド
 // ============================================================
 
@@ -102,8 +122,15 @@ pub enum IpcCommand {
     /// シーンを指定パスへ保存
     SaveScene(String),
     /// ボクセル地形を初期化する（地形ツリー生成＋初期地面）。
-    /// ワイヤ形式: `TERRAIN_INIT`（引数なし）
-    TerrainInit,
+    /// ワイヤ形式:
+    ///   - `TERRAIN_INIT`（引数なし・旧形式。現在の TerrainSettings で初期化する）
+    ///   - `TERRAIN_INIT:{chunks_x},{chunks_z},{chunk_cells},{voxel_size}`（新形式）
+    /// `config` が `Some` のときだけチャンク構成を上書きしてから初期化する。
+    TerrainInit { config: Option<TerrainChunkConfig> },
+    /// 編集中の地形へチャンクを追加する（既存チャンクは温存する）。
+    /// ワイヤ形式: `TERRAIN_ADD_CHUNKS:{min_x},{min_z},{max_x},{max_z}`（i32×4・両端含む）
+    /// 縦方向（Y）の範囲は現在の TerrainSettings（ground_chunk_y_min/max）に従う。
+    TerrainAddChunks { min_x: i32, min_z: i32, max_x: i32, max_z: i32 },
     /// ボクセル地形をブラシ編集する（スクリーン座標からレイマーチで着弾点を求める）。
     /// ワイヤ形式: `TERRAIN_BRUSH:{op},{screen_x},{screen_y},{radius},{strength}`
     ///   op: 0=Add / 1=Subtract / 2=Smooth / 3=Flatten
@@ -138,11 +165,15 @@ pub enum IpcCommand {
     /// ワイヤ形式: `TERRAIN_RELOAD_LAYERS`（引数なし）
     TerrainReloadLayers,
     /// ハイトマップ画像から地形を敷き直す。
-    /// ワイヤ形式: `TERRAIN_HEIGHTMAP:{path},{height_scale}`
-    ///   path: 実ファイルシステム上の絶対パス（Windows パスはカンマを含みうるため、
-    ///         右端のカンマより前を path、以降を height_scale としてパースする）。
+    /// ワイヤ形式（2 形式を受け付ける）:
+    ///   - 旧: `TERRAIN_HEIGHTMAP:{path},{height_scale}`
+    ///         path は Windows パスがカンマを含みうるため、右端のカンマより前を path とする。
+    ///   - 新: `TERRAIN_HEIGHTMAP:{chunks_x},{chunks_z},{chunk_cells},{voxel_size},{height_scale},{path}`
+    ///         path を**末尾**へ置くことで、path 中のカンマに影響されずに前 5 個の数値
+    ///         フィールドを固定個数（splitn(6, ',')）で切り出せる。
     ///   height_scale: 輝度 1.0（白）が対応する高さ（メートル）。
-    TerrainHeightmap { path: String, height_scale: f32 },
+    /// `config` が `Some` のときだけチャンク構成を上書きしてから敷き直す。
+    TerrainHeightmap { path: String, height_scale: f32, config: Option<TerrainChunkConfig> },
     /// グループフォルダ作成（parent=None はルート）
     CreateGroup { name: String, parent: Option<u32> },
     /// グループフォルダ作成 + 子を一括移動
@@ -596,6 +627,72 @@ impl IpcClient {
 /// 地形コマンドの共通プレフィックス。read_loop の振り分けと本関数で共有する。
 const TERRAIN_COMMAND_PREFIX: &str = "TERRAIN_";
 
+/// 地形チャンク構成の 4 フィールド `"chunks_x,chunks_z,chunk_cells,voxel_size"` をパースする。
+///
+/// `TERRAIN_INIT:` と `TERRAIN_HEIGHTMAP:` の新形式で共有する（DRY）。
+/// フィールド数が 4 でない・数値として読めない場合は `None`。
+fn parse_terrain_chunk_config(s: &str) -> Option<TerrainChunkConfig> {
+    let parts: Vec<&str> = s.split(',').collect();
+    if parts.len() != TERRAIN_CHUNK_CONFIG_FIELDS {
+        return None;
+    }
+    Some(TerrainChunkConfig {
+        chunks_x:    parts[0].trim().parse::<u32>().ok()?,
+        chunks_z:    parts[1].trim().parse::<u32>().ok()?,
+        chunk_cells: parts[2].trim().parse::<u32>().ok()?,
+        voxel_size:  parts[3].trim().parse::<f32>().ok()?,
+    })
+}
+
+/// チャンク構成 4 フィールドの個数。`TERRAIN_INIT:` の引数個数でもある。
+const TERRAIN_CHUNK_CONFIG_FIELDS: usize = 4;
+/// ハイトマップ新形式の総フィールド数（構成 4 + height_scale 1 + path 1）。
+const TERRAIN_HEIGHTMAP_FIELDS: usize = TERRAIN_CHUNK_CONFIG_FIELDS + 2;
+
+/// ハイトマップ**新形式**をパースする。
+/// `"chunks_x,chunks_z,chunk_cells,voxel_size,height_scale,path"`（path は末尾・カンマ可）。
+///
+/// `splitn(6, ',')` で先頭 5 個の数値フィールドと残り全部（= path）に切り分ける。
+/// 前 5 個のいずれかが数値として読めなければ「新形式ではない」と判断して `None` を返し、
+/// 呼び出し側が旧形式パースへフォールバックする。
+fn parse_heightmap_with_config(rest: &str) -> Option<IpcCommand> {
+    let parts: Vec<&str> = rest.splitn(TERRAIN_HEIGHTMAP_FIELDS, ',').collect();
+    if parts.len() != TERRAIN_HEIGHTMAP_FIELDS {
+        return None;
+    }
+    let config = TerrainChunkConfig {
+        chunks_x:    parts[0].trim().parse::<u32>().ok()?,
+        chunks_z:    parts[1].trim().parse::<u32>().ok()?,
+        chunk_cells: parts[2].trim().parse::<u32>().ok()?,
+        voxel_size:  parts[3].trim().parse::<f32>().ok()?,
+    };
+    let height_scale = parts[4].trim().parse::<f32>().ok()?;
+    // path は空であってはならない（空だと画像読込が必ず失敗するため、旧形式へ落とす）。
+    let path = parts[5];
+    if path.is_empty() {
+        return None;
+    }
+    Some(IpcCommand::TerrainHeightmap {
+        path: path.to_string(),
+        height_scale,
+        config: Some(config),
+    })
+}
+
+/// ハイトマップ**旧形式** `"path,height_scale"` をパースする（下位互換）。
+///
+/// path に Windows パスのカンマが含まれても壊れないよう、右端のカンマで分割する。
+fn parse_heightmap_legacy(rest: &str) -> Option<IpcCommand> {
+    let idx = rest.rfind(',')?;
+    let path = &rest[..idx];
+    let height_scale = rest[idx + 1..].trim().parse::<f32>().ok()?;
+    Some(IpcCommand::TerrainHeightmap {
+        path: path.to_string(),
+        height_scale,
+        config: None,
+    })
+}
+
 /// 地形関連の IPC 1 行を `IpcCommand` へ変換する。未知のコマンド／引数不正は `None`。
 ///
 /// 【判定順の注意】
@@ -605,8 +702,8 @@ const TERRAIN_COMMAND_PREFIX: &str = "TERRAIN_";
 fn parse_terrain_command(s: &str) -> Option<IpcCommand> {
     match s {
         // ── 引数なしコマンド ──
-        // 地形初期化。
-        "TERRAIN_INIT" => Some(IpcCommand::TerrainInit),
+        // 地形初期化（旧形式・引数なし）。現在の設定をそのまま使う。
+        "TERRAIN_INIT" => Some(IpcCommand::TerrainInit { config: None }),
         // 地形保存。
         "TERRAIN_SAVE" => Some(IpcCommand::TerrainSave),
         // レイヤ定義（layers.json）の再読込＋全チャンク再メッシュ。
@@ -619,6 +716,25 @@ fn parse_terrain_command(s: &str) -> Option<IpcCommand> {
         "TERRAIN_STROKE_END" => Some(IpcCommand::TerrainStrokeEnd),
 
         // ── 引数付きコマンド ──
+        // 地形初期化（新形式）: "chunks_x,chunks_z,chunk_cells,voxel_size"。
+        // 前 3 個が u32、末尾が f32。値域の検証はここでは行わない
+        //（TerrainSettings::apply_chunk_config が一手にクランプする）。
+        s if s.starts_with("TERRAIN_INIT:") => {
+            parse_terrain_chunk_config(&s["TERRAIN_INIT:".len()..])
+                .map(|config| IpcCommand::TerrainInit { config: Some(config) })
+        }
+        // チャンク追加: "min_x,min_z,max_x,max_z"（i32×4・両端含む）。
+        s if s.starts_with("TERRAIN_ADD_CHUNKS:") => {
+            let parts: Vec<&str> = s["TERRAIN_ADD_CHUNKS:".len()..].split(',').collect();
+            if parts.len() != 4 {
+                return None;
+            }
+            let mut v = [0i32; 4];
+            for (i, p) in parts.iter().enumerate() {
+                v[i] = p.trim().parse::<i32>().ok()?;
+            }
+            Some(IpcCommand::TerrainAddChunks { min_x: v[0], min_z: v[1], max_x: v[2], max_z: v[3] })
+        }
         // ブラシプレビュー更新: "screen_x,screen_y,radius,strength"（f32×4）。
         s if s.starts_with("TERRAIN_BRUSH_PREVIEW:") => {
             parse_nf::<4>(&s["TERRAIN_BRUSH_PREVIEW:".len()..]).map(|fs| {
@@ -630,21 +746,16 @@ fn parse_terrain_command(s: &str) -> Option<IpcCommand> {
                 }
             })
         }
-        // ハイトマップ読込: "path,height_scale"。path 側に Windows パスの
-        // カンマ（通常は含まれないが、他コマンドの流儀に合わせて安全側に倒す）が
-        // 含まれても壊れないよう、右端のカンマで分割する（path は最後のカンマより前）。
+        // ハイトマップ読込。新旧 2 形式を受け付ける（下位互換）。
+        //   新: "chunks_x,chunks_z,chunk_cells,voxel_size,height_scale,path"
+        //       path が末尾なので、前 5 フィールドを splitn(6) で確実に切り出せる。
+        //   旧: "path,height_scale"
+        //       path 側に Windows パスのカンマが含まれても壊れないよう右端のカンマで分割する。
+        // 新形式の判定は「6 フィールド以上あり、前 5 個がすべて数値として読める」こと。
+        // 旧形式の path（例 "C:\a\map.png"）は先頭フィールドが数値にならないため衝突しない。
         s if s.starts_with("TERRAIN_HEIGHTMAP:") => {
             let rest = &s["TERRAIN_HEIGHTMAP:".len()..];
-            rest.rfind(',').and_then(|idx| {
-                let path = &rest[..idx];
-                let scale_s = &rest[idx + 1..];
-                scale_s.trim().parse::<f32>().ok().map(|height_scale| {
-                    IpcCommand::TerrainHeightmap {
-                        path: path.to_string(),
-                        height_scale,
-                    }
-                })
-            })
+            parse_heightmap_with_config(rest).or_else(|| parse_heightmap_legacy(rest))
         }
         // 地形ブラシ: "op,screen_x,screen_y,radius,strength"。
         // 先頭 op は u32、残り 4 つは f32。parse1u_nf::<4> で (op, [sx,sy,r,st]) を得る。
@@ -1878,7 +1989,7 @@ mod tests {
     /// 引数なし地形コマンドが取りこぼされないこと（アーム統合時の退行検出）。
     #[test]
     fn parses_argument_less_terrain_commands() {
-        assert!(matches!(parse_terrain_command("TERRAIN_INIT"),        Some(IpcCommand::TerrainInit)));
+        assert!(matches!(parse_terrain_command("TERRAIN_INIT"),        Some(IpcCommand::TerrainInit { config: None })));
         assert!(matches!(parse_terrain_command("TERRAIN_SAVE"),        Some(IpcCommand::TerrainSave)));
         assert!(matches!(parse_terrain_command("TERRAIN_UNDO"),        Some(IpcCommand::TerrainUndo)));
         assert!(matches!(parse_terrain_command("TERRAIN_REDO"),        Some(IpcCommand::TerrainRedo)));
@@ -1923,13 +2034,14 @@ mod tests {
         }
     }
 
-    /// ハイトマップはカンマを含むパスでも右端のカンマで分割されること。
+    /// 旧形式のハイトマップはカンマを含むパスでも右端のカンマで分割されること。
     #[test]
     fn heightmap_splits_on_last_comma() {
         match parse_terrain_command(r"TERRAIN_HEIGHTMAP:C:\a,b\map.png,12.5") {
-            Some(IpcCommand::TerrainHeightmap { path, height_scale }) => {
+            Some(IpcCommand::TerrainHeightmap { path, height_scale, config }) => {
                 assert_eq!(path, r"C:\a,b\map.png");
                 assert_eq!(height_scale, 12.5);
+                assert_eq!(config, None, "旧形式では構成指定が付かない");
             }
             _ => panic!("TerrainHeightmap を期待した"),
         }
@@ -1943,5 +2055,72 @@ mod tests {
         assert!(parse_terrain_command("TERRAIN_BRUSH_PREVIEW:1,2,3").is_none());
         // height_scale が数値でない。
         assert!(parse_terrain_command("TERRAIN_HEIGHTMAP:map.png,abc").is_none());
+    }
+
+    // ── チャンク構成の設定（本機能の追加分）─────────────────────────────
+
+    /// 構成引数つき TERRAIN_INIT が 4 フィールドを正しく取り出すこと。
+    #[test]
+    fn parses_terrain_init_with_chunk_config() {
+        match parse_terrain_command("TERRAIN_INIT:6,8,16,0.25") {
+            Some(IpcCommand::TerrainInit { config: Some(c) }) => {
+                assert_eq!(c.chunks_x, 6);
+                assert_eq!(c.chunks_z, 8);
+                assert_eq!(c.chunk_cells, 16);
+                assert_eq!(c.voxel_size, 0.25);
+            }
+            _ => panic!("構成付き TerrainInit を期待した"),
+        }
+    }
+
+    /// 構成引数の個数不足・非数値は握り潰されること（旧形式へ誤って落ちない）。
+    #[test]
+    fn rejects_malformed_terrain_init_config() {
+        assert!(parse_terrain_command("TERRAIN_INIT:6,8,16").is_none());
+        assert!(parse_terrain_command("TERRAIN_INIT:6,8,16,0.25,99").is_none());
+        assert!(parse_terrain_command("TERRAIN_INIT:a,b,c,d").is_none());
+    }
+
+    /// チャンク追加が i32×4 として読めること（負のチャンク座標も許す）。
+    #[test]
+    fn parses_terrain_add_chunks() {
+        match parse_terrain_command("TERRAIN_ADD_CHUNKS:-2,-3,4,5") {
+            Some(IpcCommand::TerrainAddChunks { min_x, min_z, max_x, max_z }) => {
+                assert_eq!((min_x, min_z, max_x, max_z), (-2, -3, 4, 5));
+            }
+            _ => panic!("TerrainAddChunks を期待した"),
+        }
+        assert!(parse_terrain_command("TERRAIN_ADD_CHUNKS:1,2,3").is_none());
+        assert!(parse_terrain_command("TERRAIN_ADD_CHUNKS:1,2,3,x").is_none());
+    }
+
+    /// 新形式のハイトマップ（構成 4 + height_scale + path）が読めること。
+    /// path は末尾なので、カンマを含むパスでも前 5 フィールドが壊れない。
+    #[test]
+    fn parses_heightmap_with_chunk_config() {
+        match parse_terrain_command(r"TERRAIN_HEIGHTMAP:3,5,16,0.25,20,C:\a,b\map.png") {
+            Some(IpcCommand::TerrainHeightmap { path, height_scale, config: Some(c) }) => {
+                assert_eq!(path, r"C:\a,b\map.png", "path は最後のフィールド全部（カンマ込み）");
+                assert_eq!(height_scale, 20.0);
+                assert_eq!(c.chunks_x, 3);
+                assert_eq!(c.chunks_z, 5);
+                assert_eq!(c.chunk_cells, 16);
+                assert_eq!(c.voxel_size, 0.25);
+            }
+            _ => panic!("構成付き TerrainHeightmap を期待した"),
+        }
+    }
+
+    /// 新形式として読めない入力は旧形式へフォールバックすること（後方互換の要）。
+    /// Windows の絶対パスは先頭フィールドが数値にならないため、必ず旧形式で解釈される。
+    #[test]
+    fn heightmap_falls_back_to_legacy_form() {
+        match parse_terrain_command(r"TERRAIN_HEIGHTMAP:C:\maps\a,b,c,d,e\hm.png,10") {
+            Some(IpcCommand::TerrainHeightmap { path, height_scale, config: None }) => {
+                assert_eq!(path, r"C:\maps\a,b,c,d,e\hm.png");
+                assert_eq!(height_scale, 10.0);
+            }
+            _ => panic!("旧形式の TerrainHeightmap を期待した"),
+        }
     }
 }
