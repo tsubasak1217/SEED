@@ -23,10 +23,19 @@ impl App {
     ///
     /// &self.ipc の不変借用を処理ループ内に持ち込まないことで、
     /// apply_delete 等の &mut self メソッド呼び出しを可能にする。
+    ///
+    /// 【フレーム末の集約処理】コマンドループを抜けた後に
+    /// `flush_terrain_pending_remesh` を必ず呼ぶ。ドラッグ中は 1 フレームに複数の
+    /// TERRAIN_BRUSH / TERRAIN_PAINT が届くため、各ハンドラは密度・スプラットの
+    /// 書き換えだけを即時に行い、重い再メッシュはここで 1 回にまとめて消化する。
+    ///
+    /// IPC が未接続（`self.ipc == None`。スモークテスト等のスタンドアロン実行）でも
+    /// **早期 return せず** flush まで到達させること。地形編集はフックから直接
+    /// 呼ばれる経路もあり、そこで積まれた保留が永久に消化されなくなるため。
     pub(super) fn process_ipc(&mut self, event_loop: &ActiveEventLoop) {
-        let cmds: Vec<_> = {
-            let Some(ipc) = &self.ipc else { return };
-            std::iter::from_fn(|| ipc.try_recv()).collect()
+        let cmds: Vec<_> = match &self.ipc {
+            Some(ipc) => std::iter::from_fn(|| ipc.try_recv()).collect(),
+            None => Vec::new(),
         };
         for cmd in cmds {
             match cmd {
@@ -1326,6 +1335,12 @@ impl App {
                 }
             }
         }
+
+        // ── フレーム末の地形ダーティ集約を消化する ──
+        //   このフレームに届いたブラシ／ペイントが触れた全チャンクを重複無しで
+        //   1 回だけ再メッシュする。IPC 応答（TERRAIN_BRUSH_OK 等）は各コマンド処理時に
+        //   既に返してあるので、ここで送信タイミング・文言が変わることはない。
+        self.flush_terrain_pending_remesh();
     }
 
     // ============================================================

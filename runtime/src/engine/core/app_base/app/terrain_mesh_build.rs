@@ -40,12 +40,16 @@ use crate::engine::core::loader::model::{
     CullFace, Material, Mesh, Model, ModelNode, Primitive, Vertex,
 };
 use crate::engine::terrain::layers::{
-    blend_rule_and_paint_all, select_top_slots, TerrainLayerSet, TERRAIN_BLEND_SLOTS,
+    blend_rule_and_paint_all, blend_rule_and_paint_all_into, select_top_slots, BlendSlots,
+    TerrainLayerSet, TERRAIN_BLEND_SLOTS, TERRAIN_MAX_LAYERS,
 };
 use crate::engine::terrain::marching_cubes::TerrainMesh;
 
 /// 接線の既定値（xyz=+X 軸, w=+1 ハンドネス）。地形は法線マップを持たないためダミー。
 const DEFAULT_TANGENT: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
+/// 法線が欠けている頂点の代替値（真上向き）。positions と normals の長さは常に
+/// 一致する前提だが、崩れても黒落ち・NaN を出さないための防御値。
+const DEFAULT_NORMAL: [f32; 3] = [0.0, 1.0, 0.0];
 /// UV の既定値（頂点 UV 未使用。シェーダ側 triplanar がワールド座標から UV を作る）。
 const DEFAULT_UV: [f32; 2] = [0.0, 0.0];
 
@@ -70,27 +74,102 @@ pub fn terrain_mesh_to_model(
     world_origin: [f32; 3],
     layers: &TerrainLayerSet,
 ) -> (Model, [u32; TERRAIN_BLEND_SLOTS]) {
+    // ─── 頂点カラー（レイヤ重み）とチャンクパレットを求める ───
+    //   計算そのものは compute_layer_colors に集約してある（差分更新と共有するため）。
+    let (colors, palette) = compute_layer_colors(
+        &mesh.positions,
+        &mesh.normals,
+        &mesh.paint,
+        &mesh.paint_amount,
+        world_origin,
+        layers,
+    );
+
+    // ─── 位置・法線・色を束ねて Vertex 列を組み立てる ───
+    let mut vertices: Vec<Vertex> = Vec::with_capacity(mesh.positions.len());
+    for (i, pos) in mesh.positions.iter().enumerate() {
+        let normal = mesh.normals.get(i).copied().unwrap_or(DEFAULT_NORMAL);
+        vertices.push(Vertex {
+            position: *pos,
+            normal,
+            tangent: DEFAULT_TANGENT,
+            uv0:     DEFAULT_UV,
+            uv1:     DEFAULT_UV,
+            // 頂点カラー = パレット内スロット重み（RGBA = palette[0..3] の各層）。
+            color:   colors[i],
+        });
+    }
+
+    build_terrain_model(vertices, mesh.indices.clone(), name, palette)
+}
+
+/// 頂点ごとのレイヤ重み（＝頂点カラー RGBA）とチャンクパレットを計算する。
+///
+/// `terrain_mesh_to_model`（フル生成）と、ペイント時の頂点カラー差分更新の
+/// **両方がこの 1 関数を使う**ため、差分更新の結果はフル再生成と定義上必ず一致する。
+///
+/// - `positions` / `normals`: 頂点の位置（チャンクローカル）と法線。同じ長さ・同じ順序。
+/// - `paint` / `paint_amount`: 手ペイントのスロット重みとペイント量（TerrainMesh 由来）。
+/// - `world_origin`: チャンクのワールド原点（高度ルールの評価に使う）。
+/// - `layers`: レイヤ定義一式（斜度／高度ルールの供給元）。
+///
+/// 戻り値は (頂点カラー列, チャンクパレット)。頂点カラーは positions と同じ長さ。
+pub fn compute_layer_colors(
+    positions:    &[[f32; 3]],
+    normals:      &[[f32; 3]],
+    paint:        &[BlendSlots],
+    paint_amount: &[f32],
+    world_origin: [f32; 3],
+    layers:       &TerrainLayerSet,
+) -> (Vec<[f32; 4]>, [u32; TERRAIN_BLEND_SLOTS]) {
     // レイヤ定義数（密重みベクトルの次元）。0 層はあり得ないが防御的に 1 を下限とする。
     let layer_count = layers.layers.len().max(1);
-    let vertex_count = mesh.positions.len();
+    let vertex_count = positions.len();
+
+    // ─── 頂点ループ用スクラッチバッファ（1 頂点ごとのヒープ確保を無くすため）───
+    //   レイヤ重みの密ベクトルは最大でも TERRAIN_MAX_LAYERS 次元なので、
+    //   スタック上の固定長配列で足りる。ここを Vec 確保にすると 64³ チャンクで
+    //   8 万回以上の malloc/free が走り、頂点カラー計算がホットパス化する。
+    let mut rule_buf  = [0.0f32; TERRAIN_MAX_LAYERS];
+    let mut blend_buf = [0.0f32; TERRAIN_MAX_LAYERS];
+
+    // レイヤ定義数（＝密重みベクトルの実際の次元。layer_count と違い下限 1 を課さない）。
+    let rule_len = layers.layers.len();
+    // スクラッチ経路が使えるか。レイヤ定義は from_json_str が TERRAIN_MAX_LAYERS へ
+    // 切り詰めるため通常は必ず true だが、TerrainLayerSet を直接組み立てれば
+    // 上限超えもあり得る。その場合は従来の Vec 経路へ落とし、挙動を一切変えない。
+    let use_scratch = rule_len <= TERRAIN_MAX_LAYERS;
 
     // ─── パス 1: 全頂点の密重みベクトルを求め、チャンク合計を累積する ───
     //   密重みは flat な Vec<f32>（頂点 i の重み = dense[i*layer_count .. +layer_count]）
     //   として持つ。Vec<Vec<f32>> より確保回数が少なく、走査も連続で速い。
     let mut dense = vec![0.0f32; vertex_count * layer_count];
     let mut chunk_total = vec![0.0f32; layer_count];
-    for (i, pos) in mesh.positions.iter().enumerate() {
+    for (i, pos) in positions.iter().enumerate() {
         // 法線は位置と対になっている（境界外でも normals[i] が必ず存在する前提）。
-        let normal = mesh.normals.get(i).copied().unwrap_or([0.0, 1.0, 0.0]);
+        let normal = normals.get(i).copied().unwrap_or(DEFAULT_NORMAL);
 
         // ── ルールによる自動下地（斜度＝法線 Y／高度＝ワールド Y）──
         let world_y = world_origin[1] + pos[1];
-        let rule_w = layers.rule_weights_all(normal[1], world_y);
 
         // ── 手ペイント分と合成（ペイント量 0 の頂点は完全にルール任せ）──
-        let paint_slots = mesh.paint.get(i).copied().unwrap_or_default();
-        let paint_amount = mesh.paint_amount.get(i).copied().unwrap_or(0.0);
-        let w = blend_rule_and_paint_all(&rule_w, &paint_slots, paint_amount);
+        let paint_slots = paint.get(i).copied().unwrap_or_default();
+        let vertex_paint_amount = paint_amount.get(i).copied().unwrap_or(0.0);
+
+        // スクラッチ経路（既定）と Vec 経路（レイヤ上限超えの防御）は同一の演算。
+        // 後者でしか使わない一時 Vec は、借用を揃えるためここで宣言しておく。
+        let fallback_w: Vec<f32>;
+        let w: &[f32] = if use_scratch {
+            layers.rule_weights_all_into(normal[1], world_y, &mut rule_buf);
+            blend_rule_and_paint_all_into(
+                &rule_buf[..rule_len], &paint_slots, vertex_paint_amount, &mut blend_buf,
+            );
+            &blend_buf[..rule_len]
+        } else {
+            let rule_w = layers.rule_weights_all(normal[1], world_y);
+            fallback_w = blend_rule_and_paint_all(&rule_w, &paint_slots, vertex_paint_amount);
+            &fallback_w
+        };
 
         // rule_weights_all は layers.len() 長を返すが、layer_count は下限 1 なので
         // 短い場合に備えて明示的に切り詰めながら書き込む。
@@ -107,9 +186,8 @@ pub fn terrain_mesh_to_model(
     let palette = palette_slots.index;
 
     // ─── パス 2: 各頂点の密重みをパレットの 4 成分へ射影し、正規化して頂点カラーへ ───
-    let mut vertices: Vec<Vertex> = Vec::with_capacity(vertex_count);
-    for (i, pos) in mesh.positions.iter().enumerate() {
-        let normal = mesh.normals.get(i).copied().unwrap_or([0.0, 1.0, 0.0]);
+    let mut colors: Vec<[f32; 4]> = Vec::with_capacity(vertex_count);
+    for i in 0..vertex_count {
         let base = i * layer_count;
 
         // パレットが指すレイヤの重みだけを抜き出す。
@@ -146,23 +224,69 @@ pub fn terrain_mesh_to_model(
             w[0] = 1.0;
         }
 
-        vertices.push(Vertex {
-            position: *pos,
-            normal,
-            tangent: DEFAULT_TANGENT,
-            uv0:     DEFAULT_UV,
-            uv1:     DEFAULT_UV,
-            // 頂点カラー = パレット内スロット重み（RGBA = palette[0..3] の各層）。
-            color:   [w[0], w[1], w[2], w[3]],
-        });
+        // 頂点カラー = パレット内スロット重み（RGBA = palette[0..3] の各層）。
+        colors.push([w[0], w[1], w[2], w[3]]);
     }
 
+    (colors, palette)
+}
+
+/// 既存の地形チャンク Model から「頂点カラーとパレットだけを差し替えた」新しい Model を作る。
+///
+/// 【なぜ新規に作るのか — `Arc::make_mut` が使えない理由】
+///   ペイント高速パスは CPU 側モデル（`ModelComponent::model: Arc<Model>`）の頂点カラーも
+///   更新しなければならない。`slot_ops.rs` のマテリアルオーバーライド設定経路が
+///   `mc.model` から `upload_model_with_overrides` で GPU リソースを作り直すため、
+///   CPU 側の色が古いままだと、後でオーバーライドを付けた瞬間に色が巻き戻るからである。
+///   ところが `Model` / `Mesh` / `Primitive` は `Clone` を実装していないため
+///   `Arc::make_mut` は使えず、また `Arc` は共有されうる（統合バッチキャッシュ等）ので
+///   `Arc::get_mut` も成功が保証されない。`get_mut` の成否で挙動が分かれるのは
+///   非決定的で危ういため、**常に新しい Model を組み立てて丸ごと差し替える**方式に統一する。
+///
+///   コストは「頂点列＋インデックス列の memcpy」だけで、マーチングキューブス
+///   （形状生成・法線の勾配評価・辺キャッシュ）は一切走らない。地形チャンクは
+///   LOD もメッシュレットも持たないため、それ以外に複製すべき重いデータも無い。
+///
+/// - `src_vertices`: 元モデルの頂点列。位置・法線・接線・UV はそのまま引き継ぐ。
+/// - `indices`:      元モデルのインデックス列（ペイントでは不変）。
+/// - `colors`:       新しい頂点カラー。`src_vertices` と同じ長さでなければならない。
+///
+/// 長さが食い違う場合は `None` を返す（呼び出し側はフル再メッシュへフォールバックする）。
+pub fn rebuild_terrain_model_with_colors(
+    src_vertices: &[Vertex],
+    indices:      &[u32],
+    name:         &str,
+    colors:       &[[f32; 4]],
+    palette:      [u32; TERRAIN_BLEND_SLOTS],
+) -> Option<Model> {
+    if src_vertices.len() != colors.len() {
+        return None;
+    }
+    let vertices: Vec<Vertex> = src_vertices
+        .iter()
+        .zip(colors.iter())
+        .map(|(v, c)| Vertex { color: *c, ..*v })
+        .collect();
+    let (model, _palette) = build_terrain_model(vertices, indices.to_vec(), name, palette);
+    Some(model)
+}
+
+/// 頂点列・インデックス列・パレットから、地形チャンク 1 個ぶんの Model を組み立てる。
+///
+/// Model の骨組み（単一ノード・単一メッシュ・地形マテリアル）はレイヤ計算とは
+/// 独立した関心事なので、`terrain_mesh_to_model` から分離してある。
+fn build_terrain_model(
+    vertices: Vec<Vertex>,
+    indices:  Vec<u32>,
+    name:     &str,
+    palette:  [u32; TERRAIN_BLEND_SLOTS],
+) -> (Model, [u32; TERRAIN_BLEND_SLOTS]) {
     // ─── 1 プリミティブ（1 マテリアル）を構築する ───
     //   skin_vertices は必ず空（地形はスキニング非対応）。LOD・メッシュレットも未生成。
     let primitive = Primitive {
         vertices,
         skin_vertices:     Vec::new(),
-        indices:           mesh.indices.clone(),
+        indices,
         material_index:    Some(0),
         lod_indices:       Vec::new(),
         meshlets:          Vec::new(),
@@ -260,6 +384,8 @@ mod tests {
             indices:      vec![0, 1, 2],
             paint:        vec![paint; 3],
             paint_amount: vec![1.0; 3],
+            // 由来辺（edges）はペイント差分更新でしか使わないので、ここでは空で良い。
+            ..Default::default()
         }
     }
 
@@ -386,6 +512,344 @@ mod tests {
         assert_eq!(dominant_layer(&res_b), 2);
     }
 
+    /// `compute_layer_colors` を単体で呼んだ結果が、`terrain_mesh_to_model` が組み立てた
+    /// `Vertex.color` および `material.terrain_palette` と完全一致すること。
+    ///
+    /// ペイント時の頂点カラー差分更新は `compute_layer_colors` だけを呼ぶ設計なので、
+    /// この一致が崩れると「差分更新した箇所とフル再生成した箇所で色が食い違う」
+    /// （＝再メッシュのたびに色がちらつく）という形で表面化する。
+    #[test]
+    fn compute_layer_colors_matches_terrain_mesh_to_model() {
+        let layers = TerrainLayerSet::default();
+
+        // レイヤごとに塗り分けたメッシュを一通り試す（パレットの並びが毎回変わる）。
+        for painted in 0..layers.layers.len() as u32 {
+            let mesh = painted_mesh(painted);
+            let (model, model_palette) =
+                terrain_mesh_to_model(&mesh, "chunk", TEST_ORIGIN, &layers);
+
+            let (colors, palette) = compute_layer_colors(
+                &mesh.positions,
+                &mesh.normals,
+                &mesh.paint,
+                &mesh.paint_amount,
+                TEST_ORIGIN,
+                &layers,
+            );
+
+            // ① パレットが一致すること（Model 側・Material 側の双方）。
+            assert_eq!(palette, model_palette, "レイヤ {painted}: パレットが不一致");
+            assert_eq!(
+                palette, model.materials[0].terrain_palette,
+                "レイヤ {painted}: material.terrain_palette と不一致"
+            );
+
+            // ② 頂点カラーが 1 ビット違わず一致すること。
+            let verts = &model.meshes[0].primitives[0].vertices;
+            assert_eq!(colors.len(), verts.len(), "レイヤ {painted}: 頂点数が不一致");
+            for (i, (c, v)) in colors.iter().zip(verts.iter()).enumerate() {
+                for k in 0..TERRAIN_BLEND_SLOTS {
+                    assert_eq!(
+                        c[k].to_bits(), v.color[k].to_bits(),
+                        "レイヤ {painted}: 頂点 {i} スロット {k} の色がビット不一致 \
+                         ({} vs {})", c[k], v.color[k]
+                    );
+                }
+            }
+        }
+    }
+
+    // ============================================================
+    //  ペイント高速パス（メッシュ再生成なしの頂点カラー差し替え）の検証
+    //
+    //  GPU を持たない環境でも回るよう、App / DrawContext には一切触れず
+    //  「由来辺（TerrainVertexEdge）＋ interp_vertex_paint ＋ compute_layer_colors」
+    //  という高速パスの**計算部分そのもの**を組み立てて、フル再生成と突き合わせる。
+    // ============================================================
+
+    use crate::engine::terrain::marching_cubes::{generate_standalone, interp_vertex_paint};
+    use crate::engine::terrain::paint::{apply_paint, PaintField};
+    use crate::engine::terrain::{
+        BlendSlots as TerrainBlendSlots, ChunkCoord, SphereBrush, TerrainChunkData, TerrainSettings,
+    };
+
+    /// テスト球 SDF の中心（チャンクローカル、メートル）。チャンク中央付近に置く。
+    const SPHERE_CENTER: [f32; 3] = [8.0, 8.0, 8.0];
+    /// テスト球 SDF の半径（メートル）。
+    const SPHERE_RADIUS: f32 = 5.0;
+    /// ペイントブラシの離散適用時間（terrain_ops.rs の BRUSH_DT と同じ 1 回ぶん）。
+    const TEST_BRUSH_DT: f32 = 1.0;
+    /// ペイントブラシ半径（メートル）。球表面の一部だけを覆う大きさにする
+    /// （全面を覆うとチャンク合計が一様になり、パレット変化の検出テストが鈍る）。
+    const TEST_PAINT_RADIUS: f32 = 4.0;
+    /// ペイントブラシ強度（1 回で paint_amount がほぼ 1 に達する値）。
+    const TEST_PAINT_STRENGTH: f32 = 2.0;
+    /// パレット変化テストで塗る「まだそのチャンクに無いレイヤ」の番号。
+    const TEST_NEW_LAYER: u32 = 5;
+    /// パレット変化テストのレイヤ定義数（TEST_NEW_LAYER を含められる数）。
+    const TEST_WIDE_LAYER_COUNT: usize = 6;
+
+    /// 単一チャンクだけを対象とする最小の `PaintField` 実装。
+    ///
+    /// テスト対象は 1 チャンク（座標 (0,0,0)）だけなので、グローバルサンプル座標は
+    /// そのままローカル添字になる。範囲外は「未ペイント」を返し、書き込みは無視する。
+    struct SingleChunkPaintField<'a> {
+        settings: &'a TerrainSettings,
+        chunk:    &'a mut TerrainChunkData,
+    }
+
+    impl<'a> SingleChunkPaintField<'a> {
+        /// グローバルサンプル座標がこのチャンクの範囲内なら添字を返す。
+        fn local(&self, gx: i32, gy: i32, gz: i32) -> Option<(usize, usize, usize)> {
+            let s = self.settings.samples_per_axis() as i32;
+            if gx < 0 || gy < 0 || gz < 0 || gx >= s || gy >= s || gz >= s {
+                return None;
+            }
+            Some((gx as usize, gy as usize, gz as usize))
+        }
+    }
+
+    impl<'a> PaintField for SingleChunkPaintField<'a> {
+        fn settings(&self) -> &TerrainSettings {
+            self.settings
+        }
+        fn read_paint_global(&self, gx: i32, gy: i32, gz: i32) -> (TerrainBlendSlots, f32) {
+            match self.local(gx, gy, gz) {
+                Some((x, y, z)) => (self.chunk.paint_slots(x, y, z), self.chunk.paint_amount(x, y, z)),
+                None => (TerrainBlendSlots::default(), 0.0),
+            }
+        }
+        fn write_paint_global(
+            &mut self, gx: i32, gy: i32, gz: i32, slots: &TerrainBlendSlots, amount: f32,
+        ) {
+            if let Some((x, y, z)) = self.local(gx, gy, gz) {
+                self.chunk.set_paint_slots(x, y, z, slots);
+                self.chunk.set_paint_amount(x, y, z, amount);
+            }
+        }
+        fn world_of_global(&self, gx: i32, gy: i32, gz: i32) -> [f32; 3] {
+            let v = self.settings.voxel_size;
+            [gx as f32 * v, gy as f32 * v, gz as f32 * v]
+        }
+    }
+
+    /// 球 SDF を密度として持つチャンクを作る（表面＝球面に三角形が出る）。
+    fn sphere_chunk(settings: &TerrainSettings) -> TerrainChunkData {
+        let mut chunk = TerrainChunkData::new_filled(settings, 0.0);
+        let s = settings.samples_per_axis();
+        let voxel = settings.voxel_size;
+        for iz in 0..s {
+            for iy in 0..s {
+                for ix in 0..s {
+                    let p = [ix as f32 * voxel, iy as f32 * voxel, iz as f32 * voxel];
+                    let d = [
+                        p[0] - SPHERE_CENTER[0],
+                        p[1] - SPHERE_CENTER[1],
+                        p[2] - SPHERE_CENTER[2],
+                    ];
+                    let dist = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+                    chunk.set_sample(ix, iy, iz, dist - SPHERE_RADIUS);
+                }
+            }
+        }
+        chunk
+    }
+
+    /// 高速パスの計算部分そのもの：保存しておいた由来辺からスプラットを引き直し、
+    /// 既存メッシュの位置・法線と合わせて頂点カラーとパレットを再構築する。
+    ///
+    /// ランタイム側（`App::apply_terrain_paint_colors`）が行う計算と同一の手順・同一の
+    /// 関数呼び出しであり、違いは「位置・法線を CPU モデルから取るか TerrainMesh から
+    /// 取るか」だけ（どちらも同じ値）。
+    fn fast_path_colors(
+        chunk:        &TerrainChunkData,
+        edges:        &[crate::engine::terrain::TerrainVertexEdge],
+        positions:    &[[f32; 3]],
+        normals:      &[[f32; 3]],
+        world_origin: [f32; 3],
+        layers:       &TerrainLayerSet,
+    ) -> (Vec<[f32; 4]>, [u32; TERRAIN_BLEND_SLOTS]) {
+        let interpolated: Vec<(BlendSlots, f32)> =
+            edges.iter().map(|e| interp_vertex_paint(chunk, e)).collect();
+        let paint: Vec<BlendSlots> = interpolated.iter().map(|p| p.0).collect();
+        let paint_amount: Vec<f32> = interpolated.iter().map(|p| p.1).collect();
+        compute_layer_colors(positions, normals, &paint, &paint_amount, world_origin, layers)
+    }
+
+    /// 【この最適化の正しさの中核】
+    /// ペイント後に「由来辺から再構築した頂点カラー・パレット」が、
+    /// 「ペイント後にフルで作り直したメッシュ」の頂点カラー・パレットと **f32 ビット一致**すること。
+    ///
+    /// ここが崩れると、高速パスで塗ったチャンクと（フォールバックで）再メッシュした
+    /// チャンクとで色が食い違い、ストローク中に色がちらつく。
+    #[test]
+    fn paint_fast_path_colors_match_full_regeneration() {
+        let settings = TerrainSettings::default();
+        let layers = TerrainLayerSet::default();
+        let coord = ChunkCoord::new(0, 0, 0);
+        let world_origin = coord.world_origin(&settings);
+
+        // ── (a) ペイント前のフル生成。由来辺をここで保存しておく（＝ランタイムのキャッシュ相当）──
+        let mut chunk = sphere_chunk(&settings);
+        let mesh_before = generate_standalone(&chunk, &settings);
+        assert!(!mesh_before.positions.is_empty(), "球メッシュが空（前提の崩れ）");
+        let edges = mesh_before.edges.clone();
+        let positions = mesh_before.positions.clone();
+        let normals = mesh_before.normals.clone();
+        let (colors_before, palette_before) = compute_layer_colors(
+            &positions, &normals, &mesh_before.paint, &mesh_before.paint_amount,
+            world_origin, &layers,
+        );
+
+        // ── ペイントを当てる（密度は変えず、スプラット場だけが書き換わる）──
+        //   既定レイヤ 4 層の範囲内（レイヤ 1）を塗り、パレットが変わらないケースを作る。
+        //   ブラシ中心は球「面」上の点にする。球の中心に置くと半径 4 のブラシが
+        //   半径 5 の球面へ届かず、頂点が 1 つも塗られない（＝テストが空回りする）。
+        let brush = SphereBrush {
+            center:   [SPHERE_CENTER[0] + SPHERE_RADIUS, SPHERE_CENTER[1], SPHERE_CENTER[2]],
+            radius:   TEST_PAINT_RADIUS,
+            strength: TEST_PAINT_STRENGTH,
+        };
+        {
+            let mut field = SingleChunkPaintField { settings: &settings, chunk: &mut chunk };
+            let affected = apply_paint(&mut field, &brush, 1, TEST_BRUSH_DT);
+            assert!(!affected.is_empty(), "ペイントが 1 サンプルにも当たっていない（前提の崩れ）");
+        }
+
+        // ── (b) 高速パス: 保存しておいた由来辺から再構築 ──
+        let (colors_fast, palette_fast) =
+            fast_path_colors(&chunk, &edges, &positions, &normals, world_origin, &layers);
+
+        // ── (c) フル再生成: ペイント後のチャンクからメッシュごと作り直す ──
+        let mesh_after = generate_standalone(&chunk, &settings);
+        let (model_full, palette_full) =
+            terrain_mesh_to_model(&mesh_after, "chunk", world_origin, &layers);
+        let verts_full = &model_full.meshes[0].primitives[0].vertices;
+
+        // ── 前提: ペイントで形状は変わっていない（＝高速パスが成立する条件）──
+        assert_eq!(
+            mesh_after.positions.len(), positions.len(),
+            "ペイントで頂点数が変わった（密度を触っている＝高速パスの前提が崩れている）"
+        );
+
+        // ── ① パレットが一致すること ──
+        assert_eq!(palette_fast, palette_full, "高速パスとフル再生成でパレットが不一致");
+        // このケースはパレット不変（＝フォールバックしない）であることも確認する。
+        assert_eq!(
+            palette_fast, palette_before,
+            "既存レイヤを塗っただけでパレットが変わった（このテストの想定外）"
+        );
+
+        // ── ② ペイントが実際に色を変えていること（テストが形骸化していない担保）──
+        //   ここが変わらないなら「何も塗れていない」ので、下の一致比較は無意味になる。
+        assert!(
+            colors_fast.iter().zip(colors_before.iter()).any(|(a, b)| a != b),
+            "ペイント前後で頂点カラーが 1 つも変わっていない（テストが何も守れていない）"
+        );
+
+        // ── ③ 頂点カラーが 1 ビット違わず一致すること ──
+        assert_eq!(colors_fast.len(), verts_full.len(), "頂点数が不一致");
+        for (i, (c, v)) in colors_fast.iter().zip(verts_full.iter()).enumerate() {
+            for k in 0..TERRAIN_BLEND_SLOTS {
+                assert_eq!(
+                    c[k].to_bits(), v.color[k].to_bits(),
+                    "頂点 {i} スロット {k} の色がビット不一致 ({} vs {})", c[k], v.color[k]
+                );
+            }
+        }
+    }
+
+    /// フォールバック条件（パレット変化）が現実的な経路で実際に発火すること。
+    ///
+    /// そのチャンクにまだ無いレイヤを強く塗ると、チャンク合計の上位 4 層の顔ぶれが変わり、
+    /// 頂点カラー 4 成分の *意味* が変わる。ランタイムはこれを検出してフル再メッシュへ
+    /// フォールバックする。検出できなければ「旧パレットで新しい重みを描く」＝誤色になる。
+    #[test]
+    fn paint_introducing_new_layer_changes_palette() {
+        let settings = TerrainSettings::default();
+        // 既定の 4 層では「まだ無い 5 番目の層」を作れないので、6 層構成にする。
+        let layers = flat_layer_set(TEST_WIDE_LAYER_COUNT);
+        let coord = ChunkCoord::new(0, 0, 0);
+        let world_origin = coord.world_origin(&settings);
+
+        let mut chunk = sphere_chunk(&settings);
+        let mesh_before = generate_standalone(&chunk, &settings);
+        let edges = mesh_before.edges.clone();
+        let positions = mesh_before.positions.clone();
+        let normals = mesh_before.normals.clone();
+        let (_c0, palette_before) = compute_layer_colors(
+            &positions, &normals, &mesh_before.paint, &mesh_before.paint_amount,
+            world_origin, &layers,
+        );
+        assert!(
+            !palette_before.contains(&TEST_NEW_LAYER),
+            "前提の崩れ: 塗る前からレイヤ {TEST_NEW_LAYER} がパレットに居る"
+        );
+
+        // ── まだ使われていないレイヤを、球全体を覆う大きなブラシで強く塗る ──
+        let brush = SphereBrush {
+            center:   SPHERE_CENTER,
+            radius:   SPHERE_RADIUS * 2.0,
+            strength: TEST_PAINT_STRENGTH,
+        };
+        {
+            let mut field = SingleChunkPaintField { settings: &settings, chunk: &mut chunk };
+            let affected = apply_paint(&mut field, &brush, TEST_NEW_LAYER, TEST_BRUSH_DT);
+            assert!(!affected.is_empty(), "ペイントが当たっていない（前提の崩れ）");
+        }
+
+        // ── 高速パスの再構築が返すパレットが変わっている＝フォールバック条件が発火する ──
+        let (_colors_fast, palette_fast) =
+            fast_path_colors(&chunk, &edges, &positions, &normals, world_origin, &layers);
+        assert_ne!(
+            palette_fast, palette_before,
+            "新レイヤを塗ってもパレットが変わらない（フォールバック条件が死んでいる）"
+        );
+        assert!(
+            palette_fast.contains(&TEST_NEW_LAYER),
+            "塗った新レイヤ {TEST_NEW_LAYER} がパレットへ入っていない: {palette_fast:?}"
+        );
+    }
+
+    /// `rebuild_terrain_model_with_colors` が「色だけ差し替えた」モデルを返すこと。
+    ///
+    /// 位置・法線・インデックス・パレットが元と一致し、色だけが指定どおりに変わることを固定する。
+    /// ここが崩れると、高速パスが CPU モデルを壊して以後の再アップロードで形状が化ける。
+    #[test]
+    fn rebuild_terrain_model_replaces_only_colors() {
+        let layers = TerrainLayerSet::default();
+        let mesh = painted_mesh(1);
+        let (model, palette) = terrain_mesh_to_model(&mesh, "chunk", TEST_ORIGIN, &layers);
+        let src = &model.meshes[0].primitives[0];
+
+        // 元と明確に違う色を入れる（差し替えが本当に効いているかを見るため）。
+        let new_colors: Vec<[f32; 4]> = (0..src.vertices.len())
+            .map(|i| [i as f32, 0.25, 0.5, 0.75])
+            .collect();
+        let rebuilt = rebuild_terrain_model_with_colors(
+            &src.vertices, &src.indices, "chunk", &new_colors, palette,
+        )
+        .expect("長さが一致しているのに None が返った");
+
+        let dst = &rebuilt.meshes[0].primitives[0];
+        assert_eq!(dst.indices, src.indices, "インデックスが変わった");
+        assert_eq!(rebuilt.materials[0].terrain_palette, palette, "パレットが変わった");
+        for (i, (a, b)) in src.vertices.iter().zip(dst.vertices.iter()).enumerate() {
+            assert_eq!(a.position, b.position, "頂点 {i} の位置が変わった");
+            assert_eq!(a.normal, b.normal, "頂点 {i} の法線が変わった");
+            assert_eq!(b.color, new_colors[i], "頂点 {i} の色が差し替わっていない");
+        }
+
+        // 長さ不一致は None（呼び出し側はフル再メッシュへフォールバックする）。
+        assert!(
+            rebuild_terrain_model_with_colors(
+                &src.vertices, &src.indices, "chunk", &new_colors[..1], palette,
+            )
+            .is_none(),
+            "長さ不一致を検出できていない"
+        );
+    }
+
     /// レイヤ定義が 4 層未満のとき、パレットの重複スロットで重みが二重計上されないこと。
     ///
     /// `select_top_slots` は余りスロットをレイヤ 0 で埋めるため、素直に射影すると
@@ -405,6 +869,7 @@ mod tests {
             indices:      vec![0, 1, 2],
             paint:        vec![paint; 3],
             paint_amount: vec![1.0; 3],
+            ..Default::default()
         };
 
         let (model, palette) = terrain_mesh_to_model(&mesh, "chunk", TEST_ORIGIN, &layers);

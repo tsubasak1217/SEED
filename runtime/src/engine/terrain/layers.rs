@@ -299,17 +299,42 @@ impl TerrainLayerSet {
     /// すべてのルールが 0 を返した場合はレイヤ 0 に 1.0 を寄せる
     /// （穴＝真っ黒を出さないための縮退規約）。
     pub fn rule_weights_all(&self, normal_y: f32, world_y: f32) -> Vec<f32> {
+        // 確保なし版へ委譲するだけの薄いラッパ（演算は 1 箇所に集約する）。
+        let mut w = vec![0.0f32; self.layers.len()];
+        let written = self.rule_weights_all_into(normal_y, world_y, &mut w);
+        debug_assert_eq!(written, w.len(), "rule_weights_all_into の書き込み数が層数と不一致");
+        w
+    }
+
+    /// `rule_weights_all` の **確保なし版**（呼び出し側のスクラッチバッファへ書き込む）。
+    ///
+    /// 頂点ごとに呼ばれるホットパス（頂点カラー計算）で `Vec` の新規確保を無くすために
+    /// 存在する。演算内容・順序は `rule_weights_all` と完全に同一であり、
+    /// 結果は 1 ビットも変わらない。
+    ///
+    /// - `out`: 書き込み先。**`self.layers.len()` 以上の長さが必要**
+    ///          （足りない場合は debug ビルドで assert、release では書ける分だけ書く形に
+    ///           ならないよう `panic` するので、呼び出し側で層数を保証すること）。
+    ///
+    /// 戻り値は書き込んだ要素数（= `self.layers.len()`）。`out` の残り（それ以降の
+    /// 要素）は触らないため、呼び出し側は `&out[..written]` だけを使うこと。
+    pub fn rule_weights_all_into(&self, normal_y: f32, world_y: f32, out: &mut [f32]) -> usize {
+        let n = self.layers.len();
+        assert!(
+            out.len() >= n,
+            "rule_weights_all_into: 出力バッファが短い（{} < {n}）", out.len()
+        );
+
         // ─── 法線 Y から斜度（度）を求める。上向き=0 度、水平方向=90 度 ───
         //   |n.y| を使うことで、天井（下向き法線）も同じ斜度として扱う。
         let slope_deg = normal_y.abs().clamp(0.0, 1.0).acos().to_degrees();
 
-        let mut w: Vec<f32> = self
-            .layers
-            .iter()
-            .map(|layer| layer.rule.evaluate(slope_deg, world_y))
-            .collect();
-        normalize_weights_slice(&mut w);
-        w
+        // ─── 各レイヤのルールを評価して先頭 n 要素を全て上書きする ───
+        for (slot, layer) in self.layers.iter().enumerate() {
+            out[slot] = layer.rule.evaluate(slope_deg, world_y);
+        }
+        normalize_weights_slice(&mut out[..n]);
+        n
     }
 }
 
@@ -495,7 +520,27 @@ pub fn select_top_slots(weights: &[f32]) -> BlendSlots {
 ///
 /// 展開結果の総和は 1 になる（範囲外 index を落とした場合を除く）。
 pub fn expand_slots(slots: &BlendSlots, len: usize) -> Vec<f32> {
+    // 確保なし版へ委譲するだけの薄いラッパ。
     let mut out = vec![0.0f32; len];
+    expand_slots_into(slots, len, &mut out);
+    out
+}
+
+/// `expand_slots` の **確保なし版**（呼び出し側のスクラッチバッファへ書き込む）。
+///
+/// `out[..len]` は本関数が必ず全要素を上書きする（先に 0 クリアしてから加算するため、
+/// 呼び出し側でバッファを 0 埋めし直す必要はない）。`out` の `len` 以降は触らない。
+///
+/// 演算内容・順序は `expand_slots` と完全に同一。
+pub fn expand_slots_into(slots: &BlendSlots, len: usize, out: &mut [f32]) {
+    assert!(
+        out.len() >= len,
+        "expand_slots_into: 出力バッファが短い（{} < {len}）", out.len()
+    );
+    // ─── 先頭 len 要素を 0 クリア（vec![0.0; len] と同じ初期状態を作る）───
+    for v in out[..len].iter_mut() {
+        *v = 0.0;
+    }
     for slot in 0..TERRAIN_BLEND_SLOTS {
         let layer = slots.index[slot] as usize;
         // 範囲外（レイヤ定義が減った等）は捨てる。パニックさせない。
@@ -503,7 +548,6 @@ pub fn expand_slots(slots: &BlendSlots, len: usize) -> Vec<f32> {
             out[layer] += slots.weight[slot];
         }
     }
-    out
 }
 
 /// ルール重み（密ベクトル）とペイント（BlendSlots）を paint_amount で lerp する。
@@ -515,16 +559,40 @@ pub fn blend_rule_and_paint_all(
     paint: &BlendSlots,
     paint_amount: f32,
 ) -> Vec<f32> {
-    let t = paint_amount.clamp(0.0, 1.0);
-    // ペイントをルールと同じ次元へ展開してから成分ごとに lerp する。
-    let paint_dense = expand_slots(paint, rule.len());
-    let mut out: Vec<f32> = rule
-        .iter()
-        .zip(paint_dense.iter())
-        .map(|(&r, &p)| r * (1.0 - t) + p * t)
-        .collect();
-    normalize_weights_slice(&mut out);
+    // 確保なし版へ委譲するだけの薄いラッパ。
+    let mut out = vec![0.0f32; rule.len()];
+    blend_rule_and_paint_all_into(rule, paint, paint_amount, &mut out);
     out
+}
+
+/// `blend_rule_and_paint_all` の **確保なし版**（呼び出し側のスクラッチバッファへ書き込む）。
+///
+/// `out[..rule.len()]` は本関数が必ず全要素を上書きする。`out` のそれ以降は触らない。
+///
+/// 【中間バッファを持たない理由】
+///   まず `out` 自体へペイントの密展開を書き、その場で `rule` と lerp する。
+///   `expand_slots` → 一時 Vec → lerp という元実装と **演算の順序も内容も同一**
+///   （成分ごとに `r * (1 - t) + p * t`）でありながら、確保が 1 回も起きない。
+pub fn blend_rule_and_paint_all_into(
+    rule: &[f32],
+    paint: &BlendSlots,
+    paint_amount: f32,
+    out: &mut [f32],
+) {
+    let len = rule.len();
+    assert!(
+        out.len() >= len,
+        "blend_rule_and_paint_all_into: 出力バッファが短い（{} < {len}）", out.len()
+    );
+    let t = paint_amount.clamp(0.0, 1.0);
+    // ペイントをルールと同じ次元へ展開（out をそのまま展開先に使う）。
+    expand_slots_into(paint, len, out);
+    // 成分ごとに lerp（out には展開済みのペイント重みが入っている）。
+    for (slot, &r) in rule.iter().enumerate() {
+        let p = out[slot];
+        out[slot] = r * (1.0 - t) + p * t;
+    }
+    normalize_weights_slice(&mut out[..len]);
 }
 
 // ─── ウィンドウ関数 ─────────────────────────────────────────────────────────
