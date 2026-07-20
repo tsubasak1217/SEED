@@ -272,6 +272,11 @@ impl App {
                     // 進行中のブラシストロークを 1 undo エントリとして確定する。
                     self.handle_terrain_stroke_end();
                 }
+                IpcCommand::TerrainReloadLayers => {
+                    // layers.json を読み直し、レイヤテクスチャと全チャンクを作り直す
+                    // （エディタの地形設定ウィンドウでレイヤを保存した直後の即時反映）。
+                    self.handle_terrain_reload_layers();
+                }
                 IpcCommand::TerrainHeightmap { path, height_scale } => {
                     // ハイトマップ画像から地形を敷き直す。
                     self.handle_terrain_heightmap(path, height_scale);

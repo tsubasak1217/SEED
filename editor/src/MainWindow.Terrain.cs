@@ -93,6 +93,12 @@ public partial class MainWindow
     /// <summary>低レベルマウスフックのハンドル。</summary>
     private nint _terrainMouseHook;
 
+    /// <summary>
+    /// 開いている地形設定ウィンドウ（非モーダル）。多重起動を防ぐために保持する。
+    /// 閉じられたら Closed イベントで null に戻す。
+    /// </summary>
+    private SEEDEditor.Terrain.TerrainSettingsWindow? _terrainSettingsWindow;
+
     // ── 初期化 / フック設置 ────────────────────────────────────
 
     /// <summary>地形ツールバー UI（スライダー表示ラベル）の初期同期とイベント接続。</summary>
@@ -108,6 +114,65 @@ public partial class MainWindow
             SldTerrainStrength.ValueChanged += (_, _) => UpdateTerrainStrengthLabel();
             UpdateTerrainStrengthLabel();
         }
+        // レイヤ選択コンボは layers.json（レイヤ総数自由）から動的に作る。
+        RefreshTerrainLayerCombo();
+    }
+
+    /// <summary>
+    /// ツールバーのレイヤ選択コンボを layers.json の内容から作り直す。
+    /// <para>
+    /// レイヤ総数は自由（最大 TerrainLayerDefaults.MaxLayers）なので固定項目は持たない。
+    /// 地形設定ウィンドウでレイヤを増減・並べ替えた直後にも呼ばれ、即座に反映される。
+    /// 選択レイヤ番号は可能な限り維持する（範囲外になった場合は先頭へ戻す）。
+    /// </para>
+    /// </summary>
+    private void RefreshTerrainLayerCombo()
+    {
+        if (CmbTerrainLayer == null) return;
+
+        int previous = CmbTerrainLayer.SelectedIndex;
+        var doc = SEEDEditor.Terrain.TerrainLayersDocument.Load(AssetsPath);
+
+        CmbTerrainLayer.Items.Clear();
+        for (int i = 0; i < doc.Layers.Count; i++)
+        {
+            CmbTerrainLayer.Items.Add(
+                SEEDEditor.Terrain.TerrainSettingsWindow.FormatLayerListEntry(i, doc.Layers[i].Name));
+        }
+
+        CmbTerrainLayer.SelectedIndex = doc.Layers.Count == 0
+            ? -1
+            : Math.Clamp(previous < 0 ? 0 : previous, 0, doc.Layers.Count - 1);
+    }
+
+    /// <summary>
+    /// 「⚙ 設定」ボタン: 地形設定ウィンドウを開く。
+    /// 既に開いている場合は新規生成せず前面化する（多重起動防止）。
+    /// 非モーダルなので、開いたままシーンビューでブラシ操作を続けられる。
+    /// </summary>
+    private void OnTerrainSettings(object sender, RoutedEventArgs e)
+    {
+        if (_terrainSettingsWindow != null)
+        {
+            // 最小化されている場合も確実に見えるよう、通常表示へ戻してから前面化する。
+            if (_terrainSettingsWindow.WindowState == WindowState.Minimized)
+                _terrainSettingsWindow.WindowState = WindowState.Normal;
+            _terrainSettingsWindow.Activate();
+            return;
+        }
+
+        var win = new SEEDEditor.Terrain.TerrainSettingsWindow(
+            AssetsPath,
+            // ランタイム未起動でも設定編集自体は可能にする（送信だけ黙って捨てる）。
+            sendToRuntime: msg => _runtimeManager?.SendToRuntime(msg),
+            // 保存後はツールバーのレイヤ選択コンボを作り直して構成変更を反映する。
+            onSaved: RefreshTerrainLayerCombo)
+        {
+            Owner = this,
+        };
+        win.Closed += (_, _) => _terrainSettingsWindow = null;
+        _terrainSettingsWindow = win;
+        win.Show();
     }
 
     private void UpdateTerrainRadiusLabel()

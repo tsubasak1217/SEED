@@ -133,6 +133,10 @@ pub enum IpcCommand {
     /// エディタはドラッグ終了（マウスアップ）時に送る。
     /// ワイヤ形式: `TERRAIN_STROKE_END`（引数なし）
     TerrainStrokeEnd,
+    /// レイヤ定義（layers.json）を再読込し、レイヤテクスチャ配列と全チャンクを作り直す。
+    /// エディタの地形設定ウィンドウがレイヤを保存した直後に送る（シーンビューへの即時反映）。
+    /// ワイヤ形式: `TERRAIN_RELOAD_LAYERS`（引数なし）
+    TerrainReloadLayers,
     /// ハイトマップ画像から地形を敷き直す。
     /// ワイヤ形式: `TERRAIN_HEIGHTMAP:{path},{height_scale}`
     ///   path: 実ファイルシステム上の絶対パス（Windows パスはカンマを含みうるため、
@@ -582,6 +586,97 @@ impl IpcClient {
 }
 
 // ============================================================
+//  地形コマンドのパース（TERRAIN_*）
+//
+//  read_loop の巨大な match から切り出した純粋関数。
+//  「文字列 in / IpcCommand out」で副作用を持たないため、名前付きパイプ無しで
+//  ユニットテストできる（read_loop 内に埋めたままだとテスト不能だった）。
+// ============================================================
+
+/// 地形コマンドの共通プレフィックス。read_loop の振り分けと本関数で共有する。
+const TERRAIN_COMMAND_PREFIX: &str = "TERRAIN_";
+
+/// 地形関連の IPC 1 行を `IpcCommand` へ変換する。未知のコマンド／引数不正は `None`。
+///
+/// 【判定順の注意】
+///   引数なしの完全一致（例 `TERRAIN_BRUSH_PREVIEW_OFF`）は、同じ語で始まる
+///   前方一致アーム（`TERRAIN_BRUSH_PREVIEW:`）より **先に** 置くこと。
+///   逆にすると OFF が引数付きとして解釈され、パース失敗で握り潰される。
+fn parse_terrain_command(s: &str) -> Option<IpcCommand> {
+    match s {
+        // ── 引数なしコマンド ──
+        // 地形初期化。
+        "TERRAIN_INIT" => Some(IpcCommand::TerrainInit),
+        // 地形保存。
+        "TERRAIN_SAVE" => Some(IpcCommand::TerrainSave),
+        // レイヤ定義（layers.json）の再読込＋全チャンク再メッシュ。
+        "TERRAIN_RELOAD_LAYERS" => Some(IpcCommand::TerrainReloadLayers),
+        // ブラシプレビュー非表示。TERRAIN_BRUSH_PREVIEW: より先に判定する。
+        "TERRAIN_BRUSH_PREVIEW_OFF" => Some(IpcCommand::TerrainBrushPreviewOff),
+        // terrain 専用 undo/redo・ストローク確定。
+        "TERRAIN_UNDO" => Some(IpcCommand::TerrainUndo),
+        "TERRAIN_REDO" => Some(IpcCommand::TerrainRedo),
+        "TERRAIN_STROKE_END" => Some(IpcCommand::TerrainStrokeEnd),
+
+        // ── 引数付きコマンド ──
+        // ブラシプレビュー更新: "screen_x,screen_y,radius,strength"（f32×4）。
+        s if s.starts_with("TERRAIN_BRUSH_PREVIEW:") => {
+            parse_nf::<4>(&s["TERRAIN_BRUSH_PREVIEW:".len()..]).map(|fs| {
+                IpcCommand::TerrainBrushPreview {
+                    screen_x: fs[0],
+                    screen_y: fs[1],
+                    radius:   fs[2],
+                    strength: fs[3],
+                }
+            })
+        }
+        // ハイトマップ読込: "path,height_scale"。path 側に Windows パスの
+        // カンマ（通常は含まれないが、他コマンドの流儀に合わせて安全側に倒す）が
+        // 含まれても壊れないよう、右端のカンマで分割する（path は最後のカンマより前）。
+        s if s.starts_with("TERRAIN_HEIGHTMAP:") => {
+            let rest = &s["TERRAIN_HEIGHTMAP:".len()..];
+            rest.rfind(',').and_then(|idx| {
+                let path = &rest[..idx];
+                let scale_s = &rest[idx + 1..];
+                scale_s.trim().parse::<f32>().ok().map(|height_scale| {
+                    IpcCommand::TerrainHeightmap {
+                        path: path.to_string(),
+                        height_scale,
+                    }
+                })
+            })
+        }
+        // 地形ブラシ: "op,screen_x,screen_y,radius,strength"。
+        // 先頭 op は u32、残り 4 つは f32。parse1u_nf::<4> で (op, [sx,sy,r,st]) を得る。
+        s if s.starts_with("TERRAIN_BRUSH:") => {
+            parse1u_nf::<4>(&s["TERRAIN_BRUSH:".len()..]).map(|(op, fs)| {
+                IpcCommand::TerrainBrush {
+                    op,
+                    screen_x: fs[0],
+                    screen_y: fs[1],
+                    radius:   fs[2],
+                    strength: fs[3],
+                }
+            })
+        }
+        // 地形レイヤペイント: "layer,screen_x,screen_y,radius,strength"。
+        // 先頭 layer は u32、残り 4 つは f32（TERRAIN_BRUSH と同じ並び）。
+        s if s.starts_with("TERRAIN_PAINT:") => {
+            parse1u_nf::<4>(&s["TERRAIN_PAINT:".len()..]).map(|(layer, fs)| {
+                IpcCommand::TerrainPaint {
+                    layer,
+                    screen_x: fs[0],
+                    screen_y: fs[1],
+                    radius:   fs[2],
+                    strength: fs[3],
+                }
+            })
+        }
+        _ => None,
+    }
+}
+
+// ============================================================
 //  IPC パース共通ヘルパー
 //
 //  IPC コマンドのペイロードは「カンマ区切りの数値列」という共通フォーマットを持つ。
@@ -781,69 +876,10 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                         s if s.starts_with("SAVE_SCENE:") => {
                             Some(IpcCommand::SaveScene(s["SAVE_SCENE:".len()..].to_string()))
                         }
-                        // 地形初期化（引数なし）。
-                        "TERRAIN_INIT" => Some(IpcCommand::TerrainInit),
-                        // 地形保存（引数なし）。
-                        "TERRAIN_SAVE" => Some(IpcCommand::TerrainSave),
-                        // ブラシプレビュー非表示（引数なし）。TERRAIN_BRUSH_PREVIEW: より先に判定する。
-                        "TERRAIN_BRUSH_PREVIEW_OFF" => Some(IpcCommand::TerrainBrushPreviewOff),
-                        // ブラシプレビュー更新: "screen_x,screen_y,radius,strength"（f32×4）。
-                        s if s.starts_with("TERRAIN_BRUSH_PREVIEW:") => {
-                            parse_nf::<4>(&s["TERRAIN_BRUSH_PREVIEW:".len()..]).map(|fs| {
-                                IpcCommand::TerrainBrushPreview {
-                                    screen_x: fs[0],
-                                    screen_y: fs[1],
-                                    radius:   fs[2],
-                                    strength: fs[3],
-                                }
-                            })
-                        }
-                        // terrain 専用 undo/redo・ストローク確定（いずれも引数なし）。
-                        "TERRAIN_UNDO" => Some(IpcCommand::TerrainUndo),
-                        "TERRAIN_REDO" => Some(IpcCommand::TerrainRedo),
-                        "TERRAIN_STROKE_END" => Some(IpcCommand::TerrainStrokeEnd),
-                        // ハイトマップ読込: "path,height_scale"。path 側に Windows パスの
-                        // カンマ（通常は含まれないが、他コマンドの流儀に合わせて安全側に倒す）が
-                        // 含まれても壊れないよう、右端のカンマで分割する（path は最後のカンマより前）。
-                        s if s.starts_with("TERRAIN_HEIGHTMAP:") => {
-                            let rest = &s["TERRAIN_HEIGHTMAP:".len()..];
-                            rest.rfind(',').and_then(|idx| {
-                                let path = &rest[..idx];
-                                let scale_s = &rest[idx + 1..];
-                                scale_s.trim().parse::<f32>().ok().map(|height_scale| {
-                                    IpcCommand::TerrainHeightmap {
-                                        path: path.to_string(),
-                                        height_scale,
-                                    }
-                                })
-                            })
-                        }
-                        // 地形ブラシ: "op,screen_x,screen_y,radius,strength"。
-                        // 先頭 op は u32、残り 4 つは f32。parse1u_nf::<4> で (op, [sx,sy,r,st]) を得る。
-                        s if s.starts_with("TERRAIN_BRUSH:") => {
-                            parse1u_nf::<4>(&s["TERRAIN_BRUSH:".len()..]).map(|(op, fs)| {
-                                IpcCommand::TerrainBrush {
-                                    op,
-                                    screen_x: fs[0],
-                                    screen_y: fs[1],
-                                    radius:   fs[2],
-                                    strength: fs[3],
-                                }
-                            })
-                        }
-                        // 地形レイヤペイント: "layer,screen_x,screen_y,radius,strength"。
-                        // 先頭 layer は u32、残り 4 つは f32（TERRAIN_BRUSH と同じ並び）。
-                        s if s.starts_with("TERRAIN_PAINT:") => {
-                            parse1u_nf::<4>(&s["TERRAIN_PAINT:".len()..]).map(|(layer, fs)| {
-                                IpcCommand::TerrainPaint {
-                                    layer,
-                                    screen_x: fs[0],
-                                    screen_y: fs[1],
-                                    radius:   fs[2],
-                                    strength: fs[3],
-                                }
-                            })
-                        }
+                        // 地形コマンド（TERRAIN_*）は 1 箇所へ集約して parse_terrain_command へ委譲する。
+                        // 他に "TERRAIN_" で始まるコマンドは存在しないため、この 1 アームで
+                        // 従来の個別アーム群と同じ判定結果になる（コマンド追加時もここは触らずに済む）。
+                        s if s.starts_with(TERRAIN_COMMAND_PREFIX) => parse_terrain_command(s),
                         s if s.starts_with("SAVE_ACTOR:") => {
                             Some(IpcCommand::SaveActor(s["SAVE_ACTOR:".len()..].to_string()))
                         }
@@ -1817,4 +1853,95 @@ fn try_open(path: &str) -> std::io::Result<std::fs::File> {
         }
     }
     OpenOptions::new().read(true).write(true).open(path)
+}
+
+// ============================================================
+//  テスト — 地形コマンドのパース
+//
+//  read_loop はパイプ読み込みと一体で自動テストできないため、そこから
+//  切り出した純粋関数 parse_terrain_command を直接検証する。
+// ============================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// レイヤ再読込コマンドが専用 variant へパースされること（本機能の追加分）。
+    #[test]
+    fn parses_terrain_reload_layers() {
+        assert!(matches!(
+            parse_terrain_command("TERRAIN_RELOAD_LAYERS"),
+            Some(IpcCommand::TerrainReloadLayers)
+        ));
+    }
+
+    /// 引数なし地形コマンドが取りこぼされないこと（アーム統合時の退行検出）。
+    #[test]
+    fn parses_argument_less_terrain_commands() {
+        assert!(matches!(parse_terrain_command("TERRAIN_INIT"),        Some(IpcCommand::TerrainInit)));
+        assert!(matches!(parse_terrain_command("TERRAIN_SAVE"),        Some(IpcCommand::TerrainSave)));
+        assert!(matches!(parse_terrain_command("TERRAIN_UNDO"),        Some(IpcCommand::TerrainUndo)));
+        assert!(matches!(parse_terrain_command("TERRAIN_REDO"),        Some(IpcCommand::TerrainRedo)));
+        assert!(matches!(parse_terrain_command("TERRAIN_STROKE_END"),  Some(IpcCommand::TerrainStrokeEnd)));
+    }
+
+    /// プレビュー OFF が「引数付きプレビュー」より先に判定されること（判定順の回帰テスト）。
+    #[test]
+    fn preview_off_is_matched_before_preview_with_args() {
+        assert!(matches!(
+            parse_terrain_command("TERRAIN_BRUSH_PREVIEW_OFF"),
+            Some(IpcCommand::TerrainBrushPreviewOff)
+        ));
+        let cmd = parse_terrain_command("TERRAIN_BRUSH_PREVIEW:10,20,3,0.5");
+        match cmd {
+            Some(IpcCommand::TerrainBrushPreview { screen_x, screen_y, radius, strength }) => {
+                assert_eq!(screen_x, 10.0);
+                assert_eq!(screen_y, 20.0);
+                assert_eq!(radius,    3.0);
+                assert_eq!(strength,  0.5);
+            }
+            _ => panic!("TerrainBrushPreview を期待した"),
+        }
+    }
+
+    /// ブラシ／ペイントの引数並びが従来どおりであること。
+    #[test]
+    fn parses_brush_and_paint_arguments() {
+        match parse_terrain_command("TERRAIN_BRUSH:1,100,200,4.5,0.25") {
+            Some(IpcCommand::TerrainBrush { op, screen_x, screen_y, radius, strength }) => {
+                assert_eq!(op, 1);
+                assert_eq!(screen_x, 100.0);
+                assert_eq!(screen_y, 200.0);
+                assert_eq!(radius,   4.5);
+                assert_eq!(strength, 0.25);
+            }
+            _ => panic!("TerrainBrush を期待した"),
+        }
+        match parse_terrain_command("TERRAIN_PAINT:3,10,20,2,1") {
+            Some(IpcCommand::TerrainPaint { layer, .. }) => assert_eq!(layer, 3),
+            _ => panic!("TerrainPaint を期待した"),
+        }
+    }
+
+    /// ハイトマップはカンマを含むパスでも右端のカンマで分割されること。
+    #[test]
+    fn heightmap_splits_on_last_comma() {
+        match parse_terrain_command(r"TERRAIN_HEIGHTMAP:C:\a,b\map.png,12.5") {
+            Some(IpcCommand::TerrainHeightmap { path, height_scale }) => {
+                assert_eq!(path, r"C:\a,b\map.png");
+                assert_eq!(height_scale, 12.5);
+            }
+            _ => panic!("TerrainHeightmap を期待した"),
+        }
+    }
+
+    /// 未知コマンド・引数不正は None（握り潰し）になること。
+    #[test]
+    fn rejects_unknown_and_malformed_terrain_commands() {
+        assert!(parse_terrain_command("TERRAIN_NOPE").is_none());
+        // 引数の個数不足（f32×4 が必要なのに 3 個）。
+        assert!(parse_terrain_command("TERRAIN_BRUSH_PREVIEW:1,2,3").is_none());
+        // height_scale が数値でない。
+        assert!(parse_terrain_command("TERRAIN_HEIGHTMAP:map.png,abc").is_none());
+    }
 }
