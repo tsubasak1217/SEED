@@ -201,13 +201,68 @@ serde/JSON ではない。地形コマンドは以下の 3 つ。エディタ側
 | `TERRAIN_INIT` | なし | `TERRAIN_INIT_OK` |
 | `TERRAIN_BRUSH:{op},{screen_x},{screen_y},{radius},{strength}` | `op`:u32（0=Add,1=Subtract,2=Smooth,3=Flatten）／他 f32。`screen_x/y` はビューポート左上原点のピクセル座標 | ヒット時 `TERRAIN_BRUSH_OK:{hx},{hy},{hz}`（ワールドヒット点）／非ヒット `TERRAIN_BRUSH_MISS` |
 | `TERRAIN_SAVE` | なし | `TERRAIN_SAVE_OK:{count}`（保存チャンク数）／`TERRAIN_SAVE_ERROR:{msg}` |
-| `TERRAIN_BRUSH_PREVIEW:{screen_x},{screen_y},{radius}` | 全 f32。ホバー中（非押下）に送る | 応答なし（高頻度・ホバー用）。レイマーチのヒット点にブラシ半径のワイヤスフィアを描く |
+| `TERRAIN_BRUSH_PREVIEW:{screen_x},{screen_y},{radius},{strength}` | 全 f32。ホバー中（非押下）に送る。`strength` はプレビュー球の色（強度連動）にのみ使う | 応答なし（高頻度・ホバー用）。レイマーチのヒット点にブラシ半径のワイヤスフィアを描く |
 | `TERRAIN_BRUSH_PREVIEW_OFF` | なし | 応答なし。プレビュー（ワイヤスフィア）を非表示にする |
+| `TERRAIN_UNDO` | なし | 応答なし。地形専用 undo スタックを 1 ストローク分戻す（下記 §9.1） |
+| `TERRAIN_REDO` | なし | 応答なし。地形専用 undo を 1 ストローク分やり直す |
+| `TERRAIN_STROKE_END` | なし | 応答なし。進行中ストロークを 1 undo エントリとして確定する（左ボタン解放時に送る） |
+| `TERRAIN_HEIGHTMAP:{path},{height_scale}` | `path`=画像の実ファイル絶対パス（png/jpg）、`height_scale`:f32（最大高さ m）。`path` にカンマが含まれても壊れないよう **最後のカンマで path / height_scale を分割** する | `TERRAIN_HEIGHTMAP_OK:{ms}`（処理ミリ秒）／`TERRAIN_HEIGHTMAP_ERROR:{msg}` |
 
 - `TERRAIN_INIT`: terrain ルート＋初期平地（`ground_chunks_x × ground_chunks_z × [y_min..=y_max]` チャンク、y=0 に地面）を生成。
 - `TERRAIN_BRUSH`: カーソル位置からカメラレイを作り、グローバル密度場を SDF レイマーチして最初の AIR→SOLID 交差点を求め、
   そこへ球ブラシを適用。ヒットが無ければ無視（MISS）。適用後、影響チャンクを VRAM 安全手順で再アップロードし dirty 化。
 - `TERRAIN_SAVE`: 全チャンクの tvox を書き出す（シーン保存とは別口。シーン保存は既存 `SAVE_SCENE`）。
+
+### 9.1 地形 undo/redo（1 ストローク = 1 エントリ）
+
+- **専用スタック**：既存の `undo.rs`（`Command`/`UndoHistory`）は `Scene` を対象にするが、地形密度は
+  `App.terrain`（`TerrainState`・Scene 外の `HashMap<ChunkCoord, TerrainChunkData>`）にあるため統合せず、
+  `TerrainState` に **地形専用スタック** を新設した（`undo_stack` / `redo_stack: Vec<TerrainEdit>`、
+  `TerrainEdit{ before, after: HashMap<ChunkCoord, Vec<f32>> }`。触ったチャンクの密度のみ保持）。上限
+  `TERRAIN_UNDO_MAX = 32` エントリ（超過は古いものから捨ててメモリ有界化。1 チャンク 33³×4B≈144 KB）。
+- **粒度**：LBUTTONDOWN→UP の 1 ストローク＝1 エントリ。ストローク開始は明示 IPC を作らず
+  「`stroke_active` でない状態で最初の `TERRAIN_BRUSH` が来たとき」に暗黙開始。`handle_terrain_brush_world` は
+  ブラシ適用**前**に `brush::chunks_in_brush_aabb`（純関数・AABB→所有チャンク）で触りうるチャンクを求め、
+  未登録のものだけ現在密度を `stroke_before` へスナップショットする（初回タッチ時コピー）。
+- **確定**：`TERRAIN_STROKE_END` で `stroke_before`（before）と現在密度（after）から `TerrainEdit` を作り
+  `undo_stack` へ push、`redo_stack` をクリア。`TERRAIN_UNDO`/`TERRAIN_REDO` は該当チャンクの密度を
+  `TerrainChunkData::set_raw_density` で書き戻し、`remesh_chunks`（ブラシ編集と共通の VRAM 安全再メッシュ手順）で
+  再メッシュする。
+- **整合**：`TERRAIN_INIT` と `TERRAIN_HEIGHTMAP` は密度場を丸ごと差し替えるため、undo/redo スタックを
+  クリアする（旧エントリを適用すると座標が食い違って壊れるため。コード内コメント明記）。
+- エディタは terrain モード中の Ctrl+Z / Ctrl+Y を（通常の `UNDO`/`REDO` ではなく）`TERRAIN_UNDO`/`TERRAIN_REDO`
+  として送り、左ボタン解放とモード離脱で `TERRAIN_STROKE_END` を送る。
+
+### 9.2 ハイトマップ読込（TERRAIN_HEIGHTMAP）
+
+- ランタイムは `image` クレートで png/jpg を読み、グレースケール（`to_luma8`）→ luma01 正規化 →
+  `HeightmapField`（`terrain/heightmap.rs`・`image` 非依存の純粋構造体。バイリニア補間）を組む。
+- 画像を初期平地フットプリント（world x∈[0, `ground_chunks_x`×`chunk_extent`], z∈[0, `ground_chunks_z`×`chunk_extent`]）へ
+  張り、各サンプルの world(x,z)→uv→バイリニアでグレー値 g01→高さ `h = g01 × height_scale`。密度 = `worldY − h`
+  （規約どおり `worldY < h` が SOLID、`> h` が AIR、`= h` が表面。洞窟の無い純地形）。
+- 地形ツリー構築（root/フォルダ/mesh・MC/TerrainChunk スロット・GPU アップロード）は `TERRAIN_INIT` と共通化した
+  `build_terrain_with<F>(fill)` を通す（INIT は `from_ground_plane`、ハイトマップは `HeightmapField` サンプラを渡す）。
+  既存地形があれば INIT と同じ冪等経路で置き換え、undo スタックはクリア、全チャンクを再メッシュ。処理時間を
+  `TERRAIN_HEIGHTMAP_OK:{ms}` で返す（実測: 64×64 グラデーション PNG・48 チャンクで約 44〜47 ms）。
+- エディタは地形ツールバーの「ハイトマップ読込」ボタン→`OpenFileDialog`（png/jpg）→高さスケール入力
+  （`TxtTerrainHeightScale`・既定 10 m）→ `TERRAIN_HEIGHTMAP:{path},{scale}` を送る。
+
+### 9.3 プレビュー球の追従と強度連動カラー
+
+- **追従（不具合修正）**：ストローク中はエディタが `TERRAIN_BRUSH_PREVIEW` を送らない（移動握り潰し回避のため）。
+  そのため押しながらだと球が置き去りになっていた。ランタイムの `handle_terrain_brush` が **ブラシ着弾点で
+  `terrain.brush_preview` も同時更新** するよう修正（追加レイ不要）。これでドラッグ中も球が着弾点に追従する。
+- **強度連動カラー**：`brush_preview` を `Option<([f32;3], 半径, 強度)>` に拡張し、`frame_renderer` が
+  `TERRAIN_PREVIEW_COLOR_LOW`（低強度＝薄い水色）→`TERRAIN_PREVIEW_COLOR_HIGH`（高強度＝濃いオレンジ）を
+  強度 0..1 で線形補間する。ホバー時は `TERRAIN_BRUSH_PREVIEW` の 4 番目 `strength` を反映するため、
+  Shift+ホイールで強度を変えると球の色が即変わる。
+
+### 9.4 ブラシ半径・強度のホイール操作（エディタ）
+
+- terrain モード中・ビューポート上の `WM_MOUSEWHEEL` を `WH_MOUSE_LL` フックで捕捉する。**Ctrl+ホイール**で半径
+  （乗算式・1 ノッチ ±10%＝`TerrainRadiusWheelFactor=0.10`）、**Shift+ホイール**で強度（加算式・1 ノッチ ±0.05＝
+  `TerrainStrengthWheelStep`）をスライダー範囲内で増減し、イベントを飲み込んでランタイムのカメラズームへ流さない。
+  修飾キー無しのホイールは素通し（従来のズーム）。変更後は即プレビューを再送し、球の大きさ・色が即反映される。
 
 ### レイマーチ詳細（TERRAIN_BRUSH の内部）
 

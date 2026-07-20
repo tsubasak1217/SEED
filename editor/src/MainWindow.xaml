@@ -1238,6 +1238,22 @@
                                                         ToolTip="全チャンクの密度データ（.tvox）を保存する"
                                                         Click="OnTerrainSave"/>
 
+                                                <Border Width="1" Background="#3A3A3A" Margin="8,2"/>
+
+                                                <!-- ハイトマップ読込（高さスケール入力＋読込ボタン）-->
+                                                <TextBlock Text="高さ" Foreground="#AAAAAA" FontSize="11"
+                                                           VerticalAlignment="Center" Margin="0,0,4,0"/>
+                                                <TextBox x:Name="TxtTerrainHeightScale" Text="10"
+                                                         Width="36" VerticalAlignment="Center"
+                                                         FontFamily="Consolas" FontSize="11"
+                                                         Margin="0,0,6,0"
+                                                         ToolTip="ハイトマップ最大高さ(m)"/>
+                                                <Button x:Name="BtnTerrainHeightmap"
+                                                        Content="ハイトマップ読込"
+                                                        Style="{StaticResource TerrainActionBtnStyle}"
+                                                        ToolTip="画像（グレースケール高さマップ）から地形を生成する"
+                                                        Click="OnTerrainHeightmap"/>
+
                                                 <!-- ステータス表示（初期化/保存/ブラシの結果）-->
                                                 <TextBlock x:Name="TxtTerrainStatus" Text=""
                                                            Foreground="#88CC88" FontSize="11"

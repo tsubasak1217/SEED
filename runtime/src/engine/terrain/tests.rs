@@ -9,9 +9,10 @@
 
 use std::collections::HashMap;
 
-use super::brush::{apply, BrushOp, SampleField, SphereBrush};
+use super::brush::{apply, chunks_in_brush_aabb, BrushOp, SampleField, SphereBrush};
 use super::chunk_coord::ChunkCoord;
 use super::chunk_data::TerrainChunkData;
+use super::heightmap::HeightmapField;
 use super::marching_cubes::generate_standalone;
 use super::settings::TerrainSettings;
 use super::tvox::{read_chunk, write_chunk, TvoxError, TVOX_MAGIC};
@@ -289,6 +290,94 @@ fn tvox_round_trip_and_corruption() {
     // version フィールド（オフセット4）を 999 に書き換える。
     bad_ver[4..8].copy_from_slice(&999u32.to_le_bytes());
     assert!(matches!(read_chunk(&bad_ver), Err(TvoxError::BadVersion)));
+}
+
+/// テスト5：undo スナップショット往復（set_raw_density で editable-before を復元できること）。
+///
+/// terrain 専用 undo/redo は「編集前密度を丸ごと Vec<f32> として控え、undo 時に
+/// set_raw_density で書き戻す」方式（terrain_ops.rs の TerrainEdit）。その往復が
+/// ビット一致で成立することを検証する。
+#[test]
+fn raw_density_snapshot_round_trip() {
+    let settings = TerrainSettings::default();
+    let chunk = make_sphere_chunk(&settings);
+
+    // ─── 編集前を控える ───
+    let before: Vec<f32> = chunk.raw_density().to_vec();
+
+    // ─── 数点を変更する（ブラシ編集を模擬）───
+    let mut edited = chunk.clone();
+    let s = settings.samples_per_axis();
+    edited.set_sample(0, 0, 0, 123.456);
+    edited.set_sample(s / 2, s / 2, s / 2, -78.9);
+    edited.set_sample(s - 1, s - 1, s - 1, 42.0);
+    // 編集後は before と異なっていること（テストの前提が成立していることの確認）。
+    assert_ne!(
+        before.iter().map(|f| f.to_bits()).collect::<Vec<_>>(),
+        edited.raw_density().iter().map(|f| f.to_bits()).collect::<Vec<_>>(),
+        "precondition failed: edit did not change density"
+    );
+
+    // ─── set_raw_density で before を書き戻す（undo 相当）───
+    edited.set_raw_density(before.clone());
+
+    // ─── 全サンプルがビット一致で復元されていること ───
+    for (a, b) in before.iter().zip(edited.raw_density().iter()) {
+        assert_eq!(a.to_bits(), b.to_bits(), "density sample bit mismatch after undo restore");
+    }
+}
+
+/// テスト6：ハイトマップ→SDF 変換。既知の 1 軸グラデーションでバイリニア補間の
+/// 中点値と、density_at の符号反転（worldY と height の大小関係）を検証する。
+/// image クレートを使わず、正規化済み luma01 配列を直接組んで HeightmapField をテストする。
+#[test]
+fn heightmap_field_bilinear_and_density_sign() {
+    // w=2,h=1 の 1 軸グラデーション: x=0 で輝度0.0（高さ0）、x=1 で輝度1.0（高さ=height_scale）。
+    let field = HeightmapField {
+        luma01: vec![0.0, 1.0],
+        w: 2,
+        h: 1,
+        footprint_w: 10.0,
+        footprint_d: 10.0,
+        height_scale: 4.0,
+    };
+
+    // ─── 中点（world x=5, フットプリント中央）のバイリニア高さは 0.5*4.0=2.0 に近いこと ───
+    let mid_height = field.height_at(5.0, 5.0);
+    assert!(
+        (mid_height - 2.0).abs() < 1e-3,
+        "mid height should be ~2.0, was {mid_height}"
+    );
+
+    // ─── worldY が height より大きい → density>0（AIR の規約） ───
+    assert!(
+        field.density_at(5.0, 3.0, 5.0) > 0.0,
+        "worldY above height should be AIR (density>0)"
+    );
+    // ─── worldY が height より小さい → density<0（SOLID の規約） ───
+    assert!(
+        field.density_at(5.0, 1.0, 5.0) < 0.0,
+        "worldY below height should be SOLID (density<0)"
+    );
+}
+
+/// テスト7：chunks_in_brush_aabb がチャンクの継ぎ目をまたぐブラシで両側のチャンクを
+/// 返すこと（apply() の touched チャンク集合と整合する superset であること）を確認する。
+#[test]
+fn chunks_in_brush_aabb_covers_seam() {
+    let settings = TerrainSettings::default();
+    let extent = settings.chunk_extent(); // チャンク1辺（既定16.0m）
+
+    // 境界（x=extent）をまたぐ位置にブラシを置く。
+    let brush = SphereBrush {
+        center: [extent, 8.0, 8.0],
+        radius: 3.0,
+        strength: 1.0,
+    };
+    let coords = chunks_in_brush_aabb(&brush, &settings);
+
+    assert!(coords.contains(&ChunkCoord::new(0, 0, 0)), "should include chunk on the near side of the seam");
+    assert!(coords.contains(&ChunkCoord::new(1, 0, 0)), "should include chunk on the far side of the seam");
 }
 
 /// 1 チャンク（33³ サンプル）の marching cubes 再生成時間を実測する計測用テスト。

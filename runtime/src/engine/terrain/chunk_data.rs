@@ -80,6 +80,46 @@ impl TerrainChunkData {
         &self.density
     }
 
+    /// 密度配列全体を書き換える（undo/redo でのスナップショット復元に使用）。
+    ///
+    /// 長さが一致しない場合は debug ビルドで assert する（raw_density() と対で
+    /// 使うことを前提にしており、通常は長さが変わることはない）。
+    pub fn set_raw_density(&mut self, d: Vec<f32>) {
+        debug_assert_eq!(
+            d.len(), self.density.len(),
+            "set_raw_density length mismatch: {} != {}", d.len(), self.density.len()
+        );
+        self.density = d;
+    }
+
+    /// 密度関数 `density_fn(world_x, world_y, world_z) -> density` を全サンプルへ適用して
+    /// チャンクを初期化する（ハイトマップ読込など、地面以外の初期地形を敷くための汎用版）。
+    ///
+    /// from_ground_plane（density = world_y 固定）の一般化版。任意の SDF/高さ場から
+    /// チャンクを組み立てられる。
+    pub fn from_fn<F: Fn(f32, f32, f32) -> f32>(
+        settings: &TerrainSettings,
+        coord: ChunkCoord,
+        density_fn: F,
+    ) -> Self {
+        let mut data = Self::new_filled(settings, 0.0);
+        let origin = coord.world_origin(settings);
+        let voxel = settings.voxel_size;
+        let s = data.samples;
+
+        for iz in 0..s {
+            let world_z = origin[2] + iz as f32 * voxel;
+            for iy in 0..s {
+                let world_y = origin[1] + iy as f32 * voxel;
+                for ix in 0..s {
+                    let world_x = origin[0] + ix as f32 * voxel;
+                    data.set_sample(ix, iy, iz, density_fn(world_x, world_y, world_z));
+                }
+            }
+        }
+        data
+    }
+
     /// 平坦な地面（y=0 平面が表面）としてチャンクを初期化する。
     ///
     /// 各サンプルのワールド座標を求め、density = ワールド Y 座標 とする。

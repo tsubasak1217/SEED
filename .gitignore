@@ -76,3 +76,6 @@ target/
 editor/settings/
 # netcoredbg デバッガのバイナリ（サイズ大・各自配置）
 /tools/netcoredbg/
+
+# ランタイムのモデルキャッシュ（生成物。コミット禁止）
+runtime/cache/
