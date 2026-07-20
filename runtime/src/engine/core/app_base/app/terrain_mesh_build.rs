@@ -113,12 +113,23 @@ pub fn terrain_mesh_to_model(
         let base = i * layer_count;
 
         // パレットが指すレイヤの重みだけを抜き出す。
+        //
+        // 【重複スロットの扱い】レイヤ定義が 4 層未満のとき `select_top_slots` は
+        // 余ったスロットをレイヤ 0 で埋めるため、パレットに同じレイヤ番号が複数回
+        // 現れる。そのまま各スロットへ同じ重みを入れると、シェーダ側でそのレイヤが
+        // 重複して積算され（例: 2 層構成でレイヤ 0 が 3 倍）、ブレンド比が歪む。
+        // よって 2 回目以降に現れたレイヤのスロットは重み 0 に落とす。
         let mut w = [0.0f32; TERRAIN_BLEND_SLOTS];
         let mut sum = 0.0f32;
+        // 既にどのスロットへ載せたレイヤ番号か（重複検出用。要素数 4 なので線形探索で十分）。
+        let mut assigned: [Option<u32>; TERRAIN_BLEND_SLOTS] = [None; TERRAIN_BLEND_SLOTS];
         for slot in 0..TERRAIN_BLEND_SLOTS {
-            let layer = palette[slot] as usize;
+            let layer_id = palette[slot];
+            let layer = layer_id as usize;
             // パレットの層がレイヤ定義の範囲外（定義が減った等）なら 0 のまま。
-            if layer < layer_count {
+            // 既出レイヤ（重複スロット）も 0 のままにする。
+            if layer < layer_count && !assigned.contains(&Some(layer_id)) {
+                assigned[slot] = Some(layer_id);
                 w[slot] = dense[base + layer];
                 sum += w[slot];
             }
@@ -188,10 +199,17 @@ pub fn terrain_mesh_to_model(
     //   唯一のスイッチ（gbuffer.rs::draw_gbuffer_indirect を参照）。
     //   フォワード経路（deferred 無効時）へ落ちた場合は頂点カラー＝レイヤ重みが
     //   そのまま base_color へ乗算されるため、レイヤ色にはならないが黒落ちもしない。
+    //
+    //   【重要】terrain_palette は必ずここで設定する。頂点カラーの 4 成分は
+    //   「レイヤ番号」ではなく「このチャンクのパレット内スロット」を意味するため、
+    //   パレットをマテリアルへ載せ忘れると描画側が既定パレット（恒等 [0,1,2,3]）で
+    //   解決してしまい、チャンクごとに層が入れ替わって描かれる（T2b の回帰点）。
+    //   このフィールドは upload_model → GpuMaterial → gbuffer の group3 選択まで運ばれる。
     let material = Material {
         double_sided: true,
         cull_face: CullFace::None,
         terrain_layers: true,
+        terrain_palette: palette,
         ..Material::default()
     };
 
@@ -208,4 +226,191 @@ pub fn terrain_mesh_to_model(
     };
 
     (model, palette)
+}
+
+// ============================================================
+//  テスト
+// ============================================================
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::terrain::layers::{BlendSlots, TerrainLayer, TerrainLayerSet};
+
+    /// テスト用チャンク原点（高度ルールの影響を切るため常に 0）。
+    const TEST_ORIGIN: [f32; 3] = [0.0, 0.0, 0.0];
+    /// 重み比較の許容誤差（f32 の正規化 2 回ぶん）。
+    const EPS: f32 = 1.0e-5;
+
+    /// 指定レイヤを 100% 手ペイントした 3 頂点（1 三角形）のメッシュを作る。
+    ///
+    /// `paint_amount = 1.0` にすることでルール自動下地の寄与を完全に排除でき、
+    /// 「どのレイヤを塗ったか」と「復元されたレイヤ」を 1 対 1 で突き合わせられる。
+    fn painted_mesh(layer: u32) -> TerrainMesh {
+        let mut paint = BlendSlots::default();
+        paint.index = [layer, 0, 0, 0];
+        paint.weight = [1.0, 0.0, 0.0, 0.0];
+        TerrainMesh {
+            positions:    vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
+            normals:      vec![[0.0, 1.0, 0.0]; 3],
+            indices:      vec![0, 1, 2],
+            paint:        vec![paint; 3],
+            paint_amount: vec![1.0; 3],
+        }
+    }
+
+    /// GPU 側（terrain_gbuffer_write.wgsl）と同じ手順で
+    /// 「頂点カラー（スロット重み）＋パレット」からレイヤ別の重みを復元する。
+    ///
+    /// シェーダは `weight[slot]` を `layers[palette[slot]]` へ適用するだけなので、
+    /// CPU 側でも同じ加算をすれば描画結果のレイヤ配分を検証できる。
+    fn resolve_layer_weights(
+        color:       [f32; 4],
+        palette:     [u32; TERRAIN_BLEND_SLOTS],
+        layer_count: usize,
+    ) -> Vec<f32> {
+        let mut out = vec![0.0f32; layer_count];
+        for slot in 0..TERRAIN_BLEND_SLOTS {
+            let layer = palette[slot] as usize;
+            if layer < layer_count {
+                out[layer] += color[slot];
+            }
+        }
+        out
+    }
+
+    /// 最も重みの大きいレイヤ番号を返す。
+    fn dominant_layer(w: &[f32]) -> usize {
+        w.iter()
+            .enumerate()
+            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+            .map(|(i, _)| i)
+            .unwrap()
+    }
+
+    /// 単色 n 層のレイヤセットを作る（ルールは既定＝全レイヤ同条件）。
+    fn flat_layer_set(n: usize) -> TerrainLayerSet {
+        TerrainLayerSet {
+            layers: (0..n)
+                .map(|i| TerrainLayer { name: format!("layer{i}"), ..TerrainLayer::default() })
+                .collect(),
+        }
+    }
+
+    /// 【回帰テストの本体】チャンクごとにパレットが違っても、
+    /// 復元されるレイヤは「塗ったレイヤ」と一致すること。
+    ///
+    /// パレットをマテリアルへ載せ忘れる（＝描画側が恒等パレットで解決する）と
+    /// この対応が崩れ、チャンクによって層が入れ替わって描かれる。
+    #[test]
+    fn painted_layer_survives_per_chunk_palette_permutation() {
+        let layers = TerrainLayerSet::default(); // 既定 4 層（grass/dirt/rock/sand）
+        let layer_count = layers.layers.len();
+
+        // 各レイヤを塗ったチャンクを 1 つずつ作り、復元結果を突き合わせる。
+        for painted in 0..layer_count as u32 {
+            let mesh = painted_mesh(painted);
+            let (model, palette) =
+                terrain_mesh_to_model(&mesh, "chunk", TEST_ORIGIN, &layers);
+
+            // ① パレットはマテリアルへ載っていること（これが抜けると描画側が恒等になる）。
+            assert_eq!(
+                model.materials[0].terrain_palette, palette,
+                "レイヤ {painted}: パレットが material.terrain_palette へ載っていない"
+            );
+            assert!(model.materials[0].terrain_layers);
+
+            // ② 頂点カラー＋パレットから復元したレイヤが、塗ったレイヤと一致すること。
+            let color = model.meshes[0].primitives[0].vertices[0].color;
+            let resolved = resolve_layer_weights(color, palette, layer_count);
+            assert_eq!(
+                dominant_layer(&resolved),
+                painted as usize,
+                "レイヤ {painted} を塗ったのに復元結果が違う: color={color:?} palette={palette:?}"
+            );
+            assert!(
+                (resolved[painted as usize] - 1.0).abs() < EPS,
+                "塗ったレイヤの重みが 1 でない: {resolved:?}"
+            );
+        }
+    }
+
+    /// パレットが恒等でないチャンクが実際に生じること（テスト自体が形骸化しない担保）。
+    ///
+    /// 併せて「恒等パレットで解決すると誤ったレイヤになる」ことも示し、
+    /// パレット結線が本当に必要であることを固定する。
+    #[test]
+    fn non_identity_palette_is_produced_and_identity_would_be_wrong() {
+        let layers = TerrainLayerSet::default();
+        let layer_count = layers.layers.len();
+
+        // レイヤ 2（rock）を塗ったチャンク。上位スロットは 2 から始まる＝非恒等。
+        const PAINTED: u32 = 2;
+        let mesh = painted_mesh(PAINTED);
+        let (model, palette) = terrain_mesh_to_model(&mesh, "chunk", TEST_ORIGIN, &layers);
+
+        assert_ne!(palette, [0, 1, 2, 3], "非恒等パレットが生じていない（前提の崩れ）");
+        assert_eq!(palette[0], PAINTED, "最重要スロットは塗ったレイヤであるべき");
+
+        let color = model.meshes[0].primitives[0].vertices[0].color;
+        // 恒等パレットで解決すると（＝バグ時の描画）別レイヤになる。
+        let wrong = resolve_layer_weights(color, [0, 1, 2, 3], layer_count);
+        assert_ne!(
+            dominant_layer(&wrong), PAINTED as usize,
+            "恒等パレットでも正しく出てしまうと、この回帰テストは何も守れていない"
+        );
+    }
+
+    /// 隣り合う 2 チャンクが別パレットでも、同じレイヤを塗れば同じレイヤに解決されること。
+    #[test]
+    fn two_chunks_with_different_palettes_agree_on_layer() {
+        let layers = TerrainLayerSet::default();
+        let layer_count = layers.layers.len();
+
+        let (model_a, pal_a) =
+            terrain_mesh_to_model(&painted_mesh(0), "a", TEST_ORIGIN, &layers);
+        let (model_b, pal_b) =
+            terrain_mesh_to_model(&painted_mesh(2), "b", TEST_ORIGIN, &layers);
+        assert_ne!(pal_a, pal_b, "別レイヤを塗ったチャンクは別パレットになるはず");
+
+        let res_a = resolve_layer_weights(
+            model_a.meshes[0].primitives[0].vertices[0].color, pal_a, layer_count);
+        let res_b = resolve_layer_weights(
+            model_b.meshes[0].primitives[0].vertices[0].color, pal_b, layer_count);
+
+        assert_eq!(dominant_layer(&res_a), 0);
+        assert_eq!(dominant_layer(&res_b), 2);
+    }
+
+    /// レイヤ定義が 4 層未満のとき、パレットの重複スロットで重みが二重計上されないこと。
+    ///
+    /// `select_top_slots` は余りスロットをレイヤ 0 で埋めるため、素直に射影すると
+    /// レイヤ 0 が 3 回積算されてブレンド比が歪む（例: 2 層構成）。
+    #[test]
+    fn duplicate_palette_slots_do_not_double_count() {
+        let layers = flat_layer_set(2);
+        let layer_count = layers.layers.len();
+
+        // レイヤ 1 を 25%・レイヤ 0 を 75% で塗る（重複計上が起きれば比率が崩れる）。
+        let mut paint = BlendSlots::default();
+        paint.index  = [0, 1, 0, 0];
+        paint.weight = [0.75, 0.25, 0.0, 0.0];
+        let mesh = TerrainMesh {
+            positions:    vec![[0.0, 0.0, 0.0]; 3],
+            normals:      vec![[0.0, 1.0, 0.0]; 3],
+            indices:      vec![0, 1, 2],
+            paint:        vec![paint; 3],
+            paint_amount: vec![1.0; 3],
+        };
+
+        let (model, palette) = terrain_mesh_to_model(&mesh, "chunk", TEST_ORIGIN, &layers);
+        let color = model.meshes[0].primitives[0].vertices[0].color;
+        let resolved = resolve_layer_weights(color, palette, layer_count);
+
+        // 総和は 1（エネルギー保存）。
+        let sum: f32 = resolved.iter().sum();
+        assert!((sum - 1.0).abs() < EPS, "重みの総和が 1 でない: {resolved:?}");
+        // 比率は塗ったとおり（重複計上があればレイヤ 0 が 0.9 前後まで膨らむ）。
+        assert!((resolved[0] - 0.75).abs() < EPS, "レイヤ 0 の比率が崩れた: {resolved:?}");
+        assert!((resolved[1] - 0.25).abs() < EPS, "レイヤ 1 の比率が崩れた: {resolved:?}");
+    }
 }

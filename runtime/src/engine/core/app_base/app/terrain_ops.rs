@@ -540,7 +540,9 @@ fn build_chunk_render(
     });
     // レイヤ重みはワールド Y（高度ルール）を要するため、チャンク原点を渡す。
     // 第 2 戻り値はこのチャンクのレイヤパレット（頂点カラー各成分が指すレイヤ番号）。
-    // GPU への結線は未実装のため、ここでは受けるだけにしておく。
+    // パレットは model.materials[0].terrain_palette へも載っており、GPU へは
+    // upload_model → GpuMaterial → gbuffer の group3 選択という経路で運ばれる。
+    // 呼び出し側で個別に持つ必要はないため、ここでは戻り値を使わない。
     let (model, _palette) = terrain_mesh_to_model(
         &mesh,
         &format!("terrain_{}_{}_{}", coord.x, coord.y, coord.z),
