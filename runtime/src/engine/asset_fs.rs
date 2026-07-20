@@ -92,6 +92,37 @@ pub fn resolve(path: &str) -> PathBuf {
     PathBuf::from(path)
 }
 
+/// 任意のパス文字列を「読み込み API がアセットルート基準で解決できる形」へ正規化する。
+///
+/// アセット参照の文字列は出所によって 3 系統ある:
+///   1. `assets://terrain/rock.png` … 仮想パス（PAK 対応。そのまま通す）
+///   2. `C:\proj\assets\rock.png`   … 絶対パス（エディタ外のファイル。そのまま通す）
+///   3. `terrain/rock.png`          … **アセットルート相対**（layers.json などデータ側の標準表記）
+///
+/// 3 は `read_bytes` がそのまま `std::fs::read` へ渡すとカレントディレクトリ基準になり、
+/// 実行ディレクトリ次第で読めたり読めなかったりする。ここで `assets://` を補って
+/// アセットルート基準へ固定する。1・2 は一切変更しないので既存の呼び出しは無影響。
+///
+/// 区切り文字は `assets://` の規約に合わせて `/` へ統一する。
+pub fn normalize_asset_path(path: &str) -> String {
+    // ── 1. 仮想パスはそのまま ──
+    if is_virtual(path) {
+        return path.to_string();
+    }
+    // ── 2. 絶対パスはそのまま ──
+    //   Windows では `C:\...` / `C:/...` / `\\server\share` が絶対と判定される。
+    //   先頭が `/` だけのパスも Path::is_absolute では非絶対（Windows）だが、
+    //   その形はアセット相対の書き間違いとみなしてルート基準へ寄せた方が実害が無い。
+    if Path::new(path).is_absolute() {
+        return path.to_string();
+    }
+    // ── 3. 相対パスはアセットルート基準の仮想パスへ ──
+    //   先頭の `./` や `/` は仮想パスとして無意味なので落としておく。
+    let rel = path.replace('\\', "/");
+    let rel = rel.trim_start_matches("./").trim_start_matches('/');
+    format!("{ASSETS_SCHEME}{rel}")
+}
+
 /// 絶対パスを仮想パスに変換する。
 ///
 /// 絶対パスがアセットルート配下でない場合は元の絶対パスを文字列で返す。
@@ -185,6 +216,19 @@ pub fn read_image(path: &str) -> image::RgbaImage {
     }
 }
 
+/// 画像バイトを読み込み、`image::RgbaImage` として返す（フォールバック・ログ無し）。
+///
+/// `read_image` と違い、失敗を呼び出し側へ返す。用途ごとに安全な既定値が異なる
+/// （法線マップにマゼンタを敷くと法線が壊れる、など）ケースで使う。
+/// パスは `normalize_asset_path` で正規化してから読むため、アセットルート相対でも読める。
+pub fn read_image_result(path: &str) -> std::io::Result<image::RgbaImage> {
+    let normalized = normalize_asset_path(path);
+    let bytes = read_bytes(&normalized)?;
+    image::load_from_memory(&bytes)
+        .map(|img| img.to_rgba8())
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+}
+
 // ============================================================
 //  ヘルパー
 // ============================================================
@@ -194,4 +238,61 @@ fn magenta_fallback() -> image::RgbaImage {
     let mut img = image::RgbaImage::new(1, 1);
     img.put_pixel(0, 0, image::Rgba([255, 0, 255, 255]));
     img
+}
+
+// ============================================================
+//  テスト
+// ============================================================
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 仮想パスは一切書き換えられないこと（既存挙動の保護）。
+    #[test]
+    fn normalize_keeps_virtual_path_as_is() {
+        assert_eq!(
+            normalize_asset_path("assets://terrain/textures/rock_normal.jpeg"),
+            "assets://terrain/textures/rock_normal.jpeg"
+        );
+        // スキーム付きなら区切りも触らない。
+        assert_eq!(normalize_asset_path("assets://a\\b.png"), "assets://a\\b.png");
+    }
+
+    /// 絶対パスは一切書き換えられないこと（エディタモード・後方互換の保護）。
+    #[test]
+    fn normalize_keeps_absolute_path_as_is() {
+        let win = r"C:\proj\assets\terrain\rock.png";
+        assert_eq!(normalize_asset_path(win), win);
+        // ドライブ + スラッシュ区切りも絶対として扱われる。
+        let win_fwd = "C:/proj/assets/terrain/rock.png";
+        assert_eq!(normalize_asset_path(win_fwd), win_fwd);
+        // UNC パス。
+        let unc = r"\\server\share\rock.png";
+        assert_eq!(normalize_asset_path(unc), unc);
+    }
+
+    /// 相対パスはアセットルート基準（assets:// 付き）へ寄せられること。
+    /// これが本修正の主眼（layers.json のテクスチャパスが cwd 基準で解決されていた）。
+    #[test]
+    fn normalize_promotes_relative_path_to_virtual() {
+        assert_eq!(
+            normalize_asset_path("terrain/textures/rock_normal.jpeg"),
+            "assets://terrain/textures/rock_normal.jpeg"
+        );
+        // 区切りは '/' に統一される。
+        assert_eq!(
+            normalize_asset_path(r"terrain\textures\rock_normal.jpeg"),
+            "assets://terrain/textures/rock_normal.jpeg"
+        );
+        // 先頭の "./" と "/" は落とす。
+        assert_eq!(normalize_asset_path("./tex/a.png"), "assets://tex/a.png");
+        assert_eq!(normalize_asset_path("/tex/a.png"), "assets://tex/a.png");
+    }
+
+    /// 存在しないパスは Err を返すこと（フォールバック画像で握り潰さない）。
+    #[test]
+    fn read_image_result_reports_error() {
+        let r = read_image_result("no/such/texture_for_test.png");
+        assert!(r.is_err(), "存在しないパスは Err になるべき");
+    }
 }
