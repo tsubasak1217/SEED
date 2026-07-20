@@ -112,8 +112,6 @@ public partial class MainWindow
         // CmbTransparency の選択アイテムの Tag（"sort" / "wboit"）を読み取る。未選択・null の場合は既定の距離ソート。
         string transparency = (CmbTransparency?.SelectedItem as System.Windows.Controls.ComboBoxItem)?.Tag as string
                                ?? DefaultTransparencyMode;
-        // GPU メッシュレットカリング（第1弾）。null（未初期化）時は既定 true。
-        bool meshletCull = ChkMeshletCull?.IsChecked != false;
         // Deferred レンダリング（G-Buffer + フルスクリーン・ライティング）。null（未初期化）時は既定 true。
         bool deferred = ChkDeferred?.IsChecked != false;
         // RT屈折の逐次グラブ。null（未初期化）時は既定 false（重いオプションのため）。
@@ -139,14 +137,15 @@ public partial class MainWindow
         var ci = System.Globalization.CultureInfo.InvariantCulture;
         // 新キー "features"（機能マトリクス）。旧キー gi_enabled は features.gi へ移行したため送らない。
         string features = $"\"features\":{{\"shadow\":\"{shadow}\",\"gi\":\"{giMode}\",\"reflection\":\"{reflection}\",\"ao\":\"{ao}\",\"translucency\":\"{translucency}\"}}";
-        string json = $"{{\"bloom\":{(bloom ? "true" : "false")},\"fxaa\":{(fxaa ? "true" : "false")},\"bloom_intensity\":{intensity.ToString(ci)},\"transparency\":\"{transparency}\",\"meshlet_cull\":{(meshletCull ? "true" : "false")},\"deferred\":{(deferred ? "true" : "false")},\"refract_sequential_grab\":{(refractSequentialGrab ? "true" : "false")},\"view_mode\":\"{viewMode}\",\"gi_intensity\":{giIntensity.ToString(ci)},\"reflection_intensity\":{reflectionIntensity.ToString(ci)},\"ao_intensity\":{aoIntensity.ToString(ci)},{features}}}";
+        // メッシュレットカリングは常時有効化したため "meshlet_cull" キーは送信しない（ランタイム側で常時 ON）。
+        string json = $"{{\"bloom\":{(bloom ? "true" : "false")},\"fxaa\":{(fxaa ? "true" : "false")},\"bloom_intensity\":{intensity.ToString(ci)},\"transparency\":\"{transparency}\",\"deferred\":{(deferred ? "true" : "false")},\"refract_sequential_grab\":{(refractSequentialGrab ? "true" : "false")},\"view_mode\":\"{viewMode}\",\"gi_intensity\":{giIntensity.ToString(ci)},\"reflection_intensity\":{reflectionIntensity.ToString(ci)},\"ao_intensity\":{aoIntensity.ToString(ci)},{features}}}";
         _runtimeManager?.SendToRuntime($"SET_POST_FX:{json}");
 
         // ビューポート設定を project_settings.json へ永続化する（次回起動時に UI とランタイムの
         // load_graphics_settings が同じ値を復元できるようにする）。view_mode はセッション限りの
         // 表示モードのため永続化しない。既存の他キー（start_scene / scenes / plugins 等）は保全する。
         PersistViewportSettings(
-            bloom, fxaa, intensity, transparency, meshletCull, deferred, refractSequentialGrab,
+            bloom, fxaa, intensity, transparency, deferred, refractSequentialGrab,
             giIntensity, reflectionIntensity, aoIntensity,
             shadow, giMode, reflection, ao, translucency);
     }
@@ -159,7 +158,7 @@ public partial class MainWindow
     /// </summary>
     private void PersistViewportSettings(
         bool bloom, bool fxaa, double bloomIntensity, string transparency,
-        bool meshletCull, bool deferred, bool refractSequentialGrab,
+        bool deferred, bool refractSequentialGrab,
         double giIntensity, double reflectionIntensity, double aoIntensity,
         string shadow, string giMode, string reflection, string ao, string translucency)
     {
@@ -184,7 +183,8 @@ public partial class MainWindow
             root["fxaa"]                 = fxaa;
             root["bloom_intensity"]      = bloomIntensity;
             root["transparency"]         = transparency;
-            root["meshlet_cull"]         = meshletCull;
+            // メッシュレットカリングは常時有効化したため "meshlet_cull" は書き込まない
+            //（旧キーが残っていてもランタイムは無視する）。
             root["deferred"]             = deferred;
             root["refract_sequential_grab"] = refractSequentialGrab;
             root["gi_intensity"]         = giIntensity;
@@ -247,8 +247,7 @@ public partial class MainWindow
                 ChkFxaa.IsChecked = f.GetValue<bool>();
             if (root["bloom_intensity"] is JsonNode bi && SldBloomIntensity != null)
                 SldBloomIntensity.Value = bi.GetValue<double>();
-            if (root["meshlet_cull"] is JsonNode mc && ChkMeshletCull != null)
-                ChkMeshletCull.IsChecked = mc.GetValue<bool>();
+            // "meshlet_cull" は廃止（常時有効）。旧プロジェクトに残っていても復元しない。
             if (root["deferred"] is JsonNode df && ChkDeferred != null)
                 ChkDeferred.IsChecked = df.GetValue<bool>();
             // キー無し（既存プロジェクト）は既定 false のため未設定のままでよい。
@@ -677,8 +676,7 @@ public partial class MainWindow
         SldBloomIntensity.Value      = DefaultBloomIntensity;
         if (ChkRefractSeqGrab != null) ChkRefractSeqGrab.IsChecked = false;
         if (CmbTransparency != null) CmbTransparency.SelectedIndex = 0;
-        // メッシュレットカリング（第1弾）は既定 true（有効）へリセットする。
-        if (ChkMeshletCull != null) ChkMeshletCull.IsChecked = true;
+        // メッシュレットカリングは常時有効化したため UI リセット対象から除外（チェックボックス撤去済み）。
         // シーンビュー表示モードは既定「ライティングON」（index 0）へリセットする。
         if (CmbViewMode != null) CmbViewMode.SelectedIndex = 0;
         // レンダリング機能マトリクスを既定（現状維持）へリセットする。

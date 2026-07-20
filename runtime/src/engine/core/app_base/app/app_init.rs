@@ -352,9 +352,8 @@ impl App {
         self.post_fx.transparency = crate::engine::core::renderer::TransparencyMode::from_str(
             v["transparency"].as_str().unwrap_or("sort"),
         );
-        // GPU メッシュレットカリング（第1弾, 既定 true）。キー欠落時も有効。
-        // MULTI_DRAW_INDIRECT_COUNT 非対応 GPU では本値に関わらず実行時に従来経路へフォールバック。
-        self.post_fx.meshlet_cull = v["meshlet_cull"].as_bool().unwrap_or(true);
+        // メッシュレットカリングは常時有効化したため設定キー "meshlet_cull" は読み込まない
+        //（旧プロジェクトの project_settings.json に本キーが残っていても無視する＝互換維持）。
         // Deferred（G-Buffer）レンダリング（Phase D3 Deferred Phase B, 既定 true）。キー欠落時も有効。
         // OFF で従来のフォワード経路へ完全フォールバックする（A/B パリティ検証用）。
         self.post_fx.deferred = v["deferred"].as_bool().unwrap_or(true);

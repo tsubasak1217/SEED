@@ -55,12 +55,12 @@ pub(crate) mod refract_pyramid;
 pub(crate) mod bindless;
 
 pub use uniforms::{CameraUniform, ModelUniform, MaterialUniform, JointUniform, ColorVertex,
-                   GpuCullData, FrustumUniform, GizmoVertex};
+                   GpuCullData, GizmoVertex};
 pub use gpu_resources::{GpuTexture, GpuMaterial, GpuPrimitive, GpuMesh, GpuModel, InlineUpdateResult,
                         InstancedModelBatch, NodePrimDraw, GpuLineBatch, GpuGizmoBatch,
                         DefaultTextures, CameraBuffer,
-                        extract_frustum_planes, test_aabb_frustum, NUM_LODS};
-pub use pipeline::{MeshPipeline, SkinnedMeshPipeline, UnlitPipeline, CullPipeline, DrawPipelines,
+                        extract_frustum_planes, NUM_LODS};
+pub use pipeline::{MeshPipeline, SkinnedMeshPipeline, UnlitPipeline, DrawPipelines,
                    SkinComputePipeline, IdPassPipeline, OutlinePipeline, DepthPrepassPipelines,
                    SpritePipeline, SpriteOutlinePipeline, CanvasIdPipeline, CanvasIdUniform,
                    CameraPreviewBlitPipeline, ShadowDepthPipelines,

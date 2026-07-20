@@ -108,10 +108,6 @@ pub struct PostFxSettings {
     pub fxaa_enabled:    bool,
     /// 透明描画の方式（距離ソート / WBOIT）。既定は距離ソート（Phase R5）。
     pub transparency:    super::transparency::TransparencyMode,
-    /// GPU メッシュレットカリング有効フラグ（第1弾）。既定 true。
-    /// OFF で完全に従来経路（CPU カリング＋draw_indexed）＝A/B パリティ検証用。
-    /// MULTI_DRAW_INDIRECT_COUNT 非対応 GPU では本フラグに関わらず従来経路。
-    pub meshlet_cull:    bool,
     /// Deferred（G-Buffer）レンダリング有効フラグ（Phase D3 Deferred Phase B）。既定 true。
     /// OFF で完全に従来のフォワード経路（不透明を direct にシーン HDR へ描く）にフォールバックする
     /// （A/B パリティ検証用）。デファードはメインカメラの不透明・Lit のみが対象で、
@@ -156,7 +152,6 @@ impl Default for PostFxSettings {
             bloom_intensity: DEFAULT_BLOOM_INTENSITY,
             fxaa_enabled:    false,
             transparency:    super::transparency::TransparencyMode::DistanceSort,
-            meshlet_cull:    true,
             deferred:        true,
             refract_sequential_grab: false,
             gi:              GiSettings::default(),
