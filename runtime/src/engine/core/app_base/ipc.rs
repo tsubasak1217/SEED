@@ -101,6 +101,16 @@ pub enum IpcCommand {
     Rename { idx: u32, name: String },
     /// シーンを指定パスへ保存
     SaveScene(String),
+    /// ボクセル地形を初期化する（地形ツリー生成＋初期地面）。
+    /// ワイヤ形式: `TERRAIN_INIT`（引数なし）
+    TerrainInit,
+    /// ボクセル地形をブラシ編集する（スクリーン座標からレイマーチで着弾点を求める）。
+    /// ワイヤ形式: `TERRAIN_BRUSH:{op},{screen_x},{screen_y},{radius},{strength}`
+    ///   op: 0=Add / 1=Subtract / 2=Smooth / 3=Flatten
+    TerrainBrush { op: u32, screen_x: f32, screen_y: f32, radius: f32, strength: f32 },
+    /// ボクセル地形の全チャンクを .tvox としてアセット配下へ保存する。
+    /// ワイヤ形式: `TERRAIN_SAVE`（引数なし）
+    TerrainSave,
     /// グループフォルダ作成（parent=None はルート）
     CreateGroup { name: String, parent: Option<u32> },
     /// グループフォルダ作成 + 子を一括移動
@@ -744,6 +754,23 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                         }
                         s if s.starts_with("SAVE_SCENE:") => {
                             Some(IpcCommand::SaveScene(s["SAVE_SCENE:".len()..].to_string()))
+                        }
+                        // 地形初期化（引数なし）。
+                        "TERRAIN_INIT" => Some(IpcCommand::TerrainInit),
+                        // 地形保存（引数なし）。
+                        "TERRAIN_SAVE" => Some(IpcCommand::TerrainSave),
+                        // 地形ブラシ: "op,screen_x,screen_y,radius,strength"。
+                        // 先頭 op は u32、残り 4 つは f32。parse1u_nf::<4> で (op, [sx,sy,r,st]) を得る。
+                        s if s.starts_with("TERRAIN_BRUSH:") => {
+                            parse1u_nf::<4>(&s["TERRAIN_BRUSH:".len()..]).map(|(op, fs)| {
+                                IpcCommand::TerrainBrush {
+                                    op,
+                                    screen_x: fs[0],
+                                    screen_y: fs[1],
+                                    radius:   fs[2],
+                                    strength: fs[3],
+                                }
+                            })
                         }
                         s if s.starts_with("SAVE_ACTOR:") => {
                             Some(IpcCommand::SaveActor(s["SAVE_ACTOR:".len()..].to_string()))

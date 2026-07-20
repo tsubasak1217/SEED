@@ -379,6 +379,11 @@ impl Actor {
                     world.get::<crate::engine::components::SkyboxComponent>(slot.entity)
                         .map(|sb| ComponentData::SkyboxComponent(sb.to_data()))
                 }
+                ComponentKind::TerrainChunk => {
+                    // 地形チャンクの座標＋.tvox リンクをシリアライズ用データへ変換する
+                    world.get::<crate::engine::components::TerrainChunkComponent>(slot.entity)
+                        .map(|tc| ComponentData::TerrainChunkComponent(tc.to_data()))
+                }
             };
             data.map(|d| ComponentSlotData {
                 name:      slot.name.clone(),

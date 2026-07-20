@@ -469,11 +469,18 @@ pub fn build_actor(
             ComponentData::ModelComponent(mc_data) => {
                 use std::path::Path;
                 let cast_shadows = mc_data.cast_shadows;
-                if mc_data.model_path.is_empty() {
-                    // モデル未設定の空コンポーネント
+                // 【地形チャンクの特例】source_path が `terrain://` 接頭辞の場合は実ファイルが
+                // 存在しないため load_model をスキップする（さもないとシーンロード全体が失敗する）。
+                // model/gpu_model は None のままにし、terrain_ops の rebuild_terrain_after_load が
+                // 対応する .tvox からメッシュを再構築して埋める。空パス（未設定）と同じ経路で扱う。
+                let is_terrain_synthetic =
+                    mc_data.model_path.starts_with(crate::engine::components::TERRAIN_SOURCE_SCHEME);
+                if mc_data.model_path.is_empty() || is_terrain_synthetic {
+                    // モデル未設定の空コンポーネント、または地形チャンク（後で rebuild される）。
+                    // source_path は保持する（terrain:// パスは rebuild 後の描画・RT キャスタ判定に必要）。
                     let meta = mc_data.meta;
                     world.insert(slot_entity, ModelComponent {
-                        source_path:     String::new(),
+                        source_path:     mc_data.model_path,
                         model:           None,
                         gpu_model:       None,
                         instanced_batch: None,
@@ -637,6 +644,13 @@ pub fn build_actor(
                 use crate::engine::components::SkyboxComponent;
                 world.insert(slot_entity, SkyboxComponent::from_data(sb_data));
                 actor.add_slot_typed::<SkyboxComponent>(slot_name, ComponentKind::Skybox, slot_entity);
+            }
+            ComponentData::TerrainChunkComponent(tc_data) => {
+                // 地形チャンクコンポーネントを ECS ワールドに挿入してスロットを登録する。
+                // 実メッシュ（ModelComponent）は rebuild_terrain_after_load が .tvox から復元する。
+                use crate::engine::components::TerrainChunkComponent;
+                world.insert(slot_entity, TerrainChunkComponent::from_data(tc_data));
+                actor.add_slot_typed::<TerrainChunkComponent>(slot_name, ComponentKind::TerrainChunk, slot_entity);
             }
             ComponentData::LegacyRigidbodyComponent(rb_data) => {
                 // 旧フォーマット（Rigidbody が独立コンポーネント）の後方互換マイグレーション。

@@ -534,6 +534,15 @@ impl App {
                     let json = serde_json::to_string(d).unwrap_or_default();
                     ("Collider2dComponent", format!(r#","collider_data":{json}"#))
                 }
+                ComponentData::TerrainChunkComponent(d) => {
+                    // 地形チャンク（内部管理用）。ユーザー編集 UI は持たないため、
+                    // 座標と .tvox パスのみを読み取り専用情報として送る。
+                    let path_json = serde_json::to_string(&d.tvox_path).unwrap_or_else(|_| "\"\"".to_string());
+                    ("TerrainChunkComponent", format!(
+                        r#","chunk_x":{},"chunk_y":{},"chunk_z":{},"tvox_path":{path_json}"#,
+                        d.chunk_x, d.chunk_y, d.chunk_z,
+                    ))
+                }
                 ComponentData::LegacyRigidbodyComponent(_) => {
                     // 旧フォーマット互換: to_data_recursive からは生成されないため通常は到達しない
                     ("_legacy", String::new())

@@ -394,6 +394,10 @@ impl App {
                         use crate::engine::components::SkyboxComponent;
                         scene.world.remove::<SkyboxComponent>(slot_entity);
                     }
+                    ComponentKind::TerrainChunk => {
+                        use crate::engine::components::TerrainChunkComponent;
+                        scene.world.remove::<TerrainChunkComponent>(slot_entity);
+                    }
                 }
                 scene.world.despawn(slot_entity);
                 // アクターのスロットリストから削除
@@ -702,6 +706,17 @@ impl App {
                 } else { scene.world.despawn(slot_entity); }
                 true
             }
+            ComponentData::TerrainChunkComponent(tc_data) => {
+                // 地形チャンクの識別＋.tvox リンクを複製する（内部管理用。GPU メッシュは複製しない）
+                use crate::engine::components::TerrainChunkComponent;
+                let slot_entity = scene.world.spawn();
+                scene.world.insert(slot_entity, TerrainChunkComponent::from_data(tc_data));
+                let mut c = 0u32;
+                if let Some(actor) = find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs_id, &mut c) {
+                    actor.add_slot_typed::<TerrainChunkComponent>(slot_data.name, ComponentKind::TerrainChunk, slot_entity);
+                } else { scene.world.despawn(slot_entity); }
+                true
+            }
             ComponentData::LegacyRigidbodyComponent(_) => {
                 // 旧フォーマット互換: ColliderComponent に統合済みのためスロット追加しない
                 false
@@ -914,6 +929,11 @@ impl App {
                     use crate::engine::components::SkyboxComponent;
                     scene.world.insert(slot_entity, SkyboxComponent::from_data(sb_data));
                     new_slots.push(ComponentSlot::new::<SkyboxComponent>(slot_data.name, ComponentKind::Skybox, slot_entity));
+                }
+                ComponentData::TerrainChunkComponent(tc_data) => {
+                    use crate::engine::components::TerrainChunkComponent;
+                    scene.world.insert(slot_entity, TerrainChunkComponent::from_data(tc_data));
+                    new_slots.push(ComponentSlot::new::<TerrainChunkComponent>(slot_data.name, ComponentKind::TerrainChunk, slot_entity));
                 }
                 ComponentData::LegacyRigidbodyComponent(_) => {
                     // 旧フォーマット互換: ColliderComponent に統合済みのためスキップする

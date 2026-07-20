@@ -28,6 +28,8 @@ pub mod skybox_component;
 pub mod particle_emitter_component;
 /// マテリアルオーバーライド（Phase R7: .mat マテリアル＋マルチマテリアル編集）
 pub mod material_override;
+/// 地形チャンク（ボクセル地形の 1 チャンク識別＋.tvox 永続化リンク・内部管理用）
+pub mod terrain_component;
 
 pub use transform::Transform;
 pub use canvas_transform::CanvasTransform;
@@ -51,6 +53,7 @@ pub use collider2d_component::{
 // RigidbodyComponentData は旧フォーマットシーンの後方互換デシリアライズ専用
 pub use rigidbody_component::RigidbodyComponentData;
 pub use audio_component::{AudioComponent, AudioComponentData};
+pub use terrain_component::{TerrainChunkComponent, TerrainChunkComponentData, TERRAIN_SOURCE_SCHEME};
 pub use animator_component::{AnimatorComponent, AnimatorComponentData, AnimClipRef, AnimClipKind, AnimClipLoop};
 pub use light_component::{LightComponent, LightComponentData, LightKind};
 pub use jointattach_component::{JointAttachComponent, JointAttachComponentData};
@@ -106,6 +109,8 @@ pub enum ComponentKind {
     ParticleEmitter,
     /// スカイボックス（天球：equirectangular 背景・CameraLocked / WorldAnchored）
     Skybox,
+    /// 地形チャンク（ボクセル地形の 1 チャンク・内部管理用。ユーザー追加不可）
+    TerrainChunk,
 }
 
 impl ComponentKind {
@@ -128,6 +133,7 @@ impl ComponentKind {
             Self::JointAttach => "JointAttachComponent",
             Self::ParticleEmitter => "ParticleEmitterComponent",
             Self::Skybox      => "SkyboxComponent",
+            Self::TerrainChunk => "TerrainChunkComponent",
         }
     }
 }
@@ -166,4 +172,6 @@ pub enum ComponentData {
     ParticleEmitterComponent(ParticleEmitterComponentData),
     /// スカイボックス（天球：equirectangular 背景）
     SkyboxComponent(SkyboxComponentData),
+    /// 地形チャンク（ボクセル地形の 1 チャンク識別＋.tvox リンク・内部管理用）
+    TerrainChunkComponent(TerrainChunkComponentData),
 }
