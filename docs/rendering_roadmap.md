@@ -1296,7 +1296,13 @@ RT-Translucency の屈折を土台に、「本物のガラス」を作れる 2 �
   再屈折する（現状は shading 面の `material.ior` を全界面に流用）。※界面法線の復元は実装済み（上記）。
 - **界面のアルファ抜き（Mask）**: 透明 group4 に `binding_array` を持ち込めれば界面のテクスチャ α で抜ける
   （現状はグループ制約で不可＝平均色ベール維持）。group4 の uniform 分離 or グループ再編が要る。
-- **拡散透過（diffuse transmission）〔実装済み〕**: 葉・布・紙の逆光透け（`KHR_materials_diffuse_transmission`
+- **拡散透過（diffuse transmission）〔実装済み・2026-07-20 時点で一時無効化中〕**: パラメータ数の割に制御が
+  難しく狙った見た目にならないとの判断で、入口だけ塞いで無効化した（実装は温存、いつでも復帰可能）。
+  無効化の実体は 2 か所: (1) エディタ Inspector の「拡散透過」スライダー行を `Visibility.Collapsed`
+  （`InspectorPanel.xaml.cs`）、(2) ランタイムの `build_material_uniform`（`gpu_resources.rs`）で
+  `DIFFUSE_TRANSMISSION_DISABLED = true` の間 GPU へ渡す直前に 0.0 を強制（既存シーン保存値も無効化）。
+  serde・.mat・インライン上書き・シェーダ側の実装・`CACHE_FORMAT_VERSION` は変更していない。再有効化は
+  上記 2 か所を元に戻すだけでよい。葉・布・紙の逆光透け（`KHR_materials_diffuse_transmission`
   相当の簡易版）。`Material.diffuse_transmission`（0..1・既定 0）を追加し、`lighting_eval.wgsl` の
   evaluate_lighting のライトループ内で、面がライトに背を向けている側の逆光を
   `radiance × saturate(-dot(N,L)) × diffuse_transmission × albedo / PI` として加算する（透過色は base_color を

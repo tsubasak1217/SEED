@@ -3160,10 +3160,12 @@ public partial class InspectorPanel : UserControl
         inlinePanel.Children.Add(BuildMaterialSliderRow("ラフネス", curRoughness, v => { curRoughness = v; SendInline(); }));
 
         // 拡散透過スライダー（0..1。葉・布・紙の逆光透け＝KHR_materials_diffuse_transmission 簡易版）。
-        // 【常時表示の理由】ガラス系の屈折率／透過率は Blend 限定で条件表示するが、拡散透過は
-        // 葉（Mask で描く）・布（Opaque で描く）でも使うため、AlphaMode に関わらず常に表示する
-        // （ガラスの鏡面透過とは効き方も対象マテリアルも異なる、意図的な差異）。
-        inlinePanel.Children.Add(BuildMaterialSliderRow("拡散透過", curDiffuseTransmission, v => { curDiffuseTransmission = v; SendInline(); }));
+        // 【一時無効化】パラメータの割に制御が難しく狙った見た目にならないため 2026-07-20 時点で
+        // 非表示にしている（削除ではない）。ランタイム側も build_material_uniform で 0.0 を強制しており、
+        // ここを操作しても反映されない。再有効化する場合はこの Visibility.Collapsed を外す。
+        var diffuseTransmissionRow = BuildMaterialSliderRow("拡散透過", curDiffuseTransmission, v => { curDiffuseTransmission = v; SendInline(); });
+        diffuseTransmissionRow.Visibility = Visibility.Collapsed;
+        inlinePanel.Children.Add(diffuseTransmissionRow);
 
         // MR テクスチャ無視トグル（常時表示）。glTF PBR は実効 metallic/roughness = factor × MR テクスチャのため、
         // MR テクスチャ持ちの面はスライダを最大にしても実効 roughness をテクスチャ値以上へ上げられない。

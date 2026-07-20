@@ -368,6 +368,13 @@ pub struct GpuMaterial {
     textures:           Vec<GpuTexture>,
 }
 
+/// 拡散透過（diffuse_transmission）機能の一時無効化フラグ。
+///
+/// true の間、`build_material_uniform` が GPU へ渡す直前に diffuse_transmission を 0.0 に
+/// 強制する。Material 構造体・serde・.mat・インライン上書き・Inspector UI・シェーダ側の
+/// 実装は一切変更しない（入口を塞ぐだけ）。将来再有効化する場合は false に戻す。
+const DIFFUSE_TRANSMISSION_DISABLED: bool = true;
+
 /// `Material` から GPU 用 `MaterialUniform`（std140 レイアウト）を組み立てる純関数。
 ///
 /// 【単一の真実source】マテリアル uniform のビット表現をここ 1 か所に集約する。
@@ -397,7 +404,12 @@ pub(crate) fn build_material_uniform(mat: &Material) -> MaterialUniform {
         // シェーダ側 surface_gather.wgsl の MR 採取 1 箇所が参照する（forward/G-Buffer 共通）。
         mr_tex_ignore:      mat.mr_tex_ignore as u32,
         // 拡散透過（葉・布・紙の逆光透け, offset 72）。lighting_eval.wgsl の逆光項が Surface 経由で読む。
-        diffuse_transmission: mat.diffuse_transmission,
+        //
+        // 【一時無効化】パラメータ数の割に制御が難しく、狙った見た目にならないため 2026-07-20 時点で
+        // 無効化中。Material / .mat / インライン上書き・serde・エディタ UI・シェーダは温存し、
+        // GPU へ渡す直前のこの 1 か所で強制的に 0.0 にする（= 既存シーンに保存済みの値も無視される）。
+        // 再有効化するには DIFFUSE_TRANSMISSION_DISABLED を false にするだけでよい。
+        diffuse_transmission: if DIFFUSE_TRANSMISSION_DISABLED { 0.0 } else { mat.diffuse_transmission },
         _pad2:              0.0,
     }
 }
