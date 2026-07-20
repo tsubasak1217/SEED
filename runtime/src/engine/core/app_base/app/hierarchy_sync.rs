@@ -22,7 +22,7 @@ impl App {
             .filter(|a| a.world_line == wl)
             .collect();
 
-        let mut nodes: Vec<(u32, String, Option<u32>, bool, bool, bool, bool, bool)> = Vec::new();
+        let mut nodes: Vec<(u32, String, Option<u32>, bool, bool, bool, bool, bool, bool)> = Vec::new();
         let mut counter = 0u32;
         for root in &roots {
             // is_vp（ビューポート所属）はトップレベルルートが Actor2D かで決まり、

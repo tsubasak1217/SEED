@@ -114,6 +114,12 @@ pub struct ActorData {
     /// Actor2D のみ使用。既存の .actor ファイルとの互換性のため省略可（省略時はデフォルト）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub canvas_transform: Option<CanvasTransform>,
+    /// フォルダノードフラグ（整理専用ノード）。true のとき Transform / CanvasTransform を
+    /// 一切持たず、子のワールド変換に影響しない（描画・物理・スクリプトから透過）。
+    /// 単なる階層グルーピングのための器であり、地形ルート／チャンクの整理などに使う。
+    /// 既存シーンとの後方互換のため省略時は false（＝通常アクター）、false のときは書き出さない。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub is_folder:  bool,
     pub components: Vec<ComponentSlotData>,
     pub children:   Vec<ActorData>,
     /// アクターのアクティブフラグ（Unity の activeSelf 相当）。
@@ -138,6 +144,8 @@ fn is_actor3d(k: &ActorKind) -> bool { *k == ActorKind::Actor3D }
 /// serde 用: デフォルト true / true なら省略（active / enabled フラグの互換性維持）。
 fn default_true() -> bool { true }
 fn is_true(v: &bool) -> bool { *v }
+/// serde 用: false なら省略（is_folder フラグの互換性維持。既存シーンは false 扱い）。
+fn is_false(v: &bool) -> bool { !*v }
 
 /// ComponentSlot のシリアライズ用データ。
 #[derive(Clone, Serialize, Deserialize)]
@@ -175,6 +183,10 @@ pub struct Actor {
     /// **インスタンスのルートのみ Some**（子アクターは常に None）。
     /// build_actor で ActorData から復元し、to_data で書き戻す。
     pub prefab_source: Option<String>,
+    /// フォルダノードフラグ（整理専用ノード）。true のとき Transform を持たず、
+    /// 子のワールド変換に影響しない（描画・物理・スクリプトから透過）。
+    /// ActorData の同名フィールドと往復する。地形ルート／チャンクの器などに使う。
+    pub is_folder:  bool,
     /// 保持コンポーネントの目録（実データは World）
     slots:          Vec<ComponentSlot>,
 }
@@ -189,6 +201,7 @@ impl Actor {
             children:   Vec::new(),
             active:     true,
             prefab_source: None,
+            is_folder:  false,
             slots:      Vec::new(),
         }
     }
@@ -203,6 +216,25 @@ impl Actor {
             children:   Vec::new(),
             active:     true,
             prefab_source: None,
+            is_folder:  false,
+            slots:      Vec::new(),
+        }
+    }
+
+    /// フォルダノード（整理専用・Transform 非保持）として生成するヘルパー。
+    ///
+    /// 呼び出し側は World に Transform / CanvasTransform を挿入しないこと
+    /// （フォルダは子のワールド変換に影響しない透過ノードのため）。
+    pub fn new_folder(entity: Entity, name: impl Into<String>) -> Self {
+        Self {
+            entity,
+            name:       name.into(),
+            world_line: 0,
+            actor_kind: ActorKind::Actor3D,
+            children:   Vec::new(),
+            active:     true,
+            prefab_source: None,
+            is_folder:  true,
             slots:      Vec::new(),
         }
     }
@@ -398,6 +430,7 @@ impl Actor {
             actor_kind:       self.actor_kind,
             transform,
             canvas_transform,
+            is_folder:        self.is_folder,
             components,
             children:         self.children.iter().map(|c| c.to_data_recursive(world, counter)).collect(),
             active:           self.active,
@@ -408,8 +441,84 @@ impl Actor {
 
     /// 2D Actor かどうかを返す。
     pub fn is_2d(&self) -> bool { self.actor_kind == ActorKind::Actor2D }
+
+    /// フォルダノード（整理専用・Transform 非保持）かどうかを返す。
+    pub fn is_folder(&self) -> bool { self.is_folder }
 }
 
 impl Default for Actor {
     fn default() -> Self { Self::with_name("Actor") }
+}
+
+// ============================================================
+//  テスト — フォルダノード（is_folder）の serde 後方互換・Transform 非保持
+// ============================================================
+
+#[cfg(test)]
+mod folder_tests {
+    use super::*;
+    use crate::engine::components::Transform;
+
+    /// フォルダフラグ（is_folder）の serde 往復と、旧シーンとの後方互換を検証する。
+    ///
+    /// - is_folder=true は JSON へ出力され、往復で保持される。
+    /// - is_folder=false は skip_serializing_if で出力されない（旧 .scene とバイト互換）。
+    /// - is_folder フィールドを持たない旧 JSON は false（＝通常アクター）として読める。
+    #[test]
+    fn folder_flag_serde_roundtrip_and_backward_compat() {
+        let folder = ActorData {
+            name:             "terrain".into(),
+            dfs_id:           None,
+            actor_kind:       ActorKind::Actor3D,
+            transform:        None,
+            canvas_transform: None,
+            is_folder:        true,
+            components:       Vec::new(),
+            children:         Vec::new(),
+            active:           true,
+            prefab_source:    None,
+        };
+
+        // is_folder=true は出力され、往復で保持される。
+        let json = serde_json::to_string(&folder).unwrap();
+        assert!(json.contains("\"is_folder\":true"), "folder must serialize is_folder: {json}");
+        let back: ActorData = serde_json::from_str(&json).unwrap();
+        assert!(back.is_folder);
+
+        // is_folder=false は出力されない（既存シーンとのバイト互換維持）。
+        let normal = ActorData { is_folder: false, ..folder.clone() };
+        let json_n = serde_json::to_string(&normal).unwrap();
+        assert!(!json_n.contains("is_folder"), "normal actor must omit is_folder: {json_n}");
+
+        // is_folder フィールドの無い旧 JSON は false として読める。
+        let legacy = r#"{"name":"legacy","components":[],"children":[]}"#;
+        let parsed: ActorData = serde_json::from_str(legacy).unwrap();
+        assert!(!parsed.is_folder, "legacy scene without is_folder must default to false");
+    }
+
+    /// フォルダノードが Transform を一切保持しない（＝子のワールド変換へ継承しない）ことを検証する。
+    ///
+    /// フォルダは World に Transform を挿入しないため to_data の transform は None になる。
+    /// Transform を持たない以上、親子ワールド変換合成の起点になり得ない（非継承の担保）。
+    /// 対照として通常アクターは Transform を保持し、transform が Some になる。
+    #[test]
+    fn folder_actor_carries_no_transform() {
+        let mut world = World::new();
+
+        // フォルダ: Transform を挿入しない透過ノード。
+        let fe = world.spawn();
+        let folder = Actor::new_folder(fe, "terrain");
+        assert!(folder.is_folder());
+        let fdata = folder.to_data(&world);
+        assert!(fdata.is_folder);
+        assert!(fdata.transform.is_none(), "folder must not carry a Transform");
+
+        // 通常アクター: Transform を保持し、継承の起点になり得る。
+        let me = world.spawn();
+        world.insert(me, Transform::default());
+        let mesh = Actor::new(me, "mesh");
+        let mdata = mesh.to_data(&world);
+        assert!(!mesh.is_folder());
+        assert!(mdata.transform.is_some(), "normal actor must carry a Transform");
+    }
 }

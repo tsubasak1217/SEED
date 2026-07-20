@@ -427,30 +427,42 @@ pub fn build_actor(
     let reused = root_entity.is_some();
     let entity = root_entity.unwrap_or_else(|| world.spawn());
 
-    // actor_kind に応じてデフォルトトランスフォームを挿入する。
-    // Actor3D → Transform（3D ワールド空間）
-    // Actor2D → CanvasTransform（XY キャンバス空間）+ Transform（ダミーとして挿入しない）
-    match data.actor_kind {
-        ActorKind::Actor3D => {
-            // 予約済みルートに既に Transform がある場合（Instantiate 直後にスクリプトが
-            // Position を設定済み）はその値を優先し、アクターファイルの値で上書きしない。
-            if !(reused && world.contains::<Transform>(entity)) {
-                world.insert(entity, data.transform.unwrap_or_default());
-            }
+    // フォルダノード（is_folder）は整理専用の透過ノードで Transform を一切持たない。
+    // よってデフォルト Transform / CanvasTransform の挿入をスキップする
+    // （子のワールド変換に影響させないため）。予約済みルートに仮挿入された
+    // Transform があれば取り除いておく（フォルダに Transform を残さない）。
+    if data.is_folder {
+        if reused {
+            world.remove::<Transform>(entity);
         }
-        ActorKind::Actor2D => {
-            // 予約時に仮挿入された 3D Transform は 2D アクターには不要なので取り除く
-            if reused {
-                world.remove::<Transform>(entity);
+    } else {
+        // actor_kind に応じてデフォルトトランスフォームを挿入する。
+        // Actor3D → Transform（3D ワールド空間）
+        // Actor2D → CanvasTransform（XY キャンバス空間）+ Transform（ダミーとして挿入しない）
+        match data.actor_kind {
+            ActorKind::Actor3D => {
+                // 予約済みルートに既に Transform がある場合（Instantiate 直後にスクリプトが
+                // Position を設定済み）はその値を優先し、アクターファイルの値で上書きしない。
+                if !(reused && world.contains::<Transform>(entity)) {
+                    world.insert(entity, data.transform.unwrap_or_default());
+                }
             }
-            // 保存済み canvas_transform があれば復元（pivot/anchor を含む）。
-            // 旧フォーマット（canvas_transform フィールドなし）との互換のためデフォルトにフォールバック。
-            world.insert(entity, data.canvas_transform.unwrap_or_default());
+            ActorKind::Actor2D => {
+                // 予約時に仮挿入された 3D Transform は 2D アクターには不要なので取り除く
+                if reused {
+                    world.remove::<Transform>(entity);
+                }
+                // 保存済み canvas_transform があれば復元（pivot/anchor を含む）。
+                // 旧フォーマット（canvas_transform フィールドなし）との互換のためデフォルトにフォールバック。
+                world.insert(entity, data.canvas_transform.unwrap_or_default());
+            }
         }
     }
 
     let mut actor = Actor::new(entity, data.name);
     actor.actor_kind = data.actor_kind;
+    // フォルダノードフラグを復元する（省略時 serde デフォルトで false = 通常アクター）。
+    actor.is_folder = data.is_folder;
     // アクティブフラグを復元する（省略時は serde デフォルトで true）
     actor.active = data.active;
     // プレハブ参照リンクを復元する（インスタンスのルートのみ Some、子は None）。

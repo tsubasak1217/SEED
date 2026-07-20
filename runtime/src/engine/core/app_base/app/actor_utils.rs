@@ -46,7 +46,7 @@ pub(super) fn collect_actor_nodes(
     counter:       &mut u32,
     root_is_vp:    bool,
     parent_active: bool,
-    out:           &mut Vec<(u32, String, Option<u32>, bool, bool, bool, bool, bool)>,
+    out:           &mut Vec<(u32, String, Option<u32>, bool, bool, bool, bool, bool, bool)>,
 ) {
     let id = *counter;
     *counter += 1;
@@ -58,7 +58,10 @@ pub(super) fn collect_actor_nodes(
     // インスタンスのルートのみ Some を持つため、子ノードは自然と false になる。
     // エディタのヒエラルキーでプレハブアイコン表示に使用する（C# パースは次ウェーブ）。
     let is_prefab = actor.prefab_source.is_some();
-    out.push((id, actor.name.clone(), parent, actor.is_2d(), root_is_vp, active, has_canvas, is_prefab));
+    // is_folder: 整理専用のフォルダノードか（Transform 非保持・透過）。
+    // エディタでフォルダアイコン表示＋Inspector で Transform を出さない判定に使う。
+    let is_folder = actor.is_folder();
+    out.push((id, actor.name.clone(), parent, actor.is_2d(), root_is_vp, active, has_canvas, is_prefab, is_folder));
     for child in actor.children() {
         // ルートのビューポート所属フラグを子孫全体へそのまま伝播する
         collect_actor_nodes(child, Some(id), counter, root_is_vp, active, out);
@@ -88,22 +91,29 @@ struct HierarchyNode<'a> {
     /// このアクターがプレハブインスタンスのルート（prefab_source を持つ）か。
     /// エディタのプレハブアイコン表示・右クリック「リンク解除」メニュー活性化に使用する。
     is_prefab: bool,
+    /// このアクターが整理専用のフォルダノード（Transform 非保持・透過）か。
+    /// エディタのヒエラルキーでフォルダアイコン表示、Inspector で Transform を
+    /// 出さない（名前変更のみ）判定に使用する。地形ルート／チャンクの器などに付く。
+    is_folder: bool,
 }
 
 /// フラットリストから HIERARCHY JSON を生成する。
-pub(super) fn build_hierarchy_json(nodes: &[(u32, String, Option<u32>, bool, bool, bool, bool, bool)]) -> String {
+pub(super) fn build_hierarchy_json(nodes: &[(u32, String, Option<u32>, bool, bool, bool, bool, bool, bool)]) -> String {
     let items: Vec<HierarchyNode<'_>> = nodes
         .iter()
-        .map(|(id, name, parent, is_2d, is_vp, active, has_canvas, is_prefab)| HierarchyNode {
+        .map(|(id, name, parent, is_2d, is_vp, active, has_canvas, is_prefab, is_folder)| HierarchyNode {
             id:       *id,
             name:     name.as_str(),
             parent:   *parent,
-            is_group: false,
+            // フォルダノードはグループ同様「器」なので is_group も true にして、
+            // 既存エディタのグループ系ロジック（選択種別判定のスキップ等）と整合させる。
+            is_group: *is_folder,
             is_2d:    *is_2d,
             is_vp:    *is_vp,
             active:   *active,
             has_canvas: *has_canvas,
             is_prefab: *is_prefab,
+            is_folder: *is_folder,
         })
         .collect();
     serde_json::to_string(&items).unwrap_or_default()
