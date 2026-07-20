@@ -75,6 +75,12 @@ const SMOKE_BRUSH_RADIUS: f32 = 6.0;
 const SMOKE_BRUSH_STRENGTH: f32 = 8.0;
 /// スモークテストで盛り／掘りの中心を footprint 中心から左右へずらす量（メートル）。
 const SMOKE_BRUSH_OFFSET: f32 = 8.0;
+/// スモークの連続ストローク（畝）の適用回数（線を引くように点を並べる）。
+const SMOKE_STROKE_STEPS: u32 = 10;
+/// スモークの連続ストロークで 1 ステップあたり進む距離（メートル）。
+const SMOKE_STROKE_SPACING: f32 = 2.0;
+/// スモークのプレビュー球（ワイヤスフィア）半径（メートル）。
+const SMOKE_PREVIEW_RADIUS: f32 = 5.0;
 
 // ============================================================
 //  TerrainState — 地形の実行時状態
@@ -93,6 +99,10 @@ pub struct TerrainState {
     pub scene_name: String,
     /// 編集されて未保存のチャンク集合（handle_terrain_save でクリア）。
     pub dirty: HashSet<ChunkCoord>,
+    /// ブラシプレビュー（Edit モードのホバー位置に描くワイヤスフィア）の
+    /// (ワールド中心, 半径)。`None` のとき非表示。frame_renderer が描画に使う。
+    /// レイがヒットしない（空を指す）フレームは `None` へクリアされる。
+    pub brush_preview: Option<([f32; 3], f32)>,
 }
 
 impl Default for TerrainState {
@@ -103,6 +113,7 @@ impl Default for TerrainState {
             chunk_slot_entity: HashMap::new(),
             scene_name: String::new(),
             dirty: HashSet::new(),
+            brush_preview: None,
         }
     }
 }
@@ -542,13 +553,34 @@ impl App {
             }
             return;
         }
-        // ビューポートサイズを取得してレイを生成する（デバッグカメラの投影方式に追従）。
-        let (vp_w, vp_h) = match self.window.as_ref() {
-            Some(w) => {
-                let sz = w.inner_size();
-                (sz.width.max(1) as f32, sz.height.max(1) as f32)
+
+        let Some(center) = self.terrain_raymarch_hit(screen_x, screen_y) else {
+            if let Some(ipc) = &self.ipc {
+                ipc.send("TERRAIN_BRUSH_MISS");
             }
-            None => return,
+            return;
+        };
+
+        self.handle_terrain_brush_world(op, center, radius, strength);
+        if let Some(ipc) = &self.ipc {
+            ipc.send(&format!("TERRAIN_BRUSH_OK:{},{},{}", center[0], center[1], center[2]));
+        }
+    }
+
+    /// スクリーン座標からカメラレイを作り、密度場を SDF レイマーチして最初の
+    /// AIR→SOLID 交差（地形表面）のワールド座標を返す。命中無しは `None`。
+    ///
+    /// ブラシ着弾点（handle_terrain_brush）とブラシプレビュー（handle_terrain_brush_preview）
+    /// の双方から使う共通処理。地形未初期化・ウィンドウ無しでは `None`。
+    pub(super) fn terrain_raymarch_hit(&self, screen_x: f32, screen_y: f32) -> Option<[f32; 3]> {
+        if self.terrain.chunks.is_empty() {
+            return None;
+        }
+        // ビューポートサイズを取得してレイを生成する（デバッグカメラの投影方式に追従）。
+        let (vp_w, vp_h) = {
+            let w = self.window.as_ref()?;
+            let sz = w.inner_size();
+            (sz.width.max(1) as f32, sz.height.max(1) as f32)
         };
         let (origin, dir) = self.editor_3d_ray(screen_x, screen_y, vp_w, vp_h);
 
@@ -568,7 +600,6 @@ impl App {
         let mut prev_t = 0.0f32;
         let mut prev_d = density_at(prev_t);
         let mut t = step;
-        let mut hit: Option<[f32; 3]> = None;
         while t <= RAYMARCH_MAX_DISTANCE {
             let d = density_at(t);
             // AIR（>=iso）→ SOLID（<iso）の交差を検出する。
@@ -583,25 +614,29 @@ impl App {
                         lo = mid;
                     }
                 }
-                hit = Some(at(0.5 * (lo + hi)));
-                break;
+                return Some(at(0.5 * (lo + hi)));
             }
             prev_t = t;
             prev_d = d;
             t += step;
         }
+        None
+    }
 
-        let Some(center) = hit else {
-            if let Some(ipc) = &self.ipc {
-                ipc.send("TERRAIN_BRUSH_MISS");
-            }
-            return;
-        };
+    /// ブラシプレビュー（ホバー位置のワイヤスフィア）の中心を更新する。
+    ///
+    /// TERRAIN_BRUSH_PREVIEW コマンドから呼ばれる。カーソル位置のレイが地形に
+    /// 当たれば `terrain.brush_preview` に (着弾点, 半径) をセットし、当たらなければ
+    /// `None`（非表示）にする。押下していないホバー中に高頻度で呼ばれるため IPC 応答は返さない。
+    pub(super) fn handle_terrain_brush_preview(&mut self, screen_x: f32, screen_y: f32, radius: f32) {
+        self.terrain.brush_preview = self
+            .terrain_raymarch_hit(screen_x, screen_y)
+            .map(|center| (center, radius));
+    }
 
-        self.handle_terrain_brush_world(op, center, radius, strength);
-        if let Some(ipc) = &self.ipc {
-            ipc.send(&format!("TERRAIN_BRUSH_OK:{},{},{}", center[0], center[1], center[2]));
-        }
+    /// ブラシプレビューを非表示にする（TERRAIN_BRUSH_PREVIEW_OFF・terrain モード離脱時）。
+    pub(super) fn handle_terrain_brush_preview_off(&mut self) {
+        self.terrain.brush_preview = None;
     }
 
     /// ワールド座標中心で球ブラシを適用し、影響を受けたチャンクを再メッシュ化する。
@@ -879,6 +914,25 @@ impl App {
         self.handle_terrain_brush_world(BrushOp::Add, bump_center, SMOKE_BRUSH_RADIUS, SMOKE_BRUSH_STRENGTH);
         self.handle_terrain_brush_world(BrushOp::Subtract, hole_center, SMOKE_BRUSH_RADIUS, SMOKE_BRUSH_STRENGTH);
 
-        eprintln!("[SEED terrain] smoke: init + deform done (chunks={})", self.terrain.chunks.len());
+        // ── 連続ストローク（畝）: エディタのドラッグ相当を模擬する ──
+        //   -Z 方向へ点を並べて Add ブラシを連続適用し、線を引いたような盛り上がりを作る。
+        //   1 ストローク中の複数ブラシがすべて反映され再メッシュが追従することを実機で示す。
+        let stroke_x = center[0];
+        let stroke_z0 = center[2] - (SMOKE_STROKE_STEPS as f32 * SMOKE_STROKE_SPACING) * 0.5;
+        for i in 0..SMOKE_STROKE_STEPS {
+            let sc = [stroke_x, 0.0, stroke_z0 + i as f32 * SMOKE_STROKE_SPACING];
+            self.handle_terrain_brush_world(BrushOp::Add, sc, SMOKE_BRUSH_RADIUS * 0.6, SMOKE_BRUSH_STRENGTH);
+        }
+
+        // ── プレビュー球の模擬 ──
+        //   エディタ経由でしか出ないワイヤスフィアを、スモークでも直接セットして映す。
+        //   footprint 中心の地表付近に置く（レイマーチのヒット点に相当）。
+        self.terrain.brush_preview = Some(([center[0], 0.0, center[2]], SMOKE_PREVIEW_RADIUS));
+
+        eprintln!(
+            "[SEED terrain] smoke: init + deform + stroke({}) + preview done (chunks={})",
+            SMOKE_STROKE_STEPS,
+            self.terrain.chunks.len()
+        );
     }
 }

@@ -190,6 +190,70 @@ impl LineBatch {
         }
     }
 
+    /// 緯線・経線グリッドのワイヤスフィアを追加する（地形ブラシプレビュー等）。
+    ///
+    /// `add_sphere_at` の 3 大円と違い、Y 軸を極とする緯線（水平リング）と
+    /// 経線（極を通る縦の半円）のグリッドを描くため、球としての視認性が高い。
+    ///
+    /// - `center`    : ワールド空間での中心
+    /// - `radius`    : 半径（m）
+    /// - `meridians` : 経線本数（縦の半円。最小 3）
+    /// - `parallels` : 緯線本数（水平リング。極を除く。最小 1）
+    /// - `ring_segs` : 各円の分割数（滑らかさ。最小 6）
+    /// - `color`     : 線色
+    pub fn add_wire_sphere_latlong(
+        &mut self,
+        center:    [f32; 3],
+        radius:    f32,
+        meridians: usize,
+        parallels: usize,
+        ring_segs: usize,
+        color:     [f32; 4],
+    ) {
+        let [cx, cy, cz] = center;
+        let r = radius;
+        let nm = meridians.max(3);
+        let np = parallels.max(1);
+        let ns = ring_segs.max(6);
+
+        // ── 緯線（水平リング）: 高さ phi ごとに XZ 平面の円を描く ──
+        // phi は極（±90°）を含まないよう (k / (np+1)) で内分する。
+        for k in 1..=np {
+            let phi = -0.5 * PI + PI * (k as f32) / (np as f32 + 1.0);
+            let (sin_phi, cos_phi) = phi.sin_cos();
+            let ry = cy + r * sin_phi;      // リングの高さ
+            let rr = r * cos_phi;           // リングの半径
+            for i in 0..ns {
+                let a0 = 2.0 * PI * (i as f32) / (ns as f32);
+                let a1 = 2.0 * PI * ((i + 1) as f32) / (ns as f32);
+                let (s0, c0) = a0.sin_cos();
+                let (s1, c1) = a1.sin_cos();
+                self.add_line(
+                    [cx + rr * c0, ry, cz + rr * s0],
+                    [cx + rr * c1, ry, cz + rr * s1],
+                    color,
+                );
+            }
+        }
+
+        // ── 経線（極を通る縦の半円）: 経度 theta ごとに phi を掃引する ──
+        for m in 0..nm {
+            let theta = 2.0 * PI * (m as f32) / (nm as f32);
+            let (sin_t, cos_t) = theta.sin_cos();
+            for i in 0..ns {
+                let p0 = -0.5 * PI + PI * (i as f32) / (ns as f32);
+                let p1 = -0.5 * PI + PI * ((i + 1) as f32) / (ns as f32);
+                let (sp0, cp0) = p0.sin_cos();
+                let (sp1, cp1) = p1.sin_cos();
+                self.add_line(
+                    [cx + r * cp0 * cos_t, cy + r * sp0, cz + r * cp0 * sin_t],
+                    [cx + r * cp1 * cos_t, cy + r * sp1, cz + r * cp1 * sin_t],
+                    color,
+                );
+            }
+        }
+    }
+
     /// OBB（有向バウンディングボックス）ワイヤーフレームを追加する。
     ///
     /// - `center`      : ワールド空間での中心座標

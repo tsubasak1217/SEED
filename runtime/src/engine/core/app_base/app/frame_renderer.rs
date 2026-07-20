@@ -2010,6 +2010,27 @@ impl App {
                         Some(gb.build(&draw_ctx.device))
                     } else { None };
 
+                    // 地形ブラシ範囲プレビュー（Edit モードのホバー位置のワイヤスフィア）。
+                    //   TERRAIN_BRUSH_PREVIEW で terrain.brush_preview に (中心, 半径) が入る。
+                    //   Edit（in_editor）のみ描画し、Play では出さない。色は視認性重視の半透明シアン。
+                    const TERRAIN_PREVIEW_COLOR: [f32; 4] = [0.20, 0.90, 1.0, 0.80];
+                    const TERRAIN_PREVIEW_MERIDIANS: usize = 12; // 経線本数
+                    const TERRAIN_PREVIEW_PARALLELS: usize = 6;  // 緯線本数
+                    const TERRAIN_PREVIEW_RING_SEGS: usize = 32; // 各円の分割数
+                    let terrain_preview_batch = if in_editor {
+                        self.terrain.brush_preview.map(|(center, radius)| {
+                            let mut lb = LineBatch::new();
+                            lb.add_wire_sphere_latlong(
+                                center, radius,
+                                TERRAIN_PREVIEW_MERIDIANS,
+                                TERRAIN_PREVIEW_PARALLELS,
+                                TERRAIN_PREVIEW_RING_SEGS,
+                                TERRAIN_PREVIEW_COLOR,
+                            );
+                            lb.build(&draw_ctx.device)
+                        })
+                    } else { None };
+
                     // グリッド描画バッチ（エディタモード + show_grid のみ）
                     let _perf_t_grid = std::time::Instant::now();
                     // アクター編集タブの 2D キャンバス: XY 平面グリッド（常時表示）
@@ -4309,6 +4330,17 @@ impl App {
                         {
                             draw_line_batch(
                                 &mut pass, grid_batch,
+                                &camera_buf.bind_group, line_bg,
+                                &draw_ctx.pipelines,
+                            );
+                        }
+
+                        // 地形ブラシ範囲プレビュー（ワイヤスフィア）描画。
+                        if let (Some(preview_batch), Some((_, line_bg))) =
+                            (&terrain_preview_batch, &self.line_model_buf)
+                        {
+                            draw_line_batch(
+                                &mut pass, preview_batch,
                                 &camera_buf.bind_group, line_bg,
                                 &draw_ctx.pipelines,
                             );
