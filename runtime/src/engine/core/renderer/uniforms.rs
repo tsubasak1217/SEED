@@ -212,18 +212,6 @@ pub struct GpuCullData {
     pub _pad1:    f32,
 }
 
-/// 視錐台 6 平面ユニフォーム（コンピュートシェーダ用）。
-///
-/// WGSL レイアウト（96 bytes）:
-/// | オフセット | フィールド   | サイズ |
-/// |-----------|-------------|--------|
-/// |   0       | planes[0-5] |  96    |
-#[repr(C)]
-#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct FrustumUniform {
-    pub planes: [[f32; 4]; 6],
-}
-
 /// CPU から `indirect_cmds_buf` へ書き込む DrawIndexedIndirect コマンド。
 ///
 /// wgpu / DX12 の DrawIndexedIndirect レイアウト（20 bytes）:

@@ -515,15 +515,14 @@ impl App {
                     };
                     self.log_render_features_if_changed();
                 }
-                IpcCommand::SetPostFx { bloom, fxaa, bloom_intensity, transparency, meshlet_cull, deferred, refract_sequential_grab, view_mode, gi, reflection_intensity, ao_intensity, features, legacy_gi_enabled } => {
+                IpcCommand::SetPostFx { bloom, fxaa, bloom_intensity, transparency, deferred, refract_sequential_grab, view_mode, gi, reflection_intensity, ao_intensity, features, legacy_gi_enabled } => {
                     // ブルーム／FXAA をエディタからのライブ切替で更新する（Phase R4）。
                     self.post_fx.bloom_enabled   = bloom;
                     self.post_fx.fxaa_enabled    = fxaa;
                     self.post_fx.bloom_intensity = bloom_intensity;
                     // 透明描画方式（距離ソート / WBOIT）のライブ切替（Phase R5）。
                     self.post_fx.transparency    = transparency;
-                    // GPU メッシュレットカリング（第1弾）のライブ切替。
-                    self.post_fx.meshlet_cull    = meshlet_cull;
+                    // メッシュレットカリングは常時有効化したためライブ切替は撤去（設定 meshlet_cull 廃止）。
                     // Deferred（G-Buffer）レンダリングのライブ切替（Phase D3 Deferred Phase B）。
                     self.post_fx.deferred        = deferred;
                     // RT屈折の逐次グラブ（ガラス越しガラスの多重屈折）のライブ切替。既定 OFF の重量オプション。

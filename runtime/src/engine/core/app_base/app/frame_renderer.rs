@@ -547,28 +547,9 @@ impl App {
         let win_w_f = window_size.map_or(1280.0_f32, |s| s.width  as f32);
         let win_h_f = window_size.map_or(720.0_f32,  |s| s.height as f32);
 
-        // Edit モードで選択中のカメラの視錐台プレーンを事前に計算する。
-        //
-        // update_all_mc_batches_for_wl では scene への可変借用が必要なため、
-        // ここで不変借用のうちにフラスタムを取得しておく。
-        // デバッグカメラ OR 選択カメラのいずれかに入っていれば描画する（OR カリング）。
-        let preview_frustum: Option<[[f32; 4]; 6]> = {
-            // 3D Edit シーン（アクター編集 2D タブ・2D シーンビュー以外）のみ対象
-            // WL 0 に 2D アクターが混在していても 3D カメラ視錐台を計算する
-            let is_3d_edit = in_editor && !use_ortho_2d_camera;
-            if is_3d_edit {
-                self.scene.as_ref().and_then(|scene| {
-                    camera_scene_gizmo::get_selected_camera_data(
-                        &scene.actors, &scene.world,
-                        self.active_world_line,
-                        self.actor_virtual_selected_idx,
-                    )
-                }).map(|cam_data| {
-                    // アスペクト比はエディタビューポートではなく cam_data.target_aspect() から導出する
-                    camera_scene_gizmo::compute_frustum_planes(&cam_data)
-                })
-            } else { None }
-        };
+        // NOTE: オブジェクト単位の視錐台カリングは撤去したため、Edit モードのカメラプレビュー用
+        //       OR カリング視錐台（旧 preview_frustum）も不要になった。メッシュレットカリングは
+        //       メインカメラ視錐台のみで動作する（プレビュー小窓の描画はカリング対象外）。
         let mut game_viewport:    (f32, f32, f32, f32) = (0.0, 0.0, win_w_f, win_h_f);
         let mut game_clear_color: [f32; 4]             = [0.1, 0.1, 0.1, 1.0];
         // LetterBox / PillarBox 時の帯カラー。デフォルト黒。
@@ -748,13 +729,13 @@ impl App {
             saved_frustum_planes = frustum_planes;
             saved_camera_pos     = camera_pos;
 
-            // シーンモード・アクター編集モード共通: world_line 全 MC を DFS で更新する
-            // preview_frustum が Some の場合: デバッグカメラ OR プレビューカメラの OR カリング。
+            // シーンモード・アクター編集モード共通: world_line 全 MC を DFS で更新する。
+            // オブジェクト単位の視錐台カリングは廃止済み（全インスタンス可視扱い）。
             let (actors, world) = (&mut scene.actors, &mut scene.world);
             let _perf_t_batch = std::time::Instant::now();
             super::update_all_mc_batches_for_wl(
                 actors, world, self.active_world_line,
-                &queue, &frustum_planes, preview_frustum.as_ref(), camera_pos,
+                &queue, camera_pos,
             );
             perf_batch_ms = _perf_t_batch.elapsed().as_secs_f64() * 1000.0;
         }
@@ -1030,10 +1011,10 @@ impl App {
                     let rt_on = draw_ctx.rt_active(resolved_features.rt_shadow());
 
                     // このフレームで GPU メッシュレットカリング（第1弾）を使うか。
-                    // 設定 meshlet_cull オン かつ GPU が MULTI_DRAW_INDIRECT_COUNT 対応のときのみ。
-                    // false のときはメインパス不透明 LOD0 も完全に従来 draw_indexed 経路（パリティ担保）。
-                    let meshlet_active = self.post_fx.meshlet_cull
-                        && crate::engine::core::renderer::gpu_resources::meshlet_cull_supported();
+                    // メッシュレットカリングは常時有効。GPU が MULTI_DRAW_INDIRECT_COUNT 対応のときのみ稼働し、
+                    // 非対応 GPU では自動的に従来 draw_indexed 経路へフォールバックする（ON/OFF 設定は撤去済み）。
+                    let meshlet_active =
+                        crate::engine::core::renderer::gpu_resources::meshlet_cull_supported();
 
                     // エディタのシーンビュー表示モード（デバッグカメラ専用）。
                     // Play 中・非 Edit では Lit（0）に固定し、ゲーム本編の見た目へ一切影響させない。
@@ -1179,8 +1160,6 @@ impl App {
                                 &draw_ctx.queue,
                                 cpu_model,
                                 &info.mats,
-                                &saved_frustum_planes,
-                                preview_frustum.as_ref(),
                                 saved_camera_pos,
                             );
                             // lod_id_buffers を絶対 ID で上書きする
@@ -1464,11 +1443,9 @@ impl App {
                             || !particle_gizmo_actor_mats.is_empty())
                     {
                         let cp  = self.camera.position();
-                        let v   = self.camera.view_matrix();
-                        let p   = self.camera.projection_matrix();
-                        let fp  = extract_frustum_planes(&(p * v).data);
                         let cpo = [cp.x, cp.y, cp.z];
-                        // (行列リスト, 対象ギズモ) の組を順に更新する（アイコンは常に表示のため extra_frustum なし）。
+                        // (行列リスト, 対象ギズモ) の組を順に更新する。
+                        // オブジェクト視錐台カリングは撤去済みのためギズモアイコンは常に全表示。
                         let updates: [(&Vec<(usize, [[f32; 4]; 4])>, &mut Option<CameraGizmoResources>); 3] = [
                             (&cam_gizmo_actor_mats,      &mut self.camera_gizmo),
                             (&light_gizmo_actor_mats,    &mut self.light_gizmo),
@@ -1484,8 +1461,6 @@ impl App {
                                     &draw_ctx.queue,
                                     &gizmo.cpu_model,
                                     &transforms,
-                                    &fp,
-                                    None,
                                     cpo,
                                 );
                             }
@@ -5446,7 +5421,7 @@ impl App {
                     // total:       フレーム全体（begin_frame GPU 待機 + 記録 + submit）
                     // begin_frame: get_current_texture 待機（GPU バックプレッシャー指標）
                     // ipc:         process_ipc の時間
-                    // batch_upd:   MC バッチ更新（view frustum カリング + write_buffer）
+                    // batch_upd:   MC バッチ更新（LOD 振り分け + write_buffer。オブジェクト視錐台カリングは撤去済み）
                     // skin_cmds:   スキンコンピュートコマンド記録
                     // draw:        draw_model_indirect コマンド記録（メインパス）
                     // id_pass:     ID パスコマンド記録（Edit モードのみ）

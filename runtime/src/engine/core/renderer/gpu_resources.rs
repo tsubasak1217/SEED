@@ -7,7 +7,7 @@ use crate::engine::core::loader::model::{
     NormalTextureInfo, OcclusionTextureInfo,
 };
 use super::uniforms::{CameraUniform, ModelUniform, MaterialUniform, JointUniform, ColorVertex,
-                      GpuCullData, FrustumUniform, GizmoVertex};
+                      GpuCullData, GizmoVertex};
 use super::skin_system::SkinComputeSystem;
 use super::pipeline::{SkinComputePipeline, MeshletCullPipeline};
 use super::material_asset;
@@ -1346,24 +1346,6 @@ fn sub_rows(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
     [a[0]-b[0], a[1]-b[1], a[2]-b[2], a[3]-b[3]]
 }
 
-/// AABB が視錐台と交差するか判定する。
-///
-/// 6 平面すべてに対して「正頂点」が内側であれば可視と判断する。
-/// 保守的な判定（偽陽性あり）だが高速。
-#[inline]
-pub fn test_aabb_frustum(planes: &[[f32; 4]; 6], min: [f32; 3], max: [f32; 3]) -> bool {
-    for p in planes {
-        // 平面法線に最も揃った頂点（正頂点）を選ぶ
-        let px = if p[0] >= 0.0 { max[0] } else { min[0] };
-        let py = if p[1] >= 0.0 { max[1] } else { min[1] };
-        let pz = if p[2] >= 0.0 { max[2] } else { min[2] };
-        if p[0]*px + p[1]*py + p[2]*pz + p[3] < 0.0 {
-            return false;   // 完全に外側
-        }
-    }
-    true
-}
-
 /// モデルローカル空間の AABB をルート変換行列でワールド空間に変換する。
 ///
 /// 8 頂点すべてを変換し、新しい AABB を求める（精密かつシンプル）。
@@ -1875,17 +1857,17 @@ impl InstancedModelBatch {
     ///
     /// 1. `dirty` な場合のみ: rayon でワールド行列と AABB を全インスタンス分計算して
     ///    CPU キャッシュ（`world_mats_cache`・`world_aabbs`）に保存。
-    /// 2. 毎フレーム: 視錐台テスト → カメラ距離で LOD バケットに振り分け →
+    /// 2. 毎フレーム: カメラ距離で LOD バケットに振り分け →
     ///    各 LOD の可視行列をノードバッファへアップロードし `lod_visible_counts` を更新。
+    ///
+    /// NOTE: オブジェクト単位の視錐台カリングは廃止した（画面端ポッピング・チャンク消えの
+    ///       誤棄却を根絶するため）。可視範囲の間引きはメッシュレットカリング側のみが担う。
+    ///       全インスタンスを常に「可視」として LOD 振り分け・アップロードする。
     pub fn update(
         &mut self,
         queue:           &wgpu::Queue,
         model:           &Model,
         root_transforms: &[[[f32; 4]; 4]],
-        frustum_planes:  &[[f32; 4]; 6],
-        // メインカメラに加えて判定する追加フラスタム（プレビューカメラなど）。
-        // Some の場合: どちらかの視錐台に入っていれば可視と見なす（OR カリング）。
-        extra_frustum:   Option<&[[f32; 4]; 6]>,
         camera_pos:      [f32; 3],
     ) {
         let n_instances  = root_transforms.len();
@@ -1930,22 +1912,15 @@ impl InstancedModelBatch {
                 .collect();
         }
 
-        // ── ② 視錐台カリング + 距離 LOD → per-LOD 可視インスタンスリスト ─
+        // ── ② 距離 LOD → per-LOD 可視インスタンスリスト ─
+        // オブジェクト単位の視錐台カリングは行わない（全インスタンスを可視扱い）。
+        // カメラからの距離のみで LOD バケットへ振り分ける。
         let mut lod_visible_insts: Vec<Vec<usize>> = vec![Vec::new(); NUM_LODS];
         let mut compact: Vec<Vec<Vec<ModelUniform>>> = (0..NUM_LODS)
             .map(|_| (0..n_mesh_nodes).map(|_| Vec::with_capacity(n_instances / NUM_LODS + 1)).collect())
             .collect();
 
         for (inst_idx, aabb) in self.world_aabbs.iter().enumerate() {
-            // メイン視錐台でカリング → 追加視錐台（プレビューカメラ等）でも判定する。
-            // どちらかに入っていれば可視とする。
-            if !test_aabb_frustum(frustum_planes, aabb.aabb_min, aabb.aabb_max) {
-                let visible_in_extra = extra_frustum
-                    .map(|ef| test_aabb_frustum(ef, aabb.aabb_min, aabb.aabb_max))
-                    .unwrap_or(false);
-                if !visible_in_extra { continue; }
-            }
-
             let cx = (aabb.aabb_min[0] + aabb.aabb_max[0]) * 0.5;
             let cy = (aabb.aabb_min[1] + aabb.aabb_max[1]) * 0.5;
             let cz = (aabb.aabb_min[2] + aabb.aabb_max[2]) * 0.5;

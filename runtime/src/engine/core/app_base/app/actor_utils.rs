@@ -393,19 +393,17 @@ fn collect_mcs_in_actor<'a>(
 
 /// world_line の全アクターの MC バッチを DFS 順で更新する（可変参照版）。
 ///
-/// `extra_frustum` を指定するとメイン視錐台と OR でカリングする（どちらかに入れば可視）。
-/// Edit モードでカメラプレビューを表示している場合に使用する。
+/// オブジェクト単位の視錐台カリングは廃止した（誤棄却によるポッピング/チャンク消え防止）。
+/// 全インスタンスを常に可視扱いで LOD 振り分け・アップロードする。
 pub(super) fn update_all_mc_batches_for_wl(
     actors:         &mut Vec<Actor>,
     world:          &mut World,
     wl:             u32,
     queue:          &wgpu::Queue,
-    frustum_planes: &[[f32; 4]; 6],
-    extra_frustum:  Option<&[[f32; 4]; 6]>,
     camera_pos:     [f32; 3],
 ) {
     for actor in actors.iter_mut().filter(|a| a.world_line == wl) {
-        update_mc_batch_recursive(actor, world, queue, frustum_planes, extra_frustum, camera_pos);
+        update_mc_batch_recursive(actor, world, queue, camera_pos);
     }
 }
 
@@ -414,8 +412,6 @@ fn update_mc_batch_recursive(
     actor:          &mut Actor,
     world:          &mut World,
     queue:          &wgpu::Queue,
-    frustum_planes: &[[f32; 4]; 6],
-    extra_frustum:  Option<&[[f32; 4]; 6]>,
     camera_pos:     [f32; 3],
 ) {
     // スロット専用 entity の全 ModelComponent バッチを更新する（複数スロット対応）
@@ -426,12 +422,12 @@ fn update_mc_batch_recursive(
     for slot_entity in slot_entities {
         if let Some(mc) = world.get_mut::<ModelComponent>(slot_entity) {
             if let (Some(batch), Some(model)) = (&mut mc.instanced_batch, mc.model.as_deref()) {
-                batch.update(queue, model, &mc.instance_mats, frustum_planes, extra_frustum, camera_pos);
+                batch.update(queue, model, &mc.instance_mats, camera_pos);
             }
         }
     }
     for child in actor.children_mut().iter_mut() {
-        update_mc_batch_recursive(child, world, queue, frustum_planes, extra_frustum, camera_pos);
+        update_mc_batch_recursive(child, world, queue, camera_pos);
     }
 }
 

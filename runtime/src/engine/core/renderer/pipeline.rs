@@ -1,7 +1,7 @@
 // pipeline_rs — パイプライン定義
 //
 // レンダーパイプラインは TOML 設定 + WGSL リフレクションで自動構築。
-// コンピュートパイプライン（CullPipeline, SkinComputePipeline）は手動定義。
+// コンピュートパイプライン（MeshletCullPipeline, SkinComputePipeline）は手動定義。
 
 use super::pipeline_config::{RenderPipelineBuilder, parse_compare};
 use crate::engine::core::loader::model::{CULL_FACE_COUNT, CULL_FACE_VARIANTS};
@@ -415,79 +415,6 @@ impl ShadowDepthPipelines {
         });
 
         Self { mesh, skinned, empty_bg2 }
-    }
-}
-
-// ============================================================
-//  CullPipeline — GPU 視錐台カリング コンピュートパイプライン
-// ============================================================
-
-/// GPU コンピュートカリングパイプライン。
-///
-/// Group 0 BGL:
-///   0 = cull_data        (array<GpuCullData>,          Storage RO)
-///   1 = u_frustum        (FrustumUniform,               Uniform)
-///   2 = draw_cmds        (array<DrawIndexedIndirect>,   Storage RW)
-///   3 = prim_index_counts(array<u32>,                   Storage RO)
-pub struct CullPipeline {
-    pub pipeline: wgpu::ComputePipeline,
-    pub bgl:      wgpu::BindGroupLayout,
-}
-
-impl CullPipeline {
-    fn new(device: &wgpu::Device, cache: Option<&wgpu::PipelineCache>) -> Self {
-        let src    = include_str!("shaders/cull.wgsl");
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label:  Some("Cull Shader"),
-            source: wgpu::ShaderSource::Wgsl(src.into()),
-        });
-
-        let make_storage = |binding: u32, read_only: bool| wgpu::BindGroupLayoutEntry {
-            binding,
-            visibility: wgpu::ShaderStages::COMPUTE,
-            ty: wgpu::BindingType::Buffer {
-                ty:                 wgpu::BufferBindingType::Storage { read_only },
-                has_dynamic_offset: false,
-                min_binding_size:   None,
-            },
-            count: None,
-        };
-        let make_uniform = |binding: u32| wgpu::BindGroupLayoutEntry {
-            binding,
-            visibility: wgpu::ShaderStages::COMPUTE,
-            ty: wgpu::BindingType::Buffer {
-                ty:                 wgpu::BufferBindingType::Uniform,
-                has_dynamic_offset: false,
-                min_binding_size:   None,
-            },
-            count: None,
-        };
-
-        let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label:   Some("Cull BGL"),
-            entries: &[
-                make_storage(0, true),
-                make_uniform(1),
-                make_storage(2, false),
-                make_storage(3, true),
-            ],
-        });
-
-        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label:                Some("Cull Pipeline Layout"),
-            bind_group_layouts:   &[&bgl],
-            push_constant_ranges: &[],
-        });
-        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label:               Some("Cull Compute Pipeline"),
-            layout:              Some(&layout),
-            module:              &shader,
-            entry_point:         Some("cs_main"),
-            compilation_options: Default::default(),
-            cache,
-        });
-
-        Self { pipeline, bgl }
     }
 }
 
@@ -1168,7 +1095,7 @@ impl SpriteOutlinePipeline {
 ///   0 = particles (array<Particle>,  storage read_write)
 ///   1 = params    (EmitterParams,    uniform)
 ///   2 = lut       (array<vec4<f32>>, storage read)  … カーブ LUT（連結）
-/// CullPipeline / SkinComputePipeline と同じ手動 BGL 構築の流儀。
+/// MeshletCullPipeline / SkinComputePipeline と同じ手動 BGL 構築の流儀。
 pub struct ParticleComputePipeline {
     pub pipeline: wgpu::ComputePipeline,
     /// group 0 レイアウト（エミッタごとの compute BindGroup 生成に使う）。
@@ -1255,7 +1182,7 @@ impl ParticleComputePipeline {
 ///   2 = grid    (array<ClusterCell>,storage rw)
 ///   3 = indices (array<u32>,        storage rw)
 ///   4 = cursor  (atomic<u32>,       storage rw)
-/// CullPipeline / ParticleComputePipeline と同じ手動 BGL 構築の流儀。
+/// MeshletCullPipeline / ParticleComputePipeline と同じ手動 BGL 構築の流儀。
 pub struct ClusterBuildPipeline {
     pub pipeline: wgpu::ComputePipeline,
     /// group 0 レイアウト（ClusterResources::attach_lights が BindGroup 生成に使う）。
@@ -1681,8 +1608,8 @@ pub struct DrawPipelines {
     /// 非対応時は None で、mesh/skinned_mesh の従来パイプラインのみを使う。
     pub rt:                   Option<RtMeshPipelines>,
     pub unlit_line:           UnlitPipeline,
-    pub cull:                 CullPipeline,
     /// GPU メッシュレットカリング compute パイプライン（第1弾）。
+    /// オブジェクト単位の視錐台カリング（旧 CullPipeline）は撤去済み。可視範囲の間引きはこれのみが担う。
     pub meshlet_cull:         MeshletCullPipeline,
     pub skin_compute:         SkinComputePipeline,
     pub depth_prepass:        DepthPrepassPipelines,
@@ -1760,7 +1687,6 @@ impl DrawPipelines {
             None
         };
         let unlit_line          = UnlitPipeline::new(device, sf, df, cache);
-        let cull                = CullPipeline::new(device, cache);
         let meshlet_cull        = MeshletCullPipeline::new(device, cache);
         let skin_compute        = SkinComputePipeline::new(device, cache);
         let depth_prepass       = DepthPrepassPipelines::new(device, df, cache);
@@ -1809,6 +1735,6 @@ impl DrawPipelines {
         let shadow_mask           = rt.as_ref().map(|r| {
             super::shadow_mask::ShadowMaskPipelines::new(device, &deferred, &r.lights_bgl, cache)
         });
-        Self { mesh, skinned_mesh, rt, unlit_line, cull, meshlet_cull, skin_compute, depth_prepass, shadow_depth, id_pass, outline, sprite, sprite_outline, canvas_id, camera_preview_blit, bar_fill, transparent, particle_compute, particles, skybox, cluster_build, gi_update, gbuffer, deferred, reflection, ao, ssgi, shadow_mask }
+        Self { mesh, skinned_mesh, rt, unlit_line, meshlet_cull, skin_compute, depth_prepass, shadow_depth, id_pass, outline, sprite, sprite_outline, canvas_id, camera_preview_blit, bar_fill, transparent, particle_compute, particles, skybox, cluster_build, gi_update, gbuffer, deferred, reflection, ao, ssgi, shadow_mask }
     }
 }

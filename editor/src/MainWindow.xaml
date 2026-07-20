@@ -1631,14 +1631,7 @@
                                                                       IsChecked="False"
                                                                       Checked="OnPostFxChanged"
                                                                       Unchecked="OnPostFxChanged"/>
-                                                            <!-- GPU メッシュレットカリング（第1弾）。OFF で従来経路＝A/B パリティ検証用。 -->
-                                                            <CheckBox x:Name="ChkMeshletCull"
-                                                                      Content="メッシュレットカリング（GPU）"
-                                                                      Foreground="White" FontSize="11"
-                                                                      Margin="0,4,0,0"
-                                                                      IsChecked="True"
-                                                                      Checked="OnPostFxChanged"
-                                                                      Unchecked="OnPostFxChanged"/>
+                                                            <!-- メッシュレットカリング（GPU）は常時有効化したため設定 UI を撤去した。 -->
                                                             <!-- Deferred レンダリング（G-Buffer + フルスクリーン・ライティング）。
                                                                  OFF で従来のフォワード経路へ完全フォールバック＝A/B パリティ検証用。 -->
                                                             <CheckBox x:Name="ChkDeferred"

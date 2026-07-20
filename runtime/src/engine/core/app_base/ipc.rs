@@ -164,8 +164,6 @@ pub enum IpcCommand {
         fxaa: bool,
         bloom_intensity: f32,
         transparency: crate::engine::core::renderer::TransparencyMode,
-        /// GPU メッシュレットカリング有効フラグ（第1弾）。欠落時は true。
-        meshlet_cull: bool,
         /// Deferred（G-Buffer）レンダリング有効フラグ（Phase D3 Deferred Phase B）。欠落時は true。
         /// OFF で従来のフォワード経路（deferred=false）にフォールバックする（A/B パリティ検証用）。
         deferred: bool,
@@ -934,10 +932,8 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                                     .and_then(|v| v["transparency"].as_str())
                                     .unwrap_or("sort"),
                             );
-                            // メッシュレットカリング（欠落時は true = 有効）。
-                            let meshlet_cull = v.as_ref()
-                                .and_then(|v| v["meshlet_cull"].as_bool())
-                                .unwrap_or(true);
+                            // メッシュレットカリングは常時有効化したため "meshlet_cull" は解釈しない
+                            //（旧エディタが送ってきても無視する＝ワイヤ互換維持）。
                             // Deferred レンダリング（欠落時は true = 有効。Phase D3 Deferred Phase B）。
                             let deferred = v.as_ref()
                                 .and_then(|v| v["deferred"].as_bool())
@@ -975,7 +971,7 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                             let features = v.as_ref()
                                 .and_then(|vv| vv.get("features"))
                                 .and_then(|fv| serde_json::from_value::<crate::engine::core::renderer::RenderFeatures>(fv.clone()).ok());
-                            Some(IpcCommand::SetPostFx { bloom, fxaa, bloom_intensity, transparency, meshlet_cull, deferred, refract_sequential_grab, view_mode, gi, reflection_intensity, ao_intensity, features, legacy_gi_enabled })
+                            Some(IpcCommand::SetPostFx { bloom, fxaa, bloom_intensity, transparency, deferred, refract_sequential_grab, view_mode, gi, reflection_intensity, ao_intensity, features, legacy_gi_enabled })
                         }
                         // 環境光（Phase R1.5）。"SET_AMBIENT:{r},{g},{b},{intensity}"。
                         // 4 要素に満たない／パース不能な場合は無視する（None）。
