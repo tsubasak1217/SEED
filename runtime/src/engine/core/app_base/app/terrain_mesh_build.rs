@@ -188,12 +188,17 @@ pub fn terrain_mesh_to_model(
         parent:       None,
     };
 
-    // ─── 地形マテリアル（レイヤブレンド＋両面描画）───
-    //   マーチングキューブスの三角ワインディングは（左手系エンジンの Ccw フロントフェイス
-    //   規約と一致しないため）片面カリングだと地表が裏面判定で消える。両面描画
-    //   （cull_face=None / double_sided）にして確実に見えるようにする。ライティングは
-    //   面ワインディングではなく頂点法線（密度勾配＝外向き、テスト検証済み）で行われるため
-    //   両面でも陰影は正しい。
+    // ─── 地形マテリアル（レイヤブレンド＋通常の背面カリング）───
+    //   マーチングキューブス側（marching_cubes.rs::push_triangle）が
+    //   エンジン規約（左手系 / front_face=Ccw / cull_mode=Back）どおりの巻き順で
+    //   三角形を出すようになったため、通常の背面カリングで正しく描ける。
+    //
+    //   【なぜ両面描画を止めたか】
+    //   両面（cull_face=None）だと地表フラグメントが裏面判定になり、
+    //   terrain_gbuffer_write.wgsl の front_facing 反転（facing_sign = -1）で
+    //   法線が丸ごと反転する。結果、ライト方向に対する陰影が逆転し
+    //   （上向きライトで地形が明るくなる）、シャドウの法線オフセットバイアスも
+    //   逆方向に効いて斑状のシャドウアクネを生む。片面に戻すことが本質的な修正。
     //
     //   terrain_layers=true が G-Buffer ジオメトリパスでの地形専用パイプライン選択の
     //   唯一のスイッチ（gbuffer.rs::draw_gbuffer_indirect を参照）。
@@ -206,8 +211,8 @@ pub fn terrain_mesh_to_model(
     //   解決してしまい、チャンクごとに層が入れ替わって描かれる（T2b の回帰点）。
     //   このフィールドは upload_model → GpuMaterial → gbuffer の group3 選択まで運ばれる。
     let material = Material {
-        double_sided: true,
-        cull_face: CullFace::None,
+        double_sided: false,
+        cull_face: CullFace::Back,
         terrain_layers: true,
         terrain_palette: palette,
         ..Material::default()

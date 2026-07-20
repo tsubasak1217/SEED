@@ -112,6 +112,62 @@ fn sphere_normals_point_outward() {
     );
 }
 
+/// テスト2b：三角形の巻き順がエンジンのフロントフェイス規約に一致することを検証する。
+///
+/// 【規約】本エンジンは左手系（look_at_lh / perspective_lh）＋ front_face=Ccw /
+/// cull_mode=Back。glTF ローダが右手系データを Z 反転で取り込み巻き順を据え置く結果、
+/// エンジン内の「表面」三角形は
+///   `dot(cross(b - a, c - a), 外向き法線) < 0`
+/// を満たす（gltf_loader.rs の MESHLET_CONE_AXIS_SIGN のドキュメント参照）。
+/// 球 SDF のメッシュ全三角形がこの条件を満たすことを固定する。
+///
+/// この向きが逆だと地形フラグメントが全面裏面判定になり、
+/// terrain_gbuffer_write.wgsl の front_facing 反転で法線が丸ごと反転する
+/// （＝ライト方向に対して陰影が逆転し、シャドウアクネが出る）。
+#[test]
+fn sphere_winding_matches_engine_front_face_convention() {
+    let settings = TerrainSettings::default();
+    let chunk = make_sphere_chunk(&settings);
+    let mesh = generate_standalone(&chunk, &settings);
+
+    assert!(mesh.triangle_count() > 0, "mesh should be non-empty");
+
+    let mut ok = 0usize;
+    let total = mesh.triangle_count();
+    for tri in mesh.indices.chunks_exact(3) {
+        let pa = mesh.positions[tri[0] as usize];
+        let pb = mesh.positions[tri[1] as usize];
+        let pc = mesh.positions[tri[2] as usize];
+
+        // ─── 代数的外積 cross(b-a, c-a) ───
+        let ab = [pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]];
+        let ac = [pc[0] - pa[0], pc[1] - pa[1], pc[2] - pa[2]];
+        let geo = [
+            ab[1] * ac[2] - ab[2] * ac[1],
+            ab[2] * ac[0] - ab[0] * ac[2],
+            ab[0] * ac[1] - ab[1] * ac[0],
+        ];
+
+        // ─── 三角形重心から見た球の外向き方向（＝正しい外向き法線） ───
+        let cx = (pa[0] + pb[0] + pc[0]) / 3.0 - SPHERE_CENTER[0];
+        let cy = (pa[1] + pb[1] + pc[1]) / 3.0 - SPHERE_CENTER[1];
+        let cz = (pa[2] + pb[2] + pc[2]) / 3.0 - SPHERE_CENTER[2];
+
+        // 規約: 外積は外向き法線と「逆向き」であること。
+        if geo[0] * cx + geo[1] * cy + geo[2] * cz < 0.0 {
+            ok += 1;
+        }
+    }
+
+    // 縮退三角形（外積ほぼ 0）が僅かに混じり得るため 98% を閾値とする。
+    let ratio = ok as f32 / total as f32;
+    assert!(
+        ratio >= 0.98,
+        "only {ok}/{total} ({:.1}%) triangles match the engine front-face winding convention",
+        ratio * 100.0
+    );
+}
+
 // ─── テスト3 用：隣接 2 チャンクを束ねる SampleField 実装 ─────────────────────
 
 /// x 方向に隣接する 2 チャンク (0,0,0) と (1,0,0) を束ねたグローバル場。

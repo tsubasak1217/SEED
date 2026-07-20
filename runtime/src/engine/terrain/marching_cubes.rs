@@ -15,10 +15,10 @@
 //      （Bourke の慣習に一致）。
 //    - 法線 = 密度場の勾配（中心差分）を正規化したもの。
 //      勾配は密度増加方向 = solid→air = 外向き。よって法線は AIR 側を向く。
-//    - 三角形のワインディングは、幾何法線（右手系 cross(b-a, c-a)）が
-//      外向き解析法線と揃うように必要なら反転して出力する。
-//      → 法線配列が唯一の真実（source of truth）。エンジン統合側で
-//        フロントフェイスカリングが合わなければワインディングを反転する。
+//    - 三角形のワインディングはエンジン規約（front_face=Ccw / cull_mode=Back の
+//      左手系。glTF ローダの Z 反転により「代数的外積 cross(b-a,c-a) は外向き法線と
+//      逆向き」が表面の条件）に合わせて出力する。詳細は push_triangle のコメント。
+//      → 地形マテリアルは通常の背面カリング（CullFace::Back）で正しく描ける。
 //
 //  【水密性（watertight）】
 //    セル間で共有される辺は 1 頂点に溶接する。辺をグリッドサンプル座標の
@@ -288,10 +288,23 @@ fn lexi_less(pa: [i32; 3], pb: [i32; 3]) -> bool {
     (pa[0], pa[1], pa[2]) < (pb[0], pb[1], pb[2])
 }
 
-/// 三角形を、幾何法線が頂点解析法線と揃う向きで push する。
+/// 三角形を、エンジンのフロントフェイス規約に一致する巻き順で push する。
 ///
-/// 右手系 cross(b-a, c-a) が平均解析法線と逆を向く場合は 2 頂点を入れ替えて
-/// ワインディングを反転する。→ 出力ワインディングが常に外向き法線と一致。
+/// 【エンジン規約（glTF/OBJ ローダと同一）】
+///   本エンジンは左手座標系（`Mat4x4::look_at_lh` / `perspective_lh`）で、
+///   ラスタライザは `front_face = Ccw` / `cull_mode = Back`（pipelines/mesh.toml）。
+///   glTF ローダは右手系データを Z 反転 `M = diag(1,1,-1)` で左手系へ変換し、
+///   巻き順は据え置く。M は行列式 -1 の鏡映なので
+///     `cross(M·u, M·v) = -M·cross(u, v)`
+///   となり、**変換後の頂点データにおける代数的外積 cross(b-a, c-a) は、
+///   正しい外向き頂点法線と必ず逆向き**になる。これがエンジン内の
+///   「表面」三角形が満たす規約である（gltf_loader.rs の
+///   MESHLET_CONE_AXIS_SIGN のドキュメント参照）。
+///
+/// よってここでは `dot(cross(b-a, c-a), 外向き法線) < 0` となる巻き順で出力する。
+/// （旧実装は逆に「揃う」向きで出していたため全三角形が裏面判定となり、
+///  terrain_gbuffer_write.wgsl の front_facing 反転で法線が丸ごと反転し、
+///  ライト方向に対する陰影の反転とシャドウアクネを引き起こしていた。）
 fn push_triangle(mesh: &mut TerrainMesh, a: u32, b: u32, c: u32) {
     let pa = mesh.positions[a as usize];
     let pb = mesh.positions[b as usize];
@@ -313,13 +326,13 @@ fn push_triangle(mesh: &mut TerrainMesh, a: u32, b: u32, c: u32) {
     let avg = [na[0] + nb[0] + nc[0], na[1] + nb[1] + nc[1], na[2] + nb[2] + nc[2]];
 
     let dot = geo[0] * avg[0] + geo[1] * avg[1] + geo[2] * avg[2];
-    if dot >= 0.0 {
-        // 幾何法線が外向き解析法線と揃う → そのまま。
+    if dot <= 0.0 {
+        // 外積が外向き法線と逆 → エンジン規約どおり。そのまま出す。
         mesh.indices.push(a);
         mesh.indices.push(b);
         mesh.indices.push(c);
     } else {
-        // 逆向き → b と c を入れ替えてワインディング反転。
+        // 外積が外向き法線と同じ向き → 規約違反。b と c を入れ替えて反転する。
         mesh.indices.push(a);
         mesh.indices.push(c);
         mesh.indices.push(b);
