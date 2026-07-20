@@ -199,6 +199,8 @@ serde/JSON ではない。地形コマンドは以下の 3 つ。エディタ側
 | `TERRAIN_INIT` | なし | `TERRAIN_INIT_OK` |
 | `TERRAIN_BRUSH:{op},{screen_x},{screen_y},{radius},{strength}` | `op`:u32（0=Add,1=Subtract,2=Smooth,3=Flatten）／他 f32。`screen_x/y` はビューポート左上原点のピクセル座標 | ヒット時 `TERRAIN_BRUSH_OK:{hx},{hy},{hz}`（ワールドヒット点）／非ヒット `TERRAIN_BRUSH_MISS` |
 | `TERRAIN_SAVE` | なし | `TERRAIN_SAVE_OK:{count}`（保存チャンク数）／`TERRAIN_SAVE_ERROR:{msg}` |
+| `TERRAIN_BRUSH_PREVIEW:{screen_x},{screen_y},{radius}` | 全 f32。ホバー中（非押下）に送る | 応答なし（高頻度・ホバー用）。レイマーチのヒット点にブラシ半径のワイヤスフィアを描く |
+| `TERRAIN_BRUSH_PREVIEW_OFF` | なし | 応答なし。プレビュー（ワイヤスフィア）を非表示にする |
 
 - `TERRAIN_INIT`: terrain ルート＋初期平地（`ground_chunks_x × ground_chunks_z × [y_min..=y_max]` チャンク、y=0 に地面）を生成。
 - `TERRAIN_BRUSH`: カーソル位置からカメラレイを作り、グローバル密度場を SDF レイマーチして最初の AIR→SOLID 交差点を求め、
@@ -255,6 +257,31 @@ IPC を叩けない環境（エディタ非接続）で地形生成・編集を�
   ランタイムの選択・ギズモへは届かない（＝選択/ギズモ無効）。右ドラッグ（カメラ回転）・WASD 等は
   フックが一切触れないため従来どおり効く。ストローク中でない移動はランタイムへ素通しする。
 
+### ドラッグ追従（押しながら塗り続ける）
+
+- 左ボタン押下でストローク開始（`_terrainStroking=true`）→ 押下中の `WM_MOUSEMOVE` を
+  スロットル（40ms）で `TERRAIN_BRUSH` として送り続ける → 左ボタン解放で終了。ボタン押下状態を
+  `_terrainStroking` で追跡するため、押しながらカーソルを動かすと連続適用され線状の畝ができる。
+- ランタイムは 1 ブラシごとに影響チャンクのみを再メッシュ化する（`handle_terrain_brush_world`）。
+  1 チャンク再メッシュ ≈ 1.6ms（§3）で、ストローク中の 40ms 間隔・数チャンク差し替えに追従する。
+  スモーク（`SEED_TERRAIN_SMOKE=1`）は連続ストローク（`SMOKE_STROKE_STEPS` 点への Add 連打）で
+  この追従を実機確認する（線状の盛り上がりが出る）。
+
+### ブラシ範囲プレビュー（ワイヤスフィア）
+
+- **ねらい**: 押していないホバー中も、ブラシがどこにどの大きさで当たるかを可視化する。
+- **エディタ**: terrain モードの非ストローク `WM_MOUSEMOVE` で、ビューポート上なら 40ms スロットルで
+  `TERRAIN_BRUSH_PREVIEW:{lx},{ly},{radius}` を送る（移動は飲み込まず素通し＝カメラ操作を妨げない）。
+  ビューポート外へ出た瞬間・terrain モード離脱時に `TERRAIN_BRUSH_PREVIEW_OFF` を 1 度送る
+  （`_terrainPreviewActive` で重複送信を抑止）。
+- **ランタイム**: `handle_terrain_brush_preview` が `terrain_raymarch_hit`（ブラシ着弾と共通の SDF
+  レイマーチ）で地形ヒット点を求め、`TerrainState.brush_preview = Some((中心, 半径))` を設定する
+  （ヒット無し＝空を指すフレームは `None`＝非表示）。
+- **描画**: `frame_renderer` が既存のデバッグ線描画基盤（`LineBatch` / `draw_line_batch`・グリッドや
+  コライダーワイヤと同じ経路）を流用し、`LineBatch::add_wire_sphere_latlong`（緯線・経線グリッドの
+  ワイヤスフィア）を組んで半透明シアンで描く。**`in_editor` のみ描画・Play では出さない**。色・分割数は
+  `TERRAIN_PREVIEW_*` 定数で集約（マジックナンバー無し）。
+
 ### ヒエラルキー整合（設計の要）
 
 - **ランタイムがシーンの正、エディタは指示役**。`handle_terrain_init` が生成した地形アクター
@@ -271,6 +298,35 @@ IPC を叩けない環境（エディタ非接続）で地形生成・編集を�
   エディタの追加リスト（`ComponentSelectorWindow` の静的 `Categories`）に項目が無いため既定で出ない。
 
 ---
+
+### ヒエラルキーの器：親子付け vs グループフォルダ（調査結果・未着手）
+
+**現状**: `handle_terrain_init` は地形を **アクターの親子付け**（`terrain` ルート →
+`chunk_X_Y_Z` フォルダアクター → `mesh` アクター）で構築する。各チャンクメッシュは
+**それぞれ固有ジオメトリを持つ独立した ModelComponent**（1 アクター 1 メッシュ）である。
+
+**「グループフォルダ」機構の実体**（`CREATE_GROUP` / `GroupMeta` / エディタの `is_group`）:
+グループフォルダは `ModelComponent.group_meta`（`GroupMeta{id,name,parent}`）として保持され、
+**単一 ModelComponent 内の複数インスタンス**（`instance_meta[].parent` がグループ id を指す）を
+整理する仕組みである。適用先は「1 MC＋多数インスタンス」パラダイム（アクター編集タブ等の
+world_line）で、`CreateGroup` ハンドラも `find_component_in_world_line_mut::<ModelComponent>` で
+アクティブ world_line の代表 MC に対して働く。シーン（WL0）の `do_send_hierarchy` は
+アクターツリーを走査し `is_group=false` 固定で送るため、**独立したシーンアクターをグループ
+フォルダに束ねる経路は存在しない**。
+
+**結論（停止・別判断）**: 地形チャンクは各々別メッシュの独立アクターであり、単一 MC の
+インスタンス群ではないため、**既存のグループフォルダ機構では器を置き換えられない**。
+アクター単位のフォルダ（`Transform` 親子を持たない整理専用ノード）は現状の `ActorKind`
+（Actor3D/Actor2D のみ）にも存在せず、これを新設するのは「フォルダ機構の新設」＝別判断のため
+本作業では**未着手**とする。将来対応する場合の設計候補:
+- `ActorKind::Folder`（またはアクターの `is_folder` フラグ）を追加し、`do_send_hierarchy` の
+  `is_group` をこのフラグから供給。フォルダは Transform を持たず、ドラッグ伝播
+  （`apply_delta_to_actor_subtree`）の対象外にする。
+- 移行: `handle_terrain_init` の冪等除去（`TERRAIN_ROOT_NAME` サブツリー despawn）は流用でき、
+  ルート/チャンクの器をフォルダ種別で作り直す。既存 `.scene`（アクター親子版）はロード時に
+  `terrain` ルートを検出したらフォルダ構造へ作り直す（または再初期化を促す）。
+- チャンクメッシュはフォルダ直下にフラット配置し、`mesh_tf.position=world_origin`・
+  `instance_mats` はワールド空間のまま（親子 Transform 合成に依存しない現構造をそのまま活かせる）。
 
 ## 12. 拡張余地（T2 / T3）
 

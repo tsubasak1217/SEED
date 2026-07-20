@@ -111,6 +111,12 @@ pub enum IpcCommand {
     /// ボクセル地形の全チャンクを .tvox としてアセット配下へ保存する。
     /// ワイヤ形式: `TERRAIN_SAVE`（引数なし）
     TerrainSave,
+    /// ブラシ範囲プレビュー（Edit モードのホバー位置にワイヤスフィアを描く）を更新する。
+    /// ワイヤ形式: `TERRAIN_BRUSH_PREVIEW:{screen_x},{screen_y},{radius}`
+    TerrainBrushPreview { screen_x: f32, screen_y: f32, radius: f32 },
+    /// ブラシ範囲プレビューを非表示にする（terrain モード離脱時）。
+    /// ワイヤ形式: `TERRAIN_BRUSH_PREVIEW_OFF`（引数なし）
+    TerrainBrushPreviewOff,
     /// グループフォルダ作成（parent=None はルート）
     CreateGroup { name: String, parent: Option<u32> },
     /// グループフォルダ作成 + 子を一括移動
@@ -759,6 +765,18 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                         "TERRAIN_INIT" => Some(IpcCommand::TerrainInit),
                         // 地形保存（引数なし）。
                         "TERRAIN_SAVE" => Some(IpcCommand::TerrainSave),
+                        // ブラシプレビュー非表示（引数なし）。TERRAIN_BRUSH_PREVIEW: より先に判定する。
+                        "TERRAIN_BRUSH_PREVIEW_OFF" => Some(IpcCommand::TerrainBrushPreviewOff),
+                        // ブラシプレビュー更新: "screen_x,screen_y,radius"（f32×3）。
+                        s if s.starts_with("TERRAIN_BRUSH_PREVIEW:") => {
+                            parse_nf::<3>(&s["TERRAIN_BRUSH_PREVIEW:".len()..]).map(|fs| {
+                                IpcCommand::TerrainBrushPreview {
+                                    screen_x: fs[0],
+                                    screen_y: fs[1],
+                                    radius:   fs[2],
+                                }
+                            })
+                        }
                         // 地形ブラシ: "op,screen_x,screen_y,radius,strength"。
                         // 先頭 op は u32、残り 4 つは f32。parse1u_nf::<4> で (op, [sx,sy,r,st]) を得る。
                         s if s.starts_with("TERRAIN_BRUSH:") => {

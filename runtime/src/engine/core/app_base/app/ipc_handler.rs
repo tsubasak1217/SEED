@@ -246,6 +246,14 @@ impl App {
                     // ボクセル地形の全チャンクを .tvox として保存する。
                     self.handle_terrain_save();
                 }
+                IpcCommand::TerrainBrushPreview { screen_x, screen_y, radius } => {
+                    // ホバー位置のブラシ範囲プレビュー（ワイヤスフィア）を更新する。
+                    self.handle_terrain_brush_preview(screen_x, screen_y, radius);
+                }
+                IpcCommand::TerrainBrushPreviewOff => {
+                    // ブラシ範囲プレビューを非表示にする。
+                    self.handle_terrain_brush_preview_off();
+                }
                 IpcCommand::SaveActor(path) => {
                     let wl = self.active_world_line;
                     let result: Result<(), String> = (|| {

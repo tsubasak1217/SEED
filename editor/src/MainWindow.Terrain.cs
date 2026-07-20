@@ -61,6 +61,12 @@ public partial class MainWindow
     /// <summary>ブラシ送信のスロットル計測用ストップウォッチ。</summary>
     private readonly Stopwatch _terrainBrushThrottle = new();
 
+    /// <summary>ブラシ範囲プレビュー送信のスロットル計測用ストップウォッチ（ホバー用・ストローク用とは別）。</summary>
+    private readonly Stopwatch _terrainPreviewThrottle = new();
+
+    /// <summary>プレビュー（ワイヤスフィア）を現在表示中か。ビューポート離脱時に OFF を 1 度だけ送るために追跡する。</summary>
+    private bool _terrainPreviewActive;
+
     /// <summary>低レベルマウスフックのコールバック（GC 回収防止のためフィールド保持）。</summary>
     private LowLevelMouseProc? _terrainMouseProc;
 
@@ -153,9 +159,16 @@ public partial class MainWindow
                             _terrainBrushThrottle.Restart();
                             SendTerrainBrushAtCursor();
                         }
-                        // ストローク中の移動はランタイム（hover/カメラ）へ流さない。
-                        return (nint)1;
+                        // 注意: ここで移動イベントを飲み込んではならない。WH_MOUSE_LL で
+                        // WM_MOUSEMOVE を握りつぶすと OS のカーソル移動そのものが止まり、
+                        // 「押しながらカーソルを動かせない」不具合になる（実機で発生済み）。
+                        // 移動は素通しし、ブラシ送信だけを行う（カメラは右ドラッグなので干渉しない）。
+                        break;
                     }
+                    // 非ストローク時: ホバー位置のブラシ範囲プレビューを更新する
+                    // （押していない間も表示する）。移動イベントは飲み込まず素通しする
+                    // （カメラ回転・ランタイム hover を妨げない）。
+                    UpdateTerrainBrushPreview();
                     break;
 
                 case WM_LBUTTONUP:
@@ -193,6 +206,47 @@ public partial class MainWindow
             $"TERRAIN_BRUSH:{_terrainOp},{lx},{ly},{radius.ToString(ci)},{strength.ToString(ci)}");
     }
 
+    /// <summary>
+    /// 非ストローク時のホバーで、カーソル位置のブラシ範囲プレビュー（ワイヤスフィア）を
+    /// スロットル付きで更新する。ビューポート上なら TERRAIN_BRUSH_PREVIEW を送り、
+    /// ビューポート外へ出た瞬間に一度だけ TERRAIN_BRUSH_PREVIEW_OFF を送る。
+    /// ランタイムはヒットが無ければ自動で非表示にするため、ここでは座標送信のみでよい。
+    /// </summary>
+    private void UpdateTerrainBrushPreview()
+    {
+        if (_viewportHost == null || _runtimeManager == null) return;
+
+        if (!IsMouseOverViewportHwnd())
+        {
+            // ビューポート外へ出たら 1 度だけ非表示指示を送る（重複送信を避ける）。
+            if (_terrainPreviewActive)
+            {
+                _terrainPreviewActive = false;
+                _runtimeManager.SendToRuntime("TERRAIN_BRUSH_PREVIEW_OFF");
+            }
+            return;
+        }
+
+        // スロットル（ブラシと同じ 40ms）。初回（未計測）は即送信する。
+        if (_terrainPreviewThrottle.IsRunning
+            && _terrainPreviewThrottle.ElapsedMilliseconds < TerrainBrushThrottleMs)
+            return;
+        _terrainPreviewThrottle.Restart();
+
+        GetCursorPos(out var cursor);
+        GetWindowRect(_viewportHost.ContainerHwnd, out var rect);
+        int lx = cursor.X - rect.Left;
+        int ly = cursor.Y - rect.Top;
+        if (lx < 0 || ly < 0 || lx >= rect.Right - rect.Left || ly >= rect.Bottom - rect.Top)
+            return;
+
+        double radius = SldTerrainRadius?.Value ?? 3.0;
+        var ci = CultureInfo.InvariantCulture;
+        _terrainPreviewActive = true;
+        _runtimeManager.SendToRuntime(
+            $"TERRAIN_BRUSH_PREVIEW:{lx},{ly},{radius.ToString(ci)}");
+    }
+
     // ── モード / ツールバー イベント ─────────────────────────────
 
     /// <summary>シーン編集モードコンボ（common / terrain）の切り替え。</summary>
@@ -205,8 +259,16 @@ public partial class MainWindow
         if (TerrainToolbar != null)
             TerrainToolbar.Visibility = terrain ? Visibility.Visible : Visibility.Collapsed;
 
-        // モードを抜けたら進行中のストロークを打ち切る。
-        if (!terrain) _terrainStroking = false;
+        // モードを抜けたら進行中のストロークを打ち切り、ブラシプレビューを消す。
+        if (!terrain)
+        {
+            _terrainStroking = false;
+            if (_terrainPreviewActive)
+            {
+                _terrainPreviewActive = false;
+                _runtimeManager?.SendToRuntime("TERRAIN_BRUSH_PREVIEW_OFF");
+            }
+        }
 
         if (TxtTerrainStatus != null) TxtTerrainStatus.Text = "";
     }
