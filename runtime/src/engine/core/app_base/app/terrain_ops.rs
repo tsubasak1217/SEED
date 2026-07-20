@@ -125,6 +125,19 @@ const SMOKE_STEEP_STRENGTH: f32 = 40.0;
 /// 急斜面デモの山／谷を footprint 中心からずらす量（メートル）。
 const SMOKE_STEEP_OFFSET: f32 = 14.0;
 
+/// スモークの「構成指定つき初期化」で使う 1 軸あたりのチャンク数（小さめの構成）。
+const SMOKE_CONFIG_CHUNKS: u32 = 2;
+/// スモークの「構成指定つき初期化」で使うチャンク分割数（既定 32 と違う値にして効果を確認する）。
+const SMOKE_CONFIG_CHUNK_CELLS: u32 = 16;
+/// スモークの「構成指定つき初期化」で使うボクセルサイズ（メートル）。
+const SMOKE_CONFIG_VOXEL_SIZE: f32 = 0.5;
+/// スモーク本編（構図を既定に戻す再初期化）で使う 1 軸あたりのチャンク数。
+const SMOKE_DEFAULT_CHUNKS: u32 = 4;
+/// スモーク本編で使うチャンク分割数。
+const SMOKE_DEFAULT_CHUNK_CELLS: u32 = 32;
+/// スモーク本編で使うボクセルサイズ（メートル）。
+const SMOKE_DEFAULT_VOXEL_SIZE: f32 = 0.5;
+
 /// terrain 専用 undo スタックの最大保持数。これを超えたら最古のエントリを破棄する
 /// （無制限に保持すると 1 チャンク ≒ 143KB のスナップショットが積み上がり続けるため）。
 const TERRAIN_UNDO_MAX: usize = 32;
@@ -269,18 +282,21 @@ fn axis_owners(g: i32, cells: i32) -> ([(i32, usize); 2], usize) {
     }
 }
 
-/// グローバルサンプル座標の密度を読む（terrain ライブラリと同じ所有規約）。
+/// グローバルサンプル座標を所有する既存チャンクを探し、`(チャンク, ローカル添字)` を返す。
 ///
 /// 主チャンクが存在すればそれを、無ければ境界重複する近傍チャンクを試す。
-/// どのチャンクも存在しない（地形外）場合は `clamp`（＝AIR 側）を返す。
-fn read_global_impl(
-    chunks: &HashMap<ChunkCoord, TerrainChunkData>,
+/// どのチャンクも存在しない（地形外）場合は `None`。
+///
+/// 「地形外を AIR とみなす」か「地形外だと分かりたい」かは呼び出し側で分かれるため、
+/// 所有チャンク探索だけをここへ切り出して両者で共有する（DRY）。
+#[inline]
+fn find_owner<'a>(
+    chunks: &'a HashMap<ChunkCoord, TerrainChunkData>,
     cells: i32,
-    clamp: f32,
     gx: i32,
     gy: i32,
     gz: i32,
-) -> f32 {
+) -> Option<(&'a TerrainChunkData, usize, usize, usize)> {
     let (ox, nx) = axis_owners(gx, cells);
     let (oy, ny) = axis_owners(gy, cells);
     let (oz, nz) = axis_owners(gz, cells);
@@ -290,13 +306,51 @@ fn read_global_impl(
             for k in 0..nz {
                 let coord = ChunkCoord::new(ox[i].0, oy[j].0, oz[k].0);
                 if let Some(chunk) = chunks.get(&coord) {
-                    return chunk.sample(ox[i].1, oy[j].1, oz[k].1);
+                    return Some((chunk, ox[i].1, oy[j].1, oz[k].1));
                 }
             }
         }
     }
-    // 地形外 = AIR（clamp は density_clamp = 正の大きな値）。
-    clamp
+    None
+}
+
+/// グローバルサンプル座標の密度を読む（terrain ライブラリと同じ所有規約）。
+///
+/// どのチャンクも存在しない（地形外）場合は `clamp`（＝AIR 側）を返す。
+fn read_global_impl(
+    chunks: &HashMap<ChunkCoord, TerrainChunkData>,
+    cells: i32,
+    clamp: f32,
+    gx: i32,
+    gy: i32,
+    gz: i32,
+) -> f32 {
+    match find_owner(chunks, cells, gx, gy, gz) {
+        Some((chunk, lx, ly, lz)) => chunk.sample(lx, ly, lz),
+        // 地形外 = AIR（clamp は density_clamp = 正の大きな値）。
+        None => clamp,
+    }
+}
+
+/// グローバルサンプル座標の (密度, 手ペイントスロット, ペイント量) を読む。
+/// 地形外（どのチャンクも所有しない）の場合は `None`。
+///
+/// チャンク追加時に「既存チャンクと共有する境界サンプル」を引き写すために使う。
+/// 「値が無い」ことを AIR 相当の既定値と区別する必要があるため、`read_global_impl`
+/// ではなくこちらを使う（既定値で上書きすると継ぎ目に段差が出る）。
+fn try_read_sample_global(
+    chunks: &HashMap<ChunkCoord, TerrainChunkData>,
+    cells: i32,
+    gx: i32,
+    gy: i32,
+    gz: i32,
+) -> Option<(f32, BlendSlots, f32)> {
+    let (chunk, lx, ly, lz) = find_owner(chunks, cells, gx, gy, gz)?;
+    Some((
+        chunk.sample(lx, ly, lz),
+        chunk.paint_slots(lx, ly, lz),
+        chunk.paint_amount(lx, ly, lz),
+    ))
 }
 
 /// グローバルサンプル座標へ密度を書く。境界で重複する全チャンクへ同一値を書き込む（同期）。
@@ -335,27 +389,14 @@ fn read_paint_global_impl(
     gy: i32,
     gz: i32,
 ) -> (BlendSlots, f32) {
-    let (ox, nx) = axis_owners(gx, cells);
-    let (oy, ny) = axis_owners(gy, cells);
-    let (oz, nz) = axis_owners(gz, cells);
-    for i in 0..nx {
-        for j in 0..ny {
-            for k in 0..nz {
-                let coord = ChunkCoord::new(ox[i].0, oy[j].0, oz[k].0);
-                if let Some(chunk) = chunks.get(&coord) {
-                    return (
-                        chunk.paint_slots(ox[i].1, oy[j].1, oz[k].1),
-                        chunk.paint_amount(ox[i].1, oy[j].1, oz[k].1),
-                    );
-                }
-            }
-        }
+    match find_owner(chunks, cells, gx, gy, gz) {
+        Some((chunk, lx, ly, lz)) => (chunk.paint_slots(lx, ly, lz), chunk.paint_amount(lx, ly, lz)),
+        // 地形外 = 未ペイント（＝ルール自動生成に従う）。重みは全 0 で返す。
+        None => (
+            BlendSlots { index: [0; TERRAIN_BLEND_SLOTS], weight: [0.0; TERRAIN_BLEND_SLOTS] },
+            0.0,
+        ),
     }
-    // 地形外 = 未ペイント（＝ルール自動生成に従う）。重みは全 0 で返す。
-    (
-        BlendSlots { index: [0; TERRAIN_BLEND_SLOTS], weight: [0.0; TERRAIN_BLEND_SLOTS] },
-        0.0,
-    )
 }
 
 /// グローバルサンプル座標へ (手ペイント重み, ペイント量) を書く。
@@ -604,6 +645,156 @@ fn collect_subtree_entities(actor: &Actor, out: &mut Vec<Entity>) {
     }
 }
 
+/// 追加した新規チャンクの**境界サンプル**を、既存チャンクが持つ値で上書きして
+/// 継ぎ目を一致させる（密度・手ペイントスロット・ペイント量の 3 点すべて）。
+///
+/// 【なぜ必要か】
+///   グローバルサンプル座標の規約上、隣り合うチャンクは接する面のサンプルを
+///   **重複所有**する（`axis_owners` 参照）。ブラシ編集は `write_global_impl` が
+///   全所有チャンクへ同じ値を書くのでこの重複は常に一致しているが、新しく作った
+///   チャンクは平地の初期値を持つため、隣が編集済み（盛り／掘り／ペイント）だと
+///   同じ座標のサンプルが 2 つの異なる値を持つことになる。
+///   結果、マーチングキューブスが両側で別々の等値面を出して継ぎ目に穴／段差が出る。
+///   そこで「既存側の値が正」として新規チャンクへ引き写し、重複所有の不変条件を回復する。
+///
+/// 【呼び出しタイミング】
+///   `existing` には**まだ新規チャンクを入れない**こと。入れてしまうと、新規チャンク
+///   自身が主所有者として見つかり、自分の初期値で自分を上書きするだけの無意味な処理になる。
+///
+/// 走査するのは 6 面の境界サンプル（ローカル添字が 0 または cells のもの）のみ。
+/// 内部サンプルは他チャンクと共有しないため触らない。
+fn sync_new_chunk_boundary(
+    existing: &HashMap<ChunkCoord, TerrainChunkData>,
+    settings: &TerrainSettings,
+    coord: ChunkCoord,
+    data: &mut TerrainChunkData,
+) {
+    let cells = settings.chunk_cells as i32;
+    let samples = settings.samples_per_axis();
+    // このチャンクのローカル添字 → グローバルサンプル座標のオフセット。
+    let base = [coord.x * cells, coord.y * cells, coord.z * cells];
+
+    for lz in 0..samples {
+        let on_z = lz == 0 || lz as i32 == cells;
+        for ly in 0..samples {
+            let on_y = ly == 0 || ly as i32 == cells;
+            for lx in 0..samples {
+                let on_x = lx == 0 || lx as i32 == cells;
+                // どの軸でも境界に接していないサンプルは他チャンクと共有しない。
+                if !(on_x || on_y || on_z) {
+                    continue;
+                }
+                let g = [base[0] + lx as i32, base[1] + ly as i32, base[2] + lz as i32];
+                // 既存チャンクがこのサンプルを所有していれば、その値を正として引き写す。
+                if let Some((density, slots, amount)) =
+                    try_read_sample_global(existing, cells, g[0], g[1], g[2])
+                {
+                    data.set_sample(lx, ly, lz, density);
+                    data.set_paint_slots(lx, ly, lz, &slots);
+                    data.set_paint_amount(lx, ly, lz, amount);
+                }
+            }
+        }
+    }
+}
+
+/// チャンク追加要求（X/Z 範囲・両端含む）から「まだ存在しないチャンク座標」を列挙する。
+///
+/// 縦方向（Y）は設定の `ground_chunk_y_min..=ground_chunk_y_max` を敷き詰める。
+/// **既存チャンクは結果に含めない**＝呼び出し側が上書きしようがないため、
+/// 「既存地形の温存」がこの関数の戻り値だけで保証される（純粋関数なのでテストできる）。
+///
+/// 範囲は反転指定（min > max）でも受け付けられるよう内部で正規化する。
+fn collect_new_chunk_coords(
+    existing: &HashMap<ChunkCoord, TerrainChunkData>,
+    settings: &TerrainSettings,
+    min_x: i32,
+    min_z: i32,
+    max_x: i32,
+    max_z: i32,
+) -> Vec<ChunkCoord> {
+    let (lo_x, hi_x) = (min_x.min(max_x), min_x.max(max_x));
+    let (lo_z, hi_z) = (min_z.min(max_z), min_z.max(max_z));
+    let mut out = Vec::new();
+    for x in lo_x..=hi_x {
+        for z in lo_z..=hi_z {
+            for y in settings.ground_chunk_y_min..=settings.ground_chunk_y_max {
+                let coord = ChunkCoord::new(x, y, z);
+                if !existing.contains_key(&coord) {
+                    out.push(coord);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// 1 チャンク分のアクター（チャンクフォルダ + メッシュアクター）を組み立て、
+/// World へ Transform / ModelComponent / TerrainChunkComponent を挿入する。
+///
+/// 戻り値は `(親へぶら下げるフォルダアクター, ModelComponent スロットの entity)`。
+/// 呼び出し側が terrain ルートへ `add_child` して、スロット entity を
+/// `chunk_slot_entity` へ登録する。
+///
+/// 地形の新規構築（`build_terrain_with`）とチャンク追加（`handle_terrain_add_chunks`）の
+/// 双方から使う共通経路（両者でアクター構造が食い違わないよう 1 箇所に集約する）。
+fn spawn_chunk_actor(
+    world: &mut crate::engine::ecs::World,
+    scene_name: &str,
+    settings: &TerrainSettings,
+    coord: ChunkCoord,
+    model: Arc<Model>,
+    gpu: Option<GpuModel>,
+    batch: Option<InstancedModelBatch>,
+) -> (Actor, Entity) {
+    // ── チャンクフォルダノード（描画なし・整理用・Transform 非保持）──
+    let folder_entity = world.spawn();
+    let mut folder = Actor::new_folder(
+        folder_entity,
+        format!("chunk_{}_{}_{}", coord.x, coord.y, coord.z),
+    );
+
+    // ── メッシュアクター（チャンク原点に配置）──
+    let mesh_entity = world.spawn();
+    let mesh_tf = ActorTransform {
+        position: coord.world_origin(settings),
+        rotation: [0.0, 0.0, 0.0],
+        scale: [1.0, 1.0, 1.0],
+    };
+    let world_mat = mesh_tf.to_mat4();
+    world.insert(mesh_entity, mesh_tf);
+    let mut mesh_actor = Actor::new(mesh_entity, TERRAIN_MESH_NAME);
+
+    // ── ModelComponent スロット（合成 source_path で描画＋RT キャスタ化）──
+    let mc_slot = world.spawn();
+    let source_path = terrain_source_path(scene_name, coord);
+    world.insert(
+        mc_slot,
+        make_terrain_model_component(source_path, model, gpu, batch, world_mat),
+    );
+    mesh_actor.add_slot_typed::<ModelComponent>(
+        TERRAIN_MODEL_SLOT_NAME, ComponentKind::Model, mc_slot,
+    );
+
+    // ── TerrainChunkComponent スロット（座標＋.tvox リンク・ロード時復元の手掛かり）──
+    let tc_slot = world.spawn();
+    world.insert(
+        tc_slot,
+        TerrainChunkComponent {
+            chunk_x: coord.x,
+            chunk_y: coord.y,
+            chunk_z: coord.z,
+            tvox_path: tvox_virtual_path(scene_name, coord),
+        },
+    );
+    mesh_actor.add_slot_typed::<TerrainChunkComponent>(
+        TERRAIN_CHUNK_SLOT_NAME, ComponentKind::TerrainChunk, tc_slot,
+    );
+
+    folder.add_child(mesh_actor);
+    (folder, mc_slot)
+}
+
 /// このチャンク範囲の全チャンク座標を列挙する（settings のグラウンド範囲に従う）。
 fn ground_chunk_coords(settings: &TerrainSettings) -> Vec<ChunkCoord> {
     let mut coords = Vec::new();
@@ -672,10 +863,16 @@ impl App {
         //   まとめてクリアされる。地形全体を作り直す（全チャンク密度が入れ替わる）ため、
         //   古い undo 履歴は対象チャンクごと消え去り整合性が保てなくなる。よってここで
         //   確実に破棄する（中途半端な undo エントリを残さない）。
+        //
+        //   ただし **設定（TerrainSettings）はリセットしてはならない**。エディタから
+        //   TERRAIN_INIT の引数で渡されたチャンク構成（枚数・分割数・ボクセルサイズ）は
+        //   この呼び出しの直前に self.terrain.settings へ反映済みであり、既定値へ
+        //   戻すとその指定が丸ごと無視されるため、退避して復元する。
+        let settings = self.terrain.settings.clone();
         self.terrain = TerrainState::default();
+        self.terrain.settings = settings.clone();
         let scene_name = self.scene.as_ref().map(|s| s.name.clone()).unwrap_or_default();
         self.terrain.scene_name = scene_name.clone();
-        let settings = self.terrain.settings.clone();
 
         // ── レイヤ定義（layers.json）を読み込み、GPU バインドグループを用意する ──
         //   TerrainState::default() でクリアされているため毎回作り直す。
@@ -719,53 +916,12 @@ impl App {
             let mut root_actor = Actor::new_folder(root_entity, TERRAIN_ROOT_NAME);
 
             for (coord, model, gpu, batch) in prebuilt {
-                // チャンクフォルダノード（描画なし・整理用・Transform 非保持）。
-                let folder_entity = scene.world.spawn();
-                let mut folder = Actor::new_folder(
-                    folder_entity,
-                    format!("chunk_{}_{}_{}", coord.x, coord.y, coord.z),
+                // チャンク 1 枚分のアクター構造は spawn_chunk_actor へ集約している
+                // （チャンク追加（TERRAIN_ADD_CHUNKS）と完全に同じ構造にするため）。
+                let (folder, mc_slot) = spawn_chunk_actor(
+                    &mut scene.world, &scene_name, &settings, coord, model, gpu, batch,
                 );
-
-                // メッシュアクター（チャンク原点に配置）。
-                let mesh_entity = scene.world.spawn();
-                let origin = coord.world_origin(&settings);
-                let mesh_tf = ActorTransform {
-                    position: origin,
-                    rotation: [0.0, 0.0, 0.0],
-                    scale: [1.0, 1.0, 1.0],
-                };
-                let world_mat = mesh_tf.to_mat4();
-                scene.world.insert(mesh_entity, mesh_tf);
-                let mut mesh_actor = Actor::new(mesh_entity, TERRAIN_MESH_NAME);
-
-                // ModelComponent スロット（合成 source_path で描画＋RT キャスタ化）。
-                let mc_slot = scene.world.spawn();
-                let source_path = terrain_source_path(&scene_name, coord);
-                scene.world.insert(
-                    mc_slot,
-                    make_terrain_model_component(source_path, model, gpu, batch, world_mat),
-                );
-                mesh_actor.add_slot_typed::<ModelComponent>(
-                    TERRAIN_MODEL_SLOT_NAME, ComponentKind::Model, mc_slot,
-                );
-
-                // TerrainChunkComponent スロット（座標＋.tvox リンク・ロード時復元の手掛かり）。
-                let tc_slot = scene.world.spawn();
-                scene.world.insert(
-                    tc_slot,
-                    TerrainChunkComponent {
-                        chunk_x: coord.x,
-                        chunk_y: coord.y,
-                        chunk_z: coord.z,
-                        tvox_path: tvox_virtual_path(&scene_name, coord),
-                    },
-                );
-                mesh_actor.add_slot_typed::<TerrainChunkComponent>(
-                    TERRAIN_CHUNK_SLOT_NAME, ComponentKind::TerrainChunk, tc_slot,
-                );
-
                 slot_map.push((coord, mc_slot));
-                folder.add_child(mesh_actor);
                 root_actor.add_child(folder);
             }
 
@@ -986,10 +1142,41 @@ impl App {
         self.remesh_chunks(&affected);
     }
 
+    /// エディタから届いたチャンク構成を現在の TerrainSettings へ反映する。
+    ///
+    /// `config` が `None`（旧形式の引数なしコマンド）なら何もしない＝現在の設定を維持する。
+    /// 値の検証・クランプは `TerrainSettings::apply_chunk_config` が担う。
+    ///
+    /// 【安全策 — 分割数変更は地形の作り直しとセットでのみ許す】
+    ///   chunk_cells / voxel_size を変えると 1 チャンクのサンプル数・実寸が変わり、
+    ///   既存の密度配列（および保存済み .tvox）とサイズが噛み合わなくなる。
+    ///   よって本メソッドは **地形を丸ごと作り直す経路（TERRAIN_INIT / TERRAIN_HEIGHTMAP）
+    ///   からのみ** 呼ぶ。チャンク追加（TERRAIN_ADD_CHUNKS）は構成を一切変更しない。
+    fn apply_terrain_chunk_config(
+        &mut self,
+        config: Option<crate::engine::core::app_base::ipc::TerrainChunkConfig>,
+    ) {
+        let Some(c) = config else { return };
+        self.terrain.settings.apply_chunk_config(
+            c.chunks_x, c.chunks_z, c.chunk_cells, c.voxel_size,
+        );
+        let s = &self.terrain.settings;
+        eprintln!(
+            "[SEED terrain] chunk config applied: {}x{} chunks, cells={}, voxel={}m (chunk extent={}m)",
+            s.ground_chunks_x, s.ground_chunks_z, s.chunk_cells, s.voxel_size, s.chunk_extent()
+        );
+    }
+
     /// 地形を初期化する。地形ツリーを生成し、初期地面（平坦地面）を敷いてメッシュ化・GPU アップロードする。
     ///
     /// TERRAIN_INIT コマンド・スモークフックから呼ばれる。
-    pub(super) fn handle_terrain_init(&mut self) {
+    /// `config` が `Some` のときはチャンク構成（枚数・分割数・ボクセルサイズ）を先に反映する。
+    /// 既存地形は丸ごと破棄されるため、この経路でのみ分割数の変更が安全に行える。
+    pub(super) fn handle_terrain_init(
+        &mut self,
+        config: Option<crate::engine::core::app_base::ipc::TerrainChunkConfig>,
+    ) {
+        self.apply_terrain_chunk_config(config);
         let ok = self.build_terrain_with(|coord, settings| {
             TerrainChunkData::from_ground_plane(settings, coord)
         });
@@ -1001,18 +1188,205 @@ impl App {
         }
     }
 
+    /// 編集中の地形へチャンクを追加する（TERRAIN_ADD_CHUNKS）。
+    ///
+    /// 指定されたチャンク座標範囲 `[min_x, max_x] × [min_z, max_z]`（両端含む）を、
+    /// 現在の縦方向範囲（`ground_chunk_y_min..=ground_chunk_y_max`）ぶん敷き詰める。
+    ///
+    /// 【既存チャンクの温存】
+    ///   範囲内に既にあるチャンクは**一切触らない**（密度もペイントもアクターもそのまま）。
+    ///   よって「今の地形を保ったまま外側へ広げる」用途に使える。
+    ///
+    /// 【継ぎ目の連続性】
+    ///   新規チャンクは平坦地面で初期化した上で、既存チャンクと重複所有する境界サンプルを
+    ///   `sync_new_chunk_boundary` で既存側の値に揃える。さらに新規チャンクの 26 近傍にある
+    ///   既存チャンクも再メッシュ化する（外側 1 サンプルの読み値が「地形外＝AIR」から
+    ///   実際の密度へ変わるため、境界の三角形と法線が変化する）。
+    ///
+    /// 【変更しないもの】
+    ///   chunk_cells / voxel_size は変更しない（既存チャンクと非互換になるため。
+    ///   構成変更は TERRAIN_INIT / TERRAIN_HEIGHTMAP による作り直しでのみ行う）。
+    pub(super) fn handle_terrain_add_chunks(
+        &mut self,
+        min_x: i32,
+        min_z: i32,
+        max_x: i32,
+        max_z: i32,
+    ) {
+        // ── ① 前提条件の検査 ──
+        if self.draw_ctx.is_none() {
+            self.send_add_chunks_error("draw context unavailable");
+            return;
+        }
+        if self.terrain.chunks.is_empty() {
+            // 地形が無い状態での「追加」は意味が定まらない（ツリーも設定も未確定）。
+            // 先に初期化させる方が挙動が明快なのでエラーにする。
+            self.send_add_chunks_error("terrain not initialized");
+            return;
+        }
+        let settings = self.terrain.settings.clone();
+
+        // ── ② 追加対象（まだ存在しないチャンク）を列挙する ──
+        //   既存チャンクは列挙されない＝以降の処理で上書きされない（＝温存される）。
+        let new_coords =
+            collect_new_chunk_coords(&self.terrain.chunks, &settings, min_x, min_z, max_x, max_z);
+        if new_coords.is_empty() {
+            // 追加すべきものが無いのは正常（指定範囲がすべて既存）。0 件で成功を返す。
+            if let Some(ipc) = &self.ipc {
+                ipc.send("TERRAIN_ADD_CHUNKS_OK:0,0");
+            }
+            return;
+        }
+        // チャンク総数の安全弁（1 チャンクは数 MB あるため、暴走すると即メモリ枯渇する）。
+        if self.terrain.chunks.len() + new_coords.len() > terrain::MAX_TOTAL_CHUNKS {
+            self.send_add_chunks_error(&format!(
+                "chunk limit exceeded ({} existing + {} new > {})",
+                self.terrain.chunks.len(), new_coords.len(), terrain::MAX_TOTAL_CHUNKS
+            ));
+            return;
+        }
+
+        // ── ③ 新規チャンクの密度を作り、境界を既存チャンクへ揃える ──
+        //   sync_new_chunk_boundary は「まだ新規チャンクを含まない chunks」を見る必要が
+        //   あるため、全チャンクを作り終えてからまとめて insert する。
+        let mut created: Vec<(ChunkCoord, TerrainChunkData)> = Vec::with_capacity(new_coords.len());
+        for &coord in &new_coords {
+            let mut data = TerrainChunkData::from_ground_plane(&settings, coord);
+            sync_new_chunk_boundary(&self.terrain.chunks, &settings, coord, &mut data);
+            created.push((coord, data));
+        }
+        for (coord, data) in created {
+            self.terrain.chunks.insert(coord, data);
+        }
+
+        // ── ④ 新規チャンクをメッシュ化して GPU アップロードする ──
+        //   全チャンクを map へ入れ終えた後に行うことで、隣接読み（neighbor_sampler）が
+        //   新規チャンク同士の境界でも正しい値を返す。
+        let layers = self.terrain.layers.clone();
+        let mut prebuilt: Vec<(ChunkCoord, Arc<Model>, Option<GpuModel>, Option<InstancedModelBatch>)> =
+            Vec::with_capacity(new_coords.len());
+        {
+            let ctx = self.draw_ctx.as_ref().unwrap();
+            for &coord in &new_coords {
+                if let Some((model, gpu, batch)) =
+                    build_chunk_render(&self.terrain.chunks, &settings, &layers, ctx, coord)
+                {
+                    prebuilt.push((coord, model, gpu, batch));
+                }
+            }
+        }
+        self.ensure_terrain_palettes(prebuilt.iter().map(|p| p.1.as_ref()));
+
+        // ── ⑤ アクターを組み立てて既存の terrain ルートへぶら下げる ──
+        //   World への spawn/insert（&mut scene.world）と、ルートアクターの探索
+        //   （&mut scene.actors）は別フィールドなので順に行えばよい。
+        let scene_name = self.terrain.scene_name.clone();
+        let mut slot_map: Vec<(ChunkCoord, Entity)> = Vec::with_capacity(prebuilt.len());
+        {
+            let Some(scene) = self.scene.as_mut() else {
+                self.send_add_chunks_error("no scene");
+                return;
+            };
+            let mut folders: Vec<Actor> = Vec::with_capacity(prebuilt.len());
+            for (coord, model, gpu, batch) in prebuilt {
+                let (folder, mc_slot) = spawn_chunk_actor(
+                    &mut scene.world, &scene_name, &settings, coord, model, gpu, batch,
+                );
+                slot_map.push((coord, mc_slot));
+                folders.push(folder);
+            }
+            // terrain ルート（トップレベルの同名フォルダ）へ追加する。
+            match scene.actors.iter_mut().find(|a| a.name == TERRAIN_ROOT_NAME) {
+                Some(root) => {
+                    for folder in folders {
+                        root.add_child(folder);
+                    }
+                }
+                None => {
+                    // ルートが無い＝地形ツリーが壊れている。作ったエンティティを掃除して中断する。
+                    for folder in &folders {
+                        let mut entities: Vec<Entity> = Vec::new();
+                        collect_subtree_entities(folder, &mut entities);
+                        for e in entities {
+                            scene.world.despawn(e);
+                        }
+                    }
+                    for &coord in &new_coords {
+                        self.terrain.chunks.remove(&coord);
+                    }
+                    self.send_add_chunks_error("terrain root actor not found");
+                    return;
+                }
+            }
+        }
+        for (coord, entity) in slot_map {
+            self.terrain.chunk_slot_entity.insert(coord, entity);
+            // 追加直後は未保存なので、TERRAIN_SAVE の対象になるようダーティにする。
+            self.terrain.dirty.insert(coord);
+        }
+
+        // ── ⑥ 新規チャンクに接する既存チャンクを再メッシュ化する ──
+        //   既存チャンクのサンプル自体は変わらないが、メッシュ生成時に読む「外側 1 サンプル」が
+        //   地形外（＝AIR 相当の density_clamp）から実際の密度へ変わるため、境界の三角形と
+        //   法線が変化する。これを怠ると継ぎ目に隙間や陰影の段差が残る。
+        let new_set: HashSet<ChunkCoord> = new_coords.iter().copied().collect();
+        let mut neighbors: HashSet<ChunkCoord> = HashSet::new();
+        for &coord in &new_coords {
+            for dx in -1..=1 {
+                for dy in -1..=1 {
+                    for dz in -1..=1 {
+                        let n = ChunkCoord::new(coord.x + dx, coord.y + dy, coord.z + dz);
+                        // 新規チャンクは ④ で既にメッシュ化済みなので除外する。
+                        if !new_set.contains(&n) && self.terrain.chunk_slot_entity.contains_key(&n) {
+                            neighbors.insert(n);
+                        }
+                    }
+                }
+            }
+        }
+        let neighbor_list: Vec<ChunkCoord> = neighbors.into_iter().collect();
+        self.remesh_chunks(&neighbor_list);
+
+        self.send_hierarchy();
+        eprintln!(
+            "[SEED terrain] add chunks: +{} (remeshed neighbors={}, total={})",
+            new_coords.len(), neighbor_list.len(), self.terrain.chunks.len()
+        );
+        if let Some(ipc) = &self.ipc {
+            ipc.send(&format!(
+                "TERRAIN_ADD_CHUNKS_OK:{},{}",
+                new_coords.len(), neighbor_list.len()
+            ));
+        }
+    }
+
+    /// チャンク追加の失敗をエディタへ通知する（メッセージ組み立ての重複を避けるヘルパ）。
+    fn send_add_chunks_error(&self, message: &str) {
+        eprintln!("[SEED terrain] add chunks failed: {message}");
+        if let Some(ipc) = &self.ipc {
+            ipc.send(&format!("TERRAIN_ADD_CHUNKS_ERROR:{message}"));
+        }
+    }
+
     /// ハイトマップ画像から地形を敷き直す（TERRAIN_HEIGHTMAP コマンド）。
     ///
     /// 画像を読み込んでグレースケール化し、初期地面フットプリント（world x,z ∈
     /// [0, ground_chunks_x/z * chunk_extent]）へバイリニアマッピングして高さ場を作る。
     /// 密度 = worldY - height（規約どおり density<iso で SOLID）。
     /// build_terrain_with を通すため、既存の地形（undo 履歴含む）は丸ごと作り直しになる。
-    pub(super) fn handle_terrain_heightmap(&mut self, path: String, height_scale: f32) {
+    ///
+    /// `config` が `Some` のときはチャンク構成（枚数・分割数・ボクセルサイズ）を先に反映する。
+    /// フットプリントもその構成から決まるため、画像は新しい範囲へマッピングされる。
+    pub(super) fn handle_terrain_heightmap(
+        &mut self,
+        path: String,
+        height_scale: f32,
+        config: Option<crate::engine::core::app_base::ipc::TerrainChunkConfig>,
+    ) {
         let start = std::time::Instant::now();
 
-        // フットプリントは現行設定から求める（build_terrain_with 内でも同じ既定値に
-        // リセットされるため実質同一だが、将来 settings が可変になった場合に備えて
-        // 呼び出し時点の値を明示的に控えておく）。
+        // 画像のマッピング先フットプリントを決めるので、構成の反映は必ず先に行う。
+        self.apply_terrain_chunk_config(config);
         let settings = self.terrain.settings.clone();
         let extent = settings.chunk_extent();
         let footprint_w = settings.ground_chunks_x as f32 * extent;
@@ -1492,6 +1866,16 @@ impl App {
         }
 
         // ── フェーズ 1: 全チャンクの .tvox を読み込んで map へ入れる（欠落はスキップ）──
+        //
+        //   【チャンク構成の復元】
+        //     .tvox ヘッダは samples_per_axis（= chunk_cells + 1）と voxel_size を持つ。
+        //     チャンク分割数はエディタから変更できるため、既定値（32 / 0.5m）とは限らない。
+        //     そこで **最初に読めたチャンクのヘッダを正として settings へ取り込み**、
+        //     以降のチャンクはそのヘッダと一致するものだけを受け入れる。
+        //     不一致チャンク（＝分割数を変えた後に一部だけ古い .tvox が残っている状態）は
+        //     読み込むと密度配列の長さが食い違って描画・編集が破綻するため、警告して捨てる。
+        let mut adopted: Option<tvox::TvoxHeader> = None;
+        let mut mismatched = 0u32;
         let mut loaded: Vec<(ChunkCoord, Entity)> = Vec::new();
         for (coord, path, mc_slot) in &found {
             let bytes = match crate::engine::asset_fs::read_bytes(path) {
@@ -1501,6 +1885,44 @@ impl App {
                     continue;
                 }
             };
+            // 本体を読む前にヘッダで構成を突き合わせる（不一致なら本体を読む必要がない）。
+            let header = match tvox::read_header(&bytes) {
+                Ok(h) => h,
+                Err(e) => {
+                    eprintln!("[SEED terrain] tvox header invalid, skip: {path} err={e:?}");
+                    continue;
+                }
+            };
+            match adopted {
+                None => {
+                    // 最初の 1 枚の構成を地形全体の構成として採用する。
+                    self.terrain.settings.apply_chunk_config(
+                        self.terrain.settings.ground_chunks_x,
+                        self.terrain.settings.ground_chunks_z,
+                        header.chunk_cells(),
+                        header.voxel_size,
+                    );
+                    eprintln!(
+                        "[SEED terrain] adopted chunk config from tvox: cells={}, voxel={}m",
+                        self.terrain.settings.chunk_cells, self.terrain.settings.voxel_size
+                    );
+                    adopted = Some(header);
+                }
+                Some(first) => {
+                    if header.samples_per_axis != first.samples_per_axis
+                        || header.voxel_size != first.voxel_size
+                    {
+                        mismatched += 1;
+                        eprintln!(
+                            "[SEED terrain] tvox chunk config mismatch, skip: {path} \
+                             (samples={} voxel={} / expected samples={} voxel={})",
+                            header.samples_per_axis, header.voxel_size,
+                            first.samples_per_axis, first.voxel_size
+                        );
+                        continue;
+                    }
+                }
+            }
             match tvox::read_chunk(&bytes) {
                 Ok((chunk, _stored_coord)) => {
                     self.terrain.chunks.insert(*coord, chunk);
@@ -1511,6 +1933,12 @@ impl App {
                     eprintln!("[SEED terrain] tvox decode failed, skip: {path} err={e:?}");
                 }
             }
+        }
+        if mismatched > 0 {
+            eprintln!(
+                "[SEED terrain] {mismatched} chunk(s) skipped due to incompatible voxel config; \
+                 地形を初期化し直して保存してください"
+            );
         }
         if loaded.is_empty() {
             return;
@@ -1558,8 +1986,38 @@ impl App {
     /// 地形を初期化し、デバッグカメラを地形フットプリント全体が見える位置へ向け、
     /// 明確に地形を変形させる（盛り 1・掘り 1）。通常の Play/Edit では呼ばれない。
     pub(super) fn run_terrain_smoke(&mut self) {
-        // 地形を生成する（シーンが無ければ handle_terrain_init が空シーンを作る）。
-        self.handle_terrain_init();
+        use crate::engine::core::app_base::ipc::TerrainChunkConfig;
+
+        // ── ① チャンク構成の指定つき初期化 → チャンク追加 の確認 ──
+        //   小さめの構成（分割数も既定と違う値）で作り、そこへチャンクを足して
+        //   「構成指定が効くこと」「既存を保ったまま広げられること」を実機で通す。
+        //   本編のスクリーンショット構図に影響しないよう、確認後に既定構成で作り直す。
+        self.handle_terrain_init(Some(TerrainChunkConfig {
+            chunks_x:    SMOKE_CONFIG_CHUNKS,
+            chunks_z:    SMOKE_CONFIG_CHUNKS,
+            chunk_cells: SMOKE_CONFIG_CHUNK_CELLS,
+            voxel_size:  SMOKE_CONFIG_VOXEL_SIZE,
+        }));
+        let small_chunks = self.terrain.chunks.len();
+        let small_cells = self.terrain.settings.chunk_cells;
+        // +X 側へ 1 列ぶんチャンクを足す（既存 0..chunks-1 の外側）。
+        let add_from = SMOKE_CONFIG_CHUNKS as i32;
+        self.handle_terrain_add_chunks(add_from, 0, add_from, SMOKE_CONFIG_CHUNKS as i32 - 1);
+        eprintln!(
+            "[SEED terrain] smoke: config init cells={small_cells} chunks={small_chunks} \
+             -> after add_chunks chunks={}",
+            self.terrain.chunks.len()
+        );
+
+        // ── ② 既定構成へ戻して本編のスモークを始める ──
+        //   引数なし（None）ではなく明示的に既定値を渡す。①で settings が
+        //   小さい構成へ書き換わっているため、None だとそれが引き継がれてしまう。
+        self.handle_terrain_init(Some(TerrainChunkConfig {
+            chunks_x:    SMOKE_DEFAULT_CHUNKS,
+            chunks_z:    SMOKE_DEFAULT_CHUNKS,
+            chunk_cells: SMOKE_DEFAULT_CHUNK_CELLS,
+            voxel_size:  SMOKE_DEFAULT_VOXEL_SIZE,
+        }));
 
         // ── デバッグカメラをフットプリント全体が見える位置へ向ける ──
         //   フットプリント（ワールド）: x,z ∈ [0, chunks*extent]。中心は地面（y=0）。
@@ -1666,9 +2124,11 @@ impl App {
             }
         }
         let heightmap_start = std::time::Instant::now();
+        // 構成は②で既定へ戻した状態を維持したいので config は None（現行設定を使う）。
         self.handle_terrain_heightmap(
             heightmap_path.to_string_lossy().to_string(),
             SMOKE_HEIGHTMAP_HEIGHT_SCALE,
+            None,
         );
         eprintln!(
             "[SEED terrain] smoke: heightmap load done in {:?} (chunks={})",
@@ -1730,5 +2190,188 @@ impl App {
             SMOKE_STROKE_STEPS,
             self.terrain.chunks.len()
         );
+    }
+}
+
+// ============================================================
+//  ユニットテスト（App・GPU 非依存の純粋ヘルパーのみ）
+//
+//  チャンク追加の中核である「追加対象の列挙（＝既存の温存）」と
+//  「境界サンプルの引き写し（＝継ぎ目の連続性）」は App も wgpu も要らない
+//  純粋関数へ切り出してあるため、ここで直接検証できる。
+// ============================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// テスト用の小さめ設定（33³ ではなく 9³ サンプルにして実行時間を抑える）。
+    /// Y 範囲は 1 段だけにして、列挙件数の期待値を素直に数えられるようにする。
+    fn test_settings() -> TerrainSettings {
+        let mut s = TerrainSettings::default();
+        s.apply_chunk_config(2, 2, TEST_CHUNK_CELLS, TEST_VOXEL_SIZE);
+        s.ground_chunk_y_min = 0;
+        s.ground_chunk_y_max = 0;
+        s
+    }
+
+    /// テスト用のチャンク分割数（小さいほどテストが速い）。
+    const TEST_CHUNK_CELLS: u32 = 8;
+    /// テスト用のボクセルサイズ（メートル）。
+    const TEST_VOXEL_SIZE: f32 = 0.5;
+    /// 既存チャンクの境界面へ書き込む「編集済み」を表す目印の密度値。
+    /// 平坦地面（density = world_y）では絶対に現れない値を選ぶ。
+    const MARKER_DENSITY: f32 = -12.5;
+    /// 既存チャンクの境界面へ書き込む目印のペイント量。
+    const MARKER_PAINT_AMOUNT: f32 = 1.0;
+    /// 目印のペイントレイヤ番号。
+    const MARKER_PAINT_LAYER: u32 = 3;
+
+    /// 既存チャンク 1 枚だけを持つ地形を作る（座標 (0,0,0)、平坦地面）。
+    fn ground_map(settings: &TerrainSettings) -> HashMap<ChunkCoord, TerrainChunkData> {
+        let mut chunks = HashMap::new();
+        chunks.insert(
+            ChunkCoord::new(0, 0, 0),
+            TerrainChunkData::from_ground_plane(settings, ChunkCoord::new(0, 0, 0)),
+        );
+        chunks
+    }
+
+    /// 追加対象の列挙が「既存チャンクを含まない」＝既存地形を温存すること。
+    #[test]
+    fn collect_new_chunks_excludes_existing() {
+        let settings = test_settings();
+        let chunks = ground_map(&settings);
+        // (0..=1) × (0..=0) の 2 枚を要求するが、(0,0,0) は既存なので 1 枚だけ返るはず。
+        let new = collect_new_chunk_coords(&chunks, &settings, 0, 0, 1, 0);
+        assert_eq!(new, vec![ChunkCoord::new(1, 0, 0)], "既存チャンクは列挙されてはならない");
+    }
+
+    /// 範囲が反転（min > max）していても正規化されて同じ結果になること。
+    #[test]
+    fn collect_new_chunks_normalizes_reversed_range() {
+        let settings = test_settings();
+        let chunks = ground_map(&settings);
+        let forward  = collect_new_chunk_coords(&chunks, &settings, 1, 0, 2, 1);
+        let reversed = collect_new_chunk_coords(&chunks, &settings, 2, 1, 1, 0);
+        assert_eq!(forward, reversed);
+        assert_eq!(forward.len(), 4, "2×2 枚が新規として列挙される");
+    }
+
+    /// Y 範囲の段数ぶんチャンクが積まれること（縦方向は設定に従う）。
+    #[test]
+    fn collect_new_chunks_spans_configured_y_range() {
+        let mut settings = test_settings();
+        settings.ground_chunk_y_min = -1;
+        settings.ground_chunk_y_max = 1;
+        let chunks = HashMap::new();
+        let new = collect_new_chunk_coords(&chunks, &settings, 5, 5, 5, 5);
+        assert_eq!(new.len(), 3, "y=-1,0,1 の 3 段が作られる");
+    }
+
+    /// 追加チャンクの接する面が、既存チャンクの境界サンプルとビット一致すること。
+    ///
+    /// これが崩れると、同じグローバルサンプル座標に 2 つの異なる密度が存在することになり、
+    /// マーチングキューブスが両側で違う等値面を出して継ぎ目に穴／段差が生じる。
+    #[test]
+    fn new_chunk_boundary_matches_existing_neighbor() {
+        let settings = test_settings();
+        let cells = settings.chunk_cells as usize;
+        let samples = settings.samples_per_axis();
+        let mut chunks = ground_map(&settings);
+
+        // 既存チャンク (0,0,0) の +X 面（ローカル lx = cells）を「編集済み」に見せかける。
+        // 追加チャンク (1,0,0) の -X 面（lx = 0）と重複所有する面である。
+        {
+            let existing = chunks.get_mut(&ChunkCoord::new(0, 0, 0)).unwrap();
+            let marker_slots = BlendSlots {
+                index:  [MARKER_PAINT_LAYER, 0, 0, 0],
+                weight: [1.0, 0.0, 0.0, 0.0],
+            };
+            for lz in 0..samples {
+                for ly in 0..samples {
+                    existing.set_sample(cells, ly, lz, MARKER_DENSITY);
+                    existing.set_paint_slots(cells, ly, lz, &marker_slots);
+                    existing.set_paint_amount(cells, ly, lz, MARKER_PAINT_AMOUNT);
+                }
+            }
+        }
+
+        // 追加チャンクを平坦地面で作り、境界を既存へ揃える。
+        let new_coord = ChunkCoord::new(1, 0, 0);
+        let mut new_chunk = TerrainChunkData::from_ground_plane(&settings, new_coord);
+        sync_new_chunk_boundary(&chunks, &settings, new_coord, &mut new_chunk);
+
+        let existing = chunks.get(&ChunkCoord::new(0, 0, 0)).unwrap();
+        for lz in 0..samples {
+            for ly in 0..samples {
+                // 密度: 共有面がビット一致すること。
+                assert_eq!(
+                    new_chunk.sample(0, ly, lz), existing.sample(cells, ly, lz),
+                    "共有面の密度が一致しない (ly={ly}, lz={lz})"
+                );
+                // ペイント量・レイヤ番号も引き継がれること（色の継ぎ目も出さない）。
+                assert_eq!(
+                    new_chunk.paint_amount(0, ly, lz), existing.paint_amount(cells, ly, lz),
+                    "共有面のペイント量が一致しない (ly={ly}, lz={lz})"
+                );
+                assert_eq!(
+                    new_chunk.paint_slots(0, ly, lz).index[0], MARKER_PAINT_LAYER,
+                    "共有面のペイントレイヤ番号が引き継がれていない (ly={ly}, lz={lz})"
+                );
+            }
+        }
+    }
+
+    /// 隣接チャンクが無い面と内部サンプルは、平坦地面の初期値のまま保たれること。
+    ///
+    /// 「境界を揃える」処理が広く塗り潰してしまうと、新しい地面が既存の編集内容で
+    /// 汚染される（例: 端の高さが地形全体へ波及する）。触る範囲を境界面に限る回帰テスト。
+    #[test]
+    fn new_chunk_keeps_ground_plane_where_no_neighbor() {
+        let settings = test_settings();
+        let cells = settings.chunk_cells as usize;
+        let samples = settings.samples_per_axis();
+        let mut chunks = ground_map(&settings);
+        {
+            let existing = chunks.get_mut(&ChunkCoord::new(0, 0, 0)).unwrap();
+            for lz in 0..samples {
+                for ly in 0..samples {
+                    existing.set_sample(cells, ly, lz, MARKER_DENSITY);
+                }
+            }
+        }
+
+        let new_coord = ChunkCoord::new(1, 0, 0);
+        let pristine = TerrainChunkData::from_ground_plane(&settings, new_coord);
+        let mut new_chunk = pristine.clone();
+        sync_new_chunk_boundary(&chunks, &settings, new_coord, &mut new_chunk);
+
+        for lz in 0..samples {
+            for ly in 0..samples {
+                for lx in 0..samples {
+                    // 既存チャンクと共有するのは -X 面（lx=0）だけ。それ以外は不変であること。
+                    if lx == 0 {
+                        continue;
+                    }
+                    assert_eq!(
+                        new_chunk.sample(lx, ly, lz), pristine.sample(lx, ly, lz),
+                        "隣接の無いサンプルが書き換えられた ({lx},{ly},{lz})"
+                    );
+                }
+            }
+        }
+    }
+
+    /// 隣接チャンクが 1 枚も無ければ、追加チャンクは完全に平坦地面のままであること。
+    #[test]
+    fn isolated_new_chunk_is_untouched() {
+        let settings = test_settings();
+        let chunks: HashMap<ChunkCoord, TerrainChunkData> = HashMap::new();
+        let new_coord = ChunkCoord::new(9, 0, 9);
+        let pristine = TerrainChunkData::from_ground_plane(&settings, new_coord);
+        let mut new_chunk = pristine.clone();
+        sync_new_chunk_boundary(&chunks, &settings, new_coord, &mut new_chunk);
+        assert_eq!(new_chunk.raw_density(), pristine.raw_density());
     }
 }

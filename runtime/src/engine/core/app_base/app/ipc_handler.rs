@@ -232,9 +232,15 @@ impl App {
                         }
                     }
                 }
-                IpcCommand::TerrainInit => {
+                IpcCommand::TerrainInit { config } => {
                     // ボクセル地形を初期化する（地形ツリー生成＋初期地面のメッシュ化）。
-                    self.handle_terrain_init();
+                    // config が付いていればチャンク構成（枚数・分割数・ボクセルサイズ）を
+                    // 先に反映する。既存地形は丸ごと作り直されるので、分割数変更もここでは安全。
+                    self.handle_terrain_init(config);
+                }
+                IpcCommand::TerrainAddChunks { min_x, min_z, max_x, max_z } => {
+                    // 編集中の地形へチャンクを追加する（既存チャンクは温存）。
+                    self.handle_terrain_add_chunks(min_x, min_z, max_x, max_z);
                 }
                 IpcCommand::TerrainBrush { op, screen_x, screen_y, radius, strength } => {
                     // op を BrushOp へ復元（未知値は Add にフォールバック）。
@@ -277,9 +283,9 @@ impl App {
                     // （エディタの地形設定ウィンドウでレイヤを保存した直後の即時反映）。
                     self.handle_terrain_reload_layers();
                 }
-                IpcCommand::TerrainHeightmap { path, height_scale } => {
-                    // ハイトマップ画像から地形を敷き直す。
-                    self.handle_terrain_heightmap(path, height_scale);
+                IpcCommand::TerrainHeightmap { path, height_scale, config } => {
+                    // ハイトマップ画像から地形を敷き直す（config 付きなら構成も反映）。
+                    self.handle_terrain_heightmap(path, height_scale, config);
                 }
                 IpcCommand::SaveActor(path) => {
                     let wl = self.active_world_line;

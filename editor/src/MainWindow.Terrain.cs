@@ -478,7 +478,10 @@ public partial class MainWindow
         return idx < 0 ? 0 : idx;
     }
 
-    /// <summary>「地形を初期化」ボタン: TERRAIN_INIT を送る（再初期化は確認する）。</summary>
+    /// <summary>
+    /// 「地形を初期化」ボタン: 地形設定ウィンドウで保存したチャンク構成
+    /// （chunk_config.json）を読み、新形式の TERRAIN_INIT を送る（再初期化は確認する）。
+    /// </summary>
     private void OnTerrainInit(object sender, RoutedEventArgs e)
     {
         if (_runtimeManager?.State != EditorState.Edit)
@@ -486,15 +489,34 @@ public partial class MainWindow
             SetTerrainStatus("Edit モードで実行してください", ok: false);
             return;
         }
+
+        var cfg = SEEDEditor.Terrain.TerrainChunkConfigDocument.Load(AssetsPath);
+        string desc = FormatTerrainChunkConfigDescription(cfg);
+
         if (_terrainInited)
         {
             var r = MessageBox.Show(this,
-                "既に地形が初期化されています。作り直すと現在の地形（未保存の編集を含む）は破棄されます。続行しますか？",
+                $"既に地形が初期化されています。作り直すと現在の地形（未保存の編集を含む）は破棄されます。\n"
+                + $"これから作られるチャンク構成: {desc}\n続行しますか？",
                 "地形の再初期化", MessageBoxButton.OKCancel, MessageBoxImage.Warning);
             if (r != MessageBoxResult.OK) return;
         }
-        _runtimeManager.SendToRuntime("TERRAIN_INIT");
-        SetTerrainStatus("地形を初期化中...", ok: true);
+
+        var ci = CultureInfo.InvariantCulture;
+        _runtimeManager.SendToRuntime(
+            $"TERRAIN_INIT:{cfg.ChunksX.ToString(ci)},{cfg.ChunksZ.ToString(ci)},{cfg.ChunkCells.ToString(ci)},{cfg.VoxelSize.ToString(ci)}");
+        SetTerrainStatus($"地形を初期化中...（{desc}）", ok: true);
+    }
+
+    /// <summary>
+    /// チャンク構成を確認ダイアログ／ステータス表示向けに整形する
+    /// （例: "6×6 チャンク / 分割数 32 / ボクセル 0.5m"）。
+    /// </summary>
+    private static string FormatTerrainChunkConfigDescription(SEEDEditor.Terrain.TerrainChunkConfigDocument cfg)
+    {
+        var ci = CultureInfo.InvariantCulture;
+        return $"{cfg.ChunksX.ToString(ci)}×{cfg.ChunksZ.ToString(ci)} チャンク / "
+             + $"分割数 {cfg.ChunkCells.ToString(ci)} / ボクセル {cfg.VoxelSize.ToString(ci)}m";
     }
 
     /// <summary>「地形を保存」ボタン: TERRAIN_SAVE を送る。</summary>
@@ -537,11 +559,14 @@ public partial class MainWindow
             heightScale = parsed;
         }
 
+        var cfg = SEEDEditor.Terrain.TerrainChunkConfigDocument.Load(AssetsPath);
         var ci = CultureInfo.InvariantCulture;
-        // ランタイム側は右端のカンマで path / height_scale を分割するため、
-        // height_scale は必ず末尾に置く（path にカンマが含まれていても安全）。
-        _runtimeManager.SendToRuntime($"TERRAIN_HEIGHTMAP:{dialog.FileName},{heightScale.ToString(ci)}");
-        SetTerrainStatus("ハイトマップ読込中...", ok: true);
+        // 新形式: チャンク構成を明示して送る。path は必ず末尾に置くため、
+        // パス中にカンマが含まれていてもランタイム側の分割処理を壊さない。
+        _runtimeManager.SendToRuntime(
+            $"TERRAIN_HEIGHTMAP:{cfg.ChunksX.ToString(ci)},{cfg.ChunksZ.ToString(ci)},{cfg.ChunkCells.ToString(ci)},"
+            + $"{cfg.VoxelSize.ToString(ci)},{heightScale.ToString(ci)},{dialog.FileName}");
+        SetTerrainStatus($"ハイトマップ読込中...（{FormatTerrainChunkConfigDescription(cfg)}）", ok: true);
     }
 
     // ── ランタイム応答ハンドラ（IPC スレッド → Dispatcher）──────────
@@ -569,6 +594,16 @@ public partial class MainWindow
     {
         Dispatcher.BeginInvoke(() =>
             SetTerrainStatus(ok ? $"ハイトマップを反映しました（{arg} ms）" : $"読込失敗: {arg}", ok));
+    }
+
+    /// <summary>
+    /// チャンク追加完了通知（TERRAIN_ADD_CHUNKS_OK:追加数,再メッシュ数 / TERRAIN_ADD_CHUNKS_ERROR:msg）。
+    /// 地形設定ウィンドウの「チャンクを追加」ボタンから送った TERRAIN_ADD_CHUNKS への応答。
+    /// </summary>
+    private void OnTerrainAddChunksCompleted(bool ok, string arg)
+    {
+        Dispatcher.BeginInvoke(() =>
+            SetTerrainStatus(ok ? $"チャンクを追加しました（{arg}）" : $"チャンク追加失敗: {arg}", ok));
     }
 
     /// <summary>

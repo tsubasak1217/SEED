@@ -1253,7 +1253,7 @@
                                                 <Button x:Name="BtnTerrainInit"
                                                         Content="地形を初期化"
                                                         Style="{StaticResource TerrainActionBtnStyle}"
-                                                        ToolTip="平地 4×4 チャンクを生成する（既存の地形は作り直される）"
+                                                        ToolTip="地形設定で指定したチャンク構成（既定 4×4 チャンク）で平地を生成する（既存の地形は作り直される）"
                                                         Click="OnTerrainInit"/>
                                                 <Button x:Name="BtnTerrainSave"
                                                         Content="地形を保存"
@@ -1274,7 +1274,7 @@
                                                 <Button x:Name="BtnTerrainHeightmap"
                                                         Content="ハイトマップ読込"
                                                         Style="{StaticResource TerrainActionBtnStyle}"
-                                                        ToolTip="画像（グレースケール高さマップ）から地形を生成する"
+                                                        ToolTip="画像（グレースケール高さマップ）から、地形設定で指定したチャンク構成で地形を生成する"
                                                         Click="OnTerrainHeightmap"/>
 
                                                 <Border Width="1" Background="#3A3A3A" Margin="8,2"/>

@@ -55,6 +55,18 @@ public partial class TerrainSettingsWindow : Window
     /// <summary>斜度ウィンドウのプレビュー帯の分割数（描画セル数）。細かいほど滑らかだが重い。</summary>
     private const int SlopePreviewSegments = 90;
 
+    /// <summary>数値の丸め表示に使う小数桁数指定（"0.###" = 末尾 0 を省いた最大 3 桁）。</summary>
+    private const string DerivedValueFormat = "0.###";
+
+    /// <summary>警告ボックスの内側余白（px）。</summary>
+    private const double WarningBoxPadding = 8;
+
+    /// <summary>警告ボックスの外側マージン（px）。</summary>
+    private const double WarningBoxMargin = 6;
+
+    /// <summary>「チャンクを追加」入力欄（min_x 等）の既定値。</summary>
+    private const int AddChunksDefaultCoord = 0;
+
     // ── 依存（生成時に受け取る）──────────────────────────────
 
     /// <summary>assets ディレクトリの絶対パス（layers.json とテクスチャ相対パスの基準）。</summary>
@@ -66,8 +78,17 @@ public partial class TerrainSettingsWindow : Window
     /// <summary>保存が完了したときに呼ばれるコールバック（ツールバーのレイヤコンボ再構築に使う）。</summary>
     private readonly Action _onSaved;
 
-    /// <summary>編集中のドキュメント。</summary>
+    /// <summary>編集中のドキュメント（レイヤ）。</summary>
     private TerrainLayersDocument _doc;
+
+    /// <summary>編集中のドキュメント（チャンク構成）。</summary>
+    private TerrainChunkConfigDocument _chunkConfig;
+
+    /// <summary>「チャンクを追加」入力欄の値（min_x/min_z/max_x/max_z・チャンク座標・両端含む範囲）。</summary>
+    private int _addChunksMinX = AddChunksDefaultCoord;
+    private int _addChunksMinZ = AddChunksDefaultCoord;
+    private int _addChunksMaxX = AddChunksDefaultCoord;
+    private int _addChunksMaxZ = AddChunksDefaultCoord;
 
     /// <summary>プロパティ欄を組み立て中かどうか（イベント再入で編集値を壊さないためのガード）。</summary>
     private bool _rebuilding;
@@ -90,6 +111,9 @@ public partial class TerrainSettingsWindow : Window
         _doc = TerrainLayersDocument.Load(_assetsRoot);
         RefreshLayerList(selectIndex: 0);
 
+        _chunkConfig = TerrainChunkConfigDocument.Load(_assetsRoot);
+        RebuildTerrainConfigPanel();
+
         if (_doc.WasMissingOrInvalid)
         {
             SetStatus($"{TerrainLayersDocument.ResolvePath(_assetsRoot)} が読めなかったため、新規レイヤ 1 枚で開始します", ok: false);
@@ -99,6 +123,114 @@ public partial class TerrainSettingsWindow : Window
             SetStatus($"{_doc.Layers.Count} レイヤを読み込みました", ok: true);
         }
     }
+
+    // ── 地形タブ（チャンク構成）────────────────────────────────
+
+    /// <summary>
+    /// 「地形」タブの中身を組み立て直す。チャンク構成（chunks_x/chunks_z/chunk_cells/voxel_size）の
+    /// 編集欄、派生値（実寸・フットプリント・総チャンク数）の読み取り専用表示、
+    /// 非互換化に関する警告、そして「チャンクを追加」セクションで構成する。
+    /// </summary>
+    private void RebuildTerrainConfigPanel()
+    {
+        PanelTerrainConfig.Children.Clear();
+
+        // ── 警告（常時表示。チャンク分割数・ボクセルサイズの変更は初期化/ハイトマップ読込でのみ反映される）──
+        var warningText = new TextBlock
+        {
+            Text = "チャンク分割数・ボクセルサイズの変更は、「地形を初期化」または「ハイトマップ読込」で"
+                 + "地形を作り直したときにのみ反映されます。既存の地形（保存済み .tvox ファイル）とは"
+                 + "ボクセル配置が非互換になるため、変更後は必ず地形を初期化し直してください。",
+            Foreground   = new SolidColorBrush(Color.FromRgb(0xFF, 0xC1, 0x07)),
+            FontWeight   = FontWeights.Bold,
+            TextWrapping = TextWrapping.Wrap,
+        };
+        var warningBox = new Border
+        {
+            Background      = new SolidColorBrush(Color.FromRgb(0x4A, 0x36, 0x08)),
+            BorderBrush     = new SolidColorBrush(Color.FromRgb(0xFF, 0xC1, 0x07)),
+            BorderThickness = new Thickness(1),
+            Padding         = new Thickness(WarningBoxPadding),
+            Margin          = new Thickness(0, 0, 0, WarningBoxMargin),
+            Child           = warningText,
+        };
+        PanelTerrainConfig.Children.Add(warningBox);
+
+        // ── チャンク構成の編集欄 ──
+        PanelTerrainConfig.Children.Add(MakeSectionHeader("チャンク構成"));
+
+        // 派生値（実寸・フットプリント・総チャンク数）の表示欄。編集欄の onChanged から再計算する。
+        var txtChunkEdge   = MakeReadonlyValueText();
+        var txtFootprint   = MakeReadonlyValueText();
+        var txtTotalChunks = MakeReadonlyValueText();
+        void RecomputeDerived()
+        {
+            var ci = CultureInfo.InvariantCulture;
+            double edge = _chunkConfig.VoxelSize * _chunkConfig.ChunkCells;
+            txtChunkEdge.Text = $"{edge.ToString(DerivedValueFormat, ci)} m";
+
+            double footprintX = edge * _chunkConfig.ChunksX;
+            double footprintZ = edge * _chunkConfig.ChunksZ;
+            txtFootprint.Text = $"{footprintX.ToString(DerivedValueFormat, ci)} m × {footprintZ.ToString(DerivedValueFormat, ci)} m";
+
+            txtTotalChunks.Text = $"{_chunkConfig.ChunksX * _chunkConfig.ChunksZ} 個";
+        }
+
+        PanelTerrainConfig.Children.Add(MakeIntRow("チャンク数 X", _chunkConfig.ChunksX,
+            TerrainChunkConfigDocument.ChunksAxisMin, TerrainChunkConfigDocument.ChunksAxisMax,
+            v => { _chunkConfig.ChunksX = v; RecomputeDerived(); }));
+        PanelTerrainConfig.Children.Add(MakeIntRow("チャンク数 Z", _chunkConfig.ChunksZ,
+            TerrainChunkConfigDocument.ChunksAxisMin, TerrainChunkConfigDocument.ChunksAxisMax,
+            v => { _chunkConfig.ChunksZ = v; RecomputeDerived(); }));
+        PanelTerrainConfig.Children.Add(MakeIntRow("チャンク分割数（chunk_cells）", _chunkConfig.ChunkCells,
+            TerrainChunkConfigDocument.ChunkCellsMin, TerrainChunkConfigDocument.ChunkCellsMax,
+            v => { _chunkConfig.ChunkCells = v; RecomputeDerived(); }));
+        PanelTerrainConfig.Children.Add(MakeNumericRow("ボクセルサイズ（m）", _chunkConfig.VoxelSize,
+            TerrainChunkConfigDocument.VoxelSizeMin, TerrainChunkConfigDocument.VoxelSizeMax,
+            v => { _chunkConfig.VoxelSize = v; RecomputeDerived(); }));
+
+        PanelTerrainConfig.Children.Add(MakeSectionHeader("計算値（読み取り専用）"));
+        PanelTerrainConfig.Children.Add(MakeRow("チャンク 1 辺の実寸", txtChunkEdge));
+        PanelTerrainConfig.Children.Add(MakeRow("地形全体のフットプリント", txtFootprint));
+        PanelTerrainConfig.Children.Add(MakeRow("総チャンク数", txtTotalChunks));
+        RecomputeDerived();
+
+        // ── チャンクを追加 ──
+        PanelTerrainConfig.Children.Add(MakeSectionHeader("チャンクを追加"));
+        PanelTerrainConfig.Children.Add(MakeHint(
+            "指定したチャンク座標範囲（両端含む）へチャンクを追加する。既存チャンクは温存される "
+            + "（地形の作り直しにはならない・保存済みの編集内容はそのまま残る）。"));
+
+        PanelTerrainConfig.Children.Add(MakeIntRow("min_x", _addChunksMinX, null, null, v => _addChunksMinX = v));
+        PanelTerrainConfig.Children.Add(MakeIntRow("min_z", _addChunksMinZ, null, null, v => _addChunksMinZ = v));
+        PanelTerrainConfig.Children.Add(MakeIntRow("max_x", _addChunksMaxX, null, null, v => _addChunksMaxX = v));
+        PanelTerrainConfig.Children.Add(MakeIntRow("max_z", _addChunksMaxZ, null, null, v => _addChunksMaxZ = v));
+
+        var btnAddChunks = new Button
+        {
+            Style               = (Style)FindResource("ToolButtonStyle"),
+            Content             = "追加",
+            Padding             = new Thickness(14, 4, 14, 4),
+            Margin              = new Thickness(0, 6, 0, 0),
+            HorizontalAlignment = HorizontalAlignment.Left,
+            ToolTip             = "TERRAIN_ADD_CHUNKS を送信し、指定範囲のチャンクを追加する（既存チャンクは温存される）",
+        };
+        btnAddChunks.Click += (_, _) =>
+        {
+            _sendToRuntime($"TERRAIN_ADD_CHUNKS:{_addChunksMinX},{_addChunksMinZ},{_addChunksMaxX},{_addChunksMaxZ}");
+            SetStatus("チャンク追加を送信しました", ok: true);
+        };
+        PanelTerrainConfig.Children.Add(btnAddChunks);
+    }
+
+    /// <summary>読み取り専用の派生値表示用 TextBlock を作る（エディタ配色に合わせる）。</summary>
+    private static TextBlock MakeReadonlyValueText() => new()
+    {
+        Text              = "",
+        Foreground        = new SolidColorBrush(Color.FromRgb(0xDD, 0xDD, 0xDD)),
+        FontFamily        = new FontFamily("Consolas"),
+        VerticalAlignment = VerticalAlignment.Center,
+    };
 
     // ── レイヤ一覧 ────────────────────────────────────────────
 
@@ -432,6 +564,26 @@ public partial class TerrainSettingsWindow : Window
         return MakeRow(label, box);
     }
 
+    /// <summary>
+    /// 整数入力の行を作る。パースできない入力は無視し（直前の値を保つ）、
+    /// min/max が指定されていればクランプする。負数（"-" 始まり）の入力途中も許容する。
+    /// </summary>
+    private static Grid MakeIntRow(string label, int value, int? min, int? max, Action<int> onChanged)
+    {
+        var box = MakeStyledTextBox(value.ToString(CultureInfo.InvariantCulture));
+        box.Width               = NumericBoxWidth;
+        box.HorizontalAlignment = HorizontalAlignment.Left;
+        box.TextChanged += (_, _) =>
+        {
+            if (!int.TryParse(box.Text, NumberStyles.Integer, CultureInfo.InvariantCulture, out var v))
+                return; // 入力途中（"-" や "" 等）は確定させない
+            if (min.HasValue) v = Math.Max(v, min.Value);
+            if (max.HasValue) v = Math.Min(v, max.Value);
+            onChanged(v);
+        };
+        return MakeRow(label, box);
+    }
+
     /// <summary>選択肢コンボの行を作る（detile モード等）。</summary>
     private static Grid MakeComboRow(string label, string[] options, string current, Action<string> onChanged)
     {
@@ -573,6 +725,9 @@ public partial class TerrainSettingsWindow : Window
         try
         {
             _doc.Save(_assetsRoot);
+            // チャンク構成は保存するだけで、この時点では TERRAIN_INIT は送らない
+            // （破壊的な操作のため、反映は「地形を初期化」／「ハイトマップ読込」ボタン経由に限定する）。
+            _chunkConfig.Save(_assetsRoot);
         }
         catch (Exception ex)
         {
@@ -584,7 +739,7 @@ public partial class TerrainSettingsWindow : Window
         _sendToRuntime("TERRAIN_RELOAD_LAYERS");
         // ツールバーのレイヤ選択コンボなど、エディタ側 UI へレイヤ構成の変更を伝える。
         _onSaved();
-        SetStatus($"保存しました（{_doc.Layers.Count} レイヤ）。シーンビューへ反映を指示しました", ok: true);
+        SetStatus($"保存しました（{_doc.Layers.Count} レイヤ／チャンク構成）。シーンビューへ反映を指示しました", ok: true);
     }
 
     private void OnCloseClicked(object sender, RoutedEventArgs e) => Close();

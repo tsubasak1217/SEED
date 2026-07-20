@@ -798,3 +798,104 @@ fn mc_regen_timing() {
     );
 }
 
+
+// ============================================================
+//  チャンク構成の設定（apply_chunk_config）と tvox ヘッダ読み取り
+// ============================================================
+
+/// 設定範囲外の値が上下限へクランプされること（エディタからの不正入力に対する防御）。
+#[test]
+fn apply_chunk_config_clamps_out_of_range_values() {
+    use super::settings::{
+        MAX_CHUNK_CELLS, MAX_GROUND_CHUNKS, MAX_VOXEL_SIZE, MIN_CHUNK_CELLS, MIN_GROUND_CHUNKS,
+        MIN_VOXEL_SIZE,
+    };
+
+    // 下限側: 0 枚・0 分割・0m はいずれも成立しない。
+    let mut small = TerrainSettings::default();
+    small.apply_chunk_config(0, 0, 0, 0.0);
+    assert_eq!(small.ground_chunks_x, MIN_GROUND_CHUNKS);
+    assert_eq!(small.ground_chunks_z, MIN_GROUND_CHUNKS);
+    assert_eq!(small.chunk_cells, MIN_CHUNK_CELLS);
+    assert_eq!(small.voxel_size, MIN_VOXEL_SIZE);
+
+    // 上限側: メモリを食い潰す巨大値は上限で止まる。
+    let mut big = TerrainSettings::default();
+    big.apply_chunk_config(9999, 9999, 9999, 9999.0);
+    assert_eq!(big.ground_chunks_x, MAX_GROUND_CHUNKS);
+    assert_eq!(big.ground_chunks_z, MAX_GROUND_CHUNKS);
+    assert_eq!(big.chunk_cells, MAX_CHUNK_CELLS);
+    assert_eq!(big.voxel_size, MAX_VOXEL_SIZE);
+}
+
+/// NaN を渡してもパニックせず既定値へ落ちること（f32::clamp は NaN でパニックするため）。
+#[test]
+fn apply_chunk_config_rejects_nan_voxel_size() {
+    let mut s = TerrainSettings::default();
+    let before = s.voxel_size;
+    s.apply_chunk_config(4, 4, 32, f32::NAN);
+    assert_eq!(s.voxel_size, before, "NaN は既定値へフォールバックする");
+}
+
+/// 構成変更に合わせて派生値（chunk_extent / density_clamp / samples_per_axis）が
+/// 追随すること。density_clamp が古い構成のまま残ると、大きなチャンクでブラシ編集の
+/// 密度が頭打ちになって掘削・盛土が効かなくなる。
+#[test]
+fn apply_chunk_config_updates_derived_values() {
+    let mut s = TerrainSettings::default();
+    s.apply_chunk_config(6, 8, 16, 1.0);
+    assert_eq!(s.ground_chunks_x, 6);
+    assert_eq!(s.ground_chunks_z, 8);
+    assert_eq!(s.samples_per_axis(), 17, "サンプル数 = cells + 1");
+    assert_eq!(s.chunk_extent(), 16.0, "実寸 = voxel_size * chunk_cells");
+    assert_eq!(s.density_clamp, s.chunk_extent(), "density_clamp は実寸に追随する");
+}
+
+/// 既定以外のチャンク分割数で作ったチャンクが .tvox を往復して壊れないこと。
+#[test]
+fn tvox_roundtrip_with_custom_chunk_cells() {
+    let mut settings = TerrainSettings::default();
+    settings.apply_chunk_config(2, 2, 8, 0.25);
+    let coord = ChunkCoord::new(-1, 2, 3);
+    let chunk = TerrainChunkData::from_ground_plane(&settings, coord);
+
+    let bytes = write_chunk(&chunk, coord, &settings);
+    let (restored, restored_coord) = read_chunk(&bytes).expect("読み込めること");
+    assert_eq!(restored_coord, coord);
+    assert_eq!(restored.samples_per_axis(), settings.samples_per_axis());
+    assert_eq!(restored.raw_density(), chunk.raw_density(), "密度がビット一致すること");
+}
+
+/// tvox ヘッダだけを読む read_header が、書き出したチャンク構成をそのまま返すこと。
+/// シーンロード時の「保存された地形の分割数を復元する」経路の土台。
+#[test]
+fn tvox_read_header_reports_chunk_config() {
+    use super::tvox::read_header;
+
+    let mut settings = TerrainSettings::default();
+    settings.apply_chunk_config(2, 2, 12, 0.75);
+    let coord = ChunkCoord::new(4, -2, 7);
+    let chunk = TerrainChunkData::from_ground_plane(&settings, coord);
+    let bytes = write_chunk(&chunk, coord, &settings);
+
+    let header = read_header(&bytes).expect("ヘッダが読めること");
+    assert_eq!(header.coord, coord);
+    assert_eq!(header.samples_per_axis, settings.samples_per_axis() as u32);
+    assert_eq!(header.voxel_size, settings.voxel_size);
+    assert_eq!(header.chunk_cells(), settings.chunk_cells, "cells = samples - 1 が復元できる");
+}
+
+/// 壊れた／短すぎるバイト列では read_header がエラーを返すこと（本体を読む前に弾ける）。
+#[test]
+fn tvox_read_header_detects_bad_input() {
+    use super::tvox::read_header;
+
+    assert_eq!(read_header(&[]), Err(TvoxError::Truncated));
+    let mut bad = vec![0u8; 32];
+    bad[0..4].copy_from_slice(b"XXXX");
+    assert_eq!(read_header(&bad), Err(TvoxError::BadMagic));
+    let mut bad_version = vec![0u8; 32];
+    bad_version[0..4].copy_from_slice(&TVOX_MAGIC);
+    bad_version[4..8].copy_from_slice(&99u32.to_le_bytes());
+    assert_eq!(read_header(&bad_version), Err(TvoxError::BadVersion));
+}

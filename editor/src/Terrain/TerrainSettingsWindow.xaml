@@ -65,6 +65,15 @@
 
         <TabControl Grid.Row="0" Background="#1E1E1E" BorderBrush="#3A3A3A">
 
+            <!-- ── 地形タブ: チャンク構成（chunk_config.json）の編集 ─────────
+                 中身はコードビハインド（RebuildTerrainConfigPanel）で組み立てる。
+                 レイヤタブと同じく、フィールド追加時に XAML を触らずに済むようにするため。 -->
+            <TabItem Header="地形">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel x:Name="PanelTerrainConfig" Margin="12"/>
+                </ScrollViewer>
+            </TabItem>
+
             <!-- ── レイヤタブ: layers.json の編集 ───────────────────────── -->
             <TabItem Header="レイヤ">
                 <Grid Margin="6">
