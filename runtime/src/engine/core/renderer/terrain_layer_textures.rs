@@ -159,7 +159,8 @@ where
     for i in 0..count {
         let path = set.layers.get(i).and_then(&pick);
         out.push(match path {
-            Some(p) => load_and_resize(p, cache),
+            // 読み込み失敗時も「未指定と同じ既定色」へ落とす（マップ種別ごとに安全な値）。
+            Some(p) => load_and_resize(p, cache, default_px),
             None => solid_image(default_px),
         });
     }
@@ -167,20 +168,64 @@ where
 }
 
 /// パスの画像を読み、共通解像度へリサイズして返す（同一パスはキャッシュから返す）。
-fn load_and_resize(path: &str, cache: &mut HashMap<String, RgbaImage>) -> RgbaImage {
-    if let Some(img) = cache.get(path) {
+///
+/// 読み込み・デコードに失敗した場合は `fallback_px` の単色を返す。
+/// 共通のマゼンタフォールバック（`asset_fs::read_image`）を使わないのは、
+/// **法線マップにマゼンタ (1,0,1) が入るとデコード後の法線が異常なベクトルになり、
+/// ライティングが破綻する**ため。マップ種別ごとに中立な既定値へ落とす方が安全側に縮退する。
+///
+/// パスは `asset_fs::normalize_asset_path` で正規化される（layers.json の
+/// アセットルート相対表記がカレントディレクトリ基準で解決されないようにするため）。
+fn load_and_resize(
+    path:        &str,
+    cache:       &mut HashMap<String, RgbaImage>,
+    fallback_px: [u8; 4],
+) -> RgbaImage {
+    // キャッシュキーは正規化後のパス（同じ実体を指す別表記を 1 回のデコードにまとめる）。
+    let key = crate::engine::asset_fs::normalize_asset_path(path);
+    if let Some(img) = cache.get(&key) {
         return img.clone();
     }
-    // asset_fs は PAK / ファイルシステムのどちらでも読める（読み失敗時はマゼンタ 1×1）。
-    let src = crate::engine::asset_fs::read_image(path);
+
+    let src = match crate::engine::asset_fs::read_image_result(path) {
+        Ok(img) => img,
+        Err(e) => {
+            log_texture_failure_once(&key, &e);
+            solid_image(fallback_px)
+        }
+    };
+
     let resized = image::imageops::resize(
         &src,
         TERRAIN_LAYER_TEXTURE_SIZE,
         TERRAIN_LAYER_TEXTURE_SIZE,
         RESIZE_FILTER,
     );
-    cache.insert(path.to_string(), resized.clone());
+    cache.insert(key, resized.clone());
     resized
+}
+
+/// 同一パスの読み込み失敗を 1 回だけログする。
+///
+/// レイヤ定義は設定ウィンドウの保存のたびに再構築されるため、素直に毎回出すと
+/// 同じ 1 行がログを埋める。パスごとに 1 回に絞って「気付けるが埋もれない」ようにする。
+fn log_texture_failure_once(key: &str, err: &std::io::Error) {
+    use std::collections::HashSet;
+    use std::sync::{Mutex, OnceLock};
+
+    /// 既に報告済みのパス集合（プロセス全体で共有）。
+    static REPORTED: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+
+    let reported = REPORTED.get_or_init(|| Mutex::new(HashSet::new()));
+    // ロック取得に失敗（毒化）した場合はログを諦める。描画は続行させる方が重要。
+    if let Ok(mut set) = reported.lock() {
+        if set.insert(key.to_string()) {
+            eprintln!(
+                "[SEED terrain] レイヤテクスチャを読み込めません: path={key:?} err={err}\
+                 （既定色で代替します。layers.json のパスは assets フォルダ相対で記述してください）"
+            );
+        }
+    }
 }
 
 /// 単色で共通解像度を埋めた画像を作る。
@@ -266,6 +311,40 @@ mod tests {
             TERRAIN_LAYER_TEXTURE_SIZE >> (mip_level_count(TERRAIN_LAYER_TEXTURE_SIZE) - 1),
             1
         );
+    }
+
+    /// 読み込み失敗時のフォールバックが「マップ種別ごとに安全な色」であること。
+    ///
+    /// 特に法線マップ: マゼンタ (255,0,255) が入るとタンジェント空間法線が
+    /// 異常なベクトルになるため、平坦法線 (128,128,255) でなければならない。
+    #[test]
+    fn missing_texture_falls_back_to_neutral_per_map_kind() {
+        let mut cache = HashMap::new();
+
+        // 法線: 平坦（+Z）。マゼンタであってはならない。
+        let normal = load_and_resize("no/such/normal_for_test.png", &mut cache, DEFAULT_NORMAL_PIXEL);
+        assert_eq!(normal.get_pixel(0, 0).0, DEFAULT_NORMAL_PIXEL);
+        assert_ne!(normal.get_pixel(0, 0).0, [255, 0, 255, 255]);
+        assert_eq!(normal.width(), TERRAIN_LAYER_TEXTURE_SIZE);
+
+        // ラフネス: 白（係数そのまま）。
+        let rough = load_and_resize("no/such/rough_for_test.png", &mut cache, DEFAULT_ROUGHNESS_PIXEL);
+        assert_eq!(rough.get_pixel(0, 0).0, DEFAULT_ROUGHNESS_PIXEL);
+
+        // ベースカラー: 白（base_color 係数そのまま）。
+        let base = load_and_resize("no/such/base_for_test.png", &mut cache, DEFAULT_BASE_COLOR_PIXEL);
+        assert_eq!(base.get_pixel(0, 0).0, DEFAULT_BASE_COLOR_PIXEL);
+    }
+
+    /// キャッシュキーが正規化後のパスであること（同一実体の別表記を 1 回にまとめる）。
+    #[test]
+    fn cache_key_is_normalized_path() {
+        let mut cache = HashMap::new();
+        let _ = load_and_resize("no/such/tex_for_test.png", &mut cache, DEFAULT_NORMAL_PIXEL);
+        assert!(cache.contains_key("assets://no/such/tex_for_test.png"));
+        // 区切り違いの別表記でも同じエントリに当たる（デコード 1 回で済む）。
+        let _ = load_and_resize(r"no\such\tex_for_test.png", &mut cache, DEFAULT_NORMAL_PIXEL);
+        assert_eq!(cache.len(), 1);
     }
 
     /// 単色画像が共通解像度で作られること（GPU 無しで確認できる範囲の検証）。
