@@ -108,6 +108,11 @@ pub enum IpcCommand {
     /// ワイヤ形式: `TERRAIN_BRUSH:{op},{screen_x},{screen_y},{radius},{strength}`
     ///   op: 0=Add / 1=Subtract / 2=Smooth / 3=Flatten
     TerrainBrush { op: u32, screen_x: f32, screen_y: f32, radius: f32, strength: f32 },
+    /// ボクセル地形にレイヤペイントブラシを適用する（Terrain T2）。
+    /// ワイヤ形式: `TERRAIN_PAINT:{layer},{screen_x},{screen_y},{radius},{strength}`
+    ///   layer: 塗る対象レイヤ番号（0 起点。layers.json の並び順に対応）
+    /// 密度は変えず、レイヤ重み（スプラット）だけを押し上げる。
+    TerrainPaint { layer: u32, screen_x: f32, screen_y: f32, radius: f32, strength: f32 },
     /// ボクセル地形の全チャンクを .tvox としてアセット配下へ保存する。
     /// ワイヤ形式: `TERRAIN_SAVE`（引数なし）
     TerrainSave,
@@ -819,6 +824,19 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                             parse1u_nf::<4>(&s["TERRAIN_BRUSH:".len()..]).map(|(op, fs)| {
                                 IpcCommand::TerrainBrush {
                                     op,
+                                    screen_x: fs[0],
+                                    screen_y: fs[1],
+                                    radius:   fs[2],
+                                    strength: fs[3],
+                                }
+                            })
+                        }
+                        // 地形レイヤペイント: "layer,screen_x,screen_y,radius,strength"。
+                        // 先頭 layer は u32、残り 4 つは f32（TERRAIN_BRUSH と同じ並び）。
+                        s if s.starts_with("TERRAIN_PAINT:") => {
+                            parse1u_nf::<4>(&s["TERRAIN_PAINT:".len()..]).map(|(layer, fs)| {
+                                IpcCommand::TerrainPaint {
+                                    layer,
                                     screen_x: fs[0],
                                     screen_y: fs[1],
                                     radius:   fs[2],

@@ -102,8 +102,11 @@ fn smoothstep(t: f32) -> f32 {
 }
 
 /// ブラシ中心からの距離 `dist` に対する減衰係数（中心 1 → 半径 0）。
+///
+/// 密度ブラシ（本ファイル）とペイントブラシ（paint.rs）で同一の減衰カーブを使うため
+/// モジュール内公開にしている（形が食い違うと編集とペイントの効き幅がズレる）。
 #[inline]
-fn falloff(dist: f32, radius: f32) -> f32 {
+pub(super) fn falloff(dist: f32, radius: f32) -> f32 {
     if radius <= 0.0 {
         // 半径 0 は減衰未定義 → 影響なしとする。
         return 0.0;

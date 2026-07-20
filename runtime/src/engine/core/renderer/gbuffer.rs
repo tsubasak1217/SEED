@@ -103,6 +103,9 @@ pub struct GBufferPipelines {
     pub mesh:    CullPipelineSet,
     /// スキンメッシュ用（レイアウト: group0=camera, 1=model, 2=material, 3=joints）。
     pub skinned: CullPipelineSet,
+    /// 地形レイヤブレンド用（レイアウト: group0=camera, 1=model, 2=material, 3=terrain layers）。
+    /// Terrain T2。`Material::terrain_layers` が true のプリミティブだけがここへ流れる。
+    pub terrain: super::terrain_gbuffer::TerrainGBufferPipelines,
 }
 
 impl GBufferPipelines {
@@ -146,7 +149,13 @@ impl GBufferPipelines {
             )
         });
 
-        Self { mesh, skinned }
+        // ── 地形レイヤブレンド用（group3 にレイヤ定義を差す）──
+        //   MRT カラーターゲットは通常の G-Buffer と完全に同一（同じ 4 枚へ焼く）。
+        let terrain = super::terrain_gbuffer::TerrainGBufferPipelines::new(
+            device, mesh_pipeline, df, cache, &gbuffer_color_targets(),
+        );
+
+        Self { mesh, skinned, terrain }
     }
 }
 
@@ -260,6 +269,10 @@ pub fn draw_gbuffer_indirect<'pass>(
     // GPU メッシュレットカリング（第1弾）を LOD0 で使うか。model_drawer.rs の
     // draw_model_indirect と同じ条件（LOD0・非スキンのみ対象、他は自動フォールバック）。
     meshlet_cull: bool,
+    // 地形レイヤ定義のバインドグループ（group3・Terrain T2）。
+    // `None`（レイヤ未初期化＝地形が無いシーン）のときは地形パイプラインへ切り替えず、
+    // 通常のマテリアル経路で描く（group3 未バインドでの描画パニックを避ける）。
+    terrain_layer_bg: Option<&'pass wgpu::BindGroup>,
 ) {
     if batch.n_prims == 0 { return; }
 
@@ -270,6 +283,8 @@ pub fn draw_gbuffer_indirect<'pass>(
         let mut cur_skinned: Option<bool>                   = None;
         let mut cur_cull:    Option<CullFace>               = None;
         let mut cur_mat_ptr: Option<*const wgpu::BindGroup> = None;
+        // 直前のドローが地形パイプラインだったか（パイプライン切り替え判定に使う）。
+        let mut cur_terrain: Option<bool>                   = None;
 
         let joint_bg = batch.joint_vs_bg(lod);
 
@@ -294,9 +309,26 @@ pub fn draw_gbuffer_indirect<'pass>(
 
             let cull = gpu_model.primitive_cull_face(draw.material_idx);
 
+            // ── 地形レイヤブレンド対象か（Terrain T2）────────────────
+            //   レイヤ定義 BG が用意できているときだけ地形パイプラインへ振り分ける。
+            //   スキンメッシュは地形になり得ないため、地形判定はスキン判定より優先する。
+            let is_terrain = terrain_layer_bg.is_some()
+                && !draw.is_skinned
+                && gpu_model.primitive_terrain_layers(draw.material_idx);
+
             // ── パイプライン切り替え ──────────────────────────────
-            if cur_skinned != Some(draw.is_skinned) || cur_cull != Some(cull) {
-                if draw.is_skinned {
+            if cur_skinned != Some(draw.is_skinned)
+                || cur_cull != Some(cull)
+                || cur_terrain != Some(is_terrain)
+            {
+                if is_terrain {
+                    render_pass.set_pipeline(&pipelines.terrain.pipes[cull.index()]);
+                    // group3 = 地形レイヤ定義（uniform + レイヤテクスチャ 4 枚）。
+                    // is_terrain が true になるのは terrain_layer_bg が Some のときだけ。
+                    if let Some(tbg) = terrain_layer_bg {
+                        render_pass.set_bind_group(3, tbg, &[]);
+                    }
+                } else if draw.is_skinned {
                     render_pass.set_pipeline(&pipelines.skinned[cull.index()]);
                     if let Some(jbg) = joint_bg {
                         render_pass.set_bind_group(3, jbg, &[]);
@@ -311,6 +343,7 @@ pub fn draw_gbuffer_indirect<'pass>(
                 render_pass.set_bind_group(0, camera_bg, &[]);
                 cur_skinned = Some(draw.is_skinned);
                 cur_cull    = Some(cull);
+                cur_terrain = Some(is_terrain);
                 cur_mat_ptr = None;
             }
 

@@ -361,6 +361,10 @@ pub struct GpuMaterial {
     /// （未登録・非対応 GPU は `BINDLESS_DUMMY_TEX_INDEX`=0）。B2 の RT 反射が引く。
     /// `GpuModel::register_bindless` が対応 GPU でのみ非 0 を書き込む。
     pub bindless_albedo_tex_index: u32,
+    /// 地形レイヤブレンドで描画するか（Terrain T2）。
+    /// true のとき G-Buffer ジオメトリパスが地形専用パイプラインを選ぶ。
+    /// `Material::terrain_layers` を upload 時に複製する。
+    pub terrain_layers: bool,
     #[allow(dead_code)]
     uniform_buffer:     wgpu::Buffer,
     // テクスチャのライフタイムを保持する
@@ -515,6 +519,7 @@ impl GpuMaterial {
             alpha_mode: mat.alpha_mode,
             alpha_cutoff: mat.alpha_cutoff,
             cull_face:  mat.cull_face,
+            terrain_layers: mat.terrain_layers,
             base_color_factor:      mat.base_color_factor,
             base_color_tex_index:   base_color_idx,
             bindless_albedo_tex_index: crate::engine::core::renderer::BINDLESS_DUMMY_TEX_INDEX,
@@ -907,6 +912,16 @@ impl GpuModel {
             .and_then(|mi| self.materials.get(mi))
             .map(|m| m.cull_face)
             .unwrap_or(self.default_material.cull_face)
+    }
+
+    /// プリミティブのマテリアルインデックスから「地形レイヤブレンド対象か」を返す（Terrain T2）。
+    /// `material_idx` が None・範囲外のときは既定マテリアルの値（＝false）を返す。
+    /// G-Buffer ジオメトリパスが地形専用パイプラインを選ぶ唯一の判定入口。
+    pub fn primitive_terrain_layers(&self, material_idx: Option<usize>) -> bool {
+        material_idx
+            .and_then(|mi| self.materials.get(mi))
+            .map(|m| m.terrain_layers)
+            .unwrap_or(self.default_material.terrain_layers)
     }
 
     /// プリミティブのマテリアルインデックスからプリミティブ平均アルベドを返す（Phase RT-GI）。

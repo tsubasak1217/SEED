@@ -1,11 +1,11 @@
-# Terrain（地形エディタ）設計メモ — T1 ランタイム基盤
+# Terrain（地形エディタ）設計メモ — T1 ランタイム基盤 ＋ T2 レイヤブレンド
 
-本書は SEED の地形（terrain）機能 **T1: ランタイム基盤** の設計正典である。
-ボクセル SDF ＋ marching cubes による洞窟対応の破壊可能地形をランタイム側に実装した段階の記録であり、
-データ構造・チャンク境界同期・tvox フォーマット・IPC 仕様・T2/T3 の拡張余地をまとめる。
+本書は SEED の地形（terrain）機能の設計正典である。
+**T1: ランタイム基盤**（ボクセル SDF ＋ marching cubes による洞窟対応の破壊可能地形）と、
+**T2: 地形マテリアルのレイヤブレンド**（スプラット × triplanar・斜度/高度ルールによる自動下地・
+ペイントブラシによる手修正）をカバーする。
 
-> スコープ外（T1 では未実装）: エディタ UI（モード/ツールバー/マウス入力）、マテリアルレイヤブレンド、
-> triplanar、木/草散布、LOD。これらは T2/T3 で追加する（末尾「拡張余地」参照）。
+> スコープ外（未実装）: 木/草散布、LOD／ストリーミング。これらは T3 で追加する（末尾「拡張余地」参照）。
 
 ---
 
@@ -173,20 +173,33 @@ source_path のみ保持）し、後述の再構築パスで tvox から埋め�
   `tvox::read_chunk` の戻り値が `TerrainSettings` を返さないため。既定構成では問題ないが、非既定 voxel_size プロジェクトを
   完全復元するには tvox ヘッダの voxel_size/samples を `TerrainState` へ反映する小改修が要る（T2 で対応）。
 
-### tvox フォーマット（v1・リトルエンディアン）
+### tvox フォーマット（v2・リトルエンディアン）
 
 | オフセット | 型 | 内容 |
 |---|---|---|
 | 0 | u8[4] | マジック `"TVOX"` |
-| 4 | u32 | バージョン（現在 `1`） |
+| 4 | u32 | バージョン（現在 `2`） |
 | 8 | i32 | チャンク座標 x |
 | 12 | i32 | チャンク座標 y |
 | 16 | i32 | チャンク座標 z |
 | 20 | u32 | samples_per_axis（例 33） |
 | 24 | f32 | voxel_size（m） |
-| 28 | f32 × N | 密度サンプル（N = samples_per_axis³, row-major） |
+| 28 | u32 | **layer_count**（スプラットのレイヤ数。v2 で追加） |
+| 32 | f32 × N | 密度サンプル（N = samples_per_axis³, row-major） |
+| … | u8 × N×L | **手ペイントレイヤ重み**（L = layer_count・サンプルごとに L バイト・u8 量子化） |
+| … | u8 × N | **ペイント量**（0=未ペイント〜255=完全に手描き優先） |
 
-ヘッダ 28 バイト。`read_chunk` は magic/version を検証し、`TvoxError{BadMagic, BadVersion, Truncated, DimMismatch}` を返す。
+ヘッダ v2 = 32 バイト（v1 = 28 バイト）。`read_chunk` は magic/version を検証し、
+`TvoxError{BadMagic, BadVersion, Truncated, DimMismatch}` を返す。
+
+**v1 後方互換**: v1（密度のみ・layer_count 無し）も `read_chunk` が受け付ける。
+その場合スプラットは「全サンプル未ペイント」で復元される。未ペイント＝斜度/高度ルールによる
+自動下地が全面に適用されるため、旧セーブデータも正しくレイヤブレンドされた地形として表示される
+（重みが欠落して黒落ちする、といった破綻は起きない）。
+保存は常に v2 で行う（v1 の書き手 `write_chunk_v1` はテスト・移行用のみ）。
+
+**レイヤ数が変わったとき**: ファイルの `layer_count` が現在の `TERRAIN_LAYER_COUNT` と異なる場合、
+共通する先頭 `min(L_file, L_now)` 層だけを読み、残りは 0 で埋める（定義の増減でロード不能にしない）。
 保存先: `<assets_root>/terrain/<scene>/chunk_X_Y_Z.tvox`（`std::fs::create_dir_all`＋`std::fs::write`。読みは `asset_fs::read_bytes` で PAK 対応）。
 
 ---
@@ -200,6 +213,7 @@ serde/JSON ではない。地形コマンドは以下の 3 つ。エディタ側
 |---|---|---|
 | `TERRAIN_INIT` | なし | `TERRAIN_INIT_OK` |
 | `TERRAIN_BRUSH:{op},{screen_x},{screen_y},{radius},{strength}` | `op`:u32（0=Add,1=Subtract,2=Smooth,3=Flatten）／他 f32。`screen_x/y` はビューポート左上原点のピクセル座標 | ヒット時 `TERRAIN_BRUSH_OK:{hx},{hy},{hz}`（ワールドヒット点）／非ヒット `TERRAIN_BRUSH_MISS` |
+| `TERRAIN_PAINT:{layer},{screen_x},{screen_y},{radius},{strength}` | `layer`:u32（塗る対象レイヤ番号・0 起点／`layers.json` の並び順）／他 f32 | ヒット時 `TERRAIN_PAINT_OK:{layer},{hx},{hy},{hz}`／非ヒット `TERRAIN_PAINT_MISS` |
 | `TERRAIN_SAVE` | なし | `TERRAIN_SAVE_OK:{count}`（保存チャンク数）／`TERRAIN_SAVE_ERROR:{msg}` |
 | `TERRAIN_BRUSH_PREVIEW:{screen_x},{screen_y},{radius},{strength}` | 全 f32。ホバー中（非押下）に送る。`strength` はプレビュー球の色（強度連動）にのみ使う | 応答なし（高頻度・ホバー用）。レイマーチのヒット点にブラシ半径のワイヤスフィアを描く |
 | `TERRAIN_BRUSH_PREVIEW_OFF` | なし | 応答なし。プレビュー（ワイヤスフィア）を非表示にする |
@@ -211,6 +225,9 @@ serde/JSON ではない。地形コマンドは以下の 3 つ。エディタ側
 - `TERRAIN_INIT`: terrain ルート＋初期平地（`ground_chunks_x × ground_chunks_z × [y_min..=y_max]` チャンク、y=0 に地面）を生成。
 - `TERRAIN_BRUSH`: カーソル位置からカメラレイを作り、グローバル密度場を SDF レイマーチして最初の AIR→SOLID 交差点を求め、
   そこへ球ブラシを適用。ヒットが無ければ無視（MISS）。適用後、影響チャンクを VRAM 安全手順で再アップロードし dirty 化。
+- `TERRAIN_PAINT`: `TERRAIN_BRUSH` と同じレイマーチで着弾点を求め、そこへ球ブラシで**レイヤ重みだけ**を塗る
+  （密度＝形状は一切変えない）。undo は密度ブラシと同じストローク単位（`TERRAIN_STROKE_END` で確定）に載る。
+  ペイントは形状を変えないが頂点属性（頂点カラー＝レイヤ重み）が変わるため、影響チャンクは再メッシュされる。
 - `TERRAIN_SAVE`: 全チャンクの tvox を書き出す（シーン保存とは別口。シーン保存は既存 `SAVE_SCENE`）。
 
 ### 9.1 地形 undo/redo（1 ストローク = 1 エントリ）
@@ -297,7 +314,8 @@ IPC を叩けない環境（エディタ非接続）で地形生成・編集を�
 
 | UI | 機能 |
 |---|---|
-| ツール選択（盛る/掘る/均す/平坦化） | トグル（`RadioButton` 群）。選択状態をアクセント色で表示。`op` = 0/1/2/3 に対応 |
+| ツール選択（盛る/掘る/均す/平坦化/ペイント） | トグル（`RadioButton` 群）。選択状態をアクセント色で表示。`op` = 0/1/2/3 に対応。**ペイント**だけは擬似 op（100）で、`TERRAIN_BRUSH` ではなく `TERRAIN_PAINT` を送る |
+| レイヤ選択コンボ（`CmbTerrainLayer`） | **ペイントツール選択時のみ表示**（`TerrainLayerPanel`）。項目は `assets/terrain/layers.json` の並びに対応し、`SelectedIndex` がそのまま `TERRAIN_PAINT` の `layer` になる |
 | ブラシ半径スライダー | 0.5〜8 m（`TERRAIN_BRUSH` の radius）|
 | ブラシ強度スライダー | 0〜1（`TERRAIN_BRUSH` の strength）|
 | 「地形を初期化」ボタン | `TERRAIN_INIT` を送る。再初期化時は確認ダイアログを出す（既存地形は作り直される）|
@@ -399,13 +417,145 @@ IPC を叩けない環境（エディタ非接続）で地形生成・編集を�
 `REMOVE_ACTOR`/`DELETE_RECURSIVE` で行うため実害はない。スクリプトからフォルダを破棄させたい
 場合は `ffi_destroy` の生存確認を is_folder 対応へ拡張する余地がある。
 
-## 12. 拡張余地（T2 / T3）
+## 12. T2: 地形マテリアルのレイヤブレンド
 
-- **T2 マテリアル**: triplanar ＋標高/傾斜ベースのレイヤブレンド（草/岩/砂）。現在の単一デフォルト Material を置換。
-  `terrain_mesh_build.rs` の Material 生成部と `Vertex.color`/uv の使い方を差し替えるだけで載る設計。
-- **T2 tvox 拡張**: voxel_size/samples をロード後 `TerrainState` へ反映（§8 の限界解消）。i8 量子化オプション（メモリ/ディスク 1/4）。
-  マテリアル ID/レイヤ重みをサンプル毎に持たせる場合はフォーマット版数を上げて後方互換ロードを追加。
-- **T2/T3 散布物**: チャンクフォルダ内に木・草アクターを追加（ヒエラルキーは既に対応）。地表サンプルから配置点を算出。
+AAA 定番の **スプラット（レイヤ重み）× triplanar** 方式。
+「斜度/高度ルールによる自動下地生成」と「ブラシによる手ペイント修正」の**両方**に対応する。
+
+### 12.1 レイヤ定義（データドリブン）— `assets/terrain/layers.json`
+
+レイヤ構成はアセットで定義する。値を書き換えるだけで塗り分けが変わる（コード変更不要）。
+
+```jsonc
+{
+  "layers": [
+    {
+      "name": "grass",                 // エディタのレイヤ選択 UI に出る表示名
+      "base_color": [0.16, 0.38, 0.12],// リニア RGB 係数（テクスチャがあれば乗算）
+      "roughness": 0.95,
+      "metallic": 0.0,
+      "uv_scale": 0.25,                // triplanar UV スケール（world 1m あたりの UV 進み量）
+      "base_color_texture": null,      // アセット相対パス。null なら base_color の単色レイヤ
+      "rule": {                        // 斜度/高度による自動下地生成ルール
+        "slope_min_deg": 0.0,          // 斜度ウィンドウ（0=水平, 90=垂直）
+        "slope_max_deg": 22.0,
+        "slope_fade_deg": 10.0,        // ウィンドウ両端の smoothstep ぼかし幅
+        "height_min": -1000000.0,      // 高度ウィンドウ（ワールド Y・メートル）
+        "height_max":  1000000.0,
+        "height_fade": 2.0,
+        "priority": 1.0                // 同条件で複数層が立つときの配分比
+      }
+    }
+    // … 最大 4 層（TERRAIN_LAYER_COUNT）。超過分は先頭 4 層へ切り詰め
+  ]
+}
+```
+
+- 正典実装: `runtime/src/engine/terrain/layers.rs`（純粋データ層。IO/GPU 非依存）。
+- ファイルが無い／壊れている場合は**既定セット（単色 4 層: 草・土・岩・砂）へフォールバック**する。
+  アセット未整備でもブレンドが目視でき、データドリブンな試作を止めない。
+- レイヤ数上限 `TERRAIN_LAYER_COUNT = 4` は**定数**（layers.rs）。WGSL 側の
+  `const TERRAIN_LAYER_COUNT: u32 = 4u` と一致必須（`terrain_gbuffer.rs` のテストが検証）。
+
+### 12.2 スプラット（レイヤ重み）の保持方法とメモリ
+
+密度と同じ 33³ グリッド上に、**手ペイント分だけ**を保持する（`chunk_data.rs`）:
+
+| 配列 | 型 | サイズ/チャンク |
+|---|---|---|
+| `density` | f32 × 1 | 143.7 KB |
+| `paint`（手ペイント重み） | u8 × 4 | 143.7 KB |
+| `paint_amount`（ペイント量 0..1） | u8 × 1 | 35.9 KB |
+| **合計** | | **323.4 KB/チャンク**（T1 比 +125%） |
+
+既定の地面 4×4×3 = 48 チャンクで約 **15.5 MB**。
+u8 量子化を採ったのは、f32 のままだと `paint` だけで 575 KB/チャンク（density の 4 倍）に膨らむため。
+重みは 0..1 の被覆率であり 8bit で視覚的に十分。
+
+**斜度/高度ルールによる自動下地はグリッドに保存しない。** メッシュ生成時に法線と高度から毎回計算する。
+理由は、ルールが `layers.json` で後から差し替えられるべきで、グリッドへ焼き込むと差し替えが効かなくなるため。
+
+### 12.3 ルール自動生成と手ペイントの共存
+
+最終的なレイヤ重みは 1 本の式で決まる（`layers::blend_rule_and_paint`）:
+
+```
+result = normalize( lerp(rule_weights, paint_weights, paint_amount) )
+```
+
+| `paint_amount` | 挙動 |
+|---|---|
+| 0（未ペイント） | 完全にルール任せ。地形を掘って斜面ができれば**自動で岩になる**（自動下地が生き続ける） |
+| 1（完全ペイント） | ルールを無視して手描き優先。塗った箇所は**その後に地形を変形してもルールに塗り戻されない** |
+| 中間 | ブラシ縁のフェード。ペイント領域が地形へ自然に溶ける |
+
+ペイント済みを真偽フラグではなく**連続値**（`paint_amount`）にしたのが要点で、
+これによりブラシ縁の段差が出ず、「上書きしない」という要件も同時に満たす。
+
+`rule_weights(normal_y, world_y)` は
+斜度 = `acos(|n.y|)`（度）と高度 = ワールド Y に対する台形ウィンドウの積 × `priority` を、
+総和 1 へ正規化したもの。全ルールが 0 になる縮退時はレイヤ 0 に 1.0 を寄せる（黒落ち防止）。
+
+### 12.4 GPU への運び方（頂点カラー転用）
+
+レイヤ重み 4 成分は **`Vertex.color` の RGBA** に載せて渡す（`terrain_mesh_build.rs`）。
+
+専用の頂点属性スロットを増やす案もあったが、`Vertex`/`mesh_vertex` レイアウトは
+forward / shadow / depth / id / outline / RT を含む**全パイプラインが共有**しており、
+1 バイト増やすだけで十数本のパイプラインへ波及する。地形メッシュでは頂点カラーが未使用（常に白）だったため、
+これを転用するのが最小の差分で、既存の頂点アップロード経路をそのまま使える。
+→ 同時ブレンド可能なレイヤ数が 4 に固定される、というトレードオフ。
+
+マーチングキューブスは辺の両端サンプルから `paint` / `paint_amount` を位置と同じ係数 `t` で線形補間し
+（`marching_cubes.rs`）、`terrain_mesh_to_model` がそこへルール重みを合成して頂点カラーへ焼く。
+
+### 12.5 シェーディング（既存 deferred G-Buffer への統合）
+
+新しいライティングは**一切書かない**。G-Buffer 書き込み段だけを差し替える。
+
+- シェーダ: `runtime/src/engine/core/renderer/shaders/terrain_gbuffer_write.wgsl`（entry `fs_terrain_gbuffer`）
+- パイプライン: `runtime/src/engine/core/renderer/terrain_gbuffer.rs`（`TerrainGBufferPipelines`）
+- 連結順: `["shader_common.wgsl", "shader_static_vertex.wgsl", "terrain_gbuffer_write.wgsl"]`
+  （`surface.wgsl` / `surface_gather.wgsl` は連結しない。Surface を経由せず直接 MRT を作る）
+- バインドグループ: `group0=camera / 1=model / 2=material`（`MeshPipeline` から借用）＋
+  **`group3` = 地形レイヤ定義**（uniform 1 + サンプラ 1 + レイヤテクスチャ 4）。
+  非スキンの地形では group3 が空いているため、ここに差すのが最小差分。
+- MRT カラーターゲットは通常の G-Buffer と**完全に同一**（`gbuffer_color_targets()` を共有）。
+
+フラグメントは
+①頂点カラー（レイヤ重み）を再正規化 → ②法線から triplanar ブレンド重み `pow(|n|, sharpness)` を求める →
+③各レイヤをワールド座標由来 UV で 3 平面サンプル（最大 4 層 × 3 平面 = 12 タップ）→
+④重みで線形合成した `albedo / metallic / roughness` を G-Buffer へ書く。
+合成済みの値を通常レイアウトへ出すため、**ライティング・シャドウ・SSAO・RT 反射・SSGI は既存パスがそのまま効く**。
+
+パイプライン選択は `Material::terrain_layers`（bool）が唯一のスイッチで、
+`gbuffer.rs::draw_gbuffer_indirect` が `GpuModel::primitive_terrain_layers()` を見て振り分ける。
+このフラグを立てるのは `terrain_mesh_build.rs` だけ。
+レイヤ定義の BindGroup が未用意（地形が無いシーン・GPU 未初期化）のときは切り替えず、通常マテリアル描画へ倒す。
+
+レイヤテクスチャは 2D 配列テクスチャではなく**個別バインディング 4 枚**にしてある
+（配列は全レイヤで同一サイズ・同一フォーマットを強制するため）。
+パス未指定・読み込み失敗のレイヤには 1×1 白テクスチャを割り当て、`base_color` の単色レイヤとして機能させる。
+
+### 12.6 ペイントブラシ
+
+- 純粋アルゴリズム: `runtime/src/engine/terrain/paint.rs`（`PaintField` トレイト＋`apply_paint`）。
+  密度ブラシ（`brush.rs`）と同じ減衰カーブ（`falloff`）・同じ境界重複同期規約を使う。
+- 1 サンプルあたり `paint[layer] += delta` → 正規化（他レイヤは相対的に減衰）、`paint_amount += delta` を clamp。
+- エンジン統合: `terrain_ops.rs::handle_terrain_paint`（レイキャスト経路）と `handle_terrain_paint_world`（共通経路）。
+- undo: 密度ブラシと同じ `stroke_before` を共有する。1 エントリは `ChunkSnapshot{density, paint, paint_amount}` を
+  丸ごと控えるため、密度編集とペイントが混在したストロークも 1 回の undo で完全に戻る。
+
+---
+
+## 13. 拡張余地（T3）
+
+- **レイヤ法線マップ**: T2 ではレイヤごとの base_color テクスチャのみ対応。法線マップを足す場合は
+  group3 にテクスチャ 4 枚を追加し、triplanar の 3 平面それぞれで接空間法線を合成する（Whiteout blend）。
+- **レイヤ数の拡張（>4）**: 頂点カラー転用をやめ、専用の頂点属性スロット（`Unorm8x4` を 2 本など）を
+  追加する必要がある（§12.4 のトレードオフ参照）。
+- **tvox 拡張**: voxel_size/samples をロード後 `TerrainState` へ反映（§8 の限界解消）。密度の i8 量子化（ディスク 1/4）。
+- **T3 散布物**: チャンクフォルダ内に木・草アクターを追加（ヒエラルキーは既に対応）。地表サンプルから配置点を算出。
 - **T3 LOD/ストリーミング**: 遠距離チャンクの粗メッシュ（セル間引き）・視錐台外チャンクのアンロード。
   再メッシュは既に「影響チャンクのみ差し替え」なので、距離別メッシュキャッシュを足す方向で拡張できる。
 - **編集の連続化**: エディタ側でドラッグ中に毎フレーム `TERRAIN_BRUSH` を送る（`dt` はフレーム時間）。undo/redo は

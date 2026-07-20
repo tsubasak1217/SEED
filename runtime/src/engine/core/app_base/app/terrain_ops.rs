@@ -32,13 +32,17 @@ use crate::engine::core::loader::model::Model;
 use crate::engine::methods::drawer::{DrawContext, GpuModel, InstancedModelBatch};
 use crate::engine::structs::objects::Actor;
 use crate::engine::terrain::{
-    self, BrushOp, ChunkCoord, SampleField, SphereBrush, TerrainChunkData, TerrainSettings, tvox,
+    self, BrushOp, ChunkCoord, LayerWeights, PaintField, SampleField, SphereBrush,
+    TerrainChunkData, TerrainLayerSet, TerrainSettings, TERRAIN_LAYER_COUNT, tvox,
 };
 
 use super::App;
 use super::terrain_mesh_build::terrain_mesh_to_model;
 
 // ─── 名前・調整用の名前付き定数（マジックナンバー禁止） ────────────────────────
+
+/// 地形レイヤ定義アセットの仮想パス（データドリブン。ここを差し替えれば層構成が変わる）。
+const TERRAIN_LAYERS_ASSET: &str = "assets://terrain/layers.json";
 
 /// 地形ルートアクターの名前。
 const TERRAIN_ROOT_NAME: &str = "terrain";
@@ -91,6 +95,25 @@ const SMOKE_UNDO_TEST_BRUSH_COUNT: u32 = 3;
 const SMOKE_HEIGHTMAP_SIZE: u32 = 64;
 /// スモークのハイトマップ読込で使う高さスケール（メートル）。
 const SMOKE_HEIGHTMAP_HEIGHT_SCALE: f32 = 10.0;
+/// スモークのレイヤペイント確認で塗るレイヤ番号（既定 layers.json では 3 = sand＝砂色）。
+/// 自動下地（草／土／岩）と明確に色が違う層を選び、手ペイントが効いていることを一目で示す。
+const SMOKE_PAINT_LAYER: usize = 3;
+/// スモークのレイヤペイント半径（メートル）。
+const SMOKE_PAINT_RADIUS: f32 = 7.0;
+/// スモークのレイヤペイント強度（1 回で paint_amount がほぼ 1 へ達する値）。
+const SMOKE_PAINT_STRENGTH: f32 = 2.0;
+/// スモークのレイヤペイント中心を footprint 中心からずらす量（メートル）。
+const SMOKE_PAINT_OFFSET: f32 = 24.0;
+/// スモークのレイヤペイントを縦方向に積む段数。ハイトマップ適用後の地表 Y は
+/// スクリーンレイを使わずには求められないため、垂直に積んで確実に地表を覆う。
+const SMOKE_PAINT_COLUMN_STEPS: u32 = 12;
+/// レイヤペイント縦積みの 1 段あたりの高さ（メートル）。
+const SMOKE_PAINT_COLUMN_STEP_Y: f32 = 1.5;
+/// スモークの「急斜面デモ」ブラシ強度。斜度ルール（38 度以上＝岩）が確実に立つよう
+/// 通常のスモークブラシより強く盛って切り立った山を作る。
+const SMOKE_STEEP_STRENGTH: f32 = 40.0;
+/// 急斜面デモの山／谷を footprint 中心からずらす量（メートル）。
+const SMOKE_STEEP_OFFSET: f32 = 14.0;
 
 /// terrain 専用 undo スタックの最大保持数。これを超えたら最古のエントリを破棄する
 /// （無制限に保持すると 1 チャンク ≒ 143KB のスナップショットが積み上がり続けるため）。
@@ -109,10 +132,43 @@ const TERRAIN_UNDO_MAX: usize = 32;
 /// 触ったチャンクのみを before/after として保持する（全チャンクをスナップショットすると
 /// 1 チャンクあたり 33³×4byte ≒ 143KB と重いため、ストロークで実際に触れたチャンクに限定する）。
 pub struct TerrainEdit {
-    /// ストローク開始時点の密度（chunk coord -> raw density スナップショット）。
-    pub before: HashMap<ChunkCoord, Vec<f32>>,
-    /// ストローク終了時点の密度（chunk coord -> raw density スナップショット）。
-    pub after: HashMap<ChunkCoord, Vec<f32>>,
+    /// ストローク開始時点のチャンク状態（chunk coord -> スナップショット）。
+    pub before: HashMap<ChunkCoord, ChunkSnapshot>,
+    /// ストローク終了時点のチャンク状態（chunk coord -> スナップショット）。
+    pub after: HashMap<ChunkCoord, ChunkSnapshot>,
+}
+
+/// undo/redo 用の 1 チャンク分スナップショット（密度＋スプラット）。
+///
+/// 密度ブラシ（TERRAIN_BRUSH）とペイントブラシ（TERRAIN_PAINT）を同じ undo スタックに
+/// 載せるため、両方の状態をひとまとめに控える。片方しか変わらないストロークでも
+/// もう片方をそのまま控えるだけなので、復元は常に「丸ごと書き戻す」で済む（分岐不要）。
+#[derive(Clone)]
+pub struct ChunkSnapshot {
+    /// 密度サンプル（f32 × samples³）。
+    pub density: Vec<f32>,
+    /// 手ペイントレイヤ重み（u8 × TERRAIN_LAYER_COUNT × samples³）。
+    pub paint: Vec<[u8; TERRAIN_LAYER_COUNT]>,
+    /// ペイント量（u8 × samples³）。
+    pub paint_amount: Vec<u8>,
+}
+
+impl ChunkSnapshot {
+    /// チャンクの現在状態を控える。
+    pub fn capture(chunk: &TerrainChunkData) -> Self {
+        Self {
+            density:      chunk.raw_density().to_vec(),
+            paint:        chunk.raw_paint().to_vec(),
+            paint_amount: chunk.raw_paint_amount().to_vec(),
+        }
+    }
+
+    /// 控えた状態をチャンクへ書き戻す。
+    pub fn restore(&self, chunk: &mut TerrainChunkData) {
+        chunk.set_raw_density(self.density.clone());
+        chunk.set_raw_paint(self.paint.clone());
+        chunk.set_raw_paint_amount(self.paint_amount.clone());
+    }
 }
 
 /// ボクセル地形の実行時状態。App に 1 つ保持する。
@@ -136,9 +192,17 @@ pub struct TerrainState {
     /// 現在ブラシストローク中かどうか。TERRAIN_BRUSH（ドラッグ中の連続適用）の
     /// 最初の 1 回で暗黙的に true になり、TERRAIN_STROKE_END で false に戻る。
     pub stroke_active: bool,
-    /// 現在のストローク中に初めて触れたチャンクの「編集前」密度スナップショット。
+    /// 現在のストローク中に初めて触れたチャンクの「編集前」スナップショット。
     /// ストローク確定（handle_terrain_stroke_end）時に TerrainEdit::before として消費される。
-    pub stroke_before: HashMap<ChunkCoord, Vec<f32>>,
+    pub stroke_before: HashMap<ChunkCoord, ChunkSnapshot>,
+    /// 地形マテリアルレイヤ定義（assets/terrain/layers.json 由来。読めなければ既定セット）。
+    /// 斜度／高度ルールの供給元であり、GPU のレイヤ uniform／テクスチャの元でもある。
+    pub layers: TerrainLayerSet,
+    /// レイヤ定義の GPU バインドグループ（group3）。地形描画時に G-Buffer パスへ渡す。
+    /// `None` のときは地形専用パイプラインへ切り替えない（通常マテリアル描画へフォールバック）。
+    pub layer_bind_group: Option<wgpu::BindGroup>,
+    /// ペイントブラシで塗る対象レイヤ番号（エディタのレイヤ選択 UI と対応）。
+    pub paint_layer: usize,
     /// terrain 専用 undo スタック（末尾が最新）。上限 TERRAIN_UNDO_MAX。
     pub undo_stack: Vec<TerrainEdit>,
     /// terrain 専用 redo スタック（末尾が最新）。undo 実行で積まれ、新規編集で clear される。
@@ -156,6 +220,9 @@ impl Default for TerrainState {
             brush_preview: None,
             stroke_active: false,
             stroke_before: HashMap::new(),
+            layers: TerrainLayerSet::default(),
+            layer_bind_group: None,
+            paint_layer: 0,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
         }
@@ -240,6 +307,66 @@ fn write_global_impl(
     }
 }
 
+/// グローバルサンプル座標の (手ペイント重み, ペイント量) を読む。
+///
+/// 密度の read_global_impl と同じ所有規約（境界サンプルは複数チャンクが重複所有）。
+/// どのチャンクも存在しない（地形外）場合は「未ペイント」を返す。
+fn read_paint_global_impl(
+    chunks: &HashMap<ChunkCoord, TerrainChunkData>,
+    cells: i32,
+    gx: i32,
+    gy: i32,
+    gz: i32,
+) -> (LayerWeights, f32) {
+    let (ox, nx) = axis_owners(gx, cells);
+    let (oy, ny) = axis_owners(gy, cells);
+    let (oz, nz) = axis_owners(gz, cells);
+    for i in 0..nx {
+        for j in 0..ny {
+            for k in 0..nz {
+                let coord = ChunkCoord::new(ox[i].0, oy[j].0, oz[k].0);
+                if let Some(chunk) = chunks.get(&coord) {
+                    return (
+                        chunk.paint_weights(ox[i].1, oy[j].1, oz[k].1),
+                        chunk.paint_amount(ox[i].1, oy[j].1, oz[k].1),
+                    );
+                }
+            }
+        }
+    }
+    // 地形外 = 未ペイント（＝ルール自動生成に従う）。
+    ([0.0; TERRAIN_LAYER_COUNT], 0.0)
+}
+
+/// グローバルサンプル座標へ (手ペイント重み, ペイント量) を書く。
+///
+/// 境界で重複する全チャンクへ同一値を書き込む（同期）。これを怠るとチャンク境界で
+/// レイヤの塗り分けが食い違い、継ぎ目に色の段差が出る。
+fn write_paint_global_impl(
+    chunks: &mut HashMap<ChunkCoord, TerrainChunkData>,
+    cells: i32,
+    gx: i32,
+    gy: i32,
+    gz: i32,
+    w: LayerWeights,
+    amount: f32,
+) {
+    let (ox, nx) = axis_owners(gx, cells);
+    let (oy, ny) = axis_owners(gy, cells);
+    let (oz, nz) = axis_owners(gz, cells);
+    for i in 0..nx {
+        for j in 0..ny {
+            for k in 0..nz {
+                let coord = ChunkCoord::new(ox[i].0, oy[j].0, oz[k].0);
+                if let Some(chunk) = chunks.get_mut(&coord) {
+                    chunk.set_paint_weights(ox[i].1, oy[j].1, oz[k].1, w);
+                    chunk.set_paint_amount(ox[i].1, oy[j].1, oz[k].1, amount);
+                }
+            }
+        }
+    }
+}
+
 /// ワールド座標 `p` の密度をトライリニア補間で求める（レイマーチ用）。
 fn sample_density_world(
     chunks: &HashMap<ChunkCoord, TerrainChunkData>,
@@ -312,6 +439,31 @@ impl<'a> SampleField for FieldView<'a> {
     }
 }
 
+/// ペイントブラシ（terrain::paint::apply_paint）用の PaintField 実装。
+///
+/// 密度用の SampleField と同じ FieldView に相乗りさせている（設定とチャンク集合という
+/// 依存が完全に同じで、分けると分割借用のボイラープレートが二重になるだけのため）。
+impl<'a> PaintField for FieldView<'a> {
+    fn settings(&self) -> &TerrainSettings {
+        self.settings
+    }
+
+    fn read_paint_global(&self, gx: i32, gy: i32, gz: i32) -> (LayerWeights, f32) {
+        let cells = self.settings.chunk_cells as i32;
+        read_paint_global_impl(self.chunks, cells, gx, gy, gz)
+    }
+
+    fn write_paint_global(&mut self, gx: i32, gy: i32, gz: i32, w: LayerWeights, amount: f32) {
+        let cells = self.settings.chunk_cells as i32;
+        write_paint_global_impl(self.chunks, cells, gx, gy, gz, w, amount);
+    }
+
+    fn world_of_global(&self, gx: i32, gy: i32, gz: i32) -> [f32; 3] {
+        let vs = self.settings.voxel_size;
+        [gx as f32 * vs, gy as f32 * vs, gz as f32 * vs]
+    }
+}
+
 // ============================================================
 //  純粋ヘルパー（App 非依存）
 // ============================================================
@@ -354,6 +506,7 @@ fn tvox_file_name(coord: ChunkCoord) -> String {
 fn build_chunk_render(
     chunks: &HashMap<ChunkCoord, TerrainChunkData>,
     settings: &TerrainSettings,
+    layers: &TerrainLayerSet,
     ctx: &DrawContext,
     coord: ChunkCoord,
 ) -> Option<(Arc<Model>, Option<GpuModel>, Option<InstancedModelBatch>)> {
@@ -365,9 +518,12 @@ fn build_chunk_render(
     let mesh = terrain::generate(chunk, settings, |lx, ly, lz| {
         read_global_impl(chunks, cells, clamp, base[0] + lx, base[1] + ly, base[2] + lz)
     });
+    // レイヤ重みはワールド Y（高度ルール）を要するため、チャンク原点を渡す。
     let model = terrain_mesh_to_model(
         &mesh,
         &format!("terrain_{}_{}_{}", coord.x, coord.y, coord.z),
+        coord.world_origin(settings),
+        layers,
     );
     // 空メッシュ（三角形 0）は GPU リソースを作らない（サイズ 0 バッファ由来のパニック回避）。
     if mesh.indices.is_empty() {
@@ -497,6 +653,12 @@ impl App {
         self.terrain.scene_name = scene_name.clone();
         let settings = self.terrain.settings.clone();
 
+        // ── レイヤ定義（layers.json）を読み込み、GPU バインドグループを用意する ──
+        //   TerrainState::default() でクリアされているため毎回作り直す。
+        //   アセットが無ければ既定セット（単色 4 層）にフォールバックする。
+        self.ensure_terrain_layers();
+        let layers = self.terrain.layers.clone();
+
         // ── フェーズ 1: 全チャンクの初期密度を敷き詰める（fill クロージャに委譲） ──
         // 先に全チャンクを map へ入れておくことで、後段のメッシュ化で境界の
         // 隣接サンプル（neighbor_sampler）が正しい値を返す。
@@ -514,7 +676,7 @@ impl App {
             for &coord in &coords {
                 // 空メッシュチャンクも Some(model, None, None) で返るため、全チャンクが
                 // アクター＋MC スロットを得る（掘削で後から表面が出ても差し替えられる）。
-                if let Some((model, gpu, batch)) = build_chunk_render(&self.terrain.chunks, &settings, ctx, coord) {
+                if let Some((model, gpu, batch)) = build_chunk_render(&self.terrain.chunks, &settings, &layers, ctx, coord) {
                     prebuilt.push((coord, model, gpu, batch));
                 }
             }
@@ -591,6 +753,146 @@ impl App {
 
         self.send_hierarchy();
         true
+    }
+
+    /// レイヤ定義（layers.json）を読み込み、GPU バインドグループを用意する。
+    ///
+    /// 冪等（何度呼んでもよい）。読み込み順:
+    ///   1. `assets://terrain/layers.json` を読んでパースする
+    ///   2. 読めない／壊れている場合は `TerrainLayerSet::default()`（単色 4 層）へフォールバックする
+    ///   3. レイヤ定義から group3 のバインドグループ（uniform + レイヤテクスチャ 4 枚）を作る
+    ///
+    /// GPU 未初期化（draw_ctx なし）のときはバインドグループを作らず CPU 側の定義だけ持つ。
+    /// この場合 G-Buffer パスは地形専用パイプラインへ切り替えないため、
+    /// レイヤ色は出ないが描画自体は通常マテリアルで成立する（安全側）。
+    pub(super) fn ensure_terrain_layers(&mut self) {
+        // ── ① 定義を読む（アセットが無ければ既定セット）──
+        let set = match crate::engine::asset_fs::read_string(TERRAIN_LAYERS_ASSET) {
+            Ok(text) => match TerrainLayerSet::from_json_str(&text) {
+                Ok(set) => set,
+                Err(e) => {
+                    eprintln!(
+                        "[SEED terrain] layers.json parse failed ({e}); 既定レイヤセットで続行します"
+                    );
+                    TerrainLayerSet::default()
+                }
+            },
+            Err(_) => {
+                // ファイルが無いのは正常な運用（未整備プロジェクト）なのでログレベルを落とす。
+                eprintln!(
+                    "[SEED terrain] {TERRAIN_LAYERS_ASSET} が見つかりません; 既定レイヤセット（単色 4 層）を使用します"
+                );
+                TerrainLayerSet::default()
+            }
+        };
+
+        // ── ② GPU バインドグループを作る（レイヤテクスチャの読み込みを伴う）──
+        let bg = self.draw_ctx.as_ref().map(|ctx| {
+            crate::engine::core::renderer::terrain_gbuffer::create_layer_bind_group(
+                &ctx.device,
+                &ctx.queue,
+                &ctx.pipelines.gbuffer.terrain.layer_bgl,
+                &set,
+            )
+        });
+
+        self.terrain.layers = set;
+        self.terrain.layer_bind_group = bg;
+    }
+
+    /// レイヤペイントブラシ（TERRAIN_PAINT）。
+    ///
+    /// スクリーン座標からレイマーチで地表の着弾点を求め、そこを中心とした球ブラシで
+    /// `layer` の重みを押し上げる（他レイヤは正規化で減衰する）。密度は一切変えない。
+    /// undo は密度ブラシと同じストローク単位（TERRAIN_STROKE_END で確定）に載る。
+    pub(super) fn handle_terrain_paint(
+        &mut self,
+        layer: usize,
+        screen_x: f32,
+        screen_y: f32,
+        radius: f32,
+        strength: f32,
+    ) {
+        // 地形未初期化なら何もしない。
+        if self.terrain.chunks.is_empty() {
+            if let Some(ipc) = &self.ipc {
+                ipc.send("TERRAIN_PAINT_MISS");
+            }
+            return;
+        }
+        let Some(center) = self.terrain_raymarch_hit(screen_x, screen_y) else {
+            if let Some(ipc) = &self.ipc {
+                ipc.send("TERRAIN_PAINT_MISS");
+            }
+            return;
+        };
+
+        self.terrain.paint_layer = layer.min(TERRAIN_LAYER_COUNT - 1);
+        self.handle_terrain_paint_world(self.terrain.paint_layer, center, radius, strength);
+
+        // プレビュー球をペイント着弾点へ追従させる（密度ブラシと同じ扱い）。
+        self.terrain.brush_preview = Some((center, radius, strength));
+
+        if let Some(ipc) = &self.ipc {
+            ipc.send(&format!(
+                "TERRAIN_PAINT_OK:{},{},{},{}",
+                self.terrain.paint_layer, center[0], center[1], center[2]
+            ));
+        }
+    }
+
+    /// ワールド座標中心でレイヤペイントを適用し、影響チャンクを再メッシュ化する。
+    ///
+    /// レイキャスト（handle_terrain_paint）とスモークフックの双方から呼ばれる共通経路。
+    /// 手順は handle_terrain_brush_world と対称（ストローク開始スナップショット →
+    /// ペイント適用 → 影響チャンク再メッシュ）。
+    pub(super) fn handle_terrain_paint_world(
+        &mut self,
+        layer: usize,
+        center: [f32; 3],
+        radius: f32,
+        strength: f32,
+    ) {
+        if self.draw_ctx.is_none() || self.terrain.chunks.is_empty() {
+            return;
+        }
+        let settings = self.terrain.settings.clone();
+        let brush = SphereBrush { center, radius, strength };
+
+        // ── ① undo 用ストローク開始（暗黙）＆ 編集前スナップショット ──
+        //   密度ブラシと同じ stroke_before を共有するため、密度編集とペイントを
+        //   混ぜたストロークも 1 エントリとして正しく巻き戻せる。
+        self.terrain.stroke_active = true;
+        {
+            let touch_candidates = terrain::brush::chunks_in_brush_aabb(&brush, &settings);
+            let terrain = &mut self.terrain;
+            for coord in touch_candidates {
+                if terrain.stroke_before.contains_key(&coord) {
+                    continue;
+                }
+                if let Some(chunk) = terrain.chunks.get(&coord) {
+                    terrain.stroke_before.insert(coord, ChunkSnapshot::capture(chunk));
+                }
+            }
+        }
+
+        // ── ② 球ブラシをスプラット場へ適用 ──
+        let affected: Vec<ChunkCoord> = {
+            let terrain = &mut self.terrain;
+            let mut view = FieldView {
+                settings: &terrain.settings,
+                chunks: &mut terrain.chunks,
+            };
+            terrain::paint::apply_paint(&mut view, &brush, layer, BRUSH_DT)
+        };
+        if affected.is_empty() {
+            return;
+        }
+
+        // ── ③ 影響チャンクを再メッシュ化（頂点カラー＝レイヤ重みを焼き直す）──
+        //   ペイントは密度を変えないため形状は変わらないが、頂点属性が変わるので
+        //   メッシュの作り直し（＝頂点バッファの再アップロード）が必要。
+        self.remesh_chunks(&affected);
     }
 
     /// 地形を初期化する。地形ツリーを生成し、初期地面（平坦地面）を敷いてメッシュ化・GPU アップロードする。
@@ -818,7 +1120,7 @@ impl App {
                     continue;
                 }
                 if let Some(chunk) = terrain.chunks.get(&coord) {
-                    terrain.stroke_before.insert(coord, chunk.raw_density().to_vec());
+                    terrain.stroke_before.insert(coord, ChunkSnapshot::capture(chunk));
                 }
             }
         }
@@ -851,6 +1153,7 @@ impl App {
             return;
         }
         let settings = self.terrain.settings.clone();
+        let layers = self.terrain.layers.clone();
 
         // ── 再メッシュ化して GPU リソースを作り直す（描画リソースを先に生成）──
         let mut prebuilt: Vec<(ChunkCoord, Arc<Model>, Option<GpuModel>, Option<InstancedModelBatch>)> = Vec::new();
@@ -858,7 +1161,7 @@ impl App {
             let ctx = self.draw_ctx.as_ref().unwrap();
             for &coord in coords {
                 // 空メッシュ化したチャンクは gpu/batch=None で返り、下で非描画に差し替わる。
-                if let Some((model, gpu, batch)) = build_chunk_render(&self.terrain.chunks, &settings, ctx, coord) {
+                if let Some((model, gpu, batch)) = build_chunk_render(&self.terrain.chunks, &settings, &layers, ctx, coord) {
                     prebuilt.push((coord, model, gpu, batch));
                 }
             }
@@ -906,10 +1209,10 @@ impl App {
             let before = std::mem::take(&mut self.terrain.stroke_before);
 
             // ── before と同じチャンク集合について、現在（ストローク終了時点）の密度を after として集める ──
-            let mut after: HashMap<ChunkCoord, Vec<f32>> = HashMap::with_capacity(before.len());
+            let mut after: HashMap<ChunkCoord, ChunkSnapshot> = HashMap::with_capacity(before.len());
             for &coord in before.keys() {
                 if let Some(chunk) = self.terrain.chunks.get(&coord) {
-                    after.insert(coord, chunk.raw_density().to_vec());
+                    after.insert(coord, ChunkSnapshot::capture(chunk));
                 }
             }
 
@@ -932,10 +1235,12 @@ impl App {
             return;
         };
         let mut touched: Vec<ChunkCoord> = Vec::with_capacity(edit.before.len());
-        for (&coord, density) in &edit.before {
+        for (&coord, snapshot) in &edit.before {
             // チャンクが存在する場合のみ書き戻す（ハイトマップ再読込等で消えている可能性に備える）。
+            // 密度とスプラットを丸ごと戻すため、密度ブラシとペイントブラシが混在した
+            // ストロークでも 1 回の undo で完全に元へ戻る。
             if let Some(chunk) = self.terrain.chunks.get_mut(&coord) {
-                chunk.set_raw_density(density.clone());
+                snapshot.restore(chunk);
                 touched.push(coord);
             }
         }
@@ -950,9 +1255,9 @@ impl App {
             return;
         };
         let mut touched: Vec<ChunkCoord> = Vec::with_capacity(edit.after.len());
-        for (&coord, density) in &edit.after {
+        for (&coord, snapshot) in &edit.after {
             if let Some(chunk) = self.terrain.chunks.get_mut(&coord) {
-                chunk.set_raw_density(density.clone());
+                snapshot.restore(chunk);
                 touched.push(coord);
             }
         }
@@ -1119,13 +1424,17 @@ impl App {
         }
 
         // ── フェーズ 2: 全チャンク読込後にメッシュ化（隣接読みが揃った状態で継ぎ目を正しく作る）──
+        //   レイヤ定義もここで読み直す（.tvox v1 のようにスプラットを持たないデータでも
+        //   ルール自動生成が効くようにするため、定義は常に手元に必要）。
+        self.ensure_terrain_layers();
         let settings = self.terrain.settings.clone();
+        let layers = self.terrain.layers.clone();
         let mut prebuilt: Vec<(Entity, Arc<Model>, Option<GpuModel>, Option<InstancedModelBatch>)> = Vec::new();
         {
             let ctx = self.draw_ctx.as_ref().unwrap();
             for (coord, mc_slot) in &loaded {
                 // 空メッシュチャンクは gpu/batch=None で返る（非描画のまま MC を埋める）。
-                if let Some((model, gpu, batch)) = build_chunk_render(&self.terrain.chunks, &settings, ctx, *coord) {
+                if let Some((model, gpu, batch)) = build_chunk_render(&self.terrain.chunks, &settings, &layers, ctx, *coord) {
                     prebuilt.push((*mc_slot, model, gpu, batch));
                 }
             }
@@ -1272,14 +1581,57 @@ impl App {
             self.terrain.chunks.len()
         );
 
+        // ── 斜度ルール（自動下地）の実機確認: 切り立った山と谷を作る ──
+        //   ハイトマップの起伏は緩やかで斜度が 20 度に届かず、全面が草地レイヤになる。
+        //   ルールによる塗り分け（平地=草／中傾斜=土／急斜面=岩）を目視するために、
+        //   強い盛り／掘りで確実に 38 度超の斜面を作る。
+        let steep_up = [center[0] - SMOKE_STEEP_OFFSET, 0.0, center[2]];
+        let steep_dn = [center[0] + SMOKE_STEEP_OFFSET, 0.0, center[2]];
+        self.handle_terrain_brush_world(BrushOp::Add, steep_up, SMOKE_BRUSH_RADIUS, SMOKE_STEEP_STRENGTH);
+        self.handle_terrain_brush_world(BrushOp::Subtract, steep_dn, SMOKE_BRUSH_RADIUS, SMOKE_STEEP_STRENGTH);
+        self.handle_terrain_stroke_end();
+
+        // ── レイヤペイント（手ペイント）の実機確認 ──
+        //   自動下地（斜度／高度ルール）とは別に、明示的に砂レイヤを丸く塗る。
+        //   スクリーンショットで「ルールによる草／岩の塗り分け」と「手ペイントの丸い砂」の
+        //   両方が同時に見えることを狙う。
+        //   ハイトマップ適用後の地表 Y はスクリーンレイ無しには求められないため、
+        //   同じ XZ で Y を変えながら縦にペイント球を積み、確実に地表を貫かせる。
+        for i in 0..SMOKE_PAINT_COLUMN_STEPS {
+            let y = i as f32 * SMOKE_PAINT_COLUMN_STEP_Y;
+            let paint_center = [center[0] + SMOKE_PAINT_OFFSET, y, center[2]];
+            self.handle_terrain_paint_world(
+                SMOKE_PAINT_LAYER, paint_center, SMOKE_PAINT_RADIUS, SMOKE_PAINT_STRENGTH,
+            );
+        }
+        self.handle_terrain_stroke_end();
+        {
+            // 塗れたかを数値で確認する（ペイント量 > 0 のサンプル数）。
+            let painted: usize = self
+                .terrain
+                .chunks
+                .values()
+                .map(|c| c.raw_paint_amount().iter().filter(|&&a| a > 0).count())
+                .sum();
+            eprintln!(
+                "[SEED terrain] smoke: layer paint (layer={SMOKE_PAINT_LAYER}) painted_samples={painted}, layers={}",
+                self.terrain.layers.active_count()
+            );
+        }
+
         // ── プレビュー球の模擬 ──
         //   エディタ経由でしか出ないワイヤスフィアを、スモークでも直接セットして映す。
         //   footprint 中心の地表付近に置く（レイマーチのヒット点に相当）。
         //   strength を高め（⑥の色分岐が視認できる値）にセットする。
         self.terrain.brush_preview = Some(([center[0], 0.0, center[2]], SMOKE_PREVIEW_RADIUS, SMOKE_PREVIEW_STRENGTH));
 
+        // ── カメラを再適用する ──
+        //   ハイトマップと急斜面デモで地形が上へ伸びたため、初期化時の画角のままでは
+        //   手前の斜面が画面を覆って塗り分けが見えない。同じ計算式で組み直して構図を戻す。
+        self.apply_camera_data(&cam);
+
         eprintln!(
-            "[SEED terrain] smoke: init + deform + stroke({}) + undo/redo + heightmap + preview done (chunks={})",
+            "[SEED terrain] smoke: init + deform + stroke({}) + undo/redo + heightmap + layers + preview done (chunks={})",
             SMOKE_STROKE_STEPS,
             self.terrain.chunks.len()
         );

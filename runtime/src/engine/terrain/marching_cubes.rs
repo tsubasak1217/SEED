@@ -30,6 +30,7 @@
 use std::collections::HashMap;
 
 use super::chunk_data::TerrainChunkData;
+use super::layers::{LayerWeights, TERRAIN_LAYER_COUNT};
 use super::settings::TerrainSettings;
 
 // ─── 勾配（法線）計算のステップ幅（サンプル間隔単位） ────────────────────────
@@ -44,6 +45,12 @@ pub struct TerrainMesh {
     pub positions: Vec<[f32; 3]>,
     pub normals: Vec<[f32; 3]>,
     pub indices: Vec<u32>,
+    /// 各頂点の「手ペイントされたレイヤ重み」（辺の両端サンプルから線形補間）。
+    /// ルールによる自動下地はここには含まれない（layers.rs の blend_rule_and_paint で
+    /// メッシュ→Model 変換時に合成する）。positions と同じ長さ。
+    pub paint: Vec<LayerWeights>,
+    /// 各頂点のペイント量（0=未ペイント〜1=完全に手描き優先）。positions と同じ長さ。
+    pub paint_amount: Vec<f32>,
 }
 
 impl TerrainMesh {
@@ -53,6 +60,8 @@ impl TerrainMesh {
             positions: Vec::new(),
             normals: Vec::new(),
             indices: Vec::new(),
+            paint: Vec::new(),
+            paint_amount: Vec::new(),
         }
     }
 
@@ -218,9 +227,25 @@ fn generate_core(
                         ];
                         let normal = gradient_normal(&sampler, fpos);
 
+                        // ─── スプラット（手ペイント重み・ペイント量）を辺に沿って補間 ───
+                        //   位置と同じ補間係数 t を使うことで、頂点属性が位置と整合する。
+                        //   lo/hi はどちらもセルのコーナー＝自チャンク内のサンプルなので
+                        //   隣接チャンクを読む必要はない（境界サンプルは write 側で同期済み）。
+                        let p_lo = chunk.paint_weights(lo[0] as usize, lo[1] as usize, lo[2] as usize);
+                        let p_hi = chunk.paint_weights(hi[0] as usize, hi[1] as usize, hi[2] as usize);
+                        let mut paint: LayerWeights = [0.0; TERRAIN_LAYER_COUNT];
+                        for k in 0..TERRAIN_LAYER_COUNT {
+                            paint[k] = p_lo[k] + t * (p_hi[k] - p_lo[k]);
+                        }
+                        let a_lo = chunk.paint_amount(lo[0] as usize, lo[1] as usize, lo[2] as usize);
+                        let a_hi = chunk.paint_amount(hi[0] as usize, hi[1] as usize, hi[2] as usize);
+                        let paint_amount = a_lo + t * (a_hi - a_lo);
+
                         let new_idx = mesh.positions.len() as u32;
                         mesh.positions.push(pos);
                         mesh.normals.push(normal);
+                        mesh.paint.push(paint);
+                        mesh.paint_amount.push(paint_amount);
                         edge_cache.insert(key, new_idx);
                         new_idx
                     };
