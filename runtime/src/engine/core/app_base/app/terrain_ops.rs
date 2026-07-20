@@ -22,6 +22,9 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::time::Instant;
+
+use rayon::prelude::*;
 
 use crate::engine::ecs::Entity;
 use crate::engine::components::{
@@ -32,13 +35,15 @@ use crate::engine::core::loader::model::Model;
 use crate::engine::methods::drawer::{DrawContext, GpuModel, InstancedModelBatch};
 use crate::engine::structs::objects::Actor;
 use crate::engine::terrain::{
-    self, BlendSlots, BrushOp, ChunkCoord, PaintField, SampleField, SphereBrush,
-    TerrainChunkData, TerrainLayerSet, TerrainSettings, TERRAIN_BLEND_SLOTS, TERRAIN_MAX_LAYERS,
-    tvox,
+    self, interp_vertex_paint, BlendSlots, BrushOp, ChunkCoord, PaintField, SampleField,
+    SphereBrush, TerrainChunkData, TerrainLayerSet, TerrainSettings, TerrainVertexEdge,
+    TERRAIN_BLEND_SLOTS, TERRAIN_MAX_LAYERS, tvox,
 };
 
 use super::App;
-use super::terrain_mesh_build::terrain_mesh_to_model;
+use super::terrain_mesh_build::{
+    compute_layer_colors, rebuild_terrain_model_with_colors, terrain_mesh_to_model,
+};
 
 // ─── 名前・調整用の名前付き定数（マジックナンバー禁止） ────────────────────────
 
@@ -65,6 +70,21 @@ const TERRAIN_CHUNK_SLOT_NAME: &str = "chunk";
 
 /// クリック 1 回ぶんのブラシ適用時間（離散編集なので 1.0 秒相当）。
 const BRUSH_DT: f32 = 1.0;
+
+// ─── 地形編集の計測ログ（[PERF terrain]） ────────────────────────────────
+/// 計測ログを有効化する環境変数名。frame_renderer.rs の `[PERF]` ログと**同じ**変数を使い、
+/// 「SEED_PERF_LOG を付ければ全系統の PERF 行が出る」という既存の流儀を崩さない。
+const PERF_LOG_ENV: &str = "SEED_PERF_LOG";
+
+/// `[PERF terrain]` 行を出力するかどうか（既定は無効）。
+///
+/// フレーム描画側は 60 フレームに 1 回へ間引いているが、地形編集は間欠的（ドラッグ中のみ）で
+/// 1 回 1 回が重いため、**再メッシュが起きたら毎回出す**。間引くと肝心のスパイクを取り逃す。
+static PERF_TERRAIN_LOG_ENABLED: std::sync::LazyLock<bool> =
+    std::sync::LazyLock::new(|| std::env::var_os(PERF_LOG_ENV).is_some());
+
+/// 秒 → ミリ秒の換算係数（マジックナンバー回避）。
+const MILLIS_PER_SEC: f64 = 1000.0;
 
 /// レイマーチのステップ幅（voxel_size に対する割合）。0.5 = 半ボクセルずつ進む。
 const RAYMARCH_STEP_FRACTION: f32 = 0.5;
@@ -126,6 +146,33 @@ const SMOKE_DEFERRED_DIG_STRENGTH: f32 = 1.0;
 const SMOKE_DEFERRED_DIG_COLUMN_STEPS: u32 = 6;
 /// 遅延掘削を縦に積むときの 1 段あたりの高さ（メートル）。
 const SMOKE_DEFERRED_DIG_COLUMN_STEP_Y: f32 = 3.0;
+// ── 遅延ペイント（ペイント高速パスの実機検証用）─────────────────────────────
+//
+// 【なぜ init 時のペイントと別に要るか】
+//   `run_terrain_smoke` は初期化・掘削・ペイントを同一フレーム内で連続して行う。
+//   ダーティ集約により、そのフレームでは触れたチャンクの多くが「密度も変わった」
+//   ＝ pending_remesh 側に入り、ペイント高速パス（pending_paint）は
+//   「密度が変わっていないチャンク」だけを受け取る。結果、init 時のペイントは
+//   高速パスをほとんど通らず、効果を実機で確認できない。
+//   そこで、地形が完全にメッシュ化・描画済みになったフレームで
+//   **密度を触らないペイントだけ**を連続して当てるステップを別に持つ。
+//   1 回目はパレットが変わり得るのでフォールバックし、2 回目以降が高速パスに乗る
+//   （＝`[PERF terrain] paint ... fast=N` が立つ）ことをログで確認できる。
+/// 遅延ペイントを発火させるフレーム番号（掘削のあと、地形が再メッシュ済みになってから）。
+const SMOKE_DEFERRED_PAINT_FRAMES: [u32; 3] = [40, 45, 50];
+/// 遅延ペイントで塗るレイヤ番号。
+const SMOKE_DEFERRED_PAINT_LAYER: usize = 2;
+/// 遅延ペイントの半径（メートル）。
+const SMOKE_DEFERRED_PAINT_RADIUS: f32 = 10.0;
+/// 遅延ペイントの強度。
+const SMOKE_DEFERRED_PAINT_STRENGTH: f32 = 1.0;
+/// 遅延ペイントを縦に積む段数（地表 Y が未知でも確実に地表を貫くため）。
+const SMOKE_DEFERRED_PAINT_COLUMN_STEPS: u32 = 6;
+/// 遅延ペイントを縦に積むときの 1 段あたりの高さ（メートル）。
+const SMOKE_DEFERRED_PAINT_COLUMN_STEP_Y: f32 = 3.0;
+/// 遅延ペイントの中心を掘削中心からずらす距離（掘った穴の外の地表を塗るため）。
+const SMOKE_DEFERRED_PAINT_OFFSET: f32 = 20.0;
+
 /// 遅延掘削の状態カウンタ（0 = 無効／1 以上 = スモーク有効時のフレーム計数）。
 /// App にフィールドを増やさずデバッグフックを閉じ込めるための静的状態。
 static SMOKE_DEFERRED_FRAME_COUNTER: std::sync::atomic::AtomicU32 =
@@ -252,6 +299,39 @@ pub struct TerrainState {
     pub scene_name: String,
     /// 編集されて未保存のチャンク集合（handle_terrain_save でクリア）。
     pub dirty: HashSet<ChunkCoord>,
+    /// **再メッシュ待ち**のチャンク集合（ダーティ集約）。
+    ///
+    /// ドラッグ中は 1 フレームに複数の TERRAIN_BRUSH / TERRAIN_PAINT が届き、
+    /// そのたびに同じチャンクを何度も再メッシュしていた（1 チャンク数 ms × 重複回数）。
+    /// ブラシ適用（＝密度・スプラットの書き換え）はそのまま即時に行い、
+    /// **メッシュ化だけ**をここへ積んで 1 フレーム 1 回へ潰す。
+    /// `App::flush_terrain_pending_remesh` が IPC コマンドループ直後に消化する。
+    /// 集合なので同一チャンクの重複は自然に 1 回へ畳まれる。
+    pub pending_remesh: HashSet<ChunkCoord>,
+    /// **頂点カラーだけの更新待ち**チャンク集合（ペイント高速パス）。
+    ///
+    /// レイヤペイント（TERRAIN_PAINT）は密度を一切変えないため、頂点位置・法線・
+    /// インデックス・三角形数はすべて不変であり、変わるのは頂点カラー（レイヤ重み）と
+    /// チャンクのパレットだけである。よってマーチングキューブスを回す必要が無い。
+    /// `pending_remesh` とは別の集合に積み、`apply_terrain_paint_colors` が
+    /// 「由来辺キャッシュから重みを引き直して頂点カラーを差し替えるだけ」で消化する。
+    ///
+    /// 【優先順位】同一フレームで同じチャンクが `pending_remesh` にも入った場合は
+    /// **`pending_remesh` が勝つ**（フル再メッシュすれば頂点カラーも当然作り直されるため、
+    /// ペイント高速パスを重ねて走らせるのは純粋な無駄になる）。
+    pub pending_paint: HashSet<ChunkCoord>,
+    /// チャンク → そのメッシュ頂点の「由来辺」記述子（positions と同順・同長）。
+    ///
+    /// ペイント高速パスがマーチングキューブスを再実行せずに頂点ごとのレイヤ重みを
+    /// 引き直すために使う（`interp_vertex_paint` の入力）。`remesh_chunks` が
+    /// メッシュを作り直すたびに更新され、地形を作り直す経路（`TerrainState::default()` で
+    /// 丸ごと差し替わる `build_terrain_with` / `rebuild_terrain_after_load`）では
+    /// チャンクごと消える。
+    ///
+    /// 【メモリ見積り】`TerrainVertexEdge` は 16 バイト／頂点（lo:[u16;3]=6 + axis:u8=1 +
+    /// パディング1 + t:f32=4 → アラインメント込み 16）。cells=64 の実測 17,173 頂点で
+    /// 約 275 KB/チャンク。既定の cells=32 ではその 1/4 程度で収まる。
+    pub chunk_vertex_edges: HashMap<ChunkCoord, Arc<Vec<TerrainVertexEdge>>>,
     /// ブラシプレビュー（Edit モードのホバー位置に描くワイヤスフィア）の
     /// (ワールド中心, 半径, 強度)。`None` のとき非表示。frame_renderer が描画に使う。
     /// 強度はプレビュー球の色（低強度=水色〜高強度=オレンジ）に反映される。
@@ -288,6 +368,9 @@ impl Default for TerrainState {
             chunk_slot_entity: HashMap::new(),
             scene_name: String::new(),
             dirty: HashSet::new(),
+            pending_remesh: HashSet::new(),
+            pending_paint: HashSet::new(),
+            chunk_vertex_edges: HashMap::new(),
             brush_preview: None,
             stroke_active: false,
             stroke_before: HashMap::new(),
@@ -611,15 +694,53 @@ fn build_chunk_render(
     layers: &TerrainLayerSet,
     ctx: &DrawContext,
     coord: ChunkCoord,
-) -> Option<(Arc<Model>, Option<GpuModel>, Option<InstancedModelBatch>)> {
+) -> Option<(Arc<Model>, Option<GpuModel>, Option<InstancedModelBatch>, Arc<Vec<TerrainVertexEdge>>)> {
+    // CPU メッシュ生成（純粋部）とアップロード（GPU 部）は分離してある。
+    // ここは「1 チャンクを単独で作り直す」旧来の呼び出し側（初期化・チャンク追加・
+    // シーンロード復元）向けの薄いラッパで、両者を続けて実行するだけ。
+    //
+    // 4 番目の戻り値は頂点の由来辺（`TerrainState::chunk_vertex_edges` へ入れる）。
+    // これを登録しておくと、そのチャンクは最初のペイントから高速パスに乗れる。
+    let (model, is_empty, edges) = build_chunk_cpu_model(chunks, settings, layers, coord)?;
+    let (gpu, batch) = upload_chunk_model(ctx, &model, is_empty);
+    Some((model, gpu, batch, edges))
+}
+
+/// 1 チャンクの CPU メッシュだけを生成し、`(CPU モデル, メッシュが空か)` を返す。
+///
+/// 【純粋関数であること — rayon 並列化の前提】
+///   引数は共有参照（`&HashMap` / `&TerrainSettings` / `&TerrainLayerSet`）のみで、
+///   グローバル状態も GPU リソースも一切触らない。あるチャンクの結果は他チャンクの
+///   結果に依存せず（近傍サンプルは「編集後の密度場」を読むだけで、他チャンクの
+///   *メッシュ* には依存しない）、副作用も無い。
+///   よって `par_iter().map(...)` で並列実行しても、各要素の値は逐次実行と完全に一致する。
+///   さらに rayon の `IndexedParallelIterator` は `collect::<Vec<_>>()` で**入力順を保存する**
+///   ことを保証するため、出力 Vec の並びもスレッド数・スケジューリングに依らず決定的である。
+///
+/// 継ぎ目の勾配（法線）を隣接チャンクと連続させるため、`generate` の neighbor_sampler で
+/// グローバル密度場を読む（チャンク境界の外側 1 サンプルも正しい値を返す）。
+///
+/// 戻り値の 2 番目 `is_empty` は「三角形 0 個（全 AIR / 全 SOLID）」を表す。
+/// `true` のチャンクは GPU リソースを一切作ってはならない（理由は `build_chunk_render` の
+/// ドキュメント【空メッシュ対策】を参照）。
+fn build_chunk_cpu_model(
+    chunks: &HashMap<ChunkCoord, TerrainChunkData>,
+    settings: &TerrainSettings,
+    layers: &TerrainLayerSet,
+    coord: ChunkCoord,
+) -> Option<(Arc<Model>, bool, Arc<Vec<TerrainVertexEdge>>)> {
     let chunk = chunks.get(&coord)?;
     let cells = settings.chunk_cells as i32;
     let clamp = settings.density_clamp;
     // このチャンクのローカルサンプル (lx,ly,lz) → グローバルサンプル座標 = coord*cells + local。
     let base = [coord.x * cells, coord.y * cells, coord.z * cells];
-    let mesh = terrain::generate(chunk, settings, |lx, ly, lz| {
+    let mut mesh = terrain::generate(chunk, settings, |lx, ly, lz| {
         read_global_impl(chunks, cells, clamp, base[0] + lx, base[1] + ly, base[2] + lz)
     });
+    // 由来辺（頂点がどの辺のどこで生まれたか）はここでしか手に入らないので取り出す。
+    // ペイント高速パスがマーチングキューブスを再実行せずにスプラットを引き直すための唯一の手掛かり。
+    // `Vec` を丸ごと move して以後の再確保・コピーを避ける（メッシュ側では使わない）。
+    let edges = Arc::new(std::mem::take(&mut mesh.edges));
     // レイヤ重みはワールド Y（高度ルール）を要するため、チャンク原点を渡す。
     // 第 2 戻り値はこのチャンクのレイヤパレット（頂点カラー各成分が指すレイヤ番号）。
     // パレットは model.materials[0].terrain_palette へも載っており、GPU へは
@@ -631,14 +752,29 @@ fn build_chunk_render(
         coord.world_origin(settings),
         layers,
     );
-    // 空メッシュ（三角形 0）は GPU リソースを作らない（サイズ 0 バッファ由来のパニック回避）。
-    if mesh.indices.is_empty() {
-        return Some((Arc::new(model), None, None));
+    Some((Arc::new(model), mesh.indices.is_empty(), edges))
+}
+
+/// CPU モデルを GPU へアップロードし、`(GpuModel?, インスタンスバッチ?)` を返す。
+///
+/// 【シリアル固定】`DrawContext` は `RefCell`（`rt_shadow` / `model_cache` 等）を内部に持つため
+/// `Sync` ではなく、`&DrawContext` を複数スレッドへ配れない。よってアップロードは並列化せず、
+/// 並列化するのは純粋 CPU 部（`build_chunk_cpu_model`）だけに限る。
+///
+/// `is_empty` が真のチャンクは GPU リソースを作らず `(None, None)` を返す
+/// （サイズ 0 バッファ由来のパニック回避。詳細は `build_chunk_render` のドキュメント）。
+fn upload_chunk_model(
+    ctx: &DrawContext,
+    model: &Arc<Model>,
+    is_empty: bool,
+) -> (Option<GpuModel>, Option<InstancedModelBatch>) {
+    if is_empty {
+        return (None, None);
     }
     // オーバーライド無しでアップロード（source_path とビット一致のバッチキーになる）。
-    let gpu = ctx.upload_model_with_overrides(&model, &[]);
-    let batch = ctx.create_instanced_batch(&model, 1);
-    Some((Arc::new(model), Some(gpu), Some(batch)))
+    let gpu = ctx.upload_model_with_overrides(model, &[]);
+    let batch = ctx.create_instanced_batch(model, 1);
+    (Some(gpu), Some(batch))
 }
 
 /// 地形チャンク用の ModelComponent を組み立てる。
@@ -933,15 +1069,22 @@ impl App {
         // ── フェーズ 2: 各チャンクをメッシュ化して GPU アップロード（描画リソースを先に作る）──
         //   self.terrain.chunks（不変）と self.draw_ctx（不変）を同時借用する（別フィールドなので可）。
         let mut prebuilt: Vec<(ChunkCoord, Arc<Model>, Option<GpuModel>, Option<InstancedModelBatch>)> = Vec::new();
+        // 由来辺は借用の都合で一旦ローカルへ溜め、フェーズ 3 の後で self.terrain へ入れる。
+        let mut prebuilt_edges: Vec<(ChunkCoord, Arc<Vec<TerrainVertexEdge>>)> = Vec::new();
         {
             let ctx = self.draw_ctx.as_ref().unwrap();
             for &coord in &coords {
                 // 空メッシュチャンクも Some(model, None, None) で返るため、全チャンクが
                 // アクター＋MC スロットを得る（掘削で後から表面が出ても差し替えられる）。
-                if let Some((model, gpu, batch)) = build_chunk_render(&self.terrain.chunks, &settings, &layers, ctx, coord) {
+                if let Some((model, gpu, batch, edges)) = build_chunk_render(&self.terrain.chunks, &settings, &layers, ctx, coord) {
                     prebuilt.push((coord, model, gpu, batch));
+                    prebuilt_edges.push((coord, edges));
                 }
             }
+        }
+        // 由来辺キャッシュを登録する（`self.terrain` は上で default に差し替わっているので空）。
+        for (coord, edges) in prebuilt_edges {
+            self.terrain.chunk_vertex_edges.insert(coord, edges);
         }
         // 地形チャンクが使うパレットを group3 へ登録する（描画前に済ませる必要がある）。
         self.ensure_terrain_palettes(prebuilt.iter().map(|p| p.1.as_ref()));
@@ -1183,10 +1326,15 @@ impl App {
             return;
         }
 
-        // ── ③ 影響チャンクを再メッシュ化（頂点カラー＝レイヤ重みを焼き直す）──
-        //   ペイントは密度を変えないため形状は変わらないが、頂点属性が変わるので
-        //   メッシュの作り直し（＝頂点バッファの再アップロード）が必要。
-        self.remesh_chunks(&affected);
+        // ── ③ 影響チャンクを「頂点カラー更新待ち」へ積む（ペイント高速パス） ──
+        //   ペイントは密度を一切変えないため、頂点位置・法線・インデックス・三角形数は
+        //   すべて不変であり、変わるのは頂点カラー（レイヤ重み）とチャンクのパレットだけ。
+        //   よってマーチングキューブスを回す必要はまったく無く、`pending_remesh` ではなく
+        //   `pending_paint` へ積む。実際の反映は密度ブラシと同じく
+        //   `flush_terrain_pending_remesh` が 1 フレーム 1 回にまとめて行う。
+        //   未保存マーク（dirty）は編集時点で立てる（理由は handle_terrain_brush_world と同じ）。
+        self.terrain.dirty.extend(affected.iter().copied());
+        self.terrain.pending_paint.extend(affected);
     }
 
     /// エディタから届いたチャンク構成を現在の TerrainSettings へ反映する。
@@ -1312,13 +1460,19 @@ impl App {
         let layers = self.terrain.layers.clone();
         let mut prebuilt: Vec<(ChunkCoord, Arc<Model>, Option<GpuModel>, Option<InstancedModelBatch>)> =
             Vec::with_capacity(new_coords.len());
+        // 由来辺は、アクター構築が成功して初めてキャッシュへ入れる（下の ⑤ 参照）。
+        // ここで先に入れてしまうと、terrain ルート不在で中断する経路（チャンクを
+        // `chunks` から取り消す）で、実体の無いチャンクの辺だけが残ってしまう。
+        let mut prebuilt_edges: Vec<(ChunkCoord, Arc<Vec<TerrainVertexEdge>>)> =
+            Vec::with_capacity(new_coords.len());
         {
             let ctx = self.draw_ctx.as_ref().unwrap();
             for &coord in &new_coords {
-                if let Some((model, gpu, batch)) =
+                if let Some((model, gpu, batch, edges)) =
                     build_chunk_render(&self.terrain.chunks, &settings, &layers, ctx, coord)
                 {
                     prebuilt.push((coord, model, gpu, batch));
+                    prebuilt_edges.push((coord, edges));
                 }
             }
         }
@@ -1370,6 +1524,11 @@ impl App {
             self.terrain.chunk_slot_entity.insert(coord, entity);
             // 追加直後は未保存なので、TERRAIN_SAVE の対象になるようダーティにする。
             self.terrain.dirty.insert(coord);
+        }
+        // アクター構築まで成功したので、由来辺キャッシュを登録する
+        // （これで追加チャンクも最初のペイントからマーチングキューブス無しで塗れる）。
+        for (coord, edges) in prebuilt_edges {
+            self.terrain.chunk_vertex_edges.insert(coord, edges);
         }
 
         // ── ⑥ 新規チャンクに接する既存チャンクを再メッシュ化する ──
@@ -1650,64 +1809,190 @@ impl App {
             return;
         }
 
-        // ── ③ 影響チャンクを再メッシュ化（VRAM 安全な GPU 差し替え手順は remesh_chunks に共通化）──
-        self.remesh_chunks(&affected);
+        // ── ③ 影響チャンクを「再メッシュ待ち」へ積む（ダーティ集約） ──
+        //   密度場の書き換えは上で完了しているので、ここでのメッシュ化は先送りしてよい。
+        //   ドラッグ中は 1 フレームに複数回ここへ来るため、即時に再メッシュすると
+        //   同じチャンクを何度も作り直すことになる（1 チャンク数 ms の実測値）。
+        //   `process_ipc` が全コマンド処理後に flush_terrain_pending_remesh で 1 回だけ消化する。
+        //   未保存マーク（dirty）は再メッシュではなく**編集**に対応する情報なので、
+        //   ここで先に立てる。こうしないと同一フレーム内で編集直後に TERRAIN_SAVE が
+        //   届いたとき、まだ flush 前で dirty が空＝保存対象から漏れる。
+        self.terrain.dirty.extend(affected.iter().copied());
+        self.terrain.pending_remesh.extend(affected);
+    }
+
+    /// 保留中（`terrain.pending_remesh`）の再メッシュをまとめて 1 回で消化する。
+    ///
+    /// `process_ipc` の**コマンドループ直後**に毎フレーム 1 回だけ呼ばれる。
+    /// ドラッグ中に届いた複数のブラシ／ペイントで積まれたチャンク集合は、ここで
+    /// 重複無しの 1 リストへ畳まれ、`remesh_chunks` を **1 回**通るだけになる。
+    ///
+    /// 【決定性】`HashSet` のイテレーション順は（ハッシュシードにより）実行ごとに変わりうる。
+    ///   差し替え順が変わっても最終的な描画結果は同じだが、ログ・GPU コマンド列を
+    ///   再現可能にするため必ず座標でソートしてから渡す。
+    ///   `ChunkCoord` は `Ord` を実装していない（terrain ライブラリ側の型なので
+    ///   ここでは変更しない）ため、`(x, y, z)` のタプルをキーに全順序を与える。
+    pub(super) fn flush_terrain_pending_remesh(&mut self) {
+        // ── ① フル再メッシュ待ちを優先して消化する ──
+        //   同一フレームで同じチャンクが `pending_remesh` と `pending_paint` の両方に
+        //   入りうる（密度ブラシとペイントを混ぜたストローク）。フル再メッシュは
+        //   頂点カラーも作り直すため、その場合は再メッシュだけを行えば十分であり、
+        //   ペイント高速パスを重ねて走らせるのは純粋な無駄になる。
+        //   よって先に `pending_paint` から再メッシュ対象を差し引く。
+        if !self.terrain.pending_paint.is_empty() {
+            let remesh = std::mem::take(&mut self.terrain.pending_remesh);
+            self.terrain.pending_paint.retain(|c| !remesh.contains(c));
+            self.terrain.pending_remesh = remesh;
+        }
+
+        if !self.terrain.pending_remesh.is_empty() {
+            let mut coords: Vec<ChunkCoord> =
+                std::mem::take(&mut self.terrain.pending_remesh).into_iter().collect();
+            coords.sort_by_key(|c| (c.x, c.y, c.z));
+            self.remesh_chunks(&coords);
+        }
+
+        // ── ② 頂点カラーだけの更新待ちを消化する（ペイント高速パス）──
+        //   決定性の担保は ① と同じ理由でソートする（`HashSet` の走査順は実行ごとに変わる）。
+        if !self.terrain.pending_paint.is_empty() {
+            let mut coords: Vec<ChunkCoord> =
+                std::mem::take(&mut self.terrain.pending_paint).into_iter().collect();
+            coords.sort_by_key(|c| (c.x, c.y, c.z));
+            self.apply_terrain_paint_colors(&coords);
+        }
     }
 
     /// 指定チャンク群を再メッシュ化し、GPU リソースを VRAM 安全な手順で差し替える。
     ///
-    /// handle_terrain_brush_world（ブラシ編集直後）と handle_terrain_undo/handle_terrain_redo
-    /// （密度を過去/未来のスナップショットへ書き戻した直後）の双方から呼ばれる共通処理（DRY）。
-    /// 手順: (1) 旧 GpuModel を drop → (2) device.poll(Wait) で解放を確定 → (3) 新規を書き戻し
-    /// → (4) mark_batch_dirty。旧解放前に新テクスチャを確保すると瞬間 VRAM 2 倍需要になるため。
+    /// `flush_terrain_pending_remesh`（ブラシ／ペイントの集約消化）と
+    /// handle_terrain_undo/handle_terrain_redo・チャンク追加（密度を書き換えた直後に
+    /// 同期で作り直す経路）の双方から呼ばれる共通処理（DRY）。
+    ///
+    /// 【フェーズ構成 — poll(Wait) は全体で 1 回だけ】
+    ///   0. CPU メッシュ生成（rayon で**チャンク間並列**。GPU に一切触らない純粋処理）
+    ///   A. 対象全チャンクの旧 `GpuModel` を drop（`gpu_model = None`）
+    ///   B. `device.poll(Wait)` を **1 回だけ** 呼び、遅延破棄をまとめて確定させる
+    ///   C. 新 GPU リソースをアップロードして書き戻し → `mark_batch_dirty` →
+    ///      派生キャッシュ破棄
+    ///
+    ///   `poll(Wait)` は GPU が完全にアイドルになるまでブロックする同期点である。
+    ///   旧実装はこれを**チャンクごとにループ内**で呼んでいたため、1 ブラシで 4〜8 チャンクが
+    ///   触れる典型ケースでは同じ全体同期を 4〜8 回繰り返していた。解放を確定させたいのは
+    ///   「全チャンクの旧リソースを手放した後に 1 度」で十分なので、ループの外へ出している。
+    ///
+    /// 【旧実装の矛盾（発見メモ）】
+    ///   旧コードのドキュメントは「旧解放前に新規を確保すると瞬間 VRAM 2 倍需要になる」ため
+    ///   drop → poll → 書き戻しの順にする、と説明していた。しかし実際には
+    ///   `build_chunk_render` を先に全チャンクぶん回して**新しい GPU リソースを作り切ってから**
+    ///   旧を drop していたので、VRAM 2 倍のピークは既に発生しており、コメントの意図は
+    ///   守られていなかった。本実装では GPU アップロードをフェーズ C へ移し、
+    ///   「CPU メッシュ生成 → 旧 drop → poll 1 回 → 新規アップロード」という順序にしたため、
+    ///   VRAM ピークも実際に下がる（CPU 側のメッシュはシステムメモリなので二重に持ってよい）。
     fn remesh_chunks(&mut self, coords: &[ChunkCoord]) {
         if self.draw_ctx.is_none() || coords.is_empty() {
             return;
         }
+        // 【保留集合との整合】ここで作り直すチャンクは保留リストから取り除く。
+        //   undo/redo・チャンク追加は同期で `remesh_chunks` を直接呼ぶため、
+        //   保留が残っていると「同じチャンクを直後にもう一度メッシュ化する」無駄が出る。
+        //   入口で flush する案もあるが、それだと undo が「直前のブラシ結果を一度描いてから
+        //   巻き戻す」ことになり、無駄な GPU 差し替えを 1 往復ぶん増やす。
+        //   除去方式なら常に最新の密度場から 1 回だけ作られるので、こちらを採用する。
+        for coord in coords {
+            self.terrain.pending_remesh.remove(coord);
+            // ペイント保留も同様に取り消す。フル再メッシュは頂点カラーも作り直すため、
+            // 直後にペイント高速パスを走らせるのは完全に無駄（結果も同一）になる。
+            self.terrain.pending_paint.remove(coord);
+        }
+
+        let t_total = Instant::now();
         let settings = self.terrain.settings.clone();
         let layers = self.terrain.layers.clone();
 
-        // ── 再メッシュ化して GPU リソースを作り直す（描画リソースを先に生成）──
-        let mut prebuilt: Vec<(ChunkCoord, Arc<Model>, Option<GpuModel>, Option<InstancedModelBatch>)> = Vec::new();
-        {
-            let ctx = self.draw_ctx.as_ref().unwrap();
-            for &coord in coords {
-                // 空メッシュ化したチャンクは gpu/batch=None で返り、下で非描画に差し替わる。
-                if let Some((model, gpu, batch)) = build_chunk_render(&self.terrain.chunks, &settings, &layers, ctx, coord) {
-                    prebuilt.push((coord, model, gpu, batch));
-                }
-            }
-        }
-        // 地形チャンクが使うパレットを group3 へ登録する（描画前に済ませる必要がある）。
-        self.ensure_terrain_palettes(prebuilt.iter().map(|p| p.1.as_ref()));
+        // ── フェーズ 0: CPU メッシュ生成（rayon でチャンク間並列） ──
+        //   `build_chunk_cpu_model` は共有参照しか取らない純粋関数なので、複数チャンクを
+        //   同時に走らせても互いに干渉しない。`par_iter().map().collect::<Vec<_>>()` は
+        //   rayon の IndexedParallelIterator により**入力順を保存する**ため、
+        //   出力の並びは並列度・スケジューリングに依らず完全に決定的である。
+        let t_cpu = Instant::now();
+        let cpu_models: Vec<Option<(Arc<Model>, bool, Arc<Vec<TerrainVertexEdge>>)>> = coords
+            .par_iter()
+            .map(|&coord| build_chunk_cpu_model(&self.terrain.chunks, &settings, &layers, coord))
+            .collect();
+        let cpu_ms = t_cpu.elapsed().as_secs_f64() * MILLIS_PER_SEC;
 
-        // ── VRAM 安全な差し替え（slot_ops::handle_set_material_override と同じ手順）──
-        // 差し替えたチャンクの batch_key（= ModelComponent::source_path。地形チャンクは
-        // マテリアルオーバーライドを持たないため batch_key とビット一致）を集め、
-        // 後段でジオメトリ由来の派生キャッシュを破棄する。
-        let mut swapped_keys: Vec<String> = Vec::new();
-        for (coord, model, gpu, batch) in prebuilt {
-            let slot_entity = match self.terrain.chunk_slot_entity.get(&coord) {
-                Some(&e) => e,
-                None => continue,
+        // 地形チャンクが使うパレットを group3 へ登録する（描画前に済ませる必要がある）。
+        // パレット用バインドグループはメッシュ VRAM とは別枠なので、フェーズ A より前でよい。
+        self.ensure_terrain_palettes(
+            cpu_models.iter().filter_map(|m| m.as_ref()).map(|(model, _, _)| model.as_ref()),
+        );
+
+        // ── フェーズ A: 対象全チャンクの旧 GpuModel を drop する ──
+        //   ここで手放すのはチャンク専有のリソースなので、他の描画には影響しない。
+        let t_swap = Instant::now();
+        for (&coord, cpu) in coords.iter().zip(cpu_models.iter()) {
+            // メッシュ生成に失敗した（チャンクが存在しない）ものは触らない。
+            if cpu.is_none() {
+                continue;
+            }
+            let Some(&slot_entity) = self.terrain.chunk_slot_entity.get(&coord) else {
+                continue;
             };
-            // (1) 旧 GpuModel を drop（このチャンク専有のため他描画に影響なし）。
             if let Some(scene) = self.scene.as_mut() {
                 if let Some(mc) = scene.world.get_mut::<ModelComponent>(slot_entity) {
                     mc.gpu_model = None;
                 }
             }
-            // (2) 遅延破棄を今ここで確定させる（GPU アイドル待ち）。wgpu 25 の poll API。
-            if let Some(ctx) = self.draw_ctx.as_ref() {
-                let _ = ctx.device.poll(wgpu::PollType::Wait);
+        }
+
+        // ── フェーズ B: 遅延破棄をここで 1 回だけ確定させる（GPU アイドル待ち） ──
+        //   wgpu 25 の poll API。ループ外に置くことがこの関数の最大の要点。
+        let t_poll = Instant::now();
+        if let Some(ctx) = self.draw_ctx.as_ref() {
+            let _ = ctx.device.poll(wgpu::PollType::Wait);
+        }
+        let poll_ms = t_poll.elapsed().as_secs_f64() * MILLIS_PER_SEC;
+
+        // ── フェーズ C-1: 新しい GPU リソースをアップロードする（シリアル） ──
+        //   DrawContext は内部可変性（RefCell）を持ち Sync ではないため並列化しない。
+        //   `self.draw_ctx` の借用と `self.scene` の可変借用が衝突しないよう、
+        //   アップロードだけを先にまとめて済ませてから書き戻す。
+        let mut uploaded: Vec<(
+            ChunkCoord,
+            Arc<Model>,
+            Option<GpuModel>,
+            Option<InstancedModelBatch>,
+            Arc<Vec<TerrainVertexEdge>>,
+        )> = Vec::with_capacity(cpu_models.len());
+        {
+            let ctx = self.draw_ctx.as_ref().unwrap();
+            for (&coord, cpu) in coords.iter().zip(cpu_models.into_iter()) {
+                // 空メッシュのチャンクは gpu/batch=None で積まれ、下で非描画に差し替わる。
+                let Some((model, is_empty, edges)) = cpu else { continue };
+                let (gpu, batch) = upload_chunk_model(ctx, &model, is_empty);
+                uploaded.push((coord, model, gpu, batch, edges));
             }
-            // (3) 新 GpuModel / バッチ / CPU モデルを書き戻す（空メッシュなら None＝非描画）。
+        }
+
+        // ── フェーズ C-2: 全チャンクへ書き戻す ──
+        // 差し替えたチャンクの batch_key（= ModelComponent::source_path。地形チャンクは
+        // マテリアルオーバーライドを持たないため batch_key とビット一致）を集め、
+        // 後段でジオメトリ由来の派生キャッシュを破棄する。
+        let mut swapped_keys: Vec<String> = Vec::new();
+        for (coord, model, gpu, batch, edges) in uploaded {
+            // 由来辺キャッシュを最新メッシュのものへ更新する。ここを怠ると、
+            // 掘削でメッシュが変わったチャンクを次にペイントしたとき、古い辺で
+            // 重みを引き直して頂点数不一致（＝フォールバック）や誤色を招く。
+            self.terrain.chunk_vertex_edges.insert(coord, edges);
+            let Some(&slot_entity) = self.terrain.chunk_slot_entity.get(&coord) else {
+                continue;
+            };
             if let Some(scene) = self.scene.as_mut() {
                 if let Some(mc) = scene.world.get_mut::<ModelComponent>(slot_entity) {
                     mc.model = Some(model);
                     mc.gpu_model = gpu;
                     mc.instanced_batch = batch;
-                    // (4) バッチ更新をマークする。
+                    // バッチ更新をマークする。
                     mc.mark_batch_dirty();
                     swapped_keys.push(mc.source_path.clone());
                 }
@@ -1715,8 +2000,258 @@ impl App {
             self.terrain.dirty.insert(coord);
         }
 
-        // (5) ジオメトリ由来の派生キャッシュを破棄する（下記メソッドの説明を参照）。
+        // ── フェーズ C-3: ジオメトリ由来の派生キャッシュを破棄する（下記メソッドの説明を参照） ──
         self.invalidate_geometry_caches(&swapped_keys);
+        let swap_ms = t_swap.elapsed().as_secs_f64() * MILLIS_PER_SEC;
+
+        // ── 計測ログ（編集が起きたフレームは毎回出す。間引くとスパイクを取り逃すため） ──
+        if *PERF_TERRAIN_LOG_ENABLED {
+            let total_ms = t_total.elapsed().as_secs_f64() * MILLIS_PER_SEC;
+            // gpu_ms は「アップロード＋書き戻し」から poll 待ちを除いた実作業時間。
+            let gpu_ms = (swap_ms - poll_ms).max(0.0);
+            eprintln!(
+                "[PERF terrain] remesh chunks={} cpu_mesh={:.2}ms gpu_swap={:.2}ms poll_wait={:.2}ms total={:.2}ms",
+                coords.len(), cpu_ms, gpu_ms, poll_ms, total_ms
+            );
+        }
+    }
+
+    /// レイヤペイント専用の高速パス。**メッシュを一切再生成せず**、頂点カラー（レイヤ重み）
+    /// と GPU 頂点バッファだけを差し替える。
+    ///
+    /// 【成立する理由】
+    ///   ペイント（TERRAIN_PAINT）はスプラット場（手ペイント重み・ペイント量）しか
+    ///   書き換えず、密度場には一切触れない。マーチングキューブスの出力（頂点位置・法線・
+    ///   インデックス・三角形数・頂点の並び順）は密度場だけで決まるので、これらはすべて不変。
+    ///   変わるのは頂点カラーとチャンクパレットだけである。
+    ///   そこで、メッシュ生成時に記録しておいた「頂点の由来辺」(`chunk_vertex_edges`) から
+    ///   `interp_vertex_paint` でスプラットを引き直し、`compute_layer_colors` で色を作る。
+    ///   どちらも **フル生成経路（`generate_core` / `terrain_mesh_to_model`）が使うのと
+    ///   同一関数**なので、この高速パスの結果はフル再メッシュの結果とビット一致する。
+    ///
+    /// 【フォールバック条件（フル再メッシュへ回す）】
+    ///   1. 由来辺キャッシュが無い（メッシュ化前・キャッシュが失われた）
+    ///   2. ModelComponent が引けない／`model` または `gpu_model` が `None`
+    ///      （＝空メッシュチャンク。GPU リソースを持たないので書き換え先が無い）
+    ///   3. 由来辺の数と CPU モデルの頂点数が食い違う（防御的。起きないはずだが、
+    ///      黙って壊れた色を描くより作り直したほうが安全）
+    ///   4. **パレットが変わった**。頂点カラー 4 成分は「レイヤ番号」ではなく
+    ///      「このチャンクのパレット内スロット」を意味するため、パレットが変われば
+    ///      成分の *意味* が変わる。頂点カラーだけ差し替えても描画側は旧パレットで
+    ///      解決してしまうので正しく描けない。
+    ///      これは「そのチャンクで初めて塗るレイヤが上位 4 層へ入り込んだ瞬間」だけ起き、
+    ///      ストローク 1 発目に 1 回起きたあとは同じパレットが続くので以降は高速パスに乗る。
+    ///
+    /// 【呼ばないもの — この最適化の要点】
+    ///   - `invalidate_geometry_caches`: **絶対に呼ばない**。あれはジオメトリが変化した
+    ///     ときだけのための処理で（コミット 44bf6a3）、BLAS 再構築と統合バッチ再構築を
+    ///     誘発する。形状不変のペイントで毎回呼ぶと BLAS 再構築が走り、この最適化の
+    ///     意味が完全に消える。
+    ///   - `mark_batch_dirty`: 呼ばない。インスタンス行列（`instance_mats`）は不変であり、
+    ///     このフラグはインスタンスデータの再アップロード用だから。
+    ///     【描画へ反映される根拠（コード確認済み）】`frame_renderer.rs` は頂点／インデックスを
+    ///     `gpu_model_by_path`（＝各 `ModelComponent::gpu_model`。ここで書き換えている実体）から
+    ///     引き、`shared_model_batches` はインスタンス行列とカリング用 `cpu_model` しか持たない。
+    ///     よって頂点バッファを書き換えれば次のドローで新しい色が出る。
+    ///     RT の BLAS も頂点**位置**しか読まないため、色の変更で作り直す必要は無い。
+    fn apply_terrain_paint_colors(&mut self, coords: &[ChunkCoord]) {
+        if self.draw_ctx.is_none() || coords.is_empty() {
+            return;
+        }
+        let t_total = Instant::now();
+        let settings = self.terrain.settings.clone();
+        let layers = self.terrain.layers.clone();
+
+        // フル再メッシュへ回すチャンク（フォールバック条件のいずれかに該当したもの）。
+        let mut fallback: Vec<ChunkCoord> = Vec::new();
+        // 高速パスで実際に色を差し替えたチャンク（未保存マーク用。借用の都合で後回し）。
+        let mut painted: Vec<ChunkCoord> = Vec::new();
+        // 各フェーズの累積時間（ミリ秒）。
+        let mut recalc_ms = 0.0f64;
+        let mut colors_ms = 0.0f64;
+        let mut upload_ms = 0.0f64;
+        // フォールバック理由の内訳（[PERF terrain] paint に出す診断値）。
+        //
+        // 【なぜ理由まで出すか】
+        //   この高速パスは「フォールバックしていないこと」が効果の前提であり、
+        //   fallback だけを数えても「なぜ落ちたか」が分からず最適化が効いているのか
+        //   判断できない。理由別に数えておけば、ログ 1 行で
+        //   「パレット変化（＝仕様どおり・ストローク 1 発目だけ）」なのか
+        //   「キャッシュ欠落（＝配線の不備）」なのかを切り分けられる。
+        let mut fb_no_edges = 0usize;   // ① 由来辺キャッシュが無い
+        let mut fb_no_slot = 0usize;    // ③ スロット／ModelComponent が引けない
+        let mut fb_no_gpu = 0usize;     // 空メッシュチャンク（GPU リソース不在）
+        let mut fb_vert_mismatch = 0usize; // ④ 頂点数不一致
+        let mut fb_palette = 0usize;    // ⑦ パレット変化
+
+        for &coord in coords {
+            // ── ① 由来辺キャッシュ（無ければフル再メッシュ）──
+            let Some(edges) = self.terrain.chunk_vertex_edges.get(&coord).cloned() else {
+                fb_no_edges += 1;
+                fallback.push(coord);
+                continue;
+            };
+            // ── ② 密度・スプラットの実体（無い＝既に消えたチャンク。何もしない）──
+            if !self.terrain.chunks.contains_key(&coord) {
+                continue;
+            }
+            // ── ③ メッシュを載せている ModelComponent スロット ──
+            let Some(&slot_entity) = self.terrain.chunk_slot_entity.get(&coord) else {
+                fb_no_slot += 1;
+                fallback.push(coord);
+                continue;
+            };
+
+            // ── ⑤ 由来辺からスプラットを引き直す（rayon でチャンク内並列） ──
+            //   `interp_vertex_paint` は `&TerrainChunkData` しか触らない純粋関数なので
+            //   並列に走らせても互いに干渉しない。`par_iter().map().collect::<Vec<_>>()` は
+            //   rayon の IndexedParallelIterator により**入力順を保存する**ため、
+            //   出力の並びはスレッド数・スケジューリングに依らず完全に決定的である。
+            let t_recalc = Instant::now();
+            let interpolated: Vec<(BlendSlots, f32)> = {
+                // `unwrap` は ② の存在確認済みなので安全。
+                let chunk = self.terrain.chunks.get(&coord).unwrap();
+                edges.par_iter().map(|edge| interp_vertex_paint(chunk, edge)).collect()
+            };
+            let paint: Vec<BlendSlots> = interpolated.iter().map(|p| p.0).collect();
+            let paint_amount: Vec<f32> = interpolated.iter().map(|p| p.1).collect();
+            recalc_ms += t_recalc.elapsed().as_secs_f64() * MILLIS_PER_SEC;
+
+            // ── ⑥⑦ 頂点カラーとパレットを求め、パレット変化を判定する ──
+            //   `self.scene`（不変借用）と `self.draw_ctx`（不変借用）は別フィールドなので同時に持てる。
+            let world_origin = coord.world_origin(&settings);
+            let t_colors = Instant::now();
+            let rebuilt: Option<Model> = {
+                let Some(scene) = self.scene.as_ref() else {
+                    fb_no_slot += 1;
+                    fallback.push(coord);
+                    continue;
+                };
+                let Some(mc) = scene.world.get::<ModelComponent>(slot_entity) else {
+                    fb_no_slot += 1;
+                    fallback.push(coord);
+                    continue;
+                };
+                // CPU モデルが無い（まだ一度も構築されていない）ならフル生成に任せる。
+                let Some(model) = mc.model.as_ref() else {
+                    fb_no_slot += 1;
+                    fallback.push(coord);
+                    continue;
+                };
+                // ── 空メッシュチャンクは「何もしない」が正解（フォールバックしない）──
+                //   全 AIR / 全 SOLID のチャンクは表面三角形が 0 個で、GPU リソースも
+                //   持たない（build_chunk_render が gpu=None を返す）。頂点が 1 つも
+                //   無いのだから塗り替える頂点カラーも存在せず、フル再メッシュしても
+                //   やはり空メッシュができるだけで画面は 1 ピクセルも変わらない。
+                //   ここでフォールバックさせると、ブラシ半径に掛かった空チャンクのぶん
+                //   毎ストローク無駄な再メッシュ（＋GPU 差し替え）が走り続ける
+                //   （実測: 遅延ペイントの fallback 4 件がすべてこれだった）。
+                //   よって単にスキップする。
+                if mc.gpu_model.is_none() {
+                    continue;
+                }
+                // 地形チャンクは単一メッシュ・単一プリミティブ・単一マテリアル。
+                let (Some(mesh), Some(material)) =
+                    (model.meshes.first(), model.materials.first())
+                else {
+                    fb_no_gpu += 1;
+                    fallback.push(coord);
+                    continue;
+                };
+                let Some(prim) = mesh.primitives.first() else {
+                    fb_no_gpu += 1;
+                    fallback.push(coord);
+                    continue;
+                };
+                // ── ④ 頂点数の整合（防御的。ありえないはずだが黙って壊れるより作り直す）──
+                if edges.len() != prim.vertices.len() {
+                    fb_vert_mismatch += 1;
+                    fallback.push(coord);
+                    continue;
+                }
+
+                let positions: Vec<[f32; 3]> = prim.vertices.iter().map(|v| v.position).collect();
+                let normals: Vec<[f32; 3]> = prim.vertices.iter().map(|v| v.normal).collect();
+                let (colors, palette) = compute_layer_colors(
+                    &positions, &normals, &paint, &paint_amount, world_origin, &layers,
+                );
+
+                // ── ⑦ パレット変化＝頂点カラー成分の意味が変わる → フル再メッシュ ──
+                if palette != material.terrain_palette {
+                    fb_palette += 1;
+                    fallback.push(coord);
+                    continue;
+                }
+                rebuild_terrain_model_with_colors(
+                    &prim.vertices, &prim.indices, &model.name, &colors, palette,
+                )
+            };
+            colors_ms += t_colors.elapsed().as_secs_f64() * MILLIS_PER_SEC;
+
+            let Some(new_model) = rebuilt else {
+                // 長さ不一致（④ で弾いているので実質到達しない）。念のため作り直す。
+                fallback.push(coord);
+                continue;
+            };
+
+            // ── ⑧ CPU モデルの差し替え ＋ GPU 頂点バッファの丸ごと書き換え ──
+            let t_upload = Instant::now();
+            {
+                let ctx = self.draw_ctx.as_ref().unwrap();
+                let Some(scene) = self.scene.as_mut() else { continue };
+                let Some(mc) = scene.world.get_mut::<ModelComponent>(slot_entity) else {
+                    continue;
+                };
+                // CPU 側も更新する。`slot_ops.rs` のマテリアルオーバーライド設定経路が
+                // `mc.model` から GPU リソースを作り直すため、ここが古いままだと
+                // 後でオーバーライドを付けた瞬間に色が巻き戻る。
+                mc.model = Some(Arc::new(new_model));
+
+                // GPU 頂点バッファは **1 回の write_buffer で全頂点を丸ごと**書き直す。
+                //   頂点あたり 16 バイト（color の offset 56）だけを書く方式もあるが、
+                //   それだと 17,000 頂点で 17,000 回の write_buffer 呼び出しになり、
+                //   1 回あたりの固定コスト（ステージングバッファ確保・コマンド記録）が
+                //   支配的になってかえって遅い。72 B × 頂点数（cells=64 で約 1.2 MB）を
+                //   `bytemuck::cast_slice` で 1 回転送するほうが速い。
+                //   頂点バッファには COPY_DST usage が付いている（gpu_resources.rs）。
+                if let (Some(model), Some(gpu)) = (mc.model.as_ref(), mc.gpu_model.as_ref()) {
+                    if let (Some(prim), Some(gpu_prim)) = (
+                        model.meshes.first().and_then(|m| m.primitives.first()),
+                        gpu.meshes.first().and_then(|m| m.primitives.first()),
+                    ) {
+                        ctx.queue.write_buffer(
+                            &gpu_prim.vertex_buffer,
+                            0,
+                            bytemuck::cast_slice(&prim.vertices),
+                        );
+                    }
+                }
+            }
+            upload_ms += t_upload.elapsed().as_secs_f64() * MILLIS_PER_SEC;
+            painted.push(coord);
+        }
+
+        // 未保存マーク（借用が解けてから立てる）。
+        for coord in &painted {
+            self.terrain.dirty.insert(*coord);
+        }
+
+        // ── ⑨ フォールバック対象はまとめてフル再メッシュへ回す ──
+        if !fallback.is_empty() {
+            self.remesh_chunks(&fallback);
+        }
+
+        // ── 計測ログ（`[PERF terrain] remesh ...` と同じ流儀・同じゲート）──
+        if *PERF_TERRAIN_LOG_ENABLED {
+            let total_ms = t_total.elapsed().as_secs_f64() * MILLIS_PER_SEC;
+            eprintln!(
+                "[PERF terrain] paint chunks={} fast={} fallback={} (edges={} slot={} gpu={} verts={} palette={}) recalc={:.2}ms \
+                 colors={:.2}ms upload={:.2}ms total={:.2}ms",
+                coords.len(), painted.len(), fallback.len(),
+                fb_no_edges, fb_no_slot, fb_no_gpu, fb_vert_mismatch, fb_palette,
+                recalc_ms, colors_ms, upload_ms, total_ms
+            );
+        }
     }
 
     /// 同一 batch_key のままメッシュを差し替えたときに、レンダラ側の
@@ -2050,14 +2585,22 @@ impl App {
         let settings = self.terrain.settings.clone();
         let layers = self.terrain.layers.clone();
         let mut prebuilt: Vec<(Entity, Arc<Model>, Option<GpuModel>, Option<InstancedModelBatch>)> = Vec::new();
+        // 由来辺は借用の都合で一旦ローカルへ溜め、この後 self.terrain へ入れる。
+        let mut prebuilt_edges: Vec<(ChunkCoord, Arc<Vec<TerrainVertexEdge>>)> = Vec::new();
         {
             let ctx = self.draw_ctx.as_ref().unwrap();
             for (coord, mc_slot) in &loaded {
                 // 空メッシュチャンクは gpu/batch=None で返る（非描画のまま MC を埋める）。
-                if let Some((model, gpu, batch)) = build_chunk_render(&self.terrain.chunks, &settings, &layers, ctx, *coord) {
+                if let Some((model, gpu, batch, edges)) = build_chunk_render(&self.terrain.chunks, &settings, &layers, ctx, *coord) {
                     prebuilt.push((*mc_slot, model, gpu, batch));
+                    prebuilt_edges.push((*coord, edges));
                 }
             }
+        }
+        // 由来辺キャッシュを登録する（`self.terrain` はこの関数の冒頭で default に
+        // 差し替わっているため、前のシーンの辺が混ざることはない）。
+        for (coord, edges) in prebuilt_edges {
+            self.terrain.chunk_vertex_edges.insert(coord, edges);
         }
         // 地形チャンクが使うパレットを group3 へ登録する（描画前に済ませる必要がある）。
         self.ensure_terrain_palettes(prebuilt.iter().map(|p| p.1.as_ref()));
@@ -2345,7 +2888,10 @@ impl App {
             return;
         }
         let n = SMOKE_DEFERRED_FRAME_COUNTER.fetch_add(1, Ordering::Relaxed);
-        if n != SMOKE_DEFERRED_DIG_FRAME {
+        // 掘削フレームでもペイントフレームでもなければ何もしない。
+        let is_dig = n == SMOKE_DEFERRED_DIG_FRAME;
+        let is_paint = SMOKE_DEFERRED_PAINT_FRAMES.contains(&n);
+        if !is_dig && !is_paint {
             return;
         }
         // フットプリント中心（run_terrain_smoke のカメラ注視点と同じ計算式）。
@@ -2356,6 +2902,29 @@ impl App {
             0.0,
             settings.ground_chunks_z as f32 * extent * 0.5,
         ];
+
+        // ── 遅延ペイント: 密度を触らずレイヤだけを塗る（高速パスの実機検証）──
+        //   同じ場所を複数フレームに分けて塗ることで、
+        //   1 回目 = パレット確定（フォールバックし得る）／2 回目以降 = 高速パス
+        //   という遷移が `[PERF terrain] paint` のログで観測できる。
+        if is_paint {
+            for i in 0..SMOKE_DEFERRED_PAINT_COLUMN_STEPS {
+                let y = i as f32 * SMOKE_DEFERRED_PAINT_COLUMN_STEP_Y;
+                self.handle_terrain_paint_world(
+                    SMOKE_DEFERRED_PAINT_LAYER,
+                    [center[0] + SMOKE_DEFERRED_PAINT_OFFSET, y, center[2]],
+                    SMOKE_DEFERRED_PAINT_RADIUS,
+                    SMOKE_DEFERRED_PAINT_STRENGTH,
+                );
+            }
+            self.handle_terrain_stroke_end();
+            eprintln!("[SEED terrain] smoke: deferred paint at frame {n}");
+            // 最終ペイントフレームまで来たらフックを畳む。
+            if Some(&n) == SMOKE_DEFERRED_PAINT_FRAMES.last() {
+                SMOKE_DEFERRED_ENABLED.store(false, Ordering::Relaxed);
+            }
+            return;
+        }
         // ハイトマップ適用後の地表 Y はレイ無しには求まらないため、同じ XZ で Y を変えながら
         // 縦に掘削球を積み、確実に地表を貫いて穴の内部（側面・底）を露出させる。
         for i in 0..SMOKE_DEFERRED_DIG_COLUMN_STEPS {
@@ -2373,7 +2942,7 @@ impl App {
         eprintln!(
             "[SEED terrain] smoke: deferred dig at frame {n} center={center:?} r={SMOKE_DEFERRED_DIG_RADIUS}"
         );
-        SMOKE_DEFERRED_ENABLED.store(false, Ordering::Relaxed);
+        // ここでは畳まない。後続の遅延ペイントフレームまでフックを生かしておく。
     }
 }
 

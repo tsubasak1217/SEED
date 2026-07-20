@@ -25,22 +25,60 @@
 //    正規化ペア（(小, 大)）でキー化し、補間も常に小→大方向で行うことで、
 //    隣接セルが同一辺に対してビット一致の頂点を生成する。
 //    → 共有辺は 1 頂点となり、メッシュはインデックス溶接され水密になる。
+//
+//  【辺キャッシュの表現 — フラット配列】
+//    MC の辺は必ず「あるサンプル座標から +X / +Y / +Z のいずれか 1 方向へ
+//    1 だけ進んだ隣」を結ぶ。よって辺は (lo サンプル座標, 軸 0..2) で一意に
+//    表せる。HashMap ではなく長さ 3·S³ のフラット配列で持つことで、
+//    ハッシュ計算と衝突処理が丸ごと消え、溶接が単なる配列アクセスになる。
 // ============================================================
 
-use std::collections::HashMap;
-
 use super::chunk_data::TerrainChunkData;
-use super::layers::{expand_slots, select_top_slots, BlendSlots, TERRAIN_MAX_LAYERS};
-use super::settings::TerrainSettings;
+use super::layers::{expand_slots_into, select_top_slots, BlendSlots, TERRAIN_MAX_LAYERS};
+use super::settings::{TerrainSettings, MAX_CHUNK_CELLS};
 
 // ─── 勾配（法線）計算のステップ幅（サンプル間隔単位） ────────────────────────
 /// 中心差分の刻み幅。1.0 = 1 サンプル間隔ぶん離れた点で差分を取る。
 const GRADIENT_STEP_SAMPLES: f32 = 1.0;
 
+// ─── 辺キャッシュ（フラット配列）のパラメータ ───────────────────────────────
+/// 1 サンプルが起点となり得る辺の本数（+X / +Y / +Z の 3 方向）。
+const EDGE_AXIS_COUNT: usize = 3;
+/// 辺キャッシュの「未割当」マーカ。この値なら、その辺の頂点はまだ生成されていない。
+/// 頂点数が u32::MAX に達することは（1 チャンク 65³ サンプル上限では）あり得ない。
+const EDGE_SLOT_UNASSIGNED: u32 = u32::MAX;
+
+// ─── `TerrainVertexEdge::lo` を u16 で持てる根拠 ────────────────────────────
+/// チャンク 1 軸あたりのサンプル数の上限（= MAX_CHUNK_CELLS + 1 = 65）。
+/// ローカルサンプル座標はこの値未満なので u16 に収まる。
+const MAX_SAMPLES_PER_AXIS: usize = MAX_CHUNK_CELLS as usize + 1;
+/// 上の根拠をコンパイル時に固定する（MAX_CHUNK_CELLS を将来広げたらここで落ちる）。
+const _: () = assert!(
+    MAX_SAMPLES_PER_AXIS <= u16::MAX as usize,
+    "TerrainVertexEdge::lo が u16 に収まらない分割数になっている"
+);
+
+/// 頂点を生んだ辺の記述子。hi サンプル座標は lo + 軸方向の単位ベクトルで求まる。
+///
+/// ペイント（レイヤ塗り）は密度を変えないため、頂点の位置・法線・インデックスは
+/// 不変であり、変わるのは頂点カラーだけである。そこで「どの辺のどこ（t）で
+/// 生まれた頂点か」をメッシュに記録しておき、ペイント時はマーチングキューブスを
+/// 再実行せずに、この記述子からスプラット場を引き直すだけで済むようにする。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TerrainVertexEdge {
+    /// 辺の「小さい側」サンプル座標（チャンクローカル整数）。
+    pub lo: [u16; 3],
+    /// 辺が伸びる軸（0=X, 1=Y, 2=Z）。hi = lo + unit(axis)。
+    pub axis: u8,
+    /// 補間係数（lo→hi 方向。位置・法線・ペイントすべてこの t で決まる）。
+    pub t: f32,
+}
+
 /// エンジン非依存の地形メッシュ。
 ///
 /// positions はチャンクローカル空間（メートル、原点 = チャンク最小コーナー）。
 /// normals は各頂点の外向き単位法線。indices は三角形リスト（3 個で 1 三角形）。
+#[derive(Default)]
 pub struct TerrainMesh {
     pub positions: Vec<[f32; 3]>,
     pub normals: Vec<[f32; 3]>,
@@ -51,18 +89,15 @@ pub struct TerrainMesh {
     pub paint: Vec<BlendSlots>,
     /// 各頂点のペイント量（0=未ペイント〜1=完全に手描き優先）。positions と同じ長さ。
     pub paint_amount: Vec<f32>,
+    /// 頂点がどの辺から生まれたか（lo サンプル座標・軸・補間係数 t）。
+    /// positions と同じ長さ・同じ順序。
+    pub edges: Vec<TerrainVertexEdge>,
 }
 
 impl TerrainMesh {
     /// 空メッシュを生成する。
     fn new() -> Self {
-        Self {
-            positions: Vec::new(),
-            normals: Vec::new(),
-            indices: Vec::new(),
-            paint: Vec::new(),
-            paint_amount: Vec::new(),
-        }
+        Self::default()
     }
 
     /// 三角形数を返す（indices.len() / 3）。
@@ -153,9 +188,12 @@ fn generate_core(
     // セル数 = サンプル数 - 1（各軸）。
     let cells = s - 1;
 
-    // ─── 辺→頂点インデックスの溶接キャッシュ ───
-    //   キー = (小さいサンプル座標, 大きいサンプル座標) の正規化ペア。
-    let mut edge_cache: HashMap<([i32; 3], [i32; 3]), u32> = HashMap::new();
+    // ─── 辺→頂点インデックスの溶接キャッシュ（フラット配列） ───
+    //   添字 = (lo サンプル座標, 軸) → edge_cache_index()。
+    //   HashMap を使わないのは、ハッシュ計算と衝突処理が再メッシュのホットパスで
+    //   支配的なコストになるため（辺は座標と軸で自然に番号付けできる）。
+    let mut edge_cache: Vec<u32> =
+        vec![EDGE_SLOT_UNASSIGNED; EDGE_AXIS_COUNT * (s as usize) * (s as usize) * (s as usize)];
 
     // ─── 全セルを走査 ───
     for cz in 0..cells {
@@ -194,12 +232,16 @@ fn generate_core(
                     let pb = [cx + CORNER_OFFSET[cb][0], cy + CORNER_OFFSET[cb][1], cz + CORNER_OFFSET[cb][2]];
 
                     // 正規化：辞書順で小さい方を lo にする（補間方向を固定）。
+                    // lexi_less は「lo が座標の小さい側」を保証するので、
+                    // hi は必ず lo + 単位軸ベクトル（1 軸だけ +1）になる。
                     let (lo, hi) = if lexi_less(pa, pb) { (pa, pb) } else { (pb, pa) };
-                    let key = (lo, hi);
+                    let axis = edge_axis(lo, hi);
+                    let slot = edge_cache_index(lo, axis, s);
 
                     // 既にこの辺の頂点があれば再利用。
-                    let idx = if let Some(&existing) = edge_cache.get(&key) {
-                        existing
+                    let cached = edge_cache[slot];
+                    let idx = if cached != EDGE_SLOT_UNASSIGNED {
+                        cached
                     } else {
                         // 補間係数 t（lo→hi 方向）。密度差 0 の場合は中点。
                         let d_lo = chunk.sample(lo[0] as usize, lo[1] as usize, lo[2] as usize);
@@ -228,37 +270,22 @@ fn generate_core(
                         let normal = gradient_normal(&sampler, fpos);
 
                         // ─── スプラット（手ペイント重み・ペイント量）を辺に沿って補間 ───
-                        //   位置と同じ補間係数 t を使うことで、頂点属性が位置と整合する。
-                        //   lo/hi はどちらもセルのコーナー＝自チャンク内のサンプルなので
-                        //   隣接チャンクを読む必要はない（境界サンプルは write 側で同期済み）。
-                        //
-                        //   【なぜ密ベクトル経由で補間するか — T2b】
-                        //     BlendSlots はスロット番号とレイヤ番号の対応が
-                        //     サンプルごとに違い得る（lo のスロット 0 が岩でも
-                        //     hi のスロット 0 は砂かもしれない）。スロット添字で
-                        //     直接 lerp すると別レイヤ同士を混ぜてしまい、境界に
-                        //     まったく塗っていない層が湧く。よって一度
-                        //     レイヤ番号を添字とする密ベクトルへ展開してから lerp し、
-                        //     改めて上位 4 層を選び直す（正しさ優先）。
-                        let p_lo = chunk.paint_slots(lo[0] as usize, lo[1] as usize, lo[2] as usize);
-                        let p_hi = chunk.paint_slots(hi[0] as usize, hi[1] as usize, hi[2] as usize);
-                        let d_lo_w = expand_slots(&p_lo, TERRAIN_MAX_LAYERS);
-                        let d_hi_w = expand_slots(&p_hi, TERRAIN_MAX_LAYERS);
-                        let mut dense = [0.0f32; TERRAIN_MAX_LAYERS];
-                        for k in 0..TERRAIN_MAX_LAYERS {
-                            dense[k] = d_lo_w[k] + t * (d_hi_w[k] - d_lo_w[k]);
-                        }
-                        let paint = select_top_slots(&dense);
-                        let a_lo = chunk.paint_amount(lo[0] as usize, lo[1] as usize, lo[2] as usize);
-                        let a_hi = chunk.paint_amount(hi[0] as usize, hi[1] as usize, hi[2] as usize);
-                        let paint_amount = a_lo + t * (a_hi - a_lo);
+                        //   ペイント時の頂点カラー差分更新と同じ関数を通すことで、
+                        //   両経路の結果が定義上必ず一致する（interp_vertex_paint 参照）。
+                        let edge_desc = TerrainVertexEdge {
+                            lo:   [lo[0] as u16, lo[1] as u16, lo[2] as u16],
+                            axis: axis as u8,
+                            t,
+                        };
+                        let (paint, paint_amount) = interp_vertex_paint(chunk, &edge_desc);
 
                         let new_idx = mesh.positions.len() as u32;
                         mesh.positions.push(pos);
                         mesh.normals.push(normal);
                         mesh.paint.push(paint);
                         mesh.paint_amount.push(paint_amount);
-                        edge_cache.insert(key, new_idx);
+                        mesh.edges.push(edge_desc);
+                        edge_cache[slot] = new_idx;
                         new_idx
                     };
                     edge_vertex[e] = idx;
@@ -286,6 +313,86 @@ fn generate_core(
 fn lexi_less(pa: [i32; 3], pb: [i32; 3]) -> bool {
     // ─── x → y → z の順で比較する ───
     (pa[0], pa[1], pa[2]) < (pb[0], pb[1], pb[2])
+}
+
+/// 正規化済みの辺 (lo, hi) が伸びる軸（0=X, 1=Y, 2=Z）を返す。
+///
+/// MC の辺は必ずグリッドの 1 軸方向へ 1 進んだ隣同士を結び、`lexi_less` による
+/// 正規化で lo が小さい側になるため、hi - lo は「ある 1 軸だけが +1」となる。
+#[inline]
+fn edge_axis(lo: [i32; 3], hi: [i32; 3]) -> usize {
+    let d = [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]];
+    debug_assert!(
+        d.iter().filter(|&&v| v == 1).count() == 1 && d.iter().all(|&v| v == 0 || v == 1),
+        "MC の辺が単位軸ベクトルになっていない: lo={lo:?} hi={hi:?}"
+    );
+    if d[0] == 1 {
+        0
+    } else if d[1] == 1 {
+        1
+    } else {
+        2
+    }
+}
+
+/// 辺 (lo サンプル座標, 軸) をフラット辺キャッシュの添字へ写す。
+///
+/// レイアウトは `((lz * S + ly) * S + lx) * 3 + axis`（S = 1 軸のサンプル数）。
+/// セル走査が cz→cy→cx 順なので、この並びだと近傍アクセスが連続に寄る。
+#[inline]
+fn edge_cache_index(lo: [i32; 3], axis: usize, samples: i32) -> usize {
+    let s = samples as usize;
+    let (lx, ly, lz) = (lo[0] as usize, lo[1] as usize, lo[2] as usize);
+    debug_assert!(lx < s && ly < s && lz < s, "辺キャッシュ添字が範囲外: {lo:?} >= {s}");
+    ((lz * s + ly) * s + lx) * EDGE_AXIS_COUNT + axis
+}
+
+/// 指定した辺（lo, axis, t）における手ペイント重みとペイント量を、
+/// チャンクの現在のスプラット場から補間して求める。
+///
+/// `generate_core`（フルメッシュ生成）と、ペイント時の頂点カラー差分更新の
+/// **両方がこの 1 関数を使う**ことで、両経路の結果が定義上必ず一致する。
+///
+/// lo/hi はどちらもセルのコーナー＝自チャンク内のサンプルなので、
+/// 隣接チャンクを読む必要はない（境界サンプルは write 側で同期済み）。
+///
+/// 【なぜ密ベクトル経由で補間するか — T2b】
+///   BlendSlots はスロット番号とレイヤ番号の対応がサンプルごとに違い得る
+///   （lo のスロット 0 が岩でも hi のスロット 0 は砂かもしれない）。スロット添字で
+///   直接 lerp すると別レイヤ同士を混ぜてしまい、境界にまったく塗っていない層が湧く。
+///   よって一度レイヤ番号を添字とする密ベクトルへ展開してから lerp し、
+///   改めて上位 4 層を選び直す（正しさ優先）。
+pub fn interp_vertex_paint(
+    chunk: &TerrainChunkData,
+    edge: &TerrainVertexEdge,
+) -> (BlendSlots, f32) {
+    // ─── lo / hi のサンプル座標を復元する（hi = lo + unit(axis)）───
+    let lo = [edge.lo[0] as usize, edge.lo[1] as usize, edge.lo[2] as usize];
+    let mut hi = lo;
+    hi[edge.axis as usize] += 1;
+    let t = edge.t;
+
+    // ─── 手ペイント重み: 密ベクトルへ展開 → t で lerp → 上位 4 層を選び直す ───
+    let p_lo = chunk.paint_slots(lo[0], lo[1], lo[2]);
+    let p_hi = chunk.paint_slots(hi[0], hi[1], hi[2]);
+    //   展開先はスタック上の固定長配列（レイヤ上限が TERRAIN_MAX_LAYERS で固定のため）。
+    //   本関数は全頂点ぶん呼ばれるホットパスなので、ここでの Vec 確保は許容できない。
+    let mut d_lo_w = [0.0f32; TERRAIN_MAX_LAYERS];
+    let mut d_hi_w = [0.0f32; TERRAIN_MAX_LAYERS];
+    expand_slots_into(&p_lo, TERRAIN_MAX_LAYERS, &mut d_lo_w);
+    expand_slots_into(&p_hi, TERRAIN_MAX_LAYERS, &mut d_hi_w);
+    let mut dense = [0.0f32; TERRAIN_MAX_LAYERS];
+    for k in 0..TERRAIN_MAX_LAYERS {
+        dense[k] = d_lo_w[k] + t * (d_hi_w[k] - d_lo_w[k]);
+    }
+    let paint = select_top_slots(&dense);
+
+    // ─── ペイント量も同じ t で線形補間する ───
+    let a_lo = chunk.paint_amount(lo[0], lo[1], lo[2]);
+    let a_hi = chunk.paint_amount(hi[0], hi[1], hi[2]);
+    let paint_amount = a_lo + t * (a_hi - a_lo);
+
+    (paint, paint_amount)
 }
 
 /// 三角形を、エンジンのフロントフェイス規約に一致する巻き順で push する。

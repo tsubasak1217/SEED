@@ -24,13 +24,19 @@ mod tests;
 #[cfg(test)]
 mod tests_layers;
 
+/// 編集ホットパスの CPU 計測（#[ignore] 付き。通常のテスト実行では走らない）。
+#[cfg(test)]
+mod bench;
+
 pub use settings::{
     TerrainSettings, MAX_CHUNK_CELLS, MAX_GROUND_CHUNKS, MAX_TOTAL_CHUNKS, MAX_VOXEL_SIZE,
     MIN_CHUNK_CELLS, MIN_GROUND_CHUNKS, MIN_VOXEL_SIZE,
 };
 pub use chunk_coord::ChunkCoord;
 pub use chunk_data::TerrainChunkData;
-pub use marching_cubes::{generate, generate_standalone, TerrainMesh};
+pub use marching_cubes::{
+    generate, generate_standalone, interp_vertex_paint, TerrainMesh, TerrainVertexEdge,
+};
 pub use brush::{apply, chunks_in_brush_aabb, BrushOp, SampleField, SphereBrush};
 pub use tvox::{read_chunk, read_header, write_chunk, TvoxError, TvoxHeader, TVOX_MAGIC, TVOX_VERSION};
 pub use heightmap::HeightmapField;

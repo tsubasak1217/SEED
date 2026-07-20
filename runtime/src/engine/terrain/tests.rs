@@ -800,6 +800,189 @@ fn mc_regen_timing() {
 
 
 // ============================================================
+//  メッシュ出力のバイト一致回帰（辺キャッシュ実装の差し替えを守る）
+// ============================================================
+
+/// FNV-1a 64bit のオフセット基底（正典値）。
+const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+/// FNV-1a 64bit の素数（正典値）。
+const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+
+/// 球 SDF メッシュの positions/normals/indices を丸ごと畳んだ FNV-1a ハッシュ（既定設定）。
+///
+/// **この値は「辺キャッシュを HashMap からフラット配列へ置換する前」の出力から採取した。**
+/// 頂点の push 順・インデックス値・三角形の並びが 1 つでも変われば必ず変化する。
+const SPHERE_MESH_FNV: u64 = 0x4d81_819d_ff2f_4575;
+
+/// 4 バイトを FNV-1a へ畳み込む。
+#[inline]
+fn fnv_feed_u32(h: &mut u64, v: u32) {
+    for b in v.to_le_bytes() {
+        *h ^= b as u64;
+        *h = h.wrapping_mul(FNV_PRIME);
+    }
+}
+
+/// メッシュの位置・法線・インデックスを **ビットレベルで** 畳み込んだハッシュを返す。
+///
+/// f32 は `to_bits()` で扱うため、丸め誤差を許容せず完全一致だけを通す。
+fn mesh_fingerprint(mesh: &super::marching_cubes::TerrainMesh) -> u64 {
+    let mut h = FNV_OFFSET_BASIS;
+    // 長さも混ぜる（要素数が変わったのに畳み込み結果が偶然一致するのを防ぐ）。
+    fnv_feed_u32(&mut h, mesh.positions.len() as u32);
+    fnv_feed_u32(&mut h, mesh.indices.len() as u32);
+    for p in &mesh.positions {
+        for c in p {
+            fnv_feed_u32(&mut h, c.to_bits());
+        }
+    }
+    for n in &mesh.normals {
+        for c in n {
+            fnv_feed_u32(&mut h, c.to_bits());
+        }
+    }
+    for &i in &mesh.indices {
+        fnv_feed_u32(&mut h, i);
+    }
+    h
+}
+
+/// テスト8：球 SDF チャンクのメッシュ出力が既知のハッシュとビット一致すること。
+///
+/// 辺の溶接キャッシュ（HashMap → フラット配列）のような内部実装差し替えが、
+/// 出力を 1 ビットも変えていないことを固定するための回帰テスト。
+#[test]
+fn sphere_mesh_output_is_bit_stable() {
+    let settings = TerrainSettings::default();
+    let chunk = make_sphere_chunk(&settings);
+    let mesh = generate_standalone(&chunk, &settings);
+
+    // 前提: メッシュが空でないこと（空だとハッシュが定数になり何も守れない）。
+    assert!(mesh.triangle_count() > 0, "球メッシュが空（前提の崩れ）");
+
+    let fp = mesh_fingerprint(&mesh);
+    eprintln!("[sphere_mesh_output_is_bit_stable] fingerprint = 0x{fp:016x}");
+    assert_eq!(
+        fp, SPHERE_MESH_FNV,
+        "メッシュ出力が変化した（頂点順・インデックス・座標のいずれかが非互換）"
+    );
+}
+
+// ─── ペイント差分更新の前提テスト用パラメータ ──────────────────────────────
+/// テスト用スプラットのレイヤ数（この数で剰余を取ってサンプルごとに塗る層を変える）。
+const PAINT_TEST_LAYER_COUNT: u32 = 4;
+/// テスト用スプラットの主スロット重み（残りは副スロットへ回す）。
+const PAINT_TEST_PRIMARY_WEIGHT: f32 = 0.7;
+/// テスト用スプラットの副スロット重み（主 + 副 = 1）。
+const PAINT_TEST_SECONDARY_WEIGHT: f32 = 1.0 - PAINT_TEST_PRIMARY_WEIGHT;
+/// テスト用ペイント量のサンプル方向の刻み（サンプルごとに 0..1 を巡回させる）。
+const PAINT_TEST_AMOUNT_STEP: f32 = 0.017;
+
+/// 球 SDF チャンクへ、サンプルごとに異なるスプラットを塗り込む。
+///
+/// 一様に塗ると「補間が効いていなくてもテストが通る」ため、レイヤ番号・重み・
+/// ペイント量のすべてがサンプル座標に依存して変化するようにする。
+fn paint_sphere_chunk(settings: &TerrainSettings) -> TerrainChunkData {
+    use super::layers::BlendSlots;
+
+    let mut chunk = make_sphere_chunk(settings);
+    let s = settings.samples_per_axis();
+    for iz in 0..s {
+        for iy in 0..s {
+            for ix in 0..s {
+                // サンプル座標から主レイヤ・副レイヤを決める（隣接サンプルで必ず変わる）。
+                let primary = (ix + iy * 2 + iz * 3) as u32 % PAINT_TEST_LAYER_COUNT;
+                let secondary = (primary + 1) % PAINT_TEST_LAYER_COUNT;
+                let mut slots = BlendSlots::default();
+                slots.index = [primary, secondary, 0, 0];
+                slots.weight =
+                    [PAINT_TEST_PRIMARY_WEIGHT, PAINT_TEST_SECONDARY_WEIGHT, 0.0, 0.0];
+                chunk.set_paint_slots(ix, iy, iz, &slots);
+                // ペイント量もサンプルごとに 0..1 を巡回させる。
+                let amount = ((ix + iy + iz) as f32 * PAINT_TEST_AMOUNT_STEP).fract();
+                chunk.set_paint_amount(ix, iy, iz, amount);
+            }
+        }
+    }
+    chunk
+}
+
+/// テスト9：`interp_vertex_paint` で TerrainMesh.paint を再構築した結果が、
+/// `generate_standalone` が返した paint / paint_amount と全要素一致すること。
+///
+/// これは「ペイント高速パス」の前提そのものである。ペイントは密度を変えないので
+/// 頂点の位置・法線・インデックスは不変であり、記録しておいた由来辺（TerrainVertexEdge）
+/// からスプラットを引き直すだけで、フル再メッシュと同じ頂点属性が得られなければならない。
+/// ここが崩れると、差分更新した箇所だけ色が食い違う。
+#[test]
+fn interp_vertex_paint_reproduces_mesh_paint() {
+    use super::marching_cubes::interp_vertex_paint;
+
+    let settings = TerrainSettings::default();
+    let chunk = paint_sphere_chunk(&settings);
+    let mesh = generate_standalone(&chunk, &settings);
+
+    // 前提: メッシュが空でなく、由来辺が頂点数ぶん記録されていること。
+    assert!(mesh.triangle_count() > 0, "球メッシュが空（前提の崩れ）");
+    assert_eq!(
+        mesh.edges.len(), mesh.positions.len(),
+        "edges は positions と同じ長さでなければならない"
+    );
+
+    for (i, edge) in mesh.edges.iter().enumerate() {
+        let (paint, amount) = interp_vertex_paint(&chunk, edge);
+
+        // ── レイヤ番号は完全一致、重みはビット一致（同じ式・同じ順序で計算されるため）──
+        assert_eq!(
+            paint.index, mesh.paint[i].index,
+            "頂点 {i}: 再構築したレイヤ番号が不一致 (edge={edge:?})"
+        );
+        for k in 0..super::layers::TERRAIN_BLEND_SLOTS {
+            assert_eq!(
+                paint.weight[k].to_bits(), mesh.paint[i].weight[k].to_bits(),
+                "頂点 {i} スロット {k}: 再構築した重みがビット不一致"
+            );
+        }
+        assert_eq!(
+            amount.to_bits(), mesh.paint_amount[i].to_bits(),
+            "頂点 {i}: 再構築したペイント量がビット不一致"
+        );
+    }
+}
+
+/// テスト9b：由来辺（TerrainVertexEdge）が実際に頂点位置を再現できること。
+///
+/// テスト9 だけだと「edges が正しい辺を指しているか」は検証されない
+/// （generate_core と同じ edge を使い回しているため定義上必ず一致する）。
+/// ここでは辺の記述子から位置を独立に組み立て直し、mesh.positions と突き合わせる。
+#[test]
+fn vertex_edge_descriptor_reconstructs_positions() {
+    let settings = TerrainSettings::default();
+    let chunk = paint_sphere_chunk(&settings);
+    let mesh = generate_standalone(&chunk, &settings);
+    let voxel = settings.voxel_size;
+
+    for (i, edge) in mesh.edges.iter().enumerate() {
+        // hi = lo + unit(axis)。位置は lo→hi を t で内分したもの（メートル換算）。
+        let mut p = [
+            edge.lo[0] as f32,
+            edge.lo[1] as f32,
+            edge.lo[2] as f32,
+        ];
+        p[edge.axis as usize] += edge.t;
+        for k in 0..3 {
+            let expected = mesh.positions[i][k];
+            let actual = p[k] * voxel;
+            assert_eq!(
+                actual.to_bits(), expected.to_bits(),
+                "頂点 {i} 軸 {k}: 由来辺から復元した位置がビット不一致 \
+                 ({actual} vs {expected}, edge={edge:?})"
+            );
+        }
+    }
+}
+
+// ============================================================
 //  チャンク構成の設定（apply_chunk_config）と tvox ヘッダ読み取り
 // ============================================================
 

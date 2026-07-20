@@ -16,9 +16,10 @@ use super::brush::SphereBrush;
 use super::chunk_coord::ChunkCoord;
 use super::chunk_data::TerrainChunkData;
 use super::layers::{
-    blend_rule_and_paint_all, dequantize_weight, expand_slots, normalize_weights_slice,
-    quantize_weight, select_top_slots, BlendSlots, DetileMode, LayerRule, LayerWeights,
-    TerrainLayer, TerrainLayerSet, TERRAIN_BLEND_SLOTS, TERRAIN_MAX_LAYERS,
+    blend_rule_and_paint_all, blend_rule_and_paint_all_into, dequantize_weight, expand_slots,
+    expand_slots_into, normalize_weights_slice, quantize_weight, select_top_slots, BlendSlots,
+    DetileMode, LayerRule, LayerWeights, TerrainLayer, TerrainLayerSet, TERRAIN_BLEND_SLOTS,
+    TERRAIN_MAX_LAYERS,
 };
 use super::paint::{apply_paint, PaintField};
 use super::settings::TerrainSettings;
@@ -721,6 +722,124 @@ fn blend_rule_and_paint_all_lerps_dense_weights() {
     assert!((w[0] - 0.75).abs() < WEIGHT_EPS, "{w:?}");
     assert!((w[5] - 0.25).abs() < WEIGHT_EPS, "{w:?}");
     assert!((w.iter().sum::<f32>() - 1.0).abs() < WEIGHT_EPS, "{w:?}");
+}
+
+// ============================================================
+//  確保なし版（`*_into`）と Vec 版の等価性
+//
+//  頂点カラー計算のホットパスは `*_into` 版だけを呼ぶ。両者がビット単位で
+//  一致しなくなると、メッシュ出力の指紋テストやペイント高速パスの一致テストが
+//  静かに崩れる（＝再メッシュのたびに色がちらつく）。ここでその一致を固定する。
+// ============================================================
+
+/// `*_into` 等価性テストで走査するレイヤ数（1 層・2 層・4 層・上限 16 層）。
+const INTO_LAYER_COUNTS: [usize; 4] = [1, 2, 4, TERRAIN_MAX_LAYERS];
+/// `*_into` 等価性テストで走査するペイント量（未ペイント・中間・完全ペイント）。
+const INTO_PAINT_AMOUNTS: [f32; 3] = [0.0, 0.5, 1.0];
+/// 等価性テスト用の法線 Y サンプル（平地・中腹・垂直面）。斜度ルールを一通り踏む。
+const INTO_NORMAL_YS: [f32; 3] = [1.0, 0.5, 0.0];
+/// 等価性テスト用のワールド Y サンプル（低地・地表・高地）。高度ルールを一通り踏む。
+const INTO_WORLD_YS: [f32; 3] = [-5.0, 0.0, 5.0];
+
+/// n 層の等価性テスト用レイヤセット（既定ルール 4 層を繰り返して埋める）。
+///
+/// 既定セットのルール（草地・土・岩・砂）を使い回すことで、
+/// 「全層同条件」ではない＝重みに差が出る状況を作る。
+fn into_test_layer_set(n: usize) -> TerrainLayerSet {
+    let base = TerrainLayerSet::default();
+    TerrainLayerSet {
+        layers: (0..n)
+            .map(|i| TerrainLayer {
+                name: format!("layer{i}"),
+                ..base.layers[i % base.layers.len()].clone()
+            })
+            .collect(),
+    }
+}
+
+/// `expand_slots_into` が `expand_slots` とビット単位で一致すること。
+#[test]
+fn expand_slots_into_matches_vec_version() {
+    // スロット構成をいくつか用意する（重複レイヤ・範囲外レイヤを含む）。
+    let cases = [
+        BlendSlots::default(),
+        BlendSlots { index: [0, 1, 2, 3], weight: [0.4, 0.3, 0.2, 0.1] },
+        BlendSlots { index: [5, 5, 0, 0], weight: [0.5, 0.25, 0.25, 0.0] },
+        BlendSlots { index: [15, 14, 13, 12], weight: [0.7, 0.1, 0.1, 0.1] },
+    ];
+    // 出力バッファは常に上限長で確保し、len だけを変えて呼ぶ。
+    let mut buf = [0.0f32; TERRAIN_MAX_LAYERS];
+    for slots in cases.iter() {
+        for &len in INTO_LAYER_COUNTS.iter() {
+            let expected = expand_slots(slots, len);
+            // 前回の残骸が残っていても結果が変わらないこと（全上書きの担保）を兼ねる。
+            buf = [f32::NAN; TERRAIN_MAX_LAYERS];
+            expand_slots_into(slots, len, &mut buf);
+            for k in 0..len {
+                assert_eq!(
+                    buf[k].to_bits(), expected[k].to_bits(),
+                    "len={len} slot={k} が不一致: {} vs {}", buf[k], expected[k]
+                );
+            }
+        }
+    }
+}
+
+/// `rule_weights_all_into` が `rule_weights_all` とビット単位で一致すること。
+#[test]
+fn rule_weights_all_into_matches_vec_version() {
+    let mut buf = [0.0f32; TERRAIN_MAX_LAYERS];
+    for &n in INTO_LAYER_COUNTS.iter() {
+        let set = into_test_layer_set(n);
+        for &ny in INTO_NORMAL_YS.iter() {
+            for &wy in INTO_WORLD_YS.iter() {
+                let expected = set.rule_weights_all(ny, wy);
+                buf = [f32::NAN; TERRAIN_MAX_LAYERS];
+                let written = set.rule_weights_all_into(ny, wy, &mut buf);
+                assert_eq!(written, expected.len(), "n={n}: 書き込み数が不一致");
+                for k in 0..written {
+                    assert_eq!(
+                        buf[k].to_bits(), expected[k].to_bits(),
+                        "n={n} ny={ny} wy={wy} layer={k} が不一致: {} vs {}",
+                        buf[k], expected[k]
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// `blend_rule_and_paint_all_into` が `blend_rule_and_paint_all` とビット単位で一致すること。
+///
+/// ルール重みは実際のルール評価から取り、ペイント量 0 / 0.5 / 1 を全て踏む
+/// （＝ホットパスが実際に通る組み合わせをそのまま再現する）。
+#[test]
+fn blend_rule_and_paint_all_into_matches_vec_version() {
+    let paint = BlendSlots { index: [2, 0, 1, 3], weight: [0.5, 0.2, 0.2, 0.1] };
+    let mut rule_buf  = [0.0f32; TERRAIN_MAX_LAYERS];
+    let mut blend_buf = [0.0f32; TERRAIN_MAX_LAYERS];
+
+    for &n in INTO_LAYER_COUNTS.iter() {
+        let set = into_test_layer_set(n);
+        for &ny in INTO_NORMAL_YS.iter() {
+            for &amount in INTO_PAINT_AMOUNTS.iter() {
+                // ルール重みも `*_into` 経路で作る（ホットパスと同じ組み立て）。
+                let written = set.rule_weights_all_into(ny, 0.0, &mut rule_buf);
+                let rule = &rule_buf[..written];
+
+                let expected = blend_rule_and_paint_all(rule, &paint, amount);
+                blend_buf = [f32::NAN; TERRAIN_MAX_LAYERS];
+                blend_rule_and_paint_all_into(rule, &paint, amount, &mut blend_buf);
+                for k in 0..written {
+                    assert_eq!(
+                        blend_buf[k].to_bits(), expected[k].to_bits(),
+                        "n={n} ny={ny} amount={amount} layer={k} が不一致: {} vs {}",
+                        blend_buf[k], expected[k]
+                    );
+                }
+            }
+        }
+    }
 }
 
 /// DetileMode が JSON からパースでき、未指定は None・不正値はエラーになること。

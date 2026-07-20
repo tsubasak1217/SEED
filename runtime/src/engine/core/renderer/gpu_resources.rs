@@ -620,11 +620,22 @@ impl GpuPrimitive {
         // BLAS は各頂点先頭（offset 0）の位置 Float32x3 を Vertex ストライドで直接読むため、
         // 位置のみの別バッファは作らず既存バッファへ用途を足す（キャッシュ v2 ロード経路でも同一）。
         // 非対応 GPU では用途を足さない（従来と完全に同一のバッファ）。
+        //
+        // 【COPY_DST を常時付ける理由 — 地形ペイントの頂点カラー差分更新】
+        //   地形のレイヤペイントは密度を変えないため、頂点位置・法線・インデックス・
+        //   三角形数はすべて不変で、変わるのは頂点カラー（レイヤ重み）だけである。
+        //   このとき頂点バッファを作り直す（＝スムーズ法線再計算・メッシュレット再分割・
+        //   インスタンスバッチ再生成・BLAS 再構築を巻き込む）のは無駄が大きい。
+        //   COPY_DST があれば `queue.write_buffer` で該当バイト範囲だけを上書きでき、
+        //   ペイント 1 回のコストを桁で下げられる（terrain_ops::apply_terrain_paint_colors）。
+        //   COPY_DST 自体はバッファの配置・読み出し性能に影響せず、追加コストは無い。
         let rt = super::rt_shadow::rt_shadows_supported();
         let vertex_usage = if rt {
-            wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::BLAS_INPUT
-        } else {
             wgpu::BufferUsages::VERTEX
+                | wgpu::BufferUsages::BLAS_INPUT
+                | wgpu::BufferUsages::COPY_DST
+        } else {
+            wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST
         };
         let index_usage = if rt {
             wgpu::BufferUsages::INDEX | wgpu::BufferUsages::BLAS_INPUT

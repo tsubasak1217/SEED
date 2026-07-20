@@ -56,7 +56,7 @@ pub(crate) mod particle_scene_gizmo;
 mod prefab_ops;
 pub(crate) mod camera_scene_gizmo;
 pub(super) mod terrain_ops;
-mod terrain_mesh_build;
+pub(crate) mod terrain_mesh_build;
 
 // ── 外部クレート・標準ライブラリ ────────────────────────────
 use std::collections::{HashMap, HashSet};
