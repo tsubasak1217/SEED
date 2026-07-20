@@ -313,8 +313,16 @@ pub struct Material {
     /// base_color / roughness / metallic を合成して G-Buffer へ焼く。
     /// 地形メッシュ以外がこのフラグを立てることは想定していない
     /// （terrain_mesh_build.rs だけが true を設定する）。
-    /// 旧データ互換のため #[serde(default)]（bool の既定は false＝従来動作）。
-    #[serde(default)]
+    ///
+    /// 【重要】`#[serde(skip)]` にしてキャッシュのバイナリ表現から完全に外す。
+    /// `Material` の serde 用途はアセットキャッシュ（bincode）だけであり、bincode は
+    /// 自己記述型ではないためフィールドを 1 つ足すだけで既存キャッシュ全体が
+    /// 読めなくなる（`#[serde(default)]` では救えない。CACHE_FORMAT_VERSION の
+    /// v8 コメント参照）。このフラグはランタイムが組み立てる地形メッシュ専用で、
+    /// キャッシュ対象の glTF/OBJ 由来マテリアルでは常に false なので、
+    /// 焼く必要がない＝バージョンを上げず既存キャッシュを維持できる。
+    /// デシリアライズ時は Default（false）が入る。
+    #[serde(skip)]
     pub terrain_layers: bool,
 }
 

@@ -138,9 +138,15 @@ impl App {
         // ウィンドウ表示より先に完了させる。
         if self.mode == RuntimeMode::Play {
             eprintln!("[SEED INIT] load_play_scene start  scene_path={:?}", self.scene_path);
+            // シーン復元の所要時間を恒久計測する。
+            // モデルキャッシュのヒット／ミスは体感ロード時間を桁で変えるため
+            // （Sponza 級はミス時に glTF 再パース＋メッシュレット再構築が走る）、
+            // 退行に気付けるよう完了ログに必ず実測値を残す。
+            let t_load = std::time::Instant::now();
             self.load_play_scene();
+            let load_ms = t_load.elapsed().as_secs_f64() * 1000.0;
             let actor_count = self.scene.as_ref().map(|s| s.actors.len()).unwrap_or(0);
-            eprintln!("[SEED INIT] load_play_scene done  actors={actor_count}");
+            eprintln!("[SEED INIT] load_play_scene done  actors={actor_count} ({load_ms:.0}ms)");
             // 物理スレッドは初回フレームまで起動を遅延する。
             // ここで起動するとロード中に物理演算が進み、アクターが意図しない初期状態になる。
             // update_physics() / update_physics_2d() の先頭で自動起動される。
@@ -490,7 +496,7 @@ impl App {
                 // terrain:// ガードで model=None のまま読まれた ModelComponent を埋める。
                 self.rebuild_terrain_after_load();
             }
-            Some(Err(_)) => {}
+            Some(Err(e)) => { eprintln!("[SEED INIT] load_play_scene FAILED: {e}"); }
             None => {}
         }
     }
