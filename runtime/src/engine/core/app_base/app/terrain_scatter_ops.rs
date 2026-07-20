@@ -1,0 +1,1239 @@
+// ============================================================
+//  terrain_scatter_ops.rs — 地形プロップ散布のエンジン統合層
+//
+//  【責務】
+//    純粋データ層（engine/terrain/scatter/）と、実行中のエンジン
+//    （ECS チャンク管理・GPU・ファイル IO・IPC）を繋ぐ層。
+//    アルゴリズムそのものは一切持たない（持たせない）。
+//      * 散布の生成規則   → scatter/generate.rs
+//      * プロップ定義      → scatter/props.rs
+//      * 永続化フォーマット → scatter/tscatter.rs
+//      * 草の描画          → renderer/grass_gbuffer.rs
+//    本ファイルがやるのは「それらをどこから呼び、結果をどこへ置くか」だけである。
+//
+//  【terrain_ops.rs と分けた理由】
+//    terrain_ops.rs は既に 3000 行を超えており、密度編集・ペイント・メッシュ化
+//    という 3 つの関心事で飽和している。散布は「地形の上に載る別レイヤ」であり
+//    密度グリッドとは更新頻度も永続化ファイルも独立しているため、
+//    単一責任原則に従って別ファイルへ分離した。
+//
+//  【本ファイルが提供するもの】
+//    * TerrainScatterField — チャンクマップ上の `ScatterField` 実装
+//    * App::ensure_terrain_props        — props.json の読み込み
+//    * App::handle_terrain_scatter_rules — ルール自動散布（IPC）
+//    * App::handle_terrain_scatter_brush — ブラシ散布（IPC）
+//    * App::restick_scatter_for_chunks  — 地形編集後の再接地
+//    * App::rebuild_grass_gpu           — 草 GPU バッファの再構築
+//    * .tscatter の保存／読み込みヘルパ
+// ============================================================
+
+use std::collections::HashMap;
+
+// ルール散布のチャンク並列化に使う（terrain_ops.rs の再メッシュ並列化と同じ流儀）。
+use rayon::prelude::*;
+
+use super::terrain_ops::{find_owner, sample_density_world, TerrainState};
+use super::App;
+use crate::engine::core::renderer::grass_gbuffer::{
+    GrassInstanceBuffer, GrassInstanceGpu, GrassUniformGpu,
+};
+use crate::engine::terrain::chunk_coord::ChunkCoord;
+use crate::engine::terrain::chunk_data::TerrainChunkData;
+use crate::engine::terrain::layers::{blend_rule_and_paint_all, TerrainLayerSet};
+// 散布データ層は mod.rs の再エクスポート（＝モジュールの公開 API）経由で参照する。
+// 各サブモジュールを直接指さないのは、公開 API を 1 か所に集約しておくためである。
+use crate::engine::terrain::scatter::{
+    read_chunk, restick_instances, scatter_brush, scatter_chunk_by_rules, write_chunk,
+    PropKind, ScatterField, ScatterInstance, TerrainProp, TerrainPropSet,
+};
+use crate::engine::terrain::settings::TerrainSettings;
+
+// ============================================================
+//  定数（マジックナンバー禁止）
+// ============================================================
+
+/// 散布プロップ定義アセットの仮想パス（データドリブン。ここを差し替えれば草が変わる）。
+const TERRAIN_PROPS_ASSET: &str = "assets://terrain/props.json";
+
+/// プロップ定義の読み込み元を差し替える環境変数名（layers.json と同じ流儀）。
+const TERRAIN_PROPS_PATH_ENV: &str = "SEED_TERRAIN_PROPS";
+
+/// 地形編集後の再接地で、元の高さから上下どれだけ探索するか（ボクセル数）。
+///
+/// ブラシ 1 ストロークが地面を動かす量はボクセル数個ぶんに収まるため、
+/// 4 ボクセル（既定 0.5m × 4 = 2m）あれば通常の盛り／掘りには追従できる。
+/// これを大きくすると、崖の下に落ちた草が遠くの地面へ吸着して不自然になる。
+const RESTICK_Y_SEARCH_VOXELS: f32 = 4.0;
+
+/// `TERRAIN_SCATTER_RULES` の prop_id が空文字のときの意味（= 全プロップ対象）。
+const SCATTER_ALL_PROPS: &str = "";
+
+/// ミリ秒換算係数（terrain_ops.rs と同じ）。
+const MILLIS_PER_SEC: f64 = 1000.0;
+
+/// 法線を求める中心差分の刻み幅（voxel_size に対する比率）。
+///
+/// scatter/generate.rs の `NORMAL_GRADIENT_EPS_FRACTION` と同じ値にしてある。
+/// 散布ルールの斜度判定（generate 側）とレイヤ重み判定（本ファイル側）で
+/// 法線の求め方がずれると、「斜度は通ったのにレイヤ重みが 0」という
+/// 説明の付かない禿げが出るため、刻み幅を揃えている。
+const NORMAL_GRADIENT_EPS_FRACTION: f32 = 0.5;
+
+/// 勾配長がこの値以下なら「勾配なし」とみなして真上を向く（0 除算回避）。
+const NORMAL_GRADIENT_EPSILON: f32 = 1.0e-12;
+
+/// 勾配が縮退したときのフォールバック法線（真上）。
+const NORMAL_FALLBACK_UP: [f32; 3] = [0.0, 1.0, 0.0];
+
+/// 散布プロップ定義の読み込み失敗を警告するのは 1 回だけにするためのフラグ。
+///
+/// props.json が無い環境で毎フレーム／毎コマンド警告が出るとログが埋まるため。
+static PROPS_LOAD_WARNED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// 草 GPU 再構築のログを出すかどうか（terrain_ops.rs の PERF ゲートと同じ環境変数）。
+static PERF_TERRAIN_LOG_ENABLED: std::sync::LazyLock<bool> =
+    std::sync::LazyLock::new(|| std::env::var_os("SEED_PERF_TERRAIN").is_some());
+
+// ============================================================
+//  TerrainScatterField — チャンクマップ上の ScatterField 実装
+// ============================================================
+
+/// 実行中の地形チャンクマップの上に `ScatterField` を実装するアダプタ。
+///
+/// 純粋層（scatter/generate.rs）は `HashMap<ChunkCoord, TerrainChunkData>` を
+/// 知らない。本構造体がその橋渡しをすることで、散布アルゴリズムを
+/// エンジンから完全に切り離したままにできる。
+///
+/// 借用のみを持つ（所有しない）ので、生成コストはゼロ。
+/// 散布 1 回ごとに作り捨ててよい。
+pub(super) struct TerrainScatterField<'a> {
+    /// 密度・ペイントを読むチャンクマップ。
+    chunks: &'a HashMap<ChunkCoord, TerrainChunkData>,
+    /// ボクセルサイズ・チャンク分割・iso_level。
+    settings: &'a TerrainSettings,
+    /// レイヤ定義（レイヤ名 → 添字の解決とルール重みの評価に使う）。
+    layers: &'a TerrainLayerSet,
+}
+
+impl<'a> TerrainScatterField<'a> {
+    /// チャンクマップ・設定・レイヤ定義からアダプタを作る。
+    pub(super) fn new(
+        chunks: &'a HashMap<ChunkCoord, TerrainChunkData>,
+        settings: &'a TerrainSettings,
+        layers: &'a TerrainLayerSet,
+    ) -> Self {
+        Self { chunks, settings, layers }
+    }
+
+    /// `TerrainState` からアダプタを作る便宜コンストラクタ。
+    ///
+    /// 呼び出し側で 3 つのフィールドを個別に借りると、同じ `terrain` から
+    /// 可変借用を取りたい場面（散布結果の書き戻し）と衝突しやすい。
+    /// 読み取り専用の借用をここで 1 か所に閉じ込めておく。
+    pub(super) fn from_state(terrain: &'a TerrainState) -> Self {
+        Self::new(&terrain.chunks, &terrain.settings, &terrain.layers)
+    }
+
+    /// ワールド座標 `p` における密度場の外向き単位法線（中心差分）。
+    ///
+    /// 密度は「外へ行くほど増える」規約なので、勾配 ∇density が
+    /// そのまま外向きを指す（符号反転しない）。これは
+    /// marching_cubes.rs の `gradient_normal` および
+    /// scatter/generate.rs の `surface_normal` と同一の規約である。
+    fn normal_at(&self, p: [f32; 3]) -> [f32; 3] {
+        let h = NORMAL_GRADIENT_EPS_FRACTION * self.settings.voxel_size;
+
+        // ─── 各軸の偏微分（中心差分）───
+        let dx = self.density_at([p[0] + h, p[1], p[2]]) - self.density_at([p[0] - h, p[1], p[2]]);
+        let dy = self.density_at([p[0], p[1] + h, p[2]]) - self.density_at([p[0], p[1] - h, p[2]]);
+        let dz = self.density_at([p[0], p[1], p[2] + h]) - self.density_at([p[0], p[1], p[2] - h]);
+
+        // ─── 正規化。勾配が縮退していたら真上を向く ───
+        let len_sq = dx * dx + dy * dy + dz * dz;
+        if len_sq <= NORMAL_GRADIENT_EPSILON {
+            return NORMAL_FALLBACK_UP;
+        }
+        let inv = 1.0 / len_sq.sqrt();
+        [dx * inv, dy * inv, dz * inv]
+    }
+}
+
+impl ScatterField for TerrainScatterField<'_> {
+    /// 地形設定をそのまま返す。
+    fn settings(&self) -> &TerrainSettings {
+        self.settings
+    }
+
+    /// ワールド座標の密度（トライリニア補間）。
+    ///
+    /// terrain_ops.rs の `sample_density_world` をそのまま使う。
+    /// レイマーチ（ブラシの着弾判定）と散布の接地判定で別実装を持つと、
+    /// 「ブラシは当たったのに草が生えない」というずれが出るため、
+    /// 意図的に同一関数を共有している。
+    /// 地形外は `density_clamp`（＝ AIR 相当）が返るので、未生成領域の
+    /// 境界に草が生えることはない。
+    fn density_at(&self, p: [f32; 3]) -> f32 {
+        sample_density_world(self.chunks, self.settings, p)
+    }
+
+    /// ワールド座標 `p` におけるレイヤ名 → 重み（0..1）。
+    ///
+    /// 【計算式は terrain_mesh_build.rs の `compute_layer_colors` と一致させてある】
+    ///   1. 密度勾配から地表法線を求める
+    ///   2. `TerrainLayerSet::rule_weights_all(normal.y, world_y)` でルール重みを得る
+    ///   3. 最近傍サンプルの `BlendSlots` と `paint_amount` を読む
+    ///   4. `blend_rule_and_paint_all` でルールと手ペイントを合成する
+    ///   得られる密重みベクトルは `compute_layer_colors` の `dense[]` と同じ値である。
+    ///
+    /// 【なぜパレット射影（上位 4 層への正規化）まで真似ないのか】
+    ///   パレット射影はチャンク全体の重み合計に依存する「描画上の都合」であり、
+    ///   同じ地点でも隣のチャンクを編集すると値が変わりうる。散布ルールが
+    ///   それに引きずられると、無関係な場所を彫っただけで草の生え方が変わって
+    ///   しまう。射影前の `dense[]` こそが「その地点に実際に塗られている量」
+    ///   であり、散布判定にはこちらが正しい。
+    ///
+    /// 【未知のレイヤ名】
+    ///   layers.json に存在しないレイヤ名を props.json が参照していた場合は
+    ///   0.0 を返す（＝そのレイヤ条件は不成立になり、プロップは生えない）。
+    ///   タイポで草が消えるのは分かりやすい失敗であり、逆に 1.0 を返して
+    ///   「条件を書いたのに全面に生える」ほうが発見しにくいと判断した。
+    fn layer_weight_at(&self, p: [f32; 3], layer: &str) -> f32 {
+        // ─── ① レイヤ名を添字へ解決する（未知なら即 0）───
+        let Some(layer_index) = self.layers.layers.iter().position(|l| l.name == layer) else {
+            return 0.0;
+        };
+
+        // ─── ② 地表法線 → ルール重み（斜度・高度による自動下地）───
+        let normal = self.normal_at(p);
+        let rule_w = self.layers.rule_weights_all(normal[1], p[1]);
+
+        // ─── ③ 最近傍サンプルの手ペイント情報を読む ───
+        //   ペイントは頂点ではなくサンプル格子に載っているので、
+        //   p を最寄りのグローバルサンプル座標へ丸めて所有チャンクを引く。
+        let inv = 1.0 / self.settings.voxel_size;
+        let gx = (p[0] * inv).round() as i32;
+        let gy = (p[1] * inv).round() as i32;
+        let gz = (p[2] * inv).round() as i32;
+        let cells = self.settings.chunk_cells as i32;
+
+        let (paint_slots, paint_amount) = match find_owner(self.chunks, cells, gx, gy, gz) {
+            Some((chunk, lx, ly, lz)) => {
+                (chunk.paint_slots(lx, ly, lz), chunk.paint_amount(lx, ly, lz))
+            }
+            // 地形外にはペイントが存在しない＝ルール重みがそのまま通る。
+            None => (Default::default(), 0.0),
+        };
+
+        // ─── ④ ルールと手ペイントを合成する（compute_layer_colors と同じ関数）───
+        let dense = blend_rule_and_paint_all(&rule_w, &paint_slots, paint_amount);
+        dense.get(layer_index).copied().unwrap_or(0.0)
+    }
+}
+
+// ============================================================
+//  自由関数ヘルパ
+// ============================================================
+
+/// ワールド座標を含むチャンクの格子座標を返す。
+///
+/// 【境界の扱い（重要）】
+///   チャンク座標 c は `[c*extent, (c+1)*extent)` を占める（上端は開区間）。
+///   `floor()` はこの規約をそのまま実装しており、負座標でも正しく動く
+///   （例 extent=16 のとき -0.001 → floor(-0.0000625) = -1）。
+///   ここを `as i32`（0 方向への切り捨て）で書くと -0.001 が 0 になり、
+///   x<0 の一列ぶんの草が隣のチャンクへ紛れて継ぎ目で消える。
+///   単体テスト `owning_chunk_handles_negative_and_boundary` が固定している。
+pub(super) fn owning_chunk_coord(settings: &TerrainSettings, pos: [f32; 3]) -> ChunkCoord {
+    let extent = settings.chunk_extent();
+    ChunkCoord::new(
+        (pos[0] / extent).floor() as i32,
+        (pos[1] / extent).floor() as i32,
+        (pos[2] / extent).floor() as i32,
+    )
+}
+
+/// 散布インスタンスを草 GPU インスタンスへ変換する。
+///
+/// `prop_id` は GPU 側では使わない（プロップ種別ごとに別バッファ・別 uniform を
+/// 持つため、バッファに入った時点でどのプロップかは確定している）。
+pub(super) fn scatter_instance_to_gpu(inst: &ScatterInstance) -> GrassInstanceGpu {
+    GrassInstanceGpu {
+        pos:    inst.pos,
+        yaw:    inst.yaw,
+        normal: inst.normal,
+        scale:  inst.scale,
+        seed:   inst.seed,
+        _pad:   [0; 3],
+    }
+}
+
+/// プロップ定義から草の GPU uniform を組み立てる。
+///
+/// `time` は 0 で初期化する（毎フレーム `update_time` が上書きするため）。
+/// `segments` は `clamped_segments()` 経由で取る（props.json に 0 や 1000 が
+/// 書かれても頂点バッファが破綻しないようにするための規約）。
+pub(super) fn grass_uniform_from_prop(prop: &TerrainProp) -> GrassUniformGpu {
+    let g = &prop.grass;
+    let w = &prop.wind;
+    GrassUniformGpu {
+        color_bottom: g.color_bottom,
+        width:        g.width,
+        color_top:    g.color_top,
+        height:       g.height,
+
+        wind_strength:  w.strength,
+        wind_speed:     w.speed,
+        wind_frequency: w.frequency,
+        gust_strength:  w.gust_strength,
+        gust_speed:     w.gust_speed,
+        time:           0.0,
+        bend:           g.bend,
+        roughness:      g.roughness,
+
+        segments:         g.clamped_segments(),
+        // WGSL 側は 1 or 2 の枚数として読むので bool を枚数へ展開する。
+        cross_planes:     if g.cross_planes { 2 } else { 1 },
+        tip_alpha_cutoff: g.tip_alpha_cutoff,
+        // 法線の地表寄せ量。不正値（NaN・範囲外）が props.json に書かれても
+        // シェーダ側の mix が壊れないよう、ここで 0..1 へ丸めておく。
+        normal_up_blend:  g.normal_up_blend.clamp(0.0, 1.0),
+    }
+}
+
+/// チャンクの .tscatter ファイル名（`chunk_X_Y_Z.tscatter`）を返す。
+///
+/// terrain_ops.rs の `tvox_file_name` と同じ命名規則にしてある
+/// （同じディレクトリに拡張子違いで隣り合うため）。
+pub(super) fn tscatter_file_name(coord: ChunkCoord) -> String {
+    format!("chunk_{}_{}_{}.tscatter", coord.x, coord.y, coord.z)
+}
+
+/// チャンクの .tscatter 仮想パス（`assets://terrain/<scene>/chunk_X_Y_Z.tscatter`）。
+///
+/// 【現状どこからも呼ばれていない件】
+///   保存は `std::fs` の実パス（`tscatter_file_name`）、読み込みは .tvox パスからの
+///   拡張子差し替え（`tscatter_path_from_tvox`）で足りているため、第1段では
+///   出番が無い。それでも残すのは `tvox_virtual_path` と対になる API であり、
+///   エディタへ散布ファイルの所在を通知する段（T3 第2段）で必要になるためである。
+///   テストでは命名規則の固定に使っている。
+#[allow(dead_code)]
+pub(super) fn tscatter_virtual_path(scene: &str, coord: ChunkCoord) -> String {
+    format!(
+        "{}terrain/{}/{}",
+        crate::engine::asset_fs::ASSETS_SCHEME,
+        scene,
+        tscatter_file_name(coord)
+    )
+}
+
+/// .tvox の仮想パスから、隣に置かれた .tscatter の仮想パスを導く。
+///
+/// ロード時は `TerrainChunkComponent::tvox_path` しか手掛かりが無い
+/// （シーン名を別途組み立てるとパス生成の規則が 2 か所に分かれて壊れやすい）。
+/// 拡張子だけを差し替えることで、tvox 側のパス規則に自動で追従する。
+pub(super) fn tscatter_path_from_tvox(tvox_path: &str) -> String {
+    match tvox_path.strip_suffix(".tvox") {
+        Some(stem) => format!("{stem}.tscatter"),
+        // 拡張子が想定外なら素直に足す（読み込みに失敗して空配列になるだけ）。
+        None => format!("{tvox_path}.tscatter"),
+    }
+}
+
+// ============================================================
+//  App — 散布のエンジン統合
+// ============================================================
+
+impl App {
+    // ─── プロップ定義の読み込み ─────────────────────────────────────────────
+
+    /// props.json を読み込んで `terrain.props` へ格納する。
+    ///
+    /// 読み込み元は環境変数 `SEED_TERRAIN_PROPS` > `assets://terrain/props.json`
+    /// の順で解決する（layers.json の `ensure_terrain_layers` と完全に同じ流儀）。
+    /// 何らかの理由で読めなければ `TerrainPropSet::default()` へフォールバックし、
+    /// 警告は 1 回だけ出す（props.json が無い環境でログを埋めないため）。
+    pub(super) fn ensure_terrain_props(&mut self) {
+        let source = std::env::var(TERRAIN_PROPS_PATH_ENV)
+            .ok()
+            .filter(|p| !p.is_empty())
+            .unwrap_or_else(|| TERRAIN_PROPS_ASSET.to_string());
+
+        let set = match crate::engine::asset_fs::read_string(&source) {
+            Ok(text) => match TerrainPropSet::from_json_str(&text) {
+                Ok(set) => set,
+                Err(e) => {
+                    warn_props_once(&format!(
+                        "[SEED terrain] props.json parse failed ({e}); 既定プロップセットで続行します"
+                    ));
+                    TerrainPropSet::default()
+                }
+            },
+            Err(_) => {
+                warn_props_once(&format!(
+                    "[SEED terrain] {source} が見つかりません; 既定プロップセット（草1種+木1種）を使用します"
+                ));
+                TerrainPropSet::default()
+            }
+        };
+
+        self.terrain.props = set;
+    }
+
+    /// prop_id 文字列を散布対象のプロップ添字リストへ解決する。
+    ///
+    /// 空文字（`SCATTER_ALL_PROPS`）は「全プロップ」を意味する。
+    /// 未知の ID は空リストを返す（呼び出し側が 0 件として扱う）。
+    fn resolve_scatter_prop_indices(&self, prop_id: &str) -> Vec<usize> {
+        if prop_id == SCATTER_ALL_PROPS {
+            return (0..self.terrain.props.active_count()).collect();
+        }
+        match self.terrain.props.find_by_id(prop_id) {
+            Some((index, _)) => vec![index],
+            None => Vec::new(),
+        }
+    }
+
+    // ─── ルール自動散布 ─────────────────────────────────────────────────────
+
+    /// `TERRAIN_SCATTER_RULES` の実処理。全チャンクをルールで散布し直す。
+    ///
+    /// 【既存インスタンスの扱い】
+    ///   対象プロップのインスタンスだけを全チャンクから取り除いてから
+    ///   生成し直す（他プロップとブラシ散布ぶんは温存する）。
+    ///   ブラシで描いた草も対象プロップなら消える点は仕様である
+    ///   ——「ルールで敷き直す」とは自動生成の結果で置き換えることであり、
+    ///   手描きだけを見分けて残す情報をインスタンスは持っていない。
+    ///
+    /// 【決定性】
+    ///   同じ (seed, 地形, props.json) なら必ず同じ結果になる。
+    ///   seed をシーンに保存しておけば、未保存チャンクを実行時に再生成しても
+    ///   保存済みチャンクと継ぎ目なく繋がる。
+    pub(super) fn handle_terrain_scatter_rules(&mut self, prop_id: String, seed: u64) {
+        // ─── プロップ定義が未読なら読む（初回の散布コマンドで遅延ロード）───
+        if self.terrain.props.props.is_empty() {
+            self.ensure_terrain_props();
+        }
+
+        let prop_indices = self.resolve_scatter_prop_indices(&prop_id);
+        if prop_indices.is_empty() {
+            if let Some(ipc) = &self.ipc {
+                ipc.send(&format!("TERRAIN_SCATTER_ERROR:unknown prop_id '{prop_id}'"));
+            }
+            return;
+        }
+
+        self.terrain.scatter_seed = seed;
+
+        // ─── 全チャンクを走査して散布し直す ───
+        //   ScatterField は terrain を不変借用するため、書き戻しは
+        //   走査後にまとめて行う（借用の衝突を避ける）。
+        //   チャンク走査順を固定するため、座標をソートしてから並列化する
+        //   （HashMap のキー順は実行ごとに変わるため、そのままでは
+        //     「書き戻し順」が非決定的になり、同一チャンク内のインスタンス
+        //     並びがブラシ散布ぶんと混ざったときに再現性を失う）。
+        let mut coords: Vec<ChunkCoord> = self.terrain.chunks.keys().copied().collect();
+        coords.sort_by_key(|c| (c.x, c.y, c.z));
+
+        // ─── チャンクごとの生成は並列化する ───
+        //   `scatter_chunk_by_rules` はチャンク座標とシードだけから乱数列を
+        //   導出する（セルごとに独立ストリーム）ため、実行順・スレッド数に
+        //   関わらずビット単位で同じ結果になる。48 チャンク×3 プロップの
+        //   実測で 34 秒かかっており、エディタ操作としては固まって見えるため
+        //   ここを並列化する。`map().collect()` は入力順を保つので、
+        //   書き戻し順は上でソートした座標順のまま決定的である。
+        let generated: Vec<(ChunkCoord, Vec<ScatterInstance>)> = {
+            let field = TerrainScatterField::from_state(&self.terrain);
+            coords
+                .par_iter()
+                .map(|&coord| {
+                    let fresh = scatter_chunk_by_rules(
+                        &field,
+                        &self.terrain.props,
+                        &prop_indices,
+                        coord,
+                        seed,
+                    );
+                    (coord, fresh)
+                })
+                .collect()
+        };
+
+        // ─── 書き戻し: 対象プロップの旧インスタンスを捨てて新しいものを足す ───
+        let mut total = 0usize;
+        for (coord, fresh) in generated {
+            let slot = self.terrain.scatter.entry(coord).or_default();
+            // 対象プロップぶんだけを取り除く（他プロップは温存）。
+            slot.retain(|inst| !prop_indices.contains(&(inst.prop_id as usize)));
+            slot.extend(fresh);
+            total += slot.len();
+            self.terrain.scatter_dirty.insert(coord);
+        }
+        self.terrain.grass_gpu_dirty = true;
+
+        if let Some(ipc) = &self.ipc {
+            ipc.send(&format!("TERRAIN_SCATTER_OK:{total}"));
+        }
+    }
+
+    // ─── ブラシ散布 ─────────────────────────────────────────────────────────
+
+    /// `TERRAIN_SCATTER_BRUSH` の実処理。画面座標から地形へレイを飛ばして散布する。
+    ///
+    /// 着弾点の求め方は密度ブラシ（`handle_terrain_brush`）と完全に同じ
+    /// `terrain_raymarch_hit` を使う。別実装にするとブラシプレビューの球と
+    /// 実際に草が生える位置がずれるため。
+    pub(super) fn handle_terrain_scatter_brush(
+        &mut self,
+        prop_id: String,
+        screen_x: f32,
+        screen_y: f32,
+        radius: f32,
+        density: f32,
+        erase: bool,
+    ) {
+        if self.terrain.props.props.is_empty() {
+            self.ensure_terrain_props();
+        }
+        if self.terrain.chunks.is_empty() {
+            if let Some(ipc) = &self.ipc {
+                ipc.send("TERRAIN_SCATTER_BRUSH_MISS");
+            }
+            return;
+        }
+
+        let Some(center) = self.terrain_raymarch_hit(screen_x, screen_y) else {
+            if let Some(ipc) = &self.ipc {
+                ipc.send("TERRAIN_SCATTER_BRUSH_MISS");
+            }
+            return;
+        };
+
+        // ─── 消去はプロップ添字を問わないので、未知 ID でも通す ───
+        //   （scatter_brush の消去は半径内の全プロップを消す意味論のため）。
+        let prop_index = match self.terrain.props.find_by_id(&prop_id) {
+            Some((index, _)) => index,
+            None if erase => 0,
+            None => {
+                if let Some(ipc) = &self.ipc {
+                    ipc.send(&format!("TERRAIN_SCATTER_ERROR:unknown prop_id '{prop_id}'"));
+                }
+                return;
+            }
+        };
+        self.terrain.scatter_prop = prop_index;
+
+        self.handle_terrain_scatter_brush_world(prop_index, center, radius, density, erase);
+
+        if let Some(ipc) = &self.ipc {
+            ipc.send(&format!(
+                "TERRAIN_SCATTER_BRUSH_OK:{},{},{}",
+                center[0], center[1], center[2]
+            ));
+        }
+    }
+
+    /// ワールド座標を直接指定するブラシ散布（スモークテストと IPC の共通実体）。
+    ///
+    /// 【チャンクを跨ぐブラシの扱い】
+    ///   ブラシは容易にチャンク境界を跨ぐ。インスタンスは必ず
+    ///   **自分の XZ 位置を所有するチャンク** へ格納しなければならない
+    ///   （そうしないと保存時に別チャンクの .tscatter へ書かれ、
+    ///    そのチャンクだけを読み直したときに草が消える／二重に出る）。
+    ///   そこで一旦フラットな作業配列で散布し、位置に基づいて仕分け直す。
+    pub(super) fn handle_terrain_scatter_brush_world(
+        &mut self,
+        prop_index: usize,
+        center: [f32; 3],
+        radius: f32,
+        density: f32,
+        erase: bool,
+    ) {
+        let settings = self.terrain.settings.clone();
+
+        // ─── ① ブラシ球が触れうるチャンクを列挙する ───
+        let touched = chunks_in_sphere(&settings, center, radius);
+
+        // ─── ② 対象チャンクのインスタンスを 1 本の作業配列へ集める ───
+        //   `scatter_brush` は重なり判定を配列全体に対して行うため、
+        //   チャンクごとに別々に呼ぶと境界付近で重複が防げない。
+        let mut work: Vec<ScatterInstance> = Vec::new();
+        for coord in &touched {
+            if let Some(list) = self.terrain.scatter.remove(coord) {
+                work.extend(list);
+            }
+        }
+        let before_len = work.len();
+
+        // ─── ③ 散布／消去（純粋層へ委譲）───
+        let changed = {
+            let field = TerrainScatterField::from_state(&self.terrain);
+            scatter_brush(
+                &field,
+                &self.terrain.props,
+                prop_index,
+                &mut work,
+                center,
+                radius,
+                density,
+                erase,
+                self.terrain.scatter_seed,
+            )
+        };
+
+        // ─── ④ 位置に基づいて所有チャンクへ仕分け直す ───
+        //   触れたチャンクは中身が空でもエントリを作っておく。
+        //   そうしないと「全部消した」チャンクが dirty 集合に載らず、
+        //   保存時に古い .tscatter が消えずに残ってしまう。
+        for &coord in &touched {
+            self.terrain.scatter.entry(coord).or_default();
+        }
+        for inst in work {
+            let coord = owning_chunk_coord(&settings, inst.pos);
+            self.terrain.scatter.entry(coord).or_default().push(inst);
+        }
+
+        // ─── ⑤ 変化があったチャンクだけを dirty にする ───
+        if changed || before_len > 0 {
+            for &coord in &touched {
+                self.terrain.scatter_dirty.insert(coord);
+            }
+            self.terrain.grass_gpu_dirty = true;
+        }
+    }
+
+    // ─── 地形編集後の再接地 ─────────────────────────────────────────────────
+
+    /// 指定チャンクの散布インスタンスを、編集後の地表へ貼り直す。
+    ///
+    /// 【なぜ密度編集のときだけ呼ぶのか】
+    ///   ペイント（`handle_terrain_paint_world`）は密度グリッドを一切変えない。
+    ///   頂点が動かない以上、草が宙に浮くことも埋まることも構造的に起こり得ない。
+    ///   ペイントは 1 ストロークで何十回も飛んでくるので、そこで
+    ///   全インスタンスの柱探索（1 本あたり数十回の密度サンプル）を走らせると
+    ///   目に見えて重くなる。よって再接地は密度編集経路にのみ挿す。
+    ///
+    /// 【undo/redo でも呼ぶ理由】
+    ///   密度スナップショットを戻すと地面も戻る。散布そのものは undo されない
+    ///   （T3 第1段のスコープ外）が、再接地だけは掛けておかないと
+    ///   「undo したら草だけ空中に取り残される」という壊れた見た目になる。
+    ///   再接地後の草は「今の地面」に必ず載っている、という不変条件を保つ。
+    ///
+    /// 戻り値は再接地の結果 1 本でも変化したチャンクがあったかどうか。
+    pub(super) fn restick_scatter_for_chunks(&mut self, coords: &[ChunkCoord]) -> bool {
+        if coords.is_empty() || self.terrain.scatter.is_empty() {
+            return false;
+        }
+        let y_search = RESTICK_Y_SEARCH_VOXELS * self.terrain.settings.voxel_size;
+
+        // ─── ScatterField は terrain を不変借用するので、対象リストを先に抜く ───
+        let mut taken: Vec<(ChunkCoord, Vec<ScatterInstance>)> = Vec::new();
+        for &coord in coords {
+            if let Some(list) = self.terrain.scatter.remove(&coord) {
+                if !list.is_empty() {
+                    taken.push((coord, list));
+                }
+            }
+        }
+        if taken.is_empty() {
+            return false;
+        }
+
+        // ─── 再接地（純粋層へ委譲）───
+        let mut any_changed = false;
+        {
+            let field = TerrainScatterField::from_state(&self.terrain);
+            for (_, list) in taken.iter_mut() {
+                let before: Vec<[f32; 3]> = list.iter().map(|i| i.pos).collect();
+                restick_instances(&field, &self.terrain.props, list, y_search);
+                // 削除されたか、1 本でも動いたら変化ありとみなす。
+                let moved = list.len() != before.len()
+                    || list.iter().zip(before.iter()).any(|(i, &p)| i.pos != p);
+                any_changed |= moved;
+            }
+        }
+
+        // ─── 書き戻し（再接地で位置が変わったので所有チャンクも変わりうる）───
+        //   盛土で 1 チャンクぶん上へ押し上げられた草は上のチャンクへ移す。
+        for (coord, list) in taken {
+            // 元のチャンクは（空でも）エントリを残す＝保存時に旧ファイルを消せる。
+            self.terrain.scatter.entry(coord).or_default();
+            for inst in list {
+                let owner = owning_chunk_coord(&self.terrain.settings, inst.pos);
+                self.terrain.scatter.entry(owner).or_default().push(inst);
+            }
+        }
+
+        if any_changed {
+            for &coord in coords {
+                self.terrain.scatter_dirty.insert(coord);
+            }
+            self.terrain.grass_gpu_dirty = true;
+        }
+        any_changed
+    }
+
+    // ─── 永続化 ─────────────────────────────────────────────────────────────
+
+    /// 全チャンクの散布データを .tscatter として保存する。
+    ///
+    /// 【空チャンクのファイルを消す理由】
+    ///   インスタンスが 0 本になったチャンクのファイルを残すと、次回ロード時に
+    ///   古い草が復活する（消したはずの草が戻る＝もっとも分かりにくい部類のバグ）。
+    ///   よって「0 本 = ファイルを消す」を保存の不変条件とする。
+    ///
+    /// 戻り値は (書き出したファイル数, 削除したファイル数)。
+    pub(super) fn save_terrain_scatter(&mut self, dir: &std::path::Path) -> (u32, u32) {
+        let mut written = 0u32;
+        let mut removed = 0u32;
+
+        for (&coord, instances) in &self.terrain.scatter {
+            let path = dir.join(tscatter_file_name(coord));
+            if instances.is_empty() {
+                // ─── 空 → 既存ファイルを削除する（無ければ何もしない）───
+                match std::fs::remove_file(&path) {
+                    Ok(()) => removed += 1,
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => eprintln!("[SEED terrain] tscatter remove failed: {path:?} err={e}"),
+                }
+                continue;
+            }
+            let bytes = write_chunk(instances, coord);
+            match std::fs::write(&path, &bytes) {
+                Ok(()) => written += 1,
+                Err(e) => eprintln!("[SEED terrain] tscatter save failed: {path:?} err={e}"),
+            }
+        }
+
+        self.terrain.scatter_dirty.clear();
+        (written, removed)
+    }
+
+    /// .tvox の隣にある .tscatter を読み込んで `terrain.scatter` を埋める。
+    ///
+    /// 【ファイルが無いのはエラーではない】
+    ///   散布機能より前に保存されたシーンには .tscatter が存在しない。
+    ///   欠落を空配列として扱うことで、旧シーンもそのまま開ける
+    ///   （ここでエラーにすると既存プロジェクトが全部開けなくなる）。
+    pub(super) fn load_terrain_scatter(&mut self, chunk_paths: &[(ChunkCoord, String)]) {
+        for (coord, tvox_path) in chunk_paths {
+            let path = tscatter_path_from_tvox(tvox_path);
+            let Ok(bytes) = crate::engine::asset_fs::read_bytes(&path) else {
+                // 未保存／旧シーン。空として扱う（エラーではない）。
+                continue;
+            };
+            match read_chunk(&bytes) {
+                Ok((instances, _stored_coord)) => {
+                    self.terrain.scatter.insert(*coord, instances);
+                }
+                Err(e) => {
+                    eprintln!("[SEED terrain] tscatter decode failed, skip: {path} err={e:?}");
+                }
+            }
+        }
+        self.terrain.grass_gpu_dirty = true;
+    }
+
+    // ─── GPU ────────────────────────────────────────────────────────────────
+
+    /// 草の GPU インスタンスバッファをプロップ種別ごとに作り直す。
+    ///
+    /// `grass_gpu_dirty` が立っていなければ即座に返る（毎フレーム呼んでよい）。
+    ///
+    /// 【なぜ全チャンクを毎回舐めるのか】
+    ///   GPU バッファはプロップ種別ごとに 1 本の連続配列であり、
+    ///   チャンク単位の部分更新をするには「どのチャンクがバッファのどの範囲か」
+    ///   という対応表の維持が要る。散布が変わる頻度（ブラシ操作時のみ）に対して
+    ///   その複雑さは見合わないと判断し、まるごと作り直す方式にした。
+    ///   コストはログ（`[PERF terrain] grass gpu rebuild`）で監視できる。
+    ///
+    /// 【model 種別を飛ばす理由】→ 下の TODO コメントを参照。
+    pub(super) fn rebuild_grass_gpu(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
+        if !self.terrain.grass_gpu_dirty {
+            return;
+        }
+        let t_start = std::time::Instant::now();
+
+        // ─── ① 全チャンクのインスタンスをプロップ添字ごとに束ねる ───
+        let mut by_prop: HashMap<usize, Vec<GrassInstanceGpu>> = HashMap::new();
+        for instances in self.terrain.scatter.values() {
+            for inst in instances {
+                let prop_index = inst.prop_id as usize;
+                let Some(prop) = self.terrain.props.props.get(prop_index) else {
+                    // props.json からプロップが消えた孤児インスタンス。描かない。
+                    continue;
+                };
+                if prop.kind != PropKind::Grass {
+                    // TODO(terrain T3 第2段): kind=Model のプロップはここで描画対象から外れる。
+                    //   インスタンス自体は生成・保存されている（.tscatter に入っている）ので
+                    //   データは失われない。描かないのは、既存のモデル描画経路が
+                    //   ECS 前提で組まれているためである:
+                    //     * frame_renderer.rs の `shared_model_batches` は
+                    //       ECS の ModelComponent アクター群（`all_mcs`）から毎フレーム
+                    //       組み立て直される。
+                    //     * 実際の描画は `gpu_model_by_path` から GpuModel を引くが、
+                    //       この表も `all_mcs` からしか作られない。ECS アクターの裏付けが
+                    //       無いバッチはここで必ず None になり、静かに描画スキップされる
+                    //       （さらに 60 フレーム後には stale として prune される）。
+                    //   したがって散布モデルを載せるには
+                    //     (a) N 体のアクターを spawn する
+                    //         → シーンファイルが肥大し、.tscatter と情報が二重化する
+                    //     (b) シーンから独立したインスタンシング経路を新設する
+                    //         → GpuModel のロード・所有・破棄と、描画/影/ID/RT の
+                    //           各パスへの登録が要る
+                    //   のいずれかが必要で、いずれも第1段のスコープを超える。意図的な保留。
+                    continue;
+                }
+                by_prop
+                    .entry(prop_index)
+                    .or_default()
+                    .push(scatter_instance_to_gpu(inst));
+            }
+        }
+
+        // ─── ② インスタンスが 0 本になったプロップのバッファを捨てる ───
+        //   （VRAM を掴んだままにしない）
+        self.terrain
+            .grass_buffers
+            .retain(|prop_index, _| by_prop.contains_key(prop_index));
+
+        // ─── ③ プロップ種別ごとにバッファを作る／更新する ───
+        let Some(ctx) = self.draw_ctx.as_ref() else {
+            // 描画コンテキストが無い（ヘッドレス等）。フラグは寝かせて次回に備える。
+            self.terrain.grass_gpu_dirty = false;
+            return;
+        };
+        let pipeline = &ctx.pipelines.gbuffer.grass;
+
+        let mut total = 0usize;
+        for (prop_index, instances) in &by_prop {
+            let Some(prop) = self.terrain.props.props.get(*prop_index) else {
+                continue;
+            };
+            let uniform = grass_uniform_from_prop(prop);
+            total += instances.len();
+
+            match self.terrain.grass_buffers.get_mut(prop_index) {
+                // 既存バッファは中身を差し替える（容量が足りていれば再確保しない）。
+                Some(buf) => buf.update(device, queue, pipeline, instances, uniform),
+                None => {
+                    let buf = GrassInstanceBuffer::new(device, pipeline, instances, uniform);
+                    self.terrain.grass_buffers.insert(*prop_index, buf);
+                }
+            }
+        }
+
+        self.terrain.grass_gpu_dirty = false;
+
+        if *PERF_TERRAIN_LOG_ENABLED {
+            let ms = t_start.elapsed().as_secs_f64() * MILLIS_PER_SEC;
+            eprintln!("[PERF terrain] grass gpu rebuild: {total} instances in {ms:.2}ms");
+        }
+    }
+}
+
+// ============================================================
+//  内部ヘルパ
+// ============================================================
+
+/// props.json 読み込み失敗の警告を 1 回だけ出す。
+fn warn_props_once(message: &str) {
+    if !PROPS_LOAD_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        eprintln!("{message}");
+    }
+}
+
+/// 球（中心・半径）が触れうるチャンク格子座標を列挙する。
+///
+/// 球の AABB をチャンク格子へ写して全数挙げる（保守的＝取りこぼさない）。
+/// 触れないチャンクが少し混ざるのは無害で、逆に取りこぼすと
+/// ブラシがチャンク境界を跨いだときに草が片側にしか出ない。
+fn chunks_in_sphere(
+    settings: &TerrainSettings,
+    center: [f32; 3],
+    radius: f32,
+) -> Vec<ChunkCoord> {
+    let extent = settings.chunk_extent();
+    if !(extent > 0.0) || !(radius >= 0.0) {
+        return Vec::new();
+    }
+    // AABB の下端・上端をチャンク格子へ写す。
+    let lo = owning_chunk_coord(
+        settings,
+        [center[0] - radius, center[1] - radius, center[2] - radius],
+    );
+    let hi = owning_chunk_coord(
+        settings,
+        [center[0] + radius, center[1] + radius, center[2] + radius],
+    );
+
+    let mut out = Vec::new();
+    for z in lo.z..=hi.z {
+        for y in lo.y..=hi.y {
+            for x in lo.x..=hi.x {
+                out.push(ChunkCoord::new(x, y, z));
+            }
+        }
+    }
+    out
+}
+
+// ============================================================
+//  テスト
+// ============================================================
+#[cfg(test)]
+mod tests {
+    use super::*;
+    // テストからのみ使うデータ層 API（実行時経路では使わないので上位では import しない）。
+    use crate::engine::terrain::scatter::{surface_hit_down, GRASS_MAX_SEGMENTS};
+
+    /// テスト用の地形設定（extent = 0.5 * 32 = 16.0 m）。
+    fn test_settings() -> TerrainSettings {
+        TerrainSettings::default()
+    }
+
+    /// 所有チャンクの計算が、負座標でも境界ちょうどでも正しいこと。
+    ///
+    /// ここが 1 ずれると、チャンクの継ぎ目一列ぶんの草が
+    /// 隣のファイルへ書かれて静かに消える（発見が非常に難しいバグ）。
+    #[test]
+    fn owning_chunk_handles_negative_and_boundary() {
+        let s = test_settings();
+        let extent = s.chunk_extent();
+
+        // ─── 原点はチャンク 0 ───
+        assert_eq!(owning_chunk_coord(&s, [0.0, 0.0, 0.0]), ChunkCoord::new(0, 0, 0));
+
+        // ─── 境界ちょうど（extent）は「次のチャンクの下端」＝ 1 ───
+        //   区間は [c*extent, (c+1)*extent) の半開区間である。
+        assert_eq!(
+            owning_chunk_coord(&s, [extent, extent, extent]),
+            ChunkCoord::new(1, 1, 1)
+        );
+
+        // ─── 境界のわずか下は 0 のまま ───
+        let eps = 1.0e-3;
+        assert_eq!(
+            owning_chunk_coord(&s, [extent - eps, extent - eps, extent - eps]),
+            ChunkCoord::new(0, 0, 0)
+        );
+
+        // ─── 負座標: -eps は chunk -1（0 方向切り捨てだと 0 になり間違う）───
+        assert_eq!(
+            owning_chunk_coord(&s, [-eps, -eps, -eps]),
+            ChunkCoord::new(-1, -1, -1)
+        );
+
+        // ─── 負の境界ちょうど（-extent）は chunk -1 の下端 ───
+        assert_eq!(
+            owning_chunk_coord(&s, [-extent, -extent, -extent]),
+            ChunkCoord::new(-1, -1, -1)
+        );
+
+        // ─── 負側でさらに 1 つ下 ───
+        assert_eq!(
+            owning_chunk_coord(&s, [-extent - eps, 0.0, -extent - eps]),
+            ChunkCoord::new(-2, 0, -2)
+        );
+    }
+
+    /// `ScatterInstance` → `GrassInstanceGpu` の変換が値を落とさないこと。
+    ///
+    /// フィールドの並び替えでサイレントに取り違えると、
+    /// 「草が全部同じ向き」「スケールが seed になる」等の描画バグになる。
+    #[test]
+    fn scatter_instance_converts_to_gpu_losslessly() {
+        let inst = ScatterInstance {
+            pos:     [1.5, -2.25, 3.75],
+            normal:  [0.0, 0.6, 0.8],
+            yaw:     1.25,
+            scale:   0.875,
+            prop_id: 7,
+            seed:    0xDEAD_BEEF,
+        };
+        let gpu = scatter_instance_to_gpu(&inst);
+
+        assert_eq!(gpu.pos, inst.pos, "pos が一致しない");
+        assert_eq!(gpu.normal, inst.normal, "normal が一致しない");
+        assert_eq!(gpu.yaw, inst.yaw, "yaw が一致しない");
+        assert_eq!(gpu.scale, inst.scale, "scale が一致しない");
+        assert_eq!(gpu.seed, inst.seed, "seed が一致しない");
+        assert_eq!(gpu._pad, [0; 3], "パディングはゼロ初期化であること");
+    }
+
+    /// 出荷する props.json が実際にパースできること。
+    ///
+    /// JSON を手で書き換えたときの構文ミス・型ミスを CI で捕まえる
+    /// （壊れていても既定セットへフォールバックしてしまうため、
+    ///  実行時には気付けない＝テストでしか守れない）。
+    #[test]
+    fn shipped_props_json_parses() {
+        let text = include_str!("../../../../../assets/terrain/props.json");
+        let set = TerrainPropSet::from_json_str(text)
+            .expect("assets/terrain/props.json のパースに失敗した");
+
+        // 既定セットへのフォールバックと区別するため、想定 ID の存在を確認する。
+        for id in ["grass_field", "grass_dry", "tree_pine"] {
+            assert!(
+                set.find_by_id(id).is_some(),
+                "props.json に '{id}' が定義されていない"
+            );
+        }
+
+        // 草プロップは Grass 種別で、目視できる大きさであること。
+        let (_, grass) = set.find_by_id("grass_field").unwrap();
+        assert_eq!(grass.kind, PropKind::Grass, "grass_field は kind=grass であること");
+        assert!(grass.grass.height > 0.0, "草の高さが 0 以下");
+        assert!(grass.grass.width > 0.0, "草の幅が 0 以下");
+        assert!(grass.scatter.density > 0.0, "草の散布密度が 0 以下");
+
+        // 木プロップは Model 種別であること（第2段の描画対象）。
+        let (_, tree) = set.find_by_id("tree_pine").unwrap();
+        assert_eq!(tree.kind, PropKind::Model, "tree_pine は kind=model であること");
+    }
+
+    /// 出荷する props.json のレイヤ条件が layers.json に実在するレイヤを指すこと。
+    ///
+    /// レイヤ名のタイポは `layer_weight_at` が 0.0 を返すため
+    /// 「なぜか一本も生えない」という無言の失敗になる。ここで捕まえる。
+    #[test]
+    fn shipped_props_reference_existing_layers() {
+        let props_text = include_str!("../../../../../assets/terrain/props.json");
+        let layers_text = include_str!("../../../../../assets/terrain/layers.json");
+        let props = TerrainPropSet::from_json_str(props_text).unwrap();
+        let layers = TerrainLayerSet::from_json_str(layers_text).unwrap();
+
+        for prop in &props.props {
+            for cond in &prop.rule.layer_conditions {
+                assert!(
+                    layers.layers.iter().any(|l| l.name == cond.layer),
+                    "props.json のプロップ '{}' が未定義のレイヤ '{}' を参照している",
+                    prop.id, cond.layer
+                );
+            }
+        }
+    }
+
+    /// .tscatter がファイル経路で往復しても内容が保たれること。
+    ///
+    /// バイト列レベルの往復は tests_scatter.rs が見ているので、
+    /// ここでは「保存ヘルパが組み立てるファイル名で書いて読み戻せる」ことを見る
+    /// （ユーザーの assets を汚さないよう一時ディレクトリを使う）。
+    #[test]
+    fn tscatter_round_trips_through_file_path() {
+        let dir = std::env::temp_dir().join(format!(
+            "seed_tscatter_roundtrip_{}_{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&dir).expect("一時ディレクトリを作れない");
+
+        // 負座標のチャンクを使う（ファイル名生成の符号漏れも同時に見る）。
+        let coord = ChunkCoord::new(-3, 1, 2);
+        let instances = vec![
+            ScatterInstance {
+                pos: [1.0, 2.0, 3.0],
+                normal: [0.0, 1.0, 0.0],
+                yaw: 0.5,
+                scale: 1.25,
+                prop_id: 0,
+                seed: 42,
+            },
+            ScatterInstance {
+                pos: [-4.5, 0.25, 6.75],
+                normal: [0.6, 0.8, 0.0],
+                yaw: 2.5,
+                scale: 0.75,
+                prop_id: 1,
+                seed: 7,
+            },
+        ];
+
+        let path = dir.join(tscatter_file_name(coord));
+        std::fs::write(&path, write_chunk(&instances, coord)).expect("書き出し失敗");
+
+        let bytes = std::fs::read(&path).expect("読み込み失敗");
+        let (restored, restored_coord) = read_chunk(&bytes).expect("デコード失敗");
+
+        assert_eq!(restored_coord, coord, "チャンク座標が往復で変わった");
+        assert_eq!(restored, instances, "インスタンス配列が往復で変わった");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// .tvox パスから .tscatter パスを導く規則が正しいこと。
+    #[test]
+    fn tscatter_path_derives_from_tvox_path() {
+        assert_eq!(
+            tscatter_path_from_tvox("assets://terrain/main/chunk_0_0_0.tvox"),
+            "assets://terrain/main/chunk_0_0_0.tscatter"
+        );
+        // 負座標を含むパスでも壊れないこと。
+        assert_eq!(
+            tscatter_path_from_tvox("assets://terrain/s/chunk_-1_0_-2.tvox"),
+            "assets://terrain/s/chunk_-1_0_-2.tscatter"
+        );
+        // 想定外の拡張子は素直に付け足す（読み込みに失敗して空になるだけ）。
+        assert_eq!(tscatter_path_from_tvox("foo.bin"), "foo.bin.tscatter");
+    }
+
+    /// 仮想パスとファイル名が tvox と同じ規則で並ぶこと。
+    #[test]
+    fn tscatter_names_follow_tvox_convention() {
+        let coord = ChunkCoord::new(1, -2, 3);
+        assert_eq!(tscatter_file_name(coord), "chunk_1_-2_3.tscatter");
+        assert_eq!(
+            tscatter_virtual_path("main", coord),
+            "assets://terrain/main/chunk_1_-2_3.tscatter"
+        );
+    }
+
+    /// ブラシ球が跨るチャンクを取りこぼさないこと。
+    ///
+    /// 取りこぼすと、境界を跨いだブラシで片側にしか草が出ない。
+    #[test]
+    fn chunks_in_sphere_covers_straddling_brush() {
+        let s = test_settings();
+        let extent = s.chunk_extent();
+
+        // 境界ちょうどを中心に、両側へ食い込む半径のブラシ。
+        let coords = chunks_in_sphere(&s, [extent, 0.0, extent], extent * 0.25);
+
+        // XZ の 4 チャンク（0,0 / 1,0 / 0,1 / 1,1 相当）をすべて含むこと。
+        for (x, z) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+            assert!(
+                coords.contains(&ChunkCoord::new(x, 0, z)),
+                "チャンク ({x},0,{z}) が列挙されていない"
+            );
+        }
+    }
+
+    /// 地形を掘ったあと、散布インスタンスが新しい地表まで降りてくること。
+    ///
+    /// 【これが守る不変条件】
+    ///   「草は常に今の地面に載っている」。密度編集で地面が下がったのに草が
+    ///   その場に残ると、空中に浮いた草が見える（もっとも目立つ壊れ方）。
+    ///
+    /// App を構築せず、チャンクマップ＋`TerrainScatterField` を直接組んで
+    /// `restick_instances` を回す（GPU も ECS も要らない純粋な検証）。
+    #[test]
+    fn instances_follow_ground_down_after_subtract() {
+        let settings = test_settings();
+        let iso = settings.iso_level;
+        let vs = settings.voxel_size;
+        let samples = settings.samples_per_axis();
+        let layers = TerrainLayerSet::default();
+
+        // ─── 平坦な地面を作る: density = (world_y - ground_y) ───
+        //   density < iso が SOLID なので、ground_y より下が地中になる。
+        let build_ground = |ground_y: f32| {
+            let mut chunk = TerrainChunkData::new_filled(&settings, 0.0);
+            for iz in 0..samples {
+                for iy in 0..samples {
+                    for ix in 0..samples {
+                        let world_y = iy as f32 * vs;
+                        chunk.set_sample(ix, iy, iz, (world_y - ground_y) + iso);
+                    }
+                }
+            }
+            let mut chunks = HashMap::new();
+            chunks.insert(ChunkCoord::new(0, 0, 0), chunk);
+            chunks
+        };
+
+        // ─── ① 高さ 4.0m の地面へ 1 本置く ───
+        let original_ground = 4.0f32;
+        let chunks = build_ground(original_ground);
+        let field = TerrainScatterField::new(&chunks, &settings, &layers);
+
+        // 実際に接地点が取れることを先に確認する（テスト自身の前提検証）。
+        let x = vs * 4.0;
+        let z = vs * 4.0;
+        let (hit, _n) = surface_hit_down(&field, x, z, settings.chunk_extent(), 0.0)
+            .expect("平坦な地面で接地点が取れないのはテストの前提崩れ");
+        assert!(
+            (hit[1] - original_ground).abs() < vs,
+            "接地点が想定の地面高さから離れている: {} vs {original_ground}", hit[1]
+        );
+
+        let props = TerrainPropSet::default();
+        let mut instances = vec![ScatterInstance {
+            pos: hit,
+            normal: [0.0, 1.0, 0.0],
+            yaw: 0.0,
+            scale: 1.0,
+            // 既定セットの先頭は grass_field（kind=Grass, align_to_normal=true）。
+            prop_id: 0,
+            seed: 1,
+        }];
+
+        // ─── ② 地面を 1.0m 掘り下げる（Subtract ブラシ相当）───
+        let lowered_ground = original_ground - 1.0;
+        let lowered = build_ground(lowered_ground);
+        let lowered_field = TerrainScatterField::new(&lowered, &settings, &layers);
+
+        let y_search = RESTICK_Y_SEARCH_VOXELS * vs;
+        let removed = restick_instances(
+            &lowered_field, &props, &mut instances, y_search,
+        );
+
+        assert_eq!(removed, 0, "地面はまだあるので削除されてはいけない");
+        assert_eq!(instances.len(), 1, "インスタンスが消えた");
+        assert!(
+            (instances[0].pos[1] - lowered_ground).abs() < vs,
+            "草が下がった地面へ追従していない: y={} 期待={lowered_ground}",
+            instances[0].pos[1]
+        );
+        assert!(
+            instances[0].pos[1] < hit[1],
+            "草の高さが下がっていない（掘ったのに追従していない）"
+        );
+        // XZ は動かないこと（柱を真下に辿るだけなので水平位置は保存される）。
+        assert_eq!(instances[0].pos[0], hit[0], "X がずれた");
+        assert_eq!(instances[0].pos[2], hit[2], "Z がずれた");
+
+        // ─── ③ 地面が探索窓の外まで消えたらインスタンスは削除されること ───
+        //   全サンプルを AIR（density > iso）で埋めて「地面が無くなった」状態を作る。
+        let mut empty_chunks = HashMap::new();
+        empty_chunks.insert(
+            ChunkCoord::new(0, 0, 0),
+            TerrainChunkData::new_filled(&settings, iso + 1.0),
+        );
+        let empty_field = TerrainScatterField::new(&empty_chunks, &settings, &layers);
+
+        let removed = restick_instances(
+            &empty_field, &props, &mut instances, y_search,
+        );
+        assert_eq!(removed, 1, "足元の地面が消えたインスタンスは削除されること");
+        assert!(instances.is_empty(), "宙に浮いた草が残っている");
+    }
+
+    /// 草 uniform がプロップ定義の値をそのまま運ぶこと。
+    ///
+    /// 特に `cross_planes` の bool → 枚数（1 or 2）展開を固定する。
+    #[test]
+    fn grass_uniform_maps_prop_fields() {
+        let mut prop = TerrainProp::default();
+        prop.grass.width = 0.04;
+        prop.grass.height = 0.4;
+        prop.grass.cross_planes = true;
+        // 上限を超える分割数を書いても clamp されること。
+        prop.grass.segments = 999;
+        prop.wind.strength = 0.5;
+
+        let u = grass_uniform_from_prop(&prop);
+        assert_eq!(u.width, 0.04);
+        assert_eq!(u.height, 0.4);
+        assert_eq!(u.cross_planes, 2, "cross_planes=true は 2 枚");
+        assert_eq!(
+            u.segments,
+            GRASS_MAX_SEGMENTS,
+            "segments は GRASS_MAX_SEGMENTS へ clamp されること"
+        );
+        assert_eq!(u.wind_strength, 0.5);
+        assert_eq!(u.time, 0.0, "time は 0 初期化（毎フレーム update_time が入れる）");
+
+        prop.grass.cross_planes = false;
+        assert_eq!(grass_uniform_from_prop(&prop).cross_planes, 1, "false は 1 枚");
+    }
+}

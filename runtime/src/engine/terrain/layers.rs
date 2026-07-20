@@ -598,8 +598,12 @@ pub fn blend_rule_and_paint_all_into(
 // ─── ウィンドウ関数 ─────────────────────────────────────────────────────────
 
 /// smoothstep（3t²-2t³）。t は [0,1] にクランプして評価する。
+///
+/// `pub(crate)` なのは、散布ルール（terrain/scatter/props.rs）が
+/// **まったく同じ台形ウィンドウ演算**を使うためである。式を複製すると
+/// 片方だけ直したときにレイヤ境界と散布境界がずれるので、定義は 1 箇所に保つ。
 #[inline]
-fn smoothstep(t: f32) -> f32 {
+pub(crate) fn smoothstep(t: f32) -> f32 {
     let x = t.clamp(0.0, 1.0);
     x * x * (3.0 - 2.0 * x)
 }
@@ -607,7 +611,9 @@ fn smoothstep(t: f32) -> f32 {
 /// [min, max] の内側で 1、外側で 0 になり、両端を `fade` 幅でぼかす台形ウィンドウ。
 ///
 /// `fade <= 0` のときはハードな矩形ウィンドウになる。
-fn window(v: f32, min: f32, max: f32, fade: f32) -> f32 {
+///
+/// `pub(crate)` の理由は `smoothstep` と同じ（散布ルールが同一式を再利用する）。
+pub(crate) fn window(v: f32, min: f32, max: f32, fade: f32) -> f32 {
     // ─── 区間が潰れている（max < min）なら常に 0 ───
     if max < min {
         return 0.0;

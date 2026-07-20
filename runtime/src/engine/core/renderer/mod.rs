@@ -34,6 +34,11 @@ pub(crate) mod view_mode;
 pub(crate) mod gbuffer;
 /// 地形レイヤブレンド用 G-Buffer パイプライン（Terrain T2）。
 pub(crate) mod terrain_gbuffer;
+
+/// プロシージャル草の GPU インスタンシング パイプライン（G-Buffer 書き込み）。
+pub(crate) mod grass_gbuffer;
+/// 提示フレームの PNG 書き出し（環境変数ゲートの常設デバッグフック）。
+pub(crate) mod screenshot;
 /// 地形レイヤテクスチャ配列（texture_2d_array）の構築（Terrain T2b）。
 pub(crate) mod terrain_layer_textures;
 /// フルスクリーン・ライティングパイプライン（G-Buffer 復元, Phase D3 Deferred Phase A）
@@ -449,8 +454,17 @@ impl Renderer {
             wgpu::PresentMode::Fifo
         };
 
+        // スクリーンショット機能が有効なときだけ COPY_SRC を足す。
+        // サーフェスからの読み戻し（copy_texture_to_buffer）に必須だが、
+        // 常時付けるとドライバによっては最適な提示パスを外れる可能性があるため、
+        // 通常起動では従来どおり RENDER_ATTACHMENT のみにする。
+        let surface_usage = if screenshot::is_enabled() {
+            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC
+        } else {
+            wgpu::TextureUsages::RENDER_ATTACHMENT
+        };
         let config = wgpu::SurfaceConfiguration {
-            usage:                        wgpu::TextureUsages::RENDER_ATTACHMENT,
+            usage:                        surface_usage,
             format:                       surface_format,
             width:                        size.width,
             height:                       size.height,
@@ -626,6 +640,7 @@ impl Renderer {
             depth_view:      &self.depth_texture.view,
             depth_only_view: &self.depth_texture.depth_only_view,
             queue:           &self.queue,
+            device:          &self.device,
         })
     }
 }
@@ -658,6 +673,8 @@ pub struct RenderFrame<'r> {
     /// DepthOnly aspect: Hi-Z テクスチャサンプリング用
     depth_only_view: &'r wgpu::TextureView,
     queue:           &'r wgpu::Queue,
+    /// スクリーンショットの読み戻し（バッファ生成 + マップ完了待ち）に使う。
+    device:          &'r wgpu::Device,
 }
 
 impl<'r> RenderFrame<'r> {
@@ -1452,8 +1469,26 @@ impl<'r> RenderFrame<'r> {
     }
 
     /// コマンドを GPU にサブミットしてフレームを表示する。
-    pub fn finish(self) {
+    ///
+    /// スクリーンショット機能が有効かつ現フレームが撮影対象なら、
+    /// サブミット前にカラーターゲット → 読み戻しバッファのコピーを積み、
+    /// present 後に PNG を書き出す（`screenshot` モジュール参照）。
+    pub fn finish(mut self) {
+        // 提示フレームの通し番号を払い出す（機能無効時は撮影判定で即 None になる）。
+        let frame_index = screenshot::next_frame_index();
+        let pending = screenshot::schedule(
+            self.device,
+            &mut self.encoder,
+            &self.output.texture,
+            frame_index,
+        );
+
         self.queue.submit(std::iter::once(self.encoder.finish()));
         self.output.present();
+
+        // present 後に読み出す。マップ完了待ちで同期するため、撮影フレームだけ重くなる。
+        if let Some(pending) = pending {
+            screenshot::resolve(self.device, pending);
+        }
     }
 }

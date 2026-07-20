@@ -246,6 +246,9 @@ impl App {
         // 地形スモーク（SEED_TERRAIN_SMOKE=1）専用: 描画開始後に 1 度だけ掘るステップ。
         // スモークが無効なら即 return する自己ゲート付きフックなので、通常実行では無害。
         self.tick_terrain_smoke_deferred();
+        // 同じくスモーク専用: 指定フレームで草のクローズアップ構図へカメラを寄せるステップ。
+        // 環境変数 SEED_SMOKE_CLOSEUP_FRAME 未指定なら即 return する。
+        self.tick_terrain_smoke_closeup();
 
         // ── パフォーマンス計測変数 ─────────────────────────────────────────────
         // 60 フレームごとに各処理の CPU 消費時間を eprintln! でログ出力する。
@@ -970,6 +973,28 @@ impl App {
                 self.skybox_system.collect(&scene.world, &scene.actors, awl);
             }
         }
+
+        // ── 草（地形散布プロップ）の GPU バッファ再構築（Terrain T3）────────────
+        //   `rebuild_grass_gpu` は `&mut self` を要求する（バッファを作って
+        //   self.terrain へ入れるため）。一方この下の描画ブロックは self の
+        //   複数フィールドを個別に借り続けるので、そこからは呼べない。
+        //   よって「描画ブロックへ入る前」に済ませておく。
+        //   device / queue は Arc なので clone は参照カウントの増加だけで済む。
+        //   散布が変わっていなければ（grass_gpu_dirty=false）関数内で即 return する。
+        //   計測値は下の [PERF] 出力で使う（宣言をここへ置くのは、この時点で
+        //   必ず 1 回だけ代入されるため。他の perf_* のように上で 0 初期化すると
+        //   「代入した値が読まれない」警告になる）。
+        let perf_grass_ms: f64 = {
+            let t_grass = std::time::Instant::now();
+            if let Some((device, queue)) = self
+                .draw_ctx
+                .as_ref()
+                .map(|c| (c.device.clone(), c.queue.clone()))
+            {
+                self.rebuild_grass_gpu(&device, &queue);
+            }
+            t_grass.elapsed().as_secs_f64() * 1000.0
+        };
 
         if let (Some(renderer), Some(scene), Some(camera_buf), Some(draw_ctx)) =
             (&mut self.renderer, &self.scene, &self.camera_buf, &self.draw_ctx)
@@ -3695,6 +3720,22 @@ impl App {
                                         );
                                     }
                                 }
+
+                                // ── 草（地形散布プロップ）を G-Buffer へ焼く（Terrain T3）──
+                                //   バッファはこのフレームの冒頭で再構築済み（rebuild_grass_gpu）。
+                                //   ここでは時刻の 4 バイト部分更新と描画コマンド記録だけを行う。
+                                //   時刻は `ctx.anim_time`（Play 中のみ進むゲーム内経過秒）を使う。
+                                //   Edit モードで風が止まるのは他のアニメーションと同じ挙動であり、
+                                //   独自の時計を持たない（時間源を二重化しないための判断）。
+                                for buf in self.terrain.grass_buffers.values() {
+                                    buf.update_time(&draw_ctx.queue, ctx.anim_time);
+                                    crate::engine::core::renderer::grass_gbuffer::draw_grass(
+                                        &mut gpass,
+                                        &draw_ctx.pipelines.gbuffer.grass,
+                                        buf,
+                                        &camera_buf.bind_group,
+                                    );
+                                }
                             }
 
                             // ── AO 生成パス + いもす法ブラー（Phase D4）─────────────────
@@ -5450,7 +5491,7 @@ impl App {
                         let other_ms = (total_ms
                             - perf_begin_frame_ms - perf_ipc_ms - perf_batch_ms
                             - perf_skin_ms - perf_main_pass_ms - perf_id_ms
-                            - perf_grid_ms - perf_collider_ms - perf_finish_ms
+                            - perf_grid_ms - perf_collider_ms - perf_finish_ms - perf_grass_ms
                             - phys_total_ms).max(0.0);
                         eprintln!(
                             "[PERF f={perf_idx}] MC={perf_mc_count} skin_MC={perf_skin_mc_count} dispatches={perf_skin_dispatches} \
@@ -5463,8 +5504,14 @@ impl App {
                              sprites={perf_sprite_insts}枚/{perf_sprite_draws}draws \
                              meshlet={perf_meshlet_considered}考慮 \
                              id={perf_id_ms:.3}ms grid={perf_grid_ms:.3}ms collider={perf_collider_ms:.3}ms \
+                             grass={perf_grass_ms:.3}ms grass_inst={} \
+                             anim_t={:.3}s \
                              finish={perf_finish_ms:.3}ms other={other_ms:.3}ms",
                             if perf_tlas_built { "build" } else { "skip" },
+                            // 描画対象の草インスタンス総数（フレーム時間との対応を取るため）。
+                            self.terrain.grass_buffers.values().map(|b| b.count()).sum::<u32>(),
+                            // 草の風はこの時刻で駆動される。値が止まっていれば風も止まっている。
+                            ctx.anim_time,
                         );
                     }
 

@@ -108,6 +108,10 @@ pub struct GBufferPipelines {
     /// 地形レイヤブレンド用（レイアウト: group0=camera, 1=model, 2=material, 3=terrain layers）。
     /// Terrain T2。`Material::terrain_layers` が true のプリミティブだけがここへ流れる。
     pub terrain: super::terrain_gbuffer::TerrainGBufferPipelines,
+    /// プロシージャル草用（レイアウト: group0=camera, 1=草インスタンス）。
+    /// 頂点バッファを持たず、頂点シェーダが `vertex_index` から葉を生成する。
+    /// 散布データの供給は engine/terrain/scatter/ の責務（本パイプラインは描くだけ）。
+    pub grass: super::grass_gbuffer::GrassGBufferPipeline,
 }
 
 impl GBufferPipelines {
@@ -157,7 +161,13 @@ impl GBufferPipelines {
             device, mesh_pipeline, df, cache, &gbuffer_color_targets(),
         );
 
-        Self { mesh, skinned, terrain }
+        // ── プロシージャル草（group1 に草インスタンスを差す）──
+        //   MRT カラーターゲットは通常の G-Buffer と完全に同一（同じ 4 枚へ焼く）。
+        let grass = super::grass_gbuffer::GrassGBufferPipeline::new(
+            device, mesh_pipeline, df, cache, &gbuffer_color_targets(),
+        );
+
+        Self { mesh, skinned, terrain, grass }
     }
 }
 

@@ -114,6 +114,10 @@ public partial class TerrainSettingsWindow : Window
         _chunkConfig = TerrainChunkConfigDocument.Load(_assetsRoot);
         RebuildTerrainConfigPanel();
 
+        // 散布タブ（props.json）。レイヤ一覧を参照するため、_doc の読み込み後に初期化する
+        // （レイヤ条件のレイヤ名候補を layers.json から作るため）。
+        InitScatterTab();
+
         if (_doc.WasMissingOrInvalid)
         {
             SetStatus($"{TerrainLayersDocument.ResolvePath(_assetsRoot)} が読めなかったため、新規レイヤ 1 枚で開始します", ok: false);
@@ -728,6 +732,10 @@ public partial class TerrainSettingsWindow : Window
             // チャンク構成は保存するだけで、この時点では TERRAIN_INIT は送らない
             // （破壊的な操作のため、反映は「地形を初期化」／「ハイトマップ読込」ボタン経由に限定する）。
             _chunkConfig.Save(_assetsRoot);
+            // 散布プロップ定義（props.json）。ランタイムはこのファイルを
+            // 再散布（TERRAIN_SCATTER_RULES）や散布ブラシの実行時に参照するため、
+            // レイヤと同じタイミングで書き出しておく。
+            _props.Save(_assetsRoot);
         }
         catch (Exception ex)
         {
@@ -737,9 +745,11 @@ public partial class TerrainSettingsWindow : Window
 
         // ランタイムへ即時反映を指示する（レイヤテクスチャ再構築＋全チャンク再メッシュ）。
         _sendToRuntime("TERRAIN_RELOAD_LAYERS");
-        // ツールバーのレイヤ選択コンボなど、エディタ側 UI へレイヤ構成の変更を伝える。
+        // ツールバーのレイヤ選択コンボ・プロップ選択コンボなど、エディタ側 UI へ構成変更を伝える。
         _onSaved();
-        SetStatus($"保存しました（{_doc.Layers.Count} レイヤ／チャンク構成）。シーンビューへ反映を指示しました", ok: true);
+        SetStatus(
+            $"保存しました（{_doc.Layers.Count} レイヤ／{_props.Props.Count} プロップ／チャンク構成）。"
+            + "レイヤはシーンビューへ反映済み。散布定義の反映は「ルールで再散布」で行います", ok: true);
     }
 
     private void OnCloseClicked(object sender, RoutedEventArgs e) => Close();
