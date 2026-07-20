@@ -1215,15 +1215,12 @@
                                                     <Border Width="1" Background="#3A3A3A" Margin="8,2"/>
                                                     <TextBlock Text="レイヤ" Foreground="#AAAAAA" FontSize="11"
                                                                VerticalAlignment="Center" Margin="0,0,4,0"/>
+                                                    <!-- 項目は layers.json から動的に生成する（RefreshTerrainLayerCombo）。
+                                                         レイヤ総数は自由なので XAML に固定項目は置かない。 -->
                                                     <ComboBox x:Name="CmbTerrainLayer"
-                                                              Width="90" VerticalAlignment="Center"
-                                                              FontSize="11" SelectedIndex="0"
-                                                              ToolTip="塗る対象の地形レイヤ（layers.json の並び順）">
-                                                        <ComboBoxItem Content="0: grass"/>
-                                                        <ComboBoxItem Content="1: dirt"/>
-                                                        <ComboBoxItem Content="2: rock"/>
-                                                        <ComboBoxItem Content="3: sand"/>
-                                                    </ComboBox>
+                                                              Width="110" VerticalAlignment="Center"
+                                                              FontSize="11"
+                                                              ToolTip="塗る対象の地形レイヤ（layers.json の並び順）"/>
                                                 </StackPanel>
 
                                                 <Border Width="1" Background="#3A3A3A" Margin="8,2"/>
@@ -1279,6 +1276,15 @@
                                                         Style="{StaticResource TerrainActionBtnStyle}"
                                                         ToolTip="画像（グレースケール高さマップ）から地形を生成する"
                                                         Click="OnTerrainHeightmap"/>
+
+                                                <Border Width="1" Background="#3A3A3A" Margin="8,2"/>
+
+                                                <!-- 地形設定ウィンドウ（レイヤ定義などをまとめて編集する別ウィンドウ）-->
+                                                <Button x:Name="BtnTerrainSettings"
+                                                        Content="⚙ 設定"
+                                                        Style="{StaticResource TerrainActionBtnStyle}"
+                                                        ToolTip="地形設定ウィンドウを開く（レイヤ定義の編集・将来のブラシ設定）"
+                                                        Click="OnTerrainSettings"/>
 
                                                 <!-- ステータス表示（初期化/保存/ブラシの結果）-->
                                                 <TextBlock x:Name="TxtTerrainStatus" Text=""

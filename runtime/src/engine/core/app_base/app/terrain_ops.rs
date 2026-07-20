@@ -815,7 +815,19 @@ impl App {
             }
         };
 
-        // ── ② GPU リソースを作る（レイヤテクスチャ配列の読み込み／リサイズを伴う）──
+        // ── ② 旧レイヤリソースを先に解放する（VRAM 2 倍スパイク回避）──
+        //   レイヤテクスチャ配列は base_color / normal / roughness の 3 本を
+        //   全レイヤぶん抱えるため、旧を保持したまま新を確保すると瞬間的に
+        //   2 倍の VRAM を要求する。remesh_chunks / slot_ops と同じ
+        //   「旧 drop → device.poll(Wait) で解放確定 → 新規確保」の順序に従う。
+        //   （初回呼び出しでは None なので実質ノーオペ）
+        if self.terrain.layer_resources.take().is_some() {
+            if let Some(ctx) = self.draw_ctx.as_ref() {
+                let _ = ctx.device.poll(wgpu::PollType::Wait);
+            }
+        }
+
+        // ── ③ GPU リソースを作る（レイヤテクスチャ配列の読み込み／リサイズを伴う）──
         //   パレット別バインドグループのキャッシュもここで初期化される
         //   （既定パレット＝レイヤ 0..3 の素通しぶんは必ず作られる）。
         let res = self.draw_ctx.as_ref().map(|ctx| {
@@ -829,6 +841,31 @@ impl App {
 
         self.terrain.layers = set;
         self.terrain.layer_resources = res;
+    }
+
+    /// レイヤ定義（layers.json）を再読込し、シーンビューへ即時反映する（TERRAIN_RELOAD_LAYERS）。
+    ///
+    /// エディタの地形設定ウィンドウが layers.json を保存した直後に送られる。
+    /// 手順:
+    ///   1. `ensure_terrain_layers()` で JSON を読み直し、レイヤテクスチャ配列を作り直す
+    ///      （旧リソースの drop → poll(Wait) → 新規確保は ensure_terrain_layers 内で担保）
+    ///   2. 既存の全チャンクを再メッシュ化する（ルール変更で頂点のレイヤ重みが変わるため、
+    ///      密度が同じでも頂点バッファの作り直しが必要）
+    ///
+    /// 地形が未生成（チャンク 0 個）の場合はレイヤ定義の読み直しだけ行う。
+    /// 完了は `TERRAIN_RELOAD_LAYERS_OK:{再メッシュしたチャンク数}` で通知する。
+    pub(super) fn handle_terrain_reload_layers(&mut self) {
+        // ── ① レイヤ定義とレイヤテクスチャ配列を作り直す ──
+        self.ensure_terrain_layers();
+
+        // ── ② 全チャンクを再メッシュ化する ──
+        //   remesh_chunks が &mut self を取るため、対象座標は先に確定させておく。
+        let coords: Vec<ChunkCoord> = self.terrain.chunk_slot_entity.keys().copied().collect();
+        self.remesh_chunks(&coords);
+
+        if let Some(ipc) = &self.ipc {
+            ipc.send(&format!("TERRAIN_RELOAD_LAYERS_OK:{}", coords.len()));
+        }
     }
 
     /// 地形チャンクのモデル群が使うパレットを group3 のバインドグループとして登録する。
