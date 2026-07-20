@@ -77,6 +77,27 @@ const GRASS_TIP_FADE_START: f32 = 0.55;
 /// 2 枚目の十字平面を 1 枚目から回す角度（ラジアン、90 度）。
 const GRASS_CROSS_PLANE_YAW_OFFSET: f32 = 1.5707963;
 
+// ─── サブピクセル・アンチエイリアス（葉のスクリーン空間最小幅）────────────────
+//
+// deferred G-Buffer には MSAA も alpha-to-coverage も無い（草は不透明パスに乗る）。
+// そのため遠方の細い葉（既定 幅 0.04m）は 1 画素未満へ縮み、フレームごとに
+// 当たり画素が入れ替わって「ギザギザ・点滅・まばら」に見える（実測された症状）。
+// 対策として、葉の半幅を **スクリーン空間で最低 GRASS_MIN_SCREEN_HALF_PX 画素**
+// 確保するよう頂点段で太らせる。近距離では既に十分太いので倍率 1（無変化）、
+// 遠距離のみ太らせて葉を常に 1 画素以上の安定したリボンにする。幾何法線・穂先
+// カットアウト・風の計算には一切影響しない（幅だけを変える）。
+
+/// 確保するスクリーン空間の最小「半幅」（画素）。full width では約 2 倍。
+/// 大きすぎると近景の細い葉まで太って束に見えるため、1 画素弱に抑える。
+const GRASS_MIN_SCREEN_HALF_PX: f32 = 0.75;
+/// 最小画素確保のための葉幅拡大の上限倍率。
+/// 無制限だと真横・遠方の退化ケースで葉が異常に太る（板の過剰な重なり）ため飽和させる。
+const GRASS_MAX_WIDTH_WIDEN: f32 = 8.0;
+/// クリップ座標 w がこの値以下なら「カメラ背面」とみなし拡大しない（0 除算回避）。
+const GRASS_CLIP_W_EPSILON: f32 = 1.0e-4;
+/// スクリーン投影幅がこの値（画素）以下なら退化とみなし拡大しない。
+const GRASS_SCREEN_PX_EPSILON: f32 = 1.0e-4;
+
 // ─── 風・曲げの調整定数 ───────────────────────────────────────────────
 
 /// 突風（gust）の位相を基本揺れの位相からずらす倍率。
@@ -250,6 +271,37 @@ fn grass_bend_angle(theta_max: f32, h: f32) -> f32 {
     return theta_max * h * h;
 }
 
+/// 葉の中心 `center` と幅方向の端点 `edge`（= center + side*half_width）との
+/// スクリーン空間距離（画素）を返す。どちらかがカメラ背面なら負値。
+///
+/// NDC は [-1,1] なので、画素へは各軸 `* 0.5 * resolution` で写す。
+fn grass_screen_half_px(center: vec3<f32>, edge: vec3<f32>) -> f32 {
+    let c = u_camera.view_proj * vec4<f32>(center, 1.0);
+    let e = u_camera.view_proj * vec4<f32>(edge, 1.0);
+    if (c.w <= GRASS_CLIP_W_EPSILON || e.w <= GRASS_CLIP_W_EPSILON) {
+        return -1.0;
+    }
+    let ndc_c = c.xy / c.w;
+    let ndc_e = e.xy / e.w;
+    let d = (ndc_e - ndc_c) * u_camera.resolution * 0.5;
+    return length(d);
+}
+
+/// 葉の半幅を、スクリーン空間で最低 `GRASS_MIN_SCREEN_HALF_PX` 画素になるよう拡大する。
+///
+/// 近距離（既に十分太い）では倍率 1（無変化）、遠距離のみ太らせる。上限あり。
+/// カメラ背面・退化ケースでは元の半幅をそのまま返す（触らない）。
+fn grass_min_screen_half_width(center: vec3<f32>, side: vec3<f32>, half_width: f32) -> f32 {
+    let edge = center + side * half_width;
+    let px = grass_screen_half_px(center, edge);
+    if (px <= GRASS_SCREEN_PX_EPSILON) {
+        return half_width;
+    }
+    // px は現在の半幅の画素数。目標画素との比が拡大倍率（1..MAX でクランプ）。
+    let widen = clamp(GRASS_MIN_SCREEN_HALF_PX / px, 1.0, GRASS_MAX_WIDTH_WIDEN);
+    return half_width * widen;
+}
+
 // ============================================================
 //  頂点シェーダ
 // ============================================================
@@ -399,7 +451,12 @@ fn vs_grass(
     let width_root = u_grass.width * inst.scale;
     let half_width = mix(width_root, width_root * GRASS_TIP_WIDTH_RATIO, height_t) * 0.5;
     let side_t     = select(-1.0, 1.0, is_right);
-    let world_pos  = center + side * (side_t * half_width);
+    //   遠距離のサブピクセル落ち（ジャギ・点滅・まばら）対策で、葉の半幅を
+    //   スクリーン空間で最低 1 画素弱まで確保する（近距離は無変化）。
+    //   left/right・top/bottom 頂点は同じ center・half_width から同じ倍率を得るので
+    //   対称に太り、四角形に亀裂は入らない。
+    let half_width_eff = grass_min_screen_half_width(center, side, half_width);
+    let world_pos  = center + side * (side_t * half_width_eff);
 
     // ── 8. 曲げ後の法線を作り直す ──
     //   葉面は「side（幅方向・曲げても不変）」と「tangent（曲げ後の芯線方向）」が張る平面。

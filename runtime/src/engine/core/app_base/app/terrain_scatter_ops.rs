@@ -116,6 +116,20 @@ pub(super) struct TerrainScatterField<'a> {
     layers: &'a TerrainLayerSet,
 }
 
+/// `fast_density_at` の局所トライリニアが成立する上限ローカル添字。
+///
+/// あるサンプル軸のローカル添字 `l = g.rem_euclid(cells)` に対し、トライリニアは
+/// `l` と `l+1` の 2 サンプルを読む。`l` が `[0, cells-2]` の範囲にあれば
+/// `l+1 <= cells-1` となり、両サンプルとも**同一チャンクの内部**（遠端境界
+/// `local == cells` を踏まない）に収まる。このとき `find_owner` は必ずそのチャンクを
+/// primary として返すため、局所読みは汎用パス（`sample_density_world`）と
+/// **ビット単位で一致**する。`l == cells-1` は上側サンプルが遠端境界に乗り、
+/// 隣チャンク優先の解決になりうるので局所パスを使わず汎用へ退避する。
+///
+/// この定数は「引く量」（cells から幾つ内側までが安全か）を表し、実際の上限は
+/// 呼び出し側で `cells - FAST_DENSITY_INTERIOR_MARGIN` として求める。
+const FAST_DENSITY_INTERIOR_MARGIN: i32 = 1;
+
 impl<'a> TerrainScatterField<'a> {
     /// チャンクマップ・設定・レイヤ定義からアダプタを作る。
     pub(super) fn new(
@@ -133,6 +147,85 @@ impl<'a> TerrainScatterField<'a> {
     /// 読み取り専用の借用をここで 1 か所に閉じ込めておく。
     pub(super) fn from_state(terrain: &'a TerrainState) -> Self {
         Self::new(&terrain.chunks, &terrain.settings, &terrain.layers)
+    }
+
+    /// 密度のトライリニア補間（`sample_density_world` の高速版）。
+    ///
+    /// 【なぜ必要か — 計測で判明した支配項】
+    ///   ルール散布は 1 チャンクあたり数千の候補柱を上から下へ 0.25m 刻みで
+    ///   マーチし、各ステップで密度を 1 回サンプルする。汎用の
+    ///   `sample_density_world` は 8 コーナーそれぞれに `find_owner` を呼び、
+    ///   `find_owner` は `ChunkCoord` を **SipHash の HashMap** で引く。
+    ///   つまり 1 サンプル = 最悪 8 回の SipHash 探索。散布全体では数千万回に
+    ///   達し、これが CPU 100% 張り付き・エディタ硬直の実測上の主因だった。
+    ///
+    /// 【最適化】
+    ///   トライリニアの 8 コーナーは連続する 2×2×2 サンプルなので、点が
+    ///   チャンク内部（各軸のローカル添字が `[0, cells-1)` の帯）にあれば
+    ///   **8 コーナーすべてが単一チャンクに収まる**。その場合は所有チャンクを
+    ///   1 回だけ引き、ローカル配列から 8 値を直接読む（SipHash 8→1）。
+    ///   チャンク境界（遠端サンプル）や地形外に掛かる点だけ汎用パスへ退避する。
+    ///
+    /// 【正しさ — ビット単位で汎用パスと一致】
+    ///   退避条件は `FAST_DENSITY_INTERIOR_MARGIN` のコメントで証明したとおり、
+    ///   局所読みが `find_owner` の primary 解決と一致する範囲に限定している。
+    ///   したがって決定性（このモジュールの最重要不変条件）は一切損なわれない。
+    #[inline]
+    fn fast_density_at(&self, p: [f32; 3]) -> f32 {
+        let cells = self.settings.chunk_cells as i32;
+        let inv = 1.0 / self.settings.voxel_size;
+        let fx = p[0] * inv;
+        let fy = p[1] * inv;
+        let fz = p[2] * inv;
+        let x0 = fx.floor();
+        let y0 = fy.floor();
+        let z0 = fz.floor();
+        let ix = x0 as i32;
+        let iy = y0 as i32;
+        let iz = z0 as i32;
+
+        // ─── 各軸のローカル添字。内部帯 [0, cells-2] なら局所パスが安全 ───
+        let lx = ix.rem_euclid(cells);
+        let ly = iy.rem_euclid(cells);
+        let lz = iz.rem_euclid(cells);
+        let limit = cells - FAST_DENSITY_INTERIOR_MARGIN; // = cells-1
+        let interior = lx < limit && ly < limit && lz < limit;
+
+        if interior {
+            // ─── 8 コーナーを収める単一チャンクを 1 回だけ引く ───
+            let coord = ChunkCoord::new(
+                ix.div_euclid(cells),
+                iy.div_euclid(cells),
+                iz.div_euclid(cells),
+            );
+            if let Some(chunk) = self.chunks.get(&coord) {
+                let (lx, ly, lz) = (lx as usize, ly as usize, lz as usize);
+                // ローカル添字 l と l+1（interior 帯なので l+1 <= cells-1 で範囲内）。
+                let c000 = chunk.sample(lx, ly, lz);
+                let c100 = chunk.sample(lx + 1, ly, lz);
+                let c010 = chunk.sample(lx, ly + 1, lz);
+                let c110 = chunk.sample(lx + 1, ly + 1, lz);
+                let c001 = chunk.sample(lx, ly, lz + 1);
+                let c101 = chunk.sample(lx + 1, ly, lz + 1);
+                let c011 = chunk.sample(lx, ly + 1, lz + 1);
+                let c111 = chunk.sample(lx + 1, ly + 1, lz + 1);
+                // 補間係数（汎用パスと同一の順序・式）。
+                let tx = fx - x0;
+                let ty = fy - y0;
+                let tz = fz - z0;
+                let c00 = c000 + (c100 - c000) * tx;
+                let c10 = c010 + (c110 - c010) * tx;
+                let c01 = c001 + (c101 - c001) * tx;
+                let c11 = c011 + (c111 - c011) * tx;
+                let c0 = c00 + (c10 - c00) * ty;
+                let c1 = c01 + (c11 - c01) * ty;
+                return c0 + (c1 - c0) * tz;
+            }
+            // base チャンクが無い＝地形外。汎用パスも clamp を返すので退避する。
+        }
+
+        // ─── 境界／地形外は汎用パスへ（find_owner の境界解決に委ねる）───
+        sample_density_world(self.chunks, self.settings, p)
     }
 
     /// ワールド座標 `p` における密度場の外向き単位法線（中心差分）。
@@ -174,7 +267,9 @@ impl ScatterField for TerrainScatterField<'_> {
     /// 地形外は `density_clamp`（＝ AIR 相当）が返るので、未生成領域の
     /// 境界に草が生えることはない。
     fn density_at(&self, p: [f32; 3]) -> f32 {
-        sample_density_world(self.chunks, self.settings, p)
+        // 局所トライリニアの高速版（境界・地形外は sample_density_world へ退避）。
+        // 結果は sample_density_world とビット単位で一致する（決定性を保つ）。
+        self.fast_density_at(p)
     }
 
     /// ワールド座標 `p` におけるレイヤ名 → 重み（0..1）。
@@ -424,6 +519,8 @@ impl App {
         }
 
         self.terrain.scatter_seed = seed;
+        // 生成時間の計測開始（SEED_PERF_TERRAIN 有効時のみログ出力）。
+        let t_gen_start = std::time::Instant::now();
 
         // ─── 全チャンクを走査して散布し直す ───
         //   ScatterField は terrain を不変借用するため、書き戻しは
@@ -459,6 +556,11 @@ impl App {
                 .collect()
         };
 
+        // ─── 生成の内訳を計測（並列生成が支配項か切り分けるため）───
+        let gen_ms = t_gen_start.elapsed().as_secs_f64() * MILLIS_PER_SEC;
+        let generated_count: usize = generated.iter().map(|(_, v)| v.len()).sum();
+        let t_writeback_start = std::time::Instant::now();
+
         // ─── 書き戻し: 対象プロップの旧インスタンスを捨てて新しいものを足す ───
         let mut total = 0usize;
         for (coord, fresh) in generated {
@@ -470,6 +572,17 @@ impl App {
             self.terrain.scatter_dirty.insert(coord);
         }
         self.terrain.grass_gpu_dirty = true;
+
+        // ─── 計測ログ（生成 vs 書き戻し。GPU 構築は rebuild_grass_gpu 側で別途ログ）───
+        if *PERF_TERRAIN_LOG_ENABLED {
+            let writeback_ms = t_writeback_start.elapsed().as_secs_f64() * MILLIS_PER_SEC;
+            let chunk_count = coords.len();
+            eprintln!(
+                "[PERF terrain] scatter rules: gen={gen_ms:.1}ms writeback={writeback_ms:.1}ms \
+                 chunks={chunk_count} props={} generated={generated_count} total_after={total}",
+                prop_indices.len()
+            );
+        }
 
         if let Some(ipc) = &self.ipc {
             ipc.send(&format!("TERRAIN_SCATTER_OK:{total}"));
@@ -1206,6 +1319,171 @@ mod tests {
         );
         assert_eq!(removed, 1, "足元の地面が消えたインスタンスは削除されること");
         assert!(instances.is_empty(), "宙に浮いた草が残っている");
+    }
+
+    /// 高速密度サンプラ `fast_density_at` が汎用 `sample_density_world` と
+    /// **ビット単位で一致** することを保証する（境界・地形外・内部すべて）。
+    ///
+    /// これが散布最適化の安全網である。1 ビットでもずれると散布結果（＝草原の
+    /// 見た目）が汎用パスと食い違い、保存済み／未保存チャンクで草が変わる。
+    #[test]
+    fn fast_density_matches_general_bit_exact() {
+        let settings = TerrainSettings::default();
+        let cells = settings.chunk_cells as i32;
+        let vs = settings.voxel_size;
+        let extent = settings.chunk_extent();
+        let layers = TerrainLayerSet::default();
+
+        // ─── 隣接する複数チャンク（穴あきも含む）を張る ───
+        //   境界サンプルの共有と、地形外（欠けチャンク）への退避を両方踏ませる。
+        let mut chunks: HashMap<ChunkCoord, TerrainChunkData> = HashMap::new();
+        for cz in -1..=1 {
+            for cy in -1..=1 {
+                for cx in -1..=1 {
+                    // (1,1,1) を意図的に欠けさせて地形外パスを踏ませる。
+                    if (cx, cy, cz) == (1, 1, 1) {
+                        continue;
+                    }
+                    let coord = ChunkCoord::new(cx, cy, cz);
+                    let data = TerrainChunkData::from_fn(&settings, coord, |x, y, z| {
+                        // 非自明な密度（各コーナーが違う値になるようにする）。
+                        (x * 0.7).sin() + (y * 0.9).cos() * 1.3 + (z * 0.5).sin() * 0.6 + y * 0.05
+                    });
+                    chunks.insert(coord, data);
+                }
+            }
+        }
+        let field = TerrainScatterField::new(&chunks, &settings, &layers);
+
+        // ─── 決定的な格子＋境界ちょうどの点を総当たりで比較 ───
+        //   voxel の 1/3 刻みで内部・境界・チャンク跨ぎを網羅する。
+        let step = vs / 3.0;
+        let lo = -extent - vs;
+        let hi = extent + vs;
+        let mut n = 0u64;
+        let mut p = lo;
+        while p < hi {
+            // 対角線上と、境界ちょうど（voxel/chunk 境界）を明示的に混ぜる。
+            for &(x, y, z) in &[
+                [p, p * 0.5 + 1.0, -p],
+                [p, extent, p],           // y がチャンク境界ちょうど
+                [extent, p, p],           // x がチャンク境界ちょうど
+                [p, p, 0.0],              // z=0 境界
+            ]
+            .map(|a| (a[0], a[1], a[2]))
+            {
+                let fast = field.fast_density_at([x, y, z]);
+                let slow = sample_density_world(&chunks, &settings, [x, y, z]);
+                assert_eq!(
+                    fast.to_bits(),
+                    slow.to_bits(),
+                    "fast≠slow at ({x},{y},{z}): fast={fast} slow={slow}"
+                );
+                n += 1;
+            }
+            p += step;
+        }
+        assert!(n > 500, "比較点が少なすぎる（テストの前提崩れ）: {n}");
+        // cells は使っていることを明示（未使用警告回避＋境界網羅の意図）。
+        assert!(cells > 0);
+    }
+
+    // ============================================================
+    //  計測専用ベンチ（#[ignore]）— ルール散布のボトルネック特定
+    // ============================================================
+
+    /// ルール自動散布のホットパスを、実機と同じ `TerrainScatterField`
+    /// （SipHash 付き `HashMap` バック）で計測する。
+    ///
+    /// `tests_scatter.rs` の `TestField` は密度を閉形式で返すため、
+    /// 実機の支配項である「密度サンプルごとの HashMap 探索コスト」を一切
+    /// 再現しない。ここでは本物のチャンクマップを組み、
+    ///   * 生成時間（シリアル / rayon 並列）
+    ///   * 生成インスタンス総数
+    ///   * 1 インスタンスあたりの生成コスト
+    /// を数値で出す。GPU アップロードと .tscatter 保存は別途 App 側の
+    /// `SEED_PERF_TERRAIN` ログで測る（生成が支配項かを切り分けるため）。
+    ///
+    /// 実行:
+    ///   cargo test -p seed_runtime terrain_scatter_ops::tests::bench_scatter_rules
+    ///     -- --ignored --nocapture
+    #[test]
+    #[ignore = "計測専用。--ignored --nocapture で実行"]
+    fn bench_scatter_rules_realistic() {
+        use std::time::Instant;
+
+        // ─── 実機と同じ既定設定（voxel 0.5m・chunk 32 セル・extent 16m）───
+        let settings = TerrainSettings::default();
+        let extent = settings.chunk_extent();
+        let layers = TerrainLayerSet::default();
+
+        // ─── 出荷 props.json をそのまま使う（実機の密度で測る）───
+        let props = TerrainPropSet::from_json_str(include_str!(
+            "../../../../../assets/terrain/props.json"
+        ))
+        .expect("props.json parse");
+        let prop_indices: Vec<usize> = (0..props.active_count()).collect();
+
+        // ─── 48 チャンク（XZ 8×6・単一 Y 層）に起伏地面を張る ───
+        //   草は広い地面一面に生えるので、全チャンクが地表を含む配置が
+        //   最も重い現実ケース（ユーザーが遭遇した「全面ルール散布」）。
+        //   density = world_y - height（下が solid）。height は各チャンク
+        //   中央付近（8m 前後）を通るサイン起伏。
+        const CHUNKS_X: i32 = 8;
+        const CHUNKS_Z: i32 = 6;
+        let freq = std::f32::consts::TAU / (extent * 0.5);
+        let mid = extent * 0.5;
+        let mut chunks: HashMap<ChunkCoord, TerrainChunkData> = HashMap::new();
+        for cz in 0..CHUNKS_Z {
+            for cx in 0..CHUNKS_X {
+                let coord = ChunkCoord::new(cx, 0, cz);
+                // density(p) = p.y - h(x,z)。h は各チャンク中央付近を通るサイン起伏。
+                let data = TerrainChunkData::from_fn(&settings, coord, |x, y, z| {
+                    let h = mid
+                        + (x * freq).sin() * (extent * 0.15)
+                        + (z * freq).cos() * (extent * 0.15);
+                    y - h
+                });
+                chunks.insert(coord, data);
+            }
+        }
+        let coords: Vec<ChunkCoord> = {
+            let mut v: Vec<ChunkCoord> = chunks.keys().copied().collect();
+            v.sort_by_key(|c| (c.x, c.y, c.z));
+            v
+        };
+        let seed: u64 = 0x5EED_1234_ABCD_0001;
+
+        // ─── ① シリアル生成 ───
+        let field = TerrainScatterField::new(&chunks, &settings, &layers);
+        let t = Instant::now();
+        let mut serial_total = 0usize;
+        for &coord in &coords {
+            serial_total +=
+                scatter_chunk_by_rules(&field, &props, &prop_indices, coord, seed).len();
+        }
+        let serial_ms = t.elapsed().as_secs_f64() * 1000.0;
+
+        // ─── ② rayon 並列生成（実機の handle_terrain_scatter_rules と同じ形）───
+        let t = Instant::now();
+        let par_total: usize = coords
+            .par_iter()
+            .map(|&coord| {
+                scatter_chunk_by_rules(&field, &props, &prop_indices, coord, seed).len()
+            })
+            .sum();
+        let par_ms = t.elapsed().as_secs_f64() * 1000.0;
+
+        let chunk_count = coords.len();
+        println!(
+            "[BENCH scatter] chunks={chunk_count} props={} instances={serial_total} \
+             serial={serial_ms:.1}ms parallel={par_ms:.1}ms \
+             speedup={:.2}x per_inst_serial={:.2}us",
+            prop_indices.len(),
+            serial_ms / par_ms.max(0.001),
+            serial_ms * 1000.0 / serial_total.max(1) as f64,
+        );
+        assert_eq!(serial_total, par_total, "並列と直列で本数が食い違う（決定性違反）");
     }
 
     /// 草 uniform がプロップ定義の値をそのまま運ぶこと。
