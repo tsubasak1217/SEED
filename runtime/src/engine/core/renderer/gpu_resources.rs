@@ -12,6 +12,8 @@ use super::skin_system::SkinComputeSystem;
 use super::pipeline::{SkinComputePipeline, MeshletCullPipeline};
 use super::material_asset;
 use crate::engine::components::material_override::{MaterialOverride, MaterialOverrideKind};
+// 地形レイヤのブレンドスロット数（＝パレット長）。
+use crate::engine::terrain::layers::TERRAIN_BLEND_SLOTS;
 
 // ============================================================
 //  GPU メッシュレットカリング対応フラグ（第1弾）
@@ -365,6 +367,9 @@ pub struct GpuMaterial {
     /// true のとき G-Buffer ジオメトリパスが地形専用パイプラインを選ぶ。
     /// `Material::terrain_layers` を upload 時に複製する。
     pub terrain_layers: bool,
+    /// 地形レイヤ番号パレット（Terrain T2b）。頂点カラー成分 i → レイヤ番号の対応表。
+    /// `Material::terrain_palette` を upload 時に複製する。地形以外では未使用。
+    pub terrain_palette: [u32; TERRAIN_BLEND_SLOTS],
     #[allow(dead_code)]
     uniform_buffer:     wgpu::Buffer,
     // テクスチャのライフタイムを保持する
@@ -520,6 +525,7 @@ impl GpuMaterial {
             alpha_cutoff: mat.alpha_cutoff,
             cull_face:  mat.cull_face,
             terrain_layers: mat.terrain_layers,
+            terrain_palette: mat.terrain_palette,
             base_color_factor:      mat.base_color_factor,
             base_color_tex_index:   base_color_idx,
             bindless_albedo_tex_index: crate::engine::core::renderer::BINDLESS_DUMMY_TEX_INDEX,
@@ -922,6 +928,16 @@ impl GpuModel {
             .and_then(|mi| self.materials.get(mi))
             .map(|m| m.terrain_layers)
             .unwrap_or(self.default_material.terrain_layers)
+    }
+
+    /// プリミティブのマテリアルインデックスから地形レイヤパレットを返す（Terrain T2b）。
+    /// `material_idx` が None・範囲外のときは既定マテリアルの値（＝恒等パレット）を返す。
+    /// G-Buffer ジオメトリパスが group3 のバインドグループを選ぶ唯一の引き当て入口。
+    pub fn primitive_terrain_palette(&self, material_idx: Option<usize>) -> [u32; TERRAIN_BLEND_SLOTS] {
+        material_idx
+            .and_then(|mi| self.materials.get(mi))
+            .map(|m| m.terrain_palette)
+            .unwrap_or(self.default_material.terrain_palette)
     }
 
     /// プリミティブのマテリアルインデックスからプリミティブ平均アルベドを返す（Phase RT-GI）。

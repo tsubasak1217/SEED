@@ -1,6 +1,9 @@
 use std::path::PathBuf;
 use serde::{Serialize, Deserialize};
 
+// 地形レイヤのブレンドスロット数（＝パレット長）。頂点カラーの成分数と一致する。
+use crate::engine::terrain::layers::TERRAIN_BLEND_SLOTS;
+
 // ============================================================
 //  最上位: Model
 // ============================================================
@@ -324,6 +327,27 @@ pub struct Material {
     /// デシリアライズ時は Default（false）が入る。
     #[serde(skip)]
     pub terrain_layers: bool,
+
+    /// この地形チャンクが使うレイヤ番号パレット（TERRAIN_BLEND_SLOTS 個）。
+    ///
+    /// 頂点カラー RGBA は「重み」だけを運び、その i 番目の成分がどのレイヤに対応するかを
+    /// 本フィールドが与える（`terrain_palette[i]` = スロット i のレイヤ番号）。
+    /// mesh_vertex（22 パイプライン共有）を変えずにレイヤ総数を 16 へ拡張するための仕組み。
+    /// 地形以外のマテリアルでは未使用（`terrain_layers == false` なら参照されない）。
+    ///
+    /// 【重要】`#[serde(skip)]` 必須。`terrain_layers` と同じ理由で、bincode の
+    /// アセットキャッシュ（.smdl）にフィールドを 1 つ足すだけで既存キャッシュ全体が
+    /// 読めなくなる。地形メッシュはランタイム生成でキャッシュ対象外なので焼く必要がない。
+    /// デシリアライズ時は `default_terrain_palette`（恒等パレット）が入る。
+    #[serde(skip, default = "default_terrain_palette")]
+    pub terrain_palette: [u32; TERRAIN_BLEND_SLOTS],
+}
+
+/// terrain_palette の既定値（恒等パレット = レイヤ 0..3 をスロット 0..3 へ素通し）。
+///
+/// T2 までの 4 層 layers.json はこのパレットで従来どおり描ける（後方互換の要）。
+fn default_terrain_palette() -> [u32; TERRAIN_BLEND_SLOTS] {
+    std::array::from_fn(|i| i as u32)
 }
 
 /// avg_albedo の serde 既定（白）。旧キャッシュ/JSON にキーが無い場合のフォールバック。
@@ -365,6 +389,7 @@ impl Default for Material {
             avg_albedo:                 [1.0, 1.0, 1.0, 1.0],
             base_color_tex_avg:         [1.0, 1.0, 1.0],
             terrain_layers:             false,
+            terrain_palette:            default_terrain_palette(),
         }
     }
 }

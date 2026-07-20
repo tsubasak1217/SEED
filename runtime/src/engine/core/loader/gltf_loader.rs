@@ -292,6 +292,8 @@ fn load_materials(document: &gltf::Document) -> Vec<Material> {
             // 地形レイヤブレンド（Terrain T2）。glTF/OBJ 由来のマテリアルは常に false
             // （true を立てるのは地形メッシュを組む terrain_mesh_build.rs だけ）。
             terrain_layers: false,
+            // 地形パレットは地形以外では未使用。恒等パレットで埋めておく。
+            terrain_palette: Material::default().terrain_palette,
         }
     }).collect()
 }

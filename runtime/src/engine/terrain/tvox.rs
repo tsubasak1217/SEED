@@ -6,21 +6,27 @@
 //    直列化 / 復元する。ファイル IO は行わない（純粋な bytes in/out）。
 //    ファイル読み書きはエンジン層の責務。
 //
-//  【オンディスク仕様（TVOX v2・リトルエンディアン）】
+//  【オンディスク仕様（TVOX v3・リトルエンディアン）】
 //    オフセット  型            内容
 //    0           u8[4]         マジック "TVOX"
-//    4           u32           バージョン（現在 2）
+//    4           u32           バージョン（現在 3）
 //    8           i32           チャンク座標 x
 //    12          i32           チャンク座標 y
 //    16          i32           チャンク座標 z
 //    20          u32           samples_per_axis（1 軸のサンプル数, 例 33）
 //    24          f32           voxel_size（メートル）
-//    28          u32           layer_count（スプラットのレイヤ数。v2 で追加）
+//    28          u32           slot_count（1 サンプルのブレンドスロット数。v3 では 4）
 //    32          f32 * N       密度サンプル（N = samples_per_axis³, row-major）
-//    …           u8  * N*L     手ペイントレイヤ重み（L = layer_count・サンプルごとに L バイト）
+//    …           u8  * N*S     スロットのレイヤ番号（S = slot_count）
+//    …           u8  * N*S     スロットの重み（u8 量子化）
 //    …           u8  * N       ペイント量（0=未ペイント〜255=完全に手描き優先）
 //
 //    全数値はリトルエンディアン。密度は f32 ビット表現をそのまま格納する。
+//
+//  【v2 との後方互換】
+//    v2 は「レイヤ番号なし・レイヤ 0..L-1 の重みを密に並べる」形式だった。
+//    v2 を読む場合はスロットのレイヤ番号を [0,1,2,3]（の先頭 min(L, 4) 個）と
+//    みなして重みだけを取り込む。T2b 以前のセーブデータがそのまま開ける。
 //
 //  【v1 との後方互換】
 //    v1 ヘッダは 28 バイト（layer_count 無し）で、本体は密度のみ。
@@ -29,21 +35,22 @@
 //    旧セーブデータでもレイヤブレンドされた地形として正しく表示される
 //    （重みが欠落して真っ黒になる、といった破綻は起きない）。
 //
-//  【レイヤ数が変わったとき】
-//    ファイルの layer_count が現在の TERRAIN_LAYER_COUNT と異なる場合は、
-//    共通する先頭 min(L_file, L_now) 層ぶんだけを読み、残りは 0 で埋める
-//    （レイヤ定義の増減でセーブデータが読めなくなるのを避ける）。
+//  【スロット数が変わったとき】
+//    ファイルの slot_count が現在の TERRAIN_BLEND_SLOTS と異なる場合は、
+//    共通する先頭 min(S_file, S_now) スロットぶんだけを読み、残りは 0 で埋める。
 // ============================================================
 
 use super::chunk_coord::ChunkCoord;
 use super::chunk_data::TerrainChunkData;
-use super::layers::TERRAIN_LAYER_COUNT;
+use super::layers::TERRAIN_BLEND_SLOTS;
 use super::settings::TerrainSettings;
 
 /// TVOX フォーマットのマジックバイト。
 pub const TVOX_MAGIC: [u8; 4] = *b"TVOX";
-/// TVOX フォーマットの現行バージョン（v2 = スプラット付き）。
-pub const TVOX_VERSION: u32 = 2;
+/// TVOX フォーマットの現行バージョン（v3 = レイヤ番号付きスロット）。書き出しは常にこれ。
+pub const TVOX_VERSION: u32 = 3;
+/// レイヤ番号なしスプラットの旧バージョン。読み込み時のみ受け付ける。
+pub const TVOX_VERSION_V2: u32 = 2;
 /// スプラット非対応の旧バージョン（密度のみ）。読み込み時のみ受け付ける。
 pub const TVOX_VERSION_V1: u32 = 1;
 
@@ -51,6 +58,8 @@ pub const TVOX_VERSION_V1: u32 = 1;
 const HEADER_LEN_V1: usize = 4 + 4 + 4 * 3 + 4 + 4;
 /// v2 ヘッダ長（v1 + layer_count4 = 32 バイト）。
 const HEADER_LEN_V2: usize = HEADER_LEN_V1 + 4;
+/// v3 ヘッダ長（v2 と同じレイアウト。28 バイト目が slot_count に変わるだけ）。
+const HEADER_LEN_V3: usize = HEADER_LEN_V2;
 
 /// TVOX の読み込みエラー。
 #[derive(Debug, PartialEq, Eq)]
@@ -65,7 +74,7 @@ pub enum TvoxError {
     DimMismatch,
 }
 
-/// チャンク（密度＋スプラット）を TVOX v2 バイト列へ直列化する。
+/// チャンク（密度＋スプラット）を TVOX v3 バイト列へ直列化する。
 pub fn write_chunk(
     chunk: &TerrainChunkData,
     coord: ChunkCoord,
@@ -73,12 +82,16 @@ pub fn write_chunk(
 ) -> Vec<u8> {
     let samples = chunk.samples_per_axis() as u32;
     let density = chunk.raw_density();
-    let paint = chunk.raw_paint();
+    let paint_index = chunk.raw_paint_index();
+    let paint_weight = chunk.raw_paint_weight();
     let paint_amount = chunk.raw_paint_amount();
 
-    // ─── ヘッダ + 密度 + スプラットぶんを確保 ───
-    let body_len = density.len() * 4 + paint.len() * TERRAIN_LAYER_COUNT + paint_amount.len();
-    let mut out = Vec::with_capacity(HEADER_LEN_V2 + body_len);
+    // ─── ヘッダ + 密度 + スプラット（番号・重み・量）ぶんを確保 ───
+    let body_len = density.len() * 4
+        + paint_index.len() * TERRAIN_BLEND_SLOTS
+        + paint_weight.len() * TERRAIN_BLEND_SLOTS
+        + paint_amount.len();
+    let mut out = Vec::with_capacity(HEADER_LEN_V3 + body_len);
 
     // ─── ヘッダ書き込み（すべてリトルエンディアン） ───
     out.extend_from_slice(&TVOX_MAGIC);
@@ -88,15 +101,20 @@ pub fn write_chunk(
     out.extend_from_slice(&coord.z.to_le_bytes());
     out.extend_from_slice(&samples.to_le_bytes());
     out.extend_from_slice(&settings.voxel_size.to_le_bytes());
-    out.extend_from_slice(&(TERRAIN_LAYER_COUNT as u32).to_le_bytes());
+    out.extend_from_slice(&(TERRAIN_BLEND_SLOTS as u32).to_le_bytes());
 
     // ─── 密度サンプルを f32 LE で書き込む ───
     for &d in density {
         out.extend_from_slice(&d.to_le_bytes());
     }
 
-    // ─── 手ペイントレイヤ重み（サンプルごとに L バイト）───
-    for w in paint {
+    // ─── スロットのレイヤ番号（サンプルごとに S バイト）───
+    for idx in paint_index {
+        out.extend_from_slice(idx);
+    }
+
+    // ─── スロットの重み（サンプルごとに S バイト）───
+    for w in paint_weight {
         out.extend_from_slice(w);
     }
 
@@ -106,7 +124,7 @@ pub fn write_chunk(
     out
 }
 
-/// TVOX バイト列からチャンクを復元する（v1 / v2 の両方を受け付ける）。
+/// TVOX バイト列からチャンクを復元する（v1 / v2 / v3 のいずれも受け付ける）。
 ///
 /// 復元されるチャンクの voxel_size / チャンク数は呼び出し側の
 /// TerrainSettings と組み合わせて使う想定（このヘッダは samples と
@@ -122,9 +140,9 @@ pub fn read_chunk(bytes: &[u8]) -> Result<(TerrainChunkData, ChunkCoord), TvoxEr
         return Err(TvoxError::BadMagic);
     }
 
-    // ─── バージョン検証（v1 と v2 のみ受け付ける）───
+    // ─── バージョン検証（v1 / v2 / v3 のみ受け付ける）───
     let version = read_u32_le(bytes, 4);
-    if version != TVOX_VERSION && version != TVOX_VERSION_V1 {
+    if version != TVOX_VERSION && version != TVOX_VERSION_V2 && version != TVOX_VERSION_V1 {
         return Err(TvoxError::BadVersion);
     }
 
@@ -135,8 +153,10 @@ pub fn read_chunk(bytes: &[u8]) -> Result<(TerrainChunkData, ChunkCoord), TvoxEr
     let samples = read_u32_le(bytes, 20) as usize;
     let voxel_size = read_f32_le(bytes, 24);
 
-    // ─── v2 のみ layer_count を読む（v1 はスプラット無し = 0 層扱い）───
-    let (header_len, file_layers) = if version == TVOX_VERSION {
+    // ─── v2/v3 のみ 28 バイト目のカウントを読む（v1 はスプラット無し = 0 扱い）───
+    //   v2 では「レイヤ数 L」、v3 では「スロット数 S」を意味する。どちらも
+    //   「1 サンプルあたりの重みバイト数」であることは共通。
+    let (header_len, file_slots) = if version == TVOX_VERSION || version == TVOX_VERSION_V2 {
         if bytes.len() < HEADER_LEN_V2 {
             return Err(TvoxError::Truncated);
         }
@@ -153,9 +173,15 @@ pub fn read_chunk(bytes: &[u8]) -> Result<(TerrainChunkData, ChunkCoord), TvoxEr
     let body = &bytes[header_len..];
 
     // ─── 本体長の整合を検証する ───
-    //   v1: density のみ / v2: density + paint(L bytes/sample) + paint_amount(1 byte/sample)
+    //   v1: density のみ
+    //   v2: density + weight(S bytes/sample) + amount(1 byte/sample)
+    //   v3: density + index(S) + weight(S) + amount(1) bytes/sample
     let density_bytes = total.checked_mul(4).ok_or(TvoxError::DimMismatch)?;
-    let per_sample_splat = if version == TVOX_VERSION { file_layers + 1 } else { 0 };
+    let per_sample_splat = match version {
+        TVOX_VERSION => file_slots * 2 + 1,
+        TVOX_VERSION_V2 => file_slots + 1,
+        _ => 0,
+    };
     let splat_bytes = total
         .checked_mul(per_sample_splat)
         .ok_or(TvoxError::DimMismatch)?;
@@ -191,18 +217,42 @@ pub fn read_chunk(bytes: &[u8]) -> Result<(TerrainChunkData, ChunkCoord), TvoxEr
         chunk.set_sample(ix, iy, iz, d);
     }
 
-    // ─── スプラット（v2 のみ）を読み込む ───
-    if version == TVOX_VERSION && file_layers > 0 {
-        // レイヤ定義の増減に耐えるよう、共通する先頭 min(L_file, L_now) 層だけを取り込む。
-        let common = file_layers.min(TERRAIN_LAYER_COUNT);
-        let paint_base = density_bytes;
-        let amount_base = paint_base + total * file_layers;
-        let mut paint = vec![[0u8; TERRAIN_LAYER_COUNT]; total];
-        for (flat, slot) in paint.iter_mut().enumerate() {
-            let src = paint_base + flat * file_layers;
-            slot[..common].copy_from_slice(&body[src..src + common]);
+    // ─── スプラット（v2 / v3）を読み込む ───
+    if file_slots > 0 {
+        // スロット数の増減に耐えるよう、共通する先頭 min(S_file, S_now) 個だけを取り込む。
+        let common = file_slots.min(TERRAIN_BLEND_SLOTS);
+        let mut index = vec![[0u8; TERRAIN_BLEND_SLOTS]; total];
+        let mut weight = vec![[0u8; TERRAIN_BLEND_SLOTS]; total];
+
+        // v3 は index → weight の順で並ぶ。v2 は index ブロックが存在しない。
+        let (index_base, weight_base) = if version == TVOX_VERSION {
+            (Some(density_bytes), density_bytes + total * file_slots)
+        } else {
+            (None, density_bytes)
+        };
+        let amount_base = weight_base + total * file_slots;
+
+        for flat in 0..total {
+            match index_base {
+                // v3: 保存されたレイヤ番号をそのまま読む。
+                Some(base) => {
+                    let src = base + flat * file_slots;
+                    index[flat][..common].copy_from_slice(&body[src..src + common]);
+                }
+                // v2 後方互換: 重みはレイヤ 0..L-1 の密ベクトルだったので、
+                // スロット k のレイヤ番号は k とみなす（index=[0,1,2,3]）。
+                None => {
+                    for k in 0..common {
+                        index[flat][k] = k as u8;
+                    }
+                }
+            }
+            let src = weight_base + flat * file_slots;
+            weight[flat][..common].copy_from_slice(&body[src..src + common]);
         }
-        chunk.set_raw_paint(paint);
+
+        chunk.set_raw_paint_index(index);
+        chunk.set_raw_paint_weight(weight);
         chunk.set_raw_paint_amount(body[amount_base..amount_base + total].to_vec());
     }
 
@@ -226,9 +276,46 @@ fn read_f32_le(b: &[u8], off: usize) -> f32 {
     f32::from_le_bytes([b[off], b[off + 1], b[off + 2], b[off + 3]])
 }
 
+/// テスト・移行ツール用に v2（レイヤ番号なしスプラット）形式で直列化する。
+///
+/// 本番の保存経路では使わない（保存は常に v3）。v2→v3 の後方互換テストが
+/// 「本物の v2 バイト列」を作るために必要なので、書き手をここに残しておく。
+///
+/// `dense_weights[flat][layer]` はレイヤ番号を添字とする u8 量子化重み
+/// （v2 当時の並び）。レイヤ数は TERRAIN_BLEND_SLOTS 固定で書く。
+pub fn write_chunk_v2(
+    chunk: &TerrainChunkData,
+    coord: ChunkCoord,
+    settings: &TerrainSettings,
+    dense_weights: &[[u8; TERRAIN_BLEND_SLOTS]],
+) -> Vec<u8> {
+    let samples = chunk.samples_per_axis() as u32;
+    let density = chunk.raw_density();
+    let paint_amount = chunk.raw_paint_amount();
+    debug_assert_eq!(dense_weights.len(), density.len(), "v2 重み配列の長さ不一致");
+
+    let mut out = Vec::with_capacity(HEADER_LEN_V2 + density.len() * 4);
+    out.extend_from_slice(&TVOX_MAGIC);
+    out.extend_from_slice(&TVOX_VERSION_V2.to_le_bytes());
+    out.extend_from_slice(&coord.x.to_le_bytes());
+    out.extend_from_slice(&coord.y.to_le_bytes());
+    out.extend_from_slice(&coord.z.to_le_bytes());
+    out.extend_from_slice(&samples.to_le_bytes());
+    out.extend_from_slice(&settings.voxel_size.to_le_bytes());
+    out.extend_from_slice(&(TERRAIN_BLEND_SLOTS as u32).to_le_bytes());
+    for &d in density {
+        out.extend_from_slice(&d.to_le_bytes());
+    }
+    for w in dense_weights {
+        out.extend_from_slice(w);
+    }
+    out.extend_from_slice(paint_amount);
+    out
+}
+
 /// テスト・移行ツール用に v1（密度のみ）形式で直列化する。
 ///
-/// 本番の保存経路では使わない（保存は常に v2）。tvox v1→v2 の後方互換テストが
+/// 本番の保存経路では使わない（保存は常に v3）。tvox v1 の後方互換テストが
 /// 「本物の v1 バイト列」を作るために必要なので、書き手をここに残しておく。
 pub fn write_chunk_v1(
     chunk: &TerrainChunkData,

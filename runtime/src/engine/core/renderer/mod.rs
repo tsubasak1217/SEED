@@ -34,6 +34,8 @@ pub(crate) mod view_mode;
 pub(crate) mod gbuffer;
 /// 地形レイヤブレンド用 G-Buffer パイプライン（Terrain T2）。
 pub(crate) mod terrain_gbuffer;
+/// 地形レイヤテクスチャ配列（texture_2d_array）の構築（Terrain T2b）。
+pub(crate) mod terrain_layer_textures;
 /// フルスクリーン・ライティングパイプライン（G-Buffer 復元, Phase D3 Deferred Phase A）
 pub(crate) mod deferred;
 /// 反射（SSR / RT）フルスクリーンパス＋合成（Phase D6）
