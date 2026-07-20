@@ -222,7 +222,57 @@ IPC を叩けない環境（エディタ非接続）で地形生成・編集を�
 
 ---
 
-## 11. 拡張余地（T2 / T3）
+## 11. エディタ操作仕様（T1 後半・WPF エディタ UI）
+
+ランタイムの IPC（§9）をエディタの UI へ接続した層。実装は `editor/src/MainWindow.Terrain.cs`
+（ロジック）と `editor/src/MainWindow.xaml`（モードコンボ＋地形ツールバー）、
+`editor/src/Runtime/RuntimeManager.cs`（応答受信）に分かれる。
+
+### モード切替（common / terrain）
+
+- シーンパネル左上のコンボ **`CmbSceneMode`**（`common` / `terrain`、既定 common）。Blender のモード切替のイメージ。
+- `terrain` を選ぶとタブバー下段に **地形ツールバー**（`TerrainToolbar`）が現れ、シーンビュー上の左ドラッグが
+  地形ブラシになる。`common` では従来どおりの選択・ギズモ編集。
+
+### 地形ツールバー（terrain モード時のみ表示）
+
+| UI | 機能 |
+|---|---|
+| ツール選択（盛る/掘る/均す/平坦化） | トグル（`RadioButton` 群）。選択状態をアクセント色で表示。`op` = 0/1/2/3 に対応 |
+| ブラシ半径スライダー | 0.5〜8 m（`TERRAIN_BRUSH` の radius）|
+| ブラシ強度スライダー | 0〜1（`TERRAIN_BRUSH` の strength）|
+| 「地形を初期化」ボタン | `TERRAIN_INIT` を送る。再初期化時は確認ダイアログを出す（既存地形は作り直される）|
+| 「地形を保存」ボタン | `TERRAIN_SAVE` を送る。結果（保存チャンク数/エラー）をステータス表示 |
+
+### ブラシ入力（マウス）
+
+- ビューポート（ランタイム HWND）は WPF の入力ルートを通らないため、**低レベルマウスフック（`WH_MOUSE_LL`）** で
+  左ドラッグを捕捉する（キーボードフックと同じ UI スレッドに常設。terrain モードかつ Edit 状態のときだけ作用）。
+- 左ボタン押下でストローク開始、移動中は **スロットル（`TerrainBrushThrottleMs` = 40 ms）** で
+  `TERRAIN_BRUSH:{op},{lx},{ly},{radius},{strength}` を送る（`lx,ly` はビューポート左上原点の物理ピクセル。
+  `GetCursorPos - GetWindowRect(ContainerHwnd).TopLeft`。既存の `DROP_ACTOR` と同じ座標変換）。
+- terrain モード中は **ビューポート上の左ボタン押下/移動/解放をフックで飲み込む**（`return 1`）ため、
+  ランタイムの選択・ギズモへは届かない（＝選択/ギズモ無効）。右ドラッグ（カメラ回転）・WASD 等は
+  フックが一切触れないため従来どおり効く。ストローク中でない移動はランタイムへ素通しする。
+
+### ヒエラルキー整合（設計の要）
+
+- **ランタイムがシーンの正、エディタは指示役**。`handle_terrain_init` が生成した地形アクター
+  （`terrain` ルート → `chunk_X_Y_Z` → `mesh`）は、同ハンドラ末尾の `send_hierarchy()` により
+  `HIERARCHY` としてエディタへ届き、ヒエラルキーパネルへ自動反映される（追加の同期実装は不要）。
+- **シーン保存**はエディタが `SAVE_SCENE:{path}` を送り、ランタイムが自分の `scene`
+  （terrain アクター＋`TerrainChunkComponent` を含む）を `scene.save` でシリアライズする。エディタ側で
+  独自にシーンを直列化する経路は無いため、**地形アクターは保存で消えない**。密度データ本体は
+  `TERRAIN_SAVE` で別口の .tvox に保存される（§8）。
+- **二重初期化対策**: `handle_terrain_init` は冪等化してあり、実行時に既存の `terrain` ルートと
+  そのサブツリーのエンティティを despawn してから作り直す（`TERRAIN_INIT` を再実行しても
+  ヒエラルキーに重複ルートが残らない）。エディタ側も再初期化前に確認ダイアログを出す。
+- **`TerrainChunkComponent` はインスペクタのコンポーネント追加リストに出さない**（内部管理メタデータ）。
+  エディタの追加リスト（`ComponentSelectorWindow` の静的 `Categories`）に項目が無いため既定で出ない。
+
+---
+
+## 12. 拡張余地（T2 / T3）
 
 - **T2 マテリアル**: triplanar ＋標高/傾斜ベースのレイヤブレンド（草/岩/砂）。現在の単一デフォルト Material を置換。
   `terrain_mesh_build.rs` の Material 生成部と `Vertex.color`/uv の使い方を差し替えるだけで載る設計。

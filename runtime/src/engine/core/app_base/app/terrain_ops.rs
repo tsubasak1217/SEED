@@ -353,6 +353,22 @@ fn make_terrain_model_component(
     }
 }
 
+/// アクターとその全子孫が保持する World エンティティ（本体＋スロット専用）を再帰収集する。
+///
+/// 既存の terrain ルートを再初期化前に despawn するために使う。`collect_entities_for_wl`
+/// は world_line 単位でしか収集できず「terrain ルートのサブツリーだけ」を抜けないため、
+/// 単一アクター起点の専用収集をここに置く（マジックナンバー・外部依存なし）。
+fn collect_subtree_entities(actor: &Actor, out: &mut Vec<Entity>) {
+    out.push(actor.entity);
+    // スロット専用エンティティ（ModelComponent / TerrainChunkComponent など）も despawn 対象。
+    for slot in actor.slots() {
+        out.push(slot.entity);
+    }
+    for child in actor.children() {
+        collect_subtree_entities(child, out);
+    }
+}
+
 /// このチャンク範囲の全チャンク座標を列挙する（settings のグラウンド範囲に従う）。
 fn ground_chunk_coords(settings: &TerrainSettings) -> Vec<ChunkCoord> {
     let mut coords = Vec::new();
@@ -381,6 +397,27 @@ impl App {
         // シーンが無ければ空シーンを作る（スモーク単独起動・地形専用編集を許容する）。
         if self.scene.is_none() {
             self.scene = Some(crate::engine::core::app_base::scene::Scene::new("terrain"));
+        }
+
+        // ── 冪等化: 既存の terrain ルートを除去してから作り直す（二重生成防止）──
+        //   handle_terrain_init は毎回新しい terrain ルートを scene.actors へ push するため、
+        //   除去しないと TERRAIN_INIT を 2 回叩くとヒエラルキーに terrain ルートが重複し、
+        //   古いチャンクアクター群がシーンに残って保存もされてしまう（オーファン）。
+        //   同名（TERRAIN_ROOT_NAME）のトップレベルルートとそのサブツリーの全エンティティを
+        //   despawn してから作り直すことで、再初期化・ロード後の再初期化でも重複を生じさせない。
+        if let Some(scene) = self.scene.as_mut() {
+            let mut to_despawn: Vec<Entity> = Vec::new();
+            scene.actors.retain(|a| {
+                if a.name == TERRAIN_ROOT_NAME {
+                    collect_subtree_entities(a, &mut to_despawn);
+                    false // 除去する
+                } else {
+                    true
+                }
+            });
+            for e in to_despawn {
+                scene.world.despawn(e);
+            }
         }
 
         // 状態をリセットしてシーン名を取り込む。

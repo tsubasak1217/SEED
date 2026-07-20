@@ -441,6 +441,83 @@
             </Setter>
         </Style>
 
+        <!-- 地形ツール選択トグル（テキストラベル付き RadioButton）。選択状態をアクセント色で表示。-->
+        <Style x:Key="TerrainToolBtnStyle" TargetType="RadioButton">
+            <Setter Property="Height"          Value="22"/>
+            <Setter Property="Margin"          Value="2,0"/>
+            <Setter Property="Padding"         Value="8,0"/>
+            <Setter Property="FontSize"        Value="11"/>
+            <Setter Property="Background"      Value="#3A3A3A"/>
+            <Setter Property="Foreground"      Value="#CCCCCC"/>
+            <Setter Property="BorderBrush"     Value="#555555"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Cursor"          Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="RadioButton">
+                        <Border x:Name="Bd"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="3"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="Bd" Property="Background"  Value="#E87820"/>
+                                <Setter TargetName="Bd" Property="BorderBrush" Value="#E87820"/>
+                                <Setter Property="Foreground"                  Value="White"/>
+                            </Trigger>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#505050"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- 地形アクションボタン（初期化 / 保存）。-->
+        <Style x:Key="TerrainActionBtnStyle" TargetType="Button">
+            <Setter Property="Height"          Value="22"/>
+            <Setter Property="Margin"          Value="2,0"/>
+            <Setter Property="Padding"         Value="10,0"/>
+            <Setter Property="FontSize"        Value="11"/>
+            <Setter Property="Background"      Value="#3A3A3A"/>
+            <Setter Property="Foreground"      Value="#CCCCCC"/>
+            <Setter Property="BorderBrush"     Value="#555555"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Cursor"          Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Bd"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="3"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#505050"/>
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#666666"/>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Foreground" Value="#666666"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
         <!-- 数値入力 TextBox スタイル（スライダー横の小型入力欄）-->
         <Style x:Key="NumInputStyle" TargetType="{x:Type TextBox}">
             <Setter Property="Background"                        Value="#1A1A1A"/>
@@ -889,6 +966,8 @@
                                         <Grid.RowDefinitions>
                                             <!-- アクタータブバー行（タブがないときは高さ 0）-->
                                             <RowDefinition Height="Auto"/>
+                                            <!-- 地形（terrain）ツールバー行。terrain モード時のみ内容が表示される（既定は Collapsed で高さ 0）-->
+                                            <RowDefinition Height="Auto"/>
                                             <!-- Viewport 本体 -->
                                             <RowDefinition Height="*"/>
                                             <!-- 編集時物理タイムライン（ツールストリップ列を除いたビューポート列にのみ表示）-->
@@ -911,6 +990,22 @@
                                                 Height="28"
                                                 Visibility="Visible">
                                             <DockPanel>
+                                                <!-- 左端固定: シーン編集モード（common / terrain）。
+                                                     Blender のモード切替のイメージ。terrain を選ぶと下段に地形ツールバーが現れ、
+                                                     シーンビュー上の左ドラッグが地形ブラシになる（選択/ギズモは無効化）。
+                                                     common は従来どおりの選択・ギズモ編集。既定は common。 -->
+                                                <ComboBox x:Name="CmbSceneMode"
+                                                          DockPanel.Dock="Left"
+                                                          Width="110" Height="22"
+                                                          Margin="6,3,4,3"
+                                                          FontSize="11"
+                                                          VerticalAlignment="Center"
+                                                          SelectedIndex="0"
+                                                          ToolTip="シーン編集モード（common＝通常編集 / terrain＝地形ブラシ編集）"
+                                                          SelectionChanged="OnSceneModeChanged">
+                                                    <ComboBoxItem Content="common"  Tag="common"/>
+                                                    <ComboBoxItem Content="terrain" Tag="terrain"/>
+                                                </ComboBox>
                                                 <!-- 右端固定: シーンビュー表示モード（ライティングON / OFF / ワイヤーフレーム）。
                                                      エディタのシーンビュー（デバッグカメラ）だけに効き、ゲームカメラの
                                                      プレビュー小窓・Play の見た目には影響しない（ランタイム側でゲート）。
@@ -1064,8 +1159,94 @@
                                             </DockPanel>
                                         </Border>
 
+                                        <!-- ── 地形（terrain）ツールバー（Row 1, 全列スパン）────────
+                                             CmbSceneMode が terrain のときだけ Visible になる。
+                                             HwndHost（ビューポート）とは別の行に置くため Airspace 問題なし。
+                                             ツール選択（盛る/掘る/均す/平坦化）＋ブラシ半径/強度スライダー＋
+                                             地形の初期化/保存ボタン＋ステータス表示で構成する。 -->
+                                        <Border x:Name="TerrainToolbar"
+                                                Grid.Row="1" Grid.ColumnSpan="2"
+                                                Background="#252526"
+                                                BorderBrush="#3A3A3A" BorderThickness="0,0,0,1"
+                                                Padding="6,4"
+                                                Visibility="Collapsed">
+                                            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                                <!-- ツール選択（トグル＝RadioButton 群。選択状態はアクセント色で可視化）-->
+                                                <TextBlock Text="ツール" Foreground="#AAAAAA" FontSize="11"
+                                                           VerticalAlignment="Center" Margin="0,0,6,0"/>
+                                                <RadioButton x:Name="BtnTerrainRaise"
+                                                             GroupName="TerrainTools"
+                                                             Style="{StaticResource TerrainToolBtnStyle}"
+                                                             IsChecked="True"
+                                                             ToolTip="盛る（地面を隆起させる）"
+                                                             Content="盛る"
+                                                             Checked="OnTerrainToolChanged"/>
+                                                <RadioButton x:Name="BtnTerrainCarve"
+                                                             GroupName="TerrainTools"
+                                                             Style="{StaticResource TerrainToolBtnStyle}"
+                                                             ToolTip="掘る（地面を削って洞窟を作る）"
+                                                             Content="掘る"
+                                                             Checked="OnTerrainToolChanged"/>
+                                                <RadioButton x:Name="BtnTerrainSmooth"
+                                                             GroupName="TerrainTools"
+                                                             Style="{StaticResource TerrainToolBtnStyle}"
+                                                             ToolTip="均す（周囲の平均へならす）"
+                                                             Content="均す"
+                                                             Checked="OnTerrainToolChanged"/>
+                                                <RadioButton x:Name="BtnTerrainFlatten"
+                                                             GroupName="TerrainTools"
+                                                             Style="{StaticResource TerrainToolBtnStyle}"
+                                                             ToolTip="平坦化（ブラシ中心の高さへそろえる）"
+                                                             Content="平坦化"
+                                                             Checked="OnTerrainToolChanged"/>
+
+                                                <Border Width="1" Background="#3A3A3A" Margin="8,2"/>
+
+                                                <!-- ブラシ半径スライダー（0.5〜8m）-->
+                                                <TextBlock Text="半径" Foreground="#AAAAAA" FontSize="11"
+                                                           VerticalAlignment="Center" Margin="0,0,4,0"/>
+                                                <Slider x:Name="SldTerrainRadius"
+                                                        Width="90" VerticalAlignment="Center"
+                                                        Minimum="0.5" Maximum="8" Value="3"
+                                                        ToolTip="ブラシ半径（メートル）"/>
+                                                <TextBlock x:Name="TxtTerrainRadius" Text="3.0m"
+                                                           Foreground="#CCCCCC" FontSize="11" FontFamily="Consolas"
+                                                           VerticalAlignment="Center" Margin="4,0,10,0" MinWidth="40"/>
+
+                                                <!-- ブラシ強度スライダー（0〜1）-->
+                                                <TextBlock Text="強度" Foreground="#AAAAAA" FontSize="11"
+                                                           VerticalAlignment="Center" Margin="0,0,4,0"/>
+                                                <Slider x:Name="SldTerrainStrength"
+                                                        Width="90" VerticalAlignment="Center"
+                                                        Minimum="0" Maximum="1" Value="0.5"
+                                                        ToolTip="ブラシ強度（0〜1）"/>
+                                                <TextBlock x:Name="TxtTerrainStrength" Text="0.50"
+                                                           Foreground="#CCCCCC" FontSize="11" FontFamily="Consolas"
+                                                           VerticalAlignment="Center" Margin="4,0,10,0" MinWidth="34"/>
+
+                                                <Border Width="1" Background="#3A3A3A" Margin="8,2"/>
+
+                                                <!-- 地形の初期化 / 保存 -->
+                                                <Button x:Name="BtnTerrainInit"
+                                                        Content="地形を初期化"
+                                                        Style="{StaticResource TerrainActionBtnStyle}"
+                                                        ToolTip="平地 4×4 チャンクを生成する（既存の地形は作り直される）"
+                                                        Click="OnTerrainInit"/>
+                                                <Button x:Name="BtnTerrainSave"
+                                                        Content="地形を保存"
+                                                        Style="{StaticResource TerrainActionBtnStyle}"
+                                                        ToolTip="全チャンクの密度データ（.tvox）を保存する"
+                                                        Click="OnTerrainSave"/>
+
+                                                <!-- ステータス表示（初期化/保存/ブラシの結果）-->
+                                                <TextBlock x:Name="TxtTerrainStatus" Text=""
+                                                           Foreground="#88CC88" FontSize="11"
+                                                           VerticalAlignment="Center" Margin="10,0,0,0"/>
+                                            </StackPanel>
+                                        </Border>
+
                                         <!-- Viewport HWND (code-behind で ViewportHost を差し込む) -->
-                                        <ContentControl Grid.Row="1" Grid.Column="1"
+                                        <ContentControl Grid.Row="2" Grid.Column="1"
                                                         x:Name="ViewportDocumentContent"
                                                         Background="Black"/>
 
@@ -1074,7 +1255,7 @@
                                              ビューポート列を覆っていても HwndHost やその下の要素が
                                              マウスイベントを受け取れるようにする。 -->
                                         <Grid x:Name="ViewportLoadingOverlay"
-                                              Grid.Row="1" Grid.Column="1"
+                                              Grid.Row="2" Grid.Column="1"
                                               Panel.ZIndex="5"
                                               IsHitTestVisible="False">
                                             <Image Source="pack://application:,,,/resources/images/blueSky_ORE.png"
@@ -1094,7 +1275,7 @@
                                         </Grid>
 
                                         <!-- ツールストリップ (HwndHost と列が異なるためAirspace問題なし) -->
-                                        <Border Grid.Row="1" Grid.Column="0"
+                                        <Border Grid.Row="2" Grid.Column="0"
                                                 Background="#CC1C1C1C"
                                                 Padding="4,10,4,10">
                                             <Border.Effect>
@@ -1162,7 +1343,7 @@
                                         <!-- ツールストリップ列（Col 0）には表示しない。
                                              HwndHost と同じ列に重ならない行に配置するため Airspace 問題なし。 -->
                                         <Border x:Name="PhysicsTimelinePanel"
-                                                Grid.Row="2" Grid.Column="1"
+                                                Grid.Row="3" Grid.Column="1"
                                                 Background="#E0141414"
                                                 BorderBrush="#55AACCFF"
                                                 BorderThickness="0,1,0,0"

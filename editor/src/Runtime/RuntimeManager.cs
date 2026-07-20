@@ -215,6 +215,15 @@ public sealed class RuntimeManager : IDisposable
     /// <summary>アクターファイル書き出し完了通知。true=成功（保存パス）/ false=失敗（エラーメッセージ）。</summary>
     public event Action<bool, string>? ExportActorCompleted;
 
+    /// <summary>地形の初期化完了通知（TERRAIN_INIT_OK）。</summary>
+    public event Action? TerrainInitCompleted;
+
+    /// <summary>地形の保存完了通知（TERRAIN_SAVE_OK:count / TERRAIN_SAVE_ERROR:msg）。true=成功（引数=保存チャンク数）/ false=失敗（引数=エラーメッセージ）。</summary>
+    public event Action<bool, string>? TerrainSaveCompleted;
+
+    /// <summary>地形ブラシ結果通知。true=命中（引数="hx,hy,hz"）/ false=非命中（引数="")。</summary>
+    public event Action<bool, string>? TerrainBrushResult;
+
     // ── コンストラクタ ─────────────────────────────────────────
 
     public RuntimeManager(string runtimeExePath)
@@ -733,6 +742,31 @@ public sealed class RuntimeManager : IDisposable
         {
             EditorLog.Write($"[Runtime→Editor] SAVE_ERROR: {msg["SAVE_ERROR:".Length..]}");
             SaveCompleted?.Invoke(false, msg["SAVE_ERROR:".Length..]);
+        }
+        else if (msg == "TERRAIN_INIT_OK")
+        {
+            EditorLog.Write("[Runtime→Editor] TERRAIN_INIT_OK");
+            TerrainInitCompleted?.Invoke();
+        }
+        else if (msg.StartsWith("TERRAIN_SAVE_OK:", StringComparison.Ordinal))
+        {
+            var count = msg["TERRAIN_SAVE_OK:".Length..];
+            EditorLog.Write($"[Runtime→Editor] TERRAIN_SAVE_OK count={count}");
+            TerrainSaveCompleted?.Invoke(true, count);
+        }
+        else if (msg.StartsWith("TERRAIN_SAVE_ERROR:", StringComparison.Ordinal))
+        {
+            var err = msg["TERRAIN_SAVE_ERROR:".Length..];
+            EditorLog.Write($"[Runtime→Editor] TERRAIN_SAVE_ERROR {err}");
+            TerrainSaveCompleted?.Invoke(false, err);
+        }
+        else if (msg.StartsWith("TERRAIN_BRUSH_OK:", StringComparison.Ordinal))
+        {
+            TerrainBrushResult?.Invoke(true, msg["TERRAIN_BRUSH_OK:".Length..]);
+        }
+        else if (msg == "TERRAIN_BRUSH_MISS")
+        {
+            TerrainBrushResult?.Invoke(false, "");
         }
         else if (msg.StartsWith("ACTOR_DATA:", StringComparison.Ordinal))
         {
