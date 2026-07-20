@@ -126,6 +126,58 @@ fn owning_chunks_on_axis(g: i32, chunk_cells: i32, out: &mut Vec<i32>) {
     }
 }
 
+/// 球ブラシが「触りうる」チャンク集合を求める（密度場を実際には編集しない純関数）。
+///
+/// apply() のフェーズ1（AABB 列挙）＋フェーズ2（owning_chunks_on_axis によるチャンク集計）
+/// と同じロジックを、書き込みを行わずに走らせたもの。undo 用のストローク開始スナップショット
+/// （「このブラシで触れる可能性のあるチャンクの編集前密度を控える」）に使う。
+///
+/// apply() と異なり `amount==0`（実効編集量ゼロ）の判定は行わない
+/// （field への読み取りアクセスが要るため、この純関数の引数だけでは判定できない）。
+/// そのため結果は apply() が実際に touch するチャンクの **superset** になりうるが、
+/// 変化しないチャンクをスナップショットしても実害はない（undo/redo は無害な差分になるだけ）。
+pub fn chunks_in_brush_aabb(brush: &SphereBrush, settings: &TerrainSettings) -> Vec<ChunkCoord> {
+    let (voxel, chunk_cells) = (settings.voxel_size, settings.chunk_cells as i32);
+
+    // ─── 球を覆うグローバルサンプル AABB（apply() と同一のロジック） ───
+    let inv_voxel = 1.0 / voxel;
+    let min_g = |axis: usize| ((brush.center[axis] - brush.radius) * inv_voxel).floor() as i32;
+    let max_g = |axis: usize| ((brush.center[axis] + brush.radius) * inv_voxel).ceil() as i32;
+    let (gx0, gx1) = (min_g(0), max_g(0));
+    let (gy0, gy1) = (min_g(1), max_g(1));
+    let (gz0, gz1) = (min_g(2), max_g(2));
+    let r2 = brush.radius * brush.radius;
+
+    let mut touched: HashSet<ChunkCoord> = HashSet::new();
+    let mut owners_x = Vec::new();
+    let mut owners_y = Vec::new();
+    let mut owners_z = Vec::new();
+    for gz in gz0..=gz1 {
+        for gy in gy0..=gy1 {
+            for gx in gx0..=gx1 {
+                // サンプルのワールド位置と中心からの距離²（球の外はスキップ）。
+                let wx = gx as f32 * voxel - brush.center[0];
+                let wy = gy as f32 * voxel - brush.center[1];
+                let wz = gz as f32 * voxel - brush.center[2];
+                if wx * wx + wy * wy + wz * wz > r2 {
+                    continue;
+                }
+                owning_chunks_on_axis(gx, chunk_cells, &mut owners_x);
+                owning_chunks_on_axis(gy, chunk_cells, &mut owners_y);
+                owning_chunks_on_axis(gz, chunk_cells, &mut owners_z);
+                for &cx in &owners_x {
+                    for &cy in &owners_y {
+                        for &cz in &owners_z {
+                            touched.insert(ChunkCoord::new(cx, cy, cz));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    touched.into_iter().collect()
+}
+
 /// 球ブラシを密度場に適用し、密度が変化したサンプルを所有するチャンク集合を返す。
 ///
 /// 手順:

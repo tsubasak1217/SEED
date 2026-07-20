@@ -126,12 +126,14 @@ public partial class MainWindow
             {
                 if (vk == 0x5A) // Z
                 {
-                    _runtimeManager?.SendToRuntime("UNDO");
+                    // terrain モード中は地形専用の undo スタック（TERRAIN_UNDO）を使う。
+                    // 通常モードのアクター編集 undo（UNDO）とはランタイム側で別管理のため分岐する。
+                    _runtimeManager?.SendToRuntime(_terrainMode ? "TERRAIN_UNDO" : "UNDO");
                     return CallNextHookEx(_llKeyHook, nCode, wParam, lParam);
                 }
                 else if (vk == 0x59) // Y
                 {
-                    _runtimeManager?.SendToRuntime("REDO");
+                    _runtimeManager?.SendToRuntime(_terrainMode ? "TERRAIN_REDO" : "REDO");
                     return CallNextHookEx(_llKeyHook, nCode, wParam, lParam);
                 }
                 else if (vk == 0x53) // S

@@ -13,6 +13,7 @@ pub mod chunk_data;
 pub mod marching_cubes;
 pub mod brush;
 pub mod tvox;
+pub mod heightmap;
 
 #[cfg(test)]
 mod tests;
@@ -21,5 +22,6 @@ pub use settings::TerrainSettings;
 pub use chunk_coord::ChunkCoord;
 pub use chunk_data::TerrainChunkData;
 pub use marching_cubes::{generate, generate_standalone, TerrainMesh};
-pub use brush::{apply, BrushOp, SampleField, SphereBrush};
+pub use brush::{apply, chunks_in_brush_aabb, BrushOp, SampleField, SphereBrush};
 pub use tvox::{read_chunk, write_chunk, TvoxError, TVOX_MAGIC, TVOX_VERSION};
+pub use heightmap::HeightmapField;

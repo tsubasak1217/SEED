@@ -81,10 +81,39 @@ const SMOKE_STROKE_STEPS: u32 = 10;
 const SMOKE_STROKE_SPACING: f32 = 2.0;
 /// スモークのプレビュー球（ワイヤスフィア）半径（メートル）。
 const SMOKE_PREVIEW_RADIUS: f32 = 5.0;
+/// スモークのプレビュー球の強度（色の確認用。0.85=高強度寄りのオレンジに近い色になる）。
+const SMOKE_PREVIEW_STRENGTH: f32 = 0.85;
+/// スモークの undo/redo 確認用ストロークをフットプリント中心からずらす量（メートル）。
+const SMOKE_UNDO_TEST_OFFSET: f32 = 16.0;
+/// スモークの undo/redo 確認ストロークで適用するブラシ回数。
+const SMOKE_UNDO_TEST_BRUSH_COUNT: u32 = 3;
+/// スモークで書き出すテスト用ハイトマップ画像の 1 辺のピクセル数。
+const SMOKE_HEIGHTMAP_SIZE: u32 = 64;
+/// スモークのハイトマップ読込で使う高さスケール（メートル）。
+const SMOKE_HEIGHTMAP_HEIGHT_SCALE: f32 = 10.0;
+
+/// terrain 専用 undo スタックの最大保持数。これを超えたら最古のエントリを破棄する
+/// （無制限に保持すると 1 チャンク ≒ 143KB のスナップショットが積み上がり続けるため）。
+const TERRAIN_UNDO_MAX: usize = 32;
 
 // ============================================================
 //  TerrainState — 地形の実行時状態
 // ============================================================
+
+/// terrain 専用 undo/redo の 1 エントリ（1 ストローク分の編集）。
+///
+/// シーン全体の undo.rs（Command トレイト/UndoHistory）は Scene（ECS World）を対象とするが、
+/// 地形密度は App.terrain（TerrainState, Scene 外の HashMap<ChunkCoord,TerrainChunkData>）に
+/// あるため、既存の undo 機構へ統合できない。そのため地形専用の軽量スタックを別に持つ。
+///
+/// 触ったチャンクのみを before/after として保持する（全チャンクをスナップショットすると
+/// 1 チャンクあたり 33³×4byte ≒ 143KB と重いため、ストロークで実際に触れたチャンクに限定する）。
+pub struct TerrainEdit {
+    /// ストローク開始時点の密度（chunk coord -> raw density スナップショット）。
+    pub before: HashMap<ChunkCoord, Vec<f32>>,
+    /// ストローク終了時点の密度（chunk coord -> raw density スナップショット）。
+    pub after: HashMap<ChunkCoord, Vec<f32>>,
+}
 
 /// ボクセル地形の実行時状態。App に 1 つ保持する。
 pub struct TerrainState {
@@ -100,9 +129,20 @@ pub struct TerrainState {
     /// 編集されて未保存のチャンク集合（handle_terrain_save でクリア）。
     pub dirty: HashSet<ChunkCoord>,
     /// ブラシプレビュー（Edit モードのホバー位置に描くワイヤスフィア）の
-    /// (ワールド中心, 半径)。`None` のとき非表示。frame_renderer が描画に使う。
+    /// (ワールド中心, 半径, 強度)。`None` のとき非表示。frame_renderer が描画に使う。
+    /// 強度はプレビュー球の色（低強度=水色〜高強度=オレンジ）に反映される。
     /// レイがヒットしない（空を指す）フレームは `None` へクリアされる。
-    pub brush_preview: Option<([f32; 3], f32)>,
+    pub brush_preview: Option<([f32; 3], f32, f32)>,
+    /// 現在ブラシストローク中かどうか。TERRAIN_BRUSH（ドラッグ中の連続適用）の
+    /// 最初の 1 回で暗黙的に true になり、TERRAIN_STROKE_END で false に戻る。
+    pub stroke_active: bool,
+    /// 現在のストローク中に初めて触れたチャンクの「編集前」密度スナップショット。
+    /// ストローク確定（handle_terrain_stroke_end）時に TerrainEdit::before として消費される。
+    pub stroke_before: HashMap<ChunkCoord, Vec<f32>>,
+    /// terrain 専用 undo スタック（末尾が最新）。上限 TERRAIN_UNDO_MAX。
+    pub undo_stack: Vec<TerrainEdit>,
+    /// terrain 専用 redo スタック（末尾が最新）。undo 実行で積まれ、新規編集で clear される。
+    pub redo_stack: Vec<TerrainEdit>,
 }
 
 impl Default for TerrainState {
@@ -114,6 +154,10 @@ impl Default for TerrainState {
             scene_name: String::new(),
             dirty: HashSet::new(),
             brush_preview: None,
+            stroke_active: false,
+            stroke_before: HashMap::new(),
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
         }
     }
 }
@@ -398,12 +442,24 @@ fn ground_chunk_coords(settings: &TerrainSettings) -> Vec<ChunkCoord> {
 // ============================================================
 
 impl App {
-    /// 地形を初期化する。地形ツリーを生成し、初期地面を敷いてメッシュ化・GPU アップロードする。
+    /// 地形ツリー（root/フォルダ/メッシュアクター）を「地面全チャンクの密度を作る関数」を
+    /// 差し替え可能な形で構築する共通経路。
     ///
-    /// TERRAIN_INIT コマンド・スモークフックから呼ばれる。
-    pub(super) fn handle_terrain_init(&mut self) {
+    /// handle_terrain_init（平坦地面）と handle_terrain_heightmap（ハイトマップ起伏）の
+    /// 両方から使う。既存の terrain ルートを冪等に除去してから作り直し、フェーズ1（密度充填）
+    /// →フェーズ2（メッシュ化＋GPU アップロード）→フェーズ3（アクターツリー構築）の順に進める。
+    ///
+    /// `fill`: チャンク座標 → そのチャンクの初期密度データを返す関数（from_ground_plane や
+    /// from_fn(...) をラップして渡す）。
+    ///
+    /// 戻り値: draw_ctx が無い（GPU 未初期化）場合は何もせず false を返す。成功したら true。
+    /// IPC 応答（TERRAIN_INIT_OK / TERRAIN_HEIGHTMAP_OK 等）は呼び出し側が送る。
+    fn build_terrain_with<F>(&mut self, fill: F) -> bool
+    where
+        F: Fn(ChunkCoord, &TerrainSettings) -> TerrainChunkData,
+    {
         if self.draw_ctx.is_none() {
-            return;
+            return false;
         }
         // シーンが無ければ空シーンを作る（スモーク単独起動・地形専用編集を許容する）。
         if self.scene.is_none() {
@@ -411,11 +467,11 @@ impl App {
         }
 
         // ── 冪等化: 既存の terrain ルートを除去してから作り直す（二重生成防止）──
-        //   handle_terrain_init は毎回新しい terrain ルートを scene.actors へ push するため、
-        //   除去しないと TERRAIN_INIT を 2 回叩くとヒエラルキーに terrain ルートが重複し、
+        //   本メソッドは毎回新しい terrain ルートを scene.actors へ push するため、
+        //   除去しないと 2 回叩くとヒエラルキーに terrain ルートが重複し、
         //   古いチャンクアクター群がシーンに残って保存もされてしまう（オーファン）。
         //   同名（TERRAIN_ROOT_NAME）のトップレベルルートとそのサブツリーの全エンティティを
-        //   despawn してから作り直すことで、再初期化・ロード後の再初期化でも重複を生じさせない。
+        //   despawn してから作り直すことで、再初期化・ハイトマップ再読込でも重複を生じさせない。
         if let Some(scene) = self.scene.as_mut() {
             let mut to_despawn: Vec<Entity> = Vec::new();
             scene.actors.retain(|a| {
@@ -431,18 +487,22 @@ impl App {
             }
         }
 
-        // 状態をリセットしてシーン名を取り込む。
+        // ── 状態をリセットしてシーン名を取り込む ──
+        //   TerrainState::default() により undo_stack/redo_stack/stroke_before/stroke_active も
+        //   まとめてクリアされる。地形全体を作り直す（全チャンク密度が入れ替わる）ため、
+        //   古い undo 履歴は対象チャンクごと消え去り整合性が保てなくなる。よってここで
+        //   確実に破棄する（中途半端な undo エントリを残さない）。
         self.terrain = TerrainState::default();
         let scene_name = self.scene.as_ref().map(|s| s.name.clone()).unwrap_or_default();
         self.terrain.scene_name = scene_name.clone();
         let settings = self.terrain.settings.clone();
 
-        // ── フェーズ 1: 全チャンクの初期地面密度を敷き詰める ──
+        // ── フェーズ 1: 全チャンクの初期密度を敷き詰める（fill クロージャに委譲） ──
         // 先に全チャンクを map へ入れておくことで、後段のメッシュ化で境界の
         // 隣接サンプル（neighbor_sampler）が正しい値を返す。
         let coords = ground_chunk_coords(&settings);
         for &coord in &coords {
-            let data = TerrainChunkData::from_ground_plane(&settings, coord);
+            let data = fill(coord, &settings);
             self.terrain.chunks.insert(coord, data);
         }
 
@@ -530,8 +590,88 @@ impl App {
         }
 
         self.send_hierarchy();
+        true
+    }
+
+    /// 地形を初期化する。地形ツリーを生成し、初期地面（平坦地面）を敷いてメッシュ化・GPU アップロードする。
+    ///
+    /// TERRAIN_INIT コマンド・スモークフックから呼ばれる。
+    pub(super) fn handle_terrain_init(&mut self) {
+        let ok = self.build_terrain_with(|coord, settings| {
+            TerrainChunkData::from_ground_plane(settings, coord)
+        });
+        if !ok {
+            return;
+        }
         if let Some(ipc) = &self.ipc {
             ipc.send("TERRAIN_INIT_OK");
+        }
+    }
+
+    /// ハイトマップ画像から地形を敷き直す（TERRAIN_HEIGHTMAP コマンド）。
+    ///
+    /// 画像を読み込んでグレースケール化し、初期地面フットプリント（world x,z ∈
+    /// [0, ground_chunks_x/z * chunk_extent]）へバイリニアマッピングして高さ場を作る。
+    /// 密度 = worldY - height（規約どおり density<iso で SOLID）。
+    /// build_terrain_with を通すため、既存の地形（undo 履歴含む）は丸ごと作り直しになる。
+    pub(super) fn handle_terrain_heightmap(&mut self, path: String, height_scale: f32) {
+        let start = std::time::Instant::now();
+
+        // フットプリントは現行設定から求める（build_terrain_with 内でも同じ既定値に
+        // リセットされるため実質同一だが、将来 settings が可変になった場合に備えて
+        // 呼び出し時点の値を明示的に控えておく）。
+        let settings = self.terrain.settings.clone();
+        let extent = settings.chunk_extent();
+        let footprint_w = settings.ground_chunks_x as f32 * extent;
+        let footprint_d = settings.ground_chunks_z as f32 * extent;
+
+        // ── 画像読込 → グレースケール化 → luma01（0..1 正規化）へ変換 ──
+        //   path はエディタから渡される実ファイルシステム絶対パス（asset_fs 不要）。
+        let img = match image::open(&path) {
+            Ok(img) => img,
+            Err(e) => {
+                if let Some(ipc) = &self.ipc {
+                    ipc.send(&format!("TERRAIN_HEIGHTMAP_ERROR:{e}"));
+                }
+                return;
+            }
+        };
+        let gray = img.to_luma8();
+        let (w, h) = (gray.width() as usize, gray.height() as usize);
+        if w == 0 || h == 0 {
+            if let Some(ipc) = &self.ipc {
+                ipc.send("TERRAIN_HEIGHTMAP_ERROR:empty image");
+            }
+            return;
+        }
+        let luma01: Vec<f32> = gray.into_raw().iter().map(|&b| b as f32 / 255.0).collect();
+        let field = terrain::HeightmapField {
+            luma01,
+            w,
+            h,
+            footprint_w,
+            footprint_d,
+            height_scale,
+        };
+
+        // ── build_terrain_with を通して地形を丸ごと敷き直す ──
+        //   from_fn の density_fn は HeightmapField::density_at をそのまま渡す。
+        let ok = self.build_terrain_with(|coord, settings| {
+            TerrainChunkData::from_fn(settings, coord, |wx, wy, wz| field.density_at(wx, wy, wz))
+        });
+        if !ok {
+            if let Some(ipc) = &self.ipc {
+                ipc.send("TERRAIN_HEIGHTMAP_ERROR:draw context unavailable");
+            }
+            return;
+        }
+
+        let ms = start.elapsed().as_millis();
+        // 重い処理（画像デコード＋全チャンク再メッシュ）なので、IPC 未接続時（スモーク等）
+        // でも進捗が追えるよう常に eprintln する。
+        eprintln!("[SEED terrain] heightmap applied: {path} ({w}x{h}, scale={height_scale}) in {ms}ms");
+        if let Some(ipc) = &self.ipc {
+            ipc.send(&format!("TERRAIN_HEIGHTMAP_OK:{ms}"));
         }
     }
 
@@ -562,6 +702,13 @@ impl App {
         };
 
         self.handle_terrain_brush_world(op, center, radius, strength);
+
+        // ── ④ プレビュー球をブラシ着弾点へ追従させる ──
+        //   ドラッグ中（ストローク中）はエディタが TERRAIN_BRUSH_PREVIEW を送らないため、
+        //   プレビューが更新されずカーソルから取り残されて見えていた。追加のレイマーチは
+        //   不要（handle_terrain_brush_world 内で使った着弾点をそのまま使い回す）。
+        self.terrain.brush_preview = Some((center, radius, strength));
+
         if let Some(ipc) = &self.ipc {
             ipc.send(&format!("TERRAIN_BRUSH_OK:{},{},{}", center[0], center[1], center[2]));
         }
@@ -626,12 +773,13 @@ impl App {
     /// ブラシプレビュー（ホバー位置のワイヤスフィア）の中心を更新する。
     ///
     /// TERRAIN_BRUSH_PREVIEW コマンドから呼ばれる。カーソル位置のレイが地形に
-    /// 当たれば `terrain.brush_preview` に (着弾点, 半径) をセットし、当たらなければ
+    /// 当たれば `terrain.brush_preview` に (着弾点, 半径, 強度) をセットし、当たらなければ
     /// `None`（非表示）にする。押下していないホバー中に高頻度で呼ばれるため IPC 応答は返さない。
-    pub(super) fn handle_terrain_brush_preview(&mut self, screen_x: f32, screen_y: f32, radius: f32) {
+    /// strength は frame_renderer 側でプレビュー球の色（低強度=水色〜高強度=オレンジ）に使われる。
+    pub(super) fn handle_terrain_brush_preview(&mut self, screen_x: f32, screen_y: f32, radius: f32, strength: f32) {
         self.terrain.brush_preview = self
             .terrain_raymarch_hit(screen_x, screen_y)
-            .map(|center| (center, radius));
+            .map(|center| (center, radius, strength));
     }
 
     /// ブラシプレビューを非表示にする（TERRAIN_BRUSH_PREVIEW_OFF・terrain モード離脱時）。
@@ -655,7 +803,27 @@ impl App {
         let settings = self.terrain.settings.clone();
         let brush = SphereBrush { center, radius, strength };
 
-        // ── 球ブラシを密度場へ適用（settings と chunks を分割借用して FieldView を作る）──
+        // ── ① undo 用ストローク開始（暗黙）＆ 編集前スナップショット ──
+        //   ストローク開始は「stroke_active でない状態で最初の TERRAIN_BRUSH（＝本メソッド呼び出し）
+        //   が来たとき」に暗黙的に始まる（専用の開始 IPC は無い）。
+        //   ブラシ適用前に「このブラシが触りうるチャンク集合」（superset で可）の各既存チャンクを
+        //   走査し、ストローク中でまだ控えていないものだけ現在の密度をスナップショットする
+        //   （2 発目以降のブラシで上書きしてしまうと「ストローク開始時点」の密度でなくなるため）。
+        self.terrain.stroke_active = true;
+        {
+            let touch_candidates = terrain::brush::chunks_in_brush_aabb(&brush, &settings);
+            let terrain = &mut self.terrain;
+            for coord in touch_candidates {
+                if terrain.stroke_before.contains_key(&coord) {
+                    continue;
+                }
+                if let Some(chunk) = terrain.chunks.get(&coord) {
+                    terrain.stroke_before.insert(coord, chunk.raw_density().to_vec());
+                }
+            }
+        }
+
+        // ── ② 球ブラシを密度場へ適用（settings と chunks を分割借用して FieldView を作る）──
         let affected: Vec<ChunkCoord> = {
             let terrain = &mut self.terrain;
             let mut view = FieldView {
@@ -668,12 +836,28 @@ impl App {
             return;
         }
 
-        // ── 影響チャンクを再メッシュ化して GPU リソースを作り直す（描画リソースを先に生成）──
+        // ── ③ 影響チャンクを再メッシュ化（VRAM 安全な GPU 差し替え手順は remesh_chunks に共通化）──
+        self.remesh_chunks(&affected);
+    }
+
+    /// 指定チャンク群を再メッシュ化し、GPU リソースを VRAM 安全な手順で差し替える。
+    ///
+    /// handle_terrain_brush_world（ブラシ編集直後）と handle_terrain_undo/handle_terrain_redo
+    /// （密度を過去/未来のスナップショットへ書き戻した直後）の双方から呼ばれる共通処理（DRY）。
+    /// 手順: (1) 旧 GpuModel を drop → (2) device.poll(Wait) で解放を確定 → (3) 新規を書き戻し
+    /// → (4) mark_batch_dirty。旧解放前に新テクスチャを確保すると瞬間 VRAM 2 倍需要になるため。
+    fn remesh_chunks(&mut self, coords: &[ChunkCoord]) {
+        if self.draw_ctx.is_none() || coords.is_empty() {
+            return;
+        }
+        let settings = self.terrain.settings.clone();
+
+        // ── 再メッシュ化して GPU リソースを作り直す（描画リソースを先に生成）──
         let mut prebuilt: Vec<(ChunkCoord, Arc<Model>, Option<GpuModel>, Option<InstancedModelBatch>)> = Vec::new();
         {
             let ctx = self.draw_ctx.as_ref().unwrap();
-            for &coord in &affected {
-                // 編集後に空メッシュ化したチャンクは gpu/batch=None で返り、下で非描画に差し替わる。
+            for &coord in coords {
+                // 空メッシュ化したチャンクは gpu/batch=None で返り、下で非描画に差し替わる。
                 if let Some((model, gpu, batch)) = build_chunk_render(&self.terrain.chunks, &settings, ctx, coord) {
                     prebuilt.push((coord, model, gpu, batch));
                 }
@@ -681,8 +865,6 @@ impl App {
         }
 
         // ── VRAM 安全な差し替え（slot_ops::handle_set_material_override と同じ手順）──
-        //   旧 GpuModel を先に drop → device.poll(Wait) で解放を確定 → 新規を書き戻す。
-        //   これをやらないと「旧解放前に新テクスチャ確保」で瞬間 VRAM 2 倍需要 → OOM になる。
         for (coord, model, gpu, batch) in prebuilt {
             let slot_entity = match self.terrain.chunk_slot_entity.get(&coord) {
                 Some(&e) => e,
@@ -710,6 +892,72 @@ impl App {
             }
             self.terrain.dirty.insert(coord);
         }
+    }
+
+    /// 現在進行中のブラシストロークを 1 つの undo エントリとして確定する（TERRAIN_STROKE_END）。
+    ///
+    /// stroke_before（ストローク開始時点のスナップショット）が空でなければ、その各チャンクの
+    /// 現在密度を after として集めて TerrainEdit を undo_stack へ push し、redo_stack をクリアする
+    /// （新しい編集が確定したら、それより後の未来を指していた redo 履歴は無効になるため）。
+    /// stroke_before が空（＝実質何も変化しないまま終わった）場合は単に stroke_active を戻すだけ。
+    pub(super) fn handle_terrain_stroke_end(&mut self) {
+        if !self.terrain.stroke_before.is_empty() {
+            // before を丸ごと取り出す（以後 stroke_before は空に戻る）。
+            let before = std::mem::take(&mut self.terrain.stroke_before);
+
+            // ── before と同じチャンク集合について、現在（ストローク終了時点）の密度を after として集める ──
+            let mut after: HashMap<ChunkCoord, Vec<f32>> = HashMap::with_capacity(before.len());
+            for &coord in before.keys() {
+                if let Some(chunk) = self.terrain.chunks.get(&coord) {
+                    after.insert(coord, chunk.raw_density().to_vec());
+                }
+            }
+
+            self.terrain.undo_stack.push(TerrainEdit { before, after });
+            // 上限を超えたら最古のエントリを破棄する（無制限にメモリを食わせない）。
+            if self.terrain.undo_stack.len() > TERRAIN_UNDO_MAX {
+                self.terrain.undo_stack.remove(0);
+            }
+            // 新しい編集が確定したので、以前の undo から辿れた redo 履歴は無効化する
+            // （シーン全体の UndoHistory と同じ規約）。
+            self.terrain.redo_stack.clear();
+        }
+        self.terrain.stroke_active = false;
+    }
+
+    /// terrain 専用 undo（TERRAIN_UNDO）。undo_stack から直近のエントリを取り出し、
+    /// 各チャンクの密度を before（編集前）へ書き戻して再メッシュ化し、redo_stack へ積む。
+    pub(super) fn handle_terrain_undo(&mut self) {
+        let Some(edit) = self.terrain.undo_stack.pop() else {
+            return;
+        };
+        let mut touched: Vec<ChunkCoord> = Vec::with_capacity(edit.before.len());
+        for (&coord, density) in &edit.before {
+            // チャンクが存在する場合のみ書き戻す（ハイトマップ再読込等で消えている可能性に備える）。
+            if let Some(chunk) = self.terrain.chunks.get_mut(&coord) {
+                chunk.set_raw_density(density.clone());
+                touched.push(coord);
+            }
+        }
+        self.remesh_chunks(&touched);
+        self.terrain.redo_stack.push(edit);
+    }
+
+    /// terrain 専用 redo（TERRAIN_REDO）。redo_stack から直近のエントリを取り出し、
+    /// 各チャンクの密度を after（編集後）へ書き戻して再メッシュ化し、undo_stack へ積み直す。
+    pub(super) fn handle_terrain_redo(&mut self) {
+        let Some(edit) = self.terrain.redo_stack.pop() else {
+            return;
+        };
+        let mut touched: Vec<ChunkCoord> = Vec::with_capacity(edit.after.len());
+        for (&coord, density) in &edit.after {
+            if let Some(chunk) = self.terrain.chunks.get_mut(&coord) {
+                chunk.set_raw_density(density.clone());
+                touched.push(coord);
+            }
+        }
+        self.remesh_chunks(&touched);
+        self.terrain.undo_stack.push(edit);
     }
 
     /// 全チャンクを .tvox としてアセット配下（terrain/<scene>/）へ書き出す。
@@ -957,13 +1205,81 @@ impl App {
             self.handle_terrain_brush_world(BrushOp::Add, sc, SMOKE_BRUSH_RADIUS * 0.6, SMOKE_BRUSH_STRENGTH);
         }
 
+        // 上の盛り/掘り/畝はすべて同じ暗黙ストローク中（handle_terrain_brush_world の最初の
+        // 呼び出しで stroke_active になって以降、TERRAIN_STROKE_END 相当がまだ来ていない）。
+        // ここで一旦確定させ、以降の undo/redo テストを独立したストロークとして行えるようにする。
+        self.handle_terrain_stroke_end();
+
+        // ── undo/redo 往復の実機確認 ──
+        //   専用の 1 ストローク（ブラシを複数回適用 → ストローク確定）を作り、
+        //   undo で密度がストローク前へ戻り、redo で再適用されることを検証する。
+        //   footprint 内の未使用領域（盛り/掘り/畝と重ならない位置）を使う。
+        let undo_test_center = [center[0], 0.0, center[2] + SMOKE_UNDO_TEST_OFFSET];
+        let undo_test_coord = ChunkCoord::new(
+            (undo_test_center[0] / extent).floor() as i32,
+            0,
+            (undo_test_center[2] / extent).floor() as i32,
+        );
+        for _ in 0..SMOKE_UNDO_TEST_BRUSH_COUNT {
+            self.handle_terrain_brush_world(BrushOp::Add, undo_test_center, SMOKE_BRUSH_RADIUS, SMOKE_BRUSH_STRENGTH);
+        }
+        let density_after_stroke = self.terrain.chunks.get(&undo_test_coord).map(|c| c.raw_density().to_vec());
+        self.handle_terrain_stroke_end();
+
+        self.handle_terrain_undo();
+        let density_after_undo = self.terrain.chunks.get(&undo_test_coord).map(|c| c.raw_density().to_vec());
+        eprintln!(
+            "[SEED terrain] smoke: undo reverted density = {} (undo_stack={}, redo_stack={})",
+            density_after_undo != density_after_stroke && density_after_undo.is_some(),
+            self.terrain.undo_stack.len(),
+            self.terrain.redo_stack.len(),
+        );
+
+        self.handle_terrain_redo();
+        let density_after_redo = self.terrain.chunks.get(&undo_test_coord).map(|c| c.raw_density().to_vec());
+        eprintln!(
+            "[SEED terrain] smoke: redo reapplied density = {} (undo_stack={}, redo_stack={})",
+            density_after_redo == density_after_stroke,
+            self.terrain.undo_stack.len(),
+            self.terrain.redo_stack.len(),
+        );
+
+        // ── ハイトマップ読込の実機確認 ──
+        //   temp_dir に小さな左右グラデーション PNG を書き出し、handle_terrain_heightmap を
+        //   通して起伏が出ること・処理時間（ms）をログする。build_terrain_with 経由で地形全体が
+        //   作り直されるため、以降 self.terrain の undo 履歴はクリアされる（想定どおり）。
+        let heightmap_path = std::env::temp_dir().join("seed_terrain_smoke_heightmap.png");
+        {
+            use image::{ImageBuffer, Luma};
+            let denom = (SMOKE_HEIGHTMAP_SIZE - 1).max(1);
+            let img: ImageBuffer<Luma<u8>, Vec<u8>> = ImageBuffer::from_fn(
+                SMOKE_HEIGHTMAP_SIZE,
+                SMOKE_HEIGHTMAP_SIZE,
+                |x, _y| Luma([(x * 255 / denom) as u8]),
+            );
+            if let Err(e) = img.save(&heightmap_path) {
+                eprintln!("[SEED terrain] smoke: heightmap PNG write failed: {e}");
+            }
+        }
+        let heightmap_start = std::time::Instant::now();
+        self.handle_terrain_heightmap(
+            heightmap_path.to_string_lossy().to_string(),
+            SMOKE_HEIGHTMAP_HEIGHT_SCALE,
+        );
+        eprintln!(
+            "[SEED terrain] smoke: heightmap load done in {:?} (chunks={})",
+            heightmap_start.elapsed(),
+            self.terrain.chunks.len()
+        );
+
         // ── プレビュー球の模擬 ──
         //   エディタ経由でしか出ないワイヤスフィアを、スモークでも直接セットして映す。
         //   footprint 中心の地表付近に置く（レイマーチのヒット点に相当）。
-        self.terrain.brush_preview = Some(([center[0], 0.0, center[2]], SMOKE_PREVIEW_RADIUS));
+        //   strength を高め（⑥の色分岐が視認できる値）にセットする。
+        self.terrain.brush_preview = Some(([center[0], 0.0, center[2]], SMOKE_PREVIEW_RADIUS, SMOKE_PREVIEW_STRENGTH));
 
         eprintln!(
-            "[SEED terrain] smoke: init + deform + stroke({}) + preview done (chunks={})",
+            "[SEED terrain] smoke: init + deform + stroke({}) + undo/redo + heightmap + preview done (chunks={})",
             SMOKE_STROKE_STEPS,
             self.terrain.chunks.len()
         );

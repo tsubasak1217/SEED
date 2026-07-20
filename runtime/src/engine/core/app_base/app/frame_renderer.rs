@@ -2011,21 +2011,30 @@ impl App {
                     } else { None };
 
                     // 地形ブラシ範囲プレビュー（Edit モードのホバー位置のワイヤスフィア）。
-                    //   TERRAIN_BRUSH_PREVIEW で terrain.brush_preview に (中心, 半径) が入る。
-                    //   Edit（in_editor）のみ描画し、Play では出さない。色は視認性重視の半透明シアン。
-                    const TERRAIN_PREVIEW_COLOR: [f32; 4] = [0.20, 0.90, 1.0, 0.80];
+                    //   TERRAIN_BRUSH_PREVIEW で terrain.brush_preview に (中心, 半径, 強度) が入る。
+                    //   Edit（in_editor）のみ描画し、Play では出さない。
+                    //   ⑥ 強度に応じて色を低強度色→高強度色へ線形補間する（視認性重視）。
+                    const TERRAIN_PREVIEW_COLOR_LOW: [f32; 4] = [0.40, 0.85, 1.0, 0.80];  // 低強度=薄い水色
+                    const TERRAIN_PREVIEW_COLOR_HIGH: [f32; 4] = [1.0, 0.45, 0.10, 0.90]; // 高強度=濃いオレンジ
                     const TERRAIN_PREVIEW_MERIDIANS: usize = 12; // 経線本数
                     const TERRAIN_PREVIEW_PARALLELS: usize = 6;  // 緯線本数
                     const TERRAIN_PREVIEW_RING_SEGS: usize = 32; // 各円の分割数
                     let terrain_preview_batch = if in_editor {
-                        self.terrain.brush_preview.map(|(center, radius)| {
+                        self.terrain.brush_preview.map(|(center, radius, strength)| {
+                            // t=0（低強度）でシアン寄り、t=1（高強度）でオレンジ寄りへ各チャンネルを lerp。
+                            let t = strength.clamp(0.0, 1.0);
+                            let mut color = [0.0f32; 4];
+                            for i in 0..4 {
+                                color[i] = TERRAIN_PREVIEW_COLOR_LOW[i]
+                                    + (TERRAIN_PREVIEW_COLOR_HIGH[i] - TERRAIN_PREVIEW_COLOR_LOW[i]) * t;
+                            }
                             let mut lb = LineBatch::new();
                             lb.add_wire_sphere_latlong(
                                 center, radius,
                                 TERRAIN_PREVIEW_MERIDIANS,
                                 TERRAIN_PREVIEW_PARALLELS,
                                 TERRAIN_PREVIEW_RING_SEGS,
-                                TERRAIN_PREVIEW_COLOR,
+                                color,
                             );
                             lb.build(&draw_ctx.device)
                         })

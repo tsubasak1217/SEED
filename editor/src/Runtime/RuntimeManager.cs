@@ -224,6 +224,9 @@ public sealed class RuntimeManager : IDisposable
     /// <summary>地形ブラシ結果通知。true=命中（引数="hx,hy,hz"）/ false=非命中（引数="")。</summary>
     public event Action<bool, string>? TerrainBrushResult;
 
+    /// <summary>ハイトマップ反映完了通知（TERRAIN_HEIGHTMAP_OK:ms / TERRAIN_HEIGHTMAP_ERROR:msg）。true=成功（引数=処理時間ms）/ false=失敗（引数=エラーメッセージ）。</summary>
+    public event Action<bool, string>? TerrainHeightmapCompleted;
+
     // ── コンストラクタ ─────────────────────────────────────────
 
     public RuntimeManager(string runtimeExePath)
@@ -767,6 +770,18 @@ public sealed class RuntimeManager : IDisposable
         else if (msg == "TERRAIN_BRUSH_MISS")
         {
             TerrainBrushResult?.Invoke(false, "");
+        }
+        else if (msg.StartsWith("TERRAIN_HEIGHTMAP_OK:", StringComparison.Ordinal))
+        {
+            var ms = msg["TERRAIN_HEIGHTMAP_OK:".Length..];
+            EditorLog.Write($"[Runtime→Editor] TERRAIN_HEIGHTMAP_OK ms={ms}");
+            TerrainHeightmapCompleted?.Invoke(true, ms);
+        }
+        else if (msg.StartsWith("TERRAIN_HEIGHTMAP_ERROR:", StringComparison.Ordinal))
+        {
+            var err = msg["TERRAIN_HEIGHTMAP_ERROR:".Length..];
+            EditorLog.Write($"[Runtime→Editor] TERRAIN_HEIGHTMAP_ERROR {err}");
+            TerrainHeightmapCompleted?.Invoke(false, err);
         }
         else if (msg.StartsWith("ACTOR_DATA:", StringComparison.Ordinal))
         {

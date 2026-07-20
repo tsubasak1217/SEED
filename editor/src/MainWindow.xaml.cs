@@ -322,6 +322,7 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         _runtimeManager.TerrainInitCompleted          += OnTerrainInitCompleted;
         _runtimeManager.TerrainSaveCompleted          += OnTerrainSaveCompleted;
         _runtimeManager.TerrainBrushResult            += OnTerrainBrushResult;
+        _runtimeManager.TerrainHeightmapCompleted     += OnTerrainHeightmapCompleted;
 
         PanelHierarchy.SetRuntime(_runtimeManager);
         PanelHierarchy.SetAssetsPath(AssetsPath);

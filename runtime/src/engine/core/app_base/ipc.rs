@@ -112,11 +112,28 @@ pub enum IpcCommand {
     /// ワイヤ形式: `TERRAIN_SAVE`（引数なし）
     TerrainSave,
     /// ブラシ範囲プレビュー（Edit モードのホバー位置にワイヤスフィアを描く）を更新する。
-    /// ワイヤ形式: `TERRAIN_BRUSH_PREVIEW:{screen_x},{screen_y},{radius}`
-    TerrainBrushPreview { screen_x: f32, screen_y: f32, radius: f32 },
+    /// ワイヤ形式: `TERRAIN_BRUSH_PREVIEW:{screen_x},{screen_y},{radius},{strength}`
+    /// strength はプレビュー球の色（低強度=水色〜高強度=オレンジ）に反映される。
+    TerrainBrushPreview { screen_x: f32, screen_y: f32, radius: f32, strength: f32 },
     /// ブラシ範囲プレビューを非表示にする（terrain モード離脱時）。
     /// ワイヤ形式: `TERRAIN_BRUSH_PREVIEW_OFF`（引数なし）
     TerrainBrushPreviewOff,
+    /// terrain 専用 undo（Ctrl+Z 相当。シーン全体の Undo/Redo とは別スタック）。
+    /// ワイヤ形式: `TERRAIN_UNDO`（引数なし）
+    TerrainUndo,
+    /// terrain 専用 redo（Ctrl+Y 相当）。
+    /// ワイヤ形式: `TERRAIN_REDO`（引数なし）
+    TerrainRedo,
+    /// 現在進行中のブラシストロークを 1 つの undo エントリとして確定する。
+    /// エディタはドラッグ終了（マウスアップ）時に送る。
+    /// ワイヤ形式: `TERRAIN_STROKE_END`（引数なし）
+    TerrainStrokeEnd,
+    /// ハイトマップ画像から地形を敷き直す。
+    /// ワイヤ形式: `TERRAIN_HEIGHTMAP:{path},{height_scale}`
+    ///   path: 実ファイルシステム上の絶対パス（Windows パスはカンマを含みうるため、
+    ///         右端のカンマより前を path、以降を height_scale としてパースする）。
+    ///   height_scale: 輝度 1.0（白）が対応する高さ（メートル）。
+    TerrainHeightmap { path: String, height_scale: f32 },
     /// グループフォルダ作成（parent=None はルート）
     CreateGroup { name: String, parent: Option<u32> },
     /// グループフォルダ作成 + 子を一括移動
@@ -767,14 +784,35 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                         "TERRAIN_SAVE" => Some(IpcCommand::TerrainSave),
                         // ブラシプレビュー非表示（引数なし）。TERRAIN_BRUSH_PREVIEW: より先に判定する。
                         "TERRAIN_BRUSH_PREVIEW_OFF" => Some(IpcCommand::TerrainBrushPreviewOff),
-                        // ブラシプレビュー更新: "screen_x,screen_y,radius"（f32×3）。
+                        // ブラシプレビュー更新: "screen_x,screen_y,radius,strength"（f32×4）。
                         s if s.starts_with("TERRAIN_BRUSH_PREVIEW:") => {
-                            parse_nf::<3>(&s["TERRAIN_BRUSH_PREVIEW:".len()..]).map(|fs| {
+                            parse_nf::<4>(&s["TERRAIN_BRUSH_PREVIEW:".len()..]).map(|fs| {
                                 IpcCommand::TerrainBrushPreview {
                                     screen_x: fs[0],
                                     screen_y: fs[1],
                                     radius:   fs[2],
+                                    strength: fs[3],
                                 }
+                            })
+                        }
+                        // terrain 専用 undo/redo・ストローク確定（いずれも引数なし）。
+                        "TERRAIN_UNDO" => Some(IpcCommand::TerrainUndo),
+                        "TERRAIN_REDO" => Some(IpcCommand::TerrainRedo),
+                        "TERRAIN_STROKE_END" => Some(IpcCommand::TerrainStrokeEnd),
+                        // ハイトマップ読込: "path,height_scale"。path 側に Windows パスの
+                        // カンマ（通常は含まれないが、他コマンドの流儀に合わせて安全側に倒す）が
+                        // 含まれても壊れないよう、右端のカンマで分割する（path は最後のカンマより前）。
+                        s if s.starts_with("TERRAIN_HEIGHTMAP:") => {
+                            let rest = &s["TERRAIN_HEIGHTMAP:".len()..];
+                            rest.rfind(',').and_then(|idx| {
+                                let path = &rest[..idx];
+                                let scale_s = &rest[idx + 1..];
+                                scale_s.trim().parse::<f32>().ok().map(|height_scale| {
+                                    IpcCommand::TerrainHeightmap {
+                                        path: path.to_string(),
+                                        height_scale,
+                                    }
+                                })
                             })
                         }
                         // 地形ブラシ: "op,screen_x,screen_y,radius,strength"。

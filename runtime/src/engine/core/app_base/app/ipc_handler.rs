@@ -246,13 +246,31 @@ impl App {
                     // ボクセル地形の全チャンクを .tvox として保存する。
                     self.handle_terrain_save();
                 }
-                IpcCommand::TerrainBrushPreview { screen_x, screen_y, radius } => {
+                IpcCommand::TerrainBrushPreview { screen_x, screen_y, radius, strength } => {
                     // ホバー位置のブラシ範囲プレビュー（ワイヤスフィア）を更新する。
-                    self.handle_terrain_brush_preview(screen_x, screen_y, radius);
+                    // strength は frame_renderer 側でプレビュー球の色（低強度=水色〜高強度=オレンジ）
+                    // へ反映される。
+                    self.handle_terrain_brush_preview(screen_x, screen_y, radius, strength);
                 }
                 IpcCommand::TerrainBrushPreviewOff => {
                     // ブラシ範囲プレビューを非表示にする。
                     self.handle_terrain_brush_preview_off();
+                }
+                IpcCommand::TerrainUndo => {
+                    // terrain 専用 undo（シーン全体の Undo とは別スタック）。
+                    self.handle_terrain_undo();
+                }
+                IpcCommand::TerrainRedo => {
+                    // terrain 専用 redo。
+                    self.handle_terrain_redo();
+                }
+                IpcCommand::TerrainStrokeEnd => {
+                    // 進行中のブラシストロークを 1 undo エントリとして確定する。
+                    self.handle_terrain_stroke_end();
+                }
+                IpcCommand::TerrainHeightmap { path, height_scale } => {
+                    // ハイトマップ画像から地形を敷き直す。
+                    self.handle_terrain_heightmap(path, height_scale);
                 }
                 IpcCommand::SaveActor(path) => {
                     let wl = self.active_world_line;

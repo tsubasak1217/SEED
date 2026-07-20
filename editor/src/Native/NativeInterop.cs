@@ -86,8 +86,15 @@ internal static class NativeInterop
     public const int WM_MOUSEMOVE   = 0x0200;
     public const int WM_LBUTTONDOWN = 0x0201;
     public const int WM_LBUTTONUP   = 0x0202;
+    public const int WM_MOUSEWHEEL  = 0x020A;
     public const int WM_SYSCOMMAND  = 0x0112;
     public const int WM_EXITSIZEMOVE = 0x0232;
+
+    // 修飾キーの仮想キーコード（GetKeyState で押下判定するために使用）
+    /// <summary>Ctrl キーの仮想キーコード（左右共通）。</summary>
+    public const int VK_CONTROL = 0x11;
+    /// <summary>Shift キーの仮想キーコード（左右共通）。</summary>
+    public const int VK_SHIFT   = 0x10;
 
     // WM_SYSCOMMAND のサブコマンド
     /// <summary>ウィンドウ移動を示すシステムコマンド。</summary>
@@ -97,6 +104,14 @@ internal static class NativeInterop
 
     /// <summary>現在のカーソル座標を取得する。</summary>
     [DllImport("user32.dll")] public static extern bool GetCursorPos(out POINT pt);
+
+    /// <summary>
+    /// 指定した仮想キーの現在の押下状態を取得する。戻り値の最上位ビット（0x8000）が
+    /// 立っていれば押下中。低レベルフックは UI スレッド上で同期的に呼ばれるため、
+    /// ここでの同期取得は問題ない（キーボードフックのメッセージ経由の状態追跡とは別に、
+    /// マウスホイール処理では即座に Ctrl/Shift の状態を知る必要があるため使用する）。
+    /// </summary>
+    [DllImport("user32.dll")] public static extern short GetKeyState(int nVirtKey);
 
     /// <summary>ウィンドウの拡張スタイルなどを取得する。</summary>
     [DllImport("user32.dll")] public static extern int  GetWindowLong(nint hWnd, int nIndex);

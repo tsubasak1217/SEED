@@ -23,6 +23,7 @@
 using System;
 using System.Diagnostics;
 using System.Globalization;
+using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
@@ -43,6 +44,18 @@ public partial class MainWindow
     private const int TerrainOpCarve   = 1; // Subtract= 掘る（洞窟）
     private const int TerrainOpSmooth  = 2; // Smooth  = 均す
     private const int TerrainOpFlatten = 3; // Flatten = 平坦化
+
+    /// <summary>Ctrl+ホイール 1 ノッチあたりのブラシ半径倍率変化量（乗算式。0.10=±10%）。</summary>
+    private const double TerrainRadiusWheelFactor = 0.10;
+
+    /// <summary>Shift+ホイール 1 ノッチあたりのブラシ強度変化量（加算式。0〜1 レンジに対して）。</summary>
+    private const double TerrainStrengthWheelStep = 0.05;
+
+    /// <summary>ハイトマップ高さスケール入力欄が空/不正なときのデフォルト値（メートル）。</summary>
+    private const double TerrainHeightScaleDefault = 10.0;
+
+    /// <summary>マウスホイールの 1 ノッチ分の mouseData 値（Win32 標準）。</summary>
+    private const int WheelDeltaPerNotch = 120;
 
     // ── 状態 ──────────────────────────────────────────────────
 
@@ -175,12 +188,63 @@ public partial class MainWindow
                     if (_terrainStroking)
                     {
                         _terrainStroking = false;
+                        // ストローク確定＝1 undo エントリとしてランタイム側に区切りを通知する。
+                        _runtimeManager?.SendToRuntime("TERRAIN_STROKE_END");
                         return (nint)1;
+                    }
+                    break;
+
+                case WM_MOUSEWHEEL:
+                    // Ctrl+ホイール＝ブラシ半径、Shift+ホイール＝ブラシ強度の調整。
+                    // ビューポート上でのみ作用し、修飾キーが無ければ素通し（従来のカメラズーム等）。
+                    if (IsMouseOverViewportHwnd())
+                    {
+                        bool ctrl  = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+                        bool shift = (GetKeyState(VK_SHIFT)   & 0x8000) != 0;
+                        if (ctrl ^ shift) // どちらか一方のみ押下時に処理する（両方/無しは素通し）
+                        {
+                            var msll = Marshal.PtrToStructure<MSLLHOOKSTRUCT>(lParam);
+                            short wheelDelta = unchecked((short)((msll.mouseData >> 16) & 0xFFFF));
+                            int notches = wheelDelta / WheelDeltaPerNotch;
+                            if (notches != 0)
+                            {
+                                if (ctrl)
+                                    AdjustTerrainRadiusByWheel(notches);
+                                else
+                                    AdjustTerrainStrengthByWheel(notches);
+                                SendTerrainPreviewNow(); // スライダー変更を即プレビューへ反映
+                                return (nint)1; // 飲み込む（カメラズーム等を発生させない）
+                            }
+                        }
                     }
                     break;
             }
         }
         return CallNextHookEx(_terrainMouseHook, nCode, wParam, lParam);
+    }
+
+    /// <summary>
+    /// Ctrl+ホイールでブラシ半径を乗算式に変化させる（1 ノッチ ±10%）。
+    /// スライダーの Minimum/Maximum でクランプする。
+    /// </summary>
+    private void AdjustTerrainRadiusByWheel(int notches)
+    {
+        if (SldTerrainRadius == null) return;
+        double val = SldTerrainRadius.Value;
+        double newVal = val * (1.0 + TerrainRadiusWheelFactor * notches);
+        SldTerrainRadius.Value = Math.Clamp(newVal, SldTerrainRadius.Minimum, SldTerrainRadius.Maximum);
+    }
+
+    /// <summary>
+    /// Shift+ホイールでブラシ強度を加算式に変化させる（1 ノッチ ±0.05）。
+    /// スライダーの Minimum/Maximum でクランプする。
+    /// </summary>
+    private void AdjustTerrainStrengthByWheel(int notches)
+    {
+        if (SldTerrainStrength == null) return;
+        double val = SldTerrainStrength.Value;
+        double newVal = val + TerrainStrengthWheelStep * notches;
+        SldTerrainStrength.Value = Math.Clamp(newVal, SldTerrainStrength.Minimum, SldTerrainStrength.Maximum);
     }
 
     /// <summary>
@@ -233,6 +297,32 @@ public partial class MainWindow
             return;
         _terrainPreviewThrottle.Restart();
 
+        SendTerrainPreviewAtCursor();
+    }
+
+    /// <summary>
+    /// ホイール操作（半径/強度変更）直後など、スロットルを無視して現在カーソル位置に
+    /// 1 回だけブラシプレビューを再送する。ビューポート外なら何もしない。
+    /// スライダーの見た目（球の大きさ・色）を即座に反映させるために使う。
+    /// </summary>
+    private void SendTerrainPreviewNow()
+    {
+        if (_viewportHost == null || _runtimeManager == null) return;
+        if (!IsMouseOverViewportHwnd()) return;
+
+        _terrainPreviewThrottle.Restart(); // 直後の hover 更新が二重送信しないようスロットルも同期
+        SendTerrainPreviewAtCursor();
+    }
+
+    /// <summary>
+    /// 現在のカーソル位置（ビューポートローカル物理ピクセル）とツールバーの半径/強度を用いて
+    /// TERRAIN_BRUSH_PREVIEW を送信する共通処理。UpdateTerrainBrushPreview / SendTerrainPreviewNow
+    /// から呼ばれる。ビューポート矩形外なら送信しない。
+    /// </summary>
+    private void SendTerrainPreviewAtCursor()
+    {
+        if (_viewportHost == null || _runtimeManager == null) return;
+
         GetCursorPos(out var cursor);
         GetWindowRect(_viewportHost.ContainerHwnd, out var rect);
         int lx = cursor.X - rect.Left;
@@ -240,11 +330,12 @@ public partial class MainWindow
         if (lx < 0 || ly < 0 || lx >= rect.Right - rect.Left || ly >= rect.Bottom - rect.Top)
             return;
 
-        double radius = SldTerrainRadius?.Value ?? 3.0;
+        double radius   = SldTerrainRadius?.Value   ?? 3.0;
+        double strength = SldTerrainStrength?.Value ?? 0.5;
         var ci = CultureInfo.InvariantCulture;
         _terrainPreviewActive = true;
         _runtimeManager.SendToRuntime(
-            $"TERRAIN_BRUSH_PREVIEW:{lx},{ly},{radius.ToString(ci)}");
+            $"TERRAIN_BRUSH_PREVIEW:{lx},{ly},{radius.ToString(ci)},{strength.ToString(ci)}");
     }
 
     // ── モード / ツールバー イベント ─────────────────────────────
@@ -262,6 +353,10 @@ public partial class MainWindow
         // モードを抜けたら進行中のストロークを打ち切り、ブラシプレビューを消す。
         if (!terrain)
         {
+            // 進行中ストロークがあれば、打ち切る前に確定通知を送る
+            // （未確定ストロークが undo スタックにリークするのを防ぐ）。
+            if (_terrainStroking)
+                _runtimeManager?.SendToRuntime("TERRAIN_STROKE_END");
             _terrainStroking = false;
             if (_terrainPreviewActive)
             {
@@ -313,6 +408,41 @@ public partial class MainWindow
         SetTerrainStatus("地形を保存中...", ok: true);
     }
 
+    /// <summary>
+    /// 「ハイトマップ読込」ボタン: 画像ファイルを選択し、高さスケール（m）とともに
+    /// TERRAIN_HEIGHTMAP をランタイムへ送る。既存地形は読み込んだ高さマップで上書きされる。
+    /// </summary>
+    private void OnTerrainHeightmap(object sender, RoutedEventArgs e)
+    {
+        if (_runtimeManager?.State != EditorState.Edit)
+        {
+            SetTerrainStatus("Edit モードで実行してください", ok: false);
+            return;
+        }
+
+        var dialog = new Microsoft.Win32.OpenFileDialog
+        {
+            Filter = "画像ファイル|*.png;*.jpg;*.jpeg",
+            Title = "ハイトマップ画像を選択",
+        };
+        if (dialog.ShowDialog(this) != true) return;
+
+        // 高さスケール欄をパース。空/不正/範囲外（0 以下）はデフォルト値にフォールバックする。
+        double heightScale = TerrainHeightScaleDefault;
+        if (TxtTerrainHeightScale != null
+            && double.TryParse(TxtTerrainHeightScale.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed)
+            && parsed > 0)
+        {
+            heightScale = parsed;
+        }
+
+        var ci = CultureInfo.InvariantCulture;
+        // ランタイム側は右端のカンマで path / height_scale を分割するため、
+        // height_scale は必ず末尾に置く（path にカンマが含まれていても安全）。
+        _runtimeManager.SendToRuntime($"TERRAIN_HEIGHTMAP:{dialog.FileName},{heightScale.ToString(ci)}");
+        SetTerrainStatus("ハイトマップ読込中...", ok: true);
+    }
+
     // ── ランタイム応答ハンドラ（IPC スレッド → Dispatcher）──────────
 
     private void OnTerrainInitCompleted()
@@ -328,6 +458,16 @@ public partial class MainWindow
     {
         Dispatcher.BeginInvoke(() =>
             SetTerrainStatus(ok ? $"地形を保存しました（{arg} チャンク）" : $"保存失敗: {arg}", ok));
+    }
+
+    /// <summary>
+    /// ハイトマップ反映完了通知（TERRAIN_HEIGHTMAP_OK:ms / TERRAIN_HEIGHTMAP_ERROR:msg）。
+    /// 成功時は arg=処理時間(ms)、失敗時は arg=エラーメッセージ。
+    /// </summary>
+    private void OnTerrainHeightmapCompleted(bool ok, string arg)
+    {
+        Dispatcher.BeginInvoke(() =>
+            SetTerrainStatus(ok ? $"ハイトマップを反映しました（{arg} ms）" : $"読込失敗: {arg}", ok));
     }
 
     /// <summary>
