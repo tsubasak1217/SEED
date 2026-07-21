@@ -89,6 +89,13 @@ const PERF_LOG_ENV: &str = "SEED_PERF_LOG";
 static PERF_TERRAIN_LOG_ENABLED: std::sync::LazyLock<bool> =
     std::sync::LazyLock::new(|| std::env::var_os(PERF_LOG_ENV).is_some());
 
+/// 地形コライダー生成の計測ログ（`[PERF terrain phys]` 行）を出すか。`SEED_PERF_LOG` で有効化。
+///
+/// `register_all_terrain_colliders`（物理開始時の全チャンク登録）が支配的コストだったため、
+/// 「描画メッシュ再利用（MC なし）／MC フォールバック」の内訳と所要時間を数値化する。
+static PERF_TERRAIN_PHYS_LOG_ENABLED: std::sync::LazyLock<bool> =
+    std::sync::LazyLock::new(|| std::env::var_os(PERF_LOG_ENV).is_some());
+
 /// 秒 → ミリ秒の換算係数（マジックナンバー回避）。
 const MILLIS_PER_SEC: f64 = 1000.0;
 
@@ -900,6 +907,44 @@ fn build_chunk_collider_shape(
         .map(|t| [t[0], t[1], t[2]])
         .collect();
     Some(ColliderShape::TriangleMeshIndexed { vertices: mesh.positions, indices })
+}
+
+/// **既に生成済みの描画メッシュ（`Model`）から**物理コライダー形状を取り出す。
+///
+/// 【なぜこれが本命か — MC 二重実行の撤廃】
+///   地形チャンクの描画メッシュ（`build_chunk_cpu_model` → `terrain_mesh_to_model`）は
+///   マーチングキューブス（`terrain::generate`）の出力 `mesh.positions` / `mesh.indices` を
+///   **そのまま**保持する（`terrain_mesh_build.rs`: `position: *pos` と `mesh.indices.clone()`）。
+///   一方 `build_chunk_collider_shape` は同じ MC を**もう一度**回して同一の頂点・インデックスを
+///   作り直していた。地形は初期化・ロード時点で全チャンクがメッシュ化済みなので、その
+///   `Model` から頂点位置とインデックスを写すだけで、MC を一切走らせずに同一形状の
+///   コライダーが得られる（実測 MC は cells=32 で約 53ms/チャンク・cells=64 で約 221ms/チャンク
+///   と支配的なので、この二重実行の撤廃が `start_physics` のフリーズ解消に直結する）。
+///
+/// 地形チャンクの `Model` は「1 メッシュ・1 プリミティブ・スキンなし・LOD/メッシュレット非分離」
+/// で構築される（`build_terrain_model`）。頂点位置はチャンクローカル座標であり、ワールド配置は
+/// `PhysicsObject.position`（＝チャンク原点）が担う。三角形が 0 個（空メッシュチャンク）の
+/// 場合は `None` を返し、呼び出し側はコライダーを登録しない（`build_chunk_collider_shape` と同挙動）。
+///
+/// メッシュレット生成等で将来頂点順序が変わっても、インデックスは同じ頂点配列を指すため
+/// トライメッシュの表す**面は不変**であり、コライダーとしての正しさは保たれる。
+fn collider_shape_from_model(model: &Model) -> Option<ColliderShape> {
+    // 地形モデルは 1 メッシュ・1 プリミティブ（`build_terrain_model`）。
+    let prim = model.meshes.first()?.primitives.first()?;
+    // 空メッシュ（三角形 0）はコライダーを作らない。
+    if prim.indices.is_empty() {
+        return None;
+    }
+    // 頂点位置（チャンクローカル）を写す。
+    let vertices: Vec<[f32; 3]> = prim.vertices.iter().map(|v| v.position).collect();
+    // 平坦なインデックス列（3 個で 1 三角形）を三つ組へまとめる。
+    // マーチングキューブスは常に 3 の倍数個のインデックスを出すため端数は出ない。
+    let indices: Vec<[u32; 3]> = prim
+        .indices
+        .chunks_exact(3)
+        .map(|t| [t[0], t[1], t[2]])
+        .collect();
+    Some(ColliderShape::TriangleMeshIndexed { vertices, indices })
 }
 
 /// 地形チャンク用の静的トライメッシュ `PhysicsObject` を組み立てる。
@@ -2225,20 +2270,78 @@ impl App {
         if self.physics_thread.is_none() {
             return;
         }
+        let t_total = Instant::now();
         let settings = self.terrain.settings.clone();
-        // 借用衝突（chunks を読みつつ chunk_collider_ids を書く）を避けるためキーを先に確保する。
-        let coords: Vec<ChunkCoord> = self.terrain.chunks.keys().copied().collect();
+
+        // ── ① 各チャンクの (entity_id, position, 描画Model?) をシリアルに集める ──
+        //   entity_id 採番（`alloc_terrain_collider_id`）は self.terrain を可変借用するため
+        //   並列化できない。ここでは軽い処理（HashMap 参照・Arc ポインタ複製）だけを行い、
+        //   重い形状構築は次段の並列パートへ回す。
+        //   決定性のため coord をソートしてから採番する（HashMap 走査順は実行ごとに変わる）。
+        let mut coords: Vec<ChunkCoord> = self.terrain.chunks.keys().copied().collect();
+        coords.sort_by_key(|c| (c.x, c.y, c.z));
+
+        // (entity_id, ワールド原点, coord, 描画Model の複製 or None)
+        let mut jobs: Vec<(u64, [f32; 3], ChunkCoord, Option<Arc<Model>>)> =
+            Vec::with_capacity(coords.len());
         for coord in coords {
-            let Some(shape) = build_chunk_collider_shape(&self.terrain.chunks, &settings, coord)
-            else {
-                continue;
-            };
+            // 既に生成済みの描画メッシュ（Arc<Model>）を引く。これがあれば MC を再実行せず
+            // 頂点・インデックスを写すだけでコライダーを作れる（MC 二重実行の撤廃＝本命）。
+            //   ※ self.scene / self.terrain の借用を分けるため Model 取得と id 採番は別文にする。
+            let model: Option<Arc<Model>> = self
+                .terrain
+                .chunk_slot_entity
+                .get(&coord)
+                .copied()
+                .and_then(|slot| {
+                    self.scene
+                        .as_ref()
+                        .and_then(|s| s.world.get::<ModelComponent>(slot))
+                        .and_then(|mc| mc.model.clone())
+                });
             let entity_id = self.alloc_terrain_collider_id(coord);
             let position = coord.world_origin(&settings);
+            jobs.push((entity_id, position, coord, model));
+        }
+
+        // ── ② コライダー形状をチャンク間並列で構築する（純粋処理・self を触らない）──
+        //   Model 再利用は memcpy 相当で軽いが、MC フォールバックが混ざると重くなるため
+        //   一律に rayon で並列化しておく。`par_iter().map().collect::<Vec<_>>()` は入力順を
+        //   保存するため、送信順（＝id 割り当て順）は決定的。
+        let chunks = &self.terrain.chunks;
+        let mut n_reused = 0usize; // 描画メッシュ再利用でコライダーを作った数
+        let mut n_mc = 0usize; // MC フォールバックで作った数
+        let built: Vec<Option<(u64, [f32; 3], ColliderShape, bool)>> = jobs
+            .par_iter()
+            .map(|(id, pos, coord, model)| {
+                // bool = 「MC フォールバックだったか」（計測用の内訳集計に使う）。
+                let (shape, used_mc) = match model {
+                    // 本命: 描画メッシュから写す（MC なし）。空メッシュなら None。
+                    Some(m) => (collider_shape_from_model(m)?, false),
+                    // フォールバック: 描画メッシュが無いチャンクだけ MC で作る。
+                    None => (build_chunk_collider_shape(chunks, &settings, *coord)?, true),
+                };
+                Some((*id, *pos, shape, used_mc))
+            })
+            .collect();
+
+        // ── ③ 物理ワールドへ登録する（シリアル送信）──
+        for entry in built.into_iter().flatten() {
+            let (entity_id, position, shape, used_mc) = entry;
+            if used_mc { n_mc += 1; } else { n_reused += 1; }
             let obj = terrain_collider_object(entity_id, position, shape);
             if let Some(thread) = &self.physics_thread {
                 thread.send(PhysicsCommand::AddObject(obj));
             }
+        }
+
+        // ── 計測ログ（MC 二重実行を撤廃できているか＝reused が支配的かを確認する）──
+        if *PERF_TERRAIN_PHYS_LOG_ENABLED {
+            let total_ms = t_total.elapsed().as_secs_f64() * MILLIS_PER_SEC;
+            eprintln!(
+                "[PERF terrain phys] register colliders total={:.2}ms registered={} (reused_mesh={} mc_fallback={})",
+                total_ms, n_reused + n_mc, n_reused, n_mc
+            );
         }
     }
 
@@ -2261,7 +2364,27 @@ impl App {
             }
         }
         // 新メッシュを構築。空（掘り切り・チャンク消滅）なら再登録しない。
-        let Some(shape) = build_chunk_collider_shape(&self.terrain.chunks, &settings, coord) else {
+        //
+        // このメソッドは `remesh_chunks` のフェーズ D から呼ばれ、その直前（フェーズ C-2）で
+        // 対象チャンクの描画メッシュ（Model）が既に作り直され ModelComponent へ書き戻し済み。
+        // よって MC を再実行せず、その最新 Model から形状を写す（＝編集中の三重 MC を撤廃）。
+        // Model が引けない稀なケースだけ MC フォールバックする。
+        let model: Option<Arc<Model>> = self
+            .terrain
+            .chunk_slot_entity
+            .get(&coord)
+            .copied()
+            .and_then(|slot| {
+                self.scene
+                    .as_ref()
+                    .and_then(|s| s.world.get::<ModelComponent>(slot))
+                    .and_then(|mc| mc.model.clone())
+            });
+        let shape = match model.as_deref() {
+            Some(m) => collider_shape_from_model(m),
+            None => build_chunk_collider_shape(&self.terrain.chunks, &settings, coord),
+        };
+        let Some(shape) = shape else {
             return;
         };
         let entity_id = self.alloc_terrain_collider_id(coord);
@@ -3678,6 +3801,178 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// 【計測専用】物理開始時の全チャンクコライダー生成コストを、旧経路（直列 MC）と
+    /// 新経路（描画メッシュ再利用）で比較する。
+    ///
+    ///   cargo test -p SEED terrain_ops::tests::bench_register_colliders -- --ignored --nocapture
+    ///
+    /// 48 チャンク（4×4×3。既定地面と同数）ぶんを、cells=32/64 で計測する。
+    /// 各チャンクはサイン波起伏を入れて必ず等値面を持たせる（＝全チャンクにコライダーが付く
+    /// 最悪ケース。ユーザーが掘って凹凸を付けた地形に相当する）。
+    #[test]
+    #[ignore = "計測専用。--ignored --nocapture で実行"]
+    fn bench_register_colliders() {
+        use std::time::Instant;
+        // 既定地面と同じチャンク数（4×4、Y=-1..=1 の 3 段＝48 枚）。
+        const NX: i32 = 4;
+        const NZ: i32 = 4;
+        const NY: [i32; 3] = [-1, 0, 1];
+
+        for cells in [32u32, 64u32] {
+            let mut settings = TerrainSettings::default();
+            settings.apply_chunk_config(NX as u32, NZ as u32, cells, settings.voxel_size);
+            let extent = settings.chunk_extent();
+            let freq = std::f32::consts::TAU / (extent * 0.25);
+
+            // 全チャンクを起伏付きで作る（必ず表面が横切るよう density = y - height）。
+            let mut chunks: HashMap<ChunkCoord, TerrainChunkData> = HashMap::new();
+            let mut coords: Vec<ChunkCoord> = Vec::new();
+            for x in 0..NX {
+                for z in 0..NZ {
+                    for &y in &NY {
+                        let coord = ChunkCoord::new(x, y, z);
+                        // from_fn はワールド座標 (wx, wy, wz) を渡す。density = y - height。
+                        let chunk = TerrainChunkData::from_fn(&settings, coord, |wx, wy, wz| {
+                            let h = (wx * freq).sin() * 3.0 + (wz * freq).cos() * 3.0;
+                            wy - h
+                        });
+                        chunks.insert(coord, chunk);
+                        coords.push(coord);
+                    }
+                }
+            }
+            coords.sort_by_key(|c| (c.x, c.y, c.z));
+            let layers = TerrainLayerSet::default();
+            let cell_i = settings.chunk_cells as i32;
+            let clamp = settings.density_clamp;
+
+            // 事前に全チャンクの描画 Model を作る（実機では init/ロードで生成済みの状態に相当）。
+            let models: HashMap<ChunkCoord, Model> = coords
+                .iter()
+                .map(|&coord| {
+                    let base = [coord.x * cell_i, coord.y * cell_i, coord.z * cell_i];
+                    let mesh = terrain::generate(chunks.get(&coord).unwrap(), &settings, |lx, ly, lz| {
+                        read_global_impl(&chunks, cell_i, clamp, base[0] + lx, base[1] + ly, base[2] + lz)
+                    });
+                    let (m, _) = terrain_mesh_to_model(&mesh, "b", coord.world_origin(&settings), &layers);
+                    (coord, m)
+                })
+                .collect();
+
+            // ── (A) 旧経路: 直列 MC（build_chunk_collider_shape を 1 枚ずつ）──
+            let t = Instant::now();
+            let mut a_count = 0usize;
+            for &coord in &coords {
+                if build_chunk_collider_shape(&chunks, &settings, coord).is_some() {
+                    a_count += 1;
+                }
+            }
+            let a_ms = t.elapsed().as_secs_f64() * MILLIS_PER_SEC;
+
+            // ── (B) 参考: 並列 MC（rayon）──
+            let t = Instant::now();
+            let b: Vec<_> = coords
+                .par_iter()
+                .map(|&coord| build_chunk_collider_shape(&chunks, &settings, coord))
+                .collect();
+            let b_ms = t.elapsed().as_secs_f64() * MILLIS_PER_SEC;
+            let b_count = b.iter().filter(|s| s.is_some()).count();
+
+            // ── (C) 新経路: 描画メッシュ再利用（MC なし・並列）──
+            let t = Instant::now();
+            let c: Vec<_> = coords
+                .par_iter()
+                .map(|&coord| collider_shape_from_model(models.get(&coord).unwrap()))
+                .collect();
+            let c_ms = t.elapsed().as_secs_f64() * MILLIS_PER_SEC;
+            let c_count = c.iter().filter(|s| s.is_some()).count();
+
+            assert_eq!(a_count, b_count);
+            assert_eq!(a_count, c_count, "再利用経路のコライダー数が MC 経路と一致する");
+
+            println!(
+                "[BENCH phys] cells={cells:>3} chunks={} with_collider={a_count} | \
+                 (A)serial_MC={a_ms:.1}ms (B)par_MC={b_ms:.1}ms (C)reuse_mesh={c_ms:.2}ms  \
+                 speedup A/C={:.0}x",
+                coords.len(),
+                a_ms / c_ms.max(0.0001),
+            );
+        }
+    }
+
+    /// 描画メッシュ（Model）から取り出したコライダーが、MC を回して作る正典
+    /// （`build_chunk_collider_shape`）とビット一致すること。
+    ///
+    /// これが成り立つ限り、`register_all_terrain_colliders` は MC を二重に回さず描画メッシュを
+    /// 再利用できる（＝物理開始時フリーズの根治）。`build_terrain_model` は頂点順・インデックスを
+    /// 保つため、頂点位置列・インデックス列まで完全一致する。
+    #[test]
+    fn collider_from_model_matches_mc_build() {
+        let settings = test_settings();
+        let coord = ChunkCoord::new(0, 0, 0);
+        // 下半分を SOLID にして内部に等値面を作る（既存テストと同じ作り）。
+        let mut chunk = TerrainChunkData::new_filled(&settings, 1.0);
+        let s = chunk.samples_per_axis();
+        for iz in 0..s {
+            for iy in 0..(s / 2) {
+                for ix in 0..s {
+                    chunk.set_sample(ix, iy, iz, -1.0);
+                }
+            }
+        }
+        let mut chunks = HashMap::new();
+        chunks.insert(coord, chunk);
+
+        // ── 正典: MC 経路のコライダー ──
+        let ColliderShape::TriangleMeshIndexed { vertices: mc_v, indices: mc_i } =
+            build_chunk_collider_shape(&chunks, &settings, coord).expect("有効メッシュ")
+        else {
+            panic!("TriangleMeshIndexed");
+        };
+
+        // ── 検証対象: 描画メッシュ（Model）から取り出したコライダー ──
+        // `build_chunk_cpu_model` と同じ手順で Model を作る。
+        let cells = settings.chunk_cells as i32;
+        let clamp = settings.density_clamp;
+        let base = [coord.x * cells, coord.y * cells, coord.z * cells];
+        let mesh = terrain::generate(chunks.get(&coord).unwrap(), &settings, |lx, ly, lz| {
+            read_global_impl(&chunks, cells, clamp, base[0] + lx, base[1] + ly, base[2] + lz)
+        });
+        let layers = TerrainLayerSet::default();
+        let (model, _) =
+            terrain_mesh_to_model(&mesh, "test_chunk", coord.world_origin(&settings), &layers);
+        let ColliderShape::TriangleMeshIndexed { vertices: m_v, indices: m_i } =
+            collider_shape_from_model(&model).expect("Model からコライダーを取り出せる")
+        else {
+            panic!("TriangleMeshIndexed");
+        };
+
+        assert_eq!(mc_v, m_v, "頂点位置（チャンクローカル）が MC 経路と一致する");
+        assert_eq!(mc_i, m_i, "三角形インデックスが MC 経路と一致する");
+    }
+
+    /// 空メッシュ（全 AIR）チャンクの Model からはコライダーを作らない（None）。
+    #[test]
+    fn collider_from_model_empty_is_none() {
+        let settings = test_settings();
+        let coord = ChunkCoord::new(0, 0, 0);
+        let mut chunks = HashMap::new();
+        // 全 AIR（+1）＝等値面なし → 三角形 0 の Model。
+        chunks.insert(coord, TerrainChunkData::new_filled(&settings, 1.0));
+        let cells = settings.chunk_cells as i32;
+        let clamp = settings.density_clamp;
+        let mesh = terrain::generate(chunks.get(&coord).unwrap(), &settings, |lx, ly, lz| {
+            read_global_impl(&chunks, cells, clamp, lx, ly, lz)
+        });
+        let layers = TerrainLayerSet::default();
+        let (model, _) =
+            terrain_mesh_to_model(&mesh, "empty", coord.world_origin(&settings), &layers);
+        assert!(
+            collider_shape_from_model(&model).is_none(),
+            "空メッシュ Model はコライダーを持たない"
+        );
     }
 
     /// 地形コライダーの PhysicsObject が「回転なし・スケール 1・RigidBody なし（Static）」で
