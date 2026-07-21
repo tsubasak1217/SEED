@@ -300,6 +300,24 @@ fn create_instance_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLa
 //  GrassInstanceBuffer — 1 プロップ種別ぶんの GPU リソース
 // ============================================================
 
+/// 草インスタンスバッファ内の「1 チャンク分の連続レンジ」＋そのワールド AABB。
+///
+/// チャンク単位フラスタム／距離カリング（Terrain T3 描画最適化）で使う。バッファは
+/// チャンク座標順に詰めてあるため、各チャンクのインスタンスは `[first, first+count)`
+/// の連続区間に収まる。描画時はこの区間だけを `draw(.., first..first+count)` で
+/// 発行することで、可視チャンクぶんだけを描ける（バッファの詰め直しは不要）。
+#[derive(Clone, Copy, Debug)]
+pub struct GrassChunkSpan {
+    /// このチャンクの草を包むワールド AABB 下端（プロップ高さ分のマージン込み）。
+    pub aabb_min: [f32; 3],
+    /// このチャンクの草を包むワールド AABB 上端（プロップ高さ分のマージン込み）。
+    pub aabb_max: [f32; 3],
+    /// バッファ先頭からのインスタンス開始添字。
+    pub first: u32,
+    /// このチャンクのインスタンス本数。
+    pub count: u32,
+}
+
 /// 1 プロップ種別ぶんの草インスタンス GPU リソース（バッファ＋バインドグループ）。
 ///
 /// `capacity` はバッファに確保済みの要素数、`count` は実際に描く本数。
@@ -316,6 +334,11 @@ pub struct GrassInstanceBuffer {
     capacity: usize,
     /// 実際に描画するインスタンス本数。
     count: u32,
+    /// チャンク単位カリング用のレンジ表（バッファと同じチャンク順・連続区間）。
+    ///
+    /// 空のときはカリング情報が無い＝`draw_grass`（全描画）にフォールバックする。
+    /// `rebuild_grass_gpu` がバッファ更新と同時に `set_spans` で差し替える。
+    spans: Vec<GrassChunkSpan>,
 }
 
 impl GrassInstanceBuffer {
@@ -345,7 +368,17 @@ impl GrassInstanceBuffer {
             bind_group,
             capacity,
             count: instances.len() as u32,
+            spans: Vec::new(),
         }
+    }
+
+    /// チャンク単位カリング用のレンジ表を差し替える。
+    ///
+    /// `instances`（`update`／`new` に渡した配列）と同じチャンク順で、各チャンクの
+    /// 連続区間とワールド AABB を記述する。バッファ本体の更新（`update`）と同じ
+    /// タイミングで呼ぶこと（区間添字がバッファ内容とずれると別チャンクの草を描く）。
+    pub fn set_spans(&mut self, spans: Vec<GrassChunkSpan>) {
+        self.spans = spans;
     }
 
     /// インスタンス配列とパラメータを更新する。
@@ -504,6 +537,80 @@ pub fn draw_grass<'pass>(
     rp.set_bind_group(0, camera_bg, &[]);
     rp.set_bind_group(1, &buf.bind_group, &[]);
     rp.draw(0..GRASS_MAX_VERTS_PER_BLADE, 0..buf.count);
+}
+
+/// チャンク単位カリング付きで草を描画する（Terrain T3 描画最適化）。
+///
+/// `buf.spans` の各チャンク AABB を視錐台（`planes`）と距離（`cull_distance_sq`）で
+/// テストし、**可視チャンクの連続区間だけ**を描く。連続する可視チャンクは 1 回の
+/// draw へまとめて発行し、draw コール数を抑える（バッファは詰め直さない）。
+///
+/// スパン情報が無い（`spans` が空）場合は従来どおり全描画へフォールバックする
+/// （カリングメタデータ未設定でも描画が壊れないための安全弁）。
+///
+/// - `planes`: `extract_frustum_planes(view_proj)` で得たメインカメラの 6 平面。
+/// - `camera_pos`: 距離カリングの基準（ワールド）。
+/// - `cull_distance_sq`: これより遠い（最近点距離²）チャンクは描かない。
+pub fn draw_grass_culled<'pass>(
+    rp:               &mut wgpu::RenderPass<'pass>,
+    pipeline:         &'pass GrassGBufferPipeline,
+    buf:              &'pass GrassInstanceBuffer,
+    camera_bg:        &'pass wgpu::BindGroup,
+    planes:           &[[f32; 4]; 6],
+    camera_pos:       [f32; 3],
+    cull_distance_sq: f32,
+) {
+    if buf.count == 0 {
+        return;
+    }
+    // スパン未設定 → 従来の全描画（カリング情報が無いので棄却できない）。
+    if buf.spans.is_empty() {
+        draw_grass(rp, pipeline, buf, camera_bg);
+        return;
+    }
+
+    rp.set_pipeline(&pipeline.pipe);
+    rp.set_bind_group(0, camera_bg, &[]);
+    rp.set_bind_group(1, &buf.bind_group, &[]);
+
+    // 可視チャンクの連続区間を貯めて、途切れたところで 1 回 draw する。
+    let mut run_start: u32 = 0;
+    let mut run_end:   u32 = 0; // 半開区間 [run_start, run_end)
+    let mut run_open = false;
+
+    for span in &buf.spans {
+        if span.count == 0 {
+            continue;
+        }
+        let visible = !super::gpu_resources::aabb_outside_frustum(
+            planes, span.aabb_min, span.aabb_max,
+        ) && super::gpu_resources::aabb_distance_sq(
+            span.aabb_min, span.aabb_max, camera_pos,
+        ) <= cull_distance_sq;
+
+        if visible {
+            if run_open && span.first == run_end {
+                // 直前の可視区間と連続 → 伸ばすだけ。
+                run_end = span.first + span.count;
+            } else {
+                // 非連続 → 溜まっていた区間を描いてから新規オープン。
+                if run_open {
+                    rp.draw(0..GRASS_MAX_VERTS_PER_BLADE, run_start..run_end);
+                }
+                run_start = span.first;
+                run_end   = span.first + span.count;
+                run_open  = true;
+            }
+        } else if run_open {
+            // 不可視で区切り → 溜まっていた区間を描いて閉じる。
+            rp.draw(0..GRASS_MAX_VERTS_PER_BLADE, run_start..run_end);
+            run_open = false;
+        }
+    }
+    // 末尾に残った可視区間を描く。
+    if run_open {
+        rp.draw(0..GRASS_MAX_VERTS_PER_BLADE, run_start..run_end);
+    }
 }
 
 // ============================================================
