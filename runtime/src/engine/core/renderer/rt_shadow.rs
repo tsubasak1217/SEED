@@ -66,6 +66,28 @@ pub fn rt_shadows_supported() -> bool {
 /// これを超えるキャスターは影を落とさない（オーバーフロー時に 1 回だけ警告）。
 pub const MAX_RT_INSTANCES: u32 = 4096;
 
+/// 1 フレームで新規構築する BLAS の最大数（分割ビルドの上限）。
+///
+/// 【なぜ必要か（実機クラッシュの直接原因）】
+///   地形を作り直す／ハイトマップを読み込む／シーンを再ロードすると、
+///   `invalidate_geometry_caches` で地形全チャンク（実測 ~72 個）の BLAS キャッシュが
+///   一斉に空になる。次に RT 影が走るフレームで、それら全部（1 個あたり頂点 ~9000／
+///   インデックス ~53000）を **1 回の command encoder + submit** でまとめて
+///   `build_acceleration_structures` すると、GPU が長時間ビジーになり TDR
+///   （タイムアウト検出＆復帰）→ デバイスロスト → wgpu の遅延破棄が submit の
+///   snatch read lock 下で走って「snatch lock を再帰取得」パニック、という連鎖で落ちる。
+///
+/// 【対策】新規 BLAS のビルドを 1 フレームこの数までに制限し、残りは後続フレームへ
+///   繰り越す。未構築のキャスターはその間 TLAS に登録されない（`prepare_and_build` の
+///   TLAS ループが `blas_cache.get()==None` を素通りする既存挙動）ため、影が数フレーム
+///   遅れて出るだけで描画は破綻しない。バックログがある間は `new_blas_built=true` の
+///   ままなので毎フレーム TLAS を組み直して確実に消化し、消化し切れば静止スキップへ戻る。
+///
+/// 8 個 ≒ 地形 1.4 万三角形 ×8 の BLAS ビルド／フレーム。72 チャンクでも 9 フレーム
+///（60fps で約 0.15 秒）で消化でき、1 submit あたりの GPU 占有を TDR しきい値より十分
+/// 低く保てる大きさとして選んだ。
+const MAX_BLAS_BUILDS_PER_FRAME: usize = 8;
+
 /// メッシュ頂点 1 個のバイトストライド（Vertex 構造体サイズ）。
 /// 位置は各頂点の先頭（offset 0）の Float32x3。BLAS はこのストライドで位置のみを読む。
 const VERTEX_STRIDE: wgpu::BufferAddress =
@@ -356,6 +378,25 @@ impl RtShadowResources {
                     to_build.push((key, prim));
                 }
             }
+        }
+
+        // ── 1.5. 新規 BLAS ビルドを 1 フレームあたりの上限で分割する ─────────
+        // 地形再構築等でキャッシュが一斉に空になると to_build が数十件（全チャンク）に
+        // 膨らむ。それを 1 submit でまとめてビルドすると GPU が長時間ビジーになり
+        // TDR → デバイスロスト → snatch 再帰パニックへ連鎖する（本修正の直接対象）。
+        // 上限を超えた分はここで切り落とし、後続フレームで再収集→ビルドさせる
+        //（キャッシュ未登録のままなので次フレームも to_build に再度挙がる）。
+        // 未ビルドのキャスターは下の TLAS ループが素通りするため、影が数フレーム遅れて
+        // 出るだけで描画は壊れない。バックログが残る間は new_blas_built=true のまま
+        // 毎フレーム TLAS を組み直して確実に消化する。
+        let blas_backlog = to_build.len().saturating_sub(MAX_BLAS_BUILDS_PER_FRAME);
+        if blas_backlog > 0 {
+            to_build.truncate(MAX_BLAS_BUILDS_PER_FRAME);
+            eprintln!(
+                "[SEED RT] BLAS 分割ビルド: このフレーム {} 件を構築、残り {} 件は後続フレームへ繰り越し\
+                （一斉再構築による GPU 過負荷／デバイスロストの回避）",
+                to_build.len(), blas_backlog
+            );
         }
 
         // ── 2. BLAS を create_blas してキャッシュへ挿入（初回のみ・ログ）──
