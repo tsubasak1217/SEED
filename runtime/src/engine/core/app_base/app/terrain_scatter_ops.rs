@@ -47,6 +47,9 @@ use crate::engine::terrain::scatter::{
     PropKind, ScatterField, ScatterInstance, TerrainProp, TerrainPropSet,
 };
 use crate::engine::terrain::settings::TerrainSettings;
+// kind=Model 散布プロップのロード・GPU 化・インスタンス描画に使う既存 API。
+use crate::engine::core::loader::{load_model, model::Model};
+use crate::engine::methods::drawer::{DrawContext, GpuModel, InstancedModelBatch};
 
 // ============================================================
 //  定数（マジックナンバー禁止）
@@ -84,6 +87,22 @@ const NORMAL_GRADIENT_EPSILON: f32 = 1.0e-12;
 
 /// 勾配が縮退したときのフォールバック法線（真上）。
 const NORMAL_FALLBACK_UP: [f32; 3] = [0.0, 1.0, 0.0];
+
+/// 散布モデルの姿勢基底を組むとき「up が Y 軸と平行すぎる」と判定する |y| しきい値。
+///
+/// これを超えたら参照ベクトルを X 軸へ切り替える（外積の縮退回避）。
+/// generate.rs の `AXIS_PARALLEL_THRESHOLD` と同値にしてある（tilt 生成と姿勢構築で
+/// 基底の作り方がずれないようにするため）。
+const MODEL_BASIS_PARALLEL_THRESHOLD: f32 = 0.9;
+
+/// ベクトル長がこの二乗以下なら縮退とみなす（0 除算回避）。
+const MODEL_NORMALIZE_EPSILON: f32 = 1.0e-12;
+
+/// 散布モデルの統合バッチに確保する最小インスタンス容量。
+///
+/// 統合モデルバッチ（`shared_model_batches`）の容量規約 `.max(4)` に合わせる。
+/// 0 本でもバッファ生成がパニックしないよう最低 4 は確保する。
+const SCATTER_MODEL_MIN_CAPACITY: usize = 4;
 
 /// 散布プロップ定義の読み込み失敗を警告するのは 1 回だけにするためのフラグ。
 ///
@@ -394,6 +413,165 @@ pub(super) fn grass_uniform_from_prop(prop: &TerrainProp) -> GrassUniformGpu {
         // シェーダ側の mix が壊れないよう、ここで 0..1 へ丸めておく。
         normal_up_blend:  g.normal_up_blend.clamp(0.0, 1.0),
     }
+}
+
+// ============================================================
+//  散布モデル（kind=Model）— GPU リソースと姿勢行列
+// ============================================================
+
+/// kind=Model 散布プロップ 1 種ぶんの GPU 描画リソース。
+///
+/// 草（`GrassInstanceBuffer`）と違い、model は実アセット（glTF/obj）をロードして
+/// **通常のメッシュ G-Buffer パイプライン**でインスタンス描画する。GpuModel は
+/// ECS アクターに紐付かず本構造体が所有する（散布が変わるまで保持され続け、
+/// frame_renderer の 60 フレーム stale prune の対象外）。
+///
+/// 【なぜ CPU モデルも持つのか】
+///   `InstancedModelBatch::update` はノード階層を毎回展開してワールド行列を組むため
+///   CPU 側の `Model`（`Arc` 共有）を必要とする（統合バッチと同じ制約）。
+pub(crate) struct ScatterModelResource {
+    /// このリソースをロードした `model_path`（props リロードでの差し替え検出に使う）。
+    pub model_path: String,
+    /// CPU モデル（`InstancedModelBatch::update` がノード階層展開に必要）。
+    pub cpu_model: std::sync::Arc<Model>,
+    /// GPU モデル（頂点/インデックス/マテリアル/テクスチャ）。本構造体が所有する。
+    pub gpu_model: GpuModel,
+    /// インスタンス行列を供給する統合バッチ（草の `GrassInstanceBuffer` 相当）。
+    pub batch: InstancedModelBatch,
+    /// `batch` に確保済みのインスタンス容量（不足したら作り直す）。
+    pub capacity: usize,
+}
+
+/// 3 次元外積。
+#[inline]
+fn cross3(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+/// 正規化。長さが縮退していたら `fallback` を返す。
+#[inline]
+fn normalize_or(v: [f32; 3], fallback: [f32; 3]) -> [f32; 3] {
+    let len_sq = v[0] * v[0] + v[1] * v[1] + v[2] * v[2];
+    if len_sq <= MODEL_NORMALIZE_EPSILON {
+        return fallback;
+    }
+    let inv = 1.0 / len_sq.sqrt();
+    [v[0] * inv, v[1] * inv, v[2] * inv]
+}
+
+/// 散布インスタンス 1 件を、通常メッシュ描画用のワールド行列（4x4）へ変換する。
+///
+/// 【姿勢の組み立て】
+///   `ScatterInstance` は接地点 `pos`・上方向 `normal`（tilt 適用済みの単位ベクトル）・
+///   `yaw`（up まわりの回転）・一様 `scale` を持つ。これを
+///     ワールド = T(pos) · R(up=normal, yaw) · S(scale)
+///   の 4x4 行列へ組む。モデルのローカル +Y を `normal` へ向け、その軸まわりに
+///   `yaw` だけ回し、全軸へ `scale` を掛ける（草シェーダが normal+yaw から板を
+///   立てるのと同じ姿勢規約を、CPU 行列で再現している）。
+///
+/// 【行列レイアウト】
+///   `Transform::to_mat4` と同一規約（row-major・平行移動は各行の第 4 要素、
+///   列 j がローカル基底ベクトル j のワールド像）。この規約でないと
+///   `InstancedModelBatch::update`／頂点シェーダの解釈とズレて、モデルが
+///   転置された姿勢で描かれる。
+pub(super) fn scatter_instance_to_model_matrix(inst: &ScatterInstance) -> [[f32; 4]; 4] {
+    // ── 上方向（正規化。縮退時は真上）──
+    let up = normalize_or(inst.normal, NORMAL_FALLBACK_UP);
+
+    // ── up に直交する安定な基底を作る（up が Y と平行に近ければ X を参照軸に）──
+    //   平行なベクトル同士の外積は 0 ベクトルになり基底が作れないため参照軸を切り替える。
+    let reference = if up[1].abs() > MODEL_BASIS_PARALLEL_THRESHOLD {
+        [1.0, 0.0, 0.0]
+    } else {
+        [0.0, 1.0, 0.0]
+    };
+    let right0 = normalize_or(cross3(reference, up), [1.0, 0.0, 0.0]);
+    // right0 も up も単位長で互いに直交するので、その外積は正規化不要で単位長。
+    // 右手系（列 X × 列 Y = 列 Z ⇒ right × up = fwd）にするため cross(right0, up) を取る。
+    // cross(up, right0) だと符号が反転して鏡映（左手系）になる。
+    let fwd0 = cross3(right0, up);
+
+    // ── yaw を up まわりに適用（right/fwd を回す）──
+    let (sy, cy) = inst.yaw.sin_cos();
+    let right = [
+        right0[0] * cy + fwd0[0] * sy,
+        right0[1] * cy + fwd0[1] * sy,
+        right0[2] * cy + fwd0[2] * sy,
+    ];
+    let fwd = [
+        -right0[0] * sy + fwd0[0] * cy,
+        -right0[1] * sy + fwd0[1] * cy,
+        -right0[2] * sy + fwd0[2] * cy,
+    ];
+
+    let s = inst.scale;
+    let p = inst.pos;
+    // 列0=right・列1=up・列2=fwd（各 scale 倍）、列3=平行移動。
+    // [row][col] 表記で translation は各行の col=3 に入る（Transform::to_mat4 と同一）。
+    [
+        [right[0] * s, up[0] * s, fwd[0] * s, p[0]],
+        [right[1] * s, up[1] * s, fwd[1] * s, p[1]],
+        [right[2] * s, up[2] * s, fwd[2] * s, p[2]],
+        [0.0, 0.0, 0.0, 1.0],
+    ]
+}
+
+/// 全チャンクの散布インスタンスから、kind=Model プロップぶんのワールド行列を
+/// プロップ添字ごとに束ねる（GPU 非依存の純粋関数＝単体テスト可能）。
+///
+/// 対象になるのは `kind == Model` かつ `model_path` が非空のプロップだけ。
+/// 草・孤児（props.json から消えた prop_id）・model_path 未設定は除外する。
+fn gather_scatter_model_matrices(
+    scatter: &HashMap<ChunkCoord, Vec<ScatterInstance>>,
+    props: &TerrainPropSet,
+) -> HashMap<usize, Vec<[[f32; 4]; 4]>> {
+    let mut by_prop: HashMap<usize, Vec<[[f32; 4]; 4]>> = HashMap::new();
+    for instances in scatter.values() {
+        for inst in instances {
+            let prop_index = inst.prop_id as usize;
+            let Some(prop) = props.props.get(prop_index) else {
+                // props.json から消えた孤児インスタンス。描かない。
+                continue;
+            };
+            if prop.kind != PropKind::Model {
+                // 草は rebuild_grass_gpu が担当する。
+                continue;
+            }
+            // model_path 未設定のプロップは描けない（データはあるが実体が無い）。
+            if prop.model_path.as_deref().unwrap_or("").is_empty() {
+                continue;
+            }
+            by_prop
+                .entry(prop_index)
+                .or_default()
+                .push(scatter_instance_to_model_matrix(inst));
+        }
+    }
+    by_prop
+}
+
+/// `model_path`（assets 相対 / 仮想 / 絶対）から CPU+GPU モデルをロードする。
+///
+/// 既存のモデルロードと同じ規約でパスを解決する（相対→`assets://`→実パス）。
+/// 失敗（パス解決不可・パース失敗）は `Err(理由文字列)` を返し、呼び出し側が
+/// **1 回だけ**警告してそのプロップをスキップする。
+fn load_scatter_model(
+    ctx: &DrawContext,
+    model_path: &str,
+) -> Result<(std::sync::Arc<Model>, GpuModel), String> {
+    // アセット相対 → 仮想パス → 実パス（ギズモ／ECS モデルと同じ解決規約）。
+    let virtual_path = crate::engine::asset_fs::normalize_asset_path(model_path);
+    let abs = crate::engine::asset_fs::resolve(&virtual_path);
+    let model = load_model(&abs)
+        .map_err(|e| format!("{e:?} (resolved: {})", abs.display()))?;
+    // GpuModel は DrawContext が device/queue/pipelines/defaults を保持しているので
+    // モデルだけ渡せば構築できる（ECS の ModelComponent ロードと同じ入口）。
+    let gpu_model = ctx.upload_model(&model);
+    Ok((std::sync::Arc::new(model), gpu_model))
 }
 
 /// チャンクの .tscatter ファイル名（`chunk_X_Y_Z.tscatter`）を返す。
@@ -865,7 +1043,10 @@ impl App {
     ///   その複雑さは見合わないと判断し、まるごと作り直す方式にした。
     ///   コストはログ（`[PERF terrain] grass gpu rebuild`）で監視できる。
     ///
-    /// 【model 種別を飛ばす理由】→ 下の TODO コメントを参照。
+    /// 【model 種別を飛ばす理由】
+    ///   kind=Model のプロップは草とは別リソース・別パイプラインで描く
+    ///   （`TerrainState::rebuild_scatter_models_gpu`）。ここは手続き生成の草だけを
+    ///   担当し、model はスキップする（両者は同じ `grass_gpu_dirty` で再構築される）。
     pub(super) fn rebuild_grass_gpu(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
         if !self.terrain.grass_gpu_dirty {
             return;
@@ -882,24 +1063,11 @@ impl App {
                     continue;
                 };
                 if prop.kind != PropKind::Grass {
-                    // TODO(terrain T3 第2段): kind=Model のプロップはここで描画対象から外れる。
-                    //   インスタンス自体は生成・保存されている（.tscatter に入っている）ので
-                    //   データは失われない。描かないのは、既存のモデル描画経路が
-                    //   ECS 前提で組まれているためである:
-                    //     * frame_renderer.rs の `shared_model_batches` は
-                    //       ECS の ModelComponent アクター群（`all_mcs`）から毎フレーム
-                    //       組み立て直される。
-                    //     * 実際の描画は `gpu_model_by_path` から GpuModel を引くが、
-                    //       この表も `all_mcs` からしか作られない。ECS アクターの裏付けが
-                    //       無いバッチはここで必ず None になり、静かに描画スキップされる
-                    //       （さらに 60 フレーム後には stale として prune される）。
-                    //   したがって散布モデルを載せるには
-                    //     (a) N 体のアクターを spawn する
-                    //         → シーンファイルが肥大し、.tscatter と情報が二重化する
-                    //     (b) シーンから独立したインスタンシング経路を新設する
-                    //         → GpuModel のロード・所有・破棄と、描画/影/ID/RT の
-                    //           各パスへの登録が要る
-                    //   のいずれかが必要で、いずれも第1段のスコープを超える。意図的な保留。
+                    // kind=Model は草とは別経路（rebuild_scatter_models_gpu）で描く。
+                    //   第2段で「シーンから独立したインスタンシング経路」を新設した:
+                    //   ECS アクターに紐付かない GpuModel を TerrainState.scatter_models が
+                    //   所有し、通常メッシュ G-Buffer パイプラインでインスタンス描画する。
+                    //   ここ（草）では単にスキップする。
                     continue;
                 }
                 by_prop
@@ -946,6 +1114,134 @@ impl App {
         if *PERF_TERRAIN_LOG_ENABLED {
             let ms = t_start.elapsed().as_secs_f64() * MILLIS_PER_SEC;
             eprintln!("[PERF terrain] grass gpu rebuild: {total} instances in {ms:.2}ms");
+        }
+    }
+}
+
+// ============================================================
+//  TerrainState — 散布モデルの GPU 再構築
+//
+//  App ではなく TerrainState のメソッドにしてあるのは、frame_renderer の描画
+//  ブロックが `self.draw_ctx` を不変借用し続けたまま `self.terrain` を可変で
+//  触れるようにするためである（`&mut self` メソッドだと draw_ctx の借用と
+//  衝突する。terrain フィールドだけを可変借用する形にして分離する）。
+// ============================================================
+
+impl TerrainState {
+    /// kind=Model 散布プロップの GPU リソース（モデルのロードとインスタンス行列）を
+    /// 再構築する。草の `rebuild_grass_gpu` と対を成す。
+    ///
+    /// 【トリガと呼び出し順（重要）】
+    ///   草と同じ `grass_gpu_dirty` を再構築トリガに使う（散布データは草と共有の集合
+    ///   なので、フラグを分けると散布操作 5 か所すべてで二重管理になる）。
+    ///   **本メソッドはフラグを寝かせない**——同フレーム後段の `rebuild_grass_gpu` が
+    ///   クリアするため、必ず草再構築より前に呼ぶこと（順序は frame_renderer.rs で固定。
+    ///   逆にすると model 側が毎回スキップされる）。
+    ///
+    /// 【モデルのロードはプロップごとに 1 回だけ】
+    ///   散布インスタンス数ぶんロードしない。`model_path` 単位で GpuModel をキャッシュし、
+    ///   props リロードで `model_path` が変わったときだけ読み直す。ロード失敗は 1 回だけ
+    ///   警告してそのプロップを飛ばす（他プロップは描く）。
+    ///
+    /// 【VRAM スパイク回避】
+    ///   容量が足りていればバッチは作り直さず `batch.update`（内部 `write_buffer`）で
+    ///   行列だけ差し替える。容量不足時のみ作り直す（統合バッチ `shared_model_batches`
+    ///   と同じ規約 `.max(SCATTER_MODEL_MIN_CAPACITY)`）。
+    ///
+    /// - `camera_pos`: バッチの距離 LOD 振り分けに使う（見た目の姿勢には影響しない）。
+    pub(super) fn rebuild_scatter_models_gpu(&mut self, ctx: &DrawContext, camera_pos: [f32; 3]) {
+        if !self.grass_gpu_dirty {
+            return;
+        }
+        let t_start = std::time::Instant::now();
+
+        // ─── ① 全チャンクの Model インスタンスをプロップ添字ごとに行列で束ねる ───
+        let mats_by_prop = gather_scatter_model_matrices(&self.scatter, &self.props);
+
+        // ─── ② 描画対象から消えたプロップのリソース／失敗記録を捨てる（VRAM 解放）───
+        self.scatter_models.retain(|k, _| mats_by_prop.contains_key(k));
+        self.scatter_model_failed.retain(|k, _| mats_by_prop.contains_key(k));
+
+        // ─── ③ プロップごとに: モデルをロード（キャッシュ）→ バッチへ行列アップロード ───
+        let mut total = 0usize;
+        for (prop_index, mats) in &mats_by_prop {
+            let Some(prop) = self.props.props.get(*prop_index) else { continue };
+            let want_path = match prop.model_path.as_deref() {
+                Some(p) if !p.is_empty() => p.to_string(),
+                _ => continue,
+            };
+
+            // 既存リソースの model_path が変わっていたら破棄して読み直す（props リロード）。
+            if let Some(res) = self.scatter_models.get(prop_index) {
+                if res.model_path != want_path {
+                    self.scatter_models.remove(prop_index);
+                    self.scatter_model_failed.remove(prop_index);
+                }
+            }
+
+            // まだリソースが無ければロードを試みる（同じ壊れたパスは再試行しない）。
+            if !self.scatter_models.contains_key(prop_index) {
+                let already_failed = self
+                    .scatter_model_failed
+                    .get(prop_index)
+                    .map(|p| p == &want_path)
+                    .unwrap_or(false);
+                if already_failed {
+                    continue; // 警告済み。黙ってスキップ。
+                }
+                match load_scatter_model(ctx, &want_path) {
+                    Ok((cpu_model, gpu_model)) => {
+                        let capacity = (mats.len() * 2).max(SCATTER_MODEL_MIN_CAPACITY);
+                        let batch = ctx.create_instanced_batch(&cpu_model, capacity as u32);
+                        self.scatter_models.insert(
+                            *prop_index,
+                            ScatterModelResource {
+                                model_path: want_path.clone(),
+                                cpu_model,
+                                gpu_model,
+                                batch,
+                                capacity,
+                            },
+                        );
+                        self.scatter_model_failed.remove(prop_index);
+                    }
+                    Err(err) => {
+                        // ロード失敗。1 回だけ警告して記録（次フレーム以降は黙る）。
+                        eprintln!(
+                            "[SEED terrain] 散布モデルのロードに失敗しました: prop='{}' path='{}': {} \
+                             （このプロップは描画をスキップします）",
+                            prop.id, want_path, err
+                        );
+                        self.scatter_model_failed.insert(*prop_index, want_path.clone());
+                        continue;
+                    }
+                }
+            }
+
+            // ここまで来ればリソースは必ず存在する。容量不足なら作り直す。
+            let res = self
+                .scatter_models
+                .get_mut(prop_index)
+                .expect("scatter model resource just ensured present");
+            if mats.len() > res.capacity {
+                let capacity = (mats.len() * 2).max(SCATTER_MODEL_MIN_CAPACITY);
+                res.batch = ctx.create_instanced_batch(&res.cpu_model, capacity as u32);
+                res.capacity = capacity;
+            }
+            // 行列をアップロード（内部は write_buffer。dirty 化してから update）。
+            res.batch.mark_dirty();
+            res.batch.update(&ctx.queue, &res.cpu_model, mats, camera_pos);
+            total += mats.len();
+        }
+
+        // フラグはここではクリアしない（rebuild_grass_gpu が後段でクリアする）。
+
+        if *PERF_TERRAIN_LOG_ENABLED {
+            let ms = t_start.elapsed().as_secs_f64() * MILLIS_PER_SEC;
+            eprintln!(
+                "[PERF terrain] scatter model gpu rebuild: {total} instances across {} props in {ms:.2}ms",
+                self.scatter_models.len()
+            );
         }
     }
 }
@@ -1518,5 +1814,195 @@ mod tests {
 
         prop.grass.cross_planes = false;
         assert_eq!(grass_uniform_from_prop(&prop).cross_planes, 1, "false は 1 枚");
+    }
+
+    // ============================================================
+    //  散布モデル（kind=Model）— 姿勢行列と束ね
+    // ============================================================
+
+    /// 行列の列 j（ローカル基底ベクトル j のワールド像）を取り出す。
+    fn col(m: &[[f32; 4]; 4], j: usize) -> [f32; 3] {
+        [m[0][j], m[1][j], m[2][j]]
+    }
+    fn dot3(a: [f32; 3], b: [f32; 3]) -> f32 {
+        a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+    }
+    /// 3 基底ベクトルがそれぞれ長さ `scale`・互いに直交していることを検証する。
+    fn assert_basis_orthonormal(m: &[[f32; 4]; 4], scale: f32) {
+        let (x, y, z) = (col(m, 0), col(m, 1), col(m, 2));
+        for (v, name) in [(x, "x"), (y, "y"), (z, "z")] {
+            let len = dot3(v, v).sqrt();
+            assert!((len - scale).abs() < 1.0e-5, "基底 {name} の長さ {len} != {scale}");
+        }
+        assert!(dot3(x, y).abs() < 1.0e-5, "x·y が非直交");
+        assert!(dot3(y, z).abs() < 1.0e-5, "y·z が非直交");
+        assert!(dot3(x, z).abs() < 1.0e-5, "x·z が非直交");
+    }
+    /// 3 基底の行列式（= x · (y × z)）。正なら右手系。
+    fn basis_determinant(m: &[[f32; 4]; 4]) -> f32 {
+        let (x, y, z) = (col(m, 0), col(m, 1), col(m, 2));
+        let cr = [
+            y[1] * z[2] - y[2] * z[1],
+            y[2] * z[0] - y[0] * z[2],
+            y[0] * z[1] - y[1] * z[0],
+        ];
+        dot3(x, cr)
+    }
+
+    /// 直立・無回転・等倍のとき、平行移動＝pos／up 列＝+Y／右手正規直交であること。
+    #[test]
+    fn model_matrix_upright_identity_pose() {
+        let inst = ScatterInstance {
+            pos: [1.0, 2.0, 3.0],
+            normal: [0.0, 1.0, 0.0],
+            yaw: 0.0,
+            scale: 1.0,
+            prop_id: 0,
+            seed: 0,
+        };
+        let m = scatter_instance_to_model_matrix(&inst);
+        // 平行移動は各行の col=3。
+        assert_eq!([m[0][3], m[1][3], m[2][3]], [1.0, 2.0, 3.0], "平行移動が pos と不一致");
+        assert_eq!(m[3], [0.0, 0.0, 0.0, 1.0], "最下行が [0,0,0,1] でない");
+        // up 列（col=1）は +Y。
+        let up = col(&m, 1);
+        assert!(up[0].abs() < 1.0e-6 && (up[1] - 1.0).abs() < 1.0e-6 && up[2].abs() < 1.0e-6,
+            "up={up:?}");
+        assert_basis_orthonormal(&m, 1.0);
+        assert!(basis_determinant(&m) > 0.0, "右手系でない（鏡映が入っている）");
+    }
+
+    /// 一様スケールが全基底に等しく掛かること（平行移動には掛からない）。
+    #[test]
+    fn model_matrix_applies_uniform_scale() {
+        let inst = ScatterInstance {
+            pos: [5.0, 0.0, -2.0],
+            normal: [0.0, 1.0, 0.0],
+            yaw: 0.7,
+            scale: 2.5,
+            prop_id: 0,
+            seed: 0,
+        };
+        let m = scatter_instance_to_model_matrix(&inst);
+        assert_basis_orthonormal(&m, 2.5);
+        // 平行移動はスケール非依存。
+        assert_eq!([m[0][3], m[1][3], m[2][3]], [5.0, 0.0, -2.0]);
+    }
+
+    /// 傾いた法線に対して up 列がその法線へ一致すること（斜面で寝る草・傾く木）。
+    #[test]
+    fn model_matrix_aligns_up_to_normal() {
+        // 実装と同じ正規化を通してから渡す（テスト前提を実装に合わせる）。
+        let n = normalize_or([0.3, 0.9, 0.2], NORMAL_FALLBACK_UP);
+        let inst = ScatterInstance {
+            pos: [0.0; 3],
+            normal: n,
+            yaw: 1.3,
+            scale: 1.0,
+            prop_id: 0,
+            seed: 0,
+        };
+        let m = scatter_instance_to_model_matrix(&inst);
+        let up = col(&m, 1);
+        for i in 0..3 {
+            assert!((up[i] - n[i]).abs() < 1.0e-5, "up[{i}]={} != normal[{i}]={}", up[i], n[i]);
+        }
+        assert_basis_orthonormal(&m, 1.0);
+        assert!(basis_determinant(&m) > 0.0, "右手系でない");
+    }
+
+    /// yaw が up 軸まわりの回転になっていること（up は不変、右ベクトルが 90° 回る）。
+    ///
+    /// 基準となる forward の向きは実装の基底構築に依存する（プロップは乱数 yaw で
+    /// 撒かれるので絶対向きに意味は無い）ため、テストは「up 不変」と「right が
+    /// up 軸まわりに 90° 回転して元と直交する」という規約非依存の性質だけを見る。
+    #[test]
+    fn model_matrix_yaw_rotates_about_up() {
+        use std::f32::consts::FRAC_PI_2;
+        let base = ScatterInstance {
+            pos: [0.0; 3],
+            normal: [0.0, 1.0, 0.0],
+            yaw: 0.0,
+            scale: 1.0,
+            prop_id: 0,
+            seed: 0,
+        };
+        let m0 = scatter_instance_to_model_matrix(&base);
+        let r0 = col(&m0, 0);
+        // 直立時、右ベクトルは水平面内（up ⟂）にある。
+        assert!(r0[1].abs() < 1.0e-5, "直立時の右ベクトルが水平でない: {r0:?}");
+
+        let mut rot = base;
+        rot.yaw = FRAC_PI_2;
+        let m1 = scatter_instance_to_model_matrix(&rot);
+        // up は回転で変わらない。
+        let up = col(&m1, 1);
+        assert!((up[1] - 1.0).abs() < 1.0e-5, "yaw で up が動いた: {up:?}");
+        // right は up 軸まわりに 90° 回るので、元の right と直交する。
+        let r1 = col(&m1, 0);
+        assert!(dot3(r0, r1).abs() < 1.0e-5, "yaw=90° で右ベクトルが 90° 回っていない: {r0:?} -> {r1:?}");
+        // 90° 回っても水平面内（up ⟂）を保つ。
+        assert!(r1[1].abs() < 1.0e-5, "回転後の右ベクトルが水平から外れた: {r1:?}");
+    }
+
+    /// 縮退した法線（0 ベクトル）でも真上へフォールバックし、破綻しないこと。
+    #[test]
+    fn model_matrix_degenerate_normal_falls_back_up() {
+        let inst = ScatterInstance {
+            pos: [0.0; 3],
+            normal: [0.0, 0.0, 0.0],
+            yaw: 0.0,
+            scale: 1.0,
+            prop_id: 0,
+            seed: 0,
+        };
+        let m = scatter_instance_to_model_matrix(&inst);
+        let up = col(&m, 1);
+        assert!((up[1] - 1.0).abs() < 1.0e-6, "縮退法線は真上へフォールバックすること: {up:?}");
+        assert_basis_orthonormal(&m, 1.0);
+    }
+
+    /// 束ねは「kind=Model かつ model_path 非空」のプロップだけを対象にすること。
+    ///
+    /// 草・孤児（消えた prop_id）・model_path 未設定は除外される。
+    #[test]
+    fn gather_selects_only_model_props_with_path() {
+        let props = TerrainPropSet {
+            props: vec![
+                TerrainProp { id: "g".into(), kind: PropKind::Grass, ..TerrainProp::default() },
+                TerrainProp {
+                    id: "m1".into(),
+                    kind: PropKind::Model,
+                    model_path: Some("models/A.gltf".into()),
+                    ..TerrainProp::default()
+                },
+                TerrainProp {
+                    id: "m2".into(),
+                    kind: PropKind::Model,
+                    model_path: None,
+                    ..TerrainProp::default()
+                },
+            ],
+        };
+        let mk = |prop_id: u32| ScatterInstance {
+            pos: [0.0; 3],
+            normal: [0.0, 1.0, 0.0],
+            yaw: 0.0,
+            scale: 1.0,
+            prop_id,
+            seed: 0,
+        };
+        let mut scatter: HashMap<ChunkCoord, Vec<ScatterInstance>> = HashMap::new();
+        // grass×1, model+path×2, model無path×1
+        scatter.insert(ChunkCoord::new(0, 0, 0), vec![mk(0), mk(1), mk(1), mk(2)]);
+        // 別チャンクに model+path×1 と孤児(prop_id=9)×1
+        scatter.insert(ChunkCoord::new(1, 0, 0), vec![mk(1), mk(9)]);
+
+        let by = gather_scatter_model_matrices(&scatter, &props);
+        assert_eq!(by.len(), 1, "対象は model+path のプロップ 1 種のみ");
+        assert_eq!(by.get(&1).map(|v| v.len()), Some(3), "prop 1 は全チャンク合計 3 本");
+        assert!(!by.contains_key(&0), "草プロップは除外されること");
+        assert!(!by.contains_key(&2), "model_path 無しは除外されること");
+        assert!(!by.contains_key(&9), "孤児 prop_id は除外されること");
     }
 }

@@ -987,6 +987,18 @@ impl App {
         //   計測値は下の [PERF] 出力で使う（宣言をここへ置くのは、この時点で
         //   必ず 1 回だけ代入されるため。他の perf_* のように上で 0 初期化すると
         //   「代入した値が読まれない」警告になる）。
+        // ── 散布モデル（kind=Model プロップ）の GPU リソース再構築（Terrain T3 第2段）──
+        //   草（rebuild_grass_gpu）と同じ grass_gpu_dirty をトリガに、model 実アセットを
+        //   ロードしてインスタンス行列をアップロードする。**必ず草より前に呼ぶ**こと:
+        //   rebuild_grass_gpu が grass_gpu_dirty をクリアするため、逆順だと model 側が
+        //   毎回スキップされる（rebuild_scatter_models_gpu 自身はフラグを寝かせない）。
+        //   self.draw_ctx を不変借用しつつ self.terrain を可変で触るため、TerrainState の
+        //   メソッドとして呼ぶ（App の &mut self メソッドだと draw_ctx 借用と衝突する）。
+        //   camera_pos は距離 LOD の振り分けに使うだけ（見た目の姿勢には影響しない）。
+        if let Some(ctx) = self.draw_ctx.as_ref() {
+            self.terrain.rebuild_scatter_models_gpu(ctx, saved_camera_pos);
+        }
+
         let perf_grass_ms: f64 = {
             let t_grass = std::time::Instant::now();
             if let Some((device, queue)) = self
@@ -3469,7 +3481,7 @@ impl App {
                         // 複合 BG（binding 2〜5）経由でこの深度をサンプルする。
                         // キャスターが無ければ 0 コストでスキップ。
                         if shadow_plan.any() {
-                            let shadow_casters: Vec<(
+                            let mut shadow_casters: Vec<(
                                 &crate::engine::methods::drawer::GpuModel,
                                 &crate::engine::methods::drawer::InstancedModelBatch,
                             )> = self.shared_model_batches.iter()
@@ -3478,6 +3490,12 @@ impl App {
                                     gpu_model_by_path.get(path.as_str()).map(|&gpu| (gpu, &sd.batch))
                                 })
                                 .collect();
+                            // 散布モデル（kind=Model）も影キャスターに加える（Terrain T3 第2段）。
+                            //   TLAS/RT 反射登録は今回スコープ外だが、ラスタのシャドウマップには
+                            //   通常メッシュと同じ (GpuModel, InstancedModelBatch) を渡すだけで乗る。
+                            for res in self.terrain.scatter_models.values() {
+                                shadow_casters.push((&res.gpu_model, &res.batch));
+                            }
                             if !shadow_casters.is_empty() {
                                 draw_ctx.shadow.record(
                                     frame.encoder_mut(),
@@ -3737,6 +3755,26 @@ impl App {
                                         &draw_ctx.pipelines.gbuffer.grass,
                                         buf,
                                         &camera_buf.bind_group,
+                                    );
+                                }
+
+                                // ── 散布モデル（kind=Model プロップ）を G-Buffer へ焼く（Terrain T3 第2段）──
+                                //   草と違い実メッシュなので通常の deferred メッシュパイプラインで
+                                //   インスタンス描画する（deferred ライティング・SSAO・影・DDGI 受光が
+                                //   通常メッシュと同じく効く）。バッファはフレーム冒頭で再構築済み
+                                //   （rebuild_scatter_models_gpu）。meshlet カリングは使わない（false）:
+                                //   散布モデル専用の meshlet cull コンピュートを別途走らせていないため、
+                                //   通常の draw_indexed 経路で描く。terrain_layers は None（地形レイヤ
+                                //   ブレンドではなく通常マテリアル）。
+                                for res in self.terrain.scatter_models.values() {
+                                    crate::engine::core::renderer::gbuffer::draw_gbuffer_indirect(
+                                        &mut gpass,
+                                        &res.gpu_model,
+                                        &res.batch,
+                                        &camera_buf.bind_group,
+                                        &draw_ctx.pipelines.gbuffer,
+                                        false,
+                                        None,
                                     );
                                 }
                             }
