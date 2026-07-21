@@ -76,6 +76,19 @@ const GRASS_UNIFORM_TIME_OFFSET: wgpu::BufferAddress = 52;
 /// `count` は 0 のままなので描画には一切使われない（`draw_grass` が早期 return する）。
 const GRASS_EMPTY_DUMMY_ELEMENTS: usize = 1;
 
+/// リサイズ時に確保する容量倍率（必要本数の何倍を確保するか）。
+///
+/// 【snatch lock 再帰対策の要】バッファの再確保は旧バッファの drop を伴い、
+/// その遅延破棄がフレーム末尾 submit（snatch read lock 保持）中に処理されると
+/// write lock を再帰取得してパニックする。ブラシで 1 本ずつ増える度に丁度の
+/// サイズで確保し直すと毎ストローク drop が発生してしまうため、余裕を持たせて
+/// 確保し、再確保（＝drop）の頻度そのものを構造的に下げる。縮小はしない
+/// （`update` は容量が足りていれば絶対に再確保しない）。
+const GRASS_CAPACITY_GROWTH_FACTOR: usize = 2;
+
+/// リサイズ時に確保する最小容量（サイズ 0 バッファ生成の回避）。
+const GRASS_MIN_CAPACITY: usize = 1;
+
 // ============================================================
 //  GPU データレイアウト（WGSL と一致必須）
 // ============================================================
@@ -338,8 +351,20 @@ impl GrassInstanceBuffer {
     /// インスタンス配列とパラメータを更新する。
     ///
     /// 容量が足りていれば `queue.write_buffer` で中身だけ差し替える（バインドグループは
-    /// 作り直さない＝毎フレーム呼んでも安い）。容量不足なら再確保し、バッファが変わる
-    /// のでバインドグループも作り直す。
+    /// 作り直さない＝毎フレーム呼んでも安い）。容量不足なら**余裕を持たせて**再確保し、
+    /// バッファが変わるのでバインドグループも作り直す。
+    ///
+    /// 【snatch lock 再帰の防止（最重要）】
+    ///   再確保は旧バッファの drop を伴う。旧バッファは前フレームの submit が in-flight で
+    ///   参照中のため、wgpu は即時破棄せず「遅延破棄キュー」へ積む。この遅延破棄を、
+    ///   フレーム末尾の `queue.submit()`（snatch **read** lock 保持）が処理すると、破棄側は
+    ///   snatch **write** lock を取りに行き「同一スレッドで snatch lock を再帰取得」して
+    ///   パニックする（wgpu-core: resource.rs=破棄=write / global.rs=submit=read）。
+    ///   本メソッドはフレーム冒頭（`begin_frame` より前・描画コマンド記録前）に呼ばれ、
+    ///   この時点では read lock を誰も保持していない。そこで drop 直後に `poll(Wait)` して、
+    ///   read lock 非保持のうちに遅延破棄を確定させる（散布モデル側 `rebuild_scatter_models_gpu`
+    ///   の GpuModel／バッチ差し替えと同一の安全手順）。加えて容量に余裕を持たせることで
+    ///   再確保（＝drop＝poll）の発生頻度そのものを構造的に下げている。
     pub fn update(
         &mut self,
         device:    &wgpu::Device,
@@ -352,14 +377,23 @@ impl GrassInstanceBuffer {
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniform));
 
         if instances.len() > self.capacity {
-            // ── 容量不足 → 再確保（バッファが変わるのでバインドグループも再作成）──
-            let (buffer, capacity) = create_instance_buffer(device, instances);
+            // ── 容量不足 → 余裕を持たせて再確保（バッファが変わるのでバインドグループも再作成）──
+            //   丁度のサイズではなく GROWTH_FACTOR 倍を確保し、以後の増加では再確保しない
+            //   （＝旧バッファ drop を発生させない）。縮小は一切しない。
+            let new_capacity =
+                (instances.len() * GRASS_CAPACITY_GROWTH_FACTOR).max(GRASS_MIN_CAPACITY);
+            let buffer = create_sized_instance_buffer(device, new_capacity);
+            // 実データを書き込む（余剰要素はゼロのまま。count で参照されない）。
+            queue.write_buffer(&buffer, 0, bytemuck::cast_slice(instances));
+            // ↓ この 2 つの代入で旧バインドグループと旧バッファが drop される。
             self.bind_group =
                 create_instance_bind_group(device, pipeline, &buffer, &self.uniform_buffer);
             self.buffer   = buffer;
-            self.capacity = capacity;
+            self.capacity = new_capacity;
+            // 旧バッファの後片付けを確定させる（散布モデル rebuild と同一の安全手順）。
+            let _ = device.poll(wgpu::PollType::Wait);
         } else if !instances.is_empty() {
-            // ── 容量内 → 中身だけ書き換える ──
+            // ── 容量内 → 中身だけ書き換える（drop は一切発生しない）──
             queue.write_buffer(&self.buffer, 0, bytemuck::cast_slice(instances));
         }
         // instances が空のときはバッファへ書かない（write_buffer にサイズ 0 を渡さない）。
@@ -403,6 +437,22 @@ fn create_instance_buffer(
         usage:    wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
     });
     (buffer, data.len())
+}
+
+/// 指定要素数ぶんの容量を持つインスタンス storage バッファを作る（中身は未初期化）。
+///
+/// `update` のリサイズ経路が「必要本数より多い容量」を確保するために使う
+/// （`create_buffer_init` は contents ちょうどのサイズにしかできないため、容量に
+/// 余裕を持たせるには `create_buffer` + 後続 `write_buffer` の 2 段構えにする）。
+/// 余剰要素はゼロ初期化されないが、`count` が実本数までしか描かないため参照されない。
+fn create_sized_instance_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffer {
+    let cap = capacity.max(GRASS_MIN_CAPACITY);
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label:              Some("grass_instances"),
+        size:               (cap * std::mem::size_of::<GrassInstanceGpu>()) as wgpu::BufferAddress,
+        usage:              wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    })
 }
 
 /// group1 のバインドグループを作る。

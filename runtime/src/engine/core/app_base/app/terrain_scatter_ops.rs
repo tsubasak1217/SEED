@@ -1079,9 +1079,19 @@ impl App {
 
         // ─── ② インスタンスが 0 本になったプロップのバッファを捨てる ───
         //   （VRAM を掴んだままにしない）
+        //   【snatch lock 再帰の防止】捨てる GrassInstanceBuffer が持つバッファは前フレームの
+        //   submit が in-flight で参照中のため、drop しても wgpu は即座に破棄せず遅延破棄キューへ
+        //   積む。この破棄がフレーム末尾 submit（snatch read lock 保持）中に処理されると write lock
+        //   を再帰取得してパニックする。本メソッドは begin_frame より前（read lock 非保持）で走る
+        //   ので、削除が起きたら drop 直後に poll(Wait) して遅延破棄をここで確定させる
+        //   （rebuild_scatter_models_gpu の scatter_models.retain と同一手順）。
+        let grass_buffers_before = self.terrain.grass_buffers.len();
         self.terrain
             .grass_buffers
             .retain(|prop_index, _| by_prop.contains_key(prop_index));
+        if self.terrain.grass_buffers.len() != grass_buffers_before {
+            let _ = device.poll(wgpu::PollType::Wait);
+        }
 
         // ─── ③ プロップ種別ごとにバッファを作る／更新する ───
         let Some(ctx) = self.draw_ctx.as_ref() else {
