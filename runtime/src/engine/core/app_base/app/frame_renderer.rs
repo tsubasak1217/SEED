@@ -249,6 +249,9 @@ impl App {
         // 同じくスモーク専用: 指定フレームで草のクローズアップ構図へカメラを寄せるステップ。
         // 環境変数 SEED_SMOKE_CLOSEUP_FRAME 未指定なら即 return する。
         self.tick_terrain_smoke_closeup();
+        // 物理コリジョンスモーク（SEED_TERRAIN_PHYS_SMOKE=1）専用: 落下球の Y を毎フレーム監視。
+        // 無効なら即 return する自己ゲート付きフック。
+        self.tick_terrain_physics_smoke();
 
         // ── パフォーマンス計測変数 ─────────────────────────────────────────────
         // 60 フレームごとに各処理の CPU 消費時間を eprintln! でログ出力する。

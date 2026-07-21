@@ -1081,5 +1081,95 @@ fn build_collider_shape(shape: &ColliderShape, scale: &[f32; 3]) -> ColliderBuil
             // trimesh は rapier3d 0.22 で ColliderBuilder を直接返す（Result ではない）
             ColliderBuilder::trimesh(vertices, indices)
         }
+        ColliderShape::TriangleMeshIndexed { vertices, indices } => {
+            // 共有頂点をそのまま Point3 へ写し（ワールドスケール反映）、インデックスは複製する。
+            // 展開版と違い頂点を三角形ごとに複製しないため、地形のような大規模メッシュを
+            // 少ないメモリで登録できる。
+            let pts: Vec<nalgebra::Point3<Real>> = vertices
+                .iter()
+                .map(|&[x, y, z]| nalgebra::Point3::new(x * scale[0], y * scale[1], z * scale[2]))
+                .collect();
+            ColliderBuilder::trimesh(pts, indices.clone())
+        }
+    }
+}
+
+// ─── テスト ──────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `ColliderShape::TriangleMeshIndexed`（地形コライダーが使う共有頂点＋インデックス）で
+    /// 作った静的トライメッシュの上に、落下する Dynamic 球が「乗って止まる」ことを
+    /// 決定論的に検証する。
+    ///
+    /// 実スレッド（60Hz 実時間）ではなく `PhysicsPipeline` を固定 dt で直接回すため、
+    /// 時間・スケジューリングに依らず結果は一定で、通常の `cargo test` で高速に走る。
+    /// これは地形の物理コリジョン経路（`TriangleMeshIndexed` → `build_collider_shape`
+    /// → Rapier trimesh → Dynamic 球の接触）の実効を CI で担保するための回帰テストである。
+    #[test]
+    fn dynamic_ball_rests_on_indexed_trimesh_floor() {
+        // ── y=0 の平坦な床を 2 三角形（四角形）で共有頂点定義する ──
+        //   4 頂点を 2 三角形が共有する（＝インデックス版が想定する形）。
+        let floor = ColliderShape::TriangleMeshIndexed {
+            vertices: vec![
+                [-5.0, 0.0, -5.0],
+                [ 5.0, 0.0, -5.0],
+                [ 5.0, 0.0,  5.0],
+                [-5.0, 0.0,  5.0],
+            ],
+            indices: vec![[0, 1, 2], [0, 2, 3]],
+        };
+
+        // ── Rapier ワールドを組む ──
+        let mut rb_set   = RigidBodySet::new();
+        let mut col_set  = ColliderSet::new();
+        let mut pipeline = PhysicsPipeline::new();
+        let mut islands  = IslandManager::new();
+        let mut broad    = DefaultBroadPhase::new();
+        let mut narrow   = NarrowPhase::new();
+        let mut impulse  = ImpulseJointSet::new();
+        let mut multibody= MultibodyJointSet::new();
+        let mut ccd      = CCDSolver::new();
+        let mut query    = QueryPipeline::new();
+        let gravity = vector![DEFAULT_GRAVITY[0], DEFAULT_GRAVITY[1], DEFAULT_GRAVITY[2]];
+        let mut params  = IntegrationParameters::default();
+        params.dt = PHYSICS_FIXED_STEP as Real;
+
+        // 床：RigidBody 無しの Static コライダー（build_collider_shape の新バリアント経由）。
+        let floor_col = build_collider_shape(&floor, &[1.0, 1.0, 1.0]).build();
+        col_set.insert(floor_col);
+
+        // 球：半径 0.5、床の 3m 上から自由落下させる Dynamic ボディ。
+        const BALL_RADIUS: Real = 0.5;
+        const DROP_HEIGHT: Real = 3.0;
+        let ball_rb = RigidBodyBuilder::dynamic()
+            .translation(vector![0.0, DROP_HEIGHT, 0.0])
+            .build();
+        let ball_h = rb_set.insert(ball_rb);
+        let ball_col = ColliderBuilder::ball(BALL_RADIUS).restitution(0.0).build();
+        col_set.insert_with_parent(ball_col, ball_h, &mut rb_set);
+
+        // ── 固定 dt で十分な回数ステップする（落下＋静定に足りる 3 秒相当）──
+        for _ in 0..180 {
+            pipeline.step(
+                &gravity, &params,
+                &mut islands, &mut broad, &mut narrow,
+                &mut rb_set, &mut col_set,
+                &mut impulse, &mut multibody, &mut ccd,
+                Some(&mut query), &(), &(),
+            );
+        }
+
+        let y = rb_set.get(ball_h).unwrap().translation().y;
+        // 期待：球の中心は床（y=0）から半径ぶん上（≈0.5）で静止する。
+        //   下限 0.3：床をすり抜けて落ち続けていない（コリジョンが効いている）。
+        //   上限 0.7：床の上に正しく接地している（浮いていない・跳ね続けていない）。
+        assert!(
+            y > 0.3 && y < 0.7,
+            "球はトライメッシュ床の上（y≈{BALL_RADIUS}）で静止するはずが y={y} だった\
+             （y が負なら床をすり抜けている＝コリジョン不成立）"
+        );
     }
 }

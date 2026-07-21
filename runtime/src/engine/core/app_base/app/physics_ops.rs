@@ -110,6 +110,11 @@ impl App {
         }
 
         self.physics_thread = Some(thread);
+
+        // 地形の静的トライメッシュコライダーを物理ワールドへ登録する。
+        // 地形は ECS の ColliderComponent を持たない（terrain 側で内部管理する）ため、
+        // 通常アクターの収集（collect_physics_objects）とは別経路でここから登録する。
+        self.register_all_terrain_colliders();
     }
 
     // ─── 停止 ────────────────────────────────────────────────────
