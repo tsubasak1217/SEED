@@ -1290,6 +1290,16 @@ impl App {
         // ── ① レイヤ定義とレイヤテクスチャ配列を作り直す ──
         self.ensure_terrain_layers();
 
+        // ── ①' プロップ定義（props.json）も読み直し、草 uniform を作り直させる ──
+        //   「保存して適用」は layers.json と props.json を両方ディスクへ書いてから
+        //   TERRAIN_RELOAD_LAYERS を送る。ここで props も読み直しておくと、草丈・幅・色・
+        //   風のような「散布位置に影響しない見た目パラメータ」は**再散布せずとも**即座に
+        //   Edit モードへ反映される（これらは grass uniform だけの値で、位置の再生成を要さない）。
+        //   grass_gpu_dirty を立てて次フレームの rebuild_grass_gpu に uniform を組み直させる。
+        //   （Edit で props 変更が描画に効かない根因対策。Play はシーン再ロードで別途反映される。）
+        self.ensure_terrain_props();
+        self.terrain.grass_gpu_dirty = true;
+
         // ── ② 全チャンクを再メッシュ化する ──
         //   remesh_chunks が &mut self を取るため、対象座標は先に確定させておく。
         let coords: Vec<ChunkCoord> = self.terrain.chunk_slot_entity.keys().copied().collect();
