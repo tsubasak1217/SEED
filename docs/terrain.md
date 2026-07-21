@@ -8,10 +8,13 @@
 チャンク単位パレットで同時ブレンド 4 層の頂点フォーマットを維持・レイヤテクスチャの
 2D 配列対応・3 種のタイリング解消モード）と、
 **T3 第1段: 地形プロップ散布**（斜度/高度/レイヤ重みによる草・木の自動散布＋ブラシ手描き・
-手続き生成 GPU インスタンシング草・地形編集後の再接地）をカバーする（§15）。
+手続き生成 GPU インスタンシング草・地形編集後の再接地）と、
+**T3 第2段: `kind=model` プロップの実描画**（散布した実モデルアセットを ECS 非依存の
+専用インスタンシング経路で deferred G-Buffer へ描画＋ラスタ影に載せる）をカバーする（§15）。
 
-> スコープ外（未実装）: `kind=model` プロップの実描画（データは生成・保存済み。§15.9）、
-> 散布物との接触インタラクション、LOD／ストリーミング。末尾「拡張余地」参照。
+> スコープ外（未実装）: 散布モデルの TLAS/RT 登録（RT 反射・RT 影・RT-GI への寄与。§15.9）、
+> 散布物との接触インタラクション、LOD／インポスター／ストリーミング、木の風揺れ。
+> 末尾「拡張余地」参照。
 
 ---
 
@@ -939,8 +942,9 @@ T2 の「拡張余地」では『レイヤ数を 4 を超えて増やすには�
 - **tvox 拡張**: voxel_size/samples をロード後 `TerrainState` へ反映（§8 の限界解消）。密度の i8 量子化（ディスク 1/4）。
 - **T3 第1段（実装済み・§15）**: 斜度/高度/レイヤ重みルールによる草・木の自動散布＋ブラシ手描き、
   `.tscatter` 永続化、草のプロシージャル GPU インスタンシング描画、地形編集後の再接地。
-- **T3 第2段（未実装・§15.9）**: `kind=model` プロップ（木など）の実描画。散布物との接触インタラクション
-  （プレイヤーで草をなぎ倒す等）。
+- **T3 第2段（実装済み・§15.9）**: `kind=model` プロップ（木・岩など）の実描画。ECS 非依存の専用
+  インスタンシング経路で deferred G-Buffer へ描画＋ラスタ影に載せる。TLAS/RT 登録・接触
+  インタラクション・木の風揺れは持ち越し。
 - **T3 LOD/ストリーミング**: 遠距離チャンクの粗メッシュ（セル間引き）・視錐台外チャンクのアンロード。
   再メッシュは既に「影響チャンクのみ差し替え」なので、距離別メッシュキャッシュを足す方向で拡張できる。
 - **編集の連続化**: エディタ側でドラッグ中に毎フレーム `TERRAIN_BRUSH` を送る（`dt` はフレーム時間）。undo/redo は
@@ -1032,9 +1036,9 @@ terrain ツールバー右端の **「⚙ 設定」** ボタンで開く**独立
 ## 15. Terrain T3（散布 / Scatter）第1段
 
 草・木などの「地形の上に載る小物」を、斜度/高度/レイヤ重みのルールで自動散布し、
-ブラシで手描き修正できるようにする機能。**草は手続き生成 GPU インスタンシングで実際に描画される
-（G-Buffer 統合済み）が、`kind=model` のプロップ（木など）は現時点ではデータの生成・保存までで、
-実描画は第2段に持ち越し**（§15.9）。
+ブラシで手描き修正できるようにする機能。**草（`kind=grass`）は手続き生成 GPU インスタンシングで、
+モデル（`kind=model`・木/岩など）は実アセットを ECS 非依存の専用インスタンシング経路で、
+いずれも deferred G-Buffer に描画される**（第2段で model 描画を実装。§15.9）。
 
 ### 15.1 モジュール構成
 
@@ -1320,20 +1324,60 @@ undo/redo は密度スナップショットを戻すため、再接地も併せ�
   ウィンドウ起動時にシードへ乱数値を自動で振っておく（0 固定のまま「ランダム」を押し忘れて
   毎回同じ配置になる事故を防ぐため）。
 
-### 15.9 第2段への持ち越し・既知の限界
+### 15.9 `kind=model` プロップの描画（第2段・実装済み）
 
-- **`kind=model` プロップは描画されない**。散布インスタンスそのものは生成・保存される（`.tscatter`
-  に入っている）ため、データは失われない。描かれない理由は既存のモデル描画経路が ECS 前提で
-  組まれているため:
-  - `frame_renderer.rs` の `gpu_model_by_path` は、毎フレーム ECS の `ModelComponent` アクター群
-    （`all_mcs`）から**専ら**組み立て直される。
-  - 散布バッチには対応する ECS アクターが存在しないため、main/shadow/ID/RT の**すべての描画パス**
-    でこの表からの参照が None になり静かに描画スキップされ、さらに 60 フレーム後には stale として
-    prune される。
-  - 対処には、散布バッチ専用の独立した `GpuModel` 所有・管理と、各描画パスへの個別登録が要る
-    （ECS アクターに紐付けずに描くための新しい経路）。単純に N 体のアクターを spawn する案は
-    シーンファイルの肥大・`.tscatter` との情報二重化を招くため採らない。
-- **接触インタラクション**（プレイヤーが通ると草がなびく／なぎ倒れる等）は未実装。第2段のスコープ。
+草（`kind=grass`）が手続き生成されるのに対し、`kind=model` のプロップは `model_path` の実アセット
+（glTF/obj）をロードして、通常の deferred メッシュ G-Buffer パイプラインでインスタンス描画する。
+ECS アクターには一切紐付けない**独立したインスタンシング経路**を新設した（`all_mcs`/`ModelComponent`
+を経由しない）。単純に N 体のアクターを spawn する案は、シーンファイルの肥大・`.tscatter` との情報
+二重化を招くため採っていない。
+
+**リソース所有（`terrain_scatter_ops.rs::ScatterModelResource`）**
+- `TerrainState.scatter_models: HashMap<usize /*prop 添字*/, ScatterModelResource>` が
+  `{ model_path, cpu_model(Arc<Model>), gpu_model(GpuModel), batch(InstancedModelBatch), capacity }`
+  を所有する（草の `grass_buffers` と対を成す）。GpuModel は ECS 由来ではないため
+  `frame_renderer.rs` の 60 フレーム stale prune の対象外＝散布が変わるまで保持される。
+- `scatter_model_failed: HashMap<usize, String>` はロード失敗プロップを記録し、毎フレーム同じ
+  壊れたパスを読み直して警告を撒くのを防ぐ（`model_path` が変われば自動で再試行）。
+
+**モデルのロードとキャッシュ（`rebuild_scatter_models_gpu`）**
+- `model_path`（assets 相対/仮想/絶対）→ `asset_fs::normalize_asset_path` → `resolve` で実パス化し
+  `loader::load_model` で読む（ECS モデル・ギズモと同じ解決規約）。GPU 化は `DrawContext::upload_model`。
+- **プロップごとに 1 回だけロード**（散布インスタンス数ぶんロードしない）。`model_path` 単位でキャッシュし、
+  props リロード（`ensure_terrain_props`）で `model_path` が変わったときだけ読み直す。ロード失敗は
+  1 回だけ警告してそのプロップをスキップ（他プロップは描く）。
+
+**インスタンス行列と dirty 連動**
+- `ScatterInstance{pos, normal(tilt適用済みの up), yaw, scale}` から
+  `ワールド = T(pos)·R(up=normal, yaw)·S(scale)` の 4x4 を CPU で組む
+  （`scatter_instance_to_model_matrix`。`Transform::to_mat4` と同一の row-major・右手系規約。
+  ユニットテストが直交正規性・右手系・up 整合・yaw 回転を固定）。
+- 再構築トリガは**草と同じ `grass_gpu_dirty`**（散布データは草と共有の集合であり、フラグを分けると
+  散布操作 5 か所すべてで二重管理になるため 1 本に集約）。`rebuild_scatter_models_gpu` は
+  フラグを寝かせず、同フレーム後段の `rebuild_grass_gpu` がクリアする。ゆえに frame_renderer は
+  **model 再構築 → 草再構築**の順で呼ぶ（逆順だと model 側が毎回スキップされる）。
+- GPU アップロードは統合バッチ（`shared_model_batches`）と同規約: 容量が足りていれば
+  `batch.update`（内部 `write_buffer`）で行列だけ差し替え、容量不足時のみ作り直す
+  （`.max(SCATTER_MODEL_MIN_CAPACITY)`）。Edit/Play どちらでも反映される（草と同じ dirty 経路）。
+
+**描画経路（`frame_renderer.rs`）**
+- G-Buffer パス: 草の直後に `self.terrain.scatter_models.values()` を走査し、既存の
+  `gbuffer::draw_gbuffer_indirect(gpass, &gpu_model, &batch, camera_bg, gbuffer_pipelines,
+  meshlet=false, terrain_layers=None)` へ渡すだけ。通常マテリアルで描くので deferred ライティング・
+  SSAO・DDGI 受光が通常メッシュと同じく効く。meshlet カリングは使わない（専用 cull コンピュートを
+  走らせていないため、通常の `draw_indexed` 経路）。
+- 影: `shadow_casters` に `(&gpu_model, &batch)` を push するだけでラスタのシャドウマップに乗る
+  （`ShadowResources::record` は G-Buffer と同じ InstancedModelBatch の storage-instance を再利用する）。
+
+**スコープ外（この段では未実装）**
+- **TLAS/RT 登録**: 散布モデルは RT 影・RT 反射・RT-GI への**寄与**はしない（`rt_casters` に加えていない）。
+  deferred ライティング上の受光・ラスタ影には乗る。RT 反射に木が映るのは将来。
+- LOD/インポスター・木の風揺れ・接触インタラクション（プレイヤーが通ると草がなびく等）。
+- **スキン付きモデル**を散布した場合はバインドポーズで描かれる（スキン compute を回さない）。
+
+### 15.9b 第2段以降への持ち越し・既知の限界
+
+- **接触インタラクション**（プレイヤーが通ると草がなびく／なぎ倒れる等）は未実装。
 - **prop_id の並び替え耐性が無い**: `.tscatter` は prop_id を添字で保持するため、props.json の
   並び替えで既存散布データの指し先がずれる（§15.2）。
 
@@ -1351,6 +1395,21 @@ undo/redo は密度スナップショットを戻すため、再接地も併せ�
 **CPU コストの実測値**であり GPU 側のコストについての測定ではない。GPU が飽和する構成
 （VSync・低スペック GPU・高解像度シャドウ等）では別途フレームタイムの計測が要る。上記数値は
 CPU コストの上限（アッパーバウンド）として読むこと。
+
+**散布モデル（`kind=model`）実測（`SEED_TERRAIN_SMOKE`・debug ビルド・4×4 チャンク≈64m²・
+`models/A.gltf`（72 頂点）を density 0.4/scale 3〜6 で散布）**:
+
+| 項目 | 実測値 |
+|---|---|
+| モデルアセットのロード（`load_model`＋GPU 化）| 約 11 ms（プロップごとに一度きり。`model_path` 変更まで再ロードしない） |
+| 散布モデル GPU 再構築（`rebuild_scatter_models_gpu`）初回 | 18.19 ms（1,848 インスタンス・行列生成＋アップロード） |
+| 同・2 回目以降（容量内・行列差し替えのみ） | 2.48 ms（1,789 可視インスタンス） |
+
+同一シーンで草＋モデル合わせて 49,651 インスタンスを散布・描画しても破綻せず、
+`[PERF terrain]` ログにロード失敗は出なかった（`SEED_PERF_TERRAIN=1` で内訳ログが出る）。
+モデル 1 体あたりの頂点数が大きいほど GPU 側は重くなるため、実運用では低ポリ木＋控えめな
+density を推奨する（数千インスタンス × 数百〜数千頂点が現実的な上限の目安。LOD/インポスターは
+持ち越し）。
 
 ### 15.11 ルール散布のボトルネックと高速化（`fast_density_at`）
 

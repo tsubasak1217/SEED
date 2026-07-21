@@ -45,6 +45,8 @@ use crate::engine::terrain::{
 // 散布プロップ（Terrain T3）。状態の器だけをここで持ち、処理は terrain_scatter_ops.rs にある。
 use crate::engine::core::renderer::grass_gbuffer::GrassInstanceBuffer;
 use crate::engine::terrain::scatter::{ScatterInstance, TerrainPropSet};
+// kind=Model 散布プロップの GPU リソース型（定義・処理とも terrain_scatter_ops.rs）。
+use super::terrain_scatter_ops::ScatterModelResource;
 
 use super::App;
 use super::terrain_mesh_build::{
@@ -420,7 +422,24 @@ pub struct TerrainState {
     /// GPU 側の草インスタンスバッファ（プロップ添字 -> バッファ）。再構築待ちなら None。
     pub grass_buffers: HashMap<usize, GrassInstanceBuffer>,
     /// 草 GPU バッファの再構築が必要かどうか（散布が変わったら true）。
+    ///
+    /// このフラグは草（grass_buffers）と散布モデル（scatter_models）の**両方**の
+    /// 再構築トリガを兼ねる。散布データ（`scatter`）は草と model で共有の集合であり、
+    /// 別フラグを持つと散布操作 5 か所すべてで二重に立てる必要が出て DRY を損なうため、
+    /// 意図的に 1 本に集約している（実際の再構築順序は frame_renderer.rs 側で固定）。
     pub grass_gpu_dirty: bool,
+    /// GPU 側の散布モデルリソース（kind=Model プロップ。プロップ添字 -> リソース）。
+    ///
+    /// 草（`grass_buffers`）と対を成す。草は props の数値から手続き生成するが、model は
+    /// `model_path` の実アセットをロードして通常メッシュとしてインスタンス描画する。
+    /// GpuModel は ECS アクターに紐付かず本マップが所有する（frame_renderer の
+    /// 60 フレーム stale prune の対象外＝散布が変わるまで保持され続ける）。
+    pub scatter_models: HashMap<usize, ScatterModelResource>,
+    /// 散布モデルのロードに失敗したプロップ（プロップ添字 -> 失敗した model_path）。
+    ///
+    /// 毎フレーム同じ壊れたパスを読み直して警告を撒かないための記録。props リロードで
+    /// model_path が変われば値が一致しなくなるので、自動的に再試行される。
+    pub scatter_model_failed: HashMap<usize, String>,
     /// 散布ブラシで使う現在のプロップ添字（エディタの選択と対応）。
     pub scatter_prop: usize,
     /// ルール散布の大域シード（決定性の要。UI から変えられる）。
@@ -477,6 +496,8 @@ impl Default for TerrainState {
             scatter_dirty: HashSet::new(),
             grass_buffers: HashMap::new(),
             grass_gpu_dirty: false,
+            scatter_models: HashMap::new(),
+            scatter_model_failed: HashMap::new(),
             scatter_prop: 0,
             scatter_seed: DEFAULT_SCATTER_SEED,
 
