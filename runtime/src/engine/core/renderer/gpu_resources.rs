@@ -1592,6 +1592,18 @@ impl InstancedModelBatch {
         joint_bgl:     &wgpu::BindGroupLayout,
         id_data_bgl:   &wgpu::BindGroupLayout,
         num_instances: u32,
+        // GPU メッシュレットカリング用のスロット（コマンド／カウント／パラメータバッファ）を
+        // このバッチに確保するか。true = 確保する（アクターの共有メッシュバッチ）。
+        // false = 確保しない（地形の散布モデル等、メッシュレットカリングを走らせない経路）。
+        //
+        // 【なぜフラグで分けるか】メッシュレットカリングのコマンドバッファ容量は
+        //   `メッシュレット数 × num_instances` に比例する。散布モデルは数千インスタンスに
+        //   達し得るため、確保しようとすると 256MB（wgpu の max_buffer_size 既定）を軽く
+        //   超えて `create_buffer` が検証エラーでパニックする。散布モデルの描画は
+        //   `draw_gbuffer_indirect(meshlet=false)` の通常インスタンス描画であり、
+        //   `prepare_meshlet_cull` も呼ばれない（＝スロットを確保しても完全に無駄）。
+        //   よって false で確保自体をスキップする。
+        enable_meshlet_cull: bool,
     ) -> Self {
         let n = num_instances.max(1) as usize;
 
@@ -1704,16 +1716,33 @@ impl InstancedModelBatch {
         // ── メッシュレットカリング スロット（node_prim_list と同順・同長）──────
         // メッシュレットを持つ非スキンプリミティブにのみ Some。容量は
         // meshlet_count × num_instances(最大) 分のコマンドを確保する。
+        // メッシュレットカリング用バッファの上限（デバイスの max_buffer_size）。
+        // `capacity × DrawIndexedIndirect` がこれを超えるとスロットは確保しない
+        // （超過分をそのまま create_buffer に渡すと wgpu 検証エラーでパニックするため）。
+        let max_buffer_size = device.limits().max_buffer_size;
         let meshlet_cull: Vec<Option<MeshletCullSlot>> = node_prim_list.iter().map(|draw| {
+            // 呼び出し側がメッシュレットカリング不要と指定した経路（散布モデル等）は確保しない。
+            if !enable_meshlet_cull { return None; }
             if draw.is_skinned { return None; }
             let prim = &model.meshes[draw.mesh_idx].primitives[draw.prim_idx];
             let ml_count = prim.meshlets.len() as u32;
             if ml_count == 0 { return None; }
 
             let capacity = ml_count.saturating_mul(n as u32).max(1);
+            let cmd_buf_size = capacity as u64 * DRAW_INDEXED_INDIRECT_SIZE;
+            // 防御: 上限超過ならスロットを確保せず通常描画へフォールバックする（パニック回避）。
+            // 同種の「インスタンス数 × メッシュレット数」爆発を今後もパニックにしないための保険。
+            if cmd_buf_size > max_buffer_size {
+                eprintln!(
+                    "[SEED renderer] メッシュレットカリングをスキップします: 必要バッファ {cmd_buf_size} バイトが \
+                     max_buffer_size {max_buffer_size} を超過（メッシュレット {ml_count} × インスタンス {n}）。\
+                     このプリミティブは通常のインスタンス描画で描きます。"
+                );
+                return None;
+            }
             let cmd_buf = device.create_buffer(&wgpu::BufferDescriptor {
                 label:              Some("Meshlet Cull Cmd Buffer"),
-                size:               capacity as u64 * DRAW_INDEXED_INDIRECT_SIZE,
+                size:               cmd_buf_size,
                 usage:              wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::INDIRECT,
                 mapped_at_creation: false,
             });

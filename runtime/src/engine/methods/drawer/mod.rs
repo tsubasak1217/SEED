@@ -302,7 +302,29 @@ impl DrawContext {
         gpu_model
     }
 
+    /// アクターの共有メッシュバッチを作る。メッシュレットカリング（LOD0）を有効にする。
     pub fn create_instanced_batch(&self, model: &Model, num_instances: u32) -> BatchInner {
+        self.create_instanced_batch_inner(model, num_instances, true)
+    }
+
+    /// 地形の散布モデル用バッチを作る。メッシュレットカリングは確保しない（enable=false）。
+    ///
+    /// 散布モデルは数千インスタンスに達し得るため、メッシュレットカリングのコマンドバッファ
+    /// （メッシュレット数 × インスタンス数 に比例）を確保すると max_buffer_size を超えて
+    /// パニックする。描画は `draw_gbuffer_indirect(meshlet=false)` の通常インスタンス描画で
+    /// 行い、`prepare_meshlet_cull` も呼ばないため、スロットを確保しても無駄。よって除外する。
+    pub fn create_instanced_batch_no_meshlet(&self, model: &Model, num_instances: u32) -> BatchInner {
+        self.create_instanced_batch_inner(model, num_instances, false)
+    }
+
+    /// バッチ生成の内部実装。`enable_meshlet_cull` でメッシュレットカリング用スロットの
+    /// 確保有無を切り替える。
+    fn create_instanced_batch_inner(
+        &self,
+        model: &Model,
+        num_instances: u32,
+        enable_meshlet_cull: bool,
+    ) -> BatchInner {
         BatchInner::new(
             &self.device,
             model,
@@ -311,6 +333,7 @@ impl DrawContext {
             &self.pipelines.skinned_mesh.joint_bgl,
             &self.pipelines.id_pass.id_data_bgl,
             num_instances,
+            enable_meshlet_cull,
         )
     }
 

@@ -1192,7 +1192,7 @@ impl TerrainState {
                 match load_scatter_model(ctx, &want_path) {
                     Ok((cpu_model, gpu_model)) => {
                         let capacity = (mats.len() * 2).max(SCATTER_MODEL_MIN_CAPACITY);
-                        let batch = ctx.create_instanced_batch(&cpu_model, capacity as u32);
+                        let batch = ctx.create_instanced_batch_no_meshlet(&cpu_model, capacity as u32);
                         self.scatter_models.insert(
                             *prop_index,
                             ScatterModelResource {
@@ -1225,7 +1225,7 @@ impl TerrainState {
                 .expect("scatter model resource just ensured present");
             if mats.len() > res.capacity {
                 let capacity = (mats.len() * 2).max(SCATTER_MODEL_MIN_CAPACITY);
-                res.batch = ctx.create_instanced_batch(&res.cpu_model, capacity as u32);
+                res.batch = ctx.create_instanced_batch_no_meshlet(&res.cpu_model, capacity as u32);
                 res.capacity = capacity;
             }
             // 行列をアップロード（内部は write_buffer。dirty 化してから update）。
