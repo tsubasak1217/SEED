@@ -92,15 +92,42 @@ const GRASS_NORMAL_AUTHORED_FLAG: f32 = 1.0;
 // カットアウト・風の計算には一切影響しない（幅だけを変える）。
 
 /// 確保するスクリーン空間の最小「半幅」（画素）。full width では約 2 倍。
-/// 大きすぎると近景の細い葉まで太って束に見えるため、1 画素弱に抑える。
-const GRASS_MIN_SCREEN_HALF_PX: f32 = 0.75;
+/// 遠景で葉と葉の隙間（地面が透ける＝緑と地面の tan が画素ごとに入れ替わる砂嵐の主因）を塞いで
+/// 「まばらな点の散乱」を「緑のマット」へ寄せるため、2 画素強を確保する。widening は元々サブ
+/// ピクセルの遠景葉にしか効かない（grass_min_screen_half_width が倍率 1..MAX でクランプ）ため
+/// 近景の葉は不変。値を上げるほど遠景の被覆が上がり隙間ノイズが減る（代償は遠景の葉がやや太る）。
+const GRASS_MIN_SCREEN_HALF_PX: f32 = 2.2;
 /// 最小画素確保のための葉幅拡大の上限倍率。
 /// 無制限だと真横・遠方の退化ケースで葉が異常に太る（板の過剰な重なり）ため飽和させる。
-const GRASS_MAX_WIDTH_WIDEN: f32 = 8.0;
+/// 最遠の葉（元幅が極小）でも被覆目標 GRASS_MIN_SCREEN_HALF_PX に届くよう十分な上限を持たせる
+/// （届かないと遠景に地面が透ける隙間が残り砂嵐ノイズになる）。
+const GRASS_MAX_WIDTH_WIDEN: f32 = 16.0;
 /// クリップ座標 w がこの値以下なら「カメラ背面」とみなし拡大しない（0 除算回避）。
 const GRASS_CLIP_W_EPSILON: f32 = 1.0e-4;
 /// スクリーン投影幅がこの値（画素）以下なら退化とみなし拡大しない。
 const GRASS_SCREEN_PX_EPSILON: f32 = 1.0e-4;
+
+// ─── 遠景 LOD フェード（サブピクセル葉の砂嵐グレイン対策）─────────────────────
+//
+// 【症状】12 万本の草を俯瞰すると、1 本ずつが 1 画素前後まで縮み、株ごとの
+// 明度ゆらぎ（tint）・根元オクルージョン（root=0.35→穂先=1.0 の大きな明暗差）・葉間の
+// 隙間（地面が透ける）が画素ごとにランダムに現れて「砂嵐状のザラザラ」に見える
+// （実機の層分離で確定：地形テクスチャ・RT-AO・RT 影・DDGI ではなく、この遠景草が発生源）。
+//
+// 【対策】葉が画面上で小さくなるほど「1 株内の明暗差」を潰して株を一様な平均緑へ寄せる。
+// 幅の widening（隙間を塞ぐ）と併せて、遠景の草を「点の散乱」から「滑らかな緑のマット」へ寄せる。
+// 幾何は変えず G-Buffer へ書く albedo/occlusion のコントラストだけを距離で落とすので追加パス・
+// 追加コストは無い（頂点で株の画面上の幅を測り、フラグメントで mix するだけ）。
+
+// フェード量は「葉の**画面上の半幅**（画素）」で決める（高さではない）。砂嵐グレインの主因は
+// 細い葉が画素より細くなる＝横方向のサブピクセル化であり、丈が高くても幅が 1px 未満なら
+// 画素ごとに葉/隙間がランダムに出てザラつく。よって株の根元の半幅を画面へ投影して測る。
+
+/// 根元の画面半幅（画素）がこの値以上なら LOD フェードなし（近景＝葉が十分太くフル詳細）。
+const GRASS_LOD_FADE_START_PX: f32 = 2.5;
+/// 根元の画面半幅（画素）がこの値以下なら完全フェード（株内の明暗差を消して一様な平均緑）。
+/// START より小さいこと（smoothstep の edge 順序）。
+const GRASS_LOD_FADE_FULL_PX: f32 = 0.3;
 
 // ─── 風・曲げの調整定数 ───────────────────────────────────────────────
 
@@ -330,6 +357,10 @@ struct GrassVsOut {
     /// 頂点段で寄せてしまうと、フラグメント段の front_facing 反転が
     /// 寄せ済み法線ごと地平線の下へ倒してしまうため（fs_grass の説明を参照）。
     @location(5) ground_normal:  vec3<f32>,
+    /// 遠景 LOD フェード係数（0=近景/フル詳細, 1=遠景/一様な平均緑）。
+    /// 株の根元の画面上の幅から頂点段で算出（インスタンス単位で一定）。フラグメント段で
+    /// 根元オクルージョン・株ごとの明度ゆらぎのコントラストを距離で潰すのに使う（砂嵐グレイン対策）。
+    @location(6) lod_fade:       f32,
 }
 
 /// 縮退頂点（このインスタンスでは使われない余りの頂点）の出力を作る。
@@ -355,6 +386,7 @@ fn grass_degenerate_vertex() -> GrassVsOut {
     out.side_t         = 0.0;
     out.tint           = 1.0;
     out.ground_normal  = GRASS_WORLD_UP;
+    out.lod_fade       = 0.0;
     return out;
 }
 
@@ -481,6 +513,17 @@ fn vs_grass(
     //   株ごとの明度ゆらぎ（1.0 中心 ± GRASS_TINT_VARIATION）。
     //   位相用ハッシュとは別の種（seed を反転）にして、位相と明度の相関を切る。
     out.tint = 1.0 + (grass_hash_f32(~inst.seed) - 0.5) * 2.0 * GRASS_TINT_VARIATION;
+    //   遠景 LOD フェード: 株の根元の**半幅**を画面へ投影した画素数を測り、細いほど 1 へ。
+    //   幅の widening（grass_min_screen_half_width）は元々サブピクセル葉を太らせるので、フェード判定は
+    //   widening 前の素の半幅（half_width の根元値）で測る＝「本来どれだけ細いか」を見る。
+    //   grass_screen_half_px は中心と端点の画面距離（画素）を返す。
+    let root_half_px = grass_screen_half_px(inst.pos, inst.pos + side * (width_root * 0.5));
+    //   半幅が FULL_PX 以下で完全フェード、START_PX 以上でフェードなし。退化（負値・カメラ背面）は 0。
+    out.lod_fade = select(
+        1.0 - smoothstep(GRASS_LOD_FADE_FULL_PX, GRASS_LOD_FADE_START_PX, root_half_px),
+        0.0,
+        root_half_px <= GRASS_SCREEN_PX_EPSILON,
+    );
     return out;
 }
 
@@ -514,12 +557,21 @@ fn fs_grass(
     }
 
     // ── 2. アルベド（根元 → 穂先のグラデーション × 株ごとの明度ゆらぎ）──
-    let albedo = mix(u_grass.color_bottom, u_grass.color_top, in.height_t) * in.tint;
+    //   遠景 LOD フェード:
+    //     (a) 株ごとの明度ゆらぎ（tint）を距離で 1.0（無ゆらぎ）へ寄せる。
+    //     (b) 根元→穂先の色グラデーションも中間色（height_t=0.5 相当）へ寄せて株内の縦の明暗差を潰す。
+    //   サブピクセルの葉が画素ごとに別の tint／別の高さの色を見せて出る「砂嵐グレイン」を潰す（近景は不変）。
+    let tint_eff = mix(in.tint, 1.0, in.lod_fade);
+    let height_eff = mix(in.height_t, 0.5, in.lod_fade);
+    let albedo = mix(u_grass.color_bottom, u_grass.color_top, height_eff) * tint_eff;
 
     // ── 3. オクルージョン近似 ──
     //   草むらの根元は周囲の葉に囲まれて暗い。高さで線形補間するだけの安価な近似
     //   （本物の AO は後段の SSAO / RT-AO パスがさらに乗せる）。
-    let occlusion = mix(GRASS_ROOT_OCCLUSION, 1.0, in.height_t);
+    //   遠景 LOD フェード: root=0.35→穂先=1.0 の大きな明暗差が、サブピクセルの葉では画素ごとに
+    //   根元/穂先がランダムに現れて砂嵐グレインの主因になる。距離で 1.0（無オクルージョン）へ
+    //   寄せて株内の明暗差を潰す（近景は in.lod_fade=0 で従来どおり）。
+    let occlusion = mix(mix(GRASS_ROOT_OCCLUSION, 1.0, in.height_t), 1.0, in.lod_fade);
 
     // ── 4. 両面法線 ──
     //   cull None なので裏面フラグメントが必ず来る。裏面では頂点で作った面法線が
