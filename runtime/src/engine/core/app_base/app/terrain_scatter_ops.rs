@@ -1159,8 +1159,20 @@ impl TerrainState {
         let mats_by_prop = gather_scatter_model_matrices(&self.scatter, &self.props);
 
         // ─── ② 描画対象から消えたプロップのリソース／失敗記録を捨てる（VRAM 解放）───
+        //   【snatch lock 再帰の防止】捨てた GpuModel／バッチのバッファは、前フレームの
+        //   submit がまだ参照している（in-flight）ため、drop しても wgpu は即座には破棄せず
+        //   「遅延破棄キュー」へ積む。この遅延破棄を、後段の queue.write_buffer や本フレーム
+        //   末尾の queue.submit() が **snatch read lock を保持したまま** 処理すると、破棄側は
+        //   snatch write lock を取りに行き「同一スレッドで snatch lock を再帰取得」して
+        //   パニックする（wgpu-core resource.rs=破棄=write / global.rs=submit/write_buffer=read）。
+        //   そこで drop 直後に poll(Wait) を挟み、read lock を誰も持っていないこの時点で
+        //   遅延破棄を確定させる（slot_ops.rs / terrain_ops.rs の GpuModel 差し替えと同じ安全手順）。
+        let scatter_models_before_retain = self.scatter_models.len();
         self.scatter_models.retain(|k, _| mats_by_prop.contains_key(k));
         self.scatter_model_failed.retain(|k, _| mats_by_prop.contains_key(k));
+        if self.scatter_models.len() != scatter_models_before_retain {
+            let _ = ctx.device.poll(wgpu::PollType::Wait);
+        }
 
         // ─── ③ プロップごとに: モデルをロード（キャッシュ）→ バッチへ行列アップロード ───
         let mut total = 0usize;
@@ -1176,6 +1188,10 @@ impl TerrainState {
                 if res.model_path != want_path {
                     self.scatter_models.remove(prop_index);
                     self.scatter_model_failed.remove(prop_index);
+                    // 旧リソースの遅延破棄を確定させてから読み直す（②と同じ snatch 再帰対策。
+                    // in-flight バッファの破棄が後段の write_buffer／submit の read lock 下で
+                    // 走ると再帰パニックするため、read lock 非保持のここで poll(Wait) する）。
+                    let _ = ctx.device.poll(wgpu::PollType::Wait);
                 }
             }
 
@@ -1225,8 +1241,18 @@ impl TerrainState {
                 .expect("scatter model resource just ensured present");
             if mats.len() > res.capacity {
                 let capacity = (mats.len() * 2).max(SCATTER_MODEL_MIN_CAPACITY);
+                // 新バッチを作ると、旧バッチがこの代入で drop される。旧バッチの instance
+                // バッファは前フレームの submit が参照中（in-flight）なので、drop は即時破棄
+                // されず wgpu の遅延破棄キューへ積まれる。
                 res.batch = ctx.create_instanced_batch_no_meshlet(&res.cpu_model, capacity as u32);
                 res.capacity = capacity;
+                // 【snatch lock 再帰の防止】直後の res.batch.update()（queue.write_buffer）や
+                //   フレーム末尾の queue.submit() が snatch read lock を保持したまま上の遅延破棄を
+                //   処理すると、破棄側が snatch write lock を取りに行き再帰取得でパニックする。
+                //   ここで poll(Wait) を挟み、read lock 非保持のうちに旧バッファの解放を確定させる
+                //   （②・model_path 変更と同じ手順。再生成は「インスタンス数が 2 倍超に増えた」
+                //   稀なケースだけなので、1 フレームの GPU アイドル待ちは許容範囲）。
+                let _ = ctx.device.poll(wgpu::PollType::Wait);
             }
             // 行列をアップロード（内部は write_buffer。dirty 化してから update）。
             res.batch.mark_dirty();
