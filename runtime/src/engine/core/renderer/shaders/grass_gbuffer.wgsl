@@ -77,6 +77,10 @@ const GRASS_TIP_FADE_START: f32 = 0.55;
 /// 2 枚目の十字平面を 1 枚目から回す角度（ラジアン、90 度）。
 const GRASS_CROSS_PLANE_YAW_OFFSET: f32 = 1.5707963;
 
+/// G-Buffer RT1.w へ書く「authored 法線」フラグ値（1=有効）。
+/// deferred_lighting.wgsl の GBUFFER_NORMAL_AUTHORED_THRESHOLD と対で意味を持つ。
+const GRASS_NORMAL_AUTHORED_FLAG: f32 = 1.0;
+
 // ─── サブピクセル・アンチエイリアス（葉のスクリーン空間最小幅）────────────────
 //
 // deferred G-Buffer には MSAA も alpha-to-coverage も無い（草は不透明パスに乗る）。
@@ -561,7 +565,11 @@ fn fs_grass(
 
     var o: GrassGBufferOut;
     o.albedo_occ = vec4<f32>(albedo, occlusion);
-    o.normal     = vec4<f32>(out_n, 0.0);
+    // RT1.w=1: authored 法線フラグ。草は法線を地表向き（up）へ意図的に平坦化しているため、
+    // deferred のライティングが深度から復元する幾何法線（刃の水平向き・深度不連続で暴れる）で
+    // なく、この out_n を geo_gate の幾何法線として使わせる（草の影がドット状ノイズに壊れる不具合の
+    // 根治。詳細は deferred_lighting.wgsl の GBUFFER_NORMAL_AUTHORED_THRESHOLD を参照）。
+    o.normal     = vec4<f32>(out_n, GRASS_NORMAL_AUTHORED_FLAG);
     // metallic は常に 0（草は誘電体）。roughness は uniform 指定。
     // b = diffuse_transmission は 0（葉の逆光透けは将来拡張）。
     o.mr         = vec4<f32>(0.0, clamp(u_grass.roughness, 0.0, 1.0), 0.0, 0.0);
