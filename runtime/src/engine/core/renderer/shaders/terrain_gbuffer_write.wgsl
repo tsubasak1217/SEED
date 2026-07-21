@@ -108,6 +108,13 @@ const MACRO_NOISE_BIAS_TO_SIGNED:  f32 = 1.0;
 /// roughness の下限（完全鏡面によるスペキュラ発散を防ぐ）。
 const TERRAIN_ROUGHNESS_MIN: f32 = 0.04;
 
+/// G-Buffer RT1.w へ書く「authored 法線」フラグ値（1=有効）。
+/// 地形は閉じたハイトフィールドで triplanar 合成した信頼できる地表法線を持つため、
+/// deferred のライティングに深度復元 Ng ではなくこの法線で geo_gate させる
+/// （シルエット/掘削穴のフチで黒斑点が出る不具合の根治）。
+/// deferred_lighting.wgsl の GBUFFER_NORMAL_AUTHORED_THRESHOLD と対。
+const TERRAIN_NORMAL_AUTHORED_FLAG: f32 = 1.0;
+
 /// 法線マップのタンジェント空間復元係数（0..1 → -1..1）。
 const NORMAL_MAP_SCALE: f32 = 2.0;
 const NORMAL_MAP_BIAS:  f32 = 1.0;
@@ -530,7 +537,8 @@ fn fs_terrain_gbuffer(
     //   emissive / diffuse_transmission は地形では常に 0。
     var o: TerrainGBufferOut;
     o.albedo_occ = vec4<f32>(albedo, 1.0);
-    o.normal     = vec4<f32>(out_n, 0.0);
+    // RT1.w=1: authored 法線フラグ（地形の信頼できる法線を geo_gate に使わせる）。
+    o.normal     = vec4<f32>(out_n, TERRAIN_NORMAL_AUTHORED_FLAG);
     o.mr         = vec4<f32>(metallic, clamp(roughness, TERRAIN_ROUGHNESS_MIN, 1.0), 0.0, 0.0);
     o.emissive   = vec4<f32>(0.0, 0.0, 0.0, 0.0);
     return o;

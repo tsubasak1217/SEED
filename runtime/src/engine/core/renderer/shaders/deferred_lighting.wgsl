@@ -105,6 +105,27 @@ fn vs_fullscreen(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4<f32>
 /// discard する（既存のクリア色／スカイボックスをそのまま残すため）。
 const DEFERRED_BACKGROUND_DEPTH: f32 = 1.0;
 
+/// G-Buffer RT1.w に載る「authored 法線」フラグの判定しきい値。
+///
+/// ## 何のためのフラグか（草・地形の影がドット状ノイズに壊れる不具合の根治）
+/// deferred のライティングは幾何法線 Ng を**深度バッファの画面微分**
+/// （`cross(dpdx(world_pos), dpdy(world_pos))`）から復元する。これは隣接ピクセルが
+/// 同一サーフェスの間は面法線として正しいが、**深度不連続**（草の細い刃の輪郭・地形の
+/// シルエットや掘削穴のフチ）を跨ぐと微分が別サーフェスへ飛んで Ng が per-pixel に暴れる。
+/// lighting_eval.wgsl の geo_gate は `dot(Ng,L)>0` の**ハードな 0/1** なので、この暴れが
+/// そのままディザ状のドットノイズ／ビュー依存の黒斑点になる（実機の層分離可視化で確定）。
+/// さらに草は G-Buffer 法線を意図的に地表向き（up）へ平坦化しているのに、深度復元 Ng は
+/// 刃の真の（水平・株ごとに別方位の）向きを拾うため、約半数の刃を直接光 0 に落とす。
+///
+/// ## フラグの意味
+/// 書き込み側（grass_gbuffer.wgsl / terrain_gbuffer_write.wgsl）が RT1.w=1 を立てた
+/// サーフェス＝「G-Buffer 法線 N そのものが信頼できる幾何法線（authored）で、深度復元 Ng
+/// より優先すべき」もの。これらは薄い一枚布のような裏面光漏れの risk が無い（草は両面を
+/// front_facing で正しく反転済み、地形は閉じたハイトフィールド）ため、geo_gate の幾何法線に
+/// 深度復元 Ng ではなく N を使う。通常メッシュ（RT1.w=0）は従来どおり深度復元 Ng を使い、
+/// 法線マップ後の薄い面での光漏れ防止（geo_gate 本来の目的）を維持する。
+const GBUFFER_NORMAL_AUTHORED_THRESHOLD: f32 = 0.5;
+
 // ── RT ソフト影マスクの「深度を考慮した」アップサンプル定数（Phase RT-Shadow-Denoise 改良）──
 //
 // 症状: 半解像度マスク（いもす法ボックスブラー済み）をバイリニアでフル解像度へ拡大すると、
@@ -200,6 +221,13 @@ fn fs_deferred(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     // N と同じ半球へ揃える（表裏の符号を一致させる。faceforward 相当）。
     if dot(Ng, N) < 0.0 {
         Ng = -Ng;
+    }
+    // ── authored 法線（草・地形）は深度復元 Ng を信用しない ────────────────────
+    // RT1.w=1 のサーフェスは、深度不連続で暴れる Ng の代わりに信頼できる G-Buffer 法線 N を
+    // geo_gate の幾何法線として使う（草・地形の影がドット状ノイズ／黒斑点に壊れる不具合の根治）。
+    // 詳細は GBUFFER_NORMAL_AUTHORED_THRESHOLD のコメントを参照。
+    if g1.w >= GBUFFER_NORMAL_AUTHORED_THRESHOLD {
+        Ng = N;
     }
 
     // ── 5) Surface を構築して既存のライト評価へ渡す ─────────────
