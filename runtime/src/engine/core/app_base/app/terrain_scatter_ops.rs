@@ -35,7 +35,7 @@ use rayon::prelude::*;
 use super::terrain_ops::{find_owner, sample_density_world, TerrainState};
 use super::App;
 use crate::engine::core::renderer::grass_gbuffer::{
-    GrassInstanceBuffer, GrassInstanceGpu, GrassUniformGpu,
+    GrassChunkSpan, GrassInstanceBuffer, GrassInstanceGpu, GrassUniformGpu,
 };
 use crate::engine::terrain::chunk_coord::ChunkCoord;
 use crate::engine::terrain::chunk_data::TerrainChunkData;
@@ -104,6 +104,64 @@ const MODEL_NORMALIZE_EPSILON: f32 = 1.0e-12;
 /// 0 本でもバッファ生成がパニックしないよう最低 4 は確保する。
 const SCATTER_MODEL_MIN_CAPACITY: usize = 4;
 
+// ─── チャンク単位カリング（Terrain T3 描画最適化）─────────────────────────────
+//
+// 【背景】散布は 1 チャンク（16m 角）あたり草を数百〜数千本、木（実メッシュ）を
+//   数十〜数百本置く。カリング無しだと画面外・遠方のチャンクまで毎フレーム全ポリゴン
+//   描画され、大量散布で 1fps 級に落ちる。そこで各チャンクのワールド AABB を
+//   カメラ視錐台＋距離でテストし、可視チャンクぶんだけ描く。
+//
+// 【なぜ距離をプロップ種別で分けるか】草は近景を埋めるためのもので遠くでは
+//   1 ピクセル未満に潰れて見えないので近めで打ち切ってよい。木は輪郭が遠方でも
+//   効くのでもう少し遠くまで描く。値はここで名前付き定数として持つ（将来 props.json
+//   の per-prop フィールドへ移せるよう、意味を 1 か所に集約している）。
+//
+// 【AABB マージン＝カリングし過ぎ防止の要（ただし水平は小さく保つ）】
+//   インスタンスの原点はチャンク内でも、草は上へ height 分、木は樹高・樹冠分だけ
+//   チャンク境界の外へはみ出す。厳密な 16m 立方体で判定すると、原点チャンクが視錐台の
+//   縁で切れた瞬間に、まだ見えている樹冠や葉先が消える（偽陽性）。これを防ぐため AABB を
+//   マージン分ふくらませる。
+//   ただしマージンは**水平は小さく・垂直（上）だけ樹高ぶん大きく**する。水平マージンを
+//   大きくすると AABB がチャンク（16m）の数倍に膨れ、カメラ背後や画面外のチャンクまで
+//   視錐台／距離テストを通過してしまい（AABB 同士が重なりカメラを包む）、カリングが
+//   まったく効かなくなる。木は「縦に高いが横幅は狭い」ので、上方向だけ樹高分を確保し、
+//   水平は樹冠のはみ出し程度（数 m）に留めるのが正しい。
+
+/// 草チャンクの距離カリング閾値（メートル・既定）。最近点距離がこれを超えたら描かない。
+const GRASS_CULL_DISTANCE_DEFAULT: f32 = 90.0;
+/// 散布モデル（木）チャンクの距離カリング閾値（メートル・既定）。
+const SCATTER_MODEL_CULL_DISTANCE_DEFAULT: f32 = 220.0;
+
+/// 環境変数で距離閾値を上書きするヘルパ（未設定・不正なら既定値）。
+///
+/// データドリブン化の第一歩＝定数のチューニングを再ビルド無しで行えるようにする
+/// （将来 props.json の per-prop フィールドへ移す前提。名前は SEED_ プレフィクス）。
+fn cull_distance_env(var: &str, default: f32) -> f32 {
+    std::env::var(var)
+        .ok()
+        .and_then(|s| s.parse::<f32>().ok())
+        .filter(|v| *v > 0.0)
+        .unwrap_or(default)
+}
+
+/// 草の距離カリング閾値（メートル）。`SEED_GRASS_CULL_DIST` で上書き可。
+///
+/// 描画側（frame_renderer の草ドロー）も同じ閾値を使うため公開する。
+pub(super) static GRASS_CULL_DISTANCE: std::sync::LazyLock<f32> =
+    std::sync::LazyLock::new(|| cull_distance_env("SEED_GRASS_CULL_DIST", GRASS_CULL_DISTANCE_DEFAULT));
+/// 散布モデルの距離カリング閾値（メートル）。`SEED_MODEL_CULL_DIST` で上書き可。
+static SCATTER_MODEL_CULL_DISTANCE: std::sync::LazyLock<f32> =
+    std::sync::LazyLock::new(|| cull_distance_env("SEED_MODEL_CULL_DIST", SCATTER_MODEL_CULL_DISTANCE_DEFAULT));
+
+/// 草チャンク AABB の水平マージン（メートル）。葉先の横はみ出し分。
+const GRASS_MARGIN_HORIZ: f32 = 1.0;
+/// 草チャンク AABB の上方向マージン（メートル）。草丈＋風の揺れ分。
+const GRASS_MARGIN_UP: f32 = 2.0;
+/// 散布モデルチャンク AABB の水平マージン（メートル）。樹冠の横はみ出し分（小さく保つ）。
+const SCATTER_MODEL_MARGIN_HORIZ: f32 = 4.0;
+/// 散布モデルチャンク AABB の上方向マージン（メートル）。想定樹高ぶん（縦だけ大きく）。
+const SCATTER_MODEL_MARGIN_UP: f32 = 16.0;
+
 /// 散布プロップ定義の読み込み失敗を警告するのは 1 回だけにするためのフラグ。
 ///
 /// props.json が無い環境で毎フレーム／毎コマンド警告が出るとログが埋まるため。
@@ -113,6 +171,15 @@ static PROPS_LOAD_WARNED: std::sync::atomic::AtomicBool =
 /// 草 GPU 再構築のログを出すかどうか（terrain_ops.rs の PERF ゲートと同じ環境変数）。
 static PERF_TERRAIN_LOG_ENABLED: std::sync::LazyLock<bool> =
     std::sync::LazyLock::new(|| std::env::var_os("SEED_PERF_TERRAIN").is_some());
+
+/// 散布（草・モデル）のチャンク単位カリングを無効化するデバッグスイッチ。
+///
+/// `SEED_SCATTER_NOCULL=1` のとき true。true なら視錐台／距離テストを一切行わず、
+/// 全チャンクの散布を毎フレーム描く（カリング導入前の挙動と等価）。カリングの
+/// before/after を同一バイナリ・同一シーンで fps 比較するための計測用フックであり、
+/// 通常実行では設定しない（未設定＝カリング有効）。
+pub(super) static SCATTER_CULL_DISABLED: std::sync::LazyLock<bool> =
+    std::sync::LazyLock::new(|| std::env::var_os("SEED_SCATTER_NOCULL").is_some());
 
 // ============================================================
 //  TerrainScatterField — チャンクマップ上の ScatterField 実装
@@ -367,6 +434,33 @@ pub(super) fn owning_chunk_coord(settings: &TerrainSettings, pos: [f32; 3]) -> C
     )
 }
 
+/// チャンク格子座標から、そのチャンクを包むワールド AABB を返す（カリング判定範囲）。
+///
+/// チャンク c は各軸 `[c*extent, (c+1)*extent)` を占める。散布インスタンスの原点は
+/// この範囲内だが、見た目は草丈・樹高で上方へ、樹冠・葉先で側方へはみ出す。そこで
+/// **水平（X/Z）は `margin_h`・下方向も `margin_h`・上方向（+Y）だけ `margin_up`**
+/// でふくらませる。水平を小さく保つことで AABB がチャンク寸法の数倍に膨れてカリングが
+/// 効かなくなるのを防ぎ（コメント上部参照）、縦は樹高ぶん確保して樹冠の pop を防ぐ。
+fn chunk_world_aabb(
+    settings: &TerrainSettings,
+    coord: ChunkCoord,
+    margin_h: f32,
+    margin_up: f32,
+) -> ([f32; 3], [f32; 3]) {
+    let e = settings.chunk_extent();
+    let min = [
+        coord.x as f32 * e - margin_h,
+        coord.y as f32 * e - margin_h,
+        coord.z as f32 * e - margin_h,
+    ];
+    let max = [
+        (coord.x + 1) as f32 * e + margin_h,
+        (coord.y + 1) as f32 * e + margin_up,
+        (coord.z + 1) as f32 * e + margin_h,
+    ];
+    (min, max)
+}
+
 /// 散布インスタンスを草 GPU インスタンスへ変換する。
 ///
 /// `prop_id` は GPU 側では使わない（プロップ種別ごとに別バッファ・別 uniform を
@@ -440,6 +534,27 @@ pub(crate) struct ScatterModelResource {
     pub batch: InstancedModelBatch,
     /// `batch` に確保済みのインスタンス容量（不足したら作り直す）。
     pub capacity: usize,
+    /// チャンク単位カリング用の「チャンクごとのワールド行列＋AABB」。
+    ///
+    /// `rebuild_scatter_models_gpu`（散布が変わったときだけ）で構築し、毎フレームの
+    /// `cull_and_update_scatter_models` が視錐台＋距離で可視チャンクを選び、その行列
+    /// だけを `batch.update` へ流す。これによりバッチには**可視インスタンスだけ**が
+    /// 載り、G-Buffer パスもシャドウパスも可視ぶんだけを描く。
+    pub chunk_spans: Vec<ScatterModelChunkSpan>,
+}
+
+/// 散布モデル 1 チャンク分の「ワールド行列列＋ワールド AABB」。
+///
+/// チャンク単位カリング（`cull_and_update_scatter_models`）の判定単位。行列は
+/// `scatter_instance_to_model_matrix` で事前計算済みで、可視ならそのまま `batch.update`
+/// へ連結する（毎フレームの再計算は視錐台テストだけで、行列は使い回す）。
+pub struct ScatterModelChunkSpan {
+    /// このチャンクの木を包むワールド AABB 下端（樹高マージン込み）。
+    pub aabb_min: [f32; 3],
+    /// このチャンクの木を包むワールド AABB 上端（樹高マージン込み）。
+    pub aabb_max: [f32; 3],
+    /// このチャンクに属するインスタンスのワールド行列（4x4・行優先）。
+    pub mats: Vec<[[f32; 4]; 4]>,
 }
 
 /// 3 次元外積。
@@ -521,16 +636,23 @@ pub(super) fn scatter_instance_to_model_matrix(inst: &ScatterInstance) -> [[f32;
 }
 
 /// 全チャンクの散布インスタンスから、kind=Model プロップぶんのワールド行列を
-/// プロップ添字ごとに束ねる（GPU 非依存の純粋関数＝単体テスト可能）。
+/// **プロップ添字ごと・チャンクごと**に束ねる（チャンク単位カリングの入力）。
 ///
 /// 対象になるのは `kind == Model` かつ `model_path` が非空のプロップだけ。
 /// 草・孤児（props.json から消えた prop_id）・model_path 未設定は除外する。
-fn gather_scatter_model_matrices(
+///
+/// 各チャンク span はそのチャンクのワールド AABB（樹高マージン込み）と、属する
+/// インスタンスの事前計算ワールド行列を持つ。チャンク座標順にソートして返すため、
+/// 毎フレームのカリング結果（可視 span 連結）は決定的になる。
+fn gather_scatter_model_chunks(
     scatter: &HashMap<ChunkCoord, Vec<ScatterInstance>>,
     props: &TerrainPropSet,
-) -> HashMap<usize, Vec<[[f32; 4]; 4]>> {
-    let mut by_prop: HashMap<usize, Vec<[[f32; 4]; 4]>> = HashMap::new();
-    for instances in scatter.values() {
+    settings: &TerrainSettings,
+) -> HashMap<usize, Vec<ScatterModelChunkSpan>> {
+    // まず (prop, chunk) ごとに行列を集める。
+    let mut per_prop_chunk: HashMap<usize, HashMap<ChunkCoord, Vec<[[f32; 4]; 4]>>> =
+        HashMap::new();
+    for (&coord, instances) in scatter {
         for inst in instances {
             let prop_index = inst.prop_id as usize;
             let Some(prop) = props.props.get(prop_index) else {
@@ -545,11 +667,34 @@ fn gather_scatter_model_matrices(
             if prop.model_path.as_deref().unwrap_or("").is_empty() {
                 continue;
             }
-            by_prop
+            per_prop_chunk
                 .entry(prop_index)
+                .or_default()
+                .entry(coord)
                 .or_default()
                 .push(scatter_instance_to_model_matrix(inst));
         }
+    }
+
+    // チャンク座標順にソートして span 列へ変換する（決定的な描画順のため）。
+    let mut by_prop: HashMap<usize, Vec<ScatterModelChunkSpan>> = HashMap::new();
+    for (prop_index, chunks) in per_prop_chunk {
+        let mut coords: Vec<ChunkCoord> = chunks.keys().copied().collect();
+        coords.sort_by_key(|c| (c.x, c.y, c.z));
+        let spans = coords
+            .into_iter()
+            .map(|coord| {
+                let (aabb_min, aabb_max) = chunk_world_aabb(
+                    settings, coord, SCATTER_MODEL_MARGIN_HORIZ, SCATTER_MODEL_MARGIN_UP,
+                );
+                ScatterModelChunkSpan {
+                    aabb_min,
+                    aabb_max,
+                    mats: chunks.get(&coord).cloned().unwrap_or_default(),
+                }
+            })
+            .collect();
+        by_prop.insert(prop_index, spans);
     }
     by_prop
 }
@@ -1053,9 +1198,26 @@ impl App {
         }
         let t_start = std::time::Instant::now();
 
-        // ─── ① 全チャンクのインスタンスをプロップ添字ごとに束ねる ───
-        let mut by_prop: HashMap<usize, Vec<GrassInstanceGpu>> = HashMap::new();
-        for instances in self.terrain.scatter.values() {
+        // ─── ① 全チャンクのインスタンスをプロップ添字ごとに、かつチャンク順で束ねる ───
+        //   チャンク単位カリング（描画時）のため、各プロップのバッファは**チャンク座標順**に
+        //   詰め、各チャンクの連続区間（span: AABB＋first＋count）を記録する。チャンク座標を
+        //   ソートしてから詰めることで、span 列も描画区間も決定的になる。
+        let settings = self.terrain.settings.clone();
+        let mut coords: Vec<ChunkCoord> = self.terrain.scatter.keys().copied().collect();
+        coords.sort_by_key(|c| (c.x, c.y, c.z));
+
+        // prop -> (連続インスタンス配列, チャンク span 列)
+        let mut by_prop: HashMap<usize, (Vec<GrassInstanceGpu>, Vec<GrassChunkSpan>)> =
+            HashMap::new();
+        for &coord in &coords {
+            let Some(instances) = self.terrain.scatter.get(&coord) else { continue };
+            let (aabb_min, aabb_max) =
+                chunk_world_aabb(&settings, coord, GRASS_MARGIN_HORIZ, GRASS_MARGIN_UP);
+            // このチャンクで各プロップ用に開いた span の添字（entry.1 内）。
+            //   チャンク境界を跨いで span を伸ばさない（伸ばすと隣チャンクの草に
+            //   このチャンクの AABB が付き、カリングが破綻する）ため、チャンクごとに
+            //   最初の 1 本で新規 span を開き、以降は同じ span を伸ばす。
+            let mut opened_span: HashMap<usize, usize> = HashMap::new();
             for inst in instances {
                 let prop_index = inst.prop_id as usize;
                 let Some(prop) = self.terrain.props.props.get(prop_index) else {
@@ -1064,16 +1226,28 @@ impl App {
                 };
                 if prop.kind != PropKind::Grass {
                     // kind=Model は草とは別経路（rebuild_scatter_models_gpu）で描く。
-                    //   第2段で「シーンから独立したインスタンシング経路」を新設した:
-                    //   ECS アクターに紐付かない GpuModel を TerrainState.scatter_models が
-                    //   所有し、通常メッシュ G-Buffer パイプラインでインスタンス描画する。
-                    //   ここ（草）では単にスキップする。
                     continue;
                 }
-                by_prop
-                    .entry(prop_index)
-                    .or_default()
-                    .push(scatter_instance_to_gpu(inst));
+                let entry = by_prop.entry(prop_index).or_default();
+                let first = entry.0.len() as u32;
+                entry.0.push(scatter_instance_to_gpu(inst));
+                match opened_span.get(&prop_index) {
+                    Some(&span_idx) => {
+                        // このチャンクで既に開いている span を伸ばす。
+                        entry.1[span_idx].count += 1;
+                    }
+                    None => {
+                        // このチャンク・このプロップの最初の 1 本 → 新規 span を開く。
+                        let span_idx = entry.1.len();
+                        entry.1.push(GrassChunkSpan {
+                            aabb_min,
+                            aabb_max,
+                            first,
+                            count: 1,
+                        });
+                        opened_span.insert(prop_index, span_idx);
+                    }
+                }
             }
         }
 
@@ -1102,7 +1276,7 @@ impl App {
         let pipeline = &ctx.pipelines.gbuffer.grass;
 
         let mut total = 0usize;
-        for (prop_index, instances) in &by_prop {
+        for (prop_index, (instances, spans)) in &by_prop {
             let Some(prop) = self.terrain.props.props.get(*prop_index) else {
                 continue;
             };
@@ -1111,9 +1285,13 @@ impl App {
 
             match self.terrain.grass_buffers.get_mut(prop_index) {
                 // 既存バッファは中身を差し替える（容量が足りていれば再確保しない）。
-                Some(buf) => buf.update(device, queue, pipeline, instances, uniform),
+                Some(buf) => {
+                    buf.update(device, queue, pipeline, instances, uniform);
+                    buf.set_spans(spans.clone());
+                }
                 None => {
-                    let buf = GrassInstanceBuffer::new(device, pipeline, instances, uniform);
+                    let mut buf = GrassInstanceBuffer::new(device, pipeline, instances, uniform);
+                    buf.set_spans(spans.clone());
                     self.terrain.grass_buffers.insert(*prop_index, buf);
                 }
             }
@@ -1158,15 +1336,24 @@ impl TerrainState {
     ///   行列だけ差し替える。容量不足時のみ作り直す（統合バッチ `shared_model_batches`
     ///   と同じ規約 `.max(SCATTER_MODEL_MIN_CAPACITY)`）。
     ///
-    /// - `camera_pos`: バッチの距離 LOD 振り分けに使う（見た目の姿勢には影響しない）。
-    pub(super) fn rebuild_scatter_models_gpu(&mut self, ctx: &DrawContext, camera_pos: [f32; 3]) {
+    /// 【チャンク単位カリング（Terrain T3 描画最適化）】
+    ///   本メソッドは散布が変わったとき（`grass_gpu_dirty`）だけ走り、プロップごとに
+    ///   **チャンク単位の span（AABB＋事前計算ワールド行列）**を `res.chunk_spans` へ
+    ///   構築する。実際の GPU アップロード（`batch.update`）は毎フレームの
+    ///   `cull_and_update_scatter_models` が可視チャンクぶんだけに絞って行う。
+    ///   ここでバッチへ全行列を流し込まないのは、カメラが動くと可視集合が変わるためで、
+    ///   「rebuild=データ準備／毎フレーム=可視ぶんアップロード」に責務を分けている。
+    ///
+    /// - `camera_pos`: バッチ容量確保後の初回アップロードを兼ねて可視カリングを 1 回
+    ///   走らせるための基準（実アップロードは呼び出し側の毎フレーム経路が担う）。
+    pub(super) fn rebuild_scatter_models_gpu(&mut self, ctx: &DrawContext, _camera_pos: [f32; 3]) {
         if !self.grass_gpu_dirty {
             return;
         }
         let t_start = std::time::Instant::now();
 
-        // ─── ① 全チャンクの Model インスタンスをプロップ添字ごとに行列で束ねる ───
-        let mats_by_prop = gather_scatter_model_matrices(&self.scatter, &self.props);
+        // ─── ① 全チャンクの Model インスタンスをプロップ×チャンクで束ねる ───
+        let mats_by_prop = gather_scatter_model_chunks(&self.scatter, &self.props, &self.settings);
 
         // ─── ② 描画対象から消えたプロップのリソース／失敗記録を捨てる（VRAM 解放）───
         //   【snatch lock 再帰の防止】捨てた GpuModel／バッチのバッファは、前フレームの
@@ -1184,20 +1371,23 @@ impl TerrainState {
             let _ = ctx.device.poll(wgpu::PollType::Wait);
         }
 
-        // ─── ③ プロップごとに: モデルをロード（キャッシュ）→ バッチへ行列アップロード ───
+        // ─── ③ プロップごとに: モデルをロード（キャッシュ）→ チャンク span を格納 ───
+        //   バッチへの行列アップロードはここでは行わない（毎フレームの
+        //   cull_and_update_scatter_models が可視ぶんだけ流す）。容量だけ確保しておく。
         let mut total = 0usize;
-        for (prop_index, mats) in &mats_by_prop {
-            let Some(prop) = self.props.props.get(*prop_index) else { continue };
+        for (prop_index, spans) in mats_by_prop {
+            let mat_count: usize = spans.iter().map(|s| s.mats.len()).sum();
+            let Some(prop) = self.props.props.get(prop_index) else { continue };
             let want_path = match prop.model_path.as_deref() {
                 Some(p) if !p.is_empty() => p.to_string(),
                 _ => continue,
             };
 
             // 既存リソースの model_path が変わっていたら破棄して読み直す（props リロード）。
-            if let Some(res) = self.scatter_models.get(prop_index) {
+            if let Some(res) = self.scatter_models.get(&prop_index) {
                 if res.model_path != want_path {
-                    self.scatter_models.remove(prop_index);
-                    self.scatter_model_failed.remove(prop_index);
+                    self.scatter_models.remove(&prop_index);
+                    self.scatter_model_failed.remove(&prop_index);
                     // 旧リソースの遅延破棄を確定させてから読み直す（②と同じ snatch 再帰対策。
                     // in-flight バッファの破棄が後段の write_buffer／submit の read lock 下で
                     // 走ると再帰パニックするため、read lock 非保持のここで poll(Wait) する）。
@@ -1206,10 +1396,10 @@ impl TerrainState {
             }
 
             // まだリソースが無ければロードを試みる（同じ壊れたパスは再試行しない）。
-            if !self.scatter_models.contains_key(prop_index) {
+            if !self.scatter_models.contains_key(&prop_index) {
                 let already_failed = self
                     .scatter_model_failed
-                    .get(prop_index)
+                    .get(&prop_index)
                     .map(|p| p == &want_path)
                     .unwrap_or(false);
                 if already_failed {
@@ -1217,19 +1407,20 @@ impl TerrainState {
                 }
                 match load_scatter_model(ctx, &want_path) {
                     Ok((cpu_model, gpu_model)) => {
-                        let capacity = (mats.len() * 2).max(SCATTER_MODEL_MIN_CAPACITY);
+                        let capacity = (mat_count * 2).max(SCATTER_MODEL_MIN_CAPACITY);
                         let batch = ctx.create_instanced_batch_no_meshlet(&cpu_model, capacity as u32);
                         self.scatter_models.insert(
-                            *prop_index,
+                            prop_index,
                             ScatterModelResource {
                                 model_path: want_path.clone(),
                                 cpu_model,
                                 gpu_model,
                                 batch,
                                 capacity,
+                                chunk_spans: Vec::new(),
                             },
                         );
-                        self.scatter_model_failed.remove(prop_index);
+                        self.scatter_model_failed.remove(&prop_index);
                     }
                     Err(err) => {
                         // ロード失敗。1 回だけ警告して記録（次フレーム以降は黙る）。
@@ -1238,36 +1429,33 @@ impl TerrainState {
                              （このプロップは描画をスキップします）",
                             prop.id, want_path, err
                         );
-                        self.scatter_model_failed.insert(*prop_index, want_path.clone());
+                        self.scatter_model_failed.insert(prop_index, want_path.clone());
                         continue;
                     }
                 }
             }
 
             // ここまで来ればリソースは必ず存在する。容量不足なら作り直す。
+            //   容量は「全インスタンス数」で確保する（毎フレームのカリングで可視ぶんへ
+            //   絞るが、カメラ位置次第では全チャンクが可視になり得るため、最悪ケースの
+            //   全数を収められる容量を持たせておく＝毎フレームの再確保＝snatch を避ける）。
             let res = self
                 .scatter_models
-                .get_mut(prop_index)
+                .get_mut(&prop_index)
                 .expect("scatter model resource just ensured present");
-            if mats.len() > res.capacity {
-                let capacity = (mats.len() * 2).max(SCATTER_MODEL_MIN_CAPACITY);
+            if mat_count > res.capacity {
+                let capacity = (mat_count * 2).max(SCATTER_MODEL_MIN_CAPACITY);
                 // 新バッチを作ると、旧バッチがこの代入で drop される。旧バッチの instance
                 // バッファは前フレームの submit が参照中（in-flight）なので、drop は即時破棄
                 // されず wgpu の遅延破棄キューへ積まれる。
                 res.batch = ctx.create_instanced_batch_no_meshlet(&res.cpu_model, capacity as u32);
                 res.capacity = capacity;
-                // 【snatch lock 再帰の防止】直後の res.batch.update()（queue.write_buffer）や
-                //   フレーム末尾の queue.submit() が snatch read lock を保持したまま上の遅延破棄を
-                //   処理すると、破棄側が snatch write lock を取りに行き再帰取得でパニックする。
-                //   ここで poll(Wait) を挟み、read lock 非保持のうちに旧バッファの解放を確定させる
-                //   （②・model_path 変更と同じ手順。再生成は「インスタンス数が 2 倍超に増えた」
-                //   稀なケースだけなので、1 フレームの GPU アイドル待ちは許容範囲）。
+                // 【snatch lock 再帰の防止】read lock 非保持のここで旧バッファ解放を確定させる。
                 let _ = ctx.device.poll(wgpu::PollType::Wait);
             }
-            // 行列をアップロード（内部は write_buffer。dirty 化してから update）。
-            res.batch.mark_dirty();
-            res.batch.update(&ctx.queue, &res.cpu_model, mats, camera_pos);
-            total += mats.len();
+            // チャンク span を格納（毎フレームのカリングが読む）。行列アップロードはしない。
+            res.chunk_spans = spans;
+            total += mat_count;
         }
 
         // フラグはここではクリアしない（rebuild_grass_gpu が後段でクリアする）。
@@ -1278,6 +1466,78 @@ impl TerrainState {
                 "[PERF terrain] scatter model gpu rebuild: {total} instances across {} props in {ms:.2}ms",
                 self.scatter_models.len()
             );
+        }
+    }
+
+    /// 【毎フレーム】散布モデルをチャンク単位で視錐台＋距離カリングし、可視チャンクの
+    /// インスタンス行列だけをバッチへアップロードする（Terrain T3 描画最適化）。
+    ///
+    /// `rebuild_scatter_models_gpu` が用意した `res.chunk_spans` を走査し、各チャンクの
+    /// AABB がメインカメラ視錐台の外、または距離カリング閾値より遠ければそのチャンクを
+    /// 丸ごと飛ばす。生き残ったチャンクの事前計算行列を 1 本の可視配列へ連結し、
+    /// `batch.update` へ流す。これでバッチには可視インスタンスだけが載り、G-Buffer パス
+    /// もシャドウパスも可視ぶんだけを描く（描画コストが可視数に比例する）。
+    ///
+    /// 【毎フレーム update のコスト】`batch.update` は dirty 時に可視インスタンス分の
+    /// ワールド行列を rayon で再計算する。カリング後の可視数は近傍チャンクぶんに限られる
+    /// ため軽い。最悪（全チャンク可視）でも「全数を毎フレーム計算」に留まり、これは
+    /// GPU で重い木を全数描くコストに比べれば桁違いに小さい。
+    ///
+    /// 【シャドウの扱い（既知の割り切り）】バッチはメイン描画とシャドウ描画で共有される
+    /// ため、視錐台外のチャンクはシャドウキャスタからも外れる。画面のすぐ外の木が落とす
+    /// 影が画面端で欠けうるが、AABB の水平マージン（`SCATTER_MODEL_MARGIN_HORIZ`）で縁を広げて
+    /// 緩和している。全木を影に含める本格対応（シャドウ専用の広いカリング）は将来。
+    ///
+    /// - `planes`: `extract_frustum_planes(view_proj)` のメインカメラ 6 平面。
+    /// - `camera_pos`: 距離カリングと距離 LOD の基準（ワールド）。
+    pub(super) fn cull_and_update_scatter_models(
+        &mut self,
+        ctx: &DrawContext,
+        planes: &[[f32; 4]; 6],
+        camera_pos: [f32; 3],
+    ) {
+        use crate::engine::core::renderer::gpu_resources::{aabb_distance_sq, aabb_outside_frustum};
+        let model_cull_dist = *SCATTER_MODEL_CULL_DISTANCE;
+        let cull_dist_sq = model_cull_dist * model_cull_dist;
+
+        let nocull = *SCATTER_CULL_DISABLED;
+        let mut dbg_total = 0usize;
+        let mut dbg_visible = 0usize;
+        for res in self.scatter_models.values_mut() {
+            // 可視チャンクの行列を連結する（スクラッチは毎フレーム作り捨て）。
+            let mut visible: Vec<[[f32; 4]; 4]> = Vec::new();
+            for span in &res.chunk_spans {
+                dbg_total += span.mats.len();
+                if span.mats.is_empty() {
+                    continue;
+                }
+                // 計測用: NOCULL 指定時はテストせず全チャンクを含める（カリング前挙動）。
+                if !nocull {
+                    if aabb_outside_frustum(planes, span.aabb_min, span.aabb_max) {
+                        continue;
+                    }
+                    if aabb_distance_sq(span.aabb_min, span.aabb_max, camera_pos) > cull_dist_sq {
+                        continue;
+                    }
+                }
+                visible.extend_from_slice(&span.mats);
+            }
+            dbg_visible += visible.len();
+            // 可視ぶんだけをアップロード（dirty 化してワールド行列を再計算させる）。
+            // visible が空なら update 内部で全 LOD カウントが 0 になり、何も描かれない。
+            res.batch.mark_dirty();
+            res.batch.update(&ctx.queue, &res.cpu_model, &visible, camera_pos);
+        }
+        // 計測ログ（SEED_PERF_TERRAIN 有効時のみ・毎フレームだと五月蝿いので間引く）。
+        if *PERF_TERRAIN_LOG_ENABLED && dbg_total > 0 {
+            use std::sync::atomic::{AtomicU64, Ordering};
+            static N: AtomicU64 = AtomicU64::new(0);
+            if N.fetch_add(1, Ordering::Relaxed) % 60 == 0 {
+                eprintln!(
+                    "[PERF terrain] scatter model cull: visible={dbg_visible}/{dbg_total} \
+                     (nocull={nocull})"
+                );
+            }
         }
     }
 }
@@ -2034,11 +2294,25 @@ mod tests {
         // 別チャンクに model+path×1 と孤児(prop_id=9)×1
         scatter.insert(ChunkCoord::new(1, 0, 0), vec![mk(1), mk(9)]);
 
-        let by = gather_scatter_model_matrices(&scatter, &props);
+        let settings = TerrainSettings::default();
+        let by = gather_scatter_model_chunks(&scatter, &props, &settings);
         assert_eq!(by.len(), 1, "対象は model+path のプロップ 1 種のみ");
-        assert_eq!(by.get(&1).map(|v| v.len()), Some(3), "prop 1 は全チャンク合計 3 本");
+        // prop 1 は 2 チャンクに跨る（chunk(0,0,0)=2本, chunk(1,0,0)=1本）→ span 2 個・計 3 本。
+        let spans = by.get(&1).expect("prop 1 の span 列");
+        let total: usize = spans.iter().map(|s| s.mats.len()).sum();
+        assert_eq!(total, 3, "prop 1 は全チャンク合計 3 本");
+        assert_eq!(spans.len(), 2, "prop 1 は 2 チャンクに分かれる（span 2 個）");
         assert!(!by.contains_key(&0), "草プロップは除外されること");
         assert!(!by.contains_key(&2), "model_path 無しは除外されること");
         assert!(!by.contains_key(&9), "孤児 prop_id は除外されること");
+
+        // span はチャンク座標順（(0,0,0) が先）。chunk(0,0,0) が 2 本、chunk(1,0,0) が 1 本。
+        assert_eq!(spans[0].mats.len(), 2, "先頭 span は chunk(0,0,0) の 2 本");
+        assert_eq!(spans[1].mats.len(), 1, "次 span は chunk(1,0,0) の 1 本");
+        // chunk(0,0,0) の AABB はマージン込みで原点側に負のはみ出しを持つ。
+        let e = settings.chunk_extent();
+        assert!(spans[0].aabb_min[0] < 0.0, "AABB は margin ぶん負側へ広がる");
+        assert!(spans[1].aabb_min[0] >= e - SCATTER_MODEL_MARGIN_HORIZ - 1.0,
+            "chunk(1,0,0) の AABB は x 方向へ 1 チャンクぶんずれる");
     }
 }

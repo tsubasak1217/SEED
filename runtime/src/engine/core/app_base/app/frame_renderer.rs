@@ -997,6 +997,14 @@ impl App {
         //   camera_pos は距離 LOD の振り分けに使うだけ（見た目の姿勢には影響しない）。
         if let Some(ctx) = self.draw_ctx.as_ref() {
             self.terrain.rebuild_scatter_models_gpu(ctx, saved_camera_pos);
+            // ── 散布モデルのチャンク単位フラスタム＋距離カリング（毎フレーム）──
+            //   rebuild が用意した chunk_spans を、メインカメラ視錐台＋距離で絞り、
+            //   可視チャンクのインスタンス行列だけをバッチへアップロードする。カメラが
+            //   動くたびに可視集合が変わるため rebuild（dirty 時のみ）とは別に毎フレーム走らせる。
+            //   これで G-Buffer パスもシャドウパスも可視ぶんだけを描く（描画コスト激減）。
+            self.terrain.cull_and_update_scatter_models(
+                ctx, &saved_frustum_planes, saved_camera_pos,
+            );
         }
 
         let perf_grass_ms: f64 = {
@@ -3748,14 +3756,35 @@ impl App {
                                 //   時刻は `ctx.anim_time`（Play 中のみ進むゲーム内経過秒）を使う。
                                 //   Edit モードで風が止まるのは他のアニメーションと同じ挙動であり、
                                 //   独自の時計を持たない（時間源を二重化しないための判断）。
+                                //   チャンク単位フラスタム＋距離カリング付きで描く
+                                //   （Terrain T3 描画最適化）。可視チャンクの連続区間だけを
+                                //   draw する。カリング用の平面・カメラ位置はメインカメラのもの。
+                                let grass_cull_dist =
+                                    *super::terrain_scatter_ops::GRASS_CULL_DISTANCE;
+                                // 計測用 NOCULL 指定時は距離∞ 相当にして全チャンクを描く
+                                //   （span 判定は視錐台も見るため、draw_grass=全描画へ切り替える）。
+                                let grass_nocull = *super::terrain_scatter_ops::SCATTER_CULL_DISABLED;
+                                let grass_cull_sq = grass_cull_dist * grass_cull_dist;
                                 for buf in self.terrain.grass_buffers.values() {
                                     buf.update_time(&draw_ctx.queue, ctx.anim_time);
-                                    crate::engine::core::renderer::grass_gbuffer::draw_grass(
-                                        &mut gpass,
-                                        &draw_ctx.pipelines.gbuffer.grass,
-                                        buf,
-                                        &camera_buf.bind_group,
-                                    );
+                                    if grass_nocull {
+                                        crate::engine::core::renderer::grass_gbuffer::draw_grass(
+                                            &mut gpass,
+                                            &draw_ctx.pipelines.gbuffer.grass,
+                                            buf,
+                                            &camera_buf.bind_group,
+                                        );
+                                    } else {
+                                        crate::engine::core::renderer::grass_gbuffer::draw_grass_culled(
+                                            &mut gpass,
+                                            &draw_ctx.pipelines.gbuffer.grass,
+                                            buf,
+                                            &camera_buf.bind_group,
+                                            &saved_frustum_planes,
+                                            saved_camera_pos,
+                                            grass_cull_sq,
+                                        );
+                                    }
                                 }
 
                                 // ── 散布モデル（kind=Model プロップ）を G-Buffer へ焼く（Terrain T3 第2段）──

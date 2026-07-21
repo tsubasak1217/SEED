@@ -1381,6 +1381,69 @@ ECS アクターには一切紐付けない**独立したインスタンシン�
 - **prop_id の並び替え耐性が無い**: `.tscatter` は prop_id を添字で保持するため、props.json の
   並び替えで既存散布データの指し先がずれる（§15.2）。
 
+### 15.9c 散布のチャンク単位カリング（描画最適化・実装済み）
+
+大量散布（実モデルの木を数千〜万インスタンス＋草 10 万本級）を **LOD 無し・視界外カリング無し**で
+毎フレーム全ポリゴン描画すると、画面外・遠方のチャンクまで描き続けて 1fps 級に落ちる。
+以前オブジェクト単位フラスタムカリングを撤去した経緯もあり、散布インスタンスは画面外・遠方も
+毎フレーム全部描かれていた。これを **チャンク単位の距離＋フラスタムカリング（CPU・毎フレーム）** で
+可視ぶんだけに絞る。
+
+**判定単位＝チャンク AABB**
+- 各地形チャンクは 16m 角（`chunk_extent`）。散布インスタンスは所有チャンク（`owning_chunk_coord`・
+  XYZ 全軸）に属するので、チャンク格子座標から**ワールド AABB を厳密に**求められる
+  （`chunk_world_aabb`）。
+- AABB は **マージンを水平は小さく・上方向だけ樹高ぶん大きく**ふくらませる
+  （草: 水平 `GRASS_MARGIN_HORIZ=1m`／上 `GRASS_MARGIN_UP=2m`、モデル: 水平
+  `SCATTER_MODEL_MARGIN_HORIZ=4m`／上 `SCATTER_MODEL_MARGIN_UP=16m`）。**水平マージンを大きく
+  取ると AABB がチャンク寸法の数倍に膨れ、カメラ背後や画面外のチャンクまで判定を通過して
+  カリングがまったく効かなくなる**（実測で 24m 一律マージンだと可視=総数で全滅した）。木は
+  「縦に高いが横幅は狭い」ので上だけ樹高分を確保し、水平は樹冠のはみ出し程度に留める。
+
+**フラスタム平面の入手**（撤去した `test_aabb_frustum`／`compute_frustum_planes` は復活させない）
+- メインカメラの `view_proj` から `gpu_resources::extract_frustum_planes()` で 6 平面を得る
+  （frame_renderer が毎フレーム `saved_frustum_planes` として既に算出済み・メッシュレットカリングと共有）。
+- AABB 判定は `gpu_resources::aabb_outside_frustum()`（p-vertex 法・偽陽性ゼロ＝見える物を消さない）と
+  `aabb_distance_sq()`（最近点距離²）。距離閾値は `GRASS_CULL_DISTANCE`（既定 90m）/
+  `SCATTER_MODEL_CULL_DISTANCE`（既定 220m）。`SEED_GRASS_CULL_DIST` / `SEED_MODEL_CULL_DIST` で
+  上書き可（将来 props.json の per-prop フィールドへ移す前提の名前付き定数）。
+
+**草（`draw_grass_culled`）** — バッファは詰め直さない
+- `rebuild_grass_gpu` はプロップごとのインスタンス配列を**チャンク座標順**に詰め、各チャンクの
+  連続区間（`GrassChunkSpan{aabb, first, count}`）を `GrassInstanceBuffer` に併記する。
+- 描画時に各 span を視錐台＋距離テストし、**可視な連続区間だけ** `draw(0..96, first..first+count)` で
+  発行する（隣接可視 span は 1 draw にまとめる）。バッファ本体は無変更＝毎フレームのアップロード無し。
+
+**散布モデル（`cull_and_update_scatter_models`）** — 可視ぶんだけをバッチへ
+- `rebuild_scatter_models_gpu`（散布が変わったときだけ）はプロップごとに**チャンク単位の span**
+  （AABB＋事前計算ワールド行列）を `ScatterModelResource.chunk_spans` に構築する。バッチへの
+  行列アップロードはここでは行わない。
+- 毎フレーム `cull_and_update_scatter_models` が span を視錐台＋距離でふるい、可視チャンクの行列だけを
+  `InstancedModelBatch::update` へ流す。バッチには可視インスタンスだけが載り、**G-Buffer パスも
+  ラスタ影パスも可視ぶんだけ**を描く（両パスが同じバッチを共有するため）。容量は全数×2 で確保済み
+  なので毎フレームの再確保（＝snatch lock 再帰の危険）は起きない。
+- **影の割り切り**: バッチ共有ゆえ視錐台外チャンクはシャドウキャスタからも外れる。画面すぐ外の木の影が
+  画面端で欠けうるが、AABB の水平マージンで縁を広げて緩和。シャドウ専用の広いカリングは将来。
+
+**計測用フック**: `SEED_SCATTER_NOCULL=1` でカリングを無効化（カリング前挙動）。`SEED_PERF_TERRAIN` 有効時に
+`[PERF terrain] scatter model cull: visible=N/M` を間引き出力（可視/総数）。
+
+**スコープ外（今回やらない）**: per-instance GPU カリング（indirect draw）、LOD メッシュ切替、
+インポスター、遠景の密度低減。まずチャンク単位の距離＋フラスタムカリングで実用 fps を狙う段。
+
+**実測（RTX 3060 Laptop・Vulkan・release・`SEED_TERRAIN_SMOKE`）**
+- カリングが可視集合を正しく削減することを確認: クローズアップ視点で木 **1,789 → 1,092 本（−39%）**・
+  草 **60,595 → 27,376 本（−55%）**、オーバービュー＋距離 55m で木 **3,914 → 2,916 本（−25%）**
+  （`[PERF terrain] scatter model cull` ログ）。マージン修正前（水平 24m）は 1,789/1,789＝全数通過で
+  カリングが効いておらず、この実測で不具合を発見・修正した。
+- 高密度（木 6,119 本）では**カリング無しの全描画は GPU が device-lost（TDR）に陥りクラッシュ**
+  （wgpu snatch lock 再帰パニック）。カリング有効時は可視ぶんに絞られて描画が成立する。
+- **定常フレームタイムの before/after 数値は本自動計測環境では確定できなかった**: バックグラウンド
+  ウィンドウのスワップチェーン present が重負荷フェーズで断続的にタイムアウト（`Render error: Timeout`）し、
+  `bf`/`total` 指標がカリング有無どちらでも非決定的に汚染されるため（草のみの軽量フレームでは
+  タイムアウト無しで安定計測できたことから、present 停止は描画負荷起因の環境要因と切り分け済み）。
+  可視集合の削減（上記・決定的計測）と高密度でのクラッシュ回避が、描画コスト削減の直接証拠である。
+
 ### 15.10 パフォーマンス実測
 
 46,679 本の草を描画した実測（測定条件: Mailbox プレゼントモード・GPU バックプレッシャー無し）:

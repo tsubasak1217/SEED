@@ -1388,6 +1388,58 @@ fn sub_rows(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
     [a[0]-b[0], a[1]-b[1], a[2]-b[2], a[3]-b[3]]
 }
 
+/// 軸平行 AABB が視錐台の**完全に外側**にあるか（保守的判定）を返す。
+///
+/// 【用途】地形散布（草・モデル）のチャンク単位フラスタムカリング。カメラの
+/// `view_proj` から `extract_frustum_planes` で得た 6 平面に対し、チャンクの
+/// ワールド AABB を丸ごと棄却できるかを CPU で毎フレーム判定する。
+///
+/// 【平面規約】`extract_frustum_planes` と同じく `dot(plane.xyz, P) + plane.w >= 0`
+/// が「内側」。ある平面について AABB の**最も内側寄りの頂点**（p-vertex＝平面法線
+/// 方向へ最も進んだ頂点）ですら外側（`dot + w < 0`）なら、AABB 全体がその平面の
+/// 外にあると確定できる。1 枚でもそう言える平面があれば視錐台外。
+///
+/// 【保守性】この判定は「外」と言い切れる場合のみ true を返す（偽陽性ゼロ）。
+/// 視錐台の角付近で AABB が実際は外なのに false（＝描画）になる偽陰性はあり得るが、
+/// それは「余分に描くだけ」で見た目は正しい。カリングで見えるべき物が消える
+/// （偽陽性）ことは決して起きない——これがカリングに要求される安全側の性質である。
+#[inline]
+pub fn aabb_outside_frustum(planes: &[[f32; 4]; 6], min: [f32; 3], max: [f32; 3]) -> bool {
+    for pl in planes {
+        // p-vertex: 各軸で、平面法線成分が正なら max・負なら min を選ぶ
+        // （＝平面法線方向へ最も進んだ角）。
+        let px = if pl[0] >= 0.0 { max[0] } else { min[0] };
+        let py = if pl[1] >= 0.0 { max[1] } else { min[1] };
+        let pz = if pl[2] >= 0.0 { max[2] } else { min[2] };
+        // p-vertex ですら内側条件を満たさない ⇒ AABB 全体が外側。
+        if pl[0] * px + pl[1] * py + pl[2] * pz + pl[3] < 0.0 {
+            return true;
+        }
+    }
+    false
+}
+
+/// 点 `p` から AABB `[min,max]` までの最短距離の二乗を返す（点が内部なら 0）。
+///
+/// 距離カリング用。各軸でクランプ差分を取る標準的な最短距離計算。カメラ位置を
+/// AABB へクランプした最近点との距離を測ることで、「巨大／至近のチャンクの
+/// 中心が遠い」ケースでも取りこぼさない（中心距離ではなく最近点距離で判定する）。
+#[inline]
+pub fn aabb_distance_sq(min: [f32; 3], max: [f32; 3], p: [f32; 3]) -> f32 {
+    let mut d = 0.0f32;
+    for i in 0..3 {
+        let v = p[i];
+        if v < min[i] {
+            let e = min[i] - v;
+            d += e * e;
+        } else if v > max[i] {
+            let e = v - max[i];
+            d += e * e;
+        }
+    }
+    d
+}
+
 /// モデルローカル空間の AABB をルート変換行列でワールド空間に変換する。
 ///
 /// 8 頂点すべてを変換し、新しい AABB を求める（精密かつシンプル）。
@@ -2340,6 +2392,91 @@ mod meshlet_gpu_tests {
         validator
             .validate(&module)
             .unwrap_or_else(|e| panic!("meshlet_cull WGSL validate 失敗: {e:?}"));
+    }
+}
+
+// ============================================================
+//  テスト（チャンクカリング: フラスタム／距離判定）
+// ============================================================
+
+#[cfg(test)]
+mod cull_tests {
+    use super::{aabb_distance_sq, aabb_outside_frustum, extract_frustum_planes};
+
+    /// カメラ原点・-Z 前方を見る単純な透視 view_proj（行優先）を作る。
+    ///
+    /// near=1, far=100, fov=90°, aspect=1。`extract_frustum_planes` は行優先
+    /// （clip = vp * world）を前提とするため、描画経路と同じ並びで返す。
+    fn forward_view_proj() -> [[f32; 4]; 4] {
+        let n = 1.0f32;
+        let f = 100.0f32;
+        let s = 1.0f32; // fov 90°, aspect 1 → 1/tan(45°) = 1
+        // 行優先の透視射影（-Z 前方・depth[0,1]）:
+        //   clip.x = s*x, clip.y = s*y,
+        //   clip.z = f/(n-f)*z + n*f/(n-f)*w, clip.w = -z
+        [
+            [s,   0.0, 0.0,          0.0],
+            [0.0, s,   0.0,          0.0],
+            [0.0, 0.0, f / (n - f),  n * f / (n - f)],
+            [0.0, 0.0, -1.0,         0.0],
+        ]
+    }
+
+    /// カメラ前方（-Z）にある AABB は視錐台内＝棄却されない。
+    /// カメラ後方（+Z）にある AABB は視錐台外＝棄却される。
+    #[test]
+    fn frustum_rejects_behind_keeps_front() {
+        let planes = extract_frustum_planes(&forward_view_proj());
+
+        // 前方 10m（-Z）にある小さな箱 → 見える（棄却しない）。
+        let front_min = [-1.0, -1.0, -11.0];
+        let front_max = [1.0, 1.0, -9.0];
+        assert!(
+            !aabb_outside_frustum(&planes, front_min, front_max),
+            "カメラ前方の AABB を誤って棄却した（見えるべき物が消える偽陽性）"
+        );
+
+        // 後方 10m（+Z）にある箱 → 見えない（棄却する）。
+        let back_min = [-1.0, -1.0, 9.0];
+        let back_max = [1.0, 1.0, 11.0];
+        assert!(
+            aabb_outside_frustum(&planes, back_min, back_max),
+            "カメラ後方の AABB を棄却できていない"
+        );
+
+        // far(100m)より遠い箱 → 棄却する。
+        let far_min = [-1.0, -1.0, -130.0];
+        let far_max = [1.0, 1.0, -110.0];
+        assert!(
+            aabb_outside_frustum(&planes, far_min, far_max),
+            "far 平面より遠い AABB を棄却できていない"
+        );
+
+        // 画面横に大きく外れた箱（+X 方向へ大きく平行移動）→ 棄却する。
+        let side_min = [200.0, -1.0, -11.0];
+        let side_max = [202.0, 1.0, -9.0];
+        assert!(
+            aabb_outside_frustum(&planes, side_min, side_max),
+            "視錐台の横外にある AABB を棄却できていない"
+        );
+    }
+
+    /// AABB 最近点距離: 内部は 0、軸方向外側・斜め外側で正しい二乗距離。
+    #[test]
+    fn aabb_distance_sq_is_correct() {
+        let min = [0.0, 0.0, 0.0];
+        let max = [10.0, 10.0, 10.0];
+
+        // 内部 → 0
+        assert_eq!(aabb_distance_sq(min, max, [5.0, 5.0, 5.0]), 0.0);
+        // 面上 → 0
+        assert_eq!(aabb_distance_sq(min, max, [0.0, 5.0, 5.0]), 0.0);
+        // X 方向に 3m 外 → 9
+        assert_eq!(aabb_distance_sq(min, max, [13.0, 5.0, 5.0]), 9.0);
+        // 角から (3,4,0) 外 → 9+16 = 25
+        assert_eq!(aabb_distance_sq(min, max, [13.0, 14.0, 5.0]), 25.0);
+        // 負側 X に 5m 外 → 25
+        assert_eq!(aabb_distance_sq(min, max, [-5.0, 5.0, 5.0]), 25.0);
     }
 }
 
