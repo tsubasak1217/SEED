@@ -1285,15 +1285,26 @@ impl App {
         let mut prebuilt: Vec<(ChunkCoord, Arc<Model>, Option<GpuModel>, Option<InstancedModelBatch>)> = Vec::new();
         // 由来辺は借用の都合で一旦ローカルへ溜め、フェーズ 3 の後で self.terrain へ入れる。
         let mut prebuilt_edges: Vec<(ChunkCoord, Arc<Vec<TerrainVertexEdge>>)> = Vec::new();
+
+        // ── フェーズ 2a: CPU メッシュ生成をチャンク間で rayon 並列化する ──
+        //   ロード経路（`rebuild_terrain_after_load`）・編集経路（`remesh_chunks` フェーズ0）と
+        //   同一の並列化。`build_chunk_cpu_model` は共有参照のみの純粋関数で、
+        //   `par_iter().map().collect()` は入力順を保存するため出力は逐次実行と完全一致（決定的）。
+        let cpu_models: Vec<Option<(Arc<Model>, bool, Arc<Vec<TerrainVertexEdge>>)>> = coords
+            .par_iter()
+            .map(|&coord| build_chunk_cpu_model(&self.terrain.chunks, &settings, &layers, coord))
+            .collect();
+
+        // ── フェーズ 2b: GPU アップロードは直列（DrawContext は Sync でないため並列化しない）──
         {
             let ctx = self.draw_ctx.as_ref().unwrap();
-            for &coord in &coords {
-                // 空メッシュチャンクも Some(model, None, None) で返るため、全チャンクが
-                // アクター＋MC スロットを得る（掘削で後から表面が出ても差し替えられる）。
-                if let Some((model, gpu, batch, edges)) = build_chunk_render(&self.terrain.chunks, &settings, &layers, ctx, coord) {
-                    prebuilt.push((coord, model, gpu, batch));
-                    prebuilt_edges.push((coord, edges));
-                }
+            for (&coord, cpu) in coords.iter().zip(cpu_models.into_iter()) {
+                // 空メッシュチャンクも gpu/batch=None で積まれ、全チャンクがアクター＋MC スロットを
+                // 得る（掘削で後から表面が出ても差し替えられる）。
+                let Some((model, is_empty, edges)) = cpu else { continue };
+                let (gpu, batch) = upload_chunk_model(ctx, &model, is_empty);
+                prebuilt.push((coord, model, gpu, batch));
+                prebuilt_edges.push((coord, edges));
             }
         }
         // 由来辺キャッシュを登録する（`self.terrain` は上で default に差し替わっているので空）。
@@ -2923,6 +2934,10 @@ impl App {
         //     以降のチャンクはそのヘッダと一致するものだけを受け入れる。
         //     不一致チャンク（＝分割数を変えた後に一部だけ古い .tvox が残っている状態）は
         //     読み込むと密度配列の長さが食い違って描画・編集が破綻するため、警告して捨てる。
+        // ロード全体の計測開始（[PERF terrain load]。SEED_PERF_LOG で有効化）。
+        //   走査（walk）は軽いので、支配項である tvox I/O 以降を total の起点にする。
+        let t_total = Instant::now();
+        let t_io = Instant::now();
         let mut adopted: Option<tvox::TvoxHeader> = None;
         let mut mismatched = 0u32;
         let mut loaded: Vec<(ChunkCoord, Entity)> = Vec::new();
@@ -2998,6 +3013,7 @@ impl App {
         if loaded.is_empty() {
             return;
         }
+        let io_ms = t_io.elapsed().as_secs_f64() * MILLIS_PER_SEC;
 
         // ── フェーズ 1.5: 散布データ（.tscatter）を読む ──
         //   ファイルが無いのは **エラーではない**（散布機能より前に保存された
@@ -3009,29 +3025,52 @@ impl App {
         // ── フェーズ 2: 全チャンク読込後にメッシュ化（隣接読みが揃った状態で継ぎ目を正しく作る）──
         //   レイヤ定義もここで読み直す（.tvox v1 のようにスプラットを持たないデータでも
         //   ルール自動生成が効くようにするため、定義は常に手元に必要）。
+        let t_layers = Instant::now();
         self.ensure_terrain_layers();
+        let layers_ms = t_layers.elapsed().as_secs_f64() * MILLIS_PER_SEC;
         let settings = self.terrain.settings.clone();
         let layers = self.terrain.layers.clone();
         let mut prebuilt: Vec<(Entity, Arc<Model>, Option<GpuModel>, Option<InstancedModelBatch>)> = Vec::new();
         // 由来辺は借用の都合で一旦ローカルへ溜め、この後 self.terrain へ入れる。
         let mut prebuilt_edges: Vec<(ChunkCoord, Arc<Vec<TerrainVertexEdge>>)> = Vec::new();
+
+        // ── フェーズ 2a: CPU メッシュ生成をチャンク間で rayon 並列化する ──
+        //   `build_chunk_cpu_model` は共有参照しか取らない純粋関数（他チャンクのメッシュに
+        //   依存せず副作用も無い）。48 チャンクを逐次に回すと MC（実測 cells=32 で約 30ms、
+        //   cells=64 で約 140ms/チャンク）が支配的にロード時間を食う。これは編集経路の
+        //   `remesh_chunks` フェーズ 0 と同一の並列化であり、`par_iter().map().collect()` は
+        //   rayon の IndexedParallelIterator により**入力順を保存する**ため、出力の並びは
+        //   並列度・スケジューリングに依らず逐次実行と完全に一致する（決定的）。
+        let t_mc = Instant::now();
+        let cpu_models: Vec<Option<(Arc<Model>, bool, Arc<Vec<TerrainVertexEdge>>)>> = loaded
+            .par_iter()
+            .map(|(coord, _mc_slot)| build_chunk_cpu_model(&self.terrain.chunks, &settings, &layers, *coord))
+            .collect();
+        let mc_ms = t_mc.elapsed().as_secs_f64() * MILLIS_PER_SEC;
+
+        // ── フェーズ 2b: GPU アップロードは直列（DrawContext は Sync でないため並列化しない）──
+        //   入力順（loaded 順）を保った zip で、空メッシュ（gpu/batch=None）も含めて畳む。
+        let t_upload = Instant::now();
         {
             let ctx = self.draw_ctx.as_ref().unwrap();
-            for (coord, mc_slot) in &loaded {
+            for ((coord, mc_slot), cpu) in loaded.iter().zip(cpu_models.into_iter()) {
                 // 空メッシュチャンクは gpu/batch=None で返る（非描画のまま MC を埋める）。
-                if let Some((model, gpu, batch, edges)) = build_chunk_render(&self.terrain.chunks, &settings, &layers, ctx, *coord) {
-                    prebuilt.push((*mc_slot, model, gpu, batch));
-                    prebuilt_edges.push((*coord, edges));
-                }
+                let Some((model, is_empty, edges)) = cpu else { continue };
+                let (gpu, batch) = upload_chunk_model(ctx, &model, is_empty);
+                prebuilt.push((*mc_slot, model, gpu, batch));
+                prebuilt_edges.push((*coord, edges));
             }
         }
+        let upload_ms = t_upload.elapsed().as_secs_f64() * MILLIS_PER_SEC;
         // 由来辺キャッシュを登録する（`self.terrain` はこの関数の冒頭で default に
         // 差し替わっているため、前のシーンの辺が混ざることはない）。
         for (coord, edges) in prebuilt_edges {
             self.terrain.chunk_vertex_edges.insert(coord, edges);
         }
         // 地形チャンクが使うパレットを group3 へ登録する（描画前に済ませる必要がある）。
+        let t_palettes = Instant::now();
         self.ensure_terrain_palettes(prebuilt.iter().map(|p| p.1.as_ref()));
+        let palettes_ms = t_palettes.elapsed().as_secs_f64() * MILLIS_PER_SEC;
 
         // ── フェーズ 3: ロード時に model=None で作られた ModelComponent を埋める ──
         let mut loaded_keys: Vec<String> = Vec::new();
@@ -3054,6 +3093,18 @@ impl App {
         // 同一シーンを同一セッション中に再ロードすると batch_key が前回と一致するため、
         // ジオメトリ由来の派生キャッシュ（BLAS・統合バッチ）を破棄して作り直させる。
         self.invalidate_geometry_caches(&loaded_keys);
+
+        // ── 計測ログ（[PERF terrain load]。SEED_PERF_LOG で有効化。ロードは 1 シーン 1 回なので毎回出す）──
+        //   内訳: tvox I/O（フェーズ1）/ layers 読込 / MC 生成（並列）/ GPU アップロード / パレット登録。
+        if *PERF_TERRAIN_LOG_ENABLED {
+            let total_ms = t_total.elapsed().as_secs_f64() * MILLIS_PER_SEC;
+            eprintln!(
+                "[PERF terrain load] chunks={} cells={} tvox_io={:.2}ms layers={:.2}ms \
+                 mc_mesh={:.2}ms gpu_upload={:.2}ms palettes={:.2}ms total={:.2}ms",
+                loaded.len(), settings.chunk_cells,
+                io_ms, layers_ms, mc_ms, upload_ms, palettes_ms, total_ms
+            );
+        }
     }
 
     /// スモークテスト（環境変数 SEED_TERRAIN_SMOKE=1）専用の常設デバッグフック。
