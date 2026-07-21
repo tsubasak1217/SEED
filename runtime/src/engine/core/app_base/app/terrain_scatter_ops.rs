@@ -505,10 +505,15 @@ impl App {
     ///   seed をシーンに保存しておけば、未保存チャンクを実行時に再生成しても
     ///   保存済みチャンクと継ぎ目なく繋がる。
     pub(super) fn handle_terrain_scatter_rules(&mut self, prop_id: String, seed: u64) {
-        // ─── プロップ定義が未読なら読む（初回の散布コマンドで遅延ロード）───
-        if self.terrain.props.props.is_empty() {
-            self.ensure_terrain_props();
-        }
+        // ─── props.json を毎回読み直してから撒く（最新の編集を必ず反映する）───
+        //   ここを「未読のときだけ」にすると、一度メモリへ載った古い props を
+        //   Edit モードでは二度と更新できず、再散布しても草丈・幅・色が変わらない。
+        //   Play はシーン再ロードで `ensure_terrain_props` を無条件に通るため反映され、
+        //   この Edit/Play 差がまさに「Edit だと常に短い草のまま」というバグの根因だった。
+        //   エディタは「保存して適用」で props.json をディスクへ書いてから再散布を送るので、
+        //   ここで無条件に読み直せば Edit でも最新定義で撒ける。読み直しは小さな JSON の
+        //   パースだけで安く、Play 側の挙動と一致させる意味でも常時行う。
+        self.ensure_terrain_props();
 
         let prop_indices = self.resolve_scatter_prop_indices(&prop_id);
         if prop_indices.is_empty() {
