@@ -182,7 +182,11 @@ impl App {
         // 環境変数 SEED_TERRAIN_SMOKE=1 のときだけ、地形を生成してカメラを合わせ、
         // 明確に地形を変形させる（盛り 1・掘り 1）。スクリーンショット検証専用で、
         // 通常の Play / Edit 実行では絶対に走らない。
-        if std::env::var("SEED_TERRAIN_SMOKE").as_deref() == Ok("1") {
+        // 物理コリジョンのスモーク（SEED_TERRAIN_PHYS_SMOKE=1＋--mode=play）を優先する。
+        // 地形の静的トライメッシュコライダーに落下球が乗ることを実機で検証する専用フック。
+        if std::env::var("SEED_TERRAIN_PHYS_SMOKE").as_deref() == Ok("1") {
+            self.run_terrain_physics_smoke();
+        } else if std::env::var("SEED_TERRAIN_SMOKE").as_deref() == Ok("1") {
             self.run_terrain_smoke();
         }
     }

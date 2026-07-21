@@ -1420,3 +1420,70 @@ Problem 1 を悪化させないため据え置いた。
 **Before/After（同一構図・全景・debug スモーク `SEED_TERRAIN_SMOKE`）**: 修正前は遠景の草が
 まばらな黒い点の散乱に見えるが、修正後は草が均一なマットとして埋まり、サブピクセルの点滅・
 ジャギが目に見えて減る。近接構図は葉が近くて既に十分太いためほぼ同一（＝意図どおり遠景のみ改善）。
+
+## 16. 物理コリジョン（Static 三角形メッシュコライダー）
+
+地形に **物理コリジョン**を持たせ、落下する Dynamic 物理オブジェクトが地形の上に乗る／
+斜面を転がる／掘った穴へ落ちるようにする。MVP は**地形コリジョンのみ**（キャラクター
+コントローラーは対象外）。実装は `physics/thread.rs`（Rapier3D）と
+`core/app_base/app/terrain_ops.rs`・`physics_ops.rs` にまたがる。
+
+### 16.1 形状：共有頂点＋インデックスのトライメッシュ
+
+洞窟・オーバーハングを表現できるよう **heightfield ではなく三角形メッシュ**を使う。
+`ColliderShape` に新バリアント `TriangleMeshIndexed { vertices, indices }` を追加した
+（`physics/types.rs`）。既存の `TriangleMesh`（三角形ごとに頂点を複製した展開版）と違い、
+地形メッシュ（`TerrainMesh` = 共有頂点 `positions` ＋ 共有インデックス `indices`）をそのまま
+Rapier の `ColliderBuilder::trimesh(vertices, indices)` へ渡せる（`build_collider_shape`）。
+頂点を複製しないため、地形の大規模メッシュ（cells=64 で 1.7 万頂点級）でもメモリ効率が良い。
+
+コライダーのメッシュは描画メッシュと**同じ** `terrain::generate`＋隣接サンプラ
+（`build_chunk_collider_shape`）で作るので、コリジョン形状は見た目と頂点単位で一致する
+（原理的にめり込み・浮きが出ない）。三角形 0 個（全 AIR／全 SOLID）の空チャンクは
+`None` を返してコライダーを作らない。
+
+### 16.2 座標系：チャンクローカル → ワールド
+
+`TerrainMesh.positions` はチャンクローカル座標（原点＝チャンク最小コーナー）。地形メッシュ
+アクターは「チャンク原点への平行移動のみ」（回転・スケール無し。`spawn_chunk_actor` の
+Transform）なので、コライダーも **回転単位・スケール 1・オフセット 0**、位置＝チャンクの
+ワールド原点（`ChunkCoord::world_origin`）で登録する（`terrain_collider_object`）。
+`rigidbody = None` により RigidBody 無しの **Static コライダー**（ワールド固定）になる。
+
+### 16.3 登録・管理
+
+地形コライダーは ECS の `ColliderComponent` を持たず **terrain 側で内部管理**する。
+`TerrainState` にチャンク → 物理 `entity_id` のマップ（`chunk_collider_ids`）と単調採番
+カウンタ（`next_terrain_collider_id`）を持つ。地形 `entity_id` はアクターの DFS `entity_id`
+空間（1 始まり・アクター数ぶん）と衝突しないよう **高位ベース `2^48` から採番**する
+（Static なので物理結果の `transform_updates` には現れず、DFS 逆引きにも掛からない）。
+
+- **Play 開始時**（`start_physics` 末尾）に `register_all_terrain_colliders` が全チャンクぶんを
+  `AddObject` で登録する。空チャンクはスキップ。
+
+### 16.4 変形時のリアルタイム再構成
+
+地形は Static で固定し、**変形（掘削・盛土）でメッシュが変わったときだけ**コライダーを作り直す。
+チャンク再メッシュ（`remesh_chunks`＝密度を変えたブラシ由来）の末尾で、**物理稼働中のみ**
+（`physics_thread.is_some()`）`sync_terrain_chunk_collider` を呼ぶ：既存コライダーを
+`RemoveObject` してから、新メッシュが空でなければ同じ `entity_id` で `AddObject` する。
+掘り切って空になったチャンクは削除のみ。**ペイントは形状不変**なので高速パス
+（`apply_terrain_paint_colors`）に乗り、この経路には来ない（コライダーは作り直さない）。
+
+物理スレッドはコマンドを 1 ドレインで `Remove→Add` の順に処理し、`QueryPipeline` は毎ステップ
+更新されるため、実行中の Static コライダー差し替えに追加のコマンドは不要だった。
+
+### 16.5 検証
+
+- **ユニット／統合テスト**（`cargo test`）:
+  - `build_chunk_collider_shape`：空チャンク→`None`／等値面あり→有効な共有頂点＋インデックス
+    （全インデックスが頂点範囲内）／頂点がチャンクローカル（ワールド座標が混入しない）。
+  - `terrain_collider_object`：回転なし・スケール 1・RigidBody 無し（Static）。
+  - `dynamic_ball_rests_on_indexed_trimesh_floor`：`TriangleMeshIndexed` で作った床の上に
+    落下する Dynamic 球が `y≈0.5` で静止（すり抜けない）ことを固定 dt で決定論的に検証。
+- **実機スモーク**（`SEED_TERRAIN_PHYS_SMOKE=1`＋`--mode=play`、自己ゲート）:
+  `run_terrain_physics_smoke` がフラット地形＋中央の小山の上空へ Dynamic 球を 5 個落とし、
+  `tick_terrain_physics_smoke` が各球の Y を毎フレーム記録する。実測では
+  `y≈3.9〜5.9 → 0.19〜0.71` へ下がって静定し（`Y<0`＝すり抜けは皆無）、
+  `all_balls_rested_on_terrain = true` を出力した。球には描画メッシュを付けないため画面には
+  出ず、検証は数値ログで行う。

@@ -36,8 +36,15 @@ pub enum ColliderShape {
     Cone { radius: f32, half_height: f32 },
     /// 凸包（頂点リスト [x, y, z]）
     ConvexHull { vertices: Vec<[f32; 3]> },
-    /// 三角形メッシュ（Static コライダー専用）
+    /// 三角形メッシュ（Static コライダー専用・展開済み三角形リスト）
     TriangleMesh { triangles: Vec<[[f32; 3]; 3]> },
+    /// 三角形メッシュ（Static コライダー専用・**共有頂点＋インデックス**）。
+    ///
+    /// 頂点を共有する大規模メッシュ（地形チャンクのマーチングキューブス出力など）を、
+    /// 三角形ごとに頂点を複製せずそのまま Rapier の `trimesh(vertices, indices)` へ
+    /// 渡すためのバリアント。`TriangleMesh`（展開済み）に比べ頂点データが 1/3〜1/6 で済む。
+    /// `indices` は各要素が 1 三角形を成す頂点添字の三つ組で、値は `vertices` の範囲内。
+    TriangleMeshIndexed { vertices: Vec<[f32; 3]>, indices: Vec<[u32; 3]> },
 }
 
 // ─── リジッドボディ状態 ──────────────────────────────────────────────────────

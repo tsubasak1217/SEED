@@ -28,11 +28,13 @@ use rayon::prelude::*;
 
 use crate::engine::ecs::Entity;
 use crate::engine::components::{
+    ColliderComponent, ColliderShapeData,
     ComponentKind, InstanceMeta, ModelComponent, TerrainChunkComponent,
     Transform as ActorTransform, GROUP_ID_BASE, next_batch_instance_id,
 };
 use crate::engine::core::loader::model::Model;
 use crate::engine::methods::drawer::{DrawContext, GpuModel, InstancedModelBatch};
+use crate::engine::physics::{ColliderShape, PhysicsCommand, PhysicsObject};
 use crate::engine::structs::objects::Actor;
 use crate::engine::terrain::{
     self, interp_vertex_paint, BlendSlots, BrushOp, ChunkCoord, PaintField, SampleField,
@@ -416,7 +418,27 @@ pub struct TerrainState {
     pub scatter_prop: usize,
     /// ルール散布の大域シード（決定性の要。UI から変えられる）。
     pub scatter_seed: u64,
+
+    // ─── 物理コリジョン（地形の静的トライメッシュコライダー）─────────────────
+    /// チャンク → そのチャンクに対応する物理コライダーの entity_id。
+    ///
+    /// 地形コライダーは ECS の `ColliderComponent` ではなく terrain 側で内部管理する。
+    /// Play 開始（`start_physics`）で全チャンクぶんを静的コライダーとして物理ワールドへ
+    /// 登録し、変形（remesh）のたびに Remove→Add で作り直す。その対応付けキーがこれ。
+    /// 物理停止中は使われず、次の Play で同じチャンクは同じ id を再利用する。
+    pub chunk_collider_ids: HashMap<ChunkCoord, u64>,
+    /// 地形コライダー entity_id の単調割り当てカウンタ（次に配る値）。
+    /// アクター DFS の entity_id 空間（1 始まり・アクター数ぶん）と絶対に衝突しない
+    /// 高位ベース（`TERRAIN_COLLIDER_ENTITY_BASE`）から採番する。
+    pub next_terrain_collider_id: u64,
 }
+
+/// 地形コライダー用 entity_id のベース値。
+///
+/// アクターの物理 entity_id は DFS カウンタ（1 始まり、シーンのアクター数ぶんで現実的に
+/// 数百万未満）である。地形コライダーはそれと同じ物理ワールドに同居するため、両者の id が
+/// 決して衝突しないよう、十分に高い位（2^48）から採番する。
+const TERRAIN_COLLIDER_ENTITY_BASE: u64 = 1 << 48;
 
 impl Default for TerrainState {
     fn default() -> Self {
@@ -450,6 +472,9 @@ impl Default for TerrainState {
             grass_gpu_dirty: false,
             scatter_prop: 0,
             scatter_seed: DEFAULT_SCATTER_SEED,
+
+            chunk_collider_ids: HashMap::new(),
+            next_terrain_collider_id: TERRAIN_COLLIDER_ENTITY_BASE,
         }
     }
 }
@@ -837,6 +862,66 @@ fn build_chunk_cpu_model(
         layers,
     );
     Some((Arc::new(model), mesh.indices.is_empty(), edges))
+}
+
+/// 1 チャンクの**物理コライダー形状**（チャンクローカル座標の三角形メッシュ）を生成する。
+///
+/// 描画メッシュ（`build_chunk_cpu_model`）と同じ `terrain::generate`＋隣接サンプラを使うため、
+/// コライダーは見た目のメッシュと頂点単位で一致する（＝めり込み・浮きが原理的に出ない）。
+/// 洞窟・オーバーハングを扱うので heightfield ではなく三角形メッシュを採る。
+///
+/// 頂点は共有頂点のまま `TriangleMeshIndexed` に載せる（三角形ごとの複製をしないので
+/// 地形の大規模メッシュでもメモリ効率が良い）。三角形が 0 個（全 AIR／全 SOLID の
+/// 空チャンク）の場合は `None` を返し、呼び出し側はコライダーを登録しない。
+///
+/// 純粋関数（共有参照のみ・副作用なし）なのでユニットテストできる。
+fn build_chunk_collider_shape(
+    chunks: &HashMap<ChunkCoord, TerrainChunkData>,
+    settings: &TerrainSettings,
+    coord: ChunkCoord,
+) -> Option<ColliderShape> {
+    let chunk = chunks.get(&coord)?;
+    let cells = settings.chunk_cells as i32;
+    let clamp = settings.density_clamp;
+    // ローカルサンプル (lx,ly,lz) → グローバル = coord*cells + local（描画経路と同一）。
+    let base = [coord.x * cells, coord.y * cells, coord.z * cells];
+    let mesh = terrain::generate(chunk, settings, |lx, ly, lz| {
+        read_global_impl(chunks, cells, clamp, base[0] + lx, base[1] + ly, base[2] + lz)
+    });
+    // 空メッシュ（三角形 0）はコライダーを作らない。
+    if mesh.indices.is_empty() {
+        return None;
+    }
+    // 平坦なインデックス列（3 個で 1 三角形）を三つ組へまとめる。
+    // マーチングキューブスは常に 3 の倍数個のインデックスを出すため端数は出ない。
+    let indices: Vec<[u32; 3]> = mesh
+        .indices
+        .chunks_exact(3)
+        .map(|t| [t[0], t[1], t[2]])
+        .collect();
+    Some(ColliderShape::TriangleMeshIndexed { vertices: mesh.positions, indices })
+}
+
+/// 地形チャンク用の静的トライメッシュ `PhysicsObject` を組み立てる。
+///
+/// 地形メッシュアクターは「チャンク原点への平行移動のみ」（回転・スケール無し。
+/// `spawn_chunk_actor` の Transform 参照）なので、コライダーも回転単位・スケール 1・
+/// オフセット 0 で、位置＝チャンクのワールド原点にする。`rigidbody = None` により
+/// RigidBody 無しの Static コライダー（ワールド固定）として登録される。
+fn terrain_collider_object(entity_id: u64, position: [f32; 3], shape: ColliderShape) -> PhysicsObject {
+    PhysicsObject {
+        entity_id,
+        position,
+        rotation: [0.0, 0.0, 0.0, 1.0],
+        scale: [1.0, 1.0, 1.0],
+        collider: shape,
+        collider_offset: [0.0, 0.0, 0.0],
+        rigidbody: None,
+        is_trigger: false,
+        // レイヤ 1（既定コライダーと同じ）／マスク 0（全レイヤと衝突）。
+        physics_layer: 1,
+        layer_mask: 0,
+    }
 }
 
 /// CPU モデルを GPU へアップロードし、`(GpuModel?, インスタンスバッチ?)` を返す。
@@ -2106,6 +2191,17 @@ impl App {
         self.invalidate_geometry_caches(&swapped_keys);
         let swap_ms = t_swap.elapsed().as_secs_f64() * MILLIS_PER_SEC;
 
+        // ── フェーズ D: 物理稼働中なら地形コライダーを追従再構成する ──
+        //   Play（または RigidBody 有効の編集物理）中のみ機能する。物理停止中は no-op。
+        //   ジオメトリが変わったチャンクだけを Remove→Add で作り直す（掘り切って空に
+        //   なったチャンクはコライダー削除、掘って表面が出たチャンクは新規登録される）。
+        //   ペイントは形状不変なので `apply_terrain_paint_colors` 経由でここには来ない。
+        if self.physics_thread.is_some() {
+            for &coord in coords {
+                self.sync_terrain_chunk_collider(coord);
+            }
+        }
+
         // ── 計測ログ（編集が起きたフレームは毎回出す。間引くとスパイクを取り逃すため） ──
         if *PERF_TERRAIN_LOG_ENABLED {
             let total_ms = t_total.elapsed().as_secs_f64() * MILLIS_PER_SEC;
@@ -2116,6 +2212,77 @@ impl App {
                 coords.len(), cpu_ms, gpu_ms, poll_ms, total_ms
             );
         }
+    }
+
+    // ─── 地形の物理コリジョン（静的トライメッシュコライダー）────────────────────
+
+    /// 物理開始時に、全地形チャンクの静的トライメッシュコライダーを物理ワールドへ登録する。
+    ///
+    /// `start_physics` の末尾（物理スレッド起動＝`physics_thread` が Some になった直後）から
+    /// 呼ぶ。空メッシュ（全 AIR／全 SOLID）のチャンクはコライダーを作らずスキップする。
+    /// 物理未起動時は no-op。
+    pub(super) fn register_all_terrain_colliders(&mut self) {
+        if self.physics_thread.is_none() {
+            return;
+        }
+        let settings = self.terrain.settings.clone();
+        // 借用衝突（chunks を読みつつ chunk_collider_ids を書く）を避けるためキーを先に確保する。
+        let coords: Vec<ChunkCoord> = self.terrain.chunks.keys().copied().collect();
+        for coord in coords {
+            let Some(shape) = build_chunk_collider_shape(&self.terrain.chunks, &settings, coord)
+            else {
+                continue;
+            };
+            let entity_id = self.alloc_terrain_collider_id(coord);
+            let position = coord.world_origin(&settings);
+            let obj = terrain_collider_object(entity_id, position, shape);
+            if let Some(thread) = &self.physics_thread {
+                thread.send(PhysicsCommand::AddObject(obj));
+            }
+        }
+    }
+
+    /// 地形変形（remesh）に追従して、1 チャンクの地形コライダーを作り直す。
+    ///
+    /// 物理稼働中のみ機能する（`remesh_chunks` から `physics_thread.is_some()` ゲート付きで
+    /// 呼ばれる）。既存コライダーがあれば必ず RemoveObject し、新メッシュが空でなければ同じ
+    /// entity_id で AddObject する。掘り切って空になったチャンクは削除のみ（再登録しない）。
+    /// 物理スレッドはコマンドを 1 ドレインで Remove→Add の順に処理するため、同一 id の
+    /// 削除→追加が安全に成立する。
+    fn sync_terrain_chunk_collider(&mut self, coord: ChunkCoord) {
+        if self.physics_thread.is_none() {
+            return;
+        }
+        let settings = self.terrain.settings.clone();
+        // 既存コライダーを一旦削除する（空チャンク化した場合もこれで消える）。
+        if let Some(&old_id) = self.terrain.chunk_collider_ids.get(&coord) {
+            if let Some(thread) = &self.physics_thread {
+                thread.send(PhysicsCommand::RemoveObject { entity_id: old_id });
+            }
+        }
+        // 新メッシュを構築。空（掘り切り・チャンク消滅）なら再登録しない。
+        let Some(shape) = build_chunk_collider_shape(&self.terrain.chunks, &settings, coord) else {
+            return;
+        };
+        let entity_id = self.alloc_terrain_collider_id(coord);
+        let position = coord.world_origin(&settings);
+        let obj = terrain_collider_object(entity_id, position, shape);
+        if let Some(thread) = &self.physics_thread {
+            thread.send(PhysicsCommand::AddObject(obj));
+        }
+    }
+
+    /// チャンクの地形コライダー entity_id を取得する（未割り当てなら採番して記録する）。
+    ///
+    /// 同じチャンクには常に同じ id を返すので、Remove→Add の作り直しで id が安定する。
+    fn alloc_terrain_collider_id(&mut self, coord: ChunkCoord) -> u64 {
+        if let Some(&id) = self.terrain.chunk_collider_ids.get(&coord) {
+            return id;
+        }
+        let id = self.terrain.next_terrain_collider_id;
+        self.terrain.next_terrain_collider_id += 1;
+        self.terrain.chunk_collider_ids.insert(coord, id);
+        id
     }
 
     /// レイヤペイント専用の高速パス。**メッシュを一切再生成せず**、頂点カラー（レイヤ重み）
@@ -3195,7 +3362,194 @@ impl App {
         );
         // ここでは畳まない。後続の遅延ペイントフレームまでフックを生かしておく。
     }
+
+    // ─── 物理コリジョンのスモーク（SEED_TERRAIN_PHYS_SMOKE=1）─────────────────
+
+    /// 地形の物理コリジョンを実機で検証するための常設デバッグフック（自己ゲート）。
+    ///
+    /// 環境変数 `SEED_TERRAIN_PHYS_SMOKE=1`＋起動引数 `--mode=play` のときだけ、
+    /// フラット地形＋中央に小山を作り、その上空へ落下する Dynamic 球コライダーを数個置く。
+    /// Play モードなのでフレーム末尾で物理が自動起動し、`register_all_terrain_colliders` が
+    /// 地形の静的トライメッシュコライダーを登録する。各球が地形表面で静止する（すり抜けない）
+    /// ことを `tick_terrain_physics_smoke` が毎フレーム Y 座標のログで検証する。
+    ///
+    /// 球には描画メッシュを付けないため画面には出ない（可視化には別途プリミティブ生成が要る）。
+    /// 検証は「球の中心 Y が地表付近で下げ止まる＝コリジョン成立」を数値で行う。
+    pub(super) fn run_terrain_physics_smoke(&mut self) {
+        // ── フラット地形を既定構成で作る ──
+        self.handle_terrain_init(None);
+
+        // フットプリント中心（run_terrain_smoke と同じ計算式）。
+        let settings = self.terrain.settings.clone();
+        let extent = settings.chunk_extent();
+        let footprint_w = settings.ground_chunks_x as f32 * extent;
+        let footprint_d = settings.ground_chunks_z as f32 * extent;
+        let span = footprint_w.max(footprint_d);
+        let center = [footprint_w * 0.5, 0.0, footprint_d * 0.5];
+
+        // ── 中央に小山を盛る（球が転がる斜面を作る）──
+        self.handle_terrain_brush_world(
+            BrushOp::Add, center, PHYS_SMOKE_MOUND_RADIUS, PHYS_SMOKE_MOUND_STRENGTH,
+        );
+        self.handle_terrain_stroke_end();
+        // ブラシ由来の pending_remesh をここで確実に消化して地形メッシュを確定させる
+        // （物理登録時に最新形状で登録されるように）。
+        self.flush_terrain_pending_remesh();
+
+        // ── デバッグカメラを俯瞰位置へ ──
+        let eye = [
+            center[0],
+            center[1] + span * SMOKE_CAM_UP_RATIO,
+            center[2] - span * SMOKE_CAM_BACK_RATIO,
+        ];
+        let dir = [center[0] - eye[0], center[1] - eye[1], center[2] - eye[2]];
+        let len = (dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]).sqrt().max(f32::EPSILON);
+        let fwd = [dir[0] / len, dir[1] / len, dir[2] / len];
+        let cam = crate::engine::core::app_base::scene::DebugCameraData {
+            position: eye,
+            yaw: fwd[0].atan2(fwd[2]),
+            pitch: (-fwd[1]).clamp(-1.0, 1.0).asin(),
+            fov_deg: SMOKE_CAM_FOV_DEG,
+            far: SMOKE_CAM_FAR,
+            speed: SMOKE_CAM_SPEED,
+        };
+        self.apply_camera_data(&cam);
+
+        // ── 落下する Dynamic 球コライダーを数個スポーンする ──
+        //   XZ を少しずつ散らし、上空 PHYS_SMOKE_DROP_Y から落とす。中央の球は小山へ、
+        //   周囲の球は平地へ落ちるので「乗る」「転がって止まる」の両方を観察できる。
+        let mut spawned: Vec<crate::engine::ecs::Entity> = Vec::new();
+        if let Some(scene) = self.scene.as_mut() {
+            for i in 0..PHYS_SMOKE_BALL_COUNT {
+                let angle = i as f32 * PHYS_SMOKE_BALL_ANGLE_STEP;
+                let x = center[0] + angle.cos() * PHYS_SMOKE_BALL_SPREAD;
+                let z = center[2] + angle.sin() * PHYS_SMOKE_BALL_SPREAD;
+                let y = PHYS_SMOKE_DROP_Y + i as f32 * PHYS_SMOKE_DROP_Y_STEP;
+
+                let ball_entity = scene.world.spawn();
+                scene.world.insert(ball_entity, ActorTransform {
+                    position: [x, y, z],
+                    rotation: [0.0, 0.0, 0.0],
+                    scale: [1.0, 1.0, 1.0],
+                });
+                let mut ball_actor = Actor::new(ball_entity, PHYS_SMOKE_BALL_ACTOR_NAME);
+
+                let col_slot = scene.world.spawn();
+                scene.world.insert(col_slot, ColliderComponent {
+                    shape: ColliderShapeData::Sphere { radius: PHYS_SMOKE_BALL_RADIUS },
+                    use_rigidbody: true,
+                    is_kinematic: false,
+                    mass: PHYS_SMOKE_BALL_MASS,
+                    restitution: PHYS_SMOKE_BALL_RESTITUTION,
+                    friction: PHYS_SMOKE_BALL_FRICTION,
+                    ..ColliderComponent::default()
+                });
+                ball_actor.add_slot_typed::<ColliderComponent>(
+                    PHYS_SMOKE_BALL_SLOT_NAME, ComponentKind::Collider, col_slot,
+                );
+                scene.actors.push(ball_actor);
+                spawned.push(ball_entity);
+            }
+        }
+
+        // スポーンした球の Entity を tick 側へ引き継ぐ（毎フレームの Y 監視に使う）。
+        *PHYS_SMOKE_BALLS.lock().unwrap() = spawned;
+        PHYS_SMOKE_ENABLED.store(true, std::sync::atomic::Ordering::Relaxed);
+        eprintln!(
+            "[SEED phys-smoke] setup done: {} balls dropped over terrain center={center:?} \
+             (surface≈y=0, mound r={PHYS_SMOKE_MOUND_RADIUS})",
+            PHYS_SMOKE_BALL_COUNT
+        );
+    }
+
+    /// 物理スモークの毎フレームフック（自己ゲート）。スポーンした球の Y 座標を追跡し、
+    /// 規定フレームで「地表付近で下げ止まった＝地形コライダーに乗った」ことを判定・ログする。
+    ///
+    /// `frame_renderer` のフレーム先頭から毎フレーム呼ぶ（`tick_terrain_smoke_deferred` と同様）。
+    pub(super) fn tick_terrain_physics_smoke(&mut self) {
+        use std::sync::atomic::Ordering;
+        if !PHYS_SMOKE_ENABLED.load(Ordering::Relaxed) {
+            return;
+        }
+        let n = PHYS_SMOKE_FRAME_COUNTER.fetch_add(1, Ordering::Relaxed);
+        // 規定の観測フレーム以外は何もしない。
+        if !PHYS_SMOKE_SAMPLE_FRAMES.contains(&n) {
+            return;
+        }
+        let balls = PHYS_SMOKE_BALLS.lock().unwrap().clone();
+        let Some(scene) = self.scene.as_ref() else { return };
+
+        // 各球の現在 Y を収集する。
+        let ys: Vec<f32> = balls.iter().map(|&e| {
+            scene.world.get::<ActorTransform>(e).map(|t| t.position[1]).unwrap_or(f32::NAN)
+        }).collect();
+
+        let min_y = ys.iter().cloned().filter(|y| y.is_finite()).fold(f32::INFINITY, f32::min);
+        let max_y = ys.iter().cloned().filter(|y| y.is_finite()).fold(f32::NEG_INFINITY, f32::max);
+        eprintln!(
+            "[SEED phys-smoke] frame {n}: ball Y = {ys:?} (min={min_y:.3}, max={max_y:.3})"
+        );
+
+        // 最終観測フレームで合否判定する。
+        if Some(&n) == PHYS_SMOKE_SAMPLE_FRAMES.last() {
+            // すべての球が「地表付近で静止」＝ Y が下限より上（すり抜けていない）かつ
+            // 落下開始位置よりは十分下（実際に落ちて着地した）。
+            let all_rested = ys.iter().all(|&y| {
+                y.is_finite() && y > PHYS_SMOKE_REST_Y_MIN && y < PHYS_SMOKE_REST_Y_MAX
+            });
+            eprintln!(
+                "[SEED phys-smoke] RESULT: all_balls_rested_on_terrain = {all_rested} \
+                 (期待範囲 {PHYS_SMOKE_REST_Y_MIN}..{PHYS_SMOKE_REST_Y_MAX}; \
+                 Y<0 はすり抜け＝コリジョン不成立の徴候)"
+            );
+            PHYS_SMOKE_ENABLED.store(false, Ordering::Relaxed);
+        }
+    }
 }
+
+// ─── 物理スモークの状態・定数 ────────────────────────────────────────────────
+
+/// 物理スモークが有効か（`run_terrain_physics_smoke` が立てる）。
+static PHYS_SMOKE_ENABLED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+/// 物理スモークの経過フレーム数（描画開始後にカウント）。
+static PHYS_SMOKE_FRAME_COUNTER: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(0);
+/// スポーンした球アクターの World Entity（毎フレームの Y 監視に使う）。
+static PHYS_SMOKE_BALLS: std::sync::LazyLock<std::sync::Mutex<Vec<crate::engine::ecs::Entity>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
+
+/// Y を観測・ログするフレーム番号（落下→静定を追える間隔）。末尾フレームで合否判定する。
+const PHYS_SMOKE_SAMPLE_FRAMES: &[u32] = &[15, 45, 90, 150, 240];
+
+/// 落下させる球の数。
+const PHYS_SMOKE_BALL_COUNT: u32 = 5;
+/// 球の半径（メートル）。静止時の中心 Y の目安になる。
+const PHYS_SMOKE_BALL_RADIUS: f32 = 0.5;
+/// 球の質量（kg）。
+const PHYS_SMOKE_BALL_MASS: f32 = 1.0;
+/// 球の反発係数（小さめ＝あまり跳ねずに静定しやすい）。
+const PHYS_SMOKE_BALL_RESTITUTION: f32 = 0.2;
+/// 球の摩擦係数（斜面で転がりつつ止まる程度）。
+const PHYS_SMOKE_BALL_FRICTION: f32 = 0.6;
+/// 球を中心から散らす半径（メートル）。中央の小山と周囲の平地に振り分ける。
+const PHYS_SMOKE_BALL_SPREAD: f32 = 2.0;
+/// 球を円周状に並べる角度ステップ（ラジアン）。
+const PHYS_SMOKE_BALL_ANGLE_STEP: f32 = 1.2566; // ≈ 2π/5
+/// 最初の球を落とす高さ（メートル、地表 y=0 の上空）。
+const PHYS_SMOKE_DROP_Y: f32 = 4.0;
+/// 球ごとに落下開始高さをずらす量（同時着地の重なりを避ける）。
+const PHYS_SMOKE_DROP_Y_STEP: f32 = 0.5;
+/// 静止判定の Y 下限（これ未満＝地形をすり抜けて落下＝失敗）。
+const PHYS_SMOKE_REST_Y_MIN: f32 = -0.5;
+/// 静止判定の Y 上限（これを超える＝まだ空中＝未着地）。小山の高さ＋半径を見込む。
+const PHYS_SMOKE_REST_Y_MAX: f32 = 3.0;
+/// 小山ブラシの半径・強度。
+const PHYS_SMOKE_MOUND_RADIUS: f32 = 3.0;
+const PHYS_SMOKE_MOUND_STRENGTH: f32 = 1.0;
+/// 球アクター・スロットの名前。
+const PHYS_SMOKE_BALL_ACTOR_NAME: &str = "phys_smoke_ball";
+const PHYS_SMOKE_BALL_SLOT_NAME: &str = "collider";
 
 // ============================================================
 //  ユニットテスト（App・GPU 非依存の純粋ヘルパーのみ）
@@ -3239,6 +3593,109 @@ mod tests {
             TerrainChunkData::from_ground_plane(settings, ChunkCoord::new(0, 0, 0)),
         );
         chunks
+    }
+
+    // ─── 物理コライダー生成のテスト ─────────────────────────────────────────
+
+    /// 全サンプルが AIR（density > iso=0）のチャンクは三角形 0 でコライダーを作らない。
+    #[test]
+    fn collider_shape_all_air_is_none() {
+        let settings = test_settings();
+        let coord = ChunkCoord::new(0, 0, 0);
+        let mut chunks = HashMap::new();
+        // +1 で埋める＝全 AIR。等値面が生じないので None が返るべき。
+        chunks.insert(coord, TerrainChunkData::new_filled(&settings, 1.0));
+        assert!(
+            build_chunk_collider_shape(&chunks, &settings, coord).is_none(),
+            "空メッシュのチャンクはコライダーを持たない"
+        );
+    }
+
+    /// 内部に等値面を持つチャンクは、有効な共有頂点＋インデックスのトライメッシュを返す。
+    /// 全インデックスが頂点範囲内であること（Rapier trimesh の前提）も検証する。
+    #[test]
+    fn collider_shape_surface_chunk_is_valid_indexed_mesh() {
+        let settings = test_settings();
+        let coord = ChunkCoord::new(0, 0, 0);
+        // 全 AIR から下半分を SOLID（負）にして、内部に必ず等値面を作る。
+        let mut chunk = TerrainChunkData::new_filled(&settings, 1.0);
+        let s = chunk.samples_per_axis();
+        for iz in 0..s {
+            for iy in 0..(s / 2) {
+                for ix in 0..s {
+                    chunk.set_sample(ix, iy, iz, -1.0);
+                }
+            }
+        }
+        let mut chunks = HashMap::new();
+        chunks.insert(coord, chunk);
+
+        let shape = build_chunk_collider_shape(&chunks, &settings, coord)
+            .expect("等値面のあるチャンクはコライダーを返す");
+        let ColliderShape::TriangleMeshIndexed { vertices, indices } = shape else {
+            panic!("地形コライダーは TriangleMeshIndexed でなければならない");
+        };
+        assert!(!vertices.is_empty(), "頂点が存在する");
+        assert!(!indices.is_empty(), "三角形が存在する");
+        let n = vertices.len() as u32;
+        for tri in &indices {
+            for &i in tri {
+                assert!(i < n, "インデックス {i} が頂点数 {n} を超えている");
+            }
+        }
+    }
+
+    /// コライダーの頂点はチャンクローカル座標（原点 0 付近）であり、ワールド配置は
+    /// PhysicsObject.position（＝チャンク原点）で行われること。ローカル頂点は
+    /// チャンクの寸法（cells*voxel = chunk_extent）を大きく超えない。
+    #[test]
+    fn collider_shape_vertices_are_chunk_local() {
+        let settings = test_settings();
+        let coord = ChunkCoord::new(3, 0, -2); // 原点から離れたチャンク
+        let mut chunk = TerrainChunkData::new_filled(&settings, 1.0);
+        let s = chunk.samples_per_axis();
+        for iz in 0..s {
+            for iy in 0..(s / 2) {
+                for ix in 0..s {
+                    chunk.set_sample(ix, iy, iz, -1.0);
+                }
+            }
+        }
+        let mut chunks = HashMap::new();
+        chunks.insert(coord, chunk);
+        let ColliderShape::TriangleMeshIndexed { vertices, .. } =
+            build_chunk_collider_shape(&chunks, &settings, coord).expect("有効メッシュ")
+        else {
+            panic!("TriangleMeshIndexed");
+        };
+        // チャンクは原点(3,0,-2)から離れているが、頂点はローカルなので [0, extent] 近傍に収まる。
+        let extent = settings.chunk_extent();
+        for v in &vertices {
+            for &c in v {
+                assert!(
+                    c >= -1.0 && c <= extent + 1.0,
+                    "頂点座標 {c} がチャンクローカル範囲(0..{extent})から外れている（ワールド座標が混入した疑い）"
+                );
+            }
+        }
+    }
+
+    /// 地形コライダーの PhysicsObject が「回転なし・スケール 1・RigidBody なし（Static）」で
+    /// 位置がそのまま渡ること。
+    #[test]
+    fn terrain_collider_object_is_static_untransformed() {
+        let shape = ColliderShape::TriangleMeshIndexed {
+            vertices: vec![[0.0; 3], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            indices: vec![[0, 1, 2]],
+        };
+        let obj = terrain_collider_object(42, [3.0, 0.0, -5.0], shape);
+        assert_eq!(obj.entity_id, 42);
+        assert_eq!(obj.position, [3.0, 0.0, -5.0]);
+        assert_eq!(obj.rotation, [0.0, 0.0, 0.0, 1.0], "回転は単位クォータニオン");
+        assert_eq!(obj.scale, [1.0, 1.0, 1.0], "スケールは 1");
+        assert_eq!(obj.collider_offset, [0.0, 0.0, 0.0]);
+        assert!(obj.rigidbody.is_none(), "地形は Static（RigidBody なし）");
+        assert!(!obj.is_trigger);
     }
 
     /// 追加対象の列挙が「既存チャンクを含まない」＝既存地形を温存すること。
