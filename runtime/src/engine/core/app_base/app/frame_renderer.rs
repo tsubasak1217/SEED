@@ -1510,6 +1510,30 @@ impl App {
                                 );
                             }
                         }
+                        // ── 散布モデル（kind=Model プロップ）も同じメッシュレットカリングへ乗せる ──
+                        //   散布モデルのバッチは create_instanced_batch（enable_meshlet_cull=true）で
+                        //   作られ、インスタンス数が上限内ならスロットを確保している（超える prim は
+                        //   InstancedModelBatch::new 側の防御でスロット未確保＝通常描画へ自動フォールバック）。
+                        //   ここで前処理し、下の compute で可視 LOD0 メッシュレットだけを間接コマンドへ詰める。
+                        //   これで近景の高ポリ木がアクター（shared_model_batches）と同等に軽くなる。
+                        //   スロットを 1 つも持たないバッチ（大量散布でフォールバックした木・草由来の
+                        //   モデル等）は has_meshlet_slots()==false で即スキップ（追加コストゼロ）。
+                        //   カリング済み可視集合は cull_and_update_scatter_models が既に update 済み。
+                        //   env トグル（SEED_SCATTER_MESHLET=0）で無効化可（計測用・既定 ON）。
+                        let scatter_meshlet = *super::terrain_scatter_ops::SCATTER_MESHLET_CULL_ENABLED;
+                        if scatter_meshlet {
+                            for res in self.terrain.scatter_models.values_mut() {
+                                if !res.batch.has_meshlet_slots() { continue; }
+                                perf_meshlet_considered += res.batch.prepare_meshlet_cull(
+                                    &draw_ctx.queue,
+                                    &draw_ctx.device,
+                                    &res.gpu_model,
+                                    &draw_ctx.pipelines.meshlet_cull.bgl,
+                                    &saved_frustum_planes,
+                                    saved_camera_pos,
+                                );
+                            }
+                        }
                         // compute ディスパッチ（前処理で active になったスロットのみ）。
                         if perf_meshlet_considered > 0 {
                             let mut cull_pass = frame.encoder_mut().begin_compute_pass(
@@ -1520,6 +1544,12 @@ impl App {
                             );
                             for sd in self.shared_model_batches.values() {
                                 sd.batch.record_meshlet_cull(
+                                    &mut cull_pass, &draw_ctx.pipelines.meshlet_cull,
+                                );
+                            }
+                            // 散布モデルのカリング compute も同じパスで発行する。
+                            for res in self.terrain.scatter_models.values() {
+                                res.batch.record_meshlet_cull(
                                     &mut cull_pass, &draw_ctx.pipelines.meshlet_cull,
                                 );
                             }
@@ -3962,10 +3992,15 @@ impl App {
                                 //   草と違い実メッシュなので通常の deferred メッシュパイプラインで
                                 //   インスタンス描画する（deferred ライティング・SSAO・影・DDGI 受光が
                                 //   通常メッシュと同じく効く）。バッファはフレーム冒頭で再構築済み
-                                //   （rebuild_scatter_models_gpu）。meshlet カリングは使わない（false）:
-                                //   散布モデル専用の meshlet cull コンピュートを別途走らせていないため、
-                                //   通常の draw_indexed 経路で描く。terrain_layers は None（地形レイヤ
-                                //   ブレンドではなく通常マテリアル）。
+                                //   （rebuild_scatter_models_gpu）。meshlet カリングはインスタンス数が
+                                //   上限内のバッチで有効（meshlet_active を渡す）:
+                                //   上のメッシュレットカリング compute で散布モデルの可視 LOD0 メッシュレット
+                                //   だけを間接コマンドへ詰めてある。draw_gbuffer_indirect はプリミティブ単位で
+                                //   間接コマンドの有無を見て、スロット未確保（大量散布でフォールバック・スキン・
+                                //   Blend）の prim は自動で通常 draw_indexed に落ちる。terrain_layers は None
+                                //   （地形レイヤブレンドではなく通常マテリアル）。
+                                let scatter_meshlet_draw = meshlet_active
+                                    && *super::terrain_scatter_ops::SCATTER_MESHLET_CULL_ENABLED;
                                 for res in self.terrain.scatter_models.values() {
                                     crate::engine::core::renderer::gbuffer::draw_gbuffer_indirect(
                                         &mut gpass,
@@ -3973,7 +4008,7 @@ impl App {
                                         &res.batch,
                                         &camera_buf.bind_group,
                                         &draw_ctx.pipelines.gbuffer,
-                                        false,
+                                        scatter_meshlet_draw,
                                         None,
                                     );
                                 }

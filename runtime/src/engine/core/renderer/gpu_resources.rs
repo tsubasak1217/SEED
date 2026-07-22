@@ -1698,6 +1698,27 @@ const CONE_CULL_OFF: u32 = 0;
 /// DrawIndexedIndirect のバイトサイズ（u32 × 5）。
 const DRAW_INDEXED_INDIRECT_SIZE: u64 = 20;
 
+/// メッシュレットカリング用コマンドバッファに必要なバイト数を返す。
+///
+/// 容量は `meshlet_count × num_instances`（最低 1）分の DrawIndexedIndirect コマンド。
+/// このバッファは (1) `create_buffer`（上限 `max_buffer_size`）と (2) カリング compute の
+/// ストレージバインディング（上限 `max_storage_buffer_binding_size`）の両方で使われるため、
+/// 呼び出し側は返り値を **両上限の下限** と比較してスロット確保可否を判定する。
+/// `meshlet_cull_slot_fits` がその判定を行う（テスト可能な純粋関数として切り出している）。
+fn meshlet_cmd_buf_size(meshlet_count: u32, num_instances: u32) -> u64 {
+    let capacity = meshlet_count.saturating_mul(num_instances).max(1) as u64;
+    capacity * DRAW_INDEXED_INDIRECT_SIZE
+}
+
+/// メッシュレットカリングスロットを確保できるか（必要バッファが上限内か）を判定する。
+///
+/// `max_cmd_buf_size` は `min(max_buffer_size, max_storage_buffer_binding_size)` を渡す。
+/// 上限を超える（＝大量インスタンス × 多メッシュレット）場合は `false` を返し、
+/// 呼び出し側は当該プリミティブを通常のインスタンス描画へフォールバックさせる（パニック回避）。
+fn meshlet_cull_slot_fits(meshlet_count: u32, num_instances: u32, max_cmd_buf_size: u64) -> bool {
+    meshlet_count != 0 && meshlet_cmd_buf_size(meshlet_count, num_instances) <= max_cmd_buf_size
+}
+
 impl InstancedModelBatch {
     pub fn new(
         device:        &wgpu::Device,
@@ -1831,10 +1852,18 @@ impl InstancedModelBatch {
         // ── メッシュレットカリング スロット（node_prim_list と同順・同長）──────
         // メッシュレットを持つ非スキンプリミティブにのみ Some。容量は
         // meshlet_count × num_instances(最大) 分のコマンドを確保する。
-        // メッシュレットカリング用バッファの上限（デバイスの max_buffer_size）。
-        // `capacity × DrawIndexedIndirect` がこれを超えるとスロットは確保しない
-        // （超過分をそのまま create_buffer に渡すと wgpu 検証エラーでパニックするため）。
-        let max_buffer_size = device.limits().max_buffer_size;
+        //
+        // 【上限の取り方】cmd_buf は 2 通りで使われる:
+        //   (1) create_buffer で確保          → 上限は max_buffer_size（既定 256MB）
+        //   (2) メッシュレットカリング compute の BindGroup binding 2 に
+        //       ストレージバッファとして as_entire_binding でバインド
+        //                                      → 上限は max_storage_buffer_binding_size（既定 128MB）
+        // (2) の方が小さいので、こちらを超えると `create_bind_group` が検証エラーで
+        // パニックする（prepare_meshlet_cull 内）。したがって **両方の下限** で判定する。
+        // 以前は max_buffer_size だけで見ていたため、128MB〜256MB のバッファが確保は通っても
+        // BindGroup 生成でパニックしていた（散布モデルにメッシュレットカリングを効かせた際に露見）。
+        let compute_binding_limit = device.limits().max_storage_buffer_binding_size as u64;
+        let max_cmd_buf_size = device.limits().max_buffer_size.min(compute_binding_limit);
         let meshlet_cull: Vec<Option<MeshletCullSlot>> = node_prim_list.iter().map(|draw| {
             // 呼び出し側がメッシュレットカリング不要と指定した経路（散布モデル等）は確保しない。
             if !enable_meshlet_cull { return None; }
@@ -1844,14 +1873,14 @@ impl InstancedModelBatch {
             if ml_count == 0 { return None; }
 
             let capacity = ml_count.saturating_mul(n as u32).max(1);
-            let cmd_buf_size = capacity as u64 * DRAW_INDEXED_INDIRECT_SIZE;
+            let cmd_buf_size = meshlet_cmd_buf_size(ml_count, n as u32);
             // 防御: 上限超過ならスロットを確保せず通常描画へフォールバックする（パニック回避）。
             // 同種の「インスタンス数 × メッシュレット数」爆発を今後もパニックにしないための保険。
-            if cmd_buf_size > max_buffer_size {
+            if !meshlet_cull_slot_fits(ml_count, n as u32, max_cmd_buf_size) {
                 eprintln!(
                     "[SEED renderer] メッシュレットカリングをスキップします: 必要バッファ {cmd_buf_size} バイトが \
-                     max_buffer_size {max_buffer_size} を超過（メッシュレット {ml_count} × インスタンス {n}）。\
-                     このプリミティブは通常のインスタンス描画で描きます。"
+                     上限 {max_cmd_buf_size}（=min(max_buffer_size, max_storage_buffer_binding_size)）を超過\
+                     （メッシュレット {ml_count} × インスタンス {n}）。このプリミティブは通常のインスタンス描画で描きます。"
                 );
                 return None;
             }
@@ -2439,7 +2468,43 @@ impl GpuGizmoBatch {
 
 #[cfg(test)]
 mod meshlet_gpu_tests {
-    use super::GpuMeshlet;
+    use super::{GpuMeshlet, meshlet_cmd_buf_size, meshlet_cull_slot_fits, DRAW_INDEXED_INDIRECT_SIZE};
+
+    /// コマンドバッファサイズ計算: capacity(=ml×inst, 最低1) × DrawIndexedIndirect(20B)。
+    #[test]
+    fn meshlet_cmd_buf_size_is_capacity_times_stride() {
+        // 通常ケース。
+        assert_eq!(meshlet_cmd_buf_size(100, 50), 100 * 50 * DRAW_INDEXED_INDIRECT_SIZE);
+        // meshlet=0 でも size 計算は最低 capacity=1 を返す（呼び出し側は fits で弾く）。
+        assert_eq!(meshlet_cmd_buf_size(0, 1000), DRAW_INDEXED_INDIRECT_SIZE);
+        assert_eq!(meshlet_cmd_buf_size(10, 0), DRAW_INDEXED_INDIRECT_SIZE);
+        // u32 乗算のオーバーフローは saturating で u32::MAX に張り付き、u64 化して 20 倍される。
+        assert_eq!(
+            meshlet_cmd_buf_size(u32::MAX, u32::MAX),
+            u32::MAX as u64 * DRAW_INDEXED_INDIRECT_SIZE
+        );
+    }
+
+    /// スロット確保可否の閾値判定（=min(max_buffer_size, max_storage_buffer_binding_size) と比較）。
+    #[test]
+    fn meshlet_cull_slot_fits_threshold() {
+        // wgpu 既定の storage binding 上限（128MiB）を上限に使う想定。
+        const LIMIT: u64 = 128 * 1024 * 1024; // 134_217_728
+
+        // searsia の重いプリミティブ（1367 メッシュレット）は、少数インスタンスなら収まり…
+        assert!(meshlet_cull_slot_fits(1367, 100, LIMIT), "少数インスタンスは収まるべき");
+        // …インスタンス数が増えると 128MiB を超えてフォールバック（実機クラッシュ再現の防御）。
+        //   1367 × 6200 × 20 = 169_508_000 > 134_217_728。
+        assert!(!meshlet_cull_slot_fits(1367, 6200, LIMIT), "大量インスタンスは上限超過で不可");
+
+        // 境界: ちょうど上限と等しいサイズは可（<=）、1 コマンド超えると不可。
+        let n = (LIMIT / DRAW_INDEXED_INDIRECT_SIZE) as u32; // capacity ちょうど上限
+        assert!(meshlet_cull_slot_fits(1, n, LIMIT), "上限ちょうどは可");
+        assert!(!meshlet_cull_slot_fits(1, n + 1, LIMIT), "上限+1コマンドは不可");
+
+        // meshlet_count=0 は常に不可（メッシュレット無しプリミティブはスロット確保しない）。
+        assert!(!meshlet_cull_slot_fits(0, 1, LIMIT));
+    }
 
     /// GpuMeshlet は std430 想定の 48 バイト・各フィールドオフセットを固定する。
     /// meshlet_cull.wgsl の Meshlet 構造体とバイト一致していること。
