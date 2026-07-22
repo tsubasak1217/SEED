@@ -271,7 +271,12 @@ impl App {
         // process_ipc にかかった時間 [ms]
         let mut perf_ipc_ms:        f64 = 0.0;
         // MCバッチ更新（視錐台カリング + write_buffer記録）にかかった CPU 時間 [ms]
+        // Phase R7 以降は per-MC batch 更新は廃止（下記 merge バケットへ統合）のため常に 0。
         let mut perf_batch_ms:      f64 = 0.0;
+        // 統合バッチ（shared_model_batches）の merge_map 構築＋全バッチ update() 記録に
+        // かかった CPU 時間 [ms]。地形 768 チャンクではここが主要 CPU 支配項の一つ。
+        // 静的地形チャンクの update スキップ（Fix B）の効果はこのバケットに現れる。
+        let mut perf_merge_ms:      f64 = 0.0;
         // スキンコンピュートコマンド記録にかかった CPU 時間 [ms]
         let mut perf_skin_ms:       f64 = 0.0;
         // メインパスの draw_model_indirect コマンド記録にかかった CPU 時間 [ms]
@@ -746,15 +751,18 @@ impl App {
             // 次フレーム先頭の地形 LOD 選択（tick_terrain_lod）が使うカメラ位置を控える。
             self.last_camera_pos = camera_pos;
 
-            // シーンモード・アクター編集モード共通: world_line 全 MC を DFS で更新する。
-            // オブジェクト単位の視錐台カリングは廃止済み（全インスタンス可視扱い）。
-            let (actors, world) = (&mut scene.actors, &mut scene.world);
-            let _perf_t_batch = std::time::Instant::now();
-            super::update_all_mc_batches_for_wl(
-                actors, world, self.active_world_line,
-                &queue, camera_pos,
-            );
-            perf_batch_ms = _perf_t_batch.elapsed().as_secs_f64() * 1000.0;
+            // ── 旧: per-MC `instanced_batch` の毎フレーム更新（廃止）──────────────
+            // かつてここで `update_all_mc_batches_for_wl` が world_line 全 MC の
+            // `ModelComponent::instanced_batch` を毎フレーム `update()`（距離 LOD 振り分け＋
+            // GPU バッファ書き込み）していた。しかし Phase R7 のバッチ統合以降、実際の描画は
+            // すべて `shared_model_batches`（batch_key ごとの統合バッチ）を通る。per-MC の
+            // `instanced_batch` はどの描画・アウトライン・ピッキング経路からも参照されず
+            // （唯一の描画アクセサ `rendering_refs()` は呼び出し 0 件）、その `update()` は
+            // 完全な死荷重だった。16×16×3層=768 チャンクの地形では実測 batch≈4ms/フレームを
+            // まるごと浪費していた（[PERF] の batch バケット）。統合バッチは下の
+            // `shared_model_batches` 更新ループ（merge バケット）で別途更新されるため、
+            // ここでの per-MC 更新は不要。呼び出しごと削除して batch バケットを 0 にする。
+            perf_batch_ms = 0.0;
         }
 
         // ── ギズモ位置：全選択アクターの重心（マルチ選択対応） ──
@@ -1149,6 +1157,8 @@ impl App {
                         (u32, usize),
                         (String, u32, u32),
                     > = std::collections::HashMap::new();
+                    // merge_map 構築＋全統合バッチ update() の CPU 時間を計測する（merge バケット）。
+                    let _perf_t_merge = std::time::Instant::now();
                     let merge_map: std::collections::HashMap<String, MergeInfo> = {
                         let mut map: std::collections::HashMap<String, MergeInfo>
                             = std::collections::HashMap::new();
@@ -1206,40 +1216,73 @@ impl App {
                                 batch:      new_batch,
                                 capacity:   cap,
                                 id_zero_bg,
+                                // 新規/再生成バッチは未アップロード。次の update で確定させる。
+                                uploaded_sig: None,
                             });
                         }
                         if let Some(sd) = self.shared_model_batches.get_mut(path) {
-                            // フィールド分割借用: batch は可変、cpu_model は不変
-                            let batch     = &mut sd.batch;
-                            let cpu_model = &sd.cpu_model;
-                            // Animator 駆動の権威時刻を反映する（非駆動インスタンスは静止）。
-                            batch.set_anim_time_overrides(&info.time_overrides);
-                            batch.mark_dirty();
-                            batch.update(
-                                &draw_ctx.queue,
-                                cpu_model,
-                                &info.mats,
-                                saved_camera_pos,
-                            );
-                            // lod_id_buffers を絶対 ID で上書きする
-                            // update() が書いた「統合バッチ内 compact インデックス」を
-                            // 元 MC の id_base + 元インスタンスインデックスに差し替え、
-                            // CPU ピッキングのデコードロジックをそのまま使えるようにする。
-                            for lod in 0..NUM_LODS {
-                                if batch.lod_visible_counts[lod] > 0 {
-                                    let remapped: Vec<u32> = batch.lod_compact_insts[lod]
-                                        .iter()
-                                        .map(|&merged_idx| info.abs_ids[merged_idx])
-                                        .collect();
-                                    draw_ctx.queue.write_buffer(
-                                        &batch.lod_id_buffers[lod],
-                                        0,
-                                        bytemuck::cast_slice(&remapped),
-                                    );
+                            // ── 静的地形チャンクの update スキップ（Fix B）──────────────
+                            // 地形チャンクは静的で、変形/remesh のときだけメッシュと mats が
+                            // 変わる。remesh 時は batch_key（合成 source_path=ジオメトリ由来）
+                            // 自体が変わり別バッチになるため、同一キーで mats が前フレームと
+                            // 一致するなら描画は完全に不変。毎フレームの mark_dirty()+update()
+                            // （rayon 行列再計算・全ノードバッファ書込・id バッファ書込）を丸ごと
+                            // 省ける。地形は独自の remesh ベース LOD を持ち、汎用 per-instance
+                            // 距離 LOD（バケット振り分け）は 1 インスタンス・単一 LOD メッシュの
+                            // チャンクでは描画に影響しないため、カメラ移動時の再バケット省略も
+                            // 視覚的に安全。通常モデル/散布/アニメは非地形キー or mats 変化のため
+                            // 従来どおり毎フレーム更新される（挙動不変）。
+                            let is_terrain = path.starts_with(
+                                crate::engine::components::TERRAIN_SOURCE_SCHEME);
+                            let unchanged = is_terrain
+                                && sd.uploaded_sig.as_ref().is_some_and(|(m, a)| {
+                                    m.as_slice() == info.mats.as_slice()
+                                        && a.as_slice() == info.abs_ids.as_slice()
+                                });
+                            if unchanged {
+                                // 前フレームと同一（行列・ID とも）: 既存の lod バッファ・
+                                // compact をそのまま使い、更新を丸ごと省く。
+                                continue;
+                            }
+                            {
+                                // フィールド分割借用: batch は可変、cpu_model は不変
+                                let batch     = &mut sd.batch;
+                                let cpu_model = &sd.cpu_model;
+                                // Animator 駆動の権威時刻を反映する（非駆動インスタンスは静止）。
+                                batch.set_anim_time_overrides(&info.time_overrides);
+                                batch.mark_dirty();
+                                batch.update(
+                                    &draw_ctx.queue,
+                                    cpu_model,
+                                    &info.mats,
+                                    saved_camera_pos,
+                                );
+                                // lod_id_buffers を絶対 ID で上書きする
+                                // update() が書いた「統合バッチ内 compact インデックス」を
+                                // 元 MC の id_base + 元インスタンスインデックスに差し替え、
+                                // CPU ピッキングのデコードロジックをそのまま使えるようにする。
+                                for lod in 0..NUM_LODS {
+                                    if batch.lod_visible_counts[lod] > 0 {
+                                        let remapped: Vec<u32> = batch.lod_compact_insts[lod]
+                                            .iter()
+                                            .map(|&merged_idx| info.abs_ids[merged_idx])
+                                            .collect();
+                                        draw_ctx.queue.write_buffer(
+                                            &batch.lod_id_buffers[lod],
+                                            0,
+                                            bytemuck::cast_slice(&remapped),
+                                        );
+                                    }
                                 }
+                            }
+                            // 地形キーは今回アップロードした mats・abs_ids を記録し、
+                            // 次フレームの一致判定に使う。非地形は記録しない（None のまま＝常に更新）。
+                            if is_terrain {
+                                sd.uploaded_sig = Some((info.mats.clone(), info.abs_ids.clone()));
                             }
                         }
                     }
+                    perf_merge_ms = _perf_t_merge.elapsed().as_secs_f64() * 1000.0;
 
                     // ─── stale 統合バッチ／BLAS キャッシュの遅延 prune ──────────────
                     // マテリアルのインライン編集（スライダードラッグ等）は署名が変わるたびに
@@ -5656,7 +5699,7 @@ impl App {
                         // main_pass は draw を内包するので draw を除いた残り = main_pass - draw = 他の描画コマンド記録
                         let main_rest_ms = (perf_main_pass_ms - perf_draw_ms).max(0.0);
                         let other_ms = (total_ms
-                            - perf_begin_frame_ms - perf_ipc_ms - perf_batch_ms
+                            - perf_begin_frame_ms - perf_ipc_ms - perf_batch_ms - perf_merge_ms
                             - perf_skin_ms - perf_main_pass_ms - perf_id_ms
                             - perf_grid_ms - perf_collider_ms - perf_finish_ms - perf_grass_ms
                             - phys_total_ms).max(0.0);
@@ -5665,7 +5708,7 @@ impl App {
                              | total={total_ms:.3}ms \
                              physics={phys_total_ms:.3}ms(3d={perf_physics_ms:.3}ms+snap={perf_snapshot_ms:.3}ms+2d={perf_physics2d_ms:.3}ms) \
                              bf={perf_begin_frame_ms:.3}ms ipc={perf_ipc_ms:.3}ms \
-                             batch={perf_batch_ms:.3}ms skin={perf_skin_ms:.3}ms \
+                             batch={perf_batch_ms:.3}ms merge={perf_merge_ms:.3}ms skin={perf_skin_ms:.3}ms \
                              tlas={perf_tlas_ms:.3}ms({}/{perf_tlas_insts}inst) \
                              main_pass={perf_main_pass_ms:.3}ms(draw={perf_draw_ms:.3}ms+pass_drop={perf_pass_drop_ms:.3}ms+rest={main_rest_ms:.3}ms) \
                              sprites={perf_sprite_insts}枚/{perf_sprite_draws}draws \
