@@ -388,8 +388,18 @@
   定数整合は `rt_shadow.rs::wgsl_soft_shadow_constants_are_consistent` が担保。
   残課題: 16本でも遮蔽率は17段階の量子化が残るため、空間デノイズ（いもす法ベースの可変半径ブラー）or
   時間的蓄積 or ブルーノイズ（IGN からの差し替え）の追加を検討。
+- 散布モデル（地形 `kind=model` プロップ）の RT 影（2026-07 追加, 実機検証済み）: 散布モデルは ECS アクター
+  ではないため `shared_model_batches` に載らず、従来 TLAS 未登録だった（`shadow=rt` で散布木の影が地面に出ない
+  症状の原因）。`frame_renderer.rs` の `rt_casters` 収集へ `terrain.scatter_models` を追加し、キー
+  `"scatter://{model_path}"` で登録する（同一モデルの全インスタンスが 1 組の BLAS を共有＝`BlasKey` キャッシュ）。
+  登録対象は `cull_and_update_scatter_models` が更新済みの**可視インスタンスのみ**（`rt_enumerate` は `num_instances`
+  ＝可視数を列挙）で、`MAX_RT_INSTANCES=4096` 上限と `MAX_BLAS_BUILDS_PER_FRAME=8` 分割にそのまま乗る（大量散布でも
+  TDR/snatch 再帰しない）。実機（RTX 3060/Vulkan, `SEED_TERRAIN_SMOKE`＋A.gltf 木）で `tlas=…(263inst＝地形24＋木239)`・
+  散布木の地面影・パニック無しを確認（詳細は `docs/terrain.md` §15.9f）。葉が Blend の場合の影は幹の不透明シルエット
+  （0x02 マスクで影レイから除外）＝Blend 葉のアルファ抜き影は下記 TODO。
 - TODO（R8残）: スキンメッシュのRT影（スキン済み頂点からのBLAS毎フレーム再構築）・カメラプレビュー/
-  ギズモモデルのRT影（現状は従来パイプライン固定で影を受けない）・ソフト影サンプル数の SET_POST_FX 可変化・実機での視覚検証。
+  ギズモモデルのRT影（現状は従来パイプライン固定で影を受けない）・ソフト影サンプル数の SET_POST_FX 可変化・
+  Blend の葉（散布木の葉など）のアルファ抜き RT 影（現状は不透明シルエット。Mask はバインドレス色付き影で対応済み）。
 
 ### ブラー系実装の方針（ユーザー指定・必読）
 今後ガウシアンフィルタ相当の処理（ブラー・被写界深度・大半径ブルーム等）を実装する際は、

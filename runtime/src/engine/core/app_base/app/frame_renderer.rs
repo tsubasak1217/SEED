@@ -3722,7 +3722,26 @@ impl App {
                         if draw_ctx.rt_shadow.is_some() && resolved_features.needs_tlas() {
                             if let Some(rt_cell) = draw_ctx.rt_shadow.as_ref() {
                                 let mut rt = rt_cell.borrow_mut();
-                                let rt_casters: Vec<(
+                                // 散布モデル（kind=Model）の RT キャスターキーを先に確保して寿命を持たせる。
+                                //   キーは "scatter://{model_path}"。同一モデルの複数プロップは同じキー＝
+                                //   同じ BLAS を共有する（木は高ポリ＝searsia 21 プリムなので、数千本でも
+                                //   BLAS は 21 個で済む＝MAX_BLAS_BUILDS_PER_FRAME の分割ビルドに素直に乗る）。
+                                //   ECS アクター（shared_model_batches）の batch_key とは名前空間を分けて、
+                                //   frame_renderer の stale prune（prune_source_paths）が散布 BLAS を巻き添えで
+                                //   解放しない（＝再ビルド churn を避ける）ようにする。
+                                //   String は rt_casters（借用）より長生きさせる必要があるため、ここで所有 Vec に集める。
+                                let scatter_rt: Vec<(
+                                    String,
+                                    &crate::engine::methods::drawer::GpuModel,
+                                    &crate::engine::methods::drawer::InstancedModelBatch,
+                                )> = self.terrain.scatter_models.values()
+                                    .map(|res| (
+                                        format!("scatter://{}", res.model_path),
+                                        &res.gpu_model,
+                                        &res.batch,
+                                    ))
+                                    .collect();
+                                let mut rt_casters: Vec<(
                                     &str,
                                     &crate::engine::methods::drawer::GpuModel,
                                     &crate::engine::methods::drawer::InstancedModelBatch,
@@ -3733,6 +3752,15 @@ impl App {
                                             .map(|&gpu| (path.as_str(), gpu, &sd.batch))
                                     })
                                     .collect();
+                                // 散布モデルを TLAS キャスターに追加する。
+                                //   res.batch は毎フレームの cull_and_update_scatter_models で「可視チャンクの
+                                //   インスタンスだけ」に更新済み（rt_enumerate は num_instances＝可視数のみ列挙）。
+                                //   ＝視錐台＋距離カリング済みの可視集合をそのまま流用して TLAS 登録数を抑える
+                                //   （近傍・可視に絞る、というタスク要件を既存カリングで満たす）。総数が
+                                //   MAX_RT_INSTANCES(4096) を超えた分は prepare_and_build 側で警告付きクランプされる。
+                                for (key, gpu, batch) in &scatter_rt {
+                                    rt_casters.push((key.as_str(), gpu, batch));
+                                }
                                 let _perf_t_tlas = std::time::Instant::now();
                                 // バインドレス（B2）: 対応 GPU では instance_table も同時に詰めさせる。
                                 // rt_shadow とは別 RefCell のため共有借用で共存できる。
