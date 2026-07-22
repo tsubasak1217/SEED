@@ -3433,7 +3433,23 @@ impl App {
         // 一人称視点の上書き（描画カリング計測用）: `SEED_SMOKE_FPV=1` で、地表付近に立って
         //   水平を見る構図にする。俯瞰は全チャンクが視界に入り（カリングが効かない）が、一人称では
         //   背後・側方のチャンクが視錐台外になり、地形チャンク描画カリングの効果が顕著に出る。
-        let (eye, yaw, pitch, fov_deg, far) = if std::env::var_os("SEED_SMOKE_FPV").is_some() {
+        let (eye, yaw, pitch, fov_deg, far) = if std::env::var_os("SEED_SMOKE_LOOKAWAY").is_some() {
+            // 視界外（描画ほぼゼロ）計測用（`SEED_SMOKE_LOOKAWAY=1`）: フットプリントの外
+            //   （-Z 側へ span ぶん離れた位置）に立ち、地形と反対（-Z 方向）を向く。地形は全
+            //   チャンクがカメラ背後に来るため視錐台カリングで 1 枚も残らず（drawn≈0）、
+            //   「地形を全く見ていない」構図を厳密に再現できる。これにより視界に関係なく毎フレーム
+            //   走る処理（merge_map 再構築・tick_terrain_lod・カリング判定など）だけを [PERF] で
+            //   切り出せる。※Play/スタンドアロンはゲームカメラ描画のためデバッグカメラの向きが
+            //   効かない。この構図で描画するには `--mode=edit` で起動すること。
+            const LOOKAWAY_EYE_HEIGHT: f32 = 12.0;
+            (
+                [center[0], center[1] + LOOKAWAY_EYE_HEIGHT, -span],
+                std::f32::consts::PI,       // yaw=180°（-Z 方向＝地形と反対を向く）
+                0.0f32,                     // 水平（地形は真後ろ）
+                SMOKE_CAM_FOV_DEG,
+                SMOKE_CAM_FAR,
+            )
+        } else if std::env::var_os("SEED_SMOKE_FPV").is_some() {
             // フットプリント中心に立ち、ほぼ水平（やや下 8°）で +Z 方向を見る。目線高さは
             // ハイトマップ最大起伏（10m）＋急斜面デモより上に取り、地形へ潜らないようにする
             // （一人称でも視錐台外の背後・側方チャンクが落ちる構図であればカリング検証には十分）。
