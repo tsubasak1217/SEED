@@ -64,6 +64,13 @@ const BINDING_UNIFORM:   u32 = 1;
 /// `GrassInstanceGpu` の想定バイト数（std430。テストで固定する）。
 const GRASS_INSTANCE_BYTES: usize = 48;
 
+/// 草インスタンス 1 本あたりの storage stride（バイト）。
+///
+/// 単一 storage バインドに収まる最大本数（`grass_max_instances_for_limit`）の分母。
+/// `GrassInstanceGpu` の実サイズを使うので、構造体を変えても自動追従する
+/// （テスト `grass_instance_is_48_bytes` が `GRASS_INSTANCE_BYTES` と一致を固定する）。
+const GRASS_INSTANCE_STRIDE: usize = std::mem::size_of::<GrassInstanceGpu>();
+
 /// `GrassUniformGpu` 内の `time` フィールドのバイトオフセット。
 ///
 /// `update_time` が 4 バイトだけ部分更新するために使う。構造体の並びを変えたら
@@ -297,6 +304,105 @@ fn create_instance_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLa
 }
 
 // ============================================================
+//  単一 storage バインド上限のガード（草インスタンス爆発対策）
+//
+//  【背景】草インスタンスバッファはプロップ種別ごとに 1 本の storage 配列で、
+//    バインドグループには `as_entire_binding()`（＝バッファ全域）で渡す。したがって
+//    バインド範囲＝バッファ全サイズであり、これが wgpu の
+//    `max_storage_buffer_binding_size`（既定 128MB）を超えると、バインドグループ生成
+//    時点で検証エラーになり即パニックする。16×16 チャンク（768 チャンク）へ高密度散布
+//    すると 1 プロップで約 400 万本に達し、400万 × 48B ≒ 192MB で上限を突破していた。
+//
+//  【対策】総本数を「単一バインドに収まる最大本数」でクランプする。バッファ容量も
+//    この上限で頭打ちにするため、確保するバッファサイズが 128MB を超えることは
+//    構造的に起こらない（前回のメッシュレット cmd バッファ防御と同方針）。
+//    超過分（＝最大本数を超えた末尾）は描画しない。呼び出し側（rebuild_grass_gpu）は
+//    バッファへ詰める前にチャンク順で切り詰めるため、切り捨てられるのは
+//    ソート末尾（＝最も座標の大きい）チャンク群である。
+// ============================================================
+
+/// 指定バイト上限に、草インスタンスが何本収まるかを返す（最低 1 本）。
+///
+/// `limit_bytes` は `max_storage_buffer_binding_size`（バイト）を想定する。
+/// 0 本になる（＝stride が上限より大きい）ことは現実にはないが、サイズ 0 バッファ生成の
+/// パニックを避けるため下限 1 を返す。`const fn` なのでテストで純粋に検証できる。
+pub const fn grass_max_instances_for_limit(limit_bytes: u64) -> usize {
+    let n = (limit_bytes / GRASS_INSTANCE_STRIDE as u64) as usize;
+    if n == 0 { 1 } else { n }
+}
+
+/// この device で草インスタンス storage の単一バインドに収まる最大本数。
+///
+/// `device.limits().max_storage_buffer_binding_size` から求める。バインドは
+/// `as_entire_binding()`（バッファ全域）なので、この本数を超えるバッファを作ると
+/// バインドグループ生成でパニックする。描画側はこの値で総本数を頭打ちにすること。
+pub fn max_grass_instances(device: &wgpu::Device) -> usize {
+    grass_max_instances_for_limit(device.limits().max_storage_buffer_binding_size as u64)
+}
+
+/// インスタンス配列と span 列を、単一バインド上限 `max` 本以内へ切り詰める。
+///
+/// `instances` はチャンク座標順（`rebuild_grass_gpu` が詰めた順）に並んでいる前提で、
+/// 末尾（＝座標の大きいチャンク）から捨てる。`spans` は各チャンクの連続区間
+/// `[first, first+count)` を持ち first 昇順なので、`max` を跨ぐ span は count を詰め、
+/// それ以降の span は丸ごと捨てて、span とバッファ内容の整合を保つ
+/// （ずれると `draw_grass_culled` が範囲外を描いてしまう）。
+///
+/// 戻り値は切り捨てた本数（0 なら無切り捨て）。
+pub fn clamp_instances_and_spans(
+    instances: &mut Vec<GrassInstanceGpu>,
+    spans:     &mut Vec<GrassChunkSpan>,
+    max:       usize,
+) -> usize {
+    if instances.len() <= max {
+        return 0;
+    }
+    let dropped = instances.len() - max;
+    instances.truncate(max);
+
+    // span を max 以内へ整える。first 昇順なので、first >= max を見つけたら以降は全て範囲外。
+    let mut kept: Vec<GrassChunkSpan> = Vec::with_capacity(spans.len());
+    for span in spans.iter() {
+        let first = span.first as usize;
+        if first >= max {
+            break;
+        }
+        let mut s = *span;
+        let end = first + span.count as usize;
+        if end > max {
+            // max を跨ぐ span は描ける範囲だけに詰める。
+            s.count = (max - first) as u32;
+        }
+        kept.push(s);
+    }
+    *spans = kept;
+    dropped
+}
+
+/// `GrassInstanceBuffer::new` 用の最終防衛クランプ（device 上限から max を求めて切り詰める）。
+fn clamp_new_instances<'a>(
+    device:    &wgpu::Device,
+    instances: &'a [GrassInstanceGpu],
+) -> &'a [GrassInstanceGpu] {
+    clamp_update_instances(instances, max_grass_instances(device))
+}
+
+/// スライスを `max` 本以内へ切り詰める（超過時のみ警告）。切り詰めが起きるのは、
+/// rebuild 側の事前クランプを通らない異常経路だけなので、起きたら警告を出す。
+fn clamp_update_instances(instances: &[GrassInstanceGpu], max: usize) -> &[GrassInstanceGpu] {
+    if instances.len() > max {
+        eprintln!(
+            "[SEED grass] 草インスタンス {} 本が単一 storage バインド上限 {} 本を超過。\
+             {} 本へクランプして描画します（パニック回避）。",
+            instances.len(), max, max
+        );
+        &instances[..max]
+    } else {
+        instances
+    }
+}
+
+// ============================================================
 //  GrassInstanceBuffer — 1 プロップ種別ぶんの GPU リソース
 // ============================================================
 
@@ -352,6 +458,10 @@ impl GrassInstanceBuffer {
         instances: &[GrassInstanceGpu],
         uniform:   GrassUniformGpu,
     ) -> Self {
+        // 最終防衛: 単一バインド上限を超える本数はここで切り詰める。通常は呼び出し側
+        // （rebuild_grass_gpu）が span と併せて既に切り詰めているので発火しないが、
+        // どの経路から作られてもバッファが 128MB を超えてパニックしないための保険。
+        let instances = clamp_new_instances(device, instances);
         let (buffer, capacity) = create_instance_buffer(device, instances);
 
         let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -409,12 +519,19 @@ impl GrassInstanceBuffer {
         // ── パラメータは常に全上書き（80 バイトなので分岐する価値がない）──
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniform));
 
+        // 最終防衛: 単一バインド上限を超える本数はここで切り詰める（new と同方針）。
+        let max = max_grass_instances(device);
+        let instances = clamp_update_instances(instances, max);
+
         if instances.len() > self.capacity {
             // ── 容量不足 → 余裕を持たせて再確保（バッファが変わるのでバインドグループも再作成）──
             //   丁度のサイズではなく GROWTH_FACTOR 倍を確保し、以後の増加では再確保しない
             //   （＝旧バッファ drop を発生させない）。縮小は一切しない。
+            //   【上限クランプ】GROWTH_FACTOR 倍が単一バインド上限（max 本）を超えると、
+            //   確保したバッファ全域をバインドした時点でパニックする。容量を max で頭打ち
+            //   にして、バッファサイズが 128MB を超えないことを構造的に保証する。
             let new_capacity =
-                (instances.len() * GRASS_CAPACITY_GROWTH_FACTOR).max(GRASS_MIN_CAPACITY);
+                (instances.len() * GRASS_CAPACITY_GROWTH_FACTOR).clamp(GRASS_MIN_CAPACITY, max);
             let buffer = create_sized_instance_buffer(device, new_capacity);
             // 実データを書き込む（余剰要素はゼロのまま。count で参照されない）。
             queue.write_buffer(&buffer, 0, bytemuck::cast_slice(instances));
@@ -730,5 +847,63 @@ mod tests {
         }
         // 派生定数は式で書かれているため、値そのものも固定しておく。
         assert_eq!(GRASS_MAX_VERTS_PER_BLADE, 96, "1 株ぶんの頂点数は 8*6*2=96");
+    }
+
+    /// 128MB 上限から求まる最大本数が「上限 / stride の切り捨て」であること、
+    /// かつその本数 × stride が上限を超えないこと（バッファが 128MB を超えない保証）。
+    #[test]
+    fn grass_max_instances_fits_under_limit() {
+        // wgpu 既定の max_storage_buffer_binding_size。
+        const LIMIT_128MB: u64 = 128 * 1024 * 1024; // 134217728
+        let max = grass_max_instances_for_limit(LIMIT_128MB);
+        // 128MB / 48 = 2796202.66… → 切り捨て 2796202。
+        assert_eq!(max, 2_796_202, "128MB / 48B の切り捨て本数");
+        // 最大本数ぶんのバッファは必ず上限以内（＝バインドでパニックしない）。
+        assert!(
+            (max as u64) * (GRASS_INSTANCE_STRIDE as u64) <= LIMIT_128MB,
+            "max 本 × stride が上限を超えてはならない"
+        );
+        // 上限が stride 未満でも最低 1 本（サイズ 0 バッファ生成の回避）。
+        assert_eq!(grass_max_instances_for_limit(0), 1);
+        assert_eq!(grass_max_instances_for_limit(1), 1);
+    }
+
+    /// 上限内なら切り詰めが起きず、配列も span もそのままであること。
+    #[test]
+    fn clamp_is_noop_when_within_limit() {
+        let mut inst = vec![GrassInstanceGpu::default(); 10];
+        let mut spans = vec![
+            GrassChunkSpan { aabb_min: [0.0; 3], aabb_max: [0.0; 3], first: 0, count: 5 },
+            GrassChunkSpan { aabb_min: [0.0; 3], aabb_max: [0.0; 3], first: 5, count: 5 },
+        ];
+        let dropped = clamp_instances_and_spans(&mut inst, &mut spans, 100);
+        assert_eq!(dropped, 0);
+        assert_eq!(inst.len(), 10);
+        assert_eq!(spans.len(), 2);
+        assert_eq!(spans[1].count, 5);
+    }
+
+    /// 上限超過時: 配列は max へ、span は「跨ぐものは詰め・以降は捨て」で整合すること。
+    /// これがずれると draw_grass_culled が範囲外インスタンスを描いてしまう。
+    #[test]
+    fn clamp_truncates_instances_and_spans_consistently() {
+        // 3 チャンク（各 4 本）＝12 本を、max=7 へ切り詰める。
+        let mut inst = vec![GrassInstanceGpu::default(); 12];
+        let mut spans = vec![
+            GrassChunkSpan { aabb_min: [0.0; 3], aabb_max: [0.0; 3], first: 0, count: 4 },
+            GrassChunkSpan { aabb_min: [0.0; 3], aabb_max: [0.0; 3], first: 4, count: 4 }, // 4..8 が 7 を跨ぐ
+            GrassChunkSpan { aabb_min: [0.0; 3], aabb_max: [0.0; 3], first: 8, count: 4 }, // 全範囲外
+        ];
+        let dropped = clamp_instances_and_spans(&mut inst, &mut spans, 7);
+        assert_eq!(dropped, 5, "12 - 7 = 5 本を捨てる");
+        assert_eq!(inst.len(), 7, "配列は max=7 本へ");
+        assert_eq!(spans.len(), 2, "全範囲外の 3 つ目 span は消える");
+        assert_eq!(spans[0].count, 4, "1 つ目はそのまま");
+        assert_eq!(spans[1].first, 4);
+        assert_eq!(spans[1].count, 3, "跨ぐ span は 4..7 の 3 本へ詰める");
+        // どの span も max を超えない（描画範囲がバッファ容量内）。
+        for s in &spans {
+            assert!((s.first + s.count) as usize <= 7);
+        }
     }
 }

@@ -1376,12 +1376,32 @@ impl App {
         };
         let pipeline = &ctx.pipelines.gbuffer.grass;
 
+        // ─── 単一 storage バインド上限（既定 128MB）に収まる最大本数 ───
+        //   草バッファはプロップ種別ごとに 1 本・全域バインドなので、総本数がこの値を
+        //   超えるとバインドグループ生成でパニックする。16×16 高密度散布で 1 プロップが
+        //   約 400 万本（≒192MB）に達しクラッシュしていた。本数と span をここで頭打ちに
+        //   して、確保するバッファが上限を超えないことを構造的に保証する。
+        let max_instances = crate::engine::core::renderer::grass_gbuffer::max_grass_instances(device);
+
         let mut total = 0usize;
-        for (prop_index, (instances, spans)) in &by_prop {
+        for (prop_index, (instances, spans)) in &mut by_prop {
             let Some(prop) = self.terrain.props.props.get(*prop_index) else {
                 continue;
             };
             let uniform = grass_uniform_from_prop(prop);
+
+            // 上限超過ぶんを切り詰める（span も同時に整合させる）。切り捨てはチャンク座標
+            // ソートの末尾から起きる。切り捨てが発生したら 1 プロップ分の内訳を警告する。
+            let dropped = crate::engine::core::renderer::grass_gbuffer::clamp_instances_and_spans(
+                instances, spans, max_instances,
+            );
+            if dropped > 0 {
+                eprintln!(
+                    "[SEED terrain] 草プロップ #{prop_index} の散布 {} 本が単一バインド上限 {max_instances} 本を超過。\
+                     {dropped} 本を描画対象から除外しました（クラッシュ回避）。密度を下げるか散布範囲を狭めてください。",
+                    instances.len() + dropped
+                );
+            }
             total += instances.len();
 
             match self.terrain.grass_buffers.get_mut(prop_index) {
