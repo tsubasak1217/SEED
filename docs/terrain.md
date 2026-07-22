@@ -171,6 +171,60 @@ ModelComponent 分岐がこのパスをそのまま `load_model` すると（実
 そのため **`TERRAIN_SOURCE_SCHEME = "terrain://"` で始まる source_path は `load_model` をスキップ**（model/gpu を None のまま
 source_path のみ保持）し、後述の再構築パスで tvox から埋める。空パスガードと同じ場所に実装。
 
+### 7.1 チャンク単位 地形 LOD（遠いチャンクを低ポリで描く）
+
+俯瞰など全チャンクが視界に入る構図では、フラスタム＋距離カリング（§申し送り元）でも
+1 枚も落とせず、256+ チャンクの全三角形（実測 16×16×3=768 チャンクで **約 55 万三角形**）を
+毎フレーム描くため重い。そこで **遠いチャンクを低解像度の marching cubes メッシュで描く** LOD を入れた。
+
+- **低解像度メッシュ生成**（`terrain/lod.rs`・エンジン非依存）: 密度グリッド（33³）を stride で
+  間引いた「粗いチャンク」を組み、`voxel_size` を stride 倍・`chunk_cells` を 1/stride にした設定で
+  **既存の `generate_standalone` をそのまま**回す。チャンクの実寸（extent）は保たれ、出力頂点は
+  フル解像度と同じローカル空間 `[0, extent]` に載る。段は `TERRAIN_LOD_STRIDES = [1, 2, 4]`
+  （LOD0=フル・LOD1≒頂点1/4・LOD2≒頂点1/16）。**marching_cubes.rs には一切手を入れておらず、
+  フル解像度出力・水密性・全テストは 1 ビットも変わらない**（LOD0 は従来経路をそのまま使う）。
+- **境界の継ぎ目（クラック）対策 = スカート**: 隣接チャンクが別 LOD だと境界でテッセレーションが
+  食い違い隙間が出る。第 1 段は **スカート**（チャンクの 4 垂直側面 x=0/x=extent/z=0/z=extent 上の
+  表面辺から真下へ深さ `voxel*stride*2` 伸ばす両巻きの幕）で隙間を隠す。スカートは **LOD>=1 の
+  間引きメッシュにだけ**付ける（LOD0 は境界サンプル共有で隣接 LOD0 と水密・ペイント高速パスの
+  由来辺キャッシュと食い違わせないため）。LOD0↔LOD1 の継ぎ目は LOD1 側のカーテンが受け持つ。
+  実機（俯瞰・全 LOD2）で **露骨な穴・見通せるクラックは出ない**ことを確認済み
+  （※ LOD2 チャンク境界に法線の不連続＝薄い陰影の帯が残る。standalone の境界勾配クランプに由来。
+  平坦地では目立たない。近傍サンプラ対応は第 2 段の申し送り）。
+- **LOD 選択**（`terrain_ops.rs::tick_terrain_lod`）: フレーム先頭で **前フレームのメインカメラ位置**
+  （`App::last_camera_pos`）とチャンク AABB の最近点距離から目標 LOD を決める。しきい値は
+  名前付き定数＋env 上書き（`SEED_TERRAIN_LOD1_DIST` 既定 60m / `SEED_TERRAIN_LOD2_DIST` 既定 140m。
+  将来 `TerrainSettings` へ）。境界のばたつきを防ぐヒステリシス（±12%）付き。`SEED_TERRAIN_LOD_DISABLED=1`
+  で全 LOD0（before 計測用）。
+- **保持と切替（動的キャッシュ）**: チャンクごとに保持する GpuModel は **常に 1 つ**（現在 LOD ぶんだけ）。
+  目標 LOD が変わったチャンクを `pending_remesh` へ積み、既存の VRAM 安全な `remesh_chunks`
+  （gpu_model と instanced_batch を同時に作り直し・統合バッチ／BLAS キャッシュも破棄）で差し替える。
+  1 フレームの切替は近い順に **最大 8 チャンク**へ小分けしてスパイクを防ぐ。全 LOD を同時保持しないため
+  **メモリ増はゼロ**（むしろ遠方が低ポリになるぶん頂点 VRAM は減る）。CPU メッシュは切替時に 1 回だけ生成。
+- **描画**: 既存のチャンク描画（`shared_model_batches` × `gpu_model_by_path`）をそのまま使う。
+  path（`terrain://…`）ごとの GpuModel が LOD ぶんに差し替わるだけで、フラスタム／距離カリングとも両立
+  （視界外はスキップ・視界内は距離で LOD）。
+- **物理コライダーは常に LOD0（フル解像度）**: 当たり判定は精度優先。表示 LOD を落としたチャンク
+  （`chunk_lod>0`）では描画メッシュを流用せず `build_chunk_collider_shape`（密度からフル解像度 MC）で
+  作り直す（`register_all_terrain_colliders` / `sync_terrain_chunk_collider`）。表示だけ粗く・衝突はフル。
+- **BLAS（RT 影・反射）は表示 LOD に追従**: BLAS は表示 GpuModel から作られるため、遠方は低ポリの
+  加速構造になる（遠方の RT 影は精度が落ちるが描画三角形削減を優先。第 2 段で要判断）。
+
+**実機計測（`SEED_TERRAIN_SMOKE=1 SEED_SMOKE_CHUNKS=16 SEED_SMOKE_NO_SCATTER=1`・768 チャンク）**:
+
+| 構図 | LOD | 総三角形（`[PERF terrain] lod: total_tris`） | main_pass |
+|---|---|---|---|
+| 俯瞰 | OFF | 549,428（全 768 = LOD0） | 約 3.0–3.8ms |
+| 俯瞰 | ON | **71,084（全 768 = LOD2）＝ −87.1%** | 約 2.5ms |
+| 一人称 | ON | 312,772（LOD0=228 / LOD1=528 / LOD2=12）＝ −43%・近景フル解像度維持 | — |
+
+俯瞰で遠方まで含め全チャンクが LOD2 へ落ち、三角形が 8 割以上減る。一人称では近景がフル解像度の
+まま遠方だけ低ポリ化する（LOD0/1/2 の階調が出る）。どちらも穴・破綻なし。
+
+**第 2 段の申し送り**: (1) LOD 境界の法線不連続（standalone の境界クランプ → 近傍サンプラ対応で
+帯を消す）、(2) 上下 Y 面／洞窟の継ぎ目スカート（現状は 4 垂直側面のみ）、(3) 遠方 BLAS 精度、
+(4) しきい値の `TerrainSettings` 化。
+
 ---
 
 ## 8. シーン永続化

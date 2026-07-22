@@ -243,6 +243,11 @@ impl App {
         // （起動時・スタンドアロン時もここで拾う。IPC 切替は各ハンドラでも即ログ）。
         self.log_render_features_if_changed();
 
+        // チャンク単位 地形 LOD: 前フレームのカメラ位置で各チャンクの目標 LOD を選び、
+        // 変化ぶんだけ近い順に小分けで再メッシュする（遠いチャンクを低ポリ化して描画三角形を削減）。
+        // 描画の借用が始まる前（フレーム先頭）で行うことで scene/draw_ctx の可変借用衝突を避ける。
+        self.tick_terrain_lod();
+
         // 地形スモーク（SEED_TERRAIN_SMOKE=1）専用: 描画開始後に 1 度だけ掘るステップ。
         // スモークが無効なら即 return する自己ゲート付きフックなので、通常実行では無害。
         self.tick_terrain_smoke_deferred();
@@ -738,6 +743,8 @@ impl App {
             // 統合バッチ更新のためにブロック外へ保存する
             saved_frustum_planes = frustum_planes;
             saved_camera_pos     = camera_pos;
+            // 次フレーム先頭の地形 LOD 選択（tick_terrain_lod）が使うカメラ位置を控える。
+            self.last_camera_pos = camera_pos;
 
             // シーンモード・アクター編集モード共通: world_line 全 MC を DFS で更新する。
             // オブジェクト単位の視錐台カリングは廃止済み（全インスタンス可視扱い）。
