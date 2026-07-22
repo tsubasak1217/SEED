@@ -234,6 +234,39 @@ pub(super) static PERF_TERRAIN_LOG_ENABLED: std::sync::LazyLock<bool> =
 pub(super) static SCATTER_CULL_DISABLED: std::sync::LazyLock<bool> =
     std::sync::LazyLock::new(|| std::env::var_os("SEED_SCATTER_NOCULL").is_some());
 
+// ─── 地形チャンク（メッシュ本体）単位カリング（Terrain 描画最適化）─────────────
+//
+// 【背景】地形は 16×16 チャンク（256 水平 × 高さ層）を「terrain:// の独立 ModelComponent
+//   バッチ」として持つ。以前は視界外・背後のチャンクまで毎フレーム全ポリゴン描画しており
+//   （オブジェクト単位フラスタムカリングは 00dbe29 で撤去済み・メッシュレットカリングは
+//   MULTI_DRAW_INDIRECT_COUNT 非対応 GPU では無効）、地形を置いただけで 30fps を切っていた。
+//   そこで各チャンクバッチのワールドメッシュ AABB（`InstancedModelBatch::world_bounds`＝
+//   実ジオメトリを厳密に包む）をメインカメラ視錐台＋距離でテストし、完全に外側のチャンクを
+//   G-Buffer 描画・メッシュレットカリング前処理からスキップする。判定は散布と同じ
+//   `aabb_outside_frustum`（p-vertex 法・偽陽性ゼロ）を使うため、視界内チャンクを誤って消す
+//   ことは無い（撤去された旧オブジェクトカリングの誤棄却問題は再発しない）。
+
+/// 地形チャンク単位カリングの距離閾値（メートル・既定）。最近点距離がこれを超えたら描かない。
+///
+/// 地形は草木より遠くまで見えるべきなので緩めに取る（実質フラスタムカリングが主役で、
+/// 距離は「地平線の彼方まで続く巨大ワールド」でのみ効く保険）。16×16 スモーク（≈256m 角）
+/// では距離では 1 枚も落ちず、フラスタムのみで効く。`SEED_TERRAIN_CULL_DIST` で上書き可。
+const TERRAIN_CHUNK_CULL_DISTANCE_DEFAULT: f32 = 4000.0;
+
+/// 地形チャンク単位カリングの距離閾値（メートル）。`SEED_TERRAIN_CULL_DIST` で上書き可。
+pub(super) static TERRAIN_CHUNK_CULL_DISTANCE: std::sync::LazyLock<f32> =
+    std::sync::LazyLock::new(|| {
+        cull_distance_env("SEED_TERRAIN_CULL_DIST", TERRAIN_CHUNK_CULL_DISTANCE_DEFAULT)
+    });
+
+/// 地形チャンク単位カリングを無効化するデバッグスイッチ（before/after の fps 比較計測用）。
+///
+/// `SEED_TERRAIN_NOCULL=1` のとき true。全地形チャンクを毎フレーム描く（カリング導入前の
+/// 挙動と等価）。散布側の `SEED_SCATTER_NOCULL` と対になる計測用フックであり、通常実行では
+/// 設定しない（未設定＝カリング有効）。
+pub(super) static TERRAIN_CULL_DISABLED: std::sync::LazyLock<bool> =
+    std::sync::LazyLock::new(|| std::env::var_os("SEED_TERRAIN_NOCULL").is_some());
+
 // ============================================================
 //  TerrainScatterField — チャンクマップ上の ScatterField 実装
 // ============================================================
