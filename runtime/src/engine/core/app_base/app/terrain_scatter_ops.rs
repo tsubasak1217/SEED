@@ -153,6 +153,58 @@ pub(super) static GRASS_CULL_DISTANCE: std::sync::LazyLock<f32> =
 static SCATTER_MODEL_CULL_DISTANCE: std::sync::LazyLock<f32> =
     std::sync::LazyLock::new(|| cull_distance_env("SEED_MODEL_CULL_DIST", SCATTER_MODEL_CULL_DISTANCE_DEFAULT));
 
+// ─── 遠景密度減衰（植生 LOD 第1段）─────────────────────────────────────────────
+//
+// 【背景】チャンク距離カリング（上）を通ったチャンクでも、俯瞰では大量のチャンクが
+//   可視になり、近景と同じ全密度で描くと重い。そこで**可視チャンクを距離帯で分け、
+//   遠いほど描画インスタンスを間引く**（近=全数 / 中=1/2 / 遠=1/4）。間引きは描画時の
+//   「先頭 kept 本だけ描く」方式で、散布データ自体は変えない（`gpu_resources::
+//   density_kept_count`）。均一に薄くするため、GPU バッファ／行列列はチャンク内で
+//   `scatter_thin_key` のハッシュ順に並べておく（プレフィクスが空間的に均一になる）。
+//
+// 【しきい値はカリング距離の内側に置く】各帯境界（near < mid < cull_distance）。
+//   将来 props.json の per-prop フィールドへ移せるよう、意味をここへ集約する。
+
+/// 草の密度減衰・近距離帯の上端（メートル・既定）。これ以内は全密度。
+const GRASS_DECAY_NEAR_DEFAULT: f32 = 30.0;
+/// 草の密度減衰・中距離帯の上端（メートル・既定）。ここまでは 1/2、以遠は 1/4。
+const GRASS_DECAY_MID_DEFAULT: f32 = 55.0;
+/// 散布モデル（木）の密度減衰・近距離帯の上端（メートル・既定）。これ以内は全密度。
+const SCATTER_MODEL_DECAY_NEAR_DEFAULT: f32 = 70.0;
+/// 散布モデル（木）の密度減衰・中距離帯の上端（メートル・既定）。ここまでは 1/2、以遠は 1/4。
+const SCATTER_MODEL_DECAY_MID_DEFAULT: f32 = 130.0;
+
+/// 草の密度減衰・近距離帯上端（メートル）。`SEED_GRASS_DECAY_NEAR` で上書き可。
+/// 描画側（frame_renderer の草ドロー）が二乗して使うため公開する。
+pub(super) static GRASS_DECAY_NEAR: std::sync::LazyLock<f32> =
+    std::sync::LazyLock::new(|| cull_distance_env("SEED_GRASS_DECAY_NEAR", GRASS_DECAY_NEAR_DEFAULT));
+/// 草の密度減衰・中距離帯上端（メートル）。`SEED_GRASS_DECAY_MID` で上書き可。
+pub(super) static GRASS_DECAY_MID: std::sync::LazyLock<f32> =
+    std::sync::LazyLock::new(|| cull_distance_env("SEED_GRASS_DECAY_MID", GRASS_DECAY_MID_DEFAULT));
+/// 散布モデルの密度減衰・近距離帯上端（メートル）。`SEED_MODEL_DECAY_NEAR` で上書き可。
+static SCATTER_MODEL_DECAY_NEAR: std::sync::LazyLock<f32> = std::sync::LazyLock::new(|| {
+    cull_distance_env("SEED_MODEL_DECAY_NEAR", SCATTER_MODEL_DECAY_NEAR_DEFAULT)
+});
+/// 散布モデルの密度減衰・中距離帯上端（メートル）。`SEED_MODEL_DECAY_MID` で上書き可。
+static SCATTER_MODEL_DECAY_MID: std::sync::LazyLock<f32> = std::sync::LazyLock::new(|| {
+    cull_distance_env("SEED_MODEL_DECAY_MID", SCATTER_MODEL_DECAY_MID_DEFAULT)
+});
+
+/// 散布インスタンスを間引き順に安定ソートするためのハッシュ（seed → 撹拌値）。
+///
+/// 密度減衰は「先頭 kept 本だけ描く」方式のため、インスタンス列をこのハッシュ順へ
+/// 並べておくと、任意のプレフィクスが空間的に均一なサブセットになる（＝遠景を
+/// 間引いても穴が空かず均等に薄くなる）。`seed` はインスタンスごとに固定の疑似乱数で、
+/// 決定的なので毎回同じ並びになり、フレーム間でも保存/ロード間でも間引かれる個体が
+/// 変わらない（ちらつき防止）。splitmix32 相当の全単射撹拌で下位ビットの偏りを消す。
+#[inline]
+pub(super) fn scatter_thin_key(seed: u32) -> u32 {
+    let mut z = seed.wrapping_add(0x9E37_79B9);
+    z = (z ^ (z >> 16)).wrapping_mul(0x85EB_CA6B);
+    z = (z ^ (z >> 13)).wrapping_mul(0xC2B2_AE35);
+    z ^ (z >> 16)
+}
+
 /// 草チャンク AABB の水平マージン（メートル）。葉先の横はみ出し分。
 const GRASS_MARGIN_HORIZ: f32 = 1.0;
 /// 草チャンク AABB の上方向マージン（メートル）。草丈＋風の揺れ分。
@@ -169,7 +221,8 @@ static PROPS_LOAD_WARNED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
 /// 草 GPU 再構築のログを出すかどうか（terrain_ops.rs の PERF ゲートと同じ環境変数）。
-static PERF_TERRAIN_LOG_ENABLED: std::sync::LazyLock<bool> =
+/// 草描画の間引き計測ログ（frame_renderer）でも参照するため公開する。
+pub(super) static PERF_TERRAIN_LOG_ENABLED: std::sync::LazyLock<bool> =
     std::sync::LazyLock::new(|| std::env::var_os("SEED_PERF_TERRAIN").is_some());
 
 /// 散布（草・モデル）のチャンク単位カリングを無効化するデバッグスイッチ。
@@ -649,8 +702,10 @@ fn gather_scatter_model_chunks(
     props: &TerrainPropSet,
     settings: &TerrainSettings,
 ) -> HashMap<usize, Vec<ScatterModelChunkSpan>> {
-    // まず (prop, chunk) ごとに行列を集める。
-    let mut per_prop_chunk: HashMap<usize, HashMap<ChunkCoord, Vec<[[f32; 4]; 4]>>> =
+    // まず (prop, chunk) ごとに (間引きキー, 行列) を集める。
+    //   キーはあとでチャンク内をハッシュ順へ並べ替えるために持つ（遠景密度減衰で
+    //   「先頭 kept 本」を均一なサブセットにするため。scatter_thin_key 参照）。
+    let mut per_prop_chunk: HashMap<usize, HashMap<ChunkCoord, Vec<(u32, [[f32; 4]; 4])>>> =
         HashMap::new();
     for (&coord, instances) in scatter {
         for inst in instances {
@@ -672,7 +727,7 @@ fn gather_scatter_model_chunks(
                 .or_default()
                 .entry(coord)
                 .or_default()
-                .push(scatter_instance_to_model_matrix(inst));
+                .push((scatter_thin_key(inst.seed), scatter_instance_to_model_matrix(inst)));
         }
     }
 
@@ -687,11 +742,18 @@ fn gather_scatter_model_chunks(
                 let (aabb_min, aabb_max) = chunk_world_aabb(
                     settings, coord, SCATTER_MODEL_MARGIN_HORIZ, SCATTER_MODEL_MARGIN_UP,
                 );
-                ScatterModelChunkSpan {
-                    aabb_min,
-                    aabb_max,
-                    mats: chunks.get(&coord).cloned().unwrap_or_default(),
-                }
+                // チャンク内をハッシュキー順へ並べ替え、行列だけを取り出す。
+                //   これで span.mats の任意プレフィクスが空間的に均一なサブセットになり、
+                //   密度減衰（先頭 kept 本だけ描く）で穴が空かない。第2キーに行列先頭要素を
+                //   置き、同一 seed でも並びが決定的になるようにする（ちらつき防止）。
+                let mut keyed = chunks.get(&coord).cloned().unwrap_or_default();
+                keyed.sort_by(|a, b| {
+                    a.0.cmp(&b.0)
+                        .then(a.1[0][3].total_cmp(&b.1[0][3]))
+                        .then(a.1[2][3].total_cmp(&b.1[2][3]))
+                });
+                let mats = keyed.into_iter().map(|(_, m)| m).collect();
+                ScatterModelChunkSpan { aabb_min, aabb_max, mats }
             })
             .collect();
         by_prop.insert(prop_index, spans);
@@ -1218,7 +1280,13 @@ impl App {
             //   このチャンクの AABB が付き、カリングが破綻する）ため、チャンクごとに
             //   最初の 1 本で新規 span を開き、以降は同じ span を伸ばす。
             let mut opened_span: HashMap<usize, usize> = HashMap::new();
-            for inst in instances {
+            // チャンク内を (プロップ, 間引きハッシュ) 順へ並べる。同一プロップが連続し、
+            //   かつプロップ内はハッシュ順になるので、各 span（＝バッファの連続区間）の
+            //   任意プレフィクスが空間的に均一なサブセットになる。これが遠景密度減衰
+            //   （draw_grass_culled が先頭 kept 本だけ描く）で穴を空けないための前提。
+            let mut ordered: Vec<&ScatterInstance> = instances.iter().collect();
+            ordered.sort_by_key(|i| (i.prop_id, scatter_thin_key(i.seed)));
+            for inst in ordered {
                 let prop_index = inst.prop_id as usize;
                 let Some(prop) = self.terrain.props.props.get(prop_index) else {
                     // props.json からプロップが消えた孤児インスタンス。描かない。
@@ -1496,9 +1564,14 @@ impl TerrainState {
         planes: &[[f32; 4]; 6],
         camera_pos: [f32; 3],
     ) {
-        use crate::engine::core::renderer::gpu_resources::{aabb_distance_sq, aabb_outside_frustum};
+        use crate::engine::core::renderer::gpu_resources::{
+            aabb_distance_sq, aabb_outside_frustum, density_kept_count,
+        };
         let model_cull_dist = *SCATTER_MODEL_CULL_DISTANCE;
         let cull_dist_sq = model_cull_dist * model_cull_dist;
+        // 遠景密度減衰の帯境界（二乗距離）。近=全数 / 中=1/2 / 遠=1/4。
+        let decay_near_sq = *SCATTER_MODEL_DECAY_NEAR * *SCATTER_MODEL_DECAY_NEAR;
+        let decay_mid_sq = *SCATTER_MODEL_DECAY_MID * *SCATTER_MODEL_DECAY_MID;
 
         let nocull = *SCATTER_CULL_DISABLED;
         let mut dbg_total = 0usize;
@@ -1511,16 +1584,26 @@ impl TerrainState {
                 if span.mats.is_empty() {
                     continue;
                 }
-                // 計測用: NOCULL 指定時はテストせず全チャンクを含める（カリング前挙動）。
-                if !nocull {
+                // 計測用: NOCULL 指定時はテストせず全チャンク・全密度を含める（カリング前挙動）。
+                let dist_sq = aabb_distance_sq(span.aabb_min, span.aabb_max, camera_pos);
+                let kept = if nocull {
+                    span.mats.len()
+                } else {
                     if aabb_outside_frustum(planes, span.aabb_min, span.aabb_max) {
                         continue;
                     }
-                    if aabb_distance_sq(span.aabb_min, span.aabb_max, camera_pos) > cull_dist_sq {
+                    if dist_sq > cull_dist_sq {
                         continue;
                     }
+                    // 遠景密度減衰: チャンク距離に応じて先頭 kept 本だけ描く（span.mats は
+                    // ハッシュ順なのでプレフィクスが空間的に均一。gather_scatter_model_chunks）。
+                    density_kept_count(span.mats.len() as u32, dist_sq, decay_near_sq, decay_mid_sq)
+                        as usize
+                };
+                if kept == 0 {
+                    continue;
                 }
-                visible.extend_from_slice(&span.mats);
+                visible.extend_from_slice(&span.mats[..kept]);
             }
             dbg_visible += visible.len();
             // 可視ぶんだけをアップロード（dirty 化してワールド行列を再計算させる）。
@@ -2314,5 +2397,82 @@ mod tests {
         assert!(spans[0].aabb_min[0] < 0.0, "AABB は margin ぶん負側へ広がる");
         assert!(spans[1].aabb_min[0] >= e - SCATTER_MODEL_MARGIN_HORIZ - 1.0,
             "chunk(1,0,0) の AABB は x 方向へ 1 チャンクぶんずれる");
+    }
+
+    // ============================================================
+    //  遠景密度減衰（植生 LOD 第1段）— 間引き順の決定性
+    // ============================================================
+
+    /// 間引きハッシュが決定的で、隣接する種でも値が大きく撹拌されること。
+    ///
+    /// 決定性はちらつき防止の根拠（同じ seed は常に同じ順位＝間引かれる個体が不変）。
+    /// 撹拌が効いていないと「seed の下位ビット順＝散布の生成順」に戻り、プレフィクスが
+    /// 空間的に偏る（遠景に穴が空く）。
+    #[test]
+    fn scatter_thin_key_is_deterministic_and_spreads() {
+        // 同じ入力は常に同じ出力。
+        for s in [0u32, 1, 2, 100, 0xDEAD_BEEF, u32::MAX] {
+            assert_eq!(scatter_thin_key(s), scatter_thin_key(s), "seed={s} が非決定的");
+        }
+        // 連番 seed でも出力は単調増加にならない（撹拌が効いている）＝生成順に戻らない。
+        let keys: Vec<u32> = (0..64u32).map(scatter_thin_key).collect();
+        let is_sorted = keys.windows(2).all(|w| w[0] <= w[1]);
+        assert!(!is_sorted, "連番 seed のハッシュが単調（撹拌が効いていない）");
+        // 衝突が起きていない（64 個の連番が全て相異なる）。
+        let uniq: std::collections::HashSet<u32> = keys.iter().copied().collect();
+        assert_eq!(uniq.len(), keys.len(), "連番 seed でハッシュ衝突が発生");
+    }
+
+    /// モデル束ねの `span.mats` 並びが入力順に依存せず決定的であること。
+    ///
+    /// 【これが守る不変条件】密度減衰は「先頭 kept 本だけ描く」ため、並びが実行ごとに
+    /// 変われば「毎フレーム別個体が消える」＝ちらつく。散布データの格納順が変わっても
+    /// （HashMap 走査順や保存/ロードの差で起こりうる）、ハッシュ順ソートにより
+    /// `span.mats` は必ず同じ並びに落ち着くことを固定する。
+    #[test]
+    fn gather_orders_model_mats_deterministically() {
+        let settings = TerrainSettings::default();
+        let props = TerrainPropSet {
+            props: vec![TerrainProp {
+                id: "m".into(),
+                kind: PropKind::Model,
+                model_path: Some("models/A.gltf".into()),
+                ..TerrainProp::default()
+            }],
+        };
+        let mk = |x: f32, seed: u32| ScatterInstance {
+            pos: [x, 0.0, 0.0],
+            normal: [0.0, 1.0, 0.0],
+            yaw: 0.0,
+            scale: 1.0,
+            prop_id: 0,
+            seed,
+        };
+        // 同一チャンク内に 5 本。seed をわざとバラバラに与える。
+        let base = [mk(1.0, 40), mk(2.0, 7), mk(3.0, 900), mk(4.0, 3), mk(5.0, 128)];
+
+        // 入力順を変えた 2 つの scatter を作る。
+        let mut a: HashMap<ChunkCoord, Vec<ScatterInstance>> = HashMap::new();
+        a.insert(ChunkCoord::new(0, 0, 0), base.to_vec());
+        let mut rev = base.to_vec();
+        rev.reverse();
+        let mut b: HashMap<ChunkCoord, Vec<ScatterInstance>> = HashMap::new();
+        b.insert(ChunkCoord::new(0, 0, 0), rev);
+
+        let ga = gather_scatter_model_chunks(&a, &props, &settings);
+        let gb = gather_scatter_model_chunks(&b, &props, &settings);
+        let ma = &ga.get(&0).unwrap()[0].mats;
+        let mb = &gb.get(&0).unwrap()[0].mats;
+        assert_eq!(ma.len(), 5);
+        // 入力順に関わらず並びが一致する＝決定的。
+        assert_eq!(ma, mb, "入力順で span.mats の並びが変わった（ちらつきの原因）");
+
+        // 並びが seed のハッシュ順であること（先頭 = 最小ハッシュの個体の x 平行移動）。
+        let mut expected: Vec<(u32, f32)> =
+            base.iter().map(|i| (scatter_thin_key(i.seed), i.pos[0])).collect();
+        expected.sort_by(|p, q| p.0.cmp(&q.0));
+        for (k, (_, x)) in expected.iter().enumerate() {
+            assert_eq!(ma[k][0][3], *x, "{k} 番目の個体がハッシュ順に並んでいない");
+        }
     }
 }

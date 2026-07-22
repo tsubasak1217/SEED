@@ -1440,6 +1440,47 @@ pub fn aabb_distance_sq(min: [f32; 3], max: [f32; 3], p: [f32; 3]) -> f32 {
     d
 }
 
+// ─── 遠景密度減衰（植生 LOD 第1段）────────────────────────────────────────────
+//
+// 【ねらい】近景は全個体・全密度で描き、遠いチャンクほど描画インスタンスを間引く。
+//   草は 12 万本規模、散布モデル（木）は 1 本が数千頂点＋多数テクスチャで重いため、
+//   遠景の間引きは俯瞰（全チャンク可視でフラスタムカリングが効かない構図）で
+//   描画コストを大きく下げる。散布データ自体は変えず**描画時に先頭 kept 本だけ描く**。
+//
+// 【間引きの単位は「先頭からの連続プレフィクス」】草バッファはチャンク区間
+//   `[first, first+count)` を 1 回の draw で発行するため、間引きも「先頭 kept 本を描く」
+//   （`[first, first+kept)`）にすると draw 発行の仕組みをそのまま使える。均一に薄くするには
+//   インスタンス列をハッシュ順に並べておく（呼び出し側の責務。terrain_scatter_ops の
+//   `scatter_thin_key`）。そうすれば任意のプレフィクスが空間的に均一なサブセットになる。
+
+/// 遠景密度減衰の中距離帯の間引き除数（この帯では全体の 1/DENSITY_DECAY_MID_DIVISOR を描く）。
+pub const DENSITY_DECAY_MID_DIVISOR: u32 = 2;
+/// 遠景密度減衰の遠距離帯の間引き除数（この帯では全体の 1/DENSITY_DECAY_FAR_DIVISOR を描く）。
+pub const DENSITY_DECAY_FAR_DIVISOR: u32 = 4;
+
+/// 距離に応じて「先頭から描く個体数」を返す（遠景密度減衰・決定的・入れ子）。
+///
+/// `near_sq` 以内は全数、`mid_sq` 以内は 1/2、それより遠いと 1/4 を返す（いずれも
+/// 二乗距離で比較）。返すのは**先頭から連続で描く本数**なので、間引き対象の
+/// インスタンス列はハッシュ順へ並べておくこと（そうすれば「先頭 kept 本」が
+/// 空間的に均一なサブセットになる＝遠景を薄くしても穴が空かない）。
+///
+/// 【決定性とちらつかなさ（最重要不変条件）】戻り値は `(total, dist_sq)` だけの関数で
+/// フレーム状態に依存しない。かつ返す本数は必ず先頭からのプレフィクス長なので、
+/// `1/4 ⊂ 1/2 ⊂ 全数` と入れ子になる。カメラが近づくと描画個体は**増える方向にのみ**
+/// 変化し、既に描いていた個体が消えて別個体へすり替わることが無い（帯の境界を跨いでも
+/// 露骨なポップ／ちらつきが出ない）。逆にカメラが遠ざかると外側の帯の個体から順に消える。
+#[inline]
+pub fn density_kept_count(total: u32, dist_sq: f32, near_sq: f32, mid_sq: f32) -> u32 {
+    if dist_sq <= near_sq {
+        total
+    } else if dist_sq <= mid_sq {
+        total / DENSITY_DECAY_MID_DIVISOR
+    } else {
+        total / DENSITY_DECAY_FAR_DIVISOR
+    }
+}
+
 /// モデルローカル空間の AABB をルート変換行列でワールド空間に変換する。
 ///
 /// 8 頂点すべてを変換し、新しい AABB を求める（精密かつシンプル）。
@@ -2401,7 +2442,10 @@ mod meshlet_gpu_tests {
 
 #[cfg(test)]
 mod cull_tests {
-    use super::{aabb_distance_sq, aabb_outside_frustum, extract_frustum_planes};
+    use super::{
+        aabb_distance_sq, aabb_outside_frustum, density_kept_count, extract_frustum_planes,
+        DENSITY_DECAY_FAR_DIVISOR, DENSITY_DECAY_MID_DIVISOR,
+    };
 
     /// カメラ原点・-Z 前方を見る単純な透視 view_proj（行優先）を作る。
     ///
@@ -2477,6 +2521,59 @@ mod cull_tests {
         assert_eq!(aabb_distance_sq(min, max, [13.0, 14.0, 5.0]), 25.0);
         // 負側 X に 5m 外 → 25
         assert_eq!(aabb_distance_sq(min, max, [-5.0, 5.0, 5.0]), 25.0);
+    }
+
+    /// 遠景密度減衰: 帯ごとの間引き本数（近=全数 / 中=1/2 / 遠=1/4）と境界の扱い。
+    ///
+    /// 境界（`dist_sq == near_sq` / `== mid_sq`）は「まだ濃い側」に含める（`<=`）。
+    /// ここがずれると帯の境界で 1 フレームだけ本数が飛ぶ（微小なポップ）。
+    #[test]
+    fn density_kept_count_bands_and_boundaries() {
+        let total = 100u32;
+        let near_sq = 30.0 * 30.0; // 900
+        let mid_sq = 60.0 * 60.0; // 3600
+
+        // 近景（near 以内）→ 全数。境界ちょうども全数側。
+        assert_eq!(density_kept_count(total, 0.0, near_sq, mid_sq), 100);
+        assert_eq!(density_kept_count(total, near_sq, near_sq, mid_sq), 100, "near 境界は全数側");
+        // 中距離帯 → 1/2。境界ちょうども 1/2 側。
+        assert_eq!(density_kept_count(total, near_sq + 1.0, near_sq, mid_sq), 50);
+        assert_eq!(density_kept_count(total, mid_sq, near_sq, mid_sq), 50, "mid 境界は 1/2 側");
+        // 遠距離帯 → 1/4。
+        assert_eq!(density_kept_count(total, mid_sq + 1.0, near_sq, mid_sq), 25);
+        assert_eq!(density_kept_count(total, 1.0e9, near_sq, mid_sq), 25);
+        // 除数の値も固定（マジックナンバーの取り違え防止）。
+        assert_eq!(DENSITY_DECAY_MID_DIVISOR, 2);
+        assert_eq!(DENSITY_DECAY_FAR_DIVISOR, 4);
+    }
+
+    /// 密度減衰は「先頭からのプレフィクス長」であり `遠 ⊂ 中 ⊂ 近` と入れ子になること。
+    ///
+    /// これが「同じ個体が消え続ける（フレーム間でちらつかない）」ことの根拠である。
+    /// カメラが近づいて帯が変わっても、描画本数は増えるだけで既存個体が別個体へ
+    /// すり替わらない（プレフィクスなので先頭側は不変）。
+    #[test]
+    fn density_kept_count_is_nested_prefix() {
+        let near_sq = 25.0 * 25.0;
+        let mid_sq = 50.0 * 50.0;
+        for total in [0u32, 1, 3, 4, 7, 100, 12345] {
+            let near = density_kept_count(total, 0.0, near_sq, mid_sq);
+            let mid = density_kept_count(total, near_sq + 1.0, near_sq, mid_sq);
+            let far = density_kept_count(total, mid_sq + 1.0, near_sq, mid_sq);
+            assert!(far <= mid && mid <= near && near == total,
+                "入れ子違反 total={total}: far={far} mid={mid} near={near}");
+        }
+    }
+
+    /// 決定的: 同じ入力なら常に同じ本数（フレーム状態に一切依存しない）。
+    #[test]
+    fn density_kept_count_is_deterministic() {
+        let (n, m) = (20.0 * 20.0, 40.0 * 40.0);
+        for &d in &[0.0f32, 100.0, 401.0, 1600.0, 1601.0, 9000.0] {
+            let a = density_kept_count(999, d, n, m);
+            let b = density_kept_count(999, d, n, m);
+            assert_eq!(a, b, "同じ入力で本数が変わった dist_sq={d}");
+        }
     }
 }
 

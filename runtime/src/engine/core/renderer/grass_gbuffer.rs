@@ -539,18 +539,29 @@ pub fn draw_grass<'pass>(
     rp.draw(0..GRASS_MAX_VERTS_PER_BLADE, 0..buf.count);
 }
 
-/// チャンク単位カリング付きで草を描画する（Terrain T3 描画最適化）。
+/// チャンク単位カリング＋遠景密度減衰付きで草を描画する（植生 LOD 第1段）。
 ///
 /// `buf.spans` の各チャンク AABB を視錐台（`planes`）と距離（`cull_distance_sq`）で
-/// テストし、**可視チャンクの連続区間だけ**を描く。連続する可視チャンクは 1 回の
-/// draw へまとめて発行し、draw コール数を抑える（バッファは詰め直さない）。
+/// テストし、可視チャンクだけを描く。さらに可視チャンクごとに最近点距離で
+/// **先頭 kept 本だけ**を描く（遠いチャンクほど間引く＝`density_kept_count`）。
+/// バッファは `rebuild_grass_gpu` がチャンク内でハッシュ順に並べてあるため、
+/// 先頭プレフィクスは空間的に均一なサブセットになり、遠景を薄くしても穴が空かない。
+///
+/// 連続かつ**全密度**（kept==count）の可視チャンクは 1 回の draw へまとめて発行し、
+/// draw コール数を抑える。間引かれたチャンク（kept<count）は `[first, first+kept)`
+/// が次チャンク先頭と連続しないため自然に run が閉じ、そのプレフィクスだけが描かれる。
 ///
 /// スパン情報が無い（`spans` が空）場合は従来どおり全描画へフォールバックする
 /// （カリングメタデータ未設定でも描画が壊れないための安全弁）。
 ///
 /// - `planes`: `extract_frustum_planes(view_proj)` で得たメインカメラの 6 平面。
-/// - `camera_pos`: 距離カリングの基準（ワールド）。
+/// - `camera_pos`: 距離カリング／密度減衰の基準（ワールド）。
 /// - `cull_distance_sq`: これより遠い（最近点距離²）チャンクは描かない。
+/// - `decay_near_sq` / `decay_mid_sq`: 密度減衰の帯境界（二乗距離）。
+///   `near` 以内は全密度、`mid` 以内は 1/2、それ以遠は 1/4（`cull_distance_sq` まで）。
+///
+/// 戻り値は**実際に描画したインスタンス本数**（カリング＋密度減衰後）。呼び出し側が
+/// `buf.count()`（全本数）と比べて削減量を計測ログへ出すために返す（決定的な数値）。
 pub fn draw_grass_culled<'pass>(
     rp:               &mut wgpu::RenderPass<'pass>,
     pipeline:         &'pass GrassGBufferPipeline,
@@ -559,14 +570,16 @@ pub fn draw_grass_culled<'pass>(
     planes:           &[[f32; 4]; 6],
     camera_pos:       [f32; 3],
     cull_distance_sq: f32,
-) {
+    decay_near_sq:    f32,
+    decay_mid_sq:     f32,
+) -> u32 {
     if buf.count == 0 {
-        return;
+        return 0;
     }
     // スパン未設定 → 従来の全描画（カリング情報が無いので棄却できない）。
     if buf.spans.is_empty() {
         draw_grass(rp, pipeline, buf, camera_bg);
-        return;
+        return buf.count;
     }
 
     rp.set_pipeline(&pipeline.pipe);
@@ -574,35 +587,50 @@ pub fn draw_grass_culled<'pass>(
     rp.set_bind_group(1, &buf.bind_group, &[]);
 
     // 可視チャンクの連続区間を貯めて、途切れたところで 1 回 draw する。
+    // run_end は「実際に描く上端」＝ `first + kept` を積む（間引きぶんは含めない）。
     let mut run_start: u32 = 0;
     let mut run_end:   u32 = 0; // 半開区間 [run_start, run_end)
     let mut run_open = false;
+    // 実際に描いた本数（カリング＋密度減衰後）。計測ログ用に返す。
+    let mut drawn: u32 = 0;
 
     for span in &buf.spans {
         if span.count == 0 {
             continue;
         }
+        let dist_sq = super::gpu_resources::aabb_distance_sq(
+            span.aabb_min, span.aabb_max, camera_pos,
+        );
         let visible = !super::gpu_resources::aabb_outside_frustum(
             planes, span.aabb_min, span.aabb_max,
-        ) && super::gpu_resources::aabb_distance_sq(
-            span.aabb_min, span.aabb_max, camera_pos,
-        ) <= cull_distance_sq;
+        ) && dist_sq <= cull_distance_sq;
 
-        if visible {
+        // 遠景密度減衰: 可視チャンクは距離に応じて先頭 kept 本だけ描く。
+        let kept = if visible {
+            super::gpu_resources::density_kept_count(
+                span.count, dist_sq, decay_near_sq, decay_mid_sq,
+            )
+        } else {
+            0
+        };
+
+        if kept > 0 {
+            drawn += kept;
+            let draw_end = span.first + kept;
+            // 直前の run と連続するのは「直前が全密度で描き切り（run_end==span.first）」の
+            // ときだけ。間引かれた直前チャンクは run_end < 次 first になり自然に途切れる。
             if run_open && span.first == run_end {
-                // 直前の可視区間と連続 → 伸ばすだけ。
-                run_end = span.first + span.count;
+                run_end = draw_end;
             } else {
-                // 非連続 → 溜まっていた区間を描いてから新規オープン。
                 if run_open {
                     rp.draw(0..GRASS_MAX_VERTS_PER_BLADE, run_start..run_end);
                 }
                 run_start = span.first;
-                run_end   = span.first + span.count;
+                run_end   = draw_end;
                 run_open  = true;
             }
         } else if run_open {
-            // 不可視で区切り → 溜まっていた区間を描いて閉じる。
+            // 不可視 or 全間引きで区切り → 溜まっていた区間を描いて閉じる。
             rp.draw(0..GRASS_MAX_VERTS_PER_BLADE, run_start..run_end);
             run_open = false;
         }
@@ -611,6 +639,7 @@ pub fn draw_grass_culled<'pass>(
     if run_open {
         rp.draw(0..GRASS_MAX_VERTS_PER_BLADE, run_start..run_end);
     }
+    drawn
 }
 
 // ============================================================
