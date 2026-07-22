@@ -692,6 +692,14 @@ impl<'r> RenderFrame<'r> {
     /// `depth_view` フィールド（All aspect）側を使う（begin_gbuffer_pass_to 等を参照）。
     pub fn depth_only_view(&self) -> &wgpu::TextureView { self.depth_only_view }
 
+    /// DepthOnly ビューを **フレーム('r) 寿命** で返す（Hi-Z ピラミッド生成用）。
+    ///
+    /// `depth_only_view()` は戻り値が `&self` 借用に縛られ、同時に `encoder_mut(&mut self)`
+    /// を呼べない。Hi-Z は「深度ビュー＋エンコーダ」を同時に使うため、深度ビューを
+    /// フレーム全体の借用 'r として取り出せるこのメソッドを使う（深度テクスチャは
+    /// Renderer が所有し 'r の間は不変なので安全）。
+    pub fn depth_only_view_r(&self) -> &'r wgpu::TextureView { self.depth_only_view }
+
     // ── 深度プリパス（カラー出力なし、深度クリアあり）────────────
 
     /// 深度のみ書き込むプリパスを開始する。

@@ -1412,13 +1412,43 @@ impl App {
                     let terrain_cull_disabled = *super::terrain_scatter_ops::TERRAIN_CULL_DISABLED;
                     let terrain_cull_dist = *super::terrain_scatter_ops::TERRAIN_CHUNK_CULL_DISTANCE;
                     let terrain_cull_dist_sq = terrain_cull_dist * terrain_cull_dist;
+
+                    // ── Hi-Z オクルージョン: 前フレーム結果の取得（1 フレーム遅延・opt-in）──────
+                    //   SEED_OCCLUSION_CULL=1 のときのみ。前フレームにディスパッチした地形チャンクの
+                    //   可視性（0=遮蔽 / 1=可視）を読み戻し、hiz_prev_keys と同順で対応づけて
+                    //   「完全遮蔽」チャンクの path 集合を作る。結果が無い（未収束・未対応・非 deferred）
+                    //   チャンクは一切含めない＝「不明なら描く」保守側（誤棄却防止の要）。
+                    //   ここで得た遮蔽集合は下でフラスタム／距離カリング集合へ union する。
+                    let terrain_occluded: std::collections::HashSet<String> =
+                        if *super::terrain_scatter_ops::HIZ_OCCLUSION_ENABLED {
+                            if let Some(hiz) = self.hiz.as_mut() {
+                                if let Some(vis) = hiz.try_read_results(&draw_ctx.device) {
+                                    self.hiz_prev_keys.iter().zip(vis.iter())
+                                        .filter(|(_, v)| **v == 0)
+                                        .map(|(k, _)| k.clone())
+                                        .collect()
+                                } else { std::collections::HashSet::new() }
+                            } else { std::collections::HashSet::new() }
+                        } else { std::collections::HashSet::new() };
+                    // 計測: Hi-Z が読み戻した可視性から落とした地形チャンク数（60 フレームに 1 回）。
+                    if *super::terrain_scatter_ops::HIZ_OCCLUSION_ENABLED
+                        && *super::terrain_scatter_ops::PERF_TERRAIN_LOG_ENABLED {
+                        use std::sync::atomic::{AtomicU64, Ordering};
+                        static HN: AtomicU64 = AtomicU64::new(0);
+                        if HN.fetch_add(1, Ordering::Relaxed) % 60 == 0 {
+                            eprintln!(
+                                "[PERF hiz] occlusion read: occluded={} tested_prev={}",
+                                terrain_occluded.len(), self.hiz_prev_keys.len()
+                            );
+                        }
+                    }
                     // 診断用: このフレームの地形チャンクバッチ総数（描画数ログの分母）。
                     let terrain_chunk_total = self.shared_model_batches.keys()
                         .filter(|p| p.starts_with(
                             crate::engine::components::TERRAIN_SOURCE_SCHEME))
                         .count() as u32;
                     // 視錐台外／距離外の地形チャンク path 集合（描画・前処理でスキップする）。
-                    let terrain_culled: std::collections::HashSet<String> = if terrain_cull_disabled {
+                    let mut terrain_culled: std::collections::HashSet<String> = if terrain_cull_disabled {
                         std::collections::HashSet::new()
                     } else {
                         self.shared_model_batches.iter()
@@ -1435,6 +1465,10 @@ impl App {
                             })
                             .collect()
                     };
+                    // Hi-Z オクルージョン結果を union（フラスタム／距離 AND 遮蔽）。遮蔽集合は
+                    // 保守側（完全遮蔽のみ）なので、視界内でも山の裏なら追加でスキップされる。
+                    // 空集合（既定 OFF・未収束）なら何も足さず＝フラスタムのみの従来挙動。
+                    terrain_culled.extend(terrain_occluded);
                     // 計測ログ（60 フレームに 1 回・SEED_PERF_TERRAIN 有効時のみ）。
                     //   カリング後に実際に描く地形チャンク数 / 全チャンク数。
                     if *super::terrain_scatter_ops::PERF_TERRAIN_LOG_ENABLED && terrain_chunk_total > 0 {
@@ -3945,6 +3979,63 @@ impl App {
                                 }
                             }
 
+                            // ── Hi-Z オクルージョン: ピラミッド生成＋ディスパッチ＋読み戻し予約 ─────
+                            //   G-Buffer 深度が確定した直後（パス外）に実行する。地形チャンクの
+                            //   world AABB を Hi-Z へ投影・比較し、可視性を result_buf → staging へ写す。
+                            //   結果は **次フレーム** の try_read_results が受け取る（1 フレーム遅延）。
+                            //   readback_idle() が false（前回マップ未消費）のフレームは丸ごと見送る
+                            //   （マップ中 staging への二重 COPY / 二重 map を防ぐ）。deferred のみ。
+                            if *super::terrain_scatter_ops::HIZ_OCCLUSION_ENABLED {
+                                let (sw, sh) = frame.surface_size();
+                                // レイジー構築（初回のみ）。以降は ensure_size でサイズ追従する。
+                                if self.hiz.is_none() {
+                                    self.hiz = Some(crate::engine::core::renderer::hiz::HiZSystem::new(
+                                        &draw_ctx.device, sw.max(1), sh.max(1), 256,
+                                    ));
+                                }
+                                if let Some(hiz) = self.hiz.as_mut() {
+                                    if hiz.readback_idle() {
+                                        hiz.ensure_size(&draw_ctx.device, &draw_ctx.queue, sw, sh);
+                                        // 地形チャンクの world AABB と key（path）を同順で収集する。
+                                        // world_bounds=None（未 update）のチャンクは対象外＝描く（保守側）。
+                                        let mut keys: Vec<String> = Vec::new();
+                                        let mut aabbs: Vec<crate::engine::core::renderer::uniforms::GpuCullData>
+                                            = Vec::new();
+                                        for (path, sd) in &self.shared_model_batches {
+                                            if !path.starts_with(
+                                                crate::engine::components::TERRAIN_SOURCE_SCHEME) { continue; }
+                                            if let Some((mn, mx)) = sd.batch.world_bounds() {
+                                                keys.push(path.clone());
+                                                aabbs.push(crate::engine::core::renderer::uniforms::GpuCullData {
+                                                    aabb_min: mn, _pad0: 0.0, aabb_max: mx, _pad1: 0.0,
+                                                });
+                                            }
+                                        }
+                                        if !aabbs.is_empty() {
+                                            hiz.set_instances(&draw_ctx.device, &draw_ctx.queue, &aabbs);
+                                            // 深度ビューは 'r 寿命で取り出し、エンコーダ借用と両立させる。
+                                            let depth_view = frame.depth_only_view_r();
+                                            let enc = frame.encoder_mut();
+                                            hiz.build_pyramid(enc, depth_view, &draw_ctx.device);
+                                            hiz.dispatch_occlusion(enc, &camera_buf.buffer, &draw_ctx.device);
+                                            hiz.schedule_readback(enc);
+                                            if *super::terrain_scatter_ops::PERF_TERRAIN_LOG_ENABLED {
+                                                use std::sync::atomic::{AtomicU64, Ordering};
+                                                static DN: AtomicU64 = AtomicU64::new(0);
+                                                if DN.fetch_add(1, Ordering::Relaxed) % 60 == 0 {
+                                                    eprintln!(
+                                                        "[PERF hiz] dispatch: instances={} ({}x{})",
+                                                        keys.len(), sw, sh
+                                                    );
+                                                }
+                                            }
+                                            self.hiz_prev_keys = keys;
+                                            self.hiz_need_map = true;
+                                        }
+                                    }
+                                }
+                            }
+
                             // ── AO 生成パス + いもす法ブラー（Phase D4）─────────────────
                             // G-Buffer 完成後・deferred ライティング前に半解像度 ao_raw へ AO を焼き、
                             // いもす法で ao_b へ均す。ライティングは group1 に ao_b をバイリニアで受け取り
@@ -5673,6 +5764,15 @@ impl App {
                     let _perf_t_finish = std::time::Instant::now();
                     frame.finish();
                     perf_finish_ms = _perf_t_finish.elapsed().as_secs_f64() * 1000.0;
+
+                    // ── Hi-Z: submit 後に読み戻しマップを予約する（1 フレーム遅延の要）──────
+                    //   schedule_readback で staging へ写した可視性を、次フレームの
+                    //   try_read_results が受け取れるようマップ予約する。map_async は submit 後
+                    //   （＝ frame.finish() 後）に呼ぶ必要がある（マップ中バッファは COPY 先に使えない）。
+                    if self.hiz_need_map {
+                        if let Some(hiz) = self.hiz.as_mut() { hiz.map_after_submit(); }
+                        self.hiz_need_map = false;
+                    }
 
                     // ── パフォーマンスログ ─────────────────────────────────────────
                     // 60 フレームごとに CPU タイミングを eprintln! で出力する。

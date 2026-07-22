@@ -631,6 +631,17 @@ pub struct App {
     /// 同じく eager 構築（パイプラインは DrawContext.pipelines.skybox が持つ）。
     /// 毎フレーム collect（CPU）→ sync_gpu/draw（GPU）で更新・描画する。
     skybox_system: crate::engine::core::renderer::SkyboxSystem,
+    /// Hi-Z オクルージョンカリングシステム（地形チャンク・**opt-in**）。
+    /// `SEED_OCCLUSION_CULL=1` のフレームで初回レイジー構築し、G-Buffer 深度から Hi-Z を作り、
+    /// 各地形チャンク AABB を投影・比較して「完全遮蔽」のチャンクを 1 フレーム遅延で描画スキップする。
+    /// 既定（未設定）では None のまま一切構築・実行しない（オーバーヘッド 0）。
+    hiz: Option<crate::engine::core::renderer::hiz::HiZSystem>,
+    /// 直近フレームで Hi-Z ディスパッチした地形チャンクの key（path）列。
+    /// 次フレームの `try_read_results` が返す可視性 `Vec<u32>` と同順で対応させ、
+    /// 遮蔽チャンク集合（描画スキップ）へ変換するためのインデックス→key マップ。
+    hiz_prev_keys: Vec<String>,
+    /// このフレームの終わり（frame.finish 後）に Hi-Z staging のマップ予約が必要か。
+    hiz_need_map: bool,
     /// ビネットポストパスの有効フラグ（デフォルト OFF）。
     /// project_settings.json の `post_vignette`（bool, 既定 false）を起動時に読み込む。
     /// 有効時はトーンマップ前段にビネットを挿す（ポストパスチェーンの実証）。
@@ -1023,6 +1034,9 @@ impl App {
             ssgi_warmed:                 false,
             particle_system:             crate::engine::core::renderer::ParticleSystem::new(),
             skybox_system:               crate::engine::core::renderer::SkyboxSystem::new(),
+            hiz:                         None,
+            hiz_prev_keys:               Vec::new(),
+            hiz_need_map:                false,
             post_vignette_enabled:       false,
             post_fx:                     crate::engine::core::renderer::PostFxSettings::default(),
             scene_view_mode:             crate::engine::core::renderer::SceneViewMode::default(),
