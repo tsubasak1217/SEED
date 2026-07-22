@@ -3456,9 +3456,18 @@ impl App {
             const FPV_EYE_HEIGHT: f32 = 12.0;
             const FPV_PITCH_DEG: f32 = 8.0;
             let deg2rad = std::f32::consts::PI / 180.0;
+            // オクルージョンカリング検証用の任意上書き（既定は従来値）。低い目線で起伏へ
+            // 向かせると、手前の尾根が奥のチャンクを完全遮蔽する構図を作れる。
+            //   SEED_SMOKE_FPV_EYE=<m>   … 目線高さ（既定 12m）
+            //   SEED_SMOKE_FPV_YAW=<deg> … 向き（既定 0=+Z。ハイトマップの傾斜は X 方向なので
+            //                              90 で +X の上り坂へ向く＝尾根越しの遮蔽が出る）
+            let eye_h = std::env::var("SEED_SMOKE_FPV_EYE").ok()
+                .and_then(|s| s.parse::<f32>().ok()).unwrap_or(FPV_EYE_HEIGHT);
+            let yaw_fpv = std::env::var("SEED_SMOKE_FPV_YAW").ok()
+                .and_then(|s| s.parse::<f32>().ok()).map(|d| d * deg2rad).unwrap_or(0.0);
             (
-                [center[0], center[1] + FPV_EYE_HEIGHT, center[2]],
-                0.0f32,                     // +Z を向く
+                [center[0], center[1] + eye_h, center[2]],
+                yaw_fpv,
                 FPV_PITCH_DEG * deg2rad,    // わずかに下向き（地面が見える）
                 SMOKE_CAM_FOV_DEG,
                 SMOKE_CAM_FAR,

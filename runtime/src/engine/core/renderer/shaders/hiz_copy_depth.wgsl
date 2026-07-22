@@ -1,5 +1,7 @@
 // ============================================================
-//  hiz_copy_depth.wgsl — 深度バッファ(Depth32Float) → Hi-Z mip 0(R32Float)
+//  hiz_copy_depth.wgsl — 深度バッファ(DepthOnly aspect) → Hi-Z mip 0(R32Float)
+//  実際の深度フォーマットは Depth24PlusStencil8（DEPTH_FORMAT）。texture_depth_2d は
+//  その DepthOnly ビューをサンプルするため、フォーマットに依らずそのまま動く。
 // ============================================================
 
 @group(0) @binding(0) var depth_tex: texture_depth_2d;

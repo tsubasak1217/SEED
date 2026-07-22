@@ -267,6 +267,22 @@ pub(super) static TERRAIN_CHUNK_CULL_DISTANCE: std::sync::LazyLock<f32> =
 pub(super) static TERRAIN_CULL_DISABLED: std::sync::LazyLock<bool> =
     std::sync::LazyLock::new(|| std::env::var_os("SEED_TERRAIN_NOCULL").is_some());
 
+/// Hi-Z オクルージョンカリング（地形チャンク）の有効化スイッチ（**既定 OFF・opt-in**）。
+///
+/// `SEED_OCCLUSION_CULL=1` のとき true。true なら、深度プリパス相当（G-Buffer 深度）から
+/// 生成した Hi-Z ピラミッドに各地形チャンクのワールド AABB を投影・比較し、「AABB 全体が
+/// 既存オクルーダの背後（＝完全遮蔽）」のチャンクを既存のフラスタム／距離カリング集合へ
+/// 追加してスキップする（1 フレーム遅延・GPU→CPU 読み戻し方式）。
+///
+/// 【既定 OFF の理由】1 フレーム遅延方式は、カメラが動いて新たに見えたチャンクが最大 1
+/// フレームだけ描画されない過渡（reveal ホール）を持つ。誤棄却をユーザーが強く嫌うため、
+/// まず opt-in で実機検証し、問題なければ既定 ON を検討する。判定自体は保守側（AABB が
+/// 少しでも見える／カメラ背後／フラスタム外なら必ず描く）で、静止画では偽陽性ゼロ。
+pub(super) static HIZ_OCCLUSION_ENABLED: std::sync::LazyLock<bool> =
+    std::sync::LazyLock::new(|| {
+        matches!(std::env::var("SEED_OCCLUSION_CULL").as_deref(), Ok("1"))
+    });
+
 // ============================================================
 //  TerrainScatterField — チャンクマップ上の ScatterField 実装
 // ============================================================
