@@ -3765,8 +3765,17 @@ impl App {
                                 //   （span 判定は視錐台も見るため、draw_grass=全描画へ切り替える）。
                                 let grass_nocull = *super::terrain_scatter_ops::SCATTER_CULL_DISABLED;
                                 let grass_cull_sq = grass_cull_dist * grass_cull_dist;
+                                // 遠景密度減衰の帯境界（二乗距離）。近=全密度 / 中=1/2 / 遠=1/4。
+                                let grass_decay_near = *super::terrain_scatter_ops::GRASS_DECAY_NEAR;
+                                let grass_decay_mid = *super::terrain_scatter_ops::GRASS_DECAY_MID;
+                                let grass_decay_near_sq = grass_decay_near * grass_decay_near;
+                                let grass_decay_mid_sq = grass_decay_mid * grass_decay_mid;
+                                // 遠景密度減衰の削減量を決定的に計測する（SEED_PERF_TERRAIN 有効時）。
+                                let mut grass_drawn: u32 = 0;
+                                let mut grass_total: u32 = 0;
                                 for buf in self.terrain.grass_buffers.values() {
                                     buf.update_time(&draw_ctx.queue, ctx.anim_time);
+                                    grass_total += buf.count();
                                     if grass_nocull {
                                         crate::engine::core::renderer::grass_gbuffer::draw_grass(
                                             &mut gpass,
@@ -3774,8 +3783,9 @@ impl App {
                                             buf,
                                             &camera_buf.bind_group,
                                         );
+                                        grass_drawn += buf.count();
                                     } else {
-                                        crate::engine::core::renderer::grass_gbuffer::draw_grass_culled(
+                                        grass_drawn += crate::engine::core::renderer::grass_gbuffer::draw_grass_culled(
                                             &mut gpass,
                                             &draw_ctx.pipelines.gbuffer.grass,
                                             buf,
@@ -3783,6 +3793,20 @@ impl App {
                                             &saved_frustum_planes,
                                             saved_camera_pos,
                                             grass_cull_sq,
+                                            grass_decay_near_sq,
+                                            grass_decay_mid_sq,
+                                        );
+                                    }
+                                }
+                                // 計測ログ（60 フレームに 1 回・SEED_PERF_TERRAIN 有効時のみ）。
+                                //   カリング＋密度減衰後に実際に描いた草本数 / 全本数。
+                                if *super::terrain_scatter_ops::PERF_TERRAIN_LOG_ENABLED && grass_total > 0 {
+                                    use std::sync::atomic::{AtomicU64, Ordering};
+                                    static GN: AtomicU64 = AtomicU64::new(0);
+                                    if GN.fetch_add(1, Ordering::Relaxed) % 60 == 0 {
+                                        eprintln!(
+                                            "[PERF terrain] grass draw: drawn={grass_drawn}/{grass_total} \
+                                             (nocull={grass_nocull})"
                                         );
                                     }
                                 }
