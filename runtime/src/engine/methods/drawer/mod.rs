@@ -302,19 +302,15 @@ impl DrawContext {
         gpu_model
     }
 
-    /// アクターの共有メッシュバッチを作る。メッシュレットカリング（LOD0）を有効にする。
+    /// アクター・地形散布モデル共通のメッシュバッチを作る。メッシュレットカリング（LOD0）を有効にする。
+    ///
+    /// メッシュレットカリング用コマンドバッファ（メッシュレット数 × インスタンス数 に比例）が
+    /// `max_buffer_size` を超える prim は、`InstancedModelBatch::new` 側の防御でスロットを
+    /// 確保せず通常のインスタンス描画へ自動フォールバックする。したがって数千インスタンスの
+    /// 大量散布でも確保でパニックせず、上限内のバッチ（近景の高ポリ木など）ではメッシュレット
+    /// カリングが効いて可視部分だけ描画される。
     pub fn create_instanced_batch(&self, model: &Model, num_instances: u32) -> BatchInner {
         self.create_instanced_batch_inner(model, num_instances, true)
-    }
-
-    /// 地形の散布モデル用バッチを作る。メッシュレットカリングは確保しない（enable=false）。
-    ///
-    /// 散布モデルは数千インスタンスに達し得るため、メッシュレットカリングのコマンドバッファ
-    /// （メッシュレット数 × インスタンス数 に比例）を確保すると max_buffer_size を超えて
-    /// パニックする。描画は `draw_gbuffer_indirect(meshlet=false)` の通常インスタンス描画で
-    /// 行い、`prepare_meshlet_cull` も呼ばないため、スロットを確保しても無駄。よって除外する。
-    pub fn create_instanced_batch_no_meshlet(&self, model: &Model, num_instances: u32) -> BatchInner {
-        self.create_instanced_batch_inner(model, num_instances, false)
     }
 
     /// バッチ生成の内部実装。`enable_meshlet_cull` でメッシュレットカリング用スロットの

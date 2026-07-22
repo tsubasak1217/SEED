@@ -283,6 +283,17 @@ pub(super) static HIZ_OCCLUSION_ENABLED: std::sync::LazyLock<bool> =
         matches!(std::env::var("SEED_OCCLUSION_CULL").as_deref(), Ok("1"))
     });
 
+/// 散布モデル（kind=Model プロップ）の GPU メッシュレットカリングを有効にするか。
+/// 既定 ON。環境変数 `SEED_SCATTER_MESHLET=0` で無効化できる（無効時は G-Buffer を
+/// 通常のインスタンス描画で焼く＝従来挙動）。近景の高ポリ木の描画コスト計測（before/after）を
+/// 同一バイナリで取るためのトグルであり、通常運用では ON のまま使う。
+/// 無効化しても描画結果は同じ（メッシュレットカリングは可視部分だけを描くカリングであり、
+/// 見た目は変えない）。
+pub(super) static SCATTER_MESHLET_CULL_ENABLED: std::sync::LazyLock<bool> =
+    std::sync::LazyLock::new(|| {
+        !matches!(std::env::var("SEED_SCATTER_MESHLET").as_deref(), Ok("0"))
+    });
+
 // ============================================================
 //  TerrainScatterField — チャンクマップ上の ScatterField 実装
 // ============================================================
@@ -1545,7 +1556,12 @@ impl TerrainState {
                 match load_scatter_model(ctx, &want_path) {
                     Ok((cpu_model, gpu_model)) => {
                         let capacity = (mat_count * 2).max(SCATTER_MODEL_MIN_CAPACITY);
-                        let batch = ctx.create_instanced_batch_no_meshlet(&cpu_model, capacity as u32);
+                        // メッシュレットカリングを有効化して生成する。インスタンス数（capacity）が
+                        // 上限内なら近景の高ポリ木が可視メッシュレットだけ描かれてアクター並みに軽くなる。
+                        // capacity × メッシュレット数 が max_buffer_size を超える prim は
+                        // InstancedModelBatch::new 側の防御でスロット未確保＝通常描画へ自動フォールバック
+                        // （大量散布でもパニックしない）。
+                        let batch = ctx.create_instanced_batch(&cpu_model, capacity as u32);
                         self.scatter_models.insert(
                             prop_index,
                             ScatterModelResource {
@@ -1585,7 +1601,8 @@ impl TerrainState {
                 // 新バッチを作ると、旧バッチがこの代入で drop される。旧バッチの instance
                 // バッファは前フレームの submit が参照中（in-flight）なので、drop は即時破棄
                 // されず wgpu の遅延破棄キューへ積まれる。
-                res.batch = ctx.create_instanced_batch_no_meshlet(&res.cpu_model, capacity as u32);
+                // 容量拡張時もメッシュレットカリング有効で作り直す（生成時と同じ方針）。
+                res.batch = ctx.create_instanced_batch(&res.cpu_model, capacity as u32);
                 res.capacity = capacity;
                 // 【snatch lock 再帰の防止】read lock 非保持のここで旧バッファ解放を確定させる。
                 let _ = ctx.device.poll(wgpu::PollType::Wait);

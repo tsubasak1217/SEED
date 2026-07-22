@@ -286,7 +286,13 @@ static SMOKE_DEFERRED_ENABLED: std::sync::atomic::AtomicBool =
 
 /// クローズアップへ切り替えるフレーム番号を指定する環境変数名（未指定なら切り替えない）。
 const ENV_SMOKE_CLOSEUP_FRAME: &str = "SEED_SMOKE_CLOSEUP_FRAME";
-/// クローズアップ時、注視点からカメラまでの水平距離（メートル）。
+/// クローズアップの被写体プロップ添字を指定する環境変数名（未指定なら `SMOKE_CLOSEUP_PROP_INDEX`）。
+/// 高ポリ散布モデル（例: 木）を近接 LOD0 で写して描画コストを計測する用途で使う。
+const ENV_SMOKE_CLOSEUP_PROP: &str = "SEED_SMOKE_CLOSEUP_PROP";
+/// クローズアップの水平距離を上書きする環境変数名（未指定なら `SMOKE_CLOSEUP_DISTANCE`）。
+/// 木のような大きい被写体は既定 1.1m では近すぎるため、env で引ける（例: 十数本を画面に収める）。
+const ENV_SMOKE_CLOSEUP_DISTANCE: &str = "SEED_SMOKE_CLOSEUP_DIST";
+/// クローズアップ時、注視点からカメラまでの水平距離（メートル）の既定値。
 const SMOKE_CLOSEUP_DISTANCE: f32 = 1.1;
 /// クローズアップ時、注視点に対するカメラの高さ（メートル）。ほぼ水平に見る。
 const SMOKE_CLOSEUP_EYE_HEIGHT: f32 = 0.30;
@@ -298,13 +304,30 @@ const SMOKE_CLOSEUP_FOV_DEG: f32 = 35.0;
 const SMOKE_CLOSEUP_FAR: f32 = 200.0;
 /// クローズアップ時のデバッグカメラ移動速度（メートル/秒）。構図固定なので使わないが必須項目。
 const SMOKE_CLOSEUP_SPEED: f32 = 2.0;
-/// クローズアップの被写体に選ぶプロップ添字（0 = props.json の先頭 = grass_field）。
+/// クローズアップの被写体に選ぶプロップ添字の既定値（0 = props.json の先頭 = grass_field）。
 const SMOKE_CLOSEUP_PROP_INDEX: u32 = 0;
 
 /// クローズアップ切替フレーム（環境変数 `SEED_SMOKE_CLOSEUP_FRAME`）。未指定なら `None`。
 static SMOKE_CLOSEUP_FRAME: std::sync::LazyLock<Option<u32>> =
     std::sync::LazyLock::new(|| {
         std::env::var(ENV_SMOKE_CLOSEUP_FRAME).ok()?.trim().parse::<u32>().ok()
+    });
+/// クローズアップの被写体プロップ添字（環境変数 `SEED_SMOKE_CLOSEUP_PROP` 優先・既定 `SMOKE_CLOSEUP_PROP_INDEX`）。
+static SMOKE_CLOSEUP_PROP: std::sync::LazyLock<u32> =
+    std::sync::LazyLock::new(|| {
+        std::env::var(ENV_SMOKE_CLOSEUP_PROP)
+            .ok()
+            .and_then(|v| v.trim().parse::<u32>().ok())
+            .unwrap_or(SMOKE_CLOSEUP_PROP_INDEX)
+    });
+/// クローズアップの水平距離（環境変数 `SEED_SMOKE_CLOSEUP_DIST` 優先・既定 `SMOKE_CLOSEUP_DISTANCE`）。
+static SMOKE_CLOSEUP_DIST: std::sync::LazyLock<f32> =
+    std::sync::LazyLock::new(|| {
+        std::env::var(ENV_SMOKE_CLOSEUP_DISTANCE)
+            .ok()
+            .and_then(|v| v.trim().parse::<f32>().ok())
+            .filter(|d| d.is_finite() && *d > 0.0)
+            .unwrap_or(SMOKE_CLOSEUP_DISTANCE)
     });
 /// クローズアップ判定用のフレームカウンタ（描画開始後のフレーム数）。
 static SMOKE_CLOSEUP_COUNTER: std::sync::atomic::AtomicU32 =
@@ -3710,16 +3733,23 @@ impl App {
         }
         SMOKE_CLOSEUP_DONE.store(true, Ordering::Relaxed);
 
+        // 被写体プロップ添字（env 上書き可）。木の高ポリ散布モデルを近接 LOD0 で写す計測に使う。
+        let closeup_prop = *SMOKE_CLOSEUP_PROP;
+
         // 対象プロップのインスタンスが最も多いチャンクを選ぶ（草が濃い場所＝絵になる場所）。
         let Some((_, instances)) = self
             .terrain
             .scatter
             .iter()
             .map(|(coord, list)| {
-                let count = list.iter().filter(|i| i.prop_id == SMOKE_CLOSEUP_PROP_INDEX).count();
+                let count = list.iter().filter(|i| i.prop_id == closeup_prop).count();
                 (coord, list, count)
             })
-            .max_by_key(|(_, _, count)| *count)
+            // タイブレークをチャンク座標で決定論化する。scatter は HashMap で、イテレーション順が
+            // 実行ごとに変わるため、同数チャンクが複数あると max_by_key が選ぶチャンクが run 依存に
+            // なる（＝計測用クローズアップの構図が run ごとにブレて before/after 比較が壊れる）。
+            // 座標を副キーに入れて常に同じチャンクを選ぶ。
+            .max_by_key(|(coord, _, count)| (*count, coord.x, coord.y, coord.z))
             .map(|(coord, list, _)| (coord, list))
         else {
             eprintln!("[SEED terrain] smoke: closeup 対象の散布データがありません");
@@ -3729,7 +3759,7 @@ impl App {
         // （重心そのものは草が無い窪みに落ちることがあるため、実在インスタンスへ吸着させる）。
         let picked: Vec<[f32; 3]> = instances
             .iter()
-            .filter(|i| i.prop_id == SMOKE_CLOSEUP_PROP_INDEX)
+            .filter(|i| i.prop_id == closeup_prop)
             .map(|i| i.pos)
             .collect();
         if picked.is_empty() {
@@ -3757,7 +3787,7 @@ impl App {
         let eye = [
             target[0],
             subject[1] + SMOKE_CLOSEUP_EYE_HEIGHT,
-            target[2] - SMOKE_CLOSEUP_DISTANCE,
+            target[2] - *SMOKE_CLOSEUP_DIST,
         ];
         // yaw/pitch は debug_camera の規約（forward → yaw = atan2(fwd.x, fwd.z), pitch = asin(-fwd.y)）。
         let dir = [target[0] - eye[0], target[1] - eye[1], target[2] - eye[2]];

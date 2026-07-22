@@ -1463,11 +1463,31 @@ ECS アクターには一切紐付けない**独立したインスタンシン�
 **描画経路（`frame_renderer.rs`）**
 - G-Buffer パス: 草の直後に `self.terrain.scatter_models.values()` を走査し、既存の
   `gbuffer::draw_gbuffer_indirect(gpass, &gpu_model, &batch, camera_bg, gbuffer_pipelines,
-  meshlet=false, terrain_layers=None)` へ渡すだけ。通常マテリアルで描くので deferred ライティング・
-  SSAO・DDGI 受光が通常メッシュと同じく効く。meshlet カリングは使わない（専用 cull コンピュートを
-  走らせていないため、通常の `draw_indexed` 経路）。
+  meshlet=scatter_meshlet_draw, terrain_layers=None)` へ渡す。通常マテリアルで描くので deferred
+  ライティング・SSAO・DDGI 受光が通常メッシュと同じく効く。
+- **メッシュレットカリング（近景高ポリ木の描画コスト対策・実装済み）**: 散布モデルのバッチは
+  `create_instanced_batch`（`enable_meshlet_cull=true`）で作られ、`frame_renderer` の
+  メッシュレットカリング前処理ループにアクターと並んで載る（`prepare_meshlet_cull` →
+  同一 compute パスで `record_meshlet_cull`）。G-Buffer 描画は `meshlet_active` を渡し、
+  可視 LOD0 メッシュレットだけを間接コマンドで描く。これで近景の高ポリ散布モデル（例: searsia＝
+  377k 三角形/本）がアクター（`shared_model_batches`）と同等に軽くなる。
+  - **上限フォールバック**: メッシュレットカリング用コマンドバッファは
+    `メッシュレット数 × インスタンス数 × 20B`。これが `min(max_buffer_size,
+    max_storage_buffer_binding_size)`（＝既定 128MiB。**ストレージバインディング上限**が効く）を
+    超える prim は `InstancedModelBatch::new` がスロットを確保せず、通常の `draw_indexed` へ自動
+    フォールバックする（大量散布でもパニックしない）。searsia の重い prim（1367 メッシュレット）は
+    総インスタンス **約 6,700 本**を超えると 128MiB を超えてフォールバックする（＝十数〜数千本の
+    近景では効き、数千〜万本規模の遠景大量散布では自動でフォールバック＝チャンクカリング／距離 LOD が担当）。
+  - env トグル `SEED_SCATTER_MESHLET=0` で無効化できる（既定 ON。before/after 計測を同一バイナリで
+    取るための切替。描画結果は不変＝可視部分だけを描くカリング）。
 - 影: `shadow_casters` に `(&gpu_model, &batch)` を push するだけでラスタのシャドウマップに乗る
   （`ShadowResources::record` は G-Buffer と同じ InstancedModelBatch の storage-instance を再利用する）。
+  - **【重要な残課題】シャドウパスはメッシュレットカリングを使わない**。`shadow.rs` の `draw_caster` は
+    全 LOD × 3 カスケード（`CSM_CASCADE_COUNT`）を `draw_indexed` で全三角形描画する（アクターも散布も同じ）。
+    近景の高ポリ木では **シャドウ（実質 3 回描画）が G-Buffer（1 回）の約 3 倍**の三角形コストを占め、
+    G-Buffer 側だけをメッシュレットカリングしても総 GPU 時間の削減は限定的（実測で bf 約 15〜25% 減）。
+    木のコストを本質的に下げるには、シャドウパスのカスケード別メッシュレットカリング、または散布モデル
+    シャドウの LOD バイアス（影の輪郭は低ポリで十分）が次段の本命。
 
 **スコープ外（この段では未実装）**
 - **TLAS/RT 登録**: 散布モデルは RT 影・RT 反射・RT-GI への**寄与**はしない（`rt_casters` に加えていない）。
