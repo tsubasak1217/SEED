@@ -1722,13 +1722,46 @@ G-Buffer/不透明パスのカリングを優先し、影パスは触らない�
 present/スケジューラ待ち**であり、**視界に依存しない性質**を持つ。地形チャンクの CPU 処理（merge_map・LOD・
 カリング）は 296ac8d 時点で既に 1ms 未満まで最適化済みで、これ以上のキャッシュ化（merge_map/LOD/AABB の
 変化時のみ再計算）を入れても数十〜数百µs しか縮まず、frame 全体（数〜十数 ms）には現れない。よって
-**本調査ではキャッシュ化は実装しない**（非ボトルネックへの最適化を避ける）。散布あり 16×16 では草インスタンス
-が約 400 万本に達し `grass_instance_bg` が単一バインド上限 134MB を超えて panic する（別件・散布側スケーリング）。
+**本調査ではキャッシュ化は実装しない**（非ボトルネックへの最適化を避ける）。
+
+#### 草インスタンスバッファの単一バインド上限クランプ（400万本 panic の解消）
+
+**症状（実機・確定）**: 散布あり 16×16（768 チャンク）で高密度に草を撒くと草インスタンスが
+約 400 万本（実測 4,171,738 本）に達し、`grass_instance_bg`（草インスタンスバッファのバインド）が
+単一 storage バインド上限 `max_storage_buffer_binding_size`（既定 128MB=134217728）を超えて
+wgpu 検証エラーで panic する。原因は、草バッファがプロップ種別ごとに 1 本の storage 配列で、
+バインドグループへ `as_entire_binding()`（＝バッファ全域）で渡すため、**バインド範囲＝バッファ全サイズ**
+であり、これが 400万本 × 48B ≒ 192MB で上限を突破していたこと（さらに `GRASS_CAPACITY_GROWTH_FACTOR`
+の 2 倍確保が容量を押し上げる）。前回のメッシュレット cmd バッファ・skin 行列バッファと同種の
+「インスタンス数比例バッファが上限超過」問題。
+
+**修正（クランプ方式・確実に panic を防ぐ）**: 総本数を「単一バインドに収まる最大本数」
+`max = max_storage_buffer_binding_size / stride`（128MB / 48B = 2,796,202 本）で頭打ちにする。
+- `renderer/grass_gbuffer.rs`: `grass_max_instances_for_limit`／`max_grass_instances`／
+  `clamp_instances_and_spans` を新設。`GrassInstanceBuffer::new`／`update` は device 上限から
+  求めた max で**バッファ容量そのものを頭打ち**にする（容量再確保の 2 倍化も `.clamp(_, max)`）ので、
+  確保するバッファが 128MB を超えることは**構造的に**起こらない（どの経路から作られても panic しない防御）。
+- `terrain_scatter_ops.rs::rebuild_grass_gpu`: バッファへ詰める前に、プロップごとに本数と span を
+  `clamp_instances_and_spans` で max 以内へ切り詰める（span 側も「max を跨ぐ span は count を詰め、
+  以降は捨てる」で整合させる。ずれると `draw_grass_culled` が範囲外を描く）。切り捨てはチャンク座標
+  ソートの**末尾**（＝最も座標の大きいチャンク群）から起きる。切り詰め発生時は警告ログを 1 行出す。
+
+**実機検証（`SEED_TERRAIN_SMOKE=1 SEED_SMOKE_CHUNKS=16` ＋高密度 props（density=120）・RTX 3060・debug）**:
+- 散布 4,171,738 本 → 草プロップ #0 を 2,796,202 本へクランプ（1,375,500 本を除外）。**panic せず**
+  `grass gpu rebuild: 2796202 instances` で確定。俯瞰／FPV とも複数フレーム present 継続（screenshot 取得成功）。
+- FPV（`SEED_SMOKE_FPV=1`・草原の中に立つ構図）で `grass draw: drawn=257601/2796202`。クランプ後の
+  span でカリング描画が正しく成立し、GPU 検証エラーは出ない。近景の草原が正常に描画される。
+- 通常規模（本数が max 未満）ではクランプは無発火（`clamp_instances_and_spans` が即 return）＝退行なし。
+
+**残る同種リスク（申し送り）**: 散布モデル（`kind=Model`）の skin 行列バッファ／統合バッチ
+（`InstancedModelBatch`）も理屈上はインスタンス数比例で `max_storage_buffer_binding_size` を超えうる。
+本修正は草バッファのみ。木を超高密度に撒く運用が出たら同様のクランプ／分割を入れること。
+草をクランプではなく**全数描く**必要が出た場合は、バッファ分割（複数バインドで 1 バインド 128MB 未満）
+または可視ぶんだけ確保（カメラ依存の毎フレーム再構築）が次の選択肢（本修正は最小コストのクランプを採用）。
 
 **次に効く方向（申し送り・いずれも本調査スコープ外の GPU/散布側）**:
 (1) フルスクリーン deferred/RT 影/RT GI のコスト自体（解像度スケール・RT の間引き・GI の更新頻度低減）。
-(2) 散布/草の視界外時の GPU 処理（カリングで `drawn=0` でも buffer 保持・cull compute が走るなら間引く）＋
-    16×16 での grass バッファ分割（134MB 上限 panic の解消）。
+(2) 散布/草の視界外時の GPU 処理（カリングで `drawn=0` でも buffer 保持・cull compute が走るなら間引く）。
 (3) present バックプレッシャ（`bf`）＝GPU 律速の指標。CPU 側の地形処理をこれ以上削っても `bf` は縮まない。
 
 `SEED_SMOKE_LOOKAWAY=1`（`--mode=edit` 併用）は視界外構図の再計測用フックとして常設した。
