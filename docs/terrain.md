@@ -12,8 +12,9 @@
 **T3 第2段: `kind=model` プロップの実描画**（散布した実モデルアセットを ECS 非依存の
 専用インスタンシング経路で deferred G-Buffer へ描画＋ラスタ影に載せる）をカバーする（§15）。
 
-> スコープ外（未実装）: 散布モデルの TLAS/RT 登録（RT 反射・RT 影・RT-GI への寄与。§15.9）、
-> 散布物との接触インタラクション、インポスター（hemi-octahedral ビルボード）／ストリーミング、木の風揺れ。
+> スコープ外（未実装）: 散布物との接触インタラクション、インポスター（hemi-octahedral ビルボード）／
+> ストリーミング、木の風揺れ。
+> **散布モデルの RT 影（TLAS 登録）は §15.9f で実装済み**（RT 反射・RT-GI への寄与は同経路で自動的に効く）。
 > **植生 LOD 第1段（距離 LOD メッシュ切替＋遠景密度減衰）は §15.9d で実装済み**。末尾「拡張余地」参照。
 
 ---
@@ -1721,6 +1722,49 @@ G-Buffer/不透明パスのカリングを優先し、影パスは触らない�
 付与で地形にも GPU メッシュレットカリングを効かせる）。(2) 影パスのライト視錐台による地形影カリング。
 (3) そもそも 256 チャンクは多いのでストリーミング／ページング。まずは本節のカリングで「見えない地形を
 描かない」ことで大幅改善する。
+
+### 15.9f 散布モデルの RT 影（TLAS 登録・実装済み）
+
+**症状**: レイトレ影（`shadow=rt`）構成で、散布した `kind=model` プロップ（木）の影が地面に落ちなかった。
+原因は「散布モデルが RT の TLAS に未登録」だったこと。ラスタのシャドウマップには載っていた
+（§15.9 の `shadow_casters` に追加済み）が、RT 影は TLAS のみを引くため、影のレイが木を素通りしていた。
+
+**修正（`frame_renderer.rs` の RT キャスター収集）**: RT の TLAS 構築（`rt.prepare_and_build`）へ渡す
+`rt_casters` に、ECS アクター（`shared_model_batches`）だけでなく散布モデル（`terrain.scatter_models`）も
+加える。散布モデルはワールド行列を供給する `InstancedModelBatch` を持つため、通常メッシュと同じ
+`(source_path, &GpuModel, &InstancedModelBatch)` の 3 つ組で登録できる。
+
+- **BLAS の共有とキャッシュ**: キャスターキーは `"scatter://{model_path}"`。同一モデルの複数プロップ・
+  数百〜数千インスタンスは**同じキー＝同じ BLAS を共有**する（`rt_shadow.rs` の `BlasKey` キャッシュ）。
+  高ポリ木でも BLAS はプリミティブ数ぶんだけ（1 種 = 数個〜数十個）で済む。ECS アクターの `batch_key` とは
+  名前空間を分け、frame_renderer の stale prune（`prune_source_paths`）が散布 BLAS を巻き添え解放しない。
+- **BLAS 分割ビルドに乗る**: 新規 BLAS は既存の `MAX_BLAS_BUILDS_PER_FRAME=8` 分割に従う（木の初回登録・
+  地形再構築でキャッシュが一斉に空になっても、1 submit の GPU 占有を TDR しきい値未満に保つ＝
+  デバイスロスト／snatch 再帰パニックの回避。実機ログ `BLAS 分割ビルド: … 後続フレームへ繰り越し` で確認）。
+- **登録数の抑制（可視・近傍に絞る）**: 散布モデルの `batch` は毎フレーム `cull_and_update_scatter_models` で
+  「可視チャンクのインスタンスだけ」に更新済み。`rt_enumerate` は `num_instances`（＝可視数）のみ列挙するため、
+  既存の視錐台＋距離カリング済み可視集合をそのまま TLAS 登録へ流用して数を抑える。総数が
+  `MAX_RT_INSTANCES=4096` を超えた分は `prepare_and_build` 側で警告付きクランプ（超過キャスターは影を落とさない）。
+- **葉のアルファ（申し送り）**: 葉が `AlphaMode::Blend/Mask` の場合、影レイのマスクは `0x02`（`RT_MASK_NON_OPAQUE`）
+  となり基本の不透明影レイからは除外される（幹など不透明部のシルエット影は落ちる）。Mask（アルファテスト）は
+  バインドレス対応 GPU では色付き影の第 2 クエリ（`BINDLESS_FLAG_MASK`）で葉の形にアルファ抜きされ得る
+  （メガバッファ登録済みが条件）。Blend の葉のアルファ抜き影は未対応（幹シルエットで代替。§R8 TODO）。
+- **編集連動**: 散布が変わると `grass_gpu_dirty`→`rebuild_scatter_models_gpu` でバッチが作り直され、TLAS は
+  内容シグネチャ変化で自動再構築される（`prepare_and_build` の静止スキップ判定が変換・追加削除を検知）。
+
+**実機検証（`SEED_TERRAIN_SMOKE`＋一時 props で木=`assets://models/A.gltf`・4×4 チャンク俯瞰・RTX 3060・
+Vulkan・debug・`shadow=rt`）**:
+- `[SEED FEATURES] shadow=rt`、`[SEED RT] インラインレイトレ: 対応`。
+- `[SEED RT] BLAS 構築: scatter://assets://models/A.gltf mesh#0 prim#0`（散布モデルの BLAS が 1 個だけ構築＝
+  239 インスタンスで共有）。BLAS 分割ビルドが 8 件/フレームで消化されるログを確認。
+- TLAS インスタンス数 `tlas=…ms(skip/263inst)` ＝ **地形チャンク 24＋散布木 239＝263**（`skip/0inst` でなく
+  散布木ぶんが確かに登録されている）。可視カリング `scatter model cull: visible=239/239`。
+- スクリーンショット（`scatter_rt_shadow_proof.png`）で、緑の地面に散布モデルの影が落ちることを目視確認。
+- **パニック／device-lost／snatch 再帰／上限超過警告は発生せず**（1,787 インスタンスの高密度散布でも同様）。
+
+**残課題（申し送り）**: (1) Blend の葉のアルファ抜き影（現状は不透明シルエット）。(2) 登録上限
+`MAX_RT_INSTANCES=4096` を超える大量散布では遠景側の一部が影を落とさない（可視カリングで実用上は回避されるが、
+超広域で多数の木種を近接配置すると到達し得る＝クランプ発火）。(3) スキンメッシュは従来どおり RT 対象外。
 
 ### 15.10 「視界外で 20ms」調査 — 毎フレーム走る地形 CPU 処理は既にボトルネックではない（計測結論）
 
