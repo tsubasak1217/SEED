@@ -391,45 +391,13 @@ fn collect_mcs_in_actor<'a>(
     }
 }
 
-/// world_line の全アクターの MC バッチを DFS 順で更新する（可変参照版）。
-///
-/// オブジェクト単位の視錐台カリングは廃止した（誤棄却によるポッピング/チャンク消え防止）。
-/// 全インスタンスを常に可視扱いで LOD 振り分け・アップロードする。
-pub(super) fn update_all_mc_batches_for_wl(
-    actors:         &mut Vec<Actor>,
-    world:          &mut World,
-    wl:             u32,
-    queue:          &wgpu::Queue,
-    camera_pos:     [f32; 3],
-) {
-    for actor in actors.iter_mut().filter(|a| a.world_line == wl) {
-        update_mc_batch_recursive(actor, world, queue, camera_pos);
-    }
-}
-
-/// update_all_mc_batches_for_wl の再帰実装。
-fn update_mc_batch_recursive(
-    actor:          &mut Actor,
-    world:          &mut World,
-    queue:          &wgpu::Queue,
-    camera_pos:     [f32; 3],
-) {
-    // スロット専用 entity の全 ModelComponent バッチを更新する（複数スロット対応）
-    let slot_entities: Vec<Entity> = actor.slots().iter()
-        .filter(|s| s.kind == ComponentKind::Model)
-        .map(|s| s.entity)
-        .collect();
-    for slot_entity in slot_entities {
-        if let Some(mc) = world.get_mut::<ModelComponent>(slot_entity) {
-            if let (Some(batch), Some(model)) = (&mut mc.instanced_batch, mc.model.as_deref()) {
-                batch.update(queue, model, &mc.instance_mats, camera_pos);
-            }
-        }
-    }
-    for child in actor.children_mut().iter_mut() {
-        update_mc_batch_recursive(child, world, queue, camera_pos);
-    }
-}
+// ── 旧: update_all_mc_batches_for_wl / update_mc_batch_recursive（削除）──────────
+// per-MC `ModelComponent::instanced_batch` を毎フレーム `update()` していた関数群。
+// Phase R7 のバッチ統合以降、描画は shared_model_batches（統合バッチ）だけを通り、
+// per-MC の instanced_batch はどの描画経路からも参照されない（唯一の描画アクセサ
+// rendering_refs() は呼び出し 0 件）。毎フレームの update は完全な死荷重（16×16×3層の
+// 地形で実測 batch≈4ms/フレーム）だったため削除した。統合バッチの更新は frame_renderer の
+// merge 更新ループが担う。
 
 // ============================================================
 //  アクター削除・サイズ計算

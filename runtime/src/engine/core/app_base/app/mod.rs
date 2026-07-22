@@ -289,6 +289,15 @@ struct SharedModelData {
     /// ID パス用ベースオフセット=0 のバインドグループ。
     /// lod_id_buffers には絶対 ID を書き込むため base=0 で識別可能。
     id_zero_bg: (wgpu::Buffer, wgpu::BindGroup),
+    /// 静的地形チャンクの毎フレーム update スキップ（Fix B）用スナップショット。
+    /// `(統合インスタンス行列, 各インスタンスの絶対 ID)` を前回 `batch.update()` 時の値で保持する。
+    /// 地形チャンクキー（`TERRAIN_SOURCE_SCHEME`）のときだけ設定・比較する。次フレームの
+    /// merge 結果がこれと完全一致すれば mark_dirty()+update()+id バッファ書込をまるごと省ける
+    /// （描画結果・ピッキング ID ともに不変）。
+    /// 行列だけでなく abs_ids も比較するのは、行列不変でもアクター追加/削除で id_base が
+    /// ずれると lod_id_buffers（ピッキング）が陳腐化するのを防ぐため。
+    /// 非地形（通常モデル・散布・アニメ）は None のままで、従来どおり毎フレーム更新する。
+    uploaded_sig: Option<(Vec<[[f32; 4]; 4]>, Vec<u32>)>,
 }
 
 // ============================================================
@@ -1172,7 +1181,7 @@ use actor_utils::{
     find_actor_by_dfs, find_actor_by_dfs_mut,
     canvas_anchor_offset_for_dfs, collect_canvas_actors_in_rect,
     collect_transform_only_in_rect,
-    collect_mcs_in_world_line, update_all_mc_batches_for_wl,
+    collect_mcs_in_world_line,
     remove_actor_by_dfs, actor_subtree_size, find_parent_canvas_info,
     find_actor_root_info,
     collect_entities_for_wl, despawn_actor_recursive,

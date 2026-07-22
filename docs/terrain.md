@@ -225,6 +225,52 @@ source_path のみ保持）し、後述の再構築パスで tvox から埋め�
 帯を消す）、(2) 上下 Y 面／洞窟の継ぎ目スカート（現状は 4 垂直側面のみ）、(3) 遠方 BLAS 精度、
 (4) しきい値の `TerrainSettings` 化。
 
+### 7.2 静的地形チャンクの毎フレーム CPU 削減（CPU バウンド対策）
+
+三角形を LOD で −87% 減らしても実機 fps が変わらない＝**CPU バウンド**だった。16×16×3層=768
+チャンクの俯瞰（`[PERF]` 内訳）で支配していたのは描画三角形でも 276 ドローコール記録でもなく、
+**静的な地形チャンクに毎フレーム走る 2 つの無駄なバッチ更新**だった。
+
+- **Fix A — per-MC `instanced_batch` の毎フレーム更新を撤去**（`[PERF]` の `batch` バケット）。
+  Phase R7 のバッチ統合以降、実描画はすべて `shared_model_batches`（batch_key ごとの統合バッチ）を
+  通る。`ModelComponent::instanced_batch` はどの描画・アウトライン・ピッキング経路からも参照されず
+  （唯一の描画アクセサ `rendering_refs()` は呼び出し 0 件）、その `update()`（距離 LOD 振り分け＋
+  GPU 書込）は**完全な死荷重**だった。呼び出し元（`update_all_mc_batches_for_wl`）ごと削除。
+  実測 `batch` ≈ 4.1ms/フレーム → **0ms**。
+- **Fix B — 統合バッチ更新を静的地形チャンクでスキップ**（新設 `[PERF]` `merge` バケット）。
+  `frame_renderer` の統合バッチ更新ループは毎フレーム全 batch_key に `mark_dirty()+update()`
+  （rayon 行列再計算・全ノードバッファ書込・id バッファ書込）を掛けていた。地形チャンクは静的
+  （1 インスタンス＝単位行列）で、変形/掘削/LOD 切替のときだけ mats/ジオメトリが変わる。
+  そこで `SharedModelData` に前回アップロードした `(mats, abs_ids)` を保持し、地形キー
+  （`TERRAIN_SOURCE_SCHEME`）かつ前フレームと一致するなら更新を丸ごとスキップする。
+  - **正しさの根拠**: 地形ジオメトリを変える全経路（`remesh_chunks`＝掘削/LOD 切替、`handle_terrain_init`
+    ＝初期化/ハイトマップ、シーンロード）は `invalidate_geometry_caches` で当該 `shared_model_batches`
+    エントリを削除する。削除＝次フレーム reinit＝`uploaded_sig=None`＝フル更新となり、古いメッシュが
+    残ることはない。高速ペイントは頂点色を `gpu_model`（描画は `gpu_model_by_path` から引く）へ直書き
+    するだけで統合バッチ更新を必要としない（元々 `mark_batch_dirty` も呼んでいない）。行列だけでなく
+    `abs_ids` も比較するのは、mats 不変でもアクター追加/削除で id_base がずれるとピッキング ID が
+    陳腐化するのを防ぐため。通常モデル/散布/アニメは非地形キー or mats 変化のため従来どおり毎フレーム更新。
+
+**実機計測（`SEED_TERRAIN_SMOKE=1 SEED_SMOKE_CHUNKS=16`・768 チャンク俯瞰・276 チャンク描画・
+物理稼働・`[PERF f=120..600]` 平均）**:
+
+| バケット | before | after | 備考 |
+|---|---|---|---|
+| **total** | **26.7ms（≈37fps）** | **13.0ms（≈77fps）** | **−13.7ms / −51%** |
+| batch（per-MC 更新） | 4.1ms | **0ms** | Fix A（死荷重撤去） |
+| merge（統合バッチ更新） | （before は other に内包） | 1.08ms | Fix B 後は merge_map 構築のみ |
+| other | 14.4ms | 6.24ms | path-2 update をスキップした差が主 |
+| main_pass | 6.0ms | 4.36ms | GPU 書込減による副次的な軽減 |
+| tlas / physics | 1.25 / 1.0ms | 1.02 / 0.9ms | ほぼ不変（対象外） |
+
+`draw=0.000ms`（Deferred のため不透明は G-Buffer パスで記録）であり、**ドローコール記録は支配項では
+なかった**。支配項は「静的地形への毎フレーム冗長バッチ更新」で、Fix A+B で frame time が約半減した。
+
+**次段の申し送り（さらに削るなら）**: (1) `merge_map` 自体の毎フレーム再構築（768 エントリの Arc clone＋
+push、after では merge≈1.08ms のほぼ全部）を地形はキャッシュ再利用にする、(2) 276 個別ドローの
+統合ドロー化（同一マテリアル・LOD のチャンクメッシュを 1 頂点/インデックスバッファへマージ or
+indirect draw）、(3) メッシュレット化／地形ストリーミング。
+
 ---
 
 ## 8. シーン永続化
