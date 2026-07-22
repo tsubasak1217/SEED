@@ -1440,6 +1440,28 @@ pub fn aabb_distance_sq(min: [f32; 3], max: [f32; 3], p: [f32; 3]) -> f32 {
     d
 }
 
+/// ワールド AABB を「メインカメラ視錐台の外」または「最近点距離が閾値超」で
+/// カリングすべきか（＝描かないか）を返す純関数。
+///
+/// 【用途】地形チャンク（`terrain://` の独立バッチ）単位の描画カリング。フラスタム外は
+/// `aabb_outside_frustum`（p-vertex 法・偽陽性ゼロ）、遠方は `aabb_distance_sq`（最近点
+/// 距離の二乗）で判定する。どちらか一方でも成立すれば true（描画スキップ）。
+///
+/// 【安全性】フラスタム判定は「外」と言い切れる場合のみ true なので、視界内のチャンクを
+/// 誤って消す（偽陽性）ことは無い。距離判定は最近点距離なので、巨大／至近チャンクの中心が
+/// 遠いだけで消えることも無い。`cull_dist_sq` を十分大きく取れば距離カリングは実質無効化できる。
+#[inline]
+pub fn chunk_culled_by_camera(
+    planes:       &[[f32; 4]; 6],
+    camera_pos:   [f32; 3],
+    min:          [f32; 3],
+    max:          [f32; 3],
+    cull_dist_sq: f32,
+) -> bool {
+    aabb_outside_frustum(planes, min, max)
+        || aabb_distance_sq(min, max, camera_pos) > cull_dist_sq
+}
+
 // ─── 遠景密度減衰（植生 LOD 第1段）────────────────────────────────────────────
 //
 // 【ねらい】近景は全個体・全密度で描き、遠いチャンクほど描画インスタンスを間引く。
@@ -1905,6 +1927,23 @@ impl InstancedModelBatch {
     /// 追加コストゼロ判定（対象ゼロなら compute パス生成をスキップできる）。
     pub fn has_meshlet_slots(&self) -> bool {
         self.meshlet_cull.iter().any(|s| s.is_some())
+    }
+
+    /// 全メッシュレットカリングスロットを「非アクティブ」へ戻す。
+    ///
+    /// `prepare_meshlet_cull` は各スロットの先頭で bind_group/workgroups をリセットするが、
+    /// 前処理そのものをスキップしたいバッチ（例: チャンク単位で視錐台外と判定した地形）では
+    /// 前フレームの `bind_group`・`workgroups>0` が残ってしまい、`record_meshlet_cull` が
+    /// 不要なカリング compute を発行してしまう（描画はしないので結果は無駄になるだけだが、
+    /// GPU 時間を浪費する）。前処理をスキップする側がこれを呼べば、`record_meshlet_cull` の
+    /// `workgroups==0` ガードで確実に dispatch されなくなる。
+    pub fn reset_meshlet_cull(&mut self) {
+        for slot_opt in self.meshlet_cull.iter_mut() {
+            if let Some(slot) = slot_opt.as_mut() {
+                slot.bind_group = None;
+                slot.workgroups = 0;
+            }
+        }
     }
 
     /// 毎フレームの前処理（compute パス開始前に呼ぶ）。
@@ -2443,8 +2482,8 @@ mod meshlet_gpu_tests {
 #[cfg(test)]
 mod cull_tests {
     use super::{
-        aabb_distance_sq, aabb_outside_frustum, density_kept_count, extract_frustum_planes,
-        DENSITY_DECAY_FAR_DIVISOR, DENSITY_DECAY_MID_DIVISOR,
+        aabb_distance_sq, aabb_outside_frustum, chunk_culled_by_camera, density_kept_count,
+        extract_frustum_planes, DENSITY_DECAY_FAR_DIVISOR, DENSITY_DECAY_MID_DIVISOR,
     };
 
     /// カメラ原点・-Z 前方を見る単純な透視 view_proj（行優先）を作る。
@@ -2521,6 +2560,52 @@ mod cull_tests {
         assert_eq!(aabb_distance_sq(min, max, [13.0, 14.0, 5.0]), 25.0);
         // 負側 X に 5m 外 → 25
         assert_eq!(aabb_distance_sq(min, max, [-5.0, 5.0, 5.0]), 25.0);
+    }
+
+    /// 地形チャンク描画カリング（`chunk_culled_by_camera`）: 視界内は描き、視界外・遠方は棄却。
+    ///
+    /// 地形は多数の独立チャンクバッチを持つため、視界内チャンクを 1 枚でも誤棄却すると
+    /// 地面に穴が空く。ここで「前方＝描く／後方・far 外・横外・距離外＝棄却」を固定する。
+    #[test]
+    fn terrain_chunk_cull_keeps_visible_rejects_out() {
+        let planes = extract_frustum_planes(&forward_view_proj());
+        let cam = [0.0f32, 0.0, 0.0];
+        // 距離カリングは十分緩く取り、フラスタム判定を主役にする（16m チャンク相当）。
+        let cull_dist_sq = 4000.0f32 * 4000.0;
+
+        // 前方 10m（-Z）の 16m 角チャンク → 見える＝描く（false）。
+        let front_min = [-8.0, -8.0, -18.0];
+        let front_max = [8.0, 8.0, -2.0];
+        assert!(
+            !chunk_culled_by_camera(&planes, cam, front_min, front_max, cull_dist_sq),
+            "視界内の地形チャンクを誤棄却した（地面に穴が空く偽陽性）"
+        );
+
+        // 後方 10m（+Z）のチャンク → 見えない＝棄却（true）。
+        let back_min = [-8.0, -8.0, 2.0];
+        let back_max = [8.0, 8.0, 18.0];
+        assert!(
+            chunk_culled_by_camera(&planes, cam, back_min, back_max, cull_dist_sq),
+            "カメラ背後の地形チャンクを棄却できていない"
+        );
+
+        // 前方だが距離閾値の外（-Z 5000m）→ 距離カリングで棄却（true）。
+        // far 平面(100m)でも棄却されるが、ここでは距離カリング経路も効くことを固定する。
+        let far_min = [-8.0, -8.0, -5016.0];
+        let far_max = [8.0, 8.0, -5000.0];
+        assert!(
+            chunk_culled_by_camera(&planes, cam, far_min, far_max, cull_dist_sq),
+            "距離閾値の外の地形チャンクを棄却できていない"
+        );
+
+        // カメラを含むチャンク（最近点距離 0）は、距離閾値を極端に小さくしても残す
+        // （距離判定は最近点距離なので、AABB がカメラを含めば 0 で棄却されない）。
+        let around_min = [-8.0, -8.0, -8.0];
+        let around_max = [8.0, 8.0, 8.0];
+        assert!(
+            !chunk_culled_by_camera(&planes, cam, around_min, around_max, 1.0),
+            "カメラを含む地形チャンクを距離カリングで誤棄却した"
+        );
     }
 
     /// 遠景密度減衰: 帯ごとの間引き本数（近=全数 / 中=1/2 / 遠=1/4）と境界の扱い。

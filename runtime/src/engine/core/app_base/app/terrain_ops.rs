@@ -274,6 +274,12 @@ const SMOKE_CONFIG_CHUNK_CELLS: u32 = 16;
 const SMOKE_CONFIG_VOXEL_SIZE: f32 = 0.5;
 /// スモーク本編（構図を既定に戻す再初期化）で使う 1 軸あたりのチャンク数。
 const SMOKE_DEFAULT_CHUNKS: u32 = 4;
+/// スモーク本編のチャンク数を上書きする環境変数（描画カリング計測用）。
+///
+/// `SEED_SMOKE_CHUNKS=16` を渡すと 16×16 の広い地形でスモークを回せる（地形のみで
+/// 描画チャンク数・main_pass ms を before/after 計測するための恒常フック）。未設定・不正なら
+/// `SMOKE_DEFAULT_CHUNKS`。値は `apply_chunk_config` が 1..=32 にクランプする。
+const SMOKE_CHUNKS_ENV: &str = "SEED_SMOKE_CHUNKS";
 /// スモーク本編で使うチャンク分割数。
 const SMOKE_DEFAULT_CHUNK_CELLS: u32 = 32;
 /// スモーク本編で使うボクセルサイズ（メートル）。
@@ -3159,9 +3165,15 @@ impl App {
         // ── ② 既定構成へ戻して本編のスモークを始める ──
         //   引数なし（None）ではなく明示的に既定値を渡す。①で settings が
         //   小さい構成へ書き換わっているため、None だとそれが引き継がれてしまう。
+        // チャンク数は SEED_SMOKE_CHUNKS で上書き可（描画カリング計測用に 16×16 等へ拡大）。
+        let smoke_chunks = std::env::var(SMOKE_CHUNKS_ENV)
+            .ok()
+            .and_then(|s| s.parse::<u32>().ok())
+            .filter(|v| *v > 0)
+            .unwrap_or(SMOKE_DEFAULT_CHUNKS);
         self.handle_terrain_init(Some(TerrainChunkConfig {
-            chunks_x:    SMOKE_DEFAULT_CHUNKS,
-            chunks_z:    SMOKE_DEFAULT_CHUNKS,
+            chunks_x:    smoke_chunks,
+            chunks_z:    smoke_chunks,
             chunk_cells: SMOKE_DEFAULT_CHUNK_CELLS,
             voxel_size:  SMOKE_DEFAULT_VOXEL_SIZE,
         }));
@@ -3187,12 +3199,32 @@ impl App {
         let fwd = [dir[0] / len, dir[1] / len, dir[2] / len];
         let yaw = fwd[0].atan2(fwd[2]);
         let pitch = (-fwd[1]).clamp(-1.0, 1.0).asin();
+        // 一人称視点の上書き（描画カリング計測用）: `SEED_SMOKE_FPV=1` で、地表付近に立って
+        //   水平を見る構図にする。俯瞰は全チャンクが視界に入り（カリングが効かない）が、一人称では
+        //   背後・側方のチャンクが視錐台外になり、地形チャンク描画カリングの効果が顕著に出る。
+        let (eye, yaw, pitch, fov_deg, far) = if std::env::var_os("SEED_SMOKE_FPV").is_some() {
+            // フットプリント中心に立ち、ほぼ水平（やや下 8°）で +Z 方向を見る。目線高さは
+            // ハイトマップ最大起伏（10m）＋急斜面デモより上に取り、地形へ潜らないようにする
+            // （一人称でも視錐台外の背後・側方チャンクが落ちる構図であればカリング検証には十分）。
+            const FPV_EYE_HEIGHT: f32 = 12.0;
+            const FPV_PITCH_DEG: f32 = 8.0;
+            let deg2rad = std::f32::consts::PI / 180.0;
+            (
+                [center[0], center[1] + FPV_EYE_HEIGHT, center[2]],
+                0.0f32,                     // +Z を向く
+                FPV_PITCH_DEG * deg2rad,    // わずかに下向き（地面が見える）
+                SMOKE_CAM_FOV_DEG,
+                SMOKE_CAM_FAR,
+            )
+        } else {
+            (eye, yaw, pitch, SMOKE_CAM_FOV_DEG, SMOKE_CAM_FAR)
+        };
         let cam = crate::engine::core::app_base::scene::DebugCameraData {
             position: eye,
             yaw,
             pitch,
-            fov_deg: SMOKE_CAM_FOV_DEG,
-            far: SMOKE_CAM_FAR,
+            fov_deg,
+            far,
             speed: SMOKE_CAM_SPEED,
         };
         self.apply_camera_data(&cam);
@@ -3360,7 +3392,9 @@ impl App {
         //   prop_id を空文字にして全プロップを対象にする（草地レイヤに grass_field、
         //   土レイヤに grass_dry が乗るので、レイヤの塗り分けと草の生え分けが
         //   一致しているかを 1 枚のスクリーンショットで検証できる）。
-        {
+        //   `SEED_SMOKE_NO_SCATTER=1` のときは散布を丸ごと省く（地形メッシュ描画だけの
+        //   純粋な負荷を計測するため——地形チャンク描画カリングの before/after 計測用）。
+        if std::env::var_os("SEED_SMOKE_NO_SCATTER").is_none() {
             let scatter_start = std::time::Instant::now();
             self.handle_terrain_scatter_rules(
                 SMOKE_SCATTER_ALL_PROPS.to_string(),
@@ -3373,6 +3407,8 @@ impl App {
                 self.terrain.scatter.len(),
                 self.terrain.props.active_count(),
             );
+        } else {
+            eprintln!("[SEED terrain] smoke: SEED_SMOKE_NO_SCATTER 設定により散布をスキップ（地形のみ計測）");
         }
 
         // ── プレビュー球の模擬 ──

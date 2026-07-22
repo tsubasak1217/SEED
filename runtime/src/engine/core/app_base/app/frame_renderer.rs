@@ -1344,6 +1344,61 @@ impl App {
                         );
                     } // particle_pass がドロップされ ComputePass が終了する
 
+                    // ── 地形チャンク単位フラスタム＋距離カリング（Terrain 描画最適化）──────
+                    //   地形は「terrain:// の独立 ModelComponent バッチ」をチャンク数（16×16 で
+                    //   256+）だけ持ち、以前は視界外・背後のチャンクまで毎フレーム全描画していた
+                    //   （地形のみで 30fps 割れの直接原因）。ここでメインカメラ視錐台＋距離で
+                    //   「完全に外側」のチャンクバッチを集め、この後の G-Buffer 描画・メッシュレット
+                    //   カリング前処理からスキップする（可視ぶんだけ描く）。
+                    //
+                    //   判定 AABB は各バッチの update() が算出済みのワールドメッシュ AABB
+                    //   （`world_bounds`）＝実ジオメトリを厳密に包む。したがって p-vertex 法
+                    //   （`aabb_outside_frustum`・偽陽性ゼロ）と合わせ、視界内チャンクを誤って
+                    //   消すことは絶対に無い（撤去された旧オブジェクト単位カリングの誤棄却は再発しない）。
+                    //   対象は「terrain://」で始まる地形バッチのみ（通常アクター・散布は挙動不変）。
+                    //   ★影パスはライト視錐台が別物なので、ここ（メインカメラ視錐台）では触らない
+                    //     ——カメラ視界外でも視界内へ影を落とすチャンクがあるため、影キャスタを
+                    //     カメラ視錐台で棄却すると影が欠ける。影の緩和は今回スコープ外（申し送り）。
+                    let terrain_cull_disabled = *super::terrain_scatter_ops::TERRAIN_CULL_DISABLED;
+                    let terrain_cull_dist = *super::terrain_scatter_ops::TERRAIN_CHUNK_CULL_DISTANCE;
+                    let terrain_cull_dist_sq = terrain_cull_dist * terrain_cull_dist;
+                    // 診断用: このフレームの地形チャンクバッチ総数（描画数ログの分母）。
+                    let terrain_chunk_total = self.shared_model_batches.keys()
+                        .filter(|p| p.starts_with(
+                            crate::engine::components::TERRAIN_SOURCE_SCHEME))
+                        .count() as u32;
+                    // 視錐台外／距離外の地形チャンク path 集合（描画・前処理でスキップする）。
+                    let terrain_culled: std::collections::HashSet<String> = if terrain_cull_disabled {
+                        std::collections::HashSet::new()
+                    } else {
+                        self.shared_model_batches.iter()
+                            .filter(|(path, _)| path.starts_with(
+                                crate::engine::components::TERRAIN_SOURCE_SCHEME))
+                            .filter_map(|(path, sd)| {
+                                // update() 未実行（world_bounds=None）なら安全側に「描く」扱い。
+                                let (min, max) = sd.batch.world_bounds()?;
+                                let culled = crate::engine::core::renderer::gpu_resources::chunk_culled_by_camera(
+                                    &saved_frustum_planes, saved_camera_pos,
+                                    min, max, terrain_cull_dist_sq,
+                                );
+                                if culled { Some(path.clone()) } else { None }
+                            })
+                            .collect()
+                    };
+                    // 計測ログ（60 フレームに 1 回・SEED_PERF_TERRAIN 有効時のみ）。
+                    //   カリング後に実際に描く地形チャンク数 / 全チャンク数。
+                    if *super::terrain_scatter_ops::PERF_TERRAIN_LOG_ENABLED && terrain_chunk_total > 0 {
+                        use std::sync::atomic::{AtomicU64, Ordering};
+                        static TN: AtomicU64 = AtomicU64::new(0);
+                        if TN.fetch_add(1, Ordering::Relaxed) % 60 == 0 {
+                            let drawn = terrain_chunk_total - terrain_culled.len() as u32;
+                            eprintln!(
+                                "[PERF terrain] chunk draw: drawn={drawn}/{terrain_chunk_total} \
+                                 (nocull={terrain_cull_disabled})"
+                            );
+                        }
+                    }
+
                     // ── GPU メッシュレットカリング（第1弾）: 前処理＋ compute ディスパッチ ──
                     // meshlet_active（設定オン かつ MULTI_DRAW_INDIRECT_COUNT 対応）のときのみ。
                     // 前処理: 可視 LOD0 インスタンス × メッシュレットのパラメータ更新・カウント 0 リセット・
@@ -1354,6 +1409,12 @@ impl App {
                         // gpu_model_by_path から借用（all_mcs 由来＝shared_model_batches と非交差）。
                         for (path, sd) in self.shared_model_batches.iter_mut() {
                             if !sd.batch.has_meshlet_slots() { continue; }
+                            // 視錐台外の地形チャンクは描かないので、メッシュレットカリング compute も
+                            // 走らせない（スロットをリセットして record 側の dispatch を確実に止める）。
+                            if terrain_culled.contains(path.as_str()) {
+                                sd.batch.reset_meshlet_cull();
+                                continue;
+                            }
                             if let Some(&gpu) = gpu_model_by_path.get(path.as_str()) {
                                 perf_meshlet_considered += sd.batch.prepare_meshlet_cull(
                                     &draw_ctx.queue,
@@ -3739,6 +3800,8 @@ impl App {
                                     gpass.set_scissor_rect(vp_x as u32, vp_y as u32, vp_w as u32, vp_h as u32);
                                 }
                                 for (path, sd) in &self.shared_model_batches {
+                                    // 視錐台外・遠方の地形チャンクは描画スキップ（Terrain 描画最適化）。
+                                    if terrain_culled.contains(path.as_str()) { continue; }
                                     if let Some(&gpu) = gpu_model_by_path.get(path.as_str()) {
                                         crate::engine::core::renderer::gbuffer::draw_gbuffer_indirect(
                                             &mut gpass, gpu, &sd.batch, &camera_buf.bind_group,
@@ -4309,6 +4372,9 @@ impl App {
                             // フォワード時のみ従来どおり draw_model_indirect で不透明を描く。
                             if !deferred_active {
                                 for (path, sd) in &self.shared_model_batches {
+                                    // 視錐台外・遠方の地形チャンクは描画スキップ（Terrain 描画最適化・
+                                    // フォワード経路も G-Buffer 経路と同じ集合でスキップする）。
+                                    if terrain_culled.contains(path.as_str()) { continue; }
                                     if let Some(&gpu) = gpu_model_by_path.get(path.as_str()) {
                                         draw_model_indirect(
                                             &mut pass, gpu, &sd.batch,
