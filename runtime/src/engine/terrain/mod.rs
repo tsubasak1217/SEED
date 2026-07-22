@@ -11,6 +11,7 @@ pub mod settings;
 pub mod chunk_coord;
 pub mod chunk_data;
 pub mod marching_cubes;
+pub mod lod;
 pub mod brush;
 pub mod tvox;
 pub mod heightmap;
@@ -38,6 +39,7 @@ pub use chunk_data::TerrainChunkData;
 pub use marching_cubes::{
     generate, generate_standalone, interp_vertex_paint, TerrainMesh, TerrainVertexEdge,
 };
+pub use lod::{generate_lod_mesh, lod_count, stride_for_lod, TERRAIN_LOD_STRIDES};
 pub use brush::{apply, chunks_in_brush_aabb, BrushOp, SampleField, SphereBrush};
 pub use tvox::{read_chunk, read_header, write_chunk, TvoxError, TvoxHeader, TVOX_MAGIC, TVOX_VERSION};
 pub use heightmap::HeightmapField;

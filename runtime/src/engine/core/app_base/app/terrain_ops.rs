@@ -101,6 +101,90 @@ static PERF_TERRAIN_PHYS_LOG_ENABLED: std::sync::LazyLock<bool> =
 /// 秒 → ミリ秒の換算係数（マジックナンバー回避）。
 const MILLIS_PER_SEC: f64 = 1000.0;
 
+// ─── チャンク単位 地形 LOD（遠いチャンクを低ポリ MC で描く）の調整値 ───────────
+//
+// 【データドリブンの余地】距離しきい値は当面 env 上書き付きの名前付き定数で持つ。
+// 将来は TerrainSettings（props/settings）へ移し、プロジェクト単位で調整できるようにする。
+
+/// LOD1（頂点 ≒ 1/4）へ落とすチャンク最近点距離の既定（m）。これ未満は LOD0（フル）。
+const TERRAIN_LOD1_DISTANCE_DEFAULT: f32 = 60.0;
+/// LOD2（頂点 ≒ 1/16）へ落とすチャンク最近点距離の既定（m）。これ以上は最粗段。
+const TERRAIN_LOD2_DISTANCE_DEFAULT: f32 = 140.0;
+/// LOD1 しきい値の env 上書き（m）。俯瞰スモークで段階を作るための恒常フック。
+const TERRAIN_LOD1_DISTANCE_ENV: &str = "SEED_TERRAIN_LOD1_DIST";
+/// LOD2 しきい値の env 上書き（m）。
+const TERRAIN_LOD2_DISTANCE_ENV: &str = "SEED_TERRAIN_LOD2_DIST";
+/// LOD 機能そのものを切る env（"1" で全チャンク LOD0＝before 計測用）。
+const TERRAIN_LOD_DISABLED_ENV: &str = "SEED_TERRAIN_LOD_DISABLED";
+
+/// LOD 遷移の「ばたつき」を防ぐヒステリシス幅（しきい値に対する割合）。
+/// 粗くするのはしきい値×(1+H) を超えたとき、細かくするのは×(1−H) を下回ったとき。
+const TERRAIN_LOD_HYSTERESIS: f32 = 0.12;
+/// 1 フレームで処理する LOD 遷移（再メッシュ）の最大チャンク数。大量チャンクが同時に
+/// LOD を跨いでも 1 フレームで全再メッシュしてスパイクを出さないよう、近い順に小分けする。
+const TERRAIN_LOD_TRANSITIONS_PER_FRAME: usize = 8;
+
+/// LOD 距離しきい値（env 上書き反映済み）。`(lod1, lod2)` を返す。
+fn terrain_lod_distances() -> (f32, f32) {
+    let parse = |name: &str, default: f32| -> f32 {
+        std::env::var(name)
+            .ok()
+            .and_then(|v| v.trim().parse::<f32>().ok())
+            .filter(|v| v.is_finite() && *v > 0.0)
+            .unwrap_or(default)
+    };
+    let d1 = parse(TERRAIN_LOD1_DISTANCE_ENV, TERRAIN_LOD1_DISTANCE_DEFAULT);
+    let d2 = parse(TERRAIN_LOD2_DISTANCE_ENV, TERRAIN_LOD2_DISTANCE_DEFAULT);
+    // d2 は必ず d1 以上（逆転設定を防ぐ）。
+    (d1, d1.max(d2))
+}
+
+/// LOD 機能が無効か（before 計測用）。
+static TERRAIN_LOD_DISABLED: std::sync::LazyLock<bool> =
+    std::sync::LazyLock::new(|| std::env::var(TERRAIN_LOD_DISABLED_ENV).as_deref() == Ok("1"));
+
+/// 現在の LOD と最近点距離から、ヒステリシス込みで目標 LOD を決める純関数。
+///
+/// - `current`: そのチャンクの現在 LOD（0/1/2）。
+/// - `dist`: チャンク AABB とカメラの最近点距離（m）。
+/// - `(d1, d2)`: LOD1/LOD2 のしきい値（m・d1<=d2）。
+/// 境界付近での往復（再メッシュのばたつき）を防ぐため、上げ／下げでしきい値をずらす。
+fn desired_lod_for_distance(current: u8, dist: f32, d1: f32, d2: f32) -> u8 {
+    let h = TERRAIN_LOD_HYSTERESIS;
+    // 粗→細（LOD を下げる＝より高精細に）は下側しきい値、細→粗（上げる）は上側しきい値を使う。
+    let up1 = d1 * (1.0 + h);
+    let dn1 = d1 * (1.0 - h);
+    let up2 = d2 * (1.0 + h);
+    let dn2 = d2 * (1.0 - h);
+    // 素の距離帯から「素の目標」を求める。
+    let raw: u8 = if dist >= d2 {
+        2
+    } else if dist >= d1 {
+        1
+    } else {
+        0
+    };
+    let mut t = current;
+    if raw > current {
+        // より粗くしたい: 上側しきい値を確実に超えたぶんだけ 1 段ずつ上げる（2 段跨ぎも可）。
+        if t == 0 && dist > up1 {
+            t = 1;
+        }
+        if t == 1 && dist > up2 {
+            t = 2;
+        }
+    } else if raw < current {
+        // より細かくしたい: 下側しきい値を確実に下回ったぶんだけ 1 段ずつ下げる。
+        if t == 2 && dist < dn2 {
+            t = 1;
+        }
+        if t == 1 && dist < dn1 {
+            t = 0;
+        }
+    }
+    t
+}
+
 /// レイマーチのステップ幅（voxel_size に対する割合）。0.5 = 半ボクセルずつ進む。
 const RAYMARCH_STEP_FRACTION: f32 = 0.5;
 /// レイマーチの最大距離（メートル）。これを超えたら未命中とする。
@@ -354,6 +438,13 @@ pub struct TerrainState {
     /// チャンク → そのメッシュを載せる ModelComponent スロットの entity。
     /// 再メッシュ化（GPU 差し替え）時に対象コンポーネントを引くために使う。
     pub chunk_slot_entity: HashMap<ChunkCoord, Entity>,
+    /// チャンク → 現在アップロード済みの LOD レベル（0=フル・1・2…）。未登録は 0 とみなす。
+    ///
+    /// `tick_terrain_lod` がカメラ距離から目標 LOD を決め、現在値と異なるチャンクだけを
+    /// `pending_remesh` へ積んで LOD を切り替える。`remesh_chunks` はここを読んで
+    /// `build_chunk_cpu_model` に渡す LOD を決める（＝どの解像度でメッシュ化するか）。
+    /// 地形を作り直す経路（`TerrainState::default()`）で丸ごと消え、全チャンク LOD0 から始まる。
+    pub chunk_lod: HashMap<ChunkCoord, u8>,
     /// 現在の地形が属するシーン名（.tvox の保存フォルダ・合成 source_path に使う）。
     pub scene_name: String,
     /// 編集されて未保存のチャンク集合（handle_terrain_save でクリア）。
@@ -478,6 +569,7 @@ impl Default for TerrainState {
             settings: TerrainSettings::default(),
             chunks: HashMap::new(),
             chunk_slot_entity: HashMap::new(),
+            chunk_lod: HashMap::new(),
             scene_name: String::new(),
             dirty: HashSet::new(),
             pending_remesh: HashSet::new(),
@@ -844,7 +936,9 @@ fn build_chunk_render(
     //
     // 4 番目の戻り値は頂点の由来辺（`TerrainState::chunk_vertex_edges` へ入れる）。
     // これを登録しておくと、そのチャンクは最初のペイントから高速パスに乗れる。
-    let (model, is_empty, edges) = build_chunk_cpu_model(chunks, settings, layers, coord)?;
+    // 単発ビルド（初期化・チャンク追加・ロード復元）は常に LOD0 で作る。
+    // 遠近に応じた LOD 切替は毎フレームの `tick_terrain_lod` が担う。
+    let (model, is_empty, edges) = build_chunk_cpu_model(chunks, settings, layers, coord, 0)?;
     let (gpu, batch) = upload_chunk_model(ctx, &model, is_empty);
     Some((model, gpu, batch, edges))
 }
@@ -871,19 +965,52 @@ fn build_chunk_cpu_model(
     settings: &TerrainSettings,
     layers: &TerrainLayerSet,
     coord: ChunkCoord,
+    lod: u8,
 ) -> Option<(Arc<Model>, bool, Arc<Vec<TerrainVertexEdge>>)> {
     let chunk = chunks.get(&coord)?;
     let cells = settings.chunk_cells as i32;
     let clamp = settings.density_clamp;
     // このチャンクのローカルサンプル (lx,ly,lz) → グローバルサンプル座標 = coord*cells + local。
     let base = [coord.x * cells, coord.y * cells, coord.z * cells];
-    let mut mesh = terrain::generate(chunk, settings, |lx, ly, lz| {
-        read_global_impl(chunks, cells, clamp, base[0] + lx, base[1] + ly, base[2] + lz)
-    });
-    // 由来辺（頂点がどの辺のどこで生まれたか）はここでしか手に入らないので取り出す。
+
+    // ─── LOD メッシュの選択 ──────────────────────────────────────────────
+    //   lod>=1: 間引き＋スカートの低解像度メッシュ（terrain::lod）。stride が chunk_cells を
+    //           割り切らない構成では 1 段細かい LOD へ落とし、最終的に LOD0（下）へ帰着する。
+    //   lod==0: 従来経路（隣接サンプラ付きフル解像度 MC）。境界勾配が隣と連続し水密。
+    //   低解像度メッシュは頂点の「由来辺」を持たない（ペイント高速パス非対象）。編集は
+    //   カメラ至近＝LOD0 のチャンクでしか起きないため、これは実害にならない。
+    let mut lod_mesh: Option<terrain::TerrainMesh> = None;
+    let mut try_lod = lod;
+    while try_lod >= 1 {
+        let stride = terrain::stride_for_lod(try_lod as usize);
+        if let Some(m) = terrain::generate_lod_mesh(chunk, settings, stride) {
+            lod_mesh = Some(m);
+            break;
+        }
+        try_lod -= 1;
+    }
+
+    let (mut mesh, is_lod0) = match lod_mesh {
+        Some(m) => (m, false),
+        None => {
+            // LOD0（フル解像度・隣接サンプラで境界勾配を連続化）。
+            let m = terrain::generate(chunk, settings, |lx, ly, lz| {
+                read_global_impl(chunks, cells, clamp, base[0] + lx, base[1] + ly, base[2] + lz)
+            });
+            (m, true)
+        }
+    };
+
+    // 由来辺（頂点がどの辺のどこで生まれたか）は LOD0 のときだけ意味を持つ。
     // ペイント高速パスがマーチングキューブスを再実行せずにスプラットを引き直すための唯一の手掛かり。
     // `Vec` を丸ごと move して以後の再確保・コピーを避ける（メッシュ側では使わない）。
-    let edges = Arc::new(std::mem::take(&mut mesh.edges));
+    // LOD>0 のメッシュは由来辺を持てない（間引き・スカートで頂点が MC 辺と 1:1 対応しない）ため
+    // 空にする。呼び出し側（apply_terrain_paint_colors）は長さ不一致でフル再メッシュへ落ちる。
+    let edges = if is_lod0 {
+        Arc::new(std::mem::take(&mut mesh.edges))
+    } else {
+        Arc::new(Vec::new())
+    };
     // レイヤ重みはワールド Y（高度ルール）を要するため、チャンク原点を渡す。
     // 第 2 戻り値はこのチャンクのレイヤパレット（頂点カラー各成分が指すレイヤ番号）。
     // パレットは model.materials[0].terrain_palette へも載っており、GPU へは
@@ -1319,7 +1446,7 @@ impl App {
         //   `par_iter().map().collect()` は入力順を保存するため出力は逐次実行と完全一致（決定的）。
         let cpu_models: Vec<Option<(Arc<Model>, bool, Arc<Vec<TerrainVertexEdge>>)>> = coords
             .par_iter()
-            .map(|&coord| build_chunk_cpu_model(&self.terrain.chunks, &settings, &layers, coord))
+            .map(|&coord| build_chunk_cpu_model(&self.terrain.chunks, &settings, &layers, coord, 0))
             .collect();
 
         // ── フェーズ 2b: GPU アップロードは直列（DrawContext は Sync でないため並列化しない）──
@@ -2094,6 +2221,91 @@ impl App {
     ///   再現可能にするため必ず座標でソートしてから渡す。
     ///   `ChunkCoord` は `Ord` を実装していない（terrain ライブラリ側の型なので
     ///   ここでは変更しない）ため、`(x, y, z)` のタプルをキーに全順序を与える。
+    /// 【チャンク単位 地形 LOD】カメラ距離に応じて各チャンクの目標 LOD を選び、
+    /// 現在 LOD と異なるチャンクだけを近い順に小分けで再メッシュ（GPU 差し替え）する。
+    ///
+    /// フレーム先頭（`handle_redraw_requested`）で **前フレームのメインカメラ位置**
+    /// (`self.last_camera_pos`) を使って呼ぶ。カメラは 1 フレームで大きく動かないため
+    /// 1 フレーム遅れは体感できず、描画中の借用衝突（scene/draw_ctx 可変借用）も避けられる。
+    ///
+    /// 遠いチャンクを低ポリ（間引き＋スカート）へ落として毎フレームの描画三角形数を削減する。
+    /// 物理コライダーは常にフル解像度（`register_all_terrain_colliders` 側で LOD0 強制）。
+    pub(super) fn tick_terrain_lod(&mut self) {
+        // 地形無し・GPU 無しなら何もしない（計測ログも意味を持たない）。
+        if self.draw_ctx.is_none() || self.terrain.chunk_slot_entity.is_empty() {
+            return;
+        }
+        let settings = self.terrain.settings.clone();
+        let extent = settings.chunk_extent();
+        let cam = self.last_camera_pos;
+        let (d1, d2) = terrain_lod_distances();
+        let max_lod = (terrain::lod_count().saturating_sub(1)) as u8;
+
+        // LOD 無効（before 計測）のときは遷移処理を丸ごと飛ばすが、下の計測ログは
+        // 全チャンク LOD0 の総三角形数を出すために引き続き実行する（on/off 比較の分母）。
+        if !*TERRAIN_LOD_DISABLED {
+        // ── 各チャンクの目標 LOD を求め、変化するものを (最近点距離, coord, 目標LOD) で集める ──
+        let mut changes: Vec<(f32, ChunkCoord, u8)> = Vec::new();
+        for &coord in self.terrain.chunk_slot_entity.keys() {
+            let origin = coord.world_origin(&settings);
+            let min = origin;
+            let max = [origin[0] + extent, origin[1] + extent, origin[2] + extent];
+            let dist_sq =
+                crate::engine::core::renderer::gpu_resources::aabb_distance_sq(min, max, cam);
+            let dist = dist_sq.sqrt();
+            let current = self.terrain.chunk_lod.get(&coord).copied().unwrap_or(0);
+            let desired = desired_lod_for_distance(current, dist, d1, d2).min(max_lod);
+            if desired != current {
+                changes.push((dist, coord, desired));
+            }
+        }
+
+        if !changes.is_empty() {
+            // 近いチャンクほど見た目への影響が大きいので、近い順に優先して処理する。
+            changes.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+            let mut coords: Vec<ChunkCoord> = Vec::new();
+            for (_dist, coord, desired) in changes.into_iter().take(TERRAIN_LOD_TRANSITIONS_PER_FRAME) {
+                // 先に目標 LOD を確定してから再メッシュする（remesh_chunks がこの値を読む）。
+                self.terrain.chunk_lod.insert(coord, desired);
+                coords.push(coord);
+            }
+            // 既存の VRAM 安全な再メッシュ機構をそのまま使う（gpu_model と instanced_batch を
+            // 同時に作り直し、派生キャッシュ＝統合バッチ・BLAS も破棄される）。
+            self.remesh_chunks(&coords);
+        }
+        } // if !*TERRAIN_LOD_DISABLED（遷移処理ここまで。以降の計測ログは on/off 共通）
+
+        // ── 計測ログ（60 フレームに 1 回）: 現在アップロード済みの地形総三角形数と LOD 内訳 ──
+        //   LOD 有無での before/after 比較用。カリング前の「保持している総三角形」を数える。
+        if *PERF_TERRAIN_LOG_ENABLED {
+            use std::sync::atomic::{AtomicU64, Ordering};
+            static LN: AtomicU64 = AtomicU64::new(0);
+            if LN.fetch_add(1, Ordering::Relaxed) % 60 == 0 {
+                let mut lod_hist = [0u32; 8];
+                let mut total_tris: u64 = 0;
+                if let Some(scene) = self.scene.as_ref() {
+                    for (&coord, &slot) in self.terrain.chunk_slot_entity.iter() {
+                        let lod = self.terrain.chunk_lod.get(&coord).copied().unwrap_or(0);
+                        lod_hist[(lod as usize).min(7)] += 1;
+                        if let Some(mc) = scene.world.get::<ModelComponent>(slot) {
+                            if let Some(model) = mc.model.as_ref() {
+                                if let Some(prim) =
+                                    model.meshes.first().and_then(|m| m.primitives.first())
+                                {
+                                    total_tris += (prim.indices.len() / 3) as u64;
+                                }
+                            }
+                        }
+                    }
+                }
+                eprintln!(
+                    "[PERF terrain] lod: total_tris={total_tris} lod0={} lod1={} lod2={} (d1={d1} d2={d2})",
+                    lod_hist[0], lod_hist[1], lod_hist[2]
+                );
+            }
+        }
+    }
+
     pub(super) fn flush_terrain_pending_remesh(&mut self) {
         // ── ① フル再メッシュ待ちを優先して消化する ──
         //   同一フレームで同じチャンクが `pending_remesh` と `pending_paint` の両方に
@@ -2187,7 +2399,11 @@ impl App {
         let t_cpu = Instant::now();
         let cpu_models: Vec<Option<(Arc<Model>, bool, Arc<Vec<TerrainVertexEdge>>)>> = coords
             .par_iter()
-            .map(|&coord| build_chunk_cpu_model(&self.terrain.chunks, &settings, &layers, coord))
+            .map(|&coord| {
+                // このチャンクの現在の目標 LOD（未登録＝LOD0）でメッシュ化する。
+                let lod = self.terrain.chunk_lod.get(&coord).copied().unwrap_or(0);
+                build_chunk_cpu_model(&self.terrain.chunks, &settings, &layers, coord, lod)
+            })
             .collect();
         let cpu_ms = t_cpu.elapsed().as_secs_f64() * MILLIS_PER_SEC;
 
@@ -2326,17 +2542,26 @@ impl App {
             // 既に生成済みの描画メッシュ（Arc<Model>）を引く。これがあれば MC を再実行せず
             // 頂点・インデックスを写すだけでコライダーを作れる（MC 二重実行の撤廃＝本命）。
             //   ※ self.scene / self.terrain の借用を分けるため Model 取得と id 採番は別文にする。
-            let model: Option<Arc<Model>> = self
-                .terrain
-                .chunk_slot_entity
-                .get(&coord)
-                .copied()
-                .and_then(|slot| {
-                    self.scene
-                        .as_ref()
-                        .and_then(|s| s.world.get::<ModelComponent>(slot))
-                        .and_then(|mc| mc.model.clone())
-                });
+            //
+            // 【コライダーは常に LOD0（フル解像度）】当たり判定は精度優先なので、遠方で
+            // 表示 LOD を落としているチャンク（chunk_lod>0）では描画メッシュを流用せず、
+            // 下段の MC フォールバック（`build_chunk_collider_shape`＝密度からフル解像度で生成）
+            // へ回す。表示だけ粗く・衝突はフル、という分離を保つ。
+            let display_lod = self.terrain.chunk_lod.get(&coord).copied().unwrap_or(0);
+            let model: Option<Arc<Model>> = if display_lod == 0 {
+                self.terrain
+                    .chunk_slot_entity
+                    .get(&coord)
+                    .copied()
+                    .and_then(|slot| {
+                        self.scene
+                            .as_ref()
+                            .and_then(|s| s.world.get::<ModelComponent>(slot))
+                            .and_then(|mc| mc.model.clone())
+                    })
+            } else {
+                None
+            };
             let entity_id = self.alloc_terrain_collider_id(coord);
             let position = coord.world_origin(&settings);
             jobs.push((entity_id, position, coord, model));
@@ -2407,17 +2632,23 @@ impl App {
         // 対象チャンクの描画メッシュ（Model）が既に作り直され ModelComponent へ書き戻し済み。
         // よって MC を再実行せず、その最新 Model から形状を写す（＝編集中の三重 MC を撤廃）。
         // Model が引けない稀なケースだけ MC フォールバックする。
-        let model: Option<Arc<Model>> = self
-            .terrain
-            .chunk_slot_entity
-            .get(&coord)
-            .copied()
-            .and_then(|slot| {
-                self.scene
-                    .as_ref()
-                    .and_then(|s| s.world.get::<ModelComponent>(slot))
-                    .and_then(|mc| mc.model.clone())
-            });
+        // コライダーは常に LOD0（フル解像度）。表示 LOD を落としているチャンクでは
+        // 描画メッシュを流用せず密度からフル解像度で作り直す（当たり判定は精度優先）。
+        let display_lod = self.terrain.chunk_lod.get(&coord).copied().unwrap_or(0);
+        let model: Option<Arc<Model>> = if display_lod == 0 {
+            self.terrain
+                .chunk_slot_entity
+                .get(&coord)
+                .copied()
+                .and_then(|slot| {
+                    self.scene
+                        .as_ref()
+                        .and_then(|s| s.world.get::<ModelComponent>(slot))
+                        .and_then(|mc| mc.model.clone())
+                })
+        } else {
+            None
+        };
         let shape = match model.as_deref() {
             Some(m) => collider_shape_from_model(m),
             None => build_chunk_collider_shape(&self.terrain.chunks, &settings, coord),
@@ -3071,7 +3302,7 @@ impl App {
         let t_mc = Instant::now();
         let cpu_models: Vec<Option<(Arc<Model>, bool, Arc<Vec<TerrainVertexEdge>>)>> = loaded
             .par_iter()
-            .map(|(coord, _mc_slot)| build_chunk_cpu_model(&self.terrain.chunks, &settings, &layers, *coord))
+            .map(|(coord, _mc_slot)| build_chunk_cpu_model(&self.terrain.chunks, &settings, &layers, *coord, 0))
             .collect();
         let mc_ms = t_mc.elapsed().as_secs_f64() * MILLIS_PER_SEC;
 

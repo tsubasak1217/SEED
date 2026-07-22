@@ -673,6 +673,12 @@ pub struct App {
     /// に削減することで RenderPass::drop() のオーバーヘッドを大幅に低減する。
     shared_model_batches: HashMap<String, SharedModelData>,
 
+    /// 前フレームで確定したメインカメラのワールド位置。
+    /// チャンク単位 地形 LOD（`tick_terrain_lod`）が、描画の借用と衝突しないフレーム先頭で
+    /// カメラ距離を評価するために使う（1 フレーム遅れは体感できない）。フレーム後半の
+    /// `saved_camera_pos` 確定時に更新する。
+    last_camera_pos: [f32; 3],
+
     /// 統合バッチキー（batch_key = モデルパス＋マテリアルオーバーライド署名）ごとの
     /// 「このフレームの描画対象に不在だった連続フレーム数」。
     /// マテリアルのインライン編集（スライダードラッグ等）は署名が変わるたびに新しい
@@ -1019,6 +1025,7 @@ impl App {
             light_gizmo:                 None,
             particle_gizmo:              None,
             shared_model_batches:    HashMap::new(),
+            last_camera_pos:         [0.0; 3],
             batch_absent_frames:     HashMap::new(),
             pending_drop:            None,
             pending_drop_hover: None,
