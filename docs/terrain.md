@@ -1465,6 +1465,17 @@ ECS アクターには一切紐付けない**独立したインスタンシン�
   `gbuffer::draw_gbuffer_indirect(gpass, &gpu_model, &batch, camera_bg, gbuffer_pipelines,
   meshlet=scatter_meshlet_draw, terrain_layers=None)` へ渡す。通常マテリアルで描くので deferred
   ライティング・SSAO・DDGI 受光が通常メッシュと同じく効く。
+- **半透明パス（重要・葉の描画）**: `draw_gbuffer_indirect` は `alphaMode=Blend` プリミティブを
+  スキップする（不透明 G-Buffer には焼けない）。木の葉・小枝（例: searsia の `*_leaves` /
+  `*_twigs` マテリアルは `doubleSided=true` の **BLEND**）はこの経路では描かれない。したがって
+  散布モデルを**透明モデル集合（`transparent_models`）へも加える**必要がある。これを怠ると散布木は
+  幹（Opaque）だけが描かれ**葉が丸ごと消える**（症状: 「幹だけの枯れ木」）。`frame_renderer` は
+  `transparent_models` をアクター（`shared_model_batches`）に続けて `scatter_models` の
+  `(gpu_model, batch)` で拡張する。バッチはアクターと同じ `InstancedModelBatch` なので、透明描画
+  （距離ソート／WBOIT）は `lod_visible_counts`・インスタンス行列をそのまま扱える。
+  - なお葉は BLEND ＝ `cone_cull_enabled=OFF`（両面）なので、メッシュレットのコーン背面棄却とは
+    無関係（`SEED_SCATTER_MESHLET` の ON/OFF で葉の有無は変わらない）。葉が出るかは純粋に
+    「散布モデルが透明パスに載っているか」で決まる。
 - **メッシュレットカリング（近景高ポリ木の描画コスト対策・実装済み）**: 散布モデルのバッチは
   `create_instanced_batch`（`enable_meshlet_cull=true`）で作られ、`frame_renderer` の
   メッシュレットカリング前処理ループにアクターと並んで載る（`prepare_meshlet_cull` →

@@ -3392,11 +3392,27 @@ impl App {
                     )> = if edit_view_2d {
                         Vec::new()
                     } else {
-                        self.shared_model_batches.iter()
+                        let mut models: Vec<(
+                            &crate::engine::methods::drawer::GpuModel,
+                            &crate::engine::methods::drawer::InstancedModelBatch,
+                        )> = self.shared_model_batches.iter()
                             .filter_map(|(path, sd)| {
                                 gpu_model_by_path.get(path.as_str()).map(|&gpu| (gpu, &sd.batch))
                             })
-                            .collect()
+                            .collect();
+                        // ── 地形散布モデル（kind=Model プロップ）の半透明プリミティブも透明パスへ ──
+                        //   散布した木（searsia 等）の葉・小枝は glTF 上 alphaMode=BLEND の両面
+                        //   マテリアルであり、不透明 G-Buffer パス（draw_gbuffer_indirect）は Blend を
+                        //   スキップする。ここで透明モデル集合へ加えないと、散布木は幹（Opaque）だけが
+                        //   描かれ葉が丸ごと消える（アクター配置の同一モデルは shared_model_batches
+                        //   経由でここに含まれるため葉が出る＝両者のパリティを取る）。
+                        //   バッチはアクターと同じ InstancedModelBatch なので、透明描画側は
+                        //   lod_visible_counts / インスタンス行列をそのまま扱える。可視カリングは
+                        //   cull_and_update_scatter_models が既に更新済み。
+                        for res in self.terrain.scatter_models.values() {
+                            models.push((&res.gpu_model, &res.batch));
+                        }
+                        models
                     };
                     let has_tp = crate::engine::core::renderer::transparency::has_transparent(
                         &transparent_models,
