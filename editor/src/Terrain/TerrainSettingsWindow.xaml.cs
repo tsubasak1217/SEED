@@ -67,6 +67,9 @@ public partial class TerrainSettingsWindow : Window
     /// <summary>「チャンクを追加」入力欄（min_x 等）の既定値。</summary>
     private const int AddChunksDefaultCoord = 0;
 
+    /// <summary>ツールチップの折返し最大幅（px）。長い説明が横に伸びすぎないようにする。</summary>
+    private const double TooltipMaxWidth = 340;
+
     // ── 依存（生成時に受け取る）──────────────────────────────
 
     /// <summary>assets ディレクトリの絶対パス（layers.json とテクスチャ相対パスの基準）。</summary>
@@ -521,8 +524,24 @@ public partial class TerrainSettingsWindow : Window
         Margin       = new Thickness(0, 2, 0, 2),
     };
 
+    /// <summary>
+    /// 折返し付きのツールチップ内容を作る。
+    /// WPF では同一 UIElement を複数要素の ToolTip に使い回すと「既に別要素の子」になり例外になるため、
+    /// これは呼ぶたびに新しい TextBlock を返す（＝ラベル用・入力用・行用でそれぞれ別インスタンスにする）。
+    /// </summary>
+    private static TextBlock MakeTip(string text) => new()
+    {
+        Text         = text,
+        TextWrapping = TextWrapping.Wrap,
+        MaxWidth     = TooltipMaxWidth,
+    };
+
     /// <summary>「ラベル ＋ 任意コントロール」の 1 行を作る共通レイアウト。</summary>
-    private static Grid MakeRow(string label, UIElement content)
+    /// <param name="tooltip">
+    /// 行全体（ラベル・隙間・入力欄）で共有する説明文。null なら付けない。
+    /// content が既に ToolTip を持つ場合（カラースウォッチ等）はそちらを尊重し上書きしない。
+    /// </param>
+    private static Grid MakeRow(string label, UIElement content, string? tooltip = null)
     {
         var grid = new Grid { Margin = new Thickness(0, PropertyRowMargin, 0, PropertyRowMargin) };
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(PropertyLabelWidth) });
@@ -536,23 +555,34 @@ public partial class TerrainSettingsWindow : Window
         };
         Grid.SetColumn(lbl, 0);     grid.Children.Add(lbl);
         Grid.SetColumn(content, 1); grid.Children.Add(content);
+
+        if (tooltip is not null)
+        {
+            // 既定では Grid の背景が null 判定になり、ラベルと入力の隙間ではホバー判定が効かない。
+            // Transparent にしておくことで行全体（隙間含む）でツールチップが出るようにする。
+            grid.Background = System.Windows.Media.Brushes.Transparent;
+            lbl.ToolTip = MakeTip(tooltip);
+            if (content is FrameworkElement fe && fe.ToolTip is null)
+                fe.ToolTip = MakeTip(tooltip);
+            grid.ToolTip = MakeTip(tooltip);
+        }
         return grid;
     }
 
     /// <summary>文字列入力の行を作る（入力のたびに onChanged が呼ばれる）。</summary>
-    private static Grid MakeTextRow(string label, string value, Action<string> onChanged)
+    private static Grid MakeTextRow(string label, string value, Action<string> onChanged, string? tooltip = null)
     {
         var box = MakeStyledTextBox(value);
         box.HorizontalAlignment = HorizontalAlignment.Stretch;
         box.TextChanged += (_, _) => onChanged(box.Text);
-        return MakeRow(label, box);
+        return MakeRow(label, box, tooltip);
     }
 
     /// <summary>
     /// 数値入力の行を作る。パースできない入力は無視し（直前の値を保つ）、
     /// min/max が指定されていればクランプする。
     /// </summary>
-    private static Grid MakeNumericRow(string label, double value, double? min, double? max, Action<double> onChanged)
+    private static Grid MakeNumericRow(string label, double value, double? min, double? max, Action<double> onChanged, string? tooltip = null)
     {
         var box = MakeStyledTextBox(value.ToString("G", CultureInfo.InvariantCulture));
         box.Width               = NumericBoxWidth;
@@ -565,14 +595,14 @@ public partial class TerrainSettingsWindow : Window
             if (max.HasValue) v = Math.Min(v, max.Value);
             onChanged(v);
         };
-        return MakeRow(label, box);
+        return MakeRow(label, box, tooltip);
     }
 
     /// <summary>
     /// 整数入力の行を作る。パースできない入力は無視し（直前の値を保つ）、
     /// min/max が指定されていればクランプする。負数（"-" 始まり）の入力途中も許容する。
     /// </summary>
-    private static Grid MakeIntRow(string label, int value, int? min, int? max, Action<int> onChanged)
+    private static Grid MakeIntRow(string label, int value, int? min, int? max, Action<int> onChanged, string? tooltip = null)
     {
         var box = MakeStyledTextBox(value.ToString(CultureInfo.InvariantCulture));
         box.Width               = NumericBoxWidth;
@@ -585,11 +615,11 @@ public partial class TerrainSettingsWindow : Window
             if (max.HasValue) v = Math.Min(v, max.Value);
             onChanged(v);
         };
-        return MakeRow(label, box);
+        return MakeRow(label, box, tooltip);
     }
 
     /// <summary>選択肢コンボの行を作る（detile モード等）。</summary>
-    private static Grid MakeComboRow(string label, string[] options, string current, Action<string> onChanged)
+    private static Grid MakeComboRow(string label, string[] options, string current, Action<string> onChanged, string? tooltip = null)
     {
         var cmb = new ComboBox
         {
@@ -602,7 +632,7 @@ public partial class TerrainSettingsWindow : Window
         {
             if (cmb.SelectedItem is string s) onChanged(s);
         };
-        return MakeRow(label, cmb);
+        return MakeRow(label, cmb, tooltip);
     }
 
     /// <summary>
