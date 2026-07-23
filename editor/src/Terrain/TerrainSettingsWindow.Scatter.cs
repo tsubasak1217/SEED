@@ -248,14 +248,14 @@ public partial class TerrainSettingsWindow
         {
             prop.Id = v;
             RefreshPropListEntryText();
-        }));
+        }, "散布インスタンスと IPC（再散布・ブラシ）が参照する安定キー。変更すると散布済みの対応が切れる。"));
         PanelPropProperties.Children.Add(MakeHint(
             "ID は散布インスタンスと IPC（再散布・ブラシ）が参照する安定キー。変更すると散布済みの対応が切れる。"));
         PanelPropProperties.Children.Add(MakeTextRow("名前", prop.Name, v =>
         {
             prop.Name = v;
             RefreshPropListEntryText();
-        }));
+        }, "一覧表示用の名前。散布結果そのものには影響しない。"));
         PanelPropProperties.Children.Add(MakeDisplayComboRow("種別",
             TerrainPropDefaults.Kinds, TerrainPropDefaults.KindDisplayNames, prop.Kind,
             v =>
@@ -264,7 +264,7 @@ public partial class TerrainSettingsWindow
                 prop.Kind = v;
                 // 種別で表示項目そのものが変わるためパネルごと作り直す。
                 RebuildPropPropertyPanel();
-            }));
+            }, "草＝数値から手続き生成（メッシュ不要）。モデル＝glTF/OBJ の実アセットを配置する。"));
 
         // ── モデル（kind=model のときのみ）──
         if (prop.IsModel)
@@ -281,24 +281,35 @@ public partial class TerrainSettingsWindow
             PanelPropProperties.Children.Add(MakeHint(
                 "草はメッシュアセットではなく、以下の数値からランタイムが生成する。"));
             PanelPropProperties.Children.Add(MakeNumericRow("葉幅（m）", g.Width,
-                TerrainPropDefaults.NonNegativeMin, GrassSizeUiMax, v => g.Width = v));
+                TerrainPropDefaults.NonNegativeMin, GrassSizeUiMax, v => g.Width = v,
+                "葉 1 枚の横幅（メートル）。"));
             PanelPropProperties.Children.Add(MakeNumericRow("高さ（m）", g.Height,
-                TerrainPropDefaults.NonNegativeMin, GrassSizeUiMax, v => g.Height = v));
+                TerrainPropDefaults.NonNegativeMin, GrassSizeUiMax, v => g.Height = v,
+                "葉の基準の高さ（メートル）。実際の高さは下の変動率で上下する。"));
             PanelPropProperties.Children.Add(MakeNumericRow("高さの変動率", g.HeightVariance,
-                TerrainPropDefaults.UnitRangeMin, TerrainPropDefaults.UnitRangeMax, v => g.HeightVariance = v));
+                TerrainPropDefaults.UnitRangeMin, TerrainPropDefaults.UnitRangeMax, v => g.HeightVariance = v,
+                "個体ごとの高さのばらつき。0＝一定、1＝およそ 0〜2 倍まで変動。"));
             PanelPropProperties.Children.Add(MakeIntRow("縦分割数", g.Segments,
-                TerrainPropDefaults.GrassMinSegments, TerrainPropDefaults.GrassMaxSegments, v => g.Segments = v));
-            PanelPropProperties.Children.Add(MakeBoolRow("十字 2 枚構成", g.CrossPlanes, v => g.CrossPlanes = v));
+                TerrainPropDefaults.GrassMinSegments, TerrainPropDefaults.GrassMaxSegments, v => g.Segments = v,
+                "葉の縦方向の分割数。多いほど滑らかに曲がるが頂点数が増える。"));
+            PanelPropProperties.Children.Add(MakeBoolRow("十字 2 枚構成", g.CrossPlanes, v => g.CrossPlanes = v,
+                "葉を十字に 2 枚重ねて密度感を出す（頂点数は倍になる）。"));
             PanelPropProperties.Children.Add(MakeNumericRow("垂れ（静止時の曲げ）", g.Bend,
-                TerrainPropDefaults.UnitRangeMin, TerrainPropDefaults.UnitRangeMax, v => g.Bend = v));
-            PanelPropProperties.Children.Add(MakeLinearColorRow("根元色", g.ColorBottom, c => g.ColorBottom = c));
-            PanelPropProperties.Children.Add(MakeLinearColorRow("先端色", g.ColorTop,    c => g.ColorTop    = c));
+                TerrainPropDefaults.UnitRangeMin, TerrainPropDefaults.UnitRangeMax, v => g.Bend = v,
+                "静止時に葉先が垂れる量。0＝直立、1＝大きく垂れる。"));
+            PanelPropProperties.Children.Add(MakeLinearColorRow("根元色", g.ColorBottom, c => g.ColorBottom = c,
+                "葉の根元のリニア RGB 色。先端色との間をグラデーションで補間する。"));
+            PanelPropProperties.Children.Add(MakeLinearColorRow("先端色", g.ColorTop,    c => g.ColorTop    = c,
+                "葉の先端のリニア RGB 色。根元色との間をグラデーションで補間する。"));
             PanelPropProperties.Children.Add(MakeNumericRow("ラフネス", g.Roughness,
-                TerrainPropDefaults.UnitRangeMin, TerrainPropDefaults.UnitRangeMax, v => g.Roughness = v));
+                TerrainPropDefaults.UnitRangeMin, TerrainPropDefaults.UnitRangeMax, v => g.Roughness = v,
+                "表面の粗さ。0＝つやあり（反射が鋭い）、1＝つや消し。"));
             PanelPropProperties.Children.Add(MakeNumericRow("先端アルファ閾値", g.TipAlphaCutoff,
-                TerrainPropDefaults.UnitRangeMin, TerrainPropDefaults.UnitRangeMax, v => g.TipAlphaCutoff = v));
+                TerrainPropDefaults.UnitRangeMin, TerrainPropDefaults.UnitRangeMax, v => g.TipAlphaCutoff = v,
+                "葉先を透過で細らせる閾値。0＝そのまま（細らせない）。"));
             PanelPropProperties.Children.Add(MakeNumericRow("法線の地表寄せ", g.NormalUpBlend,
-                TerrainPropDefaults.UnitRangeMin, TerrainPropDefaults.UnitRangeMax, v => g.NormalUpBlend = v));
+                TerrainPropDefaults.UnitRangeMin, TerrainPropDefaults.UnitRangeMax, v => g.NormalUpBlend = v,
+                "葉の法線を地表向きへ寄せる割合。直立葉の N·L≈0 による黒ずみを防ぐ。0＝寄せない、1＝完全に地表向き。"));
         }
 
         // ── 風 ──
@@ -307,31 +318,42 @@ public partial class TerrainSettingsWindow
         PanelPropProperties.Children.Add(MakeHint(
             "基本振動（速く細かい）と突風（遅く大きい）の 2 成分で揺らす。強度 0 で揺れなし。"));
         PanelPropProperties.Children.Add(MakeNumericRow("強度", w.Strength,
-            TerrainPropDefaults.NonNegativeMin, TerrainPropDefaults.UnitRangeMax, v => w.Strength = v));
+            TerrainPropDefaults.NonNegativeMin, TerrainPropDefaults.UnitRangeMax, v => w.Strength = v,
+            "揺れの全体量。0 で揺れなし。"));
         PanelPropProperties.Children.Add(MakeNumericRow("速度", w.Speed,
-            TerrainPropDefaults.NonNegativeMin, WindUiMax, v => w.Speed = v));
+            TerrainPropDefaults.NonNegativeMin, WindUiMax, v => w.Speed = v,
+            "基本振動（速く細かい成分）の速さ。"));
         PanelPropProperties.Children.Add(MakeNumericRow("空間周波数", w.Frequency,
-            TerrainPropDefaults.NonNegativeMin, WindUiMax, v => w.Frequency = v));
+            TerrainPropDefaults.NonNegativeMin, WindUiMax, v => w.Frequency = v,
+            "隣り合う株どうしの位相差。大きいほど細かく波打つ。"));
         PanelPropProperties.Children.Add(MakeNumericRow("突風の強さ", w.GustStrength,
-            TerrainPropDefaults.NonNegativeMin, TerrainPropDefaults.UnitRangeMax, v => w.GustStrength = v));
+            TerrainPropDefaults.NonNegativeMin, TerrainPropDefaults.UnitRangeMax, v => w.GustStrength = v,
+            "遅く大きなうねり成分の量。"));
         PanelPropProperties.Children.Add(MakeNumericRow("突風の速度", w.GustSpeed,
-            TerrainPropDefaults.NonNegativeMin, WindUiMax, v => w.GustSpeed = v));
+            TerrainPropDefaults.NonNegativeMin, WindUiMax, v => w.GustSpeed = v,
+            "うねり成分の周期の速さ。"));
 
         // ── 散布（密度・姿勢）──
         var s = prop.Scatter;
         PanelPropProperties.Children.Add(MakeSectionHeader("散布（密度・姿勢）"));
         PanelPropProperties.Children.Add(MakeNumericRow("密度（点/m²）", s.Density,
-            TerrainPropDefaults.NonNegativeMin, ScatterDensityUiMax, v => s.Density = v));
+            TerrainPropDefaults.NonNegativeMin, ScatterDensityUiMax, v => s.Density = v,
+            "1m² あたりの候補点数。実際に生えるのは自動散布ルールの判定を通った候補だけ。"));
         PanelPropProperties.Children.Add(MakeHint(
             "密度は「候補点」の数。実際に生えるのは下のルール判定を通った候補だけ。"));
         PanelPropProperties.Children.Add(MakeNumericRow("スケール min", s.ScaleMin,
-            TerrainPropDefaults.NonNegativeMin, ScaleUiMax, v => s.ScaleMin = v));
+            TerrainPropDefaults.NonNegativeMin, ScaleUiMax, v => s.ScaleMin = v,
+            "個体の大きさ倍率の下限。各個体は min〜max の範囲でランダムに決まる。"));
         PanelPropProperties.Children.Add(MakeNumericRow("スケール max", s.ScaleMax,
-            TerrainPropDefaults.NonNegativeMin, ScaleUiMax, v => s.ScaleMax = v));
-        PanelPropProperties.Children.Add(MakeBoolRow("地表法線に沿わせる", s.AlignToNormal, v => s.AlignToNormal = v));
+            TerrainPropDefaults.NonNegativeMin, ScaleUiMax, v => s.ScaleMax = v,
+            "個体の大きさ倍率の上限。各個体は min〜max の範囲でランダムに決まる。"));
+        PanelPropProperties.Children.Add(MakeBoolRow("地表法線に沿わせる", s.AlignToNormal, v => s.AlignToNormal = v,
+            "地面の傾きに合わせて個体を傾ける。オフだと常に垂直に立つ。"));
         PanelPropProperties.Children.Add(MakeNumericRow("ランダム傾き上限（度）", s.TiltMaxDeg,
-            TerrainPropDefaults.NonNegativeMin, TerrainPropDefaults.TiltRangeMax, v => s.TiltMaxDeg = v));
-        PanelPropProperties.Children.Add(MakeBoolRow("ランダム Y 回転", s.RandomYaw, v => s.RandomYaw = v));
+            TerrainPropDefaults.NonNegativeMin, TerrainPropDefaults.TiltRangeMax, v => s.TiltMaxDeg = v,
+            "垂直からランダムに倒す最大角度。自然なばらつきを与える。"));
+        PanelPropProperties.Children.Add(MakeBoolRow("ランダム Y 回転", s.RandomYaw, v => s.RandomYaw = v,
+            "水平方向の向き（Y 軸まわりの回転）をランダム化する。"));
 
         // ── 自動散布ルール ──
         var r = prop.Rule;
@@ -340,19 +362,26 @@ public partial class TerrainSettingsWindow
             "斜度ウィンドウ × 高度ウィンドウ × 全レイヤ条件の積が「その地点に生える確率」になる。"
             + "フェード幅は境界をぼかす幅（0 でハードエッジ）。"));
         PanelPropProperties.Children.Add(MakeNumericRow("斜度 min（度）", r.SlopeMinDeg,
-            TerrainPropDefaults.SlopeRangeMin, TerrainPropDefaults.SlopeRangeMax, v => r.SlopeMinDeg = v));
+            TerrainPropDefaults.SlopeRangeMin, TerrainPropDefaults.SlopeRangeMax, v => r.SlopeMinDeg = v,
+            "生える地面の傾きの下限。これより緩い斜面には生えない。"));
         PanelPropProperties.Children.Add(MakeNumericRow("斜度 max（度）", r.SlopeMaxDeg,
-            TerrainPropDefaults.SlopeRangeMin, TerrainPropDefaults.SlopeRangeMax, v => r.SlopeMaxDeg = v));
+            TerrainPropDefaults.SlopeRangeMin, TerrainPropDefaults.SlopeRangeMax, v => r.SlopeMaxDeg = v,
+            "生える地面の傾きの上限。これより急な斜面には生えない。"));
         PanelPropProperties.Children.Add(MakeNumericRow("斜度フェード（度）", r.SlopeFadeDeg,
-            TerrainPropDefaults.SlopeRangeMin, TerrainPropDefaults.SlopeRangeMax, v => r.SlopeFadeDeg = v));
+            TerrainPropDefaults.SlopeRangeMin, TerrainPropDefaults.SlopeRangeMax, v => r.SlopeFadeDeg = v,
+            "斜度の境界をぼかす幅。0 でハードエッジ（境界でスパッと切れる）。"));
         PanelPropProperties.Children.Add(MakeNumericRow("高度 min（m）", r.HeightMin,
-            null, null, v => r.HeightMin = v));
+            null, null, v => r.HeightMin = v,
+            "生えるワールド Y 高さの下限（メートル）。"));
         PanelPropProperties.Children.Add(MakeNumericRow("高度 max（m）", r.HeightMax,
-            null, null, v => r.HeightMax = v));
+            null, null, v => r.HeightMax = v,
+            "生えるワールド Y 高さの上限（メートル）。"));
         PanelPropProperties.Children.Add(MakeNumericRow("高度フェード（m）", r.HeightFade,
-            null, null, v => r.HeightFade = v));
+            null, null, v => r.HeightFade = v,
+            "高度の境界をぼかす幅（メートル）。0 でハードエッジ。"));
         PanelPropProperties.Children.Add(MakeNumericRow("閾値（足切り）", r.Threshold,
-            TerrainPropDefaults.UnitRangeMin, TerrainPropDefaults.UnitRangeMax, v => r.Threshold = v));
+            TerrainPropDefaults.UnitRangeMin, TerrainPropDefaults.UnitRangeMax, v => r.Threshold = v,
+            "算出確率がこの値未満の点は生やさない。まばら／密の最終調整に使う。"));
 
         // ── レイヤ条件 ──
         PanelPropProperties.Children.Add(MakeSectionHeader("レイヤ条件"));
@@ -408,6 +437,7 @@ public partial class TerrainSettingsWindow
 
             var boxWeight = MakeStyledTextBox(cond.MinWeight.ToString("G", CultureInfo.InvariantCulture));
             boxWeight.Width = ConditionWeightBoxWidth;
+            boxWeight.ToolTip = "指定レイヤの塗り重みがこの値以上の場所にだけ生える（0〜1）。";
             boxWeight.TextChanged += (_, _) =>
             {
                 if (!double.TryParse(boxWeight.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var v))
@@ -464,7 +494,7 @@ public partial class TerrainSettingsWindow
     // ── 行生成ヘルパ（散布タブ専用）──────────────────────────
 
     /// <summary>真偽値のチェックボックス行を作る。</summary>
-    private static Grid MakeBoolRow(string label, bool value, Action<bool> onChanged)
+    private static Grid MakeBoolRow(string label, bool value, Action<bool> onChanged, string? tooltip = null)
     {
         var chk = new CheckBox
         {
@@ -475,7 +505,7 @@ public partial class TerrainSettingsWindow
         };
         chk.Checked   += (_, _) => onChanged(true);
         chk.Unchecked += (_, _) => onChanged(false);
-        return MakeRow(label, chk);
+        return MakeRow(label, chk, tooltip);
     }
 
     /// <summary>
@@ -483,7 +513,7 @@ public partial class TerrainSettingsWindow
     /// <paramref name="values"/> と <paramref name="displayNames"/> は同じ並びであること。
     /// </summary>
     private static Grid MakeDisplayComboRow(
-        string label, string[] values, string[] displayNames, string current, Action<string> onChanged)
+        string label, string[] values, string[] displayNames, string current, Action<string> onChanged, string? tooltip = null)
     {
         var cmb = new ComboBox
         {
@@ -497,14 +527,14 @@ public partial class TerrainSettingsWindow
             int i = cmb.SelectedIndex;
             if (i >= 0 && i < values.Length) onChanged(values[i]);
         };
-        return MakeRow(label, cmb);
+        return MakeRow(label, cmb, tooltip);
     }
 
     /// <summary>
     /// リニア RGB 色の行を作る。スウォッチのクリックでカラーピッカーを開く。
     /// アルファは持たないため、ピッカーへは不透明を渡して結果の A は捨てる。
     /// </summary>
-    private Grid MakeLinearColorRow(string label, double[] color, Action<double[]> onChanged)
+    private Grid MakeLinearColorRow(string label, double[] color, Action<double[]> onChanged, string? tooltip = null)
     {
         var swatch = new Border
         {
@@ -530,7 +560,10 @@ public partial class TerrainSettingsWindow
             // スウォッチの色を反映させるため行ごと作り直す。
             RebuildPropPropertyPanel();
         };
-        return MakeRow(label, swatch);
+        // スウォッチ自身は「クリックでピッカーを開く」という操作説明の ToolTip を既に持つため、
+        // MakeRow 側の「content の既存 ToolTip は上書きしない」規則により、
+        // スウォッチ上＝操作説明／ラベル・行の余白＝色の意味説明、という住み分けになる。
+        return MakeRow(label, swatch, tooltip);
     }
 
     /// <summary>
