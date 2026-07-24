@@ -12,31 +12,27 @@
 //    主要な型・定数をすべてこのモジュールから再エクスポートする。
 // ============================================================
 
-pub mod thread;
-pub mod thread2d;
 mod types;
 mod types2d;
+pub mod thread;
+pub mod thread2d;
 
 // ── 3D 型・定数の再エクスポート ─────────────────────────────────────────────
 
 pub use types::{
-    // 形状・RB 状態
-    ColliderShape,
-    // イベント
-    CollisionEvent,
-    CollisionPhase,
-    DEFAULT_GRAVITY,
     // 定数
-    PHYSICS_FIXED_STEP,
-    PhysicsCommand,
+    PHYSICS_FIXED_STEP, DEFAULT_GRAVITY,
+    // 形状・RB 状態
+    ColliderShape, RigidBodyState,
     // スレッド通信型
-    PhysicsObject,
-    PhysicsResult,
+    PhysicsObject, PhysicsCommand, PhysicsResult,
+    // イベント
+    CollisionEvent, CollisionPhase,
+    TriggerEvent, TriggerPhase,
     // クエリ
     RaycastHit,
-    RigidBodyState,
-    TriggerEvent,
-    TriggerPhase,
+    // キャラクターコントローラー
+    CharacterMoveResult,
 };
 
 pub use thread::PhysicsThread;
@@ -44,22 +40,15 @@ pub use thread::PhysicsThread;
 // ── 2D 型・定数の再エクスポート ─────────────────────────────────────────────
 
 pub use types2d::{
-    // 形状・RB 状態
-    ColliderShape2d,
-    // イベント
-    CollisionEvent2d,
-    CollisionPhase2d,
-    DEFAULT_GRAVITY_2D,
     // 定数
-    PHYSICS_2D_FIXED_STEP,
-    PIXELS_PER_METER,
-    PhysicsCommand2d,
+    PHYSICS_2D_FIXED_STEP, DEFAULT_GRAVITY_2D, PIXELS_PER_METER,
+    // 形状・RB 状態
+    ColliderShape2d, RigidBodyState2d,
     // スレッド通信型
-    PhysicsObject2d,
-    PhysicsResult2d,
-    RigidBodyState2d,
-    TriggerEvent2d,
-    TriggerPhase2d,
+    PhysicsObject2d, PhysicsCommand2d, PhysicsResult2d,
+    // イベント
+    CollisionEvent2d, CollisionPhase2d,
+    TriggerEvent2d, TriggerPhase2d,
 };
 
 pub use thread2d::PhysicsThread2d;

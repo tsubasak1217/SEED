@@ -236,6 +236,29 @@ bool blocked = SEED.Physics.Raycast(origin, dir, maxDistance);
 - 3D 物理（ColliderComponent）に対するレイキャストです。物理スレッドへの同期問い合わせのため、毎フレーム大量に呼ぶとフレーム時間を消費します。
 - 衝突・トリガーの**イベント通知**は第 2 節「物理イベントコールバック」（`OnCollisionEnter` 等）を参照してください。
 
+### Physics.MoveActor（キャラクターコントローラー移動）
+
+```csharp
+// アクターをキャラクターコントローラー的に動かす（Unity の CharacterController.Move 相当）。
+// 希望移動量を地形・静的コライダーと衝突解決し、補正済み移動量だけ動かす。
+// 壁ずり・段差の乗り越え・スロープ登坂は内部の KCC が処理する。
+SEED.MoveResult r = SEED.Physics.MoveActor(gameObject, motion); // motion は Vector3（ワールド空間）
+r.Motion    // Vector3: 実際に移動した量（衝突解決後）
+r.Grounded  // bool:    移動後に接地しているか
+
+// 重力はエンジンが自動適用しない。落下は motion に重力ぶんを含める:
+velocityY += -9.81f * SEED.Time.DeltaTime;          // 重力を積分
+if (r.Grounded && velocityY < 0f) velocityY = 0f;   // 接地したら落下速度をリセット
+var move = horizontal + new SEED.Vector3(0f, velocityY, 0f) * SEED.Time.DeltaTime;
+var res  = SEED.Physics.MoveActor(gameObject, move);
+```
+
+- 対象アクターは **Collider コンポーネント（カプセル推奨）** を持つ必要があります。カプセル形状が KCC のシェイプに使われます。
+- 補正後の位置は集約経路で反映されるため、**子アクタ（カメラ等）も追従**します。
+- 対象は **Kinematic なコライダー**（`use_rigidbody` = true かつ `is_kinematic` = true）を推奨します。**Dynamic** コライダーに対して使うと、物理エンジンの積分と移動が競合して暴れます。
+- 物理スレッドへの同期問い合わせのため、毎フレーム大量に呼ぶとフレーム時間を消費します。
+- 重力・複数コライダーの合成移動はスクリプト側の責務です（KCC 自体は重力を持ちません）。
+
 ---
 
 ## 6.7 Audio（BGM・効果音）
