@@ -356,6 +356,22 @@ fn run_physics_loop(
                             .filter(|e| e.rb_handle.is_none() && !e.is_character)
                             .count();
                         let total_colliders = collider_set.len();
+                        // 【追加診断】キャラ位置から真下(-Y)へレイを撃ち、地形表面までの距離を測る。
+                        //   Some(d)=直下 d[m] に地形あり（キャラは地形の上空に浮いている）
+                        //   None   =直下に地形が無い（地形内部に埋没 or 地形が検出されない）
+                        // これで「浮遊」「埋没」「未検出」を切り分ける。
+                        let down_hit: Option<f32> = last_before.and_then(|last| {
+                            let ray = Ray::new(
+                                point![last[0], last[1], last[2]],
+                                vector![0.0, -1.0, 0.0],
+                            );
+                            let filter = entries.get(&entity_id)
+                                .map(|e| QueryFilter::default().exclude_collider(e.col_handle))
+                                .unwrap_or_default();
+                            query_pipeline
+                                .cast_ray(&rigid_body_set, &collider_set, &ray, 500.0, true, filter)
+                                .map(|(_, toi)| toi)
+                        });
                         match (last_before, resolved) {
                             (Some(last), Some((corrected, grounded))) => {
                                 let motion = [
@@ -372,14 +388,14 @@ fn run_physics_loop(
                                     "[CharCtl] id={id} entry=found desired=({dx:.3},{dy:.3},{dz:.3}) \
                                      last=({lx:.3},{ly:.3},{lz:.3}) motion=({mx:.3},{my:.3},{mz:.3}) \
                                      kcc_move=({ax:.3},{ay:.3},{az:.3}) corrected=({cx:.3},{cy:.3},{cz:.3}) \
-                                     grounded={g} | colliders total={tc} static={sc}",
+                                     grounded={g} down_hit={dh:?} | colliders total={tc} static={sc}",
                                     id = entity_id,
                                     dx = desired_position[0], dy = desired_position[1], dz = desired_position[2],
                                     lx = last[0], ly = last[1], lz = last[2],
                                     mx = motion[0], my = motion[1], mz = motion[2],
                                     ax = applied[0], ay = applied[1], az = applied[2],
                                     cx = corrected[0], cy = corrected[1], cz = corrected[2],
-                                    g = grounded, tc = total_colliders, sc = static_colliders,
+                                    g = grounded, dh = down_hit, tc = total_colliders, sc = static_colliders,
                                 );
                             }
                             _ => {
