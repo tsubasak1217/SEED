@@ -25,7 +25,7 @@ use rapier3d::prelude::*;
 // nalgebra の UnitQuaternion は rapier3d プレリュードに含まれないため直接インポートする
 use nalgebra::UnitQuaternion;
 use std::collections::{HashMap, HashSet};
-use crossbeam_channel::{Receiver, Sender, TryRecvError, unbounded};
+use crossbeam_channel::{Receiver, Sender, TryRecvError, RecvTimeoutError, unbounded};
 use std::time::{Duration, Instant};
 
 // rapier3d の control モジュール（キャラクターコントローラー）は prelude に含まれないため直接インポートする
@@ -57,6 +57,14 @@ static CHAR_LOG_FRAMES: std::sync::atomic::AtomicU32 = std::sync::atomic::Atomic
 
 /// `[CharCtl]` 行を出す最大件数（起動直後の切り分けに十分な数だけ出して以降は黙る）。
 const CHAR_LOG_MAX_FRAMES: u32 = 240;
+
+/// Pause 中にコマンド到着を待つ最大ブロック時間。
+///
+/// Pause 中は物理ステップを進めないため「次ステップ時刻」を待つ意味がなく、代わりに
+/// コマンド（Resume や同期問い合わせ）が来るまで recv_timeout でブロックして即応する。
+/// この値はタイムアウトの保険（万一の取りこぼし防止で定期的にドレインへ戻る周期）に過ぎず、
+/// コマンドが届けばそれより早く起きるため、体感の応答遅延には影響しない。
+const PAUSE_IDLE_TIMEOUT: Duration = Duration::from_millis(50);
 
 // ─── キャラクターコントローラー（KCC）パラメータ定数 ──────────────────────────
 //
@@ -305,18 +313,28 @@ fn run_physics_loop(
     // Pause/Resume 状態（true のとき物理ステップをスキップ、速度は保持される）
     let mut paused = false;
 
-    loop {
-        // ── コマンド処理（全キューをフラッシュ）────────────────────────────
-        loop {
-            match cmd_rx.try_recv() {
-                Ok(PhysicsCommand::Stop)   => return,
-                Ok(PhysicsCommand::Pause)  => { paused = true; }
-                Ok(PhysicsCommand::Resume) => {
+    // ── コマンド処理ディスパッチ（即応化のためのローカルマクロ）─────────────
+    //
+    // 【なぜマクロ化するか】
+    //   後述のとおり待機を recv_timeout 化するため、コマンド処理を「ドレインループ
+    //   （try_recv）」と「idle 待機（recv_timeout）」の 2 箇所から呼ぶ必要がある。
+    //   巨大な match を複製すると保守性が崩れるので、1 コマンドを処理する match を
+    //   ローカルマクロに括り出し、両方から呼ぶ。macro_rules! は呼び出し位置の
+    //   ローカル変数（rigid_body_set/collider_set/query_pipeline/entries/col_to_entity/
+    //   trigger_set/paused/next_step 等）をそのまま参照・可変借用でき、Stop の `return`・
+    //   Pause/Resume の `paused`/`next_step` 書き換えも展開先で正しく効く。
+    //   引数は既に unwrap 済みの PhysicsCommand（recv 結果の Ok/Err は呼び出し側で処理）。
+    macro_rules! dispatch_command {
+        ($cmd:expr) => {
+            match $cmd {
+                PhysicsCommand::Stop   => return,
+                PhysicsCommand::Pause  => { paused = true; }
+                PhysicsCommand::Resume => {
                     paused = false;
                     // Resume 直後にタイムステップをリセットして即座に次ステップを実行する
                     next_step = Instant::now();
                 }
-                Ok(PhysicsCommand::Raycast { origin, direction, max_distance, reply }) => {
+                PhysicsCommand::Raycast { origin, direction, max_distance, reply } => {
                     // 同期レイキャスト問い合わせ（スクリプトの Physics.Raycast）。
                     // query_pipeline は step のたびに更新済み。
                     let hit = perform_raycast(
@@ -325,7 +343,7 @@ fn run_physics_loop(
                     );
                     let _ = reply.send(hit);
                 }
-                Ok(PhysicsCommand::ResolveCharacter { entity_id, desired_position, rotation, reply }) => {
+                PhysicsCommand::ResolveCharacter { entity_id, desired_position, rotation, reply } => {
                     // キャラクターコントローラーの差分解決（同期問い合わせ・フレーム 1 回）。
                     // query_pipeline は step のたびに更新済み。前回解決済み位置との差分を
                     // KCC で衝突解決し、entry の char_last_pos を更新すると同時に
@@ -422,7 +440,7 @@ fn run_physics_loop(
 
                     let _ = reply.send(resolved);
                 }
-                Ok(PhysicsCommand::CheckKinematicOverlap { entity_id, position, rotation, reply }) => {
+                PhysicsCommand::CheckKinematicOverlap { entity_id, position, rotation, reply } => {
                     // 同期オーバーラップ問い合わせ（編集時ドラッグの押し戻し判定）。
                     // Pause 中もコマンドドレインは回り続けるため必ず応答できる。
                     let overlapping = check_kinematic_overlap(
@@ -432,32 +450,64 @@ fn run_physics_loop(
                     );
                     let _ = reply.send(overlapping);
                 }
-                Ok(cmd) => handle_command(
-                    cmd,
+                other => handle_command(
+                    other,
                     &mut rigid_body_set, &mut collider_set,
                     &mut island_manager, &mut impulse_joint_set, &mut multibody_joint_set,
                     &mut entries, &mut col_to_entity,
                     &mut trigger_set, &mut active_contacts, &mut active_triggers,
                     &mut gravity, &mut drag_targets,
                 ),
-                Err(TryRecvError::Empty)          => break,
-                Err(TryRecvError::Disconnected)   => return,
+            }
+        };
+    }
+
+    loop {
+        // ── ① 保留コマンドを全ドレイン（非ブロック）────────────────────────
+        //   既にキューに届いている分は、待たずにその場で全て処理する。
+        loop {
+            match cmd_rx.try_recv() {
+                Ok(cmd) => dispatch_command!(cmd),
+                Err(TryRecvError::Empty)        => break,
+                Err(TryRecvError::Disconnected) => return,
             }
         }
 
-        // Pause 中は物理ステップをスキップ（速度・内部状態は保持）
+        // ── ② Pause 中はコマンド到着まで（or 短時間）ブロックして待つ ──────────
+        //   Pause 中は物理ステップを進めない（速度・内部状態は保持）。
+        //   【なぜ sleep をやめ recv_timeout にするか】従来は sleep(5ms) 固定待機だったが、
+        //   Windows のタイマ粒度（約15.6ms）で実際には ~15ms 眠り、その間コマンド
+        //   （Resume や同期問い合わせ CheckKinematicOverlap 等）をドレインできず reply が
+        //   遅れた。recv_timeout でブロックすればコマンド到着で即起きて処理でき、来なければ
+        //   タイムアウトで再ループしてドレインへ戻るだけ（挙動は不変・応答だけ即応化）。
         if paused {
-            std::thread::sleep(Duration::from_millis(5));
+            match cmd_rx.recv_timeout(PAUSE_IDLE_TIMEOUT) {
+                Ok(cmd) => { dispatch_command!(cmd); }
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => return,
+            }
             continue;
         }
 
-        // ── 物理ステップ ─────────────────────────────────────────────────────
+        // ── ③ 次ステップ時刻まで、コマンド到着で即起きる形でブロックして待つ ────
+        //   【なぜ sleep ではなく recv_timeout か（本改修の核心）】
+        //   従来の `std::thread::sleep(≤1ms)` は Windows のタイマ粒度（約15.6ms）により
+        //   実際には ~15ms 眠り、その間コマンドをドレインできないため、同期問い合わせ
+        //   （ResolveCharacter/Raycast/CheckKinematicOverlap）の reply がメインの
+        //   recv_timeout(40ms) にすら間に合わず 100% 取りこぼしていた（キャラが地形を貫通）。
+        //   recv_timeout ならコマンド到着で即座に起きてその場で処理でき、健全時は <1ms で
+        //   reply を返せる。到着が無ければ残り時間でタイムアウトしてステップへ進むため、
+        //   物理ステップの精度・タイミング・順序は従来と一切変わらない。
         let now = Instant::now();
         if now < next_step {
-            // 次ステップまで 1ms 以内でスリープしてコマンド受信を維持する
             let remaining = next_step - now;
-            std::thread::sleep(remaining.min(Duration::from_millis(1)));
-            continue;
+            match cmd_rx.recv_timeout(remaining) {
+                // コマンドが届いた: 即処理し、再ループして①のドレイン＋タイミング再判定へ。
+                Ok(cmd) => { dispatch_command!(cmd); continue; }
+                // 残り時間が経過: ステップ実行タイミングに到達。下のステップへ進む。
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => return,
+            }
         }
 
         // スムーズドラッグ: このステップの次目標位置を最大速度クランプ付きで更新する。
