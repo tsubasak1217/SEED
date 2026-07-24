@@ -843,6 +843,27 @@ public partial class HierarchyPanel : UserControl
     }
 
     /// <summary>
+    /// 確認ダイアログを表示し、承諾されたらシーン内の全プレハブインスタンスを
+    /// プレハブ(.actor)の内容で一括再展開する（PREFAB_REAPPLY_ALL 送信）。
+    ///
+    /// プレハブ本体を編集したあと、その内容をシーン全体へ反映するための導線。
+    /// ランタイム側は .actor 保存時に自動反映を行わない（データ損失を防ぐため）ので、
+    /// 反映したいときはユーザーがこの操作を明示的に実行する。
+    ///
+    /// 全インスタンスに影響する破壊的操作のため、警告付きの OKCancel ダイアログで確認を取る。
+    /// </summary>
+    private void ConfirmAndReapplyAllPrefabs()
+    {
+        var result = MessageBox.Show(
+            "シーン内の全プレハブインスタンスをプレハブ（アクタファイル）の内容で上書きします。\n" +
+            "シーン上で加えた変更（コンポーネントの追加・値の変更・子の追加など）は失われます。\n" +
+            "続行しますか？",
+            "シーン内の全プレハブを更新", MessageBoxButton.OKCancel, MessageBoxImage.Warning);
+        if (result != MessageBoxResult.OK) return;
+        _runtime?.SendToRuntime("PREFAB_REAPPLY_ALL");
+    }
+
+    /// <summary>
     /// 確認ダイアログを表示し、承諾されたら指定アクターのプレハブリンクを解除する（UNLINK_PREFAB 送信）。
     /// Inspector 側のリンク解除と同一の導線・文言。
     /// </summary>
@@ -866,6 +887,12 @@ public partial class HierarchyPanel : UserControl
         {
             menu.Items.Add(new Separator());
             AddMenuItem(menu, "グループフォルダを作成", null, OnCreateGroupMenu);
+            // ── シーン全体に対する操作 ──────────────────────────────
+            // 個別更新（ノード右クリックの「プレハブから更新」）の一括版。
+            // シーン全体が対象なので、特定ノードではなく空白領域のメニューに置く。
+            menu.Items.Add(new Separator());
+            AddMenuItem(menu, "シーン内の全プレハブを更新", null,
+                (_, _) => ConfirmAndReapplyAllPrefabs());
         }
         return menu;
     }

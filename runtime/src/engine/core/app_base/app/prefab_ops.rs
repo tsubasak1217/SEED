@@ -11,15 +11,21 @@
 //   - 置換する値: 子ツリー・コンポーネント（＝ファイル内容で丸ごと差し替え）
 //   - 参照先ファイルが無い／読めない場合: シーン保存値のまま（リンク維持）
 //
-//  適用タイミング:
+//  適用タイミング（**自動再展開は一切行わない。全てユーザーの明示操作**）:
 //   - シーンロード時: 再展開は「行わない」。シーン(.scene)に保存された内容を正とする。
 //     （旧実装は apply_prefab_links_on_load でロード毎に上書きしており、インスタンスへ
 //       加えた変更が失われるデータ損失バグの原因だった。関数自体は再利用のため残す。）
-//   - ユーザーの明示操作（handle_reapply_prefab / IPC: PREFAB_REAPPLY）: 指定アクタ
-//     配下のプレハブインスタンスだけをファイル最新内容で再展開する（Undo 可能）。
-//   - .actor 保存／エクスポート時（propagate_prefab_change）: ロード中シーンの
-//     同じ参照パスを持つ全インスタンスへライブ反映する（Undo 可能）。
-//     ※ この経路はユーザーがプレハブ本体を編集した文脈のため従来どおり残している。
+//   - .actor 保存／エクスポート時: **再展開は「行わない」**。
+//     以前は propagate_prefab_change を自動で呼んでおり、プレハブ本体を保存した瞬間に
+//     同じ参照パスを持つ全インスタンスが問答無用で再展開され、シーン側で加えた変更
+//     （コンポーネント追加・値変更・子の追加）が消えていた。これが最後に残っていた
+//     データ損失経路だったため自動呼び出しを撤去した。
+//   - 個別更新（handle_reapply_prefab / IPC: PREFAB_REAPPLY）: 指定アクタ配下の
+//     プレハブインスタンスだけをファイル最新内容で再展開する（Undo 可能）。
+//   - 一括更新（handle_reapply_all_prefabs / IPC: PREFAB_REAPPLY_ALL）: シーン内の
+//     全プレハブインスタンスをファイル最新内容で再展開する（Undo 可能）。
+//     プレハブ本体を編集したあと、その内容をシーン全体へ反映したいときに使う。
+//     いずれも破壊的操作のため、エディタ側で確認ダイアログを出してから送信する。
 //
 //  ネスト・自己参照（P1 の扱い）:
 //   - ネストプレハブ（.actor 内のアクタがさらに prefab_source を持つ）は
@@ -46,27 +52,72 @@ use super::{App, apply_delta_to_actor_subtree, despawn_actor_recursive, find_act
 const SINGULAR_SCALE_EPS: f32 = 1e-7;
 
 impl App {
-    /// 通常シーン（world_line=0）の全プレハブインスタンスを一括再展開する。
+    /// 通常シーン（world_line=0）の全プレハブインスタンスを一括再展開する（低レベル処理）。
     ///
-    /// 【現在は呼び出し元なし】
-    /// 以前は LoadScene ハンドラから呼んでいたが、シーンに保存済みのインスタンス変更を
-    /// 毎回破棄してしまうデータ損失バグの原因だったため呼び出しを外した
-    /// （ipc_handler.rs の LoadScene 内コメント参照）。
-    /// 「シーン全体をプレハブ最新内容へ揃える」一括コマンドを将来足す際に再利用できるよう
-    /// 実装は残してある。
-    #[allow(dead_code)]
-    pub(super) fn apply_prefab_links_on_load(&mut self) {
+    /// ロード時の自動呼び出しは廃止済み（データ損失バグのため）。
+    /// 現在は明示コマンド `handle_reapply_all_prefabs` の実装本体として使う。
+    /// Undo 記録・エディタ通知は呼び出し側の責務。
+    fn apply_prefab_links_on_load(&mut self) -> bool {
         // filter=None: world_line=0 の全プレハブインスタンスを対象に再展開する
-        let _ = self.run_prefab_reinstantiation(0, None);
+        self.run_prefab_reinstantiation(0, None)
     }
 
-    /// .actor 保存／エクスポート時のライブ反映。
+    /// シーン内の全プレハブインスタンスをプレハブ最新内容で一括再展開する
+    /// （メニュー「シーン内の全プレハブを更新」用 / IPC: PREFAB_REAPPLY_ALL）。
+    ///
+    /// 対象は通常シーン（world_line=0）のみ。アクタ編集タブ（world_line>0）は
+    /// ファイルそのものを編集する場所なので対象外。
+    ///
+    /// 【破壊的操作】シーン上でインスタンスへ加えた変更（コンポーネントの追加・値の変更・
+    /// 子の追加など）はファイル内容で上書きされて失われる。エディタ側で確認ダイアログを
+    /// 出したうえで送信すること。Undo で 1 操作として戻せる。
+    ///
+    /// 作法は `handle_reapply_prefab`（個別更新）と揃えてある
+    /// （Undo 記録 → send_hierarchy → send_actor_components → SCENE_MODIFIED）。
+    pub(super) fn handle_reapply_all_prefabs(&mut self) {
+        // シーン未ロード・描画コンテキスト未初期化なら何もしない
+        if self.scene.is_none() || self.draw_ctx.is_none() { return; }
+
+        // Undo 用に再展開前の world_line=0 ツリーをスナップショットする
+        let before_actors = self.snapshot_actors_for_wl(0);
+
+        // 1 件も再展開されなければ履歴も通知も出さない
+        if !self.apply_prefab_links_on_load() { return; }
+
+        // 再展開後のツリーをスナップショットし、1 操作として Undo 履歴へ記録する
+        let after_actors = self.snapshot_actors_for_wl(0);
+        self.undo_history.record(Box::new(ActorTreeSnapshotCommand {
+            world_line: 0,
+            before_actors,
+            after_actors,
+        }));
+
+        // エディタへ通知する（ヒエラルキー・選択中インスペクタ・シーン変更）
+        self.send_hierarchy();
+        if let Some(dfs) = self.actor_virtual_selected_idx {
+            self.send_actor_components(dfs as u32, self.actor_virtual_selected_slot_idx);
+        }
+        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+    }
+
+    /// .actor 保存／エクスポート時のライブ反映（**現在は自動では呼ばれない**）。
     ///
     /// 通常シーン（world_line=0）から prefab_source == `saved_abs_path`（仮想パス換算）を
     /// 持つ全インスタンスを探し、書き出した内容で再展開する。
-    /// 変更があれば 1 操作として Undo 履歴に記録し、エディタへ通知する。
     ///
-    /// アクタ編集タブ（world_line>0）は対象外（そのタブはファイルそのものを編集する場所）。
+    /// 【自動呼び出しを撤去した理由】
+    /// 以前は .actor の保存／エクスポート成功時にここを自動で呼んでいた。しかしその結果、
+    /// プレハブ本体を保存した瞬間に同じ参照パスを持つ全インスタンスが問答無用で再展開され、
+    /// シーン側で加えた変更（コンポーネント追加・値変更・子の追加）が消えていた。
+    /// 「シーンに保存された内容を正とする」方針（ロード時自動再展開の廃止）と矛盾し、
+    /// 最後に残っていたデータ損失経路だったため自動呼び出しを撤去した。
+    /// プレハブ本体の変更をシーンへ反映したいときは、ユーザーが明示的に
+    /// 「プレハブから更新」（PREFAB_REAPPLY）または「シーン内の全プレハブを更新」
+    /// （PREFAB_REAPPLY_ALL）を実行する。
+    ///
+    /// 「特定パスのインスタンスだけを一括更新する」明示コマンドを足す際に再利用できるよう
+    /// 実装は残してある。
+    #[allow(dead_code)]
     pub(super) fn propagate_prefab_change(&mut self, saved_abs_path: &str) {
         // 保存パス（絶対）を assets:// 仮想パスへ換算して prefab_source と比較する
         let vpath = crate::engine::asset_fs::to_virtual(saved_abs_path);

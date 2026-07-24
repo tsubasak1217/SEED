@@ -26,15 +26,17 @@
 //    オイラー角（度）との変換には engine::structs::transforms::Quaternion を使う。
 // ============================================================
 
-use super::{App, InspectorTransformDrag, RuntimeMode};
 use crate::engine::components::{
-    ColliderComponent, ComponentKind, ModelComponent, Transform as ActorTransform,
+    ColliderComponent, Transform as ActorTransform, ComponentKind, ModelComponent,
 };
-use crate::engine::core::app_base::scene::Scene;
-use crate::engine::physics::{PhysicsCommand, PhysicsObject, PhysicsThread};
 use crate::engine::structs::objects::actor::Actor;
 use crate::engine::structs::tensor::Vector3 as SeedVec3;
 use crate::engine::structs::transforms::Quaternion as SeedQuat;
+use crate::engine::physics::{
+    PhysicsThread, PhysicsCommand, PhysicsObject,
+};
+use crate::engine::core::app_base::scene::Scene;
+use super::{App, RuntimeMode, InspectorTransformDrag};
 
 /// ドラッグ押し戻しの同期オーバーラップ問い合わせのタイムアウト（ミリ秒）。
 ///
@@ -76,7 +78,8 @@ impl App {
         let Some(scene) = &self.scene else { return };
 
         // 編集時コライダーのみモード: 全ボディを kinematic 扱い
-        let force_kinematic = self.mode == RuntimeMode::Edit && !self.edit_physics_with_rigidbody;
+        let force_kinematic = self.mode == RuntimeMode::Edit
+            && !self.edit_physics_with_rigidbody;
 
         let thread = PhysicsThread::spawn();
 
@@ -84,28 +87,17 @@ impl App {
         // タブ復帰時（pending_restore_vel_3d が Some）は該当 Entity の初速を上書きして
         // 「続き」の速度で再開する。それ以外の呼び出しでは None なので初速なし。
         let objects = collect_physics_objects(
-            scene,
-            self.active_world_line,
-            force_kinematic,
+            scene, self.active_world_line, force_kinematic,
             self.pending_restore_vel_3d.as_ref(),
         );
         if *PHYS_LOG_ENABLED {
-            eprintln!(
-                "[Physics] start_physics: {} objects collected (world_line={}, force_kinematic={})",
-                objects.len(),
-                self.active_world_line,
-                force_kinematic
-            );
+            eprintln!("[Physics] start_physics: {} objects collected (world_line={}, force_kinematic={})",
+                objects.len(), self.active_world_line, force_kinematic);
             for obj in &objects {
-                eprintln!(
-                    "[Physics]   entity_id={} pos=({:.3},{:.3},{:.3}) rigidbody={} kinematic={}",
-                    obj.entity_id,
-                    obj.position[0],
-                    obj.position[1],
-                    obj.position[2],
+                eprintln!("[Physics]   entity_id={} pos=({:.3},{:.3},{:.3}) rigidbody={} kinematic={}",
+                    obj.entity_id, obj.position[0], obj.position[1], obj.position[2],
                     obj.rigidbody.is_some(),
-                    obj.rigidbody.as_ref().map_or(false, |rb| rb.is_kinematic)
-                );
+                    obj.rigidbody.as_ref().map_or(false, |rb| rb.is_kinematic));
             }
         }
         for obj in objects {
@@ -114,9 +106,7 @@ impl App {
 
         // コライダーのみモードでは重力を無効化する
         if force_kinematic {
-            thread.send(PhysicsCommand::SetGravity {
-                gravity: [0.0, 0.0, 0.0],
-            });
+            thread.send(PhysicsCommand::SetGravity { gravity: [0.0, 0.0, 0.0] });
         }
 
         self.physics_thread = Some(thread);
@@ -149,9 +139,7 @@ impl App {
         // （フレーム先頭で起動すると初回 GPU 処理の間に物理が先行してしまうため）
         // ※ ドラッグ状態変化ブロック内で self の可変メソッド（自動再開）を呼ぶため、
         //   thread はここでは束縛せず、送信のたびに狭いスコープで借用する。
-        if self.physics_thread.is_none() {
-            return;
-        }
+        if self.physics_thread.is_none() { return; }
 
         // 診断ログ（最初の 120 フレームのみ）
         static DIAG_FRAME: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
@@ -161,8 +149,8 @@ impl App {
         let diag = *PHYS_LOG_ENABLED && diag_n < 120;
 
         // edit コライダーのみモードでは Transform 更新をスキップする
-        let should_apply_transforms =
-            self.mode != RuntimeMode::Edit || self.edit_physics_with_rigidbody;
+        let should_apply_transforms = self.mode != RuntimeMode::Edit
+            || self.edit_physics_with_rigidbody;
 
         // ── ギズモドラッグ中アクターの kinematic 切り替え ──────────
         // ビューポートのギズモドラッグ中は self.drag.gizmo_drag が Some になり、
@@ -171,15 +159,12 @@ impl App {
         // 2D アクター・Canvas アクターは物理を持たないため対象外とする。
         let new_drag_entity_id: Option<u64> = if self.drag.gizmo_drag.is_some() {
             // ビューポートギズモドラッグ: 選択中アクターを kinematic 化
-            self.actor_virtual_selected_idx
-                .map(|dfs_id| dfs_id as u64 + 1)
+            self.actor_virtual_selected_idx.map(|dfs_id| dfs_id as u64 + 1)
         } else {
             // インスペクタ経由の Transform ドラッグ（BeginTransformDrag IPC）
             match &self.inspector_transform_drag {
-                Some(InspectorTransformDrag::Actor { dfs_id, .. })
-                | Some(InspectorTransformDrag::ActorGroup { dfs_id, .. }) => {
-                    Some(*dfs_id as u64 + 1)
-                }
+                Some(InspectorTransformDrag::Actor     { dfs_id, .. }) |
+                Some(InspectorTransformDrag::ActorGroup{ dfs_id, .. }) => Some(*dfs_id as u64 + 1),
                 _ => None,
             }
         };
@@ -191,8 +176,8 @@ impl App {
             // 通常はドラッグ開始時にライブシミュレーション（下記 start_live_sim）が始まって
             // paused=false になるため、この分岐はユーザーがドラッグ中に手動で一時停止した場合等の
             // フォールバック。過去フレームへシーク中（!at_latest）は誤爆防止で対象外。
-            let drag_ended =
-                self.dragging_physics_entity_id.is_some() && new_drag_entity_id.is_none();
+            let drag_ended = self.dragging_physics_entity_id.is_some()
+                && new_drag_entity_id.is_none();
             let auto_resume = drag_ended
                 && self.mode == RuntimeMode::Edit
                 && self.edit_physics_enabled
@@ -235,9 +220,8 @@ impl App {
                 // 現在の ECS 位置を final_position として渡すことで、接触補正などで
                 // Rapier 内部位置が ECS とわずかにズレている場合でも
                 // 持ち上げ開始時の回転ジャークを防ぐ。
-                let ecs_start_pos = self.scene.as_ref().and_then(|s| {
-                    get_actor_transform_by_entity_id(s, self.active_world_line, new_id)
-                });
+                let ecs_start_pos = self.scene.as_ref()
+                    .and_then(|s| get_actor_transform_by_entity_id(s, self.active_world_line, new_id));
 
                 // 【ドラッグ中ライブシミュレーション】の発動判定を先に行う（smooth 指定に使う）。
                 // RigidBody タイムラインモードで最新フレーム停止中に Collider 付きアクターの
@@ -311,23 +295,14 @@ impl App {
         }
 
         // 結果受信のためにここで改めて物理スレッドを借用する。
-        let Some(thread) = &self.physics_thread else {
-            return;
-        };
+        let Some(thread) = &self.physics_thread else { return };
         let result = thread.recv_latest();
 
         if let Some(ref result) = result {
             if diag {
-                eprintln!(
-                    "[Physics] frame={} transform_updates={}",
-                    diag_n,
-                    result.transform_updates.len()
-                );
+                eprintln!("[Physics] frame={} transform_updates={}", diag_n, result.transform_updates.len());
                 for (id, pos, _) in &result.transform_updates {
-                    eprintln!(
-                        "[Physics]   entity_id={} new_pos=({:.3},{:.3},{:.3})",
-                        id, pos[0], pos[1], pos[2]
-                    );
+                    eprintln!("[Physics]   entity_id={} new_pos=({:.3},{:.3},{:.3})", id, pos[0], pos[1], pos[2]);
                 }
             }
 
@@ -336,16 +311,8 @@ impl App {
             if should_apply_transforms {
                 if let Some(scene) = &mut self.scene {
                     for (entity_id, new_pos, new_rot) in &result.transform_updates {
-                        if Some(*entity_id) == self.dragging_physics_entity_id {
-                            continue;
-                        }
-                        apply_physics_transform(
-                            scene,
-                            self.active_world_line,
-                            *entity_id,
-                            *new_pos,
-                            *new_rot,
-                        );
+                        if Some(*entity_id) == self.dragging_physics_entity_id { continue; }
+                        apply_physics_transform(scene, self.active_world_line, *entity_id, *new_pos, *new_rot);
                     }
                 }
             }
@@ -383,8 +350,7 @@ impl App {
             // 問い合わせた結果であり、押し戻し判定と同一の確実な情報源。
             // トリガーは active_contact_entity_ids から除外されているため、
             // 毎フレーム送られる active_trigger_entity_ids と和集合を取る。
-            let mut frame_colliding: std::collections::HashSet<u64> =
-                std::collections::HashSet::new();
+            let mut frame_colliding: std::collections::HashSet<u64> = std::collections::HashSet::new();
             for &eid in &result.active_contact_entity_ids {
                 frame_colliding.insert(eid);
             }
@@ -396,10 +362,7 @@ impl App {
 
             // 収束停止判定用に、全 Dynamic ボディの最大速度を退避する。
             // タイムライン（stop 判定）が「実際に静止したか」を速度で確認するために使う。
-            self.store_edit_physics_rest_speeds_3d(
-                result.max_linear_speed,
-                result.max_angular_speed,
-            );
+            self.store_edit_physics_rest_speeds_3d(result.max_linear_speed, result.max_angular_speed);
 
             // ⑥ タブ退避用の速度キャッシュを丸ごと更新する。
             // DFS entity_id → ECS Entity 変換をこの 1 箇所（結果受信時）に閉じ込め、
@@ -410,9 +373,7 @@ impl App {
                 let drag = self.dragging_physics_entity_id;
                 let mut cache = std::collections::HashMap::new();
                 for (dfs_id, lin, ang) in &result.body_velocities {
-                    if Some(*dfs_id) == drag {
-                        continue;
-                    }
+                    if Some(*dfs_id) == drag { continue; }
                     if let Some(&ent) = dfs_to_entity.get(dfs_id) {
                         cache.insert(ent, (*lin, *ang));
                     }
@@ -423,18 +384,12 @@ impl App {
 
         // ④ Kinematic Actor の Transform を物理スレッドへ送信する
         let Some(scene) = &self.scene else { return };
-        let Some(thread) = &self.physics_thread else {
-            return;
-        };
+        let Some(thread) = &self.physics_thread else { return };
 
         collect_kinematic_updates(scene, self.active_world_line)
             .into_iter()
             .for_each(|(entity_id, pos, rot)| {
-                thread.send(PhysicsCommand::UpdateKinematic {
-                    entity_id,
-                    position: pos,
-                    rotation: rot,
-                });
+                thread.send(PhysicsCommand::UpdateKinematic { entity_id, position: pos, rotation: rot });
             });
 
         // ⑤ ドラッグ中アクターの現在位置を kinematic 更新として送信する。
@@ -442,14 +397,8 @@ impl App {
         // 押し戻し（apply_drag_pushback）が発動したフレームでは ECS が安全位置へ復元済みのため、
         // ここで送信されるのも検証済みの安全位置となる（送信経路はこの 1 箇所に集約）。
         if let Some(drag_entity_id) = self.dragging_physics_entity_id {
-            if let Some((pos, rot)) =
-                get_actor_transform_by_entity_id(scene, self.active_world_line, drag_entity_id)
-            {
-                thread.send(PhysicsCommand::UpdateKinematic {
-                    entity_id: drag_entity_id,
-                    position: pos,
-                    rotation: rot,
-                });
+            if let Some((pos, rot)) = get_actor_transform_by_entity_id(scene, self.active_world_line, drag_entity_id) {
+                thread.send(PhysicsCommand::UpdateKinematic { entity_id: drag_entity_id, position: pos, rotation: rot });
             }
         }
     }
@@ -468,28 +417,23 @@ impl App {
     /// 物理スレッドへの位置送信は呼び出し元（update_physics ⑤）が行う。
     fn apply_drag_pushback(&mut self, drag_id: u64) {
         // ① 提案位置 = on_cursor_moved / インスペクタ編集が書き込み済みの現在 ECS 位置
-        let Some((prop_pos, prop_rot)) = self
-            .scene
-            .as_ref()
+        let Some((prop_pos, prop_rot)) = self.scene.as_ref()
             .and_then(|s| get_actor_transform_by_entity_id(s, self.active_world_line, drag_id))
-        else {
-            return;
-        };
+        else { return };
 
         // ② 物理スレッドへ同期問い合わせ（Raycast と同じ reply チャンネルパターン）
         let overlapping = {
-            let Some(thread) = &self.physics_thread else {
-                return;
-            };
+            let Some(thread) = &self.physics_thread else { return };
             let (reply_tx, reply_rx) = crossbeam_channel::bounded::<bool>(1);
             thread.send(PhysicsCommand::CheckKinematicOverlap {
                 entity_id: drag_id,
-                position: prop_pos,
-                rotation: prop_rot,
-                reply: reply_tx,
+                position:  prop_pos,
+                rotation:  prop_rot,
+                reply:     reply_tx,
             });
-            match reply_rx.recv_timeout(std::time::Duration::from_millis(OVERLAP_REPLY_TIMEOUT_MS))
-            {
+            match reply_rx.recv_timeout(
+                std::time::Duration::from_millis(OVERLAP_REPLY_TIMEOUT_MS),
+            ) {
                 Ok(v) => v,
                 // 応答なし（スレッド高負荷・終了中等）: 今フレームは判定を保留する。
                 // 未検証の位置を安全位置として採用しないため last_valid_pos は更新しない。
@@ -504,9 +448,7 @@ impl App {
         }
 
         // ── めり込みあり: 最終有効位置に押し戻す ─────────────────────────────
-        let Some((last_pos, last_rot)) = self.drag_collider_last_valid_pos else {
-            return;
-        };
+        let Some((last_pos, last_rot)) = self.drag_collider_last_valid_pos else { return };
 
         // ECS に安全位置を書き戻す（物理スレッドへの送信は update_physics ⑤ が行う）
         if let Some(scene) = &mut self.scene {
@@ -529,26 +471,24 @@ impl App {
         ];
         // MC ドラッグ開始行列群を調整する
         for (_, sm) in &mut self.drag.drag_root_starts {
-            sm[0][3] -= off[0];
-            sm[1][3] -= off[1];
-            sm[2][3] -= off[2];
+            sm[0][3] -= off[0]; sm[1][3] -= off[1]; sm[2][3] -= off[2];
         }
         for (_, sm) in &mut self.drag.drag_child_starts {
-            sm[0][3] -= off[0];
-            sm[1][3] -= off[1];
-            sm[2][3] -= off[2];
+            sm[0][3] -= off[0]; sm[1][3] -= off[1]; sm[2][3] -= off[2];
         }
         for (_, mats) in &mut self.drag.actor_extra_mc_drag_starts {
             for sm in mats.iter_mut() {
-                sm[0][3] -= off[0];
-                sm[1][3] -= off[1];
-                sm[2][3] -= off[2];
+                sm[0][3] -= off[0]; sm[1][3] -= off[1]; sm[2][3] -= off[2];
             }
         }
-        for (_, sm) in &mut self.drag.actor_child_drag_starts {
-            sm[0][3] -= off[0];
-            sm[1][3] -= off[1];
-            sm[2][3] -= off[2];
+        // 子孫アクタの開始行列は MC 用・Transform 用の 2 本あるため両方を調整する
+        for cs in &mut self.drag.actor_child_drag_starts {
+            if let Some(sm) = &mut cs.mc_start {
+                sm[0][3] -= off[0]; sm[1][3] -= off[1]; sm[2][3] -= off[2];
+            }
+            cs.tf_start[0][3] -= off[0];
+            cs.tf_start[1][3] -= off[1];
+            cs.tf_start[2][3] -= off[2];
         }
         // Transform-only ドラッグ（MC なし）の場合も調整する
         if let Some((_, start_tf)) = &mut self.drag.actor_transform_drag_start {
@@ -567,22 +507,18 @@ impl App {
 /// アクターも含めてカウンタを進める）で走査するため、物理スレッドが返す entity_id を
 /// そのまま安定な ECS Entity へ変換できる。速度キャッシュの取り違え防止に使う。
 fn build_dfs_entity_map_3d(
-    scene: &Scene,
+    scene:      &Scene,
     world_line: u32,
 ) -> std::collections::HashMap<u64, crate::engine::ecs::Entity> {
     let mut map = std::collections::HashMap::new();
     let mut dfs_counter = 0u32;
-    let mut stack: Vec<&Actor> = scene
-        .actors
-        .iter()
+    let mut stack: Vec<&Actor> = scene.actors.iter()
         .filter(|a| a.world_line == world_line)
         .rev()
         .collect();
     while let Some(actor) = stack.pop() {
         dfs_counter += 1;
-        for child in actor.children.iter().rev() {
-            stack.push(child);
-        }
+        for child in actor.children.iter().rev() { stack.push(child); }
         map.insert(dfs_counter as u64, actor.entity);
     }
     map
@@ -599,20 +535,16 @@ fn build_dfs_entity_map_3d(
 /// RigidBody 生成時の初速（linear/angular velocity）をその値で上書きする。
 /// タブ復帰時に「続き」の速度でシミュレーションを再開するために使う。None なら初速なし。
 fn collect_physics_objects(
-    scene: &Scene,
-    world_line: u32,
+    scene:        &Scene,
+    world_line:   u32,
     force_kinematic: bool,
-    vel_override: Option<
-        &std::collections::HashMap<crate::engine::ecs::Entity, ([f32; 3], [f32; 3])>,
-    >,
+    vel_override: Option<&std::collections::HashMap<crate::engine::ecs::Entity, ([f32; 3], [f32; 3])>>,
 ) -> Vec<PhysicsObject> {
-    let mut objects = Vec::new();
-    let mut dfs_counter = 0u32;
+    let mut objects      = Vec::new();
+    let mut dfs_counter  = 0u32;
 
     // (アクター, 親までの実効アクティブ) をスタックで運ぶ（DFS 先行順を維持）
-    let mut stack: Vec<(&Actor, bool)> = scene
-        .actors
-        .iter()
+    let mut stack: Vec<(&Actor, bool)> = scene.actors.iter()
         .filter(|a| a.world_line == world_line)
         .rev()
         .map(|a| (a, true))
@@ -629,31 +561,20 @@ fn collect_physics_objects(
 
         // 非アクティブアクターは物理シミュレーションへ登録しない
         // （DFS カウントは entity_id 整合のため上で進めている）
-        if !active {
-            continue;
-        }
+        if !active { continue; }
 
-        let Some(tf) = scene.world.get::<ActorTransform>(actor.entity) else {
-            continue;
-        };
+        let Some(tf) = scene.world.get::<ActorTransform>(actor.entity) else { continue };
 
         // Collider スロットを探す（enabled=false のスロットは対象外）
-        let Some(collider_slot) = actor
-            .slots()
-            .iter()
-            .find(|s| s.kind == ComponentKind::Collider && s.enabled)
-        else {
-            continue;
-        };
-        let Some(collider) = scene.world.get::<ColliderComponent>(collider_slot.entity) else {
-            continue;
-        };
+        let Some(collider_slot) = actor.slots().iter()
+            .find(|s| s.kind == ComponentKind::Collider && s.enabled) else { continue };
+        let Some(collider) = scene.world.get::<ColliderComponent>(collider_slot.entity) else { continue };
 
         let position = [tf.position[0], tf.position[1], tf.position[2]];
-        let scale = [tf.scale[0], tf.scale[1], tf.scale[2]];
+        let scale    = [tf.scale[0],    tf.scale[1],    tf.scale[2]];
         let rotation = euler_to_quat_arr(tf.rotation);
-        let offset = collider.offset;
-        let shape = collider.shape.to_physics_shape();
+        let offset   = collider.offset;
+        let shape    = collider.shape.to_physics_shape();
 
         let rigidbody = if collider.use_rigidbody {
             let mut rb = collider.to_rigidbody_state();
@@ -665,7 +586,7 @@ fn collect_physics_objects(
             // kinematic 時は速度が無視されるため実質 Dynamic ボディのみ有効。
             if let Some(map) = vel_override {
                 if let Some((lin, ang)) = map.get(&actor.entity) {
-                    rb.linear_velocity = *lin;
+                    rb.linear_velocity  = *lin;
                     rb.angular_velocity = *ang;
                 }
             }
@@ -675,16 +596,16 @@ fn collect_physics_objects(
         };
 
         objects.push(PhysicsObject {
-            entity_id: dfs_id,
+            entity_id:       dfs_id,
             position,
             rotation,
             scale,
-            collider: shape,
+            collider:        shape,
             collider_offset: offset,
             rigidbody,
-            is_trigger: collider.is_trigger,
-            physics_layer: collider.physics_layer,
-            layer_mask: collider.layer_mask,
+            is_trigger:      collider.is_trigger,
+            physics_layer:   collider.physics_layer,
+            layer_mask:      collider.layer_mask,
         });
     }
     objects
@@ -693,13 +614,14 @@ fn collect_physics_objects(
 /// Kinematic オブジェクトの現在 Transform を DFS 順に収集する。
 ///
 /// collect_physics_objects と同一の DFS 順を使うことで entity_id が対応する。
-fn collect_kinematic_updates(scene: &Scene, world_line: u32) -> Vec<(u64, [f32; 3], [f32; 4])> {
-    let mut updates = Vec::new();
+fn collect_kinematic_updates(
+    scene:      &Scene,
+    world_line: u32,
+) -> Vec<(u64, [f32; 3], [f32; 4])> {
+    let mut updates     = Vec::new();
     let mut dfs_counter = 0u32;
 
-    let mut stack: Vec<&Actor> = scene
-        .actors
-        .iter()
+    let mut stack: Vec<&Actor> = scene.actors.iter()
         .filter(|a| a.world_line == world_line)
         .rev()
         .collect();
@@ -712,23 +634,11 @@ fn collect_kinematic_updates(scene: &Scene, world_line: u32) -> Vec<(u64, [f32; 
             stack.push(child);
         }
 
-        let Some(collider_slot) = actor
-            .slots()
-            .iter()
-            .find(|s| s.kind == ComponentKind::Collider)
-        else {
-            continue;
-        };
-        let Some(collider) = scene.world.get::<ColliderComponent>(collider_slot.entity) else {
-            continue;
-        };
-        if !collider.use_rigidbody || !collider.is_kinematic {
-            continue;
-        }
+        let Some(collider_slot) = actor.slots().iter().find(|s| s.kind == ComponentKind::Collider) else { continue };
+        let Some(collider) = scene.world.get::<ColliderComponent>(collider_slot.entity) else { continue };
+        if !collider.use_rigidbody || !collider.is_kinematic { continue; }
 
-        let Some(tf) = scene.world.get::<ActorTransform>(actor.entity) else {
-            continue;
-        };
+        let Some(tf) = scene.world.get::<ActorTransform>(actor.entity) else { continue };
         let position = [tf.position[0], tf.position[1], tf.position[2]];
         let rotation = euler_to_quat_arr(tf.rotation);
 
@@ -742,30 +652,24 @@ fn collect_kinematic_updates(scene: &Scene, world_line: u32) -> Vec<(u64, [f32; 
 /// entity_id は collect_physics_objects と同一の DFS 順カウンタで照合する。
 /// ActorTransform を更新した後、レンダラーが参照する ModelComponent の行列も同期する。
 fn apply_physics_transform(
-    scene: &mut Scene,
+    scene:      &mut Scene,
     world_line: u32,
-    entity_id: u64,
-    new_pos: [f32; 3],
-    new_rot: [f32; 4],
+    entity_id:  u64,
+    new_pos:    [f32; 3],
+    new_rot:    [f32; 4],
 ) {
     let mut dfs_counter = 0u32;
 
     // 安全な借用のため actor の情報を先にフラット化する
     let actor_info: Vec<_> = {
-        let mut stack: Vec<&Actor> = scene
-            .actors
-            .iter()
+        let mut stack: Vec<&Actor> = scene.actors.iter()
             .filter(|a| a.world_line == world_line)
             .rev()
             .collect();
         let mut result = Vec::new();
         while let Some(actor) = stack.pop() {
-            for child in actor.children.iter().rev() {
-                stack.push(child);
-            }
-            let model_slot = actor
-                .slots()
-                .iter()
+            for child in actor.children.iter().rev() { stack.push(child); }
+            let model_slot = actor.slots().iter()
                 .find(|s| s.kind == ComponentKind::Model)
                 .map(|s| s.entity);
             result.push((actor.entity, model_slot));
@@ -775,9 +679,7 @@ fn apply_physics_transform(
 
     for (actor_entity, model_slot) in actor_info {
         dfs_counter += 1;
-        if dfs_counter as u64 != entity_id {
-            continue;
-        }
+        if dfs_counter as u64 != entity_id { continue; }
 
         // ActorTransform を更新し TRS 行列を計算する（スケールは物理で変化しないので維持）
         let new_mat = if let Some(tf) = scene.world.get_mut::<ActorTransform>(actor_entity) {
@@ -820,36 +722,28 @@ fn euler_to_quat_arr(euler_deg: [f32; 3]) -> [f32; 4] {
 fn quat_arr_to_euler_deg(q_arr: [f32; 4]) -> [f32; 3] {
     let q = SeedQuat::new(q_arr[0], q_arr[1], q_arr[2], q_arr[3]);
     let euler = q.to_euler();
-    [
-        euler.x.to_degrees(),
-        euler.y.to_degrees(),
-        euler.z.to_degrees(),
-    ]
+    [euler.x.to_degrees(), euler.y.to_degrees(), euler.z.to_degrees()]
 }
 
 /// 物理 entity_id（1-indexed DFS）に対応するアクターが有効な Collider スロットを持つかを返す。
 ///
 /// ドラッグ中ライブシミュレーション開始・ドラッグ終了自動再開のトリガー判定に使用する。
 /// Collider を持たないアクターの移動では物理の再開・再起動を行わない。
-fn actor_has_enabled_collider(scene: &Scene, world_line: u32, entity_id: u64) -> bool {
+fn actor_has_enabled_collider(
+    scene:      &Scene,
+    world_line: u32,
+    entity_id:  u64,
+) -> bool {
     let mut dfs_counter = 0u32;
-    let mut stack: Vec<&Actor> = scene
-        .actors
-        .iter()
+    let mut stack: Vec<&Actor> = scene.actors.iter()
         .filter(|a| a.world_line == world_line)
         .rev()
         .collect();
     while let Some(actor) = stack.pop() {
         dfs_counter += 1;
-        for child in actor.children.iter().rev() {
-            stack.push(child);
-        }
-        if dfs_counter as u64 != entity_id {
-            continue;
-        }
-        return actor
-            .slots()
-            .iter()
+        for child in actor.children.iter().rev() { stack.push(child); }
+        if dfs_counter as u64 != entity_id { continue; }
+        return actor.slots().iter()
             .any(|s| s.kind == ComponentKind::Collider && s.enabled);
     }
     false
@@ -859,25 +753,19 @@ fn actor_has_enabled_collider(scene: &Scene, world_line: u32, entity_id: u64) ->
 ///
 /// ドラッグ中アクターの gizmo 位置を物理スレッドへ送信するために使用する。
 fn get_actor_transform_by_entity_id(
-    scene: &Scene,
+    scene:      &Scene,
     world_line: u32,
-    entity_id: u64,
+    entity_id:  u64,
 ) -> Option<([f32; 3], [f32; 4])> {
     let mut dfs_counter = 0u32;
-    let mut stack: Vec<&crate::engine::structs::objects::actor::Actor> = scene
-        .actors
-        .iter()
+    let mut stack: Vec<&crate::engine::structs::objects::actor::Actor> = scene.actors.iter()
         .filter(|a| a.world_line == world_line)
         .rev()
         .collect();
     while let Some(actor) = stack.pop() {
         dfs_counter += 1;
-        for child in actor.children.iter().rev() {
-            stack.push(child);
-        }
-        if dfs_counter as u64 != entity_id {
-            continue;
-        }
+        for child in actor.children.iter().rev() { stack.push(child); }
+        if dfs_counter as u64 != entity_id { continue; }
         if let Some(tf) = scene.world.get::<ActorTransform>(actor.entity) {
             return Some((
                 [tf.position[0], tf.position[1], tf.position[2]],

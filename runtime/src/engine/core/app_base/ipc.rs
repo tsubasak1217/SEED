@@ -27,9 +27,7 @@ pub enum ToolMode {
 }
 
 impl Default for ToolMode {
-    fn default() -> Self {
-        ToolMode::Select
-    }
+    fn default() -> Self { ToolMode::Select }
 }
 
 // ============================================================
@@ -47,9 +45,7 @@ pub enum GizmoSpace {
 }
 
 impl Default for GizmoSpace {
-    fn default() -> Self {
-        GizmoSpace::World
-    }
+    fn default() -> Self { GizmoSpace::World }
 }
 
 // ============================================================
@@ -116,16 +112,13 @@ pub enum IpcCommand {
     /// 旧 2 フィールド形式（IPC 上）との後方互換のため anchor_sibling/place_before は
     /// 未指定時 None/false 扱いになる（＝従来どおり末尾追加）。
     Reparent {
-        child: u32,
-        new_parent: Option<u32>,
+        child:          u32,
+        new_parent:     Option<u32>,
         anchor_sibling: Option<u32>,
-        place_before: bool,
+        place_before:   bool,
     },
     /// インスタンス名変更
-    Rename {
-        idx: u32,
-        name: String,
-    },
+    Rename { idx: u32, name: String },
     /// シーンを指定パスへ保存
     SaveScene(String),
     /// ボクセル地形を初期化する（地形ツリー生成＋初期地面）。
@@ -133,51 +126,27 @@ pub enum IpcCommand {
     ///   - `TERRAIN_INIT`（引数なし・旧形式。現在の TerrainSettings で初期化する）
     ///   - `TERRAIN_INIT:{chunks_x},{chunks_z},{chunk_cells},{voxel_size}`（新形式）
     /// `config` が `Some` のときだけチャンク構成を上書きしてから初期化する。
-    TerrainInit {
-        config: Option<TerrainChunkConfig>,
-    },
+    TerrainInit { config: Option<TerrainChunkConfig> },
     /// 編集中の地形へチャンクを追加する（既存チャンクは温存する）。
     /// ワイヤ形式: `TERRAIN_ADD_CHUNKS:{min_x},{min_z},{max_x},{max_z}`（i32×4・両端含む）
     /// 縦方向（Y）の範囲は現在の TerrainSettings（ground_chunk_y_min/max）に従う。
-    TerrainAddChunks {
-        min_x: i32,
-        min_z: i32,
-        max_x: i32,
-        max_z: i32,
-    },
+    TerrainAddChunks { min_x: i32, min_z: i32, max_x: i32, max_z: i32 },
     /// ボクセル地形をブラシ編集する（スクリーン座標からレイマーチで着弾点を求める）。
     /// ワイヤ形式: `TERRAIN_BRUSH:{op},{screen_x},{screen_y},{radius},{strength}`
     ///   op: 0=Add / 1=Subtract / 2=Smooth / 3=Flatten
-    TerrainBrush {
-        op: u32,
-        screen_x: f32,
-        screen_y: f32,
-        radius: f32,
-        strength: f32,
-    },
+    TerrainBrush { op: u32, screen_x: f32, screen_y: f32, radius: f32, strength: f32 },
     /// ボクセル地形にレイヤペイントブラシを適用する（Terrain T2）。
     /// ワイヤ形式: `TERRAIN_PAINT:{layer},{screen_x},{screen_y},{radius},{strength}`
     ///   layer: 塗る対象レイヤ番号（0 起点。layers.json の並び順に対応）
     /// 密度は変えず、レイヤ重み（スプラット）だけを押し上げる。
-    TerrainPaint {
-        layer: u32,
-        screen_x: f32,
-        screen_y: f32,
-        radius: f32,
-        strength: f32,
-    },
+    TerrainPaint { layer: u32, screen_x: f32, screen_y: f32, radius: f32, strength: f32 },
     /// ボクセル地形の全チャンクを .tvox としてアセット配下へ保存する。
     /// ワイヤ形式: `TERRAIN_SAVE`（引数なし）
     TerrainSave,
     /// ブラシ範囲プレビュー（Edit モードのホバー位置にワイヤスフィアを描く）を更新する。
     /// ワイヤ形式: `TERRAIN_BRUSH_PREVIEW:{screen_x},{screen_y},{radius},{strength}`
     /// strength はプレビュー球の色（低強度=水色〜高強度=オレンジ）に反映される。
-    TerrainBrushPreview {
-        screen_x: f32,
-        screen_y: f32,
-        radius: f32,
-        strength: f32,
-    },
+    TerrainBrushPreview { screen_x: f32, screen_y: f32, radius: f32, strength: f32 },
     /// ブラシ範囲プレビューを非表示にする（terrain モード離脱時）。
     /// ワイヤ形式: `TERRAIN_BRUSH_PREVIEW_OFF`（引数なし）
     TerrainBrushPreviewOff,
@@ -204,20 +173,13 @@ pub enum IpcCommand {
     ///         フィールドを固定個数（splitn(6, ',')）で切り出せる。
     ///   height_scale: 輝度 1.0（白）が対応する高さ（メートル）。
     /// `config` が `Some` のときだけチャンク構成を上書きしてから敷き直す。
-    TerrainHeightmap {
-        path: String,
-        height_scale: f32,
-        config: Option<TerrainChunkConfig>,
-    },
+    TerrainHeightmap { path: String, height_scale: f32, config: Option<TerrainChunkConfig> },
     /// 散布プロップをルールで全チャンクへ自動散布し直す（Terrain T3）。
     /// ワイヤ形式: `TERRAIN_SCATTER_RULES:{prop_id},{seed}`
     ///   prop_id: props.json のプロップ ID。**空文字なら全プロップ**が対象。
     ///   seed   : ルール散布の大域シード（同じ値なら必ず同じ草原が再現される）。
     /// prop_id は末尾の seed 以外すべてとして切り出す（ID は先頭・seed は末尾固定）。
-    TerrainScatterRules {
-        prop_id: String,
-        seed: u64,
-    },
+    TerrainScatterRules { prop_id: String, seed: u64 },
     /// 散布プロップを球ブラシで手描き追加／消去する（Terrain T3）。
     /// ワイヤ形式: `TERRAIN_SCATTER_BRUSH:{prop_id},{screen_x},{screen_y},{radius},{density},{erase}`
     ///   prop_id: props.json のプロップ ID（消去時は無視される＝半径内の全種が消える）。
@@ -232,16 +194,9 @@ pub enum IpcCommand {
         erase: bool,
     },
     /// グループフォルダ作成（parent=None はルート）
-    CreateGroup {
-        name: String,
-        parent: Option<u32>,
-    },
+    CreateGroup { name: String, parent: Option<u32> },
     /// グループフォルダ作成 + 子を一括移動
-    CreateGroupWithChildren {
-        name: String,
-        parent: Option<u32>,
-        children: Vec<u32>,
-    },
+    CreateGroupWithChildren { name: String, parent: Option<u32>, children: Vec<u32> },
     /// 複数インスタンスの一括選択（インスタンスインデックスのリスト）
     SelectMulti(Vec<u32>),
     /// 選択インスタンスをクリップボードへコピー
@@ -251,18 +206,7 @@ pub enum IpcCommand {
     /// アクターデータ要求（インスタンスインデックス）
     GetActorData(u32),
     /// トランスフォーム設定（位置・ZYX オイラー角(度)・スケール）
-    SetTransform {
-        id: u32,
-        px: f32,
-        py: f32,
-        pz: f32,
-        ex: f32,
-        ey: f32,
-        ez: f32,
-        sx: f32,
-        sy: f32,
-        sz: f32,
-    },
+    SetTransform { id: u32, px: f32, py: f32, pz: f32, ex: f32, ey: f32, ez: f32, sx: f32, sy: f32, sz: f32 },
     /// デバッグカメラ画角設定（度）
     SetCameraFov(f32),
     /// デバッグカメラ描画距離（far clip）設定
@@ -305,19 +249,13 @@ pub enum IpcCommand {
     /// 環境光（アンビエント）の色・強度（Phase R1.5）。
     /// フォーマット: `SET_AMBIENT:{r},{g},{b},{intensity}`（色はリニア RGB）。
     /// intensity=0 で完全な暗闇。既定は白×0.05（従来のハードコード値）。
-    SetAmbient {
-        color: [f32; 3],
-        intensity: f32,
-    },
+    SetAmbient { color: [f32; 3], intensity: f32 },
     /// 軸ギズモ表示オンオフ
     SetShowAxisGizmo(bool),
     /// アクターを指定パスへ保存（アクター編集モードのアクティブ世界線）
     SaveActor(String),
     /// インスペクターフィールドドラッグ開始（Undo 単一化のため事前状態を保存）
-    BeginTransformDrag {
-        is_actor: bool,
-        target_id: u32,
-    },
+    BeginTransformDrag { is_actor: bool, target_id: u32 },
     /// インスペクターフィールドドラッグ終了（1 undo コマンドとして記録）
     EndTransformDrag,
     /// シーンファイルのロード
@@ -326,30 +264,17 @@ pub enum IpcCommand {
     GetCamState,
     /// デバッグカメラ位置・Euler XYZ 回転設定（度、YXZ 合成順）
     /// フォーマット: CAM_TRANSFORM:{px},{py},{pz},{euler_x},{euler_y},{euler_z}
-    SetCameraTransform {
-        px: f32,
-        py: f32,
-        pz: f32,
-        euler_x: f32,
-        euler_y: f32,
-        euler_z: f32,
-    },
+    SetCameraTransform { px: f32, py: f32, pz: f32, euler_x: f32, euler_y: f32, euler_z: f32 },
     /// デバッグカメラ移動速度設定
     SetCameraSpeed(f32),
     /// アクターファイルを指定世界線で開く（world_line,path の順でカンマ区切り）
-    OpenActor {
-        path: String,
-        world_line: u32,
-    },
+    OpenActor { path: String, world_line: u32 },
     /// シーン内キャンバスアクターの隔離編集を開始する（キャンバス編集タブ）。
     /// シーン世界線（0）の対象アクターサブツリーを world_line へ移動し、
     /// 2D キャンバス編集世界線として登録してアクティブ化する。
     /// フォーマット: EDIT_CANVAS_BEGIN:{world_line},{actor_dfs_id}
     /// 応答: CANVAS_EDIT_WL:{world_line},{root_is_2d:0|1},{actor_name}
-    EditCanvasBegin {
-        world_line: u32,
-        actor_dfs_id: u32,
-    },
+    EditCanvasBegin { world_line: u32, actor_dfs_id: u32 },
     /// キャンバス編集タブを終了し、アクターサブツリーをシーン世界線（0）の
     /// 元の位置へ戻す。フォーマット: EDIT_CANVAS_END:{world_line}
     EditCanvasEnd(u32),
@@ -359,257 +284,111 @@ pub enum IpcCommand {
     RemoveWorldLine(u32),
     /// アクターにコンポーネントを追加する
     /// フォーマット: ADD_COMPONENT:{actor_dfs_id},{type},{name},{args}
-    AddComponent {
-        actor_dfs_id: u32,
-        component_type: String,
-        slot_name: String,
-        args: String,
-    },
+    AddComponent { actor_dfs_id: u32, component_type: String, slot_name: String, args: String },
     /// アクターのコンポーネント一覧を要求する
     GetActorComponents(u32),
     /// 子アクター（3D）を追加する (world_line, parent_dfs_id=None はルート)
-    AddActor {
-        world_line: u32,
-        parent_dfs_id: Option<u32>,
-    },
+    AddActor { world_line: u32, parent_dfs_id: Option<u32> },
     /// 子アクター（2D）を追加する (world_line, parent_dfs_id=None はルート)
-    AddActor2D {
-        world_line: u32,
-        parent_dfs_id: Option<u32>,
-    },
+    AddActor2D { world_line: u32, parent_dfs_id: Option<u32> },
     /// 指定アクターの子として 3D アクターを追加する（world_line は親から自動取得）
     /// フォーマット: ADD_ACTOR_CHILD:{parent_dfs_id}
-    AddActorChild {
-        parent_dfs_id: u32,
-    },
+    AddActorChild { parent_dfs_id: u32 },
     /// 指定アクターの子として 2D アクターを追加する（world_line は親から自動取得）
     /// フォーマット: ADD_ACTOR_2D_CHILD:{parent_dfs_id}
-    AddActor2dChild {
-        parent_dfs_id: u32,
-    },
+    AddActor2dChild { parent_dfs_id: u32 },
     /// 指定アクターを新規アクターで「ラップ」する。
     /// 新規アクターを child_dfs の現在位置（同じ親・同じ index）に挿入し、
     /// child_dfs をその新規アクターの子へ移動する（右クリック「親として追加（ラップ）」用）。
     /// フォーマット: WRAP_ACTOR:{child_dfs},{is_2d(0|1)}
-    WrapActor {
-        child_dfs: u32,
-        is_2d: bool,
-    },
+    WrapActor { child_dfs: u32, is_2d: bool },
     /// アクターを削除する
     RemoveActor(u32),
     /// アクターをリネームする
-    RenameActor {
-        dfs_id: u32,
-        name: String,
-    },
+    RenameActor { dfs_id: u32, name: String },
     /// コンポーネントスロットを削除する
-    RemoveComponentSlot {
-        actor_dfs_id: u32,
-        slot_idx: u32,
-    },
+    RemoveComponentSlot { actor_dfs_id: u32, slot_idx: u32 },
     /// コンポーネントスロットをリネームする
-    RenameComponentSlot {
-        actor_dfs_id: u32,
-        slot_idx: u32,
-        name: String,
-    },
+    RenameComponentSlot { actor_dfs_id: u32, slot_idx: u32, name: String },
     /// 3D アクターのトランスフォームを設定する
-    SetActorTransform {
-        dfs_id: u32,
-        px: f32,
-        py: f32,
-        pz: f32,
-        ex: f32,
-        ey: f32,
-        ez: f32,
-        sx: f32,
-        sy: f32,
-        sz: f32,
-    },
+    SetActorTransform { dfs_id: u32, px: f32, py: f32, pz: f32, ex: f32, ey: f32, ez: f32, sx: f32, sy: f32, sz: f32 },
     /// 2D アクターの CanvasTransform を設定する
     /// フォーマット: SET_CANVAS_TRANSFORM:{dfs_id},{px},{py},{rotation},{sx},{sy},{pivot_x},{pivot_y}
-    SetCanvasTransform {
-        dfs_id: u32,
-        px: f32,
-        py: f32,
-        rotation: f32,
-        sx: f32,
-        sy: f32,
-        pivot_x: f32,
-        pivot_y: f32,
-    },
+    SetCanvasTransform { dfs_id: u32, px: f32, py: f32, rotation: f32, sx: f32, sy: f32, pivot_x: f32, pivot_y: f32 },
     /// CanvasComponent のサイズを設定する
     /// フォーマット: SET_CANVAS_SIZE:{actor_dfs_id},{slot_idx},{width},{height}
-    SetCanvasSize {
-        actor_dfs_id: u32,
-        slot_idx: u32,
-        width: f32,
-        height: f32,
-    },
+    SetCanvasSize { actor_dfs_id: u32, slot_idx: u32, width: f32, height: f32 },
     /// ModelComponent のモデルパスを後から設定する
     /// フォーマット: SET_MODEL_PATH:{actor_dfs_id},{slot_idx},{path}
-    SetModelPath {
-        actor_dfs_id: u32,
-        slot_idx: u32,
-        path: String,
-    },
+    SetModelPath { actor_dfs_id: u32, slot_idx: u32, path: String },
     /// ModelComponent のフィールドを更新する（key: cast_shadows。LightComponent の
     /// SetLightField と同流儀）
     /// フォーマット: SET_MODEL_FIELD:{actor_dfs_id},{slot_idx},{key},{value}
-    SetModelField {
-        actor_dfs_id: u32,
-        slot_idx: u32,
-        key: String,
-        value: String,
-    },
+    SetModelField { actor_dfs_id: u32, slot_idx: u32, key: String, value: String },
     /// マテリアルスロットのオーバーライドを設定/解除する（Phase R7: .mat マテリアル＋
     /// マルチマテリアル編集）。json が空 or `{"kind":"embedded"}` で解除（埋込に戻す）、
     /// それ以外は `MaterialOverrideKind` の JSON（`{"kind":"mat_asset","path":".."}` /
     /// `{"kind":"inline",...}`）。
     /// フォーマット: SET_MATERIAL_OVERRIDE:{actor_dfs_id},{slot_idx},{mat_slot},{json}
-    SetMaterialOverride {
-        actor_dfs_id: u32,
-        slot_idx: u32,
-        mat_slot: u32,
-        json: String,
-    },
+    SetMaterialOverride { actor_dfs_id: u32, slot_idx: u32, mat_slot: u32, json: String },
     /// ScriptComponent の [SerializeField] フィールド値を設定する
     /// フォーマット: SET_SCRIPT_FIELD:{actor_dfs_id},{slot_idx},{field_name},{value}
-    SetScriptField {
-        actor_dfs_id: u32,
-        slot_idx: u32,
-        field: String,
-        value: String,
-    },
+    SetScriptField { actor_dfs_id: u32, slot_idx: u32, field: String, value: String },
     /// ユーザースクリプトを再コンパイルし、全 ScriptComponent を再生成する（ホットリロード）
     /// フォーマット: RELOAD_SCRIPTS
     ReloadScripts,
     /// コンポーネントスロットを複製する
     /// フォーマット: DUPLICATE_COMPONENT:{actor_dfs_id},{slot_idx}
-    DuplicateComponent {
-        actor_dfs_id: u32,
-        slot_idx: u32,
-    },
+    DuplicateComponent { actor_dfs_id: u32, slot_idx: u32 },
     /// .actor ファイルをビューポートにドラッグ&ドロップした
     /// フォーマット: DROP_ACTOR:{path},{screen_x},{screen_y}
-    DropActor {
-        path: String,
-        screen_x: u32,
-        screen_y: u32,
-    },
+    DropActor { path: String, screen_x: u32, screen_y: u32 },
     /// ドラッグ中カーソル位置ホバー通知（配置プレビュー球体表示用）
     /// フォーマット: DRAG_HOVER:{viewport_x},{viewport_y}
-    DragHover {
-        x: u32,
-        y: u32,
-    },
+    DragHover { x: u32, y: u32 },
     /// ドラッグ離脱通知（プレビュー球体を消す）
     DragHoverEnd,
     /// SpriteComponent のテクスチャパスを設定する
     /// フォーマット: SET_SPRITE_PATH:{actor_dfs_id},{slot_idx},{path}
-    SetSpritePath {
-        actor_dfs_id: u32,
-        slot_idx: u32,
-        path: String,
-    },
+    SetSpritePath { actor_dfs_id: u32, slot_idx: u32, path: String },
     /// スプライトのポストエフェクト（.postfx）参照パスを設定する（空文字列で無効化）。
-    SetSpritePostfx {
-        actor_dfs_id: u32,
-        slot_idx: u32,
-        path: String,
-    },
+    SetSpritePostfx { actor_dfs_id: u32, slot_idx: u32, path: String },
     /// SpriteComponent の RGBA カラーを設定する（正規化値 0.0〜1.0）
     /// フォーマット: SET_SPRITE_COLOR:{actor_dfs_id},{slot_idx},{r},{g},{b},{a}
-    SetSpriteColor {
-        actor_dfs_id: u32,
-        slot_idx: u32,
-        r: f32,
-        g: f32,
-        b: f32,
-        a: f32,
-    },
+    SetSpriteColor { actor_dfs_id: u32, slot_idx: u32, r: f32, g: f32, b: f32, a: f32 },
     /// SpriteComponent の幅・高さをキャンバスユニットで設定する
     /// フォーマット: SET_SPRITE_SIZE:{actor_dfs_id},{slot_idx},{width},{height}
-    SetSpriteSize {
-        actor_dfs_id: u32,
-        slot_idx: u32,
-        width: f32,
-        height: f32,
-    },
+    SetSpriteSize { actor_dfs_id: u32, slot_idx: u32, width: f32, height: f32 },
     /// SpriteComponent の描画優先度レイヤーを設定する（大きいほど手前）
     /// フォーマット: SET_SPRITE_LAYER:{actor_dfs_id},{slot_idx},{layer}
-    SetSpriteLayer {
-        actor_dfs_id: u32,
-        slot_idx: u32,
-        layer: i32,
-    },
+    SetSpriteLayer { actor_dfs_id: u32, slot_idx: u32, layer: i32 },
     /// AudioComponent のフィールドを更新する（key: path/volume/loop/play_on_start/spatial/min_distance/max_distance/pan）
-    SetAudioField {
-        actor_dfs_id: u32,
-        slot_idx: u32,
-        key: String,
-        value: String,
-    },
+    SetAudioField { actor_dfs_id: u32, slot_idx: u32, key: String, value: String },
     /// LightComponent のフィールドを更新する
     /// （key: kind/color/intensity/range/inner_angle/outer_angle/rect_width/rect_height/cast_shadows）
-    SetLightField {
-        actor_dfs_id: u32,
-        slot_idx: u32,
-        key: String,
-        value: String,
-    },
+    SetLightField { actor_dfs_id: u32, slot_idx: u32, key: String, value: String },
     /// JointAttachComponent のフィールドを更新する
     /// （key: joint_name / offset_pos / offset_rot / offset_scale。offset_* は "x,y,z" 形式）
-    SetJointAttachField {
-        actor_dfs_id: u32,
-        slot_idx: u32,
-        key: String,
-        value: String,
-    },
+    SetJointAttachField { actor_dfs_id: u32, slot_idx: u32, key: String, value: String },
     /// SkyboxComponent のフィールドを更新する（key: texture_path/mode/intensity/tint。skybox_ops.rs が処理）
-    SetSkyboxField {
-        actor_dfs_id: u32,
-        slot_idx: u32,
-        key: String,
-        value: String,
-    },
+    SetSkyboxField { actor_dfs_id: u32, slot_idx: u32, key: String, value: String },
     /// ParticleEmitterComponent のフィールドを更新する
     /// （key: max_particles/shape/spawn_volume/emit_mode/lifetime_min/... 等。particle_ops.rs が処理）
-    SetParticleField {
-        actor_dfs_id: u32,
-        slot_idx: u32,
-        key: String,
-        value: String,
-    },
+    SetParticleField { actor_dfs_id: u32, slot_idx: u32, key: String, value: String },
     /// ParticleEmitterComponent のカーブを差し替える（curve_id: speed/rot_speed/color/scale/
     /// random_colors。json は ParamCurve のシリアライズ。random_colors のみ Vec<ParamCurve> の
     /// JSON 配列）。particle_ops.rs の handle_set_particle_curve が処理する。
     /// フォーマット: SET_PARTICLE_CURVE:{actor_dfs_id},{slot_idx},{curve_id},{json}
-    SetParticleCurve {
-        actor_dfs_id: u32,
-        slot_idx: u32,
-        curve_id: String,
-        json: String,
-    },
+    SetParticleCurve { actor_dfs_id: u32, slot_idx: u32, curve_id: String, json: String },
     /// CanvasTransform の anchor を設定する（正規化値 0.0〜1.0）
     /// フォーマット: SET_CANVAS_ANCHOR:{actor_dfs_id},{anchor_x},{anchor_y}
-    SetCanvasAnchor {
-        actor_dfs_id: u32,
-        ax: f32,
-        ay: f32,
-    },
+    SetCanvasAnchor { actor_dfs_id: u32, ax: f32, ay: f32 },
     /// CanvasTransform のスケールモード（scale_transform / scale_size / keep_aspect_ratio /
     /// aspect_ratio_axis）を設定する。スケールモードは各ノードの CanvasTransform が保持するため、
     /// スロット指定は不要（アクター DFS ID のルート CanvasTransform を更新する）。
     /// フォーマット: SET_CANVAS_TRANSFORM_SCALE_MODE:{actor_dfs_id},{scale_transform},{scale_size},{keep_aspect},{axis}
     /// scale_transform / scale_size / keep_aspect は "0" または "1"、axis は 0=Width / 1=Height。
-    SetCanvasTransformScaleMode {
-        actor_dfs_id: u32,
-        scale_transform: bool,
-        scale_size: bool,
-        keep_aspect: bool,
-        axis: u8,
-    },
+    SetCanvasTransformScaleMode { actor_dfs_id: u32, scale_transform: bool, scale_size: bool, keep_aspect: bool, axis: u8 },
     /// キャンバスをスクリーンスペースオーバーレイで表示するかを切り替える
     /// false（デフォルト）= ワールドスペース、true = スクリーンスペースオーバーレイ
     /// フォーマット: CANVAS_SS_OVERLAY:0/1
@@ -619,210 +398,102 @@ pub enum IpcCommand {
     /// is_2d = false: 3D シーンビュー（スクリーンスペースキャンバス非表示）
     /// Play モード中は無視される（Edit モード限定機能）
     /// フォーマット: EDIT_VIEW:2d / EDIT_VIEW:3d
-    SetEditViewMode {
-        is_2d: bool,
-    },
+    SetEditViewMode { is_2d: bool },
     /// エディタのデバッグカメラを正射投影/透視投影に切り替える（2D トグル）。
     /// 視点は維持したまま 0.3 秒かけて投影方式を補間する。
     /// フォーマット: EDITOR_CAM_ORTHO:1 / EDITOR_CAM_ORTHO:0
     SetEditorCameraOrtho(bool),
     /// ルートキャンバスの画面サイズ自動スケールを設定する
     /// フォーマット: SET_CANVAS_AUTO_SCALE:{actor_dfs_id},{slot_idx},{value}
-    SetCanvasAutoScale {
-        actor_dfs_id: u32,
-        slot_idx: u32,
-        auto_scale: bool,
-    },
+    SetCanvasAutoScale { actor_dfs_id: u32, slot_idx: u32, auto_scale: bool },
     /// CanvasComponent の重力方向モードを設定する
     /// フォーマット: SET_CANVAS_GRAVITY_MODE:{actor_dfs_id},{slot_idx},{mode:0|1}
     /// mode: 0=WorldDown, 1=CanvasDown
-    SetCanvasGravityMode {
-        actor_dfs_id: u32,
-        slot_idx: u32,
-        mode: u8,
-    },
+    SetCanvasGravityMode { actor_dfs_id: u32, slot_idx: u32, mode: u8 },
     /// CanvasComponent の描画ゾーンを設定する（ビューポート・ルートキャンバス用）
     /// フォーマット: SET_CANVAS_DRAW_ZONE:{actor_dfs_id},{slot_idx},{zone}
     /// zone: "foreground"（3D ワールドの手前・デフォルト）| "background"（3D ワールドの奥）
-    SetCanvasDrawZone {
-        actor_dfs_id: u32,
-        slot_idx: u32,
-        zone: String,
-    },
+    SetCanvasDrawZone { actor_dfs_id: u32, slot_idx: u32, zone: String },
     /// 3D キャンバスのピボットを設定する（Actor3D アタッチ時のみ有効）
     /// フォーマット: SET_CANVAS_3D_PIVOT:{actor_dfs_id},{slot_idx},{pivot_x},{pivot_y}
     /// pivot_x / pivot_y は正規化値 [0,1]。(0,0)=左上, (0.5,0.5)=中央, (1,1)=右下。
-    SetCanvas3dPivot {
-        actor_dfs_id: u32,
-        slot_idx: u32,
-        pivot_x: f32,
-        pivot_y: f32,
-    },
+    SetCanvas3dPivot { actor_dfs_id: u32, slot_idx: u32, pivot_x: f32, pivot_y: f32 },
     /// Collider2dComponent のアスペクト比維持設定を更新する
     /// フォーマット: SET_COLLIDER2D_ASPECT_RATIO:{actor_dfs_id},{slot_idx},{keep:0|1},{axis:width|height}
-    SetCollider2dAspectRatio {
-        actor_dfs_id: u32,
-        slot_idx: u32,
-        keep: bool,
-        axis: String,
-    },
+    SetCollider2dAspectRatio { actor_dfs_id: u32, slot_idx: u32, keep: bool, axis: String },
     /// キャンバスのビューポート参照をウィンドウに設定する（Camera 参照を解除）
     /// フォーマット: SET_CANVAS_VIEWPORT_REF_WINDOW:{actor_dfs_id},{slot_idx}
-    SetCanvasViewportRefWindow {
-        actor_dfs_id: u32,
-        slot_idx: u32,
-    },
+    SetCanvasViewportRefWindow { actor_dfs_id: u32, slot_idx: u32 },
     /// キャンバスのビューポート参照をメインカメラ（is_main = true）に設定する
     /// フォーマット: SET_CANVAS_VIEWPORT_REF_MAIN_CAMERA:{actor_dfs_id},{slot_idx}
     /// メインカメラが存在しない場合は実行時にウィンドウ基準へフォールバックする
-    SetCanvasViewportRefMainCamera {
-        actor_dfs_id: u32,
-        slot_idx: u32,
-    },
+    SetCanvasViewportRefMainCamera { actor_dfs_id: u32, slot_idx: u32 },
     /// キャンバスのビューポート参照をカメラに設定する
     /// フォーマット: SET_CANVAS_VIEWPORT_REF_CAMERA:{actor_dfs_id},{slot_idx},{actor_name},{slot_name}
     /// actor_name / slot_name はカンマを含まない前提
-    SetCanvasViewportRefCamera {
-        actor_dfs_id: u32,
-        slot_idx: u32,
-        actor_name: String,
-        slot_name: String,
-    },
+    SetCanvasViewportRefCamera { actor_dfs_id: u32, slot_idx: u32, actor_name: String, slot_name: String },
     /// InputMapComponent のアセットパスを設定する
     /// フォーマット: SET_INPUTMAP_PATH:{actor_dfs_id},{slot_idx},{path}
-    SetInputMapPath {
-        actor_dfs_id: u32,
-        slot_idx: u32,
-        path: String,
-    },
+    SetInputMapPath { actor_dfs_id: u32, slot_idx: u32, path: String },
     /// CameraComponent の FOV（視野角・度）を設定する
     /// フォーマット: SET_CAMERA_FOV:{actor_dfs_id},{slot_idx},{value}
-    SetCameraComponentFov {
-        actor_dfs_id: u32,
-        slot_idx: u32,
-        value: f32,
-    },
+    SetCameraComponentFov { actor_dfs_id: u32, slot_idx: u32, value: f32 },
     /// CameraComponent の near clip を設定する
     /// フォーマット: SET_CAMERA_NEAR:{actor_dfs_id},{slot_idx},{value}
-    SetCameraComponentNear {
-        actor_dfs_id: u32,
-        slot_idx: u32,
-        value: f32,
-    },
+    SetCameraComponentNear { actor_dfs_id: u32, slot_idx: u32, value: f32 },
     /// CameraComponent の far clip を設定する
     /// フォーマット: SET_CAMERA_FAR:{actor_dfs_id},{slot_idx},{value}
-    SetCameraComponentFar {
-        actor_dfs_id: u32,
-        slot_idx: u32,
-        value: f32,
-    },
+    SetCameraComponentFar { actor_dfs_id: u32, slot_idx: u32, value: f32 },
     /// CameraComponent の is_main フラグを設定する
     /// フォーマット: SET_CAMERA_MAIN:{actor_dfs_id},{slot_idx},{0|1}
-    SetCameraComponentMain {
-        actor_dfs_id: u32,
-        slot_idx: u32,
-        is_main: bool,
-    },
+    SetCameraComponentMain { actor_dfs_id: u32, slot_idx: u32, is_main: bool },
     /// CameraComponent のクリアカラーを設定する（正規化値 0.0〜1.0）
     /// フォーマット: SET_CAMERA_CLEAR_COLOR:{actor_dfs_id},{slot_idx},{r},{g},{b},{a}
-    SetCameraComponentClearColor {
-        actor_dfs_id: u32,
-        slot_idx: u32,
-        r: f32,
-        g: f32,
-        b: f32,
-        a: f32,
-    },
+    SetCameraComponentClearColor { actor_dfs_id: u32, slot_idx: u32, r: f32, g: f32, b: f32, a: f32 },
     /// CameraComponent のスケーリングモードを設定する
     /// フォーマット: SET_CAMERA_SCALING_MODE:{actor_dfs_id},{slot_idx},{mode}
-    SetCameraComponentScalingMode {
-        actor_dfs_id: u32,
-        slot_idx: u32,
-        mode: String,
-    },
+    SetCameraComponentScalingMode { actor_dfs_id: u32, slot_idx: u32, mode: String },
     /// CameraComponent のターゲット解像度を設定する
     /// フォーマット: SET_CAMERA_TARGET_SIZE:{actor_dfs_id},{slot_idx},{width},{height}
-    SetCameraComponentTargetSize {
-        actor_dfs_id: u32,
-        slot_idx: u32,
-        width: u32,
-        height: u32,
-    },
+    SetCameraComponentTargetSize { actor_dfs_id: u32, slot_idx: u32, width: u32, height: u32 },
     /// CameraComponent の帯カラーを設定する（LetterBox / PillarBox 時の帯色、正規化値 0.0〜1.0）
     /// フォーマット: SET_CAMERA_BAR_COLOR:{actor_dfs_id},{slot_idx},{r},{g},{b},{a}
-    SetCameraBarColor {
-        actor_dfs_id: u32,
-        slot_idx: u32,
-        r: f32,
-        g: f32,
-        b: f32,
-        a: f32,
-    },
+    SetCameraBarColor { actor_dfs_id: u32, slot_idx: u32, r: f32, g: f32, b: f32, a: f32 },
     /// CameraComponent の投影方式を設定する（"perspective" / "orthographic"）
     /// フォーマット: SET_CAMERA_PROJECTION:{actor_dfs_id},{slot_idx},{mode}
-    SetCameraComponentProjection {
-        actor_dfs_id: u32,
-        slot_idx: u32,
-        mode: String,
-    },
+    SetCameraComponentProjection { actor_dfs_id: u32, slot_idx: u32, mode: String },
     /// CameraComponent の正射投影の縦描画範囲（ワールド単位・全高）を設定する
     /// フォーマット: SET_CAMERA_ORTHO_HEIGHT:{actor_dfs_id},{slot_idx},{value}
-    SetCameraComponentOrthoHeight {
-        actor_dfs_id: u32,
-        slot_idx: u32,
-        value: f32,
-    },
+    SetCameraComponentOrthoHeight { actor_dfs_id: u32, slot_idx: u32, value: f32 },
     /// アクターのアクティブ切替（Unity の SetActive 相当）。
     /// フォーマット: SET_ACTOR_ACTIVE:{dfs_id},{0|1}
-    SetActorActive {
-        dfs_id: u32,
-        active: bool,
-    },
+    SetActorActive { dfs_id: u32, active: bool },
     /// コンポーネントスロットの有効切替（Unity の enabled 相当）。
     /// フォーマット: SET_SLOT_ENABLED:{actor_dfs_id},{slot_idx},{0|1}
-    SetSlotEnabled {
-        actor_dfs_id: u32,
-        slot_idx: u32,
-        enabled: bool,
-    },
+    SetSlotEnabled { actor_dfs_id: u32, slot_idx: u32, enabled: bool },
     /// ColliderComponent のデータ全体（リジッドボディ設定を含む）を JSON で設定する
     /// フォーマット: SET_COLLIDER_DATA:{actor_dfs_id},{slot_idx},{json}
     /// json は ColliderComponentData の serde_json シリアライズ結果（カンマ含む）
-    SetColliderData {
-        actor_dfs_id: u32,
-        slot_idx: u32,
-        json: String,
-    },
+    SetColliderData { actor_dfs_id: u32, slot_idx: u32, json: String },
     /// Collider2dComponent のデータ全体（リジッドボディ設定を含む）を JSON で設定する
     /// フォーマット: SET_COLLIDER2D_DATA:{actor_dfs_id},{slot_idx},{json}
     /// json は Collider2dComponentData の serde_json シリアライズ結果（カンマ含む）
-    SetCollider2dData {
-        actor_dfs_id: u32,
-        slot_idx: u32,
-        json: String,
-    },
+    SetCollider2dData { actor_dfs_id: u32, slot_idx: u32, json: String },
     /// 編集時の 2D 物理シミュレーション設定。
     /// enabled=true かつ with_rigidbody=false : 重力なし・全ボディを kinematic として衝突検出のみ
     /// enabled=true かつ with_rigidbody=true  : 重力・ダイナミクスも有効な完全シミュレーション
     /// フォーマット: SET_EDIT_PHYSICS_2D:{enabled},{with_rigidbody}  (0=off, 1=on)
-    SetEditPhysics2d {
-        enabled: bool,
-        with_rigidbody: bool,
-    },
+    SetEditPhysics2d { enabled: bool, with_rigidbody: bool },
     /// プラグインコンポーネントのフィールド値を設定する
     /// フォーマット: SET_PLUGIN_FIELD:{actor_dfs_id},{slot_idx},{key},{value}
     /// ※ key と value はカンマを含む可能性があるため最後の区切りのみ使用
-    SetPluginField {
-        actor_dfs_id: u32,
-        slot_idx: u32,
-        key: String,
-        value: String,
-    },
+    SetPluginField { actor_dfs_id: u32, slot_idx: u32, key: String, value: String },
     /// ロード済みプラグイン一覧の要求
     /// フォーマット: GET_PLUGIN_LIST
     GetPluginList,
 
     // ── AI アシスタント用コマンド ─────────────────────────────────────────────
+
     /// シーン全体の情報を JSON で要求する
     /// フォーマット: GET_SCENE_INFO
     GetSceneInfo,
@@ -834,57 +505,31 @@ pub enum IpcCommand {
     ResumeRender,
     /// AI が新しいアクターを追加する
     /// フォーマット: AI_ADD_ACTOR:{name},{x},{y},{z}
-    AiAddActor {
-        name: String,
-        x: f32,
-        y: f32,
-        z: f32,
-    },
+    AiAddActor { name: String, x: f32, y: f32, z: f32 },
     /// AI がアクターを削除する（DFS ID 指定）
     /// フォーマット: AI_REMOVE_ACTOR:{actor_dfs_id}
-    AiRemoveActor {
-        actor_dfs_id: u32,
-    },
+    AiRemoveActor { actor_dfs_id: u32 },
     /// AI がアクターを移動する（DFS ID + 位置）
     /// フォーマット: AI_MOVE_ACTOR:{actor_dfs_id},{x},{y},{z}
-    AiMoveActor {
-        actor_dfs_id: u32,
-        x: f32,
-        y: f32,
-        z: f32,
-    },
+    AiMoveActor { actor_dfs_id: u32, x: f32, y: f32, z: f32 },
     /// AI がコンポーネントを追加する
     /// フォーマット: AI_ADD_COMPONENT:{actor_dfs_id},{component_type},{params_json}
-    AiAddComponent {
-        actor_dfs_id: u32,
-        component_type: String,
-        params_json: String,
-    },
+    AiAddComponent { actor_dfs_id: u32, component_type: String, params_json: String },
     /// AI がコンポーネントのフィールド値を設定する
     /// フォーマット: AI_SET_VALUE:{actor_dfs_id},{slot_idx},{key},{value}
-    AiSetValue {
-        actor_dfs_id: u32,
-        slot_idx: u32,
-        key: String,
-        value: String,
-    },
+    AiSetValue { actor_dfs_id: u32, slot_idx: u32, key: String, value: String },
 
     /// シーン内のアクターをファイルへ書き出す。
     /// transform はルートのみ 0 にリセット、子は相対位置を維持。
     /// フォーマット: EXPORT_ACTOR:{dfs_id},{path}
     /// path はエディタの SaveFileDialog で選択された絶対ファイルパス
-    ExportActor {
-        dfs_id: u32,
-        path: String,
-    },
+    ExportActor { dfs_id: u32, path: String },
 
     /// プレハブ参照リンクを解除する（アクターの prefab_source を None にする）。
     /// 以後このアクターは「プレハブから更新」・.actor 保存時ライブ反映の対象外となり、
     /// 独立したアクターツリーとしてシーンに保存・維持される。
     /// フォーマット: UNLINK_PREFAB:{actor_dfs}
-    UnlinkPrefab {
-        actor_dfs: u32,
-    },
+    UnlinkPrefab { actor_dfs: u32 },
 
     /// プレハブインスタンスを参照先 .actor の内容で再展開する（ユーザーの明示操作）。
     /// 指定アクタ自身がプレハブならそれを、そうでなければ配下のプレハブインスタンスを対象とする。
@@ -892,23 +537,25 @@ pub enum IpcCommand {
     /// フォーマット: PREFAB_REAPPLY:{actor_dfs}
     ReapplyPrefab { actor_dfs: u32 },
 
+    /// シーン内（world_line=0）の全プレハブインスタンスを、参照先 .actor の内容で
+    /// 一括再展開する（ユーザーの明示操作）。
+    /// プレハブ本体を編集したあと、その内容をシーン全体へ反映するための入口。
+    /// シーン上でインスタンスへ加えた変更は全て破棄されるため、
+    /// エディタ側で確認ダイアログ必須。Undo で 1 操作として戻せる。
+    /// フォーマット: PREFAB_REAPPLY_ALL（引数なし）
+    ReapplyAllPrefabs,
+
     /// 編集時の物理シミュレーション設定。
     /// enabled=true かつ with_rigidbody=false : 重力なし・全ボディを kinematic として衝突検出のみ
     /// enabled=true かつ with_rigidbody=true  : 重力・ダイナミクスも有効な完全シミュレーション
     /// フォーマット: SET_EDIT_PHYSICS:{enabled},{with_rigidbody}  (0=off, 1=on)
-    SetEditPhysics {
-        enabled: bool,
-        with_rigidbody: bool,
-    },
+    SetEditPhysics { enabled: bool, with_rigidbody: bool },
 
     /// 編集時の物理シミュレーション設定（2D/3D 統合）。
     /// エディタの単一チェックボックスから届き、3D・2D を常に同値で設定する。
     /// タイムラインは 3D・2D 共通の 1 本として扱う（タブごと状態保持と併用）。
     /// フォーマット: SET_EDIT_PHYSICS_ALL:{enabled},{with_rigidbody}  (0=off, 1=on)
-    SetEditPhysicsAll {
-        enabled: bool,
-        with_rigidbody: bool,
-    },
+    SetEditPhysicsAll { enabled: bool, with_rigidbody: bool },
 
     /// 実行時コライダー描画設定。
     /// Play モードでもコライダーワイヤーフレームを描画する。
@@ -921,14 +568,10 @@ pub enum IpcCommand {
     EditPhysicsPlayPause,
     /// フレームを N ステップ進む（step>0）または戻す（step<0）。
     /// フォーマット: EDIT_PHYSICS_STEP:{step}  (例: +1, -1, +5)
-    EditPhysicsStep {
-        step: i32,
-    },
+    EditPhysicsStep { step: i32 },
     /// 指定フレームへシーク。
     /// フォーマット: EDIT_PHYSICS_SEEK:{frame_idx}
-    EditPhysicsSeek {
-        frame: usize,
-    },
+    EditPhysicsSeek { frame: usize },
     /// 現在フレームの状態をフレーム 0 として適用（履歴削除）。
     /// フォーマット: EDIT_PHYSICS_APPLY_FRAME
     EditPhysicsApplyFrame,
@@ -944,28 +587,16 @@ pub enum IpcCommand {
     /// フォーマット: SET_ANIMATOR_CLIPS:{actor_dfs_id},{slot_idx},{json}
     /// json は AnimatorComponentData の serde_json シリアライズ結果（カンマ含む）。
     /// slot_idx はマルチ Animator 対応のため付与（parse2u_tail 流用）。
-    SetAnimatorClips {
-        actor_dfs_id: u32,
-        slot_idx: u32,
-        json: String,
-    },
+    SetAnimatorClips { actor_dfs_id: u32, slot_idx: u32, json: String },
     /// Edit モード限定：指定クリップの指定時刻を対象アクターへプレビュー適用する。
     /// フォーマット: ANIM_PREVIEW:{actor_dfs_id},{clip_path},{time}
-    AnimPreview {
-        actor_dfs_id: u32,
-        clip_path: String,
-        time: f32,
-    },
+    AnimPreview { actor_dfs_id: u32, clip_path: String, time: f32 },
     /// アニメーションプレビューを終了し、退避しておいた元値へ復元する。
     /// フォーマット: ANIM_PREVIEW_STOP:{actor_dfs_id}
-    AnimPreviewStop {
-        actor_dfs_id: u32,
-    },
+    AnimPreviewStop { actor_dfs_id: u32 },
     /// 指定クリップのロード済みキャッシュを破棄する（.anim 保存後の再読込用）。
     /// フォーマット: ANIM_RELOAD:{clip_path}
-    AnimReload {
-        clip_path: String,
-    },
+    AnimReload { clip_path: String },
 }
 
 // ============================================================
@@ -996,10 +627,7 @@ impl IpcClient {
         let (tx, rx) = mpsc::channel();
         thread::spawn(move || read_loop(file, tx));
 
-        Ok(Self {
-            commands: rx,
-            write_tx,
-        })
+        Ok(Self { commands: rx, write_tx })
     }
 
     /// エディタにメッセージを 1 行送信する（非ブロッキング）。
@@ -1042,10 +670,10 @@ fn parse_terrain_chunk_config(s: &str) -> Option<TerrainChunkConfig> {
         return None;
     }
     Some(TerrainChunkConfig {
-        chunks_x: parts[0].trim().parse::<u32>().ok()?,
-        chunks_z: parts[1].trim().parse::<u32>().ok()?,
+        chunks_x:    parts[0].trim().parse::<u32>().ok()?,
+        chunks_z:    parts[1].trim().parse::<u32>().ok()?,
         chunk_cells: parts[2].trim().parse::<u32>().ok()?,
-        voxel_size: parts[3].trim().parse::<f32>().ok()?,
+        voxel_size:  parts[3].trim().parse::<f32>().ok()?,
     })
 }
 
@@ -1070,10 +698,10 @@ fn parse_heightmap_with_config(rest: &str) -> Option<IpcCommand> {
         return None;
     }
     let config = TerrainChunkConfig {
-        chunks_x: parts[0].trim().parse::<u32>().ok()?,
-        chunks_z: parts[1].trim().parse::<u32>().ok()?,
+        chunks_x:    parts[0].trim().parse::<u32>().ok()?,
+        chunks_z:    parts[1].trim().parse::<u32>().ok()?,
         chunk_cells: parts[2].trim().parse::<u32>().ok()?,
-        voxel_size: parts[3].trim().parse::<f32>().ok()?,
+        voxel_size:  parts[3].trim().parse::<f32>().ok()?,
     };
     let height_scale = parts[4].trim().parse::<f32>().ok()?;
     // path は空であってはならない（空だと画像読込が必ず失敗するため、旧形式へ落とす）。
@@ -1129,11 +757,8 @@ fn parse_terrain_command(s: &str) -> Option<IpcCommand> {
         // 前 3 個が u32、末尾が f32。値域の検証はここでは行わない
         //（TerrainSettings::apply_chunk_config が一手にクランプする）。
         s if s.starts_with("TERRAIN_INIT:") => {
-            parse_terrain_chunk_config(&s["TERRAIN_INIT:".len()..]).map(|config| {
-                IpcCommand::TerrainInit {
-                    config: Some(config),
-                }
-            })
+            parse_terrain_chunk_config(&s["TERRAIN_INIT:".len()..])
+                .map(|config| IpcCommand::TerrainInit { config: Some(config) })
         }
         // チャンク追加: "min_x,min_z,max_x,max_z"（i32×4・両端含む）。
         s if s.starts_with("TERRAIN_ADD_CHUNKS:") => {
@@ -1145,12 +770,7 @@ fn parse_terrain_command(s: &str) -> Option<IpcCommand> {
             for (i, p) in parts.iter().enumerate() {
                 v[i] = p.trim().parse::<i32>().ok()?;
             }
-            Some(IpcCommand::TerrainAddChunks {
-                min_x: v[0],
-                min_z: v[1],
-                max_x: v[2],
-                max_z: v[3],
-            })
+            Some(IpcCommand::TerrainAddChunks { min_x: v[0], min_z: v[1], max_x: v[2], max_z: v[3] })
         }
         // ブラシプレビュー更新: "screen_x,screen_y,radius,strength"（f32×4）。
         s if s.starts_with("TERRAIN_BRUSH_PREVIEW:") => {
@@ -1158,7 +778,7 @@ fn parse_terrain_command(s: &str) -> Option<IpcCommand> {
                 IpcCommand::TerrainBrushPreview {
                     screen_x: fs[0],
                     screen_y: fs[1],
-                    radius: fs[2],
+                    radius:   fs[2],
                     strength: fs[3],
                 }
             })
@@ -1177,12 +797,14 @@ fn parse_terrain_command(s: &str) -> Option<IpcCommand> {
         // 地形ブラシ: "op,screen_x,screen_y,radius,strength"。
         // 先頭 op は u32、残り 4 つは f32。parse1u_nf::<4> で (op, [sx,sy,r,st]) を得る。
         s if s.starts_with("TERRAIN_BRUSH:") => {
-            parse1u_nf::<4>(&s["TERRAIN_BRUSH:".len()..]).map(|(op, fs)| IpcCommand::TerrainBrush {
-                op,
-                screen_x: fs[0],
-                screen_y: fs[1],
-                radius: fs[2],
-                strength: fs[3],
+            parse1u_nf::<4>(&s["TERRAIN_BRUSH:".len()..]).map(|(op, fs)| {
+                IpcCommand::TerrainBrush {
+                    op,
+                    screen_x: fs[0],
+                    screen_y: fs[1],
+                    radius:   fs[2],
+                    strength: fs[3],
+                }
             })
         }
         // 散布ルール実行: "prop_id,seed"。
@@ -1193,10 +815,7 @@ fn parse_terrain_command(s: &str) -> Option<IpcCommand> {
             let rest = &s["TERRAIN_SCATTER_RULES:".len()..];
             let (prop_id, seed_s) = rest.rsplit_once(',')?;
             let seed = seed_s.trim().parse::<u64>().ok()?;
-            Some(IpcCommand::TerrainScatterRules {
-                prop_id: prop_id.to_string(),
-                seed,
-            })
+            Some(IpcCommand::TerrainScatterRules { prop_id: prop_id.to_string(), seed })
         }
         // 散布ブラシ: "prop_id,screen_x,screen_y,radius,density,erase"。
         // 先頭が文字列 ID なので数値ヘルパは使えず、固定 6 フィールドで切り出す。
@@ -1207,13 +826,13 @@ fn parse_terrain_command(s: &str) -> Option<IpcCommand> {
                 return None;
             }
             Some(IpcCommand::TerrainScatterBrush {
-                prop_id: parts[0].to_string(),
+                prop_id:  parts[0].to_string(),
                 screen_x: parts[1].trim().parse::<f32>().ok()?,
                 screen_y: parts[2].trim().parse::<f32>().ok()?,
-                radius: parts[3].trim().parse::<f32>().ok()?,
-                density: parts[4].trim().parse::<f32>().ok()?,
+                radius:   parts[3].trim().parse::<f32>().ok()?,
+                density:  parts[4].trim().parse::<f32>().ok()?,
                 // erase は 0/1。0 以外はすべて「消去」として扱う（寛容側）。
-                erase: parts[5].trim().parse::<u32>().ok()? != 0,
+                erase:    parts[5].trim().parse::<u32>().ok()? != 0,
             })
         }
         // 地形レイヤペイント: "layer,screen_x,screen_y,radius,strength"。
@@ -1224,7 +843,7 @@ fn parse_terrain_command(s: &str) -> Option<IpcCommand> {
                     layer,
                     screen_x: fs[0],
                     screen_y: fs[1],
-                    radius: fs[2],
+                    radius:   fs[2],
                     strength: fs[3],
                 }
             })
@@ -1244,9 +863,7 @@ fn parse_terrain_command(s: &str) -> Option<IpcCommand> {
 #[inline]
 fn parse_nf<const N: usize>(rest: &str) -> Option<[f32; N]> {
     let parts: Vec<&str> = rest.split(',').collect();
-    if parts.len() != N {
-        return None;
-    }
+    if parts.len() != N { return None; }
     let mut fs = [0.0f32; N];
     for (i, p) in parts.iter().enumerate() {
         fs[i] = p.trim().parse().ok()?;
@@ -1258,9 +875,7 @@ fn parse_nf<const N: usize>(rest: &str) -> Option<[f32; N]> {
 #[inline]
 fn parse1u_nf<const N: usize>(rest: &str) -> Option<(u32, [f32; N])> {
     let parts: Vec<&str> = rest.split(',').collect();
-    if parts.len() != N + 1 {
-        return None;
-    }
+    if parts.len() != N + 1 { return None; }
     let id: u32 = parts[0].trim().parse().ok()?;
     let mut fs = [0.0f32; N];
     for (i, p) in parts[1..].iter().enumerate() {
@@ -1281,10 +896,7 @@ fn parse1u_tail(rest: &str) -> Option<(u32, &str)> {
 #[inline]
 fn parse2u(rest: &str) -> Option<(u32, u32)> {
     let mut it = rest.splitn(2, ',');
-    Some((
-        it.next()?.trim().parse().ok()?,
-        it.next()?.trim().parse().ok()?,
-    ))
+    Some((it.next()?.trim().parse().ok()?, it.next()?.trim().parse().ok()?))
 }
 
 /// `rest` から `u32, u32, <tail>` をカンマ区切りでパースして (a, b, tail) を返す。
@@ -1340,9 +952,7 @@ fn parse2u1b(rest: &str) -> Option<(u32, u32, bool)> {
 #[inline]
 fn parse2u_nf<const N: usize>(rest: &str) -> Option<(u32, u32, [f32; N])> {
     let parts: Vec<&str> = rest.split(',').collect();
-    if parts.len() != N + 2 {
-        return None;
-    }
+    if parts.len() != N + 2 { return None; }
     let a: u32 = parts[0].trim().parse().ok()?;
     let b: u32 = parts[1].trim().parse().ok()?;
     let mut fs = [0.0f32; N];
@@ -1381,7 +991,7 @@ fn write_loop(mut file: std::fs::File, rx: mpsc::Receiver<String>) {
 fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
     use std::os::windows::io::AsRawHandle;
 
-    let mut reader = BufReader::new(file);
+    let mut reader   = BufReader::new(file);
     let mut line_buf = String::new();
 
     loop {
@@ -1402,58 +1012,42 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                     Some(IpcCommand::CamKeyUp(key.to_string()))
                 } else {
                     match trimmed {
-                        "CTRL_DOWN" => Some(IpcCommand::CtrlDown),
-                        "CTRL_UP" => Some(IpcCommand::CtrlUp),
+                        "CTRL_DOWN"      => Some(IpcCommand::CtrlDown),
+                        "CTRL_UP"        => Some(IpcCommand::CtrlUp),
                         "CAM_KEYS_CLEAR" => Some(IpcCommand::CamKeysClear),
-                        "PAUSE" => Some(IpcCommand::Pause),
-                        "RESUME" => Some(IpcCommand::Resume),
-                        "STOP" => Some(IpcCommand::Stop),
-                        "DBG_GUARD:1" => Some(IpcCommand::SetDebugGuard(true)),
-                        "DBG_GUARD:0" => Some(IpcCommand::SetDebugGuard(false)),
+                        "PAUSE"        => Some(IpcCommand::Pause),
+                        "RESUME"       => Some(IpcCommand::Resume),
+                        "STOP"         => Some(IpcCommand::Stop),
+                        "DBG_GUARD:1"  => Some(IpcCommand::SetDebugGuard(true)),
+                        "DBG_GUARD:0"  => Some(IpcCommand::SetDebugGuard(false)),
                         "PLAY_CLAMP:1" => Some(IpcCommand::PlayClamp(true)),
                         "PLAY_CLAMP:0" => Some(IpcCommand::PlayClamp(false)),
-                        "TOOL:SELECT" => Some(IpcCommand::SetToolMode(ToolMode::Select)),
-                        "TOOL:MOVE" => Some(IpcCommand::SetToolMode(ToolMode::Move)),
-                        "TOOL:ROTATE" => Some(IpcCommand::SetToolMode(ToolMode::Rotate)),
-                        "TOOL:SCALE" => Some(IpcCommand::SetToolMode(ToolMode::Scale)),
+                        "TOOL:SELECT"  => Some(IpcCommand::SetToolMode(ToolMode::Select)),
+                        "TOOL:MOVE"    => Some(IpcCommand::SetToolMode(ToolMode::Move)),
+                        "TOOL:ROTATE"  => Some(IpcCommand::SetToolMode(ToolMode::Rotate)),
+                        "TOOL:SCALE"   => Some(IpcCommand::SetToolMode(ToolMode::Scale)),
                         "GIZMO_SPACE:WORLD" => Some(IpcCommand::SetGizmoSpace(GizmoSpace::World)),
                         "GIZMO_SPACE:LOCAL" => Some(IpcCommand::SetGizmoSpace(GizmoSpace::Local)),
-                        "UNDO" => Some(IpcCommand::Undo),
-                        "REDO" => Some(IpcCommand::Redo),
-                        s if s.starts_with("SELECT:") => s["SELECT:".len()..]
-                            .parse::<u32>()
-                            .ok()
-                            .map(IpcCommand::Select),
+                        "UNDO"         => Some(IpcCommand::Undo),
+                        "REDO"         => Some(IpcCommand::Redo),
+                        s if s.starts_with("SELECT:") => {
+                            s["SELECT:".len()..].parse::<u32>().ok()
+                                .map(IpcCommand::Select)
+                        }
                         s if s.starts_with("DELETE_RECURSIVE:") => {
                             let ids: Vec<u32> = s["DELETE_RECURSIVE:".len()..]
-                                .split(',')
-                                .filter_map(|x| x.parse::<u32>().ok())
-                                .collect();
-                            if !ids.is_empty() {
-                                Some(IpcCommand::DeleteRecursive(ids))
-                            } else {
-                                None
-                            }
+                                .split(',').filter_map(|x| x.parse::<u32>().ok()).collect();
+                            if !ids.is_empty() { Some(IpcCommand::DeleteRecursive(ids)) } else { None }
                         }
                         s if s.starts_with("DELETE:") => {
                             let ids: Vec<u32> = s["DELETE:".len()..]
-                                .split(',')
-                                .filter_map(|x| x.parse::<u32>().ok())
-                                .collect();
-                            if !ids.is_empty() {
-                                Some(IpcCommand::Delete(ids))
-                            } else {
-                                None
-                            }
+                                .split(',').filter_map(|x| x.parse::<u32>().ok()).collect();
+                            if !ids.is_empty() { Some(IpcCommand::Delete(ids)) } else { None }
                         }
                         s if s.starts_with("RENAME:") => {
                             // "id,name" — name 中にカンマを含む可能性があるため parse1u_tail を使用
-                            parse1u_tail(&s["RENAME:".len()..]).map(|(idx, name)| {
-                                IpcCommand::Rename {
-                                    idx,
-                                    name: name.to_string(),
-                                }
-                            })
+                            parse1u_tail(&s["RENAME:".len()..])
+                                .map(|(idx, name)| IpcCommand::Rename { idx, name: name.to_string() })
                         }
                         s if s.starts_with("SAVE_SCENE:") => {
                             Some(IpcCommand::SaveScene(s["SAVE_SCENE:".len()..].to_string()))
@@ -1469,95 +1063,54 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                             let rest = &s["BEGIN_TRANSFORM_DRAG:".len()..];
                             let mut it = rest.splitn(2, ',');
                             if let (Some(t), Some(id_s)) = (it.next(), it.next()) {
-                                if let (Ok(type_n), Ok(id)) =
-                                    (t.parse::<u32>(), id_s.parse::<u32>())
-                                {
-                                    Some(IpcCommand::BeginTransformDrag {
-                                        is_actor: type_n != 0,
-                                        target_id: id,
-                                    })
-                                } else {
-                                    None
-                                }
-                            } else {
-                                None
-                            }
+                                if let (Ok(type_n), Ok(id)) = (t.parse::<u32>(), id_s.parse::<u32>()) {
+                                    Some(IpcCommand::BeginTransformDrag { is_actor: type_n != 0, target_id: id })
+                                } else { None }
+                            } else { None }
                         }
                         "END_TRANSFORM_DRAG" => Some(IpcCommand::EndTransformDrag),
                         s if s.starts_with("CREATE_GROUP:") => {
                             let rest = &s["CREATE_GROUP:".len()..];
                             let mut it = rest.splitn(2, ',');
                             if let (Some(p), Some(name)) = (it.next(), it.next()) {
-                                let parent = if p == "-1" {
-                                    None
-                                } else {
-                                    p.parse::<u32>().ok()
-                                };
-                                Some(IpcCommand::CreateGroup {
-                                    name: name.to_string(),
-                                    parent,
-                                })
-                            } else {
-                                None
-                            }
+                                let parent = if p == "-1" { None } else { p.parse::<u32>().ok() };
+                                Some(IpcCommand::CreateGroup { name: name.to_string(), parent })
+                            } else { None }
                         }
                         // フォーマット: "CREATE_GROUP_WITH_CHILDREN:{parentId}|{name}|{childId1},{childId2},..."
                         s if s.starts_with("CREATE_GROUP_WITH_CHILDREN:") => {
                             let rest = &s["CREATE_GROUP_WITH_CHILDREN:".len()..];
                             let mut it = rest.splitn(3, '|');
-                            if let (Some(p), Some(name), Some(kids)) =
-                                (it.next(), it.next(), it.next())
-                            {
-                                let parent = if p == "-1" {
-                                    None
-                                } else {
-                                    p.parse::<u32>().ok()
-                                };
-                                let children: Vec<u32> = kids
-                                    .split(',')
+                            if let (Some(p), Some(name), Some(kids)) = (it.next(), it.next(), it.next()) {
+                                let parent = if p == "-1" { None } else { p.parse::<u32>().ok() };
+                                let children: Vec<u32> = kids.split(',')
                                     .filter_map(|x| x.parse::<u32>().ok())
                                     .collect();
                                 Some(IpcCommand::CreateGroupWithChildren {
-                                    name: name.to_string(),
-                                    parent,
-                                    children,
+                                    name: name.to_string(), parent, children,
                                 })
-                            } else {
-                                None
-                            }
+                            } else { None }
                         }
                         s if s.starts_with("SELECT_MULTI:") => {
                             let ids: Vec<u32> = s["SELECT_MULTI:".len()..]
                                 .split(',')
                                 .filter_map(|x| x.parse::<u32>().ok())
                                 .collect();
-                            if !ids.is_empty() {
-                                Some(IpcCommand::SelectMulti(ids))
-                            } else {
-                                None
-                            }
+                            if !ids.is_empty() { Some(IpcCommand::SelectMulti(ids)) } else { None }
                         }
-                        "COPY" => Some(IpcCommand::Copy),
+                        "COPY"  => Some(IpcCommand::Copy),
                         "PASTE" => Some(IpcCommand::Paste),
-                        s if s.starts_with("GET_ACTOR:") => s["GET_ACTOR:".len()..]
-                            .parse::<u32>()
-                            .ok()
-                            .map(IpcCommand::GetActorData),
+                        s if s.starts_with("GET_ACTOR:") => {
+                            s["GET_ACTOR:".len()..].parse::<u32>().ok()
+                                .map(IpcCommand::GetActorData)
+                        }
                         s if s.starts_with("SET_TRANSFORM:") => {
                             // フォーマット: SET_TRANSFORM:{id},{px},{py},{pz},{ex},{ey},{ez},{sx},{sy},{sz}
-                            parse1u_nf::<9>(&s["SET_TRANSFORM:".len()..]).map(|(id, fs)| {
-                                IpcCommand::SetTransform {
-                                    id,
-                                    px: fs[0],
-                                    py: fs[1],
-                                    pz: fs[2],
-                                    ex: fs[3],
-                                    ey: fs[4],
-                                    ez: fs[5],
-                                    sx: fs[6],
-                                    sy: fs[7],
-                                    sz: fs[8],
-                                }
+                            parse1u_nf::<9>(&s["SET_TRANSFORM:".len()..]).map(|(id, fs)| IpcCommand::SetTransform {
+                                id,
+                                px: fs[0], py: fs[1], pz: fs[2],
+                                ex: fs[3], ey: fs[4], ez: fs[5],
+                                sx: fs[6], sy: fs[7], sz: fs[8],
                             })
                         }
                         s if s.starts_with("REPARENT:") => {
@@ -1569,11 +1122,7 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                             parse1u_tail(&s["REPARENT:".len()..]).and_then(|(child, tail)| {
                                 let fields: Vec<&str> = tail.split(',').collect();
                                 let p = fields.first()?.trim();
-                                let new_parent = if p == "-1" {
-                                    None
-                                } else {
-                                    Some(p.parse::<u32>().ok()?)
-                                };
+                                let new_parent = if p == "-1" { None } else { Some(p.parse::<u32>().ok()?) };
                                 let (anchor_sibling, place_before) = if fields.len() >= 3 {
                                     let a: i64 = fields[1].trim().parse().ok()?;
                                     let anchor = if a < 0 { None } else { Some(a as u32) };
@@ -1582,60 +1131,45 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                                 } else {
                                     (None, false)
                                 };
-                                Some(IpcCommand::Reparent {
-                                    child,
-                                    new_parent,
-                                    anchor_sibling,
-                                    place_before,
-                                })
+                                Some(IpcCommand::Reparent { child, new_parent, anchor_sibling, place_before })
                             })
                         }
-                        s if s.starts_with("VIEWPORT_FOV:") => s["VIEWPORT_FOV:".len()..]
-                            .parse::<f32>()
-                            .ok()
-                            .map(IpcCommand::SetCameraFov),
-                        s if s.starts_with("VIEWPORT_FAR:") => s["VIEWPORT_FAR:".len()..]
-                            .parse::<f32>()
-                            .ok()
-                            .map(IpcCommand::SetCameraFar),
-                        "SHOW_GRID:1" => Some(IpcCommand::SetShowGrid(true)),
-                        "SHOW_GRID:0" => Some(IpcCommand::SetShowGrid(false)),
-                        "RT_SHADOWS:1" => Some(IpcCommand::SetRtShadows(true)),
-                        "RT_SHADOWS:0" => Some(IpcCommand::SetRtShadows(false)),
+                        s if s.starts_with("VIEWPORT_FOV:") => {
+                            s["VIEWPORT_FOV:".len()..].parse::<f32>().ok()
+                                .map(IpcCommand::SetCameraFov)
+                        }
+                        s if s.starts_with("VIEWPORT_FAR:") => {
+                            s["VIEWPORT_FAR:".len()..].parse::<f32>().ok()
+                                .map(IpcCommand::SetCameraFar)
+                        }
+                        "SHOW_GRID:1"           => Some(IpcCommand::SetShowGrid(true)),
+                        "SHOW_GRID:0"           => Some(IpcCommand::SetShowGrid(false)),
+                        "RT_SHADOWS:1"          => Some(IpcCommand::SetRtShadows(true)),
+                        "RT_SHADOWS:0"          => Some(IpcCommand::SetRtShadows(false)),
                         // ポストエフェクト設定（Phase R4）。JSON: {"bloom":bool,"fxaa":bool,"bloom_intensity":float}。
                         // パース不能・キー欠落時は安全側（false / 既定強度）へフォールバックする。
                         s if s.starts_with("SET_POST_FX:") => {
                             let json = &s["SET_POST_FX:".len()..];
                             let v = serde_json::from_str::<serde_json::Value>(json).ok();
-                            let bloom = v
-                                .as_ref()
-                                .and_then(|v| v["bloom"].as_bool())
-                                .unwrap_or(false);
-                            let fxaa = v
-                                .as_ref()
-                                .and_then(|v| v["fxaa"].as_bool())
-                                .unwrap_or(false);
-                            let bloom_intensity =
-                                v.as_ref()
-                                    .and_then(|v| v["bloom_intensity"].as_f64())
-                                    .unwrap_or(0.6) as f32;
+                            let bloom = v.as_ref().and_then(|v| v["bloom"].as_bool()).unwrap_or(false);
+                            let fxaa  = v.as_ref().and_then(|v| v["fxaa"].as_bool()).unwrap_or(false);
+                            let bloom_intensity = v.as_ref()
+                                .and_then(|v| v["bloom_intensity"].as_f64())
+                                .unwrap_or(0.6) as f32;
                             // 透明描画方式（欠落時は "sort" = 距離ソート）。
-                            let transparency =
-                                crate::engine::core::renderer::TransparencyMode::from_str(
-                                    v.as_ref()
-                                        .and_then(|v| v["transparency"].as_str())
-                                        .unwrap_or("sort"),
-                                );
+                            let transparency = crate::engine::core::renderer::TransparencyMode::from_str(
+                                v.as_ref()
+                                    .and_then(|v| v["transparency"].as_str())
+                                    .unwrap_or("sort"),
+                            );
                             // メッシュレットカリングは常時有効化したため "meshlet_cull" は解釈しない
                             //（旧エディタが送ってきても無視する＝ワイヤ互換維持）。
                             // Deferred レンダリング（欠落時は true = 有効。Phase D3 Deferred Phase B）。
-                            let deferred = v
-                                .as_ref()
+                            let deferred = v.as_ref()
                                 .and_then(|v| v["deferred"].as_bool())
                                 .unwrap_or(true);
                             // RT屈折の逐次グラブ（欠落時は false = 無効。既定 OFF の重量オプション）。
-                            let refract_sequential_grab = v
-                                .as_ref()
+                            let refract_sequential_grab = v.as_ref()
                                 .and_then(|v| v["refract_sequential_grab"].as_bool())
                                 .unwrap_or(false);
                             // ビューモード（欠落・未知時は "lit" = ライティング ON）。
@@ -1647,62 +1181,27 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                             // DDGI の数値設定（Phase RT-GI）。既定値から出発し、存在するキーだけ上書きする。
                             let mut gi = crate::engine::core::renderer::GiSettings::default();
                             // 旧キー "gi_enabled"（後方互換）。features 無しの旧エディタからの GI 有効/無効。
-                            let legacy_gi_enabled =
-                                v.as_ref().and_then(|vv| vv["gi_enabled"].as_bool());
+                            let legacy_gi_enabled = v.as_ref().and_then(|vv| vv["gi_enabled"].as_bool());
                             if let Some(vv) = v.as_ref() {
-                                if let Some(x) = vv["gi_intensity"].as_f64() {
-                                    gi.intensity = x as f32;
-                                }
-                                if let Some(x) = vv["gi_probes_per_frame"].as_u64() {
-                                    gi.probes_per_frame = x as u32;
-                                }
-                                if let Some(x) = vv["gi_rays_per_probe"].as_u64() {
-                                    gi.rays_per_probe = x as u32;
-                                }
-                                if let Some(x) = vv["gi_hysteresis"].as_f64() {
-                                    gi.hysteresis = x as f32;
-                                }
-                                if let Some(x) = vv["gi_recursive_weight"].as_f64() {
-                                    gi.recursive_weight = x as f32;
-                                }
+                                if let Some(x) = vv["gi_intensity"].as_f64()         { gi.intensity = x as f32; }
+                                if let Some(x) = vv["gi_probes_per_frame"].as_u64()  { gi.probes_per_frame = x as u32; }
+                                if let Some(x) = vv["gi_rays_per_probe"].as_u64()    { gi.rays_per_probe = x as u32; }
+                                if let Some(x) = vv["gi_hysteresis"].as_f64()        { gi.hysteresis = x as f32; }
+                                if let Some(x) = vv["gi_recursive_weight"].as_f64()  { gi.recursive_weight = x as f32; }
                             }
                             // 反射強度（Phase D6）。欠落時は既定 1.0。
-                            let reflection_intensity = v
-                                .as_ref()
+                            let reflection_intensity = v.as_ref()
                                 .and_then(|vv| vv["reflection_intensity"].as_f64())
-                                .unwrap_or(
-                                    crate::engine::core::renderer::DEFAULT_REFLECTION_INTENSITY
-                                        as f64,
-                                ) as f32;
+                                .unwrap_or(crate::engine::core::renderer::DEFAULT_REFLECTION_INTENSITY as f64) as f32;
                             // AO 強度（Phase D4）。欠落時は既定 1.0。
-                            let ao_intensity = v
-                                .as_ref()
+                            let ao_intensity = v.as_ref()
                                 .and_then(|vv| vv["ao_intensity"].as_f64())
-                                .unwrap_or(
-                                    crate::engine::core::renderer::DEFAULT_AO_INTENSITY as f64,
-                                ) as f32;
+                                .unwrap_or(crate::engine::core::renderer::DEFAULT_AO_INTENSITY as f64) as f32;
                             // 新キー "features"（機能マトリクス）。欠落キーは serde default で埋まる。
-                            let features =
-                                v.as_ref().and_then(|vv| vv.get("features")).and_then(|fv| {
-                                    serde_json::from_value::<
-                                        crate::engine::core::renderer::RenderFeatures,
-                                    >(fv.clone())
-                                    .ok()
-                                });
-                            Some(IpcCommand::SetPostFx {
-                                bloom,
-                                fxaa,
-                                bloom_intensity,
-                                transparency,
-                                deferred,
-                                refract_sequential_grab,
-                                view_mode,
-                                gi,
-                                reflection_intensity,
-                                ao_intensity,
-                                features,
-                                legacy_gi_enabled,
-                            })
+                            let features = v.as_ref()
+                                .and_then(|vv| vv.get("features"))
+                                .and_then(|fv| serde_json::from_value::<crate::engine::core::renderer::RenderFeatures>(fv.clone()).ok());
+                            Some(IpcCommand::SetPostFx { bloom, fxaa, bloom_intensity, transparency, deferred, refract_sequential_grab, view_mode, gi, reflection_intensity, ao_intensity, features, legacy_gi_enabled })
                         }
                         // 環境光（Phase R1.5）。"SET_AMBIENT:{r},{g},{b},{intensity}"。
                         // 4 要素に満たない／パース不能な場合は無視する（None）。
@@ -1717,62 +1216,44 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                                     parts[3].parse::<f32>(),
                                 ) {
                                     Some(IpcCommand::SetAmbient {
-                                        color: [r.max(0.0), g.max(0.0), b.max(0.0)],
+                                        color:     [r.max(0.0), g.max(0.0), b.max(0.0)],
                                         intensity: i.max(0.0),
                                     })
-                                } else {
-                                    None
-                                }
-                            } else {
-                                None
-                            }
+                                } else { None }
+                            } else { None }
                         }
-                        "SHOW_AXIS_GIZMO:1" => Some(IpcCommand::SetShowAxisGizmo(true)),
-                        "SHOW_AXIS_GIZMO:0" => Some(IpcCommand::SetShowAxisGizmo(false)),
-                        "CANVAS_SS_OVERLAY:1" => {
-                            Some(IpcCommand::SetCanvasScreenSpaceOverlay(true))
-                        }
-                        "CANVAS_SS_OVERLAY:0" => {
-                            Some(IpcCommand::SetCanvasScreenSpaceOverlay(false))
-                        }
+                        "SHOW_AXIS_GIZMO:1"     => Some(IpcCommand::SetShowAxisGizmo(true)),
+                        "SHOW_AXIS_GIZMO:0"     => Some(IpcCommand::SetShowAxisGizmo(false)),
+                        "CANVAS_SS_OVERLAY:1"   => Some(IpcCommand::SetCanvasScreenSpaceOverlay(true)),
+                        "CANVAS_SS_OVERLAY:0"   => Some(IpcCommand::SetCanvasScreenSpaceOverlay(false)),
                         // Edit ビューモード切替（エディタの 3Dシーン / 2Dシーンタブ）
-                        "EDIT_VIEW:2d" => Some(IpcCommand::SetEditViewMode { is_2d: true }),
-                        "EDIT_VIEW:3d" => Some(IpcCommand::SetEditViewMode { is_2d: false }),
-                        "EDITOR_CAM_ORTHO:1" => Some(IpcCommand::SetEditorCameraOrtho(true)),
-                        "EDITOR_CAM_ORTHO:0" => Some(IpcCommand::SetEditorCameraOrtho(false)),
+                        "EDIT_VIEW:2d"          => Some(IpcCommand::SetEditViewMode { is_2d: true  }),
+                        "EDIT_VIEW:3d"          => Some(IpcCommand::SetEditViewMode { is_2d: false }),
+                        "EDITOR_CAM_ORTHO:1"    => Some(IpcCommand::SetEditorCameraOrtho(true)),
+                        "EDITOR_CAM_ORTHO:0"    => Some(IpcCommand::SetEditorCameraOrtho(false)),
                         s if s.starts_with("LOAD_SCENE:") => {
                             Some(IpcCommand::LoadScene(s["LOAD_SCENE:".len()..].to_string()))
                         }
                         "GET_CAM_STATE" => Some(IpcCommand::GetCamState),
                         s if s.starts_with("CAM_TRANSFORM:") => {
                             // フォーマット: CAM_TRANSFORM:{px},{py},{pz},{euler_x},{euler_y},{euler_z}
-                            parse_nf::<6>(&s["CAM_TRANSFORM:".len()..]).map(|fs| {
-                                IpcCommand::SetCameraTransform {
-                                    px: fs[0],
-                                    py: fs[1],
-                                    pz: fs[2],
-                                    euler_x: fs[3],
-                                    euler_y: fs[4],
-                                    euler_z: fs[5],
-                                }
+                            parse_nf::<6>(&s["CAM_TRANSFORM:".len()..]).map(|fs| IpcCommand::SetCameraTransform {
+                                px: fs[0], py: fs[1], pz: fs[2],
+                                euler_x: fs[3], euler_y: fs[4], euler_z: fs[5],
                             })
                         }
-                        s if s.starts_with("CAM_SPEED:") => s["CAM_SPEED:".len()..]
-                            .parse::<f32>()
-                            .ok()
-                            .map(IpcCommand::SetCameraSpeed),
+                        s if s.starts_with("CAM_SPEED:") => {
+                            s["CAM_SPEED:".len()..].parse::<f32>().ok()
+                                .map(IpcCommand::SetCameraSpeed)
+                        }
                         s if s.starts_with("OPEN_ACTOR:") => {
                             // フォーマット: "OPEN_ACTOR:<world_line>,<path>"
                             let rest = &s["OPEN_ACTOR:".len()..];
                             let mut it = rest.splitn(2, ',');
                             if let (Some(wl_s), Some(path)) = (it.next(), it.next()) {
-                                wl_s.parse::<u32>().ok().map(|wl| IpcCommand::OpenActor {
-                                    path: path.to_string(),
-                                    world_line: wl,
-                                })
-                            } else {
-                                None
-                            }
+                                wl_s.parse::<u32>().ok()
+                                    .map(|wl| IpcCommand::OpenActor { path: path.to_string(), world_line: wl })
+                            } else { None }
                         }
                         s if s.starts_with("EDIT_CANVAS_BEGIN:") => {
                             // フォーマット: "EDIT_CANVAS_BEGIN:{world_line},{actor_dfs_id}"
@@ -1781,28 +1262,24 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                             if let (Some(wl_s), Some(dfs_s)) = (it.next(), it.next()) {
                                 match (wl_s.parse::<u32>(), dfs_s.parse::<u32>()) {
                                     (Ok(wl), Ok(dfs)) => Some(IpcCommand::EditCanvasBegin {
-                                        world_line: wl,
-                                        actor_dfs_id: dfs,
+                                        world_line: wl, actor_dfs_id: dfs,
                                     }),
                                     _ => None,
                                 }
-                            } else {
-                                None
-                            }
+                            } else { None }
                         }
-                        s if s.starts_with("EDIT_CANVAS_END:") => s["EDIT_CANVAS_END:".len()..]
-                            .parse::<u32>()
-                            .ok()
-                            .map(IpcCommand::EditCanvasEnd),
-                        s if s.starts_with("SET_ACTIVE_WORLD_LINE:") => s
-                            ["SET_ACTIVE_WORLD_LINE:".len()..]
-                            .parse::<u32>()
-                            .ok()
-                            .map(IpcCommand::SetActiveWorldLine),
-                        s if s.starts_with("REMOVE_WORLD_LINE:") => s["REMOVE_WORLD_LINE:".len()..]
-                            .parse::<u32>()
-                            .ok()
-                            .map(IpcCommand::RemoveWorldLine),
+                        s if s.starts_with("EDIT_CANVAS_END:") => {
+                            s["EDIT_CANVAS_END:".len()..].parse::<u32>().ok()
+                                .map(IpcCommand::EditCanvasEnd)
+                        }
+                        s if s.starts_with("SET_ACTIVE_WORLD_LINE:") => {
+                            s["SET_ACTIVE_WORLD_LINE:".len()..].parse::<u32>().ok()
+                                .map(IpcCommand::SetActiveWorldLine)
+                        }
+                        s if s.starts_with("REMOVE_WORLD_LINE:") => {
+                            s["REMOVE_WORLD_LINE:".len()..].parse::<u32>().ok()
+                                .map(IpcCommand::RemoveWorldLine)
+                        }
                         s if s.starts_with("ADD_COMPONENT:") => {
                             // ADD_COMPONENT:{dfs_id},{type},{name},{args}
                             let rest = &s["ADD_COMPONENT:".len()..];
@@ -1810,44 +1287,29 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                             if let (Some(id_s), Some(comp_type), Some(name), Some(args)) =
                                 (it.next(), it.next(), it.next(), it.next())
                             {
-                                id_s.parse::<u32>().ok().map(|actor_dfs_id| {
-                                    IpcCommand::AddComponent {
-                                        actor_dfs_id,
-                                        component_type: comp_type.to_string(),
-                                        slot_name: name.to_string(),
-                                        args: args.to_string(),
-                                    }
+                                id_s.parse::<u32>().ok().map(|actor_dfs_id| IpcCommand::AddComponent {
+                                    actor_dfs_id,
+                                    component_type: comp_type.to_string(),
+                                    slot_name:      name.to_string(),
+                                    args:           args.to_string(),
                                 })
-                            } else {
-                                None
-                            }
+                            } else { None }
                         }
-                        s if s.starts_with("GET_ACTOR_COMPONENTS:") => s
-                            ["GET_ACTOR_COMPONENTS:".len()..]
-                            .parse::<u32>()
-                            .ok()
-                            .map(IpcCommand::GetActorComponents),
+                        s if s.starts_with("GET_ACTOR_COMPONENTS:") => {
+                            s["GET_ACTOR_COMPONENTS:".len()..].parse::<u32>().ok()
+                                .map(IpcCommand::GetActorComponents)
+                        }
                         s if s.starts_with("ADD_ACTOR:") => {
                             // ADD_ACTOR:{world_line},{parent_dfs_id} (-1 = root)
                             let rest = &s["ADD_ACTOR:".len()..];
                             let mut it = rest.splitn(2, ',');
                             if let (Some(wl_s), Some(p_s)) = (it.next(), it.next()) {
                                 if let Ok(wl) = wl_s.parse::<u32>() {
-                                    let parent = if p_s == "-1" {
-                                        None
-                                    } else {
-                                        p_s.parse::<u32>().ok()
-                                    };
-                                    Some(IpcCommand::AddActor {
-                                        world_line: wl,
-                                        parent_dfs_id: parent,
-                                    })
-                                } else {
-                                    None
-                                }
-                            } else {
-                                None
-                            }
+                                    let parent = if p_s == "-1" { None }
+                                        else { p_s.parse::<u32>().ok() };
+                                    Some(IpcCommand::AddActor { world_line: wl, parent_dfs_id: parent })
+                                } else { None }
+                            } else { None }
                         }
                         s if s.starts_with("ADD_ACTOR_2D:") => {
                             // ADD_ACTOR_2D:{world_line},{parent_dfs_id} (-1 = root)
@@ -1855,36 +1317,20 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                             let mut it = rest.splitn(2, ',');
                             if let (Some(wl_s), Some(p_s)) = (it.next(), it.next()) {
                                 if let Ok(wl) = wl_s.parse::<u32>() {
-                                    let parent = if p_s == "-1" {
-                                        None
-                                    } else {
-                                        p_s.parse::<u32>().ok()
-                                    };
-                                    Some(IpcCommand::AddActor2D {
-                                        world_line: wl,
-                                        parent_dfs_id: parent,
-                                    })
-                                } else {
-                                    None
-                                }
-                            } else {
-                                None
-                            }
+                                    let parent = if p_s == "-1" { None }
+                                        else { p_s.parse::<u32>().ok() };
+                                    Some(IpcCommand::AddActor2D { world_line: wl, parent_dfs_id: parent })
+                                } else { None }
+                            } else { None }
                         }
                         s if s.starts_with("ADD_ACTOR_CHILD:") => {
                             // ADD_ACTOR_CHILD:{parent_dfs_id}
-                            s["ADD_ACTOR_CHILD:".len()..]
-                                .trim()
-                                .parse::<u32>()
-                                .ok()
+                            s["ADD_ACTOR_CHILD:".len()..].trim().parse::<u32>().ok()
                                 .map(|id| IpcCommand::AddActorChild { parent_dfs_id: id })
                         }
                         s if s.starts_with("ADD_ACTOR_2D_CHILD:") => {
                             // ADD_ACTOR_2D_CHILD:{parent_dfs_id}
-                            s["ADD_ACTOR_2D_CHILD:".len()..]
-                                .trim()
-                                .parse::<u32>()
-                                .ok()
+                            s["ADD_ACTOR_2D_CHILD:".len()..].trim().parse::<u32>().ok()
                                 .map(|id| IpcCommand::AddActor2dChild { parent_dfs_id: id })
                         }
                         s if s.starts_with("WRAP_ACTOR:") => {
@@ -1892,169 +1338,113 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                             let rest = &s["WRAP_ACTOR:".len()..];
                             let mut it = rest.splitn(2, ',');
                             if let (Some(c_s), Some(k_s)) = (it.next(), it.next()) {
-                                c_s.trim().parse::<u32>().ok().map(|child_dfs| {
-                                    IpcCommand::WrapActor {
-                                        child_dfs,
-                                        is_2d: k_s.trim() == "1",
-                                    }
+                                c_s.trim().parse::<u32>().ok().map(|child_dfs| IpcCommand::WrapActor {
+                                    child_dfs,
+                                    is_2d: k_s.trim() == "1",
                                 })
-                            } else {
-                                None
-                            }
+                            } else { None }
                         }
-                        s if s.starts_with("REMOVE_ACTOR:") => s["REMOVE_ACTOR:".len()..]
-                            .parse::<u32>()
-                            .ok()
-                            .map(IpcCommand::RemoveActor),
+                        s if s.starts_with("REMOVE_ACTOR:") => {
+                            s["REMOVE_ACTOR:".len()..].parse::<u32>().ok()
+                                .map(IpcCommand::RemoveActor)
+                        }
                         s if s.starts_with("RENAME_ACTOR:") => {
                             // フォーマット: RENAME_ACTOR:{dfs_id},{name}
-                            parse1u_tail(&s["RENAME_ACTOR:".len()..]).map(|(dfs_id, name)| {
-                                IpcCommand::RenameActor {
-                                    dfs_id,
-                                    name: name.to_string(),
-                                }
-                            })
+                            parse1u_tail(&s["RENAME_ACTOR:".len()..])
+                                .map(|(dfs_id, name)| IpcCommand::RenameActor { dfs_id, name: name.to_string() })
                         }
                         s if s.starts_with("REMOVE_COMPONENT:") => {
                             // フォーマット: REMOVE_COMPONENT:{actor_dfs_id},{slot_idx}
-                            parse2u(&s["REMOVE_COMPONENT:".len()..]).map(|(a, sl)| {
-                                IpcCommand::RemoveComponentSlot {
-                                    actor_dfs_id: a,
-                                    slot_idx: sl,
-                                }
-                            })
+                            parse2u(&s["REMOVE_COMPONENT:".len()..])
+                                .map(|(a, sl)| IpcCommand::RemoveComponentSlot { actor_dfs_id: a, slot_idx: sl })
                         }
                         s if s.starts_with("SET_ACTOR_ACTIVE:") => {
                             // フォーマット: SET_ACTOR_ACTIVE:{dfs_id},{0|1}
-                            parse2u(&s["SET_ACTOR_ACTIVE:".len()..]).map(|(dfs, v)| {
-                                IpcCommand::SetActorActive {
-                                    dfs_id: dfs,
-                                    active: v != 0,
-                                }
-                            })
+                            parse2u(&s["SET_ACTOR_ACTIVE:".len()..])
+                                .map(|(dfs, v)| IpcCommand::SetActorActive { dfs_id: dfs, active: v != 0 })
                         }
                         s if s.starts_with("SET_SLOT_ENABLED:") => {
                             // フォーマット: SET_SLOT_ENABLED:{actor_dfs_id},{slot_idx},{0|1}
-                            parse2u1b(&s["SET_SLOT_ENABLED:".len()..]).map(|(a, sl, v)| {
-                                IpcCommand::SetSlotEnabled {
-                                    actor_dfs_id: a,
-                                    slot_idx: sl,
-                                    enabled: v,
-                                }
-                            })
+                            parse2u1b(&s["SET_SLOT_ENABLED:".len()..])
+                                .map(|(a, sl, v)| IpcCommand::SetSlotEnabled {
+                                    actor_dfs_id: a, slot_idx: sl, enabled: v,
+                                })
                         }
                         s if s.starts_with("RENAME_COMPONENT:") => {
                             // フォーマット: RENAME_COMPONENT:{actor_dfs_id},{slot_idx},{name}
-                            parse2u_tail(&s["RENAME_COMPONENT:".len()..]).map(|(a, sl, name)| {
-                                IpcCommand::RenameComponentSlot {
-                                    actor_dfs_id: a,
-                                    slot_idx: sl,
-                                    name: name.to_string(),
-                                }
-                            })
+                            parse2u_tail(&s["RENAME_COMPONENT:".len()..])
+                                .map(|(a, sl, name)| IpcCommand::RenameComponentSlot {
+                                    actor_dfs_id: a, slot_idx: sl, name: name.to_string(),
+                                })
                         }
                         s if s.starts_with("SET_ACTOR_TRANSFORM:") => {
                             // フォーマット: SET_ACTOR_TRANSFORM:{dfs_id},{px},{py},{pz},{ex},{ey},{ez},{sx},{sy},{sz}
-                            parse1u_nf::<9>(&s["SET_ACTOR_TRANSFORM:".len()..]).map(
-                                |(dfs_id, fs)| IpcCommand::SetActorTransform {
-                                    dfs_id,
-                                    px: fs[0],
-                                    py: fs[1],
-                                    pz: fs[2],
-                                    ex: fs[3],
-                                    ey: fs[4],
-                                    ez: fs[5],
-                                    sx: fs[6],
-                                    sy: fs[7],
-                                    sz: fs[8],
-                                },
-                            )
+                            parse1u_nf::<9>(&s["SET_ACTOR_TRANSFORM:".len()..]).map(|(dfs_id, fs)| IpcCommand::SetActorTransform {
+                                dfs_id,
+                                px: fs[0], py: fs[1], pz: fs[2],
+                                ex: fs[3], ey: fs[4], ez: fs[5],
+                                sx: fs[6], sy: fs[7], sz: fs[8],
+                            })
                         }
                         s if s.starts_with("SET_CANVAS_TRANSFORM:") => {
                             // フォーマット: SET_CANVAS_TRANSFORM:{dfs_id},{px},{py},{rotation},{sx},{sy},{pivot_x},{pivot_y}
-                            parse1u_nf::<7>(&s["SET_CANVAS_TRANSFORM:".len()..]).map(
-                                |(dfs_id, fs)| IpcCommand::SetCanvasTransform {
-                                    dfs_id,
-                                    px: fs[0],
-                                    py: fs[1],
-                                    rotation: fs[2],
-                                    sx: fs[3],
-                                    sy: fs[4],
-                                    pivot_x: fs[5],
-                                    pivot_y: fs[6],
-                                },
-                            )
+                            parse1u_nf::<7>(&s["SET_CANVAS_TRANSFORM:".len()..]).map(|(dfs_id, fs)| IpcCommand::SetCanvasTransform {
+                                dfs_id,
+                                px: fs[0], py: fs[1],
+                                rotation: fs[2],
+                                sx: fs[3], sy: fs[4],
+                                pivot_x: fs[5], pivot_y: fs[6],
+                            })
                         }
                         s if s.starts_with("SET_CANVAS_SIZE:") => {
                             // フォーマット: SET_CANVAS_SIZE:{actor_dfs_id},{slot_idx},{width},{height}
-                            parse2u_nf::<2>(&s["SET_CANVAS_SIZE:".len()..]).map(|(a, sl, fs)| {
-                                IpcCommand::SetCanvasSize {
-                                    actor_dfs_id: a,
-                                    slot_idx: sl,
-                                    width: fs[0],
-                                    height: fs[1],
-                                }
-                            })
+                            parse2u_nf::<2>(&s["SET_CANVAS_SIZE:".len()..])
+                                .map(|(a, sl, fs)| IpcCommand::SetCanvasSize {
+                                    actor_dfs_id: a, slot_idx: sl,
+                                    width: fs[0], height: fs[1],
+                                })
                         }
                         s if s.starts_with("SET_MODEL_PATH:") => {
                             // フォーマット: SET_MODEL_PATH:{actor_dfs_id},{slot_idx},{path}
-                            parse2u_tail(&s["SET_MODEL_PATH:".len()..]).map(|(a, sl, path)| {
-                                IpcCommand::SetModelPath {
-                                    actor_dfs_id: a,
-                                    slot_idx: sl,
-                                    path: path.to_string(),
-                                }
-                            })
+                            parse2u_tail(&s["SET_MODEL_PATH:".len()..])
+                                .map(|(a, sl, path)| IpcCommand::SetModelPath {
+                                    actor_dfs_id: a, slot_idx: sl, path: path.to_string(),
+                                })
                         }
                         s if s.starts_with("SET_MODEL_FIELD:") => {
                             // フォーマット: SET_MODEL_FIELD:{actor_dfs_id},{slot_idx},{key},{value}
-                            parse2u_tail(&s["SET_MODEL_FIELD:".len()..]).and_then(
-                                |(a, sl, tail)| {
-                                    let (key, value) = tail.split_once(',')?;
-                                    Some(IpcCommand::SetModelField {
-                                        actor_dfs_id: a,
-                                        slot_idx: sl,
-                                        key: key.to_string(),
-                                        value: value.to_string(),
-                                    })
-                                },
-                            )
+                            parse2u_tail(&s["SET_MODEL_FIELD:".len()..]).and_then(|(a, sl, tail)| {
+                                let (key, value) = tail.split_once(',')?;
+                                Some(IpcCommand::SetModelField {
+                                    actor_dfs_id: a, slot_idx: sl,
+                                    key: key.to_string(), value: value.to_string(),
+                                })
+                            })
                         }
                         s if s.starts_with("SET_MATERIAL_OVERRIDE:") => {
                             // フォーマット: SET_MATERIAL_OVERRIDE:{actor_dfs_id},{slot_idx},{mat_slot},{json}
-                            parse3u_tail(&s["SET_MATERIAL_OVERRIDE:".len()..]).map(
-                                |(a, sl, ms, json)| IpcCommand::SetMaterialOverride {
-                                    actor_dfs_id: a,
-                                    slot_idx: sl,
-                                    mat_slot: ms,
-                                    json: json.to_string(),
-                                },
-                            )
+                            parse3u_tail(&s["SET_MATERIAL_OVERRIDE:".len()..])
+                                .map(|(a, sl, ms, json)| IpcCommand::SetMaterialOverride {
+                                    actor_dfs_id: a, slot_idx: sl, mat_slot: ms, json: json.to_string(),
+                                })
                         }
                         s if s.starts_with("SET_SCRIPT_FIELD:") => {
                             // フォーマット: SET_SCRIPT_FIELD:{actor_dfs_id},{slot_idx},{field_name},{value}
                             // value にはカンマが含まれてもよい（文字列フィールド用）
-                            parse2u_tail(&s["SET_SCRIPT_FIELD:".len()..]).and_then(
-                                |(a, sl, tail)| {
+                            parse2u_tail(&s["SET_SCRIPT_FIELD:".len()..])
+                                .and_then(|(a, sl, tail)| {
                                     let (field, value) = tail.split_once(',')?;
                                     Some(IpcCommand::SetScriptField {
-                                        actor_dfs_id: a,
-                                        slot_idx: sl,
-                                        field: field.to_string(),
-                                        value: value.to_string(),
+                                        actor_dfs_id: a, slot_idx: sl,
+                                        field: field.to_string(), value: value.to_string(),
                                     })
-                                },
-                            )
+                                })
                         }
                         "RELOAD_SCRIPTS" => Some(IpcCommand::ReloadScripts),
                         s if s.starts_with("DUPLICATE_COMPONENT:") => {
                             // フォーマット: DUPLICATE_COMPONENT:{actor_dfs_id},{slot_idx}
-                            parse2u(&s["DUPLICATE_COMPONENT:".len()..]).map(|(a, sl)| {
-                                IpcCommand::DuplicateComponent {
-                                    actor_dfs_id: a,
-                                    slot_idx: sl,
-                                }
-                            })
+                            parse2u(&s["DUPLICATE_COMPONENT:".len()..])
+                                .map(|(a, sl)| IpcCommand::DuplicateComponent { actor_dfs_id: a, slot_idx: sl })
                         }
                         s if s.starts_with("DROP_ACTOR:") => {
                             // フォーマット: DROP_ACTOR:{path},{screen_x},{screen_y}
@@ -2070,12 +1460,8 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                                         screen_x: sx,
                                         screen_y: sy,
                                     })
-                                } else {
-                                    None
-                                }
-                            } else {
-                                None
-                            }
+                                } else { None }
+                            } else { None }
                         }
                         s if s.starts_with("DRAG_HOVER:") => {
                             // フォーマット: DRAG_HOVER:{viewport_x},{viewport_y}
@@ -2085,9 +1471,7 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                                 (Some(xs), Some(ys)) => {
                                     if let (Ok(x), Ok(y)) = (xs.parse::<u32>(), ys.parse::<u32>()) {
                                         Some(IpcCommand::DragHover { x, y })
-                                    } else {
-                                        None
-                                    }
+                                    } else { None }
                                 }
                                 _ => None,
                             }
@@ -2095,160 +1479,113 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                         s if s == "DRAG_HOVER_END" => Some(IpcCommand::DragHoverEnd),
                         s if s.starts_with("SET_SPRITE_PATH:") => {
                             // フォーマット: SET_SPRITE_PATH:{actor_dfs_id},{slot_idx},{path}
-                            parse2u_tail(&s["SET_SPRITE_PATH:".len()..]).map(|(a, sl, path)| {
-                                IpcCommand::SetSpritePath {
-                                    actor_dfs_id: a,
-                                    slot_idx: sl,
-                                    path: path.to_string(),
-                                }
-                            })
+                            parse2u_tail(&s["SET_SPRITE_PATH:".len()..])
+                                .map(|(a, sl, path)| IpcCommand::SetSpritePath {
+                                    actor_dfs_id: a, slot_idx: sl, path: path.to_string(),
+                                })
                         }
                         s if s.starts_with("SET_SPRITE_POSTFX:") => {
                             // フォーマット: SET_SPRITE_POSTFX:{actor_dfs_id},{slot_idx},{path}
-                            parse2u_tail(&s["SET_SPRITE_POSTFX:".len()..]).map(|(a, sl, path)| {
-                                IpcCommand::SetSpritePostfx {
-                                    actor_dfs_id: a,
-                                    slot_idx: sl,
-                                    path: path.to_string(),
-                                }
-                            })
+                            parse2u_tail(&s["SET_SPRITE_POSTFX:".len()..])
+                                .map(|(a, sl, path)| IpcCommand::SetSpritePostfx {
+                                    actor_dfs_id: a, slot_idx: sl, path: path.to_string(),
+                                })
                         }
                         s if s.starts_with("SET_SPRITE_COLOR:") => {
                             // フォーマット: SET_SPRITE_COLOR:{actor_dfs_id},{slot_idx},{r},{g},{b},{a}
-                            parse2u_nf::<4>(&s["SET_SPRITE_COLOR:".len()..]).map(|(a, sl, fs)| {
-                                IpcCommand::SetSpriteColor {
-                                    actor_dfs_id: a,
-                                    slot_idx: sl,
-                                    r: fs[0],
-                                    g: fs[1],
-                                    b: fs[2],
-                                    a: fs[3],
-                                }
-                            })
+                            parse2u_nf::<4>(&s["SET_SPRITE_COLOR:".len()..])
+                                .map(|(a, sl, fs)| IpcCommand::SetSpriteColor {
+                                    actor_dfs_id: a, slot_idx: sl,
+                                    r: fs[0], g: fs[1], b: fs[2], a: fs[3],
+                                })
                         }
                         s if s.starts_with("SET_SPRITE_SIZE:") => {
                             // フォーマット: SET_SPRITE_SIZE:{actor_dfs_id},{slot_idx},{width},{height}
-                            parse2u_nf::<2>(&s["SET_SPRITE_SIZE:".len()..]).map(|(a, sl, fs)| {
-                                IpcCommand::SetSpriteSize {
-                                    actor_dfs_id: a,
-                                    slot_idx: sl,
-                                    width: fs[0],
-                                    height: fs[1],
-                                }
-                            })
+                            parse2u_nf::<2>(&s["SET_SPRITE_SIZE:".len()..])
+                                .map(|(a, sl, fs)| IpcCommand::SetSpriteSize {
+                                    actor_dfs_id: a, slot_idx: sl,
+                                    width: fs[0], height: fs[1],
+                                })
                         }
                         s if s.starts_with("SET_SPRITE_LAYER:") => {
                             // フォーマット: SET_SPRITE_LAYER:{actor_dfs_id},{slot_idx},{layer}
-                            parse2u_tail(&s["SET_SPRITE_LAYER:".len()..]).and_then(
-                                |(a, sl, tail)| {
-                                    let layer: i32 = tail.trim().parse().ok()?;
-                                    Some(IpcCommand::SetSpriteLayer {
-                                        actor_dfs_id: a,
-                                        slot_idx: sl,
-                                        layer,
-                                    })
-                                },
-                            )
+                            parse2u_tail(&s["SET_SPRITE_LAYER:".len()..]).and_then(|(a, sl, tail)| {
+                                let layer: i32 = tail.trim().parse().ok()?;
+                                Some(IpcCommand::SetSpriteLayer {
+                                    actor_dfs_id: a, slot_idx: sl, layer,
+                                })
+                            })
                         }
                         s if s.starts_with("SET_AUDIO_FIELD:") => {
                             // フォーマット: SET_AUDIO_FIELD:{actor_dfs_id},{slot_idx},{key},{value}
-                            parse2u_tail(&s["SET_AUDIO_FIELD:".len()..]).and_then(
-                                |(a, sl, tail)| {
-                                    let (key, value) = tail.split_once(',')?;
-                                    Some(IpcCommand::SetAudioField {
-                                        actor_dfs_id: a,
-                                        slot_idx: sl,
-                                        key: key.to_string(),
-                                        value: value.to_string(),
-                                    })
-                                },
-                            )
+                            parse2u_tail(&s["SET_AUDIO_FIELD:".len()..]).and_then(|(a, sl, tail)| {
+                                let (key, value) = tail.split_once(',')?;
+                                Some(IpcCommand::SetAudioField {
+                                    actor_dfs_id: a, slot_idx: sl,
+                                    key: key.to_string(), value: value.to_string(),
+                                })
+                            })
                         }
                         s if s.starts_with("SET_LIGHT_FIELD:") => {
                             // フォーマット: SET_LIGHT_FIELD:{actor_dfs_id},{slot_idx},{key},{value}
                             // value に "," を含む可能性がある color を扱うため tail をそのまま value にする。
-                            parse2u_tail(&s["SET_LIGHT_FIELD:".len()..]).and_then(
-                                |(a, sl, tail)| {
-                                    let (key, value) = tail.split_once(',')?;
-                                    Some(IpcCommand::SetLightField {
-                                        actor_dfs_id: a,
-                                        slot_idx: sl,
-                                        key: key.to_string(),
-                                        value: value.to_string(),
-                                    })
-                                },
-                            )
+                            parse2u_tail(&s["SET_LIGHT_FIELD:".len()..]).and_then(|(a, sl, tail)| {
+                                let (key, value) = tail.split_once(',')?;
+                                Some(IpcCommand::SetLightField {
+                                    actor_dfs_id: a, slot_idx: sl,
+                                    key: key.to_string(), value: value.to_string(),
+                                })
+                            })
                         }
                         s if s.starts_with("SET_JOINTATTACH_FIELD:") => {
                             // フォーマット: SET_JOINTATTACH_FIELD:{actor_dfs_id},{slot_idx},{key},{value}
                             // value に "," を含む（offset_* は "x,y,z"、joint_name も任意文字）ため tail をそのまま value にする。
-                            parse2u_tail(&s["SET_JOINTATTACH_FIELD:".len()..]).and_then(
-                                |(a, sl, tail)| {
-                                    let (key, value) = tail.split_once(',')?;
-                                    Some(IpcCommand::SetJointAttachField {
-                                        actor_dfs_id: a,
-                                        slot_idx: sl,
-                                        key: key.to_string(),
-                                        value: value.to_string(),
-                                    })
-                                },
-                            )
+                            parse2u_tail(&s["SET_JOINTATTACH_FIELD:".len()..]).and_then(|(a, sl, tail)| {
+                                let (key, value) = tail.split_once(',')?;
+                                Some(IpcCommand::SetJointAttachField {
+                                    actor_dfs_id: a, slot_idx: sl,
+                                    key: key.to_string(), value: value.to_string(),
+                                })
+                            })
                         }
                         s if s.starts_with("SET_SKYBOX_FIELD:") => {
                             // フォーマット: SET_SKYBOX_FIELD:{actor_dfs_id},{slot_idx},{key},{value}
                             // value に "," を含む可能性がある（tint / texture_path）ため tail をそのまま value にする。
-                            parse2u_tail(&s["SET_SKYBOX_FIELD:".len()..]).and_then(
-                                |(a, sl, tail)| {
-                                    let (key, value) = tail.split_once(',')?;
-                                    Some(IpcCommand::SetSkyboxField {
-                                        actor_dfs_id: a,
-                                        slot_idx: sl,
-                                        key: key.to_string(),
-                                        value: value.to_string(),
-                                    })
-                                },
-                            )
+                            parse2u_tail(&s["SET_SKYBOX_FIELD:".len()..]).and_then(|(a, sl, tail)| {
+                                let (key, value) = tail.split_once(',')?;
+                                Some(IpcCommand::SetSkyboxField {
+                                    actor_dfs_id: a, slot_idx: sl,
+                                    key: key.to_string(), value: value.to_string(),
+                                })
+                            })
                         }
                         s if s.starts_with("SET_PARTICLE_FIELD:") => {
                             // フォーマット: SET_PARTICLE_FIELD:{actor_dfs_id},{slot_idx},{key},{value}
                             // value に "," を含む可能性を考慮し tail をそのまま value にする。
-                            parse2u_tail(&s["SET_PARTICLE_FIELD:".len()..]).and_then(
-                                |(a, sl, tail)| {
-                                    let (key, value) = tail.split_once(',')?;
-                                    Some(IpcCommand::SetParticleField {
-                                        actor_dfs_id: a,
-                                        slot_idx: sl,
-                                        key: key.to_string(),
-                                        value: value.to_string(),
-                                    })
-                                },
-                            )
+                            parse2u_tail(&s["SET_PARTICLE_FIELD:".len()..]).and_then(|(a, sl, tail)| {
+                                let (key, value) = tail.split_once(',')?;
+                                Some(IpcCommand::SetParticleField {
+                                    actor_dfs_id: a, slot_idx: sl,
+                                    key: key.to_string(), value: value.to_string(),
+                                })
+                            })
                         }
                         s if s.starts_with("SET_PARTICLE_CURVE:") => {
                             // フォーマット: SET_PARTICLE_CURVE:{actor_dfs_id},{slot_idx},{curve_id},{json}
                             // json に "," を含むため（配列・複数キー）、curve_id だけを
                             // 先頭で split_once して残り全部を json として扱う。
-                            parse2u_tail(&s["SET_PARTICLE_CURVE:".len()..]).and_then(
-                                |(a, sl, tail)| {
-                                    let (curve_id, json) = tail.split_once(',')?;
-                                    Some(IpcCommand::SetParticleCurve {
-                                        actor_dfs_id: a,
-                                        slot_idx: sl,
-                                        curve_id: curve_id.to_string(),
-                                        json: json.to_string(),
-                                    })
-                                },
-                            )
+                            parse2u_tail(&s["SET_PARTICLE_CURVE:".len()..]).and_then(|(a, sl, tail)| {
+                                let (curve_id, json) = tail.split_once(',')?;
+                                Some(IpcCommand::SetParticleCurve {
+                                    actor_dfs_id: a, slot_idx: sl,
+                                    curve_id: curve_id.to_string(), json: json.to_string(),
+                                })
+                            })
                         }
                         s if s.starts_with("SET_CANVAS_ANCHOR:") => {
                             // フォーマット: SET_CANVAS_ANCHOR:{actor_dfs_id},{anchor_x},{anchor_y}
-                            parse1u_nf::<2>(&s["SET_CANVAS_ANCHOR:".len()..]).map(|(id, fs)| {
-                                IpcCommand::SetCanvasAnchor {
-                                    actor_dfs_id: id,
-                                    ax: fs[0],
-                                    ay: fs[1],
-                                }
-                            })
+                            parse1u_nf::<2>(&s["SET_CANVAS_ANCHOR:".len()..])
+                                .map(|(id, fs)| IpcCommand::SetCanvasAnchor { actor_dfs_id: id, ax: fs[0], ay: fs[1] })
                         }
                         s if s.starts_with("SET_CANVAS_TRANSFORM_SCALE_MODE:") => {
                             // フォーマット: SET_CANVAS_TRANSFORM_SCALE_MODE:{actor_dfs_id},{scale_transform},{scale_size},{keep_aspect},{axis}
@@ -2256,90 +1593,69 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                             let rest = &s["SET_CANVAS_TRANSFORM_SCALE_MODE:".len()..];
                             let mut it = rest.splitn(5, ',');
                             (|| -> Option<IpcCommand> {
-                                let id: u32 = it.next()?.trim().parse().ok()?;
-                                let st: bool = it.next()?.trim() == "1";
-                                let ss: bool = it.next()?.trim() == "1";
+                                let id:   u32  = it.next()?.trim().parse().ok()?;
+                                let st:   bool = it.next()?.trim() == "1";
+                                let ss:   bool = it.next()?.trim() == "1";
                                 let keep: bool = it.next()?.trim() == "1";
-                                let axis: u8 = it.next()?.trim().parse().ok()?;
+                                let axis: u8   = it.next()?.trim().parse().ok()?;
                                 Some(IpcCommand::SetCanvasTransformScaleMode {
                                     actor_dfs_id: id,
-                                    scale_transform: st,
-                                    scale_size: ss,
-                                    keep_aspect: keep,
-                                    axis,
+                                    scale_transform: st, scale_size: ss,
+                                    keep_aspect: keep, axis,
                                 })
                             })()
                         }
                         s if s.starts_with("SET_CANVAS_AUTO_SCALE:") => {
                             // フォーマット: SET_CANVAS_AUTO_SCALE:{actor_dfs_id},{slot_idx},{0|1}
-                            parse2u1b(&s["SET_CANVAS_AUTO_SCALE:".len()..]).map(|(id, sl, v)| {
-                                IpcCommand::SetCanvasAutoScale {
-                                    actor_dfs_id: id,
-                                    slot_idx: sl,
-                                    auto_scale: v,
-                                }
-                            })
+                            parse2u1b(&s["SET_CANVAS_AUTO_SCALE:".len()..])
+                                .map(|(id, sl, v)| IpcCommand::SetCanvasAutoScale {
+                                    actor_dfs_id: id, slot_idx: sl, auto_scale: v,
+                                })
                         }
                         s if s.starts_with("SET_CANVAS_GRAVITY_MODE:") => {
                             // フォーマット: SET_CANVAS_GRAVITY_MODE:{actor_dfs_id},{slot_idx},{mode}
                             let rest = &s["SET_CANVAS_GRAVITY_MODE:".len()..];
                             let mut it = rest.splitn(3, ',');
                             (|| -> Option<IpcCommand> {
-                                let id: u32 = it.next()?.trim().parse().ok()?;
-                                let sl: u32 = it.next()?.trim().parse().ok()?;
-                                let mode: u8 = it.next()?.trim().parse().ok()?;
-                                Some(IpcCommand::SetCanvasGravityMode {
-                                    actor_dfs_id: id,
-                                    slot_idx: sl,
-                                    mode,
-                                })
+                                let id:   u32 = it.next()?.trim().parse().ok()?;
+                                let sl:   u32 = it.next()?.trim().parse().ok()?;
+                                let mode: u8  = it.next()?.trim().parse().ok()?;
+                                Some(IpcCommand::SetCanvasGravityMode { actor_dfs_id: id, slot_idx: sl, mode })
                             })()
                         }
                         s if s.starts_with("SET_CANVAS_DRAW_ZONE:") => {
                             // フォーマット: SET_CANVAS_DRAW_ZONE:{actor_dfs_id},{slot_idx},{zone}
                             // zone: "foreground" | "background"
-                            parse2u_tail(&s["SET_CANVAS_DRAW_ZONE:".len()..]).map(
-                                |(a, sl, zone)| IpcCommand::SetCanvasDrawZone {
-                                    actor_dfs_id: a,
-                                    slot_idx: sl,
-                                    zone: zone.trim().to_string(),
-                                },
-                            )
+                            parse2u_tail(&s["SET_CANVAS_DRAW_ZONE:".len()..])
+                                .map(|(a, sl, zone)| IpcCommand::SetCanvasDrawZone {
+                                    actor_dfs_id: a, slot_idx: sl, zone: zone.trim().to_string(),
+                                })
                         }
                         s if s.starts_with("SET_COLLIDER2D_ASPECT_RATIO:") => {
                             // フォーマット: SET_COLLIDER2D_ASPECT_RATIO:{id},{slot},{0|1},{axis}
                             let rest = &s["SET_COLLIDER2D_ASPECT_RATIO:".len()..];
                             let mut it = rest.splitn(4, ',');
                             (|| -> Option<IpcCommand> {
-                                let id: u32 = it.next()?.trim().parse().ok()?;
-                                let sl: u32 = it.next()?.trim().parse().ok()?;
+                                let id:   u32  = it.next()?.trim().parse().ok()?;
+                                let sl:   u32  = it.next()?.trim().parse().ok()?;
                                 let keep: bool = it.next()?.trim() == "1";
-                                let axis = it.next()?.trim().to_string();
-                                Some(IpcCommand::SetCollider2dAspectRatio {
-                                    actor_dfs_id: id,
-                                    slot_idx: sl,
-                                    keep,
-                                    axis,
-                                })
+                                let axis       = it.next()?.trim().to_string();
+                                Some(IpcCommand::SetCollider2dAspectRatio { actor_dfs_id: id, slot_idx: sl, keep, axis })
                             })()
                         }
                         s if s.starts_with("SET_CANVAS_VIEWPORT_REF_WINDOW:") => {
                             // フォーマット: SET_CANVAS_VIEWPORT_REF_WINDOW:{actor_dfs_id},{slot_idx}
-                            parse2u(&s["SET_CANVAS_VIEWPORT_REF_WINDOW:".len()..]).map(
-                                |(id, sl)| IpcCommand::SetCanvasViewportRefWindow {
-                                    actor_dfs_id: id,
-                                    slot_idx: sl,
-                                },
-                            )
+                            parse2u(&s["SET_CANVAS_VIEWPORT_REF_WINDOW:".len()..])
+                                .map(|(id, sl)| IpcCommand::SetCanvasViewportRefWindow {
+                                    actor_dfs_id: id, slot_idx: sl,
+                                })
                         }
                         s if s.starts_with("SET_CANVAS_VIEWPORT_REF_MAIN_CAMERA:") => {
                             // フォーマット: SET_CANVAS_VIEWPORT_REF_MAIN_CAMERA:{actor_dfs_id},{slot_idx}
-                            parse2u(&s["SET_CANVAS_VIEWPORT_REF_MAIN_CAMERA:".len()..]).map(
-                                |(id, sl)| IpcCommand::SetCanvasViewportRefMainCamera {
-                                    actor_dfs_id: id,
-                                    slot_idx: sl,
-                                },
-                            )
+                            parse2u(&s["SET_CANVAS_VIEWPORT_REF_MAIN_CAMERA:".len()..])
+                                .map(|(id, sl)| IpcCommand::SetCanvasViewportRefMainCamera {
+                                    actor_dfs_id: id, slot_idx: sl,
+                                })
                         }
                         s if s.starts_with("SET_CANVAS_VIEWPORT_REF_CAMERA:") => {
                             // フォーマット: SET_CANVAS_VIEWPORT_REF_CAMERA:{actor_dfs_id},{slot_idx},{actor_name},{slot_name}
@@ -2347,102 +1663,67 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                             let rest = &s["SET_CANVAS_VIEWPORT_REF_CAMERA:".len()..];
                             let mut it = rest.splitn(4, ',');
                             let parsed = (|| -> Option<IpcCommand> {
-                                let id: u32 = it.next()?.trim().parse().ok()?;
-                                let sl: u32 = it.next()?.trim().parse().ok()?;
-                                let aname = it.next()?.to_string();
-                                let sname = it.next()?.to_string();
+                                let id:        u32    = it.next()?.trim().parse().ok()?;
+                                let sl:        u32    = it.next()?.trim().parse().ok()?;
+                                let aname             = it.next()?.to_string();
+                                let sname             = it.next()?.to_string();
                                 Some(IpcCommand::SetCanvasViewportRefCamera {
-                                    actor_dfs_id: id,
-                                    slot_idx: sl,
-                                    actor_name: aname,
-                                    slot_name: sname,
+                                    actor_dfs_id: id, slot_idx: sl,
+                                    actor_name: aname, slot_name: sname,
                                 })
                             })();
                             parsed
                         }
                         s if s.starts_with("SET_CANVAS_3D_PIVOT:") => {
                             // フォーマット: SET_CANVAS_3D_PIVOT:{actor_dfs_id},{slot_idx},{pivot_x},{pivot_y}
-                            parse2u_nf::<2>(&s["SET_CANVAS_3D_PIVOT:".len()..]).map(
-                                |(a, sl, fs)| IpcCommand::SetCanvas3dPivot {
-                                    actor_dfs_id: a,
-                                    slot_idx: sl,
+                            parse2u_nf::<2>(&s["SET_CANVAS_3D_PIVOT:".len()..])
+                                .map(|(a, sl, fs)| IpcCommand::SetCanvas3dPivot {
+                                    actor_dfs_id: a, slot_idx: sl,
                                     pivot_x: fs[0].clamp(0.0, 1.0),
                                     pivot_y: fs[1].clamp(0.0, 1.0),
-                                },
-                            )
+                                })
                         }
                         s if s.starts_with("SET_INPUTMAP_PATH:") => {
                             // フォーマット: SET_INPUTMAP_PATH:{actor_dfs_id},{slot_idx},{path}
-                            parse2u_tail(&s["SET_INPUTMAP_PATH:".len()..]).map(|(a, sl, path)| {
-                                IpcCommand::SetInputMapPath {
-                                    actor_dfs_id: a,
-                                    slot_idx: sl,
-                                    path: path.to_string(),
-                                }
-                            })
+                            parse2u_tail(&s["SET_INPUTMAP_PATH:".len()..])
+                                .map(|(a, sl, path)| IpcCommand::SetInputMapPath {
+                                    actor_dfs_id: a, slot_idx: sl, path: path.to_string(),
+                                })
                         }
                         s if s.starts_with("SET_CAMERA_FOV:") => {
                             // フォーマット: SET_CAMERA_FOV:{actor_dfs_id},{slot_idx},{value}
-                            parse2u1f(&s["SET_CAMERA_FOV:".len()..]).map(|(a, sl, v)| {
-                                IpcCommand::SetCameraComponentFov {
-                                    actor_dfs_id: a,
-                                    slot_idx: sl,
-                                    value: v,
-                                }
-                            })
+                            parse2u1f(&s["SET_CAMERA_FOV:".len()..])
+                                .map(|(a, sl, v)| IpcCommand::SetCameraComponentFov { actor_dfs_id: a, slot_idx: sl, value: v })
                         }
                         s if s.starts_with("SET_CAMERA_NEAR:") => {
                             // フォーマット: SET_CAMERA_NEAR:{actor_dfs_id},{slot_idx},{value}
-                            parse2u1f(&s["SET_CAMERA_NEAR:".len()..]).map(|(a, sl, v)| {
-                                IpcCommand::SetCameraComponentNear {
-                                    actor_dfs_id: a,
-                                    slot_idx: sl,
-                                    value: v,
-                                }
-                            })
+                            parse2u1f(&s["SET_CAMERA_NEAR:".len()..])
+                                .map(|(a, sl, v)| IpcCommand::SetCameraComponentNear { actor_dfs_id: a, slot_idx: sl, value: v })
                         }
                         s if s.starts_with("SET_CAMERA_FAR:") => {
                             // フォーマット: SET_CAMERA_FAR:{actor_dfs_id},{slot_idx},{value}
-                            parse2u1f(&s["SET_CAMERA_FAR:".len()..]).map(|(a, sl, v)| {
-                                IpcCommand::SetCameraComponentFar {
-                                    actor_dfs_id: a,
-                                    slot_idx: sl,
-                                    value: v,
-                                }
-                            })
+                            parse2u1f(&s["SET_CAMERA_FAR:".len()..])
+                                .map(|(a, sl, v)| IpcCommand::SetCameraComponentFar { actor_dfs_id: a, slot_idx: sl, value: v })
                         }
                         s if s.starts_with("SET_CAMERA_MAIN:") => {
                             // フォーマット: SET_CAMERA_MAIN:{actor_dfs_id},{slot_idx},{0|1}
-                            parse2u1b(&s["SET_CAMERA_MAIN:".len()..]).map(|(a, sl, v)| {
-                                IpcCommand::SetCameraComponentMain {
-                                    actor_dfs_id: a,
-                                    slot_idx: sl,
-                                    is_main: v,
-                                }
-                            })
+                            parse2u1b(&s["SET_CAMERA_MAIN:".len()..])
+                                .map(|(a, sl, v)| IpcCommand::SetCameraComponentMain { actor_dfs_id: a, slot_idx: sl, is_main: v })
                         }
                         s if s.starts_with("SET_CAMERA_CLEAR_COLOR:") => {
                             // フォーマット: SET_CAMERA_CLEAR_COLOR:{actor_dfs_id},{slot_idx},{r},{g},{b},{a}
-                            parse2u_nf::<4>(&s["SET_CAMERA_CLEAR_COLOR:".len()..]).map(
-                                |(a, sl, fs)| IpcCommand::SetCameraComponentClearColor {
-                                    actor_dfs_id: a,
-                                    slot_idx: sl,
-                                    r: fs[0],
-                                    g: fs[1],
-                                    b: fs[2],
-                                    a: fs[3],
-                                },
-                            )
+                            parse2u_nf::<4>(&s["SET_CAMERA_CLEAR_COLOR:".len()..])
+                                .map(|(a, sl, fs)| IpcCommand::SetCameraComponentClearColor {
+                                    actor_dfs_id: a, slot_idx: sl,
+                                    r: fs[0], g: fs[1], b: fs[2], a: fs[3],
+                                })
                         }
                         s if s.starts_with("SET_CAMERA_SCALING_MODE:") => {
                             // フォーマット: SET_CAMERA_SCALING_MODE:{actor_dfs_id},{slot_idx},{mode}
-                            parse2u_tail(&s["SET_CAMERA_SCALING_MODE:".len()..]).map(
-                                |(a, sl, mode)| IpcCommand::SetCameraComponentScalingMode {
-                                    actor_dfs_id: a,
-                                    slot_idx: sl,
-                                    mode: mode.trim().to_string(),
-                                },
-                            )
+                            parse2u_tail(&s["SET_CAMERA_SCALING_MODE:".len()..])
+                                .map(|(a, sl, mode)| IpcCommand::SetCameraComponentScalingMode {
+                                    actor_dfs_id: a, slot_idx: sl, mode: mode.trim().to_string(),
+                                })
                         }
                         s if s.starts_with("SET_CAMERA_TARGET_SIZE:") => {
                             // フォーマット: SET_CAMERA_TARGET_SIZE:{actor_dfs_id},{slot_idx},{width},{height}
@@ -2458,50 +1739,32 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                                     h_s.trim().parse::<u32>(),
                                 ) {
                                     Some(IpcCommand::SetCameraComponentTargetSize {
-                                        actor_dfs_id: a,
-                                        slot_idx: sl,
-                                        width: w,
-                                        height: h,
+                                        actor_dfs_id: a, slot_idx: sl, width: w, height: h,
                                     })
-                                } else {
-                                    None
-                                }
-                            } else {
-                                None
-                            }
+                                } else { None }
+                            } else { None }
                         }
                         s if s.starts_with("SET_CAMERA_BAR_COLOR:") => {
                             // フォーマット: SET_CAMERA_BAR_COLOR:{actor_dfs_id},{slot_idx},{r},{g},{b},{a}
-                            parse2u_nf::<4>(&s["SET_CAMERA_BAR_COLOR:".len()..]).map(
-                                |(a, sl, fs)| IpcCommand::SetCameraBarColor {
-                                    actor_dfs_id: a,
-                                    slot_idx: sl,
-                                    r: fs[0],
-                                    g: fs[1],
-                                    b: fs[2],
-                                    a: fs[3],
-                                },
-                            )
+                            parse2u_nf::<4>(&s["SET_CAMERA_BAR_COLOR:".len()..])
+                                .map(|(a, sl, fs)| IpcCommand::SetCameraBarColor {
+                                    actor_dfs_id: a, slot_idx: sl,
+                                    r: fs[0], g: fs[1], b: fs[2], a: fs[3],
+                                })
                         }
                         s if s.starts_with("SET_CAMERA_PROJECTION:") => {
                             // フォーマット: SET_CAMERA_PROJECTION:{actor_dfs_id},{slot_idx},{mode}
-                            parse2u_tail(&s["SET_CAMERA_PROJECTION:".len()..]).map(
-                                |(a, sl, mode)| IpcCommand::SetCameraComponentProjection {
-                                    actor_dfs_id: a,
-                                    slot_idx: sl,
-                                    mode: mode.trim().to_string(),
-                                },
-                            )
+                            parse2u_tail(&s["SET_CAMERA_PROJECTION:".len()..])
+                                .map(|(a, sl, mode)| IpcCommand::SetCameraComponentProjection {
+                                    actor_dfs_id: a, slot_idx: sl, mode: mode.trim().to_string(),
+                                })
                         }
                         s if s.starts_with("SET_CAMERA_ORTHO_HEIGHT:") => {
                             // フォーマット: SET_CAMERA_ORTHO_HEIGHT:{actor_dfs_id},{slot_idx},{value}
-                            parse2u1f(&s["SET_CAMERA_ORTHO_HEIGHT:".len()..]).map(|(a, sl, v)| {
-                                IpcCommand::SetCameraComponentOrthoHeight {
-                                    actor_dfs_id: a,
-                                    slot_idx: sl,
-                                    value: v,
-                                }
-                            })
+                            parse2u1f(&s["SET_CAMERA_ORTHO_HEIGHT:".len()..])
+                                .map(|(a, sl, v)| IpcCommand::SetCameraComponentOrthoHeight {
+                                    actor_dfs_id: a, slot_idx: sl, value: v,
+                                })
                         }
                         s if s.starts_with("SET_COLLIDER_DATA:") => {
                             // フォーマット: SET_COLLIDER_DATA:{actor_dfs_id},{slot_idx},{json}
@@ -2519,12 +1782,8 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                                         slot_idx: sl,
                                         json: json.to_string(),
                                     })
-                                } else {
-                                    None
-                                }
-                            } else {
-                                None
-                            }
+                                } else { None }
+                            } else { None }
                         }
                         s if s.starts_with("SET_COLLIDER2D_DATA:") => {
                             // フォーマット: SET_COLLIDER2D_DATA:{actor_dfs_id},{slot_idx},{json}
@@ -2542,12 +1801,8 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                                         slot_idx: sl,
                                         json: json.to_string(),
                                     })
-                                } else {
-                                    None
-                                }
-                            } else {
-                                None
-                            }
+                                } else { None }
+                            } else { None }
                         }
                         s if s.starts_with("SET_EDIT_PHYSICS_2D:") => {
                             // フォーマット: SET_EDIT_PHYSICS_2D:{enabled},{with_rigidbody}  (0/1)
@@ -2555,7 +1810,7 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                             let mut it = rest.split(',');
                             match (it.next(), it.next()) {
                                 (Some(e), Some(rb)) => Some(IpcCommand::SetEditPhysics2d {
-                                    enabled: e.trim() == "1",
+                                    enabled:        e.trim() == "1",
                                     with_rigidbody: rb.trim() == "1",
                                 }),
                                 _ => None,
@@ -2575,20 +1830,16 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                                     Some(IpcCommand::SetPluginField {
                                         actor_dfs_id: a,
                                         slot_idx: sl,
-                                        key: key.to_string(),
+                                        key:   key.to_string(),
                                         value: value.to_string(),
                                     })
-                                } else {
-                                    None
-                                }
-                            } else {
-                                None
-                            }
+                                } else { None }
+                            } else { None }
                         }
-                        "GET_PLUGIN_LIST" => Some(IpcCommand::GetPluginList),
-                        "GET_SCENE_INFO" => Some(IpcCommand::GetSceneInfo),
-                        "PAUSE_RENDER" => Some(IpcCommand::PauseRender),
-                        "RESUME_RENDER" => Some(IpcCommand::ResumeRender),
+                        "GET_PLUGIN_LIST"  => Some(IpcCommand::GetPluginList),
+                        "GET_SCENE_INFO"   => Some(IpcCommand::GetSceneInfo),
+                        "PAUSE_RENDER"     => Some(IpcCommand::PauseRender),
+                        "RESUME_RENDER"    => Some(IpcCommand::ResumeRender),
 
                         // ── AI アシスタント用コマンド ──────────────────────────────
                         s if s.starts_with("AI_ADD_ACTOR:") => {
@@ -2604,31 +1855,20 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                                 ) {
                                     let name = parts[3].to_string();
                                     Some(IpcCommand::AiAddActor { name, x, y, z })
-                                } else {
-                                    None
-                                }
-                            } else {
-                                None
-                            }
+                                } else { None }
+                            } else { None }
                         }
                         s if s.starts_with("AI_REMOVE_ACTOR:") => {
                             // フォーマット: AI_REMOVE_ACTOR:{actor_dfs_id}
-                            s["AI_REMOVE_ACTOR:".len()..]
-                                .trim()
-                                .parse::<u32>()
-                                .ok()
+                            s["AI_REMOVE_ACTOR:".len()..].trim().parse::<u32>().ok()
                                 .map(|id| IpcCommand::AiRemoveActor { actor_dfs_id: id })
                         }
                         s if s.starts_with("AI_MOVE_ACTOR:") => {
                             // フォーマット: AI_MOVE_ACTOR:{actor_dfs_id},{x},{y},{z}
-                            parse1u_nf::<3>(&s["AI_MOVE_ACTOR:".len()..]).map(|(id, fs)| {
-                                IpcCommand::AiMoveActor {
-                                    actor_dfs_id: id,
-                                    x: fs[0],
-                                    y: fs[1],
-                                    z: fs[2],
-                                }
-                            })
+                            parse1u_nf::<3>(&s["AI_MOVE_ACTOR:".len()..])
+                                .map(|(id, fs)| IpcCommand::AiMoveActor {
+                                    actor_dfs_id: id, x: fs[0], y: fs[1], z: fs[2],
+                                })
                         }
                         s if s.starts_with("AI_ADD_COMPONENT:") => {
                             // フォーマット: AI_ADD_COMPONENT:{actor_dfs_id},{component_type},{params_json}
@@ -2637,16 +1877,12 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                             if let (Some(id_s), Some(comp_type), Some(params)) =
                                 (it.next(), it.next(), it.next())
                             {
-                                id_s.trim().parse::<u32>().ok().map(|id| {
-                                    IpcCommand::AiAddComponent {
-                                        actor_dfs_id: id,
-                                        component_type: comp_type.to_string(),
-                                        params_json: params.to_string(),
-                                    }
+                                id_s.trim().parse::<u32>().ok().map(|id| IpcCommand::AiAddComponent {
+                                    actor_dfs_id: id,
+                                    component_type: comp_type.to_string(),
+                                    params_json:    params.to_string(),
                                 })
-                            } else {
-                                None
-                            }
+                            } else { None }
                         }
                         s if s.starts_with("AI_SET_VALUE:") => {
                             // フォーマット: AI_SET_VALUE:{actor_dfs_id},{slot_idx},{key},{value}
@@ -2660,35 +1896,27 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                                 {
                                     Some(IpcCommand::AiSetValue {
                                         actor_dfs_id: a,
-                                        slot_idx: sl,
-                                        key: key.to_string(),
-                                        value: value.to_string(),
+                                        slot_idx:     sl,
+                                        key:          key.to_string(),
+                                        value:        value.to_string(),
                                     })
-                                } else {
-                                    None
-                                }
-                            } else {
-                                None
-                            }
+                                } else { None }
+                            } else { None }
                         }
 
                         s if s.starts_with("EXPORT_ACTOR:") => {
                             // フォーマット: EXPORT_ACTOR:{dfs_id},{path}
                             // path は絶対ファイルパス（カンマを含まない前提）
-                            parse1u_tail(&s["EXPORT_ACTOR:".len()..]).map(|(dfs_id, path)| {
-                                IpcCommand::ExportActor {
+                            parse1u_tail(&s["EXPORT_ACTOR:".len()..])
+                                .map(|(dfs_id, path)| IpcCommand::ExportActor {
                                     dfs_id,
                                     path: path.to_string(),
-                                }
-                            })
+                                })
                         }
 
                         s if s.starts_with("UNLINK_PREFAB:") => {
                             // フォーマット: UNLINK_PREFAB:{actor_dfs}
-                            s["UNLINK_PREFAB:".len()..]
-                                .trim()
-                                .parse::<u32>()
-                                .ok()
+                            s["UNLINK_PREFAB:".len()..].trim().parse::<u32>().ok()
                                 .map(|actor_dfs| IpcCommand::UnlinkPrefab { actor_dfs })
                         }
 
@@ -2698,20 +1926,24 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                                 .map(|actor_dfs| IpcCommand::ReapplyPrefab { actor_dfs })
                         }
 
-                        "EDIT_PHYSICS_PLAY_PAUSE" => Some(IpcCommand::EditPhysicsPlayPause),
+                        // シーン内全プレハブの一括更新（引数なし）。
+                        // "PREFAB_REAPPLY:" 判定とは接頭辞が異なるため衝突しない。
+                        "PREFAB_REAPPLY_ALL" => Some(IpcCommand::ReapplyAllPrefabs),
+
+                        "EDIT_PHYSICS_PLAY_PAUSE" => {
+                            Some(IpcCommand::EditPhysicsPlayPause)
+                        }
                         s if s.starts_with("EDIT_PHYSICS_STEP:") => {
                             let rest = &s["EDIT_PHYSICS_STEP:".len()..];
-                            rest.trim()
-                                .parse::<i32>()
-                                .ok()
+                            rest.trim().parse::<i32>().ok()
                                 .map(|step| IpcCommand::EditPhysicsStep { step })
                         }
-                        "EDIT_PHYSICS_APPLY_FRAME" => Some(IpcCommand::EditPhysicsApplyFrame),
+                        "EDIT_PHYSICS_APPLY_FRAME" => {
+                            Some(IpcCommand::EditPhysicsApplyFrame)
+                        }
                         s if s.starts_with("EDIT_PHYSICS_SEEK:") => {
                             let rest = &s["EDIT_PHYSICS_SEEK:".len()..];
-                            rest.trim()
-                                .parse::<usize>()
-                                .ok()
+                            rest.trim().parse::<usize>().ok()
                                 .map(|frame| IpcCommand::EditPhysicsSeek { frame })
                         }
                         s if s.starts_with("SET_EDIT_PHYSICS_ALL:") => {
@@ -2720,8 +1952,8 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                             let mut it = rest.split(',');
                             match (it.next(), it.next()) {
                                 (Some(e), Some(rb)) => Some(IpcCommand::SetEditPhysicsAll {
-                                    enabled: e.trim() == "1",
-                                    with_rigidbody: rb.trim() == "1",
+                                    enabled:         e.trim() == "1",
+                                    with_rigidbody:  rb.trim() == "1",
                                 }),
                                 _ => None,
                             }
@@ -2732,8 +1964,8 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                             let mut it = rest.split(',');
                             match (it.next(), it.next()) {
                                 (Some(e), Some(rb)) => Some(IpcCommand::SetEditPhysics {
-                                    enabled: e.trim() == "1",
-                                    with_rigidbody: rb.trim() == "1",
+                                    enabled:         e.trim() == "1",
+                                    with_rigidbody:  rb.trim() == "1",
                                 }),
                                 _ => None,
                             }
@@ -2744,20 +1976,14 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                         s if s.starts_with("SET_ANIMATOR_CLIPS:") => {
                             // フォーマット: SET_ANIMATOR_CLIPS:{actor_dfs_id},{slot_idx},{json}
                             // json は AnimatorComponentData の serde_json シリアライズ結果（カンマ含む）。
-                            parse2u_tail(&s["SET_ANIMATOR_CLIPS:".len()..]).map(|(a, sl, json)| {
-                                IpcCommand::SetAnimatorClips {
-                                    actor_dfs_id: a,
-                                    slot_idx: sl,
-                                    json: json.to_string(),
-                                }
-                            })
+                            parse2u_tail(&s["SET_ANIMATOR_CLIPS:".len()..])
+                                .map(|(a, sl, json)| IpcCommand::SetAnimatorClips {
+                                    actor_dfs_id: a, slot_idx: sl, json: json.to_string(),
+                                })
                         }
                         s if s.starts_with("ANIM_PREVIEW_STOP:") => {
                             // フォーマット: ANIM_PREVIEW_STOP:{actor_dfs_id}
-                            s["ANIM_PREVIEW_STOP:".len()..]
-                                .trim()
-                                .parse::<u32>()
-                                .ok()
+                            s["ANIM_PREVIEW_STOP:".len()..].trim().parse::<u32>().ok()
                                 .map(|actor_dfs_id| IpcCommand::AnimPreviewStop { actor_dfs_id })
                         }
                         s if s.starts_with("ANIM_PREVIEW:") => {
@@ -2769,11 +1995,7 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                                 let actor_dfs_id: u32 = it.next()?.trim().parse().ok()?;
                                 let clip_path = it.next()?.to_string();
                                 let time: f32 = it.next()?.trim().parse().ok()?;
-                                Some(IpcCommand::AnimPreview {
-                                    actor_dfs_id,
-                                    clip_path,
-                                    time,
-                                })
+                                Some(IpcCommand::AnimPreview { actor_dfs_id, clip_path, time })
                             })()
                         }
                         s if s.starts_with("ANIM_RELOAD:") => {
@@ -2782,13 +2004,11 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                             Some(IpcCommand::AnimReload { clip_path })
                         }
 
-                        _ => None,
+                        _                    => None,
                     }
                 };
                 if let Some(cmd) = cmd {
-                    if tx.send(cmd).is_err() {
-                        break;
-                    }
+                    if tx.send(cmd).is_err() { break; }
                 }
             }
         }
@@ -2814,7 +2034,7 @@ fn peek_pipe(handle: std::os::windows::raw::HANDLE) -> u32 {
 fn try_open(path: &str) -> std::io::Result<std::fs::File> {
     for _ in 0..PIPE_CONNECT_RETRIES {
         match OpenOptions::new().read(true).write(true).open(path) {
-            Ok(f) => return Ok(f),
+            Ok(f)  => return Ok(f),
             Err(_) => thread::sleep(Duration::from_millis(PIPE_CONNECT_RETRY_MS)),
         }
     }
@@ -2844,26 +2064,11 @@ mod tests {
     /// 引数なし地形コマンドが取りこぼされないこと（アーム統合時の退行検出）。
     #[test]
     fn parses_argument_less_terrain_commands() {
-        assert!(matches!(
-            parse_terrain_command("TERRAIN_INIT"),
-            Some(IpcCommand::TerrainInit { config: None })
-        ));
-        assert!(matches!(
-            parse_terrain_command("TERRAIN_SAVE"),
-            Some(IpcCommand::TerrainSave)
-        ));
-        assert!(matches!(
-            parse_terrain_command("TERRAIN_UNDO"),
-            Some(IpcCommand::TerrainUndo)
-        ));
-        assert!(matches!(
-            parse_terrain_command("TERRAIN_REDO"),
-            Some(IpcCommand::TerrainRedo)
-        ));
-        assert!(matches!(
-            parse_terrain_command("TERRAIN_STROKE_END"),
-            Some(IpcCommand::TerrainStrokeEnd)
-        ));
+        assert!(matches!(parse_terrain_command("TERRAIN_INIT"),        Some(IpcCommand::TerrainInit { config: None })));
+        assert!(matches!(parse_terrain_command("TERRAIN_SAVE"),        Some(IpcCommand::TerrainSave)));
+        assert!(matches!(parse_terrain_command("TERRAIN_UNDO"),        Some(IpcCommand::TerrainUndo)));
+        assert!(matches!(parse_terrain_command("TERRAIN_REDO"),        Some(IpcCommand::TerrainRedo)));
+        assert!(matches!(parse_terrain_command("TERRAIN_STROKE_END"),  Some(IpcCommand::TerrainStrokeEnd)));
     }
 
     /// プレビュー OFF が「引数付きプレビュー」より先に判定されること（判定順の回帰テスト）。
@@ -2875,16 +2080,11 @@ mod tests {
         ));
         let cmd = parse_terrain_command("TERRAIN_BRUSH_PREVIEW:10,20,3,0.5");
         match cmd {
-            Some(IpcCommand::TerrainBrushPreview {
-                screen_x,
-                screen_y,
-                radius,
-                strength,
-            }) => {
+            Some(IpcCommand::TerrainBrushPreview { screen_x, screen_y, radius, strength }) => {
                 assert_eq!(screen_x, 10.0);
                 assert_eq!(screen_y, 20.0);
-                assert_eq!(radius, 3.0);
-                assert_eq!(strength, 0.5);
+                assert_eq!(radius,    3.0);
+                assert_eq!(strength,  0.5);
             }
             _ => panic!("TerrainBrushPreview を期待した"),
         }
@@ -2894,17 +2094,11 @@ mod tests {
     #[test]
     fn parses_brush_and_paint_arguments() {
         match parse_terrain_command("TERRAIN_BRUSH:1,100,200,4.5,0.25") {
-            Some(IpcCommand::TerrainBrush {
-                op,
-                screen_x,
-                screen_y,
-                radius,
-                strength,
-            }) => {
+            Some(IpcCommand::TerrainBrush { op, screen_x, screen_y, radius, strength }) => {
                 assert_eq!(op, 1);
                 assert_eq!(screen_x, 100.0);
                 assert_eq!(screen_y, 200.0);
-                assert_eq!(radius, 4.5);
+                assert_eq!(radius,   4.5);
                 assert_eq!(strength, 0.25);
             }
             _ => panic!("TerrainBrush を期待した"),
@@ -2960,12 +2154,7 @@ mod tests {
     fn scatter_brush_parses() {
         match parse_terrain_command("TERRAIN_SCATTER_BRUSH:grass_field,100,200,3.5,8,0") {
             Some(IpcCommand::TerrainScatterBrush {
-                prop_id,
-                screen_x,
-                screen_y,
-                radius,
-                density,
-                erase,
+                prop_id, screen_x, screen_y, radius, density, erase,
             }) => {
                 assert_eq!(prop_id, "grass_field");
                 assert_eq!(screen_x, 100.0);
@@ -2985,9 +2174,7 @@ mod tests {
 
         // ─── 境界: 半径・密度 0（パースは通る。妥当性は実行側の責務）───
         match parse_terrain_command("TERRAIN_SCATTER_BRUSH:g,0,0,0,0,0") {
-            Some(IpcCommand::TerrainScatterBrush {
-                radius, density, ..
-            }) => {
+            Some(IpcCommand::TerrainScatterBrush { radius, density, .. }) => {
                 assert_eq!(radius, 0.0);
                 assert_eq!(density, 0.0);
             }
@@ -3005,11 +2192,7 @@ mod tests {
     #[test]
     fn heightmap_splits_on_last_comma() {
         match parse_terrain_command(r"TERRAIN_HEIGHTMAP:C:\a,b\map.png,12.5") {
-            Some(IpcCommand::TerrainHeightmap {
-                path,
-                height_scale,
-                config,
-            }) => {
+            Some(IpcCommand::TerrainHeightmap { path, height_scale, config }) => {
                 assert_eq!(path, r"C:\a,b\map.png");
                 assert_eq!(height_scale, 12.5);
                 assert_eq!(config, None, "旧形式では構成指定が付かない");
@@ -3056,12 +2239,7 @@ mod tests {
     #[test]
     fn parses_terrain_add_chunks() {
         match parse_terrain_command("TERRAIN_ADD_CHUNKS:-2,-3,4,5") {
-            Some(IpcCommand::TerrainAddChunks {
-                min_x,
-                min_z,
-                max_x,
-                max_z,
-            }) => {
+            Some(IpcCommand::TerrainAddChunks { min_x, min_z, max_x, max_z }) => {
                 assert_eq!((min_x, min_z, max_x, max_z), (-2, -3, 4, 5));
             }
             _ => panic!("TerrainAddChunks を期待した"),
@@ -3075,15 +2253,8 @@ mod tests {
     #[test]
     fn parses_heightmap_with_chunk_config() {
         match parse_terrain_command(r"TERRAIN_HEIGHTMAP:3,5,16,0.25,20,C:\a,b\map.png") {
-            Some(IpcCommand::TerrainHeightmap {
-                path,
-                height_scale,
-                config: Some(c),
-            }) => {
-                assert_eq!(
-                    path, r"C:\a,b\map.png",
-                    "path は最後のフィールド全部（カンマ込み）"
-                );
+            Some(IpcCommand::TerrainHeightmap { path, height_scale, config: Some(c) }) => {
+                assert_eq!(path, r"C:\a,b\map.png", "path は最後のフィールド全部（カンマ込み）");
                 assert_eq!(height_scale, 20.0);
                 assert_eq!(c.chunks_x, 3);
                 assert_eq!(c.chunks_z, 5);
@@ -3099,11 +2270,7 @@ mod tests {
     #[test]
     fn heightmap_falls_back_to_legacy_form() {
         match parse_terrain_command(r"TERRAIN_HEIGHTMAP:C:\maps\a,b,c,d,e\hm.png,10") {
-            Some(IpcCommand::TerrainHeightmap {
-                path,
-                height_scale,
-                config: None,
-            }) => {
+            Some(IpcCommand::TerrainHeightmap { path, height_scale, config: None }) => {
                 assert_eq!(path, r"C:\maps\a,b,c,d,e\hm.png");
                 assert_eq!(height_scale, 10.0);
             }

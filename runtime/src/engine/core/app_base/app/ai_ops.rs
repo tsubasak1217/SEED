@@ -8,11 +8,15 @@
 //  ・handle_ai_add_component : DFS ID で指定したアクターにコンポーネントを追加
 // ============================================================
 
-use crate::engine::components::{CanvasTransform, Transform as ActorTransform};
+use crate::engine::components::{Transform as ActorTransform, CanvasTransform};
 use crate::engine::core::app_base::undo::ActorTreeSnapshotCommand;
 use crate::engine::structs::objects::Actor;
 
-use super::{App, find_actor_by_dfs, find_actor_by_dfs_mut};
+use super::{
+    App,
+    find_actor_by_dfs,
+    find_actor_by_dfs_mut,
+};
 
 impl App {
     // ============================================================
@@ -24,7 +28,7 @@ impl App {
     ///
     /// AI がシーンの現状を把握するために呼ばれる。
     pub(super) fn send_scene_info(&self) {
-        let Some(ipc) = &self.ipc else { return };
+        let Some(ipc)   = &self.ipc   else { return };
         let Some(scene) = &self.scene else {
             eprintln!("[AI] send_scene_info: シーンなし → SCENE_INFO:[]");
             ipc.send("SCENE_INFO:[]");
@@ -34,9 +38,7 @@ impl App {
         // 世界線 0（通常シーン）のアクターのみ対象にする。
         // シリアライズ時に DFS ID を付与するためにカウンタを用意する。
         let mut counter = Some(0u32);
-        let actors_data: Vec<_> = scene
-            .actors
-            .iter()
+        let actors_data: Vec<_> = scene.actors.iter()
             .filter(|a| a.world_line == 0)
             .map(|a| a.to_data_recursive(&scene.world, &mut counter))
             .collect();
@@ -50,9 +52,7 @@ impl App {
             }
             Err(e) => {
                 // シリアライズ失敗時も空配列を返してタイムアウトを防ぐ
-                eprintln!(
-                    "[AI] send_scene_info: シリアライズ失敗: {e} → フォールバック SCENE_INFO:[]"
-                );
+                eprintln!("[AI] send_scene_info: シリアライズ失敗: {e} → フォールバック SCENE_INFO:[]");
                 ipc.send("SCENE_INFO:[]");
             }
         }
@@ -69,9 +69,7 @@ impl App {
     ///
     /// Undo 対応済み。追加後はヒエラルキー・SCENE_MODIFIED を送信。
     pub(super) fn handle_ai_add_actor(&mut self, name: &str, x: f32, y: f32, z: f32) {
-        if self.scene.is_none() {
-            return;
-        }
+        if self.scene.is_none() { return; }
 
         // Undo 用スナップショット（変更前）
         let before_actors = self.snapshot_actors_for_wl(0);
@@ -80,14 +78,11 @@ impl App {
 
         // エンティティを生成し、指定位置の Transform を挿入する
         let entity = scene.world.spawn();
-        scene.world.insert(
-            entity,
-            ActorTransform {
-                position: [x, y, z],
-                rotation: [0.0, 0.0, 0.0],
-                scale: [1.0, 1.0, 1.0],
-            },
-        );
+        scene.world.insert(entity, ActorTransform {
+            position: [x, y, z],
+            rotation: [0.0, 0.0, 0.0],
+            scale:    [1.0, 1.0, 1.0],
+        });
 
         // アクターをルートに追加する（AI はネスト先を指定しない）
         let mut new_actor = Actor::new(entity, name);
@@ -97,16 +92,14 @@ impl App {
         // Undo 用スナップショット（変更後）
         let after_actors = self.snapshot_actors_for_wl(0);
         self.undo_history.record(Box::new(ActorTreeSnapshotCommand {
-            world_line: 0,
+            world_line:    0,
             before_actors,
             after_actors,
         }));
 
         // エディタへ変更を通知する
         self.send_hierarchy();
-        if let Some(ipc) = &self.ipc {
-            ipc.send("SCENE_MODIFIED");
-        }
+        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
     }
 
     // ============================================================
@@ -121,23 +114,24 @@ impl App {
         let Some(scene) = &mut self.scene else { return };
         let wl = self.active_world_line;
 
-        // DFS ID でアクターを検索し、エンティティを取得する
-        let entity = {
-            let mut c = 0u32;
-            match find_actor_by_dfs(&scene.actors, wl, actor_dfs_id, &mut c) {
-                Some(a) => a.entity,
-                None => return,
-            }
-        };
+        // scene.actors（不変）と scene.world（可変）を同時借用してアクタを解決する
+        let (actors, world) = (&scene.actors, &mut scene.world);
+        let mut c = 0u32;
+        let Some(actor) = find_actor_by_dfs(actors, wl, actor_dfs_id, &mut c) else { return };
 
-        // Transform コンポーネントの position を更新する
-        if let Some(tf) = scene.world.get_mut::<ActorTransform>(entity) {
-            tf.position = [x, y, z];
-        }
+        // 現在の Transform の position だけを差し替えた新しいワールド Transform を作る
+        let mut new_tf = world.get::<ActorTransform>(actor.entity).cloned().unwrap_or_default();
+        new_tf.position = [x, y, z];
 
-        if let Some(ipc) = &self.ipc {
-            ipc.send("SCENE_MODIFIED");
-        }
+        // 集約関数へ委譲する。
+        // 単に Transform の数値を書くだけでは描画実体（instance_mats）も子アクタも
+        // 追従しないため、必ずこの経路を通す。
+        // Undo は記録しない（AI からの一括変更で履歴が肥大化するため）。
+        crate::engine::core::transform_sync::set_actor_world_transform(
+            actor, world, new_tf, actor_dfs_id + 1,
+        );
+
+        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
     }
 
     // ============================================================
@@ -153,15 +147,15 @@ impl App {
         &mut self,
         actor_dfs_id: u32,
         component_type: &str,
-        _params_json: &str, // 現在は未使用（将来の拡張用）
+        _params_json:  &str,   // 現在は未使用（将来の拡張用）
     ) {
         // AI が使いやすい短い名前を、エンジン内部の正規名称（...Component）に変換する
         let normalized_type = match component_type {
-            "Model" => "ModelComponent",
-            "Script" => "ScriptComponent",
-            "Canvas" => "CanvasComponent",
-            "Sprite" => "SpriteComponent",
-            "Camera" => "CameraComponent",
+            "Model"   => "ModelComponent",
+            "Script"  => "ScriptComponent",
+            "Canvas"  => "CanvasComponent",
+            "Sprite"  => "SpriteComponent",
+            "Camera"  => "CameraComponent",
             "InputMap" => "InputMapComponent",
             _ => component_type,
         };
@@ -171,8 +165,7 @@ impl App {
             &normalized_type["Plugin:".len()..]
         } else {
             normalized_type
-        }
-        .to_string();
+        }.to_string();
 
         // 第2引数が component_type, 第3引数が slot_name
         self.handle_add_component_to_actor(actor_dfs_id, normalized_type, &slot_name, "");

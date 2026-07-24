@@ -29,8 +29,8 @@
 use std::cell::{Cell, RefCell};
 
 use crate::engine::components::{
-    AnimatorComponent, AudioComponent, CameraComponent, CanvasTransform, ComponentKind,
-    ModelComponent, ParticleEmitterComponent, SpriteComponent, Transform,
+    AnimatorComponent, AudioComponent, CameraComponent, CanvasTransform, ParticleEmitterComponent,
+    SpriteComponent, Transform,
 };
 use crate::engine::core::input::{Input, InputState};
 use crate::engine::ecs::{Entity, World};
@@ -103,12 +103,10 @@ pub fn with_actors<R>(actors: &Vec<Actor>, f: impl FnOnce() -> R) -> R {
 /// frame_renderer がフェーズ群の実行前に Some、実行後に None を渡す。
 /// スクリプトの Input API はこのポインタ経由でキー・マウス状態を参照する。
 pub fn publish_input(input: Option<&Input>) {
-    INPUT_PTR.with(|p| {
-        p.set(match input {
-            Some(i) => i as *const Input,
-            None => std::ptr::null(),
-        })
-    });
+    INPUT_PTR.with(|p| p.set(match input {
+        Some(i) => i as *const Input,
+        None    => std::ptr::null(),
+    }));
 }
 
 /// ゲームロジック開始前に物理スレッドへのコマンド送信チャンネルを公開する（None で解除）。
@@ -159,11 +157,7 @@ pub enum ScriptAudioCommand {
     /// 効果音を再生する（多重再生可）
     PlaySe { path: String, volume: f32 },
     /// BGM を再生する（既存 BGM は置き換え）
-    PlayBgm {
-        path: String,
-        volume: f32,
-        looped: bool,
-    },
+    PlayBgm { path: String, volume: f32, looped: bool },
     /// BGM を停止する
     StopBgm,
     /// BGM の音量を変更する
@@ -186,53 +180,6 @@ pub const MAX_FLOAT_FIELD_LEN: usize = 4;
 
 // ─── スロットエンティティ解決 ─────────────────────────────────
 
-/// ルートエンティティが一致するアクターを再帰検索する。
-fn find_actor_by_entity(actors: &[Actor], e: Entity) -> Option<&Actor> {
-    for a in actors {
-        if a.entity == e {
-            return Some(a);
-        }
-        if let Some(found) = find_actor_by_entity(a.children(), e) {
-            return Some(found);
-        }
-    }
-    None
-}
-
-/// Transform 書き換え後に同じアクターの全 Model スロットへ描画行列を同期する。
-fn sync_model_instance_mats_for_actor_entity(world: &mut World, entity: Entity) {
-    let Some(new_mat) = world.get::<Transform>(entity).map(|t| t.to_mat4()) else {
-        return;
-    };
-
-    let actors_ptr = ACTORS_PTR.with(|p| p.get());
-    if actors_ptr.is_null() {
-        return;
-    }
-    let actors = unsafe { &*actors_ptr };
-    let Some(actor) = find_actor_by_entity(actors, entity) else {
-        return;
-    };
-
-    let model_slots: Vec<_> = actor
-        .slots()
-        .iter()
-        .filter(|s| s.kind == ComponentKind::Model)
-        .map(|s| s.entity)
-        .collect();
-
-    for slot_entity in model_slots {
-        if let Some(mc) = world.get_mut::<ModelComponent>(slot_entity) {
-            if let Some(m) = mc.instance_mats.first_mut() {
-                *m = new_mat;
-            }
-            if let Some(batch) = mc.instanced_batch.as_mut() {
-                batch.mark_dirty();
-            }
-        }
-    }
-}
-
 /// コンポーネント T の実体があるエンティティを解決する。
 ///
 /// Transform / CanvasTransform はアクターのルートエンティティに直接あるが、
@@ -249,17 +196,49 @@ fn locate<T: crate::engine::ecs::Component>(world: &World, entity: Entity) -> Op
     }
     // 2. Actor ツリーからルートエンティティ一致のアクターを探し、スロットを走査する
     let actors_ptr = ACTORS_PTR.with(|p| p.get());
-    if actors_ptr.is_null() {
-        return None;
+    if actors_ptr.is_null() { return None; }
+
+    /// ルートエンティティが一致するアクターを再帰検索するローカル関数
+    fn find_actor(actors: &[Actor], e: Entity) -> Option<&Actor> {
+        for a in actors {
+            if a.entity == e { return Some(a); }
+            if let Some(found) = find_actor(a.children(), e) { return Some(found); }
+        }
+        None
     }
 
     let actors = unsafe { &*actors_ptr };
-    let actor = find_actor_by_entity(actors, entity)?;
-    actor
-        .slots()
-        .iter()
+    let actor  = find_actor(actors, entity)?;
+    actor.slots().iter()
         .map(|s| s.entity)
         .find(|&se| world.get::<T>(se).is_some())
+}
+
+/// ルートエンティティが `entity` と一致する Actor を Actor ツリーから探す。
+///
+/// Transform の書き込みで「子孫へ伝播する」ために Actor ツリー（親子関係）が必要になる。
+/// ACTORS_PTR はスクリプトフェーズ実行中のみ有効な読み取り専用ポインタで、
+/// フェーズ中にツリーの構造変更は起きない（Instantiate/Destroy は遅延コマンド）。
+///
+/// 戻り値の参照はフェーズ内でのみ有効。呼び出し側は即座に使い切ること。
+/// ツリーが未公開（ポインタが null）の場合は None。
+fn actor_of_entity<'a>(entity: Entity) -> Option<&'a Actor> {
+    let actors_ptr = ACTORS_PTR.with(|p| p.get());
+    if actors_ptr.is_null() { return None; }
+
+    /// ルートエンティティが一致するアクターを再帰検索するローカル関数
+    fn find_actor(actors: &[Actor], e: Entity) -> Option<&Actor> {
+        for a in actors {
+            if a.entity == e { return Some(a); }
+            if let Some(found) = find_actor(a.children(), e) { return Some(found); }
+        }
+        None
+    }
+
+    // SAFETY: ACTORS_PTR はフェーズ実行中のみ非 null で、その間ツリーは不変。
+    // world（&mut World）とは別オブジェクトなのでエイリアス違反にはならない。
+    let actors = unsafe { &*actors_ptr };
+    find_actor(actors, entity)
 }
 
 // ─── コンポーネントレジストリ ─────────────────────────────────
@@ -272,11 +251,7 @@ fn locate<T: crate::engine::ecs::Component>(world: &World, entity: Entity) -> Op
 ///
 /// out は MAX_FLOAT_FIELD_LEN 要素以上あること（呼び出し側 FFI が保証する）。
 fn read_floats(
-    world: &World,
-    entity: Entity,
-    component: &str,
-    field: &str,
-    out: &mut [f32],
+    world: &World, entity: Entity, component: &str, field: &str, out: &mut [f32],
 ) -> Option<usize> {
     // スライスを out へコピーして要素数を返すローカルヘルパ
     fn put(out: &mut [f32], v: &[f32]) -> Option<usize> {
@@ -290,8 +265,8 @@ fn read_floats(
             match field {
                 "position" => put(out, &t.position),
                 "rotation" => put(out, &t.rotation),
-                "scale" => put(out, &t.scale),
-                _ => None,
+                "scale"    => put(out, &t.scale),
+                _          => None,
             }
         }
         // ── 2D キャンバストランスフォーム ──
@@ -300,10 +275,10 @@ fn read_floats(
             match field {
                 "position" => put(out, &t.position),
                 "rotation" => put(out, &[t.rotation]),
-                "scale" => put(out, &t.scale),
-                "pivot" => put(out, &t.pivot),
-                "anchor" => put(out, &t.anchor),
-                _ => None,
+                "scale"    => put(out, &t.scale),
+                "pivot"    => put(out, &t.pivot),
+                "anchor"   => put(out, &t.anchor),
+                _          => None,
             }
         }
         // ── 2D スプライト（スロット格納型: locate で解決）──
@@ -311,12 +286,12 @@ fn read_floats(
             let e = locate::<SpriteComponent>(world, entity)?;
             let s = world.get::<SpriteComponent>(e)?;
             match field {
-                "color" => put(out, &s.color),
-                "width" => put(out, &[s.width]),
+                "color"  => put(out, &s.color),
+                "width"  => put(out, &[s.width]),
                 "height" => put(out, &[s.height]),
                 // 描画優先度レイヤー（i32 → f32 変換して返す。Camera の target_width と同様）
-                "layer" => put(out, &[s.layer as f32]),
-                _ => None,
+                "layer"  => put(out, &[s.layer as f32]),
+                _        => None,
             }
         }
         // ── オーディオソース（スロット格納型: locate で解決）──
@@ -324,14 +299,14 @@ fn read_floats(
             let e = locate::<AudioComponent>(world, entity)?;
             let a = world.get::<AudioComponent>(e)?;
             match field {
-                "volume" => put(out, &[a.volume]),
-                "pan" => put(out, &[a.pan]),
-                "loop" => put(out, &[if a.looped { 1.0 } else { 0.0 }]),
+                "volume"        => put(out, &[a.volume]),
+                "pan"           => put(out, &[a.pan]),
+                "loop"          => put(out, &[if a.looped { 1.0 } else { 0.0 }]),
                 "play_on_start" => put(out, &[if a.play_on_start { 1.0 } else { 0.0 }]),
-                "spatial" => put(out, &[if a.spatial { 1.0 } else { 0.0 }]),
-                "min_distance" => put(out, &[a.min_distance]),
-                "max_distance" => put(out, &[a.max_distance]),
-                _ => None,
+                "spatial"       => put(out, &[if a.spatial { 1.0 } else { 0.0 }]),
+                "min_distance"  => put(out, &[a.min_distance]),
+                "max_distance"  => put(out, &[a.max_distance]),
+                _               => None,
             }
         }
         // ── 3D カメラ（スロット格納型: locate で解決）──
@@ -339,16 +314,16 @@ fn read_floats(
             let e = locate::<CameraComponent>(world, entity)?;
             let c = world.get::<CameraComponent>(e)?;
             match field {
-                "fov_y_deg" => put(out, &[c.fov_y_deg]),
-                "near" => put(out, &[c.near]),
-                "far" => put(out, &[c.far]),
-                "is_main" => put(out, &[if c.is_main { 1.0 } else { 0.0 }]),
-                "clear_color" => put(out, &c.clear_color),
-                "target_width" => put(out, &[c.target_width as f32]),
+                "fov_y_deg"     => put(out, &[c.fov_y_deg]),
+                "near"          => put(out, &[c.near]),
+                "far"           => put(out, &[c.far]),
+                "is_main"       => put(out, &[if c.is_main { 1.0 } else { 0.0 }]),
+                "clear_color"   => put(out, &c.clear_color),
+                "target_width"  => put(out, &[c.target_width as f32]),
                 "target_height" => put(out, &[c.target_height as f32]),
-                "bar_color" => put(out, &c.bar_color),
-                "ortho_height" => put(out, &[c.ortho_height]),
-                _ => None,
+                "bar_color"     => put(out, &c.bar_color),
+                "ortho_height"  => put(out, &[c.ortho_height]),
+                _               => None,
             }
         }
         // ── アニメーター（スロット格納型: locate で解決）──
@@ -358,10 +333,10 @@ fn read_floats(
             let e = locate::<AnimatorComponent>(world, entity)?;
             let a = world.get::<AnimatorComponent>(e)?;
             match field {
-                "time" => put(out, &[a.time]),
-                "speed" => put(out, &[a.speed]),
+                "time"    => put(out, &[a.time]),
+                "speed"   => put(out, &[a.speed]),
                 "playing" => put(out, &[if a.playing { 1.0 } else { 0.0 }]),
-                _ => None,
+                _         => None,
             }
         }
         // ── パーティクルエミッタ（スロット格納型: locate で解決）──
@@ -376,34 +351,24 @@ fn read_floats(
             // C# ラッパー・docs/scripting_api.md（正典）の API 名は変えない。
             match field {
                 // 実効放出レート（個/秒）= particles_per_emit / emit_interval。
-                "emit_rate" => {
+                "emit_rate"        => {
                     let rate = if p.emit_interval > 0.0 {
                         p.particles_per_emit as f32 / p.emit_interval
-                    } else {
-                        0.0
-                    };
+                    } else { 0.0 };
                     put(out, &[rate])
                 }
-                "drag" => put(out, &[p.drag]),
+                "drag"             => put(out, &[p.drag]),
                 // 円錐半頂角（度）= direction_randomness * 180。
-                "spread_angle_deg" => put(
-                    out,
-                    &[p.direction_randomness
-                        * crate::engine::components::DIRECTION_RANDOMNESS_MAX_HALF_ANGLE_DEG],
-                ),
-                "playing" => put(out, &[if p.playing { 1.0 } else { 0.0 }]),
+                "spread_angle_deg" => put(out, &[
+                    p.direction_randomness
+                        * crate::engine::components::DIRECTION_RANDOMNESS_MAX_HALF_ANGLE_DEG,
+                ]),
+                "playing"          => put(out, &[if p.playing { 1.0 } else { 0.0 }]),
                 // loop_emit = emit_mode が Loop かどうか。
-                "loop_emit" => put(
-                    out,
-                    &[
-                        if p.emit_mode == crate::engine::components::EmitMode::Loop {
-                            1.0
-                        } else {
-                            0.0
-                        },
-                    ],
-                ),
-                _ => None,
+                "loop_emit"        => put(out, &[
+                    if p.emit_mode == crate::engine::components::EmitMode::Loop { 1.0 } else { 0.0 },
+                ]),
+                _                  => None,
             }
         }
         _ => None,
@@ -415,11 +380,7 @@ fn read_floats(
 /// v の要素数がフィールドの要素数と一致しない場合は失敗させる
 /// （C# ラッパーの実装ミスを暗黙に丸めず検出するため）。
 fn write_floats(
-    world: &mut World,
-    entity: Entity,
-    component: &str,
-    field: &str,
-    v: &[f32],
+    world: &mut World, entity: Entity, component: &str, field: &str, v: &[f32],
 ) -> bool {
     // 要素数が一致する場合のみ固定長配列へコピーするローカルヘルパ
     fn take<const N: usize>(v: &[f32]) -> Option<[f32; N]> {
@@ -427,168 +388,145 @@ fn write_floats(
     }
     match component {
         // ── 3D トランスフォーム ──
+        // Transform はワールド空間で保持され、描画実体は ModelComponent.instance_mats、
+        // 親子関係は Actor ツリーが持つ。そのためコンポーネントの数値を書くだけでは
+        // 「メッシュが動かない」「子アクタ（カメラ等）が追従しない」状態になる。
+        // 必ず集約関数 transform_sync::set_actor_world_transform を経由させること。
         "Transform" => {
-            let Some(t) = world.get_mut::<Transform>(entity) else {
-                return false;
+            // 現在値を読み、指定フィールドだけ差し替えた新しいワールド Transform を作る
+            let Some(cur) = world.get::<Transform>(entity).cloned() else { return false };
+            let mut next = cur;
+            let field_ok = match field {
+                "position" => take::<3>(v).map(|a| next.position = a).is_some(),
+                "rotation" => take::<3>(v).map(|a| next.rotation = a).is_some(),
+                "scale"    => take::<3>(v).map(|a| next.scale    = a).is_some(),
+                _          => false,
             };
-            let written = match field {
-                "position" => take(v).map(|a| t.position = a).is_some(),
-                "rotation" => take(v).map(|a| t.rotation = a).is_some(),
-                "scale" => take(v).map(|a| t.scale = a).is_some(),
-                _ => false,
-            };
-            if written {
-                sync_model_instance_mats_for_actor_entity(world, entity);
+            if !field_ok { return false; }
+
+            match actor_of_entity(entity) {
+                // Actor ツリーが公開されている通常ケース: instance_mats・全子孫へ伝播する。
+                // child_dfs_start は Undo 記録に使う採番の起点で、スクリプト経路では
+                // Undo を記録しないため 0 でよい。
+                Some(actor) => {
+                    crate::engine::core::transform_sync::set_actor_world_transform(
+                        actor, world, next, 0,
+                    );
+                    true
+                }
+                // Actor ツリー未公開（フェーズ外呼び出し等）のフォールバック。
+                // 伝播はできないが、少なくともコンポーネント値は反映する。
+                None => {
+                    match world.get_mut::<Transform>(entity) {
+                        Some(t) => { *t = next; true }
+                        None    => false,
+                    }
+                }
             }
-            written
         }
         // ── 2D キャンバストランスフォーム ──
         "CanvasTransform" => {
-            let Some(t) = world.get_mut::<CanvasTransform>(entity) else {
-                return false;
-            };
+            let Some(t) = world.get_mut::<CanvasTransform>(entity) else { return false };
             match field {
                 "position" => take(v).map(|a| t.position = a).is_some(),
                 "rotation" => take::<1>(v).map(|a| t.rotation = a[0]).is_some(),
-                "scale" => take(v).map(|a| t.scale = a).is_some(),
-                "pivot" => take(v).map(|a| t.pivot = a).is_some(),
-                "anchor" => take(v).map(|a| t.anchor = a).is_some(),
-                _ => false,
+                "scale"    => take(v).map(|a| t.scale  = a).is_some(),
+                "pivot"    => take(v).map(|a| t.pivot  = a).is_some(),
+                "anchor"   => take(v).map(|a| t.anchor = a).is_some(),
+                _          => false,
             }
         }
         // ── 2D スプライト（スロット格納型: locate で解決）──
         "Sprite" => {
-            let Some(e) = locate::<SpriteComponent>(world, entity) else {
-                return false;
-            };
-            let Some(s) = world.get_mut::<SpriteComponent>(e) else {
-                return false;
-            };
+            let Some(e) = locate::<SpriteComponent>(world, entity) else { return false };
+            let Some(s) = world.get_mut::<SpriteComponent>(e) else { return false };
             match field {
-                "color" => take(v).map(|a| s.color = a).is_some(),
-                "width" => take::<1>(v).map(|a| s.width = a[0]).is_some(),
+                "color"  => take(v).map(|a| s.color = a).is_some(),
+                "width"  => take::<1>(v).map(|a| s.width  = a[0]).is_some(),
                 "height" => take::<1>(v).map(|a| s.height = a[0]).is_some(),
                 // 描画優先度レイヤー（f32 → i32 変換して格納。Camera の target_width と同様）
-                "layer" => take::<1>(v).map(|a| s.layer = a[0] as i32).is_some(),
-                _ => false,
+                "layer"  => take::<1>(v).map(|a| s.layer = a[0] as i32).is_some(),
+                _        => false,
             }
         }
         // ── オーディオソース（スロット格納型: locate で解決）──
         "Audio" => {
-            let Some(e) = locate::<AudioComponent>(world, entity) else {
-                return false;
-            };
-            let Some(a) = world.get_mut::<AudioComponent>(e) else {
-                return false;
-            };
+            let Some(e) = locate::<AudioComponent>(world, entity) else { return false };
+            let Some(a) = world.get_mut::<AudioComponent>(e) else { return false };
             match field {
-                "volume" => take::<1>(v).map(|x| a.volume = x[0].max(0.0)).is_some(),
-                "pan" => take::<1>(v)
-                    .map(|x| a.pan = x[0].clamp(-1.0, 1.0))
-                    .is_some(),
-                "loop" => take::<1>(v).map(|x| a.looped = x[0] != 0.0).is_some(),
-                "play_on_start" => take::<1>(v)
-                    .map(|x| a.play_on_start = x[0] != 0.0)
-                    .is_some(),
-                "spatial" => take::<1>(v).map(|x| a.spatial = x[0] != 0.0).is_some(),
-                "min_distance" => take::<1>(v)
-                    .map(|x| a.min_distance = x[0].max(0.0))
-                    .is_some(),
-                "max_distance" => take::<1>(v)
-                    .map(|x| a.max_distance = x[0].max(0.0))
-                    .is_some(),
-                _ => false,
+                "volume"        => take::<1>(v).map(|x| a.volume = x[0].max(0.0)).is_some(),
+                "pan"           => take::<1>(v).map(|x| a.pan = x[0].clamp(-1.0, 1.0)).is_some(),
+                "loop"          => take::<1>(v).map(|x| a.looped = x[0] != 0.0).is_some(),
+                "play_on_start" => take::<1>(v).map(|x| a.play_on_start = x[0] != 0.0).is_some(),
+                "spatial"       => take::<1>(v).map(|x| a.spatial = x[0] != 0.0).is_some(),
+                "min_distance"  => take::<1>(v).map(|x| a.min_distance = x[0].max(0.0)).is_some(),
+                "max_distance"  => take::<1>(v).map(|x| a.max_distance = x[0].max(0.0)).is_some(),
+                _               => false,
             }
         }
         // ── 3D カメラ（スロット格納型: locate で解決）──
         "Camera" => {
-            let Some(e) = locate::<CameraComponent>(world, entity) else {
-                return false;
-            };
-            let Some(c) = world.get_mut::<CameraComponent>(e) else {
-                return false;
-            };
+            let Some(e) = locate::<CameraComponent>(world, entity) else { return false };
+            let Some(c) = world.get_mut::<CameraComponent>(e) else { return false };
             match field {
-                "fov_y_deg" => take::<1>(v).map(|a| c.fov_y_deg = a[0]).is_some(),
-                "near" => take::<1>(v).map(|a| c.near = a[0]).is_some(),
-                "far" => take::<1>(v).map(|a| c.far = a[0]).is_some(),
-                "is_main" => take::<1>(v).map(|a| c.is_main = a[0] != 0.0).is_some(),
-                "clear_color" => take(v).map(|a| c.clear_color = a).is_some(),
-                "target_width" => take::<1>(v)
-                    .map(|a| c.target_width = a[0].max(0.0) as u32)
-                    .is_some(),
-                "target_height" => take::<1>(v)
-                    .map(|a| c.target_height = a[0].max(0.0) as u32)
-                    .is_some(),
-                "bar_color" => take(v).map(|a| c.bar_color = a).is_some(),
-                "ortho_height" => take::<1>(v)
-                    .map(|a| c.ortho_height = a[0].max(0.01))
-                    .is_some(),
-                _ => false,
+                "fov_y_deg"     => take::<1>(v).map(|a| c.fov_y_deg = a[0]).is_some(),
+                "near"          => take::<1>(v).map(|a| c.near = a[0]).is_some(),
+                "far"           => take::<1>(v).map(|a| c.far  = a[0]).is_some(),
+                "is_main"       => take::<1>(v).map(|a| c.is_main = a[0] != 0.0).is_some(),
+                "clear_color"   => take(v).map(|a| c.clear_color = a).is_some(),
+                "target_width"  => take::<1>(v).map(|a| c.target_width  = a[0].max(0.0) as u32).is_some(),
+                "target_height" => take::<1>(v).map(|a| c.target_height = a[0].max(0.0) as u32).is_some(),
+                "bar_color"     => take(v).map(|a| c.bar_color = a).is_some(),
+                "ortho_height"  => take::<1>(v).map(|a| c.ortho_height = a[0].max(0.01)).is_some(),
+                _               => false,
             }
         }
         // ── アニメーター（スロット格納型: locate で解決）──
         // playing は Play/Stop/Pause/Resume（ffi_animator_component）経由でのみ変更させる
         // （直接書き込みを許すと current_clip との整合が崩れるため、ここでは公開しない）。
         "Animator" => {
-            let Some(e) = locate::<AnimatorComponent>(world, entity) else {
-                return false;
-            };
-            let Some(a) = world.get_mut::<AnimatorComponent>(e) else {
-                return false;
-            };
+            let Some(e) = locate::<AnimatorComponent>(world, entity) else { return false };
+            let Some(a) = world.get_mut::<AnimatorComponent>(e) else { return false };
             match field {
-                "time" => take::<1>(v).map(|x| a.time = x[0].max(0.0)).is_some(),
+                "time"  => take::<1>(v).map(|x| a.time = x[0].max(0.0)).is_some(),
                 "speed" => take::<1>(v).map(|x| a.speed = x[0]).is_some(),
-                _ => false,
+                _       => false,
             }
         }
         // ── パーティクルエミッタ（スロット格納型: locate で解決）──
         // 負値・範囲外は light_ops と同方針でクランプする（放出レート/抵抗は非負、
         // spread は円錐半頂角なので 0..=180 度に収める）。
         "ParticleEmitter" => {
-            let Some(e) = locate::<ParticleEmitterComponent>(world, entity) else {
-                return false;
-            };
-            let Some(p) = world.get_mut::<ParticleEmitterComponent>(e) else {
-                return false;
-            };
+            let Some(e) = locate::<ParticleEmitterComponent>(world, entity) else { return false };
+            let Some(p) = world.get_mut::<ParticleEmitterComponent>(e) else { return false };
             // スクリプト API の互換レイヤ（read_floats と対）: 従来のフィールド名を
             // 新スキーマへ換算して書き込む。C# ラッパー・docs の API 名は変えない。
             match field {
                 // emit_rate（個/秒）→ emit_interval = particles_per_emit / rate。
                 // rate<=0 は「放出停止」の意図として emit_interval を 0 にせず
                 // 十分大きな間隔（f32::MAX）にする（interval=0 は毎フレーム放出の意味のため）。
-                "emit_rate" => take::<1>(v)
-                    .map(|x| {
-                        let rate = x[0].max(0.0);
-                        p.emit_interval = if rate > 0.0 {
-                            p.particles_per_emit.max(1) as f32 / rate
-                        } else {
-                            f32::MAX
-                        };
-                    })
-                    .is_some(),
-                "drag" => take::<1>(v).map(|x| p.drag = x[0].max(0.0)).is_some(),
+                "emit_rate"        => take::<1>(v).map(|x| {
+                    let rate = x[0].max(0.0);
+                    p.emit_interval = if rate > 0.0 {
+                        p.particles_per_emit.max(1) as f32 / rate
+                    } else { f32::MAX };
+                }).is_some(),
+                "drag"             => take::<1>(v).map(|x| p.drag = x[0].max(0.0)).is_some(),
                 // spread_angle_deg（0..180）→ direction_randomness = deg / 180。
-                "spread_angle_deg" => take::<1>(v)
-                    .map(|x| {
-                        p.direction_randomness = x[0].clamp(0.0, 180.0)
-                            / crate::engine::components::DIRECTION_RANDOMNESS_MAX_HALF_ANGLE_DEG;
-                    })
-                    .is_some(),
-                "playing" => take::<1>(v).map(|x| p.playing = x[0] != 0.0).is_some(),
+                "spread_angle_deg" => take::<1>(v).map(|x| {
+                    p.direction_randomness = x[0].clamp(0.0, 180.0)
+                        / crate::engine::components::DIRECTION_RANDOMNESS_MAX_HALF_ANGLE_DEG;
+                }).is_some(),
+                "playing"          => take::<1>(v).map(|x| p.playing = x[0] != 0.0).is_some(),
                 // loop_emit: true → Loop / false → Once（Count 指定はエディタ側のみ）。
-                "loop_emit" => take::<1>(v)
-                    .map(|x| {
-                        p.emit_mode = if x[0] != 0.0 {
-                            crate::engine::components::EmitMode::Loop
-                        } else {
-                            crate::engine::components::EmitMode::Once
-                        };
-                    })
-                    .is_some(),
-                _ => false,
+                "loop_emit"        => take::<1>(v).map(|x| {
+                    p.emit_mode = if x[0] != 0.0 {
+                        crate::engine::components::EmitMode::Loop
+                    } else {
+                        crate::engine::components::EmitMode::Once
+                    };
+                }).is_some(),
+                _                  => false,
             }
         }
         _ => false,
@@ -603,7 +541,7 @@ fn read_string(world: &World, entity: Entity, component: &str, field: &str) -> O
             let s = world.get::<SpriteComponent>(e)?;
             match field {
                 "texture_path" => Some(s.texture_path.clone()),
-                _ => None,
+                _              => None,
             }
         }
         "Audio" => {
@@ -611,7 +549,7 @@ fn read_string(world: &World, entity: Entity, component: &str, field: &str) -> O
             let a = world.get::<AudioComponent>(e)?;
             match field {
                 "audio_path" => Some(a.audio_path.clone()),
-                _ => None,
+                _            => None,
             }
         }
         "Camera" => {
@@ -619,7 +557,7 @@ fn read_string(world: &World, entity: Entity, component: &str, field: &str) -> O
             let c = world.get::<CameraComponent>(e)?;
             match field {
                 "projection" => Some(c.projection.as_str().to_string()),
-                _ => None,
+                _            => None,
             }
         }
         // ── アニメーター（スロット格納型: locate で解決）──
@@ -630,7 +568,7 @@ fn read_string(world: &World, entity: Entity, component: &str, field: &str) -> O
             match field {
                 // 未再生（None）は空文字を返す（C# 側 CurrentClip の既定値と一致させる）
                 "current_clip" => Some(a.current_clip.clone().unwrap_or_default()),
-                _ => None,
+                _              => None,
             }
         }
         _ => None,
@@ -639,50 +577,28 @@ fn read_string(world: &World, entity: Entity, component: &str, field: &str) -> O
 
 /// コンポーネントの文字列フィールドへ書き込む。成功なら true。
 fn write_string(
-    world: &mut World,
-    entity: Entity,
-    component: &str,
-    field: &str,
-    value: &str,
+    world: &mut World, entity: Entity, component: &str, field: &str, value: &str,
 ) -> bool {
     match component {
         "Sprite" => {
-            let Some(e) = locate::<SpriteComponent>(world, entity) else {
-                return false;
-            };
-            let Some(s) = world.get_mut::<SpriteComponent>(e) else {
-                return false;
-            };
+            let Some(e) = locate::<SpriteComponent>(world, entity) else { return false };
+            let Some(s) = world.get_mut::<SpriteComponent>(e) else { return false };
             match field {
-                "texture_path" => {
-                    s.texture_path = value.to_string();
-                    true
-                }
-                _ => false,
+                "texture_path" => { s.texture_path = value.to_string(); true }
+                _              => false,
             }
         }
         "Audio" => {
-            let Some(e) = locate::<AudioComponent>(world, entity) else {
-                return false;
-            };
-            let Some(a) = world.get_mut::<AudioComponent>(e) else {
-                return false;
-            };
+            let Some(e) = locate::<AudioComponent>(world, entity) else { return false };
+            let Some(a) = world.get_mut::<AudioComponent>(e) else { return false };
             match field {
-                "audio_path" => {
-                    a.audio_path = value.to_string();
-                    true
-                }
-                _ => false,
+                "audio_path" => { a.audio_path = value.to_string(); true }
+                _            => false,
             }
         }
         "Camera" => {
-            let Some(e) = locate::<CameraComponent>(world, entity) else {
-                return false;
-            };
-            let Some(c) = world.get_mut::<CameraComponent>(e) else {
-                return false;
-            };
+            let Some(e) = locate::<CameraComponent>(world, entity) else { return false };
+            let Some(c) = world.get_mut::<CameraComponent>(e) else { return false };
             match field {
                 "projection" => {
                     c.projection = crate::engine::components::CameraProjection::from_str(value);
@@ -698,12 +614,12 @@ fn write_string(
 /// エンティティ（またはそのアクターのスロット）が指定コンポーネントを持つか。
 fn has_component(world: &World, entity: Entity, component: &str) -> bool {
     match component {
-        "Transform" => world.get::<Transform>(entity).is_some(),
+        "Transform"       => world.get::<Transform>(entity).is_some(),
         "CanvasTransform" => world.get::<CanvasTransform>(entity).is_some(),
-        "Sprite" => locate::<SpriteComponent>(world, entity).is_some(),
-        "Camera" => locate::<CameraComponent>(world, entity).is_some(),
-        "Audio" => locate::<AudioComponent>(world, entity).is_some(),
-        "Animator" => locate::<AnimatorComponent>(world, entity).is_some(),
+        "Sprite"          => locate::<SpriteComponent>(world, entity).is_some(),
+        "Camera"          => locate::<CameraComponent>(world, entity).is_some(),
+        "Audio"           => locate::<AudioComponent>(world, entity).is_some(),
+        "Animator"        => locate::<AnimatorComponent>(world, entity).is_some(),
         "ParticleEmitter" => locate::<ParticleEmitterComponent>(world, entity).is_some(),
         _ => false,
     }
@@ -713,9 +629,7 @@ fn has_component(world: &World, entity: Entity, component: &str) -> bool {
 
 /// ポインタ＋長さから &str を復元する（不正 UTF-8 は空文字）。
 unsafe fn str_from<'a>(ptr: *const u8, len: i32) -> &'a str {
-    if ptr.is_null() || len <= 0 {
-        return "";
-    }
+    if ptr.is_null() || len <= 0 { return ""; }
     let bytes = std::slice::from_raw_parts(ptr, len as usize);
     std::str::from_utf8(bytes).unwrap_or("")
 }
@@ -723,29 +637,17 @@ unsafe fn str_from<'a>(ptr: *const u8, len: i32) -> &'a str {
 /// 数値フィールドを読む。out に書き込んだ要素数（1〜4）を返す。失敗=0。
 /// cap は out の容量（要素数）。フィールドの要素数が cap を超える場合は失敗。
 unsafe extern "system" fn ffi_get_floats(
-    idx: u32,
-    generation: u32,
-    comp: *const u8,
-    comp_len: i32,
-    field: *const u8,
-    field_len: i32,
-    out: *mut f32,
-    cap: i32,
+    idx: u32, generation: u32,
+    comp: *const u8, comp_len: i32,
+    field: *const u8, field_len: i32,
+    out: *mut f32, cap: i32,
 ) -> i32 {
     let ptr = WORLD_PTR.with(|p| p.get());
-    if ptr.is_null() || out.is_null() || cap <= 0 {
-        return 0;
-    }
+    if ptr.is_null() || out.is_null() || cap <= 0 { return 0; }
     let world = &*ptr;
     let entity = Entity::from_raw(idx, generation);
     let mut buf = [0.0f32; MAX_FLOAT_FIELD_LEN];
-    match read_floats(
-        world,
-        entity,
-        str_from(comp, comp_len),
-        str_from(field, field_len),
-        &mut buf,
-    ) {
+    match read_floats(world, entity, str_from(comp, comp_len), str_from(field, field_len), &mut buf) {
         Some(n) if n <= cap as usize => {
             std::ptr::copy_nonoverlapping(buf.as_ptr(), out, n);
             n as i32
@@ -756,14 +658,10 @@ unsafe extern "system" fn ffi_get_floats(
 
 /// 数値フィールドへ書き込む。成功=1 / 失敗=0（inp は count 要素）。
 unsafe extern "system" fn ffi_set_floats(
-    idx: u32,
-    generation: u32,
-    comp: *const u8,
-    comp_len: i32,
-    field: *const u8,
-    field_len: i32,
-    inp: *const f32,
-    count: i32,
+    idx: u32, generation: u32,
+    comp: *const u8, comp_len: i32,
+    field: *const u8, field_len: i32,
+    inp: *const f32, count: i32,
 ) -> i32 {
     let ptr = WORLD_PTR.with(|p| p.get());
     if ptr.is_null() || inp.is_null() || count <= 0 || count as usize > MAX_FLOAT_FIELD_LEN {
@@ -772,43 +670,22 @@ unsafe extern "system" fn ffi_set_floats(
     let world = &mut *ptr;
     let entity = Entity::from_raw(idx, generation);
     let v = std::slice::from_raw_parts(inp, count as usize);
-    if write_floats(
-        world,
-        entity,
-        str_from(comp, comp_len),
-        str_from(field, field_len),
-        v,
-    ) {
-        1
-    } else {
-        0
-    }
+    if write_floats(world, entity, str_from(comp, comp_len), str_from(field, field_len), v) { 1 } else { 0 }
 }
 
 /// 文字列フィールドを読む。UTF-8 バイト列の必要長を返す（失敗=-1）。
 /// 必要長 <= cap のときだけ out へ書き込む（C# 側は不足時にバッファを広げて再呼び出しする）。
 unsafe extern "system" fn ffi_get_string(
-    idx: u32,
-    generation: u32,
-    comp: *const u8,
-    comp_len: i32,
-    field: *const u8,
-    field_len: i32,
-    out: *mut u8,
-    cap: i32,
+    idx: u32, generation: u32,
+    comp: *const u8, comp_len: i32,
+    field: *const u8, field_len: i32,
+    out: *mut u8, cap: i32,
 ) -> i32 {
     let ptr = WORLD_PTR.with(|p| p.get());
-    if ptr.is_null() {
-        return -1;
-    }
+    if ptr.is_null() { return -1; }
     let world = &*ptr;
     let entity = Entity::from_raw(idx, generation);
-    match read_string(
-        world,
-        entity,
-        str_from(comp, comp_len),
-        str_from(field, field_len),
-    ) {
+    match read_string(world, entity, str_from(comp, comp_len), str_from(field, field_len)) {
         Some(s) => {
             let bytes = s.as_bytes();
             if !out.is_null() && bytes.len() <= cap as usize {
@@ -822,54 +699,30 @@ unsafe extern "system" fn ffi_get_string(
 
 /// 文字列フィールドへ書き込む。成功=1 / 失敗=0（value は UTF-8 バイト列）。
 unsafe extern "system" fn ffi_set_string(
-    idx: u32,
-    generation: u32,
-    comp: *const u8,
-    comp_len: i32,
-    field: *const u8,
-    field_len: i32,
-    value: *const u8,
-    value_len: i32,
+    idx: u32, generation: u32,
+    comp: *const u8, comp_len: i32,
+    field: *const u8, field_len: i32,
+    value: *const u8, value_len: i32,
 ) -> i32 {
     let ptr = WORLD_PTR.with(|p| p.get());
-    if ptr.is_null() {
-        return 0;
-    }
+    if ptr.is_null() { return 0; }
     let world = &mut *ptr;
     let entity = Entity::from_raw(idx, generation);
     // value_len=0 は「空文字列を書く」として許容する（str_from が空文字を返す）
     let s = str_from(value, value_len);
-    if write_string(
-        world,
-        entity,
-        str_from(comp, comp_len),
-        str_from(field, field_len),
-        s,
-    ) {
-        1
-    } else {
-        0
-    }
+    if write_string(world, entity, str_from(comp, comp_len), str_from(field, field_len), s) { 1 } else { 0 }
 }
 
 /// コンポーネント保持判定。持つ=1 / 持たない=0。
 unsafe extern "system" fn ffi_has_component(
-    idx: u32,
-    generation: u32,
-    comp: *const u8,
-    comp_len: i32,
+    idx: u32, generation: u32,
+    comp: *const u8, comp_len: i32,
 ) -> i32 {
     let ptr = WORLD_PTR.with(|p| p.get());
-    if ptr.is_null() {
-        return 0;
-    }
+    if ptr.is_null() { return 0; }
     let world = &*ptr;
     let entity = Entity::from_raw(idx, generation);
-    if has_component(world, entity, str_from(comp, comp_len)) {
-        1
-    } else {
-        0
-    }
+    if has_component(world, entity, str_from(comp, comp_len)) { 1 } else { 0 }
 }
 
 // ─── シーン操作 FFI（Instantiate / Destroy / Find）───────────
@@ -884,15 +737,14 @@ unsafe extern "system" fn ffi_has_component(
 ///
 /// 注意: 2D アクター（Actor2D）の場合、遅延適用時に仮の Transform は
 /// CanvasTransform へ差し替えられるため、生成直後の 3D Position 設定は反映されない。
-unsafe extern "system" fn ffi_instantiate(path: *const u8, path_len: i32, out: *mut u32) -> i32 {
+unsafe extern "system" fn ffi_instantiate(
+    path: *const u8, path_len: i32,
+    out: *mut u32,
+) -> i32 {
     let ptr = WORLD_PTR.with(|p| p.get());
-    if ptr.is_null() || out.is_null() {
-        return 0;
-    }
+    if ptr.is_null() || out.is_null() { return 0; }
     let path_str = str_from(path, path_len);
-    if path_str.is_empty() {
-        return 0;
-    }
+    if path_str.is_empty() { return 0; }
 
     // ルートエンティティを予約し、スクリプトが即座に位置設定できるよう
     // デフォルト Transform を挿入する（2D の場合は適用時に差し替える）
@@ -900,15 +752,13 @@ unsafe extern "system" fn ffi_instantiate(path: *const u8, path_len: i32, out: *
     let entity = world.spawn();
     world.insert(entity, Transform::default());
 
-    SCENE_COMMANDS.with(|q| {
-        q.borrow_mut().push(ScriptSceneCommand::Instantiate {
-            path: path_str.to_string(),
-            entity,
-        })
-    });
+    SCENE_COMMANDS.with(|q| q.borrow_mut().push(ScriptSceneCommand::Instantiate {
+        path:   path_str.to_string(),
+        entity,
+    }));
 
-    *out = entity.index();
-    *out.add(1) = entity.generation();
+    *out         = entity.index();
+    *out.add(1)  = entity.generation();
     1
 }
 
@@ -918,13 +768,13 @@ unsafe extern "system" fn ffi_instantiate(path: *const u8, path_len: i32, out: *
 /// （実行中スクリプトの巻き添えを防ぐため。Unity の Destroy と同じ考え方）。
 unsafe extern "system" fn ffi_destroy(idx: u32, generation: u32) -> i32 {
     let ptr = WORLD_PTR.with(|p| p.get());
-    if ptr.is_null() {
-        return 0;
-    }
+    if ptr.is_null() { return 0; }
     let world = &*ptr;
     let entity = Entity::from_raw(idx, generation);
     // 生存確認: 予約済み Transform か CanvasTransform を持つものだけ受理する
-    if world.get::<Transform>(entity).is_none() && world.get::<CanvasTransform>(entity).is_none() {
+    if world.get::<Transform>(entity).is_none()
+        && world.get::<CanvasTransform>(entity).is_none()
+    {
         return 0;
     }
     SCENE_COMMANDS.with(|q| q.borrow_mut().push(ScriptSceneCommand::Destroy { entity }));
@@ -932,7 +782,7 @@ unsafe extern "system" fn ffi_destroy(idx: u32, generation: u32) -> i32 {
 }
 
 // ─── シーンコマンド種別（C# 側 Scene クラスの定数と一致させる）───
-const SCENE_CMD_PRELOAD: i32 = 0; // 事前読み込み（遷移しない）
+const SCENE_CMD_PRELOAD: i32 = 0;    // 事前読み込み（遷移しない）
 const SCENE_CMD_TRANSITION: i32 = 1; // 遷移（未読み込みなら自動 Load）
 
 /// シーンの事前読み込み・遷移コマンドを発行する。受理=1 / 失敗=0。
@@ -943,16 +793,10 @@ const SCENE_CMD_TRANSITION: i32 = 1; // 遷移（未読み込みなら自動 Loa
 /// Transition があるフレームでは他のシーン操作コマンドはすべて破棄される。
 unsafe extern "system" fn ffi_scene(kind: i32, name: *const u8, name_len: i32) -> i32 {
     let name_str = str_from(name, name_len);
-    if name_str.is_empty() {
-        return 0;
-    }
+    if name_str.is_empty() { return 0; }
     let cmd = match kind {
-        SCENE_CMD_PRELOAD => ScriptSceneCommand::PreloadScene {
-            name_or_path: name_str.to_string(),
-        },
-        SCENE_CMD_TRANSITION => ScriptSceneCommand::TransitionScene {
-            name_or_path: name_str.to_string(),
-        },
+        SCENE_CMD_PRELOAD    => ScriptSceneCommand::PreloadScene    { name_or_path: name_str.to_string() },
+        SCENE_CMD_TRANSITION => ScriptSceneCommand::TransitionScene { name_or_path: name_str.to_string() },
         _ => return 0,
     };
     SCENE_COMMANDS.with(|q| q.borrow_mut().push(cmd));
@@ -961,25 +805,20 @@ unsafe extern "system" fn ffi_scene(kind: i32, name: *const u8, name_len: i32) -
 
 /// アクターを名前で検索する（DFS 順の最初の一致）。見つかった=1 / なし=0。
 /// out（[index, generation] の 2 要素）へルートエンティティを返す。
-unsafe extern "system" fn ffi_find_actor(name: *const u8, name_len: i32, out: *mut u32) -> i32 {
+unsafe extern "system" fn ffi_find_actor(
+    name: *const u8, name_len: i32,
+    out: *mut u32,
+) -> i32 {
     let actors_ptr = ACTORS_PTR.with(|p| p.get());
-    if actors_ptr.is_null() || out.is_null() {
-        return 0;
-    }
+    if actors_ptr.is_null() || out.is_null() { return 0; }
     let name_str = str_from(name, name_len);
-    if name_str.is_empty() {
-        return 0;
-    }
+    if name_str.is_empty() { return 0; }
 
     /// Actor ツリーを DFS で走査し、名前一致の最初のエンティティを返すローカル関数
     fn walk(actors: &[Actor], name: &str) -> Option<Entity> {
         for a in actors {
-            if a.name == name {
-                return Some(a.entity);
-            }
-            if let Some(e) = walk(a.children(), name) {
-                return Some(e);
-            }
+            if a.name == name { return Some(a.entity); }
+            if let Some(e) = walk(a.children(), name) { return Some(e); }
         }
         None
     }
@@ -987,7 +826,7 @@ unsafe extern "system" fn ffi_find_actor(name: *const u8, name_len: i32, out: *m
     let actors = &*actors_ptr;
     match walk(actors, name_str) {
         Some(e) => {
-            *out = e.index();
+            *out        = e.index();
             *out.add(1) = e.generation();
             1
         }
@@ -1003,15 +842,11 @@ unsafe extern "system" fn ffi_find_actor(name: *const u8, name_len: i32, out: *m
 /// key_id は C# 側 SEED.KeyCode の数値（input_bridge の対応表で変換）。
 unsafe extern "system" fn ffi_input_key(kind: i32, key_id: u32) -> i32 {
     let ptr = INPUT_PTR.with(|p| p.get());
-    if ptr.is_null() {
-        return 0;
-    }
+    if ptr.is_null() { return 0; }
     let input = &*ptr;
-    let Some(key) = input_bridge::keycode_from_id(key_id) else {
-        return 0;
-    };
+    let Some(key) = input_bridge::keycode_from_id(key_id) else { return 0 };
     let hit = match kind {
-        input_bridge::INPUT_KIND_PRESS => input.is_press_key(key),
+        input_bridge::INPUT_KIND_PRESS   => input.is_press_key(key),
         input_bridge::INPUT_KIND_TRIGGER => input.is_trigger_key(key),
         input_bridge::INPUT_KIND_RELEASE => input.is_release_key(key),
         _ => false,
@@ -1023,15 +858,11 @@ unsafe extern "system" fn ffi_input_key(kind: i32, key_id: u32) -> i32 {
 /// button_id は C# 側 SEED.MouseButton の数値（0=左 / 1=右 / 2=中）。
 unsafe extern "system" fn ffi_input_mouse_button(kind: i32, button_id: u32) -> i32 {
     let ptr = INPUT_PTR.with(|p| p.get());
-    if ptr.is_null() {
-        return 0;
-    }
+    if ptr.is_null() { return 0; }
     let input = &*ptr;
-    let Some(button) = input_bridge::mouse_button_from_id(button_id) else {
-        return 0;
-    };
+    let Some(button) = input_bridge::mouse_button_from_id(button_id) else { return 0 };
     let hit = match kind {
-        input_bridge::INPUT_KIND_PRESS => input.is_press_mouse(button),
+        input_bridge::INPUT_KIND_PRESS   => input.is_press_mouse(button),
         input_bridge::INPUT_KIND_TRIGGER => input.is_trigger_mouse(button),
         input_bridge::INPUT_KIND_RELEASE => input.is_release_mouse(button),
         _ => false,
@@ -1045,20 +876,18 @@ unsafe extern "system" fn ffi_input_mouse_button(kind: i32, button_id: u32) -> i
 /// out は 2 要素以上の容量を C# 側が保証する。
 unsafe extern "system" fn ffi_input_mouse_state(kind: i32, out: *mut f32) -> i32 {
     let ptr = INPUT_PTR.with(|p| p.get());
-    if ptr.is_null() || out.is_null() {
-        return 0;
-    }
+    if ptr.is_null() || out.is_null() { return 0; }
     let input = &*ptr;
     match kind {
         input_bridge::MOUSE_STATE_POSITION => {
             let v = input.mouse_position(InputState::Current);
-            *out = v.x;
+            *out        = v.x;
             *out.add(1) = v.y;
             2
         }
         input_bridge::MOUSE_STATE_DELTA => {
             let v = input.mouse_vector(InputState::Current);
-            *out = v.x;
+            *out        = v.x;
             *out.add(1) = v.y;
             2
         }
@@ -1088,28 +917,17 @@ fn entity_by_dfs_id(actors: &[Actor], target: u64) -> Option<Entity> {
     fn walk(actors: &[Actor], counter: &mut u64, target: u64) -> Option<Entity> {
         for a in actors {
             *counter += 1;
-            if *counter == target {
-                return Some(a.entity);
-            }
-            if let Some(e) = walk(a.children(), counter, target) {
-                return Some(e);
-            }
+            if *counter == target { return Some(a.entity); }
+            if let Some(e) = walk(a.children(), counter, target) { return Some(e); }
         }
         None
     }
-    let roots: Vec<&Actor> = actors
-        .iter()
-        .filter(|a| a.world_line == PLAY_WORLD_LINE)
-        .collect();
+    let roots: Vec<&Actor> = actors.iter().filter(|a| a.world_line == PLAY_WORLD_LINE).collect();
     let mut counter = 0u64;
     for root in roots {
         counter += 1;
-        if counter == target {
-            return Some(root.entity);
-        }
-        if let Some(e) = walk(root.children(), &mut counter, target) {
-            return Some(e);
-        }
+        if counter == target { return Some(root.entity); }
+        if let Some(e) = walk(root.children(), &mut counter, target) { return Some(e); }
     }
     None
 }
@@ -1121,11 +939,8 @@ fn entity_by_dfs_id(actors: &[Actor], target: u64) -> Option<Entity> {
 /// out_entity へ [index, generation] の 2 要素を書き込む
 /// （ヒットしたアクターが逆引きできない場合は u32::MAX, 0）。
 unsafe extern "system" fn ffi_raycast(
-    origin: *const f32,
-    direction: *const f32,
-    max_distance: f32,
-    out_hit: *mut f32,
-    out_entity: *mut u32,
+    origin: *const f32, direction: *const f32, max_distance: f32,
+    out_hit: *mut f32, out_entity: *mut u32,
 ) -> i32 {
     use crate::engine::physics::PhysicsCommand;
 
@@ -1133,29 +948,25 @@ unsafe extern "system" fn ffi_raycast(
         return 0;
     }
     // 物理スレッドが起動していなければミス扱い
-    let Some(tx) = PHYSICS_TX.with(|p| p.borrow().clone()) else {
-        return 0;
-    };
+    let Some(tx) = PHYSICS_TX.with(|p| p.borrow().clone()) else { return 0 };
 
     // 同期問い合わせ: 応答用の 1 要素チャンネルを添えてコマンドを送る
     let (reply_tx, reply_rx) = crossbeam_channel::bounded(1);
     let cmd = PhysicsCommand::Raycast {
-        origin: [*origin, *origin.add(1), *origin.add(2)],
-        direction: [*direction, *direction.add(1), *direction.add(2)],
+        origin:       [*origin, *origin.add(1), *origin.add(2)],
+        direction:    [*direction, *direction.add(1), *direction.add(2)],
         max_distance,
-        reply: reply_tx,
+        reply:        reply_tx,
     };
-    if tx.send(cmd).is_err() {
-        return 0;
-    }
+    if tx.send(cmd).is_err() { return 0; }
 
     let hit = match reply_rx.recv_timeout(std::time::Duration::from_millis(RAYCAST_TIMEOUT_MS)) {
         Ok(Some(hit)) => hit,
-        _ => return 0,
+        _             => return 0,
     };
 
     // ヒット情報を書き込む
-    *out_hit = hit.point[0];
+    *out_hit        = hit.point[0];
     *out_hit.add(1) = hit.point[1];
     *out_hit.add(2) = hit.point[2];
     *out_hit.add(3) = hit.normal[0];
@@ -1166,21 +977,11 @@ unsafe extern "system" fn ffi_raycast(
     // DFS 順 ID → エンティティの逆引き（Actor ツリーが公開中の場合のみ）
     let entity = {
         let actors_ptr = ACTORS_PTR.with(|p| p.get());
-        if actors_ptr.is_null() {
-            None
-        } else {
-            entity_by_dfs_id(&*actors_ptr, hit.entity_id)
-        }
+        if actors_ptr.is_null() { None } else { entity_by_dfs_id(&*actors_ptr, hit.entity_id) }
     };
     match entity {
-        Some(e) => {
-            *out_entity = e.index();
-            *out_entity.add(1) = e.generation();
-        }
-        None => {
-            *out_entity = u32::MAX;
-            *out_entity.add(1) = 0;
-        }
+        Some(e) => { *out_entity = e.index(); *out_entity.add(1) = e.generation(); }
+        None    => { *out_entity = u32::MAX;  *out_entity.add(1) = 0; }
     }
     1
 }
@@ -1188,9 +989,9 @@ unsafe extern "system" fn ffi_raycast(
 // ─── オーディオ FFI ──────────────────────────────────────────
 
 /// オーディオコマンド種別（C# 側 Audio クラスの定数と一致させる）。
-const AUDIO_CMD_PLAY_SE: i32 = 0; // SE 再生（path, volume）
-const AUDIO_CMD_PLAY_BGM: i32 = 1; // BGM 再生（path, volume, flag=ループ 0/1）
-const AUDIO_CMD_STOP_BGM: i32 = 2; // BGM 停止
+const AUDIO_CMD_PLAY_SE: i32 = 0;        // SE 再生（path, volume）
+const AUDIO_CMD_PLAY_BGM: i32 = 1;       // BGM 再生（path, volume, flag=ループ 0/1）
+const AUDIO_CMD_STOP_BGM: i32 = 2;       // BGM 停止
 const AUDIO_CMD_SET_BGM_VOLUME: i32 = 3; // BGM 音量変更（volume）
 
 /// オーディオコマンドを発行する。受理=1 / 失敗=0。
@@ -1199,34 +1000,21 @@ const AUDIO_CMD_SET_BGM_VOLUME: i32 = 3; // BGM 音量変更（volume）
 /// volume は 1.0 = 等倍。flag は BGM 再生時のループ指定（0/1）。
 unsafe extern "system" fn ffi_audio(
     kind: i32,
-    path: *const u8,
-    path_len: i32,
-    volume: f32,
-    flag: i32,
+    path: *const u8, path_len: i32,
+    volume: f32, flag: i32,
 ) -> i32 {
     let cmd = match kind {
         AUDIO_CMD_PLAY_SE => {
             let p = str_from(path, path_len);
-            if p.is_empty() {
-                return 0;
-            }
-            ScriptAudioCommand::PlaySe {
-                path: p.to_string(),
-                volume,
-            }
+            if p.is_empty() { return 0; }
+            ScriptAudioCommand::PlaySe { path: p.to_string(), volume }
         }
         AUDIO_CMD_PLAY_BGM => {
             let p = str_from(path, path_len);
-            if p.is_empty() {
-                return 0;
-            }
-            ScriptAudioCommand::PlayBgm {
-                path: p.to_string(),
-                volume,
-                looped: flag != 0,
-            }
+            if p.is_empty() { return 0; }
+            ScriptAudioCommand::PlayBgm { path: p.to_string(), volume, looped: flag != 0 }
         }
-        AUDIO_CMD_STOP_BGM => ScriptAudioCommand::StopBgm,
+        AUDIO_CMD_STOP_BGM       => ScriptAudioCommand::StopBgm,
         AUDIO_CMD_SET_BGM_VOLUME => ScriptAudioCommand::SetBgmVolume { volume },
         _ => return 0,
     };
@@ -1259,19 +1047,14 @@ pub fn publish_screen_positions(positions: Vec<(Entity, [f32; 2])>) {
 /// 2D アクターのスクリーン座標（ウィンドウ左上原点・ピクセル）を取得する。
 /// 見つかった=1 / 2D アクターでない・未公開=0（out は 2 要素）。
 unsafe extern "system" fn ffi_screen_position(idx: u32, generation: u32, out: *mut f32) -> i32 {
-    if out.is_null() {
-        return 0;
-    }
+    if out.is_null() { return 0; }
     let entity = Entity::from_raw(idx, generation);
     let found = SCREEN_POSITIONS.with(|p| {
-        p.borrow()
-            .iter()
-            .find(|(e, _)| *e == entity)
-            .map(|(_, pos)| *pos)
+        p.borrow().iter().find(|(e, _)| *e == entity).map(|(_, pos)| *pos)
     });
     match found {
         Some(pos) => {
-            *out = pos[0];
+            *out        = pos[0];
             *out.add(1) = pos[1];
             1
         }
@@ -1285,29 +1068,19 @@ unsafe extern "system" fn ffi_screen_position(idx: u32, generation: u32, out: *m
 /// locate で解決し、Play/Stop はコマンドキューへ積む（フレーム末尾に適用）。
 unsafe extern "system" fn ffi_audio_component(action: i32, idx: u32, generation: u32) -> i32 {
     let ptr = WORLD_PTR.with(|p| p.get());
-    if ptr.is_null() {
-        return 0;
-    }
+    if ptr.is_null() { return 0; }
     let world = &*ptr;
     let entity = Entity::from_raw(idx, generation);
     // ルートエンティティから AudioComponent のスロットエンティティを解決する
-    let Some(slot) = locate::<AudioComponent>(world, entity) else {
-        return 0;
-    };
+    let Some(slot) = locate::<AudioComponent>(world, entity) else { return 0 };
 
     match action {
         AUDIO_COMPONENT_PLAY => {
-            AUDIO_COMMANDS.with(|q| {
-                q.borrow_mut()
-                    .push(ScriptAudioCommand::PlayComponent { entity: slot })
-            });
+            AUDIO_COMMANDS.with(|q| q.borrow_mut().push(ScriptAudioCommand::PlayComponent { entity: slot }));
             1
         }
         AUDIO_COMPONENT_STOP => {
-            AUDIO_COMMANDS.with(|q| {
-                q.borrow_mut()
-                    .push(ScriptAudioCommand::StopComponent { entity: slot })
-            });
+            AUDIO_COMMANDS.with(|q| q.borrow_mut().push(ScriptAudioCommand::StopComponent { entity: slot }));
             1
         }
         AUDIO_COMPONENT_IS_PLAYING => {
@@ -1319,9 +1092,9 @@ unsafe extern "system" fn ffi_audio_component(action: i32, idx: u32, generation:
 }
 
 /// AnimatorComponent 操作の種別（C# 側 Animator の定数と一致させる）。
-const ANIMATOR_COMPONENT_PLAY: i32 = 0; // clip 名 + speed（NaN = 変更なし）を指定して先頭から再生
-const ANIMATOR_COMPONENT_STOP: i32 = 1; // 停止して time=0
-const ANIMATOR_COMPONENT_PAUSE: i32 = 2; // playing=false のまま time は維持
+const ANIMATOR_COMPONENT_PLAY: i32   = 0; // clip 名 + speed（NaN = 変更なし）を指定して先頭から再生
+const ANIMATOR_COMPONENT_STOP: i32   = 1; // 停止して time=0
+const ANIMATOR_COMPONENT_PAUSE: i32  = 2; // playing=false のまま time は維持
 const ANIMATOR_COMPONENT_RESUME: i32 = 3; // current_clip があれば playing=true に戻す
 
 /// AnimatorComponent を操作する。成功=1 / 失敗=0。
@@ -1334,43 +1107,30 @@ const ANIMATOR_COMPONENT_RESUME: i32 = 3; // current_clip があれば playing=t
 /// clip_name/clip_name_len: Play 時のクリップ名（それ以外の action では無視）。
 /// speed: Play 時の再生速度指定（NaN なら既存の speed を変更しない）。それ以外の action では無視。
 unsafe extern "system" fn ffi_animator_component(
-    action: i32,
-    idx: u32,
-    generation: u32,
-    clip_name: *const u8,
-    clip_name_len: i32,
+    action: i32, idx: u32, generation: u32,
+    clip_name: *const u8, clip_name_len: i32,
     speed: f32,
 ) -> i32 {
     let ptr = WORLD_PTR.with(|p| p.get());
-    if ptr.is_null() {
-        return 0;
-    }
+    if ptr.is_null() { return 0; }
     let world = &mut *ptr;
     let entity = Entity::from_raw(idx, generation);
     // ルートエンティティから AnimatorComponent のスロットエンティティを解決する
-    let Some(slot) = locate::<AnimatorComponent>(world, entity) else {
-        return 0;
-    };
-    let Some(a) = world.get_mut::<AnimatorComponent>(slot) else {
-        return 0;
-    };
+    let Some(slot) = locate::<AnimatorComponent>(world, entity) else { return 0 };
+    let Some(a) = world.get_mut::<AnimatorComponent>(slot) else { return 0 };
 
     match action {
         ANIMATOR_COMPONENT_PLAY => {
             let name = str_from(clip_name, clip_name_len);
             // ロード済みキャッシュ（init_animators がフレーム先頭で clips を全ロード済み）に無ければ失敗
             if !a.cache.contains_key(name) {
-                eprintln!(
-                    "[SEED script] Animator.Play: クリップ '{name}' が見つかりません（clips 未登録 or 未ロード）"
-                );
+                eprintln!("[SEED script] Animator.Play: クリップ '{name}' が見つかりません（clips 未登録 or 未ロード）");
                 return 0;
             }
             a.current_clip = Some(name.to_string());
             a.time = 0.0;
             a.playing = true;
-            if !speed.is_nan() {
-                a.speed = speed;
-            }
+            if !speed.is_nan() { a.speed = speed; }
             1
         }
         ANIMATOR_COMPONENT_STOP => {
@@ -1384,9 +1144,7 @@ unsafe extern "system" fn ffi_animator_component(
         }
         ANIMATOR_COMPONENT_RESUME => {
             // 再生対象クリップが無いまま resume しても無害（システム側が current_clip 未設定を無視する）
-            if a.current_clip.is_some() {
-                a.playing = true;
-            }
+            if a.current_clip.is_some() { a.playing = true; }
             1
         }
         _ => 0,
@@ -1394,8 +1152,8 @@ unsafe extern "system" fn ffi_animator_component(
 }
 
 /// ParticleEmitterComponent 操作の種別（C# 側 ParticleEmitter の定数と一致させる）。
-const PARTICLE_COMPONENT_PLAY: i32 = 0; // playing = true（放出開始）
-const PARTICLE_COMPONENT_STOP: i32 = 1; // playing = false（放出停止）
+const PARTICLE_COMPONENT_PLAY: i32  = 0; // playing = true（放出開始）
+const PARTICLE_COMPONENT_STOP: i32  = 1; // playing = false（放出停止）
 const PARTICLE_COMPONENT_BURST: i32 = 2; // pending_burst に count を加算（即時一括放出）
 
 /// ParticleEmitterComponent を操作する。成功=1 / 失敗=0。
@@ -1407,34 +1165,19 @@ const PARTICLE_COMPONENT_BURST: i32 = 2; // pending_burst に count を加算（
 ///
 /// count: Burst 時のみ使用する放出個数（0 以下は 0 として無視。他 action では未使用）。
 unsafe extern "system" fn ffi_particle_component(
-    action: i32,
-    idx: u32,
-    generation: u32,
-    count: i32,
+    action: i32, idx: u32, generation: u32, count: i32,
 ) -> i32 {
     let ptr = WORLD_PTR.with(|p| p.get());
-    if ptr.is_null() {
-        return 0;
-    }
+    if ptr.is_null() { return 0; }
     let world = &mut *ptr;
     let entity = Entity::from_raw(idx, generation);
     // ルートエンティティから ParticleEmitterComponent のスロットエンティティを解決する
-    let Some(slot) = locate::<ParticleEmitterComponent>(world, entity) else {
-        return 0;
-    };
-    let Some(p) = world.get_mut::<ParticleEmitterComponent>(slot) else {
-        return 0;
-    };
+    let Some(slot) = locate::<ParticleEmitterComponent>(world, entity) else { return 0 };
+    let Some(p) = world.get_mut::<ParticleEmitterComponent>(slot) else { return 0 };
 
     match action {
-        PARTICLE_COMPONENT_PLAY => {
-            p.playing = true;
-            1
-        }
-        PARTICLE_COMPONENT_STOP => {
-            p.playing = false;
-            1
-        }
+        PARTICLE_COMPONENT_PLAY => { p.playing = true;  1 }
+        PARTICLE_COMPONENT_STOP => { p.playing = false; 1 }
         PARTICLE_COMPONENT_BURST => {
             // 負値は 0 として扱い、飽和加算でオーバーフローを防ぐ。
             p.pending_burst = p.pending_burst.saturating_add(count.max(0) as u32);
@@ -1452,48 +1195,44 @@ unsafe extern "system" fn ffi_particle_component(
 #[repr(C)]
 #[allow(dead_code)]
 pub struct ScriptHostApi {
-    get_floats:
-        unsafe extern "system" fn(u32, u32, *const u8, i32, *const u8, i32, *mut f32, i32) -> i32,
-    set_floats:
-        unsafe extern "system" fn(u32, u32, *const u8, i32, *const u8, i32, *const f32, i32) -> i32,
-    get_string:
-        unsafe extern "system" fn(u32, u32, *const u8, i32, *const u8, i32, *mut u8, i32) -> i32,
-    set_string:
-        unsafe extern "system" fn(u32, u32, *const u8, i32, *const u8, i32, *const u8, i32) -> i32,
+    get_floats:    unsafe extern "system" fn(u32, u32, *const u8, i32, *const u8, i32, *mut f32, i32) -> i32,
+    set_floats:    unsafe extern "system" fn(u32, u32, *const u8, i32, *const u8, i32, *const f32, i32) -> i32,
+    get_string:    unsafe extern "system" fn(u32, u32, *const u8, i32, *const u8, i32, *mut u8, i32) -> i32,
+    set_string:    unsafe extern "system" fn(u32, u32, *const u8, i32, *const u8, i32, *const u8, i32) -> i32,
     has_component: unsafe extern "system" fn(u32, u32, *const u8, i32) -> i32,
-    instantiate: unsafe extern "system" fn(*const u8, i32, *mut u32) -> i32,
-    destroy: unsafe extern "system" fn(u32, u32) -> i32,
-    find_actor: unsafe extern "system" fn(*const u8, i32, *mut u32) -> i32,
-    input_key: unsafe extern "system" fn(i32, u32) -> i32,
-    input_mouse: unsafe extern "system" fn(i32, u32) -> i32,
+    instantiate:   unsafe extern "system" fn(*const u8, i32, *mut u32) -> i32,
+    destroy:       unsafe extern "system" fn(u32, u32) -> i32,
+    find_actor:    unsafe extern "system" fn(*const u8, i32, *mut u32) -> i32,
+    input_key:         unsafe extern "system" fn(i32, u32) -> i32,
+    input_mouse:       unsafe extern "system" fn(i32, u32) -> i32,
     input_mouse_state: unsafe extern "system" fn(i32, *mut f32) -> i32,
-    raycast: unsafe extern "system" fn(*const f32, *const f32, f32, *mut f32, *mut u32) -> i32,
-    scene: unsafe extern "system" fn(i32, *const u8, i32) -> i32,
-    audio: unsafe extern "system" fn(i32, *const u8, i32, f32, i32) -> i32,
-    audio_component: unsafe extern "system" fn(i32, u32, u32) -> i32,
-    screen_position: unsafe extern "system" fn(u32, u32, *mut f32) -> i32,
+    raycast:           unsafe extern "system" fn(*const f32, *const f32, f32, *mut f32, *mut u32) -> i32,
+    scene:             unsafe extern "system" fn(i32, *const u8, i32) -> i32,
+    audio:             unsafe extern "system" fn(i32, *const u8, i32, f32, i32) -> i32,
+    audio_component:   unsafe extern "system" fn(i32, u32, u32) -> i32,
+    screen_position:   unsafe extern "system" fn(u32, u32, *mut f32) -> i32,
     animator_component: unsafe extern "system" fn(i32, u32, u32, *const u8, i32, f32) -> i32,
     particle_component: unsafe extern "system" fn(i32, u32, u32, i32) -> i32,
 }
 
 // 関数ポインタは Sync。プロセス全体で 1 つの静的表を共有する。
 static HOST_API: ScriptHostApi = ScriptHostApi {
-    get_floats: ffi_get_floats,
-    set_floats: ffi_set_floats,
-    get_string: ffi_get_string,
-    set_string: ffi_set_string,
+    get_floats:    ffi_get_floats,
+    set_floats:    ffi_set_floats,
+    get_string:    ffi_get_string,
+    set_string:    ffi_set_string,
     has_component: ffi_has_component,
-    instantiate: ffi_instantiate,
-    destroy: ffi_destroy,
-    find_actor: ffi_find_actor,
-    input_key: ffi_input_key,
-    input_mouse: ffi_input_mouse_button,
+    instantiate:   ffi_instantiate,
+    destroy:       ffi_destroy,
+    find_actor:    ffi_find_actor,
+    input_key:         ffi_input_key,
+    input_mouse:       ffi_input_mouse_button,
     input_mouse_state: ffi_input_mouse_state,
-    raycast: ffi_raycast,
-    scene: ffi_scene,
-    audio: ffi_audio,
-    audio_component: ffi_audio_component,
-    screen_position: ffi_screen_position,
+    raycast:           ffi_raycast,
+    scene:             ffi_scene,
+    audio:             ffi_audio,
+    audio_component:   ffi_audio_component,
+    screen_position:   ffi_screen_position,
     animator_component: ffi_animator_component,
     particle_component: ffi_particle_component,
 };

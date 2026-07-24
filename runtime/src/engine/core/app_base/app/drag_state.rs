@@ -14,6 +14,26 @@
 use crate::engine::components::{CanvasTransform, Transform as ActorTransform};
 use crate::engine::methods::gizmo_interact::GizmoDrag;
 
+/// 子孫アクタ 1 件分のギズモドラッグ開始スナップショット。
+///
+/// 【なぜ MC と Transform を分けて保持するか】
+/// 以前は「MC の先頭インスタンス行列」1 本だけを記録し、それを MC 更新にも
+/// Transform 更新にも流用していた。そのため
+///   - Model を持たない子（カメラ・空アクタ）は記録自体がされず追従しなかった
+///   - MC 行列と Transform がずれている場合に Transform が MC 行列で汚染された
+/// という 2 つの問題があった。両者を独立に記録することで解消する。
+#[derive(Clone, Copy)]
+pub(super) struct ChildDragStart {
+    /// 子アクタの DFS ID（選択アクタの DFS + 1 から DFS 順に採番）
+    pub dfs_id: u32,
+    /// ドラッグ開始時の ModelComponent 先頭インスタンス行列。
+    /// Model スロットを持たない子は None（＝ MC 更新の対象外）。
+    pub mc_start: Option<[[f32; 4]; 4]>,
+    /// ドラッグ開始時の Transform（ワールド空間）の行列。
+    /// Model の有無にかかわらず必ず記録するため、モデルなしの子も追従できる。
+    pub tf_start: [[f32; 4]; 4],
+}
+
 /// LMB ドラッグに関連する全状態を集約する。
 ///
 /// App から分離することで App 構造体の責任範囲を減らし、
@@ -27,8 +47,9 @@ pub(super) struct DragState {
     pub drag_root_starts: Vec<(u32, [[f32; 4]; 4])>,
     /// ドラッグ開始時の子孫インスタンス初期行列（ルート以外の追従対象）。
     pub drag_child_starts: Vec<(u32, [[f32; 4]; 4])>,
-    /// アクター編集モードのギズモドラッグ開始時の子アクター MC 行列 (child_dfs_id, mat)。
-    pub actor_child_drag_starts: Vec<(u32, [[f32; 4]; 4])>,
+    /// ギズモドラッグ開始時の子孫アクタのスナップショット。
+    /// **Model の有無にかかわらず全子孫を記録する**（モデルなしカメラ子の追従に必要）。
+    pub actor_child_drag_starts: Vec<ChildDragStart>,
     /// アクタートランスフォームをギズモでドラッグ中に保持する開始状態 (dfs_id, old_transform)。
     pub actor_transform_drag_start: Option<(u32, ActorTransform)>,
     /// 2D アクターの CanvasTransform をギズモでドラッグ中に保持する開始状態 (dfs_id, old_canvas_transform)。
