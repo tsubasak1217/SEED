@@ -43,12 +43,12 @@ use super::types::{
 
 // ─── キャラクターコントローラー診断ログ ──────────────────────────────────────
 //
-//  StepCharacter（キャラクター非同期解決）の切り分け用ログ。既定オフ。
-//  環境変数 SEED_CHAR_LOG を設定したときだけ、最初の N 回だけ stderr へ出す。
-//  既存の PHYS_LOG_ENABLED（physics_ops.rs）と同じ作法（既定オフ・件数上限で洪水防止）。
+//  StepCharacter（キャラクター非同期解決）の切り分け用ログ。
+//  最初の N 回（CHAR_LOG_MAX_FRAMES）だけ stderr へ出す（件数上限で洪水防止）。
 
-/// キャラクター診断ログ（`[CharCtl]` 行）を出力するかどうか。既定オフ。
-/// 環境変数 SEED_CHAR_LOG を設定したときだけ有効化する（上限 CHAR_LOG_MAX_FRAMES で洪水防止）。
+/// キャラクター診断ログ（`[CharCtl]` 行）を出力するかどうか。
+/// 【実機確認のため一時的に常時 ON】ラバーバンド不具合の実機切り分け中のため、env の有無に関わらず
+/// 出力する（上限 CHAR_LOG_MAX_FRAMES=240 で洪水防止）。確認後に監督が env ゲートへ戻す。
 static CHAR_LOG_ENABLED: std::sync::LazyLock<bool> =
     std::sync::LazyLock::new(|| true || std::env::var_os("SEED_CHAR_LOG").is_some());
 
@@ -150,6 +150,12 @@ pub struct PhysicsThread {
     cmd_tx: Sender<PhysicsCommand>,
     /// 結果受信チャンネル（物理スレッド → メイン）
     res_rx: Receiver<PhysicsResult>,
+    /// キャラクター補正結果の専用受信チャンネル（物理スレッド → メイン）。
+    /// (entity_id, 補正後位置 [x,y,z], grounded)。
+    /// StepCharacter を**処理したその場**で送られるため、届く corrected は常に処理直後の
+    /// char_last_pos と一致する（物理ステップ 60Hz の結果ストリームに相乗りさせると、メインが
+    /// 60fps 超のとき数フレーム古い corrected が届き、古い値への引き戻しが起きる問題を回避）。
+    char_res_rx: Receiver<(u64, [f32; 3], bool)>,
     /// スレッドハンドル（Drop 時に join する）
     handle: Option<std::thread::JoinHandle<()>>,
 }
@@ -159,12 +165,14 @@ impl PhysicsThread {
     pub fn spawn() -> Self {
         let (cmd_tx, cmd_rx) = unbounded::<PhysicsCommand>();
         let (res_tx, res_rx) = unbounded::<PhysicsResult>();
+        // キャラクター補正結果の専用チャンネル（StepCharacter 処理時に即送信する）。
+        let (char_res_tx, char_res_rx) = unbounded::<(u64, [f32; 3], bool)>();
 
         let handle = std::thread::spawn(move || {
-            run_physics_loop(cmd_rx, res_tx);
+            run_physics_loop(cmd_rx, res_tx, char_res_tx);
         });
 
-        PhysicsThread { cmd_tx, res_rx, handle: Some(handle) }
+        PhysicsThread { cmd_tx, res_rx, char_res_rx, handle: Some(handle) }
     }
 
     /// コマンドを物理スレッドへ送信する。
@@ -192,6 +200,24 @@ impl PhysicsThread {
             }
         }
         latest
+    }
+
+    /// キャラクター補正結果を専用チャンネルから**全件・非ブロック**で取り出す。
+    ///
+    /// 各要素 = (entity_id, 補正後位置 [x,y,z], grounded)。物理スレッドが StepCharacter を
+    /// 処理したその場で送るため、届く値は常に「処理直後の char_last_pos」と一致する。
+    /// メインは同一 entity_id が複数含まれる場合、**最後（最新）の値だけ**を採用すればよい。
+    /// 溜まっている分を残さず drain することで、古い中間値がメインに残留しないようにする。
+    pub fn drain_character_results(&self) -> Vec<(u64, [f32; 3], bool)> {
+        let mut out = Vec::new();
+        loop {
+            match self.char_res_rx.try_recv() {
+                Ok(v)                           => out.push(v),
+                Err(TryRecvError::Empty)        => break,
+                Err(TryRecvError::Disconnected) => break,
+            }
+        }
+        out
     }
 }
 
@@ -230,11 +256,8 @@ struct PhysicsEntry {
     /// キャラクターコントローラーの「前回解決済みワールド位置」[x, y, z]。
     /// StepCharacter が (希望位置 - この値) を moveVector として解決し、補正後位置で更新する。
     /// 初期値はコライダー登録時のアクターワールド位置。
+    /// （接地 grounded は解決したその場で専用チャンネルへ送るため entry には保持しない。）
     char_last_pos: [f32; 3],
-    /// キャラクターコントローラーの最新接地状態（move_shape の grounded）。
-    /// StepCharacter 解決時に更新し、collect_results が character_updates に載せてメインへ返す。
-    /// 非同期化に伴い reply でその場返しできなくなったため entry に保持する（旧設計から復活）。
-    char_grounded: bool,
 }
 
 /// SetBodyKinematic によるコライダー再生成のためのデータ。
@@ -259,6 +282,8 @@ struct StaticColliderData {
 fn run_physics_loop(
     cmd_rx: Receiver<PhysicsCommand>,
     res_tx: Sender<PhysicsResult>,
+    // キャラクター補正結果の専用送信チャンネル（StepCharacter 処理時に即送信する）。
+    char_res_tx: Sender<(u64, [f32; 3], bool)>,
 ) {
     // ── Rapier 物理ワールドオブジェクト ──────────────────────────────────────
     let mut rigid_body_set      = RigidBodySet::new();
@@ -354,15 +379,20 @@ fn run_physics_loop(
                 PhysicsCommand::StepCharacter { entity_id, desired_position, rotation } => {
                     // キャラクターコントローラーの差分解決（**非同期・投げっぱなし**）。
                     // メインは希望位置を送るだけで待たない。ここで前回解決済み位置との差分を
-                    // KCC で衝突解決し、entry の char_last_pos（補正後位置）と char_grounded（接地）を
-                    // 更新すると同時に、物理ワールドのコライダー位置も補正後位置へ同期する。
-                    // 補正後位置＋接地は collect_results が PhysicsResult.character_updates に載せて
-                    // メインへ返し、メインは次フレームの結果受信で ECS へ反映する（1 フレームラグ）。
+                    // KCC で衝突解決し、entry の char_last_pos（補正後位置）を更新すると同時に、
+                    // 物理ワールドのコライダー位置も補正後位置へ同期する。補正後位置＋接地は
+                    // この処理の末尾で専用チャンネル（char_res_tx）へ即送信する（下記参照）。
                     //
                     // 【なぜ非同期にするか】move_shape 自体は実測 0.03ms と極めて速いが、以前の同期
                     // 方式（reply を待つ）は grass 描画等の高負荷下で OS スケジューリング遅延による
                     // reply 配送待ち（15〜200ms）がそのままメインの毎フレームブロックになり FPS を
-                    // 落としていた。非同期化で待ちを消し、代償は 1 フレームのラグだけに抑える。
+                    // 落としていた。非同期化で待ちを消す。
+                    //
+                    // 【なぜ専用チャンネルで即送信するか】本コマンドは到着の瞬間に処理され
+                    // char_last_pos を毎メインフレーム進めるが、物理ステップは 60Hz。補正結果を
+                    // 60Hz の PhysicsResult に相乗りさせるとメイン（60fps 超）へ届く corrected が
+                    // char_last_pos より数フレーム古くなり、古い値へ引き戻される（ラバーバンド・入力食い）。
+                    // 処理したその場で送れば corrected は常にその時点の char_last_pos と一致する。
                     //
                     // 【最適化】クエリパイプラインの全更新（フリーコライダー＝地形の索引）は
                     // コライダー変化時（AddObject/RemoveObject）にだけ query_dirty 経由で行う。
@@ -442,8 +472,13 @@ fn run_physics_loop(
                         }
                     }
 
-                    // 非同期なので reply は送らない（補正後位置は collect_results 経由で返す）。
-                    let _ = resolved;
+                    // 補正後位置＋接地を「処理したその場」で専用チャンネルへ即送信する（投げっぱなし）。
+                    // ここで送ることで、メインへ届く corrected は常に処理直後の char_last_pos と一致し、
+                    // 物理ステップ（60Hz）に相乗りさせたときに生じる「メインが 60fps 超だと数フレーム
+                    // 古い corrected が届き、古い値へ引き戻される（ラバーバンド・入力食い）」問題を防ぐ。
+                    if let Some((corrected, grounded)) = resolved {
+                        let _ = char_res_tx.send((entity_id, corrected, grounded));
+                    }
                     false
                 }
                 PhysicsCommand::CheckKinematicOverlap { entity_id, position, rotation, reply } => {
@@ -674,11 +709,11 @@ fn perform_character_move(
 /// StepCharacter コマンド（非同期解決）の実体。次を行う純粋手続き:
 ///   1. moveVector = 希望位置 - 前回解決済み位置（char_last_pos）
 ///   2. `perform_character_move` で KCC が地形・静的コライダーと衝突解決（壁ずり・段差・スロープ）
-///   3. 補正後位置 = 前回位置 + 補正移動量 を求め、char_last_pos／char_grounded を更新
+///   3. 補正後位置 = 前回位置 + 補正移動量 を求め、char_last_pos を更新
 ///   4. 物理ワールドのコライダー姿勢も補正後位置へ同期（他オブジェクトのクエリ整合）
 ///
-/// 補正後位置と接地を `Some((corrected, grounded))` で返す。値は entry にも保存され、
-/// collect_results が PhysicsResult.character_updates に載せてメインへ返す（メインは次フレームで反映）。
+/// 補正後位置と接地を `Some((corrected, grounded))` で返す。呼び出し側（StepCharacter アーム）は
+/// この値を専用チャンネル（char_res_tx）へ即送信し、メインは非ブロック drain で受け取る。
 /// 対象が未登録・キャラクター指定でない・コライダーが引けない場合は `None`（何もしない）。
 #[allow(clippy::too_many_arguments)]
 fn perform_character_step(
@@ -720,11 +755,10 @@ fn perform_character_step(
         last[2] + res.translation[2],
     ];
 
-    // 前回位置・接地を更新し、物理ワールドのコライダー姿勢も補正後位置へ同期する。
-    // char_grounded は collect_results が character_updates に載せてメインへ返す（非同期反映）。
+    // 前回位置を更新し、物理ワールドのコライダー姿勢も補正後位置へ同期する。
+    // 接地（grounded）は戻り値でそのまま返し、呼び出し側が専用チャンネルへ即送信する。
     if let Some(entry) = entries.get_mut(&entity_id) {
         entry.char_last_pos = corrected;
-        entry.char_grounded = res.grounded;
         sync_character_collider_pose(rb_set, col_set, entry, corrected, rotation);
     }
     Some((corrected, res.grounded))
@@ -1301,8 +1335,6 @@ fn add_object(
         is_character: obj.is_character_controller,
         // 前回解決済み位置の初期値 = 登録時のアクターワールド位置。
         char_last_pos: obj.position,
-        // 接地状態の初期値は false（最初の StepCharacter 解決で更新される）。
-        char_grounded: false,
     });
 }
 
@@ -1442,23 +1474,15 @@ fn collect_results(
         if !active_trigger_entity_ids.contains(&oe) { active_trigger_entity_ids.push(oe); }
     }
 
-    // ── キャラクターコントローラー補正後位置・接地の収集（非同期反映） ──────────
-    // StepCharacter で解決済みの char_last_pos（補正後位置）と char_grounded（接地）を
-    // キャラごとに集めて character_updates に載せる。メインは update_physics の結果受信で
-    // これを走査し、補正後位置を ECS へ・接地を publish_grounded_states で公開する
-    // （希望位置を送った次フレームで反映＝1 フレームラグ。move_shape が 0.03ms と速いため許容）。
-    let mut character_updates: Vec<(u64, [f32; 3], bool)> = Vec::new();
-    for (entity_id, entry) in entries.iter() {
-        if !entry.is_character { continue; }
-        character_updates.push((*entity_id, entry.char_last_pos, entry.char_grounded));
-    }
+    // 【撤去】キャラクター補正後位置・接地の収集は廃止した。StepCharacter を処理したその場で
+    // 専用チャンネル（char_res_tx）から送るようにしたため、ステップ結果に相乗りさせない
+    // （相乗りさせると 60fps 超のメインへ数フレーム古い corrected が届き引き戻しが起きる）。
 
     PhysicsResult {
         transform_updates, collision_events, trigger_events,
         active_contact_entity_ids, active_trigger_entity_ids,
         max_linear_speed, max_angular_speed,
         body_velocities,
-        character_updates,
     }
 }
 
@@ -1771,7 +1795,6 @@ mod tests {
             col_shape_data: None,
             is_character:  true,
             char_last_pos: [0.0, START_Y as f32, 0.0],
-            char_grounded: false,
         });
 
         let kcc = make_character_controller();
@@ -1815,8 +1838,8 @@ mod tests {
     /// entry を書き換えないことを検証する。
     ///
     /// StepCharacter（非同期解決）で `None`（解決失敗）のときは entry.char_last_pos を
-    /// 書き換えないため、character_updates には従来の解決済み位置が載り続ける（＝暴れない）。
-    /// その不変性の拠り所となる純粋部分（None を返す条件）を外部依存なしで固定する回帰テスト。
+    /// 書き換えず、専用チャンネルへも送らないため、メインは従来の補正後位置を保持し続ける
+    /// （＝暴れない）。その不変性の拠り所となる純粋部分（None を返す条件）を外部依存なしで固定する。
     #[test]
     fn character_step_returns_none_for_missing_or_non_character() {
         let mut rb_set  = RigidBodySet::new();
@@ -1846,7 +1869,6 @@ mod tests {
             col_shape_data: None,
             is_character:  false,      // ← キャラクターではない
             char_last_pos: START,
-            char_grounded: false,
         });
         let r = perform_character_step(
             &kcc, &query, &mut rb_set, &mut col_set, &mut entries,

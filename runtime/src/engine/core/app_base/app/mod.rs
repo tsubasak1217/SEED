@@ -859,16 +859,16 @@ pub struct App {
 
     /// キャラクターコントローラーの「保留中の補正結果」: (entity_id, 補正後位置 [x,y,z], grounded)。
     ///
-    /// 【非同期パイプラインの反映タイミング制御・実行時のみ／シリアライズ対象外】
-    ///   update_physics（フレーム先頭・スクリプト実行前）で物理スレッドの
-    ///   `PhysicsResult.character_updates` を受信するが、**その場では ECS へ反映しない**。
-    ///   ここへ退避するだけにする。直後にスクリプトが `transform.Position += move` で
-    ///   希望位置（地形貫通しうる値）を ECS へ書くため、フレーム先頭で補正を反映しても
-    ///   同フレームのスクリプト直書きに上書きされ、描画に貫通位置が出てしまうからである。
-    ///   実際の ECS 反映は sync_character_controllers（スクリプト実行後・描画直前）が行い、
-    ///   スクリプトの貫通直書きをクランプ済みの補正後位置で上書きする。
-    ///   補正は 1 フレーム古いが、物理は char_last_pos を基準に毎フレーム move 差分を解決するため
-    ///   キャラは動き、クランプが効くのですり抜けは起きない。
+    /// 【非同期パイプラインの反映用・実行時のみ／シリアライズ対象外】
+    ///   物理スレッドが StepCharacter を処理したその場で専用チャンネルへ送る補正後位置を、
+    ///   メインが `PhysicsThread::drain_character_results` で非ブロック drain し、エンティティごとに
+    ///   最新値をここへマージする（poll_character_results）。何も届かないフレームは前回値を保持する。
+    ///
+    ///   反映は二重に行う:
+    ///     - update_physics（フレーム先頭・スクリプト前／ingest_character_results）: ECS へ反映して
+    ///       スクリプトの `+= move` の基準位置を最新化する（全速維持）。
+    ///     - sync_character_controllers ③（スクリプト後・描画直前）: 同じ pending を再反映して
+    ///       スクリプトの貫通直書きを上書きし、描画に貫通位置が出ないようにする（＋接地公開）。
     pub(super) pending_character_corrections: Vec<(u64, [f32; 3], bool)>,
 
     /// タブ復帰時に「次の start_physics で初速として積む速度」（一回性）。
