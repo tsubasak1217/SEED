@@ -222,18 +222,24 @@ pub enum PhysicsCommand {
     /// スクリプトが Transform を書き換えた希望位置 `desired_position` と、物理側が保持する
     /// 「前回解決済み位置」の差分を moveVector として `KinematicCharacterController::move_shape`
     /// が地形・静的コライダーと衝突解決し、補正後位置（前回位置 + 補正移動量）を求めて
-    /// 前回位置（char_last_pos）と接地（char_grounded）を entry に保存する。物理ワールドの
-    /// コライダー姿勢も補正後位置へ同期する。
+    /// 前回位置（char_last_pos）を更新する。物理ワールドのコライダー姿勢も補正後位置へ同期する。
+    /// 補正後位置＋接地は**このコマンドを処理したその場**で専用チャンネル（char_res_tx →
+    /// メインの `PhysicsThread::drain_character_results`）へ即送信する（投げっぱなし）。
     ///
     /// 【なぜ非同期（reply なし）か】
     ///   move_shape の実処理は実測 0.03ms と極めて速く計算負荷はゼロだが、以前の同期方式
     ///   （reply を待つ ResolveCharacter）は grass 描画等の高負荷下で OS スケジューリング遅延に
     ///   よる reply 配送待ち（実測 15〜200ms）がそのままメインスレッドの毎フレームブロックになり
-    ///   FPS を落としていた。ここではメインは希望位置を投げるだけで待たず、物理スレッドが自分の
-    ///   ループ内で解決した補正後位置＋接地を `PhysicsResult.character_updates` に載せて返す。
-    ///   メインは次フレームの結果受信で ECS へ反映する（＝入力に対する 1 フレームのラグ）。
-    ///   高速移動時に壁へ 1 フレーム分わずかに食い込むが、KCC のクランプが効くため
-    ///   すり抜け（トンネリング）は起きない。
+    ///   FPS を落としていた。ここではメインは希望位置を投げるだけで待たず、物理スレッドが解決した
+    ///   補正後位置を専用チャンネルへ送り、メインは非ブロック drain で受け取る。
+    ///
+    /// 【なぜ専用チャンネル（物理ステップ結果に相乗りさせない）か】
+    ///   本コマンドはコマンド即応ドレインで「到着の瞬間」に処理され char_last_pos を毎メイン
+    ///   フレーム進めるが、物理ステップは 60Hz。補正結果を 60Hz の PhysicsResult に相乗りさせると、
+    ///   メインが 60fps 超のときメインへ届く corrected が char_last_pos より数フレーム古くなり、
+    ///   古い値へ引き戻される（ラバーバンド・入力食い）。処理したその場で送れば corrected は常に
+    ///   その時点の char_last_pos と一致し、desired = corrected + move → motion = move で全速を保つ。
+    ///   反映は 1 フレーム遅れるが、KCC のクランプが効くためすり抜け（トンネリング）は起きない。
     StepCharacter {
         /// 対象アクターの DFS 順識別 ID（コライダー形状取得・自己除外・前回位置の保持に使う）
         entity_id:         u64,
@@ -302,16 +308,11 @@ pub struct PhysicsResult {
     /// タブごとの物理状態退避（続きから再開）で唯一失われる「速度」を復元するために使う。
     /// entity_id は DFS 順識別 ID（メインスレッド側で ECS Entity へ変換する）。
     pub body_velocities:   Vec<(u64, [f32; 3], [f32; 3])>,
-    /// キャラクターコントローラーの補正後ワールド位置＋接地の一覧:
-    /// (entity_id, corrected [x,y,z], grounded)。
-    ///
-    /// 【非同期パイプライン】メインが `StepCharacter` で送った希望位置を物理スレッドが
-    /// KCC で衝突解決し、その補正後位置（entry.char_last_pos）と接地（entry.char_grounded）を
-    /// 毎ステップここに載せる。メインは `update_physics` の結果受信でこれを走査し、補正後位置を
-    /// `apply_character_transform` で ECS へ、接地を `publish_grounded_states` で公開する。
-    /// 待ちが無い代わりに反映は「希望位置を送った次フレーム」になる（1 フレームラグ）。
-    /// move_shape が 0.03ms と速く負荷ゼロのため、このラグだけで同期ブロックの遅延を解消できる。
-    pub character_updates:  Vec<(u64, [f32; 3], bool)>,
+    // 【撤去】キャラクター補正後位置は「物理ステップ時（60Hz）」ではなく「StepCharacter を
+    // 処理したその場」で専用チャンネル（char_res_tx）からメインへ送るように変更した。
+    // ステップ結果に相乗りさせると、メインが 60fps 超で回るときにメインへ届く corrected が
+    // 物理側 char_last_pos より数フレーム古くなり、古い値への引き戻し（ラバーバンド・入力食い）が
+    // 起きたため。詳細は thread.rs の StepCharacter アーム／PhysicsThread::drain_character_results 参照。
 }
 
 // ─── 衝突イベント ────────────────────────────────────────────────────────────

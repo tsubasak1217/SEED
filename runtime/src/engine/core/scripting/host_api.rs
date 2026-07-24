@@ -1141,14 +1141,14 @@ thread_local! {
     static PLAYING_AUDIO_SLOTS: RefCell<Vec<Entity>> = const { RefCell::new(Vec::new()) };
 
     /// キャラクターコントローラーの接地状態スナップショット（アクターエンティティ → grounded）。
-    /// update_physics が物理スレッドの character_updates を受信するたびに更新・公開し、
+    /// sync_character_controllers ③（描画直前）がキャラ補正結果を反映するたびに更新・公開し、
     /// スクリプトの Physics.IsGrounded がこの値を参照する。
-    /// 新しい物理結果が無いフレームでは更新されず、前回値が維持される。
+    /// 新しい補正結果が無いフレームでは前回値が維持される。
     static GROUNDED_STATES: RefCell<Vec<(Entity, bool)>> = const { RefCell::new(Vec::new()) };
 }
 
 /// キャラクターコントローラーの接地状態スナップショットを公開する。
-/// update_physics が character_updates 受信時に呼ぶ（DFS ID は ECS Entity へ変換済み）。
+/// sync_character_controllers ③ が描画直前に呼ぶ（DFS ID は ECS Entity へ変換済み）。
 pub fn publish_grounded_states(states: Vec<(Entity, bool)>) {
     GROUNDED_STATES.with(|p| *p.borrow_mut() = states);
 }

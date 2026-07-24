@@ -64,8 +64,9 @@ const OVERLAP_REPLY_TIMEOUT_MS: u64 = 4;
 static PHYS_LOG_ENABLED: std::sync::LazyLock<bool> =
     std::sync::LazyLock::new(|| std::env::var_os("SEED_PHYS_LOG").is_some());
 
-/// キャラクターコントローラー非同期解決の診断ログ（`[CharCtl]` 行）を出すか。既定オフ。
-/// 環境変数 SEED_CHAR_LOG を設定したときだけ有効化する（洪水は CHAR_LOG_MAX_FRAMES で防ぐ）。
+/// キャラクターコントローラー非同期解決の診断ログ（`[CharCtl]` 行）を出すか。
+/// 【実機確認のため一時的に常時 ON】ラバーバンド不具合の実機切り分け中のため env の有無に関わらず
+/// 出力する（洪水は CHAR_LOG_MAX_FRAMES で防ぐ）。確認後に監督が env ゲートへ戻す。
 /// 物理スレッド側（thread.rs）も同様に `[CharCtl]` 行を出し、キャラ解決を切り分ける。
 static CHAR_LOG_ENABLED: std::sync::LazyLock<bool> =
     std::sync::LazyLock::new(|| true || std::env::var_os("SEED_CHAR_LOG").is_some());
@@ -351,45 +352,6 @@ impl App {
                 }
             }
 
-            // ①-2 キャラクターコントローラーの補正後位置を「退避＋反映」する（二重反映の前半）。
-            //
-            // 【二重反映の設計（全速かつ貫通なしを両立させる）】
-            //   sync_character_controllers（前フレーム末・スクリプト実行後）が希望位置を
-            //   StepCharacter で物理スレッドへ投げ、物理スレッドが KCC で衝突解決した補正後位置を
-            //   PhysicsResult.character_updates に載せて返す。ここ（フレーム先頭・スクリプト実行前）で
-            //   その結果を:
-            //     (a) self.pending_character_corrections へ退避（sync③ の再反映用）
-            //     (b) さらに ECS へも反映する
-            //   (b) が重要な理由: スクリプトは直後に `transform.Position += move` を最新の ECS 位置を
-            //   基準に行う。ここで最新のクランプ済み補正後位置を ECS に入れておかないと、スクリプトが
-            //   1 フレーム古い位置を基準に move し、平地で実効移動速度が半分になる（＝motion の基準が
-            //   物理側 char_last_pos と 1 フレームずれるため）。ここで反映して基準を最新化すると
-            //   motion=move となり全速に戻る。
-            //   一方、ここで反映するとスクリプトが直後に貫通位置で上書きしてしまうが、それは
-            //   sync_character_controllers ③ が同じ pending を**再反映**して描画直前に上書きするため
-            //   描画には貫通位置が出ない（貫通防止は sync③ が担う）。
-            //   ＝「update_physics=スクリプトが読む基準を最新化」「sync③=描画を貫通させない」の
-            //     二重反映で、全速かつすり抜けなしを両立する。
-            //   ※ grounded の公開は描画直前の sync③ 側に一本化する（ここでは公開しない＝二重公開回避）。
-            //   ※ 新しい結果が無いフレーム（character_updates が空）は退避を上書きせず前回値を保持する。
-            if !result.character_updates.is_empty() {
-                self.pending_character_corrections = result.character_updates.clone();
-
-                // (b) 最新のクランプ済み補正後位置を ECS へ反映してスクリプトの move 基準を最新化する。
-                //     編集時コライダーのみモードでは Transform を書き換えない（should_apply_transforms）。
-                //     ドラッグ中アクターは gizmo が位置を制御するため反映しない。
-                if should_apply_transforms {
-                    let drag = self.dragging_physics_entity_id;
-                    // result は self とは別のローカル Option の借用なので、self.scene の可変借用と共存できる。
-                    if let Some(scene) = &mut self.scene {
-                        for (entity_id, corrected, _grounded) in &result.character_updates {
-                            if Some(*entity_id) == drag { continue; }
-                            apply_character_transform(scene, self.active_world_line, *entity_id, *corrected);
-                        }
-                    }
-                }
-            }
-
             // ②-0 Play モード時: 衝突・トリガーイベントをスクリプトのコールバックへ配信する
             //（OnCollisionEnter / OnTriggerEnter 等。Edit モードの物理プレビューでは呼ばない）
             if self.mode == RuntimeMode::Play
@@ -455,6 +417,25 @@ impl App {
             }
         }
 
+        // ── キャラクターコントローラー補正結果の取り込み（専用チャンネル・物理ステップと独立）──
+        //
+        // 【なぜ専用チャンネルを毎フレーム drain するのか（ラバーバンド/入力食いの根治）】
+        //   物理スレッドは StepCharacter を「コマンド到着の瞬間」に処理して char_last_pos を毎
+        //   メインフレーム進める。もし補正結果を物理ステップ（60Hz）の結果ストリームに相乗り
+        //   させると、メインが 60fps 超で回るとき、メインへ届く corrected は物理側 char_last_pos
+        //   より数フレーム古くなる。その古い corrected を毎フレーム ECS へ上書きすると、
+        //   desired = 古いcorrected + move に対し物理の基準 last はもっと先 → motion が
+        //   ゼロ/負になって入力が食われ、同じ場所へ引き戻される（ラバーバンド）。
+        //   そこで物理スレッドは StepCharacter を処理したその場で専用チャンネルへ corrected を
+        //   送り、メインはそれを毎フレーム非ブロック drain する。届く corrected は常に「その時点の
+        //   char_last_pos」と一致するため、desired_N = corrected_{N-1} + move → motion = move
+        //   ちょうどになり、全速・壁ずりが正しく復活する。
+        //
+        // 【二重反映は維持】ここ（フレーム先頭・スクリプト前）で ECS へ反映してスクリプトの
+        //   move 基準を最新化し、sync_character_controllers ③ が同じ pending を描画直前に再反映して
+        //   スクリプトの貫通直書きを上書きする。grounded の公開は sync③ に一本化する。
+        self.ingest_character_results();
+
         // ④ Kinematic Actor の Transform を物理スレッドへ送信する
         let Some(scene) = &self.scene else { return };
         let Some(thread) = &self.physics_thread else { return };
@@ -485,8 +466,8 @@ impl App {
     ///   ① スクリプトが Transform に直書きした希望位置（＝現在の ECS 位置。地形を貫通しうる値）を
     ///      キャラごとに収集する。
     ///   ② その希望位置を reply を持たない `StepCharacter` で物理スレッドへ **投げっぱなし（非ブロック）**
-    ///      で送る。物理スレッドは自ループ内で前回解決済み位置との差分を KCC で衝突解決し、補正後位置＋
-    ///      接地を `PhysicsResult.character_updates` に載せて返す（次フレームの update_physics で受信）。
+    ///      で送る。物理スレッドは前回解決済み位置との差分を KCC で衝突解決し、補正後位置＋接地を
+    ///      **処理したその場**で専用チャンネルへ送る（メインは drain_character_results で受信）。
     ///   ③ **その後**、前フレームに送った希望位置の解決結果（update_physics が退避した
     ///      `self.pending_character_corrections`）を ECS へ反映し、接地を公開する。
     ///
@@ -535,6 +516,11 @@ impl App {
 
         // ── ③ 前フレームに送った希望位置の解決結果（退避済み）を ECS へ反映する ──
         // 描画直前のこの反映で、スクリプトの貫通直書きをクランプ済みの補正後位置で上書きする。
+        //
+        // ③の直前に専用チャンネルを一度 drain して pending を最新化する。②で送った分が同フレーム内に
+        // 物理スレッドで処理済みなら（コマンド即応ドレインのため多くの場合そうなる）ここで拾えて、
+        // より新しい補正後位置を描画に反映できる。非ブロックなので害はない。
+        self.poll_character_results();
         if self.pending_character_corrections.is_empty() { return; }
 
         // 編集時コライダーのみモードでは Transform を書き換えない（Play / edit+rigidbody 時のみ反映）。
@@ -569,6 +555,56 @@ impl App {
 
         // 接地状態をスクリプトへ公開する（描画直前の最新接地）。
         crate::engine::core::scripting::host_api::publish_grounded_states(grounded_states);
+    }
+
+    // ─── キャラクター補正結果の取り込み（専用チャンネル・非ブロック）─────────────────
+
+    /// キャラクター補正結果を専用チャンネルから**全件・非ブロック**で drain し、
+    /// エンティティごとに最新値を `self.pending_character_corrections` へマージする。
+    ///
+    /// 物理スレッドが StepCharacter を処理したその場で送るため、届く corrected は常に
+    /// 「その時点の char_last_pos」と一致する。同一 entity_id が複数届いた場合は到着順に
+    /// 上書きするため最後（最新）の値が残る。何も届かないフレームでは pending を変更せず前回値を
+    /// 保持する（update_physics／sync③ が前回の補正を反映し続ける）。
+    fn poll_character_results(&mut self) {
+        let drained = match &self.physics_thread {
+            Some(thread) => thread.drain_character_results(),
+            None         => return,
+        };
+        for (entity_id, corrected, grounded) in drained {
+            match self.pending_character_corrections.iter_mut().find(|(e, _, _)| *e == entity_id) {
+                Some(slot) => { slot.1 = corrected; slot.2 = grounded; }
+                None       => self.pending_character_corrections.push((entity_id, corrected, grounded)),
+            }
+        }
+    }
+
+    /// update_physics 用: 専用チャンネルを drain して pending を最新化し、その最新の補正後位置を
+    /// ECS へ反映してスクリプトの `+= move` の基準位置を最新化する（二重反映の前半）。
+    ///
+    /// これによりスクリプトが読む基準 = 物理側 char_last_pos と一致し、desired = corrected + move
+    /// → motion = move ちょうどとなって全速・壁ずりが保たれる。ここでの ECS 反映はスクリプトの
+    /// 貫通直書きで一旦上書きされるが、sync_character_controllers ③ が同じ pending を描画直前に
+    /// 再反映して貫通を防ぐ。接地公開は sync③ に一本化するためここでは行わない。
+    fn ingest_character_results(&mut self) {
+        self.poll_character_results();
+
+        // 編集時コライダーのみモードでは Transform を書き換えない（Play / edit+rigidbody 時のみ）。
+        let should_apply_transforms = self.mode != RuntimeMode::Edit
+            || self.edit_physics_with_rigidbody;
+        if !should_apply_transforms || self.pending_character_corrections.is_empty() { return; }
+
+        // ドラッグ中アクターは gizmo が位置を制御するため反映しない。
+        let drag = self.dragging_physics_entity_id;
+        // pending を退避して self.scene の可変借用と共存させる（反映後に書き戻す）。
+        let pending = std::mem::take(&mut self.pending_character_corrections);
+        if let Some(scene) = &mut self.scene {
+            for (entity_id, corrected, _grounded) in &pending {
+                if Some(*entity_id) == drag { continue; }
+                apply_character_transform(scene, self.active_world_line, *entity_id, *corrected);
+            }
+        }
+        self.pending_character_corrections = pending;
     }
 
     // ─── ドラッグ中押し戻し（同期オーバーラップ判定）──────────────────────────
