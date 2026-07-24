@@ -937,11 +937,14 @@ fn apply_character_transform(
     crate::engine::core::transform_sync::set_actor_world_transform(actor, &mut scene.world, next, 0);
 
     // 【一時診断】書き込みが実際に ECS へ反映されたか読み直して確認する。
-    // set_at=書き込もうとした補正後 Y、ecs_after=書き込み直後に読み直した ECS の Y。
+    // set_to=書き込もうとした補正後位置、ecs_after=書き込み直後に読み直した ECS の位置。
     // 両者が一致すれば apply は成功＝反映が消えるのは次フレームの別処理が原因、
     // 不一致なら set_actor_world_transform の書き込み経路の問題、と切り分けられる。
+    // 専用カウンタ（APPLY_LOG_FRAMES）で数えることで、毎フレーム消費される
+    // CHAR_LOG_FRAMES の上限に巻き込まれず、実際に apply が呼ばれた最初の N 回を確実に出す。
+    static APPLY_LOG_FRAMES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     if *CHAR_LOG_ENABLED
-        && CHAR_LOG_FRAMES.load(std::sync::atomic::Ordering::Relaxed) < CHAR_LOG_MAX_FRAMES
+        && APPLY_LOG_FRAMES.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < CHAR_LOG_MAX_FRAMES
     {
         let ecs_after = scene.world.get::<ActorTransform>(entity)
             .map(|t| t.position)
