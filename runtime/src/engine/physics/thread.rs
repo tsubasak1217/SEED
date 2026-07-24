@@ -41,6 +41,22 @@ use super::types::{
     DEFAULT_GRAVITY, PHYSICS_FIXED_STEP,
 };
 
+// ─── キャラクターコントローラー診断ログ ──────────────────────────────────────
+//
+//  ResolveCharacter（キャラクター同期解決）の切り分け用ログ。既定オフ。
+//  環境変数 SEED_CHAR_LOG を設定したときだけ、最初の N 回だけ stderr へ出す。
+//  既存の PHYS_LOG_ENABLED（physics_ops.rs）と同じ作法（既定オフ・件数上限で洪水防止）。
+
+/// キャラクター診断ログ（`[CharCtl]` 行）を出力するかどうか。既定オフ。
+static CHAR_LOG_ENABLED: std::sync::LazyLock<bool> =
+    std::sync::LazyLock::new(|| std::env::var_os("SEED_CHAR_LOG").is_some());
+
+/// これまでに出力した `[CharCtl]` 行の件数（洪水防止の上限判定に使う）。
+static CHAR_LOG_FRAMES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// `[CharCtl]` 行を出す最大件数（起動直後の切り分けに十分な数だけ出して以降は黙る）。
+const CHAR_LOG_MAX_FRAMES: u32 = 240;
+
 // ─── キャラクターコントローラー（KCC）パラメータ定数 ──────────────────────────
 //
 //  キャラクターコントローラー（StepCharacter による自動押し戻し）が使う KCC の設定値。
@@ -203,11 +219,10 @@ struct PhysicsEntry {
     /// キャラクターコントローラーかどうか（StepCharacter による差分解決の対象か）。
     is_character: bool,
     /// キャラクターコントローラーの「前回解決済みワールド位置」[x, y, z]。
-    /// StepCharacter が (希望位置 - この値) を moveVector として解決し、補正後位置で更新する。
+    /// ResolveCharacter が (希望位置 - この値) を moveVector として解決し、補正後位置で更新する。
     /// 初期値はコライダー登録時のアクターワールド位置。
     char_last_pos: [f32; 3],
-    /// キャラクターコントローラーの最新接地判定（IsGrounded 用）。
-    char_grounded: bool,
+    // 【撤去】接地判定は ResolveCharacter の reply でその場返しするため、entry に保持しない。
 }
 
 /// SetBodyKinematic によるコライダー再生成のためのデータ。
@@ -309,18 +324,77 @@ fn run_physics_loop(
                     );
                     let _ = reply.send(hit);
                 }
-                Ok(PhysicsCommand::StepCharacter { entity_id, desired_position, rotation }) => {
-                    // キャラクターコントローラーの差分解決（非同期・毎フレーム）。
+                Ok(PhysicsCommand::ResolveCharacter { entity_id, desired_position, rotation, reply }) => {
+                    // キャラクターコントローラーの差分解決（同期問い合わせ・フレーム 1 回）。
                     // query_pipeline は step のたびに更新済み。前回解決済み位置との差分を
-                    // KCC で衝突解決し、entry の char_last_pos / char_grounded を更新すると同時に
+                    // KCC で衝突解決し、entry の char_last_pos を更新すると同時に
                     // 物理ワールドのコライダー位置も補正後位置へ同期する。
-                    // 補正後位置は step 後の collect_results が character_updates として送る。
-                    perform_character_step(
+                    // 補正後位置＋接地を reply でその場返しし、メインが描画前に ECS へ書き戻す。
+                    //
+                    // 【診断ログ】SEED_CHAR_LOG 設定時のみ、最初の N 回だけ切り分け情報を出す。
+                    // 物理 entry の有無・desired・motion・KCC 補正・corrected・grounded に加え、
+                    // 「物理ワールドに Static コライダー（地形）が登録されているか」を出力し、
+                    // 地形が物理世界に無くて検出できないケースを切り分けられるようにする。
+                    let diag = *CHAR_LOG_ENABLED
+                        && CHAR_LOG_FRAMES.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                            < CHAR_LOG_MAX_FRAMES;
+                    // 補正前の前回位置（motion 算出・ログ用）を退避する。
+                    let last_before = entries.get(&entity_id).map(|e| e.char_last_pos);
+
+                    let resolved = perform_character_step(
                         &character_controller, &query_pipeline,
                         &mut rigid_body_set, &mut collider_set, &mut entries,
                         entity_id, desired_position, rotation,
                         PHYSICS_FIXED_STEP as Real,
                     );
+
+                    if diag {
+                        // Static コライダー（RigidBody を持たない＝地形・静的プロップ）の登録数。
+                        // 0 なら「地形が物理ワールドに無い」＝キャラが検出できないケース。
+                        let static_colliders = entries.values()
+                            .filter(|e| e.rb_handle.is_none() && !e.is_character)
+                            .count();
+                        let total_colliders = collider_set.len();
+                        match (last_before, resolved) {
+                            (Some(last), Some((corrected, grounded))) => {
+                                let motion = [
+                                    desired_position[0] - last[0],
+                                    desired_position[1] - last[1],
+                                    desired_position[2] - last[2],
+                                ];
+                                let applied = [
+                                    corrected[0] - last[0],
+                                    corrected[1] - last[1],
+                                    corrected[2] - last[2],
+                                ];
+                                eprintln!(
+                                    "[CharCtl] id={id} entry=found desired=({dx:.3},{dy:.3},{dz:.3}) \
+                                     last=({lx:.3},{ly:.3},{lz:.3}) motion=({mx:.3},{my:.3},{mz:.3}) \
+                                     kcc_move=({ax:.3},{ay:.3},{az:.3}) corrected=({cx:.3},{cy:.3},{cz:.3}) \
+                                     grounded={g} | colliders total={tc} static={sc}",
+                                    id = entity_id,
+                                    dx = desired_position[0], dy = desired_position[1], dz = desired_position[2],
+                                    lx = last[0], ly = last[1], lz = last[2],
+                                    mx = motion[0], my = motion[1], mz = motion[2],
+                                    ax = applied[0], ay = applied[1], az = applied[2],
+                                    cx = corrected[0], cy = corrected[1], cz = corrected[2],
+                                    g = grounded, tc = total_colliders, sc = static_colliders,
+                                );
+                            }
+                            _ => {
+                                eprintln!(
+                                    "[CharCtl] id={id} entry={found} 解決失敗（キャラ未登録/コライダー無し）\
+                                     desired=({dx:.3},{dy:.3},{dz:.3}) | colliders total={tc} static={sc}",
+                                    id = entity_id,
+                                    found = if last_before.is_some() { "found" } else { "MISSING" },
+                                    dx = desired_position[0], dy = desired_position[1], dz = desired_position[2],
+                                    tc = total_colliders, sc = static_colliders,
+                                );
+                            }
+                        }
+                    }
+
+                    let _ = reply.send(resolved);
                 }
                 Ok(PhysicsCommand::CheckKinematicOverlap { entity_id, position, rotation, reply }) => {
                     // 同期オーバーラップ問い合わせ（編集時ドラッグの押し戻し判定）。
@@ -498,14 +572,15 @@ fn perform_character_move(
 
 /// キャラクターコントローラーの「希望位置」を前回解決済み位置との差分で衝突解決する。
 ///
-/// StepCharacter コマンドの実体。次を行う純粋手続き（reply は持たない・非同期）:
+/// ResolveCharacter コマンド（同期解決）の実体。次を行う純粋手続き:
 ///   1. moveVector = 希望位置 - 前回解決済み位置（char_last_pos）
 ///   2. `perform_character_move` で KCC が地形・静的コライダーと衝突解決（壁ずり・段差・スロープ）
-///   3. 補正後位置 = 前回位置 + 補正移動量 を求め、char_last_pos と char_grounded を更新
+///   3. 補正後位置 = 前回位置 + 補正移動量 を求め、char_last_pos を更新
 ///   4. 物理ワールドのコライダー姿勢も補正後位置へ同期（他オブジェクトのクエリ整合）
 ///
-/// 補正後位置は step 後の `collect_results` が `character_updates` としてメインへ送る。
-/// 対象が未登録・キャラクター指定でない場合は何もしない。
+/// 補正後位置と接地を `Some((corrected, grounded))` で返す。ResolveCharacter の同期 reply が
+/// これをそのままメインへ返し、メインが描画前に ECS へ書き戻す。
+/// 対象が未登録・キャラクター指定でない・コライダーが引けない場合は `None`（何もしない）。
 #[allow(clippy::too_many_arguments)]
 fn perform_character_step(
     kcc:              &KinematicCharacterController,
@@ -517,13 +592,13 @@ fn perform_character_step(
     desired_position: [f32; 3],
     rotation:         [f32; 4],
     dt:               Real,
-) {
+) -> Option<([f32; 3], bool)> {
     // 前回解決済み位置とキャラクター判定を取得する（キャラでなければ何もしない）
     let (last, is_char) = match entries.get(&entity_id) {
         Some(e) => (e.char_last_pos, e.is_character),
-        None    => return,
+        None    => return None,
     };
-    if !is_char { return; }
+    if !is_char { return None; }
 
     // 希望移動量 = 希望位置 - 前回解決済み位置
     let motion = [
@@ -534,10 +609,10 @@ fn perform_character_step(
 
     // KCC 衝突解決（読み取り専用クエリ）。基準位置は前回解決済み位置。
     // rb_set / col_set は &mut を immutable に自動再借用して渡す。
-    let Some(res) = perform_character_move(
+    let res = perform_character_move(
         kcc, query_pipeline, rb_set, col_set, entries,
         entity_id, last, rotation, motion, dt,
-    ) else { return };
+    )?;
 
     // 補正後位置 = 前回位置 + 補正移動量
     let corrected = [
@@ -546,12 +621,12 @@ fn perform_character_step(
         last[2] + res.translation[2],
     ];
 
-    // 前回位置・接地を更新し、物理ワールドのコライダー姿勢も補正後位置へ同期する
+    // 前回位置を更新し、物理ワールドのコライダー姿勢も補正後位置へ同期する
     if let Some(entry) = entries.get_mut(&entity_id) {
         entry.char_last_pos = corrected;
-        entry.char_grounded = res.grounded;
         sync_character_collider_pose(rb_set, col_set, entry, corrected, rotation);
     }
+    Some((corrected, res.grounded))
 }
 
 /// キャラクターコントローラーのコライダー姿勢を物理ワールドへ同期する。
@@ -742,7 +817,7 @@ fn handle_command(
         PhysicsCommand::Pause  => { /* ループ側で処理済み */ }
         PhysicsCommand::Resume => { /* ループ側で処理済み */ }
         PhysicsCommand::Raycast { .. } => { /* ループ側（コマンドドレイン）で処理済み */ }
-        PhysicsCommand::StepCharacter { .. } => { /* ループ側（コマンドドレイン）で処理済み */ }
+        PhysicsCommand::ResolveCharacter { .. } => { /* ループ側（コマンドドレイン）で処理済み */ }
         PhysicsCommand::CheckKinematicOverlap { .. } => { /* ループ側（コマンドドレイン）で処理済み */ }
 
         PhysicsCommand::TeleportCharacter { entity_id, position, rotation } => {
@@ -751,7 +826,6 @@ fn handle_command(
             if let Some(entry) = entries.get_mut(&entity_id) {
                 if !entry.is_character { return; }
                 entry.char_last_pos = position;
-                entry.char_grounded = false;
                 sync_character_collider_pose(rb_set, col_set, entry, position, rotation);
             }
         }
@@ -1115,7 +1189,6 @@ fn add_object(
         is_character: obj.is_character_controller,
         // 前回解決済み位置の初期値 = 登録時のアクターワールド位置。
         char_last_pos: obj.position,
-        char_grounded: false,
     });
 }
 
@@ -1255,22 +1328,14 @@ fn collect_results(
         if !active_trigger_entity_ids.contains(&oe) { active_trigger_entity_ids.push(oe); }
     }
 
-    // ── キャラクターコントローラーの解決後状態を収集する ──────────────────────
-    // StepCharacter が更新した「前回解決済み位置」と接地判定を毎フレーム送り、
-    // メインスレッドが ECS Transform（子孫伝播つき）へ反映・IsGrounded をキャッシュする。
-    let mut character_updates: Vec<(u64, [f32; 3], bool)> = Vec::new();
-    for (entity_id, entry) in entries.iter() {
-        if entry.is_character {
-            character_updates.push((*entity_id, entry.char_last_pos, entry.char_grounded));
-        }
-    }
+    // 【撤去】キャラクターの補正後位置・接地は `ResolveCharacter` の同期 reply でフレーム 1 回
+    // 返すため、ここでステップ結果に相乗りさせて収集する処理は不要になった。
 
     PhysicsResult {
         transform_updates, collision_events, trigger_events,
         active_contact_entity_ids, active_trigger_entity_ids,
         max_linear_speed, max_angular_speed,
         body_velocities,
-        character_updates,
     }
 }
 
@@ -1583,20 +1648,26 @@ mod tests {
             col_shape_data: None,
             is_character:  true,
             char_last_pos: [0.0, START_Y as f32, 0.0],
-            char_grounded: false,
         });
 
         let kcc = make_character_controller();
 
         // 希望位置: 床を大きく貫く y=-1.0（スクリプトが Transform に書いた値の代役）
         let desired = [0.0, -1.0, 0.0];
-        perform_character_step(
+        let resolved = perform_character_step(
             &kcc, &query, &mut rb_set, &mut col_set, &mut entries,
             ENTITY_ID, desired, [0.0, 0.0, 0.0, 1.0], PHYSICS_FIXED_STEP as Real,
         );
 
+        // 同期 reply 値（補正後位置＋接地）が返ること
+        let (corrected, grounded) = resolved.expect("キャラクター解決が Some を返すこと");
+        // entry の前回位置も同じ補正後位置へ更新されている
         let entry = entries.get(&ENTITY_ID).unwrap();
-        let corrected_y = entry.char_last_pos[1];
+        assert_eq!(
+            entry.char_last_pos, corrected,
+            "entry.char_last_pos と reply の corrected が一致すること"
+        );
+        let corrected_y = corrected[1];
 
         // 前回位置が更新されている（初期値 START_Y のままではない）
         assert!(
@@ -1611,8 +1682,55 @@ mod tests {
         );
         // 床へ向かって沈もうとしたので接地判定が立つ
         assert!(
-            entry.char_grounded,
-            "床へ押し付けたのに grounded=false（接地状態が保持されていない）"
+            grounded,
+            "床へ押し付けたのに grounded=false（接地状態が返されていない）"
+        );
+    }
+
+    /// `perform_character_step` が「対象未登録」「キャラクター指定でない」で `None` を返し、
+    /// entry を書き換えないことを検証する。
+    ///
+    /// ResolveCharacter の同期 reply はこの `None` を「解決失敗」としてメインへ返し、
+    /// メインは今フレームの補正を諦めて ECS をスクリプト値のまま据え置く。その据え置き判定の
+    /// 拠り所となる純粋部分（None を返す条件）を外部依存なしで固定する回帰テスト。
+    #[test]
+    fn character_step_returns_none_for_missing_or_non_character() {
+        let mut rb_set  = RigidBodySet::new();
+        let mut col_set = ColliderSet::new();
+        let query   = QueryPipeline::new();
+        let kcc     = make_character_controller();
+
+        // ── ① 未登録 entity_id: None を返す ──
+        let mut empty: HashMap<u64, PhysicsEntry> = HashMap::new();
+        let r = perform_character_step(
+            &kcc, &query, &mut rb_set, &mut col_set, &mut empty,
+            999, [0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0], PHYSICS_FIXED_STEP as Real,
+        );
+        assert!(r.is_none(), "未登録 entity は None を返すべき");
+
+        // ── ② is_character=false の entry: None を返し、char_last_pos を書き換えない ──
+        const ID: u64 = 7;
+        const START: [f32; 3] = [1.0, 2.0, 3.0];
+        let col_h = col_set.insert(ColliderBuilder::ball(0.5).build());
+        let mut entries: HashMap<u64, PhysicsEntry> = HashMap::new();
+        entries.insert(ID, PhysicsEntry {
+            rb_handle:  None,
+            col_handle: col_h,
+            is_dynamic: false,
+            col_offset: [0.0, 0.0, 0.0],
+            rb_created_for_drag: false,
+            col_shape_data: None,
+            is_character:  false,      // ← キャラクターではない
+            char_last_pos: START,
+        });
+        let r = perform_character_step(
+            &kcc, &query, &mut rb_set, &mut col_set, &mut entries,
+            ID, [10.0, 10.0, 10.0], [0.0, 0.0, 0.0, 1.0], PHYSICS_FIXED_STEP as Real,
+        );
+        assert!(r.is_none(), "非キャラクター entity は None を返すべき");
+        assert_eq!(
+            entries.get(&ID).unwrap().char_last_pos, START,
+            "非キャラクターでは char_last_pos を書き換えないこと"
         );
     }
 }
