@@ -64,6 +64,19 @@ const OVERLAP_REPLY_TIMEOUT_MS: u64 = 4;
 static PHYS_LOG_ENABLED: std::sync::LazyLock<bool> =
     std::sync::LazyLock::new(|| std::env::var_os("SEED_PHYS_LOG").is_some());
 
+/// キャラクターコントローラー同期解決の診断ログ（`[CharCtl]` 行）を出すか。既定オフ。
+/// 環境変数 `SEED_CHAR_LOG` を設定したときだけ有効化する（PHYS_LOG と同じ作法）。
+/// 物理スレッド側（thread.rs）も同じ環境変数で `[CharCtl]` 行を出し、両者で 1 フレームの
+/// キャラ解決を切り分けられるようにする。
+static CHAR_LOG_ENABLED: std::sync::LazyLock<bool> =
+    std::sync::LazyLock::new(|| std::env::var_os("SEED_CHAR_LOG").is_some());
+
+/// これまでに出力した `[CharCtl]`（メイン側）行のフレーム数（洪水防止の上限判定に使う）。
+static CHAR_LOG_FRAMES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// メイン側 `[CharCtl]` 行を出す最大フレーム数（起動直後の切り分けに十分な数だけ出す）。
+const CHAR_LOG_MAX_FRAMES: u32 = 240;
+
 impl App {
     // ─── 起動 ────────────────────────────────────────────────────
 
@@ -339,33 +352,11 @@ impl App {
                 }
             }
 
-            // ①-c キャラクターコントローラーの補正後位置を ECS に書き戻す。
-            //
-            // StepCharacter が地形と衝突解決した「前回位置」を毎フレーム受け取り、
-            // 集約関数 set_actor_world_transform 経由で反映することで子アクタ（カメラ等）も追従する。
-            // このタイミング（update_physics = フレーム先頭、スクリプト実行前）で反映するため、
-            // 直後に走るスクリプトは押し戻し済みの位置を読んで次の希望位置を組み立てられる。
-            // ドラッグ中のアクターは gizmo が位置を制御するため無視する。
-            if should_apply_transforms && !result.character_updates.is_empty() {
-                if let Some(scene) = &mut self.scene {
-                    for (entity_id, corrected_pos, _grounded) in &result.character_updates {
-                        if Some(*entity_id) == self.dragging_physics_entity_id { continue; }
-                        apply_character_transform(scene, self.active_world_line, *entity_id, *corrected_pos);
-                    }
-                }
-                // 接地状態を IsGrounded 用にスクリプトへ公開する（DFS ID → ECS Entity 変換つき）。
-                // 新しい結果があるフレームでのみ更新し、結果なしフレームでは前回値を維持する
-                // （publish_grounded_states を呼ばないことで thread-local の前回公開が残る）。
-                if let Some(scene) = &self.scene {
-                    let dfs_to_entity = build_dfs_entity_map_3d(scene, self.active_world_line);
-                    let grounded: Vec<(crate::engine::ecs::Entity, bool)> = result.character_updates.iter()
-                        .filter_map(|(dfs_id, _pos, grounded)| {
-                            dfs_to_entity.get(dfs_id).map(|&e| (e, *grounded))
-                        })
-                        .collect();
-                    crate::engine::core::scripting::host_api::publish_grounded_states(grounded);
-                }
-            }
+            // 【撤去】キャラクターコントローラーの補正後位置反映は、フレーム末尾
+            // （スクリプトフェーズ実行後）の sync_character_controllers による同期解決へ
+            // 一本化した。ここ（update_physics = フレーム先頭・スクリプト実行前）で
+            // 非同期ストリーム（character_updates）を反映していた旧経路は、補正が描画前に
+            // 確定せずスクリプトの貫通直書きで毎フレーム上書きされる設計欠陥だったため削除した。
 
             // ②-0 Play モード時: 衝突・トリガーイベントをスクリプトのコールバックへ配信する
             //（OnCollisionEnter / OnTriggerEnter 等。Edit モードの物理プレビューでは呼ばない）
@@ -453,30 +444,89 @@ impl App {
         }
     }
 
-    // ─── キャラクターコントローラー同期（スクリプト実行後）────────────────────
+    // ─── キャラクターコントローラー同期解決（スクリプト実行後・描画前）──────────────
 
-    /// キャラクターコントローラーの「希望位置」を物理スレッドへ送信する（StepCharacter）。
+    /// キャラクターコントローラーの衝突解決を **同期・フレーム 1 回** 実行し、補正後位置を
+    /// ECS の確定値として描画前に書き戻す。
     ///
-    /// **必ずスクリプトフェーズ実行後**に呼ぶこと。スクリプトが Transform に書き込んだ
-    /// 希望位置をそのまま拾い、物理スレッドが前回解決済み位置との差分を KCC で解決する。
+    /// **必ずスクリプトフェーズ実行後・描画前**に呼ぶこと（frame_renderer のスクリプト
+    /// フェーズ直後）。スクリプトが Transform に直書きした希望位置（地形を貫通しうる値）を
+    /// そのまま拾い、物理スレッドへ reply 付きの `ResolveCharacter` を送って前回解決済み位置
+    /// との差分を KCC で衝突解決させ、**補正後位置＋接地をその場で受け取る**。
     ///
-    /// 【フレームパイプライン（1 フレーム遅延・非同期）】
-    ///   フレーム N: update_physics で前フレームの補正後位置を反映（スクリプト実行前）
-    ///            → スクリプトが希望位置 D を書き込む
-    ///            → 本メソッドが StepCharacter(D) を送信
-    ///   フレーム N+1: update_physics が補正後位置を受信して反映
+    /// 【なぜ同期・フレーム 1 回か】
+    ///   旧設計は `StepCharacter` を投げっぱなし（非同期）で送り、補正後位置を次フレームの
+    ///   ステップ結果で受けていた。しかし補正が描画前に確定せず、同フレームの描画は貫通位置を
+    ///   読み、次フレームの補正もスクリプトの直書きで上書きされるため、実機で全く押し戻され
+    ///   なかった。ここで同期解決に一本化し、受け取った補正後位置を `set_actor_world_transform`
+    ///   経由で即 ECS へ書き戻すことで、スクリプトの貫通直書きを同フレーム・描画前に上書きする。
+    ///   解決は「毎 move ごと」ではなく「フレーム 1 回」なので、往復コストは 1 キャラ 1 回で済む。
     ///
-    /// update_physics ④（collect_kinematic_updates）と同じく「物理へ姿勢を送る」役割だが、
-    /// あちらはスクリプト実行前に走るため希望位置を拾えない。キャラクターの希望位置は
-    /// スクリプトが書いた直後（本メソッド）で集約して送る必要がある。
+    /// reply のタイムアウトは既存の同期問い合わせ（ドラッグ押し戻し）と同じ作法・定数
+    /// （`OVERLAP_REPLY_TIMEOUT_MS`）を流用する。タイムアウト時は今フレームの補正を諦め、
+    /// ECS はスクリプト値のまま（＝従来同等）とし、`SEED_CHAR_LOG` 設定時のみログに出す。
     pub(super) fn sync_character_controllers(&mut self) {
+        if self.physics_thread.is_none() { return; }
+
+        // ① スクリプトが書いた希望位置（＋回転）をキャラごとに収集する。
         let Some(scene) = &self.scene else { return };
-        let Some(thread) = &self.physics_thread else { return };
-        collect_character_step_updates(scene, self.active_world_line)
-            .into_iter()
-            .for_each(|(entity_id, desired_position, rotation)| {
-                thread.send(PhysicsCommand::StepCharacter { entity_id, desired_position, rotation });
-            });
+        let desired = collect_character_step_updates(scene, self.active_world_line);
+
+        // 診断ログ（対象キャラ数）。SEED_CHAR_LOG 設定時のみ、最初の N 回だけ出す。
+        let diag = *CHAR_LOG_ENABLED
+            && CHAR_LOG_FRAMES.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                < CHAR_LOG_MAX_FRAMES;
+        if diag {
+            eprintln!("[CharCtl] sync_character_controllers: collected {} character(s)", desired.len());
+        }
+        if desired.is_empty() { return; }
+
+        // ② 各キャラを同期解決する。物理スレッドへ reply 付きコマンドを送り、補正後位置を
+        //    受け取ってから ECS へ書き戻す。DFS ID → ECS Entity 変換は接地公開のために保持する。
+        let mut grounded_states: Vec<(crate::engine::ecs::Entity, bool)> = Vec::new();
+        let dfs_to_entity = build_dfs_entity_map_3d(scene, self.active_world_line);
+
+        for (entity_id, desired_position, rotation) in desired {
+            // 物理スレッドへ同期問い合わせ（Raycast / CheckKinematicOverlap と同じ reply パターン）。
+            let resolved = {
+                let Some(thread) = &self.physics_thread else { return };
+                let (reply_tx, reply_rx) = crossbeam_channel::bounded::<Option<([f32; 3], bool)>>(1);
+                thread.send(PhysicsCommand::ResolveCharacter {
+                    entity_id,
+                    desired_position,
+                    rotation,
+                    reply: reply_tx,
+                });
+                match reply_rx.recv_timeout(
+                    std::time::Duration::from_millis(OVERLAP_REPLY_TIMEOUT_MS),
+                ) {
+                    Ok(v) => v,
+                    // 応答なし（スレッド高負荷・終了中等）: 今フレームの補正を諦める。
+                    // ECS はスクリプト値のまま＝従来同等。次フレームで最新の希望位置を再解決する。
+                    Err(_) => {
+                        if diag {
+                            eprintln!("[CharCtl] id={entity_id} reply timeout（今フレームの補正を諦め）");
+                        }
+                        continue;
+                    }
+                }
+            };
+
+            // 解決失敗（キャラ未登録・コライダー無し）はスクリプト値のまま据え置く。
+            let Some((corrected_pos, grounded)) = resolved else { continue };
+
+            // 補正後位置を ECS の確定値として書き戻す（子孫アクタ＝カメラ等も追従）。
+            if let Some(scene) = &mut self.scene {
+                apply_character_transform(scene, self.active_world_line, entity_id, corrected_pos);
+            }
+            // 接地状態を IsGrounded 用に集約する（DFS ID → ECS Entity 変換つき）。
+            if let Some(&ent) = dfs_to_entity.get(&entity_id) {
+                grounded_states.push((ent, grounded));
+            }
+        }
+
+        // ③ 接地状態をスクリプトへ公開する（Physics.IsGrounded 用）。
+        crate::engine::core::scripting::host_api::publish_grounded_states(grounded_states);
     }
 
     // ─── ドラッグ中押し戻し（同期オーバーラップ判定）──────────────────────────
