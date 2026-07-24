@@ -50,7 +50,7 @@ use super::types::{
 /// キャラクター診断ログ（`[CharCtl]` 行）を出力するかどうか。既定オフ。
 /// 環境変数 SEED_CHAR_LOG を設定したときだけ有効化する（上限 CHAR_LOG_MAX_FRAMES で洪水防止）。
 static CHAR_LOG_ENABLED: std::sync::LazyLock<bool> =
-    std::sync::LazyLock::new(|| std::env::var_os("SEED_CHAR_LOG").is_some());
+    std::sync::LazyLock::new(|| true || std::env::var_os("SEED_CHAR_LOG").is_some());
 
 /// これまでに出力した `[CharCtl]` 行の件数（洪水防止の上限判定に使う）。
 static CHAR_LOG_FRAMES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
