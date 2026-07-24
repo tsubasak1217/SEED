@@ -28,14 +28,76 @@ use std::collections::{HashMap, HashSet};
 use crossbeam_channel::{Receiver, Sender, TryRecvError, unbounded};
 use std::time::{Duration, Instant};
 
+// rapier3d の control モジュール（キャラクターコントローラー）は prelude に含まれないため直接インポートする
+use rapier3d::control::{CharacterAutostep, CharacterLength, KinematicCharacterController};
+
 // SEED 側の物理型（Rapier の CollisionEvent と名前が衝突するため別名でインポートする）
 use super::types::{
+    CharacterMoveResult,
     ColliderShape,
     CollisionEvent as SeedCollisionEvent, CollisionPhase,
     PhysicsCommand, PhysicsObject, PhysicsResult,
     TriggerEvent as SeedTriggerEvent, TriggerPhase,
     DEFAULT_GRAVITY, PHYSICS_FIXED_STEP,
 };
+
+// ─── キャラクターコントローラー（KCC）パラメータ定数 ──────────────────────────
+//
+//  スクリプトの Physics.MoveActor が使う KinematicCharacterController の設定値。
+//  rapier3d の既定値をベースに、SEED のメートル単位（1 unit = 1m）に合わせて
+//  段差・スロープ・スナップの各しきい値を絶対値で固定する（データドリブンに
+//  差し替えたくなったら将来コンポーネント化する想定で、まずは定数化する）。
+
+/// キャラクターと周囲の間に保つ微小な隙間（メートル・スキン幅）。
+/// 0 だと数値的に不安定になるため小さな正の値を絶対指定する（1cm）。
+const KCC_SKIN_OFFSET_M: Real = 0.01;
+
+/// 登れる最大スロープ角（度）。これを超える斜面は壁として扱い、登らず滑る。
+/// 45 度は rapier 既定（π/4）と同じで、一般的なキャラ移動の妥当値。
+const KCC_MAX_SLOPE_CLIMB_DEG: Real = 45.0;
+
+/// 自動で滑り落ち始める最小スロープ角（度）。これ未満の斜面には立てる。
+/// climb と同じ 45 度にし、「登れる限界＝立てる限界」で挙動を一貫させる。
+const KCC_MIN_SLOPE_SLIDE_DEG: Real = 45.0;
+
+/// 自動で乗り越えられる段差（階段）の最大高さ（メートル・絶対値）。
+/// 0.3m は一般的な階段 1 段ぶんに相当し、キャラが引っかからず登れる。
+const KCC_AUTOSTEP_MAX_HEIGHT_M: Real = 0.3;
+
+/// 段差を登った先に必要な最小の平地幅（メートル・絶対値）。
+/// これ未満の狭い足場には段差昇降しない（縁に爪先立ちして揺れるのを防ぐ）。
+const KCC_AUTOSTEP_MIN_WIDTH_M: Real = 0.05;
+
+/// 地面から足がこの距離以内なら接地状態へスナップする（メートル・絶対値）。
+/// 下り坂・階段を降りるときにキャラが浮かず地面に吸着する。0.3m は段差高さと同程度。
+const KCC_SNAP_TO_GROUND_M: Real = 0.3;
+
+/// SEED のキャラクターコントローラー設定を構築する。
+///
+/// 上記の KCC_* 定数から `KinematicCharacterController` を組み立てる純粋関数。
+/// 物理スレッド起動時に 1 度だけ生成し、MoveCharacter コマンドで使い回す。
+fn make_character_controller() -> KinematicCharacterController {
+    KinematicCharacterController {
+        // 既定の上方向（+Y）・壁ずり有効はそのまま使う
+        up:     Vector::y_axis(),
+        slide:  true,
+        offset: CharacterLength::Absolute(KCC_SKIN_OFFSET_M),
+        // 段差の自動乗り越え（階段）を有効化する。
+        // ※ rapier のドキュメント上 autostep は計算コストが高い機能だが、
+        //   本 API は 1 フレーム 1 回の同期クエリのため許容範囲。段差昇降は要件。
+        autostep: Some(CharacterAutostep {
+            max_height:             CharacterLength::Absolute(KCC_AUTOSTEP_MAX_HEIGHT_M),
+            min_width:              CharacterLength::Absolute(KCC_AUTOSTEP_MIN_WIDTH_M),
+            // 動的ボディの上には段差昇降しない（意図しない乗り上げを防ぐ）
+            include_dynamic_bodies: false,
+        }),
+        max_slope_climb_angle: (KCC_MAX_SLOPE_CLIMB_DEG as Real).to_radians(),
+        min_slope_slide_angle: (KCC_MIN_SLOPE_SLIDE_DEG as Real).to_radians(),
+        snap_to_ground:        Some(CharacterLength::Absolute(KCC_SNAP_TO_GROUND_M)),
+        // すり抜け防止の法線ナッジは既定値
+        ..KinematicCharacterController::default()
+    }
+}
 
 // ─── スムーズドラッグ速度クランプ定数 ────────────────────────────────────────
 
@@ -173,8 +235,12 @@ fn run_physics_loop(
     let mut impulse_joint_set   = ImpulseJointSet::new();
     let mut multibody_joint_set = MultibodyJointSet::new();
     let mut ccd_solver          = CCDSolver::new();
-    // レイキャスト用クエリパイプライン（step のたびに自動更新される）
+    // レイキャスト・キャラクター移動用クエリパイプライン（step のたびに自動更新される）
     let mut query_pipeline      = QueryPipeline::new();
+
+    // キャラクターコントローラー（スクリプトの Physics.MoveActor 用）。
+    // 定数から 1 度だけ生成して MoveCharacter コマンドで使い回す（状態を持たない）。
+    let character_controller = make_character_controller();
 
     // 重力ベクトル（SetGravity コマンドで変更可能）
     let mut gravity = vector![DEFAULT_GRAVITY[0], DEFAULT_GRAVITY[1], DEFAULT_GRAVITY[2]];
@@ -234,6 +300,18 @@ fn run_physics_loop(
                         origin, direction, max_distance,
                     );
                     let _ = reply.send(hit);
+                }
+                Ok(PhysicsCommand::MoveCharacter { entity_id, position, rotation, motion, reply }) => {
+                    // 同期キャラクター移動問い合わせ（スクリプトの Physics.MoveActor）。
+                    // query_pipeline は step のたびに更新済み。move_shape は読み取り専用で
+                    // コライダー位置を変えないため、ここでシミュレーション状態は汚さない。
+                    let res = perform_character_move(
+                        &character_controller, &query_pipeline,
+                        &rigid_body_set, &collider_set, &entries,
+                        entity_id, position, rotation, motion,
+                        PHYSICS_FIXED_STEP as Real,
+                    );
+                    let _ = reply.send(res);
                 }
                 Ok(PhysicsCommand::CheckKinematicOverlap { entity_id, position, rotation, reply }) => {
                     // 同期オーバーラップ問い合わせ（編集時ドラッグの押し戻し判定）。
@@ -344,6 +422,66 @@ fn perform_raycast(
         point:    [point.x, point.y, point.z],
         normal:   [normal.x, normal.y, normal.z],
         distance: intersection.time_of_impact,
+    })
+}
+
+// ─── キャラクターコントローラー移動 ──────────────────────────────────────────
+
+/// キャラクターコントローラーで希望移動量を衝突解決し、実効移動＋接地を返す。
+///
+/// スクリプトの Physics.MoveActor 用。対象アクターの既存カプセルコライダー形状を
+/// KCC のシェイプに使い、地形・静的コライダーとの衝突を rapier の
+/// `move_shape` に解決させる（壁ずり・段差・スロープは KCC の標準機能）。
+///
+/// - 対象自身のコライダー／リジッドボディは自己衝突しないよう除外する。
+/// - センサー（トリガー）は応答なしのため除外する。
+/// - move_shape はクエリのみでコライダー位置を変更しない。実際の位置反映（ECS 更新）は
+///   呼び出し元 FFI が集約関数 `set_actor_world_transform` 経由で行う。
+///
+/// 対象 entity_id が未登録・コライダーが引けない場合は None を返す。
+#[allow(clippy::too_many_arguments)]
+fn perform_character_move(
+    kcc:            &KinematicCharacterController,
+    query_pipeline: &QueryPipeline,
+    rb_set:         &RigidBodySet,
+    col_set:        &ColliderSet,
+    entries:        &HashMap<u64, PhysicsEntry>,
+    entity_id:      u64,
+    position:       [f32; 3],
+    rotation:       [f32; 4],
+    motion:         [f32; 3],
+    dt:             Real,
+) -> Option<CharacterMoveResult> {
+    // 対象アクターのコライダーを解決し、その形状を KCC シェイプに使う
+    let entry = entries.get(&entity_id)?;
+    let col   = col_set.get(entry.col_handle)?;
+    let shape = col.shared_shape().clone();
+
+    // シェイプの基準姿勢 = アクターワールド姿勢 × コライダーローカルオフセット。
+    // motion はワールド空間の希望移動量なので姿勢に依存しない。
+    let o          = entry.col_offset;
+    let offset_iso = Isometry::translation(o[0], o[1], o[2]);
+    let char_pos   = to_isometry(position, rotation) * offset_iso;
+    let desired    = vector![motion[0], motion[1], motion[2]];
+
+    // 自己コライダー・自己 RB・センサーを衝突候補から除外する
+    let mut filter = QueryFilter::default()
+        .exclude_sensors()
+        .exclude_collider(entry.col_handle);
+    if let Some(rb_h) = entry.rb_handle {
+        filter = filter.exclude_rigid_body(rb_h);
+    }
+
+    // KCC に衝突解決を委ねる（イベントは使わないので空クロージャ）。
+    let movement = kcc.move_shape(
+        dt, rb_set, col_set, query_pipeline,
+        &*shape, &char_pos, desired, filter, |_| {},
+    );
+
+    let t = movement.translation;
+    Some(CharacterMoveResult {
+        translation: [t.x, t.y, t.z],
+        grounded:    movement.grounded,
     })
 }
 
@@ -501,6 +639,7 @@ fn handle_command(
         PhysicsCommand::Pause  => { /* ループ側で処理済み */ }
         PhysicsCommand::Resume => { /* ループ側で処理済み */ }
         PhysicsCommand::Raycast { .. } => { /* ループ側（コマンドドレイン）で処理済み */ }
+        PhysicsCommand::MoveCharacter { .. } => { /* ループ側（コマンドドレイン）で処理済み */ }
         PhysicsCommand::CheckKinematicOverlap { .. } => { /* ループ側（コマンドドレイン）で処理済み */ }
 
         PhysicsCommand::AddObject(obj) => {
@@ -1170,6 +1309,96 @@ mod tests {
             y > 0.3 && y < 0.7,
             "球はトライメッシュ床の上（y≈{BALL_RADIUS}）で静止するはずが y={y} だった\
              （y が負なら床をすり抜けている＝コリジョン不成立）"
+        );
+    }
+
+    /// `make_character_controller` が定数どおりの KCC を構築することを検証する。
+    ///
+    /// マジックナンバーではなく KCC_* 定数から組み立てていること・単位（度→ラジアン）
+    /// 変換が正しいことを、外部依存なしで確認する回帰テスト。
+    #[test]
+    fn character_controller_uses_configured_constants() {
+        let kcc = make_character_controller();
+
+        // スロープ角は度→ラジアン変換されている
+        assert!((kcc.max_slope_climb_angle - (KCC_MAX_SLOPE_CLIMB_DEG as Real).to_radians()).abs() < 1e-6);
+        assert!((kcc.min_slope_slide_angle - (KCC_MIN_SLOPE_SLIDE_DEG as Real).to_radians()).abs() < 1e-6);
+
+        // スキン幅は絶対指定
+        assert!(matches!(kcc.offset, CharacterLength::Absolute(v) if (v - KCC_SKIN_OFFSET_M).abs() < 1e-6));
+
+        // 段差の自動乗り越えが有効で、絶対値の高さが設定されている
+        let step = kcc.autostep.expect("autostep が有効であること");
+        assert!(matches!(step.max_height, CharacterLength::Absolute(v) if (v - KCC_AUTOSTEP_MAX_HEIGHT_M).abs() < 1e-6));
+        assert!(!step.include_dynamic_bodies, "動的ボディの上には段差昇降しない設定");
+
+        // 接地スナップが有効
+        assert!(matches!(kcc.snap_to_ground, Some(CharacterLength::Absolute(v)) if (v - KCC_SNAP_TO_GROUND_M).abs() < 1e-6));
+    }
+
+    /// `make_character_controller` の KCC で、カプセルを床へ向けて下方向に動かしたとき、
+    /// 床をすり抜けず・接地判定が立つことを決定論的に検証する。
+    ///
+    /// スレッドを使わず `KinematicCharacterController::move_shape` を直接呼ぶため、
+    /// 時間・スケジューリングに依らず結果は一定。Physics.MoveActor が依存する
+    /// KCC 統合経路（カプセルシェイプ → move_shape → 補正移動量＋grounded）の実効を
+    /// CI で担保する。
+    #[test]
+    fn character_move_is_blocked_by_floor_and_reports_grounded() {
+        // ── y=0 の平坦な床（共有頂点＋インデックスのトライメッシュ）──
+        let floor = ColliderShape::TriangleMeshIndexed {
+            vertices: vec![
+                [-5.0, 0.0, -5.0],
+                [ 5.0, 0.0, -5.0],
+                [ 5.0, 0.0,  5.0],
+                [-5.0, 0.0,  5.0],
+            ],
+            indices: vec![[0, 1, 2], [0, 2, 3]],
+        };
+
+        let mut rb_set  = RigidBodySet::new();
+        let mut col_set = ColliderSet::new();
+        let mut query   = QueryPipeline::new();
+
+        // 床：Static コライダー
+        let floor_col = build_collider_shape(&floor, &[1.0, 1.0, 1.0]).build();
+        col_set.insert(floor_col);
+
+        // キャラクター：半径 0.4・半高 0.5 のカプセル（Y 軸）。
+        // カプセルの下端 = 中心 - (半高 + 半径) = 中心 - 0.9。中心を 1.0m に置くと
+        // 下端は床（y=0）の 0.1m 上から始まる（＝床にめり込んでいない）。
+        const CAP_RADIUS:      Real = 0.4;
+        const CAP_HALF_HEIGHT: Real = 0.5;
+        const START_Y:         Real = 1.0;
+        let capsule = SharedShape::capsule_y(CAP_HALF_HEIGHT, CAP_RADIUS);
+        let char_pos = Isometry::translation(0.0, START_Y, 0.0);
+
+        // クエリパイプラインを床コライダーで更新する（move_shape が参照する）
+        query.update(&col_set);
+
+        let kcc = make_character_controller();
+        // 下向きに 1m 動かそうとする（重力分をスクリプトが含める想定の代役）
+        let movement = kcc.move_shape(
+            PHYSICS_FIXED_STEP as Real,
+            &rb_set, &col_set, &query,
+            &*capsule, &char_pos, vector![0.0, -1.0, 0.0],
+            QueryFilter::default().exclude_sensors(),
+            |_| {},
+        );
+
+        // 実効移動後の中心 Y
+        let result_y = START_Y + movement.translation.y;
+        // カプセル下端が床（y=0）を大きく割り込んでいない（すり抜けていない）。
+        //   下端 = result_y - (CAP_HALF_HEIGHT + CAP_RADIUS)。床上ならほぼ 0 以上。
+        let foot_y = result_y - (CAP_HALF_HEIGHT + CAP_RADIUS);
+        assert!(
+            foot_y > -0.05,
+            "カプセルが床をすり抜けた: foot_y={foot_y}（下向き移動が床で止まっていない）"
+        );
+        // 床に十分近い下向き移動なので接地判定が立つはず
+        assert!(
+            movement.grounded,
+            "床の直上へ下向き移動したのに grounded=false（接地判定が機能していない）"
         );
     }
 }

@@ -401,8 +401,8 @@ transform.Position += <span class="k">new</span> <span class="t">SEED.Vector3</s
 </section>
 
 <!-- ════════════════ 6.6 Physics ════════════════ -->
-<section id="sec-physics" data-keywords="Physics レイキャスト Raycast 物理 コライダー 判定">
-  <h2>6.6 Physics（レイキャスト）</h2>
+<section id="sec-physics" data-keywords="Physics レイキャスト Raycast 物理 コライダー 判定 MoveActor キャラクターコントローラー CharacterController 移動 接地 grounded 押し戻し 段差 スロープ 重力">
+  <h2>6.6 Physics（レイキャスト・キャラクター移動）</h2>
   <div class="api"><code class="sig">Physics.Raycast(origin, dir, maxDistance, out hit)</code><span class="desc">bool: 最初にヒットしたコライダーの情報を <code>hit</code> に格納</span></div>
   <div class="api"><code class="sig">Physics.Raycast(origin, dir, maxDistance)</code><span class="desc">bool: ヒット情報が不要な場合の簡易版</span></div>
   <div class="api"><code class="sig">hit.GameObject</code><span class="desc">GameObject: ヒットしたアクター（<code>IsValid</code> で有効判定）</span></div>
@@ -414,6 +414,16 @@ transform.Position += <span class="k">new</span> <span class="t">SEED.Vector3</s
     <span class="t">SEED.Debug</span>.Log($<span class="s">"接地: {hit.Point} 距離={hit.Distance}"</span>);
 }</pre>
   <div class="warn">3D 物理（ColliderComponent）に対するレイキャストです。物理スレッドへの同期問い合わせのため、毎フレーム大量に呼ぶとフレーム時間を消費します。衝突・トリガーの<b>イベント通知</b>は第 2 節の物理イベントコールバックを参照。</div>
+
+  <h3 id="cmp-moveactor">Physics.MoveActor（キャラクターコントローラー移動）</h3>
+  <div class="api"><code class="sig">Physics.MoveActor(gameObject, motion)</code><span class="desc">MoveResult: 希望移動量 <code>motion</code>（Vector3・ワールド空間）を衝突解決して移動</span></div>
+  <div class="api"><code class="sig">result.Motion</code><span class="desc">Vector3: 実際に移動した量（壁ずり・段差・スロープ解決後）</span></div>
+  <div class="api"><code class="sig">result.Grounded</code><span class="desc">bool: 移動後に接地しているか</span></div>
+<pre><span class="c">// 重力はエンジンが自動適用しない。落下は motion に重力ぶんを含める</span>
+velocityY += -9.81f * <span class="t">SEED.Time</span>.DeltaTime;
+<span class="k">var</span> res = <span class="t">SEED.Physics</span>.MoveActor(gameObject, horizontal + <span class="k">new</span> <span class="t">SEED.Vector3</span>(0f, velocityY, 0f) * <span class="t">SEED.Time</span>.DeltaTime);
+<span class="k">if</span> (res.Grounded &amp;&amp; velocityY &lt; 0f) velocityY = 0f;</pre>
+  <div class="warn">Unity の <code>CharacterController.Move</code> 相当。対象は <b>Collider（カプセル推奨）</b>を持ち、<b>Kinematic</b>（use_rigidbody=true かつ is_kinematic=true）を推奨します。Dynamic コライダーに使うと物理積分と競合して暴れます。補正後の位置は集約経路で反映され<b>子アクタも追従</b>します。重力・複数移動の合成はスクリプト側の責務です。</div>
 </section>
 
 <!-- ════════════════ 6.7 Audio ════════════════ -->

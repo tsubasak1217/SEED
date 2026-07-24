@@ -210,8 +210,42 @@ pub enum PhysicsCommand {
         /// 結果送信チャンネル（ヒットなし = None）
         reply:        crossbeam_channel::Sender<Option<RaycastHit>>,
     },
+    /// キャラクターコントローラー移動を実行し、補正済み移動量＋接地判定を
+    /// reply チャンネルへ返す（同期問い合わせ）。スクリプトの Physics.MoveActor 用。
+    ///
+    /// rapier3d の `KinematicCharacterController::move_shape` を使い、対象アクターの
+    /// カプセルコライダー形状で「希望移動量」を地形・静的コライダーと衝突解決する。
+    /// move_shape は読み取り専用クエリでコライダー位置を変更しない（結果の適用＝
+    /// ECS Transform 更新はメインスレッドの FFI 側が行う）。物理スレッドはコマンド
+    /// ドレイン間隔（約 1ms）で応答するため、呼び出し側は短いタイムアウトで待機する。
+    MoveCharacter {
+        /// 移動対象アクターの DFS 順識別 ID（コライダー形状取得・自己除外に使う）
+        entity_id:    u64,
+        /// 対象アクターの現在ワールド位置 [x, y, z]（KCC シェイプの基準位置）
+        position:     [f32; 3],
+        /// 対象アクターの現在ワールド回転 [x, y, z, w]（SEED 規約・シェイプ姿勢に使う）
+        rotation:     [f32; 4],
+        /// このステップで加えたい希望移動量 [x, y, z]（重力分はスクリプトが含める）
+        motion:       [f32; 3],
+        /// 結果送信チャンネル（対象が見つからない・コライダーなし = None）
+        reply:        crossbeam_channel::Sender<Option<CharacterMoveResult>>,
+    },
     /// スレッドを停止する
     Stop,
+}
+
+// ─── キャラクターコントローラー結果 ──────────────────────────────────────────
+
+/// `PhysicsCommand::MoveCharacter` の結果（衝突解決後の実効移動）。
+///
+/// KCC が壁ずり・段差・スロープを解決した後の「実際に適用すべき移動量」と、
+/// 移動後に接地しているかどうかを返す。呼び出し側（FFI）は
+/// 新位置 = 現在位置 + translation を集約関数経由で ECS へ反映する。
+pub struct CharacterMoveResult {
+    /// 衝突解決後の実効移動量 [x, y, z]（希望移動量とは異なり得る）
+    pub translation: [f32; 3],
+    /// 移動適用後に接地しているか（KCC の grounded をそのまま返す）
+    pub grounded:    bool,
 }
 
 // ─── 物理スレッド結果 ────────────────────────────────────────────────────────

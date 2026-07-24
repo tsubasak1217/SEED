@@ -905,6 +905,11 @@ unsafe extern "system" fn ffi_input_mouse_state(kind: i32, out: *mut f32) -> i32
 /// 約 1ms 間隔なので通常は数 ms で応答する。応答がない場合はミス扱い。
 const RAYCAST_TIMEOUT_MS: u64 = 20;
 
+/// キャラクター移動（Physics.MoveActor）の同期問い合わせタイムアウト（ミリ秒）。
+/// Raycast と同様、物理スレッドはコマンドドレイン間隔（約 1ms）で応答するため
+/// 通常は数 ms で返る。応答がない場合は移動なし・非接地扱いにする。
+const MOVE_CHARACTER_TIMEOUT_MS: u64 = 20;
+
 /// Play シーンの world_line（物理の DFS 順 ID はこの世界線の走査で振られる。
 /// スクリプトは Play モードでのみ実行されるため常に 0）。
 const PLAY_WORLD_LINE: u32 = 0;
@@ -930,6 +935,47 @@ fn entity_by_dfs_id(actors: &[Actor], target: u64) -> Option<Entity> {
         if let Some(e) = walk(root.children(), &mut counter, target) { return Some(e); }
     }
     None
+}
+
+/// アクターのルートエンティティから DFS 順 ID を逆引きする（entity_by_dfs_id の逆）。
+///
+/// Physics.MoveActor が、動かす対象アクターの物理コライダーを物理スレッド側で
+/// 特定（形状取得・自己除外）できるよう、ECS Entity → DFS 順 ID を求める。
+/// 走査順は entity_by_dfs_id / collect_physics_objects と同一
+/// （world_line 一致のルートから先行順 DFS、ID は 1 始まり・全アクターがカウント対象）。
+fn dfs_id_by_entity(actors: &[Actor], target: Entity) -> Option<u64> {
+    fn walk(actors: &[Actor], counter: &mut u64, target: Entity) -> Option<u64> {
+        for a in actors {
+            *counter += 1;
+            if a.entity == target { return Some(*counter); }
+            if let Some(id) = walk(a.children(), counter, target) { return Some(id); }
+        }
+        None
+    }
+    let roots: Vec<&Actor> = actors.iter().filter(|a| a.world_line == PLAY_WORLD_LINE).collect();
+    let mut counter = 0u64;
+    for root in roots {
+        counter += 1;
+        if root.entity == target { return Some(counter); }
+        if let Some(id) = walk(root.children(), &mut counter, target) { return Some(id); }
+    }
+    None
+}
+
+/// YXZ オイラー角（度）を SEED のクォータニオン [x, y, z, w] へ変換する。
+///
+/// Transform.rotation はオイラー角（度）で保持されるが、物理スレッドの KCC シェイプ姿勢は
+/// クォータニオンを要するため、Physics.MoveActor の送信直前にここで変換する。
+fn euler_deg_to_quat_arr(euler_deg: [f32; 3]) -> [f32; 4] {
+    use crate::engine::structs::tensor::Vector3 as SeedVec3;
+    use crate::engine::structs::transforms::Quaternion as SeedQuat;
+    let euler_rad = SeedVec3::new(
+        euler_deg[0].to_radians(),
+        euler_deg[1].to_radians(),
+        euler_deg[2].to_radians(),
+    );
+    let q = SeedQuat::from_euler(euler_rad);
+    [q.x, q.y, q.z, q.w]
 }
 
 /// レイキャストを実行する。ヒット=1 / ミス・失敗=0。
@@ -983,6 +1029,93 @@ unsafe extern "system" fn ffi_raycast(
         Some(e) => { *out_entity = e.index(); *out_entity.add(1) = e.generation(); }
         None    => { *out_entity = u32::MAX;  *out_entity.add(1) = 0; }
     }
+    1
+}
+
+/// キャラクターコントローラー移動を実行する。成功=1 / 失敗（対象なし・応答なし等）=0。
+///
+/// idx/gen は動かす対象アクターのルートエンティティ。motion は 3 要素の希望移動量
+/// （ワールド空間・重力分はスクリプトが含める）。地形・静的コライダーとの衝突を
+/// KCC で解決し、補正済み移動量ぶんだけアクターを移動する。
+///
+/// 補正後の位置は集約関数 set_actor_world_transform 経由で ECS Transform に反映するため、
+/// 子アクタ（カメラ等）も追従する。
+///
+/// out_result（4 要素）へ [moved.x, moved.y, moved.z, grounded(0/1)] を書き込む。
+unsafe extern "system" fn ffi_move_character(
+    idx: u32, generation: u32,
+    motion: *const f32,
+    out_result: *mut f32,
+) -> i32 {
+    use crate::engine::physics::PhysicsCommand;
+
+    if motion.is_null() || out_result.is_null() { return 0; }
+    // World（現在位置の読み取り＋補正位置の反映に使う）
+    let wptr = WORLD_PTR.with(|p| p.get());
+    if wptr.is_null() { return 0; }
+    // 物理スレッドが未起動ならキャラ移動は行えない
+    let Some(tx) = PHYSICS_TX.with(|p| p.borrow().clone()) else { return 0 };
+
+    let world  = &mut *wptr;
+    let entity = Entity::from_raw(idx, generation);
+
+    // 現在のワールド Transform（位置・回転）を読む。無ければ対象外。
+    let Some(cur) = world.get::<Transform>(entity).cloned() else { return 0 };
+    let position = cur.position;
+    let rotation = euler_deg_to_quat_arr(cur.rotation);
+
+    // ECS Entity → DFS 順 ID（物理スレッドがコライダー形状取得・自己除外に使う）。
+    // Actor ツリー未公開（フェーズ外）や物理未登録アクターなら失敗扱い。
+    let actors_ptr = ACTORS_PTR.with(|p| p.get());
+    if actors_ptr.is_null() { return 0; }
+    let Some(entity_id) = dfs_id_by_entity(&*actors_ptr, entity) else { return 0 };
+
+    let motion_arr = [*motion, *motion.add(1), *motion.add(2)];
+
+    // 同期問い合わせ（Raycast と同じ reply チャンネル方式）
+    let (reply_tx, reply_rx) =
+        crossbeam_channel::bounded::<Option<crate::engine::physics::CharacterMoveResult>>(1);
+    let cmd = PhysicsCommand::MoveCharacter {
+        entity_id,
+        position,
+        rotation,
+        motion: motion_arr,
+        reply:  reply_tx,
+    };
+    if tx.send(cmd).is_err() { return 0; }
+
+    let res = match reply_rx.recv_timeout(
+        std::time::Duration::from_millis(MOVE_CHARACTER_TIMEOUT_MS),
+    ) {
+        Ok(Some(r)) => r,
+        _           => return 0,
+    };
+
+    // 補正後の新しいワールド位置を計算する（回転・スケールは維持）
+    let new_position = [
+        position[0] + res.translation[0],
+        position[1] + res.translation[1],
+        position[2] + res.translation[2],
+    ];
+    let mut next = cur;
+    next.position = new_position;
+
+    // 集約関数経由で反映（instance_mats・全子孫アクタへ伝播）。
+    // Actor ツリー未公開時のフォールバックは Transform 値のみ反映する。
+    match actor_of_entity(entity) {
+        Some(actor) => {
+            crate::engine::core::transform_sync::set_actor_world_transform(actor, world, next, 0);
+        }
+        None => {
+            if let Some(t) = world.get_mut::<Transform>(entity) { t.position = new_position; }
+        }
+    }
+
+    // 結果を書き込む: [moved.xyz, grounded(0/1)]
+    *out_result        = res.translation[0];
+    *out_result.add(1) = res.translation[1];
+    *out_result.add(2) = res.translation[2];
+    *out_result.add(3) = if res.grounded { 1.0 } else { 0.0 };
     1
 }
 
@@ -1213,6 +1346,9 @@ pub struct ScriptHostApi {
     screen_position:   unsafe extern "system" fn(u32, u32, *mut f32) -> i32,
     animator_component: unsafe extern "system" fn(i32, u32, u32, *const u8, i32, f32) -> i32,
     particle_component: unsafe extern "system" fn(i32, u32, u32, i32) -> i32,
+    // キャラクターコントローラー移動（Physics.MoveActor）。
+    // 新カテゴリ API のため構造体末尾に追加した（C# ScriptHost.cs も末尾に同順で追加）。
+    move_character:     unsafe extern "system" fn(u32, u32, *const f32, *mut f32) -> i32,
 }
 
 // 関数ポインタは Sync。プロセス全体で 1 つの静的表を共有する。
@@ -1235,6 +1371,7 @@ static HOST_API: ScriptHostApi = ScriptHostApi {
     screen_position:   ffi_screen_position,
     animator_component: ffi_animator_component,
     particle_component: ffi_particle_component,
+    move_character:     ffi_move_character,
 };
 
 /// C# へ渡す関数ポインタ表へのポインタを返す（RegisterHostApi 用）。

@@ -31,6 +31,8 @@ pub use types::{
     TriggerEvent, TriggerPhase,
     // クエリ
     RaycastHit,
+    // キャラクターコントローラー
+    CharacterMoveResult,
 };
 
 pub use thread::PhysicsThread;
