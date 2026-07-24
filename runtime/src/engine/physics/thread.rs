@@ -326,13 +326,17 @@ fn run_physics_loop(
     //   引数は既に unwrap 済みの PhysicsCommand（recv 結果の Ok/Err は呼び出し側で処理）。
     macro_rules! dispatch_command {
         ($cmd:expr) => {
+            // マクロは「コライダー集合が変化したか（＝クエリパイプラインの全更新が要るか）」を
+            // bool で返す。呼び出し側が true のとき query_dirty を立てる（マクロ・ハイジーンにより
+            // マクロ内から外側の query_dirty を直接触れないため、返り値で伝える）。
             match $cmd {
                 PhysicsCommand::Stop   => return,
-                PhysicsCommand::Pause  => { paused = true; }
+                PhysicsCommand::Pause  => { paused = true; false }
                 PhysicsCommand::Resume => {
                     paused = false;
                     // Resume 直後にタイムステップをリセットして即座に次ステップを実行する
                     next_step = Instant::now();
+                    false
                 }
                 PhysicsCommand::Raycast { origin, direction, max_distance, reply } => {
                     // 同期レイキャスト問い合わせ（スクリプトの Physics.Raycast）。
@@ -342,6 +346,7 @@ fn run_physics_loop(
                         origin, direction, max_distance,
                     );
                     let _ = reply.send(hit);
+                    false
                 }
                 PhysicsCommand::ResolveCharacter { entity_id, desired_position, rotation, reply } => {
                     // キャラクターコントローラーの差分解決（同期問い合わせ・フレーム 1 回）。
@@ -360,15 +365,12 @@ fn run_physics_loop(
                     // 補正前の前回位置（motion 算出・ログ用）を退避する。
                     let last_before = entries.get(&entity_id).map(|e| e.char_last_pos);
 
-                    // 【重要】KCC のクエリ直前にクエリパイプラインを明示的に全更新する。
-                    // 地形コライダーは親剛体を持たない「フリーコライダー」として登録されており、
-                    // step() 内のクエリパイプライン更新経路ではフリーコライダーが索引されず、
-                    // move_shape が地形を検出できない（＝素通り）ことがある。ユニットテストが
-                    // 通るのは明示的に query.update(&col_set) を呼んでいるためで、本番ループも
-                    // 同じ作法に揃える。地形は静的なので毎フレーム再構築はコストになるが、まずは
-                    // 正しさを優先する（将来はコライダー変化時のみ更新へ最適化する）。
-                    query_pipeline.update(&collider_set);
-
+                    // 【最適化】クエリパイプラインの全更新（フリーコライダー＝地形の索引）は
+                    // コライダー変化時（AddObject/RemoveObject）にだけ query_dirty 経由で行う。
+                    // ここで毎フレーム query_pipeline.update(322 トライメッシュ) を呼ぶと 1 回の
+                    // ResolveCharacter 処理が 16ms を超え、メイン側の reply 待ちが 100% タイムアウトして
+                    // 補正が ECS へ反映されなかった（実測）。地形は静的なので一度索引すれば十分で、
+                    // step() の増分更新はフリーコライダーを落とさないため索引は保持される。
                     let resolved = perform_character_step(
                         &character_controller, &query_pipeline,
                         &mut rigid_body_set, &mut collider_set, &mut entries,
@@ -439,6 +441,7 @@ fn run_physics_loop(
                     }
 
                     let _ = reply.send(resolved);
+                    false
                 }
                 PhysicsCommand::CheckKinematicOverlap { entity_id, position, rotation, reply } => {
                     // 同期オーバーラップ問い合わせ（編集時ドラッグの押し戻し判定）。
@@ -449,7 +452,10 @@ fn run_physics_loop(
                         entity_id, position, rotation,
                     );
                     let _ = reply.send(overlapping);
+                    false
                 }
+                // その他（AddObject/RemoveObject/UpdateKinematic 等）は handle_command が処理し、
+                // 「コライダー集合が変化したか」を bool で返す。マクロはその値をそのまま返す。
                 other => handle_command(
                     other,
                     &mut rigid_body_set, &mut collider_set,
@@ -462,15 +468,30 @@ fn run_physics_loop(
         };
     }
 
+    // コライダー集合が変化したフレームだけ true。true のときクエリパイプラインを全更新して
+    // 地形（親剛体を持たないフリーコライダー）を索引し直す。step() の増分更新はフリー
+    // コライダーを索引しないため、この明示更新が無いと move_shape が地形を検出できない。
+    // 毎フレーム更新は高コスト（322 トライメッシュの再構築で ResolveCharacter が 16ms 超）
+    // なので、変化時のみに限定して同期 reply のタイムアウトを防ぐ。
+    let mut query_dirty = true;
+
     loop {
         // ── ① 保留コマンドを全ドレイン（非ブロック）────────────────────────
         //   既にキューに届いている分は、待たずにその場で全て処理する。
         loop {
             match cmd_rx.try_recv() {
-                Ok(cmd) => dispatch_command!(cmd),
+                Ok(cmd) => { if dispatch_command!(cmd) { query_dirty = true; } }
                 Err(TryRecvError::Empty)        => break,
                 Err(TryRecvError::Disconnected) => return,
             }
+        }
+
+        // コライダー集合が変化した（AddObject/RemoveObject）フレームだけ、クエリパイプラインを
+        // 全更新して地形（フリーコライダー）を索引し直す。それ以外のフレームでは更新しない
+        // （毎フレームの再構築で ResolveCharacter が重くなり同期 reply がタイムアウトするのを防ぐ）。
+        if query_dirty {
+            query_pipeline.update(&collider_set);
+            query_dirty = false;
         }
 
         // ── ② Pause 中はコマンド到着まで（or 短時間）ブロックして待つ ──────────
@@ -482,7 +503,7 @@ fn run_physics_loop(
         //   タイムアウトで再ループしてドレインへ戻るだけ（挙動は不変・応答だけ即応化）。
         if paused {
             match cmd_rx.recv_timeout(PAUSE_IDLE_TIMEOUT) {
-                Ok(cmd) => { dispatch_command!(cmd); }
+                Ok(cmd) => { if dispatch_command!(cmd) { query_dirty = true; } }
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => return,
             }
@@ -503,7 +524,7 @@ fn run_physics_loop(
             let remaining = next_step - now;
             match cmd_rx.recv_timeout(remaining) {
                 // コマンドが届いた: 即処理し、再ループして①のドレイン＋タイミング再判定へ。
-                Ok(cmd) => { dispatch_command!(cmd); continue; }
+                Ok(cmd) => { if dispatch_command!(cmd) { query_dirty = true; } continue; }
                 // 残り時間が経過: ステップ実行タイミングに到達。下のステップへ進む。
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => return,
@@ -887,7 +908,15 @@ fn handle_command(
     active_triggers:   &mut HashSet<(u64, u64)>,
     gravity:           &mut nalgebra::Vector3<Real>,
     drag_targets:      &mut HashMap<u64, Isometry<Real>>,
-) {
+) -> bool {
+    // コライダー集合が変化するコマンド（AddObject/RemoveObject）かどうか。
+    // 呼び出し側はこれが true のときだけクエリパイプラインを全更新して地形（フリー
+    // コライダー）を索引し直す。UpdateKinematic 等の毎フレームコマンドでは false のため、
+    // 高コストな全更新が毎フレーム走らない。matches! は非束縛パターンで cmd を消費しない。
+    let colliders_changed = matches!(
+        cmd,
+        PhysicsCommand::AddObject(_) | PhysicsCommand::RemoveObject { .. }
+    );
     match cmd {
         PhysicsCommand::Stop   => { /* 呼び出し元で処理済み */ }
         PhysicsCommand::Pause  => { /* ループ側で処理済み */ }
@@ -900,9 +929,10 @@ fn handle_command(
             // キャラクターの瞬間移動（衝突無視）。前回解決済み位置を強制的に position へ上書きし、
             // 次の StepCharacter で差分ゼロ（= 押し戻されない）にする。コライダー位置も即反映する。
             if let Some(entry) = entries.get_mut(&entity_id) {
-                if !entry.is_character { return; }
-                entry.char_last_pos = position;
-                sync_character_collider_pose(rb_set, col_set, entry, position, rotation);
+                if entry.is_character {
+                    entry.char_last_pos = position;
+                    sync_character_collider_pose(rb_set, col_set, entry, position, rotation);
+                }
             }
         }
 
@@ -934,7 +964,7 @@ fn handle_command(
             // 実際の前進（速度クランプ付き）はステップ直前の advance_smooth_drag_targets が行う。
             if let Some(target) = drag_targets.get_mut(&entity_id) {
                 *target = to_isometry(position, rotation);
-                return;
+                return false;
             }
             if let Some(entry) = entries.get(&entity_id) {
                 if let Some(rb_h) = entry.rb_handle {
@@ -1156,6 +1186,8 @@ fn handle_command(
             }
         }
     }
+    // コライダー集合が変化したか（呼び出し側でクエリパイプラインの全更新要否に使う）。
+    colliders_changed
 }
 
 // ─── オブジェクト追加 ────────────────────────────────────────────────────────
