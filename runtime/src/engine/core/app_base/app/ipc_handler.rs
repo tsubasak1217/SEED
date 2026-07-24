@@ -971,12 +971,19 @@ impl App {
                             self.selected_instances.clear();
                             self.actor_virtual_selected_idx = None;
                             self.actor_virtual_selected_slot_idx = 0;
-                            // ── プレハブ参照リンクの再展開（ロード時適用） ──────────────
-                            // シーンに保存された prefab_source 付きアクタを、参照先
-                            // .actor/.actor2d ファイルの最新内容で再展開する
-                            // （ルート Transform/name/active/world_line は維持）。
-                            // undo_history リセットの前に実行する（ロードの一部でありUndo対象外）。
-                            self.apply_prefab_links_on_load();
+                            // ── プレハブ参照リンクのロード時再展開は「行わない」 ────────
+                            // 【データ損失バグの修正】
+                            // 以前はここで apply_prefab_links_on_load() を呼び、prefab_source を
+                            // 持つアクタの子ツリー・コンポーネントを .actor ファイルの内容で丸ごと
+                            // 差し替えていた。そのため、シーン上でインスタンスに加えた変更
+                            // （Collider の値変更・ScriptComponent の追加・子への Camera 追加など）が
+                            // .scene には正しく保存されているにもかかわらず、シーンを開き直すたびに
+                            // 破棄されていた。
+                            //
+                            // 方針: 「シーンに丸ごと保存されている内容を正とする」。
+                            // ロード時に自動で上書きすることはせず、プレハブ本体の内容を反映したい
+                            // ときだけ、ユーザーが明示的に「プレハブから更新」
+                            // （IPC: PREFAB_REAPPLY → handle_reapply_prefab）を実行する。
                             // 地形チャンク（TerrainChunkComponent 付き）を .tvox から復元し、
                             // terrain:// ガードで model=None のまま読まれた ModelComponent を埋める。
                             self.rebuild_terrain_after_load();
@@ -1766,6 +1773,11 @@ impl App {
                 }
                 IpcCommand::UnlinkPrefab { actor_dfs } => {
                     self.handle_unlink_prefab(actor_dfs);
+                }
+                IpcCommand::ReapplyPrefab { actor_dfs } => {
+                    // 明示操作による「プレハブから更新」。シーン側の変更を破棄して
+                    // .actor の内容で再展開する（確認ダイアログはエディタ側で表示済み）。
+                    self.handle_reapply_prefab(actor_dfs);
                 }
 
                 // ── 物理シミュレーション設定 ─────────────────────────────────
