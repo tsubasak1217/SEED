@@ -351,44 +351,43 @@ impl App {
                 }
             }
 
-            // ①-2 キャラクターコントローラーの補正後位置＋接地を反映する（非同期パイプライン）。
+            // ①-2 キャラクターコントローラーの補正後位置を「退避＋反映」する（二重反映の前半）。
             //
-            // 【なぜここ（フレーム先頭）で反映するか／なぜ非同期か】
+            // 【二重反映の設計（全速かつ貫通なしを両立させる）】
             //   sync_character_controllers（前フレーム末・スクリプト実行後）が希望位置を
             //   StepCharacter で物理スレッドへ投げ、物理スレッドが KCC で衝突解決した補正後位置を
-            //   PhysicsResult.character_updates に載せて返す。メインはそれを待たず、次フレームの
-            //   この結果受信で拾って ECS へ書き戻す。
-            //   以前は reply を同期ブロックで待っていたが、grass 描画等の高負荷下で reply 配送に
-            //   OS スケジューリング遅延（実測 15〜200ms）が乗り、その待ちがそのまま毎フレームの
-            //   FPS 低下になっていた。move_shape 自体は 0.03ms と速く負荷ゼロなので、同期待ちを
-            //   やめて 1 フレームのラグを許容する方が総合的に軽い。反映は描画前（スクリプトも
-            //   この補正後位置を読んで += move する）ため、KCC のクランプが毎フレーム効き、
-            //   高速移動時に壁へ 1 フレーム分わずかに食い込んでもすり抜けは起きない。
+            //   PhysicsResult.character_updates に載せて返す。ここ（フレーム先頭・スクリプト実行前）で
+            //   その結果を:
+            //     (a) self.pending_character_corrections へ退避（sync③ の再反映用）
+            //     (b) さらに ECS へも反映する
+            //   (b) が重要な理由: スクリプトは直後に `transform.Position += move` を最新の ECS 位置を
+            //   基準に行う。ここで最新のクランプ済み補正後位置を ECS に入れておかないと、スクリプトが
+            //   1 フレーム古い位置を基準に move し、平地で実効移動速度が半分になる（＝motion の基準が
+            //   物理側 char_last_pos と 1 フレームずれるため）。ここで反映して基準を最新化すると
+            //   motion=move となり全速に戻る。
+            //   一方、ここで反映するとスクリプトが直後に貫通位置で上書きしてしまうが、それは
+            //   sync_character_controllers ③ が同じ pending を**再反映**して描画直前に上書きするため
+            //   描画には貫通位置が出ない（貫通防止は sync③ が担う）。
+            //   ＝「update_physics=スクリプトが読む基準を最新化」「sync③=描画を貫通させない」の
+            //     二重反映で、全速かつすり抜けなしを両立する。
+            //   ※ grounded の公開は描画直前の sync③ 側に一本化する（ここでは公開しない＝二重公開回避）。
+            //   ※ 新しい結果が無いフレーム（character_updates が空）は退避を上書きせず前回値を保持する。
             if !result.character_updates.is_empty() {
-                // DFS ID → ECS Entity（接地公開に使う）。可変借用の前に immutable 借用で作る。
-                let dfs_to_entity = self.scene.as_ref()
-                    .map(|s| build_dfs_entity_map_3d(s, self.active_world_line))
-                    .unwrap_or_default();
-                // ドラッグ中アクターは gizmo が位置を制御するため補正反映しない。
-                let drag = self.dragging_physics_entity_id;
-                let mut grounded_states: Vec<(crate::engine::ecs::Entity, bool)> = Vec::new();
+                self.pending_character_corrections = result.character_updates.clone();
 
-                for (entity_id, corrected, grounded) in &result.character_updates {
-                    // 接地はモードに関わらずスクリプトへ公開する（Physics.IsGrounded 用）。
-                    if let Some(&ent) = dfs_to_entity.get(entity_id) {
-                        grounded_states.push((ent, *grounded));
-                    }
-                    // ドラッグ中・編集時コライダーのみモード（should_apply_transforms=false）では
-                    // ECS の Transform を書き換えない。
-                    if Some(*entity_id) == drag { continue; }
-                    if !should_apply_transforms { continue; }
+                // (b) 最新のクランプ済み補正後位置を ECS へ反映してスクリプトの move 基準を最新化する。
+                //     編集時コライダーのみモードでは Transform を書き換えない（should_apply_transforms）。
+                //     ドラッグ中アクターは gizmo が位置を制御するため反映しない。
+                if should_apply_transforms {
+                    let drag = self.dragging_physics_entity_id;
+                    // result は self とは別のローカル Option の借用なので、self.scene の可変借用と共存できる。
                     if let Some(scene) = &mut self.scene {
-                        apply_character_transform(scene, self.active_world_line, *entity_id, *corrected);
+                        for (entity_id, corrected, _grounded) in &result.character_updates {
+                            if Some(*entity_id) == drag { continue; }
+                            apply_character_transform(scene, self.active_world_line, *entity_id, *corrected);
+                        }
                     }
                 }
-
-                // 接地状態をスクリプトへ公開する（新しい物理結果が無いフレームでは前回値が維持される）。
-                crate::engine::core::scripting::host_api::publish_grounded_states(grounded_states);
             }
 
             // ②-0 Play モード時: 衝突・トリガーイベントをスクリプトのコールバックへ配信する
@@ -477,30 +476,37 @@ impl App {
         }
     }
 
-    // ─── キャラクターコントローラー希望位置の送信（スクリプト実行後・非ブロック）──────
+    // ─── キャラクターコントローラー（希望位置の送信＋前フレーム補正の反映・描画直前）──────
 
-    /// キャラクターコントローラーの「希望位置」を物理スレッドへ **投げっぱなし（非ブロック）** で送る。
+    /// キャラクターコントローラーについて **①今フレームの希望位置を送信し ②前フレームの補正結果を反映** する。
     ///
-    /// **必ずスクリプトフェーズ実行後**に呼ぶこと（frame_renderer のスクリプトフェーズ直後）。
-    /// スクリプトが Transform に直書きした希望位置（地形を貫通しうる値）をそのまま拾い、
-    /// 物理スレッドへ reply を持たない `StepCharacter` を送るだけで **待たない**。
+    /// **必ずスクリプトフェーズ実行後・描画前**に呼ぶこと（frame_renderer のスクリプトフェーズ直後）。
+    /// 次の順序で行う:
+    ///   ① スクリプトが Transform に直書きした希望位置（＝現在の ECS 位置。地形を貫通しうる値）を
+    ///      キャラごとに収集する。
+    ///   ② その希望位置を reply を持たない `StepCharacter` で物理スレッドへ **投げっぱなし（非ブロック）**
+    ///      で送る。物理スレッドは自ループ内で前回解決済み位置との差分を KCC で衝突解決し、補正後位置＋
+    ///      接地を `PhysicsResult.character_updates` に載せて返す（次フレームの update_physics で受信）。
+    ///   ③ **その後**、前フレームに送った希望位置の解決結果（update_physics が退避した
+    ///      `self.pending_character_corrections`）を ECS へ反映し、接地を公開する。
     ///
-    /// 【なぜ非同期（投げっぱなし）か】
-    ///   物理スレッドはこの希望位置を自分のループ内で前回解決済み位置との差分として KCC で
-    ///   衝突解決し、補正後位置＋接地を `PhysicsResult.character_updates` に載せて返す。メインは
-    ///   次フレームの `update_physics` の結果受信でそれを ECS へ反映する。
-    ///   以前は reply 付きの同期解決で補正後位置をその場受け取りしていたが、grass 描画等の
-    ///   高負荷下で reply 配送に OS スケジューリング遅延（実測 15〜200ms）が乗り、その同期
-    ///   ブロックがそのまま毎フレームの FPS 低下になっていた。move_shape 自体は 0.03ms と速く
-    ///   負荷ゼロなので、待ちをやめて反映を 1 フレーム遅らせる方が総合的に軽い。
-    ///   1 フレームのラグで高速移動時に壁へわずかに食い込むが、KCC のクランプは効くため
+    /// 【なぜ「送信の後」に前フレーム分の補正を反映するのか】
+    ///   ①は「スクリプトが今フレーム書いた希望位置」を拾う必要があるため、③（補正でその希望位置を
+    ///   上書きする）より前に行わなければならない。③を描画直前のこの位置で行うことで、スクリプトの
+    ///   貫通直書きをクランプ済みの補正後位置で上書きでき、描画に貫通位置が出ない。
+    ///
+    /// 【なぜ非同期（reply を待たない）か】
+    ///   以前は reply 付きの同期解決で補正後位置をその場受け取りしていたが、grass 描画等の高負荷下で
+    ///   reply 配送に OS スケジューリング遅延（実測 15〜200ms）が乗り、その同期ブロックがそのまま
+    ///   毎フレームの FPS 低下になっていた。move_shape 自体は 0.03ms と速く負荷ゼロなので、待ちを
+    ///   やめて反映を 1 フレーム遅らせる方が総合的に軽い。補正は 1 フレーム古いが、物理は
+    ///   char_last_pos を基準に毎フレーム move 差分を解決するのでキャラは動き、クランプが効くため
     ///   すり抜け（トンネリング）は起きない。
-    ///
-    /// 補正後位置の ECS 反映・接地公開は `update_physics`（結果受信側）が行う（ここではしない）。
     pub(super) fn sync_character_controllers(&mut self) {
-        let Some(thread) = &self.physics_thread else { return };
+        if self.physics_thread.is_none() { return; }
 
-        // スクリプトが書いた希望位置（＋回転）をキャラごとに収集する。
+        // ── ① スクリプトが書いた希望位置（＝現在の ECS 位置）をキャラごとに収集する ──
+        // 補正の反映（③）より前に収集することで、スクリプトが今フレーム書いた希望位置を拾う。
         let Some(scene) = &self.scene else { return };
         let desired = collect_character_step_updates(scene, self.active_world_line);
 
@@ -509,18 +515,60 @@ impl App {
             && CHAR_LOG_FRAMES.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
                 < CHAR_LOG_MAX_FRAMES;
         if diag {
-            eprintln!("[CharCtl] sync_character_controllers: sent {} character(s) (async)", desired.len());
+            eprintln!(
+                "[CharCtl] sync: sent {} desired / apply {} pending (async)",
+                desired.len(), self.pending_character_corrections.len(),
+            );
         }
 
-        // 各キャラの希望位置を物理スレッドへ投げるだけ（reply 待ちなし）。
-        // 物理スレッドが衝突解決した補正後位置は次フレームの update_physics で受信・反映する。
-        for (entity_id, desired_position, rotation) in desired {
-            thread.send(PhysicsCommand::StepCharacter {
-                entity_id,
-                desired_position,
-                rotation,
-            });
+        // ── ② 各キャラの希望位置を物理スレッドへ投げる（reply 待ちなし）──
+        // 物理スレッドが衝突解決した補正後位置は次フレームの update_physics で受信・退避される。
+        if let Some(thread) = &self.physics_thread {
+            for (entity_id, desired_position, rotation) in desired {
+                thread.send(PhysicsCommand::StepCharacter {
+                    entity_id,
+                    desired_position,
+                    rotation,
+                });
+            }
         }
+
+        // ── ③ 前フレームに送った希望位置の解決結果（退避済み）を ECS へ反映する ──
+        // 描画直前のこの反映で、スクリプトの貫通直書きをクランプ済みの補正後位置で上書きする。
+        if self.pending_character_corrections.is_empty() { return; }
+
+        // 編集時コライダーのみモードでは Transform を書き換えない（Play / edit+rigidbody 時のみ反映）。
+        let should_apply_transforms = self.mode != RuntimeMode::Edit
+            || self.edit_physics_with_rigidbody;
+
+        // DFS ID → ECS Entity（接地公開に使う）。可変借用の前に immutable 借用で作る。
+        let dfs_to_entity = self.scene.as_ref()
+            .map(|s| build_dfs_entity_map_3d(s, self.active_world_line))
+            .unwrap_or_default();
+        // ドラッグ中アクターは gizmo が位置を制御するため補正反映しない。
+        let drag = self.dragging_physics_entity_id;
+
+        // pending を退避して self の可変借用（scene）と共存させる。
+        let pending = std::mem::take(&mut self.pending_character_corrections);
+        let mut grounded_states: Vec<(crate::engine::ecs::Entity, bool)> = Vec::new();
+        for (entity_id, corrected, grounded) in &pending {
+            // 接地はモードに関わらずスクリプトへ公開する（Physics.IsGrounded 用）。
+            if let Some(&ent) = dfs_to_entity.get(entity_id) {
+                grounded_states.push((ent, *grounded));
+            }
+            // ドラッグ中・編集時コライダーのみモードでは ECS の Transform を書き換えない。
+            if Some(*entity_id) == drag { continue; }
+            if !should_apply_transforms { continue; }
+            if let Some(scene) = &mut self.scene {
+                apply_character_transform(scene, self.active_world_line, *entity_id, *corrected);
+            }
+        }
+        // 次フレームも同じ補正を反映し続けられるよう、退避した pending を書き戻す
+        // （update_physics が新しい結果を受信するまで前回値を保持する）。
+        self.pending_character_corrections = pending;
+
+        // 接地状態をスクリプトへ公開する（描画直前の最新接地）。
+        crate::engine::core::scripting::host_api::publish_grounded_states(grounded_states);
     }
 
     // ─── ドラッグ中押し戻し（同期オーバーラップ判定）──────────────────────────

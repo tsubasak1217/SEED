@@ -532,10 +532,10 @@ impl App {
             if let Some(scene) = &mut self.scene { scene.run_phase(Phase::LateUpdate, &ctx); }
             if dbg { eprintln!("[SEED FRAME {dbg_frame}] scene.render"); }
             if let Some(scene) = &mut self.scene { scene.run_phase(Phase::Render, &ctx); }
-            // キャラクターコントローラーの希望位置（スクリプトが Transform に書いた値）を
-            // 物理スレッドへ送る。**必ずスクリプトフェーズ実行後**に呼ぶことで、この
-            // フレームでスクリプトが書いた希望位置を拾える（次フレームの update_physics で
-            // 補正後位置を受信して反映する非同期パイプライン）。
+            // キャラクターコントローラーの ①希望位置送信（スクリプトが Transform に書いた値を
+            // 物理へ非同期送信）＋ ②前フレーム分の補正結果を ECS へ反映（描画直前）を行う。
+            // **必ずスクリプトフェーズ実行後・描画前**に呼ぶことで、この フレームでスクリプトが
+            // 書いた希望位置を拾い、かつスクリプトの貫通直書きをクランプ済みの補正後位置で上書きする。
             self.sync_character_controllers();
             // 入力・物理チャンネルの公開を解除する（フェーズ外でのアクセスを防ぐ）
             publish_input(None);
