@@ -13,7 +13,7 @@
 // ============================================================
 
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicBool, Ordering};
 use crate::engine::components::{
     Transform as ActorTransform, CanvasTransform, ModelComponent, ComponentKind,
 };
@@ -54,6 +54,16 @@ static LAST_MAX_LIN_SPEED_3D: AtomicU32 = AtomicU32::new(0);
 static LAST_MAX_ANG_SPEED_3D: AtomicU32 = AtomicU32::new(0);
 static LAST_MAX_LIN_SPEED_2D: AtomicU32 = AtomicU32::new(0);
 static LAST_MAX_ANG_SPEED_2D: AtomicU32 = AtomicU32::new(0);
+
+// ─── 直近フレームで物理結果を受信できたか（収束停止のフレームレート非依存化用）─────
+// 【案A】update_physics / update_physics_2d が recv_latest 実行直後に、
+// 「このフレームで新しい物理結果を受信できたか（Some=true / None=false）」を退避する。
+// try_record_physics_snapshot（stop 判定）が edit_physics_results_fresh 経由で参照し、
+// 新しい結果を受信していないフレームでは収束カウントを進めないようにする。
+// 速度スナップショット（LAST_MAX_*）と同じく、update → stop 判定間の受け渡しを
+// App フィールドの借用競合なしで行うためのモジュール静的（App は単一インスタンス）。
+static LAST_RESULT_RECEIVED_3D: AtomicBool = AtomicBool::new(false);
+static LAST_RESULT_RECEIVED_2D: AtomicBool = AtomicBool::new(false);
 
 // ─── PhysicsSnapshot ─────────────────────────────────────────────────────────
 
@@ -201,6 +211,70 @@ impl App {
         LAST_MAX_ANG_SPEED_3D.store(inf, Ordering::Relaxed);
         LAST_MAX_LIN_SPEED_2D.store(inf, Ordering::Relaxed);
         LAST_MAX_ANG_SPEED_2D.store(inf, Ordering::Relaxed);
+    }
+
+    // ─── 収束停止のフレームレート非依存化（案A）───────────────────────────────
+
+    /// 3D 物理スレッドからこのフレーム新しい結果を受信できたかを退避する。
+    /// update_physics が recv_latest 実行直後に毎フレーム呼ぶ（Some=true / None=false）。
+    pub(super) fn store_edit_physics_result_received_3d(&self, received: bool) {
+        LAST_RESULT_RECEIVED_3D.store(received, Ordering::Relaxed);
+    }
+
+    /// 2D 物理スレッドからこのフレーム新しい結果を受信できたかを退避する。
+    /// update_physics_2d が recv_latest 実行直後に毎フレーム呼ぶ（Some=true / None=false）。
+    pub(super) fn store_edit_physics_result_received_2d(&self, received: bool) {
+        LAST_RESULT_RECEIVED_2D.store(received, Ordering::Relaxed);
+    }
+
+    /// 有効な全物理側が「直近の物理同期で新しい結果を受信済み」かを返す。
+    ///
+    /// 【案A: 解放直後の物理結果待ち窓を静止と誤カウントしないための根治】
+    /// 収束停止（自動 Pause）は本来メインフレーム数ではなく「物理結果が実際に
+    /// 届いたフレーム」を基準に数える必要がある。編集ビューポートはフレーム無制限
+    /// （present は Mailbox・ControlFlow::Poll）のため、高 FPS 時には 1 物理周期
+    /// （≒16.7ms）の間に複数のメインフレームが走り、そのすべてが前回結果の残留値で
+    /// 「変化なし」に見えてしまう。とくにドラッグ解放直後は、物理スレッドが Dynamic
+    /// 復帰コマンドを処理して落下速度を報告するまでラグがあり、この窓のメインフレームを
+    /// 静止とカウントすると落下前に収束停止して「物理が始まらない」不具合になる。
+    /// 新しい結果を受信していないフレームはカウントを進めないことで、判定を
+    /// フレームレート非依存にし、この誤停止を根絶する。
+    ///
+    /// 物理スレッドは（Pause 中を除き）毎ステップ無条件に結果を送る（thread.rs の
+    /// メインループ）ため、実際に静止していても結果は約 60Hz で届き続け、収束停止は
+    /// 正しく機能する（約 NO_CHANGE_STOP_THRESHOLD 物理ステップぶんの静止で停止）。
+    /// したがって「結果が来なくなって永久に停止しない」懸念は実質的に生じず、
+    /// 追加のタイムアウト保険は不要（案B のウォームアップが解放直後の窓を別途保護する）。
+    ///
+    /// 注意: update_physics_2d はフレーム内で try_record_physics_snapshot より後に
+    /// 走るため、2D の受信フラグは 1 フレーム古い値を参照する。これは速度ゲート
+    /// edit_physics_bodies_at_rest が参照する LAST_MAX_*_2D と同じ既存の非対称性で、
+    /// カウントの進行が最悪 1 フレームぶんずれるだけで実害はない。
+    fn edit_physics_results_fresh(&self) -> bool {
+        let fresh_3d = !self.edit_physics_enabled
+            || LAST_RESULT_RECEIVED_3D.load(Ordering::Relaxed);
+        let fresh_2d = !self.edit_physics_2d_enabled
+            || LAST_RESULT_RECEIVED_2D.load(Ordering::Relaxed);
+        fresh_3d && fresh_2d
+    }
+
+    /// ドラッグ解放直後の収束停止（自動 Pause）を抑止する保護を有効にする【案B】。
+    ///
+    /// ライブシミュレーション中に kinematic 化していたボディを解放して Dynamic へ
+    /// 復帰させた直後は、物理スレッドがそのコマンドを処理して落下速度を報告するまで
+    /// 最大 1 物理周期（≒16.7ms）のラグがある。この「物理結果待ちの窓」の間、
+    /// 解放したボディはまだ動かず（kinematic 中に集計除外され速度 0 が残留）、
+    /// 他に動く Dynamic ボディも無ければ try_record_physics_snapshot が
+    /// 「変化なし＆静止」と誤判定して収束停止し、落下が永久に始まらなくなる。
+    ///
+    /// 案A（edit_physics_results_fresh）で根治しているが、二重の保険として、
+    /// 過去フレームからの再開経路（resume_edit_physics_from_current_ecs）と同じく
+    /// ウォームアップ期間の付与＋速度スナップショットの「移動中」初期化を行い、
+    /// 解放直後は明示的に「移動中」とみなして収束停止判定をスキップさせる。
+    pub(super) fn protect_edit_physics_after_drag_release(&mut self) {
+        self.mark_edit_physics_moving();
+        self.edit_physics_warmup_frames   = PHYSICS_WARMUP_FRAMES;
+        self.edit_physics_no_change_count = 0;
     }
 
     /// RigidBody タイムラインモードで最新フレーム停止中にドラッグが開始されたとき、
@@ -353,37 +427,44 @@ impl App {
         };
 
         if !has_change {
-            // 【ドラッグ中ライブシミュレーション】ドラッグ操作中は収束停止（自動 Pause）を
-            // 抑止する。ドラッグ中に手を止めると Transform 変化がなくなり閾値に達して
-            // 物理が Pause され、その後のドラッグで押しのけ・押し戻しが効かなくなるため。
-            // ドラッグ終了後に静止していれば通常どおり収束停止する。
-            if self.edit_physics_drag_active()
+            // 収束停止カウンタの遷移を純粋関数で決める。判定に使う 3 条件は:
+            //   ・drag_active   : ドラッグ操作中か（ドラッグ中は収束停止を抑止する）
+            //   ・results_fresh : 有効な物理側がこのフレーム新しい結果を受信したか【案A】
+            //   ・at_rest       : 全 Dynamic ボディが速度閾値未満（実際に静止した）か
+            // 各条件の意味と根拠は convergence_action / edit_physics_results_fresh /
+            // edit_physics_bodies_at_rest のコメントを参照。
+            let drag_active = self.edit_physics_drag_active()
                 || self.dragging_physics_entity_id.is_some()
-                || self.dragging_physics_2d_entity_id.is_some()
-            {
-                self.edit_physics_no_change_count = 0;
-                return;
+                || self.dragging_physics_2d_entity_id.is_some();
+            match convergence_action(
+                drag_active,
+                self.edit_physics_results_fresh(),
+                self.edit_physics_bodies_at_rest(),
+            ) {
+                // ドラッグ中 or 静止していない: カウンタをリセットして待機（従来動作）。
+                ConvergenceAction::Reset => {
+                    self.edit_physics_no_change_count = 0;
+                    return;
+                }
+                // 【案A】物理結果待ちの窓: カウントもリセットもせずに次フレームを待つ。
+                ConvergenceAction::Skip => {
+                    return;
+                }
+                // 変化なし & 結果受信済み & 全ボディ静止: 連続カウントを増やす。
+                ConvergenceAction::Advance => {
+                    self.edit_physics_no_change_count += 1;
+                    if self.edit_physics_no_change_count < NO_CHANGE_STOP_THRESHOLD {
+                        return; // まだ猶予中: 停止しない
+                    }
+                    self.edit_physics_paused          = true;
+                    self.edit_physics_at_latest       = true;
+                    self.edit_physics_no_change_count = 0;
+                    // 速度を保持したまま物理スレッドを停止する
+                    self.send_pause_to_physics_threads();
+                    self.send_physics_timeline_state();
+                    return;
+                }
             }
-            // 【速度ゲート】位置・回転の 1 フレーム差分が微小でも、Dynamic ボディが
-            // まだ速度を持っている（空中で緩慢に落下・回転している等）間は収束停止しない。
-            // 物理スレッドが報告した全 Dynamic ボディの最大速度が静止閾値未満になって
-            // はじめて「実際に静止した」とみなし、収束カウントを進める。
-            if !self.edit_physics_bodies_at_rest() {
-                self.edit_physics_no_change_count = 0;
-                return;
-            }
-            // 変化なし & 全ボディ静止: 連続カウントを増やす。閾値を超えたら収束とみなして停止する。
-            self.edit_physics_no_change_count += 1;
-            if self.edit_physics_no_change_count < NO_CHANGE_STOP_THRESHOLD {
-                return; // まだ猶予中: 停止しない
-            }
-            self.edit_physics_paused          = true;
-            self.edit_physics_at_latest       = true;
-            self.edit_physics_no_change_count = 0;
-            // 速度を保持したまま物理スレッドを停止する
-            self.send_pause_to_physics_threads();
-            self.send_physics_timeline_state();
-            return;
         }
         // 変化があればカウンターをリセットする
         self.edit_physics_no_change_count = 0;
@@ -775,6 +856,40 @@ impl App {
     }
 }
 
+// ─── 収束停止カウンタの遷移決定（純粋関数）──────────────────────────────────
+
+/// 「変化なし」フレームで収束停止カウンタをどう扱うかの決定。
+#[derive(Debug, PartialEq, Eq)]
+enum ConvergenceAction {
+    /// カウンタを 0 に戻して待機する（ドラッグ中／まだ静止していない）。
+    Reset,
+    /// カウンタを進めずリセットもせず待機する（物理結果待ちの窓・案A）。
+    Skip,
+    /// カウンタを 1 進める（変化なし＆結果受信済み＆静止）。
+    Advance,
+}
+
+/// 「変化なし」フレームにおける収束停止カウンタの遷移を決める純粋関数。
+///
+/// 優先順位（上から評価）:
+/// 1. `drag_active`  → Reset: ドラッグ操作中は収束停止を抑止する。ドラッグ中に手を
+///    止めると Transform 変化が消えるが、ここで停止すると以後の押しのけ・押し戻しが
+///    効かなくなるため、カウンタを 0 に戻して停止させない。
+/// 2. `!results_fresh` → Skip【案A】: 有効な物理側がこのフレーム新しい結果を受信して
+///    いない。ドラッグ解放直後の「物理結果待ちの窓」ではこの状態が続くため、静止と
+///    誤カウントしないようカウンタを進めずに（かつリセットもせずに）次フレームを待つ。
+///    リセットしないのは、結果が届いたフレームだけで連続カウントを積み上げるため。
+/// 3. `!at_rest`     → Reset: 位置差分が微小でも Dynamic ボディがまだ速度を持つ間
+///    （空中で緩慢に落下・回転中など）は収束させない。
+/// 4. それ以外       → Advance: 変化なし・結果受信済み・全ボディ静止。収束候補として
+///    カウンタを 1 進める（呼び出し側で閾値到達を判定して Pause する）。
+fn convergence_action(drag_active: bool, results_fresh: bool, at_rest: bool) -> ConvergenceAction {
+    if drag_active      { return ConvergenceAction::Reset; }
+    if !results_fresh   { return ConvergenceAction::Skip; }
+    if !at_rest         { return ConvergenceAction::Reset; }
+    ConvergenceAction::Advance
+}
+
 // ─── ユーティリティ ──────────────────────────────────────────────────────────
 
 /// 2 つのスナップショットに変化があるかどうかを返す。
@@ -820,4 +935,59 @@ fn vec3_differs(a: [f32; 3], b: [f32; 3]) -> bool {
 fn vec2_differs(a: [f32; 2], b: [f32; 2]) -> bool {
     (a[0]-b[0]).abs() > CHANGE_EPSILON
     || (a[1]-b[1]).abs() > CHANGE_EPSILON
+}
+
+// ─── テスト ──────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::{convergence_action, ConvergenceAction};
+
+    /// ドラッグ操作中は常に Reset（他条件によらず収束停止を抑止する）。
+    #[test]
+    fn drag_active_always_resets() {
+        for &fresh in &[false, true] {
+            for &at_rest in &[false, true] {
+                assert_eq!(
+                    convergence_action(true, fresh, at_rest),
+                    ConvergenceAction::Reset,
+                    "drag_active=true は fresh={fresh} at_rest={at_rest} でも Reset",
+                );
+            }
+        }
+    }
+
+    /// 【案A の核心】物理結果が未受信のフレームは、静止に見えても Skip する。
+    /// これがドラッグ解放直後の「結果待ちの窓」を静止と誤カウントしない根治点。
+    #[test]
+    fn not_fresh_skips_even_when_at_rest() {
+        // 静止しているように見える（at_rest=true）が結果は未受信 → Skip
+        assert_eq!(
+            convergence_action(false, false, true),
+            ConvergenceAction::Skip,
+        );
+        // 静止していない場合も結果未受信なら Skip（fresh 判定が at_rest より優先）
+        assert_eq!(
+            convergence_action(false, false, false),
+            ConvergenceAction::Skip,
+        );
+    }
+
+    /// 結果受信済みでもまだ速度がある（at_rest=false）ならカウンタをリセットする。
+    #[test]
+    fn fresh_but_moving_resets() {
+        assert_eq!(
+            convergence_action(false, true, false),
+            ConvergenceAction::Reset,
+        );
+    }
+
+    /// 変化なし・結果受信済み・全ボディ静止のときだけカウンタを進める。
+    #[test]
+    fn fresh_and_at_rest_advances() {
+        assert_eq!(
+            convergence_action(false, true, true),
+            ConvergenceAction::Advance,
+        );
+    }
 }

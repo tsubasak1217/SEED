@@ -785,6 +785,21 @@ impl App {
                         smooth:         false,
                     });
                 }
+
+                // 【案B: ドラッグ解放直後の収束停止抑止（2D）】
+                // 3D 版 physics_ops.rs と同一の保険。ライブシミュレーション中
+                // （paused=false）のドラッグ解放直後は、上の Dynamic 復帰を 2D 物理
+                // スレッドが処理して落下速度を報告するまでラグがあり、その窓を静止と
+                // 誤判定して収束停止すると落下が始まらない。フォールバック経路と同じ
+                // ウォームアップ保護を付与して解放直後の停止判定をスキップさせる。
+                if self.mode == RuntimeMode::Edit
+                    && self.edit_physics_2d_enabled
+                    && self.edit_physics_2d_with_rigidbody
+                    && !self.edit_physics_paused
+                {
+                    self.protect_edit_physics_after_drag_release();
+                }
+
                 // ドラッグ終了: 押し戻し用の最終有効位置をクリアする（3D と同じ）
                 self.drag_collider_last_valid_pos_2d = None;
             }
@@ -845,6 +860,13 @@ impl App {
 
         let thread = self.physics_thread_2d.as_ref().unwrap();
         let result = thread.recv_latest();
+
+        // 【案A】このフレームで新しい 2D 物理結果を受信できたかを退避する。
+        // try_record_physics_snapshot（収束停止判定）が edit_physics_results_fresh 経由で
+        // 参照し、結果待ちの窓を静止と誤カウントしないようにする。
+        // なお update_physics_2d はフレーム内で try_record より後に走るため、この
+        // 2D フラグは次フレームの判定に効く（1 フレーム遅延・詳細は当該関数コメント）。
+        self.store_edit_physics_result_received_2d(result.is_some());
 
         if let Some(ref result) = result {
             // ① Dynamic Rigidbody2D の CanvasTransform を ECS に書き戻す
