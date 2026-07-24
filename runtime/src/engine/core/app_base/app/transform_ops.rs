@@ -10,6 +10,7 @@ use crate::engine::components::{ModelComponent, Transform as ActorTransform, Com
 use crate::engine::core::app_base::undo::{TransformCommand, ActorGroupTransformCommand};
 use crate::engine::structs::tensor::Vector3;
 use crate::engine::structs::transforms::Transform;
+use crate::engine::core::transform_sync::set_actor_world_transform;
 
 use crate::engine::methods::gizmo_interact::{mat4x4_mul, mat4x4_inv};
 
@@ -152,85 +153,30 @@ impl App {
     ) {
         let wl = self.active_world_line;
         let new_tf = ActorTransform { position: [px, py, pz], rotation: [ex, ey, ez], scale: [sx, sy, sz] };
-        // entity を先に取得して borrow を解放
-        let entity = {
+
+        // ── 集約関数へ委譲する ────────────────────────────────────────────
+        // Transform の設定・自アクタ instance_mats への delta 適用・全子孫への伝播・
+        // 特異行列ガードは engine::core::transform_sync が一括で担当する。
+        // ここに残すのはエディタ操作固有の処理（Undo 記録・IPC 送出）だけ。
+        // scene.actors（不変）と scene.world（可変）は別フィールドなので同時借用できる。
+        let sync = {
             let Some(scene) = &mut self.scene else { return };
+            let (actors, world) = (&scene.actors, &mut scene.world);
             let mut c = 0u32;
-            find_actor_by_dfs(&scene.actors, wl, dfs_id, &mut c).map(|a| a.entity)
+            match find_actor_by_dfs(actors, wl, dfs_id, &mut c) {
+                Some(actor) => Some(set_actor_world_transform(actor, world, new_tf, dfs_id + 1)),
+                None        => None,
+            }
         };
-        let Some(entity) = entity else {
+        let Some(sync) = sync else {
+            // 対象アクタが見つからない場合もエディタへは変更通知だけ出す（従来挙動）
             if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
             return;
         };
-        let old_tf = {
-            let Some(scene) = &mut self.scene else { return };
-            let old = scene.world.get::<ActorTransform>(entity).cloned().unwrap_or_default();
-            if let Some(t) = scene.world.get_mut::<ActorTransform>(entity) { *t = new_tf.clone(); }
-            old
-        };
-
-        // スケールが 0 だった場合、逆行列が特異になりデルタ計算が不定になる。
-        // このフラグが true のときはデルタを使わず新しいトランスフォームを直接適用する。
-        let is_old_singular = old_tf.scale.iter().any(|&s| s.abs() < 1e-7);
-
-        let new_tf_mat = new_tf.to_mat4();
-        // シーンモード・アクター編集モード共通: delta を選択アクターの MC と子アクターに適用する
-        let delta = if is_old_singular {
-            // 旧スケールが 0 → 逆行列不定のため単位行列で代替（直接設定ルートで処理する）
-            super::MAT4_IDENTITY
-        } else {
-            mat4x4_mul(new_tf_mat, mat4x4_inv(old_tf.to_mat4()))
-        };
-
-        // Phase A: 選択アクターの全 ModelComponent スロットに delta を適用する。
-        // ModelComponent は actor.entity ではなく各スロット専用の entity に格納されているため、
-        // スロット entity を先に収集してから world を可変借用する。
-        let mc_transforms = if let Some(scene) = &mut self.scene {
-            let slot_entities: Vec<crate::engine::ecs::Entity> = {
-                let mut c = 0u32;
-                find_actor_by_dfs(&scene.actors, wl, dfs_id, &mut c)
-                    .map(|a| a.slots().iter()
-                        .filter(|s| s.kind == ComponentKind::Model)
-                        .map(|s| s.entity)
-                        .collect())
-                    .unwrap_or_default()
-            };
-            let mut all_changes: Vec<(u32, [[f32;4];4], [[f32;4];4])> = Vec::new();
-            for slot_entity in slot_entities {
-                if let Some(mc) = scene.world.get_mut::<ModelComponent>(slot_entity) {
-                    let old_mats = mc.instance_mats.clone();
-                    for m in &mut mc.instance_mats {
-                        if is_old_singular {
-                            // スケール0 から復帰: delta が不定なので新しいトランスフォームを直接設定する
-                            *m = new_tf_mat;
-                        } else {
-                            *m = mat4x4_mul(delta, *m);
-                        }
-                    }
-                    mc.mark_batch_dirty();
-                    for (i, &old) in old_mats.iter().enumerate() {
-                        if let Some(new) = mc.instance_mats.get(i).copied() {
-                            if new != old { all_changes.push((i as u32, old, new)); }
-                        }
-                    }
-                }
-            }
-            all_changes
-        } else { Vec::new() };
-        // Phase B: 子アクターに delta を伝播
-        // スケール0 からの復帰時はデルタが不定なので子アクターへの伝播をスキップする
-        let mut child_changes = Vec::new();
-        if !is_old_singular {
-            if let Some(scene) = &mut self.scene {
-                let (actors, world) = (&mut scene.actors, &mut scene.world);
-                let mut c = 0u32;
-                if let Some(actor) = find_actor_by_dfs_mut(actors, wl, dfs_id, &mut c) {
-                    let mut child_dfs_counter = dfs_id + 1;
-                    apply_delta_to_actor_children(actor, world, delta, &mut child_dfs_counter, &mut child_changes);
-                }
-            }
-        }
-        let (mc_transforms, child_changes) = (mc_transforms, child_changes);
+        let old_tf         = sync.old_tf;
+        let new_tf         = sync.new_tf;
+        let mc_transforms  = sync.self_instance_changes;
+        let child_changes  = sync.child_changes;
 
         if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
         // ドラッグ中は EndTransformDrag でまとめて1コマンド記録するためここでは記録しない

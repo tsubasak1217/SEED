@@ -28,7 +28,7 @@ use super::{
     collect_mcs_in_world_line,
     collect_canvas_actors_in_rect,
     collect_transform_only_in_rect,
-    collect_child_actor_mc_starts,
+    collect_child_actor_drag_starts,
     canvas_anchor_offset_for_dfs,
     find_parent_actor_of_dfs,
     get_3d_canvas_world_mat,
@@ -451,28 +451,35 @@ impl App {
                             }
                         }
                     }
-                    // 子アクター MC にも同デルタを適用する
+                    // 子孫アクタにも同デルタを適用する。
+                    // MC 行列と Transform はそれぞれ独自の開始行列から再計算するため、
+                    // Model を持たない子（カメラ等）でも Transform だけが正しく追従する。
                     {
                         let child_starts = self.drag.actor_child_drag_starts.clone();
-                        for (child_dfs, start_mat) in &child_starts {
+                        for cs in &child_starts {
                             let (mc_slot_entity, child_actor_entity) = {
                                 let mut c = 0u32;
-                                if let Some(actor) = find_actor_by_dfs(&scene.actors, wl, *child_dfs, &mut c) {
+                                if let Some(actor) = find_actor_by_dfs(&scene.actors, wl, cs.dfs_id, &mut c) {
                                     (actor.mc_entity(), Some(actor.entity))
                                 } else { (None, None) }
                             };
-                            if let Some(entity) = mc_slot_entity {
+                            // MC 先頭インスタンス行列（Model を持つ子のみ）
+                            if let (Some(entity), Some(mc_start)) = (mc_slot_entity, cs.mc_start) {
                                 if let Some(mc) = scene.world.get_mut::<ModelComponent>(entity) {
                                     if let Some(m) = mc.instance_mats.first_mut() {
-                                        *m = mat4x4_mul(delta, *start_mat);
+                                        *m = mat4x4_mul(delta, mc_start);
                                     }
                                     mc.mark_batch_dirty();
                                 }
                             }
-                            // 子アクターの ActorTransform も更新してコライダーワイヤーフレームを追従させる
+                            // 子アクターの ActorTransform も更新する
+                            // （コライダーワイヤーフレーム・子カメラのビュー行列が追従する）
                             if let Some(entity) = child_actor_entity {
-                                if let Some(tf) = scene.world.get_mut::<ActorTransform>(entity) {
-                                    *tf = ActorTransform::from_mat4(&mat4x4_mul(delta, *start_mat));
+                                if scene.world.get::<ActorTransform>(entity).is_some() {
+                                    let new_tf = ActorTransform::from_mat4(&mat4x4_mul(delta, cs.tf_start));
+                                    if let Some(tf) = scene.world.get_mut::<ActorTransform>(entity) {
+                                        *tf = new_tf;
+                                    }
                                 }
                             }
                         }
@@ -570,12 +577,13 @@ impl App {
                                 .collect();
                         }
                     }
-                    // 子アクター MC の開始行列を収集する
+                    // 子孫アクタのドラッグ開始スナップショットを収集する
+                    // （Model を持たない子＝カメラ等も含めて全件収集する）
                     if let Some(dfs) = selected_dfs {
                         let mut c = 0u32;
                         if let Some(actor) = find_actor_by_dfs(&scene.actors, wl, dfs as u32, &mut c) {
                             let mut child_dfs_counter = dfs as u32 + 1;
-                            collect_child_actor_mc_starts(
+                            collect_child_actor_drag_starts(
                                 actor, &scene.world,
                                 &mut child_dfs_counter,
                                 &mut self.drag.actor_child_drag_starts,
@@ -721,26 +729,37 @@ impl App {
                 if let Some(new_transform) = new_transform_opt {
                     let delta = mat4x4_mul(new_transform.to_mat4(), mat4x4_inv(old_transform.to_mat4()));
                     let mut child_transforms: Vec<(u32, ActorTransform, ActorTransform, [[f32;4];4], [[f32;4];4])> = Vec::new();
-                    for (child_dfs, start_mat) in child_drag_starts {
-                        let new_mc_mat = mat4x4_mul(delta, start_mat);
+                    for cs in child_drag_starts {
                         if let Some(scene) = &mut self.scene {
-                            let child_entity = {
+                            // MC はスロット専用 entity に格納されるため、アクタの entity ではなく
+                            // mc_entity() で解決する（旧実装はアクタ entity を見ていて常に None だった）。
+                            let (child_entity, mc_slot_entity) = {
                                 let mut c = 0u32;
-                                find_actor_by_dfs(&scene.actors, wl, child_dfs, &mut c)
-                                    .map(|a| a.entity)
+                                find_actor_by_dfs(&scene.actors, wl, cs.dfs_id, &mut c)
+                                    .map(|a| (Some(a.entity), a.mc_entity()))
+                                    .unwrap_or((None, None))
                             };
                             if let Some(child_entity) = child_entity {
-                                let old_child_tf = scene.world.get::<ActorTransform>(child_entity)
-                                    .cloned().unwrap_or_default();
-                                let new_child_tf = ActorTransform::from_mat4(&new_mc_mat);
-                                if let Some(tf) = scene.world.get_mut::<ActorTransform>(child_entity) {
-                                    *tf = new_child_tf.clone();
+                                // ドラッグ中に Transform は更新済みなので、開始行列から旧値を復元する
+                                let old_child_tf = ActorTransform::from_mat4(&cs.tf_start);
+                                let new_child_tf = ActorTransform::from_mat4(&mat4x4_mul(delta, cs.tf_start));
+                                if scene.world.get::<ActorTransform>(child_entity).is_some() {
+                                    if let Some(tf) = scene.world.get_mut::<ActorTransform>(child_entity) {
+                                        *tf = new_child_tf.clone();
+                                    }
                                 }
-                                if let Some(mc) = scene.world.get_mut::<ModelComponent>(child_entity) {
-                                    if let Some(m) = mc.instance_mats.first_mut() { *m = new_mc_mat; }
-                                    mc.mark_batch_dirty();
+                                // MC 行列は MC 開始行列基準で確定させる（Model なしの子は None）
+                                let old_mc_mat = cs.mc_start.unwrap_or(super::MAT4_IDENTITY);
+                                let new_mc_mat = cs.mc_start
+                                    .map(|s| mat4x4_mul(delta, s))
+                                    .unwrap_or(super::MAT4_IDENTITY);
+                                if let (Some(e), Some(_)) = (mc_slot_entity, cs.mc_start) {
+                                    if let Some(mc) = scene.world.get_mut::<ModelComponent>(e) {
+                                        if let Some(m) = mc.instance_mats.first_mut() { *m = new_mc_mat; }
+                                        mc.mark_batch_dirty();
+                                    }
                                 }
-                                child_transforms.push((child_dfs, old_child_tf, new_child_tf, start_mat, new_mc_mat));
+                                child_transforms.push((cs.dfs_id, old_child_tf, new_child_tf, old_mc_mat, new_mc_mat));
                             }
                         }
                     }
@@ -823,29 +842,37 @@ impl App {
                                 if let Some(tf) = scene.world.get_mut::<ActorTransform>(entity) { *tf = new_v.clone(); }
                             }
                         }
-                        // 子アクターの Transform を更新し Undo 用データを収集
+                        // 子孫アクターの Transform を確定し Undo 用データを収集する
+                        // （Model を持たない子＝カメラ等も Transform だけ確定させる）
                         let mut child_transforms = Vec::new();
-                        for (child_dfs, start_mat) in child_drag_starts {
+                        for cs in child_drag_starts {
                             if let Some(scene) = &mut self.scene {
                                 let (child_entity_opt, mc_slot_entity) = {
                                     let mut c = 0u32;
-                                    find_actor_by_dfs(&scene.actors, wl, child_dfs, &mut c)
+                                    find_actor_by_dfs(&scene.actors, wl, cs.dfs_id, &mut c)
                                         .map(|a| (Some(a.entity), a.mc_entity()))
                                         .unwrap_or((None, None))
                                 };
                                 if let Some(child_entity) = child_entity_opt {
-                                    // 子アクターも AT がドラッグ中更新済みのため start_mat から old を復元する
-                                    let old_child_tf = ActorTransform::from_mat4(&start_mat);
+                                    // 子アクターも Transform がドラッグ中更新済みのため
+                                    // tf_start（Transform 由来の開始行列）から old を復元する
+                                    let old_child_tf = ActorTransform::from_mat4(&cs.tf_start);
                                     let new_child_tf = ActorTransform::from_mat4(
-                                        &mat4x4_mul(delta, start_mat));
-                                    if let Some(tf) = scene.world.get_mut::<ActorTransform>(child_entity) {
-                                        *tf = new_child_tf.clone();
+                                        &mat4x4_mul(delta, cs.tf_start));
+                                    if scene.world.get::<ActorTransform>(child_entity).is_some() {
+                                        if let Some(tf) = scene.world.get_mut::<ActorTransform>(child_entity) {
+                                            *tf = new_child_tf.clone();
+                                        }
                                     }
-                                    let new_mc_mat = mc_slot_entity
-                                        .and_then(|e| scene.world.get::<ModelComponent>(e))
-                                        .and_then(|mc| mc.instance_mats.first().copied())
-                                        .unwrap_or(start_mat);
-                                    child_transforms.push((child_dfs, old_child_tf, new_child_tf, start_mat, new_mc_mat));
+                                    // MC 行列は MC 開始行列基準（Model なしの子は単位行列＝Undo 側で no-op）
+                                    let old_mc_mat = cs.mc_start.unwrap_or(super::MAT4_IDENTITY);
+                                    let new_mc_mat = match (mc_slot_entity, cs.mc_start) {
+                                        (Some(e), Some(_)) => scene.world.get::<ModelComponent>(e)
+                                            .and_then(|mc| mc.instance_mats.first().copied())
+                                            .unwrap_or(old_mc_mat),
+                                        _ => old_mc_mat,
+                                    };
+                                    child_transforms.push((cs.dfs_id, old_child_tf, new_child_tf, old_mc_mat, new_mc_mat));
                                 }
                             }
                         }

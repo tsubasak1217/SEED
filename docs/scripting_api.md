@@ -314,6 +314,12 @@ transform.Rotation += new SEED.Vector3(0f, 90f * SEED.Time.DeltaTime, 0f);
 transform.Position += SEED.Vector3.Up * SEED.Time.DeltaTime;
 ```
 
+> **親子の追従**: `Transform` の各値は**ワールド絶対座標**です。スクリプトから `Position` /
+> `Rotation` / `Scale` のいずれかを書き込むと、その差分が**自身のメッシュと全子孫アクター
+> （Transform とメッシュの両方）へ即座に伝播**します。モデルを持たない子アクター
+> （カメラなど）も追従します。代入した直後に子の `Transform` を読めば、更新後の値が返ります。
+> なおアニメーション・物理による Transform 更新はこの伝播経路を通りません（既知の制限）。
+
 ### CanvasTransform（2D キャンバス上の位置・回転・スケール）
 
 ```csharp
@@ -326,7 +332,7 @@ ct.Anchor                  // Vector2（get/set。親 Canvas 内の position 基
 ct.ScreenPosition          // Vector2（get のみ。ウィンドウ左上原点のスクリーン座標・ピクセル）
 ```
 
-> `Position` は**親 Canvas 相対**の座標ですが、`ScreenPosition` はアンカー・スケールモード・親チェーンをすべて反映した**画面上の絶対位置**（ピボット点）を返します。SEED の 3D `Transform.Position` は元々ワールド絶対座標です（親子はエディタ操作時のみ連動）。
+> `Position` は**親 Canvas 相対**の座標ですが、`ScreenPosition` はアンカー・スケールモード・親チェーンをすべて反映した**画面上の絶対位置**（ピボット点）を返します。SEED の 3D `Transform.Position` は元々ワールド絶対座標で、書き込み時に子孫へ差分が伝播します（上記「親子の追従」参照）。
 
 ### Sprite（2D スプライト表示）
 

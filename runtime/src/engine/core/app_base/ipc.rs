@@ -537,6 +537,14 @@ pub enum IpcCommand {
     /// フォーマット: PREFAB_REAPPLY:{actor_dfs}
     ReapplyPrefab { actor_dfs: u32 },
 
+    /// シーン内（world_line=0）の全プレハブインスタンスを、参照先 .actor の内容で
+    /// 一括再展開する（ユーザーの明示操作）。
+    /// プレハブ本体を編集したあと、その内容をシーン全体へ反映するための入口。
+    /// シーン上でインスタンスへ加えた変更は全て破棄されるため、
+    /// エディタ側で確認ダイアログ必須。Undo で 1 操作として戻せる。
+    /// フォーマット: PREFAB_REAPPLY_ALL（引数なし）
+    ReapplyAllPrefabs,
+
     /// 編集時の物理シミュレーション設定。
     /// enabled=true かつ with_rigidbody=false : 重力なし・全ボディを kinematic として衝突検出のみ
     /// enabled=true かつ with_rigidbody=true  : 重力・ダイナミクスも有効な完全シミュレーション
@@ -1917,6 +1925,10 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                             s["PREFAB_REAPPLY:".len()..].trim().parse::<u32>().ok()
                                 .map(|actor_dfs| IpcCommand::ReapplyPrefab { actor_dfs })
                         }
+
+                        // シーン内全プレハブの一括更新（引数なし）。
+                        // "PREFAB_REAPPLY:" 判定とは接頭辞が異なるため衝突しない。
+                        "PREFAB_REAPPLY_ALL" => Some(IpcCommand::ReapplyAllPrefabs),
 
                         "EDIT_PHYSICS_PLAY_PAUSE" => {
                             Some(IpcCommand::EditPhysicsPlayPause)

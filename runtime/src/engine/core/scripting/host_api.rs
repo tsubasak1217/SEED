@@ -214,6 +214,33 @@ fn locate<T: crate::engine::ecs::Component>(world: &World, entity: Entity) -> Op
         .find(|&se| world.get::<T>(se).is_some())
 }
 
+/// ルートエンティティが `entity` と一致する Actor を Actor ツリーから探す。
+///
+/// Transform の書き込みで「子孫へ伝播する」ために Actor ツリー（親子関係）が必要になる。
+/// ACTORS_PTR はスクリプトフェーズ実行中のみ有効な読み取り専用ポインタで、
+/// フェーズ中にツリーの構造変更は起きない（Instantiate/Destroy は遅延コマンド）。
+///
+/// 戻り値の参照はフェーズ内でのみ有効。呼び出し側は即座に使い切ること。
+/// ツリーが未公開（ポインタが null）の場合は None。
+fn actor_of_entity<'a>(entity: Entity) -> Option<&'a Actor> {
+    let actors_ptr = ACTORS_PTR.with(|p| p.get());
+    if actors_ptr.is_null() { return None; }
+
+    /// ルートエンティティが一致するアクターを再帰検索するローカル関数
+    fn find_actor(actors: &[Actor], e: Entity) -> Option<&Actor> {
+        for a in actors {
+            if a.entity == e { return Some(a); }
+            if let Some(found) = find_actor(a.children(), e) { return Some(found); }
+        }
+        None
+    }
+
+    // SAFETY: ACTORS_PTR はフェーズ実行中のみ非 null で、その間ツリーは不変。
+    // world（&mut World）とは別オブジェクトなのでエイリアス違反にはならない。
+    let actors = unsafe { &*actors_ptr };
+    find_actor(actors, entity)
+}
+
 // ─── コンポーネントレジストリ ─────────────────────────────────
 //  新しいコンポーネントをスクリプトへ公開するときは、read_floats / write_floats
 //  （文字列フィールドがあれば read_string / write_string も）と has_component に
@@ -361,13 +388,40 @@ fn write_floats(
     }
     match component {
         // ── 3D トランスフォーム ──
+        // Transform はワールド空間で保持され、描画実体は ModelComponent.instance_mats、
+        // 親子関係は Actor ツリーが持つ。そのためコンポーネントの数値を書くだけでは
+        // 「メッシュが動かない」「子アクタ（カメラ等）が追従しない」状態になる。
+        // 必ず集約関数 transform_sync::set_actor_world_transform を経由させること。
         "Transform" => {
-            let Some(t) = world.get_mut::<Transform>(entity) else { return false };
-            match field {
-                "position" => take(v).map(|a| t.position = a).is_some(),
-                "rotation" => take(v).map(|a| t.rotation = a).is_some(),
-                "scale"    => take(v).map(|a| t.scale    = a).is_some(),
+            // 現在値を読み、指定フィールドだけ差し替えた新しいワールド Transform を作る
+            let Some(cur) = world.get::<Transform>(entity).cloned() else { return false };
+            let mut next = cur;
+            let field_ok = match field {
+                "position" => take::<3>(v).map(|a| next.position = a).is_some(),
+                "rotation" => take::<3>(v).map(|a| next.rotation = a).is_some(),
+                "scale"    => take::<3>(v).map(|a| next.scale    = a).is_some(),
                 _          => false,
+            };
+            if !field_ok { return false; }
+
+            match actor_of_entity(entity) {
+                // Actor ツリーが公開されている通常ケース: instance_mats・全子孫へ伝播する。
+                // child_dfs_start は Undo 記録に使う採番の起点で、スクリプト経路では
+                // Undo を記録しないため 0 でよい。
+                Some(actor) => {
+                    crate::engine::core::transform_sync::set_actor_world_transform(
+                        actor, world, next, 0,
+                    );
+                    true
+                }
+                // Actor ツリー未公開（フェーズ外呼び出し等）のフォールバック。
+                // 伝播はできないが、少なくともコンポーネント値は反映する。
+                None => {
+                    match world.get_mut::<Transform>(entity) {
+                        Some(t) => { *t = next; true }
+                        None    => false,
+                    }
+                }
             }
         }
         // ── 2D キャンバストランスフォーム ──

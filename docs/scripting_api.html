@@ -468,6 +468,7 @@ bullet.Transform.Position = transform.Position;   <span class="c">// 生成直�
 <pre><span class="c">// 例: 回しながら上げる</span>
 transform.Rotation += <span class="k">new</span> <span class="t">SEED.Vector3</span>(0f, 90f * <span class="t">SEED.Time</span>.DeltaTime, 0f);
 transform.Position += <span class="t">SEED.Vector3</span>.Up * <span class="t">SEED.Time</span>.DeltaTime;</pre>
+  <p class="section-note"><b>親子の追従</b>: <code>Transform</code> の各値はワールド絶対座標です。スクリプトから <code>Position</code> / <code>Rotation</code> / <code>Scale</code> のいずれかを書き込むと、その差分が自身のメッシュと全子孫アクター（Transform とメッシュの両方）へ即座に伝播します。モデルを持たない子アクター（カメラなど）も追従します。代入した直後に子の <code>Transform</code> を読めば更新後の値が返ります。なおアニメーション・物理による Transform 更新はこの伝播経路を通りません（既知の制限）。</p>
 
   <h3 id="cmp-canvastransform">CanvasTransform（2D キャンバス上の位置・回転・スケール）</h3>
   <div class="api"><code class="sig">ct.Position</code><span class="desc">Vector2（get/set。親 Canvas 基準の相対座標）</span></div>

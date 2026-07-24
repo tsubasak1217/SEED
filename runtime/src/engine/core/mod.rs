@@ -7,6 +7,7 @@ pub mod loader;
 pub mod parent_guard;
 pub mod renderer;
 pub mod scripting;
+pub mod transform_sync;
 pub mod window;
 
 pub use input::Input;

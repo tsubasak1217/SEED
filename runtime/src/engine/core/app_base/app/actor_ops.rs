@@ -1122,11 +1122,17 @@ impl App {
                 if let Some(ipc) = &self.ipc {
                     ipc.send(&format!("EXPORT_ACTOR_OK:{saved_path}"));
                 }
-                // ヒエラルキーを更新（is_prefab フラグ反映）してからライブ反映を行う。
+                // ヒエラルキーを更新する（is_prefab フラグ反映）。
                 self.send_hierarchy();
-                // 同じ参照パスを持つ通常シーン（world_line=0）の全インスタンスへ
-                // 書き出した内容を再展開する（自身も含む。ルート Transform/name/active は維持）。
-                self.propagate_prefab_change(&saved_path);
+                // ── 他インスタンスへの自動再展開は「行わない」────────────────
+                // 以前はここで propagate_prefab_change(&saved_path) を呼び、同じ参照パスを
+                // 持つ全インスタンスをエクスポート内容で上書きしていた。そのため
+                // シーン側でインスタンスに加えた変更が、アクタファイル化した瞬間に
+                // 消えるデータ損失が起きていた。
+                // 方針: 「シーンに保存されている内容を正とする」。プレハブ本体の内容を
+                // 反映したいときだけ、ユーザーが明示的に「プレハブから更新」
+                // （PREFAB_REAPPLY）／「シーン内の全プレハブを更新」（PREFAB_REAPPLY_ALL）
+                // を実行する。
             }
             Err(err) => {
                 if let Some(ipc) = &self.ipc {

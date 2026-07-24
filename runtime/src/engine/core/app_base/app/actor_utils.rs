@@ -8,7 +8,7 @@
 //  - MC 収集・バッチ更新（collect_mcs_in_world_line / update_all_mc_batches_for_wl）
 //  - エンティティ管理（collect_entities_for_wl / despawn_actor_recursive）
 //  - 座標・選択ユーティリティ（world_to_screen / selection_centroid）
-//  - ドラッグ時子アクター収集（collect_child_actor_mc_starts / apply_delta_to_actor_children）
+//  - ドラッグ時子アクター収集（collect_child_actor_drag_starts / apply_delta_to_actor_children）
 //
 //  Windows カーソルロック系 → platform_utils.rs
 // ============================================================
@@ -18,6 +18,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::engine::ecs::{Entity, World};
 use crate::engine::structs::objects::Actor;
+use super::drag_state::ChildDragStart;
 use crate::engine::components::{
     ModelComponent, Transform as ActorTransform, ComponentKind,
     CanvasTransform, CanvasComponent,
@@ -896,26 +897,34 @@ fn collect_transform_only_recursive(
 //  ドラッグ開始・終了時の子アクター状態収集ユーティリティ
 // ============================================================
 
-/// ドラッグ開始時: 子孫アクターの MC 初期行列を収集する。
+/// ドラッグ開始時: 子孫アクターのドラッグ開始スナップショットを収集する。
 /// dfs_counter は選択アクターの DFS + 1 から始める。
-pub(super) fn collect_child_actor_mc_starts(
+///
+/// 【重要】**Model の有無にかかわらず全ての子孫を収集する**。
+/// 以前は ModelComponent と instance_mats を持つ子だけを対象にしていたため、
+/// モデルを持たない子アクタ（カメラ・空アクタなど）がギズモドラッグの伝播から
+/// 漏れて親に追従しなかった。Transform は Model の有無と無関係に存在するため、
+/// MC 行列（無ければ None）と Transform 行列を独立に記録する。
+pub(super) fn collect_child_actor_drag_starts(
     actor:       &Actor,
     world:       &World,
     dfs_counter: &mut u32,
-    result:      &mut Vec<(u32, [[f32; 4]; 4])>,
+    result:      &mut Vec<ChildDragStart>,
 ) {
     for child in actor.children() {
         let child_dfs = *dfs_counter;
         *dfs_counter += 1;
-        // スロット entity 経由で MC の最初のインスタンス行列を取得する
-        if let Some(mc_e) = child.mc_entity() {
-            if let Some(mc) = world.get::<ModelComponent>(mc_e) {
-                if let Some(&mat) = mc.instance_mats.first() {
-                    result.push((child_dfs, mat));
-                }
-            }
-        }
-        collect_child_actor_mc_starts(child, world, dfs_counter, result);
+        // スロット entity 経由で MC の最初のインスタンス行列を取得する（無ければ None）
+        let mc_start = child.mc_entity()
+            .and_then(|e| world.get::<ModelComponent>(e))
+            .and_then(|mc| mc.instance_mats.first().copied());
+        // Transform（ワールド空間）の開始行列。Transform を持たないノード（フォルダ・2D）は
+        // 単位行列を記録するが、適用側は Transform が存在する場合のみ書き戻すため無害。
+        let tf_start = world.get::<ActorTransform>(child.entity)
+            .map(|tf| tf.to_mat4())
+            .unwrap_or(super::MAT4_IDENTITY);
+        result.push(ChildDragStart { dfs_id: child_dfs, mc_start, tf_start });
+        collect_child_actor_drag_starts(child, world, dfs_counter, result);
     }
 }
 
@@ -981,44 +990,20 @@ pub(super) fn apply_delta_to_actor_subtree(
 
 /// ギズモドラッグまたはインスペクタードラッグ中: delta を子孫アクター全体に適用し、
 /// Undo 用の変更データ (child_dfs, old_tf, new_tf, old_mc_mat, new_mc_mat) を収集する。
+///
+/// 実体は集約モジュール `engine::core::transform_sync` にある
+/// （Transform 伝播ロジックを 1 か所に集約し、経路ごとの取りこぼしを防ぐため）。
+/// ここは既存呼び出し元の互換ラッパー。
 pub(super) fn apply_delta_to_actor_children(
-    actor:       &mut Actor,
+    actor:       &Actor,
     world:       &mut World,
     delta:       [[f32; 4]; 4],
     dfs_counter: &mut u32,
     result:      &mut Vec<(u32, ActorTransform, ActorTransform, [[f32; 4]; 4], [[f32; 4]; 4])>,
 ) {
-    let identity = super::MAT4_IDENTITY;
-    for child in actor.children_mut().iter_mut() {
-        let child_dfs = *dfs_counter;
-        *dfs_counter += 1;
-        let child_entity   = child.entity;
-        // スロット entity を Copy で取り出す（child の borrow が続くが Entity は Copy）
-        let mc_slot_entity = child.mc_entity();
-
-        // MC の更新: スロット entity 経由でアクセスする
-        let (old_mc_mat, new_mc_mat) = if let Some(mc_e) = mc_slot_entity {
-            if let Some(mc) = world.get_mut::<ModelComponent>(mc_e) {
-                let old = mc.instance_mats.first().copied().unwrap_or(identity);
-                if let Some(m) = mc.instance_mats.first_mut() { *m = mat4x4_mul(delta, *m); }
-                mc.mark_batch_dirty();
-                let new = mc.instance_mats.first().copied().unwrap_or(identity);
-                (old, new)
-            } else {
-                (identity, identity)
-            }
-        } else {
-            (identity, identity)
-        };
-
-        // Transform の更新（actor.entity から Transform を参照）
-        let old_tf = world.get::<ActorTransform>(child_entity).cloned().unwrap_or_default();
-        let new_tf = ActorTransform::from_mat4(&mat4x4_mul(delta, old_tf.to_mat4()));
-        if let Some(tf) = world.get_mut::<ActorTransform>(child_entity) { *tf = new_tf.clone(); }
-
-        result.push((child_dfs, old_tf, new_tf, old_mc_mat, new_mc_mat));
-        apply_delta_to_actor_children(child, world, delta, dfs_counter, result);
-    }
+    crate::engine::core::transform_sync::propagate_delta_to_children(
+        actor, world, delta, dfs_counter, result,
+    );
 }
 
 // ============================================================

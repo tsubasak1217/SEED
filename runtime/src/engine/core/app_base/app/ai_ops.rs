@@ -114,19 +114,22 @@ impl App {
         let Some(scene) = &mut self.scene else { return };
         let wl = self.active_world_line;
 
-        // DFS ID でアクターを検索し、エンティティを取得する
-        let entity = {
-            let mut c = 0u32;
-            match find_actor_by_dfs(&scene.actors, wl, actor_dfs_id, &mut c) {
-                Some(a) => a.entity,
-                None    => return,
-            }
-        };
+        // scene.actors（不変）と scene.world（可変）を同時借用してアクタを解決する
+        let (actors, world) = (&scene.actors, &mut scene.world);
+        let mut c = 0u32;
+        let Some(actor) = find_actor_by_dfs(actors, wl, actor_dfs_id, &mut c) else { return };
 
-        // Transform コンポーネントの position を更新する
-        if let Some(tf) = scene.world.get_mut::<ActorTransform>(entity) {
-            tf.position = [x, y, z];
-        }
+        // 現在の Transform の position だけを差し替えた新しいワールド Transform を作る
+        let mut new_tf = world.get::<ActorTransform>(actor.entity).cloned().unwrap_or_default();
+        new_tf.position = [x, y, z];
+
+        // 集約関数へ委譲する。
+        // 単に Transform の数値を書くだけでは描画実体（instance_mats）も子アクタも
+        // 追従しないため、必ずこの経路を通す。
+        // Undo は記録しない（AI からの一括変更で履歴が肥大化するため）。
+        crate::engine::core::transform_sync::set_actor_world_transform(
+            actor, world, new_tf, actor_dfs_id + 1,
+        );
 
         if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
     }

@@ -333,10 +333,16 @@ impl App {
                     match result {
                         Ok(())   => {
                             if let Some(ipc) = &self.ipc { ipc.send("SAVE_OK"); }
-                            // アクタ編集タブの保存内容を、通常シーン（world_line=0）の
-                            // 同じ参照パスを持つ全プレハブインスタンスへ再展開する
-                            // （ルート Transform/name/active は維持）。
-                            self.propagate_prefab_change(&path);
+                            // ── シーン側インスタンスへの自動再展開は「行わない」──────
+                            // 以前はここで propagate_prefab_change(&path) を呼び、保存した
+                            // .actor と同じ参照パスを持つ全インスタンスを問答無用で
+                            // 再展開していた。そのため、プレハブ本体を保存した瞬間に
+                            // シーン側でインスタンスへ加えた変更（コンポーネント追加・
+                            // 値変更・子の追加）が消えるデータ損失が起きていた。
+                            // 方針: 「シーンに保存されている内容を正とする」。反映したい
+                            // ときだけユーザーが明示的に「プレハブから更新」
+                            // （PREFAB_REAPPLY）／「シーン内の全プレハブを更新」
+                            // （PREFAB_REAPPLY_ALL）を実行する。
                         }
                         Err(e)   => {
                             if let Some(ipc) = &self.ipc { ipc.send(&format!("SAVE_ERROR:{e}")); }
@@ -1220,6 +1226,12 @@ impl App {
                     // 明示操作による「プレハブから更新」。シーン側の変更を破棄して
                     // .actor の内容で再展開する（確認ダイアログはエディタ側で表示済み）。
                     self.handle_reapply_prefab(actor_dfs);
+                }
+                IpcCommand::ReapplyAllPrefabs => {
+                    // 明示操作による「シーン内の全プレハブを更新」。
+                    // シーン側の変更を破棄して .actor の内容で全インスタンスを再展開する
+                    // （確認ダイアログはエディタ側で表示済み）。
+                    self.handle_reapply_all_prefabs();
                 }
 
                 // ── 物理シミュレーション設定 ─────────────────────────────────

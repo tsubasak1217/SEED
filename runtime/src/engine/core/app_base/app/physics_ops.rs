@@ -481,8 +481,14 @@ impl App {
                 sm[0][3] -= off[0]; sm[1][3] -= off[1]; sm[2][3] -= off[2];
             }
         }
-        for (_, sm) in &mut self.drag.actor_child_drag_starts {
-            sm[0][3] -= off[0]; sm[1][3] -= off[1]; sm[2][3] -= off[2];
+        // 子孫アクタの開始行列は MC 用・Transform 用の 2 本あるため両方を調整する
+        for cs in &mut self.drag.actor_child_drag_starts {
+            if let Some(sm) = &mut cs.mc_start {
+                sm[0][3] -= off[0]; sm[1][3] -= off[1]; sm[2][3] -= off[2];
+            }
+            cs.tf_start[0][3] -= off[0];
+            cs.tf_start[1][3] -= off[1];
+            cs.tf_start[2][3] -= off[2];
         }
         // Transform-only ドラッグ（MC なし）の場合も調整する
         if let Some((_, start_tf)) = &mut self.drag.actor_transform_drag_start {
