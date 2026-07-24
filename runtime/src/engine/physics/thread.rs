@@ -371,14 +371,20 @@ fn run_physics_loop(
                     // ResolveCharacter 処理が 16ms を超え、メイン側の reply 待ちが 100% タイムアウトして
                     // 補正が ECS へ反映されなかった（実測）。地形は静的なので一度索引すれば十分で、
                     // step() の増分更新はフリーコライダーを落とさないため索引は保持される。
+                    // 【一時診断】KCC の衝突解決（move_shape）の所要時間を実測する。
+                    // これが 16ms を超えていれば「move_shape 自体が地形トライメッシュに対して重い」
+                    // ＝reply タイムアウトの真因、と確定できる。
+                    let _t_resolve = std::time::Instant::now();
                     let resolved = perform_character_step(
                         &character_controller, &query_pipeline,
                         &mut rigid_body_set, &mut collider_set, &mut entries,
                         entity_id, desired_position, rotation,
                         PHYSICS_FIXED_STEP as Real,
                     );
+                    let resolve_ms = _t_resolve.elapsed().as_secs_f32() * 1000.0;
 
                     if diag {
+                        eprintln!("[CharCtl] resolve_ms={resolve_ms:.2}");
                         // Static コライダー（RigidBody を持たない＝地形・静的プロップ）の登録数。
                         // 0 なら「地形が物理ワールドに無い」＝キャラが検出できないケース。
                         let static_colliders = entries.values()
