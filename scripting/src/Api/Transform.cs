@@ -45,4 +45,15 @@ public readonly struct Transform
         get => ScriptHost.TryGetVec3(_entity, Comp, "scale", out var v) ? v : Vector3.One;
         set => ScriptHost.TrySetVec3(_entity, Comp, "scale", value);
     }
+
+    /// <summary>
+    /// キャラクターコントローラーを衝突無視で瞬間移動させる。
+    ///
+    /// <see cref="Position"/> への代入と異なり、地形との衝突解決（自動押し戻し）を
+    /// 発生させずに位置を <paramref name="pos"/> に設定する（子アクタも追従）。
+    /// 物理側の「前回位置」も同時にリセットされるため、瞬間移動先で押し戻されない。
+    /// ワープ・リスポーン・シーン開始時の初期配置などに使う。
+    /// </summary>
+    /// <param name="pos">瞬間移動先のワールド座標</param>
+    public void Teleport(Vector3 pos) => ScriptHost.TryTeleport(_entity, pos);
 }

@@ -339,6 +339,34 @@ impl App {
                 }
             }
 
+            // ①-c キャラクターコントローラーの補正後位置を ECS に書き戻す。
+            //
+            // StepCharacter が地形と衝突解決した「前回位置」を毎フレーム受け取り、
+            // 集約関数 set_actor_world_transform 経由で反映することで子アクタ（カメラ等）も追従する。
+            // このタイミング（update_physics = フレーム先頭、スクリプト実行前）で反映するため、
+            // 直後に走るスクリプトは押し戻し済みの位置を読んで次の希望位置を組み立てられる。
+            // ドラッグ中のアクターは gizmo が位置を制御するため無視する。
+            if should_apply_transforms && !result.character_updates.is_empty() {
+                if let Some(scene) = &mut self.scene {
+                    for (entity_id, corrected_pos, _grounded) in &result.character_updates {
+                        if Some(*entity_id) == self.dragging_physics_entity_id { continue; }
+                        apply_character_transform(scene, self.active_world_line, *entity_id, *corrected_pos);
+                    }
+                }
+                // 接地状態を IsGrounded 用にスクリプトへ公開する（DFS ID → ECS Entity 変換つき）。
+                // 新しい結果があるフレームでのみ更新し、結果なしフレームでは前回値を維持する
+                // （publish_grounded_states を呼ばないことで thread-local の前回公開が残る）。
+                if let Some(scene) = &self.scene {
+                    let dfs_to_entity = build_dfs_entity_map_3d(scene, self.active_world_line);
+                    let grounded: Vec<(crate::engine::ecs::Entity, bool)> = result.character_updates.iter()
+                        .filter_map(|(dfs_id, _pos, grounded)| {
+                            dfs_to_entity.get(dfs_id).map(|&e| (e, *grounded))
+                        })
+                        .collect();
+                    crate::engine::core::scripting::host_api::publish_grounded_states(grounded);
+                }
+            }
+
             // ②-0 Play モード時: 衝突・トリガーイベントをスクリプトのコールバックへ配信する
             //（OnCollisionEnter / OnTriggerEnter 等。Edit モードの物理プレビューでは呼ばない）
             if self.mode == RuntimeMode::Play
@@ -423,6 +451,32 @@ impl App {
                 thread.send(PhysicsCommand::UpdateKinematic { entity_id: drag_entity_id, position: pos, rotation: rot });
             }
         }
+    }
+
+    // ─── キャラクターコントローラー同期（スクリプト実行後）────────────────────
+
+    /// キャラクターコントローラーの「希望位置」を物理スレッドへ送信する（StepCharacter）。
+    ///
+    /// **必ずスクリプトフェーズ実行後**に呼ぶこと。スクリプトが Transform に書き込んだ
+    /// 希望位置をそのまま拾い、物理スレッドが前回解決済み位置との差分を KCC で解決する。
+    ///
+    /// 【フレームパイプライン（1 フレーム遅延・非同期）】
+    ///   フレーム N: update_physics で前フレームの補正後位置を反映（スクリプト実行前）
+    ///            → スクリプトが希望位置 D を書き込む
+    ///            → 本メソッドが StepCharacter(D) を送信
+    ///   フレーム N+1: update_physics が補正後位置を受信して反映
+    ///
+    /// update_physics ④（collect_kinematic_updates）と同じく「物理へ姿勢を送る」役割だが、
+    /// あちらはスクリプト実行前に走るため希望位置を拾えない。キャラクターの希望位置は
+    /// スクリプトが書いた直後（本メソッド）で集約して送る必要がある。
+    pub(super) fn sync_character_controllers(&mut self) {
+        let Some(scene) = &self.scene else { return };
+        let Some(thread) = &self.physics_thread else { return };
+        collect_character_step_updates(scene, self.active_world_line)
+            .into_iter()
+            .for_each(|(entity_id, desired_position, rotation)| {
+                thread.send(PhysicsCommand::StepCharacter { entity_id, desired_position, rotation });
+            });
     }
 
     // ─── ドラッグ中押し戻し（同期オーバーラップ判定）──────────────────────────
@@ -628,6 +682,7 @@ fn collect_physics_objects(
             is_trigger:      collider.is_trigger,
             physics_layer:   collider.physics_layer,
             layer_mask:      collider.layer_mask,
+            is_character_controller: collider.is_character_controller,
         });
     }
     objects
@@ -658,6 +713,9 @@ fn collect_kinematic_updates(
 
         let Some(collider_slot) = actor.slots().iter().find(|s| s.kind == ComponentKind::Collider) else { continue };
         let Some(collider) = scene.world.get::<ColliderComponent>(collider_slot.entity) else { continue };
+        // キャラクターコントローラーは単純位置コピーではなく StepCharacter（KCC 差分解決）経路に
+        // 一本化するため、ここでは対象外にする（二重に位置を動かさないため）。
+        if collider.is_character_controller { continue; }
         if !collider.use_rigidbody || !collider.is_kinematic { continue; }
 
         let Some(tf) = scene.world.get::<ActorTransform>(actor.entity) else { continue };
@@ -725,6 +783,92 @@ fn apply_physics_transform(
         }
         return;
     }
+}
+
+/// キャラクターコントローラーの現在 Transform（希望位置・回転）を DFS 順に収集する。
+///
+/// collect_physics_objects と同一の DFS 順を使うことで entity_id が対応する。
+/// is_character_controller=true かつ有効な Collider スロットを持つアクターのみが対象。
+/// 収集した希望位置は StepCharacter として物理スレッドへ送られ、前回位置との差分が
+/// KCC で衝突解決される。
+fn collect_character_step_updates(
+    scene:      &Scene,
+    world_line: u32,
+) -> Vec<(u64, [f32; 3], [f32; 4])> {
+    let mut updates     = Vec::new();
+    let mut dfs_counter = 0u32;
+
+    let mut stack: Vec<&Actor> = scene.actors.iter()
+        .filter(|a| a.world_line == world_line)
+        .rev()
+        .collect();
+
+    while let Some(actor) = stack.pop() {
+        dfs_counter += 1;
+        let dfs_id = dfs_counter as u64;
+
+        for child in actor.children.iter().rev() {
+            stack.push(child);
+        }
+
+        // 有効な Collider スロットを持ち、キャラクターコントローラー指定のアクターのみ対象
+        let Some(collider_slot) = actor.slots().iter()
+            .find(|s| s.kind == ComponentKind::Collider && s.enabled) else { continue };
+        let Some(collider) = scene.world.get::<ColliderComponent>(collider_slot.entity) else { continue };
+        if !collider.is_character_controller { continue; }
+
+        let Some(tf) = scene.world.get::<ActorTransform>(actor.entity) else { continue };
+        let position = [tf.position[0], tf.position[1], tf.position[2]];
+        let rotation = euler_to_quat_arr(tf.rotation);
+
+        updates.push((dfs_id, position, rotation));
+    }
+    updates
+}
+
+/// キャラクターコントローラーの補正後ワールド位置を対応 Actor の ECS に書き戻す。
+///
+/// entity_id は collect_physics_objects と同一の DFS 順カウンタで照合する。
+/// apply_physics_transform（自 Model スロットのみ更新）と異なり、集約関数
+/// set_actor_world_transform を経由して子孫アクタ（カメラ等）まで伝播させる。
+/// 回転・スケールは既存値を維持し、位置だけ差し替える。
+fn apply_character_transform(
+    scene:      &mut Scene,
+    world_line: u32,
+    entity_id:  u64,
+    new_pos:    [f32; 3],
+) {
+    // DFS 順で対象アクターの参照を探す（roots は world_line でフィルタ、全子孫をカウント）。
+    // 見つけた &Actor は scene.actors を借用し、後段の scene.world 可変借用とは別フィールドの
+    // ため共存できる。
+    fn walk<'a>(actors: &'a [Actor], counter: &mut u64, target: u64) -> Option<&'a Actor> {
+        for a in actors {
+            *counter += 1;
+            if *counter == target { return Some(a); }
+            if let Some(found) = walk(a.children(), counter, target) { return Some(found); }
+        }
+        None
+    }
+    let target_actor: Option<&Actor> = {
+        let mut counter = 0u64;
+        let mut found: Option<&Actor> = None;
+        for root in scene.actors.iter().filter(|a| a.world_line == world_line) {
+            counter += 1;
+            if counter == entity_id { found = Some(root); break; }
+            if let Some(f) = walk(root.children(), &mut counter, entity_id) { found = Some(f); break; }
+        }
+        found
+    };
+    let Some(actor) = target_actor else { return };
+
+    // 位置だけ差し替えた新しいワールド Transform を作る（回転・スケールは維持）
+    let cur = scene.world.get::<ActorTransform>(actor.entity).cloned().unwrap_or_default();
+    let mut next = cur;
+    next.position = new_pos;
+
+    // 集約関数経由で反映（自 instance_mats・全子孫アクタへ伝播）。
+    // child_dfs_start はスクリプト／物理経路では Undo を記録しないため 0 でよい。
+    crate::engine::core::transform_sync::set_actor_world_transform(actor, &mut scene.world, next, 0);
 }
 
 // ─── 数学ユーティリティ ──────────────────────────────────────────────────────

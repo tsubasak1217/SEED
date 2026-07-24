@@ -40,48 +40,44 @@ const PERF_LOG_INTERVAL: u64 = 60;
 /// （常時出力するとエディタログが [PERF] 行で埋まり、スクリプト等の重要ログが埋没するため）
 static PERF_LOG_ENABLED: std::sync::LazyLock<bool> =
     std::sync::LazyLock::new(|| std::env::var_os("SEED_PERF_LOG").is_some());
-use crate::engine::components::CanvasDrawZone;
-use crate::engine::components::Transform as ActorTransform;
-use crate::engine::components::{CanvasTransform, Collider2dComponent};
 use crate::engine::components::{ColliderComponent, ColliderShapeData, ComponentKind};
+use crate::engine::components::{Collider2dComponent, CanvasTransform};
+use crate::engine::components::Transform as ActorTransform;
+use crate::engine::structs::transforms::Quaternion;
+use crate::engine::structs::objects::actor::Actor;
 use crate::engine::core::app_base::ipc::ToolMode;
 use crate::engine::core::app_base::scene::CanvasCameraData;
-use crate::engine::core::app_base::undo::{ActorDfsSelectionCommand, SelectionCommand};
 use crate::engine::core::clock::FrameContext;
+use crate::engine::components::CanvasDrawZone;
 use crate::engine::methods::drawer::{
-    CameraBuffer,
-    CameraUniform,
-    GizmoBatch,
-    GpuSpriteTexture,
+    CameraBuffer, CameraUniform,
+    draw_model_indirect, draw_id_pass, draw_canvas_id_items, draw_collider_pick_items, prepare_canvas_id_bg,
+    draw_outline_multi, draw_stencil_mask_multi,
+    extract_frustum_planes, GizmoBatch, draw_gizmo_batch,
+    LineBatch, draw_line_batch, draw_thick_line_batch,
+    draw_sprite_batches, draw_sprite_outline_batches, GpuSpriteTexture,
     // group 4（ライト＋シャドウ＋クラスタ複合 BG）を「どのカメラのパスか」で選ぶ型。
     // カメラ固有資源（CSM・クラスタ）の取り違えを防ぐため、BG は必ずこれ経由で取る。
     LightingPass,
-    LineBatch,
     NUM_LODS,
-    draw_canvas_id_items,
-    draw_collider_pick_items,
-    draw_gizmo_batch,
-    draw_id_pass,
-    draw_line_batch,
-    draw_model_indirect,
-    draw_outline_multi,
-    draw_sprite_batches,
-    draw_sprite_outline_batches,
-    draw_stencil_mask_multi,
-    draw_thick_line_batch,
-    extract_frustum_planes,
-    prepare_canvas_id_bg,
 };
-use crate::engine::methods::gizmo_interact::{GIZMO_SCREEN_RADIUS_RATIO, screen_to_ray};
-use crate::engine::structs::objects::actor::Actor;
-use crate::engine::structs::tensor::{Mat4x4, Vector3};
-use crate::engine::structs::transforms::Quaternion;
+use crate::engine::methods::gizmo_interact::{screen_to_ray, GIZMO_SCREEN_RADIUS_RATIO};
+use crate::engine::core::app_base::undo::{SelectionCommand, ActorDfsSelectionCommand};
+use crate::engine::structs::tensor::{Vector3, Mat4x4};
 use crate::engine::structs::utils::Color;
 
 use super::{
-    App, CANVAS_WORLD_SCALE, CameraGizmoResources, CameraPreviewResources, RuntimeMode,
-    apply_window_clamp, camera_scene_gizmo, collect_mcs_in_world_line, find_actor_by_dfs,
-    find_parent_actor_of_dfs, get_3d_canvas_world_mat, world_to_screen,
+    App, RuntimeMode,
+    collect_mcs_in_world_line,
+    find_actor_by_dfs,
+    find_parent_actor_of_dfs,
+    get_3d_canvas_world_mat,
+    world_to_screen,
+    apply_window_clamp,
+    camera_scene_gizmo,
+    CameraPreviewResources,
+    CameraGizmoResources,
+    CANVAS_WORLD_SCALE,
 };
 
 // ============================================================
@@ -107,9 +103,9 @@ use super::{
 ///   - `cache_keys` に無い（既に外部で消えた）`absent` エントリも掃除し、状態マップの肥大も防ぐ。
 fn compute_stale_batch_prune(
     cache_keys: &std::collections::HashSet<String>,
-    alive: &std::collections::HashSet<String>,
-    absent: &mut std::collections::HashMap<String, u32>,
-    threshold: u32,
+    alive:      &std::collections::HashSet<String>,
+    absent:     &mut std::collections::HashMap<String, u32>,
+    threshold:  u32,
 ) -> Vec<String> {
     let mut to_free = Vec::new();
     for key in cache_keys {
@@ -126,9 +122,7 @@ fn compute_stale_batch_prune(
         }
     }
     // 解放したキーと、既に cache から消えたキーの absent エントリを掃除する。
-    for k in &to_free {
-        absent.remove(k);
-    }
+    for k in &to_free { absent.remove(k); }
     absent.retain(|k, _| cache_keys.contains(k));
     to_free
 }
@@ -145,8 +139,9 @@ fn compute_stale_batch_prune(
 /// - proj_aspect: 射影行列に渡すアスペクト比
 /// - fov_y_rad: 射影行列に渡す実効縦 FOV（ラジアン）
 use super::canvas_collect::{
-    build_ss_layout_maps_free, collect_3d_canvas_child_id_items, collect_canvas_id_items,
-    collect_canvas_rects, collect_sprite_items, compute_game_viewport, sprite_world_corners,
+    collect_sprite_items, collect_canvas_rects, collect_canvas_id_items,
+    collect_3d_canvas_child_id_items, sprite_world_corners,
+    compute_game_viewport, build_ss_layout_maps_free,
 };
 
 /// カメラプレビューのテクスチャ幅（ピクセル）。
@@ -174,9 +169,7 @@ impl App {
         const DEFAULT_DIST: f32 = 10.0;
 
         // ピック処理がバッファを使用済みのため今フレームでは読み取れない
-        if did_pick {
-            return None;
-        }
+        if did_pick { return None; }
 
         // IDバッファからメッシュ面のワールド座標を取得する
         let world_pos = if let (Some(id_buf), Some(draw_ctx)) = (&self.id_buffer, &self.draw_ctx) {
@@ -189,18 +182,14 @@ impl App {
         // ワールド座標が取れた場合はそのまま使い、なければレイキャストにフォールバック
         Some(world_pos.unwrap_or_else(|| {
             let cam_v = self.camera.position();
-            let cam = [cam_v.x, cam_v.y, cam_v.z];
+            let cam   = [cam_v.x, cam_v.y, cam_v.z];
             if let Some(ws) = self.window.as_ref().map(|w| w.inner_size()) {
                 let view = self.camera.view_matrix();
                 let proj = self.camera.projection_matrix();
                 let (_ro, rd) = screen_to_ray(
-                    sx as f32,
-                    sy as f32,
-                    ws.width as f32,
-                    ws.height as f32,
-                    &view.data,
-                    &proj.data,
-                    cam,
+                    sx as f32, sy as f32,
+                    ws.width as f32, ws.height as f32,
+                    &view.data, &proj.data, cam,
                 );
                 [
                     cam[0] + rd[0] * DEFAULT_DIST,
@@ -209,11 +198,11 @@ impl App {
                 ]
             } else {
                 // ウィンドウサイズが取れない場合はカメラ前方向に配置する
-                let yaw = self.camera.yaw.to_radians();
+                let yaw   = self.camera.yaw.to_radians();
                 let pitch = self.camera.pitch.to_radians();
                 [
                     cam[0] + yaw.sin() * pitch.cos() * DEFAULT_DIST,
-                    cam[1] + pitch.sin() * DEFAULT_DIST,
+                    cam[1] + pitch.sin()              * DEFAULT_DIST,
                     cam[2] + yaw.cos() * pitch.cos() * DEFAULT_DIST,
                 ]
             }
@@ -232,12 +221,10 @@ impl App {
         // Edit モード（エディタ埋め込みビューポート）は、フォーカスが外れても
         // 編集操作の滑らかさを保ちたいので制限しない。制限対象は Play／スタンドアロン
         // 実行のウィンドウのみ（フラッドが問題になるのはこちら）。
-        if self.window_focused || self.mode == RuntimeMode::Edit {
-            return;
-        }
+        if self.window_focused || self.mode == RuntimeMode::Edit { return; }
         /// 非フォーカス時のフレームレート上限。
         const UNFOCUSED_MAX_FPS: u64 = 30;
-        let target = std::time::Duration::from_micros(1_000_000 / UNFOCUSED_MAX_FPS);
+        let target  = std::time::Duration::from_micros(1_000_000 / UNFOCUSED_MAX_FPS);
         let elapsed = frame_start.elapsed();
         if elapsed < target {
             std::thread::sleep(target - elapsed);
@@ -250,12 +237,7 @@ impl App {
     pub(super) fn handle_redraw_requested(&mut self, event_loop: &ActiveEventLoop) {
         let dbg_frame = DEBUG_FRAME.fetch_add(1, Ordering::Relaxed);
         let dbg = dbg_frame < DEBUG_LOG_FRAMES;
-        if dbg {
-            eprintln!(
-                "[SEED FRAME {dbg_frame}] start  mode={:?}  paused={}",
-                self.mode, self.paused
-            );
-        }
+        if dbg { eprintln!("[SEED FRAME {dbg_frame}] start  mode={:?}  paused={}", self.mode, self.paused); }
 
         // レンダリング機能マトリクスの実効モードが変わっていれば [SEED FEATURES] を出す
         // （起動時・スタンドアロン時もここで拾う。IPC 切替は各ハンドラでも即ログ）。
@@ -281,48 +263,48 @@ impl App {
         // GPU コマンド記録時間（CPU 側）を計測するため、実際の GPU 実行時間は含まない。
         // ただし total_ms と begin_frame_ms は GPU バックプレッシャー（get_current_texture 待機）も含む。
         let perf_idx = PERF_FRAME.fetch_add(1, Ordering::Relaxed);
-        let do_perf = *PERF_LOG_ENABLED && perf_idx % PERF_LOG_INTERVAL == 0;
+        let do_perf  = *PERF_LOG_ENABLED && perf_idx % PERF_LOG_INTERVAL == 0;
         // フレーム全体の経過時間 [ms]（begin_frame の GPU 待機 + コマンド記録 + submit を含む）
         let perf_t_total = std::time::Instant::now();
         // begin_frame（get_current_texture）にかかった時間 [ms]（GPU バックプレッシャーの指標）
         let mut perf_begin_frame_ms: f64 = 0.0;
         // process_ipc にかかった時間 [ms]
-        let mut perf_ipc_ms: f64 = 0.0;
+        let mut perf_ipc_ms:        f64 = 0.0;
         // MCバッチ更新（視錐台カリング + write_buffer記録）にかかった CPU 時間 [ms]
         // Phase R7 以降は per-MC batch 更新は廃止（下記 merge バケットへ統合）のため常に 0。
-        let mut perf_batch_ms: f64 = 0.0;
+        let mut perf_batch_ms:      f64 = 0.0;
         // 統合バッチ（shared_model_batches）の merge_map 構築＋全バッチ update() 記録に
         // かかった CPU 時間 [ms]。地形 768 チャンクではここが主要 CPU 支配項の一つ。
         // 静的地形チャンクの update スキップ（Fix B）の効果はこのバケットに現れる。
-        let mut perf_merge_ms: f64 = 0.0;
+        let mut perf_merge_ms:      f64 = 0.0;
         // スキンコンピュートコマンド記録にかかった CPU 時間 [ms]
-        let mut perf_skin_ms: f64 = 0.0;
+        let mut perf_skin_ms:       f64 = 0.0;
         // メインパスの draw_model_indirect コマンド記録にかかった CPU 時間 [ms]
-        let mut perf_draw_ms: f64 = 0.0;
+        let mut perf_draw_ms:       f64 = 0.0;
         // メインチャンネルのスプライトバッチ数（= ドローコール数）と総インスタンス数（Phase R6）。
         // 汎用バッチングの効果（N 枚 → 数バッチ）を [PERF] で可視化する。
-        let mut perf_sprite_draws: usize = 0;
-        let mut perf_sprite_insts: usize = 0;
+        let mut perf_sprite_draws:  usize = 0;
+        let mut perf_sprite_insts:  usize = 0;
         // ID パスコマンド記録にかかった CPU 時間 [ms]
-        let mut perf_id_ms: f64 = 0.0;
+        let mut perf_id_ms:         f64 = 0.0;
         // グリッド GPU バッチ生成（CPU 線生成 + device.create_buffer_init）にかかった時間 [ms]
-        let mut perf_grid_ms: f64 = 0.0;
+        let mut perf_grid_ms:       f64 = 0.0;
         // コライダーワイヤーフレームバッチ生成にかかった時間 [ms]
-        let mut perf_collider_ms: f64 = 0.0;
+        let mut perf_collider_ms:   f64 = 0.0;
         // RT 影の TLAS/BLAS 加速構造ビルド（build_acceleration_structures 記録）にかかった時間 [ms]
-        let mut perf_tlas_ms: f64 = 0.0;
+        let mut perf_tlas_ms:       f64 = 0.0;
         // このフレームで TLAS を実際に再構築したか（false=静止スキップ）
-        let mut perf_tlas_built: bool = false;
+        let mut perf_tlas_built:    bool = false;
         // TLAS に登録されているインスタンス数
-        let mut perf_tlas_insts: u32 = 0;
+        let mut perf_tlas_insts:    u32 = 0;
         // メインレンダーパス全体（begin〜pass drop）にかかった時間 [ms]
-        let mut perf_main_pass_ms: f64 = 0.0;
+        let mut perf_main_pass_ms:  f64 = 0.0;
         // pass.drop() だけにかかった時間 [ms]（wgpu デバッグ検証オーバーヘッドの指標）
-        let mut perf_pass_drop_ms: f64 = 0.0;
+        let mut perf_pass_drop_ms:  f64 = 0.0;
         // frame.finish()（encoder.finish + queue.submit + surface.present）にかかった時間 [ms]
-        let mut perf_finish_ms: f64 = 0.0;
+        let mut perf_finish_ms:     f64 = 0.0;
         // このフレームの ModelComponent 総数
-        let mut perf_mc_count: usize = 0;
+        let mut perf_mc_count:      usize = 0;
         // うちスキン（アニメーション）付き MC 数
         let mut perf_skin_mc_count: usize = 0;
         // 実際に dispatch したスキン LOD 数（visible_count > 0 のもの）
@@ -331,29 +313,25 @@ impl App {
         // メッシュレット×インスタンス総数（LOD0 不透明・可視インスタンス分）。
         let mut perf_meshlet_considered: u32 = 0;
         // 3D 物理同期 update_physics()（recv/書き戻し/kinematic送信/ドラッグ押し戻し同期問い合わせ）[ms]
-        let mut perf_physics_ms: f64 = 0.0;
+        let mut perf_physics_ms:    f64 = 0.0;
         // 編集時スナップショット記録 try_record_physics_snapshot()（ECS 状態のキャプチャ）[ms]
-        let mut perf_snapshot_ms: f64 = 0.0;
+        let mut perf_snapshot_ms:   f64 = 0.0;
         // 2D 物理同期 update_physics_2d() [ms]
-        let mut perf_physics2d_ms: f64 = 0.0;
+        let mut perf_physics2d_ms:  f64 = 0.0;
         // このフレームで物理が実際に更新されたか（[PERF] 自動出力の判定に使う）
         let mut perf_physics_active = false;
 
         let _perf_t_ipc = std::time::Instant::now();
         self.process_ipc(event_loop);
         perf_ipc_ms = _perf_t_ipc.elapsed().as_secs_f64() * 1000.0;
-        if dbg {
-            eprintln!("[SEED FRAME {dbg_frame}] process_ipc done");
-        }
+        if dbg { eprintln!("[SEED FRAME {dbg_frame}] process_ipc done"); }
 
         // AI 実行中はレンダリングをスキップして GPU リソースを LLM に解放する。
         // IPC は process_ipc で処理済みなので RESUME_RENDER を受け取れる。
         // request_redraw() でポーリングを継続し、RESUME_RENDER 受信後に即復帰できるようにする。
         if self.render_paused {
             self.pace_frame_if_unfocused(perf_t_total);
-            if let Some(w) = &self.window {
-                w.request_redraw();
-            }
+            if let Some(w) = &self.window { w.request_redraw(); }
             return;
         }
 
@@ -382,8 +360,7 @@ impl App {
         // ヒエラルキー遅延フラッシュ（スロットリングで保留されていた送信）
         if self.hierarchy_dirty {
             let now = std::time::Instant::now();
-            let ready = self
-                .last_hierarchy_send
+            let ready = self.last_hierarchy_send
                 .map(|t| now.duration_since(t).as_millis() >= 100)
                 .unwrap_or(true);
             if ready {
@@ -407,22 +384,16 @@ impl App {
         } else {
             let is_edit_physics_stepping = self.should_step_edit_physics();
             let should_update_physics = (self.mode == RuntimeMode::Play && !self.paused)
-                || (self.mode == RuntimeMode::Edit
-                    && self.edit_physics_enabled
-                    && is_edit_physics_stepping);
+                || (self.mode == RuntimeMode::Edit && self.edit_physics_enabled && is_edit_physics_stepping);
             if should_update_physics {
                 perf_physics_active = true;
-                if dbg {
-                    eprintln!("[SEED FRAME {dbg_frame}] update_physics start");
-                }
+                if dbg { eprintln!("[SEED FRAME {dbg_frame}] update_physics start"); }
                 // 3D 物理同期の所要時間を計測（recv・書き戻し・kinematic送信・
                 // ドラッグ押し戻しの同期オーバーラップ問い合わせ最大 20ms を含む）
                 let _perf_t_phys = std::time::Instant::now();
                 self.update_physics();
                 perf_physics_ms = _perf_t_phys.elapsed().as_secs_f64() * 1000.0;
-                if dbg {
-                    eprintln!("[SEED FRAME {dbg_frame}] update_physics done");
-                }
+                if dbg { eprintln!("[SEED FRAME {dbg_frame}] update_physics done"); }
                 // 編集時のみスナップショットを記録する（変化なしなら自動停止）
                 if self.mode == RuntimeMode::Edit && self.edit_physics_enabled {
                     let dt = 1.0 / 60.0f64; // 固定タイムステップ（物理スレッドと同期）
@@ -436,9 +407,7 @@ impl App {
             // 2D 物理はタイムラインと連動する（3D タイムラインと同期）
             let is_edit_physics_stepping = self.should_step_edit_physics();
             let should_update_physics_2d = (self.mode == RuntimeMode::Play && !self.paused)
-                || (self.mode == RuntimeMode::Edit
-                    && self.edit_physics_2d_enabled
-                    && is_edit_physics_stepping);
+                || (self.mode == RuntimeMode::Edit && self.edit_physics_2d_enabled && is_edit_physics_stepping);
             if should_update_physics_2d {
                 perf_physics_active = true;
                 let _perf_t_phys2d = std::time::Instant::now();
@@ -457,20 +426,19 @@ impl App {
         // edit_view_hide_ss: Edit モード + シーン世界線 + View3D。
         //   スクリーンスペースキャンバス（Actor2D）を描画・ピッキングとも非表示にする。
         // どちらも Play モード・アクター編集タブには影響しない。
-        let edit_view_2d = self.edit_view_is_2d();
+        let edit_view_2d      = self.edit_view_is_2d();
         let edit_view_hide_ss = self.edit_view_hides_ss_canvas();
         // 現在の世界線が 2D キャンバスモードかどうか。
         // View3D（edit_view_hide_ss）では SS キャンバスを完全に隠すため false 扱いにし、
         // スプライト収集・矩形アウトライン・2D コライダー・GPU ID ピッキングを一括で抑制する。
-        let is_canvas =
-            self.canvas_world_lines.contains(&self.active_world_line) && !edit_view_hide_ss;
+        let is_canvas = self.canvas_world_lines.contains(&self.active_world_line)
+            && !edit_view_hide_ss;
         // スクリーンスペースモード:
         //   - チェックボックス ON: スクリーンスペース
         //   - プレイ中: 常にスクリーンスペース
         //   - アクター編集タブの 2D 世界線: 常にスクリーンスペース（編集パネルは従来通り）
         //   - Edit の 2D シーンビュー: 常にスクリーンスペース（WYSIWYG 表示）
-        let use_screen_space = self.canvas_screen_space_overlay
-            || !in_editor
+        let use_screen_space = self.canvas_screen_space_overlay || !in_editor
             || self.actor_edit_canvas_wls.contains(&self.active_world_line)
             || edit_view_2d;
 
@@ -496,16 +464,11 @@ impl App {
                 // MMB ドラッグで XY パン、スクロールでズーム。3D デバッグカメラは動かさない。
                 // （3D ビューの MMB パンと操作を統一）
                 if self.cam_input.mmb {
-                    let ws = self
-                        .window
-                        .as_ref()
-                        .map(|w| {
-                            let s = w.inner_size();
-                            [s.width as f32, s.height as f32]
-                        })
-                        .unwrap_or([1280.0, 720.0]);
-                    let cam_2d = self
-                        .canvas_cameras
+                    let ws = self.window.as_ref().map(|w| {
+                        let s = w.inner_size();
+                        [s.width as f32, s.height as f32]
+                    }).unwrap_or([1280.0, 720.0]);
+                    let cam_2d = self.canvas_cameras
                         .entry(self.active_world_line)
                         .or_insert_with(CanvasCameraData::default);
                     // ビューポート高さあたりのワールドユニット（スケール係数）
@@ -515,14 +478,13 @@ impl App {
                     cam_2d.pan_y -= self.cam_input.mouse_dy * scale;
                 }
                 if self.cam_input.scroll != 0.0 {
-                    let cam_2d = self
-                        .canvas_cameras
+                    let cam_2d = self.canvas_cameras
                         .entry(self.active_world_line)
                         .or_insert_with(CanvasCameraData::default);
                     // scroll 正 = ホイール上 = ズームイン（half_h を小さくする）
                     cam_2d.ortho_half_h = (cam_2d.ortho_half_h
                         * 0.9_f32.powf(self.cam_input.scroll))
-                    .clamp(CAM2D_ORTHO_HALF_H_MIN, CAM2D_ORTHO_HALF_H_MAX);
+                        .clamp(CAM2D_ORTHO_HALF_H_MIN, CAM2D_ORTHO_HALF_H_MAX);
                 }
             } else {
                 // 3D モード（ワールドスペースキャンバス含む）: 通常のデバッグカメラ更新
@@ -538,8 +500,8 @@ impl App {
         // Scene の Schedule に登録された ECS システム群（C# スクリプト駆動を含む）を
         // フェーズ順に実行する。
         if time_running {
-            use crate::engine::core::scripting::{publish_input, publish_physics_sender};
             use crate::engine::ecs::Phase;
+            use crate::engine::core::scripting::{publish_input, publish_physics_sender};
             // アニメーション評価（スクリプト更新より前に実行し、スクリプトが上書き可能にする）。
             // AnimatorComponent のクリップを進めて対象アクターの Transform 等へ書き込む。
             self.update_animations(ctx.delta_time);
@@ -551,51 +513,30 @@ impl App {
             publish_physics_sender(self.physics_thread.as_ref().map(|t| t.command_sender()));
             // AudioSource.IsPlaying 判定用に再生中スロット一覧を公開する
             crate::engine::core::scripting::host_api::publish_playing_audio_slots(
-                self.playing_audio_slots(),
-            );
+                self.playing_audio_slots());
             // CanvasTransform.ScreenPosition 用に 2D アクターのスクリーン座標を公開する
             //（描画と同一の座標変換チェーンでフレームごとに計算する）
             crate::engine::core::scripting::host_api::publish_screen_positions(
-                self.collect_2d_screen_positions(),
-            );
-            if dbg {
-                eprintln!("[SEED FRAME {dbg_frame}] begin_frame");
-            }
-            if let Some(scene) = &mut self.scene {
-                scene.run_phase(Phase::BeginFrame, &ctx);
-            }
-            if dbg {
-                eprintln!("[SEED FRAME {dbg_frame}] early_update");
-            }
-            if let Some(scene) = &mut self.scene {
-                scene.run_phase(Phase::EarlyUpdate, &ctx);
-            }
-            if dbg {
-                eprintln!("[SEED FRAME {dbg_frame}] update");
-            }
-            if let Some(scene) = &mut self.scene {
-                scene.run_phase(Phase::Update, &ctx);
-            }
-            if dbg {
-                eprintln!("[SEED FRAME {dbg_frame}] constant_update");
-            }
+                self.collect_2d_screen_positions());
+            if dbg { eprintln!("[SEED FRAME {dbg_frame}] begin_frame"); }
+            if let Some(scene) = &mut self.scene { scene.run_phase(Phase::BeginFrame, &ctx); }
+            if dbg { eprintln!("[SEED FRAME {dbg_frame}] early_update"); }
+            if let Some(scene) = &mut self.scene { scene.run_phase(Phase::EarlyUpdate, &ctx); }
+            if dbg { eprintln!("[SEED FRAME {dbg_frame}] update"); }
+            if let Some(scene) = &mut self.scene { scene.run_phase(Phase::Update, &ctx); }
+            if dbg { eprintln!("[SEED FRAME {dbg_frame}] constant_update"); }
             for fixed_ctx in self.clock.drain_fixed() {
-                if let Some(scene) = &mut self.scene {
-                    scene.run_phase(Phase::ConstantUpdate, &fixed_ctx);
-                }
+                if let Some(scene) = &mut self.scene { scene.run_phase(Phase::ConstantUpdate, &fixed_ctx); }
             }
-            if dbg {
-                eprintln!("[SEED FRAME {dbg_frame}] late_update");
-            }
-            if let Some(scene) = &mut self.scene {
-                scene.run_phase(Phase::LateUpdate, &ctx);
-            }
-            if dbg {
-                eprintln!("[SEED FRAME {dbg_frame}] scene.render");
-            }
-            if let Some(scene) = &mut self.scene {
-                scene.run_phase(Phase::Render, &ctx);
-            }
+            if dbg { eprintln!("[SEED FRAME {dbg_frame}] late_update"); }
+            if let Some(scene) = &mut self.scene { scene.run_phase(Phase::LateUpdate, &ctx); }
+            if dbg { eprintln!("[SEED FRAME {dbg_frame}] scene.render"); }
+            if let Some(scene) = &mut self.scene { scene.run_phase(Phase::Render, &ctx); }
+            // キャラクターコントローラーの希望位置（スクリプトが Transform に書いた値）を
+            // 物理スレッドへ送る。**必ずスクリプトフェーズ実行後**に呼ぶことで、この
+            // フレームでスクリプトが書いた希望位置を拾える（次フレームの update_physics で
+            // 補正後位置を受信して反映する非同期パイプライン）。
+            self.sync_character_controllers();
             // 入力・物理チャンネルの公開を解除する（フェーズ外でのアクセスを防ぐ）
             publish_input(None);
             publish_physics_sender(None);
@@ -607,9 +548,7 @@ impl App {
             self.apply_script_audio_commands();
             // AudioComponent の play_on_start 発火と距離減衰・パンを更新する
             self.update_component_audio();
-            if dbg {
-                eprintln!("[SEED FRAME {dbg_frame}] game logic done");
-            }
+            if dbg { eprintln!("[SEED FRAME {dbg_frame}] game logic done"); }
         }
 
         // ─ 1-7. ジョイントアタッチ（ソケット）追従 ─────────
@@ -630,22 +569,22 @@ impl App {
 
         // Play モードのスケーリングモードに応じたビューポート矩形とクリアカラー。
         // カメラ選択ブロック内で上書きされ、メインレンダーパスで適用する。
-        let win_w_f = window_size.map_or(1280.0_f32, |s| s.width as f32);
-        let win_h_f = window_size.map_or(720.0_f32, |s| s.height as f32);
+        let win_w_f = window_size.map_or(1280.0_f32, |s| s.width  as f32);
+        let win_h_f = window_size.map_or(720.0_f32,  |s| s.height as f32);
 
         // NOTE: オブジェクト単位の視錐台カリングは撤去したため、Edit モードのカメラプレビュー用
         //       OR カリング視錐台（旧 preview_frustum）も不要になった。メッシュレットカリングは
         //       メインカメラ視錐台のみで動作する（プレビュー小窓の描画はカリング対象外）。
-        let mut game_viewport: (f32, f32, f32, f32) = (0.0, 0.0, win_w_f, win_h_f);
-        let mut game_clear_color: [f32; 4] = [0.1, 0.1, 0.1, 1.0];
+        let mut game_viewport:    (f32, f32, f32, f32) = (0.0, 0.0, win_w_f, win_h_f);
+        let mut game_clear_color: [f32; 4]             = [0.1, 0.1, 0.1, 1.0];
         // LetterBox / PillarBox 時の帯カラー。デフォルト黒。
-        let mut game_bar_color: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
+        let mut game_bar_color:   [f32; 4]             = [0.0, 0.0, 0.0, 1.0];
         // LetterBox / PillarBox 選択フラグ（帯カラーを clear に使用する）
-        let mut uses_bar_mode: bool = false;
+        let mut uses_bar_mode:    bool                 = false;
 
         // 統合バッチ更新で使うためここで宣言しておく（begin_frame ブロック外でも参照できるよう）
         let mut saved_frustum_planes: [[f32; 4]; 6] = [[0.0; 4]; 6];
-        let mut saved_camera_pos: [f32; 3] = [0.0; 3];
+        let mut saved_camera_pos:     [f32; 3]       = [0.0; 3];
         // シャドウ（Phase R2）用のアクティブカメラ情報（3D パースペクティブ時のみ Some）。
         // (view 行列, near, far, fov_y[rad], aspect)。CSM のカスケード分割・視錐台計算に使う。
         // 2D オルソ・正射カメラ時は None（方向光 CSM は透視カメラ前提のため影を落とさない）。
@@ -661,23 +600,19 @@ impl App {
             //   - Edit モード         → デバッグカメラ
             // 2D オルソカメラビュー（アクター編集 2D タブ / 2D シーンビュー）は
             // canvas_cameras の 2D カメラをメインカメラとして使う。
-            let (view, proj, cam_pos_arr, shadow_cam): (
-                Mat4x4<f32>,
-                Mat4x4<f32>,
-                [f32; 3],
-                Option<(f32, f32, f32, f32)>,
-            ) = if use_ortho_2d_camera {
-                let cam_2d = self
-                    .canvas_cameras
+            let (view, proj, cam_pos_arr, shadow_cam): (Mat4x4<f32>, Mat4x4<f32>, [f32; 3], Option<(f32, f32, f32, f32)>) = if use_ortho_2d_camera {
+                let cam_2d = self.canvas_cameras
                     .entry(self.active_world_line)
                     .or_insert_with(CanvasCameraData::default);
-                let aspect = window_size.map_or(16.0 / 9.0, |s| s.width as f32 / s.height as f32);
+                let aspect = window_size.map_or(16.0 / 9.0, |s| {
+                    s.width as f32 / s.height as f32
+                });
                 let half_h = cam_2d.ortho_half_h;
                 let half_w = half_h * aspect;
                 // カメラは Z=-100 から XY 平面（Z=0）を見下ろす（LH forward = +Z）
-                let eye = Vector3::new(cam_2d.pan_x, cam_2d.pan_y, -100.0);
+                let eye    = Vector3::new(cam_2d.pan_x, cam_2d.pan_y, -100.0);
                 let center = Vector3::new(cam_2d.pan_x, cam_2d.pan_y, 0.0);
-                let up = Vector3::new(0.0, 1.0, 0.0);
+                let up     = Vector3::new(0.0, 1.0, 0.0);
                 let v = Mat4x4::look_at_lh(eye, center, up);
                 // Y-down: bottom=+half_h, top=-half_h でワールド Y 正方向 = スクリーン下
                 let p = Mat4x4::orthographic_lh(-half_w, half_w, half_h, -half_h, 0.0, 200.0);
@@ -687,28 +622,24 @@ impl App {
                 // スケーリングモードに応じたビューポート矩形・射影アスペクト比・実効 FOV を計算する
                 let game_cam = scene.find_main_camera().map(|(tf, cd)| {
                     let (vp_x, vp_y, vp_w, vp_h, proj_aspect, fov_y_rad) = compute_game_viewport(
-                        &cd.scaling_mode,
-                        win_w_f,
-                        win_h_f,
-                        cd.target_width,
-                        cd.target_height,
-                        cd.fov_y_deg,
+                        &cd.scaling_mode, win_w_f, win_h_f,
+                        cd.target_width, cd.target_height, cd.fov_y_deg,
                     );
-                    game_viewport = (vp_x, vp_y, vp_w.max(1.0), vp_h.max(1.0));
+                    game_viewport    = (vp_x, vp_y, vp_w.max(1.0), vp_h.max(1.0));
                     game_clear_color = cd.clear_color;
-                    game_bar_color = cd.bar_color;
+                    game_bar_color   = cd.bar_color;
                     // LetterBox / PillarBox の場合は帯カラーを LoadOp::Clear に使用する。
                     // ゲームエリア内は scene オブジェクトがクリアカラーを上書きする想定。
                     uses_bar_mode = matches!(
                         cd.scaling_mode,
                         crate::engine::components::ScalingMode::LetterBox
-                            | crate::engine::components::ScalingMode::PillarBox
-                            | crate::engine::components::ScalingMode::LetterPillarBox
+                        | crate::engine::components::ScalingMode::PillarBox
+                        | crate::engine::components::ScalingMode::LetterPillarBox
                     );
                     let [px, py, pz] = tf.position;
                     let [fx, fy, fz] = tf.forward();
                     let [ux, uy, uz] = tf.up();
-                    let pos = Vector3::new(px, py, pz);
+                    let pos    = Vector3::new(px, py, pz);
                     let target = pos + Vector3::new(fx, fy, fz);
                     let up_vec = Vector3::new(ux, uy, uz);
                     let v = Mat4x4::look_at_lh(pos, target, up_vec);
@@ -721,28 +652,23 @@ impl App {
                             let half_h = cd.ortho_height.max(0.01) * 0.5;
                             let half_w = half_h * proj_aspect;
                             Mat4x4::orthographic_lh(
-                                -half_w,
-                                half_w,
-                                -half_h,
-                                half_h,
-                                cd.near.max(0.01),
-                                cd.far.max(cd.near + 0.1),
+                                -half_w, half_w, -half_h, half_h,
+                                cd.near.max(0.01), cd.far.max(cd.near + 0.1),
                             )
                         }
                     };
                     // CSM は透視カメラ前提。ゲームカメラが正射のときは影なし。
                     let shadow_opt = match cd.projection {
-                        crate::engine::components::CameraProjection::Perspective => {
-                            Some((cd.near, cd.far, fov_y_rad, proj_aspect))
-                        }
+                        crate::engine::components::CameraProjection::Perspective =>
+                            Some((cd.near, cd.far, fov_y_rad, proj_aspect)),
                         crate::engine::components::CameraProjection::Orthographic => None,
                     };
                     (v, p, [px, py, pz], shadow_opt)
                 });
                 // メインカメラが未配置の場合はデバッグカメラにフォールバック
                 game_cam.unwrap_or_else(|| {
-                    let v = self.camera.view_matrix();
-                    let p = self.camera.projection_matrix();
+                    let v  = self.camera.view_matrix();
+                    let p  = self.camera.projection_matrix();
                     let cp = self.camera.position();
                     // デバッグカメラ（透視）: near/far/fov/aspect を CSM に渡す。
                     let sc = Some((
@@ -755,8 +681,8 @@ impl App {
                 })
             } else {
                 // Edit モード: デバッグカメラ
-                let v = self.camera.view_matrix();
-                let p = self.camera.projection_matrix();
+                let v  = self.camera.view_matrix();
+                let p  = self.camera.projection_matrix();
                 let cp = self.camera.position();
                 let sc = Some((
                     self.camera.base.projection.near,
@@ -774,61 +700,59 @@ impl App {
                 saved_shadow_cam = Some((view, n, f, fo, a));
             }
 
-            let res = window_size.map_or([1280.0, 720.0], |s| [s.width as f32, s.height as f32]);
+            let res = window_size.map_or([1280.0, 720.0], |s| {
+                [s.width as f32, s.height as f32]
+            });
             // 逆 ViewProjection（デファードのライティングパスが深度→ワールド座標復元に使う）。
             // 特異行列（逆行列なし）の場合は単位行列へフォールバックする（パニックさせない）。
             let inv_view_proj = view_proj.inverse().unwrap_or_else(Mat4x4::identity);
-            camera_buf.update(
-                &queue,
-                &CameraUniform {
-                    view_proj: view_proj.transpose().data,
-                    view: view.transpose().data,
-                    position: cam_pos_arr,
-                    _pad: 0.0,
-                    resolution: res,
-                    _pad2: [0.0; 2],
-                    inv_view_proj: inv_view_proj.transpose().data,
-                },
-            );
+            camera_buf.update(&queue, &CameraUniform {
+                view_proj:      view_proj.transpose().data,
+                view:           view.transpose().data,
+                position:       cam_pos_arr,
+                _pad:           0.0,
+                resolution:     res,
+                _pad2:          [0.0; 2],
+                inv_view_proj:  inv_view_proj.transpose().data,
+            });
 
             // シーンスクリーンスペース専用: 2D オルソオーバーレイカメラを更新する。
             // 3D メインカメラの上に 2D キャンバス要素を重ねて描画するために使う。
             // アクター編集タブは camera_buf 自体が 2D なのでここでは更新しない。
             if scene_canvas_ss {
                 if let Some(canvas_cam_buf) = &self.canvas_overlay_camera_buf {
-                    let (vp_w, vp_h) = window_size
-                        .map_or((1280.0f32, 720.0f32), |s| (s.width as f32, s.height as f32));
+                    let (vp_w, vp_h) = window_size.map_or(
+                        (1280.0f32, 720.0f32),
+                        |s| (s.width as f32, s.height as f32),
+                    );
                     let half_h = vp_h / 2.0;
                     let half_w = vp_w / 2.0;
-                    let eye_c = Vector3::new(0.0, 0.0, -100.0);
+                    let eye_c    = Vector3::new(0.0, 0.0, -100.0);
                     let center_c = Vector3::new(0.0, 0.0, 0.0);
-                    let up_c = Vector3::new(0.0, 1.0, 0.0);
-                    let cv = Mat4x4::look_at_lh(eye_c, center_c, up_c);
+                    let up_c     = Vector3::new(0.0, 1.0, 0.0);
+                    let cv  = Mat4x4::look_at_lh(eye_c, center_c, up_c);
                     let cp2 = Mat4x4::orthographic_lh(-half_w, half_w, half_h, -half_h, 0.0, 200.0);
                     let cvp = cp2 * cv;
                     // 2D オルソオーバーレイカメラはデファードのライティングパス対象外だが、
                     // CameraUniform 構造体を埋める必要があるため一律で逆行列を計算する。
                     let cvp_inv = cvp.inverse().unwrap_or_else(Mat4x4::identity);
-                    canvas_cam_buf.update(
-                        &queue,
-                        &CameraUniform {
-                            view_proj: cvp.transpose().data,
-                            view: cv.transpose().data,
-                            position: [0.0, 0.0, -100.0],
-                            _pad: 0.0,
-                            resolution: [vp_w, vp_h],
-                            _pad2: [0.0; 2],
-                            inv_view_proj: cvp_inv.transpose().data,
-                        },
-                    );
+                    canvas_cam_buf.update(&queue, &CameraUniform {
+                        view_proj:      cvp.transpose().data,
+                        view:           cv.transpose().data,
+                        position:       [0.0, 0.0, -100.0],
+                        _pad:           0.0,
+                        resolution:     [vp_w, vp_h],
+                        _pad2:          [0.0; 2],
+                        inv_view_proj:  cvp_inv.transpose().data,
+                    });
                 }
             }
 
             let frustum_planes = extract_frustum_planes(&view_proj.data);
-            let camera_pos = cam_pos_arr;
+            let camera_pos     = cam_pos_arr;
             // 統合バッチ更新のためにブロック外へ保存する
             saved_frustum_planes = frustum_planes;
-            saved_camera_pos = camera_pos;
+            saved_camera_pos     = camera_pos;
             // 次フレーム先頭の地形 LOD 選択（tick_terrain_lod）が使うカメラ位置を控える。
             self.last_camera_pos = camera_pos;
 
@@ -847,16 +771,13 @@ impl App {
         }
 
         // ── ギズモ位置：全選択アクターの重心（マルチ選択対応） ──
-        let gizmo_pos = self
-            .selected_actors_centroid()
+        let gizmo_pos = self.selected_actors_centroid()
             .or_else(|| self.actor_virtual_world_pos());
 
         // アクター仮想選択のワールド位置（レンダラー借用外で取得）
         let actor_virtual_pos: Option<[f32; 3]> = if self.actor_virtual_selected_idx.is_some() {
             self.actor_virtual_world_pos()
-        } else {
-            None
-        };
+        } else { None };
 
         // ── ドラッグホバープレビュー位置の更新（レンダー前）──────────
         // アクター編集 2D タブの場合、アクターの配置位置は CanvasTransform で固定のため
@@ -871,36 +792,24 @@ impl App {
                 const DEFAULT_DIST: f32 = 10.0;
                 if let Some(ws) = self.window.as_ref().map(|w| w.inner_size()) {
                     let cam_v = self.camera.position();
-                    let cam = [cam_v.x, cam_v.y, cam_v.z];
-                    let view = self.camera.view_matrix();
-                    let proj = self.camera.projection_matrix();
+                    let cam   = [cam_v.x, cam_v.y, cam_v.z];
+                    let view  = self.camera.view_matrix();
+                    let proj  = self.camera.projection_matrix();
                     let (_ro, rd) = screen_to_ray(
-                        hsx as f32,
-                        hsy as f32,
-                        ws.width as f32,
-                        ws.height as f32,
-                        &view.data,
-                        &proj.data,
-                        cam,
+                        hsx as f32, hsy as f32,
+                        ws.width as f32, ws.height as f32,
+                        &view.data, &proj.data, cam,
                     );
                     // y=0 平面との交差を試みる（地面への自然な配置）
                     let pos = if rd[1].abs() > 0.001 {
                         let t = -cam[1] / rd[1];
                         if t > 0.5 {
-                            [cam[0] + rd[0] * t, 0.0, cam[2] + rd[2] * t]
+                            [cam[0]+rd[0]*t, 0.0, cam[2]+rd[2]*t]
                         } else {
-                            [
-                                cam[0] + rd[0] * DEFAULT_DIST,
-                                cam[1] + rd[1] * DEFAULT_DIST,
-                                cam[2] + rd[2] * DEFAULT_DIST,
-                            ]
+                            [cam[0]+rd[0]*DEFAULT_DIST, cam[1]+rd[1]*DEFAULT_DIST, cam[2]+rd[2]*DEFAULT_DIST]
                         }
                     } else {
-                        [
-                            cam[0] + rd[0] * DEFAULT_DIST,
-                            cam[1] + rd[1] * DEFAULT_DIST,
-                            cam[2] + rd[2] * DEFAULT_DIST,
-                        ]
+                        [cam[0]+rd[0]*DEFAULT_DIST, cam[1]+rd[1]*DEFAULT_DIST, cam[2]+rd[2]*DEFAULT_DIST]
                     };
                     self.drop_preview_pos = Some(pos);
                 }
@@ -925,75 +834,51 @@ impl App {
                     .into_iter()
                     .map(|(base, dfs, slot_i, mc)| (base, dfs, slot_i, mc.instance_mats.len()))
                     .collect()
-            } else {
-                vec![]
-            }
+            } else { vec![] }
         };
         // MC インスタンスの総数（キャンバス ID オフセット計算用）
         // 全 MC の (base + count) の最大値 = 割り当て済み ID の上限
-        let mc_total_instances: u32 = wl_mc_pick_infos
-            .iter()
+        let mc_total_instances: u32 = wl_mc_pick_infos.iter()
             .map(|&(base, _, _, count)| base + count as u32)
             .max()
             .unwrap_or(0);
 
         // カメラギズモの (DFS ID, アイコン行列) リスト（3D 編集モードのみ）。
         // ピック情報として mc_total_instances の直後の ID 範囲に割り当てる。
-        let cam_gizmo_actor_mats: Vec<(usize, [[f32; 4]; 4])> = if in_editor && !use_ortho_2d_camera
-        {
+        let cam_gizmo_actor_mats: Vec<(usize, [[f32; 4]; 4])> = if in_editor && !use_ortho_2d_camera {
             if let Some(scene) = &self.scene {
                 camera_scene_gizmo::collect_camera_actor_matrices(
-                    &scene.actors,
-                    &scene.world,
-                    self.active_world_line,
+                    &scene.actors, &scene.world, self.active_world_line,
                 )
-            } else {
-                vec![]
-            }
-        } else {
-            vec![]
-        };
+            } else { vec![] }
+        } else { vec![] };
         let camera_gizmo_count: u32 = cam_gizmo_actor_mats.len() as u32;
 
         // ライトギズモアイコンの (DFS ID, アイコン行列) リスト（3D 編集モードのみ）。
         // ピック情報としてカメラギズモの直後の ID 範囲に割り当てる。
-        let light_gizmo_actor_mats: Vec<(usize, [[f32; 4]; 4])> =
-            if in_editor && !use_ortho_2d_camera {
-                if let Some(scene) = &self.scene {
-                    super::light_scene_gizmo::collect_light_actor_matrices(
-                        &scene.actors,
-                        &scene.world,
-                        self.active_world_line,
-                    )
-                } else {
-                    vec![]
-                }
-            } else {
-                vec![]
-            };
+        let light_gizmo_actor_mats: Vec<(usize, [[f32; 4]; 4])> = if in_editor && !use_ortho_2d_camera {
+            if let Some(scene) = &self.scene {
+                super::light_scene_gizmo::collect_light_actor_matrices(
+                    &scene.actors, &scene.world, self.active_world_line,
+                )
+            } else { vec![] }
+        } else { vec![] };
         let light_gizmo_count: u32 = light_gizmo_actor_mats.len() as u32;
 
         // パーティクルエミッタギズモアイコンの (DFS ID, アイコン行列) リスト（3D 編集モードのみ）。
         // ピック情報としてライトギズモの直後の ID 範囲に割り当てる。
-        let particle_gizmo_actor_mats: Vec<(usize, [[f32; 4]; 4])> =
-            if in_editor && !use_ortho_2d_camera {
-                if let Some(scene) = &self.scene {
-                    super::particle_scene_gizmo::collect_particle_actor_matrices(
-                        &scene.actors,
-                        &scene.world,
-                        self.active_world_line,
-                    )
-                } else {
-                    vec![]
-                }
-            } else {
-                vec![]
-            };
+        let particle_gizmo_actor_mats: Vec<(usize, [[f32; 4]; 4])> = if in_editor && !use_ortho_2d_camera {
+            if let Some(scene) = &self.scene {
+                super::particle_scene_gizmo::collect_particle_actor_matrices(
+                    &scene.actors, &scene.world, self.active_world_line,
+                )
+            } else { vec![] }
+        } else { vec![] };
         let particle_gizmo_count: u32 = particle_gizmo_actor_mats.len() as u32;
 
         // ID 空間レイアウト: [MC | カメラギズモ | ライトギズモ | エミッタギズモ | キャンバス]
         // 各ギズモの ID ベースオフセット（ピックのデコードと id_pass 描画で共有する）。
-        let light_gizmo_id_base: u32 = mc_total_instances + camera_gizmo_count;
+        let light_gizmo_id_base:    u32 = mc_total_instances + camera_gizmo_count;
         let particle_gizmo_id_base: u32 = light_gizmo_id_base + light_gizmo_count;
         // キャンバス ID のベースオフセット（MC + 全ギズモアイコンの後）
         let canvas_id_offset: u32 = particle_gizmo_id_base + particle_gizmo_count;
@@ -1007,11 +892,7 @@ impl App {
         // ShadowResources::prepare_frame が採用可否とともに確定させる。
         let mut frame_lights: Vec<crate::engine::methods::drawer::GpuLight> =
             if let Some(scene) = &self.scene {
-                super::light_ops::collect_gpu_lights(
-                    &scene.actors,
-                    &scene.world,
-                    self.active_world_line,
-                )
+                super::light_ops::collect_gpu_lights(&scene.actors, &scene.world, self.active_world_line)
             } else {
                 Vec::new()
             };
@@ -1052,8 +933,8 @@ impl App {
         // self.renderer を可変借用した後は self の不変借用が取れないため。
         // ワールドスペース表示中（use_screen_space = false）の 2D アクターはパースペクティブ
         // カメラで描画されるため、ortho 半径ではなく 3D 半径を使う必要がある。
-        let gizmo_actor_is_2d =
-            use_ortho_2d_camera || (self.selected_primary_actor_is_2d() && use_screen_space);
+        let gizmo_actor_is_2d = use_ortho_2d_camera
+            || (self.selected_primary_actor_is_2d() && use_screen_space);
         // 3D Canvas 子アクター軸をレンダーパス開始前（可変借用前）に事前計算する。
         // レンダーパス内では &mut self.renderer の可変借用が続くため self の不変借用が取れない。
         let canvas_child_axes_pre = self.selected_canvas_child_axes();
@@ -1063,8 +944,7 @@ impl App {
         let local_axes_pre = self.selected_local_axes();
         // 2D シーンビューのドラッグホバー中キャンバス枠ハイライト線分も
         // 可変借用前に事前計算する（キャンバス矩形バッチ構築時に流し込む）。
-        let drag_hover_highlight_lines = if edit_view_2d && self.drag_hover_canvas_entity.is_some()
-        {
+        let drag_hover_highlight_lines = if edit_view_2d && self.drag_hover_canvas_entity.is_some() {
             self.collect_drag_hover_highlight_lines()
         } else {
             Vec::new()
@@ -1098,10 +978,7 @@ impl App {
             let awl = self.active_world_line;
             if let Some(scene) = self.scene.as_mut() {
                 self.particle_system.collect_and_consume(
-                    &mut scene.world,
-                    &scene.actors,
-                    awl,
-                    particle_dt,
+                    &mut scene.world, &scene.actors, awl, particle_dt,
                 );
             } else {
                 // シーンが無いフレームは孤児（エミッタ消滅後の粒子群）も含めて全解放する
@@ -1139,17 +1016,14 @@ impl App {
         //   メソッドとして呼ぶ（App の &mut self メソッドだと draw_ctx 借用と衝突する）。
         //   camera_pos は距離 LOD の振り分けに使うだけ（見た目の姿勢には影響しない）。
         if let Some(ctx) = self.draw_ctx.as_ref() {
-            self.terrain
-                .rebuild_scatter_models_gpu(ctx, saved_camera_pos);
+            self.terrain.rebuild_scatter_models_gpu(ctx, saved_camera_pos);
             // ── 散布モデルのチャンク単位フラスタム＋距離カリング（毎フレーム）──
             //   rebuild が用意した chunk_spans を、メインカメラ視錐台＋距離で絞り、
             //   可視チャンクのインスタンス行列だけをバッチへアップロードする。カメラが
             //   動くたびに可視集合が変わるため rebuild（dirty 時のみ）とは別に毎フレーム走らせる。
             //   これで G-Buffer パスもシャドウパスも可視ぶんだけを描く（描画コスト激減）。
             self.terrain.cull_and_update_scatter_models(
-                ctx,
-                &saved_frustum_planes,
-                saved_camera_pos,
+                ctx, &saved_frustum_planes, saved_camera_pos,
             );
         }
 
@@ -1165,12 +1039,9 @@ impl App {
             t_grass.elapsed().as_secs_f64() * 1000.0
         };
 
-        if let (Some(renderer), Some(scene), Some(camera_buf), Some(draw_ctx)) = (
-            &mut self.renderer,
-            &self.scene,
-            &self.camera_buf,
-            &self.draw_ctx,
-        ) {
+        if let (Some(renderer), Some(scene), Some(camera_buf), Some(draw_ctx)) =
+            (&mut self.renderer, &self.scene, &self.camera_buf, &self.draw_ctx)
+        {
             // begin_frame = get_current_texture(): GPU バックプレッシャーでここが長くなる
             let _perf_t_bf = std::time::Instant::now();
             let begin_frame_result = renderer.begin_frame();
@@ -1181,13 +1052,8 @@ impl App {
                     // カスケード/スポットの light view-proj を計算して UBO・シャドウカメラへ
                     // 書き込み、frame_lights の shadow_index を確定させる（採用/不採用）。
                     // 影パスの実描画は skin compute 後・メインパス直前に record で行う。
-                    let (sv, sn, sf, sfov, sasp) = saved_shadow_cam.unwrap_or((
-                        Mat4x4::identity(),
-                        0.1,
-                        100.0,
-                        std::f32::consts::FRAC_PI_4,
-                        1.0,
-                    ));
+                    let (sv, sn, sf, sfov, sasp) = saved_shadow_cam
+                        .unwrap_or((Mat4x4::identity(), 0.1, 100.0, std::f32::consts::FRAC_PI_4, 1.0));
 
                     // カメラプレビュー用 CSM を組むためのライト配列スナップショット。
                     //
@@ -1200,12 +1066,7 @@ impl App {
                     let lights_before_shadow_assign = frame_lights.clone();
 
                     let shadow_plan = draw_ctx.shadow.prepare_frame(
-                        &draw_ctx.queue,
-                        &sv,
-                        sn,
-                        sf,
-                        sfov,
-                        sasp,
+                        &draw_ctx.queue, &sv, sn, sf, sfov, sasp,
                         &mut frame_lights,
                         shadow_has_casters && saved_shadow_cam.is_some(),
                     );
@@ -1214,8 +1075,7 @@ impl App {
                     // 構築ゲートはすべてこの resolved_features を参照する（生の render_features は見ない）。
                     // NOTE: self.resolved_features() だと &self 全体を借用し、上位の &mut self.renderer
                     //       借用と衝突する。render_features は Copy な単一フィールドなので disjoint 借用で解決。
-                    let resolved_features = self
-                        .render_features
+                    let resolved_features = self.render_features
                         .resolve(crate::engine::core::renderer::rt_shadow::rt_shadows_supported());
                     // このフレームで RT 影を使うか（実効の影方式が Rt かつ RT 対応 GPU）。
                     // フラグメントの実行時分岐（LightMeta.rt_shadows）と、後段のメインパスでの
@@ -1258,34 +1118,25 @@ impl App {
                     // メタ（ライト数・RT 影フラグ・ビューモード・RT-Translucency フラグ）も同時に更新される。
                     // shadow_index 確定後にアップロードする。
                     draw_ctx.light_buffer.update(
-                        &draw_ctx.queue,
-                        &frame_lights,
-                        rt_on,
+                        &draw_ctx.queue, &frame_lights, rt_on,
                         scene_view_mode_code,
                         translucency_rt_on,
-                        self.ambient_color,
-                        self.ambient_intensity,
+                        self.ambient_color, self.ambient_intensity,
                     );
 
                     // シーンモード・アクター編集モード共通: world_line の全 MC を収集する
                     // タプル: (id_base, dfs_id, slot_i, &ModelComponent)
                     let all_mcs: Vec<(u32, u32, usize, &ModelComponent)> =
-                        collect_mcs_in_world_line(
-                            &scene.actors,
-                            &scene.world,
-                            self.active_world_line,
-                        );
+                        collect_mcs_in_world_line(&scene.actors, &scene.world, self.active_world_line);
                     // 後方互換: 単一 MC として使う箇所用（シーン編集モード or 先頭 MC）
                     let _mc = all_mcs.first().map(|&(_, _, _, mc)| mc);
                     // 選択中アクターの MC（アウトライン・アイコン用）
                     let selected_slot_i = self.actor_virtual_selected_slot_idx;
                     let selected_mc: Option<&ModelComponent> =
-                        self.actor_virtual_selected_idx.and_then(|dfs| {
-                            all_mcs
-                                .iter()
+                        self.actor_virtual_selected_idx
+                            .and_then(|dfs| all_mcs.iter()
                                 .find(|&&(_, d, si, _)| d == dfs as u32 && si == selected_slot_i)
-                                .map(|&(_, _, _, mc)| mc)
-                        });
+                                .map(|&(_, _, _, mc)| mc));
 
                     // ─── 統合モデルバッチ更新 ─────────────────────────────────────────────
                     // 同一 source_path を持つ全 MC の行列・アニメーションを 1 バッチに統合する。
@@ -1296,12 +1147,12 @@ impl App {
                     // ① MC を source_path でグループ化（CPU データのみ収集）
                     struct MergeInfo {
                         cpu_model: std::sync::Arc<crate::engine::core::loader::model::Model>,
-                        mats: Vec<[[f32; 4]; 4]>,
+                        mats:      Vec<[[f32; 4]; 4]>,
                         /// 統合インスタンス i の Animator 駆動権威時刻（None = 静止・先頭フレーム凍結）。
                         /// ModelComponent::anim_drive 由来。同一 MC の全インスタンスに同じ値を複製する。
                         time_overrides: Vec<Option<f32>>,
                         /// 統合インスタンス i の絶対 ID（元 MC の id_base + 元インスタンス idx）
-                        abs_ids: Vec<u32>,
+                        abs_ids:   Vec<u32>,
                     }
                     // (dfs_id, slot_i) → (source_path, merged_start, n_instances)
                     // アウトライン描画時に統合バッチ内のインスタンス範囲を特定するために使う。
@@ -1314,38 +1165,35 @@ impl App {
                     // merge_map 構築＋全統合バッチ update() の CPU 時間を計測する（merge バケット）。
                     let _perf_t_merge = std::time::Instant::now();
                     let merge_map: std::collections::HashMap<String, MergeInfo> = {
-                        let mut map: std::collections::HashMap<String, MergeInfo> =
-                            std::collections::HashMap::new();
+                        let mut map: std::collections::HashMap<String, MergeInfo>
+                            = std::collections::HashMap::new();
                         for &(id_base, dfs_id, slot_i, amc) in &all_mcs {
-                            if amc.source_path.is_empty() {
-                                continue;
-                            }
-                            if amc.gpu_model.is_none() {
-                                continue;
-                            }
-                            let Some(arc_m) = amc.model.as_ref() else {
-                                continue;
-                            };
+                            if amc.source_path.is_empty()  { continue; }
+                            if amc.gpu_model.is_none()     { continue; }
+                            let Some(arc_m) = amc.model.as_ref() else { continue };
                             // Phase R7: マージキーは「モデルパス＋マテリアルオーバーライド署名」。
                             // オーバーライド無し（署名空）の MC は batch_key == source_path となり、
                             // 従来どおり 1 バッチへ統合される（描画経路・性能ともに不変）。
                             // オーバーライドを持つ MC は署名が異なるため別バッチへ分離され、
                             // その代表 GpuModel（各 MC が自前で焼き込み済み）で描画される＝方式(a)。
                             let batch_key = amc.batch_key();
-                            let e = map.entry(batch_key.clone()).or_insert_with(|| MergeInfo {
-                                cpu_model: arc_m.clone(),
-                                mats: Vec::new(),
-                                time_overrides: Vec::new(),
-                                abs_ids: Vec::new(),
-                            });
+                            let e = map.entry(batch_key.clone())
+                                .or_insert_with(|| MergeInfo {
+                                    cpu_model: arc_m.clone(),
+                                    mats:      Vec::new(),
+                                    time_overrides: Vec::new(),
+                                    abs_ids:   Vec::new(),
+                                });
                             // この MC が Animator 駆動中なら権威時刻を、そうでなければ None を
                             // 全インスタンス分複製する（インスタンスは同一アニメを共有再生する）。
                             let mc_time_override = amc.anim_drive.map(|d| d.time);
                             // このMCが統合バッチに追加される前の先頭インデックスを記録する
                             let merged_start = e.mats.len() as u32;
-                            let n_insts = amc.instance_mats.len() as u32;
-                            mc_outline_map
-                                .insert((dfs_id, slot_i), (batch_key, merged_start, n_insts));
+                            let n_insts      = amc.instance_mats.len() as u32;
+                            mc_outline_map.insert(
+                                (dfs_id, slot_i),
+                                (batch_key, merged_start, n_insts),
+                            );
                             for (inst_i, &mat) in amc.instance_mats.iter().enumerate() {
                                 e.mats.push(mat);
                                 e.time_overrides.push(mc_time_override);
@@ -1359,27 +1207,23 @@ impl App {
                     // ② 統合バッチ生成/更新（容量不足時は再生成）
                     for (path, info) in &merge_map {
                         let total = info.mats.len();
-                        let need_reinit = self
-                            .shared_model_batches
-                            .get(path)
+                        let need_reinit = self.shared_model_batches.get(path)
                             .map(|s| s.capacity < total)
                             .unwrap_or(true);
                         if need_reinit {
-                            let cap = (total * 2).max(4);
-                            let new_batch =
-                                draw_ctx.create_instanced_batch(&info.cpu_model, cap as u32);
-                            let id_zero_bg = draw_ctx.create_id_base_bg(0);
-                            self.shared_model_batches.insert(
-                                path.clone(),
-                                super::SharedModelData {
-                                    cpu_model: info.cpu_model.clone(),
-                                    batch: new_batch,
-                                    capacity: cap,
-                                    id_zero_bg,
-                                    // 新規/再生成バッチは未アップロード。次の update で確定させる。
-                                    uploaded_sig: None,
-                                },
+                            let cap        = (total * 2).max(4);
+                            let new_batch  = draw_ctx.create_instanced_batch(
+                                &info.cpu_model, cap as u32
                             );
+                            let id_zero_bg = draw_ctx.create_id_base_bg(0);
+                            self.shared_model_batches.insert(path.clone(), super::SharedModelData {
+                                cpu_model:  info.cpu_model.clone(),
+                                batch:      new_batch,
+                                capacity:   cap,
+                                id_zero_bg,
+                                // 新規/再生成バッチは未アップロード。次の update で確定させる。
+                                uploaded_sig: None,
+                            });
                         }
                         if let Some(sd) = self.shared_model_batches.get_mut(path) {
                             // ── 静的地形チャンクの update スキップ（Fix B）──────────────
@@ -1393,8 +1237,8 @@ impl App {
                             // チャンクでは描画に影響しないため、カメラ移動時の再バケット省略も
                             // 視覚的に安全。通常モデル/散布/アニメは非地形キー or mats 変化のため
                             // 従来どおり毎フレーム更新される（挙動不変）。
-                            let is_terrain =
-                                path.starts_with(crate::engine::components::TERRAIN_SOURCE_SCHEME);
+                            let is_terrain = path.starts_with(
+                                crate::engine::components::TERRAIN_SOURCE_SCHEME);
                             let unchanged = is_terrain
                                 && sd.uploaded_sig.as_ref().is_some_and(|(m, a)| {
                                     m.as_slice() == info.mats.as_slice()
@@ -1407,7 +1251,7 @@ impl App {
                             }
                             {
                                 // フィールド分割借用: batch は可変、cpu_model は不変
-                                let batch = &mut sd.batch;
+                                let batch     = &mut sd.batch;
                                 let cpu_model = &sd.cpu_model;
                                 // Animator 駆動の権威時刻を反映する（非駆動インスタンスは静止）。
                                 batch.set_anim_time_overrides(&info.time_overrides);
@@ -1480,8 +1324,7 @@ impl App {
                             eprintln!(
                                 "[SEED PRUNE] stale 統合バッチ {} 件を解放（追従 BLAS {} 件）。\
                                  マテリアル編集で蓄積したユニーク署名キーの回収です。",
-                                freed.len(),
-                                freed_blas
+                                freed.len(), freed_blas
                             );
                         }
                     }
@@ -1494,13 +1337,11 @@ impl App {
                     let gpu_model_by_path: std::collections::HashMap<
                         String,
                         &crate::engine::methods::drawer::GpuModel,
-                    > = all_mcs
-                        .iter()
+                    > = all_mcs.iter()
                         .filter_map(|&(_, _, _, amc)| {
-                            if amc.source_path.is_empty() {
-                                return None;
-                            }
-                            amc.gpu_model.as_ref().map(|gpu| (amc.batch_key(), gpu))
+                            if amc.source_path.is_empty() { return None; }
+                            amc.gpu_model.as_ref()
+                                .map(|gpu| (amc.batch_key(), gpu))
                         })
                         .collect();
                     // ─── 統合モデルバッチ更新 終了 ──────────────────────────────────────────
@@ -1514,27 +1355,24 @@ impl App {
                     perf_mc_count = all_mcs.len();
                     let _perf_t_skin = std::time::Instant::now();
                     {
-                        let mut skin_pass =
-                            frame
-                                .encoder_mut()
-                                .begin_compute_pass(&wgpu::ComputePassDescriptor {
-                                    label: Some("Skin Compute Pass"),
-                                    timestamp_writes: None,
-                                });
+                        let mut skin_pass = frame.encoder_mut().begin_compute_pass(
+                            &wgpu::ComputePassDescriptor {
+                                label:            Some("Skin Compute Pass"),
+                                timestamp_writes: None,
+                            },
+                        );
                         // 統合バッチのみをディスパッチする（per-MC バッチは使用しない）
                         // N_actors 回 → N_unique_models 回に削減
                         for sd in self.shared_model_batches.values() {
                             if sd.batch.skin.is_some() {
                                 perf_skin_mc_count += 1;
-                                perf_skin_dispatches +=
-                                    sd.batch
-                                        .lod_visible_counts
-                                        .iter()
-                                        .filter(|&&c| c > 0)
-                                        .count() as u32;
+                                perf_skin_dispatches += sd.batch.lod_visible_counts
+                                    .iter().filter(|&&c| c > 0).count() as u32;
                             }
-                            sd.batch
-                                .dispatch_skin(&mut skin_pass, &draw_ctx.pipelines.skin_compute);
+                            sd.batch.dispatch_skin(
+                                &mut skin_pass,
+                                &draw_ctx.pipelines.skin_compute,
+                            );
                         }
                     } // skin_pass がここでドロップされ ComputePass が終了する
                     perf_skin_ms = _perf_t_skin.elapsed().as_secs_f64() * 1000.0;
@@ -1546,20 +1384,19 @@ impl App {
                     // エミッタ 0 個なら sync_gpu/dispatch とも即 return（バッファ確保なし＝コスト増ゼロ）。
                     if self.particle_system.has_emitters() {
                         self.particle_system.sync_gpu(
-                            &draw_ctx.device,
-                            &draw_ctx.queue,
+                            &draw_ctx.device, &draw_ctx.queue,
                             &draw_ctx.pipelines.particle_compute,
                             &draw_ctx.pipelines.particles,
                         );
-                        let mut particle_pass =
-                            frame
-                                .encoder_mut()
-                                .begin_compute_pass(&wgpu::ComputePassDescriptor {
-                                    label: Some("Particle Sim Pass"),
-                                    timestamp_writes: None,
-                                });
-                        self.particle_system
-                            .dispatch(&mut particle_pass, &draw_ctx.pipelines.particle_compute);
+                        let mut particle_pass = frame.encoder_mut().begin_compute_pass(
+                            &wgpu::ComputePassDescriptor {
+                                label:            Some("Particle Sim Pass"),
+                                timestamp_writes: None,
+                            },
+                        );
+                        self.particle_system.dispatch(
+                            &mut particle_pass, &draw_ctx.pipelines.particle_compute,
+                        );
                     } // particle_pass がドロップされ ComputePass が終了する
 
                     // ── 地形チャンク単位フラスタム＋距離カリング（Terrain 描画最適化）──────
@@ -1578,8 +1415,7 @@ impl App {
                     //     ——カメラ視界外でも視界内へ影を落とすチャンクがあるため、影キャスタを
                     //     カメラ視錐台で棄却すると影が欠ける。影の緩和は今回スコープ外（申し送り）。
                     let terrain_cull_disabled = *super::terrain_scatter_ops::TERRAIN_CULL_DISABLED;
-                    let terrain_cull_dist =
-                        *super::terrain_scatter_ops::TERRAIN_CHUNK_CULL_DISTANCE;
+                    let terrain_cull_dist = *super::terrain_scatter_ops::TERRAIN_CHUNK_CULL_DISTANCE;
                     let terrain_cull_dist_sq = terrain_cull_dist * terrain_cull_dist;
 
                     // ── Hi-Z オクルージョン: 前フレーム結果の取得（1 フレーム遅延・opt-in）──────
@@ -1592,47 +1428,35 @@ impl App {
                         if *super::terrain_scatter_ops::HIZ_OCCLUSION_ENABLED {
                             if let Some(hiz) = self.hiz.as_mut() {
                                 if let Some(vis) = hiz.try_read_results(&draw_ctx.device) {
-                                    self.hiz_prev_keys
-                                        .iter()
-                                        .zip(vis.iter())
+                                    self.hiz_prev_keys.iter().zip(vis.iter())
                                         .filter(|(_, v)| **v == 0)
                                         .map(|(k, _)| k.clone())
                                         .collect()
-                                } else {
-                                    std::collections::HashSet::new()
-                                }
-                            } else {
-                                std::collections::HashSet::new()
-                            }
-                        } else {
-                            std::collections::HashSet::new()
-                        };
+                                } else { std::collections::HashSet::new() }
+                            } else { std::collections::HashSet::new() }
+                        } else { std::collections::HashSet::new() };
                     // 計測: Hi-Z が読み戻した可視性から落とした地形チャンク数（60 フレームに 1 回）。
                     if *super::terrain_scatter_ops::HIZ_OCCLUSION_ENABLED
-                        && *super::terrain_scatter_ops::PERF_TERRAIN_LOG_ENABLED
-                    {
+                        && *super::terrain_scatter_ops::PERF_TERRAIN_LOG_ENABLED {
                         use std::sync::atomic::{AtomicU64, Ordering};
                         static HN: AtomicU64 = AtomicU64::new(0);
                         if HN.fetch_add(1, Ordering::Relaxed) % 60 == 0 {
                             eprintln!(
                                 "[PERF hiz] occlusion read: occluded={} tested_prev={}",
-                                terrain_occluded.len(),
-                                self.hiz_prev_keys.len()
+                                terrain_occluded.len(), self.hiz_prev_keys.len()
                             );
                         }
                     }
                     // 診断用: このフレームの地形チャンクバッチ総数（描画数ログの分母）。
-                    let terrain_chunk_total = self
-                        .shared_model_batches
-                        .keys()
-                        .filter(|p| p.starts_with(crate::engine::components::TERRAIN_SOURCE_SCHEME))
+                    let terrain_chunk_total = self.shared_model_batches.keys()
+                        .filter(|p| p.starts_with(
+                            crate::engine::components::TERRAIN_SOURCE_SCHEME))
                         .count() as u32;
                     // 視錐台外／距離外の地形チャンク path 集合（描画・前処理でスキップする）。
-                    let mut terrain_culled: std::collections::HashSet<String> =
-                        if terrain_cull_disabled {
-                            std::collections::HashSet::new()
-                        } else {
-                            self.shared_model_batches.iter()
+                    let mut terrain_culled: std::collections::HashSet<String> = if terrain_cull_disabled {
+                        std::collections::HashSet::new()
+                    } else {
+                        self.shared_model_batches.iter()
                             .filter(|(path, _)| path.starts_with(
                                 crate::engine::components::TERRAIN_SOURCE_SCHEME))
                             .filter_map(|(path, sd)| {
@@ -1645,16 +1469,14 @@ impl App {
                                 if culled { Some(path.clone()) } else { None }
                             })
                             .collect()
-                        };
+                    };
                     // Hi-Z オクルージョン結果を union（フラスタム／距離 AND 遮蔽）。遮蔽集合は
                     // 保守側（完全遮蔽のみ）なので、視界内でも山の裏なら追加でスキップされる。
                     // 空集合（既定 OFF・未収束）なら何も足さず＝フラスタムのみの従来挙動。
                     terrain_culled.extend(terrain_occluded);
                     // 計測ログ（60 フレームに 1 回・SEED_PERF_TERRAIN 有効時のみ）。
                     //   カリング後に実際に描く地形チャンク数 / 全チャンク数。
-                    if *super::terrain_scatter_ops::PERF_TERRAIN_LOG_ENABLED
-                        && terrain_chunk_total > 0
-                    {
+                    if *super::terrain_scatter_ops::PERF_TERRAIN_LOG_ENABLED && terrain_chunk_total > 0 {
                         use std::sync::atomic::{AtomicU64, Ordering};
                         static TN: AtomicU64 = AtomicU64::new(0);
                         if TN.fetch_add(1, Ordering::Relaxed) % 60 == 0 {
@@ -1675,9 +1497,7 @@ impl App {
                         // 前処理（BindGroup 構築・パラメータ更新）。batch は可変、GpuModel は
                         // gpu_model_by_path から借用（all_mcs 由来＝shared_model_batches と非交差）。
                         for (path, sd) in self.shared_model_batches.iter_mut() {
-                            if !sd.batch.has_meshlet_slots() {
-                                continue;
-                            }
+                            if !sd.batch.has_meshlet_slots() { continue; }
                             // 視錐台外の地形チャンクは描かないので、メッシュレットカリング compute も
                             // 走らせない（スロットをリセットして record 側の dispatch を確実に止める）。
                             if terrain_culled.contains(path.as_str()) {
@@ -1705,13 +1525,10 @@ impl App {
                         //   モデル等）は has_meshlet_slots()==false で即スキップ（追加コストゼロ）。
                         //   カリング済み可視集合は cull_and_update_scatter_models が既に update 済み。
                         //   env トグル（SEED_SCATTER_MESHLET=0）で無効化可（計測用・既定 ON）。
-                        let scatter_meshlet =
-                            *super::terrain_scatter_ops::SCATTER_MESHLET_CULL_ENABLED;
+                        let scatter_meshlet = *super::terrain_scatter_ops::SCATTER_MESHLET_CULL_ENABLED;
                         if scatter_meshlet {
                             for res in self.terrain.scatter_models.values_mut() {
-                                if !res.batch.has_meshlet_slots() {
-                                    continue;
-                                }
+                                if !res.batch.has_meshlet_slots() { continue; }
                                 perf_meshlet_considered += res.batch.prepare_meshlet_cull(
                                     &draw_ctx.queue,
                                     &draw_ctx.device,
@@ -1726,21 +1543,19 @@ impl App {
                         if perf_meshlet_considered > 0 {
                             let mut cull_pass = frame.encoder_mut().begin_compute_pass(
                                 &wgpu::ComputePassDescriptor {
-                                    label: Some("Meshlet Cull Pass"),
+                                    label:            Some("Meshlet Cull Pass"),
                                     timestamp_writes: None,
                                 },
                             );
                             for sd in self.shared_model_batches.values() {
                                 sd.batch.record_meshlet_cull(
-                                    &mut cull_pass,
-                                    &draw_ctx.pipelines.meshlet_cull,
+                                    &mut cull_pass, &draw_ctx.pipelines.meshlet_cull,
                                 );
                             }
                             // 散布モデルのカリング compute も同じパスで発行する。
                             for res in self.terrain.scatter_models.values() {
                                 res.batch.record_meshlet_cull(
-                                    &mut cull_pass,
-                                    &draw_ctx.pipelines.meshlet_cull,
+                                    &mut cull_pass, &draw_ctx.pipelines.meshlet_cull,
                                 );
                             }
                         } // cull_pass ドロップで ComputePass 終了
@@ -1751,8 +1566,7 @@ impl App {
                     // 描画はメインパスの最初（begin_scene_pass_to 直後）で行う。0 個なら即 return。
                     if self.skybox_system.has_skyboxes() {
                         self.skybox_system.sync_gpu(
-                            &draw_ctx.device,
-                            &draw_ctx.queue,
+                            &draw_ctx.device, &draw_ctx.queue,
                             &draw_ctx.pipelines.skybox,
                         );
                     }
@@ -1762,9 +1576,10 @@ impl App {
                     // 2D シーンビュー以外で表示する。
                     // WL 0 に 2D アクターが混在していても 3D カメラギズモを表示する。
                     let is_3d_scene = in_editor && !use_ortho_2d_camera;
-                    let (vp_w_f, vp_h_f) = window_size.map_or((1280.0_f32, 720.0_f32), |s| {
-                        (s.width as f32, s.height as f32)
-                    });
+                    let (vp_w_f, vp_h_f) = window_size.map_or(
+                        (1280.0_f32, 720.0_f32),
+                        |s| (s.width as f32, s.height as f32),
+                    );
 
                     // カメラギズモモデルのレイジーロードと InstancedModelBatch 更新
                     // assets_root が設定されている場合のみ実行する
@@ -1772,40 +1587,28 @@ impl App {
                         if let Some(ar) = self.editor_resources.clone() {
                             let model_path = format!("{}/models/camera.glb", ar);
                             // CPU モデルをキャッシュから取得するか、なければロードする
-                            let cpu_model_opt: Option<
-                                std::sync::Arc<crate::engine::core::loader::model::Model>,
-                            > = {
+                            let cpu_model_opt: Option<std::sync::Arc<crate::engine::core::loader::model::Model>> = {
                                 let mut cache = draw_ctx.model_cache.borrow_mut();
                                 if !cache.contains_key(&model_path) {
                                     let path = std::path::Path::new(&model_path);
                                     match crate::engine::core::loader::load_model(path) {
-                                        Ok(m) => {
-                                            cache
-                                                .insert(model_path.clone(), std::sync::Arc::new(m));
-                                        }
-                                        Err(e) => {
-                                            eprintln!("[SEED] camera gizmo model load failed: {e}");
-                                        }
+                                        Ok(m)  => { cache.insert(model_path.clone(), std::sync::Arc::new(m)); }
+                                        Err(e) => { eprintln!("[SEED] camera gizmo model load failed: {e}"); }
                                     }
                                 }
                                 cache.get(&model_path).cloned()
                             };
                             if let Some(cpu) = cpu_model_opt {
                                 // バッチ容量が不足している場合は再生成する
-                                let need_reinit = self
-                                    .camera_gizmo
-                                    .as_ref()
+                                let need_reinit = self.camera_gizmo.as_ref()
                                     .map(|g| g.capacity < cam_gizmo_actor_mats.len())
                                     .unwrap_or(true);
                                 if need_reinit {
                                     let cap = (cam_gizmo_actor_mats.len() * 2).max(4);
                                     let gpu_model = draw_ctx.upload_model(&cpu);
-                                    let batch = draw_ctx.create_instanced_batch(&cpu, cap as u32);
+                                    let batch     = draw_ctx.create_instanced_batch(&cpu, cap as u32);
                                     self.camera_gizmo = Some(CameraGizmoResources {
-                                        cpu_model: cpu,
-                                        gpu_model,
-                                        batch,
-                                        capacity: cap,
+                                        cpu_model: cpu, gpu_model, batch, capacity: cap,
                                     });
                                 }
                             }
@@ -1815,26 +1618,18 @@ impl App {
                     // （カメラギズモと同じ camera.glb を暫定アイコンとして流用する）。
                     // 同一 GLB でもバッチはギズモ種別ごとに独立させる（ID 範囲・行列が別のため）。
                     if is_3d_scene
-                        && (!light_gizmo_actor_mats.is_empty()
-                            || !particle_gizmo_actor_mats.is_empty())
+                        && (!light_gizmo_actor_mats.is_empty() || !particle_gizmo_actor_mats.is_empty())
                     {
                         if let Some(ar) = self.editor_resources.clone() {
                             let model_path = format!("{}/models/camera.glb", ar);
                             // CPU モデルをキャッシュから取得するか、なければロードする
-                            let cpu_model_opt: Option<
-                                std::sync::Arc<crate::engine::core::loader::model::Model>,
-                            > = {
+                            let cpu_model_opt: Option<std::sync::Arc<crate::engine::core::loader::model::Model>> = {
                                 let mut cache = draw_ctx.model_cache.borrow_mut();
                                 if !cache.contains_key(&model_path) {
                                     let path = std::path::Path::new(&model_path);
                                     match crate::engine::core::loader::load_model(path) {
-                                        Ok(m) => {
-                                            cache
-                                                .insert(model_path.clone(), std::sync::Arc::new(m));
-                                        }
-                                        Err(e) => {
-                                            eprintln!("[SEED] icon gizmo model load failed: {e}");
-                                        }
+                                        Ok(m)  => { cache.insert(model_path.clone(), std::sync::Arc::new(m)); }
+                                        Err(e) => { eprintln!("[SEED] icon gizmo model load failed: {e}"); }
                                     }
                                 }
                                 cache.get(&model_path).cloned()
@@ -1842,41 +1637,29 @@ impl App {
                             if let Some(cpu) = cpu_model_opt {
                                 // ライトギズモ: バッチ容量が不足している場合は再生成する
                                 if !light_gizmo_actor_mats.is_empty() {
-                                    let need_reinit = self
-                                        .light_gizmo
-                                        .as_ref()
+                                    let need_reinit = self.light_gizmo.as_ref()
                                         .map(|g| g.capacity < light_gizmo_actor_mats.len())
                                         .unwrap_or(true);
                                     if need_reinit {
                                         let cap = (light_gizmo_actor_mats.len() * 2).max(4);
                                         let gpu_model = draw_ctx.upload_model(&cpu);
-                                        let batch =
-                                            draw_ctx.create_instanced_batch(&cpu, cap as u32);
+                                        let batch     = draw_ctx.create_instanced_batch(&cpu, cap as u32);
                                         self.light_gizmo = Some(CameraGizmoResources {
-                                            cpu_model: cpu.clone(),
-                                            gpu_model,
-                                            batch,
-                                            capacity: cap,
+                                            cpu_model: cpu.clone(), gpu_model, batch, capacity: cap,
                                         });
                                     }
                                 }
                                 // パーティクルエミッタギズモ: 同上
                                 if !particle_gizmo_actor_mats.is_empty() {
-                                    let need_reinit = self
-                                        .particle_gizmo
-                                        .as_ref()
+                                    let need_reinit = self.particle_gizmo.as_ref()
                                         .map(|g| g.capacity < particle_gizmo_actor_mats.len())
                                         .unwrap_or(true);
                                     if need_reinit {
                                         let cap = (particle_gizmo_actor_mats.len() * 2).max(4);
                                         let gpu_model = draw_ctx.upload_model(&cpu);
-                                        let batch =
-                                            draw_ctx.create_instanced_batch(&cpu, cap as u32);
+                                        let batch     = draw_ctx.create_instanced_batch(&cpu, cap as u32);
                                         self.particle_gizmo = Some(CameraGizmoResources {
-                                            cpu_model: cpu.clone(),
-                                            gpu_model,
-                                            batch,
-                                            capacity: cap,
+                                            cpu_model: cpu.clone(), gpu_model, batch, capacity: cap,
                                         });
                                     }
                                 }
@@ -1891,22 +1674,17 @@ impl App {
                             || !light_gizmo_actor_mats.is_empty()
                             || !particle_gizmo_actor_mats.is_empty())
                     {
-                        let cp = self.camera.position();
+                        let cp  = self.camera.position();
                         let cpo = [cp.x, cp.y, cp.z];
                         // (行列リスト, 対象ギズモ) の組を順に更新する。
                         // オブジェクト視錐台カリングは撤去済みのためギズモアイコンは常に全表示。
-                        let updates: [(
-                            &Vec<(usize, [[f32; 4]; 4])>,
-                            &mut Option<CameraGizmoResources>,
-                        ); 3] = [
-                            (&cam_gizmo_actor_mats, &mut self.camera_gizmo),
-                            (&light_gizmo_actor_mats, &mut self.light_gizmo),
+                        let updates: [(&Vec<(usize, [[f32; 4]; 4])>, &mut Option<CameraGizmoResources>); 3] = [
+                            (&cam_gizmo_actor_mats,      &mut self.camera_gizmo),
+                            (&light_gizmo_actor_mats,    &mut self.light_gizmo),
                             (&particle_gizmo_actor_mats, &mut self.particle_gizmo),
                         ];
                         for (mats, gizmo_slot) in updates {
-                            if mats.is_empty() {
-                                continue;
-                            }
+                            if mats.is_empty() { continue; }
                             let transforms: Vec<[[f32; 4]; 4]> =
                                 mats.iter().map(|&(_, m)| m).collect();
                             if let Some(gizmo) = gizmo_slot {
@@ -1924,74 +1702,59 @@ impl App {
                     // 選択中アクターのカメラデータ取得
                     let selected_cam_data = if is_3d_scene {
                         camera_scene_gizmo::get_selected_camera_data(
-                            &scene.actors,
-                            &scene.world,
+                            &scene.actors, &scene.world,
                             self.active_world_line,
                             self.actor_virtual_selected_idx,
                         )
-                    } else {
-                        None
-                    };
+                    } else { None };
 
                     // フラスタムラインバッチ（選択カメラアクターのみ）
                     // アスペクト比は cam_data.target_aspect() から導出する（エディタビューポート非依存）
                     let frustum_batch = if let Some(ref cam_data) = selected_cam_data {
-                        camera_scene_gizmo::build_camera_frustum_batch(cam_data, &draw_ctx.device)
-                    } else {
-                        None
-                    };
+                        camera_scene_gizmo::build_camera_frustum_batch(
+                            cam_data, &draw_ctx.device,
+                        )
+                    } else { None };
 
                     // 選択中ライトアクターのギズモ（種別ごとの範囲ワイヤ・矢印、3D シーン）。
                     let light_gizmo_batch = if is_3d_scene {
                         super::light_scene_gizmo::build_selected_light_gizmo_batch(
-                            &scene.actors,
-                            &scene.world,
+                            &scene.actors, &scene.world,
                             self.active_world_line,
                             self.actor_virtual_selected_idx,
                             &draw_ctx.device,
                         )
-                    } else {
-                        None
-                    };
+                    } else { None };
 
                     // 選択中ジョイントアタッチアクターのギズモ（ソケット位置の RGB 軸十字、3D シーン）。
                     let jointattach_gizmo_batch = if is_3d_scene {
                         super::jointattach_scene_gizmo::build_selected_jointattach_gizmo_batch(
-                            &scene.actors,
-                            &scene.world,
+                            &scene.actors, &scene.world,
                             self.active_world_line,
                             self.actor_virtual_selected_idx,
                             &draw_ctx.device,
                         )
-                    } else {
-                        None
-                    };
+                    } else { None };
 
                     // 選択中パーティクルエミッタアクターのギズモ（放出円錐ワイヤ、3D シーン）。
                     let particle_gizmo_batch = if is_3d_scene {
                         super::particle_scene_gizmo::build_selected_particle_gizmo_batch(
-                            &scene.actors,
-                            &scene.world,
+                            &scene.actors, &scene.world,
                             self.active_world_line,
                             self.actor_virtual_selected_idx,
                             &draw_ctx.device,
                         )
-                    } else {
-                        None
-                    };
+                    } else { None };
 
                     // 選択中スカイボックスアクターのギズモ（WorldAnchored の配置ワイヤ球、3D シーン）。
                     let skybox_gizmo_batch = if is_3d_scene {
                         super::skybox_scene_gizmo::build_selected_skybox_gizmo_batch(
-                            &scene.actors,
-                            &scene.world,
+                            &scene.actors, &scene.world,
                             self.active_world_line,
                             self.actor_virtual_selected_idx,
                             &draw_ctx.device,
                         )
-                    } else {
-                        None
-                    };
+                    } else { None };
 
                     // カメラプレビューリソースを初期化・更新する
                     if let Some(ref cam_data) = selected_cam_data {
@@ -2009,8 +1772,7 @@ impl App {
                             self.camera_preview = Some(CameraPreviewResources::new(
                                 &draw_ctx.device,
                                 &draw_ctx.pipelines.camera_preview_blit,
-                                preview_w,
-                                preview_h,
+                                preview_w, preview_h,
                             ));
                             self.camera_preview_target_size =
                                 Some((cam_data.target_width, cam_data.target_height));
@@ -2018,11 +1780,8 @@ impl App {
                         // ブリット矩形をカメラのアスペクト比に合わせたサイズで更新する
                         if let Some(ref preview) = self.camera_preview {
                             preview.update_blit_rect(
-                                &draw_ctx.queue,
-                                vp_w_f,
-                                vp_h_f,
-                                preview_w as f32,
-                                preview_h as f32,
+                                &draw_ctx.queue, vp_w_f, vp_h_f,
+                                preview_w as f32, preview_h as f32,
                             );
                         }
                     } else {
@@ -2041,8 +1800,9 @@ impl App {
                         let res = [prev_w, prev_h];
                         // プロジェクション行列もテクスチャのアスペクト比に合わせる
                         let preview_aspect = cam_data.target_aspect();
-                        let cam_uniform =
-                            camera_scene_gizmo::build_camera_uniform(cam_data, preview_aspect, res);
+                        let cam_uniform = camera_scene_gizmo::build_camera_uniform(
+                            cam_data, preview_aspect, res,
+                        );
                         // プレビュー用一時カメラバッファを生成する
                         let preview_cam_buf = CameraBuffer::new(
                             &draw_ctx.device,
@@ -2060,12 +1820,7 @@ impl App {
                         // オフスクリーンプレビューパスで全 MC を描画する
                         let clear_col = {
                             let [r, g, b, a] = cam_data.clear_color;
-                            wgpu::Color {
-                                r: r as f64,
-                                g: g as f64,
-                                b: b as f64,
-                                a: a as f64,
-                            }
+                            wgpu::Color { r: r as f64, g: g as f64, b: b as f64, a: a as f64 }
                         };
                         // プレビュー用 3D Canvas スプライトを収集する。
                         // メインパスのスプライト収集（sprite_prepared_3d）より先にこのパスが実行されるため、
@@ -2079,61 +1834,37 @@ impl App {
                             if let Some(s) = &self.scene {
                                 let wl = self.active_world_line;
                                 for actor in &s.actors {
-                                    if actor.world_line != wl {
-                                        continue;
-                                    }
-                                    if actor.is_2d() {
-                                        continue;
-                                    }
-                                    let cs = actor.slots().iter().find(|s| {
-                                        s.kind == crate::engine::components::ComponentKind::Canvas
-                                    });
+                                    if actor.world_line != wl { continue; }
+                                    if actor.is_2d() { continue; }
+                                    let cs = actor.slots().iter()
+                                        .find(|s| s.kind == crate::engine::components::ComponentKind::Canvas);
                                     let Some(cs) = cs else { continue };
-                                    let Some(cc) =
-                                        s.world.get::<crate::engine::components::CanvasComponent>(
-                                            cs.entity,
-                                        )
-                                    else {
-                                        continue;
-                                    };
-                                    let Some(tf) = s
-                                        .world
-                                        .get::<crate::engine::components::Transform>(actor.entity)
-                                    else {
-                                        continue;
-                                    };
+                                    let Some(cc) = s.world.get::<crate::engine::components::CanvasComponent>(cs.entity) else { continue };
+                                    let Some(tf) = s.world.get::<crate::engine::components::Transform>(actor.entity) else { continue };
                                     let cws = CANVAS_WORLD_SCALE;
                                     let (piv_x, piv_y) = (cc.pivot[0], cc.pivot[1]);
                                     let ctw = crate::engine::methods::gizmo_interact::mat4x4_mul(
                                         tf.to_mat4(),
                                         [
-                                            [cws, 0.0, 0.0, -piv_x * cc.width * cws],
-                                            [0.0, -cws, 0.0, piv_y * cc.height * cws],
-                                            [0.0, 0.0, 1.0, 0.0],
-                                            [0.0, 0.0, 0.0, 1.0],
+                                            [ cws,  0.0, 0.0, -piv_x * cc.width  * cws],
+                                            [ 0.0, -cws, 0.0,  piv_y * cc.height * cws],
+                                            [ 0.0,  0.0, 1.0,  0.0                    ],
+                                            [ 0.0,  0.0, 0.0,  1.0                    ],
                                         ],
                                     );
                                     // このキャンバス内の追加分をレイヤー昇順で安定ソートする
                                     // （ワールドキャンバスのレイヤーはキャンバス内で完結する）
                                     let canvas_start = items.len();
                                     collect_sprite_items(
-                                        &actor.children,
-                                        &s.world,
-                                        wl,
-                                        draw_ctx,
+                                        &actor.children, &s.world, wl, draw_ctx,
                                         Some([cc.width, cc.height]),
-                                        ctw,
-                                        [1.0, 1.0],
-                                        1.0,
-                                        1.0,
+                                        ctw, [1.0, 1.0],
+                                        1.0, 1.0,
                                         // ワールドキャンバスは自動解像度の対象外（空マップ）・ゾーン概念なし
-                                        None,
-                                        &std::collections::HashMap::new(),
+                                        None, &std::collections::HashMap::new(),
                                         &std::collections::HashMap::new(),
                                         // 3D ワールドキャンバス配下は常に親サイズ Some のためルート分岐に入らず design_space 無関係
-                                        CanvasDrawZone::Foreground,
-                                        false,
-                                        &mut items,
+                                        CanvasDrawZone::Foreground, false, &mut items,
                                     );
                                     items[canvas_start..].sort_by_key(|&(_, _, _, _, layer)| layer);
                                 }
@@ -2144,9 +1875,9 @@ impl App {
                             // メインとは別の永続バッファ（preview ストリーム）を使う。
                             let mut sb = draw_ctx.sprites.borrow_mut();
                             sb.preview.begin();
-                            let list = sb
-                                .preview
-                                .push(items.into_iter().map(|(m, col, tex, _, _)| (m, col, tex)));
+                            let list = sb.preview.push(
+                                items.into_iter().map(|(m, col, tex, _, _)| (m, col, tex))
+                            );
                             sb.preview.upload(&draw_ctx.device, &draw_ctx.queue);
                             list
                         };
@@ -2160,13 +1891,9 @@ impl App {
                         let preview_tp_models: Vec<(
                             &crate::engine::methods::drawer::GpuModel,
                             &crate::engine::methods::drawer::InstancedModelBatch,
-                        )> = self
-                            .shared_model_batches
-                            .iter()
+                        )> = self.shared_model_batches.iter()
                             .filter_map(|(path, sd)| {
-                                gpu_model_by_path
-                                    .get(path.as_str())
-                                    .map(|&gpu| (gpu, &sd.batch))
+                                gpu_model_by_path.get(path.as_str()).map(|&gpu| (gpu, &sd.batch))
                             })
                             .collect();
                         let preview_has_tp =
@@ -2199,11 +1926,7 @@ impl App {
                             // 正射ゲームカメラは CSM（透視錐台前提の分割）を組めないため影なしへ落とす。
                             let sp = cam_data.shadow_params(preview_aspect);
                             let (pv, pn, pf, pfov, pasp) = sp.unwrap_or((
-                                Mat4x4::identity(),
-                                0.1,
-                                100.0,
-                                std::f32::consts::FRAC_PI_4,
-                                1.0,
+                                Mat4x4::identity(), 0.1, 100.0, std::f32::consts::FRAC_PI_4, 1.0,
                             ));
                             // prepare_frame はライト配列の shadow_index（影希望センチネル）を
                             // 書き換えるため、GPU へ上げ済みの frame_lights ではなく
@@ -2212,12 +1935,7 @@ impl App {
                             // メイン側と一致する（＝GPU 上のライト配列と齟齬は生じない）。
                             let mut preview_lights = lights_before_shadow_assign.clone();
                             draw_ctx.shadow_preview.prepare_frame(
-                                &draw_ctx.queue,
-                                &pv,
-                                pn,
-                                pf,
-                                pfov,
-                                pasp,
+                                &draw_ctx.queue, &pv, pn, pf, pfov, pasp,
                                 &mut preview_lights,
                                 shadow_has_casters && sp.is_some(),
                             )
@@ -2227,14 +1945,10 @@ impl App {
                             let preview_casters: Vec<(
                                 &crate::engine::methods::drawer::GpuModel,
                                 &crate::engine::methods::drawer::InstancedModelBatch,
-                            )> = self
-                                .shared_model_batches
-                                .iter()
+                            )> = self.shared_model_batches.iter()
                                 .filter(|(path, _)| shadow_caster_paths.contains(path.as_str()))
                                 .filter_map(|(path, sd)| {
-                                    gpu_model_by_path
-                                        .get(path.as_str())
-                                        .map(|&gpu| (gpu, &sd.batch))
+                                    gpu_model_by_path.get(path.as_str()).map(|&gpu| (gpu, &sd.batch))
                                 })
                                 .collect();
                             if !preview_casters.is_empty() {
@@ -2280,18 +1994,11 @@ impl App {
                                     //     ライトが落ちて暗くなる／別の場所のライトが乗る）
                                     //   - CSM = プレビューカメラ基準（上でこのパス直前に描いた深度）
                                     draw_model_indirect(
-                                        &mut preview_pass,
-                                        gpu,
-                                        &sd.batch,
+                                        &mut preview_pass, gpu, &sd.batch,
                                         &preview_mesh_cam_buf.bind_group,
-                                        draw_ctx
-                                            .light_buffer
-                                            .bind_group(LightingPass::CameraPreview),
+                                        draw_ctx.light_buffer.bind_group(LightingPass::CameraPreview),
                                         // プレビュー小窓は常にライティング ON・塗り（ワイヤなし）。
-                                        &draw_ctx.pipelines,
-                                        None,
-                                        false,
-                                        false,
+                                        &draw_ctx.pipelines, None, false, false,
                                     );
                                 }
                             }
@@ -2339,8 +2046,8 @@ impl App {
                     let physics_timeline_locked = self.mode == RuntimeMode::Edit
                         && self.edit_physics_enabled
                         && !self.edit_physics_at_latest;
-                    let show_gizmo_pre =
-                        (self.mode == RuntimeMode::Edit || self.paused) && !physics_timeline_locked;
+                    let show_gizmo_pre = (self.mode == RuntimeMode::Edit || self.paused)
+                        && !physics_timeline_locked;
                     // Edit ビューモードで非表示対象のアクターを選択中はギズモを生成しない
                     let gizmo_gpu_batch = if show_gizmo_pre
                         && self.tool_mode != ToolMode::Select
@@ -2352,8 +2059,7 @@ impl App {
                                 // 2D スクリーンスペース: ワールド編集（3D ビュー）と同じ
                                 // スクリーン占有率でギズモ半径を計算する（見た目の大きさを統一）
                                 let cam_2d = self.canvas_cameras.get(&self.active_world_line);
-                                let r = cam_2d
-                                    .map(|c| c.ortho_half_h * GIZMO_SCREEN_RADIUS_RATIO)
+                                let r = cam_2d.map(|c| c.ortho_half_h * GIZMO_SCREEN_RADIUS_RATIO)
                                     .unwrap_or(360.0 * GIZMO_SCREEN_RADIUS_RATIO);
                                 (r, [0.0f32, 0.0, -100.0])
                             } else {
@@ -2366,108 +2072,63 @@ impl App {
                                     self.camera.ortho_half_h.max(0.01) * GIZMO_SCREEN_RADIUS_RATIO
                                 } else {
                                     // 透視: カメラ距離と FOV から見た目の大きさが一定になる半径
-                                    let d = [
-                                        pos[0] - cam_pos.x,
-                                        pos[1] - cam_pos.y,
-                                        pos[2] - cam_pos.z,
-                                    ];
-                                    let dist =
-                                        (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt().max(0.01);
+                                    let d = [pos[0]-cam_pos.x, pos[1]-cam_pos.y, pos[2]-cam_pos.z];
+                                    let dist = (d[0]*d[0]+d[1]*d[1]+d[2]*d[2]).sqrt().max(0.01);
                                     let half_fov = self.camera.base.projection.fov_y_rad * 0.5;
                                     dist * half_fov.tan() * GIZMO_SCREEN_RADIUS_RATIO
                                 };
                                 (r, [cam_pos.x, cam_pos.y, cam_pos.z])
                             };
 
-                            let hov = self.hovered_gizmo_part;
+                            let hov  = self.hovered_gizmo_part;
                             let drag_part = self.drag.gizmo_drag.as_ref().map(|d| d.part);
                             let mut batch = GizmoBatch::new();
                             // 3D Canvas 子アクター: 事前計算したキャンバス軸を使用する
                             if let Some([ax, ay, az]) = canvas_child_axes_pre {
                                 // 3D Canvas 子アクター: キャンバス平面に沿った 2 軸ギズモ
                                 match self.tool_mode {
-                                    ToolMode::Move => {
-                                        batch.add_gizmo_translate_canvas(pos, radius, hov, ax, ay)
-                                    }
-                                    ToolMode::Rotate => batch.add_gizmo_rotate_canvas(
-                                        pos,
-                                        radius,
-                                        64,
-                                        cam_pos_arr,
-                                        hov,
-                                        drag_part,
-                                        az,
-                                        ax,
-                                        ay,
-                                    ),
-                                    ToolMode::Scale => {
-                                        batch.add_gizmo_scale_canvas(pos, radius, hov, ax, ay)
-                                    }
+                                    ToolMode::Move   => batch.add_gizmo_translate_canvas(pos, radius, hov, ax, ay),
+                                    ToolMode::Rotate => batch.add_gizmo_rotate_canvas(pos, radius, 64, cam_pos_arr, hov, drag_part, az, ax, ay),
+                                    ToolMode::Scale  => batch.add_gizmo_scale_canvas(pos, radius, hov, ax, ay),
                                     ToolMode::Select => {}
                                 }
                             } else if gizmo_actor_is_2d {
                                 // 2D: Z 軸・平面ハンドル不要、Rotate は完全円
                                 match self.tool_mode {
-                                    ToolMode::Move => {
-                                        batch.add_gizmo_translate_2d(pos, radius, hov)
-                                    }
-                                    ToolMode::Rotate => {
-                                        batch.add_gizmo_rotate_2d(pos, radius, 64, hov)
-                                    }
-                                    ToolMode::Scale => batch.add_gizmo_scale_2d(pos, radius, hov),
+                                    ToolMode::Move   => batch.add_gizmo_translate_2d(pos, radius, hov),
+                                    ToolMode::Rotate => batch.add_gizmo_rotate_2d(pos, radius, 64, hov),
+                                    ToolMode::Scale  => batch.add_gizmo_scale_2d(pos, radius, hov),
                                     ToolMode::Select => {}
                                 }
                             } else if let Some([ax, ay, az]) = local_axes_pre {
                                 // Local 座標モード（通常 3D アクター）: オブジェクトのローカル回転軸に
                                 // 沿った全軸ギズモ（回転リングもオブジェクト回転に追従する）
                                 match self.tool_mode {
-                                    ToolMode::Move => batch
-                                        .add_gizmo_translate_local(pos, radius, hov, ax, ay, az),
-                                    ToolMode::Rotate => batch.add_gizmo_rotate_local(
-                                        pos,
-                                        radius,
-                                        64,
-                                        cam_pos_arr,
-                                        hov,
-                                        drag_part,
-                                        ax,
-                                        ay,
-                                        az,
-                                    ),
-                                    ToolMode::Scale => {
-                                        batch.add_gizmo_scale_local(pos, radius, hov, ax, ay, az)
-                                    }
+                                    ToolMode::Move   => batch.add_gizmo_translate_local(pos, radius, hov, ax, ay, az),
+                                    ToolMode::Rotate => batch.add_gizmo_rotate_local(pos, radius, 64, cam_pos_arr, hov, drag_part, ax, ay, az),
+                                    ToolMode::Scale  => batch.add_gizmo_scale_local(pos, radius, hov, ax, ay, az),
                                     ToolMode::Select => {}
                                 }
                             } else {
                                 // 3D（World 座標モード）: 全軸・平面ハンドル、Rotate は半円
                                 match self.tool_mode {
-                                    ToolMode::Move => batch.add_gizmo_translate(pos, radius, hov),
-                                    ToolMode::Rotate => batch.add_gizmo_rotate(
-                                        pos,
-                                        radius,
-                                        64,
-                                        cam_pos_arr,
-                                        hov,
-                                        drag_part,
-                                    ),
-                                    ToolMode::Scale => batch.add_gizmo_scale(pos, radius, hov),
+                                    ToolMode::Move   => batch.add_gizmo_translate(pos, radius, hov),
+                                    ToolMode::Rotate => batch.add_gizmo_rotate(pos, radius, 64, cam_pos_arr, hov, drag_part),
+                                    ToolMode::Scale  => batch.add_gizmo_scale(pos, radius, hov),
                                     ToolMode::Select => {}
                                 }
                             }
                             batch.build(&draw_ctx.device)
                         })
-                    } else {
-                        None
-                    };
+                    } else { None };
 
                     // 矩形選択ビジュアル（レンダーパスの前に GPU バッファを生成）
                     let rect_gpu_batch = if in_editor && self.drag.rect_selecting {
                         if let (Some((px, py)), Some((cx, cy))) =
                             (self.drag.lmb_press_pos, self.last_cursor_pos)
                         {
-                            let vp_w = window_size.map_or(1280.0, |s| s.width as f32);
-                            let vp_h = window_size.map_or(720.0, |s| s.height as f32);
+                            let vp_w = window_size.map_or(1280.0, |s| s.width  as f32);
+                            let vp_h = window_size.map_or(720.0,  |s| s.height as f32);
                             let sc = [
                                 (px.min(cx), py.min(cy)), // TL
                                 (px.max(cx), py.min(cy)), // TR
@@ -2479,8 +2140,8 @@ impl App {
                                 // 2D スクリーンスペース（アクター編集タブ・2Dシーンビュー・シーンSS共通）:
                                 // 2D ortho でスクリーン座標をキャンバス XY に変換する
                                 let cam_2d = self.canvas_cameras.get(&self.active_world_line);
-                                let pan_x = cam_2d.map(|c| c.pan_x).unwrap_or(0.0);
-                                let pan_y = cam_2d.map(|c| c.pan_y).unwrap_or(0.0);
+                                let pan_x  = cam_2d.map(|c| c.pan_x).unwrap_or(0.0);
+                                let pan_y  = cam_2d.map(|c| c.pan_y).unwrap_or(0.0);
                                 let half_h = cam_2d.map(|c| c.ortho_half_h).unwrap_or(360.0);
                                 let half_w = half_h * (vp_w / vp_h);
                                 for (i, &(sx, sy)) in sc.iter().enumerate() {
@@ -2490,8 +2151,8 @@ impl App {
                                 }
                             } else {
                                 // 3D デバッグカメラ: near plane の少し手前にワールド座標を配置する
-                                let view = self.camera.view_matrix();
-                                let cam_pv = self.camera.position();
+                                let view    = self.camera.view_matrix();
+                                let cam_pv  = self.camera.position();
                                 let cam_pos = [cam_pv.x, cam_pv.y, cam_pv.z];
                                 let near_vs = self.camera.base.projection.near * 1.05;
                                 let v = &view.data;
@@ -2502,24 +2163,15 @@ impl App {
                                     let half_h = self.camera.ortho_half_h.max(0.01);
                                     let half_w = half_h * (vp_w / vp_h);
                                     for (i, &(sx, sy)) in sc.iter().enumerate() {
-                                        let nx = 2.0 * sx / vp_w - 1.0;
-                                        let ny = 1.0 - 2.0 * sy / vp_h;
+                                        let nx  = 2.0 * sx / vp_w - 1.0;
+                                        let ny  = 1.0 - 2.0 * sy / vp_h;
                                         let vpx = nx * half_w;
                                         let vpy = ny * half_h;
                                         let vpz = near_vs;
                                         wp[i] = [
-                                            cam_pos[0]
-                                                + v[0][0] * vpx
-                                                + v[1][0] * vpy
-                                                + v[2][0] * vpz,
-                                            cam_pos[1]
-                                                + v[0][1] * vpx
-                                                + v[1][1] * vpy
-                                                + v[2][1] * vpz,
-                                            cam_pos[2]
-                                                + v[0][2] * vpx
-                                                + v[1][2] * vpy
-                                                + v[2][2] * vpz,
+                                            cam_pos[0] + v[0][0]*vpx + v[1][0]*vpy + v[2][0]*vpz,
+                                            cam_pos[1] + v[0][1]*vpx + v[1][1]*vpy + v[2][1]*vpz,
+                                            cam_pos[2] + v[0][2]*vpx + v[1][2]*vpy + v[2][2]*vpz,
                                         ];
                                     }
                                 } else {
@@ -2527,24 +2179,15 @@ impl App {
                                     let proj = self.camera.projection_matrix();
                                     let p = &proj.data;
                                     for (i, &(sx, sy)) in sc.iter().enumerate() {
-                                        let nx = 2.0 * sx / vp_w - 1.0;
-                                        let ny = 1.0 - 2.0 * sy / vp_h;
+                                        let nx  = 2.0 * sx / vp_w - 1.0;
+                                        let ny  = 1.0 - 2.0 * sy / vp_h;
                                         let vpx = (nx / p[0][0]) * near_vs;
                                         let vpy = (ny / p[1][1]) * near_vs;
                                         let vpz = near_vs;
                                         wp[i] = [
-                                            cam_pos[0]
-                                                + v[0][0] * vpx
-                                                + v[1][0] * vpy
-                                                + v[2][0] * vpz,
-                                            cam_pos[1]
-                                                + v[0][1] * vpx
-                                                + v[1][1] * vpy
-                                                + v[2][1] * vpz,
-                                            cam_pos[2]
-                                                + v[0][2] * vpx
-                                                + v[1][2] * vpy
-                                                + v[2][2] * vpz,
+                                            cam_pos[0] + v[0][0]*vpx + v[1][0]*vpy + v[2][0]*vpz,
+                                            cam_pos[1] + v[0][1]*vpx + v[1][1]*vpy + v[2][1]*vpz,
+                                            cam_pos[2] + v[0][2]*vpx + v[1][2]*vpy + v[2][2]*vpz,
                                         ];
                                     }
                                 }
@@ -2556,83 +2199,65 @@ impl App {
                             lb.add_line(wp[2], wp[3], color);
                             lb.add_line(wp[3], wp[0], color);
                             Some(lb.build(&draw_ctx.device))
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    };
+                        } else { None }
+                    } else { None };
 
                     // ドロッププレビュー球体バッチ（ドラッグ中のみ）
                     // 2D シーンビューでは 3D 配置プレビューは表示しない
                     const PREVIEW_SPHERE_RADIUS: f32 = 0.5;
-                    let drop_preview_batch =
-                        if let Some(pos) = self.drop_preview_pos.filter(|_| !edit_view_2d) {
-                            let mut gb = GizmoBatch::new();
-                            gb.add_solid_sphere(
-                                pos,
-                                PREVIEW_SPHERE_RADIUS,
-                                16, // stacks
-                                24, // slices
-                                Color::new(0.3, 0.8, 1.0, 0.85),
-                            );
-                            Some(gb.build(&draw_ctx.device))
-                        } else {
-                            None
-                        };
+                    let drop_preview_batch = if let Some(pos) = self.drop_preview_pos.filter(|_| !edit_view_2d) {
+                        let mut gb = GizmoBatch::new();
+                        gb.add_solid_sphere(
+                            pos,
+                            PREVIEW_SPHERE_RADIUS,
+                            16,  // stacks
+                            24,  // slices
+                            Color::new(0.3, 0.8, 1.0, 0.85),
+                        );
+                        Some(gb.build(&draw_ctx.device))
+                    } else { None };
 
                     // 地形ブラシ範囲プレビュー（Edit モードのホバー位置のワイヤスフィア）。
                     //   TERRAIN_BRUSH_PREVIEW で terrain.brush_preview に (中心, 半径, 強度) が入る。
                     //   Edit（in_editor）のみ描画し、Play では出さない。
                     //   ⑥ 強度に応じて色を低強度色→高強度色へ線形補間する（視認性重視）。
-                    const TERRAIN_PREVIEW_COLOR_LOW: [f32; 4] = [0.40, 0.85, 1.0, 0.80]; // 低強度=薄い水色
+                    const TERRAIN_PREVIEW_COLOR_LOW: [f32; 4] = [0.40, 0.85, 1.0, 0.80];  // 低強度=薄い水色
                     const TERRAIN_PREVIEW_COLOR_HIGH: [f32; 4] = [1.0, 0.45, 0.10, 0.90]; // 高強度=濃いオレンジ
                     const TERRAIN_PREVIEW_MERIDIANS: usize = 12; // 経線本数
-                    const TERRAIN_PREVIEW_PARALLELS: usize = 6; // 緯線本数
+                    const TERRAIN_PREVIEW_PARALLELS: usize = 6;  // 緯線本数
                     const TERRAIN_PREVIEW_RING_SEGS: usize = 32; // 各円の分割数
                     let terrain_preview_batch = if in_editor {
-                        self.terrain
-                            .brush_preview
-                            .map(|(center, radius, strength)| {
-                                // t=0（低強度）でシアン寄り、t=1（高強度）でオレンジ寄りへ各チャンネルを lerp。
-                                let t = strength.clamp(0.0, 1.0);
-                                let mut color = [0.0f32; 4];
-                                for i in 0..4 {
-                                    color[i] = TERRAIN_PREVIEW_COLOR_LOW[i]
-                                        + (TERRAIN_PREVIEW_COLOR_HIGH[i]
-                                            - TERRAIN_PREVIEW_COLOR_LOW[i])
-                                            * t;
-                                }
-                                let mut lb = LineBatch::new();
-                                lb.add_wire_sphere_latlong(
-                                    center,
-                                    radius,
-                                    TERRAIN_PREVIEW_MERIDIANS,
-                                    TERRAIN_PREVIEW_PARALLELS,
-                                    TERRAIN_PREVIEW_RING_SEGS,
-                                    color,
-                                );
-                                lb.build(&draw_ctx.device)
-                            })
-                    } else {
-                        None
-                    };
+                        self.terrain.brush_preview.map(|(center, radius, strength)| {
+                            // t=0（低強度）でシアン寄り、t=1（高強度）でオレンジ寄りへ各チャンネルを lerp。
+                            let t = strength.clamp(0.0, 1.0);
+                            let mut color = [0.0f32; 4];
+                            for i in 0..4 {
+                                color[i] = TERRAIN_PREVIEW_COLOR_LOW[i]
+                                    + (TERRAIN_PREVIEW_COLOR_HIGH[i] - TERRAIN_PREVIEW_COLOR_LOW[i]) * t;
+                            }
+                            let mut lb = LineBatch::new();
+                            lb.add_wire_sphere_latlong(
+                                center, radius,
+                                TERRAIN_PREVIEW_MERIDIANS,
+                                TERRAIN_PREVIEW_PARALLELS,
+                                TERRAIN_PREVIEW_RING_SEGS,
+                                color,
+                            );
+                            lb.build(&draw_ctx.device)
+                        })
+                    } else { None };
 
                     // グリッド描画バッチ（エディタモード + show_grid のみ）
                     let _perf_t_grid = std::time::Instant::now();
                     // アクター編集タブの 2D キャンバス: XY 平面グリッド（常時表示）
                     // その他（シーン上のキャンバス含む 3D 系）: XZ 平面グリッド
                     // シーン上に canvas があっても 3D グリッドを維持する（is_actor_edit_canvas で判定）
-                    let is_actor_edit_canvas =
-                        is_canvas && self.actor_edit_canvas_wls.contains(&self.active_world_line);
+                    let is_actor_edit_canvas = is_canvas && self.actor_edit_canvas_wls.contains(&self.active_world_line);
                     // 2D グリッド（XY 平面）を使うビューか:
                     //   - アクター編集タブの 2D キャンバス（従来動作）
                     //   - Edit の 2D シーンビュー（2D オルソカメラでパン・ズームするため）
                     let is_2d_grid_view = is_actor_edit_canvas || edit_view_2d;
-                    let grid_gpu_batch = if in_editor
-                        && (self.show_grid
-                            || (self.active_world_line != 0 && !is_actor_edit_canvas))
-                    {
+                    let grid_gpu_batch = if in_editor && (self.show_grid || (self.active_world_line != 0 && !is_actor_edit_canvas)) {
                         let mut lb = LineBatch::new();
                         // モード別グリッド色
                         // 2D アクター編集・2D シーンビュー: 薄い青系（minor: 薄く, major: 中程度）
@@ -2654,13 +2279,13 @@ impl App {
                             let ax_y: [f32; 4] = [0.10, 0.55, 0.10, 0.90];
 
                             // 2D カメラの状態を取得（view/proj 計算で entry 生成済みのため get で OK）
-                            let cam_2d = self
-                                .canvas_cameras
+                            let cam_2d = self.canvas_cameras
                                 .get(&self.active_world_line)
                                 .cloned()
                                 .unwrap_or_default();
-                            let aspect = window_size
-                                .map_or(16.0 / 9.0, |s| s.width as f32 / s.height as f32);
+                            let aspect = window_size.map_or(16.0 / 9.0, |s| {
+                                s.width as f32 / s.height as f32
+                            });
                             let half_h_2d = cam_2d.ortho_half_h;
                             let half_w_2d = half_h_2d * aspect;
 
@@ -2671,13 +2296,7 @@ impl App {
                             let base = 10.0f32.powf(exp);
                             let step = {
                                 let m = raw_step / base;
-                                if m < 1.5 {
-                                    base
-                                } else if m < 3.5 {
-                                    base * 2.0
-                                } else {
-                                    base * 5.0
-                                }
+                                if m < 1.5 { base } else if m < 3.5 { base * 2.0 } else { base * 5.0 }
                             };
 
                             // major ライン周期（minor 5本ごとに major 1本 → step の 5 倍ごと）
@@ -2691,57 +2310,45 @@ impl App {
 
                             // 可視範囲に含まれるグリッドインデックス（step 単位）
                             let ix_start = (vis_x0 / step).floor() as i64;
-                            let ix_end = (vis_x1 / step).ceil() as i64;
+                            let ix_end   = (vis_x1 / step).ceil()  as i64;
                             let iy_start = (vis_y0 / step).floor() as i64;
-                            let iy_end = (vis_y1 / step).ceil() as i64;
+                            let iy_end   = (vis_y1 / step).ceil()  as i64;
 
                             // 縦ライン（X = 定数, Y 方向に伸ばす）
                             for ix in ix_start..=ix_end {
                                 let world_x = ix as f32 * step;
-                                let is_axis = ix == 0;
+                                let is_axis  = ix == 0;
                                 let is_major = !is_axis && (ix.rem_euclid(MAJOR_PERIOD) == 0);
-                                let col = if is_axis {
-                                    ax_x
-                                } else if is_major {
-                                    major
-                                } else {
-                                    minor
-                                };
+                                let col = if is_axis { ax_x } else if is_major { major } else { minor };
                                 lb.add_line([world_x, vis_y0, 0.0], [world_x, vis_y1, 0.0], col);
                             }
 
                             // 横ライン（Y = 定数, X 方向に伸ばす）
                             for iy in iy_start..=iy_end {
                                 let world_y = iy as f32 * step;
-                                let is_axis = iy == 0;
+                                let is_axis  = iy == 0;
                                 let is_major = !is_axis && (iy.rem_euclid(MAJOR_PERIOD) == 0);
-                                let col = if is_axis {
-                                    ax_y
-                                } else if is_major {
-                                    major
-                                } else {
-                                    minor
-                                };
+                                let col = if is_axis { ax_y } else if is_major { major } else { minor };
                                 lb.add_line([vis_x0, world_y, 0.0], [vis_x1, world_y, 0.0], col);
                             }
                         } else {
                             // 3D モード: XZ 平面グリッド（Y=0）
                             // カメラ追従＋深度フェード＋スケール段階切り替え
                             let cam_pos = self.camera.base.transform.position;
-                            let cam_y = cam_pos[1].abs();
+                            let cam_y   = cam_pos[1].abs();
                             let cam_far = self.camera.base.projection.far;
                             let ax_z: [f32; 4] = [0.10, 0.10, 0.50, 1.0];
 
                             // グリッドスケール選択: (step, thick_period, tier_y_start, tier_y_end)
                             let (step, thick_period, tier_start, tier_end): (f32, i64, f32, f32) =
                                 if cam_y < 1.0 {
-                                    (0.1, 10, 0.0, 1.0)
+                                    (0.1,  10, 0.0,  1.0)
                                 } else if cam_y < 10.0 {
-                                    (1.0, 5, 1.0, 10.0)
+                                    (1.0,   5, 1.0, 10.0)
                                 } else if cam_y < 30.0 {
-                                    (5.0, 2, 10.0, 30.0)
+                                    (5.0,   2, 10.0, 30.0)
                                 } else {
-                                    (10.0, 5, 30.0, f32::INFINITY)
+                                    (10.0,  5, 30.0, f32::INFINITY)
                                 };
 
                             // minor ライン alpha: 区間始端=1.0 → 区間終端≈0.0
@@ -2754,24 +2361,25 @@ impl App {
                             // n_half を cam_far / step まで伸ばしてグリッドが far 距離まで描画される
                             let max_lines: i32 = if step < 0.5 { 300 } else { 2000 };
                             let n_half: i32 = ((cam_far / step) as i32).min(max_lines);
-                            let ext = n_half as f32 * step;
+                            let ext    = n_half as f32 * step;
                             let snap_x = (cam_pos[0] / step).floor() * step;
                             let snap_z = (cam_pos[2] / step).floor() * step;
 
                             // XZ 距離ベースフェード: 各ラインをカメラの XZ 投影点でスプリット
                             // して「端=0 → スプリット点=peak → 端=0」の2セグメント描画
-                            let fade_xz =
-                                |d: f32| -> f32 { (1.0 - (d / ext).powi(2)).clamp(0.0, 1.0) };
+                            let fade_xz = |d: f32| -> f32 {
+                                (1.0 - (d / ext).powi(2)).clamp(0.0, 1.0)
+                            };
                             let split_x = cam_pos[0].clamp(snap_x - ext, snap_x + ext);
                             let split_z = cam_pos[2].clamp(snap_z - ext, snap_z + ext);
 
                             for i in -n_half..=n_half {
                                 // Z 方向ライン（X = world_x で固定）
-                                let world_x = snap_x + i as f32 * step;
-                                let perp_dx = (world_x - cam_pos[0]).abs();
+                                let world_x  = snap_x + i as f32 * step;
+                                let perp_dx  = (world_x - cam_pos[0]).abs();
                                 if perp_dx < ext {
-                                    let idx_x = (world_x / step).round() as i64;
-                                    let is_axis = idx_x == 0;
+                                    let idx_x    = (world_x / step).round() as i64;
+                                    let is_axis  = idx_x == 0;
                                     let is_major = !is_axis && idx_x % thick_period == 0;
                                     let base_a = if is_axis {
                                         ax_z[3]
@@ -2782,13 +2390,9 @@ impl App {
                                     };
                                     if base_a > 0.005 {
                                         let peak_a = fade_xz(perp_dx) * base_a;
-                                        let rgb = if is_axis {
-                                            [ax_z[0], ax_z[1], ax_z[2]]
-                                        } else if is_major {
-                                            [major[0], major[1], major[2]]
-                                        } else {
-                                            [minor[0], minor[1], minor[2]]
-                                        };
+                                        let rgb = if is_axis { [ax_z[0], ax_z[1], ax_z[2]] }
+                                            else if is_major  { [major[0], major[1], major[2]] }
+                                            else               { [minor[0], minor[1], minor[2]] };
                                         lb.add_line_grad(
                                             [world_x, 0.0, snap_z - ext],
                                             [world_x, 0.0, split_z],
@@ -2805,11 +2409,11 @@ impl App {
                                 }
 
                                 // X 方向ライン（Z = world_z で固定）
-                                let world_z = snap_z + i as f32 * step;
-                                let perp_dz = (world_z - cam_pos[2]).abs();
+                                let world_z  = snap_z + i as f32 * step;
+                                let perp_dz  = (world_z - cam_pos[2]).abs();
                                 if perp_dz < ext {
-                                    let idx_z = (world_z / step).round() as i64;
-                                    let is_axis = idx_z == 0;
+                                    let idx_z    = (world_z / step).round() as i64;
+                                    let is_axis  = idx_z == 0;
                                     let is_major = !is_axis && idx_z % thick_period == 0;
                                     let base_a = if is_axis {
                                         ax_x[3]
@@ -2820,21 +2424,17 @@ impl App {
                                     };
                                     if base_a > 0.005 {
                                         let peak_a = fade_xz(perp_dz) * base_a;
-                                        let rgb = if is_axis {
-                                            [ax_x[0], ax_x[1], ax_x[2]]
-                                        } else if is_major {
-                                            [major[0], major[1], major[2]]
-                                        } else {
-                                            [minor[0], minor[1], minor[2]]
-                                        };
+                                        let rgb = if is_axis { [ax_x[0], ax_x[1], ax_x[2]] }
+                                            else if is_major  { [major[0], major[1], major[2]] }
+                                            else               { [minor[0], minor[1], minor[2]] };
                                         lb.add_line_grad(
                                             [snap_x - ext, 0.0, world_z],
-                                            [split_x, 0.0, world_z],
+                                            [split_x,      0.0, world_z],
                                             [rgb[0], rgb[1], rgb[2], 0.0],
                                             [rgb[0], rgb[1], rgb[2], peak_a],
                                         );
                                         lb.add_line_grad(
-                                            [split_x, 0.0, world_z],
+                                            [split_x,      0.0, world_z],
                                             [snap_x + ext, 0.0, world_z],
                                             [rgb[0], rgb[1], rgb[2], peak_a],
                                             [rgb[0], rgb[1], rgb[2], 0.0],
@@ -2845,9 +2445,7 @@ impl App {
                         }
 
                         Some(lb.build(&draw_ctx.device))
-                    } else {
-                        None
-                    };
+                    } else { None };
                     perf_grid_ms = _perf_t_grid.elapsed().as_secs_f64() * 1000.0;
 
                     // ── コライダー面ピッキングアイテム ────────────────────────────────
@@ -2863,9 +2461,9 @@ impl App {
                     //   - collider_pick_items_3dcanvas: 3D シーン内キャンバス配下（WS perspective）
                     //   - collider_pick_items_3d:       3D コライダー（WS perspective。
                     //                                   形状ごとの近似クワッド生成は collider3d_pick.rs）
-                    let mut collider_pick_items_2d: Vec<(u32, [[f32; 4]; 4])> = Vec::new();
+                    let mut collider_pick_items_2d:       Vec<(u32, [[f32; 4]; 4])> = Vec::new();
                     let mut collider_pick_items_3dcanvas: Vec<(u32, [[f32; 4]; 4])> = Vec::new();
-                    let mut collider_pick_items_3d: Vec<(u32, [[f32; 4]; 4])> = Vec::new();
+                    let mut collider_pick_items_3d:       Vec<(u32, [[f32; 4]; 4])> = Vec::new();
 
                     // ── コライダーワイヤーフレームバッチ ──────────────────────────────
                     let _perf_t_collider = std::time::Instant::now();
@@ -2873,16 +2471,15 @@ impl App {
                     //   - エディタモード（3D シーンのみ）: 常に表示
                     //   - Play モード: play_collider_draw フラグが有効な場合のみ表示
                     // トリガーコライダー: 黄色 / 通常コライダー: 緑 / 衝突中: 赤
-                    const COLLIDER_COLOR_NORMAL: [f32; 4] = [0.0, 1.0, 0.2, 1.0];
-                    const COLLIDER_COLOR_TRIGGER: [f32; 4] = [1.0, 0.9, 0.0, 1.0];
+                    const COLLIDER_COLOR_NORMAL:    [f32; 4] = [0.0, 1.0, 0.2, 1.0];
+                    const COLLIDER_COLOR_TRIGGER:   [f32; 4] = [1.0, 0.9, 0.0, 1.0];
                     const COLLIDER_COLOR_COLLISION: [f32; 4] = [1.0, 0.2, 0.0, 1.0];
 
                     // 3D コライダーはアクター編集 2D タブ・2D シーンビューでは表示しない
                     let draw_colliders = (in_editor && !use_ortho_2d_camera)
                         || (!in_editor && self.play_collider_draw);
 
-                    let (collider_wireframe_batch, collider_wireframe_sel_batch) = if draw_colliders
-                    {
+                    let (collider_wireframe_batch, collider_wireframe_sel_batch) = if draw_colliders {
                         let wl = self.active_world_line;
                         let mut lb = LineBatch::new();
                         // 選択中アクターのコライダー線を集める別バッチ（太線として描画する）。
@@ -2892,9 +2489,7 @@ impl App {
                         // dfs_counter は physics_ops.rs の entity_id と一致させるため
                         // コライダーを持たないアクターも含めて 1-indexed でカウントする
                         let mut dfs_counter: u64 = 0;
-                        let mut stack: Vec<&Actor> = scene
-                            .actors
-                            .iter()
+                        let mut stack: Vec<&Actor> = scene.actors.iter()
                             .filter(|a| a.world_line == wl)
                             .rev()
                             .collect();
@@ -2910,20 +2505,13 @@ impl App {
                             }
 
                             // Transform は actor.entity から取得
-                            let Some(tf) = scene.world.get::<ActorTransform>(actor.entity) else {
-                                continue;
-                            };
+                            let Some(tf) = scene.world.get::<ActorTransform>(actor.entity) else { continue };
 
                             // Collider スロットエンティティから ColliderComponent を取得
-                            let collider_slot = actor
-                                .slots()
-                                .iter()
+                            let collider_slot = actor.slots().iter()
                                 .find(|s| s.kind == ComponentKind::Collider);
                             let Some(cs) = collider_slot else { continue };
-                            let Some(collider) = scene.world.get::<ColliderComponent>(cs.entity)
-                            else {
-                                continue;
-                            };
+                            let Some(collider) = scene.world.get::<ColliderComponent>(cs.entity) else { continue };
 
                             // コライダー色: トリガーなら黄色、衝突中なら赤、通常なら緑
                             let color = if collider.is_trigger {
@@ -2936,15 +2524,13 @@ impl App {
                             // 選択中アクターのコライダーは明度を上げ、かつ太線で強調する。
                             // selected_actor_dfs_ids はピックのデコード（global - canvas_id_offset）
                             // による 0 始まり DFS を保持するため、1 始まりの dfs_id を -1 して比較する。
-                            let is_selected = self
-                                .selected_actor_dfs_ids
+                            let is_selected = self.selected_actor_dfs_ids
                                 .contains(&(dfs_id as usize).saturating_sub(1));
                             let color = crate::engine::core::app_base::app::collider2d_wireframe::collider_color_for_selection(
                                 color, is_selected,
                             );
                             // 選択中は太線バッチ（lb_sel）へ、非選択は通常バッチ（lb）へ振り分ける。
-                            let target: &mut LineBatch =
-                                if is_selected { &mut lb_sel } else { &mut lb };
+                            let target: &mut LineBatch = if is_selected { &mut lb_sel } else { &mut lb };
 
                             // Transform のオイラー角（YXZ 度数）からクォータニオンを生成
                             let q = Quaternion::from_euler(Vector3::new(
@@ -2952,7 +2538,7 @@ impl App {
                                 tf.rotation[1].to_radians(),
                                 tf.rotation[2].to_radians(),
                             ));
-                            let rot = [q.x, q.y, q.z, q.w];
+                            let rot   = [q.x, q.y, q.z, q.w];
                             let scale = tf.scale;
 
                             // コライダーオフセットをワールド空間に変換して中心座標を計算
@@ -2971,15 +2557,15 @@ impl App {
                             //   raw_id = canvas_id_offset + dfs_id（dfs_id は 1 始まりの全アクター DFS）
                             // → decode 側の `global >= canvas_id_offset` 分岐で該当アクターが選択される。
                             if in_editor {
-                                let cam_pv = self.camera.position();
+                                let cam_pv  = self.camera.position();
                                 let cam_pos = [cam_pv.x, cam_pv.y, cam_pv.z];
                                 let mut quads: Vec<[[f32; 4]; 4]> = Vec::new();
                                 crate::engine::core::app_base::app::collider3d_pick::collect_collider3d_pick_quads(
                                     &collider.shape, pos, &q, scale, cam_pos, &mut quads,
                                 );
                                 let raw_id = canvas_id_offset + dfs_id as u32;
-                                collider_pick_items_3d
-                                    .extend(quads.into_iter().map(|m| (raw_id, m)));
+                                collider_pick_items_3d.extend(
+                                    quads.into_iter().map(|m| (raw_id, m)));
                             }
 
                             match &collider.shape {
@@ -2994,43 +2580,32 @@ impl App {
                                 }
                                 ColliderShapeData::Sphere { radius } => {
                                     // 最大スケール軸を半径に適用
-                                    let r = radius
-                                        * scale[0].abs().max(scale[1].abs()).max(scale[2].abs());
+                                    let r = radius * scale[0].abs()
+                                        .max(scale[1].abs())
+                                        .max(scale[2].abs());
                                     target.add_sphere_at(pos, r, 24, color);
                                 }
-                                ColliderShapeData::Capsule {
-                                    radius,
-                                    half_height,
-                                } => {
-                                    let r = radius * scale[0].abs().max(scale[2].abs());
+                                ColliderShapeData::Capsule { radius, half_height } => {
+                                    let r  = radius * scale[0].abs().max(scale[2].abs());
                                     let hh = half_height * scale[1].abs();
                                     target.add_capsule_wireframe(pos, rot, r, hh, 24, color);
                                 }
-                                ColliderShapeData::Cylinder {
-                                    radius,
-                                    half_height,
-                                } => {
-                                    let r = radius * scale[0].abs().max(scale[2].abs());
+                                ColliderShapeData::Cylinder { radius, half_height } => {
+                                    let r  = radius * scale[0].abs().max(scale[2].abs());
                                     let hh = half_height * scale[1].abs();
                                     target.add_cylinder_wireframe(pos, rot, r, hh, 24, color);
                                 }
-                                ColliderShapeData::Cone {
-                                    radius,
-                                    half_height,
-                                } => {
-                                    let r = radius * scale[0].abs().max(scale[2].abs());
+                                ColliderShapeData::Cone { radius, half_height } => {
+                                    let r  = radius * scale[0].abs().max(scale[2].abs());
                                     let hh = half_height * scale[1].abs();
                                     target.add_cone_wireframe(pos, rot, r, hh, 24, color);
                                 }
                                 ColliderShapeData::ConvexHull { vertices } => {
                                     // 全頂点をスケール・回転・平行移動でワールド空間に変換
-                                    let world_verts: Vec<[f32; 3]> = vertices
-                                        .iter()
+                                    let world_verts: Vec<[f32; 3]> = vertices.iter()
                                         .map(|&[x, y, z]| {
                                             let sv = Vector3::new(
-                                                x * scale[0],
-                                                y * scale[1],
-                                                z * scale[2],
+                                                x * scale[0], y * scale[1], z * scale[2],
                                             );
                                             let rv = q.rotate(sv);
                                             [pos[0] + rv.x, pos[1] + rv.y, pos[2] + rv.z]
@@ -3040,14 +2615,11 @@ impl App {
                                 }
                                 ColliderShapeData::TriangleMesh { triangles } => {
                                     // 全三角形頂点をワールド空間に変換
-                                    let world_tris: Vec<[[f32; 3]; 3]> = triangles
-                                        .iter()
+                                    let world_tris: Vec<[[f32; 3]; 3]> = triangles.iter()
                                         .map(|tri| {
                                             tri.map(|[x, y, z]| {
                                                 let sv = Vector3::new(
-                                                    x * scale[0],
-                                                    y * scale[1],
-                                                    z * scale[2],
+                                                    x * scale[0], y * scale[1], z * scale[2],
                                                 );
                                                 let rv = q.rotate(sv);
                                                 [pos[0] + rv.x, pos[1] + rv.y, pos[2] + rv.z]
@@ -3060,20 +2632,10 @@ impl App {
                         }
 
                         // 通常線（1px）＋ 選択線（太線）の 2 バッチを返す。
-                        let base = if lb.is_empty() {
-                            None
-                        } else {
-                            Some(lb.build(&draw_ctx.device))
-                        };
-                        let sel = if lb_sel.is_empty() {
-                            None
-                        } else {
-                            Some(lb_sel.build_thick(&draw_ctx.device))
-                        };
+                        let base = if lb.is_empty() { None } else { Some(lb.build(&draw_ctx.device)) };
+                        let sel  = if lb_sel.is_empty() { None } else { Some(lb_sel.build_thick(&draw_ctx.device)) };
                         (base, sel)
-                    } else {
-                        (None, None)
-                    };
+                    } else { (None, None) };
                     perf_collider_ms = _perf_t_collider.elapsed().as_secs_f64() * 1000.0;
 
                     // ── 2D コライダーワイヤーフレームバッチ ──────────────────────────────
@@ -3082,154 +2644,123 @@ impl App {
                     //   - エディタモード: 常に表示
                     //   - Play モード: play_collider_draw フラグが有効な場合のみ表示
                     // トリガーコライダー: 黄色 / 通常コライダー: 緑 / 衝突中: 赤
-                    let draw_colliders_2d = is_canvas && (in_editor || self.play_collider_draw);
+                    let draw_colliders_2d = is_canvas
+                        && (in_editor || self.play_collider_draw);
 
-                    let (collider_2d_wireframe_batch, collider_2d_wireframe_sel_batch) =
-                        if draw_colliders_2d {
-                            // キャンバス座標 → レンダリング座標変換スケール
-                            let canvas_scale = if use_screen_space {
-                                1.0f32
-                            } else {
-                                CANVAS_WORLD_SCALE
-                            };
-                            // Y 軸方向: スクリーンスペース時は Y+ が下（CSS と同方向）
-                            let y_sign = if use_screen_space { 1.0f32 } else { -1.0 };
+                    let (collider_2d_wireframe_batch, collider_2d_wireframe_sel_batch) = if draw_colliders_2d {
+                        // キャンバス座標 → レンダリング座標変換スケール
+                        let canvas_scale = if use_screen_space { 1.0f32 } else { CANVAS_WORLD_SCALE };
+                        // Y 軸方向: スクリーンスペース時は Y+ が下（CSS と同方向）
+                        let y_sign = if use_screen_space { 1.0f32 } else { -1.0 };
 
-                            let mut lb = LineBatch::new();
-                            // 選択中コライダー線を集める別バッチ（太線として描画する）。
-                            let mut lb_sel = LineBatch::new();
+                        let mut lb = LineBatch::new();
+                        // 選択中コライダー線を集める別バッチ（太線として描画する）。
+                        let mut lb_sel = LineBatch::new();
 
-                            // collect_actor2d_contexts に viewport_size を渡す。
-                            // canvas_collect.rs と同一の変換チェーンで body_pos_px が計算される。
-                            // SS モード時は ortho 空間（ビューポート中心が原点）で返ってくるため、
-                            // ワイヤーフレーム描画はコライダーオフセットを加算するだけでよい。
-                            let vp_wf = window_size.map_or(1280.0f32, |s| s.width as f32);
-                            let vp_hf = window_size.map_or(720.0f32, |s| s.height as f32);
-                            // SS レイアウト時（2D シーンビュー含む）はビューポート基準でレイアウトする
-                            let viewport_size_2d = if ss_layout {
-                                Some([vp_wf, vp_hf])
-                            } else {
-                                None
-                            };
-                            // CanvasViewportRef::Camera を持つルートキャンバスのビューポートサイズを解決する
-                            // ビューポート上書き + ルート自動解像度マップ（描画と同一条件・共通ヘルパー）
-                            let (canvas_vp_overrides_2d, root_auto_sizes_2d) = if ss_layout {
-                                build_ss_layout_maps_free(
-                                    &scene.actors,
-                                    &scene.world,
-                                    self.active_world_line,
-                                    vp_wf,
-                                    vp_hf,
-                                    if !in_editor {
-                                        Some(game_viewport)
-                                    } else {
-                                        None
-                                    },
-                                    self.project_resolution,
-                                    edit_view_2d,
-                                )
-                            } else {
-                                (
-                                    std::collections::HashMap::new(),
-                                    std::collections::HashMap::new(),
-                                )
-                            };
-                            let ctx2d_list = crate::engine::core::app_base::app::physics2d_ops::collect_actor2d_contexts(
+                        // collect_actor2d_contexts に viewport_size を渡す。
+                        // canvas_collect.rs と同一の変換チェーンで body_pos_px が計算される。
+                        // SS モード時は ortho 空間（ビューポート中心が原点）で返ってくるため、
+                        // ワイヤーフレーム描画はコライダーオフセットを加算するだけでよい。
+                        let vp_wf = window_size.map_or(1280.0f32, |s| s.width  as f32);
+                        let vp_hf = window_size.map_or(720.0f32,  |s| s.height as f32);
+                        // SS レイアウト時（2D シーンビュー含む）はビューポート基準でレイアウトする
+                        let viewport_size_2d = if ss_layout { Some([vp_wf, vp_hf]) } else { None };
+                        // CanvasViewportRef::Camera を持つルートキャンバスのビューポートサイズを解決する
+                        // ビューポート上書き + ルート自動解像度マップ（描画と同一条件・共通ヘルパー）
+                        let (canvas_vp_overrides_2d, root_auto_sizes_2d) = if ss_layout {
+                            build_ss_layout_maps_free(
+                                &scene.actors, &scene.world,
+                                self.active_world_line, vp_wf, vp_hf,
+                                if !in_editor { Some(game_viewport) } else { None },
+                                self.project_resolution, edit_view_2d,
+                            )
+                        } else {
+                            (std::collections::HashMap::new(), std::collections::HashMap::new())
+                        };
+                        let ctx2d_list = crate::engine::core::app_base::app::physics2d_ops::collect_actor2d_contexts(
                             scene, self.active_world_line, viewport_size_2d, &canvas_vp_overrides_2d,
                             &root_auto_sizes_2d, edit_view_2d,
                         );
 
-                            // 3D シーン内キャンバス（Actor3D + CanvasComponent）配下の Actor2D は、
-                            // canvas_to_world 変換を通す専用パス（後述の 3D キャンバス用バッチ）で
-                            // 描画するため、この 2D（ortho / ワールドスペース）パスからは除外する。
-                            // collect_actor2d_contexts は 3D キャンバス配下の Actor2D もフラットに
-                            // 含めるが、その body_pos_px はキャンバスローカル空間のため、ここで
-                            // ortho 空間として描画すると誤った位置（原点付近の極小枠）になってしまう。
-                            let canvas3d_desc_map =
+                        // 3D シーン内キャンバス（Actor3D + CanvasComponent）配下の Actor2D は、
+                        // canvas_to_world 変換を通す専用パス（後述の 3D キャンバス用バッチ）で
+                        // 描画するため、この 2D（ortho / ワールドスペース）パスからは除外する。
+                        // collect_actor2d_contexts は 3D キャンバス配下の Actor2D もフラットに
+                        // 含めるが、その body_pos_px はキャンバスローカル空間のため、ここで
+                        // ortho 空間として描画すると誤った位置（原点付近の極小枠）になってしまう。
+                        let canvas3d_desc_map =
                             crate::engine::core::app_base::app::collider2d_wireframe::build_3d_canvas_collider_descendant_map(
                                 scene, self.active_world_line,
                             );
 
-                            for ctx in &ctx2d_list {
-                                // 3D キャンバス配下はこのパスの対象外（専用パスで描画）
-                                if canvas3d_desc_map.contains_key(&ctx.actor_entity) {
-                                    continue;
-                                }
-                                let Some(slot_entity) = ctx.collider_slot_entity else {
-                                    continue;
-                                };
-                                let Some(collider) =
-                                    scene.world.get::<Collider2dComponent>(slot_entity)
-                                else {
-                                    continue;
-                                };
+                        for ctx in &ctx2d_list {
+                            // 3D キャンバス配下はこのパスの対象外（専用パスで描画）
+                            if canvas3d_desc_map.contains_key(&ctx.actor_entity) { continue; }
+                            let Some(slot_entity) = ctx.collider_slot_entity else { continue };
+                            let Some(collider) = scene.world.get::<Collider2dComponent>(slot_entity) else { continue };
 
-                                // コライダー色: トリガーなら黄色、衝突中なら赤、通常なら緑
-                                let color = if collider.is_trigger {
-                                    COLLIDER_COLOR_TRIGGER
-                                } else if self.active_collision_2d_dfs_ids.contains(&ctx.dfs_id) {
-                                    COLLIDER_COLOR_COLLISION
-                                } else {
-                                    COLLIDER_COLOR_NORMAL
-                                };
-                                // 選択中アクターのコライダーは明度を上げ、太線で強調する
-                                // （selected_actor_dfs_ids は 0 始まり DFS なので ctx.dfs_id を -1 して比較）
-                                let is_selected = self
-                                    .selected_actor_dfs_ids
-                                    .contains(&(ctx.dfs_id as usize).saturating_sub(1));
-                                let color = crate::engine::core::app_base::app::collider2d_wireframe::collider_color_for_selection(
+                            // コライダー色: トリガーなら黄色、衝突中なら赤、通常なら緑
+                            let color = if collider.is_trigger {
+                                COLLIDER_COLOR_TRIGGER
+                            } else if self.active_collision_2d_dfs_ids.contains(&ctx.dfs_id) {
+                                COLLIDER_COLOR_COLLISION
+                            } else {
+                                COLLIDER_COLOR_NORMAL
+                            };
+                            // 選択中アクターのコライダーは明度を上げ、太線で強調する
+                            // （selected_actor_dfs_ids は 0 始まり DFS なので ctx.dfs_id を -1 して比較）
+                            let is_selected = self.selected_actor_dfs_ids
+                                .contains(&(ctx.dfs_id as usize).saturating_sub(1));
+                            let color = crate::engine::core::app_base::app::collider2d_wireframe::collider_color_for_selection(
                                 color, is_selected,
                             );
-                                // 選択中は太線バッチ（lb_sel）へ、非選択は通常バッチ（lb）へ振り分ける。
-                                let target: &mut LineBatch =
-                                    if is_selected { &mut lb_sel } else { &mut lb };
+                            // 選択中は太線バッチ（lb_sel）へ、非選択は通常バッチ（lb）へ振り分ける。
+                            let target: &mut LineBatch = if is_selected { &mut lb_sel } else { &mut lb };
 
-                                let rot_rad = ctx.rot_rad;
-                                let (sin, cos) = rot_rad.sin_cos();
+                            let rot_rad = ctx.rot_rad;
+                            let (sin, cos) = rot_rad.sin_cos();
 
-                                // コライダーオフセットをボディ回転で変換する（キャンバスピクセル単位）
-                                let [ox, oy] = collider.offset;
-                                let off_wx = cos * ox - sin * oy;
-                                let off_wy = sin * ox + cos * oy;
+                            // コライダーオフセットをボディ回転で変換する（キャンバスピクセル単位）
+                            let [ox, oy] = collider.offset;
+                            let off_wx = cos * ox - sin * oy;
+                            let off_wy = sin * ox + cos * oy;
 
-                                // コライダー中心（Y 未反転の正準キャンバス空間）と実効スケールを求める。
-                                // body_pos_px は canvas_collect.rs と同一の変換で ortho 空間で計算済み。
-                                // Y 反転（y_sign）は共通関数へ渡す map クロージャ側で行う。
-                                let (cx, cy, eff_sx, eff_sy) = if ss_layout {
-                                    (
-                                        ctx.body_pos_px[0] + off_wx * ctx.size_sx,
-                                        ctx.body_pos_px[1] + off_wy * ctx.size_sy,
-                                        ctx.size_sx,
-                                        ctx.size_sy,
-                                    )
-                                } else {
-                                    (
-                                        (ctx.body_pos_px[0] + off_wx) * canvas_scale,
-                                        (ctx.body_pos_px[1] + off_wy) * canvas_scale,
-                                        canvas_scale,
-                                        canvas_scale,
-                                    )
-                                };
+                            // コライダー中心（Y 未反転の正準キャンバス空間）と実効スケールを求める。
+                            // body_pos_px は canvas_collect.rs と同一の変換で ortho 空間で計算済み。
+                            // Y 反転（y_sign）は共通関数へ渡す map クロージャ側で行う。
+                            let (cx, cy, eff_sx, eff_sy) = if ss_layout {
+                                (
+                                    ctx.body_pos_px[0] + off_wx * ctx.size_sx,
+                                    ctx.body_pos_px[1] + off_wy * ctx.size_sy,
+                                    ctx.size_sx, ctx.size_sy,
+                                )
+                            } else {
+                                (
+                                    (ctx.body_pos_px[0] + off_wx) * canvas_scale,
+                                    (ctx.body_pos_px[1] + off_wy) * canvas_scale,
+                                    canvas_scale, canvas_scale,
+                                )
+                            };
 
-                                // 2D シーンの描画空間: 正準キャンバス空間の Y を y_sign で反転するのみ（Z=0）。
-                                // map が Y を y_sign で反転するため、map_y_sign にも同じ y_sign を渡し
-                                // 従来実装（回転 rot_rad * y_sign）と同一の頂点列を保証する。
-                                crate::engine::core::app_base::app::collider2d_wireframe::emit_collider2d_wireframe(
+                            // 2D シーンの描画空間: 正準キャンバス空間の Y を y_sign で反転するのみ（Z=0）。
+                            // map が Y を y_sign で反転するため、map_y_sign にも同じ y_sign を渡し
+                            // 従来実装（回転 rot_rad * y_sign）と同一の頂点列を保証する。
+                            crate::engine::core::app_base::app::collider2d_wireframe::emit_collider2d_wireframe(
                                 target, &collider.shape, [cx, cy], rot_rad, ctx.scale,
                                 eff_sx, eff_sy, color, y_sign,
                                 |[x, y]| [x, y * y_sign, 0.0],
                             );
 
-                                // コライダー面ピッキング（エディタ編集時のみ。ID パス自体が
-                                // in_editor 限定のため Play 中の play_collider_draw では収集しない）。
-                                // アクター編集 2D タブは CPU picking 専用（キャンバス ID パス対象外）
-                                // のため、スプライト ID 収集（collect_canvas_id_items）と同様に除外する。
-                                // ワイヤーフレームと同一の変換でコライダー外接クワッドを構築する。
-                                // raw_id はスプライトピッキングと同じ規則:
-                                //   raw_id = canvas_id_offset + dfs(0 始まり) + 1 = canvas_id_offset + ctx.dfs_id
-                                // （collect_actor2d_contexts の dfs_id は 1 始まりの同一 DFS 順）。
-                                if in_editor && !is_actor_edit_2d {
-                                    if let Some(model) =
+                            // コライダー面ピッキング（エディタ編集時のみ。ID パス自体が
+                            // in_editor 限定のため Play 中の play_collider_draw では収集しない）。
+                            // アクター編集 2D タブは CPU picking 専用（キャンバス ID パス対象外）
+                            // のため、スプライト ID 収集（collect_canvas_id_items）と同様に除外する。
+                            // ワイヤーフレームと同一の変換でコライダー外接クワッドを構築する。
+                            // raw_id はスプライトピッキングと同じ規則:
+                            //   raw_id = canvas_id_offset + dfs(0 始まり) + 1 = canvas_id_offset + ctx.dfs_id
+                            // （collect_actor2d_contexts の dfs_id は 1 始まりの同一 DFS 順）。
+                            if in_editor && !is_actor_edit_2d {
+                                if let Some(model) =
                                     crate::engine::core::app_base::app::collider2d_wireframe::collider2d_pick_quad_model(
                                         &collider.shape, [cx, cy], rot_rad, ctx.scale,
                                         eff_sx, eff_sy, y_sign,
@@ -3238,23 +2769,13 @@ impl App {
                                 {
                                     collider_pick_items_2d.push((canvas_id_offset + ctx.dfs_id as u32, model));
                                 }
-                                }
                             }
+                        }
 
-                            let base = if lb.is_empty() {
-                                None
-                            } else {
-                                Some(lb.build(&draw_ctx.device))
-                            };
-                            let sel = if lb_sel.is_empty() {
-                                None
-                            } else {
-                                Some(lb_sel.build_thick(&draw_ctx.device))
-                            };
-                            (base, sel)
-                        } else {
-                            (None, None)
-                        };
+                        let base = if lb.is_empty() { None } else { Some(lb.build(&draw_ctx.device)) };
+                        let sel  = if lb_sel.is_empty() { None } else { Some(lb_sel.build_thick(&draw_ctx.device)) };
+                        (base, sel)
+                    } else { (None, None) };
 
                     // ── 3D キャンバス配下 2D コライダーワイヤーフレームバッチ ──────────────
                     // 3D シーン内キャンバス（Actor3D + CanvasComponent）配下の Actor2D が持つ
@@ -3269,10 +2790,7 @@ impl App {
                     let draw_colliders_3d_canvas =
                         (in_editor || self.play_collider_draw) && !edit_view_2d;
 
-                    let (
-                        collider_2d_canvas3d_wireframe_batch,
-                        collider_2d_canvas3d_wireframe_sel_batch,
-                    ) = if draw_colliders_3d_canvas {
+                    let (collider_2d_canvas3d_wireframe_batch, collider_2d_canvas3d_wireframe_sel_batch) = if draw_colliders_3d_canvas {
                         if let Some(scene) = &self.scene {
                             // 3D キャンバス配下 Actor2D → 所属キャンバスの canvas_to_world マップ。
                             let canvas3d_desc_map =
@@ -3293,14 +2811,10 @@ impl App {
                                 // これにより 3D キャンバス配下 Actor2D の body_pos_px は
                                 // キャンバスローカル空間（キャンバス [0,0] 基準の px、Y+ 下）で返り、
                                 // canvas_to_world 行列でスプライトと一致する 3D 位置へ変換できる。
-                                let empty_overrides: std::collections::HashMap<
-                                    crate::engine::ecs::Entity,
-                                    [f32; 2],
-                                > = std::collections::HashMap::new();
-                                let empty_auto: std::collections::HashMap<
-                                    crate::engine::ecs::Entity,
-                                    [f32; 2],
-                                > = std::collections::HashMap::new();
+                                let empty_overrides: std::collections::HashMap<crate::engine::ecs::Entity, [f32; 2]> =
+                                    std::collections::HashMap::new();
+                                let empty_auto: std::collections::HashMap<crate::engine::ecs::Entity, [f32; 2]> =
+                                    std::collections::HashMap::new();
                                 let ctx3d_list = crate::engine::core::app_base::app::physics2d_ops::collect_actor2d_contexts(
                                     scene, self.active_world_line, None, &empty_overrides,
                                     &empty_auto, false,
@@ -3308,38 +2822,27 @@ impl App {
 
                                 for ctx in &ctx3d_list {
                                     // 3D キャンバス配下でなければスキップ（通常の 2D パスが担当）。
-                                    let Some(ctw) = canvas3d_desc_map.get(&ctx.actor_entity) else {
-                                        continue;
-                                    };
-                                    let Some(slot_entity) = ctx.collider_slot_entity else {
-                                        continue;
-                                    };
-                                    let Some(collider) =
-                                        scene.world.get::<Collider2dComponent>(slot_entity)
-                                    else {
-                                        continue;
-                                    };
+                                    let Some(ctw) = canvas3d_desc_map.get(&ctx.actor_entity) else { continue };
+                                    let Some(slot_entity) = ctx.collider_slot_entity else { continue };
+                                    let Some(collider) = scene.world.get::<Collider2dComponent>(slot_entity) else { continue };
 
                                     // 接触色・トリガー色分けは通常 2D シーンと同一。
                                     let color = if collider.is_trigger {
                                         COLLIDER_COLOR_TRIGGER
-                                    } else if self.active_collision_2d_dfs_ids.contains(&ctx.dfs_id)
-                                    {
+                                    } else if self.active_collision_2d_dfs_ids.contains(&ctx.dfs_id) {
                                         COLLIDER_COLOR_COLLISION
                                     } else {
                                         COLLIDER_COLOR_NORMAL
                                     };
                                     // 選択中アクターのコライダーは明度を上げ、太線で強調する
                                     // （selected_actor_dfs_ids は 0 始まり DFS なので ctx.dfs_id を -1 して比較）
-                                    let is_selected = self
-                                        .selected_actor_dfs_ids
+                                    let is_selected = self.selected_actor_dfs_ids
                                         .contains(&(ctx.dfs_id as usize).saturating_sub(1));
                                     let color = crate::engine::core::app_base::app::collider2d_wireframe::collider_color_for_selection(
                                         color, is_selected,
                                     );
                                     // 選択中は太線バッチ（lb_sel）へ、非選択は通常バッチ（lb）へ振り分ける。
-                                    let target: &mut LineBatch =
-                                        if is_selected { &mut lb_sel } else { &mut lb };
+                                    let target: &mut LineBatch = if is_selected { &mut lb_sel } else { &mut lb };
 
                                     let rot_rad = ctx.rot_rad;
                                     let (sin, cos) = rot_rad.sin_cos();
@@ -3382,24 +2885,12 @@ impl App {
                                     }
                                 }
 
-                                let base = if lb.is_empty() {
-                                    None
-                                } else {
-                                    Some(lb.build(&draw_ctx.device))
-                                };
-                                let sel = if lb_sel.is_empty() {
-                                    None
-                                } else {
-                                    Some(lb_sel.build_thick(&draw_ctx.device))
-                                };
+                                let base = if lb.is_empty() { None } else { Some(lb.build(&draw_ctx.device)) };
+                                let sel  = if lb_sel.is_empty() { None } else { Some(lb_sel.build_thick(&draw_ctx.device)) };
                                 (base, sel)
                             }
-                        } else {
-                            (None, None)
-                        }
-                    } else {
-                        (None, None)
-                    };
+                        } else { (None, None) }
+                    } else { (None, None) };
 
                     // スプライト描画リソース収集（render pass 前に GPU バッファを準備する）
                     // CanvasTransform + SpriteComponent を持つアクターを列挙し、
@@ -3430,11 +2921,7 @@ impl App {
                             // ── 2D キャンバス世界線のスプライト ──────────────────────────
                             if is_canvas {
                                 // ワールドスペース時はキャンバス座標をワールドユニットへスケールする
-                                let canvas_scale = if use_screen_space {
-                                    1.0f32
-                                } else {
-                                    CANVAS_WORLD_SCALE
-                                };
+                                let canvas_scale = if use_screen_space { 1.0f32 } else { CANVAS_WORLD_SCALE };
                                 // 単位行列・初期累積スケール（ルートレベル用）
                                 const IDENTITY: [[f32; 4]; 4] = [
                                     [1.0, 0.0, 0.0, 0.0],
@@ -3444,55 +2931,25 @@ impl App {
                                 ];
                                 // Y 軸符号とビューポートサイズを決定する
                                 let y_sign = if use_screen_space { 1.0f32 } else { -1.0 };
-                                let is_scene_ss =
-                                    use_screen_space && !self.actor_edit_canvas_wls.contains(&wl);
-                                let vp_w = window_size.map_or(1280.0, |s| s.width as f32);
-                                let vp_h = window_size.map_or(720.0, |s| s.height as f32);
-                                let viewport_size = if is_scene_ss {
-                                    Some([vp_w, vp_h])
-                                } else {
-                                    None
-                                };
-                                let play_gvp = if is_scene_ss && !in_editor {
-                                    Some(game_viewport)
-                                } else {
-                                    None
-                                };
+                                let is_scene_ss = use_screen_space && !self.actor_edit_canvas_wls.contains(&wl);
+                                let vp_w = window_size.map_or(1280.0, |s| s.width  as f32);
+                                let vp_h = window_size.map_or(720.0,  |s| s.height as f32);
+                                let viewport_size = if is_scene_ss { Some([vp_w, vp_h]) } else { None };
+                                let play_gvp = if is_scene_ss && !in_editor { Some(game_viewport) } else { None };
                                 // ビューポート上書き + ルート自動解像度マップ
                                 // （シーン SS レイアウト時のみ。アクター編集タブは保存値のまま）
                                 let (canvas_vp_overrides, root_auto_sizes) = if is_scene_ss {
                                     build_ss_layout_maps_free(
-                                        &scene.actors,
-                                        &scene.world,
-                                        wl,
-                                        vp_w,
-                                        vp_h,
-                                        play_gvp,
-                                        self.project_resolution,
-                                        edit_view_2d,
-                                    )
+                                        &scene.actors, &scene.world, wl, vp_w, vp_h, play_gvp,
+                                        self.project_resolution, edit_view_2d)
                                 } else {
-                                    (
-                                        std::collections::HashMap::new(),
-                                        std::collections::HashMap::new(),
-                                    )
+                                    (std::collections::HashMap::new(), std::collections::HashMap::new())
                                 };
                                 collect_sprite_items(
-                                    &scene.actors,
-                                    &scene.world,
-                                    wl,
-                                    draw_ctx,
-                                    None,
-                                    IDENTITY,
-                                    [1.0, 1.0],
-                                    canvas_scale,
-                                    y_sign,
-                                    viewport_size,
-                                    &canvas_vp_overrides,
-                                    &root_auto_sizes,
-                                    CanvasDrawZone::Foreground,
-                                    edit_view_2d,
-                                    &mut items_2d,
+                                    &scene.actors, &scene.world, wl, draw_ctx,
+                                    None, IDENTITY, [1.0, 1.0],
+                                    canvas_scale, y_sign, viewport_size, &canvas_vp_overrides,
+                                    &root_auto_sizes, CanvasDrawZone::Foreground, edit_view_2d, &mut items_2d,
                                 );
                             }
 
@@ -3506,36 +2963,16 @@ impl App {
                             //   1px = 1cm（CANVAS_WORLD_SCALE = 0.01m）
                             for actor in scene.actors.iter() {
                                 // 2D シーンビューでは 3D Canvas スプライトを収集しない
-                                if edit_view_2d {
-                                    break;
-                                }
-                                if actor.world_line != wl {
-                                    continue;
-                                }
-                                if actor.is_2d() {
-                                    continue;
-                                } // Actor3D のみ
-                                let canvas_slot = actor.slots().iter().find(|s| {
-                                    s.kind == crate::engine::components::ComponentKind::Canvas
-                                });
-                                let Some(canvas_slot) = canvas_slot else {
-                                    continue;
-                                };
-                                let Some(cc) = scene
-                                    .world
-                                    .get::<crate::engine::components::CanvasComponent>(
-                                    canvas_slot.entity,
-                                ) else {
-                                    continue;
-                                };
+                                if edit_view_2d { break; }
+                                if actor.world_line != wl { continue; }
+                                if actor.is_2d() { continue; } // Actor3D のみ
+                                let canvas_slot = actor.slots().iter()
+                                    .find(|s| s.kind == crate::engine::components::ComponentKind::Canvas);
+                                let Some(canvas_slot) = canvas_slot else { continue };
+                                let Some(cc) = scene.world.get::<crate::engine::components::CanvasComponent>(canvas_slot.entity) else { continue };
 
                                 // Actor3D の ActorTransform からワールド行列を取得する
-                                let Some(tf) = scene
-                                    .world
-                                    .get::<crate::engine::components::Transform>(actor.entity)
-                                else {
-                                    continue;
-                                };
+                                let Some(tf) = scene.world.get::<crate::engine::components::Transform>(actor.entity) else { continue };
                                 let actor_3d_mat = tf.to_mat4();
 
                                 let cws = CANVAS_WORLD_SCALE;
@@ -3545,37 +2982,28 @@ impl App {
                                 // (0,0)=左上原点（デフォルト）: アクター位置がキャンバス左上
                                 // (0.5,0.5)=中央: アクター位置がキャンバス中心
                                 // ローカル行列: [[cws,0,0,-piv_x*w*cws],[0,-cws,0,piv_y*h*cws],[0,0,1,0],[0,0,0,1]]
-                                let canvas_to_world =
-                                    crate::engine::methods::gizmo_interact::mat4x4_mul(
-                                        actor_3d_mat,
-                                        [
-                                            [cws, 0.0, 0.0, -piv_x * cc.width * cws],
-                                            [0.0, -cws, 0.0, piv_y * cc.height * cws],
-                                            [0.0, 0.0, 1.0, 0.0],
-                                            [0.0, 0.0, 0.0, 1.0],
-                                        ],
-                                    );
+                                let canvas_to_world = crate::engine::methods::gizmo_interact::mat4x4_mul(
+                                    actor_3d_mat,
+                                    [
+                                        [ cws,  0.0, 0.0, -piv_x * cc.width  * cws],
+                                        [ 0.0, -cws, 0.0,  piv_y * cc.height * cws],
+                                        [ 0.0,  0.0, 1.0,  0.0                    ],
+                                        [ 0.0,  0.0, 0.0,  1.0                    ],
+                                    ],
+                                );
                                 // このキャンバス内の追加分をレイヤー昇順で安定ソートする
                                 // （ワールドキャンバスのレイヤーはキャンバス内で完結する）
                                 let canvas_start = items_3d.len();
                                 collect_sprite_items(
-                                    &actor.children,
-                                    &scene.world,
-                                    wl,
-                                    draw_ctx,
+                                    &actor.children, &scene.world, wl, draw_ctx,
                                     Some([cc.width, cc.height]),
-                                    canvas_to_world,
-                                    [1.0, 1.0],
-                                    1.0,
-                                    1.0,
+                                    canvas_to_world, [1.0, 1.0],
+                                    1.0, 1.0,
                                     // ワールドキャンバスは自動解像度の対象外（空マップ）・ゾーン概念なし
-                                    None,
-                                    &std::collections::HashMap::new(),
+                                    None, &std::collections::HashMap::new(),
                                     &std::collections::HashMap::new(),
                                     // 3D ワールドキャンバス配下は常に親サイズ Some のためルート分岐に入らず design_space 無関係
-                                    CanvasDrawZone::Foreground,
-                                    false,
-                                    &mut items_3d,
+                                    CanvasDrawZone::Foreground, false, &mut items_3d,
                                 );
                                 items_3d[canvas_start..].sort_by_key(|&(_, _, _, _, layer)| layer);
                             }
@@ -3585,9 +3013,9 @@ impl App {
                         // 分割時に DFS 順が保たれるため、sort_by_key（安定ソート）で
                         // 「同一レイヤーはヒエラルキー順」の仕様を満たす。
                         // ゾーン共有ソート = 全キャンバス横断で同一ゾーンのレイヤーを比較する。
-                        let (mut items_2d_bg, mut items_2d_fg): (Vec<_>, Vec<_>) = items_2d
-                            .into_iter()
-                            .partition(|&(_, _, _, zone, _)| zone == CanvasDrawZone::Background);
+                        let (mut items_2d_bg, mut items_2d_fg): (Vec<_>, Vec<_>) =
+                            items_2d.into_iter()
+                                .partition(|&(_, _, _, zone, _)| zone == CanvasDrawZone::Background);
                         items_2d_bg.sort_by_key(|&(_, _, _, _, layer)| layer);
                         items_2d_fg.sort_by_key(|&(_, _, _, _, layer)| layer);
 
@@ -3597,21 +3025,9 @@ impl App {
                         // 各 push はテクスチャ境界でバッチ分割し、描画順（ソート済み）は保つ。
                         let mut sb = draw_ctx.sprites.borrow_mut();
                         sb.main.begin();
-                        let list_bg = sb.main.push(
-                            items_2d_bg
-                                .into_iter()
-                                .map(|(m, col, tex, _, _)| (m, col, tex)),
-                        );
-                        let list_fg = sb.main.push(
-                            items_2d_fg
-                                .into_iter()
-                                .map(|(m, col, tex, _, _)| (m, col, tex)),
-                        );
-                        let list_3d = sb.main.push(
-                            items_3d
-                                .into_iter()
-                                .map(|(m, col, tex, _, _)| (m, col, tex)),
-                        );
+                        let list_bg = sb.main.push(items_2d_bg.into_iter().map(|(m, col, tex, _, _)| (m, col, tex)));
+                        let list_fg = sb.main.push(items_2d_fg.into_iter().map(|(m, col, tex, _, _)| (m, col, tex)));
+                        let list_3d = sb.main.push(items_3d.into_iter().map(|(m, col, tex, _, _)| (m, col, tex)));
                         (list_bg, list_fg, list_3d)
                     };
 
@@ -3623,11 +3039,8 @@ impl App {
                             let mut lb = LineBatch::new();
                             let rect_col: [f32; 4] = [0.85, 0.95, 1.0, 0.9];
                             // ワールドスペース時はキャンバス座標をワールドユニットへスケールする
-                            let canvas_scale_rect = if use_screen_space {
-                                1.0f32
-                            } else {
-                                CANVAS_WORLD_SCALE
-                            };
+                            let canvas_scale_rect = if use_screen_space { 1.0f32 } else { CANVAS_WORLD_SCALE };
+
 
                             const IDENTITY_RECT: [[f32; 4]; 4] = [
                                 [1.0, 0.0, 0.0, 0.0],
@@ -3638,38 +3051,19 @@ impl App {
                             let mut counter: u32 = 0;
                             // rect アウトライン用 y_sign と viewport_size
                             let y_sign_rect = if use_screen_space { 1.0f32 } else { -1.0 };
-                            let is_scene_ss_rect =
-                                use_screen_space && !self.actor_edit_canvas_wls.contains(&wl);
-                            let vp_w_r = window_size.map_or(1280.0, |s| s.width as f32);
-                            let vp_h_r = window_size.map_or(720.0, |s| s.height as f32);
-                            let viewport_size_rect = if is_scene_ss_rect {
-                                Some([vp_w_r, vp_h_r])
-                            } else {
-                                None
-                            };
+                            let is_scene_ss_rect = use_screen_space && !self.actor_edit_canvas_wls.contains(&wl);
+                            let vp_w_r = window_size.map_or(1280.0, |s| s.width  as f32);
+                            let vp_h_r = window_size.map_or(720.0,  |s| s.height as f32);
+                            let viewport_size_rect = if is_scene_ss_rect { Some([vp_w_r, vp_h_r]) } else { None };
                             // Camera 参照のルートキャンバスはビューポートオーバーライドマップを使用する
-                            let play_gvp_r = if is_scene_ss_rect && !in_editor {
-                                Some(game_viewport)
-                            } else {
-                                None
-                            };
+                            let play_gvp_r = if is_scene_ss_rect && !in_editor { Some(game_viewport) } else { None };
                             // ビューポート上書き + ルート自動解像度マップ（描画と同一条件・共通ヘルパー）
                             let (canvas_vp_overrides_r, root_auto_sizes_r) = if is_scene_ss_rect {
                                 build_ss_layout_maps_free(
-                                    &scene.actors,
-                                    &scene.world,
-                                    wl,
-                                    vp_w_r,
-                                    vp_h_r,
-                                    play_gvp_r,
-                                    self.project_resolution,
-                                    edit_view_2d,
-                                )
+                                    &scene.actors, &scene.world, wl, vp_w_r, vp_h_r, play_gvp_r,
+                                    self.project_resolution, edit_view_2d)
                             } else {
-                                (
-                                    std::collections::HashMap::new(),
-                                    std::collections::HashMap::new(),
-                                )
+                                (std::collections::HashMap::new(), std::collections::HashMap::new())
                             };
                             // アウトラインのリング間隔（描画空間の単位）:
                             // 太線はリングを重ねて表現するため、間隔を「画面 1px 相当」に
@@ -3678,9 +3072,7 @@ impl App {
                             //   - SS オーバーレイ: 1 キャンバス px = 1 画面 px 固定
                             //   - WS（3D 透視）: 距離依存のため従来の固定間隔を維持
                             let outline_step = if use_ortho_2d_camera {
-                                let half_h = self
-                                    .canvas_cameras
-                                    .get(&wl)
+                                let half_h = self.canvas_cameras.get(&wl)
                                     .map(|c| c.ortho_half_h)
                                     .unwrap_or(vp_h_r / 2.0);
                                 (2.0 * half_h) / vp_h_r.max(1.0)
@@ -3691,40 +3083,20 @@ impl App {
                                     * canvas_scale_rect
                             };
                             collect_canvas_rects(
-                                &scene.actors,
-                                &scene.world,
-                                wl,
-                                &mut lb,
-                                rect_col,
-                                &self.selected_actor_dfs_ids,
-                                &mut counter,
-                                None,
-                                IDENTITY_RECT,
-                                [1.0, 1.0],
-                                canvas_scale_rect,
-                                y_sign_rect,
-                                viewport_size_rect,
-                                &canvas_vp_overrides_r,
-                                &root_auto_sizes_r,
-                                edit_view_2d,
-                                outline_step,
+                                &scene.actors, &scene.world, wl, &mut lb, rect_col,
+                                &self.selected_actor_dfs_ids, &mut counter,
+                                None, IDENTITY_RECT, [1.0, 1.0],
+                                canvas_scale_rect, y_sign_rect, viewport_size_rect, &canvas_vp_overrides_r,
+                                &root_auto_sizes_r, edit_view_2d, outline_step,
                             );
                             // 2D シーンビューでドラッグホバー中のルートキャンバス枠を
                             // 通常枠より明るく・太くハイライト描画する（Phase 3、事前計算済み）
                             for (from, to, col) in &drag_hover_highlight_lines {
                                 lb.add_line(*from, *to, *col);
                             }
-                            if lb.is_empty() {
-                                None
-                            } else {
-                                Some(lb.build(&draw_ctx.device))
-                            }
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    };
+                            if lb.is_empty() { None } else { Some(lb.build(&draw_ctx.device)) }
+                        } else { None }
+                    } else { None };
 
                     // ── 3D Canvas アウトライン（エディタモード）──────────────────────────────
                     // Actor3D + CanvasComponent を持つアクターの矩形境界を 3D ワールド空間で描画する。
@@ -3735,7 +3107,7 @@ impl App {
                         if let Some(scene) = &self.scene {
                             let wl = self.active_world_line;
                             let mut lb = LineBatch::new();
-                            const RECT_COL_NORMAL: [f32; 4] = [0.0, 1.0, 0.0, 1.0];
+                            const RECT_COL_NORMAL:   [f32; 4] = [0.0, 1.0, 0.0, 1.0];
                             const RECT_COL_SELECTED: [f32; 4] = [1.0, 0.5, 0.05, 1.0];
 
                             // find_actor_by_dfs と同じ規則で DFS ID を計算するため、
@@ -3755,36 +3127,19 @@ impl App {
                                 // このアクター (1) + 全子孫分カウンタを進める
                                 dfs_counter += 1 + count_descendants(actor);
 
-                                if actor.is_2d() {
-                                    continue;
-                                } // Actor3D のみ
-                                let canvas_slot = actor.slots().iter().find(|s| {
-                                    s.kind == crate::engine::components::ComponentKind::Canvas
-                                });
-                                let Some(canvas_slot) = canvas_slot else {
-                                    continue;
-                                };
-                                let Some(cc) = scene
-                                    .world
-                                    .get::<crate::engine::components::CanvasComponent>(
-                                    canvas_slot.entity,
-                                ) else {
-                                    continue;
-                                };
-                                let Some(tf) = scene
-                                    .world
-                                    .get::<crate::engine::components::Transform>(actor.entity)
-                                else {
-                                    continue;
-                                };
+                                if actor.is_2d() { continue; } // Actor3D のみ
+                                let canvas_slot = actor.slots().iter()
+                                    .find(|s| s.kind == crate::engine::components::ComponentKind::Canvas);
+                                let Some(canvas_slot) = canvas_slot else { continue };
+                                let Some(cc) = scene.world.get::<crate::engine::components::CanvasComponent>(canvas_slot.entity) else { continue };
+                                let Some(tf) = scene.world.get::<crate::engine::components::Transform>(actor.entity) else { continue };
 
                                 // 選択中かどうかで色を切り替える
-                                let rect_col =
-                                    if self.selected_actor_dfs_ids.contains(&(my_dfs as usize)) {
-                                        RECT_COL_SELECTED
-                                    } else {
-                                        RECT_COL_NORMAL
-                                    };
+                                let rect_col = if self.selected_actor_dfs_ids.contains(&(my_dfs as usize)) {
+                                    RECT_COL_SELECTED
+                                } else {
+                                    RECT_COL_NORMAL
+                                };
 
                                 let cws = CANVAS_WORLD_SCALE;
                                 let (piv_x, piv_y) = (cc.pivot[0], cc.pivot[1]);
@@ -3792,24 +3147,20 @@ impl App {
                                 let h = cc.height;
                                 let m = crate::engine::methods::gizmo_interact::mat4x4_mul(
                                     tf.to_mat4(),
-                                    [
-                                        [cws, 0.0, 0.0, -piv_x * w * cws],
-                                        [0.0, -cws, 0.0, piv_y * h * cws],
-                                        [0.0, 0.0, 1.0, 0.0],
-                                        [0.0, 0.0, 0.0, 1.0],
-                                    ],
+                                    [[ cws,  0.0, 0.0, -piv_x * w * cws],
+                                     [ 0.0, -cws, 0.0,  piv_y * h * cws],
+                                     [ 0.0,  0.0, 1.0,  0.0            ],
+                                     [ 0.0,  0.0, 0.0,  1.0            ]],
                                 );
                                 let tp = |cx: f32, cy: f32| -> [f32; 3] {
-                                    [
-                                        m[0][0] * cx + m[0][1] * cy + m[0][3],
-                                        m[1][0] * cx + m[1][1] * cy + m[1][3],
-                                        m[2][0] * cx + m[2][1] * cy + m[2][3],
-                                    ]
+                                    [m[0][0]*cx + m[0][1]*cy + m[0][3],
+                                     m[1][0]*cx + m[1][1]*cy + m[1][3],
+                                     m[2][0]*cx + m[2][1]*cy + m[2][3]]
                                 };
                                 let tl = tp(0.0, 0.0);
-                                let tr = tp(w, 0.0);
-                                let br = tp(w, h);
-                                let bl = tp(0.0, h);
+                                let tr = tp(w,   0.0);
+                                let br = tp(w,   h  );
+                                let bl = tp(0.0, h  );
                                 lb.add_line(tl, tr, rect_col);
                                 lb.add_line(tr, br, rect_col);
                                 lb.add_line(br, bl, rect_col);
@@ -3829,13 +3180,11 @@ impl App {
                                     Some([w, h]), m, [1.0, 1.0], &mut nested_outlines,
                                 );
                                 for (corners, dfs_id) in nested_outlines {
-                                    let col =
-                                        if self.selected_actor_dfs_ids.contains(&(dfs_id as usize))
-                                        {
-                                            RECT_COL_SELECTED
-                                        } else {
-                                            RECT_COL_NORMAL
-                                        };
+                                    let col = if self.selected_actor_dfs_ids.contains(&(dfs_id as usize)) {
+                                        RECT_COL_SELECTED
+                                    } else {
+                                        RECT_COL_NORMAL
+                                    };
                                     lb.add_line(corners[0], corners[1], col);
                                     lb.add_line(corners[1], corners[2], col);
                                     lb.add_line(corners[2], corners[3], col);
@@ -3843,17 +3192,9 @@ impl App {
                                 }
                             }
 
-                            if lb.is_empty() {
-                                None
-                            } else {
-                                Some(lb.build(&draw_ctx.device))
-                            }
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    };
+                            if lb.is_empty() { None } else { Some(lb.build(&draw_ctx.device)) }
+                        } else { None }
+                    } else { None };
 
                     // ── 選択 3D Canvas 子スプライトのアウトライン（sprite_outline パイプライン使用）──
                     // sprite_outline.wgsl がクリップ空間でコーナーを押し出すため、
@@ -3863,76 +3204,48 @@ impl App {
                     const ORANGE: [f32; 4] = [1.0, 0.5, 0.05, 1.0];
 
                     // 2D シーンビューでは 3D Canvas 子スプライトも非表示のためアウトラインを生成しない
-                    let sprite_3d_outline_items: Vec<(
-                        [[f32; 4]; 4],
-                        [f32; 4],
-                        Option<std::sync::Arc<GpuSpriteTexture>>,
-                    )> = if in_editor && !edit_view_2d && !self.selected_actor_dfs_ids.is_empty() {
+                    let sprite_3d_outline_items:
+                        Vec<([[f32; 4]; 4], [f32; 4], Option<std::sync::Arc<GpuSpriteTexture>>)> =
+                    if in_editor && !edit_view_2d && !self.selected_actor_dfs_ids.is_empty() {
                         if let Some(scene) = &self.scene {
                             let wl = self.active_world_line;
                             let mut items = Vec::new();
 
                             for &dfs_id in &self.selected_actor_dfs_ids {
                                 let mut c = 0u32;
-                                let Some(actor) =
-                                    find_actor_by_dfs(&scene.actors, wl, dfs_id as u32, &mut c)
-                                else {
-                                    continue;
-                                };
+                                let Some(actor) = find_actor_by_dfs(
+                                    &scene.actors, wl, dfs_id as u32, &mut c,
+                                ) else { continue };
 
                                 // 2D アクター（CanvasTransform 持ち）のみ対象
-                                if !actor.is_2d() {
-                                    continue;
-                                }
+                                if !actor.is_2d() { continue; }
 
                                 // SpriteComponent を持つか確認（テクスチャあり・なし両方対象）
-                                let sprite_slot = actor
-                                    .slots()
-                                    .iter()
+                                let sprite_slot = actor.slots().iter()
                                     .find(|s| s.kind == ComponentKind::Sprite);
                                 let Some(ss) = sprite_slot else { continue };
-                                let Some(sc) = scene
-                                    .world
-                                    .get::<crate::engine::components::SpriteComponent>(
-                                    ss.entity,
-                                ) else {
-                                    continue;
-                                };
+                                let Some(sc) = scene.world.get::<
+                                    crate::engine::components::SpriteComponent>(ss.entity)
+                                else { continue };
 
                                 // 親が Actor3D + CanvasComponent か確認し、ctw と親 CC サイズを取得する
                                 let mut c_p = 0u32;
                                 let parent_actor = find_parent_actor_of_dfs(
-                                    &scene.actors,
-                                    wl,
-                                    dfs_id as u32,
-                                    &mut c_p,
-                                    None,
+                                    &scene.actors, wl, dfs_id as u32, &mut c_p, None,
                                 );
                                 let Some(parent) = parent_actor else { continue };
                                 let Some(ctw) = get_3d_canvas_world_mat(parent, &scene.world)
-                                else {
-                                    continue;
-                                };
+                                    else { continue };
 
                                 // 親の CanvasComponent からアンカーオフセット計算用サイズを取得する
-                                let parent_cc_size: Option<[f32; 2]> = parent
-                                    .slots()
-                                    .iter()
+                                let parent_cc_size: Option<[f32; 2]> = parent.slots().iter()
                                     .find(|s| s.kind == ComponentKind::Canvas)
-                                    .and_then(|s| {
-                                        scene
-                                            .world
-                                            .get::<crate::engine::components::CanvasComponent>(
-                                                s.entity,
-                                            )
-                                    })
+                                    .and_then(|s| scene.world.get::<
+                                        crate::engine::components::CanvasComponent>(s.entity))
                                     .map(|pcc| [pcc.width, pcc.height]);
 
-                                let Some(ct) =
-                                    scene.world.get::<CanvasTransform>(actor.entity).cloned()
-                                else {
-                                    continue;
-                                };
+                                let Some(ct) = scene.world.get::<CanvasTransform>(actor.entity)
+                                    .cloned() else { continue };
 
                                 // アンカーオフセットを適用した有効 CanvasTransform を構築する
                                 // （collect_sprite_items / walk_3d_canvas_children_id と同じロジック）
@@ -3941,7 +3254,7 @@ impl App {
                                     let off_y = ph * ct.anchor[1];
                                     CanvasTransform {
                                         position: [ct.position[0] + off_x, ct.position[1] + off_y],
-                                        anchor: [0.0, 0.0],
+                                        anchor:   [0.0, 0.0],
                                         ..ct
                                     }
                                 } else {
@@ -3963,12 +3276,8 @@ impl App {
                                 items.push((gpu_mat, ORANGE, None));
                             }
                             items
-                        } else {
-                            vec![]
-                        }
-                    } else {
-                        vec![]
-                    };
+                        } else { vec![] }
+                    } else { vec![] };
 
                     // 選択アウトラインを main チャンネルへ積む（全て tex=None → 通常 1 バッチ）。
                     // 2D/3D スプライトと同一 main バッファへ連続配置し、ここで 1 度だけ upload する
@@ -3985,14 +3294,11 @@ impl App {
                     // バッチ数（= ドローコール数）と総インスタンス数（= スプライト枚数）を集計する。
                     {
                         let lists = [
-                            &sprite_prepared_2d_bg,
-                            &sprite_prepared_2d_fg,
-                            &sprite_prepared_3d,
-                            &sprite_3d_outline_list,
+                            &sprite_prepared_2d_bg, &sprite_prepared_2d_fg,
+                            &sprite_prepared_3d,    &sprite_3d_outline_list,
                         ];
                         perf_sprite_draws = lists.iter().map(|l| l.batches.len()).sum();
-                        perf_sprite_insts = lists
-                            .iter()
+                        perf_sprite_insts = lists.iter()
                             .flat_map(|l| l.batches.iter())
                             .map(|b| b.count as usize)
                             .sum();
@@ -4001,8 +3307,8 @@ impl App {
                     // 軸ギズモバッチ（エディタモード + show_axis_gizmo のみ）
                     // 2D シーンビューでは 3D カメラ方位ウィジェットは無意味のため非表示にする
                     let axis_gizmo_batch = if in_editor && self.show_axis_gizmo && !edit_view_2d {
-                        let sw = window_size.map_or(1280.0, |s| s.width as f32);
-                        let sh = window_size.map_or(720.0, |s| s.height as f32);
+                        let sw  = window_size.map_or(1280.0, |s| s.width  as f32);
+                        let sh  = window_size.map_or(720.0,  |s| s.height as f32);
                         let rot = self.camera.base.transform.rotation;
                         // ホバー判定を毎フレーム更新する
                         self.axis_gizmo_hovered = self.last_cursor_pos.and_then(|(cx, cy)| {
@@ -4011,41 +3317,33 @@ impl App {
                             )
                         });
                         self.axis_gizmo.as_mut().map(|ag| {
-                            ag.build(
-                                rot,
-                                sw,
-                                sh,
-                                &draw_ctx.device,
-                                &draw_ctx.queue,
-                                self.axis_gizmo_hovered,
-                            )
+                            ag.build(rot, sw, sh, &draw_ctx.device, &draw_ctx.queue,
+                                self.axis_gizmo_hovered)
                         })
                     } else {
                         self.axis_gizmo_hovered = None;
                         None
                     };
 
+
+
                     // アイコンオーバーレイバッチ（エディタモードのみ）
                     // 全選択アクター（マルチ選択対応）の 3D Transform 位置をスクリーン投影してアイコンを表示する。
                     // キャンバスアクター（2D）はスクリーンスペース描画のため 3D 投影をスキップする。
                     // 2D シーンビューでは 3D カメラ投影が成立しないため生成しない。
                     let icon_overlay_batch = if in_editor && !edit_view_2d {
-                        let vp_w = window_size.map_or(1280.0, |s| s.width as f32);
-                        let vp_h = window_size.map_or(720.0, |s| s.height as f32);
-                        let (view, proj) =
-                            (self.camera.view_matrix(), self.camera.projection_matrix());
+                        let vp_w = window_size.map_or(1280.0, |s| s.width  as f32);
+                        let vp_h = window_size.map_or(720.0,  |s| s.height as f32);
+                        let (view, proj) = (self.camera.view_matrix(), self.camera.projection_matrix());
                         let positions: Vec<(f32, f32)> = if !self.selected_instances.is_empty() {
                             // レガシーインスタンス選択（ModelComponent クリック）
                             selected_mc
                                 .map(|mc| {
-                                    self.selected_instances
-                                        .iter()
+                                    self.selected_instances.iter()
                                         .filter_map(|&i| {
                                             let mat = mc.instance_mats.get(i as usize)?;
                                             let world = [mat[0][3], mat[1][3], mat[2][3]];
-                                            world_to_screen(
-                                                world, &view.data, &proj.data, vp_w, vp_h,
-                                            )
+                                            world_to_screen(world, &view.data, &proj.data, vp_w, vp_h)
                                         })
                                         .collect()
                                 })
@@ -4055,19 +3353,14 @@ impl App {
                             // world_line != 0 の制限を撤廃してメインシーンでも表示する
                             if let Some(scene) = &self.scene {
                                 let wl = self.active_world_line;
-                                self.selected_actor_dfs_ids
-                                    .iter()
+                                self.selected_actor_dfs_ids.iter()
                                     .filter_map(|&dfs_id| {
                                         let mut c = 0u32;
                                         let actor = find_actor_by_dfs(
-                                            &scene.actors,
-                                            wl,
-                                            dfs_id as u32,
-                                            &mut c,
+                                            &scene.actors, wl, dfs_id as u32, &mut c,
                                         )?;
                                         // 3D アクターの Transform 位置を使う（2D はスキップ）
-                                        let pos = scene
-                                            .world
+                                        let pos = scene.world
                                             .get::<ActorTransform>(actor.entity)?
                                             .position;
                                         world_to_screen(pos, &view.data, &proj.data, vp_w, vp_h)
@@ -4080,14 +3373,9 @@ impl App {
                             Vec::new()
                         };
                         crate::engine::core::font::icon_overlay::IconOverlay::build(
-                            &positions,
-                            vp_w,
-                            vp_h,
-                            &draw_ctx.device,
+                            &positions, vp_w, vp_h, &draw_ctx.device,
                         )
-                    } else {
-                        None
-                    };
+                    } else { None };
 
                     // ── HDR オフスクリーンの確保（Phase R3）──────────────
                     // シーン（メインパス＋キャンバスオーバーレイ）を Rgba16Float の HDR
@@ -4112,13 +3400,9 @@ impl App {
                         let mut models: Vec<(
                             &crate::engine::methods::drawer::GpuModel,
                             &crate::engine::methods::drawer::InstancedModelBatch,
-                        )> = self
-                            .shared_model_batches
-                            .iter()
+                        )> = self.shared_model_batches.iter()
                             .filter_map(|(path, sd)| {
-                                gpu_model_by_path
-                                    .get(path.as_str())
-                                    .map(|&gpu| (gpu, &sd.batch))
+                                gpu_model_by_path.get(path.as_str()).map(|&gpu| (gpu, &sd.batch))
                             })
                             .collect();
                         // ── 地形散布モデル（kind=Model プロップ）の半透明プリミティブも透明パスへ ──
@@ -4139,11 +3423,9 @@ impl App {
                         &transparent_models,
                     );
                     let tp_sorted = has_tp
-                        && transparency_mode
-                            == crate::engine::core::renderer::TransparencyMode::DistanceSort;
+                        && transparency_mode == crate::engine::core::renderer::TransparencyMode::DistanceSort;
                     let tp_wboit = has_tp
-                        && transparency_mode
-                            == crate::engine::core::renderer::TransparencyMode::Wboit;
+                        && transparency_mode == crate::engine::core::renderer::TransparencyMode::Wboit;
 
                     // ── デファード（G-Buffer + フルスクリーン・ライティング）経路にするか（Phase D3 Deferred Phase B）
                     // G-Buffer RT の確保要否をこの時点で判定する必要があるため、メインパス直前の
@@ -4157,10 +3439,9 @@ impl App {
                         && crate::engine::core::renderer::wireframe_supported();
                     // scene_is_lit: Play 中・非 Edit は常に Lit 扱い（scene_view_mode_code と同じ規約、
                     // 972-980 行目参照）。Edit 中はシーンビューの表示モードに従う。
-                    let scene_is_lit =
-                        self.mode != RuntimeMode::Edit || self.scene_view_mode.is_lit();
-                    let deferred_active =
-                        self.post_fx.deferred && !edit_view_2d && !scene_wireframe && scene_is_lit;
+                    let scene_is_lit = self.mode != RuntimeMode::Edit || self.scene_view_mode.is_lit();
+                    let deferred_active = self.post_fx.deferred
+                        && !edit_view_2d && !scene_wireframe && scene_is_lit;
                     // 反射（Phase D6）: deferred 有効時のみ・resolved の実効反射モード。
                     // フォワード（deferred 無効）時は反射パスを一切走らせない（Off）。
                     let reflection_effective = if deferred_active {
@@ -4185,12 +3466,11 @@ impl App {
                     let vignette_on = self.post_vignette_enabled;
                     // Phase R4: ブルーム／FXAA 設定（フレーム内で不変のためコピーしておく）。
                     let bloom_on = self.post_fx.bloom_enabled;
-                    let fxaa_on = self.post_fx.fxaa_enabled;
+                    let fxaa_on  = self.post_fx.fxaa_enabled;
                     self.rt_pool.ensure(
                         &draw_ctx.device,
                         crate::engine::core::renderer::RT_SCENE_HDR,
-                        surf_w,
-                        surf_h,
+                        surf_w, surf_h,
                         crate::engine::core::renderer::HDR_FORMAT,
                     );
                     // R4: トーンマップ後 LDR 中間（常時確保）。2D オーバーレイをこの上へ描き、
@@ -4198,45 +3478,36 @@ impl App {
                     self.rt_pool.ensure(
                         &draw_ctx.device,
                         crate::engine::core::renderer::RT_LDR,
-                        surf_w,
-                        surf_h,
+                        surf_w, surf_h,
                         crate::engine::core::renderer::HDR_FORMAT,
                     );
                     if vignette_on {
                         self.rt_pool.ensure(
                             &draw_ctx.device,
                             crate::engine::core::renderer::RT_POST_INTER,
-                            surf_w,
-                            surf_h,
+                            surf_w, surf_h,
                             crate::engine::core::renderer::HDR_FORMAT,
                         );
                     }
                     // R4: ブルーム mip 群（有効時のみ確保）。段数・サイズは解像度から算出。
                     let bloom_targets = if bloom_on {
                         crate::engine::core::renderer::BloomPipelines::ensure_targets(
-                            &mut self.rt_pool,
-                            &draw_ctx.device,
-                            crate::engine::core::renderer::HDR_FORMAT,
-                            surf_w,
-                            surf_h,
+                            &mut self.rt_pool, &draw_ctx.device,
+                            crate::engine::core::renderer::HDR_FORMAT, surf_w, surf_h,
                         )
-                    } else {
-                        Vec::new()
-                    };
+                    } else { Vec::new() };
                     // WBOIT の accum/reveal RT（WBOIT 方式かつ透明物ありのときのみ確保）。
                     if tp_wboit {
                         self.rt_pool.ensure(
                             &draw_ctx.device,
                             crate::engine::core::renderer::RT_WBOIT_ACCUM,
-                            surf_w,
-                            surf_h,
+                            surf_w, surf_h,
                             crate::engine::core::renderer::WBOIT_ACCUM_FORMAT,
                         );
                         self.rt_pool.ensure(
                             &draw_ctx.device,
                             crate::engine::core::renderer::RT_WBOIT_REVEAL,
-                            surf_w,
-                            surf_h,
+                            surf_w, surf_h,
                             crate::engine::core::renderer::WBOIT_REVEAL_FORMAT,
                         );
                     }
@@ -4247,37 +3518,32 @@ impl App {
                         self.rt_pool.ensure(
                             &draw_ctx.device,
                             crate::engine::core::renderer::gbuffer::GBUFFER0_RT_NAME,
-                            surf_w,
-                            surf_h,
+                            surf_w, surf_h,
                             crate::engine::core::renderer::gbuffer::GBUFFER0_FORMAT,
                         );
                         self.rt_pool.ensure(
                             &draw_ctx.device,
                             crate::engine::core::renderer::gbuffer::GBUFFER1_RT_NAME,
-                            surf_w,
-                            surf_h,
+                            surf_w, surf_h,
                             crate::engine::core::renderer::gbuffer::GBUFFER1_FORMAT,
                         );
                         self.rt_pool.ensure(
                             &draw_ctx.device,
                             crate::engine::core::renderer::gbuffer::GBUFFER2_RT_NAME,
-                            surf_w,
-                            surf_h,
+                            surf_w, surf_h,
                             crate::engine::core::renderer::gbuffer::GBUFFER2_FORMAT,
                         );
                         self.rt_pool.ensure(
                             &draw_ctx.device,
                             crate::engine::core::renderer::gbuffer::GBUFFER3_RT_NAME,
-                            surf_w,
-                            surf_h,
+                            surf_w, surf_h,
                             crate::engine::core::renderer::gbuffer::GBUFFER3_FORMAT,
                         );
                     }
                     // AO（Phase D4）半解像度テクスチャ（ao_raw/ao_a/ao_b）。deferred 有効かつ
                     // AO モードが Off でないときのみ確保（Off 時は 0 コスト）。STORAGE 用途のため
                     // RtPool ではなく AoTargets が専有する（half-res でコスト 1/4）。
-                    if deferred_active && ao_effective != crate::engine::core::renderer::AoMode::Off
-                    {
+                    if deferred_active && ao_effective != crate::engine::core::renderer::AoMode::Off {
                         let div = crate::engine::core::renderer::AO_RESOLUTION_DIVISOR;
                         self.ao_targets.ensure(
                             &draw_ctx.device,
@@ -4312,9 +3578,7 @@ impl App {
                             (surf_w / div).max(1),
                             (surf_h / div).max(1),
                         )
-                    } else {
-                        false
-                    };
+                    } else { false };
                     // このフレームで SSGI を実際に「読める」か（前フレームの ssgi_b が有効か）。
                     // ssgi_active かつ 前フレームも収束済み（self.ssgi_warmed）かつ 今フレーム再確保なし。
                     let ssgi_readable = ssgi_active && self.ssgi_warmed && !ssgi_reallocated;
@@ -4327,8 +3591,7 @@ impl App {
                         self.rt_pool.ensure(
                             &draw_ctx.device,
                             crate::engine::core::renderer::RT_REFLECTION_NAME,
-                            surf_w,
-                            surf_h,
+                            surf_w, surf_h,
                             crate::engine::core::renderer::REFLECTION_FORMAT,
                         );
                     }
@@ -4340,8 +3603,7 @@ impl App {
                     if refract_active {
                         // すりガラス用の屈折背景ミップチェーン（ガラス表現）を確保する。
                         // mip0=不透明シーン HDR のコピー・以降=ダウンサンプル→いもす法ブラー。
-                        self.refract_pyramid
-                            .ensure(&draw_ctx.device, surf_w, surf_h);
+                        self.refract_pyramid.ensure(&draw_ctx.device, surf_w, surf_h);
                     }
                     // sequential grab（屈折の逐次グラブ）を実行するか（Phase RT-Translucency 拡張）。
                     // 距離ソート（tp_sorted）かつ 屈折背景アクティブ（refract_active）かつ 設定 ON のときのみ。
@@ -4353,9 +3615,7 @@ impl App {
                     // 本方式は両経路に等しく効く（背景の中身が更新されるだけで BindGroup は不変）。
                     let refract_sequential_active =
                         tp_sorted && refract_active && self.post_fx.refract_sequential_grab;
-                    let hdr_view = self
-                        .rt_pool
-                        .view(crate::engine::core::renderer::RT_SCENE_HDR);
+                    let hdr_view   = self.rt_pool.view(crate::engine::core::renderer::RT_SCENE_HDR);
                     // メインカメラ用の透明 group4 BindGroup（Phase RT-Translucency）。
                     // 透明パイプラインは group4 に屈折背景（binding15/16）を要求するため、距離ソート／WBOIT
                     // 両方で使うこの BG をパスより前に生成して長生きさせる（refract_active なら実背景、
@@ -4381,65 +3641,37 @@ impl App {
                     // RT 透明パイプラインが存在（＝RT 対応 GPU）のとき。実 BindGroup は TLAS 構築後（メインパス
                     // 内）に代入する（needs_tlas()＝translucency=Rt で TLAS 構築が保証される）。None のときは
                     // SS 版フォールバック（transparent_bg_main）を使う（非対応 GPU・translucency≠Rt と完全同一経路）。
-                    let use_rt_refract =
-                        refract_active && draw_ctx.pipelines.transparent.rt.is_some();
+                    let use_rt_refract = refract_active && draw_ctx.pipelines.transparent.rt.is_some();
                     let mut transparent_rt_bg_main: Option<wgpu::BindGroup> = None;
-                    let ldr_view = self.rt_pool.view(crate::engine::core::renderer::RT_LDR);
+                    let ldr_view   = self.rt_pool.view(crate::engine::core::renderer::RT_LDR);
                     // WBOIT ターゲットのビュー（確保済みのときのみ Some）。
                     let (wboit_accum_view, wboit_reveal_view) = if tp_wboit {
                         (
-                            Some(
-                                self.rt_pool
-                                    .view(crate::engine::core::renderer::RT_WBOIT_ACCUM),
-                            ),
-                            Some(
-                                self.rt_pool
-                                    .view(crate::engine::core::renderer::RT_WBOIT_REVEAL),
-                            ),
+                            Some(self.rt_pool.view(crate::engine::core::renderer::RT_WBOIT_ACCUM)),
+                            Some(self.rt_pool.view(crate::engine::core::renderer::RT_WBOIT_REVEAL)),
                         )
                     } else {
                         (None, None)
                     };
                     // G-Buffer 4 枚ぶんのビュー（deferred_active のときのみ Some）。
                     // ensure を全て済ませてから view を取る（&mut → & の借用切り替え、既存の WBOIT と同じ規約）。
-                    let (g0v, g1v, g2v, g3v) =
-                        if deferred_active {
-                            (
-                                Some(self.rt_pool.view(
-                                    crate::engine::core::renderer::gbuffer::GBUFFER0_RT_NAME,
-                                )),
-                                Some(self.rt_pool.view(
-                                    crate::engine::core::renderer::gbuffer::GBUFFER1_RT_NAME,
-                                )),
-                                Some(self.rt_pool.view(
-                                    crate::engine::core::renderer::gbuffer::GBUFFER2_RT_NAME,
-                                )),
-                                Some(self.rt_pool.view(
-                                    crate::engine::core::renderer::gbuffer::GBUFFER3_RT_NAME,
-                                )),
-                            )
-                        } else {
-                            (None, None, None, None)
-                        };
+                    let (g0v, g1v, g2v, g3v) = if deferred_active {
+                        (
+                            Some(self.rt_pool.view(crate::engine::core::renderer::gbuffer::GBUFFER0_RT_NAME)),
+                            Some(self.rt_pool.view(crate::engine::core::renderer::gbuffer::GBUFFER1_RT_NAME)),
+                            Some(self.rt_pool.view(crate::engine::core::renderer::gbuffer::GBUFFER2_RT_NAME)),
+                            Some(self.rt_pool.view(crate::engine::core::renderer::gbuffer::GBUFFER3_RT_NAME)),
+                        )
+                    } else {
+                        (None, None, None, None)
+                    };
                     let inter_view = if vignette_on {
-                        Some(
-                            self.rt_pool
-                                .view(crate::engine::core::renderer::RT_POST_INTER),
-                        )
-                    } else {
-                        None
-                    };
+                        Some(self.rt_pool.view(crate::engine::core::renderer::RT_POST_INTER))
+                    } else { None };
                     // 反射 RT のビュー（確保済みのときのみ Some）。ensure 済み後に view を取る規約。
-                    let reflection_view = if reflection_effective
-                        != crate::engine::core::renderer::ReflectionMode::Off
-                    {
-                        Some(
-                            self.rt_pool
-                                .view(crate::engine::core::renderer::RT_REFLECTION_NAME),
-                        )
-                    } else {
-                        None
-                    };
+                    let reflection_view = if reflection_effective != crate::engine::core::renderer::ReflectionMode::Off {
+                        Some(self.rt_pool.view(crate::engine::core::renderer::RT_REFLECTION_NAME))
+                    } else { None };
 
                     // ── メインレンダーパス ────────────────
                     let _perf_t_main = std::time::Instant::now();
@@ -4456,14 +3688,10 @@ impl App {
                             let mut shadow_casters: Vec<(
                                 &crate::engine::methods::drawer::GpuModel,
                                 &crate::engine::methods::drawer::InstancedModelBatch,
-                            )> = self
-                                .shared_model_batches
-                                .iter()
+                            )> = self.shared_model_batches.iter()
                                 .filter(|(path, _)| shadow_caster_paths.contains(path.as_str()))
                                 .filter_map(|(path, sd)| {
-                                    gpu_model_by_path
-                                        .get(path.as_str())
-                                        .map(|&gpu| (gpu, &sd.batch))
+                                    gpu_model_by_path.get(path.as_str()).map(|&gpu| (gpu, &sd.batch))
                                 })
                                 .collect();
                             // 散布モデル（kind=Model）も影キャスターに加える（Terrain T3 第2段）。
@@ -4511,29 +3739,21 @@ impl App {
                                     String,
                                     &crate::engine::methods::drawer::GpuModel,
                                     &crate::engine::methods::drawer::InstancedModelBatch,
-                                )> = self
-                                    .terrain
-                                    .scatter_models
-                                    .values()
-                                    .map(|res| {
-                                        (
-                                            format!("scatter://{}", res.model_path),
-                                            &res.gpu_model,
-                                            &res.batch,
-                                        )
-                                    })
+                                )> = self.terrain.scatter_models.values()
+                                    .map(|res| (
+                                        format!("scatter://{}", res.model_path),
+                                        &res.gpu_model,
+                                        &res.batch,
+                                    ))
                                     .collect();
                                 let mut rt_casters: Vec<(
                                     &str,
                                     &crate::engine::methods::drawer::GpuModel,
                                     &crate::engine::methods::drawer::InstancedModelBatch,
-                                )> = self
-                                    .shared_model_batches
-                                    .iter()
+                                )> = self.shared_model_batches.iter()
                                     .filter(|(path, _)| shadow_caster_paths.contains(path.as_str()))
                                     .filter_map(|(path, sd)| {
-                                        gpu_model_by_path
-                                            .get(path.as_str())
+                                        gpu_model_by_path.get(path.as_str())
                                             .map(|&gpu| (path.as_str(), gpu, &sd.batch))
                                     })
                                     .collect();
@@ -4551,13 +3771,10 @@ impl App {
                                 // rt_shadow とは別 RefCell のため共有借用で共存できる。
                                 let bindless_ref = draw_ctx.bindless.as_ref().map(|c| c.borrow());
                                 let stat = rt.prepare_and_build(
-                                    &draw_ctx.device,
-                                    &draw_ctx.queue,
-                                    frame.encoder_mut(),
-                                    &rt_casters,
-                                    bindless_ref.as_deref(),
+                                    &draw_ctx.device, &draw_ctx.queue, frame.encoder_mut(),
+                                    &rt_casters, bindless_ref.as_deref(),
                                 );
-                                perf_tlas_ms = _perf_t_tlas.elapsed().as_secs_f64() * 1000.0;
+                                perf_tlas_ms    = _perf_t_tlas.elapsed().as_secs_f64() * 1000.0;
                                 perf_tlas_built = stat.built;
                                 perf_tlas_insts = stat.instances;
                             }
@@ -4579,21 +3796,20 @@ impl App {
                                 let rt = rt_cell.borrow();
                                 let bl = bl_cell.borrow();
                                 let refract_view = self.refract_pyramid.full_view();
-                                transparent_rt_bg_main =
-                                    Some(draw_ctx.light_buffer.create_transparent_rt_bind_group(
-                                        &draw_ctx.device,
-                                        &rt_tp.lights_bgl,
-                                        &draw_ctx.shadow,
-                                        &draw_ctx.clusters,
-                                        &draw_ctx.gi,
-                                        rt.tlas(),
-                                        rt.albedo_buffer(),
-                                        refract_view,
-                                        &draw_ctx.pipelines.transparent.refract_sampler,
-                                        bl.instance_table_buffer(),
-                                        bl.index_buffer(),
-                                        bl.normal_buffer(),
-                                    ));
+                                transparent_rt_bg_main = Some(draw_ctx.light_buffer.create_transparent_rt_bind_group(
+                                    &draw_ctx.device,
+                                    &rt_tp.lights_bgl,
+                                    &draw_ctx.shadow,
+                                    &draw_ctx.clusters,
+                                    &draw_ctx.gi,
+                                    rt.tlas(),
+                                    rt.albedo_buffer(),
+                                    refract_view,
+                                    &draw_ctx.pipelines.transparent.refract_sampler,
+                                    bl.instance_table_buffer(),
+                                    bl.index_buffer(),
+                                    bl.normal_buffer(),
+                                ));
                             }
                         }
 
@@ -4626,9 +3842,7 @@ impl App {
                             //   それ以外（フラット/未収束）→ enabled=0, gi_mode=FLAT（描画側フラットへ）
                             // ※SSGI の未収束（初回/リサイズ/有効化直後）フレームは ssgi_readable=false と
                             //   なりここでフラットに倒れる（＝初回はゼロクリア＝フラットアンビエントと等価）。
-                            use crate::engine::core::renderer::ddgi::{
-                                GI_MODE_DDGI, GI_MODE_FLAT, GI_MODE_SSGI,
-                            };
+                            use crate::engine::core::renderer::ddgi::{GI_MODE_FLAT, GI_MODE_DDGI, GI_MODE_SSGI};
                             let (gi_enabled, gi_mode_code) = if gi_on {
                                 (true, GI_MODE_DDGI)
                             } else if ssgi_readable {
@@ -4637,18 +3851,11 @@ impl App {
                                 (false, GI_MODE_FLAT)
                             };
                             // GiParams を書き込み、更新プローブ数（ディスパッチ数）を得る。
-                            let gi_ppf = draw_ctx.gi.update_params(
-                                &draw_ctx.queue,
-                                &self.post_fx.gi,
-                                gi_enabled,
-                                gi_mode_code,
-                            );
+                            let gi_ppf = draw_ctx.gi.update_params(&draw_ctx.queue, &self.post_fx.gi, gi_enabled, gi_mode_code);
                             // DDGI 有効時のみ compute を記録（履歴コピー → プローブ更新）。SSGI は compute 不要。
                             if gi_on {
                                 if let Some(gip) = draw_ctx.pipelines.gi_update.as_ref() {
-                                    draw_ctx
-                                        .gi
-                                        .record(frame.encoder_mut(), &gip.pipeline, gi_ppf);
+                                    draw_ctx.gi.record(frame.encoder_mut(), &gip.pipeline, gi_ppf);
                                 }
                             }
                         }
@@ -4686,10 +3893,7 @@ impl App {
                                 saved_shadow_cam.is_some(),
                                 // CameraUniform.view と同じ流儀（転置＝列優先アップロード）。
                                 cview.transpose().data,
-                                cnear,
-                                cfar,
-                                cfov,
-                                casp,
+                                cnear, cfar, cfov, casp,
                                 cluster_vp,
                                 frame_dir_count,
                                 frame_lights.len() as u32,
@@ -4697,39 +3901,23 @@ impl App {
                             if cluster_on {
                                 let mut cpass = frame.encoder_mut().begin_compute_pass(
                                     &wgpu::ComputePassDescriptor {
-                                        label: Some("Cluster Build Pass"),
+                                        label:            Some("Cluster Build Pass"),
                                         timestamp_writes: None,
                                     },
                                 );
                                 draw_ctx.clusters.dispatch(
-                                    &mut cpass,
-                                    &draw_ctx.pipelines.cluster_build.pipeline,
+                                    &mut cpass, &draw_ctx.pipelines.cluster_build.pipeline,
                                 );
                             }
                         }
 
                         let clear_color = if self.mode == RuntimeMode::Play && !self.paused {
                             let [r, g, b, a] = game_clear_color;
-                            wgpu::Color {
-                                r: r as f64,
-                                g: g as f64,
-                                b: b as f64,
-                                a: a as f64,
-                            }
+                            wgpu::Color { r: r as f64, g: g as f64, b: b as f64, a: a as f64 }
                         } else if self.active_world_line != 0 || edit_view_2d {
-                            wgpu::Color {
-                                r: 0.05,
-                                g: 0.08,
-                                b: 0.18,
-                                a: 1.0,
-                            }
+                            wgpu::Color { r: 0.05, g: 0.08, b: 0.18, a: 1.0 }
                         } else {
-                            wgpu::Color {
-                                r: 0.1,
-                                g: 0.1,
-                                b: 0.1,
-                                a: 1.0,
-                            }
+                            wgpu::Color { r: 0.1,  g: 0.1,  b: 0.1,  a: 1.0 }
                         };
                         // RT 影オン時のメインパス用の選択（Phase R8）。
                         // - rt_draw_ref: RT 影リソースの共有借用（bind_group をパス全体で参照するため保持）。
@@ -4743,16 +3931,8 @@ impl App {
                         // 算出済み（deferred_active と同時に前倒し計算）。ここでは再計算しない。
                         // ワイヤ時は RT を無効化する（塗り／RT とワイヤの経路を混在させない）。
                         let use_rt = rt_on && !scene_wireframe;
-                        let rt_draw_ref = if use_rt {
-                            draw_ctx.rt_shadow.as_ref().map(|c| c.borrow())
-                        } else {
-                            None
-                        };
-                        let rt_pipes = if use_rt {
-                            draw_ctx.pipelines.rt.as_ref()
-                        } else {
-                            None
-                        };
+                        let rt_draw_ref = if use_rt { draw_ctx.rt_shadow.as_ref().map(|c| c.borrow()) } else { None };
+                        let rt_pipes = if use_rt { draw_ctx.pipelines.rt.as_ref() } else { None };
                         let scene_lights_bg: &wgpu::BindGroup = rt_draw_ref
                             .as_ref()
                             .map(|r| &r.bind_group)
@@ -4780,18 +3960,11 @@ impl App {
                                 if self.mode == RuntimeMode::Play && !self.paused {
                                     let (vp_x, vp_y, vp_w, vp_h) = game_viewport;
                                     gpass.set_viewport(vp_x, vp_y, vp_w, vp_h, 0.0, 1.0);
-                                    gpass.set_scissor_rect(
-                                        vp_x as u32,
-                                        vp_y as u32,
-                                        vp_w as u32,
-                                        vp_h as u32,
-                                    );
+                                    gpass.set_scissor_rect(vp_x as u32, vp_y as u32, vp_w as u32, vp_h as u32);
                                 }
                                 for (path, sd) in &self.shared_model_batches {
                                     // 視錐台外・遠方の地形チャンクは描画スキップ（Terrain 描画最適化）。
-                                    if terrain_culled.contains(path.as_str()) {
-                                        continue;
-                                    }
+                                    if terrain_culled.contains(path.as_str()) { continue; }
                                     if let Some(&gpu) = gpu_model_by_path.get(path.as_str()) {
                                         crate::engine::core::renderer::gbuffer::draw_gbuffer_indirect(
                                             &mut gpass, gpu, &sd.batch, &camera_buf.bind_group,
@@ -4816,12 +3989,10 @@ impl App {
                                     *super::terrain_scatter_ops::GRASS_CULL_DISTANCE;
                                 // 計測用 NOCULL 指定時は距離∞ 相当にして全チャンクを描く
                                 //   （span 判定は視錐台も見るため、draw_grass=全描画へ切り替える）。
-                                let grass_nocull =
-                                    *super::terrain_scatter_ops::SCATTER_CULL_DISABLED;
+                                let grass_nocull = *super::terrain_scatter_ops::SCATTER_CULL_DISABLED;
                                 let grass_cull_sq = grass_cull_dist * grass_cull_dist;
                                 // 遠景密度減衰の帯境界（二乗距離）。近=全密度 / 中=1/2 / 遠=1/4。
-                                let grass_decay_near =
-                                    *super::terrain_scatter_ops::GRASS_DECAY_NEAR;
+                                let grass_decay_near = *super::terrain_scatter_ops::GRASS_DECAY_NEAR;
                                 let grass_decay_mid = *super::terrain_scatter_ops::GRASS_DECAY_MID;
                                 let grass_decay_near_sq = grass_decay_near * grass_decay_near;
                                 let grass_decay_mid_sq = grass_decay_mid * grass_decay_mid;
@@ -4855,9 +4026,7 @@ impl App {
                                 }
                                 // 計測ログ（60 フレームに 1 回・SEED_PERF_TERRAIN 有効時のみ）。
                                 //   カリング＋密度減衰後に実際に描いた草本数 / 全本数。
-                                if *super::terrain_scatter_ops::PERF_TERRAIN_LOG_ENABLED
-                                    && grass_total > 0
-                                {
+                                if *super::terrain_scatter_ops::PERF_TERRAIN_LOG_ENABLED && grass_total > 0 {
                                     use std::sync::atomic::{AtomicU64, Ordering};
                                     static GN: AtomicU64 = AtomicU64::new(0);
                                     if GN.fetch_add(1, Ordering::Relaxed) % 60 == 0 {
@@ -4904,13 +4073,9 @@ impl App {
                                 let (sw, sh) = frame.surface_size();
                                 // レイジー構築（初回のみ）。以降は ensure_size でサイズ追従する。
                                 if self.hiz.is_none() {
-                                    self.hiz =
-                                        Some(crate::engine::core::renderer::hiz::HiZSystem::new(
-                                            &draw_ctx.device,
-                                            sw.max(1),
-                                            sh.max(1),
-                                            256,
-                                        ));
+                                    self.hiz = Some(crate::engine::core::renderer::hiz::HiZSystem::new(
+                                        &draw_ctx.device, sw.max(1), sh.max(1), 256,
+                                    ));
                                 }
                                 if let Some(hiz) = self.hiz.as_mut() {
                                     if hiz.readback_idle() {
@@ -4918,15 +4083,11 @@ impl App {
                                         // 地形チャンクの world AABB と key（path）を同順で収集する。
                                         // world_bounds=None（未 update）のチャンクは対象外＝描く（保守側）。
                                         let mut keys: Vec<String> = Vec::new();
-                                        let mut aabbs: Vec<
-                                            crate::engine::core::renderer::uniforms::GpuCullData,
-                                        > = Vec::new();
+                                        let mut aabbs: Vec<crate::engine::core::renderer::uniforms::GpuCullData>
+                                            = Vec::new();
                                         for (path, sd) in &self.shared_model_batches {
                                             if !path.starts_with(
-                                                crate::engine::components::TERRAIN_SOURCE_SCHEME,
-                                            ) {
-                                                continue;
-                                            }
+                                                crate::engine::components::TERRAIN_SOURCE_SCHEME) { continue; }
                                             if let Some((mn, mx)) = sd.batch.world_bounds() {
                                                 keys.push(path.clone());
                                                 aabbs.push(crate::engine::core::renderer::uniforms::GpuCullData {
@@ -4935,31 +4096,20 @@ impl App {
                                             }
                                         }
                                         if !aabbs.is_empty() {
-                                            hiz.set_instances(
-                                                &draw_ctx.device,
-                                                &draw_ctx.queue,
-                                                &aabbs,
-                                            );
+                                            hiz.set_instances(&draw_ctx.device, &draw_ctx.queue, &aabbs);
                                             // 深度ビューは 'r 寿命で取り出し、エンコーダ借用と両立させる。
                                             let depth_view = frame.depth_only_view_r();
                                             let enc = frame.encoder_mut();
                                             hiz.build_pyramid(enc, depth_view, &draw_ctx.device);
-                                            hiz.dispatch_occlusion(
-                                                enc,
-                                                &camera_buf.buffer,
-                                                &draw_ctx.device,
-                                            );
+                                            hiz.dispatch_occlusion(enc, &camera_buf.buffer, &draw_ctx.device);
                                             hiz.schedule_readback(enc);
-                                            if *super::terrain_scatter_ops::PERF_TERRAIN_LOG_ENABLED
-                                            {
+                                            if *super::terrain_scatter_ops::PERF_TERRAIN_LOG_ENABLED {
                                                 use std::sync::atomic::{AtomicU64, Ordering};
                                                 static DN: AtomicU64 = AtomicU64::new(0);
                                                 if DN.fetch_add(1, Ordering::Relaxed) % 60 == 0 {
                                                     eprintln!(
                                                         "[PERF hiz] dispatch: instances={} ({}x{})",
-                                                        keys.len(),
-                                                        sw,
-                                                        sh
+                                                        keys.len(), sw, sh
                                                     );
                                                 }
                                             }
@@ -4978,19 +4128,14 @@ impl App {
                                 let ao_p = &draw_ctx.pipelines.ao;
                                 // RT-AO は TLAS が要る。ao==Rt かつ RT パイプライン存在時のみ RT、
                                 // それ以外は SSAO（安全側フォールバック）。半径は方式ごとの定数。
-                                let use_rt_ao = ao_effective
-                                    == crate::engine::core::renderer::AoMode::Rt
+                                let use_rt_ao = ao_effective == crate::engine::core::renderer::AoMode::Rt
                                     && ao_p.rt.is_some();
                                 let ao_radius = if use_rt_ao {
                                     crate::engine::core::renderer::AO_RTAO_WORLD_RADIUS
                                 } else {
                                     crate::engine::core::renderer::AO_SSAO_WORLD_RADIUS
                                 };
-                                ao_p.write_params(
-                                    &draw_ctx.queue,
-                                    self.post_fx.ao_intensity,
-                                    ao_radius,
-                                );
+                                ao_p.write_params(&draw_ctx.queue, self.post_fx.ao_intensity, ao_radius);
                                 // group1（G-Buffer）: AO 生成時点では ao_b 未計算のため t_ao スロットは白。
                                 let ao_gbuffer_bg = crate::engine::core::renderer::deferred::create_gbuffer_bind_group(
                                     &draw_ctx.device, &draw_ctx.pipelines.deferred.gbuffer_bgl,
@@ -5005,17 +4150,12 @@ impl App {
                                 // RT-AO データ（TLAS）。needs_tlas() 経由で構築済み保証。共有借用（RefCell）。
                                 let ao_rt_ref = if use_rt_ao {
                                     draw_ctx.rt_shadow.as_ref().map(|c| c.borrow())
-                                } else {
-                                    None
-                                };
-                                let ao_rt_bg = ao_rt_ref
-                                    .as_ref()
-                                    .map(|r| ao_p.create_rt_bg(&draw_ctx.device, r.tlas()));
+                                } else { None };
+                                let ao_rt_bg = ao_rt_ref.as_ref().map(|r| ao_p.create_rt_bg(&draw_ctx.device, r.tlas()));
                                 // RT データが得られたら RT、そうでなければ SSAO（安全側フォールバック）。
                                 let do_rt_ao = ao_rt_bg.is_some();
                                 {
-                                    let mut apass =
-                                        frame.begin_ao_pass_to(self.ao_targets.raw_view());
+                                    let mut apass = frame.begin_ao_pass_to(self.ao_targets.raw_view());
                                     // 半解像度・UV ベースのため viewport は設定しない（背景は下流で discard）。
                                     apass.set_bind_group(0, &camera_buf.bind_group, &[]);
                                     apass.set_bind_group(1, &ao_gbuffer_bg, &[]);
@@ -5038,15 +4178,9 @@ impl App {
                             // 色付き影資源（instance_table/UV/index/テクスチャ配列/サンプラー）を 1 回だけ組む。
                             // 非対応 GPU／縮退時は None＝従来の空 gap（empty_bg3）を使う。
                             let colored_shadow_bg: Option<wgpu::BindGroup> = if use_rt {
-                                match (
-                                    &draw_ctx.bindless,
-                                    draw_ctx.pipelines.deferred.colored_shadow_bgl.as_ref(),
-                                ) {
+                                match (&draw_ctx.bindless, draw_ctx.pipelines.deferred.colored_shadow_bgl.as_ref()) {
                                     (Some(bl_cell), Some(cs_bgl)) => {
-                                        Some(bl_cell.borrow().create_colored_shadow_bind_group(
-                                            &draw_ctx.device,
-                                            cs_bgl,
-                                        ))
+                                        Some(bl_cell.borrow().create_colored_shadow_bind_group(&draw_ctx.device, cs_bgl))
                                     }
                                     _ => None,
                                 }
@@ -5083,16 +4217,11 @@ impl App {
                                     // 半解像度・UV ベースのため viewport は設定しない（背景はシェーダが 1 を返す）。
                                     // バインドレス対応時（mask_bindless かつ colored_shadow_bg 確定）は色付き影
                                     // バリアントを使い group3 に色付き影資源を bind、そうでなければ従来の平均色＋空 gap。
-                                    let (mask_pipe, mask_g3): (
-                                        &wgpu::RenderPipeline,
-                                        &wgpu::BindGroup,
-                                    ) = match (
-                                        smp.mask_bindless.as_ref(),
-                                        colored_shadow_bg.as_ref(),
-                                    ) {
-                                        (Some(mb), Some(bg)) => (mb, bg),
-                                        _ => (&smp.mask, &draw_ctx.pipelines.deferred.empty_bg3),
-                                    };
+                                    let (mask_pipe, mask_g3): (&wgpu::RenderPipeline, &wgpu::BindGroup) =
+                                        match (smp.mask_bindless.as_ref(), colored_shadow_bg.as_ref()) {
+                                            (Some(mb), Some(bg)) => (mb, bg),
+                                            _ => (&smp.mask, &draw_ctx.pipelines.deferred.empty_bg3),
+                                        };
                                     mpass.set_pipeline(mask_pipe);
                                     mpass.set_bind_group(0, &camera_buf.bind_group, &[]);
                                     mpass.set_bind_group(1, &mask_gbuffer_bg, &[]);
@@ -5102,21 +4231,16 @@ impl App {
                                     mpass.draw(0..3, 0..1);
                                 }
                                 // バイラテラルブラー（各レイヤ mask_raw → mask_a → mask_b, 深度エッジ保持。結果は mask_b）。
-                                smp.blur(
-                                    &draw_ctx.device,
-                                    frame.encoder_mut(),
-                                    &self.shadow_mask_targets,
-                                );
+                                smp.blur(&draw_ctx.device, frame.encoder_mut(), &self.shadow_mask_targets);
                             }
 
                             // AO 結果ビュー（ライティングの group1 binding6 へ渡す）。AO=Off 時は白 1x1（ao=1.0）。
                             let ao_sampler = &draw_ctx.pipelines.ao.linear_sampler;
-                            let ao_result_view: &wgpu::TextureView =
-                                if ao_effective != crate::engine::core::renderer::AoMode::Off {
-                                    self.ao_targets.b_view()
-                                } else {
-                                    &draw_ctx.pipelines.ao.white_view
-                                };
+                            let ao_result_view: &wgpu::TextureView = if ao_effective != crate::engine::core::renderer::AoMode::Off {
+                                self.ao_targets.b_view()
+                            } else {
+                                &draw_ctx.pipelines.ao.white_view
+                            };
 
                             // SSGI 入力ビュー（前フレームの ssgi_b）。読み取り可なら実テクスチャ、
                             // 未収束（初回/リサイズ/有効化直後）なら黒ダミー（この 1 フレームは GiParams が
@@ -5147,17 +4271,11 @@ impl App {
                                     // シャドウマスク（Phase RT-Shadow-Denoise）: deferred_lighting.wgsl の group1 binding10/11。
                                     mask_result_view, mask_sampler,
                                 );
-                                let mut lpass =
-                                    frame.begin_deferred_lighting_pass_to(hdr_view, clear_color);
+                                let mut lpass = frame.begin_deferred_lighting_pass_to(hdr_view, clear_color);
                                 if self.mode == RuntimeMode::Play && !self.paused {
                                     let (vp_x, vp_y, vp_w, vp_h) = game_viewport;
                                     lpass.set_viewport(vp_x, vp_y, vp_w, vp_h, 0.0, 1.0);
-                                    lpass.set_scissor_rect(
-                                        vp_x as u32,
-                                        vp_y as u32,
-                                        vp_w as u32,
-                                        vp_h as u32,
-                                    );
+                                    lpass.set_scissor_rect(vp_x as u32, vp_y as u32, vp_w as u32, vp_h as u32);
                                 }
                                 // RT 対応時は rt バリアントを使う（use_rt と同条件）。scene_lights_bg は
                                 // 既に RT複合／MainCamera を選択済み。
@@ -5201,11 +4319,7 @@ impl App {
                                 lpass.set_pipeline(lit_pipe);
                                 lpass.set_bind_group(0, &camera_buf.bind_group, &[]);
                                 lpass.set_bind_group(1, &gbuffer_bg, &[]);
-                                lpass.set_bind_group(
-                                    2,
-                                    &draw_ctx.pipelines.deferred.empty_bg2,
-                                    &[],
-                                );
+                                lpass.set_bind_group(2, &draw_ctx.pipelines.deferred.empty_bg2, &[]);
                                 lpass.set_bind_group(3, lit_g3, &[]);
                                 lpass.set_bind_group(4, lit_lights_bg, &[]);
                                 lpass.draw(0..3, 0..1);
@@ -5235,29 +4349,19 @@ impl App {
                                 g3v.expect("gbuffer3 view (ssgi)"),
                             );
                             // group1（G-Buffer）。SSGI 生成は 0..5 のみ参照。AO/SSGI/マスクスロットはダミーを渡す。
-                            let ssgi_gbuffer_bg =
-                                crate::engine::core::renderer::deferred::create_gbuffer_bind_group(
-                                    &draw_ctx.device,
-                                    &draw_ctx.pipelines.deferred.gbuffer_bgl,
-                                    sg0,
-                                    sg1,
-                                    sg2,
-                                    sg3,
-                                    frame.depth_only_view(),
-                                    &draw_ctx.pipelines.deferred.gbuffer_sampler,
-                                    &draw_ctx.pipelines.ao.white_view,
-                                    &draw_ctx.pipelines.ao.linear_sampler,
-                                    &sp.dummy_view,
-                                    &sp.linear_sampler,
-                                    &draw_ctx.pipelines.deferred.mask_dummy_view,
-                                    &draw_ctx.pipelines.deferred.mask_sampler,
-                                );
+                            let ssgi_gbuffer_bg = crate::engine::core::renderer::deferred::create_gbuffer_bind_group(
+                                &draw_ctx.device, &draw_ctx.pipelines.deferred.gbuffer_bgl,
+                                sg0, sg1, sg2, sg3,
+                                frame.depth_only_view(), &draw_ctx.pipelines.deferred.gbuffer_sampler,
+                                &draw_ctx.pipelines.ao.white_view, &draw_ctx.pipelines.ao.linear_sampler,
+                                &sp.dummy_view, &sp.linear_sampler,
+                                &draw_ctx.pipelines.deferred.mask_dummy_view, &draw_ctx.pipelines.deferred.mask_sampler,
+                            );
                             // group2（SsgiParams + scene_hdr + sampler）。scene_hdr は今フレームの不透明 HDR。
                             let ssgi_input_bg = sp.create_input_bg(&draw_ctx.device, hdr_view);
                             // A. 生成パス（半解像度 ssgi_raw へ Clear0）。半解像度・UV ベースのため viewport 不要。
                             {
-                                let mut spass =
-                                    frame.begin_ssgi_pass_to(self.ssgi_targets.raw_view());
+                                let mut spass = frame.begin_ssgi_pass_to(self.ssgi_targets.raw_view());
                                 spass.set_pipeline(&sp.gen_pipeline);
                                 spass.set_bind_group(0, &camera_buf.bind_group, &[]);
                                 spass.set_bind_group(1, &ssgi_gbuffer_bg, &[]);
@@ -5288,66 +4392,46 @@ impl App {
                             // AO 結果ビュー（反射の group1 にも同じく供給。AO=Off 時は白 1x1）。
                             // ao_effective は上位スコープで算出済み（deferred 有効時のみ非 Off）。
                             let refl_ao_sampler = &draw_ctx.pipelines.ao.linear_sampler;
-                            let refl_ao_view: &wgpu::TextureView =
-                                if ao_effective != crate::engine::core::renderer::AoMode::Off {
-                                    self.ao_targets.b_view()
-                                } else {
-                                    &draw_ctx.pipelines.ao.white_view
-                                };
-                            let refl_gbuffer_bg =
-                                crate::engine::core::renderer::deferred::create_gbuffer_bind_group(
-                                    &draw_ctx.device,
-                                    &draw_ctx.pipelines.deferred.gbuffer_bgl,
-                                    rg0,
-                                    rg1,
-                                    rg2,
-                                    rg3,
-                                    frame.depth_only_view(),
-                                    &draw_ctx.pipelines.deferred.gbuffer_sampler,
-                                    refl_ao_view,
-                                    refl_ao_sampler,
-                                    // 反射シェーダは group1 の 0..5 のみ宣言＝SSGI/マスクスロットは未参照。ダミーを渡す。
-                                    &draw_ctx.pipelines.ssgi.dummy_view,
-                                    &draw_ctx.pipelines.ssgi.linear_sampler,
-                                    &draw_ctx.pipelines.deferred.mask_dummy_view,
-                                    &draw_ctx.pipelines.deferred.mask_sampler,
-                                );
+                            let refl_ao_view: &wgpu::TextureView = if ao_effective != crate::engine::core::renderer::AoMode::Off {
+                                self.ao_targets.b_view()
+                            } else {
+                                &draw_ctx.pipelines.ao.white_view
+                            };
+                            let refl_gbuffer_bg = crate::engine::core::renderer::deferred::create_gbuffer_bind_group(
+                                &draw_ctx.device, &draw_ctx.pipelines.deferred.gbuffer_bgl,
+                                rg0, rg1, rg2, rg3,
+                                frame.depth_only_view(), &draw_ctx.pipelines.deferred.gbuffer_sampler,
+                                refl_ao_view, refl_ao_sampler,
+                                // 反射シェーダは group1 の 0..5 のみ宣言＝SSGI/マスクスロットは未参照。ダミーを渡す。
+                                &draw_ctx.pipelines.ssgi.dummy_view, &draw_ctx.pipelines.ssgi.linear_sampler,
+                                &draw_ctx.pipelines.deferred.mask_dummy_view, &draw_ctx.pipelines.deferred.mask_sampler,
+                            );
                             let input_bg = refl.create_input_bg(&draw_ctx.device, hdr_view);
-                            let gi_bg = refl.create_gi_bg(&draw_ctx.device, &draw_ctx.gi);
+                            let gi_bg    = refl.create_gi_bg(&draw_ctx.device, &draw_ctx.gi);
 
                             // RT 反射は TLAS/平均アルベドが要る。reflection==Rt かつ RT パイプライン存在時のみ
                             // rt_shadow を借用して RT データ BG を作る（TLAS は needs_tlas で構築済み保証）。
                             // 借用は共有（RefCell::borrow）なので既存 rt_draw_ref と共存できる。
-                            let use_rt_refl =
-                                reflection_effective == ReflectionMode::Rt && refl.rt.is_some();
+                            let use_rt_refl = reflection_effective == ReflectionMode::Rt && refl.rt.is_some();
                             let rt_refl_ref = if use_rt_refl {
                                 draw_ctx.rt_shadow.as_ref().map(|c| c.borrow())
-                            } else {
-                                None
-                            };
+                            } else { None };
                             // バインドレス（B2）対応 GPU では、group3 に instance_table・UV・index・
                             // テクスチャ配列・サンプラーを同居させた拡張 BG を作る（refl.rt も拡張
                             // レイアウトで構築済み）。非対応 GPU では従来の 4 binding BG（平均色経路）。
                             let rt_data_bg = rt_refl_ref.as_ref().map(|r| {
                                 let lights = draw_ctx.light_buffer.lights_buffer();
-                                let meta = draw_ctx.light_buffer.meta_main_buffer();
+                                let meta   = draw_ctx.light_buffer.meta_main_buffer();
                                 if let Some(bl_cell) = &draw_ctx.bindless {
                                     let bl = bl_cell.borrow();
                                     refl.create_rt_data_bg_bindless(
-                                        &draw_ctx.device,
-                                        lights,
-                                        meta,
-                                        r.tlas(),
-                                        r.albedo_buffer(),
-                                        &bl,
+                                        &draw_ctx.device, lights, meta,
+                                        r.tlas(), r.albedo_buffer(), &bl,
                                     )
                                 } else {
                                     refl.create_rt_data_bg(
-                                        &draw_ctx.device,
-                                        lights,
-                                        meta,
-                                        r.tlas(),
-                                        r.albedo_buffer(),
+                                        &draw_ctx.device, lights, meta,
+                                        r.tlas(), r.albedo_buffer(),
                                     )
                                 }
                             });
@@ -5360,12 +4444,7 @@ impl App {
                                 if self.mode == RuntimeMode::Play && !self.paused {
                                     let (vp_x, vp_y, vp_w, vp_h) = game_viewport;
                                     rpass.set_viewport(vp_x, vp_y, vp_w, vp_h, 0.0, 1.0);
-                                    rpass.set_scissor_rect(
-                                        vp_x as u32,
-                                        vp_y as u32,
-                                        vp_w as u32,
-                                        vp_h as u32,
-                                    );
+                                    rpass.set_scissor_rect(vp_x as u32, vp_y as u32, vp_w as u32, vp_h as u32);
                                 }
                                 rpass.set_bind_group(0, &camera_buf.bind_group, &[]);
                                 rpass.set_bind_group(1, &refl_gbuffer_bg, &[]);
@@ -5382,18 +4461,12 @@ impl App {
                             }
                             // B. 合成パス（RT_REFLECTION を scene_hdr へ Additive 加算）。
                             {
-                                let composite_bg =
-                                    refl.create_composite_bg(&draw_ctx.device, refl_view);
+                                let composite_bg = refl.create_composite_bg(&draw_ctx.device, refl_view);
                                 let mut cpass = frame.begin_reflection_composite_pass_to(hdr_view);
                                 if self.mode == RuntimeMode::Play && !self.paused {
                                     let (vp_x, vp_y, vp_w, vp_h) = game_viewport;
                                     cpass.set_viewport(vp_x, vp_y, vp_w, vp_h, 0.0, 1.0);
-                                    cpass.set_scissor_rect(
-                                        vp_x as u32,
-                                        vp_y as u32,
-                                        vp_w as u32,
-                                        vp_h as u32,
-                                    );
+                                    cpass.set_scissor_rect(vp_x as u32, vp_y as u32, vp_w as u32, vp_h as u32);
                                 }
                                 cpass.set_pipeline(&refl.composite);
                                 cpass.set_bind_group(0, &composite_bg, &[]);
@@ -5410,14 +4483,8 @@ impl App {
                         //（bit0＝色付き影は light_buffer.update で設定済み。この追記は queue submit 時に
                         //  透明パスより前へ適用されるため同フレームで有効）。
                         if refract_active {
-                            let scene_hdr = self
-                                .rt_pool
-                                .texture(crate::engine::core::renderer::RT_SCENE_HDR);
-                            self.refract_pyramid.record(
-                                &draw_ctx.device,
-                                frame.encoder_mut(),
-                                scene_hdr,
-                            );
+                            let scene_hdr = self.rt_pool.texture(crate::engine::core::renderer::RT_SCENE_HDR);
+                            self.refract_pyramid.record(&draw_ctx.device, frame.encoder_mut(), scene_hdr);
                             // 屈折ビット（bit1）を追記（bit0＝色付き影は既に立っている）。offset 12＝translucency_rt。
                             let mut flag = crate::engine::core::renderer::lighting::TRANSLUCENCY_RT_COLORED_SHADOW
                                      | crate::engine::core::renderer::lighting::TRANSLUCENCY_RT_REFRACTION;
@@ -5427,13 +4494,10 @@ impl App {
                             // このビットを見て refract_rt.wgsl が界面 tint 累積をスキップし、奥レイヤーの色を
                             // WBOIT 平均で本人 1 回だけに一本化する。距離ソート時は立てない（従来どおり tint 累積）。
                             if tp_wboit {
-                                flag |=
-                                    crate::engine::core::renderer::lighting::TRANSLUCENCY_RT_WBOIT;
+                                flag |= crate::engine::core::renderer::lighting::TRANSLUCENCY_RT_WBOIT;
                             }
                             draw_ctx.queue.write_buffer(
-                                draw_ctx.light_buffer.meta_main_buffer(),
-                                12,
-                                bytemuck::bytes_of(&flag),
+                                draw_ctx.light_buffer.meta_main_buffer(), 12, bytemuck::bytes_of(&flag),
                             );
                         }
 
@@ -5470,22 +4534,15 @@ impl App {
                             ];
                             for (px0, py0, px1, py1) in bar_rects {
                                 // 面積 0 の帯はスキップ（LetterBox なら左右帯が幅 0 になる等）
-                                if px1 - px0 < 0.5 || py1 - py0 < 0.5 {
-                                    continue;
-                                }
+                                if px1 - px0 < 0.5 || py1 - py0 < 0.5 { continue; }
                                 // ピクセル矩形を NDC 矩形に変換（y は上下反転）
                                 let ndc_x0 = to_ndc_x(px0);
                                 let ndc_x1 = to_ndc_x(px1);
                                 let ndc_y0 = to_ndc_y(py1); // py が大きいほど NDC y が小さい
                                 let ndc_y1 = to_ndc_y(py0);
                                 draw_ctx.pipelines.bar_fill.draw(
-                                    &mut pass,
-                                    &draw_ctx.device,
-                                    game_bar_color,
-                                    ndc_x0,
-                                    ndc_y0,
-                                    ndc_x1,
-                                    ndc_y1,
+                                    &mut pass, &draw_ctx.device,
+                                    game_bar_color, ndc_x0, ndc_y0, ndc_x1, ndc_y1,
                                 );
                             }
                         }
@@ -5496,12 +4553,7 @@ impl App {
                         if self.mode == RuntimeMode::Play && !self.paused {
                             let (vp_x, vp_y, vp_w, vp_h) = game_viewport;
                             pass.set_viewport(vp_x, vp_y, vp_w, vp_h, 0.0, 1.0);
-                            pass.set_scissor_rect(
-                                vp_x as u32,
-                                vp_y as u32,
-                                vp_w as u32,
-                                vp_h as u32,
-                            );
+                            pass.set_scissor_rect(vp_x as u32, vp_y as u32, vp_w as u32, vp_h as u32);
                         }
 
                         // ── スカイボックス（天球）：HDR メインパスの最初（不透明より先）に描く（Phase R9）──
@@ -5547,19 +4599,12 @@ impl App {
                                 for (path, sd) in &self.shared_model_batches {
                                     // 視錐台外・遠方の地形チャンクは描画スキップ（Terrain 描画最適化・
                                     // フォワード経路も G-Buffer 経路と同じ集合でスキップする）。
-                                    if terrain_culled.contains(path.as_str()) {
-                                        continue;
-                                    }
+                                    if terrain_culled.contains(path.as_str()) { continue; }
                                     if let Some(&gpu) = gpu_model_by_path.get(path.as_str()) {
                                         draw_model_indirect(
-                                            &mut pass,
-                                            gpu,
-                                            &sd.batch,
-                                            &camera_buf.bind_group,
-                                            scene_lights_bg,
-                                            &draw_ctx.pipelines,
-                                            rt_pipes,
-                                            meshlet_active,
+                                            &mut pass, gpu, &sd.batch,
+                                            &camera_buf.bind_group, scene_lights_bg,
+                                            &draw_ctx.pipelines, rt_pipes, meshlet_active,
                                             scene_wireframe,
                                         );
                                     }
@@ -5632,9 +4677,9 @@ impl App {
                                         None
                                     };
                                     // 再グラブのコピー元（半透明の描画先＝屈折背景 mip0 のコピー元）。
-                                    let scene_hdr_tex = self
-                                        .rt_pool
-                                        .texture(crate::engine::core::renderer::RT_SCENE_HDR);
+                                    let scene_hdr_tex = self.rt_pool.texture(
+                                        crate::engine::core::renderer::RT_SCENE_HDR,
+                                    );
                                     // 直近グラブ以降に scene_hdr が変化したか。初期は false: メインパス前
                                     // （屈折ビット追記と同時）に不透明のみの背景を既にグラブ済みのため、
                                     // 初回の屈折アイテムはその背景を再利用して余計な再グラブを避ける。
@@ -5643,12 +4688,7 @@ impl App {
                                     if self.mode == RuntimeMode::Play && !self.paused {
                                         let (vp_x, vp_y, vp_w, vp_h) = game_viewport;
                                         seq_pass.set_viewport(vp_x, vp_y, vp_w, vp_h, 0.0, 1.0);
-                                        seq_pass.set_scissor_rect(
-                                            vp_x as u32,
-                                            vp_y as u32,
-                                            vp_w as u32,
-                                            vp_h as u32,
-                                        );
+                                        seq_pass.set_scissor_rect(vp_x as u32, vp_y as u32, vp_w as u32, vp_h as u32);
                                     }
                                     for sp in &seq_plan {
                                         if sp.refracts && dirty {
@@ -5658,21 +4698,13 @@ impl App {
                                             // 逐次でもブラーを毎回更新する（mip0 のみの軽量化は roughness 信号が
                                             // 要るため見送り＝docs のトレードオフ節参照）。
                                             self.refract_pyramid.record(
-                                                &draw_ctx.device,
-                                                frame.encoder_mut(),
-                                                scene_hdr_tex,
+                                                &draw_ctx.device, frame.encoder_mut(), scene_hdr_tex,
                                             );
                                             seq_pass = frame.begin_scene_pass_load_to(hdr_view);
                                             if self.mode == RuntimeMode::Play && !self.paused {
                                                 let (vp_x, vp_y, vp_w, vp_h) = game_viewport;
-                                                seq_pass
-                                                    .set_viewport(vp_x, vp_y, vp_w, vp_h, 0.0, 1.0);
-                                                seq_pass.set_scissor_rect(
-                                                    vp_x as u32,
-                                                    vp_y as u32,
-                                                    vp_w as u32,
-                                                    vp_h as u32,
-                                                );
+                                                seq_pass.set_viewport(vp_x, vp_y, vp_w, vp_h, 0.0, 1.0);
+                                                seq_pass.set_scissor_rect(vp_x as u32, vp_y as u32, vp_w as u32, vp_h as u32);
                                             }
                                             dirty = false;
                                         }
@@ -5690,12 +4722,7 @@ impl App {
                                 if self.mode == RuntimeMode::Play && !self.paused {
                                     let (vp_x, vp_y, vp_w, vp_h) = game_viewport;
                                     pass.set_viewport(vp_x, vp_y, vp_w, vp_h, 0.0, 1.0);
-                                    pass.set_scissor_rect(
-                                        vp_x as u32,
-                                        vp_y as u32,
-                                        vp_w as u32,
-                                        vp_h as u32,
-                                    );
+                                    pass.set_scissor_rect(vp_x as u32, vp_y as u32, vp_w as u32, vp_h as u32);
                                 }
                             }
                         }
@@ -5706,10 +4733,8 @@ impl App {
                             (&drop_preview_batch, &self.line_model_buf)
                         {
                             draw_gizmo_batch(
-                                &mut pass,
-                                preview_batch,
-                                &camera_buf.bind_group,
-                                line_bg,
+                                &mut pass, preview_batch,
+                                &camera_buf.bind_group, line_bg,
                                 &draw_ctx.pipelines,
                             );
                         }
@@ -5721,10 +4746,8 @@ impl App {
                             (&grid_gpu_batch, &self.line_model_buf)
                         {
                             draw_line_batch(
-                                &mut pass,
-                                grid_batch,
-                                &camera_buf.bind_group,
-                                line_bg,
+                                &mut pass, grid_batch,
+                                &camera_buf.bind_group, line_bg,
                                 &draw_ctx.pipelines,
                             );
                         }
@@ -5734,10 +4757,8 @@ impl App {
                             (&terrain_preview_batch, &self.line_model_buf)
                         {
                             draw_line_batch(
-                                &mut pass,
-                                preview_batch,
-                                &camera_buf.bind_group,
-                                line_bg,
+                                &mut pass, preview_batch,
+                                &camera_buf.bind_group, line_bg,
                                 &draw_ctx.pipelines,
                             );
                         }
@@ -5802,10 +4823,8 @@ impl App {
                                 (&canvas_rect_batch, &self.line_model_buf)
                             {
                                 draw_line_batch(
-                                    &mut pass,
-                                    rect_batch,
-                                    &camera_buf.bind_group,
-                                    line_bg,
+                                    &mut pass, rect_batch,
+                                    &camera_buf.bind_group, line_bg,
                                     &draw_ctx.pipelines,
                                 );
                             }
@@ -5816,10 +4835,8 @@ impl App {
                             (&canvas_3d_rect_batch, &self.line_model_buf)
                         {
                             draw_line_batch(
-                                &mut pass,
-                                rect_batch,
-                                &camera_buf.bind_group,
-                                line_bg,
+                                &mut pass, rect_batch,
+                                &camera_buf.bind_group, line_bg,
                                 &draw_ctx.pipelines,
                             );
                         }
@@ -5831,10 +4848,8 @@ impl App {
                                 (&rect_gpu_batch, &self.line_model_buf)
                             {
                                 draw_line_batch(
-                                    &mut pass,
-                                    rect_batch,
-                                    &camera_buf.bind_group,
-                                    line_bg,
+                                    &mut pass, rect_batch,
+                                    &camera_buf.bind_group, line_bg,
                                     &draw_ctx.pipelines,
                                 );
                             }
@@ -5848,9 +4863,9 @@ impl App {
                             if !self.selected_actor_dfs_ids.is_empty() {
                                 // Phase 1: 全選択アクターのステンシルマスクを書き込む
                                 for &dfs_id in &self.selected_actor_dfs_ids {
-                                    if let Some((path, &merged_start, &n_insts)) = mc_outline_map
-                                        .get(&(dfs_id as u32, 0usize))
-                                        .map(|(p, s, n)| (p, s, n))
+                                    if let Some((path, &merged_start, &n_insts)) =
+                                        mc_outline_map.get(&(dfs_id as u32, 0usize))
+                                            .map(|(p, s, n)| (p, s, n))
                                     {
                                         if let (Some(&gpu), Some(sd)) = (
                                             gpu_model_by_path.get(path.as_str()),
@@ -5860,11 +4875,8 @@ impl App {
                                             let merged_insts: Vec<u32> =
                                                 (merged_start..merged_start + n_insts).collect();
                                             draw_stencil_mask_multi(
-                                                &mut pass,
-                                                gpu,
-                                                &sd.batch,
-                                                &camera_buf.bind_group,
-                                                &draw_ctx.pipelines,
+                                                &mut pass, gpu, &sd.batch,
+                                                &camera_buf.bind_group, &draw_ctx.pipelines,
                                                 &merged_insts,
                                             );
                                         }
@@ -5872,9 +4884,9 @@ impl App {
                                 }
                                 // Phase 2: 全選択アクターのアウトラインを描画
                                 for &dfs_id in &self.selected_actor_dfs_ids {
-                                    if let Some((path, &merged_start, &n_insts)) = mc_outline_map
-                                        .get(&(dfs_id as u32, 0usize))
-                                        .map(|(p, s, n)| (p, s, n))
+                                    if let Some((path, &merged_start, &n_insts)) =
+                                        mc_outline_map.get(&(dfs_id as u32, 0usize))
+                                            .map(|(p, s, n)| (p, s, n))
                                     {
                                         if let (Some(&gpu), Some(sd)) = (
                                             gpu_model_by_path.get(path.as_str()),
@@ -5883,11 +4895,8 @@ impl App {
                                             let merged_insts: Vec<u32> =
                                                 (merged_start..merged_start + n_insts).collect();
                                             draw_outline_multi(
-                                                &mut pass,
-                                                gpu,
-                                                &sd.batch,
-                                                &camera_buf.bind_group,
-                                                &draw_ctx.pipelines,
+                                                &mut pass, gpu, &sd.batch,
+                                                &camera_buf.bind_group, &draw_ctx.pipelines,
                                                 &merged_insts,
                                             );
                                         }
@@ -5906,25 +4915,18 @@ impl App {
                                             gpu_model_by_path.get(path.as_str()),
                                             self.shared_model_batches.get(path),
                                         ) {
-                                            let merged_selected: Vec<u32> = self
-                                                .selected_instances
-                                                .iter()
-                                                .map(|&inst_i| merged_start + inst_i)
-                                                .collect();
+                                            let merged_selected: Vec<u32> =
+                                                self.selected_instances.iter()
+                                                    .map(|&inst_i| merged_start + inst_i)
+                                                    .collect();
                                             draw_stencil_mask_multi(
-                                                &mut pass,
-                                                gpu,
-                                                &sd.batch,
-                                                &camera_buf.bind_group,
-                                                &draw_ctx.pipelines,
+                                                &mut pass, gpu, &sd.batch,
+                                                &camera_buf.bind_group, &draw_ctx.pipelines,
                                                 &merged_selected,
                                             );
                                             draw_outline_multi(
-                                                &mut pass,
-                                                gpu,
-                                                &sd.batch,
-                                                &camera_buf.bind_group,
-                                                &draw_ctx.pipelines,
+                                                &mut pass, gpu, &sd.batch,
+                                                &camera_buf.bind_group, &draw_ctx.pipelines,
                                                 &merged_selected,
                                             );
                                         }
@@ -5939,10 +4941,8 @@ impl App {
                                 (&frustum_batch, &self.line_model_buf)
                             {
                                 draw_line_batch(
-                                    &mut pass,
-                                    frustum,
-                                    &camera_buf.bind_group,
-                                    line_bg,
+                                    &mut pass, frustum,
+                                    &camera_buf.bind_group, line_bg,
                                     &draw_ctx.pipelines,
                                 );
                             }
@@ -5954,10 +4954,8 @@ impl App {
                                 (&light_gizmo_batch, &self.line_model_buf)
                             {
                                 draw_line_batch(
-                                    &mut pass,
-                                    light_gz,
-                                    &camera_buf.bind_group,
-                                    line_bg,
+                                    &mut pass, light_gz,
+                                    &camera_buf.bind_group, line_bg,
                                     &draw_ctx.pipelines,
                                 );
                             }
@@ -5969,10 +4967,8 @@ impl App {
                                 (&jointattach_gizmo_batch, &self.line_model_buf)
                             {
                                 draw_line_batch(
-                                    &mut pass,
-                                    ja_gz,
-                                    &camera_buf.bind_group,
-                                    line_bg,
+                                    &mut pass, ja_gz,
+                                    &camera_buf.bind_group, line_bg,
                                     &draw_ctx.pipelines,
                                 );
                             }
@@ -5984,10 +4980,8 @@ impl App {
                                 (&particle_gizmo_batch, &self.line_model_buf)
                             {
                                 draw_line_batch(
-                                    &mut pass,
-                                    particle_gz,
-                                    &camera_buf.bind_group,
-                                    line_bg,
+                                    &mut pass, particle_gz,
+                                    &camera_buf.bind_group, line_bg,
                                     &draw_ctx.pipelines,
                                 );
                             }
@@ -5999,10 +4993,8 @@ impl App {
                                 (&skybox_gizmo_batch, &self.line_model_buf)
                             {
                                 draw_line_batch(
-                                    &mut pass,
-                                    skybox_gz,
-                                    &camera_buf.bind_group,
-                                    line_bg,
+                                    &mut pass, skybox_gz,
+                                    &camera_buf.bind_group, line_bg,
                                     &draw_ctx.pipelines,
                                 );
                             }
@@ -6015,10 +5007,8 @@ impl App {
                             (&collider_wireframe_batch, &self.line_model_buf)
                         {
                             draw_line_batch(
-                                &mut pass,
-                                coll_batch,
-                                &camera_buf.bind_group,
-                                line_bg,
+                                &mut pass, coll_batch,
+                                &camera_buf.bind_group, line_bg,
                                 &draw_ctx.pipelines,
                             );
                         }
@@ -6027,10 +5017,8 @@ impl App {
                             (&collider_wireframe_sel_batch, &self.line_model_buf)
                         {
                             draw_thick_line_batch(
-                                &mut pass,
-                                sel_batch,
-                                &camera_buf.bind_group,
-                                line_bg,
+                                &mut pass, sel_batch,
+                                &camera_buf.bind_group, line_bg,
                                 &draw_ctx.pipelines,
                             );
                         }
@@ -6044,23 +5032,18 @@ impl App {
                             (&collider_2d_canvas3d_wireframe_batch, &self.line_model_buf)
                         {
                             draw_line_batch(
-                                &mut pass,
-                                coll2d_c3d_batch,
-                                &camera_buf.bind_group,
-                                line_bg,
+                                &mut pass, coll2d_c3d_batch,
+                                &camera_buf.bind_group, line_bg,
                                 &draw_ctx.pipelines,
                             );
                         }
                         // 選択中コライダーの太線（3D キャンバス配下・同カメラ）
-                        if let (Some(sel_batch), Some((_, line_bg))) = (
-                            &collider_2d_canvas3d_wireframe_sel_batch,
-                            &self.line_model_buf,
-                        ) {
+                        if let (Some(sel_batch), Some((_, line_bg))) =
+                            (&collider_2d_canvas3d_wireframe_sel_batch, &self.line_model_buf)
+                        {
                             draw_thick_line_batch(
-                                &mut pass,
-                                sel_batch,
-                                &camera_buf.bind_group,
-                                line_bg,
+                                &mut pass, sel_batch,
+                                &camera_buf.bind_group, line_bg,
                                 &draw_ctx.pipelines,
                             );
                         }
@@ -6072,10 +5055,8 @@ impl App {
                                 (&collider_2d_wireframe_batch, &self.line_model_buf)
                             {
                                 draw_line_batch(
-                                    &mut pass,
-                                    coll2d_batch,
-                                    &camera_buf.bind_group,
-                                    line_bg,
+                                    &mut pass, coll2d_batch,
+                                    &camera_buf.bind_group, line_bg,
                                     &draw_ctx.pipelines,
                                 );
                             }
@@ -6084,10 +5065,8 @@ impl App {
                                 (&collider_2d_wireframe_sel_batch, &self.line_model_buf)
                             {
                                 draw_thick_line_batch(
-                                    &mut pass,
-                                    sel_batch,
-                                    &camera_buf.bind_group,
-                                    line_bg,
+                                    &mut pass, sel_batch,
+                                    &camera_buf.bind_group, line_bg,
                                     &draw_ctx.pipelines,
                                 );
                             }
@@ -6099,16 +5078,10 @@ impl App {
                             if let Some(gizmo) = &self.camera_gizmo {
                                 // カメラギズモモデルは従来パイプライン（RT なし）で描画する。
                                 draw_model_indirect(
-                                    &mut pass,
-                                    &gizmo.gpu_model,
-                                    &gizmo.batch,
-                                    &camera_buf.bind_group,
-                                    draw_ctx.light_buffer.bind_group(LightingPass::MainCamera),
+                                    &mut pass, &gizmo.gpu_model, &gizmo.batch,
+                                    &camera_buf.bind_group, draw_ctx.light_buffer.bind_group(LightingPass::MainCamera),
                                     // エディタギズモアイコンはワイヤ化しない（従来どおり塗りで表示）。
-                                    &draw_ctx.pipelines,
-                                    None,
-                                    false,
-                                    false,
+                                    &draw_ctx.pipelines, None, false, false,
                                 );
                             }
                         }
@@ -6117,15 +5090,9 @@ impl App {
                         if !scene_canvas_ss && !light_gizmo_actor_mats.is_empty() {
                             if let Some(gizmo) = &self.light_gizmo {
                                 draw_model_indirect(
-                                    &mut pass,
-                                    &gizmo.gpu_model,
-                                    &gizmo.batch,
-                                    &camera_buf.bind_group,
-                                    draw_ctx.light_buffer.bind_group(LightingPass::MainCamera),
-                                    &draw_ctx.pipelines,
-                                    None,
-                                    false,
-                                    false,
+                                    &mut pass, &gizmo.gpu_model, &gizmo.batch,
+                                    &camera_buf.bind_group, draw_ctx.light_buffer.bind_group(LightingPass::MainCamera),
+                                    &draw_ctx.pipelines, None, false, false,
                                 );
                             }
                         }
@@ -6134,15 +5101,9 @@ impl App {
                         if !scene_canvas_ss && !particle_gizmo_actor_mats.is_empty() {
                             if let Some(gizmo) = &self.particle_gizmo {
                                 draw_model_indirect(
-                                    &mut pass,
-                                    &gizmo.gpu_model,
-                                    &gizmo.batch,
-                                    &camera_buf.bind_group,
-                                    draw_ctx.light_buffer.bind_group(LightingPass::MainCamera),
-                                    &draw_ctx.pipelines,
-                                    None,
-                                    false,
-                                    false,
+                                    &mut pass, &gizmo.gpu_model, &gizmo.batch,
+                                    &camera_buf.bind_group, draw_ctx.light_buffer.bind_group(LightingPass::MainCamera),
+                                    &draw_ctx.pipelines, None, false, false,
                                 );
                             }
                         }
@@ -6157,10 +5118,8 @@ impl App {
                                     (&gizmo_gpu_batch, &self.line_model_buf)
                                 {
                                     draw_gizmo_batch(
-                                        &mut pass,
-                                        gpu_batch,
-                                        &camera_buf.bind_group,
-                                        line_bg,
+                                        &mut pass, gpu_batch,
+                                        &camera_buf.bind_group, line_bg,
                                         &draw_ctx.pipelines,
                                     );
                                 }
@@ -6170,13 +5129,17 @@ impl App {
                         // 軸ギズモ（エディタモードのみ）
                         // scene_canvas_ss 時はオーバーレイパスの末尾で最前面描画するためスキップ
                         if !scene_canvas_ss {
-                            if let (Some(batch), Some(ag)) = (&axis_gizmo_batch, &self.axis_gizmo) {
+                            if let (Some(batch), Some(ag)) =
+                                (&axis_gizmo_batch, &self.axis_gizmo)
+                            {
                                 ag.draw(batch, &mut pass);
                             }
                         }
 
                         // アイコンオーバーレイ（最前面：選択アクター位置マーカー）
-                        if let (Some(batch), Some(io)) = (&icon_overlay_batch, &self.icon_overlay) {
+                        if let (Some(batch), Some(io)) =
+                            (&icon_overlay_batch, &self.icon_overlay)
+                        {
                             io.draw(batch, &mut pass);
                         }
 
@@ -6256,16 +5219,12 @@ impl App {
                     if bloom_on {
                         let bloom_params = crate::engine::core::renderer::BloomParams {
                             threshold: self.post_fx.bloom_threshold,
-                            knee: self.post_fx.bloom_knee,
+                            knee:      self.post_fx.bloom_knee,
                             intensity: self.post_fx.bloom_intensity,
                         };
                         draw_ctx.post.run_bloom(
-                            &draw_ctx.device,
-                            frame.encoder_mut(),
-                            &self.rt_pool,
-                            &bloom_targets,
-                            hdr_view,
-                            bloom_params,
+                            &draw_ctx.device, frame.encoder_mut(),
+                            &self.rt_pool, &bloom_targets, hdr_view, bloom_params,
                         );
                     }
 
@@ -6276,21 +5235,18 @@ impl App {
                     {
                         // ビネット強度（土台のサンプル値。将来はプロジェクト設定でデータ駆動化）。
                         const VIGNETTE_INTENSITY: f32 = 0.4;
-                        let vignette_stage =
-                            inter_view.map(|iv| crate::engine::core::renderer::VignetteStage {
+                        let vignette_stage = inter_view.map(|iv| {
+                            crate::engine::core::renderer::VignetteStage {
                                 inter_view: iv,
                                 params: crate::engine::core::renderer::VignetteParams {
                                     intensity: VIGNETTE_INTENSITY,
                                     ..Default::default()
                                 },
                                 mask: None,
-                            });
+                            }
+                        });
                         frame.tonemap_to_ldr(
-                            &draw_ctx.post,
-                            &draw_ctx.device,
-                            hdr_view,
-                            ldr_view,
-                            vignette_stage,
+                            &draw_ctx.post, &draw_ctx.device, hdr_view, ldr_view, vignette_stage,
                         );
                     }
 
@@ -6324,10 +5280,8 @@ impl App {
                                 (&canvas_rect_batch, &self.line_model_buf)
                             {
                                 draw_line_batch(
-                                    &mut overlay_pass,
-                                    rect_batch,
-                                    &canvas_cam_buf.bind_group,
-                                    line_bg,
+                                    &mut overlay_pass, rect_batch,
+                                    &canvas_cam_buf.bind_group, line_bg,
                                     &draw_ctx.pipelines,
                                 );
                             }
@@ -6337,10 +5291,8 @@ impl App {
                                 (&collider_2d_wireframe_batch, &self.line_model_buf)
                             {
                                 draw_line_batch(
-                                    &mut overlay_pass,
-                                    coll2d_batch,
-                                    &canvas_cam_buf.bind_group,
-                                    line_bg,
+                                    &mut overlay_pass, coll2d_batch,
+                                    &canvas_cam_buf.bind_group, line_bg,
                                     &draw_ctx.pipelines,
                                 );
                             }
@@ -6349,10 +5301,8 @@ impl App {
                                 (&collider_2d_wireframe_sel_batch, &self.line_model_buf)
                             {
                                 draw_thick_line_batch(
-                                    &mut overlay_pass,
-                                    sel_batch,
-                                    &canvas_cam_buf.bind_group,
-                                    line_bg,
+                                    &mut overlay_pass, sel_batch,
+                                    &canvas_cam_buf.bind_group, line_bg,
                                     &draw_ctx.pipelines,
                                 );
                             }
@@ -6362,10 +5312,8 @@ impl App {
                                 (&rect_gpu_batch, &self.line_model_buf)
                             {
                                 draw_line_batch(
-                                    &mut overlay_pass,
-                                    rect_batch,
-                                    &canvas_cam_buf.bind_group,
-                                    line_bg,
+                                    &mut overlay_pass, rect_batch,
+                                    &canvas_cam_buf.bind_group, line_bg,
                                     &draw_ctx.pipelines,
                                 );
                             }
@@ -6373,18 +5321,14 @@ impl App {
                             // ギズモ（スプライト・矩形より前面）
                             // 2D アクター選択中のみ 2D オルソカメラで描画する。
                             // 3D アクター選択中はメインパスで描画済みのためスキップ。
-                            let show_gizmo = in_editor
-                                && self.tool_mode != ToolMode::Select
-                                && gizmo_actor_is_2d;
+                            let show_gizmo = in_editor && self.tool_mode != ToolMode::Select && gizmo_actor_is_2d;
                             if show_gizmo {
                                 if let (Some(gpu_batch), Some((_, line_bg))) =
                                     (&gizmo_gpu_batch, &self.line_model_buf)
                                 {
                                     draw_gizmo_batch(
-                                        &mut overlay_pass,
-                                        gpu_batch,
-                                        &canvas_cam_buf.bind_group,
-                                        line_bg,
+                                        &mut overlay_pass, gpu_batch,
+                                        &canvas_cam_buf.bind_group, line_bg,
                                         &draw_ctx.pipelines,
                                     );
                                 }
@@ -6392,9 +5336,12 @@ impl App {
 
                             // 軸ギズモ（オーバーレイ最前面）
                             // scene_canvas_ss 時にメインパスから移動し、常に最前面に表示する
-                            if let (Some(batch), Some(ag)) = (&axis_gizmo_batch, &self.axis_gizmo) {
+                            if let (Some(batch), Some(ag)) =
+                                (&axis_gizmo_batch, &self.axis_gizmo)
+                            {
                                 ag.draw(batch, &mut overlay_pass);
                             }
+
                         }
                     }
 
@@ -6402,15 +5349,16 @@ impl App {
                     // トーンマップ済み LDR（＋2D オーバーレイ）をスワップチェーンへ書き出す。
                     // FXAA 有効時はエッジをなめらかにし、無効時は中央 1 タップのコピー。
                     // この 1 パスがトーンマップ後 LDR → スワップチェーンの橋渡しを兼ねる。
-                    frame.present_to_swapchain(&draw_ctx.post, &draw_ctx.device, ldr_view, fxaa_on);
+                    frame.present_to_swapchain(
+                        &draw_ctx.post, &draw_ctx.device, ldr_view, fxaa_on,
+                    );
 
                     // ── カメラプレビューブリット（選択カメラがある場合のみ）──────
                     // メインパスの後に、オフスクリーンプレビューをビューポート右下に貼り付ける。
                     if selected_cam_data.is_some() {
                         if let Some(ref preview) = self.camera_preview {
                             let mut blit_pass = frame.begin_blit_pass();
-                            blit_pass
-                                .set_pipeline(&draw_ctx.pipelines.camera_preview_blit.pipeline);
+                            blit_pass.set_pipeline(&draw_ctx.pipelines.camera_preview_blit.pipeline);
                             blit_pass.set_bind_group(0, &preview.blit_rect_bg, &[]);
                             blit_pass.set_bind_group(1, &preview.blit_tex_bg, &[]);
                             blit_pass.draw(0..6, 0..1);
@@ -6431,35 +5379,19 @@ impl App {
 
                                 // カメラギズモ ID バインドグループ（RenderPass より先に生成してライフタイムを確保）
                                 let cam_gizmo_id_base_opt: Option<(wgpu::Buffer, wgpu::BindGroup)> =
-                                    if !cam_gizmo_actor_mats.is_empty()
-                                        && self.camera_gizmo.is_some()
-                                    {
+                                    if !cam_gizmo_actor_mats.is_empty() && self.camera_gizmo.is_some() {
                                         Some(draw_ctx.create_id_base_bg(mc_total_instances))
-                                    } else {
-                                        None
-                                    };
+                                    } else { None };
                                 // ライトギズモ ID バインドグループ（ベース = light_gizmo_id_base）
-                                let light_gizmo_id_base_opt: Option<(
-                                    wgpu::Buffer,
-                                    wgpu::BindGroup,
-                                )> = if !light_gizmo_actor_mats.is_empty()
-                                    && self.light_gizmo.is_some()
-                                {
-                                    Some(draw_ctx.create_id_base_bg(light_gizmo_id_base))
-                                } else {
-                                    None
-                                };
+                                let light_gizmo_id_base_opt: Option<(wgpu::Buffer, wgpu::BindGroup)> =
+                                    if !light_gizmo_actor_mats.is_empty() && self.light_gizmo.is_some() {
+                                        Some(draw_ctx.create_id_base_bg(light_gizmo_id_base))
+                                    } else { None };
                                 // パーティクルエミッタギズモ ID バインドグループ（ベース = particle_gizmo_id_base）
-                                let particle_gizmo_id_base_opt: Option<(
-                                    wgpu::Buffer,
-                                    wgpu::BindGroup,
-                                )> = if !particle_gizmo_actor_mats.is_empty()
-                                    && self.particle_gizmo.is_some()
-                                {
-                                    Some(draw_ctx.create_id_base_bg(particle_gizmo_id_base))
-                                } else {
-                                    None
-                                };
+                                let particle_gizmo_id_base_opt: Option<(wgpu::Buffer, wgpu::BindGroup)> =
+                                    if !particle_gizmo_actor_mats.is_empty() && self.particle_gizmo.is_some() {
+                                        Some(draw_ctx.create_id_base_bg(particle_gizmo_id_base))
+                                    } else { None };
 
                                 // キャンバスアクター ID アイテム収集
                                 // scene canvas モードのみ実行（actor edit 2D タブは CPU picking 専用）
@@ -6469,49 +5401,27 @@ impl App {
                                     if is_canvas && !is_actor_edit_2d {
                                         if let Some(scene) = &self.scene {
                                             let wl = self.active_world_line;
-                                            let canvas_scale = if use_screen_space {
-                                                1.0f32
-                                            } else {
-                                                CANVAS_WORLD_SCALE
-                                            };
-                                            let y_sign =
-                                                if use_screen_space { 1.0f32 } else { -1.0 };
-                                            let vp_w =
-                                                window_size.map_or(1280.0, |s| s.width as f32);
-                                            let vp_h =
-                                                window_size.map_or(720.0, |s| s.height as f32);
+                                            let canvas_scale = if use_screen_space { 1.0f32 } else { CANVAS_WORLD_SCALE };
+                                            let y_sign = if use_screen_space { 1.0f32 } else { -1.0 };
+                                            let vp_w = window_size.map_or(1280.0, |s| s.width  as f32);
+                                            let vp_h = window_size.map_or(720.0,  |s| s.height as f32);
                                             // SS レイアウト時（2D シーンビュー含む）は描画と同じ
                                             // ビューポート基準レイアウトで ID を配置する
                                             let viewport_size: Option<[f32; 2]> =
                                                 if ss_layout { Some([vp_w, vp_h]) } else { None };
                                             // Camera 参照のルートキャンバス用ビューポートオーバーライドマップ
-                                            let play_gvp_id = if ss_layout && !in_editor {
-                                                Some(game_viewport)
-                                            } else {
-                                                None
-                                            };
+                                            let play_gvp_id = if ss_layout && !in_editor { Some(game_viewport) } else { None };
                                             // ビューポート上書き + ルート自動解像度マップ（描画と同一条件・共通ヘルパー）
-                                            let (canvas_vp_overrides_id, root_auto_sizes_id) =
-                                                if ss_layout {
-                                                    build_ss_layout_maps_free(
-                                                        &scene.actors,
-                                                        &scene.world,
-                                                        wl,
-                                                        vp_w,
-                                                        vp_h,
-                                                        play_gvp_id,
-                                                        self.project_resolution,
-                                                        edit_view_2d,
-                                                    )
-                                                } else {
-                                                    (
-                                                        std::collections::HashMap::new(),
-                                                        std::collections::HashMap::new(),
-                                                    )
-                                                };
+                                            let (canvas_vp_overrides_id, root_auto_sizes_id) = if ss_layout {
+                                                build_ss_layout_maps_free(
+                                                    &scene.actors, &scene.world, wl, vp_w, vp_h, play_gvp_id,
+                                                    self.project_resolution, edit_view_2d)
+                                            } else {
+                                                (std::collections::HashMap::new(), std::collections::HashMap::new())
+                                            };
 
                                             let mut items = Vec::new();
-                                            let mut ctr = 0u32;
+                                            let mut ctr   = 0u32;
                                             const IDENTITY: [[f32; 4]; 4] = [
                                                 [1.0, 0.0, 0.0, 0.0],
                                                 [0.0, 1.0, 0.0, 0.0],
@@ -6519,49 +5429,32 @@ impl App {
                                                 [0.0, 0.0, 0.0, 1.0],
                                             ];
                                             collect_canvas_id_items(
-                                                &scene.actors,
-                                                &scene.world,
-                                                wl,
-                                                &mut ctr,
-                                                None,
-                                                IDENTITY,
+                                                &scene.actors, &scene.world, wl,
+                                                &mut ctr, None, IDENTITY,
                                                 [1.0, 1.0],
-                                                canvas_scale,
-                                                y_sign,
-                                                viewport_size,
+                                                canvas_scale, y_sign, viewport_size,
                                                 &canvas_vp_overrides_id,
                                                 &root_auto_sizes_id,
                                                 canvas_id_offset,
                                                 // トップレベルは SS サブツリー扱い
                                                 // （Actor3D 通過で false になり 3D キャンバス子を除外）
-                                                CanvasDrawZone::Foreground,
-                                                true,
-                                                edit_view_2d,
-                                                &mut items,
+                                                CanvasDrawZone::Foreground, true, edit_view_2d, &mut items,
                                             );
                                             // スプライト描画と同一の順序（背景ゾーン → 前面ゾーン、
                                             // 各ゾーン内はレイヤー昇順の安定ソート）へ並べ替える。
                                             // ID パスは後勝ちのため、この順序で描画すると
                                             // 視覚的最前面のスプライトがピックされる。
-                                            let (mut id_bg, mut id_fg): (Vec<_>, Vec<_>) = items
-                                                .into_iter()
-                                                .partition(|&(_, _, _, zone, _)| {
-                                                    zone == CanvasDrawZone::Background
-                                                });
+                                            let (mut id_bg, mut id_fg): (Vec<_>, Vec<_>) =
+                                                items.into_iter().partition(
+                                                    |&(_, _, _, zone, _)| zone == CanvasDrawZone::Background);
                                             id_bg.sort_by_key(|&(_, _, _, _, layer)| layer);
                                             id_fg.sort_by_key(|&(_, _, _, _, layer)| layer);
                                             // ゾーン・レイヤーを除いた 3 要素タプルへ戻す
-                                            id_bg
-                                                .into_iter()
-                                                .chain(id_fg)
+                                            id_bg.into_iter().chain(id_fg)
                                                 .map(|(id, m, p, _, _)| (id, m, p))
                                                 .collect()
-                                        } else {
-                                            vec![]
-                                        }
-                                    } else {
-                                        vec![]
-                                    };
+                                        } else { vec![] }
+                                    } else { vec![] };
 
                                 // 3D Canvas 子スプライト ID アイテム収集
                                 // Actor3D + CanvasComponent を持つアクターの 2D 子スプライトを WS で pick できるようにする。
@@ -6571,187 +5464,123 @@ impl App {
                                 // 子スプライト ID アイテムと、3D キャンバスのパネル面ピック
                                 // アイテム（透明でも面全体を選択可能にする深度対応クワッド）を
                                 // 同一 DFS 走査で同時収集する。
-                                let (canvas_3d_child_id_raw_items, canvas_panel_pick_items): (
-                                    Vec<(u32, [[f32; 4]; 4], Option<String>)>,
-                                    Vec<(u32, [[f32; 4]; 4])>,
-                                ) = if !use_ortho_2d_camera {
-                                    if let Some(scene) = &self.scene {
-                                        let wl = self.active_world_line;
-                                        let mut items = Vec::new();
-                                        let mut panels = Vec::new();
-                                        let mut ctr = 0u32;
-                                        collect_3d_canvas_child_id_items(
-                                            &scene.actors,
-                                            &scene.world,
-                                            wl,
-                                            &mut ctr,
-                                            canvas_id_offset,
-                                            &mut items,
-                                            &mut panels,
-                                        );
-                                        (items, panels)
-                                    } else {
-                                        (vec![], vec![])
-                                    }
-                                } else {
-                                    (vec![], vec![])
-                                };
+                                let (canvas_3d_child_id_raw_items, canvas_panel_pick_items):
+                                    (Vec<(u32, [[f32; 4]; 4], Option<String>)>, Vec<(u32, [[f32; 4]; 4])>) =
+                                    if !use_ortho_2d_camera {
+                                        if let Some(scene) = &self.scene {
+                                            let wl = self.active_world_line;
+                                            let mut items  = Vec::new();
+                                            let mut panels = Vec::new();
+                                            let mut ctr    = 0u32;
+                                            collect_3d_canvas_child_id_items(
+                                                &scene.actors, &scene.world, wl,
+                                                &mut ctr, canvas_id_offset, &mut items, &mut panels,
+                                            );
+                                            (items, panels)
+                                        } else { (vec![], vec![]) }
+                                    } else { (vec![], vec![]) };
 
                                 // キャンバス ID GPU バインドグループ（render pass より長く生きる）
                                 let canvas_id_bgs: Vec<(wgpu::Buffer, wgpu::BindGroup)> =
-                                    canvas_id_raw_items
-                                        .iter()
+                                    canvas_id_raw_items.iter()
                                         .map(|&(raw_id, gpu_mat, _)| {
                                             prepare_canvas_id_bg(
-                                                &draw_ctx.device,
-                                                &draw_ctx.pipelines,
-                                                gpu_mat,
-                                                raw_id,
+                                                &draw_ctx.device, &draw_ctx.pipelines,
+                                                gpu_mat, raw_id,
                                             )
                                         })
                                         .collect();
 
                                 // 3D Canvas 子スプライト ID GPU バインドグループ（WS）
                                 let canvas_3d_child_id_bgs: Vec<(wgpu::Buffer, wgpu::BindGroup)> =
-                                    canvas_3d_child_id_raw_items
-                                        .iter()
+                                    canvas_3d_child_id_raw_items.iter()
                                         .map(|&(raw_id, gpu_mat, _)| {
                                             prepare_canvas_id_bg(
-                                                &draw_ctx.device,
-                                                &draw_ctx.pipelines,
-                                                gpu_mat,
-                                                raw_id,
+                                                &draw_ctx.device, &draw_ctx.pipelines,
+                                                gpu_mat, raw_id,
                                             )
                                         })
                                         .collect();
 
                                 // スプライトテクスチャ Arc を保持してライフタイムを確保する
                                 // （render pass 中に参照するため drop されないようにする）
-                                let canvas_sprite_arcs: Vec<
-                                    Option<std::sync::Arc<GpuSpriteTexture>>,
-                                > = {
+                                let canvas_sprite_arcs: Vec<Option<std::sync::Arc<GpuSpriteTexture>>> = {
                                     let cache = draw_ctx.sprite_tex_cache.borrow();
-                                    canvas_id_raw_items
-                                        .iter()
-                                        .map(
-                                            |(_, _, path_opt): &(
-                                                u32,
-                                                [[f32; 4]; 4],
-                                                Option<String>,
-                                            )| {
-                                                // path_opt は常に Some（テクスチャありのみ out に追加される）
-                                                path_opt.as_deref().and_then(|path| {
-                                                    cache.get(path).and_then(|opt| opt.clone())
-                                                })
-                                            },
-                                        )
+                                    canvas_id_raw_items.iter()
+                                        .map(|(_, _, path_opt): &(u32, [[f32;4];4], Option<String>)| {
+                                            // path_opt は常に Some（テクスチャありのみ out に追加される）
+                                            path_opt.as_deref().and_then(|path| {
+                                                cache.get(path).and_then(|opt| opt.clone())
+                                            })
+                                        })
                                         .collect()
                                 };
 
                                 // 3D Canvas 子スプライトテクスチャ Arc
-                                let canvas_3d_child_sprite_arcs: Vec<
-                                    Option<std::sync::Arc<GpuSpriteTexture>>,
-                                > = {
+                                let canvas_3d_child_sprite_arcs: Vec<Option<std::sync::Arc<GpuSpriteTexture>>> = {
                                     let cache = draw_ctx.sprite_tex_cache.borrow();
-                                    canvas_3d_child_id_raw_items
-                                        .iter()
-                                        .map(
-                                            |(_, _, path_opt): &(
-                                                u32,
-                                                [[f32; 4]; 4],
-                                                Option<String>,
-                                            )| {
-                                                path_opt.as_deref().and_then(|path| {
-                                                    cache.get(path).and_then(|opt| opt.clone())
-                                                })
-                                            },
-                                        )
+                                    canvas_3d_child_id_raw_items.iter()
+                                        .map(|(_, _, path_opt): &(u32, [[f32;4];4], Option<String>)| {
+                                            path_opt.as_deref().and_then(|path| {
+                                                cache.get(path).and_then(|opt| opt.clone())
+                                            })
+                                        })
                                         .collect()
                                 };
 
                                 // テクスチャ BG をアイテムごとに生成する
                                 // スプライトありは Arc から view を取得、なしは白テクスチャ（全面選択可能）
                                 let canvas_id_tex_bgs: Vec<wgpu::BindGroup> =
-                                    canvas_sprite_arcs
-                                        .iter()
-                                        .map(
-                                            |arc_opt: &Option<std::sync::Arc<GpuSpriteTexture>>| {
-                                                let view = arc_opt
-                                                    .as_ref()
-                                                    .map(|arc| &arc.view)
-                                                    .unwrap_or(
-                                                        &draw_ctx.pipelines.canvas_id.white_view,
-                                                    );
-                                                draw_ctx
-                                                    .device
-                                                    .create_bind_group(&wgpu::BindGroupDescriptor {
-                                                    label: Some("CanvasId Tex BG"),
-                                                    layout: &draw_ctx.pipelines.canvas_id.tex_bgl,
-                                                    entries: &[
-                                                        wgpu::BindGroupEntry {
-                                                            binding: 0,
-                                                            resource:
-                                                                wgpu::BindingResource::TextureView(
-                                                                    view,
-                                                                ),
-                                                        },
-                                                        wgpu::BindGroupEntry {
-                                                            binding: 1,
-                                                            resource:
-                                                                wgpu::BindingResource::Sampler(
-                                                                    &draw_ctx
-                                                                        .pipelines
-                                                                        .canvas_id
-                                                                        .sampler,
-                                                                ),
-                                                        },
-                                                    ],
-                                                })
-                                            },
-                                        )
+                                    canvas_sprite_arcs.iter()
+                                        .map(|arc_opt: &Option<std::sync::Arc<GpuSpriteTexture>>| {
+                                            let view = arc_opt.as_ref()
+                                                .map(|arc| &arc.view)
+                                                .unwrap_or(&draw_ctx.pipelines.canvas_id.white_view);
+                                            draw_ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                                                label:   Some("CanvasId Tex BG"),
+                                                layout:  &draw_ctx.pipelines.canvas_id.tex_bgl,
+                                                entries: &[
+                                                    wgpu::BindGroupEntry {
+                                                        binding:  0,
+                                                        resource: wgpu::BindingResource::TextureView(view),
+                                                    },
+                                                    wgpu::BindGroupEntry {
+                                                        binding:  1,
+                                                        resource: wgpu::BindingResource::Sampler(
+                                                            &draw_ctx.pipelines.canvas_id.sampler
+                                                        ),
+                                                    },
+                                                ],
+                                            })
+                                        })
                                         .collect();
                                 let canvas_id_tex_bg_refs: Vec<&wgpu::BindGroup> =
                                     canvas_id_tex_bgs.iter().collect();
 
                                 // 3D Canvas 子スプライト テクスチャ BG（WS 用）
                                 let canvas_3d_child_id_tex_bgs: Vec<wgpu::BindGroup> =
-                                    canvas_3d_child_sprite_arcs
-                                        .iter()
-                                        .map(
-                                            |arc_opt: &Option<std::sync::Arc<GpuSpriteTexture>>| {
-                                                let view = arc_opt
-                                                    .as_ref()
-                                                    .map(|arc| &arc.view)
-                                                    .unwrap_or(
-                                                        &draw_ctx.pipelines.canvas_id.white_view,
-                                                    );
-                                                draw_ctx
-                                                    .device
-                                                    .create_bind_group(&wgpu::BindGroupDescriptor {
-                                                    label: Some("Canvas3dChildId Tex BG"),
-                                                    layout: &draw_ctx.pipelines.canvas_id.tex_bgl,
-                                                    entries: &[
-                                                        wgpu::BindGroupEntry {
-                                                            binding: 0,
-                                                            resource:
-                                                                wgpu::BindingResource::TextureView(
-                                                                    view,
-                                                                ),
-                                                        },
-                                                        wgpu::BindGroupEntry {
-                                                            binding: 1,
-                                                            resource:
-                                                                wgpu::BindingResource::Sampler(
-                                                                    &draw_ctx
-                                                                        .pipelines
-                                                                        .canvas_id
-                                                                        .sampler,
-                                                                ),
-                                                        },
-                                                    ],
-                                                })
-                                            },
-                                        )
+                                    canvas_3d_child_sprite_arcs.iter()
+                                        .map(|arc_opt: &Option<std::sync::Arc<GpuSpriteTexture>>| {
+                                            let view = arc_opt.as_ref()
+                                                .map(|arc| &arc.view)
+                                                .unwrap_or(&draw_ctx.pipelines.canvas_id.white_view);
+                                            draw_ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                                                label:   Some("Canvas3dChildId Tex BG"),
+                                                layout:  &draw_ctx.pipelines.canvas_id.tex_bgl,
+                                                entries: &[
+                                                    wgpu::BindGroupEntry {
+                                                        binding:  0,
+                                                        resource: wgpu::BindingResource::TextureView(view),
+                                                    },
+                                                    wgpu::BindGroupEntry {
+                                                        binding:  1,
+                                                        resource: wgpu::BindingResource::Sampler(
+                                                            &draw_ctx.pipelines.canvas_id.sampler
+                                                        ),
+                                                    },
+                                                ],
+                                            })
+                                        })
                                         .collect();
                                 let canvas_3d_child_id_tex_bg_refs: Vec<&wgpu::BindGroup> =
                                     canvas_3d_child_id_tex_bgs.iter().collect();
@@ -6760,53 +5589,39 @@ impl App {
                                 // ワイヤーフレーム収集時に構築した (raw_id, モデル行列) から
                                 // canvas_id パイプライン用バインドグループを生成する。
                                 let collider_pick_bgs_2d: Vec<(wgpu::Buffer, wgpu::BindGroup)> =
-                                    collider_pick_items_2d
-                                        .iter()
+                                    collider_pick_items_2d.iter()
                                         .map(|&(raw_id, gpu_mat)| {
                                             prepare_canvas_id_bg(
-                                                &draw_ctx.device,
-                                                &draw_ctx.pipelines,
-                                                gpu_mat,
-                                                raw_id,
+                                                &draw_ctx.device, &draw_ctx.pipelines,
+                                                gpu_mat, raw_id,
                                             )
                                         })
                                         .collect();
-                                let collider_pick_bgs_3dcanvas: Vec<(
-                                    wgpu::Buffer,
-                                    wgpu::BindGroup,
-                                )> = collider_pick_items_3dcanvas
-                                    .iter()
-                                    .map(|&(raw_id, gpu_mat)| {
-                                        prepare_canvas_id_bg(
-                                            &draw_ctx.device,
-                                            &draw_ctx.pipelines,
-                                            gpu_mat,
-                                            raw_id,
-                                        )
-                                    })
-                                    .collect();
-                                let collider_pick_bgs_3d: Vec<(wgpu::Buffer, wgpu::BindGroup)> =
-                                    collider_pick_items_3d
-                                        .iter()
+                                let collider_pick_bgs_3dcanvas: Vec<(wgpu::Buffer, wgpu::BindGroup)> =
+                                    collider_pick_items_3dcanvas.iter()
                                         .map(|&(raw_id, gpu_mat)| {
                                             prepare_canvas_id_bg(
-                                                &draw_ctx.device,
-                                                &draw_ctx.pipelines,
-                                                gpu_mat,
-                                                raw_id,
+                                                &draw_ctx.device, &draw_ctx.pipelines,
+                                                gpu_mat, raw_id,
+                                            )
+                                        })
+                                        .collect();
+                                let collider_pick_bgs_3d: Vec<(wgpu::Buffer, wgpu::BindGroup)> =
+                                    collider_pick_items_3d.iter()
+                                        .map(|&(raw_id, gpu_mat)| {
+                                            prepare_canvas_id_bg(
+                                                &draw_ctx.device, &draw_ctx.pipelines,
+                                                gpu_mat, raw_id,
                                             )
                                         })
                                         .collect();
                                 // 3D キャンバスのパネル面ピック BG（深度対応・白フォールバック）。
                                 let canvas_panel_pick_bgs: Vec<(wgpu::Buffer, wgpu::BindGroup)> =
-                                    canvas_panel_pick_items
-                                        .iter()
+                                    canvas_panel_pick_items.iter()
                                         .map(|&(raw_id, gpu_mat)| {
                                             prepare_canvas_id_bg(
-                                                &draw_ctx.device,
-                                                &draw_ctx.pipelines,
-                                                gpu_mat,
-                                                raw_id,
+                                                &draw_ctx.device, &draw_ctx.pipelines,
+                                                gpu_mat, raw_id,
                                             )
                                         })
                                         .collect();
@@ -6816,40 +5631,27 @@ impl App {
                                     if collider_pick_bgs_2d.is_empty()
                                         && collider_pick_bgs_3dcanvas.is_empty()
                                         && collider_pick_bgs_3d.is_empty()
-                                        && canvas_panel_pick_bgs.is_empty()
-                                    {
+                                        && canvas_panel_pick_bgs.is_empty() {
                                         None
                                     } else {
-                                        Some(
-                                            draw_ctx.device.create_bind_group(
-                                                &wgpu::BindGroupDescriptor {
-                                                    label: Some("ColliderPick White Tex BG"),
-                                                    layout: &draw_ctx.pipelines.canvas_id.tex_bgl,
-                                                    entries: &[
-                                                        wgpu::BindGroupEntry {
-                                                            binding: 0,
-                                                            resource:
-                                                                wgpu::BindingResource::TextureView(
-                                                                    &draw_ctx
-                                                                        .pipelines
-                                                                        .canvas_id
-                                                                        .white_view,
-                                                                ),
-                                                        },
-                                                        wgpu::BindGroupEntry {
-                                                            binding: 1,
-                                                            resource:
-                                                                wgpu::BindingResource::Sampler(
-                                                                    &draw_ctx
-                                                                        .pipelines
-                                                                        .canvas_id
-                                                                        .sampler,
-                                                                ),
-                                                        },
-                                                    ],
+                                        Some(draw_ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                                            label:   Some("ColliderPick White Tex BG"),
+                                            layout:  &draw_ctx.pipelines.canvas_id.tex_bgl,
+                                            entries: &[
+                                                wgpu::BindGroupEntry {
+                                                    binding:  0,
+                                                    resource: wgpu::BindingResource::TextureView(
+                                                        &draw_ctx.pipelines.canvas_id.white_view
+                                                    ),
                                                 },
-                                            ),
-                                        )
+                                                wgpu::BindGroupEntry {
+                                                    binding:  1,
+                                                    resource: wgpu::BindingResource::Sampler(
+                                                        &draw_ctx.pipelines.canvas_id.sampler
+                                                    ),
+                                                },
+                                            ],
+                                        }))
                                     };
 
                                 let mut id_pass = frame.begin_id_pass(&id_buf.view);
@@ -6876,12 +5678,9 @@ impl App {
                                         let tex_refs: Vec<&wgpu::BindGroup> =
                                             vec![white_bg; canvas_panel_pick_bgs.len()];
                                         draw_collider_pick_items(
-                                            &mut id_pass,
-                                            &draw_ctx.pipelines,
+                                            &mut id_pass, &draw_ctx.pipelines,
                                             &camera_buf.bind_group,
-                                            &canvas_panel_pick_bgs,
-                                            &tex_refs,
-                                            true,
+                                            &canvas_panel_pick_bgs, &tex_refs, true,
                                         );
                                     }
                                     // 3D コライダー面クワッド（常に WS カメラ・深度あり）
@@ -6889,12 +5688,9 @@ impl App {
                                         let tex_refs: Vec<&wgpu::BindGroup> =
                                             vec![white_bg; collider_pick_bgs_3d.len()];
                                         draw_collider_pick_items(
-                                            &mut id_pass,
-                                            &draw_ctx.pipelines,
+                                            &mut id_pass, &draw_ctx.pipelines,
                                             &camera_buf.bind_group,
-                                            &collider_pick_bgs_3d,
-                                            &tex_refs,
-                                            true,
+                                            &collider_pick_bgs_3d, &tex_refs, true,
                                         );
                                     }
                                     // 3D キャンバス配下コライダー（常に WS カメラ・深度あり）
@@ -6902,12 +5698,9 @@ impl App {
                                         let tex_refs: Vec<&wgpu::BindGroup> =
                                             vec![white_bg; collider_pick_bgs_3dcanvas.len()];
                                         draw_collider_pick_items(
-                                            &mut id_pass,
-                                            &draw_ctx.pipelines,
+                                            &mut id_pass, &draw_ctx.pipelines,
                                             &camera_buf.bind_group,
-                                            &collider_pick_bgs_3dcanvas,
-                                            &tex_refs,
-                                            true,
+                                            &collider_pick_bgs_3dcanvas, &tex_refs, true,
                                         );
                                     }
                                     // 通常 2D シーンコライダー（キャンバス ID 描画と同じカメラ選択・深度なし）
@@ -6916,29 +5709,21 @@ impl App {
                                             vec![white_bg; collider_pick_bgs_2d.len()];
                                         if scene_canvas_ss {
                                             // シーン SS: 2D ortho（オーバーレイ）カメラで描画する
-                                            if let Some(ss_cam) = self
-                                                .canvas_overlay_camera_buf
-                                                .as_ref()
-                                                .map(|b| &b.bind_group)
+                                            if let Some(ss_cam) =
+                                                self.canvas_overlay_camera_buf.as_ref().map(|b| &b.bind_group)
                                             {
                                                 draw_collider_pick_items(
-                                                    &mut id_pass,
-                                                    &draw_ctx.pipelines,
+                                                    &mut id_pass, &draw_ctx.pipelines,
                                                     ss_cam,
-                                                    &collider_pick_bgs_2d,
-                                                    &tex_refs,
-                                                    false,
+                                                    &collider_pick_bgs_2d, &tex_refs, false,
                                                 );
                                             }
                                         } else {
                                             // WS 2D シーン: メインカメラ（2D ortho / WS）で描画する
                                             draw_collider_pick_items(
-                                                &mut id_pass,
-                                                &draw_ctx.pipelines,
+                                                &mut id_pass, &draw_ctx.pipelines,
                                                 &camera_buf.bind_group,
-                                                &collider_pick_bgs_2d,
-                                                &tex_refs,
-                                                false,
+                                                &collider_pick_bgs_2d, &tex_refs, false,
                                             );
                                         }
                                     }
@@ -6952,11 +5737,8 @@ impl App {
                                     for (path, sd) in &self.shared_model_batches {
                                         if let Some(&gpu) = gpu_model_by_path.get(path.as_str()) {
                                             draw_id_pass(
-                                                &mut id_pass,
-                                                gpu,
-                                                &sd.batch,
-                                                &camera_buf.bind_group,
-                                                &draw_ctx.pipelines,
+                                                &mut id_pass, gpu, &sd.batch,
+                                                &camera_buf.bind_group, &draw_ctx.pipelines,
                                                 &sd.id_zero_bg.1,
                                             );
                                         }
@@ -6971,10 +5753,8 @@ impl App {
                                 {
                                     draw_id_pass(
                                         &mut id_pass,
-                                        &gizmo.gpu_model,
-                                        &gizmo.batch,
-                                        &camera_buf.bind_group,
-                                        &draw_ctx.pipelines,
+                                        &gizmo.gpu_model, &gizmo.batch,
+                                        &camera_buf.bind_group, &draw_ctx.pipelines,
                                         cam_id_bg,
                                     );
                                 }
@@ -6987,10 +5767,8 @@ impl App {
                                 {
                                     draw_id_pass(
                                         &mut id_pass,
-                                        &gizmo.gpu_model,
-                                        &gizmo.batch,
-                                        &camera_buf.bind_group,
-                                        &draw_ctx.pipelines,
+                                        &gizmo.gpu_model, &gizmo.batch,
+                                        &camera_buf.bind_group, &draw_ctx.pipelines,
                                         light_id_bg,
                                     );
                                 }
@@ -7003,10 +5781,8 @@ impl App {
                                 {
                                     draw_id_pass(
                                         &mut id_pass,
-                                        &gizmo.gpu_model,
-                                        &gizmo.batch,
-                                        &camera_buf.bind_group,
-                                        &draw_ctx.pipelines,
+                                        &gizmo.gpu_model, &gizmo.batch,
+                                        &camera_buf.bind_group, &draw_ctx.pipelines,
                                         particle_id_bg,
                                     );
                                 }
@@ -7016,73 +5792,55 @@ impl App {
                                 // canvas_id_offset 以上の ID 範囲を使用するため既存の decode ロジックと互換。
                                 if !canvas_3d_child_id_bgs.is_empty() {
                                     draw_canvas_id_items(
-                                        &mut id_pass,
-                                        &draw_ctx.pipelines,
-                                        &camera_buf.bind_group,
-                                        None,
+                                        &mut id_pass, &draw_ctx.pipelines,
+                                        &camera_buf.bind_group, None,
                                         &canvas_3d_child_id_bgs,
                                         &canvas_3d_child_id_tex_bg_refs,
-                                        &[],
-                                        &[],
+                                        &[], &[],
                                     );
                                 }
 
                                 // キャンバスアクター ID 描画（3D MC より後で常に上書き）
                                 // WS: perspective camera、SS: 2D ortho カメラを使用する
                                 let ss_camera_bg: Option<&wgpu::BindGroup> = if canvas_id_is_ss {
-                                    self.canvas_overlay_camera_buf
-                                        .as_ref()
-                                        .map(|b| &b.bind_group)
-                                } else {
-                                    None
-                                };
+                                    self.canvas_overlay_camera_buf.as_ref().map(|b| &b.bind_group)
+                                } else { None };
                                 if canvas_id_is_ss {
                                     draw_canvas_id_items(
-                                        &mut id_pass,
-                                        &draw_ctx.pipelines,
-                                        &camera_buf.bind_group,
-                                        ss_camera_bg,
-                                        &[],
-                                        &[],
-                                        &canvas_id_bgs,
-                                        &canvas_id_tex_bg_refs,
+                                        &mut id_pass, &draw_ctx.pipelines,
+                                        &camera_buf.bind_group, ss_camera_bg,
+                                        &[], &[],
+                                        &canvas_id_bgs, &canvas_id_tex_bg_refs,
                                     );
                                 } else {
                                     draw_canvas_id_items(
-                                        &mut id_pass,
-                                        &draw_ctx.pipelines,
-                                        &camera_buf.bind_group,
-                                        None,
-                                        &canvas_id_bgs,
-                                        &canvas_id_tex_bg_refs,
-                                        &[],
-                                        &[],
+                                        &mut id_pass, &draw_ctx.pipelines,
+                                        &camera_buf.bind_group, None,
+                                        &canvas_id_bgs, &canvas_id_tex_bg_refs,
+                                        &[], &[],
                                     );
                                 }
                             }
                             perf_id_ms = _perf_t_id.elapsed().as_secs_f64() * 1000.0;
                             // readback 優先度: drop > add_actor > pick
-                            let drop_pos = self.pending_drop.as_ref().map(|&(_, sx, sy)| (sx, sy));
-                            let add_actor_pos = self.pending_add_actor.as_ref().and_then(
-                                |&(is_2d, _, _, sx, sy)| {
+                            let drop_pos = self.pending_drop
+                                .as_ref()
+                                .map(|&(_, sx, sy)| (sx, sy));
+                            let add_actor_pos = self.pending_add_actor
+                                .as_ref()
+                                .and_then(|&(is_2d, _, _, sx, sy)| {
                                     // 2D アクターはスポーン位置不要なので readback しない
                                     if is_2d { None } else { Some((sx, sy)) }
-                                },
-                            );
+                                });
                             let readback_pos = drop_pos.or(add_actor_pos).or(pick_pos);
                             if let Some((px, py)) = readback_pos {
                                 let px = px.min(id_buf.width.saturating_sub(1));
                                 let py = py.min(id_buf.height.saturating_sub(1));
                                 frame.schedule_id_copy(
-                                    &id_buf.texture,
-                                    px,
-                                    py,
-                                    &id_buf.readback_buf,
+                                    &id_buf.texture, px, py, &id_buf.readback_buf,
                                 );
                                 // readback が drop/add_actor ではなく pick のためかを記録するフラグ
-                                did_pick = drop_pos.is_none()
-                                    && add_actor_pos.is_none()
-                                    && pick_pos.is_some();
+                                did_pick = drop_pos.is_none() && add_actor_pos.is_none() && pick_pos.is_some();
                             }
                         }
                     }
@@ -7096,9 +5854,7 @@ impl App {
                     //   try_read_results が受け取れるようマップ予約する。map_async は submit 後
                     //   （＝ frame.finish() 後）に呼ぶ必要がある（マップ中バッファは COPY 先に使えない）。
                     if self.hiz_need_map {
-                        if let Some(hiz) = self.hiz.as_mut() {
-                            hiz.map_after_submit();
-                        }
+                        if let Some(hiz) = self.hiz.as_mut() { hiz.map_after_submit(); }
                         self.hiz_need_map = false;
                     }
 
@@ -7118,8 +5874,8 @@ impl App {
                     // 物理が実際に更新されたフレーム（Play 中/編集時物理稼働中）は
                     // 環境変数なしでも PERF_LOG_INTERVAL ごとに自動出力する。
                     // → 「物理が重い」の切り分けを設定なしで即座に行えるようにする。
-                    let do_perf_out =
-                        do_perf || (perf_physics_active && perf_idx % PERF_LOG_INTERVAL == 0);
+                    let do_perf_out = do_perf
+                        || (perf_physics_active && perf_idx % PERF_LOG_INTERVAL == 0);
                     if do_perf_out {
                         let total_ms = perf_t_total.elapsed().as_secs_f64() * 1000.0;
                         // 物理更新の合計（3D update + スナップショット記録 + 2D update）
@@ -7127,19 +5883,10 @@ impl App {
                         // main_pass は draw を内包するので draw を除いた残り = main_pass - draw = 他の描画コマンド記録
                         let main_rest_ms = (perf_main_pass_ms - perf_draw_ms).max(0.0);
                         let other_ms = (total_ms
-                            - perf_begin_frame_ms
-                            - perf_ipc_ms
-                            - perf_batch_ms
-                            - perf_merge_ms
-                            - perf_skin_ms
-                            - perf_main_pass_ms
-                            - perf_id_ms
-                            - perf_grid_ms
-                            - perf_collider_ms
-                            - perf_finish_ms
-                            - perf_grass_ms
-                            - phys_total_ms)
-                            .max(0.0);
+                            - perf_begin_frame_ms - perf_ipc_ms - perf_batch_ms - perf_merge_ms
+                            - perf_skin_ms - perf_main_pass_ms - perf_id_ms
+                            - perf_grid_ms - perf_collider_ms - perf_finish_ms - perf_grass_ms
+                            - phys_total_ms).max(0.0);
                         eprintln!(
                             "[PERF f={perf_idx}] MC={perf_mc_count} skin_MC={perf_skin_mc_count} dispatches={perf_skin_dispatches} \
                              | total={total_ms:.3}ms \
@@ -7156,11 +5903,7 @@ impl App {
                              finish={perf_finish_ms:.3}ms other={other_ms:.3}ms",
                             if perf_tlas_built { "build" } else { "skip" },
                             // 描画対象の草インスタンス総数（フレーム時間との対応を取るため）。
-                            self.terrain
-                                .grass_buffers
-                                .values()
-                                .map(|b| b.count())
-                                .sum::<u32>(),
+                            self.terrain.grass_buffers.values().map(|b| b.count()).sum::<u32>(),
                             // 草の風はこの時刻で駆動される。値が止まっていれば風も止まっている。
                             ctx.anim_time,
                         );
@@ -7215,20 +5958,12 @@ impl App {
                         let parent = unsafe { GetParent(my_hwnd as _) };
                         let mut sz = None;
                         if !parent.is_null() {
-                            let mut r = RECT {
-                                left: 0,
-                                top: 0,
-                                right: 0,
-                                bottom: 0,
-                            };
+                            let mut r = RECT { left: 0, top: 0, right: 0, bottom: 0 };
                             if unsafe { GetClientRect(parent, &mut r) } != 0 {
-                                let w = (r.right - r.left) as u32;
-                                let h = (r.bottom - r.top) as u32;
+                                let w = (r.right  - r.left) as u32;
+                                let h = (r.bottom - r.top)  as u32;
                                 if w > 0 && h > 0 {
-                                    sz = Some(winit::dpi::PhysicalSize {
-                                        width: w,
-                                        height: h,
-                                    });
+                                    sz = Some(winit::dpi::PhysicalSize { width: w, height: h });
                                 }
                             }
                         }
@@ -7254,15 +5989,14 @@ impl App {
             if let (Some(id_buf), Some(draw_ctx)) = (&self.id_buffer, &self.draw_ctx) {
                 let (_world_pos, raw) = id_buf.read_pixel(&draw_ctx.device);
                 // 選択変更前の状態を保存する（Undo 記録用）
-                let before_inst = self.selected_instances.clone();
-                let before_dfs_ids = self.selected_actor_dfs_ids.clone();
-                let before_primary = self.actor_virtual_selected_idx;
+                let before_inst       = self.selected_instances.clone();
+                let before_dfs_ids    = self.selected_actor_dfs_ids.clone();
+                let before_primary    = self.actor_virtual_selected_idx;
 
                 if raw == 0 {
                     // GPU ID が背景ヒット: 3D ワールドキャンバス面のレイピックを試みる
                     // （world タブでキャンバス矩形範囲をクリックして選択できるようにする）。
-                    let canvas_hit = self
-                        .last_cursor_pos
+                    let canvas_hit = self.last_cursor_pos
                         .and_then(|(cx, cy)| self.pick_3d_world_canvas(cx, cy));
                     if let Some(dfs_usize) = canvas_hit {
                         self.actor_virtual_selected_slot_idx = 0;
@@ -7270,8 +6004,7 @@ impl App {
                             if self.selected_actor_dfs_ids.contains(&dfs_usize) {
                                 self.selected_actor_dfs_ids.retain(|&x| x != dfs_usize);
                                 if self.actor_virtual_selected_idx == Some(dfs_usize) {
-                                    self.actor_virtual_selected_idx =
-                                        self.selected_actor_dfs_ids.last().copied();
+                                    self.actor_virtual_selected_idx = self.selected_actor_dfs_ids.last().copied();
                                 }
                             } else {
                                 self.selected_actor_dfs_ids.push(dfs_usize);
@@ -7279,13 +6012,13 @@ impl App {
                             }
                         } else {
                             self.actor_virtual_selected_idx = Some(dfs_usize);
-                            self.selected_actor_dfs_ids = vec![dfs_usize];
+                            self.selected_actor_dfs_ids     = vec![dfs_usize];
                         }
                         self.selected_instances.clear();
                         self.send_actor_components(dfs_usize as u32, 0);
                     } else if !self.drag.ctrl_at_press {
                         // 真の空クリック: 選択解除（Ctrl 押下時は何もしない）
-                        self.actor_virtual_selected_idx = None;
+                        self.actor_virtual_selected_idx      = None;
                         self.actor_virtual_selected_slot_idx = 0;
                         self.selected_actor_dfs_ids.clear();
                         self.selected_instances.clear();
@@ -7293,9 +6026,8 @@ impl App {
                 } else {
                     let global = raw - 1; // 0 始まりグローバル ID
                     // 3D MC アクター判定（raw_id = base + local + 1 のいずれかの MC 範囲に入るか）
-                    let mc_hit = wl_mc_pick_infos.iter().find(|&&(base, _, _, count)| {
-                        global >= base && (global - base) < count as u32
-                    });
+                    let mc_hit = wl_mc_pick_infos.iter()
+                        .find(|&&(base, _, _, count)| global >= base && (global - base) < count as u32);
 
                     if let Some(&(base, dfs_id, slot_i, _)) = mc_hit {
                         // 3D MC アクター選択
@@ -7307,8 +6039,7 @@ impl App {
                             if self.selected_actor_dfs_ids.contains(&dfs_usize) {
                                 self.selected_actor_dfs_ids.retain(|&x| x != dfs_usize);
                                 if self.actor_virtual_selected_idx == Some(dfs_usize) {
-                                    self.actor_virtual_selected_idx =
-                                        self.selected_actor_dfs_ids.last().copied();
+                                    self.actor_virtual_selected_idx = self.selected_actor_dfs_ids.last().copied();
                                 }
                             } else {
                                 self.selected_actor_dfs_ids.push(dfs_usize);
@@ -7318,8 +6049,8 @@ impl App {
                         } else {
                             // 通常クリック: 単一選択
                             self.actor_virtual_selected_idx = Some(dfs_usize);
-                            self.selected_actor_dfs_ids = vec![dfs_usize];
-                            self.selected_instances = vec![local_idx];
+                            self.selected_actor_dfs_ids     = vec![dfs_usize];
+                            self.selected_instances          = vec![local_idx];
                         }
                         self.send_actor_components(dfs_id, slot_i);
                     } else if global >= mc_total_instances
@@ -7335,8 +6066,7 @@ impl App {
                                 if self.selected_actor_dfs_ids.contains(&dfs_id) {
                                     self.selected_actor_dfs_ids.retain(|&x| x != dfs_id);
                                     if self.actor_virtual_selected_idx == Some(dfs_id) {
-                                        self.actor_virtual_selected_idx =
-                                            self.selected_actor_dfs_ids.last().copied();
+                                        self.actor_virtual_selected_idx = self.selected_actor_dfs_ids.last().copied();
                                     }
                                 } else {
                                     self.selected_actor_dfs_ids.push(dfs_id);
@@ -7344,7 +6074,7 @@ impl App {
                                 }
                             } else {
                                 self.actor_virtual_selected_idx = Some(dfs_id);
-                                self.selected_actor_dfs_ids = vec![dfs_id];
+                                self.selected_actor_dfs_ids     = vec![dfs_id];
                             }
                             self.selected_instances.clear();
                             self.send_actor_components(dfs_id as u32, 0);
@@ -7363,8 +6093,7 @@ impl App {
                                 if self.selected_actor_dfs_ids.contains(&dfs_id) {
                                     self.selected_actor_dfs_ids.retain(|&x| x != dfs_id);
                                     if self.actor_virtual_selected_idx == Some(dfs_id) {
-                                        self.actor_virtual_selected_idx =
-                                            self.selected_actor_dfs_ids.last().copied();
+                                        self.actor_virtual_selected_idx = self.selected_actor_dfs_ids.last().copied();
                                     }
                                 } else {
                                     self.selected_actor_dfs_ids.push(dfs_id);
@@ -7372,7 +6101,7 @@ impl App {
                                 }
                             } else {
                                 self.actor_virtual_selected_idx = Some(dfs_id);
-                                self.selected_actor_dfs_ids = vec![dfs_id];
+                                self.selected_actor_dfs_ids     = vec![dfs_id];
                             }
                             self.selected_instances.clear();
                             self.send_actor_components(dfs_id as u32, 0);
@@ -7391,8 +6120,7 @@ impl App {
                                 if self.selected_actor_dfs_ids.contains(&dfs_id) {
                                     self.selected_actor_dfs_ids.retain(|&x| x != dfs_id);
                                     if self.actor_virtual_selected_idx == Some(dfs_id) {
-                                        self.actor_virtual_selected_idx =
-                                            self.selected_actor_dfs_ids.last().copied();
+                                        self.actor_virtual_selected_idx = self.selected_actor_dfs_ids.last().copied();
                                     }
                                 } else {
                                     self.selected_actor_dfs_ids.push(dfs_id);
@@ -7400,7 +6128,7 @@ impl App {
                                 }
                             } else {
                                 self.actor_virtual_selected_idx = Some(dfs_id);
-                                self.selected_actor_dfs_ids = vec![dfs_id];
+                                self.selected_actor_dfs_ids     = vec![dfs_id];
                             }
                             self.selected_instances.clear();
                             self.send_actor_components(dfs_id as u32, 0);
@@ -7408,16 +6136,15 @@ impl App {
                     } else if global >= canvas_id_offset {
                         // キャンバスアクター選択
                         // raw_id = canvas_id_offset + dfs_id + 1 → canvas_dfs_id = global - canvas_id_offset
-                        let canvas_dfs_id = global - canvas_id_offset;
-                        let dfs_usize = canvas_dfs_id as usize;
+                        let canvas_dfs_id  = global - canvas_id_offset;
+                        let dfs_usize      = canvas_dfs_id as usize;
                         self.actor_virtual_selected_slot_idx = 0;
                         if self.drag.ctrl_at_press {
                             // Ctrl+クリック: マルチ選択トグル
                             if self.selected_actor_dfs_ids.contains(&dfs_usize) {
                                 self.selected_actor_dfs_ids.retain(|&x| x != dfs_usize);
                                 if self.actor_virtual_selected_idx == Some(dfs_usize) {
-                                    self.actor_virtual_selected_idx =
-                                        self.selected_actor_dfs_ids.last().copied();
+                                    self.actor_virtual_selected_idx = self.selected_actor_dfs_ids.last().copied();
                                 }
                             } else {
                                 self.selected_actor_dfs_ids.push(dfs_usize);
@@ -7426,7 +6153,7 @@ impl App {
                         } else {
                             // 通常クリック: 単一選択
                             self.actor_virtual_selected_idx = Some(dfs_usize);
-                            self.selected_actor_dfs_ids = vec![dfs_usize];
+                            self.selected_actor_dfs_ids     = vec![dfs_usize];
                         }
                         self.selected_instances.clear();
                         self.send_actor_components(canvas_dfs_id, 0);
@@ -7438,7 +6165,7 @@ impl App {
                 if before_inst != after_inst {
                     self.undo_history.record(Box::new(SelectionCommand {
                         before: before_inst,
-                        after: after_inst,
+                        after:  after_inst,
                     }));
                 }
                 // アクター DFS 選択の Undo 記録
@@ -7492,25 +6219,19 @@ impl App {
             } else {
                 match self.resolve_spawn_pos(sx, sy, did_pick) {
                     // 再キューイング
-                    None => {
-                        self.pending_add_actor = Some((false, world_line, parent_dfs_id, sx, sy))
-                    }
-                    Some(spawn_pos) => {
-                        self.handle_add_actor(world_line, parent_dfs_id, Some(spawn_pos))
-                    }
+                    None => self.pending_add_actor = Some((false, world_line, parent_dfs_id, sx, sy)),
+                    Some(spawn_pos) => self.handle_add_actor(world_line, parent_dfs_id, Some(spawn_pos)),
                 }
             }
         }
 
         // ─ 7. EndFrame（Play 時のみ）─────────────────
         if time_running {
-            use crate::engine::core::scripting::publish_input;
             use crate::engine::ecs::Phase;
+            use crate::engine::core::scripting::publish_input;
             // EndFrame フェーズのスクリプトからも Input API を使えるようにする
             publish_input(Some(&self.input));
-            if let Some(scene) = &mut self.scene {
-                scene.run_phase(Phase::EndFrame, &ctx);
-            }
+            if let Some(scene) = &mut self.scene { scene.run_phase(Phase::EndFrame, &ctx); }
             publish_input(None);
             // EndFrame 中に積まれたシーン操作コマンドも同フレーム内で適用する
             self.apply_script_scene_commands();
@@ -7536,15 +6257,11 @@ impl App {
             }
         }
 
-        if dbg {
-            eprintln!("[SEED FRAME {dbg_frame}] end");
-        }
+        if dbg { eprintln!("[SEED FRAME {dbg_frame}] end"); }
         // フォーカスが無い間はフレームレートを抑える（遮蔽時の present 即時リターンによる
         // 暴走ループと、それに伴う毎フレーム Debug.Log の氾濫を防ぐ）。
         self.pace_frame_if_unfocused(perf_t_total);
-        if let Some(window) = &self.window {
-            window.request_redraw();
-        }
+        if let Some(window) = &self.window { window.request_redraw(); }
     }
 }
 
@@ -7568,7 +6285,7 @@ mod camera_preview_lighting_tests {
     /// プレビューパス区間の開始マーカー（frame_renderer.rs 内のコメント）。
     const PREVIEW_BEGIN: &str = "[CAMERA-PREVIEW-PASS-BEGIN]";
     /// プレビューパス区間の終了マーカー。
-    const PREVIEW_END: &str = "[CAMERA-PREVIEW-PASS-END]";
+    const PREVIEW_END:   &str = "[CAMERA-PREVIEW-PASS-END]";
 
     /// カメラプレビューのパス区間が、プレビュー専用のライティング資源だけを使うこと。
     ///
@@ -7582,11 +6299,9 @@ mod camera_preview_lighting_tests {
     fn camera_preview_pass_uses_preview_lighting_resources() {
         let src = include_str!("frame_renderer.rs");
 
-        let begin = src
-            .find(PREVIEW_BEGIN)
+        let begin = src.find(PREVIEW_BEGIN)
             .expect("プレビューパスの開始マーカーが見つかりません（区間を消さないこと）");
-        let end = src
-            .find(PREVIEW_END)
+        let end = src.find(PREVIEW_END)
             .expect("プレビューパスの終了マーカーが見つかりません（区間を消さないこと）");
         assert!(begin < end, "プレビューパスのマーカーの順序が逆です");
 
@@ -7632,7 +6347,7 @@ mod stale_prune_tests {
     #[test]
     fn frees_only_after_threshold_frames() {
         const N: u32 = 60;
-        let cache = set(&["modelA"]); // キャッシュには常に modelA が存在
+        let cache = set(&["modelA"]);      // キャッシュには常に modelA が存在
         let alive = HashSet::<String>::new(); // 一度も描画対象に現れない（不在が続く）
         let mut absent = HashMap::new();
 
@@ -7640,24 +6355,13 @@ mod stale_prune_tests {
         for frame in 1..N {
             let freed = compute_stale_batch_prune(&cache, &alive, &mut absent, N);
             assert!(freed.is_empty(), "フレーム{frame}: N未満では解放しない");
-            assert_eq!(
-                absent.get("modelA"),
-                Some(&frame),
-                "不在カウンタが加算されること"
-            );
+            assert_eq!(absent.get("modelA"), Some(&frame), "不在カウンタが加算されること");
         }
         // N フレーム目でちょうど解放される。
         let freed = compute_stale_batch_prune(&cache, &alive, &mut absent, N);
-        assert_eq!(
-            freed,
-            vec!["modelA".to_string()],
-            "N フレーム連続不在で解放されること"
-        );
+        assert_eq!(freed, vec!["modelA".to_string()], "N フレーム連続不在で解放されること");
         // 解放後は absent からも消えている。
-        assert!(
-            !absent.contains_key("modelA"),
-            "解放後は不在カウンタも掃除されること"
-        );
+        assert!(!absent.contains_key("modelA"), "解放後は不在カウンタも掃除されること");
     }
 
     /// 再出現でカウンタがリセットされ、以後 alive の間は決して解放されないこと。
@@ -7679,10 +6383,7 @@ mod stale_prune_tests {
         // ここで 1 フレームだけ再出現 → カウンタがリセットされる。
         let freed = compute_stale_batch_prune(&cache, &present_alive, &mut absent, N);
         assert!(freed.is_empty(), "再出現フレームでは解放しない");
-        assert!(
-            !absent.contains_key("modelA"),
-            "再出現でカウンタがリセット（絶不在エントリ除去）"
-        );
+        assert!(!absent.contains_key("modelA"), "再出現でカウンタがリセット（絶不在エントリ除去）");
 
         // 再びカウントし直しになる（N-1 フレーム不在ではまだ解放されない）。
         for _ in 1..N {
@@ -7703,10 +6404,7 @@ mod stale_prune_tests {
             let freed = compute_stale_batch_prune(&cache, &alive, &mut absent, 60);
             assert!(freed.is_empty());
         }
-        assert!(
-            absent.is_empty(),
-            "alive なキーは不在マップに積まれないこと"
-        );
+        assert!(absent.is_empty(), "alive なキーは不在マップに積まれないこと");
     }
 
     /// cache から外部で消えたキーの absent エントリは掃除され、状態マップが肥大しないこと。
@@ -7726,9 +6424,6 @@ mod stale_prune_tests {
         let cache2 = HashSet::<String>::new();
         let freed = compute_stale_batch_prune(&cache2, &alive, &mut absent, N);
         assert!(freed.is_empty());
-        assert!(
-            absent.is_empty(),
-            "cache に無いキーの不在エントリは掃除されること（状態マップの肥大防止）"
-        );
+        assert!(absent.is_empty(), "cache に無いキーの不在エントリは掃除されること（状態マップの肥大防止）");
     }
 }

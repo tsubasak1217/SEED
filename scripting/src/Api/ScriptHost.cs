@@ -438,29 +438,29 @@ public static unsafe class ScriptHost
     }
 
     /// <summary>
-    /// キャラクターコントローラー移動を実行する。移動できなければ false（対象なし・応答なし等）。
-    /// 物理スレッドへの同期問い合わせ（数 ms 以内に応答）。
+    /// キャラクターコントローラーを瞬間移動させる（衝突無視）。成功したら true。
     ///
-    /// motion（希望移動量・ワールド空間・重力分は呼び出し側が含める）を地形・静的
-    /// コライダーとの衝突で解決し、補正済み移動量ぶんだけアクターを移動する。
-    /// moved には実際に移動した量、grounded には移動後の接地状態が返る。
+    /// ECS Transform 位置を pos に設定し（子アクタも追従）、物理側の「前回位置」も pos に
+    /// リセットするため、瞬間移動先で自動押し戻しが発生しない。
+    /// is_character_controller でないアクターでは単に位置設定のみ行われる。
     /// </summary>
-    public static bool TryMoveActor(Entity e, Vector3 motion, out Vector3 moved, out bool grounded)
+    public static bool TryTeleport(Entity e, Vector3 pos)
     {
-        moved    = Vector3.Zero;
-        grounded = false;
-        if (!_available || _api.MoveCharacter == null || !e.IsValid) return false;
+        if (!_available || _api.Teleport == null || !e.IsValid) return false;
 
-        float* m = stackalloc float[3];
-        m[0] = motion.x; m[1] = motion.y; m[2] = motion.z;
-        // 結果: [moved.x, moved.y, moved.z, grounded(0/1)] の 4 要素
-        float* r = stackalloc float[4];
+        float* p = stackalloc float[3];
+        p[0] = pos.x; p[1] = pos.y; p[2] = pos.z;
+        return _api.Teleport(e.Index, e.Generation, p) != 0;
+    }
 
-        if (_api.MoveCharacter(e.Index, e.Generation, m, r) == 0) return false;
-
-        moved    = new Vector3(r[0], r[1], r[2]);
-        grounded = r[3] != 0f;
-        return true;
+    /// <summary>
+    /// キャラクターコントローラーが接地しているかを返す。
+    /// 物理ステップ同期で更新された最新の接地状態を参照する（非接地・未登録は false）。
+    /// </summary>
+    public static bool IsGrounded(Entity e)
+    {
+        if (!_available || _api.IsGrounded == null || !e.IsValid) return false;
+        return _api.IsGrounded(e.Index, e.Generation) != 0;
     }
 
     /// <summary>アクターを名前で検索する（DFS 順の最初の一致）。見つからなければ false。</summary>
@@ -528,6 +528,8 @@ public unsafe struct ScriptHostApi
     public delegate* unmanaged[Cdecl]<int, uint, uint, byte*, int, float, int> AnimatorComponent;
     /// <summary>(action, idx, gen, count) → 1/0（action: 0=Play/1=Stop/2=Burst。count は Burst の放出個数）</summary>
     public delegate* unmanaged[Cdecl]<int, uint, uint, int, int> ParticleComponent;
-    /// <summary>(idx, gen, motion float[3], out float[4] result) → 1/0（result: moved.xyz, grounded 0/1。Physics.MoveActor）</summary>
-    public delegate* unmanaged[Cdecl]<uint, uint, float*, float*, int> MoveCharacter;
+    /// <summary>(idx, gen, pos float[3]) → 1/0（キャラクターを衝突無視で瞬間移動。Transform.Teleport）</summary>
+    public delegate* unmanaged[Cdecl]<uint, uint, float*, int> Teleport;
+    /// <summary>(idx, gen) → 1/0（キャラクターの接地状態。Physics.IsGrounded）</summary>
+    public delegate* unmanaged[Cdecl]<uint, uint, int> IsGrounded;
 }

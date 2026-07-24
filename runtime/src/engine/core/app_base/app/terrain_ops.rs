@@ -1181,6 +1181,8 @@ fn terrain_collider_object(
         // レイヤ 1（既定コライダーと同じ）／マスク 0（全レイヤと衝突）。
         physics_layer: 1,
         layer_mask: 0,
+        // 地形はキャラクターコントローラーではない（衝突相手側の Static コライダー）。
+        is_character_controller: false,
     }
 }
 

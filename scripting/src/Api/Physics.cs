@@ -24,48 +24,22 @@ public readonly struct RaycastHit
 }
 
 /// <summary>
-/// <see cref="Physics.MoveActor"/> の結果。衝突解決後の実効移動量と接地状態を返す。
-/// </summary>
-public readonly struct MoveResult
-{
-    /// <summary>実際に移動した量（ワールド空間）。壁ずり・段差・スロープ解決後の補正済み移動量。</summary>
-    public readonly Vector3 Motion;
-    /// <summary>移動適用後に接地しているか。</summary>
-    public readonly bool Grounded;
-
-    internal MoveResult(Vector3 motion, bool grounded)
-    {
-        Motion   = motion;
-        Grounded = grounded;
-    }
-}
-
-/// <summary>
 /// 物理演算への問い合わせ・操作 API。
-/// Raycast（問い合わせ）と MoveActor（キャラクターコントローラー移動）を提供する。
+/// Raycast（レイキャスト）と IsGrounded（キャラクターの接地判定）を提供する。
 /// </summary>
 public static class Physics
 {
     /// <summary>
-    /// アクターをキャラクターコントローラー的に移動する（Unity の CharacterController.Move 相当）。
+    /// キャラクターコントローラー（Collider の「キャラクターコントローラー」を有効にしたアクター）が
+    /// 接地しているかを返す。
     ///
-    /// 希望移動量 <paramref name="motion"/>（ワールド空間）を地形・静的コライダーとの衝突で
-    /// 解決し、補正済みの移動量ぶんだけアクターを動かす。壁に沿って滑る・段差の乗り越え・
-    /// スロープ登坂は内部のキネマティックキャラクターコントローラーが処理する。
-    ///
-    /// 重力はエンジンが自動適用しない。落下させたい場合は <paramref name="motion"/> に
-    /// 重力ぶん（例: 下向きの速度 × Time.DeltaTime）を含めること。
-    ///
-    /// 対象アクターは Collider コンポーネント（カプセル推奨）を持つ必要がある。
-    /// 物理スレッドへの同期問い合わせのため、毎フレーム大量に呼ぶとフレーム時間を消費する。
+    /// 接地判定は物理ステップ同期（60Hz）で自動更新される。キャラクターは Transform.Position を
+    /// 書き換えるだけで地形に衝突解決されて押し戻され、その際の接地状態がここに反映される。
     /// </summary>
-    /// <param name="actor">移動するアクター（Collider 必須）</param>
-    /// <param name="motion">このフレームの希望移動量（ワールド空間・重力分を含める）</param>
-    /// <returns>補正済み移動量と接地状態（移動できなかった場合は Motion=Zero, Grounded=false）</returns>
-    public static MoveResult MoveActor(GameObject actor, Vector3 motion)
-        => ScriptHost.TryMoveActor(actor.Entity, motion, out var moved, out var grounded)
-            ? new MoveResult(moved, grounded)
-            : new MoveResult(Vector3.Zero, false);
+    /// <param name="actor">キャラクターコントローラーを有効にしたアクター</param>
+    /// <returns>接地していれば true（未設定・非接地は false）</returns>
+    public static bool IsGrounded(GameObject actor)
+        => ScriptHost.IsGrounded(actor.Entity);
 
     /// <summary>
     /// レイキャストを実行し、最初にヒットしたコライダーの情報を返す。

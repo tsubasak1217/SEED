@@ -1919,6 +1919,8 @@ public partial class InspectorPanel : UserControl
         bool   isTrigger  = false;
         int    physLayer  = 1;
         int    layerMask  = 0;
+        // キャラクターコントローラー設定
+        bool   isCharCtrl = false;
         // リジッドボディ設定
         bool   useRb      = false;
         float  mass = 1f, rest = 0.3f, fric = 0.5f, linDamp = 0.01f, angDamp = 0.05f, gravScale = 1f;
@@ -1945,6 +1947,8 @@ public partial class InspectorPanel : UserControl
             if (root.TryGetProperty("is_trigger",    out var it2)) isTrigger = it2.GetBoolean();
             if (root.TryGetProperty("physics_layer", out var pl))  physLayer = pl.GetInt32();
             if (root.TryGetProperty("layer_mask",    out var lm))  layerMask = lm.GetInt32();
+            // キャラクターコントローラー設定
+            if (root.TryGetProperty("is_character_controller", out var cc)) isCharCtrl = cc.GetBoolean();
             // リジッドボディ設定
             if (root.TryGetProperty("use_rigidbody",   out var ur))  useRb       = ur.GetBoolean();
             if (root.TryGetProperty("mass",            out var mv))  mass        = mv.GetSingle();
@@ -1974,6 +1978,7 @@ public partial class InspectorPanel : UserControl
         var curMass       = mass;      var curRest  = rest;    var curFric    = fric;
         var curLinDamp    = linDamp;   var curAngD  = angDamp; var curGrav    = gravScale;
         var curKinem      = isKinematic;
+        var curCharCtrl   = isCharCtrl;
         var curFreezeP    = (bool[])freezePos.Clone();
         var curFreezeR    = (bool[])freezeRot.Clone();
         var curLinV       = (float[])initLinVel.Clone();
@@ -1999,6 +2004,7 @@ public partial class InspectorPanel : UserControl
                 $"\"is_trigger\":{B(curTrigger)}," +
                 $"\"physics_layer\":{curLayer}," +
                 $"\"layer_mask\":{curMask}," +
+                $"\"is_character_controller\":{B(curCharCtrl)}," +
                 $"\"use_rigidbody\":{B(curUseRb)}," +
                 $"\"mass\":{F(curMass)}," +
                 $"\"restitution\":{F(curRest)}," +
@@ -2146,6 +2152,22 @@ public partial class InspectorPanel : UserControl
         maskRow.textBox.LostFocus += (_, _) => CommitMask();
         maskRow.textBox.KeyDown   += (_, e) => { if (e.Key is Key.Return or Key.Enter) CommitMask(); };
         NumericDragBehavior.SetOnDrag(maskRow.textBox, CommitMask);
+
+        // --- キャラクターコントローラー ---
+        // ON にすると、スクリプトが Transform.Position を書き換えるだけで地形に衝突解決され、
+        // めり込んだぶんが物理ステップ同期（60Hz）で自動的に押し戻される。
+        // 瞬間移動（衝突無視）は Transform.Teleport()、接地判定は Physics.IsGrounded() を使う。
+        var charCtrlRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 4, 0, 2) };
+        charCtrlRow.Children.Add(new TextBlock
+        {
+            Text = "キャラクターコントローラー", Foreground = new SolidColorBrush(Color.FromRgb(0xAA, 0xAA, 0xAA)),
+            FontSize = 11, Width = 130, VerticalAlignment = VerticalAlignment.Center,
+        });
+        var charCtrlCheck = new CheckBox { IsChecked = curCharCtrl, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(4, 0, 0, 0) };
+        charCtrlCheck.Checked   += (_, _) => { curCharCtrl = true;  CommitCollider(); };
+        charCtrlCheck.Unchecked += (_, _) => { curCharCtrl = false; CommitCollider(); };
+        charCtrlRow.Children.Add(charCtrlCheck);
+        sp.Children.Add(charCtrlRow);
 
         // ────────────────────────────────────────────────────────────────
         // リジッドボディ設定（「リジッドボディを使用」チェックで展開）

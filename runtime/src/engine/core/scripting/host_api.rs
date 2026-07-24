@@ -905,11 +905,6 @@ unsafe extern "system" fn ffi_input_mouse_state(kind: i32, out: *mut f32) -> i32
 /// 約 1ms 間隔なので通常は数 ms で応答する。応答がない場合はミス扱い。
 const RAYCAST_TIMEOUT_MS: u64 = 20;
 
-/// キャラクター移動（Physics.MoveActor）の同期問い合わせタイムアウト（ミリ秒）。
-/// Raycast と同様、物理スレッドはコマンドドレイン間隔（約 1ms）で応答するため
-/// 通常は数 ms で返る。応答がない場合は移動なし・非接地扱いにする。
-const MOVE_CHARACTER_TIMEOUT_MS: u64 = 20;
-
 /// Play シーンの world_line（物理の DFS 順 ID はこの世界線の走査で振られる。
 /// スクリプトは Play モードでのみ実行されるため常に 0）。
 const PLAY_WORLD_LINE: u32 = 0;
@@ -939,8 +934,8 @@ fn entity_by_dfs_id(actors: &[Actor], target: u64) -> Option<Entity> {
 
 /// アクターのルートエンティティから DFS 順 ID を逆引きする（entity_by_dfs_id の逆）。
 ///
-/// Physics.MoveActor が、動かす対象アクターの物理コライダーを物理スレッド側で
-/// 特定（形状取得・自己除外）できるよう、ECS Entity → DFS 順 ID を求める。
+/// Transform.Teleport が、対象アクターの物理エントリ（前回位置・コライダー）を物理
+/// スレッド側で特定できるよう、ECS Entity → DFS 順 ID を求める。
 /// 走査順は entity_by_dfs_id / collect_physics_objects と同一
 /// （world_line 一致のルートから先行順 DFS、ID は 1 始まり・全アクターがカウント対象）。
 fn dfs_id_by_entity(actors: &[Actor], target: Entity) -> Option<u64> {
@@ -964,8 +959,8 @@ fn dfs_id_by_entity(actors: &[Actor], target: Entity) -> Option<u64> {
 
 /// YXZ オイラー角（度）を SEED のクォータニオン [x, y, z, w] へ変換する。
 ///
-/// Transform.rotation はオイラー角（度）で保持されるが、物理スレッドの KCC シェイプ姿勢は
-/// クォータニオンを要するため、Physics.MoveActor の送信直前にここで変換する。
+/// Transform.rotation はオイラー角（度）で保持されるが、物理スレッドのコライダー姿勢は
+/// クォータニオンを要するため、Transform.Teleport の送信直前にここで変換する。
 fn euler_deg_to_quat_arr(euler_deg: [f32; 3]) -> [f32; 4] {
     use crate::engine::structs::tensor::Vector3 as SeedVec3;
     use crate::engine::structs::transforms::Quaternion as SeedQuat;
@@ -1032,91 +1027,70 @@ unsafe extern "system" fn ffi_raycast(
     1
 }
 
-/// キャラクターコントローラー移動を実行する。成功=1 / 失敗（対象なし・応答なし等）=0。
+/// キャラクターコントローラーを瞬間移動させる（衝突無視）。成功=1 / 失敗=0。
 ///
-/// idx/gen は動かす対象アクターのルートエンティティ。motion は 3 要素の希望移動量
-/// （ワールド空間・重力分はスクリプトが含める）。地形・静的コライダーとの衝突を
-/// KCC で解決し、補正済み移動量ぶんだけアクターを移動する。
+/// C# `Transform.Teleport(pos)` 用。idx/gen は対象アクターのルートエンティティ、
+/// pos は 3 要素のワールド位置。次を行う:
+///   1. ECS Transform 位置を pos に設定する（集約関数経由で子アクタも追従）。
+///   2. 物理側の「前回解決済み位置」を pos に強制リセットする（TeleportCharacter）。
+///      これにより次の StepCharacter で差分ゼロとなり、瞬間移動先で押し戻されない。
 ///
-/// 補正後の位置は集約関数 set_actor_world_transform 経由で ECS Transform に反映するため、
-/// 子アクタ（カメラ等）も追従する。
-///
-/// out_result（4 要素）へ [moved.x, moved.y, moved.z, grounded(0/1)] を書き込む。
-unsafe extern "system" fn ffi_move_character(
+/// is_character_controller でないアクターでは単に位置設定のみ（物理側は無視する）。
+unsafe extern "system" fn ffi_teleport(
     idx: u32, generation: u32,
-    motion: *const f32,
-    out_result: *mut f32,
+    pos: *const f32,
 ) -> i32 {
     use crate::engine::physics::PhysicsCommand;
 
-    if motion.is_null() || out_result.is_null() { return 0; }
-    // World（現在位置の読み取り＋補正位置の反映に使う）
+    if pos.is_null() { return 0; }
     let wptr = WORLD_PTR.with(|p| p.get());
     if wptr.is_null() { return 0; }
-    // 物理スレッドが未起動ならキャラ移動は行えない
-    let Some(tx) = PHYSICS_TX.with(|p| p.borrow().clone()) else { return 0 };
-
     let world  = &mut *wptr;
     let entity = Entity::from_raw(idx, generation);
 
-    // 現在のワールド Transform（位置・回転）を読む。無ければ対象外。
+    // 現在の Transform（回転・スケールを維持するため）を読む。無ければ対象外。
     let Some(cur) = world.get::<Transform>(entity).cloned() else { return 0 };
-    let position = cur.position;
+    let new_pos  = [*pos, *pos.add(1), *pos.add(2)];
     let rotation = euler_deg_to_quat_arr(cur.rotation);
 
-    // ECS Entity → DFS 順 ID（物理スレッドがコライダー形状取得・自己除外に使う）。
-    // Actor ツリー未公開（フェーズ外）や物理未登録アクターなら失敗扱い。
-    let actors_ptr = ACTORS_PTR.with(|p| p.get());
-    if actors_ptr.is_null() { return 0; }
-    let Some(entity_id) = dfs_id_by_entity(&*actors_ptr, entity) else { return 0 };
-
-    let motion_arr = [*motion, *motion.add(1), *motion.add(2)];
-
-    // 同期問い合わせ（Raycast と同じ reply チャンネル方式）
-    let (reply_tx, reply_rx) =
-        crossbeam_channel::bounded::<Option<crate::engine::physics::CharacterMoveResult>>(1);
-    let cmd = PhysicsCommand::MoveCharacter {
-        entity_id,
-        position,
-        rotation,
-        motion: motion_arr,
-        reply:  reply_tx,
-    };
-    if tx.send(cmd).is_err() { return 0; }
-
-    let res = match reply_rx.recv_timeout(
-        std::time::Duration::from_millis(MOVE_CHARACTER_TIMEOUT_MS),
-    ) {
-        Ok(Some(r)) => r,
-        _           => return 0,
-    };
-
-    // 補正後の新しいワールド位置を計算する（回転・スケールは維持）
-    let new_position = [
-        position[0] + res.translation[0],
-        position[1] + res.translation[1],
-        position[2] + res.translation[2],
-    ];
+    // 1. ECS Transform 位置を新位置へ設定（集約関数経由で instance_mats・全子孫へ伝播）
     let mut next = cur;
-    next.position = new_position;
-
-    // 集約関数経由で反映（instance_mats・全子孫アクタへ伝播）。
-    // Actor ツリー未公開時のフォールバックは Transform 値のみ反映する。
+    next.position = new_pos;
     match actor_of_entity(entity) {
         Some(actor) => {
             crate::engine::core::transform_sync::set_actor_world_transform(actor, world, next, 0);
         }
         None => {
-            if let Some(t) = world.get_mut::<Transform>(entity) { t.position = new_position; }
+            if let Some(t) = world.get_mut::<Transform>(entity) { t.position = new_pos; }
         }
     }
 
-    // 結果を書き込む: [moved.xyz, grounded(0/1)]
-    *out_result        = res.translation[0];
-    *out_result.add(1) = res.translation[1];
-    *out_result.add(2) = res.translation[2];
-    *out_result.add(3) = if res.grounded { 1.0 } else { 0.0 };
+    // 2. 物理側の前回位置を強制リセットする（キャラでなければ物理側で無視される）。
+    //    Actor ツリー未公開・物理未起動・DFS 逆引き失敗時は ECS 設定のみで完了扱い。
+    if let Some(tx) = PHYSICS_TX.with(|p| p.borrow().clone()) {
+        let actors_ptr = ACTORS_PTR.with(|p| p.get());
+        if !actors_ptr.is_null() {
+            if let Some(entity_id) = dfs_id_by_entity(&*actors_ptr, entity) {
+                let _ = tx.send(PhysicsCommand::TeleportCharacter {
+                    entity_id, position: new_pos, rotation,
+                });
+            }
+        }
+    }
     1
+}
+
+/// キャラクターコントローラーの接地状態を返す。接地=1 / 非接地・未登録=0。
+///
+/// C# `Physics.IsGrounded(actor)` 用。物理スレッドが StepCharacter で更新した grounded を
+/// メインスレッドがフレームごとに ECS Entity をキーに公開（publish_grounded_states）した
+/// スナップショットを参照する。
+unsafe extern "system" fn ffi_is_grounded(idx: u32, generation: u32) -> i32 {
+    let entity = Entity::from_raw(idx, generation);
+    let grounded = GROUNDED_STATES.with(|p| {
+        p.borrow().iter().find(|(e, _)| *e == entity).map(|(_, g)| *g).unwrap_or(false)
+    });
+    if grounded { 1 } else { 0 }
 }
 
 // ─── オーディオ FFI ──────────────────────────────────────────
@@ -1165,6 +1139,18 @@ thread_local! {
     /// AudioManager は App が所有するため、frame_renderer がフレームごとに
     /// 再生中スロットのスナップショットを公開する。
     static PLAYING_AUDIO_SLOTS: RefCell<Vec<Entity>> = const { RefCell::new(Vec::new()) };
+
+    /// キャラクターコントローラーの接地状態スナップショット（アクターエンティティ → grounded）。
+    /// update_physics が物理スレッドの character_updates を受信するたびに更新・公開し、
+    /// スクリプトの Physics.IsGrounded がこの値を参照する。
+    /// 新しい物理結果が無いフレームでは更新されず、前回値が維持される。
+    static GROUNDED_STATES: RefCell<Vec<(Entity, bool)>> = const { RefCell::new(Vec::new()) };
+}
+
+/// キャラクターコントローラーの接地状態スナップショットを公開する。
+/// update_physics が character_updates 受信時に呼ぶ（DFS ID は ECS Entity へ変換済み）。
+pub fn publish_grounded_states(states: Vec<(Entity, bool)>) {
+    GROUNDED_STATES.with(|p| *p.borrow_mut() = states);
 }
 
 /// 再生中の AudioComponent スロット一覧を公開する（フレームごとに更新）。
@@ -1346,9 +1332,10 @@ pub struct ScriptHostApi {
     screen_position:   unsafe extern "system" fn(u32, u32, *mut f32) -> i32,
     animator_component: unsafe extern "system" fn(i32, u32, u32, *const u8, i32, f32) -> i32,
     particle_component: unsafe extern "system" fn(i32, u32, u32, i32) -> i32,
-    // キャラクターコントローラー移動（Physics.MoveActor）。
+    // キャラクターコントローラー系（Transform.Teleport / Physics.IsGrounded）。
     // 新カテゴリ API のため構造体末尾に追加した（C# ScriptHost.cs も末尾に同順で追加）。
-    move_character:     unsafe extern "system" fn(u32, u32, *const f32, *mut f32) -> i32,
+    teleport:           unsafe extern "system" fn(u32, u32, *const f32) -> i32,
+    is_grounded:        unsafe extern "system" fn(u32, u32) -> i32,
 }
 
 // 関数ポインタは Sync。プロセス全体で 1 つの静的表を共有する。
@@ -1371,7 +1358,8 @@ static HOST_API: ScriptHostApi = ScriptHostApi {
     screen_position:   ffi_screen_position,
     animator_component: ffi_animator_component,
     particle_component: ffi_particle_component,
-    move_character:     ffi_move_character,
+    teleport:           ffi_teleport,
+    is_grounded:        ffi_is_grounded,
 };
 
 /// C# へ渡す関数ポインタ表へのポインタを返す（RegisterHostApi 用）。
