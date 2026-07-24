@@ -817,10 +817,29 @@ public partial class HierarchyPanel : UserControl
             menu.Items.Add(new Separator());
             AddMenuItem(menu, "アクタファイルを開く", null,
                 (_, _) => PrefabSourceOpenRequested?.Invoke(prefabNode.Id));
+            AddMenuItem(menu, "プレハブから更新", null,
+                (_, _) => ConfirmAndReapplyPrefab(prefabNode.Id));
             AddMenuItem(menu, "プレハブリンク解除", null,
                 (_, _) => ConfirmAndUnlinkPrefab(prefabNode.Id));
         }
         return menu;
+    }
+
+    /// <summary>
+    /// 確認ダイアログを表示し、承諾されたら指定アクターをプレハブ(.actor)の内容で
+    /// 再展開する（PREFAB_REAPPLY 送信）。
+    /// シーン上で加えた変更（コンポーネント追加・値変更・子の追加など）は破棄されるため、
+    /// 破壊的操作として警告付きの OKCancel ダイアログで確認を取る。
+    /// </summary>
+    private void ConfirmAndReapplyPrefab(int actorDfsId)
+    {
+        var result = MessageBox.Show(
+            "このアクターをプレハブ（アクタファイル）の内容で上書きします。\n" +
+            "シーン上で加えた変更（コンポーネントの追加・値の変更・子の追加など）は失われます。\n" +
+            "続行しますか？",
+            "プレハブから更新", MessageBoxButton.OKCancel, MessageBoxImage.Warning);
+        if (result != MessageBoxResult.OK) return;
+        _runtime?.SendToRuntime($"PREFAB_REAPPLY:{actorDfsId}");
     }
 
     /// <summary>

@@ -526,10 +526,16 @@ pub enum IpcCommand {
     ExportActor { dfs_id: u32, path: String },
 
     /// プレハブ参照リンクを解除する（アクターの prefab_source を None にする）。
-    /// 以後このアクターはシーンロード時再展開・.actor 保存時ライブ反映の対象外となり、
+    /// 以後このアクターは「プレハブから更新」・.actor 保存時ライブ反映の対象外となり、
     /// 独立したアクターツリーとしてシーンに保存・維持される。
     /// フォーマット: UNLINK_PREFAB:{actor_dfs}
     UnlinkPrefab { actor_dfs: u32 },
+
+    /// プレハブインスタンスを参照先 .actor の内容で再展開する（ユーザーの明示操作）。
+    /// 指定アクタ自身がプレハブならそれを、そうでなければ配下のプレハブインスタンスを対象とする。
+    /// シーン上でインスタンスへ加えた変更は破棄されるため、エディタ側で確認ダイアログ必須。
+    /// フォーマット: PREFAB_REAPPLY:{actor_dfs}
+    ReapplyPrefab { actor_dfs: u32 },
 
     /// 編集時の物理シミュレーション設定。
     /// enabled=true かつ with_rigidbody=false : 重力なし・全ボディを kinematic として衝突検出のみ
@@ -1904,6 +1910,12 @@ fn read_loop(file: std::fs::File, tx: mpsc::Sender<IpcCommand>) {
                             // フォーマット: UNLINK_PREFAB:{actor_dfs}
                             s["UNLINK_PREFAB:".len()..].trim().parse::<u32>().ok()
                                 .map(|actor_dfs| IpcCommand::UnlinkPrefab { actor_dfs })
+                        }
+
+                        s if s.starts_with("PREFAB_REAPPLY:") => {
+                            // フォーマット: PREFAB_REAPPLY:{actor_dfs}
+                            s["PREFAB_REAPPLY:".len()..].trim().parse::<u32>().ok()
+                                .map(|actor_dfs| IpcCommand::ReapplyPrefab { actor_dfs })
                         }
 
                         "EDIT_PHYSICS_PLAY_PAUSE" => {

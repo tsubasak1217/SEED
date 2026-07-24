@@ -12,10 +12,14 @@
 //   - 参照先ファイルが無い／読めない場合: シーン保存値のまま（リンク維持）
 //
 //  適用タイミング:
-//   - シーンロード時（apply_prefab_links_on_load）: 通常シーン(world_line=0)の
-//     prefab_source 付きアクタをファイル最新内容で再展開する。
+//   - シーンロード時: 再展開は「行わない」。シーン(.scene)に保存された内容を正とする。
+//     （旧実装は apply_prefab_links_on_load でロード毎に上書きしており、インスタンスへ
+//       加えた変更が失われるデータ損失バグの原因だった。関数自体は再利用のため残す。）
+//   - ユーザーの明示操作（handle_reapply_prefab / IPC: PREFAB_REAPPLY）: 指定アクタ
+//     配下のプレハブインスタンスだけをファイル最新内容で再展開する（Undo 可能）。
 //   - .actor 保存／エクスポート時（propagate_prefab_change）: ロード中シーンの
 //     同じ参照パスを持つ全インスタンスへライブ反映する（Undo 可能）。
+//     ※ この経路はユーザーがプレハブ本体を編集した文脈のため従来どおり残している。
 //
 //  ネスト・自己参照（P1 の扱い）:
 //   - ネストプレハブ（.actor 内のアクタがさらに prefab_source を持つ）は
@@ -42,11 +46,15 @@ use super::{App, despawn_actor_recursive, find_actor_by_dfs_mut, apply_delta_to_
 const SINGULAR_SCALE_EPS: f32 = 1e-7;
 
 impl App {
-    /// シーンロード時にプレハブ参照リンク付きアクタを再展開する（通常シーン world_line=0）。
+    /// 通常シーン（world_line=0）の全プレハブインスタンスを一括再展開する。
     ///
-    /// LoadScene ハンドラから呼ぶ。参照先ファイルの最新内容でサブツリーを差し替える
-    /// （ルート Transform/name/active/world_line は維持）。ロードの一部であり Undo 対象外。
-    /// 通知（send_hierarchy）は呼び出し側（LoadScene）が行うためここでは通知しない。
+    /// 【現在は呼び出し元なし】
+    /// 以前は LoadScene ハンドラから呼んでいたが、シーンに保存済みのインスタンス変更を
+    /// 毎回破棄してしまうデータ損失バグの原因だったため呼び出しを外した
+    /// （ipc_handler.rs の LoadScene 内コメント参照）。
+    /// 「シーン全体をプレハブ最新内容へ揃える」一括コマンドを将来足す際に再利用できるよう
+    /// 実装は残してある。
+    #[allow(dead_code)]
     pub(super) fn apply_prefab_links_on_load(&mut self) {
         // filter=None: world_line=0 の全プレハブインスタンスを対象に再展開する
         let _ = self.run_prefab_reinstantiation(0, None);
@@ -83,6 +91,65 @@ impl App {
         self.send_hierarchy();
         // 選択中アクターがある場合はコンポーネント表示を最新内容へ更新する（best-effort）。
         // 再展開で DFS が変動し得るが、C# ウェーブ以前の暫定対応として現行選択 DFS を再送する。
+        if let Some(dfs) = self.actor_virtual_selected_idx {
+            self.send_actor_components(dfs as u32, self.actor_virtual_selected_slot_idx);
+        }
+        if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
+    }
+
+    /// 指定アクタ配下のプレハブインスタンスを、参照先 .actor の内容で再展開する
+    /// （右クリックメニュー「プレハブから更新」用 / IPC: PREFAB_REAPPLY）。
+    ///
+    /// シーンロード時の自動再展開を廃止した代わりの、ユーザー明示操作の入口。
+    /// 対象アクタ自身がプレハブインスタンスならそれを再展開し、そうでなければ
+    /// 子孫にネストされたプレハブインスタンスを探して再展開する。
+    ///
+    /// 【破壊的操作】シーン上でインスタンスへ加えた変更（コンポーネントの追加・値の変更・
+    /// 子の追加など）はファイル内容で上書きされて失われる。エディタ側で確認ダイアログを
+    /// 出したうえで送信すること。Undo で 1 操作として戻せる。
+    pub(super) fn handle_reapply_prefab(&mut self, actor_dfs: u32) {
+        let wl = self.active_world_line;
+        // シーン未ロード・描画コンテキスト未初期化なら何もしない
+        if self.scene.is_none() || self.draw_ctx.is_none() { return; }
+
+        // Undo 用に再展開前のツリーをスナップショットする
+        let before_actors = self.snapshot_actors_for_wl(wl);
+        let host = self.scripting_host.clone();
+
+        // scene を取り出して draw_ctx（&self）との同時借用を回避する
+        // （run_prefab_reinstantiation / rebuild_actors_for_wl と同じパターン）
+        let mut scene = self.scene.take().unwrap();
+        let mut changed = false;
+        {
+            let ctx = self.draw_ctx.as_ref().unwrap();
+            let mut counter = 0u32;
+            // scene.actors と scene.world は別フィールドなので同時可変借用できる
+            if let Some(actor) =
+                find_actor_by_dfs_mut(&mut scene.actors, wl, actor_dfs, &mut counter)
+            {
+                reapply_prefab_in_subtree(
+                    actor, &mut scene.world, ctx, host.as_ref(), &mut changed,
+                );
+            }
+        }
+        self.scene = Some(scene);
+
+        // 対象が見つからない／プレハブを含まない場合は履歴も通知も出さない
+        if !changed { return; }
+
+        // 再展開で 2D/3D 構成が変化し得るため canvas_world_lines を同期する
+        self.update_canvas_wl_state_for(wl);
+
+        // 再展開後のツリーをスナップショットし、1 操作として Undo 履歴へ記録する
+        let after_actors = self.snapshot_actors_for_wl(wl);
+        self.undo_history.record(Box::new(ActorTreeSnapshotCommand {
+            world_line: wl,
+            before_actors,
+            after_actors,
+        }));
+
+        // エディタへ通知する（ヒエラルキー・選択中インスペクタ・シーン変更）
+        self.send_hierarchy();
         if let Some(dfs) = self.actor_virtual_selected_idx {
             self.send_actor_components(dfs as u32, self.actor_virtual_selected_slot_idx);
         }
@@ -160,6 +227,34 @@ impl App {
 // ============================================================
 //  再展開の実装（フリー関数）
 // ============================================================
+
+/// 1 つのアクタ（とその配下）に限定してプレハブ再展開を行う。
+///
+/// - `actor` 自身が prefab_source を持つ ＝ プレハブインスタンスのルートなら、それを再展開する
+///   （ネストプレハブは P1 と同じく 1 段のみ。子へは再帰しない）。
+/// - そうでなければ、子ツリーを再帰的に探索してネストされたプレハブインスタンスを再展開する。
+///
+/// `changed` は 1 件でも再展開したら true にセットされる。
+fn reapply_prefab_in_subtree(
+    actor:   &mut Actor,
+    world:   &mut World,
+    ctx:     &DrawContext,
+    host:    Option<&Arc<ScriptingHost>>,
+    changed: &mut bool,
+) {
+    if let Some(src) = actor.prefab_source.clone() {
+        reinstantiate_single(actor, world, ctx, host, &src, changed);
+        return;
+    }
+    // 通常アクタ: 子側にネストされたプレハブインスタンスを探す
+    // （is_top=false のため world_line フィルタは適用されない。filter=None で全プレハブ対象）
+    // world_line は children_mut() の可変借用より先に取り出しておく
+    let wl = actor.world_line;
+    reinstantiate_prefabs_in_actors(
+        actor.children_mut(), world, ctx, host,
+        wl, false, None, changed,
+    );
+}
 
 /// アクター配列を走査し、プレハブインスタンス（prefab_source 付き）を再展開する。
 ///
