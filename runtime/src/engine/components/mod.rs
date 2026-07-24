@@ -175,3 +175,33 @@ pub enum ComponentData {
     /// 地形チャンク（ボクセル地形の 1 チャンク識別＋.tvox リンク・内部管理用）
     TerrainChunkComponent(TerrainChunkComponentData),
 }
+
+impl ComponentData {
+    /// シリアライズ表現上の型タグ（`#[serde(tag = "type")]` に出力される文字列）を返す。
+    ///
+    /// プレハブオーバーライドの照合キーに使う。serde の `rename` を含めて
+    /// **JSON へ実際に書き出される文字列と一致させること**。
+    /// バリアント追加時はこの match が非網羅でコンパイルエラーになるため取りこぼさない。
+    pub fn type_tag(&self) -> &'static str {
+        match self {
+            Self::ModelComponent(_)            => "ModelComponent",
+            Self::ScriptComponent(_)           => "ScriptComponent",
+            Self::CanvasComponent(_)           => "CanvasComponent",
+            Self::SpriteComponent(_)           => "SpriteComponent",
+            Self::InputMapComponent(_)         => "InputMapComponent",
+            Self::CameraComponent(_)           => "CameraComponent",
+            Self::PluginComponent(_)           => "PluginComponent",
+            Self::ColliderComponent(_)         => "ColliderComponent",
+            Self::Collider2dComponent(_)       => "Collider2dComponent",
+            // serde(rename) に合わせる（旧フォーマット互換の型名）
+            Self::LegacyRigidbodyComponent(_)  => "RigidbodyComponent",
+            Self::AudioComponent(_)            => "AudioComponent",
+            Self::AnimatorComponent(_)         => "AnimatorComponent",
+            Self::LightComponent(_)            => "LightComponent",
+            Self::JointAttachComponent(_)      => "JointAttachComponent",
+            Self::ParticleEmitterComponent(_)  => "ParticleEmitterComponent",
+            Self::SkyboxComponent(_)           => "SkyboxComponent",
+            Self::TerrainChunkComponent(_)     => "TerrainChunkComponent",
+        }
+    }
+}

@@ -9,6 +9,8 @@
 //  再展開（reinstantiate）のルール:
 //   - 維持する値: ルートの Transform / CanvasTransform・name・active・world_line
 //   - 置換する値: 子ツリー・コンポーネント（＝ファイル内容で丸ごと差し替え）
+//   - ただし `prefab_overrides`（シーン側で加えた差分）は展開データへマージし直すため
+//     失われない。詳細は structs/objects/prefab/ を参照。
 //   - 参照先ファイルが無い／読めない場合: シーン保存値のまま（リンク維持）
 //
 //  適用タイミング:
@@ -33,13 +35,15 @@ use crate::engine::methods::drawer::DrawContext;
 use crate::engine::core::scripting::ScriptingHost;
 use crate::engine::core::app_base::scene::build_actor;
 use crate::engine::core::app_base::undo::ActorTreeSnapshotCommand;
-use crate::engine::methods::gizmo_interact::{mat4x4_mul, mat4x4_inv};
 
-use super::{App, despawn_actor_recursive, find_actor_by_dfs_mut, apply_delta_to_actor_subtree};
+use super::{App, despawn_actor_recursive, find_actor_by_dfs_mut};
 
-/// スケールが実質 0（逆行列が特異）とみなす閾値。
-/// handle_set_actor_transform（transform_ops.rs）の特異判定と同じ値を使用する。
-const SINGULAR_SCALE_EPS: f32 = 1e-7;
+// スケールが実質 0（逆行列が特異）とみなす閾値。
+// handle_set_actor_transform（transform_ops.rs）の特異判定と同じ値を使用する。
+// 差分抽出（prefab::extract）と判定を必ず一致させるため、定義は prefab モジュールに集約している。
+use crate::engine::structs::objects::prefab::{
+    SINGULAR_SCALE_EPS, apply_delta_to_subtree, compute_delta_for_root, merge_overrides_into,
+};
 
 impl App {
     /// シーンロード時にプレハブ参照リンク付きアクタを再展開する（通常シーン world_line=0）。
@@ -222,7 +226,8 @@ fn reinstantiate_prefabs_in_actors(
 
 /// 1 つのプレハブインスタンス `slot` を、参照先ファイルの内容で再展開する（in place 置換）。
 ///
-/// 維持: ルートの Transform/CanvasTransform・name・active・world_line・prefab_source。
+/// 維持: ルートの Transform/CanvasTransform・name・active・world_line・prefab_source、
+///       および prefab_overrides（シーン側の差分。展開データへマージし直す）。
 /// 置換: 子ツリー・コンポーネント（ファイル内容で丸ごと差し替え）。
 /// ファイル欠損・パース失敗・構築失敗・自己参照のいずれかの場合は再展開せず
 /// 旧インスタンスを維持する（＝リンク維持）。
@@ -265,6 +270,53 @@ fn reinstantiate_single(
     let keep_wl     = slot.world_line;
     let keep_tf     = world.get::<Transform>(slot.entity).cloned();
     let keep_ct     = world.get::<CanvasTransform>(slot.entity).cloned();
+    // シーン側の差分（プレハブオーバーライド）も維持する。
+    // 展開データへマージし直すことで、ユーザーの変更がファイル内容に上書きされない。
+    let keep_overrides = slot.prefab_overrides.clone();
+
+    // ── ファイル内容（ActorData）へ、維持値と差分を反映する ──
+    // ECS へ載せる前のデータ段階で加工しておくことで、構築経路は build_actor 一本のまま
+    // 済む（コンポーネント種別ごとの構築処理を二重に持たないため取りこぼしが起きない）。
+    let mut data = data;
+
+    // 3D: ファイル内容は「ルート位置＝原点」基準で作られており、instance_mats・子 Transform は
+    // ワールド空間で保持される（毎フレームの親子再計算は無い）。シーン側のルート Transform を
+    // 書き戻すだけではメッシュ位置が追従しないため、ファイル側ルート Transform との差分
+    // delta = M_keep * M_file^{-1} をサブツリー全体（MC 行列・子 Transform）へ適用する。
+    // 2D: スプライト描画は毎フレーム CanvasTransform 階層から再計算されるため補正は不要。
+    let is_2d = data.actor_kind == crate::engine::structs::objects::actor::ActorKind::Actor2D;
+    match compute_delta_for_root(keep_tf.as_ref(), is_2d, &data) {
+        Some(delta) => apply_delta_to_subtree(&mut data, delta),
+        None => {
+            // 補正なしのケースのうち、スケール特異だけは想定外なので警告を出す
+            // （2D・Transform 無し・同値は正常系のため無言でスキップする）。
+            if !is_2d {
+                if let Some(keep) = keep_tf.as_ref() {
+                    let file_tf = data.transform.clone().unwrap_or_default();
+                    if *keep != file_tf && file_tf.scale.iter().any(|&s| s.abs() < SINGULAR_SCALE_EPS) {
+                        eprintln!("[Prefab] ファイル側ルートスケールが 0 のため行列補正をスキップ: {src}");
+                    }
+                }
+            }
+        }
+    }
+
+    // シーン側の差分を、行列補正の **後** にマージする。
+    // オーバーライドの値はシーン保存時のワールド空間の値そのものなので、
+    // 補正前にマージすると二重に変換されてしまう。
+    merge_overrides_into(&mut data, &keep_overrides);
+
+    // 維持する値を書き戻す（ルート Transform / CanvasTransform・name・active）。
+    // 種別がファイル側で変わっているケースでも安全なよう、種別に応じて選ぶ。
+    if is_2d {
+        if let Some(ct) = keep_ct { data.canvas_transform = Some(ct); }
+    } else if let Some(tf) = keep_tf {
+        data.transform = Some(tf);
+    }
+    data.name             = keep_name;
+    data.active           = keep_active;
+    data.prefab_source    = Some(src.to_string());
+    data.prefab_overrides = keep_overrides;
 
     // ── ファイルからサブツリーを新規構築する（新規 entity を spawn）──
     // 先に構築し、成功してから旧インスタンスを despawn することで、構築失敗時に
@@ -280,41 +332,8 @@ fn reinstantiate_single(
     // ── 旧インスタンスのエンティティ群を despawn する（構築成功後に実施）──
     despawn_actor_recursive(slot, world);
 
-    // ── 退避値を書き戻す ──
-    new_actor.name          = keep_name;
-    new_actor.active        = keep_active;
-    new_actor.prefab_source = Some(src.to_string());
+    // 世界線を自身と全子孫へ伝播する（ファイル由来のノードは 0 で構築されるため）
     new_actor.set_world_line_recursive(keep_wl);
-    // ルート Transform を維持する。新アクターの種別に合わせて適切な型を挿入する
-    // （種別がファイル側で変わっているケースでも安全に処理できるよう両方を退避してある）。
-    if new_actor.is_2d() {
-        // 2D: スプライト描画は毎フレーム CanvasTransform 階層から再計算されるため、
-        // ルート CanvasTransform の書き戻しのみで整合する（行列の再基準化は不要）。
-        if let Some(ct) = keep_ct {
-            world.insert(new_actor.entity, ct);
-        }
-    } else if let Some(keep) = keep_tf {
-        // 3D: ファイル内容は「ルート位置＝原点」基準で構築されており、instance_mats・
-        // 子 Transform はワールド空間で保持される（毎フレームの親子再計算は無い）。
-        // シーン側のルート Transform（keep）を書き戻すだけではメッシュ位置が追従しない
-        // ため、ファイル側ルート Transform との差分 delta = M_keep * M_file^{-1} を
-        // サブツリー全体（MC 行列・子 Transform）へ適用して見た目を整合させる。
-        let file_tf = world.get::<Transform>(new_actor.entity).cloned().unwrap_or_default();
-        world.insert(new_actor.entity, keep.clone());
-        // keep == file_tf（通常はドロップ直後など未移動のケース）は delta が単位行列の
-        // ため適用しない（浮動小数点誤差の累積蓄積を防ぐ）。
-        if keep != file_tf {
-            // ファイル側スケールが 0 の場合は逆行列が特異になるため delta 適用をスキップする
-            // （handle_set_actor_transform と同じガード）。
-            let singular = file_tf.scale.iter().any(|&s| s.abs() < SINGULAR_SCALE_EPS);
-            if singular {
-                eprintln!("[Prefab] ファイル側ルートスケールが 0 のため行列補正をスキップ: {src}");
-            } else {
-                let delta = mat4x4_mul(keep.to_mat4(), mat4x4_inv(file_tf.to_mat4()));
-                apply_delta_to_actor_subtree(&mut new_actor, world, delta);
-            }
-        }
-    }
 
     // ── ツリー内のインスタンスを置き換える ──
     *slot = new_actor;

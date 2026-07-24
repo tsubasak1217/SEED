@@ -1071,6 +1071,9 @@ impl App {
             // 参照リンクを持たない。出力前に prefab_source を除去して、テンプレートに
             // 参照リンクが混入する（＝自己参照・二重リンク）ことを防ぐ。
             data.prefab_source = None;
+            // 同様に、テンプレートは「特定インスタンスの差分」を持たない。
+            // オーバーライドはシーン側の概念なので書き出さない。
+            data.prefab_overrides = Default::default();
 
             // ルート Transform の position のみ 0 にリセットする（配置時の起点をオリジンに統一）。
             // rotation / scale はプレハブの見た目を保つため保存値を維持する。
