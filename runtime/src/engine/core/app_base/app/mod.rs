@@ -857,6 +857,20 @@ pub struct App {
     /// 直近フレームの 2D Dynamic ボディ速度キャッシュ（ECS Entity → (linvel, angvel スカラー)）。
     pub(super) current_vel_cache_2d: std::collections::HashMap<crate::engine::ecs::Entity, ([f32; 2], f32)>,
 
+    /// キャラクターコントローラーの「保留中の補正結果」: (entity_id, 補正後位置 [x,y,z], grounded)。
+    ///
+    /// 【非同期パイプラインの反映タイミング制御・実行時のみ／シリアライズ対象外】
+    ///   update_physics（フレーム先頭・スクリプト実行前）で物理スレッドの
+    ///   `PhysicsResult.character_updates` を受信するが、**その場では ECS へ反映しない**。
+    ///   ここへ退避するだけにする。直後にスクリプトが `transform.Position += move` で
+    ///   希望位置（地形貫通しうる値）を ECS へ書くため、フレーム先頭で補正を反映しても
+    ///   同フレームのスクリプト直書きに上書きされ、描画に貫通位置が出てしまうからである。
+    ///   実際の ECS 反映は sync_character_controllers（スクリプト実行後・描画直前）が行い、
+    ///   スクリプトの貫通直書きをクランプ済みの補正後位置で上書きする。
+    ///   補正は 1 フレーム古いが、物理は char_last_pos を基準に毎フレーム move 差分を解決するため
+    ///   キャラは動き、クランプが効くのですり抜けは起きない。
+    pub(super) pending_character_corrections: Vec<(u64, [f32; 3], bool)>,
+
     /// タブ復帰時に「次の start_physics で初速として積む速度」（一回性）。
     /// Some のときだけ collect_physics_objects が該当 Entity の初速を上書きする。
     /// start 直後に None へ戻すことで、他の多数の start_physics 呼び出しは初速なしを保つ。
@@ -1070,6 +1084,7 @@ impl App {
             tab_physics:            std::collections::HashMap::new(),
             current_vel_cache_3d:   std::collections::HashMap::new(),
             current_vel_cache_2d:   std::collections::HashMap::new(),
+            pending_character_corrections: Vec::new(),
             pending_restore_vel_3d: None,
             pending_restore_vel_2d: None,
             // handle_resumed で project_settings.json から上書きされる
