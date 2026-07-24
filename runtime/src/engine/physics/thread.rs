@@ -43,14 +43,14 @@ use super::types::{
 
 // ─── キャラクターコントローラー診断ログ ──────────────────────────────────────
 //
-//  ResolveCharacter（キャラクター同期解決）の切り分け用ログ。既定オフ。
+//  StepCharacter（キャラクター非同期解決）の切り分け用ログ。既定オフ。
 //  環境変数 SEED_CHAR_LOG を設定したときだけ、最初の N 回だけ stderr へ出す。
 //  既存の PHYS_LOG_ENABLED（physics_ops.rs）と同じ作法（既定オフ・件数上限で洪水防止）。
 
-/// キャラクター診断ログ（`[CharCtl]` 行）を出力するかどうか。
-/// 【一時診断】貫通バグ切り分けのため常時 ON（上限 CHAR_LOG_MAX_FRAMES で洪水防止）。原因特定後に env ゲートへ戻す。
+/// キャラクター診断ログ（`[CharCtl]` 行）を出力するかどうか。既定オフ。
+/// 環境変数 SEED_CHAR_LOG を設定したときだけ有効化する（上限 CHAR_LOG_MAX_FRAMES で洪水防止）。
 static CHAR_LOG_ENABLED: std::sync::LazyLock<bool> =
-    std::sync::LazyLock::new(|| true || std::env::var_os("SEED_CHAR_LOG").is_some());
+    std::sync::LazyLock::new(|| std::env::var_os("SEED_CHAR_LOG").is_some());
 
 /// これまでに出力した `[CharCtl]` 行の件数（洪水防止の上限判定に使う）。
 static CHAR_LOG_FRAMES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
@@ -228,10 +228,13 @@ struct PhysicsEntry {
     /// キャラクターコントローラーかどうか（StepCharacter による差分解決の対象か）。
     is_character: bool,
     /// キャラクターコントローラーの「前回解決済みワールド位置」[x, y, z]。
-    /// ResolveCharacter が (希望位置 - この値) を moveVector として解決し、補正後位置で更新する。
+    /// StepCharacter が (希望位置 - この値) を moveVector として解決し、補正後位置で更新する。
     /// 初期値はコライダー登録時のアクターワールド位置。
     char_last_pos: [f32; 3],
-    // 【撤去】接地判定は ResolveCharacter の reply でその場返しするため、entry に保持しない。
+    /// キャラクターコントローラーの最新接地状態（move_shape の grounded）。
+    /// StepCharacter 解決時に更新し、collect_results が character_updates に載せてメインへ返す。
+    /// 非同期化に伴い reply でその場返しできなくなったため entry に保持する（旧設計から復活）。
+    char_grounded: bool,
 }
 
 /// SetBodyKinematic によるコライダー再生成のためのデータ。
@@ -348,53 +351,46 @@ fn run_physics_loop(
                     let _ = reply.send(hit);
                     false
                 }
-                PhysicsCommand::ResolveCharacter { entity_id, desired_position, rotation, reply } => {
-                    // キャラクターコントローラーの差分解決（同期問い合わせ・フレーム 1 回）。
-                    // query_pipeline は step のたびに更新済み。前回解決済み位置との差分を
-                    // KCC で衝突解決し、entry の char_last_pos を更新すると同時に
-                    // 物理ワールドのコライダー位置も補正後位置へ同期する。
-                    // 補正後位置＋接地を reply でその場返しし、メインが描画前に ECS へ書き戻す。
+                PhysicsCommand::StepCharacter { entity_id, desired_position, rotation } => {
+                    // キャラクターコントローラーの差分解決（**非同期・投げっぱなし**）。
+                    // メインは希望位置を送るだけで待たない。ここで前回解決済み位置との差分を
+                    // KCC で衝突解決し、entry の char_last_pos（補正後位置）と char_grounded（接地）を
+                    // 更新すると同時に、物理ワールドのコライダー位置も補正後位置へ同期する。
+                    // 補正後位置＋接地は collect_results が PhysicsResult.character_updates に載せて
+                    // メインへ返し、メインは次フレームの結果受信で ECS へ反映する（1 フレームラグ）。
                     //
-                    // 【診断ログ】SEED_CHAR_LOG 設定時のみ、最初の N 回だけ切り分け情報を出す。
-                    // 物理 entry の有無・desired・motion・KCC 補正・corrected・grounded に加え、
-                    // 「物理ワールドに Static コライダー（地形）が登録されているか」を出力し、
-                    // 地形が物理世界に無くて検出できないケースを切り分けられるようにする。
+                    // 【なぜ非同期にするか】move_shape 自体は実測 0.03ms と極めて速いが、以前の同期
+                    // 方式（reply を待つ）は grass 描画等の高負荷下で OS スケジューリング遅延による
+                    // reply 配送待ち（15〜200ms）がそのままメインの毎フレームブロックになり FPS を
+                    // 落としていた。非同期化で待ちを消し、代償は 1 フレームのラグだけに抑える。
+                    //
+                    // 【最適化】クエリパイプラインの全更新（フリーコライダー＝地形の索引）は
+                    // コライダー変化時（AddObject/RemoveObject）にだけ query_dirty 経由で行う。
+                    // 地形は静的なので一度索引すれば十分で、step() の増分更新はフリーコライダーを
+                    // 落とさないため索引は保持される（毎フレーム update すると 322 トライメッシュの
+                    // 再構築で重くなるため避ける）。
                     let diag = *CHAR_LOG_ENABLED
                         && CHAR_LOG_FRAMES.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
                             < CHAR_LOG_MAX_FRAMES;
                     // 補正前の前回位置（motion 算出・ログ用）を退避する。
                     let last_before = entries.get(&entity_id).map(|e| e.char_last_pos);
 
-                    // 【最適化】クエリパイプラインの全更新（フリーコライダー＝地形の索引）は
-                    // コライダー変化時（AddObject/RemoveObject）にだけ query_dirty 経由で行う。
-                    // ここで毎フレーム query_pipeline.update(322 トライメッシュ) を呼ぶと 1 回の
-                    // ResolveCharacter 処理が 16ms を超え、メイン側の reply 待ちが 100% タイムアウトして
-                    // 補正が ECS へ反映されなかった（実測）。地形は静的なので一度索引すれば十分で、
-                    // step() の増分更新はフリーコライダーを落とさないため索引は保持される。
-                    // 【一時診断】KCC の衝突解決（move_shape）の所要時間を実測する。
-                    // これが 16ms を超えていれば「move_shape 自体が地形トライメッシュに対して重い」
-                    // ＝reply タイムアウトの真因、と確定できる。
-                    let _t_resolve = std::time::Instant::now();
                     let resolved = perform_character_step(
                         &character_controller, &query_pipeline,
                         &mut rigid_body_set, &mut collider_set, &mut entries,
                         entity_id, desired_position, rotation,
                         PHYSICS_FIXED_STEP as Real,
                     );
-                    let resolve_ms = _t_resolve.elapsed().as_secs_f32() * 1000.0;
 
                     if diag {
-                        eprintln!("[CharCtl] resolve_ms={resolve_ms:.2}");
                         // Static コライダー（RigidBody を持たない＝地形・静的プロップ）の登録数。
                         // 0 なら「地形が物理ワールドに無い」＝キャラが検出できないケース。
                         let static_colliders = entries.values()
                             .filter(|e| e.rb_handle.is_none() && !e.is_character)
                             .count();
                         let total_colliders = collider_set.len();
-                        // 【追加診断】キャラ位置から真下(-Y)へレイを撃ち、地形表面までの距離を測る。
-                        //   Some(d)=直下 d[m] に地形あり（キャラは地形の上空に浮いている）
-                        //   None   =直下に地形が無い（地形内部に埋没 or 地形が検出されない）
-                        // これで「浮遊」「埋没」「未検出」を切り分ける。
+                        // キャラ位置から真下(-Y)へレイを撃ち、地形表面までの距離を測る。
+                        //   Some(d)=直下 d[m] に地形あり（浮遊）／None=直下に地形なし（埋没/未検出）
                         let down_hit: Option<f32> = last_before.and_then(|last| {
                             let ray = Ray::new(
                                 point![last[0], last[1], last[2]],
@@ -446,7 +442,8 @@ fn run_physics_loop(
                         }
                     }
 
-                    let _ = reply.send(resolved);
+                    // 非同期なので reply は送らない（補正後位置は collect_results 経由で返す）。
+                    let _ = resolved;
                     false
                 }
                 PhysicsCommand::CheckKinematicOverlap { entity_id, position, rotation, reply } => {
@@ -477,8 +474,8 @@ fn run_physics_loop(
     // コライダー集合が変化したフレームだけ true。true のときクエリパイプラインを全更新して
     // 地形（親剛体を持たないフリーコライダー）を索引し直す。step() の増分更新はフリー
     // コライダーを索引しないため、この明示更新が無いと move_shape が地形を検出できない。
-    // 毎フレーム更新は高コスト（322 トライメッシュの再構築で ResolveCharacter が 16ms 超）
-    // なので、変化時のみに限定して同期 reply のタイムアウトを防ぐ。
+    // 毎フレーム更新は高コスト（322 トライメッシュの再構築で StepCharacter の解決が重くなる）
+    // なので、変化時のみに限定してステップ処理を軽く保つ。
     let mut query_dirty = true;
 
     loop {
@@ -494,7 +491,7 @@ fn run_physics_loop(
 
         // コライダー集合が変化した（AddObject/RemoveObject）フレームだけ、クエリパイプラインを
         // 全更新して地形（フリーコライダー）を索引し直す。それ以外のフレームでは更新しない
-        // （毎フレームの再構築で ResolveCharacter が重くなり同期 reply がタイムアウトするのを防ぐ）。
+        // （毎フレームの再構築で StepCharacter の解決やステップが重くなるのを防ぐ）。
         if query_dirty {
             query_pipeline.update(&collider_set);
             query_dirty = false;
@@ -520,10 +517,9 @@ fn run_physics_loop(
         //   【なぜ sleep ではなく recv_timeout か（本改修の核心）】
         //   従来の `std::thread::sleep(≤1ms)` は Windows のタイマ粒度（約15.6ms）により
         //   実際には ~15ms 眠り、その間コマンドをドレインできないため、同期問い合わせ
-        //   （ResolveCharacter/Raycast/CheckKinematicOverlap）の reply がメインの
-        //   recv_timeout(40ms) にすら間に合わず 100% 取りこぼしていた（キャラが地形を貫通）。
-        //   recv_timeout ならコマンド到着で即座に起きてその場で処理でき、健全時は <1ms で
-        //   reply を返せる。到着が無ければ残り時間でタイムアウトしてステップへ進むため、
+        //   （Raycast/CheckKinematicOverlap）の reply や StepCharacter（非同期）の処理が
+        //   最大 ~15ms 遅れていた。recv_timeout ならコマンド到着で即座に起きてその場で処理でき、
+        //   健全時は <1ms で応答できる。到着が無ければ残り時間でタイムアウトしてステップへ進むため、
         //   物理ステップの精度・タイミング・順序は従来と一切変わらない。
         let now = Instant::now();
         if now < next_step {
@@ -675,14 +671,14 @@ fn perform_character_move(
 
 /// キャラクターコントローラーの「希望位置」を前回解決済み位置との差分で衝突解決する。
 ///
-/// ResolveCharacter コマンド（同期解決）の実体。次を行う純粋手続き:
+/// StepCharacter コマンド（非同期解決）の実体。次を行う純粋手続き:
 ///   1. moveVector = 希望位置 - 前回解決済み位置（char_last_pos）
 ///   2. `perform_character_move` で KCC が地形・静的コライダーと衝突解決（壁ずり・段差・スロープ）
-///   3. 補正後位置 = 前回位置 + 補正移動量 を求め、char_last_pos を更新
+///   3. 補正後位置 = 前回位置 + 補正移動量 を求め、char_last_pos／char_grounded を更新
 ///   4. 物理ワールドのコライダー姿勢も補正後位置へ同期（他オブジェクトのクエリ整合）
 ///
-/// 補正後位置と接地を `Some((corrected, grounded))` で返す。ResolveCharacter の同期 reply が
-/// これをそのままメインへ返し、メインが描画前に ECS へ書き戻す。
+/// 補正後位置と接地を `Some((corrected, grounded))` で返す。値は entry にも保存され、
+/// collect_results が PhysicsResult.character_updates に載せてメインへ返す（メインは次フレームで反映）。
 /// 対象が未登録・キャラクター指定でない・コライダーが引けない場合は `None`（何もしない）。
 #[allow(clippy::too_many_arguments)]
 fn perform_character_step(
@@ -724,9 +720,11 @@ fn perform_character_step(
         last[2] + res.translation[2],
     ];
 
-    // 前回位置を更新し、物理ワールドのコライダー姿勢も補正後位置へ同期する
+    // 前回位置・接地を更新し、物理ワールドのコライダー姿勢も補正後位置へ同期する。
+    // char_grounded は collect_results が character_updates に載せてメインへ返す（非同期反映）。
     if let Some(entry) = entries.get_mut(&entity_id) {
         entry.char_last_pos = corrected;
+        entry.char_grounded = res.grounded;
         sync_character_collider_pose(rb_set, col_set, entry, corrected, rotation);
     }
     Some((corrected, res.grounded))
@@ -928,7 +926,7 @@ fn handle_command(
         PhysicsCommand::Pause  => { /* ループ側で処理済み */ }
         PhysicsCommand::Resume => { /* ループ側で処理済み */ }
         PhysicsCommand::Raycast { .. } => { /* ループ側（コマンドドレイン）で処理済み */ }
-        PhysicsCommand::ResolveCharacter { .. } => { /* ループ側（コマンドドレイン）で処理済み */ }
+        PhysicsCommand::StepCharacter { .. } => { /* ループ側（コマンドドレイン）で処理済み */ }
         PhysicsCommand::CheckKinematicOverlap { .. } => { /* ループ側（コマンドドレイン）で処理済み */ }
 
         PhysicsCommand::TeleportCharacter { entity_id, position, rotation } => {
@@ -1303,6 +1301,8 @@ fn add_object(
         is_character: obj.is_character_controller,
         // 前回解決済み位置の初期値 = 登録時のアクターワールド位置。
         char_last_pos: obj.position,
+        // 接地状態の初期値は false（最初の StepCharacter 解決で更新される）。
+        char_grounded: false,
     });
 }
 
@@ -1442,14 +1442,23 @@ fn collect_results(
         if !active_trigger_entity_ids.contains(&oe) { active_trigger_entity_ids.push(oe); }
     }
 
-    // 【撤去】キャラクターの補正後位置・接地は `ResolveCharacter` の同期 reply でフレーム 1 回
-    // 返すため、ここでステップ結果に相乗りさせて収集する処理は不要になった。
+    // ── キャラクターコントローラー補正後位置・接地の収集（非同期反映） ──────────
+    // StepCharacter で解決済みの char_last_pos（補正後位置）と char_grounded（接地）を
+    // キャラごとに集めて character_updates に載せる。メインは update_physics の結果受信で
+    // これを走査し、補正後位置を ECS へ・接地を publish_grounded_states で公開する
+    // （希望位置を送った次フレームで反映＝1 フレームラグ。move_shape が 0.03ms と速いため許容）。
+    let mut character_updates: Vec<(u64, [f32; 3], bool)> = Vec::new();
+    for (entity_id, entry) in entries.iter() {
+        if !entry.is_character { continue; }
+        character_updates.push((*entity_id, entry.char_last_pos, entry.char_grounded));
+    }
 
     PhysicsResult {
         transform_updates, collision_events, trigger_events,
         active_contact_entity_ids, active_trigger_entity_ids,
         max_linear_speed, max_angular_speed,
         body_velocities,
+        character_updates,
     }
 }
 
@@ -1762,6 +1771,7 @@ mod tests {
             col_shape_data: None,
             is_character:  true,
             char_last_pos: [0.0, START_Y as f32, 0.0],
+            char_grounded: false,
         });
 
         let kcc = make_character_controller();
@@ -1804,9 +1814,9 @@ mod tests {
     /// `perform_character_step` が「対象未登録」「キャラクター指定でない」で `None` を返し、
     /// entry を書き換えないことを検証する。
     ///
-    /// ResolveCharacter の同期 reply はこの `None` を「解決失敗」としてメインへ返し、
-    /// メインは今フレームの補正を諦めて ECS をスクリプト値のまま据え置く。その据え置き判定の
-    /// 拠り所となる純粋部分（None を返す条件）を外部依存なしで固定する回帰テスト。
+    /// StepCharacter（非同期解決）で `None`（解決失敗）のときは entry.char_last_pos を
+    /// 書き換えないため、character_updates には従来の解決済み位置が載り続ける（＝暴れない）。
+    /// その不変性の拠り所となる純粋部分（None を返す条件）を外部依存なしで固定する回帰テスト。
     #[test]
     fn character_step_returns_none_for_missing_or_non_character() {
         let mut rb_set  = RigidBodySet::new();
@@ -1836,6 +1846,7 @@ mod tests {
             col_shape_data: None,
             is_character:  false,      // ← キャラクターではない
             char_last_pos: START,
+            char_grounded: false,
         });
         let r = perform_character_step(
             &kcc, &query, &mut rb_set, &mut col_set, &mut entries,
