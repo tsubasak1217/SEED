@@ -55,6 +55,18 @@ use super::{App, RuntimeMode, InspectorTransformDrag};
 ///   トンネリング（すり抜け）は起きない。健全時（大多数）は 1ms 未満応答で挙動不変。
 const OVERLAP_REPLY_TIMEOUT_MS: u64 = 4;
 
+/// キャラクターコントローラー同期解決（ResolveCharacter）の reply 待ちタイムアウト（ms）。
+///
+/// ドラッグ押し戻し（4ms）と違い、キャラ解決は「補正後位置を必ず ECS へ反映する」ことが
+/// 目的で、タイムアウトすると貫通位置がそのまま描画されてしまう（＝諦められない）。
+/// 物理スレッドは待機を `std::thread::sleep(1ms)` で行うが、Windows のタイマ粒度により
+/// 実際には約 15ms 眠るため、コマンドのドレイン間隔が ~15ms になり得る。4ms では
+/// 物理側が正しく解決・返信していても取りこぼす（実測で 100% タイムアウト）。
+/// 1 ドレイン周期を確実に跨げるよう、余裕を持って 40ms とする。健全時は数 ms で返るため
+/// 実際のブロックはそれ未満で、待つのはフレーム 1 回・キャラ数分のみ。
+/// （将来: 物理スレッドの待機を recv_timeout 化してドレインを即応させ、この値を下げる）
+const CHAR_RESOLVE_REPLY_TIMEOUT_MS: u64 = 40;
+
 /// 物理の毎フレーム診断ログ（`[Physics]` 行）を出力するかどうか。既定オフ。
 /// プロファイル/デバッグしたいときのみ環境変数 SEED_PHYS_LOG を設定して有効化する。
 ///
@@ -498,7 +510,7 @@ impl App {
                     reply: reply_tx,
                 });
                 match reply_rx.recv_timeout(
-                    std::time::Duration::from_millis(OVERLAP_REPLY_TIMEOUT_MS),
+                    std::time::Duration::from_millis(CHAR_RESOLVE_REPLY_TIMEOUT_MS),
                 ) {
                     Ok(v) => v,
                     // 応答なし（スレッド高負荷・終了中等）: 今フレームの補正を諦める。
