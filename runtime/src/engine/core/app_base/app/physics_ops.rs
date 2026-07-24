@@ -64,12 +64,12 @@ const OVERLAP_REPLY_TIMEOUT_MS: u64 = 4;
 static PHYS_LOG_ENABLED: std::sync::LazyLock<bool> =
     std::sync::LazyLock::new(|| std::env::var_os("SEED_PHYS_LOG").is_some());
 
-/// キャラクターコントローラー同期解決の診断ログ（`[CharCtl]` 行）を出すか。既定オフ。
-/// 環境変数 `SEED_CHAR_LOG` を設定したときだけ有効化する（PHYS_LOG と同じ作法）。
-/// 物理スレッド側（thread.rs）も同じ環境変数で `[CharCtl]` 行を出し、両者で 1 フレームの
-/// キャラ解決を切り分けられるようにする。
+/// キャラクターコントローラー同期解決の診断ログ（`[CharCtl]` 行）を出すか。
+/// 【一時診断】キャラクター貫通バグの切り分けのため、env 変数の有無に関わらず常時 ON。
+/// （洪水は CHAR_LOG_MAX_FRAMES=240 フレームの上限で防ぐ。原因特定後に env ゲートへ戻す）
+/// 物理スレッド側（thread.rs）も同様に `[CharCtl]` 行を出し、1 フレームのキャラ解決を切り分ける。
 static CHAR_LOG_ENABLED: std::sync::LazyLock<bool> =
-    std::sync::LazyLock::new(|| std::env::var_os("SEED_CHAR_LOG").is_some());
+    std::sync::LazyLock::new(|| true || std::env::var_os("SEED_CHAR_LOG").is_some());
 
 /// これまでに出力した `[CharCtl]`（メイン側）行のフレーム数（洪水防止の上限判定に使う）。
 static CHAR_LOG_FRAMES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);

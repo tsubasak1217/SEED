@@ -47,9 +47,10 @@ use super::types::{
 //  環境変数 SEED_CHAR_LOG を設定したときだけ、最初の N 回だけ stderr へ出す。
 //  既存の PHYS_LOG_ENABLED（physics_ops.rs）と同じ作法（既定オフ・件数上限で洪水防止）。
 
-/// キャラクター診断ログ（`[CharCtl]` 行）を出力するかどうか。既定オフ。
+/// キャラクター診断ログ（`[CharCtl]` 行）を出力するかどうか。
+/// 【一時診断】貫通バグ切り分けのため常時 ON（上限 CHAR_LOG_MAX_FRAMES で洪水防止）。原因特定後に env ゲートへ戻す。
 static CHAR_LOG_ENABLED: std::sync::LazyLock<bool> =
-    std::sync::LazyLock::new(|| std::env::var_os("SEED_CHAR_LOG").is_some());
+    std::sync::LazyLock::new(|| true || std::env::var_os("SEED_CHAR_LOG").is_some());
 
 /// これまでに出力した `[CharCtl]` 行の件数（洪水防止の上限判定に使う）。
 static CHAR_LOG_FRAMES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
