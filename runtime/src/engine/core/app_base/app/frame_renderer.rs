@@ -532,6 +532,11 @@ impl App {
             if let Some(scene) = &mut self.scene { scene.run_phase(Phase::LateUpdate, &ctx); }
             if dbg { eprintln!("[SEED FRAME {dbg_frame}] scene.render"); }
             if let Some(scene) = &mut self.scene { scene.run_phase(Phase::Render, &ctx); }
+            // キャラクターコントローラーの希望位置（スクリプトが Transform に書いた値）を
+            // 物理スレッドへ送る。**必ずスクリプトフェーズ実行後**に呼ぶことで、この
+            // フレームでスクリプトが書いた希望位置を拾える（次フレームの update_physics で
+            // 補正後位置を受信して反映する非同期パイプライン）。
+            self.sync_character_controllers();
             // 入力・物理チャンネルの公開を解除する（フェーズ外でのアクセスを防ぐ）
             publish_input(None);
             publish_physics_sender(None);

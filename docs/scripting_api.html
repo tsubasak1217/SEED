@@ -415,15 +415,15 @@ transform.Position += <span class="k">new</span> <span class="t">SEED.Vector3</s
 }</pre>
   <div class="warn">3D 物理（ColliderComponent）に対するレイキャストです。物理スレッドへの同期問い合わせのため、毎フレーム大量に呼ぶとフレーム時間を消費します。衝突・トリガーの<b>イベント通知</b>は第 2 節の物理イベントコールバックを参照。</div>
 
-  <h3 id="cmp-moveactor">Physics.MoveActor（キャラクターコントローラー移動）</h3>
-  <div class="api"><code class="sig">Physics.MoveActor(gameObject, motion)</code><span class="desc">MoveResult: 希望移動量 <code>motion</code>（Vector3・ワールド空間）を衝突解決して移動</span></div>
-  <div class="api"><code class="sig">result.Motion</code><span class="desc">Vector3: 実際に移動した量（壁ずり・段差・スロープ解決後）</span></div>
-  <div class="api"><code class="sig">result.Grounded</code><span class="desc">bool: 移動後に接地しているか</span></div>
-<pre><span class="c">// 重力はエンジンが自動適用しない。落下は motion に重力ぶんを含める</span>
-velocityY += -9.81f * <span class="t">SEED.Time</span>.DeltaTime;
-<span class="k">var</span> res = <span class="t">SEED.Physics</span>.MoveActor(gameObject, horizontal + <span class="k">new</span> <span class="t">SEED.Vector3</span>(0f, velocityY, 0f) * <span class="t">SEED.Time</span>.DeltaTime);
-<span class="k">if</span> (res.Grounded &amp;&amp; velocityY &lt; 0f) velocityY = 0f;</pre>
-  <div class="warn">Unity の <code>CharacterController.Move</code> 相当。対象は <b>Collider（カプセル推奨）</b>を持ち、<b>Kinematic</b>（use_rigidbody=true かつ is_kinematic=true）を推奨します。Dynamic コライダーに使うと物理積分と競合して暴れます。補正後の位置は集約経路で反映され<b>子アクタも追従</b>します。重力・複数移動の合成はスクリプト側の責務です。</div>
+  <h3 id="cmp-charactercontroller">キャラクターコントローラー（Transform を書くだけで地形に押し戻される）</h3>
+  <p class="section-note">Collider インスペクタの「<b>キャラクターコントローラー</b>」を ON にしたアクターは、<b>専用 API を呼ばず</b> <code>transform.Position</code> を書き換えるだけで地形・静的コライダーに衝突解決され、めり込んだぶんが自動で押し戻されます。押し戻しは移動のたびではなく <b>物理ステップ同期（60Hz）と同じタイミング</b>で前回位置との差分を解決します。壁ずり・段差・スロープは内部の KCC が処理します。</p>
+  <div class="api"><code class="sig">Physics.IsGrounded(gameObject)</code><span class="desc">bool: キャラクターが接地しているか（物理ステップ同期で自動更新）</span></div>
+  <div class="api"><code class="sig">transform.Teleport(pos)</code><span class="desc">void: 衝突を無視して pos へ瞬間移動（前回位置もリセットされ押し戻されない）</span></div>
+<pre><span class="c">// キャラクター移動: Position を希望位置へ書くだけ。地形にめり込めば押し戻される</span>
+velocityY += -9.81f * <span class="t">SEED.Time</span>.DeltaTime;                <span class="c">// 重力は自前で積分</span>
+<span class="k">if</span> (<span class="t">SEED.Physics</span>.IsGrounded(gameObject) &amp;&amp; velocityY &lt; 0f) velocityY = 0f;
+transform.Position += horizontal + <span class="k">new</span> <span class="t">SEED.Vector3</span>(0f, velocityY, 0f) * <span class="t">SEED.Time</span>.DeltaTime;</pre>
+  <div class="warn">対象は <b>Collider（カプセル推奨）</b>を持ち、インスペクタで「キャラクターコントローラー」を ON にしてください。1 フレーム内で <code>Position</code> を何度書いても物理ステップで <b>1 回だけまとめて</b>解決されます（反映に 1 フレームの遅延あり）。補正後の位置は集約経路で反映され<b>子アクタも追従</b>します。重力・複数移動の合成はスクリプト側の責務です。瞬間移動は <code>transform.Teleport()</code> を使ってください。</div>
 </section>
 
 <!-- ════════════════ 6.7 Audio ════════════════ -->
@@ -475,6 +475,7 @@ bullet.Transform.Position = transform.Position;   <span class="c">// 生成直�
   <div class="api"><code class="sig">transform.WorldPosition</code><span class="desc">Vector3（get のみ。ワールド絶対座標 = Position と同値）</span></div>
   <div class="api"><code class="sig">transform.Rotation</code><span class="desc">Vector3（get/set。YXZ オイラー角・度）</span></div>
   <div class="api"><code class="sig">transform.Scale</code><span class="desc">Vector3（get/set）</span></div>
+  <div class="api"><code class="sig">transform.Teleport(pos)</code><span class="desc">void: 衝突を無視して pos へ瞬間移動（キャラクターコントローラー用。前回位置もリセットし押し戻されない）</span></div>
 <pre><span class="c">// 例: 回しながら上げる</span>
 transform.Rotation += <span class="k">new</span> <span class="t">SEED.Vector3</span>(0f, 90f * <span class="t">SEED.Time</span>.DeltaTime, 0f);
 transform.Position += <span class="t">SEED.Vector3</span>.Up * <span class="t">SEED.Time</span>.DeltaTime;</pre>

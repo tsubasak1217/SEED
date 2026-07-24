@@ -123,6 +123,12 @@ pub struct PhysicsObject {
     pub physics_layer:   u32,
     /// 衝突対象レイヤーマスク（0 = 全レイヤーと衝突）
     pub layer_mask:      u32,
+    /// true ならキャラクターコントローラー。
+    /// スクリプトが Transform を書き換えた希望位置を、物理ステップ同期のタイミングで
+    /// KCC（KinematicCharacterController）が地形と衝突解決し、押し戻す対象になる。
+    /// 単純な kinematic 位置コピー（collect_kinematic_updates）からは除外され、
+    /// StepCharacter コマンドによる差分解決経路に一本化される。
+    pub is_character_controller: bool,
 }
 
 // ─── 物理スレッドコマンド ────────────────────────────────────────────────────
@@ -210,25 +216,37 @@ pub enum PhysicsCommand {
         /// 結果送信チャンネル（ヒットなし = None）
         reply:        crossbeam_channel::Sender<Option<RaycastHit>>,
     },
-    /// キャラクターコントローラー移動を実行し、補正済み移動量＋接地判定を
-    /// reply チャンネルへ返す（同期問い合わせ）。スクリプトの Physics.MoveActor 用。
+    /// キャラクターコントローラーの「希望位置」を差分解決する（非同期・毎フレーム送信）。
     ///
-    /// rapier3d の `KinematicCharacterController::move_shape` を使い、対象アクターの
-    /// カプセルコライダー形状で「希望移動量」を地形・静的コライダーと衝突解決する。
-    /// move_shape は読み取り専用クエリでコライダー位置を変更しない（結果の適用＝
-    /// ECS Transform 更新はメインスレッドの FFI 側が行う）。物理スレッドはコマンド
-    /// ドレイン間隔（約 1ms）で応答するため、呼び出し側は短いタイムアウトで待機する。
-    MoveCharacter {
-        /// 移動対象アクターの DFS 順識別 ID（コライダー形状取得・自己除外に使う）
-        entity_id:    u64,
-        /// 対象アクターの現在ワールド位置 [x, y, z]（KCC シェイプの基準位置）
-        position:     [f32; 3],
+    /// スクリプトが Transform を書き換えた希望位置 `desired_position` と、物理側が保持する
+    /// 「前回解決済み位置」の差分を moveVector として `KinematicCharacterController::move_shape`
+    /// が地形・静的コライダーと衝突解決し、補正後位置（前回位置 + 補正移動量）を求めて
+    /// 前回位置を更新する。接地判定も保持する。
+    ///
+    /// reply を持たない非同期コマンド。補正後位置は次のステップ結果（PhysicsResult の
+    /// character_updates）としてメインスレッドへ返り、ECS Transform に反映される。
+    /// これにより往復ブロック（MoveActor 同期 API の欠点）を避ける。
+    StepCharacter {
+        /// 対象アクターの DFS 順識別 ID（コライダー形状取得・自己除外・前回位置の保持に使う）
+        entity_id:         u64,
+        /// スクリプトが書き換えた希望ワールド位置 [x, y, z]
+        desired_position:  [f32; 3],
         /// 対象アクターの現在ワールド回転 [x, y, z, w]（SEED 規約・シェイプ姿勢に使う）
-        rotation:     [f32; 4],
-        /// このステップで加えたい希望移動量 [x, y, z]（重力分はスクリプトが含める）
-        motion:       [f32; 3],
-        /// 結果送信チャンネル（対象が見つからない・コライダーなし = None）
-        reply:        crossbeam_channel::Sender<Option<CharacterMoveResult>>,
+        rotation:          [f32; 4],
+    },
+    /// キャラクターコントローラーを瞬間移動させる（衝突無視・前回位置の強制リセット）。
+    ///
+    /// C# `Transform.Teleport(pos)` 用。物理側の「前回解決済み位置」を `position` に
+    /// 上書きし、コライダー位置も即座に反映する。前回位置＝希望位置となるため、
+    /// 次の StepCharacter で差分ゼロとなり押し戻されない。
+    /// is_character_controller でないアクターに対しては何もしない（位置設定は ECS 側で完結）。
+    TeleportCharacter {
+        /// 対象アクターの DFS 順識別 ID
+        entity_id: u64,
+        /// 瞬間移動先のワールド位置 [x, y, z]
+        position:  [f32; 3],
+        /// 対象アクターの現在ワールド回転 [x, y, z, w]（SEED 規約・コライダー姿勢に使う）
+        rotation:  [f32; 4],
     },
     /// スレッドを停止する
     Stop,
@@ -236,11 +254,11 @@ pub enum PhysicsCommand {
 
 // ─── キャラクターコントローラー結果 ──────────────────────────────────────────
 
-/// `PhysicsCommand::MoveCharacter` の結果（衝突解決後の実効移動）。
+/// KCC 衝突解決の結果（衝突解決後の実効移動）。
 ///
-/// KCC が壁ずり・段差・スロープを解決した後の「実際に適用すべき移動量」と、
-/// 移動後に接地しているかどうかを返す。呼び出し側（FFI）は
-/// 新位置 = 現在位置 + translation を集約関数経由で ECS へ反映する。
+/// `perform_character_move`（StepCharacter が使う内部関数）が壁ずり・段差・スロープを
+/// 解決した後の「実際に適用すべき移動量」と、移動後に接地しているかどうかを返す。
+/// 呼び出し側は 新位置 = 前回位置 + translation を求めて前回位置を更新する。
 pub struct CharacterMoveResult {
     /// 衝突解決後の実効移動量 [x, y, z]（希望移動量とは異なり得る）
     pub translation: [f32; 3],
@@ -276,6 +294,10 @@ pub struct PhysicsResult {
     /// タブごとの物理状態退避（続きから再開）で唯一失われる「速度」を復元するために使う。
     /// entity_id は DFS 順識別 ID（メインスレッド側で ECS Entity へ変換する）。
     pub body_velocities:   Vec<(u64, [f32; 3], [f32; 3])>,
+    /// キャラクターコントローラーの解決後状態: (entity_id, 補正後ワールド位置 [x,y,z], grounded)。
+    /// StepCharacter で差分解決した「前回位置」を毎フレーム送り、メインスレッドが
+    /// ECS Transform（子孫伝播つき）へ反映し、接地状態を IsGrounded 用にキャッシュする。
+    pub character_updates: Vec<(u64, [f32; 3], bool)>,
 }
 
 // ─── 衝突イベント ────────────────────────────────────────────────────────────

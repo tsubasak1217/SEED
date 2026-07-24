@@ -113,6 +113,7 @@ impl App {
                     is_trigger:      collider.is_trigger,
                     physics_layer:   collider.physics_layer,
                     layer_mask:      collider.layer_mask,
+                    is_character_controller: collider.is_character_controller,
                 })
             });
 

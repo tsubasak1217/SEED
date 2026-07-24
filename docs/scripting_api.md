@@ -216,7 +216,7 @@ if (SEED.Input.GetKeyDown(SEED.KeyCode.Space)) { /* ジャンプ */ }
 
 ---
 
-## 6.6 Physics（レイキャスト）
+## 6.6 Physics（レイキャスト・キャラクターコントローラー）
 
 ```csharp
 // レイキャスト: 最初にヒットしたコライダーの情報を得る
@@ -236,27 +236,30 @@ bool blocked = SEED.Physics.Raycast(origin, dir, maxDistance);
 - 3D 物理（ColliderComponent）に対するレイキャストです。物理スレッドへの同期問い合わせのため、毎フレーム大量に呼ぶとフレーム時間を消費します。
 - 衝突・トリガーの**イベント通知**は第 2 節「物理イベントコールバック」（`OnCollisionEnter` 等）を参照してください。
 
-### Physics.MoveActor（キャラクターコントローラー移動）
+### キャラクターコントローラー（Transform を書くだけで地形に押し戻される）
+
+Collider インスペクタの「**キャラクターコントローラー**」を ON にしたアクターは、**専用 API を呼ばず**、`transform.Position` を書き換えるだけで地形・静的コライダーに衝突解決され、めり込んだぶんが自動で押し戻されます。押し戻しは移動のたびではなく、**物理ステップ同期（60Hz）と同じタイミングで定期的に** Transform を確認し、前回解決済み位置との差分を moveVector として解決します。壁ずり・段差の乗り越え・スロープ登坂は内部の KCC（KinematicCharacterController）が処理します。
 
 ```csharp
-// アクターをキャラクターコントローラー的に動かす（Unity の CharacterController.Move 相当）。
-// 希望移動量を地形・静的コライダーと衝突解決し、補正済み移動量だけ動かす。
-// 壁ずり・段差の乗り越え・スロープ登坂は内部の KCC が処理する。
-SEED.MoveResult r = SEED.Physics.MoveActor(gameObject, motion); // motion は Vector3（ワールド空間）
-r.Motion    // Vector3: 実際に移動した量（衝突解決後）
-r.Grounded  // bool:    移動後に接地しているか
+// キャラクター移動: Transform.Position を希望位置へ書くだけ。地形にめり込めば押し戻される。
+float velocityY = 0f; // フィールドとして保持する
 
-// 重力はエンジンが自動適用しない。落下は motion に重力ぶんを含める:
-velocityY += -9.81f * SEED.Time.DeltaTime;          // 重力を積分
-if (r.Grounded && velocityY < 0f) velocityY = 0f;   // 接地したら落下速度をリセット
-var move = horizontal + new SEED.Vector3(0f, velocityY, 0f) * SEED.Time.DeltaTime;
-var res  = SEED.Physics.MoveActor(gameObject, move);
+void Update()
+{
+    // 重力はエンジンが自動適用しないので自前で積分する
+    velocityY += -9.81f * SEED.Time.DeltaTime;
+    if (SEED.Physics.IsGrounded(gameObject) && velocityY < 0f) velocityY = 0f; // 接地で落下停止
+
+    var move = horizontal + new SEED.Vector3(0f, velocityY, 0f) * SEED.Time.DeltaTime;
+    transform.Position += move; // ← これだけ。押し戻しは物理ステップ同期で自動適用される
+}
 ```
 
-- 対象アクターは **Collider コンポーネント（カプセル推奨）** を持つ必要があります。カプセル形状が KCC のシェイプに使われます。
+- 対象アクターは **Collider コンポーネント（カプセル推奨）** を持ち、インスペクタで「キャラクターコントローラー」を ON にしてください。カプセル形状が KCC のシェイプに使われます。
 - 補正後の位置は集約経路で反映されるため、**子アクタ（カメラ等）も追従**します。
-- 対象は **Kinematic なコライダー**（`use_rigidbody` = true かつ `is_kinematic` = true）を推奨します。**Dynamic** コライダーに対して使うと、物理エンジンの積分と移動が競合して暴れます。
-- 物理スレッドへの同期問い合わせのため、毎フレーム大量に呼ぶとフレーム時間を消費します。
+- 1 フレーム内で `Position` を何度書いても、物理ステップで **1 回だけまとめて** 解決されます。押し戻しの反映には物理同期の都合上 1 フレームの遅延があります。
+- **`Physics.IsGrounded(gameObject)`**: キャラクターが接地しているかを返します（物理ステップ同期で自動更新）。
+- **`transform.Teleport(pos)`**: 衝突を無視して瞬間移動します（下記 Transform 参照）。ワープ・リスポーン・初期配置に使います。
 - 重力・複数コライダーの合成移動はスクリプト側の責務です（KCC 自体は重力を持ちません）。
 
 ---
@@ -331,11 +334,17 @@ transform.Position         // Vector3（get/set）
 transform.WorldPosition    // Vector3（get のみ。ワールド絶対座標 = Position と同値）
 transform.Rotation         // Vector3（get/set。YXZ オイラー角・度）
 transform.Scale            // Vector3（get/set）
+transform.Teleport(pos)    // void: 衝突を無視して pos へ瞬間移動（キャラクターコントローラー用）
 
 // 例: 回しながら上げる（エンジン API は SEED. で修飾）
 transform.Rotation += new SEED.Vector3(0f, 90f * SEED.Time.DeltaTime, 0f);
 transform.Position += SEED.Vector3.Up * SEED.Time.DeltaTime;
 ```
+
+> **`Teleport(pos)`**: キャラクターコントローラー（Collider の「キャラクターコントローラー」ON）を、
+> 地形との衝突解決（自動押し戻し）を発生させずに `pos` へ瞬間移動します。物理側の「前回位置」も
+> 同時にリセットされるため、瞬間移動先で押し戻されません。ワープ・リスポーン・シーン開始時の
+> 初期配置に使います。`Position` への代入（＝押し戻しあり）との使い分けに注意してください。
 
 > **親子の追従**: `Transform` の各値は**ワールド絶対座標**です。スクリプトから `Position` /
 > `Rotation` / `Scale` のいずれかを書き込むと、その差分が**自身のメッシュと全子孫アクター

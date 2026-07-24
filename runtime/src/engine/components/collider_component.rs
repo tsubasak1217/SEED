@@ -169,6 +169,17 @@ pub struct ColliderComponent {
     /// Play 開始直後に適用される初期回転速度（rad/s）
     #[serde(default)]
     pub initial_angular_velocity: [f32; 3],
+
+    // ─── キャラクターコントローラー設定 ──────────────────────────────────────
+
+    /// true ならこのコライダーをキャラクターコントローラーとして扱う。
+    ///
+    /// Play 中、スクリプトが Transform を書き換えた希望位置を物理ステップ同期の
+    /// タイミングで KCC が地形と衝突解決し、めり込んだぶんを自動で押し戻す
+    /// （専用 API を呼ばず、Transform 代入だけで押し戻しが効く）。
+    /// 瞬間移動（衝突無視）は `Transform.Teleport(pos)` を使う。
+    #[serde(default)]
+    pub is_character_controller: bool,
 }
 
 // ─── デフォルト値ファクトリ ──────────────────────────────────────────────────
@@ -201,6 +212,7 @@ impl Default for ColliderComponent {
             freeze_rotation:         [false; 3],
             initial_linear_velocity:  [0.0; 3],
             initial_angular_velocity: [0.0; 3],
+            is_character_controller:  false,
         }
     }
 }
@@ -264,6 +276,9 @@ pub struct ColliderComponentData {
     pub initial_linear_velocity:  [f32; 3],
     #[serde(default)]
     pub initial_angular_velocity: [f32; 3],
+    // キャラクターコントローラー設定（旧シーン互換のため default=false）
+    #[serde(default)]
+    pub is_character_controller: bool,
 }
 
 impl From<&ColliderComponent> for ColliderComponentData {
@@ -286,6 +301,7 @@ impl From<&ColliderComponent> for ColliderComponentData {
             freeze_rotation:         c.freeze_rotation,
             initial_linear_velocity:  c.initial_linear_velocity,
             initial_angular_velocity: c.initial_angular_velocity,
+            is_character_controller:  c.is_character_controller,
         }
     }
 }
@@ -310,6 +326,7 @@ impl From<ColliderComponentData> for ColliderComponent {
             freeze_rotation:         d.freeze_rotation,
             initial_linear_velocity:  d.initial_linear_velocity,
             initial_angular_velocity: d.initial_angular_velocity,
+            is_character_controller:  d.is_character_controller,
         }
     }
 }
