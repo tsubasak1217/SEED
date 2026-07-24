@@ -928,12 +928,30 @@ fn apply_character_transform(
 
     // 位置だけ差し替えた新しいワールド Transform を作る（回転・スケールは維持）
     let cur = scene.world.get::<ActorTransform>(actor.entity).cloned().unwrap_or_default();
+    let entity = actor.entity;
     let mut next = cur;
     next.position = new_pos;
 
     // 集約関数経由で反映（自 instance_mats・全子孫アクタへ伝播）。
     // child_dfs_start はスクリプト／物理経路では Undo を記録しないため 0 でよい。
     crate::engine::core::transform_sync::set_actor_world_transform(actor, &mut scene.world, next, 0);
+
+    // 【一時診断】書き込みが実際に ECS へ反映されたか読み直して確認する。
+    // set_at=書き込もうとした補正後 Y、ecs_after=書き込み直後に読み直した ECS の Y。
+    // 両者が一致すれば apply は成功＝反映が消えるのは次フレームの別処理が原因、
+    // 不一致なら set_actor_world_transform の書き込み経路の問題、と切り分けられる。
+    if *CHAR_LOG_ENABLED
+        && CHAR_LOG_FRAMES.load(std::sync::atomic::Ordering::Relaxed) < CHAR_LOG_MAX_FRAMES
+    {
+        let ecs_after = scene.world.get::<ActorTransform>(entity)
+            .map(|t| t.position)
+            .unwrap_or([f32::NAN; 3]);
+        eprintln!(
+            "[CharCtl] apply id={entity_id} set_to=({:.3},{:.3},{:.3}) ecs_after=({:.3},{:.3},{:.3})",
+            new_pos[0], new_pos[1], new_pos[2],
+            ecs_after[0], ecs_after[1], ecs_after[2],
+        );
+    }
 }
 
 // ─── 数学ユーティリティ ──────────────────────────────────────────────────────
