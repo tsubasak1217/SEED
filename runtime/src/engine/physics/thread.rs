@@ -342,6 +342,15 @@ fn run_physics_loop(
                     // 補正前の前回位置（motion 算出・ログ用）を退避する。
                     let last_before = entries.get(&entity_id).map(|e| e.char_last_pos);
 
+                    // 【重要】KCC のクエリ直前にクエリパイプラインを明示的に全更新する。
+                    // 地形コライダーは親剛体を持たない「フリーコライダー」として登録されており、
+                    // step() 内のクエリパイプライン更新経路ではフリーコライダーが索引されず、
+                    // move_shape が地形を検出できない（＝素通り）ことがある。ユニットテストが
+                    // 通るのは明示的に query.update(&col_set) を呼んでいるためで、本番ループも
+                    // 同じ作法に揃える。地形は静的なので毎フレーム再構築はコストになるが、まずは
+                    // 正しさを優先する（将来はコライダー変化時のみ更新へ最適化する）。
+                    query_pipeline.update(&collider_set);
+
                     let resolved = perform_character_step(
                         &character_controller, &query_pipeline,
                         &mut rigid_body_set, &mut collider_set, &mut entries,
