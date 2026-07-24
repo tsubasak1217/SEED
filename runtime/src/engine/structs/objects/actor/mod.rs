@@ -39,7 +39,6 @@ use crate::engine::components::{
     ColliderComponent, ColliderComponentData,
 };
 use crate::engine::core::clock::FrameContext;
-use crate::engine::structs::objects::prefab::PrefabOverrides;
 
 // ─── ActorKind ────────────────────────────────────────────────────────────────
 
@@ -137,36 +136,6 @@ pub struct ActorData {
     /// 旧 `.scene` との互換性のため省略可（省略時 None）、None のときは書き出さない。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prefab_source: Option<String>,
-    /// プレハブオーバーライド（シーン側でこのインスタンスに加えた差分）。
-    /// `prefab_source` を持つアクタのみ意味を持つ。
-    ///
-    /// シーン保存時にプレハブ本体（`.actor`）と比較して自動抽出され、
-    /// ロード時の再展開直後に再適用される。これにより
-    /// 「プレハブ本体の編集は全インスタンスへ反映」しつつ
-    /// 「シーン側の個別変更は失われない」を両立する（prefab/mod.rs 参照）。
-    /// 旧 `.scene` との互換性のため省略可（省略時は空）、空のときは書き出さない。
-    #[serde(default, skip_serializing_if = "PrefabOverrides::is_empty")]
-    pub prefab_overrides: PrefabOverrides,
-}
-
-impl Default for ActorData {
-    /// 空のアクタデータ（active=true / 3D / コンポーネント・子なし）。
-    /// テストや部分的なデータ組み立ての起点として使う。
-    fn default() -> Self {
-        Self {
-            name:             String::new(),
-            dfs_id:           None,
-            actor_kind:       ActorKind::Actor3D,
-            transform:        None,
-            canvas_transform: None,
-            is_folder:        false,
-            components:       Vec::new(),
-            children:         Vec::new(),
-            active:           true,
-            prefab_source:    None,
-            prefab_overrides: PrefabOverrides::default(),
-        }
-    }
 }
 
 /// actor_kind が Actor3D（デフォルト）の場合は JSON に書き出さない。
@@ -214,12 +183,6 @@ pub struct Actor {
     /// **インスタンスのルートのみ Some**（子アクターは常に None）。
     /// build_actor で ActorData から復元し、to_data で書き戻す。
     pub prefab_source: Option<String>,
-    /// プレハブオーバーライド（シーン側の差分）。ActorData の同名フィールドと往復する。
-    /// **インスタンスのルートのみが中身を持つ**（子アクターは常に空）。
-    /// 保存時に自動抽出され（prefab::extract）、ロード時の再展開直後に再適用される。
-    /// ここで往復させておくのは、Undo スナップショットや再展開を挟んでも
-    /// 差分が消えないようにするため。
-    pub prefab_overrides: PrefabOverrides,
     /// フォルダノードフラグ（整理専用ノード）。true のとき Transform を持たず、
     /// 子のワールド変換に影響しない（描画・物理・スクリプトから透過）。
     /// ActorData の同名フィールドと往復する。地形ルート／チャンクの器などに使う。
@@ -238,7 +201,6 @@ impl Actor {
             children:   Vec::new(),
             active:     true,
             prefab_source: None,
-            prefab_overrides: PrefabOverrides::default(),
             is_folder:  false,
             slots:      Vec::new(),
         }
@@ -254,7 +216,6 @@ impl Actor {
             children:   Vec::new(),
             active:     true,
             prefab_source: None,
-            prefab_overrides: PrefabOverrides::default(),
             is_folder:  false,
             slots:      Vec::new(),
         }
@@ -273,7 +234,6 @@ impl Actor {
             children:   Vec::new(),
             active:     true,
             prefab_source: None,
-            prefab_overrides: PrefabOverrides::default(),
             is_folder:  true,
             slots:      Vec::new(),
         }
@@ -476,8 +436,6 @@ impl Actor {
             active:           self.active,
             // プレハブ参照リンクを往復させる（ルートのみ Some、子は None）。
             prefab_source:    self.prefab_source.clone(),
-            // プレハブオーバーライドを往復させる（保存時に extract で最新へ更新される）。
-            prefab_overrides: self.prefab_overrides.clone(),
         }
     }
 
@@ -519,7 +477,6 @@ mod folder_tests {
             children:         Vec::new(),
             active:           true,
             prefab_source:    None,
-            prefab_overrides: PrefabOverrides::default(),
         };
 
         // is_folder=true は出力され、往復で保持される。

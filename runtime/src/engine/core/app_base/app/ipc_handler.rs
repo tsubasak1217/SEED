@@ -326,8 +326,6 @@ impl App {
                         // .actor ファイルはプレハブのテンプレート。ルートの参照リンクは
                         // 書き出さない（テンプレートへの自己参照・二重リンク混入を防ぐ）。
                         data.prefab_source = None;
-                        // オーバーライドはシーン側の概念。テンプレートには書き出さない。
-                        data.prefab_overrides = Default::default();
                         let json = serde_json::to_string_pretty(&data).map_err(|e| e.to_string())?;
                         std::fs::write(&path, json).map_err(|e| e.to_string())?;
                         Ok(())

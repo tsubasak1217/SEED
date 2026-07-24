@@ -333,20 +333,10 @@ impl Scene {
     // ── 保存 ──────────────────────────────────────────────────
 
     pub fn save(&self, path: &Path, camera: &DebugCameraData) -> Result<(), SceneError> {
-        let mut actors: Vec<ActorData> =
-            self.actors.iter().map(|a| a.to_data(&self.world)).collect();
-
-        // プレハブインスタンスの差分（オーバーライド）を、書き出す直前に
-        // プレハブ本体（.actor）と比較して抽出し直す。
-        // 【重要】編集操作時にフラグを立てるのではなく保存時に丸ごと比較する方式にしている。
-        // 編集の IPC 経路は多数あり、どれか 1 本に印付け処理を通し忘れると差分が
-        // 失われるため（この方式なら経路が増えても構造的に漏れない）。
-        crate::engine::structs::objects::prefab::refresh_prefab_overrides(&mut actors);
-
         let data = SceneData {
             name:         self.name.clone(),
             debug_camera: Some(camera.clone()),
-            actors,
+            actors:       self.actors.iter().map(|a| a.to_data(&self.world)).collect(),
         };
         let json = serde_json::to_string_pretty(&data)?;
         std::fs::write(path, json)?;
@@ -478,9 +468,6 @@ pub fn build_actor(
     // プレハブ参照リンクを復元する（インスタンスのルートのみ Some、子は None）。
     // シーンロード時の再展開・ライブ反映の対象判定に使用する。
     actor.prefab_source = data.prefab_source;
-    // プレハブオーバーライド（シーン側の差分）を復元する。
-    // 再展開（prefab_ops）はこの値を維持し、展開の途中でプレハブ内容へマージし直す。
-    actor.prefab_overrides = data.prefab_overrides;
 
     for slot in data.components {
         let slot_name = slot.name.clone();
