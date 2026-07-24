@@ -211,6 +211,22 @@ impl App {
                             smooth: false,
                         });
                     }
+
+                    // 【案B: ドラッグ解放直後の収束停止抑止】
+                    // ライブシミュレーション中（paused=false）のドラッグを解放した直後は、
+                    // 上の Dynamic 復帰コマンドを物理スレッドが処理して落下速度を報告するまで
+                    // 最大 1 物理周期のラグがある。その窓では解放したボディの速度が 0 のまま
+                    // 残留するため、収束停止（自動 Pause）に誤って掛かって落下が始まらなく
+                    // なる。案A で根治済みだが、二重の保険としてフォールバック経路
+                    // （resume_edit_physics_from_current_ecs）と同じウォームアップ保護を
+                    // 明示的に付与し、解放直後を「移動中」とみなして停止判定をスキップさせる。
+                    if self.mode == RuntimeMode::Edit
+                        && self.edit_physics_enabled
+                        && self.edit_physics_with_rigidbody
+                        && !self.edit_physics_paused
+                    {
+                        self.protect_edit_physics_after_drag_release();
+                    }
                 }
                 // ドラッグ終了: 押し戻し用の最終有効位置をクリアする
                 self.drag_collider_last_valid_pos = None;
@@ -297,6 +313,12 @@ impl App {
         // 結果受信のためにここで改めて物理スレッドを借用する。
         let Some(thread) = &self.physics_thread else { return };
         let result = thread.recv_latest();
+
+        // 【案A】このフレームで新しい物理結果を受信できたかを退避する。
+        // try_record_physics_snapshot（収束停止判定）が edit_physics_results_fresh 経由で
+        // 参照し、結果待ちの窓を静止と誤カウントしないようにする。update_physics は
+        // try_record より前に走るため、この 3D フラグは常に同フレームの最新値になる。
+        self.store_edit_physics_result_received_3d(result.is_some());
 
         if let Some(ref result) = result {
             if diag {
