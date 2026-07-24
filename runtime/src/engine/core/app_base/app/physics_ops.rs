@@ -512,15 +512,24 @@ impl App {
                     rotation,
                     reply: reply_tx,
                 });
-                match reply_rx.recv_timeout(
-                    std::time::Duration::from_millis(CHAR_RESOLVE_REPLY_TIMEOUT_MS),
-                ) {
-                    Ok(v) => v,
+                // 【一時診断】reply が実際に何 ms 後に届くか（届かないか）を実測する。
+                // タイムアウトを 200ms に上げ、reply の待ち時間を計測。届けば「純粋な配送遅延」
+                // （物理スレッドがコマンドを処理するまでのスケジューリング遅延）、200ms でも
+                // 届かなければ「配送バグ」と切り分けられる。move_shape は 0.03ms（実測）なので
+                // 計算コストではない。
+                let _t_wait = std::time::Instant::now();
+                match reply_rx.recv_timeout(std::time::Duration::from_millis(200)) {
+                    Ok(v) => {
+                        if diag {
+                            eprintln!("[CharCtl] recv OK wait_ms={:.2}", _t_wait.elapsed().as_secs_f32() * 1000.0);
+                        }
+                        v
+                    }
                     // 応答なし（スレッド高負荷・終了中等）: 今フレームの補正を諦める。
                     // ECS はスクリプト値のまま＝従来同等。次フレームで最新の希望位置を再解決する。
                     Err(_) => {
                         if diag {
-                            eprintln!("[CharCtl] id={entity_id} reply timeout（今フレームの補正を諦め）");
+                            eprintln!("[CharCtl] id={entity_id} reply timeout wait_ms={:.2}", _t_wait.elapsed().as_secs_f32() * 1000.0);
                         }
                         continue;
                     }
