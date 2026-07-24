@@ -68,7 +68,7 @@ static PHYS_LOG_ENABLED: std::sync::LazyLock<bool> =
 /// 環境変数 SEED_CHAR_LOG を設定したときだけ有効化する（洪水は CHAR_LOG_MAX_FRAMES で防ぐ）。
 /// 物理スレッド側（thread.rs）も同様に `[CharCtl]` 行を出し、キャラ解決を切り分ける。
 static CHAR_LOG_ENABLED: std::sync::LazyLock<bool> =
-    std::sync::LazyLock::new(|| std::env::var_os("SEED_CHAR_LOG").is_some());
+    std::sync::LazyLock::new(|| true || std::env::var_os("SEED_CHAR_LOG").is_some());
 
 /// これまでに出力した `[CharCtl]`（メイン側）行のフレーム数（洪水防止の上限判定に使う）。
 static CHAR_LOG_FRAMES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
